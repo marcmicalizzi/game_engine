@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R158",
+  "reason": "R158 leg 3 and R159: record_frame sets the cross-fade's turn on the camera's and the cascades' cull blocks (4 lines); renderer.md gains the accumulation's third leg, its measurements and the reconstruction provider's section",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": 4,
+    "page:docs/subsystems/renderer.md": 9100
+  }
+}

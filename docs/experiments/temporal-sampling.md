@@ -37,6 +37,18 @@ still crown it cost four codes of the ten. **The frames are averaged as the disp
 through the display's curve. Not built: the cross-fade's hash taking the phase, a read sharper
 than four taps, the frame loop's flight, the forest's pair.
 
+**Status, 2026-11-17 (roadmap R158 leg 3, R159).** Three of the stage's leftovers are built, off
+with the accumulation ([renderer](../subsystems/renderer.md#leg-3-the-sharper-read-reactive-surfaces-and-the-fade-turned-with-the-phase)):
+the history read through Catmull-Rom where its four nearest texels held; water marked reactive
+(always clipped, at least a quarter of the new frame), the material table standing in for the
+reactive mask Part 2 proposed; and **the third content fault answered**, the cross-fade's screen
+door turned with the phase so the accumulation blends it. Stage 3, the registration point, is built
+([renderer](../subsystems/renderer.md#sampling-over-time-a-reconstruction-provider)). Karis 2014
+was read for this leg (Epic's published PDF of the slides, its text); **Yang, Liu and Salvi 2020
+was not**: no copy could be fetched (the authors' host's certificate did not match, the
+Eurographics library and the publisher refused), so what this page attributes to the survey is
+still from its published version as known, not re-read.
+
 **What was asked.** The owner, after two walks of the forest (2026-11-14): "just for figuring out
 visual artifacts from just so many leaves creating interference patterns (it's not a visual defect
 persey but it is noticeable), and for frame rates too, maybe it's time to start thinking about TAA,

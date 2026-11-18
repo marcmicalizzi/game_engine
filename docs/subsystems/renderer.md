@@ -1924,7 +1924,8 @@ pixel and the seed lies between them (`fade_keeps`, `alpha_mask.slang`) — scre
 through the masked variants' discard, so the visibility buffer keeps one id a pixel and the tie rule
 stands. Both sides of a transition hash the same pixels with the same seed (the instance's, never the
 pair's), so they are complementary: no holes, no doubles. The hash has nothing of the frame in it, so a
-still view does not shimmer. **The seed is the instance's placement, never its index**
+still view does not shimmer; only under the accumulation are the splits turned with the phase, so
+that the frames blend the two levels ([leg 3](#leg-3-the-sharper-read-reactive-surfaces-and-the-fade-turned-with-the-phase)). **The seed is the instance's placement, never its index**
 (`fade_seed` in `scene.slang`: the bits of its offset into its cell and of its rotation and scale,
 hashed; not the cell, so a scene moved by whole cells draws the same bytes). Until R170
 (2026-11-16) it was the instance's index, which is its place in the scene's layout and so the order
@@ -6792,6 +6793,36 @@ it writes and keeps exactly what it did).
 **Determinism.** The phase is the renderer's own count since the last reset, so all three are
 functions of the frames since a reset: a flight from its first path frame (`history_reset`) draws
 the same bytes twice, as before.
+
+**Measured** (2026-11-18, 00:00 to 01:15 local, `msvc-release`, RTX 5090, the Windows session
+locked and every core held 94 to 100 % by others throughout, so every time below is an upper bound
+and is not to be set beside an unlocked figure). Pictures: the renderer's own mean of 64 offsets
+is the reference; luma codes rms; "edges" are pixels whose reference 3 × 3 spans 24 codes or more.
+
+| still view, 1280 × 720, rt/rt, bounce off | as drawn: all / edges / interior | accumulated, 16th frame |
+|---|---|---|
+| the grove (a pose among the trunks) | 2.36 / 9.88 / 1.64 | 0.50 / 2.06 / 0.35 |
+| the village (its path's first pose) | 2.60 / 7.74 / 1.10 | 0.58 / 1.32 / 0.44 |
+| the beach (its first shot) | 1.65 / 11.76 / 0.82 | 0.31 / 2.00 / 0.20 |
+
+The spruce at 120 m (R154 leg 2's crop and 64-offset reference): held 10.80 as drawn, 2.53
+accumulated with either read (a held view's read is a texel); a slow pan of an eighth of a pixel a
+frame 3.90 from the slid reference with Catmull-Rom and 4.01 with the bilinear read, its
+frame-to-frame change 0.99 and 0.92 times the reference's; the wind 3.64 and 3.62. **Leaf-cards'
+oaks drew no crown on this main** in any of leg 2's views (the frames hold ground and sky), and the
+grove's walk shows its trees standing above the eye, on main's copied-out build as on this one: a
+fault of the scenes on this main, found here and not this row's, so the crowns' rows of the table
+above were not flown again. A turn on the beach and the walks of the grove and the village, read
+frame by frame with the accumulation on, show no trail behind a rock or the swash's edge; the walks'
+change between every fourth frame is 6.7, 26.2 and 6.6 codes on, 8.6, 27.2 and 7.3 off. Water was
+not isolated as a region, so the reactive rule has no figure of its own yet.
+
+**What it costs** (the grove's path at 3840 × 2160, `--raster rt --shadows rt`, the bounce on, 240
+warm-up frames, one alternation in one lease, locked as above): main's copied-out build 6.040 ms at
+the median (p99 6.567), this build with the accumulation off 6.023 (6.600), on 7.269 (7.958), of
+which the frame passes (the accumulation and the encode) 0.579 and the motion pass 0.101. Off costs
+nothing; on is 1.25 ms more here, where leg 2 measured 0.46 unlocked: the locked card's clocks are
+in that figure, and the sharper read's sixteen taps are not separated from them.
 
 ## Sampling over time: a reconstruction provider
 
