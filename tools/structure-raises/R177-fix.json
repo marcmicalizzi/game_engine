@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R177-fix",
+  "reason": "A7 (review of R177): renderer.md says why a scene with a mesh room keeps the foliage lines whatever its generators declared, why a pipeline rebuild on arrival was not taken, and names the case",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 841
+  }
+}

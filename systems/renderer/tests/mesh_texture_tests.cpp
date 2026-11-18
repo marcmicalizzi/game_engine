@@ -9,7 +9,8 @@
 // second, its image a few recorded frames later, in bytes; a texture let go and wanted again
 // before then comes back without an upload; the room's refusal names its bound and the mesh draws
 // its constants; an alpha-tested rock draws its holes, as the whole read does, only in a scene
-// told to expect one; and on the ray path the textured rocks are the whole read's.
+// told to expect one; on the ray path the textured rocks are the whole read's; and a foliage
+// material a tile hands after the first frame is lit from both sides whatever was declared.
 #include "test_device.h"
 
 #include <core/memory/memory.h>
@@ -171,10 +172,18 @@ struct Rig {
   }
 
   // The world's order: every texture in, then the mesh, then the caller's own references back.
-  // `textures` false admits the mesh without them, as a refusal leaves it.
-  bool admit(u32 tile, u32 slot, bool textures = true) {
+  // `textures` false admits the mesh without them, as a refusal leaves it. `transmission` at zero
+  // or more makes every material of the mesh two-sided with that diffuse transmission, which is
+  // foliage optics from 0 up (gpu_scene_textures.cpp, `fill_material`).
+  bool admit(u32 tile, u32 slot, bool textures = true, f32 transmission = -1.0f) {
     PlacementMeshData built;
     if (!make(tile, built)) return false;
+    if (transmission >= 0.0f) {
+      for (assets::Material& material : built.source.data.materials) {
+        material.double_sided = true;
+        material.transmission = transmission;
+      }
+    }
     if (!built.textures_why.empty()) {
       error = built.textures_why;
       return false;
@@ -799,4 +808,63 @@ TEST_CASE("mesh textures: a textured tile mesh on the ray path is the whole read
     CHECK(static_cast<f64>(apart) < 0.03 * static_cast<f64>(rastered));
     CHECK(rayed + 150 < opaque);
   }
+}
+
+TEST_CASE("mesh textures: a tile's foliage material arriving after the first frame is two-sided") {
+  // Review finding A7 (R177): the resolve's foliage lines are a specialization constant fixed when
+  // the scene's pipelines are made. A scene with a mesh room keeps them whatever its generators
+  // declared, so foliage a tile hands later is lit as main lit it: the same picture as in a scene
+  // whose generator said its tiles may be alpha-tested (which kept them on the branch too), and
+  // not the picture of the same rocks with no foliage optics. A closed scene with no foliage
+  // material still drops them (the rock field's and the erg's saving).
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  const u32 look = 0;
+  test::TempDir tmp{"engine_renderer_mesh_textures_foliage"};
+  Rig closed;
+  REQUIRE_MESSAGE(closed.build(gpu.device, describe(tmp, true, look), plain(), false, look),
+                  closed.error);
+  CHECK_FALSE(closed.scene.has_foliage_materials());
+  Rig undeclared;  // no generator said anything about its tiles' meshes
+  REQUIRE_MESSAGE(undeclared.build(gpu.device, describe(tmp, false, look), plain(), true, look),
+                  undeclared.error);
+  CHECK(undeclared.scene.has_foliage_materials());
+  Rig declared;
+  REQUIRE_MESSAGE(
+      declared.build(gpu.device, describe(tmp, false, look), plain(), true, look, true),
+      declared.error);
+  Rig sheet;  // the same rocks two-sided with no transmission: no foliage optics
+  REQUIRE_MESSAGE(sheet.build(gpu.device, describe(tmp, false, look), plain(), true, look),
+                  sheet.error);
+  CapturedFrame first;
+  for (Rig* rig : {&undeclared, &declared, &sheet}) {
+    REQUIRE_MESSAGE(rig->shoot(first), rig->error);  // a frame drawn before any tile arrived
+    const f32 transmission = rig == &sheet ? 0.0f : 0.4f;
+    for (u32 t = 0; t < k_tiles; ++t)
+      REQUIRE_MESSAGE(rig->admit(t, t, true, transmission), rig->error);
+    REQUIRE_MESSAGE(rig->hand_over(k_in_order), rig->error);
+  }
+  CapturedFrame u;
+  CapturedFrame d;
+  CapturedFrame s;
+  REQUIRE_MESSAGE(undeclared.shoot(u), undeclared.error);
+  REQUIRE_MESSAGE(declared.shoot(d), declared.error);
+  REQUIRE_MESSAGE(sheet.shoot(s), sheet.error);
+  const Difference same = compare(u, undeclared, d, declared);
+  MESSAGE("foliage tiles, undeclared against declared: " << same.depth << " depths, "
+                                                        << same.color << " colours, " << same.ids
+                                                        << " ids over " << same.rock_pixels
+                                                        << " rock pixels");
+  CHECK(same.rock_pixels > 3000);
+  CHECK(same.depth == 0);
+  CHECK(same.ids == 0);
+  CHECK(same.color == 0);
+  const Difference optics = compare(u, undeclared, s, sheet);
+  MESSAGE("foliage tiles against the same sheets with no optics: "
+          << optics.rock_color << " of " << optics.rock_pixels << " rock pixels differ");
+  CHECK(optics.ids == 0);
+  CHECK(optics.rock_color > 1000);
 }

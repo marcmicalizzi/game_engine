@@ -278,16 +278,11 @@ bool GpuScene::admit_mesh(u32 mesh, const PlacementMeshData& data, std::string* 
         info_of(from.base_color_image), info_of(from.metallic_roughness_image),
         info_of(from.normal_image), info_of(from.occlusion_image), info_of(from.emissive_image)};
     if (!fill_material(from, built, tex, made[m], error)) return false;
-    // Foliage optics where the scene's resolve was made without its foliage lines (R177): the
-    // material keeps its byte and draws as a one-sided sheet, as the masked rule above draws
-    // opaque.
-    if ((made[m].flags & gfx::k_material_foliage_mask) != 0 && !has_foliage_materials_) {
-      ENGINE_LOG_WARN(log_renderer, "a tile's foliage material is lit from its front alone",
-                      log::field("mesh", name), log::field("material", m),
-                      log::field("reason",
-                                 "no material of the load has foliage optics and no generator "
-                                 "said its tiles hand alpha-tested meshes"));
-    }
+    // Foliage optics need no declaration: a scene with a mesh room keeps the resolve's foliage
+    // lines (`upload_materials`, R177; review finding A7), so a tile's foliage material draws from
+    // both sides as the load's own would.
+    ENGINE_ASSERT((made[m].flags & gfx::k_material_foliage_mask) == 0 || has_foliage_materials_,
+                  "a scene with a mesh room keeps its foliage lines");
     // Stochastic sampling (R131) where the set asked for it and the scene's resolve is the
     // stochastic one, which is chosen from the load's materials when the scene is made.
     const bool stochastic =

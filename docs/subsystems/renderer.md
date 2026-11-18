@@ -1781,9 +1781,18 @@ is made with it false where no material row of the scene has the byte
 (`GpuScene::has_foliage_materials`). The driver folds the constant before it allocates registers,
 so such a pipeline is the module without foliage, from the same SPIR-V: not a fifth bit of
 `resolve_module`, which would have doubled the resolve's sixteen modules to thirty-two and their
-build. A scene with a mesh room whose generators said their tiles hand alpha-tested meshes
-(`tile_meshes_masked`) keeps the lines, as it keeps the masked pipelines; a tile's foliage
-material in a scene made without them is drawn as a one-sided sheet and said in the log.
+build. **A scene with a mesh room keeps the lines, whatever its generators declared** (review
+finding A7): a tile may hand a foliage material at any frame, the constant is fixed when the
+pipelines are made, and a picture must not depend on whether a generator remembered to say its
+tiles may (the branch first kept them only behind `tile_meshes_masked`, and an undeclared world's
+tile foliage was lit from the front alone where main lit it from both sides). Rebuilding the
+family's pipelines when the first foliage material arrived was the other way, and was not taken:
+a resolve family's build is long, and would land on the frame's thread or a frame late. So only a
+**closed** scene with no foliage material drops them, which is where the saving was measured (the
+rock field and the erg have no mesh room); a streamed world with tile meshes and no foliage pays
+for the lines as it did on main. `mesh_texture_tests.cpp` ("a tile's foliage material arriving
+after the first frame is two-sided") holds an undeclared scene's tile foliage to a declared
+scene's picture and away from the same sheets with no optics.
 `gfx::Specialization` (`pipeline.h`; [gfx](gfx.md#specialization-constants)) is how any pipeline
 sets such a constant.
 

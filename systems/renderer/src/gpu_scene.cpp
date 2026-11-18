@@ -5078,11 +5078,11 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     if ((material.flags & gfx::k_material_alpha_mask) != 0) has_masked_ = true;
     if ((material.flags & gfx::k_material_foliage_mask) != 0) has_foliage_materials_ = true;
   }
-  // A generator said its tiles may hand an alpha-tested mesh (`tile_meshes_masked`): the masked
-  // pipelines are chosen from this flag when the scene's renderer is made, before any tile is.
-  // Foliage cards are such meshes, so the resolve keeps its foliage lines for them too (R177).
-  if (mesh_room_.slots != 0 && data_->tile_meshes_masked)
-    has_masked_ = has_foliage_materials_ = true;
+  // The masked pipelines are chosen before any tile is, from `tile_meshes_masked`. A scene with a
+  // mesh room keeps the foliage lines whatever was declared, since a tile may hand a foliage
+  // material at any frame (R177; review finding A7): only a closed scene with none drops them.
+  if (mesh_room_.slots != 0) has_masked_ = has_masked_ || data_->tile_meshes_masked;
+  if (mesh_room_.slots != 0) has_foliage_materials_ = true;
   // The resolve's stochastic variant is the one only such a scene draws with (scene_renderer.cpp,
   // `resolve_module`).
   has_stochastic_materials_ = stochastic != 0;
