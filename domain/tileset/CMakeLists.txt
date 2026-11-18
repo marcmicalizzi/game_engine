@@ -26,3 +26,7 @@ engine_module(NAME tileset LAYER domain OPTIONAL WHOLE_ARCHIVE GENERATOR ground:
 engine_module_tests(NAME tileset WALL_CLOCK
   SOURCES tests/tileset_tests.cpp tests/determinism_tests.cpp tests/mask_tests.cpp tests/cut_tests.cpp
           tests/size_table.cpp)
+
+# What a mask level's reads cost on several threads at once and at load, on a level of the forest's
+# size (T182; tileset.md, "Read without a lock").
+engine_module_bench(NAME tileset SOURCES bench/tileset_bench.cpp DEPS platform)
