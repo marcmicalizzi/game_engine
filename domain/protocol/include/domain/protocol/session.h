@@ -128,10 +128,20 @@ class Session {
                   RpcError& error);
   // Makes every accepted layer what the checkpoint held, as one journaled patch per layer it
   // changes, each checked against the caller's role and the leases like any write; open proposals
-  // are left as they are. All or nothing as far as the checks go: every layer is checked before
-  // any is changed.
+  // are left as they are. All or nothing: every layer is checked before any is changed, and a
+  // layer refused after that (a save that failed) undoes the layers that had landed, puts back
+  // the storage forms and the layers it added, and answers the refusal. When that taking back
+  // fails too, the error's `data` is the RollbackResult of what stands, and `doc.undo` with its
+  // `patches` steps takes it back.
   bool rollback_to(const RollbackParams& params, const Caller& caller, RollbackResult& out,
                    RpcError& error);
+  // Tests only (history_tests.cpp): the rollback's commit of its `layer`th changed layer, from
+  // zero, is refused as a failed save would be, after the checks passed; with `take_back_too`, so
+  // is the undo of what had landed. Nothing else calls it.
+  void fail_rollback_for_test(u32 layer, bool take_back_too) noexcept {
+    test_fail_rollback_at_ = layer;
+    test_fail_take_back_ = take_back_too;
+  }
 
  private:
   class Guard;
@@ -176,6 +186,8 @@ class Session {
   LeaseTable leases_;
   ProposalTable proposals_;
   Subscriptions* events_ = nullptr;
+  u32 test_fail_rollback_at_ = ~0u;  // fail_rollback_for_test
+  bool test_fail_take_back_ = false;
 };
 
 class SessionManager {

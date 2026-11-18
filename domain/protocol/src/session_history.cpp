@@ -150,6 +150,7 @@ bool Session::rollback_to(const RollbackParams& params, const Caller& caller, Ro
     Vector<doc::Command> commands;
     bool repartition = false;
     doc::LayerPartition partition;
+    std::optional<doc::LayerPartition> original;  // the form it has now, for a take-back
   };
   Vector<Step> steps;
   const doc::Document& read = doc_;
@@ -159,6 +160,7 @@ bool Session::rollback_to(const RollbackParams& params, const Caller& caller, Ro
     step.name = now.name();
     step.index = static_cast<i32>(i);
     step.role = now.role();
+    if (now.partitioned()) step.original = now.partition();
     if (proposals_.find(now.name()) != nullptr || now.role() == doc::LayerRole::Proposal) {
       step.action = "kept";
       steps.push_back(std::move(step));
@@ -225,10 +227,78 @@ bool Session::rollback_to(const RollbackParams& params, const Caller& caller, Ro
     return true;
   }
 
+  // From here the rollback changes the document, and it lands whole or not at all (b68 review
+  // B10): the checks above passed for every layer, so what can still refuse a layer is a save that
+  // fails, and then everything this rollback changed is taken back — the layers that had landed
+  // undone newest first, as `doc.undo` would (they stand in the redo tail, which the next commit
+  // drops, as a commit whose save died does), the storage forms put back and the added layers taken
+  // off — and the refusal is answered. Only if that fails too does part of it stand, and then the
+  // error's `data` is the RollbackResult of exactly what stands: `doc.undo` with its `patches`
+  // steps takes those back. Blobs written back from the checkpoint stay; a collection decides.
+  const u32 start = manifest_.undo_position;
+  Vector<u32> landed;  // the steps whose patch landed, in order
+  Vector<u32> reformed;  // the steps whose storage form was changed, in order
+  u32 added = 0;
+  const auto take_back = [&](RpcError cause) {
+    u32 standing = manifest_.undo_position - start;
+    std::string why;
+    if (test_fail_take_back_) {
+      why = "refused for the test";
+    } else if (standing > 0) {
+      StepResult stepped;
+      RpcError undo_error;
+      const bool ok = this->step(true, standing, nullptr, stepped, undo_error);
+      standing -= stepped.stepped;
+      if (!ok || standing > 0) why = undo_error.message.empty() ? "undo stopped" : undo_error.message;
+    }
+    if (why.empty()) {
+      for (u32 i = reformed.size(); i-- > 0;) {
+        const Step& s = steps[reformed[i]];
+        RpcError form_error;
+        if (s.action != "added" && !set_partition(s.name, s.original, form_error) && why.empty())
+          why = form_error.message;
+      }
+    }
+    if (why.empty() && added > 0) {
+      for (u32 n = 0; n < added; ++n)
+        (void)doc_.remove_layer(doc_.layer_count() - 1);
+      added = 0;
+      RpcError save_error;
+      if (!persist(save_error)) why = save_error.message;
+    }
+    if (why.empty()) {
+      error = make_error(cause.code, cause.message +
+                                         "; nothing of the rollback stands: what had landed was "
+                                         "taken back");
+      return false;
+    }
+    RollbackResult stands;
+    stands.checkpoint = out.checkpoint;
+    stands.blobs_restored = out.blobs_restored;
+    stands.patches = standing;
+    stands.committed = standing > 0;
+    for (u32 i = 0; i < standing && i < landed.size(); ++i) {
+      const Step& s = steps[landed[i]];
+      RollbackLayer layer;
+      layer.layer = s.name;
+      layer.action = s.action;
+      layer.records = static_cast<u32>(s.commands.size());
+      layer.patch_index = start + i;
+      layer.repartitioned = s.repartition;
+      stands.layers.push_back(std::move(layer));
+    }
+    stands.edit_layer = static_cast<const doc::Document&>(doc_).layer(doc_.edit_layer()).name();
+    error = make_error(cause.code,
+                       cause.message + "; the rollback could not be taken back (" + why + "): " +
+                           std::to_string(standing) + " of its layers stand, and doc.undo with " +
+                           std::to_string(standing) + " steps takes them back",
+                       schema::to_json(stands));
+    return false;
+  };
+
   // Layers the checkpoint had and the stack lost come back on top, empty, outside the transactions
   // (as a merge's new output layer does): undoing the rollback empties them, it does not take them
   // off the stack. Each is then checked as the others were, and a refusal takes them off again.
-  u32 added = 0;
   for (Step& step : steps) {
     if (step.action != "added") continue;
     step.index = static_cast<i32>(doc_.add_layer(step.name, step.role));
@@ -243,7 +313,7 @@ bool Session::rollback_to(const RollbackParams& params, const Caller& caller, Ro
         return false;
       }
     }
-    if (!persist(error)) return false;
+    if (RpcError save_error; !persist(save_error)) return take_back(std::move(save_error));
   }
 
   // The bytes the checkpoint's references need, from the checkpoint itself.
@@ -251,44 +321,53 @@ bool Session::rollback_to(const RollbackParams& params, const Caller& caller, Ro
     Vector<std::pair<std::string, std::string>> blobs;
     if (!Checkpoints::read_blobs(*vfs_, dir_, info.id,
                                  std::span<const std::string>(missing.data(), missing.size()),
-                                 blobs, &message)) {
-      error = make_error(codes::k_io_error, std::move(message));
-      return false;
-    }
+                                 blobs, &message))
+      return take_back(make_error(codes::k_io_error, std::move(message)));
     for (const auto& [name, bytes] : blobs) {
       doc::BlobRef ref;
-      if (!BlobStore::put(*vfs_, dir_, bytes, "", ref, nullptr, &message) || ref.blob != name) {
-        error = make_error(codes::k_io_error, "blob " + name + " could not be restored: " + message);
-        return false;
-      }
+      if (!BlobStore::put(*vfs_, dir_, bytes, "", ref, nullptr, &message) || ref.blob != name)
+        return take_back(
+            make_error(codes::k_io_error, "blob " + name + " could not be restored: " + message));
       ++out.blobs_restored;
     }
   }
 
   // Storage forms first (no record changes, nothing journaled), then one patch per layer.
-  for (const Step& step : steps) {
+  for (u32 i = 0; i < steps.size(); ++i) {
+    const Step& step = steps[i];
     if (!step.repartition || step.action == "kept") continue;
     const std::optional<doc::LayerPartition> form =
         step.partition.tile_size > 0 ? std::optional<doc::LayerPartition>(step.partition)
                                      : std::nullopt;
-    if (!set_partition(step.name, form, error)) return false;
+    RpcError form_error;
+    if (!set_partition(step.name, form, form_error)) return take_back(std::move(form_error));
+    reformed.push_back(i);
   }
-  for (const Step& step : steps) {
+  u32 changed = 0;  // the layers with a patch, counted for fail_rollback_for_test
+  for (u32 i = 0; i < steps.size(); ++i) {
+    const Step& step = steps[i];
     if (step.action == "kept" || step.commands.empty()) {
       report(step, std::nullopt);
       continue;
     }
+    if (changed++ == test_fail_rollback_at_)
+      return take_back(make_error(codes::k_io_error, "layer " + step.name +
+                                                         " could not be saved (refused for the "
+                                                         "test)"));
     ApplyResult applied;
+    RpcError commit_error;
+    const u32 before = manifest_.undo_position;
     // The commands replay a diff, so they are applied as a merge's are: without the preconditions
     // that speak about the composed document.
-    if (!commit_commands(step.commands, who, true, false, static_cast<u32>(step.index), &caller,
-                         applied, error))
-      return false;
+    const bool ok = commit_commands(step.commands, who, true, false, static_cast<u32>(step.index),
+                                    &caller, applied, commit_error);
+    // A commit whose save failed has still landed in the document and the journal.
+    if (manifest_.undo_position > before) landed.push_back(i);
+    if (!ok) return take_back(std::move(commit_error));
     if (!applied.committed) {
       std::string why = "layer " + step.name + " could not be rolled back";
       if (!applied.diagnostics.empty()) why += ": " + applied.diagnostics[0].message;
-      error = make_error(codes::k_document_error, std::move(why));
-      return false;
+      return take_back(make_error(codes::k_document_error, std::move(why)));
     }
     ++out.patches;
     report(step, applied.patch_index);

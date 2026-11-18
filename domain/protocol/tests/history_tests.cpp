@@ -468,6 +468,64 @@ TEST_CASE("checkpoints: roles, leases and proposals") {
   CHECK(h.document().property(oid(1), "color") == nullptr);  // the director's change rolled back
 }
 
+// Batch 68's review, B10: a layer refused after the checks passed (a save that failed) stopped the
+// rollback with the earlier layers' patches committed and their storage forms changed, and said
+// nothing of them. Now what had landed is taken back; and when that fails too, the error says
+// exactly what stands.
+TEST_CASE("checkpoints: a rollback refused at its second layer lands whole or says what stands") {
+  if (!have_git()) return;
+  TempDir tmp("engine_protocol_rollback_partial");
+  Host h;
+  h.make_world(tmp.path() + "/doc");
+  const JsonValue c1 = h.ok("doc.checkpoint", obj({{"label", JsonValue("four props")}}));
+  const std::string id1(c1.find("id")->as_string());
+  // Since: world repainted and re-tiled, and a layer the checkpoint did not have, with a record.
+  h.apply(one(set(oid(1), "color", JsonValue(5))));
+  h.ok("doc.add_layer", obj({{"name", JsonValue("extra")}}));
+  h.apply(one(create_prop(oid(9), 1, 1)), who("director"), "extra");
+  h.ok("doc.set_partition", obj({{"layer", JsonValue("world")},
+                                 {"partition", obj({{"tile_size", JsonValue(20.0)}})}}));
+  const auto world_before = h.files_of("layers/world");
+  const u32 journal_before = h.document().journal().size();
+
+  // Refused at the second layer (extra), with world's patch and form already changed: taken back.
+  h.s().fail_rollback_for_test(1, false);
+  JsonValue e;
+  CHECK(h.fails("doc.rollback_to", obj({{"checkpoint", JsonValue(id1)}}), &e) ==
+        codes::k_io_error);
+  CHECK(at_message(e).find("nothing of the rollback stands") != std::string::npos);
+  CHECK(h.document().property(oid(1), "color") != nullptr);
+  CHECK(h.document().exists(oid(9)));
+  CHECK(h.files_of("layers/world") == world_before);  // records and the 20 m tiles, byte for byte
+  CHECK(h.document().journal().size() == journal_before + 1);  // world's patch, in the redo tail
+
+  // The same, and the taking back refused too: the error names what stands.
+  h.s().fail_rollback_for_test(1, true);
+  CHECK(h.fails("doc.rollback_to", obj({{"checkpoint", JsonValue(id1)}}), &e) ==
+        codes::k_io_error);
+  CHECK(at_message(e).find("doc.undo with 1 steps") != std::string::npos);
+  const JsonValue* stands = e.find("data");
+  REQUIRE(stands != nullptr);
+  CHECK(stands->find("patches")->as_uint() == 1);
+  CHECK(*stands->find("committed") == JsonValue(true));
+  REQUIRE(stands->find("layers")->size() == 1);
+  const JsonValue& world = stands->find("layers")->as_array()[0];
+  CHECK(world.find("layer")->as_string() == "world");
+  CHECK(world.find("patch_index")->as_uint() == journal_before);  // the redo tail was dropped
+  CHECK(*world.find("repartitioned") == JsonValue(true));
+  CHECK(h.document().property(oid(1), "color") == nullptr);  // world's patch stands
+  CHECK(h.document().exists(oid(9)));                         // extra's never landed
+  h.ok("doc.undo", obj({{"steps", *stands->find("patches")}}));
+  CHECK(h.document().property(oid(1), "color") != nullptr);
+
+  // Nothing refused: the whole rollback.
+  h.s().fail_rollback_for_test(~0u, false);
+  const JsonValue rolled = h.ok("doc.rollback_to", obj({{"checkpoint", JsonValue(id1)}}));
+  CHECK(rolled.find("patches")->as_uint() == 2);
+  CHECK(h.document().property(oid(1), "color") == nullptr);
+  CHECK_FALSE(h.document().exists(oid(9)));
+}
+
 TEST_CASE("checkpoints: without git the methods say so") {
   TempDir tmp("engine_protocol_no_git");
   Host h;
