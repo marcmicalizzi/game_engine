@@ -950,10 +950,13 @@ no device open**, which a second chain overlaps with the first's holds.
 **What the configure does.** Every test labelled `gpu` takes one of `ENGINE_TEST_GPU_CHAINS`
 resource locks, `gpu_device.1` to `gpu_device.<n>`, so `n` of them run at once in one `ctest` with
 jobs, and the machine-wide lock orders their devices' holds a hold at a time, as it does between
-two suites: a test waits for at most the other chain's current hold. `n` is 2 where the machine-wide
-lock's directory exists (the lock is in use, [gpu_lock](../subsystems/gpu_lock.md#elsewhere-and-the-limits))
-and 1 where it does not, since there nothing would stop two devices being open at once; a bundle
-(`tools/package-tests.ps1`) writes every chain's lock as one `gpu_device` for the same reason. The
+two suites: a test waits for at most the other chain's current hold. `ENGINE_TEST_GPU_CHAINS` is
+`auto` unless set, and `auto` is worked out at every configure: 2 where the machine-wide lock's
+directory exists (the lock is in use, [gpu_lock](../subsystems/gpu_lock.md#elsewhere-and-the-limits))
+and a test's work fits twice into its lock wait, and 1 otherwise — where the directory does not
+exist because nothing would stop two devices being open at once, and where the work does not fit
+for the reason [below](#one-chain-where-a-test-outruns-its-deadline); a bundle
+(`tools/package-tests.ps1`) writes every chain's lock as one `gpu_device` for the first reason. The
 chains are dealt in `_engine_finalize_tests` (`cmake/EngineTesting.cmake`) by
 `engine_deal_gpu_chains` (`cmake/EngineTestDeal.cmake`), which is the parts' deal — longest first,
 each to the chain with the least so far, the unmeasured after them round the chains — over:
@@ -999,6 +1002,50 @@ is the check that the model holds. Jobs do not bind: two chains and the 2,155 s 
 finish in the same time at three jobs as at five, so the gate's three stand. With the chains the
 card is the next bound — held 75% of the replayed debug suite, 82% with T162's run in it. (Once
 T170 took 1,170 s of tests that open no device out of the chains, three jobs do bind; below.)
+
+### One chain where a test outruns its deadline
+
+**What gate b67's server leg showed** (2026-11-17, `linux-server` on the Titan Xp, 11:29 to 15:05,
+two chains): `renderer.2`, `.3`, `.4` and `engine_view.3` skipped after 1,800 to 1,839 s, every
+one on a give-up line reading `gave up waiting for the GPU lock after 0 s` — the wait had not
+lasted, the **deadline** had passed. Every wait in a test's tree gives up at the test's start plus
+`ENGINE_TEST_GPU_LOCK_WAIT_S` (1,800 s; [gpu_lock](../subsystems/gpu_lock.md#how-a-hold-works)),
+an absolute time the test's children inherit, and it assumes a test's own run is short beside it.
+On that card it is not: one chain at a time on gate b66b, `renderer.2` ran 1,882 s and `renderer.4`
+1,918 s alone, which is why the server's presets give a test 7,200 s of work. With one chain a test
+that runs past its deadline never waits after it, because nothing of its own run holds the card
+beside it; with two, the other chain holds it about half the time, every test's holds take turns
+with that chain's, and a test still running past its deadline gives up at its next ask. Beside the
+renderer's parts `engine_view.3` went from 483 s to past its 1,800, so the two that skipped first
+were each other's cause, and `water` ran 2,009 s against 1,624 alone.
+
+**One chain was not enough by itself.** Batch 68's first run of the leg with one chain (T171,
+2026-11-17 21:00 onwards) had `renderer.3` give up 2,141 s in: alone, a test that runs past its
+deadline needs only one other holder at one of its asks after it — on that server another user of
+the card, on this machine any agent — and gives up behind it however short its hold. So T171 has
+two halves.
+
+**The deadline is the queue's** ([gpu_lock](../subsystems/gpu_lock.md#how-a-hold-works)): each
+process moves the deadline it inherited later by the time it has itself held the lock, which is the
+test's work and never its queue. A test now gives up when its time off the card — its waits and
+the CPU work between its holds — reaches the budget, wherever its own run has got to. Children
+start from the deadline they inherit, so an end-to-end test's fifty children still share one
+budget, and CTest's `TIMEOUT` (work + queue) still covers a give-up: the deadline moves only by
+work.
+
+**And the configure deals one chain where a second would spend the queue**: beside `n - 1` other
+chains on a card that bounds the suite, a test's holds take turns with theirs, so it waits about
+`(n - 1)` times its own card time, and with its CPU work between holds its time off the card is at
+most `(n - 1) * card + cpu <= n * (card + cpu) <= n * WORK_S`. `auto` deals two chains only where
+`n * WORK_S <= WAIT_S` holds for `n` = 2. With the defaults (600 and 1,800 s) every preset keeps its
+two; the `linux-server` presets' 7,200 s of work give one, which is the one chain the server ran
+green on until T89. The number is known at configure time because the presets already declare how
+long a test there may work, and that declaration is what the card's speed decides; neither the card
+(no device is open at configure time) nor the cost table (measured on the RTX 5090) could say it. A
+whole number given for `ENGINE_TEST_GPU_CHAINS` overrides `auto`, with a warning when it breaks the
+rule. A build tree configured before T171 has T89's number in its cache, which nobody chose, and its
+first configure since reads it as `auto`. A second chain would buy the server little anyway: its
+suite is the card's, as the one-chain legs show (11,737 s on b66b with every GPU test run).
 
 ## Tests that open no device
 

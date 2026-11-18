@@ -348,6 +348,55 @@ TEST_CASE(
   CHECK(hold.acquire(elsewhere) == gpu_lock::HoldMode::NoDirectory);
 }
 
+// T171: a test whose own work on the card outlasts its queue budget still has the budget to wait
+// in. The deadline the environment gives moves by the time this process has held the lock; one a
+// caller gives outright does not. (The process's holds of earlier cases move it further, which
+// only makes the wait below longer, never a give-up.)
+TEST_CASE("device hold: a deadline from the environment moves by the time this process held") {
+  const Isolated isolated;
+  test::TempDir dir("gpu_hold_moves");
+  const std::string path = dir.file("gpu.lock");
+  gpu_lock::HoldConfig config = config_at(path);
+  config.poll_s = 1;
+  config.wait_until_unix_s = now_s() + 2;
+  // As gfx::Device's configuration has it, the deadline from ENGINE_GPU_LOCK_WAIT_UNTIL.
+  {
+    const test::ScopedEnv until(gpu_lock::k_env_wait_until, "1790035200");
+    CHECK(gpu_lock::hold_config_from_environment().deadline_moves_with_holds);
+  }
+  CHECK_FALSE(config.deadline_moves_with_holds);
+  config.deadline_moves_with_holds = true;
+  {
+    // The card held past the deadline: the work, not a wait.
+    gpu_lock::DeviceHold hold;
+    REQUIRE(hold.acquire(config) == gpu_lock::HoldMode::Taken);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5000));
+  }
+  REQUIRE(now_s() > config.wait_until_unix_s);
+  // Somebody else has it now. The deadline is past, but this process held the card for five of
+  // the seconds since, so it waits, and takes the lock when they let it go.
+  const std::string theirs = lock_json(config.self.owner, k_other_pid, now_s() + 600,
+                                       config.self.host, "another agent's suite");
+  write_file(path, theirs);
+  std::thread releaser([&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(800));
+    std::filesystem::remove(std::filesystem::path(path));
+  });
+  {
+    gpu_lock::DeviceHold hold;
+    CHECK(hold.acquire(config) == gpu_lock::HoldMode::Taken);
+    releaser.join();
+  }
+  // The same lock with the deadline as given: past it, the wait gives up at once.
+  write_file(path, theirs);
+  config.deadline_moves_with_holds = false;
+  {
+    gpu_lock::DeviceHold hold;
+    CHECK(hold.acquire(config) == gpu_lock::HoldMode::GaveUp);
+  }
+  CHECK(read_file(path) == theirs);
+}
+
 // ---- several processes ----------------------------------------------------------------------
 
 namespace {

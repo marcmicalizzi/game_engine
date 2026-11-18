@@ -338,6 +338,25 @@ TEST_CASE("mesh room: a mesh is not resident before it is admitted and is gone a
   }
 }
 
+// The case below compares a streamed scene with the same scene read whole word for word, and the
+// stand-in lights stand at the scene's centre and orbit at its radius: the two loads must frame
+// them alike to the bit. They hold different instances — the whole read the rocks too, inside the
+// slab's bounds, two tiles' of them west of the origin and so in cells below its own — and when the
+// bounds were measured in a float frame at the lowest cell the instances hold (R164-3) the two
+// centres rounded micrometres apart, which drew one pixel a code apart on the Titan Xp (T171).
+TEST_CASE("mesh room: the scene read whole and its load alone have the same bounds to the bit") {
+  test::register_tile_rocks();
+  test::TempDir tmp{"engine_renderer_mesh_room_bounds"};
+  SceneData whole;
+  SceneData streamed;
+  std::string error;
+  REQUIRE_MESSAGE(load_scene(describe(tmp, true), whole, error), error);
+  REQUIRE_MESSAGE(load_scene(describe(tmp, false), streamed, error), error);
+  REQUIRE(whole.instances.size() > streamed.instances.size());
+  CHECK(whole.center == streamed.center);
+  CHECK(whole.radius == streamed.radius);
+}
+
 TEST_CASE(
     "mesh room: a streamed scene is the scene read whole, whatever order its meshes came in") {
   Gpu gpu;

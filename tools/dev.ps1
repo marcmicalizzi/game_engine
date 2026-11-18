@@ -48,7 +48,8 @@
                 one at a time, as it always has, and a Linux preset as its test preset says.
                 The tests that can open a GPU device run as two chains (the resource locks
                 `gpu_device.1` and `.2`, dealt by cost over the tests labelled `gpu`; one chain
-                where the machine-wide GPU lock is not in use, ENGINE_TEST_GPU_CHAINS), so two of
+                where the machine-wide GPU lock is not in use or a test's work allowance does not
+                fit twice in its lock wait, as on the linux-server presets; ENGINE_TEST_GPU_CHAINS), so two of
                 them run at once and the machine-wide lock orders their devices; the tests that
                 can open a window run one at a time (`e2e_apps`); the wall-clock tests run alone
                 (cmake/EngineTesting.cmake, docs/ci/what-to-run.md "Jobs", "Two GPU chains").
