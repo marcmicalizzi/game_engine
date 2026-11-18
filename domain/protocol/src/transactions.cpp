@@ -43,7 +43,31 @@ u32 Session::expire_transactions(i64 now_ms) {
   }
   while (list.size() > kept)
     list.pop_back();
+  for (u32 i = transaction_holds_.size(); i > 0; --i) {
+    bool open = false;
+    for (const TransactionEntry& e : list) {
+      if (e.info.id == transaction_holds_[i - 1].transaction) open = true;
+    }
+    if (!open) transaction_holds_.erase_at(i - 1);
+  }
   return dropped;
+}
+
+void Session::forget_transaction_hold(u64 transaction) {
+  for (u32 i = transaction_holds_.size(); i > 0; --i) {
+    if (transaction_holds_[i - 1].transaction == transaction) transaction_holds_.erase_at(i - 1);
+  }
+}
+
+u32 Session::release_connection_transactions(u64 connection) {
+  if (connection == 0) return 0;
+  u32 released = 0;
+  for (u32 i = transaction_holds_.size(); i > 0; --i) {
+    if (transaction_holds_[i - 1].connection != connection) continue;
+    transaction_holds_.erase_at(i - 1);
+    ++released;
+  }
+  return released;
 }
 
 TransactionEntry* Session::find_transaction(u64 id, const Caller& caller, i64 now_ms,
@@ -62,6 +86,18 @@ TransactionEntry* Session::find_transaction(u64 id, const Caller& caller, i64 no
       error = forbidden("transaction " + std::to_string(id) + " was opened by " +
                             e.info.attribution.actor +
                             ", and only its opener stages into it, commits it or rolls it back",
+                        "transaction owner", caller.who.role);
+      return nullptr;
+    }
+    // Two clients of one host may say they are the same actor; while the connection that opened
+    // the transaction lasts, it is the opener, and when it ends the actor is again (as a lease's
+    // connection is; protocol.md, "Several clients, one host").
+    for (const TransactionHold& h : transaction_holds_) {
+      if (h.transaction != id || h.connection == caller.connection) continue;
+      error = forbidden("transaction " + std::to_string(id) + " was opened on client connection " +
+                            std::to_string(h.connection) +
+                            ", which is still connected: only that connection stages into it, "
+                            "commits it or rolls it back until it closes",
                         "transaction owner", caller.who.role);
       return nullptr;
     }
@@ -116,6 +152,7 @@ bool Session::begin_transaction(const BeginParams& params, const Caller& caller,
   entry.info.ttl_seconds = params.ttl_seconds;
   entry.info.expires_unix_ms = expiry_of(now_ms, params.ttl_seconds);
   out = entry.info;
+  if (caller.connection != 0) transaction_holds_.push_back({entry.info.id, caller.connection});
   transactions_.transactions.push_back(std::move(entry));
   return save_transactions(error);
 }
@@ -174,7 +211,7 @@ bool Session::commit_transaction(u64 transaction, const Caller& caller, i64 now_
   if (entry->commands.empty()) {
     // Nothing staged: nothing to journal, and nothing left to hold open.
     remove_entry(transactions_, transaction);
-
+    forget_transaction_hold(transaction);
     return save_transactions(error);
   }
   const i32 found = doc_.find_layer(entry->info.layer);
@@ -200,7 +237,7 @@ bool Session::commit_transaction(u64 transaction, const Caller& caller, i64 now_
     return true;
   }
   remove_entry(transactions_, transaction);
-
+  forget_transaction_hold(transaction);
   result.staged = 0;
   return save_transactions(error);
 }
@@ -211,7 +248,7 @@ bool Session::rollback_transaction(u64 transaction, const Caller& caller, i64 no
   if (entry == nullptr) return false;
   out = entry->info;
   remove_entry(transactions_, transaction);
-
+  forget_transaction_hold(transaction);
   return save_transactions(error);
 }
 

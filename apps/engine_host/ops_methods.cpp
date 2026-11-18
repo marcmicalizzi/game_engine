@@ -2441,7 +2441,7 @@ bool session_load_game(protocol::Context& ctx, const protocol::LoadGameParams& p
   }
   protocol::SessionOpenParams open;
   open.path = params.dir;
-  protocol::Session* session = ctx.sessions->open(open, error);
+  protocol::Session* session = ctx.sessions->open(open, ctx.connection, error);
   if (session == nullptr) return false;
   const std::string session_id = session->id();
   auto refuse = [&](protocol::RpcError e) {

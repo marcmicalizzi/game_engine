@@ -7,6 +7,7 @@
 #include <core/time/time.h>
 #include <domain/gfx/adapter.h>
 #include <domain/gfx/display_probe.h>
+#include <domain/protocol/clients.h>
 #include <domain/protocol/events.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
@@ -65,16 +66,45 @@ bool engine_methods(Context& ctx, MethodsResult& out, RpcError&) {
 
 bool session_open(Context& ctx, const SessionOpenParams& params, SessionInfo& out,
                   RpcError& error) {
-  Session* s = ctx.sessions->open(params, error);
+  // Held by the connection that asked (0: stdio and in-process callers), so a client that
+  // vanishes lets go of what it opened and a close lets go of the caller's hold alone.
+  Session* s = ctx.sessions->open(params, ctx.connection, error);
   if (s == nullptr) return false;
   out = s->info();
   return true;
 }
 
-bool session_close(Context& ctx, const SessionRef& params, SessionRef& out, RpcError& error) {
-  if (ctx.sessions->require(params.session, error) == nullptr) return false;
-  ctx.sessions->close(params.session);
+// One client closing a session must not close it under the others (protocol.md, "Several clients,
+// one host"): a close lets go of the caller's hold, and the session closes with its last holder.
+bool session_close(Context& ctx, const SessionRef& params, SessionCloseResult& out,
+                   RpcError& error) {
+  Session* s = ctx.sessions->require(params.session, error);
+  if (s == nullptr) return false;
+  bool closed = false;
+  if (!ctx.sessions->release(params.session, ctx.connection, closed)) {
+    std::string holders;
+    JsonValue list = JsonValue::array();
+    for (const u64 h : s->holders()) {
+      holders += (holders.empty() ? "" : ", ") + std::to_string(h);
+      list.push_back(JsonValue(h));
+    }
+    JsonValue data = JsonValue::object();
+    data.set("holders", std::move(list));
+    error = make_error(codes::k_invalid_argument,
+                       "session " + params.session + " is not held by " +
+                           (ctx.connection == 0 ? std::string("stdio")
+                                                : "connection " + std::to_string(ctx.connection)) +
+                           ", which did not open it; it is held by " + holders +
+                           " (0 is the host's own stdio), and closes when they let go",
+                       std::move(data));
+    return false;
+  }
   out.session = params.session;
+  out.closed = closed;
+  if (!closed) {
+    for (const u64 h : s->holders())
+      out.holders.push_back(h);
+  }
   return true;
 }
 
@@ -169,6 +199,68 @@ bool session_unsubscribe(Context& ctx, const SubscribeParams& params, SubscribeR
   return true;
 }
 
+// ---- client.* (clients.h) ----------------------------------------------------------------------
+
+void fill_client(const Context& ctx, const Client& c, ClientInfo& out) {
+  out.connection = c.connection;
+  out.name = c.name;
+  out.actor = c.who.actor;
+  out.role = c.who.role;
+  out.task = c.who.task;
+  out.identified = c.identified;
+  out.connected_unix_ms = c.connected_unix_ms;
+  out.requests = c.requests;
+  if (ctx.sessions == nullptr) return;
+  for (const auto& s : ctx.sessions->sessions()) {
+    if (s->held_by(c.connection)) out.sessions.push_back(s->id());
+    for (const LeaseInfo& l : s->leases().leases()) {
+      if (l.connection == c.connection) out.leases.push_back(s->id() + ":" + std::to_string(l.id));
+    }
+  }
+}
+
+bool client_hello(Context& ctx, const ClientHelloParams& params, ClientInfo& out, RpcError& error) {
+  if (ctx.clients == nullptr || ctx.connection == 0) {
+    error = make_error(codes::k_unavailable,
+                       "client.hello names a socket connection (engine-host --listen, "
+                       "engine-editor); on stdio the caller is the host's own --actor, --role and "
+                       "--task, or what each call's attribution says");
+    return false;
+  }
+  if (params.name.size() > k_client_name_max) {
+    error = make_error(codes::k_invalid_argument,
+                       "a client's name is at most " + std::to_string(k_client_name_max) +
+                           " characters: it is a label for client.list, not a description");
+    return false;
+  }
+  // A role the roles file does not have is refused once, here, rather than at every call that
+  // would inherit it.
+  if (ctx.policy != nullptr && !params.attribution.role.empty()) {
+    const Role* role = nullptr;
+    if (!ctx.policy->resolve_role(params.attribution.role, role, error)) return false;
+  }
+  Client& c = ctx.clients->touch(ctx.connection, time::wall_unix_ms());
+  c.name = params.name;
+  c.who = doc::Attribution{};
+  c.who.actor = params.attribution.actor;
+  c.who.role = params.attribution.role;
+  c.who.task = params.attribution.task;
+  c.identified = true;
+  fill_client(ctx, c, out);
+  return true;
+}
+
+bool client_list(Context& ctx, ClientsResult& out, RpcError&) {
+  out.you = ctx.connection;
+  if (ctx.clients == nullptr) return true;
+  for (const Client& c : ctx.clients->clients()) {
+    ClientInfo info;
+    fill_client(ctx, c, info);
+    out.clients.push_back(std::move(info));
+  }
+  return true;
+}
+
 // ---- doc.* -----------------------------------------------------------------------------------
 
 bool doc_layers(Context& ctx, const SessionRef& params, LayersResult& out, RpcError& error) {
@@ -254,7 +346,7 @@ bool doc_apply(Context& ctx, const ApplyParams& params, ApplyResult& out, RpcErr
   Session* s = ctx.sessions->require(params.session, error);
   if (s == nullptr) return false;
   Caller caller;
-  if (!resolve_caller(ctx.policy, &params.attribution, caller, error)) return false;
+  if (!resolve_caller(ctx, &params.attribution, caller, error)) return false;
   if (params.transaction != 0) {
     return s->stage(params.transaction, params.commands, caller, params.atomic, params.layer,
                     time::wall_unix_ms(), out, error);
@@ -268,7 +360,7 @@ bool doc_begin(Context& ctx, const BeginParams& params, TransactionInfo& out, Rp
   Session* s = ctx.sessions->require(params.session, error);
   if (s == nullptr) return false;
   Caller caller;
-  if (!resolve_caller(ctx.policy, &params.attribution, caller, error)) return false;
+  if (!resolve_caller(ctx, &params.attribution, caller, error)) return false;
   return s->begin_transaction(params, caller, time::wall_unix_ms(), out, error);
 }
 
@@ -276,7 +368,7 @@ bool doc_commit(Context& ctx, const TransactionParams& params, ApplyResult& out,
   Session* s = ctx.sessions->require(params.session, error);
   if (s == nullptr) return false;
   Caller caller;
-  if (!resolve_caller(ctx.policy, &params.attribution, caller, error)) return false;
+  if (!resolve_caller(ctx, &params.attribution, caller, error)) return false;
   return s->commit_transaction(params.transaction, caller, time::wall_unix_ms(), out, error);
 }
 
@@ -285,7 +377,7 @@ bool doc_rollback(Context& ctx, const TransactionParams& params, TransactionInfo
   Session* s = ctx.sessions->require(params.session, error);
   if (s == nullptr) return false;
   Caller caller;
-  if (!resolve_caller(ctx.policy, &params.attribution, caller, error)) return false;
+  if (!resolve_caller(ctx, &params.attribution, caller, error)) return false;
   return s->rollback_transaction(params.transaction, caller, time::wall_unix_ms(), out, error);
 }
 
@@ -303,7 +395,7 @@ bool doc_undo(Context& ctx, const StepParams& params, StepResult& out, RpcError&
   Session* s = ctx.sessions->require(params.session, error);
   if (s == nullptr) return false;
   Caller caller;
-  if (!resolve_caller(ctx.policy, attribution_of(params.attribution), caller, error)) return false;
+  if (!resolve_caller(ctx, attribution_of(params.attribution), caller, error)) return false;
   return s->undo(params.steps, &caller, out, error);
 }
 
@@ -311,7 +403,7 @@ bool doc_redo(Context& ctx, const StepParams& params, StepResult& out, RpcError&
   Session* s = ctx.sessions->require(params.session, error);
   if (s == nullptr) return false;
   Caller caller;
-  if (!resolve_caller(ctx.policy, attribution_of(params.attribution), caller, error)) return false;
+  if (!resolve_caller(ctx, attribution_of(params.attribution), caller, error)) return false;
   return s->redo(params.steps, &caller, out, error);
 }
 
@@ -334,7 +426,7 @@ bool doc_merge(Context& ctx, const MergeParams& params, MergeResult& out, RpcErr
   Session* s = ctx.sessions->require(params.session, error);
   if (s == nullptr) return false;
   Caller caller;
-  if (!resolve_caller(ctx.policy, attribution_of(params.attribution), caller, error)) return false;
+  if (!resolve_caller(ctx, attribution_of(params.attribution), caller, error)) return false;
   return s->merge(params, &caller, out, error);
 }
 
@@ -612,8 +704,9 @@ void add_builtin_methods(Dispatcher& d) {
   d.add(read_only(method<SessionOpenParams, SessionInfo, &session_open>(
       "session.open",
       "Open a document directory (create it with `create`); returns the session.")));
-  d.add(read_only(
-      method<SessionRef, SessionRef, &session_close>("session.close", "Close a session.")));
+  d.add(read_only(method<SessionRef, SessionCloseResult, &session_close>(
+      "session.close",
+      "Let go of a session this client opened; it closes when no client holds it.")));
   d.add(
       read_only(method_no_params<SessionsResult, &session_list>("session.list", "Open sessions.")));
   d.add(read_only(method<SessionRef, SessionInfo, &session_info>(
@@ -635,6 +728,14 @@ void add_builtin_methods(Dispatcher& d) {
       "session.subscriptions",
       "Who is subscribed to which events, and how many each has had dropped since it was last "
       "sent one (non-zero: that connection is not reading).")));
+  d.add(read_only(method<ClientHelloParams, ClientInfo, &client_hello>(
+      "client.hello",
+      "Socket connections only: say who this client is (its name, and the actor, role and task "
+      "its calls are attributed to and checked as when they name none).")));
+  d.add(read_only(method_no_params<ClientsResult, &client_list>(
+      "client.list",
+      "Every client connected to this host: who each said it is, how many requests it made, and "
+      "the sessions and leases it holds (given back when its connection ends).")));
 
   d.add(read_only(method<SessionRef, LayersResult, &doc_layers>(
       "doc.layers",

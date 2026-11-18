@@ -83,17 +83,24 @@ class Policy {
   bool loaded_ = false;
 };
 
-// Who is making a call, resolved once per call: its attribution with the host's defaults filled
-// in, and the role it runs in (null: nothing restricts it).
+// Who is making a call, resolved once per call: its attribution with the connection's and then
+// the host's defaults filled in, the role it runs in (null: nothing restricts it), and the client
+// connection it came on (0: stdio or in process), which a lease it takes and the events its
+// changes publish carry.
 struct Caller {
   doc::Attribution who;
   const Role* role = nullptr;
+  u64 connection = 0;
 };
 
-// `given` null means the call carried no attribution. Policy may be null. False with 1008 when the
-// call names a role the roles file does not have.
-bool resolve_caller(const Policy* policy, const doc::Attribution* given, Caller& out,
+// `given` null means the call carried no attribution. Blank actor, role and task come from the
+// connection's `client.hello` (`ctx.clients`), then from the host's identity (`ctx.policy`, which
+// may be null). False with 1008 when the call names a role the roles file does not have.
+bool resolve_caller(const Context& ctx, const doc::Attribution* given, Caller& out,
                     RpcError& error);
+// The connection's own identity (`client.hello`) when it gave one, else null: what fills a call's
+// blank attribution before the host's.
+const doc::Attribution* client_identity(const Context& ctx) noexcept;
 
 // 1008 Forbidden with `data.reason` and `data.role`.
 RpcError forbidden(std::string message, std::string_view reason, std::string_view role,

@@ -85,7 +85,28 @@ class Session {
   // the SessionManager that opened it.
   void set_events(Subscriptions* events) noexcept { events_ = events; }
   // `event.session` for this session: "opened", "closed", or a lease's change with the lease.
-  void publish_session(std::string_view change, const LeaseInfo* lease = nullptr) const;
+  // `connection` is the one whose call made the change; `reason` says why a lease went when its
+  // holder did not ask.
+  void publish_session(std::string_view change, const LeaseInfo* lease = nullptr,
+                       u64 connection = 0, std::string_view reason = {}) const;
+
+  // --- holders (protocol.md, "Several clients, one host") ------------------------------------
+  // Who holds the session open: client connections that opened it, and 0 for the host's own
+  // stdio and in-process callers. The SessionManager closes a session when its last holder lets
+  // go.
+  std::span<const u64> holders() const noexcept { return {holders_.data(), holders_.size()}; }
+  bool held_by(u64 holder) const noexcept;
+  void hold(u64 holder);
+  // False when `holder` did not hold it.
+  bool let_go(u64 holder);
+
+  // A client connection has ended: every lease it took (`LeaseInfo.connection`) is released and
+  // saved, each with `event.session` "lease_released" and the reason "connection closed". The
+  // number released.
+  u32 release_connection_leases(u64 connection, i64 now_ms);
+  // The same connection's open transactions stop being bound to it and are their opener actor's
+  // again, still staged (protocol.md, "Several clients, one host"). The number let go.
+  u32 release_connection_transactions(u64 connection);
 
   // --- leases (leases.h) ---------------------------------------------------------------------
   // Every change is written to `leases.json` before the answer. `now_ms` is the host's clock.
@@ -120,7 +141,8 @@ class Session {
   // as `apply` checks a write — the commands against the document with the transaction's earlier
   // ones applied, the caller's role, the proposal's owner, the leases — and changes no record; the
   // commit applies them all as one checked transaction and one journal patch, or none of them.
-  // Only the opener stages, commits or rolls back. `now_ms` is the host's clock.
+  // Only the opener stages, commits or rolls back: the actor that opened it and, while the client
+  // connection it was opened on lasts, that connection alone. `now_ms` is the host's clock.
 
   bool begin_transaction(const BeginParams& params, const Caller& caller, i64 now_ms,
                          TransactionInfo& out, RpcError& error);
@@ -199,18 +221,30 @@ class Session {
   bool clear_layer(u32 layer, doc::Attribution attribution, std::optional<u32>& patch_index,
                    RpcError& error);
 
-  // `event.journal` for the patch at `index`, after it was committed, undone or redone and saved.
-  void publish_journal(std::string_view action, u32 index) const;
+  // `event.journal` for the patch at `index`, after it was committed, undone or redone and saved,
+  // naming the connection whose call made it (0: stdio, the host, the engine's write-back).
+  void publish_journal(std::string_view action, u32 index, u64 connection) const;
 
   bool load_side_files(RpcError& error);
   bool save_leases(RpcError& error);
   bool save_proposals(RpcError& error);
   bool save_transactions(RpcError& error);
   // The open transaction `id` for the caller, after dropping lapsed ones: 1003 when there is none
-  // (or it lapsed), 1008 when another actor opened it.
+  // (or it lapsed), 1008 when another actor opened it or another connection than the one still
+  // holding it calls.
   TransactionEntry* find_transaction(u64 id, const Caller& caller, i64 now_ms, RpcError& error);
-  // Drops lapsed transactions; the number dropped.
+  // Drops lapsed transactions, and the holds of every transaction no longer open; the number
+  // dropped.
   u32 expire_transactions(i64 now_ms);
+  void forget_transaction_hold(u64 transaction);
+
+  // The client connection each open transaction was begun on (non-zero only), for as long as it
+  // lasts. Kept in memory and never in `transactions.json`: connections are this process's, and
+  // a transaction outlives the host that a call started, where its actor alone owns it.
+  struct TransactionHold {
+    u64 transaction = 0;
+    u64 connection = 0;
+  };
   std::string base_file(std::string_view proposal) const;
 
   io::Vfs* vfs_;
@@ -221,9 +255,11 @@ class Session {
   LeaseTable leases_;
   ProposalTable proposals_;
   TransactionsFile transactions_;
+  Vector<TransactionHold> transaction_holds_;
   Subscriptions* events_ = nullptr;
   u32 test_fail_rollback_at_ = ~0u;  // fail_rollback_for_test
   bool test_fail_take_back_ = false;
+  Vector<u64> holders_;
 };
 
 class SessionManager {
@@ -231,13 +267,22 @@ class SessionManager {
   explicit SessionManager(io::Vfs& vfs) noexcept : vfs_(&vfs) {}
   ENGINE_NON_COPYABLE(SessionManager);
 
-  // Opens (or with `create`, creates) the document at `params.path`. A session already open
-  // on the same path is returned instead of a second one.
-  Session* open(const SessionOpenParams& params, RpcError& error);
+  // Opens (or with `create`, creates) the document at `params.path`, held by `holder` (a client
+  // connection, or 0 for the host's own stdio and in-process callers). A session already open on
+  // the same path is returned instead of a second one, and `holder` joins its holders: several
+  // clients of one host share one document.
+  Session* open(const SessionOpenParams& params, u64 holder, RpcError& error);
   Session* find(std::string_view id) noexcept;
   // Looks up the session named in params; sets SessionNotFound otherwise.
   Session* require(std::string_view id, RpcError& error) noexcept;
+  // `holder` lets go of the session (`session.close`); it closes when no holder is left. False
+  // when `holder` did not hold it; `closed` says whether it closed.
+  bool release(std::string_view id, u64 holder, bool& closed);
+  // Closes the session whoever holds it: the host's own clean-up of a session it just opened.
   bool close(std::string_view id);
+  // A client connection has ended: its leases on every session are released, then its holds,
+  // closing each session nobody else holds.
+  void release_connection(u64 connection, i64 now_ms);
   usize count() const noexcept { return sessions_.size(); }
   // Where every session's events go (events.h): the sessions open now and every one opened later.
   // A session opened or closed with events set publishes `event.session`.

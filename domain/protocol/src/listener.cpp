@@ -1,6 +1,7 @@
 #include <core/hash/base64.h>
 #include <core/json/json.h>
 #include <core/platform/random.h>
+#include <core/time/time.h>
 #include <domain/protocol/listener.h>
 #include <domain/protocol/session.h>
 #include <foundation/io/vfs.h>
@@ -22,16 +23,62 @@ bool same_secret(std::string_view a, std::string_view b) noexcept {
 
 }  // namespace
 
+// ---- Clients (clients.h) ----------------------------------------------------------------------
+// Here rather than in a file of its own: the listener is the only thing that makes or forgets one.
+
+Client& Clients::touch(u64 connection, i64 now_ms) {
+  // A host has tens of connections at most, so a walk is the right cost; they are numbered as they
+  // are accepted, and inserting by number keeps `client.list` in that order.
+  for (Client& c : clients_) {
+    if (c.connection == connection) return c;
+  }
+  Client client;
+  client.connection = connection;
+  client.connected_unix_ms = now_ms;
+  u32 at = clients_.size();
+  while (at > 0 && clients_[at - 1].connection > connection)
+    --at;
+  clients_.insert(at, std::move(client));
+  return clients_[at];
+}
+
+Client* Clients::find(u64 connection) noexcept {
+  for (Client& c : clients_) {
+    if (c.connection == connection) return &c;
+  }
+  return nullptr;
+}
+
+const Client* Clients::find(u64 connection) const noexcept {
+  for (const Client& c : clients_) {
+    if (c.connection == connection) return &c;
+  }
+  return nullptr;
+}
+
+void Clients::forget(u64 connection) {
+  for (u32 i = 0; i < clients_.size(); ++i) {
+    if (clients_[i].connection == connection) {
+      clients_.erase_at(i);
+      return;
+    }
+  }
+}
+
+// ---- Listener ---------------------------------------------------------------------------------
+
 Listener::Listener(Dispatcher& dispatcher, std::mutex& dispatch_lock, CaptureSource* captures)
     : dispatcher_(&dispatcher), lock_(&dispatch_lock), captures_(captures) {
   Context& ctx = dispatcher.context();
   ctx.events = &events_;
+  ctx.clients = &clients_;
   if (ctx.sessions != nullptr) ctx.sessions->set_events(&events_);
 }
 
 Listener::~Listener() {
   stop();
   Context& ctx = dispatcher_->context();
+  if (ctx.clients == &clients_) ctx.clients = nullptr;
   if (ctx.events == &events_) ctx.events = nullptr;
   if (ctx.sessions != nullptr && ctx.sessions->events() == &events_) {
     ctx.sessions->set_events(nullptr);
@@ -193,7 +240,9 @@ std::string Listener::message(u64 connection, std::string_view text) {
   // the editor's frame) go through the same dispatcher, one at a time, with the same attribution,
   // roles and journal.
   std::lock_guard<std::mutex> lock(*lock_);
-  // Which connection this request came on, for `session.subscribe`, and only for this request.
+  // Which connection this request came on — for `session.subscribe`, for the caller its
+  // `client.hello` named, for the sessions and leases it holds — and only for this request.
+  ++clients_.touch(connection, time::wall_unix_ms()).requests;
   Context& ctx = dispatcher_->context();
   ctx.connection = connection;
   std::string reply = dispatcher_->dispatch_text(text);
@@ -201,7 +250,20 @@ std::string Listener::message(u64 connection, std::string_view text) {
   return reply;
 }
 
-void Listener::closed(u64 connection) { events_.forget(connection); }
+void Listener::closed(u64 connection) {
+  // A client that vanishes gives back what it held, under the same lock as every request, so a
+  // lease is released between two other clients' calls and never during one: its leases first
+  // (each `event.session` "lease_released" with the reason), then its holds on sessions (a session
+  // nobody else holds closes, "closed"), then its subscriptions and its entry.
+  {
+    std::lock_guard<std::mutex> lock(*lock_);
+    if (SessionManager* sessions = dispatcher_->context().sessions) {
+      sessions->release_connection(connection, time::wall_unix_ms());
+    }
+    clients_.forget(connection);
+  }
+  events_.forget(connection);
+}
 
 EventTransport::Post Listener::post(u64 connection, std::string text, u32 bound) {
   switch (server_.post(connection, std::move(text), bound)) {

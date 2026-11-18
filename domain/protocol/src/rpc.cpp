@@ -136,6 +136,11 @@ JsonValue Dispatcher::dispatch_one(const JsonValue& request) {
         a != nullptr && a->is_object()) {
       if (const JsonValue* role = a->find("role"); role != nullptr) (void)role->get_string(named);
     }
+    // A call that names no role runs in its connection's (`client.hello`) before the host's, as
+    // resolve_caller fills it.
+    if (named.find_first_not_of(" \t") == std::string_view::npos) {
+      if (const doc::Attribution* client = client_identity(context_)) named = client->role;
+    }
     if (!context_.policy->allows_method(*method, named, error)) {
       return is_notification ? JsonValue() : error_response(id, error);
     }

@@ -1,4 +1,5 @@
 #include <core/json/json.h>
+#include <core/platform/random.h>
 #include <core/schema/json_reflect.h>
 #include <core/time/time.h>
 #include <domain/doc/merge.h>
@@ -26,6 +27,30 @@ constexpr std::string_view k_leases_file = "leases.json";
 constexpr std::string_view k_proposals_file = "proposals.json";
 constexpr std::string_view k_proposals_dir = "proposals";
 constexpr std::string_view k_transactions_file = "transactions.json";
+
+// This host process's name for the leases its connections take (`LeaseInfo.host`): 64 random
+// bits, made once. A clock and the process would do as well for telling hosts apart; the secure
+// source is simply what the listener already uses, with the clock behind it if it fails.
+const std::string& host_instance() {
+  static const std::string name = [] {
+    u8 bytes[8] = {};
+    if (!platform::secure_random(std::span<u8>(bytes, sizeof(bytes)))) {
+      u64 t = static_cast<u64>(time::wall_unix_ms());
+      for (u8& b : bytes) {
+        b = static_cast<u8>(t);
+        t >>= 8;
+      }
+    }
+    constexpr char k_digits[] = "0123456789abcdef";
+    std::string text;
+    for (const u8 b : bytes) {
+      text.push_back(k_digits[b >> 4]);
+      text.push_back(k_digits[b & 15]);
+    }
+    return text;
+  }();
+  return name;
+}
 
 std::string hex_of(doc::ObjectId id) {
   char hex[Id128::k_hex_length + 1];
@@ -324,7 +349,21 @@ bool Session::load_side_files(RpcError& error) {
   LeaseFile leases;
   if (!read_json_file(*vfs_, DocumentStore::path_of(dir_, k_leases_file), leases, present, error))
     return false;
+  // A lease a client connection took lives no longer than the connection, and connections are a
+  // host's: one in the file that another host granted was left by a host that has gone, with its
+  // client (two hosts on one document at once is unsupported). Dropped here, and the file written
+  // again, so it stops standing against everyone else. This host's own stay: a session closed and
+  // opened again while the client is still connected keeps its client's lease.
+  u32 orphaned = 0;
+  for (u32 i = leases.leases.size(); i > 0; --i) {
+    const LeaseInfo& l = leases.leases[i - 1];
+    if (l.connection != 0 && l.host != host_instance()) {
+      leases.leases.erase_at(i - 1);
+      ++orphaned;
+    }
+  }
   leases_.assign(std::move(leases));
+  if (orphaned > 0 && !save_leases(error)) return false;
 
   ProposalsFile proposals;
   if (!read_json_file(*vfs_, DocumentStore::path_of(dir_, k_proposals_file), proposals, present,
@@ -522,7 +561,8 @@ bool Session::commit_commands(std::span<const doc::Command> commands, doc::Attri
     return false;
   }
   if (!persist(error)) return false;
-  publish_journal("commit", static_cast<u32>(doc_.journal().size() - 1));
+  publish_journal("commit", static_cast<u32>(doc_.journal().size() - 1),
+                  caller != nullptr ? caller->connection : 0);
   return note_proposal_touches(doc_.journal().back(), error);
 }
 
@@ -552,12 +592,13 @@ bool Session::check_commands(std::span<const doc::Command> commands,
   return ok;
 }
 
-void Session::publish_journal(std::string_view action, u32 index) const {
+void Session::publish_journal(std::string_view action, u32 index, u64 connection) const {
   if (events_ == nullptr || !events_->wanted(EventKind::Journal, id_)) return;
   if (index >= doc_.journal().size()) return;
   const doc::Patch& patch = doc_.journal()[index];
   JournalEvent event;
   event.session = id_;
+  event.connection = connection;
   event.action = std::string(action);
   event.index = index;
   event.layer = patch.layer;
@@ -584,12 +625,15 @@ void Session::publish_journal(std::string_view action, u32 index) const {
   events_->publish(EventKind::Journal, id_, schema::to_json(event));
 }
 
-void Session::publish_session(std::string_view change, const LeaseInfo* lease) const {
+void Session::publish_session(std::string_view change, const LeaseInfo* lease, u64 connection,
+                              std::string_view reason) const {
   if (events_ == nullptr || !events_->wanted(EventKind::Session, id_)) return;
   SessionChangeEvent event;
   event.session = id_;
   event.change = std::string(change);
   event.path = dir_;
+  event.connection = connection;
+  event.reason = std::string(reason);
   if (lease != nullptr) {
     event.lease = lease->id;
     event.actor = lease->actor;
@@ -724,7 +768,8 @@ bool Session::step(bool backwards, u32 steps, const Caller* caller, StepResult& 
         return false;
       }
       for (const u32 at : stepped)
-        publish_journal(backwards ? "undo" : "redo", at);
+        publish_journal(backwards ? "undo" : "redo", at,
+                        caller != nullptr ? caller->connection : 0);
     }
     return ok;
   };
@@ -849,7 +894,56 @@ SessionInfo Session::info() const {
   layers(info.layers);
   info.journal_length = doc_.journal().size();
   info.undo_position = manifest_.undo_position;
+  for (const u64 h : holders_)
+    info.holders.push_back(h);
   return info;
+}
+
+// ---- holders -----------------------------------------------------------------------------------
+
+bool Session::held_by(u64 holder) const noexcept {
+  for (const u64 h : holders_) {
+    if (h == holder) return true;
+  }
+  return false;
+}
+
+void Session::hold(u64 holder) {
+  if (held_by(holder)) return;
+  // In order, so `holders` reads the same however the clients arrived.
+  u32 at = holders_.size();
+  while (at > 0 && holders_[at - 1] > holder)
+    --at;
+  holders_.insert(at, holder);
+}
+
+bool Session::let_go(u64 holder) {
+  for (u32 i = 0; i < holders_.size(); ++i) {
+    if (holders_[i] == holder) {
+      holders_.erase_at(i);
+      return true;
+    }
+  }
+  return false;
+}
+
+u32 Session::release_connection_leases(u64 connection, i64 now_ms) {
+  if (connection == 0) return 0;
+  Vector<LeaseInfo> gone;
+  for (const LeaseInfo& l : leases_.leases()) {
+    if (l.connection == connection) gone.push_back(l);
+  }
+  if (gone.empty()) return 0;
+  for (const LeaseInfo& l : gone)
+    leases_.remove(l.id);
+  (void)leases_.expire(now_ms);
+  // Nobody is waiting for an answer: a save that fails leaves the lease in the file, where the
+  // next open of the document drops it anyway (it names a connection of a host that has gone).
+  RpcError ignored;
+  (void)save_leases(ignored);
+  for (const LeaseInfo& l : gone)
+    publish_session("lease_released", &l, connection, "connection closed");
+  return gone.size();
 }
 
 // ---- leases ------------------------------------------------------------------------------------
@@ -946,6 +1040,10 @@ bool Session::acquire_lease(const LeaseAcquireParams& params, const Caller& call
   wanted.object_types = params.object_types;
   wanted.acquired_unix_ms = now_ms;
   wanted.expires_unix_ms = expiry(now_ms, params.ttl_seconds);
+  // A client's lease lives as long as its connection at most (protocol.md, "Several clients, one
+  // host"): one that vanishes must not hold tiles for the rest of a ttl nobody will renew.
+  wanted.connection = caller.connection;
+  if (caller.connection != 0) wanted.host = host_instance();
   if (const LeaseInfo* held = leases_.overlap(wanted, now_ms)) {
     JsonValue data = JsonValue::object();
     data.set("lease", schema::to_json(*held));
@@ -966,7 +1064,7 @@ bool Session::acquire_lease(const LeaseAcquireParams& params, const Caller& call
   const u64 id = leases_.add(std::move(wanted));
   if (!save_leases(error)) return false;
   out = *leases_.find(id);
-  publish_session("lease_acquired", &out);
+  publish_session("lease_acquired", &out, caller.connection);
   return true;
 }
 
@@ -1017,7 +1115,7 @@ bool Session::release_lease(u64 lease, const Caller& caller, i64 now_ms, LeaseIn
   leases_.remove(lease);
   (void)leases_.expire(now_ms);
   if (!save_leases(error)) return false;
-  publish_session("lease_released", &out);
+  publish_session("lease_released", &out, caller.connection);
   return true;
 }
 
@@ -1389,7 +1487,7 @@ bool Session::reject(const RejectParams& params, const Caller& caller, RpcError&
 
 // ---- SessionManager --------------------------------------------------------------------------
 
-Session* SessionManager::open(const SessionOpenParams& params, RpcError& error) {
+Session* SessionManager::open(const SessionOpenParams& params, u64 holder, RpcError& error) {
   if (params.path.empty()) {
     error = make_error(codes::k_invalid_argument, "path is required");
     return nullptr;
@@ -1398,7 +1496,11 @@ Session* SessionManager::open(const SessionOpenParams& params, RpcError& error) 
   const std::string path =
       params.path.find("://") == std::string::npos ? io::normalize_path(params.path) : params.path;
   for (const auto& s : sessions_) {
-    if (s->dir() == path) return s.get();
+    if (s->dir() == path) {
+      // One document, however many clients: the second opener shares the first's session.
+      s->hold(holder);
+      return s.get();
+    }
   }
   auto session = std::make_unique<Session>(*vfs_, "s" + std::to_string(next_id_), path);
   if (DocumentStore::exists(*vfs_, path)) {
@@ -1412,6 +1514,7 @@ Session* SessionManager::open(const SessionOpenParams& params, RpcError& error) 
   }
   ++next_id_;
   session->set_events(events_);
+  session->hold(holder);
   sessions_.push_back(std::move(session));
   sessions_.back()->publish_session("opened");
   return sessions_.back().get();
@@ -1448,6 +1551,33 @@ bool SessionManager::close(std::string_view id) {
     }
   }
   return false;
+}
+
+bool SessionManager::release(std::string_view id, u64 holder, bool& closed) {
+  closed = false;
+  Session* s = find(id);
+  if (s == nullptr || !s->let_go(holder)) return false;
+  if (s->holders().empty()) closed = close(id);
+  return true;
+}
+
+void SessionManager::release_connection(u64 connection, i64 now_ms) {
+  if (connection == 0) return;
+  // Leases first, on every session (a client may lease on a session it did not open, such as the
+  // host's --doc), then the holds; a session closed by the second loop is gone, so it walks a copy
+  // of the ids.
+  for (const auto& s : sessions_) {
+    (void)s->release_connection_leases(connection, now_ms);
+    (void)s->release_connection_transactions(connection);
+  }
+  Vector<std::string> held;
+  for (const auto& s : sessions_) {
+    if (s->held_by(connection)) held.push_back(s->id());
+  }
+  for (const std::string& id : held) {
+    bool closed = false;
+    (void)release(id, connection, closed);
+  }
 }
 
 }  // namespace engine::protocol

@@ -119,7 +119,7 @@ bool EditorDocument::open(const std::string& dir, bool create, const std::string
   params.path = dir;
   params.create = create;
   protocol::RpcError rpc;
-  session_ = sessions_->open(params, rpc);
+  session_ = sessions_->open(params, 0, rpc);
   if (session_ == nullptr) {
     error = dir + ": " + rpc.message;
     return false;

@@ -121,7 +121,7 @@ bool place_asset(Context& ctx, const PlaceAssetParams& params, PlaceResult& out,
   Session* s = ctx.sessions->require(params.session, error);
   if (s == nullptr) return false;
   Caller caller;
-  if (!resolve_caller(ctx.policy, &params.attribution, caller, error)) return false;
+  if (!resolve_caller(ctx, &params.attribution, caller, error)) return false;
   if (params.placements.empty()) {
     error = make_error(codes::k_invalid_argument, "placements is empty: nothing to place");
     return false;
@@ -180,7 +180,7 @@ bool instantiate_template(Context& ctx, const InstantiateTemplateParams& params,
   Session* s = ctx.sessions->require(params.session, error);
   if (s == nullptr) return false;
   Caller caller;
-  if (!resolve_caller(ctx.policy, &params.attribution, caller, error)) return false;
+  if (!resolve_caller(ctx, &params.attribution, caller, error)) return false;
   const doc::Document& d = s->document();
   if (!d.exists(params.root)) {
     error =

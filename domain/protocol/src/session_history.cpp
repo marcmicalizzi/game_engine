@@ -110,7 +110,7 @@ bool Session::checkpoint(std::string_view label, const Caller& caller, doc::Chec
     error = checkpoint_error(std::move(message));
     return false;
   }
-  publish_session("checkpoint");
+  publish_session("checkpoint", nullptr, caller.connection);
   return true;
 }
 
@@ -381,7 +381,7 @@ bool Session::rollback_to(const RollbackParams& params, const Caller& caller, Ro
   // The const accessor: the mutable one would mark the composed index for a rebuild.
   out.edit_layer = read.layer(read.edit_layer()).name();
   out.committed = out.patches > 0;
-  publish_session("rollback");
+  publish_session("rollback", nullptr, caller.connection);
   return true;
 }
 

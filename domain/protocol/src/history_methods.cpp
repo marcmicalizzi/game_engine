@@ -25,7 +25,7 @@ Session* begin(Context& ctx, const std::string& session,
                RpcError& error) {
   Session* s = ctx.sessions->require(session, error);
   if (s == nullptr) return nullptr;
-  if (!resolve_caller(ctx.policy, attribution.has_value() ? &*attribution : nullptr, caller, error))
+  if (!resolve_caller(ctx, attribution.has_value() ? &*attribution : nullptr, caller, error))
     return nullptr;
   return s;
 }

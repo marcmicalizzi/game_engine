@@ -458,8 +458,14 @@ bool schema_close_session(Bridge& b, JsonValue& s, std::string& e) {
 void run_close_session(Bridge& b, const JsonValue& args, ToolOutcome& out) {
   JsonValue r;
   if (!b.call("session.close", args, r, out)) return;
-  out.summary = "Closed session " + text_of(r, "session") +
-                ". Everything it committed is on disk; open_session opens it again.";
+  // A close lets go of this client's hold (protocol.md, "Several clients, one host"): on a host
+  // others use too, the session stays open for them.
+  const JsonValue* closed = r.find("closed");
+  out.summary = closed != nullptr && closed->is_bool() && !closed->as_bool()
+                    ? "Let go of session " + text_of(r, "session") +
+                          ": other clients of the host still hold it, so it stays open for them."
+                    : "Closed session " + text_of(r, "session") +
+                          ". Everything it committed is on disk; open_session opens it again.";
   out.data = r;
 }
 

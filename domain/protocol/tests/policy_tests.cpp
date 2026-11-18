@@ -466,7 +466,7 @@ TEST_CASE("leases: expiry is by the host's clock, and the table is kept beside t
   RpcError error;
   SessionOpenParams open;
   open.path = dir;
-  Session* s = sessions.open(open, error);
+  Session* s = sessions.open(open, 0, error);
   REQUIRE(s != nullptr);
   Caller a, b;
   a.who.actor = "a";
@@ -497,7 +497,7 @@ TEST_CASE("leases: expiry is by the host's clock, and the table is kept beside t
   REQUIRE(s->require_leases(true, time::wall_unix_ms(), listed, error));
   io::Vfs vfs2;
   SessionManager sessions2(vfs2);
-  Session* s2 = sessions2.open(open, error);
+  Session* s2 = sessions2.open(open, 0, error);
   REQUIRE(s2 != nullptr);
   CHECK(s2->leases().required());
   REQUIRE(s2->leases().leases().size() == 1);

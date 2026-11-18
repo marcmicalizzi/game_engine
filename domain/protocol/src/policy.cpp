@@ -3,6 +3,7 @@
 #include <core/schema/json_reflect.h>
 #include <core/schema/type_info.h>
 #include <domain/doc/partition.h>
+#include <domain/protocol/clients.h>
 #include <domain/protocol/policy.h>
 
 namespace engine::protocol {
@@ -182,10 +183,25 @@ bool Policy::allows_method(const MethodDesc& method, std::string_view named_role
   return false;
 }
 
-bool resolve_caller(const Policy* policy, const doc::Attribution* given, Caller& out,
+const doc::Attribution* client_identity(const Context& ctx) noexcept {
+  if (ctx.clients == nullptr || ctx.connection == 0) return nullptr;
+  const Client* client = ctx.clients->find(ctx.connection);
+  return client != nullptr && client->identified ? &client->who : nullptr;
+}
+
+bool resolve_caller(const Context& ctx, const doc::Attribution* given, Caller& out,
                     RpcError& error) {
   out.who = given != nullptr ? *given : doc::Attribution{};
   out.role = nullptr;
+  out.connection = ctx.connection;
+  // The connection's identity first: several clients share one host, and each is who it said it
+  // was, not who the host was started as.
+  if (const doc::Attribution* client = client_identity(ctx)) {
+    if (blank(out.who.actor)) out.who.actor = client->actor;
+    if (blank(out.who.role)) out.who.role = client->role;
+    if (blank(out.who.task)) out.who.task = client->task;
+  }
+  const Policy* policy = ctx.policy;
   if (policy == nullptr) return true;
   out.who = policy->fill(std::move(out.who));
   return policy->resolve_role(out.who.role, out.role, error);

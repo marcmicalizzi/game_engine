@@ -651,6 +651,15 @@ try {
     $s = Need 'Session'
     $c = Invoke-Tool $bridge 'close_session' @{ session = $s }
     Assert-Ok $c 'close_session'
+    if ($Connect) {
+      # Attached, the bridge lets go of its hold alone: the host's --doc still holds the session,
+      # which stays open for the host and its other clients (protocol.md, "Several clients, one host").
+      Assert (-not (Get-Prop $c.Data 'closed')) "an attached bridge closed the host's own session: $(Show $c)"
+      $l = Invoke-Tool $bridge 'list_sessions' @{}
+      Assert-Ok $l 'list_sessions'
+      Assert (@(Get-Prop $l.Data 'sessions').Count -eq 1) 'the host''s session went with the bridge''s close'
+      return
+    }
     $l = Invoke-Tool $bridge 'list_sessions' @{}
     Assert-Ok $l 'list_sessions'
     Assert (@(Get-Prop $l.Data 'sessions').Count -eq 0) 'a session is still open'

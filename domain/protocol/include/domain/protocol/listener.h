@@ -31,9 +31,16 @@
 // event to the subscriber's connection, where the server's writer for that connection sends it
 // outside every lock (foundation/net/server.h, `Server::post`), and forgets a connection's
 // subscriptions when it closes. A host that never starts the listener publishes nothing.
+//
+// **Clients.** The listener also owns the host's client table (clients.h): each connection's entry
+// is made on its first request, `client.hello` names who it is, and when the connection ends the
+// listener gives back, under the dispatch lock, the leases it took and the sessions it opened
+// (SessionManager::release_connection) before it forgets it (protocol.md, "Several clients, one
+// host").
 
 #include <core/base/macros.h>
 #include <core/base/types.h>
+#include <domain/protocol/clients.h>
 #include <domain/protocol/events.h>
 #include <domain/protocol/rpc.h>
 #include <foundation/net/server.h>
@@ -90,6 +97,9 @@ class Listener final : public net::ServerHandler, public EventTransport {
   // The host's subscriptions: what engine-editor publishes its selection through, and what a
   // handler reaches as `Context::events`.
   Subscriptions& events() noexcept { return events_; }
+  // The host's client connections (clients.h), what a handler reaches as `Context::clients`. Read
+  // and written under the dispatch lock only.
+  Clients& clients() noexcept { return clients_; }
 
   void http(const net::HttpRequest& request, net::HttpResponse& response) override;
   bool accept(const net::HttpRequest& request, u16& close, std::string& reason) override;
@@ -107,6 +117,7 @@ class Listener final : public net::ServerHandler, public EventTransport {
   std::mutex* lock_;
   CaptureSource* captures_;
   Subscriptions events_;
+  Clients clients_;
   net::Server server_;
   std::string token_;
   std::string shell_dir_;

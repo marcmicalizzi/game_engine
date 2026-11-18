@@ -139,13 +139,17 @@ struct LayerInfo @version(3) {
   proposal: ProposalInfo? @since(3)
 }
 
-struct SessionInfo @version(1) {
+struct SessionInfo @version(2) {
   session: string
   path: string
   name: string
   layers: LayerInfo[]
   journal_length: u32 = 0
   undo_position: u32 = 0
+  /// Who holds the session open: client connections that opened it, and 0 for the host's own
+  /// stdio (and `--doc`). `session.close` lets go of the caller's hold; the session closes with
+  /// the last.
+  holders: u64[] @since(2)
 }
 
 struct SessionRef @version(1) {
@@ -2185,8 +2189,15 @@ struct RolesResult @version(1) {
 
 /// A live lease: a claim on a layer's tiles or object types, held by one actor until it expires or
 /// is released.
-struct LeaseInfo @version(1) {
+struct LeaseInfo @version(2) {
   id: u64 = 0
+  /// The client connection that took it, 0 for none (stdio, a host started per call). A lease a
+  /// connection took is released when that connection ends, and one a host that has gone left in
+  /// `leases.json` is dropped when the document is next opened, since its client went with it.
+  connection: u64 = 0 @since(2)
+  /// For a connection's lease, the host process that granted it (a random name it makes at
+  /// start), which is how a later open tells a gone host's lease from one of its own.
+  host: string @since(2)
   /// The holder. Only the holder renews or releases it, and only the holder's edits it covers.
   actor: string
   role: string
@@ -2954,7 +2965,7 @@ struct SubscriptionsResult @version(1) {
 }
 
 /// `event.journal`: a transaction was committed, undone or redone.
-struct JournalEvent @version(1) {
+struct JournalEvent @version(2) {
   session: string
   /// "commit", "undo" or "redo".
   action: string
@@ -2972,6 +2983,9 @@ struct JournalEvent @version(1) {
   journal_length: u32 = 0
   undo_position: u32 = 0
   dropped: u64 = 0
+  /// The connection whose call made the change, so a client tells its own from the others'; 0 for
+  /// stdio, the host itself and the engine's own write-back.
+  connection: u64 = 0 @since(2)
 }
 
 /// `event.selection`: the editor's selection changed (engine-editor only: a click in its viewport,
@@ -2999,7 +3013,7 @@ struct SceneEvent @version(1) {
 
 /// `event.session`: a session opened or closed, or a lease on it was taken or released. (Not
 /// `SessionEvent`, which is one entry of `session.events`' log.)
-struct SessionChangeEvent @version(1) {
+struct SessionChangeEvent @version(2) {
   session: string
   /// "opened", "closed", "lease_acquired" or "lease_released".
   change: string
@@ -3010,6 +3024,65 @@ struct SessionChangeEvent @version(1) {
   actor: string
   layer: string
   dropped: u64 = 0
+  /// The connection whose call made the change; 0 for stdio and the host itself. For a lease
+  /// released because its client's connection closed, that connection.
+  connection: u64 = 0 @since(2)
+  /// Why a lease was released when its holder did not ask: "connection closed". Empty otherwise.
+  reason: string @since(2)
+}
+
+// ---- clients of one host (roadmap A3; docs/subsystems/protocol.md, "Several clients, one host") -
+// One host serves several clients at once — the editor's shell, an agent's bridge attached with
+// `engine-mcp --connect`, the command line on its stdin — each on its own connection with its own
+// identity, over one document: their writes are ordered by the host's one lock, each is pushed the
+// others' changes as events, a lease one holds stands against the others, and a client whose
+// connection ends gives back the leases it took and the sessions it opened.
+
+/// Parameters of `client.hello`: who this connection is. Every blank attribution field of a later
+/// call on the connection is taken from here before the host's own `--actor`, `--role`, `--task`.
+struct ClientHelloParams @version(1) {
+  /// What the client is, for an operator reading `client.list`: "shell", "engine-mcp", a tool's
+  /// name. Free text, at most 64 characters.
+  name: string
+  /// The connection's actor, role and task (rationale and timestamp are ignored: they belong to a
+  /// transaction). A role must be one of the host's roles file.
+  attribution: engine.doc.Attribution
+}
+
+/// One client connection: who it says it is and what it holds.
+struct ClientInfo @version(1) {
+  /// The connection's number, as events and leases name it.
+  connection: u64 = 0
+  name: string
+  actor: string
+  role: string
+  task: string
+  /// `client.hello` named it; false until then (its calls run as the host's identity).
+  identified: bool = false
+  connected_unix_ms: i64 = 0
+  /// Requests it has made.
+  requests: u64 = 0
+  /// The sessions it opened and has not closed: each stays open while any client holds it.
+  sessions: string[]
+  /// The leases it took (`LeaseInfo.connection`), each `<session>:<id>`; given back when the
+  /// connection ends.
+  leases: string[]
+}
+
+/// `client.list`: every connected client, in connection order, and the asking connection.
+struct ClientsResult @version(1) {
+  clients: ClientInfo[]
+  /// The connection that asked; 0 on stdio.
+  you: u64 = 0
+}
+
+/// Result of `session.close`: the caller let go of the session; whether that closed it.
+struct SessionCloseResult @version(1) {
+  session: string
+  /// False when another client still holds the session: it stays open for them.
+  closed: bool = false
+  /// The holders left (connection numbers, 0 the host's own stdio): empty when it closed.
+  holders: u64[]
 }
 
 // ---- profile.* ---------------------------------------------------------------------------------
