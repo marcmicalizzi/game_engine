@@ -16,7 +16,7 @@
       "file": "systems/renderer/src/scene_renderer.cpp",
       "function": "SceneRenderer::record_frame",
       "why": "every pass and every feature flag of a frame",
-      "ceiling": 3749
+      "ceiling": 3796
     },
     {
       "id": "renderer.record_frame.add_pass",
@@ -32,21 +32,21 @@
       "measure": "file-lines",
       "file": "systems/renderer/src/gpu_scene.cpp",
       "why": "every feature's GPU state",
-      "ceiling": 6925
+      "ceiling": 6929
     },
     {
       "id": "renderer.gpu_scene_h.lines",
       "measure": "file-lines",
       "file": "systems/renderer/include/systems/renderer/gpu_scene.h",
       "why": "every feature's GPU state",
-      "ceiling": 2341
+      "ceiling": 2345
     },
     {
       "id": "engine_view.main_cpp.lines",
       "measure": "file-lines",
       "file": "apps/engine_view/main.cpp",
       "why": "every play feature and every flag",
-      "ceiling": 7641
+      "ceiling": 7647
     },
     {
       "id": "engine_view.run_view.lines",
@@ -54,7 +54,7 @@
       "file": "apps/engine_view/main.cpp",
       "function": "run_view",
       "why": "the windowed loop",
-      "ceiling": 3209
+      "ceiling": 3206
     },
     {
       "id": "engine_view.run_offscreen.lines",
@@ -62,7 +62,7 @@
       "file": "apps/engine_view/main.cpp",
       "function": "run_offscreen",
       "why": "the offscreen loop",
-      "ceiling": 1202
+      "ceiling": 1199
     },
     {
       "id": "gfx.resolve_modules",
@@ -107,37 +107,37 @@
       "id": "page:docs/subsystems/renderer.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/renderer.md",
-      "ceiling": 1268816
+      "ceiling": 1354166
     },
     {
       "id": "page:docs/subsystems/apps.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/apps.md",
-      "ceiling": 701492
+      "ceiling": 714506
     },
     {
       "id": "page:docs/subsystems/gfx.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/gfx.md",
-      "ceiling": 362229
+      "ceiling": 372705
     },
     {
       "id": "page:docs/subsystems/geometry.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/geometry.md",
-      "ceiling": 307926
+      "ceiling": 309865
     },
     {
       "id": "page:docs/subsystems/flora.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/flora.md",
-      "ceiling": 259252
+      "ceiling": 260191
     },
     {
       "id": "page:docs/plan/05-simulation.md",
       "measure": "page-bytes",
       "file": "docs/plan/05-simulation.md",
-      "ceiling": 215260
+      "ceiling": 215864
     },
     {
       "id": "page:docs/subsystems/tissue.md",
@@ -149,13 +149,13 @@
       "id": "page:docs/subsystems/water.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/water.md",
-      "ceiling": 261809
+      "ceiling": 263906
     },
     {
       "id": "page:docs/subsystems/protocol.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/protocol.md",
-      "ceiling": 115005
+      "ceiling": 165669
     },
     {
       "id": "page:docs/experiments/e10-generated-props.md",
@@ -173,13 +173,13 @@
       "id": "page:docs/subsystems/world.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/world.md",
-      "ceiling": 147494
+      "ceiling": 148771
     },
     {
       "id": "page:AGENTS.md",
       "measure": "page-bytes",
       "file": "AGENTS.md",
-      "ceiling": 72613
+      "ceiling": 72871
     },
     {
       "id": "page:docs/subsystems/rocks.md",
@@ -197,7 +197,7 @@
       "id": "page:docs/subsystems/channels.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/channels.md",
-      "ceiling": 231731
+      "ceiling": 246237
     },
     {
       "id": "page:docs/subsystems/landform.md",
@@ -209,19 +209,25 @@
       "id": "page:docs/subsystems/scene_collision.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/scene_collision.md",
-      "ceiling": 100190
+      "ceiling": 114218
     },
     {
       "id": "page:docs/subsystems/scene_gen.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/scene_gen.md",
-      "ceiling": 102326
+      "ceiling": 102318
     },
     {
       "id": "page:docs/subsystems/texture.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/texture.md",
       "ceiling": 116242
+    },
+    {
+      "id": "page:docs/ci/what-to-run.md",
+      "measure": "page-bytes",
+      "file": "docs/ci/what-to-run.md",
+      "ceiling": 109637
     }
   ],
   "rebaselines": [
@@ -2242,6 +2248,537 @@
           "id": "page:docs/subsystems/texture.md",
           "old": 100000,
           "new": 116242
+        }
+      ]
+    },
+    {
+      "date": "2026-11-18",
+      "by": "Marc Micalizzi",
+      "reason": "",
+      "commit": "09ed028b",
+      "folded": [
+        {
+          "name": "A10",
+          "reason": "A10 adds the profile.* methods' section to protocol.md (with what two clients and one capture do, and what a capture that filled reports), their MCP tools to apps.md, and the renderer's frame capture hook to renderer.md",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 1204,
+            "page:docs/subsystems/apps.md": 386,
+            "page:docs/subsystems/protocol.md": 7205
+          }
+        },
+        {
+          "name": "A11",
+          "reason": "A11: plan 06 6.4's explicit transactions get their protocol section (methods, staging, commit, lapse, tests) and the four MCP tools their row",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 677,
+            "page:docs/subsystems/protocol.md": 6387
+          }
+        },
+        {
+          "name": "A12",
+          "reason": "A12: place_asset and instantiate_template get their protocol section and the two MCP tools their row; place_asset says where it may read (only under the document's directory) and why",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 451,
+            "page:docs/subsystems/protocol.md": 6446
+          }
+        },
+        {
+          "name": "A13",
+          "reason": "A13: doc.describe gets its protocol section and describe_document its MCP row",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 343,
+            "page:docs/subsystems/protocol.md": 4406
+          }
+        },
+        {
+          "name": "A14",
+          "reason": "A14: doc.query gets its protocol section (the document filter built, SQL over the store designed) and query its MCP row",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 196,
+            "page:docs/subsystems/protocol.md": 6053
+          }
+        },
+        {
+          "name": "A3",
+          "reason": "A3: protocol.md gains the section on several clients of one host (client.hello and client.list, sessions held per client, leases bound to their connection and given back when it drops); apps.md the listener's clients and engine-mcp's hello; joined onto the protocol line: the writes that resolve their caller from the connection, and a transaction held by the connection that began it; and what a session's close leaves of a connection's leases and transactions until it drops",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 1005,
+            "page:docs/subsystems/protocol.md": 10023
+          }
+        },
+        {
+          "name": "b68-stack-C",
+          "reason": "Leg C of b68's stack: protocol.md states that a backslash is a separator on every platform (doc.place_asset, doc.put_blob); renderer.md says the water reflection case holds the leaf to its reflected part",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 169,
+            "page:docs/subsystems/protocol.md": 404
+          }
+        },
+        {
+          "name": "b68-stack-D",
+          "reason": "The render graph's rule that a declared write implies the read and that a reader in another stage widens the barrier before the first (gfx.md, Render graph v0), and what it says of the pool's fold (renderer.md)",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 307,
+            "page:docs/subsystems/gfx.md": 1187
+          }
+        },
+        {
+          "name": "b68-stack-E",
+          "reason": "G2's mend on the stack: renderer.md's content addressing says a scene's hash pins the bytes and the cache key carries the importer's tags, and why (the desert overlook's Lantern)",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 577
+          }
+        },
+        {
+          "name": "b68-stack-F",
+          "reason": "what-to-run.md: why the affected rule's grep reaches git as an argument list (PowerShell globs native arguments on Linux); water.md: what counts as ground the swash sheet is drawn on now that one code is not evidence",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/water.md": 136,
+            "page:docs/ci/what-to-run.md": 330
+          }
+        },
+        {
+          "name": "b68-stack",
+          "reason": "The stack's joins and notes: what-to-run.md holds the tool rows' sections together (T177, T76, T31, T171, sweep-T2) and B8's sentence; gfx.md the CullParams join's fade_turn bullet; renderer.md R181's paragraph as joined with W147 and review A4's note; protocol.md the A3 x D13 join (the methods line, D13's four writes among a connection's callers) and B2's collection roots",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 222,
+            "page:docs/subsystems/gfx.md": 780,
+            "page:docs/subsystems/protocol.md": 169,
+            "page:AGENTS.md": -8,
+            "page:docs/subsystems/scene_gen.md": -8,
+            "page:docs/ci/what-to-run.md": 9307
+          }
+        },
+        {
+          "name": "banding",
+          "reason": "The output encode's pages say why the SDR encode rounds to the code itself and not the store: what Vulkan promises of the conversion, what the card does, what a driver's last bit cost the banding test, what moved, and why HDR10's codes wait.",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 4978,
+            "page:docs/subsystems/gfx.md": 1627
+          }
+        },
+        {
+          "name": "D13-fix",
+          "reason": "D13's fixes: doc.put_blob's path rule (B1), a re-put restarting the grace period (B3), the checkpoint label rule (B9) and a rollback landing whole or saying what stands (B10)",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/protocol.md": 2504
+          }
+        },
+        {
+          "name": "D13",
+          "reason": "D13 and D14: protocol.md gains 'Blobs and checkpoints', the six methods' table and what a rollback does to layers, proposals, roles and leases, which the plan left open and the build had to decide",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/protocol.md": 6884
+          }
+        },
+        {
+          "name": "G2-fix",
+          "reason": "A3 (review of G2): geometry.md says why a scene's merge drops the VertexExtra stream (the 1.4 GB it padded the forest with) and why not per mesh, and names the case that bounds it",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/geometry.md": 876
+          }
+        },
+        {
+          "name": "G2",
+          "reason": "The container format gained four sections (49 to 52: an imported glTF's tangents, second UV set, colours, second-set slots, lights and cameras); geometry.md indexes every section kind, so it says what each holds in one paragraph and points at assets.md for the why",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/geometry.md": 1063,
+            "page:AGENTS.md": -22
+          }
+        },
+        {
+          "name": "gi-driver",
+          "reason": "The world-space cache's passes declare the read each makes of what the pass before wrote (one declaration and a two-line comment in record_frame), and the pages say what the three failing cases were and what a person saw: the diagnosis of batch 68",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 3,
+            "page:docs/subsystems/renderer.md": 6693,
+            "page:docs/subsystems/gfx.md": 927
+          }
+        },
+        {
+          "name": "P45",
+          "reason": "P45: a game's prop collides (walker set_props in attach_game, the load summary's instances_in_structures), scene_collision.md's Props section and what a moving prop costs (the measured tick before and after a move stopped remaking the body, the one mask every walker and module query takes so a kinematic prop or door is a surface, and where a mesh prop's proxy is still built on the tick), renderer.md's instances over a building, apps.md's props paragraph",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "engine_view.main_cpp.lines": 3,
+            "page:docs/subsystems/renderer.md": 1597,
+            "page:docs/subsystems/apps.md": 1026,
+            "page:docs/subsystems/scene_collision.md": 9412
+          }
+        },
+        {
+          "name": "P54",
+          "reason": "apps.md gains Crouching under Walking (the capsule, the eased eye, the map's seventh revision, the header's crouch block, the tunables) and The crouch layer under the player's body: the row's own sections, the change's point",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 6800
+          }
+        },
+        {
+          "name": "R158",
+          "reason": "R158 leg 3 and R159: record_frame sets the cross-fade's turn on the camera's and the cascades' cull blocks (4 lines); renderer.md gains the accumulation's third leg, its measurements and the reconstruction provider's section",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 4,
+            "page:docs/subsystems/renderer.md": 9100
+          }
+        },
+        {
+          "name": "R168",
+          "reason": "R168: the eye's adaptation, a frame pass of the renderer's own: record_frame passes its scale to the encode (the push's field, its read, the stats) and renderer.md gains the section that describes it",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 5,
+            "page:docs/subsystems/renderer.md": 6991
+          }
+        },
+        {
+          "name": "R171-5",
+          "reason": "R171 leg 5: the guide's section on renderer.md (the measurement, the research read, what was built, what it does on the screen, what it costs, why both are off and what it does not show) and four lines of record_frame (the memory's hold after a cold start, the guide's bit in the shell word)",
+          "date": "2026-11-18",
+          "by": "R171-5",
+          "deltas": {
+            "renderer.record_frame.lines": 4,
+            "page:docs/subsystems/renderer.md": 16232
+          }
+        },
+        {
+          "name": "R171-6",
+          "reason": "R171 leg 6: renderer.md's account of the sixth leg (the table of cases with each feature alone, the five by cause, main's three, the pre-roll's bound back to main's, the guide's training by degrees, the guide's mean under the sky, the room whose light was not made to move) and the temporal measure's channel shares on renderer.md and apps.md",
+          "date": "2026-11-18",
+          "by": "R171-6",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 14922,
+            "page:docs/subsystems/apps.md": 171
+          }
+        },
+        {
+          "name": "R173-fix",
+          "reason": "R173 fix (review A1): the occlusion depth's derivation and the unmeasured mesh spheres, in renderer.md's instance-pass section and gfx.md's occlusion paragraph",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 3091,
+            "page:docs/subsystems/gfx.md": 932
+          }
+        },
+        {
+          "name": "R173",
+          "reason": "R16/R173: every cull run is preceded by an instance pass (prepare, the blocks' fields, the passes and the indirect dispatch in the camera's and the cascades' cull), its mechanism and the cull's measurement by pair count on renderer.md, and CullParams' three new fields on gfx.md",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 30,
+            "page:docs/subsystems/renderer.md": 6411,
+            "page:docs/subsystems/gfx.md": 1248
+          }
+        },
+        {
+          "name": "R177-fix",
+          "reason": "A7 (review of R177): renderer.md says why a scene with a mesh room keeps the foliage lines whatever its generators declared, why a pipeline rebuild on arrival was not taken, and names the case",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 841
+          }
+        },
+        {
+          "name": "R177",
+          "reason": "R177: foliage's specialization constant and the backlit tier: has_foliage_materials (one accessor, one field, the material scan's two lines), the low tier's two lines in record_frame's cache block, and the pages that say what a scene with no foliage pays and what the tier gives back and loses",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 2,
+            "renderer.gpu_scene_cpp.lines": 4,
+            "renderer.gpu_scene_h.lines": 4,
+            "page:docs/subsystems/renderer.md": 3559,
+            "page:docs/subsystems/gfx.md": 1769
+          }
+        },
+        {
+          "name": "R181",
+          "reason": "R181: the pool's arguments, which runs fold and why the folds come first after the cull, and what found it (renderer.md; joined with W147 at the stack, so gfx.md is W147's)",
+          "date": "2026-11-18",
+          "by": "R181",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 2268
+          }
+        },
+        {
+          "name": "R81",
+          "reason": "R81: renderer.md gains the section A guess is not a demand (the provisional first capacity, its pair, what is left by kind) and the place report by kind; apps.md names the memory report place block by kind",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 5638,
+            "page:docs/subsystems/apps.md": 270
+          }
+        },
+        {
+          "name": "S12",
+          "reason": "Plan 05's status notes for S3 and S12: the static table and tier filtering built, and the world event bus built as domain/events; kept to two sentences that point at sim.md and events.md",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/plan/05-simulation.md": 604
+          }
+        },
+        {
+          "name": "sweep-D",
+          "reason": "D20 and D26 (batch 68 sweep-D): world.md gains the section Edits between calls, the store's projections note and the event reader in its public API; protocol.md says a streamed call's first pass takes the live tiles' changes",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/protocol.md": 183,
+            "page:docs/subsystems/world.md": 1277
+          }
+        },
+        {
+          "name": "sweep-T2",
+          "reason": "renderer.md: T70's paragraph naming the frame record's resolve_stop and sun_ray_rule; apps.md: R124's deform_cache bucket replacing the paragraph that asked for it",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 550,
+            "page:docs/subsystems/apps.md": 315
+          }
+        },
+        {
+          "name": "T172-2",
+          "reason": "T172-2: scene_collision.md gives the drop pair's numbers and where the sward's tile waits (its mask reads, measured by the new split stage, and the pair of the mend); flora.md says why a sward call reads each mask tile once",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/flora.md": 939,
+            "page:docs/subsystems/scene_collision.md": 2397
+          }
+        },
+        {
+          "name": "T172",
+          "reason": "T172: scene_collision.md says what the owner's 1,410 ms drop on batch 67 was (a hover after a 1,375 m/s flight, the workers on builds the flight had passed), the outrun rule that hands no build over while the camera crosses the builds' reach faster than a build takes, its test, and the trace's new zones inside a collision build",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/scene_collision.md": 2219
+          }
+        },
+        {
+          "name": "T177",
+          "reason": "AGENTS.md's tools/dev.ps1 test line names the author's no-driver switch, -NoDriver, and the page that gives it",
+          "date": "2026-11-18",
+          "by": "agent-T177",
+          "deltas": {
+            "page:AGENTS.md": 87
+          }
+        },
+        {
+          "name": "T181",
+          "reason": "engine-view's device options in one helper with a test's profile (+3 lines net: the helper replaces three copies of four lines); apps.md: the new section Running as a weaker card",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "engine_view.main_cpp.lines": 3,
+            "engine_view.run_view.lines": -3,
+            "engine_view.run_offscreen.lines": -3,
+            "page:docs/subsystems/apps.md": 1374
+          }
+        },
+        {
+          "name": "T76",
+          "reason": "T76: AGENTS.md's compiler-cache paragraph and gfx.md's shader build paragraph say shaders are shared through a cache of their own, keyed by what slangc read",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/gfx.md": 329,
+            "page:AGENTS.md": 201
+          }
+        },
+        {
+          "name": "W132",
+          "reason": "W132: channels.md's table of the count gains the staircase's four fields (steps a 100 m, the share of the fall at steps, their mean height, level water) with what the published reaches have",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/channels.md": 697
+          }
+        },
+        {
+          "name": "W140",
+          "reason": "W140: channels.md says why a steep line is held to its trough both ways and a fall's foot is seated, with the v47 re-plan's and torrent's tables, what it cost, the verification's runs and pictures, and on main the sixth column beside the three streams rows with why the gaps do not move",
+          "date": "2026-11-17",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/channels.md": 9093
+          }
+        },
+        {
+          "name": "W142",
+          "reason": "W142: channels.md says what a plate above a lip was in the solved stations, why the standard step's friction term made it under Ferguson's law, what the harmonic mean is grounded on, and v47's counts before and after at stage 1 and at the forest's stage 2, with what is left",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/channels.md": 4716
+          }
+        },
+        {
+          "name": "W144",
+          "reason": "water.md gains the bullet for the conveying reach (W144's regression: water past it stands)",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/water.md": 994
+          }
+        },
+        {
+          "name": "W147",
+          "reason": "W147: gfx.md and water.md say what a load's sea is a function of and why the pool's arguments are folded first after the cull",
+          "date": "2026-11-18",
+          "by": "agent-W147",
+          "deltas": {
+            "renderer.record_frame.lines": -1,
+            "page:docs/subsystems/gfx.md": 1677,
+            "page:docs/subsystems/water.md": 967
+          }
+        }
+      ],
+      "changes": [
+        {
+          "id": "renderer.record_frame.lines",
+          "old": 3749,
+          "new": 3796
+        },
+        {
+          "id": "renderer.gpu_scene_cpp.lines",
+          "old": 6925,
+          "new": 6929
+        },
+        {
+          "id": "renderer.gpu_scene_h.lines",
+          "old": 2341,
+          "new": 2345
+        },
+        {
+          "id": "engine_view.main_cpp.lines",
+          "old": 7641,
+          "new": 7647
+        },
+        {
+          "id": "engine_view.run_view.lines",
+          "old": 3209,
+          "new": 3206
+        },
+        {
+          "id": "engine_view.run_offscreen.lines",
+          "old": 1202,
+          "new": 1199
+        },
+        {
+          "id": "page:docs/subsystems/renderer.md",
+          "old": 1268816,
+          "new": 1354166
+        },
+        {
+          "id": "page:docs/subsystems/apps.md",
+          "old": 701492,
+          "new": 714506
+        },
+        {
+          "id": "page:docs/subsystems/gfx.md",
+          "old": 362229,
+          "new": 372705
+        },
+        {
+          "id": "page:docs/subsystems/geometry.md",
+          "old": 307926,
+          "new": 309865
+        },
+        {
+          "id": "page:docs/subsystems/flora.md",
+          "old": 259252,
+          "new": 260191
+        },
+        {
+          "id": "page:docs/plan/05-simulation.md",
+          "old": 215260,
+          "new": 215864
+        },
+        {
+          "id": "page:docs/subsystems/water.md",
+          "old": 261809,
+          "new": 263906
+        },
+        {
+          "id": "page:docs/subsystems/protocol.md",
+          "old": 115005,
+          "new": 165669
+        },
+        {
+          "id": "page:docs/subsystems/world.md",
+          "old": 147494,
+          "new": 148771
+        },
+        {
+          "id": "page:AGENTS.md",
+          "old": 72613,
+          "new": 72871
+        },
+        {
+          "id": "page:docs/subsystems/channels.md",
+          "old": 231731,
+          "new": 246237
+        },
+        {
+          "id": "page:docs/subsystems/scene_collision.md",
+          "old": 100190,
+          "new": 114218
+        },
+        {
+          "id": "page:docs/subsystems/scene_gen.md",
+          "old": 102326,
+          "new": 102318
+        },
+        {
+          "id": "page:docs/ci/what-to-run.md",
+          "old": 100000,
+          "new": 109637
         }
       ]
     }
