@@ -3213,7 +3213,10 @@ struct Credential @version(1) {
   /// The operator's label for it, unique in the file: "agent-1", "qa-bot".
   name: string
   actor: string
-  /// A role of the host's roles file; empty runs in the file's default role.
+  /// A role of the host's roles file, which binds the connection on every host that accepts the
+  /// credential. Empty, or on a host with no roles file to define it (every engine-editor): the
+  /// connection may only read (ADR-0069 decision 3a), never the host's own role or the file's
+  /// default.
   role: string
   task: string
   /// The token's SHA-256, 64 lowercase hex digits. The file never holds the token itself: the

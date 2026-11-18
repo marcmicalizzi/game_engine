@@ -20,6 +20,7 @@
 #include <core/json/json_value.h>
 #include <core/platform/process.h>
 #include <domain/gfx/device.h>
+#include <domain/protocol/clients.h>
 #include <domain/protocol/listener.h>
 #include <domain/protocol/policy.h>
 #include <domain/protocol/rpc.h>
@@ -2006,6 +2007,30 @@ TEST_CASE("engine-editor: editor.tool, editor.pick_file and editor.import_mesh")
   CHECK(call("editor.import_mesh", import).find("error") != nullptr);
   CHECK_FALSE(io::exists(tmp.path() + "/assets/broken/broken.glb"));
   CHECK(document.document().journal().size() == before + 2);
+
+  // ADR-0069 decision 5: an import a client asks for is that client's in the journal, as every
+  // other write of the protocol is, and not the editor's own; a call naming nobody from the page
+  // (no client entry) stays the editor's, as above.
+  protocol::Clients clients;
+  d.context().clients = &clients;
+  {
+    protocol::Client& agent = clients.touch(5, 0);
+    agent.who.actor = "agent-1";
+    agent.who.task = "t-agent";
+    agent.identified = true;
+  }
+  d.context().connection = 5;
+  import.set("path", JsonValue(source_dir + "/crate.gltf"));
+  REQUIRE(write_cube_gltf(source_dir, "crate"));  // the bytes the store holds again
+  answer = call("editor.import_mesh", import);
+  d.context().connection = 0;
+  d.context().clients = nullptr;
+  REQUIRE_MESSAGE(answer.find("result") != nullptr, write_json(answer));
+  document.journal(journal, 10);
+  CHECK(journal[0].actor == "agent-1");
+  CHECK(journal[0].task == "t-agent");
+  CHECK(journal[0].role == "director");  // its hello named none: the host's, as on engine-host
+  CHECK(document.document().journal().size() == before + 3);
 
   // A sample from content/samples, when tools/fetch-samples.ps1 has fetched it: the viewport
   // rebuilds with one more instance, its pixel picks back to the new record, and undo removes it.

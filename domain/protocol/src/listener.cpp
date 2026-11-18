@@ -12,8 +12,12 @@ namespace engine::protocol {
 
 namespace {
 
-// The cookie a spent ticket buys a browser page (ADR-0069).
-constexpr std::string_view k_cookie = "engine_session";
+// The cookie a spent ticket buys a browser page (ADR-0069), named for the listener's port: a
+// browser keeps one cookie per name, host and path and none per port (RFC 6265 §8.5), so two hosts'
+// shells under one name would overwrite each other's and break the first one's captures and
+// reconnects. The port in the name does not keep the cookie from another port's server: the
+// browser still sends every one of them to every port of 127.0.0.1 (the ADR's "What this is not").
+std::string cookie_name(u16 port) { return "engine_session_" + std::to_string(port); }
 
 // A query pair that may go back into a header as it came: printable ASCII, no space.
 bool plain_query(std::string_view pair) noexcept {
@@ -112,6 +116,13 @@ bool Credentials::load(std::string_view path, std::string_view text, const Polic
   }
   file_ = std::move(file);
   return true;
+}
+
+u32 Credentials::read_only_count(const Policy* policy) const noexcept {
+  u32 n = 0;
+  for (const Credential& c : file_.credentials)
+    n += &bound_role(policy, c.role) == &bound_role(nullptr, {}) ? 1u : 0u;
+  return n;
 }
 
 const Credential* Credentials::match(std::string_view token) const {
@@ -255,7 +266,7 @@ Listener::Presented Listener::presented(const net::HttpRequest& request) {
     return out;
   }
   std::string cookie;
-  if (cookie_value(request, k_cookie, cookie)) {
+  if (cookie_value(request, cookie_name(port()), cookie)) {
     std::lock_guard<std::mutex> lock(auth_mutex_);
     for (const std::string& c : cookies_)
       out.known = out.known || same_secret(c, cookie);
@@ -327,7 +338,7 @@ void Listener::http(const net::HttpRequest& request, net::HttpResponse& response
     response.status = 303;
     response.headers.push_back({"Location", "/" + rest});
     if (spent)
-      response.headers.push_back({"Set-Cookie", std::string(k_cookie) + "=" + cookie +
+      response.headers.push_back({"Set-Cookie", cookie_name(port()) + "=" + cookie +
                                                     "; HttpOnly; SameSite=Strict; Path=/"});
     return;
   }

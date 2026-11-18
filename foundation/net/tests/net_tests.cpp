@@ -250,6 +250,36 @@ TEST_CASE("net: a server and a client on loopback") {
   CHECK(server.connections() == 0);
 }
 
+// net.md, "Two bounds": sockets that never send a byte hold no place a client needs.
+// Before, the cap counted them, so twice its number of silent sockets kept every client out with a
+// 503 for the head timeout; now the newest needing a place shuts the oldest silent one down.
+TEST_CASE("net: silent sockets do not keep a client off the server") {
+  EchoHandler handler;
+  Server server;
+  std::string error;
+  REQUIRE_MESSAGE(server.start(0, handler, error), error);
+  Vector<Socket> silent;
+  for (u32 i = 0; i < Server::k_max_connections + Server::k_max_pending; ++i) {
+    Socket s;
+    REQUIRE_MESSAGE(connect_loopback(server.port(), s, error), error);
+    silent.push_back(std::move(s));
+  }
+  WebSocket ws;
+  REQUIRE_MESSAGE(websocket_connect(server.port(), "/", {}, ws, error), error);
+  REQUIRE(ws.send_text("through"));
+  Message m;
+  REQUIRE(ws.receive(m, 10000));
+  CHECK(m.data == "echo:7:through");
+  // The silent ones were shut as newer ones came: no more than the pending bound is left open
+  // beside the client (a thread each, so the bound is on threads too), once the shut ones' threads
+  // have seen their reads fail.
+  for (u32 look = 0; look < 100 && server.connections() > Server::k_max_pending + 1; ++look)
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  CHECK(server.connections() <= Server::k_max_pending + 1);
+  ws.close(close_code::k_normal, "done");
+  server.stop();
+}
+
 namespace {
 
 // Answers "ok" and remembers which connection asked, so a test can push to it.

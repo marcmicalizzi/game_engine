@@ -921,9 +921,12 @@ TEST_CASE("listen: an issued credential is printed once, kept as a digest, and b
   std::string token;
   {
     platform::Process issue;
-    const std::string_view argv[] = {
-        host_exe(), "--issue-credential", file, "--name", "agent-1", "--actor", "agent-1", "--task",
-        "t-agent"};
+    const std::string_view argv[] = {host_exe(), "--issue-credential",
+                                     file,       "--name",
+                                     "agent-1",  "--actor",
+                                     "agent-1",  "--role",
+                                     "builder",  "--task",
+                                     "t-agent"};
     std::string error;
     REQUIRE_MESSAGE(issue.spawn(argv, &error), error);
     std::string line;
@@ -946,8 +949,14 @@ TEST_CASE("listen: an issued credential is printed once, kept as a digest, and b
   REQUIRE(parse_json(kept, parsed).ok);
   CHECK(at(at(parsed, "credentials")[0], "token_sha256").as_string().size() == 64);
 
-  ListeningHost host(
-      {"--credentials", file, "--doc", tmp.file("doc"), "--create", "--actor", "cli"});
+  // A credential's role binds only where a roles file defines it (ADR-0069): with none, this one
+  // could read and not write.
+  const std::string roles = tmp.file("roles.json");
+  write_file(roles, R"({"default_role":"director","roles":[{"name":"director","methods":["*"],
+    "layers":["*"],"object_types":["*"]},{"name":"builder","methods":["doc.*"],"layers":["*"],
+    "object_types":["*"]}]})");
+  ListeningHost host({"--roles", roles, "--credentials", file, "--doc", tmp.file("doc"), "--create",
+                      "--actor", "cli"});
   const std::string in_session = R"({"session":")" + host.session + "\"";
   Client agent;
   REQUIRE(agent.connect(host.port, token));

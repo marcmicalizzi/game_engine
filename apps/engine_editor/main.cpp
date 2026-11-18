@@ -926,7 +926,8 @@ int run_window(const Options& options, editor::EditorDocument& document) {
   }
 
   // Before the host, so the listener's threads never outlive what it accepts (ADR-0069). The
-  // editor has no roles file, so a credential's role is not checked against one.
+  // editor loads no roles file, so it cannot enforce a credential's role, and a role it cannot
+  // enforce is never a label: every credential's connection here may read and not write.
   protocol::Credentials credentials;
   if (!options.credentials.empty()) {
     std::string text;
@@ -941,6 +942,11 @@ int run_window(const Options& options, editor::EditorDocument& document) {
       std::fprintf(stderr, "engine-editor: %s\n", error.c_str());
       return 2;
     }
+    std::fprintf(stderr,
+                 "engine-editor: the editor has no roles file, so the %u credentials in '%s' may "
+                 "only read here; an agent that writes attaches to engine-host --listen --roles\n",
+                 static_cast<u32>(credentials.file().credentials.size()),
+                 options.credentials.c_str());
   }
   Host host(document);
   if (credentials.loaded()) host.listener.set_credentials(&credentials);

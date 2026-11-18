@@ -103,7 +103,13 @@ class EditorDocument {
   // `rationale` (a default naming the edit when empty). False, with `error`, when the session
   // refuses it or a command fails (atomic: nothing is committed then).
   bool apply(std::span<const doc::Command> commands, const std::string& rationale,
-             std::string& error);
+             std::string& error) {
+    return apply(commands, caller_, rationale, error);
+  }
+  // The same, attributed to `caller`: a protocol method's write is its caller's, resolved from the
+  // connection it came on (`protocol::resolve_caller`), never the editor's own (ADR-0069).
+  bool apply(std::span<const doc::Command> commands, const protocol::Caller& caller,
+             const std::string& rationale, std::string& error);
   bool undo(std::string& error);
   bool redo(std::string& error);
   // Whether the session has a transaction to undo, or an undone one to redo (its undo position

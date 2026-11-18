@@ -1,6 +1,7 @@
 #include <core/base/assert.h>
 #include <core/json/json.h>
 #include <core/profiling/profile.h>
+#include <domain/protocol/clients.h>
 #include <domain/protocol/policy.h>
 #include <domain/protocol/rpc.h>
 
@@ -144,7 +145,14 @@ JsonValue Dispatcher::dispatch_one(const JsonValue& request) {
   // The role gate (policy.h): a write must be one of the methods the call's role names. The role
   // is the params' `attribution.role` wherever a method takes one, and the host's otherwise, so
   // the gate reads it from the JSON here once rather than every handler learning to.
-  if (context_.policy != nullptr && !method->read_only) {
+  // A connection bound to a credential is gated by its credential's role whether or not the host
+  // loaded a roles file, and with no role it may only read (ADR-0069): a role the host cannot
+  // enforce is never a label.
+  if (const Client* bound = bound_client(context_); bound != nullptr && !method->read_only) {
+    if (!bound_allows_method(context_, *bound, *method, error)) {
+      return is_notification ? JsonValue() : error_response(id, error);
+    }
+  } else if (context_.policy != nullptr && !method->read_only) {
     std::string_view named;
     if (const JsonValue* a = p.is_object() ? p.find("attribution") : nullptr;
         a != nullptr && a->is_object()) {

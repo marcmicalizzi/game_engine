@@ -1,11 +1,12 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "A4",
-  "reason": "A4: protocol.md gains the section on who a connection is (credentials, the identity gate, the shell's one-time ticket and cookie); apps.md the credential flags of engine-host and engine-editor",
+  "reason": "A4: protocol.md gains the section on who a connection is (credentials, the identity gate, the shell's one-time ticket and cookie); apps.md the credential flags of engine-host and engine-editor; then what a security review of this work, 2026-11-18, found: what a credential's role is worth on a host with and without a roles file, the agent's attach by an issued credential in a file, the port-named cookie and the client's import, on protocol.md and apps.md",
   "date": "2026-11-18",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/apps.md": 732,
-    "page:docs/subsystems/protocol.md": 4401
+    "page:docs/subsystems/apps.md": 2547,
+    "page:docs/subsystems/protocol.md": 7567,
+    "page:AGENTS.md": -10
   }
 }

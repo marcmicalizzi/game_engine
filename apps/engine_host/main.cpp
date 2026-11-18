@@ -443,6 +443,12 @@ int main(int argc, char** argv) {
     const std::string out = write_json(line, JsonWriteOptions{.pretty = false});
     std::fwrite(out.data(), 1, out.size(), stdout);
     std::fputc('\n', stdout);
+    if (policy.identity.role.empty()) {
+      std::fprintf(stderr,
+                   "engine-host: '%s' names no role, so a connection presenting it may only read "
+                   "(ADR-0069); issue it with --role to let it write\n",
+                   issue_name.c_str());
+    }
     return 0;
   }
   protocol::Credentials credentials;
@@ -461,6 +467,16 @@ int main(int argc, char** argv) {
     if (listen_address.empty()) {
       std::fprintf(stderr, "engine-host: --credentials is for --listen: stdio is the operator's\n");
       return 2;
+    }
+    // A role this host cannot enforce is never a label (ADR-0069): said once, here, so the operator
+    // learns it at start rather than at an agent's first refused write.
+    if (const u32 readers = credentials.read_only_count(&policy); readers > 0) {
+      std::fprintf(stderr,
+                   "engine-host: %u of the %u credentials in '%s' may only read here: they name no "
+                   "role%s\n",
+                   readers, static_cast<u32>(credentials.file().credentials.size()),
+                   credentials_file.c_str(),
+                   policy.roles_loaded() ? "" : ", or this host has no --roles to enforce theirs");
     }
   }
 

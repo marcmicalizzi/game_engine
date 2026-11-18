@@ -37,7 +37,7 @@ const char* k_usage =
     "                  [--workspace <dir>] [--actor <name>] [--role <name>] [--task <id>]\n"
     "                  [--roles <file.json>]\n"
     "                  [--call-timeout <seconds>] [--long-call-timeout <seconds>] [--log <spec>]\n"
-    "       engine-mcp --connect ws://127.0.0.1:<port>/ --token <token> [--workspace <dir>]\n"
+    "       engine-mcp --connect ws://127.0.0.1:<port>/ --token-file <file> [--workspace <dir>]\n"
     "                  [--actor <name>] [--role <name>] [--task <id>] [--call-timeout ...] ...\n"
     "       engine-mcp --connect-from <file> ...\n"
     "\n"
@@ -49,12 +49,17 @@ const char* k_usage =
     "                       engine-host --listen) instead of starting one: the same tools, on the\n"
     "                       document its owner has open; the host's journal and scene events "
     "reach\n"
-    "                       the MCP client as notifications/resources/updated. Needs --token.\n"
-    "                       --host, --host-arg, --mount and --roles configure a host the bridge\n"
-    "                       starts, so they are refused with it: the host's own roles govern\n"
-    "  --token <token>      the host's session token (its first line on stdout says it)\n"
-    "  --connect-from <file>  the host's first stdout line saved to a file, {\"listen\":...,\n"
-    "                       \"token\":...,\"session\":...}: --connect and --token from it\n"
+    "                       the MCP client as notifications/resources/updated. Needs\n"
+    "                       --token-file. --host, --host-arg, --mount and --roles configure a\n"
+    "                       host the bridge starts, so they are refused with it: the host's own\n"
+    "                       roles govern\n"
+    "  --token-file <file>  a file holding {\"token\":...}: for an agent, the line engine-host\n"
+    "                       --issue-credential printed, saved; never the token on the command\n"
+    "                       line, where every process of the user can read it (ADR-0069)\n"
+    "  --connect-from <file>  {\"listen\":...,\"token\":...[,\"session\":...]} in a file: "
+    "--connect\n"
+    "                       and the token from it (the host's first stdout line is one, and holds\n"
+    "                       the operator's own token: an agent gets a credential instead)\n"
     "  --host <path>        engine-host executable (default: beside engine-mcp)\n"
     "  --host-arg <arg>     appended to engine-host's command line; repeatable\n"
     "  --mount <spec>       forwarded to engine-host; repeatable\n"
@@ -127,8 +132,28 @@ int main(int argc, char** argv) {
       return 0;
     } else if (a == "--connect") {
       if (!value(connect_url)) return 2;
-    } else if (a == "--token") {
-      if (!value(options.connect_token)) return 2;
+    } else if (a == "--token-file") {
+      std::string file;
+      if (!value(file)) return 2;
+      // {"token": ...} and nothing read from the command line: a process's arguments are open to
+      // every process of its user, a file can be the operator's alone.
+      std::ifstream in(std::filesystem::path(
+          std::u8string_view(reinterpret_cast<const char8_t*>(file.data()), file.size())));
+      std::string line;
+      JsonValue held;
+      const JsonValue* token = nullptr;
+      if (in && std::getline(in, line) && parse_json(line, held).ok && held.is_object()) {
+        token = held.find("token");
+      }
+      if (token == nullptr || !token->is_string() || token->as_string().empty()) {
+        // The file's name and never its contents: they may be a secret, wrongly shaped.
+        std::fprintf(stderr,
+                     "engine-mcp: --token-file %s: expected one line {\"token\":\"...\"}, as "
+                     "engine-host --issue-credential prints it\n",
+                     file.c_str());
+        return 2;
+      }
+      options.connect_token = std::string(token->as_string());
       token_given = true;
     } else if (a == "--connect-from") {
       if (!value(connect_from)) return 2;
@@ -182,7 +207,7 @@ int main(int argc, char** argv) {
     if (!connect_url.empty() || token_given) {
       std::fprintf(stderr,
                    "engine-mcp: --connect-from gives the address and the token; do not "
-                   "also pass --connect or --token\n");
+                   "also pass --connect or --token-file\n");
       return 2;
     }
     std::ifstream in(std::filesystem::path(std::u8string_view(
@@ -213,7 +238,9 @@ int main(int argc, char** argv) {
       return 2;
     }
     if (!token_given || options.connect_token.empty()) {
-      std::fprintf(stderr, "engine-mcp: --connect needs --token, the token the host printed\n");
+      std::fprintf(stderr,
+                   "engine-mcp: --connect needs --token-file, a credential the host's operator "
+                   "issued\n");
       return 2;
     }
     // ws://127.0.0.1:<port>/ and nothing else: the listener binds loopback only, and so the bridge
@@ -234,7 +261,7 @@ int main(int argc, char** argv) {
     }
     options.connect_port = port;
   } else if (token_given) {
-    std::fprintf(stderr, "engine-mcp: --token goes with --connect\n");
+    std::fprintf(stderr, "engine-mcp: --token-file goes with --connect\n");
     return 2;
   }
 

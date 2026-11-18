@@ -63,8 +63,15 @@ enum class Post : u8 {
 
 class Server {
  public:
-  // More connections than this at once are answered 503 and closed.
+  // **Two bounds, so a socket that has proved nothing cannot keep a client out** (net.md, "Two
+  // bounds"). WebSocket connections the handler accepted (for the protocol, those that presented
+  // a credential) are at most `k_max_connections`; one more completes its handshake and is closed
+  // with 1013. Connections the handler has not accepted yet (sending their request head, a plain
+  // GET being answered) are at most `k_max_pending`; a new one past that shuts down the oldest of
+  // them, so a local process holding silent sockets open delays a client by one eviction rather
+  // than refusing it for the head timeout. Together they bound the threads.
   static constexpr u32 k_max_connections = 32;
+  static constexpr u32 k_max_pending = 16;
   // How long a connection may take to send its request head.
   static constexpr i32 k_head_timeout_ms = 10000;
 
@@ -105,6 +112,10 @@ class Server {
     u64 id = 0;
     std::intptr_t handle = Socket::k_invalid;  // for stop(), valid while `done` is false
     std::atomic<bool> done{false};
+    // Guarded by the server's `mutex_`: the handler accepted it (or is accepting it), so it counts
+    // against `k_max_connections`; or it was shut down to make room for a newer pending one.
+    bool established = false;
+    bool evicted = false;
     std::thread thread;
     // The outbox (post), guarded by `out_mutex`. `ws` is the connection's WebSocket while its
     // message loop runs, and null before and after, which is what makes a post `Gone`.

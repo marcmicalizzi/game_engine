@@ -51,6 +51,7 @@ inline constexpr u16 k_invalid_data = 1007;
 inline constexpr u16 k_policy = 1008;
 inline constexpr u16 k_too_big = 1009;
 inline constexpr u16 k_internal = 1011;
+inline constexpr u16 k_try_again_later = 1013;  // the server is full now
 }  // namespace close_code
 
 enum class Opcode : u8 {

@@ -6,6 +6,7 @@
 #include <core/json/json.h>
 #include <core/json/json_value.h>
 #include <core/math/math.h>
+#include <domain/protocol/policy.h>
 
 #include <algorithm>
 #include <cmath>
@@ -56,6 +57,11 @@ bool editor_import_mesh(protocol::Context& ctx, const protocol::EditorImportMesh
     return false;
   }
   EditorDocument& document = *state.document;
+  // Whoever called: the shell's page is the editor's own identity through the host's policy, and a
+  // client that said who it is (client.hello) or presented a credential is itself, connection and
+  // all, in the journal and in the events the commit publishes (ADR-0069).
+  protocol::Caller caller;
+  if (!protocol::resolve_caller(ctx, nullptr, caller, error)) return false;
   ImportedFiles files;
   std::string why;
   if (!import_mesh_files(p.path, document.directory(), files, why)) {
@@ -80,7 +86,7 @@ bool editor_import_mesh(protocol::Context& ctx, const protocol::EditorImportMesh
   // The file's own name in the rationale, as the person chose it.
   const usize slash = p.path.find_last_of("/\\");
   const std::string file = slash == std::string::npos ? p.path : p.path.substr(slash + 1);
-  if (!document.apply(std::span<const doc::Command>(&create, 1), "import " + file, why)) {
+  if (!document.apply(std::span<const doc::Command>(&create, 1), caller, "import " + file, why)) {
     remove_imported(document.directory(), files);
     error = protocol::make_error(protocol::codes::k_document_error, "editor.import_mesh: " + why);
     return false;

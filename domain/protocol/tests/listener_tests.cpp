@@ -326,8 +326,11 @@ TEST_CASE("listener: a credential binds who a connection is; the shell's ticket 
     CHECK(first.status == 303);
     CHECK(first.head.find("Location: /?session=s1&embedded=1") != std::string::npos);
     CHECK(first.head.find("ticket") == std::string::npos);
-    const usize at = first.head.find("engine_session=");
-    REQUIRE(at != std::string::npos);
+    // Named for the port (ADR-0069 decision 6): two hosts' shells in one browser keep a cookie
+    // each.
+    const std::string name = "engine_session_" + std::to_string(port) + "=";
+    const usize at = first.head.find(name);
+    REQUIRE_MESSAGE(at != std::string::npos, first.head.substr(0, first.head.find("Set-Cookie")));
     CHECK(first.head.find("HttpOnly; SameSite=Strict") != std::string::npos);
     const std::string cookie = first.head.substr(at, first.head.find(';', at) - at);
     CHECK(http_get(port, target).status == 403);                             // spent
@@ -335,7 +338,11 @@ TEST_CASE("listener: a credential binds who a connection is; the shell's ticket 
     // The page's own GETs need nothing; its captures and its socket carry the cookie.
     CHECK(http_get(port, "/?session=s1").status == 200);
     CHECK(http_get(port, "/capture/c1", {}, "Cookie: " + cookie + "\r\n").status == 200);
-    CHECK(http_get(port, "/capture/c1", {}, "Cookie: engine_session=nope\r\n").status == 403);
+    CHECK(http_get(port, "/capture/c1", {}, "Cookie: " + name + "nope\r\n").status == 403);
+    // Another port's name is not this host's, whatever its value.
+    const std::string value = cookie.substr(name.size());
+    CHECK(http_get(port, "/capture/c1", {}, "Cookie: engine_session_1=" + value + "\r\n").status ==
+          403);
     net::WebSocket page;
     const std::pair<std::string, std::string> headers[] = {
         {"Cookie", "theme=dark; " + cookie},
@@ -349,7 +356,7 @@ TEST_CASE("listener: a credential binds who a connection is; the shell's ticket 
     CHECK(again.status == 303);
     CHECK(again.head.find("Set-Cookie") == std::string::npos);
     net::WebSocket stale;
-    const std::pair<std::string, std::string> wrong[] = {{"Cookie", "engine_session=nope"}};
+    const std::pair<std::string, std::string> wrong[] = {{"Cookie", name + "nope"}};
     REQUIRE(net::websocket_connect(port, "/", wrong, stale, error));
     net::Message m;
     CHECK_FALSE(stale.receive(m, 30000));
@@ -361,4 +368,170 @@ TEST_CASE("listener: a credential binds who a connection is; the shell's ticket 
     CHECK(http_get(port, shell.substr(shell.find('/', 7))).status == 403);
   }
   listener.stop();
+}
+
+namespace {
+
+// A listener over the built-in methods with `policy`, accepting `credentials`.
+struct BoundHost {
+  io::Vfs vfs;
+  protocol::SessionManager sessions{vfs};
+  protocol::Dispatcher dispatcher;
+  std::mutex lock;
+  protocol::Listener listener;
+  BoundHost(const protocol::Policy& policy, const protocol::Credentials& credentials)
+      : dispatcher(protocol::Context{&sessions, nullptr, nullptr, nullptr, &policy}),
+        listener(dispatcher, lock) {
+    protocol::add_builtin_methods(dispatcher);
+    listener.set_credentials(&credentials);
+    std::string error;
+    REQUIRE_MESSAGE(listener.start(0, {}, {}, error), error);
+  }
+  ~BoundHost() { listener.stop(); }
+};
+
+// What a credential's connection may do on `host`: the reason a doc.apply naming nobody is refused
+// for ("" when it committed), and whether a read (doc.journal) answered.
+struct Outcome {
+  std::string refused;
+  std::string role;  // as client.list shows it
+  bool read = false;
+};
+
+Outcome try_write(BoundHost& host, const std::string& token, const std::string& doc) {
+  net::WebSocket ws;
+  std::string error;
+  const std::pair<std::string, std::string> header[] = {{"X-Engine-Token", token}};
+  REQUIRE_MESSAGE(net::websocket_connect(host.listener.port(), "/", header, ws, error), error);
+  Outcome out;
+  const JsonValue list = call(ws, R"({"jsonrpc":"2.0","id":1,"method":"client.list"})");
+  out.role = std::string((*list.find("result")->find("clients"))[0].find("role")->as_string());
+  // session.open is a read: it changes no document.
+  const JsonValue opened =
+      call(ws, std::string(R"({"jsonrpc":"2.0","id":2,"method":"session.open","params":)") +
+                   R"({"path":)" + write_json(JsonValue(doc)) + R"(,"create":true}})");
+  REQUIRE_MESSAGE(opened.find("result") != nullptr, write_json(opened));
+  const std::string session(opened.find("result")->find("session")->as_string());
+  const JsonValue applied = call(
+      ws,
+      R"({"jsonrpc":"2.0","id":3,"method":"doc.apply","params":{"session":")" + session +
+          R"(","commands":[{"kind":"CreateObject","id":"0000000000000000000000000000be01",)"
+          R"("type":"engine.world.Node","value":{"name":"n"}}],"attribution":{"rationale":"w"}}})");
+  if (const JsonValue* e = applied.find("error"); e != nullptr) {
+    CHECK(e->find("code")->as_int() == 1008);
+    out.refused = std::string(e->find("data")->find("reason")->as_string());
+    CHECK(write_json(applied).find(token) == std::string::npos);
+  }
+  const JsonValue journal = call(ws, R"({"jsonrpc":"2.0","id":4,"method":"doc.journal",)"
+                                     R"("params":{"session":")" +
+                                         session + R"("}})");
+  out.read = journal.find("result") != nullptr;
+  return out;
+}
+
+}  // namespace
+
+// The role a handler checks a bound connection against is its credential's, not one the call named
+// (ADR-0069 decision 3a): resolve_caller refuses a named actor or role that is not the
+// credential's itself, so the dispatcher's look at a top-level `attribution` is not the only thing
+// between a call and another role's layers, tiles and types.
+TEST_CASE("listener: resolve_caller holds a bound connection to its credential's role") {
+  protocol::Policy policy;
+  std::string error;
+  REQUIRE_MESSAGE(policy.load_roles("roles.json", R"({"default_role":"director","roles":[
+    {"name":"director","methods":["*"],"layers":["*"],"object_types":["*"]},
+    {"name":"qa","methods":["doc.*"],"layers":["qa"],"object_types":["*"]}]})",
+                                    error),
+                  error);
+  protocol::Clients clients;
+  protocol::Client& bot = clients.touch(7, 0);
+  bot.credential = "qa-bot";
+  bot.who.actor = "bot";
+  bot.who.role = "qa";
+  bot.identified = true;
+  bot.bound = true;
+  protocol::Context ctx;
+  ctx.policy = &policy;
+  ctx.clients = &clients;
+  ctx.connection = 7;
+  const auto refused = [&](const char* actor, const char* role) {
+    doc::Attribution given;
+    given.actor = actor;
+    given.role = role;
+    protocol::Caller caller;
+    protocol::RpcError rpc;
+    const bool ok = protocol::resolve_caller(ctx, &given, caller, rpc);
+    if (ok) return std::string("resolved as ") + (caller.role ? caller.role->name : "(null)");
+    CHECK(rpc.code == 1008);
+    const JsonValue* reason = rpc.data.is_object() ? rpc.data.find("reason") : nullptr;
+    return reason != nullptr ? std::string(reason->as_string()) : std::string("no reason");
+  };
+  CHECK(refused("", "director") == "identity");
+  CHECK(refused("owner", "") == "identity");
+  CHECK(refused("bot", "director") == "identity");
+  // Blank, or its own, is the credential's role as the roles file defines it.
+  for (const char* role : {"", "qa"}) {
+    doc::Attribution given;
+    given.role = role;
+    protocol::Caller caller;
+    protocol::RpcError rpc;
+    REQUIRE(protocol::resolve_caller(ctx, &given, caller, rpc));
+    CHECK(caller.role == policy.find_role("qa"));
+    CHECK(caller.who.actor == "bot");
+  }
+}
+
+// ADR-0069 decision 3a ("a role a host cannot enforce is never a label"): a credential's role
+// binds on every host that accepts the credential, roles file or none, and a credential that names
+// no role runs neither in the host's own --role nor in the file's default role: it may only read.
+TEST_CASE("listener: a credential's role binds with or without a roles file; no role only reads") {
+  const test::TempDir tmp("protocol_listener_bound_roles");
+  std::string qa_token;
+  std::string reader_token;
+  REQUIRE(protocol::make_token(qa_token));
+  REQUIRE(protocol::make_token(reader_token));
+  const std::string file = R"({"credentials":[{"name":"qa-bot","actor":"bot","role":"qa",)"
+                           R"("token_sha256":")" +
+                           protocol::token_digest(qa_token) +
+                           R"("},{"name":"reader","actor":"reader","token_sha256":")" +
+                           protocol::token_digest(reader_token) + R"("}]})";
+  std::string error;
+
+  SUBCASE("no roles file: the role named is not a label, it is a connection that only reads") {
+    // engine-editor's case, and engine-host --listen --credentials without --roles.
+    protocol::Policy policy;
+    policy.identity.actor = "owner";
+    protocol::Credentials credentials;
+    REQUIRE_MESSAGE(credentials.load("c.json", file, &policy, error), error);
+    CHECK(credentials.read_only_count(&policy) == 2);
+    BoundHost host(policy, credentials);
+    const Outcome qa = try_write(host, qa_token, tmp.file("doc-a"));
+    CHECK(qa.role == "qa");
+    CHECK(qa.refused == "unenforced role");
+    CHECK(qa.read);
+    const Outcome reader = try_write(host, reader_token, tmp.file("doc-b"));
+    CHECK(reader.refused == "no role");
+    CHECK(reader.read);
+  }
+  SUBCASE("a roles file and a director host: a credential with no role gets neither") {
+    protocol::Policy policy;
+    REQUIRE_MESSAGE(policy.load_roles("roles.json", R"({"default_role":"director","roles":[
+      {"name":"director","methods":["*"],"layers":["*"],"object_types":["*"]},
+      {"name":"qa","methods":["lease.*"],"layers":["*"],"object_types":["*"]}]})",
+                                      error),
+                    error);
+    policy.identity.actor = "owner";
+    policy.identity.role = "director";  // engine-host --role director, as a director's host runs
+    protocol::Credentials credentials;
+    REQUIRE_MESSAGE(credentials.load("c.json", file, &policy, error), error);
+    CHECK(credentials.read_only_count(&policy) == 1);
+    BoundHost host(policy, credentials);
+    const Outcome reader = try_write(host, reader_token, tmp.file("doc-c"));
+    CHECK(reader.role.empty());  // client.list tells the truth: it has none
+    CHECK(reader.refused == "no role");
+    CHECK(reader.read);
+    const Outcome qa = try_write(host, qa_token, tmp.file("doc-d"));
+    CHECK(qa.refused == "method");  // the role binds, and does not list doc.apply
+    CHECK(qa.read);
+  }
 }

@@ -143,14 +143,25 @@ void Server::listen_loop() {
       continue;
     }
     reap(false);
-    if (connections() >= k_max_connections) {
-      (void)socket.send_all(format_http_response(http_error(503, "too many connections")));
-      continue;
-    }
     auto connection = std::make_unique<Connection>();
     Connection& c = *connection;
     {
       std::lock_guard<std::mutex> lock(mutex_);
+      // A connection that has proved nothing yet holds a place only until a newer one needs it:
+      // past `k_max_pending` the oldest is shut down (its thread sees its read fail and ends), so
+      // silent sockets can delay a client by an eviction and never refuse it. Under this lock, as
+      // in drop_connections, so the handle shut down is still that connection's own.
+      u32 pending = 0;
+      Connection* oldest = nullptr;
+      for (const auto& p : connections_) {
+        if (p->done.load() || p->established || p->evicted) continue;
+        ++pending;
+        if (oldest == nullptr) oldest = p.get();  // connections_ is in the order they came
+      }
+      if (pending >= k_max_pending && oldest != nullptr) {
+        oldest->evicted = true;
+        shutdown_socket(oldest->handle);
+      }
       c.id = next_id_++;
       c.handle = socket.native();
       connections_.push_back(std::move(connection));
@@ -191,7 +202,20 @@ void Server::serve(Connection& connection, Socket socket) {
   if (upgraded) {
     u16 code = close_code::k_policy;
     std::string reason;
-    if (!handler_->accept(connection.id, request, code, reason)) {
+    // A place among the accepted connections is taken before the handler is asked, under the
+    // server's lock, so two upgrades at once cannot both take the last one.
+    bool room = false;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      u32 established = 0;
+      for (const auto& c : connections_)
+        established += !c->done.load() && c->established ? 1u : 0u;
+      room = established < k_max_connections;
+      connection.established = room;
+    }
+    if (!room) {
+      ws.close(close_code::k_try_again_later, "too many connections");
+    } else if (!handler_->accept(connection.id, request, code, reason)) {
       ws.close(code, reason);
     } else {
       {

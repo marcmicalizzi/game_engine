@@ -8,6 +8,7 @@
 // no-GPU answer itself is pinned on every machine by hiding the Vulkan drivers from the host.
 #include <core/json/json.h>
 #include <core/platform/process.h>
+#include <foundation/net/server.h>
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
@@ -19,6 +20,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <mutex>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -289,6 +292,11 @@ TEST_CASE("mcp: --help, --version, and a host that cannot start") {
 TEST_CASE("mcp: --connect takes a loopback ws:// URL and a token, and no flag of a spawned host") {
   const test::TempDir tmp("mcp_bridge_connect_usage");
   const std::string ws = tmp.file("ws");
+  const std::string token_file = tmp.file("token.json");
+  {
+    std::ofstream out(token_file, std::ios::binary);
+    out << R"({"token":"t"})" << "\n";
+  }
   const auto exit_of = [](std::span<const std::string_view> argv) {
     platform::Process p;
     REQUIRE(p.spawn(argv));
@@ -301,13 +309,14 @@ TEST_CASE("mcp: --connect takes a loopback ws:// URL and a token, and no flag of
   // A host the bridge would start is configured by flags an attached bridge must not take: the
   // running host's roles and mounts are its own.
   for (const char* flag : {"--host", "--host-arg", "--mount", "--roles"}) {
-    const std::string_view argv[] = {bridge_exe(), "--connect", "ws://127.0.0.1:9/", "--token", "t",
-                                     flag,         "x"};
+    const std::string_view argv[] = {
+        bridge_exe(), "--connect", "ws://127.0.0.1:9/", "--token-file", token_file, flag, "x"};
     CHECK_MESSAGE(exit_of(argv) == 2, flag);
   }
   {
     // Loopback only, as the listener binds.
-    const std::string_view argv[] = {bridge_exe(), "--connect", "ws://10.0.0.1:9/", "--token", "t"};
+    const std::string_view argv[] = {bridge_exe(), "--connect", "ws://10.0.0.1:9/", "--token-file",
+                                     token_file};
     CHECK(exit_of(argv) == 2);
   }
   {
@@ -315,7 +324,7 @@ TEST_CASE("mcp: --connect takes a loopback ws:// URL and a token, and no flag of
     CHECK(exit_of(argv) == 2);  // no token
   }
   {
-    const std::string_view argv[] = {bridge_exe(), "--token", "t"};
+    const std::string_view argv[] = {bridge_exe(), "--token-file", token_file};
     CHECK(exit_of(argv) == 2);  // a token with nothing to connect to
   }
   {
@@ -332,9 +341,91 @@ TEST_CASE("mcp: --connect takes a loopback ws:// URL and a token, and no flag of
     // Nobody listening on that port: the bridge says it cannot connect and exits 2, as it does
     // when it cannot start a host.
     const std::string_view argv[] = {
-        bridge_exe(), "--connect", "ws://127.0.0.1:9/", "--token", "t", "--workspace", ws};
+        bridge_exe(),  "--connect", "ws://127.0.0.1:9/", "--token-file", token_file,
+        "--workspace", ws};
     CHECK(exit_of(argv) == 2);
   }
+}
+
+namespace {
+
+// Records the token an upgrade presented, and refuses it, as a host refuses a token it does not
+// know: what the bridge sent, seen from the host's side.
+struct TokenRecorder final : net::ServerHandler {
+  std::mutex mutex;
+  std::string seen;
+  u32 upgrades = 0;
+  void http(const net::HttpRequest&, net::HttpResponse& response) override {
+    response = net::http_error(404);
+  }
+  bool accept(u64, const net::HttpRequest& request, u16& close, std::string& reason) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    ++upgrades;
+    if (const std::string* token = request.header("x-engine-token")) seen = *token;
+    close = net::close_code::k_policy;
+    reason = "recorded";
+    return false;
+  }
+  std::string message(u64, std::string_view) override { return {}; }
+};
+
+}  // namespace
+
+// ADR-0069 decision 4: a process's command line
+// is readable by every process of its user, so the bridge takes a token from a file — the line
+// engine-host --issue-credential printed, saved — and refuses one on the command line before it
+// connects anywhere.
+TEST_CASE("mcp: --connect reads its token from a file, never from the command line") {
+  const test::TempDir tmp("mcp_bridge_token_file");
+  TokenRecorder recorder;
+  net::Server server;
+  std::string error;
+  REQUIRE_MESSAGE(server.start(0, recorder, error), error);
+  const std::string url = "ws://127.0.0.1:" + std::to_string(server.port()) + "/";
+  const std::string ws = tmp.file("ws");
+  const auto exit_of = [](std::span<const std::string_view> argv) {
+    platform::Process p;
+    REQUIRE(p.spawn(argv));
+    p.close_stdin();
+    std::string out;
+    p.read_all(out);
+    return p.wait();
+  };
+  const std::string file = tmp.file("bot.json");
+  {
+    std::ofstream out(file, std::ios::binary);
+    out << R"({"credential":"bot","token":"test-token-from-file"})" << "\n";
+  }
+  {
+    const std::string_view argv[] = {bridge_exe(), "--connect",   url, "--token-file",
+                                     file,         "--workspace", ws};
+    CHECK(exit_of(argv) == 1);  // connected, and the recorder refused it
+  }
+  {
+    std::lock_guard<std::mutex> lock(recorder.mutex);
+    CHECK(recorder.upgrades >= 1);
+    CHECK(recorder.seen == "test-token-from-file");
+  }
+  const u32 before = recorder.upgrades;
+  {
+    const std::string_view argv[] = {
+        bridge_exe(), "--connect", url, "--token", "test-token-on-the-line", "--workspace", ws};
+    CHECK(exit_of(argv) == 2);
+  }
+  {
+    // A file that is not {"token": ...} is refused before anything connects, too.
+    const std::string bad = tmp.file("bad.json");
+    {
+      std::ofstream out(bad, std::ios::binary);
+      out << "test-token-bare\n";
+    }
+    const std::string_view argv[] = {bridge_exe(), "--connect",   url, "--token-file",
+                                     bad,          "--workspace", ws};
+    CHECK(exit_of(argv) == 2);
+  }
+  std::lock_guard<std::mutex> lock(recorder.mutex);
+  CHECK(recorder.upgrades == before);  // neither reached the host
+  server.stop();
 }
 
 TEST_CASE("mcp: initialize agrees a protocol version and advertises tools") {

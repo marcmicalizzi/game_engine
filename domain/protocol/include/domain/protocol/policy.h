@@ -9,18 +9,22 @@
 // work needs review. Director, designer, environment, QA and performance are rows, not code
 // (`content/roles/roles.json`).
 //
-// **Roles are guardrails for cooperating agents, not security.** The protocol has no
-// authentication: a call names its role in its attribution, and the host believes it. What a role
-// buys is that an agent told to be the QA agent cannot, by mistake, rewrite the terrain — and that
-// the refusal says so, in a structured error (1008 Forbidden) a model can act on. Where one agent
-// owns one host — engine-mcp starts a host per agent — the host is given that agent's identity
+// **For the operator and stdio, roles are guardrails; for a credential, a boundary.** A caller the
+// host trusts as its operator (stdin, the printed token, the shell's cookie) names its role in its
+// attribution and the host believes it: what a role buys there is that an agent told to be the QA
+// agent cannot, by mistake, rewrite the terrain, and that the refusal says so in a structured error
+// (1008 Forbidden) a model can act on. A connection bound to a credential (clients.h, ADR-0069) is
+// its credential's role and nothing else, on every host that accepts the credential: with no roles
+// file to define that role, or no role named, it may only read (`bound_role`). Where one agent owns
+// one host — engine-mcp starts a host per agent — the host is given that agent's identity
 // (`--actor`, `--role`, `--task`), every call that names none runs in it, and the bridge refuses a
 // call that names another.
 //
 // **Read access is never restricted.** A method registered `read_only` (rpc.h) passes whatever the
 // role; a role lists only the writing methods it may make.
 //
-// No roles file restricts nothing, which is every host before roles existed.
+// No roles file restricts nothing for the operator, which is every host before roles existed, and
+// leaves a credential's connection only its reads.
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
@@ -35,6 +39,8 @@
 #include <string_view>
 
 namespace engine::protocol {
+
+struct Client;  // clients.h
 
 // '*' matches any run of characters, none included; every other character matches itself; the
 // whole of `text` must match. "doc.*" matches "doc.apply"; "*" matches everything.
@@ -95,7 +101,9 @@ struct Caller {
 
 // `given` null means the call carried no attribution. Blank actor, role and task come from the
 // connection's `client.hello` (`ctx.clients`), then from the host's identity (`ctx.policy`, which
-// may be null). False with 1008 when the call names a role the roles file does not have.
+// may be null). False with 1008 when the call names a role the roles file does not have. A
+// connection bound to a credential takes its blank fields from the credential alone, never from
+// the host, and runs in `bound_role` (ADR-0069).
 bool resolve_caller(const Context& ctx, const doc::Attribution* given, Caller& out,
                     RpcError& error);
 // The connection's own identity (`client.hello`) when it gave one, else null: what fills a call's
@@ -106,6 +114,21 @@ const doc::Attribution* client_identity(const Context& ctx) noexcept;
 // `data.reason` "identity", before its handler runs. True for every other caller.
 bool identity_allows(const Context& ctx, std::string_view actor, std::string_view role,
                      RpcError& error);
+
+// **A role a host cannot enforce is never a label** (ADR-0069). The connection's client entry
+// when it is bound to a credential, else null.
+const Client* bound_client(const Context& ctx) noexcept;
+// The role a bound connection runs in: its credential's role as the roles file defines it, and
+// nothing else — never the host's `--role` or the file's `default_role`. A credential that names no
+// role, or one whose role the host cannot find (no roles file loaded, as on engine-editor), runs in
+// a role that names no method, layer or type: its reads pass, every write is refused.
+const Role& bound_role(const Policy* policy, std::string_view name) noexcept;
+// The dispatcher's gate for a bound connection, whether or not a roles file is loaded: a method
+// that is not read-only must be one of its role's `methods`. 1008 Forbidden otherwise, with
+// `data.reason` "method", "no role" (the credential names none) or "unenforced role" (this host
+// cannot enforce the one it names).
+bool bound_allows_method(const Context& ctx, const Client& client, const MethodDesc& method,
+                         RpcError& error);
 
 // 1008 Forbidden with `data.reason` and `data.role`.
 RpcError forbidden(std::string message, std::string_view reason, std::string_view role,
