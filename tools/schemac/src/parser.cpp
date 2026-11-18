@@ -40,7 +40,12 @@ class Lexer {
           const size_t start = pos_;
           while (pos_ < text_.size() && text_[pos_] != '\n')
             ++pos_;
-          out.push_back(Token{Token::Kind::Doc, text_.substr(start, pos_ - start), line_});
+          // A CRLF file's line ends where an LF file's does: the CR is not the comment's. Kept, it
+          // reached a generated C++ string literal as a raw carriage return, which MSVC accepts and
+          // Clang and GCC refuse (roadmap T184), and every output differed from the LF file's.
+          size_t end = pos_;
+          if (end > start && text_[end - 1] == '\r') --end;
+          out.push_back(Token{Token::Kind::Doc, text_.substr(start, end - start), line_});
         } else {
           while (pos_ < text_.size() && text_[pos_] != '\n')
             ++pos_;
@@ -91,7 +96,7 @@ class Lexer {
         ++pos_;
         std::string s;
         while (true) {
-          if (pos_ >= text_.size() || text_[pos_] == '\n') {
+          if (pos_ >= text_.size() || text_[pos_] == '\n' || text_[pos_] == '\r') {
             error = file_ + ":" + std::to_string(line_) + ": unterminated string";
             return false;
           }
