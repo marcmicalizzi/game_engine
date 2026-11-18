@@ -126,7 +126,14 @@ function Start-Mcp([string]$label, [string[]]$extra) {
     $psi.FileName = $Mcp
   }
   $ws = Join-Path $Scratch 'workspace'
-  foreach ($a in @('--workspace', $ws, '--actor', 'mcp-check') + @($extra | Where-Object { $_ })) { $psi.ArgumentList.Add($a) }
+  # The host the bridge starts reaches the documents the loop makes in the scratch directory
+  # through one root of its own (protocol.md, "The host's file roots"); an attached bridge uses the
+  # host's roots, and refuses the flag.
+  $roots = @()
+  if ($Mcp -notlike '*.ps1' -and -not ($extra -contains '--connect' -or $extra -contains '--connect-from')) {
+    $roots = @('--root', "check=$($Scratch):rw")
+  }
+  foreach ($a in @('--workspace', $ws, '--actor', 'mcp-check') + $roots + @($extra | Where-Object { $_ })) { $psi.ArgumentList.Add($a) }
   $psi.UseShellExecute = $false
   $psi.RedirectStandardInput = $true
   $psi.RedirectStandardOutput = $true

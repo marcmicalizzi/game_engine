@@ -4,8 +4,8 @@
 // rolled back across a tile-partitioned layer to the files' bytes, as journaled patches the change
 // feed reports and undo takes back, a blob the store had collected restored from the checkpoint,
 // refused whole by a role or another's lease, a proposal left alone, and 1006 without git; and a
-// seeded run of edits, undos, checkpoints and rollbacks in which every rollback leaves each accepted
-// layer equal to what that checkpoint held.
+// seeded run of edits, undos, checkpoints and rollbacks in which every rollback leaves each
+// accepted layer equal to what that checkpoint held.
 #include <core/hash/base64.h>
 #include <core/json/json.h>
 #include <domain/doc/blob_store.h>
@@ -13,6 +13,8 @@
 #include <domain/protocol/policy.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
+#include <foundation/io/roots.h>
+#include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
 #include <test_environment.h>
@@ -103,11 +105,19 @@ struct Host {
   io::Vfs vfs;
   SessionManager sessions{vfs};
   Policy policy;
+  // Every path a case names is under a TempDir, and every TempDir under one parent: that parent is
+  // the host's one writable root, as an operator's --root would be (paths.h).
+  test::TempDir roots_anchor{"roots"};
+  io::Roots roots;
   Dispatcher dispatcher{Context{&sessions, nullptr, nullptr, nullptr, &policy}};
   std::string session;
   std::string dir;
 
-  Host() { add_builtin_methods(dispatcher); }
+  Host() {
+    (void)roots.add("tests", std::string(io::parent_path(roots_anchor.path())), true);
+    dispatcher.context().roots = &roots;
+    add_builtin_methods(dispatcher);
+  }
 
   JsonValue call(std::string_view method, JsonValue params) {
     JsonValue req = obj({{"jsonrpc", JsonValue("2.0")}, {"id", JsonValue(1)}});
@@ -138,7 +148,8 @@ struct Host {
   // A world: `base`, and `world` tiled 10 m a side holding four props in four tiles.
   void make_world(const std::string& path) {
     dir = path;
-    JsonValue info = ok("session.open", obj({{"path", JsonValue(path)}, {"create", JsonValue(true)}}));
+    JsonValue info =
+        ok("session.open", obj({{"path", JsonValue(path)}, {"create", JsonValue(true)}}));
     session = std::string(info.find("session")->as_string());
     ok("doc.add_layer",
        obj({{"name", JsonValue("world")}, {"partition", obj({{"tile_size", JsonValue(10.0)}})}}));
@@ -229,42 +240,32 @@ TEST_CASE("blobs: put, read back checked, referenced, refused when unheld, colle
   REQUIRE(h.fails("doc.put_blob", obj({{"path", JsonValue("inside/missing.bin")}}), &missing) ==
           codes::k_not_found);
   CHECK(write_json(missing).find("missing") == std::string::npos);  // names no path
-  std::vector<std::string> climbing = {outside,
-                                 "../secret.bin",
-                                 "inside/../../secret.bin",
-                                 "..\\secret.bin",
-                                 "/secret.bin",
-                                 "\\\\host\\share\\secret.bin",
-                                 "C:secret.bin",
-                                 "C:/secret.bin",
-                                 "inside/mask.bin:stream",
-                                 "inside//mask.bin",
-                                 "inside/",
-                                 std::string("inside/ma\x01sk.bin"),
-                                 "inside",  // a directory
-                                 // Either separator on every platform: refused on Linux as on
-                                 // Windows, never one file name holding a backslash.
-                                 "inside/..\\inside\\mask.bin",
-                                 "..\\secret.bin",
-                                 "inside\\..\\..\\secret.bin",
-                                 "\\",
-                                 "inside/\\/mask.bin",
-                                 "inside\\"};
+  std::vector<std::string> climbing = {
+      outside, "../secret.bin", "inside/../../secret.bin", "..\\secret.bin", "/secret.bin",
+      "\\\\host\\share\\secret.bin", "C:secret.bin", "C:/secret.bin", "inside/mask.bin:stream",
+      "inside//mask.bin", "inside/", std::string("inside/ma\x01sk.bin"),
+      "inside",  // a directory
+      // Either separator on every platform: refused on Linux as on
+      // Windows, never one file name holding a backslash.
+      "inside/..\\inside\\mask.bin", "..\\secret.bin", "inside\\..\\..\\secret.bin", "\\",
+      "inside/\\/mask.bin", "inside\\"};
   std::error_code link_error;
   std::filesystem::create_symlink(outside, h.dir + "/inside/link.bin", link_error);
-  if (!link_error) climbing.push_back("inside/link.bin");  // a link that leaves the directory
-  else MESSAGE("no symbolic link here (" << link_error.message() << "), so that form is not tried");
+  if (!link_error)
+    climbing.push_back("inside/link.bin");  // a link that leaves the directory
+  else
+    MESSAGE("no symbolic link here (" << link_error.message() << "), so that form is not tried");
   for (const std::string& path : climbing) {
     JsonValue e;
-    CHECK_MESSAGE(h.fails("doc.put_blob", obj({{"path", JsonValue(path)}}), &e) ==
-                      codes::k_not_found,
-                  path);
+    CHECK_MESSAGE(
+        h.fails("doc.put_blob", obj({{"path", JsonValue(path)}}), &e) == codes::k_not_found, path);
     CHECK_MESSAGE(at_message(e) == at_message(missing), path);
   }
   CHECK_FALSE(doc::BlobStore::has(h.vfs, h.dir, doc::BlobStore::name_of("secret bytes")));
   CHECK(h.fails("doc.put_blob", JsonValue::object()) == codes::k_invalid_argument);
 
-  const JsonValue back = h.ok("doc.blob", obj({{"blob", JsonValue(name)}, {"data", JsonValue(true)}}));
+  const JsonValue back =
+      h.ok("doc.blob", obj({{"blob", JsonValue(name)}, {"data", JsonValue(true)}}));
   std::string bytes;
   REQUIRE(base64_decode(back.find("data_base64")->as_string(), bytes));
   CHECK(bytes == grid);
@@ -327,8 +328,8 @@ TEST_CASE("blobs: a blob named only by a staged command is kept until its transa
   h.make_world(tmp.path() + "/doc");
   const JsonValue ref = *h.put("staged grid").find("ref");
   const std::string name(ref.find("blob")->as_string());
-  const JsonValue begun = h.ok("doc.begin", obj({{"layer", JsonValue("world")},
-                                                 {"attribution", who("director")}}));
+  const JsonValue begun =
+      h.ok("doc.begin", obj({{"layer", JsonValue("world")}, {"attribution", who("director")}}));
   const JsonValue id = *begun.find("id");
   h.ok("doc.apply", obj({{"commands", one(set(oid(1), "grid", ref))},
                          {"attribution", who("director")},
@@ -341,11 +342,10 @@ TEST_CASE("blobs: a blob named only by a staged command is kept until its transa
 
   // A transaction that lapsed holds nothing: its staged blob goes at the next collection.
   const JsonValue other = *h.put("lapsed grid").find("ref");
-  const JsonValue short_lived =
-      *h.ok("doc.begin", obj({{"layer", JsonValue("world")},
-                              {"ttl_seconds", JsonValue(1.0)},
-                              {"attribution", who("director")}}))
-           .find("id");
+  const JsonValue short_lived = *h.ok("doc.begin", obj({{"layer", JsonValue("world")},
+                                                        {"ttl_seconds", JsonValue(1.0)},
+                                                        {"attribution", who("director")}}))
+                                     .find("id");
   h.ok("doc.apply", obj({{"commands", one(set(oid(2), "grid", other))},
                          {"attribution", who("director")},
                          {"transaction", short_lived}}));
@@ -365,8 +365,9 @@ TEST_CASE("checkpoints: taken, rolled back across a tiled layer, undone, and ref
   const JsonValue a = h.put("grid a");
   const JsonValue ref_a = *a.find("ref");
   h.apply(one(set(oid(1), "grid", ref_a)));
-  const JsonValue c1 = h.ok("doc.checkpoint", obj({{"label", JsonValue("four props")},
-                                                   {"attribution", who("ann", "director")}}));
+  const JsonValue c1 =
+      h.ok("doc.checkpoint",
+           obj({{"label", JsonValue("four props")}, {"attribution", who("ann", "director")}}));
   const std::string id1(c1.find("id")->as_string());
   CHECK(id1.size() == 40);
   // A label is a client's text: one line, bounded, refused rather than altered (b68 review B9).
@@ -390,15 +391,17 @@ TEST_CASE("checkpoints: taken, rolled back across a tiled layer, undone, and ref
   h.apply(one(create_prop(oid(9), 1, 1)), who("director"), "extra");
   const u32 journal_before = h.document().journal().size();
 
-  const JsonValue dry = h.ok("doc.rollback_to", obj({{"checkpoint", JsonValue(id1.substr(0, 8))},
-                                                     {"dry_run", JsonValue(true)}}));
+  const JsonValue dry =
+      h.ok("doc.rollback_to",
+           obj({{"checkpoint", JsonValue(id1.substr(0, 8))}, {"dry_run", JsonValue(true)}}));
   CHECK(*dry.find("committed") == JsonValue(false));
   CHECK(h.document().journal().size() == journal_before);
   CHECK(h.files_of("layers/world") != world_then);
 
   const u64 changed_at = h.document().revision();
-  const JsonValue rolled = h.ok("doc.rollback_to", obj({{"checkpoint", JsonValue(id1)},
-                                                        {"attribution", who("ann", "director")}}));
+  const JsonValue rolled =
+      h.ok("doc.rollback_to",
+           obj({{"checkpoint", JsonValue(id1)}, {"attribution", who("ann", "director")}}));
   CHECK(*rolled.find("committed") == JsonValue(true));
   CHECK(rolled.find("patches")->as_uint() == 2);  // world restored, extra emptied
   CHECK(h.document().journal().size() == journal_before + 2);
@@ -475,19 +478,21 @@ TEST_CASE("checkpoints: roles, leases and proposals") {
   JsonValue e;
   // QA may read the list, and may neither checkpoint nor roll back.
   CHECK(h.ok("doc.checkpoints", JsonValue::object()).find("available") != nullptr);
-  CHECK(h.fails("doc.checkpoint", obj({{"attribution", who("q", "qa")}}), &e) == codes::k_forbidden);
-  CHECK(h.fails("doc.rollback_to",
-                obj({{"checkpoint", JsonValue(id)}, {"attribution", who("q", "qa")}}), &e) ==
+  CHECK(h.fails("doc.checkpoint", obj({{"attribution", who("q", "qa")}}), &e) ==
         codes::k_forbidden);
+  CHECK(h.fails("doc.rollback_to",
+                obj({{"checkpoint", JsonValue(id)}, {"attribution", who("q", "qa")}}),
+                &e) == codes::k_forbidden);
   // A role whose work needs review writes only its own proposals: a rollback is refused whole.
   CHECK(h.fails("doc.rollback_to",
-                obj({{"checkpoint", JsonValue(id)}, {"attribution", who("w", "writer")}}), &e) ==
-        codes::k_forbidden);
+                obj({{"checkpoint", JsonValue(id)}, {"attribution", who("w", "writer")}}),
+                &e) == codes::k_forbidden);
 
   // Another actor's live lease on a tile the rollback would change: 1009, and nothing changed.
-  h.ok("lease.require", obj({{"required", JsonValue(true)}, {"attribution", who("dee", "director")}}));
-  JsonValue range = obj({{"x0", JsonValue(0)}, {"y0", JsonValue(0)}, {"x1", JsonValue(0)},
-                         {"y1", JsonValue(0)}});
+  h.ok("lease.require",
+       obj({{"required", JsonValue(true)}, {"attribution", who("dee", "director")}}));
+  JsonValue range =
+      obj({{"x0", JsonValue(0)}, {"y0", JsonValue(0)}, {"x1", JsonValue(0)}, {"y1", JsonValue(0)}});
   JsonValue ranges = JsonValue::array();
   ranges.push_back(range);
   h.ok("lease.acquire", obj({{"layer", JsonValue("world")},
@@ -496,18 +501,20 @@ TEST_CASE("checkpoints: roles, leases and proposals") {
                              {"attribution", who("mo", "mapper")}}));
   const u32 journal = h.document().journal().size();
   CHECK(h.fails("doc.rollback_to",
-                obj({{"checkpoint", JsonValue(id)}, {"attribution", who("dee", "director")}}), &e) ==
-        codes::k_lease_conflict);
+                obj({{"checkpoint", JsonValue(id)}, {"attribution", who("dee", "director")}}),
+                &e) == codes::k_lease_conflict);
   CHECK(h.document().journal().size() == journal);
-  h.ok("lease.require", obj({{"required", JsonValue(false)}, {"attribution", who("dee", "director")}}));
+  h.ok("lease.require",
+       obj({{"required", JsonValue(false)}, {"attribution", who("dee", "director")}}));
 
   // An open proposal is its owner's work in progress: a rollback leaves it as it is.
   h.ok("doc.propose_layer", obj({{"name", JsonValue("p.w")},
                                  {"target", JsonValue("world")},
                                  {"attribution", who("w", "writer")}}));
   h.apply(one(set(oid(3), "color", JsonValue(9))), who("w", "writer"), "p.w");
-  const JsonValue rolled = h.ok("doc.rollback_to", obj({{"checkpoint", JsonValue(id)},
-                                                        {"attribution", who("dee", "director")}}));
+  const JsonValue rolled =
+      h.ok("doc.rollback_to",
+           obj({{"checkpoint", JsonValue(id)}, {"attribution", who("dee", "director")}}));
   bool kept = false;
   for (const JsonValue& l : rolled.find("layers")->as_array())
     if (l.find("layer")->as_string() == "p.w") kept = l.find("action")->as_string() == "kept";
@@ -533,16 +540,15 @@ TEST_CASE("checkpoints: a rollback refused at its second layer lands whole or sa
   h.apply(one(set(oid(1), "color", JsonValue(5))));
   h.ok("doc.add_layer", obj({{"name", JsonValue("extra")}}));
   h.apply(one(create_prop(oid(9), 1, 1)), who("director"), "extra");
-  h.ok("doc.set_partition", obj({{"layer", JsonValue("world")},
-                                 {"partition", obj({{"tile_size", JsonValue(20.0)}})}}));
+  h.ok("doc.set_partition",
+       obj({{"layer", JsonValue("world")}, {"partition", obj({{"tile_size", JsonValue(20.0)}})}}));
   const auto world_before = h.files_of("layers/world");
   const u32 journal_before = h.document().journal().size();
 
   // Refused at the second layer (extra), with world's patch and form already changed: taken back.
   h.s().fail_rollback_for_test(1, false);
   JsonValue e;
-  CHECK(h.fails("doc.rollback_to", obj({{"checkpoint", JsonValue(id1)}}), &e) ==
-        codes::k_io_error);
+  CHECK(h.fails("doc.rollback_to", obj({{"checkpoint", JsonValue(id1)}}), &e) == codes::k_io_error);
   CHECK(at_message(e).find("nothing of the rollback stands") != std::string::npos);
   CHECK(h.document().property(oid(1), "color") != nullptr);
   CHECK(h.document().exists(oid(9)));
@@ -551,8 +557,7 @@ TEST_CASE("checkpoints: a rollback refused at its second layer lands whole or sa
 
   // The same, and the taking back refused too: the error names what stands.
   h.s().fail_rollback_for_test(1, true);
-  CHECK(h.fails("doc.rollback_to", obj({{"checkpoint", JsonValue(id1)}}), &e) ==
-        codes::k_io_error);
+  CHECK(h.fails("doc.rollback_to", obj({{"checkpoint", JsonValue(id1)}}), &e) == codes::k_io_error);
   CHECK(at_message(e).find("doc.undo with 1 steps") != std::string::npos);
   const JsonValue* stands = e.find("data");
   REQUIRE(stands != nullptr);
@@ -564,7 +569,7 @@ TEST_CASE("checkpoints: a rollback refused at its second layer lands whole or sa
   CHECK(world.find("patch_index")->as_uint() == journal_before);  // the redo tail was dropped
   CHECK(*world.find("repartitioned") == JsonValue(true));
   CHECK(h.document().property(oid(1), "color") == nullptr);  // world's patch stands
-  CHECK(h.document().exists(oid(9)));                         // extra's never landed
+  CHECK(h.document().exists(oid(9)));                        // extra's never landed
   h.ok("doc.undo", obj({{"steps", *stands->find("patches")}}));
   CHECK(h.document().property(oid(1), "color") != nullptr);
 
@@ -616,7 +621,9 @@ TEST_CASE("checkpoints: seeded edits, undos, checkpoints and rollbacks restore w
     if (op < 45) {
       JsonValue c;
       switch (rng() % 4) {
-        case 0: c = create_prop(target, static_cast<f64>(rng() % 60), static_cast<f64>(rng() % 60)); break;
+        case 0:
+          c = create_prop(target, static_cast<f64>(rng() % 60), static_cast<f64>(rng() % 60));
+          break;
         case 1: c = set(target, "position", position(rng() % 80, rng() % 80)); break;
         case 2: c = set(target, "color", JsonValue(static_cast<u32>(rng() % 9))); break;
         default: c = del(target); break;
@@ -629,7 +636,8 @@ TEST_CASE("checkpoints: seeded edits, undos, checkpoints and rollbacks restore w
     } else if (op < 68) {
       h.ok("doc.redo", obj({{"steps", JsonValue(1)}}));
     } else if (op < 82) {
-      const JsonValue c = h.ok("doc.checkpoint", obj({{"label", JsonValue("s" + std::to_string(step))}}));
+      const JsonValue c =
+          h.ok("doc.checkpoint", obj({{"label", JsonValue("s" + std::to_string(step))}}));
       taken.push_back(Taken{std::string(c.find("id")->as_string()), snapshot()});
     } else if (!taken.empty()) {
       const Taken& t = taken[rng() % taken.size()];

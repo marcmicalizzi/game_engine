@@ -78,8 +78,9 @@ struct Mcp {
   bool ok = false;
 
   explicit Mcp(const std::string& workspace, std::vector<std::string> extra = {}) {
-    std::vector<std::string> args = {bridge_exe(), "--host",  host_exe(), "--workspace",
-                                     workspace,    "--actor", "mcp-test"};
+    std::vector<std::string> args = {bridge_exe(), "--root",   test::scratch_root_spec(),
+                                     "--host",     host_exe(), "--workspace",
+                                     workspace,    "--actor",  "mcp-test"};
     for (std::string& e : extra)
       args.push_back(std::move(e));
     std::vector<std::string_view> argv(args.begin(), args.end());

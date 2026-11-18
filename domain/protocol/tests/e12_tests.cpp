@@ -29,6 +29,8 @@
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
 #include <foundation/bench/machine_state.h>
+#include <foundation/io/roots.h>
+#include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
@@ -161,6 +163,9 @@ struct Agent {
 class Simulation {
  public:
   Simulation(const Config& config, const std::string& dir) : config_(config), dir_(dir) {
+    // The world's directory's parent is the host's one writable root (paths.h).
+    (void)roots_.add("tests", std::string(io::parent_path(dir_)), true);
+    dispatcher_.context().roots = &roots_;
     add_builtin_methods(dispatcher_);
   }
 
@@ -664,6 +669,7 @@ class Simulation {
   Config config_;
   std::string dir_;
   io::Vfs vfs_;
+  io::Roots roots_;
   SessionManager sessions_{vfs_};
   Dispatcher dispatcher_{Context{&sessions_, nullptr, nullptr, nullptr, nullptr}};
   std::string session_;

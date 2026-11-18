@@ -26,6 +26,9 @@
 namespace engine::log {
 class RingSink;
 }
+namespace engine::io {
+class Roots;
+}
 
 namespace engine::protocol {
 
@@ -95,6 +98,10 @@ struct Context {
   // connection said it is (`client.hello`) fills the blank attribution of its calls before the
   // host's identity does (policy.h, `resolve_caller`), and the dispatcher's role gate reads it too.
   Clients* clients = nullptr;
+  // The host's file roots (paths.h, foundation/io/roots.h; protocol.md, "The host's file roots"):
+  // every path a client names is admitted against them. Null admits nothing, so a context made
+  // without roots fails closed.
+  io::Roots* roots = nullptr;
 };
 
 using Handler = bool (*)(Context& ctx, const JsonValue& params, JsonValue& result, RpcError& error);

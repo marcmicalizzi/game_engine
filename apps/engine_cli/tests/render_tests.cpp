@@ -56,9 +56,10 @@ struct Host {
   bool ok = false;
 
   Host() {
-    const std::string_view argv[2] = {host_exe(), "--stdio"};
+    const std::string roots = test::scratch_root_spec();
+    const std::string_view argv[4] = {host_exe(), "--stdio", "--root", roots};
     std::string error;
-    if (!process.spawn(std::span<const std::string_view>(argv, 2), &error)) {
+    if (!process.spawn(std::span<const std::string_view>(argv, 4), &error)) {
       FAIL("cannot spawn engine-host: " << error);
       return;
     }
@@ -785,6 +786,9 @@ TEST_CASE("render: compare through engine-cli, on a machine with or without a GP
   argv.push_back(cli_exe());
   argv.push_back("--host");
   argv.push_back(host_exe());
+  static const std::string roots = test::scratch_root_spec();
+  argv.push_back("--root");
+  argv.push_back(roots);
   argv.push_back("render.compare");
   argv.push_back(R"({"a":"no-such-file.png","b":"no-such-file.png"})");
   platform::Process p;
@@ -795,10 +799,12 @@ TEST_CASE("render: compare through engine-cli, on a machine with or without a GP
   p.close_stdin();
   std::string output;
   p.read_all(output);
-  // The method was reached and refused the files it could not read: IoError (1005), which is
-  // neither "no such method" nor RenderUnavailable, so a script can tell them apart.
+  // The method was reached and refused the files it could not read: NotFound (1003), the one answer
+  // a missing file and a path outside the host's roots both get (protocol.md, "The host's file
+  // roots"), which is neither "no such method" nor RenderUnavailable, so a script can tell them
+  // apart.
   CHECK(p.wait() == 1);
-  CHECK_MESSAGE(output.find("error 1005") != std::string::npos, output);
+  CHECK_MESSAGE(output.find("error 1003") != std::string::npos, output);
   CHECK_MESSAGE(output.find("no-such-file.png") != std::string::npos, output);
 }
 

@@ -2,7 +2,7 @@
 # reads on the job system's Efficiency pool.
 engine_module(NAME io LAYER foundation
   DEPS base containers jobs time
-  SOURCES src/vfs.cpp)
+  SOURCES src/vfs.cpp src/roots.cpp)
 
 engine_module_tests(NAME io
-  SOURCES tests/vfs_tests.cpp)
+  SOURCES tests/vfs_tests.cpp tests/roots_tests.cpp)

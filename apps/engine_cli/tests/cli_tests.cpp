@@ -39,6 +39,9 @@ Run cli(std::vector<std::string> args) {
   argv.push_back(cli_exe());
   argv.push_back("--host");
   argv.push_back(host_exe());
+  static const std::string roots = test::scratch_root_spec();
+  argv.push_back("--root");
+  argv.push_back(roots);
   for (const std::string& a : args)
     argv.push_back(a);
   platform::Process p;

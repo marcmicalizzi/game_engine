@@ -23,9 +23,11 @@
 #include <domain/geometry/cluster_pages.h>
 #include <domain/gfx/adapter.h>
 #include <domain/gfx/device.h>
+#include <domain/protocol/paths.h>
 #include <domain/protocol/session.h>
 #include <domain/sim/materialize.h>
 #include <domain/sim/scheduler.h>
+#include <foundation/io/roots.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/rt_capacity.h>
@@ -1123,7 +1125,7 @@ void fill_output(const content_build::MeshTask& task, bool want_stats,
   }
 }
 
-bool content_build_method(protocol::Context&, const protocol::ContentBuildParams& params,
+bool content_build_method(protocol::Context& ctx, const protocol::ContentBuildParams& params,
                           protocol::ContentBuildResult& out, protocol::RpcError& error) {
   const i64 start_ns = time::monotonic_ns();
   if (params.source.empty() == params.manifest.empty()) {
@@ -1149,30 +1151,76 @@ bool content_build_method(protocol::Context&, const protocol::ContentBuildParams
   content_build::MeshOptions options;
   if (!read_mesh_options(params.options, options, error)) return false;
 
+  // Every path is a client's (protocol.md, "The host's file roots"): the source and the manifest
+  // read, the output written — never over an open document's own files or into the shell's
+  // directory (the survey's row 17) — and a manifest's entries the same, from its directory.
+  const std::string base = protocol::client_base(ctx, {});
   Vector<content_build::ManifestEntry> entries;
   if (!params.manifest.empty()) {
-    if (!io::exists(params.manifest)) {
-      error = io_error("no manifest at '" + params.manifest + "'");
+    io::Admitted manifest;
+    if (!protocol::admit_client_path(ctx, "manifest", params.manifest, base, io::Access::read,
+                                     manifest, error)) {
+      return false;
+    }
+    if (!io::exists(manifest.native)) {
+      error = protocol::path_not_found("manifest", params.manifest, io::Access::read);
       return false;
     }
     std::string message;
-    if (!content_build::read_manifest(params.manifest, options, entries, message)) {
+    if (!content_build::read_manifest(manifest.native, options, entries, message)) {
       error = invalid(std::move(message));
       return false;
     }
-    for (const content_build::ManifestEntry& entry : entries) {
+    const std::string manifest_dir(io::parent_path(manifest.native));
+    for (content_build::ManifestEntry& entry : entries) {
       if (entry.output.empty() && !params.cache) {
         error = invalid("manifest '" + params.manifest + "' entry '" + entry.source +
                         "' has no \"output\" and cache was not asked for");
         return false;
       }
+      io::Admitted source;
+      if (!protocol::admit_client_path(ctx, "manifest.source", entry.source, manifest_dir,
+                                       io::Access::read, source, error)) {
+        return false;
+      }
+      entry.source = source.native;
+      if (!entry.output.empty()) {
+        io::Admitted output;
+        if (!protocol::admit_client_path(ctx, "manifest.output", entry.output, manifest_dir,
+                                         io::Access::write, output, error)) {
+          return false;
+        }
+        entry.output = output.native;
+      }
     }
   } else {
     content_build::ManifestEntry entry;
-    entry.source = params.source;
-    entry.output = params.output;
+    io::Admitted source;
+    if (!protocol::admit_client_path(ctx, "source", params.source, base, io::Access::read, source,
+                                     error)) {
+      return false;
+    }
+    entry.source = source.native;
+    if (!params.output.empty()) {
+      io::Admitted output;
+      if (!protocol::admit_client_path(ctx, "output", params.output, base, io::Access::write,
+                                       output, error)) {
+        return false;
+      }
+      entry.output = output.native;
+    }
     entry.options = options;
     entries.push_back(std::move(entry));
+  }
+  // An admitted output's directory is made, as a capture's is: a document's `out/` exists only once
+  // something is written under it. The message names no host path.
+  for (const content_build::ManifestEntry& entry : entries) {
+    if (entry.output.empty()) continue;
+    const io::Status made = io::make_directories(io::parent_path(entry.output));
+    if (made != io::Status::Ok) {
+      error = io_error(std::string("cannot make an output's directory: ") + io::status_name(made));
+      return false;
+    }
   }
   // A generated mesh's parts fall back to the repository's material pack, as `engine-content build`
   // and `build-all` have them do and through the same function, so the two hosts build the same
@@ -1187,7 +1235,16 @@ bool content_build_method(protocol::Context&, const protocol::ContentBuildParams
   bool to_cache = false;
   for (const content_build::ManifestEntry& entry : entries)
     to_cache = to_cache || entry.output.empty();
-  std::string ddc = params.ddc;
+  std::string ddc;
+  if (!params.ddc.empty()) {
+    // A client-named cache is a place the host writes: under a writable root, as any output.
+    io::Admitted named;
+    if (!protocol::admit_client_path(ctx, "ddc", params.ddc, base, io::Access::make_directory,
+                                     named, error)) {
+      return false;
+    }
+    ddc = named.native;
+  }
   if (to_cache && ddc.empty()) {
     ddc = geometry::find_ddc_root(platform::executable_directory());
     if (ddc.empty()) {
@@ -2293,12 +2350,16 @@ bool session_save_game(protocol::Context& ctx, const protocol::SaveGameParams& p
     return false;
   }
   io::Vfs& vfs = ctx.sessions->vfs();
-  std::string path;
   std::string document_dir;
-  if (vfs.resolve(params.path, path, true) != io::Status::Ok) {
-    error = invalid("path '" + params.path + "' is not a place a save can be written");
+  // A save is a directory the host makes and fills: admitted under a writable root, outside every
+  // open document but its out/ (protocol.md, "The host's file roots"; the survey's rows 21-23).
+  io::Admitted admitted;
+  if (!protocol::admit_client_path(ctx, "path", params.path,
+                                   protocol::client_base(ctx, params.session),
+                                   io::Access::make_directory, admitted, error)) {
     return false;
   }
+  const std::string path = admitted.native;
   if (vfs.resolve(session->dir(), document_dir) != io::Status::Ok) {
     error = io_error("the session's document directory '" + session->dir() + "' does not resolve");
     return false;
@@ -2338,7 +2399,7 @@ bool session_save_game(protocol::Context& ctx, const protocol::SaveGameParams& p
     error = invalid(std::move(why));
     return false;
   }
-  out.path = path;
+  out.path = admitted.portable();
   out.tick = manifest.tick;
   out.game_time_us = manifest.game_time_us;
   out.state_hash = manifest.state_hash;
@@ -2385,16 +2446,19 @@ bool session_load_game(protocol::Context& ctx, const protocol::LoadGameParams& p
     return false;
   }
   io::Vfs& vfs = ctx.sessions->vfs();
-  std::string save_dir;
-  std::string target;
-  if (vfs.resolve(params.path, save_dir) != io::Status::Ok) {
-    error = invalid("path '" + params.path + "' does not resolve");
+  // The save is read under any root; the directory it is loaded into is made under a writable one,
+  // and becomes an open, protected document.
+  io::Admitted save_at;
+  io::Admitted target_at;
+  const std::string base = protocol::client_base(ctx, {});
+  if (!protocol::admit_client_path(ctx, "path", params.path, base, io::Access::read, save_at,
+                                   error) ||
+      !protocol::admit_client_path(ctx, "dir", params.dir, base, io::Access::make_directory,
+                                   target_at, error)) {
     return false;
   }
-  if (vfs.resolve(params.dir, target, true) != io::Status::Ok) {
-    error = invalid("dir '" + params.dir + "' is not a place a document can be written");
-    return false;
-  }
+  const std::string save_dir = save_at.native;
+  const std::string target = target_at.native;
   // Everything a load must know before it touches anything: the save is one, of versions this
   // build reads, with every file as its manifest says.
   world::SaveManifest manifest;
@@ -2412,12 +2476,12 @@ bool session_load_game(protocol::Context& ctx, const protocol::LoadGameParams& p
   if (io::exists(target)) {
     Vector<io::DirEntry> entries;
     if (io::list_directory(target, entries) != io::Status::Ok || !entries.empty()) {
-      error = invalid("dir '" + target +
+      error = invalid("dir '" + params.dir +
                       "' is not empty: a save is loaded into a new directory, never over one");
       return false;
     }
   } else if (io::make_directories(target) != io::Status::Ok) {
-    error = io_error("cannot create '" + target + "'");
+    error = io_error("cannot create '" + params.dir + "'");
     return false;
   }
   if (!world::restore_save_files(save_dir, manifest, target, why)) {
@@ -2440,9 +2504,10 @@ bool session_load_game(protocol::Context& ctx, const protocol::LoadGameParams& p
     }
   }
   protocol::SessionOpenParams open;
-  open.path = params.dir;
+  open.path = target;
   protocol::Session* session = ctx.sessions->open(open, ctx.connection, error);
   if (session == nullptr) return false;
+  (void)ctx.roots->protect(session->dir());
   const std::string session_id = session->id();
   auto refuse = [&](protocol::RpcError e) {
     ctx.sessions->close(session_id);
@@ -2470,7 +2535,7 @@ bool session_load_game(protocol::Context& ctx, const protocol::LoadGameParams& p
   protocol::RpcError hash_error;
   if (!hash_session(world, *session, vfs, h, has_store, hash_error)) return refuse(hash_error);
   out.session = session_id;
-  out.dir = target;
+  out.dir = target_at.portable();
   out.tick = world->tick();
   out.game_time_us = world->game_time_us();
   out.saved_state_hash = manifest.state_hash;

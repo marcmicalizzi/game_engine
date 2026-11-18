@@ -10,6 +10,8 @@
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
 #include <domain/protocol/side_file.h>
+#include <foundation/io/roots.h>
+#include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
@@ -141,10 +143,18 @@ struct Host {
   io::Vfs vfs;
   SessionManager sessions{vfs};
   Policy policy;
+  // Every path a case names is under a TempDir, and every TempDir under one parent: that parent is
+  // the host's one writable root, as an operator's --root would be (paths.h).
+  test::TempDir roots_anchor{"roots"};
+  io::Roots roots;
   Dispatcher dispatcher{Context{&sessions, nullptr, nullptr, nullptr, &policy}};
   std::string session;
 
-  Host() { add_builtin_methods(dispatcher); }
+  Host() {
+    (void)roots.add("tests", std::string(io::parent_path(roots_anchor.path())), true);
+    dispatcher.context().roots = &roots;
+    add_builtin_methods(dispatcher);
+  }
 
   JsonValue call(std::string_view method, JsonValue params) {
     JsonValue req = obj({{"jsonrpc", JsonValue("2.0")}, {"id", JsonValue(1)}});
@@ -1444,9 +1454,9 @@ TEST_CASE("place_asset: reads only under the document's directory, and says noth
   REQUIRE(host.fails("doc.place_asset", params("props/missing.glb"), &missing) ==
           codes::k_not_found);
   const std::string climbing[] = {
-      tmp.file("outside.glb"), "../outside.glb",        "props/../../outside.glb",
-      "..\\outside.glb",       "/outside.glb",          "\\\\host\\share\\outside.glb",
-      "C:outside.glb",         "props/crate.glb:x.glb", "props//crate.glb",
+      tmp.file("outside.glb"), "../outside.glb", "props/../../outside.glb", "..\\outside.glb",
+      "/outside.glb", "\\\\host\\share\\outside.glb", "C:outside.glb", "props/crate.glb:x.glb",
+      "props//crate.glb",
       // Either separator on every platform: the mixed forms are refused on Linux as on Windows,
       // never read as one file name holding a backslash (protocol.md, "Blobs and checkpoints"). A
       // name that is only a backslash is an empty component between two separators. (A whole asset

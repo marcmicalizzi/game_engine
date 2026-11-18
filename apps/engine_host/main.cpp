@@ -22,8 +22,10 @@
 #include <core/schema/json_reflect.h>
 #include <core/time/time.h>
 #include <domain/protocol/clients.h>
+#include <domain/protocol/paths.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
+#include <foundation/io/roots.h>
 #include <foundation/io/vfs.h>
 #include <foundation/net/socket.h>
 #include <foundation/tunables/tunables.h>
@@ -61,6 +63,7 @@ const char* k_usage =
     "                   [--log <spec>] [--log-json <path>] [--tunables <file>]\n"
     "                   [--roles <file.json>] [--actor <name>] [--role <name>] [--task <id>]\n"
     "                   [--doc <dir> [--create]] [--listen 127.0.0.1:<port>] [--shell <dir>]\n"
+    "                   [--root <name>=<dir>[:rw]]...\n"
     "\n"
     "  --stdio          serve JSON-RPC 2.0: one request per line on stdin, one response per\n"
     "                   line on stdout (default)\n"
@@ -75,7 +78,8 @@ const char* k_usage =
     "                   who a call that names no actor, role or task is: its attribution, and\n"
     "                   with --roles the role it is checked as (--role must be in the file)\n"
     "  --doc <dir>      open a session on this document at start, as session.open would; with\n"
-    "                   --create, create it when the directory holds none\n"
+    "                   --create, create it when the directory holds none (named --name, else\n"
+    "                   after its directory)\n"
     "  --listen <addr>  also serve the protocol over a WebSocket on 127.0.0.1:<port> (or\n"
     "                   localhost:<port>; port 0 picks a free one). Loopback only: any other\n"
     "                   address is refused. Prints one line first, {\"listen\":\"ws://...\",\n"
@@ -89,6 +93,12 @@ const char* k_usage =
     "                   each binds a connection to its actor, role and task (ADR-0069)\n"
     "  --issue-credential <file.json> --name <n> --actor <a> [--role <r>] [--task <t>]\n"
     "                   append a credential to the file, print its token once, and exit\n"
+    "  --root <name>=<dir>[:rw]\n"
+    "                   a directory a client may name paths under, as <name>://<path>; ':rw'\n"
+    "                   lets a client make the host write there. Repeatable. Without any, a\n"
+    "                   client reaches --doc (doc://, read) and its out/ (out://, read and\n"
+    "                   write) and nothing else; every --mount is a root too\n"
+    "                   (docs/subsystems/protocol.md, \"The host's file roots\")\n"
     "\n"
     "       engine-host --console [--script <file.luau>] [--step-budget <n>] [--memory-mb <n>]\n"
     "                   [the options above] [-- <script args>...]\n"
@@ -201,10 +211,12 @@ int main(int argc, char** argv) {
   std::string issue_name;
   std::string listen_address;
   std::string doc_dir;
+  std::string doc_name;
   std::string shell_dir;
   bool create_doc = false;
   protocol::Policy policy;
   Vector<std::string> mounts;
+  Vector<std::string> root_specs;
   bool console = false;
   bool console_only_flag = false;  // a flag that means something only with --console
   host::ConsoleOptions console_options;
@@ -262,14 +274,21 @@ int main(int argc, char** argv) {
       if (!next_value(argc, argv, i, a, doc_dir)) return 2;
     } else if (a == "--create") {
       create_doc = true;
+    } else if (a == "--name") {
+      // One flag, two readers: the credential's name under --issue-credential (ADR-0069), which
+      // serves nothing, and otherwise the name --create gives the document.
+      if (!next_value(argc, argv, i, a, doc_name)) return 2;
+      issue_name = doc_name;
     } else if (a == "--shell") {
       if (!next_value(argc, argv, i, a, shell_dir)) return 2;
     } else if (a == "--credentials") {
       if (!next_value(argc, argv, i, a, credentials_file)) return 2;
     } else if (a == "--issue-credential") {
       if (!next_value(argc, argv, i, a, issue_file)) return 2;
-    } else if (a == "--name") {
-      if (!next_value(argc, argv, i, a, issue_name)) return 2;
+    } else if (a == "--root") {
+      // The host's file roots (T174; host_roots.h): one flag, one block.
+      if (!next_value(argc, argv, i, a, value)) return 2;
+      root_specs.push_back(value);
     } else {
       std::fprintf(stderr, "engine-host: unknown option '%s'\n%s", argv[i], k_usage);
       return 2;
@@ -479,6 +498,31 @@ int main(int argc, char** argv) {
                    policy.roles_loaded() ? "" : ", or this host has no --roles to enforce theirs");
     }
   }
+  // The host's file roots (domain/protocol/paths.h, ADR-0071): where a client's paths may reach.
+  // The operator's --doc and its out/, every --mount and every --root; the shell's directory is
+  // served and never written. A document --create makes is made here, by the operator's flag,
+  // before the roots are read.
+  if (!listen_address.empty() && shell_dir.empty())
+    shell_dir = platform::executable_directory() + "/../shell";
+  if (create_doc) {
+    if (const io::Status s = io::make_directories(doc_dir); s != io::Status::Ok) {
+      std::fprintf(stderr, "engine-host: --doc %s: %s\n", doc_dir.c_str(), io::status_name(s));
+      return 2;
+    }
+  }
+  io::Roots roots;
+  {
+    protocol::HostRootsConfig config;
+    config.doc_dir = doc_dir;
+    config.root_specs = root_specs;
+    config.mounts = &vfs;
+    config.shell_dir = shell_dir;
+    std::string error;
+    if (!protocol::configure_host_roots(roots, config, error)) {
+      std::fprintf(stderr, "engine-host: %s\n", error.c_str());
+      return 2;
+    }
+  }
 
   protocol::SessionManager sessions(vfs);
   // The host's own methods' state reaches their handlers through Context::app (host_state.h): the
@@ -488,6 +532,7 @@ int main(int argc, char** argv) {
   host::HostState state;
   state.started_ns = started_ns;
   protocol::Dispatcher dispatcher(protocol::Context{&sessions, &ring, nullptr, &state, &policy});
+  dispatcher.context().roots = &roots;
   protocol::add_builtin_methods(dispatcher);
   dispatcher.add(protocol::read_only(protocol::method_no_params<protocol::PingResult, &engine_ping>(
       "engine.ping",
@@ -510,29 +555,25 @@ int main(int argc, char** argv) {
                     log::field("method", hang_method));
   }
 
-  // --doc: a session opened at start exactly as a client's `session.open` would open it (through
-  // the dispatcher, so nothing about it is special), and named in --listen's announcement so the
-  // shell can be pointed at it.
+  // --doc: a session opened at start on the operator's own document, held by stdio (0) as a
+  // client's `session.open` would be, protected as every open document is, and named in --listen's
+  // announcement so the shell can be pointed at it. It is opened directly rather than through
+  // `session.open`: the operator named it, and `--create` makes a document where no client may.
   std::string doc_session;
   if (!doc_dir.empty()) {
-    JsonValue open = JsonValue::object();
-    open.set("jsonrpc", "2.0");
-    open.set("id", 0);
-    open.set("method", "session.open");
-    JsonValue open_params = JsonValue::object();
-    open_params.set("path", doc_dir);
-    open_params.set("create", create_doc);
-    open.set("params", std::move(open_params));
-    const JsonValue response = dispatcher.dispatch(open);
-    const JsonValue* result = response.find("result");
-    const JsonValue* session = result != nullptr ? result->find("session") : nullptr;
-    std::string_view id;
-    if (session == nullptr || !session->get_string(id)) {
+    protocol::SessionOpenParams open;
+    open.path = roots.find("doc")->canonical;
+    open.create = create_doc;
+    open.name = doc_name;
+    protocol::RpcError open_error;
+    protocol::Session* opened = sessions.open(open, 0, open_error);
+    if (opened == nullptr) {
       std::fprintf(stderr, "engine-host: --doc %s: %s\n", doc_dir.c_str(),
-                   write_json(response).c_str());
+                   open_error.message.c_str());
       return 2;
     }
-    doc_session = std::string(id);
+    (void)roots.protect(opened->dir());
+    doc_session = opened->id();
   }
 
   // --listen (protocol::Listener; listen.h is the captures it serves; docs/subsystems/apps.md):
@@ -544,7 +585,6 @@ int main(int argc, char** argv) {
   protocol::Listener listen(dispatcher, dispatch_lock, &captures);
   if (credentials.loaded()) listen.set_credentials(&credentials);
   if (!listen_address.empty()) {
-    if (shell_dir.empty()) shell_dir = platform::executable_directory() + "/../shell";
     std::string error;
     if (!listen.start(listen_port, shell_dir, doc_session, error)) {
       std::fprintf(stderr, "engine-host: --listen %s: %s\n", listen_address.c_str(), error.c_str());

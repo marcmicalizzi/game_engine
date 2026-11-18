@@ -98,6 +98,19 @@ inline std::string temp_dir_label(std::string_view name) {
 
 }  // namespace detail
 
+// The one host root an end-to-end test gives every engine-host, engine-cli and engine-editor it
+// starts: `--root tests=<system temp>/engine-tests:rw`, the directory every TempDir lies under
+// (protocol.md, "The host's file roots"). A case that tests the roots themselves names its own
+// instead. Forward slashes, as a protocol path is.
+inline std::string scratch_root() {
+  const std::filesystem::path root = std::filesystem::temp_directory_path() / "engine-tests";
+  std::error_code ignored;
+  std::filesystem::create_directories(root, ignored);
+  const std::u8string s = root.generic_u8string();
+  return std::string(reinterpret_cast<const char*>(s.data()), s.size());
+}
+inline std::string scratch_root_spec() { return "tests=" + scratch_root() + ":rw"; }
+
 class TempDir {
  public:
   // `name` only has to be recognizable in a directory listing; uniqueness is the token's job.

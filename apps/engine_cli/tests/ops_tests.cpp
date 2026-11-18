@@ -56,6 +56,9 @@ Run cli(std::vector<std::string> args) {
   argv.push_back(cli_exe());
   argv.push_back("--host");
   argv.push_back(host_exe());
+  static const std::string roots = test::scratch_root_spec();
+  argv.push_back("--root");
+  argv.push_back(roots);
   for (const std::string& a : args)
     argv.push_back(a);
   platform::Process p;
@@ -78,10 +81,12 @@ struct Host {
   u32 next_id = 1;
   bool ok = false;
 
-  Host() {
-    const std::string_view argv[2] = {host_exe(), "--stdio"};
+  // `flags` after `--stdio`: the tests' scratch root unless a case names the host's roots itself.
+  explicit Host(std::vector<std::string> flags = {"--root", test::scratch_root_spec()}) {
+    flags.insert(flags.begin(), {host_exe(), "--stdio"});
+    std::vector<std::string_view> argv(flags.begin(), flags.end());
     std::string error;
-    if (!process.spawn(std::span<const std::string_view>(argv, 2), &error)) {
+    if (!process.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error)) {
       FAIL("cannot spawn engine-host: " << error);
       return;
     }
@@ -418,6 +423,55 @@ TEST_CASE(
                                                   ",\"output\":" + json_string(output) +
                                                   ",\"options\":{\"max_triangles\":2}}")) ==
         k_invalid_argument);
+}
+
+// content.build's output was written over any file the host could write, a document's own
+// layers/base.json among them, behind its journal, roles and leases (the survey's row 17). Now
+// every path is the host's roots': the document read, its out/ written, nothing else (here the
+// manifest stands for every file of the document, which none of the spellings below may reach). The
+// host is started on the document with no other root, as engine-cli starts one.
+TEST_CASE("ops: content.build writes only under a writable root, never over a document's files") {
+  const test::TempDir tmp("ops_content_roots");
+  REQUIRE(tmp.ok());
+  const std::string doc = tmp.file("world");
+  REQUIRE(std::filesystem::create_directories(doc));
+  REQUIRE(write_grid(doc, "grid", 16));
+  REQUIRE(write_grid(tmp.path(), "far", 16));
+  Host host({"--doc", doc, "--create"});
+  REQUIRE(host.ok);
+  // The host made the document at start; one answer says it has.
+  REQUIRE(error_code(host.call("session.list", "{}")) == 0);
+  const std::string base_before = [&] {
+    std::ifstream in(doc + "/manifest.json", std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  }();
+  REQUIRE_FALSE(base_before.empty());
+  auto build = [&](std::string_view source, std::string_view output) {
+    return host.call("content.build", "{\"source\":" + json_string(source) +
+                                          ",\"output\":" + json_string(output) + "}");
+  };
+  // Over the document's own files, by any spelling: refused as a missing place is.
+  for (const std::string& out : {std::string("manifest.json"), std::string("doc://manifest.json"),
+                                 std::string("layers/x.clusters"), doc + "/manifest.json",
+                                 std::string("out://../manifest.json")}) {
+    INFO(out);
+    const JsonValue r = build("grid.gltf", out);
+    CHECK(error_code(r) == 1003);
+  }
+  const std::string base_after = [&] {
+    std::ifstream in(doc + "/manifest.json", std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  }();
+  CHECK(base_after == base_before);
+  // Outside every root: refused, nothing written; a source outside is not read.
+  CHECK(error_code(build("grid.gltf", tmp.file("outside.clusters"))) == 1003);
+  CHECK_FALSE(std::filesystem::exists(tmp.file("outside.clusters")));
+  CHECK(error_code(build(tmp.file("far.gltf"), "out://far.clusters")) == 1003);
+  CHECK_FALSE(std::filesystem::exists(doc + "/out/far.clusters"));
+  // Under out/: built.
+  const JsonValue built = build("grid.gltf", "out://grid.clusters");
+  CHECK_MESSAGE(error_code(built) == 0, write_json(built));
+  CHECK(std::filesystem::exists(doc + "/out/grid.clusters"));
 }
 
 TEST_CASE("ops: session.events pages the journal's commits after two apply commands") {

@@ -37,10 +37,12 @@
 #include <domain/gfx/device.h>
 #include <domain/protocol/clients.h>
 #include <domain/protocol/listener.h>
+#include <domain/protocol/paths.h>
 #include <domain/protocol/rpc.h>
 #include <foundation/image/png.h>
 #include <foundation/input/input.h>
 #include <foundation/input/input_log.h>
+#include <foundation/io/roots.h>
 #include <foundation/io/vfs.h>
 #include <foundation/net/socket.h>
 #include <foundation/tunables/tunables.h>
@@ -105,6 +107,8 @@ constexpr const char* k_usage =
     "  --credentials <file.json>  the credentials the listener accepts beside its own token,\n"
     "               each binding a connection to its actor, role and task (engine-host\n"
     "               --issue-credential writes them; ADR-0069)\n"
+    "  --root <name>=<dir>[:rw]  a directory clients may name paths under, as engine-host's\n"
+    "               --root; the document (doc://) and its out/ (out://) always are\n"
     "  --offscreen  no window: draw --frames frames into the renderer's own target\n"
     "  --frames N   stop after N frames of the viewport (0: until the window closes); with the\n"
     "               shell, counted from when the page last placed the viewport\n"
@@ -159,7 +163,8 @@ struct Options {
   std::string listen;  // empty: the default for the mode
   u16 listen_port = 0;
   std::string shell_dir;
-  std::string credentials;  // --credentials (ADR-0069)
+  std::string credentials;         // --credentials (ADR-0069)
+  Vector<std::string> root_specs;  // --root <name>=<dir>[:rw], as engine-host's
   u32 frames = 0;
   bool pick = false;
   bool pick_center = false;
@@ -893,6 +898,22 @@ struct Host {
     if (state.document != nullptr) state.document->set_events(nullptr);
   }
   ENGINE_NON_COPYABLE(Host);
+
+  // The file roots every client path of the in-process listener is admitted against, as
+  // engine-host's (domain/protocol/paths.h, ADR-0071): the editor's document (read) and its out/
+  // (read and write), each --root, and the shell's directory served and never written.
+  io::Roots roots;
+  bool set_roots(const Vector<std::string>& specs, const std::string& shell_dir,
+                 std::string& error) {
+    protocol::HostRootsConfig config;
+    config.doc_dir = state.document->session().dir();
+    config.root_specs = specs;
+    config.shell_dir = shell_dir;
+    if (!protocol::configure_host_roots(roots, config, error)) return false;
+    (void)roots.protect(config.doc_dir);
+    dispatcher.context().roots = &roots;
+    return true;
+  }
 };
 
 int run_window(const Options& options, editor::EditorDocument& document) {
@@ -952,9 +973,14 @@ int run_window(const Options& options, editor::EditorDocument& document) {
   if (credentials.loaded()) host.listener.set_credentials(&credentials);
   if (options.test_page) editor::add_editor_test_methods(host.dispatcher);
   const bool listening = options.shell != Shell::None || !options.listen.empty();
+  std::string shell_dir = options.shell_dir;
+  if (listening && shell_dir.empty()) shell_dir = platform::executable_directory() + "/../shell";
+  if (!host.set_roots(options.root_specs, listening ? shell_dir : std::string(), error)) {
+    window::shutdown();
+    std::fprintf(stderr, "engine-editor: %s\n", error.c_str());
+    return 2;
+  }
   if (listening) {
-    std::string shell_dir = options.shell_dir;
-    if (shell_dir.empty()) shell_dir = platform::executable_directory() + "/../shell";
     if (!host.listener.start(options.listen_port, shell_dir, document.session().id(), error)) {
       window::shutdown();
       std::fprintf(stderr, "engine-editor: --listen: %s\n", error.c_str());
@@ -1724,6 +1750,10 @@ int main(int argc, char** argv) {
       if (!value(options.shell_dir)) return usage("--shell needs a directory");
     } else if (a == "--credentials") {
       if (!value(options.credentials)) return usage("--credentials needs a file");
+    } else if (a == "--root") {
+      // The host's file roots (T174): one flag, one block, engine-host's spelling.
+      if (!value(v)) return usage("--root needs <name>=<dir>[:rw]");
+      options.root_specs.push_back(v);
     } else if (a == "--frames") {
       if (!value(v) || !parse_u32(v, options.frames)) return usage("--frames needs a count");
     } else if (a == "--pick") {

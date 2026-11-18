@@ -76,7 +76,8 @@ struct ListeningHost {
   bool ok = false;
 
   explicit ListeningHost(std::vector<std::string> flags) {
-    std::vector<std::string> args = {host_exe(), "--listen", "127.0.0.1:0"};
+    std::vector<std::string> args = {host_exe(), "--listen", "127.0.0.1:0", "--root",
+                                     test::scratch_root_spec()};
     args.insert(args.end(), flags.begin(), flags.end());
     std::vector<std::string_view> argv(args.begin(), args.end());
     std::string error;

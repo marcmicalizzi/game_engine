@@ -211,6 +211,11 @@ bool Listener::start(u16 port, std::string shell_dir, std::string session, std::
   }
   token_ = base64_encode(std::span<const u8>(secret, sizeof(secret)), Base64Alphabet::Url, false);
   shell_dir_ = std::move(shell_dir);
+  shell_roots_ = io::Roots{};
+  // A shell directory that is not there serves nothing (every GET a 404 that says so), as before.
+  if (!shell_dir_.empty() && shell_roots_.add("shell", shell_dir_, false) != io::Status::Ok) {
+    shell_dir_.clear();
+  }
   session_ = std::move(session);
   events_.attach(this);
   if (server_.start(port, *this, error)) return true;
@@ -364,13 +369,20 @@ void Listener::serve_static(std::string_view relative, net::HttpResponse& respon
     response = net::http_error(404, "this host serves no shell (no shell directory)");
     return;
   }
-  if (!net::safe_relative_path(relative)) {
+  // The lexical check first (no leading '/', no '\', ':', '..'), then the roots' rules against the
+  // shell directory alone: a component ending in a dot or a space ("..%20" decodes to ".. "), a
+  // device name (`CON` would be opened as the console by this thread), a link that leads out.
+  // Every refusal is the same 404 as a file that is not there.
+  io::Admitted file;
+  io::Refusal why = io::Refusal::none;
+  if (!net::safe_relative_path(relative) ||
+      !shell_roots_.admit(relative, shell_roots_.roots()[0].canonical, io::Access::read, file,
+                          why)) {
     response = net::http_error(404);
     return;
   }
   std::string bytes;
-  const std::string file = shell_dir_ + "/" + std::string(relative);
-  if (io::read_file(file, bytes) != io::Status::Ok) {
+  if (io::read_file(file.native, bytes) != io::Status::Ok) {
     response = net::http_error(404);
     return;
   }

@@ -9,6 +9,7 @@
 #include <domain/gfx/display_probe.h>
 #include <domain/protocol/clients.h>
 #include <domain/protocol/events.h>
+#include <domain/protocol/paths.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
 #include <foundation/tunables/tunables.h>
@@ -64,13 +65,46 @@ bool engine_methods(Context& ctx, MethodsResult& out, RpcError&) {
 
 // ---- session.* -------------------------------------------------------------------------------
 
+// What a client is told of a session: its directory as `<root>://<relative>`, never the host's
+// absolute path (protocol.md, "The host's file roots").
+SessionInfo client_info(const Context& ctx, const Session& s) {
+  SessionInfo info = s.info();
+  info.path = portable_path(ctx, s.dir());
+  return info;
+}
+
 bool session_open(Context& ctx, const SessionOpenParams& params, SessionInfo& out,
                   RpcError& error) {
+  if (params.path.empty()) {
+    error = make_error(codes::k_invalid_argument, "path is required");
+    return false;
+  }
+  // The directory is a client's path (roots.h): read when a document is there, made and written
+  // when `create` makes one. A relative path starts at the host's own document.
+  io::Admitted dir;
+  if (!admit_client_path(ctx, "path", params.path, client_base(ctx, {}), io::Access::read, dir,
+                         error)) {
+    return false;
+  }
+  if (params.create && !doc::DocumentStore::exists(ctx.sessions->vfs(), dir.native) &&
+      !admit_client_path(ctx, "path", params.path, client_base(ctx, {}), io::Access::make_directory,
+                         dir, error)) {
+    return false;
+  }
+  SessionOpenParams opened = params;
+  opened.path = dir.native;
   // Held by the connection that asked (0: stdio and in-process callers), so a client that
   // vanishes lets go of what it opened and a close lets go of the caller's hold alone.
-  Session* s = ctx.sessions->open(params, ctx.connection, error);
-  if (s == nullptr) return false;
-  out = s->info();
+  Session* s = ctx.sessions->open(opened, ctx.connection, error);
+  if (s == nullptr) {
+    // "no document at <path>" named the host's path; say only what the client sent.
+    if (error.code == codes::k_not_found)
+      error = path_not_found("path", params.path, io::Access::read);
+    return false;
+  }
+  // An open document's own files are written through doc.* alone, never by a client's path.
+  (void)ctx.roots->protect(s->dir());
+  out = client_info(ctx, *s);
   return true;
 }
 
@@ -80,6 +114,7 @@ bool session_close(Context& ctx, const SessionRef& params, SessionCloseResult& o
                    RpcError& error) {
   Session* s = ctx.sessions->require(params.session, error);
   if (s == nullptr) return false;
+  const std::string dir = s->dir();  // `s` is gone once the last holder lets go
   bool closed = false;
   if (!ctx.sessions->release(params.session, ctx.connection, closed)) {
     std::string holders;
@@ -101,6 +136,7 @@ bool session_close(Context& ctx, const SessionRef& params, SessionCloseResult& o
   }
   out.session = params.session;
   out.closed = closed;
+  if (closed && ctx.roots != nullptr) ctx.roots->release(dir);
   if (!closed) {
     for (const u64 h : s->holders())
       out.holders.push_back(h);
@@ -110,14 +146,14 @@ bool session_close(Context& ctx, const SessionRef& params, SessionCloseResult& o
 
 bool session_list(Context& ctx, SessionsResult& out, RpcError&) {
   for (const auto& s : ctx.sessions->sessions())
-    out.sessions.push_back(s->info());
+    out.sessions.push_back(client_info(ctx, *s));
   return true;
 }
 
 bool session_info(Context& ctx, const SessionRef& params, SessionInfo& out, RpcError& error) {
   Session* s = ctx.sessions->require(params.session, error);
   if (s == nullptr) return false;
-  out = s->info();
+  out = client_info(ctx, *s);
   return true;
 }
 
@@ -466,7 +502,7 @@ bool doc_save(Context& ctx, const SessionRef& params, SessionInfo& out, RpcError
   Session* s = ctx.sessions->require(params.session, error);
   if (s == nullptr) return false;
   if (!s->save(error)) return false;
-  out = s->info();
+  out = client_info(ctx, *s);
   return true;
 }
 

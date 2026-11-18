@@ -50,10 +50,12 @@ struct Host {
   u32 next_id = 1;
   bool ok = false;
 
-  Host() {
-    const std::string_view argv[2] = {host_exe(), "--stdio"};
+  // `flags` after `--stdio`: the tests' scratch root unless a case names the host's roots itself.
+  explicit Host(std::vector<std::string> flags = {"--root", test::scratch_root_spec()}) {
+    flags.insert(flags.begin(), {host_exe(), "--stdio"});
+    std::vector<std::string_view> argv(flags.begin(), flags.end());
     std::string error;
-    if (!process.spawn(std::span<const std::string_view>(argv, 2), &error)) {
+    if (!process.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error)) {
       FAIL("cannot spawn engine-host: " << error);
       return;
     }
@@ -470,10 +472,13 @@ TEST_CASE("save: a save that is not what its manifest says is refused, naming wh
 
   // Refusals: a save inside the document; a directory that is not empty; a file changed since;
   // a load into a directory that is not empty; an unknown session.
+  // A save inside the open document is refused by the host's roots before the save looks: the
+  // document's own directory is never a client's to write but under its out/ (protocol.md, "The
+  // host's file roots"), and the answer is the one a missing place gets.
   const JsonValue inside =
       host.call("session.save_game", s + ",\"path\":" + json_string(doc + "/saves/one") + "}");
-  CHECK(error_code(inside) == k_invalid_argument);
-  CHECK(error_message(inside).find("inside the document") != std::string::npos);
+  CHECK(error_code(inside) == 1003);
+  CHECK(error_message(inside).find("no place this host may write") != std::string::npos);
   const JsonValue occupied =
       host.call("session.save_game", s + ",\"path\":" + json_string(save) + "}");
   CHECK(error_code(occupied) == k_invalid_argument);
@@ -767,6 +772,53 @@ TEST_CASE("document corpus: every save's document opens and saves to what this v
   if (saved.count("v4") != 0) CHECK(saved["v4"] == committed("v4"));
   if (saved.count("v5") != 0) CHECK(saved["v5"] == committed("v5"));
   if (saved.count("v4-residents") != 0) CHECK(saved["v4-residents"] == committed("v4-residents"));
+}
+
+// session.save_game and session.load_game are read-only, so every role reaches them: before the
+// roots a role that may write nothing made a directory anywhere and copied the document and its
+// store into it, or a save's into it and opened a session there (the survey's rows 21-23). Now
+// both write only under a writable root, never into an open document, and answer root and path.
+TEST_CASE("save: a save and a load write only under the host's writable roots") {
+  const test::TempDir tmp("cli_save_roots");
+  REQUIRE(tmp.ok());
+  const std::string work = tmp.file("work");
+  Host host({"--root", "work=" + work + ":rw"});
+  REQUIRE(host.ok);
+  const std::string doc = work + "/world";
+  make_world(host, doc);
+  const std::string session = open_session(host, doc, false);
+  const std::string s = "{\"session\":\"" + session + "\"";
+  // Outside every root, and into the open document's own files: one answer, nothing made.
+  const std::string outside = tmp.file("outside") + "/save";
+  const JsonValue far =
+      host.call("session.save_game", s + ",\"path\":" + json_string(outside) + "}");
+  CHECK(error_code(far) == 1003);
+  CHECK(error_message(far) == "path: no place this host may write at '" + outside + "'");
+  CHECK_FALSE(std::filesystem::exists(tmp.file("outside")));
+  CHECK(error_code(host.call("session.save_game", s + ",\"path\":\"layers/x\"}")) == 1003);
+  CHECK(error_code(host.call("session.save_game", s + ",\"path\":\"work://world/layers/x\"}")) ==
+        1003);
+  CHECK(error_code(host.call("session.save_game", s + ",\"path\":\"work://../outside/save\"}")) ==
+        1003);
+  CHECK_FALSE(std::filesystem::exists(doc + "/layers/x"));
+  // Under the root: written, and answered as the root and the path under it.
+  const JsonValue saved = host.call("session.save_game", s + ",\"path\":\"work://saves/one\"}");
+  CHECK(text(result_of(saved), "path") == "work://saves/one");
+  CHECK(std::filesystem::exists(work + "/saves/one/save.json"));
+  // A load reads under a root and makes its directory under a writable one.
+  const JsonValue away =
+      host.call("session.load_game",
+                "{\"path\":\"work://saves/one\",\"dir\":" + json_string(tmp.file("loaded")) + "}");
+  CHECK(error_code(away) == 1003);
+  CHECK_FALSE(std::filesystem::exists(tmp.file("loaded")));
+  const JsonValue loaded =
+      host.call("session.load_game", R"({"path":"work://saves/one","dir":"work://loaded"})");
+  CHECK(text(result_of(loaded), "dir") == "work://loaded");
+  // The loaded document is open, so its own files are protected as the first one's are.
+  const std::string other = text(result_of(loaded), "session");
+  CHECK(error_code(host.call("session.save_game", "{\"session\":\"" + other +
+                                                      "\",\"path\":\"work://loaded/layers/y\"}")) ==
+        1003);
 }
 
 #else

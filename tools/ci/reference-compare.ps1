@@ -74,10 +74,10 @@ class RpcHost {
   [System.Diagnostics.Process]$Process
   [int]$NextId = 1
 
-  RpcHost([string]$exe) {
+  RpcHost([string]$exe, [string]$arguments) {
     $info = [System.Diagnostics.ProcessStartInfo]::new()
     $info.FileName = $exe
-    $info.Arguments = '--stdio'
+    $info.Arguments = $arguments
     $info.RedirectStandardInput = $true
     $info.RedirectStandardOutput = $true
     $info.RedirectStandardError = $false
@@ -125,6 +125,7 @@ function ConvertTo-Hashtable {
 $hostExe = Resolve-Host $Root $Preset
 if ([string]::IsNullOrEmpty($OutDir)) { $OutDir = Join-Path $Root "build/$Preset/reference" }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+$OutDir = (Resolve-Path -LiteralPath $OutDir).Path   # a root and an out_dir name one place
 $reportPath = Join-Path $OutDir 'reference-compare.json'
 
 $sceneDir = Join-Path $Root 'content/test-scenes'
@@ -143,7 +144,9 @@ $results = @()
 $failures = @()
 $rpc = $null
 try {
-  $rpc = [RpcHost]::new($hostExe)
+  # The host reads the corpus under the repository and writes the evaluations under the output
+# directory, the two roots it is given (docs/subsystems/protocol.md, "The host's file roots").
+$rpc = [RpcHost]::new($hostExe, "--stdio --root `"repo=$Root`" --root `"out=$($OutDir):rw`"")
   foreach ($file in $files) {
     $definition = Get-Content -Raw -Path $file.FullName | ConvertFrom-Json
     $name = if ($definition.name) { $definition.name } else { $file.BaseName }
@@ -163,6 +166,11 @@ try {
     $loadParams = ConvertTo-Hashtable $definition.load
     if ($null -eq $loadParams) { $loadParams = @{} }
     $loadParams['settings'] = ConvertTo-Hashtable $definition.settings
+    # A corpus names its files from the repository's root: the host's root "repo".
+    foreach ($key in 'mesh', 'scene', 'overlay') {
+      $v = $loadParams[$key]
+      if ($v -and -not [System.IO.Path]::IsPathRooted($v) -and $v -notmatch '^[a-z0-9_]+://') { $loadParams[$key] = 'repo://' + ($v -replace '\\', '/') }
+    }
     $loaded = $rpc.Call('render.load', $loadParams)
     if ($loaded.error) {
       # 1007 is "this machine cannot render that", which is not a failed gate.

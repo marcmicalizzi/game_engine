@@ -7,6 +7,8 @@
 #include <domain/protocol/policy.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
+#include <foundation/io/roots.h>
+#include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
@@ -72,10 +74,18 @@ struct Host {
   io::Vfs vfs;
   SessionManager sessions{vfs};
   Policy policy;
+  // Every path a case names is under a TempDir, and every TempDir under one parent: that parent is
+  // the host's one writable root, as an operator's --root would be (paths.h).
+  test::TempDir roots_anchor{"roots"};
+  io::Roots roots;
   Dispatcher dispatcher{Context{&sessions, nullptr, nullptr, nullptr, &policy}};
   std::string session;
 
-  Host() { add_builtin_methods(dispatcher); }
+  Host() {
+    (void)roots.add("tests", std::string(io::parent_path(roots_anchor.path())), true);
+    dispatcher.context().roots = &roots;
+    add_builtin_methods(dispatcher);
+  }
 
   JsonValue call(std::string_view method, JsonValue params) {
     JsonValue req = obj({{"jsonrpc", JsonValue("2.0")}, {"id", JsonValue(1)}});

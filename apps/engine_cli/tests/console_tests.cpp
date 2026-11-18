@@ -45,6 +45,8 @@ struct Run {
 
 // Runs a process to its end with `input` on stdin, capturing stdout and stderr in one stream.
 Run run(std::vector<std::string> args, std::string_view input = {}) {
+  if (args.size() > 1 && args[1] != "--help")
+    args.insert(args.begin() + 1, {"--root", test::scratch_root_spec()});
   std::vector<std::string_view> argv(args.begin(), args.end());
   platform::Process p;
   std::string error;

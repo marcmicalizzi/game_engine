@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T174",
+  "reason": "T174: protocol.md's 'The host's file roots' gains what was built and what is left, the owner's decision and the root-name form; apps.md documents --root on engine-host, engine-cli, engine-mcp and engine-editor and engine-cli's --doc handed to the host",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 2363,
+    "page:docs/subsystems/protocol.md": 29921
+  }
+}

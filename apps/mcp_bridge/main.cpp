@@ -63,6 +63,9 @@ const char* k_usage =
     "  --host <path>        engine-host executable (default: beside engine-mcp)\n"
     "  --host-arg <arg>     appended to engine-host's command line; repeatable\n"
     "  --mount <spec>       forwarded to engine-host; repeatable\n"
+    "  --root <spec>        forwarded to engine-host (<name>=<dir>[:rw]): a directory an agent's\n"
+    "                       paths may name, as <name>://<path>; repeatable. The workspace is\n"
+    "                       always the root workspace://, read and write\n"
     "  --workspace <dir>    where captures, benchmark results and reports are written (default:\n"
     "                       ./mcp-workspace); tools return file:// URIs into it\n"
     "  --actor <name>       the attribution actor of a mutation that names none (default: mcp)\n"
@@ -188,6 +191,12 @@ int main(int argc, char** argv) {
       std::string m;
       if (!value(m)) return 2;
       options.mounts.push_back(m);
+    } else if (a == "--root") {
+      // The host's file roots (T174): one flag, engine-host's spelling, forwarded.
+      host_flag = "--root";
+      std::string r;
+      if (!value(r)) return 2;
+      options.roots.push_back(r);
     } else if (a == "--host-arg") {
       host_flag = "--host-arg";
       std::string h;

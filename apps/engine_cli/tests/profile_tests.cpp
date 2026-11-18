@@ -33,9 +33,10 @@ struct Host {
   bool ok = false;
 
   Host() {
-    const std::string_view argv[2] = {host_exe(), "--stdio"};
+    const std::string roots = test::scratch_root_spec();
+    const std::string_view argv[4] = {host_exe(), "--stdio", "--root", roots};
     std::string error;
-    if (!process.spawn(std::span<const std::string_view>(argv, 2), &error)) {
+    if (!process.spawn(std::span<const std::string_view>(argv, 4), &error)) {
       FAIL("cannot spawn engine-host: " << error);
       return;
     }

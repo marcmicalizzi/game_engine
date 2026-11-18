@@ -45,6 +45,7 @@
 #include <domain/protocol/clients.h>
 #include <domain/protocol/events.h>
 #include <domain/protocol/rpc.h>
+#include <foundation/io/roots.h>
 #include <foundation/net/server.h>
 
 #include <mutex>
@@ -143,6 +144,10 @@ class Listener final : public net::ServerHandler, public EventTransport {
   net::Server server_;
   std::string token_;
   std::string shell_dir_;
+  // The shell directory as the listener's one read root, apart from the methods' roots
+  // (protocol.md, "The host's file roots"): `GET /shell/<path>` is admitted against it and nothing
+  // else, so the shell serves no other file and gains the device-name, trailing-dot and link rules.
+  io::Roots shell_roots_;
   std::string session_;
   // Tickets not yet spent, and the cookies spent ones bought: both the operator's, both held only
   // here, and both read by the server's threads, so under their own lock.

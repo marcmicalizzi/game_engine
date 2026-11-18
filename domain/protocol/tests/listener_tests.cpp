@@ -12,6 +12,7 @@
 #include <domain/protocol/listener.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
+#include <foundation/io/roots.h>
 #include <foundation/io/vfs.h>
 #include <foundation/net/socket.h>
 #include <foundation/net/websocket.h>
@@ -19,6 +20,7 @@
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <string>
@@ -100,6 +102,10 @@ TEST_CASE("listener: the protocol over a loopback WebSocket, with the token, fro
   io::Vfs vfs;
   protocol::SessionManager sessions(vfs);
   protocol::Dispatcher dispatcher(protocol::Context{&sessions, nullptr, nullptr, nullptr, nullptr});
+  // The document the case opens is under the host's one writable root (paths.h).
+  io::Roots roots;
+  REQUIRE(roots.add("doc", tmp.file("doc"), true) == io::Status::Ok);
+  dispatcher.context().roots = &roots;
   protocol::add_builtin_methods(dispatcher);
   std::mutex lock;
   Captures captures;
@@ -253,6 +259,11 @@ TEST_CASE("listener: a credential binds who a connection is; the shell's ticket 
   io::Vfs vfs;
   protocol::SessionManager sessions(vfs);
   protocol::Dispatcher dispatcher(protocol::Context{&sessions, nullptr, nullptr, nullptr, &policy});
+  // The host's one writable root (protocol.md, "The host's file roots"): the case's documents are
+  // under its scratch directory.
+  io::Roots roots;
+  REQUIRE(roots.add("tests", tmp.path(), true) == io::Status::Ok);
+  dispatcher.context().roots = &roots;
   protocol::add_builtin_methods(dispatcher);
   std::mutex lock;
   Captures captures;
@@ -376,12 +387,18 @@ namespace {
 struct BoundHost {
   io::Vfs vfs;
   protocol::SessionManager sessions{vfs};
+  // Every document a case names is under a TempDir, and every TempDir under one parent: that
+  // parent is the host's one writable root, as an operator's --root would be (paths.h).
+  test::TempDir roots_anchor{"roots"};
+  io::Roots roots;
   protocol::Dispatcher dispatcher;
   std::mutex lock;
   protocol::Listener listener;
   BoundHost(const protocol::Policy& policy, const protocol::Credentials& credentials)
       : dispatcher(protocol::Context{&sessions, nullptr, nullptr, nullptr, &policy}),
         listener(dispatcher, lock) {
+    (void)roots.add("tests", std::string(io::parent_path(roots_anchor.path())), true);
+    dispatcher.context().roots = &roots;
     protocol::add_builtin_methods(dispatcher);
     listener.set_credentials(&credentials);
     std::string error;
@@ -534,4 +551,49 @@ TEST_CASE("listener: a credential's role binds with or without a roles file; no 
     CHECK(qa.refused == "method");  // the role binds, and does not list doc.apply
     CHECK(qa.read);
   }
+}
+
+// The shell's static files go through the roots' rules against the shell directory alone
+// (protocol.md, "The host's file roots"; the survey's row 27). Each request below was served, or
+// opened a device, before: `index.html.` and `index.html ` are index.html to Win32, `..%20`
+// decodes to a component net::safe_relative_path let through, `CON` is the console, and a link in
+// the shell directory led wherever it pointed.
+TEST_CASE("listener: the shell serves its own files and nothing a spelling or a link reaches") {
+  const test::TempDir tmp("protocol_listener_static");
+  const std::string shell = tmp.file("shell");
+  const std::string outside = tmp.file("outside");
+  REQUIRE(io::make_directories(shell + "/js") == io::Status::Ok);
+  REQUIRE(io::make_directories(outside) == io::Status::Ok);
+  REQUIRE(io::write_file(shell + "/index.html", "<!doctype html><title>shell</title>") ==
+          io::Status::Ok);
+  REQUIRE(io::write_file(shell + "/js/main.js", "main") == io::Status::Ok);
+  REQUIRE(io::write_file(outside + "/secret.txt", "secret") == io::Status::Ok);
+  std::error_code ec;
+  std::filesystem::create_directory_symlink(std::filesystem::path(outside),
+                                            std::filesystem::path(shell + "/out"), ec);
+  const bool linked = !ec;
+  io::Vfs vfs;
+  protocol::SessionManager sessions(vfs);
+  protocol::Dispatcher dispatcher(protocol::Context{&sessions, nullptr, nullptr, nullptr, nullptr});
+  std::mutex lock;
+  protocol::Listener listener(dispatcher, lock);
+  std::string error;
+  REQUIRE_MESSAGE(listener.start(0, shell, "", error), error);
+  const u16 port = listener.port();
+  CHECK(http_get(port, "/").status == 200);
+  CHECK(http_get(port, "/shell/js/main.js").status == 200);
+  CHECK(http_get(port, "/shell/index.html.").status == 404);
+  CHECK(http_get(port, "/shell/index.html%20").status == 404);
+  CHECK(http_get(port, "/shell/..%20/outside/secret.txt").status == 404);
+  CHECK(http_get(port, "/shell/js/..%20/..%20/outside/secret.txt").status == 404);
+  CHECK(http_get(port, "/shell/CON").status == 404);
+  CHECK(http_get(port, "/shell/nul.txt").status == 404);
+  CHECK(http_get(port, "/shell/js/COM1").status == 404);
+  CHECK(http_get(port, "/shell/index.html::$DATA").status == 404);
+  if (linked) {
+    CHECK(http_get(port, "/shell/out/secret.txt").status == 404);
+  } else {
+    MESSAGE("no directory link could be made here; the link case is skipped");
+  }
+  listener.stop();
 }

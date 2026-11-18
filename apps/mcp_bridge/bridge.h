@@ -52,6 +52,10 @@ struct BridgeOptions {
   // Appended to engine-host's command line as given (`--host-arg`, repeatable): `--log` or
   // `--tunables` for the host, or the test hook `--debug-hang`.
   Vector<std::string> host_args;
+  // Forwarded to the host it starts as `--root <name>=<dir>[:rw]` (engine-mcp's `--root`): the
+  // directories an agent's paths may name beside the workspace, which is always the root
+  // "workspace", read and write.
+  Vector<std::string> roots;
   // Absolute, forward slashes, no trailing slash. Created on the first bulk write.
   std::string workspace;
   // The attribution a mutation carries when the caller leaves a field out: the actor always has

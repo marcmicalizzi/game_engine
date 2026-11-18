@@ -38,7 +38,10 @@ struct Run {
   std::string out;
 };
 
-Run run(const std::vector<std::string>& args) {
+Run run(std::vector<std::string> args) {
+  // A host engine-cli starts reaches the tests' scratch directories through their root (paths.h).
+  if (args[0].find("engine-cli") != std::string::npos)
+    args.insert(args.begin() + 1, {"--root", test::scratch_root_spec()});
   std::vector<std::string_view> argv(args.begin(), args.end());
   platform::Process p;
   std::string error;

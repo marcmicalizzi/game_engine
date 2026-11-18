@@ -253,6 +253,20 @@ bool HostClient::start(const BridgeOptions& options, std::string& error) {
     argv.push_back("--roles");
     argv.push_back(options.roles);
   }
+  // The workspace is the host's writable root "workspace" (protocol.md, "The host's file roots"),
+  // so the captures, benchmarks, compares, evaluations and builds the bridge names there land where
+  // they always have; every other path an agent names is admitted against the roots its operator
+  // forwarded (--root) and nothing else.
+  const std::string workspace_root =
+      options.workspace.empty() ? std::string() : "workspace=" + options.workspace + ":rw";
+  if (!workspace_root.empty()) {
+    argv.push_back("--root");
+    argv.push_back(workspace_root);
+  }
+  for (const std::string& r : options.roots) {
+    argv.push_back("--root");
+    argv.push_back(r);
+  }
   for (const std::string& a : options.host_args)
     argv.push_back(a);
   auto process = std::make_unique<platform::Process>();

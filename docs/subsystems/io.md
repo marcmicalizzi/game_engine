@@ -12,6 +12,25 @@
 - `Vfs::resolve` never yields a path outside the mount root: absolute paths, `..` that escapes, and drive prefixes are `InvalidPath`; unknown schemes are `UnknownMount`; writes through read-only mounts are `ReadOnly`. Paths without `scheme://` pass through as native paths, normalized.
 - `normalize_path` uses forward slashes on every platform and is a pure string operation.
 - `list_directory` returns entries sorted by name, so tools and agents see stable order.
+- `Roots::admit` admits nothing when no root is set, and answers a canonical path that lies under a root ([Roots](#roots)).
+
+## Roots
+
+`io::Roots` (`include/foundation/io/roots.h`, roadmap T174, [ADR-0071](../adr/0071-a-host-reads-and-writes-only-under-its-roots.md)) is the one check a protocol host runs on every path a client names before it reads, writes or makes a directory there. Each root is a **name** and a directory, read or read and write, which the operator named at start. A path crosses the protocol, and is stored, as the root's name and a path under it, `out://captures/a.png`. It is never stored as an absolute path, because an absolute path of the operator's machine should not end up in a committed document, and it may name a worktree that is gone by the time anyone reads it (the owner, 2026-11-18). `admit` also takes a path relative to the caller's base, or an absolute one, and checks all three alike. It answers an `Admitted`: `native`, the canonical path the caller opens (never sent, never stored), and `root` and `relative`, which `portable()` joins into the form a client is told. `<name>://` that names a root this host does not have, or one whose directory has gone, is `Refusal::unknown_root` and is never resolved some other way.
+
+The rules, in order, the same on Windows and Linux wherever the systems allow it:
+
+- **Lexical** (`check_path_text`): valid UTF-8, no control byte, not past the system's length; none of `< > " | ? *`; a `:` only as a drive's (`C:/`), so `a.png:x`, `a::$DATA`, `dir::$INDEX_ALLOCATION` and `C:x` are refused; no `\\.\` (and `\\?\`, `\??\` fall to the reserved `?`); on Windows no `/x` that means the current drive's root; no device name in any component, whatever its case, suffix or trailing dots and spaces (`CON`, `nul.txt`, `COM1`, `COM¹`, `CONIN$`, `CLOCK$`...); no component but `.` and `..` that ends in a dot or a space, because Win32 strips them and `.. ` would be `..` in one order of its steps and a name in another. `\` is a separator on both systems.
+- **UNC** only when a root is UNC.
+- **Canonical**: joined to the base, `..` collapsed lexically (and refused above the volume's root), then the longest prefix that exists made canonical by the system: `CreateFileW` with backup semantics and `GetFinalPathNameByHandleW` on Windows, which follow links, junctions and mount points and give long names for 8.3 ones and the case on disk; `realpath` on Linux. A prefix with no DOS name is refused. The rest is appended as written, and its first component must not exist unfollowed: a dangling link is refused, because a write through it would make its target wherever it points.
+- **Under a root**, by whole components (`work` does not hold `workshop`), case-insensitively on Windows and by bytes on Linux. The most specific root that allows the access answers, so `out/` under a read-only document is the writable `out` root. A `<name>://` path must also stay under the root it names: `out://../layers` is refused.
+- **For a write or a directory**: never inside a directory the host serves to a browser (`serve`), and never inside an open document's directory but under its `out/` (`protect`, at `session.open`; `release` at its close). A writable root that holds or lies under a served directory is refused at `add`, and the other way round at `serve`. An existing last component must be a regular file for a write (a directory for `make_directory`) and never a link or junction. A hard link is admitted, because it *is* a file of the root. The caller writes by rename (`write_file_atomic`), which replaces the link rather than writing through it.
+
+A root that is itself a link is resolved once, at `add`, and `Root::linked` says so; retargeting the link later moves nothing.
+
+**What is left to the operator**: between the check and the open the tree can change. No protocol method makes a link, so only a process with the operator's own rights can race it, and such a process could write the file itself.
+
+**Tests**: `tests/roots_tests.cpp`, a case for each way round the check, each a path that lands under the root (or reaches out of it) if the rule it names is taken out: spellings outside, `..`, a root's name as a prefix, the lexical classes, devices, trailing dots and spaces, a read-only root, the protected document and its `out/`, a served directory, a link and a junction that lead out, a file link, a dangling link, a write onto a link, a hard link, a root that is a link and is retargeted, and on Windows case, backslashes and an 8.3 name. A case that needs a link the process may not make says so and skips that half. 21 cases, about 0.5 s in `msvc-debug`.
 
 ## Writing a file
 

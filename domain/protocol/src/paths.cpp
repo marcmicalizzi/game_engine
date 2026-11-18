@@ -1,0 +1,141 @@
+// The protocol's door to the host's disk (paths.h; protocol.md, "The host's file roots").
+#include <core/log/log.h>
+#include <domain/protocol/paths.h>
+#include <domain/protocol/session.h>
+
+namespace engine::protocol {
+
+namespace {
+ENGINE_LOG_CATEGORY_DEFINE(log_paths, "protocol.paths");
+
+// The name a root-qualified path gives, for the one refusal that says something more than "no
+// file": the root is missing on this host (a stored path from another machine, or a worktree that
+// is gone). It names only what the client sent.
+std::string_view named_root(std::string_view path) noexcept {
+  const usize end = path.find("://");
+  if (end == std::string_view::npos) return {};
+  return path.substr(0, end);
+}
+}  // namespace
+
+RpcError path_not_found(std::string_view field, std::string_view path, io::Access access) {
+  JsonValue data = JsonValue::object();
+  data.set("reason", "path");
+  data.set("field", std::string(field));
+  const std::string what = access == io::Access::read ? ": no file this host may read at '"
+                                                      : ": no place this host may write at '";
+  return make_error(codes::k_not_found, std::string(field) + what + std::string(path) + "'",
+                    std::move(data));
+}
+
+bool admit_client_path(Context& ctx, std::string_view field, std::string_view path,
+                       std::string_view base, io::Access access, io::Admitted& out,
+                       RpcError& error) {
+  io::Refusal why = io::Refusal::outside;
+  std::string resolved;
+  if (ctx.roots != nullptr && ctx.roots->admit(path, base, access, out, why, &resolved))
+    return true;
+  ENGINE_LOG_WARN(log_paths, "a client path was refused", log::field("field", field),
+                  log::field("path", path), log::field("access", io::access_name(access)),
+                  log::field("reason", io::refusal_name(why)), log::field("resolved", resolved),
+                  log::field("connection", ctx.connection));
+  if (why == io::Refusal::unknown_root) {
+    JsonValue data = JsonValue::object();
+    data.set("reason", "root");
+    data.set("field", std::string(field));
+    data.set("root", std::string(named_root(path)));
+    error = make_error(codes::k_not_found,
+                       std::string(field) + ": root " + std::string(named_root(path)) +
+                           " is not present on this host",
+                       std::move(data));
+    return false;
+  }
+  error = path_not_found(field, path, access);
+  return false;
+}
+
+std::string client_base(Context& ctx, std::string_view session) {
+  if (!session.empty() && ctx.sessions != nullptr) {
+    if (const Session* s = ctx.sessions->find(session); s != nullptr) {
+      // A session's directory is the canonical one it was opened at (session.open admits it).
+      return s->dir();
+    }
+  }
+  if (ctx.roots != nullptr) {
+    if (const io::Root* doc = ctx.roots->find("doc"); doc != nullptr) return doc->canonical;
+  }
+  return {};
+}
+
+std::string portable_path(const Context& ctx, std::string_view native) {
+  std::string out;
+  if (ctx.roots == nullptr || !ctx.roots->portable(native, out)) return {};
+  return out;
+}
+
+namespace {
+const char* status_text(io::Status s, bool writable) {
+  switch (s) {
+    case io::Status::NotFound: return "it is not there (a read root must exist)";
+    case io::Status::InvalidArgument:
+      return writable ? "its name is malformed or taken, or it holds or lies under the shell's "
+                        "directory, which is never written"
+                      : "its name is malformed or taken";
+    case io::Status::InvalidPath: return "the system cannot say what it is";
+    default: return io::status_name(s);
+  }
+}
+
+bool add_root(io::Roots& roots, std::string_view name, std::string_view dir, bool writable,
+              bool make, std::string& error) {
+  const io::Status s = roots.add(name, dir, writable, make);
+  if (s != io::Status::Ok) {
+    error = "root " + std::string(name) + "=" + std::string(dir) + (writable ? ":rw" : "") + ": " +
+            status_text(s, writable);
+    return false;
+  }
+  const io::Root& r = roots.roots().back();
+  ENGINE_LOG_INFO(log_paths, "a file root", log::field("name", r.name),
+                  log::field("spelled", r.spelled), log::field("canonical", r.canonical),
+                  log::field("writable", r.writable), log::field("linked", r.linked));
+  return true;
+}
+}  // namespace
+
+bool configure_host_roots(io::Roots& roots, const HostRootsConfig& config, std::string& error) {
+  // The shell first, so a writable root over it is refused by name.
+  if (!config.shell_dir.empty() && roots.serve(config.shell_dir) != io::Status::Ok) {
+    error = "the shell's directory " + config.shell_dir + " cannot be served: a root holds it";
+    return false;
+  }
+  if (!config.doc_dir.empty()) {
+    if (!add_root(roots, "doc", config.doc_dir, false, false, error)) return false;
+    // Made by the first write under it, not at start: a host that writes nothing leaves the
+    // document as it found it.
+    if (!add_root(roots, "out", io::join_path(config.doc_dir, "out"), true, false, error))
+      return false;
+  }
+  if (config.mounts != nullptr) {
+    for (const io::Mount& m : config.mounts->mounts()) {
+      if (!add_root(roots, m.scheme, m.root, m.writable, true, error)) return false;
+    }
+  }
+  for (const std::string& spec : config.root_specs) {
+    const usize eq = spec.find('=');
+    if (eq == std::string::npos || eq == 0 || eq + 1 == spec.size()) {
+      error = "--root " + spec + ": expected <name>=<dir>[:rw]";
+      return false;
+    }
+    std::string_view dir = std::string_view(spec).substr(eq + 1);
+    bool writable = false;
+    if (dir.ends_with(":rw")) {
+      writable = true;
+      dir.remove_suffix(3);
+    }
+    if (!add_root(roots, std::string_view(spec).substr(0, eq), dir, writable, true, error))
+      return false;
+  }
+  return true;
+}
+
+}  // namespace engine::protocol

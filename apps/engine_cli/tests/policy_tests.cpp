@@ -42,6 +42,8 @@ struct Run {
 };
 
 Run run(std::vector<std::string> args) {
+  if (args.size() > 1 && args[1] != "--help")
+    args.insert(args.begin() + 1, {"--root", test::scratch_root_spec()});
   std::vector<std::string_view> argv(args.begin(), args.end());
   platform::Process p;
   std::string error;
@@ -69,7 +71,7 @@ struct Host {
   bool ok = false;
 
   explicit Host(std::vector<std::string> flags) {
-    std::vector<std::string> args = {host_exe(), "--stdio"};
+    std::vector<std::string> args = {host_exe(), "--stdio", "--root", test::scratch_root_spec()};
     args.insert(args.end(), flags.begin(), flags.end());
     std::vector<std::string_view> argv(args.begin(), args.end());
     std::string error;

@@ -32,6 +32,9 @@ const char* k_usage =
     "  --create           with --doc: create the document when it does not exist\n"
     "  --name <name>      with --create: the document's name\n"
     "  --mount <spec>     forwarded to engine-host (<scheme>=<dir>[:rw]); repeatable\n"
+    "  --root <spec>      forwarded to engine-host (<name>=<dir>[:rw]): a directory a call's\n"
+    "                     paths may name, as <name>://<path>; repeatable. --doc is the root\n"
+    "                     doc:// and its out/ the writable out://\n"
     "  --roles <file>     forwarded to engine-host: the role configurations calls are checked\n"
     "                     against (content/roles/roles.json)\n"
     "  --actor, --role, --task <value>\n"
@@ -244,7 +247,8 @@ int main(int argc, char** argv) {
       std::string m;
       if (!value(m)) return 2;
       mounts.push_back(m);
-    } else if (a == "--roles" || a == "--actor" || a == "--role" || a == "--task") {
+    } else if (a == "--roles" || a == "--actor" || a == "--role" || a == "--task" ||
+               a == "--root") {
       std::string v;
       if (!value(v)) return 2;
       forwarded.push_back(std::string(a));
@@ -324,6 +328,18 @@ int main(int argc, char** argv) {
   }
   for (const std::string& f : forwarded)
     host_argv.push_back(f);
+  // The document is the operator's, typed on this command line: the host opens it at start and
+  // takes it as its "doc" root (and its out/ as "out"), so engine-cli's own session.open below
+  // names it as `doc://` like any client (protocol.md, "The host's file roots").
+  if (!doc_dir.empty()) {
+    host_argv.push_back("--doc");
+    host_argv.push_back(doc_dir);
+    if (create) host_argv.push_back("--create");
+    if (create && !doc_name.empty()) {
+      host_argv.push_back("--name");
+      host_argv.push_back(doc_name);
+    }
+  }
   if (console) return run_console(host_argv, console_script, script_args);
 
   Client client;
@@ -338,9 +354,7 @@ int main(int argc, char** argv) {
   int exit_code = 0;
   if (!doc_dir.empty()) {
     JsonValue open = JsonValue::object();
-    open.set("path", JsonValue(doc_dir));
-    open.set("create", JsonValue(create));
-    if (!doc_name.empty()) open.set("name", JsonValue(doc_name));
+    open.set("path", JsonValue("doc://"));
     JsonValue info;
     if (!client.call("session.open", std::move(open), info)) {
       exit_code = 1;
