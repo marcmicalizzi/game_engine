@@ -896,6 +896,68 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "scene_collision: a drop takes every pending prop's proxy now, so it lands on a boulder") {
+  // A drop (engine-view's `Walker::drop`, a teleport too) updates the props and casts straight down
+  // for the highest surface. Until 2026-11-18 that update waited for a new size's proxy like any
+  // other, so a drop onto a boulder of a size never placed met the floor under it and left the
+  // walker inside its shell for twelve ticks. `update_props(true)` takes every pending proxy in
+  // reach: one a job has is brought forward and built or waited for, a new one built on the spot.
+  renderer::SceneData scene;
+  crate_and_boulder_scene(scene);
+  Config config;
+  config.prop_build_updates = k_walk_prop_build_updates;
+  jobs::JobSystemConfig workers;
+  workers.performance_workers = 2;
+  workers.pin_threads = false;
+  jobs::JobSystem jobs(workers);
+  PropBody rock = crate_at(20.0f, 9);
+  rock.mesh = 1;
+  rock.scale = 1.5f;  // the 3 m boulder at 4.5 m: nothing was built for it at the load
+  const f32 top = 2.0f * 1.5f * 1.5f;
+  const auto down_at = [](Rig& rig, f32& y) {
+    physics::RayHit hit;
+    if (!rig.physics.cast_ray(place(Vec3{0.0f, 10.0f, 20.0f}), Vec3{0.0f, -20.0f, 0.0f}, hit))
+      return false;
+    y = static_cast<f32>(relative(hit.position, WorldPos::origin()).y);
+    return true;
+  };
+  for (jobs::JobSystem* with : {&jobs, static_cast<jobs::JobSystem*>(nullptr)}) {
+    CAPTURE(with != nullptr);
+    // Handed on a walking tick: the body waits for its promised update, and a ray down meets the
+    // floor. The drop's update after it takes the same proxy now: the ray meets the boulder's top.
+    {
+      Rig rig(scene, config, with);
+      rig.hand({rock});
+      f32 y = -1.0f;
+      REQUIRE(down_at(rig, y));
+      CHECK(std::fabs(y) < 0.01f);
+      CHECK(rig.collision.stats().prop_bodies == 0);
+      (void)rig.collision.update_props(true);
+      CHECK(rig.collision.stats().prop_bodies == 1);
+      REQUIRE(down_at(rig, y));
+      CHECK(std::fabs(y - top) < 0.08f);  // the cut's 5 cm, and the rounded scale's quarter of it
+      CHECK(rig.collision.stats().prop_proxy_builds == 3);  // the two declared, and this one once
+    }
+    // Handed at the drop itself: built on the spot, the body made at this update.
+    {
+      Rig rig(scene, config, with);
+      const Vector<PropBody> list{rock};
+      rig.collision.set_props({list.data(), list.size()});
+      (void)rig.collision.update_props(true);
+      CHECK(rig.collision.stats().prop_bodies == 1);
+      CHECK(rig.collision.stats().prop_proxy_inline == 1);
+      f32 y = -1.0f;
+      REQUIRE(down_at(rig, y));
+      CHECK(std::fabs(y - top) < 0.08f);
+      // A walking update after it changes nothing: the body stays, nothing is built again.
+      (void)rig.collision.update_props();
+      CHECK(rig.collision.stats().prop_bodies == 1);
+      CHECK(rig.collision.stats().prop_proxy_builds == 3);
+    }
+  }
+}
+
+TEST_CASE(
     "scene_collision: a prop of a new mesh arriving mid-run costs the walker's tick no build") {
   // The tick's cost round the arrival of a boulder prop among 300 crates of which 30 move (P2's
   // measurement; scene_collision.md, "A prop's proxy"). At its own size: built at the load. At a

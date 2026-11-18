@@ -565,7 +565,13 @@ class SceneCollision {
   // makes the same bodies with the same ids. Returns the bodies made, let go and moved; 0 at once
   // when nothing changed, and a scene with no props pays one comparison. Allocates nothing once
   // the props were handed.
-  u32 update_props();
+  // **`at_once`: every pending proxy in reach is taken at this update** (docs: "A prop's proxy"): a
+  // mesh prop whose tile is held and whose proxy is not ready has it built here, or waited for if a
+  // worker is on it, and its body made now instead of at its promised update. A host passes it at
+  // the updates that look for every body at once — a drop, a teleport, a walk's first tick
+  // (engine-view's walk.h, "Determinism") — so it is a step of the tick sequence and a replay takes
+  // the same proxies at the same tick.
+  u32 update_props(bool at_once = false);
   // ---- doors (docs: "Doors"; roadmap S91; ADR-0070) ----
   // The doors, copied with their states and angles as given (a restore hands them back where they
   // were); each a box on the kinematic layer while the tile its hinge stands in is held.

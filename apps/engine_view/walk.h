@@ -308,7 +308,10 @@ class Walker {
   void set_water(DepthFn depth, const void* context) noexcept;
   // **A game's props** (`WalkProp`, P45): asked at every tick the walker's collision is updated
   // (a step, a drop, a teleport), after its ring and before the step, so a prop a module set down
-  // at a tick stops the walker from the next. `context` must outlive the walker; null: none.
+  // at a tick stops the walker from the next. `context` must outlive the walker; null: none. A
+  // mesh prop of a size no prop used gets its body `scene_collision::k_walk_prop_build_updates`
+  // ticks after it appears, except at a drop, a teleport and the first step after either, which
+  // take every proxy in reach at once, so the walker is never dropped inside a prop.
   void set_props(PropsFn props, void* context) noexcept;
   // **A teleport** (game_runner.h, `walker_teleport`): the feet put at `at`'s x and z on the ground
   // under it — the highest surface below, or the ground's height — as a `drop` is, counted as one

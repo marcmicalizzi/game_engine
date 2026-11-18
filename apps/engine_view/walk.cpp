@@ -250,6 +250,12 @@ struct Walker::Impl {
   void* props_context = nullptr;
   u64 props_version = ~u64{0};
   Vector<WalkProp> props_scratch;
+  // **Every pending prop's proxy taken at once** (scene_collision.h `update_props(at_once)`): set
+  // by a drop (a teleport is one) and cleared after the next step's ring, so the drop and the
+  // walk's first tick find every body in reach — a scaled boulder under a drop is stood on, never
+  // fallen into — and a replay, which drops and steps at the same ticks, takes the same proxies
+  // there.
+  bool props_now = false;
   // A ground query's wall time, into `timing` (walk.h, `WalkTiming`).
   struct Query {
     WalkTiming& into;
@@ -404,7 +410,7 @@ struct Walker::Impl {
         consumer.set_props({prop_bodies.data(), prop_bodies.size()});
       }
     }
-    (void)consumer.update_props();
+    (void)consumer.update_props(unlimited || props_now);
   }
   Vector<scene_collision::PropBody> prop_bodies;
   // **The builds' lead** (T166; scene_collision.md, "Ahead of a running walker"): the walker's or
@@ -917,7 +923,9 @@ WorldPos Walker::drop(WorldPos camera) {
   ++w.stats.drops;
 #if ENGINE_VIEW_WALK_PHYSICS
   if (w.physical) {
-    // Every tile round the camera, and its ground as drawn, before anything is looked for.
+    // Every tile round the camera, and its ground as drawn, before anything is looked for; and
+    // every prop's proxy in reach, here and at the walk's first tick (`props_now`).
+    w.props_now = true;
     w.move_ring(camera, true);
     while (w.consumer.refresh(camera, w.params.radius) > 0) {
     }
@@ -989,6 +997,7 @@ WorldPos Walker::step(const WalkInput& input) {
     // refresh changed under it, never left under it (scene_collision.h, `follow`).
     const i64 ring_start = time::monotonic_ns();
     w.move_ring(before, false);
+    w.props_now = false;  // the walk's first tick took them (`drop`)
     (void)w.consumer.follow(w.body);
     w.timing.ring_ns += time::monotonic_ns() - ring_start;
     // What the step did, from where the sand left it: being carried up a rising dune is not

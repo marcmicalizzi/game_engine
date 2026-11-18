@@ -2464,7 +2464,7 @@ SceneCollision::PropProxy* SceneCollision::want_prop_proxy(const HeldProp& held,
     jobs_->schedule(jobs::Pool::Performance, jobs::Job{&PropProxy::run, out, &out->ran});
   } else if (now) {
     out->state.store(PropProxy::k_running, std::memory_order_relaxed);
-    out->compute();  // at the load (`create`): not the tick's
+    out->compute();  // at the load (`create`), or an update that takes every proxy `now`
     (void)finish_prop_proxy(*out);
   } else if (out->due <= prop_updates_) {
     (void)finish_prop_proxy(*out);
@@ -2540,7 +2540,7 @@ void SceneCollision::drop_prop_body(HeldProp& held) noexcept {
   held.shape = {};
 }
 
-u32 SceneCollision::update_props() {
+u32 SceneCollision::update_props(bool at_once) {
   ++prop_updates_;
   const u64 ring = stats_.activated + stats_.deactivated;
   const bool ring_moved = ring != props_ring_;
@@ -2616,10 +2616,14 @@ u32 SceneCollision::update_props() {
     if (held.body || !covers(held.prop.origin)) continue;
     if (held.prop.collider.shape == renderer::PropShape::mesh) {
       // Its proxy: resident, building, or begun now; a body only once it is ready (above).
+      // Taken `at_once` (a drop, a teleport, a walk's first tick): a new one built here, one a job
+      // has brought forward to this update, so `finish_prop_proxy` builds or waits for it.
       const bool resident = prop_proxies_.find_value(held.proxy) != nullptr;
-      PropProxy* entry = want_prop_proxy(held, false);
+      PropProxy* entry = want_prop_proxy(held, at_once);
       named = named || !resident;
       if (entry == nullptr) continue;  // a mesh with no body
+      if (at_once && !resident) ++stats_.prop_proxy_inline;
+      if (at_once && entry->due > prop_updates_) entry->due = prop_updates_;
       if (!finish_prop_proxy(*entry)) {
         held.pending = true;
         ++props_waiting_;

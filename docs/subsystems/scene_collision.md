@@ -252,6 +252,15 @@ own (`SceneCollision::PropProxy`):
   of a mesh and size never placed before for a twentieth of a second after it appears. A host with
   no job system and the tests' default (`prop_build_updates` 0) build it on the update that wants
   it, as before.
+- **A drop, a teleport and a walk's first tick take every pending proxy in reach now**
+  (`update_props(true)`): each mesh prop on a held tile whose proxy is not ready has it built at that
+  update, or waited for if a worker has it, and its body made there. Those are the updates that
+  look for every body at once (a drop casts straight down for the highest surface), and before
+  2026-11-18 a drop onto a boulder of a new size met the floor under it and left the walker inside
+  its shell for the twelve ticks. It is a step of the tick sequence, never a clock: engine-view's
+  walker passes it at a drop and at the first step after one (walk.h `set_props`), a replay drops
+  and steps at the same ticks, and so takes the same proxies at the same update. Its cost is the
+  build on that tick, which a drop already pays for the ring's tiles.
 - **Let go when no prop names it**: at an update whose props' set changed, each proxy is counted
   over the held props, and one no prop names (and not declared) goes, a proxy a job is still
   building kept aside until the job returned (`Stats::prop_proxies`, `prop_proxy_builds`,
@@ -264,7 +273,7 @@ scales, and are not this rule's. What an imported or hand-authored asset gets: t
 mesh's grid and fit, with nothing declared beyond `engine.scene.Prop`; a scene with no mesh props
 builds nothing at the load and pays nothing on the tick.
 
-Three cases hold it (`tests/far_forest_tests.cpp`, no device). `a mesh prop's proxy is one a mesh
+Four cases hold it (`tests/far_forest_tests.cpp`, no device). `a mesh prop's proxy is one a mesh
 and rounded scale, whatever its yaw, and goes when no prop names it`: one crate at ten yaws at its
 own size and at 1.1 is one build, for 1.1; 1.103 keeps the body and builds nothing (with the
 rounding and the letting go switched off it fails: three bodies made, three builds, three proxies
@@ -272,7 +281,10 @@ resident after the props went and none let go); the walker stops at the rounded 
 a quarter of the error; and handed none the 1.1 proxy goes while the declared one stays (0.4 s in
 `msvc-debug`). `a prop's proxy is built off the tick, its body made at the update promised` (1.9 s):
 a declared boulder at 1.2 gets its body at the twelfth update after its hand-over, with workers and
-without. `a prop of a new mesh arriving mid-run costs the walker's tick no build` (0.4 s) measures
+without. `a drop takes every pending prop's proxy now, so it lands on a boulder`: the boulder at
+1.5 handed on a walking update has no body yet and a ray straight down meets the floor; the drop's
+update after it makes the body, and the ray meets the boulder's top within the cut's error; handed
+at the drop itself it is built there; with workers and without. `a prop of a new mesh arriving mid-run costs the walker's tick no build` (0.4 s) measures
 it: 300 crates of which 30 move a centimetre a tick, and at tick 100 a boulder 3 m across (17,958
 triangles; the collision's own copy of it keeps 3,322) handed with them. Microseconds of a tick,
 `msvc-release`, two alternating runs, with the machine at 38 to 66 % CPU and other rows building:
