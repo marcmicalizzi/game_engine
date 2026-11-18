@@ -66,6 +66,9 @@ bool kept_at(const RtKeepCut& cut, u32 key) noexcept { return !cut.crosses || ke
 u32 rt_keep_q(f32 d2, f32 r2) noexcept {
   // Both are non-negative (or a NaN with its sign clear), so their bits are under 2^31 and the
   // difference fits. Clamped before the offset, so nothing overflows (the shader's int would wrap).
+  // A zero radius is the top before the difference: at the eye d² is zero too, and 0 − 0 would key
+  // a sphere-less instance at d = r.
+  if (!(r2 > 0.0f)) return k_rt_keep_q_max;
   const i32 u = static_cast<i32>(std::bit_cast<u32>(d2)) - static_cast<i32>(std::bit_cast<u32>(r2));
   constexpr i32 k_top =
       static_cast<i32>((k_rt_keep_q_max + 1) << k_rt_keep_q_shift) - k_rt_keep_q_offset;

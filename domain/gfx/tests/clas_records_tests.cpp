@@ -338,7 +338,7 @@ struct RecordsFixture {
     params.instance_count = k_instances;
     params.pair_count = pair_count;
     // One view: the run is the whole list and its count word is the first; past the capacity, the
-    // drop order's scan.
+    // cut's passes.
     params.mode = gfx::cluster_records_mode(1, false, untraced_drawn);
     params.capacity = capacity;
     REQUIRE(gfx::submit_immediate(

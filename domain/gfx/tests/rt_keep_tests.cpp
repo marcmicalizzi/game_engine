@@ -242,6 +242,10 @@ TEST_CASE(
     CHECK(rt_keep_q(16777216.0f, 1.0f) == k_rt_keep_q_max);
     CHECK(rt_keep_q(1.0e30f, 1.0e-30f) == k_rt_keep_q_max);
     CHECK(rt_keep_q(4.0f, 0.0f) == k_rt_keep_q_max);
+    // At the eye too: a frame with no spheres keys every instance at the top, whatever its place,
+    // so the hash alone orders them (the records case "a set sized under the frame" on a device
+    // found d = r = 0 keyed at 8,192 when this was a difference of bits).
+    CHECK(rt_keep_q(0.0f, 0.0f) == k_rt_keep_q_max);
     CHECK(rt_keep_q(std::nanf(""), 1.0f) == k_rt_keep_q_max);
     // d = r is 8 octaves of (d/r)² above the bottom: 8,192.
     CHECK(rt_keep_q(9.0f, 9.0f) == 8 * 1024);

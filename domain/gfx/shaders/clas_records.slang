@@ -706,8 +706,10 @@ float keep_axis(float4 row, float4 c, float from_eye) {
 }
 
 // `q` (gfx::rt_keep_q): (asuint(d²) − asuint(r²) + 8·2²³) >> 13, clamped first so nothing wraps.
-// A zero radius and a NaN distance fall at the top.
+// A zero radius and a NaN distance fall at the top; the radius is tested first, since at the eye d²
+// is zero too and the difference would key a sphere-less instance at d = r.
 uint keep_q(float d2, float r2) {
+  if (!(r2 > 0.0)) return 32767u;
   const int u = int(asuint(d2)) - int(asuint(r2));
   const int offset = 8 << 23;
   const int top = int(32768u << 13) - offset;
