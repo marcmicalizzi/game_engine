@@ -307,17 +307,6 @@ i64 pragma_value(sqlite3* db, const char* sql) {
   return value;
 }
 
-u32 value_bytes(const SqlValue& v) noexcept {
-  switch (v.type) {
-    case SqlType::Null: return 0;
-    case SqlType::Integer:
-    case SqlType::Real: return 8;
-    case SqlType::Text:
-    case SqlType::Blob: return static_cast<u32>(v.bytes.size());
-  }
-  return 0;
-}
-
 }  // namespace
 
 static constexpr std::span<const std::string_view> k_function_span{k_function_names};
@@ -480,11 +469,26 @@ Status run_sql_query(std::string_view native_path, std::string_view sql,
       out.bound = "max_rows";
       break;
     }
+    // The row is counted against max_bytes as its columns are read, and refused at the column
+    // that passes it before that column is copied, so a row of 64 values of 1 MiB under a bound of
+    // 1 KiB copies at most the 1 KiB. A value's size is known before its bytes are asked for: the
+    // column's own storage class is read, so `sqlite3_column_bytes` converts nothing, and a
+    // zeroblob is not even expanded.
     const usize first = out.cells.size();
-    u32 row_bytes = 0;
+    u64 row_bytes = 0;
+    bool over = false;
     for (int i = 0; i < columns; ++i) {
       SqlValue v;
-      switch (sqlite3_column_type(c.stmt, i)) {
+      const int type = sqlite3_column_type(c.stmt, i);
+      const u64 size = type == SQLITE_TEXT || type == SQLITE_BLOB
+                           ? static_cast<u64>(sqlite3_column_bytes(c.stmt, i))
+                       : type == SQLITE_NULL ? 0u
+                                             : 8u;
+      if (static_cast<u64>(out.bytes) + row_bytes + size > limits.max_bytes) {
+        over = true;
+        break;
+      }
+      switch (type) {
         case SQLITE_INTEGER:
           v.type = SqlType::Integer;
           v.integer = sqlite3_column_int64(c.stmt, i);
@@ -496,31 +500,30 @@ Status run_sql_query(std::string_view native_path, std::string_view sql,
         case SQLITE_TEXT: {
           v.type = SqlType::Text;
           const unsigned char* text = sqlite3_column_text(c.stmt, i);
-          const int n = sqlite3_column_bytes(c.stmt, i);
           if (text != nullptr)
-            v.bytes.assign(reinterpret_cast<const char*>(text), static_cast<usize>(n));
+            v.bytes.assign(reinterpret_cast<const char*>(text), static_cast<usize>(size));
           break;
         }
         case SQLITE_BLOB: {
           v.type = SqlType::Blob;
           const void* blob = sqlite3_column_blob(c.stmt, i);
-          const int n = sqlite3_column_bytes(c.stmt, i);
           if (blob != nullptr)
-            v.bytes.assign(static_cast<const char*>(blob), static_cast<usize>(n));
+            v.bytes.assign(static_cast<const char*>(blob), static_cast<usize>(size));
           break;
         }
         default: break;
       }
-      row_bytes += value_bytes(v);
+      row_bytes += size;
+      out.copied_bytes += v.bytes.size();
       out.cells.push_back(std::move(v));
     }
-    if (static_cast<u64>(out.bytes) + row_bytes > limits.max_bytes) {
+    if (over) {
       out.cells.resize(static_cast<u32>(first));
       out.complete = false;
       out.bound = "max_bytes";
       break;
     }
-    out.bytes += row_bytes;
+    out.bytes += static_cast<u32>(row_bytes);  // at most max_bytes, a u32
     ++out.rows;
   }
   out.instructions = progress.calls * static_cast<u64>(k_progress_period);

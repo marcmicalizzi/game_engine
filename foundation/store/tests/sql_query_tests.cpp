@@ -393,6 +393,34 @@ TEST_CASE("sql query: values grown inside the statement meet the value limit and
   CHECK(bound.status == Status::InvalidArgument);
 }
 
+TEST_CASE("sql query: one wide row is refused at the column that passes max_bytes, uncopied") {
+  TempDir dir("engine_store_sql");
+  const std::string path = make_store(dir, 8);
+  // Sixty values of a million bytes in one row, each under the value limit.
+  std::string sql = "SELECT zeroblob(1000000)";
+  for (u32 i = 1; i < 60; ++i)
+    sql += ", zeroblob(1000000)";
+  SqlQueryLimits limits;
+  limits.max_bytes = 4u * 1024u * 1024u;  // four of them fit, the fifth passes it
+  Run run = query(path, sql, {}, limits);
+  REQUIRE_MESSAGE(run.status == Status::Ok, run.message);
+  CHECK(run.result.rows == 0);
+  CHECK(run.result.cells.empty());
+  CHECK(run.result.bytes == 0);
+  CHECK_FALSE(run.result.complete);
+  CHECK(std::string_view(run.result.bound) == "max_bytes");
+  // Four columns were copied before the fifth passed the bound; the other 56 MB never were. Built
+  // whole and then refused, the row copied all 60 MB.
+  CHECK(run.result.copied_bytes == 4'000'000);
+  // A row that fits is returned whole, and what it copied is what it returned.
+  Run fits = query(path, "SELECT zeroblob(1000000), 7, NULL, 'abc'", {}, limits);
+  REQUIRE_MESSAGE(fits.status == Status::Ok, fits.message);
+  CHECK(fits.result.rows == 1);
+  CHECK(fits.result.bytes == 1'000'000 + 8 + 0 + 3);
+  CHECK(fits.result.copied_bytes == 1'000'003);
+  CHECK(fits.result.complete);
+}
+
 TEST_CASE("sql query: an expression nested past the depth is refused") {
   TempDir dir("engine_store_sql");
   const std::string path = make_store(dir, 8);

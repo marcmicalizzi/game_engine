@@ -107,6 +107,10 @@ struct SqlQueryResult {
   Vector<SqlValue> cells;  // row-major, columns.size() a row
   u32 rows = 0;
   u32 bytes = 0;
+  // The bytes of text and blob values copied out of the statement, returned or dropped. Never more
+  // than `max_bytes`: a row is counted as its columns are read and refused at the column that would
+  // pass the bound, before that column is copied, so one wide row is never built whole first.
+  u64 copied_bytes = 0;
   // Every row the statement had was returned.
   bool complete = true;
   // Which bound ended it: "" (none), "max_rows", "max_bytes" or "max_ms".
