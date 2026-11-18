@@ -21,7 +21,9 @@
 // job, so a caller with four hundred small ranges keeps the device's queue full without a pool of
 // threads to block in each read. A handle opened `ReadMode::unbuffered` bypasses the OS's cache.
 //
-// Not here (yet): memory mapping, file watching, the content-addressed blob store (domain/ddc),
+// A file mapped read-only is `mapped_file.h`'s (T182).
+//
+// Not here (yet): file watching, the content-addressed blob store (domain/ddc),
 // io_uring (POSIX `read_queued` reads in order, one at a time), and DirectStorage-style GPU
 // decompression behind the same request shape.
 

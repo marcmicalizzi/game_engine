@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T182",
+  "reason": "T182: tileset.md's mask level says how a level is read without a lock (the mapped view, what it commits and keeps resident) and its performance notes carry the window-to-view bench on several threads and the staging's level",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/tileset.md": 1565
+  }
+}
