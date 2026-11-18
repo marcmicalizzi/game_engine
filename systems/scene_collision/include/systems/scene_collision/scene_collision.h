@@ -272,10 +272,13 @@ struct Stats {
   i64 proxy_ns = 0;
   // A game's props (`set_props`; docs: "Props"): handed now, with a body now (their tile held, a
   // shape that collides), and the bodies made and let go over the consumer's life.
+  // `prop_moves`: bodies put at a prop's new place, which is what a moved prop costs once its body
+  // is a kinematic one.
   u32 props = 0;
   u32 prop_bodies = 0;
   u64 prop_bodies_created = 0;
   u64 prop_bodies_destroyed = 0;
+  u64 prop_moves = 0;
 };
 
 // **A prop a host places** (`SceneCollision::set_props`; docs: "Props"; roadmap P45): a scene mesh
@@ -475,16 +478,21 @@ class SceneCollision {
   SupportAnswer supports_near(WorldPos at, f32 radius, f32 min_size,
                               std::span<Support> out) const noexcept;
   // ---- a game's props (docs: "Props"; roadmap P45) ----
-  // **The props a host places**, copied: each is a static body of its own **while the tile it
-  // stands in is held** — made with the tile, let go with it — of its mesh's proxy (the cut every
-  // placement's is, at the prop's scale) or its declared box, or none. A host calls it when its
-  // props changed, on the tick they changed; nothing moves until `update_props`.
+  // **The props a host places**, copied: each is a body of its own **while the tile it stands in
+  // is held** — made with the tile, let go with it — of its mesh's proxy (the cut every
+  // placement's is, at the prop's scale) or its declared box; a prop declared `none` is not kept
+  // and costs nothing past this call. A host calls it when its props changed, on the tick they
+  // changed; nothing moves until `update_props`.
   void set_props(std::span<const PropBody> props);
   // **On the tick, after the ring's update and before the step**: every prop whose tile came in
-  // or which `set_props` changed gets its body, and every one whose tile went, or which changed or
-  // went, loses it — in key order, destroyed before made, so a replay makes the same bodies with
-  // the same ids. Returns the bodies made and let go; 0 at once when nothing changed, and a scene
-  // with no props pays one comparison. Allocates nothing once the props were handed.
+  // or which `set_props` added gets its body, every one whose tile went, or which went or changed
+  // its shape, loses it, and **one that only moved is moved**: put at its new place with nothing
+  // rebuilt — a box's body, made static, made once again as a kinematic one at its first move; a
+  // mesh's, which the library moves only as a static body, moved where it is (docs: "What a moving
+  // prop costs"). In key order, destroyed before made, so a replay
+  // makes the same bodies with the same ids. Returns the bodies made, let go and moved; 0 at once
+  // when nothing changed, and a scene with no props pays one comparison. Allocates nothing once
+  // the props were handed.
   u32 update_props();
   const Stats& stats() const noexcept { return stats_; }
   // **What is held** (docs: "Seeing the collision"): the held tiles, in the consumer's order, and a
@@ -763,17 +771,22 @@ class SceneCollision {
   std::mutex generators_mutex_;
   FlatMap<u64, Tile> tiles_;
   Stats stats_;
-  // A game's props (`set_props`, P45): held in key order with their bodies, the next set handed
-  // waiting beside them, and the tiles' activations and deactivations at the last update.
+  // A game's props (`set_props`, P45): the ones that collide, held in key order with their bodies,
+  // the next set handed waiting beside them, and the tiles' activations and deactivations at the
+  // last update. `kinematic`: a box that has moved, so its body is a kinematic one (docs: "What a
+  // moving prop costs"); `pending`: its body is to be made at this update if its tile is held.
   struct HeldProp {
     PropBody prop;
     physics::BodyId body{};
     physics::ShapeId shape{};
+    bool kinematic = false;
+    bool pending = true;
   };
   Vector<HeldProp> props_;
   Vector<HeldProp> props_next_;
   bool props_handed_ = false;
   u64 props_ring_ = ~u64{0};
+  bool prop_pose(const PropBody& p, physics::BodyTransform& out, Vec3& scale) const;
   bool make_prop_body(HeldProp& held);
   void drop_prop_body(HeldProp& held) noexcept;
   // Scratch, reused: the tick's placements, and the refresh's order.

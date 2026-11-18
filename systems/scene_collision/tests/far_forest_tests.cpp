@@ -5,6 +5,8 @@
 // never round a walker; binned as a prefix instance (W88) it stopped the walker in open ground,
 // 1.55 m from a birch's trunk and 3 m from a pine's. No device, no generator capability.
 
+#include <core/memory/memory.h>
+#include <core/time/time.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/physics/character.h>
 #include <domain/physics/physics.h>
@@ -15,6 +17,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 
@@ -178,10 +181,10 @@ TEST_CASE(
 }
 
 // ---- A game's props stop a walker (roadmap P45; docs/subsystems/scene_collision.md, "Props") ----
-// A prop a host hands (`SceneCollision::set_props`) is a static body of its mesh's proxy, of the box
-// its scene declares, or of nothing, while the tile it stands in is held, and goes with the tile,
-// with its removal, and when it moves. The scene is the case's own: one mesh the load placed
-// nowhere, a crate a metre on a side, declared as a prop.
+// A prop a host hands (`SceneCollision::set_props`) is a body of its mesh's proxy, of the box its
+// scene declares, or of nothing, while the tile it stands in is held; it goes with the tile and
+// with its removal, and is moved when it moves. The scene is the case's own: one mesh the load
+// placed nowhere, a crate a metre on a side, declared as a prop.
 
 namespace {
 
@@ -288,7 +291,108 @@ struct Rig {
   }
 };
 
+// **What props cost the walker's tick** (scene_collision.md, "What a moving prop costs"): `n`
+// crates standing on the held tiles round a standing walker, the first `k` moved a centimetre a
+// tick as a game module moves its animals, `ticks` ticks of what the host does at 240 Hz timed one
+// at a time — the ring's update, the props' list built and handed when one moved, `update_props`,
+// the walker's step — with the engine allocations the tick made on this thread and the prop bodies
+// it made, after a warm-up the scratch grows in.
+struct TickCost {
+  f64 median_us = 0.0;
+  f64 p95_us = 0.0;
+  f64 max_us = 0.0;
+  u64 allocations = 0;
+  u64 bodies_made = 0;
+  u32 bodies = 0;
+};
+
+TickCost prop_tick_cost(const renderer::SceneData& scene, u32 n, u32 k, renderer::PropShape shape,
+                        u32 ticks) {
+  Rig rig(scene);
+  Vector<PropBody> props;
+  Vector<Vec3> at;
+  for (u32 i = 0; i < n; ++i) {
+    at.push_back(Vec3{-30.0f + 3.0f * static_cast<f32>(i % 20), 0.0f,
+                      8.0f - 2.0f * static_cast<f32>(i / 20)});
+    PropBody p = crate_at(0.0f, i + 1);
+    p.origin = place(at.back());
+    p.collider.shape = shape;
+    p.collider.half_extents = Vec3{0.5f, 0.5f, 0.5f};
+    p.collider.center = Vec3{0.0f, 0.5f, 0.0f};
+    props.push_back(p);
+  }
+  rig.collision.set_props({props.data(), props.size()});
+  (void)rig.collision.update_props();
+  Vector<PropBody> handed;
+  handed.reserve(n);
+  Vector<f64> us;
+  us.reserve(ticks);
+  physics::CharacterInput still{};
+  constexpr u32 k_warm = 20;
+  TickCost out;
+  u64 made = 0;
+  bool stepped = true;
+  for (u32 t = 0; t < k_warm + ticks; ++t) {
+    if (t == k_warm) made = rig.collision.stats().prop_bodies_created;
+    const u64 a0 = mem::allocations_on_thread();
+    const i64 t0 = time::monotonic_ns();
+    rig.world->update(rig.observers, rig.tick++, true);  // the ring, which does not move
+    if (k > 0) {  // the host's hand-over (walk.cpp): the list again when a prop moved
+      for (u32 i = 0; i < k; ++i)
+        props[i].origin = place(at[i] + Vec3{0.01f * static_cast<f32>(t % 100), 0.0f, 0.0f});
+      handed.clear();
+      for (const PropBody& p : props)
+        handed.push_back(p);
+      rig.collision.set_props({handed.data(), handed.size()});
+    }
+    (void)rig.collision.update_props();
+    stepped = rig.walker.step(still) == physics::Status::Ok && stepped;
+    const i64 t1 = time::monotonic_ns();
+    const u64 a1 = mem::allocations_on_thread();
+    if (t < k_warm) continue;
+    us.push_back(static_cast<f64>(t1 - t0) / 1000.0);
+    out.allocations += a1 - a0;
+  }
+  REQUIRE(stepped);
+  out.bodies_made = rig.collision.stats().prop_bodies_created - made;
+  out.bodies = rig.collision.stats().prop_bodies;
+  std::sort(us.begin(), us.end());
+  out.median_us = us[us.size() / 2];
+  out.p95_us = us[(us.size() * 95) / 100];
+  out.max_us = us.back();
+  return out;
+}
+
 }  // namespace
+
+TEST_CASE(
+    "scene_collision: a prop moved every tick costs the walker's tick a move, not a rebuild") {
+  renderer::SceneData scene;
+  crate_scene(scene);
+  struct Row {
+    u32 n;
+    u32 k;
+    renderer::PropShape shape;
+    const char* name;
+  };
+  const Row rows[] = {
+      {30, 0, renderer::PropShape::mesh, "mesh"},  {30, 1, renderer::PropShape::mesh, "mesh"},
+      {30, 30, renderer::PropShape::mesh, "mesh"}, {300, 0, renderer::PropShape::mesh, "mesh"},
+      {300, 1, renderer::PropShape::mesh, "mesh"}, {300, 30, renderer::PropShape::mesh, "mesh"},
+      {300, 30, renderer::PropShape::box, "box"},  {300, 30, renderer::PropShape::none, "none"},
+  };
+  for (const Row& row : rows) {
+    const TickCost c = prop_tick_cost(scene, row.n, row.k, row.shape, 300);
+    MESSAGE("props " << row.n << " moving " << row.k << " by " << std::string(row.name)
+                     << ": tick median " << c.median_us << " us, p95 " << c.p95_us << ", max "
+                     << c.max_us << "; allocations " << c.allocations << ", bodies made "
+                     << c.bodies_made << " over 300 ticks");
+    CHECK(c.bodies == (row.shape == renderer::PropShape::none ? 0u : row.n));
+    // A move is a move: no body made for it, and nothing allocated in steady state.
+    CHECK(c.bodies_made == 0);
+    CHECK(c.allocations == 0);
+  }
+}
 
 TEST_CASE(
     "scene_collision: a game's prop stops a walker, by its mesh or its box, while its tile "
@@ -315,10 +419,13 @@ TEST_CASE(
   rig.hand({crate_at(20.0f)});
   CHECK(rig.collision.stats().prop_bodies_created == made);
 
-  // Moved 3 m on (a module's `prop_move`): the old body goes, a new one stops the walker there.
+  // Moved 3 m on (a module's `prop_move`): the body is moved, not made again, and stops the
+  // walker there.
   rig.hand({crate_at(23.0f)});
   CHECK(rig.collision.stats().prop_bodies == 1);
-  CHECK(rig.collision.stats().prop_bodies_destroyed == 1);
+  CHECK(rig.collision.stats().prop_bodies_destroyed == 0);
+  CHECK(rig.collision.stats().prop_bodies_created == made);
+  CHECK(rig.collision.stats().prop_moves == 1);
   CHECK(rig.walk() == doctest::Approx(22.5f - radius).epsilon(0.002));
 
   // Twice the size: its proxy at that scale, the face a metre out.
@@ -334,6 +441,16 @@ TEST_CASE(
   boxed.collider.center = Vec3{0.0f, 0.5f, 0.0f};
   rig.hand({boxed});
   CHECK(rig.walk() == doctest::Approx(19.75f - radius).epsilon(0.002));
+  // Moved, the box is made once again as a kinematic body, then only moved: it stops the walker
+  // at its new place as the static one did.
+  const u64 boxes_made = rig.collision.stats().prop_bodies_created;
+  for (const f32 z : {21.0f, 22.0f}) {
+    PropBody on = boxed;
+    on.origin = place(Vec3{0.0f, 0.0f, z});
+    rig.hand({on});
+  }
+  CHECK(rig.collision.stats().prop_bodies_created == boxes_made + 1);
+  CHECK(rig.walk() == doctest::Approx(21.75f - radius).epsilon(0.002));
 
   // None: no body, the walker goes through.
   PropBody ghost = crate_at(20.0f);
