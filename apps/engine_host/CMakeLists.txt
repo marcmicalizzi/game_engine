@@ -22,7 +22,7 @@
 # `*-no-ecs` presets are the proof.
 set(_host_deps base containers hash json log io image memory tunables protocol renderer schema
                schemas bench time platform jobs geometry gfx sim content_build doc input net doc_scene
-               profiling)
+               profiling profiler)
 set(_host_defs)
 foreach(_cap audio ecs animation audio_system kinematics npc scripting store tissue world)
   if(TARGET engine::${_cap})
@@ -40,7 +40,7 @@ endforeach()
 # configure stops if the three differ.
 engine_host_generators(engine_host _host_deps)
 engine_app(NAME engine_host OUTPUT engine-host
-  SOURCES main.cpp render_methods.cpp ops_methods.cpp console.cpp listen.cpp
+  SOURCES main.cpp render_methods.cpp ops_methods.cpp profile_methods.cpp console.cpp listen.cpp
   DEPS ${_host_deps}
   E2E_TESTS tests/transport_tests.cpp)
 if(_host_defs)

@@ -12,6 +12,7 @@
 #include "host_state.h"
 #include "listen.h"
 #include "ops_methods.h"
+#include "profile_methods.h"
 #include "render_methods.h"
 
 #include <core/json/json.h>
@@ -390,6 +391,7 @@ int main(int argc, char** argv) {
   // content.build, session.events, engine.budgets, session.run_headless, engine.run_tests
   // (ops_methods.h): the rest of plan 06 §6.9's day-one list.
   host::add_ops_methods(dispatcher);
+  host::add_profile_methods(dispatcher);
 #if defined(ENGINE_HOST_AUDIO)
   audio::register_methods(dispatcher);
 #endif

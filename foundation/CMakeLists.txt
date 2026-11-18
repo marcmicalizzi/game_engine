@@ -1,6 +1,7 @@
 # Layer L1: foundation. Declaration order matters (dependencies first).
 add_subdirectory(tunables)
 add_subdirectory(gpu_lock)
+add_subdirectory(profiler)
 add_subdirectory(bench)
 add_subdirectory(io)
 add_subdirectory(window)

@@ -2,6 +2,7 @@
 // roles as configuration, leases refused at acquisition and checked at the edit, and proposal
 // layers promoted by a structural merge that validates first.
 #include <core/json/json.h>
+#include <core/schema/json_reflect.h>
 #include <core/time/time.h>
 #include <domain/protocol/leases.h>
 #include <domain/protocol/policy.h>
@@ -13,6 +14,7 @@
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -833,4 +835,737 @@ TEST_CASE("proposals: compose_onto writes a proposal's opinions into a layer") {
   pd.deleted = true;
   proposal.set(pd);
   CHECK(compose_onto(over, proposal).find(oid(1)) == nullptr);  // defined here: dropped
+}
+
+// ---- a client's transactions (plan 06 §6.4; protocol.md, "Transactions a client opens") --------
+
+namespace {
+
+JsonValue staged(Host& host, u64 transaction, JsonValue commands, JsonValue attribution,
+                 bool atomic = true) {
+  return host.ok("doc.apply", obj({{"commands", std::move(commands)},
+                                   {"attribution", std::move(attribution)},
+                                   {"atomic", JsonValue(atomic)},
+                                   {"transaction", JsonValue(transaction)}}));
+}
+
+i32 staged_fails(Host& host, u64 transaction, JsonValue commands, JsonValue attribution,
+                 JsonValue* error = nullptr) {
+  return host.fails("doc.apply",
+                    obj({{"commands", std::move(commands)},
+                         {"attribution", std::move(attribution)},
+                         {"transaction", JsonValue(transaction)}}),
+                    error);
+}
+
+u64 begin_on(Host& host, const char* layer, JsonValue attribution, f64 ttl = 3600) {
+  const JsonValue info = host.ok("doc.begin", obj({{"layer", JsonValue(layer)},
+                                                   {"ttl_seconds", JsonValue(ttl)},
+                                                   {"attribution", std::move(attribution)}}));
+  return static_cast<u64>(num(at(info, "id")));
+}
+
+JsonValue ended(Host& host, const char* method, u64 transaction, JsonValue attribution) {
+  return host.ok(method, obj({{"transaction", JsonValue(transaction)},
+                              {"attribution", std::move(attribution)}}));
+}
+
+i64 journal_length(Host& host) {
+  return num(at(host.ok("session.info", obj({})), "journal_length"));
+}
+
+}  // namespace
+
+TEST_CASE("transactions: several calls land as one patch, the patch one doc.apply journals") {
+  TempDir tmp("protocol_transactions");
+  JsonValue commands = JsonValue::array();
+  commands.push_back(set(oid(1), "color", JsonValue(7)));
+  commands.push_back(create_prop(oid(10), 7, 7, oid(1)));
+  commands.push_back(set(oid(10), "color", JsonValue(8)));
+  JsonValue stamped = who("a", "", "a lamp beside the first prop");
+  stamped.set("timestamp_unix_ms", JsonValue(i64{1'700'000'000'000}));
+
+  // The same three commands as one plain doc.apply, in a second document, for the patch to match.
+  Host plain;
+  plain.make_world(tmp.file("plain"));
+  REQUIRE(at(plain.apply(commands, stamped, "world"), "committed") == JsonValue(true));
+  const std::string expected =
+      write_json(schema::to_json(plain.sessions.find(plain.session)->document().journal().back()));
+
+  Host host;
+  host.make_world(tmp.file("doc"));
+  const i64 before = journal_length(host);
+  const u64 t = begin_on(host, "world", who("a", "", "a lamp beside the first prop"));
+  CHECK(t == 1);
+  JsonValue r = staged(host, t, one(commands[0]), who("a"));
+  CHECK(at(r, "committed") == JsonValue(false));
+  CHECK(num(at(r, "applied")) == 1);
+  CHECK(num(at(r, "staged")) == 1);
+  CHECK(num(at(r, "transaction")) == static_cast<i64>(t));
+  // Staged is not landed: nobody reads it, and nothing is journaled.
+  CHECK(host.property(oid(1), "color").is_null());
+  CHECK(journal_length(host) == before);
+  // A later call is checked against the earlier ones: oid 10 exists only in the transaction.
+  staged(host, t, one(commands[1]), who("a"));
+  CHECK(host.fails("doc.get", obj({{"id", JsonValue(hex(oid(10)))}})) == codes::k_not_found);
+  r = staged(host, t, one(commands[2]), who("a"));
+  CHECK(num(at(r, "staged")) == 3);
+  // An atomic call that fails stages nothing; a non-atomic one stages what applied.
+  r = staged(host, t, one(set(oid(99), "color", JsonValue(1))), who("a"));
+  CHECK(num(at(r, "applied")) == 0);
+  CHECK(at(r, "diagnostics").size() == 1);
+  CHECK(num(at(r, "staged")) == 3);
+  const JsonValue listed = host.ok("doc.transactions", obj({}));
+  REQUIRE(at(listed, "transactions").size() == 1);
+  const JsonValue& info = at(listed, "transactions")[0];
+  CHECK(num(at(info, "commands")) == 3);
+  CHECK(num(at(info, "applies")) == 3);
+  CHECK(at(info, "layer") == JsonValue("world"));
+  CHECK(at(at(info, "attribution"), "actor") == JsonValue("a"));
+
+  r = ended(host, "doc.commit", t, stamped);
+  CHECK(at(r, "committed") == JsonValue(true));
+  CHECK(num(at(r, "applied")) == 3);
+  CHECK(num(at(r, "staged")) == 0);
+  CHECK(journal_length(host) == before + 1);
+  CHECK(host.property(oid(10), "color") == JsonValue(8));
+  CHECK(write_json(schema::to_json(
+            host.sessions.find(host.session)->document().journal().back())) == expected);
+  CHECK(at(host.ok("doc.transactions", obj({})), "transactions").size() == 0);
+  CHECK(host.fails("doc.commit", obj({{"transaction", JsonValue(t)}, {"attribution", who("a")}})) ==
+        codes::k_not_found);
+  // Landed together, so one undo takes them back together.
+  host.ok("doc.undo", obj({}));
+  CHECK(host.property(oid(1), "color").is_null());
+  CHECK(host.fails("doc.get", obj({{"id", JsonValue(hex(oid(10)))}})) == codes::k_not_found);
+}
+
+TEST_CASE("transactions: rollback and lapse leave nothing, and a transaction is its opener's") {
+  TempDir tmp("protocol_transactions");
+  const std::string dir = tmp.file("doc");
+  u64 t = 0;
+  {
+    Host host;
+    host.make_world(dir);
+    const i64 before = journal_length(host);
+    JsonValue e;
+    CHECK(host.fails("doc.begin", obj({{"layer", JsonValue("world")},
+                                       {"ttl_seconds", JsonValue(0.0)},
+                                       {"attribution", who("a")}})) == codes::k_invalid_argument);
+    CHECK(host.fails("doc.begin", obj({{"layer", JsonValue("nowhere")},
+                                       {"attribution", who("a")}})) == codes::k_not_found);
+    CHECK(host.fails("doc.begin", obj({{"layer", JsonValue("world")}, {"attribution", who("")}})) ==
+          codes::k_invalid_argument);
+
+    const u64 r = begin_on(host, "world", who("a"));
+    staged(host, r, one(set(oid(2), "color", JsonValue(5))), who("a"));
+    // Not b's to add to, commit or roll back.
+    CHECK(staged_fails(host, r, one(set(oid(2), "color", JsonValue(6))), who("b"), &e) ==
+          codes::k_forbidden);
+    CHECK(at(at(e, "data"), "reason") == JsonValue("transaction owner"));
+    CHECK(host.fails("doc.commit", obj({{"transaction", JsonValue(r)},
+                                        {"attribution", who("b")}})) == codes::k_forbidden);
+    CHECK(host.fails("doc.rollback", obj({{"transaction", JsonValue(r)},
+                                          {"attribution", who("b")}})) == codes::k_forbidden);
+    // A transaction is one layer's.
+    CHECK(host.fails("doc.apply", obj({{"commands", one(set(oid(2), "color", JsonValue(6)))},
+                                       {"attribution", who("a")},
+                                       {"layer", JsonValue("base")},
+                                       {"transaction", JsonValue(r)}})) ==
+          codes::k_invalid_argument);
+    const JsonValue gone = ended(host, "doc.rollback", r, who("a"));
+    CHECK(num(at(gone, "commands")) == 1);
+    CHECK(host.property(oid(2), "color").is_null());
+    CHECK(journal_length(host) == before);
+    CHECK(staged_fails(host, r, one(set(oid(2), "color", JsonValue(6))), who("a")) ==
+          codes::k_not_found);
+
+    // Another client commits under a staged command: the commit lands nothing and stays open.
+    const u64 c = begin_on(host, "world", who("a"));
+    staged(host, c, one(set(oid(4), "color", JsonValue(1))), who("a"));
+    host.apply(one(del(oid(4))), who("b"), "world");
+    const JsonValue refused = ended(host, "doc.commit", c, who("a"));
+    CHECK(at(refused, "committed") == JsonValue(false));
+    CHECK(at(refused, "diagnostics").size() >= 1);
+    CHECK(num(at(refused, "staged")) == 1);
+    CHECK(journal_length(host) == before + 1);  // b's delete alone
+    ended(host, "doc.rollback", c, who("a"));
+
+    // Lapsing is a rollback: judged by the host's clock, here a day ahead of it.
+    const u64 l = begin_on(host, "world", who("a"), 60);
+    staged(host, l, one(set(oid(3), "color", JsonValue(2))), who("a"));
+    Session* s = host.sessions.find(host.session);
+    Caller a;
+    a.who.actor = "a";
+    ApplyResult result;
+    RpcError error;
+    CHECK_FALSE(s->commit_transaction(l, a, time::wall_unix_ms() + 86'400'000, result, error));
+    CHECK(error.code == codes::k_not_found);
+    CHECK(error.message.find("lapsed") != std::string::npos);
+    CHECK(host.property(oid(3), "color").is_null());
+
+    // One left open for the next process.
+    t = begin_on(host, "world", who("a"));
+    staged(host, t, one(set(oid(3), "color", JsonValue(9))), who("a"));
+    host.ok("session.close", obj({}));
+  }
+  // A host started for one call commits what an earlier one staged: the table is on disk.
+  Host next;
+  next.open(dir, false);
+  const JsonValue listed = next.ok("doc.transactions", obj({{"actor", JsonValue("a")}}));
+  REQUIRE(at(listed, "transactions").size() == 1);
+  CHECK(num(at(at(listed, "transactions")[0], "id")) == static_cast<i64>(t));
+  CHECK(at(ended(next, "doc.commit", t, who("a")), "committed") == JsonValue(true));
+  CHECK(next.property(oid(3), "color") == JsonValue(9));
+}
+
+TEST_CASE("transactions: roles, proposals and leases check every staging call and the commit") {
+  TempDir tmp("protocol_transactions");
+  Host host;
+  host.make_world(tmp.file("doc"));
+  std::string message;
+  REQUIRE(host.policy.load_roles("roles.json", k_roles, message));
+  JsonValue e;
+  // The dispatcher's gate: doc.begin is a write, so QA (the default role) and a role whose
+  // methods do not name it are refused; doc.transactions is a read.
+  CHECK(host.fails("doc.begin", obj({{"layer", JsonValue("world")}, {"attribution", who("q")}}),
+                   &e) == codes::k_forbidden);
+  CHECK(at(at(e, "data"), "reason") == JsonValue("method"));
+  CHECK(host.fails("doc.begin", obj({{"layer", JsonValue("world")},
+                                     {"attribution", who("m", "mapper")}})) == codes::k_forbidden);
+  host.ok("doc.transactions", obj({}));
+  // Fail fast: a role that needs review may write only its own proposals, so a transaction on
+  // the world is refused when it is opened, not when it is committed.
+  CHECK(host.fails("doc.begin",
+                   obj({{"layer", JsonValue("world")}, {"attribution", who("w", "writer")}}),
+                   &e) == codes::k_forbidden);
+
+  const JsonValue d = who("d", "director", "recolour in a proposal");
+  host.ok("doc.propose_layer",
+          obj({{"name", JsonValue("p.d")}, {"target", JsonValue("world")}, {"attribution", d}}));
+  // Someone else's proposal is refused at doc.begin.
+  CHECK(host.fails("doc.begin",
+                   obj({{"layer", JsonValue("p.d")}, {"attribution", who("w", "writer")}}),
+                   &e) == codes::k_forbidden);
+  CHECK(at(at(e, "data"), "reason") == JsonValue("proposal owner"));
+  const u64 p = begin_on(host, "p.d", d);
+  staged(host, p, one(set(oid(1), "color", JsonValue(3))), d);
+  CHECK(at(ended(host, "doc.commit", p, d), "committed") == JsonValue(true));
+  // The commit wrote the proposal as a doc.apply does: its first touch is its merge base.
+  const JsonValue promoted =
+      host.ok("doc.promote", obj({{"proposal", JsonValue("p.d")}, {"attribution", d}}));
+  CHECK(at(promoted, "promoted") == JsonValue(true));
+  CHECK(host.layer_property("world", oid(1), "color") == JsonValue(3));
+
+  // Leases: required, so a staging call with none is refused at once, and the commit asks again.
+  host.ok("lease.require", obj({{"required", JsonValue(true)}, {"attribution", d}}));
+  const u64 l = begin_on(host, "world", d);
+  CHECK(staged_fails(host, l, one(set(oid(1), "color", JsonValue(4))), d) ==
+        codes::k_lease_required);
+  const JsonValue lease = host.ok("lease.acquire", obj({{"layer", JsonValue("world")},
+                                                        {"tiles", ranges({range(0, 0, 0, 0)})},
+                                                        {"attribution", d}}));
+  staged(host, l, one(set(oid(1), "color", JsonValue(4))), d);
+  host.ok("lease.release", obj({{"lease", at(lease, "id")}, {"attribution", d}}));
+  const i64 before = journal_length(host);
+  CHECK(host.fails("doc.commit", obj({{"transaction", JsonValue(l)}, {"attribution", d}})) ==
+        codes::k_lease_required);
+  CHECK(journal_length(host) == before);
+  CHECK(at(host.ok("doc.transactions", obj({})), "transactions").size() == 1);  // still open
+  host.ok("lease.acquire", obj({{"layer", JsonValue("world")},
+                                {"tiles", ranges({range(0, 0, 0, 0)})},
+                                {"attribution", d}}));
+  CHECK(at(ended(host, "doc.commit", l, d), "committed") == JsonValue(true));
+  CHECK(host.layer_property("world", oid(1), "color") == JsonValue(4));
+}
+
+// ---- place_asset and instantiate_template (plan 06 §6.9; protocol.md, "Placing an asset,
+// instantiating a template") --------------------------------------------------------------------
+
+namespace {
+
+void write_bytes(const std::string& path, std::string_view bytes) {
+  std::ofstream f(path, std::ios::binary);
+  f << bytes;
+}
+
+JsonValue node(Id128 id, f64 x, f64 z, Id128 parent = {}) {
+  JsonValue c = obj({{"kind", JsonValue("CreateObject")},
+                     {"id", JsonValue(hex(id))},
+                     {"type", JsonValue("engine.world.Node")},
+                     {"value", obj({{"name", JsonValue("n")}, {"position", position(x, z)}})}});
+  if (!parent.is_null()) c.set("parent", JsonValue(hex(parent)));
+  return c;
+}
+
+JsonValue placement(f64 x, f64 z, const char* name) {
+  return obj({{"name", JsonValue(name)}, {"translation", position(x, z)}});
+}
+
+f64 coord(const JsonValue& point, u32 i) {
+  f64 v = 0;
+  REQUIRE(point[i].get_f64(v));
+  return v;
+}
+
+}  // namespace
+
+TEST_CASE("place_asset: a checked mesh placed as MeshPlacement records, ids from the seed") {
+  TempDir tmp("protocol_place");
+  const std::string dir = tmp.file("doc");
+  Host host;
+  host.make_world(dir);
+  write_bytes(dir + "/crate.glb", std::string("glTF\x02\0\0\0", 8));
+  write_bytes(dir + "/tree.gltf", R"({"asset":{"version":"2.0"},"meshes":[]})");
+  write_bytes(dir + "/fake.glb", "not a glb");
+  write_bytes(dir + "/notes.txt", "x");
+  const JsonValue a = who("a", "", "two crates by the gate");
+  JsonValue two = JsonValue::array();
+  two.push_back(placement(1, 2, "crate a"));
+  two.push_back(placement(3, 4, "crate b"));
+  const auto params = [&](const char* asset, JsonValue list, u64 seed = 7) {
+    return obj({{"asset", JsonValue(asset)},
+                {"placements", std::move(list)},
+                {"seed", JsonValue(seed)},
+                {"attribution", a}});
+  };
+  const i64 before = journal_length(host);
+  const JsonValue r = host.ok("doc.place_asset", params("crate.glb", two));
+  CHECK(at(r, "kind") == JsonValue("glb"));
+  CHECK(num(at(r, "bytes")) == 8);
+  CHECK(at(at(r, "apply"), "committed") == JsonValue(true));
+  REQUIRE(at(r, "ids").size() == 2);
+  CHECK(journal_length(host) == before + 1);  // one transaction
+  const JsonValue view = host.ok("doc.get", obj({{"id", at(r, "ids")[1]}}));
+  CHECK(at(view, "type") == JsonValue("engine.scene.MeshPlacement"));
+  CHECK(at(at(view, "properties"), "mesh") == JsonValue("crate.glb"));
+  CHECK(at(at(view, "properties"), "name") == JsonValue("crate b"));
+  CHECK(coord(at(at(view, "properties"), "translation"), 2) == 4.0);
+  CHECK(at(host.ok("doc.validate", obj({})), "ok") == JsonValue(true));
+
+  // The same call in another document makes the same ids; another seed, others.
+  Host other;
+  other.make_world(tmp.file("other"));
+  write_bytes(tmp.file("other") + "/crate.glb", std::string("glTF\x02\0\0\0", 8));
+  CHECK(at(other.ok("doc.place_asset", params("crate.glb", two)), "ids") == at(r, "ids"));
+  CHECK(at(other.ok("doc.place_asset", params("crate.glb", two, 8)), "ids")[0] != at(r, "ids")[0]);
+
+  // A .gltf reads as JSON naming its asset version; staged into a transaction it is not placed yet.
+  const u64 t = begin_on(host, "", a);
+  JsonValue staged_params = params("tree.gltf", one(placement(9, 9, "tree")));
+  staged_params.set("transaction", JsonValue(t));
+  const JsonValue s = host.ok("doc.place_asset", staged_params);
+  CHECK(at(s, "kind") == JsonValue("gltf"));
+  CHECK(num(at(at(s, "apply"), "staged")) == 1);
+  CHECK(host.fails("doc.get", obj({{"id", at(s, "ids")[0]}})) == codes::k_not_found);
+  ended(host, "doc.commit", t, a);
+  host.ok("doc.get", obj({{"id", at(s, "ids")[0]}}));
+
+  // Refused: a file that is not a mesh kind, one that is not there, one that does not read as its
+  // kind, and nothing to place.
+  CHECK(host.fails("doc.place_asset", params("notes.txt", two)) == codes::k_invalid_argument);
+  CHECK(host.fails("doc.place_asset", params("missing.glb", two)) == codes::k_not_found);
+  CHECK(host.fails("doc.place_asset", params("fake.glb", two)) == codes::k_invalid_argument);
+  CHECK(host.fails("doc.place_asset", params("crate.glb", JsonValue::array())) ==
+        codes::k_invalid_argument);
+  // A role that may not write is refused at the gate, as for doc.apply.
+  std::string message;
+  REQUIRE(host.policy.load_roles("roles.json", k_roles, message));
+  JsonValue e;
+  CHECK(host.fails("doc.place_asset",
+                   obj({{"asset", JsonValue("crate.glb")},
+                        {"placements", two},
+                        {"attribution", who("q", "qa")}}),
+                   &e) == codes::k_forbidden);
+  CHECK(at(at(e, "data"), "method") == JsonValue("doc.place_asset"));
+}
+
+TEST_CASE("place_asset: reads only under the document's directory, and says nothing of the rest") {
+  TempDir tmp("protocol_place_root");
+  const std::string dir = tmp.file("doc");
+  Host host;
+  host.make_world(dir);
+  // A real .glb beside the document and one inside it, under a directory of its own.
+  const std::string glb("glTF\x02\0\0\0", 8);
+  write_bytes(tmp.file("outside.glb"), glb);
+  std::filesystem::create_directories(dir + "/props");
+  write_bytes(dir + "/props/crate.glb", glb);
+  const JsonValue a = who("a", "", "a crate");
+  const auto params = [&](const std::string& asset) {
+    return obj({{"asset", JsonValue(asset)},
+                {"placements", one(placement(1, 2, "crate"))},
+                {"attribution", a}});
+  };
+  host.ok("doc.place_asset", params("props/crate.glb"));
+  host.ok("doc.place_asset", params("props\\crate.glb"));
+  // The file outside exists and reads as a .glb, and every way of naming it is refused with the
+  // sentence a missing file gets: absolute, climbing out, a drive, a stream, an empty name.
+  JsonValue missing;
+  REQUIRE(host.fails("doc.place_asset", params("props/missing.glb"), &missing) ==
+          codes::k_not_found);
+  const std::string climbing[] = {
+      tmp.file("outside.glb"), "../outside.glb",        "props/../../outside.glb",
+      "..\\outside.glb",       "/outside.glb",          "\\\\host\\share\\outside.glb",
+      "C:outside.glb",         "props/crate.glb:x.glb", "props//crate.glb"};
+  const i64 before = journal_length(host);
+  for (const std::string& asset : climbing) {
+    JsonValue e;
+    CHECK_MESSAGE(host.fails("doc.place_asset", params(asset), &e) == codes::k_not_found, asset);
+    CHECK_MESSAGE(at(e, "message") == at(missing, "message"), asset);
+  }
+  CHECK(journal_length(host) == before);
+}
+
+TEST_CASE("instantiate_template: a subtree copied under fresh ids, offset, with its origin") {
+  TempDir tmp("protocol_template");
+  Host host;
+  host.make_world(tmp.file("doc"));
+  const JsonValue a = who("a", "", "a second yard");
+  // The template: a yard node with two children, one with a child of its own.
+  JsonValue yard = JsonValue::array();
+  yard.push_back(node(oid(20), 5, 5));
+  yard.push_back(node(oid(21), 6, 5, oid(20)));
+  yard.push_back(node(oid(22), 7, 5, oid(20)));
+  yard.push_back(node(oid(23), 7, 6, oid(22)));
+  host.apply(yard, a, "world");
+  const auto params = [&](Id128 root, u32 max_records = 10000) {
+    JsonValue offset = JsonValue::array();
+    offset.push_back(JsonValue(100.0));
+    offset.push_back(JsonValue(0.0));
+    offset.push_back(JsonValue(-10.0));
+    return obj({{"root", JsonValue(hex(root))},
+                {"offset", offset},
+                {"seed", JsonValue(u64{3})},
+                {"max_records", JsonValue(max_records)},
+                {"layer", JsonValue("world")},
+                {"attribution", a}});
+  };
+  const i64 before = journal_length(host);
+  const JsonValue r = host.ok("doc.instantiate_template", params(oid(20)));
+  CHECK(journal_length(host) == before + 1);
+  const JsonValue& ids = at(r, "ids");
+  REQUIRE(ids.size() == 4);
+  // Depth first, children by id: the copy's order is the template's.
+  const JsonValue root = host.ok("doc.get", obj({{"id", ids[0]}}));
+  CHECK(at(root, "parent") == JsonValue(hex(Id128{})));
+  CHECK(coord(at(at(root, "properties"), "position"), 0) == 105.0);
+  CHECK(coord(at(at(root, "properties"), "position"), 2) == -5.0);
+  const JsonValue deepest = host.ok("doc.get", obj({{"id", ids[3]}}));
+  CHECK(at(deepest, "parent") == ids[2]);
+  CHECK(coord(at(at(deepest, "properties"), "position"), 0) == 107.0);
+  // The template is untouched, and the copy validates.
+  CHECK(coord(host.property(oid(23), "position"), 0) == 7.0);
+  CHECK(at(host.ok("doc.validate", obj({})), "ok") == JsonValue(true));
+
+  // The origin: a child of the copy's root, standing where it stands.
+  const JsonValue kids =
+      host.ok("doc.objects",
+              obj({{"parent", ids[0]}, {"type", JsonValue("engine.protocol.TemplateOrigin")}}));
+  REQUIRE(at(kids, "objects").size() == 1);
+  const JsonValue& origin = at(at(kids, "objects")[0], "properties");
+  CHECK(at(origin, "source_root") == JsonValue(hex(oid(20))));
+  CHECK(at(origin, "sources").size() == 4);
+  CHECK(at(origin, "copies") == ids);
+  CHECK(coord(at(origin, "position"), 0) == 105.0);
+
+  // A copy of the copy leaves its origin behind and records its own.
+  Id128 copy;
+  REQUIRE(Id128::from_hex(ids[0].as_string(), copy));
+  const JsonValue again = host.ok("doc.instantiate_template", params(copy));
+  CHECK(at(again, "ids").size() == 4);
+  // One undo takes a copy back whole.
+  host.ok("doc.undo", obj({}));
+  CHECK(host.fails("doc.get", obj({{"id", at(again, "ids")[0]}})) == codes::k_not_found);
+
+  // Refused: an unknown template, one over max_records.
+  CHECK(host.fails("doc.instantiate_template", params(oid(99))) == codes::k_not_found);
+  JsonValue e;
+  CHECK(host.fails("doc.instantiate_template", params(oid(20), 3), &e) ==
+        codes::k_invalid_argument);
+  CHECK(std::string(at(e, "message").as_string()).find("max_records") != std::string::npos);
+  // Staged into a transaction, nothing is copied until the commit.
+  const u64 t = begin_on(host, "world", a);
+  JsonValue staged_params = params(oid(22));
+  staged_params.set("transaction", JsonValue(t));
+  staged_params.set("seed", JsonValue(u64{4}));
+  const JsonValue s = host.ok("doc.instantiate_template", staged_params);
+  CHECK(num(at(at(s, "apply"), "staged")) == 3);  // two nodes and the origin
+  CHECK(at(ended(host, "doc.commit", t, a), "committed") == JsonValue(true));
+  host.ok("doc.get", obj({{"id", at(s, "ids")[1]}}));
+}
+
+// ---- describe (plan 06 §6.6; protocol.md, "Describing an object, a tile or a region") ---------
+
+namespace {
+
+// The world's four props, and in tile (0, 0) a yard: a node with two child nodes, the first with a
+// child of its own.
+void make_yard(Host& host) {
+  JsonValue yard = JsonValue::array();
+  yard.push_back(node(oid(20), 5, 5));
+  yard.push_back(node(oid(21), 6, 6, oid(20)));
+  yard.push_back(node(oid(22), 7, 7, oid(20)));
+  yard.push_back(node(oid(23), 8, 8, oid(21)));
+  host.apply(yard, who("setup"));
+}
+
+JsonValue describe(Host& host, JsonValue params) { return host.ok("doc.describe", params); }
+
+Vector<std::string> listed_ids(const JsonValue& r) {
+  Vector<std::string> ids;
+  const JsonValue& records = at(r, "records");
+  for (u32 i = 0; i < records.size(); ++i)
+    ids.push_back(std::string(at(records[i], "id").as_string()));
+  return ids;
+}
+
+}  // namespace
+
+TEST_CASE("describe: an object at three details, its sentence, and the bounds") {
+  TempDir tmp("protocol_describe_object");
+  Host host;
+  host.make_world(tmp.file("doc"));
+  make_yard(host);
+  const auto params = [](const char* detail, u32 max_records = 256, u32 max_bytes = 65536) {
+    return obj({{"id", JsonValue(hex(oid(20)))},
+                {"detail", JsonValue(detail)},
+                {"max_records", JsonValue(max_records)},
+                {"max_bytes", JsonValue(max_bytes)}});
+  };
+  // Summary: the object alone, its children counted; the sentence names it, where it is, and what
+  // it holds, the same words from a second call.
+  const JsonValue s = describe(host, params("Summary"));
+  CHECK(at(s, "scope") == JsonValue("object"));
+  CHECK(num(at(s, "total")) == 3);
+  CHECK(num(at(s, "omitted")) == 2);
+  CHECK(listed_ids(s) == Vector<std::string>{hex(oid(20))});
+  const std::string sentence(at(s, "summary").as_string());
+  CHECK(sentence.find("engine.world.Node 'n' " + hex(oid(20)) + " at (5.00, 0.00, 5.00)") == 0);
+  CHECK(sentence.find(", a root, with 2 live records as children: 2 engine.world.Node.") !=
+        std::string::npos);
+  CHECK(at(describe(host, params("Summary")), "summary") == at(s, "summary"));
+  const JsonValue& self = at(s, "records")[0];
+  CHECK(num(at(self, "children")) == 2);
+  CHECK(coord(at(self, "position"), 2) == 5.0);
+  CHECK(at(self, "properties").size() == 0);
+
+  // Standard: the object and its children by id, no properties; Full: the subtree depth first,
+  // with properties.
+  const JsonValue st = describe(host, params("Standard"));
+  CHECK(listed_ids(st) == Vector<std::string>{hex(oid(20)), hex(oid(21)), hex(oid(22))});
+  CHECK(num(at(at(st, "records")[1], "depth")) == 1);
+  CHECK(at(at(st, "records")[1], "parent") == JsonValue(hex(oid(20))));
+  CHECK(at(at(st, "records")[2], "properties").size() == 0);
+  const JsonValue full = describe(host, params("Full"));
+  CHECK(num(at(full, "total")) == 4);
+  CHECK(listed_ids(full) ==
+        Vector<std::string>{hex(oid(20)), hex(oid(21)), hex(oid(23)), hex(oid(22))});
+  CHECK(num(at(at(full, "records")[2], "depth")) == 2);
+  CHECK(at(at(at(full, "records")[2], "properties"), "name") == JsonValue("n"));
+  CHECK(std::string(at(full, "summary").as_string()).find("3 live records in its subtree") !=
+        std::string::npos);
+  CHECK(at(full, "bound") == JsonValue(""));
+
+  // Bounds: the rest is counted and the sentence says by which bound; the object itself is always
+  // listed, however small the bound.
+  const JsonValue two = describe(host, params("Full", 2));
+  CHECK(listed_ids(two).size() == 2);
+  CHECK(num(at(two, "omitted")) == 2);
+  CHECK(at(two, "bound") == JsonValue("max_records"));
+  CHECK(std::string(at(two, "summary").as_string())
+            .find("Listed 2 of 4; 2 left out by max_records.") != std::string::npos);
+  const JsonValue small = describe(host, params("Full", 256, 1024));
+  CHECK(at(small, "bound") == JsonValue("max_bytes"));
+  CHECK(num(at(small, "bytes")) <= 1024);
+  CHECK(listed_ids(small).size() + num(at(small, "omitted")) == 4);
+  CHECK(listed_ids(describe(host, params("Full", 1))) == Vector<std::string>{hex(oid(20))});
+
+  // Refused: an unknown or deleted object, no target or two, a bound out of range.
+  CHECK(host.fails("doc.describe", obj({{"id", JsonValue(hex(oid(99)))}})) == codes::k_not_found);
+  host.apply(one(del(oid(22))), who("setup"));
+  CHECK(host.fails("doc.describe", obj({{"id", JsonValue(hex(oid(22)))}})) == codes::k_not_found);
+  CHECK(listed_ids(describe(host, params("Standard"))).size() == 2);
+  CHECK(host.fails("doc.describe", obj({})) == codes::k_invalid_argument);
+  CHECK(host.fails("doc.describe",
+                   obj({{"id", JsonValue(hex(oid(20)))},
+                        {"tile", obj({{"x", JsonValue(0)}, {"y", JsonValue(0)}})}})) ==
+        codes::k_invalid_argument);
+  CHECK(host.fails("doc.describe", params("Full", 0)) == codes::k_invalid_argument);
+  CHECK(host.fails("doc.describe", params("Full", 10001)) == codes::k_invalid_argument);
+  CHECK(host.fails("doc.describe", params("Full", 256, 1023)) == codes::k_invalid_argument);
+}
+
+TEST_CASE("describe: a tile and a region from the tile index, in one order, under any role") {
+  TempDir tmp("protocol_describe_tiles");
+  Host host;
+  host.make_world(tmp.file("doc"));
+  make_yard(host);
+  const auto at_tile = [](i32 x, i32 y) {
+    return obj({{"tile", obj({{"x", JsonValue(x)}, {"y", JsonValue(y)}})}});
+  };
+  const auto region = [](i32 x0, i32 y0, i32 x1, i32 y1, const char* detail = "Standard") {
+    return obj({{"region", range(x0, y0, x1, y1)}, {"detail", JsonValue(detail)}});
+  };
+  // Tile (0, 0): prop 1 and the yard's four nodes, by id.
+  const JsonValue t = describe(host, at_tile(0, 0));
+  CHECK(at(t, "scope") == JsonValue("tile"));
+  CHECK(at(t, "summary") == JsonValue("Tile (0, 0) holds 5 live records: 4 engine.world.Node and 1 "
+                                      "engine.protocol.test.Prop."));
+  CHECK(listed_ids(t) ==
+        Vector<std::string>{hex(oid(1)), hex(oid(20)), hex(oid(21)), hex(oid(22)), hex(oid(23))});
+  CHECK(num(at(t, "occupied_tiles")) == 1);
+  CHECK(at(at(t, "records")[0], "tiled") == JsonValue(true));
+  CHECK(at(at(t, "types")[0], "type") == JsonValue("engine.world.Node"));
+  CHECK(at(describe(host, at_tile(9, 9)), "summary") ==
+        JsonValue("Tile (9, 9) holds no live records."));
+
+  // A region walked tile by tile (4 tiles, 4 occupied) and one answered from the live set (9
+  // tiles): the same records in the same order, row by row.
+  const JsonValue by_tiles = describe(host, region(0, 0, 1, 1));
+  const JsonValue by_objects = describe(host, region(-1, -1, 1, 1));
+  CHECK(num(at(by_tiles, "total")) == 7);
+  CHECK(listed_ids(by_tiles) == listed_ids(by_objects));
+  CHECK(listed_ids(by_tiles) == Vector<std::string>{hex(oid(1)), hex(oid(20)), hex(oid(21)),
+                                                    hex(oid(22)), hex(oid(23)), hex(oid(2)),
+                                                    hex(oid(3))});
+  CHECK(std::string(at(by_objects, "summary").as_string())
+            .find("Tiles (-1, -1) to (1, 1), 3 of 9 occupied, hold 7 live records") == 0);
+  CHECK(listed_ids(describe(host, region(0, 0, 1, 1, "Summary"))).size() == 0);
+
+  // Refused: a region too large or upside down.
+  CHECK(host.fails("doc.describe", region(0, 0, 256, 255)) == codes::k_invalid_argument);
+  CHECK(host.ok("doc.describe", region(0, 0, 255, 255)).find("total") != nullptr);
+  CHECK(host.fails("doc.describe", region(1, 0, 0, 0)) == codes::k_invalid_argument);
+
+  // A read: a role that may write nothing describes, and the catalogue says so.
+  std::string message;
+  REQUIRE(host.policy.load_roles("roles.json", k_roles, message));
+  host.policy.identity.role = "qa";
+  CHECK(host.apply_fails(one(set(oid(1), "color", JsonValue(4))), who("q")) == codes::k_forbidden);
+  CHECK(num(at(describe(host, at_tile(0, 0)), "total")) == 5);
+  const JsonValue methods = at(host.ok("engine.methods", JsonValue()), "methods");
+  bool found = false;
+  for (u32 i = 0; i < methods.size(); ++i)
+    if (at(methods[i], "name") == JsonValue("doc.describe")) {
+      found = true;
+      CHECK(at(methods[i], "read_only") == JsonValue(true));
+    }
+  CHECK(found);
+}
+
+// ---- query (plan 06 §6.6; protocol.md, "Querying the document") ------------------------------
+
+namespace {
+
+JsonValue query(Host& host, JsonValue filter,
+                std::initializer_list<std::pair<const char*, JsonValue>> extra = {}) {
+  JsonValue params = obj({{"filter", std::move(filter)}});
+  for (auto& [k, v] : extra)
+    params.set(k, v);
+  return host.ok("doc.query", params);
+}
+
+JsonValue term(const char* property, const char* test, JsonValue value) {
+  return obj({{"property", JsonValue(property)}, {test, std::move(value)}});
+}
+
+JsonValue terms(const char* op, std::initializer_list<JsonValue> list) {
+  JsonValue a = JsonValue::array();
+  for (const JsonValue& t : list)
+    a.push_back(t);
+  return obj({{op, std::move(a)}});
+}
+
+}  // namespace
+
+TEST_CASE("query: a structured filter over the document, in id order, a page at a time") {
+  TempDir tmp("protocol_query");
+  Host host;
+  host.make_world(tmp.file("doc"));
+  make_yard(host);
+  host.apply(one(set(oid(2), "color", JsonValue(7))), who("setup"));
+  // Every live record, then by type pattern, by a property test, and composed.
+  CHECK(at(query(host, JsonValue()), "rows").size() == 8);
+  CHECK(listed_ids(JsonValue(
+            obj({{"records", at(query(host, obj({{"type", JsonValue("*.Node")}})), "rows")}}))) ==
+        Vector<std::string>{hex(oid(20)), hex(oid(21)), hex(oid(22)), hex(oid(23))});
+  const JsonValue east = query(host, term("position[0]", "at_least", JsonValue(10)),
+                               {{"fields", strings({"position", "color"})}});
+  REQUIRE(at(east, "rows").size() == 2);  // props 2 (x 15) and 4 (x 55)
+  CHECK(at(at(east, "rows")[0], "id") == JsonValue(hex(oid(2))));
+  CHECK(at(at(at(east, "rows")[0], "fields"), "color") == JsonValue(7));
+  CHECK(at(at(east, "rows")[1], "fields").find("color") == nullptr);
+  CHECK(at(east, "complete") == JsonValue(true));
+  const JsonValue mixed = query(
+      host,
+      terms("any", {term("color", "equals", JsonValue(7.0)),
+                    terms("all", {obj({{"type", JsonValue("engine.world.Node")}}),
+                                  obj({{"not", obj({{"parent", JsonValue(hex(oid(20)))}})}})})}));
+  // Prop 2 (its colour, 7, compared by value) and the yard's two nodes not directly under it.
+  CHECK(listed_ids(JsonValue(obj({{"records", at(mixed, "rows")}}))) ==
+        Vector<std::string>{hex(oid(2)), hex(oid(20)), hex(oid(23))});
+  CHECK(at(query(host, term("name", "prefix", JsonValue("p"))), "rows").size() == 4);
+  CHECK(at(query(host, term("color", "exists", JsonValue(false))), "rows").size() == 7);
+
+  // Narrowed through the indices: a parent's children, a region's tiles.
+  CHECK(at(query(host, JsonValue(), {{"parent", JsonValue(hex(oid(20)))}}), "rows").size() == 2);
+  CHECK(at(query(host, JsonValue(), {{"region", range(0, 0, 0, 1)}}), "candidates") ==
+        JsonValue(u32{6}));
+  CHECK(at(query(host, JsonValue(), {{"region", range(-50, -50, 50, 50)}}), "rows").size() == 8);
+
+  // Pages: three rows at a time, resumed after `next`, the same rows as one call, none twice.
+  Vector<std::string> paged;
+  JsonValue after = JsonValue(hex(Id128{}));
+  for (u32 page = 0; page < 4; ++page) {
+    const JsonValue r =
+        query(host, JsonValue(), {{"max_rows", JsonValue(u32{3})}, {"after", after}});
+    for (u32 i = 0; i < at(r, "rows").size(); ++i)
+      paged.push_back(std::string(at(at(r, "rows")[i], "id").as_string()));
+    if (at(r, "complete") == JsonValue(true)) break;
+    CHECK(at(r, "bound") == JsonValue("max_rows"));
+    after = at(r, "next");
+  }
+  CHECK(paged == listed_ids(JsonValue(obj({{"records", at(query(host, JsonValue()), "rows")}}))));
+  // The examination bound stops early and says where to go on from.
+  const JsonValue few =
+      query(host, obj({{"type", JsonValue("*.Node")}}), {{"max_examined", JsonValue(u32{2})}});
+  CHECK(at(few, "rows").size() == 0);  // props 1 and 2 examined, neither a node
+  CHECK(at(few, "bound") == JsonValue("max_examined"));
+  CHECK(at(few, "next") == JsonValue(hex(oid(2))));
+  CHECK(at(query(host, JsonValue(),
+                 {{"max_bytes", JsonValue(u32{1024})}, {"fields", strings({"name", "position"})}}),
+           "bound") == JsonValue("max_bytes"));
+
+  // Refused, naming the path: malformed terms, too deep, too many, bounds out of range.
+  JsonValue e;
+  CHECK(host.fails("doc.query", obj({{"filter", obj({{"colour", JsonValue(1)}})}}), &e) ==
+        codes::k_invalid_argument);
+  CHECK(host.fails("doc.query",
+                   obj({{"filter", terms("all", {term("x", "between", JsonValue(1))})}}),
+                   &e) == codes::k_invalid_argument);
+  CHECK(std::string(at(e, "message").as_string()).find("filter.all[0]") == 0);
+  CHECK(host.fails("doc.query", obj({{"filter", term("x", "at_least", JsonValue("a"))}})) ==
+        codes::k_invalid_argument);
+  CHECK(host.fails("doc.query", obj({{"filter", term("x[]", "exists", JsonValue(true))}})) ==
+        codes::k_invalid_argument);
+  JsonValue deep = obj({{"type", JsonValue("*")}});
+  for (u32 i = 0; i < 40; ++i)
+    deep = obj({{"not", deep}});
+  CHECK(host.fails("doc.query", obj({{"filter", deep}})) == codes::k_invalid_argument);
+  JsonValue wide = JsonValue::array();
+  for (u32 i = 0; i < 1100; ++i)
+    wide.push_back(obj({{"type", JsonValue("*")}}));
+  CHECK(host.fails("doc.query", obj({{"filter", obj({{"any", wide}})}})) ==
+        codes::k_invalid_argument);
+  CHECK(host.fails("doc.query", obj({{"max_rows", JsonValue(u32{0})}})) ==
+        codes::k_invalid_argument);
+  CHECK(host.fails("doc.query", obj({{"max_ms", JsonValue(u32{10001})}})) ==
+        codes::k_invalid_argument);
+  CHECK(host.fails("doc.query", obj({{"parent", JsonValue(hex(oid(20)))},
+                                     {"region", range(0, 0, 0, 0)}})) == codes::k_invalid_argument);
+  // A read: QA queries.
+  std::string message;
+  REQUIRE(host.policy.load_roles("roles.json", k_roles, message));
+  host.policy.identity.role = "qa";
+  CHECK(at(query(host, JsonValue()), "rows").size() == 8);
 }

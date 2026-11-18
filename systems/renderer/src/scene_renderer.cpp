@@ -2,6 +2,7 @@
 #include <core/containers/small_vector.h>
 #include <core/jobs/job_system.h>
 #include <core/platform/process.h>
+#include <core/profiling/frame_capture.h>
 #include <core/profiling/startup_trace.h>
 #include <core/time/time.h>
 #include <domain/gfx/capture.h>
@@ -650,6 +651,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   ray_params_.resize(desc.frames_in_flight);
   slot_frame_.assign(desc.frames_in_flight, 0);
   slot_submission_.assign(desc.frames_in_flight, 0);
+  slot_capture_.assign(desc.frames_in_flight, 0);
   slot_pairs_.assign(desc.frames_in_flight, 0);
   slot_instances_.assign(desc.frames_in_flight, 0);
   slot_holes_.assign(desc.frames_in_flight, 0);
@@ -2195,6 +2197,32 @@ void SceneRenderer::fold_visible(u32 slot) {
   }
 }
 
+namespace {
+// The frame capture's frame numbers: one sequence for every renderer of the process.
+std::atomic<u64> g_capture_frames{0};
+}  // namespace
+
+// The frame that last used `slot` into the frame capture, when it began with the capture on:
+// every GPU timer zone under its own name, and the frame's CPU spans (`FrameCpu`), against the
+// number the frame began with (renderer.md, "The frame capture"). Nothing when the capture is off.
+void SceneRenderer::record_capture(u32 slot) const {
+  const u64 frame = slot < slot_capture_.size() ? slot_capture_[slot] : 0;
+  if (frame == 0 || !profiling::capture_enabled()) return;
+  for (const gfx::GpuTimer::Zone& zone : timer_.results())
+    profiling::capture_value(profiling::CaptureTrack::gpu, zone.name, frame, zone.ms);
+  if (slot >= slot_cpu_.size()) return;
+  const FrameCpu& cpu = slot_cpu_[slot];
+  const struct {
+    const char* name;
+    f64 ms;
+  } spans[] = {{"renderer.wait", cpu.wait_ms},     {"renderer.begin", cpu.begin_ms},
+               {"renderer.tables", cpu.tables_ms}, {"renderer.terrain", cpu.terrain_ms},
+               {"renderer.passes", cpu.passes_ms}, {"renderer.compile", cpu.compile_ms},
+               {"renderer.record", cpu.record_ms}, {"renderer.submit", cpu.submit_ms}};
+  for (const auto& span : spans)
+    profiling::capture_value(profiling::CaptureTrack::cpu, span.name, frame, span.ms);
+}
+
 void SceneRenderer::collect_slot(u32 slot) {
   fold_visible(slot);
   // The page feedback of the frame that last used this slot, read now that the slot has come
@@ -2321,6 +2349,7 @@ void SceneRenderer::collect_slot(u32 slot) {
     stats_.tiles.gpu_tables += last.gpu_tables;
     stats_.tiles.gpu_pair_expand += last.gpu_pair_expand;
   }
+  record_capture(slot);
   // What sampled the frame over time (ADR-0064): its record's block, and whether its times are a
   // cost.
   last.reconstruction = reconstruction();
@@ -2405,6 +2434,14 @@ void SceneRenderer::collect_visible() {
 }
 
 void SceneRenderer::begin_frame() {
+  // The frame capture's mark (profiling.md, "The frame capture"; renderer.md, "The frame
+  // capture"): a frame begins with its wait for the slot, under a number no other renderer of the
+  // process gives a frame, so two scenes' frames in one capture stay apart.
+  capture_frame_ = 0;
+  if (profiling::capture_enabled()) {
+    capture_frame_ = g_capture_frames.fetch_add(1, std::memory_order_relaxed) + 1;
+    profiling::capture_frame(capture_frame_);
+  }
   // The wait for the slot first, on its own clock: it is the GPU's time, and what follows it — the
   // slot's deferred frees, its timestamps, the fold, a step of the chain's capacity — is the CPU's
   // (`FrameCpu`).
@@ -2791,6 +2828,7 @@ u64 SceneRenderer::submit_frame(const FrameDesc& frame, std::string* error) {
   if (slot < slot_frame_.size()) {
     slot_frame_[slot] = frame.frame_index;
     slot_submission_[slot] = submitted_;
+    if (slot < slot_capture_.size()) slot_capture_[slot] = capture_frame_;
     slot_pairs_[slot] = scene_->pair_count();
     slot_instances_[slot] = scene_->instance_count();
     slot_holes_[slot] = scene_->dynamic() ? scene_->tile_layout().hole_pairs() : 0u;
@@ -2829,6 +2867,7 @@ u64 SceneRenderer::submit_frame(const FrameDesc& frame, std::string* error) {
   }
   frame_cpu_.slowest_pass_ms = static_cast<f64>(slowest) / 1.0e6;
   if (slot < slot_cpu_.size()) slot_cpu_[slot] = frame_cpu_;
+  if (capture_frame_ != 0) profiling::capture_frame_end(capture_frame_);
   // **A frame whose recording took long says where** (renderer.md, "What a frame waits for"): the
   // same parts, in the log, for a host that keeps no frame records. The flight of 2026-09-30 had
   // 46–457 ms frames and no way to name the part; this line is how the next one is named.

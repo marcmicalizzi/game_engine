@@ -779,7 +779,7 @@ Build, CI, test and profiling infrastructure, and the machinery behind the stand
 | T41 | Measurements that record the machine's state | done (f174fefc) | | S | routine | [bench](subsystems/bench.md#measuring-on-a-shared-machine) |
 | T42 | No-listeners check | done (6e6f1053) | | S | routine | [runners](ci/self-hosted-runners.md#toolscicheck-no-listenersps1) |
 | T43 | No dialogs on failure | done (4b4c2a89, c75d4e7a) | | M | routine | [platform](subsystems/platform.md#no-engine-binary-opens-a-dialog-when-it-fails) |
-| T44 | Profiling service: frame report, capture export | open | T6 | M | design | [09 §9.3](plan/09-testing-profiling.md#93-profiling-infrastructure-before-optimizing-anything) |
+| T44 | Profiling service: frame report, capture export | done (2026-11-17: "Read the frame capture as a report and a trace", and the threaded capture case's fix "Let every worker record before the capture test stops"; the GPU's own time stamps and a Tracy capture beside the trace are T45's) | T6 | M | design | [profiler](subsystems/profiler.md) |
 | T45 | Tracy zones everywhere, GPU zones, vendor counters | open | T44, R35 | M | routine | [profiling](subsystems/profiling.md) |
 | T46 | Frame-budget files as merge gates | done (2026-10-07, content/budgets/frame-budgets.json) | | M | design | [bench](subsystems/bench.md#frame-budgets) |
 | T47 | Nightly performance regression with significance tests | open | T35, T46 | M | design | [09 §9.1](plan/09-testing-profiling.md#91-test-taxonomy) |
@@ -902,11 +902,11 @@ The engine as a server, its clients, and what agents and the human director work
 | A7 | Day-one operations | done (9a34cca1) | A1 | L | routine | [protocol](subsystems/protocol.md#the-day-one-operations) |
 | A8 | render.capture, benchmark, compare, evaluate | done (da851a1a, eb0a4b47) | R34 | L | routine | [protocol](subsystems/protocol.md#methods-an-app-registers-and-render) |
 | A9 | More capture channels and a contact sheet | open | A8 | M | routine | [06 §6.6](plan/06-agent-tooling.md#66-introspection) |
-| A10 | `profile` over the protocol | open | T44 | M | routine | [06 §6.9](plan/06-agent-tooling.md#69-day-one-operations) |
-| A11 | Explicit begin, commit and rollback | open | A1 | S | routine | [06 §6.9](plan/06-agent-tooling.md#69-day-one-operations) |
-| A12 | `place_asset` and `instantiate_template` | open | A1 | M | design | [06 §6.9](plan/06-agent-tooling.md#69-day-one-operations) |
-| A13 | `describe` an object, tile or region by detail | open | A1 | M | design | [06 §6.6](plan/06-agent-tooling.md#66-introspection) |
-| A14 | `query`: SQL over the store, filters over the document | open | D16 | M | design | [06 §6.6](plan/06-agent-tooling.md#66-introspection) |
+| A10 | `profile` over the protocol | done (2026-11-18: db02547b, 53429e1e. Not done: engine-editor's and engine-view's loops register no profile.*; GPU counters and memory by tag are T45's) | T44 | M | routine | [protocol](subsystems/protocol.md#profile-the-frame-capture-over-the-protocol) |
+| A11 | Explicit begin, commit and rollback | done (2026-11-17: 9863fe4b) | A1 | S | routine | [protocol](subsystems/protocol.md#transactions-a-client-opens) |
+| A12 | `place_asset` and `instantiate_template` | done (2026-11-17: 6d1c9fe6) | A1 | M | design | [protocol](subsystems/protocol.md#placing-an-asset-instantiating-a-template) |
+| A13 | `describe` an object, tile or region by detail | done (2026-11-18: 21bd7be6. Not done: plan 06 §6.7's world mips and overlap ring, the view policy, A26) | A1 | M | design | [protocol](subsystems/protocol.md#describing-an-object-a-tile-or-a-region) |
+| A14 | `query`: SQL over the store, filters over the document | done (2026-11-18: fd1729fb. Not done: SQL over the store, designed on the page and not built; the view policy, A26) | D16 | M | design | [protocol](subsystems/protocol.md#querying-the-document) |
 | A15 | Semantic summaries of diffs | open | D5 | M | design | [06 §6.4](plan/06-agent-tooling.md#64-transactions-checkpoints-rollback) |
 | A16 | Validation service v0 | done (9a34cca1, e0639a1c) | A7 | M | routine | [protocol](subsystems/protocol.md#enginerun_tests) |
 | A17 | The content validators of §6.6 | open | A16 | L | design | [06 §6.6](plan/06-agent-tooling.md#66-introspection) |

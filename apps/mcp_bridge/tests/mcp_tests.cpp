@@ -384,17 +384,63 @@ TEST_CASE("mcp: tools/list gives every tool a JSON Schema generated from the eng
   REQUIRE(tools.size() >= 41);
   JsonValue names = JsonValue::array();
   const JsonValue* by_name[64] = {};
-  const char* wanted[] = {
-      "open_session",   "close_session", "list_sessions", "layers",        "add_layer",
-      "set_edit_layer", "objects",       "get",           "create_object", "set_property",
-      "reparent",       "delete_object", "apply",         "undo",          "redo",
-      "journal",        "diff",          "merge_layers",  "validate",      "describe",
-      "list_schema",    "capture",       "benchmark",     "compare",       "evaluate",
-      "scenes",         "unload",        "get_logs",      "adapters",      "displays",
-      "host_info",      "build_content", "events",        "budgets",       "run_headless",
-      "run_tests",      "acquire_lease", "renew_lease",   "release_lease", "leases",
-      "propose_layer",  "promote",       "state_hash",    "save_game",     "load_game",
-      "materialize"};
+  const char* wanted[] = {"open_session",
+                          "close_session",
+                          "list_sessions",
+                          "layers",
+                          "add_layer",
+                          "set_edit_layer",
+                          "objects",
+                          "get",
+                          "create_object",
+                          "set_property",
+                          "reparent",
+                          "delete_object",
+                          "apply",
+                          "undo",
+                          "redo",
+                          "journal",
+                          "diff",
+                          "merge_layers",
+                          "validate",
+                          "describe",
+                          "list_schema",
+                          "capture",
+                          "benchmark",
+                          "compare",
+                          "evaluate",
+                          "scenes",
+                          "unload",
+                          "get_logs",
+                          "adapters",
+                          "displays",
+                          "host_info",
+                          "build_content",
+                          "events",
+                          "budgets",
+                          "run_headless",
+                          "run_tests",
+                          "acquire_lease",
+                          "renew_lease",
+                          "release_lease",
+                          "leases",
+                          "propose_layer",
+                          "promote",
+                          "state_hash",
+                          "save_game",
+                          "load_game",
+                          "materialize",
+                          "begin_transaction",
+                          "commit",
+                          "rollback",
+                          "transactions",
+                          "place_asset",
+                          "instantiate_template",
+                          "profile_start",
+                          "profile_report",
+                          "profile_stop",
+                          "describe_document",
+                          "query"};
   // Every tool offered is named here, so the count in docs/subsystems/apps.md cannot drift again
   // (it said 45 while there were 46: materialize was offered and never listed).
   CHECK(tools.size() == std::size(wanted));
@@ -785,6 +831,95 @@ TEST_CASE("mcp: a scripted editing session") {
       mcp.tool("open_session", "{\"path\":\"" + tmp.file("nothing-here") + "\"}");
   CHECK(is_error(missing));
   CHECK(text_of(missing).find("\"create\": true") != std::string::npos);
+}
+
+TEST_CASE("mcp: a transaction stages changes from several tools and lands them as one patch") {
+  const test::TempDir tmp("mcp_bridge_transaction");
+  Mcp mcp(tmp.file("ws"));
+  REQUIRE(mcp.ok);
+  mcp.initialize();
+  const JsonValue opened =
+      ok(mcp.tool("open_session", "{\"path\":\"" + tmp.file("world") + "\",\"create\":true}"));
+  const std::string s = "\"session\":\"" + str(opened, "session") + "\"";
+  // A transaction needs a rationale, since its patch records it.
+  CHECK(is_error(mcp.tool("begin_transaction", "{" + s + "}")));
+  const JsonValue begun =
+      ok(mcp.tool("begin_transaction", "{" + s + "," + attribution("two linked objects") + "}"));
+  const std::string t = std::to_string(num(begun, "id"));
+  const JsonValue staged = mcp.tool(
+      "create_object", "{" + s + ",\"id\":\"" + k_b + "\",\"type\":\"" + k_type +
+                           "\",\"transaction\":" + t + "," + attribution("the parent") + "}");
+  CHECK(text_of(staged).find("staged in transaction") != std::string::npos);
+  ok(mcp.tool("create_object", "{" + s + ",\"id\":\"" + k_c + "\",\"type\":\"" + k_type +
+                                   "\",\"parent\":\"" + k_b + "\",\"transaction\":" + t + "," +
+                                   attribution("its child") + "}"));
+  CHECK(num(ok(mcp.tool("objects", "{" + s + "}")), "total") == 0);
+  const JsonValue listed = ok(mcp.tool("transactions", "{" + s + "}"));
+  REQUIRE(at(listed, "transactions").size() == 1);
+  const JsonValue committed = ok(mcp.tool("commit", "{" + s + ",\"transaction\":" + t + "}"));
+  CHECK(num(committed, "applied") == 2);
+  CHECK(num(ok(mcp.tool("objects", "{" + s + "}")), "total") == 2);
+  // Committed is closed: a second commit and a rollback are errors a model can read.
+  CHECK(is_error(mcp.tool("commit", "{" + s + ",\"transaction\":" + t + "}")));
+  CHECK(is_error(mcp.tool("rollback", "{" + s + ",\"transaction\":" + t + "}")));
+  ok(mcp.tool("undo", "{" + s + "}"));
+  CHECK(num(ok(mcp.tool("objects", "{" + s + "}")), "total") == 0);
+}
+
+// describe_document (protocol.md, "Describing an object, a tile or a region").
+TEST_CASE("mcp: describe_document says what an object holds, bounded, in the host's words") {
+  const test::TempDir tmp("mcp_bridge_describe");
+  Mcp mcp(tmp.file("ws"));
+  REQUIRE(mcp.ok);
+  mcp.initialize();
+  const JsonValue opened =
+      ok(mcp.tool("open_session", "{\"path\":\"" + tmp.file("world") + "\",\"create\":true}"));
+  const std::string s = "\"session\":\"" + str(opened, "session") + "\"";
+  ok(mcp.tool("create_object", "{" + s + ",\"id\":\"" + k_b + "\",\"type\":\"" + k_type + "\"," +
+                                   attribution("the parent") + "}"));
+  ok(mcp.tool("create_object", "{" + s + ",\"id\":\"" + k_c + "\",\"type\":\"" + k_type +
+                                   "\",\"parent\":\"" + k_b + "\"," + attribution("its child") +
+                                   "}"));
+  const JsonValue d = mcp.tool("describe_document", "{" + s + ",\"id\":\"" + k_b + "\"}");
+  const JsonValue r = ok(d);
+  CHECK(num(r, "total") == 2);
+  CHECK(at(r, "records").size() == 2);
+  CHECK(text_of(d).find("with 1 live record as children") != std::string::npos);
+  // A bound that leaves the child out says how to get it.
+  const JsonValue one =
+      mcp.tool("describe_document", "{" + s + ",\"id\":\"" + k_b + "\",\"max_records\":1}");
+  CHECK(num(ok(one), "omitted") == 1);
+  CHECK(text_of(one).find("Raise max_records") != std::string::npos);
+  // Refused by the host: two targets, and an object that is not there.
+  CHECK(is_error(mcp.tool("describe_document",
+                          "{" + s + ",\"id\":\"" + k_b + "\",\"tile\":{\"x\":0,\"y\":0}}")));
+  CHECK(is_error(
+      mcp.tool("describe_document", "{" + s + ",\"id\":\"00000000000000000000000000000099\"}")));
+}
+
+// query (protocol.md, "Querying the document").
+TEST_CASE("mcp: query pages through a filter and says where to go on") {
+  const test::TempDir tmp("mcp_bridge_query");
+  Mcp mcp(tmp.file("ws"));
+  REQUIRE(mcp.ok);
+  mcp.initialize();
+  const JsonValue opened =
+      ok(mcp.tool("open_session", "{\"path\":\"" + tmp.file("world") + "\",\"create\":true}"));
+  const std::string s = "\"session\":\"" + str(opened, "session") + "\"";
+  ok(mcp.tool("create_object", "{" + s + ",\"id\":\"" + k_b + "\",\"type\":\"" + k_type + "\"," +
+                                   attribution("the parent") + "}"));
+  ok(mcp.tool("create_object", "{" + s + ",\"id\":\"" + k_c + "\",\"type\":\"" + k_type +
+                                   "\",\"parent\":\"" + k_b + "\"," + attribution("its child") +
+                                   "}"));
+  const std::string filter = ",\"filter\":{\"type\":\"" + std::string(k_type) + "\"}";
+  const JsonValue page = mcp.tool("query", "{" + s + filter + ",\"max_rows\":1}");
+  CHECK(at(ok(page), "rows").size() == 1);
+  CHECK(text_of(page).find("pass next as after") != std::string::npos);
+  const JsonValue rest =
+      ok(mcp.tool("query", "{" + s + filter + ",\"after\":\"" + str(ok(page), "next") + "\"}"));
+  CHECK(at(rest, "rows").size() == 1);
+  CHECK(at(rest, "complete") == JsonValue(true));
+  CHECK(is_error(mcp.tool("query", "{" + s + ",\"filter\":{\"colour\":1}}")));
 }
 
 TEST_CASE("mcp: a mutation with no rationale is refused, with what to add") {

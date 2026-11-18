@@ -8,7 +8,7 @@ engine_app(NAME engine_cli OUTPUT engine-cli
   DEPS base containers json platform
   E2E_TESTS tests/cli_tests.cpp tests/render_tests.cpp tests/ops_tests.cpp tests/policy_tests.cpp
             tests/save_tests.cpp tests/npc_replay_tests.cpp tests/console_tests.cpp
-            tests/content_build_parity_tests.cpp
+            tests/content_build_parity_tests.cpp tests/profile_tests.cpp
   # The engine-host these tests start opens a GPU device for render.* (render_tests.cpp, and
   # console_tests.cpp's captured frame) and for engine.budgets' device memory (ops_tests.cpp), and
   # so can wait for the machine-wide GPU lock (ADR-0049): those three files are `engine_cli.gpu`, in

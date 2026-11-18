@@ -354,6 +354,8 @@ void commit(Bridge& b, const JsonValue& args, JsonValue commands, bool atomic, s
   params.set("commands", std::move(commands));
   params.set("attribution", std::move(attr));
   params.set("atomic", JsonValue(atomic));
+  const u64 transaction = uint_of(args, "transaction");
+  if (transaction != 0) params.set("transaction", JsonValue(transaction));
   JsonValue r;
   if (!b.call("doc.apply", params, r, out)) return;
   std::string problems;
@@ -362,6 +364,23 @@ void commit(Bridge& b, const JsonValue& args, JsonValue commands, bool atomic, s
   for (usize i = 0; i < count; ++i) {
     problems +=
         "\n  " + text_of((*diagnostics)[i], "path") + ": " + text_of((*diagnostics)[i], "message");
+  }
+  if (transaction != 0) {
+    // Staged, not committed: the transaction's commit is what lands it.
+    if (uint_of(r, "applied") == 0) {
+      fail(out,
+           "Nothing was staged in transaction " + std::to_string(transaction) + ": " +
+               std::to_string(count) + " problem(s)." + problems,
+           "Fix what the diagnostics name; what the transaction already holds is unchanged.");
+      out.data.set("result", r);
+      return;
+    }
+    out.summary = what + ": staged in transaction " + std::to_string(transaction) + ", which now " +
+                  "holds " + std::to_string(uint_of(r, "staged")) +
+                  " command(s). Nothing is visible until commit lands them as one patch.";
+    if (count > 0) out.summary += " Not staged:" + problems;
+    out.data = r;
+    return;
   }
   if (!bool_of(r, "committed")) {
     fail(out, "Nothing was committed: " + std::to_string(count) + " problem(s)." + problems,
@@ -620,6 +639,10 @@ bool mutation_schema(Bridge& b, JsonValue& s, std::initializer_list<const char*>
   for (const char* f : command_fields) {
     if (!copy_prop(cmd, s, f, e)) return false;
   }
+  if (!copy_prop(apply, s, "transaction", e)) return false;
+  note(s, "transaction",
+       "An open transaction's id (begin_transaction): the change is staged there and lands with "
+       "the rest at commit. Omit it to commit the change at once.");
   return attribution_schema(b, s, e);
 }
 
@@ -1850,6 +1873,64 @@ void run_budgets(Bridge& b, const JsonValue& args, ToolOutcome& out) {
   out.data = r;
 }
 
+// profile.* (roadmap A10; protocol.md, "profile.*: the frame capture over the protocol").
+bool schema_profile_start(Bridge& b, JsonValue& s, std::string& e) {
+  return b.schemas().params_schema("profile.start", s, e);
+}
+
+void run_profile_start(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!b.call("profile.start", args, r, out)) return;
+  out.summary = "Frame capture " + std::to_string(uint_of(r, "capture")) + " running (" +
+                std::to_string(uint_of(r, "capacity")) +
+                " events); draw frames, then profile_stop with capture " +
+                std::to_string(uint_of(r, "capture")) + ".";
+  out.data = r;
+}
+
+bool schema_profile_report(Bridge& b, JsonValue& s, std::string& e) {
+  return b.schemas().params_schema("profile.report", s, e);
+}
+
+// The report's summary: the frame, then each list's largest series by median and p99.
+void profile_summary(const JsonValue& r, ToolOutcome& out) {
+  out.summary = "Capture " + std::to_string(uint_of(r, "capture")) + ": " +
+                std::to_string(uint_of(r, "frames")) + " frame(s) over " +
+                fixed(real_of(r, "window_ms"), 1) + " ms";
+  if (const JsonValue* frame = r.find("frame"))
+    out.summary += ", frame median " + fixed(real_of(*frame, "median_ms"), 3) + " ms, p99 " +
+                   fixed(real_of(*frame, "p99_ms"), 3) + " ms";
+  out.summary += "; " + std::to_string(uint_of(r, "dropped_events")) + " event(s) dropped.";
+  for (const char* list_name : {"gpu", "cpu", "zones"}) {
+    const JsonValue* list = r.find(list_name);
+    if (list == nullptr || list->size() == 0) continue;
+    out.summary += std::string("\n  ") + list_name + ":";
+    for (usize i = 0; i < list->size() && i < 8; ++i) {
+      const JsonValue& s = (*list)[i];
+      out.summary += " " + text_of(s, "name") + " " + fixed(real_of(s, "median_ms"), 3) + "/" +
+                     fixed(real_of(s, "p99_ms"), 3) + " ms;";
+    }
+  }
+  if (!text_of(r, "trace").empty()) out.summary += "\n  trace: " + text_of(r, "trace");
+  out.data = r;
+}
+
+void run_profile_report(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!b.call("profile.report", args, r, out)) return;
+  profile_summary(r, out);
+}
+
+bool schema_profile_stop(Bridge& b, JsonValue& s, std::string& e) {
+  return b.schemas().params_schema("profile.stop", s, e);
+}
+
+void run_profile_stop(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!b.call("profile.stop", args, r, out)) return;
+  profile_summary(r, out);
+}
+
 bool schema_run_headless(Bridge& b, JsonValue& s, std::string& e) {
   return schema_session_ref(b, "session.run_headless", s, e);
 }
@@ -2225,6 +2306,211 @@ void run_promote(Bridge& b, const JsonValue& args, ToolOutcome& out) {
   out.data.set("result", r);
 }
 
+// ---- a client's transactions (plan 06 §6.4) ---------------------------------------------------
+
+std::string transaction_text(const JsonValue& t) {
+  return "transaction " + std::to_string(uint_of(t, "id")) + " on " + text_of(t, "layer") + " (" +
+         std::to_string(uint_of(t, "commands")) + " command(s) staged)";
+}
+
+bool schema_begin_transaction(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("doc.begin", s, e)) return false;
+  note(s, "session", "The session id open_session returned.");
+  note(s, "layer", "The layer every staged change edits; omit it for the edit layer.");
+  if (!attribution_schema(b, s, e)) return false;
+  require(s, {"session", "attribution"});
+  return true;
+}
+
+void run_begin_transaction(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!call_attributed(b, "doc.begin", args, true, r, out)) return;
+  out.summary = "Opened " + transaction_text(r) + ". Pass transaction " +
+                std::to_string(uint_of(r, "id")) +
+                " to create_object, set_property, reparent, delete_object or apply to stage a "
+                "change; commit lands them all as one patch, rollback drops them all.";
+  out.data = r;
+}
+
+bool schema_end_transaction(Bridge& b, const char* method, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema(method, s, e)) return false;
+  note(s, "session", "The session id open_session returned.");
+  note(s, "transaction", "The id begin_transaction returned.");
+  if (!identity_schema(b, s, e)) return false;
+  require(s, {"session", "transaction"});
+  return true;
+}
+
+bool schema_commit(Bridge& b, JsonValue& s, std::string& e) {
+  return schema_end_transaction(b, "doc.commit", s, e);
+}
+
+void run_commit(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!call_attributed(b, "doc.commit", args, false, r, out)) return;
+  const std::string t = std::to_string(uint_of(args, "transaction"));
+  if (bool_of(r, "committed")) {
+    out.summary = "Committed transaction " + t + " as journal patch " +
+                  std::to_string(uint_of(r, "patch_index")) + " (" +
+                  std::to_string(uint_of(r, "applied")) +
+                  " command(s)); one undo takes all of it back.";
+    out.data = r;
+    return;
+  }
+  std::string problems;
+  const JsonValue* diagnostics = r.find("diagnostics");
+  const usize count = diagnostics != nullptr ? diagnostics->size() : 0;
+  for (usize i = 0; i < count && i < 20; ++i) {
+    problems +=
+        "\n  " + text_of((*diagnostics)[i], "path") + ": " + text_of((*diagnostics)[i], "message");
+  }
+  if (count == 0) {
+    out.summary = "Transaction " + t + " held nothing; it is closed and nothing was journaled.";
+    out.data = r;
+    return;
+  }
+  fail(out,
+       "Nothing landed: " + std::to_string(count) +
+           " staged command(s) no longer apply (the document changed under them)." + problems,
+       "The transaction is still open. rollback drops it; or roll back, read the objects again "
+       "and stage the work anew.");
+  out.data.set("result", r);
+}
+
+bool schema_rollback(Bridge& b, JsonValue& s, std::string& e) {
+  return schema_end_transaction(b, "doc.rollback", s, e);
+}
+
+void run_rollback(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!call_attributed(b, "doc.rollback", args, false, r, out)) return;
+  out.summary = "Rolled back " + transaction_text(r) + ": nothing it staged landed.";
+  out.data = r;
+}
+
+bool schema_transactions(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("doc.transactions", s, e)) return false;
+  note(s, "session", "The session id open_session returned.");
+  require(s, {"session"});
+  return true;
+}
+
+void run_transactions(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!b.call("doc.transactions", args, r, out)) return;
+  const JsonValue* list = r.find("transactions");
+  const usize n = list != nullptr ? list->size() : 0;
+  out.summary = std::to_string(n) + " open transaction(s)" + (n > 0 ? ":" : ".");
+  for (usize i = 0; i < n; ++i) {
+    const JsonValue& t = (*list)[i];
+    const JsonValue* who = t.find("attribution");
+    out.summary += "\n  " + transaction_text(t) + ", opened by " +
+                   (who != nullptr ? text_of(*who, "actor") : std::string());
+  }
+  out.data = r;
+}
+
+// ---- place_asset and instantiate_template (plan 06 §6.9) ---------------------------------------
+
+bool schema_place_asset(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("doc.place_asset", s, e)) return false;
+  note(s, "session", "The session id open_session returned.");
+  note(s, "transaction",
+       "An open transaction's id (begin_transaction) to stage the placements in.");
+  if (!attribution_schema(b, s, e)) return false;
+  require(s, {"session", "asset", "placements", "attribution"});
+  return true;
+}
+
+bool schema_instantiate_template(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("doc.instantiate_template", s, e)) return false;
+  note(s, "session", "The session id open_session returned.");
+  note(s, "transaction", "An open transaction's id (begin_transaction) to stage the copy in.");
+  if (!attribution_schema(b, s, e)) return false;
+  require(s, {"session", "root", "attribution"});
+  return true;
+}
+
+void run_placed(Bridge& b, const char* method, const char* verb, const JsonValue& args,
+                ToolOutcome& out) {
+  JsonValue r;
+  if (!call_attributed(b, method, args, true, r, out)) return;
+  const JsonValue* apply = r.find("apply");
+  const JsonValue* ids = r.find("ids");
+  const usize n = ids != nullptr ? ids->size() : 0;
+  const bool staged = apply != nullptr && uint_of(*apply, "transaction") != 0;
+  const bool landed = apply != nullptr &&
+                      (bool_of(*apply, "committed") || (staged && uint_of(*apply, "applied") > 0));
+  if (!landed) {
+    std::string problems;
+    const JsonValue* d = apply != nullptr ? apply->find("diagnostics") : nullptr;
+    for (usize i = 0; d != nullptr && i < d->size() && i < 20; ++i)
+      problems += "\n  " + text_of((*d)[i], "path") + ": " + text_of((*d)[i], "message");
+    fail(out, std::string("Nothing was ") + (staged ? "staged:" : "committed:") + problems,
+         "Fix what the diagnostics name; an id that already exists wants another seed.");
+    out.data.set("result", r);
+    return;
+  }
+  out.summary =
+      std::string(verb) + " " + std::to_string(n) + " record(s)" +
+      (staged ? ", staged in transaction " + std::to_string(uint_of(*apply, "transaction"))
+              : ", committed as journal patch " + std::to_string(uint_of(*apply, "patch_index"))) +
+      ". Their ids are in ids, in the order asked.";
+  out.data = r;
+}
+
+void run_place_asset(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  run_placed(b, "doc.place_asset", "Placed", args, out);
+}
+
+void run_instantiate_template(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  run_placed(b, "doc.instantiate_template", "Copied", args, out);
+}
+
+// ---- describe_document (plan 06 §6.6's describe; `describe` is schema.describe's) ---------------
+
+bool schema_describe_document(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("doc.describe", s, e)) return false;
+  note(s, "session", "The session id open_session returned.");
+  note(s, "id", "An object to describe; objects lists them. Give one of id, tile and region.");
+  require(s, {"session"});
+  return true;
+}
+
+void run_describe_document(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!b.call("doc.describe", args, r, out)) return;
+  // The host's own sentence, then what to ask for when the bounds left records out.
+  out.summary = text_of(r, "summary");
+  const std::string bound = text_of(r, "bound");
+  if (bound == "max_records" || bound == "max_bytes")
+    out.summary += " Raise " + bound + ", or describe a smaller part, to list the rest.";
+  out.data = r;
+}
+
+// ---- query (plan 06 §6.6's structured query over the document) ---------------------------------
+
+bool schema_query(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("doc.query", s, e)) return false;
+  note(s, "session", "The session id open_session returned.");
+  note(s, "after", "The next a call returned, to read the following page.");
+  require(s, {"session"});
+  return true;
+}
+
+void run_query(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!b.call("doc.query", args, r, out)) return;
+  const JsonValue* rows = r.find("rows");
+  const usize n = rows != nullptr ? rows->size() : 0;
+  out.summary = std::to_string(n) + " row(s) of " + std::to_string(uint_of(r, "candidates")) +
+                " candidate(s), " + std::to_string(uint_of(r, "examined")) + " examined.";
+  if (!bool_of(r, "complete"))
+    out.summary += " The page ended at " + text_of(r, "bound") +
+                   "; pass next as after to go on from " + text_of(r, "next") + ".";
+  out.data = r;
+}
+
 constexpr ToolDef k_tools[] = {
     {"open_session", "Open a document",
      "Open a document directory and get the session id the document tools take. Pass create: "
@@ -2382,6 +2668,17 @@ constexpr ToolDef k_tools[] = {
      "The budgets the engine knows and what uses them (renderer, audio, memory, GPU), by stable "
      "name, with limit, use, unit and source.",
      "engine.budgets", true, false, true, &schema_budgets, &run_budgets},
+    {"profile_start", "Start profiling",
+     "Start the host's frame capture: every frame it draws from now on (capture, benchmark), "
+     "its GPU passes, CPU spans and zones, until profile_stop.",
+     "profile.start", true, false, false, &schema_profile_start, &run_profile_start},
+    {"profile_report", "Read the frame report",
+     "The running or last frame capture's report: per GPU pass, CPU span and zone, median, p95, "
+     "p99 and max ms a frame over a window, bounded by max_series; out_dir writes the trace.",
+     "profile.report", true, false, true, &schema_profile_report, &run_profile_report},
+    {"profile_stop", "Stop profiling",
+     "Stop the frame capture and return its report; out_dir writes the trace for Perfetto.",
+     "profile.stop", true, false, false, &schema_profile_stop, &run_profile_stop},
     {"run_headless", "Run headless",
      "Materialize the session's document into its runtime world and step it at the fixed step "
      "with no rendering, for game seconds or until a predicate over document properties and live "
@@ -2437,6 +2734,47 @@ constexpr ToolDef k_tools[] = {
      "validation problem, unless prefer settles the conflicts. dry_run reports without "
      "committing. A role whose work needs review cannot promote.",
      "doc.promote", false, false, false, &schema_promote, &run_promote},
+    {"begin_transaction", "Begin a transaction",
+     "Open a transaction on a layer: changes made with its id are checked and staged, invisible "
+     "to everyone, and land together as one undoable patch at commit or vanish together at "
+     "rollback. It lapses (rolled back) after ttl_seconds without a change. Needs "
+     "attribution.rationale, which the patch records.",
+     "doc.begin", false, false, false, &schema_begin_transaction, &run_begin_transaction},
+    {"commit", "Commit a transaction",
+     "Land everything a transaction staged as one journal patch. When a staged change no longer "
+     "applies, or a lease or role now refuses it, nothing lands and the transaction stays open.",
+     "doc.commit", false, false, false, &schema_commit, &run_commit},
+    {"rollback", "Roll back a transaction",
+     "Drop an open transaction and everything it staged; the document does not change.",
+     "doc.rollback", false, true, false, &schema_rollback, &run_rollback},
+    {"transactions", "List transactions",
+     "The document's open transactions: who opened each, on which layer, how much it holds and "
+     "when it lapses.",
+     "doc.transactions", true, false, true, &schema_transactions, &run_transactions},
+    {"place_asset", "Place an asset",
+     "Place a mesh (.gltf, .glb or .clusters, checked to exist and read as one) any number of "
+     "times as engine.scene.MeshPlacement records in one undoable transaction, or staged into an "
+     "open one. Ids are generated from seed when omitted. Needs attribution.rationale.",
+     "doc.place_asset", false, false, false, &schema_place_asset, &run_place_asset},
+    {"instantiate_template", "Instantiate a template",
+     "Copy an object and its live descendants under fresh ids, every world position moved by "
+     "offset, with a TemplateOrigin record of which copy came from which source. The copy is "
+     "not live: editing the template later changes nothing here. Needs attribution.rationale.",
+     "doc.instantiate_template", false, false, false, &schema_instantiate_template,
+     &run_instantiate_template},
+    {"describe_document", "Describe part of a document",
+     "Before editing: one object (with its children, or its whole subtree at detail Full), one "
+     "tile, or a rectangle of tiles, as a sentence, counts by type and the records (id, type, "
+     "name, parent, place, child count; properties at Full), bounded by max_records and "
+     "max_bytes with what was left out counted. describe explains schema types instead.",
+     "doc.describe", true, false, true, &schema_describe_document, &run_describe_document},
+    {"query", "Query the document",
+     "The live records that pass a structured filter — type patterns, property tests (equals, "
+     "at_least, at_most, prefix, exists; name[i] for an array element), parent, and all, any, "
+     "not — narrowed by parent or region, in id order a page at a time with the fields asked "
+     "for. Bounded by max_rows, max_examined, max_ms and max_bytes; pass next as after to go "
+     "on.",
+     "doc.query", true, false, true, &schema_query, &run_query},
 };
 
 }  // namespace

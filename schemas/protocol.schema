@@ -156,8 +156,8 @@ struct SessionsResult @version(1) {
   sessions: SessionInfo[]
 }
 
-/// Parameters of `doc.apply`: one transaction.
-struct ApplyParams @version(2) {
+/// Parameters of `doc.apply`: one transaction, or one step of an open one.
+struct ApplyParams @version(3) {
   session: string
   commands: engine.doc.Command[]
   attribution: engine.doc.Attribution
@@ -168,14 +168,25 @@ struct ApplyParams @version(2) {
   /// session name their own proposal layers here rather than moving the session's edit layer
   /// under each other (plan 06 §6.5).
   layer: string @since(2)
+  /// An open transaction (`doc.begin`) to stage the commands in instead of committing them: they
+  /// are checked now, against the document with the transaction's earlier commands applied, and
+  /// land with the rest at `doc.commit` or vanish with them at `doc.rollback` (plan 06 §6.4).
+  /// Zero commits them at once, as before.
+  transaction: u64 = 0 @since(3)
 }
 
-struct ApplyResult @version(1) {
+/// Result of `doc.apply` and `doc.commit`.
+struct ApplyResult @version(2) {
   committed: bool = false
   /// Index of the committed patch in the journal.
   patch_index: u32 = 0
+  /// Commands applied: committed, or for a call into a transaction, staged by this call.
   applied: u32 = 0
   diagnostics: Diagnostic[]
+  /// The transaction the call staged into or committed; zero for a plain `doc.apply`.
+  transaction: u64 = 0 @since(2)
+  /// Commands the transaction holds after the call: zero once it is committed.
+  staged: u32 = 0 @since(2)
 }
 
 /// Parameters of `doc.objects`.
@@ -2260,6 +2271,314 @@ struct LeasesResult @version(1) {
   expired: u32 = 0
 }
 
+/// An open transaction (plan 06 §6.4, `begin_transaction → commands → commit | rollback`):
+/// commands staged by `doc.apply` calls naming it, which land together at `doc.commit` as one
+/// journal patch, or vanish together at `doc.rollback` or when it lapses.
+struct TransactionInfo @version(1) {
+  id: u64 = 0
+  /// The layer every staged command edits, fixed at `doc.begin`.
+  layer: string
+  /// Who opened it and why, journaled with its patch. Only this actor stages into it, commits it
+  /// or rolls it back.
+  attribution: engine.doc.Attribution
+  /// Commands staged so far.
+  commands: u32 = 0
+  /// `doc.apply` calls that staged something.
+  applies: u32 = 0
+  opened_unix_ms: i64 = 0
+  /// The idle time to live: every call that stages moves the expiry to its time plus this.
+  ttl_seconds: f64 = 3600
+  /// When it lapses by the host's clock unless a call stages into it first. A lapsed transaction
+  /// is rolled back: dropped by the next call that reads the table.
+  expires_unix_ms: i64 = 0
+}
+
+/// One transaction of `transactions.json`, with the commands it holds.
+struct TransactionEntry @version(1) {
+  info: TransactionInfo
+  commands: engine.doc.Command[]
+}
+
+/// `transactions.json` in a document directory: the open transactions, kept beside the document
+/// as the leases are, so that a host started for one call (engine-cli) commits what earlier ones
+/// staged.
+struct TransactionsFile @version(1) @kind(document) {
+  next_id: u64 = 1
+  transactions: TransactionEntry[]
+}
+
+/// Parameters of `doc.begin`.
+struct BeginParams @version(1) {
+  session: string
+  /// The layer the transaction edits; empty is the session's edit layer at the call.
+  layer: string
+  /// Idle time to live, 1 second to 24 hours: the transaction is rolled back when no call stages
+  /// into it for this long.
+  ttl_seconds: f64 = 3600
+  /// Who opens it and why. Blank fields are the host's `--actor`, `--role` and `--task`; the
+  /// actor must not end up blank.
+  attribution: engine.doc.Attribution
+}
+
+/// Parameters of `doc.commit` and `doc.rollback`.
+struct TransactionParams @version(1) {
+  session: string
+  transaction: u64 = 0
+  /// The caller, who must be the transaction's opener. At commit a rationale replaces the one
+  /// given at `doc.begin`, and an explicit timestamp is the patch's.
+  attribution: engine.doc.Attribution
+}
+
+/// Parameters of `doc.transactions`.
+struct TransactionsParams @version(1) {
+  session: string
+  /// Only this actor's transactions; empty for everyone's.
+  actor: string
+}
+
+/// Result of `doc.transactions`.
+struct TransactionsResult @version(1) {
+  /// The host's clock, which every expiry is judged by.
+  now_unix_ms: i64 = 0
+  transactions: TransactionInfo[]
+  /// Lapsed transactions this call rolled back.
+  expired: u32 = 0
+}
+
+/// One placement `doc.place_asset` makes: an `engine.scene.MeshPlacement` record.
+struct AssetPlacement @version(1) {
+  /// The new record's id; the null id has one generated from `doc.place_asset`'s `seed` and the
+  /// placement's index, so the same call places the same ids.
+  id: id128
+  name: string
+  /// Null id: a root.
+  parent: id128
+  translation: worldpos @unit(m)
+  rotation: quat
+  /// Degrees about +y, applied after `rotation`.
+  yaw_deg: f32 = 0
+  /// Absent: 1, 1, 1.
+  scale: vec3?
+}
+
+/// Parameters of `doc.place_asset` (plan 06 §6.9): one asset placed any number of times, as one
+/// transaction (or staged into an open one).
+struct PlaceAssetParams @version(1) {
+  session: string
+  /// A glTF (.gltf), GLB (.glb) or built (.clusters) mesh by a path relative to the document's
+  /// directory that stays under it (no drive, no `:`, no `..`): what the record's `mesh` names. It
+  /// must exist there and read as its kind; a path that leaves the directory is answered as a
+  /// missing file.
+  asset: string
+  placements: AssetPlacement[]
+  /// Mixed into every generated id: two calls with different seeds place different ids.
+  seed: u64 = 0
+  /// The layer to write; empty is the session's edit layer.
+  layer: string
+  /// An open transaction (`doc.begin`) to stage the placements in; zero commits them at once.
+  transaction: u64 = 0
+  attribution: engine.doc.Attribution
+}
+
+/// Result of `doc.place_asset` and `doc.instantiate_template`.
+struct PlaceResult @version(1) {
+  /// The records made, in the order asked.
+  ids: id128[]
+  /// The asset's kind as read: "gltf", "glb" or "clusters"; empty for a template.
+  kind: string
+  /// Its size in bytes.
+  bytes: u64 = 0
+  /// The transaction that made them (or staged them).
+  apply: ApplyResult
+}
+
+/// Parameters of `doc.instantiate_template` (plan 03 §3.2's instantiate-and-record-origin): a copy
+/// of an object and every live descendant, under fresh ids, placed by an offset, with a record of
+/// where it came from.
+struct InstantiateTemplateParams @version(1) {
+  session: string
+  /// The template's root: any live object of the document.
+  root: id128
+  /// Where the copy's root goes: the null id for a root.
+  parent: id128
+  /// The copy's root id; the null id has one generated from `seed` and the template.
+  id: id128
+  seed: u64 = 0
+  /// Added to every `worldpos` property of every copied record.
+  offset: dvec3
+  /// Most records a copy may make; more is refused (1004), naming the count.
+  max_records: u32 = 10000
+  /// Record where the copy came from in a `TemplateOrigin` child of its root.
+  record_origin: bool = true
+  layer: string
+  transaction: u64 = 0
+  attribution: engine.doc.Attribution
+}
+
+/// What `doc.instantiate_template` records under a copy's root: which template it came from and
+/// which copied record is which source record, so that a later change to the template can be found
+/// and carried over by a tool that reads it (the copy is not live: plan 03 §3.2).
+struct TemplateOrigin @version(1) @kind(record) {
+  /// The template's root.
+  source_root: id128
+  /// Where the copy's root stands, when its root has a `position`: so the origin stands in the
+  /// same tile, and a lease or a role there covers it.
+  position: worldpos? @unit(m)
+  /// Each copied record's source, in the order they were copied, and its copy.
+  sources: id128[]
+  copies: id128[]
+}
+
+// ---- describe (plan 06 §6.6; protocol.md, "Describing an object, a tile or a region") ---------
+
+/// How much `doc.describe` says. Each level says everything the one before it does.
+enum DescribeDetail : u8 {
+  /// The sentence, the counts by type and, for an object, the object itself: no other record.
+  Summary = 0
+  /// Every record in scope by id, type, name, parent, place and child count; no properties.
+  Standard = 1
+  /// Every record in scope with its composed properties too; an object's whole subtree.
+  Full = 2
+}
+
+/// One tile of the partitioned layers' grid (docs/plan/03-data-model.md §3.7).
+struct DescribeTile @version(1) {
+  x: i32 = 0
+  y: i32 = 0
+}
+
+/// Parameters of `doc.describe`: one object, one tile, or a rectangle of tiles, at a level of
+/// detail, bounded in records and in bytes. Name exactly one of `id`, `tile` and `region`.
+struct DescribeParams @version(1) {
+  session: string
+  /// An object: it, then its children (standard) or its live subtree, depth first (full).
+  id: id128?
+  /// One tile: the live records whose defining record is in it.
+  tile: DescribeTile?
+  /// A rectangle of tiles, at most 65,536 of them; its records tile by tile, row by row.
+  region: TileRange?
+  detail: DescribeDetail = Standard
+  /// Most records listed; the rest are counted, not listed (1 to 10,000).
+  max_records: u32 = 256
+  /// Most bytes of listed records, as JSON; the record that would pass it and every one after it
+  /// are counted, not listed (1,024 to 4,194,304).
+  max_bytes: u32 = 65536
+}
+
+/// How many records of one type a description covers.
+struct DescribeTypeCount @version(1) {
+  type: string
+  count: u32 = 0
+}
+
+/// One record a description lists.
+struct DescribedRecord @version(1) {
+  id: id128
+  type: string
+  /// The null id for a root.
+  parent: id128
+  /// The record's `name` property when it is a string; empty otherwise.
+  name: string
+  /// Its first `worldpos` field in its registered type, when it has one set.
+  position: worldpos? @unit(m)
+  /// The tile its defining record is in, when it is in one (`tile_x`, `tile_y`).
+  tiled: bool = false
+  tile_x: i32 = 0
+  tile_y: i32 = 0
+  /// Live children.
+  children: u32 = 0
+  /// Depth below the described object (0 for it); 0 for a tile's or region's records.
+  depth: u32 = 0
+  /// Composed properties, at `Full` only.
+  properties: map<string, json>
+}
+
+/// Result of `doc.describe`.
+struct DescribeResult @version(1) {
+  /// "object", "tile" or "region".
+  scope: string
+  detail: DescribeDetail = Standard
+  /// One or more sentences made from templates over the counts below (no model): the same
+  /// document gives the same words.
+  summary: string
+  /// Live records in scope, listed or not.
+  total: u32 = 0
+  /// Counts by type over the whole scope, the most numerous first, then by name.
+  types: DescribeTypeCount[]
+  /// The listed records, in scope order.
+  records: DescribedRecord[]
+  /// Records in scope the bounds left out (`total` minus listed); at `Summary` every one but an
+  /// object itself.
+  omitted: u32 = 0
+  /// Which bound left them out: "" (none), "max_records" or "max_bytes".
+  bound: string
+  /// Bytes of the listed records as JSON.
+  bytes: u32 = 0
+  /// For a tile or region: the tiles that hold at least one record in scope.
+  occupied_tiles: u32 = 0
+}
+
+// ---- query (plan 06 §6.6; protocol.md, "Querying the document") ------------------------------
+
+/// Parameters of `doc.query`: the document's live records that pass a structured filter, in id
+/// order, a page at a time, bounded in what it returns and in what it may examine. The filter is
+/// data the host walks, never text it runs.
+struct QueryParams @version(1) {
+  session: string
+  /// Where to look, narrowed through the document's indices before the filter runs: the children
+  /// of `parent` (the null id: the roots), the records filed in the tiles of `region`, or, with
+  /// neither, every live record.
+  parent: id128?
+  region: TileRange?
+  /// The terms, as `session.run_headless`'s `until` spells them, over each candidate record:
+  /// `{"type": "<pattern>"}` (`*` any run of characters), `{"property": "<name>", <test>}` where
+  /// `<test>` is `"equals": <json>`, `"at_least": <number>`, `"at_most": <number>`,
+  /// `"prefix": "<text>"` or `"exists": <bool>` and a name may end in `[i]` to take one element of
+  /// an array (`"position[0]"`); `{"parent": "<id>"}`; and `{"all": [...]}`, `{"any": [...]}`,
+  /// `{"not": term}` over them, nested at most 32 deep and at most 1,024 terms. Null passes every
+  /// candidate.
+  filter: json
+  /// Composed properties to return with each row; empty returns none.
+  fields: string[]
+  /// Resume after this id: the `next` a call returned. The null id starts at the beginning.
+  after: id128
+  /// Most rows returned (1 to 10,000).
+  max_rows: u32 = 100
+  /// Most candidates the filter is run over (1 to 1,000,000).
+  max_examined: u32 = 100000
+  /// Most wall milliseconds spent examining (1 to 10,000).
+  max_ms: u32 = 2000
+  /// Most bytes of rows, as JSON (1,024 to 4,194,304).
+  max_bytes: u32 = 262144
+}
+
+/// One record a query matched.
+struct QueryRow @version(1) {
+  id: id128
+  type: string
+  /// The null id for a root.
+  parent: id128
+  /// The `fields` asked for that the record sets, composed.
+  fields: map<string, json>
+}
+
+/// Result of `doc.query`.
+struct QueryResult @version(1) {
+  rows: QueryRow[]
+  /// Candidates the filter ran over in this call.
+  examined: u32 = 0
+  /// Candidates the narrowing found after `after`, examined or not.
+  candidates: u32 = 0
+  /// Every candidate was examined: there is no next page.
+  complete: bool = true
+  /// Which bound ended the page: "" (none), "max_rows", "max_examined", "max_ms" or "max_bytes".
+  bound: string
+  /// Where the next page starts (pass it as `after`); the null id when `complete`.
+  next: id128
+  /// Bytes of the rows as JSON.
+  bytes: u32 = 0
+}
+
 // ProposalState and ProposalInfo are declared before LayerInfo, which reports them.
 
 /// `proposals.json` in a document directory.
@@ -2565,4 +2884,104 @@ struct SessionChangeEvent @version(1) {
   actor: string
   layer: string
   dropped: u64 = 0
+}
+
+// ---- profile.* ---------------------------------------------------------------------------------
+// 06 §6.6 and §6.9's `profile` (roadmap A10): core/profiling's frame capture turned on and off by a
+// client, and foundation/profiler's frame report as the result (docs/subsystems/profiler.md). The
+// frames are whatever the host draws meanwhile; the capture is the process's, one for every client.
+
+/// Parameters of `profile.start`.
+struct ProfileStartParams @version(1) {
+  /// Events the capture holds before it drops and counts the rest: a zone, a frame's mark or end,
+  /// or one measured time each, 48 bytes. 0 is the default, 262,144; at most 4,194,304.
+  capacity: u32 = 0
+}
+
+struct ProfileStartResult @version(1) {
+  running: bool = false
+  /// The events the capture holds.
+  capacity: u32 = 0
+  /// This capture's number in the host, from 1: pass it as `capture` to `profile.report` and
+  /// `profile.stop` to read this capture and no other client's.
+  capture: u64 = 0
+}
+
+/// Parameters of `profile.report` and `profile.stop`.
+struct ProfileReportParams @version(1) {
+  /// The last this many frames; 0 is every frame of the capture.
+  window_frames: u32 = 0
+  /// Series kept in each of `gpu`, `cpu` and `zones`, largest total first; 1 to 64. What is cut is
+  /// counted in `series_dropped`, so the result is bounded by this and never by the capture.
+  max_series: u32 = 16
+  /// When set, the trace (Chrome's JSON Object Format, which Perfetto opens) is written here as
+  /// `<name>.trace.json`, and its path returned as `trace`.
+  out_dir: string
+  name: string = "profile"
+  /// The capture `profile.start` returned. A call naming one that another start has replaced is
+  /// refused (1003, naming both), since its events are gone; 0 reads whichever capture is the
+  /// host's.
+  capture: u64 = 0
+}
+
+/// One name's cost a frame over the window (docs/subsystems/profiler.md, "The frame report").
+struct ProfileSeries @version(1) {
+  /// A GPU timer's zone, a CPU span's name, or a zone's (`ENGINE_PROFILE_ZONE`).
+  name: string
+  /// The frames it was summarized over: every frame of the window for a zone, the frames its
+  /// track measured for a GPU or CPU time.
+  frames: u32 = 0
+  /// Of those, the frames it appeared in; a frame it did not counts as zero.
+  frames_seen: u32 = 0
+  /// Zone calls or measured times in the window.
+  count: u64 = 0
+  median_ms: f64 = 0
+  p95_ms: f64 = 0
+  p99_ms: f64 = 0
+  max_ms: f64 = 0
+  mean_ms: f64 = 0
+  total_ms: f64 = 0
+  /// A zone's calls outside every frame of the window, and their time (a request's dispatch
+  /// round its frames). Zero for a measured time.
+  outside_count: u64 = 0
+  outside_ms: f64 = 0
+}
+
+/// The result of `profile.report` and `profile.stop`.
+struct ProfileReport @version(1) {
+  /// "engine.profile.v1".
+  format: string
+  /// True when read from a capture still recording.
+  running: bool = false
+  /// The capture read: `profile.start`'s number for it.
+  capture: u64 = 0
+  /// Frames in the window, and their indices (the process's own frame numbers).
+  frames: u32 = 0
+  first_frame: u64 = 0
+  last_frame: u64 = 0
+  /// From the window's first frame's start to its last frame's end.
+  window_ms: f64 = 0
+  /// The frames' own intervals: from a frame's start to its end.
+  frame: ProfileSeries
+  /// The GPU timer's zones, per frame (inclusive of nothing: each is its own queries' time).
+  gpu: ProfileSeries[]
+  /// The renderer's CPU spans per frame (`renderer.begin`, `renderer.record`, `renderer.submit`,
+  /// ...), and any other a host records.
+  cpu: ProfileSeries[]
+  /// Zones: CPU time inclusive of nested zones and summed over threads.
+  zones: ProfileSeries[]
+  /// Frames of the window the GPU's times and the CPU's came back for.
+  gpu_frames: u32 = 0
+  cpu_frames: u32 = 0
+  /// Series cut by `max_series`, all three lists together.
+  series_dropped: u32 = 0
+  /// Events read, and events the capture's full buffer refused (not zero: the report is missing
+  /// that many).
+  events: u64 = 0
+  dropped_events: u64 = 0
+  threads: u32 = 0
+  /// The capture's length so far.
+  capture_ms: f64 = 0
+  /// The trace's path, when `out_dir` was set.
+  trace: string
 }

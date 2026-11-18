@@ -1125,6 +1125,7 @@ class SceneRenderer {
   // a body pushes has to still be alive when execute() records it.
   bool record_frame(const FrameDesc& frame, gfx::RgImage color_handle, std::string* error);
   void collect_slot(u32 slot);
+  void record_capture(u32 slot) const;
   void fold_visible(u32 slot);
   void fold_sky(u32 slot);
   // The world-space cache's counts of the frame that last used this slot (Stats::gi).
@@ -1254,6 +1255,10 @@ class SceneRenderer {
   // submission since the last reset.
   Vector<u64> slot_frame_;
   Vector<u64> slot_submission_;
+  // The frame capture's number for the frame each slot holds, and the one being recorded (0: the
+  // capture was off when it began; renderer.md, "The frame capture").
+  Vector<u64> slot_capture_;
+  u64 capture_frame_ = 0;
   Vector<u32> slot_pairs_;  // and the scene it culled, which a world changes between frames
   Vector<u32> slot_instances_;
   Vector<u32> slot_rt_capacity_;    // the chain's capacity each slot's frame was recorded against

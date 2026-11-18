@@ -10,7 +10,6 @@
 # or laid over bytes on disk has a table; the reasons below say which of the three a module lacks.
 
 core/hash: functions, the empty `Hash<T>` functors and `Sha1`'s digest state, used per hash computed and never stored per element, mirrored or written as bytes; a table is due with the first hashed-key type the module declares
-core/profiling: the zone macros and the startup trace's records (`TraceEvent`, `TraceSample`), kept for one process start and written out as JSON, never as bytes; a table is due when a record is kept per frame
 foundation/bench: the bench harness, whose types live for one bench run and whose output is JSON lines; a table is due only if a bench result becomes a binary format
 foundation/gpu_lock: the lock's lease is a JSON file and its hold a handful of fields per process; nothing is per element, mirrored or binary
 foundation/io: the VFS's mounts, handles and read requests, one per file or read in flight; the formats it reads are other modules', pinned by their tables; a table is due when io keeps a record per file that a frame walks (a streaming cache's index, say)
@@ -21,3 +20,4 @@ domain/content_build: build tasks, results and manifest entries, one per entry b
 domain/materials: the material packs' records, read from pack.json once per pack; nothing is per element, mirrored or binary
 domain/protocol: the method table, roles, leases and proposals, one per method or client; its messages are schema types (schemas/protocol.schema) carried as JSON
 systems/doc_scene: the document-to-scene bridge's change sets, one per transaction; nothing is per element, mirrored or binary
+foundation/profiler: a frame report is built once per request from a stopped capture and handed on as a schema type; nothing is per element, mirrored or binary (the per-event record is core/profiling's `CaptureEvent`, in its table)

@@ -114,8 +114,38 @@ class Session {
   bool reject(const RejectParams& params, const Caller& caller, RpcError& error);
   const ProposalTable& proposals() const noexcept { return proposals_; }
 
+  // --- transactions (plan 06 §6.4; protocol.md, "Transactions a client opens") ----------------
+  // A client's transaction is a list of staged commands kept beside the document in
+  // `transactions.json`, so that it outlives the host a call started. Each staging call is checked
+  // as `apply` checks a write — the commands against the document with the transaction's earlier
+  // ones applied, the caller's role, the proposal's owner, the leases — and changes no record; the
+  // commit applies them all as one checked transaction and one journal patch, or none of them.
+  // Only the opener stages, commits or rolls back. `now_ms` is the host's clock.
+
+  bool begin_transaction(const BeginParams& params, const Caller& caller, i64 now_ms,
+                         TransactionInfo& out, RpcError& error);
+  // `layer` empty is the transaction's own; naming another is refused.
+  bool stage(u64 transaction, std::span<const doc::Command> commands, const Caller& caller,
+             bool atomic, std::string_view layer, i64 now_ms, ApplyResult& result, RpcError& error);
+  // A commit whose commands no longer all apply, or that the role or the leases refuse, lands
+  // nothing and leaves the transaction open, for the caller to mend or roll back.
+  bool commit_transaction(u64 transaction, const Caller& caller, i64 now_ms, ApplyResult& result,
+                          RpcError& error);
+  bool rollback_transaction(u64 transaction, const Caller& caller, i64 now_ms, TransactionInfo& out,
+                            RpcError& error);
+  bool list_transactions(std::string_view actor, i64 now_ms, TransactionsResult& out,
+                         RpcError& error);
+  const TransactionsFile& transactions() const noexcept { return transactions_; }
+
  private:
   class Guard;
+  // A check-only pass of `commit_commands` for a staging call: the first `held` commands are the
+  // transaction's, applied again, and the rest are the call's; nothing is committed, and the
+  // indices of the call's commands that applied are appended to `accepted`.
+  struct Staging {
+    u32 held = 0;
+    Vector<u32>* accepted = nullptr;
+  };
 
   bool persist(RpcError& error);
   // One transaction against `layer`, committed, journaled, and saved. `strict` is the document's
@@ -123,7 +153,7 @@ class Session {
   // caller, the transaction is checked (Guard, session.cpp) and refused whole on a violation.
   bool commit_commands(std::span<const doc::Command> commands, doc::Attribution attribution,
                        bool atomic, bool strict, u32 layer, const Caller* caller,
-                       ApplyResult& result, RpcError& error);
+                       ApplyResult& result, RpcError& error, const Staging* staging = nullptr);
   bool step(bool backwards, u32 steps, const Caller* caller, StepResult& result, RpcError& error);
   // After a commit to a proposal layer: the target's record for every object the patch touched
   // that the proposal had not touched before, appended to its base file.
@@ -138,6 +168,12 @@ class Session {
   bool load_side_files(RpcError& error);
   bool save_leases(RpcError& error);
   bool save_proposals(RpcError& error);
+  bool save_transactions(RpcError& error);
+  // The open transaction `id` for the caller, after dropping lapsed ones: 1003 when there is none
+  // (or it lapsed), 1008 when another actor opened it.
+  TransactionEntry* find_transaction(u64 id, const Caller& caller, i64 now_ms, RpcError& error);
+  // Drops lapsed transactions; the number dropped.
+  u32 expire_transactions(i64 now_ms);
   std::string base_file(std::string_view proposal) const;
 
   io::Vfs* vfs_;
@@ -147,6 +183,7 @@ class Session {
   doc::DocumentManifest manifest_;
   LeaseTable leases_;
   ProposalTable proposals_;
+  TransactionsFile transactions_;
   Subscriptions* events_ = nullptr;
 };
 

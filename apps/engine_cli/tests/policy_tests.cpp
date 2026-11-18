@@ -238,3 +238,198 @@ TEST_CASE("cli: leases and proposals hold from one process to the next") {
   CHECK(at(at(stack[2], "proposal"), "state") == JsonValue("Promoted"));
   CHECK(at(at(stack[2], "proposal"), "closed_by") == JsonValue("d"));
 }
+
+// Plan 06 §6.4's explicit transaction through the real executables (protocol.md, "Transactions a
+// client opens"): opened, staged into and committed by three engine-cli processes, and refused
+// over one engine-host --stdio the ways a client can get it wrong.
+TEST_CASE("cli: a transaction staged by several processes lands as one patch") {
+  test::TempDir tmp("engine_cli_transactions");
+  const std::string doc = tmp.file("doc");
+  const auto call = [&](const char* method, const std::string& params) {
+    return cli({"--doc", doc, "--compact", method, params});
+  };
+  REQUIRE(cli({"--doc", doc, "--create", "session.info"}).exit_code == 0);
+  const Run begun =
+      call("doc.begin", R"({"layer":"base","attribution":{"actor":"a","rationale":"two nodes"}})");
+  REQUIRE(begun.exit_code == 0);
+  const std::string t = std::to_string(at(begun.result, "id").as_int());
+  const auto staged = [&](const char* id) {
+    return call("doc.apply", R"({"commands":[)" + create(id, 0) +
+                                 R"(],"attribution":{"actor":"a"},"transaction":)" + t + "}");
+  };
+  const Run first = staged("00000000000000100000000000000001");
+  REQUIRE(first.exit_code == 0);
+  CHECK(at(first.result, "staged") == JsonValue(u32{1}));
+  REQUIRE(staged("00000000000000100000000000000002").exit_code == 0);
+  CHECK(at(call("doc.objects", "{}").result, "total") == JsonValue(u32{0}));
+  const Run committed =
+      call("doc.commit", R"({"transaction":)" + t + R"(,"attribution":{"actor":"a"}})");
+  REQUIRE(committed.exit_code == 0);
+  CHECK(at(committed.result, "committed") == JsonValue(true));
+  CHECK(at(committed.result, "applied") == JsonValue(u32{2}));
+  CHECK(at(call("doc.objects", "{}").result, "total") == JsonValue(u32{2}));
+  const Run info = call("session.info", "{}");
+  CHECK(at(info.result, "journal_length") == JsonValue(u32{1}));
+  // Committed and gone: committing again is a usage error the cli exits 1 on.
+  CHECK(
+      call("doc.commit", R"({"transaction":)" + t + R"(,"attribution":{"actor":"a"}})").exit_code ==
+      1);
+}
+
+TEST_CASE("host: doc.begin, doc.commit and doc.rollback refused over --stdio") {
+  test::TempDir tmp("engine_cli_transactions");
+  const std::string roles = tmp.file("roles.json");
+  write_file(roles, k_roles);
+  const std::string doc = tmp.file("doc");
+  REQUIRE(cli({"--doc", doc, "--create", "session.info"}).exit_code == 0);
+  Host host({"--roles", roles, "--actor", "boss", "--role", "director"});
+  REQUIRE(code_of(host.call("session.open", "{\"path\":" + write_json(JsonValue(doc)) + "}")) == 0);
+  // QA may not open one: doc.begin is a write.
+  CHECK(code_of(host.call("doc.begin",
+                          R"({"session":"s1","attribution":{"actor":"q","role":"qa"}})")) == 1008);
+  CHECK(code_of(host.call("doc.transactions", R"({"session":"s1"})")) == 0);
+  // An unknown transaction, and an unknown session.
+  CHECK(code_of(host.call("doc.commit", R"({"session":"s1","transaction":41})")) == 1003);
+  CHECK(code_of(host.call("doc.rollback", R"({"session":"s9","transaction":1})")) == 1000);
+  const JsonValue begun = host.call("doc.begin", R"({"session":"s1"})");
+  REQUIRE(code_of(begun) == 0);
+  const std::string t = std::to_string(at(at(begun, "result"), "id").as_int());
+  CHECK(at(at(at(begun, "result"), "attribution"), "actor") == JsonValue("boss"));
+  // Another actor's commit, and a staging call naming another layer.
+  CHECK(code_of(host.call("doc.commit", R"({"session":"s1","transaction":)" + t +
+                                            R"(,"attribution":{"actor":"other"}})")) == 1008);
+  CHECK(code_of(host.call("doc.apply", R"({"session":"s1","commands":[)" +
+                                           create("00000000000000100000000000000001", 0) +
+                                           R"(],"layer":"elsewhere","transaction":)" + t + "}")) ==
+        1004);
+  CHECK(code_of(host.call("doc.apply", R"({"session":"s1","commands":[)" +
+                                           create("00000000000000100000000000000001", 0) +
+                                           R"(],"transaction":)" + t + "}")) == 0);
+  const JsonValue gone = host.call("doc.rollback", R"({"session":"s1","transaction":)" + t + "}");
+  REQUIRE(code_of(gone) == 0);
+  CHECK(at(at(gone, "result"), "commands") == JsonValue(u32{1}));
+  CHECK(at(at(host.call("doc.objects", R"({"session":"s1"})"), "result"), "total") ==
+        JsonValue(u32{0}));
+}
+
+// place_asset and instantiate_template over one engine-host --stdio (protocol.md, "Placing an
+// asset, instantiating a template"), refusals included.
+TEST_CASE("host: doc.place_asset and doc.instantiate_template over --stdio") {
+  test::TempDir tmp("engine_cli_place");
+  const std::string roles = tmp.file("roles.json");
+  write_file(roles, k_roles);
+  const std::string doc = tmp.file("doc");
+  REQUIRE(cli({"--doc", doc, "--create", "session.info"}).exit_code == 0);
+  write_file(doc + "/crate.glb", std::string("glTF\x02\0\0\0", 8));
+  Host host({"--roles", roles, "--actor", "boss", "--role", "director"});
+  REQUIRE(code_of(host.call("session.open", "{\"path\":" + write_json(JsonValue(doc)) + "}")) == 0);
+  const std::string place =
+      R"({"session":"s1","asset":"crate.glb","placements":[{"name":"a","translation":[1,0,2]}],"attribution":{"rationale":"e2e"}})";
+  const JsonValue placed = host.call("doc.place_asset", place);
+  REQUIRE(code_of(placed) == 0);
+  const std::string id = std::string(at(at(placed, "result"), "ids")[0].as_string());
+  CHECK(at(at(at(placed, "result"), "apply"), "committed") == JsonValue(true));
+  // Refused: QA, a missing asset, an unknown template.
+  CHECK(
+      code_of(host.call(
+          "doc.place_asset",
+          R"({"session":"s1","asset":"crate.glb","placements":[{}],"attribution":{"actor":"q","role":"qa"}})")) ==
+      1008);
+  CHECK(code_of(host.call("doc.place_asset",
+                          R"({"session":"s1","asset":"gone.glb","placements":[{}]})")) == 1003);
+  CHECK(code_of(host.call("doc.instantiate_template",
+                          R"({"session":"s1","root":"00000000000000000000000000000099"})")) ==
+        1003);
+  const JsonValue copied = host.call(
+      "doc.instantiate_template", R"({"session":"s1","root":")" + id +
+                                      R"(","offset":[10,0,0],"attribution":{"rationale":"e2e"}})");
+  REQUIRE(code_of(copied) == 0);
+  CHECK(at(at(copied, "result"), "ids").size() == 1);
+  // The placement, its copy and the copy's origin.
+  CHECK(at(at(host.call("doc.objects", R"({"session":"s1"})"), "result"), "total") ==
+        JsonValue(u32{3}));
+}
+
+// doc.query over one engine-host --stdio (protocol.md, "Querying the document"): a QA host's
+// filter, a page, and the refusals.
+TEST_CASE("host: doc.query over --stdio") {
+  test::TempDir tmp("engine_cli_query");
+  const std::string roles = tmp.file("roles.json");
+  write_file(roles, k_roles);
+  const std::string doc = tmp.file("doc");
+  REQUIRE(cli({"--doc", doc, "--create", "session.info"}).exit_code == 0);
+  write_file(doc + "/crate.glb", std::string("glTF\x02\0\0\0", 8));
+  {
+    Host director({"--roles", roles, "--actor", "boss", "--role", "director"});
+    REQUIRE(code_of(director.call("session.open",
+                                  "{\"path\":" + write_json(JsonValue(doc)) + "}")) == 0);
+    REQUIRE(
+        code_of(director.call(
+            "doc.place_asset",
+            R"({"session":"s1","asset":"crate.glb","placements":[{"name":"a","translation":[1,0,2]},{"name":"b","translation":[30,0,4]},{"name":"c","translation":[50,0,4]}],"attribution":{"rationale":"e2e"}})")) ==
+        0);
+  }
+  Host host({"--roles", roles, "--actor", "q", "--role", "qa"});
+  REQUIRE(code_of(host.call("session.open", "{\"path\":" + write_json(JsonValue(doc)) + "}")) == 0);
+  const JsonValue east = host.call(
+      "doc.query",
+      R"({"session":"s1","filter":{"all":[{"type":"engine.scene.*"},{"property":"translation[0]","at_least":10}]},"fields":["name"],"max_rows":1})");
+  REQUIRE(code_of(east) == 0);
+  const JsonValue& r = at(east, "result");
+  REQUIRE(at(r, "rows").size() == 1);
+  CHECK(at(r, "bound") == JsonValue("max_rows"));
+  const JsonValue rest = host.call(
+      "doc.query",
+      R"({"session":"s1","filter":{"property":"translation[0]","at_least":10},"fields":["name"],"after":")" +
+          std::string(at(r, "next").as_string()) + "\"}");
+  REQUIRE(code_of(rest) == 0);
+  CHECK(at(at(rest, "result"), "rows").size() == 1);
+  CHECK(at(at(rest, "result"), "complete") == JsonValue(true));
+  CHECK(code_of(host.call("doc.query", R"({"session":"s1","filter":{"all":{"type":"x"}}})")) ==
+        1004);
+  CHECK(code_of(host.call("doc.query", R"({"session":"s1","max_examined":0})")) == 1004);
+}
+
+// doc.describe over one engine-host --stdio (protocol.md, "Describing an object, a tile or a
+// region"): a read a QA host may make, its bounds, its refusals.
+TEST_CASE("host: doc.describe over --stdio") {
+  test::TempDir tmp("engine_cli_describe");
+  const std::string roles = tmp.file("roles.json");
+  write_file(roles, k_roles);
+  const std::string doc = tmp.file("doc");
+  REQUIRE(cli({"--doc", doc, "--create", "session.info"}).exit_code == 0);
+  write_file(doc + "/crate.glb", std::string("glTF\x02\0\0\0", 8));
+  {
+    Host director({"--roles", roles, "--actor", "boss", "--role", "director"});
+    REQUIRE(code_of(director.call("session.open",
+                                  "{\"path\":" + write_json(JsonValue(doc)) + "}")) == 0);
+    REQUIRE(
+        code_of(director.call(
+            "doc.place_asset",
+            R"({"session":"s1","asset":"crate.glb","seed":3,"placements":[{"name":"a","translation":[1,0,2]},{"name":"b","translation":[3,0,4]}],"attribution":{"rationale":"e2e"}})")) ==
+        0);
+  }
+  Host host({"--roles", roles, "--actor", "q", "--role", "qa"});
+  REQUIRE(code_of(host.call("session.open", "{\"path\":" + write_json(JsonValue(doc)) + "}")) == 0);
+  const JsonValue all = host.call("doc.objects", R"({"session":"s1"})");
+  REQUIRE(at(at(all, "result"), "objects").size() == 2);
+  const std::string id(at(at(at(all, "result"), "objects")[0], "id").as_string());
+  const JsonValue d =
+      host.call("doc.describe", R"({"session":"s1","detail":"Full","id":")" + id + "\"}");
+  REQUIRE(code_of(d) == 0);
+  const JsonValue& r = at(d, "result");
+  CHECK(at(r, "scope") == JsonValue("object"));
+  const std::string sentence(at(r, "summary").as_string());
+  CHECK(sentence.find("engine.scene.MeshPlacement '") == 0);
+  CHECK(sentence.find(", a root, with no children.") != std::string::npos);
+  CHECK(at(at(at(r, "records")[0], "properties"), "mesh") == JsonValue("crate.glb"));
+  // Placements are untiled in an unpartitioned document: tile (0, 0) holds nothing.
+  CHECK(at(at(host.call("doc.describe", R"({"session":"s1","tile":{"x":0,"y":0}})"), "result"),
+           "summary") == JsonValue("Tile (0, 0) holds no live records."));
+  CHECK(code_of(host.call("doc.describe", R"({"session":"s1"})")) == 1004);
+  CHECK(code_of(host.call("doc.describe",
+                          R"({"session":"s1","id":"00000000000000000000000000000099"})")) == 1003);
+  CHECK(code_of(host.call("doc.describe",
+                          R"({"session":"s1","region":{"x0":0,"y0":0,"x1":1000,"y1":1000}})")) ==
+        1004);
+}
