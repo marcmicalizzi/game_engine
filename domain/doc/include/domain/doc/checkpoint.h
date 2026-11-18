@@ -44,6 +44,10 @@ struct CheckpointState {
 class Checkpoints {
  public:
   static constexpr std::string_view k_git_dir = ".git";
+  // A label is a client's text and becomes the commit's subject, which the listing reads back: it
+  // is refused, never altered, past this length or with any control character (b68 review B9).
+  static constexpr usize k_max_label_bytes = 200;
+  static bool check_label(std::string_view label, std::string* error);
 
   // The git executable: `ENGINE_GIT` when set, "git" (found through PATH) otherwise.
   static std::string git_executable();

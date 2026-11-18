@@ -2,13 +2,19 @@
 // checkpoints"): `doc.put_blob`, `doc.blob`, `doc.collect_blobs`, `doc.checkpoint`,
 // `doc.checkpoints` and `doc.rollback_to`. The reads are `read_only`; the rest are writes a role
 // must name. The work is the session's (session_history.cpp) and domain/doc's.
+#include "document_path.h"
+
 #include <core/hash/base64.h>
 #include <domain/doc/blob_store.h>
 #include <domain/doc/checkpoint.h>
+#include <domain/doc/document_store.h>
 #include <domain/protocol/policy.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
 #include <foundation/io/vfs.h>
+
+#include <filesystem>
+#include <system_error>
 
 namespace engine::protocol {
 
@@ -24,6 +30,45 @@ Session* begin(Context& ctx, const std::string& session,
   return s;
 }
 
+// `file`, links followed, is under `dir`, links followed: a link inside the document's directory
+// that points out of it is refused like a path that climbs out. Both must exist (`canonical`), and
+// the comparison is by whole components.
+bool resolves_under(std::string_view dir, std::string_view file) {
+  // Native paths are UTF-8 (foundation/io), not the narrow code page a std::string path means on
+  // Windows.
+  const auto utf8 = [](std::string_view s) {
+    return std::filesystem::path(
+        std::u8string_view(reinterpret_cast<const char8_t*>(s.data()), s.size()));
+  };
+  std::error_code ec;
+  const std::filesystem::path root = std::filesystem::canonical(utf8(dir), ec);
+  if (ec) return false;
+  const std::filesystem::path real = std::filesystem::canonical(utf8(file), ec);
+  if (ec) return false;
+  auto r = root.begin();
+  auto f = real.begin();
+  for (; r != root.end(); ++r, ++f) {
+    if (r->empty()) continue;  // a root's trailing separator
+    if (f == real.end() || *f != *r) return false;
+  }
+  return f != real.end();
+}
+
+// A client-named file under the document's directory, read whole: false, with nothing said of why,
+// for a path `stays_under_document` refuses, one that leaves through a link, and one with no
+// readable file behind it alike (document_path.h).
+bool read_under_document(const io::Vfs& vfs, std::string_view dir, std::string_view path,
+                         std::string& bytes) {
+  if (!stays_under_document(path)) return false;
+  const std::string full = doc::DocumentStore::path_of(dir, path);
+  std::string native_dir, native_file;
+  if (vfs.resolve(dir, native_dir, false) != io::Status::Ok ||
+      vfs.resolve(full, native_file, false) != io::Status::Ok)
+    return false;
+  if (!resolves_under(native_dir, native_file)) return false;
+  return vfs.read(full, bytes) == io::Status::Ok;
+}
+
 bool doc_put_blob(Context& ctx, const PutBlobParams& params, BlobResult& out, RpcError& error) {
   Caller caller;
   Session* s = begin(ctx, params.session, params.attribution, caller, error);
@@ -35,8 +80,11 @@ bool doc_put_blob(Context& ctx, const PutBlobParams& params, BlobResult& out, Rp
   }
   std::string bytes;
   if (!params.path.empty()) {
-    if (const io::Status st = io::read_file(params.path, bytes); st != io::Status::Ok) {
-      error = make_error(codes::k_io_error, params.path + ": " + io::status_name(st));
+    if (!read_under_document(ctx.sessions->vfs(), s->dir(), params.path, bytes)) {
+      error = make_error(codes::k_not_found,
+                         "no readable file at that path under the document's directory: name it "
+                         "by a path relative to the document, without '..', or send the bytes as "
+                         "data_base64");
       return false;
     }
   } else if (!base64_decode(params.data_base64, bytes)) {
@@ -109,8 +157,8 @@ void add_history_methods(Dispatcher& d) {
   d.add(method<PutBlobParams, BlobResult, &doc_put_blob>(
       "doc.put_blob",
       "Store bytes in the document's blob store, named by their SHA-256, and return the reference "
-      "(engine.doc.BlobRef) a property holds instead of the bytes: from a file on the host's "
-      "machine or inline as base64."));
+      "(engine.doc.BlobRef) a property holds instead of the bytes: from a file under the "
+      "document's directory, named relative to it, or inline as base64."));
   d.add(read_only(method<BlobParams, BlobResult, &doc_blob>(
       "doc.blob",
       "A blob's path under the document, its bytes checked against its name, and with `data` the "

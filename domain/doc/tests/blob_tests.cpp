@@ -13,8 +13,11 @@
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <chrono>
+#include <filesystem>
 #include <random>
 #include <string>
+#include <system_error>
 
 using namespace engine;
 using namespace engine::doc;
@@ -112,6 +115,47 @@ TEST_CASE("blobs: the same bytes are the same name, the same file, and are read 
   REQUIRE(listed.size() == 1);
   CHECK(listed[0].name == a.blob);
   CHECK(listed[0].size == grid.size());
+}
+
+// Batch 68's review, B3: a put of bytes already stored wrote nothing and left the file's time where
+// it was, so a blob left unnamed past the grace period, put again by a client about to name it, was
+// collected before the client's commit, which was then refused for a blob it had just put.
+TEST_CASE("blobs: a put of bytes already stored starts the collection's grace period again") {
+  TempDir tmp("engine_doc_blob_reput");
+  io::Vfs vfs;
+  REQUIRE(vfs.mount("docs", tmp.path(), /*writable=*/true) == io::Status::Ok);
+  const std::string dir = "docs://world";
+  std::string error;
+  Document doc;
+  DocumentManifest manifest;
+  REQUIRE(DocumentStore::create(vfs, dir, "World", doc, manifest, &error));
+  BlobRef ref;
+  bool created = false;
+  REQUIRE(BlobStore::put(vfs, dir, "a painted mask", "test", ref, &created, &error));
+  REQUIRE(created);
+  // Two hours old, and named by nothing: a collection with the default hour takes it.
+  const std::string file =
+      tmp.path() + "/world/blobs/" + ref.blob.substr(0, 2) + "/" + ref.blob.substr(2);
+  std::error_code ec;
+  std::filesystem::last_write_time(
+      std::filesystem::path(file),
+      std::filesystem::file_time_type::clock::now() - std::chrono::hours(2), ec);
+  REQUIRE_MESSAGE(!ec, ec.message());
+  BlobCollectOptions hour;
+  hour.min_age_ms = 3'600'000;
+  hour.dry_run = true;
+  BlobCollectReport report;
+  REQUIRE(BlobStore::collect(vfs, dir, doc, {}, hour, report, &error));
+  REQUIRE(report.removed.size() == 1);
+
+  // Put again by a client about to name it: not new, and young again.
+  REQUIRE(BlobStore::put(vfs, dir, "a painted mask", "test", ref, &created, &error));
+  CHECK_FALSE(created);
+  hour.dry_run = false;
+  REQUIRE(BlobStore::collect(vfs, dir, doc, {}, hour, report, &error));
+  CHECK(report.removed.empty());
+  CHECK(report.kept_young == 1);
+  CHECK(BlobStore::has(vfs, dir, ref.blob));
 }
 
 TEST_CASE("blobs: a reference is found wherever it stands in a value, and only a name counts") {

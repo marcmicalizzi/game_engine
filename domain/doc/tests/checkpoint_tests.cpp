@@ -9,6 +9,7 @@
 #include <domain/doc/checkpoint.h>
 #include <domain/doc/document_store.h>
 
+#include <core/platform/process.h>
 #include <core/schema/json_reflect.h>
 
 #include <doctest/doctest.h>
@@ -122,11 +123,15 @@ TEST_CASE("checkpoints: taken, listed, found, and read back as they were saved")
   doc.set_edit_layer(0);
   commit(vfs, dir, doc, manifest, cmd_clear(f, "map"));
   CheckpointInfo second;
-  REQUIRE(Checkpoints::take(vfs, dir, doc, manifest, "after the flood\nsecond line",
+  // A label with a newline was folded to one line; it is refused now, as every control character
+  // is (b68 review B9; the case below has the rest).
+  CHECK_FALSE(Checkpoints::take(vfs, dir, doc, manifest, "after the flood\nsecond line",
+                                who("bo", "the flood"), second, &error));
+  REQUIRE(Checkpoints::take(vfs, dir, doc, manifest, "after the flood, second line",
                             who("bo", "the flood"), second, &error));
   CHECK(second.parent == first.id);
   CHECK(second.journal_from == 3);
-  CHECK(second.label == "after the flood second line");
+  CHECK(second.label == "after the flood, second line");
 
   REQUIRE(Checkpoints::list(vfs, dir, 0, listed, &error));
   REQUIRE(listed.size() == 2);
@@ -183,6 +188,78 @@ TEST_CASE("checkpoints: taken, listed, found, and read back as they were saved")
                             &error));
   REQUIRE(Checkpoints::read(vfs, dir, third.id, state, &error));
   CHECK(state.layers.size() == 2);
+}
+
+// Batch 68's review, B9: a label holding the log's separators listed a checkpoint git never made.
+// The engine refuses such a label; a commit made in the repository by hand can still hold one, and
+// the listing reads only what git wrote for each commit.
+TEST_CASE("checkpoints: a label is one bounded line, and the listing lists only real commits") {
+  if (!have_git()) return;
+  TempDir tmp("engine_doc_checkpoint_label");
+  io::Vfs vfs;
+  REQUIRE(vfs.mount("docs", tmp.path(), /*writable=*/true) == io::Status::Ok);
+  const std::string dir = "docs://world";
+  std::string error;
+  Document doc;
+  DocumentManifest manifest;
+  REQUIRE(DocumentStore::create(vfs, dir, "World", doc, manifest, &error));
+  CheckpointInfo info;
+  REQUIRE(Checkpoints::take(vfs, dir, doc, manifest, "first", who("ann", ""), info, &error));
+
+  const std::string forged = std::string(40, 'a');
+  const std::string hostile =
+      std::string("evil\x1f\x1f\x1e") + forged + "\x1f\x1f" + "forged\x1f";
+  CHECK_FALSE(Checkpoints::take(vfs, dir, doc, manifest, hostile, who("ann", ""), info, &error));
+  CHECK(error.find("control character") != std::string::npos);
+  CHECK_FALSE(Checkpoints::take(vfs, dir, doc, manifest, "two\nlines", who("ann", ""), info, &error));
+  const std::string longest(Checkpoints::k_max_label_bytes, 'l');
+  CHECK_FALSE(Checkpoints::take(vfs, dir, doc, manifest, longest + "l", who("ann", ""), info,
+                                &error));
+  CHECK(error.find("at most") != std::string::npos);
+  REQUIRE(Checkpoints::take(vfs, dir, doc, manifest, longest, who("ann", ""), info, &error));
+  CHECK(info.label == longest);
+  // An actor holding the separators is a trailer's value: it is written as one line of text.
+  Attribution odd = who("b\x1e" "ob", "");
+  REQUIRE(Checkpoints::take(vfs, dir, doc, manifest, "odd actor", odd, info, &error));
+
+  // By hand, past the engine: the hostile subject, which the format before this change listed as
+  // two checkpoints, the second named `forged`.
+  const std::string native = tmp.path() + "/world";
+  const std::string git = Checkpoints::git_executable();
+  const std::string git_dir = "--git-dir=" + native + "/.git";
+  const std::string work_tree = "--work-tree=" + native;
+  const std::string hooks = "core.hooksPath=" + native + "/.git/no-hooks";
+  const std::string_view argv[] = {git,  git_dir, work_tree, "-c", "user.name=someone", "-c",
+                                   "user.email=someone@localhost", "-c", "commit.gpgsign=false",
+                                   "-c", hooks, "commit", "-q", "--allow-empty",
+                                   "--cleanup=verbatim", "-F", "-"};
+  platform::Process process;
+  std::string why;
+  REQUIRE_MESSAGE(process.spawn(argv, &why, true, true), why);
+  (void)process.write(hostile + "\n\nEngine-Checkpoint: 1\nEngine-Actor: someone\n");
+  process.close_stdin();
+  std::string said;
+  (void)process.read_all(said);
+  REQUIRE_MESSAGE(process.wait() == 0, said);
+
+  Vector<CheckpointInfo> listed;
+  REQUIRE(Checkpoints::list(vfs, dir, 0, listed, &error));
+  REQUIRE(listed.size() == 4);  // first, the longest label, the odd actor, the hand-made one
+  for (const CheckpointInfo& c : listed) {
+    CHECK(c.id != forged);
+    CHECK(c.id.size() == 40);
+    for (const char ch : c.label)
+      CHECK(static_cast<unsigned char>(ch) >= 0x20);
+    for (const char ch : c.attribution.actor)
+      CHECK(static_cast<unsigned char>(ch) >= 0x20);
+  }
+  CHECK(listed[0].label.substr(0, 4) == "evil");
+  CHECK(listed[0].parent == listed[1].id);
+  CHECK(listed[1].attribution.actor == "b ob");
+  CHECK(listed[2].label == longest);
+  CHECK(listed[3].label == "first");
+  CheckpointInfo found;
+  CHECK_FALSE(Checkpoints::find(vfs, dir, forged, found, &error));
 }
 
 TEST_CASE("checkpoints: refused on a document with unsaved changes, and without git") {
