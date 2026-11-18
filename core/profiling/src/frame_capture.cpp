@@ -35,6 +35,7 @@ std::atomic<u32> g_writers{0};
 std::atomic<u32> g_threads{0};
 i64 g_origin_ns = 0;
 std::atomic<i64> g_stopped_ns{0};
+std::atomic<i64> g_full_ns{-1};  // when the first event was refused, from the origin; -1: never
 char g_thread_names[k_capture_max_threads][k_capture_thread_name_bytes] = {};
 
 struct ThreadState {
@@ -71,6 +72,10 @@ u16 thread_index(u32 generation) noexcept {
 void publish(const CaptureEvent& event, u32 generation) noexcept {
   const u64 at = g_claimed.fetch_add(1, std::memory_order_relaxed);
   if (at >= g_capacity) {
+    // The one claim that finds the buffer just full stamps the time, after its claim: every event
+    // recorded was stamped before its own (earlier) claim, so none is later than this. The report
+    // ends the capture's whole frames here (profiler.md, "A capture that filled").
+    if (at == g_capacity) g_full_ns.store(trace_now_ns() - g_origin_ns, std::memory_order_relaxed);
     g_dropped.fetch_add(1, std::memory_order_relaxed);
     return;
   }
@@ -84,9 +89,14 @@ void publish(const CaptureEvent& event, u32 generation) noexcept {
 // `leave`. With `generation` 0, any running capture.
 bool enter(u32& generation) noexcept {
   g_writers.fetch_add(1, std::memory_order_seq_cst);
+  // The switch first, then the generation: `capture_start` stores the generation and then the
+  // switch, so a writer that sees the switch on reads that start's generation or a later one.
+  // Read the other way round, a writer racing a start could pass with the old generation and
+  // publish an event the new capture never reads (a lost frame mark) under a stale thread index
+  // (a phantom thread), as `capture_zone_begin_check` already avoids.
+  const bool on = detail::g_capture_on.load(std::memory_order_seq_cst);
   const u32 current = g_generation.load(std::memory_order_seq_cst);
-  if (!detail::g_capture_on.load(std::memory_order_seq_cst) ||
-      (generation != 0 && generation != current)) {
+  if (!on || (generation != 0 && generation != current)) {
     g_writers.fetch_sub(1, std::memory_order_release);
     return false;
   }
@@ -135,6 +145,7 @@ bool capture_start(const CaptureOptions& options) {
   std::memset(g_thread_names, 0, sizeof(g_thread_names));
   g_origin_ns = trace_now_ns();
   g_stopped_ns.store(0, std::memory_order_relaxed);
+  g_full_ns.store(-1, std::memory_order_relaxed);
   u32 next = g_generation.load(std::memory_order_relaxed) + 1;
   if (next == 0) next = 1;
   g_generation.store(next, std::memory_order_seq_cst);
@@ -218,6 +229,7 @@ u32 capture_snapshot(std::span<CaptureEvent> out, CaptureInfo& info) noexcept {
   info.stopped_ns =
       running ? trace_now_ns() - g_origin_ns : g_stopped_ns.load(std::memory_order_relaxed);
   info.dropped = g_dropped.load(std::memory_order_relaxed);
+  info.full_ns = g_full_ns.load(std::memory_order_relaxed);
   info.threads = std::min(g_threads.load(std::memory_order_relaxed), k_capture_max_threads);
   info.running = running;
   return n;

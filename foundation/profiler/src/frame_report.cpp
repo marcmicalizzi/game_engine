@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -63,7 +64,8 @@ u32 frame_at(const Vector<Frame>& frames, i64 ns) noexcept {
 class FrameIndex {
  public:
   explicit FrameIndex(const Vector<Frame>& frames) {
-    for (u32 i = 0; i < frames.size(); ++i) entries_.push_back({frames[i].index, i});
+    for (u32 i = 0; i < frames.size(); ++i)
+      entries_.push_back({frames[i].index, i});
     std::stable_sort(entries_.begin(), entries_.end(),
                      [](const Entry& a, const Entry& b) { return a.index < b.index; });
   }
@@ -122,9 +124,37 @@ void summarize(Vector<Accumulator>& list, const Vector<u8>* measured, u32 frames
   }
 }
 
+// Whether a measured value reads as a time: NaN, an infinity or a magnitude past `k_max_value_ms`
+// is a broken timer's answer, and would be undefined behaviour in the trace's cast to i64.
+bool usable_ms(f64 ms) noexcept { return std::isfinite(ms) && std::fabs(ms) <= k_max_value_ms; }
+
+// Where a capture whose buffer filled stops being whole (profiler.md, "A capture that filled").
+struct Cut {
+  bool truncated = false;  // events were refused
+  i64 at_ns = 0;           // when the buffer filled (or, with no stamp, the last event recorded)
+  bool in_frame = false;   // a frame was in progress then and is left out
+  u64 frame = 0;           // its mark's index
+  i64 frame_begin_ns = 0;  // and its mark: zones from here on belong to no whole frame
+};
+
+Cut cut_of(std::span<const CaptureEvent> events, const CaptureInfo& info) {
+  Cut cut;
+  cut.truncated = info.dropped != 0;
+  if (!cut.truncated) return cut;
+  if (info.full_ns >= 0) {
+    cut.at_ns = info.full_ns;
+  } else {
+    for (const CaptureEvent& e : events)
+      cut.at_ns = std::max(cut.at_ns, std::max(e.begin_ns, e.end_ns));
+  }
+  return cut;
+}
+
 // The capture's frames, sorted by their marks, each ended by its end event, the next mark or the
-// capture's stop.
-Vector<Frame> frames_of(std::span<const CaptureEvent> events, const CaptureInfo& info) {
+// capture's stop. **In a capture that filled**, the last frame with no end event has no known end
+// — its end, and every mark after it, were refused — so it is left out and named in `cut`, rather
+// than stretched to the stop (which made a 20 s capture that filled at 4 s report a 16 s frame).
+Vector<Frame> frames_of(std::span<const CaptureEvent> events, const CaptureInfo& info, Cut& cut) {
   Vector<Frame> frames;
   for (const CaptureEvent& e : events)
     if (e.kind == profiling::CaptureKind::frame) frames.push_back({e.frame, e.begin_ns, -1});
@@ -140,8 +170,18 @@ Vector<Frame> frames_of(std::span<const CaptureEvent> events, const CaptureInfo&
       }
     }
   }
+  cut = cut_of(events, info);
+  if (cut.truncated && !frames.empty() && frames[frames.size() - 1].end_ns < 0) {
+    const Frame& last = frames[frames.size() - 1];
+    cut.in_frame = true;
+    cut.frame = last.index;
+    cut.frame_begin_ns = last.begin_ns;
+    frames.pop_back();
+  }
   for (u32 i = 0; i < frames.size(); ++i) {
-    const i64 next = i + 1 < frames.size() ? frames[i + 1].begin_ns : info.stopped_ns;
+    const i64 next = i + 1 < frames.size() ? frames[i + 1].begin_ns
+                     : cut.in_frame        ? cut.frame_begin_ns
+                                           : info.stopped_ns;
     if (frames[i].end_ns < 0 || frames[i].end_ns > next) frames[i].end_ns = next;
     frames[i].end_ns = std::max(frames[i].end_ns, frames[i].begin_ns);
   }
@@ -240,7 +280,12 @@ FrameReport build_report(std::span<const CaptureEvent> events, const CaptureInfo
   report.capture_running = info.running;
   report.frame.name = "frame";
 
-  Vector<Frame> all = frames_of(events, info);
+  Cut cut;
+  Vector<Frame> all = frames_of(events, info, cut);
+  report.truncated = cut.truncated;
+  report.truncated_in_frame = cut.in_frame;
+  report.truncated_frame = cut.frame;
+  report.truncated_ms = static_cast<f64>(cut.at_ns) * k_ms_per_ns;
   Vector<Frame> frames;
   const u32 first = options.window_frames != 0 && all.size() > options.window_frames
                         ? all.size() - options.window_frames
@@ -264,8 +309,29 @@ FrameReport build_report(std::span<const CaptureEvent> events, const CaptureInfo
     frame_ms.push_back(static_cast<f64>(f.end_ns - f.begin_ns) * k_ms_per_ns);
   const FrameIndex by_index(frames);
 
+  // In a capture that filled, each value track's last measured frame may have lost part of its
+  // burst of values (a frame's GPU passes are recorded one after another when its slot comes back),
+  // so it counts as unmeasured on that track: the frame whose value was recorded last.
+  bool partial[2] = {false, false};
+  u64 partial_frame[2] = {0, 0};
+  if (cut.truncated) {
+    i64 latest[2] = {-1, -1};
+    for (const CaptureEvent& e : events) {
+      if (e.kind != profiling::CaptureKind::value || !usable_ms(e.ms)) continue;
+      const u32 t = e.track == profiling::CaptureTrack::gpu ? 0u : 1u;
+      if (e.begin_ns >= latest[t]) {
+        latest[t] = e.begin_ns;
+        partial[t] = true;
+        partial_frame[t] = e.frame;
+      }
+    }
+  }
+
   for (const CaptureEvent& e : events) {
     if (e.kind == profiling::CaptureKind::zone) {
+      // A zone that began in the frame cut off, or after the buffer filled, belongs to no whole
+      // frame and is not counted, inside a frame or outside.
+      if (cut.truncated && e.begin_ns >= (cut.in_frame ? cut.frame_begin_ns : cut.at_ns)) continue;
       const u32 f = frame_at(frames, e.begin_ns);
       Accumulator& a = find_or_add(zones, e.name, n);
       const f64 ms = static_cast<f64>(e.duration_ns()) * k_ms_per_ns;
@@ -278,9 +344,15 @@ FrameReport build_report(std::span<const CaptureEvent> events, const CaptureInfo
         a.seen[f] = 1;
       }
     } else if (e.kind == profiling::CaptureKind::value) {
-      const u32 f = by_index.find(e.frame);
-      if (f == ~0u) continue;  // a frame outside the window
+      if (!usable_ms(e.ms)) {
+        ++report.invalid_values;
+        continue;
+      }
       const bool on_gpu = e.track == profiling::CaptureTrack::gpu;
+      const u32 t = on_gpu ? 0u : 1u;
+      if (partial[t] && e.frame == partial_frame[t]) continue;
+      const u32 f = by_index.find(e.frame);
+      if (f == ~0u) continue;  // a frame outside the window, or the frame cut off
       Accumulator& a = find_or_add(on_gpu ? gpu : cpu, e.name, n);
       ++a.count;
       a.sums[f] += e.ms;
@@ -355,7 +427,8 @@ std::string chrome_trace_json(const CaptureCopy& capture) {
     append_us(out, e.duration_ns());
     out += "}";
   }
-  const Vector<Frame> frames = frames_of(events, capture.info);
+  Cut cut;
+  const Vector<Frame> frames = frames_of(events, capture.info, cut);
   for (const Frame& f : frames) {
     sep();
     out += "{\"ph\":\"X\",\"cat\":\"frame\",\"name\":\"frame ";
@@ -377,14 +450,16 @@ std::string chrome_trace_json(const CaptureCopy& capture) {
     i64 at_ns = 0;
   };
   const FrameIndex by_index(frames);
-  Vector<Cursor> marked[2];     // by frame position: where the frame's next value goes
-  Vector<Cursor> unmarked[2];   // values of a frame with no mark: few, so a walk
+  Vector<Cursor> marked[2];    // by frame position: where the frame's next value goes
+  Vector<Cursor> unmarked[2];  // values of a frame with no mark: few, so a walk
   for (u32 t = 0; t < 2; ++t) {
     marked[t].resize(frames.size());
-    for (u32 f = 0; f < frames.size(); ++f) marked[t][f] = {frames[f].index, frames[f].begin_ns};
+    for (u32 f = 0; f < frames.size(); ++f)
+      marked[t][f] = {frames[f].index, frames[f].begin_ns};
   }
   for (const CaptureEvent& e : events) {
     if (e.kind != profiling::CaptureKind::value) continue;
+    if (!usable_ms(e.ms)) continue;  // not a time: counted in the report, never drawn
     const u32 track = e.track == profiling::CaptureTrack::gpu ? 0u : 1u;
     Cursor* cursor = nullptr;
     const u32 f = by_index.find(e.frame);
@@ -418,6 +493,16 @@ std::string chrome_trace_json(const CaptureCopy& capture) {
   append_f64(out, static_cast<f64>(capture.info.stopped_ns) * k_ms_per_ns);
   out += ",\"dropped_events\":";
   append_u64(out, capture.info.dropped);
+  out += ",\"truncated\":";
+  out += cut.truncated ? "true" : "false";
+  if (cut.truncated) {
+    out += ",\"truncated_ms\":";
+    append_f64(out, static_cast<f64>(cut.at_ns) * k_ms_per_ns);
+  }
+  if (cut.in_frame) {
+    out += ",\"truncated_frame\":";
+    append_u64(out, cut.frame);
+  }
   out += ",\"running\":";
   out += capture.info.running ? "true" : "false";
   out += "}}\n";

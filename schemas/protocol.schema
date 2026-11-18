@@ -2829,6 +2829,17 @@ struct ProfileReport @version(1) {
   /// that many).
   events: u64 = 0
   dropped_events: u64 = 0
+  /// True when the capture's buffer filled: the report ends there. Every number above is over the
+  /// whole frames before it; the frame in progress then is left out with its zones and values
+  /// (`truncated_in_frame`, its index `truncated_frame`), and so is each value track's last
+  /// measured frame. Start again with a larger `capacity` to see further.
+  truncated: bool = false
+  /// When the buffer filled, from the capture's start.
+  truncated_ms: f64 = 0
+  truncated_in_frame: bool = false
+  truncated_frame: u64 = 0
+  /// Values left out because they were not a time (NaN, infinite, or past 1e7 ms).
+  invalid_values: u64 = 0
   threads: u32 = 0
   /// The capture's length so far.
   capture_ms: f64 = 0

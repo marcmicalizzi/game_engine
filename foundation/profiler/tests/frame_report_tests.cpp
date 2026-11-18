@@ -5,9 +5,11 @@
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <thread>
 #include <vector>
@@ -220,4 +222,106 @@ TEST_CASE("profiler: a live capture's trace opens as Chrome trace JSON, laid out
   CHECK(other->find("dropped_events")->get_f64(dropped));
   CHECK(dropped == 0.0);
   profiling::capture_reset();
+}
+
+// A capture whose buffer fills part-way through a frame, stopped long after (profiler.md, "A
+// capture that filled"): the frame in progress lost its end, and before the mend it was reported
+// as lasting until the stop, so the frame series' max, p99, mean and window held the whole
+// unrecorded stretch. Twelve events a frame into 64 slots: frames 1 to 5 whole (60 events), frame
+// 6's mark, its two values and one zone kept, then the buffer is full.
+TEST_CASE("profiler: a capture that filled ends its report at the last whole frame") {
+  profiling::capture_reset();
+  profiling::CaptureOptions options;
+  options.capacity = 64;
+  REQUIRE(profiling::capture_start(options));
+  for (u64 f = 1; f <= 12; ++f) {
+    profiling::capture_frame(f);
+    profiling::capture_value(CaptureTrack::cpu, "filled: a", f, 1.0);
+    profiling::capture_value(CaptureTrack::cpu, "filled: b", f, 1.0);
+    for (int z = 0; z < 8; ++z) {
+      ENGINE_PROFILE_ZONE_NAMED("filled: work");
+    }
+    profiling::capture_frame_end(f);
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(600));  // the stretch nobody recorded
+  profiling::capture_stop();
+  CaptureCopy copy;
+  copy_capture(copy);
+  CHECK(copy.events.size() == 64);
+  CHECK(copy.info.dropped == 12 * 12 - 64);
+  CHECK(copy.info.full_ns >= 0);
+  CHECK(copy.info.full_ns <= copy.info.stopped_ns);
+  const FrameReport report = build_report(copy.events, copy.info);
+  CHECK(report.truncated);
+  CHECK(report.truncated_in_frame);
+  CHECK(report.truncated_frame == 6);
+  CHECK(report.truncated_ms == doctest::Approx(static_cast<f64>(copy.info.full_ns) * 1e-6));
+  CHECK(report.frames == 5);
+  CHECK(report.last_frame == 5);
+  // Frames of a few microseconds each: nothing near the 600 ms after the buffer filled.
+  CHECK(report.frame.max_ms < 250.0);
+  CHECK(report.frame.p99_ms < 250.0);
+  CHECK(report.window_ms < 250.0);
+  CHECK(report.cpu_frames == 5);
+  REQUIRE(find(report.cpu, "filled: a") != nullptr);
+  CHECK(find(report.cpu, "filled: a")->frames == 5);
+  CHECK(find(report.cpu, "filled: a")->count == 5);
+  CHECK(find(report.cpu, "filled: b")->median_ms == doctest::Approx(1.0));
+  // Frame 6's one kept zone belongs to no whole frame: not counted inside a frame or outside.
+  REQUIRE(find(report.zones, "filled: work") != nullptr);
+  CHECK(find(report.zones, "filled: work")->count == 5 * 8);
+  CHECK(find(report.zones, "filled: work")->outside_count == 0);
+  const std::string trace = chrome_trace_json(copy);
+  JsonValue json;
+  REQUIRE(parse_json(trace, json).ok);
+  CHECK(trace.find("\"truncated\":true") != std::string::npos);
+  CHECK(trace.find("\"truncated_frame\":6") != std::string::npos);
+  CHECK(trace.find("\"name\":\"frame 6\"") == std::string::npos);
+  profiling::capture_reset();
+}
+
+// The same rules over hand-made events: a capture that filled between frames keeps both whole
+// frames, but its GPU track's last frame lost one of its two passes, so that frame is not a
+// measured GPU frame (counting it would give pass b a zero there); and values that are not a
+// time — NaN, an infinity, 1e300 ms — are counted and left out of the report and the trace.
+TEST_CASE("profiler: a filled capture's last value burst and values that are not a time") {
+  const f64 nan = std::numeric_limits<f64>::quiet_NaN();
+  const f64 inf = std::numeric_limits<f64>::infinity();
+  CaptureEvent a1 = value(CaptureTrack::gpu, "a", 1, 2.0),
+               b1 = value(CaptureTrack::gpu, "b", 1, 3.0);
+  CaptureEvent a2 = value(CaptureTrack::gpu, "a", 2, 2.0);
+  a1.begin_ns = b1.begin_ns = 11 * k_ms;
+  a2.begin_ns = 21 * k_ms;
+  CaptureEvent bad = value(CaptureTrack::cpu, "bad", 1, nan);
+  CaptureEvent big = value(CaptureTrack::cpu, "big", 1, 1e300);
+  CaptureEvent endless = value(CaptureTrack::cpu, "endless", 1, -inf);
+  const CaptureEvent events[] = {
+      mark(1, 0), mark_end(1, 10), mark(2, 10), mark_end(2, 20), a1, b1, a2, bad, big, endless};
+  CaptureInfo info;
+  info.stopped_ns = 1000 * k_ms;
+  info.dropped = 1;
+  info.full_ns = 22 * k_ms;
+  const FrameReport report = build_report(events, info);
+  CHECK(report.truncated);
+  CHECK_FALSE(report.truncated_in_frame);
+  CHECK(report.truncated_ms == doctest::Approx(22.0));
+  CHECK(report.frames == 2);
+  CHECK(report.frame.max_ms == doctest::Approx(10.0));
+  CHECK(report.gpu_frames == 1);
+  REQUIRE(find(report.gpu, "b") != nullptr);
+  CHECK(find(report.gpu, "b")->frames == 1);
+  CHECK(find(report.gpu, "b")->median_ms == doctest::Approx(3.0));
+  CHECK(report.invalid_values == 3);
+  CHECK(report.cpu.size() == 0);
+  CaptureCopy copy;
+  for (const CaptureEvent& e : events)
+    copy.events.push_back(e);
+  copy.info = info;
+  const std::string trace = chrome_trace_json(copy);
+  JsonValue json;
+  CHECK(parse_json(trace, json).ok);
+  CHECK(trace.find("nan") == std::string::npos);
+  CHECK(trace.find("inf\"") == std::string::npos);
+  CHECK(trace.find("\"bad\"") == std::string::npos);
+  CHECK(trace.find("\"big\"") == std::string::npos);
 }

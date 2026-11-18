@@ -7,7 +7,9 @@
 // frame's measured times beside them.
 //
 // **What a frame is.** A frame is the interval from its mark (`profiling::capture_frame`) to its
-// end (`capture_frame_end`), or to the next mark, or to the capture's stop. A zone belongs to the
+// end (`capture_frame_end`), or to the next mark, or to the capture's stop — except in a capture
+// whose buffer filled, where a last frame with no end has no known end and is left out
+// (`FrameReport::truncated`). A zone belongs to the
 // frame its begin falls in; a value names its frame by index, which is how a GPU pass measured two
 // frames later lands on the frame that drew it.
 //
@@ -51,6 +53,9 @@ struct SeriesStats {
   f64 outside_ms = 0.0;
 };
 
+// The largest magnitude a value may have and still be read as a time: about 2.8 hours.
+inline constexpr f64 k_max_value_ms = 1.0e7;
+
 struct ReportOptions {
   u32 window_frames = 0;  // the last this many frames; 0: every frame of the capture
   u32 max_series = 32;    // per list; the rest are counted in `FrameReport::series_dropped`
@@ -70,6 +75,18 @@ struct FrameReport {
   u32 series_dropped = 0;     // names past `max_series`, all three lists together
   u64 events = 0;             // events read
   u64 dropped_events = 0;     // events the capture's full buffer refused
+  // **A capture that filled** (profiler.md): the report ends where the buffer filled. `truncated`
+  // when any event was refused; `truncated_ms` is when, from the capture's start. The frame in
+  // progress then (`truncated_in_frame`, its mark's index `truncated_frame`) is left out with its
+  // zones and values, as is each value track's last measured frame, since its burst of values may
+  // have been cut; so every number above is over whole frames whose events were all kept.
+  bool truncated = false;
+  bool truncated_in_frame = false;
+  u64 truncated_frame = 0;
+  f64 truncated_ms = 0.0;
+  // Values left out because their milliseconds were not a time (NaN, infinite, or past
+  // `k_max_value_ms` either way): a broken timer's answer is counted, never averaged in.
+  u64 invalid_values = 0;
   u32 threads = 0;
   f64 capture_ms = 0.0;  // the capture's length
   bool capture_running = false;
