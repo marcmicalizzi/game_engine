@@ -35,7 +35,6 @@
 #include <systems/renderer/far_tile.h>
 #include <systems/renderer/flora_motion.h>
 #include <systems/renderer/scene.h>
-#include <systems/renderer/scene_wind.h>
 #include <systems/renderer/sway_forms.h>
 #include <systems/renderer/terrain.h>
 #include <systems/renderer/terrain_materials.h>
@@ -51,6 +50,7 @@
 #include <renderer_log.h>
 #include <scene_fire.h>
 #include <scene_water.h>
+#include <systems/renderer/scene_wind.h>
 #include <schemas/scene.h>
 #include <thread>
 #include <utility>
@@ -2595,8 +2595,7 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       return false;
     }
     out.sky = *file.sky;
-    // The scene's wind (gfx.md, "The wind a scene names"; W136), checked here so a wind nobody can
-    // draw refuses the file.
+    // The scene's wind (gfx.md, "The wind a scene names"; W136), checked here so a wind nobody can draw refuses the file.
     if (file.sky->wind.has_value() && !read_scene_wind(*file.sky->wind, path, out.wind, error))
       return false;
     // The swell arriving beside it (gfx.md, "A swell a scene names"; W136-3).
@@ -3691,8 +3690,8 @@ void update_scene_bounds(SceneData& out) {
     Vec3i lowest = out.instances.empty() ? Vec3i{} : out.instances[0].cell;
     for (const gfx::InstanceDesc& instance : out.instances) {
       const Vec3i c = instance.cell;
-      if (c.x < lowest.x ||
-          (c.x == lowest.x && (c.y < lowest.y || (c.y == lowest.y && c.z < lowest.z))))
+      if (c.x < lowest.x || (c.x == lowest.x && (c.y < lowest.y ||
+                                                 (c.y == lowest.y && c.z < lowest.z))))
         lowest = c;
     }
     const WorldCell corner{lowest, Vec3{}};
