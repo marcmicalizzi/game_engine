@@ -17,8 +17,11 @@
 
 namespace engine::mem {
 
+// The default floor of the log, and the least a host may lower it to
+// (`set_large_allocation_floor`): below 1 MiB the table would be the heap, and every allocation would pay the log's compare.
 inline constexpr usize k_large_allocation_bytes = usize{16} << 20;
-inline constexpr u32 k_large_allocation_slots = 512;
+inline constexpr usize k_large_allocation_min_bytes = usize{1} << 20;
+inline constexpr u32 k_large_allocation_slots = 8192;
 inline constexpr u32 k_large_allocation_frames = 12;
 
 struct LargeAllocation {
@@ -31,6 +34,14 @@ struct LargeAllocation {
 
 void set_large_allocation_log(bool on) noexcept;
 bool large_allocation_log() noexcept;
+// **The log's floor** (W51-2; memory.md, "Who sized the largest blocks"): the least size it keeps,
+// `k_large_allocation_bytes` unless a host lowers it, clamped to `k_large_allocation_min_bytes` or
+// more. A memory report by owner wants the blocks between 1 and 16 MiB too (a tile's tables, a
+// generator's arrays), which together hold gigabytes no 16 MiB block names. Set it before the log
+// is turned on: it empties the table, since a block kept under one floor and freed under another
+// would otherwise stay in it. An allocation under 1 MiB still pays nothing for the log.
+void set_large_allocation_floor(usize bytes) noexcept;
+usize large_allocation_floor() noexcept;
 // Copies the live large allocations (up to `capacity`) and returns how many there are; those past
 // a full table are counted in `large_allocations_dropped`.
 u32 large_allocations(LargeAllocation* out, u32 capacity) noexcept;

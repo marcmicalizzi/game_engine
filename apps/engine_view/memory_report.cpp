@@ -35,7 +35,9 @@ namespace {
 // touched share to about a fifth of a percent of the block.
 constexpr u32 k_samples_per_block = 512;
 // The sites (distinct call stacks) the report lists, largest untouched first.
-constexpr u32 k_sites_listed = 40;
+// Every site at the default 16 MiB floor, and at a 1 MiB floor (`--memory-report-floor-mib`, W51-2)
+// enough that a fully resident site, which sorts last by untouched bytes, is still listed.
+constexpr u32 k_sites_listed = 400;
 
 f64 mib(u64 bytes) { return std::round(static_cast<f64>(bytes) / (1024.0 * 1024.0) * 10.0) / 10.0; }
 
@@ -387,8 +389,12 @@ JsonValue snapshot(const char* when, const gfx::Device* device) {
 
 }  // namespace
 
-void MemoryReport::enable() noexcept {
+void MemoryReport::enable(u64 floor_bytes) noexcept {
   on_ = true;
+  if (floor_bytes != 0) {  // before the logs are on: setting a floor empties a log's table
+    mem::set_large_allocation_floor(static_cast<usize>(floor_bytes));
+    gfx::set_large_buffer_floor(floor_bytes);
+  }
   mem::set_large_allocation_log(true);
   gfx::set_large_buffer_log(true);
 }
@@ -436,8 +442,9 @@ static JsonValue place_block(const char* when, const renderer::GpuScene& scene) 
 i64 MemoryReport::take(const char* when, const gfx::Device* device,
                        const renderer::GpuScene* scene) {
   if (!on_) return 0;
-  const bool first = std::strcmp(when, "first_frame") == 0;
-  JsonValue& slot = first ? first_frame_ : exit_;
+  JsonValue& slot = std::strcmp(when, "first_frame") == 0 ? first_frame_
+                    : std::strcmp(when, "uploaded") == 0  ? uploaded_
+                                                          : exit_;
   if (!slot.is_null()) return 0;
   const i64 started = time::monotonic_ns();
   slot = snapshot(when, device);
@@ -451,8 +458,10 @@ i64 MemoryReport::take(const char* when, const gfx::Device* device,
 JsonValue MemoryReport::block() const {
   if (!on_) return JsonValue::null();
   JsonValue out = JsonValue::object();
+  out.set("uploaded", uploaded_);
   out.set("first_frame", first_frame_);
   out.set("exit", exit_);
+  out.set("floor_mib", mib(mem::large_allocation_floor()));
   return out;
 }
 

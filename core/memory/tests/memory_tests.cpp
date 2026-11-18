@@ -193,7 +193,9 @@ TEST_CASE("memory: bounded allocation capture excludes paused work and counts ov
 // freed.
 TEST_CASE("memory: the large-allocation log keeps live large blocks while it is on") {
   constexpr usize k_bytes = mem::k_large_allocation_bytes * 2;
-  mem::LargeAllocation seen[mem::k_large_allocation_slots];
+  // About 1 MiB: on the heap, not the stack.
+  std::vector<mem::LargeAllocation> seen_storage(mem::k_large_allocation_slots);
+  mem::LargeAllocation* seen = seen_storage.data();
   void* before_on = mem::allocate(k_bytes, 64);
   mem::set_large_allocation_log(true);
   CHECK(mem::large_allocation_log());
@@ -221,4 +223,28 @@ TEST_CASE("memory: the large-allocation log keeps live large blocks while it is 
   mem::deallocate(small, mem::k_large_allocation_bytes - 1, 64);
   mem::deallocate(before_on, k_bytes, 64);
   CHECK(mem::large_allocations_dropped() == 0);
+}
+
+// The log's floor (W51-2; memory.md, "Who sized the largest blocks"): lowered, a block between the
+// floor and 16 MiB is kept and leaves when freed; a floor under 1 MiB is clamped to 1 MiB, so a
+// block under that is never kept; and the default comes back.
+TEST_CASE("memory: the large-allocation log keeps blocks down to the floor a host sets") {
+  std::vector<mem::LargeAllocation> seen(mem::k_large_allocation_slots);
+  CHECK(mem::large_allocation_floor() == mem::k_large_allocation_bytes);
+  mem::set_large_allocation_floor(1024);
+  CHECK(mem::large_allocation_floor() == mem::k_large_allocation_min_bytes);
+  mem::set_large_allocation_log(true);
+  constexpr usize k_mid = usize{3} << 20;
+  void* mid = mem::allocate(k_mid, 64);
+  void* tiny = mem::allocate(mem::k_large_allocation_min_bytes - 1, 64);
+  u32 n = mem::large_allocations(seen.data(), mem::k_large_allocation_slots);
+  REQUIRE(n == 1);
+  CHECK(seen[0].address == reinterpret_cast<u64>(mid));
+  CHECK(seen[0].bytes == k_mid);
+  mem::deallocate(mid, k_mid, 64);
+  CHECK(mem::large_allocations(seen.data(), mem::k_large_allocation_slots) == 0);
+  mem::deallocate(tiny, mem::k_large_allocation_min_bytes - 1, 64);
+  mem::set_large_allocation_log(false);
+  mem::set_large_allocation_floor(mem::k_large_allocation_bytes);
+  CHECK(mem::large_allocation_floor() == mem::k_large_allocation_bytes);
 }

@@ -236,6 +236,7 @@ Shard& shard_for(void* p) noexcept {
 // --- the large-allocation log ---------------------------------------------------------------
 
 std::atomic<bool> g_large_on{false};
+std::atomic<usize> g_large_floor{k_large_allocation_bytes};
 std::atomic<bool> g_large_lock{false};
 LargeAllocation g_large[k_large_allocation_slots];
 u32 g_large_count = 0;  // under g_large_lock; live entries are [0, count)
@@ -289,6 +290,16 @@ void set_large_allocation_log(bool on) noexcept {
 }
 
 bool large_allocation_log() noexcept { return g_large_on.load(std::memory_order_relaxed); }
+
+void set_large_allocation_floor(usize bytes) noexcept {
+  large_lock();
+  g_large_floor.store(bytes < k_large_allocation_min_bytes ? k_large_allocation_min_bytes : bytes,
+                      std::memory_order_relaxed);
+  g_large_count = 0;
+  large_unlock();
+}
+
+usize large_allocation_floor() noexcept { return g_large_floor.load(std::memory_order_relaxed); }
 
 u32 large_allocations(LargeAllocation* out, u32 capacity) noexcept {
   large_lock();
@@ -421,7 +432,8 @@ void* try_allocate(usize bytes, usize align) noexcept {
   shard.insert(p, bytes, tag);
   shard.unlock();
 #endif
-  if (bytes >= k_large_allocation_bytes && g_large_on.load(std::memory_order_relaxed))
+  if (bytes >= k_large_allocation_min_bytes && g_large_on.load(std::memory_order_relaxed) &&
+      bytes >= g_large_floor.load(std::memory_order_relaxed))
     record_large(p, bytes);
   return p;
 }
@@ -448,7 +460,8 @@ void deallocate(void* p, usize bytes, [[maybe_unused]] usize align) noexcept {
     bytes = entry.bytes;
   }
 #endif
-  if (bytes >= k_large_allocation_bytes && g_large_on.load(std::memory_order_relaxed))
+  if (bytes >= k_large_allocation_min_bytes && g_large_on.load(std::memory_order_relaxed) &&
+      bytes >= g_large_floor.load(std::memory_order_relaxed))
     forget_large(p);
   g_total.record_free(bytes);
   backend_free(p);
