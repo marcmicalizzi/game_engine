@@ -353,7 +353,7 @@ Identity, the layered document, persistence and schema evolution: [03](plan/03-d
 | D17 | Projections folded from the log; trimmed saves | open | D16 | L | design | [world](subsystems/world.md#not-yet) |
 | D18 | A save is the store, the document and the drivers | done (807dc07d, 3ecfd729) | D11, D16 | L | design | [world](subsystems/world.md#save-and-load) |
 | D19 | Accept ADR-0042 | blocked (the owner's review) | D18 | S | design | [ADR-0042](adr/0042-a-save-is-the-store-the-document-and-the-drivers.md) |
-| D20 | Live-tile edits and deletions reach the world at once | open | D7 | S | routine | [world](subsystems/world.md#not-yet) |
+| D20 | Live-tile edits and deletions reach the world at once | done (2026-11-17: a streamed call's first pass is `sim::MaterializeScope::live()`, the untiled records and every live tile following the change feed, so an edit, a creation or a deletion in a live tile reaches the world at the next call; `materialize_tests.cpp` and `ops_tests.cpp`. Not done: a projection of a record deleted while its tile is not live stays in the store until that tile is written again) | D7 | S | routine | [world](subsystems/world.md#not-yet) |
 | D21 | Save while a call is running | open | D18 | M | design | [03 §3.5](plan/03-data-model.md#35-persistent-world-state) |
 | D22 | Migration corpus of saves | done (9ebe2af1, 84e76393) | D18 | M | routine | [03 §3.8](plan/03-data-model.md#38-schema-evolution) |
 | D23 | Resident save in the corpus | open | D22 | S | routine | [corpus](../content/migration-corpus/README.md#the-resident-save-written-on-the-owners-machine-not-yet-here) |

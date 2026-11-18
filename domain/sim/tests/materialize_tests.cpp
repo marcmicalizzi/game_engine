@@ -420,6 +420,85 @@ TEST_CASE("sim: a tile is dematerialized on its own, and its children elsewhere 
   CHECK(rig.driver.live() == 4);
 }
 
+TEST_CASE("sim: the live scope brings a live tile's edits and deletions in at once, and no other") {
+  // A streamed world's pass between calls (docs/subsystems/world.md, "Edits between calls"): the
+  // untiled records and every live tile's, following the change feed after its first call, so an
+  // edit in a live tile reaches the world on the next call and one in a tile nobody simulates waits
+  // for that tile's own pass.
+  doc::Document d;
+  d.add_layer("base", doc::LayerRole::Base);
+  doc::LayerPartition partition;
+  partition.tile_size = 10.0;
+  d.set_layer_partition(0, partition);
+  create(d, 50, k_shelf, 0, props({{"position", vec3(5, 0, 5)}}));    // tile (0, 0)
+  create(d, 12, k_crate, 50, props({{"position", vec3(4, 0, 4)}}));   // tile (0, 0), child of 50
+  create(d, 13, k_crate, 0, props({{"position", vec3(3, 0, 3)}}));    // tile (0, 0)
+  create(d, 11, k_crate, 0, props({{"position", vec3(12, 0, 1)}}));   // tile (1, 0)
+  create(d, 5, k_crate, 0, props({{"speed", JsonValue(72.0)}}));      // in no tile
+
+  Rig rig;
+  // The first live pass is a full one: the untiled crate, and no tile is live yet.
+  const MaterializeReport first = rig.driver.materialize(d, MaterializeScope::live());
+  CHECK(first.full);
+  CHECK(first.created == 1);
+  CHECK(rig.driver.holds(id_of(5)));
+  rig.driver.materialize(d, MaterializeScope::of_tile({0, 0}));
+  REQUIRE(rig.driver.live() == 4);
+  const u64 calls = rig.driver.stats().hook_calls;
+
+  // Nothing changed: nothing visited, no hook called.
+  MaterializeReport still = rig.driver.materialize(d, MaterializeScope::live());
+  CHECK_FALSE(still.full);
+  CHECK(still.visited == 0);
+  CHECK(rig.driver.stats().hook_calls == calls);
+
+  // An edit in the live tile reaches the world now; one in the tile nobody simulates does not.
+  REQUIRE(d.apply(doc::cmd_set(id_of(12), "position", vec3(6, 0, 6)), nullptr, nullptr));
+  REQUIRE(d.apply(doc::cmd_set(id_of(11), "position", vec3(13, 0, 1)), nullptr, nullptr));
+  MaterializeReport edited = rig.driver.materialize(d, MaterializeScope::live());
+  CHECK_FALSE(edited.full);
+  CHECK(edited.visited == 1);
+  CHECK(edited.updated == 1);
+  CHECK(rig.world.entities.at(id_of(12)).body.position == Vec3{6.0f, 0.0f, 6.0f});
+  CHECK_FALSE(rig.driver.holds(id_of(11)));
+
+  // A deletion in the live tile, and an edit that moves a record out of every live tile, both let
+  // their record go; an edit that moves one into the live tile brings it in, filed there.
+  REQUIRE(d.apply(doc::cmd_delete(id_of(12)), nullptr, nullptr));
+  REQUIRE(d.apply(doc::cmd_set(id_of(13), "position", vec3(23, 0, 3)), nullptr, nullptr));
+  REQUIRE(d.apply(doc::cmd_set(id_of(11), "position", vec3(2, 0, 1)), nullptr, nullptr));
+  MaterializeReport moved = rig.driver.materialize(d, MaterializeScope::live());
+  CHECK_FALSE(moved.full);
+  CHECK(moved.dematerialized == 2);
+  CHECK(moved.created == 1);
+  CHECK(rig.world.entities.count(id_of(12)) == 0);
+  CHECK(rig.world.entities.count(id_of(13)) == 0);
+  CHECK(rig.driver.holds(id_of(11)));
+  Vector<Id128> west;
+  rig.driver.held(MaterializeScope::of_tile({0, 0}), west);
+  REQUIRE(west.size() == 2);
+  CHECK(west[0] == id_of(11));
+  CHECK(west[1] == id_of(50));
+
+  // The tile goes: an edit in it waits for its next pass, which brings the edit in.
+  CHECK(rig.driver.dematerialize(MaterializeScope::of_tile({0, 0})) == 2);
+  REQUIRE(d.apply(doc::cmd_set(id_of(11), "position", vec3(1, 0, 1)), nullptr, nullptr));
+  MaterializeReport away = rig.driver.materialize(d, MaterializeScope::live());
+  CHECK(away.created + away.updated == 0);
+  CHECK_FALSE(rig.driver.holds(id_of(11)));
+  rig.driver.materialize(d, MaterializeScope::of_tile({0, 0}));
+  CHECK(rig.world.entities.at(id_of(11)).body.position == Vec3{1.0f, 0.0f, 1.0f});
+
+  // After a let-go of everything the next live pass is full again, and what it holds is what a
+  // pass of the untiled records and each live tile holds: here the untiled crate alone, as the
+  // let-go took the tile with it.
+  rig.driver.dematerialize_all();
+  const MaterializeReport again = rig.driver.materialize(d, MaterializeScope::live());
+  CHECK(again.full);
+  CHECK(again.live == 1);
+  CHECK(rig.driver.holds(id_of(5)));
+}
+
 TEST_CASE("sim: write-back commits one attributed transaction and the next pass leaves it alone") {
   doc::Document d = yard();
   Rig rig;
