@@ -391,10 +391,26 @@ function Get-AffectedMentions {
     $out.Add([pscustomobject]@{ kind = $kind; target = $target; file = ($file -replace '\\', '/'); why = $why })
   }
   $source = if ($Rev) { @($Rev) } else { @('--untracked') }
+  # git is started through ProcessStartInfo.ArgumentList rather than `& git`: on Linux and macOS
+  # PowerShell expands a wildcard in a native command's argument against the current directory,
+  # a variable's value included, so `*CMakeLists.txt` reached git as `CMakeLists.txt` from the
+  # root of a checkout and the grep read the root CMakeLists alone (2026-11-18, the three Linux
+  # containers). An argument list is passed as it is, on every platform.
   function Invoke-Grep([string[]]$options, [string[]]$pathspec) {
     $gitArgs = @('-C', $Root, 'grep') + $options + $source + @('--') + $pathspec
-    $lines = & git @gitArgs 2>$null
-    $lines = @($lines | Where-Object { $_ })
+    $info = [System.Diagnostics.ProcessStartInfo]::new('git')
+    foreach ($a in $gitArgs) { $info.ArgumentList.Add($a) }
+    $info.UseShellExecute = $false
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $info.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    $process = [System.Diagnostics.Process]::Start($info)
+    $errors = $process.StandardError.ReadToEndAsync()
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $process.WaitForExit()
+    [void]$errors.Result
+    $process.Dispose()
+    $lines = @($stdout -split "`r?`n" | Where-Object { $_ })
     if ($Rev) { $lines = @($lines | ForEach-Object { $_.Substring($Rev.Length + 1) }) }
     return $lines
   }

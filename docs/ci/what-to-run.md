@@ -95,7 +95,11 @@ help with: roadmap T76.
   switched off.
 - **What a test reads at run time is found from the text** when the rule runs
   (`Get-AffectedMentions`, `git grep` over the working tree), so an edit that adds a reference
-  counts without a configure. Comments (`//`, `#`) name nothing.
+  counts without a configure. Comments (`//`, `#`) name nothing. The grep is started with its
+  arguments as a list, never through `& git`, because PowerShell on Linux expands a wildcard in a
+  native command's argument against the current directory: `*CMakeLists.txt` reached git as the
+  root's `CMakeLists.txt`, and a `cmake/` helper's callers went unfound in every container
+  (2026-11-18).
   - `content/<dir>/...` reaches the modules whose files name `content/<dir>`, and every content
     directory whose files refer to that one (a scene's `../../flora/oak.flora.json`) brings its
     readers too; a file that builds a content path out of pieces (`"content"` joined to a name:

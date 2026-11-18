@@ -343,7 +343,11 @@ try {
 
   $changed = @('content/flora/oak.flora.json', 'tools/gpu-lock.ps1', 'tests/support/tile_fixture.h',
                'domain/gfx/shaders/brdf.slang', 'cmake/EngineCloth.cmake', 'cmake/EngineGlobal.cmake')
-  $found = @(Get-AffectedMentions -Root $repo -Changed $changed)
+  # From the repository's root, as `dev.ps1 test -Affected` runs it: where PowerShell expands a
+  # native command's wildcards (Linux, macOS), the root's CMakeLists.txt is what `*CMakeLists.txt`
+  # would turn into if the grep's pathspecs ever reached git through `& git` again.
+  Push-Location -LiteralPath $repo
+  try { $found = @(Get-AffectedMentions -Root $repo -Changed $changed) } finally { Pop-Location }
   function Has([string]$kind, [string]$target, [string]$file) { @($found | Where-Object { $_.kind -eq $kind -and $_.target -eq $target -and $_.file -eq $file }).Count -gt 0 }
   Test-That 'a scene that refers to a changed file by ../.. is found, and its directory with it' { Has 'refers' 'content/flora' 'content/test-scenes/forest/scene.json' }
   Test-That 'and the directories that refer to that one, but not a page that names it' {
