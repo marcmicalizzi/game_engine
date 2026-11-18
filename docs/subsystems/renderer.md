@@ -3957,6 +3957,128 @@ pass left. That audit, or the graph naming the read with every storage write —
 can write through an address can read through it, an atomic is both, and the barrier is emitted
 either way — is a row of its own.
 
+### R171: on an ordered cache, and in the forest's own room
+
+Seventh leg (2026-11-18, on the base with the passes ordered, above). The fifth and sixth legs
+took every figure on a cache whose passes the new driver ran out of order, and never stood in
+the room the owner saw the grain in. Both are done here. **Nothing is mended and no default
+moves in this leg**: it is the tables again, and the forest's room found and measured.
+
+**The tables stand.** Held views, 3840×2160, `--raster rt --shadows rt`, the bounce, frames 150
+to 186 (`engine-view --temporal`), the RTX 5090, the session unlocked, the processors full with
+other builds (which the measure does not see):
+
+| held view (level, luma codes) | setting | the light's change a frame | pixel-frames stepping a luma code | any channel a code | three codes | cells followed a frame |
+|---|---|---|---|---|---|---|
+| house 0 (20.9) | cosine rays, today's history | 1.45 % | 2.05 % | 29.5 % | 0.057 % | — |
+| | the memory | 0.37 % | 0.090 % | 9.6 % | 0.001 % | 145 |
+| | the guide | 0.85 % | 0.50 % | 19.7 % | 0.003 % | — |
+| | both | 0.23 % | 0.018 % | 6.2 % | 0 | 765 |
+| cave (10.1) | cosine rays, today's history | 1.59 % | 0.99 % | 16.8 % | 0.001 % | — |
+| | the memory | 0.37 % | 0.043 % | 4.6 % | 0 | 26 |
+| | the guide | 0.54 % | 0.047 % | 6.7 % | 0 | — |
+| | both | 0.13 % | 0.001 % | 1.7 % | 0 | 48 |
+| **the forest's dark room** (23.7; 87 % of its pixels at 16 to 31) | cosine rays, today's history | 1.52 % | 1.34 % (1.21 % at 16–31) | 31.3 % | 0.20 % | — |
+| | the memory | 0.43 % | 0.23 % (0.012 %) | 8.2 % | 0.19 % | 63 |
+| | the guide | 0.91 % | 0.39 % (0.18 %) | 19.6 % | 0.19 % | — |
+| | both | 0.30 % | 0.22 % (0.003 %) | 5.0 % | 0.19 % | 143 |
+| the same room, the forest session's protocol (below) | cosine rays, today's history | 1.50 % | 1.38 % (1.25 %) | 30.9 % | 0.20 % | — |
+| | the memory | 0.36 % | 0.23 % (0.018 %) | 6.7 % | 0.19 % | |
+| | both | 0.28 % | 0.22 % (0.005 %) | 4.5 % | 0.19 % | |
+
+The house's and the cave's rows are the fifth leg's to the second figure (1.46, 0.38, 0.86, 0.24;
+2.06, 0.098, 0.51, 0.019): on a held view the disorder moved nothing these measures see, as
+"Main's three" found for the picture. No cell let go in any run. Every `gi cache:` case passes at
+the defaults in msvc-debug (twenty of twenty, 14,940 assertions), with the figures the gate had:
+moved by whole cells 0 in all four, the turn's first seven frames 0.541 against 0.639, the crowns'
+first frame 3.23 steps under, the rock 1,192 under 1,204, the cut 1.50 floors.
+
+**The forest's room, found.** The staging the engine's rows fly is the forest world *before* its
+village: no house stands at the owner's marks in it, so it cannot hold them. The room was cut out
+of the owner's own session instead: the scene file their walk recorded, read as text, with its
+terrain, sky, clouds and world blocks whole, its village placement, and every instance within
+80 m of their five marks (1,343 instances of 110 meshes); no water, channels, sward or litter.
+The village's plan comes out as theirs at this base (twelve houses of fourteen asked, the door of
+the seventh plot 0.3 m from their first mark). Their marks 2 and 3 are the two dark rooms; mark 3
+is a ground-floor room lit by one mullioned window with trees moving before it, the walls at
+luma 16 to 31. Flown with their flags (15 h, the world at rate 1, the flora's motion on, wind
+0.7, micromaps), it is the third block of the table: **the room behaves as the engine's house
+does.** With cosine rays 31 % of its pixels move a code in some channel each frame, not 75 to
+80 %; the memory takes the dark band's luma steps to a hundredth of what they were (1.21 to
+0.012 %) and the guide with it to 0.003 %, under the fourth leg's bar. What does not fall is
+the 0.19 % of pixel-frames moving three codes or more, the same under every setting: the crowns
+moving in the window, which is the picture and not the cache.
+
+**Is the light moving, or is it the estimate? The estimate.** With the memory on, of 113,650
+cells in the frame none let go in any frame and 63 a frame folded at today's rate because a
+coarser cell saw its light move (143 with the guide); the count starts at the 150th frame and
+is about a hundred by the 190th. A scratch simulation of the fourth leg's fold under a light
+that swings ±1 to ±5 % all the time agrees that this is too little to matter: the rule follows
+0 to 6 % of cell-frames and an own cell's change a frame stays 0.15 to 0.35 % of its light where
+today's history gives 2.4 to 4.9 %. So the fifth leg's reading — swaying crowns keep the room's
+cells following — **does not hold**: the room's light does not move as far as its cells can
+tell, and the memory is engaged there.
+
+**What the forest session measured, read from its scripts.** One flight that cuts between the
+five marks, three seconds held at each, four consecutive frames captured 2.5 s into each hold,
+so its mark 3 is 8.5 s into the room; its "change a pixel" is the median over pixels of the
+deviation over those four 8-bit frames, which at code 28 is three to four percent for any pixel
+that flips one code once and nothing under that: a count of flipped pixels, not a size. The
+table's last block is that protocol on the cut with this base's binary: the memory works there
+as it does held. **Their flights and the owner's walk were made with batch 67's binary on the
+evening of 2026-11-17, after the driver change of 16:41 and before the passes were ordered**,
+so by the rule above they are not evidence for this base. Whether the disorder is what kept
+their memory from working is **not shown**: batch 67's binary was put on the same cut and
+protocol beside this base's and did not load in the memory the machine had (its load took
+26 GB where this base's takes 11, and the machine had 5 GB of commit left at its lowest).
+The engine's house does not suggest it: the fifth leg's memory figures, taken on the disordered
+cache, are today's. The forest session flying its own marks again on a binary from this base,
+with `renderer.gi.log`, settles it in one run.
+
+**The sixth leg's three unexplained findings.**
+- *The guided wall under the cosine rays' under the sky alone*: the figure stands, 0.40 % under
+  (0.002356 against 0.002365; 0.08 % under with the bounce). Read again, the arithmetic still
+  allows no bias (the mixture, the weight, the mirror, the clamp before the weight, the fixed
+  point); and the sixth leg's "always under, three runs" was not three draws: a sample's random
+  numbers are seeded by its pixel and frame, so each run repeats one realization of each
+  estimator and the sign cannot change between runs. A realization's own scatter is what the
+  0.4 % has to be read against, and it was not measured in this leg.
+- *The memory failing the pre-roll's bound after a cut*: **it stands, and it is now the only
+  case in the way.** With the guide and the memory set as the process's defaults, msvc-debug,
+  nineteen of the twenty `gi cache:` cases pass (14,938 of 14,940 assertions): a scene moved by
+  whole cells draws the same bytes (0 in all four, so the fifth leg's mend for the samples round
+  the eye holds, which no run had shown); the turn stands at 1.17 against 1.24 and 0.51 against
+  0.64; the crowns' first frame 3.23 steps under; the rock 1,146 under 1,201. The pre-roll's
+  case fails its two own-floor bounds: a cut's furthest frame is 0.385 of a step against twice
+  a floor of 0.184 (**2.09 floors**), and a load's frames from the twenty-fourth 0.506 against
+  twice 0.203 (2.50). With both off the same frames stand at 0.799 (1.50 floors of 0.533) and
+  0.677 (against twice 0.422). So with the two on, every frame after a cut or a load is nearer
+  the long-held picture than today's is, and nearer than today's *still* picture's own floor;
+  what fails is its distance in floors of a still picture that has become three times
+  quieter. A cell just made cannot hold more than today's history, and a held one holds up to
+  sixteen times it, so no fold can keep that ratio under two; the bound is the case's promise
+  as written ("neither shows a fill"), and whether a wall that is a little grainier for a
+  second and a half after a cut, then settles, breaks that promise is still the owner's to
+  say. Nothing else stands between these tables and the two defaults in msvc-debug.
+- *The rounded rock under the memory in msvc-release*: in msvc-debug it passes with both on
+  (above); **msvc-release was not run on this base in this leg**, so the sixth leg's two
+  failures in three stand unanswered, and with them whether `blended < hard` is a property
+  under the memory or a count that was never three deviations apart.
+
+**What a person sees.** At the defaults (both off) a dark room's walls crawl as they did: a
+third of the pixels flip a code every frame. With `renderer.gi.memory` and `renderer.gi.guide`
+on, in the engine's rooms and in the forest's room alike, one pixel in twenty flips in any
+channel and three in a hundred thousand step a whole luma code: the wall holds still two and a
+half seconds after walking in. That is the same answer the fifth leg gave for the engine's
+rooms, now with the forest's room in it and on a cache whose passes run in order.
+
+**For whoever flies a cut of someone's world.** A scene cut from a larger one needs the
+`formation` block where a terrain material asks for it, and loses every mask region that names
+a water body with the water. A first load with a resolve variant the pipeline cache does not
+hold compiles one pipeline on one thread (565 s here for the variant with water and terrain),
+and a run ended before it exits saves none of it: without the water the cut drew the village
+scene's variant, which the slot's cache already held, and loaded in 70 s.
+
 ## The sun's day
 
 *A scene that names a sky takes its sun, its moon and its sky from it instead, on the world's clock ([The sky](#the-sky)); everything in this section is the stand-in's, which every other scene still draws, to the bit.*

@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R171-7",
+  "reason": "renderer.md: the seventh leg's section (the tables on the ordered cache, the forest's room)",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 9789
+  }
+}
