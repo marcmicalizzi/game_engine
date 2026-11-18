@@ -5235,13 +5235,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   auto add_deform = [&](u32 run) {
     const u64 source_offset = run == 2 ? 0 : u64{count_index} * sizeof(u32);
     const gfx::RgBuffer rg_source = run == 2 ? rg_sw_args : rg_args[run];
-    // Suballocate the pool for this run of every view before anything writes or reads it: a
-    // prefix sum over the entries' vertex counts in three passes, and one `deform_slots` word per
-    // entry saying where its block is (or that it did not fit). Its own zone rather than a view's:
-    // the passes cover every view of the run, so charging them to view 0 would put the whole set's
-    // allocation on one monitor's row.
-    add_alloc("deform alloc", rg_source, &alloc_params[run]);
-    // Each view's count folded into the pool pass's arguments (T165), where a copy of it was.
+    // Each view's count folded into the pool pass's arguments (T165), first after the cull (W147;
+    // gfx.md, "A dispatch that grows with the scene": behind the allocator it read the reset's 0).
     graph.add_pass(
         "deform args", gfx::PassKind::Compute,
         [&, rg_source](gfx::PassBuilder& b) {
@@ -5255,6 +5250,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                            scene.deform_args.address + scene.deform_args_offset(0, run),
                            k_visible_runs * gfx::k_draw_args_bytes, views);
         });
+    // Suballocate the pool for this run of every view before the pool pass: a prefix sum over the
+    // entries' vertex counts in three passes, one `deform_slots` word per entry saying where its
+    // block is (or that it did not fit), in its own zone, since the passes cover every view.
+    add_alloc("deform alloc", rg_source, &alloc_params[run]);
     graph.add_pass(
         "deform", gfx::PassKind::Compute,
         [&, rg_source](gfx::PassBuilder& b) {
