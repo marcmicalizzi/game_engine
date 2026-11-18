@@ -478,6 +478,45 @@ TEST_CASE("cluster lod: separate meshes merge into a scene, each keeping its own
   CHECK_FALSE(error.empty());
 }
 
+TEST_CASE("cluster lod: one mesh's imported extra stream does not make a scene's vertices pay") {
+  // Review finding A3 (G2): a small imported prop with tangents, colours or a second UV set beside
+  // a large mesh without them used to pad every vertex of the large one with a 12-byte "none"
+  // record. The scene's extra bytes are bounded by the prop's own vertices.
+  Vector<Vec3> positions_small;
+  Vector<u32> indices_small;
+  make_terrain(9, 0.5f, positions_small, indices_small);
+  Vector<Vec3> positions_large;
+  Vector<u32> indices_large;
+  make_terrain(65, 20.0f, positions_large, indices_large);
+  ClusterLodMesh meshes[2];
+  std::string error;
+  REQUIRE_MESSAGE(
+      build_cluster_lod(positions_small, indices_small, ClusterLodOptions{}, meshes[0], &error),
+      error);
+  REQUIRE_MESSAGE(
+      build_cluster_lod(positions_large, indices_large, ClusterLodOptions{}, meshes[1], &error),
+      error);
+  VertexExtra tinted;
+  tinted.color = encode_color_rgba8(Vec4{0.5f, 0.25f, 1.0f, 1.0f});
+  meshes[0].mesh.extra.resize(meshes[0].mesh.vertices.size(), tinted);
+  REQUIRE(meshes[1].mesh.extra.empty());
+  REQUIRE(meshes[1].mesh.vertices.size() > 8 * meshes[0].mesh.vertices.size());
+
+  ClusterLodMesh scene;
+  Vector<ClusterMeshPart> parts;
+  REQUIRE_MESSAGE(merge_cluster_meshes(meshes, scene, parts, &error), error);
+  REQUIRE(parts.size() == 2);
+  CHECK(scene.mesh.vertices.size() ==
+        meshes[0].mesh.vertices.size() + meshes[1].mesh.vertices.size());
+  CHECK(scene.mesh.extra.size() <= meshes[0].mesh.vertices.size());
+  // Whatever the scene keeps stays a stream the validator accepts: empty or parallel.
+  CHECK((scene.mesh.extra.empty() || scene.mesh.extra.size() == scene.mesh.vertices.size()));
+  MESSAGE("scene extra bytes " << scene.mesh.extra.size() * sizeof(VertexExtra) << " for "
+                               << scene.mesh.vertices.size() << " vertices");
+  // The prop's own mesh keeps its stream for its container.
+  CHECK(meshes[0].mesh.extra.size() == meshes[0].mesh.vertices.size());
+}
+
 TEST_CASE("cluster lod: a merge says where every cluster came from, so per-cluster arrays follow") {
   // A mesh laid out in pages is ordered coarse to fine, and the scene convention pulls its leaves
   // to the front: that is the merge that reorders a mesh, and a caller's own per-cluster array — a

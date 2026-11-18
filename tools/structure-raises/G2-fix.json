@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "G2-fix",
+  "reason": "A3 (review of G2): geometry.md says why a scene's merge drops the VertexExtra stream (the 1.4 GB it padded the forest with) and why not per mesh, and names the case that bounds it",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/geometry.md": 876
+  }
+}

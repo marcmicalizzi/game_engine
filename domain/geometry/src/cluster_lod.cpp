@@ -2697,9 +2697,13 @@ bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh&
     if (!any_ids) out.mesh.vertex_id_source = whole.mesh.vertex_id_source;
     any_ids = true;
   }
-  bool any_extra = false;  // G2: an imported mesh's tangent, second-UV and colour records
-  for (const ClusterLodMesh& whole : parts)
-    any_extra = any_extra || !whole.mesh.extra.empty();
+  // **A scene's merge drops an imported mesh's tangent, second-UV and colour records** (G2's
+  // `extra`; review finding A3). The stream is parallel to the vertices, so carrying it here would
+  // pad every vertex of every other mesh with a 12-byte "none" record: one imported prop with
+  // tangents in the forest's 116 million vertices was 1.4 GB at load, for data nothing reads after
+  // the merge. Each mesh's own container keeps its section 49, and the renderer's reader (G2's
+  // second leg) brings a per-mesh stream. `merge_cluster_lod`, which joins the parts of one mesh,
+  // still carries it.
   // **Every stream reserved at its merged size before the first append** (roadmap T129;
   // docs/experiments/memory-commit-accounting.md). The merge is the scene's whole geometry — on the
   // forest 116 million vertices, a 1.3 GB position array — and appending part by part grew each
@@ -2717,6 +2721,7 @@ bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh&
     out.mesh.vertex_source.reserve(vertices);
     if (attributes) out.mesh.attributes.reserve(vertices);
     if (skinned) out.mesh.skin.reserve(vertices);
+    if (any_ids) out.mesh.vertex_ids.reserve(vertices);
     out.mesh.triangles.reserve(triangles);
     out.mesh.quantized.reserve(vertices * 3 + 1);
     out.mesh.clusters.reserve(clusters);
@@ -2770,7 +2775,6 @@ bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh&
             ? part.vertex_id_source
             : VertexIdSource::none;
     append_vertex_ids(out.mesh, part, any_ids);
-    append_vertex_extra(out.mesh, part, any_extra);
     out.mesh.triangles.append(std::span<const u32>(part.triangles.data(), part.triangles.size()));
     // Three u16 a vertex, the mesh's own padding dropped so the merged index is 3 * vertex.
     out.mesh.quantized.append(
