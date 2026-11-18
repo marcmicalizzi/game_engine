@@ -276,7 +276,7 @@ function Get-AffectedByEdges {
     Set-All "$path is built into or read by everything"
   }
 
-  $mentions = @($Mentions)
+  $mentions = @($Mentions | Where-Object { $null -ne $_ })
   foreach ($c in $cmake) {
     $callers = @($mentions | Where-Object { $_.kind -eq 'cmake' -and $_.target -eq $c })
     foreach ($rec in $callers) {

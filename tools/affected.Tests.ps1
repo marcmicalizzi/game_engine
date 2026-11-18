@@ -272,6 +272,16 @@ $r = Edges @('cmake/EngineCloth.cmake') @((Ref 'cmake' 'cmake/EngineCloth.cmake'
 Test-That 'one that does more than define selects everything, and says why' { $r.All -and $r.Reason -match 'does more than define' }
 $r = Edges @('cmake/EngineCloth.cmake')
 Test-That 'one nothing calls selects no module, and says so' { -not $r.All -and $r.Modules.Count -eq 0 -and @($r.Notes | Where-Object { $_ -match 'no CMakeLists calls' }).Count -eq 1 }
+# An empty mention list may arrive as $null (dev.ps1's `@(Get-AffectedMentions ...)` of nothing
+# through a parameter); it must not become one null record whose `.kind` fails.
+$nullMentions = $null
+try {
+  $r = Get-AffectedTests -Modules $edgeModules -Layers $layers -Changed @('cmake/EngineCloth.cmake') -Mentions $nullMentions
+  $nullError = $null
+} catch { $nullError = $_ }
+Test-That 'a cmake/ helper with -Mentions $null selects without an error, as with none' {
+  $null -eq $nullError -and -not $r.All -and $r.Modules.Count -eq 0
+}
 foreach ($path in 'CMakeLists.txt', 'CMakePresets.json', 'cmake/test-costs.txt', 'third_party/doctest/doctest.h', 'tools/schemac/main.cpp') {
   $r = Edges @($path)
   Test-That "$path still selects everything" { $r.All -and $r.Reason }
