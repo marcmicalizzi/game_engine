@@ -473,15 +473,16 @@ endfunction()
 
 #   _engine_check_device_split(<name> <no_device> <device_files> <parts> <opens_devices>)
 # What NO_DEVICE and DEVICE_FILES (engine_module_tests, engine_app's E2E_ forms) may be given with:
-# not each other, and not parts (a part is dealt files by cost and a split by device; the two have
-# not been needed together). NO_DEVICE where the link graph would not give the label anyway (a
-# configuration whose capabilities leave gfx out) changes nothing.
+# not each other, and DEVICE_FILES not with parts (a part is dealt files by cost and a split by
+# device; the two have not been needed together). NO_DEVICE with parts is every part opening none,
+# as the one test would (engine_content, roadmap T183). NO_DEVICE where the link graph would not
+# give the label anyway (a configuration whose capabilities leave gfx out) changes nothing.
 function(_engine_check_device_split name no_device device_files parts)
   if(no_device AND device_files)
     message(FATAL_ERROR "${name}: NO_DEVICE says no case opens a device and DEVICE_FILES that some do; give one")
   endif()
-  if((no_device OR device_files) AND parts AND parts GREATER 1)
-    message(FATAL_ERROR "${name}: NO_DEVICE and DEVICE_FILES are not combined with PARTS")
+  if(device_files AND parts AND parts GREATER 1)
+    message(FATAL_ERROR "${name}: DEVICE_FILES is not combined with PARTS")
   endif()
 endfunction()
 
