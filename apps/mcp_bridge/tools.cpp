@@ -1901,6 +1901,20 @@ void profile_summary(const JsonValue& r, ToolOutcome& out) {
     out.summary += ", frame median " + fixed(real_of(*frame, "median_ms"), 3) + " ms, p99 " +
                    fixed(real_of(*frame, "p99_ms"), 3) + " ms";
   out.summary += "; " + std::to_string(uint_of(r, "dropped_events")) + " event(s) dropped.";
+  // A capture that filled says so first, in words, not only through the drop count.
+  if (bool_of(r, "truncated"))
+    out.summary +=
+        " Truncated: the buffer filled " + fixed(real_of(r, "truncated_ms"), 1) +
+        " ms into the capture" +
+        (bool_of(r, "truncated_in_frame")
+             ? ", during frame " + std::to_string(uint_of(r, "truncated_frame")) +
+                   ", which is left out"
+             : std::string()) +
+        "; these numbers are over the whole frames before it. profile_start with a larger "
+        "capacity to see further.";
+  if (uint_of(r, "invalid_values") != 0)
+    out.summary += " " + std::to_string(uint_of(r, "invalid_values")) +
+                   " value(s) were not a time and are left out.";
   for (const char* list_name : {"gpu", "cpu", "zones"}) {
     const JsonValue* list = r.find(list_name);
     if (list == nullptr || list->size() == 0) continue;

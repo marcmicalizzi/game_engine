@@ -12,9 +12,12 @@
 //     queries, a CPU span of the frame loop — named, and with the frame it measured, which for a
 //     GPU time is frames behind the mark of the frame it arrives in.
 //
-// **Off it costs one relaxed atomic load per zone and allocates nothing.** On, an event claims a
-// slot with one atomic add and writes 48 bytes; a full buffer drops and counts, so a frame loop
-// with the capture on still allocates nothing (AGENTS.md, "No allocations in the frame loop").
+// **Off it costs one relaxed atomic load per zone and allocates nothing.** On, an event enters as a
+// writer (a sequentially consistent add and later a release subtract on one counter every thread
+// shares, and two sequentially consistent loads), claims a slot with a relaxed add on a second
+// shared counter, writes 48 bytes and publishes them with a release store; a full buffer drops and
+// counts, and records when it filled, so a frame loop with the capture on still allocates nothing
+// (AGENTS.md, "No allocations in the frame loop").
 // `foundation/profiler` reads a stopped capture into a frame report and a trace a person opens.
 //
 // Names are pointers, never copied: a string literal, `__func__`, or a table that outlives the
@@ -62,6 +65,7 @@ struct CaptureInfo {
   i64 origin_ns = 0;     // `trace_now_ns` at `capture_start`
   i64 stopped_ns = 0;    // from the origin; the capture's length
   u64 dropped = 0;       // events a full buffer refused
+  i64 full_ns = -1;      // from the origin, when the first was refused; -1: the buffer never filled
   u32 threads = 0;       // thread indices used
   bool running = false;  // true: the snapshot was taken while recording (events may be missing)
 };

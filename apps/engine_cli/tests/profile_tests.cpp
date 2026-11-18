@@ -144,6 +144,9 @@ TEST_CASE(
   REQUIRE(stopped.find("running")->get_bool(flag));
   CHECK_FALSE(flag);
   CHECK(number(stopped, "dropped_events") == 0);
+  REQUIRE(stopped.find("truncated")->get_bool(flag));
+  CHECK_FALSE(flag);  // a buffer that did not fill (profiler.md, "A capture that filled")
+  CHECK(number(stopped, "invalid_values") == 0);
   const std::string trace(stopped.find("trace")->as_string());
   CHECK(std::filesystem::path(trace).filename() == "run.trace.json");
   std::ifstream file(trace, std::ios::binary);

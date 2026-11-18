@@ -111,6 +111,11 @@ bool report(const protocol::ProfileReportParams& params, protocol::ProfileReport
   out.series_dropped = r.series_dropped;
   out.events = r.events;
   out.dropped_events = r.dropped_events;
+  out.truncated = r.truncated;
+  out.truncated_ms = r.truncated_ms;
+  out.truncated_in_frame = r.truncated_in_frame;
+  out.truncated_frame = r.truncated_frame;
+  out.invalid_values = r.invalid_values;
   out.threads = r.threads;
   out.capture_ms = r.capture_ms;
   out.trace.clear();
