@@ -14,10 +14,14 @@
 #include <test_temp_dir.h>
 
 #include <algorithm>
+#include <atomic>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <mutex>
+#include <thread>
 #include <tuple>
 #include <vector>
 
@@ -329,6 +333,119 @@ TEST_CASE("channels: whole expansion equals any tile order, with stable ids") {
     CHECK(listed.reach > 0.0f);
     CHECK(forward[i].reach == listed.reach);
   }
+}
+
+// **A tile asked beside others is the tile asked alone** (T173; scene_gen.md, "A tile asked on
+// several threads"): the generator says its `tile` is reentrant, because a call reads only what
+// `open` kept (each piece's recipe, placement and tile) and writes only the `Placements` it is
+// handed. Every tile of the step-pool reach, asked on one thread, and then all of them at once from
+// eight threads on one state, a dozen rounds: every placement, mesh and recipe the same to the bit.
+TEST_CASE("channels: one state's tiles asked on eight threads are the tiles asked alone") {
+  test::TempDir scratch;
+  scene_gen::Context c;
+  const std::string dir = scratch.path();
+  c.dir = dir;
+  c.ddc = dir;
+  c.ground = ground(step_pool);
+  c.tile_size = 64;
+  Opened opened;
+  REQUIRE(opened.desc != nullptr);
+  CHECK(opened.desc->tile_reentrant);
+  std::string error;
+  REQUIRE_MESSAGE(opened.desc->open(schema::to_json(layer()), c, &opened.state, &error), error);
+  std::vector<scene_gen::TileCoord> asks;
+  for (i32 z = -1; z < 9; ++z)
+    for (i32 x = -1; x < 5; ++x)
+      asks.push_back(scene_gen::TileCoord{x, z});
+  const auto words = [](const scene_gen::Placements& p) {
+    std::vector<u64> out;  // every field the call hands, to the bit
+    out.push_back(p.things);
+    out.push_back(p.kind);
+    for (const scene_gen::Placement& q : p.instances) {
+      out.push_back(static_cast<u64>(q.mesh) << 32 | static_cast<u64>(q.id));
+      out.push_back(static_cast<u64>(q.tag) << 8 | q.handoff);
+      out.push_back(std::bit_cast<u64>(q.position.x));
+      out.push_back(std::bit_cast<u64>(q.position.y));
+      out.push_back(std::bit_cast<u64>(q.position.z));
+      for (const f32 f : {q.rotation.x, q.rotation.y, q.rotation.z, q.rotation.w, q.scale.x,
+                          q.scale.y, q.scale.z})
+        out.push_back(std::bit_cast<u32>(f));
+    }
+    for (const scene_gen::PlacementMesh& m : p.meshes) {
+      out.push_back(hash_bytes(m.path.data(), m.path.size()));
+      out.push_back(hash_bytes(m.name.data(), m.name.size()));
+      out.push_back(hash_bytes(m.recipe.data(), m.recipe.size()));
+      out.push_back(m.hash);
+      out.push_back(std::bit_cast<u32>(m.reach));
+    }
+    out.push_back(p.shapes.size());
+    return out;
+  };
+  std::vector<std::vector<u64>> alone(asks.size());
+  u32 pieces = 0;
+  for (u32 k = 0; k < asks.size(); ++k) {
+    scene_gen::Placements placed;
+    REQUIRE_MESSAGE(opened.desc->tile(opened.state, asks[k], c, placed, &error), error);
+    pieces += placed.instances.size();
+    alone[k] = words(placed);
+  }
+  REQUIRE(pieces > 0);
+  constexpr u32 k_threads = 8;
+  constexpr u32 k_rounds = 12;
+  std::atomic<u32> differ{0}, failed{0};
+  for (u32 round = 0; round < k_rounds; ++round) {
+    std::vector<std::thread> threads;
+    std::atomic<u32> next{0};
+    for (u32 t = 0; t < k_threads; ++t) {
+      threads.emplace_back([&] {
+        std::string why;
+        for (u32 k = next.fetch_add(1); k < asks.size(); k = next.fetch_add(1)) {
+          const u32 at = (k + round) % asks.size();
+          scene_gen::Placements placed;
+          if (!opened.desc->tile(opened.state, asks[at], c, placed, &why)) {
+            failed.fetch_add(1);
+            continue;
+          }
+          if (words(placed) != alone[at]) differ.fetch_add(1);
+        }
+      });
+    }
+    for (std::thread& t : threads)
+      t.join();
+  }
+  // What the lock cost a fill of these tiles (T169's question): every tile asked on eight threads
+  // under one lock, as the collision asks a generator that does not say it is reentrant, and side
+  // by side, as it asks one that does.
+  const auto fill_ms = [&](bool locked) {
+    std::mutex lock;
+    std::atomic<u32> next{0};
+    const auto start = std::chrono::steady_clock::now();
+    std::vector<std::thread> threads;
+    for (u32 t = 0; t < k_threads; ++t) {
+      threads.emplace_back([&] {
+        std::string why;
+        for (u32 k = next.fetch_add(1); k < asks.size(); k = next.fetch_add(1)) {
+          scene_gen::Placements placed;
+          if (locked) {
+            const std::lock_guard<std::mutex> hold(lock);
+            (void)opened.desc->tile(opened.state, asks[k], c, placed, &why);
+          } else {
+            (void)opened.desc->tile(opened.state, asks[k], c, placed, &why);
+          }
+        }
+      });
+    }
+    for (std::thread& t : threads)
+      t.join();
+    return std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - start).count();
+  };
+  const f64 locked_ms = fill_ms(true), side_ms = fill_ms(false);
+  MESSAGE(asks.size() << " tiles (" << pieces << " pieces), asked on " << k_threads
+                      << " threads at once, " << k_rounds << " rounds: " << differ.load()
+                      << " differ; a fill on eight threads " << locked_ms << " ms under one lock, "
+                      << side_ms << " ms side by side");
+  CHECK(failed.load() == 0);
+  CHECK(differ.load() == 0);
 }
 
 // **The same bytes from any start and any thread count** (W97b): two entries opened over one

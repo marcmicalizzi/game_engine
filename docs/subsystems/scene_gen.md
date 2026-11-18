@@ -292,7 +292,7 @@ The engine's own, by cause (`tile` read for each, 2026-11-17):
 
 - **Reentrant, reading only what `open` made**: `authored`, `scatter` (its placer is immutable once opened; `expand` already ran it on jobs), `wetland`, `walls`, `litter` (a call's mask tiles are its own `MaskTiles`), `city`, `bridges`, `caves`, `sward` (a call's mask words and forbs are its own), `routes`, `cliffs`, `ledges`, `deposits` (a far tile's recipe is made in memory; the plans' cache has its own lock).
 - **Reentrant by a change**: `ruins`, whose calls shared the entry's assemblers and their output (made for the first tile and reused). A call now borrows a scratch from the entry's spare list, under a lock held only to take or give one back, so tiles asked side by side each assemble in their own; a building was already a function of the kit, the seed, the tile and the ground, never of the scratch (`expand`'s jobs make their own). `ruins generator: one state's tiles asked on eight threads are the tiles asked alone` asks twelve tiles in blocks, sections and walls from eight threads at once, a dozen rounds, against one thread: the same placements to the bit.
-- **Serial for now**: `channels` and `village`. Both read only what `open` made and could say so in one line each, but on 2026-11-17 the two modules were another row's (the streams, the village's furnishing), so the line waits for them.
+- **Reentrant, read by T173**: `channels`, whose call copies the piece `open` kept for its tile, and `village`, whose call reads only the plan and the kit; a test in each asks every tile on eight threads against one, to the bit.
 
 `water` and `water_channel` have no `tile`.
 
