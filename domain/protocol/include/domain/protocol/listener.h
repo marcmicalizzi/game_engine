@@ -54,6 +54,19 @@
 
 namespace engine::protocol {
 
+// The content security policy on every HTTP response the listener answers (engine_shell.md, "What
+// another client's content cannot do"; roadmap A50): the shell's page, its scripts and stylesheet,
+// a 404's body, the ticket's redirect and a capture alike, as a header, because a `<meta>` tag is
+// read only by the page that carries it and only after the parser reaches it. The shell runs only
+// its own files, loads images only from its listener (the slideshow's captures) or blobs it made,
+// connects only to its listener (the socket and the capture fetches), and with Trusted Types and
+// no policy a string handed to an HTML sink throws in the browser, whatever the lint
+// (`shell-html-sink`, tools/lint.ps1) missed.
+inline constexpr std::string_view k_shell_content_policy =
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:; "
+    "connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; "
+    "frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'";
+
 // What `GET /capture/<id>[/<part>]` serves: a host that keeps captures answers for them
 // (engine-host keeps the last eight `render.capture {keep}` made). Called with the dispatch lock
 // held, so it may read the host's state as a method would. False leaves `response` as the 404 to
@@ -130,6 +143,8 @@ class Listener final : public net::ServerHandler, public EventTransport {
     std::string why;
   };
   bool host_allowed(const net::HttpRequest& request) const;
+  // `http` without the policy header, which `http` adds to whatever this answered.
+  void answer_http(const net::HttpRequest& request, net::HttpResponse& response);
   Presented presented(const net::HttpRequest& request);
   bool spend_ticket(std::string_view ticket, std::string& cookie);
   void serve_static(std::string_view relative, net::HttpResponse& response) const;

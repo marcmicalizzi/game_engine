@@ -105,6 +105,10 @@ function New-Fixture {
   Set-FixtureFile $root 'domain/nav/CMakeLists.txt' "engine_module(NAME nav LAYER domain DEPS base)`nengine_module_tests(NAME nav SOURCES tests/nav_tests.cpp)`n"
   Set-FixtureFile $root 'tools/size-table-exemptions.txt' "# a comment`n`ndomain/nav: nothing per element, mirrored or on disk; closed by its first such type`n"
   Set-FixtureFile $root 'apps/engine_view/CMakeLists.txt' "# Not a module: an app, which this comment's engine_module(...) does not change.`nengine_app(NAME engine_view OUTPUT engine-view SOURCES main.cpp)`n"
+  # The shell (shell-html-sink): a page whose one script is a file, a comment that names a handler,
+  # and a module that builds nodes and sets text, imports a literal and passes a timer a function.
+  Set-FixtureFile $root 'apps/engine_shell/index.html' "<!doctype html>`n<!--`n  Never <img onerror=x> or style=`"`" here.`n-->`n<link rel=`"stylesheet`" href=`"/shell/shell.css`">`n<script type=`"module`" src=`"/shell/main.js`"></script>`n<div class=`"app`" id=`"app`"></div>`n"
+  Set-FixtureFile $root 'apps/engine_shell/main.js' "// Text, never innerHTML or eval(s).`n/* insertAdjacentHTML is not used:`n   document.write(s) neither. */`nexport function show(el, s) { el.textContent = s; el.append(document.createTextNode(s)); }`nsetTimeout(() => show(document.body, `"x`"), 10);`nimport(`"./testhook.js`").then((m) => m.install());`n"
   return $root
 }
 
@@ -348,6 +352,53 @@ try {
   Set-FixtureFile $root 'systems/water/tests/size_table.cpp' $invariantTable
   Set-FixtureFile $root 'systems/water/src/water.cpp' "#if ENGINE_WITH_TERRAIN`nvoid shore() {}`n#endif`n"
   Test-That 'the same conditional in a module that is not CONFIG_INVARIANT passes, a commented mention included' { (Invoke-Lint $root).Code -eq 0 }
+
+  # shell-html-sink (docs/subsystems/engine_shell.md, "What another client's content cannot do"):
+  # every file of apps/engine_shell/ puts text on the page as text. Each sink is reported in a
+  # module of its own, on its own line; the fixture's page and module, whose comments name sinks and
+  # whose code uses textContent, a text node, a literal import() and a timer given a function, pass.
+  Test-That 'the shell''s text, its literal import and its function timer pass' {
+    ($result.Code -eq 0) -and -not $result.Out.Contains('apps/engine_shell')
+  }
+  $sinks = [ordered]@{
+    'innerHTML'                = 'el.innerHTML = s;'
+    'outerHTML'                = 'el.outerHTML = s;'
+    'insertAdjacentHTML'       = 'el.insertAdjacentHTML("beforeend", s);'
+    'document.write'           = 'document.write(s);'
+    'eval'                     = 'const v = eval(s);'
+    'Function'                 = 'const f = new Function(s);'
+    'a timer given a string'   = 'setTimeout("show()", 10);'
+    'import() of a name'       = 'import(name).then((m) => m.run());'
+    'createContextualFragment' = 'el.append(range.createContextualFragment(s));'
+    'parseFromString'          = 'const d = new DOMParser().parseFromString(s, "text/html");'
+    'srcdoc'                   = 'frame.srcdoc = s;'
+  }
+  foreach ($name in $sinks.Keys) {
+    $root = New-Fixture
+    Set-FixtureFile $root 'apps/engine_shell/queue.js' "// A module of the shell.`nexport function draw(el, s, name, range, frame) {`n  $($sinks[$name])`n}`n"
+    Test-Reports "the shell's $name is reported" $root 'apps/engine_shell/queue.js:3: [shell-html-sink]'
+  }
+  $pageSinks = [ordered]@{
+    'an inline script'    = '<script>start();</script>'
+    'an inline handler'   = '<button onclick="start()">Start</button>'
+    'a style attribute'   = '<div style="color: red"></div>'
+    'a style element'     = '<style>body { color: red; }</style>'
+    'a javascript: URL'   = '<a href="javascript:start()">Start</a>'
+  }
+  foreach ($name in $pageSinks.Keys) {
+    $root = New-Fixture
+    Set-FixtureFile $root 'apps/engine_shell/queue.html' "<!doctype html>`n<!-- a page of the shell -->`n$($pageSinks[$name])`n"
+    Test-Reports "the shell page's $name is reported" $root 'apps/engine_shell/queue.html:3: [shell-html-sink]'
+  }
+  $root = New-Fixture
+  Set-FixtureFile $root 'apps/engine_shell/queue.js' "export function draw(el, s) {`n  el.innerHTML = s;`n}`n"
+  Test-Reports 'and the message names the way out' $root 'build nodes with dom.js''s h() and set text'
+  $root = New-Fixture
+  Set-FixtureFile $root 'apps/engine_shell/queue.js' "export function draw(el, s) {`n  el.innerHTML = s;  // engine-lint: allow-html-sink the reason, stated`n}`n"
+  Test-That 'a line-level allow-html-sink marker opts a line out' { (Invoke-Lint $root).Code -eq 0 }
+  $root = New-Fixture
+  Set-FixtureFile $root 'tools/report/page.js' "document.body.innerHTML = report;`n"
+  Test-That 'a script outside apps/engine_shell/ is not the shell''s' { (Invoke-Lint $root).Code -eq 0 }
 
   # machine-path (docs/ci/machine-paths.md, roadmap T175): every tracked text file, whatever its
   # kind, names no path of the machine it was written on. The samples are put together from pieces

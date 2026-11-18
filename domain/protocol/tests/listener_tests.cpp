@@ -762,3 +762,56 @@ TEST_CASE("listener: a person's review item is closed by a credential for a huma
     CHECK((*listed.find("reviews"))[0].find("state")->as_string() == "Open");
   }
 }
+
+// The shell's content security policy (engine_shell.md, "What another client's content cannot
+// do"; roadmap A50): on every response the listener answers, as a header and once, read back per
+// kind of file. The text is the page's, written out here rather than taken from the header's
+// constant, so a change to the policy is a change to this case too.
+TEST_CASE("listener: every response carries the shell's content security policy as a header") {
+  const std::string policy =
+      "Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; "
+      "img-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; "
+      "form-action 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; "
+      "trusted-types 'none'";
+  const test::TempDir tmp("protocol_listener_policy");
+  const std::string shell = tmp.file("shell");
+  REQUIRE(io::make_directories(shell) == io::Status::Ok);
+  REQUIRE(io::write_file(shell + "/index.html", "<!doctype html><title>shell</title>") ==
+          io::Status::Ok);
+  REQUIRE(io::write_file(shell + "/main.js", "export const x = 1;") == io::Status::Ok);
+  REQUIRE(io::write_file(shell + "/shell.css", "body { color: black; }") == io::Status::Ok);
+  io::Vfs vfs;
+  protocol::SessionManager sessions(vfs);
+  protocol::Dispatcher dispatcher(protocol::Context{&sessions, nullptr, nullptr, nullptr, nullptr});
+  std::mutex lock;
+  Captures captures;
+  captures.lock = &lock;
+  protocol::Listener listener(dispatcher, lock, &captures);
+  std::string error;
+  REQUIRE_MESSAGE(listener.start(0, shell, "s1", error), error);
+  const u16 port = listener.port();
+  const auto once = [&](const std::string& what, const HttpReply& reply, u32 status) {
+    CHECK_MESSAGE(reply.status == status, what);
+    // The head stops before the blank line, so its last header has no line break after it.
+    const std::string head = reply.head + "\r\n";
+    const usize at = head.find("\r\n" + policy + "\r\n");
+    CHECK_MESSAGE(at != std::string::npos, what << ":\n" << reply.head);
+    if (at == std::string::npos) return;
+    CHECK_MESSAGE(head.find("Content-Security-Policy:", at + 2 + policy.size()) == std::string::npos,
+                  what << " carries the policy once");
+    CHECK_MESSAGE(head.find("Content-Security-Policy:") == at + 2, what << " carries it once");
+  };
+  once("the page", http_get(port, "/"), 200);
+  once("the page by name", http_get(port, "/index.html"), 200);
+  once("a script", http_get(port, "/shell/main.js"), 200);
+  once("the stylesheet", http_get(port, "/shell/shell.css"), 200);
+  once("a 404 under the shell", http_get(port, "/shell/missing.js"), 404);
+  once("a 404 elsewhere", http_get(port, "/favicon.ico"), 404);
+  const std::string url = listener.shell_url();
+  once("the ticket's redirect", http_get(port, url.substr(url.find('/', 7))), 303);
+  once("a capture refused without a credential", http_get(port, "/capture/c1"), 403);
+  const std::string token_line = "X-Engine-Token: " + listener.token() + "\r\n";
+  once("a capture", http_get(port, "/capture/c1", {}, token_line), 200);
+  once("another Host refused", http_get(port, "/", "example.com"), 403);
+  listener.stop();
+}

@@ -306,6 +306,12 @@ bool Listener::host_allowed(const net::HttpRequest& request) const {
 }
 
 void Listener::http(const net::HttpRequest& request, net::HttpResponse& response) {
+  // Every answer, refusals and 404s included, since a 404's body is drawn by the browser too.
+  answer_http(request, response);
+  response.headers.push_back({"Content-Security-Policy", std::string(k_shell_content_policy)});
+}
+
+void Listener::answer_http(const net::HttpRequest& request, net::HttpResponse& response) {
   if (!host_allowed(request)) {
     response = net::http_error(403, "the Host header must be this listener's own address");
     return;

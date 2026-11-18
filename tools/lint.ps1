@@ -15,6 +15,7 @@
       // engine-lint: allow-flecs <reason>
       // engine-lint: allow-temp-path <reason>
       // engine-lint: allow-vulkan <reason>
+      // engine-lint: allow-html-sink <reason>   (apps/engine_shell/; in its HTML, an HTML comment)
 
   A file may opt out entirely with the same marker anywhere in its first 5 lines.
 
@@ -28,6 +29,9 @@
   One rule is about modules rather than lines (`size-table`): every module `engine_module(...)`
   declares has a compiled tests/size_table.cpp with at least one entry, or a line with its reason in
   tools/size-table-exemptions.txt.
+
+  One rule reads the browser shell rather than C++ (`shell-html-sink`): every .js and .html file of
+  apps/engine_shell/ puts other clients' text on the page as text and names no HTML sink.
 #>
 [CmdletBinding()]
 param(
@@ -392,6 +396,48 @@ foreach ($rel in $machineExempt.Keys) {
     $violations.Add("${machineExemptRel}:$($machineExempt[$rel]): [machine-path] $rel is not a file of the tree; remove the line")
   } elseif (-not $machineFound.ContainsKey($rel)) {
     $violations.Add("${machineExemptRel}:$($machineExempt[$rel]): [machine-path] $rel names no path of this machine now; remove its exemption in the same change")
+  }
+}
+# `shell-html-sink` (engine_shell.md, "What another client's content cannot do"; roadmap A50). The
+# shell draws strings other clients wrote (a record's name, an actor's, and with the review queue a
+# summary, a note, a report), so every one of them reaches the page as a text node, never as
+# markup: no module of apps/engine_shell/ names an HTML sink, evaluates a string, gives a timer a
+# string or imports anything but a literal, and its HTML holds no inline script, style or handler.
+# The listener's content security policy (Trusted Types included) makes the browser throw on what
+# this misses; the lint says so at the commit, with the line, instead of at the page's run. Comments
+# are not read: a block comment and an HTML comment are blanked with their line breaks kept, and a
+# `//` comment is dropped, so a string holding `//` hides the rest of its line (a missed report,
+# never a false one). The marker exists for a stated exception; the exemptions are zero.
+$shellRel = 'apps/engine_shell'
+$shellDir = Join-Path $Root $shellRel
+$shellScriptSinks = '\b(innerHTML|outerHTML|insertAdjacentHTML|createContextualFragment|parseFromString|setHTMLUnsafe|parseHTMLUnsafe|srcdoc)\b|\bdocument\s*\.\s*write(ln)?\b|\beval\s*\(|\bFunction\s*\(|\bset(Timeout|Interval)\s*\(\s*["''`]|\bimport\s*\(\s*(?![\s"''])'
+$shellPageSinks = '<script\b(?![^>]*\bsrc\s*=)|<style\b|\son[a-z]+\s*=|\sstyle\s*=|javascript:'
+$shellSinkMessage = 'the shell puts other clients'' text on the page as text: no HTML sink (innerHTML, outerHTML, insertAdjacentHTML, document.write, createContextualFragment, parseFromString, srcdoc), no eval or Function, no timer given a string, no import() of anything but a literal, and in its HTML no inline script, style or handler; build nodes with dom.js''s h() and set text, see docs/subsystems/engine_shell.md "What another client''s content cannot do"'
+if (Test-Path -LiteralPath $shellDir) {
+  $blank = { param($m) $m.Value -replace '[^\n]', '' }
+  $shellFiles = Get-ChildItem -LiteralPath $shellDir -Recurse -File |
+    Where-Object { $_.Extension -in @('.js', '.mjs', '.html', '.htm') }
+  foreach ($file in $shellFiles) {
+    $rel = ([IO.Path]::GetRelativePath($Root, $file.FullName)) -replace '\\', '/'
+    $scanned++
+    $raw = (Get-Content -LiteralPath $file.FullName -Raw) -replace "`r`n", "`n"
+    if ($null -eq $raw) { continue }
+    $lines = $raw -split "`n"
+    if ((($lines | Select-Object -First 5) -join "`n") -match 'engine-lint:\s*allow-html-sink') { continue }
+    $isPage = $file.Extension -in @('.html', '.htm')
+    $code = if ($isPage) {
+      [regex]::Replace($raw, '(?s)<!--.*?-->', $blank)
+    } else {
+      [regex]::Replace($raw, '(?s)/\*.*?\*/', $blank)
+    }
+    $codeLines = $code -split "`n"
+    for ($i = 0; $i -lt $codeLines.Count; $i++) {
+      $text = if ($isPage) { $codeLines[$i] } else { $codeLines[$i] -replace '//.*$', '' }
+      $hit = ($text -match $shellScriptSinks) -or ($isPage -and $text -match $shellPageSinks)
+      if ($hit -and $lines[$i] -notmatch 'engine-lint:\s*allow-html-sink') {
+        $violations.Add(("{0}:{1}: [shell-html-sink] {2}`n    {3}" -f $rel, ($i + 1), $shellSinkMessage, $lines[$i].Trim()))
+      }
+    }
   }
 }
 
