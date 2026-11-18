@@ -644,6 +644,35 @@ TEST_CASE("save corpus: write the current version's save when asked") {
   MESSAGE("wrote " << out << ": " << write_json(result_of(saved), JsonWriteOptions{false}));
 }
 
+// The player's map and log are client paths (protocol.md, "The host's file roots"): before, both
+// went through the vfs, which passes a native path through, so any file on the disk was read and
+// parsed, and the two answers ("not an action map it can read" with or without a reason) told a
+// file that is there from one that is not. Outside the roots, and missing under them: 1003.
+TEST_CASE("save: run_headless reads the player's map and log only under the roots") {
+  const test::TempDir tmp("cli_save_player_roots");
+  REQUIRE(tmp.ok());
+  const std::string start = tmp.file("start");
+  const std::string map_path = tmp.file("move-map.json");
+  const std::string log_path = tmp.file("walk.jsonl");
+  make_input(map_path, log_path);
+  {
+    Host maker;
+    REQUIRE(maker.ok);
+    make_world(maker, start);
+  }
+  Host host;
+  REQUIRE(host.ok);
+  const std::string session = open_session(host, start, false);
+  const std::string s = "{\"session\":\"" + session + "\",\"seconds\":1";
+  CHECK(error_code(host.call("session.run_headless",
+                             s + stream_params("tests://../escape.json", log_path) + "}")) == 1003);
+  CHECK(error_code(host.call("session.run_headless",
+                             s + stream_params(map_path, tmp.file("none.jsonl")) + "}")) == 1003);
+  const JsonValue ran =
+      host.call("session.run_headless", s + stream_params(map_path, log_path) + "}");
+  CHECK(number(result_of(ran), "tick") == 60);
+}
+
 TEST_CASE("save corpus: every save loads, migrates, and runs on as it was measured to") {
   const std::string root = test::data_path(ENGINE_SOURCE_DIR "/content/migration-corpus/saves",
                                            "content/migration-corpus/saves");

@@ -498,6 +498,12 @@ bool RuntimeWorld::make_stream(const world::RingParams& ring, u32 simulated_ring
   made->document->bind(&session_ptr_->document());
   made->world.add_consumer(made->document->consumer(rings, &made->world.ring()));
   if (keep_store) {
+    // Written beside the document, so never for a document read from a read-only root
+    // (Session::writable).
+    if (!session_ptr_->writable()) {
+      error = "world.db: the session's document was opened from a root this host may only read";
+      return false;
+    }
     // The document's own store, `session.events`' convention: `world.db` beside it.
     std::string native;
     const std::string wanted = io::join_path(session_ptr_->dir(), "world.db");
@@ -2138,6 +2144,33 @@ bool session_run_headless(protocol::Context& ctx, const protocol::RunHeadlessPar
       return false;
     }
   }
+  // The player's map and log are client paths (protocol.md, "The host's file roots"): read under a
+  // root, from the session's document, refused or missing alike 1003 for the field, and the world
+  // is handed the admitted paths. Before, each went through the vfs, which passes a native path
+  // through, so any file was read and parsed with the host's rights.
+  std::optional<protocol::HeadlessWorld> admitted_stream;
+  std::string spelled[2];
+  std::string natives[2];
+  if (params.stream.has_value() && params.stream->player.has_value()) {
+    admitted_stream = *params.stream;
+    protocol::HeadlessPlayer& p = *admitted_stream->player;
+    const std::string base = protocol::client_base(ctx, params.session);
+    std::string* fields[2] = {&p.map, &p.log};
+    const char* names[2] = {"stream.player.map", "stream.player.log"};
+    for (u32 i = 0; i < 2; ++i) {
+      io::Admitted admitted;
+      if (!protocol::admit_client_path(ctx, names[i], *fields[i], base, io::Access::read, admitted,
+                                       error))
+        return false;
+      if (!io::exists(admitted.native)) {
+        error = protocol::path_not_found(names[i], *fields[i], io::Access::read);
+        return false;
+      }
+      spelled[i] = *fields[i];
+      natives[i] = admitted.native;
+      *fields[i] = std::move(admitted.native);
+    }
+  }
 
   RuntimeWorld* world = state->ops.world(params.session, *ctx.sessions, true);
   world->bind(session, &ctx.sessions->vfs());
@@ -2154,7 +2187,15 @@ bool session_run_headless(protocol::Context& ctx, const protocol::RunHeadlessPar
   if (streamed) {
 #if defined(ENGINE_HOST_WORLD)
     std::string why;
-    if (!world->stream(*params.stream, fill, why)) {
+    if (!world->stream(admitted_stream.has_value() ? *admitted_stream : *params.stream, fill,
+                       why)) {
+      // Said with the client's own spelling, never the admitted path.
+      for (u32 i = 0; i < 2; ++i) {
+        if (natives[i].empty()) continue;
+        for (usize at = why.find(natives[i]); at != std::string::npos;
+             at = why.find(natives[i], at + spelled[i].size()))
+          why.replace(at, natives[i].size(), spelled[i]);
+      }
       error = invalid(std::move(why));
       return false;
     }
@@ -2633,7 +2674,10 @@ void document_checks(protocol::Context& ctx, protocol::Session& session,
   }
 }
 
-void content_checks(const std::string& path, protocol::RunTestsResult& out) {
+// The container at `native` (admitted by engine_run_tests), reported under `path`, the client's own
+// spelling: no check's subject or message names the host's path.
+void content_checks(const std::string& native, const std::string& path,
+                    protocol::RunTestsResult& out) {
   std::string file;
   geometry::ClusterFileHeader header{};
   Vector<geometry::ClusterFileSection> sections;
@@ -2641,7 +2685,10 @@ void content_checks(const std::string& path, protocol::RunTestsResult& out) {
   std::string error;
   const char* later[] = {"content.cluster_budget", "content.lod", "content.pages",
                          "content.identity", "content.images"};
-  if (!content_build::load_container(path, file, header, sections, data, error)) {
+  if (!content_build::load_container(native, file, header, sections, data, error)) {
+    for (usize at = error.find(native); at != std::string::npos;
+         at = error.find(native, at + path.size()))
+      error.replace(at, native.size(), path);
     add_check(out, "content", "content.read", path, "error", "fail", error);
     for (const char* id : later)
       add_check(out, "content", id, path, "error", "skipped", "the container could not be read");
@@ -2720,14 +2767,18 @@ void content_checks(const std::string& path, protocol::RunTestsResult& out) {
 }
 
 #if defined(ENGINE_HOST_TISSUE)
-bool tissue_checks(const protocol::RunTestsParams& params, protocol::RunTestsResult& out) {
+bool tissue_checks(const std::string& native, const protocol::RunTestsParams& params,
+                   protocol::RunTestsResult& out) {
   const std::string& path = params.tissue;
   tissue::TissueFile file;
   std::string error;
   const bool json = path.size() >= 5 && path.compare(path.size() - 5, 5, ".json") == 0;
-  const bool loaded = json ? tissue::import_interchange(path, file, &error)
-                           : tissue::read_tissue_file(path, file, &error);
+  const bool loaded = json ? tissue::import_interchange(native, file, &error)
+                           : tissue::read_tissue_file(native, file, &error);
   if (!loaded) {
+    for (usize at = error.find(native); at != std::string::npos;
+         at = error.find(native, at + path.size()))
+      error.replace(at, native.size(), path);
     add_check(out, "tissue", "tissue.read", path, "error", "fail", error);
     return true;
   }
@@ -2767,12 +2818,34 @@ bool engine_run_tests(protocol::Context& ctx, const protocol::RunTestsParams& pa
     return false;
   }
 #endif
+  // Every file the call names is a client path (protocol.md, "The host's file roots"): read under
+  // a root, from the session's document, and refused or missing alike answer 1003 for the field
+  // before any check runs, so a check's verdict never tells what exists outside the roots.
+  const std::string base = protocol::client_base(ctx, params.session);
+  const auto admit_file = [&](std::string_view field, const std::string& spelled,
+                              std::string& native) {
+    io::Admitted admitted;
+    if (!protocol::admit_client_path(ctx, field, spelled, base, io::Access::read, admitted, error))
+      return false;
+    if (!io::exists(admitted.native)) {
+      error = protocol::path_not_found(field, spelled, io::Access::read);
+      return false;
+    }
+    native = std::move(admitted.native);
+    return true;
+  };
+  std::string tissue_native;
+  if (!params.tissue.empty() && !admit_file("tissue", params.tissue, tissue_native)) return false;
+  Vector<std::string> container_natives;
+  for (const std::string& container : params.containers) {
+    if (!admit_file("containers", container, container_natives.emplace_back())) return false;
+  }
   if (session != nullptr) document_checks(ctx, *session, out);
 #if defined(ENGINE_HOST_TISSUE)
-  if (!params.tissue.empty()) tissue_checks(params, out);
+  if (!params.tissue.empty()) tissue_checks(tissue_native, params, out);
 #endif
-  for (const std::string& container : params.containers)
-    content_checks(container, out);
+  for (u32 i = 0; i < params.containers.size(); ++i)
+    content_checks(container_natives[i], params.containers[i], out);
 
   for (const protocol::TestCheck& check : out.checks) {
     if (check.verdict == "pass") ++out.passed;

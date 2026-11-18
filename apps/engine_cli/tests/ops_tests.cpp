@@ -1209,6 +1209,14 @@ TEST_CASE("ops: engine.run_tests over a valid and an invalid document and two co
   CHECK(error_code(host.call("engine.run_tests", "{\"tissue\":\"any.tissue\"}")) == k_unavailable);
 #endif
   CHECK(error_code(host.call("engine.run_tests", "{\"session\":\"nope\"}")) == k_session_not_found);
+  // The files a call names are client paths (protocol.md, "The host's file roots"): before, any
+  // file on the disk was read as a container or a tissue file and the verdict told what it was.
+  // Outside the roots, and missing under them, both are 1003 for the field before any check runs.
+  CHECK(error_code(host.call("engine.run_tests",
+                             "{\"containers\":[\"tests://../escape.clusters\"]}")) == 1003);
+  CHECK(error_code(host.call(
+            "engine.run_tests",
+            "{\"containers\":[" + json_string(tmp.file("none.clusters")) + "]}")) == 1003);
   // Nothing asked, nothing checked, and nothing failed.
   const JsonValue empty = host.call("engine.run_tests", "{}");
   CHECK(at(result_of(empty), "checks").size() == 0);
