@@ -59,7 +59,10 @@ using TargetFn = Verdict (*)(std::span<const u8> input);
 struct TargetSpec {
   const char* name = "";  // the target's name: its doctest case is "fuzz: <name>"
   TargetFn one = nullptr;
-  usize max_len = 64 * 1024;  // a mutated input is cut to this many bytes
+  // A mutated input is cut to this many bytes, and libFuzzer is run with it as `-max_len`. 16 KiB,
+  // the cap of a seed: a larger input costs a debug run its time in the reader and in the
+  // allocation watch's ballast, and finds nothing a 16 KiB one does not for a text format.
+  usize max_len = 16 * 1024;
   u32 byte_iterations = 512;  // inputs a seed from the byte layer; iteration 0 is the seed itself
   u32 json_iterations = 0;    // and then from the JSON layer, for a seed that parses
   // The allocation cap of one input against the engine allocator's counters: `cap_per_byte` times
@@ -111,8 +114,8 @@ inline u64 hash_input(std::span<const u8> input, u64 h) {
 }
 
 // SplitMix64 (Steele, Lea and Flood, "Fast splittable pseudorandom number generators", OOPSLA
-// 2014; the constants are the reference implementation's). Seeded with 0 its first output is
-// 0xe220a8397b1dcdaf, which the harness's tests pin.
+// 2014; the constants are the reference implementation's). The harness's tests pin it against
+// Rosetta Code's published test case (seed 1234567) and the first outputs from 0.
 inline u64 splitmix64(u64& state) {
   state += 0x9e3779b97f4a7c15ull;
   u64 z = state;
@@ -167,8 +170,8 @@ inline Seed make_seed(std::string name, std::string_view text) {
 // The values that turned up every wrap the design's reading found (fuzzing-design.md, "1. The
 // inventory"): 0, 1, -1, 2^15, 2^16-1, 2^31, 2^32-1, 2^53, 2^62, 2^63-1.
 inline constexpr u64 k_interesting[] = {
-    0ull,           1ull,        ~0ull,      u64{1} << 15, 0xffffull, u64{1} << 31, 0xffffffffull,
-    u64{1} << 53, u64{1} << 62, 0x7fffffffffffffffull,
+    0ull,         1ull,          ~0ull,        u64{1} << 15, 0xffffull,
+    u64{1} << 31, 0xffffffffull, u64{1} << 53, u64{1} << 62, 0x7fffffffffffffffull,
 };
 inline constexpr usize k_interesting_count = sizeof(k_interesting) / sizeof(k_interesting[0]);
 
@@ -239,8 +242,7 @@ inline void mutate_bytes(Bytes& b, Rng& rng, std::span<const Seed> seeds, usize 
         std::to_chars_result r{};
         if (rng.one_in(2) && value != 0 && value <= (u64{1} << 63)) {
           // The negative of a value up to 2^63, in i64 arithmetic that cannot overflow.
-          const i64 negative =
-              value == (u64{1} << 63) ? i64{INT64_MIN} : -static_cast<i64>(value);
+          const i64 negative = value == (u64{1} << 63) ? i64{INT64_MIN} : -static_cast<i64>(value);
           r = std::to_chars(text, text + sizeof(text), negative);
         } else {
           r = std::to_chars(text, text + sizeof(text), value);

@@ -16,7 +16,6 @@
 #include <core/json/json.h>
 
 #include <fuzz_target.h>
-
 #include <span>
 #include <string>
 #include <string_view>
@@ -52,7 +51,8 @@ Verdict fuzz_parse_json(std::span<const engine::u8> input) {
       return Verdict::broken("an accepted input reads back from its own writing as another value");
     }
     if (engine::write_json(back, JsonWriteOptions{pretty}) != written) {
-      return Verdict::broken("an accepted input's writing is not canonical: written again, it differs");
+      return Verdict::broken(
+          "an accepted input's writing is not canonical: written again, it differs");
     }
   }
   return {};
@@ -66,16 +66,24 @@ constexpr std::string_view k_builtin_seeds[] = {
     R"({"truncated": [1, 2)",
 };
 
-// 512 inputs a seed from the byte layer and 256 from the JSON layer: counts, not a time, chosen so
-// the case stays inside the 10 s a target that docs/ci/what-to-run.md gives it in a serial
-// msvc-debug run.
+// 256 inputs a seed from the byte layer and 128 from the JSON layer, 4,608 over the twelve seeds:
+// counts, not a time, chosen so the case stays inside the 10 s a target that docs/ci/what-to-run.md
+// gives it in a serial msvc-debug run. Measured 2026-11-18 at 6.1 s and 6.7 s, two runs, with the
+// machine's CPU at 100 % from other rows' builds (so an upper bound); twice these counts took 19 s.
 constexpr engine::test::fuzz::TargetSpec k_parse_json = [] {
   engine::test::fuzz::TargetSpec spec;
   spec.name = "parse_json";
   spec.one = &fuzz_parse_json;
-  spec.max_len = 64 * 1024;
-  spec.byte_iterations = 512;
-  spec.json_iterations = 256;
+  spec.byte_iterations = 256;
+  spec.json_iterations = 128;
+  // The cap is the parser's real footprint, which is linear and large. Every container takes at
+  // least four slots (`grow_capacity`'s floor): an array four 24-byte values, an object four
+  // 32-byte keys and four values. So `{"b":[` — six bytes — costs 224 + 96 bytes, about 53 a byte,
+  // the worst nesting the mutators make (a deep seed's element repeated), before a parent's 1.5x
+  // growth. And this target holds two trees at once: the value and the one read back from its
+  // writing. About 110 a byte, then; 160 leaves room for the growth, and the default of 64 was
+  // passed by eight inputs of the first run (94 a byte at most), none of them a defect.
+  spec.cap_per_byte = 160;
   spec.builtin_seeds = std::span<const std::string_view>(k_builtin_seeds);
   return spec;
 }();

@@ -34,7 +34,6 @@
 #include <core/platform/process.h>
 
 #include <doctest/doctest.h>
-#include <fuzz_harness.h>
 #include <test_environment.h>
 #include <test_paths.h>
 #include <test_temp_dir.h>
@@ -47,6 +46,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <fuzz_harness.h>
 #include <iterator>
 #include <mutex>
 #include <optional>
@@ -148,12 +148,12 @@ inline std::string keep_current() {
 }
 
 // The test main's own scratch (tests/support/test_main.cpp): the directory `ENGINE_TEST_RUN` names
-// and, when the run reports its devices, the directory holding the `opened` marker. The main removes
-// both as it returns; a process the harness ends with `std::_Exit` never returns, so the harness
-// removes them first, or every assert and hang found would leave a directory under the tests'
-// scratch root that nobody owns (AGENTS.md, "Conventions"). Each one removed is named on stderr,
-// which is how a parent case checks that its child left nothing behind. The case's own `fuzz-*`
-// scratch, which holds the kept input, is not touched.
+// and, when the run reports its devices, the directory holding the `opened` marker. The main
+// removes both as it returns; a process the harness ends with `std::_Exit` never returns, so the
+// harness removes them first, or every assert and hang found would leave a directory under the
+// tests' scratch root that nobody owns (AGENTS.md, "Conventions"). Each one removed is named on
+// stderr, which is how a parent case checks that its child left nothing behind. The case's own
+// `fuzz-*` scratch, which holds the kept input, is not touched.
 inline void remove_main_scratch() {
   const std::string run = test::detail::environment("ENGINE_TEST_RUN");
   std::string devices = test::detail::environment("ENGINE_TEST_DEVICES");
@@ -186,7 +186,8 @@ inline void on_assert(const char* expression, const char* message, const char* f
                       int line) noexcept {
   if (!g_current.active.load(std::memory_order_acquire)) return;
   const std::string path = keep_current();
-  std::fprintf(stderr, "\nfuzz finding: %s %s: ENGINE_ASSERT(%s) \"%s\" at %s:%d; input kept at %s\n",
+  std::fprintf(stderr,
+               "\nfuzz finding: %s %s: ENGINE_ASSERT(%s) \"%s\" at %s:%d; input kept at %s\n",
                g_current.target, current_id(), expression, message != nullptr ? message : "", file,
                line, path.c_str());
   remove_main_scratch();
@@ -258,11 +259,11 @@ class Watchdog {
 // The allocation oracle, from counters that only grow: `bytes_peak` is the process's high-water
 // mark and nothing resets it. If the peak rises during the call, the call's own peak is exactly
 // `peak_after - base`, since nothing else allocates (no threads of the harness's allocate through
-// the engine). If it does not rise, the call held at most `peak_before - base`, the headroom. So the
-// check is exact whenever the headroom is at most the cap, and the watch makes it so by holding a
-// ballast of `headroom - cap` bytes through the call when an earlier case left more. A ballast
-// larger than `k_max_ballast` is not taken (the debug heap writes every byte it hands out), and that
-// input's check is counted as blind rather than passed in silence.
+// the engine). If it does not rise, the call held at most `peak_before - base`, the headroom. So
+// the check is exact whenever the headroom is at most the cap, and the watch makes it so by holding
+// a ballast of `headroom - cap` bytes through the call when an earlier case left more. A ballast
+// larger than `k_max_ballast` is not taken (the debug heap writes every byte it hands out), and
+// that input's check is counted as blind rather than passed in silence.
 //
 // It sees the engine allocator only: the standard library's `new` (a `std::string` key) and a
 // third-party `malloc` are not counted here, which is the nightly's `-malloc_limit_mb`.
@@ -408,9 +409,10 @@ inline std::vector<std::filesystem::path> files_by_name(const std::filesystem::p
   for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
     if (entry.is_regular_file(ec)) out.push_back(entry.path());
   }
-  std::sort(out.begin(), out.end(), [](const std::filesystem::path& a, const std::filesystem::path& b) {
-    return a.filename().generic_string() < b.filename().generic_string();
-  });
+  std::sort(out.begin(), out.end(),
+            [](const std::filesystem::path& a, const std::filesystem::path& b) {
+              return a.filename().generic_string() < b.filename().generic_string();
+            });
   return out;
 }
 
@@ -442,13 +444,14 @@ inline Corpus load_corpus(const TargetSpec& spec) {
   const std::string root = data_path(ENGINE_FUZZ_CONTENT_DIR, "content/fuzz");
   corpus.dir = root + "/" + name;
   if (!path_exists(corpus.dir)) {
-    MESSAGE("fuzz: " << name << ": no " << corpus.dir << " in this tree or bundle; builtin seeds only");
+    MESSAGE("fuzz: " << name << ": no " << corpus.dir
+                     << " in this tree or bundle; builtin seeds only");
     corpus.dir.clear();
     return corpus;
   }
   const u64 all = detail::directory_bytes(std::filesystem::path(root));
-  REQUIRE_MESSAGE(all <= k_max_corpus_bytes, "content/fuzz holds " << all << " bytes, past its cap of "
-                                                                    << k_max_corpus_bytes);
+  REQUIRE_MESSAGE(all <= k_max_corpus_bytes,
+                  "content/fuzz holds " << all << " bytes, past its cap of " << k_max_corpus_bytes);
 
   usize seed_bytes = 0;
   for (const std::filesystem::path& file : detail::files_by_name(corpus.dir + "/seeds")) {
@@ -462,9 +465,9 @@ inline Corpus load_corpus(const TargetSpec& spec) {
     seed.hash = fnv1a(seed.bytes);
     corpus.seeds.push_back(std::move(seed));
   }
-  REQUIRE_MESSAGE(seed_bytes <= k_max_target_seed_bytes,
-                  name << "'s seeds are " << seed_bytes << " bytes, past a target's cap of "
-                       << k_max_target_seed_bytes);
+  REQUIRE_MESSAGE(seed_bytes <= k_max_target_seed_bytes, name << "'s seeds are " << seed_bytes
+                                                              << " bytes, past a target's cap of "
+                                                              << k_max_target_seed_bytes);
 
   // regress/: every input has its line in NOTES.txt, and every line names an input.
   const std::filesystem::path regress(corpus.dir + "/regress");
@@ -514,14 +517,13 @@ inline Corpus load_corpus(const TargetSpec& spec) {
       const std::string seed_name = k.id.substr(0, hash);
       const std::string number = k.id.substr(hash + 1);
       u32 iteration = 0;
-      const auto parsed =
-          std::from_chars(number.data(), number.data() + number.size(), iteration);
+      const auto parsed = std::from_chars(number.data(), number.data() + number.size(), iteration);
       const bool numeric = parsed.ec == std::errc{} && parsed.ptr == number.data() + number.size();
       for (const Seed& s : corpus.seeds)
         exists = exists || (numeric && s.name == seed_name && iteration < per_seed);
     }
-    REQUIRE_MESSAGE(exists, "known-failures.txt:" << line << ": " << k.id
-                                                   << " names no input of this target");
+    REQUIRE_MESSAGE(
+        exists, "known-failures.txt:" << line << ": " << k.id << " names no input of this target");
     corpus.known.push_back(std::move(k));
   }
   return corpus;
@@ -543,7 +545,9 @@ struct RunState {
 // hook, the watchdog or doctest's handler, each naming the input.
 inline void check_one(RunState& run, const std::string& id, const Bytes& input) {
   const TargetSpec& spec = *run.spec;
-  INFO("fuzz input: " << spec.name << " " << id);
+  // A `const char*` reaches doctest's stream as a pointer; a string_view as its text.
+  const std::string_view name(spec.name);
+  INFO("fuzz input: " << name << " " << id);
   detail::Current& c = detail::g_current;
   c.id.store(&id, std::memory_order_release);
   c.data.store(input.data(), std::memory_order_release);
@@ -578,8 +582,9 @@ inline void check_one(RunState& run, const std::string& id, const Bytes& input) 
   if (!detail::write_bytes(path, input.data(), input.size())) path += " (could not be written)";
   std::fprintf(stderr, "\nfuzz finding: %s %s: %s; input kept at %s\n", spec.name, id.c_str(),
                why.c_str(), path.c_str());
-  FAIL_CHECK("fuzz finding: " << spec.name << " " << id << ": " << why << "; input kept at " << path);
-  if (run.findings >= k_max_findings) FAIL("fuzz: " << spec.name << ": stopped at " << run.findings << " findings");
+  FAIL_CHECK("fuzz finding: " << name << " " << id << ": " << why << "; input kept at " << path);
+  if (run.findings >= k_max_findings)
+    FAIL("fuzz: " << name << ": stopped at " << run.findings << " findings");
 }
 
 struct ChildRun {
@@ -643,7 +648,8 @@ inline void run_target(const TargetSpec& spec) {
   if (!replay.empty()) {
     const usize bar = replay.find('|');
     if (bar == std::string::npos || replay.substr(0, bar) != name) {
-      MESSAGE("fuzz: " << name << ": " << k_replay_env << " names another target: " << replay);
+      MESSAGE("fuzz: " << name << ": " << std::string_view(k_replay_env)
+                       << " names another target: " << replay);
       return;
     }
     const std::string id = replay.substr(bar + 1);
@@ -660,7 +666,8 @@ inline void run_target(const TargetSpec& spec) {
         return;
       }
     }
-    FAIL("fuzz: " << name << ": " << k_replay_env << " names no input of this target: " << id);
+    FAIL("fuzz: " << name << ": " << std::string_view(k_replay_env)
+                  << " names no input of this target: " << id);
   }
 
   std::vector<std::string> left_out;
@@ -696,10 +703,10 @@ inline void run_target(const TargetSpec& spec) {
     const ChildRun child = run_child_case("fuzz: " + name, run.keep_dir, name + "|" + k.id);
     const bool still_fails =
         child.code != 0 && child.output.find("fuzz finding:") != std::string::npos;
-    CHECK_MESSAGE(still_fails, "known-failures.txt:"
-                                   << k.line << ": " << k.id << " (" << k.roadmap
-                                   << ") no longer fails; remove its line. The child said:\n"
-                                   << child.output);
+    CHECK_MESSAGE(still_fails,
+                  "known-failures.txt:" << k.line << ": " << k.id << " (" << k.roadmap
+                                        << ") no longer fails; remove its line. The child said:\n"
+                                        << child.output);
   }
 
   MESSAGE("fuzz: " << name << ": " << corpus.seeds.size() << " seeds, " << corpus.regressions.size()

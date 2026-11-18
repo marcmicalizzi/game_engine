@@ -60,14 +60,14 @@ A finding becomes a regression in the commit that mends it, failing before the m
 They are in `core/json/tests/fuzz_harness_tests.cpp`, beside the first target, since `core/json` is the lowest module the harness needs.
 
 - **A planted target that asserts on one input fails its case.** `planted_assert` asserts on the input `planted`; the test runs it in a child and holds the child to exit code 86, the line naming `planted_assert builtin-0#0`, the kept bytes, and the scratch root holding nothing of the child's: a process the harness ends with `std::_Exit` never returns through its test main, so the harness removes the main's own directories first and names each on stderr, and the case checks they are gone. Three more planted targets do the same for a broken contract, an allocation past the cap and a hang (with a watchdog of 1 s), and one checks the replay. Debug builds only for the assert: release compiles `ENGINE_ASSERT` out.
-- **The same seed gives the same inputs on every compiler.** The first thousand inputs of two fixed seeds, hashed, against `k_first_thousand_inputs`, and SplitMix64 against the reference implementation's first three outputs from 0. The hash was taken on MSVC; a GCC or Clang run that differs is a finding in the harness (a choice made through something the compilers disagree on), never a reason to take the value again.
+- **The same seed gives the same inputs on every compiler.** The first thousand inputs of two fixed seeds, hashed, against `k_first_thousand_inputs`, and SplitMix64 against a published test case (Rosetta Code's "Pseudo-random numbers/Splitmix64", the first five outputs from the seed 1234567) and its first three outputs from 0, computed from the algorithm's text with arbitrary-precision integers by an implementation that reproduces the published five. The hash was taken on MSVC; a GCC or Clang run that differs is a finding in the harness (a choice made through something the compilers disagree on), never a reason to take the value again.
 
 ## The libFuzzer build
 
 `linux-clang-fuzz` is `linux-clang-asan` (Clang, Debug so asserts are live, ASan and UBSan) with `ENGINE_FUZZ` on and the x86-64-v2 baseline. `ENGINE_FUZZ` adds `-fsanitize=fuzzer-no-link` to every C++ target and builds `build/linux-clang-fuzz/fuzz/engine_fuzz_<target>`, linked with `-fsanitize=fuzzer`; the tests build as well and run sanitized. libFuzzer comes with Clang's runtime (`libclang-rt-18-dev` in the container image), so nothing is vendored or fetched. One run, in the container:
 
 ```sh
-build/linux-clang-fuzz/fuzz/engine_fuzz_parse_json -max_len=65536 -timeout=10 -malloc_limit_mb=1024 \
+build/linux-clang-fuzz/fuzz/engine_fuzz_parse_json -max_len=16384 -timeout=10 -malloc_limit_mb=1024 \
   -max_total_time=60 <a scratch corpus directory> content/fuzz/parse_json/seeds
 ```
 

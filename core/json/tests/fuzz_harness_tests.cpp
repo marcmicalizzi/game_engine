@@ -12,12 +12,12 @@
 #include <core/memory/memory.h>
 
 #include <doctest/doctest.h>
-#include <fuzz_runner.h>
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
 #include <chrono>
 #include <cstring>
+#include <fuzz_runner.h>
 #include <span>
 #include <string>
 #include <string_view>
@@ -118,9 +118,9 @@ constexpr std::string_view k_pin_json =
 constexpr std::string_view k_pin_text = "not json: 1, 2, 3";
 
 // The hash of the first thousand inputs of `k_pin_json` and `k_pin_text`, taken on MSVC
-// (msvc-debug) when the harness landed; GCC and Clang have not run it yet (docs/ci/fuzzing.md,
-// "What the harness's own tests pin").
-constexpr u64 k_first_thousand_inputs = 0x0000000000000000ull;
+// (msvc-debug, 2026-11-18) when the harness landed: MSVC only, GCC and Clang have not run it yet
+// (docs/ci/fuzzing.md, "What the harness's own tests pin").
+constexpr u64 k_first_thousand_inputs = 0x739789b80c031025ull;
 
 }  // namespace
 
@@ -130,7 +130,17 @@ TEST_CASE("fuzz: planted_contract" * doctest::skip()) { run_target(k_planted_con
 TEST_CASE("fuzz: planted_allocation" * doctest::skip()) { run_target(k_planted_allocation); }
 TEST_CASE("fuzz: planted_hang" * doctest::skip()) { run_target(k_planted_hang); }
 
+// The published test case: Rosetta Code's "Pseudo-random numbers/Splitmix64" task, its first five
+// outputs from the seed 1234567 (read 2026-11-18). The three from 0 were computed from the same
+// algorithm's text with arbitrary-precision integers, by an implementation that reproduces the
+// published five; they are not a published vector themselves.
 TEST_CASE("fuzz harness: SplitMix64 gives the reference implementation's outputs") {
+  u64 published = 1234567;
+  CHECK(splitmix64(published) == 6457827717110365317ull);
+  CHECK(splitmix64(published) == 3203168211198807973ull);
+  CHECK(splitmix64(published) == 9817491932198370423ull);
+  CHECK(splitmix64(published) == 4593380528125082431ull);
+  CHECK(splitmix64(published) == 16408922859458223821ull);
   u64 state = 0;
   CHECK(splitmix64(state) == 0xe220a8397b1dcdafull);
   CHECK(splitmix64(state) == 0x6e789e6aa1b965f4ull);
