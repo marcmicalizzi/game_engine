@@ -213,6 +213,9 @@ TEST_CASE("blobs: put, read back checked, referenced, refused when unheld, colle
   REQUIRE(io::write_file(h.dir + "/inside/mask.bin", "mask bytes") == io::Status::Ok);
   const JsonValue m = h.ok("doc.put_blob", obj({{"path", JsonValue("inside/mask.bin")}}));
   CHECK(m.find("ref")->find("blob")->as_string() == doc::BlobStore::name_of("mask bytes"));
+  // A client may send either separator, on any platform: the same file, the same blob.
+  CHECK(*h.ok("doc.put_blob", obj({{"path", JsonValue("inside\\mask.bin")}})).find("ref") ==
+        *m.find("ref"));
   CHECK(h.fails("doc.put_blob", obj({{"path", JsonValue("inside/mask.bin")},
                                      {"data_base64", JsonValue("AA==")}})) ==
         codes::k_invalid_argument);
@@ -238,7 +241,15 @@ TEST_CASE("blobs: put, read back checked, referenced, refused when unheld, colle
                                  "inside//mask.bin",
                                  "inside/",
                                  std::string("inside/ma\x01sk.bin"),
-                                 "inside"};  // a directory
+                                 "inside",  // a directory
+                                 // Either separator on every platform: refused on Linux as on
+                                 // Windows, never one file name holding a backslash.
+                                 "inside/..\\inside\\mask.bin",
+                                 "..\\secret.bin",
+                                 "inside\\..\\..\\secret.bin",
+                                 "\\",
+                                 "inside/\\/mask.bin",
+                                 "inside\\"};
   std::error_code link_error;
   std::filesystem::create_symlink(outside, h.dir + "/inside/link.bin", link_error);
   if (!link_error) climbing.push_back("inside/link.bin");  // a link that leaves the directory

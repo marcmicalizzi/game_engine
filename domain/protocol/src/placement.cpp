@@ -80,8 +80,9 @@ bool check_asset(const Session& s, std::string_view asset, std::string& kind, u6
                        ".gltf, .glb or .clusters file by a path relative to it, without '..'");
     return false;
   };
-  if (!stays_under_document(asset)) return unreadable();
-  const std::string path = doc::DocumentStore::path_of(s.dir(), asset);
+  const std::string relative = document_relative_path(asset);
+  if (relative.empty()) return unreadable();
+  const std::string path = doc::DocumentStore::path_of(s.dir(), relative);
   // The header's four bytes and the size: the asset may be hundreds of megabytes, and nothing here
   // needs more of it.
   io::FileInfo info;

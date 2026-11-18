@@ -59,8 +59,9 @@ bool resolves_under(std::string_view dir, std::string_view file) {
 // readable file behind it alike (document_path.h).
 bool read_under_document(const io::Vfs& vfs, std::string_view dir, std::string_view path,
                          std::string& bytes) {
-  if (!stays_under_document(path)) return false;
-  const std::string full = doc::DocumentStore::path_of(dir, path);
+  const std::string relative = document_relative_path(path);
+  if (relative.empty()) return false;
+  const std::string full = doc::DocumentStore::path_of(dir, relative);
   std::string native_dir, native_file;
   if (vfs.resolve(dir, native_dir, false) != io::Status::Ok ||
       vfs.resolve(full, native_file, false) != io::Status::Ok)

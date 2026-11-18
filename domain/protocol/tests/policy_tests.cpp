@@ -1206,7 +1206,13 @@ TEST_CASE("place_asset: reads only under the document's directory, and says noth
   const std::string climbing[] = {
       tmp.file("outside.glb"), "../outside.glb",        "props/../../outside.glb",
       "..\\outside.glb",       "/outside.glb",          "\\\\host\\share\\outside.glb",
-      "C:outside.glb",         "props/crate.glb:x.glb", "props//crate.glb"};
+      "C:outside.glb",         "props/crate.glb:x.glb", "props//crate.glb",
+      // Either separator on every platform: the mixed forms are refused on Linux as on Windows,
+      // never read as one file name holding a backslash (protocol.md, "Blobs and checkpoints"). A
+      // name that is only a backslash is an empty component between two separators. (A whole asset
+      // of `\` names no .glb, and is refused as one before any path is read.)
+      "props/..\\props\\crate.glb", "..\\outside.glb", "props\\..\\..\\outside.glb",
+      "props/\\/crate.glb"};
   const i64 before = journal_length(host);
   for (const std::string& asset : climbing) {
     JsonValue e;
