@@ -9,3 +9,6 @@ engine_module(NAME profiler LAYER foundation
 
 engine_module_tests(NAME profiler
   SOURCES tests/frame_report_tests.cpp)
+
+# The capture's event path while on, with threads meeting on it, and the report's cost in frames.
+engine_module_bench(NAME profiler SOURCES bench/profiler_bench.cpp)
