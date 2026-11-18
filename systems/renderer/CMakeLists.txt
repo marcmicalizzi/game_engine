@@ -57,6 +57,8 @@ endif()
 target_include_directories(engine_renderer PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/streaming_tests.cpp
+                    # T187: counts a scene or a camera path states, refused past their bounds.
+                    tests/hostile_scene_tests.cpp
                     tests/atlas_lod_tests.cpp tests/vertex_id_tests.cpp
                     tests/shadow_caster_tests.cpp tests/flythrough_tests.cpp
                     tests/visibility_tie_tests.cpp tests/rt_capacity_tests.cpp
