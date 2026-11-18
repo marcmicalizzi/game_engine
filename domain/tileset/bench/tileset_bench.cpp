@@ -127,8 +127,18 @@ Fixture& fixture() {
   made = std::make_unique<Fixture>();
   Fixture& f = *made;
   std::string error, manifest;
-  const char* named = std::getenv("ENGINE_TILESET_BENCH_LEVEL");
-  if (named != nullptr && named[0] != '\0' && !bench::smoke_mode()) {
+  std::string named;
+#if ENGINE_PLATFORM_WINDOWS
+  char* value = nullptr;
+  std::size_t length = 0;
+  if (_dupenv_s(&value, &length, "ENGINE_TILESET_BENCH_LEVEL") == 0 && value != nullptr) {
+    named = value;
+    std::free(value);
+  }
+#else
+  if (const char* value = std::getenv("ENGINE_TILESET_BENCH_LEVEL")) named = value;
+#endif
+  if (!named.empty() && !bench::smoke_mode()) {
     manifest = named;
     f.synthetic = false;
   } else if (!make_level(f, bench::smoke_mode() ? 32 : 777, manifest, error)) {
@@ -221,26 +231,17 @@ void memory_line(const char* when) {
   const auto mib = [](u64 b) { return static_cast<f64>(b) / (1024.0 * 1024.0); };
   const platform::RegionKindTotals& mapped =
       r.kinds[static_cast<u32>(platform::RegionKind::mapped_file)];
+  const platform::RegionKindTotals& own =
+      r.kinds[static_cast<u32>(platform::RegionKind::private_memory)];
   std::fprintf(stderr,
-               "tileset bench memory (%s): commit %.1f MiB, working set %.1f MiB, mapped views "
-               "%.1f MiB of which resident %.1f MiB\n",
-               when, mib(r.process_commit), mib(r.working_set),
-               mib(mapped.committed + mapped.reserved_only), mib(mapped.resident));
+               "tileset bench memory (%s): commit %.1f MiB (private allocations %.1f MiB, %.1f "
+               "resident), working set %.1f MiB, mapped views %.1f MiB of which resident %.1f MiB\n",
+               when, mib(r.process_commit), mib(own.committed), mib(own.resident),
+               mib(r.working_set), mib(mapped.committed + mapped.reserved_only),
+               mib(mapped.resident));
 }
 
 }  // namespace
-
-ENGINE_BENCH_ARGS(masks_far, "tileset.masks.far", 1, 4, 8) {
-  Fixture& f = fixture();
-  if (!f.ok) return;
-  const u32 threads = static_cast<u32>(state.arg());
-  Crew crew(threads);
-  state.set_items(u64{threads} * k_calls * k_block * k_block);
-  while (state.keep_running())
-    crew.iterate();
-  if (crew.wrong.load() != 0)
-    std::fprintf(stderr, "tileset bench: %u reads came back wrong\n", crew.wrong.load());
-}
 
 ENGINE_BENCH(masks_load, "tileset.masks.load") {
   Fixture& f = fixture();
@@ -257,4 +258,20 @@ ENGINE_BENCH(masks_load, "tileset.masks.load") {
       }
   if (wrong != 0) std::fprintf(stderr, "tileset bench: %u loads came back wrong\n", wrong);
   memory_line("after the load");
+}
+
+// Benchmarks run in name order, so the far reads come first, on a level this process has not read:
+// a mapped page's first touch is in the figure (in the engine the renderer's load has touched every
+// present tile before the walk's workers read).
+ENGINE_BENCH_ARGS(masks_far, "tileset.masks.far", 1, 4, 8) {
+  Fixture& f = fixture();
+  if (!f.ok) return;
+  const u32 threads = static_cast<u32>(state.arg());
+  Crew crew(threads);
+  state.set_items(u64{threads} * k_calls * k_block * k_block);
+  while (state.keep_running())
+    crew.iterate();
+  if (crew.wrong.load() != 0)
+    std::fprintf(stderr, "tileset bench: %u reads came back wrong\n", crew.wrong.load());
+  if (threads == 8) memory_line("after the far reads");
 }

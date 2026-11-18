@@ -207,11 +207,14 @@ bool write_mask_priors(const TileSet& set, const MaskInputs& in, const std::stri
 bool mask_point(const TileSet& set, const MaskInputs& in, i64 x_mm, i64 z_mm, Vector<f64>& weights,
                 f64& wetness, std::string& error);
 
-// **A built level, read back.** Its archive is opened once and its table read; a tile is copied
-// out of a **read-ahead window** — the tiles from the one asked onwards in file order, up to 2 MiB,
-// read as one queue of large ranges — because the renderer asks every tile in that order at load
-// once (presence is counted from the manifest), so a level costs a few dozen reads, not one a tile.
-// Safe to call from several threads (the window is behind a lock).
+// **A built level, read back.** Its archive is opened once and its table read, and the archive is
+// **mapped read-only** (`io::MappedFile`; tileset.md, "Read without a lock"): a tile is copied
+// straight out of the view, so any number of threads read at once with no lock and no shared
+// buffer, the OS's file cache is the read-ahead, and the view commits nothing (T182: the walk's
+// collision workers waited 56 of a sward call's 59 ms on the one window this replaced). An archive
+// opened `unbuffered` (a cold measurement), or one the OS will not map, is read as before: a
+// **read-ahead window** of the tiles from the one asked onwards in file order, up to 2 MiB, behind a
+// lock. Safe to call from several threads either way.
 class MaskLevel {
  public:
   MaskLevel();
@@ -234,10 +237,12 @@ class MaskLevel {
               f32& wetness) const;
   scene_gen::GroundMasks masks() const noexcept;
 
-  // Reads of the archive so far: windows filled and the bytes they read.
+  // Reads of the archive so far: windows filled and the bytes they read (none when mapped), and
+  // whether tiles come out of the mapped view.
   struct ReadStats {
     u64 windows = 0;
     u64 bytes = 0;
+    bool mapped = false;
   };
   ReadStats read_stats() const noexcept;
 
