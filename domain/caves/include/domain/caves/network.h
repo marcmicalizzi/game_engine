@@ -47,7 +47,9 @@ inline constexpr std::string_view k_cell_format = "engine.caves.cell";
 // a mouth, and a body is sunk three quarters of a lattice step into the rock. 3 (2026-11-11): a
 // sloping passage's floor is a ramp, not a step a station. 4 (2026-11-16): the edge of a mouth's
 // window of ground columns is no surface (the forest's sheets standing in the open air, need 142).
-inline constexpr u32 k_network_version = 4;
+// 5 (2026-11-17): no vertex is placed by a window's edge, and the apron sinks under the ground at
+// one (the sliver left where the sheets stood, G220).
+inline constexpr u32 k_network_version = 5;
 // The roles a network's surfaces take from a pack (materials.md); `rock/limestone` is caves.h's.
 inline constexpr std::string_view k_sediment_role = "cave/sediment";
 inline constexpr std::string_view k_breakdown_role = "cave/breakdown";

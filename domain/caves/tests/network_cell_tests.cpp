@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <vector>
 
@@ -325,9 +326,11 @@ TEST_CASE("caves: nothing a mouth's cells draw stands in the open air over the g
         for (i64 dx = -reach; dx <= reach; dx += reach) {
           for (i64 dz = -reach; dz <= reach; dz += reach) {
             const f64 gx = (caves::test::hill_height(&hill, x_mm + dx + 50, z_mm + dz) -
-                            caves::test::hill_height(&hill, x_mm + dx - 50, z_mm + dz)) / 0.1;
+                            caves::test::hill_height(&hill, x_mm + dx - 50, z_mm + dz)) /
+                           0.1;
             const f64 gz = (caves::test::hill_height(&hill, x_mm + dx, z_mm + dz + 50) -
-                            caves::test::hill_height(&hill, x_mm + dx, z_mm + dz - 50)) / 0.1;
+                            caves::test::hill_height(&hill, x_mm + dx, z_mm + dz - 50)) /
+                           0.1;
             steepest = std::max(steepest, std::sqrt(gx * gx + gz * gz));
           }
         }
@@ -347,6 +350,106 @@ TEST_CASE("caves: nothing a mouth's cells draw stands in the open air over the g
     CHECK(above == 0);
   }
   CHECK(cells_seen > 0);
+}
+
+// The forest's need 142 again (G220, 2026-11-17): after `k_network_version` 4, "a sliver a few
+// centimetres high is left along the ground where one stood". The forest's cell 9 drew its apron
+// out to a window's edge (the void comes within an apron of the ground past the window its mouth's
+// near-surface stations made), and there the apron's last row rose to vertices the dropped
+// window-edge crossings had placed, up to half a lattice step over the ground: a row of teeth 5 to
+// 17 cm tall at 0.25 m, along the line the sheets had stood on. These hills' windows hold their
+// aprons, so the case cuts a window through the apron itself, as the forest's was: every column
+// past a line a metre beyond the opening (the apron is 1.75 m) is made unknown in every cell the
+// window reaches. Nothing past the cut stands over the ground, and the apron's last lattice step
+// before it is under the ground, as at the apron's own edge. Before the mend the last step stood 26
+// to 30 cm over the ground on all three of this hill's mouths.
+TEST_CASE("caves: an apron cut by a window's edge ends under the ground, with no teeth") {
+  const caves::test::Hill hill;
+  const Plan plan = planned(caves::test::hill_network(), hill, 0.5f);
+  REQUIRE_FALSE(plan.mouths.empty());
+  const f64 vox = static_cast<f64>(plan.voxel_mm);
+  u32 cases = 0;
+  for (const PlanMouth& mouth : plan.mouths) {
+    if (cases > 0) break;  // one mouth is the case; every one of the hill's failed before
+    i64 far_x = std::numeric_limits<i64>::min();
+    for (const OutlinePoint& p : mouth.outline)
+      far_x = std::max(far_x, p.x - plan.anchor[0]);
+    // The first unknown column: the first whose x is a metre or more past the opening.
+    const i64 cut = (far_x + 1000 + plan.voxel_mm - 1) / plan.voxel_mm;
+    if (cut <= mouth.patch_i + 2 || cut >= mouth.patch_i + mouth.patch_nx - 1) continue;
+    // The ground the field knew before the cut: the window's own bilinear heights.
+    const auto ground = [&](f64 x, f64 z, f64& g) {
+      const f64 fx = x / vox - static_cast<f64>(mouth.patch_i);
+      const f64 fz = z / vox - static_cast<f64>(mouth.patch_j);
+      if (!(fx >= 0.0 && fz >= 0.0 && fx <= mouth.patch_nx - 1.0 && fz <= mouth.patch_nz - 1.0))
+        return false;
+      const u32 i = std::min(mouth.patch_nx - 2, static_cast<u32>(fx));
+      const u32 j = std::min(mouth.patch_nz - 2, static_cast<u32>(fz));
+      const f64 tx = fx - i, tz = fz - j;
+      const auto h = [&](u32 a, u32 b) {
+        return static_cast<f64>(mouth.patch[b * mouth.patch_nx + a]);
+      };
+      g = (h(i, j) * (1.0 - tx) + h(i + 1, j) * tx) * (1.0 - tz) +
+          (h(i, j + 1) * (1.0 - tx) + h(i + 1, j + 1) * tx) * tz;
+      return true;
+    };
+    u32 past_over = 0, edge_over = 0, apron_near = 0;
+    f64 past_worst = 0.0, edge_worst = -1e30;
+    for (u32 cell = 0; cell < plan.cells.size(); ++cell) {
+      const PlanCell& c = plan.cells[cell];
+      const i64 i1 = mouth.patch_i + mouth.patch_nx - 1, j1 = mouth.patch_j + mouth.patch_nz - 1;
+      if (c.flooded || i1 < c.lo[0] || mouth.patch_i > c.hi[0] || j1 < c.lo[2] ||
+          mouth.patch_j > c.hi[2])
+        continue;
+      CellRecipe recipe;
+      cell_recipe(plan, cell, 0, recipe);
+      for (u32 b = 0; b < recipe.patch_nz; ++b)
+        for (u32 a = 0; a < recipe.patch_nx; ++a)
+          if (recipe.patch_i + a >= cut)
+            recipe.patch[b * recipe.patch_nx + a] = std::numeric_limits<i32>::min();
+      assets::MeshData mesh;
+      CellReport report;
+      std::string error;
+      REQUIRE_MESSAGE(solve_cell(recipe, mesh, &report, error), error);
+      for (const assets::Primitive& prim : mesh.primitives) {
+        for (u32 t = prim.first_index; t < prim.first_index + prim.index_count; ++t) {
+          const Vec3 p = mesh.positions[mesh.indices[t]];
+          const f64 x =
+              static_cast<f64>(report.origin[0] - plan.anchor[0]) + static_cast<f64>(p.x) * 1000.0;
+          const f64 y =
+              static_cast<f64>(report.origin[1] - plan.anchor[1]) + static_cast<f64>(p.y) * 1000.0;
+          const f64 z =
+              static_cast<f64>(report.origin[2] - plan.anchor[2]) + static_cast<f64>(p.z) * 1000.0;
+          f64 g = 0.0;
+          if (!ground(x, z, g)) continue;
+          const f64 column = x / vox;  // the last known column is cut - 1
+          const f64 last = static_cast<f64>(cut - 1);
+          if (prim.material == 4 && column > last - 2.0) ++apron_near;
+          if (column > last) {
+            // The apron's: the passage itself may run on past the cut out of the hillside, which
+            // a real window holds (caves.md, "Mouths"); the cut is this case's, not the plan's.
+            if (prim.material != 4) continue;
+            if (y - g > 10.0) ++past_over;
+            past_worst = std::max(past_worst, y - g);
+          } else if (column > last - 1.0) {
+            if (y - g > 0.0) ++edge_over;
+            edge_worst = std::max(edge_worst, y - g);
+          }
+        }
+      }
+    }
+    MESSAGE(
+        "mouth at column " << mouth.patch_i << ", cut at " << cut << ": " << apron_near
+                           << " apron corners within two steps of it; past it the apron's highest "
+                           << past_worst << " mm over the ground (" << past_over
+                           << " over 1 cm); the last step before it the highest " << edge_worst
+                           << " mm (" << edge_over << " over)");
+    CHECK(apron_near > 0);  // the cut crosses the apron, as the forest's window did
+    CHECK(past_over == 0);
+    CHECK(edge_over == 0);
+    ++cases;
+  }
+  CHECK(cases > 0);
 }
 
 TEST_CASE("caves: a walker's capsule passes every edge the plan calls walkable") {
