@@ -87,6 +87,14 @@ ENGINE_EXPECT_SIZE(12, 4, geometry::ClusterFileSeat);
 // zero word for the next field, laid over the file's bytes.
 ENGINE_EXPECT_SIZE(32, 4, geometry::ClusterFilePerch);
 
+// What an imported glTF says beyond the metallic-roughness core (G2), laid over a container's bytes
+// (sections 49 to 52): a vertex's tangent, second UV and colour in three words, parallel to the
+// vertices; a material's five second-UV slots and a flags word; a punctual light; a camera.
+ENGINE_EXPECT_SIZE(12, 4, geometry::VertexExtra);
+ENGINE_EXPECT_SIZE(24, 4, geometry::ClusterFileUv1Slots);
+ENGINE_EXPECT_SIZE(80, 4, geometry::ClusterFileLight);
+ENGINE_EXPECT_SIZE(80, 4, geometry::ClusterFileCamera);
+
 // The surface binding record (surface_binding.h; plan 07 §7.11's proposed packing): a u16 refined
 // triangle, two u16 barycentrics, a half-float normal offset and a u16 blend weight, five u16 and
 // no padding. It is stored once per bound render vertex and read once per frame by the transfer,

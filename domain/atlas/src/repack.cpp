@@ -914,6 +914,16 @@ bool repack_atlas(assets::MeshData& mesh, std::string_view source_dir, const Rep
         const u32 id = mesh.vertex_ids[v];
         mesh.vertex_ids.push_back(id);
       }
+      // An imported second UV set and colour (G2) are the vertex's own and follow it into the copy;
+      // its tangent was the first set's and is dropped below, with the first set it described.
+      if (!mesh.uvs1.empty()) {
+        const Vec2 uv1 = mesh.uvs1[v];
+        mesh.uvs1.push_back(uv1);
+      }
+      if (!mesh.colors.empty()) {
+        const Vec4 color = mesh.colors[v];
+        mesh.colors.push_back(color);
+      }
       appended_source.push_back(v);
     }
     for (u32 t = 0; t < g.first_index.size(); ++t) {
@@ -976,6 +986,12 @@ bool repack_atlas(assets::MeshData& mesh, std::string_view source_dir, const Rep
       if (image >= 0 && static_cast<u32>(image) < kept_index.size())
         kept_index[static_cast<u32>(image)] = 0;
     }
+    // A slot read through the second UV set (G2) is not repacked (the repack is of the first set)
+    // and keeps its image, renumbered with the rest below.
+    for (const i32 image : mesh.materials[m].uv1_images) {
+      if (image >= 0 && static_cast<u32>(image) < kept_index.size())
+        kept_index[static_cast<u32>(image)] = 0;
+    }
   }
   for (u32 i = 0; i < mesh.images.size(); ++i) {
     if (kept_index[i] == ~0u) continue;
@@ -1024,7 +1040,14 @@ bool repack_atlas(assets::MeshData& mesh, std::string_view source_dir, const Rep
         }
       }
     }
+    for (i32& image : mesh.materials[m].uv1_images) {
+      if (image >= 0 && static_cast<u32>(image) < kept_index.size())
+        image = static_cast<i32>(kept_index[static_cast<u32>(image)]);
+    }
   }
+  // An imported tangent was the first UV set's frame (G2); the repack replaced that set, so the
+  // tangents are dropped and the resolve derives the frame from the new one, as for any mesh.
+  mesh.tangents.clear();
   mesh.images = std::move(images);
   report.images_after = mesh.images.size();
   report.total_ms = ms_since(start);

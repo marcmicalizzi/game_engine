@@ -245,10 +245,21 @@ enum class ClusterSection : u32 {
   FarFormParts = 46,
   FarFormVertices = 47,
   FarFormIndices = 48,
+  // **What an imported glTF says beyond the metallic-roughness core** (roadmap G2; assets.md,
+  // "Tangents, a second UV set and vertex colours", "Lights and cameras"). 49 the `VertexExtra` per
+  // vertex (tangent, second UV, colour), parallel to `Vertices`; 50 a `ClusterFileUv1Slots` per
+  // material, the images its slots read through the second UV set; 51 the file's punctual lights
+  // and 52 its cameras, as `ClusterFileLight` and `ClusterFileCamera` in the mesh's space. **Each
+  // is written only when the source has one**, so every other container keeps its bytes. 49 is not
+  // in a streamed read (no page uploads it yet); 50 to 52 are resident.
+  VertexExtra = 49,
+  MaterialUv1 = 50,
+  Lights = 51,
+  Cameras = 52,
 };
 
 // One past the highest kind this build knows, which is how wide a by-kind table has to be.
-inline constexpr u32 k_cluster_section_kinds = static_cast<u32>(ClusterSection::FarFormIndices) + 1;
+inline constexpr u32 k_cluster_section_kinds = static_cast<u32>(ClusterSection::Cameras) + 1;
 
 // Names the kinds this build knows, "unknown" for anything else; for diagnostics and for
 // `engine-content info`.
@@ -438,6 +449,57 @@ struct ClusterFilePerch {
   u32 flags = 0;
 };
 
+// The images a material's slots read through the **second** UV set (`TEXCOORD_1`), as section 50
+// records them (G2). 24 bytes, parallel to `Materials`, indexed by `k_slot_*`, each one-based like
+// `ClusterFileMaterial`'s optional slots (0: this slot reads no image through the second set). A
+// slot named here is **absent** from the material's own record, which is the first set's: a reader
+// that does not know the section draws the material as it drew before the second set was read,
+// without the map, rather than with the map on the wrong UVs.
+struct ClusterFileUv1Slots {
+  u32 images[5] = {0, 0, 0, 0, 0};
+  u32 flags = 0;
+};
+
+// A punctual light the glTF declares (`KHR_lights_punctual`), as section 51 records it (G2). 80
+// bytes. In the mesh's space, like the positions: `position` the node's world translation,
+// `direction` its world -z normalized (where a spot or directional light points). `type` is
+// `k_light_*`; `color` linear RGB; `intensity` the file's own number in its own units (candela for
+// a point or spot light, lux for a directional one, as the extension defines them); `range` 0 for
+// none; the cone angles in radians (a spot light's only). `name` is the light's name, NUL-padded
+// and cut at 31 bytes.
+inline constexpr u32 k_light_directional = 0;
+inline constexpr u32 k_light_point = 1;
+inline constexpr u32 k_light_spot = 2;
+struct ClusterFileLight {
+  Vec3 position{};
+  u32 type = k_light_point;
+  Vec3 direction{0.0f, 0.0f, -1.0f};
+  f32 range = 0.0f;
+  Vec3 color{1.0f, 1.0f, 1.0f};
+  f32 intensity = 1.0f;
+  f32 inner_cone = 0.0f;
+  f32 outer_cone = 0.0f;
+  char name[24] = {};
+};
+
+// A camera the glTF declares, as section 52 records it (G2). 80 bytes. `position` and `rotation`
+// (a unit quaternion, x y z w) are the node's world placement in the mesh's space, the camera
+// looking down its -z with +y up as glTF defines it. `type` is `k_camera_*`: a perspective one
+// has `yfov` (radians) and `aspect` (0 where the file leaves it to the viewport), an orthographic
+// one `xmag` and `ymag` in the same two places. `zfar` 0 is an infinite projection.
+inline constexpr u32 k_camera_perspective = 0;
+inline constexpr u32 k_camera_orthographic = 1;
+struct ClusterFileCamera {
+  Vec3 position{};
+  u32 type = k_camera_perspective;
+  Vec4 rotation{0.0f, 0.0f, 0.0f, 1.0f};
+  f32 yfov_or_xmag = 0.0f;
+  f32 aspect_or_ymag = 0.0f;
+  f32 znear = 0.0f;
+  f32 zfar = 0.0f;
+  char name[32] = {};
+};
+
 // One part's thickness, as section 37 records it (flora.md, "The structural table"). 16 bytes.
 // `part` is the part's id in section 35, the records in ascending id and so parents first; the
 // part's axis is the segment from its `pivot` along its `direction` for its `length`, and its
@@ -496,6 +558,9 @@ static_assert(sizeof(ClusterFileStructuralPart) == 16,
               "a cluster file structural part is 16 bytes");
 static_assert(sizeof(ClusterFileImpostor) == 48, "a cluster file impostor record is 48 bytes");
 static_assert(sizeof(ClusterFilePerch) == 32, "a cluster file perch is 32 bytes");
+static_assert(sizeof(ClusterFileUv1Slots) == 24, "a material's second-UV slots are 24 bytes");
+static_assert(sizeof(ClusterFileLight) == 80, "a cluster file light is 80 bytes");
+static_assert(sizeof(ClusterFileCamera) == 80, "a cluster file camera is 80 bytes");
 static_assert(sizeof(ClusterFileSection) == 24, "a cluster file section record is 24 bytes");
 static_assert(sizeof(ClusterFileScalars) == 32, "the cluster file scalars section is 32 bytes");
 static_assert(sizeof(ClusterFileMaterial) == 64, "ClusterFileMaterial is a 64-byte GPU record");
@@ -583,6 +648,12 @@ struct ClusterFileData {
   // The far form (sections 44 to 48): empty for a mesh whose build baked none. Written only when
   // not empty.
   FarForm far_form;
+  // An imported glTF's second-UV slots (section 50, empty or parallel to `materials`), lights (51)
+  // and cameras (52); each written only when not empty (G2). The per-vertex tangent, second-UV and
+  // colour records are `mesh.mesh.extra` (section 49).
+  Vector<ClusterFileUv1Slots> material_uv1;
+  Vector<ClusterFileLight> lights;
+  Vector<ClusterFileCamera> cameras;
 };
 
 // Whether a container's mesh is one a far form is baked for (G198; geometry.md, "The far form"): a
