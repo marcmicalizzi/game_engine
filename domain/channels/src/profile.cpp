@@ -252,12 +252,28 @@ struct Solver {
   }
   // **The standard step upstream**: node's level from the flow one node downstream, in tranquil
   // flow. `critical` when no tranquil level carries the head: the node passes critical depth.
+  //
+  // **The friction slope between the two sections is taken by the profile between them** (W142;
+  // channels.md, "The water above a lip"): their mean where this section's is the greater (a
+  // backwater, the level rising toward the section below), and their **harmonic mean** where it
+  // is the less — a drawdown, the water quickening toward a lip or a crest below (HEC-RAS's
+  // choice for an M2 profile, after Reed & Wolfkill 1976). The friction slope falls with about
+  // the fifth power of the depth on a bed rougher than the water is deep, so at a lip's critical
+  // section it is ten times the reach's and more, and the plain mean charged half of it over the
+  // whole lattice step: the only level upstream with that much head was a pool standing to the
+  // lip's level and that loss over it, 0.2 to 0.9 m deep above every lip of a steep line under
+  // Ferguson's law (the forest's plates). The harmonic mean follows the lesser slope, which is
+  // the reach's, as the drawdown itself does: the water quickens to the lip over a few depths
+  // and loses almost no head doing it.
+  static f64 step_friction(f64 here, f64 down) noexcept {
+    if (!(here < down)) return 0.5 * (here + down);
+    return here > 0.0 ? 2.0 * here * down / (here + down) : 0.0;
+  }
   f64 tranquil(u32 node, const Flow& down, bool& is_critical) const noexcept {
     const f64 lc = c.critical[node];
-    const f64 target = down.head + 0.5 * c.run * down.friction;
     const auto fn = [&](f64 level) {
       const Flow f = at(node, level);
-      return f.ok ? f.head - 0.5 * c.run * f.friction - target : -1.0;
+      return f.ok ? f.head - c.run * step_friction(f.friction, down.friction) - down.head : -1.0;
     };
     if (fn(lc) >= 0.0) {
       is_critical = true;

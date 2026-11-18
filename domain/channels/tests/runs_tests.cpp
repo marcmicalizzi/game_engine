@@ -70,6 +70,41 @@ TEST_CASE("a fall whose foot does not stand lower is no nappe, and the classes a
   CHECK(by.classes[4].pieces == 2);
 }
 
+TEST_CASE("a line's staircase: the fall its steps take, and its level water (W132)") {
+  // Two pools of two metres, level, each left over a 0.4 m step, then a metre of run falling
+  // 0.2 m: a metre of fall over eight metres, 0.8 m of it at the two steps, four metres level.
+  const scene::WaterChannel c = line({10.0, 10.0, 10.0, 9.6, 9.6, 9.6, 9.2, 9.2, 9.0},
+                                     {0.2f, 0.2f, 0.05f, 0.2f, 0.2f, 0.05f, 0.05f, 0.05f, 0.05f},
+                                     {0, 0, k_lip, k_foot, 0, k_lip, k_foot, 0, 0});
+  const LineRuns r = measure_runs(c);
+  CHECK(r.falls == 2);
+  CHECK(r.fall_m == doctest::Approx(1.0));
+  CHECK(r.step_fall_m == doctest::Approx(0.8));
+  CHECK(r.level_m == doctest::Approx(5.0));  // 0-1-2, 3-4-5, 6-7; the steps and 7-8 are not
+  RunsBySlope by;
+  by.add(r);  // 12.5 %
+  CHECK(by.classes[2].lines == 1);
+  CHECK(by.classes[2].step_fall_m == doctest::Approx(0.8));
+  const JsonValue json = runs_json(by);
+  const JsonValue& one = json[2];
+  const auto number = [&](const char* key) {
+    f64 v = -1.0;
+    REQUIRE(one.find(key) != nullptr);
+    CHECK(one.find(key)->get_f64(v));
+    return v;
+  };
+  CHECK(number("steps_per_100m") == doctest::Approx(25.0));
+  CHECK(number("step_fall_share") == doctest::Approx(0.8));
+  CHECK(number("step_height_mean_m") == doctest::Approx(0.4));
+  CHECK(number("level_share") == doctest::Approx(0.625));
+  // A plane at the reach's mean fall has no step and no level water.
+  const scene::WaterChannel plane =
+      line({10.0, 9.9, 9.8, 9.7}, {0.05f, 0.05f, 0.05f, 0.05f}, {0, 0, 0, 0});
+  const LineRuns p = measure_runs(plane);
+  CHECK(p.step_fall_m == 0.0);
+  CHECK(p.level_m == 0.0);
+}
+
 TEST_CASE("a line's walls: a level climbing from a film over its bank is counted, not drawn") {
   // W138: 0-1 surface, 1 a film over its bank, 2 a pool 0.8 m over it (the forest's wall), 2-3
   // the pool, 3-4 a 6 cm climb between two plain stations (drawn: the description says so), 4-5

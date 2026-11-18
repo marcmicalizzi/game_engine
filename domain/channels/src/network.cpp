@@ -214,6 +214,7 @@ void build_line(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen:
   // shares whose windows all hold the point's own).
   {
     Vector<f64> keep(m, 1.0), rx(fx), rz(fz);
+    const bool steep_line = !(link.meander > 0);
     for (u32 i = 1; i + 1 < m; ++i) {
       const u32 c = segs[i];
       const f64 sigma = std::max(wide(p.smooth_min_m), wide(p.smooth_widths) * w[c]);
@@ -237,7 +238,16 @@ void build_line(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen:
       f64 k = 1;
       for (u32 tries = 0; tries < 4 && k > 0; ++tries) {
         const f64 g = ground_at(ground, rx[i] + k * (fx[i] - rx[i]), rz[i] + k * (fz[i] - rz[i]));
-        if (g - floor <= k_trough_rise * di) break;
+        // **And on steep ground, not under it either** (W140; channels.md, "A line across a
+        // slope"): where the meander has faded out the low-pass cuts a bend's corner across the
+        // hillside, and a point standing more than the same half depth *under* the trough has
+        // left it down the slope: the line runs off the fall line there on a bench the cut
+        // leaves with no downhill bank. A stream on a steep slope runs down its fall line in the
+        // trough it cut, which the routing's cells (each to its steepest neighbour) follow, so
+        // the point is drawn back toward them as one standing over it is. Where meanders still
+        // swing a line across a valley's floor the test stays one-sided.
+        const bool under = steep_line && floor - g > k_trough_rise * di;
+        if (g - floor <= k_trough_rise * di && !under) break;
         k = tries == 3 ? 0.0 : k * .5;
       }
       keep[i] = k;
@@ -1054,11 +1064,32 @@ void seat_section(const ChannelLayer& p, const scene_gen::Ground& ground, Channe
         at_step[j] = 1;
     }
   }
+  // **But a fall's foot is seated by its own read** (W140; channels.md, "A line across a
+  // slope"): read from below a step, the step's top stands *over* the foot and lowers no bank, so
+  // what a foot reads is the hillside's fall across the line, as a reach's does. Left at 0 a foot
+  // on a cross-slope had no downhill bank, and its water ran down the hillside beside the line
+  // (the forest's `region link 515`, stations 713 to 724). The lip, the fall's face (the
+  // knickpoint's own points, which read the foot across) and what lies above stay unseated; a
+  // foot point takes the most over its two neighbours either way that are feet or reaches too.
+  Vector<u8> foot(m, 0);
+  if (link.knick.size() == m) {
+    for (u32 i = 0; i < m; ++i) {
+      if (!at_step[i] || link.knick[i]) continue;
+      bool below = false;
+      for (u32 j = i; j-- > 0 && at_step[j];)
+        if (link.knick[j]) {
+          below = true;
+          break;
+        }
+      foot[i] = below ? 1 : 0;
+    }
+  }
   for (u32 i = 0; i < m; ++i) {
+    const bool seated = !at_step[i] || foot[i];
     f64 most = 0;
     for (u32 j = i > 2 ? i - 2 : 0; j < std::min(i + 3, m); ++j)
-      if (!at_step[j]) most = std::max(most, seat[j]);
-    link.seat[i] = at_step[i] ? 0.0f : static_cast<f32>(most);
+      if (!at_step[j] || (foot[i] && foot[j])) most = std::max(most, seat[j]);
+    link.seat[i] = seated ? static_cast<f32>(most) : 0.0f;
   }
   // **And a seat never reaches under the lip below it.** The bed does not rise (`cut_bed`), so
   // what a seat lowers it by is carried down the line until the ground has fallen that far; a

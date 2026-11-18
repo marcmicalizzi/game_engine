@@ -313,6 +313,8 @@ JsonValue line_stats(const std::string& name, const channels::Profile& p,
   one["alternations"] = JsonValue(r.alternations);
   one["walls"] = JsonValue(r.walls);  // W138: rises over `k_run_wall_m`, and those drawn
   one["walls_drawn"] = JsonValue(r.walls_drawn);
+  one["step_fall_m"] = JsonValue(round3(r.step_fall_m));  // W132: the fall its steps take,
+  one["level_m"] = JsonValue(round3(r.level_m));          // and its level water
   one["over_bank"] = JsonValue(p.stats.over_bank);
   one["open_bank"] = JsonValue(p.stats.open_bank);
   one["pools"] = JsonValue(p.stats.pools);

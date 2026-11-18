@@ -47,7 +47,10 @@ LineRuns measure_runs(const scene::WaterChannel& block) {
                                               block.depth_m[i + 1], block.points[i].y,
                                               block.points[i + 1].y);
       if (seen) ++out.falls_drawn;
+      out.step_fall_m += std::max(0.0, block.points[i].y - block.points[i + 1].y);
     }
+    if (k == 0 && block.points[i].y - block.points[i + 1].y < k_run_level_slope * len)
+      out.level_m += len;
     if (k == 2) out.undrawn_m += len;
     const f64 rise = block.points[i + 1].y - block.points[i].y;
     const bool jump = (block.flags[i] & scene_gen::k_channel_jump_head) != 0 &&
@@ -126,6 +129,9 @@ void RunsBySlope::add(const LineRuns& line) {
   c.walls_drawn += line.walls_drawn;
   if (line.walls > 0) ++c.wall_lines;
   c.climb_worst_m = std::max(c.climb_worst_m, line.climb_worst_m);
+  c.fall_m += line.fall_m;
+  c.step_fall_m += line.step_fall_m;
+  c.level_m += line.level_m;
 }
 
 JsonValue runs_json(const RunsBySlope& runs) {
@@ -159,6 +165,11 @@ JsonValue runs_json(const RunsBySlope& runs) {
     one["speed_p10_mps"] = JsonValue(round(weighted_quantile(c.speed_mps, c.stretch_m, .1), 1e3));
     one["speed_p90_mps"] = JsonValue(round(weighted_quantile(c.speed_mps, c.stretch_m, .9), 1e3));
     one["depth_median_m"] = JsonValue(round(weighted_quantile(c.depth_m, c.stretch_m, .5), 1e4));
+    one["steps_per_100m"] = JsonValue(round(static_cast<f64>(c.falls) * per, 1e2));
+    one["step_fall_share"] = JsonValue(round(c.fall_m > 0 ? c.step_fall_m / c.fall_m : 0.0, 1e4));
+    one["step_height_mean_m"] =
+        JsonValue(round(c.falls > 0 ? c.step_fall_m / static_cast<f64>(c.falls) : 0.0, 1e3));
+    one["level_share"] = JsonValue(round(c.length_m > 0 ? c.level_m / c.length_m : 0.0, 1e4));
     out.push_back(std::move(one));
   }
   return out;

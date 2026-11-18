@@ -744,6 +744,57 @@ through **the sections the ground has**, by the textbook's method
 - **The standard step method both ways**: tranquil water upstream from every control, shooting
   water downstream from every node the tranquil profile passes critical depth at and from every
   fall's foot.
+- **The water above a lip** (W142, 2026-11-17; the forest session's need 151, "the mountainside's
+  stream is still in plates"). The upstream step takes the friction slope between its two sections
+  **by the profile between them**: their mean where the upstream section's is the greater (a
+  backwater), their **harmonic mean** where it is the less (a drawdown toward a lip or a crest:
+  an M2 profile). That is the HEC-RAS Hydraulic Reference Manual's choice by profile type
+  ("Friction Loss Evaluation" and its table of criteria: the average friction slope for M1, the
+  harmonic mean for M2, after Reed & Wolfkill 1976; the manual's two pages read tonight through a
+  fetch's summary, Reed & Wolfkill not reached). **What it was**: printed at the owner's mark 9 on
+  `region link 515`, a plate was four nodes whose *solved* level stood at one height, 0.22 to
+  0.78 m over a bed falling 0.56 m under them, and then dropped 0.90 m to the lip's critical level
+  over one lattice step: a level sheet 3.7 m wide ending in a face of water (a second, 0.38 m
+  deep over eleven nodes, stood above the next lip three metres on). The cause is the step's
+  friction term and W137's law together. On a bed rougher than the water is deep Ferguson's
+  friction slope goes with about the fifth power of the depth's inverse, so at a lip's critical
+  section it is ten to twenty times the reach's (about 7 there, where the bed's slope is 0.7); the
+  plain mean charged half of it over the quarter-metre step, 0.9 m of head, and the only tranquil
+  level upstream with that head is a pool. Real water quickens to a brink over a few depths and
+  loses almost no head doing it, which is what the harmonic mean, following the lesser slope,
+  gives. Under Jarrett's law the lip's friction slope was a few times the reach's and the same
+  error was centimetres; W137 made it the plates, the stations over a bank it added (4,121
+  against 2,283) and its open pools. The shooting step downstream is unchanged (a jet's friction
+  slope under this law is in the hundreds, and it is tranquil again within a node or two, which
+  is tumbling flow).
+  **Measured on v47** (2026-11-17, `msvc-debug` `engine-content`, one thread beside other rows'
+  builds; the world as W140 re-planned it, its solve against the same with this mend; 463 s,
+  2.45 GB of commit): the stations over a bank 4,180 on 158 lines to **2,354 on 134** (the worst
+  8.1 to 1.67 m over); open pools 964 to 337 and pools not written over spilled water 149 to 31;
+  on lines over 30 % the gaps 93 to 88, the undrawn share 1.32 to 1.16 %, the film 0.58 to
+  0.50 %, the climbs in the data 41 to 27 (every class: 49 to 35, the worst 1.06 to 0.89 m), the
+  lip-to-foot pairs 430 to 486 (a fall the pool above the next lip had drowned is a fall again),
+  the drawn water's median speed 0.265 to 0.288 m/s and its depth 0.083 to 0.075 m. The stations
+  under the ground at the line go 1,554 to 1,614, on 94 and 95 lines: water that stood as a pool
+  over the ground lies in its bed again, which on a bench is beside the line. `region link 515`:
+  133 to 101 stations over a bank, its 3 gaps and 3.1 m undrawn unchanged; at mark 9 the two
+  plates are sheets 6 to 10 cm deep on their bed, and the last step to each lip falls 0.20 and
+  0.08 m where it fell 0.90 and 0.32. **What is left**: of the 88 gaps over 30 %, 75 are still
+  films over a bank only, stations at an edge of the cut with no bank on its downhill side (1,359
+  held at an open edge, as before), which is the cut's width on a bench and the planner's; and
+  between its falls a steep line is still a ribbon in flat facets, which is the step-pool form's
+  ([steep streams](../experiments/steep-streams.md#the-step-pool-form-solved-or-drawn)). The
+  forest's small scene of link 515 gives the world's stations at mark 9 to the millimetre and
+  solves in two minutes; `profile_tests.cpp`'s case (a bed falling one in two, boulders, 20 l/s, a
+  0.8 m step) held a pool 1.7 m deep and a face of water 1.8 m high at the lip before the mend.
+  No version moves: a world runs `flow solve` again.
+  **At the forest's stage** (`flow.stage` 2 on the same world: 539 wet lines, 55.9 km; the four
+  counts need 151 gave for v50, which this reproduces before the mend within a few): the lines
+  with stations over a bank 336 to **290** (the stations 7,126 to 3,652, the worst 7.0 to 1.7 m
+  over), the gaps on lines over 30 % 186 to 172, the climbs 37 to 35 (the worst 0.95 to 0.91 m),
+  the lines with stations under the ground 153 to 157 (the stations 1,720 to 1,763); open pools
+  1,633 to 402, the lip-to-foot pairs over 30 % 2,494 to 2,730, the drawn water there 0.286 to
+  0.310 m/s. Each solve 250 to 270 s and 2.45 GB.
 - **The regime by specific force.** Shooting water holds while its sequent level — the tranquil
   level with the same specific force — stands over what the tranquil profile holds a jump's
   length downstream; where it no longer does, a **jump**: its head between the two nodes the test
@@ -1041,6 +1092,7 @@ its mean slope (its level's fall over its length: under 2 %, 2 to 5, 5 to 15, 15
 | `gaps` | maximal runs of undrawn stretches |
 | `thin_share`, `alternations_per_100m` | the forest's own count: stretches leaving a station 1.1 cm deep or less, and the runs of one kind (thin or not), both kinds counted |
 | `speed_median_mps`, `speed_p10_mps`, `speed_p90_mps`, `depth_median_m` | (W137) the drawn stretches' speed (the mean of their two stations') by length — its median and its tenth and ninetieth percentiles — and their median depth; falls and undrawn stretches are not counted |
+| `steps_per_100m`, `step_fall_share`, `step_height_mean_m`, `level_share` | (W132, the count only) the staircase: the lip-to-foot pairs a 100 m, the share of the lines' fall those pairs take (each lip's level less its foot's), their mean height, and the share of the length that is **level water**, a drawn stretch falling by less than 0.2 % (`k_run_level_slope`). A plane at its reach's mean fall has no step and no level water; the published step-pool reaches have a step every half to three widths taking 60 % to all of the fall ([steep streams](../experiments/steep-streams.md#the-step-pool-form-in-numbers-w132-2026-11-17)). `--line-stats` carries a line's own `step_fall_m` and `level_m` |
 
 **How it differs from the forest's count.** Its session's script (`streams47b.py`, read on
 2026-11-16 once the proof of concept was opened) classes every station by its depth alone: 1.1 cm
@@ -1125,6 +1177,41 @@ is that and W137's resistance law. Speeds and depths are the drawn stretches' me
 | speed over 30 % / all (m/s) | 0.382 / 0.267 | 0.388 / 0.269 | 0.382 / 0.267 | 0.388 / 0.270 | 0.267 / 0.205 |
 | depth over 30 % / all (m) | 0.065 / 0.076 | 0.066 / 0.076 | 0.065 / 0.075 | 0.066 / 0.076 | 0.084 / 0.091 |
 | link 515: runs, gaps, undrawn m, film m | 10, 9, 11.86, 8.70 | 7, 6, 5.88, 1.48 | 10, 9, 12.85, 8.70 | 6, 5, 3.65, 0 | 6, 5, 3.65, 0 |
+
+**A sixth column: `main` with the planner's half** (W140, 2026-11-17; `main` at 0073605c is "all
+three" with the white, whose solve writes the same flow file; the world re-planned under
+`k_channels_version` 16 into a root of its own, its cuts pasted, solved by the same command, a
+`msvc-debug` `engine-content` on one thread beside other rows' builds):
+
+| | main (all three) | main with the planner's half |
+|---|---|---|
+| walls / climbs drawn | 0 / 0 | 0 / 0 |
+| walls / climbs in the data | 3 / 52 over 30 % | 5 / 41 over 30 % |
+| pools written (open; spilled; reached back) | 331 (1,003; 149; 57) | 318 (964; 149; 58) |
+| stations over a bank (lines; held at an open edge) | 4,121 (159; 1,376) | 4,180 (158; 1,374) |
+| stations under the ground at the line (lines) | 1,645 (93) | 1,554 (94) |
+| over 30 %: film / undrawn | 0.60 / 1.42 % | 0.58 / 1.32 % |
+| over 30 %: runs / 100 m, gaps | 2.83, 93 | 2.83, 93 |
+| over 30 %: forest's thin, alternations / 100 m | 0.99 %, 3.60 | 0.97 %, 3.71 |
+| under 2 %: film / undrawn, gaps | 1.35 / 1.91 %, 10 | 1.35 / 1.91 %, 10 |
+| 5-15 % and 15-30 %: gaps | 4 and 11 | 5 and 12 |
+| speed over 30 % / all (m/s) | 0.267 / 0.205 | 0.265 / 0.205 |
+| depth over 30 % / all (m) | 0.084 / 0.091 | 0.083 / 0.091 |
+| link 515: runs, gaps, undrawn m, film m | 6, 5, 3.65, 0 | 4, 3, 3.14, 2.14 |
+| link 515: under the ground (worst), highest fall | 91 (1.50 m), 1.40 m | 83 (1.17 m), 1.79 m |
+
+**The pair is a small step on the steep lines and not better on every one.** Better: the stations
+under the ground (91 fewer, 5.5 %), over 30 % the undrawn share and the climbs in the data, and the
+owner's line (two gaps fewer, half a metre more drawn). The same: the gaps over 30 % (93; against
+W131 alone the planner's half took 93 to 85 the night before, and W138's draw rule and W137's
+deeper sheets have since changed which stretches a gap is made of). Worse: one gap more in each of
+the 5-15 % and 15-30 % classes, 59 more stations over a bank, and two more walls in the data (none
+drawn). **Why it does not move the gaps**: of the 93 gaps over 30 %, 83 are made only of films over
+a bank (both stations over a bank and under 2 cm; 272 such stretches) and 10 hold a climb; a film
+over a bank is a station held at an edge of the cut with no bank on its downhill side, which is the
+cut's width on a bench and the section's read of it, and neither of the planner's two rules (the
+trough test both ways, a fall's foot seated) changes a cut's width or gives a bench a bank. That
+is the next row's (W142).
 
 **W138+W131 is better than either alone on every steep line**: walls and climbs drawn, the stations
 under the ground, and over 30 % the film, the undrawn share, the runs, the gaps and link 515. **All
@@ -1624,6 +1711,90 @@ one fall with no pit at its foot`. The older case, which asks each drop within 0
 cliff, keeps its `may_fail` for one run of the eight, and that is the count's: a point of the
 line stands half-way down the cliff's 25 cm ramp, the stretch into it falls at 44.5 degrees, and
 the fall is begun below it, half a metre short.
+
+### The line held down its trough, and a fall's foot seated (W140)
+
+(2026-11-16, roadmap W140, the planner's half of W131: on `region link 515` 80 of the 107
+stations still under the ground at the line after W131 had nothing as low within half a metre of
+it, the line ran 30 to 90 degrees off the fall line on 15 % of its length, and the seat was not
+read at a knickpoint's points.) What real water does decides both: a stream on a steep hillside
+runs down its fall line in the trough it has cut, and where it does run across the slope it has a
+bank on the downhill side or it leaves its course over it (Montgomery & Buffington 1997: steep
+channels are confined by their valley's walls; W116's grounding above for the bank). So:
+
+- **A steep line is held to its trough on both sides** (`build_line`, the trough test). The test
+  drew back a point that stood more than half a depth *over* the routed cells' polyline; where the
+  meander has faded out (`ChannelLink::meander` 0, the steep links) it now also draws back one
+  that stands as far *under* it, which is a point the low-pass carried across a bend's corner and
+  down the hillside. The cells run each to its steepest neighbour, so drawing the line back to them
+  is laying it down the fall line where the ground gives one. On a valley's floor, where meanders
+  swing a line, the test stays one-sided.
+- **A fall's foot reads its own bank** (`seat_section`). Since W122 no point within the read's reach
+  of a knickpoint took a seat, so a fall on a hillside landed on a bench with no downhill bank. Read
+  from below a step, the step's top stands *over* the foot and lowers nothing, so the points below a
+  knickpoint's last point now take their own read, dilated over feet and reaches only; the lip, the
+  face and what lies above stay unseated, as W122 left them.
+
+`k_channels_version` is 16; the plan file's layout did not change, its content did, so every
+world plans again and its cuts' tile set cooks again.
+
+**Measured on v47** (2026-11-16, `msvc-debug` `engine-content`, the machine shared with other rows'
+builds; the forest's world, re-planned into this row's own root and solved over the new cut;
+"W131" is the solve of the row before this one over the old plan):
+
+| v47 | W131 | W140 |
+|---|---:|---:|
+| plan: line 30 to 90 degrees off the fall line (of 43.7 km measured) | 8,066 m | 7,968 m |
+| plan: less than half a bank / no bank | 2,152 / 351 m | 2,094 / 339 m |
+| plan: seated tops over their lower bank by more than 2 cm | 59 | 31 |
+| stations under the ground at the line, whole world | 1,776 (3.78 %) | 1,658 (3.52 %) |
+| over 30 %: undrawn share, gaps, runs per 100 m | 1.39 %, 93, 2.87 | 1.29 %, 85, 2.72 |
+| over 30 %: the forest's own count (thin share, alternations per 100 m) | 1.00 %, 3.89 | 1.01 %, 3.99 |
+| `region link 515`: gaps, undrawn m, runs | 6, 5.9, 7 | 2, 2.9, 3 |
+| `region link 515`: stations under the ground (worst) | 107 (1.50 m) | 92 (1.17 m) |
+| `region link 515`: highest fall, pools | 1.45 m, 5 | 1.79 m, 7 |
+
+**On `torrent`** (re-planned and solved under both versions, 340 m of line measured) it is no
+better: the line 30 to 90 degrees off the fall line 49 to 60 m, the stations under the ground 8 to
+10 (worst 0.29 to 0.45 m), the over-30 % class drawn the same (no gap, 3.0 runs per 100 m). On a
+valley's floor the fall line over a width is the valley side's (the caution above), and the
+torrent's line is a valley's.
+
+**What it costs.** The re-plan (`engine-content channels --cut` over v47) took 224 s and 1.8 GB of
+commit; the first solve over the new cuts cooks their tile set and took 528 s at **37.0 GB of
+commit** (5.4 GB on disk). A forest that takes this plan pastes its cuts, its bodies, its bed regions and its two plan keys
+again. The gain is a step and not the end: the plan's own measure of a line off the fall line moved
+1 %, because the routed cells themselves bend across the hillside where the ground's troughs do,
+and drawing back to them keeps those bends. What is left is a cut whose width (the bankfull width
+with its swell) is wider than the bench a line across a steep slope keeps; narrowing the cut to the
+water's width there would change the section's area and every reader of the line's width, and was
+not built tonight. **No fixture fails first for the foot's seat**: the cliffs' scene runs its
+line at the toe of a bench whose edge is the feet's bank (they read 0 to 2.6 cm); its case holds
+that a foot never reads the step's height. The forest's count is the measure.
+
+**Verified** (2026-11-17, at the branch's tip): `test -Affected -Base d6534963` in `msvc-debug` with
+no driver 70 of 70; the `linux-gcc-release` container over `channels|water|scene_gen|engine_content`
+7 of 7, so GCC reproduces the three pins version 16 re-took (the two plan-byte hashes in
+`hollow_tests.cpp`, the clasts' recipe hash in `channels_tests.cpp`); on the GPU
+`engine_water_tests -tc=*channel*` 26 of 26 and `engine_view.frame_loop` passed (each on its second
+run: the first waited out the machine's GPU lock). **The pictures** are the forest session's small
+scene of `region link 515` with v47's re-plan pasted in by name (its 38 cuts, 17 bed regions, the
+tarn and the plan key; the crop alone cannot be planned, since its tarn's outlet leaves it), solved,
+and drawn with the water and the ground only, at the forest's poses: at *A-nappe4m-along* the ribbon
+that clung to the trench's wall now runs down the trench's floor, in the bed the walker sees; at
+*owner-b* the line is laid in a new trench and the water follows it, but stands there as stepped
+plates with vertical faces (W138's walls), and a raised plate still sits at the lip above the drop.
+The crop's over-30 % gaps went 20 to 15. The cook of the crop's tile set peaked at 38.3 GB of commit.
+
+**On `main`** (2026-11-17, `b68-W140`: the branch merged onto 0073605c, the roadmap its one
+conflict). The re-plan of v47 writes the plan of the night before byte for byte (the plan keys
+059464c22b2df633 and 9ba5cee8a4801079; 607 s beside other rows' builds, 2.05 GB of commit), so
+nothing `main` gained since changes what the planner lays. The first solve cooks the cuts' tile
+set again, because `main` keys it differently (b75d390c9a0e2993 where the night before's was
+e41845c920fbeab1): 1,681 s with the cook, **36.95 GB of commit** at its peak. With `main`'s three
+streams rows under it the planner's half is a small step and not better on every line; the table
+and why are in
+[the three streams rows measured together](#the-three-streams-rows-measured-together-w131-w137-w138).
 
 ### The section under the line
 

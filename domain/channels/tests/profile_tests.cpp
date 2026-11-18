@@ -285,7 +285,11 @@ TEST_CASE("profile: a step is critical at its crest, falls, shoots, jumps and me
   // a jump's head carries its two nodes' flows blended — its speed 4.0757 to 4.0748 m/s, its
   // Froude number 3.1912 to 3.1902 — every station's speed is the solved level's and not the
   // level rounded to the millimetre's, and the block's text carries `derived_from`, empty.)
-  CHECK(hash_bytes(text.data(), text.size()) == 10561116533633154432ull);
+  // Taken again for W142 (msvc-debug, 2026-11-17), from 10561116533633154432: the drawdown above
+  // the crest is stepped with the harmonic mean of the two sections' friction slopes, which moves
+  // its stations' levels by millimetres; every check above against the fixture's own numbers
+  // holds unchanged.
+  CHECK(hash_bytes(text.data(), text.size()) == 8629341850483424636ull);
 }
 
 TEST_CASE("profile: a line with no width on a ground it knows nothing of, by Jarrett's law") {
@@ -396,6 +400,64 @@ TEST_CASE("profile: a bed's resistance by Ferguson's law on its own D84") {
   CHECK(error.find("\"gravel\": its bed's D84 is absent or one a point") != std::string::npos);
   bad.d84 = {0.04, 0.0};
   CHECK_FALSE(solve_profile(bad, fixture_ground(), o, pg, error));
+}
+
+TEST_CASE("profile: the water above a lip on a steep rough bed is no pool") {
+  // W142 (channels.md, "The profile", "The water above a lip"): a bed a metre wide falling one in
+  // two, boulders of D84 = 0.3 m, 20 l/s, and a step of 0.8 m at x = 12. Under Ferguson's law the
+  // water is tranquil on that slope (a clast deep, its friction slope the bed's), and at the
+  // lip's critical section the friction slope is some twenty times the bed's. The standard step
+  // charged half of that over the lattice step above the lip, so the water stood there as a pool
+  // near two metres deep reaching metres back up the bed, ending in a face of water at the lip.
+  Long g;
+  g.count = 4;
+  g.half = 0.5;
+  const f64 xs[4] = {0.0, 12.0, 12.25, 30.0};
+  const f64 ys[4] = {30.0, 24.0, 23.2, 14.325};
+  for (u32 i = 0; i < 4; ++i) {
+    g.x[i] = xs[i];
+    g.y[i] = ys[i];
+  }
+  ProfileOptions o;
+  CHECK(o.resistance == Resistance::Ferguson);
+  o.reach_m = 3.0;
+  FlowLine line = fixture_line("steep", 2, 28, 0, 0.02);
+  line.d84 = {0.3, 0.3};
+  Profile p;
+  std::string error;
+  REQUIRE_MESSAGE(solve_profile(line, long_ground(g), o, p, error), error);
+  // The reach's own depth, well above the lip and below the line's head.
+  f64 reach_depth = 0.0, nearest = 1e30;
+  u32 lip = 0;
+  bool has_lip = false;
+  for (u32 i = 0; i < p.stations.size(); ++i) {
+    const ProfileStation& s = p.stations[i];
+    if (std::fabs(s.x - 6.0) < nearest) {
+      nearest = std::fabs(s.x - 6.0);
+      reach_depth = s.depth;
+    }
+    if (!has_lip && (s.flags & scene_gen::k_channel_fall_lip) != 0) {
+      lip = i;
+      has_lip = true;
+    }
+  }
+  REQUIRE(has_lip);
+  CHECK(p.stations[lip].x == doctest::Approx(12.0).epsilon(0.001));
+  CHECK(reach_depth > 0.03);
+  CHECK(reach_depth < 0.15);
+  // Every station from there down to the lip is the reach's water quickening, never deeper than
+  // half as much again, and the last of them stands over the lip by no more than the bed falls
+  // between them and that depth: no pool, and no face of water at the lip.
+  for (u32 i = 0; i < lip; ++i) {
+    const ProfileStation& s = p.stations[i];
+    if (s.x < 6.0) continue;
+    CAPTURE(s.x);
+    CHECK(s.depth <= 1.5 * reach_depth);
+  }
+  REQUIRE(lip > 0);
+  const ProfileStation& above = p.stations[lip - 1];
+  CHECK(above.level - p.stations[lip].level <= 0.5 * (p.stations[lip].x - above.x) + reach_depth);
+  check_head_falls(p);
 }
 
 TEST_CASE("profile: a bed too small for its water is flagged, and no water is written outside it") {

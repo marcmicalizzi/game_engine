@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W142",
+  "reason": "W142: channels.md says what a plate above a lip was in the solved stations, why the standard step's friction term made it under Ferguson's law, what the harmonic mean is grounded on, and v47's counts before and after at stage 1 and at the forest's stage 2, with what is left",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/channels.md": 4716
+  }
+}
