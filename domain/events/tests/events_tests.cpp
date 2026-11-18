@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <string>
 #include <schemas/events.h>
 #include <schemas/events_test.h>
 #include <utility>
@@ -485,4 +486,54 @@ TEST_CASE("events: a run replays from its external raises alone, delivery for de
   // One input left out is a different run, and the hash says so.
   const auto missing = replay(5);
   CHECK(missing.first != recorded_hash);
+}
+
+// The same run through `ExternalRecording` (roadmap T53): recorded through its hook, written to its
+// file form, read back and raised again tick by tick — the replay a `sim::RunRecord` names. (The
+// file's bytes, not a file: `save` and `load` are those bytes and one write or read.)
+TEST_CASE("events: external raises written to a file replay to the same deliveries") {
+  std::string bytes;
+  u64 recorded_hash = 0;
+  u64 recorded_state = 0;
+  {
+    World w;
+    Vector<u16> types;
+    subscribe_world(w, types);
+    ExternalRecording recording;
+    w.bus.set_external_log(recording.hook());
+    for (u32 t = 0; t < 40u; ++t) {
+      if (t % 3u == 0u) {
+        Emitter emit = w.bus.emitter(w.player, t);
+        test::Blast blast;
+        blast.n = t * 17u;
+        blast.at = WorldPos{static_cast<f64>(t), 0.0, 0.0};
+        emit.raise(w.blast, blast);
+      }
+      w.scheduler.step();
+    }
+    recorded_hash = w.bus.delivery_hash();
+    recorded_state = w.state;
+    REQUIRE(recording.size() == 14u);
+    recording.serialize(bytes);
+  }
+  ExternalRecording read;
+  std::string error;
+  REQUIRE_MESSAGE(read.deserialize(bytes, &error), error);
+  REQUIRE(read.size() == 14u);
+  World w;
+  Vector<u16> types;
+  subscribe_world(w, types);
+  u32 taken = 0;
+  for (u32 t = 0; t < 40u; ++t) {
+    u32 refused = 0;
+    taken += read.replay_tick(w.bus, w.scheduler.tick().value, &refused);
+    CHECK(refused == 0u);
+    w.scheduler.step();
+  }
+  CHECK(taken == 14u);
+  CHECK(w.bus.delivery_hash() == recorded_hash);
+  CHECK(w.state == recorded_state);
+  // A file cut short is refused, and leaves nothing behind.
+  CHECK_FALSE(read.deserialize(std::string_view(bytes).substr(0, bytes.size() - 1), &error));
+  CHECK(read.size() == 0u);
 }

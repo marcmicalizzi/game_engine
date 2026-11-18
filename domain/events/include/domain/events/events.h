@@ -53,6 +53,8 @@
 #include <cstring>
 #include <mutex>
 #include <span>
+#include <string>
+#include <string_view>
 #include <type_traits>
 
 namespace engine::doc {
@@ -528,6 +530,58 @@ class EventBus {
   u8 phase_ = 0;
   bool delivering_ = false;
   bool installed_ = false;
+};
+
+// ---- a recorded run's external raises (events.md, "Events and the replay"; roadmap T53) --------
+//
+// The `ExternalLog` hook's other end: every external raise copied as it is raised, kept in raise
+// order with its payload in one arena, written to a file a recorded run names beside its input log
+// (`sim::RunRecord::external_log`), read back, and raised again tick by tick. The file is
+// little-endian with fixed-width entries, and a read checks every entry against the file's size
+// before it trusts it. What it does not do is write the raises into the store's event log, which
+// is S18's.
+class ExternalRecording {
+ public:
+  ExternalRecording() = default;
+
+  // A hook for `EventBus::set_external_log` that records into this object, which must outlive it.
+  ExternalLog hook() noexcept { return ExternalLog{this, &ExternalRecording::record_hook}; }
+  void record(const ExternalRaise& raise);
+  void clear() noexcept;
+
+  u32 size() const noexcept { return entries_.size(); }
+  // The raise `index`, its payload a view into this object.
+  ExternalRaise at(u32 index) const noexcept;
+
+  // Raises again on `bus` every recorded raise of tick `tick` from the cursor on, in recorded
+  // order, and moves the cursor past them. Call it before stepping tick `tick`, as the host's own
+  // raises were made. Returns how many the bus took; `refused` counts the rest.
+  u32 replay_tick(EventBus& bus, u64 tick, u32* refused = nullptr);
+  void rewind() noexcept { cursor_ = 0; }
+
+  bool save(std::string_view native_path, std::string* error = nullptr) const;
+  bool load(std::string_view native_path, std::string* error = nullptr);
+  // The file's bytes, which `save` writes and `load` reads.
+  void serialize(std::string& out) const;
+  bool deserialize(std::string_view bytes, std::string* error = nullptr);
+
+ private:
+  struct Entry {
+    u64 tick = 0;
+    u64 key = 0;
+    u64 tile = 0;
+    u32 source = 0;
+    u32 seq = 0;
+    u32 type_id = 0;
+    u32 phase = 0;
+    u32 offset = 0;
+    u32 bytes = 0;
+  };
+  static void record_hook(void* context, const ExternalRaise& raise);
+
+  Vector<Entry> entries_;
+  Vector<u8> payload_;
+  u32 cursor_ = 0;
 };
 
 }  // namespace engine::events

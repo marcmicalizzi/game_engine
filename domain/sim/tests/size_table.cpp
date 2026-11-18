@@ -10,6 +10,7 @@
 // a crowd crossing together makes that a real array.
 
 #include <core/base/size_table.h>
+#include <domain/sim/hash_log.h>
 #include <domain/sim/materialize.h>
 #include <domain/sim/scheduler.h>
 #include <domain/sim/tiers.h>
@@ -69,3 +70,7 @@ ENGINE_EXPECT_SIZE(48, 8, RecordSource);
 ENGINE_EXPECT_SIZE(12, 4, MaterializeScope);
 ENGINE_EXPECT_SIZE(40, 8, MaterializeTarget);
 ENGINE_EXPECT_SIZE(56, 8, WriteBackChange);
+
+// The state hash a tick's log (hash_log.h; roadmap T53): one row per (tick, phase) hashed, so
+// 10^4 ticks at eight phases is 80,000 of them, and its file form is the same three fields.
+ENGINE_EXPECT_SIZE(16, 8, HashLogRow);

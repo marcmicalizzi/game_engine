@@ -14,8 +14,8 @@
 engine_schema_library(NAME events_schemas SCHEMAS schemas/events.schema CAPABILITY events)
 
 engine_module(NAME events LAYER domain OPTIONAL WHOLE_ARCHIVE
-  DEPS base containers hash ids log time schema json sim doc tunables events_schemas
-  SOURCES src/events.cpp)
+  DEPS base containers hash ids log time schema json sim doc tunables events_schemas io
+  SOURCES src/events.cpp src/external_recording.cpp)
 
 # Event types for the tests and the bench.
 engine_schema_library(NAME events_test_types SCHEMAS tests/events_test.schema CAPABILITY events)
