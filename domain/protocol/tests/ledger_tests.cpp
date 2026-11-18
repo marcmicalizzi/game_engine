@@ -442,6 +442,26 @@ TEST_CASE("ledger: roles, and a review item for a person that no agent closes") 
         codes::k_invalid_argument);
 }
 
+// The ledger goes through the side files' one helper (side_file.h): a read of a document with no
+// ledger leaves no lock file in it (the first helper made `ledger.json.lock` on every call, reads
+// included), and a read that lets nothing lapse does not rewrite the file.
+TEST_CASE("ledger: reads leave a document as they found it") {
+  test::TempDir tmp("protocol_ledger");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  h.open(dir, true);
+  CHECK(at(h.ok("task.list"), "tasks").size() == 0);
+  CHECK(at(h.ok("review.list"), "reviews").size() == 0);
+  CHECK(!h.vfs.exists(dir + "/ledger.json.lock"));
+  CHECK(!h.vfs.exists(dir + "/ledger.json"));
+  (void)h.task("task.create", obj({{"title", JsonValue("t")}, {"attribution", who("c")}}));
+  std::string before, after;
+  REQUIRE(h.vfs.read(dir + "/ledger.json", before) == io::Status::Ok);
+  (void)h.ok("task.list");
+  REQUIRE(h.vfs.read(dir + "/ledger.json", after) == io::Status::Ok);
+  CHECK(before == after);
+}
+
 TEST_CASE("ledger: a host with no human role has nobody who closes a person's item") {
   test::TempDir tmp("protocol_ledger");
   Host h;  // no roles file: nothing restricts a call, and nothing marks one a person's

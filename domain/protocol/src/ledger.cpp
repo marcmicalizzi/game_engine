@@ -4,10 +4,8 @@
 //
 // The ledger is `ledger.json` beside the document, and no host keeps it in memory: every call
 // takes `ledger.json.lock` between processes, reads the file, changes it and writes it back
-// (`update_ledger`, over exclusive_file.h), so two engine-cli calls at once, or engine-host beside
+// (`update_ledger`, over side_file.h), so two engine-cli calls at once, or engine-host beside
 // engine-cli, lose nothing to each other and never mint one id twice.
-#include "exclusive_file.h"
-
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
 #include <core/time/time.h>
@@ -15,6 +13,7 @@
 #include <domain/protocol/policy.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
+#include <domain/protocol/side_file.h>
 
 #include <string>
 #include <string_view>
@@ -24,9 +23,6 @@ namespace engine::protocol {
 namespace {
 
 constexpr std::string_view k_ledger_file = "ledger.json";
-// Long enough for any other host's read-modify-write of a ledger of thousands of items, short
-// enough that a wedged one is an answer rather than a hang.
-constexpr i64 k_lock_wait_ms = 10'000;
 constexpr u32 k_history_max = 256;
 constexpr usize k_title_max = 200;
 constexpr usize k_text_max = 4096;
@@ -207,61 +203,27 @@ ReviewInfo* find_review(LedgerFile& ledger, u64 id, RpcError& error) {
 // disk now (absent: empty) while this process holds `ledger.json.lock`, and when it sets `write`
 // the result replaces the file before the lock is let go. False with `error` set when the lock,
 // the read, the change or the write fails; nothing is written then.
+// Over side_file.h's `update_side_file`, the one helper for every file beside a document (the
+// transactions and the leases go through it too): of the two this tree had, it is the one that
+// guarantees more — it reads a file of an older version through the registered migrations, writes
+// nothing when the bytes are the ones there, and waits with a deadline that grows its pauses — and
+// a read of a document that has no ledger takes no lock and makes no lock file, so `task.list` on
+// a document nobody gave tasks leaves it as it was. `change` runs on the file as it is on disk now
+// (absent: empty), and its `write` is honoured whether or not it succeeded, since a refusal may
+// still have let lapsed claims go.
 template <class F>
-bool update_ledger(io::Vfs& vfs, const Session& session, F&& change, RpcError& error) {
+bool update_ledger(io::Vfs& vfs, const Session& session, bool read_only, F&& change,
+                   RpcError& error) {
   const std::string path = doc::DocumentStore::path_of(session.dir(), k_ledger_file);
-  std::string native;
-  if (vfs.resolve(path, native, true) != io::Status::Ok) {
-    error = make_error(codes::k_io_error, "the document's ledger cannot be written here");
-    return false;
-  }
-  bool ok = false;
-  auto body = [&]() -> bool {
-    LedgerFile ledger;
-    std::string text;
-    const io::Status s = vfs.read(path, text);
-    if (s != io::Status::Ok && s != io::Status::NotFound) {
-      error = make_error(codes::k_io_error, std::string("ledger.json: ") + io::status_name(s));
-      return false;
-    }
-    if (s == io::Status::Ok) {
-      JsonValue value;
-      if (const JsonParseResult r = parse_json(text, value); !r.ok) {
-        error = make_error(codes::k_io_error, std::string("ledger.json: ") + r.message);
-        return false;
-      }
-      schema::ReadContext ctx;
-      if (!schema::from_json(ledger, value, ctx)) {
-        std::string message = "ledger.json: invalid";
-        if (!ctx.diagnostics.empty()) message += ": " + ctx.diagnostics[0].message;
-        error = make_error(codes::k_io_error, std::move(message));
-        return false;
-      }
-    }
+  if (read_only && !vfs.exists(path)) {
+    LedgerFile none;
     bool write = false;
-    if (!change(ledger, write, error)) return false;
-    if (!write) return true;
-    std::string out = write_json(schema::to_json(ledger));
-    out.push_back('\n');
-    std::string message;
-    if (!doc::DocumentStore::write_side_file(vfs, path, out, &message)) {
-      error = make_error(codes::k_io_error, std::move(message));
-      return false;
-    }
-    return true;
-  };
-  std::string message;
-  switch (detail::run_exclusive(native + ".lock", k_lock_wait_ms, body, ok, message)) {
-    case detail::ExclusiveRun::Ran: return ok;
-    case detail::ExclusiveRun::Busy:
-      error = make_error(codes::k_unavailable,
-                         "the document's ledger is held by another host for longer than " +
-                             std::to_string(k_lock_wait_ms / 1000) + " s; try again");
-      return false;
-    case detail::ExclusiveRun::Failed: break;
+    return change(none, write, error);
   }
-  error = make_error(codes::k_io_error, std::move(message));
-  return false;
+  LedgerFile ledger;
+  return update_side_file(
+      vfs, path, ledger, [&](LedgerFile& l, bool& write) { return change(l, write, error); },
+      error);
 }
 
 // The session and the caller every method starts from.
@@ -311,7 +273,7 @@ bool task_create(Context& ctx, const TaskCreateParams& params, TasksResult& out,
   const i64 now = time::wall_unix_ms();
   TaskInfo made;
   if (!update_ledger(
-          ctx.sessions->vfs(), *s,
+          ctx.sessions->vfs(), *s, false,
           [&](LedgerFile& ledger, bool& write, RpcError& e) {
             out.lapsed = lapse_claims(ledger, now);
             TaskInfo t;
@@ -355,7 +317,7 @@ bool task_claim(Context& ctx, const TaskClaimParams& params, TasksResult& out, R
   bool renewed = false;
   TaskInfo changed;
   if (!update_ledger(
-          ctx.sessions->vfs(), *s,
+          ctx.sessions->vfs(), *s, false,
           [&](LedgerFile& ledger, bool& write, RpcError& e) {
             out.lapsed = lapse_claims(ledger, now);
             write = out.lapsed > 0;
@@ -430,7 +392,7 @@ bool task_update(Context& ctx, const TaskUpdateParams& params, TasksResult& out,
   const i64 now = time::wall_unix_ms();
   TaskInfo changed;
   if (!update_ledger(
-          ctx.sessions->vfs(), *s,
+          ctx.sessions->vfs(), *s, false,
           [&](LedgerFile& ledger, bool& write, RpcError& e) {
             out.lapsed = lapse_claims(ledger, now);
             write = out.lapsed > 0;
@@ -522,7 +484,7 @@ bool task_list(Context& ctx, const TaskListParams& params, TasksResult& out, Rpc
   const i64 now = time::wall_unix_ms();
   out.now_unix_ms = now;
   return update_ledger(
-      ctx.sessions->vfs(), *s,
+      ctx.sessions->vfs(), *s, true,
       [&](LedgerFile& ledger, bool& write, RpcError& e) {
         out.lapsed = lapse_claims(ledger, now);
         write = out.lapsed > 0;
@@ -583,7 +545,7 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
   const i64 now = time::wall_unix_ms();
   ReviewInfo made;
   if (!update_ledger(
-          ctx.sessions->vfs(), *s,
+          ctx.sessions->vfs(), *s, false,
           [&](LedgerFile& ledger, bool& write, RpcError& e) {
             (void)lapse_claims(ledger, now);
             TaskInfo* task = nullptr;
@@ -638,7 +600,7 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
   const i64 now = time::wall_unix_ms();
   ReviewInfo changed;
   if (!update_ledger(
-          ctx.sessions->vfs(), *s,
+          ctx.sessions->vfs(), *s, false,
           [&](LedgerFile& ledger, bool& write, RpcError& e) {
             ReviewInfo* r = find_review(ledger, params.review, e);
             if (r == nullptr) return false;
@@ -698,7 +660,7 @@ bool review_list(Context& ctx, const ReviewListParams& params, ReviewsResult& ou
   if (s == nullptr) return false;
   out.now_unix_ms = time::wall_unix_ms();
   return update_ledger(
-      ctx.sessions->vfs(), *s,
+      ctx.sessions->vfs(), *s, true,
       [&](LedgerFile& ledger, bool& write, RpcError& e) {
         write = false;
         if (params.review != 0 && find_review(ledger, params.review, e) == nullptr) return false;
