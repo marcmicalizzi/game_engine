@@ -180,9 +180,9 @@ struct TypeInfo {
   // `@alias` on the struct: the qualified names the type had before it was renamed. A reader that
   // meets one (a document record's `type`, a layer file's type table) takes it as this type
   // (`Registry::resolve`); everything written names `qualified_name`.
-  std::span<const char* const> aliases;
+  std::span<const char* const> aliases{};
   // `@alias` on its fields, in declaration order.
-  std::span<const FieldAlias> field_aliases;
+  std::span<const FieldAlias> field_aliases{};
 
   const FieldInfo* find_field(std::string_view field_name) const noexcept;
   // The field `former_name` was a name of, or nullptr.
