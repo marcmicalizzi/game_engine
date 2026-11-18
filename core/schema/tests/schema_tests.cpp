@@ -431,3 +431,43 @@ TEST_CASE("schema: versioned reads apply registered migrations in order") {
   ReadContext future;
   CHECK_FALSE(from_json_versioned(e, old, 4, future));
 }
+
+TEST_CASE("schema: an additive version's step is generated, and only an additive one's") {
+  // Grown 1 -> 2 -> 3 only added fields, each @since its version with a default: no step is
+  // registered, and a version-1 object reads with both new fields at their defaults.
+  CHECK(additive_step(type_of<Grown>(), 2));
+  CHECK(additive_step(type_of<Grown>(), 3));
+  CHECK_FALSE(additive_step(type_of<Grown>(), 4));
+  JsonValue v1;
+  REQUIRE(parse_json(R"({"first": 7})", v1).ok);
+  Grown g;
+  ReadContext ctx;
+  REQUIRE(from_json_versioned(g, v1, 1, ctx));
+  CHECK(g.first == 7);
+  CHECK(g.second == "two");
+  CHECK(g.third == 3.5f);
+  JsonValue v2;
+  REQUIRE(parse_json(R"({"first": 8, "second": "set"})", v2).ok);
+  ReadContext ctx2;
+  REQUIRE(from_json_versioned(g, v2, 2, ctx2));
+  CHECK(g.second == "set");
+  CHECK(g.third == 3.5f);
+
+  // A field the generated step does not know of is still refused by the reader: a removal or a
+  // rename needs a step written by hand.
+  JsonValue renamed;
+  REQUIRE(parse_json(R"({"first": 8, "old_name": "x"})", renamed).ok);
+  ReadContext unknown;
+  CHECK_FALSE(from_json_versioned(g, renamed, 1, unknown));
+
+  // A version that added no field is not additive: no step, refused naming it.
+  CHECK_FALSE(additive_step(type_of<Retyped>(), 2));
+  JsonValue r1;
+  REQUIRE(parse_json(R"({"value": 1.0})", r1).ok);
+  Retyped r;
+  ReadContext gap;
+  CHECK_FALSE(from_json_versioned(r, r1, 1, gap));
+  REQUIRE(gap.diagnostics.size() == 1);
+  CHECK(gap.diagnostics[0].message.find("no migration registered from version 1 to 2") !=
+        std::string::npos);
+}
