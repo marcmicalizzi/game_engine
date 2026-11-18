@@ -7,7 +7,9 @@
 #include <foundation/tunables/tunables.h>
 
 #include <algorithm>
+#include <bit>
 #include <schemas/events.h>
+#include <thread>
 
 namespace engine::events {
 
@@ -76,35 +78,304 @@ EventBusConfig config_from_tunables() {
 
 // --- the banks -------------------------------------------------------------------------------
 
+namespace {
+
+// `Bank::state`: records in the low half, payload words in bits 32 to 62, the selection's mark in
+// bit 63.
+constexpr u64 k_selecting = u64{1} << 63;
+constexpr u32 state_count(u64 state) noexcept { return static_cast<u32>(state); }
+constexpr u32 state_words(u64 state) noexcept {
+  return static_cast<u32>(state >> 32) & 0x7FFF'FFFFu;
+}
+
+}  // namespace
+
 u32 EventBus::Bank::size() const noexcept {
-  const u32 n = count.load(std::memory_order_acquire);
-  return n < records.size() ? n : records.size();
+  return state_count(state.load(std::memory_order_acquire));
 }
 
 void EventBus::Bank::reset() noexcept {
-  count.store(0, std::memory_order_relaxed);
-  used.store(0, std::memory_order_relaxed);
+  state.store(0, std::memory_order_relaxed);
+  written.store(0, std::memory_order_relaxed);
 }
 
-bool EventBus::append(Bank& bank, const EventRecord& head, const void* bytes, u32 align) {
+u32 EventBus::payload_words(u16 type) const noexcept { return round8(types_[type]->size) / 8u; }
+
+bool EventBus::append(Bank& bank, const EventRecord& head, const void* bytes, u32 align,
+                      bool select) {
   ENGINE_ASSERT(align <= 8u, "events: a payload is aligned to at most 8 bytes");
   (void)align;
-  // The payload first and the slot second, so a slot that is handed out always has its bytes; a
-  // refused raise leaves the counters past the end, which is what `size()` clamps. The payload's
-  // size is its type's, which is why the record does not carry it.
+  // The slot and its payload words in one compare-exchange, taken only when both fit: a refused
+  // raise moves neither count, so a storm of refusals cannot carry either past its bound and round
+  // to a small offset over payloads already raised (B6). The payload's size is its type's, which
+  // is why the record does not carry it.
   const u32 size = types_[head.type]->size;
-  const u32 rounded = round8(size);
-  const u32 offset = bank.used.fetch_add(rounded, std::memory_order_relaxed);
-  if (static_cast<u64>(offset) + rounded > static_cast<u64>(bank.words.size()) * 8u) return false;
-  // Relaxed: the delivery point that reads the record runs after the raiser's wave has been waited
-  // for, and that wait is the synchronization.
-  const u32 slot = bank.count.fetch_add(1, std::memory_order_relaxed);
-  if (slot >= bank.records.size()) return false;
-  EventRecord& record = bank.records[slot];
+  const u32 words = round8(size) / 8u;
+  const u32 capacity = bank.records.size();
+  const u32 arena = bank.words.size();
+  u64 state = bank.state.load(std::memory_order_relaxed);
+  for (;;) {
+    // Full, or already selecting: which raises a full bank keeps must not be whichever reached it
+    // first (B5), so outside a delivery point the rest go through the selection.
+    if ((state & k_selecting) != 0 || state_count(state) >= capacity ||
+        static_cast<u64>(state_words(state)) + words > arena) {
+      return select && select_append(head, bytes);
+    }
+    // Relaxed: the delivery point that reads the record runs after the raiser's wave has been
+    // waited for, and that wait is the synchronization; a selection waits on `written`.
+    if (bank.state.compare_exchange_weak(state, state + (u64{words} << 32) + 1u,
+                                         std::memory_order_relaxed, std::memory_order_relaxed)) {
+      break;
+    }
+  }
+  const u32 offset = state_words(state) * 8u;
+  EventRecord& record = bank.records[state_count(state)];
   record = head;
   record.payload = offset;
   if (size != 0) std::memcpy(reinterpret_cast<u8*>(bank.words.data()) + offset, bytes, size);
+  bank.written.fetch_add(1, std::memory_order_release);
   return true;
+}
+
+// --- the full bank's selection -----------------------------------------------------------------
+//
+// What a full live bank keeps is the longest run of the order (tick, phase, source, key, sequence;
+// then type, tile and the payload's hash, so that even two raises with one whole key are told
+// apart by what they carry) that fits its records and its arena, over everything raised since the
+// last delivery point: a function of the raises and never of which thread reached the bank first.
+// Kept as a heap of the kept slots by that order, so a lower raise evicts the highest, and a cut,
+// the lowest raise turned away, at or past which everything is refused at once (a run that fits
+// stops at the first raise that does not).
+
+u64 EventBus::payload_hash(u16 type, const void* bytes) const noexcept {
+  using engine::hash_detail::mix_word;
+  const auto* p = static_cast<const u8*>(bytes);
+  u32 left = types_[type]->size;
+  u64 h = left;
+  for (; left >= 8u; left -= 8u, p += 8) {
+    u64 word;
+    std::memcpy(&word, p, 8);
+    h = mix_word(h, word);
+  }
+  if (left > 0) {
+    u64 word = 0;
+    std::memcpy(&word, p, left);
+    h = mix_word(h, word ^ (static_cast<u64>(left) << 56));
+  }
+  return h;
+}
+
+namespace {
+
+int rank_compare(u64 a_when, u32 a_source, u64 a_key, u32 a_seq, u32 a_type, u64 a_tile, u64 b_when,
+                 u32 b_source, u64 b_key, u32 b_seq, u32 b_type, u64 b_tile) noexcept {
+  if (a_when != b_when) return a_when < b_when ? -1 : 1;
+  if (a_source != b_source) return a_source < b_source ? -1 : 1;
+  if (a_key != b_key) return a_key < b_key ? -1 : 1;
+  if (a_seq != b_seq) return a_seq < b_seq ? -1 : 1;
+  if (a_type != b_type) return a_type < b_type ? -1 : 1;
+  if (a_tile != b_tile) return a_tile < b_tile ? -1 : 1;
+  return 0;
+}
+
+constexpr u64 when_of(const EventRecord& record) noexcept {
+  return (record.tick << 8) | record.phase;
+}
+
+constexpr u32 k_no_hole = 0xFFFF'FFFFu;
+constexpr u32 k_hole_classes = 14;  // `Selection::holes`
+constexpr u32 floor_log2(u32 v) noexcept { return v == 0 ? 0u : 31u - std::countl_zero(v); }
+
+}  // namespace
+
+bool EventBus::select_less(const EventRecord& a, const void* pa, const EventRecord& b,
+                           const void* pb) const noexcept {
+  const int c = rank_compare(when_of(a), a.source, a.key, a.seq, a.type, a.tile, when_of(b),
+                             b.source, b.key, b.seq, b.type, b.tile);
+  if (c != 0) return c < 0;
+  return payload_hash(a.type, pa) < payload_hash(b.type, pb);
+}
+
+bool EventBus::below_cut(const EventRecord& record, const void* bytes) const noexcept {
+  if (!selection_.has_cut) return true;
+  const Rank& cut = selection_.cut;
+  const int c =
+      rank_compare(when_of(record), record.source, record.key, record.seq, record.type, record.tile,
+                   cut.when, cut.source, cut.key, cut.seq, cut.type, cut.tile);
+  if (c != 0) return c < 0;
+  return payload_hash(record.type, bytes) < selection_.cut_hash;
+}
+
+void EventBus::lower_cut(const EventRecord& record, const void* bytes) noexcept {
+  if (!below_cut(record, bytes)) return;
+  Rank& cut = selection_.cut;
+  cut.when = when_of(record);
+  cut.key = record.key;
+  cut.tile = record.tile;
+  cut.source = record.source;
+  cut.seq = record.seq;
+  cut.type = record.type;
+  selection_.cut_hash = payload_hash(record.type, bytes);
+  selection_.has_cut = true;
+}
+
+void EventBus::open_selection() {
+  // Close the lock-free path, then wait for the raises it already let in to finish writing: from
+  // here every raise is serialized and the bank holds still.
+  const u64 state = live_.state.fetch_or(k_selecting, std::memory_order_acq_rel);
+  const u32 count = state_count(state);
+  while (live_.written.load(std::memory_order_acquire) < count)
+    std::this_thread::yield();
+  selection_.active = true;
+  selection_.has_cut = false;
+  selection_.end = count;
+  selection_.live = count;
+  selection_.bump = state_words(state);
+  selection_.live_words = state_words(state);
+  for (u32& hole : selection_.holes)
+    hole = k_no_hole;
+  order_.clear();
+  for (u32 slot = 0; slot < count; ++slot)
+    order_.push_back(slot);
+  std::make_heap(order_.begin(), order_.end(), [this](u32 a, u32 b) {
+    return select_less(live_.records[a], live_.payload(live_.records[a]), live_.records[b],
+                       live_.payload(live_.records[b]));
+  });
+}
+
+void EventBus::compact_selection() {
+  // The kept payloads in offset order, each moved down over the gaps before it (a kept payload's
+  // new offset is the sum of the kept ones below it, never past its old one); then the kept
+  // records down over the evicted slots, in slot order. The heap is the kept slots, so it is the
+  // list to sort, and it is rebuilt after.
+  auto* base = reinterpret_cast<u8*>(live_.words.data());
+  std::sort(order_.begin(), order_.end(),
+            [this](u32 a, u32 b) { return live_.records[a].payload < live_.records[b].payload; });
+  u32 to_words = 0;
+  for (const u32 slot : order_) {
+    EventRecord& record = live_.records[slot];
+    const u32 words = payload_words(record.type);
+    ENGINE_ASSERT(record.payload >= to_words * 8u, "events: kept payloads do not overlap");
+    if (record.payload != to_words * 8u) {
+      std::memmove(base + to_words * 8u, base + record.payload, words * 8u);
+      record.payload = to_words * 8u;
+    }
+    to_words += words;
+  }
+  u32 to = 0;
+  for (u32 from = 0; from < selection_.end; ++from) {
+    if (live_.records[from].type == k_invalid_type) continue;
+    if (to != from) live_.records[to] = live_.records[from];
+    ++to;
+  }
+  ENGINE_ASSERT(to == selection_.live && to_words == selection_.live_words,
+                "events: a selection's counts are its kept records");
+  selection_.end = to;
+  selection_.bump = to_words;
+  for (u32& hole : selection_.holes)
+    hole = k_no_hole;
+  order_.clear();
+  for (u32 slot = 0; slot < to; ++slot)
+    order_.push_back(slot);
+  std::make_heap(order_.begin(), order_.end(), [this](u32 a, u32 b) {
+    return select_less(live_.records[a], live_.payload(live_.records[a]), live_.records[b],
+                       live_.payload(live_.records[b]));
+  });
+}
+
+bool EventBus::select_append(const EventRecord& head, const void* bytes) {
+  std::lock_guard<std::mutex> lock(select_mutex_);
+  if (!selection_.active) open_selection();
+  // At or past the cut: a run that fits has already stopped before it.
+  if (!below_cut(head, bytes)) return false;
+  const auto heap_less = [this](u32 a, u32 b) {
+    return select_less(live_.records[a], live_.payload(live_.records[a]), live_.records[b],
+                       live_.payload(live_.records[b]));
+  };
+  const u32 capacity = live_.records.size();
+  const u32 arena = live_.words.size();
+  const u32 words = payload_words(head.type);
+  while (selection_.live + 1u > capacity ||
+         static_cast<u64>(selection_.live_words) + words > arena) {
+    // Room only by evicting what is higher than this raise; if the highest kept is lower, the run
+    // that fits ends here and this raise is the new cut.
+    if (order_.empty()) {
+      lower_cut(head, bytes);
+      return false;
+    }
+    const EventRecord& top = live_.records[order_.front()];
+    if (!select_less(head, bytes, top, live_.payload(top))) {
+      lower_cut(head, bytes);
+      return false;
+    }
+    std::pop_heap(order_.begin(), order_.end(), heap_less);
+    const u32 freed = order_.back();
+    order_.pop_back();
+    EventRecord& gone = live_.records[freed];
+    lower_cut(gone, live_.payload(gone));
+    const u32 room = payload_words(gone.type);
+    selection_.live -= 1u;
+    selection_.live_words -= room;
+    // A hole: its room in `key`, the next hole of its class in `seq`.
+    gone.type = k_invalid_type;
+    gone.key = room;
+    const u32 hole_class = std::min(floor_log2(room), k_hole_classes - 1u);
+    gone.seq = selection_.holes[hole_class];
+    selection_.holes[hole_class] = freed;
+    full_refused_.fetch_add(1, std::memory_order_relaxed);
+  }
+  // The logical room is there (the loop above made it); where it goes: a hole with room for its
+  // payload, in place; else a slot (an evicted one, whose bytes wait for the next compaction, or
+  // past the last) and words past the last, compacting first when the arena's end is reached.
+  u32 slot = k_no_hole;
+  for (u32 c = words <= 1u ? 0u : floor_log2(words - 1u) + 1u; c < k_hole_classes; ++c) {
+    const u32 hole = selection_.holes[c];
+    if (hole != k_no_hole && live_.records[hole].key >= words) {
+      selection_.holes[c] = live_.records[hole].seq;
+      slot = hole;
+      break;
+    }
+  }
+  u32 offset;
+  if (slot != k_no_hole) {
+    offset = live_.records[slot].payload;
+  } else {
+    if (static_cast<u64>(selection_.bump) + words > arena) compact_selection();
+    for (u32& hole : selection_.holes) {
+      if (hole == k_no_hole) continue;
+      slot = hole;
+      hole = live_.records[slot].seq;
+      break;
+    }
+    // Every evicted slot is on a list, so with none the slots in use are the kept ones, fewer
+    // than the capacity.
+    if (slot == k_no_hole) slot = selection_.end++;
+    ENGINE_ASSERT(slot < capacity, "events: a selection has a slot for what it keeps");
+    offset = selection_.bump * 8u;
+    selection_.bump += words;
+  }
+  EventRecord& record = live_.records[slot];
+  record = head;
+  record.payload = offset;
+  const u32 size = types_[head.type]->size;
+  if (size != 0) std::memcpy(reinterpret_cast<u8*>(live_.words.data()) + offset, bytes, size);
+  selection_.live += 1u;
+  selection_.live_words += words;
+  order_.push_back(slot);
+  std::push_heap(order_.begin(), order_.end(), heap_less);
+  return true;
+}
+
+void EventBus::close_selection() {
+  // At a delivery point, after the wave: the kept records packed to the front and the bank opened
+  // again, so what a carry or a handler appends next finds the same room on every run.
+  if (!selection_.active) return;
+  compact_selection();
+  live_.state.store((static_cast<u64>(selection_.bump) << 32) | selection_.end,
+                    std::memory_order_relaxed);
+  live_.written.store(selection_.end, std::memory_order_relaxed);
+  selection_ = Selection{};
+  order_.clear();
 }
 
 // --- construction and registration -------------------------------------------------------------
@@ -310,7 +581,7 @@ bool EventBus::raise_from(Emitter& from, u16 type, const void* bytes, u32 size, 
       external_log_.record(external_log_.context, entry);
     }
   }
-  if (!append(live_, head, bytes, align)) {
+  if (!append(live_, head, bytes, align, !delivering_)) {
     full_refused_.fetch_add(1, std::memory_order_relaxed);
     return false;
   }
@@ -332,7 +603,7 @@ bool EventBus::replay_external(const ExternalRaise& entry) {
   head.seq = entry.seq;
   head.type = type;
   head.phase = entry.phase;
-  if (!append(live_, head, entry.payload.data(), 8u)) {
+  if (!append(live_, head, entry.payload.data(), 8u, !delivering_)) {
     full_refused_.fetch_add(1, std::memory_order_relaxed);
     return false;
   }
@@ -340,7 +611,7 @@ bool EventBus::replay_external(const ExternalRaise& entry) {
 }
 
 void EventBus::carry(const EventRecord& record, const void* bytes, u32* trip) {
-  if (!append(carry_, record, bytes, 8u)) {
+  if (!append(carry_, record, bytes, 8u, false)) {
     ++current_.trips.full_dropped;
     ++type_counters_[record.type].dropped;
     return;
@@ -521,6 +792,8 @@ void EventBus::hash_delivery(const EventRecord& record, const void* bytes,
 void EventBus::deliver(sim::TickPhase point, u64 tick) {
   if (tick != tick_) begin_tick(tick);
   phase_ = static_cast<u8>(point);
+  // What a full bank kept is settled: the wave that raised it has been waited for.
+  close_selection();
   delivering_ = true;
 
   if (point == sim::TickPhase::EventsIn) {
@@ -528,7 +801,7 @@ void EventBus::deliver(sim::TickPhase point, u64 tick) {
     const u32 carried = carry_.size();
     for (u32 i = 0; i < carried; ++i) {
       const EventRecord& record = carry_.records[i];
-      if (append(live_, record, carry_.payload(record), 8u)) {
+      if (append(live_, record, carry_.payload(record), 8u, false)) {
         ++current_.carried_in;
       } else {
         ++current_.trips.full_dropped;
@@ -732,6 +1005,8 @@ void EventBus::deliver_generation(u32 first, u32 last, sim::TickPhase point) {
   }
 }
 
-u32 EventBus::pending() const noexcept { return live_.size() + carry_.size(); }
+u32 EventBus::pending() const noexcept {
+  return (selection_.active ? selection_.live : live_.size()) + carry_.size();
+}
 
 }  // namespace engine::events

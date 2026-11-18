@@ -27,6 +27,8 @@
 //   - budget: past its delivery budget in a tick, a subscriber's events are skipped for it and its
 //     `overflow` hook told how many;
 //   - full: a raise or a carry that finds its bank full is dropped and counted, never silently.
+//     What a full live bank keeps is the lowest keys of everything raised since the last delivery
+//     point that fit, whatever order a parallel wave's raises arrived in (`EventBus::append`).
 // A subscriber's wall time is measured and a slow one reported, and only reported: acting on a
 // clock would make the simulation a function of the machine.
 //
@@ -49,6 +51,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <mutex>
 #include <span>
 #include <type_traits>
 
@@ -150,7 +153,9 @@ class Emitter {
     return raise_bytes(type.index, &value, static_cast<u32>(sizeof(T)), alignof(T), options);
   }
   // False when the raise was refused: the bank was full, the depth past the cap, no bus, or an
-  // unknown type. A refusal is counted in the tick's report either way.
+  // unknown type. A refusal is counted in the tick's report either way. True when the bank took
+  // it; while the bank is full a later raise with a lower key can still displace it before the
+  // delivery point, and that is counted as a refusal too.
   bool raise_bytes(u16 type, const void* bytes, u32 size, u32 align, const RaiseOptions& options);
 
   u32 source() const noexcept { return source_; }
@@ -373,14 +378,44 @@ class EventBus {
   struct Bank {
     Vector<EventRecord> records;  // sized to the capacity once
     Vector<u64> words;            // the payload arena, 8-byte aligned, sized once
-    std::atomic<u32> count{0};    // may run past the capacity: a refused raise still counted it
-    std::atomic<u32> used{0};     // payload bytes, likewise
+    // Records in the low 32 bits, payload words in bits 32 to 62, and bit 63 set while the live
+    // bank is selecting (below). One compare-exchange reserves a slot and its words together, and
+    // only when both fit, so neither count can pass its bound and neither can wrap (B6).
+    std::atomic<u64> state{0};
+    std::atomic<u32> written{0};  // reserved slots whose record and bytes are written
 
     u32 size() const noexcept;
     void reset() noexcept;
     const void* payload(const EventRecord& record) const noexcept {
       return reinterpret_cast<const u8*>(words.data()) + record.payload;
     }
+  };
+  // A full live bank outside a delivery point keeps the lowest keys of everything raised into it
+  // (docs/subsystems/events.md, "The runaway guards"): from the first raise that does not fit, the
+  // bank is closed to the lock-free path and every raise goes through `select_append` under
+  // `select_mutex_`, which evicts the highest keys for a lower one and refuses anything at or past
+  // the lowest key it has turned away (the cut). Under the mutex only.
+  struct Rank {
+    u64 when = 0;  // tick << 8 | phase
+    u64 key = 0;
+    u64 tile = 0;
+    u32 source = 0;
+    u32 seq = 0;
+    u32 type = 0;
+    u32 pad = 0;
+  };
+  struct Selection {
+    bool active = false;
+    bool has_cut = false;
+    u32 end = 0;         // slots in use, the evicted (type `k_invalid_type`) among them
+    u32 live = 0;        // records kept
+    u32 bump = 0;        // payload words in use, holes among them
+    u32 live_words = 0;  // payload words the kept records need
+    Rank cut;            // the lowest event turned away, and its payload's hash
+    u64 cut_hash = 0;
+    // Evicted slots by the payload room they leave, a list per power of two (a payload is at
+    // most 8,192 words), threaded through the dead records themselves.
+    u32 holes[14] = {};
   };
   // The delivery order: (tick, phase), source, key, sequence, and the bank position last.
   struct SortKey {
@@ -409,7 +444,19 @@ class EventBus {
     u32 pad = 0;
   };
 
-  bool append(Bank& bank, const EventRecord& head, const void* bytes, u32 align);
+  // `select`: the live bank outside a delivery point, where a parallel wave can raise; everywhere
+  // else raises are serial and a full bank simply refuses.
+  bool append(Bank& bank, const EventRecord& head, const void* bytes, u32 align, bool select);
+  bool select_append(const EventRecord& head, const void* bytes);
+  void open_selection();
+  void compact_selection();
+  void close_selection();
+  u32 payload_words(u16 type) const noexcept;
+  u64 payload_hash(u16 type, const void* bytes) const noexcept;
+  bool select_less(const EventRecord& a, const void* pa, const EventRecord& b,
+                   const void* pb) const noexcept;
+  bool below_cut(const EventRecord& record, const void* bytes) const noexcept;
+  void lower_cut(const EventRecord& record, const void* bytes) noexcept;
   bool raise_from(Emitter& from, u16 type, const void* bytes, u32 size, u32 align,
                   const RaiseOptions& options);
   bool subscriber_hears(const Subscriber& subscriber, u16 type) const noexcept;
@@ -466,9 +513,13 @@ class EventBus {
   TickReport current_;
   TickReport last_;
   GuardTrips total_trips_;
-  // Raises refused for a full bank, which a parallel wave can do from many threads at once; folded
-  // into the tick's report at the next delivery point.
+  // Raises refused for a full bank, and raises a lower key displaced from it, which a parallel wave
+  // can do from many threads at once; folded into the tick's report at the next delivery point.
   std::atomic<u32> full_refused_{0};
+  // The full live bank's selection; its heap of kept slots lives in `order_`, which is idle
+  // between delivery points.
+  std::mutex select_mutex_;
+  Selection selection_;
   u64 delivery_hash_ = 0;
   u64 tick_ = 0;         // the tick the bus is in
   u64 serial_tick_ = 0;  // the tick `serial_` counts in
