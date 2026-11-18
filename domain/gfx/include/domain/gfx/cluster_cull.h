@@ -343,7 +343,14 @@ struct CullParams {
   // every live pair's own entry; a hole's may hold anything. 0 searches. With its pad the block is
   // 1,776 bytes, a whole number of the float4 rows the GPU reads it as.
   u64 pairs = 0;
-  u32 pad_pairs[2] = {};
+  // **The cross-fade turned with the phase** (R158 leg 3; renderer.md, "Sampling over time: the
+  // accumulation"): what the pass turns a fading pair's two splits by on the hash's ring of 65535
+  // before it writes them to `masks.fade` (cluster_cull.slang, `turn_splits`), so that over a cycle
+  // of n offsets a pixel's threshold takes n evenly spaced places and the accumulation blends the
+  // two levels. 0, every frame drawn without the accumulation, writes the splits as they are. It
+  // took one of the two pad words; the block is still 1,776 bytes.
+  u32 fade_turn = 0;
+  u32 pad_pairs = 0;
 };
 static_assert(sizeof(CullParams) == 1776);
 static_assert(offsetof(CullParams, sky_facing) == 1752);

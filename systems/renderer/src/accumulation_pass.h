@@ -51,12 +51,23 @@ struct AccumulateParams {
   f32 ceiling = 1.0f;       // and its ceiling (`FramePassContext::display_knee`, `display_ceiling`)
   f32 motion_match = 0.0f;  // pixels: a tap whose surface moved within this of the pixel's
   u32 moved_count = 0;
+  // **Reactive surfaces** (R158 leg 3; renderer.md, "Sampling over time: the accumulation"): a
+  // pixel whose material is water is always clipped and takes at least `reactive_weight` of the
+  // new frame. 0 addresses in a scene with no water material, and then nothing is read.
+  u64 materials = 0;          // gfx::ResolveMaterial[]
+  u64 cluster_materials = 0;  // u32 per cluster
+  u64 instances = 0;          // gfx::InstanceDesc[]
+  f32 reactive_weight = 0.0f;
+  u32 filter = 0;  // k_accumulate_filter_*
 };
-static_assert(sizeof(AccumulateParams) == 112, "accumulate.slang's AccumulateParams");
+static_assert(sizeof(AccumulateParams) == 144, "accumulate.slang's AccumulateParams");
 
 inline constexpr u32 k_accumulate_history = 1u;  // there is a frame before this one to read
 inline constexpr u32 k_accumulate_mean = 2u;     // the running mean at the pixel's own place
 inline constexpr u32 k_accumulate_names = 4u;    // last frame's names can be read through `pairs`
+// How a history is read between its texels (`renderer.reconstruction.history_filter`).
+inline constexpr u32 k_accumulate_filter_bilinear = 0u;
+inline constexpr u32 k_accumulate_filter_catmull_rom = 1u;
 
 class AccumulationPass {
  public:
@@ -66,6 +77,8 @@ class AccumulationPass {
     f32 clip_still = 0.0f;
     f32 clip_moving = 0.0f;
     f32 motion_match = 0.25f;  // `renderer.reconstruction.motion_match`, pixels
+    f32 reactive_weight = 0.25f;  // `renderer.reconstruction.reactive_weight`
+    u32 filter = k_accumulate_filter_catmull_rom;  // `renderer.reconstruction.history_filter`
   };
 
   bool create(const gfx::Device& device, GpuScene& scene, const MotionPass& motion,

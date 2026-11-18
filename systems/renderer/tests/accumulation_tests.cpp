@@ -24,6 +24,7 @@
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/reconstruction.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/settings.h>
@@ -377,6 +378,116 @@ TEST_CASE("accumulation: the pixels a moved instance leaves hold no trail of it"
                             << (counted > 0 ? is / counted : 0.0) << " the frame after");
   REQUIRE(counted > 30);  // the fixture's premise
   CHECK(is <= 0.25 * was);
+}
+
+// The sharper read (R158 leg 3): under a slow pan every frame's history is read between texels, and
+// a bilinear read softens the picture a little more each frame over the blend's length. After 32
+// frames of a pan of about a tenth of a pixel a frame, the picture accumulated with the Catmull-Rom
+// read stands nearer the converged picture of the last camera (a `mean` capture there) than the one
+// accumulated with the bilinear read. Fails with the read left bilinear, or with a Catmull-Rom read
+// that rings (its clamp to the inner four texels removed: the ground's edges overshoot).
+TEST_CASE("accumulation: a slow pan read through Catmull-Rom stays nearer its converged picture") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  ScopedTunable phases("renderer.reconstruction.phases", "8");
+  const auto pan = [&](const char* filter, Vector<u8>& out, Vector<u8>& converged) {
+    ScopedTunable mode("renderer.reconstruction.accumulation", "on");
+    ScopedTunable read("renderer.reconstruction.history_filter", filter);
+    Rig rig;
+    REQUIRE_MESSAGE(rig.build(gpu.device, ground_scene()), rig.error);
+    FrameDesc frame = held_frame(rig);
+    CapturedFrame shot;
+    for (u32 k = 0; k < 32; ++k) {
+      // An orbit's yaw a step of half a milliradian a frame: about a tenth of a pixel at the edges.
+      frame.camera = orbit_camera_at(rig.data.center, rig.data.radius, 22.0f,
+                                     0.4f + 0.0005f * static_cast<f32>(k), k_orbit_pitch);
+      frame.history_reset = k == 0;
+      REQUIRE_MESSAGE(rig.shoot(frame, shot), rig.error);
+    }
+    out = shot.color;
+    ScopedTunable mean("renderer.reconstruction.accumulation", "mean");
+    Rig still;
+    REQUIRE_MESSAGE(still.build(gpu.device, ground_scene()), still.error);
+    CapturedFrame cycle;
+    REQUIRE_MESSAGE(still.shoot(frame, cycle), still.error);
+    converged = cycle.color;
+  };
+  Vector<u8> bilinear;
+  Vector<u8> sharp;
+  Vector<u8> reference;
+  Vector<u8> reference_again;
+  pan("bilinear", bilinear, reference);
+  pan("catmull_rom", sharp, reference_again);
+  // The fixture's premise: the converged picture is a function of the camera.
+  REQUIRE(std::memcmp(reference.data(), reference_again.data(), reference.size()) == 0);
+  const Difference soft = difference(bilinear, reference);
+  const Difference kept = difference(sharp, reference);
+  MESSAGE("a pan of 32 frames against the last camera's converged picture, rms codes: bilinear "
+          << soft.rms << " (worst " << soft.worst << "), Catmull-Rom " << kept.rms << " (worst "
+          << kept.worst << ")");
+  CHECK(soft.rms > 0.5);  // the fixture's premise: the bilinear read has softened something
+  CHECK(kept.rms < soft.rms);
+}
+
+// The registration point (R159; reconstruction.h): the two built-in names cannot be taken, a name
+// is registered once, and an unnamed or incomplete provider is refused. No device.
+TEST_CASE("reconstruction: providers register by name, and the built-in names are kept") {
+  CHECK(find_reconstruction_provider(k_reconstruction_null) != nullptr);
+  CHECK(find_reconstruction_provider(k_reconstruction_engine) == nullptr);  // the renderer's own
+  CHECK(find_reconstruction_provider("nobody") == nullptr);
+  ReconstructionProviderDesc copy = *find_reconstruction_provider(k_reconstruction_null);
+  CHECK_FALSE(register_reconstruction_provider(copy));  // "null" is taken
+  copy.name = k_reconstruction_engine;
+  CHECK_FALSE(register_reconstruction_provider(copy));  // "engine" is the renderer's
+  copy.name = "";
+  CHECK_FALSE(register_reconstruction_provider(copy));
+  copy.name = "test-copy";
+  copy.record = nullptr;
+  CHECK_FALSE(register_reconstruction_provider(copy));
+  copy.record = find_reconstruction_provider(k_reconstruction_null)->record;
+  CHECK(register_reconstruction_provider(copy));
+  CHECK(find_reconstruction_provider("test-copy") != nullptr);
+  CHECK_FALSE(register_reconstruction_provider(copy));
+}
+
+// The null provider through the point: the renderer finds it by name, says so in its state (a
+// reconstructed frame, ADR-0064), and draws the frame the inputs alone draw — the same offsets —
+// through the linear image and its encode, which is a code from the direct encode on under 2 % of
+// channels and never more (frame_pass_tests.cpp). Fails if the point hands the encode anything but
+// the provider's output, or the provider anything but this frame.
+TEST_CASE("reconstruction: the null provider draws the frame it is handed") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  std::string why;
+  Vector<CapturedFrame> frames;
+  REQUIRE_MESSAGE(cycle_frames(gpu.device, frames, why), why);
+  ScopedTunable provider("renderer.reconstruction.provider", "null");
+  Rig rig;
+  REQUIRE_MESSAGE(rig.build(gpu.device, ground_scene()), rig.error);
+  CHECK(rig.resolved.accumulation == Accumulation::Off);
+  CHECK(rig.resolved.reconstruction_inputs);
+  const Reconstruction state = rig.renderer.reconstruction();
+  CHECK(state.provider == ReconstructionProvider::Registered);
+  REQUIRE(state.registered != nullptr);
+  CHECK(std::string(state.registered) == k_reconstruction_null);
+  CHECK_FALSE(state.native());
+  FrameDesc frame = held_frame(rig);
+  u32 worst = 0;
+  for (u32 k = 0; k < k_phases; ++k) {
+    frame.history_reset = k == 0;
+    CapturedFrame shot;
+    REQUIRE_MESSAGE(rig.shoot(frame, shot), rig.error);
+    const Difference apart = difference(shot.color, frames[k].color);
+    worst = apart.worst > worst ? apart.worst : worst;
+  }
+  MESSAGE("the null provider's frames against the inputs' own: worst " << worst << " codes");
+  CHECK(worst <= 1);
 }
 
 // The vertex tier runs it: the pass reads buffers and images and no rasterizer, and the vertex

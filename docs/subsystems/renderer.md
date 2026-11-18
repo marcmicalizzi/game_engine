@@ -6749,3 +6749,84 @@ the pixels a moved instance leaves are, the frame after, within a quarter of wha
 colour was from what they settle to (a blend that kept the history would leave nine tenths); and
 the vertex tier (`RasterMode::Vertex`, which a card with mesh shaders takes when asked) accumulates
 twelve frames to the mesh path's bytes.
+
+### Leg 3: the sharper read, reactive surfaces and the fade turned with the phase
+
+Roadmap R158, 2026-11-17. Three of the leg before's "not built", each behind a tunable read at load
+and each only in a renderer that accumulates, so a frame drawn without the accumulation is the frame
+it was to the byte (the fade's change is in the cull pass and the masked readers, and with no turn
+it writes and keeps exactly what it did).
+
+- **The history is read through Catmull-Rom** (`renderer.reconstruction.history_filter`,
+  `catmull_rom` by default, `bilinear` the leg before's read). Karis's account of TAA names the
+  blur a bilinear history read leaves, "reprojection diffusion": every frame of a pan the history is
+  read between texels and a little softer, over the blend's length. Where the four bilinear taps all
+  held (the names and the match above), the history is read from the 4 × 4 round them with the
+  cubic through the inner two in each axis, and the result is held between the inner four's least
+  and greatest so a hard edge does not ring; where a tap failed, or the 4 × 4 leaves the view, the
+  validated bilinear read stands. A held view is untouched: its motion is zero, the read lands on a
+  texel and both reads are that texel. Measured by its test (a pan of a tenth of a pixel a frame,
+  32 frames, against a `mean` capture at the last camera): 1.15 codes rms with the bilinear read,
+  0.95 with Catmull-Rom.
+- **Reactive surfaces** (`renderer.reconstruction.reactive_weight`, 0.25). A pixel whose colour is
+  not its surface's alone trusts its history less: today that is a water surface
+  (`k_material_water`, read through the pair's material as the resolve reads it), whose reflection
+  and refraction move with the eye and the waves while the motion pass follows the surface. Such a
+  pixel is always clipped (`clip_moving`) and takes at least the reactive weight of the new frame.
+  It is what the vendors' reactive and transparency masks are for, and Karis's account does the same
+  for translucency with a stencil and "minimal feedback", which it says has to stay above zero or the
+  jitter shows. A scene with no water material reads nothing for it. A medium's thick regions (the
+  design's other reactive case) are not marked yet.
+- **The cross-fade turned with the phase** (`renderer.reconstruction.fade_turn`, on). The screen
+  door between two levels of a fading transition was a function of the pixel alone
+  ([the cross-fade](#the-cross-fade)), so no number of frames could blend it: a pixel in the band
+  drew one level for ever. Under the accumulation the cull pass turns each fading pair's two splits
+  by `k * 65535 / n` on the hash's ring at phase `k` of `n` (`gfx::CullParams::fade_turn`,
+  `turn_splits` in `cluster_cull.slang`; a turned interval may wrap the ring's end, which
+  `fade_keeps` reads as two), so over a cycle a pixel's threshold takes n evenly spaced places and
+  it is kept in its band's share of the frames. Both sides of a transition turn by the same amount,
+  so their pixels stay complementary and the tie rule stands; the shadow rays and the cascades read
+  the same table and turn with it. The fade table is written per pair per frame already, so it costs
+  an add and a modulo per fading pair.
+
+**Determinism.** The phase is the renderer's own count since the last reset, so all three are
+functions of the frames since a reset: a flight from its first path frame (`history_reset`) draws
+the same bytes twice, as before.
+
+## Sampling over time: a reconstruction provider
+
+Roadmap R159, stage 3 of [the design](../experiments/temporal-sampling.md#part-4-the-plan-in-stages):
+**the registration point** a reconstruction method plugs into, as a sky provider registers its
+model ([ADR-0048](../adr/0048-the-sky-is-a-providers-model-drawn-by-the-renderer.md)) and a frame
+pass its light. `systems/renderer/reconstruction.h` is the whole contract: a provider is a name
+and five functions (`create`, `destroy`, `resize`, `record`, `device_bytes`) over a state of its
+own, registered once at start-up (`register_reconstruction_provider`) and chosen by name at load
+(`renderer.reconstruction.provider`). Each frame it is handed one struct, `ReconstructionFrame`:
+the frame pass's context (the graph, the linear colour image, the views, the visibility buffer
+whose high words are the depth, the display's curve), the motion buffer and last frame's
+visibility buffer and motion per view, this frame's sub-pixel offset and phase, and whether the
+frame before is this one's history; it returns one image, which the encode reads in the colour
+image's place (`FramePassReport::color`). So a provider is a frame pass at
+`FramePassStage::Reconstruction` (`src/reconstruction_pass.h` is the adapter), declares its reads
+and writes through the graph, and records no barrier of its own.
+
+**Two are built in.** `engine` is the accumulation above (the renderer makes it from its own
+passes, so it is not a desc; naming it is `renderer.reconstruction.accumulation=on`), and `null`
+hands its input on: a frame drawn through it is the inputs' own frame through the linear image and
+its encode, which its test holds to a code. Naming any other turns the accumulation off and the
+inputs on; a name nothing registered refuses the load with a sentence. **The engine links no
+vendor's provider**: one comes from a capability its consumer builds against an SDK it supplies
+(roadmap R161, [ADR-0064](../adr/0064-every-measurement-is-native.md) decision 4), and registers
+itself the way a sky provider does. Every frame drawn through a provider is a reconstructed frame:
+`Reconstruction::provider` is `Registered`, `Reconstruction::registered` its name, and the record's
+`reconstruction` block names it and carries no cost ([the measurement rule](#sampling-over-time-the-measurement-rule)).
+
+**Not built.** `engine.protocol.RenderStats` does not carry the block yet: the protocol is another
+row's to change. A provider is handed no reactivity mask and no exposure scalar as such (the
+engine's own reads the material table and the display curve directly); a vendor's adapter will
+need both, and the depth as a float image, and those are its row's. Internal sizes below the
+output's are R160's: `output_width` and `output_height` are the frame's own until then.
+
+**Held by** `tests/accumulation_tests.cpp`: the built-in names cannot be taken and a name is
+registered once; the null provider's frames are the inputs' own within a code, and the renderer
+says it drew them through a registered provider.

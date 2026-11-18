@@ -112,6 +112,19 @@ class MotionPass {
   // count (the accumulation's `renderer.reconstruction.phases`).
   void set_phases(u32 phases) noexcept { phases_ = phases > 0 ? phases : 1; }
   u32 phases() const noexcept { return phases_; }
+  // **The cross-fade's turn for the frame being drawn** (R158 leg 3; `gfx::CullParams::fade_turn`):
+  // phase k of n turns the hash's ring of 65535 by k * 65535 / n, so a cycle's thresholds are evenly
+  // spaced; 0 unless a reader asked (`renderer.reconstruction.fade_turn` under the accumulation).
+  // Read where `frame_offset` is, before `prepare` moves the phase on.
+  void set_fade_turn(bool on) noexcept { fade_turn_ = on; }
+  // The phase the last prepared frame was drawn at (a reader after `prepare`: a frame pass).
+  u32 drawn_phase() const noexcept {
+    return phase_ > 0 ? static_cast<u32>((phase_ - 1) % phases_) : 0u;
+  }
+  u32 fade_turn() const noexcept {
+    if (!fade_turn_) return 0;
+    return static_cast<u32>((phase_ % phases_) * 65535u / phases_);
+  }
   // What the inputs keep on the device: the motion buffer, the kept visibility buffer, the second
   // pool, the blocks and the moved tables.
   u64 device_bytes() const noexcept;
@@ -150,6 +163,7 @@ class MotionPass {
   u64 serial_ = 0;
   u32 phases_ = k_sample_phases;
   bool tables_changed_ = false;
+  bool fade_turn_ = false;
   bool had_history_ = false;
   bool full_warned_ = false;
 };

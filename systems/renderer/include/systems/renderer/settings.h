@@ -355,7 +355,9 @@ struct RenderSettings {
 // sub-pixel offset and wrote its motion (`renderer.reconstruction.inputs`, R154), which costs the
 // motion pass and is otherwise the native frame. The sizes are the views' rasterized extent and
 // the target's.
-enum class ReconstructionProvider : u8 { Off, Engine };
+// `Registered`: a provider found by name through the registration point (reconstruction.h, R159),
+// whose name `Reconstruction::registered` carries.
+enum class ReconstructionProvider : u8 { Off, Engine, Registered };
 // What the engine's own accumulation does with the frames (`renderer.reconstruction.accumulation`;
 // renderer.md, "Sampling over time: the accumulation"): nothing; the blend a session would run;
 // or the plain mean of the frames since the last reset, the converged frame a test holds to a
@@ -364,6 +366,7 @@ enum class Accumulation : u8 { Off, On, Mean };
 const char* reconstruction_provider_name(ReconstructionProvider provider) noexcept;
 struct Reconstruction {
   ReconstructionProvider provider = ReconstructionProvider::Off;
+  const char* registered = nullptr;  // a `Registered` provider's name (the registry's own string)
   bool inputs = false;
   u32 internal_width = 0;
   u32 internal_height = 0;
@@ -480,6 +483,16 @@ struct ResolvedSettings {
   f32 accumulation_clip_still = 0.0f;
   f32 accumulation_clip_moving = 0.0f;
   f32 accumulation_motion_match = 0.0f;  // `renderer.reconstruction.motion_match`, pixels
+  // R158 leg 3: the history's read between texels (`renderer.reconstruction.history_filter`: 0
+  // bilinear, 1 Catmull-Rom), a reactive (water) pixel's least share of the new frame
+  // (`.reactive_weight`), and whether the cross-fade's threshold turns with the phase
+  // (`.fade_turn`, only with the accumulation on).
+  // R159: the provider `renderer.reconstruction.provider` names, other than the engine's own
+  // (reconstruction.h); empty for none. Naming one turns the inputs on and the accumulation off.
+  char reconstruction_provider[32] = {};
+  u32 accumulation_filter = 1;
+  f32 accumulation_reactive_weight = 0.25f;
+  bool accumulation_fade_turn = false;
   bool gi_shell_clip = false;   // `renderer.gi.shell_clip`: the eye's rays stop at `gi_shell_m`
   bool gi_shell_first = false;  // `renderer.gi.shell_first`: the directions are the first threads
   u32 gi_preroll = 0;           // `renderer.gi.preroll`: steps before a cold frame's own (stage 5)
