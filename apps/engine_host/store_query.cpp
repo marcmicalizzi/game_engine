@@ -89,6 +89,10 @@ JsonValue to_json(const store::SqlValue& v) {
     case store::SqlType::Integer: return JsonValue(v.integer);
     case store::SqlType::Real: {
       if (std::isfinite(v.real)) return JsonValue(v.real);
+      // A NaN never arrives: SQLite stores a NaN result as NULL (an arithmetic that makes one is
+      // NULL, and so is a real set to one), and the store's test holds `9e999 - 9e999` to it. Were
+      // one to come, it is written null, as SQLite would have had it, never as an infinity.
+      if (std::isnan(v.real)) return JsonValue::null();
       JsonValue out = JsonValue::object();
       out.set("real", JsonValue(v.real > 0 ? "inf" : "-inf"));
       return out;

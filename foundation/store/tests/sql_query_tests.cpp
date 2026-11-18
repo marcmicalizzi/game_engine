@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -494,6 +495,21 @@ TEST_CASE("sql query: values are bound, never spliced, and come back as they wen
   CHECK(types.result.cells[3].bytes == "ü");
   CHECK(types.result.cells[4].type == SqlType::Blob);
   CHECK(types.result.cells[4].bytes == std::string(reinterpret_cast<const char*>(raw), 5));
+
+  // A real is finite, an infinity, or NULL: SQLite never hands back a NaN, so `store.query` never
+  // has one to write. An infinity less itself and a division by zero are NULL.
+  Run reals = query(path, "SELECT 9e999, -9e999, 9e999 - 9e999, 0.0 / 0.0, 1.5");
+  REQUIRE_MESSAGE(reals.status == Status::Ok, reals.message);
+  REQUIRE(reals.result.cells.size() == 5);
+  CHECK(reals.result.cells[0].type == SqlType::Real);
+  CHECK(reals.result.cells[0].real > 0.0);
+  CHECK(std::isinf(reals.result.cells[0].real));
+  CHECK(reals.result.cells[1].type == SqlType::Real);
+  CHECK(std::isinf(reals.result.cells[1].real));
+  CHECK(reals.result.cells[1].real < 0.0);
+  CHECK(reals.result.cells[2].type == SqlType::Null);
+  CHECK(reals.result.cells[3].type == SqlType::Null);
+  CHECK(reals.result.cells[4].real == 1.5);
 }
 
 TEST_CASE("sql query: a blob column comes back as bytes and compares with a bound blob") {

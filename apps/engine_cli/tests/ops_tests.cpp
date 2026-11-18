@@ -634,6 +634,15 @@ TEST_CASE("ops: store.query runs one SELECT over the document's world.db and ref
   const JsonValue count = host.call("store.query", s + ",\"sql\":\"SELECT count(*) FROM events\"}");
   REQUIRE_MESSAGE(error_code(count) == 0, write_json(count));
   CHECK(at(at(count, "result"), "rows")[0][0].as_int() == 2);
+  // An infinity is written as a tagged string, which JSON's numbers cannot hold; the NaN an
+  // infinity less itself would be is NULL in SQLite, so it is null here and never an infinity.
+  const JsonValue reals =
+      host.call("store.query", s + ",\"sql\":\"SELECT 9e999, -9e999, 9e999 - 9e999\"}");
+  REQUIRE_MESSAGE(error_code(reals) == 0, write_json(reals));
+  const JsonValue& real_row = at(at(reals, "result"), "rows")[0];
+  CHECK(text(real_row[0], "real") == "inf");
+  CHECK(text(real_row[1], "real") == "-inf");
+  CHECK(real_row[2].is_null());
 #else
   CHECK(error_code(host.call("store.query", s + ",\"sql\":\"SELECT 1\"}")) == k_unavailable);
 #endif
