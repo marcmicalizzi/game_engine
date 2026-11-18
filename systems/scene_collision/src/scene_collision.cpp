@@ -2581,6 +2581,7 @@ u32 SceneCollision::update_props(bool at_once) {
       // so the physics library moves it only as a static body: it is moved where it is.
       const bool promote = !now->kinematic && now->prop.collider.shape == renderer::PropShape::box;
       if (promote || !covers(now->prop.origin)) {  // or off the held tiles: let go
+        named = named || !promote;                 // and its proxy perhaps with it
         now->kinematic = now->kinematic || promote;
         now->pending = true;
         drop_prop_body(*now);
@@ -2600,7 +2601,9 @@ u32 SceneCollision::update_props(bool at_once) {
   }
   if (ring_moved) {
     // A body while the tile it stands in is held: let go with it here, and every prop with none
-    // asked again below.
+    // asked again below; and the proxies counted again, since one only props off the held tiles
+    // name goes with them.
+    named = true;
     for (HeldProp& held : props_) {
       if (held.body && !covers(held.prop.origin)) {
         drop_prop_body(held);
@@ -2633,13 +2636,17 @@ u32 SceneCollision::update_props(bool at_once) {
     if (make_prop_body(held)) ++worked;
   }
   if (named) {
-    // **What no prop names is let go** (docs: "A prop's proxy"), but a declared one's: counted
-    // again over the held props, and one a job may still be building kept aside until it ran.
+    // **What no prop in reach names is let go, with the tiles** (docs: "A prop's proxy"), but a
+    // declared one's: counted again over the held props whose tile is held, and one a job may
+    // still be building kept aside until it ran. A prop handed but off the held tiles names
+    // nothing, so what a walk leaves behind is freed as it leaves and the table is bounded by the
+    // ring, not by the ground walked; coming back builds it again, at its promised update.
     for (u32 i = 0; i < prop_proxies_.size(); ++i)
       prop_proxies_.value_at(i)->refs = 0;
     for (const HeldProp& held : props_)
-      if (std::unique_ptr<PropProxy>* entry = prop_proxies_.find_value(held.proxy))
-        ++(*entry)->refs;
+      if (held.proxy != 0 && covers(held.prop.origin))
+        if (std::unique_ptr<PropProxy>* entry = prop_proxies_.find_value(held.proxy))
+          ++(*entry)->refs;
     prop_unused_.clear();
     for (u32 i = 0; i < prop_proxies_.size(); ++i) {
       const PropProxy& entry = *prop_proxies_.value_at(i);

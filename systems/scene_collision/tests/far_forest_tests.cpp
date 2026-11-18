@@ -957,6 +957,33 @@ TEST_CASE(
   }
 }
 
+TEST_CASE("scene_collision: a prop's proxy goes with its tile, and comes back with it") {
+  // Until 2026-11-18 a proxy was counted over every prop handed, so one built while its prop was
+  // near stayed resident after the walker left, until the game stopped handing that prop: the
+  // table grew with the ground walked. Now it is counted over the props whose tile is held.
+  renderer::SceneData scene;
+  crate_and_boulder_scene(scene);
+  Rig rig(scene);  // `prop_build_updates` 0: built at the update that wants it
+  PropBody rock = crate_at(20.0f, 9);
+  rock.mesh = 1;
+  rock.scale = 1.2f;
+  rig.hand({rock});
+  CHECK(rig.collision.stats().prop_bodies == 1);
+  CHECK(rig.collision.stats().prop_proxies == 3);  // the two declared, and the boulder at 1.2
+  const u64 builds = rig.collision.stats().prop_proxy_builds;
+  // The walker a kilometre away: the tile goes, the body with it, and the proxy no prop in reach
+  // names; the declared two stay. The prop is still handed.
+  rig.move_ring(place(Vec3{1000.0f, 0.0f, 1000.0f}));
+  CHECK(rig.collision.stats().prop_bodies == 0);
+  CHECK(rig.collision.stats().prop_proxies == 2);
+  CHECK(rig.collision.stats().prop_proxies_freed == 1);
+  // Back: built again, and the body made again.
+  rig.move_ring(place(Vec3{0.0f, 0.0f, 16.0f}));
+  CHECK(rig.collision.stats().prop_bodies == 1);
+  CHECK(rig.collision.stats().prop_proxies == 3);
+  CHECK(rig.collision.stats().prop_proxy_builds == builds + 1);
+}
+
 TEST_CASE(
     "scene_collision: a prop of a new mesh arriving mid-run costs the walker's tick no build") {
   // The tick's cost round the arrival of a boulder prop among 300 crates of which 30 move (P2's

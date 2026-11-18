@@ -908,9 +908,9 @@ class SceneCollision {
   f32 last_quantized_ = 0.0f;
   u64 last_key_ = 0;
   // **A prop's proxy, built off the tick** (`Config::prop_build_updates`): by (mesh, quantized
-  // scale), named by `refs` held props, gone with the last unless `declared`. A job builds it into
-  // `proxy`; `state` is claimed by whoever runs it first (the job or the tick at `due`), and `ran`
-  // signalled when the job returned. Defined in the source.
+  // scale), named by `refs` held props whose tile is held, gone with the last unless `declared`. A
+  // job builds it into `proxy`; `state` is claimed by whoever runs it first (the job or the tick at
+  // `due`), and `ran` signalled when the job returned. Defined in the source.
   struct PropProxy;
   PropProxy* want_prop_proxy(const HeldProp& held, bool now);
   bool finish_prop_proxy(PropProxy& entry);

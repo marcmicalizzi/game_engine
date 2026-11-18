@@ -261,10 +261,16 @@ own (`SceneCollision::PropProxy`):
   walker passes it at a drop and at the first step after one (walk.h `set_props`), a replay drops
   and steps at the same ticks, and so takes the same proxies at the same update. Its cost is the
   build on that tick, which a drop already pays for the ring's tiles.
-- **Let go when no prop names it**: at an update whose props' set changed, each proxy is counted
-  over the held props, and one no prop names (and not declared) goes, a proxy a job is still
-  building kept aside until the job returned (`Stats::prop_proxies`, `prop_proxy_builds`,
-  `prop_proxies_freed`). A body holds the backend's reference to its shape (`adopt_shape`), so a
+- **Let go when no prop in reach names it, so with the tiles**: at an update whose props' set
+  changed, whose ring moved, or at which a prop moved off the held tiles, each proxy is counted over
+  the held props **whose tile is held**, and one none of them names (and not declared) goes, a proxy
+  a job is still building kept aside until the job returned (`Stats::prop_proxies`,
+  `prop_proxy_builds`, `prop_proxies_freed`). So the table is bounded by the props round the
+  walker, not by the ground it walked: until 2026-11-18 it was counted over every prop handed, and
+  a proxy built while its prop was near stayed until the game stopped handing the prop. Coming back
+  builds it again, its body at its promised update, which is the price: a walker going to and fro
+  across a tile's edge rebuilds a new size's proxy each time the ring lets the tile go (the ring's
+  hysteresis bounds how often). A body holds the backend's reference to its shape (`adopt_shape`), so a
   proxy let go never takes a body's shape with it.
 
 The placements' proxies (`proxy_for`, a tile's pieces) keep their own cache, built on the
@@ -273,7 +279,7 @@ scales, and are not this rule's. What an imported or hand-authored asset gets: t
 mesh's grid and fit, with nothing declared beyond `engine.scene.Prop`; a scene with no mesh props
 builds nothing at the load and pays nothing on the tick.
 
-Four cases hold it (`tests/far_forest_tests.cpp`, no device). `a mesh prop's proxy is one a mesh
+Five cases hold it (`tests/far_forest_tests.cpp`, no device). `a mesh prop's proxy is one a mesh
 and rounded scale, whatever its yaw, and goes when no prop names it`: one crate at ten yaws at its
 own size and at 1.1 is one build, for 1.1; 1.103 keeps the body and builds nothing (with the
 rounding and the letting go switched off it fails: three bodies made, three builds, three proxies
@@ -284,7 +290,9 @@ a declared boulder at 1.2 gets its body at the twelfth update after its hand-ove
 without. `a drop takes every pending prop's proxy now, so it lands on a boulder`: the boulder at
 1.5 handed on a walking update has no body yet and a ray straight down meets the floor; the drop's
 update after it makes the body, and the ray meets the boulder's top within the cut's error; handed
-at the drop itself it is built there; with workers and without. `a prop of a new mesh arriving mid-run costs the walker's tick no build` (0.4 s) measures
+at the drop itself it is built there; with workers and without. `a prop's proxy goes with its tile,
+and comes back with it`: a boulder at 1.2 still handed, the ring moved a kilometre away, loses its
+body and its proxy while the declared two stay, and back it is built again. `a prop of a new mesh arriving mid-run costs the walker's tick no build` (0.4 s) measures
 it: 300 crates of which 30 move a centimetre a tick, and at tick 100 a boulder 3 m across (17,958
 triangles; the collision's own copy of it keeps 3,322) handed with them. Microseconds of a tick,
 `msvc-release`, two alternating runs, with the machine at 38 to 66 % CPU and other rows building:
