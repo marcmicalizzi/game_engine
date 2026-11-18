@@ -99,7 +99,10 @@ engine_module_tests(NAME gfx PARTS 2 CONFIG_INVARIANT
           tests/wind_tests.cpp
           # Foliage optics' closed forms against a sphere of normals (brdf_reference.h, R164); no
           # device.
-          tests/foliage_reference_tests.cpp)
+          tests/foliage_reference_tests.cpp
+          # The sky mirror's direct and diffuse light on level ground against published clear-sky
+          # models (sky_reference.h, R182); no device.
+          tests/sky_balance_tests.cpp)
 
 # Shaders used by the RHI's own tests: the first .slang through the toolchain.
 engine_shaders(NAME gfx_tests
