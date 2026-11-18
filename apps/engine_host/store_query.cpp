@@ -5,7 +5,8 @@
 // `session.events`; `doc.query` is the structured half over the document. Everything that keeps
 // the text inside its own statement is `store::run_sql_query`'s: this file turns the protocol's
 // JSON into bound values and the rows back into JSON, and finds the store, which is always the
-// session's own `world.db` — the method takes no path from a client.
+// session's own `world.db` — the method takes no path from a client. The statement is the one
+// piece of work in the host that runs with the dispatch lock let go.
 
 #include "ops_methods.h"
 
@@ -149,9 +150,16 @@ bool store_query(protocol::Context& ctx, const protocol::StoreQueryParams& param
   limits.max_bytes = params.max_bytes;
   store::SqlQueryResult result;
   std::string message;
-  const store::Status status = store::run_sql_query(
-      native, params.sql, std::span<const store::SqlValue>(values.data(), values.size()), limits,
-      result, message);
+  store::Status status = store::Status::Ok;
+  // The statement runs with the dispatch lock let go (protocol.md, "Work outside the dispatch
+  // lock"): it reads only what is local here — the file's path, the text, the bound values — on a
+  // connection of its own, so the world's ticks and every other client go on for its `max_ms`.
+  // `session` is not touched after it: a close or a reopen meanwhile leaves this call its rows.
+  protocol::without_dispatch_lock(ctx, [&] {
+    status = store::run_sql_query(native, params.sql,
+                                  std::span<const store::SqlValue>(values.data(), values.size()),
+                                  limits, result, message);
+  });
   if (status != store::Status::Ok) {
     const bool client =
         status == store::Status::InvalidArgument || status == store::Status::SqlError;

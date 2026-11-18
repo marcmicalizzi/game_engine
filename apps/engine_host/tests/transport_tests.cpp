@@ -26,6 +26,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -834,6 +835,121 @@ TEST_CASE("listen: a client's transactions and placements are its hello's, its c
   REQUIRE_MESSAGE(at(at(taken_over, "result"), "committed").as_bool(), write_json(taken_over));
   // The opener's attribution as the begin recorded it: the agent's, though the twin committed.
   check_hello(at(last_patch(), "attribution"), "t-agent");
+}
+
+// store.query's statement runs with the dispatch lock let go (protocol.md, "Work outside the
+// dispatch lock"). Under the lock, one client's query that runs to its max_ms stopped every other
+// client and the world's ticks for as long; each part below fails that way: the twin's calls wait
+// out the agent's statement, the later call of the agent's batch loses its connection's caller to
+// the twin's request, and a close, a reopen and the host's exit each wait behind the statement.
+TEST_CASE("listen: a long store.query holds up no other client, no tick, no close and no exit") {
+  test::TempDir tmp("engine_host_listen_store_query");
+  const std::string roles = tmp.file("roles.json");
+  write_file(roles, R"({"default_role":"director","roles":[{"name":"director","methods":["*"],
+    "layers":["*"],"object_types":["*"]},{"name":"builder","methods":["*"],"layers":["*"],
+    "object_types":["*"]}]})");
+  const std::string doc = tmp.file("doc");
+  std::optional<ListeningHost> host;
+  host.emplace(std::vector<std::string>{"--roles", roles, "--doc", doc, "--create", "--actor",
+                                        "cli", "--task", "t-cli"});
+  const std::string in_session = R"({"session":")" + host->session + "\"";
+  // An empty file is an empty SQLite database, and a statement that reads no table needs no more.
+  write_file(doc + "/world.db", "");
+  constexpr i64 k_query_ms = 4000;
+  const auto forever = [&](const std::string& in) {
+    return in +
+           R"(,"sql":"WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) )"
+           R"(SELECT count(*) FROM c","max_ms":)" +
+           std::to_string(k_query_ms) + "}";
+  };
+  Client agent;
+  Client twin;
+  REQUIRE(agent.connect(host->port, host->token));
+  REQUIRE(twin.connect(host->port, host->token));
+#if !defined(ENGINE_HOST_TEST_STORE)
+  // A host built without the store answers 1006 naming the switch, over the socket as on stdin.
+  const JsonValue refused = agent.call("store.query", forever(in_session));
+  CHECK(error_code(refused) == 1006);
+  CHECK(std::string(at(at(refused, "error"), "message").as_string()).find("ENGINE_WITH_STORE") !=
+        std::string::npos);
+#else
+  using Clock = std::chrono::steady_clock;
+  const auto ms_since = [](Clock::time_point t) {
+    return std::chrono::duration<f64, std::milli>(Clock::now() - t).count();
+  };
+  REQUIRE(error_code(agent.call("client.hello", R"({"name":"agent","attribution":{
+    "actor":"agent-1","role":"builder","task":"t-agent"}})")) == 0);
+
+  // 1. A batch: the statement, then an edit that names nobody, which is the agent's hello's.
+  const std::string batch =
+      "[" + request(101, "store.query", forever(in_session)) + "," +
+      request(102, "doc.apply",
+              in_session + R"(,"commands":[)" + create_placement(k_left, "left", "[0,0,0]") +
+                  R"(],"attribution":{"rationale":"after the query"}})") +
+      "]";
+  const auto sent = Clock::now();
+  REQUIRE(agent.ws.send_text(batch));
+  // Time for the agent's statement to start; the twin is then answered beside it, and the world
+  // the twin runs ticks.
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  const auto asked = Clock::now();
+  CHECK(error_code(twin.call("engine.ping", "{}")) == 0);
+  const JsonValue ran = twin.call("session.run_headless", in_session + R"(,"seconds":0.25})");
+  const f64 twin_ms = ms_since(asked);
+  REQUIRE_MESSAGE(error_code(ran) == 0, write_json(ran));
+  CHECK(at(at(ran, "result"), "tick").as_int() > 0);
+  const JsonValue answers = agent.receive_one();
+  const f64 agent_ms = ms_since(sent);
+  REQUIRE_MESSAGE(answers.is_array(), write_json(answers));
+  REQUIRE(answers.size() == 2);
+  for (u32 i = 0; i < 2; ++i) {
+    const JsonValue& answer = answers[i];
+    REQUIRE_MESSAGE(error_code(answer) == 0, write_json(answer));
+    if (at(answer, "id").as_int() == 101) {
+      CHECK(at(at(answer, "result"), "bound").as_string() == "max_ms");
+    }
+  }
+  MESSAGE("the twin's ping and 0.25 s of ticks took " << twin_ms << " ms beside the agent's "
+                                                      << agent_ms << " ms statement");
+  // Under the lock the twin waited out the rest of the statement, about 3.5 s.
+  CHECK(twin_ms < 0.5 * static_cast<f64>(k_query_ms));
+  CHECK(agent_ms >= static_cast<f64>(k_query_ms));
+  const JsonValue journal = host->stdio("doc.journal", in_session + "}");
+  const JsonValue& patches = at(at(journal, "result"), "patches");
+  REQUIRE(patches.size() > 0);
+  CHECK(at(at(patches[patches.size() - 1], "attribution"), "task").as_string() == "t-agent");
+
+  // 2. The session closed, and its document opened again, while a statement runs over its store:
+  // the statement keeps its own connection and answers with its rows.
+  REQUIRE(agent.ws.send_text(request(103, "store.query", forever(in_session))));
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  const auto closing = Clock::now();
+  const JsonValue closed = host->stdio("session.close", in_session + "}");
+  REQUIRE_MESSAGE(error_code(closed) == 0, write_json(closed));
+  CHECK(at(at(closed, "result"), "closed").as_bool());
+  const JsonValue reopened =
+      host->stdio("session.open", R"({"path":)" + json_text(doc) + R"(,"create":false})");
+  REQUIRE_MESSAGE(error_code(reopened) == 0, write_json(reopened));
+  CHECK(ms_since(closing) < 0.5 * static_cast<f64>(k_query_ms));
+  const std::string again =
+      R"({"session":")" + std::string(at(at(reopened, "result"), "session").as_string()) + "\"";
+  const JsonValue kept = agent.receive_one();
+  REQUIRE_MESSAGE(error_code(kept) == 0, write_json(kept));
+  CHECK(at(at(kept, "result"), "bound").as_string() == "max_ms");
+  const JsonValue one = agent.call("store.query", again + R"(,"sql":"SELECT 1"})");
+  REQUIRE_MESSAGE(error_code(one) == 0, write_json(one));
+  CHECK(at(at(one, "result"), "rows")[0][0].as_int() == 1);
+  if (again != in_session)
+    CHECK(error_code(agent.call("store.query", forever(in_session))) == 1000);
+
+  // 3. The host told to exit while a statement runs: it waits for the statement, which is bounded,
+  // and exits cleanly (the destructor checks the exit code).
+  REQUIRE(agent.ws.send_text(request(104, "store.query", forever(again))));
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  const auto exiting = Clock::now();
+  host.reset();
+  CHECK(ms_since(exiting) < 4.0 * static_cast<f64>(k_query_ms));
+#endif
 }
 
 // A session closed before its connection drops (protocol.md, "Several clients, one host"): the

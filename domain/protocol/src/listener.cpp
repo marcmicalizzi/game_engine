@@ -464,8 +464,12 @@ std::string Listener::message(u64 connection, std::string_view text) {
   ++clients_.touch(connection, time::wall_unix_ms()).requests;
   Context& ctx = dispatcher_->context();
   ctx.connection = connection;
+  // A handler may let the lock go for work that reads nothing of the host's (rpc.h,
+  // `without_dispatch_lock`), so other connections are served meanwhile; it takes it back first.
+  ctx.dispatch_lock = lock_;
   std::string reply = dispatcher_->dispatch_text(text);
   ctx.connection = 0;
+  ctx.dispatch_lock = nullptr;
   return reply;
 }
 

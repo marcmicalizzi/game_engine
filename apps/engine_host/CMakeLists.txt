@@ -77,6 +77,10 @@ if(TARGET engine_engine_host_tests)
   if(TARGET engine::tileset)
     target_compile_definitions(engine_engine_host_tests PRIVATE ENGINE_HOST_TEST_TILESET=1)
   endif()
+  # store.query beside other clients when the store is built, its 1006 answer when it is not.
+  if(TARGET engine::store)
+    target_compile_definitions(engine_engine_host_tests PRIVATE ENGINE_HOST_TEST_STORE=1)
+  endif()
   # transport_tests.cpp starts engine-host with --listen and drives it through foundation/net's own
   # client (engine_app above links the host's modules into it and marks it as one that can wait for
   # the GPU lock, since render.load {session} and A32's camera open a device).

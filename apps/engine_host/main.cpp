@@ -594,11 +594,20 @@ int main(int argc, char** argv) {
   // --listen (protocol::Listener; listen.h is the captures it serves; docs/subsystems/apps.md):
   // the same dispatcher over a loopback WebSocket, beside the stdio loop. Every dispatch, from
   // either side, holds `dispatch_lock`, which is what keeps the host's state single-threaded with a
-  // socket in the process.
+  // socket in the process; a handler whose work reads none of it lets it go for that work
+  // (`protocol::without_dispatch_lock`), so the context names the lock for each request.
   std::mutex dispatch_lock;
   host::HostCaptures captures(state);
   protocol::Listener listen(dispatcher, dispatch_lock, &captures);
   if (credentials.loaded()) listen.set_credentials(&credentials);
+  const auto dispatch_held = [&](std::string_view text) {
+    std::lock_guard<std::mutex> lock(dispatch_lock);
+    protocol::Context& ctx = dispatcher.context();
+    ctx.dispatch_lock = &dispatch_lock;
+    std::string reply = dispatcher.dispatch_text(text);
+    ctx.dispatch_lock = nullptr;
+    return reply;
+  };
   if (!listen_address.empty()) {
     std::string error;
     if (!listen.start(listen_port, shell_dir, doc_session, error)) {
@@ -620,11 +629,7 @@ int main(int argc, char** argv) {
     exit_code = host::run_console(dispatcher, console_options);
   } else if (!request.empty()) {
     if (!hang_method.empty() && names_method(request, hang_method)) hang_forever(hang_method);
-    std::string out;
-    {
-      std::lock_guard<std::mutex> lock(dispatch_lock);
-      out = dispatcher.dispatch_text(request);
-    }
+    const std::string out = dispatch_held(request);
     if (!out.empty()) {
       std::fwrite(out.data(), 1, out.size(), stdout);
       std::fputc('\n', stdout);
@@ -635,11 +640,7 @@ int main(int argc, char** argv) {
       if (!line.empty() && line.back() == '\r') line.pop_back();
       if (line.empty()) continue;
       if (!hang_method.empty() && names_method(line, hang_method)) hang_forever(hang_method);
-      std::string out;
-      {
-        std::lock_guard<std::mutex> lock(dispatch_lock);
-        out = dispatcher.dispatch_text(line);
-      }
+      const std::string out = dispatch_held(line);
       if (!out.empty()) {
         std::fwrite(out.data(), 1, out.size(), stdout);
         std::fputc('\n', stdout);
