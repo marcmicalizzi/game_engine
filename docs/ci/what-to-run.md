@@ -863,7 +863,12 @@ tree and only the run sees the tree. The finalize (`cmake/EngineTesting.cmake`) 
   no file prints `engine-test: labelled gpu and opened no device`. A report and not a failure: a
   part may hold only CPU cases, a script test (`tools.game_sdk`, the MCP checks) has no test main
   to make the file, and a case may skip on a weaker card before it asks. The line is in the CTest
-  log, where `Select-String 'opened no device'` finds the next candidate.
+  log, and **`tools/test-costs.ps1 -NoDevice -Log <a gate's LastTest logs>`** collects it (batch
+  68): one row a test that reported at least once, its parts folded in, with how many of its
+  passing runs reported and in which logs, and `label can come off` when every one did or `mixed`
+  when some did — so a label no longer needed shows up without anyone reading the logs. It reads
+  only what the logs say: a failed run and a test the logs never ran say nothing. Gate b67's
+  whole-suite `msvc-debug` log (2026-11-17, 166 passing tests) holds no such line.
 
 **What it gives back, replayed** (`replay.py` in T170's scratch: T89's model unchanged over gate
 b66's seconds — each test's holds with its CPU work between them, CTest's scheduler, one card
