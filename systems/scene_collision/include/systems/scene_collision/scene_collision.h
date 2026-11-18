@@ -165,7 +165,19 @@ struct Config {
   // CPU beside the backend's shapes, for `held_tile` and `held_piece`. Off, nothing is kept and
   // those report the ground alone. Changes no body.
   bool keep_shapes = false;
+  // **A prop's proxy is built off the tick** (docs: "A prop's proxy"; P45): a mesh prop whose
+  // proxy is not resident gets its body at the `prop_build_updates`-th `update_props` after the
+  // one that first wanted it, the proxy built meanwhile on the job system `create` was handed —
+  // waited for at that update if a worker is still on it, built there if none started it. A count
+  // of updates, never a clock, so a replay makes the body at the same tick whatever the workers
+  // did. 0: built at the update that wants it, on the tick (a host with no job system, the tests).
+  // A declared prop's proxy at scale 1 is built at `create` and needs no wait.
+  u32 prop_build_updates = 0;
 };
+// engine-view's walk (apps/engine_view/walk.cpp): twelve of its 240 Hz ticks, 50 ms. A constant of
+// the walk, like its tick rate, so a recorded walk and its replay make every prop's body at the
+// same tick.
+inline constexpr u32 k_walk_prop_build_updates = 12;
 Config config_from_tunables(f32 tile_size) noexcept;
 // The consumer's ring: one ring of `radius_tunable()` tiles, the world's hysteresis, the budget.
 world::RingParams ring_params_from_tunables(f32 tile_size) noexcept;
@@ -287,6 +299,17 @@ struct Stats {
   // Props `set_props` was handed under a key it had already been handed in the same call, and left
   // out (the first handed of a key is kept).
   u64 prop_duplicates = 0;
+  // **Props' proxies** (docs: "A prop's proxy"): resident now (one a mesh and quantized scale some
+  // held prop names, and every declared prop's at scale 1); built, and let go once no prop named
+  // them, over the consumer's life; and of the builds, those the tick ran itself (`inline`: no
+  // job system, or none had started it by its update) and those it waited for a worker to finish
+  // (`waits`, the waits' total).
+  u32 prop_proxies = 0;
+  u64 prop_proxy_builds = 0;
+  u64 prop_proxies_freed = 0;
+  u64 prop_proxy_inline = 0;
+  u64 prop_proxy_waits = 0;
+  i64 prop_proxy_wait_ns = 0;
 };
 
 // **What the walker and a module's casts meet** (docs: "What a moving prop costs"): every body the
@@ -792,10 +815,14 @@ class SceneCollision {
   // the next set handed waiting beside them, and the tiles' activations and deactivations at the
   // last update. `kinematic`: a box that has moved, so its body is a kinematic one (docs: "What a
   // moving prop costs"); `pending`: its body is to be made at this update if its tile is held.
+  // A mesh prop's `proxy` is its key in `prop_proxies_` and `quantized` the module's scale its body
+  // is built and placed at (`prop_scale`); both 0 for a box.
   struct HeldProp {
     PropBody prop;
     physics::BodyId body{};
     physics::ShapeId shape{};
+    u64 proxy = 0;
+    f32 quantized = 0.0f;
     bool kinematic = false;
     bool pending = true;
   };
@@ -803,9 +830,46 @@ class SceneCollision {
   Vector<HeldProp> props_next_;
   bool props_handed_ = false;
   u64 props_ring_ = ~u64{0};
-  bool prop_pose(const PropBody& p, physics::BodyTransform& out, Vec3& scale) const;
+  bool prop_pose(const HeldProp& held, physics::BodyTransform& out) const;
   bool make_prop_body(HeldProp& held);
   void drop_prop_body(HeldProp& held) noexcept;
+  // **What a mesh's props share** (docs: "A prop's proxy"), by scene mesh, found once: the mesh's
+  // fit as a turn and a scale (`decompose`), so a prop's proxy scale is its own scale times the
+  // fit's and never a function of its yaw; and the step its scale is rounded to, which moves no
+  // point of the mesh by more than a quarter of `Config::mesh_error_m` (`reach_m`: how far the
+  // fitted mesh reaches from its origin). `ok` false: a mesh with no prop body.
+  struct PropMesh {
+    bool known = false;
+    bool ok = false;
+    Quat rotation{};
+    Vec3 scale{1.0f, 1.0f, 1.0f};
+    f32 reach_m = 0.0f;
+    f32 step = 0.0f;
+  };
+  Vector<PropMesh> prop_meshes_;
+  const PropMesh& prop_mesh(u32 mesh);
+  // The module scale `scale` rounded to the mesh's step, anchored at 1 (so 1 is 1), and the key of
+  // the proxy at it; false for a mesh with no prop body or a scale of no size.
+  bool prop_scale(u32 mesh, f32 scale, f32& quantized, u64& key);
+  u32 last_scale_mesh_ = k_no_index;  // `prop_scale`'s last question and answer
+  f32 last_scale_ = 0.0f;
+  f32 last_quantized_ = 0.0f;
+  u64 last_key_ = 0;
+  // **A prop's proxy, built off the tick** (`Config::prop_build_updates`): by (mesh, quantized
+  // scale), named by `refs` held props, gone with the last unless `declared`. A job builds it into
+  // `proxy`; `state` is claimed by whoever runs it first (the job or the tick at `due`), and `ran`
+  // signalled when the job returned. Defined in the source.
+  struct PropProxy;
+  PropProxy* want_prop_proxy(const HeldProp& held, bool now);
+  bool finish_prop_proxy(PropProxy& entry);
+  void count_prop_proxies() noexcept;
+  void build_proxy(u32 mesh, Vec3 scale, PlacementScratch& scratch, Proxy& out, u32& left_out,
+                   bool& coarsened, u64& bytes) const;
+  FlatMap<u64, std::unique_ptr<PropProxy>> prop_proxies_;
+  Vector<std::unique_ptr<PropProxy>> prop_retired_;  // let go while a job may still touch them
+  Vector<u64> prop_unused_;                          // scratch: the keys no prop names
+  u64 prop_updates_ = 0;                             // `update_props` calls, the deadline's clock
+  u32 props_waiting_ = 0;                            // held props whose proxy is building
   // Scratch, reused: the tick's placements, and the refresh's order.
   PlacementScratch tick_scratch_;
   Vector<u64> order_;

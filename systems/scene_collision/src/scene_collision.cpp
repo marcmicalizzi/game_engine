@@ -262,6 +262,41 @@ struct SceneCollision::Build {
   }
 };
 
+// **A prop's proxy** (docs: "A prop's proxy"): built on the job system, or by the tick at `due`
+// when no job ran it first; after `ran` (or `state` done with no job), only the tick touches it.
+struct SceneCollision::PropProxy {
+  const SceneCollision* owner = nullptr;
+  u32 mesh = 0;
+  Vec3 scale{};
+  Proxy proxy;
+  std::unique_ptr<PlacementScratch> scratch;  // the build's, let go once it is done
+  u32 left_out = 0;
+  bool coarsened = false;
+  u64 bytes = 0;
+  i64 ns = 0;
+  u64 due = 0;  // the `update_props` (its count) whose body waits no longer
+  u32 refs = 0;
+  bool declared = false;
+  bool submitted = false;
+  bool counted = false;  // folded into the stats
+  static constexpr u32 k_queued = 0, k_running = 1, k_done = 2;
+  std::atomic<u32> state{k_queued};
+  jobs::Counter ran;
+
+  void compute() noexcept {
+    const i64 start = time::monotonic_ns();
+    owner->build_proxy(mesh, scale, *scratch, proxy, left_out, coarsened, bytes);
+    ns = time::monotonic_ns() - start;
+    state.store(k_done, std::memory_order_release);
+  }
+  static void run(void* data) noexcept {
+    auto* entry = static_cast<PropProxy*>(data);
+    u32 expected = k_queued;
+    if (entry->state.compare_exchange_strong(expected, k_running, std::memory_order_acq_rel))
+      entry->compute();
+  }
+};
+
 SceneCollision::SceneCollision() = default;
 
 SceneCollision::~SceneCollision() {
@@ -273,6 +308,11 @@ SceneCollision::~SceneCollision() {
     build->ran.wait_blocking();
   builds_.clear();
   retired_.clear();
+  for (u32 i = 0; i < prop_proxies_.size(); ++i)  // a prop's proxy a job may still build (P45)
+    if (prop_proxies_.value_at(i)->submitted) prop_proxies_.value_at(i)->ran.wait_blocking();
+  for (const std::unique_ptr<PropProxy>& entry : prop_retired_)
+    entry->ran.wait_blocking();
+  prop_retired_.clear();
   if (physics_ != nullptr) {
     for (u32 i = 0; i < tiles_.size(); ++i) {
       Tile& tile = tiles_.value_at(i);
@@ -287,6 +327,7 @@ SceneCollision::~SceneCollision() {
   tick_scratch_.children.clear();
   proxies_.clear();
   tile_proxies_.clear();
+  prop_proxies_.clear();
   entries_.clear();
 }
 
@@ -445,6 +486,21 @@ bool SceneCollision::create(physics::World& physics, const renderer::SceneData& 
       }
     }
   }
+  // **A declared prop's proxy at scale 1, built at the load** (docs: "A prop's proxy"; P45): the
+  // scene names the meshes its game may place as props, so the first placement of one at its own
+  // size, the common case, costs the tick no build and waits no update.
+  prop_meshes_.clear();
+  prop_meshes_.resize(scene.parts.size());
+  for (const renderer::SceneProp& declared : scene.props) {
+    if (declared.collider.shape != renderer::PropShape::mesh) continue;
+    HeldProp held;
+    if (!prop_scale(declared.mesh, 1.0f, held.quantized, held.proxy)) continue;
+    held.prop.mesh = declared.mesh;
+    held.prop.collider = declared.collider;
+    PropProxy* entry = want_prop_proxy(held, true);
+    if (entry != nullptr) entry->declared = true;
+  }
+  count_prop_proxies();
   ENGINE_LOG_INFO(log_collision, "scene collision", log::field("streamed", entries_.size()),
                   log::field("binned_tiles", bins_.size()),
                   log::field("ground", ground_ != nullptr), log::field("spacing_mm", spacing_mm_),
@@ -1343,6 +1399,35 @@ u32 SceneCollision::cut_proxy(const ProxySource& source, u32 mesh, Vec3 scale,
 // it. Two threads may then build one key at once; the second finds the first's and drops its own,
 // and nothing in a shape depends on the thread that built it. The scene's DAG is read only, and
 // the cut is made in the asker's scratch.
+// The cut, its supports and its backend shape, into `out`, with what the stats count: `proxy_for`'s
+// and a prop's (`PropProxy`) alike. Touches nothing shared: the scene's DAG and the copy are read
+// only, and the backend's `build_mesh` is thread-safe.
+void SceneCollision::build_proxy(u32 mesh, Vec3 scale, PlacementScratch& scratch, Proxy& out,
+                                 u32& left_out, bool& coarsened, u64& bytes) const {
+  profiling::TraceStage proxy_stage("collision proxy");  // a scene mesh's, cut and built (T172)
+  coarsened = false;
+  bytes = 0;
+  left_out = cut_proxy(*proxy_source_, mesh, scale, scratch, coarsened);
+  const Vector<Vec3>& vertices = scratch.vertices;
+  const Vector<u32>& indices = scratch.indices;
+  if (config_.keep_shapes) {
+    out.vertices = vertices;
+    out.indices = indices;
+    out.parts = scratch.parts;
+  }
+  SupportSource supports;
+  if (mesh < scene_->sources.size()) supports = support_source(scene_->sources[mesh]);
+  fill_supports(mesh < scene_->sources.size() ? &supports : nullptr, scale, scratch, out);
+  if (!indices.empty() &&
+      physics_->build_mesh(std::span<const Vec3>(vertices.data(), vertices.size()),
+                           std::span<const u32>(indices.data(), indices.size()),
+                           out.shape) == physics::Status::Ok) {
+    out.triangles = indices.size() / 3;
+    u32 triangles = 0;
+    if (!physics_->built_memory(out.shape, false, bytes, triangles)) bytes = 0;
+  }
+}
+
 const SceneCollision::Proxy* SceneCollision::proxy_for(u32 mesh, Vec3 scale,
                                                        PlacementScratch& scratch) {
   const u64 key = proxy_key(mesh, scale);
@@ -1352,29 +1437,11 @@ const SceneCollision::Proxy* SceneCollision::proxy_for(u32 mesh, Vec3 scale,
       return (*proxy)->shape ? proxy->get() : nullptr;
   }
   const i64 start = time::monotonic_ns();
-  profiling::TraceStage proxy_stage("collision proxy");  // a scene mesh's, cut and built (T172)
-  bool coarsened = false;
-  const u32 left_out = cut_proxy(*proxy_source_, mesh, scale, scratch, coarsened);
-  const Vector<Vec3>& vertices = scratch.vertices;
-  const Vector<u32>& indices = scratch.indices;
   auto proxy = std::make_unique<Proxy>();
-  if (config_.keep_shapes) {
-    proxy->vertices = vertices;
-    proxy->indices = indices;
-    proxy->parts = scratch.parts;
-  }
-  SupportSource supports;
-  if (mesh < scene_->sources.size()) supports = support_source(scene_->sources[mesh]);
-  fill_supports(mesh < scene_->sources.size() ? &supports : nullptr, scale, scratch, *proxy);
+  u32 left_out = 0;
+  bool coarsened = false;
   u64 bytes = 0;
-  if (!indices.empty() &&
-      physics_->build_mesh(std::span<const Vec3>(vertices.data(), vertices.size()),
-                           std::span<const u32>(indices.data(), indices.size()),
-                           proxy->shape) == physics::Status::Ok) {
-    proxy->triangles = indices.size() / 3;
-    u32 triangles = 0;
-    if (!physics_->built_memory(proxy->shape, false, bytes, triangles)) bytes = 0;
-  }
+  build_proxy(mesh, scale, scratch, *proxy, left_out, coarsened, bytes);
   std::lock_guard<std::mutex> lock(proxies_mutex_);
   proxy_stats_.ns += time::monotonic_ns() - start;
   if (const std::unique_ptr<Proxy>* found = proxies_.find_value(key))
@@ -2227,10 +2294,13 @@ void SceneCollision::deactivate(void* context, const world::TileEvent& event) {
 // inside, the library moves it only as a static body, and it is moved in the static tree.
 
 namespace {
-// Whether two props of one key have the same body but for its place and turn.
-bool same_shape(const PropBody& a, const PropBody& b) noexcept {
-  return a.mesh == b.mesh && a.scale == b.scale && a.collider.shape == b.collider.shape &&
-         a.collider.half_extents == b.collider.half_extents &&
+// Whether two props of one key have the same body but for its place and turn: a box by its size,
+// a mesh by its proxy (the mesh at its quantized scale), so a scale that rounds to the same step
+// keeps the body.
+bool same_shape(const PropBody& a, u64 a_proxy, const PropBody& b, u64 b_proxy) noexcept {
+  if (a.mesh != b.mesh || a.collider.shape != b.collider.shape) return false;
+  if (a.collider.shape == renderer::PropShape::mesh) return a_proxy == b_proxy;
+  return a.scale == b.scale && a.collider.half_extents == b.collider.half_extents &&
          a.collider.center == b.collider.center;
 }
 bool same_pose(const PropBody& a, const PropBody& b) noexcept {
@@ -2238,7 +2308,77 @@ bool same_pose(const PropBody& a, const PropBody& b) noexcept {
          a.rotation.x == b.rotation.x && a.rotation.y == b.rotation.y &&
          a.rotation.z == b.rotation.z && a.rotation.w == b.rotation.w;
 }
+// A half turn about x: with the x axis's mirror, a uniform negative scale (−1 = Rx(π) · diag(−1,
+// 1, 1)).
+constexpr Quat k_half_turn_x{1.0f, 0.0f, 0.0f, 0.0f};
 }  // namespace
+
+// **What a mesh's props share** (docs: "A prop's proxy"), found the first time a prop asks: its fit
+// as a turn and a scale, and the step a prop's scale is rounded to. The reach is the mesh's 16-bit
+// grid (`ClusterMeshPart::quant_origin`, `quant_scale`), a cube holding every vertex, through the
+// fit: an upper bound, so the step errs small. A prop at scale s built at q stands every point
+// |q − s| times its distance from the origin off the drawn mesh, so a step of
+// `mesh_error_m / (2 reach)`, rounded to the nearest, moves none by more than a quarter of the
+// walk's error.
+const SceneCollision::PropMesh& SceneCollision::prop_mesh(u32 mesh) {
+  static const PropMesh k_none{};
+  if (mesh >= prop_meshes_.size()) return k_none;
+  PropMesh& pm = prop_meshes_[mesh];
+  if (pm.known) return pm;
+  pm.known = true;
+  if (mesh >= scene_->parts.size() || mesh == scene_->terrain_mesh) return pm;
+  if (water_mesh(*scene_, mesh) || far_mesh(mesh)) return pm;
+  const Mat4 fit = mesh < scene_->mesh_fit.size() ? scene_->mesh_fit[mesh] : Mat4::identity();
+  Placement turned;
+  if (!decompose(fit, turned)) return pm;
+  const geometry::ClusterMeshPart& part = scene_->parts[mesh];
+  const f32 side = part.quant_scale * 65535.0f;
+  f32 reach = 0.0f;
+  for (u32 c = 0; c < 8; ++c) {
+    const Vec3 corner{part.quant_origin.x + ((c & 1u) ? side : 0.0f),
+                      part.quant_origin.y + ((c & 2u) ? side : 0.0f),
+                      part.quant_origin.z + ((c & 4u) ? side : 0.0f)};
+    reach = std::max(reach, length(transform_point(fit, corner)));
+  }
+  pm.rotation = turned.rotation;
+  pm.scale = turned.scale;
+  pm.reach_m = reach;
+  pm.step =
+      reach > 0.0f && config_.mesh_error_m > 0.0f ? config_.mesh_error_m / (2.0f * reach) : 0.0f;
+  pm.ok = true;
+  return pm;
+}
+
+bool SceneCollision::prop_scale(u32 mesh, f32 scale, f32& quantized, u64& key) {
+  // The last answer again (a game's props are mostly many of one mesh at one size): the hand-over
+  // asks once a prop a tick it hands them.
+  if (mesh == last_scale_mesh_ && std::bit_cast<u32>(scale) == std::bit_cast<u32>(last_scale_)) {
+    quantized = last_quantized_;
+    key = last_key_;
+    return key != 0;
+  }
+  last_scale_mesh_ = mesh;
+  last_scale_ = scale;
+  quantized = 0.0f;
+  key = 0;
+  last_quantized_ = 0.0f;
+  last_key_ = 0;
+  const PropMesh& pm = prop_mesh(mesh);
+  const f32 size = std::fabs(scale);
+  if (!pm.ok || !(size > 0.0f) || !(size < std::numeric_limits<f32>::infinity())) return false;
+  f32 q = size;
+  if (pm.step > 0.0f) {
+    // Anchored at 1, so a prop at its own size is the declared proxy (`create`) exactly.
+    const f32 steps = std::floor((size - 1.0f) / pm.step + 0.5f);
+    const f32 rounded = 1.0f + steps * pm.step;
+    if (rounded > 0.0f) q = rounded;
+  }
+  quantized = scale < 0.0f ? -q : q;
+  key = hash_combine(hash_combine(k_hash_seed, mesh), bits(quantized)) | (u64{1} << 63);
+  last_quantized_ = quantized;
+  last_key_ = key;
+  return true;
+}
 
 void SceneCollision::set_props(std::span<const PropBody> props) {
   props_next_.clear();
@@ -2249,6 +2389,8 @@ void SceneCollision::set_props(std::span<const PropBody> props) {
     sorted = sorted && (props_next_.empty() || props_next_.back().prop.key < p.key);
     HeldProp held;
     held.prop = p;
+    if (p.collider.shape == renderer::PropShape::mesh)
+      (void)prop_scale(p.mesh, p.scale, held.quantized, held.proxy);  // none: no body
     props_next_.push_back(held);
   }
   if (!sorted) {
@@ -2267,30 +2409,90 @@ void SceneCollision::set_props(std::span<const PropBody> props) {
   props_handed_ = true;
 }
 
-bool SceneCollision::prop_pose(const PropBody& p, physics::BodyTransform& out, Vec3& scale) const {
+bool SceneCollision::prop_pose(const HeldProp& held, physics::BodyTransform& out) const {
+  const PropBody& p = held.prop;
   if (p.collider.shape == renderer::PropShape::box) {
     // The box's centre through the prop's turn and scale, added to its place in f64.
     out.position = p.origin + DVec3{rotate(p.rotation, p.collider.center * p.scale)};
     out.rotation = p.rotation;
-    scale = Vec3{p.scale, p.scale, p.scale};
     return true;
   }
-  const u32 mesh = p.mesh;
-  if (mesh >= scene_->parts.size() || mesh == scene_->terrain_mesh) return false;
-  if (water_mesh(*scene_, mesh) || far_mesh(mesh)) return false;
-  // Where the renderer stands the instance (`renderer::instance_translation`): its fit through
-  // the turn and scale, the offset added to the origin in f64 — as a placement's piece is.
+  if (held.proxy == 0 || p.mesh >= prop_meshes_.size() || !prop_meshes_[p.mesh].ok) return false;
+  // Where the renderer stands the instance (`renderer::instance_translation`) at the quantized
+  // scale: its fit through the turn and scale, the offset added to the origin in f64 — as a
+  // placement's piece is. The turn is the prop's and the fit's, never one taken back out of a
+  // matrix the yaw went into.
   Transform3 turn;
   turn.rotation = p.rotation;
-  turn.scale = Vec3{p.scale, p.scale, p.scale};
-  const Mat4 fit = mesh < scene_->mesh_fit.size() ? scene_->mesh_fit[mesh] : Mat4::identity();
+  turn.scale = Vec3{held.quantized, held.quantized, held.quantized};
+  const Mat4 fit = p.mesh < scene_->mesh_fit.size() ? scene_->mesh_fit[p.mesh] : Mat4::identity();
   const Mat4 linear = mat4_from_transform(turn) * fit;
-  Placement placed;
-  if (!decompose(linear, placed)) return false;
   out.position = p.origin + DVec3{linear.c[3].xyz()};
-  out.rotation = placed.rotation;
-  scale = placed.scale;
+  out.rotation = p.rotation * prop_meshes_[p.mesh].rotation;
+  if (held.quantized < 0.0f) out.rotation = out.rotation * k_half_turn_x;
   return true;
+}
+
+// The proxy `held` names, found or begun: a new one is built now when its update has come (`now`,
+// or `Config::prop_build_updates` 0), else handed to the job system to be ready by its update.
+SceneCollision::PropProxy* SceneCollision::want_prop_proxy(const HeldProp& held, bool now) {
+  if (held.proxy == 0) return nullptr;
+  if (std::unique_ptr<PropProxy>* found = prop_proxies_.find_value(held.proxy)) return found->get();
+  const PropMesh& pm = prop_mesh(held.prop.mesh);
+  if (!pm.ok) return nullptr;
+  auto entry = std::make_unique<PropProxy>();
+  entry->owner = this;
+  entry->mesh = held.prop.mesh;
+  entry->scale = pm.scale * std::fabs(held.quantized);
+  if (held.quantized < 0.0f) entry->scale.x = -entry->scale.x;
+  entry->scratch = std::make_unique<PlacementScratch>();
+  entry->due = prop_updates_ + (now ? 0u : config_.prop_build_updates);
+  PropProxy* out = entry.get();
+  prop_proxies_.try_emplace(held.proxy, std::move(entry));
+  if (out->due > prop_updates_ && jobs_ != nullptr) {
+    out->submitted = true;
+    out->ran.add(1);
+    jobs_->schedule(jobs::Pool::Performance, jobs::Job{&PropProxy::run, out, &out->ran});
+  } else if (now) {
+    out->state.store(PropProxy::k_running, std::memory_order_relaxed);
+    out->compute();  // at the load (`create`): not the tick's
+    (void)finish_prop_proxy(*out);
+  } else if (out->due <= prop_updates_) {
+    (void)finish_prop_proxy(*out);
+  }
+  count_prop_proxies();
+  return out;
+}
+
+// Whether the proxy is ready for a body at this update: built, or its update come — then built
+// here if no worker started it, or waited for while one runs. Never before its update, so the
+// body's tick is the hand-over's plus the updates, whatever the workers did.
+bool SceneCollision::finish_prop_proxy(PropProxy& entry) {
+  if (entry.state.load(std::memory_order_acquire) != PropProxy::k_done) {
+    if (prop_updates_ < entry.due) return false;
+    u32 expected = PropProxy::k_queued;
+    if (entry.state.compare_exchange_strong(expected, PropProxy::k_running,
+                                            std::memory_order_acq_rel)) {
+      entry.compute();
+      ++stats_.prop_proxy_inline;
+    } else {
+      const i64 start = time::monotonic_ns();
+      if (entry.submitted) entry.ran.wait_blocking();
+      ++stats_.prop_proxy_waits;
+      stats_.prop_proxy_wait_ns += time::monotonic_ns() - start;
+    }
+  }
+  if (!entry.counted) {
+    entry.counted = true;
+    ++stats_.prop_proxy_builds;
+    stats_.proxy_ns += entry.ns;
+    entry.scratch.reset();  // the build's alone; it stored `k_done` after its last use
+  }
+  return true;
+}
+
+void SceneCollision::count_prop_proxies() noexcept {
+  stats_.prop_proxies = static_cast<u32>(prop_proxies_.size());
 }
 
 bool SceneCollision::make_prop_body(HeldProp& held) {
@@ -2299,15 +2501,15 @@ bool SceneCollision::make_prop_body(HeldProp& held) {
   body.motion = held.kinematic ? physics::MotionType::Kinematic : physics::MotionType::Static;
   body.layer = held.kinematic ? physics::Layer::Kinematic : physics::Layer::Static;
   body.friction = 0.8f;
-  Vec3 scale{};
-  if (!prop_pose(p, body.transform, scale)) return false;
+  if (!prop_pose(held, body.transform)) return false;
   if (p.collider.shape == renderer::PropShape::box) {
     if (physics_->create_box(p.collider.half_extents * p.scale, held.shape) != physics::Status::Ok)
       return false;
   } else {
-    const Proxy* proxy = proxy_for(p.mesh, scale, tick_scratch_);
-    if (proxy == nullptr) return false;
-    if (physics_->adopt_shape(proxy->shape, held.shape) != physics::Status::Ok) return false;
+    const std::unique_ptr<PropProxy>* entry = prop_proxies_.find_value(held.proxy);
+    if (entry == nullptr || !(*entry)->counted || !(*entry)->proxy.shape) return false;
+    if (physics_->adopt_shape((*entry)->proxy.shape, held.shape) != physics::Status::Ok)
+      return false;
   }
   body.shape = held.shape;
   if (physics_->create_body(body, held.body) != physics::Status::Ok) {
@@ -2330,31 +2532,36 @@ void SceneCollision::drop_prop_body(HeldProp& held) noexcept {
 }
 
 u32 SceneCollision::update_props() {
+  ++prop_updates_;
   const u64 ring = stats_.activated + stats_.deactivated;
   const bool ring_moved = ring != props_ring_;
-  if (!props_handed_ && !ring_moved) return 0;
+  if (!props_handed_ && !ring_moved && props_waiting_ == 0 && prop_retired_.empty()) return 0;
   props_ring_ = ring;
-  u32 worked = 0;  // bodies made or let go, which the broadphase is rebuilt for
-  u32 moved = 0;   // bodies put at a new place, which it is not
+  u32 worked = 0;      // bodies made or let go, which the broadphase is rebuilt for
+  u32 moved = 0;       // bodies put at a new place, which it is not
+  bool named = false;  // which proxies the held props name may have changed
   if (props_handed_) {
     // Destroyed before made, in key order: a held prop the new set does not hold, or holds with
     // another shape, loses its body here; one held with the same shape keeps it, and is moved if
     // it moved — at its first move made again as a kinematic body. A key new to the set, or one
     // with no body, stays pending.
     u32 n = 0;
+    u32 matched = 0;
     for (HeldProp& old : props_) {
       while (n < props_next_.size() && props_next_[n].prop.key < old.prop.key)
         ++n;
       HeldProp* now = n < props_next_.size() && props_next_[n].prop.key == old.prop.key
                           ? &props_next_[n]
                           : nullptr;
-      if (now == nullptr || !same_shape(now->prop, old.prop)) {
+      if (now == nullptr || !same_shape(now->prop, now->proxy, old.prop, old.proxy)) {
+        named = true;
         if (old.body) {
           drop_prop_body(old);
           ++worked;
         }
         continue;
       }
+      ++matched;
       now->kinematic = old.kinematic;
       if (!old.body) continue;
       now->body = old.body;
@@ -2372,13 +2579,12 @@ u32 SceneCollision::update_props() {
         continue;
       }
       physics::BodyTransform pose;
-      Vec3 scale{};
-      if (prop_pose(now->prop, pose, scale) &&
-          physics_->set_body_transform(now->body, pose, false)) {
+      if (prop_pose(*now, pose) && physics_->set_body_transform(now->body, pose, false)) {
         ++moved;
         ++stats_.prop_moves;
       }
     }
+    named = named || matched != props_next_.size();
     props_.swap(props_next_);
     props_next_.clear();
     props_handed_ = false;
@@ -2394,11 +2600,53 @@ u32 SceneCollision::update_props() {
       held.pending = held.pending || !held.body;
     }
   }
+  props_waiting_ = 0;
   for (HeldProp& held : props_) {  // made, in key order
     if (!held.pending) continue;
     held.pending = false;
     if (held.body || !covers(held.prop.origin)) continue;
+    if (held.prop.collider.shape == renderer::PropShape::mesh) {
+      // Its proxy: resident, building, or begun now; a body only once it is ready (above).
+      const bool resident = prop_proxies_.find_value(held.proxy) != nullptr;
+      PropProxy* entry = want_prop_proxy(held, false);
+      named = named || !resident;
+      if (entry == nullptr) continue;  // a mesh with no body
+      if (!finish_prop_proxy(*entry)) {
+        held.pending = true;
+        ++props_waiting_;
+        continue;
+      }
+    }
     if (make_prop_body(held)) ++worked;
+  }
+  if (named) {
+    // **What no prop names is let go** (docs: "A prop's proxy"), but a declared one's: counted
+    // again over the held props, and one a job may still be building kept aside until it ran.
+    for (u32 i = 0; i < prop_proxies_.size(); ++i)
+      prop_proxies_.value_at(i)->refs = 0;
+    for (const HeldProp& held : props_)
+      if (std::unique_ptr<PropProxy>* entry = prop_proxies_.find_value(held.proxy))
+        ++(*entry)->refs;
+    prop_unused_.clear();
+    for (u32 i = 0; i < prop_proxies_.size(); ++i) {
+      const PropProxy& entry = *prop_proxies_.value_at(i);
+      if (entry.refs == 0 && !entry.declared) prop_unused_.push_back(prop_proxies_.key_at(i));
+    }
+    for (const u64 key : prop_unused_) {
+      std::unique_ptr<PropProxy>* entry = prop_proxies_.find_value(key);
+      if (!(*entry)->ran.done()) prop_retired_.push_back(std::move(*entry));
+      prop_proxies_.erase(key);
+      ++stats_.prop_proxies_freed;
+    }
+    count_prop_proxies();
+  }
+  for (u32 k = 0; k < prop_retired_.size();) {
+    if (prop_retired_[k]->ran.done()) {
+      prop_retired_[k] = std::move(prop_retired_[prop_retired_.size() - 1]);
+      prop_retired_.pop_back();
+    } else {
+      ++k;
+    }
   }
   if (worked > 0) {
     stats_.prop_bodies = 0;

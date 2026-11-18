@@ -188,6 +188,48 @@ constexpr scene_gen::PlacementGeneratorDesc k_house{.name = "scene-gen-test-hous
                                                     .tile = &house_tile};
 const scene_gen::Registrar k_house_registrar{k_house};
 
+// **A house across a tile's edge** (a review of P45; scene_gen.h, `Placements`, "The shapes it
+// occupies"): the polygon x in [-10, 2] m and z in [10, 18] m, its centre on the tile west of x = 0
+// and its east end on the tile east of it. `keeps` hands it, as the contract says, from every tile
+// it reaches (the village's `footprints` does: `wanted`); `breaks` only from the tile holding its
+// centre, which the contract forbids. Each logs the tiles it was asked.
+const scene_gen::FootprintPoint k_wide_corners[] = {
+    {-10000, 10000}, {2000, 10000}, {2000, 18000}, {-10000, 18000}};
+bool wide_keeps_tile(void*, scene_gen::TileCoord at, const scene_gen::Context& context,
+                     scene_gen::Placements& out, std::string*) {
+  g_log += "wide tile " + std::to_string(at.x) + ";";
+  const i64 tile_mm = scene_gen::nearest_mm(static_cast<f64>(context.tile_size));
+  const i64 x0 = static_cast<i64>(at.x) * tile_mm, z0 = static_cast<i64>(at.z) * tile_mm;
+  if (-10000 < x0 + tile_mm && 2000 >= x0 && 10000 < z0 + tile_mm && 18000 >= z0)
+    out.shapes.add(scene_gen::Footprint::polygon(k_wide_corners));
+  return true;
+}
+bool wide_breaks_tile(void*, scene_gen::TileCoord at, const scene_gen::Context& context,
+                      scene_gen::Placements& out, std::string*) {
+  g_log += "wide tile " + std::to_string(at.x) + ";";
+  const i64 tile_mm = scene_gen::nearest_mm(static_cast<f64>(context.tile_size));
+  if (scene_gen::mask_floor_div(-4000, tile_mm) == at.x &&
+      scene_gen::mask_floor_div(14000, tile_mm) == at.z)
+    out.shapes.add(scene_gen::Footprint::polygon(k_wide_corners));
+  return true;
+}
+bool wide_expand(void*, const scene_gen::Context&, scene_gen::Placements& out, std::string*) {
+  out.shapes.add(scene_gen::Footprint::polygon(k_wide_corners));
+  return true;
+}
+constexpr scene_gen::PlacementGeneratorDesc k_wide_keeps{.name = "scene-gen-test-wide-keeps",
+                                                         .open = &house_open,
+                                                         .close = &house_close,
+                                                         .expand = &wide_expand,
+                                                         .tile = &wide_keeps_tile};
+const scene_gen::Registrar k_wide_keeps_registrar{k_wide_keeps};
+constexpr scene_gen::PlacementGeneratorDesc k_wide_breaks{.name = "scene-gen-test-wide-breaks",
+                                                          .open = &house_open,
+                                                          .close = &house_close,
+                                                          .expand = &wide_expand,
+                                                          .tile = &wide_breaks_tile};
+const scene_gen::Registrar k_wide_breaks_registrar{k_wide_breaks};
+
 std::string scene_with(const std::string& placements, const std::string& world = std::string()) {
   return R"({"format":"engine.scene.v1","name":"rows",)"
          R"("meshes":[{"name":"marker","path":"marker.glb"}],)"
@@ -314,6 +356,45 @@ TEST_CASE("renderer: an instance over a building's footprint stands in it and do
     CHECK(low.instances_in_structures == 0);
     CHECK(low.instances_floating == 0);
     CHECK(g_log.find("house tile;") == std::string::npos);
+  }
+}
+
+TEST_CASE(
+    "renderer: a lifted instance over a footprint from the next tile is held by its own tile's "
+    "answer") {
+  // A review of P45 (2026-11-18) thought it plausible that a streamed read asks only the tile
+  // holding a lifted instance's point, so a house whose footprint crosses into that tile from its
+  // neighbour would leave the instance counted floating. It does not, for a generator that keeps
+  // the contract of `scene_gen::Placements::shapes` — `tile` hands every shape that reaches the
+  // tile — as the village does: the chest at x 1.5 m, on the tile east of x = 0, stands in the
+  // house centred on the tile west of it, and only its own tile is asked. A generator that breaks
+  // the contract (hands a shape only from the tile of its centre) leaves it floating, and the
+  // reader does not ask the neighbours to make up for it (renderer.md, "Instances off the ground").
+  const test::TempDir tmp("renderer_across_tiles");
+  const std::string path = tmp.file("scene.json");
+  const auto scene = [](const char* generator) {
+    return std::string(R"({"format":"engine.scene.v1","name":"wide",)"
+                       R"("meshes":[{"name":"marker","path":"marker.glb"}],"instances":[)"
+                       R"({"mesh":0,"translation":[1.5,6.5,14],"name":"chest"}],)"
+                       R"("terrain":{"size":17,"extent":20,"dune_height":3,)"
+                       R"("provider":"scene-gen-test-plane"},"placements":[{"generator":")") +
+           generator + R"(","params":{}}],"world":{}})";
+  };
+  struct Row {
+    const char* generator;
+    u32 held;
+  };
+  for (const Row row :
+       {Row{"scene-gen-test-wide-keeps", 1}, Row{"scene-gen-test-wide-breaks", 0}}) {
+    CAPTURE(std::string(row.generator));
+    g_log.clear();
+    SceneDesc desc;
+    std::string error;
+    REQUIRE(write_text(path, scene(row.generator)));
+    REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
+    CHECK(desc.instances_in_structures == row.held);
+    CHECK(desc.instances_floating == 1 - row.held);
+    CHECK(g_log == "ground;wide tile 0;");  // the chest's own tile, and no other
   }
 }
 

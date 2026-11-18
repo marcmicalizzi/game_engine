@@ -5,6 +5,7 @@
 // never round a walker; binned as a prefix instance (W88) it stopped the walker in open ground,
 // 1.55 m from a birch's trunk and 3 m from a pine's. No device, no generator capability.
 
+#include <core/jobs/job_system.h>
 #include <core/memory/memory.h>
 #include <core/time/time.h>
 #include <domain/geometry/cluster_lod.h>
@@ -240,7 +241,8 @@ struct Rig {
   sim::ObserverSet observers;
   u64 tick = 0;
 
-  explicit Rig(const renderer::SceneData& scene) {
+  explicit Rig(const renderer::SceneData& scene, const Config& config = Config{},
+               jobs::JobSystem* jobs = nullptr) {
     physics::WorldOptions o;
     o.max_bodies = 1024;
     o.max_body_pairs = 4096;
@@ -256,7 +258,8 @@ struct Rig {
     physics::BodyId floor_body;
     REQUIRE(physics.create_body(floor, floor_body) == physics::Status::Ok);
     std::string error;
-    REQUIRE_MESSAGE(collision.create(physics, scene, nullptr, Config{}, &error), error);
+    REQUIRE_MESSAGE(collision.create(physics, scene, nullptr, config, &error, nullptr, jobs),
+                    error);
     world::RingParams ring;
     ring.tile_size = 32.0f;
     ring.ring_count = 1;
@@ -547,4 +550,299 @@ TEST_CASE("scene_collision: a moved box prop is met by the walker's and a module
   rig.hand({crate_at(20.0f), crate_at(25.0f)});
   rig.hand({});
   CHECK(rig.physics.body_count() == bodies);
+}
+
+// ---- A prop's proxy (scene_collision.md, "A prop's proxy"; a review of P45) ----
+// Until 2026-11-18 a mesh prop's proxy was cut and built on the walker's tick, keyed by the bits of
+// a scale taken back out of its turned matrix — so a new yaw was very likely a new build — and kept
+// for the consumer's life. Now it is keyed by the mesh and the module's scale rounded to a step of
+// the walk's error, built at the load for a declared prop at its own size, on the job system for
+// the rest with the body made at a promised update, and let go when no prop names it.
+
+namespace {
+
+// A boulder: a sphere of `radius` standing on y = 0 round the mesh's origin, `rings` by `segments`,
+// faces outwards (counter-clockwise seen from outside, y up), welded at the poles and the seam.
+void boulder(Vector<Vec3>& positions, Vector<u32>& indices, f32 radius, u32 rings, u32 segments) {
+  positions.push_back(Vec3{0.0f, 2.0f * radius, 0.0f});  // the top
+  for (u32 i = 1; i < rings; ++i) {
+    const f32 theta = k_pi * static_cast<f32>(i) / static_cast<f32>(rings);
+    for (u32 j = 0; j < segments; ++j) {
+      const f32 phi = 2.0f * k_pi * static_cast<f32>(j) / static_cast<f32>(segments);
+      positions.push_back(Vec3{radius * std::sin(theta) * std::cos(phi),
+                               radius + radius * std::cos(theta),
+                               radius * std::sin(theta) * std::sin(phi)});
+    }
+  }
+  positions.push_back(Vec3{0.0f, 0.0f, 0.0f});  // the bottom
+  const u32 bottom = positions.size() - 1;
+  const auto at = [&](u32 i, u32 j) -> u32 {
+    if (i == 0) return 0;
+    if (i == rings) return bottom;
+    return 1 + (i - 1) * segments + (j % segments);
+  };
+  for (u32 i = 0; i < rings; ++i) {
+    for (u32 j = 0; j < segments; ++j) {
+      // Along phi then along theta is outwards (d/dphi x d/dtheta points away from the centre).
+      if (i > 0) {
+        indices.push_back(at(i, j));
+        indices.push_back(at(i, j + 1));
+        indices.push_back(at(i + 1, j));
+      }
+      if (i + 1 < rings) {
+        indices.push_back(at(i, j + 1));
+        indices.push_back(at(i + 1, j + 1));
+        indices.push_back(at(i + 1, j));
+      }
+    }
+  }
+}
+
+// The crate as mesh 0 and a boulder 3 m across as mesh 1, both declared as props: a prop's mesh is
+// one the scene declares (the collision's own copy holds only the meshes a load placed or
+// declared).
+void crate_and_boulder_scene(renderer::SceneData& scene) {
+  Vector<geometry::ClusterLodMesh> lods;
+  std::string error;
+  for (u32 m = 0; m < 2; ++m) {
+    Vector<Vec3> positions;
+    Vector<u32> indices;
+    if (m == 0) {
+      crate(positions, indices);
+    } else {
+      boulder(positions, indices, 1.5f, 48, 96);
+    }
+    geometry::ClusterLodMesh lod;
+    REQUIRE_MESSAGE(
+        geometry::build_cluster_lod(std::span<const Vec3>(positions.data(), positions.size()),
+                                    std::span<const u32>(indices.data(), indices.size()),
+                                    geometry::ClusterLodOptions{}, lod, &error),
+        error);
+    lods.push_back(std::move(lod));
+  }
+  REQUIRE_MESSAGE(geometry::merge_cluster_meshes(
+                      std::span<const geometry::ClusterLodMesh>(lods.data(), lods.size()),
+                      scene.lod, scene.parts, &error),
+                  error);
+  scene.mesh_fit.resize(scene.parts.size(), Mat4::identity());
+  scene.terrain_mesh = ~0u;
+  scene.props.push_back(renderer::SceneProp{"crate", 0});
+  scene.props.push_back(renderer::SceneProp{"boulder", 1});
+}
+
+// **What a prop of a mesh no prop used costs the tick** when it arrives mid-run: `ticks` ticks of
+// 300 crates, 30 of them moved a centimetre a tick, timed one at a time as `prop_tick_cost` does,
+// and at tick 100 a prop of `mesh` at `scale` handed with them. The arrival's tick and the worst of
+// the ticks after it, the update its body was made at (counted from the arrival), and the engine
+// allocations of every tick outside the arrival and the build's promised update.
+struct Arrival {
+  f64 median_us = 0.0;
+  f64 arrival_us = 0.0;
+  f64 worst_after_us = 0.0;
+  u32 body_at = ~0u;
+  u64 steady_allocations = 0;
+  u64 builds = 0;
+  u64 inline_builds = 0;
+  f64 wait_ms = 0.0;
+};
+
+Arrival arrival_cost(const renderer::SceneData& scene, const Config& config, jobs::JobSystem* jobs,
+                     u32 mesh, f32 scale, u32 ticks) {
+  Rig rig(scene, config, jobs);
+  constexpr u32 n = 300;
+  constexpr u32 k = 30;
+  constexpr u32 k_arrive = 100;
+  Vector<PropBody> props;
+  Vector<Vec3> at;
+  for (u32 i = 0; i < n; ++i) {
+    at.push_back(Vec3{-30.0f + 3.0f * static_cast<f32>(i % 20), 0.0f,
+                      8.0f - 2.0f * static_cast<f32>(i / 20)});
+    PropBody p = crate_at(0.0f, i + 1);
+    p.origin = place(at.back());
+    props.push_back(p);
+  }
+  PropBody arriving = crate_at(30.0f, 1000);
+  arriving.mesh = mesh;
+  arriving.scale = scale;
+  props.reserve(n + 1);
+  rig.collision.set_props({props.data(), props.size()});
+  (void)rig.collision.update_props();
+  Vector<PropBody> handed;
+  handed.reserve(n + 1);
+  Vector<f64> us;
+  us.reserve(ticks);
+  physics::CharacterInput still{};
+  constexpr u32 k_warm = 20;
+  Arrival out;
+  const u64 builds = rig.collision.stats().prop_proxy_builds;
+  bool stepped = true;
+  for (u32 t = 0; t < k_warm + ticks; ++t) {
+    const u32 since = t - k_warm - k_arrive;  // wraps before the arrival: never a small number
+    if (t == k_warm + k_arrive) props.push_back(arriving);  // the host's list: not the tick's
+    const u64 a0 = mem::allocations_on_thread();
+    const i64 t0 = time::monotonic_ns();
+    rig.world->update(rig.observers, rig.tick++, true);
+    for (u32 i = 0; i < k; ++i)
+      props[i].origin = place(at[i] + Vec3{0.01f * static_cast<f32>(t % 100), 0.0f, 0.0f});
+    handed.clear();
+    for (const PropBody& p : props)
+      handed.push_back(p);
+    rig.collision.set_props({handed.data(), handed.size()});
+    (void)rig.collision.update_props();
+    stepped = rig.walker.step(still) == physics::Status::Ok && stepped;
+    const i64 t1 = time::monotonic_ns();
+    const u64 a1 = mem::allocations_on_thread();
+    if (t < k_warm) continue;
+    const f64 tick_us = static_cast<f64>(t1 - t0) / 1000.0;
+    us.push_back(tick_us);
+    if (since == 0) out.arrival_us = tick_us;
+    if (since < 0x80000000u && since > 0)
+      out.worst_after_us = std::max(out.worst_after_us, tick_us);
+    if (since < 0x80000000u && out.body_at == ~0u && rig.collision.stats().prop_bodies == n + 1)
+      out.body_at = since;
+    // Steady: before the arrival, and after the promised update and the one after it (the props'
+    // two lists, swapped at each hand-over, each grow once to hold the newcomer).
+    if (since >= 0x80000000u || since > config.prop_build_updates + 1)
+      out.steady_allocations += a1 - a0;
+  }
+  REQUIRE(stepped);
+  out.builds = rig.collision.stats().prop_proxy_builds - builds;
+  out.inline_builds = rig.collision.stats().prop_proxy_inline;
+  out.wait_ms = static_cast<f64>(rig.collision.stats().prop_proxy_wait_ns) / 1e6;
+  std::sort(us.begin(), us.end());
+  out.median_us = us[us.size() / 2];
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE(
+    "scene_collision: a mesh prop's proxy is one a mesh and rounded scale, whatever its yaw, and "
+    "goes when no prop names it") {
+  renderer::SceneData scene;
+  crate_scene(scene);
+  Rig rig(scene);
+  // The declared crate's proxy at its own size was built at the load.
+  CHECK(rig.collision.stats().prop_proxies == 1);
+  const u64 built = rig.collision.stats().prop_proxy_builds;
+  CHECK(built == 1);
+  // Where the walker stops at the crate at its own size (a couple of centimetres short of the face
+  // less the capsule's radius: the character's own padding).
+  rig.hand({crate_at(20.0f)});
+  const f32 at_one = rig.walk();
+  // One crate turned to ten yaws at its own size and at 1.1: one build, for 1.1, not twenty.
+  for (const f32 scale : {1.0f, 1.1f}) {
+    for (u32 k = 1; k <= 10; ++k) {
+      PropBody p = crate_at(20.0f);
+      p.rotation = quat_from_axis_angle(Vec3{0.0f, 1.0f, 0.0f}, 0.1f * static_cast<f32>(k));
+      p.scale = scale;
+      rig.hand({p});
+      CHECK(rig.collision.stats().prop_bodies == 1);
+    }
+  }
+  CHECK(rig.collision.stats().prop_proxy_builds == built + 1);
+  CHECK(rig.collision.stats().prop_proxies == 2);
+  // A scale within the step of 1.1 (the walk's 5 cm over twice the crate's reach, about 0.02) is
+  // the same proxy and keeps the body; the step itself is a new one.
+  const u64 made = rig.collision.stats().prop_bodies_created;
+  PropBody nearby = crate_at(20.0f);
+  nearby.scale = 1.103f;
+  rig.hand({nearby});
+  CHECK(rig.collision.stats().prop_bodies_created == made);
+  CHECK(rig.collision.stats().prop_proxy_builds == built + 1);
+  // The rounded scale stands within a quarter of the walk's error: the 1.103 crate's face is 5 cm
+  // farther out than the unit crate's (0.0515 m), and the walker stops that much sooner.
+  CHECK(std::fabs((at_one - rig.walk()) - 0.0515f) < 0.0125f + 0.003f);
+  // Handed none: the scale's proxy goes, the declared one stays.
+  rig.hand({});
+  CHECK(rig.collision.stats().prop_proxies == 1);
+  CHECK(rig.collision.stats().prop_proxies_freed == 1);
+  // Handed again, it is built again: one more build, and the walker is stopped as before.
+  rig.hand({nearby});
+  CHECK(rig.collision.stats().prop_proxy_builds == built + 2);
+  CHECK(rig.collision.stats().prop_bodies == 1);
+}
+
+TEST_CASE(
+    "scene_collision: a prop's proxy is built off the tick, its body made at the update promised") {
+  renderer::SceneData scene;
+  crate_and_boulder_scene(scene);
+  Config config;
+  config.prop_build_updates = 12;
+  jobs::JobSystemConfig workers;
+  workers.performance_workers = 2;
+  workers.pin_threads = false;
+  jobs::JobSystem jobs(workers);
+  const f32 radius = physics::CharacterConfig{}.radius;
+  // With workers and without: the body at the twelfth update after the hand-over either way, so a
+  // replay makes it at the same tick whatever the workers did.
+  for (jobs::JobSystem* with : {&jobs, static_cast<jobs::JobSystem*>(nullptr)}) {
+    CAPTURE(with != nullptr);
+    Rig rig(scene, config, with);
+    const u64 built = rig.collision.stats().prop_proxy_builds;  // the crate's and the boulder's
+    CHECK(built == 2);
+    PropBody rock = crate_at(20.0f, 9);
+    rock.mesh = 1;
+    rock.scale = 1.2f;  // the boulder at a size of its own: nothing was built for it at the load
+    rig.hand({rock});
+    u32 updates = 1;
+    while (rig.collision.stats().prop_bodies == 0 && updates < 40) {
+      (void)rig.collision.update_props();
+      ++updates;
+    }
+    CHECK(updates == 1 + config.prop_build_updates);
+    CHECK(rig.collision.stats().prop_proxy_builds == built + 1);
+    if (with == nullptr) CHECK(rig.collision.stats().prop_proxy_inline == 1);
+    MESSAGE("workers " << (with != nullptr) << ": built on the tick "
+                       << rig.collision.stats().prop_proxy_inline << ", waited for "
+                       << rig.collision.stats().prop_proxy_waits << " ("
+                       << static_cast<f64>(rig.collision.stats().prop_proxy_wait_ns) / 1e6
+                       << " ms)");
+    // The boulder's face, 1.8 m south of its origin at 1.2: the walker stops there, within the
+    // cut's 5 cm and the character's own couple of centimetres.
+    CHECK(std::fabs(rig.walk() - (20.0f - 1.8f - radius)) < 0.08f);
+    // Gone with its prop: the two declared stay.
+    rig.hand({});
+    CHECK(rig.collision.stats().prop_proxies == 2);
+    CHECK(rig.collision.stats().prop_proxies_freed == 1);
+  }
+}
+
+TEST_CASE(
+    "scene_collision: a prop of a new mesh arriving mid-run costs the walker's tick no build") {
+  // The tick's cost round the arrival of a boulder prop among 300 crates of which 30 move (P2's
+  // measurement; scene_collision.md, "A prop's proxy"). At its own size: built at the load. At a
+  // scale of its own: built on the job system, the body twelve updates later; with no job system,
+  // built on the tick at that update. Zero allocations on every tick but the arrival's, the one
+  // after it and the promised update's. The ticks here run back to back, not at 240 Hz, so the
+  // twelve updates give a worker far less time than a walk's 50 ms: a wait here is an upper bound.
+  jobs::JobSystemConfig workers;
+  workers.performance_workers = 2;
+  workers.pin_threads = false;
+  jobs::JobSystem jobs(workers);
+  Config config;
+  config.prop_build_updates = k_walk_prop_build_updates;
+  struct Row {
+    f32 scale;
+    bool with_jobs;
+    const char* name;
+  };
+  const Row rows[] = {{1.0f, true, "at its own size"},
+                      {1.37f, true, "at a scale of its own, on the job system"},
+                      {1.37f, false, "at a scale of its own, no job system"}};
+  renderer::SceneData scene;
+  crate_and_boulder_scene(scene);
+  for (const Row& row : rows) {
+    const Arrival a =
+        arrival_cost(scene, config, row.with_jobs ? &jobs : nullptr, 1, row.scale, 200);
+    MESSAGE("a boulder " << std::string(row.name) << ": tick median " << a.median_us
+                         << " us, the arrival's " << a.arrival_us << ", the worst after "
+                         << a.worst_after_us << "; body at update " << a.body_at << ", builds "
+                         << a.builds << " (on the tick " << a.inline_builds << ", waited "
+                         << a.wait_ms << " ms), steady allocations " << a.steady_allocations);
+    CHECK(a.steady_allocations == 0);
+    const bool built_at_load = row.scale == 1.0f;
+    CHECK(a.builds == (built_at_load ? 0u : 1u));
+    CHECK(a.body_at == (built_at_load ? 0u : config.prop_build_updates));
+  }
 }

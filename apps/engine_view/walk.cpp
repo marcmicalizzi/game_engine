@@ -574,6 +574,9 @@ bool Walker::start(const WalkParams& params, u32 tick_hz, const renderer::SceneD
   config.mesh_error_m = params.mesh_error_m;
   config.ground_error_m = params.ground_error_m;
   config.max_refreshes = params.max_refreshes;
+  // A prop's proxy off the tick (scene_collision.h, `Config::prop_build_updates`): a constant of
+  // the walk, so a replay makes each prop's body at the tick the recording did.
+  config.prop_build_updates = scene_collision::k_walk_prop_build_updates;
   // Built ahead a tile past the ring (`walk.collision.prefetch_tiles`): not in the walk's header,
   // since it changes no body and no step.
   const f32 ahead = scene_collision::prefetch_tunable();

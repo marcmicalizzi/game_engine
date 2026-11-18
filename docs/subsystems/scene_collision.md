@@ -217,16 +217,82 @@ holds it, a ray down onto the box and a sphere at its face before and after it m
 case hands one key twice and holds that the first handed is kept (`Stats::prop_duplicates`) and no
 body is left behind.
 
-**A mesh prop's proxy is built on the tick when its scale is new** (not mended; a row). A body is
-made — and its proxy looked up by `proxy_for`, keyed by the exact float bits of the scale
-`decompose` reads from the turned and fitted matrix — only when a prop is placed, its tile comes
-in, or its shape changes; a miss cuts the proxy and builds its mesh shape inline, on the walker's
-tick, and the entry is kept for the consumer's life. **A module that moves or yaws a mesh prop
-every tick does not hit it**: a pose-only change is a move and asks for no proxy. **One that scales
-a mesh prop every tick does**: each new scale is a new shape, so a body let go and made, a proxy cut
-and built on the tick, a cache entry never freed and a broadphase rebuild, every tick. A prop placed
-at a fresh yaw may miss too, once, at the make, since a turned column's length is 1 within an ulp
-rather than exactly 1. A creature that grows or breathes should be a box.
+### A prop's proxy
+
+(2026-11-18, a review of P45.) **A mesh prop's proxy is one a mesh and rounded scale, built off
+the tick, and let go when no prop names it.** Until then a body's proxy came from `proxy_for`, the
+placements' cache, keyed by the exact float bits of the scale `decompose` read back out of the
+turned and fitted matrix: a miss cut the proxy and built its mesh shape inline on the walker's tick,
+each new module scale (rocks placed at 0.8 to 1.2) was a new build, and every entry was kept for the
+consumer's life. (The review's further worry, that a fresh yaw would miss because a turned column's
+length is 1 only within an ulp, did not hold on the base: ten yaws at two scales made two proxies,
+`msvc-release`. The key is now free of the turn by construction.) Now props have a table of their
+own (`SceneCollision::PropProxy`):
+
+- **The key is what makes two proxies the same**: the scene mesh and the module's scale rounded to
+  a step, and nothing of the turn. The proxy's scale is the module's times the fit's own column
+  lengths (`decompose` of the fit alone), its turn the prop's times the fit's, so the yaw never
+  reaches the key. The step is `mesh_error_m / (2 reach)`, where the reach is how far the fitted
+  mesh can stand from its origin (its 16-bit grid's cube through the fit, an upper bound), rounded
+  to the nearest and anchored at 1, so a prop at its own size is exactly scale 1: the body is built
+  and placed at the rounded scale, which moves no point of it more than a quarter of the walk's
+  error off the drawn mesh, on top of the cut's own error. For the walk's 5 cm a metre crate's step
+  is 0.020, a 3 m boulder's 0.007; props scattered at 0.8 to 1.2 are at most 20 and 60 proxies. A
+  scale within the step keeps the body; a new step is a new shape (a body let go and made).
+- **A declared prop's proxy at its own size is built at the load** (`create`, from
+  `SceneData::props`): the scene names what its game may place, and the first placement of one at
+  scale 1 costs the tick nothing. Those stay resident for the consumer's life.
+- **Any other is built on the job system** `create` was handed, and the prop's body is made at the
+  `Config::prop_build_updates`-th `update_props` after the one that first wanted it (engine-view's
+  walk: `k_walk_prop_build_updates`, 12 ticks, 50 ms at 240 Hz) — taken ready, waited for if a
+  worker is still on it (`Stats::prop_proxy_waits`), built there if none started it
+  (`prop_proxy_inline`). **A count of updates, never a clock**, so the body is made at the same tick
+  in a recording and its replay whatever the workers did, and with no job system at the same tick
+  too (built on it). For those 12 ticks the new prop has no body: the walker can pass through a prop
+  of a mesh and size never placed before for a twentieth of a second after it appears. A host with
+  no job system and the tests' default (`prop_build_updates` 0) build it on the update that wants
+  it, as before.
+- **Let go when no prop names it**: at an update whose props' set changed, each proxy is counted
+  over the held props, and one no prop names (and not declared) goes, a proxy a job is still
+  building kept aside until the job returned (`Stats::prop_proxies`, `prop_proxy_builds`,
+  `prop_proxies_freed`). A body holds the backend's reference to its shape (`adopt_shape`), so a
+  proxy let go never takes a body's shape with it.
+
+The placements' proxies (`proxy_for`, a tile's pieces) keep their own cache, built on the
+collision's workers ahead of the ring; they are bounded by the scene's meshes and the generators'
+scales, and are not this rule's. What an imported or hand-authored asset gets: the same, by its
+mesh's grid and fit, with nothing declared beyond `engine.scene.Prop`; a scene with no mesh props
+builds nothing at the load and pays nothing on the tick.
+
+Three cases hold it (`tests/far_forest_tests.cpp`, no device). `a mesh prop's proxy is one a mesh
+and rounded scale, whatever its yaw, and goes when no prop names it`: one crate at ten yaws at its
+own size and at 1.1 is one build, for 1.1; 1.103 keeps the body and builds nothing (with the
+rounding and the letting go switched off it fails: three bodies made, three builds, three proxies
+resident after the props went and none let go); the walker stops at the rounded crate's face within
+a quarter of the error; and handed none the 1.1 proxy goes while the declared one stays (0.4 s in
+`msvc-debug`). `a prop's proxy is built off the tick, its body made at the update promised` (1.9 s):
+a declared boulder at 1.2 gets its body at the twelfth update after its hand-over, with workers and
+without. `a prop of a new mesh arriving mid-run costs the walker's tick no build` (0.4 s) measures
+it: 300 crates of which 30 move a centimetre a tick, and at tick 100 a boulder 3 m across (17,958
+triangles; the collision's own copy of it keeps 3,322) handed with them. Microseconds of a tick,
+`msvc-release`, two alternating runs, with the machine at 38 to 66 % CPU and other rows building:
+
+| the boulder | the arrival's tick, before | after | the worst tick after it, before | after | its body, before / after |
+|---|---:|---:|---:|---:|---|
+| at its own size (declared) | 342 / 382 | 87 / 86 | 32 / 32 | 30 / 40 | at once / at once |
+| at 1.37 | 641 / 614 | 41 / 74 | 66 / 35 | 329 / 309 | at once / 12 updates on |
+| at 1.37, no job system | — | 53 / 30 | — | 642 / 698 | — / 12 updates on |
+
+Before, the proxy was cut and built on the arrival's tick: 0.3 ms at the boulder's own size and
+0.6 ms at a new one, both on the tick, with the body made beside it. After, a declared prop at its
+own size costs the arrival's tick its body (the remaining 86 µs: the body made and the broadphase
+rebuilt round 301 bodies); at a new size the arrival's tick hands the build to a worker and the
+tick twelve updates on makes the body, waiting there for the 0.2 ms of the build a worker had not
+finished — the case's ticks run back to back, not at 240 Hz, so its twelve updates give the worker
+about 0.3 ms where a walk's give it 50 ms, and in a walk that wait is nothing. With no job system
+that tick builds it, as the arrival's tick did before. The ticks that do not change the set (the
+move-cost case's rows above, run again beside these) measured the same before and after within the
+machine's noise, and no tick of either case allocated in steady state.
 
 `scene_collision: a game's prop stops a walker, by its mesh or its box, while its tile is held`
 (`tests/far_forest_tests.cpp`, beside the far forest's case, whose scene is built the same way; no
