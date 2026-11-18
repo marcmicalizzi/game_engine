@@ -311,3 +311,41 @@ TEST_CASE("host: doc.begin, doc.commit and doc.rollback refused over --stdio") {
   CHECK(at(at(host.call("doc.objects", R"({"session":"s1"})"), "result"), "total") ==
         JsonValue(u32{0}));
 }
+
+// place_asset and instantiate_template over one engine-host --stdio (protocol.md, "Placing an
+// asset, instantiating a template"), refusals included.
+TEST_CASE("host: doc.place_asset and doc.instantiate_template over --stdio") {
+  test::TempDir tmp("engine_cli_place");
+  const std::string roles = tmp.file("roles.json");
+  write_file(roles, k_roles);
+  const std::string doc = tmp.file("doc");
+  REQUIRE(cli({"--doc", doc, "--create", "session.info"}).exit_code == 0);
+  write_file(doc + "/crate.glb", std::string("glTF\x02\0\0\0", 8));
+  Host host({"--roles", roles, "--actor", "boss", "--role", "director"});
+  REQUIRE(code_of(host.call("session.open", "{\"path\":" + write_json(JsonValue(doc)) + "}")) == 0);
+  const std::string place =
+      R"({"session":"s1","asset":"crate.glb","placements":[{"name":"a","translation":[1,0,2]}],"attribution":{"rationale":"e2e"}})";
+  const JsonValue placed = host.call("doc.place_asset", place);
+  REQUIRE(code_of(placed) == 0);
+  const std::string id = std::string(at(at(placed, "result"), "ids")[0].as_string());
+  CHECK(at(at(at(placed, "result"), "apply"), "committed") == JsonValue(true));
+  // Refused: QA, a missing asset, an unknown template.
+  CHECK(
+      code_of(host.call(
+          "doc.place_asset",
+          R"({"session":"s1","asset":"crate.glb","placements":[{}],"attribution":{"actor":"q","role":"qa"}})")) ==
+      1008);
+  CHECK(code_of(host.call("doc.place_asset",
+                          R"({"session":"s1","asset":"gone.glb","placements":[{}]})")) == 1003);
+  CHECK(code_of(host.call("doc.instantiate_template",
+                          R"({"session":"s1","root":"00000000000000000000000000000099"})")) ==
+        1003);
+  const JsonValue copied = host.call(
+      "doc.instantiate_template", R"({"session":"s1","root":")" + id +
+                                      R"(","offset":[10,0,0],"attribution":{"rationale":"e2e"}})");
+  REQUIRE(code_of(copied) == 0);
+  CHECK(at(at(copied, "result"), "ids").size() == 1);
+  // The placement, its copy and the copy's origin.
+  CHECK(at(at(host.call("doc.objects", R"({"session":"s1"})"), "result"), "total") ==
+        JsonValue(u32{3}));
+}

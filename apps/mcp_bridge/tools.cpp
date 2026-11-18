@@ -2352,6 +2352,63 @@ void run_transactions(Bridge& b, const JsonValue& args, ToolOutcome& out) {
   out.data = r;
 }
 
+// ---- place_asset and instantiate_template (plan 06 §6.9) ---------------------------------------
+
+bool schema_place_asset(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("doc.place_asset", s, e)) return false;
+  note(s, "session", "The session id open_session returned.");
+  note(s, "transaction",
+       "An open transaction's id (begin_transaction) to stage the placements in.");
+  if (!attribution_schema(b, s, e)) return false;
+  require(s, {"session", "asset", "placements", "attribution"});
+  return true;
+}
+
+bool schema_instantiate_template(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("doc.instantiate_template", s, e)) return false;
+  note(s, "session", "The session id open_session returned.");
+  note(s, "transaction", "An open transaction's id (begin_transaction) to stage the copy in.");
+  if (!attribution_schema(b, s, e)) return false;
+  require(s, {"session", "root", "attribution"});
+  return true;
+}
+
+void run_placed(Bridge& b, const char* method, const char* verb, const JsonValue& args,
+                ToolOutcome& out) {
+  JsonValue r;
+  if (!call_attributed(b, method, args, true, r, out)) return;
+  const JsonValue* apply = r.find("apply");
+  const JsonValue* ids = r.find("ids");
+  const usize n = ids != nullptr ? ids->size() : 0;
+  const bool staged = apply != nullptr && uint_of(*apply, "transaction") != 0;
+  const bool landed = apply != nullptr &&
+                      (bool_of(*apply, "committed") || (staged && uint_of(*apply, "applied") > 0));
+  if (!landed) {
+    std::string problems;
+    const JsonValue* d = apply != nullptr ? apply->find("diagnostics") : nullptr;
+    for (usize i = 0; d != nullptr && i < d->size() && i < 20; ++i)
+      problems += "\n  " + text_of((*d)[i], "path") + ": " + text_of((*d)[i], "message");
+    fail(out, std::string("Nothing was ") + (staged ? "staged:" : "committed:") + problems,
+         "Fix what the diagnostics name; an id that already exists wants another seed.");
+    out.data.set("result", r);
+    return;
+  }
+  out.summary =
+      std::string(verb) + " " + std::to_string(n) + " record(s)" +
+      (staged ? ", staged in transaction " + std::to_string(uint_of(*apply, "transaction"))
+              : ", committed as journal patch " + std::to_string(uint_of(*apply, "patch_index"))) +
+      ". Their ids are in ids, in the order asked.";
+  out.data = r;
+}
+
+void run_place_asset(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  run_placed(b, "doc.place_asset", "Placed", args, out);
+}
+
+void run_instantiate_template(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  run_placed(b, "doc.instantiate_template", "Copied", args, out);
+}
+
 constexpr ToolDef k_tools[] = {
     {"open_session", "Open a document",
      "Open a document directory and get the session id the document tools take. Pass create: "
@@ -2581,6 +2638,17 @@ constexpr ToolDef k_tools[] = {
      "The document's open transactions: who opened each, on which layer, how much it holds and "
      "when it lapses.",
      "doc.transactions", true, false, true, &schema_transactions, &run_transactions},
+    {"place_asset", "Place an asset",
+     "Place a mesh (.gltf, .glb or .clusters, checked to exist and read as one) any number of "
+     "times as engine.scene.MeshPlacement records in one undoable transaction, or staged into an "
+     "open one. Ids are generated from seed when omitted. Needs attribution.rationale.",
+     "doc.place_asset", false, false, false, &schema_place_asset, &run_place_asset},
+    {"instantiate_template", "Instantiate a template",
+     "Copy an object and its live descendants under fresh ids, every world position moved by "
+     "offset, with a TemplateOrigin record of which copy came from which source. The copy is "
+     "not live: editing the template later changes nothing here. Needs attribution.rationale.",
+     "doc.instantiate_template", false, false, false, &schema_instantiate_template,
+     &run_instantiate_template},
 };
 
 }  // namespace

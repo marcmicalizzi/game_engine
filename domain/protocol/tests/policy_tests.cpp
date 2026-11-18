@@ -1077,3 +1077,182 @@ TEST_CASE("transactions: roles, proposals and leases check every staging call an
   CHECK(at(ended(host, "doc.commit", l, d), "committed") == JsonValue(true));
   CHECK(host.layer_property("world", oid(1), "color") == JsonValue(4));
 }
+
+// ---- place_asset and instantiate_template (plan 06 §6.9; protocol.md, "Placing an asset,
+// instantiating a template") --------------------------------------------------------------------
+
+namespace {
+
+void write_bytes(const std::string& path, std::string_view bytes) {
+  std::ofstream f(path, std::ios::binary);
+  f << bytes;
+}
+
+JsonValue node(Id128 id, f64 x, f64 z, Id128 parent = {}) {
+  JsonValue c = obj({{"kind", JsonValue("CreateObject")},
+                     {"id", JsonValue(hex(id))},
+                     {"type", JsonValue("engine.world.Node")},
+                     {"value", obj({{"name", JsonValue("n")}, {"position", position(x, z)}})}});
+  if (!parent.is_null()) c.set("parent", JsonValue(hex(parent)));
+  return c;
+}
+
+JsonValue placement(f64 x, f64 z, const char* name) {
+  return obj({{"name", JsonValue(name)}, {"translation", position(x, z)}});
+}
+
+f64 coord(const JsonValue& point, u32 i) {
+  f64 v = 0;
+  REQUIRE(point[i].get_f64(v));
+  return v;
+}
+
+}  // namespace
+
+TEST_CASE("place_asset: a checked mesh placed as MeshPlacement records, ids from the seed") {
+  TempDir tmp("protocol_place");
+  const std::string dir = tmp.file("doc");
+  Host host;
+  host.make_world(dir);
+  write_bytes(dir + "/crate.glb", std::string("glTF\x02\0\0\0", 8));
+  write_bytes(dir + "/tree.gltf", R"({"asset":{"version":"2.0"},"meshes":[]})");
+  write_bytes(dir + "/fake.glb", "not a glb");
+  write_bytes(dir + "/notes.txt", "x");
+  const JsonValue a = who("a", "", "two crates by the gate");
+  JsonValue two = JsonValue::array();
+  two.push_back(placement(1, 2, "crate a"));
+  two.push_back(placement(3, 4, "crate b"));
+  const auto params = [&](const char* asset, JsonValue list, u64 seed = 7) {
+    return obj({{"asset", JsonValue(asset)},
+                {"placements", std::move(list)},
+                {"seed", JsonValue(seed)},
+                {"attribution", a}});
+  };
+  const i64 before = journal_length(host);
+  const JsonValue r = host.ok("doc.place_asset", params("crate.glb", two));
+  CHECK(at(r, "kind") == JsonValue("glb"));
+  CHECK(num(at(r, "bytes")) == 8);
+  CHECK(at(at(r, "apply"), "committed") == JsonValue(true));
+  REQUIRE(at(r, "ids").size() == 2);
+  CHECK(journal_length(host) == before + 1);  // one transaction
+  const JsonValue view = host.ok("doc.get", obj({{"id", at(r, "ids")[1]}}));
+  CHECK(at(view, "type") == JsonValue("engine.scene.MeshPlacement"));
+  CHECK(at(at(view, "properties"), "mesh") == JsonValue("crate.glb"));
+  CHECK(at(at(view, "properties"), "name") == JsonValue("crate b"));
+  CHECK(coord(at(at(view, "properties"), "translation"), 2) == 4.0);
+  CHECK(at(host.ok("doc.validate", obj({})), "ok") == JsonValue(true));
+
+  // The same call in another document makes the same ids; another seed, others.
+  Host other;
+  other.make_world(tmp.file("other"));
+  write_bytes(tmp.file("other") + "/crate.glb", std::string("glTF\x02\0\0\0", 8));
+  CHECK(at(other.ok("doc.place_asset", params("crate.glb", two)), "ids") == at(r, "ids"));
+  CHECK(at(other.ok("doc.place_asset", params("crate.glb", two, 8)), "ids")[0] != at(r, "ids")[0]);
+
+  // A .gltf reads as JSON naming its asset version; staged into a transaction it is not placed yet.
+  const u64 t = begin_on(host, "", a);
+  JsonValue staged_params = params("tree.gltf", one(placement(9, 9, "tree")));
+  staged_params.set("transaction", JsonValue(t));
+  const JsonValue s = host.ok("doc.place_asset", staged_params);
+  CHECK(at(s, "kind") == JsonValue("gltf"));
+  CHECK(num(at(at(s, "apply"), "staged")) == 1);
+  CHECK(host.fails("doc.get", obj({{"id", at(s, "ids")[0]}})) == codes::k_not_found);
+  ended(host, "doc.commit", t, a);
+  host.ok("doc.get", obj({{"id", at(s, "ids")[0]}}));
+
+  // Refused: a file that is not a mesh kind, one that is not there, one that does not read as its
+  // kind, and nothing to place.
+  CHECK(host.fails("doc.place_asset", params("notes.txt", two)) == codes::k_invalid_argument);
+  CHECK(host.fails("doc.place_asset", params("missing.glb", two)) == codes::k_not_found);
+  CHECK(host.fails("doc.place_asset", params("fake.glb", two)) == codes::k_invalid_argument);
+  CHECK(host.fails("doc.place_asset", params("crate.glb", JsonValue::array())) ==
+        codes::k_invalid_argument);
+  // A role that may not write is refused at the gate, as for doc.apply.
+  std::string message;
+  REQUIRE(host.policy.load_roles("roles.json", k_roles, message));
+  JsonValue e;
+  CHECK(host.fails("doc.place_asset",
+                   obj({{"asset", JsonValue("crate.glb")},
+                        {"placements", two},
+                        {"attribution", who("q", "qa")}}),
+                   &e) == codes::k_forbidden);
+  CHECK(at(at(e, "data"), "method") == JsonValue("doc.place_asset"));
+}
+
+TEST_CASE("instantiate_template: a subtree copied under fresh ids, offset, with its origin") {
+  TempDir tmp("protocol_template");
+  Host host;
+  host.make_world(tmp.file("doc"));
+  const JsonValue a = who("a", "", "a second yard");
+  // The template: a yard node with two children, one with a child of its own.
+  JsonValue yard = JsonValue::array();
+  yard.push_back(node(oid(20), 5, 5));
+  yard.push_back(node(oid(21), 6, 5, oid(20)));
+  yard.push_back(node(oid(22), 7, 5, oid(20)));
+  yard.push_back(node(oid(23), 7, 6, oid(22)));
+  host.apply(yard, a, "world");
+  const auto params = [&](Id128 root, u32 max_records = 10000) {
+    JsonValue offset = JsonValue::array();
+    offset.push_back(JsonValue(100.0));
+    offset.push_back(JsonValue(0.0));
+    offset.push_back(JsonValue(-10.0));
+    return obj({{"root", JsonValue(hex(root))},
+                {"offset", offset},
+                {"seed", JsonValue(u64{3})},
+                {"max_records", JsonValue(max_records)},
+                {"layer", JsonValue("world")},
+                {"attribution", a}});
+  };
+  const i64 before = journal_length(host);
+  const JsonValue r = host.ok("doc.instantiate_template", params(oid(20)));
+  CHECK(journal_length(host) == before + 1);
+  const JsonValue& ids = at(r, "ids");
+  REQUIRE(ids.size() == 4);
+  // Depth first, children by id: the copy's order is the template's.
+  const JsonValue root = host.ok("doc.get", obj({{"id", ids[0]}}));
+  CHECK(at(root, "parent") == JsonValue(hex(Id128{})));
+  CHECK(coord(at(at(root, "properties"), "position"), 0) == 105.0);
+  CHECK(coord(at(at(root, "properties"), "position"), 2) == -5.0);
+  const JsonValue deepest = host.ok("doc.get", obj({{"id", ids[3]}}));
+  CHECK(at(deepest, "parent") == ids[2]);
+  CHECK(coord(at(at(deepest, "properties"), "position"), 0) == 107.0);
+  // The template is untouched, and the copy validates.
+  CHECK(coord(host.property(oid(23), "position"), 0) == 7.0);
+  CHECK(at(host.ok("doc.validate", obj({})), "ok") == JsonValue(true));
+
+  // The origin: a child of the copy's root, standing where it stands.
+  const JsonValue kids =
+      host.ok("doc.objects",
+              obj({{"parent", ids[0]}, {"type", JsonValue("engine.protocol.TemplateOrigin")}}));
+  REQUIRE(at(kids, "objects").size() == 1);
+  const JsonValue& origin = at(at(kids, "objects")[0], "properties");
+  CHECK(at(origin, "source_root") == JsonValue(hex(oid(20))));
+  CHECK(at(origin, "sources").size() == 4);
+  CHECK(at(origin, "copies") == ids);
+  CHECK(coord(at(origin, "position"), 0) == 105.0);
+
+  // A copy of the copy leaves its origin behind and records its own.
+  Id128 copy;
+  REQUIRE(Id128::from_hex(ids[0].as_string(), copy));
+  const JsonValue again = host.ok("doc.instantiate_template", params(copy));
+  CHECK(at(again, "ids").size() == 4);
+  // One undo takes a copy back whole.
+  host.ok("doc.undo", obj({}));
+  CHECK(host.fails("doc.get", obj({{"id", at(again, "ids")[0]}})) == codes::k_not_found);
+
+  // Refused: an unknown template, one over max_records.
+  CHECK(host.fails("doc.instantiate_template", params(oid(99))) == codes::k_not_found);
+  JsonValue e;
+  CHECK(host.fails("doc.instantiate_template", params(oid(20), 3), &e) ==
+        codes::k_invalid_argument);
+  CHECK(std::string(at(e, "message").as_string()).find("max_records") != std::string::npos);
+  // Staged into a transaction, nothing is copied until the commit.
+  const u64 t = begin_on(host, "world", a);
+  JsonValue staged_params = params(oid(22));
+  staged_params.set("transaction", JsonValue(t));
+  staged_params.set("seed", JsonValue(u64{4}));
+  const JsonValue s = host.ok("doc.instantiate_template", staged_params);
+  CHECK(num(at(at(s, "apply"), "staged")) == 3);  // two nodes and the origin
+  CHECK(at(ended(host, "doc.commit", t, a), "committed") == JsonValue(true));
+  host.ok("doc.get", obj({{"id", at(s, "ids")[1]}}));
+}

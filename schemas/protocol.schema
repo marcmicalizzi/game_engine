@@ -2345,6 +2345,88 @@ struct TransactionsResult @version(1) {
   expired: u32 = 0
 }
 
+/// One placement `doc.place_asset` makes: an `engine.scene.MeshPlacement` record.
+struct AssetPlacement @version(1) {
+  /// The new record's id; the null id has one generated from `doc.place_asset`'s `seed` and the
+  /// placement's index, so the same call places the same ids.
+  id: id128
+  name: string
+  /// Null id: a root.
+  parent: id128
+  translation: worldpos @unit(m)
+  rotation: quat
+  /// Degrees about +y, applied after `rotation`.
+  yaw_deg: f32 = 0
+  /// Absent: 1, 1, 1.
+  scale: vec3?
+}
+
+/// Parameters of `doc.place_asset` (plan 06 §6.9): one asset placed any number of times, as one
+/// transaction (or staged into an open one).
+struct PlaceAssetParams @version(1) {
+  session: string
+  /// A glTF (.gltf), GLB (.glb) or built (.clusters) mesh, relative to the document's directory or
+  /// absolute: what the record's `mesh` names. It must exist and read as its kind.
+  asset: string
+  placements: AssetPlacement[]
+  /// Mixed into every generated id: two calls with different seeds place different ids.
+  seed: u64 = 0
+  /// The layer to write; empty is the session's edit layer.
+  layer: string
+  /// An open transaction (`doc.begin`) to stage the placements in; zero commits them at once.
+  transaction: u64 = 0
+  attribution: engine.doc.Attribution
+}
+
+/// Result of `doc.place_asset` and `doc.instantiate_template`.
+struct PlaceResult @version(1) {
+  /// The records made, in the order asked.
+  ids: id128[]
+  /// The asset's kind as read: "gltf", "glb" or "clusters"; empty for a template.
+  kind: string
+  /// Its size in bytes.
+  bytes: u64 = 0
+  /// The transaction that made them (or staged them).
+  apply: ApplyResult
+}
+
+/// Parameters of `doc.instantiate_template` (plan 03 §3.2's instantiate-and-record-origin): a copy
+/// of an object and every live descendant, under fresh ids, placed by an offset, with a record of
+/// where it came from.
+struct InstantiateTemplateParams @version(1) {
+  session: string
+  /// The template's root: any live object of the document.
+  root: id128
+  /// Where the copy's root goes: the null id for a root.
+  parent: id128
+  /// The copy's root id; the null id has one generated from `seed` and the template.
+  id: id128
+  seed: u64 = 0
+  /// Added to every `worldpos` property of every copied record.
+  offset: dvec3
+  /// Most records a copy may make; more is refused (1004), naming the count.
+  max_records: u32 = 10000
+  /// Record where the copy came from in a `TemplateOrigin` child of its root.
+  record_origin: bool = true
+  layer: string
+  transaction: u64 = 0
+  attribution: engine.doc.Attribution
+}
+
+/// What `doc.instantiate_template` records under a copy's root: which template it came from and
+/// which copied record is which source record, so that a later change to the template can be found
+/// and carried over by a tool that reads it (the copy is not live: plan 03 §3.2).
+struct TemplateOrigin @version(1) @kind(record) {
+  /// The template's root.
+  source_root: id128
+  /// Where the copy's root stands, when its root has a `position`: so the origin stands in the
+  /// same tile, and a lease or a role there covers it.
+  position: worldpos? @unit(m)
+  /// Each copied record's source, in the order they were copied, and its copy.
+  sources: id128[]
+  copies: id128[]
+}
+
 // ProposalState and ProposalInfo are declared before LayerInfo, which reports them.
 
 /// `proposals.json` in a document directory.

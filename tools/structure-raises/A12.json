@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "A12",
+  "reason": "A12: place_asset and instantiate_template get their protocol section and the two MCP tools their row",
+  "date": "2026-11-17",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 451,
+    "page:docs/subsystems/protocol.md": 5146
+  }
+}

@@ -433,7 +433,9 @@ TEST_CASE("mcp: tools/list gives every tool a JSON Schema generated from the eng
                           "begin_transaction",
                           "commit",
                           "rollback",
-                          "transactions"};
+                          "transactions",
+                          "place_asset",
+                          "instantiate_template"};
   // Every tool offered is named here, so the count in docs/subsystems/apps.md cannot drift again
   // (it said 45 while there were 46: materialize was offered and never listed).
   CHECK(tools.size() == std::size(wanted));
