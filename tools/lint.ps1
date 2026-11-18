@@ -32,6 +32,13 @@
 
   One rule reads the browser shell rather than C++ (`shell-html-sink`): every .js and .html file of
   apps/engine_shell/ puts other clients' text on the page as text and names no HTML sink.
+
+  One rule reads committed scripts and launch configurations (`person-flag`): a PowerShell script or
+  module, a batch file, a shell script, a CI workflow, a CMake file, or a launch.json or tasks.json
+  that starts engine-editor passes it no --person or --person-role, since a review item for a person
+  is closed by a person (AGENTS.md). Its marker, on the line, in a comment of the file's own kind:
+
+      # engine-lint: allow-person-flag <reason>
 #>
 [CmdletBinding()]
 param(
@@ -438,6 +445,77 @@ if (Test-Path -LiteralPath $shellDir) {
         $violations.Add(("{0}:{1}: [shell-html-sink] {2}`n    {3}" -f $rel, ($i + 1), $shellSinkMessage, $lines[$i].Trim()))
       }
     }
+  }
+}
+
+# `person-flag` (AGENTS.md, the agents' rule beside the view-policy one; engine_shell.md, "Who the
+# person at the editor is"; roadmap A52). engine-editor started with `--person` gives its own web
+# view a seat, the one connection that closes a review item raised for a person, and the owner
+# decided on 2026-11-18 that a close asks for no system sign-in. So against a program that drives
+# the desktop, what protects a person's decision is the rule that an agent never starts the editor
+# with a seat on a document outside a test's scratch directory and never operates its queue, and
+# the record of how each item was closed. What a lint can hold is what is committed and an agent
+# may run: a script, a batch file, a CI workflow, a CMake test definition, a launch configuration.
+# A file of that set that starts engine-editor (names it outside a comment) passes `--person` or
+# `--person-role` on no line outside a comment — the file and not the line, because a script builds
+# its argument list a line or more away from the program it starts. A test's C++ that starts the
+# editor on a document under its own scratch root is not in the set: the editor itself refuses
+# `--person` with its test page anywhere else (A53). Comments of the file's own kind are not read
+# (`<# #>` and `#`, CMake's `#[[ ]]`, a batch file's `rem` and `::`, a launch file's `//` line), so
+# a `#` inside a string hides the rest of its line: a missed report, never a false one. The lint's
+# own two files name the flag to define and test the rule and start nothing. The marker opts one
+# line out and says why; there is no use of it, and the tests hold that too.
+$personOwn = @('tools/lint.ps1', 'tools/lint.Tests.ps1')
+$personEditor = 'engine[-_]editor'
+$personFlag = '(?<![\w-])--person(-role)?(?![\w-])'
+$personMarker = 'engine-lint:\s*allow-person-flag\b(.*)$'
+$personScripts = @('.ps1', '.psm1', '.cmd', '.bat', '.sh', '.yml', '.yaml', '.cmake')
+$personLaunch = @('launch.json', 'tasks.json')
+$personMessage = 'an agent never starts engine-editor with --person on a document outside a test''s scratch directory, and a committed script or launch configuration is one an agent may run: a review item for a person is closed by a person, at an editor they started (AGENTS.md; docs/subsystems/engine_shell.md "Who the person at the editor is")'
+$personBlank = { param($m) $m.Value -replace '[^\n]', '' }
+$personFiles = New-Object System.Collections.Generic.List[System.IO.FileInfo]
+$isPersonFile = { param($f) $f.Extension -in $personScripts -or $f.Name -eq 'CMakeLists.txt' -or $f.Name -in $personLaunch }
+foreach ($r in @('tools', '.github', 'templates', 'cmake') + $engineRoots) {
+  $d = Join-Path $Root $r
+  if (Test-Path -LiteralPath $d) {
+    Get-ChildItem -LiteralPath $d -Recurse -File | Where-Object { & $isPersonFile $_ } | ForEach-Object { $personFiles.Add($_) }
+  }
+}
+# The root's own scripts and CMakeLists.txt, and the launch configurations of the editors and
+# harnesses that read one from the root (never the harness's worktrees under .claude/).
+Get-ChildItem -LiteralPath $Root -File | Where-Object { & $isPersonFile $_ } | ForEach-Object { $personFiles.Add($_) }
+foreach ($d in @('.claude', '.vscode')) {
+  $p = Join-Path $Root $d
+  if (Test-Path -LiteralPath $p) {
+    Get-ChildItem -LiteralPath $p -File | Where-Object { $_.Name -in $personLaunch } | ForEach-Object { $personFiles.Add($_) }
+  }
+}
+foreach ($file in $personFiles) {
+  $rel = ([IO.Path]::GetRelativePath($Root, $file.FullName)) -replace '\\', '/'
+  if ($rel -match '(^|/)(third_party|build|_deps|node_modules)/' -or $rel -in $personOwn) { continue }
+  $scanned++
+  $raw = Get-Content -LiteralPath $file.FullName -Raw
+  if ([string]::IsNullOrEmpty($raw)) { continue }
+  $raw = $raw -replace "`r`n", "`n"
+  $lines = $raw -split "`n"
+  $code = $raw
+  if ($file.Extension -in @('.ps1', '.psm1')) { $code = [regex]::Replace($code, '(?s)<#.*?#>', $personBlank) }
+  if ($file.Name -eq 'CMakeLists.txt' -or $file.Extension -eq '.cmake') { $code = [regex]::Replace($code, '(?s)#\[(=*)\[.*?\]\1\]', $personBlank) }
+  $codeLines = @(foreach ($line in ($code -split "`n")) {
+    if ($file.Extension -in @('.cmd', '.bat')) { if ($line -match '^\s*@?(rem\b|::)') { '' } else { $line } }
+    elseif ($file.Extension -eq '.json') { if ($line -match '^\s*//') { '' } else { $line } }
+    else { $line -replace '#.*$', '' }
+  })
+  if (-not (($codeLines -join "`n") -match $personEditor)) { continue }
+  for ($i = 0; $i -lt $codeLines.Count; $i++) {
+    if ($codeLines[$i] -notmatch $personFlag) { continue }
+    if ($lines[$i] -match $personMarker) {
+      if ($Matches[1].Trim() -eq '') {
+        $violations.Add(("{0}:{1}: [person-flag] an allow-person-flag marker says why: engine-lint: allow-person-flag <reason>`n    {2}" -f $rel, ($i + 1), $lines[$i].Trim()))
+      }
+      continue
+    }
+    $violations.Add(("{0}:{1}: [person-flag] {2}`n    {3}" -f $rel, ($i + 1), $personMessage, $lines[$i].Trim()))
   }
 }
 
