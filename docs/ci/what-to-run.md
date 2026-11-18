@@ -85,35 +85,23 @@ help with: roadmap T76.
 ### What a build writes
 
 Drive wear is a cost the owner watches (2026-11-18), so the pool is also judged by the bytes a build
-writes. Measured by T185 on 2026-11-18 (`msvc-debug` at 5d0634bb, `CMAKE_BUILD_PARALLEL_LEVEL=8`,
-about seventeen agents building beside it, so the times are upper bounds; the bytes are the build's
-own). Three measures, because none of them alone is what reaches the drive:
+writes ([T185's measurements](../experiments/build-writes-2026-11-18.md), 2026-11-18, `msvc-debug`):
 
-- **counted**: the build's process tree inside a job object of its own, whose I/O accounting keeps
-  the counts of processes that have exited (a compiler, ccache): every write made through the file
-  API — objects, ccache's stores, ninja's logs. It misses the linker's outputs, which it writes
-  through mapped files.
-- **files**: the bytes of the build tree's files written since the start. A debug link is
-  incremental (`/INCREMENTAL`, the `.ilk` beside each executable) and patches its outputs in place,
-  so this overstates a relink about twenty times.
-- **pages**: for the linker's outputs, the 4 KiB pages whose bytes changed (a floor: a page written
-  back unchanged is not seen).
-
-| Build | Time | Written |
-|---|---|---|
-| a one-line code change to `systems/renderer/src/overlay.cpp` in a warm slot: one compile, the renderer's `.lib`, 19 links | 41 s | 0.12 GB counted + 0.24 GB of pages changed in the outputs (the `.lib`'s 136 MB whole, 94 MB of 2.6 GB of `.pdb`, 10 MB of `.ilk`, 0.3 MB of `.exe`), so about 0.4 GB; files 5.5 GB |
-| a slot catching up two hours of `main` (1,164 steps, mostly ccache hits) | 1,044 s | 13.3 GB of files rewritten (7.1 GB counted) |
-
-A warm `msvc-debug` tree is 17.5 GB in 21,000 files: `.pdb` 5.8 GB, `.ilk` 4.1 GB, objects 3.4 GB,
-executables 1.8 GB, libraries 1.4 GB. A static library is archived again whole when one of its
-objects changes, so a one-file change costs at least its module's `.lib`: the largest single write of
-an incremental build.
+- **A fresh worktree's first build writes the whole tree, about 18.5 GB** (17.5 GB in 21,000 files:
+  `.pdb` 5.8, `.ilk` 4.1, objects 3.4, executables 1.8, libraries 1.4; plus 0.9 GB of dependency
+  sources), **where a warm slot writes about 0.4 GB for a one-line change**: one object, its module's
+  `.lib` archived again whole (the renderer's 136 MB, the largest single write), and incremental
+  relinks that change a few percent of their outputs' pages. That difference is what the pool saves.
+- **ccache's `hard_link` stays off**: it would save the objects' 3.4 GB of a cold build and nothing
+  of an incremental one, but a linked object is stored uncompressed, and these `/Z7` objects compress
+  5.1 to 1, so the 30 GB cache would hold about two hours of use instead of a day; the page has the
+  rest.
 
 To watch the machine as a whole over a window, `tools/disk-writes.ps1` (read-only, no elevation)
 prints the bytes written per physical disk and per volume, and the processes that asked to write the
 most, from the performance counters; `-Out` keeps the same as JSON. A process that lives less than
 one sample (a compiler) and a mapped file's writes do not show in its process list, which is why the
-figures above were taken with a job object instead. It is not run by the gate.
+per-build figures were taken with a job object instead. It is not run by the gate.
 
 ## What "affected" means
 
