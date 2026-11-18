@@ -115,7 +115,9 @@ class Server {
     // Guarded by the server's `mutex_`: the handler accepted it (or is accepting it), so it counts
     // against `k_max_connections`; or it was shut down to make room for a newer pending one.
     bool established = false;
-    bool evicted = false;
+    // Written under `mutex_`; read by the connection's own thread without it, between the slices
+    // of its head read (http.h, `read_http_request`'s `stop`), so its thread ends when it is shut.
+    std::atomic<bool> evicted{false};
     std::thread thread;
     // The outbox (post), guarded by `out_mutex`. `ws` is the connection's WebSocket while its
     // message loop runs, and null before and after, which is what makes a post `Gone`.

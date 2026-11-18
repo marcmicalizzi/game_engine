@@ -154,12 +154,12 @@ void Server::listen_loop() {
       u32 pending = 0;
       Connection* oldest = nullptr;
       for (const auto& p : connections_) {
-        if (p->done.load() || p->established || p->evicted) continue;
+        if (p->done.load() || p->established || p->evicted.load()) continue;
         ++pending;
         if (oldest == nullptr) oldest = p.get();  // connections_ is in the order they came
       }
       if (pending >= k_max_pending && oldest != nullptr) {
-        oldest->evicted = true;
+        oldest->evicted.store(true);
         shutdown_socket(oldest->handle);
       }
       c.id = next_id_++;
@@ -173,7 +173,8 @@ void Server::listen_loop() {
 void Server::serve(Connection& connection, Socket socket) {
   HttpRequest request;
   std::string leftover;
-  const HttpRead read = read_http_request(socket, k_head_timeout_ms, request, leftover);
+  const HttpRead read =
+      read_http_request(socket, k_head_timeout_ms, request, leftover, &connection.evicted);
   WebSocket ws;
   bool upgraded = false;
   if (read == HttpRead::Ok) {

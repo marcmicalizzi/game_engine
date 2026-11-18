@@ -9,6 +9,7 @@
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 
+#include <atomic>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -46,7 +47,12 @@ inline constexpr usize k_max_http_head = 16 * 1024;
 // arrives (negative: forever), so a client trickling bytes is cut at the same time as a silent one.
 // Bytes that arrived after the head (a WebSocket client may send its first frame at once) are left
 // in `leftover`.
-HttpRead read_http_request(Socket& socket, i32 timeout_ms, HttpRequest& out, std::string& leftover);
+// `stop`, when given, is read every `k_stop_slice_ms` while the head is awaited, and a read that
+// finds it set answers `Closed`: how a server ends the thread of a connection it shut down to make
+// room, which a wait already under way on that socket does not always see on Windows.
+inline constexpr i32 k_stop_slice_ms = 50;
+HttpRead read_http_request(Socket& socket, i32 timeout_ms, HttpRequest& out, std::string& leftover,
+                           const std::atomic<bool>* stop = nullptr);
 
 struct HttpResponse {
   u32 status = 200;
