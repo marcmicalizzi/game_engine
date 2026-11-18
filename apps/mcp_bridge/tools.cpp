@@ -1376,15 +1376,16 @@ void run_compare(Bridge& b, const JsonValue& args, ToolOutcome& out) {
   JsonValue params = without(args, {"heatmap", "name"});
   params.set("a", JsonValue(path_of_uri(text_of(args, "a"))));
   params.set("b", JsonValue(path_of_uri(text_of(args, "b"))));
-  if (bool_of(args, "heatmap", true)) {
-    params.set("flip_out", JsonValue(dir + "/" + name + ".flip.png"));
-  }
+  const std::string flip_path = dir + "/" + name + ".flip.png";
+  if (bool_of(args, "heatmap", true)) params.set("flip_out", JsonValue(flip_path));
   JsonValue r;
   if (!b.call("render.compare", params, r, out)) return;
   const std::string result_path = dir + "/" + name + ".json";
   if (!write_json_file(result_path, r, out)) return;
   JsonValue files = JsonValue::object();
-  if (!text_of(r, "flip_image").empty()) files.set("flip", JsonValue(text_of(r, "flip_image")));
+  // The host answers the heat map in its roots' portable form (workspace://...); the agent is given
+  // the file the bridge asked for, as a file:// URI like every other file a tool returns.
+  if (!text_of(r, "flip_image").empty()) files.set("flip", JsonValue(file_uri(flip_path)));
   files.set("result", JsonValue(file_uri(result_path)));
   out.data = r;
   out.data.set("name", JsonValue(name));

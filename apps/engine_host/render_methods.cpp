@@ -935,11 +935,6 @@ bool render_load_followed(protocol::Context& ctx, const protocol::RenderLoadPara
 
 bool render_capture(protocol::Context& ctx, const protocol::RenderCaptureParams& params,
                     protocol::RenderCaptureResult& out, protocol::RpcError& error) {
-  // A kept capture with no directory touches no disk; every other one writes under the roots.
-  const bool to_disk = !(params.keep && params.out_dir.empty());
-  io::Admitted out_at;
-  if (to_disk && !admit_output_dir(ctx, {}, params.out_dir, params.name, out_at, error))
-    return false;
   RenderHost* host = host_of(ctx);
   RenderHost::Scene* scene = host != nullptr ? host->find(params.scene) : nullptr;
   if (scene == nullptr) {
@@ -992,6 +987,13 @@ bool render_capture(protocol::Context& ctx, const protocol::RenderCaptureParams&
   renderer::RenderRequest request;
   renderer::RenderSettings settings;
   if (!call_request(*scene, params.settings, params.clock, request, settings, error)) return false;
+  // The request is read whole before its directory is admitted, so a malformed one is answered as
+  // malformed (1004) wherever it would write; still before anything is drawn or written. A kept
+  // capture with no directory touches no disk; every other one writes under the roots.
+  const bool to_disk = !(params.keep && params.out_dir.empty());
+  io::Admitted out_at;
+  if (to_disk && !admit_output_dir(ctx, {}, params.out_dir, params.name, out_at, error))
+    return false;
   const renderer::Camera camera = camera_of(*scene, params.camera, params.orbit);
   std::string message;
   bool no_device = false;
@@ -1380,8 +1382,6 @@ bool render_compare(protocol::Context& ctx, const protocol::RenderCompareParams&
 
 bool render_evaluate(protocol::Context& ctx, const protocol::RenderEvaluateParams& params,
                      protocol::RenderEvaluateResult& out, protocol::RpcError& error) {
-  io::Admitted out_at;
-  if (!admit_output_dir(ctx, {}, params.out_dir, params.name, out_at, error)) return false;
   RenderHost* host = host_of(ctx);
   RenderHost::Scene* scene = host != nullptr ? host->find(params.scene) : nullptr;
   if (scene == nullptr) {
@@ -1401,6 +1401,10 @@ bool render_evaluate(protocol::Context& ctx, const protocol::RenderEvaluateParam
   if (!call_request(*scene, params.settings, params.clock, request, settings, error)) return false;
   renderer::ReferenceSettings reference_settings;
   if (!read_reference(params.reference, params.frame, reference_settings, error)) return false;
+  // Read whole before the directory is admitted, as render.capture is: a malformed request is
+  // answered as malformed (1004) wherever it would write.
+  io::Admitted out_at;
+  if (!admit_output_dir(ctx, {}, params.out_dir, params.name, out_at, error)) return false;
   const renderer::Camera camera = camera_of(*scene, params.camera, params.orbit);
 
   std::string message;
