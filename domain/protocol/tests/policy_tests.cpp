@@ -17,6 +17,7 @@
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -1873,4 +1874,40 @@ TEST_CASE("query: a structured filter over the document, in id order, a page at 
   REQUIRE(host.policy.load_roles("roles.json", k_roles, message));
   host.policy.identity.role = "qa";
   CHECK(at(query(host, JsonValue()), "rows").size() == 8);
+}
+
+// `proposals.json` goes through the side files' one helper (protocol.md, "Two hosts, one side
+// file"): each change reads the table afresh under its lock and replaces only its own proposal.
+// Before, a host wrote its whole table from memory, so the second host to open a proposal wrote a
+// table without the first host's.
+TEST_CASE("side files: two hosts that each open a proposal keep both in proposals.json") {
+  test::TempDir tmp("protocol_proposals_two_hosts");
+  const std::string dir = tmp.file("doc");
+  Host a;
+  a.open(dir, true);
+  Host b;
+  b.open(dir, false);  // read the table while it was empty
+  (void)a.ok("doc.propose_layer", obj({{"name", JsonValue("roads")},
+                                       {"target", JsonValue("base")},
+                                       {"edit", JsonValue(false)},
+                                       {"attribution", who("a")}}));
+  (void)b.ok("doc.propose_layer", obj({{"name", JsonValue("dunes")},
+                                       {"target", JsonValue("base")},
+                                       {"edit", JsonValue(false)},
+                                       {"attribution", who("b")}}));
+  ProposalsFile file;
+  bool present = false;
+  RpcError error;
+  REQUIRE_MESSAGE(read_side_file(a.vfs, dir + "/proposals.json", file, present, error),
+                  error.message);
+  REQUIRE(present);
+  std::vector<std::string> layers;
+  for (const ProposalInfo& p : file.proposals) {
+    layers.push_back(p.layer);
+    CHECK(p.state == ProposalState::Open);
+  }
+  CHECK(layers.size() == 2);
+  CHECK(std::find(layers.begin(), layers.end(), "roads") != layers.end());
+  CHECK(std::find(layers.begin(), layers.end(), "dunes") != layers.end());
+  CHECK(a.vfs.exists(dir + "/proposals.json.lock"));
 }

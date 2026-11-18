@@ -282,7 +282,10 @@ class Session {
   void publish_journal(std::string_view action, u32 index, u64 connection) const;
 
   bool load_side_files(RpcError& error);
-  bool save_proposals(RpcError& error);
+  // Writes this host's entry for the proposal `layer` into `proposals.json` under its lock, read
+  // afresh, so another host's change to another proposal stays (protocol.md, "Two hosts, one side
+  // file").
+  bool save_proposals(std::string_view layer, RpcError& error);
   // The read-modify-writes of `transactions.json` and `leases.json` (side_file.h; protocol.md,
   // "Two hosts, one side file"): under the file's lock the table is read afresh into
   // `transactions_` or `leases_`, `change(write)` runs, and the table is written back when it set

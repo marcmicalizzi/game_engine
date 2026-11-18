@@ -385,8 +385,8 @@ bool Session::load_side_files(RpcError& error) {
     return false;
 
   ProposalsFile proposals;
-  if (!read_side_file(*vfs_, DocumentStore::path_of(dir_, k_proposals_file), proposals, present,
-                      error))
+  if (!read_side_file_locked(*vfs_, DocumentStore::path_of(dir_, k_proposals_file), proposals,
+                             present, error))
     return false;
   proposals_.assign(std::move(proposals));
 
@@ -438,11 +438,33 @@ bool Session::refresh_leases(RpcError& error) {
   return true;
 }
 
-// proposals.json is still written whole from this host's table: proposal changes are rare and a
-// person's or a director's, and joining them to side_file.h is the next store's step.
-bool Session::save_proposals(RpcError& error) {
-  return write_side_file(*vfs_, DocumentStore::path_of(dir_, k_proposals_file),
-                         proposals_.to_file(), error);
+// proposals.json through the side files' one helper: the file is read afresh under its lock and
+// only this call's proposal is replaced in it (or added), so two hosts that each change a different
+// proposal both keep theirs. It was written whole from this host's table, which dropped every
+// proposal another host had opened or closed since this one read the file, and on Windows a reader
+// outside the lock made a writer's rename fail. A proposal's layer is the document's, which a host
+// still holds in memory and saves whole: that is not made safe here (two hosts changing layers at
+// once is unsupported), only the table.
+bool Session::save_proposals(std::string_view layer, RpcError& error) {
+  if (!may_write_side_files(error)) return false;
+  const ProposalTable::Entry* mine = proposals_.find(layer);
+  if (mine == nullptr) return true;
+  ProposalInfo info = mine->info;
+  info.touched = 0;  // derived from the base when reported, never stored
+  ProposalsFile file;
+  return update_side_file(
+      *vfs_, DocumentStore::path_of(dir_, k_proposals_file), file,
+      [&](ProposalsFile& f, bool& write) {
+        write = true;
+        for (ProposalInfo& p : f.proposals) {
+          if (p.layer != layer) continue;
+          p = std::move(info);
+          return true;
+        }
+        f.proposals.push_back(std::move(info));
+        return true;
+      },
+      error);
 }
 
 bool Session::note_proposal_touches(const doc::Patch& patch, RpcError& error) {
@@ -1311,7 +1333,7 @@ bool Session::propose_layer(const ProposeLayerParams& params, const Caller& call
       doc_.set_edit_layer(static_cast<u32>(existing));
       if (!persist(error)) return false;
     }
-    return save_proposals(error);
+    return save_proposals(params.name, error);
   }
 
   std::optional<doc::LayerPartition> partition;
@@ -1328,7 +1350,7 @@ bool Session::propose_layer(const ProposeLayerParams& params, const Caller& call
   info.opened_unix_ms = now;
   proposals_.add(std::move(info));
   (void)vfs_->remove(base_file(params.name));  // a leftover of an earlier layer of that name
-  return save_proposals(error);
+  return save_proposals(params.name, error);
 }
 
 bool Session::clear_layer(u32 layer, doc::Attribution attribution, std::optional<u32>& patch_index,
@@ -1538,7 +1560,7 @@ bool Session::promote(const PromoteParams& params, const Caller& caller, Promote
   entry = proposals_.find(params.proposal);
   ProposalTable::clear_base(*entry);
   (void)vfs_->remove(base_file(params.proposal));
-  if (!save_proposals(error)) return false;
+  if (!save_proposals(params.proposal, error)) return false;
   result.commit_ms = ms_since(started);
   result.promoted = true;
   return true;
@@ -1581,7 +1603,7 @@ bool Session::reject(const RejectParams& params, const Caller& caller, RpcError&
   entry = proposals_.find(params.proposal);
   ProposalTable::clear_base(*entry);
   (void)vfs_->remove(base_file(params.proposal));
-  return save_proposals(error);
+  return save_proposals(params.proposal, error);
 }
 
 // ---- SessionManager --------------------------------------------------------------------------
