@@ -230,7 +230,7 @@ The tile ring, the ground drawn from the world's tiles, the dunes, residency, an
 | W15 | Far ground to the horizon | done (2efc7749, 4e862d11) | W12 | L | design | [ADR-0051](adr/0051-the-far-ground-is-the-renderers.md) |
 | W16 | Accept ADR-0051 | done (2026-10-07, the owner) | W15 | S | design | [ADR-0051](adr/0051-the-far-ground-is-the-renderers.md) |
 | W17 | Terrain motion, tiles, far levels over the protocol | done (c5a37706) | W15 | M | routine | [renderer](subsystems/renderer.md#one-request-two-hosts) |
-| W18 | Far tiles rebuilt only where they change | open | W15 | S | design | [far ground](experiments/far-ground-2026-10-03.md#what-is-open) |
+| W18 | Far tiles rebuilt only where they change | open (read 2026-11-18, nothing built: the finest far level's hole mask is in its tiles' mesh and key, so the rings' band rebuilds 12 of a rebuild's 81 tiles at the median; a mesh independent of the hole locks every world tile's border inside a far tile and draws the hole as clusters left out — a per-pair mask in the cull, GPU work with a case on both tiers, or the far tile cut into its world tiles as instances — and both add clusters to every frame's cull. Needs: a decision on that trade, then GPU class `cases`) | W15 | S | design | [far ground](experiments/far-ground-2026-10-03.md#what-is-open) |
 | W19 | Windowed lag with far levels, measured | open | W15 | S | routine | [far ground](experiments/far-ground-2026-10-03.md#what-is-open) |
 | W20 | Cheaper tile rebuilds at speed | open | W14 | M | design | [world tiles in a window](experiments/world-tiles-window-2026-10-03.md#what-is-left) |
 | W21 | One staging ring for tile uploads | open | W14 | S | routine | [world tiles in a window](experiments/world-tiles-window-2026-10-03.md#what-is-left) |
