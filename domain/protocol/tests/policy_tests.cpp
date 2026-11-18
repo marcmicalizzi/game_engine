@@ -9,6 +9,7 @@
 #include <domain/protocol/proposals.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
+#include <domain/protocol/side_file.h>
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
@@ -18,6 +19,8 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <thread>
+#include <vector>
 
 using namespace engine;
 using namespace engine::protocol;
@@ -392,7 +395,8 @@ TEST_CASE("leases: acquisition refuses overlap with another holder") {
                                                {"tiles", ranges({range(0, 0, 1, 1)})},
                                                {"attribution", a}}));
   CHECK(at(la, "actor") == JsonValue("a"));
-  CHECK(at(la, "id") == JsonValue(u64{1}));
+  const JsonValue first = at(la, "id");  // drawn, not counted (protocol.md, "Leases")
+  CHECK(first.as_uint() > 0);
   // b overlapping a: refused, naming a's lease. a overlapping itself: fine.
   JsonValue e;
   CHECK(host.fails("lease.acquire",
@@ -401,9 +405,11 @@ TEST_CASE("leases: acquisition refuses overlap with another holder") {
                         {"attribution", b}}),
                    &e) == codes::k_lease_conflict);
   CHECK(at(at(at(e, "data"), "lease"), "actor") == JsonValue("a"));
-  host.ok("lease.acquire", obj({{"layer", JsonValue("world")},
-                                {"tiles", ranges({range(1, 1, 1, 1)})},
-                                {"attribution", a}}));
+  const JsonValue second = at(host.ok("lease.acquire", obj({{"layer", JsonValue("world")},
+                                                            {"tiles", ranges({range(1, 1, 1, 1)})},
+                                                            {"attribution", a}})),
+                              "id");
+  CHECK_FALSE(second == first);
   // Next door, and another layer: fine.
   host.ok("lease.acquire", obj({{"layer", JsonValue("world")},
                                 {"tiles", ranges({range(2, 0, 3, 3)})},
@@ -439,17 +445,17 @@ TEST_CASE("leases: acquisition refuses overlap with another holder") {
   JsonValue list = host.ok("lease.list", obj({}));
   CHECK(at(list, "leases").size() == 5);
   CHECK(at(host.ok("lease.list", obj({{"actor", JsonValue("b")}})), "leases").size() == 2);
-  CHECK(host.fails("lease.release", obj({{"lease", JsonValue(u64{1})}, {"attribution", b}})) ==
+  CHECK(host.fails("lease.release", obj({{"lease", first}, {"attribution", b}})) ==
         codes::k_forbidden);
-  CHECK(host.fails("lease.renew", obj({{"lease", JsonValue(u64{1})}, {"attribution", b}})) ==
+  CHECK(host.fails("lease.renew", obj({{"lease", first}, {"attribution", b}})) ==
         codes::k_forbidden);
-  JsonValue renewed = host.ok(
-      "lease.renew",
-      obj({{"lease", JsonValue(u64{1})}, {"ttl_seconds", JsonValue(3600.0)}, {"attribution", a}}));
+  JsonValue renewed =
+      host.ok("lease.renew",
+              obj({{"lease", first}, {"ttl_seconds", JsonValue(3600.0)}, {"attribution", a}}));
   CHECK(num(at(renewed, "expires_unix_ms")) > num(at(la, "expires_unix_ms")));
-  host.ok("lease.release", obj({{"lease", JsonValue(u64{1})}, {"attribution", a}}));
-  host.ok("lease.release", obj({{"lease", JsonValue(u64{2})}, {"attribution", a}}));
-  CHECK(host.fails("lease.release", obj({{"lease", JsonValue(u64{1})}, {"attribution", a}})) ==
+  host.ok("lease.release", obj({{"lease", first}, {"attribution", a}}));
+  host.ok("lease.release", obj({{"lease", second}, {"attribution", a}}));
+  CHECK(host.fails("lease.release", obj({{"lease", first}, {"attribution", a}})) ==
         codes::k_not_found);
   // Released, the tiles are b's to take.
   host.ok("lease.acquire", obj({{"layer", JsonValue("world")},
@@ -505,7 +511,21 @@ TEST_CASE("leases: expiry is by the host's clock, and the table is kept beside t
   CHECK(s2->leases().required());
   REQUIRE(s2->leases().leases().size() == 1);
   CHECK(s2->leases().leases()[0].id == held.id);
-  CHECK(s2->leases().file().next_id == held.id + 1);
+  // Two hosts on the document at once (protocol.md, "Two hosts, one side file"): each grants a
+  // lease from the table the file holds at the time, not the one it read at its open, and the ids
+  // are drawn rather than counted from a number both read.
+  LeaseInfo second;
+  REQUIRE(s2->acquire_lease(p, a, time::wall_unix_ms(), second, error));
+  CHECK(second.id != held.id);
+  LeaseInfo third;
+  REQUIRE(s->acquire_lease(p, a, time::wall_unix_ms(), third, error));
+  CHECK(third.id != second.id);
+  LeasesResult all;
+  REQUIRE(s2->list_leases("", "", time::wall_unix_ms(), all, error));
+  REQUIRE(all.leases.size() == 3);
+  CHECK(all.leases[0].id == held.id);
+  CHECK(all.leases[1].id == second.id);
+  CHECK(all.leases[2].id == third.id);
 }
 
 TEST_CASE("leases: when the document requires them, every write is covered") {
@@ -899,7 +919,7 @@ TEST_CASE("transactions: several calls land as one patch, the patch one doc.appl
   host.make_world(tmp.file("doc"));
   const i64 before = journal_length(host);
   const u64 t = begin_on(host, "world", who("a", "", "a lamp beside the first prop"));
-  CHECK(t == 1);
+  CHECK(t > 0);
   JsonValue r = staged(host, t, one(commands[0]), who("a"));
   CHECK(at(r, "committed") == JsonValue(false));
   CHECK(num(at(r, "applied")) == 1);
@@ -932,11 +952,25 @@ TEST_CASE("transactions: several calls land as one patch, the patch one doc.appl
   CHECK(num(at(r, "staged")) == 0);
   CHECK(journal_length(host) == before + 1);
   CHECK(host.property(oid(10), "color") == JsonValue(8));
-  CHECK(write_json(schema::to_json(
-            host.sessions.find(host.session)->document().journal().back())) == expected);
+  // The patch one doc.apply journals, and it names the transaction it is the commit of.
+  doc::Patch patch = host.sessions.find(host.session)->document().journal().back();
+  CHECK(patch.transaction == t);
+  patch.transaction = 0;
+  CHECK(write_json(schema::to_json(patch)) == expected);
   CHECK(at(host.ok("doc.transactions", obj({})), "transactions").size() == 0);
-  CHECK(host.fails("doc.commit", obj({{"transaction", JsonValue(t)}, {"attribution", who("a")}})) ==
-        codes::k_not_found);
+  // Committed: committing it again (an answer the client never saw) is answered with the patch
+  // that landed, and nothing is applied twice; rolling it back is 1003 naming that patch.
+  r = ended(host, "doc.commit", t, who("a"));
+  CHECK(at(r, "committed") == JsonValue(true));
+  CHECK(num(at(r, "patch_index")) == before);
+  CHECK(at(r, "diagnostics").size() == 1);
+  CHECK(journal_length(host) == before + 1);
+  CHECK(host.fails("doc.commit", obj({{"transaction", JsonValue(t)}, {"attribution", who("b")}})) ==
+        codes::k_forbidden);
+  JsonValue gone;
+  CHECK(host.fails("doc.rollback", obj({{"transaction", JsonValue(t)}, {"attribution", who("a")}}),
+                   &gone) == codes::k_not_found);
+  CHECK(std::string(at(gone, "message").as_string()).find("journal patch") != std::string::npos);
   // Landed together, so one undo takes them back together.
   host.ok("doc.undo", obj({}));
   CHECK(host.property(oid(1), "color").is_null());
@@ -1020,6 +1054,209 @@ TEST_CASE("transactions: rollback and lapse leave nothing, and a transaction is 
   CHECK(num(at(at(listed, "transactions")[0], "id")) == static_cast<i64>(t));
   CHECK(at(ended(next, "doc.commit", t, who("a")), "committed") == JsonValue(true));
   CHECK(next.property(oid(3), "color") == JsonValue(9));
+}
+
+// Batch 68's review (2026-11-18; protocol.md, "Two hosts, one side file"): two host processes on
+// one document — two engine-cli calls an agent made at once — each read `transactions.json` at
+// their open. The second writer is a second session manager in this process on the same directory,
+// interleaved the way two parallel calls are.
+TEST_CASE("transactions: two hosts on one document lose no staged command and no transaction") {
+  TempDir tmp("protocol_two_hosts");
+  const std::string dir = tmp.file("doc");
+  Host left;
+  left.make_world(dir);
+  const u64 t = begin_on(left, "world", who("a"));
+  Host right;
+  right.open(dir, false);
+  staged(left, t, one(set(oid(1), "color", JsonValue(1))), who("a"));
+  staged(right, t, one(set(oid(2), "color", JsonValue(2))), who("a"));
+  const JsonValue r = staged(left, t, one(set(oid(3), "color", JsonValue(3))), who("a"));
+  CHECK(num(at(r, "staged")) == 3);
+  // A begin in each: two transactions with two ids, though each host read the same table.
+  const u64 u = begin_on(right, "world", who("b"));
+  const u64 v = begin_on(left, "world", who("c"));
+  CHECK(u != v);
+  CHECK(u != t);
+  CHECK(v != t);
+  CHECK(at(right.ok("doc.transactions", obj({})), "transactions").size() == 3);
+  const JsonValue committed = ended(right, "doc.commit", t, who("a"));
+  CHECK(at(committed, "committed") == JsonValue(true));
+  CHECK(num(at(committed, "applied")) == 3);
+  CHECK(right.property(oid(1), "color") == JsonValue(1));
+  CHECK(right.property(oid(2), "color") == JsonValue(2));
+  CHECK(right.property(oid(3), "color") == JsonValue(3));
+}
+
+// The same with real concurrency: eight writers, each its own session manager on its own thread,
+// staging four calls each into one transaction at once. The lock is taken by handle, so two in one
+// process exclude each other as two processes do.
+TEST_CASE("transactions: eight writers at once stage every command") {
+  TempDir tmp("protocol_two_hosts");
+  const std::string dir = tmp.file("doc");
+  Host host;
+  host.make_world(dir);
+  const u64 t = begin_on(host, "world", who("a"));
+  constexpr u32 k_writers = 8;
+  constexpr u32 k_calls = 4;
+  Vector<doc::Command> commands;
+  for (u32 i = 0; i < k_writers * k_calls; ++i) {
+    doc::Command c;
+    schema::ReadContext ctx;
+    REQUIRE(schema::from_json(c, set(oid(1 + i % 4), "color", JsonValue(i)), ctx));
+    commands.push_back(std::move(c));
+  }
+  u32 failures[k_writers] = {};
+  std::string first_error[k_writers];
+  {
+    std::vector<std::thread> writers;
+    for (u32 w = 0; w < k_writers; ++w) {
+      writers.emplace_back([&, w] {
+        io::Vfs vfs;
+        SessionManager sessions(vfs);
+        SessionOpenParams open;
+        open.path = dir;
+        RpcError error;
+        Session* s = sessions.open(open, 0, error);
+        if (s == nullptr) {
+          failures[w] = k_calls;
+          first_error[w] = error.message;
+          return;
+        }
+        Caller a;
+        a.who.actor = "a";
+        for (u32 c = 0; c < k_calls; ++c) {
+          ApplyResult result;
+          const doc::Command& command = commands[w * k_calls + c];
+          if (!s->stage(t, {&command, 1}, a, true, "", time::wall_unix_ms(), result, error) ||
+              result.applied != 1) {
+            if (failures[w]++ == 0) first_error[w] = error.message;
+          }
+        }
+      });
+    }
+    for (std::thread& w : writers)
+      w.join();
+  }
+  for (u32 w = 0; w < k_writers; ++w)
+    CHECK_MESSAGE(failures[w] == 0, "writer " << w << ": " << first_error[w]);
+  const JsonValue listed = host.ok("doc.transactions", obj({}));
+  REQUIRE(at(listed, "transactions").size() == 1);
+  CHECK(num(at(at(listed, "transactions")[0], "commands")) == k_writers * k_calls);
+  CHECK(num(at(at(listed, "transactions")[0], "applies")) == k_writers * k_calls);
+}
+
+// A commit that landed and was reported failed: a commit whose patch is journaled and saved, and
+// whose write of `transactions.json` then fails (a scanner holding the file past the rename's
+// retries, a host killed there), left the transaction open, and a retry applied its commands again.
+// The patch names its transaction, so a retry — in this host, or in the next process, which reads
+// the table that still lists it — is answered with the patch that landed.
+TEST_CASE("transactions: a commit whose table write failed lands once, here and in the next host") {
+  TempDir tmp("protocol_transactions");
+  const std::string dir = tmp.file("doc");
+  Host host;
+  host.make_world(dir);
+  const i64 before = journal_length(host);
+  Session* s = host.sessions.find(host.session);
+  const u64 t = begin_on(host, "world", who("a"));
+  staged(host, t, one(set(oid(1), "color", JsonValue(4))), who("a"));
+  s->fail_transactions_write_for_test();
+  CHECK(host.fails("doc.commit", obj({{"transaction", JsonValue(t)}, {"attribution", who("a")}})) ==
+        codes::k_io_error);
+  CHECK(journal_length(host) == before + 1);
+  CHECK(s->landed_patch(t) == before);
+  JsonValue r = ended(host, "doc.commit", t, who("a"));
+  CHECK(at(r, "committed") == JsonValue(true));
+  CHECK(num(at(r, "patch_index")) == before);
+  CHECK(at(r, "diagnostics").size() == 1);
+  CHECK(journal_length(host) == before + 1);
+  CHECK(host.property(oid(1), "color") == JsonValue(4));
+
+  const u64 u = begin_on(host, "world", who("a"));
+  staged(host, u, one(set(oid(2), "color", JsonValue(5))), who("a"));
+  s->fail_transactions_write_for_test();
+  CHECK(host.fails("doc.commit", obj({{"transaction", JsonValue(u)}, {"attribution", who("a")}})) ==
+        codes::k_io_error);
+  std::string table;
+  REQUIRE(io::read_file(dir + "/transactions.json", table) == io::Status::Ok);
+  CHECK(table.find(std::to_string(u)) != std::string::npos);  // still listed on disk
+  Host next;
+  next.open(dir, false);
+  CHECK(at(next.ok("doc.transactions", obj({})), "transactions").size() == 0);
+  r = ended(next, "doc.commit", u, who("a"));
+  CHECK(at(r, "committed") == JsonValue(true));
+  CHECK(num(at(r, "patch_index")) == before + 1);
+  CHECK(journal_length(next) == before + 2);
+  CHECK(next.property(oid(2), "color") == JsonValue(5));
+  // One patch, so one undo takes it back.
+  next.ok("doc.undo", obj({}));
+  CHECK(next.property(oid(2), "color").is_null());
+  CHECK(next.property(oid(1), "color") == JsonValue(4));
+}
+
+// The bounds: a transaction holds at most `k_max_staged_commands`, and an actor opens at most
+// `k_max_open_transactions` at once; past either, 1004 and nothing changes.
+TEST_CASE("transactions: bounded in commands and in open transactions per actor") {
+  TempDir tmp("protocol_transactions");
+  Host host;
+  host.make_world(tmp.file("doc"));
+  const u64 t = begin_on(host, "world", who("a"));
+  JsonValue many = JsonValue::array();
+  for (u32 i = 0; i <= Session::k_max_staged_commands; ++i)
+    many.push_back(set(oid(1), "color", JsonValue(i)));
+  CHECK(staged_fails(host, t, many, who("a")) == codes::k_invalid_argument);
+  CHECK(num(at(at(host.ok("doc.transactions", obj({})), "transactions")[0], "commands")) == 0);
+  for (u32 i = 1; i < Session::k_max_open_transactions; ++i)
+    (void)begin_on(host, "world", who("a"));
+  CHECK(host.fails("doc.begin", obj({{"layer", JsonValue("world")}, {"attribution", who("a")}})) ==
+        codes::k_invalid_argument);
+  // Another actor's count is its own.
+  (void)begin_on(host, "world", who("b"));
+}
+
+TEST_CASE("side files: the lock excludes a second holder, and a version-1 table still reads") {
+  TempDir tmp("protocol_side_file");
+  const std::string path = tmp.file("table.json");
+  SideFileLock first;
+  SideFileLock second;
+  std::string message;
+  REQUIRE(first.acquire(path, 0, message));
+  CHECK(first.held());
+  const i64 start = time::monotonic_ns();
+  CHECK_FALSE(second.acquire(path, 50, message));
+  CHECK(time::monotonic_ns() - start >= 50'000'000);
+  CHECK(message.find("another host process") != std::string::npos);
+  first.release();
+  CHECK(second.acquire(path, 0, message));
+  second.release();
+
+  // Ids: never zero, under 2^53, and never one the caller calls taken.
+  u32 refusals = 0;
+  const u64 id = fresh_side_file_id(
+      [](const void* context, u64) {
+        u32& n = *static_cast<u32*>(const_cast<void*>(context));
+        return n++ < 3;
+      },
+      &refusals);
+  CHECK(refusals == 4);
+  CHECK(id > 0);
+  CHECK(id < (u64{1} << 53));
+
+  // A table written before ids were drawn names its counter; it reads through the version step.
+  io::Vfs vfs;
+  {
+    std::ofstream f(tmp.file("leases.json"), std::ios::binary);
+    f << R"({"required":true,"next_id":3,"leases":[{"id":2,"actor":"a","layer":"world"}]})";
+  }
+  Session warmup(vfs, "s", tmp.path());  // registers the version steps
+  LeaseFile leases;
+  bool present = false;
+  RpcError error;
+  REQUIRE_MESSAGE(read_side_file(vfs, tmp.file("leases.json"), leases, present, error),
+                  error.message);
+  CHECK(present);
+  CHECK(leases.required);
+  REQUIRE(leases.leases.size() == 1);
+  CHECK(leases.leases[0].id == 2);
 }
 
 TEST_CASE("transactions: roles, proposals and leases check every staging call and the commit") {

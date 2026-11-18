@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "A11-2",
+  "reason": "A11: what batch 68's review found, on protocol.md: the new section on two host processes sharing a document's side files (the lock, drawn ids, what stays unsafe), a retried commit landing once, and the staging pass's bookkeeping and bounds",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/protocol.md": 7386
+  }
+}

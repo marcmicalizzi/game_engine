@@ -4,6 +4,13 @@
 // `doc::Transaction` held open across calls: a host started for one call (engine-cli) or replaced
 // after a deadline (engine-mcp) must commit what an earlier one staged, and a document must never
 // hold a client's uncommitted records where another client reads it.
+//
+// Every call that reads or changes the table does it under `transactions.json`'s lock, reading the
+// file afresh (`update_transactions`, side_file.h), because two hosts on one document — two
+// engine-cli calls an agent made at once — would otherwise each write back the table it read and
+// lose the other's staged commands or whole transaction (batch 68's review, 2026-11-18). A commit's
+// patch names its transaction (`doc::Patch::transaction`), so a commit retried after a failure that
+// came after the journal is answered with the patch that landed and applies nothing twice.
 #include <core/time/time.h>
 #include <domain/protocol/session.h>
 
@@ -28,6 +35,27 @@ void remove_entry(TransactionsFile& file, u64 id) {
 }
 
 }  // namespace
+
+i64 Session::landed_patch(u64 transaction) const noexcept {
+  if (transaction == 0) return -1;
+  const Vector<doc::Patch>& journal = doc_.journal();
+  for (u32 i = journal.size(); i > 0; --i) {
+    if (journal[i - 1].transaction == transaction) return static_cast<i64>(i - 1);
+  }
+  return -1;
+}
+
+u32 Session::drop_landed_transactions() {
+  u32 dropped = 0;
+  Vector<TransactionEntry>& list = transactions_.transactions;
+  for (u32 i = list.size(); i > 0; --i) {
+    if (landed_patch(list[i - 1].info.id) < 0) continue;
+    forget_transaction_hold(list[i - 1].info.id);
+    list.erase(list.begin() + (i - 1));
+    ++dropped;
+  }
+  return dropped;
+}
 
 u32 Session::expire_transactions(i64 now_ms) {
   u32 dropped = 0;
@@ -79,16 +107,29 @@ u32 Session::release_connection_transactions(u64 connection) {
   return released;
 }
 
-TransactionEntry* Session::find_transaction(u64 id, const Caller& caller, i64 now_ms,
+bool Session::held_elsewhere(u64 id, const Caller& caller, RpcError& error) const {
+  // Two clients of one host may say they are the same actor; while the connection that opened
+  // the transaction lasts, it is the opener, and when it ends the actor is again (as a lease's
+  // connection is; protocol.md, "Several clients, one host").
+  for (const TransactionHold& h : transaction_holds_) {
+    if (h.transaction != id || h.connection == caller.connection) continue;
+    error = forbidden("transaction " + std::to_string(id) + " was opened on client connection " +
+                          std::to_string(h.connection) +
+                          ", which is still connected: only that connection stages into it, "
+                          "commits it or rolls it back until it closes",
+                      "transaction owner", caller.who.role);
+    return true;
+  }
+  return false;
+}
+
+TransactionEntry* Session::find_transaction(u64 id, const Caller& caller, i64 now_ms, bool& write,
                                             RpcError& error) {
   bool lapsed = false;
   for (const TransactionEntry& e : transactions_.transactions) {
     if (e.info.id == id && e.info.expires_unix_ms <= now_ms) lapsed = true;
   }
-  if (expire_transactions(now_ms) > 0) {
-    RpcError ignored;
-    (void)save_transactions(ignored);
-  }
+  if (expire_transactions(now_ms) > 0) write = true;
   for (TransactionEntry& e : transactions_.transactions) {
     if (e.info.id != id) continue;
     if (e.info.attribution.actor != caller.who.actor) {
@@ -98,24 +139,17 @@ TransactionEntry* Session::find_transaction(u64 id, const Caller& caller, i64 no
                         "transaction owner", caller.who.role);
       return nullptr;
     }
-    // Two clients of one host may say they are the same actor; while the connection that opened
-    // the transaction lasts, it is the opener, and when it ends the actor is again (as a lease's
-    // connection is; protocol.md, "Several clients, one host").
-    for (const TransactionHold& h : transaction_holds_) {
-      if (h.transaction != id || h.connection == caller.connection) continue;
-      error = forbidden("transaction " + std::to_string(id) + " was opened on client connection " +
-                            std::to_string(h.connection) +
-                            ", which is still connected: only that connection stages into it, "
-                            "commits it or rolls it back until it closes",
-                        "transaction owner", caller.who.role);
-      return nullptr;
-    }
+    if (held_elsewhere(id, caller, error)) return nullptr;
     return &e;
   }
-  error = make_error(codes::k_not_found,
-                     "no open transaction " + std::to_string(id) +
-                         (lapsed ? ": it lapsed and was rolled back; nothing it staged landed"
-                                 : ": doc.transactions lists the open ones"));
+  const i64 landed = landed_patch(id);
+  std::string why = ": doc.transactions lists the open ones";
+  if (lapsed) {
+    why = ": it lapsed and was rolled back; nothing it staged landed";
+  } else if (landed >= 0) {
+    why = ": it was committed, as journal patch " + std::to_string(landed);
+  }
+  error = make_error(codes::k_not_found, "no open transaction " + std::to_string(id) + why);
   return nullptr;
 }
 
@@ -151,125 +185,214 @@ bool Session::begin_transaction(const BeginParams& params, const Caller& caller,
     if (!commit_commands({}, caller.who, true, true, layer, &caller, ignored, error, &staging))
       return false;
   }
-  (void)expire_transactions(now_ms);
-  TransactionEntry entry;
-  entry.info.id = transactions_.next_id++;
-  entry.info.layer = static_cast<const doc::Document&>(doc_).layer(layer).name();
-  entry.info.attribution = caller.who;
-  entry.info.attribution.timestamp_unix_ms = 0;
-  entry.info.opened_unix_ms = now_ms;
-  entry.info.ttl_seconds = params.ttl_seconds;
-  entry.info.expires_unix_ms = expiry_of(now_ms, params.ttl_seconds);
-  out = entry.info;
-  if (caller.connection != 0) transaction_holds_.push_back({entry.info.id, caller.connection});
-  transactions_.transactions.push_back(std::move(entry));
-  return save_transactions(error);
+  const bool ok = update_transactions(
+      [&](bool& write) {
+        if (expire_transactions(now_ms) > 0) write = true;
+        u32 open = 0;
+        for (const TransactionEntry& e : transactions_.transactions) {
+          if (e.info.attribution.actor == caller.who.actor) ++open;
+        }
+        if (open >= k_max_open_transactions) {
+          error = make_error(codes::k_invalid_argument,
+                             caller.who.actor + " has " + std::to_string(open) +
+                                 " transactions open, the most one actor may: commit or roll one "
+                                 "back first (doc.transactions lists them)");
+          return false;
+        }
+        TransactionEntry entry;
+        // Drawn, not counted (side_file.h): never an id open now or one the journal names, so a
+        // commit's patch names one transaction for as long as the journal holds it.
+        entry.info.id = fresh_side_file_id(
+            [](const void* session, u64 id) {
+              const Session& s = *static_cast<const Session*>(session);
+              for (const TransactionEntry& e : s.transactions_.transactions) {
+                if (e.info.id == id) return true;
+              }
+              return s.landed_patch(id) >= 0;
+            },
+            this);
+        entry.info.layer = static_cast<const doc::Document&>(doc_).layer(layer).name();
+        entry.info.attribution = caller.who;
+        entry.info.attribution.timestamp_unix_ms = 0;
+        entry.info.opened_unix_ms = now_ms;
+        entry.info.ttl_seconds = params.ttl_seconds;
+        entry.info.expires_unix_ms = expiry_of(now_ms, params.ttl_seconds);
+        out = entry.info;
+        transactions_.transactions.push_back(std::move(entry));
+        write = true;
+        return true;
+      },
+      error);
+  if (ok && caller.connection != 0) transaction_holds_.push_back({out.id, caller.connection});
+  return ok;
 }
 
 bool Session::stage(u64 transaction, std::span<const doc::Command> commands, const Caller& caller,
                     bool atomic, std::string_view layer, i64 now_ms, ApplyResult& result,
                     RpcError& error) {
-  TransactionEntry* entry = find_transaction(transaction, caller, now_ms, error);
-  if (entry == nullptr) return false;
-  if (!layer.empty() && layer != entry->info.layer) {
-    error = make_error(codes::k_invalid_argument,
-                       "transaction " + std::to_string(transaction) + " edits layer " +
-                           entry->info.layer + ", not " + std::string(layer) +
-                           ": a transaction is one layer's, as its patch is");
-    return false;
-  }
-  const i32 found = doc_.find_layer(entry->info.layer);
-  if (found < 0) {
-    error = make_error(codes::k_not_found, "transaction " + std::to_string(transaction) +
-                                               "'s layer " + entry->info.layer + " is gone");
-    return false;
-  }
-  // The transaction's commands, then the call's, checked as one write.
-  const u32 held = static_cast<u32>(entry->commands.size());
-  Vector<doc::Command> all;
-  all.reserve(static_cast<u32>(entry->commands.size() + commands.size()));
-  for (const doc::Command& c : entry->commands)
-    all.push_back(c);
-  for (const doc::Command& c : commands)
-    all.push_back(c);
-  Vector<u32> accepted;
-  const Staging staging{held, &accepted};
-  doc::Attribution who = caller.who;
-  who.timestamp_unix_ms = now_ms;
-  if (!commit_commands({all.data(), all.size()}, std::move(who), atomic, true,
-                       static_cast<u32>(found), &caller, result, error, &staging))
-    return false;
-  result.transaction = transaction;
-  if (!accepted.empty()) {
-    for (const u32 i : accepted)
-      entry->commands.push_back(commands[i]);
-    entry->info.commands = static_cast<u32>(entry->commands.size());
-    ++entry->info.applies;
-    entry->info.expires_unix_ms = expiry_of(now_ms, entry->info.ttl_seconds);
-    if (!save_transactions(error)) return false;
-  }
-  result.staged = entry->info.commands;
-  return true;
+  return update_transactions(
+      [&](bool& write) {
+        TransactionEntry* entry = find_transaction(transaction, caller, now_ms, write, error);
+        if (entry == nullptr) return false;
+        if (!layer.empty() && layer != entry->info.layer) {
+          error = make_error(codes::k_invalid_argument,
+                             "transaction " + std::to_string(transaction) + " edits layer " +
+                                 entry->info.layer + ", not " + std::string(layer) +
+                                 ": a transaction is one layer's, as its patch is");
+          return false;
+        }
+        const i32 found = doc_.find_layer(entry->info.layer);
+        if (found < 0) {
+          error = make_error(codes::k_not_found, "transaction " + std::to_string(transaction) +
+                                                     "'s layer " + entry->info.layer + " is gone");
+          return false;
+        }
+        // Every staging call applies everything staged so far again, so the count is the cost.
+        if (entry->commands.size() + commands.size() > k_max_staged_commands) {
+          error = make_error(
+              codes::k_invalid_argument,
+              "transaction " + std::to_string(transaction) + " holds " +
+                  std::to_string(entry->commands.size()) + " commands, and " +
+                  std::to_string(commands.size()) + " more would pass the " +
+                  std::to_string(k_max_staged_commands) +
+                  " one transaction may stage: commit it, and send a large batch as one doc.apply");
+          return false;
+        }
+        // The transaction's commands, then the call's, checked as one write.
+        const u32 held = static_cast<u32>(entry->commands.size());
+        Vector<doc::Command> all;
+        all.reserve(static_cast<u32>(entry->commands.size() + commands.size()));
+        for (const doc::Command& c : entry->commands)
+          all.push_back(c);
+        for (const doc::Command& c : commands)
+          all.push_back(c);
+        Vector<u32> accepted;
+        const Staging staging{held, &accepted};
+        doc::Attribution who = caller.who;
+        who.timestamp_unix_ms = now_ms;
+        if (!commit_commands({all.data(), all.size()}, std::move(who), atomic, true,
+                             static_cast<u32>(found), &caller, result, error, &staging))
+          return false;
+        result.transaction = transaction;
+        if (!accepted.empty()) {
+          for (const u32 i : accepted)
+            entry->commands.push_back(commands[i]);
+          entry->info.commands = static_cast<u32>(entry->commands.size());
+          ++entry->info.applies;
+          entry->info.expires_unix_ms = expiry_of(now_ms, entry->info.ttl_seconds);
+          write = true;
+        }
+        result.staged = entry->info.commands;
+        return true;
+      },
+      error);
 }
 
 bool Session::commit_transaction(u64 transaction, const Caller& caller, i64 now_ms,
                                  ApplyResult& result, RpcError& error) {
-  TransactionEntry* entry = find_transaction(transaction, caller, now_ms, error);
-  if (entry == nullptr) return false;
-  result.transaction = transaction;
-  if (entry->commands.empty()) {
-    // Nothing staged: nothing to journal, and nothing left to hold open.
-    remove_entry(transactions_, transaction);
-    forget_transaction_hold(transaction);
-    return save_transactions(error);
-  }
-  const i32 found = doc_.find_layer(entry->info.layer);
-  if (found < 0) {
-    error = make_error(codes::k_not_found, "transaction " + std::to_string(transaction) +
-                                               "'s layer " + entry->info.layer + " is gone");
-    return false;
-  }
-  // The opener's attribution, as `doc.begin` recorded it; a rationale given now replaces its
-  // rationale, and an explicit timestamp is the patch's.
-  doc::Attribution who = entry->info.attribution;
-  if (!blank(caller.who.rationale)) who.rationale = caller.who.rationale;
-  who.timestamp_unix_ms = caller.who.timestamp_unix_ms;
-  const Vector<doc::Command> commands = entry->commands;
-  if (!commit_commands({commands.data(), commands.size()}, std::move(who), true, true,
-                       static_cast<u32>(found), &caller, result, error))
-    return false;
-  result.transaction = transaction;
-  if (!result.committed) {
-    // A command that no longer applies (another client committed under it): nothing landed, and
-    // the transaction stays open with what it holds.
-    result.staged = static_cast<u32>(commands.size());
-    return true;
-  }
-  remove_entry(transactions_, transaction);
-  forget_transaction_hold(transaction);
-  result.staged = 0;
-  return save_transactions(error);
+  return update_transactions(
+      [&](bool& write) {
+        result.transaction = transaction;
+        // Landed already: a commit whose answer was lost, or whose table write failed after the
+        // journal took its patch. The journal is the truth, and nothing is applied again.
+        if (const i64 landed = landed_patch(transaction); landed >= 0) {
+          const doc::Patch& patch = doc_.journal()[static_cast<u32>(landed)];
+          if (patch.attribution.actor != caller.who.actor) {
+            error = forbidden("transaction " + std::to_string(transaction) + " was opened by " +
+                                  patch.attribution.actor + ", and only its opener commits it",
+                              "transaction owner", caller.who.role);
+            return false;
+          }
+          if (held_elsewhere(transaction, caller, error)) return false;
+          // A save that failed after the journal: the document in memory holds the patch, and
+          // this writes what it changed.
+          if (!persist(error)) return false;
+          forget_transaction_hold(transaction);
+          result.committed = true;
+          result.applied = static_cast<u32>(patch.forward.size());
+          result.patch_index = static_cast<u32>(landed);
+          result.staged = 0;
+          Diagnostic note;
+          note.message = "transaction " + std::to_string(transaction) +
+                         " had already landed as journal patch " + std::to_string(landed) +
+                         "; nothing was applied again" +
+                         (static_cast<u32>(landed) >= manifest_.undo_position
+                              ? " (it is undone now: doc.redo brings it back)"
+                              : "");
+          result.diagnostics.push_back(std::move(note));
+          return true;
+        }
+        TransactionEntry* entry = find_transaction(transaction, caller, now_ms, write, error);
+        if (entry == nullptr) return false;
+        if (entry->commands.empty()) {
+          // Nothing staged: nothing to journal, and nothing left to hold open.
+          remove_entry(transactions_, transaction);
+          forget_transaction_hold(transaction);
+          write = true;
+          return true;
+        }
+        const i32 found = doc_.find_layer(entry->info.layer);
+        if (found < 0) {
+          error = make_error(codes::k_not_found, "transaction " + std::to_string(transaction) +
+                                                     "'s layer " + entry->info.layer + " is gone");
+          return false;
+        }
+        // The opener's attribution, as `doc.begin` recorded it; a rationale given now replaces its
+        // rationale, and an explicit timestamp is the patch's.
+        doc::Attribution who = entry->info.attribution;
+        if (!blank(caller.who.rationale)) who.rationale = caller.who.rationale;
+        who.timestamp_unix_ms = caller.who.timestamp_unix_ms;
+        const Vector<doc::Command> commands = entry->commands;
+        // Under the table's lock to the end: a second host's commit of the same transaction waits
+        // here, then finds the patch this one journaled.
+        if (!commit_commands({commands.data(), commands.size()}, std::move(who), true, true,
+                             static_cast<u32>(found), &caller, result, error, nullptr, transaction))
+          return false;
+        result.transaction = transaction;
+        if (!result.committed) {
+          // A command that no longer applies (another client committed under it): nothing landed,
+          // and the transaction stays open with what it holds.
+          result.staged = static_cast<u32>(commands.size());
+          return true;
+        }
+        remove_entry(transactions_, transaction);
+        forget_transaction_hold(transaction);
+        result.staged = 0;
+        write = true;
+        return true;
+      },
+      error);
 }
 
 bool Session::rollback_transaction(u64 transaction, const Caller& caller, i64 now_ms,
                                    TransactionInfo& out, RpcError& error) {
-  const TransactionEntry* entry = find_transaction(transaction, caller, now_ms, error);
-  if (entry == nullptr) return false;
-  out = entry->info;
-  remove_entry(transactions_, transaction);
-  forget_transaction_hold(transaction);
-  return save_transactions(error);
+  return update_transactions(
+      [&](bool& write) {
+        const TransactionEntry* entry = find_transaction(transaction, caller, now_ms, write, error);
+        if (entry == nullptr) return false;
+        out = entry->info;
+        remove_entry(transactions_, transaction);
+        forget_transaction_hold(transaction);
+        write = true;
+        return true;
+      },
+      error);
 }
 
 bool Session::list_transactions(std::string_view actor, i64 now_ms, TransactionsResult& out,
                                 RpcError& error) {
-  out.expired = expire_transactions(now_ms);
-  out.now_unix_ms = now_ms;
-  for (const TransactionEntry& e : transactions_.transactions) {
-    if (!actor.empty() && e.info.attribution.actor != actor) continue;
-    out.transactions.push_back(e.info);
-  }
-  return out.expired == 0 || save_transactions(error);
+  return update_transactions(
+      [&](bool& write) {
+        out.expired = expire_transactions(now_ms);
+        if (out.expired > 0) write = true;
+        out.now_unix_ms = now_ms;
+        for (const TransactionEntry& e : transactions_.transactions) {
+          if (!actor.empty() && e.info.attribution.actor != actor) continue;
+          out.transactions.push_back(e.info);
+        }
+        return true;
+      },
+      error);
 }
 
 }  // namespace engine::protocol

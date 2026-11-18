@@ -2222,10 +2222,12 @@ struct LeaseInfo @version(2) {
 
 /// `leases.json` in a document directory: the lease table, kept beside the document so that a
 /// host started for one call (engine-cli) sees the leases an earlier one granted.
-struct LeaseFile @version(1) @kind(document) {
+/// Version 2 drops `next_id`: a lease's id is drawn at random, not counted, so two host processes
+/// that grant leases on one document cannot give two the same id (protocol.md, "Two hosts, one
+/// side file"). Leases are kept in the order they were granted.
+struct LeaseFile @version(2) @kind(document) {
   /// Every writing `doc.*` call must hold a lease covering the records it touches.
   required: bool = false
-  next_id: u64 = 1
   leases: LeaseInfo[]
 }
 
@@ -2318,8 +2320,9 @@ struct TransactionEntry @version(1) {
 /// `transactions.json` in a document directory: the open transactions, kept beside the document
 /// as the leases are, so that a host started for one call (engine-cli) commits what earlier ones
 /// staged.
-struct TransactionsFile @version(1) @kind(document) {
-  next_id: u64 = 1
+/// Version 2 drops `next_id`: an id is drawn at random, never one an open transaction or a journal
+/// patch already names (protocol.md, "Two hosts, one side file").
+struct TransactionsFile @version(2) @kind(document) {
   transactions: TransactionEntry[]
 }
 

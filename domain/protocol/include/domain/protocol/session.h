@@ -13,6 +13,7 @@
 #include <domain/protocol/policy.h>
 #include <domain/protocol/proposals.h>
 #include <domain/protocol/rpc.h>
+#include <domain/protocol/side_file.h>
 #include <foundation/io/vfs.h>
 
 #include <memory>
@@ -180,9 +181,22 @@ class Session {
                             RpcError& error);
   bool list_transactions(std::string_view actor, i64 now_ms, TransactionsResult& out,
                          RpcError& error);
+  // The table as this session last read it under the file's lock; another host may have changed
+  // the file since (`doc.transactions` reads it afresh).
   const TransactionsFile& transactions() const noexcept { return transactions_; }
-  // --- blobs and checkpoints (roadmap D13, D14; session_history.cpp) ------------------------------
-  // docs/subsystems/protocol.md, "Blobs and checkpoints".
+  // The journal patch that committed client transaction `transaction`, or -1: how a retried
+  // commit is answered with what landed (protocol.md, "Transactions a client opens").
+  i64 landed_patch(u64 transaction) const noexcept;
+  // Bounds on what a transaction holds (batch 68's review): every staging call applies everything
+  // staged so far again, and every call that reads the table reads every open transaction. 1004
+  // past them.
+  static constexpr u32 k_max_staged_commands = 10'000;
+  static constexpr u32 k_max_open_transactions = 64;  // per actor
+  // Tests only (policy_tests.cpp): the next write of `transactions.json` fails, as a rename that a
+  // scanner holds past its retries does, after everything before it in the call has happened.
+  void fail_transactions_write_for_test() noexcept { test_fail_transactions_write_ = true; }
+  // --- blobs and checkpoints (roadmap D13, D14; session_history.cpp)
+  // ------------------------------ docs/subsystems/protocol.md, "Blobs and checkpoints".
 
   // Bytes into the document's blob store (domain/doc/blob_store.h). Changes no document.
   bool put_blob(std::string_view bytes, std::string_view media, BlobResult& out, RpcError& error);
@@ -235,7 +249,8 @@ class Session {
   // caller, the transaction is checked (Guard, session.cpp) and refused whole on a violation.
   bool commit_commands(std::span<const doc::Command> commands, doc::Attribution attribution,
                        bool atomic, bool strict, u32 layer, const Caller* caller,
-                       ApplyResult& result, RpcError& error, const Staging* staging = nullptr);
+                       ApplyResult& result, RpcError& error, const Staging* staging = nullptr,
+                       u64 transaction = 0);
   bool step(bool backwards, u32 steps, const Caller* caller, StepResult& result, RpcError& error);
   // After a commit to a proposal layer: the target's record for every object the patch touched
   // that the proposal had not touched before, appended to its base file.
@@ -249,16 +264,33 @@ class Session {
   void publish_journal(std::string_view action, u32 index, u64 connection) const;
 
   bool load_side_files(RpcError& error);
-  bool save_leases(RpcError& error);
   bool save_proposals(RpcError& error);
-  bool save_transactions(RpcError& error);
-  // The open transaction `id` for the caller, after dropping lapsed ones: 1003 when there is none
-  // (or it lapsed), 1008 when another actor opened it or another connection than the one still
-  // holding it calls.
-  TransactionEntry* find_transaction(u64 id, const Caller& caller, i64 now_ms, RpcError& error);
+  // The read-modify-writes of `transactions.json` and `leases.json` (side_file.h; protocol.md,
+  // "Two hosts, one side file"): under the file's lock the table is read afresh into
+  // `transactions_` or `leases_`, `change(write)` runs, and the table is written back when it set
+  // `write`. Reading `transactions_` afresh also drops the entries the journal shows committed.
+  template <class Change>
+  bool update_transactions(Change&& change, RpcError& error);
+  template <class Change>
+  bool update_leases(Change&& change, RpcError& error);
+  // `leases_` read afresh (under the file's lock, as every reader reads) before a write is checked
+  // against it: a lease another host granted, or its `lease.require`, holds here at once.
+  bool refresh_leases(RpcError& error);
+  std::string transactions_path() const;
+  std::string leases_path() const;
+  // The open transaction `id` for the caller, after dropping lapsed ones (`write` set when any
+  // was): 1003 when there is none (or it lapsed, or landed), 1008 when another actor opened it or
+  // another connection than the one still holding it calls.
+  TransactionEntry* find_transaction(u64 id, const Caller& caller, i64 now_ms, bool& write,
+                                     RpcError& error);
+  // Whether a connection other than the caller's still holds `id` (1008 in `error` when it does).
+  bool held_elsewhere(u64 id, const Caller& caller, RpcError& error) const;
   // Drops lapsed transactions, and the holds of every transaction no longer open; the number
   // dropped.
   u32 expire_transactions(i64 now_ms);
+  // Drops the open entries the journal shows committed (a table write that failed after the
+  // commit's journal); the number dropped.
+  u32 drop_landed_transactions();
   void forget_transaction_hold(u64 transaction);
   std::string base_file(std::string_view proposal) const;
 
@@ -274,8 +306,41 @@ class Session {
   Subscriptions* events_ = nullptr;
   u32 test_fail_rollback_at_ = ~0u;  // fail_rollback_for_test
   bool test_fail_take_back_ = false;
+  bool test_fail_transactions_write_ = false;  // fail_transactions_write_for_test
   Vector<u64> holders_;
 };
+
+template <class Change>
+bool Session::update_transactions(Change&& change, RpcError& error) {
+  return update_side_file(
+      *vfs_, transactions_path(), transactions_,
+      [&](TransactionsFile&, bool& write) {
+        if (drop_landed_transactions() > 0) write = true;
+        const bool ok = change(write);
+        if (write && test_fail_transactions_write_) {
+          test_fail_transactions_write_ = false;
+          write = false;
+          if (ok) error = make_error(codes::k_io_error, "transactions.json: failed for the test");
+          return false;
+        }
+        return ok;
+      },
+      error);
+}
+
+template <class Change>
+bool Session::update_leases(Change&& change, RpcError& error) {
+  LeaseFile file;
+  return update_side_file(
+      *vfs_, leases_path(), file,
+      [&](LeaseFile& read, bool& write) {
+        leases_.assign(std::move(read));
+        const bool ok = change(write);
+        if (write) read = leases_.file();
+        return ok;
+      },
+      error);
+}
 
 class SessionManager {
  public:

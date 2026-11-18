@@ -556,20 +556,26 @@ const std::vector<CorpusSave>& corpus() {
       // and `SaveObserver` 2 (their positions are f64) are three more steps for every older save,
       // and rewrite nothing: a file with no type table reads as before, and a float32 position's
       // JSON is the double it widens to.
+      //
+      // 2026-11-18: `Patch` 2 (a journal patch names the client transaction it commits, protocol.md
+      // "Transactions a client opens") is one more step for every older save, rewriting nothing: a
+      // patch with no `transaction` reads as 0. `v5` is the save it writes.
       {"v1",
        300,
        "8a6d7d078e00bcbf",
        "3d528309eea2b9df",
-       {"engine.doc.LayerFile 1 -> 2", "engine.kinematics.Mover 1 -> 2", "engine.world.Node 1 -> 2",
-        "engine.world.SaveManifest 1 -> 2", "engine.world.SaveObserver 1 -> 2",
-        "engine.world.TileProjection 1 -> 2", "store.tables 1 -> 2"},
+       {"engine.doc.LayerFile 1 -> 2", "engine.doc.Patch 1 -> 2", "engine.kinematics.Mover 1 -> 2",
+        "engine.world.Node 1 -> 2", "engine.world.SaveManifest 1 -> 2",
+        "engine.world.SaveObserver 1 -> 2", "engine.world.TileProjection 1 -> 2",
+        "store.tables 1 -> 2"},
        "232aa2a53b31c9ac"},
       {"v2",
        300,
        "3d528309eea2b9df",
        "3d528309eea2b9df",
-       {"engine.doc.LayerFile 1 -> 2", "engine.kinematics.Mover 1 -> 2", "engine.world.Node 1 -> 2",
-        "engine.world.SaveObserver 1 -> 2", "engine.world.TileProjection 1 -> 2"},
+       {"engine.doc.LayerFile 1 -> 2", "engine.doc.Patch 1 -> 2", "engine.kinematics.Mover 1 -> 2",
+        "engine.world.Node 1 -> 2", "engine.world.SaveObserver 1 -> 2",
+        "engine.world.TileProjection 1 -> 2"},
        "232aa2a53b31c9ac"},
       // Written by the build that made them version 2: the same world, its carts moved in f64 for
       // the 300 ticks before the save, which is why its hashes are not v2's.
@@ -577,13 +583,21 @@ const std::vector<CorpusSave>& corpus() {
        300,
        "8cdae985e86ab1d5",
        "8cdae985e86ab1d5",
-       {"engine.doc.LayerFile 1 -> 2", "engine.world.SaveObserver 1 -> 2",
-        "engine.world.TileProjection 1 -> 2"},
+       {"engine.doc.LayerFile 1 -> 2", "engine.doc.Patch 1 -> 2",
+        "engine.world.SaveObserver 1 -> 2", "engine.world.TileProjection 1 -> 2"},
        "c9b72a04d230351f"},
       // Written by the build that made those three version 2: the same world and the same state
       // at tick 300 as v3 — nothing the 300 ticks wrote depended on the change — in files that
       // name their versions.
-      {"v4", 300, "8cdae985e86ab1d5", "8cdae985e86ab1d5", {}, "c9b72a04d230351f"},
+      {"v4",
+       300,
+       "8cdae985e86ab1d5",
+       "8cdae985e86ab1d5",
+       {"engine.doc.Patch 1 -> 2"},
+       "c9b72a04d230351f"},
+      // Written by the build that made `Patch` version 2: v4's world and state in files whose
+      // journal names its patches' transactions.
+      {"v5", 300, "8cdae985e86ab1d5", "8cdae985e86ab1d5", {}, "c9b72a04d230351f"},
       // The npc capability's record types (D23): 400 generated residents and their places on 64 m
       // tiles, streamed round a walking and a still observer and saved at tick 300 by
       // npc_replay_tests.cpp's helper, in v4's formats. No player, so it continues on its own.
@@ -591,7 +605,7 @@ const std::vector<CorpusSave>& corpus() {
        300,
        "30fe42fed65a7a18",
        "30fe42fed65a7a18",
-       {},
+       {"engine.doc.Patch 1 -> 2"},
        "31278070c16babc9",
        {"engine.npc.Resident", "engine.npc.Place"}},
   };
@@ -751,6 +765,7 @@ TEST_CASE("document corpus: every save's document opens and saves to what this v
   if (saved.count("v1") != 0 && saved.count("v2") != 0) CHECK(saved["v1"] == saved["v2"]);
   if (saved.count("v3") != 0) CHECK(saved["v3"] == committed("v4"));
   if (saved.count("v4") != 0) CHECK(saved["v4"] == committed("v4"));
+  if (saved.count("v5") != 0) CHECK(saved["v5"] == committed("v5"));
   if (saved.count("v4-residents") != 0) CHECK(saved["v4-residents"] == committed("v4-residents"));
 }
 

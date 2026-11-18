@@ -1,8 +1,7 @@
 // The lease table (leases.h).
 #include <domain/protocol/leases.h>
 #include <domain/protocol/policy.h>
-
-#include <algorithm>
+#include <domain/protocol/side_file.h>
 
 namespace engine::protocol {
 
@@ -57,10 +56,23 @@ const LeaseInfo* LeaseTable::overlap(const LeaseInfo& wanted, i64 now_ms) const 
 }
 
 u64 LeaseTable::add(LeaseInfo lease) {
-  lease.id = file_.next_id++;
+  // Not a counter in the file: two hosts granting leases on one document would both count from
+  // the same number (protocol.md, "Two hosts, one side file").
+  lease.id = fresh_side_file_id(
+      [](const void* table, u64 id) {
+        return static_cast<const LeaseTable*>(table)->find_id(id) != nullptr;
+      },
+      this);
   const u64 id = lease.id;
-  file_.leases.push_back(std::move(lease));  // ids only grow, so the table stays in id order
+  file_.leases.push_back(std::move(lease));
   return id;
+}
+
+const LeaseInfo* LeaseTable::find_id(u64 id) const noexcept {
+  for (const LeaseInfo& l : file_.leases) {
+    if (l.id == id) return &l;
+  }
+  return nullptr;
 }
 
 LeaseInfo* LeaseTable::find(u64 id) noexcept {
@@ -93,16 +105,6 @@ LeaseTable::Cover LeaseTable::check(std::string_view actor, std::string_view lay
     mine = true;
   }
   return mine ? Cover::covered : Cover::not_held;
-}
-
-void LeaseTable::assign(LeaseFile file) {
-  file_ = std::move(file);
-  std::sort(file_.leases.begin(), file_.leases.end(),
-            [](const LeaseInfo& a, const LeaseInfo& b) { return a.id < b.id; });
-  u64 next = 1;
-  for (const LeaseInfo& l : file_.leases)
-    next = l.id >= next ? l.id + 1 : next;
-  if (file_.next_id < next) file_.next_id = next;
 }
 
 }  // namespace engine::protocol

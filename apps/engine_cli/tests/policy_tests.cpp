@@ -10,6 +10,7 @@
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <cstdio>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -271,10 +272,67 @@ TEST_CASE("cli: a transaction staged by several processes lands as one patch") {
   CHECK(at(call("doc.objects", "{}").result, "total") == JsonValue(u32{2}));
   const Run info = call("session.info", "{}");
   CHECK(at(info.result, "journal_length") == JsonValue(u32{1}));
-  // Committed and gone: committing again is a usage error the cli exits 1 on.
-  CHECK(
-      call("doc.commit", R"({"transaction":)" + t + R"(,"attribution":{"actor":"a"}})").exit_code ==
-      1);
+  // Committed: committing again — a retry whose first answer was lost — is answered with the patch
+  // that landed, and applies nothing (protocol.md, "Transactions a client opens").
+  const Run again =
+      call("doc.commit", R"({"transaction":)" + t + R"(,"attribution":{"actor":"a"}})");
+  REQUIRE(again.exit_code == 0);
+  CHECK(at(again.result, "committed") == JsonValue(true));
+  CHECK(at(again.result, "patch_index") == JsonValue(u32{0}));
+  CHECK(at(call("session.info", "{}").result, "journal_length") == JsonValue(u32{1}));
+  // Rolling it back is a usage error the cli exits 1 on.
+  CHECK(call("doc.rollback", R"({"transaction":)" + t + R"(,"attribution":{"actor":"a"}})")
+            .exit_code == 1);
+}
+
+// Two hosts on one document through the executables (protocol.md, "Two hosts, one side file"):
+// eight engine-cli processes, each with a host of its own, stage into one transaction at once, as
+// an agent's parallel tool calls do. Every one is staged, and the commit lands all eight.
+TEST_CASE("cli: eight processes staging into one transaction at once lose none") {
+  test::TempDir tmp("engine_cli_transactions");
+  const std::string doc = tmp.file("doc");
+  REQUIRE(cli({"--doc", doc, "--create", "session.info"}).exit_code == 0);
+  const Run begun = cli({"--doc", doc, "--compact", "doc.begin",
+                         R"({"layer":"base","attribution":{"actor":"a","rationale":"eight"}})"});
+  REQUIRE(begun.exit_code == 0);
+  const std::string t = std::to_string(at(begun.result, "id").as_int());
+  constexpr u32 k_writers = 8;
+  std::unique_ptr<platform::Process[]> writers(new platform::Process[k_writers]);
+  for (u32 i = 0; i < k_writers; ++i) {
+    char id[33];
+    std::snprintf(id, sizeof(id), "000000000000001000000000000000%02x", i + 1);
+    const std::vector<std::string> args = {cli_exe(),
+                                           "--host",
+                                           host_exe(),
+                                           "--doc",
+                                           doc,
+                                           "--compact",
+                                           "doc.apply",
+                                           R"({"commands":[)" + create(id, 0) +
+                                               R"(],"attribution":{"actor":"a"},"transaction":)" +
+                                               t + "}"};
+    std::vector<std::string_view> argv(args.begin(), args.end());
+    std::string error;
+    REQUIRE_MESSAGE(
+        writers[i].spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error),
+        error);
+    writers[i].close_stdin();
+  }
+  for (u32 i = 0; i < k_writers; ++i) {
+    std::string out;
+    writers[i].read_all(out);
+    CHECK_MESSAGE(writers[i].wait() == 0, out);
+  }
+  const Run listed = cli({"--doc", doc, "--compact", "doc.transactions", "{}"});
+  REQUIRE(listed.exit_code == 0);
+  REQUIRE(at(listed.result, "transactions").size() == 1);
+  CHECK(at(at(listed.result, "transactions")[0], "commands") == JsonValue(k_writers));
+  const Run committed = cli({"--doc", doc, "--compact", "doc.commit",
+                             R"({"transaction":)" + t + R"(,"attribution":{"actor":"a"}})"});
+  REQUIRE(committed.exit_code == 0);
+  CHECK(at(committed.result, "applied") == JsonValue(k_writers));
+  CHECK(at(cli({"--doc", doc, "--compact", "doc.objects", "{}"}).result, "total") ==
+        JsonValue(k_writers));
 }
 
 TEST_CASE("cli: eight processes at once write one ledger and lose nothing") {

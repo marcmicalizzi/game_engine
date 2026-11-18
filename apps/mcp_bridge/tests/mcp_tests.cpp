@@ -950,8 +950,11 @@ TEST_CASE("mcp: a transaction stages changes from several tools and lands them a
   const JsonValue committed = ok(mcp.tool("commit", "{" + s + ",\"transaction\":" + t + "}"));
   CHECK(num(committed, "applied") == 2);
   CHECK(num(ok(mcp.tool("objects", "{" + s + "}")), "total") == 2);
-  // Committed is closed: a second commit and a rollback are errors a model can read.
-  CHECK(is_error(mcp.tool("commit", "{" + s + ",\"transaction\":" + t + "}")));
+  // Committed is closed: a second commit (a retry whose answer was lost) is answered with the
+  // patch that landed and applies nothing; a rollback is an error a model can read.
+  const JsonValue again = ok(mcp.tool("commit", "{" + s + ",\"transaction\":" + t + "}"));
+  CHECK(num(again, "applied") == 2);
+  CHECK(num(ok(mcp.tool("objects", "{" + s + "}")), "total") == 2);
   CHECK(is_error(mcp.tool("rollback", "{" + s + ",\"transaction\":" + t + "}")));
   ok(mcp.tool("undo", "{" + s + "}"));
   CHECK(num(ok(mcp.tool("objects", "{" + s + "}")), "total") == 0);
