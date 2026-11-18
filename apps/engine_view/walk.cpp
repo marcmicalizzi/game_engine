@@ -621,10 +621,11 @@ bool Walker::cast_boom(WorldPos from, Vec3 direction, f32 length, f32& out) cons
   physics::BodyTransform start;
   start.position = from;
   physics::ShapeHit hit;
-  // The static bodies alone: the ground, the placements and the scene's meshes. The character's
+  // The collision's bodies alone (`scene_collision::k_scene_surfaces`): the ground, the
+  // placements, the scene's meshes and the props, a moved one's kinematic box too. The character's
   // capsule is not a body of the world, so the cast never meets the walker it starts inside.
-  const physics::LayerMask statics = physics::LayerMask::of(physics::Layer::Static);
-  if (!w.world.cast_shape(w.boom_sphere, start, direction * length, hit, statics)) {
+  if (!w.world.cast_shape(w.boom_sphere, start, direction * length, hit,
+                          scene_collision::k_scene_surfaces)) {
     out = length;
     return true;
   }
@@ -651,7 +652,8 @@ bool Walker::cast(WorldPos origin, Vec3 direction, f32 length, f32 radius,
   out = WalkCast{};
   const Vec3 sweep = direction * length;
   out.covered = w.consumer.covers_segment(origin, origin + DVec3{sweep});
-  const physics::LayerMask statics = physics::LayerMask::of(physics::Layer::Static);
+  // What the collision made, a moved prop's kinematic box included (scene_collision.h).
+  const physics::LayerMask statics = scene_collision::k_scene_surfaces;
   physics::BodyId body{};
   u32 child = 0;
   f32 fraction = 0.0f;
@@ -841,8 +843,10 @@ WorldPos Walker::drop(WorldPos camera) {
     while (w.consumer.refresh(camera, w.params.radius) > 0) {
     }
     // The highest surface below the camera; a camera under the ground (a flight below the sand)
-    // comes up to the surface above it; nothing at all, the ground's own height.
-    const physics::LayerMask statics = physics::LayerMask::of(physics::Layer::Static);
+    // comes up to the surface above it; nothing at all, the ground's own height. Every body the
+    // collision made (scene_collision.h `k_scene_surfaces`), so a teleport onto a moved crate
+    // stands on it.
+    const physics::LayerMask statics = scene_collision::k_scene_surfaces;
     physics::RayHit hit;
     WorldPos feet{camera.x, 0.0, camera.z};
     if (w.world.cast_ray(camera + DVec3{0.0, 0.01, 0.0}, Vec3{0.0f, -20000.0f, 0.0f}, hit,

@@ -279,7 +279,18 @@ struct Stats {
   u64 prop_bodies_created = 0;
   u64 prop_bodies_destroyed = 0;
   u64 prop_moves = 0;
+  // Props `set_props` was handed under a key it had already been handed in the same call, and left
+  // out (the first handed of a key is kept).
+  u64 prop_duplicates = 0;
 };
+
+// **What the walker and a module's casts meet** (docs: "What a moving prop costs"): every body the
+// collision makes — the static ground, placements and standing props, and the kinematic ones,
+// a prop's box once it has moved (and a door) — and nothing else in the world. One mask for every
+// query that asks what stops or carries the walker or what a module's cast hits: a body that
+// moves into `Layer::Kinematic` must not drop out of what those queries see.
+inline constexpr physics::LayerMask k_scene_surfaces =
+    physics::LayerMask::of(physics::Layer::Static).with(physics::Layer::Kinematic);
 
 // **A prop a host places** (`SceneCollision::set_props`; docs: "Props"; roadmap P45): a scene mesh
 // standing at `origin`, turned by `rotation` and scaled uniformly by `scale` — the renderer's
@@ -481,7 +492,8 @@ class SceneCollision {
   // **The props a host places**, copied: each is a body of its own **while the tile it stands in
   // is held** — made with the tile, let go with it — of its mesh's proxy (the cut every
   // placement's is, at the prop's scale) or its declared box; a prop declared `none` is not kept
-  // and costs nothing past this call. A host calls it when its props changed, on the tick they
+  // and costs nothing past this call; a key handed twice keeps the first handed
+  // (`Stats::prop_duplicates`). A host calls it when its props changed, on the tick they
   // changed; nothing moves until `update_props`.
   void set_props(std::span<const PropBody> props);
   // **On the tick, after the ring's update and before the step**: every prop whose tile came in
