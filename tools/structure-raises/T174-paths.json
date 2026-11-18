@@ -1,10 +1,10 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "T174-paths",
-  "reason": "T174's paths review mended on the roots section: what the log may hold, a session that may not be written, the profile trace and the event log under the roots",
+  "reason": "T174's paths review mended on the roots section: what the log may hold, a session that may not be written, the profile trace, the event log, run_tests' and run_headless' files and the document-file check under the roots",
   "date": "2026-11-18",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/protocol.md": 2554
+    "page:docs/subsystems/protocol.md": 3441
   }
 }
