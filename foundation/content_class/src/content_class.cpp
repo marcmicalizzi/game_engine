@@ -444,9 +444,8 @@ u64 class_hash(const Categories& categories, const ContentClasses& classes,
       all = join(all, (*materials)[m].classes);
       classified.push_back(m);
     }
-    std::sort(classified.begin(), classified.end(), [materials](u32 a, u32 b) {
-      return (*materials)[a].name < (*materials)[b].name;
-    });
+    std::sort(classified.begin(), classified.end(),
+              [materials](u32 a, u32 b) { return (*materials)[a].name < (*materials)[b].name; });
   }
   if (is_none(all)) return 0;  // an unclassified source keeps its key
 

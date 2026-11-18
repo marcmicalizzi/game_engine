@@ -586,12 +586,12 @@ TEST_CASE("content_class: the class hash is over names, and nothing classified h
   REQUIRE(hum_first.add_json(
       R"({"categories":[{"name":"fixture_hum","levels":["none","loud"]},{"name":"fixture_glow","levels":["none","dim","bright"]}]})",
       error));
-  const ContentClasses a =
-      join(join(classes_of(at(glow_first, "fixture_glow"), 2), classes_of(at(glow_first, "fixture_hum"), 1)),
-           classes_of(k_violence, 1));
-  const ContentClasses b =
-      join(join(classes_of(at(hum_first, "fixture_glow"), 2), classes_of(at(hum_first, "fixture_hum"), 1)),
-           classes_of(k_violence, 1));
+  const ContentClasses a = join(join(classes_of(at(glow_first, "fixture_glow"), 2),
+                                     classes_of(at(glow_first, "fixture_hum"), 1)),
+                                classes_of(k_violence, 1));
+  const ContentClasses b = join(join(classes_of(at(hum_first, "fixture_glow"), 2),
+                                     classes_of(at(hum_first, "fixture_hum"), 1)),
+                                classes_of(k_violence, 1));
   CHECK(a != b);  // the same class by names, at other indexes
   const u64 ha = class_hash(glow_first, a);
   CHECK(ha != 0);
@@ -750,14 +750,13 @@ TEST_CASE("content_class: the limits, exactly at them and one past") {
 
   // A number where a level's name belongs, in a categories file and in a sidecar's either form.
   Categories typed;
-  CHECK_FALSE(typed.add_json(R"({"categories":[{"name":"fixture_glow","levels":["none",2]}]})",
-                             error));
+  CHECK_FALSE(
+      typed.add_json(R"({"categories":[{"name":"fixture_glow","levels":["none",2]}]})", error));
   CHECK(typed.size() == k_engine_categories);
   const Categories categories = with_glow();
   ContentClasses out;
-  CHECK_FALSE(
-      read_sidecar_classes(categories, R"({"content_classes":{"levels":{"fixture_glow":2}}})", out,
-                           error));
+  CHECK_FALSE(read_sidecar_classes(
+      categories, R"({"content_classes":{"levels":{"fixture_glow":2}}})", out, error));
   CHECK(out == unreadable(categories));
   CHECK_FALSE(read_sidecar_classes(
       categories, R"({"content_classes":{"materials":{"m0":{"levels":{"fixture_glow":{}}}}}})", out,
@@ -819,7 +818,8 @@ TEST_CASE("content_class: the decision table, and same_decisions outcome for out
   CHECK(table.size() == 3);
   CHECK(table.decide(classes_of(k_nudity, 1)).outcome == Outcome::proxy);
   CHECK(table.size() == 3);  // met again, not appended
-  CHECK(table.at(2) == DecisionEntry{classes_of(k_nudity, 1), decide(classes_of(k_nudity, 1), scene)});
+  CHECK(table.at(2) ==
+        DecisionEntry{classes_of(k_nudity, 1), decide(classes_of(k_nudity, 1), scene)});
 
   // The table's own policy makes its decisions; one that omits where it proxied does not, and
   // nor does a wider one, though each is "within" where the table admitted.
