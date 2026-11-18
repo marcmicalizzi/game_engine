@@ -466,7 +466,7 @@ struct ClusterFileUv1Slots {
 // `k_light_*`; `color` linear RGB; `intensity` the file's own number in its own units (candela for
 // a point or spot light, lux for a directional one, as the extension defines them); `range` 0 for
 // none; the cone angles in radians (a spot light's only). `name` is the light's name, NUL-padded
-// and cut at 31 bytes.
+// and cut at 23 bytes (the field holds 24; a camera's holds 32).
 inline constexpr u32 k_light_directional = 0;
 inline constexpr u32 k_light_point = 1;
 inline constexpr u32 k_light_spot = 2;
