@@ -18,8 +18,11 @@
 #include <test_environment.h>
 #include <test_temp_dir.h>
 
+#include <filesystem>
 #include <random>
 #include <string>
+#include <system_error>
+#include <vector>
 
 using namespace engine;
 using namespace engine::protocol;
@@ -81,6 +84,10 @@ JsonValue one(JsonValue command) {
   JsonValue list = JsonValue::array();
   list.push_back(std::move(command));
   return list;
+}
+
+std::string at_message(const JsonValue& error) {
+  return std::string(error.find("message")->as_string());
 }
 
 bool have_git() {
@@ -199,14 +206,49 @@ TEST_CASE("blobs: put, read back checked, referenced, refused when unheld, colle
   CHECK(ref.find("media")->as_string() == "engine.terrain.grid/1");
   CHECK(*h.put(grid).find("created") == JsonValue(false));
 
-  // From a file on the host's machine.
-  const std::string file = tmp.path() + "/mask.bin";
-  REQUIRE(io::write_file(file, "mask bytes") == io::Status::Ok);
-  const JsonValue m = h.ok("doc.put_blob", obj({{"path", JsonValue(file)}}));
+  // From a file under the document's directory, named relative to it.
+  REQUIRE(io::make_directories(h.dir + "/inside") == io::Status::Ok);
+  REQUIRE(io::write_file(h.dir + "/inside/mask.bin", "mask bytes") == io::Status::Ok);
+  const JsonValue m = h.ok("doc.put_blob", obj({{"path", JsonValue("inside/mask.bin")}}));
   CHECK(m.find("ref")->find("blob")->as_string() == doc::BlobStore::name_of("mask bytes"));
-  CHECK(h.fails("doc.put_blob", obj({{"path", JsonValue(file)},
+  CHECK(h.fails("doc.put_blob", obj({{"path", JsonValue("inside/mask.bin")},
                                      {"data_base64", JsonValue("AA==")}})) ==
         codes::k_invalid_argument);
+  // Nothing outside it (B1 of batch 68's review: this case pinned an absolute path outside the
+  // document being read, which let any role holding doc.put_blob copy any file the host can read
+  // into the store and read it back through the read-only doc.blob). A file that exists outside,
+  // named every way that reaches it, gets the answer a missing file gets: one code, one sentence.
+  const std::string outside = tmp.path() + "/secret.bin";
+  REQUIRE(io::write_file(outside, "secret bytes") == io::Status::Ok);
+  JsonValue missing;
+  REQUIRE(h.fails("doc.put_blob", obj({{"path", JsonValue("inside/missing.bin")}}), &missing) ==
+          codes::k_not_found);
+  CHECK(write_json(missing).find("missing") == std::string::npos);  // names no path
+  std::vector<std::string> climbing = {outside,
+                                 "../secret.bin",
+                                 "inside/../../secret.bin",
+                                 "..\\secret.bin",
+                                 "/secret.bin",
+                                 "\\\\host\\share\\secret.bin",
+                                 "C:secret.bin",
+                                 "C:/secret.bin",
+                                 "inside/mask.bin:stream",
+                                 "inside//mask.bin",
+                                 "inside/",
+                                 std::string("inside/ma\x01sk.bin"),
+                                 "inside"};  // a directory
+  std::error_code link_error;
+  std::filesystem::create_symlink(outside, h.dir + "/inside/link.bin", link_error);
+  if (!link_error) climbing.push_back("inside/link.bin");  // a link that leaves the directory
+  else MESSAGE("no symbolic link here (" << link_error.message() << "), so that form is not tried");
+  for (const std::string& path : climbing) {
+    JsonValue e;
+    CHECK_MESSAGE(h.fails("doc.put_blob", obj({{"path", JsonValue(path)}}), &e) ==
+                      codes::k_not_found,
+                  path);
+    CHECK_MESSAGE(at_message(e) == at_message(missing), path);
+  }
+  CHECK_FALSE(doc::BlobStore::has(h.vfs, h.dir, doc::BlobStore::name_of("secret bytes")));
   CHECK(h.fails("doc.put_blob", JsonValue::object()) == codes::k_invalid_argument);
 
   const JsonValue back = h.ok("doc.blob", obj({{"blob", JsonValue(name)}, {"data", JsonValue(true)}}));

@@ -2352,11 +2352,13 @@ struct RejectParams @version(1) {
 // ---- blobs and checkpoints (roadmap D13, D14; docs/subsystems/protocol.md, "Blobs and
 // checkpoints") ------------------------------------------------------------------------------------
 
-/// Parameters of `doc.put_blob`: bytes into the document's blob store, from a file on the host's
-/// machine (`path`) or inline (`data_base64`, for a few megabytes at most), never both.
+/// Parameters of `doc.put_blob`: bytes into the document's blob store, from a file under the
+/// document's directory (`path`) or inline (`data_base64`, for a few megabytes at most), never both.
 struct PutBlobParams @version(1) {
   session: string
-  /// A file the host reads; relative paths are the host's working directory's.
+  /// A file under the document's directory, by a path relative to it: no drive, no ':', no '..',
+  /// no empty name, no link out of the directory. Anything else answers 1003 with the sentence a
+  /// missing file gets, so the answer says nothing of the disk outside.
   path: string
   /// The bytes, base64 (RFC 4648), when there is no file.
   data_base64: string
