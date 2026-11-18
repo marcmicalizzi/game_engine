@@ -897,3 +897,170 @@ TEST_CASE("content_class: deciding where nothing is classified costs a branch") 
   std::printf("content_class.decide.none: %.2f ns a mesh (debug build, shared machine)\n",
               static_cast<double>(ns) / (64.0 * 4096.0));
 }
+
+// ---- C62: what derived data carries ----------------------------------------------------------
+
+namespace {
+
+std::span<const u8> view(const Vector<u8>& v) { return {v.data(), v.size()}; }
+
+bool same_bytes(const Vector<u8>& a, const Vector<u8>& b) {
+  if (a.size() != b.size()) return false;
+  for (u32 i = 0; i < a.size(); ++i)
+    if (a[i] != b[i]) return false;
+  return true;
+}
+
+}  // namespace
+
+TEST_CASE("content_class: a source's sidecar is <stem>.provenance.json beside it") {
+  CHECK(sidecar_path_of("dir/cube.glb") == "dir/cube.provenance.json");
+  CHECK(sidecar_path_of("dir\\cube.gltf") == "dir\\cube.provenance.json");
+  CHECK(sidecar_path_of("dir.v2/cube") == "dir.v2/cube.provenance.json");
+  CHECK(sidecar_path_of("palm.flora.json") == "palm.flora.provenance.json");
+  CHECK(sidecar_path_of("glow.png") == "glow.provenance.json");
+}
+
+TEST_CASE("content_class: a key holds a class only when there is one") {
+  CHECK(classified_key(0x1234u, 0) == 0x1234u);
+  const u64 bright = classified_key(0x1234u, 77u);
+  CHECK(bright != 0x1234u);
+  CHECK(bright == classified_key(0x1234u, 77u));
+  CHECK(bright != classified_key(0x1234u, 78u));
+  CHECK(bright != classified_key(0x1235u, 77u));
+}
+
+TEST_CASE("content_class: an unclassified class encodes to nothing, so no section is written") {
+  const Categories categories = with_glow();
+  Vector<u8> bytes;
+  bytes.push_back(1);
+  encode_classes(categories, ContentClasses{}, nullptr, bytes);
+  CHECK(bytes.empty());
+  Vector<MaterialClass> materials;
+  materials.push_back(MaterialClass{"body", ContentClasses{}});
+  encode_classes(categories, ContentClasses{}, &materials, bytes);
+  CHECK(bytes.empty());
+  // And no section reads back as none everywhere.
+  Categories reader;
+  ContentClasses out = classes_of(0, 1);
+  std::string error;
+  CHECK(decode_classes(reader, {}, out, error));
+  CHECK(is_none(out));
+}
+
+TEST_CASE("content_class: a section round-trips and teaches a host the game's ladder") {
+  const Categories built = with_glow();
+  ContentClasses classes = classes_of(glow(), 2);
+  Vector<MaterialClass> materials;
+  materials.push_back(MaterialClass{"lamp", classes_of(glow(), 2)});
+  materials.push_back(MaterialClass{"base", ContentClasses{}});
+  Vector<u8> bytes;
+  encode_classes(built, classes, &materials, bytes);
+  REQUIRE_FALSE(bytes.empty());
+  // A host with no categories file learns `fixture_glow` from the bytes.
+  Categories host;
+  REQUIRE(host.find("fixture_glow") == -1);
+  ContentClasses out;
+  Vector<MaterialClass> read;
+  std::string error;
+  REQUIRE_MESSAGE(decode_classes(host, view(bytes), out, error, &read), error);
+  const i32 at = host.find("fixture_glow");
+  REQUIRE(at >= 0);
+  CHECK(out.levels[static_cast<u32>(at)] == 2);
+  REQUIRE(read.size() == 1u);  // only the classified material is recorded
+  CHECK(read[0].name == "lamp");
+  // The bytes are a function of names: the same class encodes the same, and a host that met the
+  // category under another index writes the same record.
+  Vector<u8> again;
+  encode_classes(host, out, &read, again);
+  CHECK(same_bytes(again, bytes));
+}
+
+TEST_CASE("content_class: a section is unreadable when it is not the record or contradicts a host") {
+  const Categories built = with_glow();
+  Vector<u8> bytes;
+  encode_classes(built, classes_of(glow(), 1), nullptr, bytes);
+  ContentClasses out;
+  std::string error;
+  {  // cut short: refused, and the class left is every known category at its top
+    Categories host;
+    Vector<u8> cut = bytes;
+    cut.resize(cut.size() - 1);
+    CHECK_FALSE(decode_classes(host, view(cut), out, error));
+    CHECK(out == unreadable(host));
+  }
+  {  // a byte after the end
+    Categories host;
+    Vector<u8> longer = bytes;
+    longer.push_back(0);
+    CHECK_FALSE(decode_classes(host, view(longer), out, error));
+    CHECK(error.find("follow") != std::string::npos);
+  }
+  {  // a host that already holds `fixture_glow` with another ladder
+    Categories host;
+    u32 index = 0;
+    REQUIRE(host.learn("fixture_glow", ladder_of({"none", "bright", "dim"}), index, error));
+    CHECK_FALSE(decode_classes(host, view(bytes), out, error));
+    CHECK(out == unreadable(host));
+  }
+}
+
+TEST_CASE("content_class: a node built from inputs carries their join, as a whole asset") {
+  const Categories built = with_glow();
+  Vector<u8> neutral;  // a neutral mesh has no section at all
+  Vector<u8> dim;
+  Vector<MaterialClass> materials;
+  materials.push_back(MaterialClass{"lamp", classes_of(glow(), 1)});
+  encode_classes(built, classes_of(glow(), 1), &materials, dim);
+  Vector<u8> violent;
+  encode_classes(built, classes_of(k_violence, 1), nullptr, violent);
+
+  Categories host;
+  std::string error;
+  Vector<u8> merged;
+  const std::span<const u8> two[2] = {view(neutral), view(dim)};
+  REQUIRE_MESSAGE(join_encoded(host, two, merged, error), error);
+  ContentClasses out;
+  Vector<MaterialClass> read;
+  REQUIRE(decode_classes(host, view(merged), out, error, &read));
+  CHECK(out.levels[static_cast<u32>(host.find("fixture_glow"))] == 1);  // a neutral one joined
+  CHECK(read.empty());                                                    // with a dim one is dim
+
+  const std::span<const u8> three[3] = {view(dim), view(neutral), view(violent)};
+  REQUIRE(join_encoded(host, three, merged, error));
+  REQUIRE(decode_classes(host, view(merged), out, error));
+  CHECK(out.levels[k_violence] == 1);
+  CHECK(out.levels[static_cast<u32>(host.find("fixture_glow"))] == 1);
+
+  // Neutral with neutral: no section.
+  const std::span<const u8> none[2] = {view(neutral), view(neutral)};
+  REQUIRE(join_encoded(host, none, merged, error));
+  CHECK(merged.empty());
+
+  // An input that cannot be read makes the node unreadable, written.
+  Vector<u8> junk;
+  junk.push_back(7);
+  const std::span<const u8> bad[2] = {view(dim), view(junk)};
+  CHECK_FALSE(join_encoded(host, bad, merged, error));
+  REQUIRE(decode_classes(host, view(merged), out, error));
+  CHECK(out == unreadable(host));
+}
+
+TEST_CASE("content_class: a class as data names categories, ladders and levels") {
+  const Categories categories = with_glow();
+  Vector<MaterialClass> materials;
+  materials.push_back(MaterialClass{"lamp", classes_of(glow(), 2)});
+  const JsonValue json = classes_json(categories, classes_of(glow(), 2), &materials);
+  const JsonValue* named = json.find("categories");
+  REQUIRE(named != nullptr);
+  REQUIRE(named->is_array());
+  const JsonValue* levels = json.find("levels");
+  REQUIRE(levels != nullptr);
+  const JsonValue* glow_level = levels->find("fixture_glow");
+  REQUIRE(glow_level != nullptr);
+  CHECK(glow_level->as_string() == "bright");
+  CHECK(json.find("materials")->find("lamp") != nullptr);
+  // Nothing classified: empty lists, so a reader tells "none" from "an older build" by the key.
+  const JsonValue empty = classes_json(categories, ContentClasses{});
+  CHECK(empty.find("levels")->as_object().size() == 0u);
+}

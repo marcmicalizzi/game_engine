@@ -473,6 +473,243 @@ u64 class_hash(const Categories& categories, const ContentClasses& classes,
   return h == 0 ? 1 : h;
 }
 
+std::string sidecar_path_of(std::string_view source) {
+  const usize slash = source.find_last_of("/\\");
+  const usize start = slash == std::string_view::npos ? 0 : slash + 1;
+  const usize dot = source.find_last_of('.');
+  const usize end = dot == std::string_view::npos || dot < start ? source.size() : dot;
+  std::string out(source.substr(0, end));
+  out += ".provenance.json";
+  return out;
+}
+
+u64 classified_key(u64 key, u64 class_hash) {
+  if (class_hash == 0) return key;
+  const u64 words[3] = {0x636c617373656432ull /* "classed2" */, key, class_hash};
+  u64 h = hash_bytes(words, sizeof(words));
+  if (h == key) h ^= 0x9e3779b97f4a7c15ull;  // never the unclassified key
+  return h;
+}
+
+namespace {
+
+constexpr std::string_view k_section_form = "engine.content_classes/1";
+
+void put_bytes(Vector<u8>& out, const std::string& form) {
+  out.resize(static_cast<u32>(form.size()));
+  for (u32 i = 0; i < form.size(); ++i)
+    out[i] = static_cast<u8>(form[i]);
+}
+
+// A reader over `encode_classes`'s form that refuses to run past the end.
+struct FormReader {
+  std::span<const u8> bytes;
+  usize at = 0;
+
+  bool count(u32& n) {
+    if (bytes.size() - at < 4) return false;
+    n = 0;
+    for (u32 b = 0; b < 4; ++b)
+      n |= static_cast<u32>(bytes[at + b]) << (8 * b);
+    at += 4;
+    return true;
+  }
+  bool text(std::string& out) {
+    u32 n = 0;
+    if (!count(n) || bytes.size() - at < n) return false;
+    out.assign(reinterpret_cast<const char*>(bytes.data() + at), n);
+    at += n;
+    return true;
+  }
+  bool done() const { return at == bytes.size(); }
+};
+
+}  // namespace
+
+void encode_classes(const Categories& categories, const ContentClasses& classes,
+                    const Vector<MaterialClass>* materials, Vector<u8>& out) {
+  out.clear();
+  ContentClasses all = classes;
+  Vector<u32> classified;
+  if (materials) {
+    for (u32 m = 0; m < materials->size(); ++m) {
+      if (is_none((*materials)[m].classes)) continue;
+      all = join(all, (*materials)[m].classes);
+      classified.push_back(m);
+    }
+    std::sort(classified.begin(), classified.end(),
+              [materials](u32 a, u32 b) { return (*materials)[a].name < (*materials)[b].name; });
+  }
+  if (is_none(all)) return;  // nothing classified: no section
+
+  std::string form;
+  put_text(form, k_section_form);
+  std::array<u32, k_max_categories> order{};
+  const u32 n = named_order(categories, all, order);
+  put_count(form, n);
+  for (u32 i = 0; i < n; ++i) {
+    const u32 c = order[i];
+    put_text(form, category_text(categories, c));
+    const u32 levels = c < categories.size() ? static_cast<u32>(categories.top(c)) + 1 : 0;
+    put_count(form, levels);
+    for (u32 l = 0; l < levels; ++l)
+      put_text(form, categories.level_name(c, static_cast<u8>(l)));
+  }
+  put_pairs(form, categories, classes);
+  put_count(form, static_cast<u32>(classified.size()));
+  for (u32 i = 0; i < classified.size(); ++i) {
+    const MaterialClass& material = (*materials)[classified[i]];
+    put_text(form, material.name);
+    put_pairs(form, categories, material.classes);
+  }
+  put_bytes(out, form);
+}
+
+bool decode_classes(Categories& categories, std::span<const u8> bytes, ContentClasses& out,
+                    std::string& error, Vector<MaterialClass>* materials) {
+  const auto refuse = [&](const std::string& why) {
+    error = "classes section: " + why;
+    out = unreadable(categories);
+    if (materials) materials->clear();
+    return false;
+  };
+  if (bytes.empty()) {  // no section: nothing classified
+    out = ContentClasses{};
+    if (materials) materials->clear();
+    return true;
+  }
+  FormReader r{bytes};
+  std::string form;
+  if (!r.text(form) || form != k_section_form) return refuse("not an engine.content_classes/1 record");
+  u32 n = 0;
+  if (!r.count(n) || n > k_max_categories) return refuse("its category count is not one a class holds");
+  Vector<std::string> names;
+  std::array<u32, k_max_categories> index{};
+  for (u32 i = 0; i < n; ++i) {
+    std::string name;
+    u32 levels = 0;
+    if (!r.text(name) || !r.count(levels) || levels > k_max_levels)
+      return refuse("a category's record runs short");
+    Vector<std::string> ladder;
+    for (u32 l = 0; l < levels; ++l) {
+      std::string level;
+      if (!r.text(level)) return refuse("category '" + name + "': its ladder runs short");
+      ladder.push_back(std::move(level));
+    }
+    std::string why;
+    if (!categories.learn(name, ladder, index[i], why)) return refuse(why);
+    names.push_back(std::move(name));
+  }
+  // One scope's pairs: every category must be one the record listed, every level on its ladder.
+  const auto read_pairs = [&](ContentClasses& into, std::string& why) {
+    u32 pairs = 0;
+    if (!r.count(pairs) || pairs > n) {
+      why = "a scope's pair count runs past the categories it lists";
+      return false;
+    }
+    for (u32 p = 0; p < pairs; ++p) {
+      std::string category;
+      std::string level;
+      if (!r.text(category) || !r.text(level)) {
+        why = "a scope's pairs run short";
+        return false;
+      }
+      u32 i = 0;
+      while (i < names.size() && names[i] != category)
+        ++i;
+      if (i == names.size()) {
+        why = "a pair names '" + category + "', which the record does not list";
+        return false;
+      }
+      const i32 l = categories.level(index[i], level);
+      if (l < 0) {
+        why = "category '" + category + "': '" + level + "' is not on its recorded ladder";
+        return false;
+      }
+      into.levels[index[i]] = static_cast<u8>(l);
+    }
+    return true;
+  };
+  std::string why;
+  ContentClasses classes;
+  if (!read_pairs(classes, why)) return refuse(why);
+  u32 count = 0;
+  if (!r.count(count)) return refuse("its material count runs short");
+  Vector<MaterialClass> per_material;
+  for (u32 m = 0; m < count; ++m) {
+    MaterialClass material;
+    if (!r.text(material.name)) return refuse("a material's name runs short");
+    if (!read_pairs(material.classes, why)) return refuse("material '" + material.name + "': " + why);
+    classes = join(classes, material.classes);  // the asset's, as the reader joined it
+    per_material.push_back(std::move(material));
+  }
+  if (!r.done()) return refuse("bytes follow the record");
+  out = classes;
+  if (materials) *materials = std::move(per_material);
+  return true;
+}
+
+bool join_encoded(Categories& categories, std::span<const std::span<const u8>> inputs,
+                  Vector<u8>& out, std::string& error) {
+  ContentClasses all;
+  for (const std::span<const u8> input : inputs) {
+    ContentClasses one;
+    if (!decode_classes(categories, input, one, error)) {
+      encode_classes(categories, unreadable(categories), nullptr, out);
+      return false;
+    }
+    all = join(all, one);
+  }
+  encode_classes(categories, all, nullptr, out);
+  return true;
+}
+
+namespace {
+
+JsonValue pairs_json(const Categories& categories, const ContentClasses& classes) {
+  JsonValue levels = JsonValue::object();
+  std::array<u32, k_max_categories> order{};
+  const u32 n = named_order(categories, classes, order);
+  for (u32 i = 0; i < n; ++i)
+    levels.set(category_text(categories, order[i]),
+               JsonValue(level_text(categories, order[i], classes.levels[order[i]])));
+  return levels;
+}
+
+}  // namespace
+
+JsonValue classes_json(const Categories& categories, const ContentClasses& classes,
+                       const Vector<MaterialClass>* materials) {
+  ContentClasses all = classes;
+  if (materials)
+    for (u32 m = 0; m < materials->size(); ++m)
+      all = join(all, (*materials)[m].classes);
+  JsonValue out = JsonValue::object();
+  JsonValue named = JsonValue::array();
+  std::array<u32, k_max_categories> order{};
+  const u32 n = named_order(categories, all, order);
+  for (u32 i = 0; i < n; ++i) {
+    const u32 c = order[i];
+    JsonValue category = JsonValue::object();
+    category.set("name", JsonValue(category_text(categories, c)));
+    JsonValue ladder = JsonValue::array();
+    if (c < categories.size())
+      for (u32 l = 0; l <= categories.top(c); ++l)
+        ladder.push_back(JsonValue(categories.level_name(c, static_cast<u8>(l))));
+    category.set("levels", std::move(ladder));
+    named.push_back(std::move(category));
+  }
+  out.set("categories", std::move(named));
+  out.set("levels", pairs_json(categories, classes));
+  JsonValue per_material = JsonValue::object();
+  if (materials)
+    for (u32 m = 0; m < materials->size(); ++m)
+      if (!is_none((*materials)[m].classes))
+        per_material.set((*materials)[m].name, pairs_json(categories, (*materials)[m].classes));
+  out.set("materials", std::move(per_material));
+  return out;
+}
+
 namespace {
 
 NamedPolicy compiled_in_default() {

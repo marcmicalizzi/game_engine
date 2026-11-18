@@ -10,8 +10,10 @@
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
+#include <core/json/json_value.h>
 
 #include <array>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -253,6 +255,55 @@ struct NamedCap {
 // `hash_bytes` over that form).
 u64 class_hash(const Categories& categories, const ContentClasses& classes,
                const Vector<MaterialClass>* materials = nullptr);
+
+// ---- carried through derived data (docs/content-classes.md, "How it travels through derived
+// data"; C62) ----------------------------------------------------------------------------------
+//
+// What a built thing records about its class, and how its cache key holds it. The containers
+// (`.clusters` section 54, `.tex` section 6) keep the bytes `encode_classes` makes and know
+// nothing about them, so the form is this module's alone, as the reader is.
+
+// Where a source's sidecar is: `<stem>.provenance.json` beside it, the stem being the file name
+// without its last extension (`cube.glb` to `cube.provenance.json`), which is the name
+// `tools/generate.ps1` and `tools/blender-run.ps1` write (docs/content-generation.md).
+std::string sidecar_path_of(std::string_view source);
+
+// A cache key that holds a class: `key` itself when `class_hash` is zero, so an unclassified
+// source keeps the key, and every existing entry, golden and pin, it had; otherwise a key of its
+// own over both, never equal to `key`. Both cache keys are moved by this one function.
+u64 classified_key(u64 key, u64 class_hash);
+
+// The record a classified thing carries: every category above `none` in the class or a material,
+// sorted by name, each with its whole ladder by name, lowest first; the class's (category, level)
+// pairs by name; and every classified material's own pairs, by material name. Length-prefixed
+// text, so it is the same bytes on every toolchain. **Empty when nothing is classified**, which
+// is what tells a writer not to write the section, so an unclassified container or texture is
+// the bytes it was before the section existed.
+void encode_classes(const Categories& categories, const ContentClasses& classes,
+                    const Vector<MaterialClass>* materials, Vector<u8>& out);
+
+// Reads `encode_classes`'s bytes back, learning each category's ladder into `categories` as it
+// goes (`Categories::learn`), so a host needs no categories file. Empty bytes are `none`
+// everywhere. Refused, with `out` the unreadable class (after whatever was learned) and the
+// materials emptied: bytes that are not the record, a ladder the table holds otherwise for the
+// name, a pair naming a category the record did not list or a level its ladder lacks, and
+// anything after the end.
+bool decode_classes(Categories& categories, std::span<const u8> bytes, ContentClasses& out,
+                    std::string& error, Vector<MaterialClass>* materials = nullptr);
+
+// The record a node built from several inputs carries (a merged mesh, a tile set over its forms,
+// an impostor over the meshes it was baked from): the join of every input's class, as a whole
+// asset. Materials are not carried across, since two inputs' materials of one name are two
+// materials. An input that cannot be decoded makes the output the unreadable class, written, and
+// the answer false, so a caller that ignores it still carries a class that fails closed.
+bool join_encoded(Categories& categories, std::span<const std::span<const u8>> inputs,
+                  Vector<u8>& out, std::string& error);
+
+// A class as data, for `engine-content info` and `content.build`'s result: `categories` (each
+// named one with its `levels`, lowest first), `levels` (category to level) and `materials`
+// (material to its own map), by name. Numbers and names only, which ADR-0033 decision 6 allows.
+JsonValue classes_json(const Categories& categories, const ContentClasses& classes,
+                       const Vector<MaterialClass>* materials = nullptr);
 
 // The operator's policies, with `agent-default` compiled in. Cold data, built at start.
 struct NamedPolicy {
