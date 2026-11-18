@@ -659,6 +659,10 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
       // its capacity one (R130, "ranges drop").
       // And with sampling over time's inputs the motion pass one and the pool's second write three
       // (the accumulation's zone is one of the frame passes' eight).
+      // Counted again on 2026-11-18 (batch 68, review A's open question): R173's instance passes add
+      // five (the mesh bounds, two a cull pass) and two with the cascades; R168's exposure is one of
+      // the frame passes' eight, beside the volumetrics' four, the collision's and the accumulation's.
+      // One view with every feature on and four cascades opens about 57 of the 67; not raised.
       !timer_.create(device, desc.frames_in_flight,
                      63 + 16 * (views - 1) + (resolved.reconstruction_inputs ? 4 : 0), error)) {
     destroy();
