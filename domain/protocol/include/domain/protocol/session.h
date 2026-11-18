@@ -85,7 +85,25 @@ class Session {
   // the SessionManager that opened it.
   void set_events(Subscriptions* events) noexcept { events_ = events; }
   // `event.session` for this session: "opened", "closed", or a lease's change with the lease.
-  void publish_session(std::string_view change, const LeaseInfo* lease = nullptr) const;
+  // `connection` is the one whose call made the change; `reason` says why a lease went when its
+  // holder did not ask.
+  void publish_session(std::string_view change, const LeaseInfo* lease = nullptr,
+                       u64 connection = 0, std::string_view reason = {}) const;
+
+  // --- holders (protocol.md, "Several clients, one host") ------------------------------------
+  // Who holds the session open: client connections that opened it, and 0 for the host's own
+  // stdio and in-process callers. The SessionManager closes a session when its last holder lets
+  // go.
+  std::span<const u64> holders() const noexcept { return {holders_.data(), holders_.size()}; }
+  bool held_by(u64 holder) const noexcept;
+  void hold(u64 holder);
+  // False when `holder` did not hold it.
+  bool let_go(u64 holder);
+
+  // A client connection has ended: every lease it took (`LeaseInfo.connection`) is released and
+  // saved, each with `event.session` "lease_released" and the reason "connection closed". The
+  // number released.
+  u32 release_connection_leases(u64 connection, i64 now_ms);
 
   // --- leases (leases.h) ---------------------------------------------------------------------
   // Every change is written to `leases.json` before the answer. `now_ms` is the host's clock.
@@ -162,8 +180,9 @@ class Session {
   bool clear_layer(u32 layer, doc::Attribution attribution, std::optional<u32>& patch_index,
                    RpcError& error);
 
-  // `event.journal` for the patch at `index`, after it was committed, undone or redone and saved.
-  void publish_journal(std::string_view action, u32 index) const;
+  // `event.journal` for the patch at `index`, after it was committed, undone or redone and saved,
+  // naming the connection whose call made it (0: stdio, the host, the engine's write-back).
+  void publish_journal(std::string_view action, u32 index, u64 connection) const;
 
   bool load_side_files(RpcError& error);
   bool save_leases(RpcError& error);
@@ -185,6 +204,7 @@ class Session {
   ProposalTable proposals_;
   TransactionsFile transactions_;
   Subscriptions* events_ = nullptr;
+  Vector<u64> holders_;
 };
 
 class SessionManager {
@@ -192,13 +212,22 @@ class SessionManager {
   explicit SessionManager(io::Vfs& vfs) noexcept : vfs_(&vfs) {}
   ENGINE_NON_COPYABLE(SessionManager);
 
-  // Opens (or with `create`, creates) the document at `params.path`. A session already open
-  // on the same path is returned instead of a second one.
-  Session* open(const SessionOpenParams& params, RpcError& error);
+  // Opens (or with `create`, creates) the document at `params.path`, held by `holder` (a client
+  // connection, or 0 for the host's own stdio and in-process callers). A session already open on
+  // the same path is returned instead of a second one, and `holder` joins its holders: several
+  // clients of one host share one document.
+  Session* open(const SessionOpenParams& params, u64 holder, RpcError& error);
   Session* find(std::string_view id) noexcept;
   // Looks up the session named in params; sets SessionNotFound otherwise.
   Session* require(std::string_view id, RpcError& error) noexcept;
+  // `holder` lets go of the session (`session.close`); it closes when no holder is left. False
+  // when `holder` did not hold it; `closed` says whether it closed.
+  bool release(std::string_view id, u64 holder, bool& closed);
+  // Closes the session whoever holds it: the host's own clean-up of a session it just opened.
   bool close(std::string_view id);
+  // A client connection has ended: its leases on every session are released, then its holds,
+  // closing each session nobody else holds.
+  void release_connection(u64 connection, i64 now_ms);
   usize count() const noexcept { return sessions_.size(); }
   // Where every session's events go (events.h): the sessions open now and every one opened later.
   // A session opened or closed with events set publishes `event.session`.

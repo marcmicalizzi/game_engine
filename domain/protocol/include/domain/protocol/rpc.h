@@ -33,6 +33,7 @@ class SessionManager;
 class Dispatcher;
 class Policy;
 class Subscriptions;
+class Clients;
 
 namespace codes {
 inline constexpr i32 k_parse_error = -32700;
@@ -90,6 +91,10 @@ struct Context {
   // its subscriber by; 0 for stdio and every in-process caller, which have no channel to push on.
   // The listener sets it under the dispatch lock for each request and puts 0 back after.
   u64 connection = 0;
+  // The host's client connections (clients.h), when it serves a socket; null otherwise. Who each
+  // connection said it is (`client.hello`) fills the blank attribution of its calls before the
+  // host's identity does (policy.h, `resolve_caller`), and the dispatcher's role gate reads it too.
+  Clients* clients = nullptr;
 };
 
 using Handler = bool (*)(Context& ctx, const JsonValue& params, JsonValue& result, RpcError& error);

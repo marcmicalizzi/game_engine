@@ -571,6 +571,164 @@ TEST_CASE("listen: a second connection sees the first's commit, undo and redo as
   CHECK(b.events.empty());
 }
 
+// Roadmap A3 (protocol.md, "Several clients, one host"): an editor's shell and an agent's bridge on
+// two connections and a command line on stdin, three clients of one host and one document. Each is
+// its own caller (`client.hello`), their writes are ordered and each is pushed the others', a lease
+// one holds stands against the others, a close lets go of the closer's hold alone, and a client
+// whose connection drops gives back its lease and the session only it held.
+TEST_CASE("listen: three clients of one host, one document, and a client that drops") {
+  test::TempDir tmp("engine_host_listen_clients");
+  const std::string roles = tmp.file("roles.json");
+  write_file(roles, R"({"default_role":"director","roles":[{"name":"director","methods":["*"],
+    "layers":["*"],"object_types":["*"]},{"name":"qa","methods":[]}]})");
+  ListeningHost host({"--roles", roles, "--doc", tmp.file("doc"), "--create", "--actor", "cli",
+                      "--task", "t-cli"});
+  const std::string session = host.session;
+  const std::string in_session = R"({"session":")" + session + "\"";
+
+  // stdio is the host's own caller: it has no connection to name.
+  CHECK(error_code(host.stdio("client.hello", R"({"name":"cli"})")) == 1006);
+
+  Client shell;
+  Client agent;
+  REQUIRE(shell.connect(host.port, host.token));
+  REQUIRE(agent.connect(host.port, host.token));
+  const JsonValue hello_shell = shell.call(
+      "client.hello", R"({"name":"shell","attribution":{"actor":"owner","task":"t-shell"}})");
+  REQUIRE_MESSAGE(error_code(hello_shell) == 0, write_json(hello_shell));
+  const JsonValue hello_agent =
+      agent.call("client.hello", R"({"name":"engine-mcp","attribution":{"actor":"agent-1",
+        "role":"director","task":"t-agent"}})");
+  REQUIRE_MESSAGE(error_code(hello_agent) == 0, write_json(hello_agent));
+  const i64 shell_id = at(at(hello_shell, "result"), "connection").as_int();
+  const i64 agent_id = at(at(hello_agent, "result"), "connection").as_int();
+  CHECK(shell_id != agent_id);
+  CHECK(at(at(hello_agent, "result"), "identified").as_bool());
+  // A role nobody configured is refused at the hello, not at every call that would inherit it.
+  CHECK(error_code(agent.call("client.hello", R"({"attribution":{"role":"pilot"}})")) == 1008);
+  CHECK(error_code(agent.call("client.hello", R"({"name":")" + std::string(65, 'n') + "\"}")) ==
+        1004);
+
+  // The shell watches every session; the agent opens the host's document too, and one of its own.
+  REQUIRE(error_code(shell.call("session.subscribe", R"({"kinds":["journal","session"]})")) == 0);
+  const JsonValue shared =
+      agent.call("session.open", R"({"path":)" + json_text(tmp.file("doc")) + "}");
+  REQUIRE_MESSAGE(error_code(shared) == 0, write_json(shared));
+  CHECK(at(at(shared, "result"), "session").as_string() == session);  // one document, one session
+  const JsonValue& holders = at(at(shared, "result"), "holders");
+  REQUIRE(holders.size() == 2);
+  CHECK(holders[0].as_int() == 0);  // the host's --doc
+  CHECK(holders[1].as_int() == agent_id);
+  const JsonValue own = agent.call(
+      "session.open", R"({"path":)" + json_text(tmp.file("scratch")) + R"(,"create":true})");
+  REQUIRE_MESSAGE(error_code(own) == 0, write_json(own));
+  const std::string own_session = std::string(at(at(own, "result"), "session").as_string());
+  CHECK(shell.next_event().find("params")->find("change")->as_string() == "opened");
+
+  // The agent leases what it is about to edit; edits then need one.
+  REQUIRE(error_code(host.stdio("lease.require", in_session + R"(,"required":true})")) == 0);
+  const JsonValue lease = agent.call("lease.acquire", in_session + R"(,"layer":"base",
+        "object_types":["engine.scene.MeshPlacement"]})");
+  REQUIRE_MESSAGE(error_code(lease) == 0, write_json(lease));
+  CHECK(at(at(lease, "result"), "actor").as_string() == "agent-1");  // from its hello
+  CHECK(at(at(lease, "result"), "connection").as_int() == agent_id);
+  const JsonValue taken = shell.next_event();
+  CHECK(at(at(taken, "params"), "change").as_string() == "lease_acquired");
+  CHECK(at(at(taken, "params"), "connection").as_int() == agent_id);
+
+  // The agent's edit names no actor: it is the agent's, by its hello, and the shell is told.
+  const auto apply = [&](Client* c, const std::string& command, const char* why) {
+    const std::string params = in_session + R"(,"commands":[)" + command +
+                               R"(],"attribution":{"rationale":")" + why + "\"}}";
+    return c != nullptr ? c->call("doc.apply", params) : host.stdio("doc.apply", params);
+  };
+  const JsonValue made = apply(&agent, create_placement(k_left, "left", "[0,0,0]"), "make");
+  REQUIRE_MESSAGE(at(at(made, "result"), "committed").as_bool(), write_json(made));
+  const JsonValue made_event = shell.next_event();
+  CHECK(at(made_event, "method").as_string() == "event.journal");
+  CHECK(at(at(made_event, "params"), "connection").as_int() == agent_id);
+  CHECK(at(at(at(made_event, "params"), "attribution"), "actor").as_string() == "agent-1");
+  CHECK(at(at(at(made_event, "params"), "attribution"), "task").as_string() == "t-agent");
+  const i64 first_revision = at(at(made_event, "params"), "revision").as_int();
+
+  // The lease stands against the other two clients, whoever they are.
+  const JsonValue refused_shell = apply(&shell, create_placement(k_right, "right", "[2,0,0]"), "x");
+  CHECK(error_code(refused_shell) == 1009);
+  CHECK(at(at(at(refused_shell, "error"), "data"), "lease").find("connection")->as_int() ==
+        agent_id);
+  CHECK(error_code(apply(nullptr, create_placement(k_right, "right", "[2,0,0]"), "x")) == 1009);
+  // A connection that said it is QA runs as QA: the role gate reads its hello.
+  Client qa;
+  REQUIRE(qa.connect(host.port, host.token));
+  REQUIRE(error_code(qa.call("client.hello", R"({"name":"qa","attribution":{"actor":"qa-1",
+    "role":"qa"}})")) == 0);
+  const JsonValue refused_qa = apply(&qa, set_translation(k_left, 5), "not mine");
+  CHECK(error_code(refused_qa) == 1008);
+  CHECK(at(at(at(refused_qa, "error"), "data"), "reason").as_string() == "method");
+
+  // Who is connected and what each holds, as any client (here the command line) sees it.
+  const JsonValue list = host.stdio("client.list", "null");
+  const JsonValue& clients = at(at(list, "result"), "clients");
+  REQUIRE(clients.size() == 3);
+  CHECK(at(clients[0], "name").as_string() == "shell");
+  CHECK(at(clients[1], "name").as_string() == "engine-mcp");
+  CHECK(at(clients[1], "actor").as_string() == "agent-1");
+  REQUIRE(at(clients[1], "sessions").size() == 2);
+  REQUIRE(at(clients[1], "leases").size() == 1);
+  CHECK(at(clients[1], "leases")[0].as_string() ==
+        session + ":" + std::to_string(at(at(lease, "result"), "id").as_int()));
+  CHECK(at(clients[0], "sessions").size() == 0);
+  CHECK(at(at(list, "result"), "you").as_int() == 0);
+
+  // A close lets go of the closer's hold alone: the host's --doc stays open for everyone.
+  const JsonValue closed = agent.call("session.close", in_session + "}");
+  REQUIRE_MESSAGE(error_code(closed) == 0, write_json(closed));
+  CHECK_FALSE(at(at(closed, "result"), "closed").as_bool());
+  REQUIRE(at(at(closed, "result"), "holders").size() == 1);
+  CHECK(error_code(shell.call("session.close", in_session + "}")) == 1004);  // it never opened it
+  CHECK(error_code(shell.call("session.info", in_session + "}")) == 0);
+
+  // The agent drops without a close frame. It gives back its lease and the session only it held,
+  // and the shell is told both, in that order.
+  agent.ws.socket().close();
+  const JsonValue released = shell.next_event();
+  CHECK(at(released, "method").as_string() == "event.session");
+  CHECK(at(at(released, "params"), "change").as_string() == "lease_released");
+  CHECK(at(at(released, "params"), "reason").as_string() == "connection closed");
+  CHECK(at(at(released, "params"), "connection").as_int() == agent_id);
+  CHECK(at(at(released, "params"), "actor").as_string() == "agent-1");
+  const JsonValue gone = shell.next_event();
+  CHECK(at(at(gone, "params"), "change").as_string() == "closed");
+  CHECK(at(at(gone, "params"), "session").as_string() == own_session);
+  CHECK(error_code(host.stdio("session.info", R"({"session":")" + own_session + "\"}")) == 1000);
+
+  // Its tiles are free: the shell leases them, and its edit, the command line's and the shell's
+  // again land in the order they were made, each pushed with a later revision than the last.
+  const JsonValue mine = shell.call("lease.acquire", in_session + R"(,"layer":"base",
+        "object_types":["engine.scene.MeshPlacement"]})");
+  REQUIRE_MESSAGE(error_code(mine) == 0, write_json(mine));
+  CHECK(at(at(mine, "result"), "actor").as_string() == "owner");
+  CHECK(at(at(shell.next_event(), "params"), "change").as_string() == "lease_acquired");
+  REQUIRE(
+      at(at(apply(&shell, set_translation(k_left, 1), "shell"), "result"), "committed").as_bool());
+  // The command line is "cli", not the owner, so the owner's lease refuses it; it reads instead.
+  CHECK(error_code(apply(nullptr, set_translation(k_left, 9), "cli")) == 1009);
+  REQUIRE(at(at(apply(&shell, set_translation(k_left, 2), "shell again"), "result"), "committed")
+              .as_bool());
+  i64 revision = first_revision;
+  for (const i64 index : {1, 2}) {
+    const JsonValue e = shell.next_event();
+    CHECK(at(e, "method").as_string() == "event.journal");
+    CHECK(at(at(e, "params"), "index").as_int() == index);
+    CHECK(at(at(e, "params"), "connection").as_int() == shell_id);
+    CHECK(at(at(at(e, "params"), "attribution"), "actor").as_string() == "owner");
+    CHECK(at(at(e, "params"), "revision").as_int() > revision);
+    revision = at(at(e, "params"), "revision").as_int();
+  }
+  const JsonValue after = host.stdio("client.list", "null");
+  CHECK(at(at(after, "result"), "clients").size() == 2);  // the shell and QA
+}
+
 TEST_CASE("listen: a subscriber that never reads gets the bounded queue and a dropped count") {
   test::TempDir tmp("engine_host_listen_slow");
   ListeningHost host({"--doc", tmp.file("doc"), "--create", "--actor", "busy"});

@@ -19,7 +19,7 @@ Session* begin(Context& ctx, const std::string& session, const doc::Attribution*
                Caller& caller, RpcError& error) {
   Session* s = ctx.sessions->require(session, error);
   if (s == nullptr) return nullptr;
-  if (!resolve_caller(ctx.policy, attribution, caller, error)) return nullptr;
+  if (!resolve_caller(ctx, attribution, caller, error)) return nullptr;
   return s;
 }
 
