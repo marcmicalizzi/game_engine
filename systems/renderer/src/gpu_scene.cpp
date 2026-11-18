@@ -22,6 +22,7 @@
 #include <foundation/io/vfs.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/page_source.h>
 #include <systems/renderer/rt_capacity.h>
 #include <systems/renderer/terrain_materials.h>
 #include <systems/renderer/water_refract.h>
@@ -764,8 +765,8 @@ JsonValue GpuScene::pair_summary() const {
 }
 
 bool GpuScene::create(const gfx::Device& device, const SceneData& data,
-                      const ResolvedSettings& requested, std::string* error,
-                      TerrainLevelSet* rings) {
+                      const ResolvedSettings& requested, std::string* error, TerrainLevelSet* rings,
+                      SceneData* release) {
   ResolvedSettings resolved;
   const PairAccount account = account_pairs(data, requested, rings);
   resolve_settings(requested.settings, device.features(), &data, resolved, &account);
@@ -899,13 +900,20 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
   }
 
   if (!bindless_.create(device, gfx::BindlessConfig{}, error) ||
-      !create_streaming(resolved, error) || !upload_geometry(resolved, error) ||
-      !upload_materials(resolved, error) || !create_working_set(resolved, error) ||
-      !create_ray_tracing(resolved, error)) {
+      !create_streaming(resolved, error) || !upload_geometry(resolved, error)) {
     destroy();
     return false;
   }
   measure_host_reads(data, resolved);  // before a host may release what they read (T138)
+  // W51-3: what only the geometry's upload read goes before the textures and the chain are made;
+  // the floats stay for the chain's builds and the collision, and go when the host releases.
+  if (release == &data && !streamed_)
+    (void)release_uploaded_streams(*release, HostReaders::collision);
+  if (!upload_materials(resolved, error) || !create_working_set(resolved, error) ||
+      !create_ray_tracing(resolved, error)) {
+    destroy();
+    return false;
+  }
   // The sand's detail: the terrain's ground, asked for the wind the ripples lie across, and the
   // time its surface stands at — the scene's own until a moving terrain's motion moves it
   // (renderer.md, "The sand close up").
