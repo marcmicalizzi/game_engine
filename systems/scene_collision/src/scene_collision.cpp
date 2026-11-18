@@ -2496,12 +2496,19 @@ bool SceneCollision::finish_prop_proxy(PropProxy& entry) {
     ++stats_.prop_proxy_builds;
     stats_.proxy_ns += entry.ns;
     entry.scratch.reset();  // the build's alone; it stored `k_done` after its last use
+    count_prop_proxies();
   }
   return true;
 }
 
 void SceneCollision::count_prop_proxies() noexcept {
   stats_.prop_proxies = static_cast<u32>(prop_proxies_.size());
+  u64 bytes = 0;  // a walk over the table, which changes only at a build or a letting go
+  for (u32 i = 0; i < prop_proxies_.size(); ++i) {
+    const PropProxy& entry = *prop_proxies_.value_at(i);
+    bytes += sizeof(PropProxy) + (entry.counted ? entry.bytes : 0u);
+  }
+  stats_.prop_proxy_bytes = bytes;
 }
 
 bool SceneCollision::make_prop_body(HeldProp& held) {

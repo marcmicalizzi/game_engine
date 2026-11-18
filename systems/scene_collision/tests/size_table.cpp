@@ -7,3 +7,6 @@
 using namespace engine;
 
 ENGINE_EXPECT_SIZE(32, 8, scene_collision::GroundTime);
+// A door, kept per door and walked by `step_doors` every tick whether or not its tile is held: what
+// a building's doors keep resident (scene_collision.md, "What props and doors keep resident").
+ENGINE_EXPECT_SIZE(64, 8, scene_collision::DoorBody);

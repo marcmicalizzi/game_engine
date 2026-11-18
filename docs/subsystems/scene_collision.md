@@ -272,7 +272,7 @@ own (`SceneCollision::PropProxy`):
   differ is a session that continued past a save, which nothing makes: there, a prop whose proxy was
   pending at the save would get its body at the restore's first tick instead of up to
   `k_walk_prop_build_updates` ticks later. A save taken mid-session would have to carry each pending
-  proxy's remaining updates.
+  proxy's remaining updates (roadmap P63).
 - **Let go when no prop in reach names it, so with the tiles**: at an update whose props' set
   changed, whose ring moved, or at which a prop moved off the held tiles, each proxy is counted over
   the held props **whose tile is held**, and one none of them names (and not declared) goes, a proxy
@@ -299,14 +299,14 @@ resident after the props went and none let go); the walker stops at the rounded 
 a quarter of the error; and handed none the 1.1 proxy goes while the declared one stays (0.4 s in
 `msvc-debug`). `a prop's proxy is built off the tick, its body made at the update promised` (1.9 s):
 a declared boulder at 1.2 gets its body at the twelfth update after its hand-over, with workers and
-without. `a drop takes every pending prop's proxy now, so it lands on a boulder`: the boulder at
+without. `a drop takes every pending prop's proxy now, so it lands on a boulder` (0.3 s in `msvc-debug`): the boulder at
 1.5 handed on a walking update has no body yet and a ray straight down meets the floor; the drop's
 update after it makes the body, and the ray meets the boulder's top within the cut's error; handed
 at the drop itself it is built there; with workers and without. `a restored walk's first update has
-the bodies the saved walk had`: four props, three at sizes of their own, handed to one consumer and
+the bodies the saved walk had` (0.3 s): four props, three at sizes of their own, handed to one consumer and
 updated twenty times, and to a fresh one at a drop's update, give the same bodies, the same proxies
 resident and the same tops to the bit. `a prop's proxy goes with its tile,
-and comes back with it`: a boulder at 1.2 still handed, the ring moved a kilometre away, loses its
+and comes back with it` (0.2 s): a boulder at 1.2 still handed, the ring moved a kilometre away, loses its
 body and its proxy while the declared two stay, and back it is built again. `a prop of a new mesh arriving mid-run costs the walker's tick no build` (0.4 s) measures
 it: 300 crates of which 30 move a centimetre a tick, and at tick 100 a boulder 3 m across (17,958
 triangles; the collision's own copy of it keeps 3,322) handed with them. Microseconds of a tick,
@@ -328,6 +328,21 @@ about 0.3 ms where a walk's give it 50 ms, and in a walk that wait is nothing. W
 that tick builds it, as the arrival's tick did before. The ticks that do not change the set (the
 move-cost case's rows above, run again beside these) measured the same before and after within the
 machine's noise, and no tick of either case allocated in steady state.
+
+**What props and doors keep resident** (2026-11-18; a game's memory at its start is a budget). A
+prop's proxy is one a (mesh, rounded scale), never one an instance: its physics shape (the
+library's own count) and its entry, `Stats::prop_proxy_bytes`. Measured in `msvc-debug` on the
+cases' meshes: the 1 m crate and the 3 m boulder, both declared and built at the load, 5,272
+bytes together; the boulder at 1.2, a size of its own, 9,112 more. **Before the first frame** are
+only the declared props' proxies at their own size, one a declared prop, which `create` builds
+from `SceneData::props`; every other is built when a prop in reach first wants it (a drop takes
+them at once) and let go with its tile, so what stays is bounded by the distinct sizes among the
+props round the walker, not by the props placed. A door keeps its `DoorBody` (64 bytes, pinned in
+the size table) and two physics ids for as long as it is handed, whether or not its tile is held,
+because its state is the world's; its leaf's record in a building's container is 48 bytes
+(`geometry::ClusterFileDoor`), loaded with the mesh; and while its tile is held, one kinematic box
+body of the physics library, the same as a box prop's. A scene with no props and no doors keeps
+none of it.
 
 `scene_collision: a game's prop stops a walker, by its mesh or its box, while its tile is held`
 (`tests/far_forest_tests.cpp`, beside the far forest's case, whose scene is built the same way; no
@@ -374,7 +389,7 @@ through a degree a leaf's edge 17 m from its hinge moves the walker's 0.3 m radi
 goes as far as the last angle clear of the walker, so a door a game gives a quarter turn a tick is
 held in the walker's path instead of passing through it, which until 2026-11-18 it did; at the
 default speed the travel is one test at its end, as before (`scene_collision: a fast door is held
-along its arc, never swung through the walker`). **Only the walker holds a door**: the walker's
+along its arc, never swung through the walker`, 6 ms). **Only the walker holds a door**: the walker's
 world is never stepped, so two leaves, or a leaf and a prop, pass through each other, and a walker
 squeezed between a held leaf and a wall is never pushed, so it can always walk out the way it
 came; a leaf that stops at a prop or at another leaf is not built. The walker collides as `Moving`, so

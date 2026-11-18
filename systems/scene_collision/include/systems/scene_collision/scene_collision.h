@@ -303,8 +303,10 @@ struct Stats {
   // held prop names, and every declared prop's at scale 1); built, and let go once no prop named
   // them, over the consumer's life; and of the builds, those the tick ran itself (`inline`: no
   // job system, or none had started it by its update) and those it waited for a worker to finish
-  // (`waits`, the waits' total).
+  // (`waits`, the waits' total). `prop_proxy_bytes`: what the resident ones hold, each one's
+  // physics shape (the library's own count) and its entry, so a walk can say what props keep.
   u32 prop_proxies = 0;
+  u64 prop_proxy_bytes = 0;
   u64 prop_proxy_builds = 0;
   u64 prop_proxies_freed = 0;
   u64 prop_proxy_inline = 0;

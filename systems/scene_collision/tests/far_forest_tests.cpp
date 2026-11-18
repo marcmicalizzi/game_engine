@@ -937,6 +937,10 @@ TEST_CASE(
       REQUIRE(down_at(rig, y));
       CHECK(std::fabs(y - top) < 0.08f);  // the cut's 5 cm, and the rounded scale's quarter of it
       CHECK(rig.collision.stats().prop_proxy_builds == 3);  // the two declared, and this one once
+      // What they keep resident (scene_collision.md, "What props and doors keep resident").
+      MESSAGE("resident: " << rig.collision.stats().prop_proxies << " proxies, "
+                           << rig.collision.stats().prop_proxy_bytes << " bytes");
+      CHECK(rig.collision.stats().prop_proxy_bytes > 0);
     }
     // Handed at the drop itself: built on the spot, the body made at this update.
     {
@@ -1023,9 +1027,14 @@ TEST_CASE("scene_collision: a prop's proxy goes with its tile, and comes back wi
   CHECK(rig.collision.stats().prop_bodies == 1);
   CHECK(rig.collision.stats().prop_proxies == 3);  // the two declared, and the boulder at 1.2
   const u64 builds = rig.collision.stats().prop_proxy_builds;
+  const u64 three = rig.collision.stats().prop_proxy_bytes;
   // The walker a kilometre away: the tile goes, the body with it, and the proxy no prop in reach
   // names; the declared two stay. The prop is still handed.
   rig.move_ring(place(Vec3{1000.0f, 0.0f, 1000.0f}));
+  MESSAGE("resident proxies: the crate and the boulder declared "
+          << rig.collision.stats().prop_proxy_bytes << " bytes; the boulder at 1.2 "
+          << three - rig.collision.stats().prop_proxy_bytes << " more");
+  CHECK(rig.collision.stats().prop_proxy_bytes < three);
   CHECK(rig.collision.stats().prop_bodies == 0);
   CHECK(rig.collision.stats().prop_proxies == 2);
   CHECK(rig.collision.stats().prop_proxies_freed == 1);
