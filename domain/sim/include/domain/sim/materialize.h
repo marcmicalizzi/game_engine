@@ -78,14 +78,23 @@ struct RecordSource {
 // and `Whole` both. A tile or untiled pass takes its records from the document's tile index
 // (`doc::Document::ids_in_tile`, `untiled`) and what the driver holds there from its own filing of
 // them, so it costs the records in its scope and not the document.
+//
+// `Live` is a streamed world's between-calls pass (docs/subsystems/world.md, "Edits between
+// calls"): the untiled records and the records of every tile the driver holds live (`tile_live`),
+// so an edit or a deletion of a record in a live tile reaches the world on the next call rather
+// than when its tile next comes in. After its first call it follows the document's change feed, as
+// a whole-document pass does, so it costs the records that changed and not the live tiles; one the
+// feed cannot answer is a full pass over the untiled records and every live tile. To the let-go and
+// `held` it is the whole scope, since a streamed world holds nothing outside it.
 struct MaterializeScope {
-  enum class Kind : u8 { Whole, Tile, Untiled };
+  enum class Kind : u8 { Whole, Tile, Untiled, Live };
   Kind kind = Kind::Whole;
   doc::TileCoord tile;
 
   static MaterializeScope whole() noexcept { return {}; }
   static MaterializeScope of_tile(doc::TileCoord t) noexcept { return {Kind::Tile, t}; }
   static MaterializeScope untiled() noexcept { return {Kind::Untiled, {}}; }
+  static MaterializeScope live() noexcept { return {Kind::Live, {}}; }
 };
 
 // Why a live record in scope has no entity.
@@ -409,6 +418,9 @@ class Materializer {
   u64 revision_ = 0;
   bool synced_ =
       false;  // a whole-document pass has run, so the feed can be followed from revision_
+  // The same for the live scope: a live pass has run, so the next follows the feed from here.
+  u64 live_revision_ = 0;
+  bool live_synced_ = false;
   u64 pass_ = 0;
 
   HashMap<Id128, Held> held_;

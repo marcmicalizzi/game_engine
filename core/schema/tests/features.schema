@@ -48,6 +48,18 @@ struct Spatial @version(1) {
   extra: json
 }
 
+/// Two additive versions and no migration registered for either (D27): both steps are generated.
+struct Grown @version(3) {
+  first: i32 = 1
+  second: string = "two" @since(2)
+  third: f32 = 3.5 @since(3)
+}
+
+/// A version that added no field — a meaning changed — and registered no step: still refused.
+struct Retyped @version(2) {
+  value: f64 = 0
+}
+
 /// The f64 vector primitives (ADR-0053): a point in the world and a displacement.
 struct Far @version(1) @kind(record) {
   at: worldpos @unit(m)

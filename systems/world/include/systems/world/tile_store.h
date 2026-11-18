@@ -28,8 +28,10 @@
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <core/ids/id128.h>
+#include <core/json/json_value.h>
 #include <core/math/math.h>
 #include <core/math/world.h>
+#include <core/schema/type_info.h>
 #include <domain/sim/scheduler.h>
 #include <foundation/store/database.h>
 #include <foundation/store/event_log.h>
@@ -94,5 +96,20 @@ class WorldStore {
   u64 world_seed_ = 1;
   Vector<u8> scratch_;
 };
+
+// **An event's payload as this build reads it** (plan 03 §3.8, "events are upcast"; roadmap D26).
+// An event in the store keeps the schema type it was written as (`EventRecord::type`, a
+// `schema::stable_type_id`) and the `@version` of that type it was written at (`payload_version`);
+// its payload is that type's canonical JSON. `read_event_payload` parses it and brings it up to the
+// build's version through the type's steps — the registered ones and the generated additive ones
+// (`schema::upcast`) — so every reader of an old log reads the current shape, and none reads an old
+// one as if it were new. Refused with a sentence: a type this build has never heard of, a payload
+// written by a newer build, a missing step, bytes that are not a JSON object.
+struct EventPayload {
+  const schema::TypeInfo* type = nullptr;
+  u16 written_version = 0;  // the version it was stored at; `type->version` is what it reads as
+  JsonValue value;          // the payload at the build's version
+};
+bool read_event_payload(const store::EventRecord& record, EventPayload& out, std::string& error);
 
 }  // namespace engine::world

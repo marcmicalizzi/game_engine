@@ -276,6 +276,7 @@ bool Materializer::in_scope(const MaterializeScope& scope, bool tiled,
     case MaterializeScope::Kind::Whole: return true;
     case MaterializeScope::Kind::Tile: return tiled && tile == scope.tile;
     case MaterializeScope::Kind::Untiled: return !tiled;
+    case MaterializeScope::Kind::Live: return !tiled || live_tiles_.contains(tile_key(tile));
   }
   return false;
 }
@@ -525,8 +526,12 @@ MaterializeReport Materializer::materialize(const doc::Document& document,
   const i64 start_ns = time::monotonic_ns();
   MaterializeReport report;
   ++pass_;
-  if (document_ != &document) synced_ = false;  // another document: nothing held can be trusted
+  if (document_ != &document) {
+    synced_ = false;  // another document: nothing held can be trusted
+    live_synced_ = false;
+  }
   document_ = &document;
+  const bool live = scope.kind == MaterializeScope::Kind::Live;
   // Only when something is in it: `clear()` zeroes the whole bucket array, which after a first pass
   // over 10^5 records is a megabyte — and was the entire cost of a pass that found nothing
   // changed (`ecs.materialize.nochange`, 32 µs at 10^5 before this line had its guard).
@@ -542,6 +547,9 @@ MaterializeReport Materializer::materialize(const doc::Document& document,
   if (scope.kind == MaterializeScope::Kind::Whole && synced_) {
     scratch_ids_.clear();
     incremental = document.changed_since(revision_, scratch_ids_);
+  } else if (live && live_synced_) {
+    scratch_ids_.clear();
+    incremental = document.changed_since(live_revision_, scratch_ids_);
   }
   report.full = !incremental;
 
@@ -552,6 +560,17 @@ MaterializeReport Materializer::materialize(const doc::Document& document,
       if (!document.exists(id)) {
         if (held != nullptr) gone_.push_back(id);
         continue;
+      }
+      if (live) {
+        // Where it is now decides whether the pass is its: an edit that moved it out of every
+        // live tile lets it go (its state is the document's), and one in a tile nobody simulates
+        // is not looked at, as that tile's own pass will be the one to bring it in.
+        Candidate where;
+        filing_of(document, id, where);
+        if (!in_scope(scope, where.tiled, where.tile)) {
+          if (held != nullptr) gone_.push_back(id);
+          continue;
+        }
       }
       Candidate candidate;
       const Verdict verdict = classify(document, id, report, candidate);
@@ -577,6 +596,29 @@ MaterializeReport Materializer::materialize(const doc::Document& document,
                              : scope.kind == MaterializeScope::Kind::Tile
                                  ? document.ids_in_tile(scope.tile)
                                  : document.untiled();
+    if (live) {
+      // The untiled records, every live tile's, and what the sources place in each live tile now
+      // (the sources hear the tile begin again: it is still live, and they answer from that).
+      Vector<u64> keys;
+      for (const u64 key : live_tiles_.keys())
+        keys.push_back(key);
+      std::sort(keys.begin(), keys.end());
+      for (const u64 key : keys) {
+        const doc::TileCoord tile{static_cast<i32>(static_cast<u32>(key >> 32)),
+                                  static_cast<i32>(static_cast<u32>(key))};
+        for (const Id128& id : document.ids_in_tile(tile))
+          live_ids.push_back(id);
+        claims_.clear();
+        for (const TileSource& source : sources_) {
+          if (source.tile_in != nullptr) source.tile_in(source.context, document, tile, claims_);
+        }
+        for (const Id128& id : claims_) {
+          if (document.exists(id)) live_ids.push_back(id);
+        }
+      }
+      std::sort(live_ids.begin(), live_ids.end());
+      live_ids.erase(std::unique(live_ids.begin(), live_ids.end()), live_ids.end());
+    }
     if (scope.kind == MaterializeScope::Kind::Tile) {
       // The tile is live from here, and the records the sources place in it now are in its scope
       // as well as its own (TileSource): the union, in id order, of both.
@@ -636,8 +678,9 @@ MaterializeReport Materializer::materialize(const doc::Document& document,
     // Held under this scope and not seen by the pass: deleted, removed with a layer, or — for a
     // tile or the untiled records — filed elsewhere by the document now. For a tile that is what
     // the driver files under it, not everything it holds. One a source places in another live tile
-    // is filed there instead of let go.
-    if (scope.kind == MaterializeScope::Kind::Whole) {
+    // is filed there instead of let go. The live scope is everything held: a streamed world holds
+    // nothing outside its untiled records and its live tiles.
+    if (scope.kind == MaterializeScope::Kind::Whole || live) {
       for (u32 i = 0; i < held_.size(); ++i) {
         if (held_.value_at(i).seen_pass != pass_) gone_.push_back(held_.key_at(i));
       }
@@ -675,6 +718,9 @@ MaterializeReport Materializer::materialize(const doc::Document& document,
   if (scope.kind == MaterializeScope::Kind::Whole) {
     revision_ = document.revision();
     synced_ = true;
+  } else if (live) {
+    live_revision_ = document.revision();
+    live_synced_ = true;
   }
   report.revision = document.revision();
   report.live = held_.size();
@@ -714,11 +760,13 @@ u32 Materializer::dematerialize_all() {
   filed_.clear();
   filed_untiled_.clear();
   synced_ = false;
+  live_synced_ = false;
   return report.dematerialized;
 }
 
 u32 Materializer::dematerialize(const MaterializeScope& scope) {
-  if (scope.kind == MaterializeScope::Kind::Whole) return dematerialize_all();
+  if (scope.kind == MaterializeScope::Kind::Whole || scope.kind == MaterializeScope::Kind::Live)
+    return dematerialize_all();
   MaterializeReport report;
   if (scope.kind == MaterializeScope::Kind::Tile) {
     // Not live from here, and the sources hear it before its records go, so what they do for a
@@ -737,7 +785,7 @@ u32 Materializer::dematerialize(const MaterializeScope& scope) {
 
 void Materializer::held(const MaterializeScope& scope, Vector<Id128>& out) const {
   out.clear();
-  if (scope.kind == MaterializeScope::Kind::Whole) {
+  if (scope.kind == MaterializeScope::Kind::Whole || scope.kind == MaterializeScope::Kind::Live) {
     for (const Id128& id : held_.keys())
       out.push_back(id);
   } else {
@@ -811,7 +859,10 @@ MaterializeReport Materializer::materialize_arrivals(const doc::Document& docume
   }
   if (scratch_ids_.empty()) return report;
   ++pass_;
-  if (document_ != &document) synced_ = false;
+  if (document_ != &document) {
+    synced_ = false;
+    live_synced_ = false;
+  }
   document_ = &document;
   if (!depth_cache_.empty()) depth_cache_.clear();
   order_.clear();

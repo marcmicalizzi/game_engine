@@ -606,6 +606,14 @@ MigrationRegistry& MigrationRegistry::global() {
 
 void MigrationRegistry::add(const Migration& migration) { migrations_.push_back(migration); }
 
+bool additive_step(const TypeInfo& type, u16 to_version) noexcept {
+  if (type.kind != Kind::Struct || to_version < 2 || to_version > type.version) return false;
+  for (const FieldInfo& field : type.fields) {
+    if (field.since_version == to_version) return true;
+  }
+  return false;
+}
+
 bool MigrationRegistry::migrate(const TypeInfo& type, JsonValue& object, u16 from_version,
                                 ReadContext& ctx) const {
   const std::string_view name(type.qualified_name);
@@ -617,6 +625,15 @@ bool MigrationRegistry::migrate(const TypeInfo& type, JsonValue& object, u16 fro
         break;
       }
     }
+    // **The additive step** (schemas/README.md, "Evolution rules"; plan 03 §3.8): a version that
+    // only added fields, each `@since` it with a default, needs nothing done to the JSON — a field
+    // the object lacks takes its default when it is read — so the step is derived from the tables
+    // schemac generated rather than written by hand. A version that adds no field (a field's type
+    // changed, a meaning changed) is not additive and still needs a registered step, and one
+    // registered by hand wins over the derived one, which is how a version that adds a field and
+    // also renames or removes one says what to do with the old one. A removal or rename left to
+    // the derived step is still refused, by the reader, as an unknown field.
+    if (step == nullptr && additive_step(type, static_cast<u16>(v + 1u))) continue;
     if (step == nullptr) {
       char buf[128];
       std::snprintf(buf, sizeof(buf), "no migration registered from version %u to %u", v, v + 1);
@@ -626,6 +643,19 @@ bool MigrationRegistry::migrate(const TypeInfo& type, JsonValue& object, u16 fro
     if (!step->apply(object, ctx)) return false;
   }
   return true;
+}
+
+bool upcast(const TypeInfo& type, JsonValue& object, u16 stored_version, ReadContext& ctx) {
+  if (stored_version > type.version) {
+    ctx.error("stored schema version is newer than this build understands");
+    return false;
+  }
+  if (stored_version == 0) {
+    ctx.error("stored schema version 0 is not a version");
+    return false;
+  }
+  return stored_version == type.version ||
+         MigrationRegistry::global().migrate(type, object, stored_version, ctx);
 }
 
 bool from_json_versioned(const TypeInfo& type, void* object, JsonValue in, u16 stored_version,

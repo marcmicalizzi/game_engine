@@ -1,0 +1,134 @@
+{
+  "name": "residents",
+  "objects": [
+    {
+      "deleted": false,
+      "id": "6e70632d706c6163b456bcfc00000055",
+      "parent": null,
+      "properties": {
+        "capacity": 4,
+        "name": "home 85",
+        "position": [
+          -39.0,
+          0.0,
+          86.25
+        ],
+        "role": "Home"
+      },
+      "type": "engine.npc.Place"
+    },
+    {
+      "deleted": false,
+      "id": "6e70632d72657369b456bcfc00000010",
+      "parent": null,
+      "properties": {
+        "clock_offset": 25195000000,
+        "home": "6e70632d706c6163b456bcfc00000055",
+        "job": "6e70632d706c6163b456bcfc0000006b",
+        "leisure": "6e70632d706c6163b456bcfc00000079",
+        "next_event": 19925000000,
+        "position": [
+          -39.0,
+          0.0,
+          86.25
+        ],
+        "routine": "NightWorker",
+        "service": "6e70632d706c6163b456bcfc00000070",
+        "state": "Sleeping"
+      },
+      "type": "engine.npc.Resident"
+    },
+    {
+      "deleted": false,
+      "id": "6e70632d72657369b456bcfc000000c2",
+      "parent": null,
+      "properties": {
+        "clock_offset": 25195000000,
+        "home": "6e70632d706c6163b456bcfc00000055",
+        "leisure": "6e70632d706c6163b456bcfc00000077",
+        "next_event": 7025000000,
+        "position": [
+          -39.0,
+          0.0,
+          86.25
+        ],
+        "routine": "Retiree",
+        "service": "6e70632d706c6163b456bcfc00000072",
+        "state": "AtHome"
+      },
+      "type": "engine.npc.Resident"
+    },
+    {
+      "deleted": false,
+      "id": "6e70632d72657369b456bcfc000000c4",
+      "parent": null,
+      "properties": {
+        "clock_offset": 25195000000,
+        "home": "6e70632d706c6163b456bcfc00000055",
+        "leisure": "6e70632d706c6163b456bcfc00000078",
+        "next_event": 3125000000,
+        "position": [
+          -39.0,
+          0.0,
+          86.25
+        ],
+        "routine": "Retiree",
+        "service": "6e70632d706c6163b456bcfc0000006e",
+        "state": "Sleeping"
+      },
+      "type": "engine.npc.Resident"
+    },
+    {
+      "deleted": false,
+      "id": "6e70632d72657369b456bcfc00000137",
+      "parent": null,
+      "properties": {
+        "clock_offset": 25195000000,
+        "home": "6e70632d706c6163b456bcfc00000055",
+        "job": "6e70632d706c6163b456bcfc00000064",
+        "leisure": "6e70632d706c6163b456bcfc00000078",
+        "next_event": 1805000000,
+        "position": [
+          -39.0,
+          0.0,
+          86.25
+        ],
+        "routine": "DayWorker",
+        "service": "6e70632d706c6163b456bcfc00000073",
+        "state": "AtHome"
+      },
+      "type": "engine.npc.Resident"
+    },
+    {
+      "deleted": false,
+      "id": "6e70632d72657369b456bcfc00000165",
+      "parent": null,
+      "properties": {
+        "clock_offset": 25195000000,
+        "home": "6e70632d706c6163b456bcfc00000055",
+        "leisure": "6e70632d706c6163b456bcfc00000078",
+        "next_event": 11285000000,
+        "position": [
+          -39.0,
+          0.0,
+          86.25
+        ],
+        "routine": "Idle",
+        "service": "6e70632d706c6163b456bcfc00000074",
+        "state": "Sleeping"
+      },
+      "type": "engine.npc.Resident"
+    }
+  ],
+  "role": "Base",
+  "types": [
+    {
+      "name": "engine.npc.Place",
+      "version": 2
+    },
+    {
+      "name": "engine.npc.Resident",
+      "version": 2
+    }
+  ]
+}

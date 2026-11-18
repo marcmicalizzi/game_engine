@@ -197,4 +197,11 @@ u32 stable_type_id(std::string_view qualified_name) noexcept {
   return hash;
 }
 
+const TypeInfo* find_by_stable_id(u32 id) noexcept {
+  for (const TypeInfo* type : Registry::global().all()) {
+    if (stable_type_id(type->qualified_name) == id) return type;
+  }
+  return nullptr;
+}
+
 }  // namespace engine::schema

@@ -919,6 +919,30 @@ TEST_CASE("ops: run_headless streams a partitioned document tile by tile round i
   // With an entity store: the near place is an entity, the other two are not.
   CHECK(number(world, "created") == 1);
   CHECK(number(run, "materialized") == 1);
+
+  // Edits between calls to records in a live tile reach the world when the next call starts, not
+  // when their tile next comes in (world.md, "Edits between calls"; roadmap D20): a place made in
+  // the origin's tile, and the near place renamed, then the new place deleted again.
+  const char* k_new = "00000000000000300000000000000004";
+  auto apply = [&](const std::string& commands) {
+    return at(result_of(
+                  host.call("doc.apply", s + ",\"commands\":" + commands +
+                                             ",\"attribution\":{\"actor\":\"ops-test\",\"role\":"
+                                             "\"environment\",\"task\":\"t\"}}")),
+              "committed") == JsonValue(true);
+  };
+  REQUIRE(apply("[" + node(k_new, 10, 10) + ",{\"kind\":\"SetProperty\",\"id\":\"" + k_near +
+                "\",\"name\":\"name\",\"value\":\"renamed\"}]"));
+  const JsonValue edited = host.call("session.run_headless", s + ",\"seconds\":0.1}");
+  const JsonValue& edited_pass = at(result_of(edited), "materialize");
+  CHECK(at(edited_pass, "full") == JsonValue(false));
+  CHECK(number(edited_pass, "created") == 1);
+  CHECK(number(edited_pass, "updated") == 1);
+  CHECK(number(result_of(edited), "materialized") == 2);
+  REQUIRE(apply(std::string("[{\"kind\":\"DeleteObject\",\"id\":\"") + k_new + "\"}]"));
+  const JsonValue deleted = host.call("session.run_headless", s + ",\"seconds\":0.1}");
+  CHECK(number(at(result_of(deleted), "materialize"), "dematerialized") == 1);
+  CHECK(number(result_of(deleted), "materialized") == 1);
 #endif
 
   // Two kilometres east: the origin's tiles go (and are written to the store), the far place's

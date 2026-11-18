@@ -1,0 +1,69 @@
+{
+  "name": "residents",
+  "objects": [
+    {
+      "deleted": false,
+      "id": "6e70632d706c6163b456bcfc0000006d",
+      "parent": null,
+      "properties": {
+        "capacity": 40,
+        "name": "workplace 9",
+        "position": [
+          -24.25,
+          0.0,
+          39.25
+        ],
+        "role": "Work"
+      },
+      "type": "engine.npc.Place"
+    },
+    {
+      "deleted": false,
+      "id": "6e70632d706c6163b456bcfc00000077",
+      "parent": null,
+      "properties": {
+        "capacity": 40,
+        "name": "leisure 1",
+        "position": [
+          -33.0,
+          0.0,
+          56.5
+        ],
+        "role": "Leisure"
+      },
+      "type": "engine.npc.Place"
+    },
+    {
+      "deleted": false,
+      "id": "6e70632d72657369b456bcfc000000ed",
+      "parent": null,
+      "properties": {
+        "clock_offset": 25195000000,
+        "home": "6e70632d706c6163b456bcfc00000008",
+        "job": "6e70632d706c6163b456bcfc0000006d",
+        "leisure": "6e70632d706c6163b456bcfc00000079",
+        "next_event": 6005000000,
+        "position": [
+          -24.25,
+          0.0,
+          39.25
+        ],
+        "routine": "DayWorker",
+        "service": "6e70632d706c6163b456bcfc00000075",
+        "state": "Travelling"
+      },
+      "type": "engine.npc.Resident"
+    }
+  ],
+  "role": "Base",
+  "types": [
+    {
+      "name": "engine.npc.Place",
+      "version": 2
+    },
+    {
+      "name": "engine.npc.Resident",
+      "version": 2
+    }
+  ]
+}

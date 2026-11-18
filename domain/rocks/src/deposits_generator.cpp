@@ -67,14 +67,10 @@ bool migrate_layer_1(JsonValue& object, schema::ReadContext&) {
   if (none) object["supply_m"] = JsonValue(0.0);
   return true;
 }
-// DepositLayer 2 -> 3 (G191): `far_rings` is new and takes its default; nothing else moved.
-bool migrate_layer_2(JsonValue&, schema::ReadContext&) { return true; }
-// DepositLayer 3 -> 4 (G198): `near_rings` is new and takes its default; nothing else moved.
-bool migrate_layer_3(JsonValue&, schema::ReadContext&) { return true; }
+// DepositLayer 2 -> 3 (G191, `far_rings`) and 3 -> 4 (G198, `near_rings`) only added a field each,
+// `@since` its version with a default: those steps are generated (`schema::additive_step`, D27).
 const bool k_migration_registered = [] {
   schema::MigrationRegistry::global().add({"engine.rocks.DepositLayer", 1, &migrate_layer_1});
-  schema::MigrationRegistry::global().add({"engine.rocks.DepositLayer", 2, &migrate_layer_2});
-  schema::MigrationRegistry::global().add({"engine.rocks.DepositLayer", 3, &migrate_layer_3});
   return true;
 }();
 // G198: a far tile's placement id, past every piece's (a piece's is its patch's plus k times the

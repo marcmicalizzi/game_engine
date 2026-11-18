@@ -178,4 +178,32 @@ store::Status WorldStore::read_tile(TileCoord tile, Vector<TileRow>& rows, bool&
       &read);
 }
 
+bool read_event_payload(const store::EventRecord& record, EventPayload& out, std::string& error) {
+  out = EventPayload{};
+  const schema::TypeInfo* type = schema::find_by_stable_id(record.type);
+  if (type == nullptr || type->kind != schema::Kind::Struct) {
+    error = "event type " + std::to_string(record.type) + " is no struct this build has";
+    return false;
+  }
+  const std::string_view text(reinterpret_cast<const char*>(record.payload.data()),
+                              record.payload.size());
+  JsonValue value;
+  if (!parse_json(text, value).ok || !value.is_object()) {
+    error = std::string("the payload of a ") + type->qualified_name + " event is not a JSON object";
+    return false;
+  }
+  schema::ReadContext ctx;
+  if (!schema::upcast(*type, value, record.payload_version, ctx)) {
+    error = std::string("a ") + type->qualified_name + " event written at version " +
+            std::to_string(record.payload_version) + " does not read as version " +
+            std::to_string(type->version) +
+            (ctx.diagnostics.empty() ? std::string() : ": " + ctx.diagnostics[0].message);
+    return false;
+  }
+  out.type = type;
+  out.written_version = record.payload_version;
+  out.value = std::move(value);
+  return true;
+}
+
 }  // namespace engine::world

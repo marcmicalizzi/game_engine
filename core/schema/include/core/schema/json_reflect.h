@@ -75,16 +75,29 @@ struct Migration {
   bool (*apply)(JsonValue& object, ReadContext& ctx);
 };
 
+// Whether the step to `to_version` only added fields: some field of `type` is `@since(to_version)`.
+// Such a step is generated — derived from the tables schemac emits — and changes nothing in the
+// JSON, since an absent field takes its default (schemas/README.md, "Evolution rules").
+bool additive_step(const TypeInfo& type, u16 to_version) noexcept;
+
 class MigrationRegistry {
  public:
   static MigrationRegistry& global();
   void add(const Migration& migration);
-  // Applies every step from `from_version` up to `type.version`; fails if a step is missing.
+  // Applies every step from `from_version` up to `type.version`: the one registered for it, or else
+  // the generated additive step when the version only added fields; fails naming the first step
+  // that is neither.
   bool migrate(const TypeInfo& type, JsonValue& object, u16 from_version, ReadContext& ctx) const;
 
  private:
   Vector<Migration> migrations_;
 };
+
+// Brings a JSON object stored at `stored_version` of `type` up to the build's version, through
+// every step the registry has or generates, without mapping it: what an event's payload read from
+// the store goes through (plan 03 §3.8, "events are upcast"). False, with the reason in `ctx`, for
+// a version newer than the build's, a version 0, or a missing step.
+bool upcast(const TypeInfo& type, JsonValue& object, u16 stored_version, ReadContext& ctx);
 
 // Reads an object stored at an older schema version: migrates the JSON, then maps it.
 bool from_json_versioned(const TypeInfo& type, void* object, JsonValue in, u16 stored_version,

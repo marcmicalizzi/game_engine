@@ -2080,10 +2080,11 @@ bool session_run_headless(protocol::Context& ctx, const protocol::RunHeadlessPar
   world->bind(session, &ctx.sessions->vfs());
   world->set_writeback_every(params.write_back_every);
   // A streamed world (docs/subsystems/world.md) materializes the document a tile at a time round
-  // the declared observers: the records in no tile once, whole, and the tiles as the ring takes
-  // them. Otherwise the document into the world before the first tick: all of it on the first
-  // call, what changed since on later ones — edits made through doc.apply between two calls reach
-  // the world here.
+  // the declared observers: the records in no tile and the live tiles' records here (the live
+  // scope: what changed since the last call, so an edit or a deletion in a live tile reaches the
+  // world now and not when its tile next comes in), and the tiles as the ring takes them. Otherwise
+  // the document into the world before the first tick: all of it on the first call, what changed
+  // since on later ones — edits made through doc.apply between two calls reach the world here.
   bool streamed = params.stream.has_value();
   [[maybe_unused]] bool fill = false;
   sim::MaterializeScope scope = sim::MaterializeScope::whole();
@@ -2107,7 +2108,7 @@ bool session_run_headless(protocol::Context& ctx, const protocol::RunHeadlessPar
   // (or over a save and a load) is the run that never stopped (world.md, "Save and load").
   streamed = streamed || world->streaming();
 #endif
-  if (streamed) scope = sim::MaterializeScope::untiled();
+  if (streamed) scope = sim::MaterializeScope::live();
   const sim::MaterializeReport pass = world->materialize(session->document(), scope);
   protocol::MaterializeResult report;
   fill_materialize(pass, RuntimeWorld::tier(), report);

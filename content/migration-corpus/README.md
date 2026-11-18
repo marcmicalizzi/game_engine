@@ -4,7 +4,7 @@ Old documents and saves that every schema migration must still load ([plan 03 §
 
 `.gitattributes` here turns off every line-ending conversion: a save's manifest hashes every byte of its files, so a checkout that turned `\n` into `\r\n` would make every save refuse to load, naming the first file it changed.
 
-## `saves/` — save games
+## `saves/` — save games, and the documents they hold
 
 A save is a directory the world capability writes and reads ([world](../../docs/subsystems/world.md#save-and-load), [ADR-0042](../../docs/adr/0042-a-save-is-the-store-the-document-and-the-drivers.md)): `save.json`, the manifest, naming every other file with its size and hash and every format with the version it was written at; `document/`, the session's document directory; `world.db`, the persistent store, a SQLite backup — the one binary file, 40 KB, five 8 KiB pages; and the player's `input.jsonl` and `input-map.json`. **One save per version of the format that has existed**, starting with the one the format began at. A save is never rewritten once committed — it is what a version wrote, and the point is that a newer build still reads it.
 
@@ -27,16 +27,26 @@ Every save so far holds the same world, the one the replay test runs ([world](..
 
 **`LayerFile`, `TileProjection` and `SaveObserver` version 2 (2026-10-06) moved no loaded hash and every continued one, and `v4` is the save they write.** Each is a step for every older save and rewrites nothing: a layer file with no type table loads as before ([doc](../../docs/subsystems/doc.md#a-layer-says-which-versions-it-holds)), and a float32 position's JSON is the double it widens to. What moved is the second after the load, and it is the projections: a tile that goes inactive in that second writes its records' positions as the document holds them, f64 (`TileProjection` 2), where it wrote the float32 each rounded to, and the carts have been moving in f64 since `Node` and `Mover` 2 — so `v1` and `v2` now continue to `232aa2a53b31c9ac` and `v3` to `c9b72a04d230351f`. That it is the projections and nothing else (the observers also move in f64 now) was checked: a build that rounded each projection's position back to float32 continued all three to their old hashes, `25aef5f85a9efe56` and `6ca572c1c0fa824b`. `v4` is the same world saved by this build: its state at tick 300 is `v3`'s to the hash — nothing the first 300 ticks wrote depended on the change — and so is the second after; what differs is its files, whose layers name their record types' versions and whose manifest names the three new versions.
 
-### The resident save: written on the owner's machine, not yet here
+### The resident save
 
-The npc capability's record types (`engine.npc.Resident`, `engine.npc.Place`, [npc](../../docs/subsystems/npc.md)) join the corpus through a save of their own, `v2-residents`: the same save format as `v2`, holding a world of 400 generated residents and their places on 64 m tiles, streamed round the replay test's walking and still observers and saved at tick 300. It is written by `apps/engine_cli/tests/npc_replay_tests.cpp`'s helper, "save corpus: write the resident save when asked", which does nothing unless `ENGINE_SAVE_CORPUS_NPC_OUT` names the directory:
+The npc capability's record types (`engine.npc.Resident`, `engine.npc.Place`, [npc](../../docs/subsystems/npc.md)) are in the corpus through a save of their own, `v4-residents` (roadmap D23, 2026-11-17): the save format `v4` is written in, holding a world of 400 generated residents and their places on 64 m tiles, streamed round the replay test's walking and still observers and saved at tick 300, 61 files and 367 KB. It was written by `apps/engine_cli/tests/npc_replay_tests.cpp`'s helper, "save corpus: write the resident save when asked", which does nothing unless `ENGINE_SAVE_CORPUS_NPC_OUT` names the directory:
 
 ```powershell
-$env:ENGINE_SAVE_CORPUS_NPC_OUT = "content/migration-corpus/saves/v2-residents"
+$env:ENGINE_SAVE_CORPUS_NPC_OUT = "content/migration-corpus/saves/v4-residents"
 build/msvc-debug/apps/engine_cli/engine_engine_cli_tests.exe -tc="save corpus: write the resident*"
 ```
 
-It is not committed yet: the capability was built in an environment that could not build engine-host or the store, so the save and its row in the table above and in `corpus()` are added, as step 2 and 3 below say, on the owner's machine. Until then a build without the npc capability refuses nothing here, and a build with it has no corpus entry that names its types.
+It was meant to be `v2-residents` when the capability was built (in an environment that could not build engine-host or the store); by the time a machine that could wrote it, the format was `v4`'s, so it is named for that. It has no player, so it continues one second on its own. A build without the npc capability refuses it naming `engine.npc.Resident` (`CorpusSave::needs` in the test), as one without kinematics refuses the others naming `engine.kinematics.Mover`.
+
+| Save | Written by | Formats it names | Loaded tick | Hash in its manifest | Hash once loaded | Migrations | Hash after one more second |
+|---|---|---|---|---|---|---|---|
+| `v4-residents` | `engine-host 0.0.1`, 2026-11-17 | as `v4`, with `engine.npc.Resident`, `Place` and `NpcState` 2 in place of the carts and places | 300 | `30fe42fed65a7a18` | `30fe42fed65a7a18` | none | `31278070c16babc9` |
+
+Its numbers were measured on MSVC; the Linux container's are in the hand-back of the change that added it.
+
+## The documents
+
+The corpus's documents are the saves' own (roadmap D24, 2026-11-17): every save holds the document directory its version wrote, and `save_tests.cpp`'s case "document corpus: every save's document opens and saves to what this version writes" opens each **on its own**, as a session opens any document and not through a load, and saves it — [plan 03 §3.8](../../docs/plan/03-data-model.md#38-schema-evolution)'s "documents migrated on open and rewritten on the next checkpoint". A second save writes nothing new, and the first is held to what this version writes: `v3`'s document, written before a layer file named its record types' versions ([doc](../../docs/subsystems/doc.md#a-layer-says-which-versions-it-holds)), saves to `v4`'s committed document byte for byte, manifest and every layer file; `v1`'s, whose carts moved in float32, saves to what `v2`'s saves to; `v4`'s and `v4-residents`' save to themselves. The journal is left out of the comparison: it is the history of the run, not the document's content. Copies of these directories under a `documents/` of their own would hold the same bytes twice, so a document that is not a save's — one at a record-type version no save holds — gets a directory here when there is one to commit.
 
 ### Adding a version
 
