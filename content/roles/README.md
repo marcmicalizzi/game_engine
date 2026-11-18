@@ -10,18 +10,18 @@ says what each check does and why.
 
 What the six say, in short:
 
-| Role | May call (writes; reads are never restricted) | Layers | Review |
+| Role | May call (writes; reads are never restricted, and a read that leaves a file is refused only to a credential that may only read: [what a read may do](../../docs/subsystems/protocol.md#what-a-read-may-do)) | Layers | Review |
 |---|---|---|---|
 | director | everything, `doc.checkpoint`, `doc.rollback_to` and `doc.collect_blobs` among it | every layer | no: it promotes and rejects |
-| designer | `doc.apply` and a transaction's `doc.begin`, `doc.commit` and `doc.rollback`, undo and redo, `doc.propose_layer`, `doc.reject`, `lease.*`, `doc.put_blob`, the ledger's `task.*` and `review.raise` | every layer, through proposals | yes |
+| designer | `doc.apply` and a transaction's `doc.begin`, `doc.commit` and `doc.rollback`, undo and redo, `doc.propose_layer`, `doc.reject`, `lease.*`, `doc.put_blob`, `doc.save`, the ledger's `task.*` and `review.raise` | every layer, through proposals | yes |
 | environment | the same | every layer, through proposals, and only records that stand in a tile | yes |
-| qa | nothing | none | — |
-| performance | `content.build`, `tunables.set` | none | — |
+| qa | `profile.start`, `profile.stop`, `render.unload`, `session.materialize`: the host's own state that looking needs, and no document | none | — |
+| performance | `content.build`, `tunables.set`, `profile.start`, `profile.stop`, `render.unload` | none | — |
 | reviewer (`human`) | `review.*`, `task.create`, `task.update` | none | — |
 
 **`default_role` is `qa`.** A call that names no role — every method that takes no attribution, and
 one that leaves `attribution.role` blank on a host started without `--role` — runs as QA and so
-changes nothing. That is the least a host told to restrict anything should grant a caller who did
+changes no document. That is the least a host told to restrict anything should grant a caller who did
 not say who it is. A host started without a roles file restricts nothing at all.
 
 **Checkpoints, rollbacks and blob collection are the director's.** A rollback rewrites every

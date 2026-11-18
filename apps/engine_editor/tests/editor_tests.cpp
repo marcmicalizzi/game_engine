@@ -1096,18 +1096,25 @@ TEST_CASE("engine-editor: the shell's three methods, through the editor's dispat
   const test::TempDir tmp("engine_editor_methods");
   editor::EditorDocument document;
   make_fixture(document, tmp.path());
-  // The editor's host as main.cpp makes it, with a roles file whose default role may write
-  // nothing: the three methods are UI state, registered read-only, and a role that may not write
-  // still lays out, selects and reads.
+  // The editor's host as main.cpp makes it, with a roles file. Moving the viewport, the selection
+  // and the gizmo is what is on the person's screen, so they are writes (protocol.md, "What a read
+  // may do"): a role that may write nothing is refused them and still reads; the role the person's
+  // page runs in names them. Before, they were registered read-only and every role moved the view.
   editor::EditorState state;
   state.document = &document;
   protocol::Policy policy;
   std::string error;
-  REQUIRE_MESSAGE(policy.load_roles("roles.json", R"({"default_role":"watcher","roles":[
+  const auto roles = [&](const char* default_role) {
+    REQUIRE_MESSAGE(policy.load_roles("roles.json", std::string(R"({"default_role":")") +
+                                                        default_role + R"(","roles":[
       {"name":"watcher","doc":"reads","methods":[],"layers":[],"tiles":[],"untiled":false,
-       "object_types":[],"review_required":false}]})",
-                                    error),
-                  error);
+       "object_types":[],"review_required":false},
+      {"name":"seat","doc":"the person's page","methods":["editor.*"],"layers":[],"tiles":[],
+       "untiled":false,"object_types":[],"review_required":false}]})",
+                                      error),
+                    error);
+  };
+  roles("watcher");
   protocol::Dispatcher d(
       protocol::Context{&document.sessions(), nullptr, nullptr, &state, &policy});
   protocol::add_builtin_methods(d);
@@ -1118,6 +1125,16 @@ TEST_CASE("engine-editor: the shell's three methods, through the editor's dispat
     REQUIRE_MESSAGE(parse_json(out, response).ok, out);
     return response;
   };
+  {
+    const JsonValue refused =
+        call(R"({"jsonrpc":"2.0","id":9,"method":"editor.layout","params":)"
+             R"({"x":1,"y":1,"width":10,"height":10,"device_pixel_ratio":1}})");
+    const JsonValue* e = refused.find("error");
+    REQUIRE_MESSAGE(e != nullptr, write_json(refused));
+    CHECK(e->find("code")->as_int() == 1008);
+    CHECK(state.layouts == 0);
+  }
+  roles("seat");
 
   // editor.layout as the page sends it — a notification, so nothing comes back — moves the
   // recorded rectangle; as a request it says where the window will put the viewport.

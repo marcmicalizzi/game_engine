@@ -50,17 +50,21 @@ struct EngineInfo @version(1) {
 }
 
 /// One entry of the method catalogue (`engine.methods`).
-struct MethodInfo @version(2) {
+struct MethodInfo @version(3) {
   name: string
   doc: string
   /// Qualified schema type of `params`; empty when the method takes none.
   params_type: string
   /// Qualified schema type of `result`.
   result_type: string
-  /// The method changes no document, no lease and no host setting, so no role restricts it
-  /// (plan 06 §6.5: read access is unrestricted). A method that does not say so is a write, and a
-  /// role has to allow it by name.
+  /// The method changes no document, no lease, no host setting, not the running world and not
+  /// what is on a person's screen, so no role restricts it (plan 06 §6.5: read access is
+  /// unrestricted). A method that does not say so is a write, and a role has to allow it by name.
   read_only: bool = false @since(2)
+  /// A read that may leave a file the caller asked for on the host's disk (a picture, a trace, a
+  /// save, a created document, derived data). A credential that may only read is refused the calls
+  /// that do (protocol.md, "What a read may do").
+  leaves_files: bool = false @since(3)
 }
 
 struct MethodsResult @version(1) {

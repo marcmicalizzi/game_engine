@@ -148,8 +148,14 @@ JsonValue Dispatcher::dispatch_one(const JsonValue& request) {
   // A connection bound to a credential is gated by its credential's role whether or not the host
   // loaded a roles file, and with no role it may only read (ADR-0069): a role the host cannot
   // enforce is never a label.
+  // A read that leaves a file is not a read for a connection that may only read: nothing is written
+  // on its behalf (protocol.md, "What a read may do").
   if (const Client* bound = bound_client(context_); bound != nullptr && !method->read_only) {
     if (!bound_allows_method(context_, *bound, *method, error)) {
+      return is_notification ? JsonValue() : error_response(id, error);
+    }
+  } else if (bound != nullptr) {
+    if (call_leaves_files(*method, p) && !bound_allows_files(context_, *bound, *method, error)) {
       return is_notification ? JsonValue() : error_response(id, error);
     }
   } else if (context_.policy != nullptr && !method->read_only) {

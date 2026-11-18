@@ -1848,37 +1848,61 @@ bool RenderHost::ensure_reference(Scene& scene, std::string& error, bool& unavai
   return true;
 }
 
+namespace {
+
+// Which `render.*` calls leave a file (protocol.md, "What a read may do"): a capture unless it is
+// kept in memory with no directory named, a compare that names a heat map.
+bool capture_leaves_files(const JsonValue& params) {
+  return !(protocol::param_is_true(params, "keep") && !protocol::param_is_named(params, "out_dir"));
+}
+bool compare_leaves_files(const JsonValue& params) {
+  return protocol::param_is_named(params, "flip_out");
+}
+
+}  // namespace
+
 void add_render_methods(protocol::Dispatcher& d) {
-  d.add(protocol::read_only(protocol::method<protocol::RenderLoadParams, protocol::RenderSceneInfo,
-                                             &render_load>(
-      "render.load",
-      "Load a mesh or a scene file into a GPU scene the session holds; returns its id and "
-      "counts. `settings.stream` also keeps the scene's streaming page table, which `page_bytes` "
-      "sizes for the procedural heightfield.")));
-  d.add(protocol::read_only(protocol::method<protocol::RenderCaptureParams,
-                                             protocol::RenderCaptureResult, &render_capture>(
-      "render.capture",
-      "Render one frame of a loaded scene offscreen and write the asked-for channels (color, "
-      "ids, depth, normals) as files.")));
+  // A read that leaves a file every time: a load may build derived data (the meshes' clusters, the
+  // textures, the ground's tile sets) into the derived-data root, which is the caller's choosing
+  // whenever `ddc` is named and the cache is cold.
+  d.add(protocol::read_leaving_files(
+      protocol::method<protocol::RenderLoadParams, protocol::RenderSceneInfo, &render_load>(
+          "render.load",
+          "Load a mesh or a scene file into a GPU scene the session holds; returns its id and "
+          "counts. `settings.stream` also keeps the scene's streaming page table, which "
+          "`page_bytes` sizes for the procedural heightfield.")));
+  d.add(protocol::read_leaving_files(
+      protocol::method<protocol::RenderCaptureParams, protocol::RenderCaptureResult,
+                       &render_capture>(
+          "render.capture",
+          "Render one frame of a loaded scene offscreen and write the asked-for channels (color, "
+          "ids, depth, normals) as files."),
+      &capture_leaves_files));
   d.add(protocol::read_only(protocol::method<protocol::RenderBenchmarkParams,
                                              protocol::RenderBenchmarkResult, &render_benchmark>(
       "render.benchmark",
       "Render a loaded scene for n frames with the camera held still; returns GPU milliseconds "
       "per pass, CPU milliseconds per frame, and the run's geometry residency in stats.stream.")));
-  d.add(protocol::read_only(protocol::method<protocol::RenderCompareParams,
-                                             protocol::RenderCompareResult, &render_compare>(
-      "render.compare", "FLIP, PSNR, and SSIM between two images, with an optional heat map.")));
-  d.add(protocol::read_only(protocol::method<protocol::RenderEvaluateParams,
-                                             protocol::RenderEvaluateResult, &render_evaluate>(
-      "render.evaluate",
-      "Render one frame of a loaded scene through the real-time path and through the reference "
-      "path tracer, compare them, write both pictures and the FLIP heat map, and return the "
-      "numbers and the times: plan 04 section 4.8's optimization loop in one call.")));
-  d.add(protocol::read_only(protocol::method<protocol::RenderUnloadParams,
-                                             protocol::RenderUnloadResult, &render_unload>(
+  d.add(protocol::read_leaving_files(
+      protocol::method<protocol::RenderCompareParams, protocol::RenderCompareResult,
+                       &render_compare>(
+          "render.compare", "FLIP, PSNR, and SSIM between two images, with an optional heat map."),
+      &compare_leaves_files));
+  d.add(protocol::read_leaving_files(
+      protocol::method<protocol::RenderEvaluateParams, protocol::RenderEvaluateResult,
+                       &render_evaluate>(
+          "render.evaluate",
+          "Render one frame of a loaded scene through the real-time path and through the "
+          "reference path tracer, compare them, write both pictures and the FLIP heat map, and "
+          "return the numbers and the times: plan 04 section 4.8's optimization loop in one "
+          "call.")));
+  // A write: the host's scenes are every client's, so releasing one by its id ends what another
+  // client loaded and is looking at, not only the caller's own handle.
+  d.add(protocol::method<protocol::RenderUnloadParams, protocol::RenderUnloadResult,
+                         &render_unload>(
       "render.unload",
       "Release a loaded scene: its GPU buffers, textures, acceleration structures, renderer and "
-      "host arrays. The id names nothing afterwards; the device stays open for the next load.")));
+      "host arrays. The id names nothing afterwards; the device stays open for the next load."));
   d.add(protocol::read_only(
       protocol::method_no_params<protocol::RenderProgressResult, &render_progress>(
           "render.progress",

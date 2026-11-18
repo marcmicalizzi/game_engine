@@ -151,6 +151,13 @@ const Role& bound_role(const Policy* policy, std::string_view name) noexcept;
 bool bound_allows_method(const Context& ctx, const Client& client, const MethodDesc& method,
                          RpcError& error);
 
+// The same gate's second half, for a read whose call leaves a file (rpc.h, `call_leaves_files`;
+// protocol.md, "What a read may do"): a bound connection that may only read — `bound_role` is the
+// role with no methods — is refused it, 1008 with `data.reason` "no role" or "unenforced role";
+// an enforced role passes.
+bool bound_allows_files(const Context& ctx, const Client& client, const MethodDesc& method,
+                        RpcError& error);
+
 // 1008 Forbidden with `data.reason` and `data.role`.
 RpcError forbidden(std::string message, std::string_view reason, std::string_view role,
                    JsonValue extra = {});

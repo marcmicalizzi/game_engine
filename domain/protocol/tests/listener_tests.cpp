@@ -415,6 +415,10 @@ struct Outcome {
   std::string refused;
   std::string role;  // as client.list shows it
   bool read = false;
+  // Why `session.open {create: true}`, a read that leaves a file, was refused ("" when it made the
+  // document), and whether the directory was there after a refusal.
+  std::string create_refused;
+  bool made_on_refusal = false;
 };
 
 Outcome try_write(BoundHost& host, const std::string& token, const std::string& doc) {
@@ -425,10 +429,27 @@ Outcome try_write(BoundHost& host, const std::string& token, const std::string& 
   Outcome out;
   const JsonValue list = call(ws, R"({"jsonrpc":"2.0","id":1,"method":"client.list"})");
   out.role = std::string((*list.find("result")->find("clients"))[0].find("role")->as_string());
-  // session.open is a read: it changes no document.
-  const JsonValue opened =
+  // session.open is a read: it changes no document. With `create` it leaves one on the disk, which
+  // a connection that may only read is refused (protocol.md, "What a read may do"); the document is
+  // then made by the host's own operator, a dispatch on no connection, and opened as it stands.
+  const std::string open_params = R"({"path":)" + write_json(JsonValue(doc));
+  JsonValue opened =
       call(ws, std::string(R"({"jsonrpc":"2.0","id":2,"method":"session.open","params":)") +
-                   R"({"path":)" + write_json(JsonValue(doc)) + R"(,"create":true}})");
+                   open_params + R"(,"create":true}})");
+  if (const JsonValue* e = opened.find("error"); e != nullptr) {
+    CHECK(e->find("code")->as_int() == 1008);
+    out.create_refused = std::string(e->find("data")->find("reason")->as_string());
+    out.made_on_refusal = std::filesystem::exists(doc);
+    {
+      const std::lock_guard<std::mutex> held(host.lock);
+      const std::string made = host.dispatcher.dispatch_text(
+          std::string(R"({"jsonrpc":"2.0","id":1,"method":"session.open","params":)") +
+          open_params + R"(,"create":true}})");
+      REQUIRE_MESSAGE(made.find("\"result\"") != std::string::npos, made);
+    }
+    opened = call(ws, std::string(R"({"jsonrpc":"2.0","id":5,"method":"session.open","params":)") +
+                          open_params + "}}");
+  }
   REQUIRE_MESSAGE(opened.find("result") != nullptr, write_json(opened));
   const std::string session(opened.find("result")->find("session")->as_string());
   const JsonValue applied = call(
@@ -528,9 +549,14 @@ TEST_CASE("listener: a credential's role binds with or without a roles file; no 
     CHECK(qa.role == "qa");
     CHECK(qa.refused == "unenforced role");
     CHECK(qa.read);
+    // A read that leaves a file is refused it too, and nothing is made (the sort's case).
+    CHECK(qa.create_refused == "unenforced role");
+    CHECK_FALSE(qa.made_on_refusal);
     const Outcome reader = try_write(host, reader_token, tmp.file("doc-b"));
     CHECK(reader.refused == "no role");
     CHECK(reader.read);
+    CHECK(reader.create_refused == "no role");
+    CHECK_FALSE(reader.made_on_refusal);
   }
   SUBCASE("a roles file and a director host: a credential with no role gets neither") {
     protocol::Policy policy;
@@ -549,9 +575,13 @@ TEST_CASE("listener: a credential's role binds with or without a roles file; no 
     CHECK(reader.role.empty());  // client.list tells the truth: it has none
     CHECK(reader.refused == "no role");
     CHECK(reader.read);
+    CHECK(reader.create_refused == "no role");
+    CHECK_FALSE(reader.made_on_refusal);
     const Outcome qa = try_write(host, qa_token, tmp.file("doc-d"));
     CHECK(qa.refused == "method");  // the role binds, and does not list doc.apply
     CHECK(qa.read);
+    // An enforced role keeps a read that leaves a file, confined by the host's roots.
+    CHECK(qa.create_refused.empty());
   }
 }
 

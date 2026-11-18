@@ -2990,14 +2990,14 @@ constexpr ToolDef k_tools[] = {
     {"profile_start", "Start profiling",
      "Start the host's frame capture: every frame it draws from now on (capture, benchmark), "
      "its GPU passes, CPU spans and zones, until profile_stop.",
-     "profile.start", true, false, false, &schema_profile_start, &run_profile_start},
+     "profile.start", false, false, false, &schema_profile_start, &run_profile_start},
     {"profile_report", "Read the frame report",
      "The running or last frame capture's report: per GPU pass, CPU span and zone, median, p95, "
      "p99 and max ms a frame over a window, bounded by max_series; out_dir writes the trace.",
-     "profile.report", true, false, true, &schema_profile_report, &run_profile_report},
+     "profile.report", false, false, true, &schema_profile_report, &run_profile_report},
     {"profile_stop", "Stop profiling",
      "Stop the frame capture and return its report; out_dir writes the trace for Perfetto.",
-     "profile.stop", true, false, false, &schema_profile_stop, &run_profile_stop},
+     "profile.stop", false, false, false, &schema_profile_stop, &run_profile_stop},
     {"run_headless", "Run headless",
      "Materialize the session's document into its runtime world and step it at the fixed step "
      "with no rendering, for game seconds or until a predicate over document properties and live "

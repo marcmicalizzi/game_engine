@@ -2812,16 +2812,17 @@ void add_ops_methods(protocol::Dispatcher& d) {
       "time round declared observers that may walk, and each tile reconciled from the document's "
       "store (the world capability). Returns ticks, game time, the materialization, the "
       "write-backs and the streamed tiles."));
-  d.add(protocol::read_only(protocol::method<protocol::MaterializeParams,
-                                             protocol::MaterializeResult, &session_materialize>(
+  // A write (protocol.md, "What a read may do"): it changes the session's running world, which
+  // every other client of the session runs and reads.
+  d.add(protocol::method<protocol::MaterializeParams, protocol::MaterializeResult,
+                         &session_materialize>(
       "session.materialize",
       "Materialize the session's document (or one tile of it) into its runtime world now, and "
       "report which record types mapped, how many records became entities, which were skipped and "
-      "why, and every mapping this build compiled.")));
-  // Read-only in the protocol's sense (protocol.md, "Identity, and what a role restricts"): none
-  // changes a document, a lease or a host setting. A save writes a new directory from what the
-  // session holds, as `doc.save` and `render.capture` write theirs; a load opens a new session on a
-  // new directory, as `session.open` with `create` does; the hash reads.
+      "why, and every mapping this build compiled."));
+  // The hash reads. A save is a read that leaves a file: a new directory from what the session
+  // holds, so a credential that may only read is refused it. A load is a write: it copies a save
+  // into a new directory and makes a running world there, as `session.run_headless` runs one.
   d.add(protocol::read_only(protocol::method<protocol::StateHashParams, protocol::StateHashResult,
                                              &session_state_hash>(
       "session.state_hash",
@@ -2829,20 +2830,19 @@ void add_ops_methods(protocol::Dispatcher& d) {
       "document's live records composed across the layers, and its store's events, projections "
       "and snapshots in key order, as one 64-bit number and its parts. Two runs of a world agree "
       "on it exactly when they left the same persistent state; a replay compares it.")));
-  d.add(protocol::read_only(protocol::method<protocol::SaveGameParams, protocol::SaveGameResult,
-                                             &session_save_game>(
-      "session.save_game",
-      "Save the session's running world into a new directory: its document, a consistent backup "
-      "of its store, the clock and seed, the streamed world's observers and active tiles, the "
-      "player's input log so far, and a save.json naming and hashing every file. Changes nothing "
-      "in the session.")));
-  d.add(protocol::read_only(protocol::method<protocol::LoadGameParams, protocol::LoadGameResult,
-                                             &session_load_game>(
+  d.add(protocol::read_leaving_files(
+      protocol::method<protocol::SaveGameParams, protocol::SaveGameResult, &session_save_game>(
+          "session.save_game",
+          "Save the session's running world into a new directory: its document, a consistent "
+          "backup of its store, the clock and seed, the streamed world's observers and active "
+          "tiles, the player's input log so far, and a save.json naming and hashing every file. "
+          "Changes nothing in the session.")));
+  d.add(protocol::method<protocol::LoadGameParams, protocol::LoadGameResult, &session_load_game>(
       "session.load_game",
       "Open a session on a save: its document and store copied into a new directory, the world "
       "made at the save's tick with its tiles, observers and player restored, so "
       "session.run_headless continues the run. Refuses a save newer than this build or whose files "
-      "do not match its manifest, naming what is wrong; migrates an older one.")));
+      "do not match its manifest, naming what is wrong; migrates an older one."));
   d.add(protocol::read_only(
       protocol::method<protocol::RunTestsParams, protocol::RunTestsResult, &engine_run_tests>(
           "engine.run_tests",

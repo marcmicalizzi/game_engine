@@ -302,8 +302,53 @@ TEST_CASE("policy: a roles file is checked when it is read") {
     CHECK_MESSAGE(human == (role.name == "reviewer"), role.name);
   }
   CHECK(shipped.roles().default_role == "qa");
-  CHECK(shipped.find_role("qa")->methods.empty());
+  // QA writes nothing of a document: what it may call is the host's own state that looking needs
+  // (protocol.md, "What a read may do"), and no layer, tile or object type.
+  {
+    const Role& qa = *shipped.find_role("qa");
+    const char* const expect[] = {"profile.start", "profile.stop", "render.unload",
+                                  "session.materialize"};
+    REQUIRE(qa.methods.size() == 4);
+    for (u32 i = 0; i < 4; ++i)
+      CHECK(qa.methods[i] == expect[i]);
+    CHECK(qa.layers.empty());
+    CHECK(qa.object_types.empty());
+  }
   CHECK(shipped.find_role("designer")->review_required);
+}
+
+// Every method's class (protocol.md, "What a read may do"): a read, a read that leaves a file, or a
+// write. The builtin table's three that the sort moved are pinned here so a later registration
+// cannot quietly put them back; engine-host's and the editor's are pinned by their own tests.
+TEST_CASE("roles: a read that leaves a file says so, and doc.save is a write") {
+  TempDir tmp("protocol_roles_sort");
+  Host host;
+  host.make_world(tmp.file("doc"));
+  const JsonValue methods = host.ok("engine.methods", JsonValue());
+  int seen = 0;
+  for (usize i = 0; i < at(methods, "methods").size(); ++i) {
+    const JsonValue& m = at(methods, "methods")[i];
+    const JsonValue& name = at(m, "name");
+    const bool read = at(m, "read_only") == JsonValue(true);
+    const bool files = at(m, "leaves_files") == JsonValue(true);
+    // No write claims to leave a file: the flag is a read's.
+    CHECK_MESSAGE(!(files && !read), at(m, "name").as_string());
+    if (name == JsonValue("doc.save")) {
+      CHECK_FALSE(read);
+      ++seen;
+    }
+    if (name == JsonValue("session.open")) {
+      CHECK(read);
+      CHECK(files);
+      ++seen;
+    }
+    if (name == JsonValue("doc.get") || name == JsonValue("lease.list")) {
+      CHECK(read);
+      CHECK_FALSE(files);
+      ++seen;
+    }
+  }
+  CHECK(seen == 4);
 }
 
 TEST_CASE("roles: no roles file restricts nothing, and the gate reads only writes") {

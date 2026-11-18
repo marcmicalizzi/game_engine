@@ -187,28 +187,35 @@ bool profile_stop(protocol::Context&, const protocol::ProfileReportParams& param
   return report(params, out, error);
 }
 
+// A report leaves a file when it names a directory for its trace (protocol.md, "What a read may
+// do").
+bool report_leaves_files(const JsonValue& params) {
+  return protocol::param_is_named(params, "out_dir");
+}
+
 }  // namespace
 
 void add_profile_methods(protocol::Dispatcher& d) {
-  // Read-only: a capture changes no document, lease or host setting — it records what the host
-  // does while it is on, as `render.capture` records a frame — so every role may profile.
-  d.add(protocol::read_only(
+  // Starting and stopping are writes: the capture is one switch for the whole process, every frame
+  // and thread pays for it while it is on, and a stop ends whichever client's capture is running.
+  // A role that profiles names them (content/roles/roles.json: qa, performance). The report reads.
+  d.add(
       protocol::method<protocol::ProfileStartParams, protocol::ProfileStartResult, &profile_start>(
           "profile.start",
           "Start the frame capture: every frame this host draws from now on (render.capture, "
           "render.benchmark), its GPU passes, its CPU spans and the zones of every thread, until "
-          "profile.stop. One capture a process.")));
-  d.add(protocol::read_only(
+          "profile.stop. One capture a process."));
+  d.add(protocol::read_leaving_files(
       protocol::method<protocol::ProfileReportParams, protocol::ProfileReport, &profile_report>(
           "profile.report",
           "The frame report of the running capture, or of the last one stopped: per GPU pass, CPU "
           "span and zone, the median, p95, p99 and max milliseconds a frame over a window, at most "
-          "max_series of each; with out_dir, the trace beside it for Perfetto.")));
-  d.add(protocol::read_only(
-      protocol::method<protocol::ProfileReportParams, protocol::ProfileReport, &profile_stop>(
-          "profile.stop",
-          "Stop the frame capture and return its frame report (profile.report's), with the trace "
-          "written into out_dir when one is named.")));
+          "max_series of each; with out_dir, the trace beside it for Perfetto."),
+      &report_leaves_files));
+  d.add(protocol::method<protocol::ProfileReportParams, protocol::ProfileReport, &profile_stop>(
+      "profile.stop",
+      "Stop the frame capture and return its frame report (profile.report's), with the trace "
+      "written into out_dir when one is named."));
 }
 
 }  // namespace engine::host

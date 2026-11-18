@@ -640,7 +640,11 @@ TEST_CASE("mcp: tools/list gives every tool a JSON Schema generated from the eng
         str(tools[i], "name") == "state_hash") {
       CHECK(at(at(tools[i], "annotations"), "readOnlyHint") == JsonValue(true));
     }
-    if (str(tools[i], "name") == "save_game" || str(tools[i], "name") == "load_game") {
+    // A tool over a write, or a read that may leave a file, is not read-only to a client either
+    // (protocol.md, "What a read may do"): the frame capture is one switch for the whole host.
+    if (str(tools[i], "name") == "save_game" || str(tools[i], "name") == "load_game" ||
+        str(tools[i], "name") == "profile_start" || str(tools[i], "name") == "profile_stop" ||
+        str(tools[i], "name") == "profile_report") {
       CHECK(at(at(tools[i], "annotations"), "readOnlyHint") == JsonValue(false));
     }
     if (str(tools[i], "name") == "delete_object" || str(tools[i], "name") == "unload") {

@@ -58,6 +58,7 @@ bool engine_methods(Context& ctx, MethodsResult& out, RpcError&) {
     info.params_type = m.params_type != nullptr ? m.params_type : "";
     info.result_type = m.result_type != nullptr ? m.result_type : "";
     info.read_only = m.read_only;
+    info.leaves_files = m.read_only && m.leaves_files != nullptr;
     out.methods.push_back(std::move(info));
   }
   return true;
@@ -733,10 +734,17 @@ void add_ledger_methods(Dispatcher& d);
 
 // Read-only methods are marked `read_only` and no role restricts them (plan 06 §6.5: read access
 // is unrestricted); every other one is a write a role must name. A method is read-only when it
-// changes no document, no lease and no host setting. `doc.save` is one — it writes what the
-// document already holds — and so are the housekeeping of a caller's own handles, `session.open`
-// and `session.close` (as `render.unload` is in engine-host): a role that may only look must still
-// be able to open what it looks at and let it go.
+// changes no document, no lease, no host setting, not the running world and not what is on a
+// person's screen; a read that leaves a file the caller asked for says so (`read_leaving_files`),
+// and protocol.md's "What a read may do" sorts every registration with its reason. `session.open`
+// and `session.close` are the housekeeping of a caller's own handles: a role that may only look
+// must still be able to open what it looks at and let it go, so only an open that creates the
+// document leaves a file. `doc.save` is a write: it rewrites the document's files from this host's
+// memory, over whatever another host saved since.
+namespace {
+bool open_creates(const JsonValue& params) { return param_is_true(params, "create"); }
+}  // namespace
+
 void add_builtin_methods(Dispatcher& d) {
   d.add(read_only(method_no_params<EngineInfo, &engine_info>(
       "engine.info", "Engine name, version, build configuration, process id, and counts.")));
@@ -745,9 +753,11 @@ void add_builtin_methods(Dispatcher& d) {
       "The method catalogue with parameter and result schema types, and which methods are "
       "read-only.")));
 
-  d.add(read_only(method<SessionOpenParams, SessionInfo, &session_open>(
-      "session.open",
-      "Open a document directory (create it with `create`); returns the session.")));
+  d.add(read_leaving_files(
+      method<SessionOpenParams, SessionInfo, &session_open>(
+          "session.open",
+          "Open a document directory (create it with `create`); returns the session."),
+      &open_creates));
   d.add(read_only(method<SessionRef, SessionCloseResult, &session_close>(
       "session.close",
       "Let go of a session this client opened; it closes when no client holds it.")));
@@ -825,8 +835,8 @@ void add_builtin_methods(Dispatcher& d) {
       "doc.validate", "Validate every record against the schema registry.")));
   d.add(read_only(method<JournalParams, JournalResult, &doc_journal>(
       "doc.journal", "Committed patches with attribution.")));
-  d.add(read_only(method<SessionRef, SessionInfo, &doc_save>(
-      "doc.save", "Write layer files and the manifest.")));
+  d.add(method<SessionRef, SessionInfo, &doc_save>(
+      "doc.save", "Write layer files and the manifest from what this host holds."));
 
   d.add(read_only(method_no_params<TunablesResult, &tunables_list>(
       "tunables.list", "Every tunable with value and range.")));

@@ -256,6 +256,31 @@ bool bound_allows_method(const Context& ctx, const Client& client, const MethodD
   return false;
 }
 
+bool bound_allows_files(const Context& ctx, const Client& client, const MethodDesc& method,
+                        RpcError& error) {
+  if (&bound_role(ctx.policy, client.who.role) != &no_role()) return true;
+  JsonValue extra = JsonValue::object();
+  extra.set("method", JsonValue(method.name));
+  extra.set("credential", JsonValue(client.credential));
+  const bool has_role = !blank(client.who.role);
+  const bool no_file = ctx.policy == nullptr || !ctx.policy->roles_loaded();
+  std::string why;
+  if (!has_role) {
+    why = "names no role";
+  } else if (no_file) {
+    why = "names role '" + client.who.role + "', and this host loaded no roles file to enforce it";
+  } else {
+    why = "names role '" + client.who.role + "', which the host's roles file does not have";
+  }
+  error = forbidden("the credential '" + client.credential + "' " + why +
+                        ", so its connection may only read and nothing is written on its behalf: " +
+                        std::string(method.name) +
+                        " as called leaves a file on the host's disk. Ask the host's operator for "
+                        "a credential with a role of the host's roles file (ADR-0069)",
+                    has_role ? "unenforced role" : "no role", client.who.role, std::move(extra));
+  return false;
+}
+
 bool Policy::allows_method(const MethodDesc& method, std::string_view named_role,
                            RpcError& error) const {
   if (method.read_only || !loaded_) return true;

@@ -106,22 +106,65 @@ struct Context {
 
 using Handler = bool (*)(Context& ctx, const JsonValue& params, JsonValue& result, RpcError& error);
 
+// Whether one call of a read leaves a file on the host's disk, from its params alone and before its
+// handler runs (protocol.md, "What a read may do").
+using LeavesFiles = bool (*)(const JsonValue& params);
+
 struct MethodDesc {
   const char* name;
   const char* doc;
   const char* params_type;  // qualified schema type, or "" for none
   const char* result_type;
   Handler handler;
-  // Changes no document, no lease and no host setting, so no role restricts it (plan 06 §6.5:
-  // read access is unrestricted). The default is a write on purpose: a method nobody classified
-  // is refused to a role that did not name it — loud — rather than open to every role — silent.
+  // Changes no document, no lease, no host setting, not the running world and not what is on a
+  // person's screen, so no role restricts it (plan 06 §6.5: read access is unrestricted). The
+  // default is a write on purpose: a method nobody classified is refused to a role that did not
+  // name it — loud — rather than open to every role — silent.
   bool read_only = false;
+  // A read that leaves a file the caller asked for (a picture, a trace, a save, a created document,
+  // derived data): null when it never does, else whether this call does. Such a call is refused to
+  // a credential that may only read — one with no role, or a role the host cannot enforce — since
+  // that state means nothing is written on its behalf (ADR-0069); an enforced role keeps it as a
+  // read, confined by the host's roots. Housekeeping a call did not choose (a lapsed lease or claim
+  // dropped, a lock file made) does not count: any caller's next call writes the same bytes.
+  LeavesFiles leaves_files = nullptr;
 };
 
 // `method` marked read-only: `d.add(read_only(method<P, R, &fn>(...)))`.
 inline MethodDesc read_only(MethodDesc method) noexcept {
   method.read_only = true;
   return method;
+}
+
+// Every call leaves a file.
+inline bool always_leaves_files(const JsonValue&) noexcept { return true; }
+
+// For a `LeavesFiles` that depends on one field: whether `params` sets `field` true, or names
+// something in it (a string that is not empty). Anything else is a call that names no file; its
+// params are the handler's to refuse.
+inline bool param_is_true(const JsonValue& params, std::string_view field) noexcept {
+  const JsonValue* v = params.is_object() ? params.find(field) : nullptr;
+  bool on = false;
+  return v != nullptr && v->get_bool(on) && on;
+}
+inline bool param_is_named(const JsonValue& params, std::string_view field) noexcept {
+  const JsonValue* v = params.is_object() ? params.find(field) : nullptr;
+  std::string_view s;
+  return v != nullptr && v->get_string(s) && !s.empty();
+}
+
+// `method` marked as a read that leaves a file: every call, or the calls `when` says.
+inline MethodDesc read_leaving_files(MethodDesc method,
+                                     LeavesFiles when = &always_leaves_files) noexcept {
+  method.read_only = true;
+  method.leaves_files = when;
+  return method;
+}
+
+// Whether a call of `method` with `params` would leave a file (false for a write: a write is gated
+// by its role's list instead).
+inline bool call_leaves_files(const MethodDesc& method, const JsonValue& params) noexcept {
+  return method.read_only && method.leaves_files != nullptr && method.leaves_files(params);
 }
 
 class Dispatcher {
@@ -187,13 +230,15 @@ MethodDesc method(const char* name, const char* doc) {
                     schema::type_of<P>().qualified_name,
                     schema::type_of<R>().qualified_name,
                     &typed_handler<P, R, Fn>,
-                    false};
+                    false,
+                    nullptr};
 }
 
 template <class R, bool (*Fn)(Context&, R&, RpcError&)>
 MethodDesc method_no_params(const char* name, const char* doc) {
   return MethodDesc{
-      name, doc, "", schema::type_of<R>().qualified_name, &typed_result_handler<R, Fn>, false};
+      name,  doc,    "", schema::type_of<R>().qualified_name, &typed_result_handler<R, Fn>,
+      false, nullptr};
 }
 
 }  // namespace engine::protocol
