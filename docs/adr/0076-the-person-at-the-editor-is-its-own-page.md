@@ -43,7 +43,9 @@ The person also has to keep editing as the page does today (as the editor's `dir
 
 ## Open questions
 
-For the owner: (1) the viewport at rest held until a look (recommended) or drawing at the editor's policy from the start; (2) the seat holding two roles (recommended) or one human role that may also edit; (3) a browser against engine-host never closing a person's item (recommended) or an `engine-host --person` whose printed address is the seat; (4) an optional system sign-in (Windows Hello) on closing a person's item, which a synthetic click cannot pass, at a prompt per decision, a Windows-only API, and a path no test can exercise — not recommended either way. Of the design: (5) whether a person can judge a subject without its surroundings, and if not, whether the look's scene carries the main scene's sky and lights or the content classes take a decision per instance; (6) "the shell never names a path" is recommended, not decided.
+For the owner: (1) the viewport at rest held until a look (recommended) or drawing at the editor's policy from the start.
+
+Decided since (2026-11-18): (2) **no sign-in prompt on closing** (the owner: "No prompt"): the question was whether closing a person's item should also ask for a system sign-in (Windows Hello) on each close, which a synthetic click cannot pass; with no prompt, the protection against a program that drives the desktop stays the agents' rule (A52) and the record of how each item was closed (`closed_via`). (3) **The seat holds two roles**, and (4) **a browser against engine-host never closes a person's item**: both decided by the coordinator as this record recommended, and reversible. Of the design: (5) whether a person can judge a subject without its surroundings, and if not, whether the look's scene carries the main scene's sky and lights or the content classes take a decision per instance; (6) "the shell never names a path" is recommended, not decided.
 
 ## When to revisit
 
