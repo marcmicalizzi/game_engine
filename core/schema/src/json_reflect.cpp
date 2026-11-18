@@ -290,6 +290,19 @@ bool read_enum(const TypeInfo& info, void* p, const JsonValue& in, ReadContext& 
   return true;
 }
 
+// The name, other than `key`, under which `object` also carries `field` — its own or another former
+// one — or nullptr.
+const char* other_name_present(const TypeInfo& info, const FieldInfo& field,
+                               const JsonValue& object, std::string_view key) {
+  if (key != field.name && object.find(field.name) != nullptr) return field.name;
+  const auto index = static_cast<u32>(&field - info.fields.data());
+  for (const FieldAlias& a : info.field_aliases) {
+    if (a.field == index && key != a.former_name && object.find(a.former_name) != nullptr)
+      return a.former_name;
+  }
+  return nullptr;
+}
+
 bool read_struct(const TypeInfo& info, void* obj, const JsonValue& in, ReadContext& ctx) {
   if (!in.is_object()) {
     ctx.error("expected an object");
@@ -299,6 +312,21 @@ bool read_struct(const TypeInfo& info, void* obj, const JsonValue& in, ReadConte
   auto* base = static_cast<std::byte*>(obj);
   for (auto [key, value] : in.as_object()) {
     const FieldInfo* f = info.find_field(key);
+    if (f == nullptr && !info.field_aliases.empty()) {
+      // A former name (`@alias`) reads as the field. An object carrying the field under two of its
+      // names is refused by both rather than read as whichever came last.
+      f = info.find_field_alias(key);
+      if (f != nullptr) {
+        if (const char* other = other_name_present(info, *f, in, key)) {
+          ctx.push_field(key.c_str());
+          ctx.error(std::string("carries both '") + key + "' and '" + other + "', two names of '" +
+                    f->name + "'");
+          ctx.pop();
+          ok = false;
+          continue;
+        }
+      }
+    }
     if (f == nullptr) {
       if (!ctx.options.ignore_unknown_fields) {
         ctx.push_field(key.c_str());
@@ -595,6 +623,97 @@ bool from_json(const TypeInfo& type, void* object, const JsonValue& in, ReadCont
   ref.size = type.size;
   ref.align = type.align;
   return from_json(ref, object, in, ctx);
+}
+
+// --- former names -----------------------------------------------------------------------------
+
+namespace {
+
+bool rename_value(const TypeRef& type, JsonValue& value, ReadContext& ctx, u32& renamed) {
+  switch (type.kind) {
+    case Kind::Struct:
+      if (!value.is_object()) return true;  // the reader says what is wrong with it
+      return rename_former_fields(*type.type, value.as_object(), ctx, renamed);
+    case Kind::Optional: return value.is_null() || rename_value(*type.element, value, ctx, renamed);
+    case Kind::Array:
+    case Kind::FixedArray: {
+      if (!value.is_array()) return true;
+      bool ok = true;
+      for (usize i = 0; i < value.size(); ++i) {
+        ctx.push_index(i);
+        ok = rename_value(*type.element, value[i], ctx, renamed) && ok;
+        ctx.pop();
+      }
+      return ok;
+    }
+    case Kind::Map: {
+      bool ok = true;
+      if (value.is_object()) {
+        JsonValue::Object& members = value.as_object();
+        for (u32 i = 0; i < members.size(); ++i) {
+          ctx.push_field(members.key_at(i).c_str());
+          ok = rename_value(*type.element, members.value_at(i), ctx, renamed) && ok;
+          ctx.pop();
+        }
+      } else if (value.is_array()) {  // a map with non-string keys: [[key, value], ...]
+        for (usize i = 0; i < value.size(); ++i) {
+          JsonValue& pair = value[i];
+          if (!pair.is_array() || pair.size() != 2) continue;
+          ctx.push_index(i);
+          ok = rename_value(*type.element, pair[1], ctx, renamed) && ok;
+          ctx.pop();
+        }
+      }
+      return ok;
+    }
+    default: return true;  // scalars and `json` hold no field of a schema type
+  }
+}
+
+}  // namespace
+
+bool rename_former_fields(const TypeInfo& type, JsonValue::Object& members, ReadContext& ctx,
+                          u32& renamed) {
+  if (type.kind != Kind::Struct) return true;
+  bool ok = true;
+  if (!type.field_aliases.empty()) {
+    // Found first and renamed after: a rename moves an entry of the sorted map.
+    Vector<std::string> former;
+    for (u32 i = 0; i < members.size(); ++i) {
+      const std::string& key = members.key_at(i);
+      if (type.find_field(key) == nullptr && type.find_field_alias(key) != nullptr)
+        former.push_back(key);
+    }
+    for (const std::string& key : former) {
+      const FieldInfo& field = *type.find_field_alias(key);
+      if (members.contains(std::string_view(field.name))) {
+        // Two names of one field, the current one and a former one, or two former ones (the
+        // first already renamed): refused by name, never read as whichever was last.
+        ctx.push_field(key.c_str());
+        ctx.error(std::string("carries both '") + key + "' and '" + field.name +
+                  "', two names of one field");
+        ctx.pop();
+        ok = false;
+        continue;
+      }
+      JsonValue value = std::move(*members.find_value(key));
+      members.erase(key);
+      members.insert_or_assign(std::string(field.name), std::move(value));
+      ++renamed;
+    }
+  }
+  for (u32 i = 0; i < members.size(); ++i) {
+    const FieldInfo* field = type.find_field(members.key_at(i));
+    if (field == nullptr) continue;
+    ctx.push_field(field->name);
+    ok = rename_value(field->type, members.value_at(i), ctx, renamed) && ok;
+    ctx.pop();
+  }
+  return ok;
+}
+
+bool rename_former_fields(const TypeRef& type, JsonValue& value, ReadContext& ctx, u32& renamed) {
+  return rename_value(type, value, ctx, renamed);
 }
 
 // --- migrations -------------------------------------------------------------------------------

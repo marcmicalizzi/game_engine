@@ -1,0 +1,28 @@
+{
+  "edit_layer": "notes",
+  "layers": [
+    {
+      "file": "base.json",
+      "name": "base",
+      "partition": null,
+      "role": "Base"
+    },
+    {
+      "file": "places/index.json",
+      "name": "places",
+      "partition": {
+        "property": "position",
+        "tile_size": 32.0
+      },
+      "role": "Feature"
+    },
+    {
+      "file": "notes.json",
+      "name": "notes",
+      "partition": null,
+      "role": "Feature"
+    }
+  ],
+  "name": "renamed",
+  "undo_position": 0
+}

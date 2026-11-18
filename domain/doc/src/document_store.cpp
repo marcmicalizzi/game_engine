@@ -835,7 +835,8 @@ bool load_partitioned(const DiskView& disk, const LayerRef& ref, Layer& out, Sto
     if (!read_file(disk, lf.tile(t.file), text, known, error) ||
         !parse_schema_text(text, path, file, error))
       return false;
-    if (std::string why; !check_record_types(file, why)) {
+    // Renamed before its tile is checked: a record's tile is read from its type's position field.
+    if (std::string why; !check_record_types(file, why) || !rename_defining_records(file, why)) {
       set_error(error, path, why);
       return false;
     }
@@ -894,7 +895,8 @@ bool load_partitioned(const DiskView& disk, const LayerRef& ref, Layer& out, Sto
   if (!read_file(disk, lf.untiled, text, known, error) ||
       !parse_schema_text(text, untiled_path, untiled, error))
     return false;
-  if (std::string why; !check_record_types(untiled, why)) {
+  if (std::string why;
+      !check_record_types(untiled, why) || !rename_defining_records(untiled, why)) {
     set_error(error, untiled_path, why);
     return false;
   }
@@ -1162,6 +1164,20 @@ bool DocumentStore::load(const io::Vfs& vfs, std::string_view dir, Document& out
   }
   const i32 edit = doc.find_layer(manifest.edit_layer);
   doc.set_edit_layer(edit >= 0 ? static_cast<u32>(edit) : doc.layer_count() - 1);
+
+  // **Former names** (doc.md, "A renamed type or field"): definitions were renamed as their files
+  // were read; an override's type is the composed one, so its properties are renamed now that the
+  // whole stack is here. A layer that changed is not what its files say, so the canonical check
+  // below has the next save write it in the new names. An override no layer defines keeps its
+  // names, and the document says which (`Document::kept_names`).
+  {
+    u32 renamed = 0;
+    std::string why;
+    if (!doc.rename_override_records(renamed, doc.kept_names_, why)) {
+      set_error(error, dir, why);
+      return false;
+    }
+  }
 
   // The journal, and where each of its lines ends: what lets the next append cut a dropped redo
   // tail, or a line an append died in, off in place.

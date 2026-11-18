@@ -1,5 +1,6 @@
 #include "model.h"
 
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -466,6 +467,81 @@ void resolve_materialize(MaterializeDecl& m, const SchemaFile& file,
   }
 }
 
+bool is_identifier(const std::string& s) {
+  if (s.empty() || std::isdigit(static_cast<unsigned char>(s[0]))) return false;
+  for (char c : s) {
+    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') return false;
+  }
+  return true;
+}
+
+bool is_dotted_name(const std::string& s) {
+  size_t start = 0;
+  while (true) {
+    const size_t dot = s.find('.', start);
+    if (!is_identifier(s.substr(start, dot == std::string::npos ? std::string::npos : dot - start)))
+      return false;
+    if (dot == std::string::npos) return true;
+    start = dot + 1;
+  }
+}
+
+// `@alias` (schemas/README.md, "Renaming a field or a type"). A field's former name is a name a
+// member of a stored object could carry, so it must be a field name and must not be one this struct
+// still has, or one its other fields claim: a reader could not tell which field it meant. A type's
+// former name is qualified here (a simple one is in the file's namespace) and belongs to one type
+// of everything compiled together and to no type that is declared now, for the same reason; the
+// runtime registry checks it again across libraries.
+void check_aliases(const SchemaFile& file, StructDecl& s,
+                   const std::map<std::string, DeclRef>& decls,
+                   std::map<std::string, SourceLoc>& former_types,
+                   std::vector<std::string>& errors) {
+  std::set<std::string> current;
+  for (const Field& f : s.fields)
+    current.insert(f.name);
+  std::set<std::string> former;
+  for (const Field& f : s.fields) {
+    for (const Attribute& a : f.attrs) {
+      if (a.name == "alias" && a.args.empty())
+        errors.push_back(err(a.loc, "@alias names the field's former names"));
+    }
+    for (const std::string& name : f.aliases) {
+      if (!is_identifier(name))
+        errors.push_back(
+            err(f.loc, "@alias(\"" + name + "\") on '" + f.name + "' is not a field name"));
+      else if (current.count(name) != 0)
+        errors.push_back(err(f.loc, "@alias(\"" + name + "\") on '" + f.name + "' names a field '" +
+                                        s.name + "' still has"));
+      else if (!former.insert(name).second)
+        errors.push_back(err(f.loc, "@alias(\"" + name + "\") on '" + f.name +
+                                        "': two fields of '" + s.name +
+                                        "' claim that former name"));
+    }
+  }
+  for (const Attribute& a : s.attrs) {
+    if (a.name == "alias" && a.args.empty())
+      errors.push_back(err(a.loc, "@alias names the type's former names"));
+  }
+  for (std::string& name : s.aliases) {
+    if (!is_dotted_name(name)) {
+      errors.push_back(
+          err(s.loc, "@alias(\"" + name + "\") on '" + s.name + "' is not a type name"));
+      continue;
+    }
+    if (name.find('.') == std::string::npos) name = file.ns + "." + name;
+    if (decls.count(name) != 0) {
+      errors.push_back(
+          err(s.loc, "@alias(\"" + name + "\") on '" + s.name + "' names a type that is declared"));
+      continue;
+    }
+    const auto [it, inserted] = former_types.emplace(name, s.loc);
+    if (!inserted)
+      errors.push_back(err(s.loc, "@alias(\"" + name + "\") on '" + s.name +
+                                      "': another type claims that former name at " +
+                                      it->second.file + ":" + std::to_string(it->second.line)));
+  }
+}
+
 }  // namespace
 
 const UnitInfo* find_unit(const std::string& symbol) {
@@ -513,6 +589,8 @@ bool resolve(Model& model, std::vector<std::string>& errors) {
   }
   if (!errors.empty()) return false;
 
+  // Every former type name in the files compiled together, to where it was declared: one type each.
+  std::map<std::string, SourceLoc> former_types;
   for (SchemaFile& file : model.files) {
     for (StructDecl& s : file.structs) {
       std::set<std::string> names;
@@ -526,7 +604,7 @@ bool resolve(Model& model, std::vector<std::string>& errors) {
         if (f.since == 0) errors.push_back(err(f.loc, "@since must be at least 1"));
         for (const Attribute& a : f.attrs) {
           if (a.name != "since" && a.name != "transient" && a.name != "deprecated" &&
-              a.name != "doc" && a.name != "unit") {
+              a.name != "doc" && a.name != "unit" && a.name != "alias") {
             errors.push_back(err(a.loc, "unknown field attribute '@" + a.name + "'"));
           }
           if (a.name == "unit" && a.args.size() != 1) {
@@ -545,16 +623,18 @@ bool resolve(Model& model, std::vector<std::string>& errors) {
       }
       for (const Attribute& a : s.attrs) {
         if (a.name != "version" && a.name != "kind" && a.name != "doc" && a.name != "transient" &&
-            a.name != "additive")
+            a.name != "additive" && a.name != "alias")
           errors.push_back(err(a.loc, "unknown struct attribute '@" + a.name + "'"));
         if (a.name == "additive" && a.args.empty())
           errors.push_back(err(a.loc, "@additive names the versions whose step only adds fields"));
       }
+      check_aliases(file, s, decls, former_types, errors);
       // @additive(v): the step to v is derived by the reader, so v must be a step this struct has
       // and one that adds a field (review B4, batch 68: a step is generated only where declared).
       for (uint16_t v : s.additive) {
         bool adds = false;
-        for (const Field& f : s.fields) adds = adds || f.since == v;
+        for (const Field& f : s.fields)
+          adds = adds || f.since == v;
         if (v < 2 || v > s.version || v > 63)
           errors.push_back(err(s.loc, "@additive(" + std::to_string(v) + ") on '" + s.name +
                                           "' is not a step to one of its versions"));

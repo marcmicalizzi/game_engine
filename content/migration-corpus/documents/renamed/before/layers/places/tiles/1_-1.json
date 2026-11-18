@@ -1,0 +1,26 @@
+{
+  "name": "places",
+  "objects": [
+    {
+      "deleted": false,
+      "id": "00000000000000280000000000000002",
+      "parent": null,
+      "properties": {
+        "position": [
+          40.0,
+          1.0,
+          -7.5
+        ],
+        "title": "buoy"
+      },
+      "type": "engine.doc.test.Beacon"
+    }
+  ],
+  "role": "Feature",
+  "types": [
+    {
+      "name": "engine.doc.test.Beacon",
+      "version": 1
+    }
+  ]
+}

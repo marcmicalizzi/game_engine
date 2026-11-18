@@ -497,3 +497,94 @@ TEST_CASE("schema: an additive version's step is generated, and only an additive
   CHECK(undeclared.diagnostics[0].message.find("no migration registered from version 1 to 2") !=
         std::string::npos);
 }
+
+// **A rename is an alias** (roadmap D28, plan 03 §3.8; schemas/README.md, "Renaming a field or a
+// type"): a reader takes a former name as the field or the type, a writer writes the new one, and
+// one field under two of its names is refused, naming both.
+TEST_CASE("schema: a former name reads as the field or the type, and is written as the new one") {
+  const TypeInfo& info = type_of<Renamed>();
+  REQUIRE(info.aliases.size() == 2);
+  CHECK(std::string_view(info.aliases[0]) == "engine.schema_test.Formerly");
+  CHECK(std::string_view(info.aliases[1]) == "engine.schema_test.old.Earlier");
+  REQUIRE(info.find_field_alias("name") != nullptr);
+  CHECK(std::string_view(info.find_field_alias("name")->name) == "label");
+  CHECK(info.find_field_alias("title") == info.find_field_alias("name"));
+  CHECK(info.find_field_alias("label") == nullptr);  // a current name is not a former one
+  CHECK(info.find_field_alias("count") == nullptr);
+
+  const Registry& registry = Registry::global();
+  CHECK(registry.find("engine.schema_test.Formerly") == nullptr);  // `find` is the current name
+  CHECK(registry.find_former("engine.schema_test.Formerly") == &info);
+  CHECK(registry.resolve("engine.schema_test.old.Earlier") == &info);
+  CHECK(registry.resolve("engine.schema_test.Renamed") == &info);
+  CHECK(registry.resolve("engine.schema_test.Nowhere") == nullptr);
+  CHECK(registry.has_field_aliases());
+  CHECK(registry.is_former_field_name("title"));
+  CHECK(registry.is_former_field_name("length"));
+  CHECK_FALSE(registry.is_former_field_name("label"));
+
+  // Read under the former names, nested ones included; written under the new.
+  JsonValue old;
+  REQUIRE(parse_json(R"({"name": "lamp", "count": 2, "parts": [{"length": 1.5}, {"size": 2}],
+                         "only": {"length": 4}})",
+                     old)
+              .ok);
+  Renamed r;
+  ReadContext ctx;
+  REQUIRE(from_json(r, old, ctx));
+  CHECK(r.label == "lamp");
+  CHECK(r.count == 2);
+  REQUIRE(r.parts.size() == 2);
+  CHECK(r.parts[0].size == 1.5f);
+  CHECK(r.parts[1].size == 2.0f);
+  REQUIRE(r.only.has_value());
+  CHECK(r.only->size == 4.0f);
+  const std::string written = write_json(to_json(r), JsonWriteOptions{false});
+  CHECK(written.find("\"label\":\"lamp\"") != std::string::npos);
+  CHECK(written.find("\"name\"") == std::string::npos);
+  CHECK(written.find("\"length\"") == std::string::npos);
+
+  // The JSON itself, renamed in place: what a holder of raw JSON — a document's record — writes
+  // back. Renamed, it is the new form, member for member.
+  JsonValue raw = old;
+  ReadContext rename_ctx;
+  u32 renamed = 0;
+  REQUIRE(rename_former_fields(info, raw.as_object(), rename_ctx, renamed));
+  CHECK(renamed == 3);  // `name`, and `length` twice
+  JsonValue expect;
+  REQUIRE(parse_json(R"({"label": "lamp", "count": 2, "parts": [{"size": 1.5}, {"size": 2}],
+                         "only": {"size": 4}})",
+                     expect)
+              .ok);
+  CHECK(raw == expect);
+  u32 again = 0;
+  REQUIRE(rename_former_fields(info, raw.as_object(), rename_ctx, again));
+  CHECK(again == 0);
+  CHECK(raw == expect);
+
+  // Both names of one field: refused by name, by the reader and by the rename. Two former names of
+  // one field are two names of it too.
+  for (const char* text : {R"({"label": "a", "name": "b"})", R"({"name": "a", "title": "b"})",
+                           R"({"label": "a", "parts": [{"size": 1, "length": 2}]})"}) {
+    CAPTURE(text);
+    JsonValue both;
+    REQUIRE(parse_json(text, both).ok);
+    Renamed b;
+    ReadContext read_ctx;
+    CHECK_FALSE(from_json(b, both, read_ctx));
+    REQUIRE_FALSE(read_ctx.diagnostics.empty());
+    CHECK(read_ctx.diagnostics[0].message.find("carries both") != std::string::npos);
+    JsonValue copy = both;
+    ReadContext both_ctx;
+    u32 n = 0;
+    CHECK_FALSE(rename_former_fields(info, copy.as_object(), both_ctx, n));
+    REQUIRE_FALSE(both_ctx.diagnostics.empty());
+    CHECK(both_ctx.diagnostics[0].message.find("carries both") != std::string::npos);
+  }
+  JsonValue nested;
+  REQUIRE(parse_json(R"({"label": "a", "parts": [{"size": 1, "length": 2}]})", nested).ok);
+  ReadContext nested_ctx;
+  u32 n = 0;
+  CHECK_FALSE(rename_former_fields(info, nested.as_object(), nested_ctx, n));
+  CHECK(nested_ctx.diagnostics[0].path == "parts[0].length");
+}
