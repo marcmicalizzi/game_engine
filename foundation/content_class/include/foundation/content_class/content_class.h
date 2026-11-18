@@ -187,11 +187,32 @@ bool read_sidecar_classes(const Categories& categories, std::string_view sidecar
                           ContentClasses& out, std::string& error,
                           Vector<MaterialClass>* materials = nullptr);
 
+// A policy's cap on a category that is not the engine's, kept by name as the file gave it: a
+// host learns a game's category from the data that carries it, so the category may not be in
+// the table when the file is read (docs/content-classes.md, "Where a policy lives, and what keeps
+// it from a client").
+struct NamedCap {
+  std::string category;
+  std::string cap;
+  Substitution substitution = Substitution::omit;
+};
+
 // The operator's policies, with `agent-default` compiled in. Cold data, built at start.
 struct NamedPolicy {
   std::string name;
+  // Resolved against the table it was last resolved with: an engine category's cap always, a
+  // game category's once the table holds it, every other category `none` with `omit`.
   ViewPolicy policy;
+  // Every cap the file gave a category that is not the engine's, by name.
+  Vector<NamedCap> by_name;
 };
+
+// `named.policy` with every by-name cap whose category the table now holds applied: its cap's
+// level, or `none` with `omit` when the ladder does not have that level, so a misspelt level
+// narrows and never widens. Every other category past the engine's three is `none` with `omit`,
+// whatever an earlier resolution set. Pure; the caller resolves again after a ladder arrives
+// (`Categories::learn`), before it decides a class that names the new category.
+ViewPolicy resolve(const NamedPolicy& named, const Categories& categories);
 
 class ViewPolicies {
  public:
@@ -199,16 +220,22 @@ class ViewPolicies {
   ViewPolicies();
 
   // Reads a policies file, refused whole (the set unchanged) with the reason: a policy with no
-  // name, a name given twice or `agent-default` (compiled in, never redefined, wider or not),
-  // a category neither table defines or named twice in one policy, a cap its ladder does not
-  // have, a substitution that is not one of the four ADR-0033 names, and `cover` or
-  // `obscure at capture`, which are not built yet.
+  // name, a name given twice or `agent-default` (compiled in, never redefined, wider or not), a
+  // category name outside `Categories::valid_name` or named twice in one policy, an engine
+  // category's cap its ladder does not have, a substitution that is not one of the four ADR-0033
+  // names, and `cover` or `obscure at capture`, which are not built yet. A category that is not
+  // the engine's is capped by name (`NamedCap`), whether the table knows it yet or not, and
+  // resolved against `categories` before the read returns.
   bool read(const Categories& categories, const content::ViewPoliciesFile& file,
             std::string& error);
   // The same from the file's JSON text (unknown fields refused).
   bool read_json(const Categories& categories, std::string_view json, std::string& error);
 
-  // The policy by name, or null.
+  // Resolves every policy's by-name caps against `categories` again, after the table learned a
+  // ladder from data. Idempotent.
+  void resolve(const Categories& categories);
+
+  // The policy by name, as last resolved, or null.
   const ViewPolicy* find(std::string_view name) const;
   u32 size() const { return static_cast<u32>(policies_.size()); }
   const NamedPolicy& at(u32 i) const { return policies_[i]; }

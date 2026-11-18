@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <initializer_list>
 #include <random>
 #include <schemas/provenance.h>
 #include <string>
@@ -45,6 +46,13 @@ ViewPolicy policy_of(u8 category, u8 cap, Substitution s) {
 bool read_policies(const Categories& categories, const char* json, ViewPolicies& out,
                    std::string& error) {
   return out.read_json(categories, json, error);
+}
+
+Vector<std::string> ladder_of(std::initializer_list<const char*> levels) {
+  Vector<std::string> out;
+  for (const char* level : levels)
+    out.push_back(level);
+  return out;
 }
 
 }  // namespace
@@ -520,12 +528,24 @@ TEST_CASE(
       {"obscure at capture, not built yet",
        R"({"policies":[{"name":"a","caps":[{"category":"nudity","cap":"none","substitution":"obscure at capture"}]}]})",
        "not built yet"},
-      {"a cap its ladder does not have",
-       R"({"policies":[{"name":"a","caps":[{"category":"fixture_glow","cap":"blinding","substitution":"omit"}]}]})",
+      {"an engine category's cap its ladder does not have",
+       R"({"policies":[{"name":"a","caps":[{"category":"nudity","cap":"blinding","substitution":"omit"}]}]})",
        "not a level"},
-      {"a category neither defines",
-       R"({"policies":[{"name":"a","caps":[{"category":"fixture_hum","cap":"none","substitution":"omit"}]}]})",
-       "not a category"},
+      {"a category name outside [a-z0-9_]",
+       R"({"policies":[{"name":"a","caps":[{"category":"Nudity","cap":"none","substitution":"omit"}]}]})",
+       "not a category name"},
+      {"a reserved name",
+       R"({"policies":[{"name":"a","caps":[{"category":"levels","cap":"none","substitution":"omit"}]}]})",
+       "not a category name"},
+      {"a game category capped twice",
+       R"({"policies":[{"name":"a","caps":[{"category":"fixture_hum","cap":"none","substitution":"omit"},{"category":"fixture_hum","cap":"loud","substitution":"proxy"}]}]})",
+       "capped twice"},
+      {"a number for a cap",
+       R"({"policies":[{"name":"a","caps":[{"category":"nudity","cap":0,"substitution":"omit"}]}]})",
+       "cap"},
+      {"an object for a cap",
+       R"({"policies":[{"name":"a","caps":[{"category":"nudity","cap":{},"substitution":"omit"}]}]})",
+       "cap"},
       {"a category capped twice",
        R"({"policies":[{"name":"a","caps":[{"category":"nudity","cap":"none","substitution":"omit"},{"category":"nudity","cap":"none","substitution":"proxy"}]}]})",
        "capped twice"},
@@ -549,6 +569,80 @@ TEST_CASE(
     CHECK(before.size() == 2);
     CHECK(before.find("kept") != nullptr);
   }
+}
+
+TEST_CASE(
+    "content_class: a policy caps a game's category by name, resolved when its ladder arrives") {
+  std::string error;
+  Categories table;  // a host's: given no categories file
+  ViewPolicies set;
+  REQUIRE(set.read_json(table, R"({"policies":[{"name":"fixture-review","caps":[
+      {"category":"fixture_glow","cap":"dim","substitution":"proxy"},
+      {"category":"fixture_hum","cap":"loud","substitution":"proxy"},
+      {"category":"violence","cap":"graphic","substitution":"omit"}]}]})",
+                        error));
+  REQUIRE(set.size() == 2);
+  REQUIRE(set.at(1).by_name.size() == 2);
+  const ViewPolicy* p = set.find("fixture-review");
+  REQUIRE(p != nullptr);
+  CHECK(p->caps[k_violence] == 2);  // an engine category's cap is resolved at once
+  for (u32 c = k_engine_categories; c < k_max_categories; ++c) {
+    CHECK(p->caps[c] == k_none);  // no game category is met yet
+    CHECK(p->substitutions[c] == Substitution::omit);
+  }
+
+  // The ladder arrives with data, and the cap by name takes effect.
+  u32 glow_index = 0;
+  REQUIRE(table.learn("fixture_glow", ladder_of({"none", "dim", "bright"}), glow_index, error));
+  set.resolve(table);
+  p = set.find("fixture-review");
+  CHECK(p->caps[glow_index] == 1);
+  CHECK(p->substitutions[glow_index] == Substitution::proxy);
+  CHECK(decide(classes_of(static_cast<u8>(glow_index), 1), *p).outcome == Outcome::admit);
+  CHECK(decide(classes_of(static_cast<u8>(glow_index), 2), *p).outcome == Outcome::proxy);
+
+  // A cap naming a level its ladder does not have is `none` with `omit`: it narrows.
+  u32 hum_index = 0;
+  REQUIRE(table.learn("fixture_hum", ladder_of({"none", "quiet"}), hum_index, error));
+  set.resolve(table);
+  p = set.find("fixture-review");
+  CHECK(p->caps[hum_index] == k_none);
+  CHECK(p->substitutions[hum_index] == Substitution::omit);
+  CHECK(decide(classes_of(static_cast<u8>(hum_index), 1), *p).outcome == Outcome::omit);
+
+  // A game category the policy does not name, added after the file was read, stays `none` with
+  // `omit`; resolving again changes nothing; agent-default is what it was.
+  u32 buzz_index = 0;
+  REQUIRE(table.learn("fixture_buzz", ladder_of({"none", "on"}), buzz_index, error));
+  set.resolve(table);
+  p = set.find("fixture-review");
+  CHECK(p->caps[buzz_index] == k_none);
+  CHECK(p->substitutions[buzz_index] == Substitution::omit);
+  const ViewPolicy resolved = *p;
+  set.resolve(table);
+  CHECK(*set.find("fixture-review") == resolved);
+  CHECK(*set.find("agent-default") == agent_default());
+
+  // Resolved against a table that holds the categories at other places, nothing of the first
+  // resolution is left behind.
+  Categories other;
+  u32 other_hum = 0;
+  REQUIRE(other.learn("fixture_hum", ladder_of({"none", "loud"}), other_hum, error));
+  const ViewPolicy moved = resolve(set.at(1), other);
+  CHECK(other_hum == glow_index);  // the same index now names another category
+  CHECK(moved.caps[other_hum] == 1);
+  CHECK(moved.substitutions[other_hum] == Substitution::proxy);
+  for (u32 c = k_engine_categories + 1; c < k_max_categories; ++c)
+    CHECK(moved.caps[c] == k_none);
+
+  // A misspelt game category is capped by name and never met: it narrows, never widens.
+  ViewPolicies typo;
+  REQUIRE(typo.read_json(
+      table,
+      R"({"policies":[{"name":"typo","caps":[{"category":"fixture_glw","cap":"bright","substitution":"proxy"}]}]})",
+      error));
+  CHECK(decide(classes_of(static_cast<u8>(glow_index), 1), *typo.find("typo")).outcome ==
+        Outcome::omit);
 }
 
 TEST_CASE("content_class: deciding where nothing is classified costs a branch") {

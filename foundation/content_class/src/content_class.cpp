@@ -359,14 +359,55 @@ bool read_sidecar_classes(const Categories& categories, std::string_view sidecar
   return read_classes(categories, typed, out, error, materials);
 }
 
-ViewPolicies::ViewPolicies() {
-  policies_.push_back(NamedPolicy{std::string(k_agent_default_name), agent_default()});
+namespace {
+
+NamedPolicy compiled_in_default() {
+  NamedPolicy named;
+  named.name = std::string(k_agent_default_name);
+  named.policy = agent_default();
+  return named;
+}
+
+}  // namespace
+
+ViewPolicy resolve(const NamedPolicy& named, const Categories& categories) {
+  // A game category's cap comes from its by-name cap alone, so a policy resolved against one
+  // table and then another keeps nothing of the first.
+  ViewPolicy out = named.policy;
+  for (u32 c = k_engine_categories; c < k_max_categories; ++c) {
+    out.caps[c] = k_none;
+    out.substitutions[c] = Substitution::omit;
+  }
+  for (u32 k = 0; k < named.by_name.size(); ++k) {
+    const NamedCap& cap = named.by_name[k];
+    const i32 category = categories.find(cap.category);
+    if (category < 0) continue;  // not met yet: `none` with `omit`, as an unnamed category
+    const u32 c = static_cast<u32>(category);
+    const i32 level = categories.level(c, cap.cap);
+    if (level < 0) {
+      // A level the ladder does not have is a cap the operator did not mean, so the stricter
+      // reading is taken for all of it.
+      out.caps[c] = k_none;
+      out.substitutions[c] = Substitution::omit;
+    } else {
+      out.caps[c] = static_cast<u8>(level);
+      out.substitutions[c] = cap.substitution;
+    }
+  }
+  return out;
+}
+
+ViewPolicies::ViewPolicies() { policies_.push_back(compiled_in_default()); }
+
+void ViewPolicies::resolve(const Categories& categories) {
+  for (u32 i = 0; i < policies_.size(); ++i)
+    policies_[i].policy = content_class::resolve(policies_[i], categories);
 }
 
 bool ViewPolicies::read(const Categories& categories, const content::ViewPoliciesFile& file,
                         std::string& error) {
   Vector<NamedPolicy> parsed;
-  parsed.push_back(NamedPolicy{std::string(k_agent_default_name), agent_default()});
+  parsed.push_back(compiled_in_default());
   for (u32 i = 0; i < file.policies.size(); ++i) {
     const content::ViewPolicy& p = file.policies[i];
     const std::string where = "policies[" + std::to_string(i) + "]";
@@ -384,23 +425,26 @@ bool ViewPolicies::read(const Categories& categories, const content::ViewPolicie
         return false;
       }
     }
-    NamedPolicy named{p.name, ViewPolicy{}};
-    bool seen[k_max_categories] = {};
+    NamedPolicy named;
+    named.name = p.name;
     for (u32 k = 0; k < p.caps.size(); ++k) {
       const content::ViewPolicyCap& cap = p.caps[k];
       const std::string at = where + " '" + p.name + "' caps[" + std::to_string(k) + "]";
+      if (!Categories::valid_name(cap.category)) {
+        error = at + ": '" + cap.category + "' is not a category name (" + k_name_rule + ")";
+        return false;
+      }
+      for (u32 j = 0; j < k; ++j) {
+        if (p.caps[j].category == cap.category) {
+          error = at + ": '" + cap.category + "' is capped twice";
+          return false;
+        }
+      }
+      // An engine category's ladder is compiled in, so its cap is checked now; any other
+      // category is capped by name and resolved when its ladder is in the table.
       const i32 category = categories.find(cap.category);
-      if (category < 0) {
-        error = at + ": '" + cap.category + "' is not a category the engine or the game defines";
-        return false;
-      }
-      const u32 c = static_cast<u32>(category);
-      if (seen[c]) {
-        error = at + ": '" + cap.category + "' is capped twice";
-        return false;
-      }
-      seen[c] = true;
-      const i32 level = categories.level(c, cap.cap);
+      const bool engine = category >= 0 && static_cast<u32>(category) < k_engine_categories;
+      const i32 level = engine ? categories.level(static_cast<u32>(category), cap.cap) : 0;
       if (level < 0) {
         error = at + ": '" + cap.cap + "' is not a level of '" + cap.category + "'";
         return false;
@@ -419,9 +463,15 @@ bool ViewPolicies::read(const Categories& categories, const content::ViewPolicie
                 "' is not a substitution ('omit', 'proxy', 'cover', 'obscure at capture')";
         return false;
       }
-      named.policy.caps[c] = static_cast<u8>(level);
-      named.policy.substitutions[c] = substitution;
+      if (engine) {
+        const u32 c = static_cast<u32>(category);
+        named.policy.caps[c] = static_cast<u8>(level);
+        named.policy.substitutions[c] = substitution;
+      } else {
+        named.by_name.push_back(NamedCap{cap.category, cap.cap, substitution});
+      }
     }
+    named.policy = content_class::resolve(named, categories);
     parsed.push_back(std::move(named));
   }
   policies_ = std::move(parsed);
