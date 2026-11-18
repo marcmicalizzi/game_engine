@@ -31,44 +31,15 @@ Session* begin(Context& ctx, const std::string& session,
   return s;
 }
 
-// `file`, links followed, is under `dir`, links followed: a link inside the document's directory
-// that points out of it is refused like a path that climbs out. Both must exist (`canonical`), and
-// the comparison is by whole components.
-bool resolves_under(std::string_view dir, std::string_view file) {
-  // Native paths are UTF-8 (foundation/io), not the narrow code page a std::string path means on
-  // Windows.
-  const auto utf8 = [](std::string_view s) {
-    return std::filesystem::path(
-        std::u8string_view(reinterpret_cast<const char8_t*>(s.data()), s.size()));
-  };
-  std::error_code ec;
-  const std::filesystem::path root = std::filesystem::canonical(utf8(dir), ec);
-  if (ec) return false;
-  const std::filesystem::path real = std::filesystem::canonical(utf8(file), ec);
-  if (ec) return false;
-  auto r = root.begin();
-  auto f = real.begin();
-  for (; r != root.end(); ++r, ++f) {
-    if (r->empty()) continue;  // a root's trailing separator
-    if (f == real.end() || *f != *r) return false;
-  }
-  return f != real.end();
-}
-
 // A client-named file under the document's directory, read whole: false, with nothing said of why,
-// for a path `stays_under_document` refuses, one that leaves through a link, and one with no
-// readable file behind it alike (document_path.h).
-bool read_under_document(const io::Vfs& vfs, std::string_view dir, std::string_view path,
+// for a path the document-path rule refuses, one the roots refuse, one that leaves the document
+// through a link, and one with no readable file behind it alike. The check is the one every
+// method's paths pass (`admit_document_file`, paths.h), and the read is of the path it admitted.
+bool read_under_document(Context& ctx, std::string_view dir, std::string_view path,
                          std::string& bytes) {
-  const std::string relative = document_relative_path(path);
-  if (relative.empty()) return false;
-  const std::string full = doc::DocumentStore::path_of(dir, relative);
-  std::string native_dir, native_file;
-  if (vfs.resolve(dir, native_dir, false) != io::Status::Ok ||
-      vfs.resolve(full, native_file, false) != io::Status::Ok)
-    return false;
-  if (!resolves_under(native_dir, native_file)) return false;
-  return vfs.read(full, bytes) == io::Status::Ok;
+  io::Admitted admitted;
+  if (!admit_document_file(ctx, dir, "path", path, admitted)) return false;
+  return io::read_file(admitted.native, bytes) == io::Status::Ok;
 }
 
 bool doc_put_blob(Context& ctx, const PutBlobParams& params, BlobResult& out, RpcError& error) {
@@ -76,13 +47,14 @@ bool doc_put_blob(Context& ctx, const PutBlobParams& params, BlobResult& out, Rp
   Session* s = begin(ctx, params.session, params.attribution, caller, error);
   if (s == nullptr) return false;
   if (params.path.empty() == params.data_base64.empty()) {
-    error = make_error(codes::k_invalid_argument,
-                       "name the bytes once: a file's `path` or `data_base64`, not both or neither");
+    error =
+        make_error(codes::k_invalid_argument,
+                   "name the bytes once: a file's `path` or `data_base64`, not both or neither");
     return false;
   }
   std::string bytes;
   if (!params.path.empty()) {
-    if (!read_under_document(ctx.sessions->vfs(), s->dir(), params.path, bytes)) {
+    if (!read_under_document(ctx, s->dir(), params.path, bytes)) {
       error = make_error(codes::k_not_found,
                          "no readable file at that path under the document's directory: name it "
                          "by a path relative to the document, without '..', or send the bytes as "
@@ -93,7 +65,10 @@ bool doc_put_blob(Context& ctx, const PutBlobParams& params, BlobResult& out, Rp
     error = make_error(codes::k_invalid_argument, "data_base64 is not base64");
     return false;
   }
-  return s->put_blob(bytes, params.media, out, error);
+  if (!s->put_blob(bytes, params.media, out, error)) return false;
+  // The blob's place as the client may see it (paths.h): `<root>://<relative>`, never the host's.
+  out.path = portable_path(ctx, out.path);
+  return true;
 }
 
 bool doc_blob(Context& ctx, const BlobParams& params, BlobResult& out, RpcError& error) {

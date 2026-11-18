@@ -45,6 +45,14 @@ bool admit_output_file(Context& ctx, std::string_view field, std::string_view sp
                        const io::Admitted& dir, std::string_view name, io::Admitted& out,
                        RpcError& error);
 
+// A file a client names inside a session's document, which a record or the blob store keeps
+// relative to it (`doc.place_asset`'s asset, `doc.put_blob`'s path): relative and without `..`
+// (domain/protocol's document-path rule), admitted for reading by the roots from the document's
+// directory, and after links are resolved still inside that directory. False when any of the three
+// refuses, with nothing told; the caller answers its one sentence, the same as for a missing file.
+bool admit_document_file(Context& ctx, std::string_view document_dir, std::string_view field,
+                         std::string_view path, io::Admitted& out);
+
 // Where a relative path starts: the document directory of the session `session` names, else the
 // host's own document (the root named "doc"), else nothing (a relative path is then refused).
 std::string client_base(Context& ctx, std::string_view session);

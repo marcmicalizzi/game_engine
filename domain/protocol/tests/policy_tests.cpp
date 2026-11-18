@@ -1515,6 +1515,25 @@ TEST_CASE("place_asset: a checked mesh placed as MeshPlacement records, ids from
   CHECK(host.fails("doc.place_asset", params("fake.glb", two)) == codes::k_invalid_argument);
   CHECK(host.fails("doc.place_asset", params("crate.glb", JsonValue::array())) ==
         codes::k_invalid_argument);
+  // The one check (paths.h, admit_document_file): the roots are asked as well as the lexical rule,
+  // so a host whose roots do not hold the document reads none of its assets; and a link inside the
+  // document that leads out of it is refused, which the lexical rule alone let through.
+  {
+    TempDir elsewhere("protocol_place_elsewhere");
+    io::Roots narrow;
+    REQUIRE(narrow.add("elsewhere", elsewhere.path(), false) == io::Status::Ok);
+    host.dispatcher.context().roots = &narrow;
+    CHECK(host.fails("doc.place_asset", params("crate.glb", two)) == codes::k_not_found);
+    host.dispatcher.context().roots = &host.roots;
+    std::error_code link_error;
+    std::filesystem::create_directories(tmp.file("outside"), link_error);
+    write_bytes(tmp.file("outside") + "/crate.glb", std::string("glTF\x02\0\0\0", 8));
+    std::filesystem::create_directory_symlink(tmp.file("outside"), dir + "/linked", link_error);
+    if (!link_error)
+      CHECK(host.fails("doc.place_asset", params("linked/crate.glb", two)) == codes::k_not_found);
+    else
+      MESSAGE("no symbolic link here (" << link_error.message() << "), so that form is not tried");
+  }
   // A role that may not write is refused at the gate, as for doc.apply.
   std::string message;
   REQUIRE(host.policy.load_roles("roles.json", k_roles, message));

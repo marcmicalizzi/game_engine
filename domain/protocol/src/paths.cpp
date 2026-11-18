@@ -1,4 +1,7 @@
 // The protocol's door to the host's disk (paths.h; protocol.md, "The host's file roots").
+#include "document_path.h"
+
+#include <core/base/macros.h>
 #include <core/log/log.h>
 #include <domain/protocol/paths.h>
 #include <domain/protocol/session.h>
@@ -86,6 +89,41 @@ bool admit_output_file(Context& ctx, std::string_view field, std::string_view sp
   if (!shown.empty() && shown.back() != '/' && shown.back() != '\\') shown += '/';
   error = path_not_found(field, shown + std::string(name), io::Access::write);
   return false;
+}
+
+namespace {
+// `file` is `dir` or lies under it by whole components; both canonical (forward slashes), compared
+// without case on Windows as the roots compare (roots.h, rule 9).
+bool inside_directory(std::string_view dir, std::string_view file) noexcept {
+  while (!dir.empty() && dir.back() == '/')
+    dir.remove_suffix(1);
+  if (file.size() <= dir.size() || file[dir.size()] != '/') return false;
+  for (usize i = 0; i < dir.size(); ++i) {
+    char a = dir[i];
+    char b = file[i];
+#if ENGINE_PLATFORM_WINDOWS
+    if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
+    if (b >= 'A' && b <= 'Z') b = static_cast<char>(b - 'A' + 'a');
+#endif
+    if (a != b) return false;
+  }
+  return true;
+}
+}  // namespace
+
+bool admit_document_file(Context& ctx, std::string_view document_dir, std::string_view field,
+                         std::string_view path, io::Admitted& out) {
+  const std::string relative = document_relative_path(path);
+  if (relative.empty()) return false;
+  RpcError ignored;
+  if (!admit_client_path(ctx, field, relative, document_dir, io::Access::read, out, ignored))
+    return false;
+  // The roots may hold more than the document; the record names a file of the document.
+  io::Admitted base;
+  if (ctx.roots == nullptr) return false;
+  io::Refusal why = io::Refusal::outside;
+  if (!ctx.roots->admit(document_dir, {}, io::Access::read, base, why)) return false;
+  return inside_directory(base.native, out.native);
 }
 
 std::string client_base(Context& ctx, std::string_view session) {

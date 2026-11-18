@@ -263,6 +263,20 @@ TEST_CASE("blobs: put, read back checked, referenced, refused when unheld, colle
   }
   CHECK_FALSE(doc::BlobStore::has(h.vfs, h.dir, doc::BlobStore::name_of("secret bytes")));
   CHECK(h.fails("doc.put_blob", JsonValue::object()) == codes::k_invalid_argument);
+  // The one check (paths.h, admit_document_file): the host's roots are asked too, not only the
+  // document-path rule, so a host whose roots do not hold the document reads none of it for a
+  // client; before, the rule alone decided. The same answer as a missing file.
+  {
+    TempDir elsewhere("engine_protocol_blobs_elsewhere");
+    io::Roots narrow;
+    REQUIRE(narrow.add("elsewhere", elsewhere.path(), false) == io::Status::Ok);
+    h.dispatcher.context().roots = &narrow;
+    JsonValue e;
+    CHECK(h.fails("doc.put_blob", obj({{"path", JsonValue("inside/mask.bin")}}), &e) ==
+          codes::k_not_found);
+    CHECK(at_message(e) == at_message(missing));
+    h.dispatcher.context().roots = &h.roots;
+  }
 
   const JsonValue back =
       h.ok("doc.blob", obj({{"blob", JsonValue(name)}, {"data", JsonValue(true)}}));
