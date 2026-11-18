@@ -418,7 +418,7 @@ bool Session::list_transactions(std::string_view actor, i64 now_ms, Transactions
         }
         return true;
       },
-      error);
+      error, /*read=*/true);
 }
 
 }  // namespace engine::protocol

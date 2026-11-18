@@ -214,13 +214,13 @@ class Session {
   void fail_transactions_write_for_test() noexcept { test_fail_transactions_write_ = true; }
   // **The one gate on every write beside the document**: `transactions.json` and `leases.json`
   // (`update_transactions`, `update_leases`) and `ledger.json` (ledger.cpp's `update_ledger`) ask
-  // it before they take a lock or change anything, and a refusal is the call's answer. True for
-  // every session today; a session that may not write its directory (one opened from a read-only
-  // root) refuses here, and its side-file reads pass `make_lock = false` (side_file.h).
-  bool may_write_side_files(RpcError& error) const {
-    (void)error;
-    return true;
-  }
+  // it before they take a lock or change anything, and a refusal is the call's answer. It is
+  // `check_writable`: a session that may not write its directory (one a client opened from a
+  // read-only root) refuses here with the answer any refused path gets, and everything it still
+  // reads beside the document — the leases, the proposals, the transactions, the ledger — it reads
+  // without the lock (`make_lock = false`, side_file.h), so it makes no lock file, removes no gone
+  // host's mark and writes nothing there (protocol.md, "The host's file roots").
+  bool may_write_side_files(RpcError& error) const { return check_writable(error); }
   // Tests only (policy_tests.cpp): the next save of the document fails before it writes anything,
   // as a layer file a scanner holds or a full disk does, after the journal has taken the patch.
   void fail_save_for_test() noexcept { test_fail_save_ = true; }
@@ -302,10 +302,13 @@ class Session {
   // "Two hosts, one side file"): under the file's lock the table is read afresh into
   // `transactions_` or `leases_`, `change(write)` runs, and the table is written back when it set
   // `write`. Reading `transactions_` afresh also drops the entries the journal shows committed.
+  // `read`: the call is a read (`lease.list`, `doc.transactions`) that writes only to let lapsed
+  // entries go; on a session that may not be written it reads the table without the lock, runs
+  // `change` and writes nothing, where a write is refused by the gate.
   template <class Change>
-  bool update_transactions(Change&& change, RpcError& error);
+  bool update_transactions(Change&& change, RpcError& error, bool read = false);
   template <class Change>
-  bool update_leases(Change&& change, RpcError& error);
+  bool update_leases(Change&& change, RpcError& error, bool read = false);
   // `leases_` read afresh (under the file's lock, as every reader reads) before a write is checked
   // against it: a lease another host granted, or its `lease.require`, holds here at once.
   bool refresh_leases(RpcError& error);
@@ -352,8 +355,14 @@ class Session {
 };
 
 template <class Change>
-bool Session::update_transactions(Change&& change, RpcError& error) {
-  if (!check_writable(error)) return false;
+bool Session::update_transactions(Change&& change, RpcError& error, bool read) {
+  if (read && !writable()) {
+    bool present = false;
+    if (!read_side_file(*vfs_, transactions_path(), transactions_, present, error)) return false;
+    bool write = false;
+    (void)drop_landed_transactions();
+    return change(write);
+  }
   if (!may_write_side_files(error)) return false;
   return update_side_file(
       *vfs_, transactions_path(), transactions_,
@@ -372,10 +381,16 @@ bool Session::update_transactions(Change&& change, RpcError& error) {
 }
 
 template <class Change>
-bool Session::update_leases(Change&& change, RpcError& error) {
-  if (!check_writable(error)) return false;
-  if (!may_write_side_files(error)) return false;
+bool Session::update_leases(Change&& change, RpcError& error, bool read) {
   LeaseFile file;
+  if (read && !writable()) {
+    bool present = false;
+    if (!read_side_file(*vfs_, leases_path(), file, present, error)) return false;
+    leases_.assign(std::move(file));
+    bool write = false;
+    return change(write);
+  }
+  if (!may_write_side_files(error)) return false;
   return update_side_file(
       *vfs_, leases_path(), file,
       [&](LeaseFile& read, bool& write) {

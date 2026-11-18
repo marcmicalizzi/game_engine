@@ -104,9 +104,10 @@ std::string host_mark_path(std::string_view dir, std::string_view host) {
 
 // Whether the host named `host` still holds its mark on `dir`. No mark, or a mark nobody holds, is
 // a host that has gone (a host's name is drawn once per process and never reused, so a free mark
-// is never taken again, and is removed here). A mark that cannot be opened is counted alive: the
-// lease then stands until its own expiry rather than being dropped from a live host.
-bool host_alive(const io::Vfs& vfs, std::string_view dir, std::string_view host) {
+// is never taken again, and is removed here when `may_remove`: the session's gate on writes beside
+// its document said yes). A mark that cannot be opened is counted alive: the lease then stands
+// until its own expiry rather than being dropped from a live host.
+bool host_alive(const io::Vfs& vfs, std::string_view dir, std::string_view host, bool may_remove) {
   const std::string mark = host_mark_path(dir, host);
   if (!vfs.exists(mark + ".lock")) return false;
   std::string native;
@@ -114,7 +115,7 @@ bool host_alive(const io::Vfs& vfs, std::string_view dir, std::string_view host)
   SideFileLock probe;
   std::string message;
   if (!probe.acquire(native, 0, message)) return true;
-  (void)vfs.remove(mark + ".lock");
+  if (may_remove) (void)vfs.remove(mark + ".lock");
   return false;
 }
 
@@ -383,9 +384,13 @@ std::string Session::base_file(std::string_view proposal) const {
 
 bool Session::load_side_files(RpcError& error) {
   bool present = false;
+  // A session that may not be written reads every table without its lock, which would make a lock
+  // file in its directory (side_file.h), and removes no gone host's mark: the gate's answer.
+  RpcError refused;
+  const bool may_write = may_write_side_files(refused);
   LeaseFile leases;
   if (!read_side_file_locked(*vfs_, DocumentStore::path_of(dir_, k_leases_file), leases, present,
-                             error))
+                             error, may_write))
     return false;
   // A lease a client connection took lives no longer than the connection, and connections are a
   // host's: one in the file that another host granted was left by a host that has gone, with its
@@ -399,8 +404,9 @@ bool Session::load_side_files(RpcError& error) {
   // A host that is alive holds its mark (`host_mark_path`), so its clients' leases stay: before
   // the mark, `host` alone could not tell a live host from a gone one, and a second host's open (a
   // read any credential may make) ended a live host's socket clients' leases.
-  const auto orphan = [this](const LeaseInfo& l) {
-    return l.connection != 0 && l.host != host_instance() && !host_alive(*vfs_, dir_, l.host);
+  const auto orphan = [this, may_write](const LeaseInfo& l) {
+    return l.connection != 0 && l.host != host_instance() &&
+           !host_alive(*vfs_, dir_, l.host, may_write);
   };
   bool orphans = false;
   for (const LeaseInfo& l : leases.leases)
@@ -408,7 +414,7 @@ bool Session::load_side_files(RpcError& error) {
   leases_.assign(std::move(leases));
   // A session that may not be written leaves them in the file, where they refuse nothing it could
   // do anyway.
-  if (orphans && writable() &&
+  if (orphans && may_write &&
       !update_leases(
           [&](bool& write) {
             const LeaseFile& file = leases_.file();
@@ -424,13 +430,13 @@ bool Session::load_side_files(RpcError& error) {
 
   ProposalsFile proposals;
   if (!read_side_file_locked(*vfs_, DocumentStore::path_of(dir_, k_proposals_file), proposals,
-                             present, error))
+                             present, error, may_write))
     return false;
   proposals_.assign(std::move(proposals));
 
   transactions_ = TransactionsFile{};
   if (!read_side_file_locked(*vfs_, DocumentStore::path_of(dir_, k_transactions_file),
-                             transactions_, present, error))
+                             transactions_, present, error, may_write))
     return false;
   for (const ProposalTable::Entry& e : proposals_.entries()) {
     ProposalTable::Entry* entry = proposals_.find(e.info.layer);
@@ -477,7 +483,7 @@ std::string Session::transactions_path() const {
 bool Session::refresh_leases(RpcError& error) {
   LeaseFile file;
   bool present = false;
-  if (!read_side_file_locked(*vfs_, leases_path(), file, present, error)) return false;
+  if (!read_side_file_locked(*vfs_, leases_path(), file, present, error, writable())) return false;
   leases_.assign(std::move(file));
   return true;
 }
@@ -490,7 +496,6 @@ bool Session::refresh_leases(RpcError& error) {
 // still holds in memory and saves whole: that is not made safe here (two hosts changing layers at
 // once is unsupported), only the table.
 bool Session::save_proposals(std::string_view layer, RpcError& error) {
-  if (!check_writable(error)) return false;
   if (!may_write_side_files(error)) return false;
   const ProposalTable::Entry* mine = proposals_.find(layer);
   if (mine == nullptr) return true;
@@ -1295,7 +1300,7 @@ bool Session::list_leases(std::string_view layer, std::string_view actor, i64 no
         }
         return true;
       },
-      error);
+      error, /*read=*/true);
 }
 
 bool Session::require_leases(bool required, i64 now_ms, LeasesResult& out, RpcError& error) {

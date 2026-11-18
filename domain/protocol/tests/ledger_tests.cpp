@@ -14,7 +14,9 @@
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
 #include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <set>
 #include <string>
@@ -485,6 +487,83 @@ TEST_CASE("ledger: reads leave a document as they found it") {
   (void)h.ok("task.list");
   REQUIRE(h.vfs.read(dir + "/ledger.json", after) == io::Status::Ok);
   CHECK(before == after);
+}
+
+namespace {
+// Every file under `dir`, by its path from `dir`, with its bytes: what a read must leave as it was.
+std::vector<std::pair<std::string, std::string>> files_under(const std::string& dir) {
+  std::vector<std::pair<std::string, std::string>> out;
+  const std::filesystem::path root(dir);
+  for (const auto& e : std::filesystem::recursive_directory_iterator(root)) {
+    if (!e.is_regular_file()) continue;
+    std::string bytes;
+    REQUIRE(io::read_file(e.path().string(), bytes) == io::Status::Ok);
+    out.emplace_back(std::filesystem::relative(e.path(), root).generic_string(), std::move(bytes));
+  }
+  std::sort(out.begin(), out.end());
+  return out;
+}
+}  // namespace
+
+// A document a client opened from a root the operator named read-only may not be written
+// (protocol.md, "The host's file roots"), and that includes the files beside it: before the side
+// files' one gate asked that, the open's read of the leases made `leases.json.lock` and removed a
+// gone host's mark, `task.list` made `ledger.json.lock`, and `lease.list` was refused outright,
+// since it lets lapsed leases go through the writer. The document here came without its lock files,
+// as one copied into a library does, with a lease a host that has gone left behind.
+TEST_CASE(
+    "ledger: a document under a read-only root reads its ledger and leases and writes "
+    "nothing") {
+  test::TempDir tmp("protocol_ledger_read_only");
+  const std::string world = tmp.file("lib") + "/world";
+  {
+    Host h;
+    h.open(world, true);
+    (void)h.task("task.create", obj({{"title", JsonValue("survey")}, {"attribution", who("c")}}));
+    JsonValue tiles = JsonValue::array();
+    tiles.push_back(obj(
+        {{"x0", JsonValue(0)}, {"y0", JsonValue(0)}, {"x1", JsonValue(0)}, {"y1", JsonValue(0)}}));
+    (void)h.ok("lease.acquire", obj({{"layer", JsonValue("base")},
+                                     {"tiles", tiles},
+                                     {"ttl_seconds", JsonValue(600.0)},
+                                     {"attribution", who("c")}}));
+    (void)h.ok("session.close", JsonValue::object());
+  }
+  for (const auto& e : std::filesystem::directory_iterator(std::filesystem::path(world))) {
+    if (e.path().extension() == ".lock") std::filesystem::remove(e.path());
+  }
+  std::string text;
+  REQUIRE(io::read_file(world + "/leases.json", text) == io::Status::Ok);
+  JsonValue leases;
+  REQUIRE(parse_json(text, leases).ok);
+  JsonValue* list = leases.find("leases");
+  REQUIRE(list != nullptr);
+  REQUIRE(list->size() == 1);
+  (*list)[usize{0}].set("connection", JsonValue(u64{7}));
+  (*list)[usize{0}].set("host", JsonValue("h-gone"));
+  REQUIRE(io::write_file(world + "/leases.json", write_json(leases)) == io::Status::Ok);
+  REQUIRE(io::write_file(world + "/leases.h-gone.lock", "") == io::Status::Ok);
+  const auto before = files_under(world);
+
+  io::Roots read_only;
+  REQUIRE(read_only.add("lib", tmp.file("lib"), false) == io::Status::Ok);
+  {
+    Host h;
+    h.dispatcher.context().roots = &read_only;
+    h.open("lib://world", false);
+    CHECK(at(h.ok("task.list"), "tasks").size() == 1);
+    CHECK(at(h.ok("review.list"), "reviews").size() == 0);
+    CHECK(at(h.ok("lease.list"), "leases").size() == 1);
+    CHECK(at(h.ok("doc.transactions"), "transactions").size() == 0);
+    JsonValue error;
+    CHECK(h.fails("task.create", obj({{"title", JsonValue("more")}, {"attribution", who("c")}}),
+                  &error) == codes::k_not_found);
+    CHECK(at(error, "message").as_string() ==
+          "path: no place this host may write at 'lib://world'");
+    (void)h.ok("session.close", JsonValue::object());
+    h.dispatcher.context().roots = &h.roots;
+  }
+  CHECK(files_under(world) == before);
 }
 
 TEST_CASE("ledger: a host with no human role has nobody who closes a person's item") {

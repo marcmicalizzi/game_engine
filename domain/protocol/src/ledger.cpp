@@ -268,7 +268,16 @@ bool update_ledger(io::Vfs& vfs, const Session& session, bool read_only, bool gr
     return change(none, write, error);
   }
   // A read goes on to take the lock too, since it may let claims lapse and write: the session's
-  // one gate on writes beside its document (session.h) decides both.
+  // one gate on writes beside its document (session.h) decides both. A read on a session the gate
+  // refuses (one a client opened from a read-only root) is a plain read without the lock, which
+  // makes no lock file there, and what lapses lapses in its answer only.
+  if (read_only && !session.writable()) {
+    LedgerFile ledger;
+    bool present = false;
+    if (!read_side_file(vfs, path, ledger, present, error)) return false;
+    bool write = false;
+    return change(ledger, write, error);
+  }
   if (!session.may_write_side_files(error)) return false;
   LedgerFile ledger;
   return update_side_file(
