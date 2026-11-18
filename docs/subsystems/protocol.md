@@ -425,7 +425,7 @@ One table per document, **kept beside it as `leases.json`** (schema `LeaseFile`)
 
 ## Blobs and checkpoints
 
-Roadmap D13 and D14: the document's store of content-addressed blobs and its checkpoints, over the store and repository `domain/doc` keeps ([doc](doc.md#blobs), [doc](doc.md#checkpoints)). `src/session_history.cpp` is the session's half, `src/history_methods.cpp` the wire; every params and result type is in `schemas/protocol.schema`, so engine-cli reaches them by name (`engine-cli --doc ./world doc.checkpoint '{"label":"before the river"}'`).
+Roadmap D13 and D14: the document's store of content-addressed blobs and its checkpoints, over the store and repository `domain/doc` keeps ([doc](doc.md#blobs), [doc](doc.md#checkpoints)). `src/session_history.cpp` is the session's half, `src/history_methods.cpp` the wire; every params and result type is in `schemas/protocol.schema`, so engine-cli reaches them by name (`engine-cli --doc ./world doc.checkpoint '{"label":"before the river"}'`), and engine-mcp has a tool for each — `put_blob`, `read_blob` (the bytes as a file in the workspace, never inline), `collect_blobs`, `checkpoint`, `checkpoints`, `rollback_to` ([apps](apps.md#blobs-reach-an-agent-as-a-file); roadmap A49).
 
 | Method | Params → result | What |
 |---|---|---|

@@ -122,9 +122,10 @@ if (Test-Path -LiteralPath $Mcp) {
     $rep = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
     foreach ($s in $rep.steps) {
       if ($s.Status -eq 'skip') {
-        $why = ($s.Step -match '^(capture|benchmark)') -and
-               ($s.Detail -match 'no GPU can render|did not produce Scene')
-        Expect $why "only a render step skips, and only for want of a GPU: $($s.Step): $($s.Detail)"
+        $why = (($s.Step -match '^(capture|benchmark)') -and
+                ($s.Detail -match 'no GPU can render|did not produce Scene')) -or
+               (($s.Step -match '^checkpoint') -and ($s.Detail -match 'no git where the host runs'))
+        Expect $why "only a render step skips, for want of a GPU, or the checkpoints' for want of git: $($s.Step): $($s.Detail)"
       } else {
         Expect ($s.Status -eq 'ok') "$($s.Step): $($s.Status) $($s.Detail)"
       }

@@ -8,6 +8,7 @@
 // their file:// URIs with a short summary.
 #include "bridge.h"
 
+#include <core/hash/sha256.h>
 #include <core/ids/id128.h>
 #include <core/json/json.h>
 
@@ -2531,6 +2532,304 @@ void run_query(Bridge& b, const JsonValue& args, ToolOutcome& out) {
   out.data = r;
 }
 
+// ---- blobs and checkpoints (roadmap D13, D14, A49; protocol.md, "Blobs and checkpoints") --------
+
+// The attribution of a blob tool: the generated type and the flags' defaults, the rationale
+// optional — a put or a collection changes no record, so there is no patch for it to explain.
+bool who_schema(Bridge& b, JsonValue& s, std::string& e, std::string_view what) {
+  if (!identity_schema(b, s, e)) return false;
+  props(s).find("attribution")->set("description", JsonValue(what));
+  return true;
+}
+
+std::string blob_text(const JsonValue& ref) {
+  std::string s =
+      "blob " + text_of(ref, "blob") + " (" + std::to_string(uint_of(ref, "size")) + " bytes";
+  if (!text_of(ref, "media").empty()) s += ", " + text_of(ref, "media");
+  return s + ")";
+}
+
+bool schema_put_blob(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("doc.put_blob", s, e)) return false;
+  note(s, "session", "The session id open_session returned.");
+  note(s, "path",
+       "Give path or data_base64, not both. A file written elsewhere goes in by copying it under "
+       "the document's directory first, which spares the base64 round trip.");
+  note(s, "data_base64", "For bytes you hold yourself, a few megabytes at most.");
+  if (!who_schema(b, s, e, "Who puts the bytes: the actor, the role and the task.")) return false;
+  require(s, {"session"});
+  return true;
+}
+
+void run_put_blob(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!call_attributed(b, "doc.put_blob", args, false, r, out)) return;
+  const JsonValue* ref = r.find("ref");
+  out.summary = std::string(bool_of(r, "created") ? "Stored " : "The store already held ") +
+                blob_text(ref != nullptr ? *ref : JsonValue()) +
+                ". Set ref, as it stands in the result, as (part of) a property's value with "
+                "set_property or apply: an edit naming a blob the store lacks is refused, and "
+                "collect_blobs removes one nothing names once it is older than min_age_s (an hour "
+                "by default), so commit the reference soon.";
+  out.data = r;
+}
+
+bool schema_read_blob(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("doc.blob", s, e)) return false;
+  // The bytes never come through the JSON line: the bridge copies the file (apps.md, "Blobs reach
+  // an agent as a file").
+  drop(s, "data");
+  note(s, "session", "The session id open_session returned.");
+  note(s, "blob", "The blob a BlobRef in a property names, or the name put_blob answered.");
+  require(s, {"session", "blob"});
+  return true;
+}
+
+// Whether the file at `path` is the blob: its length `size` and its SHA-256 `name`.
+bool is_blob_file(const std::string& path, std::string_view name, u64 size) {
+  std::error_code ec;
+  if (std::filesystem::file_size(native(path), ec) != size || ec) return false;
+  std::ifstream in(native(path), std::ios::binary);
+  if (!in.good()) return false;
+  Sha256 hash;
+  std::string chunk(usize{1} << 20, '\0');
+  while (in) {
+    in.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+    const usize got = static_cast<usize>(in.gcount());
+    if (got == 0) break;
+    hash.update(std::string_view(chunk.data(), got));
+  }
+  return !in.bad() && sha256_hex(hash.finish()) == name;
+}
+
+// Copies `from` to `to` through a sibling file renamed into place, hashing the bytes on the way,
+// and keeps the copy only when its SHA-256 is `name` and its length `size`: the host checked the
+// store's file, and this checks that the copy is that file. A `to` that is the blob already is
+// left as it is — a reader may hold it open, which Windows will not replace under it.
+bool copy_checked(const std::string& from, const std::string& to, std::string_view name, u64 size,
+                  std::string& error) {
+  if (is_blob_file(to, name, size)) return true;
+  char unique[33] = {};
+  Id128::generate().to_hex(unique);
+  const std::string part = to + "." + std::string(unique, 32) + ".part";
+  std::error_code ec;
+  {
+    std::ifstream in(native(from), std::ios::binary);
+    std::ofstream file(native(part), std::ios::binary | std::ios::trunc);
+    if (!in.good() || !file.good()) {
+      error = in.good() ? "cannot write the copy" : "cannot read the store's file";
+      file.close();
+      std::filesystem::remove(native(part), ec);
+      return false;
+    }
+    Sha256 hash;
+    u64 length = 0;
+    std::string chunk(usize{1} << 20, '\0');
+    while (in) {
+      in.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+      const usize got = static_cast<usize>(in.gcount());
+      if (got == 0) break;
+      hash.update(std::string_view(chunk.data(), got));
+      file.write(chunk.data(), static_cast<std::streamsize>(got));
+      length += got;
+    }
+    file.close();
+    if (in.bad() || !file.good()) {
+      error = "the copy failed part-way";
+    } else if (length != size || sha256_hex(hash.finish()) != name) {
+      error = "the store's file changed under the copy: its bytes no longer hash to the name";
+    }
+  }
+  if (!error.empty()) {
+    std::filesystem::remove(native(part), ec);
+    return false;
+  }
+  std::filesystem::rename(native(part), native(to), ec);
+  if (ec) {
+    error = "cannot move the copy into place: " + ec.message();
+    std::filesystem::remove(native(part), ec);
+    return false;
+  }
+  return true;
+}
+
+void run_read_blob(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!b.call("doc.blob", without(args, {"data"}), r, out)) return;
+  const JsonValue* ref = r.find("ref");
+  const std::string name = ref != nullptr ? text_of(*ref, "blob") : std::string();
+  const u64 size = ref != nullptr ? uint_of(*ref, "size") : 0;
+  const std::string source = text_of(r, "path");
+  // The name becomes a file name in the workspace, so it is held to the store's form here too.
+  bool plain = name.size() == 64;
+  for (const char c : name)
+    plain = plain && ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'));
+  if (!plain || source.empty()) {
+    fail(out, "the host answered no blob name and path",
+         "Rebuild engine-mcp and engine-host together.");
+    return;
+  }
+  if (source.find("://") != std::string::npos) {
+    fail(out,
+         "the document is under one of the host's mounts (" + source.substr(0, source.find("://")) +
+             "://), whose files the bridge does not reach",
+         "Open the document by its directory's path to read its blobs through the bridge.");
+    return;
+  }
+  std::string dir;
+  if (!workspace_dir(b, "blobs", dir, out)) return;
+  std::string why;
+  if (!copy_checked(source, dir + "/" + name, name, size, why)) {
+    fail(out, "blob " + name + " was not copied into the workspace: " + why,
+         "Read it again; if it keeps failing, validate the document and check the disk.");
+    return;
+  }
+  // Named relative to the workspace (host_info names its directory), never by a path of the
+  // machine.
+  const std::string file = "blobs/" + name;
+  out.data = JsonValue::object();
+  if (ref != nullptr) out.data.set("ref", *ref);
+  out.data.set("file", JsonValue(file));
+  out.summary = blob_text(ref != nullptr ? *ref : JsonValue()) +
+                ", its bytes checked against its name, is at " + file +
+                " under the workspace (host_info names the workspace's directory). Read it with "
+                "your own tools; the name is the bytes' SHA-256, so the same blob is always the "
+                "same file.";
+}
+
+bool schema_collect_blobs(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("doc.collect_blobs", s, e)) return false;
+  note(s, "session", "The session id open_session returned.");
+  note(s, "dry_run", "Run it once with dry_run true to see what would go.");
+  if (!who_schema(b, s, e, "Who collects: the actor, the role and the task.")) return false;
+  require(s, {"session"});
+  return true;
+}
+
+std::string names_text(const JsonValue* names, usize most) {
+  std::string s;
+  const usize n = names != nullptr ? names->size() : 0;
+  for (usize i = 0; i < n && i < most; ++i) {
+    std::string_view v;
+    if ((*names)[i].get_string(v)) s += "\n  " + std::string(v);
+  }
+  if (n > most) s += "\n  ... (" + std::to_string(n - most) + " more in the result)";
+  return s;
+}
+
+void run_collect_blobs(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!call_attributed(b, "doc.collect_blobs", args, false, r, out)) return;
+  const JsonValue* removed = r.find("removed");
+  const JsonValue* missing = r.find("missing");
+  const usize n = removed != nullptr ? removed->size() : 0;
+  const usize m = missing != nullptr ? missing->size() : 0;
+  out.summary = std::string(bool_of(args, "dry_run") ? "Dry run: would remove " : "Removed ") +
+                std::to_string(n) + " blob(s), " + std::to_string(uint_of(r, "removed_bytes")) +
+                " bytes, of " + std::to_string(uint_of(r, "stored")) + " stored (" +
+                std::to_string(uint_of(r, "stored_bytes")) + " bytes); " +
+                std::to_string(uint_of(r, "referenced")) + " name(s) referenced, " +
+                std::to_string(uint_of(r, "kept_young")) +
+                " unreferenced kept for being younger than min_age_s." + names_text(removed, 20);
+  if (m > 0)
+    out.summary += "\n" + std::to_string(m) +
+                   " referenced blob(s) are missing from the store; rollback_to a checkpoint "
+                   "that holds them writes them back:" +
+                   names_text(missing, 20);
+  out.data = r;
+}
+
+std::string checkpoint_text(const JsonValue& c) {
+  const std::string id = text_of(c, "id");
+  const JsonValue* who = c.find("attribution");
+  std::string s = "checkpoint " + id.substr(0, 12) + " \"" + text_of(c, "label") + "\"";
+  if (who != nullptr) {
+    s += " by " + text_of(*who, "actor");
+    if (!text_of(*who, "rationale").empty()) s += " (" + text_of(*who, "rationale") + ")";
+  }
+  return s + ", journal " + std::to_string(uint_of(c, "undo_position")) + " of " +
+         std::to_string(uint_of(c, "journal_length"));
+}
+
+bool schema_checkpoint(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("doc.checkpoint", s, e)) return false;
+  note(s, "session", "The session id open_session returned.");
+  if (!attribution_schema(b, s, e)) return false;
+  require(s, {"session", "attribution"});
+  return true;
+}
+
+void run_checkpoint(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!call_attributed(b, "doc.checkpoint", args, true, r, out)) return;
+  out.summary = "Took " + checkpoint_text(r) + ": the document as saved, its layers and blobs. " +
+                "rollback_to with checkpoint " + text_of(r, "id") +
+                " makes the accepted layers what it holds again.";
+  out.data = r;
+}
+
+bool schema_checkpoints(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("doc.checkpoints", s, e)) return false;
+  note(s, "session", "The session id open_session returned.");
+  require(s, {"session"});
+  return true;
+}
+
+void run_checkpoints(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!b.call("doc.checkpoints", args, r, out)) return;
+  out.data = r;
+  if (!bool_of(r, "available")) {
+    out.summary = "Checkpoints are not available where the host runs: " + text_of(r, "git") +
+                  ". They need git on its PATH (or ENGINE_GIT naming one); the document tools "
+                  "still work.";
+    return;
+  }
+  const JsonValue* list = r.find("checkpoints");
+  const usize n = list != nullptr ? list->size() : 0;
+  out.summary = n == 0 ? std::string("No checkpoints yet; checkpoint takes one.")
+                       : std::to_string(n) + " checkpoint(s), newest first:";
+  for (usize i = 0; i < n; ++i)
+    out.summary += "\n  " + checkpoint_text((*list)[i]);
+}
+
+bool schema_rollback_to(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("doc.rollback_to", s, e)) return false;
+  note(s, "session", "The session id open_session returned.");
+  note(s, "checkpoint", "checkpoints lists the ids.");
+  note(s, "dry_run", "Run it once with dry_run true to see what each layer would become.");
+  if (!attribution_schema(b, s, e)) return false;
+  require(s, {"session", "checkpoint", "attribution"});
+  return true;
+}
+
+void run_rollback_to(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!call_attributed(b, "doc.rollback_to", args, true, r, out)) return;
+  const JsonValue* c = r.find("checkpoint");
+  const std::string to = c != nullptr ? checkpoint_text(*c) : std::string("the checkpoint");
+  const u64 patches = uint_of(r, "patches");
+  if (bool_of(r, "dry_run")) {
+    out.summary = "Dry run: rolling back to " + to +
+                  " would change these layers; nothing was "
+                  "committed.";
+  } else {
+    out.summary = "Rolled back to " + to + " as " + std::to_string(patches) + " journal patch(es)" +
+                  (patches > 0 ? "; undo with steps " + std::to_string(patches) + " takes it back."
+                               : ": the accepted layers already held it.");
+  }
+  if (const u64 restored = uint_of(r, "blobs_restored"); restored > 0)
+    out.summary += " " + std::to_string(restored) + " collected blob(s) written back.";
+  const JsonValue* layers = r.find("layers");
+  for (usize i = 0; layers != nullptr && i < layers->size(); ++i) {
+    const JsonValue& l = (*layers)[i];
+    out.summary += "\n  " + text_of(l, "layer") + ": " + text_of(l, "action") + ", " +
+                   std::to_string(uint_of(l, "records")) + " record(s)" +
+                   (bool_of(l, "repartitioned") ? ", storage form put back" : "");
+  }
+  out.data = r;
+}
+
 constexpr ToolDef k_tools[] = {
     {"open_session", "Open a document",
      "Open a document directory and get the session id the document tools take. Pass create: "
@@ -2795,6 +3094,35 @@ constexpr ToolDef k_tools[] = {
      "for. Bounded by max_rows, max_examined, max_ms and max_bytes; pass next as after to go "
      "on.",
      "doc.query", true, false, true, &schema_query, &run_query},
+    {"put_blob", "Store a blob",
+     "Put bytes in the document's blob store, named by their SHA-256, from a file under the "
+     "document's directory (path, relative to it) or inline (data_base64), and get the BlobRef a "
+     "property holds instead of the bytes. Putting bytes the store holds already changes nothing.",
+     "doc.put_blob", false, false, true, &schema_put_blob, &run_put_blob},
+    {"read_blob", "Read a blob",
+     "Copy a blob out of the document's store into the workspace as blobs/<name>, its bytes "
+     "checked against its name, and say where; the bytes never come back inline, whatever their "
+     "size.",
+     "doc.blob", true, false, true, &schema_read_blob, &run_read_blob},
+    {"collect_blobs", "Collect unused blobs",
+     "Remove the blobs nothing can bring back — no layer, no journal patch (undo history or redo "
+     "tail), no open proposal's merge base and no open transaction names them — once older than "
+     "min_age_s; dry_run reports without removing. Names referenced blobs the store lacks.",
+     "doc.collect_blobs", false, true, true, &schema_collect_blobs, &run_collect_blobs},
+    {"checkpoint", "Take a checkpoint",
+     "Save the document and commit it — manifest, layers and blobs — to its directory's own git "
+     "repository, labelled, with who took it and why; rollback_to returns to it. Needs git where "
+     "the host runs. Needs attribution.rationale.",
+     "doc.checkpoint", false, false, false, &schema_checkpoint, &run_checkpoint},
+    {"checkpoints", "List checkpoints",
+     "The document's checkpoints, newest first: each id, label, who took it and why, and the "
+     "journal's position then; or why checkpoints are not available here.",
+     "doc.checkpoints", true, false, true, &schema_checkpoints, &run_checkpoints},
+    {"rollback_to", "Roll back to a checkpoint",
+     "Make every accepted layer what a checkpoint held, as one journaled, undoable patch per "
+     "layer it changes, each checked against the role and the leases before any lands; open "
+     "proposals are kept. dry_run reports without committing. Needs attribution.rationale.",
+     "doc.rollback_to", false, true, true, &schema_rollback_to, &run_rollback_to},
 };
 
 }  // namespace

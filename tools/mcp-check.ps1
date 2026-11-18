@@ -580,6 +580,82 @@ try {
     Assert ((Get-Prop $v.Data 'ok') -eq $true) "the document does not validate: $(Show $v)"
   }
 
+  # ---- blobs and checkpoints (roadmap A49; apps.md, "Blobs reach an agent as a file") ----------
+
+  Step 'put_blob, then read_blob hands the bytes back as a file under the workspace' {
+    $s = Need 'Session'
+    $bytes = $utf8.GetBytes('the conformance client''s blob')
+    $p = Invoke-Tool $bridge 'put_blob' @{ session = $s; data_base64 = [Convert]::ToBase64String($bytes); media = 'text/plain' }
+    Assert-Ok $p 'put_blob'
+    $name = [string](Get-Prop $p.Data 'ref.blob')
+    $want = ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))).ToLowerInvariant()
+    Assert ($name -eq $want) "put_blob named the bytes $name, not their SHA-256 $want"
+    Assert ((Get-Prop $p.Data 'ref.size') -eq $bytes.Length) 'put_blob''s reference has the wrong size'
+    $again = Invoke-Tool $bridge 'put_blob' @{ session = $s; data_base64 = [Convert]::ToBase64String($bytes) }
+    Assert-Ok $again 'put_blob of the same bytes'
+    Assert ((Get-Prop $again.Data 'created') -ne $true) 'the same bytes were stored twice'
+    $r = Invoke-Tool $bridge 'read_blob' @{ session = $s; blob = $name }
+    Assert-Ok $r 'read_blob'
+    $file = [string](Get-Prop $r.Data 'file')
+    Assert ($file -eq "blobs/$name") "read_blob named '$file', not blobs/<name> under the workspace"
+    $copy = Join-Path (Join-Path $Scratch 'workspace') $file
+    Assert (Test-Path -LiteralPath $copy) "read_blob names $file, which is not in the workspace"
+    $back = [IO.File]::ReadAllBytes($copy)
+    Assert ([Convert]::ToBase64String($back) -eq [Convert]::ToBase64String($bytes)) 'the copy is not the bytes put'
+    Assert ($r.Text -notmatch [regex]::Escape([Convert]::ToBase64String($bytes))) 'read_blob put the bytes in its answer'
+    $ctx.Blob = $name
+    "blob $($name.Substring(0, 12)), answer $($r.Bytes) bytes"
+  }
+
+  Step 'collect_blobs: a dry run names the unreferenced blob, a collection takes it' {
+    $s = Need 'Session'
+    $name = Need 'Blob'
+    $d = Invoke-Tool $bridge 'collect_blobs' @{ session = $s; min_age_s = 0; dry_run = $true }
+    Assert-Ok $d 'collect_blobs dry run'
+    Assert (@(Get-Prop $d.Data 'removed') -contains $name) "the dry run does not name $name"
+    Assert-Ok (Invoke-Tool $bridge 'read_blob' @{ session = $s; blob = $name }) 'read_blob after the dry run'
+    $c = Invoke-Tool $bridge 'collect_blobs' @{ session = $s; min_age_s = 0 }
+    Assert-Ok $c 'collect_blobs'
+    Assert (@(Get-Prop $c.Data 'removed') -contains $name) "the collection did not take $name"
+    $gone = Invoke-Tool $bridge 'read_blob' @{ session = $s; blob = $name }
+    Assert (-not $gone.Ok) 'a collected blob still reads'
+    Assert ($gone.Text -match 'Hint:') "the collected blob's error has no hint: $(Show $gone)"
+  }
+
+  Step 'checkpoint, checkpoints and rollback_to, then undo puts the edits back' {
+    $s = Need 'Session'
+    $id = Need 'Object'
+    $l = Invoke-Tool $bridge 'checkpoints' @{ session = $s }
+    Assert-Ok $l 'checkpoints'
+    if ((Get-Prop $l.Data 'available') -ne $true) { Skip "no git where the host runs: $(Get-Prop $l.Data 'git')" }
+    $bare = Invoke-Tool $bridge 'checkpoint' @{ session = $s; label = 'mcp-check' }
+    Assert (-not $bare.Ok) 'a checkpoint with no rationale was taken'
+    $before = [string](Get-Prop (Invoke-Tool $bridge 'get' @{ session = $s; id = $id }).Data 'properties.generator')
+    $c = Invoke-Tool $bridge 'checkpoint' @{ session = $s; label = 'mcp-check'; attribution = (Rationale 'a point to roll back to') }
+    Assert-Ok $c 'checkpoint'
+    $cp = [string](Get-Prop $c.Data 'id')
+    Assert ($cp -match '^[0-9a-f]{40}$') "checkpoint answered no commit id: $(Show $c)"
+    $listed = @(Get-Prop (Invoke-Tool $bridge 'checkpoints' @{ session = $s }).Data 'checkpoints')
+    Assert ($listed.Count -ge 1 -and (Get-Prop $listed[0] 'id') -eq $cp) 'checkpoints does not list the new one first'
+    $e = Invoke-Tool $bridge 'set_property' @{ session = $s; id = $id; name = 'generator'; value = 'after the checkpoint'; attribution = (Rationale 'an edit to roll back') }
+    Assert-Ok $e 'set_property after the checkpoint'
+    $total = Journal-Total $bridge $s
+    $dry = Invoke-Tool $bridge 'rollback_to' @{ session = $s; checkpoint = $cp; dry_run = $true; attribution = (Rationale 'see what a rollback would do') }
+    Assert-Ok $dry 'rollback_to dry run'
+    Assert ((Journal-Total $bridge $s) -eq $total) 'a dry run journaled something'
+    $r = Invoke-Tool $bridge 'rollback_to' @{ session = $s; checkpoint = $cp; attribution = (Rationale 'the edit was wrong') }
+    Assert-Ok $r 'rollback_to'
+    $patches = [int](Get-Prop $r.Data 'patches')
+    Assert ($patches -ge 1) "the rollback committed $patches patches"
+    Assert ((Journal-Total $bridge $s) -eq $total + $patches) 'the rollback''s patches are not in the journal'
+    $now = [string](Get-Prop (Invoke-Tool $bridge 'get' @{ session = $s; id = $id }).Data 'properties.generator')
+    Assert ($now -eq $before) "after the rollback the property is '$now', not the checkpoint's '$before'"
+    # Undo the rollback and the edit, so the steps after this one see the document they expect.
+    $u = Invoke-Tool $bridge 'undo' @{ session = $s; steps = $patches + 1 }
+    Assert-Ok $u 'undo of the rollback'
+    "checkpoint $($cp.Substring(0, 12)), rolled back in $patches patch(es)"
+  }
+
   Step 'capture a frame into the workspace' {
     if ($NoRender) { Skip '-NoRender' }
     $c = Invoke-Tool $bridge 'capture' @{ load = @{ grid = 33 }; width = 320; height = 180; channels = @('color', 'ids') } -Timeout $RenderTimeout

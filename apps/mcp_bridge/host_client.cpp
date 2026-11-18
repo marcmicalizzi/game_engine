@@ -59,10 +59,12 @@ bool is_long_call(std::string_view method) noexcept {
   // bookkeeping over a document or the host's own state, and a host that takes minutes over it is
   // a host that has stopped. render.unload and render.scenes are in the short class: they release
   // or list what is there, and the release waits only for the frames already submitted.
+  // doc.checkpoint and doc.rollback_to copy a whole document into its repository and back out, as
+  // save and load copy a world.
   constexpr std::string_view k_long[] = {
-      "render.load",       "render.capture",   "render.benchmark",     "render.evaluate",
-      "render.compare",    "content.build",    "session.run_headless", "engine.run_tests",
-      "session.save_game", "session.load_game"};
+      "render.load",       "render.capture",    "render.benchmark",     "render.evaluate",
+      "render.compare",    "content.build",     "session.run_headless", "engine.run_tests",
+      "session.save_game", "session.load_game", "doc.checkpoint",       "doc.rollback_to"};
   for (const std::string_view m : k_long) {
     if (method == m) return true;
   }

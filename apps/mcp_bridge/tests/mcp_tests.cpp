@@ -6,6 +6,7 @@
 // fixture: they load the procedural heightfield. Where a case renders, it accepts either answer a
 // machine can honestly give — a picture, or "no GPU on this machine" — and says which it got; the
 // no-GPU answer itself is pinned on every machine by hiding the Vulkan drivers from the host.
+#include <core/hash/sha256.h>
 #include <core/json/json.h>
 #include <core/platform/process.h>
 #include <foundation/net/server.h>
@@ -531,7 +532,13 @@ TEST_CASE("mcp: tools/list gives every tool a JSON Schema generated from the eng
                           "profile_report",
                           "profile_stop",
                           "describe_document",
-                          "query"};
+                          "query",
+                          "put_blob",
+                          "read_blob",
+                          "collect_blobs",
+                          "checkpoint",
+                          "checkpoints",
+                          "rollback_to"};
   // Every tool offered is named here, so the count in docs/subsystems/apps.md cannot drift again
   // (it said 45 while there were 46: materialize was offered and never listed).
   CHECK(tools.size() == std::size(wanted));
@@ -958,6 +965,85 @@ TEST_CASE("mcp: a transaction stages changes from several tools and lands them a
   CHECK(is_error(mcp.tool("rollback", "{" + s + ",\"transaction\":" + t + "}")));
   ok(mcp.tool("undo", "{" + s + "}"));
   CHECK(num(ok(mcp.tool("objects", "{" + s + "}")), "total") == 0);
+}
+
+// The blob and checkpoint tools (apps.md, "Blobs reach an agent as a file"; roadmap A49).
+TEST_CASE("mcp: a blob reaches the workspace as a file, and a checkpoint is rolled back to") {
+  const test::TempDir tmp("mcp_bridge_blobs");
+  Mcp mcp(tmp.file("ws"));
+  REQUIRE(mcp.ok);
+  mcp.initialize();
+  const JsonValue opened =
+      ok(mcp.tool("open_session", "{\"path\":\"" + tmp.file("world") + "\",\"create\":true}"));
+  const std::string s = "\"session\":\"" + str(opened, "session") + "\"";
+  const std::string name = sha256_hex(sha256("hello blob"));
+  // Inline, then the same bytes again: one blob, the second put told it was there.
+  const std::string put = "{" + s + R"(,"data_base64":"aGVsbG8gYmxvYg==","media":"text/plain"})";
+  const JsonValue first = ok(mcp.tool("put_blob", put));
+  CHECK(str(at(first, "ref"), "blob") == name);
+  CHECK(num(at(first, "ref"), "size") == 10);
+  CHECK(text_of(mcp.tool("put_blob", put)).find("already held") != std::string::npos);
+  // Read back as a file under the workspace, named relative to it, with the bytes it was put with.
+  const JsonValue read = ok(mcp.tool("read_blob", "{" + s + ",\"blob\":\"" + name + "\"}"));
+  CHECK(str(read, "file") == "blobs/" + name);
+  {
+    std::ifstream file(std::filesystem::path(tmp.file("ws")) / "blobs" / name, std::ios::binary);
+    REQUIRE(file.good());
+    const std::string bytes((std::istreambuf_iterator<char>(file)),
+                            std::istreambuf_iterator<char>());
+    CHECK(bytes == "hello blob");
+    // A copy a reader holds open is the answer already: a second read leaves it and says where.
+    CHECK(str(ok(mcp.tool("read_blob", "{" + s + ",\"blob\":\"" + name + "\"}")), "file") ==
+          "blobs/" + name);
+  }
+  // The bytes never come inline: `data` is not an argument the tool takes.
+  CHECK(is_error(mcp.tool("read_blob", "{" + s + ",\"blob\":\"" + name + "\",\"data\":true}")));
+  const JsonValue unknown =
+      mcp.tool("read_blob", "{" + s + ",\"blob\":\"" + std::string(64, '0') + "\"}");
+  CHECK(is_error(unknown));
+  CHECK(text_of(unknown).find("put_blob") != std::string::npos);
+  // Nothing names the blob: a dry run says it would go and leaves it, a collection takes it.
+  const std::string collect = "{" + s + ",\"min_age_s\":0";
+  CHECK(at(ok(mcp.tool("collect_blobs", collect + ",\"dry_run\":true}")), "removed").size() == 1);
+  ok(mcp.tool("read_blob", "{" + s + ",\"blob\":\"" + name + "\"}"));
+  CHECK(at(ok(mcp.tool("collect_blobs", collect + "}")), "removed").size() == 1);
+  CHECK(is_error(mcp.tool("read_blob", "{" + s + ",\"blob\":\"" + name + "\"}")));
+
+  const JsonValue listed = ok(mcp.tool("checkpoints", "{" + s + "}"));
+  bool available = false;
+  REQUIRE(at(listed, "available").get_bool(available));
+  if (!available) {
+    // No git here: the tool says why, and the rest of the case needs one.
+    CHECK(text_of(mcp.tool("checkpoints", "{" + s + "}")).find("not available") !=
+          std::string::npos);
+    MESSAGE("no git where the host runs: " << str(listed, "git"));
+    return;
+  }
+  CHECK(at(listed, "checkpoints").size() == 0);
+  // A checkpoint is history others roll back to, so it says why.
+  CHECK(is_error(mcp.tool("checkpoint", "{" + s + ",\"label\":\"empty\"}")));
+  const JsonValue taken = ok(mcp.tool(
+      "checkpoint", "{" + s + ",\"label\":\"empty\"," + attribution("before any object") + "}"));
+  const std::string id = str(taken, "id");
+  CHECK(id.size() == 40);
+  ok(mcp.tool("create_object", "{" + s + ",\"id\":\"" + k_b + "\",\"type\":\"" + k_type + "\"," +
+                                   attribution("an object to roll back") + "}"));
+  const std::string back =
+      "{" + s + ",\"checkpoint\":\"" + id + "\"," + attribution("back to the empty world");
+  const JsonValue dry = ok(mcp.tool("rollback_to", back + ",\"dry_run\":true}"));
+  CHECK(text_of(mcp.tool("rollback_to", back + ",\"dry_run\":true}")).find("Dry run") !=
+        std::string::npos);
+  CHECK_FALSE(at(dry, "committed") == JsonValue(true));
+  CHECK(num(ok(mcp.tool("objects", "{" + s + "}")), "total") == 1);
+  const JsonValue rolled = ok(mcp.tool("rollback_to", back + "}"));
+  CHECK(num(rolled, "patches") >= 1);
+  CHECK(num(ok(mcp.tool("objects", "{" + s + "}")), "total") == 0);
+  CHECK(at(ok(mcp.tool("checkpoints", "{" + s + "}")), "checkpoints").size() == 1);
+  // An unknown checkpoint names the tool that lists them.
+  const JsonValue missing =
+      mcp.tool("rollback_to", "{" + s + ",\"checkpoint\":\"" + std::string(40, 'f') + "\"," +
+                                  attribution("no such checkpoint") + "}");
+  CHECK(is_error(missing));
 }
 
 // describe_document (protocol.md, "Describing an object, a tile or a region").

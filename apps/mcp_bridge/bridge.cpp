@@ -190,6 +190,13 @@ std::string hint_for(std::string_view method, i32 code, std::string_view message
       if (message.find("scene") != std::string_view::npos)
         return "Scene ids live until unload releases them or the host exits; scenes lists the "
                "loaded ones. Pass `load` instead of `scene` to load it again.";
+      if (method == "doc.blob")
+        return "A blob is named by the blob of the BlobRef a property holds; put_blob stores "
+               "bytes and answers that name.";
+      if (method == "doc.put_blob")
+        return "path names a file under the document's directory, relative to it; send bytes "
+               "the agent holds as data_base64 instead.";
+      if (method == "doc.rollback_to") return "checkpoints lists the document's checkpoint ids.";
       if (message.find("layer") != std::string_view::npos)
         return "layers lists the document's layer names.";
       return "Check the id or name: objects lists ids and layers lists layer names.";
@@ -197,7 +204,11 @@ std::string hint_for(std::string_view method, i32 code, std::string_view message
     case 1005:
       return "A file could not be read or written: check the path, and that its directory "
              "exists and is writable.";
-    case 1006: return "This host does not offer that service.";
+    case 1006:
+      if (method == "doc.checkpoint" || method == "doc.rollback_to")
+        return "Checkpoints need git where the host runs (on its PATH, or ENGINE_GIT naming "
+               "one); checkpoints says which git answered. The document tools still work.";
+      return "This host does not offer that service.";
     case 1007:
       return "There is no GPU on this machine that can render this. If the message names a "
              "missing ray-tracing extension, load again with settings {\"shadows\":\"off\"} and "
