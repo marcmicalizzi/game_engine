@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R185",
+  "reason": "R185: the ambient's lower half from the scene's own ground, the rule and why on the renderer page",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 1633
+  }
+}

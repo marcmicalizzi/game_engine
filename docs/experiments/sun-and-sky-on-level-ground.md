@@ -265,7 +265,10 @@ leg had no GPU. In the order it would be built:
    the sand's albedo a shaded trunk or needle with the bounce off loses about three fifths of its
    light, and the cache's fallbacks stop leaking sand. *Pays*: nothing a frame. *Cases*: the
    lighting test that pins the sand (`flythrough_tests.cpp`), a scene with a layered ground, every
-   golden over a terrain that is not sand.
+   golden over a terrain that is not sand. **Built by R185 (2026-11-18)** as designed, with the
+   masked palette's shares read off the mask level rather than blended per hit
+   ([renderer](../subsystems/renderer.md), "The ground's albedo is a scene value"); what it moved
+   is in [the section below](#r185-the-lower-half-from-the-scenes-own-ground).
 2. **The turbidity is the Linke turbidity it says** (`earth_atmosphere`, `domain/sky/src/earth.cpp`;
    `schemas/scene.schema`'s `Sky`). The aerosol at 550 nm becomes
    `max((T / 11.2 − δcda(2) − δw(2, water)) / 0.749, least)` over a stated water column (a new
@@ -305,6 +308,49 @@ leg had no GPU. In the order it would be built:
 
 Not proposed: any change to `sky.slang` or its reference. Nothing in the scattering contradicts
 its sources at the precision this page measured.
+
+## R185: the lower half from the scene's own ground
+
+Built 2026-11-18 as step 1 above (`load_scene`, `terrain_ground_albedo`; the rule is on the
+[renderer page](../subsystems/renderer.md), "The ground's albedo is a scene value"). Two engine-view
+binaries built in `msvc-release` from the base (the R182 merge, whose code is main 5d0634bb's) and
+from the mend, the same hour, at fixed poses (`--raster rt --shadows rt`, 1920 × 1080, 12 frames, the
+renderer's stand-in sun on the two tree scenes and the village's own sky at 15:00 on day 170 at 52° N).
+Luminance is the capture's sRGB codes decoded to linear and weighted by Rec. 709, the display's
+shoulder not inverted, the mean of a box (`<scratch>\b69\R185\lum.py`, `boxes.json`):
+
+| scene, bounce | surface | before | after | after / before |
+|---|---|---|---|---|
+| `tree-species`, off | a shaded spruce trunk; its needle mass; the sunlit sand | 0.069; 0.128; 0.400 | the same bytes | 1 |
+| `tree-species`, on | the same | 0.058; 0.102; 0.387 | the same bytes | 1 |
+| `grove`, off | a shaded palm trunk; a young spruce's needles; the sand under the crowns | 0.081; 0.150; 0.226 | the same bytes | 1 |
+| `grove`, on | the same | 0.061; 0.124; 0.189 | the same bytes | 1 |
+| village, off | a gable in shade (two houses); the near left cottage's front, lit at a slant; the sunlit turf | 0.300, 0.252; 0.651; 0.127 | 0.105, 0.090; 0.511; 0.127 | 0.35, 0.36; 0.79; 1.00 |
+| village, on | the same | 0.099, 0.067; 0.510; 0.127 | 0.093, 0.063; 0.507; 0.127 | 0.95, 0.95; 0.99; 1.00 |
+
+- **Both tree scenes stand on the desert's sand**, a ground with no ridge or basin, so their lower
+  half is the sand to the bit and their pictures did not move: every capture is the same file
+  before and after. Their crowns still read over white sand, which is step 5's (content), not this
+  row's.
+- **The village stands on turf, soil, a verge, wear and a gravel lane** by its masks, and a wall in
+  shade with the bounce off loses about two thirds of its light (0.35 of it): its ambient's lower
+  half was sand of luminance 0.71 and is now the village's ground. That is the R182 page's
+  prediction (four fifths of a shaded wall's light was the lower half; a ground a fifth as bright
+  leaves 0.2 + 0.8 / 5 ≈ 0.36). The shade also takes the ground's green where it took the sand's
+  cream. With the bounce on, the cache's rays already found the turf, and the walls move 5 %, which
+  is what its fallbacks (a read with no samples, a miss below the horizon) took from the sand.
+- **On the tier with no bounce at all** (the Titan Xp's: no ray queries, so no cache), the
+  harmonics' lower half is all the indirect light a shaded surface gets, and the bounce-off rows are
+  that tier's picture: the mend is the whole of the change there.
+- The village's ground came to (0.122, 0.141, 0.066) linear, luminance 0.13, from the sand's
+  (0.84, 0.69, 0.47), luminance 0.71 (the load's `scene loaded` line logs it at `--log info`).
+- **The cost is nothing a frame**: the value is one vector the frame already carried. The grove path
+  at 3840 × 2160, `--raster rt --shadows rt`, bounce on, 3,001 frames, flown before, after, before,
+  after under one lease (session unlocked, the machine's other processes at 70 to 100 % of the CPU):
+  GPU frame median 5.33, 5.48, 5.69, 5.52 ms and p95 5.99, 6.20, 6.44, 6.25 ms — the two sides
+  interleave, and the grove's pictures are the same bytes.
+- What is resident: nothing new beyond a float per palette layer (`TerrainDesc::mask_cover`); a mask
+  tile's words and a decoded coverage map are held only while summed at load.
 
 ## What an imported asset gets, and a scene with none
 
