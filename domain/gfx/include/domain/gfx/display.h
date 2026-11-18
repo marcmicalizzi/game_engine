@@ -319,6 +319,23 @@ inline void display_encode_hdr(const f32 exposed[3], f32 knee, DisplayEncoding e
   }
 }
 
+// **One pixel of an HDR10 picture as the encode stores it** (ADR-0075): display.slang's
+// `display_output` PQ branch on the CPU — `display_encode_hdr`'s three PQ values, the dither of
+// pixel (x, y) at `dither_steps` (0 for none, 1023 for the target's own), and the encode's own
+// rounding to the 10-bit code (`display_code`), so the code is the shader's on every driver and
+// not the store's. The shader computes the same in float32 with the device's `pow`, so the two
+// agree to a code except where a value lies within a last bit's reach of the edge between two
+// (hdr_output_tests.cpp measures how far; renderer.md, "The code is the engine's, not the
+// store's").
+inline constexpr u32 k_pq_codes = 1023;  // a 10-bit PQ target's steps: HDR10's codes
+inline void display_pq_codes(const f32 exposed[3], f32 knee, f32 paper_white_nits, f32 peak_nits,
+                             u32 x, u32 y, u32 dither_steps, u32 out[3]) noexcept {
+  f32 pq[3];
+  display_encode_hdr(exposed, knee, DisplayEncoding::Pq, paper_white_nits, peak_nits, pq);
+  for (u32 c = 0; c < 3; ++c)
+    out[c] = display_code(display_dithered(pq[c], x, y, dither_steps), k_pq_codes);
+}
+
 // **The HDR10 static metadata for a picture the curve has fitted to the display** (E39): the
 // mastering primaries BT.2020's (what the PQ encode writes), its luminance range the display's own
 // peak and black, MaxCLL the peak — the curve approaches it and never passes it — and MaxFALL paper

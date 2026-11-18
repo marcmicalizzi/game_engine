@@ -9,6 +9,16 @@ against its **3 %**, where the store's rounding had given **2.14 %**. This page 
 is, what the case's true invariant is, and the check that states it. **The decision to round HDR10
 in the encode is the owner's**; nothing here changes a test or a shader.
 
+**Decided and built (2026-11-18, R187-1; [ADR-0075](../adr/0075-the-encode-owns-the-rounding-to-a-targets-codes.md)).**
+The owner said yes to the recommendation below the same day. The PQ branch of `display_output` and
+of the frame passes' `encode_under_ui` ends on `display_stored`, `display.h`'s `display_pq_codes`
+is the branch on the CPU, and `hdr_output_tests.cpp`'s "HDR10's codes are the CPU mirror's,
+rounded by the encode" holds the device's codes to it. The overlay case's HDR10 blend is the check
+below (`hdr10_blend_window` in `overlay_tests.cpp`), read from the target's 10-bit codes, and what
+`check2.py` showed is the CPU case "overlay: HDR10's blend window holds every linear composite, not
+one in PQ's curve" (the scripts stay in the row's scratch, and the repository takes no Python).
+renderer.md, "The code is the engine's, not the store's", has the figures measured with it.
+
 The scripts are in the row's scratch (`<scratch>/b69/R187/`: `overlay_hdr10.py`, `search.py`,
 `sweep.py`, `variants.py`, `check.py`, `check2.py`) and mirror, in float32 where the device computes
 in float32: `display.h`'s `pq_encode`, `pq_decode`, `k_bt709_to_bt2020` and its inverse in double,
@@ -115,7 +125,8 @@ the stored BT.2020 codes of both frames, which `CapturedFrame::light` has alread
 `CodeHistogram` holds only in aggregate: the restated case reads them from the raw 10-bit capture
 of both frames.
 
-**Verified on the CPU** (`check2.py`): over 20,000 random cases × 257 dither values × 3 channels,
+**Verified on the CPU** (`check2.py`; in the suite since R187-1 as the overlay test's CPU case,
+4,000 cases × 129 dither values × 3 channels × both rules for each frame): over 20,000 random cases × 257 dither values × 3 channels,
 simulated with the half-float under, the layer's nearest code and both rounding rules, **no correct
 composite falls outside the window** (0 under nearest, 0 under the store's rule). The window is 4.6
 codes wide at the median (5.7 at p99, 13.6 at its widest, where a dark layer's 8-bit sRGB step is

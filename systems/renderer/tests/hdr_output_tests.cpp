@@ -466,3 +466,77 @@ TEST_CASE("hdr output: the ramp view is display_ramp through the output encode")
     }
   }
 }
+
+// **HDR10's codes are the encode's** (ADR-0075; renderer.md, "The code is the engine's, not the
+// store's"): the ramp drawn as HDR10, with the dither off and on, read back as its 10-bit codes,
+// is the CPU mirror's codes (`gfx::display_pq_codes`) at every pixel-channel, except where the
+// value the encode rounded lay within a last bit's reach of the edge between two codes — the
+// device's `pow` and `exp2` against the CPU's, through the ramp, the curve and PQ. A store left to
+// round (the cards here cut a value to four bits under a code first) would put up to 3% of
+// channels on the lower code anywhere within a sixteenth of a code above an edge (0.0624), which
+// `edge` sees; measured with the encode rounding (RTX 5090, 621.24), none off undithered and 293 of
+// 172,800 dithered, every one within 0.0074 of an edge.
+TEST_CASE("hdr output: HDR10's codes are the CPU mirror's, rounded by the encode") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  const u32 ramp = static_cast<u32>(gfx::ResolveMode::Ramp);
+  const FrameDesc frame = looking(0.0);
+  for (const bool dither : {false, true}) {
+    CAPTURE(dither);
+    Rig pq;
+    REQUIRE_MESSAGE(pq.build(gpu.device, false, gfx::Format::A2B10G10R10Unorm,
+                             gfx::DisplayEncoding::Pq, ramp, dither),
+                    pq.error);
+    CaptureChannels channels;
+    channels.color = false;
+    CapturedFrame shot;
+    REQUIRE_MESSAGE(pq.renderer.capture(frame, channels, shot, &pq.error), pq.error);
+    gfx::Capture raw;
+    REQUIRE_MESSAGE(gfx::capture_image(gpu.device, pq.renderer.color_target(),
+                                       gfx::ImageLayout::TransferSrc, raw, &pq.error),
+                    pq.error);
+    REQUIRE(raw.format == gfx::Format::A2B10G10R10Unorm);
+    REQUIRE(raw.width == k_width);
+    REQUIRE(raw.height == k_height);
+    u64 compared = 0, differ = 0, over_one = 0;
+    f64 edge = 0.0;  // the farthest from a code's edge any differing value lay, in codes
+    for (u32 y = 0; y < k_height; ++y) {
+      for (u32 x = 0; x < k_width; ++x) {
+        u32 word = 0;
+        std::memcpy(&word, raw.bytes.data() + (u64{y} * k_width + x) * 4, sizeof(word));
+        const f32 grey = gfx::display_ramp(x, y, k_width, k_height);
+        const f32 exposed[3] = {grey, grey, grey};
+        u32 mirror[3];
+        gfx::display_pq_codes(exposed, 1.0f, static_cast<f32>(k_paper_white),
+                              static_cast<f32>(k_peak), x, y, dither ? gfx::k_pq_codes : 0u,
+                              mirror);
+        f32 pq_values[3];
+        gfx::display_encode_hdr(exposed, 1.0f, gfx::DisplayEncoding::Pq,
+                                static_cast<f32>(k_paper_white), static_cast<f32>(k_peak),
+                                pq_values);
+        for (u32 c = 0; c < 3; ++c) {
+          const i64 seen = static_cast<i64>((word >> (10 * c)) & 1023u);
+          const i64 d = seen - static_cast<i64>(mirror[c]);
+          ++compared;
+          if (d == 0) continue;
+          ++differ;
+          if (d > 1 || d < -1) ++over_one;
+          const f64 handed =
+              static_cast<f64>(gfx::display_dithered(pq_values[c], x, y,
+                                                     dither ? gfx::k_pq_codes : 0u)) *
+              static_cast<f64>(gfx::k_pq_codes);
+          edge = std::max(edge, std::fabs(handed - std::floor(handed) - 0.5));
+        }
+      }
+    }
+    MESSAGE("hdr10 ramp, dither " << std::string(dither ? "on" : "off") << ": " << differ << " of "
+                                  << compared << " channels off the CPU mirror, " << over_one
+                                  << " by more than one, all within " << edge
+                                  << " of a code's edge");
+    CHECK(over_one == 0);
+    CHECK(edge < 0.02);
+  }
+}
