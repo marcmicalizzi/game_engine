@@ -37,7 +37,8 @@ bool device_memory_report(const Device& device, DeviceMemoryReport& out) noexcep
 // commit as well (the driver's system-memory backing, measured by `tests/device_memory_tests.cpp`).
 // Off — the default — a buffer that large pays one relaxed load and a smaller one nothing.
 inline constexpr u64 k_large_buffer_bytes = u64{16} << 20;
-inline constexpr u32 k_large_buffer_slots = 1024;
+inline constexpr u64 k_large_buffer_min_bytes = u64{1} << 20;
+inline constexpr u32 k_large_buffer_slots = 8192;
 inline constexpr u32 k_large_buffer_frames = 12;
 struct LargeBuffer {
   u64 key = 0;  // the allocation's handle
@@ -47,12 +48,19 @@ struct LargeBuffer {
   void* stack[k_large_buffer_frames]{};
 };
 void set_large_buffer_log(bool on) noexcept;
+// The log's floor (W51-2): `k_large_buffer_bytes` unless a host lowers it, never under
+// `k_large_buffer_min_bytes`; set before the log is on (it empties the table), as the engine
+// heap's (core/memory/large_allocations.h, `set_large_allocation_floor`).
+void set_large_buffer_floor(u64 bytes) noexcept;
+u64 large_buffer_floor() noexcept;
 // Copies the live large buffers (up to `capacity`) and returns how many there are.
 u32 large_buffers(LargeBuffer* out, u32 capacity) noexcept;
 u64 large_buffers_dropped() noexcept;
 
 namespace detail {
 bool large_buffer_log_on() noexcept;
+// On, and `bytes` at or above the floor: whether a buffer of that size is the log's.
+bool large_buffer_logged(u64 bytes) noexcept;
 void note_large_buffer(u64 key, u64 bytes, bool host_visible) noexcept;
 void forget_large_buffer(u64 key) noexcept;
 }  // namespace detail

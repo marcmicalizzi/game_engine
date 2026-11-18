@@ -22,6 +22,7 @@ namespace engine::gfx {
 namespace {
 
 std::atomic<bool> g_on{false};
+std::atomic<u64> g_floor{k_large_buffer_bytes};
 std::atomic<bool> g_lock{false};
 LargeBuffer g_buffers[k_large_buffer_slots];
 u32 g_count = 0;  // under g_lock
@@ -54,9 +55,24 @@ u32 large_buffers(LargeBuffer* out, u32 capacity) noexcept {
 
 u64 large_buffers_dropped() noexcept { return g_dropped.load(std::memory_order_relaxed); }
 
+void set_large_buffer_floor(u64 bytes) noexcept {
+  lock();
+  g_floor.store(bytes < k_large_buffer_min_bytes ? k_large_buffer_min_bytes : bytes,
+                std::memory_order_relaxed);
+  g_count = 0;
+  unlock();
+}
+
+u64 large_buffer_floor() noexcept { return g_floor.load(std::memory_order_relaxed); }
+
 namespace detail {
 
 bool large_buffer_log_on() noexcept { return g_on.load(std::memory_order_relaxed); }
+
+bool large_buffer_logged(u64 bytes) noexcept {
+  return bytes >= k_large_buffer_min_bytes && g_on.load(std::memory_order_relaxed) &&
+         bytes >= g_floor.load(std::memory_order_relaxed);
+}
 
 void note_large_buffer(u64 key, u64 bytes, bool host_visible) noexcept {
   LargeBuffer entry{};
