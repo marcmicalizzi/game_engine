@@ -1149,3 +1149,27 @@ and `report` sees the try even though no device follows. A bundle (`tools/packag
 carries each test's arguments, so the split's filters travel, and not its environment: there
 `ENGINE_TEST_DEVICES` is unset and both checks do nothing, which is right for a machine whose run
 has no chains to protect. Outside CTest — an author running a test executable by hand — the same.
+
+## Checks on events, not seconds
+
+A check that passes alone and fails in a full run is a race or a clock until shown otherwise
+(roadmap T184), and the mend is to wait for the event the assertion is about, never to lengthen the
+sleep or loosen the assertion. A deadline may stay, to end a case that would otherwise hang; it is
+never what the case measures. What batch 68's runs found, with each check before and after:
+
+| Check | Before | After |
+|---|---|---|
+| `tools.slot`, "reset refuses while a process runs from under the slot" | the sleeper given 800 ms to start | waits until slot.ps1's own question (a process whose executable is under the slot) finds it; the same refusal, the same unmoved HEAD |
+| `tools.slot`, "and resets once it has ended" | kill, then at most 5 s for the process to end | waits until that question finds nothing; the same reset, the same new HEAD |
+| `tools.machine_lock`, "a build that releases and asks again is served after the build that was waiting" | the first hold 3 s, in which a second pwsh had to start and stand in the line; every hold seen by a look every 20 ms at holds of 0.3 s | the first hold ends only once the second build stands in the line (`linux-build.ps1 -LockOnlyUntil <file>`), and every hold ends only once the test has seen it; the same order, by pid and by hold |
+| `tools.machine_lock`, "and are served in that order" (three builds) | holds of 0.31 to 0.33 s against the same 20 ms look | each hold ends once seen; the same order, by pid and by hold |
+
+**The slot reset's own race was in the script, not the test.** `slot.ps1` asked
+`$_.Path -and $_.Path.StartsWith(...)` of every process, and `Path` is a script property
+(`$this.MainModule.FileName`) that asks the process again on each read: one that exits between the
+two reads answers null the second time, the call on null stops the script, and `reset` exits 1. On
+this machine with the rows' compilers starting and ending, the two-read form threw on 1 of 60
+enumerations of the process table and the one-read form on none (2026-11-18, about 1.9 s an
+enumeration). It reads `Path` once now, and so does the test's own question.
+
+`scene_collision`'s wall-clock check is another row's (T184 left it).

@@ -85,6 +85,9 @@
               same exit codes — hold it for <s> seconds and release it, starting no container and
               asking nothing of Docker. It is how `tools.machine_lock` tests the build lock's line
               through this script, and by hand a way to keep builds off the machine for a moment.
+-LockOnlyUntil <path>  with -LockOnly: release as soon as <path> exists, <s> being then the most
+              it holds. The tests end each hold on an event of their own rather than on a clock
+              (docs/ci/what-to-run.md, "Checks on events, not seconds").
     -Offline      run the build containers with --network none: proof that everything this
                   build needs is already in the dependency cache, and a failure if it is not.
 
@@ -120,7 +123,8 @@ param(
   [switch]$Sync = $true,
   [switch]$NoWait,
   [switch]$Offline,
-  [double]$LockOnly = 0
+  [double]$LockOnly = 0,
+  [string]$LockOnlyUntil
 )
 
 $ErrorActionPreference = 'Stop'
@@ -653,8 +657,13 @@ if ($LockOnly -gt 0) {
   $lock = Enter-BuildLock "linux-build -LockOnly $LockOnly in $Root"
   $heartbeat = if ($lock.Handle) { Start-MachineLockHeartbeat -Handle $lock.Handle } else { $null }
   try {
-    Write-Host "linux-build: holding the build lock for $LockOnly s (-LockOnly)"
-    Start-Sleep -Milliseconds ([int]($LockOnly * 1000))
+    Write-Host "linux-build: holding the build lock for $LockOnly s (-LockOnly)$(if ($LockOnlyUntil) { " or until $LockOnlyUntil exists" })"
+    if ($LockOnlyUntil) {
+      $until = [DateTime]::UtcNow.AddMilliseconds($LockOnly * 1000)
+      while (-not (Test-Path -LiteralPath $LockOnlyUntil) -and [DateTime]::UtcNow -lt $until) { Start-Sleep -Milliseconds 20 }
+    } else {
+      Start-Sleep -Milliseconds ([int]($LockOnly * 1000))
+    }
   } finally {
     Stop-MachineLockHeartbeat -Job $heartbeat
     Exit-MachineLock -Handle $lock.Handle
