@@ -1,0 +1,12 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "b68-stack",
+  "reason": "The stack joins four tool rows' sections of what-to-run.md (T177 the no-driver form, T76 the shader cache, sweep-T2 sanitizers and test costs, T171 the GPU chains): each under the default page ceiling alone, 109,200 bytes together",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": -38,
+    "page:AGENTS.md": -8,
+    "page:docs/ci/what-to-run.md": 9200
+  }
+}
