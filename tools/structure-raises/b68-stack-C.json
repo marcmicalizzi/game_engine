@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "b68-stack-C",
+  "reason": "Leg C of b68's stack: protocol.md states that a backslash is a separator on every platform (doc.place_asset, doc.put_blob); renderer.md says the water reflection case holds the leaf to its reflected part",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 169,
+    "page:docs/subsystems/protocol.md": 404
+  }
+}

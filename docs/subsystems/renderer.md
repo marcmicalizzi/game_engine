@@ -1860,7 +1860,8 @@ let through of the front's, so the light a bounce brings back from under a canop
 lit-through green rather than a dark sheet's back. `water reflect: a foliage card in the water is
 shaded as the card on the screen` (systems/water) holds the reflected hit to the resolve: what the
 optics multiply a backlit card by, in the sun and in a wall's shadow, agrees on the screen and in
-the water within ln(1.05).
+the water within ln(1.05), against a sheet of the leaf's reflected part (the importer keeps 1 - t
+of glTF's base colour, so a sheet of the whole would cancel the shadowed card's gain to the bit).
 
 **Not done.** Water's flag-class mirror in `water.slang` does not name the byte (it checks only
 that the classes stay apart, which they do).

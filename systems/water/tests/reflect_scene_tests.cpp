@@ -790,6 +790,17 @@ TEST_CASE(
 // ambient one-sided, mended in R164-3's B7 with no case); this is that case. Card A's ratio is the
 // sun through the leaf and its back's ambient, card B's the back's ambient alone.
 //
+// **"The same leaf without" is the leaf's reflected part** (b68's stack, leg C). The importer
+// splits glTF's factor t (R164-3, review B4; gltf.cpp): the base colour keeps 1 - t of itself and
+// the transmittance is t / (1 - t) of what is kept. A sheet of the leaf's whole base colour is
+// therefore the leaf's front plus what the leaf sends through, and under the stand-in's ambient,
+// which is the same on both faces of a vertical card, the two cancel to the bit: card B read 1.0
+// on the screen and moved no water pixel, and card A read only t times the sun (1.169). So the
+// sheet here is base colour times 1 - t = 0.6, the leaf's reflected albedo, and the ratio is
+// 1 + (t / (1 - t)) (E_back / E_front) in the diffuse: 1 + 0.667 = 1.667 for card B, whose back
+// sees the same ambient as its front, and more for card A, whose back also takes the sun. The
+// ambient's specular share, the same in both pictures, dilutes it a little.
+//
 // Why the two ratios must agree: the cards are vertical and untextured, so the mirrored view meets
 // each at the same n.v as the eye does and the leaf's terms are the view's but for the sheet's
 // specular lobe, which a backlit sheet (n.l < 0) does not have and whose ambient share depends on
@@ -801,7 +812,14 @@ TEST_CASE(
 // over the hundreds of pixels a card's reflection covers at a mean over 30 codes that is under 1 %,
 // so the ratios are held within ln(1.05). A one-sided hit (the sun or the back's ambient missing)
 // moves card A's ratio by its whole size and card B's by the back's share: each checked to be
-// over 1.3, six times the bound.
+// over 1.3, six times the bound (ln 1.3 = 0.26, ln 1.05 = 0.049), and under the 1.667 the back's
+// ambient alone gives card B. A reflection that kept the leaf's split front and lost what goes
+// through would read 1.0 in the water against 1.667 or more on the screen.
+//
+// Why 200 mirrored pixels: a card covers about 1,800 pixels on the screen at 480 x 320 and its
+// mirror in the still pool about 1,600 of the water's in the card's columns (both measured, card
+// A); a mirror of 200 is an eighth of that, still a mean over hundreds of pixels, which is what
+// the ln(1.05) above rests on.
 namespace {
 
 // A vertical quad in the mesh's x-y plane, facing -z, `x0`..`x1` by `y0`..`y1`, its material
@@ -860,8 +878,10 @@ TEST_CASE("water reflect: a foliage card in the water is shaded as the card on t
   const char* k_leaf = R"({"doubleSided": true, "pbrMetallicRoughness": {
       "baseColorFactor": [0.15, 0.40, 0.08, 1], "metallicFactor": 0, "roughnessFactor": 0.7},
       "extensions": {"KHR_materials_diffuse_transmission": {"diffuseTransmissionFactor": 0.4}}})";
+  // The leaf's reflected part: its base colour times 1 - t, which is what the importer keeps of the
+  // leaf's (above), so the two pictures differ only by what the leaf sends through.
   const char* k_sheet = R"({"doubleSided": true, "pbrMetallicRoughness": {
-      "baseColorFactor": [0.15, 0.40, 0.08, 1], "metallicFactor": 0, "roughnessFactor": 0.7}})";
+      "baseColorFactor": [0.09, 0.24, 0.048, 1], "metallicFactor": 0, "roughnessFactor": 0.7}})";
   const char* k_wall = R"({"pbrMetallicRoughness": {
       "baseColorFactor": [0.5, 0.5, 0.5, 1], "metallicFactor": 0, "roughnessFactor": 0.9}})";
   {
@@ -996,7 +1016,8 @@ TEST_CASE("water reflect: a foliage card in the water is shaded as the card on t
     REQUIRE(mirrored[1] > 0.0);
     const f64 on_screen = seen[0] / seen[1];
     const f64 in_water = mirrored[0] / mirrored[1];
-    MESSAGE("card " << (c == 0 ? "A (in the sun)" : "B (in the wall's shadow)") << ": " << seen_n
+    const std::string card = c == 0 ? "A (in the sun)" : "B (in the wall's shadow)";
+    MESSAGE("card " << card << ": " << seen_n
                     << " pixels on the screen, the optics multiply them by " << on_screen << "; "
                     << mirrored_n << " in the water (mean green code without the optics "
                     << codes / mirrored_n << "), by " << in_water << "; bound ln(1.05)");
