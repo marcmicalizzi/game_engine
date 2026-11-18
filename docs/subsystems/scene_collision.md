@@ -304,6 +304,77 @@ twice it is made again once, as a kinematic body, and stops the walker at its ne
 a removal let it through; the ring moved a kilometre away lets the body go with the tile, and back
 it is made again; a cast names the prop by its key.
 
+## Doors
+
+(2026-11-18, roadmap S91; [ADR-0070](../adr/0070-a-door-is-a-kinematic-box-held-by-the-walker.md);
+plan [14 §14.4](../plan/14-structures.md#doors-the-first-kinematic-bodies).) **A door is the
+scene's first body that moves**: a box on the kinematic layer the size of its leaf, about an upright
+hinge (`DoorBody`: the hinge's foot, the closed heading and the swing in integer millidegrees, the
+leaf's half sizes, the speed, the state and the angle reached). A host hands its doors with
+`set_doors` and calls `step_doors(&walker)` on every tick after the ring's update and before the
+walker's step; `toggle_door(key)` at a tick sends a door toward its other state; `door(key)` reads
+it back, which is what a saved village keeps. **Made with its tile, let go with it**, in key order,
+as a prop's body ([Props](#props)); its state is the world's and goes on while its tile is away.
+**Its angle moves by an integer a tick** (`k_door_speed_mdeg` = 375, 90 degrees in a second at 240
+Hz) and the box is put at the pose that integer names with `set_body_transform`, never driven by
+`move_kinematic`, because this world is never stepped (ADR-0070 decisions 2 and 3). **A door that
+would enter the walker holds its angle**: the leaf at the next angle is tested against the capsule
+— both upright, so the test is exact in the leaf's frame — and a door that would come within
+`k_door_hold_margin_m` (5 cm, past the character's contact padding, so a leaf never presses the
+walker into stepping aside for it to creep after) stays where it was that tick and counts a hold (`DoorStats::holds`). The walker collides as `Moving`, so
+its sweep meets the kinematic layer: a closed door is a wall, an open one a wall at its angle. A
+cast that meets a leaf is `HitKind::door`, its `instance` the door's key. **What it costs**: a
+scene with no doors pays an empty check a tick; a door costs a transform write on the ticks it
+turns and nothing standing. **A swing is a move** (2026-11-18), as a prop's is ([What a moving
+prop costs](#what-a-moving-prop-costs)): the box is put at its angle and its node in the kinematic
+tree follows it, and the broadphase is rebuilt only at a step that made or let go a door's body.
+Until then every tick a door swung rebuilt it over every body the world holds. `scene_collision: a
+swinging door costs the walker's tick a move, not a rebuild` (0.2 s in `msvc-debug`) stands 30
+doors and 300 static boxes round a standing walker, keeps k of them swinging, and times 300 ticks
+of the ring's update, `step_doors` and the step; it asserts every swinging door moves every tick
+and that no tick allocates. Medians of a tick in microseconds, `msvc-release`, two alternating runs
+with the machine at 73 to 87 % CPU and other rows building, so upper bounds:
+
+| doors swinging | before | after |
+|---:|---:|---:|
+| 0 of 30 | 2.9 / 4.8 | 4.9 / 2.8 |
+| 1 of 30 | 57 / 68 | 5.5 / 3.2 |
+| 30 of 30 | 69 / 80 | 18.7 / 18.7 |
+
+Before, one door swinging cost the tick about 60 µs over 330 bodies, all of it the rebuild, and a
+walk's broadphase also holds every held tile's ground and placements; after, a swinging door costs
+about half a microsecond (30 against 0), the leaf test against the walker and the transform write.
+
+Three cases in `tests/far_forest_tests.cpp` (no device): a closed door across a doorway stops a
+walker at the leaf's face less its radius, toggled it swings open in exactly 240 ticks and the
+walker goes through; a door closing on a walker in its arc holds short of it, counting holds, and
+finishes once the walker steps away; and two worlds given the same toggles at the same ticks reach
+the same angle, the tile let go takes the body and keeps the door, and the body is made again when
+the tile comes back.
+
+**Not built of S91**: the leaf meshed on its own with its pivot on the hinge (the mesher draws it
+in the house's mesh, G65), doors handed from a building's description, the walker's interact
+action and a game module's service (an ABI step), the state written back through the document
+(D37), and a closed door as an area navigation opens.
+
+**What a door from a building's description needs** (2026-11-18). The description already says
+everything a door is: an opening with a leaf (`structure::Opening::leaf`, `leaf_open`, and the jamb
+it hangs on, `hinge_at_to`), which `structures::walk_records` turns into a `WalkLeaf` — the hinge's foot and the leaf's tip
+in the building's frame, its foot and head heights, its thickness and the angle it stands at — so
+`DoorBody`'s hinge, closed heading, half sizes and swing follow from it with no rule of the
+collision's own. What is missing is the way from the description to the scene, in three pieces, and
+none of them belongs in this module: **(1)** the structure mesh generator writes each leaf into the
+built container as a section of its own (append-only, as the perches and the structural table are,
+`geometry::cluster_file.h`), so a tile-handed house and an imported asset that declares doors carry
+them the same way and the collision reads them through `renderer::load_placement_mesh` as it reads
+a mesh's perches; **(2)** the mesher leaves the leaf out of the house's mesh, or marks its
+triangles as no collider (S89's no-collision flag per part), since the proxy today is cut from a
+mesh that holds the leaf standing at `leaf_open`, and a kinematic leaf beside it would leave the
+drawn open leaf a wall whatever the door's state; **(3)** a tile's gather makes one `DoorBody` a
+leaf of each placed piece, keyed by the piece's name (`support_placement`) and the opening's
+index, so a door is the same door whenever its tile comes in. Until then a host hands doors itself
+(`set_doors`), and nothing in a scene does.
+
 ## Holes
 
 (2026-11-07, roadmap W87; [terrain](terrain.md#holes).) A terrain's `holes` take the ground away under them, as the drawn ground's meshes leave their cells out. On the collision lattice a sample is **no sample** — the backend's no-collision height, `physics::k_heightfield_hole`, Jolt's `cNoCollisionValue` — where all four cells round it are holes by the terrain's cell rule, so the triangles that use it have no collision and the opening the walker falls through lies inside the one drawn (at the drawn levels' finer spacing the same rule takes the rim cells closer to the outline). `ground_height` answers none over a cell any of whose corners is no sample. A walker that steps in falls to whatever stands below — a cave passage's floor, a body like any placement's (the passage is a mesh, and its proxy is cut from its DAG, [caves](caves.md)). Only a tile whose window a hole's bounds reach pays: one bounds test a hole a tile, and then a copy of its heights with the hole samples set (`SceneCollision::holes_reach`, `hole_sample`). `tests/terrain_hole_tests.cpp` holds it: a 6 m round hole over flat ground with a floor 4 m below — no ground at the centre or 1.9 m out, the ground 4.5 m out, a ray straight down meeting the floor through the hole and the ground beside it, and a walker 6 m west walking east falls in and stands on the floor at −4 m.

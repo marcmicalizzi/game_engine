@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "S91",
+  "reason": "S91: a door's body and its swing as a move, its measurement, and what a door from a building's description needs, on the Doors section",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/scene_collision.md": 5712
+  }
+}

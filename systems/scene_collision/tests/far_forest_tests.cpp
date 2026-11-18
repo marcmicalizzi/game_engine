@@ -716,6 +716,90 @@ Arrival arrival_cost(const renderer::SceneData& scene, const Config& config, job
 
 }  // namespace
 
+// ---- Doors that open (roadmap S91; docs/subsystems/scene_collision.md, "Doors"; ADR-0070) ----
+// A door is a kinematic box on its hinge, made while its tile is held, turned toward its state by
+// integer millidegrees a tick, toggled at a tick, held where its leaf would enter the walker.
+
+namespace {
+
+// A doorway in a wall across z = 20: the wall from x = -5 to 5 with a gap 0.9 m wide at x in
+// [-0.45, 0.45], 0.1 m thick; the door's hinge at x = -0.45 on the wall's south face. Closed, the
+// leaf runs along +x across the gap; open, it has swung 90 degrees to run north (+z), away from a
+// walker coming from the south.
+struct DoorRig {
+  physics::World physics;
+  renderer::SceneData scene;
+  SceneCollision collision;
+  std::unique_ptr<world::World> world;
+  physics::CharacterBody walker;
+  sim::ObserverSet observers;
+  u64 tick = 0;
+
+  DoorRig() {
+    physics::WorldOptions o;
+    o.max_bodies = 1024;
+    o.max_body_pairs = 4096;
+    o.max_contact_constraints = 4096;
+    REQUIRE(physics.init(o) == physics::Status::Ok);
+    wall(Vec3{0.0f, -0.5f, 0.0f}, Vec3{200.0f, 0.5f, 200.0f});     // the floor
+    wall(Vec3{-2.725f, 1.0f, 20.05f}, Vec3{2.275f, 1.0f, 0.05f});  // west of the gap
+    wall(Vec3{2.725f, 1.0f, 20.05f}, Vec3{2.275f, 1.0f, 0.05f});   // east of it
+    scene.terrain_mesh = ~0u;
+    std::string error;
+    REQUIRE_MESSAGE(collision.create(physics, scene, nullptr, Config{}, &error), error);
+    world::RingParams ring;
+    ring.tile_size = 32.0f;
+    ring.ring_count = 1;
+    for (f32& r : ring.radius)
+      r = 0.0f;
+    ring.radius[0] = 1.5f;
+    world = std::make_unique<world::World>(ring);
+    world->add_consumer(collision.consumer());
+    move_ring(place(Vec3{0.0f, 0.0f, 16.0f}));
+    physics::CharacterConfig c;
+    c.step_hz = 240;
+    REQUIRE(walker.create(physics, c, place(Vec3{0.0f, 0.02f, 17.0f})) == physics::Status::Ok);
+  }
+  void wall(Vec3 centre, Vec3 half) {
+    physics::ShapeId shape;
+    REQUIRE(physics.create_box(half, shape) == physics::Status::Ok);
+    physics::BodyDesc body;
+    body.shape = shape;
+    body.transform.position = place(centre);
+    body.motion = physics::MotionType::Static;
+    body.layer = physics::Layer::Static;
+    physics::BodyId id;
+    REQUIRE(physics.create_body(body, id) == physics::Status::Ok);
+  }
+  void move_ring(WorldPos at) {
+    observers.clear();
+    observers.add(at, 1.0f);
+    world->update(observers, tick++, true);
+  }
+  // `seconds` of ticks: the doors stepped before the walker, as a host does.
+  f32 walk(f32 seconds, Vec3 move) {
+    physics::CharacterInput in;
+    in.move = move;
+    for (u32 k = 0; k < static_cast<u32>(seconds * 240.0f); ++k) {
+      (void)collision.step_doors(&walker);
+      REQUIRE(walker.step(in) == physics::Status::Ok);
+    }
+    return relative(walker.state().position, WorldPos::origin()).z;
+  }
+};
+
+DoorBody doorway() {
+  DoorBody d;
+  d.key = 3;
+  d.hinge = place(Vec3{-0.45f, 0.0f, 19.975f});
+  d.closed_mdeg = 0;
+  d.open_mdeg = -90000;  // swings away from the walker coming from the south: toward +z
+  d.half_extents = Vec3{0.45f, 1.0f, 0.025f};
+  return d;
+}
+
+}  // namespace
+
 TEST_CASE(
     "scene_collision: a mesh prop's proxy is one a mesh and rounded scale, whatever its yaw, and "
     "goes when no prop names it") {
@@ -844,5 +928,162 @@ TEST_CASE(
     const bool built_at_load = row.scale == 1.0f;
     CHECK(a.builds == (built_at_load ? 0u : 1u));
     CHECK(a.body_at == (built_at_load ? 0u : config.prop_build_updates));
+  }
+}
+
+TEST_CASE("scene_collision: a closed door stops a walker, an open one lets it through") {
+  DoorRig rig;
+  const f32 radius = physics::CharacterConfig{}.radius;
+  const DoorBody d = doorway();
+  rig.collision.set_doors({&d, 1});
+  (void)rig.collision.step_doors(nullptr);
+  CHECK(rig.collision.door_stats().bodies == 1);
+  // Closed: the walker going north stops at the leaf's south face less its radius.
+  const f32 stopped = rig.walk(3.0f, Vec3{0.0f, 0.0f, 1.0f});
+  MESSAGE("at the closed door: z " << stopped);
+  CHECK(stopped == doctest::Approx(19.95f - radius).epsilon(0.002));
+  // Toggled with the walker standing against the leaf: the leaf swings away from it (to +z), so
+  // it is not held; 90 degrees at 375 a tick is 240 ticks, a second.
+  rig.walker.teleport(place(Vec3{0.0f, 0.02f, 17.0f}));
+  REQUIRE(rig.collision.toggle_door(3));
+  (void)rig.walk(1.0f, Vec3{});
+  DoorBody now;
+  REQUIRE(rig.collision.door(3, now));
+  CHECK(now.open);
+  CHECK(now.angle_mdeg == -90000);
+  CHECK(rig.collision.door_stats().moves == 240);
+  // Open: the walker goes through the doorway.
+  CHECK(rig.walk(3.0f, Vec3{0.0f, 0.0f, 1.0f}) > 21.0f);
+}
+
+TEST_CASE("scene_collision: a door holds its angle where its leaf would enter the walker") {
+  DoorRig rig;
+  const DoorBody d = doorway();
+  rig.collision.set_doors({&d, 1});
+  (void)rig.collision.step_doors(nullptr);
+  // Open it, walk the walker into the doorway and stand it in the leaf's arc, then close it.
+  REQUIRE(rig.collision.toggle_door(3));
+  (void)rig.walk(1.0f, Vec3{});
+  rig.walker.teleport(place(Vec3{0.0f, 0.02f, 20.5f}));  // north of the wall, in the leaf's arc
+  REQUIRE(rig.collision.toggle_door(3));
+  (void)rig.walk(1.5f, Vec3{});
+  DoorBody now;
+  REQUIRE(rig.collision.door(3, now));
+  MESSAGE("held at " << now.angle_mdeg << " mdeg, the walker at z "
+                     << relative(rig.walker.feet(), WorldPos::origin()).z);
+  CHECK_FALSE(now.open);
+  CHECK(now.angle_mdeg < 0);       // it closed only as far as the walker
+  CHECK(now.angle_mdeg > -90000);  // and moved some way
+  CHECK(rig.collision.door_stats().holds > 0);
+  // The walker steps away north: the door finishes closing.
+  rig.walker.teleport(place(Vec3{0.0f, 0.02f, 23.0f}));
+  (void)rig.walk(1.0f, Vec3{});
+  REQUIRE(rig.collision.door(3, now));
+  CHECK(now.angle_mdeg == 0);
+}
+
+TEST_CASE("scene_collision: a door's body goes with its tile, and its swing replays") {
+  // The same toggles at the same ticks reach the same angles; the tile let go takes the body, and
+  // the door's state stays (it is the world's).
+  DoorRig a;
+  DoorRig b;
+  const DoorBody d = doorway();
+  a.collision.set_doors({&d, 1});
+  b.collision.set_doors({&d, 1});
+  for (u32 t = 0; t < 300; ++t) {
+    if (t == 10 || t == 130) {
+      REQUIRE(a.collision.toggle_door(3));
+      REQUIRE(b.collision.toggle_door(3));
+    }
+    (void)a.collision.step_doors(&a.walker);
+    (void)b.collision.step_doors(&b.walker);
+  }
+  DoorBody da;
+  DoorBody db;
+  REQUIRE(a.collision.door(3, da));
+  REQUIRE(b.collision.door(3, db));
+  CHECK(da.angle_mdeg == db.angle_mdeg);
+  CHECK(da.angle_mdeg == 0);  // opened 120 ticks from tick 10, closed again by tick 250
+  a.move_ring(place(Vec3{1000.0f, 0.0f, 1000.0f}));
+  (void)a.collision.step_doors(nullptr);
+  CHECK(a.collision.door_stats().bodies == 0);
+  CHECK(a.collision.door_stats().doors == 1);
+  a.move_ring(place(Vec3{0.0f, 0.0f, 16.0f}));
+  (void)a.collision.step_doors(nullptr);
+  CHECK(a.collision.door_stats().bodies == 1);
+}
+
+// **What a swinging door costs the walker's tick** (scene_collision.md, "Doors"): 30 doors in a row
+// north of a standing walker, 300 static boxes beside them as a held tile's bodies stand for, and
+// the first `k` kept swinging — each toggled the tick it reaches its state — for `ticks` ticks of
+// the ring's update, `step_doors` and the walker's step, timed one at a time after a warm-up, with
+// the engine allocations the tick made on this thread. A swing is a move of a kinematic body, as a
+// prop's move is: the bodies are what they were, so nothing about the broadphase is rebuilt.
+namespace {
+
+struct DoorCost {
+  f64 median_us = 0.0;
+  f64 p95_us = 0.0;
+  u64 allocations = 0;
+  u64 moves = 0;
+};
+
+DoorCost door_tick_cost(u32 k, u32 ticks) {
+  DoorRig rig;
+  for (u32 i = 0; i < 300; ++i)
+    rig.wall(Vec3{-30.0f + 3.0f * static_cast<f32>(i % 20), 0.5f,
+                  -10.0f - 2.0f * static_cast<f32>(i / 20)},
+             Vec3{0.4f, 0.5f, 0.4f});
+  Vector<DoorBody> doors;
+  for (u32 i = 0; i < 30; ++i) {
+    DoorBody d = doorway();
+    d.key = 100 + i;
+    d.hinge = place(Vec3{-30.0f + 2.0f * static_cast<f32>(i), 0.0f, 30.0f});
+    doors.push_back(d);
+  }
+  rig.collision.set_doors({doors.data(), doors.size()});
+  (void)rig.collision.step_doors(nullptr);
+  REQUIRE(rig.collision.door_stats().bodies == 30);
+  physics::CharacterInput still{};
+  Vector<f64> us;
+  us.reserve(ticks);
+  constexpr u32 k_warm = 20;
+  DoorCost out;
+  u64 moves = 0;
+  for (u32 t = 0; t < k_warm + ticks; ++t) {
+    if (t == k_warm) moves = rig.collision.door_stats().moves;
+    const u64 a0 = mem::allocations_on_thread();
+    const i64 t0 = time::monotonic_ns();
+    rig.world->update(rig.observers, rig.tick++, true);
+    for (u32 i = 0; i < k; ++i) {  // a module's toggles: the door that came to rest swings back
+      DoorBody now;
+      if (rig.collision.door(100 + i, now) && now.angle_mdeg == (now.open ? now.open_mdeg : 0))
+        (void)rig.collision.toggle_door(100 + i);
+    }
+    (void)rig.collision.step_doors(&rig.walker);
+    REQUIRE(rig.walker.step(still) == physics::Status::Ok);
+    const i64 t1 = time::monotonic_ns();
+    const u64 a1 = mem::allocations_on_thread();
+    if (t < k_warm) continue;
+    us.push_back(static_cast<f64>(t1 - t0) / 1000.0);
+    out.allocations += a1 - a0;
+  }
+  out.moves = rig.collision.door_stats().moves - moves;
+  std::sort(us.begin(), us.end());
+  out.median_us = us[us.size() / 2];
+  out.p95_us = us[(us.size() * 95) / 100];
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("scene_collision: a swinging door costs the walker's tick a move, not a rebuild") {
+  for (const u32 k : {0u, 1u, 30u}) {
+    const DoorCost c = door_tick_cost(k, 300);
+    MESSAGE("doors swinging " << k << " of 30: tick median " << c.median_us << " us, p95 "
+                              << c.p95_us << "; moves " << c.moves << ", allocations "
+                              << c.allocations << " over 300 ticks");
+    CHECK(c.allocations == 0);
+    CHECK(c.moves == 300u * k);  // a swinging door moves every tick
   }
 }

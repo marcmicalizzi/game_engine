@@ -334,6 +334,32 @@ struct PropBody {
   renderer::PropCollider collider{};
 };
 
+// **A door** (`SceneCollision::set_doors`; docs: "Doors"; roadmap S91; ADR-0070): a leaf turning
+// about an upright hinge. `hinge` is the hinge line's foot; closed, the leaf runs from it along +x
+// turned `closed_mdeg` millidegrees about +y, `half_extents` its half width along the leaf, half
+// height and half thickness. Open is `open_mdeg` from closed, signed: the side it swings to (a
+// negative swing turns the leaf's +x toward +z). Each tick the angle moves toward its state's
+// target by `speed_mdeg`, an integer, so a replay reaches the same angle at the same tick.
+inline constexpr i32 k_door_open_mdeg = 90000;
+inline constexpr i32 k_door_speed_mdeg = 375;  // 90 degrees in a second at 240 Hz
+struct DoorBody {
+  u32 key = 0;
+  WorldPos hinge{};
+  i32 closed_mdeg = 0;
+  i32 open_mdeg = k_door_open_mdeg;
+  i32 speed_mdeg = k_door_speed_mdeg;
+  Vec3 half_extents{0.45f, 1.0f, 0.025f};
+  bool open = false;   // its state: where it is heading
+  i32 angle_mdeg = 0;  // reached, from closed
+};
+struct DoorStats {
+  u32 doors = 0;
+  u32 bodies = 0;
+  u64 toggles = 0;
+  u64 moves = 0;  // ticks a door's angle changed
+  u64 holds = 0;  // ticks a door held its angle because its leaf would have entered the walker
+};
+
 // **What a held tile holds, for a debug draw** (collision_draw.h). Spans are the consumer's and
 // stay valid until its next update.
 inline constexpr u32 k_no_index = 0xFFFFFFFFu;
@@ -353,8 +379,9 @@ struct HeldTile {
 // **What a cast met** (`describe_hit`; docs: "What a module can ask"): the ground of a held tile,
 // or one piece of its placements — a scene mesh's instance (`instance`) or a streamed entry's
 // placement (`entry`; `mesh` its scene mesh, or none for a mesh the tile handed).
-// A game's prop (`set_props`) is `prop`, its `instance` the prop's key and `mesh` its scene mesh.
-enum class HitKind : u8 { none = 0, ground = 1, piece = 2, prop = 3 };
+// A game's prop (`set_props`) is `prop`, its `instance` the prop's key and `mesh` its scene mesh;
+// a door's leaf (`set_doors`) is `door`, its `instance` the door's key.
+enum class HitKind : u8 { none = 0, ground = 1, piece = 2, prop = 3, door = 4 };
 struct HitInfo {
   HitKind kind = HitKind::none;
   u32 mesh = k_no_index;
@@ -534,6 +561,20 @@ class SceneCollision {
   // when nothing changed, and a scene with no props pays one comparison. Allocates nothing once
   // the props were handed.
   u32 update_props();
+  // ---- doors (docs: "Doors"; roadmap S91; ADR-0070) ----
+  // The doors, copied with their states and angles as given (a restore hands them back where they
+  // were); each a box on the kinematic layer while the tile its hinge stands in is held.
+  void set_doors(std::span<const DoorBody> doors);
+  // At the tick: the door heads for its other state. False for a key not held.
+  bool toggle_door(u32 key);
+  // **On the tick, after the ring's update and before the walker's step**: bodies made and let go
+  // with their tiles (in key order), and every door turned toward its target by its speed — held
+  // where the leaf at the next angle would reach into `walker`'s capsule (null: none) — its box
+  // put there. Returns the doors that moved; nothing to do costs a scan of the doors.
+  u32 step_doors(const physics::CharacterBody* walker);
+  // A door's state now: its angle and where it is heading, what a host writes back.
+  bool door(u32 key, DoorBody& out) const noexcept;
+  const DoorStats& door_stats() const noexcept { return door_stats_; }
   const Stats& stats() const noexcept { return stats_; }
   // **What is held** (docs: "Seeing the collision"): the held tiles, in the consumer's order, and a
   // tile's pieces where `Config::keep_shapes` kept them. False past the count.
@@ -870,6 +911,16 @@ class SceneCollision {
   Vector<u64> prop_unused_;                          // scratch: the keys no prop names
   u64 prop_updates_ = 0;                             // `update_props` calls, the deadline's clock
   u32 props_waiting_ = 0;                            // held props whose proxy is building
+  // The doors (`set_doors`, S91), in key order with their kinematic boxes.
+  struct HeldDoor {
+    DoorBody door;
+    physics::BodyId body{};
+    physics::ShapeId shape{};
+  };
+  Vector<HeldDoor> doors_;
+  u64 doors_ring_ = ~u64{0};
+  DoorStats door_stats_;
+  void drop_door_body(HeldDoor& held) noexcept;
   // Scratch, reused: the tick's placements, and the refresh's order.
   PlacementScratch tick_scratch_;
   Vector<u64> order_;

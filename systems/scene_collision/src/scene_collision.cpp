@@ -322,6 +322,8 @@ SceneCollision::~SceneCollision() {
     }
     for (HeldProp& held : props_)
       drop_prop_body(held);  // P45
+    for (HeldDoor& held : doors_)
+      drop_door_body(held);  // S91
   }
   tiles_.clear();
   tick_scratch_.children.clear();
@@ -1079,6 +1081,12 @@ HitInfo SceneCollision::describe_hit(physics::BodyId body, u32 child) const noex
     out.kind = HitKind::prop;
     out.mesh = held.prop.mesh;
     out.instance = held.prop.key;
+    return out;
+  }
+  for (const HeldDoor& held : doors_) {  // a door's leaf (S91)
+    if (!(held.body == body)) continue;
+    out.kind = HitKind::door;
+    out.instance = held.door.key;
     return out;
   }
   return out;
@@ -2657,6 +2665,151 @@ u32 SceneCollision::update_props() {
     physics_->optimize_broad_phase();
   }
   return worked + moved;
+}
+
+// ---- doors, kinematic boxes about a hinge (scene_collision.md, "Doors"; roadmap S91; ADR-0070)
+// ---------------------------------------------------------------------------------------------
+//
+// A kinematic box a door, made while the tile its hinge stands in is held, put at its angle on the
+// tick with `set_body_transform` — the walker's world is never stepped, so `move_kinematic`, which
+// sets a velocity for a step, would move nothing (ADR-0070 decision 3).
+
+namespace {
+constexpr f64 k_mdeg_to_rad = 3.14159265358979323846 / 180000.0;
+// How far short of the walker's capsule a door holds: past the character's contact padding, so a
+// leaf that stops beside it never presses it, which the character would answer by stepping aside
+// and the door by creeping after it.
+constexpr f32 k_door_hold_margin_m = 0.05f;
+// The leaf's turn about +y at `mdeg` millidegrees from its closed heading's zero.
+Quat door_turn(i32 mdeg) noexcept {
+  return quat_from_axis_angle(Vec3{0.0f, 1.0f, 0.0f}, static_cast<f32>(mdeg * k_mdeg_to_rad));
+}
+i32 door_target(const DoorBody& d) noexcept { return d.open ? d.open_mdeg : 0; }
+// The leaf box's centre at swing `mdeg`: half its width along the leaf from the hinge, half its
+// height up.
+physics::BodyTransform door_pose(const DoorBody& d, i32 mdeg) noexcept {
+  physics::BodyTransform t;
+  t.rotation = door_turn(d.closed_mdeg + mdeg);
+  t.position = d.hinge + DVec3{rotate(t.rotation, Vec3{d.half_extents.x, d.half_extents.y, 0.0f})};
+  return t;
+}
+// Whether the leaf at swing `mdeg` reaches into an upright capsule whose feet stand at `feet`
+// (`radius`, `height` feet to crown). The leaf is upright too, so in its own frame the test is the
+// distance in x and z from the capsule's axis to the leaf's rectangle against the radius, with the
+// heights overlapping; exact for a capsule standing up, as the walker always does.
+bool leaf_meets(const DoorBody& d, i32 mdeg, WorldPos feet, f32 radius, f32 height) noexcept {
+  const DVec3 rel = feet - d.hinge;
+  if (rel.y > 2.0 * static_cast<f64>(d.half_extents.y) || rel.y + static_cast<f64>(height) < 0.0)
+    return false;
+  const Quat back = conjugate(door_turn(d.closed_mdeg + mdeg));
+  const Vec3 local = rotate(back, Vec3{static_cast<f32>(rel.x), 0.0f, static_cast<f32>(rel.z)});
+  const f32 dx = std::max(0.0f, std::fabs(local.x - d.half_extents.x) - d.half_extents.x);
+  const f32 dz = std::max(0.0f, std::fabs(local.z) - d.half_extents.z);
+  return dx * dx + dz * dz < radius * radius;
+}
+}  // namespace
+
+void SceneCollision::set_doors(std::span<const DoorBody> doors) {
+  for (HeldDoor& held : doors_)
+    drop_door_body(held);
+  doors_.clear();
+  doors_.reserve(static_cast<u32>(doors.size()));
+  for (const DoorBody& d : doors) {
+    HeldDoor held;
+    held.door = d;
+    doors_.push_back(held);
+  }
+  std::sort(doors_.begin(), doors_.end(),
+            [](const HeldDoor& a, const HeldDoor& b) { return a.door.key < b.door.key; });
+  door_stats_.doors = doors_.size();
+  doors_ring_ = ~u64{0};
+}
+
+bool SceneCollision::toggle_door(u32 key) {
+  for (HeldDoor& held : doors_) {
+    if (held.door.key != key) continue;
+    held.door.open = !held.door.open;
+    ++door_stats_.toggles;
+    return true;
+  }
+  return false;
+}
+
+bool SceneCollision::door(u32 key, DoorBody& out) const noexcept {
+  for (const HeldDoor& held : doors_) {
+    if (held.door.key != key) continue;
+    out = held.door;
+    return true;
+  }
+  return false;
+}
+
+void SceneCollision::drop_door_body(HeldDoor& held) noexcept {
+  if (held.body) physics_->destroy_body(held.body);
+  if (held.shape) physics_->destroy_shape(held.shape);
+  held.body = {};
+  held.shape = {};
+}
+
+u32 SceneCollision::step_doors(const physics::CharacterBody* walker) {
+  if (doors_.empty()) return 0;
+  const u64 ring = stats_.activated + stats_.deactivated;
+  bool changed = false;
+  if (ring != doors_ring_) {
+    doors_ring_ = ring;
+    for (HeldDoor& held : doors_) {  // let go with the tile first, then made, in key order
+      if (held.body && !covers(held.door.hinge)) {
+        drop_door_body(held);
+        changed = true;
+      }
+    }
+    for (HeldDoor& held : doors_) {
+      if (held.body || !covers(held.door.hinge)) continue;
+      if (physics_->create_box(held.door.half_extents, held.shape) != physics::Status::Ok) continue;
+      physics::BodyDesc body;
+      body.shape = held.shape;
+      body.transform = door_pose(held.door, held.door.angle_mdeg);
+      body.motion = physics::MotionType::Kinematic;
+      body.layer = physics::Layer::Kinematic;
+      body.friction = 0.8f;
+      if (physics_->create_body(body, held.body) != physics::Status::Ok) {
+        physics_->destroy_shape(held.shape);
+        held.shape = {};
+        continue;
+      }
+      changed = true;
+    }
+  }
+  // Each door toward its target, whether or not its tile is held (its state is the world's), held
+  // where the leaf at the next angle would reach into the walker.
+  const physics::CharacterConfig* c = walker != nullptr ? &walker->config() : nullptr;
+  const WorldPos feet = walker != nullptr ? walker->feet() : WorldPos{};
+  u32 moved = 0;
+  u32 bodies = 0;
+  for (HeldDoor& held : doors_) {
+    DoorBody& d = held.door;
+    bodies += held.body ? 1u : 0u;
+    const i32 target = door_target(d);
+    if (d.angle_mdeg == target) continue;
+    const i32 step = d.speed_mdeg > 0 ? d.speed_mdeg : k_door_speed_mdeg;
+    const i32 next = target > d.angle_mdeg ? std::min(target, d.angle_mdeg + step)
+                                           : std::max(target, d.angle_mdeg - step);
+    if (c != nullptr && leaf_meets(d, next, feet, c->radius + k_door_hold_margin_m, c->height)) {
+      ++door_stats_.holds;
+      continue;
+    }
+    d.angle_mdeg = next;
+    ++door_stats_.moves;
+    ++moved;
+    // **A swing is a move** (docs: "Doors"), as a prop's is: the body is put at its angle, and the
+    // kinematic tree's node follows it there; nothing is rebuilt for it. Until 2026-11-18 every
+    // tick a door swung rebuilt the broadphase over every body the world holds.
+    if (held.body) (void)physics_->set_body_transform(held.body, door_pose(d, next), false);
+  }
+  door_stats_.bodies = bodies;
+  // Rebuilt once a step that made or let go a body (a removed body's node comes back only so).
+  if (changed) physics_->optimize_broad_phase();
+  return moved;
 }
 
 }  // namespace engine::scene_collision
