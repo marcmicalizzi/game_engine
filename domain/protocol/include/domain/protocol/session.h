@@ -89,6 +89,10 @@ class Session {
   // holder did not ask.
   void publish_session(std::string_view change, const LeaseInfo* lease = nullptr,
                        u64 connection = 0, std::string_view reason = {}) const;
+  // `event.session` for a change to the document's task ledger (ledger.cpp): "task_created" and
+  // the like, naming the task or the review item (the other 0) and the actor who changed it.
+  void publish_ledger(std::string_view change, u64 task, u64 review, std::string_view actor,
+                      u64 connection) const;
 
   // --- holders (protocol.md, "Several clients, one host") ------------------------------------
   // Who holds the session open: client connections that opened it, and 0 for the host's own

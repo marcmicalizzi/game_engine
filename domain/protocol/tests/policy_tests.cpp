@@ -280,8 +280,11 @@ TEST_CASE("policy: a roles file is checked when it is read") {
   const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   Policy shipped;
   REQUIRE_MESSAGE(shipped.load_roles(path, text, error), error);
-  for (const char* name : {"director", "designer", "environment", "qa", "performance"})
+  for (const char* name : {"director", "designer", "environment", "qa", "performance", "reviewer"})
     CHECK_MESSAGE(shipped.find_role(name) != nullptr, name);
+  // A person's role is the reviewer alone: no role an agent runs in closes a human review item.
+  for (const Role& role : shipped.roles().roles)
+    CHECK_MESSAGE(role.human == (role.name == "reviewer"), role.name);
   CHECK(shipped.roles().default_role == "qa");
   CHECK(shipped.find_role("qa")->methods.empty());
   CHECK(shipped.find_role("designer")->review_required);

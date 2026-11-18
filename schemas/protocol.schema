@@ -2131,9 +2131,14 @@ struct TileRange @version(1) {
 /// rows of a roles file, not code. Every name list is an allow-list whose entries may use `*` as a
 /// wildcard for any run of characters: empty allows nothing and `"*"` everything. The tile list is
 /// the one exception, because a range has no wildcard: no ranges is the whole partition.
-struct Role @version(1) {
+struct Role @version(2) {
   name: string
   doc: string
+  /// The operator's statement that calls in this role are a person's, not an agent's: only such a
+  /// call closes a review item raised for a human (`review.close`; protocol.md, "The task ledger
+  /// and review items"). Never given to a role an agent runs in. A host with no role marked human
+  /// has nobody who can close one.
+  human: bool = false @since(2)
   /// The writing methods a call in this role may make: `doc.apply`, `lease.*`, `*`. A read-only
   /// method (`engine.methods` marks them) is never restricted and need not be listed; empty is a
   /// read-only role.
@@ -2438,6 +2443,278 @@ struct TemplateOrigin @version(1) @kind(record) {
   /// Each copied record's source, in the order they were copied, and its copy.
   sources: id128[]
   copies: id128[]
+}
+
+// ---- the task ledger and review items (plan 06 §6.8; protocol.md, "The task ledger and review
+// items"; ADR-0072) ------------------------------------------------------------------------------
+// Long work an agent resumes from the ledger and the document, never from its conversation: a
+// **task** is a goal with acceptance criteria that a role claims, works and finishes; a **review
+// item** is where a check goes that the checker may not or cannot make, raised by anyone, closed
+// by whom its audience says, and for a human only by a role the operator marked human. Both live
+// in `ledger.json` beside the document, read and written whole under a lock between processes on
+// every call.
+
+/// Where a task stands.
+enum TaskStatus : u8 {
+  /// Nobody holds it: any caller whose role is its `owner_role` (any role when that is empty) may
+  /// claim it.
+  Open = 0
+  /// Its claimant works it. The claim lapses at `claim_expires_unix_ms` unless the claimant renews
+  /// it (`task.claim` again, or any `task.update`), and the task is open again.
+  Claimed = 1
+  /// Its claimant cannot go on and says why in a note; the claim is kept and lapses as above.
+  Blocked = 2
+  /// Finished by its claimant against its acceptance criteria.
+  Done = 3
+  /// Given up, by its creator or its claimant.
+  Dropped = 4
+}
+
+/// What a piece of work is connected to, by name: what a later agent reads to find it.
+struct WorkLinks @version(1) {
+  /// Proposal layers carrying the work (`doc.propose_layer`).
+  proposals: string[]
+  /// Leases held for it (`lease.acquire`).
+  leases: u64[]
+  /// Transactions staging it (`doc.begin`).
+  transactions: u64[]
+  /// Checkpoints taken along the way (`doc.checkpoint`'s `CheckpointInfo.commit`).
+  checkpoints: string[]
+  /// Records it made or is about.
+  records: id128[]
+}
+
+/// One line of a task's or review item's history: who changed what, when, and what they said.
+struct WorkNote @version(1) {
+  at_unix_ms: i64 = 0
+  actor: string
+  role: string
+  /// "created", "claimed", "renewed", "released", "lapsed", "status", "note", "linked", "raised",
+  /// "closed".
+  change: string
+  /// For "status", the new status's name; otherwise the caller's note, possibly empty.
+  text: string
+}
+
+/// One task of the ledger.
+struct TaskInfo @version(1) {
+  id: u64 = 0
+  /// What a call's `attribution.task` says while it does this work: "task/<id>". A journal entry,
+  /// a lease or a transaction naming it can be found from the task, and the task from them.
+  key: string
+  title: string
+  goal: string
+  /// The acceptance criteria, one sentence each: what "done" is checked against.
+  acceptance: string[]
+  /// The role that should do it, a role of the host's roles file; empty: any role may claim it.
+  owner_role: string
+  status: TaskStatus = Open
+  /// Who made it and why.
+  created_by: engine.doc.Attribution
+  created_unix_ms: i64 = 0
+  /// While claimed or blocked: who holds it, in which role, since when, and until when.
+  claimant: string
+  claimant_role: string
+  claimed_unix_ms: i64 = 0
+  claim_expires_unix_ms: i64 = 0
+  /// The time to live the claim was taken with: what each renewal by an update extends it by.
+  claim_ttl_seconds: f64 = 0
+  updated_unix_ms: i64 = 0
+  links: WorkLinks
+  /// Review items raised for this task (`review.raise` with `task`).
+  reviews: u64[]
+  /// Oldest first, at most 256 lines; `history_dropped` counts the ones let go from the front.
+  history: WorkNote[]
+  history_dropped: u32 = 0
+}
+
+/// Who a review item is for.
+enum ReviewAudience : u8 {
+  /// A reviewing agent or a director may close it.
+  Agent = 0
+  /// A person: only a call in a role the roles file marks `human` closes it, and its raiser cannot
+  /// withdraw it. What a check above the session's view policy raises (ADR-0033).
+  Human = 1
+}
+
+enum ReviewState : u8 {
+  Open = 0
+  Closed = 1
+}
+
+/// How a review item was closed.
+enum ReviewResolution : u8 {
+  /// Still open.
+  None = 0
+  /// What it asks about is good.
+  Accepted = 1
+  /// What it asks about must change; the note says what.
+  Rejected = 2
+  /// Its raiser took it back (an agent-audience item only).
+  Withdrawn = 3
+}
+
+/// Exactly what a review item asks about: the identity and the version, never a picture.
+struct ReviewSubject @version(1) {
+  /// The layer the records are judged in (a proposal layer, a feature layer); empty: the composed
+  /// document.
+  layer: string
+  /// The records, at most 1,024; each must be live when the item is raised.
+  records: id128[]
+  /// The document's version when raised, stamped by the host, not the caller: the journal's length
+  /// and the undo position (`session.info`).
+  journal_length: u32 = 0
+  undo_position: u32 = 0
+  /// A checkpoint holding that version, when the raiser took one.
+  checkpoint: string
+  /// Blobs it is about (`doc.put_blob`'s names).
+  blobs: string[]
+}
+
+/// One review item of the ledger.
+struct ReviewInfo @version(1) {
+  id: u64 = 0
+  /// What kind of check it is: data, not code. "classified content review" (plan 06 §6.10) is the
+  /// one the engine names; "validation", "promotion" or a game's own are as good.
+  kind: string
+  audience: ReviewAudience = Agent
+  /// One or two sentences: what is to be decided.
+  summary: string
+  subject: ReviewSubject
+  /// The numbers the raiser's check produced (a validator's report), as JSON, at most 64 KiB
+  /// written out; null for none. Never an image.
+  report: json
+  /// The task it was raised for; 0 for none.
+  task: u64 = 0
+  raised_by: engine.doc.Attribution
+  raised_unix_ms: i64 = 0
+  state: ReviewState = Open
+  resolution: ReviewResolution = None
+  closed_by: engine.doc.Attribution
+  closed_unix_ms: i64 = 0
+  history: WorkNote[]
+  history_dropped: u32 = 0
+}
+
+/// `ledger.json` in a document directory: the tasks and review items, ids growing per document.
+/// Never cached by a host: every call reads it, changes it and writes it back while it holds
+/// `ledger.json.lock` exclusively, so two hosts on one directory lose nothing to each other.
+struct LedgerFile @version(1) @kind(document) {
+  next_task: u64 = 1
+  next_review: u64 = 1
+  tasks: TaskInfo[]
+  reviews: ReviewInfo[]
+}
+
+/// Parameters of `task.create`.
+struct TaskCreateParams @version(1) {
+  session: string
+  /// One line, 1 to 200 bytes.
+  title: string
+  /// What is to be achieved and why, at most 4 KiB.
+  goal: string
+  /// At most 32 criteria of at most 1 KiB each.
+  acceptance: string[]
+  /// A role of the roles file, or empty for any.
+  owner_role: string
+  links: WorkLinks
+  /// The creator. Blank fields are the connection's hello, then the host's identity; the actor
+  /// must not end up blank.
+  attribution: engine.doc.Attribution
+}
+
+/// Parameters of `task.claim`: take an open task, or renew one's own claim.
+struct TaskClaimParams @version(1) {
+  session: string
+  task: u64 = 0
+  /// How long the claim lasts from now unless renewed, 1 second to 7 days.
+  ttl_seconds: f64 = 3600
+  attribution: engine.doc.Attribution
+}
+
+/// Parameters of `task.update`: the claimant's progress, or the creator's drop or reopen.
+struct TaskUpdateParams @version(1) {
+  session: string
+  task: u64 = 0
+  /// The new status; absent leaves it. The claimant may set Blocked, Claimed (unblocked), Done,
+  /// Dropped, or Open (lets go of the claim); the creator may set Dropped, or Open on a Done or
+  /// Dropped task (reopens it).
+  status: TaskStatus?
+  /// A line for the history, at most 4 KiB.
+  note: string
+  /// Added to the task's links (duplicates ignored).
+  links: WorkLinks
+  attribution: engine.doc.Attribution
+}
+
+/// Parameters of `task.list`.
+struct TaskListParams @version(1) {
+  session: string
+  /// One task by id; 0 for every task that passes the filters below.
+  task: u64 = 0
+  /// Only these statuses; empty for all.
+  statuses: TaskStatus[]
+  /// Only tasks for this role; empty for all.
+  owner_role: string
+  /// Only tasks this actor holds; empty for all.
+  claimant: string
+  /// Leave each task's history out (it is the bulk of a long-lived ledger).
+  brief: bool = false
+}
+
+/// Result of `task.list`, and of the writes, which answer the task they changed in `tasks[0]`.
+struct TasksResult @version(1) {
+  /// The host's clock, which every claim's expiry is judged by.
+  now_unix_ms: i64 = 0
+  tasks: TaskInfo[]
+  /// Claims that had lapsed and were let go by this call.
+  lapsed: u32 = 0
+}
+
+/// Parameters of `review.raise`.
+struct ReviewRaiseParams @version(1) {
+  session: string
+  /// 1 to 64 bytes.
+  kind: string
+  audience: ReviewAudience = Agent
+  /// 1 to 1,024 bytes.
+  summary: string
+  /// Its `journal_length` and `undo_position` are the host's to stamp and are ignored here.
+  subject: ReviewSubject
+  report: json
+  task: u64 = 0
+  attribution: engine.doc.Attribution
+}
+
+/// Parameters of `review.close`.
+struct ReviewCloseParams @version(1) {
+  session: string
+  review: u64 = 0
+  /// Accepted, Rejected, or Withdrawn (its raiser, an agent-audience item only).
+  resolution: ReviewResolution = Accepted
+  /// What was decided and why, at most 4 KiB.
+  note: string
+  attribution: engine.doc.Attribution
+}
+
+/// Parameters of `review.list`.
+struct ReviewListParams @version(1) {
+  session: string
+  /// One item by id; 0 for every item that passes the filters below.
+  review: u64 = 0
+  state: ReviewState?
+  audience: ReviewAudience?
+  /// Only this kind; empty for all.
+  kind: string
+  /// Only items raised for this task; 0 for all.
+  task: u64 = 0
+  brief: bool = false
+}
+
+/// Result of `review.list`, and of the writes, which answer the item they changed in `reviews[0]`.
+struct ReviewsResult @version(1) {
+  now_unix_ms: i64 = 0
+  reviews: ReviewInfo[]
 }
 
 // ---- describe (plan 06 §6.6; protocol.md, "Describing an object, a tile or a region") ---------
@@ -3013,9 +3290,10 @@ struct SceneEvent @version(1) {
 
 /// `event.session`: a session opened or closed, or a lease on it was taken or released. (Not
 /// `SessionEvent`, which is one entry of `session.events`' log.)
-struct SessionChangeEvent @version(2) {
+struct SessionChangeEvent @version(3) {
   session: string
-  /// "opened", "closed", "lease_acquired" or "lease_released".
+  /// "opened", "closed", "lease_acquired", "lease_released", "checkpoint", "rollback", and the
+  /// ledger's "task_created", "task_claimed", "task_updated", "review_raised" and "review_closed".
   change: string
   /// The document's directory.
   path: string
@@ -3029,6 +3307,10 @@ struct SessionChangeEvent @version(2) {
   connection: u64 = 0 @since(2)
   /// Why a lease was released when its holder did not ask: "connection closed". Empty otherwise.
   reason: string @since(2)
+  /// For a ledger change: the task or the review item it was (one of the two; the other is 0).
+  /// `actor` is then who made the change.
+  task: u64 = 0 @since(3)
+  review: u64 = 0 @since(3)
 }
 
 // ---- clients of one host (roadmap A3; docs/subsystems/protocol.md, "Several clients, one host") -

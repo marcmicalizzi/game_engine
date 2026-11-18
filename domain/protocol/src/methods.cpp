@@ -692,6 +692,8 @@ void add_placement_methods(Dispatcher& d);
 void add_introspection_methods(Dispatcher& d);  // describe.cpp
 // history_methods.cpp.
 void add_history_methods(Dispatcher& d);
+// task.* and review.* (ledger.cpp).
+void add_ledger_methods(Dispatcher& d);
 
 // Read-only methods are marked `read_only` and no role restricts them (plan 06 §6.5: read access
 // is unrestricted); every other one is a write a role must name. A method is read-only when it
@@ -818,6 +820,8 @@ void add_builtin_methods(Dispatcher& d) {
   // Blobs and checkpoints: doc.put_blob, doc.blob, doc.collect_blobs, doc.checkpoint,
   // doc.checkpoints and doc.rollback_to (history_methods.cpp).
   add_history_methods(d);
+  // The task ledger and review items (plan 06 §6.8): task.* and review.* (ledger.cpp).
+  add_ledger_methods(d);
 }
 
 }  // namespace engine::protocol

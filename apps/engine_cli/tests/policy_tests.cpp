@@ -11,6 +11,7 @@
 #include <test_temp_dir.h>
 
 #include <fstream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -274,6 +275,56 @@ TEST_CASE("cli: a transaction staged by several processes lands as one patch") {
   CHECK(
       call("doc.commit", R"({"transaction":)" + t + R"(,"attribution":{"actor":"a"}})").exit_code ==
       1);
+}
+
+TEST_CASE("cli: eight processes at once write one ledger and lose nothing") {
+  // The task ledger (protocol.md, "The task ledger and review items") is read and written under a
+  // lock between processes on every call, so eight engine-cli calls started together, each with
+  // its own host, mint eight ids and keep eight tasks.
+  test::TempDir tmp("engine_cli_ledger");
+  const std::string doc = tmp.file("doc");
+  REQUIRE(cli({"--doc", doc, "--create", "session.info"}).exit_code == 0);
+  constexpr int k_processes = 8;
+  std::vector<std::unique_ptr<platform::Process>> running;
+  for (int i = 0; i < k_processes; ++i) {
+    const std::string params = R"({"title":"part )" + std::to_string(i) +
+                               R"(","attribution":{"actor":"agent-)" + std::to_string(i) + "\"}}";
+    std::vector<std::string> args = {cli_exe(), "--host",    host_exe(),    "--doc",
+                                     doc,       "--compact", "task.create", params};
+    std::vector<std::string_view> argv(args.begin(), args.end());
+    auto p = std::make_unique<platform::Process>();
+    std::string error;
+    REQUIRE_MESSAGE(p->spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error),
+                    error);
+    p->close_stdin();
+    running.push_back(std::move(p));
+  }
+  for (auto& p : running) {
+    std::string out;
+    p->read_all(out);
+    CHECK_MESSAGE(p->wait() == 0, out);
+  }
+  const Run listed = cli({"--doc", doc, "--compact", "task.list", R"({"brief":true})"});
+  REQUIRE(listed.exit_code == 0);
+  const JsonValue& tasks = at(listed.result, "tasks");
+  REQUIRE(tasks.size() == k_processes);
+  std::vector<bool> seen(k_processes + 1, false);
+  for (u32 i = 0; i < tasks.size(); ++i) {
+    i64 id = 0;
+    REQUIRE(at(tasks[i], "id").get_i64(id));
+    REQUIRE(id >= 1);
+    REQUIRE(id <= k_processes);
+    CHECK_FALSE(seen[static_cast<usize>(id)]);
+    seen[static_cast<usize>(id)] = true;
+  }
+  // A review item raised by one process and read by the next.
+  const Run raised = cli({"--doc", doc, "--compact", "review.raise",
+                          R"({"kind":"validation","summary":"two parts overlap","task":3,)"
+                          R"("attribution":{"actor":"qa-agent"}})"});
+  REQUIRE(raised.exit_code == 0);
+  const Run reviews = cli({"--doc", doc, "--compact", "review.list", R"({"task":3})"});
+  REQUIRE(reviews.exit_code == 0);
+  CHECK(at(reviews.result, "reviews").size() == 1);
 }
 
 TEST_CASE("host: doc.begin, doc.commit and doc.rollback refused over --stdio") {

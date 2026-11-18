@@ -644,6 +644,20 @@ void Session::publish_session(std::string_view change, const LeaseInfo* lease, u
   events_->publish(EventKind::Session, id_, schema::to_json(event));
 }
 
+void Session::publish_ledger(std::string_view change, u64 task, u64 review, std::string_view actor,
+                             u64 connection) const {
+  if (events_ == nullptr || !events_->wanted(EventKind::Session, id_)) return;
+  SessionChangeEvent event;
+  event.session = id_;
+  event.change = std::string(change);
+  event.path = dir_;
+  event.connection = connection;
+  event.actor = std::string(actor);
+  event.task = task;
+  event.review = review;
+  events_->publish(EventKind::Session, id_, schema::to_json(event));
+}
+
 bool Session::merge(const MergeParams& params, MergeResult& result, RpcError& error) {
   return merge(params, nullptr, result, error);
 }
