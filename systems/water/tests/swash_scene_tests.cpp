@@ -17,6 +17,7 @@
 #include <systems/renderer/settings.h>
 
 #include <doctest/doctest.h>
+#include <test_device.h>
 #include <test_temp_dir.h>
 
 #include <algorithm>
@@ -120,19 +121,32 @@ u32 luma(const CapturedFrame& f, u32 p) {
   return u32{f.color[p * 4]} + f.color[p * 4 + 1] + f.color[p * 4 + 2];
 }
 
-}  // namespace
+// The device of the project's GPU runner without ray queries (the TITAN Xp; renderer_tests.cpp's
+// TITAN-Xp-like case has the same rows): the vertex path and the cascaded shadow maps.
+gfx::DeviceOptions titan_xp_like() {
+  gfx::DeviceOptions options;
+  for (const char* row :
+       {"VK_EXT_mesh_shader", "VK_KHR_ray_query", "VK_NV_cluster_acceleration_structure",
+        "VK_EXT_memory_decompression", "VK_KHR_fragment_shading_rate"}) {
+    options.overrides.absent.push_back(row);
+  }
+  return options;
+}
 
 // Since S100 the windy body's mesh moves (the pool lifts it by its height function, water_waves.
 // slang), so its waterline is in the ids channel: S94's "no surface moves" (the ids the dry frame's
 // at every time) went with the flat mesh it described, and in its place the ids change only where
 // the water is in one of the two frames, the waterline moves between the times, and the still
 // body's ids stand.
-TEST_CASE("water swash: the wet band runs up and back with the clock, and the waterline with it") {
-  if (!gpu_here()) return;
+void check_band(const gfx::DeviceOptions& options, const std::string& tier) {
   const test::TempDir tmp("water_swash");
   gfx::Device device;
   std::string error;
-  REQUIRE_MESSAGE(device.create(gfx::DeviceOptions{}, &error), error);
+  REQUIRE_MESSAGE(device.create(options, &error), error);
+  MESSAGE("swash on " << tier << ": ray queries "
+                      << std::string(device.features().ray_query ? "yes" : "no")
+                      << ", mesh shaders "
+                      << std::string(device.features().mesh_shader ? "yes" : "no"));
   Sequence dry, wind, still;
   shoot(device, tmp, "dry", 0.0f, 0.0f, true, dry);       // no record: the plain ground
   shoot(device, tmp, "wind", 6.0f, 0.3f, true, wind);     // the swash
@@ -178,16 +192,39 @@ TEST_CASE("water swash: the wet band runs up and back with the clock, and the wa
   }
   CHECK(not_water == 0u);
   CHECK(waterline_moved > 0u);
-  MESSAGE("swash: " << waterline_moved << " water/ground id changes over 2 s at a quarter second");
-  // The wet ground (darker than the dry ground at the same time, off the water) at each time.
+  MESSAGE("swash on " << tier << ": " << waterline_moved
+                      << " water/ground id changes over 2 s at a quarter second");
+  // **The band at each time: the ground the swash changes** — a pixel the ground's own surface
+  // covers in both frames (its id, neither the water's nor none), some channel of which is more
+  // than one code from the dry frame's at the same time (one code is not evidence: the encode
+  // rounds to a code's centre, R183). That is the damp sand, darker, and the sheet under the
+  // front, which mirrors what lies along its level mirror and is darker or lighter than dry sand
+  // by what that is (water.md, "One sheet"). W148: until 2026-11-18 the band was every pixel off
+  // the water darker than the dry frame by more than 3 of luma, which took in the open sea's plane
+  // at the horizon (no id: 258 pixels falling to 154 over the 2 s, on every GPU) and left out the
+  // sheet wherever it mirrors something lighter than dry sand — the stand-in sky, on a GPU without
+  // ray queries, where this GPU's traced reflection meets the bank — so the TITAN Xp counted 785
+  // to 822 where the RTX 5090 counted 2,837 to 3,036, and its swing, 4.7 %, failed the bound.
   u32 wet[k_times] = {};
+  u32 darker[k_times] = {};  // the old count's ground half, said beside it
   u32 still_ground_moved = 0;
   for (u32 s = 0; s < k_times; ++s) {
     for (u32 p = 0; p < pixels; ++p) {
-      if (dry.frame[s].ids[p * k_id_words] == wind.water_instance) continue;
-      if (wind.frame[s].ids[p * k_id_words] == wind.water_instance) continue;
-      if (luma(wind.frame[s], p) + 3 < luma(dry.frame[s], p)) ++wet[s];
+      const u32 a = wind.frame[s].ids[p * k_id_words];
+      if (a == wind.water_instance || dry.frame[s].ids[p * k_id_words] == wind.water_instance) {
+        continue;
+      }
       if (s > 0 && luma(still.frame[s], p) != luma(still.frame[0], p)) ++still_ground_moved;
+      if (a == k_no_id || dry.frame[s].ids[p * k_id_words] != a) continue;
+      for (u32 ch = 0; ch < 3; ++ch) {
+        const int d = static_cast<int>(wind.frame[s].color[p * 4 + ch]) -
+                      static_cast<int>(dry.frame[s].color[p * 4 + ch]);
+        if (std::abs(d) > 1) {
+          ++wet[s];
+          break;
+        }
+      }
+      if (luma(wind.frame[s], p) + 3 < luma(dry.frame[s], p)) ++darker[s];
     }
   }
   u32 lo = ~0u, hi = 0, rises = 0, falls = 0;
@@ -197,16 +234,39 @@ TEST_CASE("water swash: the wet band runs up and back with the clock, and the wa
     if (s > 0 && wet[s] > wet[s - 1]) ++rises;
     if (s > 0 && wet[s] < wet[s - 1]) ++falls;
   }
-  MESSAGE("swash: wet ground pixels over 2 s: "
-          << wet[0] << " " << wet[1] << " " << wet[2] << " " << wet[3] << " " << wet[4] << " "
-          << wet[5] << " " << wet[6] << " " << wet[7] << "; still band's ground moved "
-          << still_ground_moved);
+  MESSAGE("swash on " << tier << ": ground the swash changes over 2 s: " << wet[0] << " " << wet[1]
+                      << " " << wet[2] << " " << wet[3] << " " << wet[4] << " " << wet[5] << " "
+                      << wet[6] << " " << wet[7] << " (darker by more than 3: " << darker[0] << " "
+                      << darker[1] << " " << darker[2] << " " << darker[3] << " " << darker[4]
+                      << " " << darker[5] << " " << darker[6] << " " << darker[7]
+                      << "); still band's ground moved " << still_ground_moved);
   CHECK(lo > 50u);
   CHECK(hi > lo + lo / 20);  // the band's extent moves
   CHECK(rises > 0u);
   CHECK(falls > 0u);
   // No wind, no tide: the ground is the same at every time (only the water's waves move).
   CHECK(still_ground_moved == 0u);
+}
+
+}  // namespace
+
+// On the GPU as it is (or as ENGINE_GFX_TEST_DEVICE makes it) and — where it has ray queries —
+// again as the GPU runner without them (the vertex path, the cascaded shadow maps, the water
+// modules without the ray), so a machine with everything sees what the project's TITAN Xp sees
+// (W148: the server leg was red on this case for two batches while this machine was green).
+TEST_CASE("water swash: the wet band runs up and back with the clock, and the waterline with it") {
+  if (!gpu_here()) return;
+  const gfx::DeviceOptions options = renderer_test::device_options();
+  bool traced = false;
+  {
+    gfx::Device probe;
+    std::string error;
+    REQUIRE_MESSAGE(probe.create(options, &error), error);
+    traced = probe.features().ray_query;
+    probe.destroy();
+  }
+  check_band(options, "this GPU");
+  if (traced) check_band(titan_xp_like(), "the TITAN Xp's absences");
 }
 
 // ---- S102: a sea that comes in at an angle, on a bay (docs/experiments/shore-mechanics.md)
@@ -517,18 +577,6 @@ struct RestoreFilm {
     (void)tunables::apply_overrides("renderer.water.reflect=1");
   }
 };
-
-// The device of the project's GPU runner without ray queries (the TITAN Xp; renderer_tests.cpp's
-// TITAN-Xp-like case has the same rows): the vertex path and the cascaded shadow maps.
-gfx::DeviceOptions titan_xp_like() {
-  gfx::DeviceOptions options;
-  for (const char* row :
-       {"VK_EXT_mesh_shader", "VK_KHR_ray_query", "VK_NV_cluster_acceleration_structure",
-        "VK_EXT_memory_decompression", "VK_KHR_fragment_shading_rate"}) {
-    options.overrides.absent.push_back(row);
-  }
-  return options;
-}
 
 void check_sheet(const gfx::DeviceOptions& options, const std::string& tier) {
   const test::TempDir tmp("water_sheet");
