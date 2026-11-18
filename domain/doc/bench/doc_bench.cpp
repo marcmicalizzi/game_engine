@@ -23,6 +23,8 @@
 #include <foundation/bench/bench.h>
 #include <foundation/io/vfs.h>
 
+#include <bench_peak.h>
+#include <test_paths.h>
 #include <test_temp_dir.h>
 
 #include <algorithm>
@@ -749,6 +751,168 @@ ENGINE_BENCH(fs_vfs_write, "doc.fs.vfs_write") {
     bench::keep(vfs.write("docs://world/leases.json", data));
   state.set_items(1);
   state.set_bytes(data.size());
+}
+
+// ---- opening a large document (roadmap D40) ----------------------------------------------------
+//
+// A world the size and shape of engine_cli's 10^5-resident case (npc_replay_tests.cpp, 76 MB on
+// disk): 100,000 residents and 30,500 places in one layer partitioned into 64 m tiles over a 512 m
+// square, each record holding the properties the npc capability writes (the migration corpus's
+// `saves/v4-residents` shows them). `doc.store.load.residents` opens it as a host does; the
+// `doc.layer.*` rows take one layer file of the same records apart — the text's parse into a tree,
+// the tree's reflection into a LayerFile, and the serialization a load used to make again to learn
+// whether the next save must rewrite the file. `ENGINE_BENCH_DOC` names a directory to keep the
+// document in between runs (built there when it holds none), so that the load row run alone
+// (`--filter`) reports the load's own peaks (tests/support/bench_peak.h).
+
+namespace {
+
+constexpr u32 k_resident_records = 130'500;
+
+std::string hex_id(ObjectId id) {
+  char hex[Id128::k_hex_length + 1];
+  id.to_hex(hex);
+  return std::string(hex, Id128::k_hex_length);
+}
+
+ObjectId npc_id(bool place, u32 n) {
+  return Id128::from_parts(place ? 0x6e70632d706c6163ull : 0x6e70632d72657369ull, n + 1);
+}
+
+ObjectRecord npc_record(u32 n) {
+  u64 h = (static_cast<u64>(n) + 1) * 0x9E3779B97F4A7C15ull;
+  const auto next = [&h] {
+    h ^= h >> 29;
+    h *= 0xBF58476D1CE4E5B9ull;
+    return h ^ (h >> 32);
+  };
+  const auto coord = [&] { return static_cast<f64>(static_cast<i64>(next() % 2048) - 1024) * 0.25; };
+  const bool place = n % 1000 < 234;  // about 30,500 places in 130,500 records
+  ObjectRecord r;
+  r.id = npc_id(place, n);
+  r.parent = ObjectId{};
+  r.properties.insert_or_assign(
+      "position", JsonValue(JsonValue::Array{JsonValue(coord()), JsonValue(0.0), JsonValue(coord())}));
+  if (place) {
+    r.type = "engine.npc.Place";
+    r.properties.insert_or_assign("capacity", JsonValue(u64{4}));
+    r.properties.insert_or_assign("name", JsonValue("home " + std::to_string(n)));
+    r.properties.insert_or_assign("role", JsonValue("Home"));
+    return r;
+  }
+  r.type = "engine.npc.Resident";
+  r.properties.insert_or_assign("clock_offset", JsonValue(u64{25195000000}));
+  r.properties.insert_or_assign("home", JsonValue(hex_id(npc_id(true, static_cast<u32>(next() % 30500)))));
+  r.properties.insert_or_assign("job", JsonValue(hex_id(npc_id(true, static_cast<u32>(next() % 30500)))));
+  r.properties.insert_or_assign("leisure", JsonValue(hex_id(npc_id(true, static_cast<u32>(next() % 30500)))));
+  r.properties.insert_or_assign("next_event", JsonValue(static_cast<u64>(next() % 86400) * 1000000));
+  r.properties.insert_or_assign("routine", JsonValue((next() & 1) != 0 ? "DayWorker" : "Idle"));
+  r.properties.insert_or_assign("service", JsonValue(hex_id(npc_id(true, static_cast<u32>(next() % 30500)))));
+  r.properties.insert_or_assign("state", JsonValue("Sleeping"));
+  return r;
+}
+
+Layer resident_layer(u32 records) {
+  Layer layer("residents", LayerRole::Base);
+  for (u32 n = 0; n < records; ++n)
+    layer.set(npc_record(n));
+  return layer;
+}
+
+u32 resident_records(i64 arg) {
+  return bench::smoke_mode() ? static_cast<u32>(arg) / 100 : static_cast<u32>(arg);
+}
+
+// The text of one layer file holding every record, as the store writes it.
+std::string resident_layer_text(u32 records) { return resident_layer(records).to_json_text(); }
+
+}  // namespace
+
+ENGINE_BENCH_ARGS(store_load_residents, "doc.store.load.residents", k_resident_records) {
+  const u32 records = resident_records(state.arg());
+  engine::test::TempDir tmp("engine_doc_load_bench");
+  const std::string kept = engine::test::detail::environment("ENGINE_BENCH_DOC");
+  const std::string root = !kept.empty() ? kept : tmp.path();
+  io::Vfs vfs;
+  (void)vfs.mount("docs", root, /*writable=*/true);
+  const std::string dir = "docs://residents";
+  std::string error;
+  if (!DocumentStore::exists(vfs, dir)) {
+    Document doc;
+    DocumentManifest manifest;
+    ENGINE_VERIFY(DocumentStore::create(vfs, dir, "Residents", doc, manifest, &error),
+                  "doc load bench: create failed");
+    const u32 layer = doc.add_layer(resident_layer(records));
+    LayerPartition partition;
+    partition.property = "position";
+    partition.tile_size = 64;
+    doc.set_layer_partition(layer, partition);
+    doc.set_edit_layer(layer);
+    ENGINE_VERIFY(DocumentStore::save(vfs, dir, doc, manifest, &error),
+                  "doc load bench: save failed");
+  }
+  u64 bytes = 0;
+  std::error_code ec;
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(root + "/residents", ec))
+    if (entry.is_regular_file(ec)) bytes += entry.file_size(ec);
+  while (state.keep_running()) {
+    Document doc;
+    DocumentManifest manifest;
+    ENGINE_VERIFY(DocumentStore::load(vfs, dir, doc, manifest, &error), "doc load bench: load failed");
+    bench::keep(doc.layer_count());
+  }
+  state.set_items(records);
+  state.set_bytes(bytes);
+  engine::test::report_peak("doc.store.load.residents", bytes);
+}
+
+// The text's parse into a tree, alone; once, what the tree holds in the engine heap.
+ENGINE_BENCH_ARGS(layer_parse, "doc.layer.parse", k_resident_records) {
+  const std::string text = resident_layer_text(resident_records(state.arg()));
+  {
+    const u64 before = mem::total_stats().bytes_current;
+    JsonValue tree;
+    ENGINE_VERIFY(parse_json(text, tree).ok, "doc layer bench: parse failed");
+    const u64 held = mem::total_stats().bytes_current - before;
+    std::fprintf(stderr, "doc.layer.parse: a tree of %llu B of text holds %llu B (%.2f per byte)\n",
+                 static_cast<unsigned long long>(text.size()), static_cast<unsigned long long>(held),
+                 static_cast<f64>(held) / static_cast<f64>(text.size()));
+  }
+  while (state.keep_running()) {
+    JsonValue tree;
+    bench::keep(parse_json(text, tree).ok);
+  }
+  state.set_items(1);
+  state.set_bytes(text.size());
+}
+
+// The tree's reflection into the file's struct, alone.
+ENGINE_BENCH_ARGS(layer_from_json, "doc.layer.from_json", k_resident_records) {
+  const std::string text = resident_layer_text(resident_records(state.arg()));
+  JsonValue tree;
+  ENGINE_VERIFY(parse_json(text, tree).ok, "doc layer bench: parse failed");
+  while (state.keep_running()) {
+    LayerFile file;
+    schema::ReadContext ctx;
+    bench::keep(schema::from_json(file, tree, ctx));
+    bench::keep(file.objects.size());
+  }
+  state.set_items(1);
+  state.set_bytes(text.size());
+}
+
+// What a load did a second time for every file: the file's struct serialized to its canonical text.
+ENGINE_BENCH_ARGS(layer_serialize, "doc.layer.serialize", k_resident_records) {
+  const std::string text = resident_layer_text(resident_records(state.arg()));
+  JsonValue tree;
+  ENGINE_VERIFY(parse_json(text, tree).ok, "doc layer bench: parse failed");
+  LayerFile file;
+  schema::ReadContext ctx;
+  ENGINE_VERIFY(schema::from_json(file, tree, ctx), "doc layer bench: from_json failed");
+  while (state.keep_running())
+    bench::keep(write_json(schema::to_json(file)).size());
+  state.set_items(1);
+  state.set_bytes(text.size());
 }
 
 ENGINE_BENCH(fs_vfs_append, "doc.fs.vfs_append") {

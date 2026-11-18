@@ -36,6 +36,7 @@
 #include <systems/renderer/flora_motion.h>
 #include <systems/renderer/gpu_scene.h>  // k_max_pairs: the bound a scatter's count is held to
 #include <systems/renderer/scene.h>
+#include <systems/renderer/scene_text.h>
 #include <systems/renderer/sway_forms.h>
 #include <systems/renderer/terrain.h>
 #include <systems/renderer/terrain_materials.h>
@@ -2498,6 +2499,35 @@ bool read_scene_file(const std::string& path, SceneDesc& out, std::string& error
   return read_scene_file(path, SceneFileOptions{}, out, error);
 }
 
+bool read_scene_text(std::string_view text, const std::string& path, bool without_water_channels,
+                     scene::Scene& out, std::string& error) {
+  JsonValue root;
+  profiling::TraceStage parse_stage("json parse");
+  const JsonParseResult parsed = parse_json(text, root);
+  parse_stage.end();
+  if (!parsed.ok) {
+    error = std::string(path) + ":" + std::to_string(parsed.line) + ": " + parsed.message;
+    return false;
+  }
+  // The water's cook reads the ground and writes the channels: the file's own are left out (W120).
+  if (without_water_channels && root.is_object() && root.contains("water_channels"))
+    root.set("water_channels", JsonValue::array());
+  // One grammar, and it is the schema's: an unknown field is refused with its path rather than
+  // skipped, because a misspelt `"ground"` that quietly did nothing would float a building.
+  out = scene::Scene{};
+  schema::ReadContext ctx;
+  profiling::TraceStage schema_stage("schema read");
+  // (A channel block of versions 3 to 5 is read through `WaterChannel`'s migration: W120.)
+  const bool schema_read =
+      scene_gen::migrate_scene_water_channels(root, ctx) && schema::from_json(out, root, ctx);
+  schema_stage.end();
+  if (!schema_read || !ctx.ok()) {
+    error = path + ": " + schema_errors(ctx);
+    return false;
+  }
+  return true;
+}
+
 bool read_scene_props(const std::string& path, Vector<SceneProp>& out, std::string& error) {
   out.clear();
   std::string text;
@@ -2531,30 +2561,8 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     error = std::string("cannot read ") + path + ": " + io::status_name(status);
     return false;
   }
-  JsonValue root;
-  profiling::TraceStage parse_stage("json parse");
-  const JsonParseResult parsed = parse_json(text, root);
-  parse_stage.end();
-  if (!parsed.ok) {
-    error = std::string(path) + ":" + std::to_string(parsed.line) + ": " + parsed.message;
-    return false;
-  }
-  // The water's cook reads the ground and writes the channels: the file's own are left out (W120).
-  if (options.without_water_channels && root.is_object() && root.contains("water_channels"))
-    root.set("water_channels", JsonValue::array());
-  // One grammar, and it is the schema's: an unknown field is refused with its path rather than
-  // skipped, because a misspelt `"ground"` that quietly did nothing would float a building.
   scene::Scene file;
-  schema::ReadContext ctx;
-  profiling::TraceStage schema_stage("schema read");
-  // (A channel block of versions 3 to 5 is read through `WaterChannel`'s migration: W120.)
-  const bool schema_read =
-      scene_gen::migrate_scene_water_channels(root, ctx) && schema::from_json(file, root, ctx);
-  schema_stage.end();
-  if (!schema_read || !ctx.ok()) {
-    error = path + ": " + schema_errors(ctx);
-    return false;
-  }
+  if (!read_scene_text(text, path, options.without_water_channels, file, error)) return false;
   ENGINE_STARTUP_STAGE("scene expand");  // the providers, the placements, the instances
   if (!file.format.empty() && file.format != "engine.scene.v1") {
     error = path + ": format is '" + file.format + "', not engine.scene.v1";
