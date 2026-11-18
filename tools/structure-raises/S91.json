@@ -1,12 +1,12 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "S91",
-  "reason": "S91: section 53 for a structure's hinged leaves on geometry.md's new Doors section, and on scene_collision.md the piece of the way from a description to a door that is built and the door's deterministic turn, its kept ranges and its one door a key; and P45's and S91's review mends: scene_collision.md says what a drop takes, that a prop's proxy goes with its tile, why a save needs no proxy state, and that a door's swing is tested along its arc, with the cases that hold each",
+  "reason": "S91 and P45 on this line: geometry.md's Doors section for a structure's hinged leaves (section 53); on scene_collision.md a prop's proxy built off the tick, what a drop takes, that a proxy goes with its tile, why a save needs no proxy state, what props and doors keep resident, the move-cost rows settled by five pairs, and the door's turn, ranges, one door a key and swing tested along its arc; renderer.md on a lifted instance's tile",
   "date": "2026-11-18",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/renderer.md": -5,
+    "page:docs/subsystems/renderer.md": 913,
     "page:docs/subsystems/geometry.md": 2493,
-    "page:docs/subsystems/scene_collision.md": 11440
+    "page:docs/subsystems/scene_collision.md": 19368
   }
 }
