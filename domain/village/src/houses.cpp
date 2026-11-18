@@ -1137,10 +1137,10 @@ bool describe_house(const VillageLayer& layer, const VillagePlan& plan, u32 hous
   // where it stands in for one, the foot and the height the furnisher searched with, centimetres.
   JsonValue kit_rows = JsonValue::array();
   const auto f32s = [](const auto& v, u32 n) {
-    JsonValue out = JsonValue::array();
+    JsonValue numbers = JsonValue::array();
     for (u32 i = 0; i < n; ++i)
-      out.push_back(JsonValue(static_cast<f64>(v[i])));
-    return out;
+      numbers.push_back(JsonValue(static_cast<f64>(v[i])));
+    return numbers;
   };
   for (u32 r = 0; r < layer.kit.size(); ++r) {
     const KitPiece& piece = layer.kit[r];
