@@ -6,6 +6,7 @@
 #include <core/json/json.h>
 #include <core/profiling/profile.h>
 #include <core/schema/json_reflect.h>
+#include <core/schema/json_text.h>
 #include <domain/doc/document_store.h>
 #include <domain/doc/partition.h>
 
@@ -58,20 +59,18 @@ std::string manifest_text(const DocumentManifest& manifest) {
   return text;
 }
 
+// Straight from the text, with no tree of it (roadmap D40; core/schema/json_text.h): the tree
+// path's verdicts word for word.
 template <class T>
 bool parse_schema_text(std::string_view text, const std::string& path, T& out, std::string* error) {
-  JsonValue value;
-  if (const JsonParseResult r = parse_json(text, value); !r.ok) {
-    set_error(error, path, r.message);
-    return false;
-  }
   schema::ReadContext ctx;
-  out = T{};
-  if (!schema::from_json(out, value, ctx)) {
+  JsonParseResult parsed;
+  if (schema::read_json_text(out, text, ctx, parsed)) return true;
+  if (!parsed.ok)
+    set_error(error, path, parsed.message);
+  else
     set_error(error, path, ctx);
-    return false;
-  }
-  return true;
+  return false;
 }
 
 std::string hex_of(ObjectId id) {
