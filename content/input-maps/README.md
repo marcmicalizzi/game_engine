@@ -17,8 +17,12 @@ then the walk mode's two (`walk` on F and `jump` on Space and a pad's South, rev
 module may read and the camera never does (`interact` on E and a pad's West, `use` on Q, `game_1`
 to `game_4` on 1 to 4, revision 5, 2026-10-16;
 [apps](../../docs/subsystems/apps.md#--game-running-a-game-module)) — E and Q are `lift` too,
-which a flying camera reads and a walking one does not, as Space is both `lift` and `jump` — on
-the keyboard and mouse and on a gamepad. Key
+which a flying camera reads and a walking one does not, as Space is both `lift` and `jump` —
+then `camera` (V and a pad's East, first or third person while walking, revision 6, 2026-11-02)
+and `crouch` (C and Left Ctrl, held, and a pad's right stick click, while walking, revision 7,
+2026-11-17; [apps](../../docs/subsystems/apps.md#crouching)) — Ctrl is `lift` down and the right
+stick's click `slow`, which a walking session does not read — on the keyboard and mouse and on a
+gamepad. Key
 codes are SDL scancodes, gamepad codes `window::GamepadButton` and `window::GamepadAxis`, and a
 pointer axis is `input::MouseAxisCode`.
 

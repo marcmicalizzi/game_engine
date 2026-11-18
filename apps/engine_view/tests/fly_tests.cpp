@@ -203,10 +203,21 @@ TEST_CASE("fly camera: the default map is the committed file, and every action i
   // keys after those (revision 4): `-`, `=` and `0`; and the six game actions a `--game` module may
   // read after those (revision 5), which the camera never resolves; and `camera`, first person or
   // third person, last (revision 6, P53), which a revision 5 session does not have and whose V
-  // then presses nothing.
-  CHECK(map.action_count() == 24);
+  // then presses nothing; and `crouch` after it (revision 7, P54), which a revision 6 session does
+  // not have, so its C and Ctrl crouch nothing.
+  CHECK(map.action_count() == 25);
+  CHECK(map.find_action("crouch") == map.action_count() - 1);
+  CHECK(actions.crouch != input::k_invalid_action);
+  CHECK(view::default_fly_map(6).action_count() == 24);
+  view::FlyActions sixth;
+  REQUIRE(view::resolve_fly_actions(view::default_fly_map(6), sixth, &error));
+  CHECK(sixth.crouch == input::k_invalid_action);
+  CHECK(sixth.camera != input::k_invalid_action);
+  input::ActionMap sixth_found;
+  CHECK(view::default_fly_map_for(view::default_fly_map(6).hash(), sixth_found));
+  CHECK(sixth_found.action_count() == 24);
   CHECK(view::default_fly_map(5).action_count() == 23);
-  CHECK(map.find_action("camera") == map.action_count() - 1);
+  CHECK(map.find_action("camera") == map.action_count() - 2);
   CHECK(view::default_fly_map(5).find_action("camera") == input::k_invalid_action);
   CHECK(actions.camera != input::k_invalid_action);
   view::FlyActions fifth;

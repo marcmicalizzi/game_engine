@@ -167,6 +167,9 @@ struct FlyActions {
   // between first person and third person. `k_invalid_action` in a map of an earlier revision,
   // where the key presses nothing.
   input::ActionId camera = input::k_invalid_action;
+  // Button, the seventh revision's (P54): held while the session walks, the walker crouches
+  // (walk.h, `WalkInput::crouch`). `k_invalid_action` in an earlier revision's map.
+  input::ActionId crouch = input::k_invalid_action;
 };
 
 // **The map's revisions.** 1 is the eight actions the camera reads (2026-09-24); 2 appends the
@@ -175,23 +178,25 @@ struct FlyActions {
 // (2026-09-30); 5 appends the six game actions a `--game` module may read, `interact` (E, the
 // pad's West), `use` (Q) and `game_1`..`game_4` (1 to 4) (2026-10-16), which the camera itself
 // never reads; 6 appends `camera` (V, the pad's East), first person or third person while walking
-// (2026-11-02, P53). A revision appends and never reorders, and a log names the hash
+// (2026-11-02, P53); 7 appends `crouch` (C and Left Ctrl, the pad's right stick click), held to
+// crouch while walking (2026-11-17, P54). A revision appends and never reorders, and a log names the hash
 // of the map it was recorded against, so a log recorded against an earlier revision is replayed
 // with that revision (`default_fly_map_for`) rather than refused as a rebind: under it every key
 // means what it meant when the session was flown, and a key a later revision binds — a `.` pressed
 // before it meant anything, an F pressed before it walked — does nothing, as it did then.
-inline constexpr u32 k_fly_map_revision = 6;
+inline constexpr u32 k_fly_map_revision = 7;
 // The bindings engine-view ships (content/input-maps/engine-view.json is the latest revision, byte
 // for byte, and a test holds the two together): WASD to move, E/Space up and Q/Ctrl down, pointer
 // motion to look while the window holds the pointer, Shift fast, Alt slow, Escape to give back the
 // pointer (or, with it given back, to end the session), M to drop a marker, `[` `]` the sun's day
 // slower and faster and `,` `.` the dunes', F to walk or fly and Space to jump while walking, `-`
 // `=` a sky's exposure darker and brighter and `0` to hold it, E to interact and Q to use while
-// walking, 1 to 4 a game's own four and V first person or third person while walking; and
-// on a gamepad the left stick to move, the triggers up and down, the right stick to turn, the stick
-// clicks fast and slow, Back as Escape, North to mark, South to jump, West to interact and East to
-// switch the camera. `revision` 1 is the map without the four time-lapse keys, 2 the map without
-// the walk mode's, 3 without the exposure's, 4 without the game actions, 5 without `camera`.
+// walking, 1 to 4 a game's own four, V first person or third person while walking and C or Ctrl
+// held to crouch while walking; and on a gamepad the left stick to move, the triggers up and down,
+// the right stick to turn, the stick clicks fast and slow (the right one crouching while walking),
+// Back as Escape, North to mark, South to jump, West to interact and East to switch the camera.
+// `revision` 1 is the map without the four time-lapse keys, 2 the map without the walk mode's, 3
+// without the exposure's, 4 without the game actions, 5 without `camera`, 6 without `crouch`.
 input::ActionMap default_fly_map(u32 revision = k_fly_map_revision);
 // The shipped map, of whichever revision hashes to `hash`, into `out`: false when none does (a
 // player's own map, which only `--input-map` can supply).

@@ -26,6 +26,7 @@
 #if ENGINE_VIEW_ANIMATION && ENGINE_VIEW_GAME
 
 #include "animation.h"
+#include "crouch_pose.h"
 #include "fly_camera.h"
 #include "game_props.h"
 
@@ -148,6 +149,14 @@ struct PlayerRig {
   // `view.player.collapse_head` resolved: `auto` collapses under the walker's eye and not under
   // the face's; `true` and `false` force it.
   bool collapse_head = true;
+
+  // ---- the crouch layer (P54; apps.md "The crouch layer", crouch_pose.h) ----------------------
+  //
+  // The joints it turns, in the order it turns them — the trunk (the standard skeleton's `Spine`,
+  // else the look's torso), then each leg's hip, knee and ankle, left then right — where they stand
+  // at rest, the eye there, the scale and `view.player.crouch_trunk_deg`. Its `layer` is false for
+  // a rig missing a leg's three or a head: that body stands upright while the walker crouches.
+  CrouchRig crouch;
 };
 
 // **The look's share per pivot** (apps.md, "The head-look layer"): the look's pitch (up positive,
@@ -268,6 +277,10 @@ class PlayerBody {
   Vector<u32> mask_;       // the joints collapsed
   u32 entry_ = ~0u;        // the body's entry in `AnimatedScene::collapse`
   bool look_ = false;      // the head-look layer is set on it
+  bool crouch_ = false;    // the crouch layer is set on it (`rig_.crouch_layer` and a head)
+  CrouchPose crouch_pose_;  // the last tick's
+  u64 crouch_ticks_ = 0;    // ticks the layer bent the body
+  f32 max_knee_rad_ = 0.0f;
   // The last face camera (`face_camera`): the look's shares, the eye in the body's frame and in
   // the world; and the markers' (`note_marker`).
   struct FaceEye {

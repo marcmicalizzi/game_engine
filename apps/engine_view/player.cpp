@@ -48,6 +48,14 @@ tunables::Bool player_head_look{
     "view.player.head_look", true,
     "view.player.eye=face: the look's pitch turns the neck and the head within the cervical "
     "ranges, the torso past them (--player)"};
+// The crouch layer's trunk (P54; apps.md "The crouch layer"): stooped walking under restricted
+// headroom flexes the trunk as the room drops (Friedrich et al. 2000, sewage workers at five
+// headrooms down to 1.05 m; docs/experiments/crouch-grounding-2026-11-17.md). 30 degrees at a full
+// crouch is a choice inside that range, not a measured value: the knob says so.
+tunables::Float player_crouch_trunk{
+    "view.player.crouch_trunk_deg", 30.0, 0.0, 80.0,
+    "The crouch layer: degrees the trunk leans forward at a full crouch (--player; the legs bend "
+    "for the rest of the eye's drop)"};
 tunables::Float player_neck_flexion{
     "view.player.neck_flexion_deg", 57.7, 0.0, 120.0,
     "The cervical spine's flexion (looking down) the head-look layer holds the neck and head to, "
@@ -396,6 +404,31 @@ bool measure_player_rig(const std::string& path, f32 target_height_m, f32 eye_he
       out.head_look = player_head_look.get();
     }
   }
+  // **The crouch layer's joints** (P54): the trunk and both legs by the gait's roles (the names,
+  // completed from the rest pose), where they stand at rest, and the eye there.
+  {
+    const anim::JointMapping roles = animation::gait_mapping(skeleton, asset.mapping);
+    using anim::StandardJoint;
+    CrouchRig& crouch = out.crouch;
+    const i32 spine = roles[StandardJoint::Spine];
+    crouch.joints[0] = spine >= 0 ? spine : out.torso;
+    const StandardJoint legs[6] = {StandardJoint::LeftUpperLeg,  StandardJoint::LeftLowerLeg,
+                                   StandardJoint::LeftFoot,      StandardJoint::RightUpperLeg,
+                                   StandardJoint::RightLowerLeg, StandardJoint::RightFoot};
+    bool legged = true;
+    for (u32 i = 0; i < 6; ++i) {
+      crouch.joints[1 + i] = roles[legs[i]];
+      legged = legged && roles[legs[i]] >= 0;
+    }
+    for (u32 i = 0; i < k_crouch_pivots; ++i) {
+      const i32 j = crouch.joints[i];
+      crouch.rest[i] = j >= 0 ? transform_point(model[static_cast<u32>(j)], Vec3{}) : Vec3{};
+    }
+    crouch.eye = out.eye_face ? anim::transform_point(out.head_rest, out.eye_bind) : out.head_bind;
+    crouch.layer = legged && out.head >= 0;
+    crouch.scale = out.scale;
+    crouch.trunk = static_cast<f32>(player_crouch_trunk.get()) * k_deg;
+  }
   const CollapseHead collapse = player_collapse_head.get();
   out.collapse_head =
       collapse == CollapseHead::Auto ? !out.eye_face : collapse == CollapseHead::True;
@@ -569,8 +602,19 @@ bool PlayerBody::bind(AnimatedScene& scene, GameActors& actors, std::string& err
   look_ = !pivots.empty();
   set_joint_look(scene, entry_, asset.skeleton, collapse_,
                  std::span<const u32>(pivots.data(), pivots.size()));
-  // The copy is handed when it carries something: the collapse, or the look.
-  set_joint_collapse_on(scene, collapse_ || look_);
+  // The crouch layer (P54): its pivots in the order they turn, the trunk first when the rig has
+  // one, at rest until the walker crouches.
+  crouch_ = rig_.crouch.layer;
+  if (crouch_) {
+    Vector<u32> joints;
+    for (u32 i = 0; i < k_crouch_pivots; ++i) {
+      if (rig_.crouch.joints[i] >= 0) joints.push_back(static_cast<u32>(rig_.crouch.joints[i]));
+    }
+    set_joint_crouch(scene, entry_, asset.skeleton,
+                     std::span<const u32>(joints.data(), joints.size()));
+  }
+  // The copy is handed when it carries something: the collapse, the look, or the crouch.
+  set_joint_collapse_on(scene, collapse_ || look_ || crouch_);
   return true;
 }
 
@@ -787,6 +831,22 @@ void PlayerBody::tick(const FlySession& session, const input::InputState& input)
   } else {
     ++refused_;
   }
+  // **The crouch layer** (P54): bent to the walker's eye at this tick, as it eases.
+  if (crouch_ && scene_ != nullptr) {
+    const f32 drop = walker->params().eye_height - walker->eye_height();
+    crouch_pose(rig_.crouch, drop, walker->crouch_amount(), crouch_pose_);
+    if (crouch_pose_.on) {
+      ++crouch_ticks_;
+      max_knee_rad_ = std::max(max_knee_rad_, crouch_pose_.knee_rad);
+    }
+    u32 n = 0;
+    Quat turns[k_crouch_pivots];
+    for (u32 i = 0; i < k_crouch_pivots; ++i) {
+      if (rig_.crouch.joints[i] >= 0) turns[n++] = crouch_pose_.turns[i];
+    }
+    set_joint_crouch_pose(*scene_, entry_, std::span<const Quat>(turns, n), crouch_pose_.shift,
+                          crouch_pose_.on);
+  }
   const f64 walked = walker->stats().distance_m;
   if (rig_.gait) {
     tick_gait(session, input, walked);
@@ -907,6 +967,16 @@ JsonValue PlayerBody::summary_json(const GameActors* actors) const {
     look.set("markers", markers);
     out.set("look", look);
   }
+  // The crouch layer (P54; apps.md "The crouch layer"): whether the rig has it, the ticks it bent
+  // the body, the deepest knee, and the last tick's pose.
+  JsonValue crouch = JsonValue::object();
+  crouch.set("layer", crouch_);
+  crouch.set("trunk_deg", static_cast<f64>(rig_.crouch.trunk) * k_to_deg);
+  crouch.set("ticks", crouch_ticks_);
+  crouch.set("max_knee_deg", static_cast<f64>(max_knee_rad_) * k_to_deg);
+  crouch.set("pelvis_drop_m", static_cast<f64>(crouch_pose_.pelvis_drop_m));
+  crouch.set("eye_drop_m", static_cast<f64>(crouch_pose_.eye_drop_m));
+  out.set("crouch", crouch);
   out.set("collapse_head", collapse_ && scene_ != nullptr && scene_->collapse_on);
   out.set("collapsed_joints", static_cast<u64>(mask_.size()));
   out.set("collapse_steps", scene_ != nullptr ? scene_->collapse_steps : u64{0});

@@ -379,6 +379,27 @@
       ],
       "kind": "button",
       "name": "camera"
+    },
+    {
+      "bindings": [
+        {
+          "code": 6,
+          "scale": 1.0,
+          "source": "key"
+        },
+        {
+          "code": 224,
+          "scale": 1.0,
+          "source": "key"
+        },
+        {
+          "code": 9,
+          "scale": 1.0,
+          "source": "gamepad_button"
+        }
+      ],
+      "kind": "button",
+      "name": "crouch"
     }
   ],
   "version": 1

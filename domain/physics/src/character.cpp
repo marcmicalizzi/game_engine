@@ -11,6 +11,7 @@
 #include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
 
 #include <bit>
+#include <cfloat>
 #include <cmath>
 
 namespace engine::physics {
@@ -85,11 +86,34 @@ Ground ground_of(JPH::CharacterBase::EGroundState state) noexcept {
 
 bool valid_config(const CharacterConfig& c) noexcept {
   const auto positive = [](f32 v) { return v > 0.0f; };  // false for NaN too
+  // A crouch, when there is one, is a capsule too: shorter than standing, taller than the step.
+  const bool crouch =
+      c.crouch_height == 0.0f ||
+      (c.crouch_height > 2.0f * c.radius && c.crouch_height < c.height &&
+       c.step_height < c.crouch_height && positive(c.crouch_eye_height) &&
+       c.crouch_eye_height <= c.crouch_height && positive(c.crouch_speed));
   return positive(c.radius) && positive(c.height) && c.height > 2.0f * c.radius &&
          positive(c.eye_height) && c.eye_height <= c.height && c.step_height >= 0.0f &&
          c.step_height < c.height && positive(c.walk_speed) && positive(c.sprint_speed) &&
          c.max_slope_deg > 0.0f && c.max_slope_deg < 90.0f && c.gravity >= 0.0f &&
-         c.jump_speed >= 0.0f && positive(c.mass) && c.step_hz > 0;
+         c.jump_speed >= 0.0f && positive(c.mass) && c.step_hz > 0 && crouch;
+}
+
+// A capsule standing on its feet: the shape is lifted by half its height, so the character's
+// position is the bottom of the capsule and not its middle, which is what a caller means by "where
+// it stands" and what a ground query returns. Null, with the backend's sentence logged, on failure.
+JPH::RefConst<JPH::Shape> standing_capsule(f32 height, f32 radius) {
+  const f32 half_cylinder = 0.5f * (height - 2.0f * radius);
+  JPH::RotatedTranslatedShapeSettings shape_settings(JPH::Vec3(0.0f, 0.5f * height, 0.0f),
+                                                     JPH::Quat::sIdentity(),
+                                                     new JPH::CapsuleShape(half_cylinder, radius));
+  const JPH::ShapeSettings::ShapeResult shape = shape_settings.Create();
+  if (shape.HasError()) {
+    ENGINE_LOG_ERROR(log_physics, "character shape build failed",
+                     log::field("error", shape.GetError().c_str()));
+    return nullptr;
+  }
+  return shape.Get();
 }
 
 }  // namespace
@@ -108,7 +132,7 @@ u64 hash_character_state(u64 seed, const CharacterState& state) noexcept {
   u64 h = hash_world(seed, state.position);
   h = hash_vec3(h, state.velocity);
   h = hash_vec3(h, state.ground_normal);
-  h = hash_combine(h, static_cast<u64>(state.ground));
+  h = hash_combine(h, static_cast<u64>(state.ground) | (static_cast<u64>(state.crouched) << 8));
   return hash_combine(h, state.tick);
 }
 
@@ -122,6 +146,33 @@ struct CharacterBody::Impl {
   f32 dt = 1.0f / 60.0f;
   u64 tick = 0;
   u64 hash = 0;
+  // The two stances' capsules, both made at `create`, so a step allocates no shape and a session
+  // and its replay make the same ones in the same order.
+  JPH::RefConst<JPH::Shape> standing;
+  JPH::RefConst<JPH::Shape> crouching;
+  bool crouched = false;
+  u64 refusals = 0;
+
+  // **The stance** before a step (physics.md, "Crouching"): down at once, since the shorter
+  // capsule lies inside the taller one; up only where the backend finds the standing capsule
+  // penetrating nothing past its slop — the check its own character sample makes — so a character
+  // under a low ceiling stays crouched and asks again next step.
+  void stance(bool crouch) {
+    if (crouching == nullptr || crouch == crouched) return;
+    const JPH::DefaultBroadPhaseLayerFilter broad = broad_phase_filter();
+    const JPH::DefaultObjectLayerFilter objects = object_filter();
+    if (crouch) {
+      (void)character->SetShape(crouching, FLT_MAX, broad, objects, {}, {}, *temp);
+      crouched = true;
+      return;
+    }
+    const f32 slop = 1.5f * system->GetPhysicsSettings().mPenetrationSlop;
+    if (character->SetShape(standing, slop, broad, objects, {}, {}, *temp)) {
+      crouched = false;
+    } else {
+      ++refusals;
+    }
+  }
 
   // The character collides with everything a moving body does: static geometry, other moving and
   // kinematic bodies, and debris. Never with `Layer::Query`, which is geometry to cast against.
@@ -139,6 +190,7 @@ struct CharacterBody::Impl {
     out.ground = ground_of(character->GetGroundState());
     out.ground_normal =
         out.ground == Ground::InAir ? Vec3{} : from_jph(character->GetGroundNormal());
+    out.crouched = crouched ? u8{1} : u8{0};
     out.tick = tick;
     return out;
   }
@@ -162,22 +214,14 @@ Status CharacterBody::create(World& world, const CharacterConfig& config, WorldP
   if (impl_ != nullptr || world.impl_ == nullptr) return Status::InvalidArgument;
   if (!valid_config(config)) return Status::InvalidArgument;
 
-  // The capsule stands on its feet: the shape is lifted by half its height, so the character's
-  // position is the bottom of the capsule and not its middle, which is what a caller means by
-  // "where it stands" and what a ground query returns.
-  const f32 half_cylinder = 0.5f * (config.height - 2.0f * config.radius);
-  JPH::RotatedTranslatedShapeSettings shape_settings(
-      JPH::Vec3(0.0f, 0.5f * config.height, 0.0f), JPH::Quat::sIdentity(),
-      new JPH::CapsuleShape(half_cylinder, config.radius));
-  const JPH::ShapeSettings::ShapeResult shape = shape_settings.Create();
-  if (shape.HasError()) {
-    ENGINE_LOG_ERROR(log_physics, "character shape build failed",
-                     log::field("error", shape.GetError().c_str()));
+  const JPH::RefConst<JPH::Shape> standing = standing_capsule(config.height, config.radius);
+  JPH::RefConst<JPH::Shape> crouching;
+  if (config.crouch_height > 0.0f) crouching = standing_capsule(config.crouch_height, config.radius);
+  if (standing == nullptr || (config.crouch_height > 0.0f && crouching == nullptr))
     return Status::BackendError;
-  }
 
   JPH::Ref<JPH::CharacterVirtualSettings> settings = new JPH::CharacterVirtualSettings();
-  settings->mShape = shape.Get();
+  settings->mShape = standing;
   settings->mMaxSlopeAngle = config.max_slope_deg * k_degrees_to_radians;
   settings->mMass = config.mass;
   settings->mID = JPH::CharacterID(config.id);
@@ -189,6 +233,8 @@ Status CharacterBody::create(World& world, const CharacterConfig& config, WorldP
   impl->system = &world.impl_->system;
   impl->temp = world.impl_->temp_allocator;
   impl->config = config;
+  impl->standing = standing;
+  impl->crouching = crouching;
   impl->dt = 1.0f / static_cast<f32>(config.step_hz);
   impl->character =
       new JPH::CharacterVirtual(settings, to_jph(feet), JPH::Quat::sIdentity(), 0, impl->system);
@@ -212,6 +258,9 @@ Status CharacterBody::step(const CharacterInput& input) {
   JPH::CharacterVirtual& character = *impl.character;
   const CharacterConfig& config = impl.config;
   const f32 dt = impl.dt;
+  // The stance first, so the sweep below is the stance's capsule (a character that cannot crouch
+  // has nothing to change).
+  impl.stance(input.crouch);
 
   // What the input asks for, horizontally: a direction no longer than one, times the speed.
   f32 mx = input.move.x;
@@ -223,7 +272,10 @@ Status CharacterBody::step(const CharacterInput& input) {
     mx = mx * inverse;
     mz = mz * inverse;
   }
-  const f32 speed = (input.sprint ? config.sprint_speed : config.walk_speed) * input.speed_scale;
+  // Crouched, the crouch's speed whatever sprint says: nobody runs bent double.
+  const f32 base = impl.crouched ? config.crouch_speed
+                                 : (input.sprint ? config.sprint_speed : config.walk_speed);
+  const f32 speed = base * input.speed_scale;
   const JPH::Vec3 desired(mx * speed, 0.0f, mz * speed);
   impl.listener.allow_sliding = length2 > 0.0f;
 
@@ -277,8 +329,16 @@ WorldPos CharacterBody::feet() const noexcept {
 }
 
 WorldPos CharacterBody::eye() const noexcept {
-  const f32 eye_height = impl_ != nullptr ? impl_->config.eye_height : 0.0f;
+  f32 eye_height = 0.0f;
+  if (impl_ != nullptr)
+    eye_height = impl_->crouched ? impl_->config.crouch_eye_height : impl_->config.eye_height;
   return feet() + DVec3{0.0, static_cast<f64>(eye_height), 0.0};
+}
+
+bool CharacterBody::crouched() const noexcept { return impl_ != nullptr && impl_->crouched; }
+
+u64 CharacterBody::stand_refusals() const noexcept {
+  return impl_ != nullptr ? impl_->refusals : 0;
 }
 
 u64 CharacterBody::hash() const noexcept { return impl_ != nullptr ? impl_->hash : 0; }

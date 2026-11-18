@@ -427,3 +427,88 @@ TEST_CASE("character: the scripted walk at 419 km, 10,000 km and 1e8 m is the or
     CHECK(worst < k_far_walk_tolerance_m);
   }
 }
+
+// **Crouching** (physics.md, "Crouching"; roadmap P54): under a slab whose underside is 1.4 m up —
+// lower than the 1.8 m capsule, higher than the 1.25 m one — a standing character is stopped at
+// its edge, a crouched one walks under it at the crouch's speed with its eye at the crouch's
+// height, letting go of crouch there is refused every step it is under the slab, and past the far
+// edge it stands up. A character that can crouch and never does is the same chain as one that
+// cannot.
+TEST_CASE("character: a crouch passes under a low slab, and standing waits until it is clear") {
+  CharacterConfig config = config_at(60);
+  config.crouch_height = 1.25f;
+  config.crouch_eye_height = 1.1f;
+  config.crouch_speed = 1.0f;
+  World world;
+  REQUIRE(world.init(small_world_options()) == Status::Ok);
+  add_ground(world);
+  // A slab 0.2 m thick, its underside at y = 1.4, from x = 3 to x = 6.
+  add_box(world, Vec3{4.5f, 1.5f, 0.0f}, Vec3{1.5f, 0.1f, 5.0f});
+  CharacterInput east;
+  east.move = Vec3{1.0f, 0.0f, 0.0f};
+  {
+    CharacterBody standing;
+    REQUIRE(standing.create(world, config, place(Vec3{0.0f, 0.02f, 0.0f})) == Status::Ok);
+    walk(standing, east, 4 * 60);  // 6 m at a walk: past the slab's far edge, were it not there
+    const f32 x = local_of(standing.feet()).x;
+    MESSAGE("standing: stopped at x " << x << " against the slab's edge at 3");
+    CHECK(x < 3.0f - config.radius + 0.03f);
+    CHECK_FALSE(standing.crouched());
+  }
+  CharacterBody body;
+  REQUIRE(body.create(world, config, place(Vec3{0.0f, 0.02f, 0.0f})) == Status::Ok);
+  walk(body, CharacterInput{}, 30);
+  CharacterInput low = east;
+  low.crouch = true;
+  low.sprint = true;  // ignored while crouched
+  const f32 x0 = local_of(body.feet()).x;
+  walk(body, low, 60);
+  CHECK(body.crouched());
+  CHECK(body.state().crouched == 1);
+  // A second at the crouch's 1 m/s, sprint held or not (the backend's ground velocity and padding
+  // take a little).
+  const f32 one_second = local_of(body.feet()).x - x0;
+  MESSAGE("crouched: " << one_second << " m in a second");
+  CHECK(one_second == doctest::Approx(1.0f).epsilon(0.03));
+  CHECK(local_of(body.eye()).y == doctest::Approx(local_of(body.feet()).y + 1.1f));
+  walk(body, low, 3 * 60);  // to x = 4: under the slab
+  const f32 under = local_of(body.feet()).x;
+  REQUIRE(under > 3.5f);
+  REQUIRE(under < 5.5f);
+  // Let go under the slab: refused every step, still crouched, and it walks on at the crouch's
+  // speed.
+  walk(body, east, 30);
+  CHECK(body.crouched());
+  CHECK(body.stand_refusals() == 30);
+  // Past the far edge (x = 6 plus the radius): it stands.
+  walk(body, east, 3 * 60);
+  MESSAGE("out at x " << local_of(body.feet()).x << " after " << body.stand_refusals()
+                      << " refused stands");
+  CHECK(local_of(body.feet()).x > 6.0f + config.radius);
+  CHECK_FALSE(body.crouched());
+  CHECK(local_of(body.eye()).y == doctest::Approx(local_of(body.feet()).y + 1.65f));
+  CHECK(body.state().ground == Ground::OnGround);
+
+  // A crouch the character never takes changes nothing: the same chain as a character with none.
+  World a_world;
+  World b_world;
+  REQUIRE(a_world.init(small_world_options()) == Status::Ok);
+  REQUIRE(b_world.init(small_world_options()) == Status::Ok);
+  add_ground(a_world);
+  add_ground(b_world);
+  CharacterBody a;
+  CharacterBody b;
+  REQUIRE(a.create(a_world, config_at(60), place(Vec3{0.0f, 0.02f, 0.0f})) == Status::Ok);
+  REQUIRE(b.create(b_world, config, place(Vec3{0.0f, 0.02f, 0.0f})) == Status::Ok);
+  walk(a, east, 90);
+  walk(b, east, 90);
+  CHECK(a.hash() == b.hash());
+  // And a crouch that is no capsule is refused.
+  CharacterBody c;
+  CharacterConfig tall = config;
+  tall.crouch_height = 1.9f;  // above standing
+  CHECK(c.create(world, tall, place(Vec3{})) == Status::InvalidArgument);
+  CharacterConfig thin = config;
+  thin.crouch_height = 0.5f;  // under twice the radius
+  CHECK(c.create(world, thin, place(Vec3{})) == Status::InvalidArgument);
+}
