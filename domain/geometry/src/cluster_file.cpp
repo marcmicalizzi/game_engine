@@ -747,7 +747,12 @@ bool read_memory(std::span<const u8> bytes, ClusterFileData& out, std::string* e
                              "-byte elements, expected 2");
     }
     copy_section(bytes, *quantized, result.mesh.mesh.quantized);
-    if (result.mesh.mesh.quantized.size() != u64{result.mesh.mesh.vertices.size()} * 3) {
+    // Three coordinates a vertex, and the one pad word `quantize_positions` adds when that is odd
+    // (so a shader reads every triple as two whole 32-bit words); a stream without it is taken as
+    // it always was.
+    const u64 coordinates = u64{result.mesh.mesh.vertices.size()} * 3;
+    const u64 stored = result.mesh.mesh.quantized.size();
+    if (stored != coordinates && stored != coordinates + 1) {
       return fail(error, "cluster file has " + std::to_string(result.mesh.mesh.quantized.size()) +
                              " quantized coordinates for " +
                              std::to_string(result.mesh.mesh.vertices.size()) + " vertices");
@@ -1598,7 +1603,7 @@ bool ClusterFileReader::open(std::string_view path, ClusterFileData* resident, s
   if (element_count(ClusterSection::Attributes) != paged.vertices ||
       element_count(ClusterSection::VertexSource) != paged.vertices ||
       (by_kind_[static_cast<u32>(ClusterSection::Quantized)] != 0 &&
-       quantized != paged.vertices * 3)) {
+       quantized != paged.vertices * 3 && quantized != paged.vertices * 3 + 1)) {
     close();
     return fail(error,
                 "cluster file vertex streams differ in length: " + std::to_string(paged.vertices) +
