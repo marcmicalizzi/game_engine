@@ -128,6 +128,8 @@ scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, 
   out.visible_pairs = stats.visible_pairs();
   out.shadow_casters = stats.shadow_casters;
   out.shadow_pairs = stats.shadow_pairs;
+  out.resolve_stop = stats.resolve_stop;
+  out.sun_ray_rule = stats.sun_ray_rule;
   // Every bucket of the pass list (scene_renderer.h, T85) into the record's field of its name.
   scene::PassMs ms;
 #define ENGINE_RENDERER_PASS_RECORD(name, top) ms.name = stats.gpu_##name;

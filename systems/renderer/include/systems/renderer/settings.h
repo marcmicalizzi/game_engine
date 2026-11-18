@@ -699,6 +699,9 @@ struct ShadowRayRule {
   bool opaque = false;
   f32 opaque_coverage = 0.0f;
   bool count = false;
+  // Which of the sweep's rules this is, 0 to `k_shadow_sweeps` - 1: 0 the frame as set, and 0
+  // always without `renderer.shadow.sweep`. The frame record's `sun_ray_rule` (T70).
+  u32 index = 0;
 };
 inline constexpr u32 k_shadow_sweeps = 6;
 ShadowRayRule shadow_ray_rule(u64 frame_index, f32 opaque_coverage) noexcept;

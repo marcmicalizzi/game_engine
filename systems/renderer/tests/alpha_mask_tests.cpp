@@ -639,6 +639,7 @@ TEST_CASE("alpha mask: the shadow sweep steps the sun ray's rules eight frames a
     CHECK(rule.opaque == false);
     CHECK(rule.opaque_coverage == 0.25f);
     CHECK(rule.count == false);
+    CHECK(rule.index == 0);
   }
   REQUIRE(tunables::apply_overrides("renderer.shadow.sweep=true"));
   for (u64 period : {u64{0}, u64{48}}) {
@@ -656,6 +657,9 @@ TEST_CASE("alpha mask: the shadow sweep steps the sun ray's rules eight frames a
       const ShadowRayRule count = shadow_ray_rule(base + 40, 0.25f);
       CHECK(count.count);
       CHECK(count.opaque_coverage == 0.25f);
+      // The rule's number, which the frame record carries (T70): rule r for frames 8r to 8r + 7.
+      for (u32 r = 0; r < k_shadow_sweeps; ++r)
+        CHECK(shadow_ray_rule(base + 8 * u64{r}, 0.25f).index == r);
     }
   }
 }

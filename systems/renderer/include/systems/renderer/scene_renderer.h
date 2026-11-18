@@ -246,6 +246,11 @@ struct FrameStats {
   // frame late like the rest.
   u32 horizon_casters = 0;    // Stats::shadow_casters: built into the structures, not drawn
   u32 shadow_pairs = 0;       // Stats::shadow_pairs: drawn into the cascaded maps
+  // The measurement switches' words this frame drew under (T70): the resolve's stop stage
+  // (`resolve_stop_tunable`, 0 the picture) and the sun ray's rule (`ShadowRayRule::index`, 0 the
+  // frame as set), from the frame's own index, so an analysis reads them instead of deriving them.
+  u32 resolve_stop = 0;
+  u32 sun_ray_rule = 0;
   // Every pass bucket, `gpu_<name>`, from the pass list above (T85). A frame past its capacity
   // without "ranges drop" takes the one-thread rule inside "ranges".
   ENGINE_RENDERER_PASS_BUCKETS(ENGINE_RENDERER_PASS_FIELD)

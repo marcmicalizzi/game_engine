@@ -8,6 +8,7 @@
 // and occlusion culling changes no pixel anywhere on it while it does cull the hidden cubes.
 #include "test_device.h"
 
+#include <core/json/json.h>
 #include <core/json/json_value.h>
 #include <core/math/math.h>
 #include <core/memory/memory.h>
@@ -912,6 +913,25 @@ TEST_CASE("flythrough: every pass bucket of the record comes from the one pass l
       CHECK_MESSAGE(other != value, "gpu_ms." << name << " repeats another bucket's value");
     seen.push_back(value);
   }
+}
+
+// T70: the record names the resolve's stop stage and the sun ray's rule its frame drew under, so an
+// analysis of a sweep never derives them from a frame number; both survive the JSON line.
+TEST_CASE("flythrough: the record carries the resolve's stop stage and the sun ray's rule") {
+  FrameStats stats;
+  stats.reconstruction.internal_width = stats.reconstruction.output_width = 640;
+  stats.reconstruction.internal_height = stats.reconstruction.output_height = 360;
+  stats.resolve_stop = 5;
+  stats.sun_ray_rule = 3;
+  const scene::FrameRecord record = frame_record(stats, 0, 0, 0.0);
+  CHECK(record.resolve_stop == 5);
+  CHECK(record.sun_ray_rule == 3);
+  const std::string text = write_json(schema::to_json(record), JsonWriteOptions{.pretty = false});
+  CHECK(text.find("\"resolve_stop\":5") != std::string::npos);
+  CHECK(text.find("\"sun_ray_rule\":3") != std::string::npos);
+  const scene::FrameRecord plain = frame_record(FrameStats{}, 0, 1, 0.0);
+  CHECK(plain.resolve_stop == 0);
+  CHECK(plain.sun_ray_rule == 0);
 }
 
 // **The measurement rule** (ADR-0064; renderer.md, "Sampling over time: the measurement rule"): a
