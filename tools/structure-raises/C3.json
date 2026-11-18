@@ -1,12 +1,13 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "C3",
-  "reason": "C3 and A26 are designed and not built: protocol.md and renderer.md each gain a short section saying what the module will own of content classes and view policies, pointing at docs/content-classes.md, which holds the design so the hubs carry a paragraph each and not the design; revised after a review, the two sections say the per-instance decision, the one admission door, the capture check and the composed-class rule, and AGENTS.md's rule on view policies names the flags an agent never passes and the audit trail that stands for a wall",
+  "reason": "C3 and A26 are designed and not built: protocol.md and renderer.md each gain a short section saying what the module will own of content classes and view policies, pointing at docs/content-classes.md, which holds the design so the hubs carry a paragraph each and not the design; revised after a review, the two sections say the per-instance decision, the one admission door, the capture check and the composed-class rule, and AGENTS.md's rule on view policies names the flags an agent never passes and the audit trail that stands for a wall; after the owner let agents choose a wider policy (2026-11-18), AGENTS.md's rule says the starter chooses among the operator's policies, on the record, and an agent never writes a policies file or changes a cap",
   "date": "2026-11-18",
   "by": "Marc Micalizzi",
   "deltas": {
     "page:docs/subsystems/renderer.md": 1720,
-    "page:docs/subsystems/protocol.md": 3241,
-    "page:AGENTS.md": 429
+    "page:docs/subsystems/apps.md": -12,
+    "page:docs/subsystems/protocol.md": 3258,
+    "page:AGENTS.md": 584
   }
 }
