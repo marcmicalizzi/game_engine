@@ -516,6 +516,10 @@ enum class ClusterOrder : u8 { leaves_first, keep };
 // before; every other mesh's grid is in `parts_out`, and `dequantize_position` on the merged
 // mesh is therefore only correct for the first. Fails on an empty list or an empty part.
 //
+// An imported mesh's `extra` stream (G2) is **not** carried: `out.mesh.extra` is empty, since a
+// stream parallel to the scene's vertices would pad every other mesh's with a "none" record and
+// nothing reads it after the merge (each mesh's container keeps it; review finding A3).
+//
 // `order` is `ClusterOrder::keep` when the meshes have been laid out in pages; see the enum, and
 // `merge_paged_cluster_meshes` in cluster_pages.h, which is what a caller with page tables uses.
 //
