@@ -38,8 +38,17 @@ $lint = Join-Path $PSScriptRoot 'lint.ps1'
 $failures = New-Object System.Collections.Generic.List[string]
 $checks = 0
 $roots = New-Object System.Collections.Generic.List[string]
+$script:TrackFixtures = $false
 
-function Invoke-Lint([string]$root) {
+function Invoke-Lint([string]$root, [switch]$Untracked) {
+  # The machine-path rule reads the files git tracks, so its cases ($script:TrackFixtures) make a
+  # fixture a repository with every file in its index first (re-added on each call, since cases add
+  # files between calls); -Untracked leaves it a plain directory. The other rules' cases skip the
+  # step, which costs a git process or two a case.
+  if ($script:TrackFixtures -and -not $Untracked) {
+    if (-not (Test-Path -LiteralPath (Join-Path $root '.git'))) { & git -C $root init -q 2>&1 | Out-Null }
+    & git -C $root add -A 2>&1 | Out-Null
+  }
   # The report is written with Write-Host, which is the information stream, not output: *>&1
   # brings every stream back so the tests can read what a contributor would see.
   $out = (& $lint -Root $root *>&1 | Out-String)
@@ -339,6 +348,94 @@ try {
   Set-FixtureFile $root 'systems/water/tests/size_table.cpp' $invariantTable
   Set-FixtureFile $root 'systems/water/src/water.cpp' "#if ENGINE_WITH_TERRAIN`nvoid shore() {}`n#endif`n"
   Test-That 'the same conditional in a module that is not CONFIG_INVARIANT passes, a commented mention included' { (Invoke-Lint $root).Code -eq 0 }
+
+  # machine-path (docs/ci/machine-paths.md, roadmap T175): every tracked text file, whatever its
+  # kind, names no path of the machine it was written on. The samples are put together from pieces
+  # so that this file, which the rule reads too, names none itself.
+  $script:TrackFixtures = $true
+  $drive = 'D' + ':'
+  $cdrive = 'C' + ':'
+  $ws = $drive + '\workspace'
+  $caught = [ordered]@{
+    'a Windows profile in a page'                    = @('docs/notes.md', "The captures are in ``$cdrive\Users\marc\AppData\Local\Temp\x``.")
+    'a profile with forward slashes in a script'     = @('tools/a.ps1', "`$p = '$cdrive/Users/marc/.codex/worktrees/x'")
+    'a POSIX home in a shell script'                 = @('tools/b.sh', ("cd /ho" + "me/marc/src"))
+    'a macOS home in a README'                       = @('content/x/README.md', ("see /Us" + "ers/marc/Desktop"))
+    'a Git Bash spelling of a profile'               = @('docs/c.md', ("``/c/Us" + "ers/marc/x``"))
+    'a WSL spelling of a profile'                    = @('docs/d.md', ("``/mnt/c/Us" + "ers/marc/x``"))
+    'the workspace folder in a script default'       = @('tools/e.ps1', "`$root = '$ws\game_engine_local'")
+    'the workspace folder alone, forward slashes'    = @('cmake/F.cmake', "set(_dir `"$drive/workspace`")")
+    'the workspace folder in a C++ test string'      = @('apps/x/tests/x_tests.cpp', "const char* p = `"$drive/workspace/game_engine_assets/x`";")
+    'a Git Bash spelling of the workspace folder'    = @('tools/g.sh', ("cd /d/work" + "space/game_engine"))
+    'a WSL spelling of the workspace folder'         = @('tools/h.sh', ("ls /mnt/d/work" + "space"))
+    'an absolute path into an agent worktree'        = @('docs/i.json', ("{`"root`": `"E:\\src\\engine\\.claude\\worktrees\\agent-a" + "0123456789abcdef`"}"))
+    'an absolute path into a slot worktree'          = @('docs/j.md', ("``/srv/engine/.claude/worktrees/slot-" + "2/build``"))
+  }
+  foreach ($case in $caught.GetEnumerator()) {
+    $root = New-Fixture
+    Set-FixtureFile $root $case.Value[0] $case.Value[1]
+    Test-Reports "$($case.Key) is reported" $root "$($case.Value[0]):1: [machine-path]"
+  }
+
+  $root = New-Fixture
+  $passes = @(
+    "$cdrive\Program Files\Microsoft Visual Studio\18\Professional\VC\Tools\Llvm\x64\bin\clang-format.exe",
+    "$cdrive\Windows\System32\wsl.exe and $cdrive\PROGRA~1\x",
+    "$cdrive\Users\someone\AppData\Local\Microsoft\WinGet\Links\ccache.exe, $cdrive/Users/runner/work",
+    "$cdrive\Users\<user>\.ssh, $cdrive\Users\...\x, $cdrive\Users\%USERNAME%\x, $cdrive\Users\`$env:USERNAME",
+    "%USERPROFILE%\.ssh and `$env:LOCALAPPDATA\x and ~/.cache and `$HOME/game_engine_local",
+    "/ho" + "me/runner/work and /ho" + "me/<user>/x and file:///ho" + "me/x and https://example.com/home/marc",
+    "$drive\games\engine-sdk, E:\cc, $drive\work\engine\.claude\worktrees\agent-a1, $drive\...\x, <workspace>\gpu.lock",
+    "game_engine_local\captures\x and .claude/worktrees/agent-a0123456789abcdef (relative) and $drive\workspaces-old is not it"
+  )
+  Set-FixtureFile $root 'docs/neutral.md' ($passes -join "`n")
+  # A binary file is not read, whatever bytes it holds.
+  $binary = [Text.Encoding]::UTF8.GetBytes("x$ws\y") + [byte[]](0, 1, 2)
+  New-Item -ItemType Directory -Force -Path (Join-Path $root 'content') | Out-Null
+  [IO.File]::WriteAllBytes((Join-Path $root 'content/blob.bin'), [byte[]](@(0) + $binary))
+  $result = Invoke-Lint $root
+  Test-That 'what is the same on every machine passes: toolchains, placeholders, neutral names, sample drives, a binary' { $result.Code -eq 0 }
+  if ($result.Code -ne 0) { Write-Host $result.Out }
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'tools/k.ps1' "`$lock = '$ws\gpu.lock'   # engine-lint: allow-machine-path the protocol's fixed path, shared with tools outside the repository"
+  Set-FixtureFile $root 'core/l.cpp' "  return `"$ws\\gpu.lock`";  // engine-lint: allow-machine-path the protocol's location"
+  Test-That 'a line marked with its reason passes, in any comment syntax' { (Invoke-Lint $root).Code -eq 0 }
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'tools/k.ps1' "`$lock = '$ws\gpu.lock'   # engine-lint: allow-machine-path"
+  Test-Reports 'a marker with no reason does not let a line through' $root 'tools/k.ps1:1: [machine-path]'
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'docs/adr/0001-x.md' "The protocol is ``$ws\GPU-LOCK.md``."
+  Set-FixtureFile $root 'tools/machine-path-exemptions.txt' "# a comment`n`ndocs/adr/0001-x.md: an accepted ADR is never edited`n"
+  Test-That 'a file on the exemption list with its reason passes' { (Invoke-Lint $root).Code -eq 0 }
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'docs/adr/0001-x.md' "The protocol is ``$ws\GPU-LOCK.md``."
+  Set-FixtureFile $root 'tools/machine-path-exemptions.txt' "docs/adr/0001-x.md`n"
+  Test-Reports 'an exemption with no reason is refused' $root 'tools/machine-path-exemptions.txt:1: [machine-path] an exemption is "<file>: <reason>"'
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'tools/machine-path-exemptions.txt' "docs/adr/0009-gone.md: it was accepted`n"
+  Test-Reports 'an exemption naming no file of the tree is refused' $root 'docs/adr/0009-gone.md is not a file of the tree; remove the line'
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'docs/adr/0001-x.md' "The protocol is GPU-LOCK.md's."
+  Set-FixtureFile $root 'tools/machine-path-exemptions.txt' "docs/adr/0001-x.md: an accepted ADR is never edited`n"
+  Test-Reports 'an exemption for a file that no longer names a path is refused' $root 'docs/adr/0001-x.md names no path of this machine now; remove its exemption in the same change'
+
+  # Only what git tracks is read: an ignored file never reaches the repository. A tree that is no
+  # checkout at all (the Linux container's synced copy has no .git) skips the rule and says so.
+  $root = New-Fixture
+  Set-FixtureFile $root '.gitignore' "scratch/`n"
+  Set-FixtureFile $root 'scratch/notes.md' "under ``$ws\game_engine_local``"
+  Test-That 'an ignored file is not read' { (Invoke-Lint $root).Code -eq 0 }
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'docs/notes.md' "under ``$ws\game_engine_local``"
+  $result = Invoke-Lint $root -Untracked
+  Test-That 'a tree that is no checkout skips the rule, and says so' { $result.Code -eq 0 -and $result.Out.Contains('machine-path skipped') }
 } finally {
   foreach ($r in $roots) {
     if ($KeepTemp) {

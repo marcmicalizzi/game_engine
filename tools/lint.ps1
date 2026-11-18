@@ -296,6 +296,95 @@ foreach ($dir in $scanRoots) {
   }
 }
 
+# `machine-path` (docs/ci/machine-paths.md; roadmap T175). The repository is public and outlives
+# every checkout, so no tracked text file names a path of the machine it was written on: a user's
+# profile (`<drive>:\Users\<name>`, `/home/<name>`, `/Users/<name>`, and their Git Bash and WSL
+# spellings), the workspace folder at a drive's root that holds the checkouts (`<drive>:\workspace`,
+# `/<drive>/workspace`), or an absolute path into one of the harness's worktrees
+# (`...\.claude\worktrees\agent-<hex>` or `slot-<n>`). What is the same on every machine passes: a
+# toolchain's install folder, a placeholder (`<dir>`, `...`, `%USERNAME%`, `$env:X`), a neutral name
+# a test or an example uses for "somebody" (`someone`, `runner`), a sample drive that stands for
+# "another disk" (`D:\games`, `E:\cc`). Every tracked file is read, not only C++ — the 243 lines this
+# rule was written from were pages, scripts, READMEs, a CMake file and two tests — and a file is
+# skipped only when it is binary (a NUL in its first 8,000 bytes, git's own test). The way out is a
+# line's marker with its reason (`engine-lint: allow-machine-path <reason>`, in any comment syntax)
+# or a line of tools/machine-path-exemptions.txt (`<file>: <reason>`) for a file that cannot carry
+# one — an accepted ADR is never edited — and the list refuses a line with no reason, a line naming
+# no tracked file and a line for a file the rule no longer finds anything in, so it only shrinks.
+$neutralNames = '(?i:someone|somebody|user|username|you|me|name|runner|public|default|shared|all users)(?=[\\/''"`\s,;:)\]]|$)'
+$placeholderLead = '[<%$*{.…]'
+$machinePathRules = @(
+  # A Windows profile: <drive>:\Users\<name>, and the Git Bash and WSL spellings /c/Users/<name> and
+  # /mnt/c/Users/<name>.
+  ('(?i)(?<![A-Za-z0-9])[A-Za-z]:[\\/]+(?:Users|Documents and Settings)[\\/]+(?!' + $neutralNames + ')(?!' + $placeholderLead + ')[^\\/\s''"`<>|]+'),
+  ('(?i)(?<![\w./~-])/(?:mnt/)?[a-z]/Users/(?!' + $neutralNames + ')(?!' + $placeholderLead + ')[A-Za-z0-9._-]+'),
+  # A POSIX profile: /home/<name> or macOS's /Users/<name>, not inside a longer path or a URL.
+  ('(?<![\w./~:-])/(?:home|Users)/(?!' + $neutralNames + ')(?!' + $placeholderLead + ')[A-Za-z0-9._-]+'),
+  # The workspace folder at a drive's root, in every spelling a tool prints it.
+  '(?i)(?<![A-Za-z0-9])[A-Za-z]:[\\/]+workspaces?(?![A-Za-z0-9_-])',
+  '(?i)(?<![\w./~-])/(?:mnt/)?[a-z]/workspaces?(?![A-Za-z0-9_-])',
+  # An absolute path into a harness worktree, wherever its checkout is.
+  '(?i)(?:(?<![A-Za-z0-9])[A-Za-z]:[\\/]|(?<![\w.~-])/)[^\s''"`<>|]*?[\\/]\.claude[\\/]+worktrees[\\/]+(?:agent-a?[0-9a-f]{8,}|slot-\d+)'
+)
+$machinePathAny = '(?:' + ($machinePathRules -join ')|(?:') + ')'
+$machineMarker = 'engine-lint:\s*allow-machine-path\b'
+$machineMessage = 'a path of this machine (a user''s profile, the workspace folder, a worktree) is never written into the repository; name a folder beside the checkout by its name, a command''s by $env:ENGINE_LOCAL_ROOT, a test''s sample by a neutral path, or mark the line with its reason, see docs/ci/machine-paths.md'
+$machineExemptRel = 'tools/machine-path-exemptions.txt'
+$machineExempt = @{}
+$machineExemptPath = Join-Path $Root $machineExemptRel
+if (Test-Path -LiteralPath $machineExemptPath) {
+  $exemptLines = @(Get-Content -LiteralPath $machineExemptPath)
+  for ($i = 0; $i -lt $exemptLines.Count; $i++) {
+    $line = $exemptLines[$i]
+    if ($line -match '^\s*(#|$)') { continue }
+    if ($line -match '^\s*([^:\s]+)\s*:\s*(\S.*)$') {
+      $machineExempt[$Matches[1]] = $i + 1
+    } else {
+      $violations.Add(("{0}:{1}: [machine-path] an exemption is ""<file>: <reason>"", and the reason says why the file has to name the path`n    {2}" -f $machineExemptRel, ($i + 1), $line.Trim()))
+    }
+  }
+}
+# The files git tracks, and only those: what is ignored (a fetched pack, a derived-data root, a
+# scratch file) never reaches the repository, so it is not this rule's. A tree that is no checkout —
+# the Linux container's copy, synced without .git — skips the rule and says so; the Windows run and
+# CI's checkouts read the same files.
+$tracked = $null
+if (Test-Path -LiteralPath (Join-Path $Root '.git')) {
+  $listed = @(& git -C $Root ls-files -z 2>$null)
+  if ($LASTEXITCODE -eq 0) { $tracked = @(($listed -join '') -split "`0" | Where-Object { $_ }) }
+}
+if ($null -eq $tracked) {
+  Write-Host "lint: machine-path skipped: $Root is not a git checkout, and the rule reads the files git tracks"
+  $tracked = @()
+  $machineExempt = @{}
+}
+$machineRegex = [regex]::new($machinePathAny, [Text.RegularExpressions.RegexOptions]'IgnoreCase, CultureInvariant, Compiled')
+$machineFound = @{}
+foreach ($rel in $tracked) {
+  $full = Join-Path $Root $rel
+  if (-not [IO.File]::Exists($full)) { continue }
+  $text = [IO.File]::ReadAllText($full)
+  if ($text.IndexOf([char]0, 0, [Math]::Min($text.Length, 8000)) -ge 0) { continue }
+  $scanned++
+  if (-not $machineRegex.IsMatch($text)) { continue }
+  $lines = $text -split "`r?`n"
+  for ($i = 0; $i -lt $lines.Count; $i++) {
+    $line = $lines[$i]
+    if (-not $machineRegex.IsMatch($line)) { continue }
+    $machineFound[$rel] = $true
+    if ($machineExempt.ContainsKey($rel)) { continue }
+    if ($line -match ($machineMarker + '\s+\S')) { continue }
+    $violations.Add(("{0}:{1}: [machine-path] {2}`n    {3}" -f $rel, ($i + 1), $machineMessage, $line.Trim()))
+  }
+}
+foreach ($rel in $machineExempt.Keys) {
+  if ($tracked -notcontains $rel) {
+    $violations.Add("${machineExemptRel}:$($machineExempt[$rel]): [machine-path] $rel is not a file of the tree; remove the line")
+  } elseif (-not $machineFound.ContainsKey($rel)) {
+    $violations.Add("${machineExemptRel}:$($machineExempt[$rel]): [machine-path] $rel names no path of this machine now; remove its exemption in the same change")
+  }
+}
+
 if ($pending.Count -gt 0) {
   Write-Host "lint: $($pending.Count) known violation(s) on a rule's Pending list (not a failure)" -ForegroundColor Yellow
   $pending | ForEach-Object { Write-Host $_ }
