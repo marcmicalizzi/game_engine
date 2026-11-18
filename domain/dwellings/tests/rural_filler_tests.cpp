@@ -94,7 +94,7 @@ TEST_CASE("rural filler: the household fixes the type and the seed varies the si
       {1, 0, PlanType::Cot, 1, 1, false},          {2, 2, PlanType::Cot, 1, 1, false},
       {3, 0, PlanType::HallParlour, 1, 1, false},  {4, 1, PlanType::HallParlour, 1, 1, false},
       {4, 2, PlanType::HallParlour, 2, 2, false},  {5, 1, PlanType::HallParlour, 2, 1, false},
-      {6, 0, PlanType::CrossPassage, 1, 1, false}, {7, 0, PlanType::CrossPassage, 1, 1, true},
+      {6, 0, PlanType::CrossPassage, 1, 1, true},  {7, 0, PlanType::CrossPassage, 1, 1, true},
       {8, 1, PlanType::CrossPassage, 2, 1, false}, {9, 2, PlanType::CrossPassage, 2, 2, true},
   };
   for (const Row& row : rows) {

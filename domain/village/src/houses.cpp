@@ -897,6 +897,37 @@ const char* side_name(dwellings::Side s) noexcept {
     default: return "left";
   }
 }
+// The schema's names for a kit row's enums, as an entry's JSON spells them.
+const char* kit_class_name(KitClass c) noexcept {
+  switch (c) {
+    case KitClass::Wall: return "Wall";
+    case KitClass::Free: return "Free";
+    case KitClass::Top: return "Top";
+    case KitClass::Bed: return "Bed";
+    case KitClass::Hung: return "Hung";
+    case KitClass::Joist: return "Joist";
+    case KitClass::HearthIn: return "HearthIn";
+    case KitClass::HearthBy: return "HearthBy";
+    default: return "Yard";
+  }
+}
+const char* kit_front_name(KitFront f) noexcept {
+  switch (f) {
+    case KitFront::PosX: return "PosX";
+    case KitFront::NegX: return "NegX";
+    case KitFront::PosZ: return "PosZ";
+    default: return "NegZ";
+  }
+}
+const char* kit_replaces_name(KitReplaces r) noexcept {
+  switch (r) {
+    case KitReplaces::TableSet: return "TableSet";
+    case KitReplaces::Settle: return "Settle";
+    case KitReplaces::Bed: return "Bed";
+    case KitReplaces::Chest: return "Chest";
+    default: return "None";
+  }
+}
 
 }  // namespace
 
@@ -1101,21 +1132,37 @@ bool describe_house(const VillageLayer& layer, const VillagePlan& plan, u32 hous
 
   // **The kit**: every row of the entry's, and the pieces of this house that stand in the box
   // furniture's place, where their meshes stand (`kit_placement` composes the same numbers).
+  // **Every row as the entry states it** (need 153 (e)): its class, the way it faces, the heights
+  // its foot may stand at, its scale, bounds and foot, and the piece it stands in for by name; and,
+  // where it stands in for one, the foot and the height the furnisher searched with, centimetres.
   JsonValue kit_rows = JsonValue::array();
+  const auto f32s = [](const auto& v, u32 n) {
+    JsonValue a = JsonValue::array();
+    for (u32 i = 0; i < n; ++i)
+      a.push_back(JsonValue(static_cast<f64>(v[i])));
+    return a;
+  };
   for (u32 r = 0; r < layer.kit.size(); ++r) {
+    const KitPiece& piece = layer.kit[r];
     JsonValue q = JsonValue::object();
     q["row"] = JsonValue(r);
-    q["name"] = JsonValue(layer.kit[r].name);
-    q["mesh"] = JsonValue(layer.kit[r].mesh);
-    bool used = false;
+    q["name"] = JsonValue(piece.name);
+    q["mesh"] = JsonValue(piece.mesh);
+    q["placement"] = JsonValue(kit_class_name(piece.placement));
+    q["front"] = JsonValue(kit_front_name(piece.front));
+    q["height_min_m"] = JsonValue(static_cast<f64>(piece.height_min_m));
+    q["height_max_m"] = JsonValue(static_cast<f64>(piece.height_max_m));
+    q["scale"] = JsonValue(static_cast<f64>(piece.scale));
+    q["bounds_min"] = f32s(piece.bounds_min, 3);
+    q["bounds_max"] = f32s(piece.bounds_max, 3);
+    q["foot"] = f32s(piece.foot, 4);
+    q["replaces"] = JsonValue(kit_replaces_name(piece.replaces));
     for (const dwellings::KitRow& k : hk.rows)
       if (k.id == r) {
         q["foot_cm"] =
             pair_mm(static_cast<i64>(k.along_cm) * 1000, static_cast<i64>(k.out_cm) * 1000);
         q["height_cm"] = JsonValue(static_cast<i64>(k.height_cm));
-        used = true;
       }
-    q["replaces"] = JsonValue(used);
     kit_rows.push_back(std::move(q));
   }
   out["kit_rows"] = std::move(kit_rows);
@@ -1140,16 +1187,18 @@ bool describe_house(const VillageLayer& layer, const VillagePlan& plan, u32 hous
   out["kit"] = std::move(kit_json);
 
   // **The places the plan already knows** (furnish.h, `house_places`): the hearth's recess, mouth,
-  // cheeks and the floor beside its stack, the furniture's tops, seats, lid and mattress, the
-  // joists' undersides, the doors' and doorways' approaches and the windows' light, each a box in
-  // the house's frame (a surface where `low` and `high` share their height).
+  // cheeks, the floor beside its stack and its face outside, the furniture's tops, seats, lid and
+  // mattress (a kit chest's lid too), the joists' and tie beams' undersides, the doors' and
+  // doorways' approaches and the windows' light, each a box in the house's frame (a surface where
+  // `low` and `high` share their height). A stack's outside face is in no room (-1).
   Vector<dwellings::NamedPlace> named;
-  dwellings::house_places(interior, furnishing, named);
+  dwellings::house_places(interior, furnishing, choice.outer_wall_cm, named);
   JsonValue places = JsonValue::array();
   for (const dwellings::NamedPlace& n : named) {
     JsonValue q = JsonValue::object();
     q["kind"] = JsonValue(dwellings::place_kind_name(n.kind));
-    q["room"] = JsonValue(n.room);
+    q["room"] =
+        n.room == dwellings::k_no_room ? JsonValue(static_cast<i64>(-1)) : JsonValue(n.room);
     q["storey"] = JsonValue(static_cast<u32>(n.storey));
     q["faces"] = JsonValue(side_name(n.faces));
     q["of"] = JsonValue(n.index);

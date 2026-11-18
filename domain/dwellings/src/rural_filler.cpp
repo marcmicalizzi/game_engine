@@ -89,9 +89,11 @@ void household_asks(const Household& household, InteriorParams& out) noexcept {
     out.storeys = means == 2 ? u8{2} : u8{1};
   } else if (persons <= 6) {
     // Five or six sleep in two chambers over a hall and parlour, or, with no means for an upper
-    // floor, along a cross-passage house's three rooms.
+    // floor, along a cross-passage house's three rooms: the inner room beyond the hall, which is
+    // the one they sleep in (need 153 (c): without it a household of six had no bed).
     out.type = means == 0 ? PlanType::CrossPassage : PlanType::HallParlour;
     out.storeys = means == 0 ? u8{1} : u8{2};
+    out.inner_room = means == 0;
   } else {
     out.type = PlanType::CrossPassage;
     out.storeys = means == 0 ? u8{1} : u8{2};

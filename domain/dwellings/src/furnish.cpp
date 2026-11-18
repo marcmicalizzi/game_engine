@@ -50,6 +50,14 @@ constexpr i32 k_beam_width_cm = 24;
 constexpr i32 k_beam_depth_cm = 18;
 constexpr i32 k_beam_least_span_cm = 300;  // joists alone span less
 constexpr i32 k_into_cm = 2;               // a member's end runs this far into what bears it
+// A tie beam (need 153 (b)): a squared timber of a cottage's truss, 20 cm each way, its top at the
+// plate. Two kept at least this far apart (a bay of about 2.5 to 4.5 m, vernacular-interiors.md,
+// "Timber"); the mesher's rafters start this far inside the gables.
+constexpr i32 k_tie_beam_width_cm = 20;
+constexpr i32 k_tie_beam_depth_cm = 20;
+constexpr i32 k_tie_beam_apart_cm = 250;
+constexpr i32 k_rafter_inset_cm = 12;
+constexpr u32 k_tie_beam_candidates = 16;
 constexpr i32 k_nosing_cm = 2;
 constexpr i32 k_nosing_depth_cm = 3;
 constexpr i32 k_newel_cm = 9;
@@ -448,8 +456,20 @@ void furnish_room(const InteriorPlan& plan, const Vector<KeepOut>& keep, u64 see
   // it has (the two-up two-down's front room); a cot's one room is lived and slept in.
   const bool sat_in = room.kind == RoomKind::Parlour && plan.params.type == PlanType::TwoUpTwoDown;
   const bool lived = room.kind == RoomKind::Hall || room.kind == RoomKind::Kitchen || sat_in;
-  const bool slept = (room.kind == RoomKind::Parlour && !sat_in) || room.kind == RoomKind::Inner ||
-                     room.kind == RoomKind::Chamber || cot;
+  // **A house with no chamber sleeps in its hall** (need 153 (c)): before a house had a room to
+  // sleep in beyond its hall, its household slept by the hall's fire (vernacular-interiors.md,
+  // "Furniture"), so where no room of a plan is a parlour, an inner room or a chamber the hall
+  // takes the bed and the chest.
+  const auto sleeps_in = [&plan](const Room& r) {
+    const bool front_room =
+        r.kind == RoomKind::Parlour && plan.params.type == PlanType::TwoUpTwoDown;
+    return (r.kind == RoomKind::Parlour && !front_room) || r.kind == RoomKind::Inner ||
+           r.kind == RoomKind::Chamber;
+  };
+  bool any_slept = false;
+  for (const Room& r : plan.rooms)
+    any_slept = any_slept || sleeps_in(r);
+  const bool slept = sleeps_in(room) || cot || (room.kind == RoomKind::Hall && !any_slept);
   if (!lived && !slept) return;
   Place place;
   place.plan = &plan;
@@ -655,7 +675,8 @@ const char* piece_kind_name(PieceKind kind) noexcept {
     case PieceKind::Joists: return "joists";
     case PieceKind::Beam: return "beam";
     case PieceKind::Nosings: return "nosings";
-    default: return "newel";
+    case PieceKind::Newel: return "newel";
+    default: return "tie-beam";
   }
 }
 
@@ -697,20 +718,30 @@ void furnish_interior(const InteriorPlan& plan, u64 seed, Furnishing& out, const
     furnish_room(plan, keep, seed, r, kit, out);
 }
 
+bool open_to_roof(const InteriorPlan& plan) noexcept {
+  return plan.params.storeys == 1 && count_of(plan.rooms) <= 1;
+}
+
 i32 room_clear_cm(const InteriorPlan& plan, const Room& room) noexcept {
   const InteriorParams& p = plan.params;
   if (room.storey + 1 < p.storeys) return i32{p.storey_cm} - i32{p.floor_cm} - k_joist_depth_cm;
-  return p.storeys > 1 ? i32{p.upper_clear_cm} : i32{p.storey_cm};
+  if (p.storeys > 1) return i32{p.upper_clear_cm};
+  return i32{p.storey_cm} - (open_to_roof(plan) ? k_tie_beam_depth_cm : k_joist_depth_cm);
 }
 
 void timber_interior(const InteriorPlan& plan, bool ridge_along_x, Furnishing& out) {
   const InteriorParams& p = plan.params;
   // Under an upper floor: joists across the ridge at their centres, a room at a time, their ends
   // in the walls, and where they span more than a beam's least a spine beam under their middle.
-  const i32 ceiling = i32{p.storey_cm} - i32{p.floor_cm};
+  // **Under a ceiling the same** (need 153 (b)): a house of one storey whose rooms are ceiled at
+  // the plate is ceiled on joists that rest on its walls (a loft's floor over a cottage's rooms,
+  // docs/experiments/vernacular-interiors.md, "Timber"), so its rooms show them as an upper
+  // floor's do and a thing hangs from them; their undersides are the storey's height less theirs.
+  const bool ceiled = p.storeys == 1 && !open_to_roof(plan);
+  const i32 ceiling = ceiled ? i32{p.storey_cm} : i32{p.storey_cm} - i32{p.floor_cm};
   for (u32 r = 0; r < count_of(plan.rooms); ++r) {
     const Room& room = plan.rooms[r];
-    if (room.storey + 1 >= p.storeys || room.kind == RoomKind::Stair) continue;
+    if ((room.storey + 1 >= p.storeys && !ceiled) || room.kind == RoomKind::Stair) continue;
     const RectCm& rect = room.rect;
     const i32 length = ridge_along_x ? rect.x1 - rect.x0 : rect.z1 - rect.z0;
     const i32 span = ridge_along_x ? rect.z1 - rect.z0 : rect.x1 - rect.x0;
@@ -739,6 +770,74 @@ void timber_interior(const InteriorPlan& plan, bool ridge_along_x, Furnishing& o
     timber_member(out, beam, ceiling - k_beam_depth_cm, ceiling + 1, room.storey, r,
                   MemberSurface::Timber);
     whole_piece(out, PieceKind::Beam, beam, room.storey, r, beam_member, ceiling);
+  }
+
+  // **A room open to its roof** (need 153 (b)): what is over a cot's one room is its roof's
+  // timbers, the rafters and the collars the mesher draws (structures.md, "Roofs": a rafter about
+  // every 45 cm from 12 cm inside the gables, a collar on every third pair), and the tie beams that
+  // hold the feet of a truss's rafters together at the plate, from which a household hung what it
+  // dried and smoked. A tie beam stands under a collar, at the plate, its ends in the side walls:
+  // the collar nearest the room's middle first, then any other at least `k_tie_beam_apart_cm`
+  // from every one kept, none over a stack.
+  if (open_to_roof(plan) && !plan.rooms.empty()) {
+    const Room& room = plan.rooms[0];
+    const RectCm& rect = room.rect;
+    const i32 lo = ridge_along_x ? rect.x0 : rect.z0;
+    const i32 length = ridge_along_x ? rect.x1 - rect.x0 : rect.z1 - rect.z0;
+    const i32 run = length - 2 * k_rafter_inset_cm;
+    // The mesher's pairs: round((last - first) / 45), at least one.
+    const i32 bays = run > 0 && (2 * run + 45) / 90 > 0 ? (2 * run + 45) / 90 : 1;
+    i32 at[k_tie_beam_candidates];
+    u32 candidates = 0;
+    for (i32 i = 1; i <= bays && candidates < k_tie_beam_candidates; i += 3) {
+      const i32 a = lo + k_rafter_inset_cm + run * i / bays;
+      bool clear = true;
+      for (const Hearth& h : plan.hearths) {
+        const i32 s0 = ridge_along_x ? h.stack.x0 : h.stack.z0;
+        const i32 s1 = ridge_along_x ? h.stack.x1 : h.stack.z1;
+        if (a + k_tie_beam_width_cm / 2 + 10 > s0 && a - k_tie_beam_width_cm / 2 - 10 < s1)
+          clear = false;
+      }
+      if (clear) at[candidates++] = a;
+    }
+    const i32 mid = lo + length / 2;
+    const auto off_mid = [mid](i32 a) { return a < mid ? mid - a : a - mid; };
+    // Nearest the middle first, the lower on a tie: an insertion sort of a handful.
+    for (u32 i = 1; i < candidates; ++i)
+      for (u32 j = i; j > 0 && off_mid(at[j]) < off_mid(at[j - 1]); --j) {
+        const i32 t = at[j];
+        at[j] = at[j - 1];
+        at[j - 1] = t;
+      }
+    i32 kept[k_tie_beam_candidates];
+    u32 kept_count = 0;
+    for (u32 i = 0; i < candidates; ++i) {
+      bool apart = true;
+      for (u32 k = 0; k < kept_count; ++k) {
+        const i32 d = at[i] < kept[k] ? kept[k] - at[i] : at[i] - kept[k];
+        if (d < k_tie_beam_apart_cm) apart = false;
+      }
+      if (apart) kept[kept_count++] = at[i];
+    }
+    // Along the room in order, so the pieces read from one end to the other.
+    for (u32 i = 1; i < kept_count; ++i)
+      for (u32 j = i; j > 0 && kept[j] < kept[j - 1]; --j) {
+        const i32 t = kept[j];
+        kept[j] = kept[j - 1];
+        kept[j - 1] = t;
+      }
+    const i32 plate = i32{p.storey_cm};
+    for (u32 k = 0; k < kept_count; ++k) {
+      const i32 c = kept[k];
+      const RectCm beam = ridge_along_x ? RectCm{c - k_tie_beam_width_cm / 2, rect.z0 - k_into_cm,
+                                                 c + k_tie_beam_width_cm / 2, rect.z1 + k_into_cm}
+                                        : RectCm{rect.x0 - k_into_cm, c - k_tie_beam_width_cm / 2,
+                                                 rect.x1 + k_into_cm, c + k_tie_beam_width_cm / 2};
+      const u32 member = count_of(out.members);
+      timber_member(out, beam, plate - k_tie_beam_depth_cm, plate, room.storey, 0,
+                    MemberSurface::Timber);
+      whole_piece(out, PieceKind::TieBeam, beam, room.storey, 0, member, plate);
+    }
   }
 
   // A stair's nosings, one a riser, the head landing's edge among them, and a half-newel against
@@ -874,11 +973,14 @@ const char* place_kind_name(PlaceKind kind) noexcept {
     case PlaceKind::JoistUnderside: return "joist-underside";
     case PlaceKind::DoorApproach: return "door-approach";
     case PlaceKind::DoorwayApproach: return "doorway-approach";
-    default: return "window-light";
+    case PlaceKind::WindowLight: return "window-light";
+    case PlaceKind::TieBeamUnderside: return "tie-beam-underside";
+    default: return "stack-outside";
   }
 }
 
-void house_places(const InteriorPlan& plan, const Furnishing& furnishing, Vector<NamedPlace>& out) {
+void house_places(const InteriorPlan& plan, const Furnishing& furnishing, u16 outer_wall_cm,
+                  Vector<NamedPlace>& out) {
   const auto add = [&out](PlaceKind kind, const RectCm& r, i32 y0_mm, i32 y1_mm, u32 room,
                           u8 storey, Side faces, u32 index) {
     NamedPlace n;
@@ -945,6 +1047,27 @@ void house_places(const InteriorPlan& plan, const Furnishing& furnishing, Vector
         box(lo - k_hearth_side_cm, hi_edge + k_hearth_side_cm, face,
             face - sense * k_hearth_reach_cm),
         0, 0, h.room, h.storey, h.faces, hi);
+    // **The stack's outside face** (need 153 (e)): a stack in an outer wall stands
+    // `k_stack_proud_cm` out of the wall's outer face (`describe`'s chimney), as wide as it is
+    // inside, from the ground to the plate; a yard leans its woodpile and its water butt there.
+    const i32 out_cm = i32{outer_wall_cm} + k_stack_proud_cm;
+    const i32 plate_mm = (i32{plan.params.storey_cm} +
+                          (plan.params.storeys > 1 ? i32{plan.params.upper_clear_cm} : 0)) *
+                         10;
+    if (st.z0 == 0)
+      add(PlaceKind::StackOutside, RectCm{st.x0, -out_cm, st.x1, -out_cm}, 0, plate_mm, k_no_room,
+          0, Side::Front, hi);
+    if (st.z1 == plan.params.depth_cm)
+      add(PlaceKind::StackOutside,
+          RectCm{st.x0, plan.params.depth_cm + out_cm, st.x1, plan.params.depth_cm + out_cm}, 0,
+          plate_mm, k_no_room, 0, Side::Back, hi);
+    if (st.x0 == 0)
+      add(PlaceKind::StackOutside, RectCm{-out_cm, st.z0, -out_cm, st.z1}, 0, plate_mm, k_no_room,
+          0, Side::Left, hi);
+    if (st.x1 == plan.params.width_cm)
+      add(PlaceKind::StackOutside,
+          RectCm{plan.params.width_cm + out_cm, st.z0, plan.params.width_cm + out_cm, st.z1}, 0,
+          plate_mm, k_no_room, 0, Side::Right, hi);
   }
   // **The furniture's surfaces**, read from the members `add_piece` built (furnish.h): a table
   // set's top and its benches' seats, a settle's seat, the mattress, the chest's lid.
@@ -952,15 +1075,28 @@ void house_places(const InteriorPlan& plan, const Furnishing& furnishing, Vector
     const Piece& piece = furnishing.pieces[pi];
     const u32 end = piece.first_member + piece.member_count;
     if (end > count_of(furnishing.members)) continue;
-    if (piece.kind == PieceKind::Joists || piece.kind == PieceKind::Beam) {
+    if (piece.kind == PieceKind::Joists || piece.kind == PieceKind::Beam ||
+        piece.kind == PieceKind::TieBeam) {
+      const PlaceKind under = piece.kind == PieceKind::TieBeam ? PlaceKind::TieBeamUnderside
+                                                               : PlaceKind::JoistUnderside;
       for (u32 m = piece.first_member; m < end; ++m) {
         const Member& mm = furnishing.members[m];
-        add(PlaceKind::JoistUnderside, RectCm{mm.x0, mm.z0, mm.x1, mm.z1}, mm.y0 * 10, mm.y0 * 10,
-            piece.room, piece.storey, piece.against, pi);
+        add(under, RectCm{mm.x0, mm.z0, mm.x1, mm.z1}, mm.y0 * 10, mm.y0 * 10, piece.room,
+            piece.storey, piece.against, pi);
       }
       continue;
     }
     if (!is_furniture(piece.kind)) continue;
+    if (piece.kit != 0) {
+      // **A kit chest's lid** (need 153 (a)): a kit piece has no members to read a surface from,
+      // and its row states only its foot and its height, so the one surface it is known to have
+      // is a chest's: its top, over its foot. A kit table's top, a kit settle's seat and a kit
+      // bed's mattress stand somewhere under its height and are its mesh's to say.
+      if (piece.kind == PieceKind::Chest)
+        add(PlaceKind::ChestLid, piece.footprint, i32{piece.height_cm} * 10,
+            i32{piece.height_cm} * 10, piece.room, piece.storey, piece.against, pi);
+      continue;
+    }
     i32 lid = -1;  // a chest's topmost member
     for (u32 m = piece.first_member; m < end; ++m) {
       const Member& mm = furnishing.members[m];

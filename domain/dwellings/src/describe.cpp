@@ -17,7 +17,6 @@ u32 count_of(const Vector<T>& v) noexcept {
   return static_cast<u32>(v.size());
 }
 
-constexpr i32 k_stack_proud_cm = 8;    // a wall stack stands this far out of its wall's outer face
 constexpr i32 k_over_roof_cm = 75;     // a stack's top over the roof where it comes through
 constexpr i32 k_ground_floor_cm = 20;  // the ground storey's slab
 constexpr i32 k_eave_clear_cm = 2;     // an eave's edge over the head of a door under it
@@ -174,12 +173,13 @@ void describe(const InteriorPlan& plan, const RuralChoice& choice, std::string_v
     out.footprint.push_back(c[1]);
   }
 
-  // Storeys. A one-room house is open to its roof; rooms divided by walls are ceiled.
+  // Storeys. A one-room house is open to its roof; rooms divided by walls are ceiled
+  // (`open_to_roof`, furnish.h: the timber follows the same reading).
   structure::Storey ground;
   ground.elevation = 0;
   ground.height = p.storey_cm;
   ground.floor_thickness = k_ground_floor_cm;
-  ground.ceiling = p.storeys == 1 && count_of(plan.rooms) > 1;
+  ground.ceiling = p.storeys == 1 && !open_to_roof(plan);
   out.storeys.push_back(ground);
   if (p.storeys == 2) {
     structure::Storey above;
