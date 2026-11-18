@@ -13,9 +13,19 @@ void write_indent(std::string& out, u32 depth) {
     out.append("  ");
 }
 
+// A run of bytes that need no escape goes out in one append: a record's ids, names and paths are
+// whole runs, and a byte at a time was a call and a capacity check each, the largest single cost of
+// writing a document in a debug build (roadmap T183).
 void write_escaped(std::string_view s, std::string& out) {
   out.push_back('"');
-  for (const char c : s) {
+  const char* const begin = s.data();
+  const char* const end = begin + s.size();
+  const char* run = begin;
+  for (const char* p = begin; p != end; ++p) {
+    const char c = *p;
+    if (static_cast<unsigned char>(c) >= 0x20 && c != '"' && c != '\\') continue;
+    if (p != run) out.append(run, static_cast<usize>(p - run));
+    run = p + 1;
     switch (c) {
       case '"': out.append("\\\""); break;
       case '\\': out.append("\\\\"); break;
@@ -24,17 +34,15 @@ void write_escaped(std::string_view s, std::string& out) {
       case '\t': out.append("\\t"); break;
       case '\b': out.append("\\b"); break;
       case '\f': out.append("\\f"); break;
-      default:
-        if (static_cast<unsigned char>(c) < 0x20) {
-          static constexpr char k_hex[] = "0123456789abcdef";
-          out.append("\\u00");
-          out.push_back(k_hex[(static_cast<unsigned char>(c) >> 4) & 0xF]);
-          out.push_back(k_hex[static_cast<unsigned char>(c) & 0xF]);
-        } else {
-          out.push_back(c);  // UTF-8 passes through
-        }
+      default: {  // another control character; UTF-8 passes through in the runs
+        static constexpr char k_hex[] = "0123456789abcdef";
+        out.append("\\u00");
+        out.push_back(k_hex[(static_cast<unsigned char>(c) >> 4) & 0xF]);
+        out.push_back(k_hex[static_cast<unsigned char>(c) & 0xF]);
+      }
     }
   }
+  if (end != run) out.append(run, static_cast<usize>(end - run));
   out.push_back('"');
 }
 
