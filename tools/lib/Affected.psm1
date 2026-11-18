@@ -1,19 +1,44 @@
-# Which tests a change can reach (tools/dev.ps1 test -Affected). Pure functions over a module list
-# and a list of changed paths, so the rule is tested as a rule (tools/affected.Tests.ps1).
+# Which tests a change can reach (tools/dev.ps1 test -Affected). Get-AffectedTests is a pure
+# function over the module graph, the changed paths and the text references Get-AffectedMentions
+# found, so the rule is tested as a rule (tools/affected.Tests.ps1); docs/ci/what-to-run.md,
+# "What affected means", is the page.
 #
 # The rule, and why it is shaped this way (AGENTS.md, "What to run, and when"):
 #   - A changed file belongs to the module whose directory holds it (build/<preset>/modules.json).
-#   - A module's tests can be reached by a change in anything it depends on, so the affected set is
-#     the changed modules and every module that depends on one, transitively.
-#   - A capability (an optional module) is linked by hosts and by other modules' *test* targets
-#     without being anyone's dependency, which the module graph does not record; so a changed
-#     capability also selects every module above the layer its directory is in. The directory's
-#     layer, not the module's: a capability's schema types are a module of their own at the bottom
-#     of the graph that lives in the capability's directory (world_schemas in systems/world), and
-#     a change there is a change to the capability.
-#   - Two modules may share a directory for that reason; a file in it belongs to both.
-#   - What no module owns and everything is built from — the build system, the test support, the
-#     vendored code, the schema compiler, the committed content — selects everything, and says so.
+#     Two modules may share a directory (a capability and its schema types); a file in it belongs
+#     to both.
+#   - **The test edges** (roadmap T31; the `edges` rule, the default): a module's tests run when a
+#     changed module is one their targets link or start. modules.json's `test_reach` holds that
+#     closure, walked at configure time over the test executable, the bench and (for an app) the
+#     app itself: what they link, what they build first (add_dependencies: the executables a test
+#     starts), and what they are compiled with the path of ($<TARGET_FILE:...>)
+#     (cmake/EngineTestReach.cmake). It holds every module the module depends on, and the
+#     capabilities a test links that its module does not, which is what the module graph alone
+#     could not say and why the older rule selected everything above a changed capability's layer.
+#   - What a test reads at run time and no link records is found from the text, when the rule runs
+#     (Get-AffectedMentions), so an edit that adds a reference counts without a configure:
+#       content/<dir>/...   the modules whose files name `content/<dir>` (or build a content path
+#                           out of pieces, which is every directory), through every content
+#                           directory whose files refer to that one (a scene's `../../flora/...`);
+#       tools/...           the tools' own tests and apps as before, and the modules whose files
+#                           run a script from the tree (`"tools/...`, `${CMAKE_SOURCE_DIR}/tools/`);
+#       tests/support/*.h   the modules whose files include it, or a support header that does;
+#       a shader            also every module whose shaders include it, through relative paths;
+#       cmake/<file>.cmake  the modules whose CMakeLists call what it defines, when all it holds is
+#                           function and macro definitions and every caller is a module's
+#                           CMakeLists; anything else, everything.
+#     A reference in a module's tests/ or bench/ reaches that module's tests; one anywhere else in
+#     a module (its sources, its CMakeLists) is a change to the module, so it reaches everything
+#     that links it.
+#   - A source file a test target compiles from outside every module (tests/support/test_main.cpp,
+#     apps/tests/...) and the directory of a target that is no module (a game module) are in
+#     `test_reach` too, so they reach the tests that build them.
+#   - **It never selects too little**: what it cannot place — the build system, the vendored code,
+#     the schema compiler, a content file at the top of content/, a support source no target lists,
+#     a reference from a file no module holds — selects everything, and says so.
+#   - `modules` (-Rule) is the older rule, the module graph and the capability's layer, used too
+#     when modules.json has no test edges (a tree configured before them); `all` selects
+#     everything.
 #   - Documentation selects nothing but the checks that always run.
 #   - The tools' own tests (`tools.*`) start the apps they test (tools.game_sdk exports and runs
 #     engine-view; the e10 harness reads this tree's binaries), and CTest records no target a
@@ -40,11 +65,26 @@ function Get-AffectedTests {
     printing).
   #>
   param(
-    [Parameter(Mandatory)] [object[]]$Modules,   # modules.json's "modules": name, layer, path, optional, deps
+    [Parameter(Mandatory)] [object[]]$Modules,   # modules.json's "modules": name, layer, path, optional, deps[, test_reach]
     [Parameter(Mandatory)] [string[]]$Layers,    # modules.json's "layers", lowest first
-    [AllowEmptyCollection()] [string[]]$Changed = @()
+    [AllowEmptyCollection()] [string[]]$Changed = @(),
+    [AllowEmptyCollection()] [object[]]$Mentions = @(),   # Get-AffectedMentions' records
+    [ValidateSet('edges', 'modules', 'all')] [string]$Rule = 'edges',
+    [AllowEmptyCollection()] [string[]]$Disabled = @()    # modules.json's "disabled_capabilities"
   )
+  if ($Rule -eq 'all') {
+    $apps = @($Modules | Where-Object { $_.layer -eq 'apps' } | ForEach-Object { $_.name } | Sort-Object)
+    return @{ All = $true; Reason = 'the rule `all` was asked for'; Modules = @($Modules | ForEach-Object { $_.name } | Sort-Object)
+              Changed = @(); Tools = $true; Filter = $null; Apps = $apps; Notes = @() }
+  }
+  $withEdges = @($Modules | Where-Object { $_.PSObject.Properties.Name -contains 'test_reach' -and $null -ne $_.test_reach })
+  if ($Rule -eq 'edges' -and $Modules.Count -gt 0 -and $withEdges.Count -eq $Modules.Count) {
+    return Get-AffectedByEdges -Modules $Modules -Changed $Changed -Mentions $Mentions -Disabled $Disabled
+  }
   $notes = New-Object System.Collections.Generic.List[string]
+  if ($Rule -eq 'edges' -and $Modules.Count -gt 0) {
+    $notes.Add('modules.json has no test edges (configured before roadmap T31): the module graph''s rule')
+  }
   $changedModules = New-Object System.Collections.Generic.HashSet[string]
   $tools = $false
   $all = $null
@@ -127,6 +167,407 @@ function Get-AffectedTests {
             Tools = $tools; Filter = ($parts -join '|'); Apps = $apps; Notes = $notes.ToArray() }
 }
 
+# The modules whose directory holds a path: the deepest, or every module that shares it.
+function Get-PathOwners([object[]]$ByPath, [string]$Path) {
+  $owners = @()
+  foreach ($m in $ByPath) {
+    if ($Path -eq $m.path -or $Path.StartsWith($m.path + '/')) {
+      if ($owners.Count -gt 0 -and $m.path.Length -lt $owners[0].path.Length) { break }
+      $owners += $m
+    }
+  }
+  return , $owners
+}
+
+function Get-AffectedByEdges {
+  # The `edges` rule (the header above). Same result shape as Get-AffectedTests.
+  param([object[]]$Modules, [string[]]$Changed, [object[]]$Mentions, [string[]]$Disabled)
+  $notes = New-Object System.Collections.Generic.List[string]
+  $disabledNames = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($d in @($Disabled)) { if ($d) { [void]$disabledNames.Add($d.ToLowerInvariant()) } }
+  $changedModules = New-Object System.Collections.Generic.HashSet[string]   # reach every test linking them
+  $direct = New-Object System.Collections.Generic.HashSet[string]           # these modules' tests, no further
+  $script:edgeAll = $null
+  function Set-All([string]$why) { if (-not $script:edgeAll) { $script:edgeAll = $why } }
+  $tools = $false
+  $byPath = @($Modules | Sort-Object { $_.path.Length } -Descending)
+
+  # A source file outside every module that a test target compiles, and a non-module target's
+  # directory, from each module's test_reach.
+  $fileMap = @{}
+  $dirMap = @{}
+  foreach ($m in $Modules) {
+    foreach ($f in @($m.test_reach.files)) { if ($f) { if (-not $fileMap.ContainsKey($f)) { $fileMap[$f] = @() }; $fileMap[$f] += $m.name } }
+    foreach ($d in @($m.test_reach.dirs)) { if ($d) { if (-not $dirMap.ContainsKey($d)) { $dirMap[$d] = @() }; $dirMap[$d] += $m.name } }
+  }
+  $dirsByLength = @($dirMap.Keys | Sort-Object { $_.Length } -Descending)
+  function Find-Reached([string]$path) {
+    if ($fileMap.ContainsKey($path)) { return , @($fileMap[$path]) }
+    foreach ($d in $dirsByLength) { if ($path.StartsWith($d + '/')) { return , @($dirMap[$d]) } }
+    return , @()
+  }
+
+  # A file that names something a test reads: whose tests that reaches.
+  function Add-Reader([string]$file, [string]$what) {
+    $file = $file -replace '\\', '/'
+    if ($file -like '*.md' -or $file -like 'docs/*' -or $file -like 'content/*') { return }
+    $owners = Get-PathOwners $byPath $file
+    if ($owners.Count -gt 0) {
+      # A test or bench source of the module reaches its tests; a header there may be included by
+      # another module's tests too (water's include gfx's water_reference.h), so it counts as a
+      # change to the module, as anything else of the module does.
+      $testSource = $file -notmatch '\.(h|hpp|inl)$'
+      foreach ($o in $owners) {
+        if ($testSource -and ($file.StartsWith($o.path + '/tests/') -or $file.StartsWith($o.path + '/bench/'))) { [void]$direct.Add($o.name) }
+        else { [void]$changedModules.Add($o.name) }
+      }
+      return
+    }
+    $reached = Find-Reached $file
+    if ($reached.Count -gt 0) { foreach ($n in $reached) { [void]$direct.Add($n) }; return }
+    if ($file -like 'tools/*' -or $file -like 'templates/*') { $script:edgeTools = $true; return }
+    Set-All "$file names $what, and no module holds it"
+  }
+  $script:edgeTools = $false
+
+  $slang = New-Object System.Collections.Generic.List[string]
+  $contentDirs = New-Object System.Collections.Generic.HashSet[string]
+  $headers = New-Object System.Collections.Generic.List[string]
+  $cmake = New-Object System.Collections.Generic.List[string]
+  $toolsChanged = $false
+  foreach ($raw in $Changed) {
+    $path = ($raw -replace '\\', '/').Trim()
+    if (-not $path) { continue }
+    $owners = Get-PathOwners $byPath $path
+    if ($owners.Count -gt 0) {
+      if ($path -like '*.md') { continue }
+      foreach ($m in $owners) { [void]$changedModules.Add($m.name) }
+      if ($path -like '*.slang') { $slang.Add($path) }
+      continue
+    }
+    if ($path -like 'docs/*' -or $path -like '*.md' -or $path -like '.github/*' -or
+        $path -in @('.clang-format', '.gitignore', '.gitattributes', 'LICENSE', 'NOTICE')) { continue }
+    if ($path -like 'tools/schemac/*') { Set-All "the schema compiler changed ($path)"; continue }
+    if ($path -like 'third_party/*') { Set-All "$path is vendored code"; continue }
+    $reached = Find-Reached $path
+    if ($reached.Count -gt 0) { foreach ($n in $reached) { [void]$direct.Add($n) }; continue }
+    $parts = $path -split '/'
+    if ($path -like 'tools/*') { $tools = $true; $toolsChanged = $true; continue }
+    # The game author's templates are read by the tools that export and start a game repository
+    # (tools/new-game-repo.ps1, tools.game_sdk), and by nothing a module builds.
+    if ($path -like 'templates/*') { $tools = $true; continue }
+    if ($path -like 'tests/support/*') {
+      if ($path -match '\.(h|hpp|inl)$') { $headers.Add($path) } else { Set-All "$path is built into every test" }
+      continue
+    }
+    if ($path -like 'content/*') {
+      if ($parts.Count -ge 3) { [void]$contentDirs.Add($parts[1]) } else { Set-All "$path is in no content directory" }
+      continue
+    }
+    if ($path -match '^cmake/[^/]+\.cmake$') { $cmake.Add($path); continue }
+    # A directory under a layer that no module holds and no test target reaches: a capability this
+    # preset switched off when its name says so, and otherwise something built or read in a way
+    # the edges do not see (apps/engine_shell, which engine-host copies by a glob), so everything.
+    if ($parts[0] -in $script:LayerDirs -and $parts.Count -gt 2) {
+      if ($disabledNames.Contains($parts[1].ToLowerInvariant())) { $notes.Add("not in this preset, so not tested by it: $path") }
+      else { Set-All "$path is in no module and no test target reaches it" }
+      continue
+    }
+    Set-All "$path is built into or read by everything"
+  }
+
+  $mentions = @($Mentions)
+  foreach ($c in $cmake) {
+    $callers = @($mentions | Where-Object { $_.kind -eq 'cmake' -and $_.target -eq $c })
+    foreach ($rec in $callers) {
+      if ($rec.file -eq '*') { Set-All "$c $($rec.why)"; continue }
+      $owners = Get-PathOwners $byPath $rec.file
+      if ($owners.Count -eq 0) { Set-All "$($rec.file) calls what $c defines, and no module holds it"; continue }
+      foreach ($o in $owners) { [void]$changedModules.Add($o.name) }
+    }
+    if ($callers.Count -eq 0) { $notes.Add("$c defines what no CMakeLists calls") }
+    else { $notes.Add("$c is called from $(@($callers | ForEach-Object { $_.file } | Sort-Object -Unique) -join ', ')") }
+  }
+  foreach ($rec in @($mentions | Where-Object { $_.kind -eq 'slang' -and $slang.Contains($_.target) })) {
+    $owners = Get-PathOwners $byPath ($rec.file -replace '\\', '/')
+    if ($owners.Count -eq 0) { Set-All "$($rec.file) includes $($rec.target), and no module holds it"; continue }
+    foreach ($o in $owners) { [void]$changedModules.Add($o.name) }
+  }
+  if ($contentDirs.Count -gt 0) {
+    # Every content directory whose files refer to a changed one, transitively.
+    $grew = $true
+    while ($grew) {
+      $grew = $false
+      foreach ($rec in @($mentions | Where-Object { $_.kind -eq 'refers' -and $contentDirs.Contains(($_.target -split '/')[1]) })) {
+        $from = ($rec.file -replace '\\', '/') -split '/'
+        if ($from.Count -ge 3 -and $contentDirs.Add($from[1])) { $grew = $true }
+      }
+    }
+    foreach ($rec in @($mentions | Where-Object { $_.kind -eq 'reads' -and ($_.target -eq 'content/*' -or
+                                                  ($_.target -like 'content/*' -and $contentDirs.Contains(($_.target -split '/')[1]))) })) {
+      Add-Reader $rec.file $rec.target
+    }
+    $notes.Add("content: $(@($contentDirs | Sort-Object) -join ', ') and the modules whose files name them")
+  }
+  if ($toolsChanged) {
+    foreach ($rec in @($mentions | Where-Object { $_.kind -eq 'reads' -and $_.target -eq 'tools' })) { Add-Reader $rec.file 'a script in tools/' }
+  }
+  foreach ($h in $headers) {
+    $includers = @($mentions | Where-Object { $_.kind -eq 'includes' -and $_.target -eq $h })
+    foreach ($rec in $includers) { if ($rec.file -notlike 'tests/support/*') { Add-Reader $rec.file $h } }
+    $notes.Add("$h is included by $($includers.Count) file(s)")
+  }
+  if ($script:edgeTools) { $tools = $true }
+
+  $apps = @($Modules | Where-Object { $_.layer -eq 'apps' } | ForEach-Object { $_.name } | Sort-Object)
+  if ($script:edgeAll) {
+    return @{ All = $true; Reason = $script:edgeAll; Modules = @($Modules | ForEach-Object { $_.name } | Sort-Object)
+              Changed = @($changedModules | Sort-Object); Tools = $true; Filter = $null; Apps = $apps
+              Notes = $notes.ToArray() }
+  }
+
+  # A module's tests are selected when what they link or start holds a changed module. The reach
+  # is test_reach's modules, the module itself, and its dependencies through the graph (which the
+  # link closure holds already; kept, so a reach can only be wider than the graph's).
+  $byName = @{}
+  foreach ($m in $Modules) { $byName[$m.name] = $m }
+  $closure = @{}
+  function Get-Reach([string]$name) {
+    if ($closure.ContainsKey($name)) { return $closure[$name] }
+    $set = New-Object System.Collections.Generic.HashSet[string]
+    $queue = New-Object System.Collections.Generic.Queue[string]
+    $queue.Enqueue($name)
+    foreach ($r in @($byName[$name].test_reach.modules)) { if ($r) { $queue.Enqueue($r) } }
+    while ($queue.Count -gt 0) {
+      $n = $queue.Dequeue()
+      if (-not $set.Add($n)) { continue }
+      if ($byName.ContainsKey($n)) { foreach ($d in @($byName[$n].deps)) { if ($d) { $queue.Enqueue($d) } } }
+    }
+    $closure[$name] = $set
+    return $set
+  }
+  $affected = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($n in $direct) { [void]$affected.Add($n) }
+  if ($changedModules.Count -gt 0) {
+    foreach ($m in $Modules) {
+      $reach = Get-Reach $m.name
+      foreach ($c in $changedModules) { if ($reach.Contains($c)) { [void]$affected.Add($m.name); break } }
+    }
+  }
+
+  $names = @($affected | Sort-Object)
+  $parts = New-Object System.Collections.Generic.List[string]
+  if ($names.Count -gt 0) {
+    $parts.Add('^(bench\.)?(' + (($names | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')(\.[A-Za-z0-9_]+)?$')
+  }
+  foreach ($t in $script:AlwaysTests) { $parts.Add('^' + [regex]::Escape($t) + '$') }
+  if ($tools) { $parts.Add('^tools\.') }
+  if (-not $tools) { $apps = @() }
+  return @{ All = $false; Reason = $null; Modules = $names; Changed = @($changedModules | Sort-Object)
+            Tools = $tools; Filter = ($parts -join '|'); Apps = $apps; Notes = $notes.ToArray() }
+}
+
+function Get-AffectedMentions {
+  <#
+  .SYNOPSIS
+    The text references the `edges` rule needs for a set of changed paths, read from the working
+    tree with git grep (tracked and untracked, not ignored): records of kind, target and file.
+  .DESCRIPTION
+    reads    target content/<dir> (or content/* for a path built from pieces) or tools: a file that
+             names it;
+    refers   target content/<dir>: a content file in another directory that refers to it;
+    includes target tests/support/<h>: a file that includes it, or a support header that does;
+    slang    target a changed shader: a shader that includes it, through any number of others;
+    cmake    target cmake/<f>.cmake: a CMakeLists or .cmake that calls what it defines, or file '*'
+             with `why` when it holds more than definitions (then the rule selects everything).
+  #>
+  param(
+    [Parameter(Mandatory)] [string]$Root,
+    [AllowEmptyCollection()] [string[]]$Changed = @(),
+    [string]$Rev = ''   # a commit to read instead of the working tree (to replay a branch's choice)
+  )
+  $out = New-Object System.Collections.Generic.List[object]
+  function Add-Record([string]$kind, [string]$target, [string]$file, [string]$why = '') {
+    $out.Add([pscustomobject]@{ kind = $kind; target = $target; file = ($file -replace '\\', '/'); why = $why })
+  }
+  $source = if ($Rev) { @($Rev) } else { @('--untracked') }
+  function Invoke-Grep([string[]]$options, [string[]]$pathspec) {
+    $gitArgs = @('-C', $Root, 'grep') + $options + $source + @('--') + $pathspec
+    $lines = & git @gitArgs 2>$null
+    $lines = @($lines | Where-Object { $_ })
+    if ($Rev) { $lines = @($lines | ForEach-Object { $_.Substring($Rev.Length + 1) }) }
+    return $lines
+  }
+  function Find-Files([string]$pattern, [string[]]$pathspec) { return Invoke-Grep @('-l', '-I', '-E', '-e', $pattern) $pathspec }
+  # The lines that match, without their comment (`//` in C++, Slang and the schemas, `#` in
+  # PowerShell and CMake), so a comment that names a path reads nothing: File and Text each.
+  function Find-Lines([string[]]$patterns, [string[]]$pathspec) {
+    $options = @('-n', '-I', '-E')
+    foreach ($p in $patterns) { $options += @('-e', $p) }
+    foreach ($line in (Invoke-Grep $options $pathspec)) {
+      if ($line -notmatch '^([^:]+):\d+:(.*)$') { continue }
+      $file = $Matches[1]; $text = $Matches[2]
+      if ($file -match '\.(ps1|psm1|cmake)$' -or $file -like '*CMakeLists.txt') { $text = $text -replace '#.*$', '' }
+      elseif ($file -match '\.(c|cc|cpp|h|hpp|inl|slang|schema)$') { $text = $text -replace '//.*$', '' }
+      [pscustomobject]@{ File = $file; Text = $text }
+    }
+  }
+  $code = @('.', ':!content', ':!docs', ':!*.md', ':!third_party')
+  $paths = @($Changed | ForEach-Object { ($_ -replace '\\', '/').Trim() } | Where-Object { $_ })
+
+  # content/<dir>: the directories that refer to it, then what names any of them.
+  $dirs = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($p in $paths) { $s = $p -split '/'; if ($s[0] -eq 'content' -and $s.Count -ge 3) { [void]$dirs.Add($s[1]) } }
+  if ($dirs.Count -gt 0) {
+    $queue = New-Object System.Collections.Generic.Queue[string]
+    foreach ($d in $dirs) { $queue.Enqueue($d) }
+    while ($queue.Count -gt 0) {
+      $d = $queue.Dequeue()
+      $e = [regex]::Escape($d)
+      foreach ($f in (Find-Files "\.\./$e/|content/$e/" @('content', ':!*.md'))) {
+        $s = $f -split '/'
+        if ($s.Count -lt 3 -or $s[1] -eq $d) { continue }
+        Add-Record 'refers' "content/$d" $f
+        if ($dirs.Add($s[1])) { $queue.Enqueue($s[1]) }
+      }
+    }
+    # One read of the tree for every directory, and for a content path built out of pieces
+    # ("content" joined to a name), which names no directory and so reads them all. A log
+    # category called "content" builds no path.
+    $alt = (@($dirs) | ForEach-Object { [regex]::Escape($_) }) -join '|'
+    $named = "content/($alt)([^A-Za-z0-9_.-]|$)"
+    $bare = '"content"|["''/]content/?["'']'
+    foreach ($hit in (Find-Lines @($named, $bare) $code)) {
+      foreach ($d in $dirs) {
+        if ($hit.Text -match "content/$([regex]::Escape($d))([^A-Za-z0-9_.-]|$)") { Add-Record 'reads' "content/$d" $hit.File }
+      }
+      if ($hit.Text -match $bare -and $hit.Text -notmatch 'LOG_CATEGORY') { Add-Record 'reads' 'content/*' $hit.File }
+    }
+  }
+
+  # tools/: what runs a script from the tree.
+  if (@($paths | Where-Object { $_ -like 'tools/*' -and $_ -notlike 'tools/schemac/*' }).Count -gt 0) {
+    $script = '"/?tools/|[}]/tools/'
+    foreach ($hit in (Find-Lines @($script) @('core', 'foundation', 'domain', 'systems', 'apps', 'game', 'tests'))) {
+      if ($hit.Text -match $script) { Add-Record 'reads' 'tools' $hit.File }
+    }
+  }
+
+  # tests/support headers: their includers, through the support headers that include them.
+  foreach ($h in @($paths | Where-Object { $_ -like 'tests/support/*' -and $_ -match '\.(h|hpp|inl)$' })) {
+    $names = New-Object System.Collections.Generic.HashSet[string]
+    [void]$names.Add([IO.Path]::GetFileName($h))
+    $seen = New-Object System.Collections.Generic.HashSet[string]
+    $grew = $true
+    while ($grew) {
+      $grew = $false
+      $alt = (@($names) | ForEach-Object { [regex]::Escape($_) }) -join '|'
+      foreach ($f in (Find-Files "#[[:space:]]*include[[:space:]]*[<`"]([^`">]*/)?($alt)[`">]" @('.', ':!third_party'))) {
+        if (-not $seen.Add($f)) { continue }
+        Add-Record 'includes' $h $f
+        if ($f -like 'tests/support/*' -and $names.Add([IO.Path]::GetFileName($f))) { $grew = $true }
+      }
+    }
+  }
+
+  # A shader: the shaders that include it, transitively, by name.
+  foreach ($sh in @($paths | Where-Object { $_ -like '*.slang' })) {
+    $names = New-Object System.Collections.Generic.HashSet[string]
+    [void]$names.Add([IO.Path]::GetFileName($sh))
+    $seen = New-Object System.Collections.Generic.HashSet[string]
+    $grew = $true
+    while ($grew) {
+      $grew = $false
+      $alt = (@($names) | ForEach-Object { [regex]::Escape($_) }) -join '|'
+      foreach ($f in (Find-Files "#[[:space:]]*include[[:space:]]*`"([^`"]*/)?($alt)`"" @('*.slang'))) {
+        if (-not $seen.Add($f)) { continue }
+        Add-Record 'slang' $sh $f
+        if ($names.Add([IO.Path]::GetFileName($f))) { $grew = $true }
+      }
+    }
+  }
+
+  # cmake/<f>.cmake: narrow only when it holds nothing but definitions.
+  foreach ($c in @($paths | Where-Object { $_ -match '^cmake/[^/]+\.cmake$' })) {
+    if ($Rev) {
+      $text = @(& git -C $Root show "${Rev}:$c" 2>$null)
+      $exists = $LASTEXITCODE -eq 0
+    } else {
+      $full = Join-Path $Root $c
+      $exists = Test-Path -LiteralPath $full
+      $text = if ($exists) { @(Get-Content -LiteralPath $full) } else { @() }
+    }
+    if (-not $exists) { Add-Record 'cmake' $c '*' 'was removed'; continue }
+    $scan = Get-CMakeDefinitions $text
+    if ($scan.Other) { Add-Record 'cmake' $c '*' "does more than define functions ($($scan.Other))"; continue }
+    $stem = [IO.Path]::GetFileNameWithoutExtension($c)
+    $words = @($scan.Names) + @($stem)
+    foreach ($w in $words) {
+      $lines = Invoke-Grep @('-n', '-I', '-w', '-F', '-e', $w) @('*.cmake', '*CMakeLists.txt')
+      foreach ($line in $lines) {
+        if ($line -notmatch '^([^:]+):\d+:(.*)$') { continue }
+        $file = $Matches[1]; $text = $Matches[2]
+        if ($file -eq $c) { continue }
+        if ($text -match '^\s*#') { continue }
+        if ($w -eq $stem -and $text -match '^\s*include\s*\(') { continue }
+        if ($text -match "^\s*(function|macro)\s*\(\s*$([regex]::Escape($w))\b") { Add-Record 'cmake' $c '*' "has a function another file defines too ($w in $file)"; continue }
+        Add-Record 'cmake' $c $file
+      }
+    }
+  }
+  return $out.ToArray()
+}
+
+function Get-CMakeDefinitions {
+  <#
+  .SYNOPSIS
+    The functions and macros a CMake file defines, and the first command it runs outside one
+    (Other; $null when it runs none, so including it only defines them).
+  #>
+  param([AllowEmptyCollection()] [AllowEmptyString()] [string[]]$Lines = @())
+  $names = New-Object System.Collections.Generic.List[string]
+  $other = $null
+  $block = 0      # function/macro nesting
+  $depth = 0      # open parentheses of the command being read
+  $quoted = $false
+  foreach ($line in $Lines) {
+    # The line without its comment, and its parentheses counted, outside quoted arguments.
+    $sb = New-Object System.Text.StringBuilder
+    $open = 0; $close = 0
+    for ($i = 0; $i -lt $line.Length; $i++) {
+      $ch = $line[$i]
+      if ($quoted) {
+        if ($ch -eq '\') { $i++; continue }
+        if ($ch -eq '"') { $quoted = $false }
+        continue
+      }
+      if ($ch -eq '"') { $quoted = $true; continue }
+      if ($ch -eq '#') { break }
+      if ($ch -eq '(') { $open++ } elseif ($ch -eq ')') { $close++ }
+      [void]$sb.Append($ch)
+    }
+    $text = $sb.ToString()
+    if ($depth -eq 0 -and $text -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(') {
+      $cmd = $Matches[1].ToLowerInvariant()
+      if ($cmd -in @('function', 'macro')) {
+        if ($block -eq 0 -and $text -match '^\s*\w+\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)') { $names.Add($Matches[1]) }
+        $block++
+      } elseif ($cmd -in @('endfunction', 'endmacro')) {
+        $block--
+      } elseif ($block -eq 0 -and -not $other -and $cmd -ne 'include_guard') {
+        $other = $cmd
+      }
+    } elseif ($depth -eq 0 -and $block -eq 0 -and $text.Trim() -and -not $other) {
+      $other = 'text outside a command'
+    }
+    $depth += $open - $close
+    if ($depth -lt 0 -and -not $other) { $other = 'parentheses that do not balance' }
+  }
+  # A file this reading cannot follow to its end is not narrowed.
+  if (-not $other -and ($block -ne 0 -or $depth -ne 0 -or $quoted)) { $other = 'a block or an argument left open' }
+  return @{ Names = $names.ToArray(); Other = $other }
+}
+
 function Get-ChangedPaths {
   <#
   .SYNOPSIS
@@ -189,4 +630,4 @@ function ConvertFrom-NinjaTargets {
   return @($names)
 }
 
-Export-ModuleMember -Function Get-AffectedTests, Get-ChangedPaths, Get-AffectedTargets, ConvertFrom-NinjaTargets
+Export-ModuleMember -Function Get-AffectedTests, Get-AffectedMentions, Get-CMakeDefinitions, Get-ChangedPaths, Get-AffectedTargets, ConvertFrom-NinjaTargets

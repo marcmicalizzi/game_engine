@@ -34,11 +34,15 @@
                 waiting for the lock and so did not run; 1 when one failed.
                 -Affected runs the tests the change can reach and no others: the modules
                 holding a file that differs from -Base (default main; committed, staged,
-                unstaged and untracked all count), every module that depends on one, and
-                for a changed capability every module above its layer; a change to the
-                build system, the test support, vendored code or committed content runs
-                everything and says why (tools/lib/Affected.psm1). It is what a change is
-                tested with before it is handed over; the whole suites run at the merge.
+                unstaged and untracked all count), and the tests whose targets link or start
+                one (modules.json's test edges, roadmap T31); a committed content directory,
+                a support header, a tools script or a CMake helper reaches the modules whose
+                files name it, include it or call it; what the rule cannot place (the build
+                system's core, vendored code, the schema compiler) runs everything and says
+                why (tools/lib/Affected.psm1). -AffectedRule modules is the older rule (the
+                module graph, and everything above a changed capability's layer), -AffectedRule
+                all selects everything; $env:ENGINE_AFFECTED_RULE says the same. It is what a
+                change is tested with before it is handed over; the whole suites run at the merge.
                 It builds what those tests need and nothing else, as `build -Affected` does.
                 -Jobs <n> runs <n> tests at once (`ctest -j`); without it a Windows preset runs
                 one at a time, as it always has, and a Linux preset as its test preset says.
@@ -96,7 +100,8 @@ param(
   [switch]$GpuLock,
   [ValidateRange(0, 64)][int]$Jobs = 0,
   [switch]$SkipInvariantGpu,
-  [switch]$NoDriver
+  [switch]$NoDriver,
+  [ValidateSet('', 'edges', 'modules', 'all')][string]$AffectedRule = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -321,8 +326,13 @@ function Get-AffectedOnce {
   Import-Module (Join-Path $PSScriptRoot 'lib/Affected.psm1') -Force
   $json = Get-Content -LiteralPath $graph -Raw | ConvertFrom-Json
   $changed = @(Get-ChangedPaths -Root $Root -Base $Base)
-  $result = Get-AffectedTests -Modules $json.modules -Layers $json.layers -Changed $changed
-  Write-Host ("affected: {0} path(s) differ from {1}" -f $changed.Count, $Base) -ForegroundColor Cyan
+  # The rule (roadmap T31): the test edges by default; `modules` the older module-graph rule,
+  # `all` everything. -AffectedRule wins over $env:ENGINE_AFFECTED_RULE.
+  $rule = if ($AffectedRule) { $AffectedRule } elseif ($env:ENGINE_AFFECTED_RULE) { $env:ENGINE_AFFECTED_RULE } else { 'edges' }
+  if ($rule -notin @('edges', 'modules', 'all')) { throw "ENGINE_AFFECTED_RULE '$rule' is none of edges, modules, all" }
+  $mentions = if ($rule -eq 'edges') { @(Get-AffectedMentions -Root $Root -Changed $changed) } else { @() }
+  $result = Get-AffectedTests -Modules $json.modules -Layers $json.layers -Changed $changed -Mentions $mentions -Rule $rule -Disabled @($json.disabled_capabilities)
+  Write-Host ("affected: {0} path(s) differ from {1} (rule: {2})" -f $changed.Count, $Base, $rule) -ForegroundColor Cyan
   if ($result.All) {
     Write-Host "  everything: $($result.Reason)" -ForegroundColor Cyan
   } else {

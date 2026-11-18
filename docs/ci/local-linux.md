@@ -530,8 +530,9 @@ anything, which is what showed the file was good a minute later.
 #### `build -Affected`
 
 `tools/dev.ps1 build -Affected` builds only the targets `test -Affected` will run: for each module
-of the affected set — the changed modules, everything that depends on them, and for a capability
-everything above its layer, with the apps among them, since an app is a module in `modules.json` —
+of the affected set — the changed modules and every module whose tests link or start one (the test
+edges, [what affected means](what-to-run.md#what-affected-means)), with the apps among them, since an
+app is a module in `modules.json` —
 its library, its test executable and its bench, as `cmake --build --preset <p> --target <list>`.
 A test that runs another binary names it with `add_dependencies` (engine-cli's tests on engine-host,
 engine-view and engine-content), so it builds with the test. The tools' own tests (`tools.*`) are
@@ -543,7 +544,7 @@ engine-view. That is the whole app set rather than the two the tools tests start
 declaration says which they start, and a list written in `Affected.psm1` would rot the first time a
 tools test began to run a third. `test -Affected` builds the same way.
 Counted with `ninja -t commands` over the targets on the 2026-10-20 tree in `msvc-debug`: a change in
-`domain/flora` — a capability, so every module above its layer — asks for 1,146 of the tree's 1,542
+`domain/flora` — a capability, so, under the rule of the day, every module above its layer — asks for 1,146 of the tree's 1,542
 compiles and 44 of its 128 links; one in `foundation/input` for 1,028 and 21; one in
 `apps/engine_cli`, whose tests start three other apps, for 954 and 7. The floor is the third-party
 code and `core/`, which everything links, so without the cache it saves a quarter to a third of a
