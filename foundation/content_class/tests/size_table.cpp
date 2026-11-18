@@ -14,3 +14,6 @@ ENGINE_EXPECT_SIZE(32, 1, content_class::ViewPolicy);
 
 // The outcome and the deciding category, level and cap.
 ENGINE_EXPECT_SIZE(4, 1, content_class::Decision);
+
+// A scene's decision table holds one per distinct class it met: the class and its decision.
+ENGINE_EXPECT_SIZE(20, 1, content_class::DecisionEntry);

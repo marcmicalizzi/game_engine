@@ -714,6 +714,75 @@ TEST_CASE(
         Outcome::omit);
 }
 
+TEST_CASE("content_class: the decision table, and same_decisions outcome for outcome") {
+  const u8 g = glow();
+  const ViewPolicy scene = agent_default();  // nudity a box, violence mild, a game's none
+  DecisionTable table(scene);
+  REQUIRE(table.size() == 1);  // the all-none class, admitted
+  CHECK(is_none(table.at(0).classes));
+  CHECK(table.at(0).decision.outcome == Outcome::admit);
+  CHECK(table.decide(ContentClasses{}).outcome == Outcome::admit);
+  CHECK(table.size() == 1);  // nothing classified, nothing appended
+  CHECK(table.decide(classes_of(k_violence, 1)).outcome == Outcome::admit);
+  CHECK(table.decide(classes_of(k_nudity, 1)).outcome == Outcome::proxy);
+  CHECK(table.size() == 3);
+  CHECK(table.decide(classes_of(k_nudity, 1)).outcome == Outcome::proxy);
+  CHECK(table.size() == 3);  // met again, not appended
+  CHECK(table.at(2) == DecisionEntry{classes_of(k_nudity, 1), decide(classes_of(k_nudity, 1), scene)});
+
+  // The table's own policy makes its decisions; one that omits where it proxied does not, and
+  // nor does a wider one, though each is "within" where the table admitted.
+  CHECK(same_decisions(table, scene));
+  ViewPolicy stricter = scene;
+  stricter.substitutions[k_nudity] = Substitution::omit;
+  CHECK_FALSE(same_decisions(table, stricter));
+  ViewPolicy wider = scene;
+  wider.caps[k_nudity] = 1;
+  CHECK_FALSE(same_decisions(table, wider));
+  // A policy that differs only where the table has met nothing makes the same decisions.
+  ViewPolicy other = scene;
+  other.caps[g] = 2;
+  other.substitutions[g] = Substitution::proxy;
+  CHECK(same_decisions(table, other));
+
+  // The second check reads only what the table gained since the first.
+  const u32 first_check = table.size();
+  CHECK(same_decisions(table, other, first_check));  // nothing new yet
+  CHECK(table.decide(classes_of(g, 1)).outcome == Outcome::omit);
+  CHECK(table.size() == first_check + 1);
+  CHECK_FALSE(same_decisions(table, other, first_check));  // `other` admits what was omitted
+  CHECK(same_decisions(table, scene, first_check));
+  CHECK(same_decisions(table, ViewPolicy{}, table.size()));  // past the end: nothing to check
+}
+
+TEST_CASE("content_class: wider_than agent-default") {
+  const ViewPolicy d = agent_default();
+  CHECK_FALSE(wider_than(d, d));
+  CHECK_FALSE(wider_than(ViewPolicy{}, d));  // the narrowest there is
+  ViewPolicy lower = d;
+  lower.caps[k_violence] = 0;
+  CHECK_FALSE(wider_than(lower, d));
+  ViewPolicy higher = d;
+  higher.caps[k_violence] = 2;
+  CHECK(wider_than(higher, d));
+  ViewPolicy game = d;
+  game.caps[glow()] = 1;
+  CHECK(wider_than(game, d));
+  ViewPolicy boxed = d;
+  boxed.substitutions[k_violence] = Substitution::proxy;  // a box where agent-default omits
+  CHECK(wider_than(boxed, d));
+  // Narrowed by agent-default, no policy is wider than it.
+  std::mt19937 rng(0xD1DEu);
+  for (u32 trial = 0; trial < 500; ++trial) {
+    ViewPolicy p;
+    for (u32 i = 0; i < k_max_categories; ++i) {
+      p.caps[i] = static_cast<u8>(rng() % 256);
+      p.substitutions[i] = static_cast<Substitution>(rng() % 2);
+    }
+    CHECK_FALSE(wider_than(narrow(p, d), d));
+  }
+}
+
 TEST_CASE("content_class: deciding where nothing is classified costs a branch") {
   // Timed beside the bench row content_class.decide.none; the number is printed, not asserted,
   // because the machine is shared (docs/subsystems/content_class.md, "What it costs").

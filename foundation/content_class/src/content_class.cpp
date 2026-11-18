@@ -106,6 +106,32 @@ ViewPolicy agent_default() {
   return p;
 }
 
+bool wider_than(const ViewPolicy& policy, const ViewPolicy& base) {
+  return narrow(policy, base) != policy;
+}
+
+DecisionTable::DecisionTable(const ViewPolicy& under) : policy_(under) {
+  entries_.push_back(DecisionEntry{ContentClasses{}, Decision{}});
+}
+
+Decision DecisionTable::decide(const ContentClasses& classes) {
+  // The all-`none` class is the first entry and is admitted under every policy.
+  if (is_none(classes)) return entries_[0].decision;
+  for (u32 i = 1; i < entries_.size(); ++i)
+    if (entries_[i].classes == classes) return entries_[i].decision;
+  const Decision d = content_class::decide(classes, policy_);
+  entries_.push_back(DecisionEntry{classes, d});
+  return d;
+}
+
+bool same_decisions(const DecisionTable& table, const ViewPolicy& policy, u32 from) {
+  for (u32 i = from; i < table.size(); ++i) {
+    const DecisionEntry& entry = table.at(i);
+    if (decide(entry.classes, policy).outcome != entry.decision.outcome) return false;
+  }
+  return true;
+}
+
 Categories::Categories() {
   for (u32 c = 0; c < k_engine_categories; ++c) {
     names_.push_back(k_engine_names[c]);

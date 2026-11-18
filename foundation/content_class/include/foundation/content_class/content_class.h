@@ -112,6 +112,51 @@ inline constexpr std::array<Substitution, k_engine_categories> k_agent_default_s
 inline constexpr Substitution k_agent_default_game_substitution = Substitution::omit;
 ViewPolicy agent_default();
 
+// True when narrowing `policy` by `base` changes it: some category capped higher than `base`
+// caps it, or `proxy` where `base` says `omit`. `wider_than(p, agent_default())` is what a host
+// started under `p` says on stderr and in its start line (docs/content-classes.md, "Every output
+// says what it was made under"). The parameter is not named `floor`, which names a C function.
+bool wider_than(const ViewPolicy& policy, const ViewPolicy& base);
+
+// One distinct class a scene met, and what it decided.
+struct DecisionEntry {
+  ContentClasses classes;
+  Decision decision;
+
+  bool operator==(const DecisionEntry&) const = default;
+};
+
+// The table a loaded scene keeps, `SceneData::decisions` in docs/content-classes.md: every
+// distinct class it decided under its one policy, with the outcome. Append-only:
+// an entry stays while the scene is loaded, so its length is its generation and a check can
+// resume where the last one stopped. It starts with the all-`none` class admitted, so a scene
+// with nothing classified holds one entry, and deciding an unclassified instance through it is
+// one branch and no allocation. Cold data: one entry per distinct class, a handful a scene.
+class DecisionTable {
+ public:
+  explicit DecisionTable(const ViewPolicy& under);
+
+  // `decide(classes, policy())`, recorded the first time the class is met.
+  Decision decide(const ContentClasses& classes);
+
+  const ViewPolicy& policy() const { return policy_; }
+  // The generation: the number of entries, the first one the all-`none` class.
+  u32 size() const { return static_cast<u32>(entries_.size()); }
+  const DecisionEntry& at(u32 i) const { return entries_[i]; }
+
+ private:
+  ViewPolicy policy_;
+  Vector<DecisionEntry> entries_;
+};
+
+// True when `policy` decides every entry from `from` on with the outcome the table recorded: it
+// admits what was admitted, proxies what was proxied and omits what was omitted. Within the cap
+// is not enough: a caller whose policy omits would receive the box, and one whose policy is
+// wider a picture missing what it may see. A capture is drawn for a caller only when this holds
+// for the caller's policy, from 0 before the first frame and again, from that check's
+// generation, after the last frame is recorded.
+bool same_decisions(const DecisionTable& table, const ViewPolicy& policy, u32 from = 0);
+
 // The categories a build or a host knows: the engine's three, then a game's. Names are read
 // against it once; a value holds indexes. Cold data, built at start.
 class Categories {
