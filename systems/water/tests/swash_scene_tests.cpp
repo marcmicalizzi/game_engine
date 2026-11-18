@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -576,8 +577,19 @@ void check_sheet(const gfx::DeviceOptions& options, const std::string& tier) {
       const CapturedFrame& b = off.frame[e][s];
       REQUIRE(a.ids == b.ids);  // the film is shading: it moves no surface
       const auto wet_pixel = [&](u32 p) { return a.ids[p * k_id_words] == on.water_instance; };
+      // Ground the sheet is drawn on: some channel more than one code from the film-off picture.
+      // One code is not evidence, because the encode rounds to a code's centre (R183): two renders
+      // that differ by an arbitrarily small amount can land a code apart, and before 2026-11-18
+      // the rule was any difference at all, which let one pair of dry sand at the waterline whose
+      // blue rounded up by one (162 151 131 against 132) count as sheeted on eye 0.
       const auto sheeted = [&](u32 p) {
-        return !wet_pixel(p) && std::memcmp(&a.color[p * 4], &b.color[p * 4], 3) != 0;
+        if (wet_pixel(p)) return false;
+        for (u32 ch = 0; ch < 3; ++ch) {
+          const int d =
+              static_cast<int>(a.color[p * 4 + ch]) - static_cast<int>(b.color[p * 4 + ch]);
+          if (std::abs(d) > 1) return true;
+        }
+        return false;
       };
       // Every pair of neighbours, side by side or one over the other, of which one is the body's
       // water and the other ground the sheet is drawn on: the mesh's edge inside the sheet.
