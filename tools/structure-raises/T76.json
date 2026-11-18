@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T76",
+  "reason": "T76: AGENTS.md's compiler-cache paragraph and gfx.md's shader build paragraph say shaders are shared through a cache of their own, keyed by what slangc read",
+  "date": "2026-11-17",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/gfx.md": 329,
+    "page:AGENTS.md": 201
+  }
+}

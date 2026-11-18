@@ -359,6 +359,14 @@ function Get-SharedVolume {
 
 function Get-CcacheMaxSize { return $script:CcacheMaxSize }
 
+# The shader compile cache's store in a container (roadmap T76; docs/ci/what-to-run.md, "The shader
+# cache"): a directory of the compiler cache's volume, so it is the machine's like ccache's results,
+# goes with that volume when it is removed, and needs no volume, label or sweep rule of its own.
+# ccache keeps to its own sixteen level directories and never reads or evicts this one; the meter
+# holds it under its own limit (ENGINE_SHADER_CACHE_MAX_MB, 4 GB).
+$script:ShaderCacheDir = '/ccache/engine-shaders'
+function Get-ShaderCacheDir { return $script:ShaderCacheDir }
+
 function Get-BuildContainerArgs {
   <#
   .SYNOPSIS
@@ -367,7 +375,9 @@ function Get-BuildContainerArgs {
     --network none with -Offline. -NoCcache (ENGINE_CCACHE=0) leaves the launcher on the configure
     line — so turning the cache off and on again never reconfigures or rebuilds the tree — and makes
     ccache run the compiler directly (CCACHE_DISABLE), which is also how an object compiled through
-    the cache is checked against one compiled without it.
+    the cache is checked against one compiled without it. -NoShaderCache (ENGINE_SHADER_CACHE=0)
+    does the same for the shader compile cache: the store stays on the configure line and the meter
+    compiles every shader without reading or writing it.
   #>
   param(
     [Parameter(Mandatory)][string]$SrcVolume,
@@ -375,7 +385,8 @@ function Get-BuildContainerArgs {
     [Parameter(Mandatory)][string]$RoleLabel,
     [Parameter(Mandatory)][string]$Role,
     [switch]$Offline,
-    [switch]$NoCcache
+    [switch]$NoCcache,
+    [switch]$NoShaderCache
   )
   $fetch = Get-SharedVolume fetch-cache
   $cc = Get-SharedVolume ccache
@@ -394,6 +405,7 @@ function Get-BuildContainerArgs {
     '-e', "CCACHE_MAXSIZE=$script:CcacheMaxSize"
   )
   if ($NoCcache) { $runArgs += @('-e', 'CCACHE_DISABLE=1') }
+  if ($NoShaderCache) { $runArgs += @('-e', 'ENGINE_SHADER_CACHE=0') }
   if ($Offline) { $runArgs += @('--network', 'none') }
   return $runArgs
 }
@@ -471,7 +483,10 @@ function Get-PresetScript {
   # precompiled header", every SDL3 and Jolt source, compiled again in every checkout. Without the
   # header the same sources are ordinary compiles and cache like the rest (docs/ci/local-linux.md,
   # "The compiler cache").
-  $lines += "cmake --preset $Name -DFETCHCONTENT_BASE_DIR=/deps/$Name -DFETCHCONTENT_UPDATES_DISCONNECTED=ON $FetchCacheArgs -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON"
+  #
+  # ENGINE_SHADER_CACHE_DIR: slangc's SPIR-V through the shader compile cache, in a directory of
+  # the same volume (Get-ShaderCacheDir), for the same reason and on the same terms.
+  $lines += "cmake --preset $Name -DFETCHCONTENT_BASE_DIR=/deps/$Name -DFETCHCONTENT_UPDATES_DISCONNECTED=ON $FetchCacheArgs -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON -DENGINE_SHADER_CACHE_DIR=$script:ShaderCacheDir"
   $lines += 'ccache_snapshot /tmp/ccache.before'
   # -k 0 is ci.yml's: keep going after a failure so one run reports every error in the tree
   # rather than the first file Ninja happened to reach.
@@ -492,4 +507,4 @@ Export-ModuleMember -Function Get-ShortHash, Get-CheckoutVolumeId, Get-CheckoutV
   ConvertTo-RootKey, Get-VolumeLabels, ConvertFrom-WorktreePorcelain, ConvertFrom-ContainerMounts,
   ConvertFrom-DockerSize, Format-DockerSize, New-VolumeFact, New-CheckoutFact, Get-VolumeVerdict,
   Get-OwnVolumeVerdict, Format-VolumeVerdict, Get-SharedVolume, Get-CcacheMaxSize, Get-BuildContainerArgs,
-  Get-CcacheReportScript, Get-PresetScript
+  Get-CcacheReportScript, Get-PresetScript, Get-ShaderCacheDir

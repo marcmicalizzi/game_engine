@@ -387,8 +387,16 @@ through the cache, then built again with `CCACHE_DISABLE=1`, then served from th
 byte-identical all three ways (SHA-256). A cache returns the object the compiler made, so the
 golden hashes and the determinism tests see what they always saw.
 
+**Shaders go through a cache of their own in the same volume.** `slangc` is not a compiler ccache
+wraps, so the configure line also carries `-DENGINE_SHADER_CACHE_DIR=/ccache/engine-shaders`
+(`Get-ShaderCacheDir`): the shader meter keeps the SPIR-V there, keyed by the compiler, the
+arguments and every file `slangc` read, and `ENGINE_SHADER_CACHE=0` passes into the container to
+compile every shader for one run, as `ENGINE_CCACHE=0` does for objects. ccache's cleanup keeps to
+its own sixteen level directories, so neither cache evicts the other; the shader store holds itself
+under 4 GB ([the shader cache](what-to-run.md#the-shader-cache)).
+
 `-Prune` and `-Prune -Stale` never touch the volume; `docker volume rm engine-linux-ccache` empties
-the cache for the machine, and every checkout's next build compiles everything once. The hosted CI
+the cache for the machine (the shaders' with it), and every checkout's next build compiles everything once. The hosted CI
 job is untouched: it installs no ccache and passes no launcher. Caching there is `actions/cache`
 over a ccache directory keyed by the preset, a row of its own when hosted minutes matter.
 

@@ -281,7 +281,12 @@ Test-That 'with the cache''s directory and its 30 GB limit, and the cache on' {
 }
 Test-That 'ENGINE_CCACHE=0 runs the compiler directly, and -Offline still takes the network away' {
   $off = (Get-BuildContainerArgs -SrcVolume s -DepsVolume d -RoleLabel l -Role build -NoCcache -Offline) -join ' '
-  $off -match '-e CCACHE_DISABLE=1' -and $off -match '--network none' -and $off -match '-v engine-linux-ccache:/ccache'
+  $off -match '-e CCACHE_DISABLE=1' -and $off -match '--network none' -and $off -match '-v engine-linux-ccache:/ccache' -and
+    $off -notmatch 'ENGINE_SHADER_CACHE'
+}
+Test-That 'ENGINE_SHADER_CACHE=0 reaches the meter in the container, and the shader cache is on otherwise' {
+  $off = (Get-BuildContainerArgs -SrcVolume s -DepsVolume d -RoleLabel l -Role build -NoShaderCache) -join ' '
+  $off -match '-e ENGINE_SHADER_CACHE=0( |$)' -and $off -notmatch 'CCACHE_DISABLE' -and $joined -notmatch 'ENGINE_SHADER_CACHE'
 }
 $presetScript = Get-PresetScript -Name 'linux-clang-debug' -Jobs 8 -Test -Filter 'flora|docs' -FetchCacheArgs '-DENGINE_FETCH_CACHE=/fetch'
 $lines = @($presetScript -split "`n")
@@ -290,6 +295,11 @@ Test-That 'the configure line names ccache as the C and C++ launcher, turns prec
   $c = $lines[(Find-Line '^cmake --preset ')]
   $c -match '-DCMAKE_C_COMPILER_LAUNCHER=ccache( |$)' -and $c -match '-DCMAKE_CXX_COMPILER_LAUNCHER=ccache( |$)' -and
     $c -match '-DENGINE_FETCH_CACHE=/fetch' -and $c -match '-DFETCHCONTENT_BASE_DIR=/deps/linux-clang-debug' -and $c -match '-DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON( |$)'
+}
+Test-That 'and the shader compile cache''s store, a directory of the compiler cache''s volume' {
+  $c = $lines[(Find-Line '^cmake --preset ')]
+  $c -match '-DENGINE_SHADER_CACHE_DIR=/ccache/engine-shaders( |$)' -and (Get-ShaderCacheDir) -eq '/ccache/engine-shaders' -and
+    (Get-ShaderCacheDir).StartsWith((Get-SharedVolume ccache).Mount + '/')
 }
 Test-That 'the counters are read on both sides of the build, and the two lines printed after it' {
   $before = Find-Line '^ccache_snapshot /tmp/ccache.before$'
@@ -391,6 +401,36 @@ Test-That 'a tree reconfigures when its launcher is not the one wanted, and only
   (Test-CcacheReconfigure -Plan $on -CachedLauncher '') -and -not (Test-CcacheReconfigure -Plan $on -CachedLauncher $on.Launcher) -and
     (Test-CcacheReconfigure -Plan (Plan primary) -CachedLauncher $on.Launcher) -and -not (Test-CcacheReconfigure -Plan (Plan primary) -CachedLauncher '') -and
     (Test-CcacheReconfigure -Plan (Plan agent '' $exe ([version]'4.13') 'E:\cc') -CachedLauncher $on.Launcher)
+}
+
+# --- the shader compile cache's switch (tools/lib/CompilerCache.psm1, Get-ShaderCachePlan; roadmap T76) -----
+
+function ShaderPlan([string]$kind, [string]$setting = '', [string]$dir = '') {
+  Get-ShaderCachePlan -Kind $kind -Setting $setting -MainRoot $mainRoot -CacheDir $dir
+}
+Test-That 'the shader cache is on in an agent''s worktree and the gate''s, off in the primary checkout and any other worktree' {
+  (ShaderPlan agent).Enabled -and (ShaderPlan gate).Enabled -and -not (ShaderPlan primary).Enabled -and
+    -not (ShaderPlan worktree).Enabled -and (ShaderPlan primary).Reason -match 'ENGINE_SHADER_CACHE=1'
+}
+Test-That 'ENGINE_SHADER_CACHE=1 turns it on there, ENGINE_SHADER_CACHE=0 off everywhere, and ccache''s switch is not its' {
+  (ShaderPlan primary '1').Enabled -and (ShaderPlan worktree '1').Enabled -and -not (ShaderPlan agent '0').Enabled -and
+    -not (ShaderPlan gate '0').Enabled -and (ShaderPlan agent '0').Reason -eq 'ENGINE_SHADER_CACHE=0'
+}
+Test-That 'its store is beside ccache''s, forward slashes for CMake, or ENGINE_SHADER_CACHE_DIR' {
+  (ShaderPlan agent).Dir -eq 'D:/workspace/game_engine_local/shader-cache' -and (ShaderPlan gate '' 'E:\sc').Dir -eq 'E:/sc'
+}
+Test-That 'configured on: the store; off over a tree that named one: an empty store; otherwise nothing' {
+  $a = @(Get-ShaderCacheConfigureArgs -Plan (ShaderPlan agent) -CachedDir '')
+  $b = @(Get-ShaderCacheConfigureArgs -Plan (ShaderPlan primary) -CachedDir 'D:/workspace/game_engine_local/shader-cache')
+  $c = @(Get-ShaderCacheConfigureArgs -Plan (ShaderPlan primary) -CachedDir '')
+  $a.Count -eq 1 -and $a[0] -eq '-DENGINE_SHADER_CACHE_DIR=D:/workspace/game_engine_local/shader-cache' -and
+    $b.Count -eq 1 -and $b[0] -eq '-DENGINE_SHADER_CACHE_DIR=' -and $c.Count -eq 0
+}
+Test-That 'a tree reconfigures when its store is not the one wanted, and only then' {
+  $on = ShaderPlan agent
+  (Test-ShaderCacheReconfigure -Plan $on -CachedDir '') -and -not (Test-ShaderCacheReconfigure -Plan $on -CachedDir $on.Dir) -and
+    (Test-ShaderCacheReconfigure -Plan (ShaderPlan primary) -CachedDir $on.Dir) -and -not (Test-ShaderCacheReconfigure -Plan (ShaderPlan primary) -CachedDir '') -and
+    (Test-ShaderCacheReconfigure -Plan (ShaderPlan agent '' 'E:\sc') -CachedDir $on.Dir)
 }
 
 # --- a corrupt object at the link: what `tools/dev.ps1 build` removes and rebuilds (LNK1236) -------------
