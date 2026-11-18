@@ -1,10 +1,9 @@
-#include <domain/events/events.h>
-
 #include <core/base/assert.h>
 #include <core/hash/hash.h>
 #include <core/log/log.h>
 #include <core/schema/materialize.h>
 #include <domain/doc/document.h>
+#include <domain/events/events.h>
 #include <foundation/tunables/tunables.h>
 
 #include <algorithm>
@@ -35,15 +34,16 @@ tunables::Int t_chain_slots{"sim.events.chain_slots", 1024, 16, 1 << 20,
                             "Causal chains a tick counts for the report's top chains"};
 
 constexpr const char* k_mark_names[sim::k_phase_count] = {
-    "events.input",   "events.in",         "events.lod",        "events.systems",
-    "events.physics", "events.postphysics", "events.out",        "events.persist",
+    "events.input",   "events.in",          "events.lod", "events.systems",
+    "events.physics", "events.postphysics", "events.out", "events.persist",
 };
 
 constexpr u32 round8(u32 size) noexcept { return (size + 7u) & ~7u; }
 
 u32 pow2_at_least(u32 n) noexcept {
   u32 p = 16;
-  while (p < n && p < (1u << 30)) p <<= 1;
+  while (p < n && p < (1u << 30))
+    p <<= 1;
   return p;
 }
 
@@ -159,16 +159,14 @@ u32 EventBus::add_source(const char* name, bool external) {
 const char* EventBus::source_name(u32 source) const noexcept {
   const u32 index = source_index(source);
   switch (source_origin(source)) {
-    case Origin::Source:
-      return index < sources_.size() ? sources_[index].name : nullptr;
+    case Origin::Source: return index < sources_.size() ? sources_[index].name : nullptr;
     case Origin::System:
       return scheduler_ != nullptr && index < scheduler_->system_count()
                  ? scheduler_->system(static_cast<u16>(index)).name
                  : nullptr;
     case Origin::Subscriber:
       return index < subscribers_.size() ? subscribers_[index].desc.name : nullptr;
-    case Origin::Document:
-      return "document";
+    case Origin::Document: return "document";
   }
   return nullptr;
 }
@@ -411,7 +409,8 @@ void EventBus::finish_tick() {
     chains_[slot] = ChainSlot{};
   }
   touched_chains_.clear();
-  for (const u32 source : touched_sources_) source_count(source) = 0;
+  for (const u32 source : touched_sources_)
+    source_count(source) = 0;
   touched_sources_.clear();
   cascade_delivered_ = 0;
   current_.carried_out = carry_.size();
@@ -428,15 +427,13 @@ void EventBus::finish_tick() {
   // Logged on the tick a guard starts tripping, not on every tick it keeps tripping: the report is
   // the record, the log the alarm.
   if (t.total() != 0 && last_.trips.total() == 0) {
-    ENGINE_LOG_WARN(log_events, "event bus guard tripped", log::field("tick", current_.tick),
-                    log::field("depth_dropped", t.depth_dropped),
-                    log::field("cascade_carried", t.cascade_carried),
-                    log::field("storm_carried", t.storm_carried),
-                    log::field("self_loops", t.self_loops),
-                    log::field("budget_skipped", t.budget_skipped),
-                    log::field("full_dropped", t.full_dropped),
-                    log::field("slow_subscribers", t.slow_subscribers),
-                    log::field("key_ties", t.key_ties));
+    ENGINE_LOG_WARN(
+        log_events, "event bus guard tripped", log::field("tick", current_.tick),
+        log::field("depth_dropped", t.depth_dropped),
+        log::field("cascade_carried", t.cascade_carried),
+        log::field("storm_carried", t.storm_carried), log::field("self_loops", t.self_loops),
+        log::field("budget_skipped", t.budget_skipped), log::field("full_dropped", t.full_dropped),
+        log::field("slow_subscribers", t.slow_subscribers), log::field("key_ties", t.key_ties));
   }
   last_ = current_;
 }
@@ -489,8 +486,8 @@ void EventBus::hash_delivery(const EventRecord& record, const void* bytes,
   u64 h = delivery_hash_;
   h = engine::hash_combine(h, record.id.value);
   h = engine::hash_combine(h, (static_cast<u64>(record.type) << 48) |
-                                (static_cast<u64>(record.depth) << 40) |
-                                (static_cast<u64>(subscriber) << 16) | record.phase);
+                                  (static_cast<u64>(record.depth) << 40) |
+                                  (static_cast<u64>(subscriber) << 16) | record.phase);
   h = engine::hash_combine(h, (static_cast<u64>(record.source) << 32) | record.seq);
   h = engine::hash_combine(h, record.key);
   if (bytes != nullptr) {
@@ -571,7 +568,8 @@ void EventBus::deliver(sim::TickPhase point, u64 tick) {
     // What the handlers raised is the next generation, in the order they raised it: delivery is
     // serial, so that order is already the same on every run.
     const u32 grown = live_.size();
-    for (u32 i = assigned; i < grown; ++i) order_.push_back(i);
+    for (u32 i = assigned; i < grown; ++i)
+      order_.push_back(i);
     first = last;
   }
 
@@ -623,9 +621,12 @@ void EventBus::deliver_generation(u32 first, u32 last, sim::TickPhase point) {
   // Each type's run of the generation, in order: a counting sort of ranks into `admitted_`.
   const u32 type_count = types_.size();
   type_first_.resize(type_count + 1u);
-  for (u32 t = 0; t <= type_count; ++t) type_first_[t] = 0;
-  for (const u32 position : admitted_) ++type_first_[live_.records[position].type + 1u];
-  for (u32 t = 0; t < type_count; ++t) type_first_[t + 1u] += type_first_[t];
+  for (u32 t = 0; t <= type_count; ++t)
+    type_first_[t] = 0;
+  for (const u32 position : admitted_)
+    ++type_first_[live_.records[position].type + 1u];
+  for (u32 t = 0; t < type_count; ++t)
+    type_first_[t + 1u] += type_first_[t];
   by_type_.resize(admitted_.size());
   // `type_first_[t]` is type t's start; filling advances it to its end, and the shift below puts
   // the starts back, so no second array of fill pointers is needed.
@@ -634,7 +635,8 @@ void EventBus::deliver_generation(u32 first, u32 last, sim::TickPhase point) {
     by_type_[type_first_[type]++] = rank;
   }
   // `type_first_[t]` is now the end of type t's run; the start is the previous type's end.
-  for (u32 t = type_count; t > 0; --t) type_first_[t] = type_first_[t - 1u];
+  for (u32 t = type_count; t > 0; --t)
+    type_first_[t] = type_first_[t - 1u];
   type_first_[0] = 0;
 
   for (u16 s = 0; s < subscribers_.size(); ++s) {

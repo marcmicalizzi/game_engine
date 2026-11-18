@@ -243,7 +243,8 @@ TEST_CASE("ecs: under the scheduler, flecs' systems are filtered by the active t
   };
   make("near_only", 0x01u, &near_runs);
   make("far_tiers", 0x0Eu, &far_runs);
-  // Disabled by its owner, and declared for tier 0: the filter must neither run it nor take it over.
+  // Disabled by its owner, and declared for tier 0: the filter must neither run it nor take it
+  // over.
   const flecs::system owned = make("owner_disabled", 0x01u, &owned_runs);
   owned.disable();
 

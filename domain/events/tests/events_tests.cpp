@@ -12,9 +12,9 @@
 
 #include <atomic>
 #include <cstring>
-#include <utility>
 #include <schemas/events.h>
 #include <schemas/events_test.h>
+#include <utility>
 
 using namespace engine;
 using namespace engine::events;
@@ -61,7 +61,8 @@ struct Raiser {
   static void tick(sim::SystemContext& context, sim::Batch batch) {
     auto* self = static_cast<Raiser*>(context.context);
     Emitter emit = self->bus->emitter(context, batch);
-    const u32 count = self->per_batch + ((static_cast<u32>(context.tick.value) * 7u + batch.begin) % 5u);
+    const u32 count =
+        self->per_batch + ((static_cast<u32>(context.tick.value) * 7u + batch.begin) % 5u);
     for (u32 i = 0; i < count; ++i) {
       test::Blast blast;
       blast.n = batch.begin * 1000u + i;
@@ -293,16 +294,17 @@ TEST_CASE("events: a subscriber hears only its types and tiles, in order across 
   bus.subscribe(desc);
 
   Emitter emit = bus.emitter(bus.add_source("host"));
-  emit.raise(ping, test::Ping{});                        // 0
-  emit.raise(pong, test::Pong{});                        // 1
-  emit.raise(quiet, test::Quiet{});                      // 2: not heard
-  emit.raise(ping, test::Ping{}, RaiseOptions{3});       // 3: an odd tile, not heard
-  emit.raise(pong, test::Pong{}, RaiseOptions{4});       // 4
-  emit.raise(ping, test::Ping{});                        // 5
+  emit.raise(ping, test::Ping{});                   // 0
+  emit.raise(pong, test::Pong{});                   // 1
+  emit.raise(quiet, test::Quiet{});                 // 2: not heard
+  emit.raise(ping, test::Ping{}, RaiseOptions{3});  // 3: an odd tile, not heard
+  emit.raise(pong, test::Pong{}, RaiseOptions{4});  // 4
+  emit.raise(ping, test::Ping{});                   // 5
   bus.deliver(sim::TickPhase::EventsIn, 1);
   const u32 expected[] = {0, 1, 4, 5};
   REQUIRE(both.order.size() == 4u);
-  for (u32 i = 0; i < 4u; ++i) CHECK(both.order[i] == expected[i]);
+  for (u32 i = 0; i < 4u; ++i)
+    CHECK(both.order[i] == expected[i]);
   CHECK(bus.current_report().delivered == 6u);
 }
 
@@ -413,7 +415,8 @@ void record_external(void* context, const ExternalRaise& entry) {
   auto* log = static_cast<Vector<Recorded>*>(context);
   Recorded r;
   r.raise = entry;
-  for (const u8 b : entry.payload) r.bytes.push_back(b);
+  for (const u8 b : entry.payload)
+    r.bytes.push_back(b);
   log->push_back(static_cast<Recorded&&>(r));
 }
 

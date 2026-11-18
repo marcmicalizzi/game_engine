@@ -94,18 +94,18 @@ constexpr u32 source_index(u32 source) noexcept { return source & 0x00FF'FFFFu; 
 // byte arena. It has no padding, because records are compared and hashed (docs/subsystems/sim.md,
 // "Invariants": no indeterminate bytes); the size table holds it at 64.
 struct EventRecord {
-  u64 tick = 0;      // the tick it was raised in
-  EventId id;        // set when its delivery order is fixed
-  EventId cause;     // the event whose handler raised it; null for a root
-  EventId root;      // the root of its chain; itself for a root
-  u64 key = 0;       // the raiser's stable key (a batch, an entity, a record's position)
+  u64 tick = 0;   // the tick it was raised in
+  EventId id;     // set when its delivery order is fixed
+  EventId cause;  // the event whose handler raised it; null for a root
+  EventId root;   // the root of its chain; itself for a root
+  u64 key = 0;    // the raiser's stable key (a batch, an entity, a record's position)
   u64 tile = k_any_tile;
-  u32 source = 0;    // `make_source(origin, index)`
-  u32 seq = 0;       // the raiser's own count of its raises
-  u32 payload = 0;   // byte offset in the bank's arena; its size is the type's
+  u32 source = 0;   // `make_source(origin, index)`
+  u32 seq = 0;      // the raiser's own count of its raises
+  u32 payload = 0;  // byte offset in the bank's arena; its size is the type's
   u16 type = k_invalid_type;
-  u8 phase = 0;      // the `sim::TickPhase` it was raised in
-  u8 depth = 0;      // 0 for a root
+  u8 phase = 0;  // the `sim::TickPhase` it was raised in
+  u8 depth = 0;  // 0 for a root
 };
 
 // A registered event type, typed so a raise and a read cannot disagree about the payload.
@@ -238,12 +238,12 @@ struct ChainCount {
 // One tick of the bus, as the tick's telemetry: complete once the tick's last delivery point ran.
 struct TickReport {
   u64 tick = 0;
-  u32 raised = 0;            // raises accepted this tick (into either bank)
-  u32 delivered = 0;         // events delivered (each once, however many subscribers heard it)
-  u32 deliveries = 0;        // handler calls
-  u32 carried_in = 0;        // events this tick took from the last
-  u32 carried_out = 0;       // events this tick leaves for the next
-  u32 sorted = 0;            // delivery points whose events arrived out of order and were sorted
+  u32 raised = 0;       // raises accepted this tick (into either bank)
+  u32 delivered = 0;    // events delivered (each once, however many subscribers heard it)
+  u32 deliveries = 0;   // handler calls
+  u32 carried_in = 0;   // events this tick took from the last
+  u32 carried_out = 0;  // events this tick leaves for the next
+  u32 sorted = 0;       // delivery points whose events arrived out of order and were sorted
   u32 max_depth = 0;
   u32 chains_untracked = 0;  // chain events whose root found no slot
   u32 depth[k_depth_buckets] = {};
@@ -267,7 +267,7 @@ struct TypeCounters {
 // the simulation, which is everything the bus delivers that the simulation did not compute
 // (docs/subsystems/events.md, "Events and the replay").
 struct ExternalRaise {
-  u64 tick = 0;     // the tick the bus was at: the raise is delivered at that tick's EventsIn
+  u64 tick = 0;  // the tick the bus was at: the raise is delivered at that tick's EventsIn
   u64 key = 0;
   u64 tile = k_any_tile;
   u32 source = 0;
@@ -391,11 +391,11 @@ class EventBus {
   };
   struct Subscriber {
     SubscriberDesc desc;
-    Vector<u16> types;   // sorted, unique
+    Vector<u16> types;  // sorted, unique
     u32 budget = 0;
-    u32 delivered = 0;   // this tick
-    u32 skipped = 0;     // this point
-    i64 ns = 0;          // this tick
+    u32 delivered = 0;  // this tick
+    u32 skipped = 0;    // this point
+    i64 ns = 0;         // this tick
   };
   struct Source {
     const char* name = nullptr;
@@ -440,11 +440,11 @@ class EventBus {
 
   // Delivery scratch, reserved to the bank's capacity.
   Vector<SortKey> keys_;
-  Vector<u32> order_;         // positions in `live_`, delivery order
-  Vector<u32> admitted_;      // this generation's events after the cascade and storm guards
-  Vector<u32> type_first_;    // counting sort of `admitted_` by type: offsets
-  Vector<u32> by_type_;       // ... and positions
-  Vector<u32> cursors_;       // a subscriber's merge cursors, one per type it hears
+  Vector<u32> order_;       // positions in `live_`, delivery order
+  Vector<u32> admitted_;    // this generation's events after the cascade and storm guards
+  Vector<u32> type_first_;  // counting sort of `admitted_` by type: offsets
+  Vector<u32> by_type_;     // ... and positions
+  Vector<u32> cursors_;     // a subscriber's merge cursors, one per type it hears
   // Events delivered this tick per source, one array per origin, indexed by the source's index;
   // the touched list is what the tick's end resets.
   Vector<u32> source_counts_[4];

@@ -142,7 +142,8 @@ TEST_CASE("guards: cascade — past max_cascade a tick, consequences wait, and n
   bus.deliver(sim::TickPhase::EventsOut, 1);
   CHECK(sink.heard == 10u);
   u64 tick = 2;
-  for (; tick < 10u && bus.carried() != 0u; ++tick) bus.deliver(sim::TickPhase::EventsIn, tick);
+  for (; tick < 10u && bus.carried() != 0u; ++tick)
+    bus.deliver(sim::TickPhase::EventsIn, tick);
   CHECK(sink.heard == 40u);
   CHECK(tick == 5u);  // 10 a tick: ticks 1, 2, 3 and 4
   CHECK(bus.current_report().carried_in == 10u);
@@ -204,7 +205,8 @@ TEST_CASE("guards: self-loop — a subscriber's raise of a type it hears waits a
   CHECK(bus.current_report().depth[4] == 1u);
 }
 
-TEST_CASE("guards: budget — past its budget a subscriber skips, is told how many, others hear all") {
+TEST_CASE(
+    "guards: budget — past its budget a subscriber skips, is told how many, others hear all") {
   EventBus bus;
   const EventType<test::Ping> ping = bus.register_type<test::Ping>();
   Counter small;
@@ -237,7 +239,8 @@ TEST_CASE("guards: full — a raise past the bank's capacity is refused, returne
   subscribe(bus, "counter", &counter, hears_ping, &Counter::handle);
   Emitter emit = bus.emitter(bus.add_source("host"));
   u32 accepted = 0;
-  for (u32 i = 0; i < 20u; ++i) accepted += emit.raise(ping, test::Ping{}) ? 1u : 0u;
+  for (u32 i = 0; i < 20u; ++i)
+    accepted += emit.raise(ping, test::Ping{}) ? 1u : 0u;
   CHECK(accepted == 16u);
   bus.deliver(sim::TickPhase::EventsIn, 1);
   CHECK(counter.heard == 16u);
@@ -249,7 +252,8 @@ TEST_CASE("guards: full — a raise past the bank's capacity is refused, returne
   const EventType<test::Blast> blast = small.register_type<test::Blast>();
   Emitter e = small.emitter(small.add_source("host"));
   u32 fit = 0;
-  for (u32 i = 0; i < 4u; ++i) fit += e.raise(blast, test::Blast{}) ? 1u : 0u;
+  for (u32 i = 0; i < 4u; ++i)
+    fit += e.raise(blast, test::Blast{}) ? 1u : 0u;
   CHECK(fit == 64u / ((sizeof(test::Blast) + 7u) & ~usize{7}));
 }
 
@@ -308,7 +312,8 @@ TEST_CASE("guards: a steady tick allocates nothing") {
     static void tick(sim::SystemContext& context, sim::Batch batch) {
       auto* self = static_cast<Raise*>(context.context);
       Emitter emit = self->bus->emitter(context, batch);
-      for (u32 i = 0; i < 1000u; ++i) emit.raise(self->ping, test::Ping{});
+      for (u32 i = 0; i < 1000u; ++i)
+        emit.raise(self->ping, test::Ping{});
     }
   };
   Raise raiser{&bus, ping};
@@ -327,9 +332,11 @@ TEST_CASE("guards: a steady tick allocates nothing") {
   subscribe(bus, "sink", &sink, hears_pong, &Counter::handle);
   bus.install(scheduler);
 
-  for (u32 t = 0; t < 3u; ++t) scheduler.step();  // the first ticks size what grows once
+  for (u32 t = 0; t < 3u; ++t)
+    scheduler.step();  // the first ticks size what grows once
   const u64 before = mem::allocation_counter();
-  for (u32 t = 0; t < 20u; ++t) scheduler.step();
+  for (u32 t = 0; t < 20u; ++t)
+    scheduler.step();
   CHECK(mem::allocation_counter() == before);
   CHECK(sink.heard == 23u * 4000u);
   // No guard of the simulation's tripped. The slow report is the machine's (a debug build's

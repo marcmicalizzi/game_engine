@@ -84,7 +84,8 @@ TEST_CASE("static table: a scheduler adds it once, in the table's order") {
   CHECK(scheduler.add_static_systems() == 0u);
   REQUIRE(scheduler.system_count() == 3u);
   const char* const expected[] = {"first.one", "zeta.one", "zeta.two"};
-  for (u16 i = 0; i < 3u; ++i) CHECK(std::strcmp(scheduler.system(i).name, expected[i]) == 0);
+  for (u16 i = 0; i < 3u; ++i)
+    CHECK(std::strcmp(scheduler.system(i).name, expected[i]) == 0);
 
   // A static system and a runtime one land in one table and the schedule cannot tell them apart.
   SystemDesc runtime;
@@ -96,7 +97,8 @@ TEST_CASE("static table: a scheduler adds it once, in the table's order") {
   g_seen = {};
   scheduler.step();
   REQUIRE(g_seen.names.size() == 4u);
-  for (u32 i = 0; i < 3u; ++i) CHECK(std::strcmp(g_seen.names[i], expected[i]) == 0);
+  for (u32 i = 0; i < 3u; ++i)
+    CHECK(std::strcmp(g_seen.names[i], expected[i]) == 0);
   CHECK(std::strcmp(g_seen.names[3], "runtime.one") == 0);
 }
 
@@ -134,7 +136,8 @@ TEST_CASE("tier filtering: a system meeting no active tier is not invoked at all
   REQUIRE(g_seen.names.size() == 4u);
   CHECK(std::strcmp(g_seen.names[0], "middle") == 0);
   CHECK(std::strcmp(g_seen.names[2], "every") == 0);
-  for (const u8 tiers : g_seen.tiers) CHECK(tiers == 0x04u);
+  for (const u8 tiers : g_seen.tiers)
+    CHECK(tiers == 0x04u);
   CHECK(g_seen.begins == 2u);
   CHECK(g_seen.ends == 2u);
   // Two batches, a begin and an end of "near".
