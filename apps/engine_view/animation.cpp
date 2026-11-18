@@ -465,6 +465,12 @@ void apply_collapse_entry(AnimatedScene& scene, std::span<const anim::JointMatri
     return;
   anim::JointMatrix* out = scene.collapsed.data() + run.first;
   if (copy) std::memcpy(out, matrices.data() + run.first, usize{run.count} * sizeof(*out));
+  // The crouch first (P54): the body bent and lowered, so the look turns from where it put the
+  // torso, the neck and the head.
+  if (c.crouch_on) {
+    apply_crouch_layer(std::span<const AnimatedScene::CrouchTurn>(c.crouch.data(), c.crouch.size()),
+                       c.crouch_shift, out, run.count);
+  }
   // The look, outermost first: each pivot where the turns outside it have put it.
   for (const AnimatedScene::LookJoint& look : c.look) {
     if (look.joint >= run.count || (look.down == 0.0f && look.turn == 0.0f)) continue;
@@ -488,7 +494,77 @@ void apply_collapse_entry(AnimatedScene& scene, std::span<const anim::JointMatri
   }
 }
 
+// `pivot` and every joint below it, in joint order: a joint's parent comes before it
+// (skeleton.h), so one forward pass finds the subtree.
+void subtree_of(const anim::Skeleton& skeleton, u32 pivot, Vector<u32>& out) {
+  const u32 n = skeleton.joint_count();
+  out.clear();
+  if (pivot >= n) return;
+  Vector<u8> in(n, u8{0});
+  for (u32 j = pivot; j < n; ++j) {
+    const i32 parent = skeleton.parents[j];
+    if (j == pivot ||
+        (parent >= 0 && static_cast<u32>(parent) < j && in[static_cast<u32>(parent)] != 0)) {
+      in[j] = 1;
+      out.push_back(j);
+    }
+  }
+}
+
 }  // namespace
+
+void apply_crouch_layer(std::span<const AnimatedScene::CrouchTurn> turns, Vec3 shift,
+                        anim::JointMatrix* out, u32 count) noexcept {
+  for (const AnimatedScene::CrouchTurn& t : turns) {
+    if (t.joint >= count) continue;
+    const Vec3 p = anim::transform_point(out[t.joint], t.bind);
+    for (const u32 j : t.joints) {
+      if (j < count) rotate_about(out[j], t.turn, p);
+    }
+  }
+  if (shift.x == 0.0f && shift.y == 0.0f && shift.z == 0.0f) return;
+  for (u32 j = 0; j < count; ++j) {
+    out[j].rows[0].w = out[j].rows[0].w + shift.x;
+    out[j].rows[1].w = out[j].rows[1].w + shift.y;
+    out[j].rows[2].w = out[j].rows[2].w + shift.z;
+  }
+}
+
+void set_joint_crouch(AnimatedScene& scene, u32 entry, const anim::Skeleton& skeleton,
+                      std::span<const u32> pivots) {
+  if (entry >= scene.collapse.size()) return;
+  AnimatedScene::JointCollapse& c = scene.collapse[entry];
+  c.crouch.clear();
+  c.crouch_on = false;
+  c.crouch_shift = Vec3{};
+  for (const u32 pivot : pivots) {
+    if (pivot >= skeleton.joint_count()) continue;
+    AnimatedScene::CrouchTurn turn;
+    turn.joint = pivot;
+    if (pivot < skeleton.inverse_bind.size())
+      turn.bind = transform_point(inverse(skeleton.inverse_bind[pivot]), Vec3{});
+    subtree_of(skeleton, pivot, turn.joints);
+    c.crouch.push_back(std::move(turn));
+  }
+}
+
+void set_joint_crouch_pose(AnimatedScene& scene, u32 entry, std::span<const Quat> turns, Vec3 shift,
+                           bool on) {
+  if (entry >= scene.collapse.size()) return;
+  AnimatedScene::JointCollapse& c = scene.collapse[entry];
+  bool same = c.crouch_on == on && c.crouch_shift.x == shift.x && c.crouch_shift.y == shift.y &&
+              c.crouch_shift.z == shift.z;
+  for (u32 i = 0; i < c.crouch.size(); ++i) {
+    const Quat q = i < turns.size() ? turns[i] : Quat{};
+    const Quat& was = c.crouch[i].turn;
+    same = same && was.x == q.x && was.y == q.y && was.z == q.z && was.w == q.w;
+    c.crouch[i].turn = q;
+  }
+  c.crouch_shift = shift;
+  c.crouch_on = on && !c.crouch.empty();
+  if (same || !scene.collapse_ready || !scene.collapse_on) return;
+  apply_collapse_entry(scene, scene.system.joint_matrices(), c, true);
+}
 
 void apply_joint_collapse(AnimatedScene& scene) {
   scene.collapse_ready = false;

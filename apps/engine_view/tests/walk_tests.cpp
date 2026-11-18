@@ -5,6 +5,7 @@
 // title. Where the build carries physics and scene collision the walker is a character on the
 // collision's heightfields; in the minimal build it follows the ground; the cases hold either.
 
+#include "../crouch_pose.h"
 #include "../fly_camera.h"
 #include "../time_controls.h"
 #include "../walk.h"
@@ -258,6 +259,160 @@ TEST_CASE("walk: a session header's walk block reads back, and another walk vers
   future.set("walk", std::move(walk));
   CHECK_FALSE(view::session_from_json(future, back, &error));
   CHECK(error.find("walk integration version") != std::string::npos);
+
+  // The crouch (P54) reads back; a block from before it, which has none, is a walker that cannot
+  // crouch; a crouch missing a number is refused.
+  CHECK(back.walk.crouch_height == h.walk.crouch_height);
+  REQUIRE(view::session_from_json(json, back, &error));
+  CHECK(back.walk.crouch_height == 1.25f);
+  CHECK(back.walk.crouch_eye_height == 1.1f);
+  CHECK(back.walk.crouch_speed == 1.0f);
+  CHECK(back.walk.crouch_time_s == 0.25f);
+  const JsonValue& block = *json.find("walk");
+  JsonValue before = JsonValue::object();
+  for (const char* k : {"version", "height", "radius", "eye_height", "speed", "sprint",
+                        "max_slope_deg", "step_height", "gravity", "jump_speed", "collision"})
+    before.set(k, *block.find(k));
+  view::WalkParams p;
+  REQUIRE_MESSAGE(view::walk_params_from_json(before, p, &error), error);
+  CHECK(p.crouch_height == 0.0f);
+  JsonValue torn = block;
+  JsonValue crouch = JsonValue::object();
+  crouch.set("height", JsonValue(1.2f));
+  torn.set("crouch", std::move(crouch));
+  CHECK_FALSE(view::walk_params_from_json(torn, p, &error));
+  CHECK(error.find("crouch") != std::string::npos);
+}
+
+// **The crouch layer's pose** (crouch_pose.h; apps.md "The crouch layer"): on a body of its own in
+// centimetres — hips at 95, knees at 50 a little ahead, ankles at 8, the trunk's pivot at 105, the
+// eye at 165 and 8 ahead — a full crouch's 0.55 m: the turns put each ankle back where it stood
+// once the shift is added, the eye goes down by the 0.55 asked, the sole stays level (the leg's
+// three turns are the identity together), the knee bends forward, and a quarter of the way bends
+// less.
+TEST_CASE("walk: the crouch layer keeps the feet planted and lowers the eye by what is asked") {
+  view::CrouchRig rig;
+  rig.layer = true;
+  rig.scale = 0.01f;
+  rig.trunk = 30.0f * 0.0174532925f;
+  rig.rest[0] = Vec3{0.0f, 105.0f, 0.0f};
+  for (u32 leg = 0; leg < 2; ++leg) {
+    const f32 x = leg == 0 ? 10.0f : -10.0f;
+    rig.rest[1 + 3 * leg] = Vec3{x, 95.0f, 0.0f};
+    rig.rest[2 + 3 * leg] = Vec3{x, 50.0f, 2.0f};
+    rig.rest[3 + 3 * leg] = Vec3{x, 8.0f, 0.0f};
+  }
+  for (i32 i = 0; i < static_cast<i32>(view::k_crouch_pivots); ++i)
+    rig.joints[i] = i;
+  rig.eye = Vec3{0.0f, 165.0f, 8.0f};
+  view::CrouchPose pose;
+  view::crouch_pose(rig, 0.55f, 1.0f, pose);
+  REQUIRE(pose.on);
+  const auto about = [](Quat q, Vec3 p, Vec3 pivot) { return rotate(q, p - pivot) + pivot; };
+  for (u32 leg = 0; leg < 2; ++leg) {
+    const Vec3 h = rig.rest[1 + 3 * leg];
+    const Quat hip = pose.turns[1 + 3 * leg];
+    const Quat knee = pose.turns[2 + 3 * leg];
+    const Quat foot = pose.turns[3 + 3 * leg];
+    const Vec3 k = about(hip, rig.rest[2 + 3 * leg], h);
+    const Vec3 a = about(knee, about(hip, rig.rest[3 + 3 * leg], h), k);
+    const Vec3 planted = a + pose.shift;
+    CHECK(std::fabs(planted.y - rig.rest[3 + 3 * leg].y) < 1e-3f);
+    CHECK(std::fabs(planted.z - rig.rest[3 + 3 * leg].z) < 1e-3f);
+    CHECK(k.z > rig.rest[2 + 3 * leg].z + 5.0f);  // the knee goes forward
+    const Quat sole = foot * knee * hip;
+    CHECK(std::fabs(sole.x) < 1e-5f);
+    CHECK(std::fabs(std::fabs(sole.w) - 1.0f) < 1e-5f);
+  }
+  const Vec3 eye = about(pose.turns[0], rig.eye, rig.rest[0]) + pose.shift;
+  MESSAGE("full crouch: the eye " << (rig.eye.y - eye.y) * rig.scale << " m down, the hips "
+                                  << pose.pelvis_drop_m << " m, the knee bent "
+                                  << pose.knee_rad * 57.29578f << " degrees");
+  CHECK((rig.eye.y - eye.y) * rig.scale == doctest::Approx(0.55f).epsilon(1e-3));
+  CHECK(pose.eye_drop_m == doctest::Approx(0.55f).epsilon(1e-3));
+  CHECK(eye.z < rig.eye.z + 30.0f);  // the head kept over the feet: the hips went back
+  view::CrouchPose quarter;
+  view::crouch_pose(rig, 0.55f * 0.25f, 0.25f, quarter);
+  REQUIRE(quarter.on);
+  CHECK(quarter.knee_rad > 0.0f);
+  CHECK(quarter.knee_rad < pose.knee_rad);
+  view::CrouchPose standing;
+  view::crouch_pose(rig, 0.0f, 0.0f, standing);
+  CHECK_FALSE(standing.on);
+  rig.layer = false;
+  view::crouch_pose(rig, 0.55f, 1.0f, standing);
+  CHECK_FALSE(standing.on);
+}
+
+// **Crouching** (P54; apps.md "Crouching"): C held while walking lowers the eye from 1.65 m to
+// 1.1 m over a quarter second, a fixed step a tick, walks at the crouch's 1 m/s with Shift held,
+// and letting go raises the eye again; the same events twice are the same trajectory, and a log
+// recorded against the map's sixth revision, which has no `crouch`, walks exactly as if C had
+// never been pressed. (Standing refused under a ceiling is the character's: physics'
+// character_tests.cpp, "a crouch passes under a low slab".)
+TEST_CASE(
+    "walk: C crouches the walker, its eye eased down and up, and a replay crouches the same") {
+  constexpr u32 k_key_c = 6;
+  const input::RawEvent events[] = {
+      key(5, k_key_f, true),       key(7, k_key_f, false),         // onto the ground
+      key(20, k_key_c, true),      key(20, k_key_w, true),         // crouch and walk north
+      key(20, k_key_lshift, true),                                 // sprint held: ignored crouched
+      key(500, k_key_c, false),    key(500, k_key_lshift, false),  // stand, walking on
+      key(740, k_key_w, false),
+  };
+  const view::SessionHeader header = walk_header();
+  f32 eye_at_eased = 0.0f;
+  f32 eye_before = 0.0f;
+  f32 eye_after = 0.0f;
+  f64 z_start = 0.0;
+  f64 z_crouched = 0.0;
+  bool crouched_mid = false;
+  f32 amount_mid = 0.0f;
+  const Walked a = walk_session(
+      header, view::default_fly_map(), std::span<const input::RawEvent>(events, std::size(events)),
+      760, [&](const view::FlySession& session, const view::Walker& walker) {
+        const u64 t = session.tick().value;
+        if (t == 19) eye_before = walker.eye_height();
+        if (t == 20 + 59) eye_at_eased = walker.eye_height();  // 60 ticks: a quarter second
+        if (t == 140) z_start = walker.feet().z;
+        if (t == 380) {
+          z_crouched = walker.feet().z;
+          crouched_mid = walker.crouched();
+          amount_mid = walker.crouch_amount();
+        }
+        if (t == 760) eye_after = walker.eye_height();
+      });
+  CHECK(a.walking);
+  CHECK(eye_before == 1.65f);
+  CHECK(eye_at_eased == doctest::Approx(1.1f).epsilon(1e-4));
+  CHECK(crouched_mid);
+  CHECK(amount_mid == 1.0f);
+  // A second (240 ticks) crouched, north, Shift held: the crouch's 1 m/s, not the sprint's 5.
+  const f64 crouched_m = z_start - z_crouched;
+  MESSAGE("crouched: " << crouched_m << " m north in a second, the eye " << eye_at_eased);
+  CHECK(crouched_m == doctest::Approx(1.0).epsilon(0.03));
+  CHECK(eye_after == 1.65f);
+  const Walked b = walk_session(header, view::default_fly_map(),
+                                std::span<const input::RawEvent>(events, std::size(events)), 760,
+                                [](const view::FlySession&, const view::Walker&) {});
+  CHECK(a.hash == b.hash);
+  CHECK(a.walker_hash == b.walker_hash);
+
+  // The sixth revision's map has no `crouch`: its C presses nothing, and the walk is the one
+  // without them, to the bit.
+  const input::RawEvent plain[] = {
+      key(5, k_key_f, true),       key(7, k_key_f, false),        key(20, k_key_w, true),
+      key(20, k_key_lshift, true), key(500, k_key_lshift, false), key(740, k_key_w, false),
+  };
+  const Walked sixth = walk_session(header, view::default_fly_map(6),
+                                    std::span<const input::RawEvent>(events, std::size(events)),
+                                    760, [](const view::FlySession&, const view::Walker&) {});
+  const Walked none = walk_session(header, view::default_fly_map(6),
+                                   std::span<const input::RawEvent>(plain, std::size(plain)), 760,
+                                   [](const view::FlySession&, const view::Walker&) {});
+  CHECK(sixth.hash == none.hash);
+  CHECK(sixth.walker_hash == none.walker_hash);
+  CHECK(sixth.hash != a.hash);
 }
 
 TEST_CASE("walk: the title says whether the camera flies or walks, and on what") {

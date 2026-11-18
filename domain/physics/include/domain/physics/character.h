@@ -66,6 +66,14 @@ struct CharacterConfig {
   // is a process-wide counter, which would make a replay's result depend on how many characters the
   // process had made before. A character is given one here instead.
   u32 id = 1;
+  // **Crouching** (physics.md, "Crouching"): a second, shorter capsule of the same radius the
+  // character takes while `CharacterInput::crouch` is held, its eye at `crouch_eye_height`, at
+  // `crouch_speed` whether or not sprint is held. 0 (the default) is a character that cannot
+  // crouch; otherwise the height must hold the capsule (over twice the radius, over the step) and
+  // stay under `height`, and the eye under it.
+  f32 crouch_height = 0.0f;
+  f32 crouch_eye_height = 0.0f;
+  f32 crouch_speed = 1.0f;
 };
 
 // One tick's intent. `move` is a direction in world space, horizontal (its y is ignored), at most
@@ -80,6 +88,10 @@ struct CharacterInput {
   // to unit length). 1, the default, is the configured speed to the bit (`x * 1.0f` is `x`), so
   // every step before this field existed is the same step.
   f32 speed_scale = 1.0f;
+  // Held: the character wants to crouch. It crouches at once (the shorter capsule fits wherever
+  // the taller one did); released, it **stands only where the standing capsule fits** — under a
+  // ceiling lower than `height` it stays crouched, and tries again every step it is not held.
+  bool crouch = false;
 };
 
 // A character between two steps. `position` is the feet: the bottom of the capsule, which on flat
@@ -92,11 +104,13 @@ struct CharacterState {
   Vec3 velocity{};       // metres a second, what the last step moved at
   Vec3 ground_normal{};  // of what it stands on; zero in the air
   Ground ground = Ground::InAir;
-  u8 pad[7] = {};  // named and zeroed, so the struct has no byte nobody wrote
-  u64 tick = 0;    // steps since `create`
+  u8 crouched = 0;  // 1 while the crouching capsule is the character's
+  u8 pad[6] = {};   // named and zeroed, so the struct has no byte nobody wrote
+  u64 tick = 0;     // steps since `create`
 };
 
-// One state folded into a hash chain: every field by its bits, -0 as +0.
+// One state folded into a hash chain: every field by its bits, -0 as +0. `crouched` goes in with
+// `ground`, as `ground | crouched << 8`: one word for the stance.
 u64 hash_character_state(u64 seed, const CharacterState& state) noexcept;
 
 class CharacterBody {
@@ -126,7 +140,12 @@ class CharacterBody {
 
   CharacterState state() const noexcept;
   WorldPos feet() const noexcept;
-  WorldPos eye() const noexcept;  // the feet plus `eye_height` straight up
+  // The feet plus `eye_height` straight up, or `crouch_eye_height` while crouched.
+  WorldPos eye() const noexcept;
+  // Whether the crouching capsule is the character's after the last step, and the steps a release
+  // of `crouch` was refused because the standing capsule did not fit (a ceiling), since `create`.
+  bool crouched() const noexcept;
+  u64 stand_refusals() const noexcept;
   // The chain over the state after `create`, every `step` and every `teleport`, in order.
   u64 hash() const noexcept;
 

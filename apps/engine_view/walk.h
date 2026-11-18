@@ -74,6 +74,14 @@ struct WalkParams {
   f32 step_height = 0.35f;
   f32 gravity = 9.81f;
   f32 jump_speed = 4.0f;
+  // **Crouching** (apps.md, "Crouching"; roadmap P54): the capsule while the `crouch` action is
+  // held, its eye, its speed (sprint or not) and the seconds the eye takes between the two heights.
+  // The header's `crouch` object; a block without one was recorded before crouching existed,
+  // against a map with no `crouch` action, and reads as `crouch_height` 0: a walker that cannot.
+  f32 crouch_height = 1.25f;
+  f32 crouch_eye_height = 1.1f;
+  f32 crouch_speed = 1.0f;
+  f32 crouch_time_s = 0.25f;
   // The collision's, when the build carries it (scene_collision.h).
   f32 spacing_m = 1.0f;
   f32 radius_tiles = 1.5f;
@@ -95,6 +103,7 @@ struct WalkInput {
   f32 yaw = 0.0f;
   bool sprint = false;
   bool jump = false;
+  bool crouch = false;  // held: crouch, and stand again where the standing capsule fits
 };
 
 // **The orbit mode's heading** (apps.md, "Third person"; roadmap P14): the movement keys are read
@@ -162,6 +171,11 @@ struct WalkStats {
   f32 max_depth_m = 0.0f;
   u64 wading_ticks = 0;
   u64 stopped_ticks = 0;
+  // Crouching (`WalkInput::crouch`): the times the walker crouched, the ticks it walked crouched,
+  // and the ticks a release was refused because the standing capsule did not fit (a ceiling).
+  u32 crouches = 0;
+  u64 crouched_ticks = 0;
+  u64 stand_refusals = 0;
 };
 
 // **Where a walker's ticks spend wall time** (apps.md, "The frame record's walk"), over the walk:
@@ -293,8 +307,17 @@ class Walker {
   void look_ahead(WorldPos camera);
   // One tick of walking; the eye.
   WorldPos step(const WalkInput& input);
+  // The feet plus `eye_height()`.
   WorldPos eye() const noexcept;
   WorldPos feet() const noexcept;
+  // **The stance** (apps.md, "Crouching"): whether the walker is crouched after the last step (the
+  // character's capsule, or the ground-follow's held key), and the eye's height over the feet now,
+  // which eases from the standing eye to the crouched one over `crouch_time_s` — a fixed step a
+  // tick on the tick's state, so a replay eases the same — and `crouch_amount()`, how far along
+  // that is, 0 standing to 1 crouched: what the body's crouch layer bends to. Read only.
+  bool crouched() const noexcept;
+  f32 eye_height() const noexcept;
+  f32 crouch_amount() const noexcept;
   // Whether the feet stand on something after the last step: the character's `OnGround`, or the
   // ground-follow's not being in a jump. False before the first drop. Read only: a game asks it
   // (game_runner.h), and nothing the walker computes depends on it being asked.

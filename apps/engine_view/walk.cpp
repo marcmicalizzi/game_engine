@@ -54,6 +54,22 @@ tunables::Float walk_gravity{"view.walk.gravity", 9.81, 0.0, 100.0,
                              "Metres a second squared, down, on the walker"};
 tunables::Float walk_jump{"view.walk.jump_speed", 4.0, 0.0, 50.0,
                           "The walker's upward speed at the start of a jump (Space)"};
+// **Crouching** (apps.md, "Crouching"; docs/experiments/crouch-grounding-2026-11-17.md): the
+// capsule at 70% of the standing one — the lower of the two headroom restrictions Hodgskiss and
+// Zschernack walked subjects under, and the 1.2 m below which low-seam miners can no longer walk
+// upright (Gallagher's NIOSH work) — its eye the standing eye's 0.15 m under the crown, and a
+// crouched walk at 1 m/s, the 3.5 km/h those subjects held under the restriction and about where
+// Grasso, Zago and Lacquaniti found bent walking's efficiency falls away.
+tunables::Float walk_crouch_height{"view.walk.crouch_height", 1.25, 0.0, 5.0,
+                                   "The walker's capsule while crouching (C, Ctrl), feet to crown, "
+                                   "metres; 0: the walker cannot crouch"};
+tunables::Float walk_crouch_eye{"view.walk.crouch_eye_height", 1.1, 0.1, 5.0,
+                                "The walking camera's height over the feet while crouched, metres"};
+tunables::Float walk_crouch_speed{"view.walk.crouch_speed", 1.0, 0.01, 100.0,
+                                  "Walking speed crouched, metres a second (sprint or not)"};
+tunables::Float walk_crouch_time{"view.walk.crouch_time_s", 0.25, 0.0, 5.0,
+                                 "Seconds the walking eye takes between its standing and its "
+                                 "crouched height"};
 // The orbit mode's bounded turn (apps.md, "Third person"): 180 degrees a second, the top of the
 // peak yaw velocities measured in healthy adults' 90 to 180 degree turns (Khobkhun, Hollands and
 // Richards 2022, about 103 to 173 degrees a second). Recorded in the session header's orbit block.
@@ -128,6 +144,10 @@ WalkParams walk_params_from_tunables() {
   p.step_height = static_cast<f32>(walk_step.get());
   p.gravity = static_cast<f32>(walk_gravity.get());
   p.jump_speed = static_cast<f32>(walk_jump.get());
+  p.crouch_height = static_cast<f32>(walk_crouch_height.get());
+  p.crouch_eye_height = static_cast<f32>(walk_crouch_eye.get());
+  p.crouch_speed = static_cast<f32>(walk_crouch_speed.get());
+  p.crouch_time_s = static_cast<f32>(walk_crouch_time.get());
 #if ENGINE_VIEW_WALK_PHYSICS
   p.spacing_m = scene_collision::spacing_tunable();
   p.radius_tiles = scene_collision::radius_tunable();
@@ -151,6 +171,12 @@ JsonValue walk_params_to_json(const WalkParams& p) {
   out.set("step_height", JsonValue(p.step_height));
   out.set("gravity", JsonValue(p.gravity));
   out.set("jump_speed", JsonValue(p.jump_speed));
+  JsonValue crouch = JsonValue::object();
+  crouch.set("height", JsonValue(p.crouch_height));
+  crouch.set("eye_height", JsonValue(p.crouch_eye_height));
+  crouch.set("speed", JsonValue(p.crouch_speed));
+  crouch.set("time_s", JsonValue(p.crouch_time_s));
+  out.set("crouch", std::move(crouch));
   JsonValue c = JsonValue::object();
   c.set("spacing_m", JsonValue(p.spacing_m));
   c.set("radius_tiles", JsonValue(p.radius_tiles));
@@ -190,6 +216,18 @@ bool walk_params_from_json(const JsonValue& value, WalkParams& out, std::string*
       !read_u32(*c, "max_refreshes", p.max_refreshes)) {
     return fail("a field is missing or not a number");
   }
+  // **The crouch** (walk.h): a block without one was recorded before crouching existed, against a
+  // map with no `crouch` action, and walks as a walker that cannot crouch; one with it must carry
+  // all four numbers.
+  const JsonValue* crouch = value.find("crouch");
+  if (crouch == nullptr) {
+    p.crouch_height = 0.0f;
+  } else if (!crouch->is_object() || !read_f32(*crouch, "height", p.crouch_height) ||
+             !read_f32(*crouch, "eye_height", p.crouch_eye_height) ||
+             !read_f32(*crouch, "speed", p.crouch_speed) ||
+             !read_f32(*crouch, "time_s", p.crouch_time_s)) {
+    return fail("the crouch's field is missing or not a number");
+  }
   out = p;
   return true;
 }
@@ -220,6 +258,27 @@ struct Walker::Impl {
   };
   WorldPos feet{};
   bool placed = false;
+  // **The stance** (walk.h, `crouched`): crouched after the last step, and the eye's height now,
+  // eased a fixed step a tick toward the stance's.
+  bool crouched = false;
+  f32 eye_now = 1.65f;
+  void ease_eye() {
+    const f32 target = crouched ? params.crouch_eye_height : params.eye_height;
+    const f32 span = params.eye_height - params.crouch_eye_height;
+    const f32 most = params.crouch_time_s > 0.0f
+                         ? (span < 0.0f ? -span : span) * dt / params.crouch_time_s
+                         : 1.0e30f;
+    if (eye_now < target) {
+      eye_now = target - eye_now > most ? eye_now + most : target;
+    } else if (eye_now > target) {
+      eye_now = eye_now - target > most ? eye_now - most : target;
+    }
+  }
+  void note_stance(bool was) {
+    if (crouched && !was) ++stats.crouches;
+    if (crouched) ++stats.crouched_ticks;
+    ease_eye();
+  }
   // A game's scales on the speeds (walk.h, `set_speed_scale`); 1 leaves every float as it was.
   f32 speed_scale = 1.0f;
   f32 sprint_scale = 1.0f;
@@ -295,6 +354,11 @@ struct Walker::Impl {
     c.gravity = params.gravity;
     c.jump_speed = params.jump_speed;
     c.step_hz = tick_hz;
+    if (params.crouch_height > 0.0f) {
+      c.crouch_height = params.crouch_height;
+      c.crouch_eye_height = params.crouch_eye_height;
+      c.crouch_speed = params.crouch_speed;
+    }
     return c;
   }
   scene_collision::GroundTime ground_time() const {
@@ -454,6 +518,8 @@ bool Walker::start(const WalkParams& params, u32 tick_hz, const renderer::SceneD
   (void)proxies;  // likewise
   Impl& w = *impl_;
   w.params = params;
+  w.eye_now = params.eye_height;
+  w.crouched = false;
   w.tick_hz = tick_hz > 0 ? tick_hz : 240u;
   w.dt = 1.0f / static_cast<f32>(w.tick_hz);
   w.scene = &scene;
@@ -582,7 +648,17 @@ void Walker::set_drawn(const DrawnGround& drawn) noexcept {
 }
 
 WorldPos Walker::eye() const noexcept {
-  return impl_->feet + DVec3{0.0, static_cast<f64>(impl_->params.eye_height), 0.0};
+  return impl_->feet + DVec3{0.0, static_cast<f64>(impl_->eye_now), 0.0};
+}
+
+bool Walker::crouched() const noexcept { return impl_->crouched; }
+f32 Walker::eye_height() const noexcept { return impl_->eye_now; }
+f32 Walker::crouch_amount() const noexcept {
+  const Impl& w = *impl_;
+  const f32 span = w.params.eye_height - w.params.crouch_eye_height;
+  if (!(span > 0.0f) || w.params.crouch_height <= 0.0f) return 0.0f;
+  const f32 a = (w.params.eye_height - w.eye_now) / span;
+  return a < 0.0f ? 0.0f : a > 1.0f ? 1.0f : a;
 }
 
 WorldPos Walker::feet() const noexcept { return impl_->feet; }
@@ -886,9 +962,16 @@ WorldPos Walker::step(const WalkInput& input) {
     in.move = direction;
     in.sprint = input.sprint;
     in.jump = input.jump;
-    // A game's scale (walk.h): the character's speed times it; 1, the same floats.
-    in.speed_scale = (input.sprint ? w.sprint_scale : w.speed_scale) * wade;
+    in.crouch = input.crouch && w.params.crouch_height > 0.0f;
+    // A game's scale (walk.h): the character's speed times it; 1, the same floats. Crouched (or
+    // about to be), the walk's scale: the crouch's speed is a walk's.
+    const bool low = in.crouch || w.crouched;
+    in.speed_scale = (input.sprint && !low ? w.sprint_scale : w.speed_scale) * wade;
     (void)w.body.step(in);
+    const bool was = w.crouched;
+    w.crouched = w.body.crouched();
+    w.stats.stand_refusals = w.body.stand_refusals();
+    w.note_stance(was);
     w.feet = w.body.feet();
     f32 held = std::numeric_limits<f32>::quiet_NaN();
     if (w.body.state().ground == physics::Ground::OnGround) {
@@ -904,8 +987,14 @@ WorldPos Walker::step(const WalkInput& input) {
   // jump an arc of the header's gravity back down onto it. A tick's step is float32, as it always
   // was, and is added to the feet in f64 (ADR-0053).
   // A game's scale on the speed (walk.h): at 1 the product is the header's number to the bit.
-  const f32 speed =
-      (input.sprint ? w.params.sprint * w.sprint_scale : w.params.speed * w.speed_scale) * wade;
+  // Crouched, the crouch's speed; with nothing in the way, standing again is never refused.
+  const bool was = w.crouched;
+  w.crouched = input.crouch && w.params.crouch_height > 0.0f;
+  w.note_stance(was);
+  const f32 speed = (w.crouched     ? w.params.crouch_speed * w.speed_scale
+                     : input.sprint ? w.params.sprint * w.sprint_scale
+                                    : w.params.speed * w.speed_scale) *
+                    wade;
   w.feet.x = w.feet.x + static_cast<f64>(direction.x * speed * w.dt);
   w.feet.z = w.feet.z + static_cast<f64>(direction.z * speed * w.dt);
   const f32 ground = w.ground_at(w.feet.x, w.feet.z);
@@ -948,6 +1037,14 @@ JsonValue Walker::summary_json() const {
   out.set("sprint_scale", JsonValue(w.sprint_scale));
   out.set("max_ground_error_m", JsonValue(w.stats.max_ground_error_m));
   out.set("hash", hex16(w.stats.hash));
+  // Crouching (walk.h): how often, how long, and the stands a ceiling refused.
+  JsonValue crouch = JsonValue::object();
+  crouch.set("available", w.params.crouch_height > 0.0f);
+  crouch.set("crouches", static_cast<u64>(w.stats.crouches));
+  crouch.set("ticks", w.stats.crouched_ticks);
+  crouch.set("stand_refusals", w.stats.stand_refusals);
+  crouch.set("crouched", w.crouched);
+  out.set("crouch", std::move(crouch));
   // Wading (walk.h), only where there is water to wade in: a summary of a scene without any is the
   // one it always was.
   if (w.depth != nullptr) {
@@ -1024,7 +1121,8 @@ void set_frame_walker(const Walker& walker, bool walking, renderer::FrameFlora& 
   if (!out.walker) return;
   out.walker_feet = walker.feet();
   out.walker_radius = walker.params().radius;
-  out.walker_height = walker.params().height;
+  // Crouched, the shorter capsule: the fronds a crouching walker passes under stay where they are.
+  out.walker_height = walker.crouched() ? walker.params().crouch_height : walker.params().height;
 }
 
 const scene_gen::GroundProvider* Walker::ground() const noexcept { return impl_->ground; }

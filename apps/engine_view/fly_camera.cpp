@@ -15,6 +15,7 @@ namespace {
 
 // SDL scancodes, the numbering a key binding's code is in (docs/subsystems/input.md).
 constexpr u32 k_key_a = 4;
+constexpr u32 k_key_c = 6;
 constexpr u32 k_key_d = 7;
 constexpr u32 k_key_e = 8;
 constexpr u32 k_key_f = 9;
@@ -269,6 +270,16 @@ input::ActionMap default_fly_map(u32 revision) {
   const input::ActionId camera = map.add_action("camera", input::ActionKind::Button);
   map.bind(camera, Binding{Source::Key, k_key_v});
   map.bind(camera, Binding{Source::GamepadButton, k_pad_east});
+  if (revision < 7) return map;
+
+  // Revision 7 (2026-11-17): `crouch`, held while walking (P54). C was left for it (above), and
+  // Left Ctrl is the other key games crouch on; both mean `lift` down while flying, which a
+  // walking session never reads, as Space means up flying and jump walking. On a pad the right
+  // stick's click, the crouch of most pad games: `slow` while flying, which walking never reads.
+  const input::ActionId crouch = map.add_action("crouch", input::ActionKind::Button);
+  map.bind(crouch, Binding{Source::Key, k_key_c});
+  map.bind(crouch, Binding{Source::Key, k_key_lctrl});
+  map.bind(crouch, Binding{Source::GamepadButton, k_pad_right_stick});
   return map;
 }
 
@@ -329,7 +340,8 @@ bool resolve_fly_actions(const input::ActionMap& map, FlyActions& out, std::stri
   const struct {
     const char* name;
     input::ActionId* slot;
-  } walking[] = {{"walk", &out.walk}, {"jump", &out.jump}, {"camera", &out.camera}};
+  } walking[] = {
+      {"walk", &out.walk}, {"jump", &out.jump}, {"camera", &out.camera}, {"crouch", &out.crouch}};
   for (const auto& w : walking) {
     const input::ActionId id = map.find_action(w.name);
     *w.slot = input::k_invalid_action;
@@ -876,6 +888,10 @@ bool FlySession::start(const input::ActionMap& map, const SessionHeader& header,
 
 bool FlySession::can_walk() const noexcept { return walker_ != nullptr && walker_->available(); }
 
+f32 FlySession::eye_height() const noexcept {
+  return walker_ != nullptr ? walker_->eye_height() : header_.walk.eye_height;
+}
+
 void FlySession::set_walk_scale(f32 speed, f32 sprint) noexcept {
   if (walker_ != nullptr) walker_->set_speed_scale(speed, sprint);
 }
@@ -913,6 +929,7 @@ void FlySession::on_tick(void* user, SimTick tick, const input::InputState& stat
     in.yaw = look.yaw;
     in.sprint = state.held(self.actions_.fast);
     in.jump = self.actions_.jump != input::k_invalid_action && state.pressed(self.actions_.jump);
+    in.crouch = self.actions_.crouch != input::k_invalid_action && state.held(self.actions_.crouch);
     self.state_.position = self.walker_->step(in);
     f32 target = 0.0f;
     if (walk_move_heading(in.move, look.yaw, target)) {
@@ -930,6 +947,8 @@ void FlySession::on_tick(void* user, SimTick tick, const input::InputState& stat
     in.yaw = self.state_.yaw;
     in.sprint = state.held(self.actions_.fast);
     in.jump = self.actions_.jump != input::k_invalid_action && state.pressed(self.actions_.jump);
+    // Crouching (P54): held, on the map's seventh revision; an earlier map's walk never crouches.
+    in.crouch = self.actions_.crouch != input::k_invalid_action && state.held(self.actions_.crouch);
     self.state_.position = self.walker_->step(in);
     self.state_.look_yaw = self.state_.yaw;
   } else {

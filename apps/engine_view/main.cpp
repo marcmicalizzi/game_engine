@@ -1533,7 +1533,7 @@ renderer::Camera player_camera(const view::FlySession& session, const view::FlyS
     boom.back_m = view::fly_boom_length(look, boom, session.walker());
     const i64 cast_ns = time::monotonic_ns() - cast_started;
     renderer::Camera behind;
-    if (g_player == nullptr || !g_player->boom_camera(look, header.walk.eye_height, boom,
+    if (g_player == nullptr || !g_player->boom_camera(look, session.eye_height(), boom,
                                                       header.fov_y, header.znear, behind)) {
       behind = view::fly_boom_view(look, boom, header.fov_y, header.znear);
     } else if (marker_tick != ~u64{0}) {
@@ -1544,7 +1544,7 @@ renderer::Camera player_camera(const view::FlySession& session, const view::FlyS
   }
   renderer::Camera face;
   if (g_player == nullptr ||
-      !g_player->face_camera(look, header.walk.eye_height, header.fov_y, header.znear, face))
+      !g_player->face_camera(look, session.eye_height(), header.fov_y, header.znear, face))
     return session.orbit() ? view::fly_view(look, header.fov_y, header.znear) : walker_camera;
   if (marker_tick != ~u64{0}) g_player->note_marker(marker_tick);
   return face;
@@ -5331,9 +5331,9 @@ int run_view(int argc, char** argv) {
   }
   // `--temporal` (R171 leg 4) is measured in the plain offscreen loop, the one that draws every
   // frame of the path in order.
-  if (!options.temporal.empty() &&
-      (live || !options.offscreen || !options.benchmark.empty() ||
-       !options.marker_captures.empty() || options.verify_occlusion || options.capture_every != 0)) {
+  if (!options.temporal.empty() && (live || !options.offscreen || !options.benchmark.empty() ||
+                                    !options.marker_captures.empty() || options.verify_occlusion ||
+                                    options.capture_every != 0)) {
     std::fprintf(stderr,
                  "engine-view: --temporal measures a plain --offscreen run (no --benchmark, "
                  "--marker-captures, --verify-occlusion, --capture-every or replay)\n");

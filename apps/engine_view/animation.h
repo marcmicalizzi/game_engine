@@ -189,6 +189,17 @@ struct AnimatedScene {
     f32 turn = 0.0f;     // radians about its +y
     Vector<u32> joints;  // the joint and every joint below it
   };
+  // **The crouch layer** (P54, apps.md "The crouch layer") rides the same copy, before the look:
+  // each `CrouchTurn` turns its joint and the joints below it about the joint's posed position by
+  // `turn` (the trunk forward, each leg's hip, knee and ankle), in order, and then every joint of
+  // the run moves by `shift` (mesh units), which puts the feet back where they stood — an additive
+  // layer over whatever the clip poses, a function of the walker's eye at the tick.
+  struct CrouchTurn {
+    u32 joint = 0;
+    Vec3 bind{};  // as `LookJoint::bind`
+    Quat turn{};
+    Vector<u32> joints;  // the joint and every joint below it
+  };
   struct JointCollapse {
     u32 instance = 0;    // the loaded instance whose run it collapses
     u32 head = 0;        // the joint the others collapse to, the skeleton's index
@@ -197,6 +208,9 @@ struct AnimatedScene {
     Vector<u32> joints;  // the head and every joint below it, the skeleton's indices
     bool collapse_head = true;     // false: the joints are drawn whole (the look alone)
     Vector<LookJoint> look;        // outermost first; empty: no look layer
+    Vector<CrouchTurn> crouch;     // in order; empty: no crouch layer
+    Vec3 crouch_shift{};           // mesh units, after the turns
+    bool crouch_on = false;        // false: the turns are the identity and the layer is skipped
     anim::JointMatrix head_posed;  // the head's skinning matrix after the look, before the collapse
     bool head_posed_valid = false;  // false: a run of nothing (the rest pose is drawn)
   };
@@ -231,6 +245,19 @@ void set_joint_collapse_head(AnimatedScene& scene, u32 entry, bool collapse_head
 // the whole span), so a frame may set the look it draws with between two steps.
 void set_joint_look_angles(AnimatedScene& scene, u32 entry, std::span<const f32> down,
                            std::span<const f32> turn);
+// The crouch layer on collapse entry `entry`: `pivots` in the order they turn (each with the joints
+// below it). Set once, at bind; nothing turns until `set_joint_crouch_pose`.
+void set_joint_crouch(AnimatedScene& scene, u32 entry, const anim::Skeleton& skeleton,
+                      std::span<const u32> pivots);
+// Each pivot's turn, the same count as `pivots`, and the shift after them (mesh units); `on` false
+// is the layer off (standing). Refreshes the entry's run as `set_joint_look_angles` does.
+void set_joint_crouch_pose(AnimatedScene& scene, u32 entry, std::span<const Quat> turns, Vec3 shift,
+                           bool on);
+// The layer itself on a run of skinning matrices (`out`, indexed by the skeleton's joints, `count`
+// of them): what `apply_joint_collapse` does to the copy, open so a test can check it on a rig of
+// its own without a device.
+void apply_crouch_layer(std::span<const AnimatedScene::CrouchTurn> turns, Vec3 shift,
+                        anim::JointMatrix* out, u32 count) noexcept;
 
 // A stable, reproducible id per scene instance (ADR-0028 seam 3), from the instance index rather
 // than a counter, so a capture is deterministic across runs.

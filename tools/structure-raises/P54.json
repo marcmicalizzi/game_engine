@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "P54",
+  "reason": "apps.md gains Crouching under Walking (the capsule, the eased eye, the map's seventh revision, the header's crouch block, the tunables) and The crouch layer under the player's body: the row's own sections, the change's point",
+  "date": "2026-11-17",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 6800
+  }
+}
