@@ -173,22 +173,46 @@ i32 Categories::level(u32 category, std::string_view name) const {
   return -1;
 }
 
-bool read_classes(const Categories& categories, const content::ContentClasses& declared,
-                  ContentClasses& out, std::string& error) {
-  ContentClasses classes;
-  for (u32 i = 0; i < declared.levels.size(); ++i) {
-    const std::string& name = declared.levels.key_at(i);
+namespace {
+
+// One map of category name to level name, as a sidecar declares it, read into `into`.
+template <class LevelMap>
+bool read_levels(const Categories& categories, const LevelMap& levels, const std::string& where,
+                 ContentClasses& into, std::string& error) {
+  for (u32 i = 0; i < levels.size(); ++i) {
+    const std::string& name = levels.key_at(i);
     const i32 category = categories.find(name);
     if (category < 0) {
-      error = "content_classes: '" + name + "' is not a category the engine or the game defines";
+      error = where + ": '" + name + "' is not a category the engine or the game defines";
       return false;
     }
     const u32 c = static_cast<u32>(category);
-    const i32 level = categories.level(c, declared.levels.value_at(i));
+    const i32 level = categories.level(c, levels.value_at(i));
     // A level the ladder does not have fails closed: the ladder's highest.
-    classes.levels[c] = level < 0 ? categories.top(c) : static_cast<u8>(level);
+    into.levels[c] = level < 0 ? categories.top(c) : static_cast<u8>(level);
+  }
+  return true;
+}
+
+}  // namespace
+
+bool read_classes(const Categories& categories, const content::ContentClasses& declared,
+                  ContentClasses& out, std::string& error, Vector<MaterialClass>* materials) {
+  ContentClasses classes;
+  if (!read_levels(categories, declared.levels, "content_classes", classes, error)) return false;
+  Vector<MaterialClass> per_material;
+  for (u32 m = 0; m < declared.materials.size(); ++m) {
+    MaterialClass material{declared.materials.key_at(m), ContentClasses{}};
+    const std::string where = "content_classes.materials['" + material.name + "']";
+    if (!read_levels(categories, declared.materials.value_at(m).levels, where, material.classes,
+                     error))
+      return false;
+    // v0 decides per mesh: a material's class is the asset's too.
+    classes = join(classes, material.classes);
+    per_material.push_back(std::move(material));
   }
   out = classes;
+  if (materials) *materials = std::move(per_material);
   return true;
 }
 

@@ -183,6 +183,52 @@ TEST_CASE(
   CHECK(is_none(out));
 }
 
+TEST_CASE("content_class: a class declared per material is read and joined into the asset's") {
+  const Categories categories = with_glow();
+  std::string error;
+
+  // A class only under `materials`: before the mend it read as none and was admitted.
+  content::ContentClasses declared;
+  content::MaterialContentClasses bright;
+  bright.levels.insert(std::string("fixture_glow"), std::string("bright"));
+  declared.materials.insert(std::string("m0"), std::move(bright));
+  content::MaterialContentClasses plain;
+  plain.levels.insert(std::string("violence"), std::string("none"));
+  declared.materials.insert(std::string("m1"), std::move(plain));
+  ContentClasses out;
+  Vector<MaterialClass> materials;
+  REQUIRE(read_classes(categories, declared, out, error, &materials));
+  CHECK(out.levels[glow()] == 2);
+  CHECK(decide(out, agent_default()).outcome == Outcome::omit);
+  REQUIRE(materials.size() == 2);
+  CHECK(materials[0].name == "m0");
+  CHECK(materials[0].classes == classes_of(glow(), 2));
+  CHECK(materials[1].name == "m1");
+  CHECK(is_none(materials[1].classes));
+
+  // Joined with the asset's own levels, per category.
+  declared.levels.insert(std::string("violence"), std::string("mild"));
+  REQUIRE(read_classes(categories, declared, out, error));
+  CHECK(out == join(classes_of(glow(), 2), classes_of(k_violence, 1)));
+
+  // A material's level its ladder does not have reads as the top.
+  content::ContentClasses unknown_level;
+  content::MaterialContentClasses blinding;
+  blinding.levels.insert(std::string("fixture_glow"), std::string("blinding"));
+  unknown_level.materials.insert(std::string("m0"), std::move(blinding));
+  REQUIRE(read_classes(categories, unknown_level, out, error));
+  CHECK(out.levels[glow()] == categories.top(glow()));
+
+  // An unknown category under a material is refused as under the asset's levels.
+  content::ContentClasses unknown_category;
+  content::MaterialContentClasses hum;
+  hum.levels.insert(std::string("fixture_hum"), std::string("none"));
+  unknown_category.materials.insert(std::string("m0"), std::move(hum));
+  CHECK_FALSE(read_classes(categories, unknown_category, out, error));
+  CHECK(error.find("fixture_hum") != std::string::npos);
+  CHECK(error.find("materials") != std::string::npos);
+}
+
 TEST_CASE("content_class: join is the per-category maximum") {
   const ContentClasses a = join(classes_of(k_nudity, 1), classes_of(glow(), 2));
   const ContentClasses b = join(classes_of(k_nudity, 2), classes_of(k_violence, 1));

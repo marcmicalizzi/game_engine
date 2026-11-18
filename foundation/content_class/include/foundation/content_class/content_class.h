@@ -142,12 +142,22 @@ class Categories {
   Vector<Vector<std::string>> ladders_;
 };
 
-// Reads what an asset declares (a sidecar's `content_classes`, the whole asset's levels). A
-// category neither table defines is refused (a level that cannot be ordered cannot be capped);
-// a level its ladder does not have is read as the ladder's highest, so an unknown level fails
-// closed. `error` names the category.
+// One material's own classes, as an asset declared them, for the part-wise substitution the
+// character work builds (C11, C12).
+struct MaterialClass {
+  std::string name;
+  ContentClasses classes;
+};
+
+// Reads what an asset declares (a sidecar's `content_classes`): the whole asset's levels, and
+// every material's, each validated alike and joined into `out`, because v0 decides per mesh and
+// a class declared only on a material is the asset's too. A category neither table defines is
+// refused (a level that cannot be ordered cannot be capped); a level its ladder does not have is
+// read as the ladder's highest, so an unknown level fails closed. `error` names the category and
+// where it was. `materials`, when given, receives each material's own classes, by name.
 bool read_classes(const Categories& categories, const content::ContentClasses& declared,
-                  ContentClasses& out, std::string& error);
+                  ContentClasses& out, std::string& error,
+                  Vector<MaterialClass>* materials = nullptr);
 
 // The operator's policies, with `agent-default` compiled in. Cold data, built at start.
 struct NamedPolicy {
