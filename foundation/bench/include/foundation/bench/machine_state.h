@@ -56,6 +56,11 @@ struct MachineState {
   f64 gpu_util_pct = 0.0;
   u64 gpu_memory_used_mib = 0;
   u64 gpu_memory_total_mib = 0;
+  // Set by sample_after_own_gpu_work when the first reading was this process's own work ending
+  // and the GPU was read again after the utilization counter's period: `gpu_util_pct` is the
+  // second reading, `gpu_own_tail_pct` the first.
+  bool gpu_settled = false;
+  f64 gpu_own_tail_pct = 0.0;
 
   // Yes when a lock screen is up (Windows: a LogonUI.exe process exists). Unknown elsewhere.
   Tristate session_locked = Tristate::Unknown;
@@ -123,5 +128,26 @@ MachineSampler& system_sampler();
 
 // system_sampler().sample(window_ms).
 MachineState sample_machine_state(i64 window_ms);
+
+// How far back nvidia-smi's `utilization.gpu` looks: "percent of time over the past sample
+// period during which one or more kernels was executing", the period "between 1 second and 1/6
+// second depending on the product" (nvidia-smi --help-query-gpu). A reading taken sooner than
+// this after a process's own GPU work ended still counts that work.
+inline constexpr i64 k_gpu_utilization_period_ms = 1000;
+
+// The state as a run of this process's own GPU work ends, with the device already idle: the
+// sample a measured run takes at its end. A plain sample there reads the run's own last second
+// of frames as a busy card (the frame budgets' unpaced erg walk read 97-99% at every gate of
+// batches 66 and 67 with other processes at 1% of the CPU), so when the first reading is busier
+// than `thresholds` allow, this waits `settle_ms` and reads the GPU again with no CPU window,
+// and the second reading is the state's: whatever the card is still doing then is somebody
+// else's. The first reading is kept in `gpu_own_tail_pct` (`gpu_settled` true). The CPU, the
+// session and the lock are the first sample's. Nothing is waited for on a quiet card or a
+// machine with no GPU reading.
+MachineState sample_after_own_gpu_work(MachineSampler& sampler, i64 window_ms, i64 settle_ms,
+                                       const QuietThresholds& thresholds);
+
+// sample_after_own_gpu_work(system_sampler(), window_ms, k_gpu_utilization_period_ms, {}).
+MachineState sample_machine_state_after_own_gpu_work(i64 window_ms);
 
 }  // namespace engine::bench

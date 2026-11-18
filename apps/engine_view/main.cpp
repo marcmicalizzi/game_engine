@@ -2797,7 +2797,7 @@ int run_reference(Options& options) {
       exit_code = fail("reference", error);
       break;
     }
-    machine_end = bench::sample_machine_state(bench::k_sample_window_ms);
+    machine_end = bench::sample_machine_state_after_own_gpu_work(bench::k_sample_window_ms);
     if (!options.capture.empty()) {
       const io::Status status =
           image::write_png(options.capture, frame.width, frame.height, 4,
@@ -3614,7 +3614,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       timed_seconds = static_cast<f64>(time::monotonic_ns() - started) / 1.0e9;
       if (!options.benchmark.empty()) {
         view_renderer.sample_gpu_memory();
-        machine_end = bench::sample_machine_state(bench::k_sample_window_ms);
+        machine_end = bench::sample_machine_state_after_own_gpu_work(bench::k_sample_window_ms);
         measured = true;
       }
     } else if (!options.benchmark.empty()) {
@@ -3679,7 +3679,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       }
       timed_seconds = flight.seconds;
       view_renderer.sample_gpu_memory();
-      machine_end = bench::sample_machine_state(bench::k_sample_window_ms);
+      machine_end = bench::sample_machine_state_after_own_gpu_work(bench::k_sample_window_ms);
       rendered = flight.submitted;
       measured = true;
 
