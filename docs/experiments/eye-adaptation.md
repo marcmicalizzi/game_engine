@@ -127,3 +127,39 @@ of 255:
 | stopped 1 s (420) | 10.0 | 147.6 |
 | stopped 3 s (540) | 9.9 | 150.2 |
 | held (719): 26.9 cd/m², EV100 6.78 | 9.9 | 151.3 |
+
+| The village (a scratch path: three seconds of house 0's garden path, then `interior-door.json`, held eight seconds; the scene's own hour) | Main (EV100 14.97, the rule) | Adapted |
+|---|---|---|
+| on the path (frame 60), the house's front in its own shade | 74.0 | 170.0 |
+| before the door (180) | 68.9 | 142.1 |
+| at the door (270) | 59.9 | 148.2 |
+| inside, 0.17 s after stopping (330) | 21.4 | 100.9 |
+| inside 1 s (380) | 21.1 | 130.0 |
+| inside 3 s (500) | 20.7 | 166.8 |
+| held (799): the stair passage, 63.8 cd/m², EV100 7.95 | 20.3 | 179.9 |
+
+**What reads right**: the rooms and the passage are seen at all — main draws them at 10 to 21 of
+255, where a person sees nothing — and they open up over seconds after the door, as the theatre
+does in Krawczyk's account: 101, 130, 167, 180 at 0.17, 1, 3 and 8 s. The cave's wall reads as
+stone in a dim passage, its lichen and cracks visible.
+
+**What still reads wrong, and is the next leg's**:
+
+- **A shaded view outdoors is lifted about two stops.** On the garden path the house's front is in
+  its own shade and fills the centre's disc, so the meter reads a shaded facade, and the frame is
+  exposed for it: the facade goes white and the sky burns to white where main drew a blue sky over a
+  grey wall. A person in the street adapts to the street, not to the wall in front of them; the
+  global key has no way to know the sky is part of the field. What would take it back: metering
+  the whole field with the sky's share kept (a lower `high`, or the centre weight lighter
+  outdoors), a cap on how far the meter may lift the frame above the sky's rule while the eye is
+  under the open sky (the rule already knows the light at the eye), or local adaptation.
+- **The held rooms are on the bright side**: 180 of 255 in the stair passage, the cream plaster
+  near white. The operator's display value (0.30 to 0.35 for these luminances) is a mean; the
+  plaster is brighter than the mean of a passage with a dark stair. A person standing there sees
+  a dim passage; a lower key indoors or the operator's own compression above the mean would draw
+  one.
+- **The doorway burns** from inside, as a camera's does; the eye's local adaptation would hold both.
+- Pre-exposure is not done: the resolve still draws at the rule's exposure and the encode lifts it,
+  so the darkest interiors sit in the half-float image's subnormals (above).
+
+So the default stays off: on, it fixes the rooms and the cave and over-lifts a shaded street.
