@@ -1307,12 +1307,14 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
     geometry::ClusterLodMesh lod;
     geometry::ClusterPages pages;
     const u64 hash = mesh < out.mesh_info.size() ? out.mesh_info[mesh].hash : 0;
-    // A path relative to the scene is the scene directory's, as the load resolves it. A mesh that
-    // cannot be read here is not this read's to refuse — the load says why, with its own sentence —
-    // so its footprint is its point alone until then.
-    std::string mesh_path = out.meshes[mesh];
-    if (!mesh_path.empty() && !dir.empty() && !std::filesystem::path(mesh_path).is_absolute())
-      mesh_path = dir + "/" + mesh_path;
+    // **The path is the load's as it stands** (G210, 2026-11-17): every path in `out.meshes` is
+    // resolved when it is put there — the file's own meshes and props against the scene's
+    // directory as they are read, a generator's as its entry resolved them — so joining the
+    // directory again named `<scene dir>/content/flora/...` for the village scene's cover and
+    // every one of them went unmeasured. A mesh that cannot be read here is not this read's to
+    // refuse — the load says why, with its own sentence — so its footprint is its point alone
+    // until then.
+    const std::string& mesh_path = out.meshes[mesh];
     radius = 0.0f;
     if (load_source_mesh(mesh_path, out, hash, source, lod, pages, why)) {
       radius = ground_radius(lod, 0, lod.mesh.clusters.size());
