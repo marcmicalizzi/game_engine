@@ -414,6 +414,103 @@ machine-wide limit would have to answer.
 
 **Checking the release stamp.** The build-time stamp is regenerated from Git on every build (`cmake/EngineBuildStamp.cmake`), and the build relinks the applications when it changes. `engine-view`, `engine-editor`, `engine-content`, `engine-image` and `engine-mcp` expose it through `--version`. The host, CLI and input probe currently have no `--version` switch; verify their completed relink against the clean generated stamp and retain their file hashes with an install, rather than treating an unsupported flag as a stale binary.
 
+### The shader cache
+
+**A compile some checkout already made is copied, not made again** (roadmap T76, 2026-11-17).
+About twenty agents build this tree in fresh worktrees every night. ccache shares their C++ objects
+([the compiler cache](local-linux.md#the-compiler-cache)), but `slangc` is not a compiler ccache
+wraps, so until T76 every fresh worktree compiled every shader again, the six heavy resolve
+variants included. Measured on batch 68's base (0073605c), a fresh worktree's first `msvc-debug`
+build at `-j6` on a machine at 100% CPU with ccache warm for the C++: **63 shader compiles, 1,411 s
+of Ninja time between them (1,362 s of `slangc` by the meter), and at least one of them running for
+604 s of the build's 2,530** (24%; `domain/gfx` 56 compiles and 1,354 s, `systems/renderer` 5 and
+51 s, `volumetrics` and `scene_collision` one each; the longest single step,
+`visibility_resolve_rt_water_terrain_stochastic`, 489 s under that load). And almost all of it was
+repeated work: hashing the SPIR-V of the twenty other build trees on the machine that evening,
+**929 of the 1,146 shaders they shared a name with were byte-identical to this one's**, and every
+tree at the same commit whose author had not edited a shader matched all 63 — the gate's
+`msvc-release` included, so the bytes name neither the checkout nor the preset.
+
+**What it is.** The meter every compile already runs under (`tools/shader_meter`, the section above)
+is also the cache, so nothing else stands between Ninja and `slangc`. `engine_shaders()` gives it
+the store (`ENGINE_SHADER_CACHE_DIR`), the compiler's identity, and which arguments are the source
+and the output; the compile's own arguments are unchanged, and the embedded header and the
+manifest the hot-reload path reads are made exactly as before. A lookup is two levels, as ccache's
+direct mode is ([`shader_cache.h`](../../tools/shader_meter/src/shader_cache.h)):
+
+| Level | What goes into it |
+|---|---|
+| The manifest key (SHA-256) | the cache's format version; **the compiler**: a SHA-256 over the Slang release's version and every file of its `bin/` and `lib/` (slangc, the compiler library, glslang, the LLVM backend), taken at configure; the source's **file name** and **bytes**; **every argument** of the compile in order (target, profile, `-O2`, `-warnings-disable`, every `FLAGS` entry and define), with the source, the output and each `-I` directory written relative to the source's directory, so the same compile in two checkouts has one key |
+| An entry of the manifest | **every file `slangc` read**, from its own `-depfile` (so no `DEPENDS` list or configure-time scan can be short, and an include reached through a macro counts), each with its SHA-256; and **every place an `#include "..."` of those files could have been found and was not** — beside the including file, in each `-I` directory, beside the shader, in the compile's working directory — each of which must still not exist, because a file created there later would be read instead (a shadow) |
+
+An entry is served only when every file it lists still has its hash and every shadow is still
+absent; a manifest keeps the sixteen newest entries, so the branches of a batch that each changed
+one included file each keep theirs. What is not in the key, and why that is safe: the absolute
+paths (the SPIR-V carries none — checked on every store: **an output that contains the directory it
+was compiled in is compiled and never stored**, which is what `-g` produces); the environment
+(`slangc` reads none of the engine's); the preset (it changes no shader argument, and the bytes
+match across presets above).
+
+**Writing is safe beside other builds.** Every file goes to a temporary name in the store's own
+`tmp/` and is renamed into place. A result (the SPIR-V, the cost lines the meter measured, what
+`slangc` printed) is written once and never replaced, SPIR-V last, so a result whose SPIR-V exists
+is whole; two builds storing one key at once both succeed with the same bytes. A manifest is
+replaced whole, and two builds adding to one at once lose at most one entry, which is a later miss.
+A file `slangc` read that was written at or after the compile started may have changed under it, so
+that compile is not stored (ccache's "include file too new"); the source's key is taken again after
+the compile for the same reason.
+
+**What a build sees.** A hit copies the SPIR-V, writes the stored cost lines and `cache hit` as the
+cost file's third line (`build.shader_pool` reads the first two, which are the compile's own
+measurement), and prints what `slangc` printed when it compiled, so a hit carries the warnings. A
+miss runs `slangc` with `-depfile` added, passes its output on, and writes `cache stored` or `cache
+not stored: <why>`. So `Select-String 'cache hit' build/<preset>/**/*.cost` counts a build's hits.
+
+**Where it is on**, by the compiler cache's rules ([`CompilerCache.psm1`](../../tools/lib/CompilerCache.psm1),
+`Get-ShaderCachePlan`): `tools/dev.ps1 configure` sets the store in an agent's worktree and the
+gate's, `<main checkout>_local\shader-cache` beside ccache's (or `$env:ENGINE_SHADER_CACHE_DIR`), and
+leaves it unset in the primary checkout and any other worktree unless `ENGINE_SHADER_CACHE=1`;
+`ENGINE_SHADER_CACHE=0` turns it off everywhere. Nothing about debugging keeps it out of the owner's
+checkout, since a served SPIR-V is the compile's own bytes; the rule is ccache's so that the owner's
+checkout changes only when asked. In the Linux containers the store is `/ccache/engine-shaders`, a
+directory of the compiler cache's volume (ccache keeps to its own sixteen level directories), on the
+configure line of every preset, and `ENGINE_SHADER_CACHE=0` reaches the meter there as
+`CCACHE_DISABLE` does. At build time `ENGINE_SHADER_CACHE=0` makes the meter compile without reading
+or writing the store, with no configure; changing the setting through `dev.ps1` reconfigures, which
+changes every shader's command and compiles them once. The store holds itself under 4 GB
+(`ENGINE_SHADER_CACHE_MAX_MB`): at most every ten minutes a store walks it and removes the least
+recently used files down to nine tenths, a hit touching what it served. One commit's 63 shaders are
+30 MB, so 4 GB is over a hundred generations of every shader. Deleting the directory empties it
+for the machine; the next build of each checkout compiles once.
+
+**The proof.** `tools.shader_cache` (CTest label `tools`, `cmake/CheckShaderCache.cmake`) compiles a
+small shader tree in two copies with this build's `slangc` into a store of its own and holds every
+ingredient: the same compile from the other copy's path is served the bytes `slangc` makes with no
+cache; an edit to an included file, an edit to the source, a changed flag, a changed compiler and a
+file that now shadows an include each miss (and the shadow's compile shows `slangc` did read it);
+`ENGINE_SHADER_CACHE=0` serves and stores nothing; a failing compile is never stored or served; a
+`-g` compile names its directory and is not stored; two compiles of one key at once both succeed
+with one SPIR-V; a store over its limit is emptied down to it; the depfile reader and SHA-256 against
+FIPS 180-4's vectors.
+
+**Measured** (2026-11-17, one worktree at 0073605c, `msvc-debug`, `-j6`, the machine at 100% CPU
+throughout with some twenty other agents building; Ninja's own log, each compile counted once):
+
+| Run | Shader steps | Their Ninja time, summed | Wall time with one running | SPIR-V against the uncached build |
+|---|---|---|---|---|
+| before: the fresh worktree's first build, no cache | 63 compiles | 1,411 s | 604 s of a 2,530 s build | (the reference) |
+| the cache on, the store empty: every compile a miss and stored | 63 compiles | 952 s | 335 s | 63 of 63 byte-identical |
+| the cache on, the store warm: every `.spv` and `.cost` removed and built again | 63 hits | 138 s | **35 s** | 63 of 63 byte-identical |
+
+A hit is a process start and some file reads: 0.2 to 1.5 s each here (one by hand: 175 ms when the
+files were warm, 1.4 s when they were not), against 1.5 s for the cheapest compile and 490 s for
+the dearest under that load. So a fresh worktree whose shaders match a commit any checkout on the
+machine has built — every agent's worktree at the batch's base, until it edits a shader — spends
+about half a minute of its first build on shaders instead of ten, and none of the heavy compiles'
+memory: a hit holds no `slangc` (its pool slot for a moment), so the 12 GiB of the largest variant is
+paid once a machine per change to what the resolve includes, not once a worktree. The miss path
+costs a depfile and the store's writes, inside the noise of the compiles beside it.
+
 ## The gate's wall clock (T77)
 
 The owner, 2026-11-09: five to ten hours a day waiting for gates is too high. Until T77 every leg of

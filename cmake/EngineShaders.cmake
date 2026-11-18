@@ -43,6 +43,43 @@ if(ENGINE_SHADERS)
   message(STATUS "engine: slangc ${ENGINE_SLANG_VERSION} at ${ENGINE_SLANGC}")
 endif()
 
+# The shader compile cache (roadmap T76; docs/ci/what-to-run.md, "The shader cache";
+# tools/shader_meter/src/shader_cache.h). Empty is off, which is the build as it always was. A
+# directory is the machine's store: every engine_shaders() compile goes through tools/shader_meter
+# with it, a compile some checkout already made is copied from it, and any other runs and is stored.
+# tools/dev.ps1 configure sets it in an agent's worktree and the gate's (and anywhere with
+# ENGINE_SHADER_CACHE=1), tools/linux-build.ps1 in every container; ENGINE_SHADER_CACHE=0 in the
+# environment of a build turns it off for that build without a configure.
+set(ENGINE_SHADER_CACHE_DIR "" CACHE PATH
+  "The machine-wide shader compile cache's store (empty: no cache)")
+
+# What the compiler is, for the cache's key: a SHA-256 over the release's version and every file of
+# its bin and lib directories (slangc, the compiler library it loads, glslang, the LLVM backend), so
+# a different release or a patched DLL is a different key and never a wrong hit. Hashed at every
+# configure (about 120 MB, a fraction of a second); the package changes only at a configure.
+function(_engine_slang_identity out_var)
+  get_filename_component(_bin "${ENGINE_SLANGC}" DIRECTORY)
+  get_filename_component(_package "${_bin}" DIRECTORY)
+  file(GLOB _files LIST_DIRECTORIES false "${_bin}/*" "${_package}/lib/*")
+  list(SORT _files)
+  set(_text "slang ${ENGINE_SLANG_VERSION}\n")
+  foreach(_file IN LISTS _files)
+    file(SHA256 "${_file}" _hash)
+    get_filename_component(_name "${_file}" NAME)
+    string(APPEND _text "${_name} ${_hash}\n")
+  endforeach()
+  string(SHA256 _id "${_text}")
+  set(${out_var} "${_id}" PARENT_SCOPE)
+endfunction()
+
+if(ENGINE_SHADERS AND ENGINE_SHADER_CACHE_DIR)
+  _engine_slang_identity(ENGINE_SLANG_IDENTITY)
+  string(SUBSTRING "${ENGINE_SLANG_IDENTITY}" 0 12 _short)
+  message(STATUS "engine shaders: compile cache at ${ENGINE_SHADER_CACHE_DIR} (slangc ${_short})")
+elseif(ENGINE_SHADERS)
+  message(STATUS "engine shaders: compile cache off (ENGINE_SHADER_CACHE_DIR is empty)")
+endif()
+
 # The heavy compiles share a pool (roadmap T118; docs/ci/what-to-run.md, "Heavy shaders share a
 # pool"; cmake/EngineShaderCosts.cmake has the line, the share and why). A shader is heavy when
 # cmake/shader-costs.txt gives it a peak at or above ENGINE_SHADER_HEAVY_MB; its slangc compile is
@@ -154,9 +191,17 @@ function(engine_shaders)
     file(RELATIVE_PATH _spv_rel "${CMAKE_BINARY_DIR}" "${_spv}")
     set_property(GLOBAL APPEND PROPERTY ENGINE_SHADER_POOL_ENTRIES
       "${_stem}|${_heavy}|${_spv_rel}|${_cost}")
+    # With the cache on, the meter is told the store, the compiler's identity and which arguments
+    # are the source and the output; the compile's own arguments are the same either way, so a
+    # SPIR-V served from the store is the one this command makes without it.
+    set(_cache_args "")
+    if(ENGINE_SHADER_CACHE_DIR)
+      set(_cache_args --cache "${ENGINE_SHADER_CACHE_DIR}" --compiler "${ENGINE_SLANG_IDENTITY}"
+                      --source "${_abs}" --output "${_spv}")
+    endif()
     add_custom_command(
       OUTPUT "${_spv}" "${_cost}"
-      COMMAND engine_shader_meter "${_cost}" "${ENGINE_SLANGC}" "${_abs}"
+      COMMAND engine_shader_meter ${_cache_args} "${_cost}" "${ENGINE_SLANGC}" "${_abs}"
               -target spirv -profile ${SH_PROFILE} -emit-spirv-directly
               -fvk-use-entrypoint-name -O2 -warnings-disable 41012 ${SH_FLAGS}
               -o "${_spv}"
@@ -263,6 +308,14 @@ function(_engine_shader_pool_finalize)
               "-DMETER=$<TARGET_FILE:engine_shader_meter>"
               -P "${CMAKE_SOURCE_DIR}/cmake/CheckShaderCosts.cmake")
     set_tests_properties(tools.shader_costs PROPERTIES LABELS "tools")
+    # The shader cache's key, ingredient by ingredient, over two copies of a small shader tree
+    # compiled by this build's slangc (cmake/CheckShaderCache.cmake). It never touches the
+    # machine's store: it makes one of its own under WORK.
+    add_test(NAME tools.shader_cache
+      COMMAND "${CMAKE_COMMAND}" "-DWORK=${CMAKE_BINARY_DIR}/Testing/Temporary"
+              "-DMETER=$<TARGET_FILE:engine_shader_meter>" "-DSLANGC=${ENGINE_SLANGC}"
+              -P "${CMAKE_SOURCE_DIR}/cmake/CheckShaderCache.cmake")
+    set_tests_properties(tools.shader_cache PROPERTIES LABELS "tools")
     if(CMAKE_GENERATOR MATCHES "Ninja")
       add_test(NAME build.shader_pool
         COMMAND "${CMAKE_COMMAND}" "-DBINARY_DIR=${CMAKE_BINARY_DIR}"

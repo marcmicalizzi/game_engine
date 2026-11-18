@@ -208,6 +208,70 @@ function Read-CachedLauncher([string]$BuildDir) {
   return ''
 }
 
+# --- the shader compile cache (roadmap T76) -----------------------------------------------------
+#
+# slangc is not a compiler ccache wraps, so the shaders have a cache of their own
+# (tools/shader_meter/src/shader_cache.h; docs/ci/what-to-run.md, "The shader cache"), switched by
+# the same rules as ccache: on in an agent's worktree and the gate's, off in the primary checkout
+# and any other worktree unless ENGINE_SHADER_CACHE=1, and ENGINE_SHADER_CACHE=0 off everywhere.
+# The SPIR-V carries no path (one that would is compiled and never stored), so the caveat that keeps
+# ccache out of the owner's checkout does not arise here; the rule is the same so the owner's
+# checkout changes only when asked. It needs no ccache and no Windows: the store is a directory
+# beside ccache's (<main checkout>_local\shader-cache, or $env:ENGINE_SHADER_CACHE_DIR), handed to
+# CMake as ENGINE_SHADER_CACHE_DIR, so a build run straight through ninja uses it as dev.ps1's does.
+
+function Get-ShaderCachePlan {
+  <#
+  .SYNOPSIS
+    Whether this configure gives the build the shader compile cache, why, and where: Enabled,
+    Reason, and when enabled Dir (forward slashes, as CMake is given it).
+  #>
+  param(
+    [Parameter(Mandatory)][ValidateSet('primary', 'agent', 'gate', 'worktree')][string]$Kind,
+    [AllowEmptyString()][string]$Setting,
+    [Parameter(Mandatory)][string]$MainRoot,
+    [AllowEmptyString()][string]$CacheDir
+  )
+  $off = { param($why) [pscustomobject]@{ Enabled = $false; Reason = $why } }
+  if ($Setting -eq '0') { return & $off 'ENGINE_SHADER_CACHE=0' }
+  $wanted = ($Kind -in @('agent', 'gate')) -or ($Setting -eq '1')
+  if (-not $wanted) {
+    $what = if ($Kind -eq 'primary') { 'the primary checkout' } else { 'a worktree that is neither an agent''s nor the gate''s' }
+    return & $off "$what (ENGINE_SHADER_CACHE=1 turns it on)"
+  }
+  $main = $MainRoot.TrimEnd('\', '/')
+  $sep = if ($main.Contains('\')) { '\' } else { '/' }
+  $base = $main -replace '[\\/][^\\/]+$', ''
+  $leaf = $main -replace '^.*[\\/]', ''
+  if (-not $CacheDir) { $CacheDir = "$base$sep${leaf}_local${sep}shader-cache" }
+  return [pscustomobject]@{ Enabled = $true; Reason = "$Kind checkout"; Dir = ($CacheDir -replace '\\', '/') }
+}
+
+function Get-ShaderCacheConfigureArgs {
+  # The cache variable a configure passes: the store when enabled; when not, an empty value only if
+  # the tree still names one (so a tree never switched on is configured exactly as before).
+  param([Parameter(Mandatory)][object]$Plan, [AllowEmptyString()][string]$CachedDir)
+  if ($Plan.Enabled) { return @("-DENGINE_SHADER_CACHE_DIR=$($Plan.Dir)") }
+  if ($CachedDir) { return @('-DENGINE_SHADER_CACHE_DIR=') }
+  return @()
+}
+
+function Test-ShaderCacheReconfigure {
+  # Whether a configured tree's store is not the one the plan wants (switched on, off, or moved).
+  param([Parameter(Mandatory)][object]$Plan, [AllowEmptyString()][string]$CachedDir)
+  if ($Plan.Enabled) { return $CachedDir -ne $Plan.Dir }
+  return [bool]$CachedDir
+}
+
+function Read-CachedShaderCacheDir([string]$BuildDir) {
+  # ENGINE_SHADER_CACHE_DIR as the build tree's CMakeCache.txt has it, or ''.
+  $cache = Join-Path $BuildDir 'CMakeCache.txt'
+  if (-not (Test-Path -LiteralPath $cache)) { return '' }
+  $line = Select-String -LiteralPath $cache -Pattern '^ENGINE_SHADER_CACHE_DIR(:[A-Z]+)?=(.*)$' | Select-Object -First 1
+  if ($line) { return $line.Matches[0].Groups[2].Value }
+  return ''
+}
+
 # --- a corrupt object at the link (LNK1236) ------------------------------------------------------
 #
 # MSVC's linker sometimes refuses an object this machine built a moment before: "fatal error
@@ -318,4 +382,5 @@ function Get-CorruptObjectRepair {
 
 Export-ModuleMember -Function Get-CheckoutKind, ConvertFrom-CcacheVersion, Find-Ccache, Get-CcachePlan, Get-CcacheConfigureArgs,
   Test-CcacheReconfigure, Read-CachedLauncher, Find-CorruptObjectError, ConvertFrom-NinjaQueryInput, Resolve-LinkedLibrary,
-  Get-CorruptObjectRepair
+  Get-CorruptObjectRepair, Get-ShaderCachePlan, Get-ShaderCacheConfigureArgs, Test-ShaderCacheReconfigure,
+  Read-CachedShaderCacheDir

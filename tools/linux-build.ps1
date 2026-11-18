@@ -32,8 +32,10 @@
   checkout's container compiles the same command at the same paths, so an unchanged file is a hit
   wherever it was last compiled and a fresh worktree's first build is the links plus what its
   change touched. Each preset's build prints two lines of cache statistics. ENGINE_CCACHE=0 runs
-  the compiler directly for one invocation (the launcher stays, so nothing reconfigures). Build
-  trees stay per checkout.
+  the compiler directly for one invocation (the launcher stays, so nothing reconfigures). **So are
+  compiled shaders**: slangc's SPIR-V goes through the shader compile cache in the same volume
+  (/ccache/engine-shaders; docs/ci/what-to-run.md, "The shader cache"), and ENGINE_SHADER_CACHE=0
+  compiles every shader for one invocation. Build trees stay per checkout.
 
   Presets: linux-clang-debug, linux-gcc-release, linux-clang-minimal, linux-clang-no-ecs, or
   `all` for the four in that order — the same four, in the same order, as ci.yml's matrix.
@@ -312,10 +314,12 @@ if [ "$copied" -gt 0 ] && [ "$copied" -le 12 ]; then grep '^>f' /tmp/sync.log | 
 
 # The volumes, the compiler cache's settings and the network, from tools/lib/LinuxVolumes.psm1
 # (Get-BuildContainerArgs), where tools/linux-build.Tests.ps1 checks them. ENGINE_CCACHE=0 runs the
-# compiler directly for this invocation and leaves the configure line, and so the build tree, alone.
+# compiler directly for this invocation and leaves the configure line, and so the build tree, alone;
+# ENGINE_SHADER_CACHE=0 does the same for slangc.
 function Get-RunArgs([string]$role) {
   return Get-BuildContainerArgs -SrcVolume $SrcVolume -DepsVolume $DepsVolume -RoleLabel $RoleLabel -Role $role `
-                                -Offline:$Offline -NoCcache:($env:ENGINE_CCACHE -eq '0')
+                                -Offline:$Offline -NoCcache:($env:ENGINE_CCACHE -eq '0') `
+                                -NoShaderCache:($env:ENGINE_SHADER_CACHE -eq '0')
 }
 
 # Containers from this toolchain's images that a build must not run beside: anything but a shell

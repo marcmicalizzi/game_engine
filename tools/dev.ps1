@@ -17,6 +17,9 @@
                 debug information names the checkout that compiled it first; ENGINE_CCACHE=0 is
                 off everywhere (tools/lib/CompilerCache.psm1, docs/ci/local-linux.md "The
                 compiler cache"). A tree whose launcher no longer matches is configured again.
+                The shaders have a cache of their own by the same rules (ENGINE_SHADER_CACHE=1
+                or 0, the store <main checkout>_local\shader-cache or $env:ENGINE_SHADER_CACHE_DIR;
+                docs/ci/what-to-run.md, "The shader cache"), on any system, ccache or none.
     build       Build the preset (configures first if needed). -Affected builds only what
                 `test -Affected` would run: the affected modules' libraries, tests and benches,
                 the apps that link them, and every app when the tools' own tests run, since
@@ -137,6 +140,9 @@ function Get-CcacheSetup {
   $branch = & git -C $Root rev-parse --abbrev-ref HEAD 2>$null
   $kind = Get-CheckoutKind -Root $Root -GitDir $gitDir -CommonDir $commonDir -Branch "$branch"
   $mainRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $commonDir))
+  # The shader compile cache decides by the same facts (Get-ShaderCacheSetup).
+  $script:CheckoutKind = $kind
+  $script:MainRoot = $mainRoot
   $exe = ''
   $version = $null
   $cmd = Get-Command ccache -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -153,6 +159,21 @@ function Get-CcacheSetup {
   return $script:CcachePlan
 }
 
+# Whether this checkout's shaders compile through the machine's shader compile cache
+# (tools/lib/CompilerCache.psm1, Get-ShaderCachePlan): the same kinds of checkout as ccache, decided by
+# ENGINE_SHADER_CACHE, on every system, with or without a ccache.
+function Get-ShaderCacheSetup {
+  if ($script:ShaderCachePlan) { return $script:ShaderCachePlan }
+  $null = Get-CcacheSetup   # imports the module and finds the checkout's kind
+  if (-not $script:CheckoutKind) {
+    $script:ShaderCachePlan = [pscustomobject]@{ Enabled = $false; Reason = 'not a git checkout' }
+    return $script:ShaderCachePlan
+  }
+  $script:ShaderCachePlan = Get-ShaderCachePlan -Kind $script:CheckoutKind -Setting "$env:ENGINE_SHADER_CACHE" `
+                                                -MainRoot $script:MainRoot -CacheDir "$env:ENGINE_SHADER_CACHE_DIR"
+  return $script:ShaderCachePlan
+}
+
 function Invoke-Configure {
   Ensure-Tool cmake
   $args = @('--preset', $Preset)
@@ -160,6 +181,13 @@ function Invoke-Configure {
   $plan = Get-CcacheSetup
   $cacheArgs = @(Get-CcacheConfigureArgs -Plan $plan -CachedLauncher (Read-CachedLauncher $BuildDir))
   $args += $cacheArgs
+  $shaderPlan = Get-ShaderCacheSetup
+  $args += @(Get-ShaderCacheConfigureArgs -Plan $shaderPlan -CachedDir (Read-CachedShaderCacheDir $BuildDir))
+  if ($shaderPlan.Enabled) {
+    Write-Host "shader cache: on ($($shaderPlan.Reason)); store $($shaderPlan.Dir)" -ForegroundColor Cyan
+  } else {
+    Write-Verbose "shader cache: off ($($shaderPlan.Reason))"
+  }
   if ($plan.Enabled) {
     Write-Host "ccache: on ($($plan.Reason)); cache $($plan.CacheDir), base_dir $($plan.BaseDir), ccache $($plan.Version) at $($plan.Exe) (from $script:CcacheWhere)" -ForegroundColor Cyan
   } elseif ($cacheArgs.Count -gt 0 -or $env:ENGINE_CCACHE) {
@@ -179,6 +207,7 @@ function Invoke-Build {
   $configured = (Test-Path (Join-Path $BuildDir 'CMakeCache.txt')) -and (Test-Path (Join-Path $BuildDir 'build.ninja'))
   $plan = Get-CcacheSetup   # first: it imports the module the next line calls
   $relaunch = $configured -and (Test-CcacheReconfigure -Plan $plan -CachedLauncher (Read-CachedLauncher $BuildDir))
+  $relaunch = $relaunch -or ($configured -and (Test-ShaderCacheReconfigure -Plan (Get-ShaderCacheSetup) -CachedDir (Read-CachedShaderCacheDir $BuildDir)))
   if ($Fresh -or -not $configured -or $relaunch) { Invoke-Configure }
   Ensure-Tool cmake
   $buildArgs = @('--build', '--preset', $Preset)

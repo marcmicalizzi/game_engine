@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T76",
+  "reason": "T76: AGENTS.md's compiler-cache paragraph says shaders are shared through a cache of their own and how to switch it",
+  "date": "2026-11-17",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:AGENTS.md": 201
+  }
+}

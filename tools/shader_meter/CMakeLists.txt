@@ -1,7 +1,9 @@
 # shader-meter: runs each slangc compile of engine_shaders() and writes its peak memory and seconds
 # beside the SPIR-V, which build.shader_pool holds against cmake/shader-costs.txt (roadmap T118;
-# cmake/EngineShaders.cmake). Standard library and the operating system only, like schemac.
-add_executable(engine_shader_meter src/main.cpp)
+# cmake/EngineShaders.cmake), and, given a store, serves and stores those compiles as the shader
+# compile cache (roadmap T76; src/shader_cache.h). Standard library and the operating system only,
+# like schemac.
+add_executable(engine_shader_meter src/main.cpp src/sha256.cpp src/shader_cache.cpp)
 target_compile_features(engine_shader_meter PRIVATE cxx_std_20)
 engine_apply_warnings(engine_shader_meter)
 set_target_properties(engine_shader_meter PROPERTIES OUTPUT_NAME shader-meter)
