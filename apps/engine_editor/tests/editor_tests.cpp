@@ -1398,15 +1398,19 @@ namespace {
 
 // The embedded runs' document: one cube three metres across at the origin, and with `provenance`
 // an AssetProvenance record, whose `license_class` is an enum the properties panel lists.
-std::string embedded_fixture(const test::TempDir& tmp, bool provenance) {
+// `name` and `actor` are the placement's name and who the fixture's transaction is attributed to:
+// the page test plants markup in both, which the page must draw as text (A50).
+std::string embedded_fixture(const test::TempDir& tmp, bool provenance,
+                             const std::string& name = "only",
+                             const std::string& actor = "editor-test") {
   editor::EditorDocument document;
   std::string error;
   REQUIRE(write_cube_glb(tmp.path() + "/cube.glb"));
-  REQUIRE_MESSAGE(document.open(tmp.path(), true, "editor-test", error), error);
+  REQUIRE_MESSAGE(document.open(tmp.path(), true, actor, error), error);
   Vector<doc::Command> commands;
-  commands.push_back(doc::cmd_create(
-      k_left, k_placement, Id128{},
-      json(R"({"name":"only","mesh":"cube.glb","translation":[0,0,0],"scale":[3,3,3]})")));
+  JsonValue placement = json(R"({"mesh":"cube.glb","translation":[0,0,0],"scale":[3,3,3]})");
+  placement.set("name", JsonValue(name));
+  commands.push_back(doc::cmd_create(k_left, k_placement, Id128{}, std::move(placement)));
   if (provenance) {
     commands.push_back(doc::cmd_create(
         k_yard, "engine.content.AssetProvenance", Id128{},
@@ -1611,7 +1615,10 @@ TEST_CASE("engine-editor: the look gesture through the platform's queue turns th
 TEST_CASE(
     "engine-editor: the page with no viewport keeps its popups off the cell, and reconnects") {
   const test::TempDir tmp("engine_editor_page");
-  const std::string doc_dir = embedded_fixture(tmp, true);
+  // Another client's strings holding markup, as a record's name and as an actor's: the hook's
+  // "hostile" check finds both drawn as text and no element with an `onerror` (A50).
+  const std::string hostile = "<img src=x onerror=alert(1)>";
+  const std::string doc_dir = embedded_fixture(tmp, true, hostile, hostile);
   const std::string exe = test::app_path(ENGINE_APP_PATH);
   // The page's test hook (?test=1, only with --test-page) opens the command line's completions
   // and the properties panel's enum list by DOM events and reports whether each stays in its panel
@@ -1653,6 +1660,8 @@ TEST_CASE(
   const io::Status read = io::read_file(holds, held);
   CHECK_MESSAGE((read != io::Status::Ok || held.empty()), "the GPU lock was held: " << held);
   CHECK_MESSAGE(report_ok(page_report(summary, "completions")), output);
+  CHECK_MESSAGE(report_ok(page_report(summary, "hostile")), output);
+  CHECK_MESSAGE(report_ok(page_report(summary, "policy")), output);
   CHECK_MESSAGE(report_ok(page_report(summary, "enum")), output);
   CHECK_MESSAGE(report_ok(page_report(summary, "done")), output);
   // editor.relayout reached the page, which answered with a layout.

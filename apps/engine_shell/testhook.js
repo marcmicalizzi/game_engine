@@ -10,6 +10,10 @@
 // - "enum": the properties panel's list for an enum field, opened by a click on its button after
 //   the record was chosen by a click in the outliner, stays inside the properties panel and off
 //   the cell too.
+// - "hostile": a record's name and an actor's name holding markup are drawn as text, and no
+//   element carries an `onerror` (the page test's fixture plants both).
+// - "policy": the listener's content security policy is in force (no Trusted Types policy can be
+//   made) and the page has met no violation of it, an image from the listener included.
 // - "reconnect": after the socket dropped, the pill said "reconnecting" while it was down and
 //   "connected" once the page was back (sent on every reconnect).
 // - "done": the popup checks have run.
@@ -50,6 +54,13 @@ export function install(app) {
     app.rpc.notify("editor.test_report", { name, ok: Boolean(ok), detail: JSON.stringify(detail) });
   window.__test = { report };
 
+  // The listener's content security policy, seen from the page (A50): every violation the
+  // browser reports from here on — the reconnect's new socket, an image from the listener, a
+  // script — is collected for the "policy" check below.
+  const violations = [];
+  document.addEventListener("securitypolicyviolation",
+    (e) => violations.push(`${e.effectiveDirective} ${e.blockedURI}`));
+
   let down = "";
   app.rpc.addEventListener("state", (e) => {
     const state = e.detail.state;
@@ -61,8 +72,9 @@ export function install(app) {
       const cell = box($("viewport"));
       const toastBox = toast ? box(toast) : null;
       const clear = !toastBox || !overlaps(toastBox, cell);
-      report("reconnect", down === "reconnecting" && after === "connected" && clear,
-        { while_down: down, after, toast: toastBox, cell });
+      // The new socket is the page's own, so `connect-src 'self'` lets it through: no violation.
+      report("reconnect", down === "reconnecting" && after === "connected" && clear && violations.length === 0,
+        { while_down: down, after, toast: toastBox, cell, violations: violations.slice() });
       down = "";
     }
   });
@@ -94,6 +106,23 @@ export function install(app) {
     input.dispatchEvent(new Event("input"));
     input.blur();
 
+    // Another client's markup is text: a record named, and a transaction attributed to an actor
+    // named, `<img src=x onerror=alert(1)>` (the editor's page test plants both) are drawn as
+    // their characters, in the outliner and outside it (the journal), and no element anywhere
+    // carries an `onerror` (engine_shell.md, "What another client's content cannot do").
+    const hostile = "<img src=x onerror=alert(1)>";
+    // An element holding the string in a text node of its own (the journal's attribution line is
+    // text beside spans, so its element is not a leaf).
+    const leaf = (el) => [...el.childNodes].some(
+      (n) => n.nodeType === Node.TEXT_NODE && n.textContent.includes(hostile));
+    const named = await until(() => [...document.querySelectorAll(".tree-row")].find(
+      (r) => r.textContent.includes(hostile)), 5000);
+    const attributed = await until(() => [...document.querySelectorAll("body *")].find(
+      (el) => leaf(el) && !el.closest(".tree-row")), 5000);
+    const parsed = document.querySelector("[onerror]");
+    report("hostile", Boolean(named) && Boolean(attributed) && !parsed,
+      { outliner: Boolean(named), elsewhere: attributed ? attributed.className : null, parsed: Boolean(parsed) });
+
     // The properties panel's enum list, for a record chosen by a click in the outliner.
     const row = [...document.querySelectorAll(".tree-row")].find(
       (r) => r.querySelector(".tree-type") && r.querySelector(".tree-type").textContent === "AssetProvenance");
@@ -116,6 +145,32 @@ export function install(app) {
       }
       button.blur();
     }
+    // The policy is in force here: with `trusted-types 'none'` no Trusted Types policy can be
+    // made (so a string reaching an HTML sink throws), and an image from the listener loads or
+    // fails as a request (a 404 here) without a violation.
+    // The refused policy is itself reported as a `trusted-types` violation, which is set aside
+    // (it is the probe's, and more proof the policy holds) so the reconnect's check counts only
+    // what the page did.
+    const at = violations.length;
+    let policyRefused = false;
+    try {
+      window.trustedTypes.createPolicy("probe", { createHTML: (s) => s });
+    } catch (e) {
+      policyRefused = true;
+    }
+    await new Promise((resolve) => {
+      const img = new Image();
+      img.onload = img.onerror = resolve;
+      img.src = "/capture/no-such-capture";
+    });
+    await sleep(100);
+    const probe = violations.splice(at);
+    const others = violations.concat(probe.filter((v) => !v.startsWith("trusted-types ")));
+    report("policy", Boolean(window.trustedTypes) && policyRefused && others.length === 0,
+      { trusted_types: Boolean(window.trustedTypes), policy_refused: policyRefused, probe, violations: others });
+    violations.length = 0;
+    violations.push(...others);
+
     report("done", true, { narrow: Boolean(app.layout && app.layout.narrow) });
   })();
 }
