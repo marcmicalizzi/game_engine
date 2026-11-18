@@ -350,6 +350,46 @@ TEST_CASE("host: doc.place_asset and doc.instantiate_template over --stdio") {
         JsonValue(u32{3}));
 }
 
+// doc.query over one engine-host --stdio (protocol.md, "Querying the document"): a QA host's
+// filter, a page, and the refusals.
+TEST_CASE("host: doc.query over --stdio") {
+  test::TempDir tmp("engine_cli_query");
+  const std::string roles = tmp.file("roles.json");
+  write_file(roles, k_roles);
+  const std::string doc = tmp.file("doc");
+  REQUIRE(cli({"--doc", doc, "--create", "session.info"}).exit_code == 0);
+  write_file(doc + "/crate.glb", std::string("glTF\x02\0\0\0", 8));
+  {
+    Host director({"--roles", roles, "--actor", "boss", "--role", "director"});
+    REQUIRE(code_of(director.call("session.open",
+                                  "{\"path\":" + write_json(JsonValue(doc)) + "}")) == 0);
+    REQUIRE(
+        code_of(director.call(
+            "doc.place_asset",
+            R"({"session":"s1","asset":"crate.glb","placements":[{"name":"a","translation":[1,0,2]},{"name":"b","translation":[30,0,4]},{"name":"c","translation":[50,0,4]}],"attribution":{"rationale":"e2e"}})")) ==
+        0);
+  }
+  Host host({"--roles", roles, "--actor", "q", "--role", "qa"});
+  REQUIRE(code_of(host.call("session.open", "{\"path\":" + write_json(JsonValue(doc)) + "}")) == 0);
+  const JsonValue east = host.call(
+      "doc.query",
+      R"({"session":"s1","filter":{"all":[{"type":"engine.scene.*"},{"property":"translation[0]","at_least":10}]},"fields":["name"],"max_rows":1})");
+  REQUIRE(code_of(east) == 0);
+  const JsonValue& r = at(east, "result");
+  REQUIRE(at(r, "rows").size() == 1);
+  CHECK(at(r, "bound") == JsonValue("max_rows"));
+  const JsonValue rest = host.call(
+      "doc.query",
+      R"({"session":"s1","filter":{"property":"translation[0]","at_least":10},"fields":["name"],"after":")" +
+          std::string(at(r, "next").as_string()) + "\"}");
+  REQUIRE(code_of(rest) == 0);
+  CHECK(at(at(rest, "result"), "rows").size() == 1);
+  CHECK(at(at(rest, "result"), "complete") == JsonValue(true));
+  CHECK(code_of(host.call("doc.query", R"({"session":"s1","filter":{"all":{"type":"x"}}})")) ==
+        1004);
+  CHECK(code_of(host.call("doc.query", R"({"session":"s1","max_examined":0})")) == 1004);
+}
+
 // doc.describe over one engine-host --stdio (protocol.md, "Describing an object, a tile or a
 // region"): a read a QA host may make, its bounds, its refusals.
 TEST_CASE("host: doc.describe over --stdio") {

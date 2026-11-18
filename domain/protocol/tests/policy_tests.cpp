@@ -1452,3 +1452,120 @@ TEST_CASE("describe: a tile and a region from the tile index, in one order, unde
     }
   CHECK(found);
 }
+
+// ---- query (plan 06 §6.6; protocol.md, "Querying the document") ------------------------------
+
+namespace {
+
+JsonValue query(Host& host, JsonValue filter,
+                std::initializer_list<std::pair<const char*, JsonValue>> extra = {}) {
+  JsonValue params = obj({{"filter", std::move(filter)}});
+  for (auto& [k, v] : extra)
+    params.set(k, v);
+  return host.ok("doc.query", params);
+}
+
+JsonValue term(const char* property, const char* test, JsonValue value) {
+  return obj({{"property", JsonValue(property)}, {test, std::move(value)}});
+}
+
+JsonValue terms(const char* op, std::initializer_list<JsonValue> list) {
+  JsonValue a = JsonValue::array();
+  for (const JsonValue& t : list)
+    a.push_back(t);
+  return obj({{op, std::move(a)}});
+}
+
+}  // namespace
+
+TEST_CASE("query: a structured filter over the document, in id order, a page at a time") {
+  TempDir tmp("protocol_query");
+  Host host;
+  host.make_world(tmp.file("doc"));
+  make_yard(host);
+  host.apply(one(set(oid(2), "color", JsonValue(7))), who("setup"));
+  // Every live record, then by type pattern, by a property test, and composed.
+  CHECK(at(query(host, JsonValue()), "rows").size() == 8);
+  CHECK(listed_ids(JsonValue(
+            obj({{"records", at(query(host, obj({{"type", JsonValue("*.Node")}})), "rows")}}))) ==
+        Vector<std::string>{hex(oid(20)), hex(oid(21)), hex(oid(22)), hex(oid(23))});
+  const JsonValue east = query(host, term("position[0]", "at_least", JsonValue(10)),
+                               {{"fields", strings({"position", "color"})}});
+  REQUIRE(at(east, "rows").size() == 2);  // props 2 (x 15) and 4 (x 55)
+  CHECK(at(at(east, "rows")[0], "id") == JsonValue(hex(oid(2))));
+  CHECK(at(at(at(east, "rows")[0], "fields"), "color") == JsonValue(7));
+  CHECK(at(at(east, "rows")[1], "fields").find("color") == nullptr);
+  CHECK(at(east, "complete") == JsonValue(true));
+  const JsonValue mixed = query(
+      host,
+      terms("any", {term("color", "equals", JsonValue(7.0)),
+                    terms("all", {obj({{"type", JsonValue("engine.world.Node")}}),
+                                  obj({{"not", obj({{"parent", JsonValue(hex(oid(20)))}})}})})}));
+  // Prop 2 (its colour, 7, compared by value) and the yard's two nodes not directly under it.
+  CHECK(listed_ids(JsonValue(obj({{"records", at(mixed, "rows")}}))) ==
+        Vector<std::string>{hex(oid(2)), hex(oid(20)), hex(oid(23))});
+  CHECK(at(query(host, term("name", "prefix", JsonValue("p"))), "rows").size() == 4);
+  CHECK(at(query(host, term("color", "exists", JsonValue(false))), "rows").size() == 7);
+
+  // Narrowed through the indices: a parent's children, a region's tiles.
+  CHECK(at(query(host, JsonValue(), {{"parent", JsonValue(hex(oid(20)))}}), "rows").size() == 2);
+  CHECK(at(query(host, JsonValue(), {{"region", range(0, 0, 0, 1)}}), "candidates") ==
+        JsonValue(u32{6}));
+  CHECK(at(query(host, JsonValue(), {{"region", range(-50, -50, 50, 50)}}), "rows").size() == 8);
+
+  // Pages: three rows at a time, resumed after `next`, the same rows as one call, none twice.
+  Vector<std::string> paged;
+  JsonValue after = JsonValue(hex(Id128{}));
+  for (u32 page = 0; page < 4; ++page) {
+    const JsonValue r =
+        query(host, JsonValue(), {{"max_rows", JsonValue(u32{3})}, {"after", after}});
+    for (u32 i = 0; i < at(r, "rows").size(); ++i)
+      paged.push_back(std::string(at(at(r, "rows")[i], "id").as_string()));
+    if (at(r, "complete") == JsonValue(true)) break;
+    CHECK(at(r, "bound") == JsonValue("max_rows"));
+    after = at(r, "next");
+  }
+  CHECK(paged == listed_ids(JsonValue(obj({{"records", at(query(host, JsonValue()), "rows")}}))));
+  // The examination bound stops early and says where to go on from.
+  const JsonValue few =
+      query(host, obj({{"type", JsonValue("*.Node")}}), {{"max_examined", JsonValue(u32{2})}});
+  CHECK(at(few, "rows").size() == 0);  // props 1 and 2 examined, neither a node
+  CHECK(at(few, "bound") == JsonValue("max_examined"));
+  CHECK(at(few, "next") == JsonValue(hex(oid(2))));
+  CHECK(at(query(host, JsonValue(),
+                 {{"max_bytes", JsonValue(u32{1024})}, {"fields", strings({"name", "position"})}}),
+           "bound") == JsonValue("max_bytes"));
+
+  // Refused, naming the path: malformed terms, too deep, too many, bounds out of range.
+  JsonValue e;
+  CHECK(host.fails("doc.query", obj({{"filter", obj({{"colour", JsonValue(1)}})}}), &e) ==
+        codes::k_invalid_argument);
+  CHECK(host.fails("doc.query",
+                   obj({{"filter", terms("all", {term("x", "between", JsonValue(1))})}}),
+                   &e) == codes::k_invalid_argument);
+  CHECK(std::string(at(e, "message").as_string()).find("filter.all[0]") == 0);
+  CHECK(host.fails("doc.query", obj({{"filter", term("x", "at_least", JsonValue("a"))}})) ==
+        codes::k_invalid_argument);
+  CHECK(host.fails("doc.query", obj({{"filter", term("x[]", "exists", JsonValue(true))}})) ==
+        codes::k_invalid_argument);
+  JsonValue deep = obj({{"type", JsonValue("*")}});
+  for (u32 i = 0; i < 40; ++i)
+    deep = obj({{"not", deep}});
+  CHECK(host.fails("doc.query", obj({{"filter", deep}})) == codes::k_invalid_argument);
+  JsonValue wide = JsonValue::array();
+  for (u32 i = 0; i < 1100; ++i)
+    wide.push_back(obj({{"type", JsonValue("*")}}));
+  CHECK(host.fails("doc.query", obj({{"filter", obj({{"any", wide}})}})) ==
+        codes::k_invalid_argument);
+  CHECK(host.fails("doc.query", obj({{"max_rows", JsonValue(u32{0})}})) ==
+        codes::k_invalid_argument);
+  CHECK(host.fails("doc.query", obj({{"max_ms", JsonValue(u32{10001})}})) ==
+        codes::k_invalid_argument);
+  CHECK(host.fails("doc.query", obj({{"parent", JsonValue(hex(oid(20)))},
+                                     {"region", range(0, 0, 0, 0)}})) == codes::k_invalid_argument);
+  // A read: QA queries.
+  std::string message;
+  REQUIRE(host.policy.load_roles("roles.json", k_roles, message));
+  host.policy.identity.role = "qa";
+  CHECK(at(query(host, JsonValue()), "rows").size() == 8);
+}

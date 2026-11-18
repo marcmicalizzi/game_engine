@@ -2518,6 +2518,67 @@ struct DescribeResult @version(1) {
   occupied_tiles: u32 = 0
 }
 
+// ---- query (plan 06 §6.6; protocol.md, "Querying the document") ------------------------------
+
+/// Parameters of `doc.query`: the document's live records that pass a structured filter, in id
+/// order, a page at a time, bounded in what it returns and in what it may examine. The filter is
+/// data the host walks, never text it runs.
+struct QueryParams @version(1) {
+  session: string
+  /// Where to look, narrowed through the document's indices before the filter runs: the children
+  /// of `parent` (the null id: the roots), the records filed in the tiles of `region`, or, with
+  /// neither, every live record.
+  parent: id128?
+  region: TileRange?
+  /// The terms, as `session.run_headless`'s `until` spells them, over each candidate record:
+  /// `{"type": "<pattern>"}` (`*` any run of characters), `{"property": "<name>", <test>}` where
+  /// `<test>` is `"equals": <json>`, `"at_least": <number>`, `"at_most": <number>`,
+  /// `"prefix": "<text>"` or `"exists": <bool>` and a name may end in `[i]` to take one element of
+  /// an array (`"position[0]"`); `{"parent": "<id>"}`; and `{"all": [...]}`, `{"any": [...]}`,
+  /// `{"not": term}` over them, nested at most 32 deep and at most 1,024 terms. Null passes every
+  /// candidate.
+  filter: json
+  /// Composed properties to return with each row; empty returns none.
+  fields: string[]
+  /// Resume after this id: the `next` a call returned. The null id starts at the beginning.
+  after: id128
+  /// Most rows returned (1 to 10,000).
+  max_rows: u32 = 100
+  /// Most candidates the filter is run over (1 to 1,000,000).
+  max_examined: u32 = 100000
+  /// Most wall milliseconds spent examining (1 to 10,000).
+  max_ms: u32 = 2000
+  /// Most bytes of rows, as JSON (1,024 to 4,194,304).
+  max_bytes: u32 = 262144
+}
+
+/// One record a query matched.
+struct QueryRow @version(1) {
+  id: id128
+  type: string
+  /// The null id for a root.
+  parent: id128
+  /// The `fields` asked for that the record sets, composed.
+  fields: map<string, json>
+}
+
+/// Result of `doc.query`.
+struct QueryResult @version(1) {
+  rows: QueryRow[]
+  /// Candidates the filter ran over in this call.
+  examined: u32 = 0
+  /// Candidates the narrowing found after `after`, examined or not.
+  candidates: u32 = 0
+  /// Every candidate was examined: there is no next page.
+  complete: bool = true
+  /// Which bound ended the page: "" (none), "max_rows", "max_examined", "max_ms" or "max_bytes".
+  bound: string
+  /// Where the next page starts (pass it as `after`); the null id when `complete`.
+  next: id128
+  /// Bytes of the rows as JSON.
+  bytes: u32 = 0
+}
+
 // ProposalState and ProposalInfo are declared before LayerInfo, which reports them.
 
 /// `proposals.json` in a document directory.

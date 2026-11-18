@@ -896,7 +896,7 @@ The engine as a server, its clients, and what agents and the human director work
 | A11 | Explicit begin, commit and rollback | done (2026-11-17: 9863fe4b) | A1 | S | routine | [protocol](subsystems/protocol.md#transactions-a-client-opens) |
 | A12 | `place_asset` and `instantiate_template` | done (2026-11-17: 6d1c9fe6) | A1 | M | design | [protocol](subsystems/protocol.md#placing-an-asset-instantiating-a-template) |
 | A13 | `describe` an object, tile or region by detail | done (2026-11-18: 21bd7be6. Not done: plan 06 §6.7's world mips and overlap ring, the view policy, A26) | A1 | M | design | [protocol](subsystems/protocol.md#describing-an-object-a-tile-or-a-region) |
-| A14 | `query`: SQL over the store, filters over the document | open | D16 | M | design | [06 §6.6](plan/06-agent-tooling.md#66-introspection) |
+| A14 | `query`: SQL over the store, filters over the document | in progress | D16 | M | design | [protocol](subsystems/protocol.md#querying-the-document) |
 | A15 | Semantic summaries of diffs | open | D5 | M | design | [06 §6.4](plan/06-agent-tooling.md#64-transactions-checkpoints-rollback) |
 | A16 | Validation service v0 | done (9a34cca1, e0639a1c) | A7 | M | routine | [protocol](subsystems/protocol.md#enginerun_tests) |
 | A17 | The content validators of §6.6 | open | A16 | L | design | [06 §6.6](plan/06-agent-tooling.md#66-introspection) |

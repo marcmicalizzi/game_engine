@@ -439,7 +439,8 @@ TEST_CASE("mcp: tools/list gives every tool a JSON Schema generated from the eng
                           "profile_start",
                           "profile_report",
                           "profile_stop",
-                          "describe_document"};
+                          "describe_document",
+                          "query"};
   // Every tool offered is named here, so the count in docs/subsystems/apps.md cannot drift again
   // (it said 45 while there were 46: materialize was offered and never listed).
   CHECK(tools.size() == std::size(wanted));
@@ -894,6 +895,31 @@ TEST_CASE("mcp: describe_document says what an object holds, bounded, in the hos
                           "{" + s + ",\"id\":\"" + k_b + "\",\"tile\":{\"x\":0,\"y\":0}}")));
   CHECK(is_error(
       mcp.tool("describe_document", "{" + s + ",\"id\":\"00000000000000000000000000000099\"}")));
+}
+
+// query (protocol.md, "Querying the document").
+TEST_CASE("mcp: query pages through a filter and says where to go on") {
+  const test::TempDir tmp("mcp_bridge_query");
+  Mcp mcp(tmp.file("ws"));
+  REQUIRE(mcp.ok);
+  mcp.initialize();
+  const JsonValue opened =
+      ok(mcp.tool("open_session", "{\"path\":\"" + tmp.file("world") + "\",\"create\":true}"));
+  const std::string s = "\"session\":\"" + str(opened, "session") + "\"";
+  ok(mcp.tool("create_object", "{" + s + ",\"id\":\"" + k_b + "\",\"type\":\"" + k_type + "\"," +
+                                   attribution("the parent") + "}"));
+  ok(mcp.tool("create_object", "{" + s + ",\"id\":\"" + k_c + "\",\"type\":\"" + k_type +
+                                   "\",\"parent\":\"" + k_b + "\"," + attribution("its child") +
+                                   "}"));
+  const std::string filter = ",\"filter\":{\"type\":\"" + std::string(k_type) + "\"}";
+  const JsonValue page = mcp.tool("query", "{" + s + filter + ",\"max_rows\":1}");
+  CHECK(at(ok(page), "rows").size() == 1);
+  CHECK(text_of(page).find("pass next as after") != std::string::npos);
+  const JsonValue rest =
+      ok(mcp.tool("query", "{" + s + filter + ",\"after\":\"" + str(ok(page), "next") + "\"}"));
+  CHECK(at(rest, "rows").size() == 1);
+  CHECK(at(rest, "complete") == JsonValue(true));
+  CHECK(is_error(mcp.tool("query", "{" + s + ",\"filter\":{\"colour\":1}}")));
 }
 
 TEST_CASE("mcp: a mutation with no rationale is refused, with what to add") {

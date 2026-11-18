@@ -344,8 +344,11 @@ bool doc_describe(Context& ctx, const DescribeParams& params, DescribeResult& ou
 
 }  // namespace
 
-// doc.describe, and with A14 doc.query: the document's introspection methods, both read-only.
+void add_query_methods(Dispatcher& d);  // query.cpp
+
+// doc.describe and doc.query: the document's introspection methods, both read-only.
 void add_introspection_methods(Dispatcher& d) {
+  add_query_methods(d);
   d.add(read_only(method<DescribeParams, DescribeResult, &doc_describe>(
       "doc.describe",
       "Describe one object (with its children, or its subtree at Full), one tile or a rectangle "

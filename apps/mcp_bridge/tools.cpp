@@ -2488,6 +2488,29 @@ void run_describe_document(Bridge& b, const JsonValue& args, ToolOutcome& out) {
   out.data = r;
 }
 
+// ---- query (plan 06 §6.6's structured query over the document) ---------------------------------
+
+bool schema_query(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("doc.query", s, e)) return false;
+  note(s, "session", "The session id open_session returned.");
+  note(s, "after", "The next a call returned, to read the following page.");
+  require(s, {"session"});
+  return true;
+}
+
+void run_query(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!b.call("doc.query", args, r, out)) return;
+  const JsonValue* rows = r.find("rows");
+  const usize n = rows != nullptr ? rows->size() : 0;
+  out.summary = std::to_string(n) + " row(s) of " + std::to_string(uint_of(r, "candidates")) +
+                " candidate(s), " + std::to_string(uint_of(r, "examined")) + " examined.";
+  if (!bool_of(r, "complete"))
+    out.summary += " The page ended at " + text_of(r, "bound") +
+                   "; pass next as after to go on from " + text_of(r, "next") + ".";
+  out.data = r;
+}
+
 constexpr ToolDef k_tools[] = {
     {"open_session", "Open a document",
      "Open a document directory and get the session id the document tools take. Pass create: "
@@ -2745,6 +2768,13 @@ constexpr ToolDef k_tools[] = {
      "name, parent, place, child count; properties at Full), bounded by max_records and "
      "max_bytes with what was left out counted. describe explains schema types instead.",
      "doc.describe", true, false, true, &schema_describe_document, &run_describe_document},
+    {"query", "Query the document",
+     "The live records that pass a structured filter — type patterns, property tests (equals, "
+     "at_least, at_most, prefix, exists; name[i] for an array element), parent, and all, any, "
+     "not — narrowed by parent or region, in id order a page at a time with the fields asked "
+     "for. Bounded by max_rows, max_examined, max_ms and max_bytes; pass next as after to go "
+     "on.",
+     "doc.query", true, false, true, &schema_query, &run_query},
 };
 
 }  // namespace

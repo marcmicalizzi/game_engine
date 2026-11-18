@@ -7,7 +7,7 @@ engine_module(NAME protocol LAYER domain
        hash net
   SOURCES src/rpc.cpp src/session.cpp src/methods.cpp src/policy.cpp src/leases.cpp
           src/proposals.cpp src/policy_methods.cpp src/listener.cpp src/events.cpp src/transactions.cpp src/placement.cpp
-          src/describe.cpp)
+          src/describe.cpp src/query.cpp)
 target_compile_definitions(engine_protocol PRIVATE ENGINE_VERSION="${PROJECT_VERSION}")
 
 # Types the roles, leases and proposals tests and experiment E12 place in a world: a prop that
