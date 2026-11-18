@@ -27,9 +27,12 @@ class Process {
 
   // argv[0] is the executable (a path, or a name found through PATH). False with a
   // description in `error` when the process cannot be started. With `merge_stderr` the
-  // child's standard error is captured into the same stream as its standard output.
+  // child's standard error is captured into the same stream as its standard output. With
+  // `no_window`, a console child of a windowed process gets no console window of its own (Windows'
+  // CREATE_NO_WINDOW; nothing elsewhere): a tool the editor runs behind the user's back — the git a
+  // document's checkpoint runs (domain/doc/checkpoint.h) — must not flash one per call.
   bool spawn(std::span<const std::string_view> argv, std::string* error = nullptr,
-             bool merge_stderr = false);
+             bool merge_stderr = false, bool no_window = false);
   bool spawned() const noexcept { return spawned_; }
 
   // Writes every byte to the child's standard input.

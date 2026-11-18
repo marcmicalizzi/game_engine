@@ -136,6 +136,24 @@ class Session {
   bool list_transactions(std::string_view actor, i64 now_ms, TransactionsResult& out,
                          RpcError& error);
   const TransactionsFile& transactions() const noexcept { return transactions_; }
+  // --- blobs and checkpoints (roadmap D13, D14; session_history.cpp) ------------------------------
+  // docs/subsystems/protocol.md, "Blobs and checkpoints".
+
+  // Bytes into the document's blob store (domain/doc/blob_store.h). Changes no document.
+  bool put_blob(std::string_view bytes, std::string_view media, BlobResult& out, RpcError& error);
+  // Removes the blobs nothing can bring back: no layer, no journal patch and no open proposal's
+  // merge base names them, and they are older than `params.min_age_s`.
+  bool collect_blobs(const CollectBlobsParams& params, CollectBlobsResult& out, RpcError& error);
+  // The document as saved, committed to its directory's repository (domain/doc/checkpoint.h). 1006
+  // when there is no git to run.
+  bool checkpoint(std::string_view label, const Caller& caller, doc::CheckpointInfo& out,
+                  RpcError& error);
+  // Makes every accepted layer what the checkpoint held, as one journaled patch per layer it
+  // changes, each checked against the caller's role and the leases like any write; open proposals
+  // are left as they are. All or nothing as far as the checks go: every layer is checked before
+  // any is changed.
+  bool rollback_to(const RollbackParams& params, const Caller& caller, RollbackResult& out,
+                   RpcError& error);
 
  private:
   class Guard;
@@ -146,6 +164,15 @@ class Session {
     u32 held = 0;
     Vector<u32>* accepted = nullptr;
   };
+
+  // Whether `caller` may make this write into `layer` (Guard, without committing anything): the
+  // commands are applied in a transaction that is rolled back. What a write made of several
+  // patches checks first, so that a refusal changes nothing.
+  bool check_commands(std::span<const doc::Command> commands, const doc::Attribution& attribution,
+                      u32 layer, const Caller* caller, RpcError& error);
+  // False, with a diagnostic in `result` naming the blob, when `command` references a blob the
+  // document's store does not hold.
+  bool blobs_held(const doc::Command& command, ApplyResult& result) const;
 
   bool persist(RpcError& error);
   // One transaction against `layer`, committed, journaled, and saved. `strict` is the document's

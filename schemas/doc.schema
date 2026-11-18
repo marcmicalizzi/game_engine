@@ -152,6 +152,45 @@ struct LayerRef @version(2) {
   partition: LayerPartition? @since(2)
 }
 
+/// **A reference to a blob**: bytes a document holds beside its layers (a heightfield's grid, a
+/// painted mask, a generated image), named by their SHA-256 and kept once in the document's
+/// `blobs/` directory (docs/subsystems/doc.md, "Blobs"; plan 03 §3.2). A property holds the
+/// reference, never the bytes, so the JSON stays small and diffable and two equal blobs compare by
+/// name. Any JSON object whose `blob` member is 64 lowercase hexadecimal characters is a reference
+/// wherever it stands in a property's value — that is how the store finds what a document still
+/// names without knowing every type — so a type that holds one declares a field of this type.
+struct BlobRef @version(1) {
+  /// The SHA-256 of the bytes, 64 lowercase hexadecimal characters: the blob's name, and the whole
+  /// of its identity.
+  blob: string
+  /// Length in bytes, checked with the hash when the blob is read.
+  size: u64 = 0
+  /// What the bytes are, for a reader ("engine.terrain.grid/1", "image/png"). Not part of the name:
+  /// the same bytes under two media are one blob.
+  media: string
+}
+
+/// One checkpoint of a document: a commit of its directory's own git repository (plan 06 §6.4,
+/// docs/subsystems/doc.md, "Checkpoints"), holding the manifest, the layer files and the blobs as
+/// they were saved, with the journal patches since the previous checkpoint as the commit's body.
+struct CheckpointInfo @version(1) {
+  /// The commit's object name, 40 hexadecimal characters: what `rollback_to` takes.
+  id: string
+  /// The previous checkpoint's id; empty for the first.
+  parent: string
+  /// The label the checkpoint was taken with: the commit's subject.
+  label: string
+  /// Who took it, and why; `timestamp_unix_ms` is when.
+  attribution: Attribution
+  /// The journal's length and the undo position when it was taken: the layer files hold the
+  /// patches before `undo_position`.
+  journal_length: u32 = 0
+  undo_position: u32 = 0
+  /// The commit body carries the journal's patches from this index to `undo_position`: those since
+  /// the previous checkpoint, when the journal still holds them.
+  journal_from: u32 = 0
+}
+
 /// `manifest.json` of a document directory: the layer stack (weakest first), the edit layer,
 /// and how many journal patches are applied (the rest form the redo tail).
 struct DocumentManifest @version(1) @kind(document) {
