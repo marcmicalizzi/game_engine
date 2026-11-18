@@ -238,3 +238,76 @@ TEST_CASE("cli: leases and proposals hold from one process to the next") {
   CHECK(at(at(stack[2], "proposal"), "state") == JsonValue("Promoted"));
   CHECK(at(at(stack[2], "proposal"), "closed_by") == JsonValue("d"));
 }
+
+// Plan 06 §6.4's explicit transaction through the real executables (protocol.md, "Transactions a
+// client opens"): opened, staged into and committed by three engine-cli processes, and refused
+// over one engine-host --stdio the ways a client can get it wrong.
+TEST_CASE("cli: a transaction staged by several processes lands as one patch") {
+  test::TempDir tmp("engine_cli_transactions");
+  const std::string doc = tmp.file("doc");
+  const auto call = [&](const char* method, const std::string& params) {
+    return cli({"--doc", doc, "--compact", method, params});
+  };
+  REQUIRE(cli({"--doc", doc, "--create", "session.info"}).exit_code == 0);
+  const Run begun =
+      call("doc.begin", R"({"layer":"base","attribution":{"actor":"a","rationale":"two nodes"}})");
+  REQUIRE(begun.exit_code == 0);
+  const std::string t = std::to_string(at(begun.result, "id").as_int());
+  const auto staged = [&](const char* id) {
+    return call("doc.apply", R"({"commands":[)" + create(id, 0) +
+                                 R"(],"attribution":{"actor":"a"},"transaction":)" + t + "}");
+  };
+  const Run first = staged("00000000000000100000000000000001");
+  REQUIRE(first.exit_code == 0);
+  CHECK(at(first.result, "staged") == JsonValue(u32{1}));
+  REQUIRE(staged("00000000000000100000000000000002").exit_code == 0);
+  CHECK(at(call("doc.objects", "{}").result, "total") == JsonValue(u32{0}));
+  const Run committed =
+      call("doc.commit", R"({"transaction":)" + t + R"(,"attribution":{"actor":"a"}})");
+  REQUIRE(committed.exit_code == 0);
+  CHECK(at(committed.result, "committed") == JsonValue(true));
+  CHECK(at(committed.result, "applied") == JsonValue(u32{2}));
+  CHECK(at(call("doc.objects", "{}").result, "total") == JsonValue(u32{2}));
+  const Run info = call("session.info", "{}");
+  CHECK(at(info.result, "journal_length") == JsonValue(u32{1}));
+  // Committed and gone: committing again is a usage error the cli exits 1 on.
+  CHECK(
+      call("doc.commit", R"({"transaction":)" + t + R"(,"attribution":{"actor":"a"}})").exit_code ==
+      1);
+}
+
+TEST_CASE("host: doc.begin, doc.commit and doc.rollback refused over --stdio") {
+  test::TempDir tmp("engine_cli_transactions");
+  const std::string roles = tmp.file("roles.json");
+  write_file(roles, k_roles);
+  const std::string doc = tmp.file("doc");
+  REQUIRE(cli({"--doc", doc, "--create", "session.info"}).exit_code == 0);
+  Host host({"--roles", roles, "--actor", "boss", "--role", "director"});
+  REQUIRE(code_of(host.call("session.open", "{\"path\":" + write_json(JsonValue(doc)) + "}")) == 0);
+  // QA may not open one: doc.begin is a write.
+  CHECK(code_of(host.call("doc.begin",
+                          R"({"session":"s1","attribution":{"actor":"q","role":"qa"}})")) == 1008);
+  CHECK(code_of(host.call("doc.transactions", R"({"session":"s1"})")) == 0);
+  // An unknown transaction, and an unknown session.
+  CHECK(code_of(host.call("doc.commit", R"({"session":"s1","transaction":41})")) == 1003);
+  CHECK(code_of(host.call("doc.rollback", R"({"session":"s9","transaction":1})")) == 1000);
+  const JsonValue begun = host.call("doc.begin", R"({"session":"s1"})");
+  REQUIRE(code_of(begun) == 0);
+  const std::string t = std::to_string(at(at(begun, "result"), "id").as_int());
+  CHECK(at(at(at(begun, "result"), "attribution"), "actor") == JsonValue("boss"));
+  // Another actor's commit, and a staging call naming another layer.
+  CHECK(code_of(host.call("doc.commit", R"({"session":"s1","transaction":)" + t +
+                                            R"(,"attribution":{"actor":"other"}})")) == 1008);
+  CHECK(code_of(host.call("doc.apply", R"({"session":"s1","commands":[)" +
+                                           create("00000000000000100000000000000001", 0) +
+                                           R"(],"layer":"elsewhere","transaction":)" + t + "}")) ==
+        1004);
+  CHECK(code_of(host.call("doc.apply", R"({"session":"s1","commands":[)" +
+                                           create("00000000000000100000000000000001", 0) +
+                                           R"(],"transaction":)" + t + "}")) == 0);
+  const JsonValue gone = host.call("doc.rollback", R"({"session":"s1","transaction":)" + t + "}");
+  REQUIRE(code_of(gone) == 0);
+  CHECK(at(at(gone, "result"), "commands") == JsonValue(u32{1}));
+  CHECK(at(at(host.call("doc.objects", R"({"session":"s1"})"), "result"), "total") ==
+        JsonValue(u32{0}));
+}

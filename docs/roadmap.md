@@ -893,7 +893,7 @@ The engine as a server, its clients, and what agents and the human director work
 | A8 | render.capture, benchmark, compare, evaluate | done (da851a1a, eb0a4b47) | R34 | L | routine | [protocol](subsystems/protocol.md#methods-an-app-registers-and-render) |
 | A9 | More capture channels and a contact sheet | open | A8 | M | routine | [06 §6.6](plan/06-agent-tooling.md#66-introspection) |
 | A10 | `profile` over the protocol | open | T44 | M | routine | [06 §6.9](plan/06-agent-tooling.md#69-day-one-operations) |
-| A11 | Explicit begin, commit and rollback | open | A1 | S | routine | [06 §6.9](plan/06-agent-tooling.md#69-day-one-operations) |
+| A11 | Explicit begin, commit and rollback | in progress | A1 | S | routine | [06 §6.9](plan/06-agent-tooling.md#69-day-one-operations) |
 | A12 | `place_asset` and `instantiate_template` | open | A1 | M | design | [06 §6.9](plan/06-agent-tooling.md#69-day-one-operations) |
 | A13 | `describe` an object, tile or region by detail | open | A1 | M | design | [06 §6.6](plan/06-agent-tooling.md#66-introspection) |
 | A14 | `query`: SQL over the store, filters over the document | open | D16 | M | design | [06 §6.6](plan/06-agent-tooling.md#66-introspection) |

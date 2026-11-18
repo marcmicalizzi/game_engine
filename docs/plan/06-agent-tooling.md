@@ -37,6 +37,8 @@
 
 `begin_transaction → commands → validate → commit | rollback`; `checkpoint(label)` is a git commit; `rollback_to(checkpoint)` restores. Every commit records actor, role, task ID, and rationale. `diff(a, b)` returns structural diffs with deterministic semantic summaries ("12 props added in tile (3,7); quest q17 stage 2 precondition changed").
 
+**Status (2026-11-17): the explicit transaction is built** (roadmap A11; [protocol](../subsystems/protocol.md#transactions-a-client-opens)). `doc.begin`, `doc.apply` with `transaction`, `doc.commit` and `doc.rollback` (and `doc.transactions` to list the open ones), and over MCP `begin_transaction`, `commit` and `rollback`. A transaction is the commands its calls staged, kept beside the document so that a host per call (engine-cli) can join one; each staging call is validated against the document as the transaction would leave it, with the role, the proposal and the leases asked then, and the commit asks again and lands everything as one journal patch — the patch a single `doc.apply` of the same commands journals — or nothing, leaving the transaction open to mend or roll back. Isolation is read-committed: nobody, the opener included, reads a staged change before the commit. `checkpoint` and `rollback_to` are not this (D13).
+
 ## 6.5 Permissions, concurrency, and leases
 
 - **Roles** are configuration: allowed tool set, allowed layers, allowed tiles and object types, and whether commits need review. Director, designer, environment, QA, and performance are role configs, not code.

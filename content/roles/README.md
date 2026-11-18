@@ -13,7 +13,7 @@ What the five say, in short:
 | Role | May call (writes; reads are never restricted) | Layers | Review |
 |---|---|---|---|
 | director | everything | every layer | no: it promotes and rejects |
-| designer | `doc.apply`, undo and redo, `doc.propose_layer`, `doc.reject`, `lease.*` | every layer, through proposals | yes |
+| designer | `doc.apply` and a transaction's `doc.begin`, `doc.commit` and `doc.rollback`, undo and redo, `doc.propose_layer`, `doc.reject`, `lease.*` | every layer, through proposals | yes |
 | environment | the same | every layer, through proposals, and only records that stand in a tile | yes |
 | qa | nothing | none | — |
 | performance | `content.build`, `tunables.set` | none | — |

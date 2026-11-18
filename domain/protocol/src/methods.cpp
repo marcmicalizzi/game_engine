@@ -4,6 +4,7 @@
 #include <core/log/log.h>
 #include <core/schema/json_reflect.h>
 #include <core/schema/type_info.h>
+#include <core/time/time.h>
 #include <domain/gfx/adapter.h>
 #include <domain/gfx/display_probe.h>
 #include <domain/protocol/events.h>
@@ -254,7 +255,44 @@ bool doc_apply(Context& ctx, const ApplyParams& params, ApplyResult& out, RpcErr
   if (s == nullptr) return false;
   Caller caller;
   if (!resolve_caller(ctx.policy, &params.attribution, caller, error)) return false;
+  if (params.transaction != 0) {
+    return s->stage(params.transaction, params.commands, caller, params.atomic, params.layer,
+                    time::wall_unix_ms(), out, error);
+  }
   return s->apply(params.commands, caller, params.atomic, params.layer, out, error);
+}
+
+// ---- a client's transactions (plan 06 §6.4; protocol.md, "Transactions a client opens") --------
+
+bool doc_begin(Context& ctx, const BeginParams& params, TransactionInfo& out, RpcError& error) {
+  Session* s = ctx.sessions->require(params.session, error);
+  if (s == nullptr) return false;
+  Caller caller;
+  if (!resolve_caller(ctx.policy, &params.attribution, caller, error)) return false;
+  return s->begin_transaction(params, caller, time::wall_unix_ms(), out, error);
+}
+
+bool doc_commit(Context& ctx, const TransactionParams& params, ApplyResult& out, RpcError& error) {
+  Session* s = ctx.sessions->require(params.session, error);
+  if (s == nullptr) return false;
+  Caller caller;
+  if (!resolve_caller(ctx.policy, &params.attribution, caller, error)) return false;
+  return s->commit_transaction(params.transaction, caller, time::wall_unix_ms(), out, error);
+}
+
+bool doc_rollback(Context& ctx, const TransactionParams& params, TransactionInfo& out,
+                  RpcError& error) {
+  Session* s = ctx.sessions->require(params.session, error);
+  if (s == nullptr) return false;
+  Caller caller;
+  if (!resolve_caller(ctx.policy, &params.attribution, caller, error)) return false;
+  return s->rollback_transaction(params.transaction, caller, time::wall_unix_ms(), out, error);
+}
+
+bool doc_transactions(Context& ctx, const TransactionsParams& params, TransactionsResult& out,
+                      RpcError& error) {
+  Session* s = ctx.sessions->require(params.session, error);
+  return s != nullptr && s->list_transactions(params.actor, time::wall_unix_ms(), out, error);
 }
 
 const doc::Attribution* attribution_of(const std::optional<doc::Attribution>& a) {
@@ -614,7 +652,19 @@ void add_builtin_methods(Dispatcher& d) {
       "doc.apply",
       "Apply commands as one transaction with attribution; commits to the journal and saves. "
       "Checked against the caller's role, a proposal's owner, and the leases when the document "
-      "requires them."));
+      "requires them. With `transaction`, stages them in that open transaction instead."));
+  d.add(method<BeginParams, TransactionInfo, &doc_begin>(
+      "doc.begin",
+      "Open a transaction on a layer: the doc.apply calls that name it are checked and staged, "
+      "and land together at doc.commit as one journal patch or vanish together at doc.rollback."));
+  d.add(method<TransactionParams, ApplyResult, &doc_commit>(
+      "doc.commit",
+      "Commit an open transaction's staged commands as one checked transaction and one journal "
+      "patch; when any no longer applies nothing lands and the transaction stays open."));
+  d.add(method<TransactionParams, TransactionInfo, &doc_rollback>(
+      "doc.rollback", "Discard an open transaction and everything it staged; nothing changes."));
+  d.add(read_only(method<TransactionsParams, TransactionsResult, &doc_transactions>(
+      "doc.transactions", "The document's open transactions, visible to everyone.")));
   d.add(method<StepParams, StepResult, &doc_undo>("doc.undo", "Undo committed patches."));
   d.add(method<StepParams, StepResult, &doc_redo>("doc.redo", "Redo undone patches."));
   d.add(read_only(method<DiffParams, DiffResult, &doc_diff>(

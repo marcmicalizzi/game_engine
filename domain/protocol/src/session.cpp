@@ -25,6 +25,7 @@ namespace {
 constexpr std::string_view k_leases_file = "leases.json";
 constexpr std::string_view k_proposals_file = "proposals.json";
 constexpr std::string_view k_proposals_dir = "proposals";
+constexpr std::string_view k_transactions_file = "transactions.json";
 
 std::string hex_of(doc::ObjectId id) {
   char hex[Id128::k_hex_length + 1];
@@ -330,6 +331,11 @@ bool Session::load_side_files(RpcError& error) {
                       error))
     return false;
   proposals_.assign(std::move(proposals));
+
+  transactions_ = TransactionsFile{};
+  if (!read_json_file(*vfs_, DocumentStore::path_of(dir_, k_transactions_file), transactions_,
+                      present, error))
+    return false;
   for (const ProposalTable::Entry& e : proposals_.entries()) {
     ProposalTable::Entry* entry = proposals_.find(e.info.layer);
     const std::string path = base_file(entry->info.layer);
@@ -367,6 +373,11 @@ bool Session::save_leases(RpcError& error) {
 bool Session::save_proposals(RpcError& error) {
   return write_json_file(*vfs_, DocumentStore::path_of(dir_, k_proposals_file),
                          proposals_.to_file(), error);
+}
+
+bool Session::save_transactions(RpcError& error) {
+  return write_json_file(*vfs_, DocumentStore::path_of(dir_, k_transactions_file), transactions_,
+                         error);
 }
 
 bool Session::note_proposal_touches(const doc::Patch& patch, RpcError& error) {
@@ -414,7 +425,7 @@ bool Session::apply(std::span<const doc::Command> commands, const Caller& caller
 
 bool Session::commit_commands(std::span<const doc::Command> commands, doc::Attribution attribution,
                               bool atomic, bool strict, u32 layer, const Caller* caller,
-                              ApplyResult& result, RpcError& error) {
+                              ApplyResult& result, RpcError& error, const Staging* staging) {
   if (attribution.timestamp_unix_ms == 0) attribution.timestamp_unix_ms = time::wall_unix_ms();
   Guard guard(*this, caller, attribution.timestamp_unix_ms);
   if (!guard.begin(layer, false, error)) return false;
@@ -425,9 +436,42 @@ bool Session::commit_commands(std::span<const doc::Command> commands, doc::Attri
   doc_.set_edit_layer(layer);
   doc::Transaction tx = doc_.begin(std::move(attribution));
   u32 applied = 0;
-  for (const doc::Command& command : commands) {
+  // Staging: the transaction's own commands come first and must all apply again, since another
+  // client may have committed under them; the call's own are counted and remembered.
+  const u32 held = staging != nullptr ? staging->held : 0;
+  bool held_ok = true;
+  for (u32 i = 0; i < commands.size(); ++i) {
+    const doc::Command& command = commands[i];
     guard.before(command.id);
-    if (tx.apply(command, strict)) ++applied;
+    const bool ok = tx.apply(command, strict);
+    if (i < held) {
+      held_ok = held_ok && ok;
+    } else if (ok) {
+      ++applied;
+      if (staging != nullptr) staging->accepted->push_back(i - held);
+    }
+  }
+  if (staging != nullptr) {
+    for (const auto& d : tx.diagnostics()) {
+      Diagnostic diagnostic;
+      diagnostic.path = d.path;
+      diagnostic.message = d.message;
+      result.diagnostics.push_back(std::move(diagnostic));
+    }
+    result.applied = applied;
+    const bool refused = !held_ok || applied == 0 || (atomic && !tx.ok());
+    // A staging call checks the write as a commit would, then takes it back: the records change
+    // only at the transaction's commit.
+    const bool allowed = refused || guard.finish(error);
+    tx.rollback();
+    doc_.set_edit_layer(edit_layer);
+    if (refused || !allowed) {
+      staging->accepted->clear();
+      result.applied = 0;
+      if (!allowed) result = ApplyResult{};
+      return allowed;
+    }
+    return true;
   }
   for (const auto& d : tx.diagnostics()) {
     Diagnostic diagnostic;

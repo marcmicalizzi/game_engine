@@ -156,8 +156,8 @@ struct SessionsResult @version(1) {
   sessions: SessionInfo[]
 }
 
-/// Parameters of `doc.apply`: one transaction.
-struct ApplyParams @version(2) {
+/// Parameters of `doc.apply`: one transaction, or one step of an open one.
+struct ApplyParams @version(3) {
   session: string
   commands: engine.doc.Command[]
   attribution: engine.doc.Attribution
@@ -168,14 +168,25 @@ struct ApplyParams @version(2) {
   /// session name their own proposal layers here rather than moving the session's edit layer
   /// under each other (plan 06 §6.5).
   layer: string @since(2)
+  /// An open transaction (`doc.begin`) to stage the commands in instead of committing them: they
+  /// are checked now, against the document with the transaction's earlier commands applied, and
+  /// land with the rest at `doc.commit` or vanish with them at `doc.rollback` (plan 06 §6.4).
+  /// Zero commits them at once, as before.
+  transaction: u64 = 0 @since(3)
 }
 
-struct ApplyResult @version(1) {
+/// Result of `doc.apply` and `doc.commit`.
+struct ApplyResult @version(2) {
   committed: bool = false
   /// Index of the committed patch in the journal.
   patch_index: u32 = 0
+  /// Commands applied: committed, or for a call into a transaction, staged by this call.
   applied: u32 = 0
   diagnostics: Diagnostic[]
+  /// The transaction the call staged into or committed; zero for a plain `doc.apply`.
+  transaction: u64 = 0 @since(2)
+  /// Commands the transaction holds after the call: zero once it is committed.
+  staged: u32 = 0 @since(2)
 }
 
 /// Parameters of `doc.objects`.
@@ -2257,6 +2268,80 @@ struct LeasesResult @version(1) {
   now_unix_ms: i64 = 0
   leases: LeaseInfo[]
   /// Expired leases this call dropped.
+  expired: u32 = 0
+}
+
+/// An open transaction (plan 06 §6.4, `begin_transaction → commands → commit | rollback`):
+/// commands staged by `doc.apply` calls naming it, which land together at `doc.commit` as one
+/// journal patch, or vanish together at `doc.rollback` or when it lapses.
+struct TransactionInfo @version(1) {
+  id: u64 = 0
+  /// The layer every staged command edits, fixed at `doc.begin`.
+  layer: string
+  /// Who opened it and why, journaled with its patch. Only this actor stages into it, commits it
+  /// or rolls it back.
+  attribution: engine.doc.Attribution
+  /// Commands staged so far.
+  commands: u32 = 0
+  /// `doc.apply` calls that staged something.
+  applies: u32 = 0
+  opened_unix_ms: i64 = 0
+  /// The idle time to live: every call that stages moves the expiry to its time plus this.
+  ttl_seconds: f64 = 3600
+  /// When it lapses by the host's clock unless a call stages into it first. A lapsed transaction
+  /// is rolled back: dropped by the next call that reads the table.
+  expires_unix_ms: i64 = 0
+}
+
+/// One transaction of `transactions.json`, with the commands it holds.
+struct TransactionEntry @version(1) {
+  info: TransactionInfo
+  commands: engine.doc.Command[]
+}
+
+/// `transactions.json` in a document directory: the open transactions, kept beside the document
+/// as the leases are, so that a host started for one call (engine-cli) commits what earlier ones
+/// staged.
+struct TransactionsFile @version(1) @kind(document) {
+  next_id: u64 = 1
+  transactions: TransactionEntry[]
+}
+
+/// Parameters of `doc.begin`.
+struct BeginParams @version(1) {
+  session: string
+  /// The layer the transaction edits; empty is the session's edit layer at the call.
+  layer: string
+  /// Idle time to live, 1 second to 24 hours: the transaction is rolled back when no call stages
+  /// into it for this long.
+  ttl_seconds: f64 = 3600
+  /// Who opens it and why. Blank fields are the host's `--actor`, `--role` and `--task`; the
+  /// actor must not end up blank.
+  attribution: engine.doc.Attribution
+}
+
+/// Parameters of `doc.commit` and `doc.rollback`.
+struct TransactionParams @version(1) {
+  session: string
+  transaction: u64 = 0
+  /// The caller, who must be the transaction's opener. At commit a rationale replaces the one
+  /// given at `doc.begin`, and an explicit timestamp is the patch's.
+  attribution: engine.doc.Attribution
+}
+
+/// Parameters of `doc.transactions`.
+struct TransactionsParams @version(1) {
+  session: string
+  /// Only this actor's transactions; empty for everyone's.
+  actor: string
+}
+
+/// Result of `doc.transactions`.
+struct TransactionsResult @version(1) {
+  /// The host's clock, which every expiry is judged by.
+  now_unix_ms: i64 = 0
+  transactions: TransactionInfo[]
+  /// Lapsed transactions this call rolled back.
   expired: u32 = 0
 }
 

@@ -2,6 +2,7 @@
 // roles as configuration, leases refused at acquisition and checked at the edit, and proposal
 // layers promoted by a structural merge that validates first.
 #include <core/json/json.h>
+#include <core/schema/json_reflect.h>
 #include <core/time/time.h>
 #include <domain/protocol/leases.h>
 #include <domain/protocol/policy.h>
@@ -833,4 +834,246 @@ TEST_CASE("proposals: compose_onto writes a proposal's opinions into a layer") {
   pd.deleted = true;
   proposal.set(pd);
   CHECK(compose_onto(over, proposal).find(oid(1)) == nullptr);  // defined here: dropped
+}
+
+// ---- a client's transactions (plan 06 §6.4; protocol.md, "Transactions a client opens") --------
+
+namespace {
+
+JsonValue staged(Host& host, u64 transaction, JsonValue commands, JsonValue attribution,
+                 bool atomic = true) {
+  return host.ok("doc.apply", obj({{"commands", std::move(commands)},
+                                   {"attribution", std::move(attribution)},
+                                   {"atomic", JsonValue(atomic)},
+                                   {"transaction", JsonValue(transaction)}}));
+}
+
+i32 staged_fails(Host& host, u64 transaction, JsonValue commands, JsonValue attribution,
+                 JsonValue* error = nullptr) {
+  return host.fails("doc.apply",
+                    obj({{"commands", std::move(commands)},
+                         {"attribution", std::move(attribution)},
+                         {"transaction", JsonValue(transaction)}}),
+                    error);
+}
+
+u64 begin_on(Host& host, const char* layer, JsonValue attribution, f64 ttl = 3600) {
+  const JsonValue info = host.ok("doc.begin", obj({{"layer", JsonValue(layer)},
+                                                   {"ttl_seconds", JsonValue(ttl)},
+                                                   {"attribution", std::move(attribution)}}));
+  return static_cast<u64>(num(at(info, "id")));
+}
+
+JsonValue ended(Host& host, const char* method, u64 transaction, JsonValue attribution) {
+  return host.ok(method, obj({{"transaction", JsonValue(transaction)},
+                              {"attribution", std::move(attribution)}}));
+}
+
+i64 journal_length(Host& host) {
+  return num(at(host.ok("session.info", obj({})), "journal_length"));
+}
+
+}  // namespace
+
+TEST_CASE("transactions: several calls land as one patch, the patch one doc.apply journals") {
+  TempDir tmp("protocol_transactions");
+  JsonValue commands = JsonValue::array();
+  commands.push_back(set(oid(1), "color", JsonValue(7)));
+  commands.push_back(create_prop(oid(10), 7, 7, oid(1)));
+  commands.push_back(set(oid(10), "color", JsonValue(8)));
+  JsonValue stamped = who("a", "", "a lamp beside the first prop");
+  stamped.set("timestamp_unix_ms", JsonValue(i64{1'700'000'000'000}));
+
+  // The same three commands as one plain doc.apply, in a second document, for the patch to match.
+  Host plain;
+  plain.make_world(tmp.file("plain"));
+  REQUIRE(at(plain.apply(commands, stamped, "world"), "committed") == JsonValue(true));
+  const std::string expected =
+      write_json(schema::to_json(plain.sessions.find(plain.session)->document().journal().back()));
+
+  Host host;
+  host.make_world(tmp.file("doc"));
+  const i64 before = journal_length(host);
+  const u64 t = begin_on(host, "world", who("a", "", "a lamp beside the first prop"));
+  CHECK(t == 1);
+  JsonValue r = staged(host, t, one(commands[0]), who("a"));
+  CHECK(at(r, "committed") == JsonValue(false));
+  CHECK(num(at(r, "applied")) == 1);
+  CHECK(num(at(r, "staged")) == 1);
+  CHECK(num(at(r, "transaction")) == static_cast<i64>(t));
+  // Staged is not landed: nobody reads it, and nothing is journaled.
+  CHECK(host.property(oid(1), "color").is_null());
+  CHECK(journal_length(host) == before);
+  // A later call is checked against the earlier ones: oid 10 exists only in the transaction.
+  staged(host, t, one(commands[1]), who("a"));
+  CHECK(host.fails("doc.get", obj({{"id", JsonValue(hex(oid(10)))}})) == codes::k_not_found);
+  r = staged(host, t, one(commands[2]), who("a"));
+  CHECK(num(at(r, "staged")) == 3);
+  // An atomic call that fails stages nothing; a non-atomic one stages what applied.
+  r = staged(host, t, one(set(oid(99), "color", JsonValue(1))), who("a"));
+  CHECK(num(at(r, "applied")) == 0);
+  CHECK(at(r, "diagnostics").size() == 1);
+  CHECK(num(at(r, "staged")) == 3);
+  const JsonValue listed = host.ok("doc.transactions", obj({}));
+  REQUIRE(at(listed, "transactions").size() == 1);
+  const JsonValue& info = at(listed, "transactions")[0];
+  CHECK(num(at(info, "commands")) == 3);
+  CHECK(num(at(info, "applies")) == 3);
+  CHECK(at(info, "layer") == JsonValue("world"));
+  CHECK(at(at(info, "attribution"), "actor") == JsonValue("a"));
+
+  r = ended(host, "doc.commit", t, stamped);
+  CHECK(at(r, "committed") == JsonValue(true));
+  CHECK(num(at(r, "applied")) == 3);
+  CHECK(num(at(r, "staged")) == 0);
+  CHECK(journal_length(host) == before + 1);
+  CHECK(host.property(oid(10), "color") == JsonValue(8));
+  CHECK(write_json(schema::to_json(
+            host.sessions.find(host.session)->document().journal().back())) == expected);
+  CHECK(at(host.ok("doc.transactions", obj({})), "transactions").size() == 0);
+  CHECK(host.fails("doc.commit", obj({{"transaction", JsonValue(t)}, {"attribution", who("a")}})) ==
+        codes::k_not_found);
+  // Landed together, so one undo takes them back together.
+  host.ok("doc.undo", obj({}));
+  CHECK(host.property(oid(1), "color").is_null());
+  CHECK(host.fails("doc.get", obj({{"id", JsonValue(hex(oid(10)))}})) == codes::k_not_found);
+}
+
+TEST_CASE("transactions: rollback and lapse leave nothing, and a transaction is its opener's") {
+  TempDir tmp("protocol_transactions");
+  const std::string dir = tmp.file("doc");
+  u64 t = 0;
+  {
+    Host host;
+    host.make_world(dir);
+    const i64 before = journal_length(host);
+    JsonValue e;
+    CHECK(host.fails("doc.begin", obj({{"layer", JsonValue("world")},
+                                       {"ttl_seconds", JsonValue(0.0)},
+                                       {"attribution", who("a")}})) == codes::k_invalid_argument);
+    CHECK(host.fails("doc.begin", obj({{"layer", JsonValue("nowhere")},
+                                       {"attribution", who("a")}})) == codes::k_not_found);
+    CHECK(host.fails("doc.begin", obj({{"layer", JsonValue("world")}, {"attribution", who("")}})) ==
+          codes::k_invalid_argument);
+
+    const u64 r = begin_on(host, "world", who("a"));
+    staged(host, r, one(set(oid(2), "color", JsonValue(5))), who("a"));
+    // Not b's to add to, commit or roll back.
+    CHECK(staged_fails(host, r, one(set(oid(2), "color", JsonValue(6))), who("b"), &e) ==
+          codes::k_forbidden);
+    CHECK(at(at(e, "data"), "reason") == JsonValue("transaction owner"));
+    CHECK(host.fails("doc.commit", obj({{"transaction", JsonValue(r)},
+                                        {"attribution", who("b")}})) == codes::k_forbidden);
+    CHECK(host.fails("doc.rollback", obj({{"transaction", JsonValue(r)},
+                                          {"attribution", who("b")}})) == codes::k_forbidden);
+    // A transaction is one layer's.
+    CHECK(host.fails("doc.apply", obj({{"commands", one(set(oid(2), "color", JsonValue(6)))},
+                                       {"attribution", who("a")},
+                                       {"layer", JsonValue("base")},
+                                       {"transaction", JsonValue(r)}})) ==
+          codes::k_invalid_argument);
+    const JsonValue gone = ended(host, "doc.rollback", r, who("a"));
+    CHECK(num(at(gone, "commands")) == 1);
+    CHECK(host.property(oid(2), "color").is_null());
+    CHECK(journal_length(host) == before);
+    CHECK(staged_fails(host, r, one(set(oid(2), "color", JsonValue(6))), who("a")) ==
+          codes::k_not_found);
+
+    // Another client commits under a staged command: the commit lands nothing and stays open.
+    const u64 c = begin_on(host, "world", who("a"));
+    staged(host, c, one(set(oid(4), "color", JsonValue(1))), who("a"));
+    host.apply(one(del(oid(4))), who("b"), "world");
+    const JsonValue refused = ended(host, "doc.commit", c, who("a"));
+    CHECK(at(refused, "committed") == JsonValue(false));
+    CHECK(at(refused, "diagnostics").size() >= 1);
+    CHECK(num(at(refused, "staged")) == 1);
+    CHECK(journal_length(host) == before + 1);  // b's delete alone
+    ended(host, "doc.rollback", c, who("a"));
+
+    // Lapsing is a rollback: judged by the host's clock, here a day ahead of it.
+    const u64 l = begin_on(host, "world", who("a"), 60);
+    staged(host, l, one(set(oid(3), "color", JsonValue(2))), who("a"));
+    Session* s = host.sessions.find(host.session);
+    Caller a;
+    a.who.actor = "a";
+    ApplyResult result;
+    RpcError error;
+    CHECK_FALSE(s->commit_transaction(l, a, time::wall_unix_ms() + 86'400'000, result, error));
+    CHECK(error.code == codes::k_not_found);
+    CHECK(error.message.find("lapsed") != std::string::npos);
+    CHECK(host.property(oid(3), "color").is_null());
+
+    // One left open for the next process.
+    t = begin_on(host, "world", who("a"));
+    staged(host, t, one(set(oid(3), "color", JsonValue(9))), who("a"));
+    host.ok("session.close", obj({}));
+  }
+  // A host started for one call commits what an earlier one staged: the table is on disk.
+  Host next;
+  next.open(dir, false);
+  const JsonValue listed = next.ok("doc.transactions", obj({{"actor", JsonValue("a")}}));
+  REQUIRE(at(listed, "transactions").size() == 1);
+  CHECK(num(at(at(listed, "transactions")[0], "id")) == static_cast<i64>(t));
+  CHECK(at(ended(next, "doc.commit", t, who("a")), "committed") == JsonValue(true));
+  CHECK(next.property(oid(3), "color") == JsonValue(9));
+}
+
+TEST_CASE("transactions: roles, proposals and leases check every staging call and the commit") {
+  TempDir tmp("protocol_transactions");
+  Host host;
+  host.make_world(tmp.file("doc"));
+  std::string message;
+  REQUIRE(host.policy.load_roles("roles.json", k_roles, message));
+  JsonValue e;
+  // The dispatcher's gate: doc.begin is a write, so QA (the default role) and a role whose
+  // methods do not name it are refused; doc.transactions is a read.
+  CHECK(host.fails("doc.begin", obj({{"layer", JsonValue("world")}, {"attribution", who("q")}}),
+                   &e) == codes::k_forbidden);
+  CHECK(at(at(e, "data"), "reason") == JsonValue("method"));
+  CHECK(host.fails("doc.begin", obj({{"layer", JsonValue("world")},
+                                     {"attribution", who("m", "mapper")}})) == codes::k_forbidden);
+  host.ok("doc.transactions", obj({}));
+  // Fail fast: a role that needs review may write only its own proposals, so a transaction on
+  // the world is refused when it is opened, not when it is committed.
+  CHECK(host.fails("doc.begin",
+                   obj({{"layer", JsonValue("world")}, {"attribution", who("w", "writer")}}),
+                   &e) == codes::k_forbidden);
+
+  const JsonValue d = who("d", "director", "recolour in a proposal");
+  host.ok("doc.propose_layer",
+          obj({{"name", JsonValue("p.d")}, {"target", JsonValue("world")}, {"attribution", d}}));
+  // Someone else's proposal is refused at doc.begin.
+  CHECK(host.fails("doc.begin",
+                   obj({{"layer", JsonValue("p.d")}, {"attribution", who("w", "writer")}}),
+                   &e) == codes::k_forbidden);
+  CHECK(at(at(e, "data"), "reason") == JsonValue("proposal owner"));
+  const u64 p = begin_on(host, "p.d", d);
+  staged(host, p, one(set(oid(1), "color", JsonValue(3))), d);
+  CHECK(at(ended(host, "doc.commit", p, d), "committed") == JsonValue(true));
+  // The commit wrote the proposal as a doc.apply does: its first touch is its merge base.
+  const JsonValue promoted =
+      host.ok("doc.promote", obj({{"proposal", JsonValue("p.d")}, {"attribution", d}}));
+  CHECK(at(promoted, "promoted") == JsonValue(true));
+  CHECK(host.layer_property("world", oid(1), "color") == JsonValue(3));
+
+  // Leases: required, so a staging call with none is refused at once, and the commit asks again.
+  host.ok("lease.require", obj({{"required", JsonValue(true)}, {"attribution", d}}));
+  const u64 l = begin_on(host, "world", d);
+  CHECK(staged_fails(host, l, one(set(oid(1), "color", JsonValue(4))), d) ==
+        codes::k_lease_required);
+  const JsonValue lease = host.ok("lease.acquire", obj({{"layer", JsonValue("world")},
+                                                        {"tiles", ranges({range(0, 0, 0, 0)})},
+                                                        {"attribution", d}}));
+  staged(host, l, one(set(oid(1), "color", JsonValue(4))), d);
+  host.ok("lease.release", obj({{"lease", at(lease, "id")}, {"attribution", d}}));
+  const i64 before = journal_length(host);
+  CHECK(host.fails("doc.commit", obj({{"transaction", JsonValue(l)}, {"attribution", d}})) ==
+        codes::k_lease_required);
+  CHECK(journal_length(host) == before);
+  CHECK(at(host.ok("doc.transactions", obj({})), "transactions").size() == 1);  // still open
+  host.ok("lease.acquire", obj({{"layer", JsonValue("world")},
+                                {"tiles", ranges({range(0, 0, 0, 0)})},
+                                {"attribution", d}}));
+  CHECK(at(ended(host, "doc.commit", l, d), "committed") == JsonValue(true));
+  CHECK(host.layer_property("world", oid(1), "color") == JsonValue(4));
 }

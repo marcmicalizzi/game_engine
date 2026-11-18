@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "A11",
+  "reason": "A11: plan 06 6.4's explicit transactions get their protocol section (methods, staging, commit, lapse, tests) and the four MCP tools their row",
+  "date": "2026-11-17",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 677,
+    "page:docs/subsystems/protocol.md": 6387
+  }
+}
