@@ -17,6 +17,7 @@
 #include <core/ids/id128.h>
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
+#include <core/schema/json_text.h>
 #include <domain/doc/document.h>
 #include <domain/doc/document_store.h>
 #include <domain/doc/partition.h>
@@ -897,6 +898,38 @@ ENGINE_BENCH_ARGS(layer_from_json, "doc.layer.from_json", k_resident_records) {
     bench::keep(schema::from_json(file, tree, ctx));
     bench::keep(file.objects.size());
   }
+  state.set_items(1);
+  state.set_bytes(text.size());
+}
+
+// The text reflected into the file's struct with no tree (schema::read_json_text): what a load does
+// now in place of the two rows above.
+ENGINE_BENCH_ARGS(layer_read_text, "doc.layer.read_text", k_resident_records) {
+  const std::string text = resident_layer_text(resident_records(state.arg()));
+  while (state.keep_running()) {
+    LayerFile file;
+    schema::ReadContext ctx;
+    JsonParseResult parsed;
+    bench::keep(schema::read_json_text(file, text, ctx, parsed));
+    bench::keep(file.objects.size());
+  }
+  state.set_items(1);
+  state.set_bytes(text.size());
+}
+
+// The text compared with what a save would write, as it is written (schema::canonical_json_equals):
+// what a load does now in place of the row below.
+ENGINE_BENCH_ARGS(layer_canonical_equals, "doc.layer.canonical_equals", k_resident_records) {
+  const std::string text = resident_layer_text(resident_records(state.arg()));
+  JsonValue tree;
+  ENGINE_VERIFY(parse_json(text, tree).ok, "doc layer bench: parse failed");
+  LayerFile file;
+  schema::ReadContext ctx;
+  ENGINE_VERIFY(schema::from_json(file, tree, ctx), "doc layer bench: from_json failed");
+  tree = JsonValue();
+  ENGINE_VERIFY(schema::canonical_json_equals(file, text), "doc layer bench: not canonical");
+  while (state.keep_running())
+    bench::keep(schema::canonical_json_equals(file, text));
   state.set_items(1);
   state.set_bytes(text.size());
 }
