@@ -416,6 +416,22 @@ TEST_CASE("roots: the most specific root answers, so out/ under a read document 
   CHECK(a.portable() == "doc://manifest.json");
 }
 
+// The most specific root that *allowed* the access answered, so a read-only root inside a
+// writable one shielded nothing: a write to refs://x was admitted under work.
+TEST_CASE("roots: a read-only root inside a writable one stays read-only") {
+  Fixture f;
+  make_dir(f.root + "/refs");
+  put(f.root + "/refs/a.txt", "a");
+  REQUIRE(f.roots.add("refs", f.root + "/refs", false) == Status::Ok);
+  CHECK(f.refuse("refs://a.txt", Access::write) == Refusal::read_only_root);
+  CHECK(f.refuse("refs://new.txt", Access::write) == Refusal::read_only_root);
+  CHECK(f.refuse(f.root + "/refs/a.txt", Access::write) == Refusal::read_only_root);
+  CHECK(f.refuse("work://refs/sub", Access::make_directory) == Refusal::read_only_root);
+  // Read as before, answered by the more specific root; and the rest of work writes.
+  CHECK(f.allow("work://refs/a.txt").portable() == "refs://a.txt");
+  CHECK(f.allow("work://other.txt", Access::write).root == "work");
+}
+
 TEST_CASE("roots: an open document's own files are never written, out/ apart") {
   Fixture f;
   const std::string doc = f.root + "/docs/world";

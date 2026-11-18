@@ -656,18 +656,21 @@ bool Roots::admit(std::string_view path, std::string_view base, Access access, A
     why = Refusal::outside;
     return false;
   }
-  // 9. Under a root: the most specific one that allows the access.
+  // 9. Under a root: the most specific one that holds the path answers, and a write needs it to
+  // be writable. So `out/` under a read-only document is writable, and a read-only root the
+  // operator named inside a writable one stays read-only: "the most specific root that allows the
+  // access" let `--root work=<w>:rw --root refs=<w>/refs` write `refs://x` under `work`.
   const Root* best = nullptr;
   for (const Root& r : roots_) {
     if (!path_is_under(canonical, r.canonical)) continue;
-    if (access != Access::read && !r.writable) continue;
     if (best == nullptr || r.canonical.size() > best->canonical.size()) best = &r;
   }
   if (best == nullptr) {
-    bool any = false;
-    for (const Root& r : roots_)
-      any = any || path_is_under(canonical, r.canonical);
-    why = any ? Refusal::read_only_root : Refusal::outside;
+    why = Refusal::outside;
+    return false;
+  }
+  if (access != Access::read && !best->writable) {
+    why = Refusal::read_only_root;
     return false;
   }
   if (access != Access::read) {
