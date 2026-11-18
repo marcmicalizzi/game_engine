@@ -1,4 +1,4 @@
-# ADR-0069: The traced chain holds what frames asked for, shares at the cluster, and packs what it keeps
+# ADR-0068: The traced chain holds what frames asked for, shares at the cluster, and packs what it keeps
 
 - **Status:** Proposed
 - **Date:** 2026-11-17

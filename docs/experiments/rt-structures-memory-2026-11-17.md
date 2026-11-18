@@ -6,7 +6,7 @@ structures** (R172's memory report), and the owner's rule is that every result i
 scales down, memory first. This page says where those bytes are, by kind and by what asked for
 them, on four scenes; what the published practice is for sharing, packing and choosing a traced
 level; and what follows. The decision is
-[ADR-0069](../adr/0069-the-traced-chain-holds-what-frames-asked-for.md); the rule that was built
+[ADR-0068](../adr/0068-the-traced-chain-holds-what-frames-asked-for.md); the rule that was built
 is in [renderer](../subsystems/renderer.md#a-guess-is-not-a-demand).
 
 ## How it was measured
@@ -180,7 +180,7 @@ to its built size, and reservations are several times what is built.
 
 ## What follows
 
-[ADR-0069](../adr/0069-the-traced-chain-holds-what-frames-asked-for.md) has the decision. In
+[ADR-0068](../adr/0068-the-traced-chain-holds-what-frames-asked-for.md) has the decision. In
 stages, by the bytes each holds:
 
 1. **A guess is given back** (built, below).
