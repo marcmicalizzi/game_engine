@@ -75,13 +75,43 @@ help with: roadmap T76.
 
 - A file that differs from the base — committed since the merge base, staged, unstaged or
   untracked — belongs to the module whose directory holds it (`build/<preset>/modules.json`).
-- The affected set is those modules and every module that depends on one, transitively.
-- **A changed capability also selects every module above the layer its directory is in.** A host
-  and a test target link the capabilities they carry without the module depending on them
-  (`renderer`'s tests link `sky` and `terrain`), and the module graph does not record what a test
-  links. Until it does, this is the conservative reading.
-- The build system, `tests/support`, vendored code, the schema compiler and committed content are
-  built into or read by everything: a change there runs everything, and the run says why.
+- **A module's tests run when what they link or start holds a changed module** (the test edges,
+  roadmap T31, below). Each row of `modules.json` carries `test_reach`: the closure of the
+  module's test executable, its bench and, for an app, the app itself, over what they link, what
+  they build first (`add_dependencies`, which is how a test says it starts an executable) and the
+  executables they are compiled with the path of (`$<TARGET_FILE:...>`), walked at configure time
+  by `cmake/EngineTestReach.cmake`. It holds every module the module depends on, and what the
+  module graph alone could not say: `renderer`'s tests link `sky` and `terrain`, `water`'s and
+  `scatter`'s link the renderer, `engine_cli`'s start engine-view, engine-host and
+  engine-content, `gpu_lock`'s start a probe that links `gfx`. It also holds the sources a test
+  target compiles from outside every module (`tests/support/test_main.cpp`, `apps/tests/`) and the
+  directories of targets that are no module (the game modules under `game/`).
+- **What a test reads at run time is found from the text** when the rule runs
+  (`Get-AffectedMentions`, `git grep` over the working tree), so an edit that adds a reference
+  counts without a configure. Comments (`//`, `#`) name nothing.
+  - `content/<dir>/...` reaches the modules whose files name `content/<dir>`, and every content
+    directory whose files refer to that one (a scene's `../../flora/oak.flora.json`) brings its
+    readers too; a file that builds a content path out of pieces (`"content"` joined to a name:
+    `materials`) reads every directory. A file at the top of `content/` runs everything.
+  - `tools/...` runs the tools' own tests and builds the apps, as before, and reaches the modules
+    whose files run a script from the tree (`"tools/...`, `${CMAKE_SOURCE_DIR}/tools/...`:
+    `gpu_lock`, `mcp_bridge`, `engine_host`, `engine_view`). `templates/` is the tools'.
+  - A `tests/support` header reaches the files that include it, through the support headers that
+    do; a support source no test target lists runs everything.
+  - A shader is also a change to every module whose shaders include it, by relative path.
+  - `cmake/<file>.cmake` reaches the modules whose `CMakeLists.txt` call what it defines, when all
+    it holds is function and macro definitions and every caller is a module's `CMakeLists.txt`
+    (today `EngineSchema.cmake`); anything else — a helper that sets a variable, includes another,
+    fetches a dependency, or is called from another helper — runs everything.
+  - A reference in a module's `tests/` or `bench/` source reaches that module's tests; one
+    anywhere else in a module (its sources, its headers, a test header another module's tests may
+    include, its `CMakeLists.txt`) is a change to the module and reaches what links it.
+- **It never selects too little**: the build system's core (`CMakeLists.txt`, `CMakePresets.json`,
+  `cmake/*.txt`), vendored code, the schema compiler, and a reference from a file no module holds
+  run everything, and the run says why. `-AffectedRule modules` (or `ENGINE_AFFECTED_RULE=modules`)
+  is the older rule — the changed modules, their dependents, and every module above a changed
+  capability's layer — and the rule whenever `modules.json` has no test edges (a tree configured
+  before them); `-AffectedRule all` selects everything.
 - Documentation selects nothing; the lint, the licence check (`lint.licenses`) and the
   documentation check run in every case.
 - `test -Filter` narrows CTest only; its default build still builds the whole preset. It cannot
@@ -98,7 +128,7 @@ help with: roadmap T76.
   `add_dependencies` (`cmake --build --preset <p> --target <list>`; `tools/dev.ps1 build -Affected`
   does the same without the tests, and `tools/dev.ps1 affected` prints the list). A fresh worktree's
   first build is where that counts: measured on the 2026-10-20 tree in `msvc-debug`, a change in
-  `domain/flora`, a capability and so everything above its layer, asks for 1,146 of the tree's 1,542
+  `domain/flora`, a capability and so (under the rule of the day) everything above its layer, asks for 1,146 of the tree's 1,542
   compiles and 44 of its 128 links; one in `foundation/input` for 1,028 and 21; one in
   `apps/engine_cli`, whose tests start engine-host, engine-view and engine-content, for 954 and 7.
   The floor under all of them is the third-party code and `core/`, which everything links. In a
@@ -106,6 +136,32 @@ help with: roadmap T76.
   rebase, say — which a whole build compiles and this does not; the change's own files are
   recompiled either way. What takes the floor out of a fresh worktree is
   [the compiler cache](local-linux.md#the-compiler-cache).
+
+**The test edges, measured** (roadmap T31, 2026-11-17). Batch 67's sixteen merged branches replayed
+through both rules (each merge's own diff, the edges of the tree at 0073605c, the text references
+read at the branch's tip; 170 tests in `msvc-debug`). Minutes are the sum of each selected test's
+fastest Windows run that night under load — a GPU case's fastest is its skip, so it stands for the
+no-driver form agents run — and are serial seconds, not the wall clock of a `-Jobs` run:
+
+| | Tests selected (16 branches) | Branches that selected everything | Minutes |
+|---|---|---|---|
+| the module graph (`modules`) | 2,205 | 9 | 586 |
+| the test edges (`edges`) | 1,800 | 3 (each changed `cmake/EngineModule.cmake`) | 501 |
+
+Five branches that changed committed content and one a support header now select 89 to 144 tests
+instead of 170; a branch in a leaf capability selects fewer by the modules above its layer that do
+not link it (G203: 79 to 58). The saving in minutes is smaller than in tests because the costly
+tests — the renderer's and the viewer's parts, `engine_cli`, `engine_content`, `flora`, `rocks` —
+link most of the tree and are reached either way; the remaining waste is the tools' own tests,
+which a change under `tools/` still runs all of. **Every test that failed on the stack or held a
+defect the review found that night is still selected** (renderer.3 for R171, renderer.4 for T164,
+R170 and R164, `engine_content` for R164, gfx and water for W136's header, the scripted GPU tests
+for T89). The edges also select tests the module graph missed: `water`'s and `scatter`'s tests
+link the renderer, `engine_cli`'s start engine-view, `gpu_lock`'s probe links `gfx`, and a change
+to a game module (`game/walk_poc`, which `engine_view`'s tests start) selected nothing at all.
+Reading the targets once each keeps the configure where it was (182 s against 194 s for this
+worktree's first, both under load); reading them once per closure had cost 300 s more. Finding
+the text references takes about 20 s of `git grep`.
 
 On the tree of 2026-10-03 (70 modules, `msvc-debug`, serial, with the GPU lock free):
 
