@@ -170,8 +170,17 @@ std::string normalize_path(std::string_view path) {
     out.push_back(':');
     i = 2;
   }
-  const bool rooted = i < path.size() && (path[i] == '/' || path[i] == '\\');
-  if (rooted) out.push_back('/');
+  const auto separator = [](char c) noexcept { return c == '/' || c == '\\'; };
+  // A UNC path's `//server/share` is its root and is kept whole: folded to one slash it would be
+  // `/server/share`, a directory on whichever drive is current, and `..` never climbs above the
+  // share, as it never climbs above `/` or `C:/`.
+  const bool unc = i == 0 && path.size() >= 2 && separator(path[0]) && separator(path[1]);
+  const bool rooted = unc || (i < path.size() && separator(path[i]));
+  if (unc) {
+    out = "//";
+  } else if (rooted) {
+    out.push_back('/');
+  }
 
   Vector<std::string_view> parts;
   usize start = i;
@@ -181,7 +190,7 @@ std::string normalize_path(std::string_view path) {
       start = k + 1;
       if (part.empty() || part == ".") continue;
       if (part == "..") {
-        if (!parts.empty() && parts.back() != "..") {
+        if (!parts.empty() && parts.back() != ".." && !(unc && parts.size() <= 2)) {
           parts.pop_back();
         } else if (!rooted) {
           parts.push_back(part);

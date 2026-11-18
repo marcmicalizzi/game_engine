@@ -52,7 +52,7 @@ enum class Refusal : u8 {
   stream,              // a ':' that is not a drive's: an alternate data stream, or "C:x"
   drive_relative,      // Windows: "/x", the root of whichever drive is current
   namespace_prefix,    // \\?\, \\.\ or \??\ in any mix of separators
-  unc,                 // //server/share, when no root is UNC
+  unc,     // //server/share, or a drive the system calls remote: no root may be on a network share
   device,  // CON, PRN, AUX, NUL, COM0-9, LPT0-9, COM¹²³, LPT¹²³, CONIN$, CONOUT$, CLOCK$
   trailing_dot_or_space,  // a component other than . and .. that ends in '.' or ' '
   no_base,                // a relative path where the caller has no directory to start from
@@ -118,8 +118,16 @@ class Roots {
   // first write under it (a document's `out/`). `InvalidArgument` for a name that is not
   // `valid_root_name` or is taken, and for a writable root that holds or lies under a served
   // directory; `NotFound` for a read root that is not there; `InvalidPath` for a directory the
-  // system cannot resolve.
-  Status add(std::string_view name, std::string_view dir, bool writable, bool make = true);
+  // system cannot resolve. **A directory on a network share is refused** (`InvalidPath`, with
+  // `*refused` set to `Refusal::unc`): a UNC spelling, a drive the system calls remote, or a
+  // directory whose canonical form is UNC (a mapped drive, a link to a share). With a root on a
+  // share, a client's `//server/share` would have to be resolved to be compared, and resolving it
+  // makes the host connect to the server the client named with the operator's credentials; so no
+  // root is one until someone needs it and designs it (protocol.md, "Roots"). The spelling is
+  // checked before anything is made or opened. `*refused`, when given, is the step that refused
+  // an `InvalidPath`, for the operator's message.
+  Status add(std::string_view name, std::string_view dir, bool writable, bool make = true,
+             Refusal* refused = nullptr);
   const Root* find(std::string_view name) const noexcept;
   // A directory the host serves to a browser: never written, whatever the roots say. Refused
   // (`InvalidArgument`) when a writable root holds it or lies under it.

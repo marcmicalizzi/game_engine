@@ -244,6 +244,15 @@ Probe final_path(const std::string& absolute, std::string& out) {
   return Probe::ok;
 }
 
+// Whether an absolute path names a drive the system calls remote (a mapped network drive). Asked
+// of the drive's letter alone, which the system answers from its own table of drives without
+// opening anything on the share.
+bool remote_drive(std::string_view s) noexcept {
+  if (!is_drive_prefix(s)) return false;
+  const wchar_t drive[4] = {static_cast<wchar_t>(s[0]), L':', L'\\', L'\0'};
+  return GetDriveTypeW(drive) == DRIVE_REMOTE;
+}
+
 // Whether something is at this path without following its last component: a dangling link.
 // `reparse` says whether that something is a link, a junction or another reparse point.
 bool exists_unfollowed(const std::string& absolute, bool& reparse, bool& directory) {
@@ -256,6 +265,10 @@ bool exists_unfollowed(const std::string& absolute, bool& reparse, bool& directo
   return true;
 }
 #else
+// A network share is reached on Linux through a mount the operator made, never through a name in
+// the path, so no spelling of a client's makes the host connect anywhere.
+bool remote_drive(std::string_view) noexcept { return false; }
+
 Probe final_path(const std::string& absolute, std::string& out) {
   char buf[PATH_MAX];
   if (::realpath(absolute.c_str(), buf) == nullptr) {
@@ -463,7 +476,11 @@ const Root* Roots::find(std::string_view name) const noexcept {
   return nullptr;
 }
 
-Status Roots::add(std::string_view name, std::string_view dir, bool writable, bool make) {
+Status Roots::add(std::string_view name, std::string_view dir, bool writable, bool make,
+                  Refusal* refused) {
+  Refusal ignored = Refusal::none;
+  Refusal& step = refused != nullptr ? *refused : ignored;
+  step = Refusal::none;
   if (!valid_root_name(name) || find(name) != nullptr) return Status::InvalidArgument;
   if (dir.empty()) return Status::InvalidPath;
   Refusal why = Refusal::none;
@@ -474,13 +491,26 @@ Status Roots::add(std::string_view name, std::string_view dir, bool writable, bo
     if (cwd.empty()) return Status::InvalidPath;
     abs = cwd + "/" + slashes(dir);
   }
+  // A network share, by its spelling, before anything is made or opened on it.
+  if (is_unc(abs) || remote_drive(abs)) {
+    step = Refusal::unc;
+    return Status::InvalidPath;
+  }
   if (writable && make) {
     if (const Status s = make_directories(abs); s != Status::Ok) return s;
   }
   std::string lexical;
   std::string canonical;
   u32 missing = 0;
-  if (resolve(abs, lexical, canonical, missing) != Refusal::none) return Status::InvalidPath;
+  if (const Refusal r = resolve(abs, lexical, canonical, missing); r != Refusal::none) {
+    step = r;
+    return Status::InvalidPath;
+  }
+  // And by what the system says it is: a link to a share, or a drive mapped to one.
+  if (is_unc(canonical) || remote_drive(canonical)) {
+    step = Refusal::unc;
+    return Status::InvalidPath;
+  }
   if (missing > 0 && (!writable || make)) return Status::NotFound;
   for (const std::string& s : served_) {
     if (writable && (path_is_under(s, canonical) || path_is_under(canonical, s)))
@@ -577,20 +607,15 @@ bool Roots::admit(std::string_view path, std::string_view base, Access access, A
   }
   why = check_path_text(path);
   if (why != Refusal::none) return false;
-  const std::string spelled = slashes(path);
-  // 5. UNC only when a root is UNC.
-  if (is_unc(spelled)) {
-    bool unc_root = false;
-    for (const Root& r : roots_)
-      unc_root = unc_root || is_unc(r.canonical);
-    if (!unc_root) {
-      why = Refusal::unc;
-      return false;
-    }
-  }
-  // 7-8.
+  // 7, and 5: no root is on a network share (`add` refuses one), so a UNC path or one on a remote
+  // drive is under no root, and is refused before step 8 opens anything: resolving it would make
+  // the host connect, with the operator's credentials, to whichever server the client named.
   const std::string absolute = make_absolute(path, base, why);
   if (why != Refusal::none) return false;
+  if (is_unc(absolute) || remote_drive(absolute)) {
+    why = Refusal::unc;
+    return false;
+  }
   std::string lexical;
   std::string canonical;
   u32 missing = 0;

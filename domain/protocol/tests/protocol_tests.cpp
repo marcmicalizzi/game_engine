@@ -796,6 +796,25 @@ TEST_CASE("roots: session.open reaches only the host's roots, and a refusal read
   h.dispatcher.context().roots = &h.roots;
 }
 
+// With a root on a network share, a client's //server/share had to be resolved to be compared,
+// which made the host connect to the client's server with the operator's credentials; so the
+// start refuses one, says why, and the host exits 2.
+TEST_CASE("roots: a root on a network share is refused at start with a message") {
+  io::Roots roots;
+  HostRootsConfig config;
+  config.root_specs.push_back("art=//engine-tests.invalid/art");
+  std::string error;
+  CHECK_FALSE(configure_host_roots(roots, config, error));
+  CHECK(error.find("network share") != std::string::npos);
+  CHECK(roots.find("art") == nullptr);
+  io::Roots rw;
+  HostRootsConfig writable;
+  writable.root_specs.push_back("work=\\\\engine-tests.invalid\\work:rw");
+  error.clear();
+  CHECK_FALSE(configure_host_roots(rw, writable, error));
+  CHECK(error.find("network share") != std::string::npos);
+}
+
 // No roots, no paths: a dispatcher made without them refuses every client path.
 TEST_CASE("roots: a context with no roots refuses every path") {
   TempDir tmp("protocol_roots_none");

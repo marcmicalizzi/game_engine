@@ -246,6 +246,31 @@ TEST_CASE("roots: the lexical rules refuse what would otherwise land under the r
   CHECK(f.refuse("\\\\server\\share\\x") == Refusal::unc);
 }
 
+TEST_CASE("roots: a root on a network share is refused at start, and no UNC path is resolved") {
+  Fixture f;
+  // A server under RFC 2606's .invalid, which no resolver answers: the refusal must come from
+  // the spelling, before anything is made or opened, and a regression that probed it reaches
+  // nobody.
+  Refusal why = Refusal::none;
+  CHECK(f.roots.add("share", "//engine-tests.invalid/share", false, true, &why) ==
+        Status::InvalidPath);
+  CHECK(why == Refusal::unc);
+  why = Refusal::none;
+  CHECK(f.roots.add("share_rw", "\\\\engine-tests.invalid\\share\\work", true, true, &why) ==
+        Status::InvalidPath);
+  CHECK(why == Refusal::unc);
+  CHECK(f.roots.find("share") == nullptr);
+  CHECK(f.roots.find("share_rw") == nullptr);
+  // A root that is not on a share answers no refusal step.
+  why = Refusal::unc;
+  REQUIRE(f.roots.add("plain", f.outside, false, true, &why) == Status::Ok);
+  CHECK(why == Refusal::none);
+  // No root is UNC, so every UNC spelling is refused before step 8, for any access.
+  CHECK(f.refuse("//engine-tests.invalid/share/x") == Refusal::unc);
+  CHECK(f.refuse("//engine-tests.invalid/share/x", Access::write) == Refusal::unc);
+  CHECK(f.refuse("\\\\engine-tests.invalid\\share", Access::make_directory) == Refusal::unc);
+}
+
 TEST_CASE("roots: device names are refused in any component, case and suffix") {
   Fixture f;
   for (const char* p :

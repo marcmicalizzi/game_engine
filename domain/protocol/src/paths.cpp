@@ -160,10 +160,14 @@ const char* status_text(io::Status s, bool writable) {
 
 bool add_root(io::Roots& roots, std::string_view name, std::string_view dir, bool writable,
               bool make, std::string& error) {
-  const io::Status s = roots.add(name, dir, writable, make);
+  io::Refusal refused = io::Refusal::none;
+  const io::Status s = roots.add(name, dir, writable, make, &refused);
   if (s != io::Status::Ok) {
     error = "root " + std::string(name) + "=" + std::string(dir) + (writable ? ":rw" : "") + ": " +
-            status_text(s, writable);
+            (refused == io::Refusal::unc
+                 ? "it is on a network share (a UNC path or a mapped network drive), and no root "
+                   "may be one yet"
+                 : status_text(s, writable));
     return false;
   }
   const io::Root& r = roots.roots().back();
