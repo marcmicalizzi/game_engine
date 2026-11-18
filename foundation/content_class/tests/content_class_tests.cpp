@@ -10,6 +10,7 @@
 #include <random>
 #include <schemas/provenance.h>
 #include <string>
+#include <utility>
 
 using namespace engine;
 using namespace engine::content_class;

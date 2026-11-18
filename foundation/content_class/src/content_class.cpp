@@ -330,7 +330,7 @@ bool read_sidecar_classes(const Categories& categories, std::string_view sidecar
     return refuse();
   }
   const JsonValue::Object& members = declared->as_object();
-  const bool schema_form = members.contains("levels") || members.contains("materials");
+  const bool schema_form = declared->contains("levels") || declared->contains("materials");
   content::ContentClasses typed;
   if (schema_form) {
     for (u32 i = 0; i < members.size(); ++i) {
