@@ -498,6 +498,9 @@ bool TextureFeedback::record(const FramePassContext& context, std::string*) {
         residency_ ? "texture residency feedback" : "texture feedback", gfx::PassKind::Compute,
         [&](gfx::PassBuilder& b) {
           b.read(visibility, gfx::Access::ComputeRead);
+          // The pair table, the instance and through them the materials and the geometry it
+          // reconstructs a pixel's footprint from (R186 A3).
+          read_scene_tables(context, b, gfx::Access::ComputeRead);
           b.write(table, gfx::Access::ComputeReadWrite);
         },
         [this, slot, timer = context.timer, bindless = context.bindless](gfx::CommandList cb,

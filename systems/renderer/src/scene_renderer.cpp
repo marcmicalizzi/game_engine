@@ -12,6 +12,7 @@
 #include <domain/gfx/pipeline_batch.h>
 #include <domain/gfx/water_swash.h>
 #include <foundation/io/vfs.h>
+#include <foundation/tunables/tunables.h>
 #include <systems/renderer/caster_volume.h>
 #include <systems/renderer/crown_priors.h>
 #include <systems/renderer/eye_shell.h>
@@ -93,6 +94,12 @@ constexpr u32 k_rt_words = gfx::k_cluster_record_count_words;
 // The resident cluster structure cache's passes and its build (renderer.md, "The resident cluster
 // structure cache"), all inside the chain's milliseconds.
 f64 cache_ms(const gfx::GpuTimer& timer) { return timer.ms("cache") + timer.ms("clas cache"); }
+// The pass audit's guard check 3 (R186; gfx.md, "Render graph v0"): a full barrier before every
+// pass. A test draws a frame with it and without it and holds the two to the same bytes.
+tunables::Bool graph_serialize{
+    "renderer.graph.serialize", false,
+    "Record a full barrier before every render graph pass, so nothing runs beside anything: a "
+    "picture that differs with it on has a dependency no pass declared (R186's guard check 3)"};
 // Per shadow cascade, behind the chain's block: its indirect block's three words, then the
 // vertex path's indexed-draw cursor and fallback count for its region.
 constexpr u32 k_shadow_stat_words = 5;
@@ -2925,6 +2932,7 @@ u64 SceneRenderer::submit_frame(const FrameDesc& frame, std::string* error) {
     return 0;
   }
   graph_->reset();
+  graph_->set_serialize(graph_serialize.get());  // the pass audit's guard check 3 (R186)
   const gfx::RgImage color_handle = graph_->import_image("color", color);
   if (!record_frame(frame, color_handle, error)) {
     frames_.end_frame();
@@ -4685,12 +4693,21 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   gfx::RgBuffer rg_alloc{};
   gfx::RgBuffer rg_blocks{};  // the allocator's tile scratch (R104)
   gfx::RgBuffer rg_deform_args{};
+  gfx::RgBuffer rg_normals{};
+  gfx::RgBuffer rg_static_cache{};
   if (resolved_.deform_pass) {
     rg_pool = graph.import_buffer("deform pool", scene.deform_pool);
     rg_slots = graph.import_buffer("deform slots", scene.deform_slots);
     rg_alloc = graph.import_buffer("deform alloc", scene.deform_alloc);
     rg_blocks = graph.import_buffer("deform blocks", scene.deform_blocks);
     rg_deform_args = graph.import_buffer("deform args", scene.deform_args);
+    // Each under its own name (R186 D2, D3): the normals the pool pass writes beside the pool and
+    // the resolve family reads, and the static shape cache "deform cache" writes and the pool
+    // passes read, which the pool had stood in for.
+    if (scene.deform_normals.buffer.valid())
+      rg_normals = graph.import_buffer("deform normals", scene.deform_normals);
+    if (scene.static_cache.buffer.valid())
+      rg_static_cache = graph.import_buffer("deform static cache", scene.static_cache);
   }
   // Sampling over time's inputs (motion_pass.h): the motion buffer, and the second pool the pool
   // pass writes from last frame's inputs.
@@ -4829,35 +4846,51 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // table set's instances and (with `pairs`) pair table, the rings' and the records' copies, the
   // page pool — once each, so the transfers and dispatches that wrote them are made visible to
   // it. On a frame that writes none of them it declares nothing, as a scene read whole never has.
-  auto read_scene = [&, write_tables, streaming, rt_chain](gfx::PassBuilder& b,
-                                                            gfx::Access access, bool pairs) {
-    gfx::RgBuffer seen[24];
-    u32 seen_count = 0;
-    const auto once = [&](gfx::RgBuffer handle) {
-      if (!handle.valid()) return;
-      for (u32 i = 0; i < seen_count; ++i) {
-        if (seen[i].index == handle.index) return;
-      }
-      if (seen_count < std::size(seen)) seen[seen_count++] = handle;
-      b.read(handle, access);
-    };
-    if (write_tables) {
-      once(rg_instances);
-      if (pairs) once(rg_pair_table);
+  // The list, once a frame: the pair table only for a pass that asks for it, the page pool's
+  // float vertices and indices only for a build (the rings' are read wherever they are copied).
+  enum : u8 { k_read_always, k_read_pairs, k_read_build };
+  struct SceneRead {
+    gfx::RgBuffer handle;
+    u8 when;
+  };
+  SceneRead scene_reads[24];
+  gfx::RgBuffer scene_tables[24];  // what a frame pass is handed: every one but the build-only
+  u32 scene_read_count = 0;
+  u32 scene_table_count = 0;
+  const auto add_scene_read = [&](gfx::RgBuffer handle, u8 when) {
+    if (!handle.valid()) return;
+    for (u32 i = 0; i < scene_read_count; ++i) {
+      if (scene_reads[i].handle.index == handle.index) return;
     }
+    ENGINE_ASSERT(scene_read_count < std::size(scene_reads), "record_frame: scene reads");
+    scene_reads[scene_read_count++] = {handle, when};
+    if (when != k_read_build) scene_tables[scene_table_count++] = handle;
+  };
+  if (write_tables) {
+    add_scene_read(rg_instances, k_read_always);
+    add_scene_read(rg_pair_table, k_read_pairs);
+  }
+  for (const gfx::RgBuffer handle :
+       {tg.clusters, tg.lods, tg.quantized, tg.attributes, tg.triangles, tg.meshes, tg.vertices,
+        tg.indices8, tg.instances, tg.cluster_materials, tg.materials, tg.water_surfaces}) {
+    add_scene_read(handle, k_read_always);
+  }
+  if (streaming) {
     for (const gfx::RgBuffer handle :
-         {tg.clusters, tg.lods, tg.quantized, tg.attributes, tg.triangles, tg.meshes, tg.vertices,
-          tg.indices8, tg.instances, tg.cluster_materials, tg.materials, tg.water_surfaces}) {
-      once(handle);
+         {sb.pool_clusters, sb.pool_quantized, sb.pool_attributes, sb.pool_triangles}) {
+      add_scene_read(handle, k_read_always);
     }
-    if (!streaming) return;
-    once(sb.pool_clusters);
-    once(sb.pool_quantized);
-    once(sb.pool_attributes);
-    once(sb.pool_triangles);
-    if (rt_chain && access == gfx::Access::AccelerationBuildRead) {
-      once(sb.pool_vertices);
-      once(sb.pool_indices8);
+    if (rt_chain) {
+      add_scene_read(sb.pool_vertices, k_read_build);
+      add_scene_read(sb.pool_indices8, k_read_build);
+    }
+  }
+  auto read_scene = [&](gfx::PassBuilder& b, gfx::Access access, bool pairs) {
+    for (u32 i = 0; i < scene_read_count; ++i) {
+      const SceneRead& r = scene_reads[i];
+      if (r.when == k_read_pairs && !pairs) continue;
+      if (r.when == k_read_build && access != gfx::Access::AccelerationBuildRead) continue;
+      b.read(r.handle, access);
     }
   };
   struct RtBuffers {
@@ -5388,7 +5421,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     graph.add_pass(
         "deform cache", gfx::PassKind::Compute,
         [&](gfx::PassBuilder& b) {
-          b.write(rg_pool, gfx::Access::ComputeWrite);
+          b.write(rg_static_cache, gfx::Access::ComputeWrite);  // R186 D3: not the pool
           read_scene(b, gfx::Access::ComputeRead, false);  // the instance it rebuilds, and its mesh
         },
         [&](gfx::CommandList cb, gfx::RenderGraph&) {
@@ -5493,7 +5526,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.read(rg_deform_args, gfx::Access::IndirectRead);
           b.read(rg_visible, gfx::Access::ComputeRead);
           b.read(rg_slots, gfx::Access::ComputeRead);
-          b.write(rg_pool, gfx::Access::ComputeReadWrite);  // reads the static cache
+          b.write(rg_pool, gfx::Access::ComputeReadWrite);
+          if (rg_static_cache.valid()) b.read(rg_static_cache, gfx::Access::ComputeRead);  // D3
+          if (rg_normals.valid()) b.write(rg_normals, gfx::Access::ComputeReadWrite);  // D2
           if (motion_pool) b.write(rg_prev_pool, gfx::Access::ComputeWrite);
           read_terrain(b);
           read_scene(b, gfx::Access::ComputeRead, false);
@@ -5575,6 +5610,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             }
             read_scene(b, stage, false);
             if (fading) b.read(rg_fade, gfx::Access::FragmentRead);  // the masked variants
+            // whose fragment stage reads the mask tables too (R186 A4)
+            if (masked_frame) read_scene(b, gfx::Access::FragmentRead, false);
           }
         },
         [&, list, run](gfx::CommandList cb, gfx::RenderGraph&) {
@@ -5749,7 +5786,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_deform_args, gfx::Access::IndirectRead);
             b.read(rg_visible, gfx::Access::ComputeRead);
             b.read(rg_slots, gfx::Access::ComputeRead);
-            b.write(rg_pool, gfx::Access::ComputeReadWrite);  // reads the static cache
+            b.write(rg_pool, gfx::Access::ComputeReadWrite);
+            if (rg_static_cache.valid()) b.read(rg_static_cache, gfx::Access::ComputeRead);  // D3
+            if (rg_normals.valid()) b.write(rg_normals, gfx::Access::ComputeReadWrite);  // D2
             read_terrain(b);
             read_scene(b, gfx::Access::ComputeRead, false);
           },
@@ -5810,6 +5849,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           }
           read_scene(b, stage, false);
           if (fading) b.read(rg_fade, gfx::Access::FragmentRead);  // the masked variants
+          // whose fragment stage reads the mask tables too (R186 A4)
+          if (masked_shadows) read_scene(b, gfx::Access::FragmentRead, false);
         },
         [&, count](gfx::CommandList cb, gfx::RenderGraph&) {
           timer.begin(cb, "shadow");
@@ -6382,6 +6423,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             }
             read_scene(b, gfx::Access::ComputeRead, true);
             if (fading) b.read(rg_fade, gfx::Access::ComputeRead);
+            b.read(rg_visible, gfx::Access::ComputeRead);  // a masked candidate's pair (R186 A1)
             b.read(rt.tlas, gfx::Access::RayQueryRead);
             b.read(rt.hit_entries, gfx::Access::ComputeRead);
             b.read(rt.blas_data, gfx::Access::RayQueryRead);
@@ -6452,7 +6494,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               }
               read_scene(b, gfx::Access::ComputeRead, true);
               if (fading) b.read(rg_fade, gfx::Access::ComputeRead);
+              b.read(rg_visible, gfx::Access::ComputeRead);  // every hit's pair (R186 A1)
+              if (rg_normals.valid()) b.read(rg_normals, gfx::Access::ComputeRead);  // D2
               if (sky_on) {
+                // The transmittance too: the hits' sky light reads it (R186 A5).
+                b.read(sb_sky.transmittance, gfx::Access::ComputeRead);
                 b.read(sb_sky.view, gfx::Access::ComputeRead);
                 b.read(sb_sky.frame, gfx::Access::ComputeRead);
               }
@@ -6500,12 +6546,17 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             "gi stats", gfx::PassKind::Transfer,
             [&](gfx::PassBuilder& b) {
               b.read(rg_gi, gfx::Access::TransferRead);
-              b.write(rg_gi, gfx::Access::TransferWrite);
               b.write(rg_stats, gfx::Access::TransferWrite);
             },
             [&, stat_target, at](gfx::CommandList cb, gfx::RenderGraph&) {
               const gfx::BufferCopy copy{0, at, sizeof(u32) * gfx::k_gi_stat_copy_words};
               cb.copy_buffer(gi_cache_.buffer, stat_target->buffer, copy);
+            });
+        // The clear after the copy, a pass of its own so the graph orders the two (R186 P1).
+        graph.add_pass(
+            "gi stats clear", gfx::PassKind::Transfer,
+            [&](gfx::PassBuilder& b) { b.write(rg_gi, gfx::Access::TransferWrite); },
+            [&](gfx::CommandList cb, gfx::RenderGraph&) {
               cb.fill_buffer(gi_cache_.buffer, 0, gfx::k_gi_header_bytes, 0u);
             });
       }
@@ -6589,6 +6640,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           }
           read_scene(b, gfx::Access::FragmentRead, true);
           if (fading) b.read(rg_fade, gfx::Access::FragmentRead);  // the shadow rays
+          b.read(rg_visible, gfx::Access::FragmentRead);  // a masked candidate's pair (R186 A1)
+          if (rg_normals.valid()) b.read(rg_normals, gfx::Access::FragmentRead);  // D2
           if (shadows) {  // the shadow rays traverse them from the fragment stage
             b.read(rt.tlas, gfx::Access::FragmentRayQueryRead);
             b.read(rt.hit_entries, gfx::Access::FragmentRead);
@@ -6684,6 +6737,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     context.height = height_;
     context.visibility = rg_vis;
     context.motion = rg_motion;
+    context.scene_tables = scene_tables;  // R186 A3
+    context.scene_table_count = scene_table_count;
     context.view_count = views;
     context.views = pass_views;
     context.camera = &frame.camera;

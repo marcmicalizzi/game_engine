@@ -582,6 +582,19 @@ void RenderGraph::execute(CommandList commands) {
   i64 mark = time::monotonic_ns();
   for (u32 p = 0; p < passes_.size(); ++p) {
     Pass& pass = passes_[p];
+    if (serialize_) {
+      VkMemoryBarrier2 all{};
+      all.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+      all.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+      all.srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+      all.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+      all.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+      VkDependencyInfo dependency{};
+      dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+      dependency.memoryBarrierCount = 1;
+      dependency.pMemoryBarriers = &all;
+      vkCmdPipelineBarrier2(cb, &dependency);
+    }
     if (pass.buffer_barrier_count > 0 || pass.image_barrier_count > 0) {
       VkDependencyInfo dependency{};
       dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;

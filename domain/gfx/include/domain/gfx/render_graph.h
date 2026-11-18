@@ -166,6 +166,12 @@ class RenderGraph {
   bool compiled() const noexcept { return compiled_; }
   // Records barriers and pass bodies into `commands`, in order.
   void execute(CommandList commands);
+  // **The serialized frame** (the pass audit's guard check 3, R186): with it on, execute() also
+  // records before every pass one global barrier from every stage and access to every stage and
+  // access, so nothing runs beside anything. A picture that differs with it on and off has a
+  // dependency nobody declared. Off by default; it outlives reset(), and moves no barrier count.
+  void set_serialize(bool on) noexcept { serialize_ = on; }
+  bool serialize() const noexcept { return serialize_; }
 
   // --- lookups for pass bodies ---
   const BufferResource& buffer(RgBuffer handle) const noexcept;
@@ -301,6 +307,7 @@ class RenderGraph {
   u32 current_pass_ = ~u32{0};
   Extent2D render_area_{};
   bool compiled_ = false;
+  bool serialize_ = false;
   Stats stats_;
 };
 
