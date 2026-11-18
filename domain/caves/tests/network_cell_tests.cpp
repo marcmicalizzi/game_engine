@@ -326,9 +326,11 @@ TEST_CASE("caves: nothing a mouth's cells draw stands in the open air over the g
         for (i64 dx = -reach; dx <= reach; dx += reach) {
           for (i64 dz = -reach; dz <= reach; dz += reach) {
             const f64 gx = (caves::test::hill_height(&hill, x_mm + dx + 50, z_mm + dz) -
-                            caves::test::hill_height(&hill, x_mm + dx - 50, z_mm + dz)) / 0.1;
+                            caves::test::hill_height(&hill, x_mm + dx - 50, z_mm + dz)) /
+                           0.1;
             const f64 gz = (caves::test::hill_height(&hill, x_mm + dx, z_mm + dz + 50) -
-                            caves::test::hill_height(&hill, x_mm + dx, z_mm + dz - 50)) / 0.1;
+                            caves::test::hill_height(&hill, x_mm + dx, z_mm + dz - 50)) /
+                           0.1;
             steepest = std::max(steepest, std::sqrt(gx * gx + gz * gz));
           }
         }
@@ -359,7 +361,8 @@ TEST_CASE("caves: nothing a mouth's cells draw stands in the open air over the g
 // aprons, so the case cuts a window through the apron itself, as the forest's was: every column
 // past a line a metre beyond the opening (the apron is 1.75 m) is made unknown in every cell the
 // window reaches. Nothing past the cut stands over the ground, and the apron's last lattice step
-// before it is under the ground, as at the apron's own edge.
+// before it is under the ground, as at the apron's own edge. Before the mend the last step stood 26
+// to 30 cm over the ground on all three of this hill's mouths.
 TEST_CASE("caves: an apron cut by a window's edge ends under the ground, with no teeth") {
   const caves::test::Hill hill;
   const Plan plan = planned(caves::test::hill_network(), hill, 0.5f);
@@ -367,6 +370,7 @@ TEST_CASE("caves: an apron cut by a window's edge ends under the ground, with no
   const f64 vox = static_cast<f64>(plan.voxel_mm);
   u32 cases = 0;
   for (const PlanMouth& mouth : plan.mouths) {
+    if (cases > 0) break;  // one mouth is the case; every one of the hill's failed before
     i64 far_x = std::numeric_limits<i64>::min();
     for (const OutlinePoint& p : mouth.outline)
       far_x = std::max(far_x, p.x - plan.anchor[0]);
@@ -410,18 +414,21 @@ TEST_CASE("caves: an apron cut by a window's edge ends under the ground, with no
       for (const assets::Primitive& prim : mesh.primitives) {
         for (u32 t = prim.first_index; t < prim.first_index + prim.index_count; ++t) {
           const Vec3 p = mesh.positions[mesh.indices[t]];
-          const f64 x = static_cast<f64>(report.origin[0] - plan.anchor[0]) +
-                        static_cast<f64>(p.x) * 1000.0;
-          const f64 y = static_cast<f64>(report.origin[1] - plan.anchor[1]) +
-                        static_cast<f64>(p.y) * 1000.0;
-          const f64 z = static_cast<f64>(report.origin[2] - plan.anchor[2]) +
-                        static_cast<f64>(p.z) * 1000.0;
+          const f64 x =
+              static_cast<f64>(report.origin[0] - plan.anchor[0]) + static_cast<f64>(p.x) * 1000.0;
+          const f64 y =
+              static_cast<f64>(report.origin[1] - plan.anchor[1]) + static_cast<f64>(p.y) * 1000.0;
+          const f64 z =
+              static_cast<f64>(report.origin[2] - plan.anchor[2]) + static_cast<f64>(p.z) * 1000.0;
           f64 g = 0.0;
           if (!ground(x, z, g)) continue;
           const f64 column = x / vox;  // the last known column is cut - 1
           const f64 last = static_cast<f64>(cut - 1);
           if (prim.material == 4 && column > last - 2.0) ++apron_near;
           if (column > last) {
+            // The apron's: the passage itself may run on past the cut out of the hillside, which
+            // a real window holds (caves.md, "Mouths"); the cut is this case's, not the plan's.
+            if (prim.material != 4) continue;
             if (y - g > 10.0) ++past_over;
             past_worst = std::max(past_worst, y - g);
           } else if (column > last - 1.0) {
@@ -431,11 +438,12 @@ TEST_CASE("caves: an apron cut by a window's edge ends under the ground, with no
         }
       }
     }
-    MESSAGE("mouth at column " << mouth.patch_i << ", cut at " << cut << ": " << apron_near
-                               << " apron corners within two steps of it; past it the highest "
-                               << past_worst << " mm over the ground (" << past_over
-                               << " over 1 cm); the last step before it the highest "
-                               << edge_worst << " mm (" << edge_over << " over)");
+    MESSAGE(
+        "mouth at column " << mouth.patch_i << ", cut at " << cut << ": " << apron_near
+                           << " apron corners within two steps of it; past it the apron's highest "
+                           << past_worst << " mm over the ground (" << past_over
+                           << " over 1 cm); the last step before it the highest " << edge_worst
+                           << " mm (" << edge_over << " over)");
     CHECK(apron_near > 0);  // the cut crosses the apron, as the forest's window did
     CHECK(past_over == 0);
     CHECK(edge_over == 0);

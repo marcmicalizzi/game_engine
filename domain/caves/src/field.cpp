@@ -363,7 +363,8 @@ void Field::set_patch(i64 i, i64 j, u32 nx, u32 nz, const i32* heights) {
   const auto edge = [&](u32 a, u32 b) { return a == 0 || b == 0 || a + 1 == nx || b + 1 == nz; };
   for (u32 b = 0; b < nz; ++b)
     for (u32 a = 0; a < nx; ++a)
-      inset[b * nx + a] = heights[b * nx + a] == k_no_ground ? u8{0} : (edge(a, b) ? u8{1} : u8{255});
+      inset[b * nx + a] =
+          heights[b * nx + a] == k_no_ground ? u8{0} : (edge(a, b) ? u8{1} : u8{255});
   const auto relax = [&](u32 a, u32 b, i32 da, i32 db) {
     const i64 na = static_cast<i64>(a) + da, nb = static_cast<i64>(b) + db;
     if (na < 0 || nb < 0 || na >= static_cast<i64>(nx) || nb >= static_cast<i64>(nz)) return;
@@ -408,8 +409,8 @@ bool Field::ground_at(f64 x, f64 z, f64& out, f64* inset_m) const noexcept {
     const auto in = [&](u32 a, u32 b) {
       return static_cast<f64>(inset.empty() ? 255 : inset[b * patch_nx + a]) - 1.0;
     };
-    *inset_m = lerp(lerp(in(i, j), in(i + 1, j), tx), lerp(in(i, j + 1), in(i + 1, j + 1), tx), tz) *
-               step;
+    *inset_m =
+        lerp(lerp(in(i, j), in(i + 1, j), tx), lerp(in(i, j + 1), in(i + 1, j + 1), tx), tz) * step;
   }
   return true;
 }
@@ -540,8 +541,7 @@ FieldSample Field::sample(V3 p) const noexcept {
     // window's edge** (G220; caves.md, "Mouths"): where the void comes within the apron of the
     // ground past the window a mouth's near-surface stations made, the apron reaches the window's
     // edge and ends there, so it sinks the same 6 cm over the last apron's width in from that edge.
-    f64 lift =
-        apron > 0.0 ? 0.03 - 0.09 * smooth01((out.raw - 0.5 * apron) / (0.5 * apron)) : 0.0;
+    f64 lift = apron > 0.0 ? 0.03 - 0.09 * smooth01((out.raw - 0.5 * apron) / (0.5 * apron)) : 0.0;
     if (apron > 0.0) lift = std::min(lift, 0.03 - 0.09 * smooth01(1.0 - inset_m / apron));
     const f64 rock = h + lift - p.y;
     if (rock < out.void_f) {
