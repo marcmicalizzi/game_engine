@@ -96,6 +96,8 @@ void note(Vector<WorkNote>& history, u32& dropped, i64 now_ms, const Caller& cal
   n.role = role_of(caller);
   n.change = std::string(change);
   n.text = std::string(text);
+  n.via = caller.via;
+  n.human_via = caller.human_via;
   history.push_back(std::move(n));
   while (history.size() > k_history_max) {
     history.erase_at(0);
@@ -114,6 +116,7 @@ u32 lapse_claims(LedgerFile& ledger, i64 now_ms) {
     n.actor = t.claimant;
     n.role = t.claimant_role;
     n.change = "lapsed";
+    n.via = "host";  // the host's own clock let it go, not a caller
     t.history.push_back(std::move(n));
     while (t.history.size() > k_history_max) {
       t.history.erase_at(0);
@@ -122,6 +125,7 @@ u32 lapse_claims(LedgerFile& ledger, i64 now_ms) {
     t.status = TaskStatus::Open;
     t.claimant.clear();
     t.claimant_role.clear();
+    t.claimant_via.clear();
     t.claimed_unix_ms = 0;
     t.claim_expires_unix_ms = 0;
     t.claim_ttl_seconds = 0;
@@ -195,6 +199,31 @@ ReviewInfo* find_review(LedgerFile& ledger, u64 id, RpcError& error) {
   error = make_error(codes::k_not_found, "no review item " + std::to_string(id) +
                                              " in this document's ledger: review.list lists them");
   return nullptr;
+}
+
+// Ids are drawn, never counted (side_file.h): a ledger restored from a copy would count again from
+// where the copy stood, and its next id would name a task or item someone already knew by that
+// number as a different one. Drawn against the ledger as it is under the lock.
+u64 fresh_task_id(const LedgerFile& ledger) {
+  return fresh_side_file_id(
+      [](const void* l, u64 id) {
+        for (const TaskInfo& t : static_cast<const LedgerFile*>(l)->tasks) {
+          if (t.id == id) return true;
+        }
+        return false;
+      },
+      &ledger);
+}
+
+u64 fresh_review_id(const LedgerFile& ledger) {
+  return fresh_side_file_id(
+      [](const void* l, u64 id) {
+        for (const ReviewInfo& r : static_cast<const LedgerFile*>(l)->reviews) {
+          if (r.id == id) return true;
+        }
+        return false;
+      },
+      &ledger);
 }
 
 // ---- the store --------------------------------------------------------------------------------
@@ -280,7 +309,7 @@ bool task_create(Context& ctx, const TaskCreateParams& params, TasksResult& out,
           [&](LedgerFile& ledger, bool& write, RpcError& e) {
             out.lapsed = lapse_claims(ledger, now);
             TaskInfo t;
-            t.id = ledger.next_task++;
+            t.id = fresh_task_id(ledger);
             t.key = "task/" + std::to_string(t.id);
             t.title = params.title;
             t.goal = params.goal;
@@ -288,6 +317,7 @@ bool task_create(Context& ctx, const TaskCreateParams& params, TasksResult& out,
             t.owner_role = params.owner_role;
             t.created_by = caller.who;
             t.created_by.timestamp_unix_ms = now;
+            t.created_via = caller.via;
             t.created_unix_ms = now;
             t.updated_unix_ms = now;
             if (!merge_links(t.links, params.links, e)) return false;
@@ -368,6 +398,7 @@ bool task_claim(Context& ctx, const TaskClaimParams& params, TasksResult& out, R
               t->status = TaskStatus::Claimed;
               t->claimant = caller.who.actor;
               t->claimant_role = role;
+              t->claimant_via = caller.via;
               t->claimed_unix_ms = now;
             }
             t->claim_ttl_seconds = params.ttl_seconds;
@@ -448,6 +479,7 @@ bool task_update(Context& ctx, const TaskUpdateParams& params, TasksResult& out,
                   if (to == TaskStatus::Open) {
                     t->claimant.clear();
                     t->claimant_role.clear();
+                    t->claimant_via.clear();
                     t->claimed_unix_ms = 0;
                   }
                   t->claim_expires_unix_ms = 0;
@@ -557,7 +589,8 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
               if (task == nullptr) return false;
             }
             ReviewInfo r;
-            r.id = ledger.next_review++;
+            r.id = fresh_review_id(ledger);
+            r.revision = 1;
             r.kind = params.kind;
             r.audience = params.audience;
             r.summary = params.summary;
@@ -569,6 +602,7 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
             r.task = params.task;
             r.raised_by = caller.who;
             r.raised_by.timestamp_unix_ms = now;
+            r.raised_via = caller.via;
             r.raised_unix_ms = now;
             note(r.history, r.history_dropped, now, caller, "raised", {});
             if (task != nullptr) {
@@ -614,6 +648,19 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
                                                             " by " + r->closed_by.actor);
               return false;
             }
+            if (params.revision != 0 && params.revision != r->revision) {
+              JsonValue data = JsonValue::object();
+              data.set("reason", JsonValue("revision moved"));
+              data.set("review", JsonValue(r->id));
+              data.set("revision", JsonValue(r->revision));
+              e = make_error(codes::k_invalid_argument,
+                             "review item " + id + " is at revision " +
+                                 std::to_string(r->revision) + ", not the " +
+                                 std::to_string(params.revision) +
+                                 " this close was decided on: review.list it again",
+                             std::move(data));
+              return false;
+            }
             const std::string role = role_of(caller);
             if (r->audience == ReviewAudience::Human) {
               // A person's to close, and nobody else's: not its raiser's to take back, and not an
@@ -640,7 +687,10 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
             r->resolution = params.resolution;
             r->closed_by = caller.who;
             r->closed_by.timestamp_unix_ms = now;
+            r->closed_via = caller.via;
+            r->closed_human_via = caller.human_via;
             r->closed_unix_ms = now;
+            ++r->revision;
             note(r->history, r->history_dropped, now, caller, "closed",
                  std::string(resolution_name(params.resolution)) +
                      (blank(params.note) ? std::string() : ": " + params.note));

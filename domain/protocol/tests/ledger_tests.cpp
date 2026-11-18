@@ -15,6 +15,7 @@
 #include <test_temp_dir.h>
 
 #include <chrono>
+#include <fstream>
 #include <set>
 #include <string>
 #include <thread>
@@ -176,42 +177,47 @@ TEST_CASE("ledger: a task's life, from creation to done, read back by another ho
                             {"acceptance", strings({"the road validates", "no tile past (3, 0)"})},
                             {"links", obj({{"proposals", strings({"roads"})}})},
                             {"attribution", who("director")}}));
-  CHECK(num(at(t, "id")) == 1);
-  CHECK(at(t, "key").as_string() == "task/1");
+  // Ids are drawn, not counted: a task is known by the id its create answered.
+  const JsonValue id1 = at(t, "id");
+  CHECK(num(id1) >= 1);
+  CHECK(at(t, "key").as_string() == "task/" + std::to_string(num(id1)));
+  CHECK(at(t, "created_via").as_string() == "stdio");  // a call on stdin names itself
+  CHECK(at(at(t, "history")[0], "via").as_string() == "stdio");
   CHECK(at(t, "status").as_string() == "Open");
   CHECK(at(at(t, "created_by"), "actor").as_string() == "director");
   CHECK(at(at(t, "links"), "proposals").size() == 1);
-  CHECK(num(at(h.task("task.create",
-                      obj({{"title", JsonValue("Second")}, {"attribution", who("director")}})),
-               "id")) == 2);
+  const JsonValue id2 = at(
+      h.task("task.create", obj({{"title", JsonValue("Second")}, {"attribution", who("director")}})),
+      "id");
+  CHECK(num(id2) != num(id1));
 
   // a claims it; b is refused while the claim stands, and may not update it.
-  t = h.task("task.claim", obj({{"task", JsonValue(1)}, {"attribution", who("a")}}));
+  t = h.task("task.claim", obj({{"task", id1}, {"attribution", who("a")}}));
   CHECK(at(t, "status").as_string() == "Claimed");
   CHECK(at(t, "claimant").as_string() == "a");
   JsonValue error;
-  CHECK(h.fails("task.claim", obj({{"task", JsonValue(1)}, {"attribution", who("b")}}), &error) ==
+  CHECK(h.fails("task.claim", obj({{"task", id1}, {"attribution", who("b")}}), &error) ==
         codes::k_lease_conflict);
   CHECK(at(at(error, "data"), "claimant").as_string() == "a");
   CHECK(
       h.fails(
           "task.update",
-          obj({{"task", JsonValue(1)}, {"note", JsonValue("mine now")}, {"attribution", who("b")}}),
+          obj({{"task", id1}, {"note", JsonValue("mine now")}, {"attribution", who("b")}}),
           &error) == codes::k_forbidden);
   CHECK(reason_of(error) == "task owner");
   // The creator may not finish it: only the claimant does.
-  CHECK(h.fails("task.update", obj({{"task", JsonValue(1)},
+  CHECK(h.fails("task.update", obj({{"task", id1},
                                     {"status", JsonValue("Done")},
                                     {"attribution", who("director")}})) ==
         codes::k_invalid_argument);
 
   // a blocks with a note, unblocks, links a checkpoint, finishes.
-  t = h.task("task.update", obj({{"task", JsonValue(1)},
+  t = h.task("task.update", obj({{"task", id1},
                                  {"status", JsonValue("Blocked")},
                                  {"note", JsonValue("the well is not placed yet")},
                                  {"attribution", who("a")}}));
   CHECK(at(t, "status").as_string() == "Blocked");
-  t = h.task("task.update", obj({{"task", JsonValue(1)},
+  t = h.task("task.update", obj({{"task", id1},
                                  {"status", JsonValue("Claimed")},
                                  {"links", obj({{"checkpoints", strings({"abc123"})},
                                                 {"proposals", strings({"roads"})}})},
@@ -220,10 +226,10 @@ TEST_CASE("ledger: a task's life, from creation to done, read back by another ho
   CHECK(at(at(t, "links"), "checkpoints").size() == 1);
   t = h.task(
       "task.update",
-      obj({{"task", JsonValue(1)}, {"status", JsonValue("Done")}, {"attribution", who("a")}}));
+      obj({{"task", id1}, {"status", JsonValue("Done")}, {"attribution", who("a")}}));
   CHECK(at(t, "status").as_string() == "Done");
   CHECK(at(t, "claimant").as_string() == "a");  // who did it stays
-  CHECK(h.fails("task.claim", obj({{"task", JsonValue(1)}, {"attribution", who("b")}})) ==
+  CHECK(h.fails("task.claim", obj({{"task", id1}, {"attribution", who("b")}})) ==
         codes::k_invalid_argument);
   const JsonValue& history = at(t, "history");
   std::vector<std::string> changes;
@@ -236,7 +242,7 @@ TEST_CASE("ledger: a task's life, from creation to done, read back by another ho
   REQUIRE(pushed.sent.size() >= 6);
   CHECK(pushed.sent[1].find("\"change\":\"task_created\"") != std::string::npos);
   CHECK(pushed.sent[3].find("\"change\":\"task_claimed\"") != std::string::npos);
-  CHECK(pushed.sent[3].find("\"task\":1") != std::string::npos);
+  CHECK(pushed.sent[3].find("\"task\":" + std::to_string(num(id1))) != std::string::npos);
   CHECK(pushed.sent[3].find("\"actor\":\"a\"") != std::string::npos);
 
   // Another host on the same directory reads what the first wrote: nothing lives in a host.
@@ -244,12 +250,12 @@ TEST_CASE("ledger: a task's life, from creation to done, read back by another ho
   second.open(dir, false);
   JsonValue listed = second.ok("task.list", obj({{"statuses", strings({"Open"})}}));
   REQUIRE(at(listed, "tasks").size() == 1);
-  CHECK(num(at(at(listed, "tasks")[0], "id")) == 2);
-  listed = second.ok("task.list", obj({{"task", JsonValue(1)}, {"brief", JsonValue(true)}}));
+  CHECK(num(at(at(listed, "tasks")[0], "id")) == num(id2));
+  listed = second.ok("task.list", obj({{"task", id1}, {"brief", JsonValue(true)}}));
   CHECK(at(at(listed, "tasks")[0], "history").size() == 0);
   CHECK(second.fails("task.list", obj({{"task", JsonValue(9)}})) == codes::k_not_found);
   // The creator reopens it; nobody holds it then.
-  t = second.task("task.update", obj({{"task", JsonValue(1)},
+  t = second.task("task.update", obj({{"task", id1},
                                       {"status", JsonValue("Open")},
                                       {"attribution", who("director")}}));
   CHECK(at(t, "status").as_string() == "Open");
@@ -260,7 +266,7 @@ TEST_CASE("ledger: a task's life, from creation to done, read back by another ho
         codes::k_invalid_argument);
   CHECK(h.fails("task.create", obj({{"title", JsonValue("a\x01")}, {"attribution", who("d")}})) ==
         codes::k_invalid_argument);
-  CHECK(h.fails("task.claim", obj({{"task", JsonValue(2)},
+  CHECK(h.fails("task.claim", obj({{"task", id2},
                                    {"ttl_seconds", JsonValue(0.5)},
                                    {"attribution", who("a")}})) == codes::k_invalid_argument);
 }
@@ -269,10 +275,11 @@ TEST_CASE("ledger: a claim nobody renews lapses and the task is open again") {
   test::TempDir tmp("protocol_ledger");
   Host h;
   h.open(tmp.file("doc"), true);
-  (void)h.task("task.create", obj({{"title", JsonValue("t")}, {"attribution", who("c")}}));
+  const JsonValue id =
+      at(h.task("task.create", obj({{"title", JsonValue("t")}, {"attribution", who("c")}})), "id");
   (void)h.task(
       "task.claim",
-      obj({{"task", JsonValue(1)}, {"ttl_seconds", JsonValue(1.0)}, {"attribution", who("a")}}));
+      obj({{"task", id}, {"ttl_seconds", JsonValue(1.0)}, {"attribution", who("a")}}));
   std::this_thread::sleep_for(std::chrono::milliseconds(1100));
   const JsonValue listed = h.ok("task.list");
   CHECK(num(at(listed, "lapsed")) == 1);
@@ -281,9 +288,10 @@ TEST_CASE("ledger: a claim nobody renews lapses and the task is open again") {
   const JsonValue& history = at(t, "history");
   CHECK(at(history[history.size() - 1], "change").as_string() == "lapsed");
   CHECK(at(history[history.size() - 1], "actor").as_string() == "a");
+  CHECK(at(history[history.size() - 1], "via").as_string() == "host");  // the host's clock, no caller
   // b may take it now; a's renewal is a claim of a task b holds.
-  (void)h.task("task.claim", obj({{"task", JsonValue(1)}, {"attribution", who("b")}}));
-  CHECK(h.fails("task.claim", obj({{"task", JsonValue(1)}, {"attribution", who("a")}})) ==
+  (void)h.task("task.claim", obj({{"task", id}, {"attribution", who("b")}}));
+  CHECK(h.fails("task.claim", obj({{"task", id}, {"attribution", who("a")}})) ==
         codes::k_lease_conflict);
 }
 
@@ -306,15 +314,16 @@ TEST_CASE("ledger: roles, and a review item for a person that no agent closes") 
                                     {"owner_role", JsonValue("painter")},
                                     {"attribution", who("d", "director")}})) ==
         codes::k_invalid_argument);
-  (void)h.task("task.create", obj({{"title", JsonValue("dunes")},
-                                   {"owner_role", JsonValue("environment")},
-                                   {"attribution", who("d", "director")}}));
+  const JsonValue dunes = at(h.task("task.create", obj({{"title", JsonValue("dunes")},
+                                                        {"owner_role", JsonValue("environment")},
+                                                        {"attribution", who("d", "director")}})),
+                             "id");
   JsonValue error;
-  CHECK(h.fails("task.claim", obj({{"task", JsonValue(1)}, {"attribution", who("x", "designer")}}),
+  CHECK(h.fails("task.claim", obj({{"task", dunes}, {"attribution", who("x", "designer")}}),
                 &error) == codes::k_forbidden);
   CHECK(reason_of(error) == "task role");
   (void)h.task("task.claim",
-               obj({{"task", JsonValue(1)}, {"attribution", who("e", "environment")}}));
+               obj({{"task", dunes}, {"attribution", who("e", "environment")}}));
   // QA may not make tasks (the gate: its role names review.raise alone), but may raise an item.
   CHECK(h.fails("task.create", obj({{"title", JsonValue("t")}, {"attribution", who("q", "qa")}}),
                 &error) == codes::k_forbidden);
@@ -331,27 +340,29 @@ TEST_CASE("ledger: roles, and a review item for a person that no agent closes") 
                                      {"records", strings({hex(rec).c_str()})},
                                      {"journal_length", JsonValue(99)}})},
                     {"report", report},
-                    {"task", JsonValue(1)},
+                    {"task", dunes},
                     {"attribution", who("q", "qa")}}));
-  CHECK(num(at(r, "id")) == 1);
+  const JsonValue item = at(r, "id");
   CHECK(at(r, "state").as_string() == "Open");
+  CHECK(num(at(r, "revision")) == 1);
+  CHECK(at(r, "raised_via").as_string() == "stdio");
   CHECK(num(at(at(r, "subject"), "journal_length")) == 1);  // the host's, not the raiser's 99
   CHECK(at(at(r, "report"), "validator").as_string() == "anatomy");
-  CHECK(at(at(h.ok("task.list", obj({{"task", JsonValue(1)}})), "tasks")[0], "reviews").size() ==
+  CHECK(at(at(h.ok("task.list", obj({{"task", dunes}})), "tasks")[0], "reviews").size() ==
         1);
 
   // Nobody but a human role closes it: not the agent roles, not the director, not the raiser.
   for (const char* role : {"environment", "director", "qa"}) {
     CAPTURE(role);
     CHECK(h.fails("review.close",
-                  obj({{"review", JsonValue(1)},
+                  obj({{"review", item},
                        {"resolution", JsonValue("Accepted")},
                        {"attribution", who("someone", role)}}),
                   &error) == codes::k_forbidden);
     if (std::string_view(role) != "qa") CHECK(reason_of(error) == "human review");
   }
   CHECK(h.fails("review.close",
-                obj({{"review", JsonValue(1)},
+                obj({{"review", item},
                      {"resolution", JsonValue("Withdrawn")},
                      {"attribution", who("q", "environment")}}),
                 &error) == codes::k_forbidden);
@@ -359,23 +370,39 @@ TEST_CASE("ledger: roles, and a review item for a person that no agent closes") 
   // Naming the human role does not make a call a person's (ADR-0072): before the mend this closed
   // the item, from stdio, engine-cli or any agent that typed the role's name.
   CHECK(h.fails("review.close",
-                obj({{"review", JsonValue(1)},
+                obj({{"review", item},
                      {"resolution", JsonValue("Accepted")},
                      {"attribution", who("person", "reviewer")}}),
                 &error) == codes::k_forbidden);
   CHECK(reason_of(error) == "human review");
-  CHECK(at(h.review("review.list", obj({{"review", JsonValue(1)}})), "state").as_string() ==
+  CHECK(at(h.review("review.list", obj({{"review", item}})), "state").as_string() ==
         "Open");
-  // A credential the operator issued for the role, presented on a connection, does.
+  // A credential the operator issued for the role, presented on a connection, does; but not
+  // against a revision of the item its closer did not see.
   h.bind(5, "person-at-desk", "person", "reviewer");
-  r = h.review("review.close", obj({{"review", JsonValue(1)},
+  CHECK(h.fails("review.close",
+                obj({{"review", item},
+                     {"resolution", JsonValue("Accepted")},
+                     {"revision", JsonValue(u64{7})},
+                     {"attribution", who("person")}}),
+                &error) == codes::k_invalid_argument);
+  CHECK(reason_of(error) == "revision moved");
+  CHECK(num(at(at(error, "data"), "revision")) == 1);
+  r = h.review("review.close", obj({{"review", item},
                                     {"resolution", JsonValue("Accepted")},
                                     {"note", JsonValue("looked at full policy; fine")},
+                                    {"revision", JsonValue(u64{1})},
                                     {"attribution", who("person")}}));
   CHECK(at(r, "state").as_string() == "Closed");
   CHECK(at(r, "resolution").as_string() == "Accepted");
   CHECK(at(at(r, "closed_by"), "actor").as_string() == "person");
-  CHECK(h.fails("review.close", obj({{"review", JsonValue(1)},
+  CHECK(num(at(r, "revision")) == 2);  // the close moved it
+  CHECK(at(r, "closed_via").as_string() == "credential:person-at-desk");
+  CHECK(at(r, "closed_human_via").as_string() == "person-at-desk");
+  const JsonValue& closed_note = at(r, "history")[at(r, "history").size() - 1];
+  CHECK(at(closed_note, "via").as_string() == "credential:person-at-desk");
+  CHECK(at(closed_note, "human_via").as_string() == "person-at-desk");
+  CHECK(h.fails("review.close", obj({{"review", item},
                                      {"resolution", JsonValue("Rejected")},
                                      {"attribution", who("person")}})) ==
         codes::k_invalid_argument);
@@ -398,22 +425,25 @@ TEST_CASE("ledger: roles, and a review item for a person that no agent closes") 
   h.stdio();
 
   // An item for an agent: its raiser withdraws it, nobody else does, a reviewing agent closes one.
-  for (int i = 0; i < 2; ++i)
-    (void)h.review("review.raise", obj({{"kind", JsonValue("validation")},
-                                        {"summary", JsonValue("two props overlap")},
-                                        {"attribution", who("e", "environment")}}));
+  JsonValue agent_items[2];
+  for (JsonValue& id : agent_items)
+    id = at(h.review("review.raise", obj({{"kind", JsonValue("validation")},
+                                          {"summary", JsonValue("two props overlap")},
+                                          {"attribution", who("e", "environment")}})),
+            "id");
+  CHECK(num(agent_items[0]) != num(agent_items[1]));
   CHECK(h.fails("review.close",
-                obj({{"review", JsonValue(2)},
+                obj({{"review", agent_items[0]},
                      {"resolution", JsonValue("Withdrawn")},
                      {"attribution", who("other", "designer")}}),
                 &error) == codes::k_forbidden);
   CHECK(reason_of(error) == "review raiser");
-  CHECK(at(h.review("review.close", obj({{"review", JsonValue(2)},
+  CHECK(at(h.review("review.close", obj({{"review", agent_items[0]},
                                          {"resolution", JsonValue("Withdrawn")},
                                          {"attribution", who("e", "environment")}})),
            "resolution")
             .as_string() == "Withdrawn");
-  CHECK(at(h.review("review.close", obj({{"review", JsonValue(3)},
+  CHECK(at(h.review("review.close", obj({{"review", agent_items[1]},
                                          {"resolution", JsonValue("Rejected")},
                                          {"attribution", who("other", "designer")}})),
            "resolution")
@@ -466,12 +496,14 @@ TEST_CASE("ledger: a host with no human role has nobody who closes a person's it
   test::TempDir tmp("protocol_ledger");
   Host h;  // no roles file: nothing restricts a call, and nothing marks one a person's
   h.open(tmp.file("doc"), true);
-  (void)h.review("review.raise", obj({{"kind", JsonValue("classified content review")},
-                                      {"audience", JsonValue("Human")},
-                                      {"summary", JsonValue("s")},
-                                      {"attribution", who("a")}}));
+  const JsonValue item =
+      at(h.review("review.raise", obj({{"kind", JsonValue("classified content review")},
+                                         {"audience", JsonValue("Human")},
+                                         {"summary", JsonValue("s")},
+                                         {"attribution", who("a")}})),
+         "id");
   JsonValue error;
-  CHECK(h.fails("review.close", obj({{"review", JsonValue(1)}, {"attribution", who("a")}}),
+  CHECK(h.fails("review.close", obj({{"review", item}, {"attribution", who("a")}}),
                 &error) == codes::k_forbidden);
   CHECK(reason_of(error) == "human review");
 }
@@ -485,7 +517,8 @@ TEST_CASE("ledger: two hosts writing one directory at once lose nothing") {
   const std::string dir = tmp.file("doc");
   Host a;
   a.open(dir, true);
-  (void)a.task("task.create", obj({{"title", JsonValue("shared")}, {"attribution", who("w")}}));
+  const JsonValue shared = at(
+      a.task("task.create", obj({{"title", JsonValue("shared")}, {"attribution", who("w")}})), "id");
   Host b;
   b.open(dir, false);
   constexpr int k_each = 25;
@@ -497,7 +530,7 @@ TEST_CASE("ledger: two hosts writing one directory at once lose nothing") {
              "id")));
       (void)h.task(
           "task.update",
-          obj({{"task", JsonValue(1)}, {"note", JsonValue(actor)}, {"attribution", who("w")}}));
+          obj({{"task", shared}, {"note", JsonValue(actor)}, {"attribution", who("w")}}));
     }
   };
   std::thread second([&] { work(b, "b", ids_b); });
@@ -511,11 +544,50 @@ TEST_CASE("ledger: two hosts writing one directory at once lose nothing") {
   for (u32 i = 0; i < tasks.size(); ++i)
     ids.insert(num(at(tasks[i], "id")));
   CHECK(ids.size() == 1 + 2 * k_each);
-  CHECK(*ids.rbegin() == 1 + 2 * k_each);
   for (const i64 id : ids_a)
     CHECK(ids.count(id) == 1);
   for (const i64 id : ids_b)
     CHECK(ids.count(id) == 1);
   // The shared task's history: its creation and every note of both hosts.
-  CHECK(at(tasks[0], "history").size() == 1 + 2 * k_each);
+  const JsonValue listed_shared = a.ok("task.list", obj({{"task", shared}}));
+  const JsonValue& first = at(listed_shared, "tasks")[0];
+  CHECK(at(first, "history").size() == 1 + 2 * k_each);
+}
+
+// `ledger.json` version 1 counted its ids (`next_task`, `next_review`) and had no revisions; the
+// registered step (session.cpp) drops the counters and gives every item revision 1. Its tasks and
+// items keep the ids they were known by, a new one is drawn against them, and the file written
+// back is version 2.
+TEST_CASE("ledger: a version-1 ledger reads, keeps its ids and draws new ones") {
+  test::TempDir tmp("protocol_ledger");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  h.open(dir, true);
+  {
+    std::ofstream out(dir + "/ledger.json", std::ios::binary);
+    out << R"({"next_task":3,"next_review":2,)"
+           R"("tasks":[{"id":1,"key":"task/1","title":"old","created_by":{"actor":"a"}},)"
+           R"({"id":2,"key":"task/2","title":"older","created_by":{"actor":"a"}}],)"
+           R"("reviews":[{"id":1,"kind":"validation","summary":"s","raised_by":{"actor":"a"}}]})";
+  }
+  const JsonValue tasks = at(h.ok("task.list"), "tasks");
+  REQUIRE(tasks.size() == 2);
+  CHECK(num(at(tasks[0], "id")) == 1);
+  CHECK(num(at(tasks[1], "id")) == 2);
+  const JsonValue item = h.review("review.list", obj({{"review", JsonValue(u64{1})}}));
+  CHECK(num(at(item, "revision")) == 1);
+  const i64 made =
+      num(at(h.task("task.create", obj({{"title", JsonValue("new")}, {"attribution", who("b")}})),
+             "id"));
+  CHECK(made != 1);
+  CHECK(made != 2);
+  std::string text;
+  REQUIRE(h.vfs.read(dir + "/ledger.json", text) == io::Status::Ok);
+  CHECK(text.find("next_task") == std::string::npos);
+  CHECK(text.find("next_review") == std::string::npos);
+  const JsonValue closed = h.review("review.close", obj({{"review", JsonValue(u64{1})},
+                                                         {"resolution", JsonValue("Accepted")},
+                                                         {"revision", JsonValue(u64{1})},
+                                                         {"attribution", who("b")}}));
+  CHECK(num(at(closed, "revision")) == 2);
 }

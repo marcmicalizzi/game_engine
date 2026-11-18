@@ -2488,7 +2488,7 @@ struct WorkLinks @version(1) {
 }
 
 /// One line of a task's or review item's history: who changed what, when, and what they said.
-struct WorkNote @version(1) {
+struct WorkNote @version(2) @additive(2) {
   at_unix_ms: i64 = 0
   actor: string
   role: string
@@ -2497,10 +2497,22 @@ struct WorkNote @version(1) {
   change: string
   /// For "status", the new status's name; otherwise the caller's note, possibly empty.
   text: string
+  /// How the caller came to be `actor` (protocol.md, "The task ledger and review items"):
+  /// "credential:<name>" for a connection bound to a credential the operator issued, "operator"
+  /// for a connection on the printed token or the shell's cookie, "stdio" for stdin, engine-cli and
+  /// a console script, "host" for the host's own change (a claim that lapsed). Anything but a
+  /// credential's is the caller's own claim of its name, and a queue draws it so.
+  via: string @since(2)
+  /// The credential that made the caller a person, when one did (`Caller::human_via`); empty for
+  /// everyone else.
+  human_via: string @since(2)
 }
 
 /// One task of the ledger.
-struct TaskInfo @version(1) {
+struct TaskInfo @version(2) @additive(2) {
+  /// Drawn at random against the ledger's other tasks (side_file.h's `fresh_side_file_id`), never
+  /// counted: after a ledger is restored from a copy, a counter's next id would name a task
+  /// someone already knew by that number as a different one.
   id: u64 = 0
   /// What a call's `attribution.task` says while it does this work: "task/<id>". A journal entry,
   /// a lease or a transaction naming it can be found from the task, and the task from them.
@@ -2529,6 +2541,9 @@ struct TaskInfo @version(1) {
   /// Oldest first, at most 256 lines; `history_dropped` counts the ones let go from the front.
   history: WorkNote[]
   history_dropped: u32 = 0
+  /// How its creator and its claimant were known, as `WorkNote.via` says.
+  created_via: string @since(2)
+  claimant_via: string @since(2)
 }
 
 /// Who a review item is for.
@@ -2575,7 +2590,8 @@ struct ReviewSubject @version(1) {
 }
 
 /// One review item of the ledger.
-struct ReviewInfo @version(1) {
+struct ReviewInfo @version(2) @additive(2) {
+  /// Drawn at random against the ledger's other items, as a task's is.
   id: u64 = 0
   /// What kind of check it is: data, not code. "classified content review" (plan 06 §6.10) is the
   /// one the engine names; "validation", "promotion" or a game's own are as good.
@@ -2597,14 +2613,23 @@ struct ReviewInfo @version(1) {
   closed_unix_ms: i64 = 0
   history: WorkNote[]
   history_dropped: u32 = 0
+  /// Moves on every change to the item, from 1 when it is raised. What a caller saw is this, not
+  /// the history's length, which stops moving at its cap of 256; `review.close` given the revision
+  /// its caller saw is refused (1004) when the item has moved since.
+  revision: u64 = 0 @since(2)
+  /// How its raiser and its closer were known, as `WorkNote.via` says; `closed_human_via` the
+  /// credential that made the closer a person (a person's item is closed by no one else).
+  raised_via: string @since(2)
+  closed_via: string @since(2)
+  closed_human_via: string @since(2)
 }
 
-/// `ledger.json` in a document directory: the tasks and review items, ids growing per document.
-/// Never cached by a host: every call reads it, changes it and writes it back while it holds
-/// `ledger.json.lock` exclusively, so two hosts on one directory lose nothing to each other.
-struct LedgerFile @version(1) @kind(document) {
-  next_task: u64 = 1
-  next_review: u64 = 1
+/// `ledger.json` in a document directory: the tasks and review items. Never cached by a host:
+/// every call reads it, changes it and writes it back while it holds `ledger.json.lock`
+/// exclusively, so two hosts on one directory lose nothing to each other. Version 1 counted its ids
+/// (`next_task`, `next_review`); version 2 draws them, and its registered step drops the counters
+/// and gives every item revision 1.
+struct LedgerFile @version(2) @kind(document) {
   tasks: TaskInfo[]
   reviews: ReviewInfo[]
 }
@@ -2666,7 +2691,8 @@ struct TaskListParams @version(1) {
 }
 
 /// Result of `task.list`, and of the writes, which answer the task they changed in `tasks[0]`.
-struct TasksResult @version(1) {
+/// Version 2: its tasks are `TaskInfo` 2 (random ids, how each caller was known).
+struct TasksResult @version(2) {
   /// The host's clock, which every claim's expiry is judged by.
   now_unix_ms: i64 = 0
   tasks: TaskInfo[]
@@ -2690,7 +2716,7 @@ struct ReviewRaiseParams @version(1) {
 }
 
 /// Parameters of `review.close`.
-struct ReviewCloseParams @version(1) {
+struct ReviewCloseParams @version(2) @additive(2) {
   session: string
   review: u64 = 0
   /// Accepted, Rejected, or Withdrawn (its raiser, an agent-audience item only).
@@ -2698,6 +2724,10 @@ struct ReviewCloseParams @version(1) {
   /// What was decided and why, at most 4 KiB.
   note: string
   attribution: engine.doc.Attribution
+  /// The item's `revision` when its closer read it; 0 closes whatever it is now. Refused (1004,
+  /// `data.reason` "revision moved") when the item has changed since, so a decision is never
+  /// recorded against a version its maker did not see.
+  revision: u64 = 0 @since(2)
 }
 
 /// Parameters of `review.list`.
@@ -2715,7 +2745,8 @@ struct ReviewListParams @version(1) {
 }
 
 /// Result of `review.list`, and of the writes, which answer the item they changed in `reviews[0]`.
-struct ReviewsResult @version(1) {
+/// Version 2: its items are `ReviewInfo` 2 (random ids, a revision, how each caller was known).
+struct ReviewsResult @version(2) {
   now_unix_ms: i64 = 0
   reviews: ReviewInfo[]
 }

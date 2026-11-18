@@ -78,10 +78,27 @@ bool drop_next_id(JsonValue& object, schema::ReadContext&) {
   return true;
 }
 
+// `ledger.json` at version 1 counted its task and review ids; version 2 draws them, and each item
+// carries a revision that moves on every change (ledger.cpp). The step drops the two counters and
+// gives every item revision 1, so 0 stays what a `review.close` that names none sends.
+bool drop_ledger_counters(JsonValue& object, schema::ReadContext&) {
+  if (!object.is_object()) return true;
+  object.as_object().erase(std::string_view("next_task"));
+  object.as_object().erase(std::string_view("next_review"));
+  if (JsonValue* reviews = object.find("reviews"); reviews != nullptr && reviews->is_array()) {
+    for (JsonValue& r : reviews->as_array()) {
+      if (r.is_object() && r.find("revision") == nullptr) r.set("revision", JsonValue(u64{1}));
+    }
+  }
+  return true;
+}
+
 void register_side_file_steps() {
   static const bool registered = [] {
     schema::MigrationRegistry::global().add({"engine.protocol.LeaseFile", 1, &drop_next_id});
     schema::MigrationRegistry::global().add({"engine.protocol.TransactionsFile", 1, &drop_next_id});
+    schema::MigrationRegistry::global().add(
+        {"engine.protocol.LedgerFile", 1, &drop_ledger_counters});
     return true;
   }();
   (void)registered;

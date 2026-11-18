@@ -394,21 +394,26 @@ TEST_CASE("cli: eight processes at once write one ledger and lose nothing") {
   REQUIRE(listed.exit_code == 0);
   const JsonValue& tasks = at(listed.result, "tasks");
   REQUIRE(tasks.size() == k_processes);
-  std::vector<bool> seen(k_processes + 1, false);
+  // Ids are drawn, not counted (protocol.md, "The task ledger and review items"): eight tasks,
+  // eight different ids, each a JSON number every client carries exactly.
+  std::vector<i64> ids;
   for (u32 i = 0; i < tasks.size(); ++i) {
     i64 id = 0;
     REQUIRE(at(tasks[i], "id").get_i64(id));
     REQUIRE(id >= 1);
-    REQUIRE(id <= k_processes);
-    CHECK_FALSE(seen[static_cast<usize>(id)]);
-    seen[static_cast<usize>(id)] = true;
+    REQUIRE(id < (i64{1} << 53));
+    for (const i64 seen : ids)
+      CHECK(seen != id);
+    ids.push_back(id);
   }
   // A review item raised by one process and read by the next.
+  const std::string task = std::to_string(ids[2]);
   const Run raised = cli({"--doc", doc, "--compact", "review.raise",
-                          R"({"kind":"validation","summary":"two parts overlap","task":3,)"
-                          R"("attribution":{"actor":"qa-agent"}})"});
+                          R"({"kind":"validation","summary":"two parts overlap","task":)" + task +
+                              R"(,"attribution":{"actor":"qa-agent"}})"});
   REQUIRE(raised.exit_code == 0);
-  const Run reviews = cli({"--doc", doc, "--compact", "review.list", R"({"task":3})"});
+  const Run reviews =
+      cli({"--doc", doc, "--compact", "review.list", R"({"task":)" + task + "}"});
   REQUIRE(reviews.exit_code == 0);
   CHECK(at(reviews.result, "reviews").size() == 1);
 }
