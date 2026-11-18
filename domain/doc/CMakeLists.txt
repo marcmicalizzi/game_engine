@@ -16,6 +16,7 @@ engine_module_tests(NAME doc
   SOURCES tests/document_tests.cpp tests/document_store_tests.cpp tests/merge_tests.cpp
           tests/index_tests.cpp tests/partition_tests.cpp tests/change_feed_tests.cpp
           tests/save_tests.cpp tests/blob_tests.cpp tests/checkpoint_tests.cpp tests/size_table.cpp
+          tests/hostile_store_tests.cpp
   DEPS doc_test_types)
 
 engine_module_bench(NAME doc SOURCES bench/doc_bench.cpp)

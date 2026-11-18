@@ -745,6 +745,56 @@ class DiskView {
 bool parse_journal(std::string_view text, const std::string& path, Vector<Patch>& out,
                    Vector<u64>* ends, std::string* error);
 
+// **Where a manifest may name a layer's file: under the document, by the rule alone** (T187).
+// `session.open` loads any directory a client names, so a manifest is someone else's bytes, and a
+// `file` of `../../x.json` read outside the document, and told the client, by "not found" against a
+// parse error and the native path, whether a file existed anywhere on the machine. This is the rule
+// `doc.place_asset` and `doc.put_blob` hold a client's path to (`stays_under_document`,
+// domain/protocol's document_path.h, which this module cannot include; the same behaviour under the
+// same name): relative, no drive or stream (`:`), no `..` component, no empty name, no control
+// character, `\` a separator on every platform. A path it refuses is never handed to the file
+// system, so the refusal names the layer and says nothing of the disk.
+bool stays_under_document(std::string_view path) noexcept {
+  if (path.empty() || path[0] == '/' || path[0] == '\\') return false;
+  usize start = 0;
+  for (usize i = 0; i <= path.size(); ++i) {
+    const char c = i < path.size() ? path[i] : '/';
+    if (static_cast<unsigned char>(c) < 0x20 || c == ':') return false;
+    if (c != '/' && c != '\\') continue;
+    const std::string_view name = path.substr(start, i - start);
+    if (name.empty() || name == "..") return false;
+    start = i + 1;
+  }
+  return true;
+}
+
+// **A `$parent` cycle is refused at load** (T187): the composed index, `children`, the materializer's
+// parents-first walk and flecs' `ChildOf` all assume a forest, and only `Document::validate` (not
+// run at load) said otherwise. Each live object is settled once, so a chain of n objects costs O(n);
+// true, with an object on the cycle in `at`, when there is one.
+bool find_parent_cycle(const Document& doc, ObjectId& at) {
+  HashMap<ObjectId, u8> state;  // 1 on the walk being made, 2 settled
+  Vector<ObjectId> walk;
+  for (const ObjectId id : doc.objects()) {
+    walk.clear();
+    for (ObjectId cursor = id; !cursor.is_null(); cursor = doc.parent_of(cursor)) {
+      const u8* seen = state.find_value(cursor);
+      if (seen != nullptr) {
+        if (*seen == 1) {
+          at = cursor;
+          return true;
+        }
+        break;
+      }
+      state.insert_or_assign(cursor, u8{1});
+      walk.push_back(cursor);
+    }
+    for (const ObjectId settled : walk)
+      state.insert_or_assign(settled, u8{2});
+  }
+  return false;
+}
+
 // Reads one file of the document and remembers what it held.
 bool read_file(const DiskView& disk, const std::string& path, std::string& out, StoredState& known,
                std::string* error) {
@@ -1143,7 +1193,17 @@ bool DocumentStore::load(const io::Vfs& vfs, std::string_view dir, Document& out
     if (ref.partition.has_value() && ref.partition->tile_size > 0) {
       if (!load_partitioned(disk, ref, layer, *known, error)) return false;
     } else {
-      const std::string rel = join(k_layers_dir, ref.file);
+      if (!stays_under_document(ref.file)) {
+        set_error(error, manifest_path,
+                  "layer '" + ref.name +
+                      "' names a file outside the document's layers directory, which a document "
+                      "may not name");
+        return false;
+      }
+      std::string file(ref.file);
+      for (char& c : file)
+        if (c == '\\') c = '/';
+      const std::string rel = join(k_layers_dir, file);
       std::string layer_text;
       if (!read_file(disk, rel, layer_text, *known, error)) return false;
       schema::ReadContext layer_ctx;
@@ -1158,6 +1218,12 @@ bool DocumentStore::load(const io::Vfs& vfs, std::string_view dir, Document& out
   }
   if (doc.layer_count() == 0) {
     set_error(error, manifest_path, "document has no layers");
+    return false;
+  }
+  if (ObjectId at; find_parent_cycle(doc, at)) {
+    set_error(error, manifest_path,
+              "the layers' parents form a cycle through object " + hex_of(at) +
+                  "; a document's parents are a forest");
     return false;
   }
   const i32 edit = doc.find_layer(manifest.edit_layer);
