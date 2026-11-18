@@ -34,6 +34,8 @@
 // Stage 4's samples round the eye find their surface with the reflection's traversal
 // (`trace_scene_hit`, R129's file: called, never edited here).
 #include "hit_shade.slang"
+// R171's fifth leg: where a coarse cell's light comes from, and the directions drawn from it.
+#include "gi_guide.slang"
 
 // **The frame's steps** (gfx::GiStepPush; renderer.md, "Indirect light", "Stage 5"). A frame
 // records one sample pass and one fold, or — its first frame, and a frame whose eye jumped —
@@ -43,6 +45,12 @@
 // its directions, its seeds and its stamps turn with.
 static const uint k_gi_step_reset = 1u;  // the fold clears every cell and the header
 static const uint k_gi_step_count = 2u;  // the fold counts what it keeps (the frame's last step)
+// gfx::k_gi_step_hold (R171's fifth leg): the memory holds at today's history in this fold.
+static const uint k_gi_step_hold = 4u;
+// gfx::k_gi_stat_let_go, k_gi_stat_followed, k_gi_stat_guided: the header's last three words.
+static const uint k_gi_stat_let_go = 13u;
+static const uint k_gi_stat_followed = 14u;
+static const uint k_gi_stat_guided = 15u;
 uint gi_now(ResolveParams* params) { return params->gi_frame + g_push.gi_step; }
 
 // The environment along `dir`: what an escaped ray carries.
@@ -323,11 +331,34 @@ uint gi_young_level(uint level, bool crown) {
 // their priors — the light outside the crown's own shade; the cells are the crown's (one face),
 // `k_gi_crown_first` to the ladder's last level above the surface's own, and the count returned
 // is, in whole samples, the cell's its read starts at.
+// The samples this thread drew with a trained guide behind them (the frame's count,
+// `k_gi_stat_guided`, is summed a wave at a time by the caller).
+static uint g_gi_guided = 0u;
 uint gi_trace_and_add(ResolveParams* params, uint2 p, Surface s, InstanceDesc instance,
                       uint first, float crown) {
   const bool foliage = crown > 0.0;
   const float base = gi_luminance(gi_harmonics(params, s.normal));
   if (!(base > 0.0)) return 0xffffffffu;
+  const uint level = gi_level(length(s.position - params->camera.xyz), params->gi_cell_scale);
+  // **R171's fifth leg: the guide** (gi_guide.slang; renderer.md, "R171: where a dark room's light
+  // comes from"). The guide of the surface's coarse cell — the ladder's top, made by the picture's
+  // own samples (`first` 0) and only found by a sample round the eye — once it averages
+  // `k_gi_guide_trained` samples and holds any light at all.
+  uint64_t guide = 0;
+  uint guide_sum = 0u;
+  float alpha = 0.0;
+  if (!foliage && (params->gi_shell_pad & k_gi_guide) != 0u) {
+    const uint slot = gi_guide_slot(
+        params->gi_cells, params->gi_count,
+        gi_guide_hash(gi_cell_hash(params, s, min(level + k_gi_guide_up, k_gi_levels - 1u))),
+        first == 0u);
+    if (slot != k_gi_no_guide) {
+      guide = gi_guide_at(params->gi_cells, params->gi_count, slot);
+      uint* words = (uint*)guide;
+      guide_sum = words[4];
+      if (words[3] >= k_gi_guide_trained && guide_sum != 0u) alpha = k_gi_guide_alpha;
+    }
+  }
   // One cosine-weighted direction about the interpolated normal; one that the triangle's own plane
   // hides is mirrored through that plane, so the ray never starts into its own surface.
   uint rng = rng_seed(p, gi_now(params), 0x9e3779b9u);
@@ -335,26 +366,65 @@ uint gi_trace_and_add(ResolveParams* params, uint2 p, Surface s, InstanceDesc in
   float3 bitangent;
   onb_from_normal(s.normal, tangent, bitangent);
   float3 dir = to_world(sample_cosine_hemisphere(rng_next2(rng)), tangent, bitangent, s.normal);
-  const float below = dot(dir, s.geometric);
-  if (below <= 0.0) dir = normalize(dir - 2.0 * below * s.geometric);
+  float below = dot(dir, s.geometric);
+  // With a trained guide the direction is the guide's instead, `alpha` of the time: a bin by its
+  // share, a point uniform in the bin's solid angle. One the surface's own plane hides brings
+  // nothing and is not traced: the lobe has no density there.
+  uint bin = k_gi_guide_bins;
+  bool lit = true;
+  if (alpha > 0.0) {
+    ++g_gi_guided;
+    const float choose = rng_next(rng);
+    if (choose < alpha) {
+      const float u = rng_next(rng);
+      const float2 uv = rng_next2(rng);
+      bin = gi_guide_draw(guide, guide_sum, u);
+      dir = gi_guide_direction(bin, uv);
+      below = dot(dir, s.geometric);
+      lit = below > 0.0;
+    }
+  }
+  if (lit && below <= 0.0) dir = normalize(dir - 2.0 * below * s.geometric);
+  // What the sample counts for: the lobe's density at its direction over the mixture's (the
+  // one-sample form of multiple importance sampling; gfx::gi_guide_weight). The lobe's density is
+  // the cosine's about the normal plus that of the direction the mirror above folds onto this one,
+  // so the weighted sample's expectation is the unguided sample's, mirror and all.
+  float counts = 1.0;
+  if (guide != 0 && lit && bin == k_gi_guide_bins) bin = gi_guide_bin(dir);
+  if (alpha > 0.0) {
+    counts = 0.0;
+    if (lit) {
+      const float3 mirrored = dir - 2.0 * dot(dir, s.geometric) * s.geometric;
+      const float lobe = (max(dot(dir, s.normal), 0.0) + max(dot(mirrored, s.normal), 0.0)) *
+                         (1.0 / 3.14159265359);
+      counts = gi_guide_weight(lobe, gi_guide_pdf(gi_guide_share(guide, bin), guide_sum), alpha);
+      lit = counts > 0.0;
+    }
+  }
   const SceneGeometry geo = geometry_of(params);
   const float ray_bias = ray_offset(geo, instance, params->shadow_bias, params->shadow_bias_steps);
   g_fade_pixel = p;
   const float3 origin = s.position + s.geometric * ray_bias;
   float3 radiance = float3(0.0);
-  if ((params->gi_flags & k_gi_bounce) != 0u) {
+  if (!lit) {
+    // Nothing to trace.
+  } else if ((params->gi_flags & k_gi_bounce) != 0u) {
     radiance = gi_bounce(params, origin, dir);
   } else if (!shadow_ray_blocked(params, k_shadow_sun, origin, dir, 1e30)) {
     radiance = gi_environment(params, dir);
   }
-  const float3 ratio = min(radiance / base, float3(k_gi_ratio_max));
+  const float3 ratio = min(radiance / base, float3(k_gi_ratio_max)) * counts;
+  // The guide learns from every sample of its cell, guided or not: the light the sample brought,
+  // as it counts, to the bin of its direction.
+  if (guide != 0) {
+    gi_guide_add(guide, lit ? bin : 0u, gi_luminance(ratio), gi_now(params) & k_gi_stamp_frames);
+  }
   const uint weight = foliage ? gi_crown_weight(crown) : 1u;
   const uint3 fixed = uint3(ratio * k_gi_fixed + 0.5) * (foliage ? k_gi_crown_weight : 1u);
   // The ladder (stage 5): the pixel's level and the three coarser, consecutive, so a surface
   // whose level just changed as the eye came nearer reads the cells that were its own and its
   // parents' a frame ago, and the coarsest of them takes enough samples in one frame to be read
   // on it.
-  const uint level = gi_level(length(s.position - params->camera.xyz), params->gi_cell_scale);
   uint own = 0u;
   // Foliage skips its own level (leaf-sized cells that never fill and nothing reads); a far crown
   // whose levels end at the last keeps that one.
@@ -503,10 +573,12 @@ void gi_sample_pixel(ResolveParams* params, uint t) {
   const uint rays = WaveActiveCountBits(trickle) + WaveActiveCountBits(traced);
   const uint samples = WaveActiveCountBits(trickle);
   const uint young = WaveActiveCountBits(young_own);
+  const uint guided = WaveActiveSum(g_gi_guided);
   if (WaveIsFirstLane()) {
     if (rays != 0u) header[k_gi_stat_rays].add(rays);
     if (samples != 0u) header[k_gi_stat_samples].add(samples);
     if (young != 0u) header[k_gi_stat_young].add(young);
+    if (guided != 0u) header[k_gi_stat_guided].add(guided);
   }
 }
 // **Stage 4: a sample round the eye** (`ResolveParams::gi_shell_rays`; renderer.md, "Indirect
@@ -637,16 +709,28 @@ void gi_fold_main(uint3 id : SV_DispatchThreadID) {
   if (params->gi_cells == 0 || cell >= params->gi_count) return;
   uint* keys = (uint*)gi_keys(params->gi_cells);
   uint* words = (uint*)gi_cell_words(params->gi_cells, params->gi_count) + cell * k_gi_cell_words;
+  // R171's fifth leg: the guides, a thread each of the fold's first (gi_guide.slang).
+  const bool guides =
+      (params->gi_shell_pad & k_gi_guide) != 0u && cell < gi_guide_count(params->gi_count);
   if ((g_push.gi_step_flags & k_gi_step_reset) != 0u) {
     keys[cell] = 0u;
     for (uint i = 0u; i < k_gi_cell_words; ++i) words[i] = 0u;
     if (cell < 16u) ((uint*)params->gi_cells)[cell] = 0u;
+    if (guides) {
+      uint* guide = (uint*)gi_guide_at(params->gi_cells, params->gi_count, cell);
+      for (uint i = 0u; i < k_gi_guide_bytes / 4u; ++i) guide[i] = 0u;
+    }
     return;
+  }
+  if (guides) {
+    gi_guide_fold(gi_guide_at(params->gi_cells, params->gi_count, cell), gi_now(params));
   }
   bool kept = false;
   bool young = false;
   bool evicted = false;
   bool expired = false;
+  bool let_go = false;
+  bool followed = false;
   if (keys[cell] != 0u) {
     // The frame's samples; the top bit is a change a coarser cell saw (R171's third leg).
     const uint n = words[2] & ~k_gi_frame_flags;
@@ -704,7 +788,12 @@ void gi_fold_main(uint3 id : SV_DispatchThreadID) {
                                : cap;
       // The fourth leg (gfx::k_gi_memory_ramp): past today's history the count grows by half a
       // frame's samples, so a cut's or a walk-in's unsettled first frames are forgotten faster.
-      const uint grow = memory && previous >= cap ? max(n / k_gi_memory_ramp, 1u) : n;
+      // The fifth leg: in a fold that holds (`k_gi_step_hold`: the pre-roll's steps and the frames
+      // just after a load or a cut, whose samples are the bounce's first rounds) the count does not
+      // grow past today's history at all; a cell that already remembers longer keeps what it has.
+      const bool hold = (g_push.gi_step_flags & k_gi_step_hold) != 0u;
+      const uint grow =
+          memory && previous >= cap ? (hold ? 0u : max(n / k_gi_memory_ramp, 1u)) : n;
       const uint total = max(min(previous + grow, ceiling), min(previous + n, cap));
       // The count is sixteen bits, and a cell that takes over 4,095 a frame — a crown's coarse
       // cell, whose samples count in sixteenths (stage 7) — would fill it in under sixteen
@@ -717,6 +806,7 @@ void gi_fold_main(uint3 id : SV_DispatchThreadID) {
       // The fourth leg: told that a coarser cell sees its light moving, this frame at today's rate.
       const float long_rate = float(n) / float(previous >= 0xffffu ? full : total);
       const float rate = memory && follow ? max(long_rate, short_rate) : long_rate;
+      followed = memory && follow && short_rate > long_rate;
       const float3 old_mean = float3(f16tof32(words[6] & 0xffffu), f16tof32(words[6] >> 16),
                                      f16tof32(words[7] & 0xffffu));
       float3 mean = previous == 0u ? frame_mean : lerp(old_mean, frame_mean, rate);
@@ -766,6 +856,7 @@ void gi_fold_main(uint3 id : SV_DispatchThreadID) {
         const float3 base = lum_old > 0.0 ? old_mean * (short_old / lum_old) : float3(short_old);
         mean = lerp(base, frame_mean, float(n) / float(back + n));
         count = back + n;
+        let_go = true;
       }
       words[1] = (words[1] & 0xffffu) | ((f32tof16(short_mean) & 0x7ffeu) << 16) |
                  (changed ? k_gi_cell_changed : 0u) | (following ? k_gi_cell_following : 0u);
@@ -802,7 +893,11 @@ void gi_fold_main(uint3 id : SV_DispatchThreadID) {
   const uint young_count = WaveActiveCountBits(young);
   const uint evicted_count = WaveActiveCountBits(evicted);
   const uint expired_count = WaveActiveCountBits(expired);
+  const uint let_go_count = WaveActiveCountBits(let_go);
+  const uint followed_count = WaveActiveCountBits(followed);
   if (WaveIsFirstLane()) {
+    if (let_go_count != 0u) header[k_gi_stat_let_go].add(let_go_count);
+    if (followed_count != 0u) header[k_gi_stat_followed].add(followed_count);
     if (kept_count != 0u) header[k_gi_stat_cells].add(kept_count);
     if (young_count != 0u) header[k_gi_stat_young_cells].add(young_count);
     if (evicted_count != 0u) header[k_gi_stat_evicted].add(evicted_count);

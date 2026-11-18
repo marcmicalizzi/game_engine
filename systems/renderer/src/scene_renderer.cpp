@@ -837,7 +837,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   // frame allocates for it; its first frame's fold clears it.
   if (pipelines_.gi_sample.pipeline.valid()) {
     gi_count_ = gfx::gi_cell_count(resolved_.gi_cache_bytes);
-    if (!gfx::create_buffer(device, gfx::gi_buffer_bytes(gi_count_),
+    if (!gfx::create_buffer(device, gfx::gi_buffer_bytes(gi_count_, resolved_.gi_guide),
                             gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress,
                             false, gi_cache_, error)) {
       destroy();
@@ -2379,6 +2379,9 @@ void SceneRenderer::fold_gi(u32 slot) {
   gi.shell_hits = words[gfx::k_gi_stat_shell_hits];
   gi.shell_near = words[gfx::k_gi_stat_shell_near];
   gi.shell_kept = words[gfx::k_gi_stat_shell_kept];
+  gi.let_go = words[gfx::k_gi_stat_let_go];
+  gi.followed = words[gfx::k_gi_stat_followed];
+  gi.guided = words[gfx::k_gi_stat_guided];
   if (resolved_.gi_log) {
     ENGINE_LOG_INFO(log_renderer, "gi cache", log::field("frame", gi_frame_),
                     log::field("rays", gi.rays), log::field("samples", gi.samples),
@@ -2387,7 +2390,8 @@ void SceneRenderer::fold_gi(u32 slot) {
                     log::field("evicted", gi.evicted), log::field("expired", gi.expired),
                     log::field("shell", gi.shell), log::field("shell_hits", gi.shell_hits),
                     log::field("shell_near", gi.shell_near),
-                    log::field("shell_kept", gi.shell_kept));
+                    log::field("shell_kept", gi.shell_kept), log::field("let_go", gi.let_go),
+                    log::field("followed", gi.followed), log::field("guided", gi.guided));
   }
 }
 
@@ -3513,6 +3517,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // picture after a load or a cut is lit by a cache that has had its samples (gi_preroll.h).
   u32 gi_steps = 0;
   u32 gi_first_frame = 0;
+  bool gi_hold = false;
   const bool gi_clear = gi_on && gi_reset_;
   if (gi_on) {
     u64 gi_pixels = 0;
@@ -3538,6 +3543,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     gi_last_eye_ = frame.camera.position;
     gi_eye_known_ = true;
     gi_steps = gi_preroll_steps(gi_cut, resolved_.gi_preroll);
+    gi_hold = gi_memory_holds(gi_cut, gi_hold_frames_);  // R171's fifth leg (gi_preroll.h)
     stats_.gi_preroll_steps = gi_steps - 1;
     gi_first_frame = gi_frame_ + 1;
     gi_frame_ += gi_steps;
@@ -4010,7 +4016,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       resolve.gi_shell_cost = static_cast<u32>(gfx::gi_shell_ray_cost(gi_shell_rays) * views);
       resolve.gi_shell_word =
           gfx::gi_shell_word(resolved_.gi_shell_clip ? resolved_.gi_shell_m : 0.0f,
-                             resolved_.gi_shell_refresh, resolved_.gi_shell_first);
+                             resolved_.gi_shell_refresh, resolved_.gi_shell_first) |
+          (resolved_.gi_guide ? gfx::k_gi_guide : 0u);
       resolve.gi_crowns = gi_crowns_.address;
       resolve.gi_crown_count = gi_crown_count_;
     }
@@ -6249,7 +6256,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               if (last_step) timer.end(cb);
             });
         fold_pass(last_step ? "gi fold" : "gi preroll fold", step,
-                  last_step ? gfx::k_gi_step_count : 0u, last_step);
+                  (last_step ? gfx::k_gi_step_count : 0u) | (gi_hold ? gfx::k_gi_step_hold : 0u),
+                  last_step);
       }
       // What the two passes counted into the cache's header, into this slot's statistics block,
       // and the header cleared for the next frame's counts and ray budget (stage 2).

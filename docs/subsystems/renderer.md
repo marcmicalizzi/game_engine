@@ -3435,6 +3435,112 @@ open: hold a cell's count at today's history until its light has settled (its sh
 over its own history), or let a cut's or a load's cells start the memory only after the pre-roll's
 window; either moves every picture the fourth leg measured, so it is a leg of its own, not a fix.
 
+### R171: where a dark room's light comes from
+
+Fifth leg (2026-11-17). The owner walked the forest's village with `renderer.gi.memory` on and the
+grain "is still there". The forest session held their five marks (4K traced, four consecutive
+frames 2.5 s into each hold): in the two dark rooms, walls at display code 27 to 30, **75 to 80 %
+of pixels move a code or more every frame with or without the memory** (three codes or more: 11.0
+% plain, 5.6 % with it; the light's change a pixel 5.9 and 4.8 % plain, 4.7 and 4.1 % with it),
+where the brighter marks fall to 0.3 to 0.5 % with it. Four legs mended the cache's averaging; the
+fault that is left is in what a dark room's cells are given to average.
+
+**The arithmetic of one sample.** At 3840×2160 an own cell covers about a hundred pixels and the
+trickle samples one in nine, eleven samples a frame, into a history of 256. One sample of value x
+therefore moves the cell's mean by (x / m − 1) / 256 of itself, and a frame's eleven by
+CV · √11 / 256, where CV² is a sample's variance over its mean squared. A display code at 28 is
+2.2 / 28 = 7.9 % of the light. Where a cosine ray finds the room's light one time in thirty — a
+doorway or a shaft seen from a wall across the room — x / m is thirty and **one sample moves the
+cell 11 %: more than a code, from one ray's luck**; the frame's change is 5.5 · 3.3 / 256 = 7 % of
+the light at CV² = 30, which is the forest's 5.9 %. That is the cause the measurements below
+single out, among the five the row weighed:
+
+| candidate | verdict | by what |
+|---|---|---|
+| too few samples a cell | part of it | eleven a frame into 256: a frame is 4 % of the mean's weight |
+| samples that rarely find the opening | **the cause** | the heaviest hundredth of a wall's samples carry two fifths of its light (`gi cache key: a guided sample keeps the mean and loses its heavy tail`, the cave's and the box's numbers below); the change a frame follows CV, and CV² is 5 on a lit room's walls and 20 to 30 where the opening is small |
+| the fold's weight | where the memory is off or let go | n / 256 a frame; sixteen times less under the memory, which is the brighter marks' 0.3 to 0.5 % |
+| the read's interpolation | no | eight cells' shares average the change down, never up |
+| quantization with no dither in time | no | with the bounce off no pixel of a held view changes at all (leg 4); a change under a code flips a pixel that sits at a rounding edge, which is the 0.69-code tail of every table here |
+
+**The village's interior paths were stale**, which is why the engine's own dark room had stopped
+showing the fault: batch 67's plan version 5 moved house 0's door 1.8 m and re-pasted
+`camera-path.json`, not `interior-held.json` and `interior-door.json`, whose pose then stood at a
+level of 5.6 codes where nothing in the picture moves. Both follow the flight's keys again.
+
+**What the research says to do about it** (read where marked; the rest is named and marked unread):
+- *Path guiding.* Mueller, Gross and Novak, "Practical Path Guiding for Efficient Light-Transport
+  Simulation" (EGSR 2017; read from the authors' PDF: the abstract, §3 and §5.3): the incident
+  radiance field is learned as an adaptively refined piecewise-constant function, a binary tree
+  over space with a quadtree over directions in **world-space cylindrical coordinates, which
+  preserve area ratios**; a leaf is refined until it holds no more than 1 % of the flux; each
+  pass is guided by the one before and combined with BSDF sampling **by multiple importance
+  sampling**, and stays unbiased because a pass's samples are independent given the distribution
+  it draws from. Vorba et al., "On-line Learning of Parametric Mixture Models for Light Transport
+  Simulation" (SIGGRAPH 2014; only the project page's abstract could be read: mixture models
+  trained on-line from a stream of particles, for scenes "featuring difficult visibility").
+- *Reservoir resampling.* Ouyang et al., "ReSTIR GI: Path Resampling for Real-Time Path Tracing"
+  (HPG 2021; **abstract only**, the paper's PDF is over the fetch limit: resampling of multi-bounce
+  indirect paths in space and time, MSE improvements of 9.3 to 166 times at one sample a pixel).
+  It reuses a neighbour's sample point with a visibility ray and a Jacobian, and is the heavier
+  road: stage 2 of the plan's GI (R68) is where it belongs.
+- *Probes.* Majercik et al., "Dynamic Diffuse Global Illumination with Ray-Traced Irradiance
+  Fields" (JCGT 2019): **not read** (the journal's page came back empty and its PDF is over the
+  limit); nothing here is taken from it.
+- *Fireflies.* Zirr, Hanika and Dachsbacher, "Reweighting Firefly Samples for Improved
+  Finite-Sample Monte Carlo Estimates" (CGF 2018; read from the preprint's abstract, §2 and §3):
+  rejecting outliers gives estimates that are too low, clamping bounds the variance by biasing,
+  and their reweighting trades bias for variance by design. So the control that does not bias the
+  mean is not a filter on the samples; it is sampling the heavy part often enough that it is not
+  heavy, which is what a guide does.
+- *What the eye sees* is the fourth leg's source and bar, above.
+
+**What is built: a guide** (`gfx::k_gi_guide`, `renderer.gi.guide`, on; `gi_cache.h` and
+`gi_guide.slang`). The samples of a coarse cell learn where their light comes from, and half the
+samples are drawn there:
+- **A guide is a coarse cell's**: three levels above a surface's own, the ladder's top, on the
+  surface's face, which on a flat wall pools sixty-four own cells and seven hundred samples a
+  frame. It holds the share of the cell's light that arrived through each of 128 **equal solid
+  angles of the sphere** — eight bands of the world's y by sixteen sectors of longitude about it,
+  the cylinder's equal-area map as in Mueller's quadtree, fixed where they refine: a cell's 32
+  bytes have no room for a tree, and a bin of a tenth of a steradian is the size of a doorway at
+  three metres.
+- **A sample is drawn from the mixture** of its cosine lobe and its guide, half each
+  (`k_gi_guide_alpha`), and counts for the lobe's density at its direction over the mixture's
+  (`gfx::gi_guide_weight`: the one-sample form of multiple importance sampling). Its expectation
+  is the cosine ray's own whatever the guide holds — mirror through the triangle's plane and
+  all — so the cells average what they averaged; no sample counts for more than twice what it
+  counted alone, and one through an opening the guide knows counts for a small part of it and is
+  drawn that many times more often. A guided direction the surface's own plane hides is not
+  traced and counts for nothing.
+- **It learns from every sample of its cell**, guided or not: the sample's weighted light into the
+  bin of its direction, folded a frame at a time into a history of sixteen frames
+  (`gfx::gi_guide_fold`), by the fold pass's first threads. A sample is drawn from a guide once it
+  averages 256 samples; one nothing sampled for 64 frames is freed. The picture's own samples make
+  guides; a sample round the eye only finds one.
+- **Where it lives**: a table of one guide to 256 cells behind the cells in the cache's buffer
+  (16,384 guides of 800 bytes, 12.5 MiB beside the cells' 144 MiB at the default size), found by
+  the guide cell's hash; nothing in `ResolveParams` or the resolve's shaders changed (the flag is
+  bit 25 of `gi_shell_word`), so the resolve reads what it read and costs what it cost.
+- **General**: it keys on a surface's place and face and learns from what the rays bring back. An
+  imported room with one window gets it as a generated one does; a scene in open air pays the
+  guide's lookup and draws its samples about as it did, since the sky's light is nearly the lobe.
+
+**The memory is on again, and holds after a cold start** (`gfx::k_gi_step_hold`,
+`gi_memory_holds`). "Off again", above, found the pre-roll seeding the long mean. Every fold of a
+cold frame's steps and of the 48 frames after it now leaves no count past today's history (a cell
+that already remembered longer keeps its count), so the bounce's first rounds are forgotten at
+today's pace and never enter a long mean. And the pre-roll's case holds its frames to **today's
+history's floor**, measured in its own first run with the memory off: with the memory on the
+long-held picture's floor is that of a history several times longer, which no frame within a
+second and a half of a cut can have, whatever folds it; the bound in absolute terms is the one the
+case held before the memory.
+
+**Whether the memory is engaged** is counted now: `Stats::gi.let_go` (face cells whose fold gave
+up a long history this frame), `.followed` (those folded at today's rate because a coarser cell
+saw its light moving) and `.guided` (samples drawn with a trained guide), in `renderer.gi.log`'s
+line.
+
 ## The sun's day
 
 *A scene that names a sky takes its sun, its moon and its sky from it instead, on the world's clock ([The sky](#the-sky)); everything in this section is the stand-in's, which every other scene still draws, to the bit.*

@@ -1179,3 +1179,180 @@ TEST_CASE("gi cache key: the shell's word holds the reach in whole metres and th
   CHECK(gi_shell_base(65537u) == 65536u + k_gi_workgroup);
   CHECK(gi_shell_base(0u) == 0u);
 }
+
+// R171's fifth leg: the guide (gi_cache.h, "the guide"; the shader's gi_guide.slang).
+TEST_CASE("gi cache key: the guide's bins tile the sphere in equal solid angles") {
+  CHECK(k_gi_guide_bytes == 800u);
+  CHECK(gi_guide_count(1u << 22) == 16384u);
+  CHECK(gi_guide_count(64u) == 64u);
+  CHECK(gi_buffer_bytes(1u << 22, false) == gi_buffer_bytes(1u << 22));
+  CHECK(gi_buffer_bytes(1u << 22, true) == gi_buffer_bytes(1u << 22) + 16384ull * 800ull);
+  // The word's bit is none of the reach, the refresh or the order.
+  CHECK((gi_shell_word(65535.0f, 255u, true) & k_gi_guide) == 0u);
+  // A point inside a bin is that bin's, and is a unit vector.
+  for (u32 bin = 0; bin < k_gi_guide_bins; ++bin) {
+    for (u32 i = 0; i < 4; ++i) {
+      for (u32 j = 0; j < 4; ++j) {
+        f32 d[3];
+        gi_guide_direction(bin, (static_cast<f32>(i) + 0.5f) / 4.0f,
+                           (static_cast<f32>(j) + 0.5f) / 4.0f, d);
+        CHECK(d[0] * d[0] + d[1] * d[1] + d[2] * d[2] == doctest::Approx(1.0).epsilon(1e-5));
+        CHECK(gi_guide_bin(d[0], d[1], d[2]) == bin);
+      }
+    }
+  }
+  // Directions uniform on the sphere (Archimedes: uniform height, uniform longitude, about z
+  // here so the bins' own axis is not the sampler's) land in every bin alike: 128,000 of them,
+  // 1,000 a bin expected, a deviation of 31.6, held to five.
+  std::vector<u32> hits(k_gi_guide_bins, 0u);
+  u32 state = 12345u;
+  const auto next = [&state]() {
+    state = state * 747796405u + 2891336453u;
+    u32 word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    word = (word >> 22u) ^ word;
+    return static_cast<f32>(word >> 8) * (1.0f / 16777216.0f);
+  };
+  for (u32 i = 0; i < 128000u; ++i) {
+    const f32 z = 1.0f - 2.0f * next();
+    const f32 phi = 6.2831853f * next();
+    const f32 s = std::sqrt(std::fmax(0.0f, 1.0f - z * z));
+    ++hits[gi_guide_bin(s * std::cos(phi), s * std::sin(phi), z)];
+  }
+  for (u32 bin = 0; bin < k_gi_guide_bins; ++bin) {
+    CHECK(hits[bin] > 1000u - 158u);
+    CHECK(hits[bin] < 1000u + 158u);
+  }
+  // The density integrates to one over the sphere whatever the shares are.
+  f64 integral = 0.0;
+  for (u32 bin = 0; bin < k_gi_guide_bins; ++bin)
+    integral += static_cast<f64>(gi_guide_pdf(bin + 1u, k_gi_guide_bins * (k_gi_guide_bins + 1u) / 2u)) *
+                (12.566370614359172 / k_gi_guide_bins);
+  CHECK(integral == doctest::Approx(1.0).epsilon(1e-5));
+  CHECK(gi_guide_pdf(7u, 0u) == 0.0f);
+  // No sample counts for more than 1 / (1 - alpha) of what it counted unguided, and one the guide
+  // does not know counts for exactly that.
+  CHECK(gi_guide_weight(0.3f, 0.0f, 0.0f) == 1.0f);
+  CHECK(gi_guide_weight(0.3f, 0.0f, k_gi_guide_alpha) ==
+        doctest::Approx(1.0 / (1.0 - static_cast<f64>(k_gi_guide_alpha))));
+  CHECK(gi_guide_weight(0.3f, 5.0f, k_gi_guide_alpha) < 0.12f);
+  CHECK(gi_guide_weight(0.0f, 5.0f, k_gi_guide_alpha) == 0.0f);
+}
+
+// A wall facing +x in a room lit through an opening: a cap of 8 degrees' half-angle, radiance 1,
+// over a field of 0.01 — a cosine ray finds the cap two times in a hundred, and the unguided
+// sample's variance is 24 times its mean squared (the first leg measured 5 on the village's walls
+// and more in the cave). The guide's cell takes 704 samples a frame (sixty-four own cells of
+// eleven). What is held: the guided samples' mean is the unguided mean (the weight makes it so
+// whatever the guide has learned, and the guide is learned from the frames before, which leaves
+// each frame's samples independent of it given it); their variance is a third or less (the row's
+// simulation, scratch guidesim.py, gives 7.6 times less at these numbers); and the heaviest
+// hundredth of them carries a third or less of the share of the light it carried unguided.
+TEST_CASE("gi cache key: a guided sample keeps the mean and loses its heavy tail") {
+  u32 state = 99u;
+  const auto next = [&state]() {
+    state = state * 747796405u + 2891336453u;
+    u32 word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    word = (word >> 22u) ^ word;
+    return static_cast<f32>(word >> 8) * (1.0f / 16777216.0f);
+  };
+  const f32 e = 30.0f * 3.14159265f / 180.0f;
+  const f32 axis[3] = {std::cos(e) * 0.8f, std::sin(e), std::cos(e) * 0.6f};
+  const f32 cos_half = std::cos(8.0f * 3.14159265f / 180.0f);
+  const auto radiance = [&](const f32 d[3]) {
+    return d[0] * axis[0] + d[1] * axis[1] + d[2] * axis[2] > cos_half ? 1.0f : 0.01f;
+  };
+  const auto cosine = [&](f32 d[3]) {  // about +x
+    const f32 u1 = next();
+    const f32 phi = 6.2831853f * next();
+    const f32 r = std::sqrt(u1);
+    d[0] = std::sqrt(std::fmax(0.0f, 1.0f - u1));
+    d[1] = r * std::cos(phi);
+    d[2] = r * std::sin(phi);
+  };
+  constexpr u32 k_frame = 704;
+  constexpr u32 k_frames = 96;
+  GiGuide guide;
+  f64 plain_sum = 0.0;
+  f64 plain_square = 0.0;
+  f64 guided_sum = 0.0;
+  f64 guided_square = 0.0;
+  f64 heaviest = 0.0;
+  u64 counted = 0;
+  std::vector<f32> plain_values;
+  std::vector<f32> guided_values;
+  for (u32 f = 0; f < k_frames; ++f) {
+    const f32 alpha = guide.trained >= k_gi_guide_trained && guide.sum != 0u ? k_gi_guide_alpha : 0.0f;
+    for (u32 i = 0; i < k_frame; ++i) {
+      f32 d[3];
+      cosine(d);
+      const f64 plain = static_cast<f64>(radiance(d));
+      u32 bin = k_gi_guide_bins;
+      if (alpha > 0.0f && next() < alpha) {
+        // The shader's draw: the first bin whose running share passes the target.
+        const u32 target = std::min(static_cast<u32>(next() * static_cast<f32>(guide.sum)),
+                                    guide.sum - 1u);
+        u32 running = 0;
+        for (bin = 0; bin + 1 < k_gi_guide_bins; ++bin) {
+          if (target < running + guide.share[bin]) break;
+          running += guide.share[bin];
+        }
+        const f32 u = next();
+        gi_guide_direction(bin, u, next(), d);
+      }
+      f32 value = 0.0f;
+      if (d[0] > 0.0f) {
+        if (bin == k_gi_guide_bins) bin = gi_guide_bin(d[0], d[1], d[2]);
+        const f32 weight = gi_guide_weight(d[0] / 3.14159265f,
+                                           gi_guide_pdf(guide.share[bin], guide.sum), alpha);
+        CHECK(weight <= 1.0f / (1.0f - k_gi_guide_alpha) + 1e-4f);
+        value = radiance(d) * weight;
+        guide.frame_sum[bin] += static_cast<u32>(value * 1024.0f + 0.5f);
+      }
+      ++guide.frame_count;
+      if (f >= k_frames / 2) {
+        plain_sum += plain;
+        plain_square += plain * plain;
+        guided_sum += static_cast<f64>(value);
+        guided_square += static_cast<f64>(value) * value;
+        heaviest = std::max(heaviest, static_cast<f64>(value));
+        plain_values.push_back(static_cast<f32>(plain));
+        guided_values.push_back(value);
+        ++counted;
+      }
+    }
+    gi_guide_fold(guide);
+    CHECK(guide.frame_count == 0u);
+  }
+  const f64 n = static_cast<f64>(counted);
+  const f64 plain_mean = plain_sum / n;
+  const f64 guided_mean = guided_sum / n;
+  const f64 plain_var = plain_square / n - plain_mean * plain_mean;
+  const f64 guided_var = guided_square / n - guided_mean * guided_mean;
+  MESSAGE("the guide: mean " << guided_mean << " against " << plain_mean << " unguided; variance "
+                             << guided_var << " against " << plain_var << " (" << plain_var / guided_var
+                             << " times less); heaviest sample " << heaviest << " against 1");
+  // The means agree within four deviations of their difference.
+  CHECK(std::fabs(guided_mean - plain_mean) <= 4.0 * std::sqrt((plain_var + guided_var) / n));
+  CHECK(guided_var * 3.0 <= plain_var);
+  // The heavy tail: the share of the light the heaviest hundredth of the samples carried. A cap
+  // that clips a bin's corner still makes a heavy sample now and then (that bin's share is small,
+  // so it is drawn seldom and counts for up to twice its light), so no single sample is bounded
+  // under the unguided one; the tail as a whole is what falls.
+  const auto top_share = [](std::vector<f32>& v) {
+    std::sort(v.begin(), v.end(), [](f32 a, f32 b) { return a > b; });
+    f64 top = 0.0;
+    f64 all = 0.0;
+    for (usize i = 0; i < v.size(); ++i) {
+      all += static_cast<f64>(v[i]);
+      if (i < v.size() / 100) top += static_cast<f64>(v[i]);
+    }
+    return top / all;
+  };
+  const f64 plain_top = top_share(plain_values);
+  const f64 guided_top = top_share(guided_values);
+  MESSAGE("the heaviest hundredth of the samples carries " << plain_top << " of the light unguided, "
+                                                           << guided_top << " guided");
+  CHECK(guided_top * 3.0 <= plain_top);
+  CHECK(heaviest <= 1.0 / (1.0 - static_cast<f64>(k_gi_guide_alpha)));
+  CHECK(guide.trained == k_frame * k_gi_guide_history_frames);
+}

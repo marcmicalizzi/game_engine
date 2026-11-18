@@ -50,6 +50,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -2033,6 +2034,16 @@ TEST_CASE("gi cache: the pre-roll runs on the first frame and on a cut, and neit
   const char* names[2] = {"without the pre-roll", "the defaults"};
   for (u32 r = 0; r < 2; ++r) {
     const ScopedTunable preroll("renderer.gi.preroll", r == 0 ? "0" : "16");
+    // **The floor the bounds are held to is today's history's** (R171's fifth leg). A floor is the
+    // noise of a cell at its history, and with the memory on by default the long-held picture's is
+    // that of a history several times today's, which no frame within a second and a half of a cut
+    // or a load can have: a cell made then holds the pre-roll's sixteen frames of samples and one
+    // more a frame, whatever rule folds them. What the pre-roll promises is that a cut shows no
+    // fill — its frames stand no further from the settled picture than a cell's own noise at
+    // today's history — so the first run, which has no pre-roll, also folds with the memory off,
+    // and its floors are that noise: the same absolute bound the case held before the memory.
+    std::optional<ScopedTunable> today;
+    if (r == 0) today.emplace("renderer.gi.memory", "false");
     Rig rig;
     REQUIRE_MESSAGE(rig.build(gpu.device, fixture.desc, false), rig.error);
     std::vector<CapturedFrame> shots[2];
@@ -2059,7 +2070,10 @@ TEST_CASE("gi cache: the pre-roll runs on the first frame and on a cut, and neit
   f64 cut_worst = 0.0;
   for (const f64 apart : jump[1].apart)
     cut_worst = std::max(cut_worst, apart);
-  CHECK(cut_worst <= 2.0 * jump[1].floor);
+  MESSAGE("the cut's furthest frame " << cut_worst << ": " << cut_worst / jump[0].floor
+                                      << " floors of today's history, " << cut_worst / jump[1].floor
+                                      << " of the defaults' own");
+  CHECK(cut_worst <= 2.0 * jump[0].floor);
   // The load. The pre-roll's first frame stands at under half of what the load's first frame
   // stood at without it, and from the twenty-fourth frame on every frame is within twice the
   // floor. In between it is not, in this box: its white walls return most of the light they
@@ -2077,13 +2091,14 @@ TEST_CASE("gi cache: the pre-roll runs on the first frame and on a cut, and neit
         std::max(k < 24 ? start_early : start_late, start[1].apart[k]);
   MESSAGE("the load with the pre-roll: the furthest of its first twenty-four frames "
           << start_early << ", of the rest " << start_late << ", against a floor of "
-          << start[1].floor);
-  CHECK(start_late <= 2.0 * start[1].floor);
+          << start[0].floor << " at today's history and " << start[1].floor
+          << " of the defaults' own");
+  CHECK(start_late <= 2.0 * start[0].floor);
   // Without the pre-roll the load's first frame misses the bound by a wide margin. The cut's does
   // not, in a box: the ladder shows the second pose from the coarse cells the first pose and the
   // samples round the eye had already filled, which is the cut a walk through one room is; the
   // pre-roll is for the cut that lands where the cache holds nothing, which the load is.
-  CHECK(start[0].apart[0] > 4.0 * start[1].floor);
+  CHECK(start[0].apart[0] > 4.0 * start[0].floor);
   CHECK(jump[1].apart[0] <= jump[0].apart[0]);
 }
 // **The direct picture does not change** (stage 4): a caster round the eye outside the sun's swept
@@ -2178,4 +2193,132 @@ TEST_CASE("gi cache: the volume round the eye keeps the spheres that come within
   MESSAGE("spheres kept: " << kept << " of " << 17 * 17 * 17);
   CHECK(kept > 0);
   CHECK(wrong == 0);
+}
+
+// **R171's fifth leg: a dark wall's light holds still from one frame to the next** (renderer.md,
+// "R171: where a dark room's light comes from"). The grain case's wall — the box with one opening,
+// a plain wall in its shade at 512 with 13-pixel cells and the trickle at one pixel in nine, a 4K
+// cell's size and density — held 220 frames, and over its last sixty the mean over the wall's
+// pixels of the light's change from one frame to the next relative to its level (the temporal
+// measure's quantity, taken on the light before the display's quantum so that the box's level does
+// not decide it). Four runs: cosine rays with today's history (stage 8), the memory alone, the
+// guide alone, and **the defaults, with no tunable of either set**: turn the guide or the memory
+// off by default and the last run is one of the two before it, and the checks that hold it under
+// each of them fail.
+TEST_CASE("gi cache: a dark wall changes less between frames with the guide and the memory") {
+  // The hold's arithmetic, with no device: a cold frame holds and sets the count, the frames after
+  // it count it down and hold, and the one after those does not.
+  u32 left = 0;
+  CHECK_FALSE(gi_memory_holds(false, left));
+  CHECK(gi_memory_holds(true, left));
+  CHECK(left == gfx::k_gi_memory_hold_frames);
+  for (u32 i = 0; i < gfx::k_gi_memory_hold_frames; ++i)
+    CHECK(gi_memory_holds(false, left));
+  CHECK_FALSE(gi_memory_holds(false, left));
+  CHECK(left == 0u);
+
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("gi cache unavailable here: " << gpu.why);
+    return;
+  }
+  const test::TempDir tmp("engine_gi_guide");
+  Fixture fixture = box_fixture(tmp.native());
+  fixture.camera.position = WorldPos{-1.0, 0.8, 0.0};
+  fixture.camera.target = WorldPos{-1.0, 0.8, -2.0};
+  constexpr u32 k_side = 512;
+  const ScopedTunable scale("renderer.gi.cell_scale", "0.025");
+  const ScopedTunable rays("renderer.gi.rays_per_frame", "58300");
+  const ScopedTunable mode("renderer.gi.mode", "bounce");
+  constexpr u32 k_frames = 220;
+  constexpr u32 k_from = 160;
+  struct Run {
+    const char* name;
+    const char* guide;   // null: the default
+    const char* memory;  // null: the default
+  };
+  constexpr u32 k_runs = 4;
+  const Run runs[k_runs] = {{"cosine rays, today's history", "false", "false"},
+                            {"the memory alone", "false", "true"},
+                            {"the guide alone", "true", "false"},
+                            {"the defaults", nullptr, nullptr}};
+  f64 change[k_runs] = {};
+  f64 level[k_runs] = {};
+  u32 guided[k_runs] = {};
+  for (u32 r = 0; r < k_runs; ++r) {
+    std::optional<ScopedTunable> guide;
+    std::optional<ScopedTunable> memory;
+    if (runs[r].guide != nullptr) guide.emplace("renderer.gi.guide", runs[r].guide);
+    if (runs[r].memory != nullptr) memory.emplace("renderer.gi.memory", runs[r].memory);
+    Rig rig;
+    rig.width = k_side;
+    rig.height = k_side;
+    REQUIRE_MESSAGE(rig.build(gpu.device, fixture.desc, false), rig.error);
+    FrameDesc frame;
+    frame.camera = fixture.camera;
+    CaptureChannels channels;
+    channels.light = true;
+    std::vector<f32> before;
+    u64 pairs = 0;
+    u64 pixels = 0;
+    for (u32 i = 0; i < k_frames; ++i) {
+      frame.frame_index = i;
+      if (i < k_from) {
+        REQUIRE_MESSAGE(rig.renderer.render_offscreen(frame, &rig.error), rig.error);
+        continue;
+      }
+      CapturedFrame shot;
+      REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, shot, &rig.error), rig.error);
+      REQUIRE(shot.light.size() == usize{k_side} * k_side * 3);
+      guided[r] = std::max(guided[r], rig.renderer.stats().gi.guided);
+      // The wall less a strip at the corner and at the floor's and the ceiling's edges, as the
+      // grain case takes it.
+      std::vector<f32> now;
+      now.reserve(usize{436} * 464);
+      for (u32 y = 24; y < 488; ++y) {
+        for (u32 x = 64; x < 500; ++x) {
+          const u32 p = (y * k_side + x) * 3;
+          now.push_back(0.2126f * shot.light[p] + 0.7152f * shot.light[p + 1] +
+                        0.0722f * shot.light[p + 2]);
+        }
+      }
+      for (usize k = 0; k < now.size(); ++k) {
+        level[r] += static_cast<f64>(now[k]);
+        ++pixels;
+        if (before.empty()) continue;
+        const f64 mean = 0.5 * (static_cast<f64>(now[k]) + static_cast<f64>(before[k]));
+        if (mean > 0.0) {
+          change[r] += std::fabs(static_cast<f64>(now[k]) - static_cast<f64>(before[k])) / mean;
+          ++pairs;
+        }
+      }
+      before = std::move(now);
+    }
+    REQUIRE(pairs > 0);
+    change[r] /= static_cast<f64>(pairs);
+    level[r] /= static_cast<f64>(pixels);
+    MESSAGE("the box's plain wall, " << std::string(runs[r].name) << ": the light changes "
+                                     << 100.0 * change[r] << " % a frame at a level of " << level[r]
+                                     << "; samples a frame with a trained guide " << guided[r]);
+  }
+  // The guide is asked for and learned: its runs draw from trained guides, the others from none.
+  CHECK(guided[0] == 0u);
+  CHECK(guided[1] == 0u);
+  CHECK(guided[2] > 0u);
+  CHECK(guided[3] > 0u);
+  // The guide keeps the light's level: a guided sample's expectation is the cosine ray's (the
+  // weight is the lobe's density over the mixture's). Two hundredths: the wall's mean over sixty
+  // frames of some twelve hundred cells carries a tenth of that in noise.
+  CHECK(std::fabs(level[2] / level[0] - 1.0) < 0.02);
+  // And a sample's weight in the mixture is under what it was alone wherever the guide knows the
+  // light, so the wall changes less from frame to frame.
+  CHECK(change[2] < change[0]);
+  // The memory: by frame 160 an own cell's count has grown from today's 256 by half a frame's
+  // eleven samples for the 89 frames since the hold let go and today's history filled, 745 and
+  // more, and a frame moves the mean by its samples over the count: 0.34 of today's change, held
+  // to a half; and to seven tenths of the guide's alone.
+  CHECK(change[3] < 0.5 * change[0]);
+  CHECK(change[3] < 0.7 * change[2]);
+  // The guide under the memory: less than the memory alone.
+  CHECK(change[3] < change[1]);
 }

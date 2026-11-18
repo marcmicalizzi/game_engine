@@ -501,17 +501,27 @@ tunables::Bool gi_spread{
     "left it) (renderer.md, Indirect light, R171: the grain on a plain wall; read at load)"};
 // **R171's third leg** (renderer.md, "Indirect light", "R171: a cell's memory by its own spread").
 // The fourth leg ("R171: the memory made right") mended the half's rounding, the blobs and the
-// small change that trailed at their causes and turned it on; **off again since batch 67's fixes**
-// ("Off again: the pre-roll's promise"): the long mean keeps the pre-roll's and the first frames'
-// unsettled samples, so a load or a cut stands past twice the floor for a second and more, which
-// `gi cache: the pre-roll runs on the first frame and on a cut` refuses. The owner decides.
+// small change that trailed at their causes and turned it on; batch 67's fixes turned it off ("Off
+// again: the pre-roll's promise": the long mean kept the pre-roll's and the first frames' unsettled
+// samples). **On since the fifth leg**: a fold of a cold frame's steps and of the frames just after
+// it holds every count at today's history (`gfx::k_gi_step_hold`), so those samples never enter a
+// long mean, and the pre-roll's case holds its frames to today's history's floor.
 tunables::Bool gi_memory{
-    "renderer.gi.memory", false,
+    "renderer.gi.memory", true,
     "A face's cache cell remembers up to sixteen times today's history while its light holds "
     "still, "
     "and goes back to today's at once when its long mean leaves the band its measured spread "
     "predicts, or a coarser cell of its ladder's does (false: today's history, as stage 8 left it) "
     "(renderer.md, Indirect light, R171: a cell's memory by its own spread; read at load)"};
+// **R171's fifth leg** (renderer.md, "Indirect light", "R171: where a dark room's light comes
+// from"): the guide.
+tunables::Bool gi_guide{
+    "renderer.gi.guide", true,
+    "The cache's samples learn where a coarse cell's light comes from and half of them are drawn "
+    "there, each weighted by its lobe's density over the mixture's, so a room lit through an "
+    "opening is not sampled by a few heavy rays among many dark ones (false: every sample is a "
+    "cosine ray, as stage 8 left it, and the cache's buffer has no guides behind its cells) "
+    "(renderer.md, Indirect light, R171: where a dark room's light comes from; read at load)"};
 // **Stage 7** (R69; renderer.md, "Indirect light", "Stage 7"): a crown's shade as a prior.
 tunables::Bool gi_crown_prior{
     "renderer.gi.crown_prior", true,
@@ -970,6 +980,7 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   out.gi_reveal = gi_reveal.get();
   out.gi_spread = gi_spread.get();
   out.gi_memory = gi_memory.get();
+  out.gi_guide = gi_guide.get();
   out.gi_crown_prior = gi_crown_prior.get();
   out.gi_show_level = static_cast<i32>(gi_show_level.get());
   out.gi_shell_m = static_cast<f32>(gi_shell_m.get());
