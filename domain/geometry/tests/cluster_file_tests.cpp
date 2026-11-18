@@ -1123,6 +1123,43 @@ TEST_CASE("cluster file: a seat round-trips, and a mesh without one writes no se
   CHECK(from_disk.seat.radius_m == 0.41f);
 }
 
+// C62 (geometry.md, "Content classes"): section 54 keeps the classes module's record as bytes,
+// written only when there is one, so an unclassified container is the bytes it was; 53 is
+// reserved for another line and nothing here writes it.
+TEST_CASE("cluster file: content classes are section 54, written only when classified") {
+  const test::TempDir tmp("engine_cluster_file");
+  ClusterFileData data;
+  Vector<u32> indices;
+  make_fixture(data, indices);
+  std::string error;
+  const u64 before = cluster_file_hash(data);
+  REQUIRE_MESSAGE(write_cluster_file(tmp.file("plain.clusters"), data, &error), error);
+  std::string plain;
+  REQUIRE(io::read_file(tmp.file("plain.clusters"), plain) == io::Status::Ok);
+  ClusterFileData none;
+  REQUIRE_MESSAGE(read_cluster_file_memory(view(plain), none, &error), error);
+  CHECK(none.content_classes.empty());
+  CHECK(cluster_file_hash(none) == before);
+
+  // The bytes are opaque here: any record round-trips as it was given.
+  for (u8 b : {u8{24}, u8{0}, u8{0}, u8{0}, u8{'e'}, u8{'n'}, u8{'g'}})
+    data.content_classes.push_back(b);
+  CHECK(cluster_file_hash(data) != before);
+  const std::string path = tmp.file("classed.clusters");
+  REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
+  std::string classed;
+  REQUIRE(io::read_file(path, classed) == io::Status::Ok);
+  CHECK(classed.size() > plain.size());
+  ClusterFileData read;
+  REQUIRE_MESSAGE(read_cluster_file(path, read, &error), error);
+  REQUIRE(read.content_classes.size() == data.content_classes.size());
+  for (u32 i = 0; i < read.content_classes.size(); ++i)
+    CHECK(read.content_classes[i] == data.content_classes[i]);
+  CHECK(std::string(cluster_section_name(static_cast<u32>(ClusterSection::ContentClasses))) ==
+        "content_classes");
+  CHECK(static_cast<u32>(ClusterSection::ContentClasses) == 54u);  // 53 is the door leaves' (S91)
+}
+
 // A43 (geometry.md, "Perches"): a mesh's perches are 32-byte records of section 43, written only
 // when it declares one, read back by the whole read and the resident one; a perch with no size or
 // an `up` that is not unit is refused.

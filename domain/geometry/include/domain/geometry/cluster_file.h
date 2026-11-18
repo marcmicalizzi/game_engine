@@ -256,10 +256,25 @@ enum class ClusterSection : u32 {
   MaterialUv1 = 50,
   Lights = 51,
   Cameras = 52,
+  // 53 is **reserved**: it is a structure's door leaves (roadmap S91), on a line not yet merged
+  // here. Never write it from this line, and never give it to anything else, so the two lines
+  // merge without either renumbering.
+  //
+  // **The source's own content class** (C62; docs/content-classes.md, "How it travels through
+  // derived data"; ADR-0073 decision 3): u8, `content_class::encode_classes`'s record — every
+  // category it names with its ladder by name, the asset's levels, each classified material's,
+  // by material name. The form is `foundation/content_class`'s, and this file keeps the bytes and
+  // nothing else, so the containers and the load read one form through one module. It covers
+  // what the cache key covers (the source's sidecar, and so the images embedded in the source),
+  // never an external image's, a pack set's or a record's class. **Written only when some level
+  // is above `none`**, so every unclassified container is the bytes it was; a reader that does
+  // not know the kind skips it, which is the limit an engine built before C64 has. Resident.
+  ContentClasses = 54,
 };
 
 // One past the highest kind this build knows, which is how wide a by-kind table has to be.
-inline constexpr u32 k_cluster_section_kinds = static_cast<u32>(ClusterSection::Cameras) + 1;
+inline constexpr u32 k_cluster_section_kinds =
+    static_cast<u32>(ClusterSection::ContentClasses) + 1;
 
 // Names the kinds this build knows, "unknown" for anything else; for diagnostics and for
 // `engine-content info`.
@@ -654,6 +669,9 @@ struct ClusterFileData {
   Vector<ClusterFileUv1Slots> material_uv1;
   Vector<ClusterFileLight> lights;
   Vector<ClusterFileCamera> cameras;
+  // The source's own class (section 54), `content_class::encode_classes`'s bytes: empty for every
+  // source that is not classified, and written only when not empty (C62).
+  Vector<u8> content_classes;
 };
 
 // Whether a container's mesh is one a far form is baked for (G198; geometry.md, "The far form"): a
