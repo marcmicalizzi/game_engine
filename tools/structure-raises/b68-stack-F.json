@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "b68-stack-F",
+  "reason": "what-to-run.md: why the affected rule's grep reaches git as an argument list (PowerShell globs native arguments on Linux); water.md: what counts as ground the swash sheet is drawn on now that one code is not evidence",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/water.md": 136,
+    "page:docs/ci/what-to-run.md": 330
+  }
+}
