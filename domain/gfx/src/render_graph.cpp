@@ -387,8 +387,12 @@ bool RenderGraph::allocate_transients(std::string* error) {
 void RenderGraph::compute_barriers() {
   // Walk passes in order, tracking each resource's last stage/access/layout, and emit a
   // barrier before a pass when the transition needs one: after any write, before any write,
-  // or when an image changes layout. Read-after-read with the same layout needs nothing and
-  // only widens the recorded stage mask so a later barrier covers every reader.
+  // or when an image changes layout. Read-after-read with the same layout needs no barrier of
+  // its own: it widens the recorded stage mask so a later barrier covers every reader, and it
+  // widens the destination masks of the barrier that ordered the first reader behind the last
+  // write, so a reader in another stage (an indirect draw behind a compute read of its count, a
+  // compute read behind an indirect one) is ordered behind that write too (gfx.md,
+  // "Render graph v0").
   for (u32 p = 0; p < passes_.size(); ++p) {
     Pass& pass = passes_[p];
     pass.first_buffer_barrier = barriers_->buffer.size();
@@ -426,9 +430,16 @@ void RenderGraph::compute_barriers() {
           if (layout_change) ++stats_.layout_transitions;
           s.stage = vk::pipeline_stage(info.stage);
           s.access = vk::memory_access(access);
+          s.barrier = writes ? ~u32{0} : static_cast<u32>(barriers_->image.size() - 1);
         } else {
           s.stage |= vk::pipeline_stage(info.stage);
           s.access |= vk::memory_access(access);
+          if (writes) {
+            s.barrier = ~u32{0};
+          } else if (s.barrier != ~u32{0}) {
+            barriers_->image[s.barrier].dstStageMask |= info.stage;
+            barriers_->image[s.barrier].dstAccessMask |= access;
+          }
         }
         s.layout = layout;
         s.written = writes;
@@ -452,9 +463,16 @@ void RenderGraph::compute_barriers() {
           ++stats_.buffer_barriers;
           s.stage = vk::pipeline_stage(info.stage);
           s.access = vk::memory_access(access);
+          s.barrier = writes ? ~u32{0} : static_cast<u32>(barriers_->buffer.size() - 1);
         } else {
           s.stage |= vk::pipeline_stage(info.stage);
           s.access |= vk::memory_access(access);
+          if (writes) {
+            s.barrier = ~u32{0};
+          } else if (s.barrier != ~u32{0}) {
+            barriers_->buffer[s.barrier].dstStageMask |= info.stage;
+            barriers_->buffer[s.barrier].dstAccessMask |= access;
+          }
         }
         s.written = writes;
       }

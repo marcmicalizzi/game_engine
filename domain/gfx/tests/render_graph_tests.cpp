@@ -417,6 +417,46 @@ TEST_CASE("render graph: a declared write names the read in its barriers") {
   graph.reset();
 }
 
+// A read in another stage behind a read that already has its barrier needs none of its own, but
+// it is ordered behind the write all the same: the barrier before the first reader is widened to
+// the second's stage and access. Before batch 68 the second reader (here an indirect dispatch
+// behind a compute read of its count) was ordered behind nothing.
+TEST_CASE("render graph: a reader in another stage widens the barrier before the first") {
+  using gfx::MemoryAccess;
+  using gfx::PipelineStage;
+  gfx::Device device;  // never opened
+  gfx::BufferResource fake{};
+  fake.size = 256;
+  gfx::RenderGraph graph(device);
+  const gfx::RgBuffer count = graph.import_buffer("count", fake);
+  auto add = [&](const char* name, auto&& setup) {
+    graph.add_pass(name, gfx::PassKind::Compute, setup,
+                   [](gfx::CommandList, gfx::RenderGraph&) {});
+  };
+  add("cull", [&](gfx::PassBuilder& b) { b.write(count, gfx::Access::ComputeReadWrite); });
+  add("fold", [&](gfx::PassBuilder& b) { b.read(count, gfx::Access::ComputeRead); });
+  add("dispatch", [&](gfx::PassBuilder& b) { b.read(count, gfx::Access::IndirectRead); });
+  add("rewrite", [&](gfx::PassBuilder& b) { b.write(count, gfx::Access::ComputeWrite); });
+  add("draw", [&](gfx::PassBuilder& b) { b.read(count, gfx::Access::IndirectRead); });
+  std::string error;
+  REQUIRE_MESSAGE(graph.compile(&error), error);
+  // cull: nothing to order behind. fold: one barrier. dispatch: none of its own.
+  CHECK(graph.pass_barrier_count(0) == 0);
+  REQUIRE(graph.pass_barrier_count(1) == 1);
+  CHECK(graph.pass_barrier_count(2) == 0);
+  const gfx::RenderGraph::BarrierMasks m = graph.pass_barrier(1, 0);
+  CHECK(m.dst_stage == (PipelineStage::ComputeShader | PipelineStage::DrawIndirect));
+  CHECK(m.dst_access == (MemoryAccess::ShaderStorageRead | MemoryAccess::IndirectCommandRead));
+  // rewrite orders behind both readers (write after read), and its write is not widened into.
+  REQUIRE(graph.pass_barrier_count(3) == 1);
+  CHECK(graph.pass_barrier(3, 0).src_stage ==
+        (PipelineStage::ComputeShader | PipelineStage::DrawIndirect));
+  REQUIRE(graph.pass_barrier_count(4) == 1);
+  CHECK(graph.pass_barrier(4, 0).dst_stage == PipelineStage::DrawIndirect);
+  CHECK(graph.stats().buffer_barriers == 3);
+  graph.reset();
+}
+
 // The same on a device: a chain of passes each of which multiplies a buffer in place by three
 // (an odd factor, so every pass leaves its own mark mod 2^32) and declares only the write. A pass
 // that ran before the one ahead of it had finished would leave a word short of a factor.

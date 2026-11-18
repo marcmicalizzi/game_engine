@@ -223,6 +223,9 @@ class RenderGraph {
     MemoryAccess access = MemoryAccess::None;
     ImageLayout layout = ImageLayout::Undefined;
     bool written = false;  // the last access wrote
+    // The barrier that ordered this resource's readers behind its last write, which a later
+    // reader in another stage widens rather than going unordered (~0: none to widen).
+    u32 barrier = ~u32{0};
   };
   struct BufferNode {
     const char* name;
