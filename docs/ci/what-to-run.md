@@ -1172,4 +1172,11 @@ this machine with the rows' compilers starting and ending, the two-read form thr
 enumerations of the process table and the one-read form on none (2026-11-18, about 1.9 s an
 enumeration). It reads `Path` once now, and so does the test's own question.
 
+`mcp_bridge`'s "a host that stops answering is stopped at the deadline and replaced" held every
+quick call to the one-second deadline it tests, a fresh debug host's first `engine.info` included,
+which at 100 % CPU took longer and replaced the host before the case began. The hung method is still
+held to that second (the same message, `timed_out`, waited 0.9 s and under 30); a quick call the
+deadline stopped on a host still starting is asked again and counted, and the generations add each
+such replacement in.
+
 `scene_collision`'s wall-clock check is another row's (T184 left it).
