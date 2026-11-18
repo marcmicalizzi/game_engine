@@ -47,6 +47,12 @@ inline constexpr f64 k_run_thin_depth_m = 0.011;
 // head to its foot climbs by the sequent depth, which is physical, and is not counted.
 inline constexpr f64 k_run_climb_m = 0.05;
 inline constexpr f64 k_run_wall_m = 0.5;
+// **The staircase** (W132; steep-streams.md, "The step-pool form in numbers"): a **step** is a
+// lip-to-foot pair, its height the lip's level less the foot's; a class's `step_fall_share` is
+// the share of its lines' fall their steps take (the published reaches: 60 % to all of it), and
+// **level water** is a drawn stretch whose surface falls by less than `k_run_level_slope`, a
+// pool's (a plane at the reach's mean fall has none above that slope).
+inline constexpr f64 k_run_level_slope = 0.002;
 
 struct LineRuns {
   f64 length_m = 0;  // along the line, horizontal
@@ -65,6 +71,8 @@ struct LineRuns {
   u32 walls = 0;         // ... over `k_run_wall_m`
   u32 walls_drawn = 0;   // walls the draw lays a sheet on
   f64 climb_worst_m = 0;
+  f64 step_fall_m = 0;  // the fall its lip-to-foot pairs take (each lip's level less its foot's)
+  f64 level_m = 0;      // drawn stretches falling by less than `k_run_level_slope`
   // **How fast it runs** (W137; channels.md, "How whole a stream is drawn"): for every drawn
   // stretch, the mean of its two stations' speed and depth and its length, so a class's median
   // is by length. A description written with no speeds (laid before W120) has none.
@@ -81,7 +89,8 @@ struct RunsBySlope {
     u32 pieces = 0, runs = 0, falls = 0, falls_drawn = 0, gaps = 0, alternations = 0;
     u32 climbs = 0, walls = 0, walls_drawn = 0, wall_lines = 0;
     f64 climb_worst_m = 0;
-    Vector<f64> speed_mps, depth_m, stretch_m;  // the lines' drawn stretches (`LineRuns`)
+    f64 fall_m = 0, step_fall_m = 0, level_m = 0;  // the lines' falls, their steps' and level water
+    Vector<f64> speed_mps, depth_m, stretch_m;     // the lines' drawn stretches (`LineRuns`)
   };
   Class classes[k_run_classes];
   void add(const LineRuns& line);
@@ -92,8 +101,9 @@ u32 run_class(f64 slope) noexcept;
 f64 weighted_quantile(const Vector<f64>& value, const Vector<f64>& weight, f64 share);
 // One object a class: lines, km, film and undrawn shares of the length, pieces and runs every
 // 100 m, falls (and those drawn), gaps, climbs and walls (with the lines holding a wall and the
-// highest climb), and the drawn water's speed (median and the tenth and ninetieth percentiles, by
-// length) and its median depth.
+// highest climb), the drawn water's speed (median and the tenth and ninetieth percentiles, by
+// length) and its median depth, and the staircase (W132): `steps_per_100m` (the falls again, by
+// length), `step_fall_share`, `step_height_mean_m` and `level_share` of the length.
 JsonValue runs_json(const RunsBySlope& runs);
 
 }  // namespace engine::channels

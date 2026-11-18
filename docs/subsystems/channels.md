@@ -1085,6 +1085,7 @@ its mean slope (its level's fall over its length: under 2 %, 2 to 5, 5 to 15, 15
 | `gaps` | maximal runs of undrawn stretches |
 | `thin_share`, `alternations_per_100m` | the forest's own count: stretches leaving a station 1.1 cm deep or less, and the runs of one kind (thin or not), both kinds counted |
 | `speed_median_mps`, `speed_p10_mps`, `speed_p90_mps`, `depth_median_m` | (W137) the drawn stretches' speed (the mean of their two stations') by length — its median and its tenth and ninetieth percentiles — and their median depth; falls and undrawn stretches are not counted |
+| `steps_per_100m`, `step_fall_share`, `step_height_mean_m`, `level_share` | (W132, the count only) the staircase: the lip-to-foot pairs a 100 m, the share of the lines' fall those pairs take (each lip's level less its foot's), their mean height, and the share of the length that is **level water**, a drawn stretch falling by less than 0.2 % (`k_run_level_slope`). A plane at its reach's mean fall has no step and no level water; the published step-pool reaches have a step every half to three widths taking 60 % to all of the fall ([steep streams](../experiments/steep-streams.md#the-step-pool-form-in-numbers-w132-2026-11-17)). `--line-stats` carries a line's own `step_fall_m` and `level_m` |
 
 **How it differs from the forest's count.** Its session's script (`streams47b.py`, read on
 2026-11-16 once the proof of concept was opened) classes every station by its depth alone: 1.1 cm
