@@ -337,6 +337,24 @@ std::string emit_cpp_source(const Model& model, const SchemaFile& file) {
       }
       out << "};\n\n";
     }
+    // `@alias` (schemas/README.md, "Renaming a field or a type").
+    if (!s.aliases.empty()) {
+      out << "constexpr const char* " << s.name << "_aliases[] = {";
+      for (size_t i = 0; i < s.aliases.size(); ++i)
+        out << (i ? ", " : "") << "\"" << escape_cpp_string(s.aliases[i]) << "\"";
+      out << "};\n\n";
+    }
+    bool field_aliases = false;
+    for (const Field& f : s.fields)
+      field_aliases = field_aliases || !f.aliases.empty();
+    if (field_aliases) {
+      out << "constexpr engine::schema::FieldAlias " << s.name << "_field_aliases[] = {\n";
+      for (size_t i = 0; i < s.fields.size(); ++i) {
+        for (const std::string& a : s.fields[i].aliases)
+          out << "    {\"" << escape_cpp_string(a) << "\", " << i << "},\n";
+      }
+      out << "};\n\n";
+    }
   }
   out << "}  // namespace\n\n";
 
@@ -383,8 +401,18 @@ std::string emit_cpp_source(const Model& model, const SchemaFile& file) {
     out << "    .ops = &engine::schema::StructOpsFor<" << s.name << ">::ops,\n";
     if (!s.additive.empty()) {
       unsigned long long bits = 0;
-      for (uint16_t v : s.additive) bits |= 1ull << v;
+      for (uint16_t v : s.additive)
+        bits |= 1ull << v;
       out << "    .additive_versions = " << bits << "ull,\n";
+    }
+    if (!s.aliases.empty())
+      out << "    .aliases = std::span<const char* const>(" << s.name << "_aliases),\n";
+    bool field_aliases = false;
+    for (const Field& f : s.fields)
+      field_aliases = field_aliases || !f.aliases.empty();
+    if (field_aliases) {
+      out << "    .field_aliases = std::span<const engine::schema::FieldAlias>(" << s.name
+          << "_field_aliases),\n";
     }
     out << "};\n\n";
   }

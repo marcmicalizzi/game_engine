@@ -19,6 +19,22 @@ struct Fixture @version(1) @kind(record) {
   transform: json
 }
 
+/// How brightly a marker glows: `strength` was `power` (roadmap D28), a field renamed inside a struct
+/// a record holds.
+struct Glow @version(1) {
+  strength: f32 = 1 @alias("power")
+}
+
+/// A type renamed, with a field of its own renamed (roadmap D28, plan 03 §3.8: "rename is an alias,
+/// never delete-and-add"): it was `engine.doc.test.Beacon`, and its `label` was `title`. The
+/// migration corpus's `documents/renamed/` holds a document written before the rename
+/// (content/migration-corpus/README.md, "The documents").
+struct Marker @version(1) @kind(record) @alias("Beacon") {
+  label: string @alias("title")
+  position: worldpos @unit(m)
+  glow: Glow?
+}
+
 /// A type with neither: it has no place on the grid, so its records go to `untiled.json`.
 struct Fact @version(1) @kind(record) {
   claim: string

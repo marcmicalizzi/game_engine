@@ -398,6 +398,9 @@ class Parser {
       if (a.name == "additive")
         for (const std::string& v : a.args)
           s.additive.push_back(static_cast<uint16_t>(std::strtoul(v.c_str(), nullptr, 0)));
+      if (a.name == "alias")
+        for (const std::string& v : a.args)
+          s.aliases.push_back(v);
     }
     if (!expect_punct('{', error)) return false;
     while (!at_punct('}')) {
@@ -420,6 +423,9 @@ class Parser {
         if (a.name == "deprecated") f.deprecated = true;
         if (a.name == "doc" && !a.args.empty()) f.doc = a.args[0];
         if (a.name == "unit" && !a.args.empty()) f.unit = a.args[0];
+        if (a.name == "alias")
+          for (const std::string& v : a.args)
+            f.aliases.push_back(v);
       }
       if (at_punct(',')) advance();
       s.fields.push_back(std::move(f));

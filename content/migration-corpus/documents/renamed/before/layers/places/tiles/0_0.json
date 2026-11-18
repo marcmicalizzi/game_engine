@@ -1,0 +1,29 @@
+{
+  "name": "places",
+  "objects": [
+    {
+      "deleted": false,
+      "id": "00000000000000280000000000000001",
+      "parent": null,
+      "properties": {
+        "glow": {
+          "power": 2.5
+        },
+        "position": [
+          5.5,
+          0.0,
+          3.25
+        ],
+        "title": "lamp"
+      },
+      "type": "engine.doc.test.Beacon"
+    }
+  ],
+  "role": "Feature",
+  "types": [
+    {
+      "name": "engine.doc.test.Beacon",
+      "version": 1
+    }
+  ]
+}

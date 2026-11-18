@@ -1,0 +1,27 @@
+{
+  "name": "places",
+  "objects": [
+    {
+      "deleted": false,
+      "id": "00000000000000280000000000000003",
+      "parent": null,
+      "properties": {
+        "glow": {},
+        "label": "mast",
+        "position": [
+          -12.25,
+          0.0,
+          70.0
+        ]
+      },
+      "type": "engine.doc.test.Marker"
+    }
+  ],
+  "role": "Feature",
+  "types": [
+    {
+      "name": "engine.doc.test.Marker",
+      "version": 1
+    }
+  ]
+}

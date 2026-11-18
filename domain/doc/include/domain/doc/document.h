@@ -311,6 +311,26 @@ class Document {
   // and definition uniqueness. Returns true when nothing was appended.
   bool validate(Vector<Diagnostic>& out) const;
 
+  // --- former names (doc.md, "A renamed type or field") --------------------------------------
+
+  // A property an override record keeps under a name some type's field used to have, because no
+  // layer defines its object and so nothing says which type it is a property of.
+  struct KeptName {
+    std::string layer;
+    ObjectId id;
+    std::string property;
+  };
+  // Renames every override record's properties from its composed type's former field names to the
+  // current ones (`@alias`, schemas/README.md), asking the index for the type. Definitions are not
+  // its business: they carry their type, and `rename_defining_records` renames them as their files
+  // are read. What `DocumentStore::load` calls once the stack is whole. `renamed` counts the names
+  // changed, and each renamed record is noted as changed for the next save. False, with `why`
+  // naming the layer, the record and both names, when a record carries one field under two names.
+  bool rename_override_records(u32& renamed, Vector<KeptName>& kept, std::string& why);
+  // What the load that made this document kept as written (above): empty unless it was loaded by
+  // `DocumentStore::load` and found such an override.
+  const Vector<KeptName>& kept_names() const noexcept { return kept_names_; }
+
  private:
   friend class Transaction;
   friend class DocumentStore;
@@ -413,6 +433,8 @@ class Document {
 
   // One per layer, in the stack's order: what changed since the last save.
   Vector<LayerChanges> changes_;
+  // What the load kept under former names (`kept_names`).
+  Vector<KeptName> kept_names_;
   // What the store knows of the disk; null until a save or a load fills it.
   std::unique_ptr<StoredState> stored_;
 
@@ -463,6 +485,18 @@ void stamp_record_types(LayerFile& file);
 // read as a float32 was the case that made this). A type this build does not have, an older
 // version, and a file with no table (written before LayerFile version 2) all read as before.
 bool check_record_types(const LayerFile& file, std::string& why);
+
+// --- former names (doc.md, "A renamed type or field") ----------------------------------------
+
+// Renames the file's defining records from former names to current ones (`@alias`,
+// schemas/README.md): a `type` that is a former name of a registered type becomes its name, and the
+// record's properties — and every struct value inside them — that bear a former field name of that
+// type take the field's name. Applied as each file is read (`Layer::from_json_text`, every tile and
+// untiled file `DocumentStore::load` reads), before anything reads a record's tile, since the tile
+// is read from the type's position field. Overrides carry no type and are `Document`'s to rename
+// once the stack is whole. False, with `why` naming the layer, the record and both names, when a
+// record carries one field under two names.
+bool rename_defining_records(LayerFile& file, std::string& why);
 
 // --- structural diff ------------------------------------------------------------------------
 
