@@ -49,7 +49,7 @@ The plan asks for event rates per type, depth histograms and top causal chains, 
 
 ## Events and the replay
 
-The input log replays a run bit for bit today ([input](input.md), [05 §5.10](../plan/05-simulation.md#510-determinism-and-replay)), and the bus is built not to break that. **An event the simulation raised is not an input**: given the same world, the same input and the same document commands, the same systems raise the same events under the same keys, so the same deliveries follow and nothing about them needs recording. `delivery_hash()` is the check — a running hash over every delivery (the event's id, type, source, key, sequence, depth and payload bytes, and which subscriber heard it) — and the ordering test holds it equal at no workers, one and eight.
+The input log replays a run bit for bit today ([input](input.md), [05 §5.10](../plan/05-simulation.md#510-determinism-and-replay)), and the bus is built not to break that. **An event the simulation raised is not an input**: given the same world, the same input and the same document commands, the same systems raise the same events under the same keys, so the same deliveries follow and nothing about them needs recording. `delivery_hash()` is the check — a running hash over every delivery (the event's id, type, source, key, sequence, depth and payload bytes, and which subscriber heard it; integer word mixes only, so every toolchain computes the same value) — and the ordering test holds it equal at no workers, one and eight.
 
 **What does need recording is what the simulation did not compute**: a raise from a source registered `external` (a player, a network peer, a scripted agent). Each one is handed to the `ExternalLog` hook as it is raised — the tick, the phase, the source, key and sequence, the type's stable id and the payload's bytes — and `replay_external` raises a recorded one again at the same tick, which is the same key and so the same place in the order. The replay test runs a world of a system, a reacting subscriber and a player's raises for forty ticks, replays it from the log alone to the same delivery hash and the same state, and shows that leaving one raise out changes the hash.
 
@@ -91,7 +91,23 @@ The size table pins `EventRecord` at 64 bytes, `TickReport` at 208 and four othe
 
 Measured with `tools/dev.ps1 bench -Preset msvc-release -Filter events.*`; one iteration is one tick's raises and the delivery point that delivers them, per event.
 
-Not yet measured in `msvc-release` (the bench builds and smoke-runs under CTest).
+**Machine state: not quiet, so every figure is an upper bound.** 2026-11-18, i9-10980XE, `msvc-release`, seven repeats; `--wait-quiet=60` gave up with other processes at 87% of the CPU, the Windows session locked and the GPU lock held by another agent's flights. The spreads were 1–8%.
+
+| Benchmark | 10^3 events a tick | 10^5 events a tick | What it covers |
+|---|---|---|---|
+| `events.deliver.ordered` | **97 µs** (97 ns an event) | **10.5 ms** (105 ns) | one source raising in order, one subscriber: no sort |
+| `events.deliver.shuffled` | **148 µs** (148 ns) | **19.4 ms** (194 ns) | the same raises from emitters whose keys arrive backwards: the sort |
+| `events.deliver.fanout` | **133 µs** (133 ns) | **16.2 ms** (162 ns) | in order, four subscribers |
+| `events.deliver.unhashed` | **70 µs** (70 ns) | **8.7 ms** (87 ns) | `ordered` with the delivery hash off |
+
+What the rows say:
+
+1. **An event costs about a hundred nanoseconds from raise to handler** on a loaded machine: two atomic adds and a copy to raise it, a key, an id, the guards' counters, a counting sort by type and an indirect call to deliver it. At [05 §5.6](../plan/05-simulation.md#56-what-npc-scale-is-realistic)'s operating point — a few thousand events a second, under a hundred a tick — that is microseconds a tick; 10^3 a tick is a tenth of a millisecond, and 10^5 a tick is a stress case at a sixth of a 60 Hz tick.
+2. **The delivery hash was half of it and is now a quarter.** The first version mixed every field through a full 64-bit finalizer per field (`hash_combine`) and ran 134 ns an event against 70 without the hash; a chain of one-multiply word mixes, with the payload read only to its type's size, is 97. It stays on by default because it is what a replay is checked against; a host that does not check replays can turn it off (`EventBusConfig::hash_deliveries`).
+3. **The sort is paid only when raises arrive out of order**, and at 10^5 it adds about 90 ns an event — `O(n log n)` over 32-byte keys. A parallel wave whose batches finish out of order pays it; one source raising in order never does.
+4. **Each further subscriber of a type costs about 12 ns a delivery** (four subscribers 133 against one 97 at 10^3).
+
+How it scales down: the banks are what it holds — 64 bytes a record and the arena, two banks of 65,536 by default, 8 MiB of records and 8 MiB of payload — and a smaller machine sets `sim.events.capacity` and `payload_kib` to the event rate it expects; the cost an event is cache-bound at 10^5 and scales with memory latency rather than cores, since delivery is serial.
 
 ## What is left open
 

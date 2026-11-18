@@ -96,7 +96,9 @@ bool EventBus::append(Bank& bank, const EventRecord& head, const void* bytes, u3
   const u32 rounded = round8(size);
   const u32 offset = bank.used.fetch_add(rounded, std::memory_order_relaxed);
   if (static_cast<u64>(offset) + rounded > static_cast<u64>(bank.words.size()) * 8u) return false;
-  const u32 slot = bank.count.fetch_add(1, std::memory_order_acq_rel);
+  // Relaxed: the delivery point that reads the record runs after the raiser's wave has been waited
+  // for, and that wait is the synchronization.
+  const u32 slot = bank.count.fetch_add(1, std::memory_order_relaxed);
   if (slot >= bank.records.size()) return false;
   EventRecord& record = bank.records[slot];
   record = head;
@@ -483,15 +485,35 @@ void EventBus::count_chain(const EventRecord& record) {
 
 void EventBus::hash_delivery(const EventRecord& record, const void* bytes,
                              u16 subscriber) noexcept {
+  // A chain of one-multiply word mixes rather than a full finalizer per field: it is a check that
+  // two runs delivered the same things in the same order, not a digest anyone keys on, and the
+  // full form cost half of a delivery (docs/subsystems/events.md, "Performance"). Integer
+  // arithmetic only, so every toolchain computes the same value.
+  using engine::hash_detail::mix_word;
   u64 h = delivery_hash_;
-  h = engine::hash_combine(h, record.id.value);
-  h = engine::hash_combine(h, (static_cast<u64>(record.type) << 48) |
-                                  (static_cast<u64>(record.depth) << 40) |
-                                  (static_cast<u64>(subscriber) << 16) | record.phase);
-  h = engine::hash_combine(h, (static_cast<u64>(record.source) << 32) | record.seq);
-  h = engine::hash_combine(h, record.key);
-  if (bytes != nullptr) {
-    h = engine::hash_combine(h, engine::hash_bytes(bytes, types_[record.type]->size));
+  h = mix_word(h, record.id.value);
+  if (bytes == nullptr) {
+    // One subscriber heard it: the event is already in the chain.
+    delivery_hash_ = mix_word(h, static_cast<u64>(subscriber) + 1u);
+    return;
+  }
+  h = mix_word(h, (static_cast<u64>(record.type) << 48) | (static_cast<u64>(record.depth) << 40) |
+                      record.phase);
+  h = mix_word(h, (static_cast<u64>(record.source) << 32) | record.seq);
+  h = mix_word(h, record.key);
+  // The payload's own bytes and none past them: the arena rounds a slot to 8 and the rest of the
+  // last word is whatever an earlier tick left there.
+  const auto* p = static_cast<const u8*>(bytes);
+  u32 left = types_[record.type]->size;
+  for (; left >= 8u; left -= 8u, p += 8) {
+    u64 word;
+    std::memcpy(&word, p, 8);
+    h = mix_word(h, word);
+  }
+  if (left > 0) {
+    u64 word = 0;
+    std::memcpy(&word, p, left);
+    h = mix_word(h, word ^ (static_cast<u64>(left) << 56));
   }
   delivery_hash_ = h;
 }
@@ -554,15 +576,6 @@ void EventBus::deliver(sim::TickPhase point, u64 tick) {
   u32 assigned = 0;  // records of `live_` given their place in the order so far
   while (first < order_.size()) {
     const u32 last = order_.size();
-    for (u32 k = first; k < last; ++k) {
-      EventRecord& record = live_.records[order_[k]];
-      if (record.id.is_null()) {
-        record.id = next_id();
-        ++current_.raised;
-        ++type_counters_[record.type].raised;
-      }
-      if (record.root.is_null()) record.root = record.id;
-    }
     assigned = live_.size();
     deliver_generation(first, last, point);
     // What the handlers raised is the next generation, in the order they raised it: delivery is
@@ -590,15 +603,29 @@ void EventBus::deliver_generation(u32 first, u32 last, sim::TickPhase point) {
   // The cascade and storm guards, in the generation's order, so which events wait is a function of
   // the order and never of the threads.
   admitted_.clear();
+  // Consecutive events mostly share a source, so its counter is looked up once a run.
+  u32 counted_source = 0xFFFF'FFFFu;
+  u32* counted = nullptr;
   for (u32 k = first; k < last; ++k) {
     const u32 position = order_[k];
-    const EventRecord& record = live_.records[position];
+    EventRecord& record = live_.records[position];
+    // Its place in the order is fixed now, so it gets its id here, carried or delivered.
+    if (record.id.is_null()) {
+      record.id = next_id();
+      ++current_.raised;
+      ++type_counters_[record.type].raised;
+    }
+    if (record.root.is_null()) record.root = record.id;
     const void* bytes = live_.payload(record);
     if (record.depth > 0 && cascade_delivered_ >= config_.max_cascade) {
       carry(record, bytes, &current_.trips.cascade_carried);
       continue;
     }
-    u32& count = source_count(record.source);
+    if (record.source != counted_source) {
+      counted_source = record.source;
+      counted = &source_count(record.source);
+    }
+    u32& count = *counted;
     if (count >= config_.max_per_source) {
       carry(record, bytes, &current_.trips.storm_carried);
       continue;
@@ -655,19 +682,25 @@ void EventBus::deliver_generation(u32 first, u32 last, sim::TickPhase point) {
 
     const i64 started = time::monotonic_ns();
     for (;;) {
-      // The earliest of its types' next events: the subscriber hears its events in the order.
       u32 best = 0xFFFF'FFFFu;
-      u32 best_j = 0;
-      for (u32 j = 0; j < heard; ++j) {
-        if (cursors_[2u * j] >= cursors_[2u * j + 1u]) continue;
-        const u32 rank = by_type_[cursors_[2u * j]];
-        if (rank < best) {
-          best = rank;
-          best_j = j;
+      if (heard == 1) {
+        // One type: its run is already in the order.
+        if (cursors_[0] >= cursors_[1]) break;
+        best = by_type_[cursors_[0]++];
+      } else {
+        // The earliest of its types' next events: the subscriber hears its events in the order.
+        u32 best_j = 0;
+        for (u32 j = 0; j < heard; ++j) {
+          if (cursors_[2u * j] >= cursors_[2u * j + 1u]) continue;
+          const u32 rank = by_type_[cursors_[2u * j]];
+          if (rank < best) {
+            best = rank;
+            best_j = j;
+          }
         }
+        if (best == 0xFFFF'FFFFu) break;
+        ++cursors_[2u * best_j];
       }
-      if (best == 0xFFFF'FFFFu) break;
-      ++cursors_[2u * best_j];
 
       const EventRecord& record = live_.records[admitted_[best]];
       if (record.tile != k_any_tile && subscriber.desc.wants_tile != nullptr &&

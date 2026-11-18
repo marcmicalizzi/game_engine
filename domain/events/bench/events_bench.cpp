@@ -6,6 +6,7 @@
 //   events.deliver.shuffled  the same N from N emitters whose keys arrive backwards, as a parallel
 //                            wave's raises can: the sort is paid.
 //   events.deliver.fanout    in order, heard by four subscribers: the per-delivery cost.
+//   events.deliver.unhashed  `ordered` with the delivery hash off: what the replay check costs.
 //
 // One iteration is one tick: N raises and the delivery point that delivers them. Items are events.
 
@@ -37,9 +38,11 @@ EventBusConfig bench_config() {
   return config;
 }
 
-void run(bench::State& state, u32 subscribers, bool backwards) {
+void run(bench::State& state, u32 subscribers, bool backwards, bool hashed = true) {
   const u32 n = static_cast<u32>(state.arg());
-  EventBus bus(bench_config());
+  EventBusConfig config = bench_config();
+  config.hash_deliveries = hashed;
+  EventBus bus(config);
   const EventType<test::Ping> ping = bus.register_type<test::Ping>();
   const u16 types[] = {ping.index};
   Count counts[4];
@@ -82,3 +85,6 @@ ENGINE_BENCH_ARGS(deliver_shuffled, "events.deliver.shuffled", 1000, 100000) {
   run(state, 1, true);
 }
 ENGINE_BENCH_ARGS(deliver_fanout, "events.deliver.fanout", 1000, 100000) { run(state, 4, false); }
+ENGINE_BENCH_ARGS(deliver_unhashed, "events.deliver.unhashed", 1000, 100000) {
+  run(state, 1, false, false);
+}
