@@ -83,6 +83,18 @@ void append_vertex_ids(ClusterMesh& to, const ClusterMesh& part, bool wanted) {
   }
 }
 
+// The same for an imported asset's tangent, second-UV and colour records (G2): a part without them
+// contributes the record that says "none" (no tangent, UV1 zero, white), and a merge in which no
+// part has them appends nothing.
+void append_vertex_extra(ClusterMesh& to, const ClusterMesh& part, bool wanted) {
+  if (!wanted) return;
+  if (!part.extra.empty() && part.extra.size() == part.vertices.size()) {
+    to.extra.append(std::span<const VertexExtra>(part.extra.data(), part.extra.size()));
+  } else {
+    to.extra.resize(to.vertices.size(), VertexExtra{});
+  }
+}
+
 Vec3 position_of(const clodMesh& mesh, unsigned int v) noexcept;
 
 int emit_group(void* context, clodGroup group, const clodCluster* clusters, size_t cluster_count) {
@@ -2296,6 +2308,7 @@ bool extract_lod_form(const ClusterLodMesh& mesh, std::span<const u32> coverage,
   ClusterMesh& dst = out.mesh;
   const bool ids = !src.vertex_ids.empty();
   const bool sources = !src.vertex_source.empty();
+  const bool extra = src.extra.size() == src.vertices.size() && !src.extra.empty();
   u32 vertices = 0;
   u32 triangles = 0;
   for (const u32 c : map.clusters) {
@@ -2309,6 +2322,7 @@ bool extract_lod_form(const ClusterLodMesh& mesh, std::span<const u32> coverage,
   dst.quantized.reserve(3 * vertices + 1);
   if (sources) dst.vertex_source.reserve(vertices);
   if (ids) dst.vertex_ids.reserve(vertices);
+  if (extra) dst.extra.reserve(vertices);
   map.vertices.reserve(vertices);
   out.lod.reserve(map.clusters.size());
   u32 top_level = 0;
@@ -2325,6 +2339,7 @@ bool extract_lod_form(const ClusterLodMesh& mesh, std::span<const u32> coverage,
         dst.quantized.push_back(src.quantized[3 * v + k]);
       if (sources) dst.vertex_source.push_back(src.vertex_source[v]);
       if (ids) dst.vertex_ids.push_back(src.vertex_ids[v]);
+      if (extra) dst.extra.push_back(src.extra[v]);
     }
     for (u32 t = from.triangle_offset; t < from.triangle_offset + from.triangle_count; ++t)
       dst.triangles.push_back(src.triangles[t]);
@@ -2531,6 +2546,10 @@ bool merge_cluster_lod(std::span<const ClusterLodMesh> parts, ClusterLodMesh& ou
     id_source = source;
   }
   out.mesh.vertex_id_source = id_source;
+  // An imported asset's tangent, second-UV and colour records (G2): carried when any part has them.
+  bool any_extra = false;
+  for (const ClusterLodMesh& whole : parts)
+    any_extra = any_extra || !whole.mesh.extra.empty();
   bool morph_normals = false;
   if (morph_template != nullptr) {
     out.mesh.morph_channels.append(std::span<const MorphChannel>(
@@ -2573,6 +2592,7 @@ bool merge_cluster_lod(std::span<const ClusterLodMesh> parts, ClusterLodMesh& ou
       out.mesh.skin.resize(out.mesh.vertices.size(), SkinBinding{});
     }
     append_vertex_ids(out.mesh, part, id_source != VertexIdSource::none);
+    append_vertex_extra(out.mesh, part, any_extra);
     out.mesh.triangles.append(std::span<const u32>(part.triangles.data(), part.triangles.size()));
     out.mesh.source_vertex_count += part.source_vertex_count;
     out.mesh.source_triangle_count += part.source_triangle_count;
@@ -2677,6 +2697,9 @@ bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh&
     if (!any_ids) out.mesh.vertex_id_source = whole.mesh.vertex_id_source;
     any_ids = true;
   }
+  bool any_extra = false;  // G2: an imported mesh's tangent, second-UV and colour records
+  for (const ClusterLodMesh& whole : parts)
+    any_extra = any_extra || !whole.mesh.extra.empty();
   // **Every stream reserved at its merged size before the first append** (roadmap T129;
   // docs/experiments/memory-commit-accounting.md). The merge is the scene's whole geometry — on the
   // forest 116 million vertices, a 1.3 GB position array — and appending part by part grew each
@@ -2747,6 +2770,7 @@ bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh&
             ? part.vertex_id_source
             : VertexIdSource::none;
     append_vertex_ids(out.mesh, part, any_ids);
+    append_vertex_extra(out.mesh, part, any_extra);
     out.mesh.triangles.append(std::span<const u32>(part.triangles.data(), part.triangles.size()));
     // Three u16 a vertex, the mesh's own padding dropped so the merged index is 3 * vertex.
     out.mesh.quantized.append(
@@ -3136,6 +3160,7 @@ bool validate_cluster_lod(const ClusterLodMesh& mesh, std::span<const u32> sourc
   // DAG, and a coarse cluster's copy of a vertex is where a broken merge or page layout would show.
   leaves.vertex_ids = mesh.mesh.vertex_ids;
   leaves.vertex_id_source = mesh.mesh.vertex_id_source;
+  leaves.extra = mesh.mesh.extra;  // G2: checked parallel to the vertices
   for (u32 i = 0; i < mesh.mesh.clusters.size(); ++i) {
     if (mesh.lod[i].level == 0) leaves.clusters.push_back(mesh.mesh.clusters[i]);
   }

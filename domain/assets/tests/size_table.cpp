@@ -15,5 +15,8 @@ ENGINE_EXPECT_SIZE(16, 4, assets::Primitive);
 // 216 around the name, not 72: the occlusion strength and how each of the five slots samples its
 // image (a 5-byte sampler and a 20-byte transform, 28 bytes a slot with alignment) came with the
 // samplers and KHR_texture_transform. Import-time data, never per frame, so the growth is not a
-// hot path's. 224, not 216: a two-sided material's foliage optics (R164), two f32 shares.
-ENGINE_EXPECT_SIZE(sizeof(std::string) + 224, 8, assets::Material);
+// hot path's. 224, not 216: a two-sided material's foliage optics (R164), two f32 shares. 272, not
+// 224 (G2): the five images read through the second UV set, the extensions word and the seven
+// factors of the material extensions the BSDF does not draw yet (52 bytes into the 4 of padding
+// there were). Import-time data still.
+ENGINE_EXPECT_SIZE(sizeof(std::string) + 272, 8, assets::Material);

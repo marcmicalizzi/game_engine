@@ -552,6 +552,9 @@ bool validate_clusters(const ClusterMesh& mesh, std::span<const u32> source_indi
   } else if (mesh.vertex_id_source != VertexIdSource::none) {
     return fail("the mesh names a vertex id source but carries no ids");
   }
+  // The imported streams (G2): present or absent as a whole.
+  if (!mesh.extra.empty() && mesh.extra.size() != mesh.vertices.size())
+    return fail("the tangent, second UV and colour stream is not parallel to the vertices");
 
   if (!validate_morph_stream(mesh, error)) return false;
 
@@ -1011,6 +1014,40 @@ Vec3 decode_normal_oct(u32 packed) noexcept {
   return normalize(n);
 }
 
+// The tangent's direction on the normal's octahedral grid, with the handedness in the lowest bit of
+// the first snorm16: that bit costs the x component one step of 32767 (a 0.002 degree turn at
+// most), and keeps the record at one word. Zero is "no tangent". The one unit tangent that would
+// encode to it is +z with w = +1 (octahedral (0, 0)), so that one is written with x two steps off
+// zero, which decodes to +z within 1e-4.
+u32 encode_tangent(Vec4 tangent) noexcept {
+  const Vec3 t{tangent.x, tangent.y, tangent.z};
+  if (!(length_squared(t) > 1.0e-20f)) return 0u;
+  u32 packed = encode_normal_oct(normalize(t));
+  packed = (packed & ~1u) | (tangent.w < 0.0f ? 1u : 0u);
+  if (packed == 0u) packed = 2u;  // +z, right-handed
+  return packed;
+}
+
+Vec4 decode_tangent(u32 packed) noexcept {
+  if (packed == 0u) return Vec4{0.0f, 0.0f, 0.0f, 0.0f};
+  const Vec3 t = decode_normal_oct(packed & ~1u);
+  return Vec4{t.x, t.y, t.z, (packed & 1u) != 0u ? -1.0f : 1.0f};
+}
+
+u32 encode_color_rgba8(Vec4 color) noexcept {
+  auto unorm = [](f32 v) {
+    const f32 c = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+    return static_cast<u32>(std::lround(c * 255.0f));
+  };
+  return unorm(color.x) | (unorm(color.y) << 8) | (unorm(color.z) << 16) | (unorm(color.w) << 24);
+}
+
+Vec4 decode_color_rgba8(u32 packed) noexcept {
+  return Vec4{
+      static_cast<f32>(packed & 0xffu) / 255.0f, static_cast<f32>((packed >> 8) & 0xffu) / 255.0f,
+      static_cast<f32>((packed >> 16) & 0xffu) / 255.0f, static_cast<f32>(packed >> 24) / 255.0f};
+}
+
 u32 encode_half2(Vec2 v) noexcept { return u32{f32_to_f16(v.x)} | (u32{f32_to_f16(v.y)} << 16); }
 
 Vec2 decode_half2(u32 packed) noexcept {
@@ -1041,20 +1078,26 @@ void compute_vertex_normals(std::span<const Vec3> positions, std::span<const u32
 
 u32 weld_vertices(Vector<Vec3>& positions, Vector<Vec3>& normals, Vector<Vec2>& uvs,
                   std::span<u32> indices, Vector<SkinBinding>* skin,
-                  Vector<MorphChannelSource>* morph, Vector<u32>* vertex_ids) {
+                  Vector<MorphChannelSource>* morph, Vector<u32>* vertex_ids,
+                  const WeldExtraStreams& extra) {
   const u32 vertex_count = positions.size();
   if (vertex_count == 0) return 0;
   const bool have_normals = normals.size() == vertex_count;
   const bool have_uvs = uvs.size() == vertex_count;
   const bool have_skin = skin != nullptr && skin->size() == vertex_count;
   const bool have_ids = vertex_ids != nullptr && vertex_ids->size() == vertex_count;
+  // An asset's own tangents, second UV set and colours (G2): part of the key when present, so a
+  // mirrored seam's two sides (one position, one UV, opposite handedness) stay two vertices.
+  const bool have_tangents = extra.tangents != nullptr && extra.tangents->size() == vertex_count;
+  const bool have_uvs1 = extra.uvs1 != nullptr && extra.uvs1->size() == vertex_count;
+  const bool have_colors = extra.colors != nullptr && extra.colors->size() == vertex_count;
   Vector<u32> morph_keys;
   const bool have_morph = morph != nullptr && !morph->empty();
   if (have_morph) {
     morph_vertex_keys(std::span<const MorphChannelSource>(morph->data(), morph->size()),
                       vertex_count, morph_keys);
   }
-  meshopt_Stream streams[6];
+  meshopt_Stream streams[9];
   usize stream_count = 0;
   streams[stream_count++] = meshopt_Stream{positions.data(), sizeof(Vec3), sizeof(Vec3)};
   if (have_normals)
@@ -1074,6 +1117,12 @@ u32 weld_vertices(Vector<Vec3>& positions, Vector<Vec3>& normals, Vector<Vec2>& 
   // stream would have merged, and a mesh with derived ids welds exactly as it did without them.
   if (have_ids)
     streams[stream_count++] = meshopt_Stream{vertex_ids->data(), sizeof(u32), sizeof(u32)};
+  if (have_tangents)
+    streams[stream_count++] = meshopt_Stream{extra.tangents->data(), sizeof(Vec4), sizeof(Vec4)};
+  if (have_uvs1)
+    streams[stream_count++] = meshopt_Stream{extra.uvs1->data(), sizeof(Vec2), sizeof(Vec2)};
+  if (have_colors)
+    streams[stream_count++] = meshopt_Stream{extra.colors->data(), sizeof(Vec4), sizeof(Vec4)};
 
   Vector<unsigned int> remap(vertex_count);
   const u32 unique = static_cast<u32>(meshopt_generateVertexRemapMulti(
@@ -1105,6 +1154,24 @@ u32 weld_vertices(Vector<Vec3>& positions, Vector<Vec3>& normals, Vector<Vec2>& 
     meshopt_remapVertexBuffer(welded.data(), vertex_ids->data(), vertex_count, sizeof(u32),
                               remap.data());
     *vertex_ids = std::move(welded);
+  }
+  if (have_tangents) {
+    Vector<Vec4> welded(unique);
+    meshopt_remapVertexBuffer(welded.data(), extra.tangents->data(), vertex_count, sizeof(Vec4),
+                              remap.data());
+    *extra.tangents = std::move(welded);
+  }
+  if (have_uvs1) {
+    Vector<Vec2> welded(unique);
+    meshopt_remapVertexBuffer(welded.data(), extra.uvs1->data(), vertex_count, sizeof(Vec2),
+                              remap.data());
+    *extra.uvs1 = std::move(welded);
+  }
+  if (have_colors) {
+    Vector<Vec4> welded(unique);
+    meshopt_remapVertexBuffer(welded.data(), extra.colors->data(), vertex_count, sizeof(Vec4),
+                              remap.data());
+    *extra.colors = std::move(welded);
   }
   if (have_morph) {
     // Every channel's vertex list is in the old numbering. Rewrite it, drop the entries whose
@@ -1337,6 +1404,24 @@ void fill_cluster_attributes(ClusterMesh& mesh, std::span<const Vec3> positions,
     mesh.vertex_ids.reserve(mesh.vertex_source.size());
     for (const u32 source : mesh.vertex_source)
       mesh.vertex_ids.push_back(attributes.vertex_ids[source]);
+  }
+
+  // An imported asset's tangents, second UV set and colours (G2), the same road once more: one
+  // record per cluster vertex when the source carried any of them, none at all when it carried
+  // none, so a mesh without them builds the bytes it always did.
+  mesh.extra.clear();
+  const bool have_tangents = attributes.tangents.size() == positions.size();
+  const bool have_uvs1 = attributes.uvs1.size() == positions.size();
+  const bool have_colors = attributes.colors.size() == positions.size();
+  if (!positions.empty() && (have_tangents || have_uvs1 || have_colors)) {
+    mesh.extra.reserve(mesh.vertex_source.size());
+    for (const u32 source : mesh.vertex_source) {
+      VertexExtra e;
+      if (have_tangents) e.tangent = encode_tangent(attributes.tangents[source]);
+      if (have_uvs1) e.uv1 = encode_half2(attributes.uvs1[source]);
+      if (have_colors) e.color = encode_color_rgba8(attributes.colors[source]);
+      mesh.extra.push_back(e);
+    }
   }
 
   mesh.skin.clear();

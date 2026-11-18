@@ -519,23 +519,8 @@ bool write_cluster_cache(const std::string& path, const std::string& source,
   data.build_key = build_key;
   data.materials.reserve(mesh_data.materials.size() + 1);
   for (const assets::Material& source_material : mesh_data.materials) {
-    geometry::ClusterFileMaterial material;
-    material.base_color = source_material.base_color;
-    material.metallic = source_material.metallic;
-    material.roughness = source_material.roughness;
-    material.base_color_image = source_material.base_color_image;
-    material.normal_image = source_material.normal_image;
-    material.metallic_roughness_image =
-        geometry::encode_optional_image(source_material.metallic_roughness_image);
-    material.occlusion_image = geometry::encode_optional_image(source_material.occlusion_image);
-    material.emissive_image = geometry::encode_optional_image(source_material.emissive_image);
-    material.emissive = source_material.emissive;
-    material.normal_scale = source_material.normal_scale;
-    material.alpha = geometry::alpha_word_with_foliage(
-        geometry::encode_alpha_word(source_material.alpha_mode, source_material.double_sided,
-                                    source_material.alpha_cutoff),
-        source_material.transmission, source_material.normal_spread);
-    data.materials.push_back(material);
+    // engine-content build's own conversion (G2), so the two write one record.
+    data.materials.push_back(assets::cluster_file_material(source_material));
     data.material_sampling.push_back(geometry::encode_material_sampling(
         source_material.sampling, source_material.occlusion_strength));
   }
@@ -555,6 +540,8 @@ bool write_cluster_cache(const std::string& path, const std::string& source,
     }
     data.cluster_material.push_back(default_material);
   }
+  // The second-UV slots, lights and cameras (G2), as engine-content build writes them.
+  assets::write_import_sections(mesh_data, data);
   // The image paths as the glTF gave them, and beside them the bytes of the images it embedded,
   // so that what this container draws is what the glTF draws. Writing only the (empty) paths is
   // what made a cache hit a different picture from a cache miss ([geometry](geometry.md)).

@@ -710,22 +710,8 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
 
   data.materials.reserve(mesh.materials.size() + 1);
   for (const assets::Material& source : mesh.materials) {
-    geometry::ClusterFileMaterial material;
-    material.base_color = source.base_color;
-    material.metallic = source.metallic;
-    material.roughness = source.roughness;
-    material.base_color_image = source.base_color_image;
-    material.normal_image = source.normal_image;
-    material.metallic_roughness_image =
-        geometry::encode_optional_image(source.metallic_roughness_image);
-    material.occlusion_image = geometry::encode_optional_image(source.occlusion_image);
-    material.emissive_image = geometry::encode_optional_image(source.emissive_image);
-    material.emissive = source.emissive;
-    material.normal_scale = source.normal_scale;
-    material.alpha = geometry::alpha_word_with_foliage(
-        geometry::encode_alpha_word(source.alpha_mode, source.double_sided, source.alpha_cutoff),
-        source.transmission, source.normal_spread);  // R164: zero for every material but foliage
-    data.materials.push_back(material);
+    // The one conversion the renderer's glTF path calls too (G2), so the two write one record.
+    data.materials.push_back(assets::cluster_file_material(source));
     // How its slots sample their images (section 33), which the texture records below read too.
     data.material_sampling.push_back(
         geometry::encode_material_sampling(source.sampling, source.occlusion_strength));
@@ -747,6 +733,9 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
     }
     data.cluster_material.push_back(default_material);
   }
+  // What the import read beyond the materials (G2): the second-UV slots, the lights, the cameras;
+  // nothing for a file that states none. The renderer's glTF path calls the same function.
+  assets::write_import_sections(mesh, data);
   // Image paths as the glTF gives them, relative to the glTF file; an image the file embedded has
   // no path of its own, so its **encoded bytes** travel in the container instead and the slot
   // keeps an empty path. That is what makes the container drawable wherever it ends up: a GLB

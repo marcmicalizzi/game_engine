@@ -21,10 +21,10 @@
 //
 // **Morph targets** arrive as `MeshData::morph`, one `geometry::MorphChannelSource` per (mesh,
 // target) pair, with the POSITION and NORMAL deltas of every primitive of that mesh appended in
-// the flattened vertex space; TANGENT deltas are ignored, since nothing downstream carries
-// tangents. Default weights come from the node's `weights` if it has them and the mesh's
-// otherwise, and an animation's `weights` channels arrive as `k_path_weights` curves whose
-// `components` is the target count.
+// the flattened vertex space; TANGENT deltas are ignored (the deform pass moves no tangent; a
+// morphed vertex keeps its rest tangent). Default weights come from the node's `weights` if it has
+// them and the mesh's otherwise, and an animation's `weights` channels arrive as `k_path_weights`
+// curves whose `components` is the target count.
 //
 // **Canonical vertex ids** arrive as `MeshData::vertex_ids`, one `u32` per vertex, from the custom
 // attribute `k_canonical_id_attribute` when the file carries it and from the base's own rule
@@ -32,11 +32,14 @@
 // are what lets a file written beside the mesh name its vertices after the content build
 // (docs/plan/07-content-pipeline.md §7.11), and the weld keys on them.
 //
+// **Tangents, a second UV set, vertex colours, more than four influences, the material extensions,
+// lights and cameras** are read too (G2): see `MeshData` and `Material`.
+//
 // What this module deliberately does not do: decode image pixels (the bytes or the URI are
 // handed on for foundation/image and the texture pipeline), touch the GPU, *evaluate* animations,
-// skins or morphs (the curves and the deltas are read, never applied), read cameras and lights,
-// or split the merged mesh back into parts. Draco and meshopt-compressed buffer views are not
-// decoded either, so such files fail to load.
+// skins or morphs (the curves and the deltas are read, never applied), or split the merged mesh
+// back into parts. Draco and meshopt-compressed buffer views are not decoded either (the tree
+// vendors no decoder), so such files fail to load with a sentence that says so.
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
@@ -79,10 +82,28 @@ inline constexpr u8 k_alpha_opaque = 0;  // alpha is ignored
 inline constexpr u8 k_alpha_mask = 1;    // alpha < alpha_cutoff is not drawn
 inline constexpr u8 k_alpha_blend = 2;   // alpha weighs the surface against what is behind it
 
+// The material extensions a file may state, as `Material::extensions` records which it did (G2;
+// assets.md, "Material extensions"). Emissive strength is folded into `emissive`; the others are
+// read into `Material`'s fields and not drawn, because the engine's BSDF has no term for them (one
+// dielectric F0 of 0.04, no coat lobe, no sorted transmission, no volume, no sheen).
+inline constexpr u32 k_ext_emissive_strength = 1u << 0;
+inline constexpr u32 k_ext_ior = 1u << 1;
+inline constexpr u32 k_ext_specular = 1u << 2;
+inline constexpr u32 k_ext_clearcoat = 1u << 3;
+inline constexpr u32 k_ext_transmission = 1u << 4;
+inline constexpr u32 k_ext_volume = 1u << 5;
+inline constexpr u32 k_ext_sheen = 1u << 6;
+inline constexpr u32 k_ext_diffuse_transmission = 1u << 7;
+// The extensions above the engine reads into a record but does not draw.
+inline constexpr u32 k_ext_not_drawn =
+    k_ext_ior | k_ext_specular | k_ext_clearcoat | k_ext_transmission | k_ext_volume | k_ext_sheen;
+
 // Metallic-roughness material parameters. Texture slots are indices into MeshData::images, or
-// -1 when the material has no such texture; only TEXCOORD_0 is read, so a texture bound to any
-// other UV set — by the reference's `texCoord` or by its `KHR_texture_transform`'s — arrives as
-// -1. Factors default to the glTF defaults.
+// -1 when the material has no such texture. A slot's texture reads TEXCOORD_0 there; one that
+// reads **TEXCOORD_1** — by the reference's `texCoord` or by its `KHR_texture_transform`'s — is
+// -1 there and its image is in `uv1_images[slot]` instead (G2), so every reader that knows one UV
+// set keeps drawing the material as it did, without that map. Any other set is refused (-1 in
+// both). Factors default to the glTF defaults.
 //
 // `sampling[slot]` (indexed by `geometry::k_slot_*`) is how that slot reads its image: the glTF
 // sampler of the texture it names (wrap s and t, the filters; the glTF defaults, repeat and
@@ -115,6 +136,20 @@ struct Material {
   // share of normals that are a sphere's (no glTF field; an engine material set's `normal_spread`).
   f32 transmission = 0.0f;
   f32 normal_spread = 0.0f;
+  // The images slots read through TEXCOORD_1, by `geometry::k_slot_*`, -1 for none (G2); such a
+  // slot's sampling is `sampling[slot]` like any other's.
+  i32 uv1_images[geometry::k_material_slots] = {-1, -1, -1, -1, -1};
+  // Which `k_ext_*` the file stated for this material, and what the ones the BSDF does not draw
+  // said (G2): read so a later BSDF has them and so the import can say what it left out.
+  // `emissive_strength` is already folded into `emissive`.
+  u32 extensions = 0;
+  f32 emissive_strength = 1.0f;
+  f32 ior = 1.5f;
+  f32 specular = 1.0f;
+  f32 clearcoat = 0.0f;
+  f32 clearcoat_roughness = 0.0f;
+  f32 transmission_factor = 0.0f;  // KHR_materials_transmission, not the foliage share above
+  f32 thickness = 0.0f;            // KHR_materials_volume
 };
 
 // An image referenced by a material, undecoded. `bytes` holds the encoded file for images that
@@ -215,6 +250,16 @@ struct MeshData {
   Vector<Vec3> positions;
   Vector<Vec3> normals;
   Vector<Vec2> uvs;
+  // **What a file may say about its vertices beyond the normal and the first UV set** (G2;
+  // assets.md, "Tangents, a second UV set and vertex colours"), each empty unless some primitive
+  // carried it and then parallel to `positions`, a primitive without it contributing the "none"
+  // value: `tangents` from TANGENT (xyz through the node's linear part and renormalized, w the
+  // handedness, flipped under a mirroring node; w = 0 and xyz zero for none), `uvs1` from
+  // TEXCOORD_1 (zero for none), `colors` from COLOR_0 as linear RGBA (VEC3 gets alpha 1; white for
+  // none).
+  Vector<Vec4> tangents;
+  Vector<Vec2> uvs1;
+  Vector<Vec4> colors;
   // Per-vertex skin influences, empty unless the file has a skinned primitive, and otherwise the
   // same length as `positions`. A rigid primitive in a file that also has skinned ones contributes
   // the default binding (all weight on joint 0), which is what keeps the stream parallel.
@@ -255,6 +300,20 @@ struct MeshData {
   // flattened mesh's space, like the positions; empty for a file with none, which imports as it
   // always did. The content build writes them into the container's section 43.
   Vector<geometry::ClusterFilePerch> perches;
+  // **The lights and cameras the default scene's nodes carry** (G2; assets.md, "Lights and
+  // cameras"): `KHR_lights_punctual` lights and glTF cameras at their nodes' world placement, in
+  // the flattened mesh's space like the perches; empty for a file with none. The content build
+  // writes them into the container's sections 51 and 52.
+  Vector<geometry::ClusterFileLight> lights;
+  Vector<geometry::ClusterFileCamera> cameras;
+  // **More than four influences** (G2; assets.md, "The influences"): a vertex with JOINTS_1 and
+  // WEIGHTS_1 keeps its four heaviest joints, renormalized, and this says what that cost: how many
+  // vertices had more than four non-zero weights, and the largest and the summed share of weight
+  // dropped (the bound on how far skinning with four moves a vertex from skinning with all eight,
+  // as a fraction of the spread of the dropped joints' displacements). Zero for every other file.
+  u32 influences_over_four = 0;
+  f32 influence_dropped_max = 0.0f;
+  f64 influence_dropped_sum = 0.0;
 };
 // A perch whose node says no size: a songbird's to a crow's branch, metres.
 inline constexpr f32 k_default_perch_size_m = 0.05f;
@@ -335,5 +394,16 @@ bool repair_uv_degenerate_triangles(MeshData& mesh, geometry::UvRepairReport& re
 // same way one release earlier. A stream `MeshData` gains is added here, once, and both builders
 // have it.
 u32 weld_vertices(MeshData& mesh);
+
+// **One material record, and the import's other container sections, written one way** (G2): both
+// builders of a cluster container — `engine-content build` and the renderer's glTF path — call
+// these, because they share derived-data cache entries and must write the same bytes, and the
+// material conversion had already been written out twice. `cluster_file_material` is the 64-byte
+// record of section 9; `write_import_sections` fills what an import adds beyond the materials and
+// images — the second-UV slots (section 50, one record per entry of `data.materials`, the default
+// material a caller appended included, and nothing when no material reads the second set), the
+// lights (51) and the cameras (52) — after the caller has filled `data.materials`.
+geometry::ClusterFileMaterial cluster_file_material(const Material& material) noexcept;
+void write_import_sections(const MeshData& mesh, geometry::ClusterFileData& data);
 
 }  // namespace engine::assets

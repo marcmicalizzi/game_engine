@@ -148,10 +148,12 @@ void check_sampling(const Material* materials) {
   CHECK(tiled.sampling[k_slot_occlusion].sampler == TextureSampler{});
   CHECK(tiled.sampling[k_slot_occlusion].transform.scale == Vec2(8.0f, 8.0f));
   CHECK(tiled.sampling[k_slot_occlusion].transform.offset == Vec2(0.0f, 0.0f));
-  // The transform named TEXCOORD_1: refused like a reference's own texCoord of 1, and its slot
-  // left at the defaults.
+  // The transform named TEXCOORD_1: since G2 the slot reads the second set, so its image is not
+  // the first set's slot (-1 there, as before) but `uv1_images`, and the slot keeps its texture's
+  // sampler (the mirrored one) and the transform, which moves nothing else.
   CHECK(tiled.emissive_image == -1);
-  CHECK(tiled.sampling[k_slot_emissive].sampler == TextureSampler{});
+  CHECK(tiled.uv1_images[k_slot_emissive] == 1);
+  CHECK(tiled.sampling[k_slot_emissive].sampler.wrap_s == TextureWrap::mirrored_repeat);
   CHECK(tiled.sampling[k_slot_emissive].transform.identity());
 
   const Material& clamped = materials[1];
@@ -218,6 +220,9 @@ TEST_CASE("gltf samplers: the container carries them, and an older container rea
   data.cluster_material.assign(data.mesh.mesh.clusters.size(), 0u);
   for (const ImageRef& image : mesh.images)
     data.image_paths.push_back(image.uri);
+  // The slot read through the second UV set travels in section 50 (G2).
+  write_import_sections(mesh, data);
+  REQUIRE(data.material_uv1.size() == 3);
 
   const test::TempDir tmp("assets_sampler_container");
   const std::string path = tmp.file("quad.clusters");
@@ -235,6 +240,9 @@ TEST_CASE("gltf samplers: the container carries them, and an older container rea
     back[i].emissive_image = geometry::decode_optional_image(read.materials[i].emissive_image);
     geometry::decode_material_sampling(geometry::cluster_material_sampling(read, i),
                                        back[i].sampling, back[i].occlusion_strength);
+    REQUIRE(read.material_uv1.size() == 3);
+    for (u32 s = 0; s < geometry::k_material_slots; ++s)
+      back[i].uv1_images[s] = geometry::decode_optional_image(read.material_uv1[i].images[s]);
   }
   check_sampling(back);
 

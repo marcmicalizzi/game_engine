@@ -381,8 +381,9 @@ TEST_CASE("gltf: diffuse transmission splits the base colour, never adding to it
   for (const f32 t : {0.3f, 0.75f}) {
     CAPTURE(t);
     std::string json = cube_json("cube.bin");
-    const std::string ext = std::string(", \"extensions\": {\"KHR_materials_diffuse_transmission\":") +
-                            " {\"diffuseTransmissionFactor\": " + std::to_string(t) + "}}";
+    const std::string ext =
+        std::string(", \"extensions\": {\"KHR_materials_diffuse_transmission\":") +
+        " {\"diffuseTransmissionFactor\": " + std::to_string(t) + "}}";
     for (const std::string_view anchor : {std::string_view("\"doubleSided\": true"),
                                           std::string_view("\"alphaMode\": \"BLEND\"")}) {
       const std::size_t at = json.find(anchor);
@@ -474,17 +475,18 @@ TEST_CASE("gltf: a file stating diffuse transmission takes a key of its own") {
   const TempDir tmp("engine_assets_gltf_transmission_key");
   const Cube cube = make_cube();
   const std::vector<std::uint8_t> binary = cube_buffer(cube);
-  REQUIRE(io::write_file(io::join_path(tmp.path(), "cube.bin"), view_of(binary)) ==
-          io::Status::Ok);
+  REQUIRE(io::write_file(io::join_path(tmp.path(), "cube.bin"), view_of(binary)) == io::Status::Ok);
   const std::string anchor = "\"doubleSided\": true";
+  u64 unstated_key = 0;
   for (const bool stated : {false, true}) {
     CAPTURE(stated);
     std::string json = cube_json("cube.bin");
     if (stated) {
       const std::size_t at = json.find(anchor);
       REQUIRE(at != std::string::npos);
-      json.insert(at + anchor.size(), ", \"extensions\": {\"KHR_materials_diffuse_transmission\":"
-                                      " {\"diffuseTransmissionFactor\": 0.3}}");
+      json.insert(at + anchor.size(),
+                  ", \"extensions\": {\"KHR_materials_diffuse_transmission\":"
+                  " {\"diffuseTransmissionFactor\": 0.3}}");
     }
     const std::string path = io::join_path(tmp.path(), "leaf.gltf");
     REQUIRE(io::write_file(path, json) == io::Status::Ok);
@@ -493,7 +495,15 @@ TEST_CASE("gltf: a file stating diffuse transmission takes a key of its own") {
     REQUIRE_MESSAGE(source_mesh_hash(path, key, &error), error);
     const u64 bytes_alone = hash_combine(hash_bytes(json.data(), json.size()),
                                          hash_bytes(binary.data(), binary.size()));
-    CHECK((key != bytes_alone) == stated);
+    // The cube binds a texture to TEXCOORD_1, which G2 reads, so even the unstated file carries
+    // G2's tag ("G2IMPOR1") over its bytes; the transmission's own tag comes on top of that.
+    if (!stated) {
+      CHECK(key == hash_combine(bytes_alone, u64{0x4732494d504f5231ull}));
+      unstated_key = key;
+    } else {
+      CHECK(key != hash_combine(bytes_alone, u64{0x4732494d504f5231ull}));
+      CHECK(key != unstated_key);
+    }
   }
 }
 

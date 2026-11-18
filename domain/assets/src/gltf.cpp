@@ -237,13 +237,18 @@ bool unpack_accessor(const cgltf_accessor& accessor, u32 components, const char*
   return true;
 }
 
-i32 image_slot(const cgltf_data& data, const cgltf_texture_view& view) noexcept {
+// The UV set a texture reference reads: its own `texCoord`, or its KHR_texture_transform's when
+// that names one, which overrides the reference's.
+cgltf_int uv_set_of(const cgltf_texture_view& view) noexcept {
+  if (view.has_transform != 0 && view.transform.has_texcoord != 0) return view.transform.texcoord;
+  return view.texcoord;
+}
+
+// The image a reference names when it reads UV set `set` (0 or 1, G2), else -1: a slot is read
+// through one set or the other, and through any third set not at all.
+i32 image_slot(const cgltf_data& data, const cgltf_texture_view& view, cgltf_int set = 0) noexcept {
   if (view.texture == nullptr) return -1;
-  if (view.texcoord != 0) return -1;  // TEXCOORD_0 only; the mesh carries one UV set
-  // KHR_texture_transform may name the UV set itself, and when it does its choice overrides the
-  // reference's own: a texture it moves to another set is refused the same way.
-  if (view.has_transform != 0 && view.transform.has_texcoord != 0 && view.transform.texcoord != 0)
-    return -1;
+  if (uv_set_of(view) != set) return -1;
   const cgltf_image* image = view.texture->image;
   if (image == nullptr && view.texture->has_basisu != 0) image = view.texture->basisu_image;
   if (image == nullptr && view.texture->has_webp != 0) image = view.texture->webp_image;
@@ -303,7 +308,10 @@ struct Context {
   bool saw_normals = false;
   bool saw_uvs = false;
   bool saw_skin = false;
-  bool saw_ids = false;     // some primitive carried `_CANONICAL_ID`
+  bool saw_ids = false;       // some primitive carried `_CANONICAL_ID`
+  bool saw_tangents = false;  // G2: some primitive carried TANGENT, TEXCOORD_1, COLOR_0
+  bool saw_uvs1 = false;
+  bool saw_colors = false;
   bool has_skins = false;   // the file declares skins, so the binding stream is kept parallel
   Vector<u32> node_remap;   // cgltf node index -> MeshData::nodes index
   Vector<u8> skin_placed;   // whether a skin's node_transform has been recorded
@@ -345,25 +353,90 @@ bool append_skin_bindings(Context& ctx, const cgltf_primitive& primitive, u32 ba
       return fail(ctx.error, "glTF: WEIGHTS_0 and POSITION have different counts");
     if (!unpack_accessor(*weights, 4, "WEIGHTS_0", ctx.more_floats, ctx.error)) return false;
   }
+  // A second set (JOINTS_1 / WEIGHTS_1, G2): read beside the first, and the vertex keeps its four
+  // heaviest influences of the eight. Both or neither: a set of joints with no weights says
+  // nothing.
+  const cgltf_accessor* joints1 = cgltf_find_accessor(&primitive, cgltf_attribute_type_joints, 1);
+  const cgltf_accessor* weights1 = cgltf_find_accessor(&primitive, cgltf_attribute_type_weights, 1);
+  const bool second = joints1 != nullptr && weights1 != nullptr && weights != nullptr;
+  if (second) {
+    if (joints1->count != vertices || weights1->count != vertices)
+      return fail(ctx.error, "glTF: JOINTS_1 or WEIGHTS_1 and POSITION have different counts");
+    if (cgltf_num_components(joints1->type) != 4)
+      return fail(ctx.error, "glTF: JOINTS_1 is not a vector of four components");
+    if (!unpack_accessor(*weights1, 4, "WEIGHTS_1", ctx.floats, ctx.error)) return false;
+  }
   const u32 palette = out.skins[static_cast<u32>(skin_index)].joints.size();
   for (u32 i = 0; i < vertices; ++i) {
-    cgltf_uint quad[4] = {0, 0, 0, 0};
+    cgltf_uint quad[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     if (cgltf_accessor_read_uint(joints, i, quad, 4) == 0)
       return fail(ctx.error, "glTF: could not read JOINTS_0 (a sparse or compressed accessor?)");
-    u32 indices[4];
-    for (u32 k = 0; k < 4; ++k) {
+    if (second && cgltf_accessor_read_uint(joints1, i, quad + 4, 4) == 0)
+      return fail(ctx.error, "glTF: could not read JOINTS_1 (a sparse or compressed accessor?)");
+    const u32 sets = second ? 8u : 4u;
+    for (u32 k = 0; k < sets; ++k) {
       if (quad[k] >= palette) {
-        return fail(ctx.error, "glTF: JOINTS_0 names joint " + std::to_string(quad[k]) +
+        return fail(ctx.error, std::string("glTF: ") + (k < 4 ? "JOINTS_0" : "JOINTS_1") +
+                                   " names joint " + std::to_string(quad[k]) +
                                    ", outside the skin's " + std::to_string(palette) + " joints");
       }
-      indices[k] = quad[k];
     }
-    f32 influence[4] = {1.0f, 0.0f, 0.0f, 0.0f};
+    f32 influence[8] = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
     if (weights != nullptr) {
       for (u32 k = 0; k < 4; ++k)
         influence[k] = ctx.more_floats[i * 4 + k];
     }
-    out.skin_bindings[base + i] = geometry::make_skin_binding(indices, influence);
+    if (second) {
+      for (u32 k = 0; k < 4; ++k)
+        influence[4 + k] = ctx.floats[i * 4 + k];
+    }
+    u32 indices[4] = {quad[0], quad[1], quad[2], quad[3]};
+    f32 kept[4] = {influence[0], influence[1], influence[2], influence[3]};
+    if (second) {
+      // One joint named twice adds up; then the four heaviest, a tie to the lower joint, so the
+      // choice is a function of the vertex alone. What is dropped is reported, not hidden.
+      u32 joint[8];
+      f32 weight[8];
+      u32 n = 0;
+      f32 total = 0.0f;
+      for (u32 k = 0; k < 8; ++k) {
+        if (!(influence[k] > 0.0f)) continue;
+        total += influence[k];
+        u32 at = 0;
+        while (at < n && joint[at] != quad[k])
+          ++at;
+        if (at == n) {
+          joint[n] = quad[k];
+          weight[n] = 0.0f;
+          ++n;
+        }
+        weight[at] += influence[k];
+      }
+      for (u32 a = 1; a < n; ++a) {  // insertion sort: heavier first, then the lower joint
+        for (u32 b = a; b > 0; --b) {
+          const bool before =
+              weight[b] > weight[b - 1] || (weight[b] == weight[b - 1] && joint[b] < joint[b - 1]);
+          if (!before) break;
+          std::swap(weight[b], weight[b - 1]);
+          std::swap(joint[b], joint[b - 1]);
+        }
+      }
+      f32 dropped = 0.0f;
+      for (u32 k = 4; k < n; ++k)
+        dropped += weight[k];
+      for (u32 k = 0; k < 4; ++k) {
+        indices[k] = k < n ? joint[k] : 0u;
+        kept[k] = k < n ? weight[k] : 0.0f;
+      }
+      if (n == 0) kept[0] = 1.0f;
+      if (n > 4 && total > 0.0f) {
+        const f32 share = dropped / total;
+        ++out.influences_over_four;
+        out.influence_dropped_sum += static_cast<f64>(share);
+        if (share > out.influence_dropped_max) out.influence_dropped_max = share;
+      }
+    }
+    out.skin_bindings[base + i] = geometry::make_skin_binding(indices, kept);
   }
   ctx.saw_skin = true;
   return true;
@@ -535,6 +608,89 @@ bool append_morph_targets(Context& ctx, const cgltf_primitive& primitive, u32 ba
   return true;
 }
 
+// The "none" value of each imported stream (G2): no tangent (the resolve derives the frame), no
+// second UV, a white colour that multiplies nothing.
+const Vec4 k_no_tangent{0.0f, 0.0f, 0.0f, 0.0f};
+const Vec4 k_white{1.0f, 1.0f, 1.0f, 1.0f};
+
+// Grows a stream that some primitive has started to `size`, with the "none" value: a stream is
+// empty until the first primitive that carries it, and parallel to the positions from then on.
+template <typename T>
+void pad_stream(Vector<T>& stream, bool started, u32 size, const T& none) {
+  if (started && stream.size() < size) stream.resize(size, none);
+}
+
+// TANGENT, TEXCOORD_1 and COLOR_0 of one primitive (G2; assets.md, "Tangents, a second UV set and
+// vertex colours"). A tangent is a direction in the surface, so a rigid primitive's goes through
+// the node's **linear part** (not the inverse transpose the normal takes) and is renormalized; the
+// handedness `w` says which way the bitangent runs, `cross(N, T) * w`, and a mirroring node (a
+// negative determinant) turns the normal's side of that cross product over, so `w` flips with it.
+// A tangent of no length, or not finite, is stored as none. A colour may be VEC3 or VEC4, float or
+// normalized; the unpacker widens either to floats.
+bool append_extra_streams(Context& ctx, const cgltf_primitive& primitive, u32 base, u32 vertices,
+                          const Mat4& world) {
+  MeshData& out = *ctx.mesh;
+  const u32 end = base + vertices;
+  const cgltf_accessor* tangents = cgltf_find_accessor(&primitive, cgltf_attribute_type_tangent, 0);
+  const cgltf_accessor* uvs1 = cgltf_find_accessor(&primitive, cgltf_attribute_type_texcoord, 1);
+  const cgltf_accessor* colors = cgltf_find_accessor(&primitive, cgltf_attribute_type_color, 0);
+  if (tangents != nullptr) {
+    if (tangents->count != vertices)
+      return fail(ctx.error, "glTF: TANGENT and POSITION have different counts");
+    if (!read_attribute(ctx, *tangents, 4, "TANGENT")) return false;
+    pad_stream(out.tangents, true, base, k_no_tangent);
+    ctx.saw_tangents = true;
+    const Vec3 c0 = world.c[0].xyz();
+    const Vec3 c1 = world.c[1].xyz();
+    const Vec3 c2 = world.c[2].xyz();
+    const f32 mirror = dot(cross(c0, c1), c2) < 0.0f ? -1.0f : 1.0f;
+    out.tangents.reserve(end);
+    for (u32 i = 0; i < vertices; ++i) {
+      const f32* t = ctx.floats.data() + static_cast<usize>(i) * 4;
+      const Vec3 moved = transform_direction(world, Vec3{t[0], t[1], t[2]});
+      const f32 length2 = length_squared(moved);
+      if (!(length2 > 1.0e-20f) || !std::isfinite(length2) || !std::isfinite(t[3])) {
+        out.tangents.push_back(k_no_tangent);
+        continue;
+      }
+      const Vec3 unit = moved * (1.0f / std::sqrt(length2));
+      out.tangents.push_back(Vec4{unit.x, unit.y, unit.z, (t[3] < 0.0f ? -1.0f : 1.0f) * mirror});
+    }
+  } else {
+    pad_stream(out.tangents, ctx.saw_tangents, end, k_no_tangent);
+  }
+  if (uvs1 != nullptr) {
+    if (uvs1->count != vertices)
+      return fail(ctx.error, "glTF: TEXCOORD_1 and POSITION have different counts");
+    if (!read_attribute(ctx, *uvs1, 2, "TEXCOORD_1")) return false;
+    pad_stream(out.uvs1, true, base, Vec2{0.0f, 0.0f});
+    ctx.saw_uvs1 = true;
+    out.uvs1.reserve(end);
+    for (u32 i = 0; i < vertices; ++i)
+      out.uvs1.push_back(Vec2{ctx.floats[i * 2], ctx.floats[i * 2 + 1]});
+  } else {
+    pad_stream(out.uvs1, ctx.saw_uvs1, end, Vec2{0.0f, 0.0f});
+  }
+  if (colors != nullptr) {
+    if (colors->count != vertices)
+      return fail(ctx.error, "glTF: COLOR_0 and POSITION have different counts");
+    const u32 components = static_cast<u32>(cgltf_num_components(colors->type));
+    if (components != 3 && components != 4)
+      return fail(ctx.error, "glTF: COLOR_0 is neither a VEC3 nor a VEC4");
+    if (!read_attribute(ctx, *colors, components, "COLOR_0")) return false;
+    pad_stream(out.colors, true, base, k_white);
+    ctx.saw_colors = true;
+    out.colors.reserve(end);
+    for (u32 i = 0; i < vertices; ++i) {
+      const f32* c = ctx.floats.data() + static_cast<usize>(i) * components;
+      out.colors.push_back(Vec4{c[0], c[1], c[2], components == 4 ? c[3] : 1.0f});
+    }
+  } else {
+    pad_stream(out.colors, ctx.saw_colors, end, k_white);
+  }
+  return true;
+}
+
 bool append_primitive(Context& ctx, const cgltf_primitive& primitive, const Mat4& world,
                       const Mat4& normal_transform, i32 skin_index, u32 morph_base) {
   MeshData& out = *ctx.mesh;
@@ -593,6 +749,8 @@ bool append_primitive(Context& ctx, const cgltf_primitive& primitive, const Mat4
     for (u32 i = 0; i < vertices; ++i)
       out.uvs[base + i] = Vec2{ctx.floats[i * 2], ctx.floats[i * 2 + 1]};
   }
+
+  if (!append_extra_streams(ctx, primitive, base, vertices, world)) return false;
 
   if (!append_vertex_ids(ctx, primitive, base, vertices)) return false;
 
@@ -712,9 +870,79 @@ void collect_perch(Context& ctx, const cgltf_node& node, const Mat4& world) {
   ctx.mesh->perches.push_back(perch);
 }
 
+// A name into a fixed record's field, cut and NUL-padded.
+template <usize N>
+void copy_name(const char* name, char (&out)[N]) noexcept {
+  std::memset(out, 0, N);
+  if (name == nullptr) return;
+  usize n = std::strlen(name);
+  if (n > N - 1) n = N - 1;
+  std::memcpy(out, name, n);
+}
+
+// **A light or a camera a node carries** (G2; assets.md, "Lights and cameras"), at the node's world
+// placement in the flattened mesh's space. glTF points a light and looks a camera down the node's
+// -z with +y up; a node's scale says nothing about either, so the direction is normalized and the
+// camera's rotation is the scale-free part of the matrix (`node_trs`'s rule: a mirror goes on x).
+void collect_light_and_camera(Context& ctx, const cgltf_node& node, const Mat4& world) {
+  const Vec3 c0 = world.c[0].xyz();
+  const Vec3 c1 = world.c[1].xyz();
+  const Vec3 c2 = world.c[2].xyz();
+  const f32 z_length = std::sqrt(dot(c2, c2));
+  if (node.light != nullptr && z_length > 0.0f && std::isfinite(z_length)) {
+    const cgltf_light& light = *node.light;
+    geometry::ClusterFileLight record;
+    record.position = world.c[3].xyz();
+    record.direction = c2 * (-1.0f / z_length);
+    record.type = light.type == cgltf_light_type_directional
+                      ? geometry::k_light_directional
+                      : (light.type == cgltf_light_type_spot ? geometry::k_light_spot
+                                                             : geometry::k_light_point);
+    record.color = Vec3{light.color[0], light.color[1], light.color[2]};
+    record.intensity = light.intensity;
+    record.range = light.range;
+    if (record.type == geometry::k_light_spot) {
+      record.inner_cone = light.spot_inner_cone_angle;
+      record.outer_cone = light.spot_outer_cone_angle;
+    }
+    copy_name(light.name, record.name);
+    ctx.mesh->lights.push_back(record);
+  }
+  if (node.camera != nullptr) {
+    const f32 lx = std::sqrt(dot(c0, c0));
+    const f32 ly = std::sqrt(dot(c1, c1));
+    if (!(lx > 0.0f) || !(ly > 0.0f) || !(z_length > 0.0f)) return;  // no direction to look in
+    const f32 sx = dot(cross(c0, c1), c2) < 0.0f ? -lx : lx;
+    const Quat rotation =
+        quat_from_mat3(Mat3(c0 * (1.0f / sx), c1 * (1.0f / ly), c2 * (1.0f / z_length)));
+    const cgltf_camera& camera = *node.camera;
+    geometry::ClusterFileCamera record;
+    record.position = world.c[3].xyz();
+    record.rotation = Vec4{rotation.x, rotation.y, rotation.z, rotation.w};
+    if (camera.type == cgltf_camera_type_orthographic) {
+      record.type = geometry::k_camera_orthographic;
+      record.yfov_or_xmag = camera.data.orthographic.xmag;
+      record.aspect_or_ymag = camera.data.orthographic.ymag;
+      record.znear = camera.data.orthographic.znear;
+      record.zfar = camera.data.orthographic.zfar;
+    } else {
+      record.type = geometry::k_camera_perspective;
+      record.yfov_or_xmag = camera.data.perspective.yfov;
+      record.aspect_or_ymag = camera.data.perspective.has_aspect_ratio != 0
+                                  ? camera.data.perspective.aspect_ratio
+                                  : 0.0f;
+      record.znear = camera.data.perspective.znear;
+      record.zfar = camera.data.perspective.has_zfar != 0 ? camera.data.perspective.zfar : 0.0f;
+    }
+    copy_name(camera.name, record.name);
+    ctx.mesh->cameras.push_back(record);
+  }
+}
+
 bool append_node(Context& ctx, const cgltf_node& node, const Mat4& parent) {
   const Mat4 world = parent * local_transform(node);
   collect_perch(ctx, node, world);
+  collect_light_and_camera(ctx, node, world);
   if (node.mesh != nullptr) {
     i32 skin_index = -1;
     if (node.skin != nullptr && !ctx.mesh->skins.empty())
@@ -784,6 +1012,72 @@ bool collect_images(const cgltf_data& data, MeshData& out, std::string* error) {
   return true;
 }
 
+// What a material says beyond the metallic-roughness core and the foliage share (G2; assets.md,
+// "Material extensions"), and the slots it reads through the second UV set.
+//
+// - `KHR_materials_emissive_strength` multiplies the emissive factor, which the container stores
+//   as floats and the resolve draws unclamped: an HDR emitter draws at its strength.
+// - `KHR_materials_ior`, `_specular`, `_clearcoat`, `_transmission`, `_volume` and `_sheen` are
+// read
+//   into the record and **not drawn**: the BSDF (brdf.slang) has one dielectric F0 of 0.04 (an IOR
+//   of 1.5, which is the extension's own default), no coat lobe, no sheen lobe, and a visibility
+//   buffer with no sorted transmission or volume. Mapping any of them onto what is there would
+//   change the picture in a way the source did not ask for (a clearcoat folded into roughness makes
+//   lacquer matte), so each is kept for the BSDF row that adds its term, and the import says which
+//   a file uses.
+void read_material_extensions(const cgltf_data& data, const cgltf_material& source,
+                              Material& entry) {
+  if (source.has_emissive_strength != 0) {
+    entry.extensions |= k_ext_emissive_strength;
+    entry.emissive_strength = source.emissive_strength.emissive_strength;
+    entry.emissive = entry.emissive * entry.emissive_strength;
+  }
+  if (source.has_ior != 0) {
+    entry.extensions |= k_ext_ior;
+    entry.ior = source.ior.ior;
+  }
+  if (source.has_specular != 0) {
+    entry.extensions |= k_ext_specular;
+    entry.specular = source.specular.specular_factor;
+  }
+  if (source.has_clearcoat != 0) {
+    entry.extensions |= k_ext_clearcoat;
+    entry.clearcoat = source.clearcoat.clearcoat_factor;
+    entry.clearcoat_roughness = source.clearcoat.clearcoat_roughness_factor;
+  }
+  if (source.has_transmission != 0) {
+    entry.extensions |= k_ext_transmission;
+    entry.transmission_factor = source.transmission.transmission_factor;
+  }
+  if (source.has_volume != 0) {
+    entry.extensions |= k_ext_volume;
+    entry.thickness = source.volume.thickness_factor;
+  }
+  if (source.has_sheen != 0) entry.extensions |= k_ext_sheen;
+  if (source.has_diffuse_transmission != 0) entry.extensions |= k_ext_diffuse_transmission;
+
+  // The slots that read TEXCOORD_1 (G2): the image goes to `uv1_images[slot]` and the sampling to
+  // the slot as for the first set; the slot's own image stays -1 (image_slot asks for set 0).
+  const auto second = [&](u32 slot, const cgltf_texture_view& view) {
+    const i32 image = image_slot(data, view, 1);
+    if (image < 0) return;
+    entry.uv1_images[slot] = image;
+    entry.sampling[slot] = slot_sampling(view);
+  };
+  if (source.has_pbr_metallic_roughness != 0) {
+    second(geometry::k_slot_base_color, source.pbr_metallic_roughness.base_color_texture);
+    second(geometry::k_slot_metallic_roughness,
+           source.pbr_metallic_roughness.metallic_roughness_texture);
+  }
+  if (image_slot(data, source.normal_texture, 1) >= 0)
+    entry.normal_scale = source.normal_texture.scale;
+  second(geometry::k_slot_normal, source.normal_texture);
+  if (image_slot(data, source.occlusion_texture, 1) >= 0)
+    entry.occlusion_strength = source.occlusion_texture.scale;
+  second(geometry::k_slot_occlusion, source.occlusion_texture);
+  second(geometry::k_slot_emissive, source.emissive_texture);
+}
+
 bool collect_materials(const cgltf_data& data, MeshData& out, std::string* error) {
   if (data.materials_count > std::numeric_limits<u32>::max())
     return fail(error, "glTF: too many materials");
@@ -842,7 +1136,8 @@ bool collect_materials(const cgltf_data& data, MeshData& out, std::string* error
     // textured leaf splits the same way) and the transmittance is stated as its share of what is
     // left, t / (1 - t), at most 1: above t = 1/2 the engine transmits what it reflects, less
     // than glTF's t, and never more than one in all. Its colour factor and textures are not read:
-    // one colour, the base colour's, serves both sides (renderer.md, "Foliage lit from both sides").
+    // one colour, the base colour's, serves both sides (renderer.md, "Foliage lit from both
+    // sides").
     if (entry.double_sided && source.has_diffuse_transmission != 0) {
       const f32 t = source.diffuse_transmission.diffuse_transmission_factor;
       if (t > 0.0f) {
@@ -852,6 +1147,7 @@ bool collect_materials(const cgltf_data& data, MeshData& out, std::string* error
         entry.transmission = t >= 0.5f ? 1.0f : t / (1.0f - t);
       }
     }
+    read_material_extensions(data, source, entry);
     out.materials.push_back(std::move(entry));
   }
   return true;
@@ -1148,6 +1444,66 @@ void log_import(const cgltf_data& data, std::string_view name) {
   }
 }
 
+// Whether a parsed document states anything the G2 reading added (the source hash's tag says so).
+bool states_g2_reading(const cgltf_data& data) noexcept {
+  if (data.lights_count != 0 || data.cameras_count != 0) return true;
+  for (cgltf_size m = 0; m < data.meshes_count; ++m) {
+    const cgltf_mesh& mesh = data.meshes[m];
+    for (cgltf_size p = 0; p < mesh.primitives_count; ++p) {
+      const cgltf_primitive& primitive = mesh.primitives[p];
+      for (cgltf_size a = 0; a < primitive.attributes_count; ++a) {
+        const cgltf_attribute& attribute = primitive.attributes[a];
+        if (attribute.type == cgltf_attribute_type_tangent ||
+            attribute.type == cgltf_attribute_type_color ||
+            (attribute.type == cgltf_attribute_type_texcoord && attribute.index == 1) ||
+            (attribute.type == cgltf_attribute_type_joints && attribute.index == 1)) {
+          return true;
+        }
+      }
+    }
+  }
+  for (cgltf_size i = 0; i < data.materials_count; ++i) {
+    const cgltf_material& m = data.materials[i];
+    if (m.has_emissive_strength != 0) return true;
+    const cgltf_texture_view* views[] = {&m.pbr_metallic_roughness.base_color_texture,
+                                         &m.pbr_metallic_roughness.metallic_roughness_texture,
+                                         &m.normal_texture, &m.occlusion_texture,
+                                         &m.emissive_texture};
+    for (const cgltf_texture_view* view : views) {
+      if (view->texture != nullptr && uv_set_of(*view) == 1) return true;
+    }
+  }
+  return false;
+}
+
+// What an import read and does not draw (G2), one line a file: the material extensions the BSDF
+// has no term for, and the vertices whose influences past four were dropped.
+void log_g2_import(const MeshData& mesh, std::string_view name) {
+  u32 not_drawn = 0;
+  u32 kinds = 0;
+  for (const Material& m : mesh.materials) {
+    if ((m.extensions & k_ext_not_drawn) != 0) ++not_drawn;
+    kinds |= m.extensions & k_ext_not_drawn;
+  }
+  if (not_drawn != 0) {
+    ENGINE_LOG_INFO(log_assets, "glTF material extensions read and not drawn",
+                    log::field("file", name), log::field("materials", not_drawn),
+                    log::field("ior", (kinds & k_ext_ior) != 0),
+                    log::field("specular", (kinds & k_ext_specular) != 0),
+                    log::field("clearcoat", (kinds & k_ext_clearcoat) != 0),
+                    log::field("transmission", (kinds & k_ext_transmission) != 0),
+                    log::field("volume", (kinds & k_ext_volume) != 0),
+                    log::field("sheen", (kinds & k_ext_sheen) != 0));
+  }
+  if (mesh.influences_over_four != 0) {
+    ENGINE_LOG_INFO(log_assets, "glTF influences past four dropped, the heaviest four kept",
+                    log::field("file", name), log::field("vertices", mesh.influences_over_four),
+                    log::field("dropped_max", static_cast<f64>(mesh.influence_dropped_max)),
+                    log::field("dropped_mean", mesh.influence_dropped_sum /
+                                                   static_cast<f64>(mesh.influences_over_four)));
+  }
+}
+
 bool load_bytes(std::span<const u8> bytes, std::string_view base_dir, std::string_view name,
                 MeshData& out, std::string* error);
 
@@ -1178,6 +1534,20 @@ bool load_bytes(std::span<const u8> bytes, std::string_view base_dir, std::strin
   // base_dir stands in for the file itself; an empty base_dir leaves URIs relative to the
   // working directory, which is what a caller with no directory can offer.
   const std::string root = base_dir.empty() ? std::string("gltf") : io::join_path(base_dir, "gltf");
+  // A Draco-compressed primitive's accessors have no buffer view, which the unpacker would read as
+  // zeros: refused by name, before anything else can call it some other fault, rather than imported
+  // as a heap of vertices at the origin. The tree vendors no Draco decoder (G2).
+  for (cgltf_size m = 0; m < document.data->meshes_count; ++m) {
+    const cgltf_mesh& mesh = document.data->meshes[m];
+    for (cgltf_size p = 0; p < mesh.primitives_count; ++p) {
+      if (mesh.primitives[p].has_draco_mesh_compression != 0) {
+        return fail(error,
+                    "glTF: a primitive is Draco-compressed (KHR_draco_mesh_compression), which "
+                    "this importer does not decode; export it uncompressed");
+      }
+    }
+  }
+
   result = cgltf_load_buffers(&options, document.data, root.c_str());
   if (result != cgltf_result_success)
     return fail(error, std::string("glTF: reading buffers failed (") + result_text(result) + ")");
@@ -1186,12 +1556,27 @@ bool load_bytes(std::span<const u8> bytes, std::string_view base_dir, std::strin
   if (result != cgltf_result_success)
     return fail(error,
                 std::string("glTF: the document is not valid (") + result_text(result) + ")");
+  // A meshopt-compressed buffer view whose own buffer holds nothing (the extension's "fallback"
+  // placeholder) has only compressed bytes, which cgltf hands back undecoded: refused by name
+  // rather than read as geometry. One with a real fallback buffer reads from it. The tree vendors
+  // no decoder (G2).
+  for (cgltf_size i = 0; i < document.data->buffer_views_count; ++i) {
+    const cgltf_buffer_view& view = document.data->buffer_views[i];
+    if (view.has_meshopt_compression != 0 &&
+        (view.buffer == nullptr || view.buffer->data == nullptr)) {
+      return fail(error,
+                  "glTF: buffer view " + std::to_string(i) +
+                      " is meshopt-compressed (EXT_meshopt_compression), which this importer does "
+                      "not decode; export it uncompressed");
+    }
+  }
 
   if (!build_mesh(*document.data, out, error)) {
     out = MeshData{};
     return false;
   }
   log_import(*document.data, name);
+  log_g2_import(out, name);
   return true;
 }
 
@@ -1260,6 +1645,13 @@ bool source_mesh_hash(std::string_view path, u64& out, std::string* error) {
       break;
     }
   }
+  // And for a file that states anything G2 reads (a tangent, a second UV set, a colour, a second
+  // influence set, an emissive strength, a texture on the second set, a light or a camera): its
+  // container now carries sections 49 to 52, its weld keys on the new streams and an emissive
+  // strength moves its material record, so an entry built before is rebuilt; every file stating
+  // none of it keeps its key, and the cache version does not move.
+  if (states_g2_reading(*document.data))
+    hash = hash_combine(hash, u64{0x4732494d504f5231ull});  // "G2IMPOR1"
   out = hash;
   return true;
 }
@@ -1269,6 +1661,13 @@ geometry::AttributeSource attribute_source(const MeshData& mesh) noexcept {
   if (!mesh.normals.empty())
     source.normals = std::span<const Vec3>(mesh.normals.data(), mesh.normals.size());
   if (!mesh.uvs.empty()) source.uvs = std::span<const Vec2>(mesh.uvs.data(), mesh.uvs.size());
+  // G2's streams, each only when parallel to the positions.
+  if (mesh.tangents.size() == mesh.positions.size() && !mesh.tangents.empty())
+    source.tangents = std::span<const Vec4>(mesh.tangents.data(), mesh.tangents.size());
+  if (mesh.uvs1.size() == mesh.positions.size() && !mesh.uvs1.empty())
+    source.uvs1 = std::span<const Vec2>(mesh.uvs1.data(), mesh.uvs1.size());
+  if (mesh.colors.size() == mesh.positions.size() && !mesh.colors.empty())
+    source.colors = std::span<const Vec4>(mesh.colors.data(), mesh.colors.size());
   if (!mesh.morph.empty())
     source.morph =
         std::span<const geometry::MorphChannelSource>(mesh.morph.data(), mesh.morph.size());
@@ -1368,9 +1767,48 @@ u32 weld_vertices(MeshData& mesh) {
   // a stream only when it is parallel to the positions (skin, ids) or non-empty (morph), so passing
   // an absent one costs nothing, while leaving a present one out would leave it in the old
   // numbering — which for the ids would be the whole defect they exist to prevent.
-  return geometry::weld_vertices(mesh.positions, mesh.normals, mesh.uvs,
-                                 std::span<u32>(mesh.indices.data(), mesh.indices.size()),
-                                 &mesh.skin_bindings, &mesh.morph, &mesh.vertex_ids);
+  return geometry::weld_vertices(
+      mesh.positions, mesh.normals, mesh.uvs,
+      std::span<u32>(mesh.indices.data(), mesh.indices.size()), &mesh.skin_bindings, &mesh.morph,
+      &mesh.vertex_ids, geometry::WeldExtraStreams{&mesh.tangents, &mesh.uvs1, &mesh.colors});
+}
+
+geometry::ClusterFileMaterial cluster_file_material(const Material& source) noexcept {
+  geometry::ClusterFileMaterial material;
+  material.base_color = source.base_color;
+  material.metallic = source.metallic;
+  material.roughness = source.roughness;
+  material.base_color_image = source.base_color_image;
+  material.normal_image = source.normal_image;
+  material.metallic_roughness_image =
+      geometry::encode_optional_image(source.metallic_roughness_image);
+  material.occlusion_image = geometry::encode_optional_image(source.occlusion_image);
+  material.emissive_image = geometry::encode_optional_image(source.emissive_image);
+  material.emissive = source.emissive;
+  material.normal_scale = source.normal_scale;
+  material.alpha = geometry::alpha_word_with_foliage(
+      geometry::encode_alpha_word(source.alpha_mode, source.double_sided, source.alpha_cutoff),
+      source.transmission, source.normal_spread);  // R164: zero for every material but foliage
+  return material;
+}
+
+void write_import_sections(const MeshData& mesh, geometry::ClusterFileData& data) {
+  bool any_uv1 = false;
+  for (const Material& m : mesh.materials) {
+    for (const i32 image : m.uv1_images)
+      any_uv1 = any_uv1 || image >= 0;
+  }
+  data.material_uv1.clear();
+  if (any_uv1) {
+    data.material_uv1.resize(data.materials.size(), geometry::ClusterFileUv1Slots{});
+    for (u32 i = 0; i < mesh.materials.size() && i < data.materials.size(); ++i) {
+      for (u32 s = 0; s < geometry::k_material_slots; ++s)
+        data.material_uv1[i].images[s] =
+            geometry::encode_optional_image(mesh.materials[i].uv1_images[s]);
+    }
+  }
+  data.lights = mesh.lights;
+  data.cameras = mesh.cameras;
 }
 
 }  // namespace engine::assets

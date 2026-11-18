@@ -77,6 +77,36 @@ struct VertexAttributes {
   u32 uv_half2 = 0;
 };
 
+// **What an imported asset may say about a vertex beyond its normal and first UV** (roadmap G2;
+// assets.md, "Tangents, a second UV set and vertex colours"), 12 bytes, cluster-ordered like
+// `attributes` and present only on a mesh whose source carried any of the three: the author's
+// tangent frame (`TANGENT`), a second UV set (`TEXCOORD_1`, which an occlusion or light map names)
+// and a vertex colour (`COLOR_0`, which glTF multiplies into the base colour). A mesh with none of
+// them has no such stream at all, so every container written before it existed keeps its bytes.
+//
+// `tangent` is `encode_tangent`: the tangent's direction octahedrally in two snorm16 like a normal,
+// with the bitangent's sign (glTF's `w`) in the lowest bit of the first, and **zero for a vertex
+// the source gave no tangent**, which a reader takes as "derive the frame from the triangle"
+// exactly as it always did. `uv1` is two half floats, zero where the source had no second set.
+// `color` is RGBA in four unorm8, R in the low byte, linear as glTF states it;
+// `k_vertex_color_white` where the source had none, which multiplies nothing.
+struct VertexExtra {
+  u32 tangent = 0;
+  u32 uv1 = 0;
+  u32 color = 0xffffffffu;
+};
+static_assert(sizeof(VertexExtra) == 12, "VertexExtra is a 12-byte per-vertex record");
+inline constexpr u32 k_vertex_color_white = 0xffffffffu;
+
+// A tangent (unit xyz, w = +1 or -1, glTF's handedness) as `VertexExtra::tangent`, and back. A
+// tangent of no length encodes as zero, the statement "no tangent"; `decode_tangent` of zero gives
+// w = 0, which says the same.
+u32 encode_tangent(Vec4 tangent) noexcept;
+Vec4 decode_tangent(u32 packed) noexcept;
+// Linear RGBA in [0, 1] as four unorm8, round to nearest, clamped.
+u32 encode_color_rgba8(Vec4 color) noexcept;
+Vec4 decode_color_rgba8(u32 packed) noexcept;
+
 // GPU-mirrored per-vertex skin binding, 8 bytes, cluster-ordered like `vertices` and
 // `attributes` (docs/plan/04-renderer.md §4.3, docs/plan/05-simulation.md §5.11): four joint
 // indices and four weights, the weights summing to **exactly 255**. Keep in step with the
@@ -245,6 +275,21 @@ struct AttributeSource {
   // two parts share and the parts meet exactly at every level. Empty locks nothing, and costs
   // nothing. Only `build_cluster_lod` reads it.
   std::span<const u8> locked;
+  // Optional imported streams over the same source vertices (G2; `VertexExtra`): the author's
+  // tangents (xyz, w the handedness; w = 0 for a vertex with none), a second UV set and a linear
+  // RGBA colour. A stream is used only when it is parallel to the positions; when none of the
+  // three is, the built mesh has no `extra` stream, which is what keeps every other mesh's bytes.
+  std::span<const Vec4> tangents;
+  std::span<const Vec2> uvs1;
+  std::span<const Vec4> colors;
+};
+
+// The imported streams `weld_vertices` keys on and compacts beside the others (G2): each takes part
+// when it is parallel to the positions, and is left alone otherwise.
+struct WeldExtraStreams {
+  Vector<Vec4>* tangents = nullptr;
+  Vector<Vec2>* uvs1 = nullptr;
+  Vector<Vec4>* colors = nullptr;
 };
 
 u32 encode_normal_oct(Vec3 normal) noexcept;
@@ -285,9 +330,14 @@ void compute_vertex_normals(std::span<const Vec3> positions, std::span<const u32
 // channel's `vertices` array is rewritten to the new indices, re-sorted, and deduplicated (two
 // vertices that merged necessarily carried identical deltas, so keeping one is exact), and an
 // entry for a vertex the weld dropped is removed.
+//
+// `extra`, when given, adds an asset's own tangents, second UV set and colours (G2) to the key and
+// compacts them the same way: two duplicates whose tangents differ (a mirrored UV seam's two sides)
+// stay two vertices.
 u32 weld_vertices(Vector<Vec3>& positions, Vector<Vec3>& normals, Vector<Vec2>& uvs,
                   std::span<u32> indices, Vector<SkinBinding>* skin = nullptr,
-                  Vector<MorphChannelSource>* morph = nullptr, Vector<u32>* vertex_ids = nullptr);
+                  Vector<MorphChannelSource>* morph = nullptr, Vector<u32>* vertex_ids = nullptr,
+                  const WeldExtraStreams& extra = WeldExtraStreams{});
 
 // The interning above, exposed because the weld is not the only place that wants to ask "do these
 // two vertices carry the same morph deltas?". Fills `out` with one id per source vertex — 0 for a
@@ -345,6 +395,10 @@ struct ClusterMesh {
   // side only: nothing uploads it (see "canonical vertex identity" above).
   Vector<u32> vertex_ids;
   VertexIdSource vertex_id_source = VertexIdSource::none;
+  // An imported asset's tangents, second UV set and colours (G2; `VertexExtra`), parallel to
+  // `vertices`, or empty when the source carried none of them. It travels `vertex_source` like the
+  // ids, so every copy of a source vertex on every level carries the same record.
+  Vector<VertexExtra> extra;
   Vector<u32> triangles;  // per triangle: local i0 | i1 << 8 | i2 << 16
   // Positions on the mesh-wide 16-bit grid: three u16 per vertex, cluster-ordered like
   // `vertices`, padded with one zero to an even count so a shader may read the last triple as

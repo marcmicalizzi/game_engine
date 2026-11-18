@@ -318,6 +318,26 @@ u64 encode(const ClusterFileData& data, std::string& out) {
     add_section(payloads, ClusterSection::FarFormIndices, static_cast<u32>(sizeof(u32)),
                 f.indices.size(), f.indices.data());
   }
+  // What an imported glTF says beyond the metallic-roughness core (G2), each only when the source
+  // said it: the per-vertex tangent, second-UV and colour records, the second-UV slots, the lights
+  // and the cameras. A container without any of them is the bytes it always was.
+  if (!mesh.extra.empty()) {
+    add_section(payloads, ClusterSection::VertexExtra, static_cast<u32>(sizeof(VertexExtra)),
+                mesh.extra.size(), mesh.extra.data());
+  }
+  if (!data.material_uv1.empty()) {
+    add_section(payloads, ClusterSection::MaterialUv1,
+                static_cast<u32>(sizeof(ClusterFileUv1Slots)), data.material_uv1.size(),
+                data.material_uv1.data());
+  }
+  if (!data.lights.empty()) {
+    add_section(payloads, ClusterSection::Lights, static_cast<u32>(sizeof(ClusterFileLight)),
+                data.lights.size(), data.lights.data());
+  }
+  if (!data.cameras.empty()) {
+    add_section(payloads, ClusterSection::Cameras, static_cast<u32>(sizeof(ClusterFileCamera)),
+                data.cameras.size(), data.cameras.data());
+  }
 
   u64 offset = k_header_bytes + k_record_bytes * payloads.size();
   for (Payload& payload : payloads) {
@@ -504,6 +524,10 @@ const char* cluster_section_name(u32 kind) noexcept {
     case ClusterSection::FarFormParts: return "far_form_parts";
     case ClusterSection::FarFormVertices: return "far_form_vertices";
     case ClusterSection::FarFormIndices: return "far_form_indices";
+    case ClusterSection::VertexExtra: return "vertex_extra";
+    case ClusterSection::MaterialUv1: return "material_uv1";
+    case ClusterSection::Lights: return "lights";
+    case ClusterSection::Cameras: return "cameras";
   }
   return "unknown";
 }
@@ -771,6 +795,31 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
                     "is not unit, or a point that is not finite");
       }
     }
+  }
+  // An imported glTF's extras (G2): fixed records, each section optional.
+  if (const ClusterFileSection* extra = found[static_cast<u32>(ClusterSection::VertexExtra)];
+      extra != nullptr && extra->element_count != 0) {
+    if (extra->element_size != sizeof(VertexExtra))
+      return fail(error, "cluster file section vertex_extra is not 12-byte records");
+    copy_section(bytes, *extra, result.mesh.mesh.extra);
+  }
+  if (const ClusterFileSection* uv1 = found[static_cast<u32>(ClusterSection::MaterialUv1)];
+      uv1 != nullptr && uv1->element_count != 0) {
+    if (uv1->element_size != sizeof(ClusterFileUv1Slots))
+      return fail(error, "cluster file section material_uv1 is not 24-byte records");
+    copy_section(bytes, *uv1, result.material_uv1);
+  }
+  if (const ClusterFileSection* lights = found[static_cast<u32>(ClusterSection::Lights)];
+      lights != nullptr && lights->element_count != 0) {
+    if (lights->element_size != sizeof(ClusterFileLight))
+      return fail(error, "cluster file section lights is not 80-byte records");
+    copy_section(bytes, *lights, result.lights);
+  }
+  if (const ClusterFileSection* cameras = found[static_cast<u32>(ClusterSection::Cameras)];
+      cameras != nullptr && cameras->element_count != 0) {
+    if (cameras->element_size != sizeof(ClusterFileCamera))
+      return fail(error, "cluster file section cameras is not 80-byte records");
+    copy_section(bytes, *cameras, result.cameras);
   }
   // The far form (G198): five sections or none; a file without them has none.
   if (const ClusterFileSection* far = found[static_cast<u32>(ClusterSection::FarForm)];
@@ -1117,6 +1166,16 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
     return fail(error, "cluster file has " + std::to_string(mesh.vertex_ids.size()) +
                            " vertex ids for " + std::to_string(mesh.vertices.size()) + " vertices");
   }
+  if (!mesh.extra.empty() && mesh.extra.size() != mesh.vertices.size()) {
+    return fail(error, "cluster file has " + std::to_string(mesh.extra.size()) +
+                           " tangent, second UV and colour records for " +
+                           std::to_string(mesh.vertices.size()) + " vertices");
+  }
+  if (!result.material_uv1.empty() && result.material_uv1.size() != result.materials.size()) {
+    return fail(error, "cluster file has " + std::to_string(result.material_uv1.size()) +
+                           " second-UV slot records for " +
+                           std::to_string(result.materials.size()) + " materials");
+  }
   u64 level_total = 0;
   for (const u32 count : result.mesh.level_cluster_counts)
     level_total += count;
@@ -1268,6 +1327,12 @@ constexpr ClusterSection k_resident_kinds[] = {
     ClusterSection::FarFormParts,
     ClusterSection::FarFormVertices,
     ClusterSection::FarFormIndices,
+    // 24 bytes a material, 80 a light or a camera, and only in an imported glTF that has them (G2).
+    // Section 49, the per-vertex tangent, second-UV and colour records, is in neither list: no
+    // streamed page uploads it yet, so a streamed read leaves it out whole.
+    ClusterSection::MaterialUv1,
+    ClusterSection::Lights,
+    ClusterSection::Cameras,
 };
 
 // The per-page streams, which a resident read leaves on disk. They are still *listed*, with zero
