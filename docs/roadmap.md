@@ -924,7 +924,7 @@ The engine as a server, its clients, and what agents and the human director work
 | A20 | Accept ADR-0039 | blocked (the owner's review) | A18 | S | design | [ADR-0039](adr/0039-leases-and-proposals-beside-the-document.md) |
 | A21 | World mips: semantic, visual, design density | open | A8, D32 | L | research | [06 §6.7](plan/06-agent-tooling.md#67-edit-context-and-world-mips) |
 | A22 | Edit context: cell, overlap ring, token budget | open | A18, A21 | L | design | [06 §6.7](plan/06-agent-tooling.md#67-edit-context-and-world-mips) |
-| A23 | Task ledger and review items | in progress (2026-11-18: v0 of `task.*` and `review.*` over `ledger.json`) | | M | design | [06 §6.8](plan/06-agent-tooling.md#68-long-running-work) |
+| A23 | Task ledger and review items | done (2026-11-18: 299ce8b0 and the page and ADR-0072 after it; v0, `task.*` and `review.*` over `ledger.json` under a lock between processes, a person's item closed only under a role marked human. Not done: MCP tools, an item that blocks a promotion, archiving) | | M | design | [06 §6.8](plan/06-agent-tooling.md#68-long-running-work) |
 | A24 | Editor client v0 with a review queue | open (2026-10-11: the editor is one window, the web shell beside the native viewport, both clients of one in-process host, A37; the review queue and the proposal views are what is left) | A2, A15, A23, A34, A37 | L | design | [06 §6.10](plan/06-agent-tooling.md#610-multi-agent-roles-review-and-the-human-director) |
 | A25 | The editor as a complete tool suite | open | A24 | L | design | [06 §6.13](plan/06-agent-tooling.md#613-human-developer-tooling) |
 | A26 | View policies applied to captures and reviews | open | C3, A23 | M | design | [ADR-0033](adr/0033-content-classes-and-view-policies.md) |

@@ -4,14 +4,15 @@
 // protocol.md, "The task ledger and review items"). Internal to the module.
 //
 // `leases.json` and `transactions.json` are read when a session opens and written whole from the
-// host's memory, so two hosts on one document lose each other's writes (batch 68's review,
-// finding T1). The ledger is never held in memory: every call takes `<file>.lock` exclusively,
-// reads the file, changes it and writes it back, and only then lets go. The lock is the operating
-// system's on an open handle (`LockFileEx` on Windows, `flock` elsewhere), so a host that dies
-// holding it leaves nothing behind for anyone to break: the system lets go with the handle.
+// host's memory, so two hosts on one document lose each other's writes (found by a review of the
+// transactions work, roadmap A11). The ledger is never held in memory: every call takes
+// `<file>.lock` exclusively, reads the file, changes it and writes it back, and only then lets go.
+// The lock is the operating system's on an open handle (`LockFileEx` on Windows, `flock`
+// elsewhere), so a host that dies holding it leaves nothing behind for anyone to break: the system
+// lets go with the handle.
 //
-// To be joined with the helper row H (b69-A11-2) writes for `transactions.json` and `leases.json`
-// once both are merged: one function for every side file.
+// To be joined with the helper roadmap A11's mend of the same fault writes for
+// `transactions.json` and `leases.json`, once both are in: one function for every side file.
 
 #include <core/base/types.h>
 

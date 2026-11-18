@@ -82,6 +82,8 @@ The design problem: an agent editing one part of a world needs enough global con
 - Review items are ledger entries created by the invalidation substrate or by review agents.
 - Every accepted proposal records its rationale next to the change so later agents can find *why*.
 
+**Status (2026-11-18): the ledger's v0 is built** (roadmap A23; [protocol](../subsystems/protocol.md#the-task-ledger-and-review-items), [ADR-0072](../adr/0072-the-task-ledger-beside-the-document.md), proposed), as `task.create`, `task.claim`, `task.update`, `task.list`, `review.raise`, `review.close` and `review.list`. Not in `work/tasks/*.json`: one `ledger.json` beside the document, as the leases and transactions are, that every call reads and writes under a lock between processes, so two hosts lose nothing. A task has the goal, acceptance criteria, owner role, status, links (proposals, leases, transactions, checkpoints, records) and review items this section names, plus a claim that lapses by time and a history, and its key `task/<id>` is what a call's attribution names while it works it. A review item carries a kind, an audience, exactly what is to be reviewed with the document's version, and a numeric report, never a picture. One for a person, which is §6.10's classified content review, closes only under a role the roles file marks human, and nobody withdraws it. Not yet: MCP tools, an item that blocks a promotion, the invalidation substrate raising items, and archiving.
+
 ## 6.9 Day-one operations
 
 The minimum set for the first agent loop, all via the protocol and exposed through MCP:
