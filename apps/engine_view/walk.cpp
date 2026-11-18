@@ -244,6 +244,12 @@ struct Walker::Impl {
   DrawnGround drawn;
   WalkStats stats;
   WalkTiming timing;
+  // A game's props (walk.h `set_props`, P45): asked on the tick, handed to the collision when the
+  // count moved.
+  PropsFn props_fn = nullptr;
+  void* props_context = nullptr;
+  u64 props_version = ~u64{0};
+  Vector<WalkProp> props_scratch;
   // A ground query's wall time, into `timing` (walk.h, `WalkTiming`).
   struct Query {
     WalkTiming& into;
@@ -383,7 +389,24 @@ struct Walker::Impl {
     // order, so a replay makes the same ones.
     consumer.prefetch(at, unlimited ? still_ahead(at) : ahead_velocity(at));
     ring.update(observers, ring_tick++, unlimited);
+    // A game's props after the ring (P45; scene_collision.h `update_props`): a prop's body is made
+    // with its tile and let go with it, on this tick and in the props' order.
+    if (props_fn != nullptr) {
+      const u64 version = props_fn(props_context, nullptr);
+      if (version != props_version) {
+        props_version = version;
+        props_scratch.clear();
+        (void)props_fn(props_context, &props_scratch);
+        prop_bodies.clear();
+        for (const WalkProp& p : props_scratch)
+          prop_bodies.push_back(
+              scene_collision::PropBody{p.key, p.mesh, p.origin, p.rotation, p.scale, p.collider});
+        consumer.set_props({prop_bodies.data(), prop_bodies.size()});
+      }
+    }
+    (void)consumer.update_props();
   }
+  Vector<scene_collision::PropBody> prop_bodies;
   // **The builds' lead** (T166; scene_collision.md, "Ahead of a running walker"): the walker's or
   // the flying camera's velocity from its place a tick ago, once a tick. It decides only which
   // tiles are built first, never a body.
@@ -848,6 +871,12 @@ f32 Walker::sprint_scale() const noexcept { return impl_->sprint_scale; }
 void Walker::set_water(DepthFn depth, const void* context) noexcept {
   impl_->depth = depth;
   impl_->depth_context = context;
+}
+
+void Walker::set_props(PropsFn props, void* context) noexcept {
+  impl_->props_fn = props;
+  impl_->props_context = context;
+  impl_->props_version = ~u64{0};
 }
 
 f32 wade_scale(f32 depth) noexcept {

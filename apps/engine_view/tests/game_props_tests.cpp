@@ -600,3 +600,45 @@ TEST_CASE(
   CHECK(loaded == renderer::k_not_loaded);
   CHECK(error.empty());
 }
+
+TEST_CASE("game props: the walker's collision is handed every live prop with its body") {
+  // P45 (apps.md, "Props: the objects a game places"): `walk_props` is what the walker asks on its
+  // tick — a count that moves at every change, and the live props in slot order, each with its
+  // id, scene mesh, place, turn, scale and the body its scene declared.
+  view::GameProps props;
+  props.declare(declared({"crate", "marker"}));
+  renderer::SceneData scene = attached_scene({"crate", "marker"});
+  scene.props[0].collider.shape = renderer::PropShape::box;
+  scene.props[0].collider.half_extents = Vec3{0.5f, 0.5f, 0.5f};
+  scene.props[1].collider.shape = renderer::PropShape::none;
+  REQUIRE(props.attach(scene, nullptr));
+  const u64 attached = view::GameProps::walk_props(&props, nullptr);
+  u32 crate = 0;
+  u32 marker = 0;
+  const f64 at[3] = {1.0, 2.0, 3.0};
+  REQUIRE(props.place(0, at, 0.5f, 2.0f, crate) == Result::Ok);
+  REQUIRE(props.place(1, at, 0.0f, 1.0f, marker) == Result::Ok);
+  Vector<view::WalkProp> out;
+  const u64 placed = view::GameProps::walk_props(&props, &out);
+  CHECK(placed != attached);
+  REQUIRE(out.size() == 2);
+  CHECK(out[0].key == crate);
+  CHECK(out[0].mesh == 10);
+  CHECK(out[0].scale == 2.0f);
+  CHECK(out[0].origin == WorldPos{1.0, 2.0, 3.0});
+  CHECK(out[0].collider.shape == renderer::PropShape::box);
+  CHECK(out[0].collider.half_extents == Vec3{0.5f, 0.5f, 0.5f});
+  CHECK(out[1].key == marker);
+  CHECK(out[1].collider.shape == renderer::PropShape::none);
+  // Asked again with nothing changed: the same count.
+  CHECK(view::GameProps::walk_props(&props, nullptr) == placed);
+  const f64 there[3] = {4.0, 2.0, 3.0};
+  REQUIRE(props.move(crate, there, 0.5f) == Result::Ok);
+  const u64 moved = view::GameProps::walk_props(&props, nullptr);
+  CHECK(moved != placed);
+  REQUIRE(props.remove(marker) == Result::Ok);
+  out.clear();
+  CHECK(view::GameProps::walk_props(&props, &out) != moved);
+  REQUIRE(out.size() == 1);
+  CHECK(out[0].origin == WorldPos{4.0, 2.0, 3.0});
+}

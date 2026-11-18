@@ -120,6 +120,98 @@ first riser ([dwellings](dwellings.md#the-stair)).
 where the proxy keeps them), kinematic bodies (a door's leaf), and the nav agent held to the
 walker's numbers ([Not yet](#not-yet)).
 
+## Props
+
+(2026-11-17, roadmap P45; [apps](apps.md#props-the-objects-a-game-places).) **A prop a game
+places is a static body the walker stops at, while the tile it stands in is held.** A host hands
+its props with `SceneCollision::set_props` — each a `PropBody`: a key (a game prop's id), a scene
+mesh, the origin as a `WorldPos`, a turn, a uniform scale and the body the scene declared
+(`renderer::PropCollider`, from `engine.scene.Prop.collision`) — on the tick they changed, and
+`update_props` runs on every tick after the ring's update and before the step. Three bodies:
+
+- **The mesh** (the default, `collision` absent): the prop's own LOD DAG cut at
+  `walk.collision.mesh_error_m` and welded — the proxy every placement gets, at the prop's scale,
+  through the same cache (`proxy_for`), so two crates share one shape — placed where the renderer
+  stands the instance: the mesh's fit through the turn and scale, its offset added to the origin in
+  f64. The collision's own copy keeps every prop mesh that collides by its mesh, at the streamed
+  entries' headroom over its fit, since no load placed it and a module may scale it
+  ([The collision's own copy](#the-collisions-own-copy)).
+- **A box** (`"collision":{"shape":"Box","half_extents":[x,y,z],"center":[x,y,z]}`): metres in the
+  prop's frame at scale 1, scaled by the module's scale — for a prop whose mesh is thin, open or
+  heavy, where a box is what a walker should meet.
+- **None** (`"shape":"None"`): a marker, a curtain.
+
+**A body a prop, not a piece of its tile's compound.** A module moves one prop at a tick, and a
+compound would be built again whole for it, with every other piece of the tile; a prop's body is
+made, moved and let go alone. **Made with its tile, let go with it**: `update_props` gives a body to
+every prop whose tile is held (`covers` its origin) and has none, and takes it from one whose tile
+went, or which a later `set_props` left out or gave another shape (mesh, scale or collider) — all
+let go first, then made, each in key order — so the bodies, their ids and a walk that touches one
+are the same in a replay (the ring's rule, [Why this shape](#why-this-shape)). A prop handed again
+unchanged keeps its body. **A prop that only moved is moved**, never made again: its body is put at
+the new place (`set_body_transform`), and if the new place is off the held tiles it is let go. The
+broadphase is rebuilt once an update that made or let go a prop's body, for the reason the tiles'
+is (a removed body's node comes back only with a rebuild), and **never for a move**. A box is made
+static and, at its first move, made once again as a kinematic body in `Layer::Kinematic`, the tree
+the physics library keeps for things that move, then only moved; a mesh's proxy has no inside, the
+library moves it only as a static body, so a moving mesh prop is moved where it is, in the static
+tree, whose nodes over its path stay widened until the next tile that comes or goes rebuilds the
+trees. A prop declared `None` is not kept past `set_props`. A cast that meets a prop is
+`HitKind::prop`, its `instance` the prop's key.
+
+### What a moving prop costs
+
+(2026-11-18.) The case `scene_collision: a prop moved every tick costs the walker's tick a move,
+not a rebuild` (`tests/far_forest_tests.cpp`; no device; 0.4 s in `msvc-debug`) stands N
+crates on the held tiles round a standing walker, moves k of them a centimetre a tick, and times
+300 ticks of what the walker's host does at 240 Hz — the ring's update, the props' list built and
+handed when one moved (`walk.cpp`), `update_props`, the character's step — one tick at a time. It
+asserts that a move makes no body and that a tick allocates nothing in steady state. Medians of a
+tick in microseconds, the lowest and the median of three runs, "before" each move a body made again
+and the broadphase rebuilt; `msvc-release` with the machine at 37 to 76 % CPU, `msvc-debug` at 76
+to 100 %, with about twenty-five other rows building and testing, so upper bounds; against the
+tick's 4,167 µs:
+
+| N | k | collider | release before | release after | debug before | debug after |
+|---:|---:|---|---:|---:|---:|---:|
+| 30 | 0 | mesh | 2.4 / 2.4 | 2.4 / 2.4 | 37 / 52 | 50 / 53 |
+| 30 | 1 | mesh | 11.3 / 11.5 | 3.9 / 3.9 | 303 / 340 | 72 / 74 |
+| 30 | 30 | mesh | 40 / 48 | 14 / 14 | 781 / 857 | 291 / 295 |
+| 300 | 0 | mesh | 2.5 / 2.5 | 2.5 / 2.5 | 38 / 57 | 58 / 59 |
+| 300 | 1 | mesh | 74 / 75 | 12.6 / 12.8 | 2,404 / 2,484 | 142 / 145 |
+| 300 | 30 | mesh | 104 / 104 | 21.6 / 22 | 2,792 / 3,184 | 366 / 373 |
+| 300 | 30 | box | 103 / 104 | 18.8 / 19.7 | 2,921 / 2,991 | 318 / 329 |
+| 300 | 30 | none | 15.6 / 15.6 | 4.7 / 4.7 | 172 / 173 | 73 / 77 |
+
+Before, one animal moving among 300 standing props cost the walker's tick 75 µs in release (2.4 ms
+in debug, more than half the tick), nearly all of it the broadphase rebuilt over every body for one
+move — and that over this case's bodies alone: a walk's broadphase also holds every held tile's
+ground and placements, which the rebuild walks too. After, a move is the body put at its place,
+about 0.3 µs a moved prop in release (k = 30 against k = 1), and what a moving prop still costs
+beside it is the hand-over: the host builds and hands the whole list when any prop moved, and
+`update_props` walks it against the held set (the 300-prop row's 9 µs over the 30-prop row's at
+k = 1 in release). That walk is linear in the props that exist; a hand-over of only the props that
+changed is the next step if a game moves many props among thousands. The debug k = 0 rows run no
+new code; their difference is the machine's. No tick allocated, before or after.
+
+**What a game with moving creatures should declare**: a box (`"collision":{"shape":"Box",...}`)
+the size of the creature's body, which after its first move is a kinematic body in the tree the
+physics library keeps for things that move, or `None` for a creature the walker should pass
+through (a bird, a fish, an insect), which costs nothing past the hand-over. Declaring nothing gives
+it the default, its mesh's proxy: right for a prop that stands, and for a creature it is a static
+mesh body moved every tick, which widens the static tree the tiles' ground and placements live in
+until a tile comes or goes, and stops the walker on every limb of the mesh rather than its body.
+
+`scene_collision: a game's prop stops a walker, by its mesh or its box, while its tile is held`
+(`tests/far_forest_tests.cpp`, beside the far forest's case, whose scene is built the same way; no
+device) holds the rest: a crate a metre on a side declared as a prop and placed by nothing stops a
+walker going north at its face less the capsule's radius; handed again unchanged nothing is made;
+moved 3 m the body is moved, nothing made or let go, and it stops the walker there; at twice the
+scale the face is a metre out; a declared box 0.25 m deep stops it at the box's face, and moved
+twice it is made again once, as a kinematic body, and stops the walker at its new place; `None` and
+a removal let it through; the ring moved a kilometre away lets the body go with the tile, and back
+it is made again; a cast names the prop by its key.
+
 ## Holes
 
 (2026-11-07, roadmap W87; [terrain](terrain.md#holes).) A terrain's `holes` take the ground away under them, as the drawn ground's meshes leave their cells out. On the collision lattice a sample is **no sample** — the backend's no-collision height, `physics::k_heightfield_hole`, Jolt's `cNoCollisionValue` — where all four cells round it are holes by the terrain's cell rule, so the triangles that use it have no collision and the opening the walker falls through lies inside the one drawn (at the drawn levels' finer spacing the same rule takes the rim cells closer to the outline). `ground_height` answers none over a cell any of whose corners is no sample. A walker that steps in falls to whatever stands below — a cave passage's floor, a body like any placement's (the passage is a mesh, and its proxy is cut from its DAG, [caves](caves.md)). Only a tile whose window a hole's bounds reach pays: one bounds test a hole a tile, and then a copy of its heights with the hole samples set (`SceneCollision::holes_reach`, `hole_sample`). `tests/terrain_hole_tests.cpp` holds it: a 6 m round hole over flat ground with a floor 4 m below — no ground at the centre or 1.9 m out, the ground 4.5 m out, a ray straight down meeting the floor through the hole and the ground beside it, and a walker 6 m west walking east falls in and stands on the floor at −4 m.

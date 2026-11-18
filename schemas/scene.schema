@@ -1443,11 +1443,34 @@ struct Fire @version(1) {
   seed: u32 = 1
 }
 
+/// How a placed prop stops a walker (roadmap P45; docs/subsystems/apps.md, "Props: the objects a
+/// game places").
+enum PropCollisionShape : u8 {
+  /// Its own mesh: the LOD DAG cut at the walk's error and welded, as a placement's proxy is, so a
+  /// cart's bed and a barrel's curve stop a walker where they are drawn.
+  Mesh = 0
+  /// A box the scene declares (`half_extents` about `center`): a prop whose mesh is thin, open or
+  /// many thousand triangles, where a box is what a walker should meet.
+  Box = 1
+  /// No body: a marker, a curtain, a thing a walker goes through.
+  None = 2
+}
+
+/// A prop's body: absent, its mesh.
+struct PropCollision @version(1) {
+  shape: PropCollisionShape = Mesh
+  /// For `Box`: the half sizes in metres in the prop's frame at scale 1 (x, y, z), each above
+  /// zero; the module's scale scales them.
+  half_extents: vec3 @unit(m)
+  /// For `Box`: the box's centre from the prop's origin, metres, in the prop's frame at scale 1.
+  center: vec3 @unit(m)
+}
+
 /// A mesh a scene loads and places nowhere, so that a game module running over the scene
 /// (engine-view `--game`; docs/subsystems/apps.md "The game contract") can place, move and remove
 /// instances of it between frames without the renderer ever loading a mesh mid-run: the meshes stay,
 /// only instances change. A module names a prop by `name` in its `on_load` (`prop_mesh`).
-struct Prop @version(2) {
+struct Prop @version(3) {
   /// The name a module asks for. Unique among the scene's props.
   name: string
   /// A glTF, GLB or .clusters file, relative to the scene file.
@@ -1458,6 +1481,8 @@ struct Prop @version(2) {
   /// A fire every placed instance of the prop carries (`Fire`, its position from the prop's origin):
   /// a campfire prop lights where a game places it. Absent: none.
   fire: Fire? @since(2)
+  /// How a placed instance stops a walker: absent, by its own mesh (P45).
+  collision: PropCollision? @since(3)
 }
 
 /// A water body's circle: its centre's x and z (its y is not read; the surface is at the body's

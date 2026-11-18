@@ -43,9 +43,11 @@ bool GameProps::attach(const renderer::SceneData& scene, std::string* error) {
       return false;
     }
     props_[p].mesh = scene.props[p].mesh;
+    props_[p].collider = scene.props[p].collider;  // the body it gets (P45)
   }
   attached_ = true;
   tail_stale_ = true;  // the instances name scene meshes, known from here on
+  ++version_;          // the walker's collision asks (walk.h `PropsFn`, P45)
   return true;
 }
 
@@ -104,6 +106,7 @@ Result GameProps::place(u32 mesh, const f64* position, f32 yaw, f32 scale, u32& 
   ++stats_.placed;
   dirty_ = true;
   tail_stale_ = true;
+  ++version_;  // the walker's collision asks (walk.h `PropsFn`, P45)
   out_prop = id_of(slot, s.generation);
   return Result::Ok;
 }
@@ -118,6 +121,7 @@ Result GameProps::move(u32 prop, const f64* position, f32 yaw) noexcept {
   ++stats_.moved;
   dirty_ = true;
   tail_stale_ = true;
+  ++version_;  // the walker's collision asks (walk.h `PropsFn`, P45)
   return Result::Ok;
 }
 
@@ -130,6 +134,7 @@ Result GameProps::remove(u32 prop) noexcept {
   ++stats_.removed;
   dirty_ = true;
   tail_stale_ = true;
+  ++version_;  // the walker's collision asks (walk.h `PropsFn`, P45)
   return Result::Ok;
 }
 
@@ -157,6 +162,25 @@ Result GameProps::nearest(u32 mesh, const WorldPos& from, f64 radius, u32& out_p
   ++stats_.found;
   distance = std::sqrt(best);
   return Result::Ok;
+}
+
+u64 GameProps::walk_props(void* context, Vector<WalkProp>* out) {
+  const GameProps& self = *static_cast<const GameProps*>(context);
+  if (out != nullptr && self.attached_) {
+    for (u32 slot = 0; slot < self.slots_.size(); ++slot) {
+      const Slot& s = self.slots_[slot];
+      if (!s.live) continue;
+      WalkProp p;
+      p.key = id_of(slot, s.generation);
+      p.mesh = self.props_[s.prop].mesh;
+      p.origin = s.position;
+      p.rotation = quat_from_axis_angle(Vec3::unit_y(), s.yaw);  // as the tail turns it
+      p.scale = s.scale;
+      p.collider = self.props_[s.prop].collider;
+      out->push_back(p);
+    }
+  }
+  return self.version_;
 }
 
 const Vector<renderer::SceneInstance>& GameProps::tail() {
@@ -258,6 +282,7 @@ bool GameProps::from_json(const JsonValue& value, std::string* error) {
   }
   dirty_ = live_ > 0;
   tail_stale_ = true;
+  ++version_;  // the walker's collision asks (walk.h `PropsFn`, P45)
   return true;
 }
 

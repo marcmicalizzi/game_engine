@@ -280,6 +280,8 @@ SceneCollision::~SceneCollision() {
       if (tile.placements) physics_->destroy_body(tile.placements);
       if (tile.placements_shape) physics_->destroy_shape(tile.placements_shape);
     }
+    for (HeldProp& held : props_)
+      drop_prop_body(held);  // P45
   }
   tiles_.clear();
   tick_scratch_.children.clear();
@@ -1015,6 +1017,13 @@ HitInfo SceneCollision::describe_hit(physics::BodyId body, u32 child) const noex
       }
       return out;
     }
+  }
+  for (const HeldProp& held : props_) {  // a game's prop (P45)
+    if (!(held.body == body)) continue;
+    out.kind = HitKind::prop;
+    out.mesh = held.prop.mesh;
+    out.instance = held.prop.key;
+    return out;
   }
   return out;
 }
@@ -2199,6 +2208,196 @@ void SceneCollision::deactivate(void* context, const world::TileEvent& event) {
   ++self->stats_.deactivated;
   self->note_bodies();
   self->stats_.deactivate_ns += time::monotonic_ns() - start;
+}
+
+// ---- a game's props (scene_collision.md, "Props"; roadmap P45)
+// ---------------------------------------------------------------------------------------------
+//
+// A body a prop, not a piece of its tile's compound: a module moves one prop at a tick, and a
+// compound would be built again whole for it, with every other piece of the tile. The bodies are
+// made on the tick and in key order, after the ring's update, so their ids — and a walk that
+// touches one — are the same in a replay. **A move is a move** (docs: "What a moving prop costs"):
+// a prop whose shape is the same is put at its new place, never made again, and nothing about the
+// broadphase is redone for it — the trees are rebuilt only for a body made or let go, which leaves
+// a node behind until they are. A box that has moved once is made again, once, as a kinematic body
+// in `Layer::Kinematic`, the tree the physics library keeps for things that move, so the static
+// tree the tiles' ground and placements live in is not the one it widens; a mesh's proxy has no
+// inside, the library moves it only as a static body, and it is moved in the static tree.
+
+namespace {
+// Whether two props of one key have the same body but for its place and turn.
+bool same_shape(const PropBody& a, const PropBody& b) noexcept {
+  return a.mesh == b.mesh && a.scale == b.scale && a.collider.shape == b.collider.shape &&
+         a.collider.half_extents == b.collider.half_extents &&
+         a.collider.center == b.collider.center;
+}
+bool same_pose(const PropBody& a, const PropBody& b) noexcept {
+  return a.origin.x == b.origin.x && a.origin.y == b.origin.y && a.origin.z == b.origin.z &&
+         a.rotation.x == b.rotation.x && a.rotation.y == b.rotation.y &&
+         a.rotation.z == b.rotation.z && a.rotation.w == b.rotation.w;
+}
+}  // namespace
+
+void SceneCollision::set_props(std::span<const PropBody> props) {
+  props_next_.clear();
+  props_next_.reserve(static_cast<u32>(props.size()));
+  bool sorted = true;
+  for (const PropBody& p : props) {
+    if (p.collider.shape == renderer::PropShape::none) continue;  // no body, nothing kept
+    sorted = sorted && (props_next_.empty() || props_next_.back().prop.key < p.key);
+    HeldProp held;
+    held.prop = p;
+    props_next_.push_back(held);
+  }
+  if (!sorted)
+    std::sort(props_next_.begin(), props_next_.end(),
+              [](const HeldProp& a, const HeldProp& b) { return a.prop.key < b.prop.key; });
+  stats_.props = static_cast<u32>(props.size());
+  props_handed_ = true;
+}
+
+bool SceneCollision::prop_pose(const PropBody& p, physics::BodyTransform& out, Vec3& scale) const {
+  if (p.collider.shape == renderer::PropShape::box) {
+    // The box's centre through the prop's turn and scale, added to its place in f64.
+    out.position = p.origin + DVec3{rotate(p.rotation, p.collider.center * p.scale)};
+    out.rotation = p.rotation;
+    scale = Vec3{p.scale, p.scale, p.scale};
+    return true;
+  }
+  const u32 mesh = p.mesh;
+  if (mesh >= scene_->parts.size() || mesh == scene_->terrain_mesh) return false;
+  if (water_mesh(*scene_, mesh) || far_mesh(mesh)) return false;
+  // Where the renderer stands the instance (`renderer::instance_translation`): its fit through
+  // the turn and scale, the offset added to the origin in f64 — as a placement's piece is.
+  Transform3 turn;
+  turn.rotation = p.rotation;
+  turn.scale = Vec3{p.scale, p.scale, p.scale};
+  const Mat4 fit = mesh < scene_->mesh_fit.size() ? scene_->mesh_fit[mesh] : Mat4::identity();
+  const Mat4 linear = mat4_from_transform(turn) * fit;
+  Placement placed;
+  if (!decompose(linear, placed)) return false;
+  out.position = p.origin + DVec3{linear.c[3].xyz()};
+  out.rotation = placed.rotation;
+  scale = placed.scale;
+  return true;
+}
+
+bool SceneCollision::make_prop_body(HeldProp& held) {
+  const PropBody& p = held.prop;
+  physics::BodyDesc body;
+  body.motion = held.kinematic ? physics::MotionType::Kinematic : physics::MotionType::Static;
+  body.layer = held.kinematic ? physics::Layer::Kinematic : physics::Layer::Static;
+  body.friction = 0.8f;
+  Vec3 scale{};
+  if (!prop_pose(p, body.transform, scale)) return false;
+  if (p.collider.shape == renderer::PropShape::box) {
+    if (physics_->create_box(p.collider.half_extents * p.scale, held.shape) != physics::Status::Ok)
+      return false;
+  } else {
+    const Proxy* proxy = proxy_for(p.mesh, scale, tick_scratch_);
+    if (proxy == nullptr) return false;
+    if (physics_->adopt_shape(proxy->shape, held.shape) != physics::Status::Ok) return false;
+  }
+  body.shape = held.shape;
+  if (physics_->create_body(body, held.body) != physics::Status::Ok) {
+    physics_->destroy_shape(held.shape);
+    held.shape = {};
+    return false;
+  }
+  ++stats_.prop_bodies_created;
+  return true;
+}
+
+void SceneCollision::drop_prop_body(HeldProp& held) noexcept {
+  if (held.body) {
+    physics_->destroy_body(held.body);
+    ++stats_.prop_bodies_destroyed;
+  }
+  if (held.shape) physics_->destroy_shape(held.shape);
+  held.body = {};
+  held.shape = {};
+}
+
+u32 SceneCollision::update_props() {
+  const u64 ring = stats_.activated + stats_.deactivated;
+  const bool ring_moved = ring != props_ring_;
+  if (!props_handed_ && !ring_moved) return 0;
+  props_ring_ = ring;
+  u32 worked = 0;  // bodies made or let go, which the broadphase is rebuilt for
+  u32 moved = 0;   // bodies put at a new place, which it is not
+  if (props_handed_) {
+    // Destroyed before made, in key order: a held prop the new set does not hold, or holds with
+    // another shape, loses its body here; one held with the same shape keeps it, and is moved if
+    // it moved — at its first move made again as a kinematic body. A key new to the set, or one
+    // with no body, stays pending.
+    u32 n = 0;
+    for (HeldProp& old : props_) {
+      while (n < props_next_.size() && props_next_[n].prop.key < old.prop.key)
+        ++n;
+      HeldProp* now = n < props_next_.size() && props_next_[n].prop.key == old.prop.key
+                          ? &props_next_[n]
+                          : nullptr;
+      if (now == nullptr || !same_shape(now->prop, old.prop)) {
+        if (old.body) {
+          drop_prop_body(old);
+          ++worked;
+        }
+        continue;
+      }
+      now->kinematic = old.kinematic;
+      if (!old.body) continue;
+      now->body = old.body;
+      now->shape = old.shape;
+      now->pending = false;
+      if (same_pose(now->prop, old.prop)) continue;
+      // A box's first move: let go, to be made a kinematic body. A mesh's proxy has no inside,
+      // so the physics library moves it only as a static body: it is moved where it is.
+      const bool promote = !now->kinematic && now->prop.collider.shape == renderer::PropShape::box;
+      if (promote || !covers(now->prop.origin)) {  // or off the held tiles: let go
+        now->kinematic = now->kinematic || promote;
+        now->pending = true;
+        drop_prop_body(*now);
+        ++worked;
+        continue;
+      }
+      physics::BodyTransform pose;
+      Vec3 scale{};
+      if (prop_pose(now->prop, pose, scale) &&
+          physics_->set_body_transform(now->body, pose, false)) {
+        ++moved;
+        ++stats_.prop_moves;
+      }
+    }
+    props_.swap(props_next_);
+    props_next_.clear();
+    props_handed_ = false;
+  }
+  if (ring_moved) {
+    // A body while the tile it stands in is held: let go with it here, and every prop with none
+    // asked again below.
+    for (HeldProp& held : props_) {
+      if (held.body && !covers(held.prop.origin)) {
+        drop_prop_body(held);
+        ++worked;
+      }
+      held.pending = held.pending || !held.body;
+    }
+  }
+  for (HeldProp& held : props_) {  // made, in key order
+    if (!held.pending) continue;
+    held.pending = false;
+    if (held.body || !covers(held.prop.origin)) continue;
+    if (make_prop_body(held)) ++worked;
+  }
+  if (worked > 0) {
+    stats_.prop_bodies = 0;
+    for (const HeldProp& held : props_)
+      stats_.prop_bodies += held.body ? 1u : 0u;
+    // The trees give back a removed body's node only when rebuilt (docs: "Why this shape"):
+    // rebuilt once an update that made or let go a prop's body, never for a move.
+    physics_->optimize_broad_phase();
+  }
+  return worked + moved;
 }
 
 }  // namespace engine::scene_collision

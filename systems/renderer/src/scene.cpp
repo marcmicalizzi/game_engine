@@ -64,6 +64,31 @@ namespace {
 // either means it or the ground moved under an absolute `y`.
 constexpr f64 k_off_ground_m = 1.0;
 
+// **An authored instance over a metre above the ground** (renderer.md, "Instances off the
+// ground"; need 153 (f)): floating unless a building stands under it. `held` is set when a
+// placement entry says it occupies a disc or a polygon covering (x, z) — a house's footprint, whose
+// floors a chest stands on and whose joists a flitch hangs from — and the read counts it in
+// `instances_in_structures` instead. A band (a lane, a tread) holds nothing up.
+struct Lifted {
+  u32 instance = 0;
+  i64 x_mm = 0;
+  i64 z_mm = 0;
+  f64 off_m = 0.0;
+  bool held = false;
+};
+
+// Marks every lifted instance a disc or polygon of `shapes` covers; the count still unheld.
+u32 hold_lifted(std::span<const scene_gen::Footprint> shapes, Vector<Lifted>& lifted) noexcept {
+  u32 left = 0;
+  for (Lifted& l : lifted) {
+    for (u32 s = 0; s < shapes.size() && !l.held; ++s)
+      l.held =
+          shapes[s].shape != scene_gen::FootprintShape::band && shapes[s].covers_mm(l.x_mm, l.z_mm);
+    left += l.held ? 0u : 1u;
+  }
+  return left;
+}
+
 void prune_form_parts(SourceMesh& form);  // below, beside the forms that take it first
 
 std::string schema_errors(const schema::ReadContext& ctx) {
@@ -1252,8 +1277,9 @@ Vector<u32> append_placement_meshes(std::span<const scene_gen::PlacementMesh> me
 // else about a generator, and names none.
 bool expand_placements(const scene::Scene& file, const std::string& path, const std::string& dir,
                        std::span<const PlacementRef> entries, const TerrainSampler& ground,
-                       SceneDesc& out, std::string& error) {
+                       SceneDesc& out, Vector<Lifted>& lifted, std::string& error) {
   if (entries.empty()) return true;
+  u32 unheld = lifted.size();
   const scene_gen::GeneratorRegistry& registry = scene_gen::GeneratorRegistry::global();
   // The world block a streamed entry is opened against: the file's, or the capability's defaults.
   const scene::WorldRings world = file.world.has_value() ? *file.world : scene::WorldRings{};
@@ -1366,6 +1392,27 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
         error = entry.where + ": " + clash;
         return false;
       }
+      // What it occupies under a lifted instance (`Lifted`): its tile asked only where one stands,
+      // once a tile, so a scene with none asks nothing and the world builds every tile as before.
+      const i64 tile_mm = scene_gen::nearest_mm(static_cast<f64>(context.tile_size));
+      Vector<scene_gen::TileCoord> asked;
+      scene_gen::Placements here;
+      for (u32 k = 0; k < lifted.size() && unheld > 0 && tile_mm > 0; ++k) {
+        if (lifted[k].held) continue;
+        const scene_gen::TileCoord at{
+            static_cast<i32>(scene_gen::mask_floor_div(lifted[k].x_mm, tile_mm)),
+            static_cast<i32>(scene_gen::mask_floor_div(lifted[k].z_mm, tile_mm))};
+        bool seen_tile = false;
+        for (const scene_gen::TileCoord& a : asked)
+          seen_tile = seen_tile || (a.x == at.x && a.z == at.z);
+        if (seen_tile) continue;
+        asked.push_back(at);
+        if (generator->occupies != nullptr && !generator->occupies(state, at)) continue;
+        here.clear();
+        std::string why;
+        if (!generator->tile(state, at, context, here, &why)) continue;  // the world says why
+        unheld = hold_lifted(here.shapes.span(), lifted);
+      }
       out.streamed.push_back(std::move(streamed));
       continue;
     }
@@ -1427,6 +1474,7 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
     // The shapes it occupies: into the exclusion, which the world's consumer and the collision are
     // handed too, and into what the entries after this one are handed.
     if (!hand_shapes_on(placed.shapes, entry.where, out, earlier, error)) return false;
+    if (unheld > 0) unheld = hold_lifted(placed.shapes.span(), lifted);
     out.placed_buildings += placed.things;
     out.placed_instances += placed.instances.size();
   }
@@ -2677,6 +2725,25 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       }
       out.props.back().fire = std::move(fire);
     }
+    if (prop.collision.has_value()) {  // its body (P45; absent: its mesh)
+      const scene::PropCollision& c = *prop.collision;
+      PropCollider& collider = out.props.back().collider;
+      collider.shape = c.shape == scene::PropCollisionShape::Box    ? PropShape::box
+                       : c.shape == scene::PropCollisionShape::None ? PropShape::none
+                                                                    : PropShape::mesh;
+      collider.half_extents = c.half_extents;
+      collider.center = c.center;
+      const Vec3 h = c.half_extents;
+      if (collider.shape == PropShape::box &&
+          !(h.x > 0.0f && h.y > 0.0f && h.z > 0.0f && std::isfinite(h.x) && std::isfinite(h.y) &&
+            std::isfinite(h.z) && std::isfinite(c.center.x) && std::isfinite(c.center.y) &&
+            std::isfinite(c.center.z))) {
+        error = where + " (\"" + prop.name +
+                "\"): collision: a box's half_extents must each be "
+                "above zero, and the box finite";
+        return false;
+      }
+    }
     out.meshes.push_back(
         io::is_absolute_path(prop.mesh) || dir.empty() ? prop.mesh : io::join_path(dir, prop.mesh));
     out.mesh_info.push_back(std::move(info));
@@ -2911,6 +2978,7 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   // "authored" generator (`load_scene`; renderer.md, "Authored instances per tile").
   out.authored_first = out.instances.size();
   out.authored.enabled = options.world_instances;
+  Vector<Lifted> lifted;  // `ground: false` instances over a metre above the ground
   for (u32 i = 0; i < file.instances.size(); ++i) {
     const scene::Instance& entry = file.instances[i];
     if (entry.mesh >= file_meshes) {
@@ -2935,8 +3003,10 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       // proof of concept floated trees 26 m when its landform changed). Counted, not refused.
       const f64 off = entry.translation.y - ground_at_world(entry.translation);
       if (off > k_off_ground_m) {
-        if (out.instances_floating++ == 0) out.floating_first = i;
-        if (off > out.floating_max_m) out.floating_max_m = off;
+        // Floating only if no building stands under it: decided once the placements say what
+        // they occupy (`expand_placements`; need 153 (f)).
+        lifted.push_back(Lifted{i, scene_gen::nearest_mm(entry.translation.x),
+                                scene_gen::nearest_mm(entry.translation.z), off, false});
       } else if (-off > k_off_ground_m) {
         if (out.instances_buried++ == 0) out.buried_first = i;
         if (-off > out.buried_max_m) out.buried_max_m = -off;
@@ -2964,24 +3034,6 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       instance.animation.lod_bias = bias;
     }
     out.instances.push_back(instance);
-  }
-  if (out.instances_floating + out.instances_buried > 0) {
-    // One line a scene (T74): how many authored instances stand well off the ground they are
-    // over, the worst of each and where the first is, so a landform that moved under a scene
-    // whose instances are not relative is seen at the load and not in a picture.
-    const auto named = [&](u32 index) {
-      return file.instances[index].name.empty() ? std::to_string(index)
-                                                : file.instances[index].name;
-    };
-    ENGINE_LOG_WARN(
-        log_renderer, "instances off the ground", log::field("floating", out.instances_floating),
-        log::field("floating_max_m", out.floating_max_m),
-        log::field("floating_first",
-                   out.instances_floating > 0 ? named(out.floating_first) : std::string()),
-        log::field("buried", out.instances_buried), log::field("buried_max_m", out.buried_max_m),
-        log::field("buried_first",
-                   out.instances_buried > 0 ? named(out.buried_first) : std::string()),
-        log::field("threshold_m", k_off_ground_m));
   }
   // Scatters, expanded here from their seeds, so the renderer sees plain instances and two
   // machines place the same ones. **The centre is a `worldpos`** (Scatter version 2, ADR-0053):
@@ -3062,9 +3114,37 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   // (`plan_scene_ground`, above).
   profiling::TraceStage placements_stage("placements");
   if (!expand_placements(file, path, dir, {placements.data(), placements.size()}, ground, out,
-                         error))
+                         lifted, error))
     return false;
   placements_stage.end();
+  for (const Lifted& l : lifted) {
+    if (l.held) {
+      ++out.instances_in_structures;
+      continue;
+    }
+    if (out.instances_floating++ == 0) out.floating_first = l.instance;
+    if (l.off_m > out.floating_max_m) out.floating_max_m = l.off_m;
+  }
+  if (out.instances_floating + out.instances_buried > 0) {
+    // One line a scene (T74): how many authored instances stand well off the ground they are
+    // over, the worst of each and where the first is, so a landform that moved under a scene
+    // whose instances are not relative is seen at the load and not in a picture. Those over a
+    // building's footprint are said apart: they stand on its floors or hang from its timbers.
+    const auto named = [&](u32 index) {
+      return file.instances[index].name.empty() ? std::to_string(index)
+                                                : file.instances[index].name;
+    };
+    ENGINE_LOG_WARN(
+        log_renderer, "instances off the ground", log::field("floating", out.instances_floating),
+        log::field("floating_max_m", out.floating_max_m),
+        log::field("floating_first",
+                   out.instances_floating > 0 ? named(out.floating_first) : std::string()),
+        log::field("buried", out.instances_buried), log::field("buried_max_m", out.buried_max_m),
+        log::field("buried_first",
+                   out.instances_buried > 0 ? named(out.buried_first) : std::string()),
+        log::field("in_structures", out.instances_in_structures),
+        log::field("threshold_m", k_off_ground_m));
+  }
   profiling::TraceStage water_stage("water");
   if (!read_scene_water(file, path, dir, ground, out, error)) return false;           // water.md
   if (!read_scene_water_channels(file, path, dir, ground, out, error)) return false;  // S96
@@ -3145,6 +3225,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   out.load.meshes = resolved.meshes.size();
   out.load.threads = pool->total_worker_count() + 1;
   out.load.instances_floating = resolved.instances_floating;
+  out.load.instances_in_structures = resolved.instances_in_structures;
   out.load.instances_buried = resolved.instances_buried;
   content_build::ImageIdentities identities(resolved.cache ? resolved.ddc : std::string(),
                                             materials::pack_at(resolved.materials));

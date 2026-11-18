@@ -35,6 +35,7 @@
 #include <core/math/math.h>
 #include <core/math/world.h>
 #include <domain/scene_gen/scene_gen.h>
+#include <systems/renderer/scene.h>
 
 #include <memory>
 #include <schemas/scene.h>
@@ -250,6 +251,22 @@ struct WalkSupports {
 // The most supports one `Walker::supports` call returns: its scratch, made once at `start`.
 inline constexpr u32 k_max_walk_supports = 256;
 
+// **A game's prop as the walker meets it** (roadmap P45; apps.md, "Props: the objects a game
+// places"; scene_collision.h `PropBody`): the prop's id, its scene mesh, where it stands, its turn
+// and scale, and the body its scene declared. A body while the walker's collision holds the tile
+// it stands in, moved when the prop moves, so the walker stops at a cart a game set down.
+struct WalkProp {
+  u32 key = 0;
+  u32 mesh = 0;
+  WorldPos origin{};
+  Quat rotation{};
+  f32 scale = 1.0f;
+  renderer::PropCollider collider{};
+};
+// What the walker asks for its props, on the tick: a count that moves whenever a prop is placed,
+// moved or removed, and, when `out` is given, the live props into it.
+using PropsFn = u64 (*)(void* context, Vector<WalkProp>* out);
+
 class Walker {
  public:
   Walker();
@@ -289,6 +306,10 @@ class Walker {
   // quarter metre ahead along the heading at the chest. `context` must outlive the walker. Null:
   // no water, the walker as it always was.
   void set_water(DepthFn depth, const void* context) noexcept;
+  // **A game's props** (`WalkProp`, P45): asked at every tick the walker's collision is updated
+  // (a step, a drop, a teleport), after its ring and before the step, so a prop a module set down
+  // at a tick stops the walker from the next. `context` must outlive the walker; null: none.
+  void set_props(PropsFn props, void* context) noexcept;
   // **A teleport** (game_runner.h, `walker_teleport`): the feet put at `at`'s x and z on the ground
   // under it — the highest surface below, or the ground's height — as a `drop` is, counted as one
   // and as a teleport; the eye returned.

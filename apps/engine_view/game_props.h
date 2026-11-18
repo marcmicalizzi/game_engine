@@ -30,8 +30,12 @@
 // `--game-state`: the file holds each prop's id and the restore puts it back in the same slot at
 // the same generation.
 //
-// **A prop is visual.** The walker walks through it; the ray tracing chain and the shadows see it
-// as the tail's instances are seen. Collision with props is a row of its own (roadmap P44).
+// **A prop stops the walker** (roadmap P45): each live prop is a static body of its mesh's proxy,
+// or of the box its scene declares, or of nothing (`engine.scene.Prop.collision`), while the
+// walker's collision holds the tile it stands in (`walk_props`, walk.h `set_props`). The ray
+// tracing chain and the shadows see it as the tail's instances are seen.
+
+#include "walk.h"
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
@@ -106,6 +110,10 @@ class GameProps {
   void handed() noexcept;
   u32 live() const noexcept { return live_; }
   const GamePropsStats& stats() const noexcept { return stats_; }
+  // **What the walker meets** (walk.h `PropsFn`, roadmap P45): `context` a `GameProps`; the count
+  // that moves at every place, move, remove and restore, and the live props into `out`, in slot
+  // order, each with the body its scene declared (`renderer::PropCollider`).
+  static u64 walk_props(void* context, Vector<WalkProp>* out);
 
   // ---- the state file's `props` ----
   // `[{"id","prop","position":[x,y,z],"yaw","scale"}]`: every live prop by its declared name, the
@@ -138,6 +146,7 @@ class GameProps {
   bool attached_ = false;
   bool dirty_ = false;
   bool tail_stale_ = false;
+  u64 version_ = 0;
   u32 live_ = 0;
   GamePropsStats stats_;
 };
