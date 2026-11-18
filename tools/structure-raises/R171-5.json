@@ -1,11 +1,11 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "R171-5",
-  "reason": "R171 leg 5: the guide's section on renderer.md (the measurement, the research read, what was built, what it does on the screen and what it does not show) and four lines of record_frame (the memory's hold after a cold start, the guide's bit in the shell word)",
-  "date": "2026-11-17",
+  "reason": "R171 leg 5: the guide's section on renderer.md (the measurement, the research read, what was built, what it does on the screen, what it costs, why both are off and what it does not show) and four lines of record_frame (the memory's hold after a cold start, the guide's bit in the shell word)",
+  "date": "2026-11-18",
   "by": "R171-5",
   "deltas": {
     "renderer.record_frame.lines": 4,
-    "page:docs/subsystems/renderer.md": 12123
+    "page:docs/subsystems/renderer.md": 16232
   }
 }

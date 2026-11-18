@@ -3495,8 +3495,8 @@ level of 5.6 codes where nothing in the picture moves. Both follow the flight's 
   heavy, which is what a guide does.
 - *What the eye sees* is the fourth leg's source and bar, above.
 
-**What is built: a guide** (`gfx::k_gi_guide`, `renderer.gi.guide`, on; `gi_cache.h` and
-`gi_guide.slang`). The samples of a coarse cell learn where their light comes from, and half the
+**What is built: a guide** (`gfx::k_gi_guide`, `renderer.gi.guide`, **off**: "Why both are off",
+below; `gi_cache.h` and `gi_guide.slang`). The samples of a coarse cell learn where their light comes from, and half the
 samples are drawn there:
 - **A guide is a coarse cell's**: three levels above a surface's own, the ladder's top, on the
   surface's face, which on a flat wall pools sixty-four own cells and seven hundred samples a
@@ -3517,7 +3517,8 @@ samples are drawn there:
   bin of its direction, folded a frame at a time into a history of sixteen frames
   (`gfx::gi_guide_fold`), by the fold pass's first threads. A sample is drawn from a guide once it
   averages 256 samples; one nothing sampled for 64 frames is freed. The picture's own samples make
-  guides; a sample round the eye only finds one.
+  guides; a sample round the eye only finds one, and adds to it only once a fold has trained it
+  (whether it finds one a pixel's sample is making in the same pass is the order of two threads).
 - **Where it lives**: a table of one guide to 256 cells behind the cells in the cache's buffer
   (16,384 guides of 800 bytes, 12.5 MiB beside the cells' 144 MiB at the default size), found by
   the guide cell's hash; nothing in `ResolveParams` or the resolve's shaders changed (the flag is
@@ -3526,15 +3527,17 @@ samples are drawn there:
   imported room with one window gets it as a generated one does; a scene in open air pays the
   guide's lookup and draws its samples about as it did, since the sky's light is nearly the lobe.
 
-**The memory is on again, and holds after a cold start** (`gfx::k_gi_step_hold`,
-`gi_memory_holds`). "Off again", above, found the pre-roll seeding the long mean. Every fold of a
-cold frame's steps and of the 48 frames after it now leaves no count past today's history (a cell
-that already remembered longer keeps its count), so the bounce's first rounds are forgotten at
-today's pace and never enter a long mean. And the pre-roll's case holds its frames to **today's
-history's floor**, measured in its own first run with the memory off: with the memory on the
-long-held picture's floor is that of a history several times longer, which no frame within a
-second and a half of a cut can have, whatever folds it; the bound in absolute terms is the one the
-case held before the memory.
+**The memory holds after a cold start** (`gfx::k_gi_step_hold`, `gi_memory_holds`; the memory
+itself stays **off** with the guide, below). "Off again", above, found the pre-roll seeding the
+long mean. Every fold of a cold frame's steps and of the 48 frames after it now leaves no count
+past today's history (a cell that already remembered longer keeps its count), so the bounce's
+first rounds are forgotten at today's pace and never enter a long mean. And the pre-roll's case
+holds its frames to **today's history's floor**, measured in its own first run with the memory
+off: with the memory on the long-held picture's floor is that of a history several times longer,
+which no frame within a second and a half of a cut can have, whatever folds it; the bound in
+absolute terms is the one the case held before the memory. With the guide and the memory both on
+the case passes (the cut's furthest frame 0.43 of an 8-bit step, 1.2 floors of today's history
+and 2.3 of its own; the load's frames from the twenty-fourth 0.56 against twice 0.40).
 
 **Whether the memory is engaged** is counted now: `Stats::gi.let_go` (face cells whose fold gave
 up a long history this frame), `.followed` (those folded at today's rate because a coarser cell
@@ -3565,6 +3568,51 @@ by then (the house's 32–63 band, 1 % of its pixels, stands at 0.089 %; the mem
 0.35 %). 99.99 % of the samples have a trained guide behind them by frame 150. The flora's motion
 and a wind of 0.7, the forest's flags, change no number of the house's (0.238 % and 0.019 % with
 them): nothing outside its door moves its light.
+
+With the sun at a 24-minute day (sixty times real time) the house holds the same over frames 150
+to 330: 0.015 % of pixel-frames step a code, the light changes 0.18 % a frame. Walking in at the
+door the picture's level stands at 23.6 codes at the stop, 21.9 a second on and 21.3 three seconds
+on, within 0.5 % of where it is six seconds on (the same walk with the two off was not flown
+beside it, so how much of that is the memory's lag is not said).
+
+**What it costs** (medians of the GPU's timestamps over frames 120 to 780 of held flights and the
+lane's, main's copied-out build against the branch with both on, one lease, alternated, the
+session locked on both sides): the cave 3.93 → 4.06 ms (`gi_trace` 0.871 → 0.949, the fold 0.094 →
+0.112), house 0 5.62 → 5.76 (0.798 → 0.907, 0.085 → 0.108), the lane outdoors 6.67 → 6.85 (0.902 →
+0.985, 0.138 → 0.169; the resolve 3.70 → 3.68, untouched). So **0.12 to 0.18 ms at 4K**, in the
+sample pass (the guide's lookup, its draw over 64 words and its two adds a sample) and the fold
+(sixteen thousand guides of 128 bins); indoors and outdoors alike, since an open scene pays the
+lookup too. It is the device's memory traffic, so it scales with the samples a frame and not with
+the scene. Ways down, not tried: a guide's shares as bytes, the draw by rows then columns.
+
+**Why both are off.** With both on by default every `gi cache:` case ran once (msvc-release, the
+RTX 5090): fourteen passed and five failed, and a default that fails a case is not a default.
+1. *The grain's law* (four times the rays, half the grain): the guide halves the base run's grain
+   (0.89 % against 1.76 %) and what is left is no longer the cosine rays' sampling noise, so four
+   times the rays take it to 0.83 of itself. The case now asks for cosine rays by name; its law is
+   theirs.
+2. *A scene moved by whole cells draws the same bytes*: two to four thousand pixels differed. A
+   sample round the eye found, or missed, a guide a pixel's sample was making in the same pass.
+   Mended as the bullet above says; **not run again**.
+3. *A turn shows no fill*: the furthest frame 1.13 against a bound of 0.95, the largest change in
+   the first seven frames 1.01 against 0.44. Two things: the case's run "with the features off"
+   left the guide on, so its floor was 0.475 where main's is 0.61 (it must turn both off: the bound
+   is main's absolute one); and frame 1 after the turn changes by 1.01 where main's changes by
+   0.53, which is a guide trained on one frame's samples steering half of the next frame's. A
+   guide should have several frames behind it before a sample is drawn from it
+   (`k_gi_guide_trained`, 256 samples now).
+4. *A turn to a stand of solid crowns*: with the crown's prior the first frame after the turn
+   stands 28 steps under the long-held picture (it must stand nearer than without the prior, 8.8),
+   and 17 under on the leaf cards. **Not explained**: foliage takes no guide and its cells no
+   memory, so it is in what the crowns' samples read at their hits, or in the hold; it is the
+   first thing the next leg runs with each of the two on alone.
+5. The row's own case held the guide under the memory to less than the memory alone, which in the
+   box is a difference of a few thousandths of a percent either way; that check is a message now.
+
+With both off a frame draws what main draws: no sample reads or writes a guide and the buffer has
+none, and the hold changes nothing without the memory. **That configuration was not run on the GPU
+after these changes**; the cases above were run with both on, and the row's own case and the
+pre-roll's passed in msvc-debug with both asked for.
 
 **What this does not show, said plainly.** The forest's two dark rooms change 5.9 and 4.8 % a
 frame with cosine rays, three to four times the engine's house at a *brighter* level, so their

@@ -1313,7 +1313,7 @@ TEST_CASE("gi cache key: a guided sample keeps the mean and loses its heavy tail
         plain_sum += plain;
         plain_square += plain * plain;
         guided_sum += static_cast<f64>(value);
-        guided_square += static_cast<f64>(value) * value;
+        guided_square += static_cast<f64>(value) * static_cast<f64>(value);
         heaviest = std::max(heaviest, static_cast<f64>(value));
         plain_values.push_back(static_cast<f32>(plain));
         guided_values.push_back(value);

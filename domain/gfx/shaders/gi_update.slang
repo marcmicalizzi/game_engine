@@ -357,6 +357,11 @@ uint gi_trace_and_add(ResolveParams* params, uint2 p, Surface s, InstanceDesc in
       uint* words = (uint*)guide;
       guide_sum = words[4];
       if (words[3] >= k_gi_guide_trained && guide_sum != 0u) alpha = k_gi_guide_alpha;
+      // A sample round the eye adds only to a guide a fold has already trained: whether it finds
+      // one a pixel's sample is making in this same pass is the order threads reach the claim,
+      // and the guide's sums, and so the picture, would depend on it (the translation case
+      // differed on some four thousand pixels before this line; not run again since).
+      if (first != 0u && words[3] < k_gi_guide_trained) guide = 0;
     }
   }
   // One cosine-weighted direction about the interpolated normal; one that the triangle's own plane

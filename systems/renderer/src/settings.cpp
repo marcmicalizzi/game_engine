@@ -503,20 +503,23 @@ tunables::Bool gi_spread{
 // The fourth leg ("R171: the memory made right") mended the half's rounding, the blobs and the
 // small change that trailed at their causes and turned it on; batch 67's fixes turned it off ("Off
 // again: the pre-roll's promise": the long mean kept the pre-roll's and the first frames' unsettled
-// samples). **On since the fifth leg**: a fold of a cold frame's steps and of the frames just after
-// it holds every count at today's history (`gfx::k_gi_step_hold`), so those samples never enter a
-// long mean, and the pre-roll's case holds its frames to today's history's floor.
+// samples). The fifth leg answered that — a fold of a cold frame's steps and of the frames just
+// after it holds every count at today's history (`gfx::k_gi_step_hold`), and the pre-roll's case,
+// which holds its frames to today's history's floor, passes with it on — and leaves it **off**
+// with the guide below, since the two were only run together and four other cases then fail
+// (renderer.md, "R171: where a dark room's light comes from", "Why both are off").
 tunables::Bool gi_memory{
-    "renderer.gi.memory", true,
+    "renderer.gi.memory", false,
     "A face's cache cell remembers up to sixteen times today's history while its light holds "
     "still, "
     "and goes back to today's at once when its long mean leaves the band its measured spread "
     "predicts, or a coarser cell of its ladder's does (false: today's history, as stage 8 left it) "
     "(renderer.md, Indirect light, R171: a cell's memory by its own spread; read at load)"};
 // **R171's fifth leg** (renderer.md, "Indirect light", "R171: where a dark room's light comes
-// from"): the guide.
+// from"): the guide. Built, measured and **off**: on, four of the cache's GPU cases fail ("Why both
+// are off" on the page names each and what mends it).
 tunables::Bool gi_guide{
-    "renderer.gi.guide", true,
+    "renderer.gi.guide", false,
     "The cache's samples learn where a coarse cell's light comes from and half of them are drawn "
     "there, each weighted by its lobe's density over the mixture's, so a room lit through an "
     "opening is not sampled by a few heavy rays among many dark ones (false: every sample is a "
