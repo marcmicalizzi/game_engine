@@ -56,6 +56,19 @@ void fail_stb(std::string* error, std::string_view what) {
   *error = std::string(what) + (reason != nullptr ? reason : "unknown error");
 }
 
+// **The engine's bound on a header's dimensions, checked before stb sizes anything from them**
+// (T187; `k_max_image_side` says why 16,384). stb's own `STBI_MAX_DIMENSIONS` would refuse the
+// same headers, but its header probe then fails over to the next format and reports "unknown image
+// type"; checked here, every caller is told the bound.
+bool within_bound(int width, int height, std::string_view what, std::string* error) {
+  if (static_cast<u32>(width) <= k_max_image_side && static_cast<u32>(height) <= k_max_image_side)
+    return true;
+  fail(error, std::string(what) + "the image is " + std::to_string(width) + " by " +
+                  std::to_string(height) + ", larger than " + std::to_string(k_max_image_side) +
+                  " pixels on a side");
+  return false;
+}
+
 bool check_input(std::span<const u8> bytes, std::string_view what, std::string* error) {
   if (bytes.empty()) {
     fail(error, std::string(what) + "no data");
@@ -86,6 +99,7 @@ bool probe_image(std::span<const u8> bytes, ImageInfo& out, std::string* error) 
     fail(error, "probe_image: implausible header");
     return false;
   }
+  if (!within_bound(width, height, "probe_image: ", error)) return false;
   out.width = static_cast<u32>(width);
   out.height = static_cast<u32>(height);
   out.channels = static_cast<u32>(channels);
@@ -103,6 +117,13 @@ bool decode_image(std::span<const u8> bytes, Image& out, u32 desired_channels, s
   int width = 0;
   int height = 0;
   int file_channels = 0;
+  // The header first: a file whose header stb reads is held to the bound before the decode sizes
+  // anything from it. One stb does not read is left to the decode, which reports why.
+  if (stbi_info_from_memory(bytes.data(), static_cast<int>(bytes.size()), &width, &height,
+                            &file_channels) != 0 &&
+      !within_bound(width, height, "decode_image: ", error)) {
+    return false;
+  }
   stbi_uc* pixels =
       stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &width, &height,
                             &file_channels, static_cast<int>(desired_channels));
