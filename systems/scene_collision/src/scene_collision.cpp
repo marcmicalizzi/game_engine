@@ -3,6 +3,7 @@
 #include <core/hash/hash.h>
 #include <core/jobs/job_system.h>
 #include <core/log/log.h>
+#include <core/math/deterministic.h>
 #include <core/profiling/startup_trace.h>
 #include <core/time/time.h>
 #include <domain/physics/character.h>
@@ -2674,16 +2675,27 @@ u32 SceneCollision::update_props() {
 // tick with `set_body_transform` — the walker's world is never stepped, so `move_kinematic`, which
 // sets a velocity for a step, would move nothing (ADR-0070 decision 3).
 
+// The leaf's turn about +y at `mdeg` millidegrees, from the integer alone: the angle is reduced to
+// (-180, 180] degrees in integers, and the half angle's sine and cosine are `core/math`'s
+// deterministic ones (`det::sin`, `det::cos`, fdlibm's kernels in IEEE arithmetic), never the C
+// library's, whose last bit differs between MSVC's UCRT and glibc — which would make a walk
+// through a door replay differently on another compiler, since the body's pose and the walker's
+// hold both turn on it (scene_collision.md, "Doors").
+Quat door_rotation(i32 mdeg) noexcept {
+  i64 m = static_cast<i64>(mdeg) % 360000;
+  if (m > 180000) m -= 360000;
+  if (m <= -180000) m += 360000;
+  const f64 half = static_cast<f64>(m) * (3.14159265358979323846 / 360000.0);
+  return Quat{0.0f, static_cast<f32>(det::sin(half)), 0.0f, static_cast<f32>(det::cos(half))};
+}
+
 namespace {
-constexpr f64 k_mdeg_to_rad = 3.14159265358979323846 / 180000.0;
 // How far short of the walker's capsule a door holds: past the character's contact padding, so a
 // leaf that stops beside it never presses it, which the character would answer by stepping aside
 // and the door by creeping after it.
 constexpr f32 k_door_hold_margin_m = 0.05f;
 // The leaf's turn about +y at `mdeg` millidegrees from its closed heading's zero.
-Quat door_turn(i32 mdeg) noexcept {
-  return quat_from_axis_angle(Vec3{0.0f, 1.0f, 0.0f}, static_cast<f32>(mdeg * k_mdeg_to_rad));
-}
+Quat door_turn(i32 mdeg) noexcept { return door_rotation(mdeg); }
 i32 door_target(const DoorBody& d) noexcept { return d.open ? d.open_mdeg : 0; }
 // The leaf box's centre at swing `mdeg`: half its width along the leaf from the hinge, half its
 // height up.
@@ -2714,13 +2726,34 @@ void SceneCollision::set_doors(std::span<const DoorBody> doors) {
     drop_door_body(held);
   doors_.clear();
   doors_.reserve(static_cast<u32>(doors.size()));
+  // Every number a tick adds to is brought into range here, so the integer swing never overflows:
+  // a speed of 1 to 180 degrees a tick (none or a negative one the default), a swing within a whole
+  // turn either way, the closed heading within one turn, and the angle reached between closed and
+  // open.
   for (const DoorBody& d : doors) {
     HeldDoor held;
     held.door = d;
+    DoorBody& h = held.door;
+    if (h.speed_mdeg <= 0) h.speed_mdeg = k_door_speed_mdeg;
+    h.speed_mdeg = std::min(h.speed_mdeg, 180000);
+    h.open_mdeg = std::clamp(h.open_mdeg, -360000, 360000);
+    h.closed_mdeg %= 360000;
+    h.angle_mdeg = std::clamp(h.angle_mdeg, std::min(0, h.open_mdeg), std::max(0, h.open_mdeg));
     doors_.push_back(held);
   }
-  std::sort(doors_.begin(), doors_.end(),
-            [](const HeldDoor& a, const HeldDoor& b) { return a.door.key < b.door.key; });
+  // In key order, the first given of a key kept and every later one refused (`DoorStats::refused`):
+  // a key names one door, and two with one key would make `toggle_door` and `door` answer for
+  // whichever the sort left first.
+  std::stable_sort(doors_.begin(), doors_.end(),
+                   [](const HeldDoor& a, const HeldDoor& b) { return a.door.key < b.door.key; });
+  u32 kept = 0;
+  for (u32 i = 0; i < doors_.size(); ++i) {
+    if (kept > 0 && doors_[kept - 1].door.key == doors_[i].door.key) continue;
+    if (kept != i) doors_[kept] = doors_[i];
+    ++kept;
+  }
+  door_stats_.refused = doors_.size() - kept;
+  doors_.resize(kept);
   door_stats_.doors = doors_.size();
   doors_ring_ = ~u64{0};
 }

@@ -356,9 +356,14 @@ struct DoorStats {
   u32 doors = 0;
   u32 bodies = 0;
   u64 toggles = 0;
-  u64 moves = 0;  // ticks a door's angle changed
-  u64 holds = 0;  // ticks a door held its angle because its leaf would have entered the walker
+  u64 moves = 0;    // ticks a door's angle changed
+  u64 holds = 0;    // ticks a door held its angle because its leaf would have entered the walker
+  u32 refused = 0;  // doors the last `set_doors` refused: a key given before
 };
+// A leaf's turn about +y at `mdeg` millidegrees, a function of the integer's bits on every
+// compiler: core/math's deterministic sine and cosine of the half angle, never the C library's
+// (docs: "Doors"). What a door's body and its hold on the walker both turn by.
+Quat door_rotation(i32 mdeg) noexcept;
 
 // **What a held tile holds, for a debug draw** (collision_draw.h). Spans are the consumer's and
 // stay valid until its next update.

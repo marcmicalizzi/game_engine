@@ -317,7 +317,19 @@ it back, which is what a saved village keeps. **Made with its tile, let go with 
 as a prop's body ([Props](#props)); its state is the world's and goes on while its tile is away.
 **Its angle moves by an integer a tick** (`k_door_speed_mdeg` = 375, 90 degrees in a second at 240
 Hz) and the box is put at the pose that integer names with `set_body_transform`, never driven by
-`move_kinematic`, because this world is never stepped (ADR-0070 decisions 2 and 3). **A door that
+`move_kinematic`, because this world is never stepped (ADR-0070 decisions 2 and 3). **The turn is
+the same bits on every compiler** (`door_rotation`): the integer is reduced to a half turn either
+way and the half angle's sine and cosine are core/math's deterministic ones (`det::sin`,
+`det::cos`), never the C library's, which until 2026-11-18 made a walk through a door replay
+differently on MSVC and glibc although the angle was the same; `scene_collision: a door's turn is
+the same bits on every compiler` pins it over two turns at an eighth of a degree. **`set_doors`
+keeps the numbers in range and one door a key**: a speed of 1 to 180 degrees a tick (none the
+default), a swing within a whole turn either way, so the integer swing never overflows; the first
+door given of a key is kept and a later one refused and counted (`DoorStats::refused`), so `door`
+and `toggle_door` answer for one door. **Left**: a door whose leaf already stands in the walker
+(a walker teleported into its arc) holds both ways, since every next angle meets it; it should
+move away from the walker and hold only toward it, which needs the overlap's depth at the two
+angles compared, not a yes or no. **A door that
 would enter the walker holds its angle**: the leaf at the next angle is tested against the capsule
 — both upright, so the test is exact in the leaf's frame — and a door that would come within
 `k_door_hold_margin_m` (5 cm, past the character's contact padding, so a leaf never presses the

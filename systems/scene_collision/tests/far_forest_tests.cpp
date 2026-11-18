@@ -5,6 +5,7 @@
 // never round a walker; binned as a prefix instance (W88) it stopped the walker in open ground,
 // 1.55 m from a birch's trunk and 3 m from a pine's. No device, no generator capability.
 
+#include <core/hash/hash.h>
 #include <core/jobs/job_system.h>
 #include <core/memory/memory.h>
 #include <core/time/time.h>
@@ -19,6 +20,8 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <bit>
+#include <cmath>
 #include <memory>
 #include <string>
 
@@ -954,6 +957,71 @@ TEST_CASE("scene_collision: a closed door stops a walker, an open one lets it th
   CHECK(rig.collision.door_stats().moves == 240);
   // Open: the walker goes through the doorway.
   CHECK(rig.walk(3.0f, Vec3{0.0f, 0.0f, 1.0f}) > 21.0f);
+}
+
+// A door's turn is a function of its integer angle's bits on every compiler (docs: "Doors"): the
+// half angle's sine and cosine are core/math's deterministic ones. Pinned over a spread of angles,
+// two turns either way at an eighth of a degree; taken on MSVC (msvc-debug, 2026-11-18) and to be
+// confirmed by a Linux container. The C library's `std::sin` and `std::cos`, which the turn used
+// before, differ from these in the last bit at some of the angles, and from each other between
+// MSVC's UCRT and glibc.
+TEST_CASE("scene_collision: a door's turn is the same bits on every compiler") {
+  constexpr u64 k_turn_pin = 0x65366023bb079f78ull;
+  u64 pin = 0x9e3779b97f4a7c15ull;
+  for (i32 mdeg = -720000; mdeg <= 720000; mdeg += 125) {
+    const Quat q = door_rotation(mdeg);
+    const u32 words[4] = {std::bit_cast<u32>(q.x), std::bit_cast<u32>(q.y), std::bit_cast<u32>(q.z),
+                          std::bit_cast<u32>(q.w)};
+    pin = hash_combine(pin, hash_bytes(words, sizeof(words)));
+    CHECK(q.x == 0.0f);
+    CHECK(q.z == 0.0f);
+    CHECK(q.y * q.y + q.w * q.w == doctest::Approx(1.0f).epsilon(1e-6));
+  }
+  MESSAGE("door turn pin: 0x" << std::hex << pin);
+  CHECK(pin == k_turn_pin);
+  // A whole turn is no turn, and a quarter turn is the half angle's exact values.
+  CHECK(door_rotation(0) == Quat::identity());
+  CHECK(door_rotation(360000) == door_rotation(0));
+  CHECK(door_rotation(-270000) == door_rotation(90000));
+  CHECK(door_rotation(90000).y == doctest::Approx(0.70710678f));
+  CHECK(door_rotation(90000).w == doctest::Approx(0.70710678f));
+}
+
+// `set_doors` brings every number a tick adds to into range, so the integer swing cannot overflow,
+// and keeps one door a key: the first given, the later one refused and counted.
+TEST_CASE("scene_collision: doors of one key are refused, and a door's numbers are kept in range") {
+  DoorRig rig;
+  DoorBody first = doorway();
+  DoorBody second = doorway();
+  second.hinge = place(Vec3{5.0f, 0.0f, 20.0f});
+  DoorBody wild = doorway();
+  wild.key = 9;
+  wild.speed_mdeg = 2000000000;
+  wild.open_mdeg = 2000000000;
+  wild.angle_mdeg = -2000000000;
+  DoorBody idle = doorway();
+  idle.key = 11;
+  idle.speed_mdeg = 0;
+  const DoorBody doors[4] = {first, wild, second, idle};
+  rig.collision.set_doors({doors, 4});
+  CHECK(rig.collision.door_stats().doors == 3);
+  CHECK(rig.collision.door_stats().refused == 1);
+  DoorBody now;
+  REQUIRE(rig.collision.door(first.key, now));
+  CHECK(std::fabs(relative(now.hinge, first.hinge).x) < 1e-6);  // the first given of the key
+  REQUIRE(rig.collision.door(9, now));
+  CHECK(now.speed_mdeg == 180000);
+  CHECK(now.open_mdeg == 360000);
+  CHECK(now.angle_mdeg == 0);
+  REQUIRE(rig.collision.door(11, now));
+  CHECK(now.speed_mdeg == k_door_speed_mdeg);
+  // The wild door swings a whole turn in two ticks and stops there, no overflow on the way.
+  REQUIRE(rig.collision.toggle_door(9));
+  (void)rig.collision.step_doors(nullptr);
+  (void)rig.collision.step_doors(nullptr);
+  (void)rig.collision.step_doors(nullptr);
+  REQUIRE(rig.collision.door(9, now));
+  CHECK(now.angle_mdeg == 360000);
 }
 
 TEST_CASE("scene_collision: a door holds its angle where its leaf would enter the walker") {
