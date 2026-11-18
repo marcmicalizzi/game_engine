@@ -744,6 +744,50 @@ through **the sections the ground has**, by the textbook's method
 - **The standard step method both ways**: tranquil water upstream from every control, shooting
   water downstream from every node the tranquil profile passes critical depth at and from every
   fall's foot.
+- **The water above a lip** (W142, 2026-11-17; the forest session's need 151, "the mountainside's
+  stream is still in plates"). The upstream step takes the friction slope between its two sections
+  **by the profile between them**: their mean where the upstream section's is the greater (a
+  backwater), their **harmonic mean** where it is the less (a drawdown toward a lip or a crest:
+  an M2 profile). That is the HEC-RAS Hydraulic Reference Manual's choice by profile type
+  ("Friction Loss Evaluation" and its table of criteria: the average friction slope for M1, the
+  harmonic mean for M2, after Reed & Wolfkill 1976; the manual's two pages read tonight through a
+  fetch's summary, Reed & Wolfkill not reached). **What it was**: printed at the owner's mark 9 on
+  `region link 515`, a plate was four nodes whose *solved* level stood at one height, 0.22 to
+  0.78 m over a bed falling 0.56 m under them, and then dropped 0.90 m to the lip's critical level
+  over one lattice step: a level sheet 3.7 m wide ending in a face of water (a second, 0.38 m
+  deep over eleven nodes, stood above the next lip three metres on). The cause is the step's
+  friction term and W137's law together. On a bed rougher than the water is deep Ferguson's
+  friction slope goes with about the fifth power of the depth's inverse, so at a lip's critical
+  section it is ten to twenty times the reach's (about 7 there, where the bed's slope is 0.7); the
+  plain mean charged half of it over the quarter-metre step, 0.9 m of head, and the only tranquil
+  level upstream with that head is a pool. Real water quickens to a brink over a few depths and
+  loses almost no head doing it, which is what the harmonic mean, following the lesser slope,
+  gives. Under Jarrett's law the lip's friction slope was a few times the reach's and the same
+  error was centimetres; W137 made it the plates, the stations over a bank it added (4,121
+  against 2,283) and its open pools. The shooting step downstream is unchanged (a jet's friction
+  slope under this law is in the hundreds, and it is tranquil again within a node or two, which
+  is tumbling flow).
+  **Measured on v47** (2026-11-17, `msvc-debug` `engine-content`, one thread beside other rows'
+  builds; the world as W140 re-planned it, its solve against the same with this mend; 463 s,
+  2.45 GB of commit): the stations over a bank 4,180 on 158 lines to **2,354 on 134** (the worst
+  8.1 to 1.67 m over); open pools 964 to 337 and pools not written over spilled water 149 to 31;
+  on lines over 30 % the gaps 93 to 88, the undrawn share 1.32 to 1.16 %, the film 0.58 to
+  0.50 %, the climbs in the data 41 to 27 (every class: 49 to 35, the worst 1.06 to 0.89 m), the
+  lip-to-foot pairs 430 to 486 (a fall the pool above the next lip had drowned is a fall again),
+  the drawn water's median speed 0.265 to 0.288 m/s and its depth 0.083 to 0.075 m. The stations
+  under the ground at the line go 1,554 to 1,614, on 94 and 95 lines: water that stood as a pool
+  over the ground lies in its bed again, which on a bench is beside the line. `region link 515`:
+  133 to 101 stations over a bank, its 3 gaps and 3.1 m undrawn unchanged; at mark 9 the two
+  plates are sheets 6 to 10 cm deep on their bed, and the last step to each lip falls 0.20 and
+  0.08 m where it fell 0.90 and 0.32. **What is left**: of the 88 gaps over 30 %, 75 are still
+  films over a bank only, stations at an edge of the cut with no bank on its downhill side (1,359
+  held at an open edge, as before), which is the cut's width on a bench and the planner's; and
+  between its falls a steep line is still a ribbon in flat facets, which is the step-pool form's
+  ([steep streams](../experiments/steep-streams.md#the-step-pool-form-solved-or-drawn)). The
+  forest's small scene of link 515 gives the world's stations at mark 9 to the millimetre and
+  solves in two minutes; `profile_tests.cpp`'s case (a bed falling one in two, boulders, 20 l/s, a
+  0.8 m step) held a pool 1.7 m deep and a face of water 1.8 m high at the lip before the mend.
+  No version moves: a world runs `flow solve` again.
 - **The regime by specific force.** Shooting water holds while its sequent level — the tranquil
   level with the same specific force — stands over what the tranquil profile holds a jump's
   length downstream; where it no longer does, a **jump**: its head between the two nodes the test
