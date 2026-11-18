@@ -172,6 +172,10 @@ struct RunRecord {
   std::string input_log;
   std::string external_log;
   std::string hash_log;
+  // The door's record (door.h, `Door::save`): every input the run took, at its tick. A record that
+  // names one needs neither of the two above — the door carries both kinds — and a record written
+  // before the door (2026-11-18) names none and reads as empty.
+  std::string door_log;
 };
 
 // `run.json` in `directory`, canonical JSON. The names must be plain file names (no separator, no

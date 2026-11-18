@@ -448,7 +448,8 @@ std::string run_file(std::string_view directory, std::string_view name) {
 }
 
 bool write_run_record(std::string_view directory, const RunRecord& record, std::string* error) {
-  for (const std::string* name : {&record.input_log, &record.external_log, &record.hash_log}) {
+  for (const std::string* name :
+       {&record.input_log, &record.external_log, &record.hash_log, &record.door_log}) {
     if (!name->empty() && !plain_file_name(*name)) {
       fail(error, "a run record names its files by plain name beside it, not '" + *name + "'");
       return false;
@@ -464,6 +465,7 @@ bool write_run_record(std::string_view directory, const RunRecord& record, std::
   out.set("input_log", record.input_log);
   out.set("external_log", record.external_log);
   out.set("hash_log", record.hash_log);
+  if (!record.door_log.empty()) out.set("door_log", record.door_log);
   const io::Status status =
       io::write_file_atomic(io::join_path(directory, "run.json"), write_json(out));
   if (status != io::Status::Ok) {
@@ -506,7 +508,10 @@ bool read_run_record(std::string_view directory, RunRecord& out, std::string* er
   }
   out.hz = static_cast<u32>(hz);
   const std::pair<const char*, std::string*> files[] = {
-      {"input_log", &out.input_log}, {"external_log", &out.external_log}, {"hash_log", &out.hash_log}};
+      {"input_log", &out.input_log},
+      {"external_log", &out.external_log},
+      {"hash_log", &out.hash_log},
+      {"door_log", &out.door_log}};
   for (const auto& [key, to] : files) {
     std::string_view name;
     const JsonValue* v = value.find(key);

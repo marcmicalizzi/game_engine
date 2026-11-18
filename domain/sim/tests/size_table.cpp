@@ -10,6 +10,7 @@
 // a crowd crossing together makes that a real array.
 
 #include <core/base/size_table.h>
+#include <domain/sim/door.h>
 #include <domain/sim/hash_log.h>
 #include <domain/sim/materialize.h>
 #include <domain/sim/scheduler.h>
@@ -74,3 +75,7 @@ ENGINE_EXPECT_SIZE(56, 8, WriteBackChange);
 // The state hash a tick's log (hash_log.h; roadmap T53): one row per (tick, phase) hashed, so
 // 10^4 ticks at eight phases is 80,000 of them, and its file form is the same three fields.
 ENGINE_EXPECT_SIZE(16, 8, HashLogRow);
+
+// The door (door.h; roadmap S18): one entry per input a run took, laid over bytes in its file and
+// in the store's payload, so a session of player input is tens of thousands of them.
+ENGINE_EXPECT_SIZE(32, 8, DoorEntry);
