@@ -253,7 +253,13 @@ Between 5 and 30 %, where the literature has a step every one to three widths ta
 fall, the solved water has almost none: 13.5 km of plane. Over 30 % a step stands every 15 m and
 takes a tenth of the fall. A step is written only where the *ground* drops at a metre a metre for
 three critical depths, and the cut is a smooth trench, so the steps there are the heightfield's
-own ledges.
+own ledges. The table is a script's over the solved stations; **the engine's own count** of the
+same (`flow solve`'s `runs_by_slope`: `steps_per_100m`, `step_fall_share`, `step_height_mean_m`,
+`level_share`, [channels](../subsystems/channels.md#how-whole-a-stream-is-drawn)), on the same
+world with W142's solve under it: 5 to 15 %, 0.12 steps a 100 m taking 0.55 % of the fall, 6.6 %
+of the length level; 15 to 30 %, 0.36 and 0.92 %, 11.0 % level; over 30 %, 7.79 and 11.85 %, the
+steps 0.68 m high in the mean, 4.6 % level. That is the measure the form will be held to: a
+staircase by the numbers below takes most of the fall at its steps and stands level between them.
 
 **The numbers a design takes from this**, each with its source:
 
@@ -268,3 +274,33 @@ own ledges.
 
 At S = 0.10 with D84 = 0.3 m that is a 0.3 m step every 2.4 m; at 0.37 a step every 0.6 m, under
 a width of a metre-wide stream, which is a cascade.
+
+**What a reader of stations will get** (the design the build leg starts from; not built, and to be
+measured when it is):
+
+- **No new field and no new flag.** A step is the pair the description already has: a station
+  flagged a fall's lip (a crest: critical depth) followed by its foot. Its place is the lip's x
+  and z, its height the lip's level less the foot's, in metres. Between a foot and the next lip
+  the stations are a pool: their levels within the description's centimetre of one height, the
+  depth greatest under the step and least at the next lip, the Froude number well under one.
+  The white row reads a jet where a foot follows a lip, as it reads a fall today; the count above
+  reads the same pairs.
+- **The steps are the ground's, so the solve needs no rule of its own.** The plan lays each
+  step's place along a steep line (the spacing above, its jitter seeded from the plan so tiles
+  agree), and the cut carves a riser of the step's height and a pool floor that runs level or
+  back up to the next lip with the residual depth under the step. The solve already finds a fall
+  wherever the bed drops at a metre a metre by three critical depths and already stands a pit's
+  water at its sill, so the staircase is solved from the ground the walker stands on, and the
+  water, the query and the ground cannot disagree. `k_channels_version` and the plan's bytes
+  move; every world plans again and its cuts' tile set cooks again.
+- **The lattice bounds it.** The solve reads the ground a quarter metre apart, so a riser and its
+  pool need a metre of line: L is held to a metre at the least, and where the regression asks
+  for less (S over about 0.2 at D84 = 0.3 m) the step grows instead, H = c S L, to 0.5 m at 0.37,
+  which is the height the heightfield's own ledges already give that class (0.5 to 0.7 m).
+- **Budgets, as estimates to be measured.** Stations: a step keeps its lip, its foot and one or
+  two of its pool's, so 1,300 to 4,000 a kilometre between S of 0.1 and 0.37 against 2,860 a
+  kilometre on the lines over 30 % today and a few hundred below. Triangles: the sheet's lattice
+  is its width's and does not move; a nappe is a piece of its own, a few triangles a step. The
+  solve walks the same nodes, so its time on v47 is today's (324 to 463 s in a debug build on
+  one thread, beside other work); the re-plan (607 s) and the cuts' cook (1,681 s with the solve,
+  37 GB of commit at its peak) are paid once.
