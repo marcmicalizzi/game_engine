@@ -2406,7 +2406,9 @@ struct CollectBlobsResult @version(1) {
   kept_young: u32 = 0
   removed: string[]
   removed_bytes: u64 = 0
-  /// Referenced names the store does not hold: a damaged document, which `doc.validate` reports.
+  /// Referenced names the store does not hold: a document whose bytes were removed behind the
+  /// store's back (a session refuses to commit such a reference). `doc.rollback_to` restores one a
+  /// checkpoint holds.
   missing: string[]
 }
 
