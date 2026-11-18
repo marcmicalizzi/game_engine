@@ -36,7 +36,15 @@ Each puts a pass over instances in front of the cluster pass, so the cluster pas
 
 [renderer](../subsystems/renderer.md#the-cull-culls-instances-first) has the mechanism. Measured (main against this branch, one lease, medians / p99 ms):
 
-*(filled in below by the flights of this row)*
+Flown 2026-11-18 00:05 to 00:12 with the session **locked**: main searching (its default), main reading the table, and this branch (b4f68c1e's code, `renderer.cull.instances` on), back to back a scene in one lease; 3840 × 2160 `--raster rt --shadows rt` with the bounce, 400 frames; the cull's zone counts the instance pass, its fold and the spheres.
+
+| Pairs | cull: search | table | instances first | frame total: search | table | instances first |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1.01 M | 0.052 / 0.055 | 0.035 / 0.038 | **0.019 / 0.027** | 2.632 | 2.619 | 2.604 |
+| 8.04 M | 0.325 / 0.343 | 0.181 / 0.202 | **0.112 / 0.181** | 3.736 | 3.598 | 3.531 |
+| 16.74 M | 0.747 / 0.776 | 0.354 / 0.396 | **0.236 / 0.342** | 5.018 | 4.624 | 4.494 |
+
+Every frame of the three culled the same set (drawn, casters, shadow pairs, built structures). Against main as it ships (searching) the instance pass takes 0.51 ms off the cull at 16.7 M pairs and the frame's total moves by as much (5.02 → 4.49 ms); against the table, 0.12 ms. What is left at the cap is mostly the instance pass itself — 328,328 threads, each moving a sphere through six planes and the caster volumes — and the survivors' pairs. **Not flown**: the hw/csm pair (two occlusion passes and four cascades, where the instance pass also culls by the Hi-Z) and `streamed-forest`'s were queued behind twenty leases and had not flown when the row handed back; nor an unlocked pair of the instance pass, though this traced 4K frame keeps the card awake either way (the table's pairs read the same locked and unlocked, above).
 
 ## What a weaker card should expect
 
