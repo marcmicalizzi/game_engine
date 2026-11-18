@@ -2365,8 +2365,10 @@ struct AssetPlacement @version(1) {
 /// transaction (or staged into an open one).
 struct PlaceAssetParams @version(1) {
   session: string
-  /// A glTF (.gltf), GLB (.glb) or built (.clusters) mesh, relative to the document's directory or
-  /// absolute: what the record's `mesh` names. It must exist and read as its kind.
+  /// A glTF (.gltf), GLB (.glb) or built (.clusters) mesh by a path relative to the document's
+  /// directory that stays under it (no drive, no `:`, no `..`): what the record's `mesh` names. It
+  /// must exist there and read as its kind; a path that leaves the directory is answered as a
+  /// missing file.
   asset: string
   placements: AssetPlacement[]
   /// Mixed into every generated id: two calls with different seeds place different ids.

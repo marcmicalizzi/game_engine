@@ -14,6 +14,7 @@
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -1177,6 +1178,42 @@ TEST_CASE("place_asset: a checked mesh placed as MeshPlacement records, ids from
                         {"attribution", who("q", "qa")}}),
                    &e) == codes::k_forbidden);
   CHECK(at(at(e, "data"), "method") == JsonValue("doc.place_asset"));
+}
+
+TEST_CASE("place_asset: reads only under the document's directory, and says nothing of the rest") {
+  TempDir tmp("protocol_place_root");
+  const std::string dir = tmp.file("doc");
+  Host host;
+  host.make_world(dir);
+  // A real .glb beside the document and one inside it, under a directory of its own.
+  const std::string glb("glTF\x02\0\0\0", 8);
+  write_bytes(tmp.file("outside.glb"), glb);
+  std::filesystem::create_directories(dir + "/props");
+  write_bytes(dir + "/props/crate.glb", glb);
+  const JsonValue a = who("a", "", "a crate");
+  const auto params = [&](const std::string& asset) {
+    return obj({{"asset", JsonValue(asset)},
+                {"placements", one(placement(1, 2, "crate"))},
+                {"attribution", a}});
+  };
+  host.ok("doc.place_asset", params("props/crate.glb"));
+  host.ok("doc.place_asset", params("props\\crate.glb"));
+  // The file outside exists and reads as a .glb, and every way of naming it is refused with the
+  // sentence a missing file gets: absolute, climbing out, a drive, a stream, an empty name.
+  JsonValue missing;
+  REQUIRE(host.fails("doc.place_asset", params("props/missing.glb"), &missing) ==
+          codes::k_not_found);
+  const std::string climbing[] = {
+      tmp.file("outside.glb"), "../outside.glb",        "props/../../outside.glb",
+      "..\\outside.glb",       "/outside.glb",          "\\\\host\\share\\outside.glb",
+      "C:outside.glb",         "props/crate.glb:x.glb", "props//crate.glb"};
+  const i64 before = journal_length(host);
+  for (const std::string& asset : climbing) {
+    JsonValue e;
+    CHECK_MESSAGE(host.fails("doc.place_asset", params(asset), &e) == codes::k_not_found, asset);
+    CHECK_MESSAGE(at(e, "message") == at(missing, "message"), asset);
+  }
+  CHECK(journal_length(host) == before);
 }
 
 TEST_CASE("instantiate_template: a subtree copied under fresh ids, offset, with its origin") {

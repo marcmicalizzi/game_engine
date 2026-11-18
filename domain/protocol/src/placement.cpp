@@ -50,8 +50,30 @@ bool ends_with(std::string_view s, std::string_view suffix) {
   return true;
 }
 
+// A path that stays under the document's directory, the one root a scene's mesh paths resolve
+// against (`doc_scene`'s `resolve_path`): relative, no drive, no stream, no `..` component, no
+// empty or control-character name. A client names a file on the host's disk here, and a host has
+// clients of several roles: an absolute path or one that climbs out would let any of them learn
+// whether a file exists anywhere on the machine, and its first bytes (protocol.md, "Placing an
+// asset, instantiating a template").
+bool stays_under_document(std::string_view asset) {
+  if (asset.empty() || asset[0] == '/' || asset[0] == '\\') return false;
+  usize start = 0;
+  for (usize i = 0; i <= asset.size(); ++i) {
+    const char c = i < asset.size() ? asset[i] : '/';
+    if (static_cast<unsigned char>(c) < 0x20 || c == ':') return false;
+    if (c != '/' && c != '\\') continue;
+    const std::string_view name = asset.substr(start, i - start);
+    if (name.empty() || name == "..") return false;
+    start = i + 1;
+  }
+  return true;
+}
+
 // What the record's `mesh` names, read far enough to say it is that kind of file: a .glb's and a
 // .clusters' magic, a .gltf's JSON with its `asset.version`. The record keeps the path as given.
+// A path refused for leaving the document's directory and one with no readable file under it get
+// the same code and the same sentence, so the answer says nothing about the disk outside.
 bool check_asset(const Session& s, std::string_view asset, std::string& kind, u64& bytes,
                  RpcError& error) {
   if (asset.empty()) {
@@ -70,17 +92,18 @@ bool check_asset(const Session& s, std::string_view asset, std::string& kind, u6
                            " is not a mesh a placement can name: a .gltf, .glb or .clusters file");
     return false;
   }
-  const bool absolute =
-      asset.size() > 1 && (asset[0] == '/' || asset[0] == '\\' || asset[1] == ':');
-  const std::string path =
-      absolute ? std::string(asset) : doc::DocumentStore::path_of(s.dir(), asset);
+  const auto unreadable = [&] {
+    error = make_error(codes::k_not_found,
+                       "no readable asset at that path under the document's directory: name a "
+                       ".gltf, .glb or .clusters file by a path relative to it, without '..'");
+    return false;
+  };
+  if (!stays_under_document(asset)) return unreadable();
+  const std::string path = doc::DocumentStore::path_of(s.dir(), asset);
   // The header's four bytes and the size: the asset may be hundreds of megabytes, and nothing here
   // needs more of it.
   io::FileInfo info;
-  if (io::stat_file(path, info) != io::Status::Ok || info.is_directory) {
-    error = make_error(codes::k_not_found, "no asset at " + path);
-    return false;
-  }
+  if (io::stat_file(path, info) != io::Status::Ok || info.is_directory) return unreadable();
   bytes = info.size;
   char head[4] = {};
   u64 got = 0;
@@ -98,7 +121,7 @@ bool check_asset(const Session& s, std::string_view asset, std::string& kind, u6
   }
   if (!ok) {
     error = make_error(codes::k_invalid_argument,
-                       "asset " + path + " does not read as a " + kind + " file");
+                       "asset '" + std::string(asset) + "' does not read as a " + kind + " file");
     return false;
   }
   return true;
