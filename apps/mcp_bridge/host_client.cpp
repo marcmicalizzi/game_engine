@@ -184,6 +184,22 @@ bool HostClient::connect(const BridgeOptions& options, std::string& error) {
     stop();
     return false;
   }
+  // Who this client is (protocol.md, "Several clients, one host"): the bridge's actor, role and
+  // task become its connection's, so the host's `client.list` names it and a call that names none
+  // runs as the agent rather than as the host. Said again on every connection, since an identity
+  // is the connection's. A host that predates it answers -32601 and the calls carry their own.
+  JsonValue hello = JsonValue::object();
+  hello.set("name", "engine-mcp");
+  JsonValue who = JsonValue::object();
+  who.set("actor", options.actor);
+  who.set("role", options.role);
+  who.set("task", options.task);
+  hello.set("attribution", std::move(who));
+  JsonValue identified;
+  if (call("client.hello", hello, identified, failure) != Status::ok) {
+    ENGINE_LOG_WARN(log_host_client, "the host did not take the bridge's identity",
+                    log::field("reason", failure.message));
+  }
   // The events the bridge passes on (journal and scene, for every session): subscribed on every
   // connection, since a subscription is the connection's.
   JsonValue params = JsonValue::object();

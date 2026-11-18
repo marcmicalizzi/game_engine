@@ -103,6 +103,13 @@ class App extends EventTarget {
   // the connection's and goes with it.
   async subscribe() {
     this.subscribed = false;
+    // Which client this connection is, for the host's `client.list` (protocol.md, "Several
+    // clients, one host"). A name only: the page edits as the host's own identity.
+    try {
+      await this.rpc.call("client.hello", { name: this.embedded ? "editor shell" : "shell" });
+    } catch (err) {
+      // A host without clients: nothing depends on it.
+    }
     if (this.session) {
       try {
         await this.rpc.call("session.subscribe", {
