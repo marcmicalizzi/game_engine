@@ -161,7 +161,12 @@ engine_app(NAME engine_content OUTPUT engine-content
   # engine-content links the renderer for its scene reader and opens no GPU device, and its tests
   # start nothing else: they run in the CPU pool, not a GPU chain (roadmap T170, what-to-run.md,
   # "Tests that open no device"). A command that opens one takes this off.
-  E2E_NO_DEVICE)
+  E2E_NO_DEVICE
+  # Two parts (roadmap T183): the 86 cases took 524 to 546 s of the 600 s budget in msvc-debug on
+  # a loaded machine, spread over the tissue settles (Jolt's soft body and the cage's winding
+  # queries, about 220 s), the erg's statistics (70 s), the crowns (51 s) and the rest; no one loop
+  # to make faster.
+  E2E_PARTS 2)
 
 if(TARGET engine::tissue)
   target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_TISSUE=1)

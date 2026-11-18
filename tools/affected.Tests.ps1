@@ -261,6 +261,63 @@ Test-That 'a script reaches the tools tests and the modules whose tests run a sc
 $r = Edges @('templates/game-repo/CMakeLists.txt')
 Test-That 'the game templates reach the tools tests and no module' { $r.Tools -and $r.Modules.Count -eq 0 -and -not $r.All }
 
+# A module's test and bench files are compiled into its own executables (roadmap T183; the gate of
+# 2026-11-18 ran fifteen modules' tests for three test sources of the renderer).
+$r = Edges @('systems/renderer/tests/frame_tests.cpp', 'systems/renderer/tests/data/frame.json')
+Test-That 'a module''s test source selects that module''s tests alone' { ($r.Modules -join ',') -eq 'renderer' -and @($r.Changed).Count -eq 0 -and -not $r.All }
+$r = Edges @('domain/physics/bench/solver_bench.cpp')
+Test-That 'a bench source too, its smoke run included' { ($r.Modules -join ',') -eq 'physics' -and (Runs $r 'bench.physics') -and -not (Runs $r 'cloth') }
+$r = Edges @('domain/gfx/tests/water_reference.h') @((Ref 'includes' 'domain/gfx/tests/water_reference.h' 'domain/gfx/tests/water_tests.cpp'),
+                                                     (Ref 'includes' 'domain/gfx/tests/water_reference.h' 'systems/cloth/tests/cloth_water_tests.cpp'))
+Test-That 'a test header selects the tests of every module whose tests include it, and no more' { ($r.Modules -join ',') -eq 'cloth,cloth_schemas,gfx' -and -not $r.All }
+$r = Edges @('domain/gfx/tests/water_reference.h') @((Ref 'includes' 'domain/gfx/tests/water_reference.h' 'domain/physics/src/odd.cpp'))
+Test-That 'a test header a module''s own source includes is a change to that module' { ($r.Modules -join ',') -eq 'cloth,gfx,physics' }
+$r = Edges @('domain/gfx/tests/water_reference.h') @((Ref 'includes' 'domain/gfx/tests/water_reference.h' 'shared/odd.cpp'))
+Test-That 'one a file no module holds includes selects everything' { $r.All }
+$r = Edges @('systems/renderer/tests/shaders/fill.slang')
+Test-That 'a test shader keeps the shader rule: a change to its module' { ($r.Modules -join ',') -eq 'engine_cli,engine_view,renderer' }
+$r = Edges @('systems/renderer/tests/frame_tests.cpp', 'domain/sky/src/earth.cpp')
+Test-That 'a test source beside a source of another module adds nothing to that module''s reach' { ($r.Modules -join ',') -eq 'engine_cli,engine_view,renderer,sky' }
+
+# The tools' tests by the scripts each runs (roadmap T183): the commands as CTest holds them.
+$ctestJson = @'
+{"kind":"ctestInfo","version":{"major":1,"minor":0},"tests":[
+ {"name":"tools.affected","command":["C:/pwsh.exe","-File","D:/src/tree/tools/affected.Tests.ps1"]},
+ {"name":"tools.no_driver","command":["C:/pwsh.exe","-File","D:/SRC/tree/tools/no-driver.Tests.ps1"]},
+ {"name":"tools.lint","command":["C:/pwsh.exe","-File","D:/src/tree/tools/lint.Tests.ps1"]},
+ {"name":"tools.shader_cache","command":["C:/cmake.exe","-DMETER=D:/src/tree/build/bin/meter.exe","-P","D:/src/tree/cmake/ShaderCache.cmake"]},
+ {"name":"mcp_bridge.mcp_check","command":["C:/pwsh.exe","-File","D:/src/tree/tools/mcp-check.ps1","-Mcp","D:/src/tree/build/bin/engine-mcp.exe"]},
+ {"name":"physics","command":["D:/src/tree/build/bin/engine_physics_tests.exe"]},
+ {"name":"disabled_one"}]}
+'@
+$toolMap = Get-ToolTests -Json $ctestJson -Root 'd:\src\tree'
+Test-That 'Get-ToolTests maps a test to the tools/ files its command names, whatever the case of the root' {
+  ($toolMap.Keys | Sort-Object) -join ',' -eq 'mcp_bridge.mcp_check,tools.affected,tools.lint,tools.no_driver' -and ($toolMap['tools.no_driver'] -join ',') -eq 'tools/no-driver.Tests.ps1'
+}
+Test-That 'and an empty listing is an empty map' { (Get-ToolTests -Json '' -Root 'd:\src\tree').Count -eq 0 }
+function Tools([string[]]$changed, [object[]]$mentions = @()) {
+  Get-AffectedTests -Modules $edgeModules -Layers $layers -Changed $changed -Mentions $mentions -ToolTests $toolMap
+}
+$runsAffected = @((Ref 'runs' 'tools/lib/Affected.psm1' 'tools/affected.Tests.ps1'), (Ref 'runs' 'tools/lib/Affected.psm1' 'tools/dev.ps1'),
+                  (Ref 'runs' 'tools/lib/Affected.psm1' 'tools/no-driver.Tests.ps1'))
+$r = Tools @('tools/lib/Affected.psm1') $runsAffected
+Test-That 'a module of tools/ selects the tests whose scripts name it, through the scripts that do' {
+  (@($r.ToolTests) -join ',') -eq 'tools.affected,tools.no_driver' -and (Runs $r 'tools.affected') -and (Runs $r 'tools.no_driver') -and
+  -not (Runs $r 'tools.lint') -and -not (Runs $r 'tools.shader_cache') -and $r.Tools -and $r.Apps.Count -gt 0 -and $r.Modules.Count -eq 0
+}
+$r = Tools @('tools/affected.Tests.ps1')
+Test-That 'a test script selects its own test' { (@($r.ToolTests) -join ',') -eq 'tools.affected' -and -not (Runs $r 'tools.no_driver') }
+$r = Tools @('tools/mcp-check.ps1')
+Test-That 'a script a module''s test runs selects that test by its name' { (Runs $r 'mcp_bridge.mcp_check') -and -not (Runs $r 'mcp_bridge') -and -not (Runs $r 'tools.lint') }
+$r = Tools @('tools/remote-build.ps1')
+Test-That 'a script no test runs selects no tools test, builds no app, and says so' {
+  -not $r.Tools -and $r.Apps.Count -eq 0 -and -not (Runs $r 'tools.lint') -and @($r.Notes | Where-Object { $_ -match 'no test runs tools/remote-build.ps1' }).Count -eq 1
+}
+$r = Tools @('tools/shader_meter/src/main.cpp')
+Test-That 'a C++ tool under tools/ still runs every tools test' { (Runs $r 'tools.shader_cache') -and (Runs $r 'tools.lint') -and $r.Tools }
+$r = Tools @('tools/gpu-lock.ps1') @((Ref 'reads' 'tools' 'foundation/io/tests/lock_tests.cpp'))
+Test-That 'a module whose tests run a script from the tree is still reached' { ($r.Modules -join ',') -eq 'io' }
+
 $r = Edges @('domain/gfx/shaders/brdf.slang') @((Ref 'slang' 'domain/gfx/shaders/brdf.slang' 'systems/cloth/shaders/cloth.slang'))
 Test-That 'a shader another module''s shader includes is a change to that module too' { $r.Modules -contains 'cloth' -and $r.Modules -contains 'renderer' }
 
@@ -338,11 +395,23 @@ try {
   Set-RepoFile 'cmake/EngineGlobal.cmake' "set(ENGINE_GLOBAL ON)`nfunction(engine_global)`nendfunction()`n"
   Set-RepoFile 'CMakeLists.txt' "include(EngineCloth)`ninclude(EngineGlobal)`n"
   Set-RepoFile 'systems/cloth/CMakeLists.txt' "engine_cloth_setup(cloth) # EngineCloth`n"
+  Set-RepoFile 'tools/lib/Rule.psm1' "function Get-Rule { }`n"
+  Set-RepoFile 'tools/dev.ps1' "Import-Module (Join-Path `$PSScriptRoot 'lib/Rule.psm1')`n"
+  Set-RepoFile 'tools/rule.Tests.ps1' "Import-Module (Join-Path `$PSScriptRoot 'lib/Rule.psm1')`n"
+  Set-RepoFile 'tools/no-driver.Tests.ps1' "& (Join-Path `$PSScriptRoot 'dev.ps1') test`n"
+  Set-RepoFile 'tools/my-dev.ps1' "& (Join-Path `$PSScriptRoot 'my-dev.ps1')`n"
+  Set-RepoFile 'tools/README.md' "lib/Rule.psm1 is the rule`n"
+  Set-RepoFile 'tools/raises/R1.json' "{}`n"
+  Set-RepoFile 'tools/raise-check.ps1' "Get-ChildItem (Join-Path `$PSScriptRoot 'raises') -Filter *.json`n"
+  Set-RepoFile 'domain/gfx/tests/water_reference.h' "#pragma once`n"
+  Set-RepoFile 'domain/gfx/tests/water_helpers.h' "#include `"water_reference.h`"`n"
+  Set-RepoFile 'systems/water/tests/water_tests.cpp' "#include <water_helpers.h>`n"
   & git -C $repo init -q 2>$null
   & git -C $repo add -A 2>$null
 
   $changed = @('content/flora/oak.flora.json', 'tools/gpu-lock.ps1', 'tests/support/tile_fixture.h',
-               'domain/gfx/shaders/brdf.slang', 'cmake/EngineCloth.cmake', 'cmake/EngineGlobal.cmake')
+               'domain/gfx/shaders/brdf.slang', 'cmake/EngineCloth.cmake', 'cmake/EngineGlobal.cmake',
+               'tools/lib/Rule.psm1', 'domain/gfx/tests/water_reference.h', 'tools/raises/R1.json')
   # From the repository's root, as `dev.ps1 test -Affected` runs it: where PowerShell expands a
   # native command's wildcards (Linux, macOS), the root's CMakeLists.txt is what `*CMakeLists.txt`
   # would turn into if the grep's pathspecs ever reached git through `& git` again.
@@ -370,6 +439,18 @@ try {
     -not (Has 'cmake' 'cmake/EngineCloth.cmake' '*')
   }
   Test-That 'a helper that sets a variable at its top is everything''s' { Has 'cmake' 'cmake/EngineGlobal.cmake' '*' }
+  Test-That 'a module of tools/ is run by the scripts that import it and by those that run them' {
+    (Has 'runs' 'tools/lib/Rule.psm1' 'tools/dev.ps1') -and (Has 'runs' 'tools/lib/Rule.psm1' 'tools/rule.Tests.ps1') -and
+    (Has 'runs' 'tools/lib/Rule.psm1' 'tools/no-driver.Tests.ps1')
+  }
+  Test-That 'but not by a script whose name only ends with the same name, nor by a page' {
+    -not (Has 'runs' 'tools/lib/Rule.psm1' 'tools/my-dev.ps1') -and -not (Has 'runs' 'tools/lib/Rule.psm1' 'tools/README.md')
+  }
+  Test-That 'a file of a directory under tools/ is run by the script that reads the directory' { Has 'runs' 'tools/raises/R1.json' 'tools/raise-check.ps1' }
+  Test-That 'a test header is found through the test header that includes it, in another module''s tests' {
+    (Has 'includes' 'domain/gfx/tests/water_reference.h' 'domain/gfx/tests/water_helpers.h') -and
+    (Has 'includes' 'domain/gfx/tests/water_reference.h' 'systems/water/tests/water_tests.cpp')
+  }
   & git -C $repo -c user.email=t@example.invalid -c user.name=t commit -q -m fixture 2>$null
   $rev = (& git -C $repo rev-parse HEAD).Trim()
   Set-RepoFile 'systems/renderer/tests/scene_tests.cpp' "int nothing;`n"

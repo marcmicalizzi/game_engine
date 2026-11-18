@@ -1,6 +1,11 @@
 # cmake -DINPUT=<file> -DOUTPUT=<header> -DSYMBOL=<name> -P EmbedFile.cmake
 # Writes a header declaring the input's bytes as a 4-byte-aligned constexpr array in
-# namespace engine::shaders.
+# namespace engine::shaders, and leaves a header that already says exactly that as it is. The
+# build runs this whenever the SPIR-V is written, and the SPIR-V is written again with the same
+# bytes after every compile the shader cache serves (roadmap T76) or that a touched include starts;
+# a header written again with no change made every source that includes it compile and every
+# test binary link again. Left alone, its time does not move and ninja's restat stops there
+# (roadmap T183: touching scene.slang went from 42 compiles and 20 links to none).
 if(NOT INPUT OR NOT OUTPUT OR NOT SYMBOL)
   message(FATAL_ERROR "EmbedFile.cmake: INPUT, OUTPUT, and SYMBOL are required")
 endif()
@@ -17,4 +22,10 @@ string(APPEND _content "#pragma once\n\n#include <cstddef>\n\nnamespace engine::
 string(APPEND _content "inline constexpr std::size_t ${SYMBOL}_size = ${_byte_count};\n")
 string(APPEND _content "alignas(4) inline constexpr unsigned char ${SYMBOL}[] = {\n  ${_bytes}\n};\n\n")
 string(APPEND _content "}  // namespace engine::shaders\n")
+if(EXISTS "${OUTPUT}")
+  file(READ "${OUTPUT}" _old)
+  if(_old STREQUAL _content)
+    return()
+  endif()
+endif()
 file(WRITE "${OUTPUT}" "${_content}")

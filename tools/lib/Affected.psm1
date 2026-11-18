@@ -20,8 +20,11 @@
 #       content/<dir>/...   the modules whose files name `content/<dir>` (or build a content path
 #                           out of pieces, which is every directory), through every content
 #                           directory whose files refer to that one (a scene's `../../flora/...`);
-#       tools/...           the tools' own tests and apps as before, and the modules whose files
-#                           run a script from the tree (`"tools/...`, `${CMAKE_SOURCE_DIR}/tools/`);
+#       tools/...           a script (or a file one reads): the tests whose command names it or a
+#                           file of tools/ that names it, transitively (`runs`; the commands from
+#                           Get-ToolTests); anything else there (a C++ tool), every tools test; and
+#                           the modules whose files run a script from the tree (`"tools/...`,
+#                           `${CMAKE_SOURCE_DIR}/tools/`);
 #       tests/support/*.h   the modules whose files include it, or a support header that does;
 #       a shader            also every module whose shaders include it, through relative paths;
 #       cmake/<file>.cmake  the modules whose CMakeLists call what it defines, when all it holds is
@@ -30,6 +33,11 @@
 #     A reference in a module's tests/ or bench/ reaches that module's tests; one anywhere else in
 #     a module (its sources, its CMakeLists) is a change to the module, so it reaches everything
 #     that links it.
+#   - **A changed file in a module's tests/ or bench/** is compiled into that module's test and
+#     bench executables, which nothing links: it selects that module's tests alone (2026-11-18:
+#     three test sources of the renderer had selected the fifteen modules whose tests link it). A
+#     header there selects too the tests whose files include it, through other headers (water's
+#     tests include gfx's water_reference.h); a shader there is a shader (above).
 #   - A source file a test target compiles from outside every module (tests/support/test_main.cpp,
 #     apps/tests/...) and the directory of a target that is no module (a game module) are in
 #     `test_reach` too, so they reach the tests that build them.
@@ -42,8 +50,9 @@
 #   - Documentation selects nothing but the checks that always run.
 #   - The tools' own tests (`tools.*`) start the apps they test (tools.game_sdk exports and runs
 #     engine-view; the e10 harness reads this tree's binaries), and CTest records no target a
-#     test needs, so when they run every app the graph declares is built with them (`Apps`): the
-#     app set comes from engine_app() through modules.json, not from a list written here.
+#     test needs, so when any of them runs every app the graph declares is built with them
+#     (`Apps`): the app set comes from engine_app() through modules.json, not from a list written
+#     here.
 # The lint, the documentation check and the structure check (the hubs' ceilings, T81) always run:
 # they are seconds, and they are the checks a change of any kind can fail — a page that grows is
 # documentation and selects no module, and it can still pass its ceiling.
@@ -70,16 +79,19 @@ function Get-AffectedTests {
     [AllowEmptyCollection()] [string[]]$Changed = @(),
     [AllowEmptyCollection()] [object[]]$Mentions = @(),   # Get-AffectedMentions' records
     [ValidateSet('edges', 'modules', 'all')] [string]$Rule = 'edges',
-    [AllowEmptyCollection()] [string[]]$Disabled = @()    # modules.json's "disabled_capabilities"
+    [AllowEmptyCollection()] [string[]]$Disabled = @(),   # modules.json's "disabled_capabilities"
+    # Each test whose command names a file under tools/, with those files (Get-ToolTests, from
+    # `ctest --show-only=json-v1`). Absent, a change under tools/ runs every tools.* test.
+    [AllowNull()] [hashtable]$ToolTests = $null
   )
   if ($Rule -eq 'all') {
     $apps = @($Modules | Where-Object { $_.layer -eq 'apps' } | ForEach-Object { $_.name } | Sort-Object)
     return @{ All = $true; Reason = 'the rule `all` was asked for'; Modules = @($Modules | ForEach-Object { $_.name } | Sort-Object)
-              Changed = @(); Tools = $true; Filter = $null; Apps = $apps; Notes = @() }
+              Changed = @(); Tools = $true; ToolTests = @(); Filter = $null; Apps = $apps; Notes = @() }
   }
   $withEdges = @($Modules | Where-Object { $_.PSObject.Properties.Name -contains 'test_reach' -and $null -ne $_.test_reach })
   if ($Rule -eq 'edges' -and $Modules.Count -gt 0 -and $withEdges.Count -eq $Modules.Count) {
-    return Get-AffectedByEdges -Modules $Modules -Changed $Changed -Mentions $Mentions -Disabled $Disabled
+    return Get-AffectedByEdges -Modules $Modules -Changed $Changed -Mentions $Mentions -Disabled $Disabled -ToolTests $ToolTests
   }
   $notes = New-Object System.Collections.Generic.List[string]
   if ($Rule -eq 'edges' -and $Modules.Count -gt 0) {
@@ -123,7 +135,7 @@ function Get-AffectedTests {
   $apps = @($Modules | Where-Object { $_.layer -eq 'apps' } | ForEach-Object { $_.name } | Sort-Object)
   if ($all) {
     return @{ All = $true; Reason = $all; Modules = @($Modules | ForEach-Object { $_.name } | Sort-Object)
-              Changed = @($changedModules | Sort-Object); Tools = $true; Filter = $null; Apps = $apps
+              Changed = @($changedModules | Sort-Object); Tools = $true; ToolTests = @(); Filter = $null; Apps = $apps
               Notes = $notes.ToArray() }
   }
 
@@ -164,7 +176,7 @@ function Get-AffectedTests {
   if ($tools) { $parts.Add('^tools\.') }
   if (-not $tools) { $apps = @() }
   return @{ All = $false; Reason = $null; Modules = $names; Changed = @($changedModules | Sort-Object)
-            Tools = $tools; Filter = ($parts -join '|'); Apps = $apps; Notes = $notes.ToArray() }
+            Tools = $tools; ToolTests = @(); Filter = ($parts -join '|'); Apps = $apps; Notes = $notes.ToArray() }
 }
 
 # The modules whose directory holds a path: the deepest, or every module that shares it.
@@ -181,7 +193,7 @@ function Get-PathOwners([object[]]$ByPath, [string]$Path) {
 
 function Get-AffectedByEdges {
   # The `edges` rule (the header above). Same result shape as Get-AffectedTests.
-  param([object[]]$Modules, [string[]]$Changed, [object[]]$Mentions, [string[]]$Disabled)
+  param([object[]]$Modules, [string[]]$Changed, [object[]]$Mentions, [string[]]$Disabled, [hashtable]$ToolTests)
   $notes = New-Object System.Collections.Generic.List[string]
   $disabledNames = New-Object System.Collections.Generic.HashSet[string]
   foreach ($d in @($Disabled)) { if ($d) { [void]$disabledNames.Add($d.ToLowerInvariant()) } }
@@ -234,6 +246,8 @@ function Get-AffectedByEdges {
   $contentDirs = New-Object System.Collections.Generic.HashSet[string]
   $headers = New-Object System.Collections.Generic.List[string]
   $cmake = New-Object System.Collections.Generic.List[string]
+  $testHeaders = New-Object System.Collections.Generic.List[string]
+  $toolScripts = New-Object System.Collections.Generic.List[string]
   $toolsChanged = $false
   foreach ($raw in $Changed) {
     $path = ($raw -replace '\\', '/').Trim()
@@ -241,6 +255,16 @@ function Get-AffectedByEdges {
     $owners = Get-PathOwners $byPath $path
     if ($owners.Count -gt 0) {
       if ($path -like '*.md') { continue }
+      # A file of a module's tests/ or bench/ is compiled into (or read by) that module's test and
+      # bench executables, and nothing links them: their tests alone. A header there may be
+      # included by another module's tests (water's include gfx's water_reference.h), so its
+      # includers' tests too; a shader there keeps the shader rule below.
+      $inTests = @($owners | Where-Object { $path.StartsWith($_.path + '/tests/') -or $path.StartsWith($_.path + '/bench/') })
+      if ($inTests.Count -eq $owners.Count -and $path -notlike '*.slang') {
+        foreach ($m in $owners) { [void]$direct.Add($m.name) }
+        if ($path -match '\.(h|hpp|inl)$') { $testHeaders.Add($path) }
+        continue
+      }
       foreach ($m in $owners) { [void]$changedModules.Add($m.name) }
       if ($path -like '*.slang') { $slang.Add($path) }
       continue
@@ -252,7 +276,17 @@ function Get-AffectedByEdges {
     $reached = Find-Reached $path
     if ($reached.Count -gt 0) { foreach ($n in $reached) { [void]$direct.Add($n) }; continue }
     $parts = $path -split '/'
-    if ($path -like 'tools/*') { $tools = $true; $toolsChanged = $true; continue }
+    if ($path -like 'tools/*') {
+      # A script, or a file a script reads, reaches the tests whose command names it or a file of
+      # tools/ that names it (Get-AffectedMentions' `runs`); a C++ tool (tools/shader_meter) or
+      # anything else there, every tools test, as before the map existed.
+      $toolsChanged = $true
+      $leaf = [IO.Path]::GetFileName($path)
+      if ($null -ne $ToolTests -and $ToolTests.Count -gt 0 -and $leaf -ne 'CMakeLists.txt' -and
+          $path -match '\.(ps1|psm1|sh|cmd|json|txt)$') { $toolScripts.Add($path) }
+      else { $tools = $true }
+      continue
+    }
     # The game author's templates are read by the tools that export and start a game repository
     # (tools/new-game-repo.ps1, tools.game_sdk), and by nothing a module builds.
     if ($path -like 'templates/*') { $tools = $true; continue }
@@ -317,12 +351,45 @@ function Get-AffectedByEdges {
     foreach ($rec in $includers) { if ($rec.file -notlike 'tests/support/*') { Add-Reader $rec.file $h } }
     $notes.Add("$h is included by $($includers.Count) file(s)")
   }
+  # A test header's includers (transitively through headers, from the mentions): a test or bench
+  # file of a module reaches that module's tests; a module's own source that includes one is a
+  # change to the module; a test target's shared source reaches the tests built from it.
+  foreach ($h in $testHeaders) {
+    $includers = @($mentions | Where-Object { $_.kind -eq 'includes' -and $_.target -eq $h })
+    $others = New-Object System.Collections.Generic.SortedSet[string] ([StringComparer]::Ordinal)
+    foreach ($rec in $includers) {
+      $file = $rec.file -replace '\\', '/'
+      $owners = Get-PathOwners $byPath $file
+      if ($owners.Count -gt 0) {
+        foreach ($o in $owners) {
+          [void]$others.Add($o.name)
+          if ($file.StartsWith($o.path + '/tests/') -or $file.StartsWith($o.path + '/bench/')) { [void]$direct.Add($o.name) }
+          else { [void]$changedModules.Add($o.name) }
+        }
+        continue
+      }
+      $reached = Find-Reached $file
+      if ($reached.Count -gt 0) { foreach ($n in $reached) { [void]$direct.Add($n) }; continue }
+      Set-All "$file includes $h, and no module holds it"
+    }
+    $notes.Add("$h is a test header; included by $($includers.Count) file(s)$(if ($others.Count) { " of $(@($others) -join ', ')" })")
+  }
+  # A script under tools/: the tests whose command names it, or a file of tools/ that names it.
+  $toolSelected = New-Object System.Collections.Generic.SortedSet[string] ([StringComparer]::Ordinal)
+  foreach ($tp in $toolScripts) {
+    $reach = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    [void]$reach.Add($tp)
+    foreach ($rec in @($mentions | Where-Object { $_.kind -eq 'runs' -and $_.target -eq $tp })) { [void]$reach.Add(($rec.file -replace '\\', '/')) }
+    $hit = @(foreach ($name in $ToolTests.Keys) { if (@($ToolTests[$name] | Where-Object { $reach.Contains($_) }).Count -gt 0) { $name } })
+    foreach ($n in $hit) { [void]$toolSelected.Add($n) }
+    if ($hit.Count -eq 0) { $notes.Add("no test runs $tp, nor a script that names it") }
+  }
   if ($script:edgeTools) { $tools = $true }
 
   $apps = @($Modules | Where-Object { $_.layer -eq 'apps' } | ForEach-Object { $_.name } | Sort-Object)
   if ($script:edgeAll) {
     return @{ All = $true; Reason = $script:edgeAll; Modules = @($Modules | ForEach-Object { $_.name } | Sort-Object)
-              Changed = @($changedModules | Sort-Object); Tools = $true; Filter = $null; Apps = $apps
+              Changed = @($changedModules | Sort-Object); Tools = $true; ToolTests = @(); Filter = $null; Apps = $apps
               Notes = $notes.ToArray() }
   }
 
@@ -362,9 +429,41 @@ function Get-AffectedByEdges {
   }
   foreach ($t in $script:AlwaysTests) { $parts.Add('^' + [regex]::Escape($t) + '$') }
   if ($tools) { $parts.Add('^tools\.') }
-  if (-not $tools) { $apps = @() }
+  if ($toolSelected.Count -gt 0) {
+    $parts.Add('^(' + ((@($toolSelected) | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')$')
+  }
+  $anyTools = $tools -or $toolSelected.Count -gt 0
+  if (-not $anyTools) { $apps = @() }
   return @{ All = $false; Reason = $null; Modules = $names; Changed = @($changedModules | Sort-Object)
-            Tools = $tools; Filter = ($parts -join '|'); Apps = $apps; Notes = $notes.ToArray() }
+            Tools = $anyTools; ToolTests = @($toolSelected); Filter = ($parts -join '|'); Apps = $apps; Notes = $notes.ToArray() }
+}
+
+function Get-ToolTests {
+  <#
+  .SYNOPSIS
+    Each test whose command names a file under tools/, with those files relative to the checkout:
+    the map Get-AffectedTests' -ToolTests takes, read from `ctest --show-only=json-v1`'s text.
+  #>
+  param(
+    [Parameter(Mandatory)] [AllowEmptyString()] [string]$Json,
+    [Parameter(Mandatory)] [string]$Root
+  )
+  $map = @{}
+  if (-not $Json.Trim()) { return $map }
+  $doc = $Json | ConvertFrom-Json
+  $prefix = (($Root -replace '\\', '/').TrimEnd('/')) + '/tools/'
+  $pattern = [regex]::Escape($prefix) + '[^;"''\s]+'
+  foreach ($t in @($doc.tests)) {
+    if (-not $t -or -not ($t.PSObject.Properties.Name -contains 'command')) { continue }
+    $named = New-Object System.Collections.Generic.SortedSet[string] ([StringComparer]::Ordinal)
+    foreach ($arg in @($t.command)) {
+      foreach ($m in [regex]::Matches(("$arg" -replace '\\', '/'), $pattern, 'IgnoreCase')) {
+        [void]$named.Add('tools/' + $m.Value.Substring($prefix.Length))
+      }
+    }
+    if ($named.Count -gt 0) { $map[[string]$t.name] = @($named) }
+  }
+  return $map
 }
 
 function Get-AffectedMentions {
@@ -462,15 +561,44 @@ function Get-AffectedMentions {
   }
 
   # tools/: what runs a script from the tree.
-  if (@($paths | Where-Object { $_ -like 'tools/*' -and $_ -notlike 'tools/schemac/*' }).Count -gt 0) {
+  $toolPaths = @($paths | Where-Object { $_ -like 'tools/*' -and $_ -notlike 'tools/schemac/*' })
+  if ($toolPaths.Count -gt 0) {
     $script = '"/?tools/|[}]/tools/'
     foreach ($hit in (Find-Lines @($script) @('core', 'foundation', 'domain', 'systems', 'apps', 'game', 'tests'))) {
       if ($hit.Text -match $script) { Add-Record 'reads' 'tools' $hit.File }
     }
   }
 
-  # tests/support headers: their includers, through the support headers that include them.
-  foreach ($h in @($paths | Where-Object { $_ -like 'tests/support/*' -and $_ -match '\.(h|hpp|inl)$' })) {
+  # A file under tools/: the files of tools/ that name it, through any number of others (a test
+  # script names the script it runs, which imports a module by its file name), so the rule can
+  # select the tests whose command names any of them. By name, comments included: a name in a
+  # comment selects a test too many, never too few.
+  foreach ($tp in $toolPaths) {
+    $names = New-Object System.Collections.Generic.HashSet[string]
+    [void]$names.Add([IO.Path]::GetFileName($tp))
+    # A file of a directory under tools/ may be read by the directory, by no name of its own
+    # (structure-check.ps1 reads every tools/structure-raises/*.json): the directory's name too.
+    # Not tools/lib/, whose modules are imported by name and whose name every script holds.
+    $dirParts = $tp -split '/'
+    if ($dirParts.Count -gt 2 -and $dirParts[1] -ne 'lib') { [void]$names.Add($dirParts[1]) }
+    $seen = New-Object System.Collections.Generic.HashSet[string]
+    [void]$seen.Add($tp)
+    $grew = $true
+    while ($grew) {
+      $grew = $false
+      $alt = (@($names) | ForEach-Object { [regex]::Escape($_) }) -join '|'
+      foreach ($f in (Find-Files "(^|[^A-Za-z0-9_.-])($alt)([^A-Za-z0-9_.-]|$)" @('tools', ':!tools/schemac', ':!*.md'))) {
+        if (-not $seen.Add($f)) { continue }
+        Add-Record 'runs' $tp $f
+        if ($names.Add([IO.Path]::GetFileName($f))) { $grew = $true }
+      }
+    }
+  }
+
+  # tests/support headers and the headers in a module's tests/ or bench/: their includers, through
+  # the headers that include them.
+  foreach ($h in @($paths | Where-Object { $_ -match '\.(h|hpp|inl)$' -and ($_ -like 'tests/support/*' -or
+                                           $_ -match '^(core|foundation|domain|systems|apps|game)/.+/(tests|bench)/') })) {
     $names = New-Object System.Collections.Generic.HashSet[string]
     [void]$names.Add([IO.Path]::GetFileName($h))
     $seen = New-Object System.Collections.Generic.HashSet[string]
@@ -481,7 +609,8 @@ function Get-AffectedMentions {
       foreach ($f in (Find-Files "#[[:space:]]*include[[:space:]]*[<`"]([^`">]*/)?($alt)[`">]" @('.', ':!third_party'))) {
         if (-not $seen.Add($f)) { continue }
         Add-Record 'includes' $h $f
-        if ($f -like 'tests/support/*' -and $names.Add([IO.Path]::GetFileName($f))) { $grew = $true }
+        $relay = $f -like 'tests/support/*' -or ($f -match '\.(h|hpp|inl)$' -and $f -match '/(tests|bench)/')
+        if ($relay -and $names.Add([IO.Path]::GetFileName($f))) { $grew = $true }
       }
     }
   }
@@ -646,4 +775,4 @@ function ConvertFrom-NinjaTargets {
   return @($names)
 }
 
-Export-ModuleMember -Function Get-AffectedTests, Get-AffectedMentions, Get-CMakeDefinitions, Get-ChangedPaths, Get-AffectedTargets, ConvertFrom-NinjaTargets
+Export-ModuleMember -Function Get-AffectedTests, Get-ToolTests, Get-AffectedMentions,Get-CMakeDefinitions, Get-ChangedPaths, Get-AffectedTargets, ConvertFrom-NinjaTargets

@@ -211,14 +211,20 @@ class Parser {
   bool parse_string(std::string& out) {
     ++pos_;  // opening quote
     while (true) {
+      // The run up to the next quote, escape or control character in one append (roadmap T183:
+      // a byte at a time was most of reading a document in a debug build).
+      const char* const base = text_.data();
+      const char* p = base + pos_;
+      const char* const end = base + text_.size();
+      while (p != end && *p != '"' && *p != '\\' && static_cast<unsigned char>(*p) >= 0x20)
+        ++p;
+      const usize run = static_cast<usize>(p - (base + pos_));
+      if (run != 0) out.append(base + pos_, run);
+      pos_ += run;
       if (at_end()) return fail("unterminated string");
       const char c = text_[pos_++];
       if (c == '"') return true;
       if (static_cast<unsigned char>(c) < 0x20) return fail("control character in string");
-      if (c != '\\') {
-        out.push_back(c);
-        continue;
-      }
       if (at_end()) return fail("unterminated escape");
       const char e = text_[pos_++];
       switch (e) {
