@@ -3918,6 +3918,29 @@ turn showed its fill. Read, not measured: the figure repeated to a few hundredth
 28.46 over the runs) because a mean over 8,000 crown pixels of that many lost samples does, not
 because the passes ran in a fixed order.
 
+**What a person saw of it: nothing in a held view, a dark first frame on a turn.** The joined
+tree's msvc-release with and without the mend, 3840×2160, `--raster rt --shadows rt`, the
+bounce, frame 186 of a held view, each flown twice (the session locked, the card otherwise
+idle):
+
+| held view | unmended, two runs | mended, two runs | unmended against mended | mean code, unmended and mended |
+|---|---|---|---|---|
+| the village's house 0 (`interior-held.json`) | 129,863 pixels apart (1.57 %), 129,461 of them by one code, none by more than two | 721 (0.01 %), every one by one code | 164,054 and 157,967 (2.0 and 1.9 %), none by more than four | 20.838 and 20.837 |
+| the grove (its path's first key held, the flora's motion off) | 122,872 (1.48 %), every one by one code | **0** | 114,172 and 114,165 (1.38 %), every one by one code | 131.919 and 131.917 |
+
+The change between frames is the same too (the house: 2.06 % of pixel-frames step a code
+unmended and 2.05 % mended; the grove 0.081 and 0.080 %). So on a held view the fault moved one
+pixel in sixty by a single display code and the level not at all, which no eye takes; what
+showed was the frame after a turn or a load, where a cell's first samples are what the picture
+reads: the crowns of the turn's case a ninth of the range dark for a frame (28 codes of 255,
+where 3), and the first frames' change nearly twice the still picture's allowance. The house's
+721 pixels between two mended runs are not explained here; the young rays' claim on their half
+of the budget is by the order waves reach it, as the sample pass says, and is the candidate.
+(An `engine-view` copied out of its tree finds no generated material sets, since the pack is
+found from the executable's directory: the first pair flown here, from copies, differed in 99.8 %
+of the house's pixels for that reason alone. A pair is flown from inside a tree, or with
+`--materials`.)
+
 **The mend** (`SceneRenderer::record_frame`'s cache block): the clear, the sample passes and the
 folds declare `Access::ComputeReadWrite`, and `gi stats` declares the copy's read
 (`TransferRead`) before its write, so each barrier names the reads too. The graph emitted a
