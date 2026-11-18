@@ -201,6 +201,7 @@ constexpr const char* k_usage =
     "                   [--inject-input <log.jsonl>] [--input-map <map.json>]\n"
     "                   [--game <module.dll> [--game-state <state.json>]] [--report <report.json>]\n"
     "                   [--startup-trace <trace.json>] [--memory-report]\n"
+    "                   [--memory-report-floor-mib <n>]\n"
     "                   [--present <mode>] [--swapchain-images <n>] [--frames-in-flight <n>]\n"
     "                   [--pace auto|display|off] [--present-max-hz <n>] [--borderless] [--fullscreen]\n"
     "                   [--no-present-timing]\n"
@@ -571,7 +572,9 @@ constexpr const char* k_usage =
     "  --memory-report  where the process's commit is, at the first frame and at exit: the address\n"
     "                   space by kind, committed against resident, the owners the engine can name\n"
     "                   and the live blocks of 16 MiB or more by call stack; the summary's\n"
-    "                   \"memory\" block and one log line each (apps.md, \"--memory-report\")\n"
+    "                   \"memory\" block and one log line each (apps.md, \"--memory-report\"); also once\n"
+    "                   the scene is uploaded, before its host copy goes\n"
+    "  --memory-report-floor-mib <n>  the report, its block logs down to n MiB (1 or more)\n"
     "  --no-loading-overlay  a window's load shows cleared frames, not its stage and bar (a\n"
     "                   --game module with game_loading draws its own either way)\n"
     "  --load-on-main   the window's load as it was before W79: every stage on the main thread,\n"
@@ -3260,6 +3263,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
                         log::field("reason", why));
       }
     }
+    view::memory_report().take("uploaded", &device, &scene);  // host copy and device both held
     if (!resolved.stream || page_source.valid())  // both uploaded: what nobody reads goes (walk.h)
       view::release_host_geometry(scene_data);
     renderer::SceneRenderer::Desc renderer_desc;
@@ -4967,6 +4971,11 @@ int run_view(int argc, char** argv) {
       if (!next_value(argc, argv, i, a, options.startup_trace)) return k_exit_usage;
     } else if (a == "--memory-report") {
       view::memory_report().enable();  // before the load, so its blocks are logged
+    } else if (a == "--memory-report-floor-mib") {  // the report, its logs down to n MiB (apps.md)
+      u32 n = 0;
+      if (!next_value(argc, argv, i, a, value) || !parse_u32(value, n) || n == 0)
+        return k_exit_usage;
+      view::memory_report().enable(u64{n} << 20);
     } else if (a == "--no-loading-overlay") {
       options.loading_overlay = false;
     } else if (a == "--load-on-main") {
@@ -6282,6 +6291,7 @@ int run_view(int argc, char** argv) {
                         log::field("reason", why));
       }
     }
+    view::memory_report().take("uploaded", &device, &scene);  // host copy and device both held
     if (!resolved.stream || page_source.valid())  // uploaded: what nobody reads goes (walk.h)
       view::release_host_geometry(scene_data);
     renderer::SceneRenderer::Desc renderer_desc;

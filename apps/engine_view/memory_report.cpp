@@ -35,7 +35,9 @@ namespace {
 // touched share to about a fifth of a percent of the block.
 constexpr u32 k_samples_per_block = 512;
 // The sites (distinct call stacks) the report lists, largest untouched first.
-constexpr u32 k_sites_listed = 40;
+// Every site at the default 16 MiB floor, and at a 1 MiB floor (`--memory-report-floor-mib`, W51-2)
+// enough that a fully resident site, which sorts last by untouched bytes, is still listed.
+constexpr u32 k_sites_listed = 400;
 
 f64 mib(u64 bytes) { return std::round(static_cast<f64>(bytes) / (1024.0 * 1024.0) * 10.0) / 10.0; }
 
@@ -135,14 +137,20 @@ JsonValue snapshot(const char* when, const gfx::Device* device) {
     const mem::LargeAllocation& a = large[i];
     resident[i] = platform::resident_estimate(reinterpret_cast<const void*>(a.address), a.bytes,
                                               k_samples_per_block);
-    large_bytes += a.bytes;
+    // A sampled block stands for `weight` bytes (`mem::set_allocation_sampling`): its resident
+    // share is scaled to them.
+    const u64 weight = a.weight != 0 ? a.weight : a.bytes;
+    if (weight != a.bytes && a.bytes != 0)
+      resident[i] = static_cast<u64>(static_cast<f64>(resident[i]) * static_cast<f64>(weight) /
+                                     static_cast<f64>(a.bytes));
+    large_bytes += weight;
     large_resident += resident[i];
     u32 s = 0;
     while (s < sites.size() && !same_stack(large[sites[s].first], a))
       ++s;
     if (s == sites.size()) sites.push_back(Site{i, 0, 0, 0});
     sites[s].count += 1;
-    sites[s].bytes += a.bytes;
+    sites[s].bytes += weight;
     sites[s].resident += resident[i];
   }
   // Largest untouched first (a short list: an insertion sort is plenty).
@@ -387,8 +395,13 @@ JsonValue snapshot(const char* when, const gfx::Device* device) {
 
 }  // namespace
 
-void MemoryReport::enable() noexcept {
+void MemoryReport::enable(u64 floor_bytes) noexcept {
   on_ = true;
+  if (floor_bytes != 0) {  // before the logs are on: setting a floor empties a log's table
+    mem::set_large_allocation_floor(static_cast<usize>(floor_bytes));
+    mem::set_allocation_sampling(static_cast<usize>(floor_bytes));  // and under it, one a floor
+    gfx::set_large_buffer_floor(floor_bytes);
+  }
   mem::set_large_allocation_log(true);
   gfx::set_large_buffer_log(true);
 }
@@ -436,8 +449,9 @@ static JsonValue place_block(const char* when, const renderer::GpuScene& scene) 
 i64 MemoryReport::take(const char* when, const gfx::Device* device,
                        const renderer::GpuScene* scene) {
   if (!on_) return 0;
-  const bool first = std::strcmp(when, "first_frame") == 0;
-  JsonValue& slot = first ? first_frame_ : exit_;
+  JsonValue& slot = std::strcmp(when, "first_frame") == 0 ? first_frame_
+                    : std::strcmp(when, "uploaded") == 0  ? uploaded_
+                                                          : exit_;
   if (!slot.is_null()) return 0;
   const i64 started = time::monotonic_ns();
   slot = snapshot(when, device);
@@ -451,8 +465,11 @@ i64 MemoryReport::take(const char* when, const gfx::Device* device,
 JsonValue MemoryReport::block() const {
   if (!on_) return JsonValue::null();
   JsonValue out = JsonValue::object();
+  out.set("uploaded", uploaded_);
   out.set("first_frame", first_frame_);
   out.set("exit", exit_);
+  out.set("floor_mib", mib(mem::large_allocation_floor()));
+  out.set("sample_mib", mib(mem::allocation_sampling()));
   return out;
 }
 
