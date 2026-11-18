@@ -7,6 +7,8 @@
 #include <core/log/log.h>
 
 #include <cstdio>
+#include <fstream>
+#include <iterator>
 
 #ifndef ENGINE_VERSION
 #define ENGINE_VERSION "0.0.0"
@@ -331,7 +333,50 @@ bool Bridge::is_human_role(std::string_view role) const noexcept {
   return false;
 }
 
+namespace {
+
+// Whether the roles file at `path` marks human the role a bridge started with `named` runs in:
+// `named`, or the file's `default_role` when it is empty; that role in `role`. An unreadable or
+// malformed file says no: the host the bridge starts reads it again and reports it.
+bool marked_human_in_file(const std::string& path, std::string_view named, std::string& role) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in.good()) return false;
+  const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  JsonValue file;
+  if (!parse_json(text, file).ok || !file.is_object()) return false;
+  role = named.empty() ? text_of(file, "default_role") : std::string(named);
+  if (role.empty()) return false;
+  const JsonValue* roles = file.find("roles");
+  for (usize i = 0; roles != nullptr && roles->is_array() && i < roles->size(); ++i) {
+    const JsonValue& r = (*roles)[i];
+    if (r.is_object() && text_of(r, "name") == role && bool_of(r, "human")) return true;
+  }
+  return false;
+}
+
+// The refusal of a human role, in the words engine-host's and engine-cli's start lines use for it
+// (ADR-0072): what is refused, where the mark is, and the one way a person's role is conferred.
+// engine-mcp's main exits 2 on it, as the two hosts do.
+std::string human_role_refusal(std::string_view role, std::string_view roles_file) {
+  const std::string r(role);
+  return "role '" + r + "' is marked human in " + std::string(roles_file) +
+         ", and an agent's bridge never runs in a person's role: a person's role is conferred "
+         "only by a credential the operator issued for it (engine-host --issue-credential <file> "
+         "--role " +
+         r + "), presented on a connection to engine-host --listen --credentials <file>";
+}
+
+}  // namespace
+
 bool Bridge::start(std::string& error) {
+  // Before a host starts, as engine-cli refuses before it starts one: the host would refuse the
+  // same --role on its own start line (and a file whose default is human), and the bridge could
+  // then say only that its host went away.
+  if (std::string human; options_.connect_port == 0 && !options_.roles.empty() &&
+                         marked_human_in_file(options_.roles, options_.role, human)) {
+    error = human_role_refusal(human, options_.roles);
+    return false;
+  }
   host_.set_event_sink(
       [](void* user, const JsonValue& notification) {
         static_cast<Bridge*>(user)->on_host_event(notification);
@@ -369,9 +414,8 @@ bool Bridge::start(std::string& error) {
   // A role marked human is a person's, conferred only by a credential the operator issued for it;
   // an agent's bridge never runs in one, whether --role named it or the file's default is one.
   if (is_human_role(role_name_)) {
-    error = "a human role: engine-mcp does not run in role '" + role_name_ +
-            "', which the host's roles file marks human (a person's; an agent's bridge never "
-            "takes it). Start it with --role naming a role an agent works in";
+    error = human_role_refusal(role_name_,
+                               options_.roles.empty() ? "the host's roles file" : options_.roles);
     return false;
   }
   const auto allowed = [&](std::string_view method) {

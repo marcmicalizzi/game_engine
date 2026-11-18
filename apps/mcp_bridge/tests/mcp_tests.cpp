@@ -325,6 +325,32 @@ TEST_CASE("mcp: a bridge refuses to start in a human role") {
     const std::string_view argv[] = {bridge_exe(), "--workspace", ws, "--roles", by_default};
     CHECK(exit_of(argv) == 2);
   }
+  // In the words engine-host's and engine-cli's refusals use (engine_cli's policy_tests, "no start
+  // line runs in a role marked human"), and the bridge's own, before a host starts: the host it
+  // would start refuses --role reviewer too, and the bridge then said only that its host went away.
+  const auto said = [](std::span<const std::string_view> argv) {
+    platform::Process p;
+    REQUIRE(p.spawn(argv, nullptr, true));
+    p.close_stdin();
+    std::string out;
+    p.read_all(out);
+    CHECK(p.wait() == 2);
+    return out;
+  };
+  const std::string_view argv[] = {bridge_exe(), "--workspace", ws,        "--roles",
+                                   named,        "--role",      "reviewer"};
+  const std::string text = said(argv);
+  CHECK(text.find("engine-mcp: role 'reviewer' is marked human in ") != std::string::npos);
+  CHECK(text.find("a person's role is conferred only by a credential the operator issued for it "
+                  "(engine-host --issue-credential <file> --role reviewer), presented on a "
+                  "connection to engine-host --listen --credentials <file>") != std::string::npos);
+  CHECK(text.find("engine-host:") == std::string::npos);
+  const std::string by_default = roles_file("roles-reviewer.json", "reviewer");
+  const std::string_view by_default_argv[] = {bridge_exe(), "--workspace", ws, "--roles",
+                                              by_default};
+  const std::string default_text = said(by_default_argv);
+  CHECK(default_text.find("engine-mcp: role 'reviewer' is marked human in ") != std::string::npos);
+  CHECK(default_text.find("engine-host:") == std::string::npos);
 }
 
 TEST_CASE("mcp: --connect takes a loopback ws:// URL and a token, and no flag of a spawned host") {

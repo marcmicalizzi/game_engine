@@ -334,10 +334,11 @@ int main(int argc, char** argv) {
       if (name == nullptr || !name->is_string() || name->as_string() != role) continue;
       if (human == nullptr || !human->is_bool() || !human->as_bool()) continue;
       std::fprintf(stderr,
-                   "engine-cli: --role '%s' is marked human in %s, and no call engine-cli makes "
+                   "engine-cli: role '%s' is marked human in %s, and no call engine-cli makes "
                    "is a person's: a person's role is conferred only by a credential the operator "
-                   "issued for it, presented on a connection to engine-host --listen\n",
-                   role.c_str(), roles_file.c_str());
+                   "issued for it (engine-host --issue-credential <file> --role %s), presented on "
+                   "a connection to engine-host --listen --credentials <file>\n",
+                   role.c_str(), roles_file.c_str(), role.c_str());
       return 2;
     }
   }

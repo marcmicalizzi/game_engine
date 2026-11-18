@@ -475,9 +475,10 @@ int main(int argc, char** argv) {
   // confers it, on the connection that presents the credential.
   if (policy.is_human_role(policy.identity.role)) {
     std::fprintf(stderr,
-                 "engine-host: --role '%s' is marked human in %s, and no host runs in a person's "
-                 "role: issue a credential for it (--issue-credential --role %s) and present it "
-                 "on a connection to a host started --listen --credentials\n",
+                 "engine-host: role '%s' is marked human in %s, and no host runs in a person's "
+                 "role: a person's role is conferred only by a credential the operator issued "
+                 "for it (engine-host --issue-credential <file> --role %s), presented on a "
+                 "connection to engine-host --listen --credentials <file>\n",
                  policy.identity.role.c_str(), roles_file.c_str(), policy.identity.role.c_str());
     return 2;
   }

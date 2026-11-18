@@ -152,6 +152,35 @@ TEST_CASE("host and engine-cli: no start line runs in a role marked human") {
                        "--doc", doc, "--create", "review.list", "{}"});
   CHECK(cli.exit_code == 2);
   CHECK(!test::path_exists(doc));
+  // The two refusals, and engine-mcp's (mcp_tests, "a bridge refuses to start in a human role"),
+  // are one voice: exit 2, what is marked where, and the one way a person's role is conferred.
+  const auto said = [](std::vector<std::string> args) {
+    args.insert(args.begin() + 1, {"--root", test::scratch_root_spec()});
+    std::vector<std::string_view> argv(args.begin(), args.end());
+    platform::Process p;
+    std::string error;
+    std::string out;
+    REQUIRE_MESSAGE(
+        p.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error, true), error);
+    p.close_stdin();
+    p.read_all(out);
+    CHECK(p.wait() == 2);
+    return out;
+  };
+  const std::string conferred =
+      "a person's role is conferred only by a credential the operator issued for it (engine-host "
+      "--issue-credential <file> --role reviewer), presented on a connection to engine-host "
+      "--listen --credentials <file>";
+  const std::string host_said =
+      said({host_exe(), "--roles", roles, "--role", "reviewer", "--stdio"});
+  CHECK(host_said.find("engine-host: role 'reviewer' is marked human in " + roles) !=
+        std::string::npos);
+  CHECK(host_said.find(conferred) != std::string::npos);
+  const std::string cli_said = said({cli_exe(), "--host", host_exe(), "--roles", roles, "--role",
+                                     "reviewer", "--doc", doc, "--create", "review.list", "{}"});
+  CHECK(cli_said.find("engine-cli: role 'reviewer' is marked human in " + roles) !=
+        std::string::npos);
+  CHECK(cli_said.find(conferred) != std::string::npos);
   CHECK(run({host_exe(), "--roles", roles, "--role", "designer", "--request", request}).exit_code ==
         0);
   const Run issued =
