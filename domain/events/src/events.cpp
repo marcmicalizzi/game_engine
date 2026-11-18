@@ -381,6 +381,11 @@ void EventBus::close_selection() {
 // --- construction and registration -------------------------------------------------------------
 
 EventBus::EventBus(const EventBusConfig& config) : config_(config) {
+  // A bank's counter word cannot overflow a field (B6): a raise moves it only when both counts fit,
+  // so records stay at most `capacity`, which is 32 bits, and payload words at most
+  // `payload_bytes / 8`, under 2^29, in the 31 bits below the selection's mark (`Bank::state`).
+  static_assert(sizeof(EventBusConfig::capacity) == 4 && sizeof(EventBusConfig::payload_bytes) == 4,
+                "events: the counter word's fields are sized from these");
   ENGINE_VERIFY(config_.capacity > 0 && config_.payload_bytes >= 8u,
                 "events: a bus holds at least one event");
   for (Bank* bank : {&live_, &carry_}) {

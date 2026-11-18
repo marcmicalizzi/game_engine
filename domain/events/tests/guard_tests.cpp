@@ -423,6 +423,78 @@ TEST_CASE("guards: full — a wave that overfills the bank keeps the lowest keys
   }
 }
 
+namespace engine::events {
+// The tests' view of the live bank's counters (`EventBus::Bank::state`).
+struct BankProbe {
+  static u32 records(const EventBus& bus) { return static_cast<u32>(bus.live_.state.load()); }
+  static u32 words(const EventBus& bus) {
+    return static_cast<u32>(bus.live_.state.load() >> 32) & 0x7FFF'FFFFu;
+  }
+};
+}  // namespace engine::events
+
+TEST_CASE("guards: full — a storm of refusals at the bound moves no counter over the payloads") {
+  // B6: the arena's counter took every raise's bytes, refused or not, so a long enough storm in
+  // one interval wrapped it to a small offset and the next raise was copied over payloads already
+  // taken. Now a raise reserves its slot and its bytes together and only when both fit: at the
+  // bound a refusal moves neither, so neither can pass the bound, let alone wrap.
+  EventBusConfig config;
+  config.payload_bytes = 64;
+  EventBus bus(config);
+  const EventType<test::Blast> blast = bus.register_type<test::Blast>();
+  const EventType<test::Ping> ping = bus.register_type<test::Ping>();
+  struct Kept {
+    EventType<test::Blast> blast;
+    Vector<test::Blast> heard;
+    static void handle(void* context, const Event& event, Emitter&) {
+      auto* self = static_cast<Kept*>(context);
+      self->heard.push_back(event.as(self->blast));
+    }
+  } kept;
+  kept.blast = blast;
+  const u16 hears_blast[] = {blast.index};
+  subscribe(bus, "kept", &kept, hears_blast, &Kept::handle);
+  Emitter e = bus.emitter(bus.add_source("host"));
+  const u32 blast_words = static_cast<u32>((sizeof(test::Blast) + 7u) / 8u);
+  REQUIRE(blast_words * 8u * 2u == 64u);
+  test::Blast first;
+  first.n = 1;
+  first.strength = 1.5f;
+  test::Blast second;
+  second.n = 2;
+  second.strength = 2.5f;
+  CHECK(e.raise(blast, first));
+  CHECK(e.raise(blast, second));
+  // Exactly at the bound: both counters where the two raises put them.
+  CHECK(BankProbe::records(bus) == 2u);
+  CHECK(BankProbe::words(bus) == 2u * blast_words);
+
+  constexpr u32 k_storm = 200'000;
+  u32 refused = 0;
+  for (u32 i = 0; i < k_storm; ++i) {
+    test::Blast more;
+    more.n = 100u + i;
+    refused += e.raise(blast, more) ? 0u : 1u;
+  }
+  // A smaller payload that would fit the records but not the bytes is refused at the bound too.
+  test::Ping small;
+  refused += e.raise(ping, small) ? 0u : 1u;
+  CHECK(refused == k_storm + 1u);
+  CHECK(BankProbe::records(bus) == 2u);
+  CHECK(BankProbe::words(bus) == 2u * blast_words);
+
+  bus.deliver(sim::TickPhase::EventsIn, 1);
+  REQUIRE(kept.heard.size() == 2u);
+  CHECK(kept.heard[0].n == 1u);
+  CHECK(kept.heard[0].strength == 1.5f);
+  CHECK(kept.heard[1].n == 2u);
+  CHECK(kept.heard[1].strength == 2.5f);
+  CHECK(bus.current_report().trips.full_dropped == k_storm + 1u);
+  // And the bank opens again whole at the next interval.
+  CHECK(BankProbe::records(bus) == 0u);
+  CHECK(e.raise(blast, first));
+}
+
 TEST_CASE("guards: slow — a subscriber past slow_subscriber_us is reported and nothing else") {
   EventBusConfig config;
   config.slow_subscriber_us = 1000;

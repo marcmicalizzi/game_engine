@@ -374,6 +374,7 @@ class EventBus {
 
  private:
   friend class Emitter;
+  friend struct BankProbe;  // the tests' view of a bank's counters
 
   struct Bank {
     Vector<EventRecord> records;  // sized to the capacity once
