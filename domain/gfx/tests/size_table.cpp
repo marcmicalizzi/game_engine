@@ -10,6 +10,7 @@
 #include <domain/gfx/dispatch.h>
 #include <domain/gfx/flora_motion.h>
 #include <domain/gfx/formation.h>
+#include <domain/gfx/gi_cache.h>
 #include <domain/gfx/ground_detail.h>
 #include <domain/gfx/motion.h>
 #include <domain/gfx/path_trace.h>
@@ -297,6 +298,11 @@ ENGINE_EXPECT_SIZE(592, 8, gfx::ResolveParams);
 // One per mesh of a scene with crowns, mirrored on the GPU (gi_cache.slang, `CrownPrior`): where
 // the mesh's grid of its own shade is, in mesh space and in the table's bytes (crown_prior.h).
 ENGINE_EXPECT_SIZE(32, 4, gfx::CrownPriorDesc);
+// The world-space cache's cell and one of its guides (R171's fifth leg; renderer.md, "R171: where
+// a dark room's light comes from"), laid over the cache's buffer by gi_update.slang and
+// gi_guide.slang: a guide is eight words, 128 shares as u16 and 128 frame sums as u32.
+ENGINE_EXPECT_SIZE(32, 4, gfx::GiCell);
+ENGINE_EXPECT_SIZE(800, 4, gfx::GiGuide);
 
 // The shore's record (S97; water.md, "The shore"), mirrored by water.slang's WaterShore. 64 since
 // S94: the swash's run-up, period, drain, slope, tide, wave height, foam and shore widths, and the

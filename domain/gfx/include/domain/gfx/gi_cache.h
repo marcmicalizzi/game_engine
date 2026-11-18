@@ -280,7 +280,15 @@ inline constexpr u32 k_gi_stat_shell_near = 11;
 // eye's ray (gi_update.slang, `gi_shell_keep`): their cells stamped, their bounce taken one frame
 // in eight.
 inline constexpr u32 k_gi_stat_shell_kept = 12;
-inline constexpr u32 k_gi_stat_copy_words = 13;
+// R171's fifth leg, the header's last three words: the face cells whose fold gave up a long
+// history this frame (their own test's or a coarser cell's), those folded at today's rate because
+// a coarser cell saw its light moving, and the samples drawn with a trained guide behind them.
+// The first two say whether the memory is engaged where it is on: a room whose cells let go or
+// follow every few frames shows today's change between frames whatever the tunable says.
+inline constexpr u32 k_gi_stat_let_go = 13;
+inline constexpr u32 k_gi_stat_followed = 14;
+inline constexpr u32 k_gi_stat_guided = 15;
+inline constexpr u32 k_gi_stat_copy_words = 16;
 inline constexpr f32 k_gi_shell_near_m = 50.0f;
 
 // The buffer's bytes for `count` slots: the header, the keys and the cells.
@@ -433,13 +441,15 @@ struct GiMemoryCell {
   bool following = false;  // set with `changed` too
 };
 inline void gi_memory_fold(GiMemoryCell& c, u32 n, f32 frame_mean, bool drop, bool memory,
-                           bool follow = false) noexcept {
+                           bool follow = false, bool hold = false) noexcept {
   if (n == 0) return;
   const u32 previous = c.count;
   const u32 cap = gi_history_cap(n);
   const u32 ceiling = memory ? gi_memory_cap(n) : cap;
-  // Past today's history the count grows by `k_gi_memory_ramp`'s share of a frame (the fourth leg).
-  const u32 ramp = n / k_gi_memory_ramp > 1u ? n / k_gi_memory_ramp : 1u;
+  // Past today's history the count grows by `k_gi_memory_ramp`'s share of a frame (the fourth leg),
+  // and not at all in a fold that holds (the fifth leg, `k_gi_step_hold`): a cell that already
+  // remembers longer keeps what it has.
+  const u32 ramp = hold ? 0u : (n / k_gi_memory_ramp > 1u ? n / k_gi_memory_ramp : 1u);
   const u32 grow = memory && previous >= cap ? ramp : n;
   const u32 grown = previous + grow < ceiling ? previous + grow : ceiling;
   const u32 today = previous + n < cap ? previous + n : cap;
@@ -678,6 +688,13 @@ struct GiStepPush {
 static_assert(sizeof(GiStepPush) == 16);
 inline constexpr u32 k_gi_step_reset = 1u;  // the fold clears every cell and the header
 inline constexpr u32 k_gi_step_count = 2u;  // the fold counts what it keeps: the frame's last step
+// R171's fifth leg: the memory holds. No cell's count grows past today's history in a fold with
+// this flag — the pre-roll's steps and the `k_gi_memory_hold_frames` frames after a load or a cut —
+// so the bounce's first rounds, which are short of the light its later rounds bring, leave a new
+// cell's mean at today's pace and never enter a long one; a cell that remembered longer before the
+// cut keeps its count (renderer.md, "Off again: the pre-roll's promise", and what answered it).
+inline constexpr u32 k_gi_step_hold = 4u;
+inline constexpr u32 k_gi_memory_hold_frames = 48;
 
 // `ResolveParams::gi_flags`.
 inline constexpr u32 k_gi_read = 1u;    // the resolve reads the cache for its ambient
@@ -879,6 +896,149 @@ constexpr u32 gi_shell_word(f32 reach_m, u32 refresh, bool first = true) noexcep
   const u32 reach = static_cast<f32>(whole) < reach_m ? whole + 1 : whole;
   return (reach < 0xffffu ? reach : 0xffffu) | ((refresh < 0xffu ? refresh : 0xffu) << 16) |
          (first ? k_gi_shell_first : 0u);
+}
+
+// **R171's fifth leg: the guide** (renderer.md, "Indirect light", "R171: where a dark room's light
+// comes from"; the shader's gi_guide.slang, the same arithmetic). A dark room's light comes through
+// an opening a cosine ray seldom finds, so a cell's few samples a frame are mostly dark and now and
+// then one heavy one, and a single sample moves an own cell more than a display step. A **guide**
+// is what the samples of a coarse cell — `k_gi_guide_up` levels above a surface's own, the ladder's
+// top, which takes sixty-four times an own cell's samples — have learned about where their light
+// comes from: the share of it that arrived through each of `k_gi_guide_bins` equal solid angles of
+// the sphere (bands of the world's y by sectors of longitude about it: the cylinder's equal-area
+// map, as Mueller, Gross and Novak's directional quadtree is laid out). A sample is then drawn from
+// the mixture of its cosine lobe and the guide (`k_gi_guide_alpha` of the guide) and weighted by
+// the lobe's density over the mixture's — the one-sample form of multiple importance sampling —
+// so its expectation is the lobe's own estimate whatever the guide holds, and a direction the
+// guide knows is taken often and counts for little each time.
+//
+// The guides live behind the cells in the cache's buffer (`gi_buffer_bytes`): a table of
+// `gi_guide_count` entries found by the guide cell's hash, `k_gi_guide_probe` slots from its low
+// bits. One entry, `k_gi_guide_bytes`:
+//   [0] the key (0: empty)        [1] the last frame a sample reached it
+//   [2] this frame's samples      [3] the samples its shares average
+//   [4] the sum of the shares     [5] the largest share's value (a float: light a sample)
+//   [6..7] unused
+//   then `k_gi_guide_bins` shares as u16 (65,535 is the largest), then as many u32 sums of this
+//   frame's contributions (luminance of the weighted ratio, `k_gi_fraction_bits` of fraction).
+// Bit 25 of `gi_shell_word` (`k_gi_guide`) turns it on; without it no sample reads or writes a
+// guide and a frame draws the bytes it drew.
+inline constexpr u32 k_gi_guide = 1u << 25;
+inline constexpr u32 k_gi_guide_rows = 8;
+inline constexpr u32 k_gi_guide_cols = 16;
+inline constexpr u32 k_gi_guide_bins = k_gi_guide_rows * k_gi_guide_cols;
+inline constexpr u32 k_gi_guide_header_words = 8;
+inline constexpr u32 k_gi_guide_bytes = k_gi_guide_header_words * 4 + k_gi_guide_bins * 6;
+inline constexpr u32 k_gi_guide_up = 3;
+inline constexpr u32 k_gi_guide_probe = 4;
+// A guide's history: this many frames of its samples, and never under `k_gi_guide_min_history`.
+inline constexpr u32 k_gi_guide_history_frames = 16;
+inline constexpr u32 k_gi_guide_min_history = 1024;
+// Samples behind a guide before a sample is drawn from it.
+inline constexpr u32 k_gi_guide_trained = 256;
+// The guide's share of the mixture. A direction the guide does not know still has the lobe's
+// `1 - alpha`, so no sample weighs more than `1 / (1 - alpha)` times what it weighed unguided.
+inline constexpr f32 k_gi_guide_alpha = 0.5f;
+// Frames a guide nothing sampled is kept.
+inline constexpr u32 k_gi_guide_max_age = 64;
+
+// The guides a cache of `count` cells holds: one to 256 cells (a guide's cell is 64 own cells on a
+// flat wall, and only the view's pixels make one), a power of two.
+constexpr u32 gi_guide_count(u32 count) noexcept { return count / 256 < 64 ? 64u : count / 256; }
+
+// The buffer's bytes with the guides behind the cells.
+constexpr u64 gi_buffer_bytes(u32 count, bool guides) noexcept {
+  return gi_buffer_bytes(count) + (guides ? u64{gi_guide_count(count)} * k_gi_guide_bytes : 0);
+}
+
+// A guide's hash from its cell's (`gi_hash` at the guide's level and the surface's face), and its
+// first slot.
+constexpr u64 gi_guide_hash(u64 cell_hash) noexcept { return gi_mix(cell_hash ^ 0x6775696465ull); }
+constexpr u32 gi_guide_first(u64 hash, u32 guides) noexcept {
+  return static_cast<u32>(hash) & (guides - 1u);
+}
+
+// The bin of a unit direction: the band of its height (the first is straight up) times the columns,
+// plus the sector of its longitude from +x towards +z.
+inline u32 gi_guide_bin(f32 x, f32 y, f32 z) noexcept {
+  const f32 u = (1.0f - y) * 0.5f * static_cast<f32>(k_gi_guide_rows);
+  f32 v = std::atan2(z, x) * (1.0f / 6.28318530718f);
+  v = (v - std::floor(v)) * static_cast<f32>(k_gi_guide_cols);
+  const u32 row = u <= 0.0f ? 0u : (u >= static_cast<f32>(k_gi_guide_rows) ? k_gi_guide_rows - 1
+                                                                            : static_cast<u32>(u));
+  const u32 col = v >= static_cast<f32>(k_gi_guide_cols) ? k_gi_guide_cols - 1 : static_cast<u32>(v);
+  return row * k_gi_guide_cols + col;
+}
+// The direction at (`u`, `v`) of 0..1 inside bin `bin`: uniform in the bin's solid angle.
+inline void gi_guide_direction(u32 bin, f32 u, f32 v, f32 out[3]) noexcept {
+  const f32 row = static_cast<f32>(bin / k_gi_guide_cols);
+  const f32 col = static_cast<f32>(bin % k_gi_guide_cols);
+  const f32 y = 1.0f - 2.0f * (row + u) / static_cast<f32>(k_gi_guide_rows);
+  const f32 s = std::sqrt(std::fmax(0.0f, 1.0f - y * y));
+  const f32 phi = 6.28318530718f * (col + v) / static_cast<f32>(k_gi_guide_cols);
+  out[0] = s * std::cos(phi);
+  out[1] = y;
+  out[2] = s * std::sin(phi);
+}
+// The guide's density at a direction of a bin holding `share` of `sum`: uniform inside the bin.
+inline f32 gi_guide_pdf(u32 share, u32 sum) noexcept {
+  return sum == 0 ? 0.0f
+                  : static_cast<f32>(share) / static_cast<f32>(sum) *
+                        (static_cast<f32>(k_gi_guide_bins) / 12.5663706144f);
+}
+// What a sample drawn from the mixture counts for: the lobe's density `lobe` at its direction over
+// the mixture's. 1 without a guide (`alpha` 0); never over `1 / (1 - alpha)`.
+inline f32 gi_guide_weight(f32 lobe, f32 guide, f32 alpha) noexcept {
+  const f32 mixture = (1.0f - alpha) * lobe + alpha * guide;
+  return mixture > 0.0f ? lobe / mixture : 0.0f;
+}
+
+// One guide as the fold sees it.
+struct GiGuide {
+  u32 key = 0;
+  u32 stamp = 0;
+  u32 frame_count = 0;
+  u32 trained = 0;
+  u32 sum = 0;
+  f32 scale = 0.0f;
+  u32 unused[2] = {0, 0};
+  u16 share[k_gi_guide_bins] = {};
+  u32 frame_sum[k_gi_guide_bins] = {};
+};
+static_assert(sizeof(GiGuide) == k_gi_guide_bytes);
+
+// The fold of a guide's frame: each bin's light a sample (its frame sum over the frame's samples,
+// every sample counted whether it brought light or not) into the running estimate at the frame's
+// share of the history, then the estimates stored again over their largest.
+inline void gi_guide_fold(GiGuide& g) noexcept {
+  const u32 n = g.frame_count;
+  if (n == 0) return;
+  const u64 frames = u64{n} * k_gi_guide_history_frames;
+  const u32 cap = frames > 0x7fffffffu
+                      ? 0x7fffffffu
+                      : (frames < k_gi_guide_min_history ? k_gi_guide_min_history
+                                                         : static_cast<u32>(frames));
+  const u32 total = g.trained + n < cap ? g.trained + n : cap;
+  const f32 rate = static_cast<f32>(n) / static_cast<f32>(total);
+  const f32 per_sample = 1.0f / (static_cast<f32>(1u << k_gi_fraction_bits) * static_cast<f32>(n));
+  f32 estimate[k_gi_guide_bins];
+  f32 largest = 0.0f;
+  for (u32 b = 0; b < k_gi_guide_bins; ++b) {
+    const f32 before = static_cast<f32>(g.share[b]) * (1.0f / 65535.0f) * g.scale;
+    estimate[b] = before + (static_cast<f32>(g.frame_sum[b]) * per_sample - before) * rate;
+    largest = estimate[b] > largest ? estimate[b] : largest;
+  }
+  u32 sum = 0;
+  for (u32 b = 0; b < k_gi_guide_bins; ++b) {
+    const u32 q = largest > 0.0f ? static_cast<u32>(estimate[b] / largest * 65535.0f + 0.5f) : 0u;
+    g.share[b] = static_cast<u16>(q > 65535u ? 65535u : q);
+    sum += g.share[b];
+    g.frame_sum[b] = 0;
+  }
+  g.sum = sum;
+  g.scale = largest;
+  g.trained = total;
+  g.frame_count = 0;
 }
 
 }  // namespace engine::gfx

@@ -3490,6 +3490,202 @@ open: hold a cell's count at today's history until its light has settled (its sh
 over its own history), or let a cut's or a load's cells start the memory only after the pre-roll's
 window; either moves every picture the fourth leg measured, so it is a leg of its own, not a fix.
 
+### R171: where a dark room's light comes from
+
+Fifth leg (2026-11-17). The owner walked the forest's village with `renderer.gi.memory` on and the
+grain "is still there". The forest session held their five marks (4K traced, four consecutive
+frames 2.5 s into each hold): in the two dark rooms, walls at display code 27 to 30, **75 to 80 %
+of pixels move a code or more every frame with or without the memory** (three codes or more: 11.0
+% plain, 5.6 % with it; the light's change a pixel 5.9 and 4.8 % plain, 4.7 and 4.1 % with it),
+where the brighter marks fall to 0.3 to 0.5 % with it. Four legs mended the cache's averaging; the
+fault that is left is in what a dark room's cells are given to average.
+
+**The arithmetic of one sample.** At 3840×2160 an own cell covers about a hundred pixels and the
+trickle samples one in nine, eleven samples a frame, into a history of 256. One sample of value x
+therefore moves the cell's mean by (x / m − 1) / 256 of itself, and a frame's eleven by
+CV · √11 / 256, where CV² is a sample's variance over its mean squared. A display code at 28 is
+2.2 / 28 = 7.9 % of the light. Where a cosine ray finds the room's light one time in thirty — a
+doorway or a shaft seen from a wall across the room — x / m is thirty and **one sample moves the
+cell 11 %: more than a code, from one ray's luck**; the frame's change is 5.5 · 3.3 / 256 = 7 % of
+the light at CV² = 30, which is the forest's 5.9 %. That is the cause the measurements below
+single out, among the five the row weighed:
+
+| candidate | verdict | by what |
+|---|---|---|
+| too few samples a cell | part of it | eleven a frame into 256: a frame is 4 % of the mean's weight |
+| samples that rarely find the opening | **the cause** | the heaviest hundredth of a wall's samples carry two fifths of its light (`gi cache key: a guided sample keeps the mean and loses its heavy tail`, the cave's and the box's numbers below); the change a frame follows CV, and CV² is 5 on a lit room's walls and 20 to 30 where the opening is small |
+| the fold's weight | where the memory is off or let go | n / 256 a frame; sixteen times less under the memory, which is the brighter marks' 0.3 to 0.5 % |
+| the read's interpolation | no | eight cells' shares average the change down, never up |
+| quantization with no dither in time | no | with the bounce off no pixel of a held view changes at all (leg 4); a change under a code flips a pixel that sits at a rounding edge, which is the 0.69-code tail of every table here |
+
+**The village's interior paths were stale**, which is why the engine's own dark room had stopped
+showing the fault: batch 67's plan version 5 moved house 0's door 1.8 m and re-pasted
+`camera-path.json`, not `interior-held.json` and `interior-door.json`, whose pose then stood at a
+level of 5.6 codes where nothing in the picture moves. Both follow the flight's keys again.
+
+**What the research says to do about it** (read where marked; the rest is named and marked unread):
+- *Path guiding.* Mueller, Gross and Novak, "Practical Path Guiding for Efficient Light-Transport
+  Simulation" (EGSR 2017; read from the authors' PDF: the abstract, §3 and §5.3): the incident
+  radiance field is learned as an adaptively refined piecewise-constant function, a binary tree
+  over space with a quadtree over directions in **world-space cylindrical coordinates, which
+  preserve area ratios**; a leaf is refined until it holds no more than 1 % of the flux; each
+  pass is guided by the one before and combined with BSDF sampling **by multiple importance
+  sampling**, and stays unbiased because a pass's samples are independent given the distribution
+  it draws from. Vorba et al., "On-line Learning of Parametric Mixture Models for Light Transport
+  Simulation" (SIGGRAPH 2014; only the project page's abstract could be read: mixture models
+  trained on-line from a stream of particles, for scenes "featuring difficult visibility").
+- *Reservoir resampling.* Ouyang et al., "ReSTIR GI: Path Resampling for Real-Time Path Tracing"
+  (HPG 2021; **abstract only**, the paper's PDF is over the fetch limit: resampling of multi-bounce
+  indirect paths in space and time, MSE improvements of 9.3 to 166 times at one sample a pixel).
+  It reuses a neighbour's sample point with a visibility ray and a Jacobian, and is the heavier
+  road: stage 2 of the plan's GI (R68) is where it belongs.
+- *Probes.* Majercik et al., "Dynamic Diffuse Global Illumination with Ray-Traced Irradiance
+  Fields" (JCGT 2019): **not read** (the journal's page came back empty and its PDF is over the
+  limit); nothing here is taken from it.
+- *Fireflies.* Zirr, Hanika and Dachsbacher, "Reweighting Firefly Samples for Improved
+  Finite-Sample Monte Carlo Estimates" (CGF 2018; read from the preprint's abstract, §2 and §3):
+  rejecting outliers gives estimates that are too low, clamping bounds the variance by biasing,
+  and their reweighting trades bias for variance by design. So the control that does not bias the
+  mean is not a filter on the samples; it is sampling the heavy part often enough that it is not
+  heavy, which is what a guide does.
+- *What the eye sees* is the fourth leg's source and bar, above.
+
+**What is built: a guide** (`gfx::k_gi_guide`, `renderer.gi.guide`, **off**: "Why both are off",
+below; `gi_cache.h` and `gi_guide.slang`). The samples of a coarse cell learn where their light comes from, and half the
+samples are drawn there:
+- **A guide is a coarse cell's**: three levels above a surface's own, the ladder's top, on the
+  surface's face, which on a flat wall pools sixty-four own cells and seven hundred samples a
+  frame. It holds the share of the cell's light that arrived through each of 128 **equal solid
+  angles of the sphere** — eight bands of the world's y by sixteen sectors of longitude about it,
+  the cylinder's equal-area map as in Mueller's quadtree, fixed where they refine: a cell's 32
+  bytes have no room for a tree, and a bin of a tenth of a steradian is the size of a doorway at
+  three metres.
+- **A sample is drawn from the mixture** of its cosine lobe and its guide, half each
+  (`k_gi_guide_alpha`), and counts for the lobe's density at its direction over the mixture's
+  (`gfx::gi_guide_weight`: the one-sample form of multiple importance sampling). Its expectation
+  is the cosine ray's own whatever the guide holds — mirror through the triangle's plane and
+  all — so the cells average what they averaged; no sample counts for more than twice what it
+  counted alone, and one through an opening the guide knows counts for a small part of it and is
+  drawn that many times more often. A guided direction the surface's own plane hides is not
+  traced and counts for nothing.
+- **It learns from every sample of its cell**, guided or not: the sample's weighted light into the
+  bin of its direction, folded a frame at a time into a history of sixteen frames
+  (`gfx::gi_guide_fold`), by the fold pass's first threads. A sample is drawn from a guide once it
+  averages 256 samples; one nothing sampled for 64 frames is freed. The picture's own samples make
+  guides; a sample round the eye only finds one, and adds to it only once a fold has trained it
+  (whether it finds one a pixel's sample is making in the same pass is the order of two threads).
+- **Where it lives**: a table of one guide to 256 cells behind the cells in the cache's buffer
+  (16,384 guides of 800 bytes, 12.5 MiB beside the cells' 144 MiB at the default size), found by
+  the guide cell's hash; nothing in `ResolveParams` or the resolve's shaders changed (the flag is
+  bit 25 of `gi_shell_word`), so the resolve reads what it read and costs what it cost.
+- **General**: it keys on a surface's place and face and learns from what the rays bring back. An
+  imported room with one window gets it as a generated one does; a scene in open air pays the
+  guide's lookup and draws its samples about as it did, since the sky's light is nearly the lobe.
+
+**The memory holds after a cold start** (`gfx::k_gi_step_hold`, `gi_memory_holds`; the memory
+itself stays **off** with the guide, below). "Off again", above, found the pre-roll seeding the
+long mean. Every fold of a cold frame's steps and of the 48 frames after it now leaves no count
+past today's history (a cell that already remembered longer keeps its count), so the bounce's
+first rounds are forgotten at today's pace and never enter a long mean. And the pre-roll's case
+holds its frames to **today's history's floor**, measured in its own first run with the memory
+off: with the memory on the long-held picture's floor is that of a history several times longer,
+which no frame within a second and a half of a cut can have, whatever folds it; the bound in
+absolute terms is the one the case held before the memory. With the guide and the memory both on
+the case passes (the cut's furthest frame 0.43 of an 8-bit step, 1.2 floors of today's history
+and 2.3 of its own; the load's frames from the twenty-fourth 0.56 against twice 0.40).
+
+**Whether the memory is engaged** is counted now: `Stats::gi.let_go` (face cells whose fold gave
+up a long history this frame), `.followed` (those folded at today's rate because a coarser cell
+saw its light moving) and `.guided` (samples drawn with a trained guide), in `renderer.gi.log`'s
+line.
+
+**What it does on the screen** (3840×2160, `--raster rt --shadows rt`, `bounce`, the RTX 5090, the
+session unlocked; `engine-view --temporal --temporal-from 150 --frames 186`: the forest session's
+protocol, the 36 frames from 2.5 s after the view is first held, which is the first seconds a
+person walking in sees and before a long memory has filled; the light's change is the measure's
+`light.mean`, each pixel's change relative to its level):
+
+| held view, frames 150 to 186 | the light's change a frame | pixel-frames stepping a whole code | the same in the 16–31 band |
+|---|---|---|---|
+| house 0 (level 20.9 codes), cosine rays, today's history | 1.46 % | 2.06 % | 2.41 % |
+| house 0, the memory alone | 0.38 % | 0.098 % | 0.108 % |
+| house 0, the guide alone | 0.86 % | 0.51 % | 0.60 % |
+| house 0, **the guide and the memory** | **0.24 %** | **0.019 %** | **0.020 %** |
+| cave (level 10.1), cosine rays, today's history | 1.60 % | 1.01 % | — |
+| cave, the memory alone | 0.29 % | 0.020 % | — |
+| cave, the guide alone | 0.55 % | 0.047 % | — |
+| cave, **the guide and the memory** | **0.15 %** | **0.003 %** | — |
+
+The guide alone takes the whole-code steps to a quarter in the house and a twentieth in the cave,
+whose light comes down one shaft; under the memory the two leave a fifth of what the memory alone
+leaves at 2.5 s, and the fourth leg's bar (under 0.1 % in every band) holds in every band of both
+by then (the house's 32–63 band, 1 % of its pixels, stands at 0.089 %; the memory alone had it at
+0.35 %). 99.99 % of the samples have a trained guide behind them by frame 150. The flora's motion
+and a wind of 0.7, the forest's flags, change no number of the house's (0.238 % and 0.019 % with
+them): nothing outside its door moves its light.
+
+With the sun at a 24-minute day (sixty times real time) the house holds the same over frames 150
+to 330: 0.015 % of pixel-frames step a code, the light changes 0.18 % a frame. Walking in at the
+door the picture's level stands at 23.6 codes at the stop, 21.9 a second on and 21.3 three seconds
+on, within 0.5 % of where it is six seconds on (the same walk with the two off was not flown
+beside it, so how much of that is the memory's lag is not said).
+
+**What it costs** (medians of the GPU's timestamps over frames 120 to 780 of held flights and the
+lane's, main's copied-out build against the branch with both on, one lease, alternated, the
+session locked on both sides): the cave 3.93 → 4.06 ms (`gi_trace` 0.871 → 0.949, the fold 0.094 →
+0.112), house 0 5.62 → 5.76 (0.798 → 0.907, 0.085 → 0.108), the lane outdoors 6.67 → 6.85 (0.902 →
+0.985, 0.138 → 0.169; the resolve 3.70 → 3.68, untouched). So **0.12 to 0.18 ms at 4K**, in the
+sample pass (the guide's lookup, its draw over 64 words and its two adds a sample) and the fold
+(sixteen thousand guides of 128 bins); indoors and outdoors alike, since an open scene pays the
+lookup too. It is the device's memory traffic, so it scales with the samples a frame and not with
+the scene. Ways down, not tried: a guide's shares as bytes, the draw by rows then columns.
+
+**Why both are off.** With both on by default every `gi cache:` case ran once (msvc-release, the
+RTX 5090): fourteen passed and five failed, and a default that fails a case is not a default.
+1. *The grain's law* (four times the rays, half the grain): the guide halves the base run's grain
+   (0.89 % against 1.76 %) and what is left is no longer the cosine rays' sampling noise, so four
+   times the rays take it to 0.83 of itself. The case now asks for cosine rays by name; its law is
+   theirs.
+2. *A scene moved by whole cells draws the same bytes*: two to four thousand pixels differed. A
+   sample round the eye found, or missed, a guide a pixel's sample was making in the same pass.
+   Mended as the bullet above says; **not run again**.
+3. *A turn shows no fill*: the furthest frame 1.13 against a bound of 0.95, the largest change in
+   the first seven frames 1.01 against 0.44. Two things: the case's run "with the features off"
+   left the guide on, so its floor was 0.475 where main's is 0.61 (it must turn both off: the bound
+   is main's absolute one); and frame 1 after the turn changes by 1.01 where main's changes by
+   0.53, which is a guide trained on one frame's samples steering half of the next frame's. A
+   guide should have several frames behind it before a sample is drawn from it
+   (`k_gi_guide_trained`, 256 samples now).
+4. *A turn to a stand of solid crowns*: with the crown's prior the first frame after the turn
+   stands 28 steps under the long-held picture (it must stand nearer than without the prior, 8.8),
+   and 17 under on the leaf cards. **Not explained**: foliage takes no guide and its cells no
+   memory, so it is in what the crowns' samples read at their hits, or in the hold; it is the
+   first thing the next leg runs with each of the two on alone.
+5. The row's own case held the guide under the memory to less than the memory alone, which in the
+   box is a difference of a few thousandths of a percent either way; that check is a message now.
+
+With both off a frame draws what main draws: no sample reads or writes a guide and the buffer has
+none, and the hold changes nothing without the memory. **That configuration was not run on the GPU
+after these changes**; the cases above were run with both on, and the row's own case and the
+pre-roll's passed in msvc-debug with both asked for.
+
+**What this does not show, said plainly.** The forest's two dark rooms change 5.9 and 4.8 % a
+frame with cosine rays, three to four times the engine's house at a *brighter* level, so their
+light is carried by rarer and heavier samples than any room the engine's own scenes have; and
+there the memory bought a fifth where the ramp's arithmetic and the house both say a factor of
+3.8 at 2.5 s (1.46 to 0.38 %). The engine's scenes do not reproduce that: in the house the memory's
+cells follow at today's rate on 190 cells a frame of 146,000 and let none go, in the cave on 660
+and five. The reading left, **not verified**, is that those rooms' light really moves — the sun
+through swaying crowns onto the ground outside their openings — so their coarse cells see it move
+and their fine cells follow at today's pace, as the fourth leg built them to; the counters above
+say so in one flight of the forest (`renderer.gi.log`, `--log info`). If that is it, the guide is
+the half of the mend that applies there (a followed cell shows today's change, which the guide
+halves or better where the light comes through an opening), and the other half is a fine cell
+following its coarse cell's change as a ratio instead of re-averaging its own few samples, which
+is not built. **A person in such a room would still see the walls' grain crawl, at about half its
+amplitude or less; in a room whose light holds still they would see it settle under a display
+step within three seconds of walking in.**
+
 ## The sun's day
 
 *A scene that names a sky takes its sun, its moon and its sky from it instead, on the world's clock ([The sky](#the-sky)); everything in this section is the stand-in's, which every other scene still draws, to the bit.*

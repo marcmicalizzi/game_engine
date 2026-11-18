@@ -152,6 +152,12 @@ struct GiStats {
   u32 shell_near = 0;
   // Stage 8: of `shell_hits`, those whose cells were whole and took no bounce this frame.
   u32 shell_kept = 0;
+  // R171's fifth leg (`gfx::k_gi_stat_let_go`, `_followed`, `_guided`): face cells whose fold gave
+  // up a long history this frame, those folded at today's rate because a coarser cell saw its
+  // light moving, and the samples drawn with a trained guide behind them.
+  u32 let_go = 0;
+  u32 followed = 0;
+  u32 guided = 0;
 };
 
 // **The pass list** (T85; renderer.md, "The pass list"): every GPU bucket a frame's record carries,
@@ -1203,6 +1209,8 @@ class SceneRenderer {
   // Where the frame before had its eye, for the pre-roll's cut test (gi_preroll.h).
   WorldPos gi_last_eye_{};
   bool gi_eye_known_ = false;
+  // Frames the memory still holds for after a load or a cut (gi_preroll.h, `gi_memory_holds`).
+  u32 gi_hold_frames_ = 0;
   gfx::FrameContext frames_;
   gfx::GpuTimer timer_;
   GeometryStreamer streamer_;

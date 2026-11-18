@@ -1,13 +1,13 @@
 {
   "format": "engine.camera-path.v1",
   "name": "house 0 held inside",
-  "description": "Twelve seconds held just inside house 0's door, looking across its front room (camera-path.json's key at 28.464 s): nothing moves, so every change between frames is the picture's own (R171's temporal measure).",
+  "description": "Twelve seconds held just inside house 0's door, looking across its front room (camera-path.json's key at 28.559 s): nothing moves, so every change between frames is the picture's own (R171's temporal measure).",
   "fps": 60,
   "interpolation": "Smooth",
   "znear": 0.05,
   "keys": [
-    {"time": 0, "fov_deg": 70, "position": [56.012, 4.854, 15.907], "target": [51.047, 4.854, 15.324]},
-    {"time": 12, "fov_deg": 70, "position": [56.012, 4.854, 15.907], "target": [51.047, 4.854, 15.324]}
+    {"time": 0, "fov_deg": 70, "position": [56.078, 4.854, 14.092], "target": [51.083, 4.854, 14.319]},
+    {"time": 12, "fov_deg": 70, "position": [56.078, 4.854, 14.092], "target": [51.083, 4.854, 14.319]}
   ],
   "markers": [
     {"frame": 180, "name": "warm"},

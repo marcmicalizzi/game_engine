@@ -55,4 +55,22 @@ inline bool gi_eye_jumped(bool known, const WorldPos& last, const WorldPos& now,
 // The sample-and-fold pairs a frame records: its own, and `preroll` before it when it starts cold.
 constexpr u32 gi_preroll_steps(bool cold, u32 preroll) noexcept { return 1 + (cold ? preroll : 0); }
 
+// **The memory holds after a cold start** (R171's fifth leg; `gfx::k_gi_step_hold`). A cold frame's
+// steps and the `gfx::k_gi_memory_hold_frames` frames after it are the bounce's first rounds: each
+// wall is still reaching the others through their cells, and what a cell averages then is short of
+// the light the later rounds bring. Folded into a long memory those samples stayed in it for a
+// second and more, which is why the memory was turned off (renderer.md, "Off again: the pre-roll's
+// promise"); so every fold of such a frame holds a cell's count at today's history, and the long
+// memory starts from light that has settled at today's pace. True while this frame's folds hold;
+// `frames_left` is the renderer's count, set by a cold frame and counted down by the others.
+constexpr bool gi_memory_holds(bool cold, u32& frames_left) noexcept {
+  if (cold) {
+    frames_left = gfx::k_gi_memory_hold_frames;
+    return true;
+  }
+  if (frames_left == 0) return false;
+  --frames_left;
+  return true;
+}
+
 }  // namespace engine::renderer
