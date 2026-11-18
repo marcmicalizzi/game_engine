@@ -1140,16 +1140,18 @@ bool describe_house(const VillageLayer& layer, const VillagePlan& plan, u32 hous
   out["kit"] = std::move(kit_json);
 
   // **The places the plan already knows** (furnish.h, `house_places`): the hearth's recess, mouth,
-  // cheeks and the floor beside its stack, the furniture's tops, seats, lid and mattress, the
-  // joists' undersides, the doors' and doorways' approaches and the windows' light, each a box in
-  // the house's frame (a surface where `low` and `high` share their height).
+  // cheeks, the floor beside its stack and its face outside, the furniture's tops, seats, lid and
+  // mattress (a kit chest's lid too), the joists' and tie beams' undersides, the doors' and
+  // doorways' approaches and the windows' light, each a box in the house's frame (a surface where
+  // `low` and `high` share their height). A stack's outside face is in no room (-1).
   Vector<dwellings::NamedPlace> named;
-  dwellings::house_places(interior, furnishing, named);
+  dwellings::house_places(interior, furnishing, choice.outer_wall_cm, named);
   JsonValue places = JsonValue::array();
   for (const dwellings::NamedPlace& n : named) {
     JsonValue q = JsonValue::object();
     q["kind"] = JsonValue(dwellings::place_kind_name(n.kind));
-    q["room"] = JsonValue(n.room);
+    q["room"] =
+        n.room == dwellings::k_no_room ? JsonValue(static_cast<i64>(-1)) : JsonValue(n.room);
     q["storey"] = JsonValue(static_cast<u32>(n.storey));
     q["faces"] = JsonValue(side_name(n.faces));
     q["of"] = JsonValue(n.index);

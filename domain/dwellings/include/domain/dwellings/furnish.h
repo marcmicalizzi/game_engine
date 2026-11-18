@@ -35,8 +35,9 @@
 namespace engine::dwellings {
 
 // Moves with any change to what `furnish_interior` or `timber_interior` writes for the same plan
-// and seed.
-inline constexpr u32 k_furnish_version = 1;
+// and seed. 2: a ceiled house of one storey shows the joists its ceiling is carried on, a house
+// open to its roof the tie beams at its plate, and a house with no chamber sleeps in its hall.
+inline constexpr u32 k_furnish_version = 2;
 
 enum class PieceKind : u8 {
   TableSet,  // a table between two benches, one against the wall
@@ -47,6 +48,7 @@ enum class PieceKind : u8 {
   Beam,      // the spine beam they cross
   Nosings,   // a stair's tread edges
   Newel,     // a half-newel against the stair's wall, at its foot or its head
+  TieBeam,   // a tie beam across a room open to its roof, at the wall plate, under a collar
 };
 const char* piece_kind_name(PieceKind kind) noexcept;
 
@@ -141,12 +143,19 @@ bool add_piece(Furnishing& out, PieceKind kind, const RectCm& footprint, Side ag
 void furnish_interior(const InteriorPlan& plan, u64 seed, Furnishing& out, const Kit& kit = {});
 
 // The clear height over a room's floor a piece stands under: the joists' undersides under an upper
-// floor, else the storey's ceiling or plate. Centimetres.
+// floor or a ceiling, the tie beams' under a roof. Centimetres.
 i32 room_clear_cm(const InteriorPlan& plan, const Room& room) noexcept;
 
-// The timber: under every upper floor a spine beam along the ridge and joists across it, a room
-// at a time (never over a stair's compartment), and each stair's nosings and half-newels.
-// `ridge_along_x`: the ridge runs along the front wall. Appends.
+// **What is overhead in a house of one storey** (dwellings.md, "Timber and furniture"): a house of
+// one room is open to its roof, rafters and collars (the mesher's) over tie beams at the plate;
+// a house of rooms divided by walls is ceiled at the plate, on joists. `describe` states the
+// storey's ceiling by this, and the timber follows it.
+bool open_to_roof(const InteriorPlan& plan) noexcept;
+
+// The timber: under every upper floor and every ceiling a spine beam along the ridge and joists
+// across it, a room at a time (never over a stair's compartment); in a room open to its roof a tie
+// beam across it at the plate under the mesher's collars, clear of its stacks; and each stair's
+// nosings and half-newels. `ridge_along_x`: the ridge runs along the front wall. Appends.
 void timber_interior(const InteriorPlan& plan, bool ridge_along_x, Furnishing& out);
 
 // Every furniture piece inside its room's free floor, clear of the tour, the approaches, the
@@ -169,20 +178,24 @@ u64 hash_furnishing(const Furnishing& furnishing) noexcept;
 // its storey's floor — of which a surface is flat (`y0_mm == y1_mm`: what a thing stands on, or
 // what hangs from it) and a face is thin across `faces` (a hearth's cheek, its mouth).
 enum class PlaceKind : u8 {
-  HearthRecess,     // the fire's recess in the stack: its floor (the raised hearth) to the lintel
-  HearthMouth,      // the opening's line on the stack's face, the raised hearth to the lintel
-  HearthCheek,      // the stack's face beside the opening, floor to lintel, one each side
-  StackSide,        // the floor beside the stack along its wall, as deep as the stack stands proud
-  HearthApron,      // the floor before the opening that the furniture keeps clear
-  TableTop,         // a table's top
-  BenchSeat,        // a bench's or a form's seat
-  SettleSeat,       // a settle's seat
-  ChestLid,         // a chest's lid
-  Mattress,         // a bed's mattress
-  JoistUnderside,   // one joist's underside (or the spine beam's), where a thing is hung from
-  DoorApproach,     // the floor before an outer door that its leaf and its way in keep
-  DoorwayApproach,  // the floor each side of an inner doorway
-  WindowLight,      // the floor before a window, at its sill: where its light falls first
+  HearthRecess,      // the fire's recess in the stack: its floor (the raised hearth) to the lintel
+  HearthMouth,       // the opening's line on the stack's face, the raised hearth to the lintel
+  HearthCheek,       // the stack's face beside the opening, floor to lintel, one each side
+  StackSide,         // the floor beside the stack along its wall, as deep as the stack stands proud
+  HearthApron,       // the floor before the opening that the furniture keeps clear
+  TableTop,          // a table's top
+  BenchSeat,         // a bench's or a form's seat
+  SettleSeat,        // a settle's seat
+  ChestLid,          // a chest's lid
+  Mattress,          // a bed's mattress
+  JoistUnderside,    // one joist's underside (or the spine beam's), where a thing is hung from
+  DoorApproach,      // the floor before an outer door that its leaf and its way in keep
+  DoorwayApproach,   // the floor each side of an inner doorway
+  WindowLight,       // the floor before a window, at its sill: where its light falls first
+  TieBeamUnderside,  // a tie beam's underside, where a thing is hung from in a house open to its
+                     // roof
+  StackOutside,      // a stack's face outside the house, proud of its wall, the ground to the
+                     // plate: what a yard leans against it (a woodpile, a water butt)
 };
 const char* place_kind_name(PlaceKind kind) noexcept;
 
@@ -207,9 +220,16 @@ struct NamedPlace {
 inline constexpr i32 k_hearth_recess_cm = 40;
 inline constexpr i32 k_raised_hearth_mm = 30;
 
+// How far a wall stack stands out of its wall's outer face (`describe`'s chimney).
+inline constexpr i32 k_stack_proud_cm = 8;
+
 // Every named place of a plan and its furnishing, in a fixed order: the hearths' (recess, mouth,
-// cheeks, the stack's sides, the apron), the furniture's surfaces in the pieces' order, the joists'
-// undersides, then the doors', the doorways' and the windows' floors. Appends.
-void house_places(const InteriorPlan& plan, const Furnishing& furnishing, Vector<NamedPlace>& out);
+// cheeks, the stack's sides, the apron, and the stack's outside face where it stands in an outer
+// wall `outer_wall_cm` thick), the furniture's surfaces in the pieces' order (a kit chest's lid
+// its foot at its height: the only surface a kit row states), the joists' and tie beams'
+// undersides, then the doors', the doorways' and the windows' floors. A stack's outside face is in
+// no room (`k_no_room`), on storey 0, `faces` the way it looks out. Appends.
+void house_places(const InteriorPlan& plan, const Furnishing& furnishing, u16 outer_wall_cm,
+                  Vector<NamedPlace>& out);
 
 }  // namespace engine::dwellings

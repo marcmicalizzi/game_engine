@@ -37,7 +37,10 @@ namespace {
 // role `stone/rubble` in place of the limewash, by a draw of their own; and at
 // k_rural_filler_version 3 a smaller plot never gives a household more storeys than it asked or
 // than the plot allows (MSVC msvc-debug).
-constexpr u64 k_descriptions_pin = 0x1dbed3833524ec80ull;
+// And at G219 (2026-11-17; 0x1dbed3833524ec80 before): joists under a ceiled one-storey house's
+// ceiling and tie beams in a cot, a one-hearth two-up two-down's fire in its kitchen, and an inner
+// room for a cross-passage house of five or six on one storey (MSVC msvc-debug).
+constexpr u64 k_descriptions_pin = 0xff3c25d2ee19f79dull;
 
 bool near_cm(f32 metres, i32 cm) {
   const f32 d = metres * 100.0f - static_cast<f32>(cm);

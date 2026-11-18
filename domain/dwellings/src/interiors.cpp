@@ -783,11 +783,16 @@ bool plan_interior(const InteriorParams& params, InteriorPlan& out, std::string*
       const Band& back = *band_of(RoomKind::Kitchen);
       // Against the side wall the head landing is on, clear of the foot landing's doorways and,
       // above, of the head landing's: the stack keeps a doorway's approach off the strip.
+      // **One hearth is the kitchen's** (need 153 (d)): the back room is where the household
+      // cooked and lived, the front its best room, heated only where there were two fires
+      // (vernacular-interiors.md, "Plan types"); a house of one hearth had its fire in the kitchen.
       const i32 half = (k_small_opening_cm + 2 * k_stack_jamb_cm) / 2;
       const i32 front_mid = (front.u0 + front.u1 - k_approach_cm - 10) / 2;
-      build.hearth(front.room, 0, front_mid - half, 0, front_mid + half, k_gable_stack_cm,
-                   Local::Far, k_small_opening_cm);
       if (p.hearths == 2) {
+        build.hearth(front.room, 0, front_mid - half, 0, front_mid + half, k_gable_stack_cm,
+                     Local::Far, k_small_opening_cm);
+      }
+      {
         const i32 back_mid = (back.u0 + k_approach_cm + 10 + back.u1) / 2;
         build.hearth(back.room, 0, back_mid - half, 0, back_mid + half, k_gable_stack_cm,
                      Local::Far, k_small_opening_cm);

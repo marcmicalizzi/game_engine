@@ -215,13 +215,14 @@ into a rectangle its author names. The sizes and their sources are the grounding
 
 | Piece | Members | Where |
 |---|---|---|
-| joists | one a joist, 12 by 10 cm at 52 cm centres | under an upper floor, a room at a time, across the ridge, their ends 2 cm in the walls; never over a stair's compartment |
+| joists | one a joist, 12 by 10 cm at 52 cm centres | under an upper floor, and under the ceiling of a house of one storey whose rooms are divided (it is ceiled at the plate on them, a loft's floor), a room at a time, across the ridge, their ends 2 cm in the walls; never over a stair's compartment |
 | beam | one, 24 cm wide, 18 cm under the ceiling | along the ridge under the joists' middle, where they span 3 m or more |
+| tie beam | one, 20 by 20 cm, its top at the plate | in a house open to its roof (`open_to_roof`: one storey, one room, a cot): under the mesher's collar nearest the room's middle, then under any other collar 2.5 m or more from every one kept, never over a stack, its ends 2 cm in the side walls |
 | nosings | one a riser, 2 cm past it and 3 cm deep | every tread's edge and the head landing's |
 | newel | one, 9 by 5 cm | a half-newel against the wall on the climber's right, astride the first riser and the last (5 cm of wall is all that stands between a landing's doorway and the flight) |
 | table set | 20: a top, four legs, four rails, three stretchers, and two benches of a seat, two slab ends and a stretcher | a hall, a kitchen, a two-up two-down's parlour: under a window where one is free, else along any wall |
 | settle | 5: a back, two ends, a seat, a front board | a heated room that is lived in: the nearest free place to the stack, within 3.2 m |
-| bed | 10: four posts, a head and a foot board, two rails, a mattress and a bolster in the ceiling's white | a parlour with no chamber over the house, an inner room, a chamber, a cot's one room: a corner before the middle of a wall, far from the way in, its head or its side to the wall |
+| bed | 10: four posts, a head and a foot board, two rails, a mattress and a bolster in the ceiling's white | a parlour with no chamber over the house, an inner room, a chamber, a cot's one room, and the hall of a plan with none of those: a corner before the middle of a wall, far from the way in, its head or its side to the wall |
 | chest | 4: two ends, a body, a lid | beside the bed |
 
 **Never in the tour's way.** `furnish_interior` places each piece against a wall of its room on a
@@ -235,6 +236,19 @@ lived-in rooms have a table, 584 of 704 heated ones a settle, and 928 of 944 sle
 (`tests/furnish_tests.cpp` holds nine in ten, six in ten and nine in ten). A cot's one room takes
 its bed before its table. `validate_furnishing` reads all of it back and repairs nothing.
 
+**What is overhead, and where a household sleeps** (the forest session's need 153 (b) and (c),
+2026-11-17; `tests/furnish_tests.cpp`, "timber" and "every house the filler plans has a bed"). A
+house of one storey had nothing overhead to hang a thing from: a ceiled one is now ceiled on joists
+(the description's ceiling at the plate is what they carry), and a cot's one room, open to its
+roof, shows the roof's rafters and collars (the mesher's, [structures](structures.md), "Roofs") over
+tie beams at the plate. `room_clear_cm` is the joists' or the tie beams' underside, so a kit row
+stands under them. A cross-passage house of one storey for five or six asks its inner room, the
+room beyond the hall the household sleeps in (`household_asks`, `k_rural_filler_version` 4: two
+such houses in the forest's village had no bed), and a plan with no parlour, inner room or chamber
+(a hand-made one) puts its bed and chest in the hall, where a household slept before it had a
+chamber. A two-up two-down of one hearth has it in its kitchen, the room it cooked and lived in, and
+the parlour's fire only with a second (`k_interior_version` 4; need 153 (d)).
+
 **What varies, from the house's seed** (one draw a purpose and a room): which of two equal places
 a piece takes, the bed's width (a 137 or a 122 cm mattress first), the chest's length (90 to
 120 cm). What a room's use fixes: which pieces it gets and in what order they are placed. The
@@ -247,7 +261,7 @@ collision and a walker meets them; legs, rails and all the timber are seen and n
 
 ## The places a plan knows
 
-`house_places(plan, furnishing, out)` (`furnish.h`) names the surfaces and slots a plan and its
+`house_places(plan, furnishing, outer_wall_cm, out)` (`furnish.h`) names the surfaces and slots a plan and its
 furniture already decide, so whoever lays props into a house reads them rather than finding them
 again from a description's boxes in the pieces' order (which is how the forest session's furnishing
 script found a table's top, need 113 (d)). Each is a `NamedPlace`, a box in the plan's frame (x and
@@ -260,8 +274,10 @@ on, or hangs from), a **face** is thin across the way it `faces`.
 | `hearth-mouth`, `hearth-cheek` | the opening's line on the stack's face; the face either side of it, floor to lintel |
 | `stack-side` | the floor beside the stack along its sides, from its face to its back (how proud it stands), 60 cm out, inside the room's free floor: a bellows, a log basket, the wall a salt box hangs on |
 | `hearth-apron` | the floor before the opening the furniture keeps clear (1.1 m, 20 cm past each side) |
-| `table-top`, `bench-seat`, `settle-seat`, `chest-lid`, `mattress` | the top of the member `add_piece` built for it: a table set's top at 75 cm and its two benches' seats at 45, a settle's seat, a chest's lid, the mattress |
-| `joist-underside` | each joist's and the spine beam's underside, where a flitch or a bunch of herbs hangs |
+| `stack-outside` | a stack in an outer wall: its face outside the house, `outer_wall_cm` and `k_stack_proud_cm` (8) out from the wall's inner face, as wide as the stack, from the ground floor's level to the top storey's plate, in no room (`k_no_room`, -1 in JSON): where a yard leans its woodpile or water butt (need 153 (e)) |
+| `table-top`, `bench-seat`, `settle-seat`, `chest-lid`, `mattress` | the top of the member `add_piece` built for it: a table set's top at 75 cm and its two benches' seats at 45, a settle's seat, a chest's lid, the mattress. A **kit chest's lid** is its foot at its row's height (need 153 (a)): a kit row states only its foot and its height, and a chest is the one piece whose top is both, so a kit table's top, settle's seat and bed's mattress are its mesh's to say and named nowhere |
+| `joist-underside` | each joist's and the spine beam's underside, under an upper floor or a ceiling, where a flitch or a bunch of herbs hangs |
+| `tie-beam-underside` | each tie beam's underside in a house open to its roof (the cot's), what it hangs from there; a collar is the mesher's and too high to name |
 | `door-approach`, `doorway-approach` | the floor before an outer door (1 m, its leaf's swing) and each side of an inner doorway (90 cm), 20 cm past each jamb |
 | `window-light` | the floor before a window at its sill's height, 1 m deep and 10 cm past each side: where its light falls first and what a tall piece keeps out of |
 
@@ -276,7 +292,8 @@ kit)`; the forest session's need 113 (e) and (f)): a row says which kind it repl
 a settle, a bed, a chest) and the box its foot and height take, its back to a wall and its front
 into the room. In each room the furnisher draws one of the kind's rows that stands under the
 room's joists or ceiling (`room_clear_cm`, `k_kit_head_gap_cm` under it: 2.08 m under an upper
-floor, the plate's 2.5 m upstairs, 2.4 m in a house of one storey) and **searches for it exactly as
+floor, the plate's 2.5 m upstairs, 2.28 m under a ceiled house of one storey's joists and 2.18 m
+under a cot's tie beams) and **searches for it exactly as
 for its own piece of that kind**: against a wall on the 10 cm module, clear of the tour's line by
 35 cm, of every doorway's and outer door's approach, the hearth's apron, the stacks and the led
 window (and every window, for a settle), 10 cm from the pieces before it, with the kind's own

@@ -29,8 +29,9 @@
 namespace engine::dwellings {
 
 // Moves with any change to what `plan_interior` writes for the same parameters, or to what its
-// records mean. 3: a stair's well runs `k_stair_reach_cm` past the first riser.
-inline constexpr u32 k_interior_version = 3;
+// records mean. 3: a stair's well runs `k_stair_reach_cm` past the first riser. 4: a two-up
+// two-down of one hearth has it in its kitchen.
+inline constexpr u32 k_interior_version = 4;
 
 enum class PlanType : u8 {
   Cot,           // one room, one storey, a gable hearth
