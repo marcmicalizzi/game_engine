@@ -405,6 +405,18 @@ static JsonValue place_block(const char* when, const renderer::GpuScene& scene) 
   out.set("materials_mib", mib(p.materials));
   out.set("textures_mib", mib(p.textures));
   out.set("structures_mib", mib(p.structures));
+  // The traced chain by what sizes each part (R81; renderer.md, "The ray tracing chain's memory").
+  JsonValue chain = JsonValue::object();
+  chain.set("frame_sets_mib", mib(p.structure.frame_sets));
+  chain.set("frame_tables_mib", mib(p.structure.frame_tables));
+  chain.set("bottom_level_mib", mib(p.structure.bottom_level));
+  chain.set("top_level_mib", mib(p.structure.top_level));
+  chain.set("scratch_mib", mib(p.structure.scratch));
+  chain.set("per_instance_mib", mib(p.structure.per_instance));
+  chain.set("cache_mib", mib(p.structure.cache));
+  chain.set("cache_slots_mib", mib(p.structure.cache_slots));
+  chain.set("static_forms_mib", mib(p.structure.static_forms));
+  out.set("structures", std::move(chain));
   out.set("tiles_mib", mib(p.tiles));
   out.set("frame_mib", mib(p.frame));
   out.set("pages_mib", mib(p.pages));

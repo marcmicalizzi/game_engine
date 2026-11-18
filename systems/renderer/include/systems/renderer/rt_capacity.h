@@ -74,6 +74,17 @@ struct RtCapacityConfig {
   // default here, so the arithmetic of a config built by hand is the rule before — grows to the
   // demand alone; the renderer sets `renderer.rt.slope_frames`, 4.
   u32 slope_frames = 0;
+  // **A first capacity that was a guess is given back once the frames have answered** (R81,
+  // 2026-11-17; renderer.md, "A guess is not a demand"). A scene too large to hold whole starts at
+  // its estimate or the budget (`first_rt_capacity`), which no frame asked for: the village's walk
+  // at 3840x2160 held the budget's 330,125 clusters (2.1 GB on the RTX 5090) for frames that built
+  // at most 6,457. When this is above zero the capacity `reset` starts at is **provisional**: after
+  // this many seconds from the first observed frame and `shrink_frames` frames, if the window's
+  // peak with its headroom is at most half of it, the capacity goes to that fit at once — no floor,
+  // and the guess is not remembered as a peak, since nothing wanted it. A window whose frames
+  // wanted more than half, a growth, or `grow_to` makes the capacity an ordinary one. 0 — the
+  // default here — is the rule before: the first capacity is held like any other.
+  f64 first_seconds = 0.0;
 };
 
 // The `renderer.rt.*` tunables, read once: the budget in MiB, the headroom, the shrink window, the
@@ -114,6 +125,10 @@ bool rt_scan_every_frame_tunable() noexcept;
 bool rt_free_on_worker_tunable() noexcept;
 // `renderer.rt.slope_frames` (4): `RtCapacityConfig::slope_frames`.
 u32 rt_slope_frames_tunable() noexcept;
+// `renderer.rt.first_seconds` (10): `RtCapacityConfig::first_seconds` for a chain whose first
+// capacity is less than its union — a guess, where the whole union is a guarantee (R81). 0 is the
+// rule before, the comparison. Read when the renderer is created.
+f64 rt_first_seconds_tunable() noexcept;
 // `renderer.rt.chunk_clusters` (65,536): the frame's cluster structures stand in chunks of this
 // many, each a buffer and a build of its own, so a step makes the chunks the new capacity lacks and
 // gives up the ones it no longer holds, and never the whole set again (R152; renderer.md, "The
@@ -287,6 +302,21 @@ class RtCapacity {
   // Starts at `capacity` (clamped to the limit) at time `now`, with an empty shrink window; the
   // capacity it starts at is held from `now`, like any other.
   void reset(const RtCapacityConfig& config, u32 capacity, f64 now) noexcept;
+  // Whether the capacity held before any frame was observed is a guess (R81): the renderer says
+  // false for a chain that holds its whole union, which is a guarantee that no frame can want more
+  // and is kept by the ordinary window. Ignored once a frame has been observed, and without
+  // `first_seconds`.
+  void first_is_guess(bool guess) noexcept {
+    if (frames_ == 0) provisional_ = guess && config_.first_seconds > 0.0;
+  }
+  // What a frame could build has grown since the guess's window began — a world still arriving —
+  // so the window starts again from `now`, keeping its peak: the guess is judged by frames that
+  // have seen the scene it was made for. Nothing once the guess has been judged.
+  void scene_grew(f64 now) noexcept {
+    if (!provisional_) return;
+    window_start_ = now;
+    window_start_frame_ = frames_;
+  }
   // One completed frame wanted `wanted` structures, read at `now`. Returns the capacity the set
   // should have from now on, which is `capacity()` unless this frame crossed a threshold; the
   // caller resizes when the two differ and then calls `resized`. While the demand rises the
@@ -315,6 +345,10 @@ class RtCapacity {
   void relimit(u32 limit, u32 capacity, f64 now) noexcept;
 
   u32 capacity() const noexcept { return capacity_; }
+  // True until the first capacity has been judged (`RtCapacityConfig::first_seconds`).
+  bool provisional() const noexcept { return provisional_; }
+  // The guess `observe` gave back, in clusters; 0 while none was (the log's line).
+  u32 guess_given_back() const noexcept { return given_back_; }
   u32 limit() const noexcept { return config_.limit; }
   const RtCapacityConfig& config() const noexcept { return config_; }
 
@@ -337,8 +371,12 @@ class RtCapacity {
   u32 window_peak_ = 0;
   f64 window_start_ = 0.0;
   u64 window_start_frame_ = 0;
-  u64 frames_ = 0;       // frames observed
-  u32 last_wanted_ = 0;  // the last observed frame's demand, for its rise
+  u64 frames_ = 0;            // frames observed
+  u32 last_wanted_ = 0;       // the last observed frame's demand, for its rise
+  bool provisional_ = false;  // the capacity is the first guess, not yet judged
+  u32 unheld_ = 0;            // a guess given back: `hold` does not remember it
+  u32 given_back_ = 0;
+  u32 give_fit_ = 0;  // what the give-back goes to, until the caller has resized
   Held held_[k_held] = {};
   u32 held_first_ = 0;
   u32 held_count_ = 0;

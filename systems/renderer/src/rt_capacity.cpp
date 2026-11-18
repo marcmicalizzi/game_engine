@@ -30,6 +30,14 @@ tunables::Int rt_headroom_pct{"renderer.rt.headroom_pct", 25, 0, 400,
 tunables::Float rt_shrink_seconds{"renderer.rt.shrink_seconds", 120.0, 0.0, 86400.0,
                                   "Seconds of wall time the ray tracing chain's demand must stay "
                                   "under half its capacity before the capacity shrinks"};
+// R81 (2026-11-17): a first capacity that was a guess is judged after ten seconds of frames, not
+// held for the shrink window and then halved (docs/experiments/rt-structures-memory-2026-11-17.md).
+// Ten, because it is the window R116 chose for a view to have shown what it wants, and a world's
+// inner rings have arrived by then; 0 is the rule before.
+tunables::Float rt_first_seconds{"renderer.rt.first_seconds", 10.0, 0.0, 86400.0,
+                                 "Seconds of frames after which a ray tracing chain whose first "
+                                 "capacity was a guess (less than its union) gives back what the "
+                                 "frames did not want; 0 holds the guess like any capacity"};
 // R152: the frame's cluster structures in chunks, and a step made on the worker (rt_capacity.h).
 tunables::Int rt_chunk_knob{"renderer.rt.chunk_clusters", 65536, 0, 1 << 24,
                             "The frame's cluster structures stand in chunks of this many, "
@@ -145,6 +153,7 @@ bool rt_scan_near_capacity_tunable() noexcept { return rt_scan_near_capacity.get
 bool rt_scan_every_frame_tunable() noexcept { return rt_scan_every_frame.get(); }
 bool rt_free_on_worker_tunable() noexcept { return rt_free_on_worker.get(); }
 u32 rt_slope_frames_tunable() noexcept { return static_cast<u32>(rt_slope_frames.get()); }
+f64 rt_first_seconds_tunable() noexcept { return rt_first_seconds.get(); }
 u32 rt_chunk_clusters_tunable() noexcept { return static_cast<u32>(rt_chunk_knob.get()); }
 bool rt_step_on_worker_tunable() noexcept { return rt_step_on_worker.get(); }
 
@@ -310,12 +319,17 @@ void RtCapacity::reset(const RtCapacityConfig& config, u32 capacity, f64 now) no
   if (!(config_.shrink_seconds >= 0.0)) config_.shrink_seconds = 0.0;
   if (!(config_.peak_seconds >= 0.0)) config_.peak_seconds = 0.0;
   if (config_.floor_pct > 100) config_.floor_pct = 100;
+  if (!(config_.first_seconds >= 0.0)) config_.first_seconds = 0.0;
   capacity_ = capacity < config_.limit ? capacity : config_.limit;
   window_peak_ = 0;
   window_start_ = now;
   window_start_frame_ = 0;
   frames_ = 0;
   last_wanted_ = 0;
+  provisional_ = config_.first_seconds > 0.0;
+  unheld_ = 0;
+  given_back_ = 0;
+  give_fit_ = 0;
   held_first_ = 0;
   held_count_ = 0;
 }
@@ -373,6 +387,9 @@ u32 RtCapacity::observe(u32 wanted, f64 now) noexcept {
   // the woods on the owner's v27 walk raised it by 38% of the capacity between two frames, which
   // the headroom (25%) could not hold: the frames before the growth landed dropped instances.
   const u32 seen = ahead(wanted);
+  // A guess is judged by its frames: the first window's clock starts at the first of them, not at
+  // the load before it (R81).
+  if (provisional_ && frames_ == 0) window_start_ = now;
   last_wanted_ = wanted;
   ++frames_;
   window_peak_ = wanted > window_peak_ ? wanted : window_peak_;
@@ -385,8 +402,35 @@ u32 RtCapacity::observe(u32 wanted, f64 now) noexcept {
     window_peak_ = wanted;
     window_start_ = now;
     window_start_frame_ = frames_;
+    provisional_ = false;  // the frames want more than the guess: it is a demand from here
     const u32 grown = grow_target(seen, now);
     return grown > capacity_ ? grown : capacity_;
+  }
+  // **A guess is not a demand** (R81; `RtCapacityConfig::first_seconds`): the first capacity of a
+  // scene too large to hold whole is its estimate or the budget, and the ordinary window below
+  // would hold it for `shrink_seconds` and then only halve it, a floor kept for a peak no frame
+  // asked for. Its first window is `first_seconds` and the same frames; when even that window's
+  // peak with its headroom is at most half the guess, the capacity goes to the fit, and `hold`
+  // forgets the guess. A window that wanted more than half leaves an ordinary capacity.
+  if (provisional_ && now - window_start_ >= config_.first_seconds &&
+      frames_ - window_start_frame_ >= config_.shrink_frames) {
+    provisional_ = false;
+    const u32 fit = target(window_peak_);
+    if (u64{fit} * 2 <= capacity_) {
+      window_peak_ = wanted;
+      window_start_ = now;
+      window_start_frame_ = frames_;
+      unheld_ = capacity_;
+      given_back_ = capacity_;
+      give_fit_ = fit;
+    }
+  }
+  // The give-back stands until the caller has resized: a frame that could not start the step (one
+  // was being taken) is asked again, with whatever the frames since have wanted.
+  if (unheld_ != 0 && unheld_ == capacity_) {
+    const u32 since = target(window_peak_);
+    const u32 fit = since > give_fit_ ? since : give_fit_;
+    if (fit < capacity_) return fit;
   }
   // Shrink only on a whole window — its seconds and its frames, so neither a load's fast frames nor
   // a handful of slow ones make one — and only when even its peak left more than half unused, so a
@@ -400,6 +444,7 @@ u32 RtCapacity::observe(u32 wanted, f64 now) noexcept {
     window_peak_ = 0;
     window_start_ = now;
     window_start_frame_ = frames_;
+    provisional_ = false;  // an ordinary window has judged it (a `shrink_seconds` under the first)
     if (u64{fit} * 2 <= capacity_) {
       const u32 least = floor(now);
       fit = fit > least ? fit : least;
@@ -413,11 +458,19 @@ u32 RtCapacity::grow_to(u32 wanted, f64 now) noexcept {
   window_peak_ = wanted;
   window_start_ = now;
   window_start_frame_ = frames_;
+  provisional_ = false;  // a frame somebody waited for asked: a demand
   const u32 fit = grow_target(wanted, now);
   return fit > capacity_ ? fit : capacity_;
 }
 
 void RtCapacity::hold(u32 previous, f64 until) noexcept {
+  // A guess given back was never a demand: a growth after it goes to what the frames want, not
+  // back to the guess (R81).
+  if (unheld_ != 0 && previous == unheld_) {
+    unheld_ = 0;
+    return;
+  }
+  unheld_ = 0;
   // A capacity no larger than one held after it can never be the peak again: drop it from the top.
   while (held_count_ > 0) {
     const Held& last = held_[(held_first_ + held_count_ - 1) % k_held];
@@ -439,7 +492,12 @@ void RtCapacity::relimit(u32 limit, u32 capacity, f64 now) noexcept {
 
 void RtCapacity::resized(u32 capacity, f64 now) noexcept {
   const u32 next = capacity < config_.limit ? capacity : config_.limit;
-  if (next != capacity_) hold(capacity_, now);
+  // Before any frame has been observed every capacity is a guess (R81): a streamed world's chain is
+  // made for its prefix and made again when the first tiles arrive, and remembering the prefix's as
+  // a peak sent the streamed forest's first growth after the give-back to 56,466 clusters for a
+  // demand of 10,119. With no `first_seconds` the rule before stands.
+  const bool guess = frames_ == 0 && config_.first_seconds > 0.0;
+  if (next != capacity_ && !guess) hold(capacity_, now);
   capacity_ = next;
 }
 

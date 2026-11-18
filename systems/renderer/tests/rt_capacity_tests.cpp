@@ -446,6 +446,133 @@ TEST_CASE("rt capacity: the floor holds half the last minute's peak, and halves 
   CHECK(drive.policy.capacity() == drive.policy.target(1000));  // and in the end the demand
 }
 
+// R81 (2026-11-17; docs/experiments/rt-structures-memory-2026-11-17.md): the village's walk at
+// 3840x2160 held the budget's 330,125 clusters, its first capacity, for frames that built at most
+// 6,457. A first capacity under the union is a guess, and its first window gives back what the
+// frames did not want; the renderer's windows (120 s to shrink, a minute's peak) and frames at 160
+// a second.
+namespace {
+
+RtCapacityConfig village_config(f64 first_seconds) {
+  RtCapacityConfig config;
+  config.limit = 330125;
+  config.shrink_seconds = 120.0;
+  config.first_seconds = first_seconds;
+  return config;
+}
+
+}  // namespace
+
+TEST_CASE("rt capacity: a first capacity that was a guess is given back after its first window") {
+  constexpr f64 k_dt = 1.0 / 160.0;
+  Driven drive;
+  // A streamed world: the chain is made for the prefix, and made again when the first tiles arrive,
+  // before any frame. Neither capacity was asked for by a frame, and neither is a peak.
+  drive.policy.reset(village_config(10.0), 56466, 0.0);
+  drive.policy.resized(330125, 1.0);
+  CHECK(drive.policy.provisional());
+  CHECK(drive.policy.peak(1.0) == 330125);
+  // A load of 30 s before the first frame is no part of the window: its clock starts at the frames.
+  drive.t = 30.0;
+  drive.run(6457, 9 * 160, k_dt);  // nine seconds of them: nothing moves
+  CHECK(drive.shrinks == 0);
+  CHECK(drive.policy.capacity() == 330125);
+  drive.run(6457, 2 * 160, k_dt);  // ten are a window
+  CHECK(drive.shrinks == 1);
+  CHECK(drive.policy.capacity() == 8192);  // 6,457 and its quarter, rounded up to the step
+  CHECK(drive.policy.guess_given_back() == 330125);
+  CHECK_FALSE(drive.policy.provisional());
+  CHECK(drive.policy.peak(drive.t) == 8192);  // nothing held before it is remembered
+  // The guess is no peak: the forest coming into view grows to what its frames want, not back to
+  // the budget, and from here the capacity is an ordinary one, floor and all.
+  drive.run(200000, 60, k_dt);
+  CHECK(drive.grows == 1);
+  CHECK(drive.policy.capacity() == 253952);
+  // (The window that saw the forest closes first and leaves it; the next one is the fall's.)
+  drive.run(6457, 245 * 160, k_dt);
+  CHECK(drive.shrinks == 2);
+  CHECK(drive.policy.capacity() == 126976);  // half of what the frames asked for and held
+
+  // The rule before (`first_seconds` 0): the guess is held for the shrink window, then halved.
+  Driven before;
+  before.policy.reset(village_config(0.0), 330125, 0.0);
+  CHECK_FALSE(before.policy.provisional());
+  before.run(6457, 119 * 160, k_dt);
+  CHECK(before.policy.capacity() == 330125);
+  before.run(6457, 2 * 160, k_dt);
+  CHECK(before.shrinks == 1);
+  CHECK(before.policy.capacity() == 167936);  // half the guess, rounded up to the step
+}
+
+TEST_CASE("rt capacity: a guess the frames wanted half of, or a whole union, is held") {
+  constexpr f64 k_dt = 1.0 / 160.0;
+  // 150,000 with its quarter is more than half of the guess: the window leaves it, as an ordinary
+  // capacity whose fall is to the floor after the shrink window.
+  Driven drive;
+  drive.policy.reset(village_config(10.0), 330125, 0.0);
+  drive.run(150000, 11 * 160, k_dt);
+  CHECK(drive.shrinks == 0);
+  CHECK(drive.policy.capacity() == 330125);
+  CHECK_FALSE(drive.policy.provisional());
+  CHECK(drive.policy.guess_given_back() == 0);
+  drive.run(6457, 245 * 160, k_dt);  // the window that saw the 150,000 leaves it; the next halves
+  CHECK(drive.shrinks == 1);
+  CHECK(drive.policy.capacity() == 167936);
+
+  // A chain that holds its whole union is a guarantee, not a guess (`first_is_guess(false)`).
+  Driven whole;
+  whole.policy.reset(village_config(10.0), 330125, 0.0);
+  whole.policy.first_is_guess(false);
+  CHECK_FALSE(whole.policy.provisional());
+  whole.run(6457, 60 * 160, k_dt);
+  CHECK(whole.shrinks == 0);
+  CHECK(whole.policy.capacity() == 330125);
+  // And once frames have been observed the answer is not taken back.
+  whole.policy.first_is_guess(true);
+  CHECK_FALSE(whole.policy.provisional());
+}
+
+TEST_CASE("rt capacity: a world still arriving starts the guess's window again") {
+  constexpr f64 k_dt = 1.0 / 160.0;
+  // R116's v25 walk: the load's frames are fast and want little, and the world arrives after them.
+  // While what a frame could build keeps growing the renderer says so (`scene_grew`), and the
+  // window that judges the guess begins again: the load's own frames never judge it.
+  Driven drive;
+  drive.policy.reset(village_config(10.0), 330125, 0.0);
+  for (u32 second = 0; second < 25; ++second) {
+    drive.run(31447, 160, k_dt);
+    if (second < 20) drive.policy.scene_grew(drive.t);  // tiles arriving for twenty seconds
+  }
+  CHECK(drive.shrinks == 0);
+  CHECK(drive.policy.capacity() == 330125);
+  CHECK(drive.policy.provisional());
+  // The world is here: its frames want two thirds of the guess, and the guess stands.
+  drive.run(206379, 6 * 160, k_dt);
+  CHECK(drive.shrinks == 0);
+  CHECK(drive.grows == 0);
+  CHECK(drive.policy.capacity() == 330125);
+  CHECK_FALSE(drive.policy.provisional());
+}
+
+TEST_CASE("rt capacity: a give-back stands until the caller has resized") {
+  // The renderer cannot start a step in a frame that is taking one, so the answer is given again,
+  // and it follows what the frames since have wanted.
+  RtCapacity policy;
+  policy.reset(village_config(10.0), 330125, 0.0);
+  f64 t = 0.0;
+  u32 answer = 330125;
+  for (u32 f = 0; f < 12 * 160 && answer == 330125; ++f)
+    answer = policy.observe(6457, t += 1.0 / 160.0);
+  CHECK(answer == 8192);
+  CHECK(policy.capacity() == 330125);  // not resized yet
+  CHECK(policy.observe(6457, t += 0.01) == 8192);
+  CHECK(policy.observe(9000, t += 0.01) == 12288);  // 11,250 rounded up: more was wanted since
+  policy.resized(12288, t);
+  CHECK(policy.capacity() == 12288);
+  CHECK(policy.observe(9000, t += 0.01) == 12288);
+  CHECK(policy.peak(t) == 12288);  // the guess is not remembered
+}
+
 TEST_CASE("rt capacity: removing the last untraced tile restores the frame estimate") {
   gfx::Device device;
   std::string error;

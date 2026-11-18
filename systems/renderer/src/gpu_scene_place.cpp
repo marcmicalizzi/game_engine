@@ -78,13 +78,20 @@ PlaceBytes GpuScene::place_bytes() const noexcept {
   out.micromaps = micromap_bytes();
   out.materials = sum({&materials, &cluster_materials, &terrain_masks, &terrain_formation});
   out.textures = texture_bytes_;
-  out.structures = sum({&clas_set.addresses, &clas_set.sizes, &blas_set.data, &blas_set.addresses,
-                        &rt_scratch, &tlas.buffer, &rt_instances, &records, &hit_entries, &slots,
-                        &instance_counts, &blas_records, &blas_dense, &blas_slots,
-                        &clas_chunk_counts, &static_clas_.data, &static_blas_.data}) +
-                   rt_cache_bytes_;
+  // The traced chain by what sizes each part (R81): the same buffers `structures` always summed.
+  StructureBytes& s = out.structure;
   for (const gfx::ClusterSet& chunk : clas_chunks_)
-    out.structures += chunk.data.size;
+    s.frame_sets += chunk.data.size;
+  s.frame_tables =
+      sum({&records, &hit_entries, &clas_set.addresses, &clas_set.sizes, &clas_chunk_counts});
+  s.bottom_level = sum({&blas_set.data, &blas_set.addresses});
+  s.top_level = sum({&tlas.buffer, &rt_instances});
+  s.scratch = rt_scratch.size;
+  s.per_instance = sum({&slots, &instance_counts, &blas_records, &blas_dense, &blas_slots});
+  s.cache = rt_cache_bytes_;
+  s.cache_slots = rt_cache_buffers.slots.size;
+  s.static_forms = sum({&static_clas_.data, &static_blas_.data});
+  out.structures = s.total();
   out.tiles = arenas + staging_ring_.size + terrain_table_.size;
   for (const TerrainLevel& level : terrain_)
     for (const gfx::BufferResource& field : level.fields)
