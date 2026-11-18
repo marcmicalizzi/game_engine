@@ -363,7 +363,9 @@ class EventBus {
   u64 delivery_hash() const noexcept { return delivery_hash_; }
   // Records waiting: in the tick's bank and in the carry.
   u32 pending() const noexcept;
-  u32 carried() const noexcept { return carry_.count; }
+  u32 carried() const noexcept { return carry_.size(); }
+  // Inside a delivery point: a handler is running, or the point is ordering what it delivers.
+  bool delivering() const noexcept { return delivering_; }
 
  private:
   friend class Emitter;
@@ -471,7 +473,6 @@ class EventBus {
   u64 tick_ = 0;         // the tick the bus is in
   u64 serial_tick_ = 0;  // the tick `serial_` counts in
   u32 serial_ = 0;       // ids given in `serial_tick_`
-  u32 document_seq_ = 0;
   u8 phase_ = 0;
   bool delivering_ = false;
   bool installed_ = false;
