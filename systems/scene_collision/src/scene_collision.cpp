@@ -1341,6 +1341,7 @@ const SceneCollision::Proxy* SceneCollision::proxy_for(u32 mesh, Vec3 scale,
       return (*proxy)->shape ? proxy->get() : nullptr;
   }
   const i64 start = time::monotonic_ns();
+  profiling::TraceStage proxy_stage("collision proxy");  // a scene mesh's, cut and built (T172)
   bool coarsened = false;
   const u32 left_out = cut_proxy(*proxy_source_, mesh, scale, scratch, coarsened);
   const Vector<Vec3>& vertices = scratch.vertices;
@@ -1406,6 +1407,7 @@ const SceneCollision::Proxy* SceneCollision::tile_proxy_for(const scene_gen::Pla
       return take(**found);
   }
   const i64 start = time::monotonic_ns();
+  profiling::TraceStage proxy_stage("collision tile proxy");  // a tile-handed mesh's (T172)
   // **From a kept copy** (T166; docs: "Ahead of a running walker"): the cut a fresh read gives,
   // word for word, without reading the mesh's container again for every tile that places it.
   if (MeshCopy* copy =
@@ -1712,11 +1714,16 @@ void SceneCollision::gather_placements(world::TileCoord coord, PlacementScratch&
         if (has_shaped) context.exclusion = &shaped;
         // **Side by side where the generator says so** (T169; docs: "Ahead of a running walker"):
         // a reentrant `tile` is asked on whichever thread builds the tile, beside the others; any
-        // other under the one lock, one thread at a time, as every one was before.
+        // other under the one lock, one thread at a time, as every one was before. The startup
+        // trace names each ask by its generator and the wait for the lock apart (T172).
         if (entry.generator->tile_reentrant) {
+          profiling::TraceStage ask("collision generator", entry.generator->name);
           made = entry.generator->tile(entry.state, at, context, scratch.placed, &why);
         } else {
+          profiling::TraceStage wait("collision generator lock", entry.generator->name);
           std::lock_guard<std::mutex> lock(generators_mutex_);
+          wait.end();
+          profiling::TraceStage ask("collision generator", entry.generator->name);
           made = entry.generator->tile(entry.state, at, context, scratch.placed, &why);
         }
       }
@@ -1729,6 +1736,7 @@ void SceneCollision::gather_placements(world::TileCoord coord, PlacementScratch&
       }
       const bool later = e + 1 < entries_.size();  // an entry after it reads what it placed
       if (later && !scratch.placed.shapes.empty()) {
+        profiling::TraceStage shaped_stage("collision exclusion");  // T172
         if (!has_shaped) shaped = scene_->terrain.exclusion;
         has_shaped = true;
         if (!shaped.add_footprints(scratch.placed.shapes.span(), &why)) {
@@ -1810,6 +1818,7 @@ void SceneCollision::gather_placements(world::TileCoord coord, PlacementScratch&
   }
   if (scratch.children.empty()) return;
   out.records = scratch.records;
+  profiling::TraceStage compound_stage("collision compound");
   if (physics_->build_compound(
           std::span<const physics::BuiltChild>(scratch.children.data(), scratch.children.size()),
           out.compound) != physics::Status::Ok) {
@@ -1891,8 +1900,20 @@ bool SceneCollision::can_prefetch() const noexcept {
          (explicit_source_ || ground_->ops()->tile_source != nullptr);
 }
 
+void SceneCollision::count_build(const Build& build) noexcept {
+  // Only a build that ran: one let go before a worker reached it measured nothing.
+  const i64 ns = build.ground_ns + build.placement_ns;
+  if (ns <= 0) return;
+  const f64 s = static_cast<f64>(ns) / 1.0e9;
+  f64& estimate = stats_.build_estimate_s;
+  estimate = estimate > 0.0 ? 0.75 * estimate + 0.25 * s : s;
+}
+
 void SceneCollision::retire(std::unique_ptr<Build>&& build) {
-  if (build->ran.done()) return;  // its job has returned: nothing else touches it
+  if (build->ran.done()) {  // its job has returned: nothing else touches it
+    count_build(*build);
+    return;
+  }
   retired_.push_back(std::move(build));
 }
 
@@ -1919,6 +1940,7 @@ std::unique_ptr<SceneCollision::Build> SceneCollision::take_build(world::TileCoo
     } else {
       ++stats_.prefetched;
     }
+    count_build(build);
     // Where its time went: the activation's own split when the tick ran it, the worker's otherwise.
     if (here) {
       stats_.ground_sample_ns += build.ground_ns;
@@ -1940,6 +1962,7 @@ void SceneCollision::prefetch(WorldPos at, Vec3 velocity) {
   // Builds let go whose jobs have returned are freed, and with them any shape they built.
   for (u32 k = 0; k < retired_.size();) {
     if (retired_[k]->ran.done()) {
+      count_build(*retired_[k]);
       retired_[k] = std::move(retired_[retired_.size() - 1]);
       retired_.pop_back();
     } else {
@@ -2074,6 +2097,19 @@ void SceneCollision::submit_builds(WorldPos at, Vec3 velocity) {
   const f64 vv = vx * vx + vz * vz;
   // A walker standing still is given a walker's pace, so the tiles round it still go nearest first.
   const f64 pace = std::max(std::sqrt(vv), 1.0);
+  // **Outrun** (T172; docs: "Ahead of a running walker"): a build is of use only if the walker is
+  // still within the builds' reach when it is done, and a flying camera crosses the reach's
+  // diameter in `2 r / speed`. When that is less than a build takes here (the estimate from the
+  // builds that ran), nothing is handed over this tick, the tiles the ring wants now included:
+  // the workers stay free for the place the camera slows down at, where a drop's ring is wanted.
+  // A drop and a walker ask with no velocity or a walker's, and are never outrun.
+  if (vv > 0.0 && stats_.build_estimate_s > 0.0) {
+    const f64 reach_m = tile_m * static_cast<f64>(config_.prefetch_radius_tiles);
+    if (2.0 * reach_m < stats_.build_estimate_s * std::sqrt(vv)) {
+      ++stats_.prefetch_outrun;
+      return;
+    }
+  }
   u32 busy = 0;
   u32 waiting = 0;
   for (const std::unique_ptr<Build>& b : builds_) {

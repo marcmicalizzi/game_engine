@@ -2077,6 +2077,63 @@ TEST_CASE("scene_collision: a drop's ring is built on every worker at once") {
   CHECK(parallel_ms < 0.5 * serial_ms);
 }
 
+// **A flight that outruns the builds hands none over** (T172; scene_collision.md, "Ahead of a
+// running walker"). The owner's drop after a flight at 1,375 m/s found its four workers on builds
+// the flight had passed. With builds taking 40 ms here and a reach of 2.5 tiles of 32 m, a camera
+// faster than 160 m in 40 ms (4,000 m/s) is gone before any build it asks for is done: nothing is
+// handed over while it flies that fast, a walker's pace and a drop are handed over as before, and
+// the estimate the rule reads is the builds' own time.
+TEST_CASE("scene_collision: a flight that outruns the builds hands none over") {
+  constexpr u32 k_delay_ms = 40;
+  TestGround g;
+  scene_gen::GroundProvider ground(&k_still_ops, &g);
+  SlowSource slow;
+  slow.delay_ms = k_delay_ms;
+  const scene_gen::TileSource source{&k_slow_ops, &slow};
+  renderer::SceneData scene;
+  physics::World physics;
+  REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+  jobs::JobSystemConfig pool = one_worker();
+  pool.performance_workers = 4;
+  jobs::JobSystem workers(pool);
+  SceneCollision collision;
+  Config config;
+  config.prefetch_radius_tiles = 2.5f;
+  config.ring_radius_tiles = 1.5f;
+  config.prefetch_slots = 8;
+  std::string error;
+  REQUIRE_MESSAGE(collision.create(physics, scene, &ground, config, &error, &source, &workers),
+                  error);
+  world::World world(ring(2));
+  world.add_consumer(collision.consumer());
+  // No build has run: nothing is outrun, whatever the speed.
+  const WorldPos there{4016.0, 0.0, -2000.0};
+  collision.prefetch(there, Vec3{20000.0f, 0.0f, 0.0f});
+  CHECK(collision.stats().prefetch_outrun == 0);
+  CHECK(collision.stats().prefetch_submitted > 0);
+  world.update(observer_at(there), 0, true);
+  const f64 estimate = collision.stats().build_estimate_s;
+  CHECK(estimate >= 0.001 * k_delay_ms);
+  // At 20 km/s the reach's 160 m pass in 8 ms: a build of 40 ms is of no use.
+  const WorldPos away{9016.0, 0.0, -2000.0};
+  const u64 before = collision.stats().prefetch_submitted;
+  collision.prefetch(away, Vec3{20000.0f, 0.0f, 0.0f});
+  CHECK(collision.stats().prefetch_submitted == before);
+  CHECK(collision.stats().prefetch_outrun == 1);
+  // At a walker's pace the same place's builds are handed over.
+  collision.prefetch(away, Vec3{5.0f, 0.0f, 0.0f});
+  const u64 walking = collision.stats().prefetch_submitted;
+  CHECK(walking > before);
+  // And a drop there (no velocity) as well, after a flight that handed nothing over.
+  const WorldPos further{14016.0, 0.0, -2000.0};
+  collision.prefetch(further, Vec3{20000.0f, 0.0f, 0.0f});
+  CHECK(collision.stats().prefetch_submitted == walking);
+  collision.prefetch(further);
+  CHECK(collision.stats().prefetch_submitted > walking);
+  MESSAGE("builds at " << k_delay_ms << " ms: estimate " << estimate * 1000.0 << " ms; "
+                       << collision.stats().prefetch_outrun << " ticks outrun");
+}
+
 namespace {
 
 // T169: a placement generator whose `tile` takes 40 ms, as a forest tile's did in its kit reads
