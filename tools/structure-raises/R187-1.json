@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R187-1",
+  "reason": "R187-1: renderer.md and gfx.md say HDR10's codes are the encode's (ADR-0075), the figures that hold it, and the overlay's window in BT.2020 codes",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 2009,
+    "page:docs/subsystems/gfx.md": 141
+  }
+}

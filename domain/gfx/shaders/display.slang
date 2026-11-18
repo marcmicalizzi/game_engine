@@ -97,7 +97,7 @@ static const uint k_display_scrgb = 2; // gfx::DisplayEncoding::ScRgb
 static const uint k_display_linear = 3; // gfx::DisplayEncoding::Linear: the exposed radiance
 
 // What the frame's output is: the encoding, the target's steps (the dither's, 0 for none), paper
-// white and the peak in nits, and the target's codes the SDR encode rounds to itself
+// white and the peak in nits, and the target's codes the SDR and HDR10 encodes round to themselves
 // (`display_stored`; 0 for none). `ResolveParams`' display fields, gathered by the caller.
 struct DisplayTarget {
   uint encoding;
@@ -157,9 +157,10 @@ float3 display_output(float3 exposed, float knee, uint2 pixel, DisplayTarget tar
                              display_tone1(e.z, knee, ceiling)) *
                       target.paper_white_nits;
   if (target.encoding == k_display_scrgb) return nits / 80.0;
-  // HDR10's codes are still the store's (renderer.md, "The code is the engine's, not the store's",
-  // says what holds it back): the SDR branch above is the only one that rounds.
-  return display_dithered(pq_encode(bt709_to_bt2020(nits)), pixel, target.steps);
+  // HDR10's codes are the encode's too (ADR-0075; display.h's `display_pq_codes` is this branch on
+  // the CPU): the dithered PQ value rounded to its code's centre, as the SDR branch above.
+  return display_stored(display_dithered(pq_encode(bt709_to_bt2020(nits)), pixel, target.steps),
+                        target.codes);
 }
 
 // The ramp test pattern's exposed radiance at `pixel` of a view `size` (display.h's
