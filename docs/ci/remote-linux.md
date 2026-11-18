@@ -384,7 +384,10 @@ which is why the third part holds half of the suite there; since T77 it is by `c
 seconds where the table has them, and the table's rows are to come from this server's log, the
 slowest card being the binding one ([parts dealt by cost](what-to-run.md#parts-dealt-by-cost)). The
 server's preset runs four tests at once since T77 (`execution.jobs`), its GPU tests still one at a
-time ([jobs](what-to-run.md#jobs)). Since the same day the server leg **runs beside the merge and does not hold it** (the owner, 2026-11-09; [what to run](what-to-run.md)): the merge goes ahead on the Windows half and the containers, the server's verdict follows, and a red one opens a fix row at the top of the next batch. The suite grows with every batch and the card does not;
+time ([jobs](what-to-run.md#jobs)) — two at a time on gate b67 alone, when T89's second chain
+reached the server and four long tests gave up at their deadline; since T171 a preset whose work
+allowance does not fit twice into the lock wait gets one chain
+([one chain where a test outruns its deadline](what-to-run.md#one-chain-where-a-test-outruns-its-deadline)). Since the same day the server leg **runs beside the merge and does not hold it** (the owner, 2026-11-09; [what to run](what-to-run.md)): the merge goes ahead on the Windows half and the containers, the server's verdict follows, and a red one opens a fix row at the top of the next batch. The suite grows with every batch and the card does not;
 splitting it into parts CTest runs side by side is the next answer, not a third raise.
 
 **Disk: 2.1 GB for one preset, 3.6 GB for both** — checkout and build trees 1.5 GB, downloaded

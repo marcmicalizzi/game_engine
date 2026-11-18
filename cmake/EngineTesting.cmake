@@ -106,10 +106,24 @@ endfunction()
 # chains"): the tests labelled `gpu` are dealt over this many resource locks, `gpu_device.1` to
 # `gpu_device.<n>`, so that many of them run at once in one invocation, and the machine-wide GPU
 # lock orders their devices' holds as it orders two suites' (ADR-0049). Gate b66's `msvc-debug`
-# chain was 4,480 s of its 4,496 s, and 2,096 s of that no test had a device open. Two by default
-# where the machine-wide lock can order them — the lock's directory exists, so the protocol is in
-# use (gpu_lock.md, "Elsewhere, and the limits") — and one where it cannot, since there nothing
-# would stop two tests' devices being open at once. 1 is the single chain every run had before.
+# chain was 4,480 s of its 4,496 s, and 2,096 s of that no test had a device open.
+#
+# `auto` (the default) derives the number at every configure, from two things:
+#   - the machine-wide lock can order the chains' devices: its directory exists, so the protocol
+#     is in use (gpu_lock.md, "Elsewhere, and the limits"). Where it cannot, one chain, since
+#     nothing would stop two tests' devices being open at once;
+#   - a test still fits its queue deadline beside the other chains (roadmap T171). Every wait in a
+#     test's tree gives up at the test's start plus ENGINE_TEST_GPU_LOCK_WAIT_S, an absolute
+#     deadline, and a test may itself run for ENGINE_TEST_WORK_TIMEOUT_S. Beside n - 1 other
+#     chains on a card that bounds the suite, its holds take turns with theirs and its run
+#     stretches up to n times; a test still running past the deadline gives up at its next wait
+#     (exit 75, skipped), and beside another chain there is always a next wait. So
+#     n <= WAIT_S / WORK_S: 1,800 / 600 gives the two chains on every preset with the default
+#     work, and the linux-server presets' 7,200 s of work — the Titan Xp's renderer parts run
+#     1,882 and 1,918 s alone (gate b66b) — give one, where two had renderer.2 to .4 and
+#     engine_view.3 give up after their 1,800 s on gate b67 (docs/ci/what-to-run.md, "Two GPU
+#     chains"). Two is the most it gives: more has not been measured.
+# A whole number overrides it, and is told when it breaks the second rule.
 set(_engine_gpu_lock_dir "")
 if(DEFINED ENV{ENGINE_GPU_LOCK} AND NOT "$ENV{ENGINE_GPU_LOCK}" STREQUAL "")
   get_filename_component(_engine_gpu_lock_dir "$ENV{ENGINE_GPU_LOCK}" DIRECTORY)
@@ -118,15 +132,32 @@ elseif(WIN32)
 else()
   set(_engine_gpu_lock_dir "/tmp")
 endif()
-if(IS_DIRECTORY "${_engine_gpu_lock_dir}")
-  set(_engine_gpu_chains_default 2)
+math(EXPR _engine_gpu_chains_fit "${ENGINE_TEST_GPU_LOCK_WAIT_S} / ${ENGINE_TEST_WORK_TIMEOUT_S}")
+if(NOT IS_DIRECTORY "${_engine_gpu_lock_dir}" OR _engine_gpu_chains_fit LESS 2)
+  set(_engine_gpu_chains_auto 1)
 else()
-  set(_engine_gpu_chains_default 1)
+  set(_engine_gpu_chains_auto 2)
 endif()
-set(ENGINE_TEST_GPU_CHAINS ${_engine_gpu_chains_default} CACHE STRING
-  "GPU-labelled tests a CTest run with jobs runs at once (resource locks gpu_device.1..n), ordered by the machine-wide GPU lock")
-if(NOT ENGINE_TEST_GPU_CHAINS MATCHES "^[1-9][0-9]*$")
-  message(FATAL_ERROR "ENGINE_TEST_GPU_CHAINS is '${ENGINE_TEST_GPU_CHAINS}', not a whole number of chains")
+# A build tree configured before T171 holds the number T89's configure derived, which nobody
+# chose and which stays in the cache: read it as `auto` once. (A first configure has no cache
+# file yet, so a -D given to it is kept.)
+if(EXISTS "${CMAKE_BINARY_DIR}/CMakeCache.txt" AND NOT DEFINED CACHE{_ENGINE_TEST_GPU_CHAINS_AUTO_RULE})
+  unset(ENGINE_TEST_GPU_CHAINS CACHE)
+endif()
+set(_ENGINE_TEST_GPU_CHAINS_AUTO_RULE 1 CACHE INTERNAL "ENGINE_TEST_GPU_CHAINS is auto unless set (T171)")
+set(ENGINE_TEST_GPU_CHAINS auto CACHE STRING
+  "GPU-labelled tests a CTest run with jobs runs at once (resource locks gpu_device.1..n), ordered by the machine-wide GPU lock: auto, or a whole number")
+if(ENGINE_TEST_GPU_CHAINS STREQUAL "auto")
+  set(_engine_gpu_chains ${_engine_gpu_chains_auto})
+elseif(ENGINE_TEST_GPU_CHAINS MATCHES "^[1-9][0-9]*$")
+  set(_engine_gpu_chains ${ENGINE_TEST_GPU_CHAINS})
+  if(_engine_gpu_chains GREATER 1 AND _engine_gpu_chains GREATER _engine_gpu_chains_fit)
+    message(WARNING "ENGINE_TEST_GPU_CHAINS is ${_engine_gpu_chains}, but a test with "
+      "${ENGINE_TEST_WORK_TIMEOUT_S} s of work beside ${_engine_gpu_chains} chains can outrun its "
+      "${ENGINE_TEST_GPU_LOCK_WAIT_S} s lock deadline and give up (exit 75) at its next wait")
+  endif()
+else()
+  message(FATAL_ERROR "ENGINE_TEST_GPU_CHAINS is '${ENGINE_TEST_GPU_CHAINS}', not auto or a whole number of chains")
 endif()
 
 #   _engine_test_seconds(<test> <out>)
@@ -235,9 +266,9 @@ function(_engine_finalize_tests)
       list(APPEND _deal_items "${_item}=${_sum}")
     endif()
   endforeach()
-  engine_deal_gpu_chains(${ENGINE_TEST_GPU_CHAINS} "${_deal_items}" _chain)   # EngineTestDeal.cmake
+  engine_deal_gpu_chains(${_engine_gpu_chains} "${_deal_items}" _chain)   # EngineTestDeal.cmake
 
-  math(EXPR _last "${ENGINE_TEST_GPU_CHAINS} - 1")
+  math(EXPR _last "${_engine_gpu_chains} - 1")
   set(_summary "")
   foreach(_k RANGE 0 ${_last})
     math(EXPR _n "${_k} + 1")
@@ -254,7 +285,7 @@ function(_engine_finalize_tests)
   endforeach()
   string(JOIN ", " _summary ${_summary})
   list(LENGTH _gpu_tests _total)
-  message(STATUS "GPU chains: ${ENGINE_TEST_GPU_CHAINS} over ${_total} gpu-labelled tests (${_summary} by cmake/test-costs.txt; ${_unmeasured} unmeasured)")
+  message(STATUS "GPU chains: ${_engine_gpu_chains} (ENGINE_TEST_GPU_CHAINS ${ENGINE_TEST_GPU_CHAINS}) over ${_total} gpu-labelled tests (${_summary} by cmake/test-costs.txt; ${_unmeasured} unmeasured)")
 endfunction()
 cmake_language(DEFER CALL _engine_finalize_tests)
 
