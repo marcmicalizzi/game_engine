@@ -1055,69 +1055,86 @@ TEST_CASE("rt chain: past the budget the traced picture follows the placement, n
     settings.lights = false;
     settings.lod_px = 0.25f;  // the starved case's cut: several times what 1 MiB holds
     const f32 distance = 0.8f;
-    // Each order at a chain that holds the scene, then past one mebibyte.
-    CapturedFrame shots[2][2];
-    RtStats starved[2];
-    for (u32 budgeted = 0; budgeted < 2; ++budgeted) {
-      settings.rt_budget_mib = budgeted != 0 ? 1u : 0u;
-      for (u32 order = 0; order < 2; ++order) {
-        Rig rig;
-        REQUIRE_MESSAGE(rig.build(device, settings, error, terrain_grid(), order != 0), error);
-        for (u32 f = 0; f < 6; ++f) {
-          REQUIRE_MESSAGE(rig.renderer.render_offscreen(frame_at(rig.data, distance, f), &error),
-                          error);
-        }
-        REQUIRE_MESSAGE(rig.renderer.capture(frame_at(rig.data, distance, 6),
-                                             {.color = true, .ids = true}, shots[budgeted][order],
-                                             &error),
+    // One order's waited-for frame at a budget (0: the device's, which holds the scene).
+    const auto shoot = [&](u32 mib, bool reversed, CapturedFrame& out, RtStats& rt) {
+      settings.rt_budget_mib = mib;
+      Rig rig;
+      REQUIRE_MESSAGE(rig.build(device, settings, error, terrain_grid(), reversed), error);
+      for (u32 f = 0; f < 6; ++f) {
+        REQUIRE_MESSAGE(rig.renderer.render_offscreen(frame_at(rig.data, distance, f), &error),
                         error);
-        if (budgeted != 0) starved[order] = rig.renderer.stats().rt;
       }
-    }
-    for (const RtStats& rt : starved) {
-      REQUIRE(rt.wanted > rt.limit);  // the case is about frames past the budget
-      CHECK(rt.overflow_frames > 0);
-      CHECK(rt.built > 0);  // the kept set is not empty
-      CHECK(rt.built <= rt.capacity);
-    }
-    REQUIRE(starved[0].capacity == starved[1].capacity);
-    REQUIRE(starved[0].limit == starved[1].limit);
-    CHECK(starved[0].wanted == starved[1].wanted);
-    CHECK(starved[0].built == starved[1].built);
-    CHECK(starved[0].dropped_instances == starved[1].dropped_instances);
-    CHECK(starved[0].dropped_caster_instances == starved[1].dropped_caster_instances);
+      REQUIRE_MESSAGE(rig.renderer.capture(frame_at(rig.data, distance, 6),
+                                           {.color = true, .ids = true}, out, &error),
+                      error);
+      REQUIRE(out.color.size() == u64{k_width} * k_height * 4);
+      REQUIRE(out.ids.size() == u64{k_width} * k_height * k_id_words);
+      rt = rig.renderer.stats().rt;
+    };
     // Pixel by pixel through the reversal: colour, and the ids with the instance word mapped.
-    constexpr u32 k_instances = 9;
+    constexpr u32 k_grid_instances = 9;
     const auto parts = [&](const CapturedFrame& a, const CapturedFrame& b, u32 p) {
       for (u32 c = 0; c < 4; ++c)
         if (a.color[u64{p} * 4 + c] != b.color[u64{p} * 4 + c]) return true;
       const u32* ia = a.ids.data() + u64{p} * k_id_words;
       const u32* ib = b.ids.data() + u64{p} * k_id_words;
-      const u32 mapped = ib[0] < k_instances ? k_instances - 1 - ib[0] : ib[0];
+      const u32 mapped = ib[0] < k_grid_instances ? k_grid_instances - 1 - ib[0] : ib[0];
       return ia[0] != mapped || ia[1] != ib[1] || ia[2] != ib[2];
     };
-    for (u32 b = 0; b < 2; ++b)
-      for (u32 o = 0; o < 2; ++o) {
-        REQUIRE(shots[b][o].color.size() == u64{k_width} * k_height * 4);
-        REQUIRE(shots[b][o].ids.size() == u64{k_width} * k_height * k_id_words);
-      }
-    u32 tied = 0;
-    u32 parted = 0;
-    for (u32 p = 0; p < k_width * k_height; ++p) {
-      if (parts(shots[0][0], shots[0][1], p)) {
-        ++tied;
+    CapturedFrame whole[2];
+    RtStats whole_rt[2];
+    for (u32 order = 0; order < 2; ++order)
+      shoot(0, order != 0, whole[order], whole_rt[order]);
+    // Past one, two and three mebibytes: at one the first instance in key order wants more than
+    // the whole capacity and the frame keeps nothing (renderer.md, "A cut can keep nothing at a
+    // small named budget"; the device's first run of this case), so the comparison is made at each
+    // and at least one of them must keep something.
+    u32 past = 0;
+    u32 kept = 0;
+    for (const u32 mib : {1u, 2u, 3u}) {
+      CapturedFrame shots[2];
+      RtStats rt[2];
+      for (u32 order = 0; order < 2; ++order)
+        shoot(mib, order != 0, shots[order], rt[order]);
+      REQUIRE(rt[0].capacity == rt[1].capacity);
+      REQUIRE(rt[0].limit == rt[1].limit);
+      if (rt[0].wanted <= rt[0].limit) {
+        MESSAGE(std::string(raster_name(raster))
+                << " at " << mib << " MiB: " << rt[0].wanted << " wanted fit " << rt[0].limit);
         continue;
       }
-      parted += parts(shots[1][0], shots[1][1], p) ? 1u : 0u;
+      ++past;
+      kept += rt[0].built > 0 ? 1u : 0u;
+      for (const RtStats& r : rt) {
+        CHECK(r.overflow_frames > 0);
+        CHECK(r.built <= r.capacity);
+      }
+      CHECK(rt[0].wanted == rt[1].wanted);
+      CHECK(rt[0].built == rt[1].built);
+      CHECK(rt[0].dropped_instances == rt[1].dropped_instances);
+      CHECK(rt[0].dropped_caster_instances == rt[1].dropped_caster_instances);
+      u32 tied = 0;
+      u32 parted = 0;
+      for (u32 p = 0; p < k_width * k_height; ++p) {
+        if (parts(whole[0], whole[1], p)) {
+          ++tied;
+          continue;
+        }
+        parted += parts(shots[0], shots[1], p) ? 1u : 0u;
+      }
+      MESSAGE(std::string(raster_name(raster))
+              << " at " << mib << " MiB: capacity " << rt[0].capacity << " of " << rt[0].wanted
+              << " wanted, built " << rt[0].built << " in both orders ("
+              << (rt[0].capacity > 0 ? 100 * rt[0].built / rt[0].capacity : 0)
+              << "% of the capacity); " << rt[0].dropped_instances << " drawn and "
+              << rt[0].dropped_caster_instances << " casters' instances dropped over the run; "
+              << parted << " pixels part past the budget, " << tied
+              << " already parted at a whole chain");
+      CHECK(parted == 0);
+      CHECK(tied * 100 <= k_width * k_height);  // ties at equal depth are a seam, not the picture
     }
-    MESSAGE(std::string(raster_name(raster))
-            << ": capacity " << starved[0].capacity << " of " << starved[0].wanted
-            << " wanted, built " << starved[0].built << " in both orders; "
-            << starved[0].dropped_instances << " drawn and " << starved[0].dropped_caster_instances
-            << " casters' instances dropped; " << parted << " pixels part past the budget, "
-            << tied << " already parted at a whole chain");
-    CHECK(parted == 0);
-    CHECK(tied * 100 <= k_width * k_height);  // ties at equal depth are a seam, not the picture
+    CHECK(past > 0);  // the case is about frames past the budget
+    CHECK(kept > 0);  // and about a kept set that is not empty
   }
   device.destroy();
 }
