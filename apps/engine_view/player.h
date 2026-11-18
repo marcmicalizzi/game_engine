@@ -273,11 +273,11 @@ class PlayerBody {
   f64 walked_ = 0.0;  // the walker's distance at the last tick
   // What the body does: 0 not yet decided, 1 walking (the walk clip), 2 standing.
   u8 gait_ = 0;
-  bool collapse_ = false;  // the mask is set on the slot
-  Vector<u32> mask_;       // the joints collapsed
-  u32 entry_ = ~0u;        // the body's entry in `AnimatedScene::collapse`
-  bool look_ = false;      // the head-look layer is set on it
-  bool crouch_ = false;    // the crouch layer is set on it (`rig_.crouch_layer` and a head)
+  bool collapse_ = false;   // the mask is set on the slot
+  Vector<u32> mask_;        // the joints collapsed
+  u32 entry_ = ~0u;         // the body's entry in `AnimatedScene::collapse`
+  bool look_ = false;       // the head-look layer is set on it
+  bool crouch_ = false;     // the crouch layer is set on it (`rig_.crouch_layer` and a head)
   CrouchPose crouch_pose_;  // the last tick's
   u64 crouch_ticks_ = 0;    // ticks the layer bent the body
   f32 max_knee_rad_ = 0.0f;

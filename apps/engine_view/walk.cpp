@@ -265,9 +265,9 @@ struct Walker::Impl {
   void ease_eye() {
     const f32 target = crouched ? params.crouch_eye_height : params.eye_height;
     const f32 span = params.eye_height - params.crouch_eye_height;
-    const f32 most = params.crouch_time_s > 0.0f ? (span < 0.0f ? -span : span) * dt /
-                                                       params.crouch_time_s
-                                                 : 1.0e30f;
+    const f32 most = params.crouch_time_s > 0.0f
+                         ? (span < 0.0f ? -span : span) * dt / params.crouch_time_s
+                         : 1.0e30f;
     if (eye_now < target) {
       eye_now = target - eye_now > most ? eye_now + most : target;
     } else if (eye_now > target) {

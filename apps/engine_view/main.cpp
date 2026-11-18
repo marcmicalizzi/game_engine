@@ -1522,7 +1522,8 @@ renderer::Camera player_camera(const view::FlySession& session, const view::FlyS
   // head looks the way the body walks, at the camera's pitch, and never turns round to the camera.
   const view::FlyState look = session.view_state(drawn);
   // The walker's eye now, crouched or eased toward it (P54): where the body's feet are under it.
-  const f32 eye = session.walker() != nullptr ? session.walker()->eye_height() : header.walk.eye_height;
+  const f32 eye =
+      session.walker() != nullptr ? session.walker()->eye_height() : header.walk.eye_height;
   if (third) {
     // **Third person** (P53; apps.md "Third person"): the walker's eye moved back along the look,
     // and under `view.camera.collision=pull` (P14) pulled in to what stands behind it. With a body
@@ -1544,8 +1545,7 @@ renderer::Camera player_camera(const view::FlySession& session, const view::FlyS
     return behind;
   }
   renderer::Camera face;
-  if (g_player == nullptr ||
-      !g_player->face_camera(look, eye, header.fov_y, header.znear, face))
+  if (g_player == nullptr || !g_player->face_camera(look, eye, header.fov_y, header.znear, face))
     return session.orbit() ? view::fly_view(look, header.fov_y, header.znear) : walker_camera;
   if (marker_tick != ~u64{0}) g_player->note_marker(marker_tick);
   return face;
@@ -5327,9 +5327,9 @@ int run_view(int argc, char** argv) {
   }
   // `--temporal` (R171 leg 4) is measured in the plain offscreen loop, the one that draws every
   // frame of the path in order.
-  if (!options.temporal.empty() &&
-      (live || !options.offscreen || !options.benchmark.empty() ||
-       !options.marker_captures.empty() || options.verify_occlusion || options.capture_every != 0)) {
+  if (!options.temporal.empty() && (live || !options.offscreen || !options.benchmark.empty() ||
+                                    !options.marker_captures.empty() || options.verify_occlusion ||
+                                    options.capture_every != 0)) {
     std::fprintf(stderr,
                  "engine-view: --temporal measures a plain --offscreen run (no --benchmark, "
                  "--marker-captures, --verify-occlusion, --capture-every or replay)\n");

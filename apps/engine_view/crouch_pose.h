@@ -10,10 +10,10 @@
 // stooped walking under a low roof flexes the trunk as the room drops (Friedrich et al. 2000) — the
 // hips take the rest of the eye's drop and move back by half of what the lean carried the eye
 // forward, so the head stays over the feet rather than past the capsule, and each leg is a two-bone
-// chain solved in the body's sagittal plane by the law of cosines with the knee forward and the sole
-// kept level. The whole body then moves by the shift that returns the ankles to where they stood:
-// the feet stay planted whatever the depth. Every number is `+ - * / sqrt` and `fly_sin_cos` /
-// `fly_atan2` (fly_camera.h), so the pose is the same bits on every compiler.
+// chain solved in the body's sagittal plane by the law of cosines with the knee forward and the
+// sole kept level. The whole body then moves by the shift that returns the ankles to where they
+// stood: the feet stay planted whatever the depth. Every number is `+ - * / sqrt` and `fly_sin_cos`
+// / `fly_atan2` (fly_camera.h), so the pose is the same bits on every compiler.
 //
 // Header-only and free of the animation module, so the walk's tests check the arithmetic with no
 // device and no rig file.

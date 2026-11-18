@@ -87,11 +87,10 @@ Ground ground_of(JPH::CharacterBase::EGroundState state) noexcept {
 bool valid_config(const CharacterConfig& c) noexcept {
   const auto positive = [](f32 v) { return v > 0.0f; };  // false for NaN too
   // A crouch, when there is one, is a capsule too: shorter than standing, taller than the step.
-  const bool crouch =
-      c.crouch_height == 0.0f ||
-      (c.crouch_height > 2.0f * c.radius && c.crouch_height < c.height &&
-       c.step_height < c.crouch_height && positive(c.crouch_eye_height) &&
-       c.crouch_eye_height <= c.crouch_height && positive(c.crouch_speed));
+  const bool crouch = c.crouch_height == 0.0f ||
+                      (c.crouch_height > 2.0f * c.radius && c.crouch_height < c.height &&
+                       c.step_height < c.crouch_height && positive(c.crouch_eye_height) &&
+                       c.crouch_eye_height <= c.crouch_height && positive(c.crouch_speed));
   return positive(c.radius) && positive(c.height) && c.height > 2.0f * c.radius &&
          positive(c.eye_height) && c.eye_height <= c.height && c.step_height >= 0.0f &&
          c.step_height < c.height && positive(c.walk_speed) && positive(c.sprint_speed) &&
@@ -216,7 +215,8 @@ Status CharacterBody::create(World& world, const CharacterConfig& config, WorldP
 
   const JPH::RefConst<JPH::Shape> standing = standing_capsule(config.height, config.radius);
   JPH::RefConst<JPH::Shape> crouching;
-  if (config.crouch_height > 0.0f) crouching = standing_capsule(config.crouch_height, config.radius);
+  if (config.crouch_height > 0.0f)
+    crouching = standing_capsule(config.crouch_height, config.radius);
   if (standing == nullptr || (config.crouch_height > 0.0f && crouching == nullptr))
     return Status::BackendError;
 

@@ -286,9 +286,10 @@ TEST_CASE("walk: a session header's walk block reads back, and another walk vers
 
 // **The crouch layer's pose** (crouch_pose.h; apps.md "The crouch layer"): on a body of its own in
 // centimetres — hips at 95, knees at 50 a little ahead, ankles at 8, the trunk's pivot at 105, the
-// eye at 165 and 8 ahead — a full crouch's 0.55 m: the turns put each ankle back where it stood once
-// the shift is added, the eye goes down by the 0.55 asked, the sole stays level (the leg's three
-// turns are the identity together), the knee bends forward, and a quarter of the way bends less.
+// eye at 165 and 8 ahead — a full crouch's 0.55 m: the turns put each ankle back where it stood
+// once the shift is added, the eye goes down by the 0.55 asked, the sole stays level (the leg's
+// three turns are the identity together), the knee bends forward, and a quarter of the way bends
+// less.
 TEST_CASE("walk: the crouch layer keeps the feet planted and lowers the eye by what is asked") {
   view::CrouchRig rig;
   rig.layer = true;
@@ -349,12 +350,13 @@ TEST_CASE("walk: the crouch layer keeps the feet planted and lowers the eye by w
 // recorded against the map's sixth revision, which has no `crouch`, walks exactly as if C had
 // never been pressed. (Standing refused under a ceiling is the character's: physics'
 // character_tests.cpp, "a crouch passes under a low slab".)
-TEST_CASE("walk: C crouches the walker, its eye eased down and up, and a replay crouches the same") {
+TEST_CASE(
+    "walk: C crouches the walker, its eye eased down and up, and a replay crouches the same") {
   constexpr u32 k_key_c = 6;
   const input::RawEvent events[] = {
-      key(5, k_key_f, true),       key(7, k_key_f, false),       // onto the ground
-      key(20, k_key_c, true),      key(20, k_key_w, true),       // crouch and walk north
-      key(20, k_key_lshift, true),                               // sprint held: ignored crouched
+      key(5, k_key_f, true),       key(7, k_key_f, false),         // onto the ground
+      key(20, k_key_c, true),      key(20, k_key_w, true),         // crouch and walk north
+      key(20, k_key_lshift, true),                                 // sprint held: ignored crouched
       key(500, k_key_c, false),    key(500, k_key_lshift, false),  // stand, walking on
       key(740, k_key_w, false),
   };
@@ -367,9 +369,8 @@ TEST_CASE("walk: C crouches the walker, its eye eased down and up, and a replay 
   bool crouched_mid = false;
   f32 amount_mid = 0.0f;
   const Walked a = walk_session(
-      header, view::default_fly_map(),
-      std::span<const input::RawEvent>(events, std::size(events)), 760,
-      [&](const view::FlySession& session, const view::Walker& walker) {
+      header, view::default_fly_map(), std::span<const input::RawEvent>(events, std::size(events)),
+      760, [&](const view::FlySession& session, const view::Walker& walker) {
         const u64 t = session.tick().value;
         if (t == 19) eye_before = walker.eye_height();
         if (t == 20 + 59) eye_at_eased = walker.eye_height();  // 60 ticks: a quarter second
@@ -400,7 +401,7 @@ TEST_CASE("walk: C crouches the walker, its eye eased down and up, and a replay 
   // The sixth revision's map has no `crouch`: its C presses nothing, and the walk is the one
   // without them, to the bit.
   const input::RawEvent plain[] = {
-      key(5, k_key_f, true),       key(7, k_key_f, false),       key(20, k_key_w, true),
+      key(5, k_key_f, true),       key(7, k_key_f, false),        key(20, k_key_w, true),
       key(20, k_key_lshift, true), key(500, k_key_lshift, false), key(740, k_key_w, false),
   };
   const Walked sixth = walk_session(header, view::default_fly_map(6),

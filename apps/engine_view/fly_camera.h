@@ -179,11 +179,12 @@ struct FlyActions {
 // pad's West), `use` (Q) and `game_1`..`game_4` (1 to 4) (2026-10-16), which the camera itself
 // never reads; 6 appends `camera` (V, the pad's East), first person or third person while walking
 // (2026-11-02, P53); 7 appends `crouch` (C and Left Ctrl, the pad's right stick click), held to
-// crouch while walking (2026-11-17, P54). A revision appends and never reorders, and a log names the hash
-// of the map it was recorded against, so a log recorded against an earlier revision is replayed
-// with that revision (`default_fly_map_for`) rather than refused as a rebind: under it every key
-// means what it meant when the session was flown, and a key a later revision binds — a `.` pressed
-// before it meant anything, an F pressed before it walked — does nothing, as it did then.
+// crouch while walking (2026-11-17, P54). A revision appends and never reorders, and a log names
+// the hash of the map it was recorded against, so a log recorded against an earlier revision is
+// replayed with that revision (`default_fly_map_for`) rather than refused as a rebind: under it
+// every key means what it meant when the session was flown, and a key a later revision binds — a
+// `.` pressed before it meant anything, an F pressed before it walked — does nothing, as it did
+// then.
 inline constexpr u32 k_fly_map_revision = 7;
 // The bindings engine-view ships (content/input-maps/engine-view.json is the latest revision, byte
 // for byte, and a test holds the two together): WASD to move, E/Space up and Q/Ctrl down, pointer
