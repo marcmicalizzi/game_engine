@@ -5203,7 +5203,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         "pair shift", gfx::PassKind::Compute,
         [&](gfx::PassBuilder& b) {
           b.read(rg_table_staging, gfx::Access::ComputeRead);
-          b.write(rg_instances, gfx::Access::ComputeWrite);
+          b.write(rg_instances, gfx::Access::ComputeReadWrite);  // first_pair += shift
         },
         [&, shift](gfx::CommandList cb, gfx::RenderGraph&) {
           timer.begin(cb, "pair shift");
@@ -5454,7 +5454,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.read(rg_deform_args, gfx::Access::IndirectRead);
           b.read(rg_visible, gfx::Access::ComputeRead);
           b.read(rg_slots, gfx::Access::ComputeRead);
-          b.write(rg_pool, gfx::Access::ComputeWrite);
+          b.write(rg_pool, gfx::Access::ComputeReadWrite);  // reads the static cache
           if (motion_pool) b.write(rg_prev_pool, gfx::Access::ComputeWrite);
           read_terrain(b);
           read_pool(b, gfx::Access::ComputeRead);
@@ -5712,7 +5712,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_deform_args, gfx::Access::IndirectRead);
             b.read(rg_visible, gfx::Access::ComputeRead);
             b.read(rg_slots, gfx::Access::ComputeRead);
-            b.write(rg_pool, gfx::Access::ComputeWrite);
+            b.write(rg_pool, gfx::Access::ComputeReadWrite);  // reads the static cache
             read_terrain(b);
             read_pool(b, gfx::Access::ComputeRead);
           },
@@ -6204,7 +6204,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rt.blas_slots, gfx::Access::ComputeRead);  // an instance's place in the build
             // The scene's instance records, which a frame that turns a terrain slot on writes.
             read_ring_geometry(b, gfx::Access::ComputeRead);
-            b.write(rt.instances, gfx::Access::ComputeWrite);
+            b.write(rt.instances, gfx::Access::ComputeReadWrite);  // reads its mask word
           },
           [&](gfx::CommandList cb, gfx::RenderGraph&) {
             cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.tlas_references.pipeline);
