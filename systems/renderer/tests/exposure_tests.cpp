@@ -388,11 +388,13 @@ TEST_CASE("exposure: walked from noon into a room and out, the eye's adaptation 
     REQUIRE(s.frames == i + 1);
     CHECK(s.pinned == 0);
     CHECK(s.weight > 0);
-    const f64 target = exposure_target_ev100(s.luminance, 0.0, options);
+    const f64 luminance = static_cast<f64>(s.luminance);
+    const f64 target = exposure_target_ev100(luminance, 0.0, options);
     worst_target = std::max(worst_target, std::abs(target - static_cast<f64>(s.target_ev100)));
-    const f64 want =
-        i == 0 ? static_cast<f64>(s.target_ev100)
-               : exposure_step(states[i - 1].ev100, s.target_ev100, s.luminance, k_dt, options);
+    const f64 want = i == 0 ? static_cast<f64>(s.target_ev100)
+                            : exposure_step(static_cast<f64>(states[i - 1].ev100),
+                                            static_cast<f64>(s.target_ev100), luminance, k_dt,
+                                            options);
     worst_step = std::max(worst_step, std::abs(want - static_cast<f64>(s.ev100)));
     CHECK(
         std::abs(static_cast<f64>(s.scale) - std::exp2(static_cast<f64>(s.base_ev100 - s.ev100))) <=
@@ -419,7 +421,8 @@ TEST_CASE("exposure: walked from noon into a room and out, the eye's adaptation 
   // `gap` stops is tau ln(gap / 0.25); the walk's last frame is where the step ends.
   const f64 gap = std::abs(static_cast<f64>(entered.ev100 - inside.target_ev100));
   const u32 settled = settled_at(states, k_walk_end, k_inside_end, 0.25);
-  const f64 model_s = gap > 0.25 ? options.dark_tau_s * std::log(gap / 0.25) : 0.0;
+  const f64 model_s =
+      gap > 0.25 ? static_cast<f64>(options.dark_tau_s) * std::log(gap / 0.25) : 0.0;
   const f64 took_s = static_cast<f64>(settled - k_walk_end) * k_dt;
   MESSAGE("into the room: " << gap << " stops to go at the threshold, within a quarter stop after "
                             << took_s << " s (the model: " << model_s << " s)");

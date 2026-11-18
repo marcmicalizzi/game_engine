@@ -69,9 +69,10 @@ f64 exposure_target_ev100(f64 luminance, f64 compensation,
 
 f64 exposure_tau_s(f64 current, f64 target, f64 luminance,
                    const ExposureOptions& options) noexcept {
-  if (target < current) return options.dark_tau_s;
+  if (target < current) return static_cast<f64>(options.dark_tau_s);
   const f64 rods = exposure_rod_share(luminance);
-  return rods * options.rod_tau_s + (1.0 - rods) * options.cone_tau_s;
+  return rods * static_cast<f64>(options.rod_tau_s) +
+         (1.0 - rods) * static_cast<f64>(options.cone_tau_s);
 }
 
 f64 exposure_step(f64 current, f64 target, f64 luminance, f64 dt_s,

@@ -42,8 +42,10 @@ TEST_CASE("exposure model: sunlit sand meets the sky's rule, a room at noon is n
   // A step of compensation is a stop; the floor and the ceiling hold.
   CHECK(exposure_target_ev100(19.0, 1.0, options) ==
         doctest::Approx(exposure_target_ev100(19.0, 0.0, options) - 1.0));
-  CHECK(exposure_target_ev100(1e-6, 0.0, options) == doctest::Approx(options.min_ev100));
-  CHECK(exposure_target_ev100(1e9, 0.0, options) == doctest::Approx(options.max_ev100));
+  CHECK(exposure_target_ev100(1e-6, 0.0, options) ==
+        doctest::Approx(static_cast<f64>(options.min_ev100)));
+  CHECK(exposure_target_ev100(1e9, 0.0, options) ==
+        doctest::Approx(static_cast<f64>(options.max_ev100)));
   // More light, a higher exposure value, everywhere between.
   f64 last = exposure_target_ev100(1e-3, 0.0, options);
   for (f64 l = 3e-3; l < 1e6; l *= 3.0) {
@@ -55,19 +57,21 @@ TEST_CASE("exposure model: sunlit sand meets the sky's rule, a room at noon is n
 
 TEST_CASE("exposure model: dark adaptation is slower, light adaptation the eye's") {
   ExposureOptions options;
+  const f64 dark = static_cast<f64>(options.dark_tau_s);
+  const f64 cone = static_cast<f64>(options.cone_tau_s);
+  const f64 rod = static_cast<f64>(options.rod_tau_s);
   // Brightening (the target lower) is dark adaptation's constant.
-  CHECK(exposure_tau_s(15.0, 6.0, 19.0, options) == doctest::Approx(options.dark_tau_s));
+  CHECK(exposure_tau_s(15.0, 6.0, 19.0, options) == doctest::Approx(dark));
   // Darkening by day is the cones', at night mostly the rods' (Durand and Dorsey 2000, 3.3).
-  CHECK(exposure_tau_s(6.0, 15.0, 20000.0, options) ==
-        doctest::Approx(options.cone_tau_s).epsilon(1e-3));
+  CHECK(exposure_tau_s(6.0, 15.0, 20000.0, options) == doctest::Approx(cone).epsilon(1e-3));
   const f64 night = exposure_tau_s(-2.0, 0.0, 0.01, options);
-  CHECK(night == doctest::Approx(0.8 * options.rod_tau_s + 0.2 * options.cone_tau_s));
+  CHECK(night == doctest::Approx(0.8 * rod + 0.2 * cone));
   // An exponential in stops: sixty steps of a sixtieth are one step of a second.
   f64 ev = 15.0;
   for (u32 i = 0; i < 60; ++i)
     ev = exposure_step(ev, 6.0, 19.0, 1.0 / 60.0, options);
   CHECK(ev == doctest::Approx(exposure_step(15.0, 6.0, 19.0, 1.0, options)).epsilon(1e-9));
-  CHECK(ev == doctest::Approx(6.0 + 9.0 * std::exp(-1.0 / options.dark_tau_s)));
+  CHECK(ev == doctest::Approx(6.0 + 9.0 * std::exp(-1.0 / dark)));
   // A time constant of 0 is at once.
   options.dark_tau_s = 0.0f;
   CHECK(exposure_step(15.0, 6.0, 19.0, 1.0 / 60.0, options) == 6.0);
