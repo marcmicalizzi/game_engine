@@ -10,8 +10,9 @@
 //
 // What it does not do: draw. The renderer contract is a span and a pair of offsets (see "The
 // renderer contract" below and docs/subsystems/animation.md); wiring it to `gfx::DeformDesc` is
-// the renderer's change, not this module's. Also absent, and named rather than implied: blend
-// trees and state machines as data, IK, and motion matching (docs/plan/05-simulation.md §5.11).
+// the renderer's change, not this module's. State machines as data exist in their first stage
+// (graph.h, S35: a control table that drives the player); absent, and named rather than implied:
+// blend trees and layers as data, IK, and motion matching (docs/plan/05-simulation.md §5.11).
 //
 // ---- ADR-0027 decision 2, registration point by registration point ----------------------------
 //
@@ -46,12 +47,14 @@
 #include <domain/ecs/systems.h>
 #include <domain/sim/scheduler.h>
 #include <domain/sim/tiers.h>
+#include <systems/animation/graph.h>
 #include <systems/animation/library.h>
 #include <systems/animation/pose_pool.h>
 
 #include <flecs.h>
 #include <schemas/animation.h>
 #include <span>
+#include <string>
 
 namespace engine::animation {
 
@@ -216,6 +219,37 @@ class AnimationSystem {
   // holds one. False for an id this world does not hold or that has no player.
   bool player(const Id128& entity, AnimationPlayer& out) const;
 
+  // --- graphs (S35 stage 1; graph.h, docs/subsystems/animation.md "Graphs") ---------------------
+  //
+  // An entity is driven by a graph when it carries `AnimationGraphInput` and `AnimationGraphState`
+  // (animation_graph.schema). In stage 1 the graph's control pass decides which state each machine
+  // is in and the state is played into the entity's `AnimationPlayer` by the same collapse-and-fade
+  // code `play()` is, so `sample_poses` and every hash of the pose are what those calls give.
+
+  // Compiles `desc` against this capability's library (every clip a state names must be in it) and
+  // adds it to `graphs()`, replacing a graph with the same id. False, with `why`, when the compile
+  // refuses it. Outside a tick; allocates.
+  bool add_graph(const GraphDesc& desc, std::string& why);
+  // Makes `entity` graph-driven by `graph` (in `graphs()`): its inputs at the parameters' defaults,
+  // no machine entered, so its first control tick enters with a cut. False for an entity or a
+  // graph this world does not hold.
+  bool attach_graph(const Id128& entity, const Id128& graph);
+  bool has_graph(const Id128& entity) const;
+  // One control tick of `dt` seconds for one graph-driven entity: `values` by parameter index and
+  // `triggers` written into its inputs, `graph_control` over its state, and for every machine that
+  // entered a state this tick its `GraphEnter` in `entered` (one a machine, at most
+  // `k_graph_max_machines`). Returns a bit a machine that entered; 0 for an entity with no graph.
+  // A host that keeps its own books for what it plays (engine-view's actors) plays the steps
+  // itself; one that does not calls `apply_graph_step`.
+  u32 control_graph(const Id128& entity, std::span<const f32> values, u32 triggers, f32 dt,
+                    GraphEnter* entered);
+  // Plays a step into the entity's `AnimationPlayer`: `play(clip, fade, looping)` and then, for a
+  // state with its own clock, its rate; a phase-locked state's rate is left to the host that drives
+  // its phase. A state with no clip is the rest pose, at once (a fade to rest is a weight, which a
+  // host's actors own; the capability's player cuts).
+  bool apply_graph_step(const Id128& entity, const GraphEnter& enter);
+  const GraphLibrary& graphs() const noexcept { return graphs_; }
+
   // --- LOD -------------------------------------------------------------------------------------
 
   // Puts one instance at `tier`, acquiring or releasing its pool slot and advancing its playhead
@@ -276,6 +310,7 @@ class AnimationSystem {
   Library* library_ = nullptr;
   flecs::world* world_ = nullptr;
   PosePool poses_;
+  GraphLibrary graphs_;  // empty, nothing allocated, for a world with no graph
   AnimationStats stats_;
   sim::SystemDesc descs_[k_system_count];
 };

@@ -7,6 +7,7 @@
 // the arithmetic that matters — 40 bytes of pose and 48 of matrix per joint — is on the docs page.
 #include <core/base/size_table.h>
 #include <systems/animation/animation.h>
+#include <systems/animation/graph.h>
 #include <systems/animation/pose_pool.h>
 
 using namespace engine;
@@ -26,3 +27,22 @@ ENGINE_EXPECT_SIZE(16, 4, animation::PosePool::Slot);
 
 // The LOD plan is a value a hot loop copies; four bytes keeps it in a register.
 ENGINE_EXPECT_SIZE(4, 1, animation::LodPlan);
+
+// ---- graphs (S35 stage 1; docs/experiments/animation-graphs.md, "Parameters are components") ----
+
+// A graph-driven entity's two persisted components, per entity in a flecs table the control pass
+// walks: 16 (graph) + 8 parameters' f32 + the trigger bits, padded to the id's alignment ...
+ENGINE_EXPECT_SIZE(56, 8, animation::AnimationGraphInput);
+// ... and 16 (graph) + two machines' state, next (u16 each), elapsed, duration, time, next_time
+// (f32 each) + two sync groups' phase. 120 bytes an instance between the two.
+ENGINE_EXPECT_SIZE(64, 8, animation::AnimationGraphState);
+
+// The compiled control table, read per instance per tick: a condition, a transition, a state's run
+// of transitions, a machine. (The design page's names for the first two are its record types';
+// the compiled ones are `Control*` so the two can live in one namespace.)
+ENGINE_EXPECT_SIZE(8, 4, animation::ControlCondition);
+ENGINE_EXPECT_SIZE(16, 4, animation::ControlTransition);
+ENGINE_EXPECT_SIZE(4, 2, animation::ControlState);
+ENGINE_EXPECT_SIZE(16, 4, animation::ControlMachine);
+// A machine's step, written per instance per machine per tick by the batch control pass.
+ENGINE_EXPECT_SIZE(12, 4, animation::GraphStep);

@@ -19,6 +19,7 @@
 #include <domain/assets/gltf.h>
 #include <foundation/bench/bench.h>
 #include <systems/animation/animation.h>
+#include <systems/animation/graph.h>
 
 #include <memory>
 #include <string>
@@ -302,6 +303,40 @@ void run_travel(bench::State& state, u32 joints, u32 keys) {
 ENGINE_BENCH_ARGS(animation_travel_keys, "animation.travel.keys", 31, 61, 121, 241) {
   const u32 keys = static_cast<u32>(state.arg());
   run_travel(state, 37, bench::smoke_mode() ? 31u : keys);
+}
+
+// The graph's control pass (S35 stage 1, graph.h) over `n` instances of the walker's graph: per
+// instance, the inputs written (moving and fast flipping on a per-instance cadence, so a few
+// percent of the instances change state each tick and the rest stay), the transitions evaluated, the
+// clocks and the phase advanced. No pose: stage 1's pass decides states and hands the player its
+// calls, so this is the whole of what a graph adds to a tick before the sampler runs.
+ENGINE_BENCH_ARGS(animation_graph_control, "animation.graph.control", 1000, 10000, 100000) {
+  const u32 n = bench::smoke_mode() ? 256u : static_cast<u32>(state.arg());
+  CompiledGraph graph;
+  std::string why;
+  if (!compile_graph(locomotion_graph({"idle", "walk", "run", 0.2f}), nullptr, graph, why)) {
+    bench::keep(why);
+    return;
+  }
+  std::vector<AnimationGraphInput> inputs(n);
+  std::vector<AnimationGraphState> states(n);
+  std::vector<GraphStep> steps(n);
+  for (u32 i = 0; i < n; ++i)
+    init_graph_instance(graph, inputs[i], states[i]);
+  u32 tick = 0;
+  while (state.keep_running()) {
+    for (u32 i = 0; i < n; ++i) {
+      // Each instance flips `moving` every 37 + (i % 61) ticks and `fast` at half that rate.
+      const u32 period = 37u + (i % 61u);
+      const u32 at = tick + i;
+      inputs[i].values[k_locomotion_moving] = ((at / period) & 1u) != 0 ? 1.0f : 0.0f;
+      inputs[i].values[k_locomotion_fast] = ((at / (2u * period)) & 1u) != 0 ? 1.0f : 0.0f;
+      inputs[i].values[k_locomotion_phase] = static_cast<f32>(at % 64u) * (1.0f / 64.0f);
+    }
+    bench::keep(graph_control(graph, inputs, states, 1.0f / 64.0f, steps));
+    ++tick;
+  }
+  state.set_items(n);
 }
 
 // By the rig: two seconds at 30 keys a second, 23 joints (the humanoid core), 37 (a bird of the
