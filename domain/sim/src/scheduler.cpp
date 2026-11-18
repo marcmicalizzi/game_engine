@@ -2,6 +2,7 @@
 #include <core/log/log.h>
 #include <domain/sim/scheduler.h>
 
+#include <algorithm>
 #include <cstring>
 
 namespace engine::sim {
@@ -152,6 +153,70 @@ ResourceRegistry& ResourceRegistry::global() noexcept {
 
 u32 resource_id(const char* name) { return ResourceRegistry::global().id(name); }
 
+// --- the static registration table ------------------------------------------------------------
+
+namespace {
+
+// A function-local static of a pointer type is constant-initialized to null before any dynamic
+// initialization runs, so a registration in any translation unit finds the list ready.
+const SystemRegistration*& registration_head() noexcept {
+  static const SystemRegistration* head = nullptr;
+  return head;
+}
+
+int compare_text(const char* a, const char* b) noexcept {
+  if (a == nullptr || b == nullptr) return (a == nullptr ? 0 : 1) - (b == nullptr ? 0 : 1);
+  return std::strcmp(a, b);
+}
+
+}  // namespace
+
+SystemRegistration::SystemRegistration(const SystemTable& table) noexcept
+    : table_(table), next_(registration_head()) {
+  registration_head() = this;
+}
+
+const SystemRegistration* static_system_registrations() noexcept { return registration_head(); }
+
+Vector<const SystemTable*> static_system_tables() {
+  Vector<const SystemTable*> tables;
+  for (const SystemRegistration* r = registration_head(); r != nullptr; r = r->next()) {
+    tables.push_back(&r->table());
+  }
+  // By (order, module): the link's order is the toolchain's, and the declaration order this
+  // produces is what orders two conflicting systems, so it must be a function of the names alone.
+  std::sort(tables.begin(), tables.end(), [](const SystemTable* a, const SystemTable* b) {
+    if (a->order != b->order) return a->order < b->order;
+    return compare_text(a->module, b->module) < 0;
+  });
+  // A module named twice: every table naming it is refused. Between two equal keys the sort's order
+  // is the toolchain's again, so keeping "the first" would let the link decide which systems run;
+  // refusing all of them is the one answer every build agrees on, and the log names the module.
+  // Cold and small (one table per linked module), so the quadratic look is the clear one.
+  Vector<const SystemTable*> kept;
+  for (u32 i = 0; i < tables.size(); ++i) {
+    bool repeated = false;
+    for (u32 j = 0; j < tables.size(); ++j) {
+      if (j != i && compare_text(tables[i]->module, tables[j]->module) == 0) repeated = true;
+    }
+    if (repeated) {
+      ENGINE_LOG_WARN(log_sim, "static system table names a module another table names; refused",
+                      log::field("module", tables[i]->module != nullptr ? tables[i]->module : ""));
+      continue;
+    }
+    kept.push_back(tables[i]);
+  }
+  return kept;
+}
+
+u8 occupied_tiers(std::span<const u8> tiers) noexcept {
+  u32 mask = 0;
+  for (const u8 tier : tiers) {
+    if (tier < 8u) mask |= 1u << tier;
+  }
+  return static_cast<u8>(mask);
+}
+
 SimScheduler::SimScheduler(const SimSchedulerConfig& config)
     : clock_(config.hz, config.max_steps_per_advance),
       game_clock_(clock_, config.game_seconds_per_real_second),
@@ -167,6 +232,20 @@ u16 SimScheduler::add_system(const SystemDesc& desc) {
   systems_.push_back(desc);
   schedule_dirty_ = true;
   return static_cast<u16>(systems_.size() - 1u);
+}
+
+u32 SimScheduler::add_static_systems() {
+  if (static_added_) return 0;
+  static_added_ = true;
+  const Vector<const SystemTable*> tables = static_system_tables();
+  u32 added = 0;
+  for (const SystemTable* table : tables) {
+    for (const SystemDesc& desc : table->systems) {
+      add_system(desc);
+      ++added;
+    }
+  }
+  return added;
 }
 
 u16 SimScheduler::add_hooks(const MaterializationHooks& hooks) {
@@ -272,6 +351,9 @@ u64 SimScheduler::schedule_hash() const {
       hash = fnv1a(hash, &desc.writes, sizeof(desc.writes));
       hash = fnv1a(hash, &desc.reads_resources, sizeof(desc.reads_resources));
       hash = fnv1a(hash, &desc.writes_resources, sizeof(desc.writes_resources));
+      // The tiers decide whether the system runs under a given mask, so two registrations that
+      // differ only in them do not produce the same tick.
+      hash = fnv1a(hash, &desc.tiers, sizeof(desc.tiers));
     }
   }
   return hash;
@@ -290,6 +372,11 @@ void SimScheduler::run_wave(TickPhase phase, u16 wave, u32 first, u32 count) {
     const SystemDesc& desc = systems_[entry.system];
     if (desc.tick == nullptr) continue;
     const u32 batches = desc.batches != 0 ? desc.batches : 1u;
+    const u8 tiers = static_cast<u8>(desc.tiers & tick_tiers_);
+    if (tiers == 0) {
+      tier_skipped_ += batches;
+      continue;
+    }
     for (u32 b = 0; b < batches; ++b) {
       Invocation invocation;
       invocation.desc = &desc;
@@ -299,6 +386,7 @@ void SimScheduler::run_wave(TickPhase phase, u16 wave, u32 first, u32 count) {
       invocation.context.step = step_size();
       invocation.context.context = desc.context;
       invocation.context.phase = phase;
+      invocation.context.tiers = tiers;
       invocation.context.system = entry.system;
       invocation.context.wave = wave;
       invocations_.push_back(invocation);
@@ -341,6 +429,11 @@ void SimScheduler::run_phase(TickPhase phase) {
 
   for (u32 i = 0; i < systems_.size(); ++i) {
     if (systems_[i].phase != phase || systems_[i].begin_tick == nullptr) continue;
+    context.tiers = static_cast<u8>(systems_[i].tiers & tick_tiers_);
+    if (context.tiers == 0) {
+      ++tier_skipped_;
+      continue;
+    }
     context.system = static_cast<u16>(i);
     context.context = systems_[i].context;
     systems_[i].begin_tick(context);
@@ -358,6 +451,11 @@ void SimScheduler::run_phase(TickPhase phase) {
 
   for (u32 i = 0; i < systems_.size(); ++i) {
     if (systems_[i].phase != phase || systems_[i].end_tick == nullptr) continue;
+    context.tiers = static_cast<u8>(systems_[i].tiers & tick_tiers_);
+    if (context.tiers == 0) {
+      ++tier_skipped_;
+      continue;
+    }
     context.system = static_cast<u16>(i);
     context.context = systems_[i].context;
     systems_[i].end_tick(context);
@@ -372,6 +470,7 @@ void SimScheduler::step() {
   if (schedule_dirty_) rebuild_schedule();
   ++tick_;
   game_clock_.advance_tick();
+  tick_tiers_ = active_tiers_;
   // One clock: the executor is told this tick's number and time and publishes them to whatever it
   // drives, rather than keeping a clock of its own that would have to agree with this one.
   if (executor_.begin_tick != nullptr) {

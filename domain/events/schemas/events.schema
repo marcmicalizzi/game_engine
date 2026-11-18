@@ -1,0 +1,25 @@
+// The world event bus's own event types (docs/plan/05-simulation.md §5.7; docs/subsystems/events.md):
+// what the authoring document's change feed raises. A capability's events live in its own schema,
+// tagged `@kind(event)`; these are the bus's because the bus is what reads the feed.
+namespace engine.events
+
+/// A document record whose composition changed since the bus last read the feed: created, edited,
+/// deleted or gone. Raised once per record per `EventsIn`, in id order, by the source "document".
+struct RecordChanged @version(1) @kind(event) {
+  /// The record.
+  record: id128
+  /// The document revision its composition last changed at.
+  revision: u64 = 0
+  /// `schema::stable_type_id` of the record's type as the document names it; 0 when it is gone.
+  record_type: u32 = 0
+  /// Whether a layer still holds it live.
+  live: bool = false
+}
+
+/// The document's change feed no longer reaches back to the revision the bus last read: the
+/// records that changed in between are not named, and a subscriber that keeps state from the
+/// document rescans it.
+struct DocumentResynced @version(1) @kind(event) {
+  /// The document's revision when the bus read it.
+  revision: u64 = 0
+}

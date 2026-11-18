@@ -62,6 +62,7 @@ One page per module, created in the same change that creates the module. Templat
 | nav (capability) | domain | [nav.md](nav.md) |
 | tissue (capability) | domain | [tissue.md](tissue.md) |
 | sim | domain | [sim.md](sim.md) |
+| events (capability) | domain | [events.md](events.md) |
 | audio (capability) | domain | [audio.md](audio.md) |
 | scene_gen | domain | [scene_gen.md](scene_gen.md) |
 | ruins (capability) | domain | [ruins.md](ruins.md) |

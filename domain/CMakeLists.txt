@@ -19,6 +19,9 @@ add_subdirectory(protocol)
 # round — `domain/sim` has to stay free of flecs for the executor to be replaceable.
 add_subdirectory(sim)
 add_subdirectory(ecs)
+# After sim and doc: the world event bus (events.md), a capability that installs into the
+# scheduler's table and reads the document's change feed.
+add_subdirectory(events)
 add_subdirectory(physics)
 add_subdirectory(nav)
 # After geometry (the limit surface and the binding) and physics (the cage-size verdict): the

@@ -1,0 +1,29 @@
+// Event types for the world event bus's tests and bench (domain/events/tests).
+namespace engine.events_test
+
+/// Something happened somewhere, with a strength.
+struct Blast @version(1) @kind(event) {
+  at: worldpos @unit(m)
+  strength: f32 = 0
+  n: u32 = 0
+}
+
+/// A number, for chains: a handler of `Ping` raises a `Pong` and the other way round.
+struct Ping @version(1) @kind(event) {
+  n: u32 = 0
+}
+
+/// The other half of a chain.
+struct Pong @version(1) @kind(event) {
+  n: u32 = 0
+}
+
+/// A type with no subscriber.
+struct Quiet @version(1) @kind(event) {
+  n: u64 = 0
+}
+
+/// A document record, for the change feed's test. Not an event: the bus would refuse it.
+struct Marker @version(1) @kind(record) {
+  n: u32 = 0
+}
