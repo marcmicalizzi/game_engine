@@ -598,6 +598,11 @@ try {
     $want = ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))).ToLowerInvariant()
     Assert ($name -eq $want) "put_blob named the bytes $name, not their SHA-256 $want"
     Assert ((Get-Prop $p.Data 'ref.size') -eq $bytes.Length) 'put_blob''s reference has the wrong size'
+    # Where the host keeps it, as every path a host answers: <root>://<relative>, never the
+    # machine's (protocol.md, "The host's file roots"); read_blob below finds it by the same roots.
+    $place = [string](Get-Prop $p.Data 'path')
+    $tail = "/blobs/$($name.Substring(0, 2))/$($name.Substring(2))"
+    Assert ($place -match '^[A-Za-z0-9_.-]+://' -and $place.EndsWith($tail)) "put_blob answered its place as '$place', not <root>://...$tail"
     $again = Invoke-Tool $bridge 'put_blob' @{ session = $s; data_base64 = [Convert]::ToBase64String($bytes) }
     Assert-Ok $again 'put_blob of the same bytes'
     Assert ((Get-Prop $again.Data 'created') -ne $true) 'the same bytes were stored twice'

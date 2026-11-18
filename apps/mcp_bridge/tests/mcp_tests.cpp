@@ -1047,6 +1047,38 @@ TEST_CASE("mcp: a transaction stages changes from several tools and lands them a
   CHECK(num(ok(mcp.tool("objects", "{" + s + "}")), "total") == 0);
 }
 
+// doc.put_blob and doc.blob both answer where the blob is as `<root>://<relative>` (protocol.md,
+// "The host's file roots"), and the bridge reads the one through the roots of the host it started:
+// a blob put from a file under the document is named by the roots on the way in and found by them
+// on the way out, and nothing either answer holds is a path of the machine.
+TEST_CASE("mcp: a blob put from the document's file is named and read back portably") {
+  const test::TempDir tmp("mcp_bridge_blob_paths");
+  Mcp mcp(tmp.file("ws"));
+  REQUIRE(mcp.ok);
+  mcp.initialize();
+  const std::string world = tmp.file("world");
+  const JsonValue opened =
+      ok(mcp.tool("open_session", "{\"path\":\"" + world + "\",\"create\":true}"));
+  const std::string s = "\"session\":\"" + str(opened, "session") + "\"";
+  {
+    std::ofstream f(std::filesystem::path(world) / "notes.txt", std::ios::binary);
+    f << "notes for a blob";
+  }
+  const std::string name = sha256_hex(sha256("notes for a blob"));
+  const JsonValue put = ok(mcp.tool("put_blob", "{" + s + R"(,"path":"notes.txt"})"));
+  CHECK(str(at(put, "ref"), "blob") == name);
+  const std::string place = str(put, "path");
+  CHECK(place.find("://") != std::string::npos);
+  CHECK(place.ends_with("/blobs/" + name.substr(0, 2) + "/" + name.substr(2)));  // blob_store.h
+  CHECK(place.find(':') == place.find("://"));  // no drive letter, no second scheme
+  const JsonValue read = ok(mcp.tool("read_blob", "{" + s + ",\"blob\":\"" + name + "\"}"));
+  CHECK(str(read, "file") == "workspace://blobs/" + name);
+  std::ifstream file(std::filesystem::path(tmp.file("ws")) / "blobs" / name, std::ios::binary);
+  REQUIRE(file.good());
+  const std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+  CHECK(bytes == "notes for a blob");
+}
+
 // The blob and checkpoint tools (apps.md, "Blobs reach an agent as a file"; roadmap A49).
 TEST_CASE("mcp: a blob reaches the workspace as a file, and a checkpoint is rolled back to") {
   const test::TempDir tmp("mcp_bridge_blobs");

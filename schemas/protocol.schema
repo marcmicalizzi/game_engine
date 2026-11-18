@@ -3018,8 +3018,9 @@ struct BlobResult @version(1) {
   ref: engine.doc.BlobRef
   /// The put stored new bytes; false when the store already held them.
   created: bool = false
-  /// Where the bytes are, under the document's directory: for `doc.blob` the portable form,
-  /// `<root>://<relative>` (empty when no root of the host holds the document; ask with `data`).
+  /// Where the bytes are, under the document's directory, in the portable form for both methods:
+  /// `<root>://<relative>` (empty when no root of the host holds the document; `doc.blob` then
+  /// answers the bytes with `data`).
   path: string
   /// `doc.blob` with `data`: the bytes, base64.
   data_base64: string
