@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "A13",
+  "reason": "A13: doc.describe gets its protocol section and describe_document its MCP row",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 343,
+    "page:docs/subsystems/protocol.md": 4406
+  }
+}

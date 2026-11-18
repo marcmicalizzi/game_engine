@@ -349,3 +349,47 @@ TEST_CASE("host: doc.place_asset and doc.instantiate_template over --stdio") {
   CHECK(at(at(host.call("doc.objects", R"({"session":"s1"})"), "result"), "total") ==
         JsonValue(u32{3}));
 }
+
+// doc.describe over one engine-host --stdio (protocol.md, "Describing an object, a tile or a
+// region"): a read a QA host may make, its bounds, its refusals.
+TEST_CASE("host: doc.describe over --stdio") {
+  test::TempDir tmp("engine_cli_describe");
+  const std::string roles = tmp.file("roles.json");
+  write_file(roles, k_roles);
+  const std::string doc = tmp.file("doc");
+  REQUIRE(cli({"--doc", doc, "--create", "session.info"}).exit_code == 0);
+  write_file(doc + "/crate.glb", std::string("glTF\x02\0\0\0", 8));
+  {
+    Host director({"--roles", roles, "--actor", "boss", "--role", "director"});
+    REQUIRE(code_of(director.call("session.open",
+                                  "{\"path\":" + write_json(JsonValue(doc)) + "}")) == 0);
+    REQUIRE(
+        code_of(director.call(
+            "doc.place_asset",
+            R"({"session":"s1","asset":"crate.glb","seed":3,"placements":[{"name":"a","translation":[1,0,2]},{"name":"b","translation":[3,0,4]}],"attribution":{"rationale":"e2e"}})")) ==
+        0);
+  }
+  Host host({"--roles", roles, "--actor", "q", "--role", "qa"});
+  REQUIRE(code_of(host.call("session.open", "{\"path\":" + write_json(JsonValue(doc)) + "}")) == 0);
+  const JsonValue all = host.call("doc.objects", R"({"session":"s1"})");
+  REQUIRE(at(at(all, "result"), "objects").size() == 2);
+  const std::string id(at(at(at(all, "result"), "objects")[0], "id").as_string());
+  const JsonValue d =
+      host.call("doc.describe", R"({"session":"s1","detail":"Full","id":")" + id + "\"}");
+  REQUIRE(code_of(d) == 0);
+  const JsonValue& r = at(d, "result");
+  CHECK(at(r, "scope") == JsonValue("object"));
+  const std::string sentence(at(r, "summary").as_string());
+  CHECK(sentence.find("engine.scene.MeshPlacement '") == 0);
+  CHECK(sentence.find(", a root, with no children.") != std::string::npos);
+  CHECK(at(at(at(r, "records")[0], "properties"), "mesh") == JsonValue("crate.glb"));
+  // Placements are untiled in an unpartitioned document: tile (0, 0) holds nothing.
+  CHECK(at(at(host.call("doc.describe", R"({"session":"s1","tile":{"x":0,"y":0}})"), "result"),
+           "summary") == JsonValue("Tile (0, 0) holds no live records."));
+  CHECK(code_of(host.call("doc.describe", R"({"session":"s1"})")) == 1004);
+  CHECK(code_of(host.call("doc.describe",
+                          R"({"session":"s1","id":"00000000000000000000000000000099"})")) == 1003);
+  CHECK(code_of(host.call("doc.describe",
+                          R"({"session":"s1","region":{"x0":0,"y0":0,"x1":1000,"y1":1000}})")) ==
+        1004);
+}

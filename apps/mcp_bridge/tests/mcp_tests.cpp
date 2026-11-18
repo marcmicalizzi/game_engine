@@ -438,7 +438,8 @@ TEST_CASE("mcp: tools/list gives every tool a JSON Schema generated from the eng
                           "instantiate_template",
                           "profile_start",
                           "profile_report",
-                          "profile_stop"};
+                          "profile_stop",
+                          "describe_document"};
   // Every tool offered is named here, so the count in docs/subsystems/apps.md cannot drift again
   // (it said 45 while there were 46: materialize was offered and never listed).
   CHECK(tools.size() == std::size(wanted));
@@ -862,6 +863,37 @@ TEST_CASE("mcp: a transaction stages changes from several tools and lands them a
   CHECK(is_error(mcp.tool("rollback", "{" + s + ",\"transaction\":" + t + "}")));
   ok(mcp.tool("undo", "{" + s + "}"));
   CHECK(num(ok(mcp.tool("objects", "{" + s + "}")), "total") == 0);
+}
+
+// describe_document (protocol.md, "Describing an object, a tile or a region").
+TEST_CASE("mcp: describe_document says what an object holds, bounded, in the host's words") {
+  const test::TempDir tmp("mcp_bridge_describe");
+  Mcp mcp(tmp.file("ws"));
+  REQUIRE(mcp.ok);
+  mcp.initialize();
+  const JsonValue opened =
+      ok(mcp.tool("open_session", "{\"path\":\"" + tmp.file("world") + "\",\"create\":true}"));
+  const std::string s = "\"session\":\"" + str(opened, "session") + "\"";
+  ok(mcp.tool("create_object", "{" + s + ",\"id\":\"" + k_b + "\",\"type\":\"" + k_type + "\"," +
+                                   attribution("the parent") + "}"));
+  ok(mcp.tool("create_object", "{" + s + ",\"id\":\"" + k_c + "\",\"type\":\"" + k_type +
+                                   "\",\"parent\":\"" + k_b + "\"," + attribution("its child") +
+                                   "}"));
+  const JsonValue d = mcp.tool("describe_document", "{" + s + ",\"id\":\"" + k_b + "\"}");
+  const JsonValue r = ok(d);
+  CHECK(num(r, "total") == 2);
+  CHECK(at(r, "records").size() == 2);
+  CHECK(text_of(d).find("with 1 live record as children") != std::string::npos);
+  // A bound that leaves the child out says how to get it.
+  const JsonValue one =
+      mcp.tool("describe_document", "{" + s + ",\"id\":\"" + k_b + "\",\"max_records\":1}");
+  CHECK(num(ok(one), "omitted") == 1);
+  CHECK(text_of(one).find("Raise max_records") != std::string::npos);
+  // Refused by the host: two targets, and an object that is not there.
+  CHECK(is_error(mcp.tool("describe_document",
+                          "{" + s + ",\"id\":\"" + k_b + "\",\"tile\":{\"x\":0,\"y\":0}}")));
+  CHECK(is_error(
+      mcp.tool("describe_document", "{" + s + ",\"id\":\"00000000000000000000000000000099\"}")));
 }
 
 TEST_CASE("mcp: a mutation with no rationale is refused, with what to add") {

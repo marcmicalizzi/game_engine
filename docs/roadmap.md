@@ -895,7 +895,7 @@ The engine as a server, its clients, and what agents and the human director work
 | A10 | `profile` over the protocol | done (2026-11-18: db02547b, 53429e1e. Not done: engine-editor's and engine-view's loops register no profile.*; GPU counters and memory by tag are T45's) | T44 | M | routine | [protocol](subsystems/protocol.md#profile-the-frame-capture-over-the-protocol) |
 | A11 | Explicit begin, commit and rollback | done (2026-11-17: 9863fe4b) | A1 | S | routine | [protocol](subsystems/protocol.md#transactions-a-client-opens) |
 | A12 | `place_asset` and `instantiate_template` | done (2026-11-17: 6d1c9fe6) | A1 | M | design | [protocol](subsystems/protocol.md#placing-an-asset-instantiating-a-template) |
-| A13 | `describe` an object, tile or region by detail | open | A1 | M | design | [06 §6.6](plan/06-agent-tooling.md#66-introspection) |
+| A13 | `describe` an object, tile or region by detail | in progress | A1 | M | design | [protocol](subsystems/protocol.md#describing-an-object-a-tile-or-a-region) |
 | A14 | `query`: SQL over the store, filters over the document | open | D16 | M | design | [06 §6.6](plan/06-agent-tooling.md#66-introspection) |
 | A15 | Semantic summaries of diffs | open | D5 | M | design | [06 §6.4](plan/06-agent-tooling.md#64-transactions-checkpoints-rollback) |
 | A16 | Validation service v0 | done (9a34cca1, e0639a1c) | A7 | M | routine | [protocol](subsystems/protocol.md#enginerun_tests) |

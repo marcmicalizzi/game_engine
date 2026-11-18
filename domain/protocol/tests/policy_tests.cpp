@@ -1293,3 +1293,162 @@ TEST_CASE("instantiate_template: a subtree copied under fresh ids, offset, with 
   CHECK(at(ended(host, "doc.commit", t, a), "committed") == JsonValue(true));
   host.ok("doc.get", obj({{"id", at(s, "ids")[1]}}));
 }
+
+// ---- describe (plan 06 §6.6; protocol.md, "Describing an object, a tile or a region") ---------
+
+namespace {
+
+// The world's four props, and in tile (0, 0) a yard: a node with two child nodes, the first with a
+// child of its own.
+void make_yard(Host& host) {
+  JsonValue yard = JsonValue::array();
+  yard.push_back(node(oid(20), 5, 5));
+  yard.push_back(node(oid(21), 6, 6, oid(20)));
+  yard.push_back(node(oid(22), 7, 7, oid(20)));
+  yard.push_back(node(oid(23), 8, 8, oid(21)));
+  host.apply(yard, who("setup"));
+}
+
+JsonValue describe(Host& host, JsonValue params) { return host.ok("doc.describe", params); }
+
+Vector<std::string> listed_ids(const JsonValue& r) {
+  Vector<std::string> ids;
+  const JsonValue& records = at(r, "records");
+  for (u32 i = 0; i < records.size(); ++i)
+    ids.push_back(std::string(at(records[i], "id").as_string()));
+  return ids;
+}
+
+}  // namespace
+
+TEST_CASE("describe: an object at three details, its sentence, and the bounds") {
+  TempDir tmp("protocol_describe_object");
+  Host host;
+  host.make_world(tmp.file("doc"));
+  make_yard(host);
+  const auto params = [](const char* detail, u32 max_records = 256, u32 max_bytes = 65536) {
+    return obj({{"id", JsonValue(hex(oid(20)))},
+                {"detail", JsonValue(detail)},
+                {"max_records", JsonValue(max_records)},
+                {"max_bytes", JsonValue(max_bytes)}});
+  };
+  // Summary: the object alone, its children counted; the sentence names it, where it is, and what
+  // it holds, the same words from a second call.
+  const JsonValue s = describe(host, params("Summary"));
+  CHECK(at(s, "scope") == JsonValue("object"));
+  CHECK(num(at(s, "total")) == 3);
+  CHECK(num(at(s, "omitted")) == 2);
+  CHECK(listed_ids(s) == Vector<std::string>{hex(oid(20))});
+  const std::string sentence(at(s, "summary").as_string());
+  CHECK(sentence.find("engine.world.Node 'n' " + hex(oid(20)) + " at (5.00, 0.00, 5.00)") == 0);
+  CHECK(sentence.find(", a root, with 2 live records as children: 2 engine.world.Node.") !=
+        std::string::npos);
+  CHECK(at(describe(host, params("Summary")), "summary") == at(s, "summary"));
+  const JsonValue& self = at(s, "records")[0];
+  CHECK(num(at(self, "children")) == 2);
+  CHECK(coord(at(self, "position"), 2) == 5.0);
+  CHECK(at(self, "properties").size() == 0);
+
+  // Standard: the object and its children by id, no properties; Full: the subtree depth first,
+  // with properties.
+  const JsonValue st = describe(host, params("Standard"));
+  CHECK(listed_ids(st) == Vector<std::string>{hex(oid(20)), hex(oid(21)), hex(oid(22))});
+  CHECK(num(at(at(st, "records")[1], "depth")) == 1);
+  CHECK(at(at(st, "records")[1], "parent") == JsonValue(hex(oid(20))));
+  CHECK(at(at(st, "records")[2], "properties").size() == 0);
+  const JsonValue full = describe(host, params("Full"));
+  CHECK(num(at(full, "total")) == 4);
+  CHECK(listed_ids(full) ==
+        Vector<std::string>{hex(oid(20)), hex(oid(21)), hex(oid(23)), hex(oid(22))});
+  CHECK(num(at(at(full, "records")[2], "depth")) == 2);
+  CHECK(at(at(at(full, "records")[2], "properties"), "name") == JsonValue("n"));
+  CHECK(std::string(at(full, "summary").as_string()).find("3 live records in its subtree") !=
+        std::string::npos);
+  CHECK(at(full, "bound") == JsonValue(""));
+
+  // Bounds: the rest is counted and the sentence says by which bound; the object itself is always
+  // listed, however small the bound.
+  const JsonValue two = describe(host, params("Full", 2));
+  CHECK(listed_ids(two).size() == 2);
+  CHECK(num(at(two, "omitted")) == 2);
+  CHECK(at(two, "bound") == JsonValue("max_records"));
+  CHECK(std::string(at(two, "summary").as_string())
+            .find("Listed 2 of 4; 2 left out by max_records.") != std::string::npos);
+  const JsonValue small = describe(host, params("Full", 256, 1024));
+  CHECK(at(small, "bound") == JsonValue("max_bytes"));
+  CHECK(num(at(small, "bytes")) <= 1024);
+  CHECK(listed_ids(small).size() + num(at(small, "omitted")) == 4);
+  CHECK(listed_ids(describe(host, params("Full", 1))) == Vector<std::string>{hex(oid(20))});
+
+  // Refused: an unknown or deleted object, no target or two, a bound out of range.
+  CHECK(host.fails("doc.describe", obj({{"id", JsonValue(hex(oid(99)))}})) == codes::k_not_found);
+  host.apply(one(del(oid(22))), who("setup"));
+  CHECK(host.fails("doc.describe", obj({{"id", JsonValue(hex(oid(22)))}})) == codes::k_not_found);
+  CHECK(listed_ids(describe(host, params("Standard"))).size() == 2);
+  CHECK(host.fails("doc.describe", obj({})) == codes::k_invalid_argument);
+  CHECK(host.fails("doc.describe",
+                   obj({{"id", JsonValue(hex(oid(20)))},
+                        {"tile", obj({{"x", JsonValue(0)}, {"y", JsonValue(0)}})}})) ==
+        codes::k_invalid_argument);
+  CHECK(host.fails("doc.describe", params("Full", 0)) == codes::k_invalid_argument);
+  CHECK(host.fails("doc.describe", params("Full", 10001)) == codes::k_invalid_argument);
+  CHECK(host.fails("doc.describe", params("Full", 256, 1023)) == codes::k_invalid_argument);
+}
+
+TEST_CASE("describe: a tile and a region from the tile index, in one order, under any role") {
+  TempDir tmp("protocol_describe_tiles");
+  Host host;
+  host.make_world(tmp.file("doc"));
+  make_yard(host);
+  const auto at_tile = [](i32 x, i32 y) {
+    return obj({{"tile", obj({{"x", JsonValue(x)}, {"y", JsonValue(y)}})}});
+  };
+  const auto region = [](i32 x0, i32 y0, i32 x1, i32 y1, const char* detail = "Standard") {
+    return obj({{"region", range(x0, y0, x1, y1)}, {"detail", JsonValue(detail)}});
+  };
+  // Tile (0, 0): prop 1 and the yard's four nodes, by id.
+  const JsonValue t = describe(host, at_tile(0, 0));
+  CHECK(at(t, "scope") == JsonValue("tile"));
+  CHECK(at(t, "summary") == JsonValue("Tile (0, 0) holds 5 live records: 4 engine.world.Node and 1 "
+                                      "engine.protocol.test.Prop."));
+  CHECK(listed_ids(t) ==
+        Vector<std::string>{hex(oid(1)), hex(oid(20)), hex(oid(21)), hex(oid(22)), hex(oid(23))});
+  CHECK(num(at(t, "occupied_tiles")) == 1);
+  CHECK(at(at(t, "records")[0], "tiled") == JsonValue(true));
+  CHECK(at(at(t, "types")[0], "type") == JsonValue("engine.world.Node"));
+  CHECK(at(describe(host, at_tile(9, 9)), "summary") ==
+        JsonValue("Tile (9, 9) holds no live records."));
+
+  // A region walked tile by tile (4 tiles, 4 occupied) and one answered from the live set (9
+  // tiles): the same records in the same order, row by row.
+  const JsonValue by_tiles = describe(host, region(0, 0, 1, 1));
+  const JsonValue by_objects = describe(host, region(-1, -1, 1, 1));
+  CHECK(num(at(by_tiles, "total")) == 7);
+  CHECK(listed_ids(by_tiles) == listed_ids(by_objects));
+  CHECK(listed_ids(by_tiles) == Vector<std::string>{hex(oid(1)), hex(oid(20)), hex(oid(21)),
+                                                    hex(oid(22)), hex(oid(23)), hex(oid(2)),
+                                                    hex(oid(3))});
+  CHECK(std::string(at(by_objects, "summary").as_string())
+            .find("Tiles (-1, -1) to (1, 1), 3 of 9 occupied, hold 7 live records") == 0);
+  CHECK(listed_ids(describe(host, region(0, 0, 1, 1, "Summary"))).size() == 0);
+
+  // Refused: a region too large or upside down.
+  CHECK(host.fails("doc.describe", region(0, 0, 256, 255)) == codes::k_invalid_argument);
+  CHECK(host.ok("doc.describe", region(0, 0, 255, 255)).find("total") != nullptr);
+  CHECK(host.fails("doc.describe", region(1, 0, 0, 0)) == codes::k_invalid_argument);
+
+  // A read: a role that may write nothing describes, and the catalogue says so.
+  std::string message;
+  REQUIRE(host.policy.load_roles("roles.json", k_roles, message));
+  host.policy.identity.role = "qa";
+  CHECK(host.apply_fails(one(set(oid(1), "color", JsonValue(4))), who("q")) == codes::k_forbidden);
+  CHECK(num(at(describe(host, at_tile(0, 0)), "total")) == 5);
+  const JsonValue methods = at(host.ok("engine.methods", JsonValue()), "methods");
+  bool found = false;
+  for (u32 i = 0; i < methods.size(); ++i)
+    if (at(methods[i], "name") == JsonValue("doc.describe")) {
+      found = true;
+      CHECK(at(methods[i], "read_only") == JsonValue(true));
+    }
+  CHECK(found);
+}

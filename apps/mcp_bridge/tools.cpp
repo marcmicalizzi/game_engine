@@ -2467,6 +2467,27 @@ void run_instantiate_template(Bridge& b, const JsonValue& args, ToolOutcome& out
   run_placed(b, "doc.instantiate_template", "Copied", args, out);
 }
 
+// ---- describe_document (plan 06 §6.6's describe; `describe` is schema.describe's) ---------------
+
+bool schema_describe_document(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("doc.describe", s, e)) return false;
+  note(s, "session", "The session id open_session returned.");
+  note(s, "id", "An object to describe; objects lists them. Give one of id, tile and region.");
+  require(s, {"session"});
+  return true;
+}
+
+void run_describe_document(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!b.call("doc.describe", args, r, out)) return;
+  // The host's own sentence, then what to ask for when the bounds left records out.
+  out.summary = text_of(r, "summary");
+  const std::string bound = text_of(r, "bound");
+  if (bound == "max_records" || bound == "max_bytes")
+    out.summary += " Raise " + bound + ", or describe a smaller part, to list the rest.";
+  out.data = r;
+}
+
 constexpr ToolDef k_tools[] = {
     {"open_session", "Open a document",
      "Open a document directory and get the session id the document tools take. Pass create: "
@@ -2718,6 +2739,12 @@ constexpr ToolDef k_tools[] = {
      "not live: editing the template later changes nothing here. Needs attribution.rationale.",
      "doc.instantiate_template", false, false, false, &schema_instantiate_template,
      &run_instantiate_template},
+    {"describe_document", "Describe part of a document",
+     "Before editing: one object (with its children, or its whole subtree at detail Full), one "
+     "tile, or a rectangle of tiles, as a sentence, counts by type and the records (id, type, "
+     "name, parent, place, child count; properties at Full), bounded by max_records and "
+     "max_bytes with what was left out counted. describe explains schema types instead.",
+     "doc.describe", true, false, true, &schema_describe_document, &run_describe_document},
 };
 
 }  // namespace

@@ -2429,6 +2429,95 @@ struct TemplateOrigin @version(1) @kind(record) {
   copies: id128[]
 }
 
+// ---- describe (plan 06 §6.6; protocol.md, "Describing an object, a tile or a region") ---------
+
+/// How much `doc.describe` says. Each level says everything the one before it does.
+enum DescribeDetail : u8 {
+  /// The sentence, the counts by type and, for an object, the object itself: no other record.
+  Summary = 0
+  /// Every record in scope by id, type, name, parent, place and child count; no properties.
+  Standard = 1
+  /// Every record in scope with its composed properties too; an object's whole subtree.
+  Full = 2
+}
+
+/// One tile of the partitioned layers' grid (docs/plan/03-data-model.md §3.7).
+struct DescribeTile @version(1) {
+  x: i32 = 0
+  y: i32 = 0
+}
+
+/// Parameters of `doc.describe`: one object, one tile, or a rectangle of tiles, at a level of
+/// detail, bounded in records and in bytes. Name exactly one of `id`, `tile` and `region`.
+struct DescribeParams @version(1) {
+  session: string
+  /// An object: it, then its children (standard) or its live subtree, depth first (full).
+  id: id128?
+  /// One tile: the live records whose defining record is in it.
+  tile: DescribeTile?
+  /// A rectangle of tiles, at most 65,536 of them; its records tile by tile, row by row.
+  region: TileRange?
+  detail: DescribeDetail = Standard
+  /// Most records listed; the rest are counted, not listed (1 to 10,000).
+  max_records: u32 = 256
+  /// Most bytes of listed records, as JSON; the record that would pass it and every one after it
+  /// are counted, not listed (1,024 to 4,194,304).
+  max_bytes: u32 = 65536
+}
+
+/// How many records of one type a description covers.
+struct DescribeTypeCount @version(1) {
+  type: string
+  count: u32 = 0
+}
+
+/// One record a description lists.
+struct DescribedRecord @version(1) {
+  id: id128
+  type: string
+  /// The null id for a root.
+  parent: id128
+  /// The record's `name` property when it is a string; empty otherwise.
+  name: string
+  /// Its first `worldpos` field in its registered type, when it has one set.
+  position: worldpos? @unit(m)
+  /// The tile its defining record is in, when it is in one (`tile_x`, `tile_y`).
+  tiled: bool = false
+  tile_x: i32 = 0
+  tile_y: i32 = 0
+  /// Live children.
+  children: u32 = 0
+  /// Depth below the described object (0 for it); 0 for a tile's or region's records.
+  depth: u32 = 0
+  /// Composed properties, at `Full` only.
+  properties: map<string, json>
+}
+
+/// Result of `doc.describe`.
+struct DescribeResult @version(1) {
+  /// "object", "tile" or "region".
+  scope: string
+  detail: DescribeDetail = Standard
+  /// One or more sentences made from templates over the counts below (no model): the same
+  /// document gives the same words.
+  summary: string
+  /// Live records in scope, listed or not.
+  total: u32 = 0
+  /// Counts by type over the whole scope, the most numerous first, then by name.
+  types: DescribeTypeCount[]
+  /// The listed records, in scope order.
+  records: DescribedRecord[]
+  /// Records in scope the bounds left out (`total` minus listed); at `Summary` every one but an
+  /// object itself.
+  omitted: u32 = 0
+  /// Which bound left them out: "" (none), "max_records" or "max_bytes".
+  bound: string
+  /// Bytes of the listed records as JSON.
+  bytes: u32 = 0
+  /// For a tile or region: the tiles that hold at least one record in scope.
+  occupied_tiles: u32 = 0
+}
+
 // ProposalState and ProposalInfo are declared before LayerInfo, which reports them.
 
 /// `proposals.json` in a document directory.
