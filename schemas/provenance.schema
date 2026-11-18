@@ -40,3 +40,55 @@ struct AssetProvenance @version(1) @kind(record) {
   /// Assets this one was derived from, by id.
   derived_from: id128[]
 }
+
+// Content classes and view policies (ADR-0033, ADR-0074; docs/content-classes.md). These are
+// the shapes the files are written in; `foundation/content_class` reads them into the compact
+// values a decision is made on, and refuses a file that is wrong, whole, with the reason.
+
+/// One material's own classes, for an asset whose classified part is one material.
+struct MaterialContentClasses {
+  /// Category name to level name.
+  levels: map<string, string>
+}
+
+/// What an asset declares, in its provenance sidecar's `content_classes`: category name to
+/// level name. A category it does not name is `none`; absent altogether is `none` everywhere.
+struct ContentClasses @version(1) {
+  /// Category name to level name, for the whole asset.
+  levels: map<string, string>
+  /// A material's name to its own classes.
+  materials: map<string, MaterialContentClasses>
+}
+
+/// A category a game adds: its name and its levels, lowest first, the first always `none`.
+struct ContentCategory {
+  name: string
+  levels: string[]
+}
+
+/// A game's categories, given to its content build beside the engine's three.
+struct ContentCategoriesFile @version(1) {
+  categories: ContentCategory[]
+}
+
+/// One category's cap in a view policy, and what stands in for content above it.
+struct ViewPolicyCap {
+  /// A category the engine or the game's categories file defines.
+  category: string
+  /// The highest level of that category the output may contain.
+  cap: string
+  /// `omit` or `proxy`; `cover` and `obscure at capture` are refused until they are built.
+  substitution: string
+}
+
+/// A named view policy. A category it does not name is capped at `none` with `omit`.
+struct ViewPolicy {
+  name: string
+  caps: ViewPolicyCap[]
+}
+
+/// The operator's view policies, named on a host's command line (not read by any host yet).
+/// `agent-default` is compiled in and may not be redefined here.
+struct ViewPoliciesFile @version(1) {
+  policies: ViewPolicy[]
+}
