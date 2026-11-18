@@ -59,7 +59,7 @@ struct Shot {
   std::string skip;
 };
 
-Shot draw(const std::string& scene_file, const Config& config, bool serialize) {
+Shot draw(const SceneData& data, const Config& config, bool serialize) {
   Shot out;
   const TunableScope gi((std::string("renderer.gi.mode=") + config.gi).c_str(),
                         "renderer.gi.mode=off");
@@ -72,11 +72,6 @@ Shot draw(const std::string& scene_file, const Config& config, bool serialize) {
     out.skip = "device unavailable: " + error;
     return out;
   }
-  SceneDesc desc;
-  desc.cache = false;
-  REQUIRE_MESSAGE(read_scene_file(scene_file, desc, error), error);
-  SceneData data;
-  REQUIRE_MESSAGE(load_scene(desc, data, error), "scene: " << error);
   RenderSettings settings;
   settings.raster = config.raster;
   settings.shadows = config.shadows;
@@ -124,15 +119,24 @@ void check_same(const char* scene_dir) {
       {"traced with the bounce", RasterMode::RayTrace, ShadowMode::RayTraced, "bounce"},
       {"hardware with the cascades", RasterMode::Hardware, ShadowMode::Cascaded, "off"},
   };
+  // Loaded once: the four draws share the scene's data and differ in their GPU objects alone.
+  SceneDesc desc;
+  desc.cache = false;
+  std::string error;
+  REQUIRE_MESSAGE(read_scene_file(file, desc, error), error);
+  SceneData data;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), "scene: " << error);
   for (const Config& config : configs) {
-    CAPTURE(scene_dir);
-    CAPTURE(config.name);
-    const Shot ordered = draw(file, config, false);
+    const std::string scene_name = scene_dir;
+    const std::string config_name = config.name;
+    CAPTURE(scene_name);
+    CAPTURE(config_name);
+    const Shot ordered = draw(data, config, false);
     if (!ordered.skip.empty()) {
       MESSAGE("skipped " << config.name << ": " << ordered.skip);
       continue;
     }
-    const Shot serial = draw(file, config, true);
+    const Shot serial = draw(data, config, true);
     REQUIRE(serial.skip.empty());
     REQUIRE(ordered.frame.color.size() == serial.frame.color.size());
     REQUIRE(ordered.frame.ids.size() == serial.frame.ids.size());
@@ -153,6 +157,6 @@ TEST_CASE("serialized frame: the grove draws the same bytes with every pass seri
   check_same("grove");
 }
 
-TEST_CASE("serialized frame: the cave draws the same bytes with every pass serialized") {
-  check_same("cave");
+TEST_CASE("serialized frame: the desert erg draws the same bytes with every pass serialized") {
+  check_same("desert-erg");
 }
