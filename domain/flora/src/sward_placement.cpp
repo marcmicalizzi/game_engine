@@ -1,5 +1,6 @@
 #include <core/hash/hash.h>
 #include <core/math/deterministic.h>
+#include <core/profiling/startup_trace.h>
 #include <core/schema/json_reflect.h>
 #include <domain/flora/flora.h>
 #include <domain/flora/meadow.h>
@@ -16,6 +17,7 @@
 #include <fstream>
 #include <memory>
 #include <schemas/flora.h>
+#include <span>
 
 namespace engine::flora {
 // ---- G140, the meadow community (meadow.h; flora.md, "The meadow community") -------------------
@@ -869,6 +871,46 @@ void keep_forbs(const Entry& entry, Vector<Forb>& forbs, scene_gen::Placements& 
   for (const auto& forb : forbs)
     out.instances.push_back(forb.placed);
 }
+// **Where a call's time goes** (T172-2; scene_collision.md, "Where the sward's tile waits"): the
+// wall time of the mask reads, the site, the ground, the exclusion and the forbs, summed over a
+// call's cells and handed to the startup trace as one stage's detail when a trace is on. Read
+// nowhere else: with no trace it costs one relaxed load a call.
+struct TileSplit {
+  enum : u32 { k_masks, k_site, k_ground, k_exclusion, k_forbs, k_parts };
+  bool on = profiling::trace_enabled();
+  i64 start = on ? profiling::trace_now_ns() : 0;
+  i64 ns[k_parts] = {};
+  u32 mask_reads = 0;
+  // The time of one scope, charged to `part` however the scope is left.
+  struct Timed {
+    TileSplit& split;
+    u32 part;
+    i64 from;
+    Timed(TileSplit& s, u32 k) noexcept
+        : split(s), part(k), from(s.on ? profiling::trace_now_ns() : 0) {}
+    ~Timed() {
+      if (split.on) split.ns[part] += profiling::trace_now_ns() - from;
+    }
+    Timed(const Timed&) = delete;
+    Timed& operator=(const Timed&) = delete;
+  };
+  void report(u32 cells, u32 placed) const {
+    if (!on) return;
+    const f64 total = static_cast<f64>(profiling::trace_now_ns() - start) * 1e-6;
+    f64 parts = 0;
+    for (const i64 v : ns)
+      parts += static_cast<f64>(v) * 1e-6;
+    char detail[256];
+    std::snprintf(detail, sizeof(detail),
+                  "masks %.2f ms (%u reads), site %.2f, ground %.2f, exclusion %.2f, forbs %.2f, "
+                  "other %.2f, total %.2f, cells %u, placed %u",
+                  static_cast<f64>(ns[k_masks]) * 1e-6, mask_reads,
+                  static_cast<f64>(ns[k_site]) * 1e-6, static_cast<f64>(ns[k_ground]) * 1e-6,
+                  static_cast<f64>(ns[k_exclusion]) * 1e-6, static_cast<f64>(ns[k_forbs]) * 1e-6,
+                  total - parts, total, cells, placed);
+    const profiling::TraceStage stage("sward split", detail);
+  }
+};
 bool tile(void* state, scene_gen::TileCoord at, const scene_gen::Context& context,
           scene_gen::Placements& out, std::string* error) {
   out.clear();
@@ -876,6 +918,7 @@ bool tile(void* state, scene_gen::TileCoord at, const scene_gen::Context& contex
   if (out.kind >= 2 || !occupies(state, at)) return true;
   const auto& entry = *static_cast<const Entry*>(state);
   const auto& p = entry.params;
+  TileSplit split;
   scene_gen::GroundMasks masks;
   if (!context.ground.masks(masks, error)) return false;
   scene_gen::GroundMaskInfo info;
@@ -883,10 +926,26 @@ bool tile(void* state, scene_gen::TileCoord at, const scene_gen::Context& contex
       !masks.ops->info(masks.state, info) || info.spacing_mm <= 0 || info.cells < 1 ||
       (info.cells & (info.cells - 1)) != 0 || info.cells > 1024 || p.layer >= info.palette)
     return fail(error, "invalid or missing mask level/layer");
-  Vector<u32> words(scene_gen::mask_tile_words(info.cells));
+  // **One read of each mask tile a call covers** (T172-2; flora.md, "Grass sward (G90)"): the
+  // cells walk x within z, so a row of cells crosses every mask tile of its row of mask tiles, and
+  // the next row crosses them again. Keeping the last tile alone read each one once per row of
+  // cells — 512 reads for the 64 mask tiles of a 64 m tile over the forest's 8 m mask tiles, each
+  // a turn of the level's one lock, and a refill of its read window whenever another thread had
+  // moved it. The row of mask tiles the cells are in is kept whole instead, each tile read when a
+  // cell first needs it, so a call reads each tile it covers once and in the archive's order.
+  const u32 n = scene_gen::mask_tile_words(info.cells);
+  const auto tx_of = [&](u32 x) {
+    const f64 wx = static_cast<f64>(at.x) * static_cast<f64>(context.tile_size) +
+                   (x + .5) * static_cast<f64>(p.cell_m);
+    return scene_gen::mask_tile_of(info, scene_gen::nearest_mm(wx), 0, 0, 0).tx;
+  };
+  const i32 row_tx0 = tx_of(0);
+  const u32 row_span = static_cast<u32>(tx_of(entry.cells - 1) - row_tx0) + 1;
+  Vector<u32> row_words(row_span * n);
+  Vector<u8> row_state(row_span, u8{0});  // 0 not read, 1 read, 2 none there
+  i32 row_tz = 0;
+  bool row_set = false;
   Vector<Forb> forbs;
-  i32 last_x = 0, last_z = 0;
-  bool loaded = false, found = false;
   const u64 width = static_cast<u64>(static_cast<i64>(p.max_x) - p.min_x + 1);
   const u64 tile_id = static_cast<u64>(static_cast<i64>(at.z) - p.min_z) * width +
                       static_cast<u64>(static_cast<i64>(at.x) - p.min_x);
@@ -907,13 +966,19 @@ bool tile(void* state, scene_gen::TileCoord at, const scene_gen::Context& contex
           mask_z > info.tile_max_z)
         continue;
       const auto ref = scene_gen::mask_tile_of(info, x_mm, 0, z_mm, 0);
-      if (!loaded || last_x != ref.tx || last_z != ref.tz) {
-        last_x = ref.tx;
-        last_z = ref.tz;
-        loaded = true;
-        found = masks.ops->tile(masks.state, ref.tx, ref.tz, words);
+      if (!row_set || ref.tz != row_tz) {
+        row_set = true;
+        row_tz = ref.tz;
+        std::fill(row_state.begin(), row_state.end(), u8{0});
       }
-      if (!found) continue;
+      const u32 slot = static_cast<u32>(ref.tx - row_tx0);
+      const std::span<u32> words(row_words.data() + static_cast<usize>(slot) * n, n);
+      if (row_state[slot] == 0) {
+        const TileSplit::Timed timed(split, TileSplit::k_masks);
+        ++split.mask_reads;
+        row_state[slot] = masks.ops->tile(masks.state, ref.tx, ref.tz, words) ? 1 : 2;
+      }
+      if (row_state[slot] != 1) continue;
       const auto sample = scene_gen::mask_sample(info, words, ref, 0);
       f32 density = 0;
       for (u32 ch = 0; ch < scene_gen::k_mask_channels; ++ch)
@@ -932,34 +997,41 @@ bool tile(void* state, scene_gen::TileCoord at, const scene_gen::Context& contex
       const f64 px = wx + (unit_of(random, 1) * 2 - 1) * k_jitter * cell;
       const f64 pz = wz + (unit_of(random, 2) * 2 - 1) * k_jitter * cell;
       bool excluded = false;
-      for (const auto& earlier : context.earlier) {
-        if (!(earlier.radius > 0)) continue;
-        const f64 dx = px - static_cast<f64>(earlier.x_mm) * .001;
-        const f64 dz = pz - static_cast<f64>(earlier.z_mm) * .001;
-        // The full patch clears earlier structures, not merely its centre.
-        const f64 radius = earlier.radius + .7071067811865476 * cell;
-        if (dx * dx + dz * dz < radius * radius) {
-          excluded = true;
-          break;
+      {
+        const TileSplit::Timed timed(split, TileSplit::k_exclusion);
+        for (const auto& earlier : context.earlier) {
+          if (!(earlier.radius > 0)) continue;
+          const f64 dx = px - static_cast<f64>(earlier.x_mm) * .001;
+          const f64 dz = pz - static_cast<f64>(earlier.z_mm) * .001;
+          // The full patch clears earlier structures, not merely its centre.
+          const f64 radius = earlier.radius + .7071067811865476 * cell;
+          if (dx * dx + dz * dz < radius * radius) {
+            excluded = true;
+            break;
+          }
+        }
+        // G135: nothing grows in a hole, a stream's bed and banks or under water, and a bank's
+        // grass thins towards it (scene_gen.md, "Exclusion"). Not asked of a scene with none, so
+        // its density is the mask's to the bit.
+        if (!excluded && context.exclusion != nullptr) {
+          const i64 jx_mm = scene_gen::nearest_mm(px), jz_mm = scene_gen::nearest_mm(pz);
+          if (context.excluded_mm(jx_mm, jz_mm))
+            excluded = true;
+          else
+            density *= static_cast<f32>(context.riparian_factor_mm(jx_mm, jz_mm));
         }
       }
       if (excluded) continue;
-      // G135: nothing grows in a hole, a stream's bed and banks or under water, and a bank's
-      // grass thins towards it (scene_gen.md, "Exclusion"). Not asked of a scene with none, so its
-      // density is the mask's to the bit.
-      if (context.exclusion != nullptr) {
-        const i64 jx_mm = scene_gen::nearest_mm(px), jz_mm = scene_gen::nearest_mm(pz);
-        if (context.excluded_mm(jx_mm, jz_mm)) continue;
-        density *= static_cast<f32>(context.riparian_factor_mm(jx_mm, jz_mm));
-      }
       // Unbiased stochastic interpolation between adjacent authored density classes. The field
       // is identical in all rings; ring and request order never participate in the hash. G137: of
       // the families of the form the site picks, when the entry names forms.
       const bool plants = !entry.community.empty() && out.kind <= 1;
       CellSite at_cell;
-      if (entry.forms || plants)
+      if (entry.forms || plants) {
+        const TileSplit::Timed timed(split, TileSplit::k_site);
         at_cell = cell_site(entry, context, words[0], sample, scene_gen::nearest_mm(px),
                             scene_gen::nearest_mm(pz), random);
+      }
       const u32 form = at_cell.form;
       u32 upper = 0;
       if (!pick_family(p, entry.form_families[form], density, random, upper)) continue;
@@ -969,20 +1041,27 @@ bool tile(void* state, scene_gen::TileCoord at, const scene_gen::Context& contex
       placed.mesh = entry.family_base[upper] + static_cast<u32>(random % family.near.size()) +
                     (out.kind == 1 ? family.near.size() : 0);
       const i64 px_mm = scene_gen::nearest_mm(px), pz_mm = scene_gen::nearest_mm(pz);
-      placed.position = {px, context.ground.surface_mm(px_mm, pz_mm), pz};
-      placed.rotation = patch_rotation(context.ground, px_mm, pz_mm, cell, p.max_tilt_deg,
-                                       unit_of(random, 3) * 6.283185307179586);
+      {
+        const TileSplit::Timed timed(split, TileSplit::k_ground);
+        placed.position = {px, context.ground.surface_mm(px_mm, pz_mm), pz};
+        placed.rotation = patch_rotation(context.ground, px_mm, pz_mm, cell, p.max_tilt_deg,
+                                         unit_of(random, 3) * 6.283185307179586);
+      }
       // A height field is sampled per patch, which is turned about its axis, moved in its cell and
       // tipped onto the ground. Wetness-specific morphology requires separately cooked families,
       // and the scale stays 1: silently scaling real leaf dimensions is forbidden.
       out.instances.push_back(placed);
-      if (plants) add_forb(entry, context, random, id, px, pz, at_cell.niche, out.kind == 1, forbs);
+      if (plants) {
+        const TileSplit::Timed timed(split, TileSplit::k_forbs);
+        add_forb(entry, context, random, id, px, pz, at_cell.niche, out.kind == 1, forbs);
+      }
     }
   }
   if (context.ring == 0) hand_off(entry, out);
   // G137's forbs follow the hand-off's pair, with no role: a herb draws at every distance of the
   // near ring, and hand_off must never see one (its card twin would be a mesh that is no card).
   keep_forbs(entry, forbs, out);
+  split.report(entry.cells * entry.cells, static_cast<u32>(out.instances.size()));
   return true;
 }
 bool expand(void* state, const scene_gen::Context& context, scene_gen::Placements& out,

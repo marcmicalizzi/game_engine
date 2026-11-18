@@ -399,7 +399,86 @@ f64 tilt_deg(const scene_gen::Placement& placed) {
   const Vec3 up = rotate(placed.rotation, Vec3::unit_y());
   return std::acos(std::min(1.0, static_cast<f64>(up.y))) * 57.29577951308232;
 }
+// T172-2: a mask level of 8 m tiles that counts the reads of each tile, grass on the tiles whose
+// x + z is even and no tile at all where x is 7.
+struct CountedMasks {
+  scene_gen::GroundMaskInfo info;
+  Vector<u32> words;
+  u32 reads[8][8] = {};
+};
+const scene_gen::GroundMaskOps k_counted_masks{
+    .present = [](const void*, i32 tx, i32) noexcept { return tx != 7; },
+    .info =
+        [](const void* state, scene_gen::GroundMaskInfo& out) noexcept {
+          out = static_cast<const CountedMasks*>(state)->info;
+          return true;
+        },
+    .tile =
+        [](const void* state, i32 tx, i32 tz, std::span<u32> out) noexcept {
+          auto& g = *const_cast<CountedMasks*>(static_cast<const CountedMasks*>(state));
+          ++g.reads[tz][tx];
+          if (tx == 7) return false;
+          for (u32 i = 0; i < g.words.size(); ++i)
+            out[i] = g.words[i];
+          if ((tx + tz) % 2 != 0)
+            for (u32 i = 1; i < g.words.size(); ++i)
+              out[i] = 0;
+          return true;
+        }};
 }  // namespace
+
+// **One read of each mask tile a call covers** (T172-2; flora.md, "Grass sward (G90)"): the
+// forest's 64 m tile of 1 m cells over 8 m mask tiles read each mask tile once per row of cells
+// (512 reads), and each read is a turn of the level's one lock and, under four workers, a refill
+// of its window. A call now reads each of its 64 once, and places what it placed.
+TEST_CASE("sward: a tile reads each mask tile it covers once, and places by the right one") {
+  CountedMasks ground;
+  ground.info.cells = 8;
+  ground.info.spacing_mm = 1000;
+  ground.info.palette = 2;
+  ground.info.tile_max_x = 7;
+  ground.info.tile_max_z = 7;
+  ground.words.resize(scene_gen::mask_tile_words(8), 0);
+  ground.words[0] = 0xffff0001u;
+  for (u32 i = 0; i < scene_gen::mask_points(8); ++i)
+    ground.words[i + 1] = 255;
+  scene_gen::Context ctx;
+  ctx.tile_size = 64;
+  ctx.ground.context = &ground;
+  ctx.ground.surface_fn = level;
+  ctx.ground.masks_fn = [](const void* s, scene_gen::GroundMasks& out, std::string*) {
+    out = {&k_counted_masks, s};
+    return true;
+  };
+  flora::SwardPlacements p;
+  p.layer = 1;
+  flora::SwardFamily family;
+  family.near.push_back("near.clusters");
+  family.cards.push_back("cards.clusters");
+  p.families.push_back(family);
+  const auto* gen = scene_gen::GeneratorRegistry::global().find_placement("sward");
+  REQUIRE(gen != nullptr);
+  void* state = nullptr;
+  std::string error;
+  REQUIRE_MESSAGE(gen->open(schema::to_json(p), ctx, &state, &error), error);
+  scene_gen::Placements out;
+  REQUIRE_MESSAGE(gen->tile(state, {0, 0}, ctx, out, &error), error);
+  for (u32 tz = 0; tz < 8; ++tz)
+    for (u32 tx = 0; tx < 8; ++tx)
+      CHECK_MESSAGE(ground.reads[tz][tx] == 1, "mask tile ", tx, ",", tz);
+  // Grass on the 28 tiles of even x + z with x < 7, every cell of each: 28 * 64 patches, each in
+  // the cell its id names and on a tile of even x + z.
+  REQUIRE(out.instances.size() == 28u * 64u);
+  for (const auto& placed : out.instances) {
+    const u32 cell = placed.id - 1;
+    const u32 x = cell % 64, z = cell / 64;
+    CHECK((x / 8 + z / 8) % 2 == 0);
+    CHECK(x / 8 != 7);
+    CHECK(std::fabs(placed.position.x - (x + .5)) <= .25);
+    CHECK(std::fabs(placed.position.z - (z + .5)) <= .25);
+  }
+  gen->close(state);
+}
 
 TEST_CASE("sward: a patch's place and turn are its hash's, in every ring and request order") {
   Meadow first(&rising_20, 15.0f), second(&rising_20, 15.0f);
