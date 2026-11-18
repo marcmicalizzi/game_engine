@@ -668,7 +668,8 @@ TEST_CASE("save corpus: every save loads, migrates, and runs on as it was measur
 
   const test::TempDir tmp("cli_save_corpus");
   REQUIRE(tmp.ok());
-  Host host;
+  // The corpus is read under a root of its own, beside the tests' scratch root it loads into.
+  Host host({"--root", test::scratch_root_spec(), "--root", "corpus=" + root});
   REQUIRE(host.ok);
   for (const CorpusSave& save : corpus()) {
     const std::string name = save.name;  // a string, so a failure prints the name, not a pointer
