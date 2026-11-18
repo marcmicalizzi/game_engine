@@ -611,6 +611,18 @@ TEST_CASE("ops: session.events reads the document's world.db when the store is b
   Run late =
       cli({"--doc", dir, "--compact", "session.events", "{\"source\":\"store\",\"since\":11}"});
   CHECK(at(late.result, "events").size() == 2);
+
+  // A store the client names is a client path (protocol.md, "The host's file roots"): before, any
+  // file on the disk was opened as an event log, "no event log at" told a missing file from one
+  // that is there, and `store_path` answered the host's own path. Outside the roots it is 1003,
+  // the answer a missing file gets.
+  Host host;
+  REQUIRE(host.ok);
+  const std::string session = open_session(host, dir, false);
+  const JsonValue outside =
+      host.call("session.events", "{\"session\":\"" + session +
+                                      "\",\"source\":\"store\",\"store\":\"../../../escape.db\"}");
+  CHECK(error_code(outside) == 1003);
 }
 #else
 TEST_CASE(

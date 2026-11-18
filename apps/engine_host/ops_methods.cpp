@@ -1517,23 +1517,28 @@ bool session_events(protocol::Context& ctx, const protocol::SessionEventsParams&
     out.store_status = "not asked";
   } else {
 #if defined(ENGINE_HOST_STORE)
+    // A client's `store` is a client path (protocol.md, "The host's file roots"): read under a
+    // root, relative to the session's document, and a refused one answers as a missing one does.
+    // The session's own world.db is the host's, beside the document it opened.
     std::string native;
-    const std::string wanted =
-        params.store.empty() ? io::join_path(session->dir(), "world.db") : params.store;
-    const io::Status resolved = ctx.sessions->vfs().resolve(wanted, native);
-    if (resolved != io::Status::Ok) {
-      error = io_error("cannot resolve the event log path '" + wanted +
-                       "': " + io::status_name(resolved));
-      return false;
+    if (params.store.empty()) {
+      native = io::join_path(session->dir(), "world.db");
+    } else {
+      io::Admitted admitted;
+      if (!protocol::admit_client_path(ctx, "store", params.store,
+                                       protocol::client_base(ctx, params.session), io::Access::read,
+                                       admitted, error))
+        return false;
+      native = admitted.native;
     }
     if (!io::exists(native)) {
       if (!params.store.empty()) {
-        error = io_error("no event log at '" + params.store + "'");
+        error = protocol::path_not_found("store", params.store, io::Access::read);
         return false;
       }
       out.store_status = "absent";
     } else {
-      out.store_path = native;
+      out.store_path = protocol::portable_path(ctx, native);
       store::Database db;
       store::OpenOptions options;
       options.read_only = true;  // session.events is read-only, and says so to SQLite as well
@@ -1543,7 +1548,8 @@ bool session_events(protocol::Context& ctx, const protocol::SessionEventsParams&
       store::EventLog event_log(db);
       if (status == store::Status::Ok) status = event_log.open();
       if (status != store::Status::Ok) {
-        error = io_error("cannot read the event log '" + native +
+        error = io_error("cannot read the event log '" +
+                         (params.store.empty() ? std::string("world.db") : params.store) +
                          "': " + store::status_name(status) + " " + std::string(db.last_error()));
         return false;
       }
