@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "D13-fix",
+  "reason": "D13's fixes: doc.put_blob's path rule (B1), a re-put restarting the grace period (B3), the checkpoint label rule (B9) and a rollback landing whole or saying what stands (B10)",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/protocol.md": 2504
+  }
+}
