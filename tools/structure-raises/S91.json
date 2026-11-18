@@ -1,10 +1,12 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "S91",
-  "reason": "S91: a door's body and its swing as a move, its measurement, and what a door from a building's description needs, on the Doors section",
+  "reason": "S91: section 53 for a structure's hinged leaves, described on geometry.md's new Doors section and in scene_collision.md's piece of the way from a description to a door",
   "date": "2026-11-18",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/scene_collision.md": 5712
+    "page:docs/subsystems/renderer.md": -5,
+    "page:docs/subsystems/geometry.md": 2493,
+    "page:docs/subsystems/scene_collision.md": 6142
   }
 }
