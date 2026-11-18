@@ -8,7 +8,56 @@ A real spruce is tiers of lit bough tops over dark gaps, its new growth lighter 
 page is why the engine's crowns are even, what the literature says light does inside a conifer
 crown, and what was changed.
 
-(In progress: the measurement of the engine's crowns is below; the sources and the mend follow.)
+## What the literature says
+
+Each row says whether its source was **read** for this row (its text, a table or an abstract, as
+said), read on an earlier page (**read there**), or is **recalled**; nothing is pinned to a recalled
+number.
+
+| What | Source | What it says |
+|---|---|---|
+| A shoot's mutual shading, and what escapes it | Smolander and Stenberg 2003, *Remote Sensing of Environment* 88:363-373, sections 2.3, 2.4 and 3.3 (read, the authors' copy) | STAR, a shoot's spherically averaged silhouette over its total needle area, would be 1/4 for needles that shade each other not at all (Cauchy's theorem); **4 STAR is the shoot shading factor** (Stenberg et al. 1994; Stenberg 1996) and also **the mean probability that a photon leaving a needle's surface escapes the shoot without meeting another needle**; the shoot's scattering is the needle's times (1 - p) / (1 - p w), with p close to 1 - 4 STAR (their Fig. 6, nine Scots pine shoots); the shoot's phase function has a **peak in the backscattering direction** (the within-shoot hot spot) |
+| A spruce shoot's STAR | Palmroth et al. 2002, *Tree Physiology* 22:1185 (read there: [conifer crowns](conifer-crown-coverage.md)) | 0.103 to 0.209 over 305 shoots, canopy openness 0.02 to 0.96 |
+| Sun shoots and shade shoots, and the light down a spruce crown | Stenberg, Kangas, Smolander and Linder 1999, *Plant, Cell and Environment* 22:1133-1142 (abstract read) | canopy openness at the shoots **0.23 to 0.90** in control trees; needle width and thickness rise with openness; **STAR falls with openness**, so "shoot silhouette area per unit needle mass was up to three times larger in shade shoots than in sun shoots": the sun shoots at the crown's outside are bushy and shade themselves, the shade shoots inside are flat |
+| A needle's colour by age | Hovi, Lukeš, Homolová, Juola and Rautiainen 2022, *Silva Fennica* 56(2) 10683, supplement S1 table S1.5 (read; top-of-canopy Norway spruce, every campaign's mean) | reflectance at 490, 560 and 665 nm: current-year needles **0.069, 0.165, 0.027**, one-year-old **0.062, 0.139, 0.026**; transmittance at 560 nm 0.085 and 0.059. The main text (read): "the c0 needles had higher albedo compared to c1 needles"; its bottom-of-canopy samples are not reported |
+| Older needles darker still | Lhotáková et al. 2021, *Remote Sensing* 13(3):391, section 3.3 and Fig. 5 (read; sun-exposed branches of 123 trees, needles of the current year, the year before and four years and older) | reflectance and transmittance "decreased with needle age in the green part of the visible (VIS) spectrum"; no number in the text |
+| A shoot scatters backward | Rautiainen et al. 2018, *Remote Sensing* 10:207 (read there: [conifer crowns](conifer-crown-coverage.md)) | Scots pine shoots "scatter most strongly in the backward directions with very little forward scattering in blue and red" |
+| A spruce's needles above and below its twig | Gymnosperm Database, *Picea abies* (read there) | "above shoot directed forward, those below more or less pectinate": a bough is a plate, all round on top, parted below |
+
+**What that asks of a crown.** A real crown is light and dark at the scale of its boughs for three
+reasons, and none of them is the needle's colour: the sun reaches the outside of the crown and the
+tops of the boughs and not what is under them; the sky reaches the inside through openness that
+falls from about 0.9 at the outside to 0.2 and less inside (Stenberg et al. 1999, Palmroth et al.
+2002); and light that enters a shoot leaves it only with the probability 4 STAR, about 0.4 to 0.8 for
+a spruce, so a shoot is brightest seen from the sun's side (backward) and dull from its far side.
+Within that, the year's growth at the end of each shoot is a fifth lighter than the needles behind
+it, and those darken further with age.
+
+## A needle's colour
+
+The sprays' recipe drew a spruce needle at 0.050, 0.100, 0.040 linear (luminance 0.085), a colour
+recalled on [conifer crowns](conifer-crown-coverage.md) and marked there to be checked. Hovi et
+al.'s bands (table above) are reflectance at three wavelengths; between them the spectrum is not
+in the text, so the linear sRGB colour was found with two shapes through the three bands (straight
+lines between them, and a baseline under a Gaussian green bump at 555 nm fitted through them),
+integrated against the CIE 1931 colour matching functions (Wyman, Sloan and Shirley 2013's
+analytic fit) under an equal-energy light, each channel over a white reflector's
+(`needle_rgb.py` in the row's scratch):
+
+| needle | straight lines | green bump | luminance |
+|---|---|---|---|
+| current year (0.069, 0.165, 0.027) | 0.098, 0.136, 0.061 | 0.081, 0.152, 0.021 | 0.121, 0.125 |
+| one year old (0.062, 0.139, 0.026) | 0.084, 0.116, 0.056 | 0.071, 0.129, 0.022 | 0.104, 0.107 |
+
+The shapes agree on luminance to 3 % and differ in blue, where neither is pinned by a band. The
+recipe takes **the one-year-old needle, 0.078, 0.122, 0.039**, the mean of the two (luminance
+0.107, a quarter over the old colour): most of a spruce's needles are a year old or older, and the
+year's growth is drawn paler on top of it, **1.17 times**, the two needles' luminance ratio (it was
+1.15, chosen). Older needles darken further (Lhotáková et al. 2021) by an amount no text read
+gives, so nothing darker is drawn. The pine's colour, 0.052, 0.092, 0.056, has no measured needle
+behind it on any page; it keeps its grey-green hue and moves to the spruce's level, **0.065,
+0.115, 0.070**. Brighter needles are a quarter brighter everywhere and do not by themselves make a
+crown less even; the measurement below is why.
 
 ## How even the engine's crowns are
 

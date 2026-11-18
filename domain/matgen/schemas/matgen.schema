@@ -274,9 +274,12 @@ struct Spray {
   flat_permille: u32 = 300
   /// The twig's width at its base, micrometres.
   twig_um: u32 = 3000
-  needle_r_permille: u32 = 50
-  needle_g_permille: u32 = 100
-  needle_b_permille: u32 = 40
+  /// A needle's own colour: a one-year-old Norway spruce needle's measured reflectance (Hovi et
+  /// al. 2022, supplement table S1.5: 0.062, 0.139, 0.026 at 490, 560, 665 nm) as linear sRGB
+  /// (conifer-crown-light.md, "A needle's colour"). The year's growth is paler (spray.cpp).
+  needle_r_permille: u32 = 78
+  needle_g_permille: u32 = 122
+  needle_b_permille: u32 = 39
   /// How far a needle's tone strays from that, as a half range.
   tone_permille: u32 = 250
   needle_roughness_permille: u32 = 500

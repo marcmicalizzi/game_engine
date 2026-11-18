@@ -337,7 +337,9 @@ void build_spray(const Set& set, Field& field, SetStats& stats, Shade& shade) {
       // behind its shoot than in front of it and paler on the year's growth, the last fifth of a
       // shoot. How dark a crown reads is the light's to say, not the image's: the second leg's
       // sprays ran from half the colour to 1.1 of it by depth and read near black in a stand.
-      const f64 young = s > 0.8 * shoot.length ? 1.15 : 1.0;
+      // The year's growth is the current-year needle over the one-year-old one the colour is:
+      // 1.17 in luminance (Hovi et al. 2022, S1.5; conifer-crown-light.md, "A needle's colour").
+      const f64 young = s > 0.8 * shoot.length ? 1.17 : 1.0;
       const f64 shade_of_depth = (0.8 + 0.25 * (0.5 + 0.5 * front)) * young;
       const u32 count = pine ? 2u : 1u;
       for (u32 k = 0; k < count; ++k) {

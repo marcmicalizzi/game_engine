@@ -942,9 +942,12 @@ Set pine_needles() {
   p.needle_spread_deg = 14;
   p.flat_permille = 0;
   p.twig_um = 6000;
-  p.needle_r_permille = 52;
-  p.needle_g_permille = 92;
-  p.needle_b_permille = 56;
+  // Grey-green against the spruce's green, and as much lighter as the spruce's measured needle is
+  // than the colour both had before (conifer-crown-light.md, "A needle's colour": no pine needle's
+  // visible reflectance was read, so the pine keeps its hue and follows the spruce's level).
+  p.needle_r_permille = 65;
+  p.needle_g_permille = 115;
+  p.needle_b_permille = 70;
   p.twig_r_permille = 120;
   p.twig_g_permille = 82;
   p.twig_b_permille = 52;

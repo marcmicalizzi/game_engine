@@ -252,10 +252,13 @@ TEST_CASE("matgen: every default's colour and roughness means are in its materia
       {"plaster/lime_pink", 0.40, 0.68, 0.80, 0.98},
       {"thatch/straw_new", 0.20, 0.50, 0.60, 0.95},
       {"thatch/straw_old", 0.05, 0.22, 0.60, 0.95},
-      // Conifer needles: a dark green, a waxy cuticle (the twigs' bark raises the mean roughness).
-      {"conifer/needles", 0.03, 0.12, 0.40, 0.70},
-      {"pine/needles", 0.03, 0.12, 0.40, 0.70},
-      {"spruce/needles", 0.03, 0.12, 0.40, 0.70},
+      // Conifer needles: a waxy cuticle (the twigs' bark raises the mean roughness), and a needle's
+      // measured luminance (G218; conifer-crown-light.md, "A needle's colour"): no darker than a
+      // one-year-old needle's 0.104 behind its shoot (0.8) at the darkest tone a needle strays to
+      // (0.75), 0.062; no lighter than a current-year needle's 0.125 at its paler tip (1.2), 0.15.
+      {"conifer/needles", 0.06, 0.15, 0.40, 0.70},
+      {"pine/needles", 0.06, 0.15, 0.40, 0.70},
+      {"spruce/needles", 0.06, 0.15, 0.40, 0.70},
   };
   // Twenty-seven sets, and the variants of the three tiled granular ones.
   CHECK(matgen::default_sets().size() == std::size(ranges) + 3 * matgen::k_tiled_variants);

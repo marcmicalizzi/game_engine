@@ -83,7 +83,11 @@ namespace engine::matgen {
 ///    those behind it darkened every spray by a fifth under a sky: matgen.md, "Spray sets").
 ///    No other kind's bytes moved; every set's key did, since a recipe's text now carries the
 ///    spray's fields.
-inline constexpr u32 k_matgen_version = 11;
+/// 12: a needle's colour from its measured reflectance (G218, 2026-11-17): the spruce's and the
+///    bare conifer's are a one-year-old Norway spruce needle's (Hovi et al. 2022) as linear sRGB,
+///    the pine's the same level at its own hue, the year's growth 1.17 times paler
+///    (conifer-crown-light.md, "A needle's colour"). Only the three sprays' bytes moved.
+inline constexpr u32 k_matgen_version = 12;
 
 /// Variants of a tiled role (G153): `default_sets` writes `<role>.1` .. `<role>.<n>` beside each
 /// tiled granular role, the same recipe from other seeds, so a consumer that picks one by place
