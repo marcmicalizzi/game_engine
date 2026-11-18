@@ -275,14 +275,22 @@ bool lod_occluded_foliage_only_tunable() noexcept { return lod_occluded_foliage_
 
 namespace {
 // **The cull's read of the pair table** (W6; renderer.md, "Where the table costs more than the
-// search: a card at idle clocks"): off until the table the cull reads is smaller, because its 8
-// bytes a pair cost more than the search on a card idling its memory clock and at the pair cap.
+// search: a card at idle clocks"): off from batch 66, when one locked 1080p budget read it slower;
+// on since R173 (2026-11-17), which flew it faster than the search locked and unlocked from 1 to
+// 16.7 M pairs. It matters only to a run over every pair: the instance pass looks nothing up.
 tunables::Bool cull_pair_table{
-    "renderer.cull.pair_table", false,
+    "renderer.cull.pair_table", true,
     "The cull and the cascades' cull read a pair's instance from the pair table instead of "
     "searching first_pair (W6); false searches, as before W6"};
+// **Instances culled before their pairs** (R16, R173; renderer.md, "The cull culls instances
+// first"): read once a frame in `record_frame`.
+tunables::Bool cull_instances{
+    "renderer.cull.instances", true,
+    "Every cull run tests each instance's sphere first and culls only the survivors' pairs "
+    "(R16, R173); false runs the pass over every pair, as before"};
 }  // namespace
 bool cull_pair_table_tunable() noexcept { return cull_pair_table.get(); }
+bool cull_instances_tunable() noexcept { return cull_instances.get(); }
 
 namespace {
 tunables::Float display_paper_white{"renderer.display.paper_white_nits", 0.0, 0.0, 10000.0,

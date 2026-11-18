@@ -21,6 +21,7 @@
 #include <systems/renderer/water_refract.h>
 
 #include <accumulation_pass.h>
+#include <cull_instances.h>
 #include <texture_feedback.h>
 #include <algorithm>
 #include <cmath>
@@ -356,6 +357,9 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   gfx::destroy_compute_pipeline(device, software);
   gfx::destroy_compute_pipeline(device, fold);
   gfx::destroy_compute_pipeline(device, cull);
+  gfx::destroy_compute_pipeline(device, cull_instances);
+  gfx::destroy_compute_pipeline(device, cull_items);
+  gfx::destroy_compute_pipeline(device, mesh_bounds);
   gfx::destroy_compute_pipeline(device, expand);
   gfx::destroy_compute_pipeline(device, deform);
   gfx::destroy_compute_pipeline(device, deform_cache);
@@ -876,6 +880,9 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
       sky_facing_count_ = static_cast<u32>(sky.size());
     }
   }
+  cull_instances_ = new CullInstances;  // R16, R173: its buffers come with the first frame
+  cull_instances_->bind(pipelines_.cull_instances, pipelines_.fold, pipelines_.mesh_bounds,
+                        device.caps(), timer_);
   fill_view_layout();
   sample_gpu_memory();
   return true;
@@ -1605,6 +1612,14 @@ bool SceneRenderer::create_pipelines(std::string* error) {
          gfx::create_compute_pipeline(device, cull->module,
                                       resolved_.vertex_indexed ? "cull_vertex_main" : "cull_main",
                                       {}, sizeof(u64), pipelines_.cull, error) &&
+         gfx::create_compute_pipeline(device, cull->module, "cull_instances_main", {}, sizeof(u64),
+                                      pipelines_.cull_instances, error) &&
+         gfx::create_compute_pipeline(
+             device, cull->module,
+             resolved_.vertex_indexed ? "cull_items_vertex_main" : "cull_items_main", {},
+             sizeof(u64), pipelines_.cull_items, error) &&
+         gfx::create_compute_pipeline(device, cull->module, "mesh_bounds_main", {}, sizeof(u64),
+                                      pipelines_.mesh_bounds, error) &&
          gfx::create_compute_pipeline(device, hiz->module, "hiz_build_main", {},
                                       sizeof(gfx::HizParams), pipelines_.hiz, error) &&
          // The one draw's pipeline, unless the renderer is made to draw by class (R151): the same
@@ -1665,6 +1680,11 @@ void SceneRenderer::destroy() noexcept {
     motion_->destroy(device);
     delete motion_;
     motion_ = nullptr;
+  }
+  if (cull_instances_ != nullptr) {
+    cull_instances_->destroy(device);
+    delete cull_instances_;
+    cull_instances_ = nullptr;
   }
   if (graph_ != nullptr) {
     graph_->reset();
@@ -2277,7 +2297,9 @@ void SceneRenderer::collect_slot(u32 slot) {
     last.gpu_blas = timer_.ms("blas");
     last.gpu_rt = last.gpu_rt_records + last.gpu_rt_ranges + last.gpu_rt_drop + last.gpu_rt_emit +
                   last.gpu_clas + last.gpu_blas + last.gpu_tlas + cache_ms(timer_);
-    last.gpu_shadow_cull = timer_.ms("shadow cull");
+    // The instance passes and the meshes' spheres are the cull's (R16, R173): counted in its zones.
+    last.gpu_cull += timer_.ms("cull instances") + timer_.ms("mesh bounds");
+    last.gpu_shadow_cull = timer_.ms("shadow cull") + timer_.ms("shadow cull instances");
     last.gpu_shadow = last.gpu_shadow_cull + timer_.ms("shadow");
     last.gpu_pair_expand = timer_.ms("pair expand");
     last.gpu_tables = timer_.ms("table carry") + timer_.ms("pair shift") + timer_.ms("table copy") +
@@ -3075,6 +3097,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     mask_tables.attributes = scene.attributes.address;
   }
   const u32 cascade_runs = csm ? scene.shadow_cascades() : 0u;
+  if (!cull_instances_->prepare(*device_, frames_, cull_instances_tunable() && settings.cull,
+                                views * 2 + cascade_runs, instance_count, pair_count,
+                                scene.null_mesh() + 1, scene.meshes.address,
+                                !records_.meshes.empty(), error))  // R16, R173
+    return false;
   ENGINE_ASSERT(!csm || ((!shadows || resolved_.hybrid) && !use_sw && !ray_path && !direct),
                 "cascaded shadow maps are drawn on the hw and vertex paths, beside rays only in "
                 "the hybrid");
@@ -3759,10 +3786,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     if (lod_occluded_foliage_only_tunable()) cull.hiz_flags |= gfx::k_cull_hiz_term_foliage;
     if (occluded_hist)
       cull.hidden_counts = params_[slot].address + hidden_offset + v * hidden_bytes;
+    cull_instances_->fill(cull, v * 2);
     cull_blocks[v * 2] = cull;
     gfx::CullParams& cull_pass2 = cull_blocks[v * 2 + 1];
     cull_pass2 = cull;
     cull_pass2.pass = 2;
+    cull_instances_->fill(cull_pass2, v * 2 + 1);
     cull_pass2.visible = vf.run_address[1];
     cull_pass2.visible_base = vf.run_base[1];
     cull_pass2.draw_args = scene.draw_args[1].address + vf.args_offset;
@@ -4192,6 +4221,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       e.triangles = scene.triangles.address;
       e.count = cull.draw_args + u64{count_index} * sizeof(u32);
     }
+    cull_instances_->fill(cull, views * 2 + c);
     cull_blocks[views * 2 + c] = cull;
 
     gfx::ClusterDrawParams& draw = shadow_draws[c];
@@ -4750,6 +4780,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const bool deform_on = resolved_.deform_pass;
   const u32 raster_width = targets.width;
   const u32 raster_height = targets.height;
+  cull_instances_->import_and_reset(graph);  // R16, R173: the instance passes' items and counts
 
   graph.add_pass(
       "reset", gfx::PassKind::Transfer,
@@ -5101,10 +5132,18 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     }
   }
 
+  auto cull_reads = [&](gfx::PassBuilder& b) {  // an instance pass's (R16, R173)
+    read_pool(b, gfx::Access::ComputeRead);
+    read_tables(b, gfx::Access::ComputeRead, false);
+  };
   auto add_cull = [&](u32 block, u32 list) {
+    cull_instances_->add_instance_pass(graph, "cull instances", params_[slot].address, block, 2,
+                                       views, instance_count,
+                                       occlusion ? rg_hiz : gfx::RgBuffer{}, cull_reads);
     graph.add_pass(
         "cull", gfx::PassKind::Compute,
         [&, list](gfx::PassBuilder& b) {
+          cull_instances_->declare_items(b);
           b.write(rg_args[list], gfx::Access::ComputeReadWrite);
           b.write(rg_visible, gfx::Access::ComputeWrite);
           b.write(rg_pair_entries, gfx::Access::ComputeWrite);
@@ -5133,12 +5172,17 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           }
         },
         [&, block](gfx::CommandList cb, gfx::RenderGraph&) {
-          cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.cull.pipeline);
+          const bool items = cull_instances_->active;  // the survivors' pairs alone (R16, R173)
+          const gfx::ComputePipeline& cull = items ? pipelines.cull_items : pipelines.cull;
+          cb.bind_pipeline(gfx::BindPoint::Compute, cull.pipeline);
           for (u32 v = 0; v < views; ++v) {
             timer.begin(cb, k_zone_names[k_zone_cull][v]);
-            cb.push_constants(pipelines.cull.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
+            cb.push_constants(cull.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
                               &view_frames[v].block_address[block]);
-            gfx::dispatch_folded(cb, gfx::cull_group_count(pair_count), device_->caps());
+            if (items)
+              cull_instances_->dispatch_items(cb, v * 2 + block);
+            else
+              gfx::dispatch_folded(cb, gfx::cull_group_count(pair_count), device_->caps());
             timer.end(cb);
           }
         });
@@ -5456,9 +5500,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   auto add_shadow_maps = [&]() {
     const u32 count = cascades_drawn;
     if (count == 0) return;
+    cull_instances_->add_instance_pass(graph, "shadow cull instances", params_[slot].address,
+                                       views * 2, 1, count, instance_count, gfx::RgBuffer{},
+                                       cull_reads);
     graph.add_pass(
         "shadow cull", gfx::PassKind::Compute,
         [&](gfx::PassBuilder& b) {
+          cull_instances_->declare_items(b);
           b.write(rg_shadow_args, gfx::Access::ComputeReadWrite);
           b.write(rg_visible, gfx::Access::ComputeWrite);
           read_tables(b, gfx::Access::ComputeRead, cull_table);  // the pair table (W6)
@@ -5476,13 +5524,17 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           }
         },
         [&, count](gfx::CommandList cb, gfx::RenderGraph&) {
-          cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.cull.pipeline);
+          const bool items = cull_instances_->active;  // R16, R173, as the camera's runs
+          const gfx::ComputePipeline& cull = items ? pipelines.cull_items : pipelines.cull;
+          cb.bind_pipeline(gfx::BindPoint::Compute, cull.pipeline);
           timer.begin(cb, "shadow cull");
           for (u32 c = 0; c < count; ++c) {
             const u64 block = params_[slot].address + sizeof(gfx::CullParams) * (views * 2 + c);
-            cb.push_constants(pipelines.cull.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
-                              &block);
-            gfx::dispatch_folded(cb, gfx::cull_group_count(pair_count), device_->caps());
+            cb.push_constants(cull.layout, gfx::ShaderStage::Compute, 0, sizeof(u64), &block);
+            if (items)
+              cull_instances_->dispatch_items(cb, views * 2 + c);
+            else
+              gfx::dispatch_folded(cb, gfx::cull_group_count(pair_count), device_->caps());
           }
           timer.end(cb);
         });

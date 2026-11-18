@@ -224,3 +224,5 @@ Tree expansion: [species profiles](tree-species-expansion.md) and [season design
 [G69: the plan of a village](village-plan-grounding.md) grounds the village filler's row plan: plan forms, the perch plots are laid out in, frontages and depths, the street's width, how many houses make a hamlet and a village, each with how far its source was read and which numbers are inferences or choices.
 
 [G206: a village that grew](village-growth-grounding.md) grounds the grown plan beside it: regular and grown forms in one village, ways found over the ground, the green, tofts and cottages of uneven size, a house's turn to the slope and the sun, back lanes, where the church and the well stand, with how far each source was read (the procedural papers' constants were not).
+
+[R173 and R16: the cull's cost by the pair](cull-by-instance.md) measures the cull's passes from 1 to 16.7 million pairs with the pair table and with the search, in both session states, reads how cluster renderers cull at that scale (an instance pass in front of the cluster pass), and measures the instance pass built from it.

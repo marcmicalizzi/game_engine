@@ -761,10 +761,14 @@ u32 lod_occluded_bias_tunable() noexcept;
 bool lod_occluded_histogram_tunable() noexcept;
 // `renderer.lod.occluded_foliage_only` (true): the term moves the coverage threshold alone.
 bool lod_occluded_foliage_only_tunable() noexcept;
-// `renderer.cull.pair_table` (false): the camera's and the cascades' culls read a pair's instance
+// `renderer.cull.pair_table` (true since R173): a cull run over every pair reads a pair's instance
 // from the pair table (W6) rather than search; off searches (renderer.md, "Where the table costs
 // more than the search: a card at idle clocks").
 bool cull_pair_table_tunable() noexcept;
+// `renderer.cull.instances` (true): every cull run tests each instance's sphere first and culls
+// only the survivors' pairs, with no lookup (R16, R173; renderer.md, "The cull culls instances
+// first"); off runs the pass over every pair, as before.
+bool cull_instances_tunable() noexcept;
 // What the frame actually shadows with, as a summary reports it: "rt", "csm", "hybrid", or "off".
 const char* resolved_shadow_name(const ResolvedSettings& resolved) noexcept;
 // "none", "identity", "wave", or "lattice" into `deform` and `deform_kind`.

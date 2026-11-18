@@ -1014,6 +1014,11 @@ class SceneRenderer {
     gfx::ComputePipeline software;
     gfx::ComputePipeline fold;  // fold_args.slang: folded arguments from GPU counts (T165)
     gfx::ComputePipeline cull;
+    // The cull's instance pass, its pair pass over the survivors' items, and the meshes' spheres
+    // (R16, R173; src/cull_instances.h).
+    gfx::ComputePipeline cull_instances;
+    gfx::ComputePipeline cull_items;
+    gfx::ComputePipeline mesh_bounds;
     gfx::ComputePipeline expand;  // vertex_expand.slang: the indexed draw's indices
     gfx::ComputePipeline deform;
     // The static shape stage over one instance's **whole mesh**, not over the cut: a cache the
@@ -1129,6 +1134,9 @@ class SceneRenderer {
   bool create_motion(std::string* error);
   // Sampling over time's inputs (src/motion_pass.h): null unless `renderer.reconstruction.inputs`.
   class MotionPass* motion_ = nullptr;
+  // The cull's instance pass and its buffers (src/cull_instances.h; R16, R173): made with the
+  // renderer, its buffers sized by the first frame that culls instances first.
+  struct CullInstances* cull_instances_ = nullptr;
   // The engine's own accumulation (src/accumulation_pass.h): null unless
   // `renderer.reconstruction.accumulation` is on or mean.
   class AccumulationPass* accumulation_ = nullptr;

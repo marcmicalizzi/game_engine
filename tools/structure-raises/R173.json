@@ -1,0 +1,12 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R173",
+  "reason": "R16/R173: every cull run is preceded by an instance pass (prepare, the blocks' fields, the passes and the indirect dispatch in the camera's and the cascades' cull), its mechanism and the cull's measurement by pair count on renderer.md, and CullParams' three new fields on gfx.md",
+  "date": "2026-11-17",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": 30,
+    "page:docs/subsystems/renderer.md": 5714,
+    "page:docs/subsystems/gfx.md": 1248
+  }
+}

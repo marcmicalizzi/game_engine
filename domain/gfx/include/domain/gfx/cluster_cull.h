@@ -166,7 +166,7 @@ struct MaskTables {
 };
 static_assert(sizeof(MaskTables) == 32);
 
-// Mirrors CullParams in cluster_cull.slang. 1776 bytes.
+// Mirrors CullParams in cluster_cull.slang. 1792 bytes.
 //
 // **Everything here is in the frame's space** (`eye`, above): the planes come from a
 // view-projection built with the frame's eye at the origin, `camera.xyz` is where this view's eye
@@ -340,14 +340,26 @@ struct CullParams {
   // binary search over `first_pair`, and a hole of a streamed world's pair space — whose entry is
   // stale, never written — is rejected without the search: by an instance index past
   // `instance_count`, or by an instance whose clusters do not reach the pair. The table must hold
-  // every live pair's own entry; a hole's may hold anything. 0 searches. With its pad the block is
-  // 1,776 bytes, a whole number of the float4 rows the GPU reads it as.
+  // every live pair's own entry; a hole's may hold anything. 0 searches.
   u64 pairs = 0;
-  u32 pad_pairs[2] = {};
+  // **Instances culled before their pairs** (R16, R173; renderer.md, "The cull culls instances
+  // first"): `cull_instances_main` runs one thread an instance over this block, tests the sphere
+  // round its mesh's every cluster (`mesh_bounds`, a float4 per mesh in mesh space, written by
+  // `mesh_bounds_main`) against what rejects a pair with no side effect — the frustum and the
+  // caster volumes, the caster policy, the Hi-Z where nothing is counted or streamed — and appends
+  // a survivor's clusters to `items` — a u32 count and a pad word, then u32x2 {instance, first
+  // local cluster}, one a run of `k_cull_item_pairs` — and `cull_items_main` then runs one
+  // workgroup an item, dispatched through `item_args` (the count folded by fold_args.slang). A pair
+  // it reaches runs exactly what `cull_main` runs for it, with its instance known and no lookup.
+  // `items` 0 is the pass over every pair, as before.
+  u64 items = 0;
+  u64 item_args = 0;  // DispatchIndirectArgs: the items' folded dispatch
+  u64 mesh_bounds = 0;
 };
-static_assert(sizeof(CullParams) == 1776);
+static_assert(sizeof(CullParams) == 1792);
 static_assert(offsetof(CullParams, sky_facing) == 1752);
 static_assert(offsetof(CullParams, pairs) == 1760);
+static_assert(offsetof(CullParams, items) == 1768);
 static_assert(offsetof(CullParams, hidden_counts) % 8 == 0);
 
 // CullParams::hiz_flags.
@@ -1269,6 +1281,15 @@ inline void set_frustum(CullParams& params, const Frustum& frustum) noexcept {
 // One thread per (instance, cluster) pair.
 inline u32 cull_group_count(u32 pair_count) noexcept {
   return (pair_count + k_cull_workgroup_size - 1) / k_cull_workgroup_size;
+}
+
+// The instance pass (R16, CullParams::items): one thread an instance in workgroups of
+// `k_cull_workgroup_size`, and an item — a workgroup of the pair pass — `k_cull_item_pairs` pairs
+// of one instance. A run's items are at most an instance's one plus a pair in `k_cull_item_pairs`
+// beyond it: `cull_item_capacity` of them.
+inline constexpr u32 k_cull_item_pairs = 32;
+inline u32 cull_item_capacity(u32 instance_count, u32 pair_count) noexcept {
+  return instance_count + (pair_count + k_cull_item_pairs - 1) / k_cull_item_pairs;
 }
 
 inline u32 hiz_mip_extent(u32 extent, u32 mip) noexcept {

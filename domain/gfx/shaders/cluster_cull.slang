@@ -43,7 +43,7 @@ struct StreamParams {
 static const uint k_caster_volume_planes = 13;
 static const uint k_max_caster_volumes = 5;
 
-// Read through a device address; mirrors gfx::CullParams (1776 bytes).
+// Read through a device address; mirrors gfx::CullParams (1792 bytes).
 struct CullParams {
   float4 planes[6];  // inward-facing, normalized: dot(n, p) + w >= 0 inside
   float4 camera;     // xyz this view's eye in the frame's space, w = znear
@@ -132,7 +132,13 @@ struct CullParams {
   // gfx::CullParams::pairs (W6): the scene's pair table, uint2 {instance, cluster} per pair, which
   // gives a pair its instance in one load instead of the search over `first_pair`; 0 searches.
   uint64_t pairs;
-  uint pad_pairs[2];
+  // gfx::CullParams::items, item_args, mesh_bounds (R16, R173): the instance pass's survivors —
+  // a u32 count and a pad word, then {instance, first local cluster} a run of k_cull_item_pairs —
+  // their folded dispatch, and a float4 sphere per mesh round all its clusters' spheres
+  // (cull_instances_main, below).
+  uint64_t items;
+  uint64_t item_args;
+  uint64_t mesh_bounds;
 };
 
 // gfx::CullParams::hiz_flags and the debug counters' layout (gfx::k_hidden_*).
@@ -528,18 +534,24 @@ void allocate_vertex_draw(uint64_t header_address, uint64_t records_address, uin
 // program: the vertex path's bookkeeping is compiled out of `cull_main` rather than branched
 // around, because code in the survivor tail costs every thread of the dispatch and not only the
 // survivors (measured on the RTX 5090: 2 µs on a 10 µs pass whatever the survivor count).
+// Occlusion's two passes over a pair: pass 1 takes what was drawn last frame, pass 2 the rest.
+[ForceInline]
+bool pass_skips(CullParams* params, uint pair) {
+  if (params->pass == 1) {
+    uint* prev = (uint*)params->prev_flags;
+    if (prev[pair] == 0) return true;
+  } else if (params->pass == 2) {
+    uint* flags = (uint*)params->flags;
+    if (flags[pair] != 0) return true;  // drawn in pass 1
+  }
+  return false;
+}
+
 [ForceInline]
 void cull_pair(uint pair, bool vertex_draw) {
   CullParams* params = (CullParams*)g_push.params;
   if (pair >= params->pair_count) return;
-
-  if (params->pass == 1) {
-    uint* prev = (uint*)params->prev_flags;
-    if (prev[pair] == 0) return;
-  } else if (params->pass == 2) {
-    uint* flags = (uint*)params->flags;
-    if (flags[pair] != 0) return;  // drawn in pass 1
-  }
+  if (pass_skips(params, pair)) return;
 
   InstanceDesc* instances = (InstanceDesc*)params->instances;
   // **The pair's instance from the pair table** (W6; renderer.md, "Instances that come and go"),
@@ -558,6 +570,14 @@ void cull_pair(uint pair, bool vertex_draw) {
   } else {
     instance_index = instance_of_pair(instances, params->instance_count, pair);
   }
+  cull_instance_pair(params, pair, instance_index, vertex_draw);
+}
+
+// Everything a pair's thread does once its instance is known: by the lookup above, or by the item
+// it is a lane of (`cull_items_main`, below), which needs none.
+[ForceInline]
+void cull_instance_pair(CullParams* params, uint pair, uint instance_index, bool vertex_draw) {
+  InstanceDesc* instances = (InstanceDesc*)params->instances;
   const InstanceDesc instance = instances[instance_index];
   // **The caster policy** (renderer.md, "The caster policy"; R95): an instance whose species casts
   // into the `n` nearest cascades alone (flags bits 2-4 hold n + 1; 0 is every cascade) is no
@@ -941,4 +961,179 @@ void cull_main(uint3 thread_id : SV_DispatchThreadID) {
 [numthreads(64, 1, 1)]
 void cull_vertex_main(uint3 thread_id : SV_DispatchThreadID) {
   cull_pair(folded_thread(thread_id, 64), true);
+}
+
+// ---- instances before their pairs (R16, R173; renderer.md, "The cull culls instances first") ----
+//
+// The pass over every pair spends a thread on each, and at a forest's 16.7 million pairs nearly all
+// of them belong to an instance wholly outside the frustum: each finds its instance, reads it, its
+// mesh and its cluster, moves the sphere and tests six planes and every caster volume, to learn
+// what the instance's own sphere would have said. So a run first tests each instance's sphere —
+// round every cluster of its mesh (`mesh_bounds_main`, below) — against the tests that reject a
+// pair with no side effect, and gives the pair pass only the survivors' pairs, a workgroup a run
+// of `k_cull_item_pairs`. Every test here is the pair's own on a sphere that holds the pair's, and
+// each is monotone in the sphere — the frustum's and a volume's planes, the Hi-Z's farthest depth
+// over a footprint that covers the pair's — so an instance rejected here has no pair the pair pass
+// would have kept: the cut, the casters, the flags and the picture are the pass over pairs' own.
+
+// Mirrors gfx::k_cull_item_pairs.
+static const uint k_cull_item_pairs = 32u;
+
+// Whether any pair of instance `i` can survive this run.
+bool instance_may_survive(CullParams* params, uint i) {
+  InstanceDesc* instances = (InstanceDesc*)params->instances;
+  const InstanceDesc instance = instances[i];
+  MeshDesc* meshes = (MeshDesc*)params->meshes;
+  if (meshes[instance.mesh].cluster_count == 0) return false;  // a hole's null instance
+  if (params->cascade != 0) {  // the caster policy, as `cull_instance_pair` applies it
+    const uint nearest = (instance.flags & k_instance_cascade_mask) >> k_instance_cascade_shift;
+    if (nearest != 0 && params->cascade >= nearest) return false;
+  }
+  const float4 bound = ((float4*)params->mesh_bounds)[instance.mesh];
+  float padding = instance.bounds_padding * instance.scale_max;
+  if (instance.terrain != 0 && params->terrain != 0) {
+    TerrainLevelDesc* levels = (TerrainLevelDesc*)params->terrain;
+    padding = max(padding, levels[instance.terrain - 1].padding);
+  }
+  const float3 from_eye = instance_from_eye(instance, params->eye);
+  const float3 center = instance_point(instance, from_eye, bound.xyz);
+  // The sphere holds every cluster's moved sphere exactly (a linear map stretches no distance by
+  // more than its largest axis scale); the slack covers what rounding `instance_point` does to the
+  // centres on either side, a few ulps of their distance from the eye.
+  const float radius =
+      bound.w * instance.scale_max * 1.0001 + padding + length(center) * 1.0e-5 + 1.0e-4;
+  if (params->lod.w > 0.0) {
+    bool outside = false;
+    for (uint p = 0; p < params->plane_count; ++p) {
+      const float4 plane = params->planes[p];
+      if (dot(plane.xyz, center) + plane.w < -radius) {
+        outside = true;
+        break;
+      }
+    }
+    if (outside) {
+      if (params->casters == 0 || params->caster_volume_count == 0 ||
+          !in_caster_volume(params, center, radius)) {
+        return false;
+      }
+    } else if (params->cascade != 0 && params->caster_volume_count != 0 &&
+               !in_caster_volume(params, center, radius)) {
+      return false;
+    }
+  }
+  // Hidden whole behind last frame's or pass 1's depth: not where an occluded pair still asks for
+  // its pages (streaming, which asks before it tests) or is counted (the term's debug counters).
+  if (params->hiz != 0 && (params->hiz_flags & k_cull_hiz_lod_only) == 0 &&
+      params->streaming == 0 && params->hidden_counts == 0 && occluded(params, center, radius)) {
+    return false;
+  }
+  return true;
+}
+
+// One thread an instance; a survivor appends one item a run of k_cull_item_pairs of its clusters,
+// one atomic a wave.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cull_instances_main(uint3 thread_id : SV_DispatchThreadID) {
+  CullParams* params = (CullParams*)g_push.params;
+  const uint i = folded_thread(thread_id, 64);
+  uint n = 0;
+  if (i < params->instance_count && instance_may_survive(params, i)) {
+    InstanceDesc* instances = (InstanceDesc*)params->instances;
+    MeshDesc* meshes = (MeshDesc*)params->meshes;
+    const uint clusters = meshes[instances[i].mesh].cluster_count;
+    n = (clusters + k_cull_item_pairs - 1u) / k_cull_item_pairs;
+  }
+  const uint total = WaveActiveSum(n);
+  if (total == 0u) return;
+  const uint before = WavePrefixSum(n);
+  uint base = 0u;
+  if (WaveIsFirstLane()) {
+    Atomic<uint>* count = (Atomic<uint>*)params->items;
+    base = count->add(total);
+  }
+  base = WaveReadLaneFirst(base) + before;
+  uint2* items = (uint2*)(params->items + 8u);
+  for (uint k = 0u; k < n; ++k) items[base + k] = uint2(i, k * k_cull_item_pairs);
+}
+
+// One workgroup an item, a lane a pair: exactly `cull_pair` for it, with its instance known.
+[ForceInline]
+void cull_item(uint3 group_id, uint lane, bool vertex_draw) {
+  CullParams* params = (CullParams*)g_push.params;
+  const uint item_index = folded_group(group_id);
+  if (item_index >= ((uint*)params->items)[0]) return;  // the folded dispatch's overhang
+  const uint2 item = ((uint2*)(params->items + 8u))[item_index];
+  InstanceDesc* instances = (InstanceDesc*)params->instances;
+  MeshDesc* meshes = (MeshDesc*)params->meshes;
+  const uint local = item.y + lane;
+  if (local >= meshes[instances[item.x].mesh].cluster_count) return;
+  const uint pair = instances[item.x].first_pair + local;
+  if (pass_skips(params, pair)) return;
+  cull_instance_pair(params, pair, item.x, vertex_draw);
+}
+
+[shader("compute")]
+[numthreads(32, 1, 1)]
+void cull_items_main(uint3 group_id : SV_GroupID, uint3 lane : SV_GroupThreadID) {
+  cull_item(group_id, lane.x, false);
+}
+
+[shader("compute")]
+[numthreads(32, 1, 1)]
+void cull_items_vertex_main(uint3 group_id : SV_GroupID, uint3 lane : SV_GroupThreadID) {
+  cull_item(group_id, lane.x, true);
+}
+
+// **A sphere round every cluster of a mesh**, in mesh space (`CullParams::mesh_bounds`), which the
+// instance pass tests: a workgroup a mesh, dispatched over exactly the meshes; the box of the
+// clusters' spheres, its centre, and the farthest sphere's reach from it. A mesh with no cluster
+// gets a negative radius, which nothing reads (its instances are rejected by their cluster count).
+// Run by the renderer on a frame that writes the mesh table, and at the first.
+groupshared float3 g_bound_lo[64];
+groupshared float3 g_bound_hi[64];
+groupshared float g_bound_r[64];
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void mesh_bounds_main(uint3 group_id : SV_GroupID, uint3 lane3 : SV_GroupThreadID) {
+  CullParams* params = (CullParams*)g_push.params;
+  const uint m = folded_group(group_id);
+  const uint lane = lane3.x;
+  const MeshDesc mesh = ((MeshDesc*)params->meshes)[m];
+  ClusterDesc* clusters = (ClusterDesc*)params->clusters;
+  float3 lo = float3(1.0e30, 1.0e30, 1.0e30);
+  float3 hi = float3(-1.0e30, -1.0e30, -1.0e30);
+  for (uint k = lane; k < mesh.cluster_count; k += 64u) {
+    const ClusterDesc c = clusters[mesh.first_cluster + k];
+    lo = min(lo, c.center - c.radius);
+    hi = max(hi, c.center + c.radius);
+  }
+  g_bound_lo[lane] = lo;
+  g_bound_hi[lane] = hi;
+  GroupMemoryBarrierWithGroupSync();
+  for (uint s = 32u; s > 0u; s >>= 1u) {
+    if (lane < s) {
+      g_bound_lo[lane] = min(g_bound_lo[lane], g_bound_lo[lane + s]);
+      g_bound_hi[lane] = max(g_bound_hi[lane], g_bound_hi[lane + s]);
+    }
+    GroupMemoryBarrierWithGroupSync();
+  }
+  const float3 center = 0.5 * (g_bound_lo[0] + g_bound_hi[0]);
+  float r = 0.0;
+  for (uint k = lane; k < mesh.cluster_count; k += 64u) {
+    const ClusterDesc c = clusters[mesh.first_cluster + k];
+    r = max(r, length(c.center - center) + c.radius);
+  }
+  g_bound_r[lane] = r;
+  GroupMemoryBarrierWithGroupSync();
+  for (uint s = 32u; s > 0u; s >>= 1u) {
+    if (lane < s) g_bound_r[lane] = max(g_bound_r[lane], g_bound_r[lane + s]);
+    GroupMemoryBarrierWithGroupSync();
+  }
+  if (lane == 0u) {
+    float4* bounds = (float4*)params->mesh_bounds;
+    bounds[m] = mesh.cluster_count == 0u ? float4(0.0, 0.0, 0.0, -1.0)
+                                         : float4(center, g_bound_r[0] * 1.0001);
+  }
 }

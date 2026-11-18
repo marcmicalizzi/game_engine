@@ -33,7 +33,7 @@ engine_module(NAME renderer LAYER systems
   DEPS ${_renderer_deps}
   SOURCES src/settings.cpp src/view_set.cpp src/motion_pass.cpp src/accumulation_pass.cpp src/scene.cpp src/gpu_scene.cpp src/gpu_scene_meshes.cpp src/gpu_scene_place.cpp src/gpu_scene_textures.cpp src/gpu_scene_texture_bound.cpp src/gpu_scene_rt_step.cpp src/gpu_scene_relayout.cpp
           src/lighting.cpp
-          src/page_source.cpp src/streaming.cpp src/scene_renderer.cpp src/reference.cpp
+          src/page_source.cpp src/streaming.cpp src/scene_renderer.cpp src/cull_instances.cpp src/reference.cpp
           src/capture.cpp src/terrain.cpp src/terrain_materials.cpp src/camera_path.cpp src/flythrough.cpp
           src/rt_capacity.cpp src/shadow_cascades.cpp src/caster_volume.cpp src/eye_shell.cpp src/crown_priors.cpp src/tile_layout.cpp src/pair_shift.cpp
           src/pair_account.cpp src/ground_sample.cpp src/ring_forms.cpp

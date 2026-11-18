@@ -731,19 +731,24 @@ TEST_CASE("dynamic instances: a loaded instance moved right after the tables gro
 }
 
 // W6 behind `renderer.cull.pair_table` (renderer.md, "Where the table costs more than the search:
-// a card at idle clocks"): off by default, the camera's and the cascades' culls search; on, they
-// read the pair table, whose holes' entries are stale. Both ways the tiled world with its holes
-// draws the loaded scene's ids, depth and colour at every step, so both cull the same set.
+// a card at idle clocks"): on by default since R173, a run over every pair reads the pair table,
+// whose holes' entries are stale; off, it searches. Both ways the tiled world with its holes draws
+// the loaded scene's ids, depth and colour at every step, so both cull the same set. The instance
+// pass is off here, since with it on no run looks a pair's instance up.
 TEST_CASE("dynamic instances: the cull draws the same with the pair table read and searched") {
-  CHECK_FALSE(cull_pair_table_tunable());
+  CHECK(cull_pair_table_tunable());
   Gpu gpu;
   if (!gpu.ok) {
     MESSAGE(gpu.why);
     return;
   }
   struct Restore {
-    ~Restore() { (void)tunables::apply_overrides("renderer.cull.pair_table=false"); }
+    ~Restore() {
+      (void)tunables::apply_overrides("renderer.cull.pair_table=true");
+      (void)tunables::apply_overrides("renderer.cull.instances=true");
+    }
   } restore;
+  REQUIRE(tunables::apply_overrides("renderer.cull.instances=false"));
   RenderSettings settings;
   settings.raster = RasterMode::Hardware;
   settings.shadows = ShadowMode::Cascaded;
@@ -756,6 +761,44 @@ TEST_CASE("dynamic instances: the cull draws the same with the pair table read a
               table ? "hw, occlusion, cascades, the pair table read"
                     : "hw, occlusion, cascades, searched",
               2);
+  }
+}
+
+// R16 and R173 behind `renderer.cull.instances` (renderer.md, "The cull culls instances first"):
+// on by default, every cull run tests each instance's sphere and culls only the survivors' pairs;
+// off, it runs over every pair. The tiled world — holes whose null instances the instance pass
+// drops by their mesh, tiles arriving and leaving between frames, the camera's two occlusion passes
+// and the cascades' runs — draws the loaded scene's ids, depth and colour at every step both ways,
+// with the pair table read and searched, so the instance pass changes nothing the frame draws.
+TEST_CASE("dynamic instances: the cull draws the same with instances culled first and not") {
+  CHECK(cull_instances_tunable());
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE(gpu.why);
+    return;
+  }
+  struct Restore {
+    ~Restore() {
+      (void)tunables::apply_overrides("renderer.cull.instances=true");
+      (void)tunables::apply_overrides("renderer.cull.pair_table=true");
+    }
+  } restore;
+  RenderSettings settings;
+  settings.raster = RasterMode::Hardware;
+  settings.shadows = ShadowMode::Cascaded;
+  settings.occlusion = true;
+  for (const bool first : {false, true}) {
+    for (const bool table : {false, true}) {
+      REQUIRE(tunables::apply_overrides(first ? "renderer.cull.instances=true"
+                                              : "renderer.cull.instances=false"));
+      REQUIRE(tunables::apply_overrides(table ? "renderer.cull.pair_table=true"
+                                              : "renderer.cull.pair_table=false"));
+      REQUIRE(cull_instances_tunable() == first);
+      run_tiles(gpu.device, settings,
+                first ? (table ? "instances first, the pair table read" : "instances first")
+                      : (table ? "every pair, the pair table read" : "every pair, searched"),
+                2);
+    }
   }
 }
 
