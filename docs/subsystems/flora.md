@@ -1340,8 +1340,23 @@ since its coverage term counts texels that differ and both masks are a dither at
 measurement's scale, so the switch distances stay where the plain bake put them. **What it costs**:
 the bake is drawn once and measured up to four times; `pine-0`'s container went from 0.97 s to 42 s
 in msvc-debug (the star's 16 tiles of 256 texels and its measures, as every broadleaf's star
-costs). **Not done**: the broadleaf keeps the plain mask, byte for byte (its pins hold); its stars
-over-cover the same way where a crown is sparse, which the same flag would fit.
+costs).
+
+**The broadleaf's levels keep it too** (G121, 2026-11-18): the broadleaf solver — `broadleaf` and
+every deciduous profile, oak, maple, elm, walnut, beech, ash, basswood, black_cherry, sycamore,
+aspen, alder — bakes its cards and its star with `coverage_dither` and `bake_matched` fits them,
+the conifer's rule unchanged. Its leaves are opaque, so the coin it tossed was at the leaves'
+edges and the crown's gaps rather than inside a shoot, but the star's four directions over-cover a
+sparse crown the same way, and so do the cards: on the 8 m test oak (`impostor_tests.cpp`, "a
+broadleaf's levels keep its leaves' coverage", MSVC) the plain bake drew **1.339, 1.325 and 1.356**
+of the leaves' coverage (two card levels, the star) and the kept one **1.002 (scale 178), 1.003
+(183) and 1.055 (144)**; D moved from 0.642, 0.645 and 0.331 to 0.669, 0.663 and 0.338, so the
+switch distances hardly move. The key: `k_broadleaf_chain_version` (1) is mixed into the
+container's source hash of those species where the conifers take theirs, and not into
+`flora_source_hash`, so every broadleaf entry rebuilds once with the chain and no dead tree's key
+(the deadwood's) moves; the birch and the ancient tree have solvers of their own and keep the plain
+mask, byte for byte. **What it costs**: up to three more bakes and measures a level when the plain
+bake over-covers, as the conifer's.
 ### The broadleaf
 
 An oak by default (12 m, `content/flora/oak.flora.json`). The **trunk** leans by `lean_deg` towards

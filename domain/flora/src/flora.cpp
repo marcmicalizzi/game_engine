@@ -241,6 +241,12 @@ namespace {
 bool builds_conifer(const std::string& species) {
   return species == k_species_conifer || detail::is_evergreen_species(species);
 }
+// The species the broadleaf solver builds: the bare `broadleaf` and every deciduous profile, whose
+// chain keys their containers by `k_broadleaf_chain_version` (G121).
+bool builds_broadleaf(const std::string& species) {
+  return species == k_species_broadleaf ||
+         (detail::is_tree_species(species) && !detail::is_evergreen_species(species));
+}
 
 // A container's identity before the bake's images: the parameters' (`flora_source_hash`), and for
 // the conifers the chain's version (G120). Mixed here and not into `flora_source_hash`, which is
@@ -260,6 +266,9 @@ u64 container_hash(const FloraFile& file) {
   u64 h = flora_source_hash(file);
   if (!file.regeneration && builds_conifer(file.species))
     h = hash_combine(h, k_conifer_chain_version);
+  // The broadleaf solver's chain (G121) the same way: `broadleaf` and the deciduous profiles.
+  if (!file.regeneration && builds_broadleaf(file.species))
+    h = hash_combine(h, k_broadleaf_chain_version);
   // The seat (G201 stage 2) is the container's and not the tree's shape: keyed here, so a tree's
   // entry rebuilds to carry it and the deadwood's key, which takes the shape, does not move.
   if (seated_species(file)) h = hash_combine(h, k_flora_seat_version);

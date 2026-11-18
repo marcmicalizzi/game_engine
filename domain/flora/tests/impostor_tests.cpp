@@ -162,9 +162,15 @@ TEST_CASE("impostor chain: the bake is the same bytes every time and on every to
   // spare pipes grow 18 leafy twigs (855 to 873) and its cards keep their size (LAI 3.87 to 3.90),
   // which moves the cards and the star. G201: the trunk's skirt takes the star's box down to its
   // bottom, so the star's pair moves (it was 0x9cce4ec8f3744e18, 0x148ff7f0dc71b48f) and the cards'
-  // pair, which bake no trunk, does not.
-  constexpr u64 k_golden[4] = {0x6f314c381c5847f1ull, 0xca1c3ce8b9210d9bull, 0x0cb5e52d702765cdull,
-                               0x30da20a4f48c3977ull};
+  // pair, which bake no trunk, does not. G121 (MSVC alone, 2026-11-18): the broadleaf's levels are
+  // baked with the coverage kept (`coverage_dither`, here unfitted at scale 256, since this bakes
+  // with `bake_level`), the conifer's rule now the broadleaf's, so a partly covered texel passes
+  // the mask with its coverage's probability and all four move (the oak's bake measures 1.32
+  // to 1.36 of its leaves' coverage plain and 1.00 to 1.06 kept and fitted: "a broadleaf's levels
+  // keep its leaves' coverage"); they were 0x6f314c381c5847f1, 0xca1c3ce8b9210d9b,
+  // 0x0cb5e52d702765cd, 0x30da20a4f48c3977.
+  constexpr u64 k_golden[4] = {0x611950356c4c1b54ull, 0xf3a43c029429cffdull, 0x5160dbf4319065a2ull,
+                               0xfa3aa31d9c779b90ull};
   for (u32 k = 0; k < 4; ++k)
     CHECK(hashes[k] == k_golden[k]);
 }
@@ -889,9 +895,12 @@ TEST_CASE("impostor chain: the conifer profiles and the matured conifer build it
   CHECK(flora::flora_source_hash(oak) == oak_hash);
   u64 oak_container = 0;
   REQUIRE(flora::flora_source_hash_with(oak, {}, oak_container, error));
-  // The seat's (G201) and the structural table's (A45).
-  CHECK(oak_container == hash_combine(hash_combine(oak_hash, flora::k_flora_seat_version),
-                                      flora::k_flora_structure_version));
+  // The broadleaf solver's chain version (G121) where the conifers take theirs, then the seat's
+  // (G201) and the structural table's (A45).
+  CHECK(oak_container ==
+        hash_combine(hash_combine(hash_combine(oak_hash, flora::k_broadleaf_chain_version),
+                                  flora::k_flora_seat_version),
+                     flora::k_flora_structure_version));
   // Off is the container it was: no level, no atlas.
   flora::FloraFile off;
   REQUIRE(flora::read_flora_file(R"({"species":"pine","tree":{"height_m":8,)"
@@ -946,6 +955,49 @@ TEST_CASE("impostor bake: a conifer's levels draw its needle mass, no less and n
       CHECK((with.colour[4 * t + 3] == 0u) == (without.colour[4 * t + 3] == 0u));
       CHECK(with.colour[4 * t + 3] == with.normal[4 * t + 3]);
     }
+  }
+}
+
+TEST_CASE("impostor bake: a broadleaf's levels keep its leaves' coverage as a conifer's do") {
+  // G121.
+  // The broadleaf solver's chain is baked with the coverage kept since G121, as the conifers' has
+  // been since G120. The same comparison as the conifer's case: each level baked plain and kept,
+  // both measured by the bake's own coverage comparison (`measure_level`'s `kept`, the cards' over
+  // the geometry's, over the ring of sixteen views).
+  const flora::Broadleaf p = small_oak();
+  assets::MeshData mesh;
+  flora::TreeLevels levels;
+  REQUIRE(flora::solve_broadleaf_chain(p, mesh, nullptr, nullptr, nullptr, &levels));
+  REQUIRE(levels.levels.size() >= 2u);
+  flora::BakeLook look;
+  look.leaf_outline = true;
+  const auto off_one = [](f64 v) { return v > 1.0 ? v - 1.0 : 1.0 - v; };
+  for (u32 k = 0; k < levels.levels.size(); ++k) {
+    CAPTURE(k);
+    REQUIRE(levels.levels[k].coverage_dither);
+    flora::TreeLevel kept = levels.levels[k];
+    flora::TreeLevel plain = kept;
+    plain.coverage_dither = false;
+    flora::BakedAtlas with, without;
+    flora::LevelMeasure m_with, m_without;
+    const f32 d_with = flora::bake_matched(mesh, levels, kept, look, with, &m_with);
+    const f32 d_without = flora::bake_matched(mesh, levels, plain, look, without, &m_without);
+    MESSAGE((k + 1 == levels.levels.size() ? std::string("star")
+                                           : std::string("cards ") + std::to_string(k))
+            << ": a plain bake draws " << m_without.kept << " of the leaves' coverage (D "
+            << d_without << "), the coverage-kept bake " << m_with.kept << " at scale "
+            << kept.coverage_scale << "/256 (D " << d_with << ")");
+    // A plain mask over-covers a sparse crown by a third on every level of the 8 m oak (1.32 to
+    // 1.36, MSVC, 2026-11-18); the kept bake draws within a tenth of what the leaves do (1.002 to
+    // 1.055), the conifer's bound, and never further from it than plain.
+    CHECK(m_with.kept > 0.9);
+    CHECK(m_with.kept < 1.1);
+    CHECK(off_one(m_with.kept) <= off_one(m_without.kept) + 1e-6);
+    CHECK(kept.coverage_scale <= 256u);
+    // Only the mask moves: the same texels hold colour either way.
+    REQUIRE(with.colour.size() == without.colour.size());
+    for (u32 t = 0; t < with.width * with.height; ++t)
+      CHECK(with.colour[4 * t] == without.colour[4 * t]);
   }
 }
 
