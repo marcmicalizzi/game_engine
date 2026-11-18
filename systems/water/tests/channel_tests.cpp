@@ -1042,6 +1042,111 @@ TEST_CASE("water channel: a slow pool bending past a station reads its own slow 
   CHECK(carried_most < 0.06);
 }
 
+TEST_CASE("water channel: a pool a steep inflow stands in carries no fall and no Froude number") {
+  // Need 149's regression (W144): flat white blotches scattered over a slow pool. The stations are
+  // the forest's `region link 59` at the owner's mark 14, in its own numbers (v50's solve): a
+  // brook 0.9 m wide comes down 6 % and then 12 % and runs into a pool, where W138 writes its
+  // stations at the pool's level, so their wet reach on the left is the pool's shore, 10 to 12 m
+  // off, while their speed, Froude number and discharge are still the brook's (a top width of
+  // Q / (V D) under a metre and a half). The line turns right 25 degrees at the first such
+  // station, so the pool on the outer side of the turn is abeam that station: every vertex there
+  // carried the last falling stretch's 12 % and the station's Froude number 0.44, which is a
+  // step-pool reach to the top tier's white (water.slang, `water_channel_white_top`'s steps).
+  scene::WaterChannel block;
+  block.name = "inflow";
+  struct Station {
+    f64 x, y, z;
+    f32 depth, speed, froude, slope, left, right;
+  };
+  // (The falling stretch into the pool is written 0.6 m long where the forest's is 0.2 m, so the
+  // sheet's lattice has nodes in it; the brook heads 25 degrees toward +z and turns right into +x,
+  // so the pool, on its left, is on the outer side.)
+  const Station stations[] = {
+      {-0.035, 10.341, -1.648, 0.075f, 0.210f, 0.280f, 0.052f, 0.60f, 0.35f},
+      {2.684, 10.176, -0.380, 0.077f, 0.225f, 0.307f, 0.067f, 0.64f, 0.29f},
+      {2.956, 10.156, -0.254, 0.075f, 0.226f, 0.306f, 0.065f, 0.66f, 0.25f},
+      {3.500, 10.087, 0.000, 0.059f, 0.288f, 0.444f, 0.220f, 11.91f, 0.18f},
+      {5.000, 10.087, 0.000, 0.337f, 0.030f, 0.019f, 0.000f, 11.11f, 0.26f},
+      {7.400, 10.080, 0.000, 0.169f, 0.111f, 0.110f, 0.001f, 10.24f, 0.25f},
+      {7.700, 10.080, 0.000, 0.123f, 0.125f, 0.131f, 0.001f, 10.16f, 0.23f},
+      {7.900, 10.080, 0.000, 0.119f, 0.176f, 0.204f, 0.003f, 0.65f, 0.20f},
+      {9.000, 10.078, 0.000, 0.098f, 0.233f, 0.293f, 0.009f, 0.62f, 0.14f}};
+  for (const Station& s : stations) {
+    block.points.push_back(WorldPos{s.x, s.y, s.z});
+    block.width_m.push_back(1.54f);
+    block.depth_m.push_back(s.depth);
+    block.slope.push_back(s.slope);
+    block.discharge_m3s.push_back(0.0114f);
+    block.speed_mps.push_back(s.speed);
+    block.froude.push_back(s.froude);
+    block.wet_left_m.push_back(s.left);
+    block.wet_right_m.push_back(s.right);
+    block.flags.push_back(0);
+  }
+  const Built b = build(block);
+  const water::Mesh& m = b.sheet.mesh;
+  REQUIRE(b.sheet.triangles > 0);
+  // The steps' share as the top tier reads a vertex (water.slang: the broken share over its
+  // ceiling, times the section's Froude number over k_channel_broken_froude_lo to _hi).
+  const auto steps = [](f64 fall, f64 fr, f64 hydraulic) {
+    const f64 t = std::clamp((fr - 0.25) / (0.6 - 0.25), 0.0, 1.0);
+    return water::channel_broken_share(fall, fr * std::sqrt(water::k_gravity * hydraulic), 0.3) /
+           water::k_channel_steep_white * (t * t * (3.0 - 2.0 * t));
+  };
+  // The pool: every vertex more than 4 m to the left of the line (its stations from the fourth
+  // on run along +x at z = 0, the origin's z a whole metre from it).
+  const f64 line_z = 0.0 - b.channel.origin.z;
+  u32 standing = 0, brook = 0;
+  f64 standing_fall = 0.0, standing_froude = 0.0, standing_steps = 0.0;
+  f64 brook_fall = 0.0, brook_froude = 0.0;
+  for (u32 v = 0; v < m.positions.size(); ++v) {
+    f32 hydraulic = 0.0f, fr = 0.0f;
+    water::unpack_channel_hydraulic(m.uvs[v].y, hydraulic, fr);
+    const Vec3 nrm = m.normals[v];
+    const f64 fall = std::sqrt(static_cast<f64>(nrm.x) * static_cast<f64>(nrm.x) +
+                               static_cast<f64>(nrm.z) * static_cast<f64>(nrm.z)) /
+                     static_cast<f64>(nrm.y);
+    const f64 off = static_cast<f64>(m.positions[v].z) - line_z;
+    const f64 along = static_cast<f64>(m.positions[v].x) + b.channel.origin.x;
+    if (off > 4.0) {
+      ++standing;
+      standing_fall = std::max(standing_fall, fall);
+      standing_froude = std::max(standing_froude, static_cast<f64>(fr));
+      standing_steps =
+          std::max(standing_steps, steps(fall, static_cast<f64>(fr), static_cast<f64>(hydraulic)));
+    } else if (std::abs(off) < 0.5 && along > 2.9 && along < 3.6) {
+      ++brook;
+      brook_fall = std::max(brook_fall, fall);
+      brook_froude = std::max(brook_froude, static_cast<f64>(fr));
+    }
+  }
+  MESSAGE("inflow: ", standing, " vertices of standing water, the most fall ", standing_fall,
+          ", Froude number ", standing_froude, ", steps' share ", standing_steps, "; ", brook,
+          " of the brook at its mouth, fall ", brook_fall, ", Froude number ", brook_froude);
+  REQUIRE(standing > 50);
+  REQUIRE(brook > 0);
+  // Standing water: no fall, no Froude number, so no rule whitens it and nothing ripples it.
+  CHECK(standing_steps == 0.0);
+  CHECK(standing_fall == 0.0);
+  CHECK(standing_froude == 0.0);
+  // The brook's own water at its mouth keeps the fall it has and its section's number.
+  CHECK(brook_fall > 0.10);
+  CHECK(brook_froude > 0.28);
+  // The rule's terms. The brook's top width by its own numbers, and each side's conveying reach:
+  // its wet reach where the numbers agree, the bed's width where the pool's shore is the reach.
+  CHECK(water::channel_convey_width(0.0114, 0.226, 0.306) == doctest::Approx(0.907).epsilon(0.01));
+  CHECK(water::channel_convey_width(0.5, 0.0, 0.0) > 1e29);  // still water says nothing
+  CHECK(water::channel_convey_reach(0.66, 0.25, 1.54, 0.907) == 0.66);
+  CHECK(water::channel_convey_reach(11.91, 0.18, 1.54, 0.93) == 1.54);
+  // A wide river whose numbers agree with its reach is whole, whatever the bed's width says.
+  CHECK(water::channel_convey_reach(20.0, 20.0, 10.0, 40.0) == 20.0);
+  // The carry: whole through the reach, the margin and a lattice cell; none a reach farther.
+  CHECK(water::channel_carry(1.54 + 0.5 + 0.25, 1.54, 0.5) == 1.0);
+  CHECK(water::channel_carry(2.0 * 1.54 + 0.5 + 0.25 + 0.01, 1.54, 0.5) == 0.0);
+  CHECK(b.channel.convey_left_m[2] == b.channel.wet_left_m[2]);
+  CHECK(b.channel.convey_left_m[3] == 1.54f);
+}
+
 TEST_CASE("water channel: the pattern travels at the jets' speed on a steep sheet (W137)") {
   // Free fall over a step of the clasts' height: sqrt(v^2 + 2 g H), H = 0.25 m, at a cascade.
   CHECK(water::channel_travel_speed(0.35, 0.35) ==

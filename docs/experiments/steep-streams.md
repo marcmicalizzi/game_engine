@@ -165,6 +165,51 @@ is 4 to 9 cm). Why the UV and not a new vertex stream: the vertex record every m
 8 bytes (`geometry::VertexAttributes`, a normal and a UV), and widening it for one material would
 cost every scene 4 bytes a vertex; a nappe's vertex (UV.y negative) carries nothing.
 
+**A fourth fault of the same kind: white blotches on a slow pool** (W144, 2026-11-17; need 149, the
+forest's v50 mark 14, where the build before drew none). A station's speed, Froude number and fall
+describe the section that carries its discharge, a top width of T = Q / (V D) = Q g Fr² / V³. Where
+a brook runs into a pool the solve writes its stations at the pool's level (W138), and their wet
+reach is then where that level meets the ground: the pool's shore. At the mark, `region link 59`'s
+station is a brook of T = 0.93 m (0.29 m/s, Froude 0.44, the stretch into it falling 12 %) with a wet
+reach of 11.9 m on its left; the line turns there, so the pool on the turn's outer side is abeam
+that one station, and every vertex of it carried the station's Froude number and the falling
+stretch's slope. To the top tier that is a step-pool reach (its steps' share 0.15, which the
+tier's sparse threshold draws as scattered lumps); the low tier's broken rule gives the same water
+a share of 0.09, under what its threads show, and the build before wrote no brook's station at a
+pool's level, which is why it drew none (read from the rules and that solve's stations; the mark
+was not re-flown). Of that
+solve's 112,906 stations 96 % have a wet reach within a quarter of T; 791 of those that can whiten
+have twice T or more.
+
+What was done is in the mesh, not the rule (`systems/water`'s `channel_carry`): each side of a
+station has a **conveying reach** — its wet reach, or where that is wider the larger of the bed's
+own width (water within the bed's width of the line is the channel's whatever the numbers say, so a
+fall's foot written at a bank's top keeps its white) and what 1.25 T leaves after the other side
+(the quarter for a description's rounding) — and a vertex carries the section's Froude number and
+fall times a share that is 1 wherever the section's conveying reach is its whole wet reach, and
+where it is less, 1 through the conveying reach, the margin under the bank and one lattice cell,
+falling to 0 over one more conveying reach (a choice: about the width an inflow's jet spreads
+over). Water standing past it is still water to every reader of the vertex: no white, no ripples,
+a pattern that does not travel. The case `a pool a steep inflow stands in carries no fall and no
+Froude number` holds the mark's own stations: with the share forced to 1 its 499 vertices of
+standing water carry a fall of 0.115, a Froude number of 0.42 and a steps' share of 0.11, and with
+the rule none of the three, while the brook's own water at its mouth keeps both.
+
+**What it moves, measured** (2026-11-18, `msvc-release`; every channel built with its conveying
+reaches and with none, the two files compared byte for byte: the three test fixtures, the torrent
+judging scene's eight channels and the forest's 542 of v50's solve, 113,496 stations and 1,973,721
+vertices). 429 stations in 94 channels have a conveying reach under their wet reach; 45 of those
+channels are written differently, 20,097 vertices (1 %), and the other 505 channels are the same
+bytes, every one of the 456 with no such station among them. On the torrent that is 21 vertices of
+one channel. The first form of the rule went by distance alone and did not hold that: 311 vertices
+in 95 channels with no narrowed station moved, places the sheet keeps past a section's own reach
+on the outer side of a bend whose two stations' reaches differ, so the rule now asks first whether
+the section is narrowed at all. An authored line whose discharge, speed and Froude number agree
+with its wet reach is untouched however wide it is. Not mended here: at that
+mark the brook's sheet stands 0.45 m over the pool of the line beside it (`region link 62`), which
+is the solve's (where the stream stands), and the phase under standing water still advances at the
+station's speed, which only the pattern's travel reads and the carried Froude number now stills.
+
 ## The step-pool form, solved or drawn
 
 (The next row's start; written by W130's third leg, 2026-11-16, and not built.) A steep reach's form
