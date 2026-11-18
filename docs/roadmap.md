@@ -776,7 +776,7 @@ Build, CI, test and profiling infrastructure, and the machinery behind the stand
 | T41 | Measurements that record the machine's state | done (f174fefc) | | S | routine | [bench](subsystems/bench.md#measuring-on-a-shared-machine) |
 | T42 | No-listeners check | done (6e6f1053) | | S | routine | [runners](ci/self-hosted-runners.md#toolscicheck-no-listenersps1) |
 | T43 | No dialogs on failure | done (4b4c2a89, c75d4e7a) | | M | routine | [platform](subsystems/platform.md#no-engine-binary-opens-a-dialog-when-it-fails) |
-| T44 | Profiling service: frame report, capture export | open | T6 | M | design | [09 §9.3](plan/09-testing-profiling.md#93-profiling-infrastructure-before-optimizing-anything) |
+| T44 | Profiling service: frame report, capture export | done (2026-11-17: "Read the frame capture as a report and a trace", and the threaded capture case's fix "Let every worker record before the capture test stops"; the GPU's own time stamps and a Tracy capture beside the trace are T45's) | T6 | M | design | [profiler](subsystems/profiler.md) |
 | T45 | Tracy zones everywhere, GPU zones, vendor counters | open | T44, R35 | M | routine | [profiling](subsystems/profiling.md) |
 | T46 | Frame-budget files as merge gates | done (2026-10-07, content/budgets/frame-budgets.json) | | M | design | [bench](subsystems/bench.md#frame-budgets) |
 | T47 | Nightly performance regression with significance tests | open | T35, T46 | M | design | [09 §9.1](plan/09-testing-profiling.md#91-test-taxonomy) |

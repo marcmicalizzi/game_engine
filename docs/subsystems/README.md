@@ -41,6 +41,7 @@ One page per module, created in the same change that creates the module. Templat
 | image | foundation | [image.md](image.md) |
 | input | foundation | [input.md](input.md) |
 | gpu_lock | foundation | [gpu_lock.md](gpu_lock.md) |
+| profiler | foundation | [profiler.md](profiler.md) |
 | bench | foundation | [bench.md](bench.md) |
 | store (capability) | foundation | [store.md](store.md) |
 | scripting (capability) | foundation | [scripting.md](scripting.md) |

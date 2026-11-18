@@ -2,9 +2,9 @@
 
 **Purpose.** The profiler hooks every module instruments itself with (docs/plan/09-testing-profiling.md §9.3, ADR-0012). With the CMake option `ENGINE_TRACY` the macros are Tracy client zones, frame marks, plots, messages, and allocation events; without it they expand to nothing, so instrumentation stays in the code at zero cost. Tracy runs in on-demand mode: until a profiler connects, a zone costs a predictable few nanoseconds.
 
-**Placement.** The plan lists profiling under the foundation layer; the hooks live in core so that the job system, I/O, and every other core module can carry zones. The startup trace lives here too, for the same reason: a loader in any layer records its stages. The profiling *service* (capture export for the `profile` protocol tool, frame reports, budget checks) is the foundation-layer module that will build on this.
+**Placement.** The plan lists profiling under the foundation layer; the hooks live in core so that the job system, I/O, and every other core module can carry zones. The startup trace lives here too, for the same reason: a loader in any layer records its stages. The profiling *service* — the frame report and the trace export over the frame capture below, for the `profile` protocol tool — is the foundation-layer module that builds on this, [profiler](profiler.md); budget checks will join it.
 
-**Public API.** `core/profiling/profile.h`: `ENGINE_PROFILE_ZONE()`, `ENGINE_PROFILE_ZONE_NAMED(name)`, `ENGINE_PROFILE_ZONE_TEXT(text, size)`, `ENGINE_PROFILE_FRAME()`, `ENGINE_PROFILE_FRAME_NAMED(name)`, `ENGINE_PROFILE_THREAD(name)`, `ENGINE_PROFILE_PLOT(name, value)`, `ENGINE_PROFILE_MESSAGE(text, size)`, `ENGINE_PROFILE_ALLOC(ptr, size)`, `ENGINE_PROFILE_FREE(ptr)`; `profiling::enabled()`, `profiling::connected()`.
+**Public API.** `core/profiling/profile.h`: `ENGINE_PROFILE_ZONE()`, `ENGINE_PROFILE_ZONE_NAMED(name)`, `ENGINE_PROFILE_ZONE_TEXT(text, size)`, `ENGINE_PROFILE_FRAME()`, `ENGINE_PROFILE_FRAME_NAMED(name)`, `ENGINE_PROFILE_THREAD(name)`, `ENGINE_PROFILE_PLOT(name, value)`, `ENGINE_PROFILE_MESSAGE(text, size)`, `ENGINE_PROFILE_ALLOC(ptr, size)`, `ENGINE_PROFILE_FREE(ptr)`; `profiling::enabled()`, `profiling::connected()`. `core/profiling/frame_capture.h`: the frame capture (below).
 
 **Rules.** One `ENGINE_PROFILE_ZONE` per scope (it declares a local). A zone per system and per pass, not per element; per-job zones exist in the job system because a job is the unit of scheduling. Plots for the counts a frame budget tracks. Worker threads name themselves.
 
@@ -13,6 +13,21 @@
 **Instrumented today.** Job workers (thread names, a zone per executed job), protocol dispatch, document store load and save, and the startup stages below (each is a Tracy zone of the same name in a Tracy build).
 
 **A frame's time, attributed whole, without Tracy** (roadmap T71 part 3, landed 2026-11-03 with R130; parts 1 and 2, the profile shader variant and a timestamp pair a dispatch, are open). Every frame record a benchmark writes carries `sections` (`engine.scene.FrameSections`): the frame loop's spans in its order — the host's turn, the slot's wait, the rest of `begin_frame` with the chain's resize inside it, the fold, the acquire, the ticks, the submission, what follows it, the present and the tail — which partition the frame's own interval and sum to it, so a hitch is never "unattributed" again; and `gpu_ms.unbucketed`, the timer's total less every bucket, which names GPU time folded into no bucket. They are measured with the clock reads the loop already made, in every build, at no cost a frame worth stating ([apps](apps.md#flythroughs) has the fields; the test is `flythrough: a frame's sections sum to its wall time, and a slow host turn is named`). Tracy's GPU zones for the live view are still part 3's to do.
+
+## The frame capture
+
+`core/profiling/frame_capture.h` (roadmap T44): what a running process did over a stretch of frames, **in every build, Tracy or not**, recorded only while a host has turned it on (`capture_start` .. `capture_stop`), and read by [profiler](profiler.md) into a frame report and a trace. Tracy needs a profiler connected to the process and a release build; a `profile` request over the protocol needs neither, which is why the capture exists beside it rather than through it.
+
+- **Zones.** Every `ENGINE_PROFILE_ZONE()` (named `__func__`) and `ENGINE_PROFILE_ZONE_NAMED(name)` scope is also a `CaptureZone`: when the capture was on at both its ends it records one event with its thread and its two times. In a Tracy build the macro is both, Tracy's zone and the capture's.
+- **Frame marks.** `capture_frame(index)` at a frame's start and, optionally, `capture_frame_end(index)` at its end. The index is the frame loop's own, so `ENGINE_PROFILE_FRAME()` (which has none) stays Tracy's alone.
+- **Values.** `capture_value(CaptureTrack::gpu | cpu, name, index, ms)`: a time measured elsewhere for frame `index` — a GPU pass from its timestamp queries, a CPU span of the frame loop.
+- **Threads.** `ENGINE_PROFILE_THREAD(name)` also calls `capture_name_thread`, which copies the name onto the thread (31 bytes; the job system names its workers from a stack buffer) and into the capture's table at the thread's first event. A thread's index is the order of its first event in the capture.
+
+**Off it costs one relaxed atomic load per zone and allocates nothing** (before T44 it was nothing at all; the zones are per system and per pass, so the load is not in an inner loop). On, an event claims a slot of the buffer `capture_start` allocated with one atomic add and writes 48 bytes (`CaptureEvent`, in the size table); a full buffer drops and counts (`CaptureInfo::dropped`), so **a frame loop with the capture on still allocates nothing**. The default is 2^18 events, 14 MiB with each slot's publication word; the buffer is kept across captures for the next one and freed by `capture_reset`.
+
+**Stopping is exact.** A writer enters by raising a count before it reads the switch a second time, and `capture_stop` turns the switch off and then waits for that count to fall to zero (sequentially consistent on both sides, the order a store-then-load handshake needs), so once it returns no thread is still inside the buffer: a zone that began while the capture was on and ends after the stop is dropped whole, never half written, and `capture_snapshot` after the stop reads the same events every time (the threaded test takes two snapshots while three threads keep running zones). Each capture has a generation, and a zone that began in one capture and ends in the next is dropped too. `capture_snapshot` while recording copies only the slots already published.
+
+**Names are pointers**: a string literal, `__func__`, or a table that outlives the capture — the report keeps them as they are.
 
 ## The startup trace
 
@@ -52,6 +67,6 @@ Why this is written down at length: it cost most of a night. On 2026-09-18 every
 
 **Depends on.** `base`, `containers`, `json` (the summary is a `JsonValue`, which is why the module is declared after `json` in `core/CMakeLists.txt`); Tracy when enabled.
 
-**Testing.** `tools/dev.ps1 test -Filter profiling` compiles every macro in whichever mode the preset selects, checks `enabled()` and `connected()`, and runs the startup trace's tests (above).
+**Testing.** `tools/dev.ps1 test -Filter profiling` compiles every macro in whichever mode the preset selects, checks `enabled()` and `connected()`, and runs the startup trace's tests (above) and the frame capture's (`tests/frame_capture_tests.cpp`: off records nothing; on records zones by name and by `__func__`, marks, values on both tracks and a thread's name; a full buffer counts its drops and a restart clears it; zones on three threads with a stop that leaves nothing written after it returns).
 
-**Performance notes.** Off: nothing. On, not connected: an atomic load per zone. Connected: Tracy's own overhead, about 20 ns per zone. Memory allocation events are not wired into `core/memory` yet; that hook arrives with the mimalloc backend so both change once.
+**Performance notes.** Off: nothing for Tracy's macros, one relaxed atomic load per zone for the frame capture. On, not connected: an atomic load per zone. Connected: Tracy's own overhead, about 20 ns per zone. Memory allocation events are not wired into `core/memory` yet; that hook arrives with the mimalloc backend so both change once.
