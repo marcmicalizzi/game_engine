@@ -180,8 +180,9 @@ bool ExposurePass::record(const FramePassContext& context, std::string* error) {
   std::memcpy(&reported_, reports_[slot].mapped, sizeof(ExposureState));
 
   // **The step's time**: the host's, or the frame index's at the clock a path and a capture advance
-  // by. The first frame, and one whose index went back, take their target at once.
-  const bool snap = !recorded_ || context.frame_index <= last_frame_index_;
+  // by. The first frame, and one whose index went back, take their target at once; a frame at the
+  // same index as the last (a window drawing faster than the index's 60 Hz) steps by nothing.
+  const bool snap = !recorded_ || context.frame_index < last_frame_index_;
   f64 dt = context.dt_s;
   if (!(dt > 0.0) && !snap) {
     dt = static_cast<f64>(context.frame_index - last_frame_index_) / static_cast<f64>(k_frame_hz);
