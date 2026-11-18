@@ -9,7 +9,8 @@
   repository's checkouts (present, main, locked, merged, dirty) and the containers holding volumes,
   so every case writes a machine down and checks the verdicts. **Nothing here talks to a Docker
   daemon**: the two cases that run the script stop before docker is asked anything, one at argument
-  validation and one with DOCKER_HOST pointed at a port nobody listens on.
+  validation and one with DOCKER_HOST pointed at a port nobody listens on. Nor does anything talk to
+  the GPU server: remote-build.ps1's reach step is held to a listener of the test's own on loopback.
 
       pwsh tools/linux-build.Tests.ps1
       Invoke-Pester tools/linux-build.Tests.ps1
@@ -565,6 +566,88 @@ Test-That '-KeepUnknown keeps what nothing names and nothing else changes' {
 Test-That 'the listing script reads only ~/game_engine-remote and twelve-hex names' {
   $s = Get-RemoteTreeListingScript
   $s -match 'cd "\$HOME/game_engine-remote"' -and $s -match '\?{12}' -and $s -notmatch 'rm ' -and $s -notmatch 'ccache'
+}
+
+# --- the GPU server that never answers: remote-build.ps1's reach step (tools/lib/RemoteSsh.psm1) --------
+#
+# Three rows' runs sat at "reaching titanxp" for hours: ssh with ConnectTimeout and no keepalive
+# waits for ever on a server that sends its banner and then says nothing. The server here is a
+# listener of this test's own on 127.0.0.1 (loopback only: no firewall prompt, AGENTS.md's listener
+# rule), which accepts, sends a banner, and is silent; no real host is contacted. Where ssh is not
+# on PATH the two cases say so and pass, as the docker case above does where docker is missing.
+
+Import-Module (Join-Path $PSScriptRoot 'lib/RemoteSsh.psm1') -Force
+$sshExe = Get-Command ssh -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+# Starts what $start returns (a ProcessStartInfo, given the port) against a server that answers with
+# a banner and then nothing, until it exits or $deadline seconds pass; stopped then. The process's
+# exit code, whether it was still running at the deadline, its seconds, and how many connections
+# the server took.
+function Invoke-AgainstSilentServer([scriptblock]$start, [int]$deadline) {
+  $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+  $listener.Start()
+  $clients = New-Object System.Collections.Generic.List[object]
+  try {
+    $psi = & $start $listener.LocalEndpoint.Port
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $out = $p.StandardOutput.ReadToEndAsync()
+    $err = $p.StandardError.ReadToEndAsync()
+    $banner = [System.Text.Encoding]::ASCII.GetBytes("SSH-2.0-OpenSSH_9.6`r`n")
+    while (-not $p.HasExited -and $watch.Elapsed.TotalSeconds -lt $deadline) {
+      if ($listener.Pending()) {
+        $c = $listener.AcceptTcpClient()
+        $c.GetStream().Write($banner, 0, $banner.Length)
+        $clients.Add($c)   # held open and never written again: the silence is the case
+      }
+      $null = $p.WaitForExit(100)
+    }
+    $hung = -not $p.HasExited
+    if ($hung) { try { $p.Kill($true) } catch { } }
+    $p.WaitForExit()
+    $seconds = $watch.Elapsed.TotalSeconds
+    $text = @((($out.Result + "`n" + $err.Result) -split "`r?`n") | Where-Object { $_.Trim() })
+    return [pscustomobject]@{ Code = $(if ($hung) { $null } else { $p.ExitCode }); Hung = $hung; Seconds = $seconds; Accepted = $clients.Count; Lines = $text }
+  } finally {
+    foreach ($c in $clients) { $c.Dispose() }
+    $listener.Stop()
+  }
+}
+
+if (-not $sshExe) {
+  Test-That 'remote-build''s reach step against a silent server: not run, no ssh on PATH' { $true }
+} else {
+  Test-That 'every connection carries a keepalive, and with it ssh gives a silent server up by itself' {
+    $opts = Get-RemoteSshOptions
+    $defaults = ($opts -join ' ')
+    # The same options with a two-second keepalive, so the case takes seconds and not the minute the
+    # defaults allow; what is held is that ssh, not this test, ends the wait.
+    $short = Get-RemoteSshOptions -AliveSeconds 1 -AliveCount 2
+    $r = Invoke-AgainstSilentServer {
+      param($port)
+      $psi = [System.Diagnostics.ProcessStartInfo]::new($sshExe.Source)
+      foreach ($a in ($short + @("ssh://127.0.0.1:$port", 'true'))) { $psi.ArgumentList.Add($a) }
+      $psi
+    } 30
+    $defaults -match 'BatchMode=yes' -and $defaults -match 'ConnectTimeout=20' -and $defaults -match 'ServerAliveInterval=15' -and
+      $defaults -match 'ServerAliveCountMax=4' -and $r.Accepted -ge 1 -and -not $r.Hung -and $r.Code -ne 0 -and $r.Seconds -lt 20
+  }
+  Test-That 'remote-build.ps1 gives a silent server up at -ReachSeconds: one line, exit 69, ssh stopped' {
+    $pwshExe = (Get-Process -Id $PID).Path
+    $remote = Join-Path $PSScriptRoot 'remote-build.ps1'
+    $r = Invoke-AgainstSilentServer {
+      param($port)
+      $psi = [System.Diagnostics.ProcessStartInfo]::new($pwshExe)
+      foreach ($a in @('-NoProfile', '-File', $remote, '-Host', "ssh://127.0.0.1:$port", '-ReachSeconds', '3', '-ReachAttempts', '1')) { $psi.ArgumentList.Add($a) }
+      $psi
+    } 60
+    $last = @($r.Lines | Where-Object { $_ -match '^remote-build: ' })
+    $r.Accepted -ge 1 -and -not $r.Hung -and $r.Code -eq 69 -and $r.Seconds -lt 45 -and $last.Count -eq 1 -and
+      $last[0] -match 'not reachable' -and ($r.Lines -match 'no answer within 3 s') -and
+      -not ($r.Lines -match 'ScriptStackTrace|CategoryInfo|Line \||At .*:\d+ char:')
+  }
 }
 
 # --- the script's own refusals, before docker is asked anything ---------------------------------------

@@ -39,6 +39,14 @@
                 outlive their checkout", why.
     -KeepUnknown  with -Stale: keep the trees nothing names.
     -WhatIf     with -Prune: print the same lines and remove nothing. Run it first.
+    -ReachSeconds  how long one attempt to reach the server may take before ssh is stopped.
+                Default 60: a connection here costs 10.6 s and the command none.
+    -ReachAttempts  attempts before giving up. Default 3, ten and twenty seconds apart.
+
+  Every connection carries a keepalive (ServerAliveInterval=15, ServerAliveCountMax=4), so a server
+  that goes silent is given up after a minute whatever the connection was doing, and the reach
+  step is bounded as a process besides; a server that cannot be reached exits 69 with one line
+  (docs/ci/remote-linux.md, "A server that answers and then says nothing").
 
   Every compile goes through the server's ccache (~/game_engine-ccache, 30 GB, shared by every
   checkout's tree there), and the build prints two lines of cache statistics. ENGINE_CCACHE=0
@@ -86,14 +94,19 @@ param(
   [switch]$Sync = $true,
   [switch]$Prune,
   [switch]$Stale,
-  [switch]$KeepUnknown
+  [switch]$KeepUnknown,
+  [ValidateRange(1, 3600)][int]$ReachSeconds = 60,
+  [ValidateRange(1, 10)][int]$ReachAttempts = 3
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$SshOpts = @('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=20')
+Import-Module (Join-Path $PSScriptRoot 'lib/RemoteSsh.psm1') -Force
+# BatchMode, ConnectTimeout and the keepalive, on every ssh and scp this script runs. ConnectTimeout
+# alone left three rows' runs at "reaching titanxp" for hours (tools/lib/RemoteSsh.psm1 says why).
+$SshOpts = Get-RemoteSshOptions
 $script:RemoteCpus = 0
 
 function Write-Step([string]$text) { Write-Host "== $text" -ForegroundColor Cyan }
@@ -155,23 +168,34 @@ function Test-Reachable {
   #
   # It also reads `nproc` here rather than in a connection of its own, because **a connection to
   # this host costs ten and a half seconds before a byte of work happens**. See Get-RemoteJobs.
-  for ($attempt = 1; $attempt -le 3; ++$attempt) {
-    $sshArgs = $SshOpts + @($Server, 'uname -sr; nproc; uptime')
-    $info = & ssh @sshArgs 2>&1
-    if ($LASTEXITCODE -eq 0) {
-      foreach ($line in $info) { Write-Host "   $line" }
-      if ($info.Count -ge 2 -and $info[1] -match '^\s*(\d+)\s*$') {
+  #
+  # Each attempt is bounded as a process as well as by ssh's own options: past -ReachSeconds the ssh
+  # is stopped and the attempt counts as one that found nobody, because a server that answers its
+  # keepalives and never runs the command is bounded by nothing ssh has.
+  $ssh = (Get-Command ssh -CommandType Application | Select-Object -First 1).Source
+  $why = ''
+  for ($attempt = 1; $attempt -le $ReachAttempts; ++$attempt) {
+    $r = Invoke-BoundedProcess -FilePath $ssh -Arguments ($SshOpts + @($Server, 'uname -sr; nproc; uptime')) -Seconds $ReachSeconds
+    if (-not $r.TimedOut -and $r.ExitCode -eq 0) {
+      foreach ($line in $r.Output) { Write-Host "   $line" }
+      if ($r.Output.Count -ge 2 -and $r.Output[1] -match '^\s*(\d+)\s*$') {
         $script:RemoteCpus = [int]$Matches[1]
       }
       return
     }
-    if ($attempt -lt 3) {
+    $why = if ($r.TimedOut) { "no answer within $ReachSeconds s; ssh stopped" }
+           else { "ssh exit $($r.ExitCode)$(if ($r.Errors.Count) { ': ' + $r.Errors[-1] })" }
+    Write-Host "   not reachable (attempt $attempt of $ReachAttempts): $why" -ForegroundColor Yellow
+    if ($attempt -lt $ReachAttempts) {
       $wait = 10 * $attempt
-      Write-Host "   not reachable (attempt $attempt of 3); retrying in ${wait}s" -ForegroundColor Yellow
+      Write-Host "   retrying in ${wait}s" -ForegroundColor Yellow
       Start-Sleep -Seconds $wait
     }
   }
-  throw "$Server is not reachable over SSH after three attempts. It reboots on its own while its GPU driver is being rebuilt, so try again before treating this as a build failure; `ssh $Server` by hand says which it is."
+  # One line and exit 69 (EX_UNAVAILABLE), not a PowerShell error record: a caller that waits on
+  # this script reads a fact about the machine, never a verdict on the tree.
+  [Console]::Error.WriteLine("remote-build: $Server is not reachable over SSH after $ReachAttempts attempt(s) ($why). It reboots on its own while its GPU driver is being rebuilt, so try again before treating this as a build failure; ``ssh $Server uptime`` by hand says which it is.")
+  exit 69
 }
 
 function Invoke-SyncTree {

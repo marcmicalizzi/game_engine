@@ -235,6 +235,34 @@ Three Windows details that each cost a run to find, recorded so the next person 
   `$(...)` before `sh` ever sees them, so the remote script is a single-quoted here-string with
   its three values substituted afterwards.
 
+### A server that answers and then says nothing
+
+On 2026-11-17 three rows' runs sat at `== reaching titanxp` for hours. The reach step was
+`ssh -o BatchMode=yes -o ConnectTimeout=20`, three attempts, and no bound of its own, and
+**`ConnectTimeout` covers less than its name says**. Measured on 2026-11-18 with Windows' OpenSSH
+9.5 against a listener on 127.0.0.1:
+
+| the server | `ConnectTimeout=5` alone | with `ServerAliveInterval=2`, `ServerAliveCountMax=2` |
+|---|---|---|
+| accepts, sends nothing | gives up at 5.6 s, "timed out during banner exchange" | the same |
+| accepts, sends its banner, then nothing | **still waiting at 30 s**, and for as long as anyone waits | gives up at 4.4 s, exit 255 |
+
+The second row is a machine half up: sshd answering while what is behind it is not. So every
+connection the script makes — the reach step, the `scp`, the build's one long `ssh` — now carries
+`ServerAliveInterval=15` and `ServerAliveCountMax=4` (`tools/lib/RemoteSsh.psm1`), and a server
+silent for a minute is given up whatever the connection was doing. The keepalive costs nothing on a
+build: the server answers it from its own loop however busy the compiler keeps the machine.
+
+The reach step is bounded as a process besides, because a server that answers its keepalives and
+never finishes the command is bounded by nothing ssh has: past `-ReachSeconds` (60; a connection
+here costs 10.6 s and `uname; nproc; uptime` none) the ssh is stopped and the attempt counted as one
+that found nobody. After `-ReachAttempts` (3) the script writes one line and exits **69**
+(EX_UNAVAILABLE), never a PowerShell error record, so a caller waiting on it reads a fact about the
+machine. `tools.linux_build` holds both to a listener of its own on loopback that sends a banner
+and nothing else: the keepalive with a two-second interval, and the whole script with
+`-ReachSeconds 3 -ReachAttempts 1` (about 6 s, against a run that was still at "reaching" when the
+case's 75 s ran out before the mend). No real host is contacted.
+
 ### What the suite is missing there, and why
 
 `cmake/EngineTesting.cmake` does not *fail* a pwsh test on a machine without pwsh, it does not
@@ -519,8 +547,9 @@ startup check says so correctly for every app, and `tools/schemac` — which the
 
 ## When it goes wrong
 
-- **`is not reachable over SSH after three attempts`** — the machine is rebooting. It is not a
-  build failure. Try `ssh titanxp uptime` by hand.
+- **`remote-build: <host> is not reachable over SSH after 3 attempt(s) (...)`, exit 69** — the
+  machine is rebooting, or half up (see "A server that answers and then says nothing" above). It
+  is not a build failure. Try `ssh titanxp uptime` by hand.
 - **`Couldn't find dependency package for XCURSOR`** — an `auto` preset on a machine with a
   partial X11. Use `linux-server`.
 - **`[code=260]` (SIGILL) from a build step** — should not happen any more: `schemac` is a host
