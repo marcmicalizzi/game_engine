@@ -186,9 +186,10 @@ TEST_CASE("ledger: a task's life, from creation to done, read back by another ho
   CHECK(at(t, "status").as_string() == "Open");
   CHECK(at(at(t, "created_by"), "actor").as_string() == "director");
   CHECK(at(at(t, "links"), "proposals").size() == 1);
-  const JsonValue id2 = at(
-      h.task("task.create", obj({{"title", JsonValue("Second")}, {"attribution", who("director")}})),
-      "id");
+  const JsonValue id2 =
+      at(h.task("task.create",
+                obj({{"title", JsonValue("Second")}, {"attribution", who("director")}})),
+         "id");
   CHECK(num(id2) != num(id1));
 
   // a claims it; b is refused while the claim stands, and may not update it.
@@ -199,11 +200,9 @@ TEST_CASE("ledger: a task's life, from creation to done, read back by another ho
   CHECK(h.fails("task.claim", obj({{"task", id1}, {"attribution", who("b")}}), &error) ==
         codes::k_lease_conflict);
   CHECK(at(at(error, "data"), "claimant").as_string() == "a");
-  CHECK(
-      h.fails(
-          "task.update",
-          obj({{"task", id1}, {"note", JsonValue("mine now")}, {"attribution", who("b")}}),
-          &error) == codes::k_forbidden);
+  CHECK(h.fails("task.update",
+                obj({{"task", id1}, {"note", JsonValue("mine now")}, {"attribution", who("b")}}),
+                &error) == codes::k_forbidden);
   CHECK(reason_of(error) == "task owner");
   // The creator may not finish it: only the claimant does.
   CHECK(h.fails("task.update", obj({{"task", id1},
@@ -224,9 +223,8 @@ TEST_CASE("ledger: a task's life, from creation to done, read back by another ho
                                  {"attribution", who("a")}}));
   CHECK(at(at(t, "links"), "proposals").size() == 1);  // a duplicate is not added twice
   CHECK(at(at(t, "links"), "checkpoints").size() == 1);
-  t = h.task(
-      "task.update",
-      obj({{"task", id1}, {"status", JsonValue("Done")}, {"attribution", who("a")}}));
+  t = h.task("task.update",
+             obj({{"task", id1}, {"status", JsonValue("Done")}, {"attribution", who("a")}}));
   CHECK(at(t, "status").as_string() == "Done");
   CHECK(at(t, "claimant").as_string() == "a");  // who did it stays
   CHECK(h.fails("task.claim", obj({{"task", id1}, {"attribution", who("b")}})) ==
@@ -255,9 +253,9 @@ TEST_CASE("ledger: a task's life, from creation to done, read back by another ho
   CHECK(at(at(listed, "tasks")[0], "history").size() == 0);
   CHECK(second.fails("task.list", obj({{"task", JsonValue(9)}})) == codes::k_not_found);
   // The creator reopens it; nobody holds it then.
-  t = second.task("task.update", obj({{"task", id1},
-                                      {"status", JsonValue("Open")},
-                                      {"attribution", who("director")}}));
+  t = second.task(
+      "task.update",
+      obj({{"task", id1}, {"status", JsonValue("Open")}, {"attribution", who("director")}}));
   CHECK(at(t, "status").as_string() == "Open");
   CHECK(at(t, "claimant").as_string().empty());
 
@@ -266,9 +264,9 @@ TEST_CASE("ledger: a task's life, from creation to done, read back by another ho
         codes::k_invalid_argument);
   CHECK(h.fails("task.create", obj({{"title", JsonValue("a\x01")}, {"attribution", who("d")}})) ==
         codes::k_invalid_argument);
-  CHECK(h.fails("task.claim", obj({{"task", id2},
-                                   {"ttl_seconds", JsonValue(0.5)},
-                                   {"attribution", who("a")}})) == codes::k_invalid_argument);
+  CHECK(h.fails("task.claim",
+                obj({{"task", id2}, {"ttl_seconds", JsonValue(0.5)}, {"attribution", who("a")}})) ==
+        codes::k_invalid_argument);
 }
 
 TEST_CASE("ledger: a claim nobody renews lapses and the task is open again") {
@@ -277,9 +275,8 @@ TEST_CASE("ledger: a claim nobody renews lapses and the task is open again") {
   h.open(tmp.file("doc"), true);
   const JsonValue id =
       at(h.task("task.create", obj({{"title", JsonValue("t")}, {"attribution", who("c")}})), "id");
-  (void)h.task(
-      "task.claim",
-      obj({{"task", id}, {"ttl_seconds", JsonValue(1.0)}, {"attribution", who("a")}}));
+  (void)h.task("task.claim",
+               obj({{"task", id}, {"ttl_seconds", JsonValue(1.0)}, {"attribution", who("a")}}));
   std::this_thread::sleep_for(std::chrono::milliseconds(1100));
   const JsonValue listed = h.ok("task.list");
   CHECK(num(at(listed, "lapsed")) == 1);
@@ -288,7 +285,8 @@ TEST_CASE("ledger: a claim nobody renews lapses and the task is open again") {
   const JsonValue& history = at(t, "history");
   CHECK(at(history[history.size() - 1], "change").as_string() == "lapsed");
   CHECK(at(history[history.size() - 1], "actor").as_string() == "a");
-  CHECK(at(history[history.size() - 1], "via").as_string() == "host");  // the host's clock, no caller
+  CHECK(at(history[history.size() - 1], "via").as_string() ==
+        "host");  // the host's clock, no caller
   // b may take it now; a's renewal is a claim of a task b holds.
   (void)h.task("task.claim", obj({{"task", id}, {"attribution", who("b")}}));
   CHECK(h.fails("task.claim", obj({{"task", id}, {"attribution", who("a")}})) ==
@@ -322,8 +320,7 @@ TEST_CASE("ledger: roles, and a review item for a person that no agent closes") 
   CHECK(h.fails("task.claim", obj({{"task", dunes}, {"attribution", who("x", "designer")}}),
                 &error) == codes::k_forbidden);
   CHECK(reason_of(error) == "task role");
-  (void)h.task("task.claim",
-               obj({{"task", dunes}, {"attribution", who("e", "environment")}}));
+  (void)h.task("task.claim", obj({{"task", dunes}, {"attribution", who("e", "environment")}}));
   // QA may not make tasks (the gate: its role names review.raise alone), but may raise an item.
   CHECK(h.fails("task.create", obj({{"title", JsonValue("t")}, {"attribution", who("q", "qa")}}),
                 &error) == codes::k_forbidden);
@@ -348,8 +345,7 @@ TEST_CASE("ledger: roles, and a review item for a person that no agent closes") 
   CHECK(at(r, "raised_via").as_string() == "stdio");
   CHECK(num(at(at(r, "subject"), "journal_length")) == 1);  // the host's, not the raiser's 99
   CHECK(at(at(r, "report"), "validator").as_string() == "anatomy");
-  CHECK(at(at(h.ok("task.list", obj({{"task", dunes}})), "tasks")[0], "reviews").size() ==
-        1);
+  CHECK(at(at(h.ok("task.list", obj({{"task", dunes}})), "tasks")[0], "reviews").size() == 1);
 
   // Nobody but a human role closes it: not the agent roles, not the director, not the raiser.
   for (const char* role : {"environment", "director", "qa"}) {
@@ -375,8 +371,7 @@ TEST_CASE("ledger: roles, and a review item for a person that no agent closes") 
                      {"attribution", who("person", "reviewer")}}),
                 &error) == codes::k_forbidden);
   CHECK(reason_of(error) == "human review");
-  CHECK(at(h.review("review.list", obj({{"review", item}})), "state").as_string() ==
-        "Open");
+  CHECK(at(h.review("review.list", obj({{"review", item}})), "state").as_string() == "Open");
   // A credential the operator issued for the role, presented on a connection, does; but not
   // against a revision of the item its closer did not see.
   h.bind(5, "person-at-desk", "person", "reviewer");
@@ -498,13 +493,13 @@ TEST_CASE("ledger: a host with no human role has nobody who closes a person's it
   h.open(tmp.file("doc"), true);
   const JsonValue item =
       at(h.review("review.raise", obj({{"kind", JsonValue("classified content review")},
-                                         {"audience", JsonValue("Human")},
-                                         {"summary", JsonValue("s")},
-                                         {"attribution", who("a")}})),
+                                       {"audience", JsonValue("Human")},
+                                       {"summary", JsonValue("s")},
+                                       {"attribution", who("a")}})),
          "id");
   JsonValue error;
-  CHECK(h.fails("review.close", obj({{"review", item}, {"attribution", who("a")}}),
-                &error) == codes::k_forbidden);
+  CHECK(h.fails("review.close", obj({{"review", item}, {"attribution", who("a")}}), &error) ==
+        codes::k_forbidden);
   CHECK(reason_of(error) == "human review");
 }
 
@@ -517,8 +512,9 @@ TEST_CASE("ledger: two hosts writing one directory at once lose nothing") {
   const std::string dir = tmp.file("doc");
   Host a;
   a.open(dir, true);
-  const JsonValue shared = at(
-      a.task("task.create", obj({{"title", JsonValue("shared")}, {"attribution", who("w")}})), "id");
+  const JsonValue shared =
+      at(a.task("task.create", obj({{"title", JsonValue("shared")}, {"attribution", who("w")}})),
+         "id");
   Host b;
   b.open(dir, false);
   constexpr int k_each = 25;
@@ -528,9 +524,8 @@ TEST_CASE("ledger: two hosts writing one directory at once lose nothing") {
       ids.push_back(num(
           at(h.task("task.create", obj({{"title", JsonValue(actor)}, {"attribution", who(actor)}})),
              "id")));
-      (void)h.task(
-          "task.update",
-          obj({{"task", shared}, {"note", JsonValue(actor)}, {"attribution", who("w")}}));
+      (void)h.task("task.update",
+                   obj({{"task", shared}, {"note", JsonValue(actor)}, {"attribution", who("w")}}));
     }
   };
   std::thread second([&] { work(b, "b", ids_b); });
@@ -576,9 +571,8 @@ TEST_CASE("ledger: a version-1 ledger reads, keeps its ids and draws new ones") 
   CHECK(num(at(tasks[1], "id")) == 2);
   const JsonValue item = h.review("review.list", obj({{"review", JsonValue(u64{1})}}));
   CHECK(num(at(item, "revision")) == 1);
-  const i64 made =
-      num(at(h.task("task.create", obj({{"title", JsonValue("new")}, {"attribution", who("b")}})),
-             "id"));
+  const i64 made = num(at(
+      h.task("task.create", obj({{"title", JsonValue("new")}, {"attribution", who("b")}})), "id"));
   CHECK(made != 1);
   CHECK(made != 2);
   std::string text;
@@ -617,7 +611,8 @@ TEST_CASE("ledger: a ledger refuses work past its bounds, and a full one can be 
       std::ofstream out(dir + "/ledger.json", std::ios::binary);
       out << R"({"tasks":[)" << tasks << R"(],"reviews":[)" << items << "]}";
     }
-    CHECK(h.fails("task.create", obj({{"title", JsonValue("one more")}, {"attribution", who("loop")}}),
+    CHECK(h.fails("task.create",
+                  obj({{"title", JsonValue("one more")}, {"attribution", who("loop")}}),
                   &error) == codes::k_invalid_argument);
     CHECK(reason_of(error) == "ledger bound");
     CHECK(bound_of(error) == "open tasks per actor");
@@ -628,9 +623,10 @@ TEST_CASE("ledger: a ledger refuses work past its bounds, and a full one can be 
                                      {"status", JsonValue("Dropped")},
                                      {"attribution", who("loop")}}));
     (void)h.task("task.create", obj({{"title", JsonValue("now")}, {"attribution", who("loop")}}));
-    CHECK(h.fails("review.raise", obj({{"kind", JsonValue("validation")},
-                                        {"summary", JsonValue("one more")},
-                                        {"attribution", who("loop")}}),
+    CHECK(h.fails("review.raise",
+                  obj({{"kind", JsonValue("validation")},
+                       {"summary", JsonValue("one more")},
+                       {"attribution", who("loop")}}),
                   &error) == codes::k_invalid_argument);
     CHECK(bound_of(error) == "open items per actor");
     (void)h.review("review.close", obj({{"review", JsonValue(u64{1})},
@@ -653,16 +649,17 @@ TEST_CASE("ledger: a ledger refuses work past its bounds, and a full one can be 
     CHECK(h.fails("task.create", obj({{"title", JsonValue("t")}, {"attribution", who("a")}}),
                   &error) == codes::k_invalid_argument);
     CHECK(bound_of(error) == "ledger bytes");
-    CHECK(h.fails("task.update", obj({{"task", JsonValue(u64{5})},
-                                      {"note", JsonValue("more")},
-                                      {"attribution", who("a")}}),
+    CHECK(h.fails("task.update",
+                  obj({{"task", JsonValue(u64{5})},
+                       {"note", JsonValue("more")},
+                       {"attribution", who("a")}}),
                   &error) == codes::k_invalid_argument);
     CHECK(bound_of(error) == "ledger bytes");
     // A claim and a status change still answer: a full ledger is worked down, not locked.
     (void)h.task("task.claim", obj({{"task", JsonValue(u64{5})}, {"attribution", who("a")}}));
     CHECK(at(h.task("task.update", obj({{"task", JsonValue(u64{5})},
-                                         {"status", JsonValue("Done")},
-                                         {"attribution", who("a")}})),
+                                        {"status", JsonValue("Done")},
+                                        {"attribution", who("a")}})),
              "status")
               .as_string() == "Done");
   }

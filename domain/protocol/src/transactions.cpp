@@ -147,7 +147,8 @@ TransactionEntry* Session::find_transaction(u64 id, const Caller& caller, i64 no
     if (held_elsewhere(id, caller, error)) return nullptr;
     // Committed in this host's memory, and its save failed: staging more into it or rolling it back
     // would be answered as if the patch were not there. doc.commit saves it.
-    if (const i64 at = landed_patch(id); at >= 0 && static_cast<u32>(at) < manifest_.undo_position) {
+    if (const i64 at = landed_patch(id);
+        at >= 0 && static_cast<u32>(at) < manifest_.undo_position) {
       error = make_error(codes::k_invalid_argument,
                          "transaction " + std::to_string(id) + " was committed as journal patch " +
                              std::to_string(at) +

@@ -624,7 +624,8 @@ JsonValue result_of(const JsonValue& response) {
 
 // The session a connection opens on `doc`, which the host made already.
 std::string open_on(net::WebSocket& ws, const std::string& doc) {
-  const JsonValue opened = call(ws, rpc(1, "session.open", R"({"path":)" + write_json(JsonValue(doc)) + "}"));
+  const JsonValue opened =
+      call(ws, rpc(1, "session.open", R"({"path":)" + write_json(JsonValue(doc)) + "}"));
   return std::string(result_of(opened).find("session")->as_string());
 }
 
@@ -657,15 +658,15 @@ TEST_CASE("listener: a person's review item is closed by a credential for a huma
   // The item, raised on the host's own side (a validator's host would raise it), for a person.
   const auto raise = [&](BoundHost& host, const std::string& doc) {
     const JsonValue opened = result_of(direct(
-        host, rpc(1, "session.open",
-                  R"({"path":)" + write_json(JsonValue(doc)) + R"(,"create":true})")));
+        host,
+        rpc(1, "session.open", R"({"path":)" + write_json(JsonValue(doc)) + R"(,"create":true})")));
     const std::string session(opened.find("session")->as_string());
-    const JsonValue raised = result_of(direct(
-        host, rpc(2, "review.raise",
-                  R"({"session":")" + session +
-                      R"(","kind":"classified content review","audience":"Human",)"
-                      R"("summary":"passed every numeric check",)"
-                      R"("attribution":{"actor":"validator","role":"designer"}})")));
+    const JsonValue raised = result_of(
+        direct(host, rpc(2, "review.raise",
+                         R"({"session":")" + session +
+                             R"(","kind":"classified content review","audience":"Human",)"
+                             R"("summary":"passed every numeric check",)"
+                             R"("attribution":{"actor":"validator","role":"designer"}})")));
     const JsonValue* id = (*raised.find("reviews"))[0].find("id");
     REQUIRE(id != nullptr);
     return write_json(*id);

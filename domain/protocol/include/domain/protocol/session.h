@@ -202,10 +202,10 @@ class Session {
   // scanner holds past its retries does, after everything before it in the call has happened.
   void fail_transactions_write_for_test() noexcept { test_fail_transactions_write_ = true; }
   // **The one gate on every write beside the document**: `transactions.json` and `leases.json`
-  // (`update_transactions`, `update_leases`) and `ledger.json` (ledger.cpp's `update_ledger`) ask it
-  // before they take a lock or change anything, and a refusal is the call's answer. True for every
-  // session today; a session that may not write its directory (one opened from a read-only root)
-  // refuses here, and its side-file reads pass `make_lock = false` (side_file.h).
+  // (`update_transactions`, `update_leases`) and `ledger.json` (ledger.cpp's `update_ledger`) ask
+  // it before they take a lock or change anything, and a refusal is the call's answer. True for
+  // every session today; a session that may not write its directory (one opened from a read-only
+  // root) refuses here, and its side-file reads pass `make_lock = false` (side_file.h).
   bool may_write_side_files(RpcError& error) const {
     (void)error;
     return true;

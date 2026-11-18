@@ -334,7 +334,8 @@ bool task_create(Context& ctx, const TaskCreateParams& params, TasksResult& out,
   }
   const i64 now = time::wall_unix_ms();
   TaskInfo made;
-  if (!update_ledger(ctx.sessions->vfs(), *s, false, true,
+  if (!update_ledger(
+          ctx.sessions->vfs(), *s, false, true,
           [&](LedgerFile& ledger, bool& write, RpcError& e) {
             out.lapsed = lapse_claims(ledger, now);
             write = out.lapsed > 0;
@@ -346,8 +347,9 @@ bool task_create(Context& ctx, const TaskCreateParams& params, TasksResult& out,
             }
             if (open >= k_open_tasks_per_actor) {
               e = bound_error("open tasks per actor", k_open_tasks_per_actor,
-                              caller.who.actor + " has made 256 tasks that are not Done or Dropped: "
-                                                 "finish or drop some before making more");
+                              caller.who.actor +
+                                  " has made 256 tasks that are not Done or Dropped: "
+                                  "finish or drop some before making more");
               return false;
             }
             TaskInfo t;
@@ -391,7 +393,8 @@ bool task_claim(Context& ctx, const TaskClaimParams& params, TasksResult& out, R
   const std::string role = role_of(caller);
   bool renewed = false;
   TaskInfo changed;
-  if (!update_ledger(ctx.sessions->vfs(), *s, false, false,
+  if (!update_ledger(
+          ctx.sessions->vfs(), *s, false, false,
           [&](LedgerFile& ledger, bool& write, RpcError& e) {
             out.lapsed = lapse_claims(ledger, now);
             write = out.lapsed > 0;
@@ -466,7 +469,8 @@ bool task_update(Context& ctx, const TaskUpdateParams& params, TasksResult& out,
   if (!text_ok("note", params.note, 0, k_text_max, true, error)) return false;
   const i64 now = time::wall_unix_ms();
   TaskInfo changed;
-  if (!update_ledger(ctx.sessions->vfs(), *s, false, !blank(params.note) || !links_empty(params.links),
+  if (!update_ledger(
+          ctx.sessions->vfs(), *s, false, !blank(params.note) || !links_empty(params.links),
           [&](LedgerFile& ledger, bool& write, RpcError& e) {
             out.lapsed = lapse_claims(ledger, now);
             write = out.lapsed > 0;
@@ -558,7 +562,8 @@ bool task_list(Context& ctx, const TaskListParams& params, TasksResult& out, Rpc
   if (s == nullptr) return false;
   const i64 now = time::wall_unix_ms();
   out.now_unix_ms = now;
-  return update_ledger(ctx.sessions->vfs(), *s, true, false,
+  return update_ledger(
+      ctx.sessions->vfs(), *s, true, false,
       [&](LedgerFile& ledger, bool& write, RpcError& e) {
         out.lapsed = lapse_claims(ledger, now);
         write = out.lapsed > 0;
@@ -618,7 +623,8 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
   }
   const i64 now = time::wall_unix_ms();
   ReviewInfo made;
-  if (!update_ledger(ctx.sessions->vfs(), *s, false, true,
+  if (!update_ledger(
+          ctx.sessions->vfs(), *s, false, true,
           [&](LedgerFile& ledger, bool& write, RpcError& e) {
             write = lapse_claims(ledger, now) > 0;
             u32 open = 0;
@@ -627,9 +633,10 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
             }
             if (open >= k_open_items_per_actor) {
               e = bound_error("open items per actor", k_open_items_per_actor,
-                              caller.who.actor + " has raised 256 review items that are still "
-                                                 "open: a raiser withdraws its own agent items, "
-                                                 "and a person's wait for the person");
+                              caller.who.actor +
+                                  " has raised 256 review items that are still "
+                                  "open: a raiser withdraws its own agent items, "
+                                  "and a person's wait for the person");
               return false;
             }
             TaskInfo* task = nullptr;
@@ -685,7 +692,8 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
   }
   const i64 now = time::wall_unix_ms();
   ReviewInfo changed;
-  if (!update_ledger(ctx.sessions->vfs(), *s, false, false,
+  if (!update_ledger(
+          ctx.sessions->vfs(), *s, false, false,
           [&](LedgerFile& ledger, bool& write, RpcError& e) {
             ReviewInfo* r = find_review(ledger, params.review, e);
             if (r == nullptr) return false;
@@ -760,7 +768,8 @@ bool review_list(Context& ctx, const ReviewListParams& params, ReviewsResult& ou
   Session* s = begin(ctx, params.session, nullptr, caller, error);
   if (s == nullptr) return false;
   out.now_unix_ms = time::wall_unix_ms();
-  return update_ledger(ctx.sessions->vfs(), *s, true, false,
+  return update_ledger(
+      ctx.sessions->vfs(), *s, true, false,
       [&](LedgerFile& ledger, bool& write, RpcError& e) {
         write = false;
         if (params.review != 0 && find_review(ledger, params.review, e) == nullptr) return false;

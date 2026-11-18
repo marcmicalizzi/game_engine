@@ -436,6 +436,27 @@ try {
   Set-FixtureFile $root 'docs/notes.md' "under ``$ws\game_engine_local``"
   $result = Invoke-Lint $root -Untracked
   Test-That 'a tree that is no checkout skips the rule, and says so' { $result.Code -eq 0 -and $result.Out.Contains('machine-path skipped') }
+
+  # human-flag (docs/subsystems/protocol.md, "The task ledger and review items"): a role's `human`
+  # flag is read in domain/protocol/src/policy.cpp alone, and every other check that a caller is a
+  # person reads Caller::human_via, so a check copied from the working role's flag is reported.
+  $root = New-Fixture
+  Set-FixtureFile $root 'domain/protocol/src/policy.cpp' "namespace engine::protocol {`nbool person(const Role* role) { return role->human; }`n}`n"
+  Set-FixtureFile $root 'domain/protocol/src/ledger.cpp' "namespace engine::protocol {`n// Not role->human: a person is known by caller.human_via alone.`nbool may_close(const Caller& caller) { return !caller.human_via.empty(); }`n}`n"
+  Test-That 'the flag read in policy.cpp, human_via elsewhere and a comment naming the flag pass' { (Invoke-Lint $root).Code -eq 0 }
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'domain/protocol/src/ledger.cpp' "namespace engine::protocol {`nbool may_close(const Caller& caller) { return caller.role != nullptr && caller.role->human; }`n}`n"
+  Test-Reports 'a read of the flag outside policy.cpp is reported' $root 'domain/protocol/src/ledger.cpp:2: [human-flag]'
+  Test-Reports 'and the message names the field to read instead' $root 'reads Caller::human_via'
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'apps/engine_editor/review.cpp' "bool person(const Role& r) { return r.human; }`n"
+  Test-Reports 'a read through a reference, in an app, is reported' $root 'apps/engine_editor/review.cpp:1: [human-flag]'
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'domain/protocol/tests/policy_tests.cpp' "bool shipped(const Role& r) { return r.human; }  // engine-lint: allow-human-flag the shipped file's one person`n"
+  Test-That 'a line-level allow-human-flag marker opts a line out' { (Invoke-Lint $root).Code -eq 0 }
 } finally {
   foreach ($r in $roots) {
     if ($KeepTemp) {

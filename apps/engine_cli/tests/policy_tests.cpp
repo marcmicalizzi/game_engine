@@ -134,9 +134,10 @@ std::string apply(const std::string& command, const char* actor, const char* lay
 }  // namespace
 
 // ADR-0072: a role marked human is conferred only by a credential presented on a connection.
-// engine-cli forwards `--role` to the host it starts, so before the mend `engine-cli --role reviewer
-// review.close` closed a person's item. Both refuse the start line now, engine-cli before any host
-// starts (its document directory is never made), and issuing a credential for the role still works.
+// engine-cli forwards `--role` to the host it starts, so before the mend `engine-cli --role
+// reviewer review.close` closed a person's item. Both refuse the start line now, engine-cli before
+// any host starts (its document directory is never made), and issuing a credential for the role
+// still works.
 TEST_CASE("host and engine-cli: no start line runs in a role marked human") {
   test::TempDir tmp("engine_cli_roles");
   const std::string roles = tmp.file("roles.json");
@@ -153,9 +154,9 @@ TEST_CASE("host and engine-cli: no start line runs in a role marked human") {
   CHECK(!test::path_exists(doc));
   CHECK(run({host_exe(), "--roles", roles, "--role", "designer", "--request", request}).exit_code ==
         0);
-  const Run issued = run({host_exe(), "--roles", roles, "--issue-credential",
-                          tmp.file("credentials.json"), "--name", "person", "--actor", "person-a",
-                          "--role", "reviewer"});
+  const Run issued =
+      run({host_exe(), "--roles", roles, "--issue-credential", tmp.file("credentials.json"),
+           "--name", "person", "--actor", "person-a", "--role", "reviewer"});
   CHECK(issued.exit_code == 0);
 }
 
@@ -412,8 +413,7 @@ TEST_CASE("cli: eight processes at once write one ledger and lose nothing") {
                           R"({"kind":"validation","summary":"two parts overlap","task":)" + task +
                               R"(,"attribution":{"actor":"qa-agent"}})"});
   REQUIRE(raised.exit_code == 0);
-  const Run reviews =
-      cli({"--doc", doc, "--compact", "review.list", R"({"task":)" + task + "}"});
+  const Run reviews = cli({"--doc", doc, "--compact", "review.list", R"({"task":)" + task + "}"});
   REQUIRE(reviews.exit_code == 0);
   CHECK(at(reviews.result, "reviews").size() == 1);
 }

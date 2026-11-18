@@ -297,9 +297,10 @@ TEST_CASE("policy: a roles file is checked when it is read") {
   for (const char* name : {"director", "designer", "environment", "qa", "performance", "reviewer"})
     CHECK_MESSAGE(shipped.find_role(name) != nullptr, name);
   // A person's role is the reviewer alone: no role an agent runs in closes a human review item.
-  for (const Role& role : shipped.roles().roles)
+  for (const Role& role : shipped.roles().roles) {
     const bool human = role.human;  // engine-lint: allow-human-flag the shipped file's own flags
     CHECK_MESSAGE(human == (role.name == "reviewer"), role.name);
+  }
   CHECK(shipped.roles().default_role == "qa");
   CHECK(shipped.find_role("qa")->methods.empty());
   CHECK(shipped.find_role("designer")->review_required);
@@ -1215,7 +1216,8 @@ TEST_CASE("transactions: a commit whose table write failed lands once, here and 
 // tail, so nothing is applied twice), and another actor's commit after it keeps them. Before the
 // mend the next host's first read of the table dropped the entry, the retry answered "committed"
 // for work the document did not hold, and the other actor's commit cut it off for good.
-TEST_CASE("transactions: a commit whose save failed after the journal lands once in the next host") {
+TEST_CASE(
+    "transactions: a commit whose save failed after the journal lands once in the next host") {
   TempDir tmp("protocol_transactions");
   const std::string dir = tmp.file("doc");
   Host host;
@@ -1930,8 +1932,8 @@ TEST_CASE("side files: a second host's open keeps a live host's connection lease
   };
   {
     std::ofstream out(dir + "/leases.json", std::ios::binary);
-    out << R"({"leases":[)" << lease(77, "feedfacefeedface") << ","
-        << lease(78, "0000000000000001") << "]}";
+    out << R"({"leases":[)" << lease(77, "feedfacefeedface") << "," << lease(78, "0000000000000001")
+        << "]}";
   }
   // The live host's mark, held as that host holds it; the other host left none.
   SideFileLock mark;
