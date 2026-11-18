@@ -21,6 +21,7 @@
 #include <utility>
 
 #if defined(ENGINE_HOST_STORE)
+#include <foundation/net/websocket.h>
 #include <foundation/store/sql_query.h>
 #endif
 
@@ -76,6 +77,12 @@ bool to_value(const JsonValue& json, u32 index, store::SqlValue& out, protocol::
   return true;
 }
 
+JsonValue blob_json(std::string_view bytes) {
+  JsonValue out = JsonValue::object();
+  out.set("blob", JsonValue(std::string_view(base64_encode(bytes))));
+  return out;
+}
+
 JsonValue to_json(const store::SqlValue& v) {
   switch (v.type) {
     case store::SqlType::Null: return JsonValue::null();
@@ -86,12 +93,14 @@ JsonValue to_json(const store::SqlValue& v) {
       out.set("real", JsonValue(v.real > 0 ? "inf" : "-inf"));
       return out;
     }
-    case store::SqlType::Text: return JsonValue(std::string_view(v.bytes));
-    case store::SqlType::Blob: {
-      JsonValue out = JsonValue::object();
-      out.set("blob", JsonValue(std::string_view(base64_encode(std::string_view(v.bytes)))));
-      return out;
-    }
+    case store::SqlType::Text:
+      // Text that is not well-formed UTF-8 — `CAST(x'ff' AS TEXT)` makes it with no function at
+      // all — would be invalid JSON, and over the listener an invalid text frame, which RFC 6455
+      // ends the connection for. It comes back in the blob form, its bytes as they are; the
+      // statement's own `typeof()` still says it was text.
+      if (!net::valid_utf8(v.bytes)) return blob_json(v.bytes);
+      return JsonValue(std::string_view(v.bytes));
+    case store::SqlType::Blob: return blob_json(v.bytes);
   }
   return JsonValue::null();
 }

@@ -952,6 +952,33 @@ TEST_CASE("listen: a long store.query holds up no other client, no tick, no clos
 #endif
 }
 
+#if defined(ENGINE_HOST_TEST_STORE)
+// Text a statement makes that is not UTF-8 comes back in the blob form (protocol.md, "Querying the
+// document"). Written as it was, it is an invalid text frame, which the client is right to end the
+// connection for; the second call on the same connection is what fails then.
+TEST_CASE("listen: store.query's text that is not UTF-8 comes back as bytes, the connection up") {
+  test::TempDir tmp("engine_host_listen_store_utf8");
+  const std::string doc = tmp.file("doc");
+  ListeningHost host({"--doc", doc, "--create"});
+  write_file(doc + "/world.db", "");
+  const std::string in_session = R"({"session":")" + host.session + "\"";
+  Client agent;
+  REQUIRE(agent.connect(host.port, host.token));
+  const std::string sql =
+      "SELECT CAST(x'ff' AS TEXT), typeof(CAST(x'ff' AS TEXT)), CAST(x'c3bc' AS TEXT), "
+      "CAST(x'c0af' AS TEXT)";
+  const JsonValue r = agent.call("store.query", in_session + ",\"sql\":" + json_text(sql) + "}");
+  REQUIRE_MESSAGE(error_code(r) == 0, write_json(r));
+  const JsonValue& row = at(at(r, "result"), "rows")[0];
+  CHECK(at(row[0], "blob").as_string() == "/w==");
+  CHECK(row[1].as_string() == "text");
+  CHECK(row[2].as_string() == "\xC3\xBC");          // well-formed text stays text
+  CHECK(at(row[3], "blob").as_string() == "wK8=");  // an overlong form is not UTF-8 either
+  const JsonValue pinged = agent.call("engine.ping", "{}");
+  CHECK(error_code(pinged) == 0);
+}
+#endif
+
 // A session closed before its connection drops (protocol.md, "Several clients, one host"): the
 // lease and the transaction the connection took in it are still its own while it is connected,
 // across the close and a reopen by someone else, and are let go when it drops although no session
