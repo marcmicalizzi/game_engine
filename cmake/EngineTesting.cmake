@@ -49,7 +49,8 @@ target_link_libraries(engine_test_main PUBLIC engine::platform)
 # The GPU lock's two numbers for a test (ADR-0049, docs/subsystems/gpu_lock.md). A test takes the
 # machine-wide lock when it, or a process it starts, opens a GPU device, and waits for it when
 # somebody else has it; the test main sets every wait in the test's tree to give up this many
-# seconds after the test started, with exit code 75, which CTest reports as a skip. Half an hour
+# seconds after the test started — later by the time each process has held the lock, since that
+# is work (T171) — with exit code 75, which CTest reports as a skip. Half an hour
 # is GPU-LOCK.md's rule 9 — a short job waits up to thirty minutes, because a measurement group's
 # lease is ten to thirty — and so it outlasts anything short that holds the card, and not a
 # diffusion batch or an hour of benchmarks, which a test should not sit behind.
@@ -112,17 +113,17 @@ endfunction()
 #   - the machine-wide lock can order the chains' devices: its directory exists, so the protocol
 #     is in use (gpu_lock.md, "Elsewhere, and the limits"). Where it cannot, one chain, since
 #     nothing would stop two tests' devices being open at once;
-#   - a test still fits its queue deadline beside the other chains (roadmap T171). Every wait in a
-#     test's tree gives up at the test's start plus ENGINE_TEST_GPU_LOCK_WAIT_S, an absolute
-#     deadline, and a test may itself run for ENGINE_TEST_WORK_TIMEOUT_S. Beside n - 1 other
-#     chains on a card that bounds the suite, its holds take turns with theirs and its run
-#     stretches up to n times; a test still running past the deadline gives up at its next wait
-#     (exit 75, skipped), and beside another chain there is always a next wait. So
+#   - a test's queue budget covers the other chains (roadmap T171). Every wait in a test's tree
+#     gives up once the test's time off the card — its waits and its CPU work between holds —
+#     reaches ENGINE_TEST_GPU_LOCK_WAIT_S (the deadline moves by each process's holds,
+#     gpu_lock.md, "How a hold works"), and a test may work for ENGINE_TEST_WORK_TIMEOUT_S.
+#     Beside n - 1 other chains on a card that bounds the suite its holds take turns with theirs,
+#     so its time off the card is up to (n - 1) * card + cpu <= n * WORK_S, and
 #     n <= WAIT_S / WORK_S: 1,800 / 600 gives the two chains on every preset with the default
 #     work, and the linux-server presets' 7,200 s of work — the Titan Xp's renderer parts run
-#     1,882 and 1,918 s alone (gate b66b) — give one, where two had renderer.2 to .4 and
-#     engine_view.3 give up after their 1,800 s on gate b67 (docs/ci/what-to-run.md, "Two GPU
-#     chains"). Two is the most it gives: more has not been measured.
+#     1,500 to 1,900 s alone (gate b66b) — give one, where two had renderer.2 to .4 and
+#     engine_view.3 give up after their 1,800 s on gate b67 (docs/ci/what-to-run.md, "One chain
+#     where a test outruns its deadline"). Two is the most it gives: more has not been measured.
 # A whole number overrides it, and is told when it breaks the second rule.
 set(_engine_gpu_lock_dir "")
 if(DEFINED ENV{ENGINE_GPU_LOCK} AND NOT "$ENV{ENGINE_GPU_LOCK}" STREQUAL "")

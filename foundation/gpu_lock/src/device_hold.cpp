@@ -36,6 +36,9 @@ struct ProcessHold {
   i64 expires_s = 0;
   i64 taken_ms = 0;   // wall clock, for the hold log
   i64 waited_ms = 0;  // how long the first device waited for it
+  // Every hold this process has taken, summed: what a deadline that moves with the holds moves by
+  // (HoldConfig::deadline_moves_with_holds, T171).
+  i64 held_total_ms = 0;
   bool set_holder_env = false;
   std::string previous_holder;  // ENGINE_GPU_LOCK_HOLDER before this hold set it
 
@@ -211,7 +214,9 @@ void end_hold(ProcessHold& h, std::unique_lock<std::mutex>& guard) {
   if (h.mode == HoldMode::Taken) {
     detail::disarm_signal_release();
     if (still_ours(h)) (void)detail::remove_file(h.path);
-    log_event(h.config, h.path, "hold", wall_ms() - h.taken_ms, h.waited_ms, h.started, nullptr);
+    const i64 held_ms = wall_ms() - h.taken_ms;
+    h.held_total_ms += std::max<i64>(held_ms, 0);
+    log_event(h.config, h.path, "hold", held_ms, h.waited_ms, h.started, nullptr);
   }
   if (h.set_holder_env) {
     detail::set_environment(k_env_holder, h.previous_holder);
@@ -256,7 +261,12 @@ HoldMode establish(ProcessHold& h, const HoldConfig& config) {
   if (!parent.empty() && !fs::is_directory(parent, ec)) return HoldMode::NoDirectory;
 
   const i64 began_ms = wall_ms();
+  // **The deadline is the queue's, not the work's** (T171; gpu_lock.md, "How a hold works"): the
+  // test's start plus its queue budget, moved by the time this process has held the card since.
+  // Without it a test whose own holds run past the budget — the Titan Xp's renderer parts, 1,500
+  // to 1,900 s alone — gives up at its first wait after it, behind anyone at all.
   i64 deadline_s = h.config.wait_until_unix_s;
+  if (deadline_s != 0 && h.config.deadline_moves_with_holds) deadline_s += h.held_total_ms / 1000;
   // Held for this process already — by this process through another path, or by the ancestor
   // ENGINE_GPU_LOCK_HOLDER names: used as it is, and no place in the line is taken for it, so a
   // holder's child is never counted among the waiters behind its own parent.
@@ -408,6 +418,7 @@ HoldConfig hold_config_from_environment() {
     value = value * 10 + (c - '0');
   }
   config.wait_until_unix_s = digits ? value : 0;
+  config.deadline_moves_with_holds = true;
   return config;
 }
 

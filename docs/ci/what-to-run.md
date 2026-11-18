@@ -816,9 +816,24 @@ with that chain's, and a test still running past its deadline gives up at its ne
 renderer's parts `engine_view.3` went from 483 s to past its 1,800, so the two that skipped first
 were each other's cause, and `water` ran 2,009 s against 1,624 alone.
 
-**So the configure keeps a test's stretched run inside its deadline**: beside `n - 1` other chains
-on a card that bounds the suite, a test's run stretches up to `n` times, and the most it is allowed
-is `ENGINE_TEST_WORK_TIMEOUT_S`, so `auto` deals two chains only where
+**One chain was not enough by itself.** Batch 68's first run of the leg with one chain (T171,
+2026-11-17 21:00 onwards) had `renderer.3` give up 2,141 s in: alone, a test that runs past its
+deadline needs only one other holder at one of its asks after it — on that server another user of
+the card, on this machine any agent — and gives up behind it however short its hold. So T171 has
+two halves.
+
+**The deadline is the queue's** ([gpu_lock](../subsystems/gpu_lock.md#how-a-hold-works)): each
+process moves the deadline it inherited later by the time it has itself held the lock, which is the
+test's work and never its queue. A test now gives up when its time off the card — its waits and
+the CPU work between its holds — reaches the budget, wherever its own run has got to. Children
+start from the deadline they inherit, so an end-to-end test's fifty children still share one
+budget, and CTest's `TIMEOUT` (work + queue) still covers a give-up: the deadline moves only by
+work.
+
+**And the configure deals one chain where a second would spend the queue**: beside `n - 1` other
+chains on a card that bounds the suite, a test's holds take turns with theirs, so it waits about
+`(n - 1)` times its own card time, and with its CPU work between holds its time off the card is at
+most `(n - 1) * card + cpu <= n * (card + cpu) <= n * WORK_S`. `auto` deals two chains only where
 `n * WORK_S <= WAIT_S` holds for `n` = 2. With the defaults (600 and 1,800 s) every preset keeps its
 two; the `linux-server` presets' 7,200 s of work give one, which is the one chain the server ran
 green on until T89. The number is known at configure time because the presets already declare how
@@ -826,13 +841,8 @@ long a test there may work, and that declaration is what the card's speed decide
 (no device is open at configure time) nor the cost table (measured on the RTX 5090) could say it. A
 whole number given for `ENGINE_TEST_GPU_CHAINS` overrides `auto`, with a warning when it breaks the
 rule. A build tree configured before T171 has T89's number in its cache, which nobody chose, and its
-first configure since reads it as `auto` (roadmap T171).
-
-**Not taken: a lock wait sized to the queue ahead.** Counting only the time a test's processes
-spend waiting, rather than a deadline from its start, would let a long test sit beside a second
-chain; but the budget is shared by every process of a test's tree, so it would have to be a counter
-the processes share, for a second chain that buys the server little — its suite is the card's, as
-the one-chain legs show (11,737 s on b66b with every GPU test run).
+first configure since reads it as `auto`. A second chain would buy the server little anyway: its
+suite is the card's, as the one-chain legs show (11,737 s on b66b with every GPU test run).
 
 ## Tests that open no device
 

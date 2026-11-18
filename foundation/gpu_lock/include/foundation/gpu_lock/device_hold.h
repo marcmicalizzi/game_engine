@@ -52,7 +52,8 @@ namespace engine::gpu_lock {
 
 // The switch: "1" takes the lock when a device is opened; unset or anything else does not.
 inline constexpr const char* k_env_on_device = "ENGINE_GPU_LOCK_ON_DEVICE";
-// The absolute deadline of every wait in this process tree, in Unix seconds.
+// The absolute deadline of every wait in this process tree, in Unix seconds, which each process
+// moves later by the time it has itself held the lock (HoldConfig::deadline_moves_with_holds).
 inline constexpr const char* k_env_wait_until = "ENGINE_GPU_LOCK_WAIT_UNTIL";
 // Who holds the lock on this process's behalf (a pid), set for children while a hold lasts.
 inline constexpr const char* k_env_holder = "ENGINE_GPU_LOCK_HOLDER";
@@ -82,7 +83,11 @@ struct HoldConfig {
   i64 look_ms = k_line_look_ms;           // how often a waiter looks at the line and the lock
   i64 ticket_lease_s = k_ticket_lease_s;  // how long its ticket outlives it if it dies
   i64 wait_until_unix_s = 0;              // 0: k_default_wait_s after the first wait begins
-  std::string log_path;                   // empty: no hold log
+  // The deadline moves later by every second this process has held the lock (T171): the budget
+  // is for waiting, and a test whose own work on the card outlasts it still has its queue. On in
+  // hold_config_from_environment; off by default, so a caller's deadline is the one it gave.
+  bool deadline_moves_with_holds = false;
+  std::string log_path;         // empty: no hold log
   std::FILE* out = stderr;      // the waiting, taking-over and giving-up lines; null: silent
   bool exit_on_give_up = true;  // false only for tests of the give-up itself
 };
