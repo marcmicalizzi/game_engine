@@ -573,6 +573,67 @@ TEST_CASE("flora motion: a walker through the crown is replayed to the same byte
   CHECK(same(live.ids, replay.ids));
 }
 
+// **A calm palm under traced shadows draws the rigid palm** (R181, 2026-11-18): the cases above
+// draw under the maps. On batch 67's main the grove's trees drew torn or not at all with the sway
+// on — with no wind too, so the pool was never filled — and differently from one run of one binary
+// to the next, under `--raster hw` and `--raster rt` alike: T165 had folded the hardware runs' pool
+// arguments on the GPU (renderer.md, "The pool's arguments"). This palm under traced shadows found
+// it, 23,001 of 102,400 pixels named differently from the rigid palm's 3,776, where the same palm
+// under the maps above passed. Padded as the swaying one is, so both cut the same DAG; with no
+// wind every part is at rest and every pixel names the same triangle at the same depth.
+TEST_CASE("flora motion: a calm palm under traced shadows draws the rigid palm's ids") {
+  const test::TempDir tmp("renderer_flora_rt");
+  REQUIRE(tmp.ok());
+  SceneData data;
+  std::string error;
+  REQUIRE_MESSAGE(load_palm(tmp, data, error), error);
+  REQUIRE(data.sources.size() == 1);
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  if (!gpu.device.features().ray_query || !gpu.device.features().acceleration_structure) {
+    MESSAGE("skipped: " << gpu.device.adapter().name << " traces no rays");
+    return;
+  }
+  FloraMesh tree;
+  REQUIRE(flora_mesh(
+      std::span<const geometry::ClusterFileMotionPart>(data.sources[0].motion_parts.data(),
+                                                       data.sources[0].motion_parts.size()),
+      std::span<const geometry::ClusterFileStructuralPart>(data.sources[0].structural_parts.data(),
+                                                           data.sources[0].structural_parts.size()),
+      data.sources[0].species, tree));
+  data.instances[0].bounds_padding = flora_bounds_padding(
+      tree, std::span<const Vec3>(data.lod.mesh.vertices.data(), data.lod.mesh.vertices.size()),
+      std::span<const geometry::ClusterFileMotionVertex>(data.sources[0].motion_vertices.data(),
+                                                         data.sources[0].motion_vertices.size()));
+  RenderSettings settings;
+  settings.shadows = ShadowMode::RayTraced;
+  settings.raster = gpu.device.features().mesh_shader ? RasterMode::Hardware : RasterMode::Vertex;
+  RenderSettings off = settings;
+  off.flora_motion = false;
+  FrameFlora calm;
+  calm.wind_set = true;
+  calm.wind_strength = 0.0f;
+  Shot rest;
+  Shot still;
+  REQUIRE_MESSAGE(draw(gpu, data, off, std::span<const FrameFlora>(&calm, 1), rest, error), error);
+  REQUIRE_MESSAGE(draw(gpu, data, settings, std::span<const FrameFlora>(&calm, 1), still, error),
+                  error);
+  CHECK(still.stats.parts == tree.part_count());
+  u32 covered = 0;
+  u32 differ = 0;
+  for (u32 i = 0; i + 2 < rest.ids.size() && i + 2 < still.ids.size(); i += 3) {
+    covered += rest.ids[i] != ~0u ? 1u : 0u;
+    differ += std::memcmp(rest.ids.data() + i, still.ids.data() + i, 3 * sizeof(u32)) != 0;
+  }
+  MESSAGE("under traced shadows: " << covered << " pixels of the rigid palm, " << differ
+                                   << " named differently with the sway on and no wind");
+  CHECK(covered > 1000);
+  CHECK(same(rest.ids, still.ids));
+}
+
 #endif  // ENGINE_RENDERER_TESTS_FLORA
 
 #if ENGINE_RENDERER_TESTS_FLORA

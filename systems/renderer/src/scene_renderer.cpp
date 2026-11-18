@@ -2924,6 +2924,26 @@ void record_fold_args(gfx::CommandList cb, const gfx::ComputePipeline& fold, u64
   cb.dispatch((n + gfx::k_fold_args_workgroup - 1) / gfx::k_fold_args_workgroup, 1, 1);
 }
 
+// The pool pass's arguments for one run of `n` views, from the views' survivor counts
+// `k_draw_args_bytes` apart at `source_at`: folded on the GPU (above), or each count copied into
+// its block's first word, the `{count, 1, 1}` the frame's reset left round it, which the pool pass
+// reads as one row of the fold. **The hardware runs copy** (R181; renderer.md, "The pool's
+// arguments"): folded, they left the pool unfilled on batch 67's main, for a reason not found.
+void record_run_args(gfx::CommandList cb, const gfx::ComputePipeline& fold_pipeline, bool fold,
+                     const gfx::BufferResource& source, u64 source_at,
+                     const gfx::BufferResource& args, u64 args_at, u32 args_stride, u32 n) {
+  if (fold) {
+    record_fold_args(cb, fold_pipeline, source.address + source_at, gfx::k_draw_args_bytes,
+                     args.address + args_at, args_stride, n);
+    return;
+  }
+  for (u32 i = 0; i < n; ++i) {
+    cb.copy_buffer(source.buffer, args.buffer,
+                   gfx::BufferCopy{source_at + u64{i} * gfx::k_draw_args_bytes,
+                                   args_at + u64{i} * args_stride, sizeof(u32)});
+  }
+}
+
 }  // namespace
 
 // One frame, from the cull pass to the resolve, for every view of the set. Every parameter block
@@ -5241,19 +5261,19 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // the passes cover every view of the run, so charging them to view 0 would put the whole set's
     // allocation on one monitor's row.
     add_alloc("deform alloc", rg_source, &alloc_params[run]);
-    // Each view's count folded into the pool pass's arguments (T165), where a copy of it was.
+    // Each view's count into the pool pass's arguments, folded for the software run alone (R181).
+    const bool fold = run == 2;
     graph.add_pass(
-        "deform args", gfx::PassKind::Compute,
-        [&, rg_source](gfx::PassBuilder& b) {
-          b.read(rg_source, gfx::Access::ComputeRead);
-          b.write(rg_deform_args, gfx::Access::ComputeWrite);
+        "deform args", fold ? gfx::PassKind::Compute : gfx::PassKind::Transfer,
+        [&, rg_source, fold](gfx::PassBuilder& b) {
+          b.read(rg_source, fold ? gfx::Access::ComputeRead : gfx::Access::TransferRead);
+          b.write(rg_deform_args, fold ? gfx::Access::ComputeWrite : gfx::Access::TransferWrite);
         },
-        [&, run, source_offset](gfx::CommandList cb, gfx::RenderGraph&) {
-          const u64 source = run == 2 ? scene.sw_args.address : scene.draw_args[run].address;
-          record_fold_args(cb, pipelines.fold, source + view_frames[0].args_offset + source_offset,
-                           gfx::k_draw_args_bytes,
-                           scene.deform_args.address + scene.deform_args_offset(0, run),
-                           k_visible_runs * gfx::k_draw_args_bytes, views);
+        [&, run, source_offset, fold](gfx::CommandList cb, gfx::RenderGraph&) {
+          record_run_args(cb, pipelines.fold, fold, run == 2 ? scene.sw_args : scene.draw_args[run],
+                          view_frames[0].args_offset + source_offset, scene.deform_args,
+                          scene.deform_args_offset(0, run), k_visible_runs * gfx::k_draw_args_bytes,
+                          views);
         });
     graph.add_pass(
         "deform", gfx::PassKind::Compute,

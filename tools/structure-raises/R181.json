@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R181",
+  "reason": "R181: the pool's arguments, why the hardware runs copy their counts and what found it (renderer.md); gfx.md's account of the folded dispatches says which runs fold",
+  "date": "2026-11-18",
+  "by": "R181",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 2268,
+    "page:docs/subsystems/gfx.md": 300
+  }
+}
