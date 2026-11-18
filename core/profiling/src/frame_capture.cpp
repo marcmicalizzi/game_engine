@@ -57,7 +57,18 @@ std::atomic<u32>& writer_word() noexcept {
 i64 g_origin_ns = 0;
 std::atomic<i64> g_stopped_ns{0};
 std::atomic<i64> g_full_ns{-1};  // when the first event was refused, from the origin; -1: never
-char g_thread_names[k_capture_max_threads][k_capture_thread_name_bytes] = {};
+// The thread-name table (profiling.md, "Thread names"). A report copies a running capture's names
+// while threads name themselves, so a name is atomic words under a sequence word, odd while it is
+// written: a reader keeps a name only when the sequence was even and the same before and after its
+// copy, and a slot whose sequence is 0 was never named in this capture. One writer a slot: its
+// thread (the shared last slot is written once and never renamed).
+constexpr u32 k_name_words = k_capture_thread_name_bytes / 8;
+static_assert(k_capture_thread_name_bytes % 8 == 0, "a name is whole 8-byte words");
+struct NameSlot {
+  std::atomic<u32> seq{0};
+  std::atomic<u64> words[k_name_words];
+};
+NameSlot g_thread_names[k_capture_max_threads];
 
 struct ThreadState {
   u32 generation = 0;  // the capture the index below belongs to
@@ -76,13 +87,36 @@ void copy_name(char* to, const char* from) noexcept {
   to[n] = '\0';
 }
 
+void write_name(u32 index, const char* from) noexcept {
+  NameSlot& slot = g_thread_names[index];
+  char bytes[k_capture_thread_name_bytes] = {};
+  copy_name(bytes, from);
+  const u32 seq = slot.seq.load(std::memory_order_relaxed);
+  slot.seq.store(seq + 1, std::memory_order_relaxed);
+  std::atomic_thread_fence(std::memory_order_release);
+  for (u32 w = 0; w < k_name_words; ++w) {
+    u64 word = 0;
+    std::memcpy(&word, bytes + w * 8, 8);
+    slot.words[w].store(word, std::memory_order_relaxed);
+  }
+  slot.seq.store(seq + 2, std::memory_order_release);
+}
+
+void clear_names() noexcept {
+  for (NameSlot& slot : g_thread_names) {
+    slot.seq.store(0, std::memory_order_relaxed);
+    for (std::atomic<u64>& word : slot.words)
+      word.store(0, std::memory_order_relaxed);
+  }
+}
+
 // The calling thread's index in capture `generation`, given one on its first event.
 u16 thread_index(u32 generation) noexcept {
   ThreadState& t = t_thread;
   if (t.generation != generation) {
     const u32 index = g_threads.fetch_add(1, std::memory_order_relaxed);
     const u32 kept = std::min(index, k_capture_max_threads - 1);  // the last index is shared
-    if (index < k_capture_max_threads) copy_name(g_thread_names[index], t.name);
+    if (index < k_capture_max_threads) write_name(index, t.name);
     t.index = static_cast<u16>(kept);
     t.generation = generation;
   }
@@ -169,7 +203,7 @@ bool capture_start(const CaptureOptions& options) {
   g_claimed.store(0, std::memory_order_relaxed);
   g_dropped.store(0, std::memory_order_relaxed);
   g_threads.store(0, std::memory_order_relaxed);
-  std::memset(g_thread_names, 0, sizeof(g_thread_names));
+  clear_names();
   g_origin_ns = trace_now_ns();
   g_stopped_ns.store(0, std::memory_order_relaxed);
   g_full_ns.store(-1, std::memory_order_relaxed);
@@ -243,7 +277,7 @@ void capture_name_thread(const char* name) noexcept {
   if (generation == 0) return;
   std::atomic<u32>& word = writer_word();
   if (!enter(generation, word)) return;
-  if (t.index < k_capture_max_threads - 1) copy_name(g_thread_names[t.index], t.name);
+  if (t.index < k_capture_max_threads - 1) write_name(t.index, t.name);
   leave(word);
 }
 
@@ -273,8 +307,28 @@ u32 capture_count() noexcept {
   return static_cast<u32>(std::min<u64>(g_claimed.load(std::memory_order_acquire), g_capacity));
 }
 
-const char* capture_thread_name(u32 thread) noexcept {
-  return thread < k_capture_max_threads ? g_thread_names[thread] : "";
+void capture_thread_name(u32 thread, char (&out)[k_capture_thread_name_bytes]) noexcept {
+  out[0] = '\0';
+  if (thread >= k_capture_max_threads) return;
+  const NameSlot& slot = g_thread_names[thread];
+  // A rename is a few stores, so a reader that meets one looks again a few times and otherwise
+  // answers no name rather than a torn one.
+  for (u32 look = 0; look < 64; ++look) {
+    const u32 before = slot.seq.load(std::memory_order_acquire);
+    if (before == 0) return;
+    if ((before & 1u) != 0) {
+      std::this_thread::yield();
+      continue;
+    }
+    u64 words[k_name_words];
+    for (u32 w = 0; w < k_name_words; ++w)
+      words[w] = slot.words[w].load(std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_acquire);
+    if (slot.seq.load(std::memory_order_relaxed) != before) continue;
+    std::memcpy(out, words, sizeof(words));
+    out[k_capture_thread_name_bytes - 1] = '\0';
+    return;
+  }
 }
 
 }  // namespace engine::profiling

@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -54,7 +55,9 @@ TEST_CASE("frame capture: off records nothing, on records zones, marks and value
   CHECK_FALSE(info.running);
   CHECK(info.dropped == 0);
   CHECK(info.threads == 1);
-  CHECK(std::strcmp(capture_thread_name(0), "capture main") == 0);
+  char name[k_capture_thread_name_bytes];
+  capture_thread_name(0, name);
+  CHECK(std::strcmp(name, "capture main") == 0);
   // mark, two iterations and the function's zone, two values, the end
   REQUIRE(events.size() == 7);
   CHECK(events[0].kind == CaptureKind::frame);
@@ -173,8 +176,11 @@ TEST_CASE("frame capture: zones on several threads, and a stop that waits for it
     t.join();
   CHECK(info.threads >= 2);
   u32 named = 0;
-  for (u32 t = 0; t < info.threads; ++t)
-    if (std::strncmp(capture_thread_name(t), "worker-", 7) == 0) ++named;
+  for (u32 t = 0; t < info.threads; ++t) {
+    char name[k_capture_thread_name_bytes];
+    capture_thread_name(t, name);
+    if (std::strncmp(name, "worker-", 7) == 0) ++named;
+  }
   CHECK(named >= 1);
   u32 marks = 0;
   for (const CaptureEvent& e : first) {
@@ -182,5 +188,60 @@ TEST_CASE("frame capture: zones on several threads, and a stop that waits for it
     if (e.kind == CaptureKind::zone) CHECK(e.end_ns >= e.begin_ns);
   }
   CHECK(marks + info.dropped >= 50);
+  capture_reset();
+}
+
+// A report of a running capture copies the thread names while threads make their first events and
+// rename themselves (profiling.md, "Thread names"). Before the table was a sequence of atomic
+// words, the copy read plain chars a thread was writing — a data race the thread sanitizer reports
+// on this case — and could keep a torn name. Every name read here is whole: one of the names the
+// threads gave, or empty.
+TEST_CASE("frame capture: a name read while threads name themselves is whole or empty") {
+  capture_reset();
+  CaptureOptions options;
+  options.capacity = 1u << 16;
+  REQUIRE(capture_start(options));
+  constexpr u32 k_workers = 8;
+  std::atomic<bool> go{true};
+  std::vector<std::thread> threads;
+  for (u32 w = 0; w < k_workers; ++w) {
+    threads.emplace_back([w, &go] {
+      const std::string a = "worker-" + std::to_string(w) + "-" + std::string(40, 'a');
+      const std::string b = "worker-" + std::to_string(w) + "-" + std::string(40, 'b');
+      capture_name_thread(a.c_str());
+      u32 turn = 0;
+      while (go.load(std::memory_order_relaxed)) {
+        {
+          ENGINE_PROFILE_ZONE_NAMED("capture tests: naming zone");
+        }
+        capture_name_thread((++turn & 1u) != 0 ? b.c_str() : a.c_str());
+      }
+    });
+  }
+  u32 whole = 0;
+  for (u32 look = 0; look < 2000; ++look) {
+    CaptureInfo info;
+    (void)snapshot(info);
+    for (u32 t = 0; t < info.threads; ++t) {
+      char name[k_capture_thread_name_bytes];
+      capture_thread_name(t, name);
+      const std::string n(name);
+      if (n.empty()) continue;
+      // `worker-<w>-` and then one letter to the end (the names are cut to the table's width): a
+      // torn name mixes the two.
+      REQUIRE_MESSAGE(n.size() == k_capture_thread_name_bytes - 1, n);
+      REQUIRE_MESSAGE(n.substr(0, 7) == "worker-", n);
+      const usize dash = n.find('-', 7);
+      REQUIRE_MESSAGE(dash != std::string::npos, n);
+      const char letter = n[dash + 1];
+      REQUIRE_MESSAGE(n.find_first_not_of(letter, dash + 1) == std::string::npos, n);
+      ++whole;
+    }
+  }
+  go.store(false);
+  for (std::thread& th : threads)
+    th.join();
+  capture_stop();
+  CHECK(whole > 0);
   capture_reset();
 }

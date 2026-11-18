@@ -113,8 +113,11 @@ u32 capture_count() noexcept;
 // The events the buffer holds before it drops: what the running or last capture asked for; 0 when
 // there is no buffer (before the first start, after a reset).
 u32 capture_capacity() noexcept;
-// The name the capture has for thread index `thread`: what it named itself, or "" when it did not.
-const char* capture_thread_name(u32 thread) noexcept;
+// Copies the name the capture has for thread index `thread` into `out`: what it named itself, or ""
+// when it did not, or when its name is being written at this moment and was not whole on a few
+// looks. Safe while the capture runs and threads name themselves: a name is copied whole or not at
+// all, never torn (profiling.md, "Thread names").
+void capture_thread_name(u32 thread, char (&out)[k_capture_thread_name_bytes]) noexcept;
 
 // A zone scope: records itself when the capture was on at both its ends.
 class CaptureZone {

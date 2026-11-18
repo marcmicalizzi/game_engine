@@ -298,8 +298,13 @@ void copy_capture(CaptureCopy& out) {
       std::span<CaptureEvent>(out.events.data(), out.events.size()), out.info);
   out.events.resize(n);
   out.thread_names.clear();
-  for (u32 t = 0; t < out.info.threads; ++t)
-    out.thread_names.push_back(std::string(profiling::capture_thread_name(t)));
+  // Each name whole or empty, never torn by its thread naming itself meanwhile (profiling.md,
+  // "Thread names").
+  char name[profiling::k_capture_thread_name_bytes];
+  for (u32 t = 0; t < out.info.threads; ++t) {
+    profiling::capture_thread_name(t, name);
+    out.thread_names.push_back(std::string(name));
+  }
 }
 
 FrameReport build_report(std::span<const CaptureEvent> events, const CaptureInfo& info,
