@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R181",
+  "reason": "R181: the pool's arguments, which runs fold and why the folds come first after the cull, and what found it (renderer.md; joined with W147 at the stack, so gfx.md is W147's)",
+  "date": "2026-11-18",
+  "by": "R181",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 2268
+  }
+}
