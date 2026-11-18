@@ -102,10 +102,14 @@ Decision decide(const ContentClasses& classes, const ViewPolicy& policy);
 // The policy every host runs that was not told otherwise (ADR-0033 decision 7): `nudity: none`,
 // `sexual: none`, `violence: mild`, every game category `none`.
 inline constexpr std::string_view k_agent_default_name = "agent-default";
-// What `agent-default` puts in place of content above a cap. The owner has not decided this
-// (ADR-0073, question 2: the design recommends `proxy` for nudity and sexual, `omit` for
-// violence); until they do, the stricter answer, `omit`, for every category.
-inline constexpr Substitution k_agent_default_substitution = Substitution::omit;
+// What `agent-default` puts in place of content above a cap, per engine category, as the owner
+// decided on 2026-11-18 (ADR-0073, question 2, "Box, as proposed"): a box at the bounds for
+// nudity and sexual, so an agent's picture keeps its framing, and nothing for violence.
+inline constexpr std::array<Substitution, k_engine_categories> k_agent_default_substitutions = {
+    Substitution::proxy, Substitution::proxy, Substitution::omit};
+// A category `agent-default` does not name (a game's own) is capped at `none`, as ADR-0033
+// decision 7 says, and omitted: the stricter answer for a category nobody has judged.
+inline constexpr Substitution k_agent_default_game_substitution = Substitution::omit;
 ViewPolicy agent_default();
 
 // The categories a build or a host knows: the engine's three, then a game's. Names are read

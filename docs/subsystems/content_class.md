@@ -29,9 +29,9 @@ The file shapes are schema types in `schemas/provenance.schema` (`ContentClasses
 - **A policies file that is wrong is refused whole**, the set unchanged, with the reason: a policy with no name, a name given twice, a category neither table defines or capped twice in one policy, a cap its ladder does not have, a substitution that is not one of ADR-0033's four names, and `cover` or `obscure at capture`, which are not built until the character work (C11, C12) builds slots and section masks ([content classes](../content-classes.md#what-decided-at-instantiation-means)). Unknown fields are refused too.
 - **`agent-default` is never redefined by a file**, wider or narrower. The design compiles it in as the policy every host runs unless its operator says otherwise, and as the one a credentialed connection falls back to rather than the host's own ([content classes](../content-classes.md#where-a-policy-lives-and-what-keeps-it-from-a-client)); a file that could redefine it would move that fail-closed floor silently, so the name is reserved and a file naming it is refused as a duplicate. The design does not address the case in words; this is the reading that keeps its fallback where it says it is. An operator who wants more for an agent names a policy of their own.
 
-## `agent-default`, and what waits on the owner
+## `agent-default`
 
-Its caps are ADR-0033 decision 7's: `nudity: none`, `sexual: none`, `violence: mild`, every game category `none`. **What it puts in place of content above a cap is not decided** (ADR-0073, question 2: the design recommends `proxy` for `nudity` and `sexual` and `omit` for `violence`). Until the owner answers, `k_agent_default_substitution` is `Substitution::omit` for every category, the stricter of the two answers, and the test "agent-default is ADR-0033 decision 7's caps, and omit until the owner says" pins both the constant and the policy. The owner's answer changes that constant (or, for the recommended mix, the policy's two substitutions) and the test in the same commit.
+Its caps are ADR-0033 decision 7's: `nudity: none`, `sexual: none`, `violence: mild`, every game category `none`. **What it puts in place of content above a cap is the owner's decision of 2026-11-18** (ADR-0073, question 2, "Box, as proposed"): `proxy` for `nudity` and `sexual`, so that an agent's picture keeps the framing, silhouette and place of a thing as a plain box at its bounds, and `omit` for `violence` (`k_agent_default_substitutions`, one per engine category). **A game's category is `omit`** (`k_agent_default_game_substitution`): the owner's answer named the engine's three, a game's category is one nobody has judged a box to be harmless for, and `omit` is the stricter of the two answers. The module was built with `omit` everywhere until the answer came. The test "agent-default is ADR-0033 decision 7's caps and the owner's substitutions" pins the two constants, the policy they build, and what it decides for one class in each category.
 
 ## What its next leg mends
 
@@ -57,7 +57,7 @@ A review of the module and of the design found three faults in the readers built
 
 ## Public API
 
-`foundation/content_class/content_class.h`: `ContentClasses`, `is_none`, `join`; `Substitution`, `ViewPolicy`, `within`, `narrow`; `Outcome`, `Decision`, `decide`; `k_agent_default_name`, `k_agent_default_substitution`, `agent_default`; `Categories` (`add`, `add_json`, `find`, `level`, `top`); `read_classes`; `NamedPolicy`, `ViewPolicies` (`read`, `read_json`, `find`).
+`foundation/content_class/content_class.h`: `ContentClasses`, `is_none`, `join`; `Substitution`, `ViewPolicy`, `within`, `narrow`; `Outcome`, `Decision`, `decide`; `k_agent_default_name`, `k_agent_default_substitutions`, `k_agent_default_game_substitution`, `agent_default`; `Categories` (`add`, `add_json`, `find`, `level`, `top`); `read_classes`; `NamedPolicy`, `ViewPolicies` (`read`, `read_json`, `find`).
 
 Nothing in the tree reads a categories file or a policies file at run time yet, no host has a flag for one, and no policies file is committed: the tests write theirs as strings.
 

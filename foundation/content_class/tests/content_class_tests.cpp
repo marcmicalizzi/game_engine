@@ -66,17 +66,32 @@ TEST_CASE("content_class: the engine's three ladders are ADR-0033's, in order") 
 }
 
 TEST_CASE(
-    "content_class: agent-default is ADR-0033 decision 7's caps, and omit until the owner says") {
+    "content_class: agent-default is ADR-0033 decision 7's caps and the owner's substitutions") {
   const ViewPolicy p = agent_default();
   CHECK(p.caps[k_nudity] == 0);
   CHECK(p.caps[k_sexual] == 0);
   CHECK(p.caps[k_violence] == 1);
   for (u32 i = k_engine_categories; i < k_max_categories; ++i)
     CHECK(p.caps[i] == 0);
-  // The substitution waits on the owner (ADR-0073, question 2); until then, omit everywhere.
-  CHECK(k_agent_default_substitution == Substitution::omit);
-  for (u32 i = 0; i < k_max_categories; ++i)
+  // The owner, 2026-11-18 (ADR-0073, question 2): a box for nudity and sexual, nothing for
+  // violence; a game's category, which no answer named, omitted.
+  CHECK(k_agent_default_substitutions[k_nudity] == Substitution::proxy);
+  CHECK(k_agent_default_substitutions[k_sexual] == Substitution::proxy);
+  CHECK(k_agent_default_substitutions[k_violence] == Substitution::omit);
+  CHECK(k_agent_default_game_substitution == Substitution::omit);
+  CHECK(p.substitutions[k_nudity] == Substitution::proxy);
+  CHECK(p.substitutions[k_sexual] == Substitution::proxy);
+  CHECK(p.substitutions[k_violence] == Substitution::omit);
+  for (u32 i = k_engine_categories; i < k_max_categories; ++i)
     CHECK(p.substitutions[i] == Substitution::omit);
+  // What that means for content: a nudity class above the cap is a box, violence above it and a
+  // game category above none are omitted.
+  CHECK(decide(classes_of(k_nudity, 1), p).outcome == Outcome::proxy);
+  CHECK(decide(classes_of(k_sexual, 2), p).outcome == Outcome::proxy);
+  CHECK(decide(classes_of(k_violence, 2), p).outcome == Outcome::omit);
+  CHECK(decide(classes_of(glow(), 1), p).outcome == Outcome::omit);
+  CHECK(decide(join(classes_of(k_nudity, 1), classes_of(k_violence, 2)), p).outcome ==
+        Outcome::omit);
   const ViewPolicies set;
   REQUIRE(set.size() == 1);
   CHECK(set.at(0).name == "agent-default");

@@ -26,7 +26,7 @@ A review of the first pass found that it said more than it built in five places:
    - **What cannot be read is never `none`**: a sidecar that is not JSON, holds a key twice, is of the wrong shape or type, or names an unknown category refuses the build; at load, such a class is the highest level of every category the reader knows, and the reader writes that class into its output whenever it refuses.
    - **Categories travel with the data.** The engine's three are compiled in. A game adds its own in a categories file its content build is given, and every built thing that records a class records each category's ladder by name beside it, so no host is given a categories file. A category name is `[a-z0-9_]`; data naming a known category with a different ladder is unreadable; a level a category does not have reads as the category's highest.
 
-2. **A document record may raise its asset's class and never lower it** (*recommended, not decided*, question 1). `MeshPlacement` version 2 carries `content_classes`, and the effective class is the per-category maximum of asset and record. `doc.place_asset` and `editor.import_mesh` copy the asset's class onto the record. **A transaction is refused (1008, `"content class"`) when the composed class of any placement it touches falls, unless the caller's role is marked `human`**: compared through the whole layer stack, before and after every transaction whatever produced it (an apply, an undo, a redo, a merge's result applied, a rollback, a promotion, a change to the layer stack), with a deleted placement counted as all `none`. A raise only narrows what is shown, so it is open to any role that may write the record.
+2. **A document record may raise its asset's class and never lower it** (question 1, **decided by the owner, 2026-11-18**). `MeshPlacement` version 2 carries `content_classes`, and the effective class is the per-category maximum of asset and record. `doc.place_asset` and `editor.import_mesh` copy the asset's class onto the record. **A transaction is refused (1008, `"content class"`) when the composed class of any placement it touches falls, unless the caller's role is marked `human`**: compared through the whole layer stack, before and after every transaction whatever produced it (an apply, an undo, a redo, a merge's result applied, a rollback, a promotion, a change to the layer stack), with a deleted placement counted as all `none`. A raise only narrows what is shown, so it is open to any role that may write the record.
 
 3. **A built thing records the class of exactly what its key covers, and the class, by name, is part of what a cache entry answers.**
    - **Where**: section 54 (`ContentClasses`) of a container holds its source's own class; section 6 of a `.tex` holds its image's own class. Each holds the ladders by name, and **is written only when some level is above `none`**.
@@ -51,7 +51,7 @@ A review of the first pass found that it said more than it built in five places:
    - **What the scene remembers**: the policy it was made under, an append-only table of each distinct class it decided with the outcome, and `held`, the join of what it admitted.
    - **Nothing on the GPU**: no GPU struct, shader or per-frame work changes.
    - **Not the world**: the runtime world materializes every record whatever its class, because the world is the source of truth and not an output, and its state hash is the same under every policy.
-   - **The default substitutions** for `agent-default` are `proxy` for `nudity` and `sexual` and `omit` for `violence` (*recommended, not decided*, question 2).
+   - **The default substitutions** for `agent-default` are `proxy` for `nudity` and `sexual` and `omit` for `violence` (question 2, **decided by the owner, 2026-11-18**). A category `agent-default` does not name, a game's own, is capped at `none` as ADR-0033 decision 7 says and substituted by `omit`, the stricter of the two: the owner decided the engine's three, and a game's category is one nobody has judged a box at the bounds to be harmless for.
 
 6. **Every output names its policy, where the policy came from, and the policies file's hash**: the capture, evaluate and benchmark results carry `view_policy` (name, source `compiled-in`, `start line` or `credential`, caps, substitutions, file hash), `held` and `substituted`; every PNG the capture path writes carries them in a `tEXt` chunk; engine-view's summary and a packaged game's report carry them too. No path is recorded. **A host started under a policy wider than `agent-default` says so** on stderr at start, in its start line or summary, and in every result and chunk; a connection under a credential naming a wider policy is logged when it connects.
 
@@ -60,15 +60,17 @@ A review of the first pass found that it said more than it built in five places:
    - **The item**: each refusal makes the host raise a `classified content review` item for a person (A23). It carries the subject's identity and version, assets by portable path, and numbers only. It is attributed to the caller and recorded as the host's, so a caller that may only read cannot lose it. It is deduplicated by the subject's identity, the build key and the category, naming the latest version.
    - **Who closes it**: a role marked `human`, after a person has looked through a host or credential whose policy covers it. The MCP tools treat 1011 as a handled outcome and never retry it.
 
-8. **Reads of the document return a record's properties unchanged, with its effective class and `above_policy` beside them** (*recommended, not decided*, question 3). The authoring rule is that a classified asset is named neutrally.
+8. **Reads of the document return a record's properties unchanged, with its effective class and `above_policy` beside them** (question 3, **decided by the owner, 2026-11-18**). The authoring rule is that a classified asset is named neutrally.
 
 9. **The vocabulary is one module, `foundation/content_class`, and it is not a capability.** `ENGINE_MINIMAL` and every `ENGINE_WITH_` switch leave enforcement in, because a build switch is what ADR-0033 forbids as the mechanism.
 
-### Questions for the owner (recommended, not decided)
+### What the owner was asked, and what they chose (2026-11-18)
 
-1. **Records may raise a class, and only a human role may lower one.** Recommended. The alternative is classes on the asset's sidecar alone: simpler, and a neutral asset can then never be classified by how it is placed.
-2. **`agent-default` substitutes `proxy` for `nudity` and `sexual` and `omit` for `violence`.** Recommended, so that framing, silhouette and the place of a thing stay meaningful in an agent's picture. The alternative is `omit` for every category, so that not even a box at the bounds reaches an agent's picture.
-3. **Record properties are returned unchanged above the cap, with the class beside them.** Recommended, because a review needs the subject's identity and diffs and merges need the text. The alternative withholds a record's string properties above the caller's cap: safer, at the cost of both.
+The first pass left three of these choices to the owner. All three were answered the same day, each as proposed.
+
+1. **May a record raise a class, with only a person's role lowering one?** The alternative was classes on the asset's sidecar alone: simpler, and a neutral asset could then never be classified by how it is placed. **Chosen: "Yes, as proposed"** (decision 2).
+2. **What does `agent-default` put in place of content above a cap?** Proposed: `proxy` for `nudity` and `sexual` and `omit` for `violence`, so that framing, silhouette and the place of a thing stay meaningful in an agent's picture. The alternative was `omit` for every category, so that not even a box at the bounds reaches an agent's picture; the module was built with it until the answer came. **Chosen: "Box, as proposed"** (decision 5).
+3. **Are record properties returned unchanged above the cap, with the class beside them?** Proposed, because a review needs the subject's identity and diffs and merges need the text. The alternative withheld a record's string properties above the caller's cap: safer, at the cost of both. **Chosen: "Text, as proposed"** (decision 8).
 
 ## Consequences
 
@@ -99,5 +101,5 @@ A review of the first pass found that it said more than it built in five places:
 
 - `cover`, or substitution per material or per section, is built (C11, C12): decision 5's per-instance rule then narrows to the part.
 - A host serves a client over something other than loopback (the credentials decision's own trigger, A4), which makes a credential's policy a security boundary rather than a guard rail.
-- The owner answers one of the three questions.
+- An agent's picture under `agent-default` is found to tell more than the owner meant by a box at the bounds (question 2's answer), or a game asks for a substitution of its own for a category of its own.
 - Load-time measurement shows the sidecar probes cost more than a percent of a many-mesh load; then the classes move into a manifest the content build writes beside the derived data, keyed like it.

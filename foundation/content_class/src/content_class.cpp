@@ -85,7 +85,8 @@ ViewPolicy agent_default() {
   ViewPolicy p;            // every category `none`, game categories included
   p.caps[k_violence] = 1;  // `mild`
   for (u32 i = 0; i < k_max_categories; ++i)
-    p.substitutions[i] = k_agent_default_substitution;
+    p.substitutions[i] =
+        i < k_engine_categories ? k_agent_default_substitutions[i] : k_agent_default_game_substitution;
   return p;
 }
 
