@@ -768,10 +768,10 @@ bool stays_under_document(std::string_view path) noexcept {
   return true;
 }
 
-// **A `$parent` cycle is refused at load** (T187): the composed index, `children`, the materializer's
-// parents-first walk and flecs' `ChildOf` all assume a forest, and only `Document::validate` (not
-// run at load) said otherwise. Each live object is settled once, so a chain of n objects costs O(n);
-// true, with an object on the cycle in `at`, when there is one.
+// **A `$parent` cycle is refused at load** (T187): the composed index, `children`, the
+// materializer's parents-first walk and flecs' `ChildOf` all assume a forest, and only
+// `Document::validate` (not run at load) said otherwise. Each live object is settled once, so a
+// chain of n objects costs O(n); true, with an object on the cycle in `at`, when there is one.
 bool find_parent_cycle(const Document& doc, ObjectId& at) {
   HashMap<ObjectId, u8> state;  // 1 on the walk being made, 2 settled
   Vector<ObjectId> walk;

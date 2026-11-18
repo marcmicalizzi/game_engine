@@ -120,7 +120,8 @@ std::string triangle_local_outside_cluster(const std::string& dir) {
     REQUIRE(c.vertex_count < 255u);
     ClusterFileSection triangles;
     REQUIRE(find_section(f, ClusterSection::Triangles, triangles) != 0);
-    f[static_cast<usize>(triangles.offset) + usize{c.triangle_offset} * 4] = static_cast<char>(0xff);
+    f[static_cast<usize>(triangles.offset) + usize{c.triangle_offset} * 4] =
+        static_cast<char>(0xff);
   });
 }
 

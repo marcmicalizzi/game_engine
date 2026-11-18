@@ -83,14 +83,15 @@ std::string inverse_bind_count_wraps() {
 // The triangle under a chain of `nodes` nodes, each the only child of the one before, the mesh on
 // the last: its depth below the scene's root is `nodes - 1`.
 std::string node_chain(std::uint32_t nodes) {
-  std::string text = std::string(R"({"asset":{"version":"2.0"},"buffers":[{"byteLength":48,"uri":")") +
-                     triangle_buffer_uri() +
-                     R"("}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},)"
-                     R"({"buffer":0,"byteOffset":36,"byteLength":12}],)"
-                     R"("accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3",)"
-                     R"("min":[0,0,0],"max":[1,1,0]},{"bufferView":1,"componentType":5125,"count":3,)"
-                     R"("type":"SCALAR"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},)"
-                     R"("indices":1}]}],"nodes":[)";
+  std::string text =
+      std::string(R"({"asset":{"version":"2.0"},"buffers":[{"byteLength":48,"uri":")") +
+      triangle_buffer_uri() +
+      R"("}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},)"
+      R"({"buffer":0,"byteOffset":36,"byteLength":12}],)"
+      R"("accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3",)"
+      R"("min":[0,0,0],"max":[1,1,0]},{"bufferView":1,"componentType":5125,"count":3,)"
+      R"("type":"SCALAR"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},)"
+      R"("indices":1}]}],"nodes":[)";
   for (std::uint32_t i = 0; i + 1 < nodes; ++i)
     text += R"({"children":[)" + std::to_string(i + 1) + "]},";
   text += R"({"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0})";

@@ -325,8 +325,7 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
   };
   // The caller's counts and the path's, multiplied in 64 bits (T187): in `u32` a long path or many
   // repeats wrapped the reservation, and a flight that cannot be counted in a `u32` is refused.
-  const u64 submitted =
-      (u64{options.warmup} + frames) * repeats + u64{options.frames_in_flight};
+  const u64 submitted = (u64{options.warmup} + frames) * repeats + u64{options.frames_in_flight};
   if (submitted > std::numeric_limits<u32>::max()) {
     if (error != nullptr) {
       *error = "a flight of " + std::to_string(frames) + " frames, " +

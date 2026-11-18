@@ -1600,12 +1600,11 @@ bool ClusterFileReader::open(std::string_view path, ClusterFileData* resident, s
       (by_kind_[static_cast<u32>(ClusterSection::Quantized)] != 0 &&
        quantized != paged.vertices * 3)) {
     close();
-    return fail(error, "cluster file vertex streams differ in length: " +
-                           std::to_string(paged.vertices) + " positions, " +
-                           std::to_string(element_count(ClusterSection::Attributes)) +
-                           " attributes, " +
-                           std::to_string(element_count(ClusterSection::VertexSource)) +
-                           " sources, " + std::to_string(quantized) + " quantized coordinates");
+    return fail(error,
+                "cluster file vertex streams differ in length: " + std::to_string(paged.vertices) +
+                    " positions, " + std::to_string(element_count(ClusterSection::Attributes)) +
+                    " attributes, " + std::to_string(element_count(ClusterSection::VertexSource)) +
+                    " sources, " + std::to_string(quantized) + " quantized coordinates");
   }
   if (!read_memory(std::span<const u8>(raw, bytes.size()), *resident, error, &paged)) {
     close();

@@ -1538,7 +1538,8 @@ bool check_extents(const cgltf_data& data, std::string* error) {
   for (cgltf_size i = 0; i < data.buffer_views_count; ++i) {
     const cgltf_buffer_view& view = data.buffer_views[i];
     u64 end = 0;
-    if (view.buffer != nullptr && (!add_fits(view.offset, view.size, end) || end > view.buffer->size))
+    if (view.buffer != nullptr &&
+        (!add_fits(view.offset, view.size, end) || end > view.buffer->size))
       return fail(error, "glTF: buffer view " + std::to_string(i) + " reaches past its buffer");
   }
   for (cgltf_size i = 0; i < data.accessors_count; ++i) {

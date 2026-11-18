@@ -57,9 +57,9 @@ TEST_CASE("schema hostile: an f32 given a number past the float's range is refus
   // The largest float itself, and its negation, read as themselves.
   joined.clear();
   Inner edge;
-  REQUIRE_MESSAGE(read_text(R"({"x": -3.4028234663852886e38, "y": 3.4028234663852886e38})", edge,
-                            joined),
-                  joined);
+  REQUIRE_MESSAGE(
+      read_text(R"({"x": -3.4028234663852886e38, "y": 3.4028234663852886e38})", edge, joined),
+      joined);
   CHECK(edge.x == -std::numeric_limits<f32>::max());
   CHECK(edge.y == std::numeric_limits<f32>::max());
 }

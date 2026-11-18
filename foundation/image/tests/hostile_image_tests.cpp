@@ -28,7 +28,8 @@ Vector<u8> png_one_past_bound() { return png_of_width(k_max_image_side + 1); }
 
 // The PNG signature, an IHDR claiming `width` by `height` RGB, an IDAT holding an empty zlib
 // stream, and IEND: 68 bytes, from which stb sized its inflate buffer by the header (width times
-// height times three) before finding no pixels. The chunks' CRCs are zero, which stb does not check.
+// height times three) before finding no pixels. The chunks' CRCs are zero, which stb does not
+// check.
 Vector<u8> png_header_claiming(u32 width, u32 height) {
   Vector<u8> out;
   const u8 signature[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
@@ -45,7 +46,8 @@ Vector<u8> png_header_claiming(u32 width, u32 height) {
     out.push_back(static_cast<u8>(c));
   be32(width);
   be32(height);
-  for (const u8 b : {u8{8}, u8{2}, u8{0}, u8{0}, u8{0}})  // 8 bits, RGB, deflate, no filter, no interlace
+  for (const u8 b :
+       {u8{8}, u8{2}, u8{0}, u8{0}, u8{0}})  // 8 bits, RGB, deflate, no filter, no interlace
     out.push_back(b);
   be32(0);
   // zlib: header 78 01, one final stored block of no bytes, the Adler-32 of nothing.
@@ -75,9 +77,8 @@ TEST_CASE("decode hostile: an image wider or taller than the bound is refused wi
   std::string error;
 
   const Vector<u8> at_bound = hostile_image::png_of_width(k_max_image_side);
-  REQUIRE_MESSAGE(decode_image(std::span<const u8>(at_bound.data(), at_bound.size()), image, 3,
-                               &error),
-                  error);
+  REQUIRE_MESSAGE(
+      decode_image(std::span<const u8>(at_bound.data(), at_bound.size()), image, 3, &error), error);
   CHECK(image.width == k_max_image_side);
 
   const Vector<u8> past = hostile_image::png_one_past_bound();

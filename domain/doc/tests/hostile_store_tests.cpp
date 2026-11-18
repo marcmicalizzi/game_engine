@@ -1,8 +1,8 @@
 // A document directory someone else made (T187, from T13's reading,
 // docs/experiments/fuzzing-design.md): `session.open` loads any path a client names. A layer's
-// `file` is held under the document by the rule `doc.place_asset` holds an asset to, and a `$parent`
-// cycle is refused at load rather than handed to the index, the materializer and flecs. Each file
-// is text a function returns, so the fuzz harness can lift it as a seed.
+// `file` is held under the document by the rule `doc.place_asset` holds an asset to, and a
+// `$parent` cycle is refused at load rather than handed to the index, the materializer and flecs.
+// Each file is text a function returns, so the fuzz harness can lift it as a seed.
 
 #include <domain/doc/document.h>
 #include <domain/doc/document_store.h>

@@ -51,7 +51,8 @@ bool write_text(const std::string& path, const std::string& text) {
 
 }  // namespace
 
-TEST_CASE("hostile scene: a scatter that would place more instances than a scene draws is refused") {
+TEST_CASE(
+    "hostile scene: a scatter that would place more instances than a scene draws is refused") {
   const test::TempDir tmp("renderer_hostile_scatter");
   REQUIRE(tmp.ok());
   const std::string path = tmp.file("scene.json");
@@ -66,8 +67,8 @@ TEST_CASE("hostile scene: a scatter that would place more instances than a scene
 TEST_CASE("hostile scene: a camera path whose frame count passes the bound is refused") {
   CameraPath path;
   std::string error;
-  CHECK_FALSE(parse_camera_path(hostile_scene::camera_path_frames_past_bound(), nullptr, path,
-                                error));
+  CHECK_FALSE(
+      parse_camera_path(hostile_scene::camera_path_frames_past_bound(), nullptr, path, error));
   CHECK(error.find(std::to_string(k_max_camera_path_frames)) != std::string::npos);
 
   // The bound itself is a path: 100 s at 1,000 frames a second is 100,001 frames, one past it;
