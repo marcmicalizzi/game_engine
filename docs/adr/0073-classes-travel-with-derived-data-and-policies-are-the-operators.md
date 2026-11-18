@@ -3,7 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-11-18 (revised the same day after a review of the first pass and of its first module)
 - **Plan references:** docs/plan/06-agent-tooling.md §6.6 and §6.10, docs/plan/07-content-pipeline.md §7.5 and §7.11, docs/plan/12-ai-usage-policy.md §12.6; roadmap C3 and A26. Builds on [ADR-0033](0033-content-classes-and-view-policies.md), which it does not change, on [ADR-0072](0072-the-task-ledger-beside-the-document.md) (the ledger's person's review item), and on two decisions proposed the same day and not yet merged: roadmap A4's (a connection is who its credential says, and a role a host cannot enforce fails closed) and roadmap T174's (a host reads and writes a client's paths only under the roots its operator named).
-- **Docs touched:** `docs/content-classes.md` (the design), `docs/subsystems/content_class.md`, `docs/subsystems/protocol.md` ("View policies on captures, reads and review items"), `docs/subsystems/assets.md` ("Content classes"), `docs/subsystems/renderer.md` ("Content classes at load"), `docs/plan/06-agent-tooling.md` §6.10, `docs/roadmap.md` (C3, A26, C61 to C66), `AGENTS.md` (the rule on view policies)
+- **Docs touched:** `docs/content-classes.md` (the design), `docs/subsystems/content_class.md`, `docs/subsystems/protocol.md` ("View policies on captures, reads and review items"), `docs/subsystems/assets.md` ("Content classes"), `docs/subsystems/renderer.md` ("Content classes at load"), `docs/plan/06-agent-tooling.md` §6.10, `docs/roadmap.md` (C3, A26, C61 to C68), `AGENTS.md` (the rule on view policies)
 
 ## Context
 
@@ -95,7 +95,7 @@ The first pass left three of these choices to the owner. All three were answered
   - a retry of a 1011;
   - a claim that an agent's start line can be told from a person's.
 - **Still a guard rail, not a wall**, against an agent with file-system access to the host, as ADR-0033 decision 4 says. Four limits are stated rather than hidden: a container built before this decision from content already classified then has no section; an engine binary built before the load decides skips the section; an image copied without its chunk and with no sidecar compares as `none`; and the operator's file and a host's command line can be written by anything that can write files and start processes, which the trail of decision 6 records and does not prevent.
-- The build is six rows, CPU-tested, in order, two of them two legs each ([content classes](../content-classes.md#the-build-in-rows)).
+- The build is eight rows, CPU-tested, in order ([content classes](../content-classes.md#the-build-in-rows)).
 
 ## Revisit when
 
