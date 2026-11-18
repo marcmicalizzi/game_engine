@@ -1,9 +1,9 @@
 #include "profile_methods.h"
 
 #include <core/profiling/frame_capture.h>
+#include <foundation/io/vfs.h>
 #include <foundation/profiler/frame_report.h>
 
-#include <filesystem>
 #include <schemas/protocol.h>
 #include <string>
 #include <string_view>
@@ -18,9 +18,22 @@ namespace {
 constexpr u32 k_max_series = 64;
 constexpr u32 k_max_capacity = 1u << 22;
 
-// Whether this process has run a capture whose events are still in the buffer: profile.report
-// reads the running one or the last one stopped.
-bool g_captured = false;
+// The number of the capture whose events are in the buffer, the running one or the last one
+// stopped; 0 before the first. The buffer holds one capture: a start clears it, so a client whose
+// capture another client stopped and replaced is told so by number (protocol.md, "Two clients and
+// one capture") rather than handed the other's report.
+u64 g_capture = 0;
+
+bool same_capture(const protocol::ProfileReportParams& params, protocol::RpcError& error) {
+  if (params.capture == 0 || params.capture == g_capture) return true;
+  error = protocol::make_error(
+      protocol::codes::k_not_found,
+      "capture " + std::to_string(params.capture) +
+          (params.capture < g_capture ? " was replaced by capture " + std::to_string(g_capture) +
+                                            " (another profile.start): its events are gone"
+                                      : " has not been started"));
+  return false;
+}
 
 void series_of(const profiler::SeriesStats& s, protocol::ProfileSeries& out) {
   out.name = s.name;
@@ -68,12 +81,12 @@ bool valid(const protocol::ProfileReportParams& params, protocol::RpcError& erro
 // The report over the capture as it stands, and its trace when the call names a directory.
 bool report(const protocol::ProfileReportParams& params, protocol::ProfileReport& out,
             protocol::RpcError& error) {
-  if (!g_captured) {
+  if (g_capture == 0) {
     error = protocol::make_error(protocol::codes::k_invalid_argument,
                                  "no capture: profile.start one, draw frames, then ask");
     return false;
   }
-  if (!valid(params, error)) return false;
+  if (!valid(params, error) || !same_capture(params, error)) return false;
   profiler::CaptureCopy copy;
   profiler::copy_capture(copy);
   profiler::ReportOptions options;
@@ -84,6 +97,7 @@ bool report(const protocol::ProfileReportParams& params, protocol::ProfileReport
       options);
   out.format = "engine.profile.v1";
   out.running = r.capture_running;
+  out.capture = g_capture;
   out.frames = r.frames;
   out.first_frame = r.first_frame;
   out.last_frame = r.last_frame;
@@ -100,14 +114,20 @@ bool report(const protocol::ProfileReportParams& params, protocol::ProfileReport
   out.threads = r.threads;
   out.capture_ms = r.capture_ms;
   out.trace.clear();
+  // The trace is written as render.capture and render.compare write theirs (render_methods.cpp):
+  // through foundation/io, refused with k_io_error naming the path and the status.
   if (!params.out_dir.empty()) {
-    std::error_code ec;
-    std::filesystem::create_directories(params.out_dir, ec);
-    const std::string path =
-        (std::filesystem::path(params.out_dir) / (params.name + ".trace.json")).string();
-    std::string why;
-    if (!profiler::write_chrome_trace(copy, path, &why)) {
-      error = protocol::make_error(protocol::codes::k_io_error, why);
+    io::Status status = io::make_directories(params.out_dir);
+    if (status != io::Status::Ok) {
+      error = protocol::make_error(protocol::codes::k_io_error, "cannot create " + params.out_dir +
+                                                                    ": " + io::status_name(status));
+      return false;
+    }
+    const std::string path = io::join_path(params.out_dir, params.name + ".trace.json");
+    status = io::write_file(path, profiler::chrome_trace_json(copy));
+    if (status != io::Status::Ok) {
+      error = protocol::make_error(protocol::codes::k_io_error,
+                                   "cannot write " + path + ": " + io::status_name(status));
       return false;
     }
     out.trace = path;
@@ -135,9 +155,10 @@ bool profile_start(protocol::Context&, const protocol::ProfileStartParams& param
                                  "a capture is already running: profile.stop it first");
     return false;
   }
-  g_captured = true;
+  ++g_capture;
   out.running = true;
   out.capacity = options.capacity;
+  out.capture = g_capture;
   return true;
 }
 
@@ -148,6 +169,8 @@ bool profile_report(protocol::Context&, const protocol::ProfileReportParams& par
 
 bool profile_stop(protocol::Context&, const protocol::ProfileReportParams& params,
                   protocol::ProfileReport& out, protocol::RpcError& error) {
+  // A capture named and replaced is that answer, before "nothing running" can hide it.
+  if (!same_capture(params, error)) return false;
   if (!profiling::capture_enabled()) {
     error = protocol::make_error(protocol::codes::k_invalid_argument,
                                  "no capture is running: profile.start one first");

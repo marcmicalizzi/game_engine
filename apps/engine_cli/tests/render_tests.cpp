@@ -1562,14 +1562,39 @@ TEST_CASE("render: profile.* reports a benchmark's frames, GPU passes and CPU sp
   (void)result_of(host.call("profile.start", "{}"));
   const JsonValue bench = host.call(
       "render.benchmark", "{\"scene\":\"" + id + "\",\"width\":64,\"height\":64,\"frames\":12}");
-  (void)result_of(bench);
+  // A device with no GPU timer: one that has no timestamps at all cannot make a SceneRenderer
+  // (gfx::GpuTimer::create refuses it), so the benchmark is refused and the case says so and
+  // stops, the capture left to the host's exit; one whose frames come back untimed draws them and
+  // times none, which the benchmark's own GPU frames say, and the capture is then checked for its
+  // frames and CPU spans and for having no GPU series.
+  if (error_code(bench) != 0 && error_message(bench).find("timestamps") != std::string::npos) {
+    MESSAGE("this device has no GPU timer: " << error_message(bench));
+    return;
+  }
+  const JsonValue* bench_stats = result_of(bench).find("stats");
+  REQUIRE(bench_stats != nullptr);
+  const JsonValue* bench_gpu = bench_stats->find("gpu_ms");
+  REQUIRE(bench_gpu != nullptr);
+  const bool timed = number(*bench_gpu, "frames") > 0;
   const JsonValue stopped = host.call("profile.stop", R"({"max_series":64})");
   const JsonValue& report = result_of(stopped);
   CHECK(number(report, "frames") >= 12);
-  CHECK(number(report, "gpu_frames") >= 8);  // the last frames in flight may not have come back
   CHECK(number(report, "dropped_events") == 0);
+  bool record = false;
+  const JsonValue* cpu = report.find("cpu");
+  REQUIRE(cpu != nullptr);
+  for (usize i = 0; i < cpu->size(); ++i)
+    if ((*cpu)[i].find("name")->as_string() == "renderer.record") record = true;
+  CHECK(record);
   const JsonValue* gpu = report.find("gpu");
   REQUIRE(gpu != nullptr);
+  if (!timed) {
+    MESSAGE("this device writes no GPU timestamps: the capture's GPU series are not checked");
+    CHECK(number(report, "gpu_frames") == 0);
+    CHECK(gpu->size() == 0);
+    return;
+  }
+  CHECK(number(report, "gpu_frames") >= 8);  // the last frames in flight may not have come back
   CHECK(gpu->size() > 0);
   f64 total = 0.0;
   for (usize i = 0; i < gpu->size(); ++i) {
@@ -1579,10 +1604,4 @@ TEST_CASE("render: profile.* reports a benchmark's frames, GPU passes and CPU sp
     total += median;
   }
   CHECK(total > 0.0);
-  bool record = false;
-  const JsonValue* cpu = report.find("cpu");
-  REQUIRE(cpu != nullptr);
-  for (usize i = 0; i < cpu->size(); ++i)
-    if ((*cpu)[i].find("name")->as_string() == "renderer.record") record = true;
-  CHECK(record);
 }

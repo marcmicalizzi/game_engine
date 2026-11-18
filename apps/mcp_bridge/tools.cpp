@@ -1881,8 +1881,10 @@ bool schema_profile_start(Bridge& b, JsonValue& s, std::string& e) {
 void run_profile_start(Bridge& b, const JsonValue& args, ToolOutcome& out) {
   JsonValue r;
   if (!b.call("profile.start", args, r, out)) return;
-  out.summary = "Frame capture running (" + std::to_string(uint_of(r, "capacity")) +
-                " events); draw frames, then profile_stop.";
+  out.summary = "Frame capture " + std::to_string(uint_of(r, "capture")) + " running (" +
+                std::to_string(uint_of(r, "capacity")) +
+                " events); draw frames, then profile_stop with capture " +
+                std::to_string(uint_of(r, "capture")) + ".";
   out.data = r;
 }
 
@@ -1892,7 +1894,8 @@ bool schema_profile_report(Bridge& b, JsonValue& s, std::string& e) {
 
 // The report's summary: the frame, then each list's largest series by median and p99.
 void profile_summary(const JsonValue& r, ToolOutcome& out) {
-  out.summary = std::to_string(uint_of(r, "frames")) + " frame(s) over " +
+  out.summary = "Capture " + std::to_string(uint_of(r, "capture")) + ": " +
+                std::to_string(uint_of(r, "frames")) + " frame(s) over " +
                 fixed(real_of(r, "window_ms"), 1) + " ms";
   if (const JsonValue* frame = r.find("frame"))
     out.summary += ", frame median " + fixed(real_of(*frame, "median_ms"), 3) + " ms, p99 " +

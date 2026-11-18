@@ -19,6 +19,7 @@ using namespace engine;
 
 namespace {
 
+constexpr i32 k_not_found = 1003;
 constexpr i32 k_invalid_argument = 1004;
 
 const std::string& host_exe() {
@@ -102,6 +103,7 @@ TEST_CASE(
   const JsonValue start_response = host.call("profile.start", R"({"capacity":4096})");
   const JsonValue& started = result_of(start_response);
   CHECK(number(started, "capacity") == 4096);
+  CHECK(number(started, "capture") == 1);
   CHECK(error_code(host.call("profile.start", "{}")) == k_invalid_argument);  // one a process
   for (int i = 0; i < 5; ++i)
     (void)host.call("engine.ping", "{}");
@@ -157,5 +159,22 @@ TEST_CASE(
   const JsonValue again_response = host.call("profile.report", "{}");
   const JsonValue& again = result_of(again_response);
   CHECK(number(again, "events") == number(stopped, "events"));
+  CHECK(number(again, "capture") == 1);
   CHECK(error_code(host.call("profile.stop", "{}")) == k_invalid_argument);
+
+  // Two clients and one capture (protocol.md): a second start replaces the first's events, and a
+  // call that names the first is told so, by number, and changes nothing.
+  CHECK(number(result_of(host.call("profile.report", R"({"capture":1})")), "capture") == 1);
+  CHECK(number(result_of(host.call("profile.start", "{}")), "capture") == 2);
+  const JsonValue replaced = host.call("profile.report", R"({"capture":1})");
+  CHECK(error_code(replaced) == k_not_found);
+  CHECK(write_json(replaced, JsonWriteOptions{}).find("replaced by capture 2") !=
+        std::string::npos);
+  CHECK(error_code(host.call("profile.stop", R"({"capture":1})")) == k_not_found);
+  CHECK(error_code(host.call("profile.report", R"({"capture":3})")) == k_not_found);
+  const JsonValue second_response = host.call("profile.stop", R"({"capture":2})");
+  const JsonValue& second = result_of(second_response);
+  CHECK(number(second, "capture") == 2);
+  REQUIRE(second.find("running")->get_bool(flag));
+  CHECK_FALSE(flag);
 }

@@ -2752,6 +2752,9 @@ struct ProfileStartResult @version(1) {
   running: bool = false
   /// The events the capture holds.
   capacity: u32 = 0
+  /// This capture's number in the host, from 1: pass it as `capture` to `profile.report` and
+  /// `profile.stop` to read this capture and no other client's.
+  capture: u64 = 0
 }
 
 /// Parameters of `profile.report` and `profile.stop`.
@@ -2765,6 +2768,10 @@ struct ProfileReportParams @version(1) {
   /// `<name>.trace.json`, and its path returned as `trace`.
   out_dir: string
   name: string = "profile"
+  /// The capture `profile.start` returned. A call naming one that another start has replaced is
+  /// refused (1003, naming both), since its events are gone; 0 reads whichever capture is the
+  /// host's.
+  capture: u64 = 0
 }
 
 /// One name's cost a frame over the window (docs/subsystems/profiler.md, "The frame report").
@@ -2796,6 +2803,8 @@ struct ProfileReport @version(1) {
   format: string
   /// True when read from a capture still recording.
   running: bool = false
+  /// The capture read: `profile.start`'s number for it.
+  capture: u64 = 0
   /// Frames in the window, and their indices (the process's own frame numbers).
   frames: u32 = 0
   first_frame: u64 = 0
