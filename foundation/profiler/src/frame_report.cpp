@@ -336,6 +336,16 @@ FrameReport build_report(std::span<const CaptureEvent> events, const CaptureInfo
     report.last_frame = frames[n - 1].index;
     report.window_ms = static_cast<f64>(frames[n - 1].end_ns - frames[0].begin_ns) * k_ms_per_ns;
   }
+  // The frames near the fill are kept but marked (profiler.md, "A capture that filled"): a zone
+  // stamped before such a frame's end may have lost the last slot to a later stamp.
+  if (cut.truncated && info.full_ns >= 0) {
+    const i64 from = cut.at_ns - k_partial_stretch_ns;
+    for (const Frame& f : frames) {
+      if (f.end_ns < from) continue;
+      if (report.partial_frames == 0) report.partial_first_frame = f.index;
+      ++report.partial_frames;
+    }
+  }
 
   Accumulators gpu, cpu, zones;
   Vector<u8> gpu_measured, cpu_measured;

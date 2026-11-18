@@ -3473,7 +3473,7 @@ struct ProfileSeries @version(1) {
 }
 
 /// The result of `profile.report` and `profile.stop`.
-struct ProfileReport @version(1) {
+struct ProfileReport @version(2) {
   /// "engine.profile.v1".
   format: string
   /// True when read from a capture still recording.
@@ -3513,6 +3513,12 @@ struct ProfileReport @version(1) {
   truncated_ms: f64 = 0
   truncated_in_frame: bool = false
   truncated_frame: u64 = 0
+  /// Frames that end within the last `k_partial_stretch_ms` (50 ms) before the buffer filled: each
+  /// may have lost a zone a thread stamped before the frame's end and claimed a slot for after the
+  /// last one went (profiler.md, "A capture that filled"). Counted in the numbers above, and marked
+  /// here: how many, and the first one's index.
+  partial_frames: u32 = 0 @since(2)
+  partial_first_frame: u64 = 0 @since(2)
   /// Values left out because they were not a time (NaN, infinite, or past 1e7 ms).
   invalid_values: u64 = 0
   threads: u32 = 0

@@ -115,6 +115,8 @@ bool report(const protocol::ProfileReportParams& params, protocol::ProfileReport
   out.truncated_ms = r.truncated_ms;
   out.truncated_in_frame = r.truncated_in_frame;
   out.truncated_frame = r.truncated_frame;
+  out.partial_frames = r.partial_frames;
+  out.partial_first_frame = r.partial_first_frame;
   out.invalid_values = r.invalid_values;
   out.threads = r.threads;
   out.capture_ms = r.capture_ms;

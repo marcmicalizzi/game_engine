@@ -315,6 +315,30 @@ TEST_CASE("profiler: a capture that filled ends its report at the last whole fra
 // frames, but its GPU track's last frame lost one of its two passes, so that frame is not a
 // measured GPU frame (counting it would give pass b a zero there); and values that are not a
 // time — NaN, an infinity, 1e300 ms — are counted and left out of the report and the trace.
+// A frame whose end was recorded is not sure of its zones near the fill (profiler.md, "A capture
+// that filled"): a worker stamps a zone's end, loses the processor before it claims a slot, the
+// main thread stamps the frame's end and takes the last slot, and the zone is refused. The report
+// cannot see the zone that is not there, so it marks the frames that end within
+// `k_partial_stretch_ns` of the fill. Frame 1 ends 190 ms before it and is sure; frame 2 ends 10 ms
+// before it and is marked; frame 3 is in progress at the fill and left out, as before.
+TEST_CASE("profiler: the frames that end just before a fill are marked possibly partial") {
+  const CaptureEvent events[] = {mark(1, 0),       mark_end(1, 10), mark(2, 10),
+                                 mark_end(2, 190), mark(3, 190),    zone("z", 20, 30)};
+  CaptureInfo info;
+  info.stopped_ns = 1000 * k_ms;
+  info.dropped = 1;
+  info.full_ns = 200 * k_ms;
+  const FrameReport report = build_report(events, info);
+  CHECK(report.truncated);
+  CHECK(report.truncated_in_frame);
+  CHECK(report.frames == 2);
+  CHECK(report.partial_frames == 1);
+  CHECK(report.partial_first_frame == 2);
+  // No fill, nothing marked.
+  CaptureInfo whole;
+  whole.stopped_ns = 1000 * k_ms;
+  CHECK(build_report(events, whole).partial_frames == 0);
+}
 TEST_CASE("profiler: a filled capture's last value burst and values that are not a time") {
   const f64 nan = std::numeric_limits<f64>::quiet_NaN();
   const f64 inf = std::numeric_limits<f64>::infinity();
