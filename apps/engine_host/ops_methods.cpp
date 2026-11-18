@@ -1252,9 +1252,12 @@ bool content_build_method(protocol::Context& ctx, const protocol::ContentBuildPa
     ddc = named.native;
   }
   if (to_cache && ddc.empty()) {
-    ddc = geometry::find_ddc_root(platform::executable_directory());
+    // The host's own derived-data root, as a session's load takes it.
+    ddc = protocol::derived_data_root(ctx, nullptr);
     if (ddc.empty()) {
-      error = invalid("cache found no repository root above the host executable; pass ddc");
+      error = invalid(
+          "cache: this host has no derived-data root (--ddc, or a repository above the "
+          "host executable); pass ddc");
       return false;
     }
   }

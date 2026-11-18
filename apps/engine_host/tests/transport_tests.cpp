@@ -26,8 +26,10 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -1308,13 +1310,14 @@ TEST_CASE("listen: document terrain tile intent rebuilds a bounded carrier") {
   check_load(true, false, 2 * 16 * 16);
 }
 
-// **A document's ground with no root named lands with the document** (T104, T119; doc_scene.md,
-// "The ground's root"): `render.load` of a session with no `ddc` builds the heightfield's set under
-// the repository's `ddc/` above the document's directory when there is one, else under the
-// document's own `ddc/` — never under the repository the host was started from, which is where a
-// host outside any checkout (an SDK's) used to have no root at all. The mesh cache is off, so the
-// fixture writes nothing outside its scratch directory.
-TEST_CASE("listen: a document's ground with no root named is built beside the document") {
+// **A session load writes only under out/** (T174; protocol.md, "Where derived data goes"):
+// `render.load` of a session with no `ddc` builds the heightfield's set under the host's own
+// derived-data root (`ddc`, the repository's above the host's executable), else under the
+// document's `out/ddc`. Before, it went to the repository's `ddc/` above the document's directory,
+// else to the document's own `ddc/`: inside an open document outside its `out/`, or under no root.
+// The mesh cache is off; the ground's set is content-addressed in the host's root, as every
+// derived node is.
+TEST_CASE("listen: a session load writes only under out/") {
   test::TempDir tmp("engine_host_document_root");
   const auto heightfield = [&](const std::string& doc) {
     std::vector<f32> heights(33 * 33);
@@ -1354,19 +1357,33 @@ TEST_CASE("listen: a document's ground with no root named is built beside the do
     REQUIRE_MESSAGE(error_code(loaded) == 0, write_json(loaded));
     return true;
   };
-  // Outside any checkout: the document's own `ddc/`.
+  // The document's directory holds its own files, the ground's and at most out/ afterwards.
+  const auto only_its_own = [](const std::string& doc) {
+    for (const auto& e : std::filesystem::directory_iterator(doc)) {
+      const std::string name = e.path().filename().string();
+      INFO(name);
+      CHECK((name == "manifest.json" || name == "layers" || name == "out" || name == "ground.f32" ||
+             name == "ground.json" || name.starts_with(".") || name.starts_with("journal") ||
+             name.ends_with(".lock") || name.ends_with(".json")));
+      CHECK(name != "ddc");
+    }
+  };
+  // Outside any checkout: never the document's own `ddc/`.
   std::filesystem::create_directories(tmp.file("alone"));
   const std::string alone = tmp.file("alone/doc");
   if (!load(alone)) return;
-  CHECK(std::filesystem::is_directory(alone + "/ddc"));
-  // Inside a repository (the directory above holds AGENTS.md): that repository's `ddc/`.
+  CHECK_FALSE(std::filesystem::exists(alone + "/ddc"));
+  only_its_own(alone);
+  // Inside a repository (the directory above holds AGENTS.md): not that repository's `ddc/`
+  // either, which no root of the host's names.
   const std::string game = tmp.file("game");
   std::filesystem::create_directories(game + "/worlds");
   write_file(game + "/AGENTS.md", "a game repository's root\n");
   const std::string inside = game + "/worlds/doc";
   if (!load(inside)) return;
-  CHECK(std::filesystem::is_directory(game + "/ddc"));
+  CHECK_FALSE(std::filesystem::exists(game + "/ddc"));
   CHECK_FALSE(std::filesystem::exists(inside + "/ddc"));
+  only_its_own(inside);
 }
 #endif
 

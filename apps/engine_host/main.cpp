@@ -21,6 +21,7 @@
 #include <core/platform/process.h>
 #include <core/schema/json_reflect.h>
 #include <core/time/time.h>
+#include <domain/geometry/cluster_file.h>
 #include <domain/protocol/clients.h>
 #include <domain/protocol/paths.h>
 #include <domain/protocol/rpc.h>
@@ -529,6 +530,9 @@ int main(int argc, char** argv) {
     config.root_specs = root_specs;
     config.mounts = &vfs;
     config.shell_dir = shell_dir;
+    // The host's derived-data folder, the repository's `ddc/` as AGENTS.md finds it; a host with
+    // none puts a session's derived data in its document's `out/ddc`.
+    config.ddc_dir = geometry::find_ddc_root(platform::executable_directory());
     std::string error;
     if (!protocol::configure_host_roots(roots, config, error)) {
       std::fprintf(stderr, "engine-host: %s\n", error.c_str());

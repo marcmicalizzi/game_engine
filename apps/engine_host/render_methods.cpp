@@ -587,9 +587,11 @@ bool load_session(protocol::Context& ctx, RenderHost& host,
     }
   }
   auto described = std::make_unique<doc_scene::DocumentScene>();
-  // The ground's set under the host's root (T104, T119): `render.load`'s `ddc`, else the
-  // document's own — the repository's `ddc/` above the session's directory, else its own `ddc/`.
-  const std::string root = scene_gen::document_derived_root(params.ddc, session->dir());
+  // The ground's set under the host's root (T104, T119): `render.load`'s `ddc`, else the host's
+  // own derived-data root, else the document's `out/ddc` — never `<doc>/ddc` or a `ddc/` found by
+  // walking up from the session, which no root admitted (protocol.md, "Where derived data goes").
+  const std::string root = params.ddc.empty() ? protocol::derived_data_root(ctx, session)
+                                              : scene_gen::document_derived_root(params.ddc, {});
   if (!doc_scene::read_document_scene(document, session->dir(), root, *described, message)) {
     error = protocol::make_error(protocol::codes::k_document_error, std::move(message));
     return false;

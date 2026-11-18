@@ -25,6 +25,8 @@
 
 namespace engine::protocol {
 
+class Session;
+
 // True with `out` the admitted path. False with `error` set and the record `path_not_found` logs
 // (the same for a missing file), or for a root the host lacks the root's name.
 bool admit_client_path(Context& ctx, std::string_view field, std::string_view path,
@@ -72,7 +74,19 @@ struct HostRootsConfig {
   Vector<std::string> root_specs;   // each --root <name>=<dir>[:rw]
   const io::Vfs* mounts = nullptr;  // every --mount is a root of its scheme's name
   std::string shell_dir;            // the listener's directory: served, never written
+  // The host's derived-data folder (`--ddc`, else the repository's `ddc/` as AGENTS.md finds it):
+  // the root "ddc", made at start if missing, **read** for clients (a client may name a built
+  // container in it) and written by the host alone, by content address. Empty: no such root, and
+  // a session's derived data goes to its document's `out/ddc` (`derived_data_root`).
+  std::string ddc_dir;
 };
+
+// Where the host's own work for `session` writes derived data (a generated ground's tiles, the
+// generators' caches, a cached build): the host's "ddc" root, else `<the session's document>/out/
+// ddc` when its directory may be written, else empty (the generator then refuses, naming why).
+// Never `<doc>/ddc` or anywhere else in a document outside its `out/`, which the roots keep from
+// every client write (protocol.md, "Where derived data goes").
+std::string derived_data_root(const Context& ctx, const Session* session);
 // Fills `roots` and logs one line per root (its name, its access and whether it was a link, never
 // its directory). False with `error` naming the root that cannot be one: a malformed spec, a name
 // taken twice, a read root that is not there, a writable root over the shell.

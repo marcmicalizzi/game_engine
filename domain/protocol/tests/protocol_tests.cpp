@@ -840,6 +840,41 @@ TEST_CASE("roots: a document whose out is not its own directory opens with no ou
   CHECK(ok.find("out") != nullptr);
 }
 
+// A session's derived data went to the repository's ddc/ found by walking up from the document,
+// else to <doc>/ddc: inside an open document outside its out/, or under no root at all, where no
+// client write could go. Now it is the host's own "ddc" root, else the document's out/ddc.
+TEST_CASE("roots: a session's derived data goes to the host's ddc root, else its out/ddc") {
+  TempDir tmp("protocol_roots_ddc");
+  Host h;
+  io::Roots without;
+  HostRootsConfig plain;
+  plain.root_specs.push_back("work=" + tmp.file("work") + ":rw");
+  std::string error;
+  REQUIRE(configure_host_roots(without, plain, error));
+  h.dispatcher.context().roots = &without;
+  const JsonValue opened =
+      h.ok("session.open", obj({{"path", JsonValue("work://world")}, {"create", JsonValue(true)}}));
+  const Session* session =
+      h.dispatcher.context().sessions->find(std::string(at(opened, "session").as_string()));
+  REQUIRE(session != nullptr);
+  const std::string out_ddc = derived_data_root(h.dispatcher.context(), session);
+  CHECK(out_ddc == io::join_path(session->dir(), "out/ddc"));
+  // Under out/, so the roots' own rule for a document's files holds for it.
+  CHECK(io::path_is_under(out_ddc, session->dir() + "/out"));
+  h.ok("session.close", obj({{"session", at(opened, "session")}}));
+  // With a "ddc" root, that, made at start and read-only to clients.
+  io::Roots with;
+  HostRootsConfig config = plain;
+  config.ddc_dir = tmp.file("derived");
+  REQUIRE(configure_host_roots(with, config, error));
+  REQUIRE(with.find("ddc") != nullptr);
+  CHECK_FALSE(with.find("ddc")->writable);
+  CHECK(io::exists(tmp.file("derived")));
+  h.dispatcher.context().roots = &with;
+  CHECK(derived_data_root(h.dispatcher.context(), nullptr) == with.find("ddc")->canonical);
+  h.dispatcher.context().roots = &h.roots;
+}
+
 // No roots, no paths: a dispatcher made without them refuses every client path.
 TEST_CASE("roots: a context with no roots refuses every path") {
   TempDir tmp("protocol_roots_none");

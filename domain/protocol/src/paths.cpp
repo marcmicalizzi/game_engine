@@ -139,6 +139,14 @@ std::string client_base(Context& ctx, std::string_view session) {
   return {};
 }
 
+std::string derived_data_root(const Context& ctx, const Session* session) {
+  if (ctx.roots != nullptr) {
+    if (const io::Root* ddc = ctx.roots->find("ddc"); ddc != nullptr) return ddc->canonical;
+  }
+  if (session != nullptr && session->writable()) return io::join_path(session->dir(), "out/ddc");
+  return {};
+}
+
 std::string portable_path(const Context& ctx, std::string_view native) {
   std::string out;
   if (ctx.roots == nullptr || !ctx.roots->portable(native, out)) return {};
@@ -216,6 +224,16 @@ bool configure_host_roots(io::Roots& roots, const HostRootsConfig& config, std::
       ENGINE_LOG_INFO(log_paths, "a file root", log::field("name", "out"),
                       log::field("writable", true), log::field("linked", false));
     }
+  }
+  if (!config.ddc_dir.empty()) {
+    // The host's own: made here, so a fresh checkout's first load has it, and read-only to
+    // clients, whose writes never land where the host addresses by content.
+    if (const io::Status made = io::make_directories(config.ddc_dir); made != io::Status::Ok) {
+      error =
+          "root ddc: cannot make the derived-data folder: " + std::string(io::status_name(made));
+      return false;
+    }
+    if (!add_root(roots, "ddc", config.ddc_dir, false, false, error)) return false;
   }
   if (config.mounts != nullptr) {
     for (const io::Mount& m : config.mounts->mounts()) {
