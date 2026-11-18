@@ -223,8 +223,15 @@ int main(int argc, char** argv) {
         reinterpret_cast<const char8_t*>(connect_from.data()), connect_from.size())));
     std::string line;
     JsonValue announcement;
+    // The file is external input: every field is checked for its kind before it is read, so a line
+    // that parses but is not the announcement (an array, a number where the address goes) is this
+    // message and exit 2, never an assert.
+    const auto text_field = [&announcement](const char* name) {
+      const JsonValue* v = announcement.is_object() ? announcement.find(name) : nullptr;
+      return v != nullptr && v->is_string() && !v->as_string().empty();
+    };
     if (!in || !std::getline(in, line) || !parse_json(line, announcement).ok ||
-        announcement.find("listen") == nullptr || announcement.find("token") == nullptr) {
+        !text_field("listen") || !text_field("token")) {
       std::fprintf(stderr,
                    "engine-mcp: --connect-from %s: expected the host's first stdout line, "
                    "{\"listen\":\"ws://127.0.0.1:<port>/\",\"token\":\"...\"}\n",

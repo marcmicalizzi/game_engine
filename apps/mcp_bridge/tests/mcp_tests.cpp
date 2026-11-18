@@ -339,6 +339,19 @@ TEST_CASE("mcp: --connect takes a loopback ws:// URL and a token, and no flag of
     const std::string_view argv[] = {bridge_exe(), "--connect-from", file, "--workspace", ws};
     CHECK(exit_of(argv) == 2);
   }
+  // A line that parses but holds the wrong kinds is refused the same way: the file is external
+  // input, so a debug build must not assert on it (it did on {"listen":1,"token":2}).
+  for (const char* line :
+       {R"({"listen":1,"token":2})", R"({"listen":"ws://127.0.0.1:1/","token":""})",
+        R"(["listen","token"])", "7"}) {
+    const std::string file = tmp.file("announcement-kinds.json");
+    {
+      std::ofstream out(file, std::ios::binary | std::ios::trunc);
+      out << line << "\n";
+    }
+    const std::string_view argv[] = {bridge_exe(), "--connect-from", file, "--workspace", ws};
+    CHECK_MESSAGE(exit_of(argv) == 2, line);
+  }
   {
     // Nobody listening on that port: the bridge says it cannot connect and exits 2, as it does
     // when it cannot start a host.
