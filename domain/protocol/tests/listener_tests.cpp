@@ -33,15 +33,17 @@ struct HttpReply {
   std::string body;
 };
 
-HttpReply http_get(u16 port, std::string_view target, std::string_view host = {}) {
+// `extra`: header lines, each ending in CRLF.
+HttpReply http_get(u16 port, std::string_view target, std::string_view host = {},
+                   std::string_view extra = {}) {
   net::Socket s;
   std::string error;
   HttpReply reply;
   REQUIRE_MESSAGE(net::connect_loopback(port, s, error), error);
   const std::string host_line =
       host.empty() ? "127.0.0.1:" + std::to_string(port) : std::string(host);
-  REQUIRE(
-      s.send_all("GET " + std::string(target) + " HTTP/1.1\r\nHost: " + host_line + "\r\n\r\n"));
+  REQUIRE(s.send_all("GET " + std::string(target) + " HTTP/1.1\r\nHost: " + host_line + "\r\n" +
+                     std::string(extra) + "\r\n"));
   std::string all;
   u8 chunk[16384];
   while (s.wait_readable(30000) > 0) {
@@ -108,8 +110,12 @@ TEST_CASE("listener: the protocol over a loopback WebSocket, with the token, fro
   const u16 port = listener.port();
   REQUIRE(port != 0);
   CHECK(listener.token().size() == 22);
-  CHECK(listener.shell_url() ==
-        "http://127.0.0.1:" + std::to_string(port) + "/?token=" + listener.token() + "&session=s1");
+  // A one-time ticket in the address, never the token (ADR-0069); each call makes another.
+  const std::string shell = listener.shell_url();
+  CHECK(shell.starts_with("http://127.0.0.1:" + std::to_string(port) + "/?ticket="));
+  CHECK(shell.ends_with("&session=s1"));
+  CHECK(shell.find(listener.token()) == std::string::npos);
+  CHECK(listener.shell_url() != shell);
   JsonValue announcement;
   REQUIRE(parse_json(listener.announcement(), announcement).ok);
   CHECK(std::string(announcement.find("listen")->as_string()) ==
@@ -122,17 +128,26 @@ TEST_CASE("listener: the protocol over a loopback WebSocket, with the token, fro
     net::Message m;
     CHECK_FALSE(none.receive(m, 30000));
     CHECK(none.close_code() == net::close_code::k_policy);
-    CHECK(none.close_reason().find("token is required") != std::string::npos);
+    CHECK(none.close_reason().find("a credential is required") != std::string::npos);
     net::WebSocket wrong;
-    REQUIRE(net::websocket_connect(port, "/?token=AAAAAAAAAAAAAAAAAAAAAA", {}, wrong, error));
+    const std::pair<std::string, std::string> guess[] = {
+        {"X-Engine-Token", "AAAAAAAAAAAAAAAAAAAAAA"}};
+    REQUIRE(net::websocket_connect(port, "/", guess, wrong, error));
     CHECK_FALSE(wrong.receive(m, 30000));
     CHECK(wrong.close_code() == net::close_code::k_policy);
-    CHECK(wrong.close_reason().find("does not match") != std::string::npos);
+    CHECK(wrong.close_reason().find("names no token or credential") != std::string::npos);
+    CHECK(wrong.close_reason().find("AAAA") == std::string::npos);  // what was sent is never said
+    // The token in the URL is not read at all: a credential is never in a URL.
+    net::WebSocket in_url;
+    REQUIRE(net::websocket_connect(port, "/?token=" + listener.token(), {}, in_url, error));
+    CHECK_FALSE(in_url.receive(m, 30000));
+    CHECK(in_url.close_code() == net::close_code::k_policy);
   }
   SUBCASE("a page from another origin is refused even with the token") {
     net::WebSocket ws;
-    const std::pair<std::string, std::string> origin[] = {{"Origin", "http://evil.example"}};
-    REQUIRE(net::websocket_connect(port, "/?token=" + listener.token(), origin, ws, error));
+    const std::pair<std::string, std::string> origin[] = {{"Origin", "http://evil.example"},
+                                                          {"X-Engine-Token", listener.token()}};
+    REQUIRE(net::websocket_connect(port, "/", origin, ws, error));
     net::Message m;
     CHECK_FALSE(ws.receive(m, 30000));
     CHECK(ws.close_code() == net::close_code::k_policy);
@@ -177,12 +192,173 @@ TEST_CASE("listener: the protocol over a loopback WebSocket, with the token, fro
   SUBCASE("a capture needs the token and is the source's, asked under the host's lock") {
     CHECK(http_get(port, "/capture/c1").status == 403);
     CHECK(captures.asked == 0);
-    const HttpReply shot = http_get(port, "/capture/c1?token=" + listener.token());
+    CHECK(http_get(port, "/capture/c1?token=" + listener.token()).status == 403);  // not in a URL
+    const std::string with_token = "X-Engine-Token: " + listener.token() + "\r\n";
+    const HttpReply shot = http_get(port, "/capture/c1", {}, with_token);
     CHECK(shot.status == 200);
     CHECK(shot.body == "PNGBYTES");
     CHECK(captures.held);
-    CHECK(http_get(port, "/capture/c2?token=" + listener.token()).status == 404);
+    CHECK(http_get(port, "/capture/c2", {}, with_token).status == 404);
     CHECK(captures.asked == 2);
+  }
+  listener.stop();
+}
+
+// Roadmap A4, ADR-0069 (protocol.md, "Who a connection is"): a credential the operator issued binds
+// its connection's identity, a call naming another is refused before its handler, a token nobody
+// issued is refused before any method, and a browser page buys its cookie with a one-time ticket.
+TEST_CASE("listener: a credential binds who a connection is; the shell's ticket buys a cookie") {
+  const test::TempDir tmp("protocol_listener_credentials");
+  {
+    std::ofstream f(tmp.file("index.html"), std::ios::binary);
+    f << "<!doctype html><title>shell</title>";
+  }
+  protocol::Policy policy;
+  std::string error;
+  REQUIRE_MESSAGE(policy.load_roles("roles.json", R"({"default_role":"director","roles":[
+    {"name":"director","methods":["*"],"layers":["*"],"object_types":["*"]},
+    {"name":"designer","methods":["doc.*"],"layers":["*"],"object_types":["*"]}]})",
+                                    error),
+                  error);
+  std::string agent_token;
+  REQUIRE(protocol::make_token(agent_token));
+  CHECK(agent_token.size() == 22);
+  const std::string digest = protocol::token_digest(agent_token);
+  CHECK(digest.size() == 64);
+  // SHA-256, by FIPS 180-4's own example.
+  CHECK(protocol::token_digest("abc") ==
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+  protocol::Credentials credentials;
+  // Malformed files are refused with the reason, never quoting a digest.
+  CHECK_FALSE(credentials.load(
+      "c.json", R"({"credentials":[{"name":"a","token_sha256":")" + digest + R"("}]})", &policy,
+      error));
+  CHECK(error.find("actor") != std::string::npos);
+  CHECK_FALSE(credentials.load("c.json", R"({"credentials":[{"name":"a","actor":"x",
+    "token_sha256":"abc"}]})",
+                               &policy, error));
+  CHECK_FALSE(credentials.load("c.json", R"({"credentials":[{"name":"a","actor":"x","role":"pilot",
+    "token_sha256":")" + digest + R"("}]})",
+                               &policy, error));
+  CHECK(error.find(digest) == std::string::npos);
+  REQUIRE_MESSAGE(credentials.load("c.json",
+                                   R"({"credentials":[{"name":"agent-1","actor":"agent",
+    "role":"designer","task":"t-a","token_sha256":")" +
+                                       digest + R"("}]})",
+                                   &policy, error),
+                  error);
+  CHECK(credentials.match(agent_token) != nullptr);
+  CHECK(credentials.match("AAAAAAAAAAAAAAAAAAAAAA") == nullptr);
+
+  io::Vfs vfs;
+  protocol::SessionManager sessions(vfs);
+  protocol::Dispatcher dispatcher(protocol::Context{&sessions, nullptr, nullptr, nullptr, &policy});
+  protocol::add_builtin_methods(dispatcher);
+  std::mutex lock;
+  Captures captures;
+  captures.lock = &lock;
+  protocol::Listener listener(dispatcher, lock, &captures);
+  listener.set_credentials(&credentials);
+  REQUIRE_MESSAGE(listener.start(0, tmp.path(), "s1", error), error);
+  const u16 port = listener.port();
+
+  SUBCASE("the credential's connection is its actor and role, and may not call as another") {
+    net::WebSocket ws;
+    const std::pair<std::string, std::string> header[] = {{"X-Engine-Token", agent_token}};
+    REQUIRE_MESSAGE(net::websocket_connect(port, "/", header, ws, error), error);
+    const JsonValue list = call(ws, R"({"jsonrpc":"2.0","id":1,"method":"client.list"})");
+    const JsonValue& me = (*list.find("result")->find("clients"))[0];
+    CHECK(me.find("credential")->as_string() == "agent-1");
+    CHECK(me.find("bound")->as_bool());
+    CHECK(me.find("actor")->as_string() == "agent");
+    CHECK(me.find("role")->as_string() == "designer");
+    CHECK(write_json(list).find(agent_token) == std::string::npos);
+    const JsonValue opened = call(
+        ws, std::string(R"({"jsonrpc":"2.0","id":2,"method":"session.open","params":)") +
+                R"({"path":)" + write_json(JsonValue(tmp.file("doc"))) + R"(,"create":true}})");
+    const std::string session(opened.find("result")->find("session")->as_string());
+    const auto apply = [&](u32 id, std::string_view attribution) {
+      return call(
+          ws, R"({"jsonrpc":"2.0","id":)" + std::to_string(id) +
+                  R"(,"method":"doc.apply","params":{"session":")" + session +
+                  R"(","commands":[{"kind":"CreateObject","id":"0000000000000000000000000000be)" +
+                  std::to_string(10 + id) +
+                  R"(","type":"engine.world.Node","value":{"name":"n"}}],"attribution":)" +
+                  std::string(attribution) + "}}");
+    };
+    // Naming another actor or role is refused before the handler, whatever the method.
+    const JsonValue as_other = apply(3, R"({"actor":"owner","rationale":"x"})");
+    REQUIRE(as_other.find("error") != nullptr);
+    CHECK(as_other.find("error")->find("code")->as_int() == 1008);
+    CHECK(as_other.find("error")->find("data")->find("reason")->as_string() == "identity");
+    CHECK(apply(4, R"({"role":"director","rationale":"x"})").find("error") != nullptr);
+    CHECK(call(ws, R"({"jsonrpc":"2.0","id":5,"method":"client.hello","params":)"
+                   R"({"attribution":{"actor":"owner"}}})")
+              .find("error") != nullptr);
+    // Blank, or its own, is the credential's; the journal says so.
+    const JsonValue own = apply(6, R"({"rationale":"mine"})");
+    REQUIRE_MESSAGE(own.find("result") != nullptr, write_json(own));
+    CHECK(own.find("result")->find("committed")->as_bool());
+    CHECK(
+        apply(7, R"({"actor":"agent","role":"designer","rationale":"mine too"})").find("result") !=
+        nullptr);
+    const JsonValue journal = call(ws, R"({"jsonrpc":"2.0","id":8,"method":"doc.journal",)"
+                                       R"("params":{"session":")" +
+                                           session + R"("}})");
+    const JsonValue& first = (*journal.find("result")->find("patches"))[0];
+    CHECK(first.find("attribution")->find("actor")->as_string() == "agent");
+    CHECK(first.find("attribution")->find("task")->as_string() == "t-a");
+  }
+  SUBCASE("the operator's token is not bound") {
+    net::WebSocket ws;
+    const std::pair<std::string, std::string> header[] = {{"X-Engine-Token", listener.token()}};
+    REQUIRE_MESSAGE(net::websocket_connect(port, "/", header, ws, error), error);
+    const JsonValue hello = call(ws, R"({"jsonrpc":"2.0","id":1,"method":"client.hello","params":)"
+                                     R"({"name":"cli","attribution":{"actor":"owner"}}})");
+    REQUIRE_MESSAGE(hello.find("result") != nullptr, write_json(hello));
+    CHECK(hello.find("result")->find("credential")->as_string() == "operator");
+    CHECK_FALSE(hello.find("result")->find("bound")->as_bool());
+  }
+  SUBCASE("a shell address's ticket is spent once, for a cookie the page's socket carries") {
+    const std::string shell = listener.shell_url();
+    const std::string target = shell.substr(shell.find('/', 7));  // "/?ticket=...&session=s1"
+    const HttpReply first = http_get(port, target + "&embedded=1");
+    CHECK(first.status == 303);
+    CHECK(first.head.find("Location: /?session=s1&embedded=1") != std::string::npos);
+    CHECK(first.head.find("ticket") == std::string::npos);
+    const usize at = first.head.find("engine_session=");
+    REQUIRE(at != std::string::npos);
+    CHECK(first.head.find("HttpOnly; SameSite=Strict") != std::string::npos);
+    const std::string cookie = first.head.substr(at, first.head.find(';', at) - at);
+    CHECK(http_get(port, target).status == 403);                             // spent
+    CHECK(http_get(port, "/?ticket=AAAAAAAAAAAAAAAAAAAAAA").status == 403);  // never issued
+    // The page's own GETs need nothing; its captures and its socket carry the cookie.
+    CHECK(http_get(port, "/?session=s1").status == 200);
+    CHECK(http_get(port, "/capture/c1", {}, "Cookie: " + cookie + "\r\n").status == 200);
+    CHECK(http_get(port, "/capture/c1", {}, "Cookie: engine_session=nope\r\n").status == 403);
+    net::WebSocket page;
+    const std::pair<std::string, std::string> headers[] = {
+        {"Cookie", "theme=dark; " + cookie},
+        {"Origin", "http://127.0.0.1:" + std::to_string(port)}};
+    REQUIRE_MESSAGE(net::websocket_connect(port, "/", headers, page, error), error);
+    const JsonValue pong = call(page, R"({"jsonrpc":"2.0","id":1,"method":"engine.info"})");
+    CHECK(pong.find("result") != nullptr);
+    // A browser that holds the cookie (a second tab opened from the same printed address) is sent
+    // on without a new one; one that does not is refused.
+    const HttpReply again = http_get(port, target, {}, "Cookie: " + cookie + "\r\n");
+    CHECK(again.status == 303);
+    CHECK(again.head.find("Set-Cookie") == std::string::npos);
+    net::WebSocket stale;
+    const std::pair<std::string, std::string> wrong[] = {{"Cookie", "engine_session=nope"}};
+    REQUIRE(net::websocket_connect(port, "/", wrong, stale, error));
+    net::Message m;
+    CHECK_FALSE(stale.receive(m, 30000));
+    CHECK(stale.close_code() == net::close_code::k_policy);
+  }
+  SUBCASE("a ticket left unspent past its lifetime buys nothing") {
+    listener.set_ticket_lifetime_ms(0);
+    const std::string shell = listener.shell_url();
+    CHECK(http_get(port, shell.substr(shell.find('/', 7))).status == 403);
   }
   listener.stop();
 }

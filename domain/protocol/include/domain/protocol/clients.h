@@ -24,9 +24,12 @@
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <domain/doc/document.h>
+#include <domain/protocol/policy.h>
 
+#include <schemas/protocol.h>
 #include <span>
 #include <string>
+#include <string_view>
 
 namespace engine::protocol {
 
@@ -41,6 +44,38 @@ struct Client {
   bool identified = false;
   i64 connected_unix_ms = 0;
   u64 requests = 0;
+  // How it authenticated (ADR-0069): "operator", or the name of its credential. Never the token.
+  std::string credential;
+  // `who` is its credential's and no call may name another actor or role.
+  bool bound = false;
+};
+
+// ---- credentials (roadmap A4, ADR-0069; protocol.md, "Who a connection is") -------------------
+
+// A token: 128 bits from the system's secure random source, base64url without padding (22
+// characters). False when the source did not answer.
+bool make_token(std::string& out);
+// What the credentials file keeps of a token: its SHA-256 (core/hash/sha256.h), 64 lowercase hex
+// digits.
+std::string token_digest(std::string_view token);
+// Equal strings, compared without stopping at the first difference, so how long a refusal takes
+// says nothing about how much of a guess was right.
+bool same_secret(std::string_view a, std::string_view b) noexcept;
+
+// The credentials a host accepts beside its own printed token (`engine-host --credentials`).
+class Credentials {
+ public:
+  // Reads a credentials file's text: every entry has a unique non-empty name, an actor, and a
+  // digest of 40 hex digits; a role, when given, must be one of `policy`'s roles file when it
+  // loaded one. False with a sentence naming the first problem otherwise, never quoting a digest.
+  bool load(std::string_view path, std::string_view text, const Policy* policy, std::string& error);
+  // The credential `token` is, or null.
+  const Credential* match(std::string_view token) const;
+  bool loaded() const noexcept { return !file_.credentials.empty(); }
+  const CredentialsFile& file() const noexcept { return file_; }
+
+ private:
+  CredentialsFile file_;
 };
 
 class Clients {

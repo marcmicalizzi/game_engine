@@ -60,6 +60,11 @@ std::string request(u32 id, std::string_view method, std::string_view params) {
          std::string(method) + "\",\"params\":" + std::string(params) + "}";
 }
 
+// The token as a header, which is the only way a program presents one (ADR-0069).
+std::vector<std::pair<std::string, std::string>> token_header(std::string_view token) {
+  return {{"X-Engine-Token", std::string(token)}};
+}
+
 // One engine-host with --listen and the given flags: the announcement read, stdin kept for
 // requests on the stdio side, and closed at the end, which is what ends the host.
 struct ListeningHost {
@@ -97,7 +102,9 @@ struct ListeningHost {
       session = std::string(s->as_string());
     }
     const std::string_view shell = at(announcement, "shell").as_string();
-    CHECK(shell.find("token=" + token) != std::string_view::npos);
+    // A one-time ticket, never the token: a credential is never in a URL (ADR-0069).
+    CHECK(shell.find("ticket=") != std::string_view::npos);
+    CHECK(shell.find(token) == std::string_view::npos);
   }
   ~ListeningHost() {
     if (!ok) return;
@@ -122,8 +129,7 @@ struct Client {
 
   bool connect(u16 port, std::string_view token) {
     std::string error;
-    const bool connected =
-        net::websocket_connect(port, "/?token=" + std::string(token), {}, ws, error);
+    const bool connected = net::websocket_connect(port, "/", token_header(token), ws, error);
     CHECK_MESSAGE(connected, error);
     return connected;
   }
@@ -172,15 +178,18 @@ struct HttpReply {
   std::string body;
 };
 
-HttpReply http_get(u16 port, std::string_view target, std::string_view host = {}) {
+HttpReply http_get(u16 port, std::string_view target, std::string_view host = {},
+                   std::string_view token = {}) {
   net::Socket s;
   std::string error;
   HttpReply reply;
   REQUIRE_MESSAGE(net::connect_loopback(port, s, error), error);
   const std::string host_line =
       host.empty() ? "127.0.0.1:" + std::to_string(port) : std::string(host);
-  REQUIRE(
-      s.send_all("GET " + std::string(target) + " HTTP/1.1\r\nHost: " + host_line + "\r\n\r\n"));
+  const std::string token_line =
+      token.empty() ? std::string() : "X-Engine-Token: " + std::string(token) + "\r\n";
+  REQUIRE(s.send_all("GET " + std::string(target) + " HTTP/1.1\r\nHost: " + host_line + "\r\n" +
+                     token_line + "\r\n"));
   std::string all;
   u8 chunk[16384];
   while (s.wait_readable(30000) > 0) {
@@ -318,23 +327,25 @@ TEST_CASE("listen: the handshake needs the token, and refuses without it with 10
     net::Message m;
     CHECK_FALSE(ws.receive(m, 30000));
     CHECK(ws.close_code() == net::close_code::k_policy);
-    CHECK(ws.close_reason().find("token is required") != std::string::npos);
+    CHECK(ws.close_reason().find("a credential is required") != std::string::npos);
   }
   {
     net::WebSocket ws;
     std::string error;
-    REQUIRE(net::websocket_connect(host.port, "/?token=AAAAAAAAAAAAAAAAAAAAAA", {}, ws, error));
+    REQUIRE(
+        net::websocket_connect(host.port, "/", token_header("AAAAAAAAAAAAAAAAAAAAAA"), ws, error));
     net::Message m;
     CHECK_FALSE(ws.receive(m, 30000));
     CHECK(ws.close_code() == net::close_code::k_policy);
-    CHECK(ws.close_reason().find("does not match") != std::string::npos);
+    CHECK(ws.close_reason().find("names no token or credential") != std::string::npos);
   }
   {
     // A browser page from elsewhere is refused even with the token.
     net::WebSocket ws;
     std::string error;
     const std::pair<std::string, std::string> origin[] = {{"Origin", "http://evil.example"}};
-    REQUIRE(net::websocket_connect(host.port, "/?token=" + host.token, origin, ws, error));
+    const std::pair<std::string, std::string> both[] = {origin[0], {"X-Engine-Token", host.token}};
+    REQUIRE(net::websocket_connect(host.port, "/", both, ws, error));
     net::Message m;
     CHECK_FALSE(ws.receive(m, 30000));
     CHECK(ws.close_code() == net::close_code::k_policy);
@@ -467,7 +478,8 @@ TEST_CASE("listen: the shell's files, and nothing outside them") {
   CHECK(http_get(host.port, "/shell/").status == 404);
   CHECK(http_get(host.port, "/elsewhere").status == 404);
   CHECK(http_get(host.port, "/capture/c1").status == 403);                      // no token
-  CHECK(http_get(host.port, "/capture/c1?token=" + host.token).status == 404);  // none kept yet
+  CHECK(http_get(host.port, "/capture/c1?token=" + host.token).status == 403);  // never from a URL
+  CHECK(http_get(host.port, "/capture/c1", {}, host.token).status == 404);      // none kept yet
   // A name that is not the listener's own (DNS rebinding) is refused.
   CHECK(http_get(host.port, "/", "evil.example:" + std::to_string(host.port)).status == 403);
 }
@@ -900,6 +912,74 @@ TEST_CASE("listen: a lease and a transaction outlive their session's close, not 
   CHECK(at(held[0], "actor").as_string() == "owner");
 }
 
+// Roadmap A4 (ADR-0069; protocol.md, "Who a connection is"): the operator's own act end to end.
+// `--issue-credential` prints a token once and writes only its digest; a host started with
+// `--credentials` binds the connection that presents it, and refuses it a call as anyone else.
+TEST_CASE("listen: an issued credential is printed once, kept as a digest, and binds its socket") {
+  test::TempDir tmp("engine_host_listen_credential");
+  const std::string file = tmp.file("credentials.json");
+  std::string token;
+  {
+    platform::Process issue;
+    const std::string_view argv[] = {
+        host_exe(), "--issue-credential", file, "--name", "agent-1", "--actor", "agent-1", "--task",
+        "t-agent"};
+    std::string error;
+    REQUIRE_MESSAGE(issue.spawn(argv, &error), error);
+    std::string line;
+    REQUIRE(issue.read_line(line));
+    issue.close_stdin();
+    REQUIRE(issue.wait() == 0);
+    JsonValue printed;
+    REQUIRE_MESSAGE(parse_json(line, printed).ok, line);
+    CHECK(at(printed, "credential").as_string() == "agent-1");
+    token = std::string(at(printed, "token").as_string());
+    CHECK(token.size() == 22);
+  }
+  std::string kept;
+  {
+    std::ifstream in(file, std::ios::binary);
+    kept.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  }
+  CHECK(kept.find(token) == std::string::npos);  // the file holds no secret
+  JsonValue parsed;
+  REQUIRE(parse_json(kept, parsed).ok);
+  CHECK(at(at(parsed, "credentials")[0], "token_sha256").as_string().size() == 64);
+
+  ListeningHost host(
+      {"--credentials", file, "--doc", tmp.file("doc"), "--create", "--actor", "cli"});
+  const std::string in_session = R"({"session":")" + host.session + "\"";
+  Client agent;
+  REQUIRE(agent.connect(host.port, token));
+  const JsonValue list = agent.call("client.list", "null");
+  const JsonValue& me = at(at(list, "result"), "clients")[0];
+  CHECK(at(me, "credential").as_string() == "agent-1");
+  CHECK(at(me, "bound").as_bool());
+  CHECK(write_json(list).find(token) == std::string::npos);
+  const auto apply = [&](const char* attribution) {
+    return agent.call("doc.apply", in_session + R"(,"commands":[)" +
+                                       create_placement(k_left, "left", "[0,0,0]") +
+                                       R"(],"attribution":)" + attribution + "}");
+  };
+  const JsonValue as_owner = apply(R"({"actor":"owner","rationale":"x"})");
+  CHECK(error_code(as_owner) == 1008);
+  CHECK(at(at(at(as_owner, "error"), "data"), "reason").as_string() == "identity");
+  CHECK(write_json(as_owner).find(token) == std::string::npos);
+  const JsonValue own = apply(R"({"rationale":"mine"})");
+  REQUIRE_MESSAGE(error_code(own) == 0, write_json(own));
+  const JsonValue journal = host.stdio("doc.journal", in_session + "}");
+  CHECK(at(at(at(at(journal, "result"), "patches")[0], "attribution"), "actor").as_string() ==
+        "agent-1");
+  // A token nobody issued is refused before any method runs.
+  net::WebSocket stranger;
+  std::string error;
+  REQUIRE(net::websocket_connect(host.port, "/", token_header("AAAAAAAAAAAAAAAAAAAAAA"), stranger,
+                                 error));
+  net::Message m;
+  CHECK_FALSE(stranger.receive(m, 30000));
+  CHECK(stranger.close_code() == net::close_code::k_policy);
+}
+
 TEST_CASE("listen: a subscriber that never reads gets the bounded queue and a dropped count") {
   test::TempDir tmp("engine_host_listen_slow");
   ListeningHost host({"--doc", tmp.file("doc"), "--create", "--actor", "busy"});
@@ -1186,11 +1266,11 @@ TEST_CASE("listen: render.load of a session, the camera it framed, records, a ke
   CHECK((files == nullptr || files->size() == 0));  // kept, with no directory: nothing on disk
   const std::string id = std::string(at(result, "capture").as_string());
   REQUIRE_FALSE(id.empty());
-  const HttpReply png = http_get(host.port, "/capture/" + id + "?token=" + host.token);
+  const HttpReply png = http_get(host.port, "/capture/" + id, {}, host.token);
   CHECK(png.status == 200);
   CHECK(png.head.find("image/png") != std::string::npos);
   CHECK(png.body.substr(1, 3) == "PNG");
-  const HttpReply ids = http_get(host.port, "/capture/" + id + "/ids?token=" + host.token);
+  const HttpReply ids = http_get(host.port, "/capture/" + id + "/ids", {}, host.token);
   REQUIRE(ids.status == 200);
   REQUIRE(ids.body.size() == usize{96} * 64 * 3 * 4);
   // Some pixel shows each cube, and every covered pixel's instance has a record.
@@ -1214,8 +1294,8 @@ TEST_CASE("listen: render.load of a session, the camera it framed, records, a ke
   REQUIRE_MESSAGE(error_code(again) == 0, write_json(again));
   CHECK(write_json(at(at(again, "result"), "camera")) == write_json(camera));
   const HttpReply png2 = http_get(
-      host.port, "/capture/" + std::string(at(at(again, "result"), "capture").as_string()) +
-                     "?token=" + host.token);
+      host.port, "/capture/" + std::string(at(at(again, "result"), "capture").as_string()) + "", {},
+      host.token);
   CHECK(png2.body == png.body);
 
   // A second connection follows the scene through its events.
@@ -1238,8 +1318,8 @@ TEST_CASE("listen: render.load of a session, the camera it framed, records, a ke
   const JsonValue after = c.call("render.capture", again_params);
   REQUIRE(error_code(after) == 0);
   const HttpReply png3 = http_get(
-      host.port, "/capture/" + std::string(at(at(after, "result"), "capture").as_string()) +
-                     "?token=" + host.token);
+      host.port, "/capture/" + std::string(at(at(after, "result"), "capture").as_string()) + "", {},
+      host.token);
   CHECK(png3.body != png.body);  // the right cube is somewhere else now
   const JsonValue moved_event = watcher.next_event();
   CHECK(at(moved_event, "method").as_string() == "event.scene");

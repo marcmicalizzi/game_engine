@@ -210,6 +210,8 @@ void fill_client(const Context& ctx, const Client& c, ClientInfo& out) {
   out.identified = c.identified;
   out.connected_unix_ms = c.connected_unix_ms;
   out.requests = c.requests;
+  out.credential = c.credential;
+  out.bound = c.bound;
   if (ctx.sessions == nullptr) return;
   for (const auto& s : ctx.sessions->sessions()) {
     if (s->held_by(c.connection)) out.sessions.push_back(s->id());
@@ -241,10 +243,14 @@ bool client_hello(Context& ctx, const ClientHelloParams& params, ClientInfo& out
   }
   Client& c = ctx.clients->touch(ctx.connection, time::wall_unix_ms());
   c.name = params.name;
-  c.who = doc::Attribution{};
-  c.who.actor = params.attribution.actor;
-  c.who.role = params.attribution.role;
-  c.who.task = params.attribution.task;
+  // A connection bound to a credential keeps its credential's identity (ADR-0069): the dispatcher
+  // already refused a hello naming another, and one naming the same, or none, changes nothing.
+  if (!c.bound) {
+    c.who = doc::Attribution{};
+    c.who.actor = params.attribution.actor;
+    c.who.role = params.attribution.role;
+    c.who.task = params.attribution.task;
+  }
   c.identified = true;
   fill_client(ctx, c, out);
   return true;

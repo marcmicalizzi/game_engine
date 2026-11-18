@@ -191,7 +191,7 @@ void Server::serve(Connection& connection, Socket socket) {
   if (upgraded) {
     u16 code = close_code::k_policy;
     std::string reason;
-    if (!handler_->accept(request, code, reason)) {
+    if (!handler_->accept(connection.id, request, code, reason)) {
       ws.close(code, reason);
     } else {
       {

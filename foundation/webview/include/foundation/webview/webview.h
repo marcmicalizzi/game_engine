@@ -14,7 +14,7 @@
 //     webview::Webview view;
 //     if (!view.create(window.os_handle(), {}, &error)) { /* no runtime: run without it */ }
 //     view.set_rect(0, 0, width, height);
-//     view.navigate("http://127.0.0.1:52341/?token=...");
+//     view.navigate("http://127.0.0.1:52341/?ticket=...");
 
 #include <core/base/macros.h>
 #include <core/base/types.h>

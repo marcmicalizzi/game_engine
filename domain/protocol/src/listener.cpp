@@ -1,6 +1,8 @@
 #include <core/hash/base64.h>
+#include <core/hash/sha256.h>
 #include <core/json/json.h>
 #include <core/platform/random.h>
+#include <core/schema/json_reflect.h>
 #include <core/time/time.h>
 #include <domain/protocol/listener.h>
 #include <domain/protocol/session.h>
@@ -9,6 +11,41 @@
 namespace engine::protocol {
 
 namespace {
+
+// The cookie a spent ticket buys a browser page (ADR-0069).
+constexpr std::string_view k_cookie = "engine_session";
+
+// A query pair that may go back into a header as it came: printable ASCII, no space.
+bool plain_query(std::string_view pair) noexcept {
+  for (const char c : pair) {
+    if (c <= ' ' || c > '~') return false;
+  }
+  return true;
+}
+
+// The value of cookie `name` in a Cookie header, or false.
+bool cookie_value(const net::HttpRequest& request, std::string_view name, std::string& out) {
+  const std::string* header = request.header("cookie");
+  if (header == nullptr) return false;
+  std::string_view rest = *header;
+  while (!rest.empty()) {
+    const usize semi = rest.find(';');
+    std::string_view pair = rest.substr(0, semi);
+    rest = semi == std::string_view::npos ? std::string_view() : rest.substr(semi + 1);
+    while (!pair.empty() && pair.front() == ' ')
+      pair.remove_prefix(1);
+    const usize eq = pair.find('=');
+    if (eq != std::string_view::npos && pair.substr(0, eq) == name) {
+      out.assign(pair.substr(eq + 1));
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+// ---- credentials (clients.h) ------------------------------------------------------------------
 
 // Compares without stopping at the first difference, so how long a refusal takes says nothing
 // about how much of a guessed token was right. Loopback makes the timing hard to read anyway; it
@@ -21,7 +58,72 @@ bool same_secret(std::string_view a, std::string_view b) noexcept {
   return diff == 0;
 }
 
-}  // namespace
+bool make_token(std::string& out) {
+  u8 secret[16] = {};
+  if (!platform::secure_random(std::span<u8>(secret, sizeof(secret)))) return false;
+  out = base64_encode(std::span<const u8>(secret, sizeof(secret)), Base64Alphabet::Url, false);
+  return true;
+}
+
+std::string token_digest(std::string_view token) { return sha256_hex(sha256(token)); }
+
+bool Credentials::load(std::string_view path, std::string_view text, const Policy* policy,
+                       std::string& error) {
+  JsonValue value;
+  if (!parse_json(text, value).ok) {
+    error = std::string(path) + " is not JSON";
+    return false;
+  }
+  CredentialsFile file;
+  schema::ReadContext ctx;
+  if (!schema::from_json(file, value, ctx)) {
+    error = std::string(path) + " is not a credentials file" +
+            (ctx.diagnostics.empty()
+                 ? std::string()
+                 : ": " + ctx.diagnostics[0].path + ": " + ctx.diagnostics[0].message);
+    return false;
+  }
+  for (u32 i = 0; i < file.credentials.size(); ++i) {
+    const Credential& c = file.credentials[i];
+    const std::string where = std::string(path) + ": credential " + std::to_string(i);
+    if (c.name.empty() || c.actor.empty()) {
+      error = where + " needs a name and an actor: a connection is somebody";
+      return false;
+    }
+    for (u32 j = 0; j < i; ++j) {
+      if (file.credentials[j].name == c.name) {
+        error = where + " repeats the name '" + c.name + "'";
+        return false;
+      }
+    }
+    bool hex = c.token_sha256.size() == 64;
+    for (const char ch : c.token_sha256)
+      hex = hex && ((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'));
+    if (!hex) {
+      error = where + " ('" + c.name + "') has no token_sha256 of 64 lowercase hex digits";
+      return false;
+    }
+    if (!c.role.empty() && policy != nullptr && policy->roles_loaded() &&
+        policy->find_role(c.role) == nullptr) {
+      error = where + " ('" + c.name + "') names role '" + c.role +
+              "', which the host's roles file does not have";
+      return false;
+    }
+  }
+  file_ = std::move(file);
+  return true;
+}
+
+const Credential* Credentials::match(std::string_view token) const {
+  if (token.empty()) return nullptr;
+  const std::string digest = token_digest(token);
+  const Credential* found = nullptr;
+  // Every entry is compared, so the time does not say which one matched.
+  for (const Credential& c : file_.credentials) {
+    if (same_secret(digest, c.token_sha256) && found == nullptr) found = &c;
+  }
+  return found;
+}
 
 // ---- Clients (clients.h) ----------------------------------------------------------------------
 // Here rather than in a file of its own: the listener is the only thing that makes or forgets one.
@@ -105,13 +207,69 @@ bool Listener::start(u16 port, std::string shell_dir, std::string session, std::
   return false;
 }
 
-std::string Listener::shell_url() const {
-  std::string shell = "http://127.0.0.1:" + std::to_string(port()) + "/?token=" + token_;
+std::string Listener::shell_url() {
+  // A ticket, not the token: the address is what browser history, a screenshot and an error keep,
+  // and a ticket is worth nothing once its page has loaded (ADR-0069).
+  std::string ticket;
+  if (!make_token(ticket)) return {};
+  {
+    std::lock_guard<std::mutex> lock(auth_mutex_);
+    const i64 now = time::wall_unix_ms();
+    // Expired tickets go as new ones come, so the list holds only the live ones.
+    for (u32 i = tickets_.size(); i > 0; --i) {
+      if (now >= tickets_[i - 1].expires_unix_ms) tickets_.erase_at(i - 1);
+    }
+    tickets_.push_back({ticket, now + ticket_lifetime_ms_});
+  }
+  std::string shell = "http://127.0.0.1:" + std::to_string(port()) + "/?ticket=" + ticket;
   if (!session_.empty()) shell += "&session=" + session_;
   return shell;
 }
 
-std::string Listener::announcement() const {
+bool Listener::spend_ticket(std::string_view ticket, std::string& cookie) {
+  std::lock_guard<std::mutex> lock(auth_mutex_);
+  const i64 now = time::wall_unix_ms();
+  for (u32 i = 0; i < tickets_.size(); ++i) {
+    if (!same_secret(tickets_[i].value, ticket)) continue;
+    // Spent or expired, it is gone either way: a ticket buys one cookie, within its lifetime.
+    const bool live = now < tickets_[i].expires_unix_ms;
+    tickets_.erase_at(i);
+    if (!live || !make_token(cookie)) return false;
+    cookies_.push_back(cookie);
+    return true;
+  }
+  return false;
+}
+
+Listener::Presented Listener::presented(const net::HttpRequest& request) {
+  Presented out;
+  if (const std::string* header = request.header("x-engine-token"); header != nullptr) {
+    if (same_secret(*header, token_)) {
+      out.known = true;
+    } else if (credentials_ != nullptr) {
+      out.credential = credentials_->match(*header);
+      out.known = out.credential != nullptr;
+    }
+    if (!out.known)
+      out.why = "the X-Engine-Token header names no token or credential this host knows";
+    return out;
+  }
+  std::string cookie;
+  if (cookie_value(request, k_cookie, cookie)) {
+    std::lock_guard<std::mutex> lock(auth_mutex_);
+    for (const std::string& c : cookies_)
+      out.known = out.known || same_secret(c, cookie);
+    if (!out.known)
+      out.why = "the page's cookie is not one this host gave; open a new shell address";
+    return out;
+  }
+  out.why =
+      "a credential is required: the X-Engine-Token header (the token the host printed, or "
+      "one the operator issued), or a page opened from the shell address the host printed";
+  return out;
+}
+
+std::string Listener::announcement() {
   JsonValue line = JsonValue::object();
   line.set("listen", "ws://127.0.0.1:" + std::to_string(port()) + "/");
   line.set("token", token_);
@@ -131,16 +289,6 @@ bool Listener::host_allowed(const net::HttpRequest& request) const {
   return *host == "127.0.0.1" + port_text || *host == "localhost" + port_text;
 }
 
-bool Listener::token_given(const net::HttpRequest& request) const {
-  std::string given;
-  if (const std::string* header = request.header("x-engine-token"); header != nullptr) {
-    given = *header;
-  } else if (!request.query_param("token", given)) {
-    return false;
-  }
-  return same_secret(given, token_);
-}
-
 void Listener::http(const net::HttpRequest& request, net::HttpResponse& response) {
   if (!host_allowed(request)) {
     response = net::http_error(403, "the Host header must be this listener's own address");
@@ -151,13 +299,47 @@ void Listener::http(const net::HttpRequest& request, net::HttpResponse& response
     return;
   }
   const std::string_view path = request.path;
+  std::string ticket;
+  if (path == "/" && request.query_param("ticket", ticket)) {
+    // The shell's address: its one-time ticket buys the page a cookie, and the page is sent on to
+    // an address with no ticket in it, so what history keeps is worth nothing (ADR-0069).
+    std::string cookie;
+    // A browser that already holds this host's cookie (the printed address opened a second time)
+    // is sent on without a new one.
+    const bool spent = spend_ticket(ticket, cookie);
+    if (!spent && !presented(request).known) {
+      response = net::http_error(403,
+                                 "this shell address was used already, or is not this host's: "
+                                 "the host makes a new one for each page it opens");
+      return;
+    }
+    // The rest of the query goes on as it came (still percent-encoded, so it cannot break the
+    // header): the session, and engine-editor's `embedded=1`.
+    std::string rest;
+    std::string_view query = request.query;
+    while (!query.empty()) {
+      const usize amp = query.find('&');
+      const std::string_view pair = query.substr(0, amp);
+      query = amp == std::string_view::npos ? std::string_view() : query.substr(amp + 1);
+      if (pair.starts_with("ticket=") || pair.empty() || !plain_query(pair)) continue;
+      rest += (rest.empty() ? "?" : "&") + std::string(pair);
+    }
+    response.status = 303;
+    response.headers.push_back({"Location", "/" + rest});
+    if (spent)
+      response.headers.push_back({"Set-Cookie", std::string(k_cookie) + "=" + cookie +
+                                                    "; HttpOnly; SameSite=Strict; Path=/"});
+    return;
+  }
   if (path == "/" || path == "/index.html") {
     serve_static("index.html", response);
   } else if (path.starts_with("/shell/")) {
     serve_static(path.substr(7), response);
   } else if (path.starts_with("/capture/")) {
-    if (!token_given(request)) {
-      response = net::http_error(403, "a capture needs the session token");
+    // A credential's holder sees what the operator's do: a read is never restricted.
+    const Presented who = presented(request);
+    if (!who.known) {
+      response = net::http_error(403, "a capture needs a credential: " + who.why);
       return;
     }
     serve_capture(path.substr(9), response);
@@ -204,7 +386,8 @@ void Listener::serve_capture(std::string_view rest, net::HttpResponse& response)
   }
 }
 
-bool Listener::accept(const net::HttpRequest& request, u16& close, std::string& reason) {
+bool Listener::accept(u64 connection, const net::HttpRequest& request, u16& close,
+                      std::string& reason) {
   close = net::close_code::k_policy;
   if (!host_allowed(request)) {
     reason = "the Host header must be this listener's own address";
@@ -223,14 +406,27 @@ bool Listener::accept(const net::HttpRequest& request, u16& close, std::string& 
     reason = "the protocol is served at /";
     return false;
   }
-  std::string given;
-  if (request.header("x-engine-token") == nullptr && !request.query_param("token", given)) {
-    reason = "a session token is required: ?token=<the token the host printed>";
+  // Who it is, once, here, before its first message is read: nothing runs for a connection that
+  // presented nothing the host knows (ADR-0069). A token in the URL is not read at all.
+  const Presented who = presented(request);
+  if (!who.known) {
+    reason = who.why;
     return false;
   }
-  if (!token_given(request)) {
-    reason = "the token does not match this host's";
-    return false;
+  // Bound under the dispatch lock, which every request takes, so the first message already finds
+  // its identity.
+  std::lock_guard<std::mutex> lock(*lock_);
+  Client& client = clients_.touch(connection, time::wall_unix_ms());
+  if (who.credential != nullptr) {
+    client.credential = who.credential->name;
+    client.who = doc::Attribution{};
+    client.who.actor = who.credential->actor;
+    client.who.role = who.credential->role;
+    client.who.task = who.credential->task;
+    client.identified = true;
+    client.bound = true;
+  } else {
+    client.credential = "operator";
   }
   return true;
 }

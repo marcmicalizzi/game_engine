@@ -36,8 +36,11 @@ class ServerHandler {
   virtual void http(const HttpRequest& request, HttpResponse& response) = 0;
   // An upgrade request whose handshake is valid. False refuses it: the handshake still completes,
   // and the connection is closed at once with `close` and `reason` — because a browser's WebSocket
-  // reports a close code and its reason to the page, and an HTTP status to nobody.
-  virtual bool accept(const HttpRequest& request, u16& close, std::string& reason) = 0;
+  // reports a close code and its reason to the page, and an HTTP status to nobody. `connection` is
+  // the number its messages will carry, so a handler can bind what it learnt from the handshake (a
+  // credential, protocol.md "Who a connection is") to the connection before its first message.
+  virtual bool accept(u64 connection, const HttpRequest& request, u16& close,
+                      std::string& reason) = 0;
   // One text message on connection `connection`; the text to send back, or empty for none.
   virtual std::string message(u64 connection, std::string_view text) = 0;
   // A binary message; the connection is closed with 1003 when this returns false (the default).

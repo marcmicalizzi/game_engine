@@ -26,7 +26,7 @@ class EchoHandler final : public ServerHandler {
     response.content_type = "text/plain";
     response.body = "path " + request.path;
   }
-  bool accept(const HttpRequest& request, u16& close, std::string& reason) override {
+  bool accept(u64, const HttpRequest& request, u16& close, std::string& reason) override {
     std::string value;
     if (request.query_param("refuse", value)) {
       close = close_code::k_policy;
@@ -256,7 +256,7 @@ namespace {
 class PushHandler final : public ServerHandler {
  public:
   void http(const HttpRequest&, HttpResponse& response) override { response.body = "no"; }
-  bool accept(const HttpRequest&, u16&, std::string&) override { return true; }
+  bool accept(u64, const HttpRequest&, u16&, std::string&) override { return true; }
   std::string message(u64 connection, std::string_view) override {
     last.store(connection);
     return "ok";

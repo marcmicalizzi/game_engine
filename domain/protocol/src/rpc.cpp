@@ -127,6 +127,20 @@ JsonValue Dispatcher::dispatch_one(const JsonValue& request) {
 
   JsonValue result;
   RpcError error;
+  // The identity gate (ADR-0069): a connection bound to a credential may not call as someone
+  // else, whatever the method, and is refused before its handler runs.
+  if (context_.clients != nullptr && context_.connection != 0) {
+    std::string_view actor;
+    std::string_view role;
+    if (const JsonValue* a = p.is_object() ? p.find("attribution") : nullptr;
+        a != nullptr && a->is_object()) {
+      if (const JsonValue* v = a->find("actor"); v != nullptr) (void)v->get_string(actor);
+      if (const JsonValue* v = a->find("role"); v != nullptr) (void)v->get_string(role);
+    }
+    if (!identity_allows(context_, actor, role, error)) {
+      return is_notification ? JsonValue() : error_response(id, error);
+    }
+  }
   // The role gate (policy.h): a write must be one of the methods the call's role names. The role
   // is the params' `attribution.role` wherever a method takes one, and the host's otherwise, so
   // the gate reads it from the JSON here once rather than every handler learning to.

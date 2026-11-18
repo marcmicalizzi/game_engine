@@ -189,6 +189,30 @@ const doc::Attribution* client_identity(const Context& ctx) noexcept {
   return client != nullptr && client->identified ? &client->who : nullptr;
 }
 
+bool identity_allows(const Context& ctx, std::string_view actor, std::string_view role,
+                     RpcError& error) {
+  if (ctx.clients == nullptr || ctx.connection == 0) return true;
+  const Client* client = ctx.clients->find(ctx.connection);
+  if (client == nullptr || !client->bound) return true;
+  const bool other_actor = !blank(actor) && actor != client->who.actor;
+  const bool other_role = !blank(role) && role != client->who.role;
+  if (!other_actor && !other_role) return true;
+  JsonValue extra = JsonValue::object();
+  extra.set("credential", JsonValue(client->credential));
+  extra.set("actor", JsonValue(client->who.actor));
+  error = forbidden(
+      "this connection is " + client->who.actor +
+          (client->who.role.empty() ? std::string() : " in role '" + client->who.role + "'") +
+          " by the credential '" + client->credential +
+          "' it presented, and may not "
+          "call as " +
+          (other_actor ? "actor " + std::string(actor) : "role " + std::string(role)) +
+          ": leave attribution's actor and role blank, or ask the host's operator "
+          "for a credential that is",
+      "identity", client->who.role, std::move(extra));
+  return false;
+}
+
 bool resolve_caller(const Context& ctx, const doc::Attribution* given, Caller& out,
                     RpcError& error) {
   out.who = given != nullptr ? *given : doc::Attribution{};

@@ -19,7 +19,9 @@
 #include <core/log/log.h>
 #include <core/platform/cpu_baseline.h>
 #include <core/platform/process.h>
+#include <core/schema/json_reflect.h>
 #include <core/time/time.h>
+#include <domain/protocol/clients.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
 #include <foundation/io/vfs.h>
@@ -83,6 +85,10 @@ const char* k_usage =
     "                   (docs/subsystems/engine_shell.md). The host serves until its standard\n"
     "                   input closes, as without --listen\n"
     "  --shell <dir>    the shell's static files (default: <bin>/../shell)\n"
+    "  --credentials <file.json>  the credentials --listen accepts beside its own token:\n"
+    "                   each binds a connection to its actor, role and task (ADR-0069)\n"
+    "  --issue-credential <file.json> --name <n> --actor <a> [--role <r>] [--task <t>]\n"
+    "                   append a credential to the file, print its token once, and exit\n"
     "\n"
     "       engine-host --console [--script <file.luau>] [--step-budget <n>] [--memory-mb <n>]\n"
     "                   [the options above] [-- <script args>...]\n"
@@ -190,6 +196,9 @@ int main(int argc, char** argv) {
   std::string tunables_file;
   std::string hang_method;
   std::string roles_file;
+  std::string credentials_file;  // --credentials (ADR-0069)
+  std::string issue_file;        // --issue-credential
+  std::string issue_name;
   std::string listen_address;
   std::string doc_dir;
   std::string shell_dir;
@@ -255,6 +264,12 @@ int main(int argc, char** argv) {
       create_doc = true;
     } else if (a == "--shell") {
       if (!next_value(argc, argv, i, a, shell_dir)) return 2;
+    } else if (a == "--credentials") {
+      if (!next_value(argc, argv, i, a, credentials_file)) return 2;
+    } else if (a == "--issue-credential") {
+      if (!next_value(argc, argv, i, a, issue_file)) return 2;
+    } else if (a == "--name") {
+      if (!next_value(argc, argv, i, a, issue_name)) return 2;
     } else {
       std::fprintf(stderr, "engine-host: unknown option '%s'\n%s", argv[i], k_usage);
       return 2;
@@ -374,6 +389,81 @@ int main(int argc, char** argv) {
     }
   }
 
+  // --issue-credential (ADR-0069): the operator's act, never a protocol method. A token is made,
+  // its digest appended to the file under --name with --actor, --role and --task, and the token
+  // printed once on stdout; nothing is served.
+  if (!issue_file.empty()) {
+    if (issue_name.empty() || policy.identity.actor.empty()) {
+      std::fprintf(stderr, "engine-host: --issue-credential needs --name and --actor\n");
+      return 2;
+    }
+    protocol::Credentials existing;
+    std::string text;
+    const io::Status read = io::read_file(issue_file, text);
+    if (read != io::Status::Ok && read != io::Status::NotFound) {
+      std::fprintf(stderr, "engine-host: cannot read '%s': %s\n", issue_file.c_str(),
+                   io::status_name(read));
+      return 2;
+    }
+    std::string error;
+    if (read == io::Status::Ok && !existing.load(issue_file, text, &policy, error)) {
+      std::fprintf(stderr, "engine-host: %s\n", error.c_str());
+      return 2;
+    }
+    protocol::CredentialsFile file = existing.file();
+    for (const protocol::Credential& c : file.credentials) {
+      if (c.name == issue_name) {
+        std::fprintf(stderr, "engine-host: %s already has a credential named '%s'\n",
+                     issue_file.c_str(), issue_name.c_str());
+        return 2;
+      }
+    }
+    protocol::Credential issued;
+    std::string token;
+    if (!protocol::make_token(token)) {
+      std::fprintf(stderr, "engine-host: the system's secure random source did not answer\n");
+      return 2;
+    }
+    issued.name = issue_name;
+    issued.actor = policy.identity.actor;
+    issued.role = policy.identity.role;
+    issued.task = policy.identity.task;
+    issued.token_sha256 = protocol::token_digest(token);
+    issued.issued_unix_ms = time::wall_unix_ms();
+    file.credentials.push_back(std::move(issued));
+    if (const io::Status s = io::write_file(issue_file, write_json(schema::to_json(file)));
+        s != io::Status::Ok) {
+      std::fprintf(stderr, "engine-host: cannot write '%s': %s\n", issue_file.c_str(),
+                   io::status_name(s));
+      return 2;
+    }
+    JsonValue line = JsonValue::object();
+    line.set("credential", issue_name);
+    line.set("token", token);
+    const std::string out = write_json(line, JsonWriteOptions{.pretty = false});
+    std::fwrite(out.data(), 1, out.size(), stdout);
+    std::fputc('\n', stdout);
+    return 0;
+  }
+  protocol::Credentials credentials;
+  if (!credentials_file.empty()) {
+    std::string text;
+    if (const io::Status s = io::read_file(credentials_file, text); s != io::Status::Ok) {
+      std::fprintf(stderr, "engine-host: cannot read credentials file '%s': %s\n",
+                   credentials_file.c_str(), io::status_name(s));
+      return 2;
+    }
+    std::string error;
+    if (!credentials.load(credentials_file, text, &policy, error)) {
+      std::fprintf(stderr, "engine-host: %s\n", error.c_str());
+      return 2;
+    }
+    if (listen_address.empty()) {
+      std::fprintf(stderr, "engine-host: --credentials is for --listen: stdio is the operator's\n");
+      return 2;
+    }
+  }
+
   protocol::SessionManager sessions(vfs);
   // The host's own methods' state reaches their handlers through Context::app (host_state.h): the
   // renderer's device and scenes, and the sessions' runtime worlds. It must outlive the
@@ -436,6 +526,7 @@ int main(int argc, char** argv) {
   std::mutex dispatch_lock;
   host::HostCaptures captures(state);
   protocol::Listener listen(dispatcher, dispatch_lock, &captures);
+  if (credentials.loaded()) listen.set_credentials(&credentials);
   if (!listen_address.empty()) {
     if (shell_dir.empty()) shell_dir = platform::executable_directory() + "/../shell";
     std::string error;

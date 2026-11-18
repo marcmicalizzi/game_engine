@@ -274,7 +274,7 @@ export class Viewport {
         keep: true,
         camera: this.cameraParams(),
       });
-      const url = `/capture/${encodeURIComponent(result.capture)}?token=${encodeURIComponent(this.app.token)}`;
+      const url = `/capture/${encodeURIComponent(result.capture)}`;
       const img = new Image();
       img.src = url;
       await img.decode();
@@ -322,7 +322,7 @@ export class Viewport {
 
   idsOf(shot) {
     if (!this.ids.has(shot.id)) {
-      const url = `/capture/${encodeURIComponent(shot.id)}/ids?token=${encodeURIComponent(this.app.token)}`;
+      const url = `/capture/${encodeURIComponent(shot.id)}/ids`;
       this.ids.set(shot.id, fetch(url).then((r) => {
         if (!r.ok) throw new Error(`the host no longer keeps capture ${shot.id}`);
         return r.arrayBuffer();

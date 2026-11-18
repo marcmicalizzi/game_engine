@@ -57,11 +57,13 @@ $timeout = [TimeSpan]::FromSeconds(60)
 
 function New-Token { [Threading.CancellationTokenSource]::new($timeout).Token }
 
-function Connect-Ws([int]$port, [string]$query) {
+function Connect-Ws([int]$port, [string]$token) {
   $ws = [System.Net.WebSockets.ClientWebSocket]::new()
   $ws.Options.KeepAliveInterval = [TimeSpan]::Zero
+  # The token as a header: the host never reads one from a URL (ADR-0069).
+  if ($token) { $ws.Options.SetRequestHeader('X-Engine-Token', $token) }
   # A Task is a Task<VoidTaskResult> underneath, and PowerShell would emit the result: discard it.
-  $null = $ws.ConnectAsync([Uri]"ws://127.0.0.1:$port/$query", (New-Token)).GetAwaiter().GetResult()
+  $null = $ws.ConnectAsync([Uri]"ws://127.0.0.1:$port/", (New-Token)).GetAwaiter().GetResult()
   return $ws
 }
 
@@ -133,7 +135,7 @@ try {
   $ws.Dispose()
 
   # 2. With the token.
-  $ws = Connect-Ws $port "?token=$token"
+  $ws = Connect-Ws $port $token
   $ping = Invoke-Rpc $ws 'engine.ping' $null
   Expect ($ping.Response.result.pid -gt 0) 'engine.ping answers over .NET''s client'
 
@@ -158,7 +160,7 @@ try {
   Expect ($entry.actor -eq 'ps-client') 'and the host''s --actor'
 
   # 3. A second connection beside the first.
-  $ws2 = Connect-Ws $port "?token=$token"
+  $ws2 = Connect-Ws $port $token
   $a = Invoke-Rpc $ws2 'engine.ping' $null
   $b = Invoke-Rpc $ws 'engine.ping' $null
   Expect ($a.Response.result.pid -eq $b.Response.result.pid) 'two connections are both answered, by the same host'

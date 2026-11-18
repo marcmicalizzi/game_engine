@@ -35,6 +35,7 @@
 #include <domain/gfx/backend/vulkan/swapchain.h>
 #include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/device.h>
+#include <domain/protocol/clients.h>
 #include <domain/protocol/listener.h>
 #include <domain/protocol/rpc.h>
 #include <foundation/image/png.h>
@@ -101,6 +102,9 @@ constexpr const char* k_usage =
     "               Prints one line first: "
     "{\"listen\":\"ws://...\",\"token\":\"...\",\"shell\":...}\n"
     "  --shell      the shell's files (default <bin>/../shell)\n"
+    "  --credentials <file.json>  the credentials the listener accepts beside its own token,\n"
+    "               each binding a connection to its actor, role and task (engine-host\n"
+    "               --issue-credential writes them; ADR-0069)\n"
     "  --offscreen  no window: draw --frames frames into the renderer's own target\n"
     "  --frames N   stop after N frames of the viewport (0: until the window closes); with the\n"
     "               shell, counted from when the page last placed the viewport\n"
@@ -155,6 +159,7 @@ struct Options {
   std::string listen;  // empty: the default for the mode
   u16 listen_port = 0;
   std::string shell_dir;
+  std::string credentials;  // --credentials (ADR-0069)
   u32 frames = 0;
   bool pick = false;
   bool pick_center = false;
@@ -920,7 +925,25 @@ int run_window(const Options& options, editor::EditorDocument& document) {
     }
   }
 
+  // Before the host, so the listener's threads never outlive what it accepts (ADR-0069). The
+  // editor has no roles file, so a credential's role is not checked against one.
+  protocol::Credentials credentials;
+  if (!options.credentials.empty()) {
+    std::string text;
+    if (const io::Status s = io::read_file(options.credentials, text); s != io::Status::Ok) {
+      window::shutdown();
+      std::fprintf(stderr, "engine-editor: cannot read credentials file '%s': %s\n",
+                   options.credentials.c_str(), io::status_name(s));
+      return 2;
+    }
+    if (!credentials.load(options.credentials, text, nullptr, error)) {
+      window::shutdown();
+      std::fprintf(stderr, "engine-editor: %s\n", error.c_str());
+      return 2;
+    }
+  }
   Host host(document);
+  if (credentials.loaded()) host.listener.set_credentials(&credentials);
   if (options.test_page) editor::add_editor_test_methods(host.dispatcher);
   const bool listening = options.shell != Shell::None || !options.listen.empty();
   if (listening) {
@@ -1693,6 +1716,8 @@ int main(int argc, char** argv) {
       }
     } else if (a == "--shell") {
       if (!value(options.shell_dir)) return usage("--shell needs a directory");
+    } else if (a == "--credentials") {
+      if (!value(options.credentials)) return usage("--credentials needs a file");
     } else if (a == "--frames") {
       if (!value(v) || !parse_u32(v, options.frames)) return usage("--frames needs a count");
     } else if (a == "--pick") {

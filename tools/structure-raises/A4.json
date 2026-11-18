@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "A4",
+  "reason": "A4: protocol.md gains the section on who a connection is (credentials, the identity gate, the shell's one-time ticket and cookie); apps.md the credential flags of engine-host and engine-editor",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 732,
+    "page:docs/subsystems/protocol.md": 4401
+  }
+}

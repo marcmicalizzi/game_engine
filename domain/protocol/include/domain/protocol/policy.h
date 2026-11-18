@@ -101,6 +101,11 @@ bool resolve_caller(const Context& ctx, const doc::Attribution* given, Caller& o
 // The connection's own identity (`client.hello`) when it gave one, else null: what fills a call's
 // blank attribution before the host's.
 const doc::Attribution* client_identity(const Context& ctx) noexcept;
+// A connection bound to a credential (clients.h, ADR-0069) is its credential's actor and role: a
+// call that names another (either may be blank, which is the credential's) is refused with 1008,
+// `data.reason` "identity", before its handler runs. True for every other caller.
+bool identity_allows(const Context& ctx, std::string_view actor, std::string_view role,
+                     RpcError& error);
 
 // 1008 Forbidden with `data.reason` and `data.role`.
 RpcError forbidden(std::string message, std::string_view reason, std::string_view role,

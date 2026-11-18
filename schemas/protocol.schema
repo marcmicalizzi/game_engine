@@ -3050,7 +3050,13 @@ struct ClientHelloParams @version(1) {
 }
 
 /// One client connection: who it says it is and what it holds.
-struct ClientInfo @version(1) {
+struct ClientInfo @version(2) {
+  /// How it authenticated: "operator" (the token the host printed, or the shell's cookie made from
+  /// its ticket) or the name of the credential it presented. Never the token.
+  credential: string @since(2)
+  /// Its identity is its credential's: a call naming another actor or role is refused (1008,
+  /// reason "identity"). False for the operator, who may name any role.
+  bound: bool = false @since(2)
   /// The connection's number, as events and leases name it.
   connection: u64 = 0
   name: string
@@ -3194,4 +3200,31 @@ struct ProfileReport @version(1) {
   capture_ms: f64 = 0
   /// The trace's path, when `out_dir` was set.
   trace: string
+}
+
+// ---- who a connection is (roadmap A4; ADR-0069; protocol.md, "Who a connection is") ----------
+// The host's operator issues credentials (`engine-host --issue-credential`); a connection presents
+// one at its upgrade, in the `X-Engine-Token` header, or a browser page the cookie its one-time
+// ticket bought, and is refused before any method runs when it presents nothing the host knows. A
+// credential binds the connection's actor, role and task. Never logged, never in a URL.
+
+/// One credential the operator issued: who a connection presenting its token is.
+struct Credential @version(1) {
+  /// The operator's label for it, unique in the file: "agent-1", "qa-bot".
+  name: string
+  actor: string
+  /// A role of the host's roles file; empty runs in the file's default role.
+  role: string
+  task: string
+  /// The token's SHA-256, 64 lowercase hex digits. The file never holds the token itself: the
+  /// token is 128 bits from the system's secure random source, so its digest is a lookup key
+  /// nobody can turn back into it.
+  token_sha256: string
+  issued_unix_ms: i64 = 0
+}
+
+/// A credentials file, `engine-host --credentials <file.json>`, written by
+/// `engine-host --issue-credential <file.json>`.
+struct CredentialsFile @version(1) @kind(document) {
+  credentials: Credential[]
 }
