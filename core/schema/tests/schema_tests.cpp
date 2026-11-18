@@ -484,4 +484,16 @@ TEST_CASE("schema: an additive version's step is generated, and only an additive
   REQUIRE(gap.diagnostics.size() == 1);
   CHECK(gap.diagnostics[0].message.find("no migration registered from version 1 to 2") !=
         std::string::npos);
+
+  // A version that adds a field and does not declare @additive is not derived either: the tables
+  // cannot tell it from one that also changed an existing field's meaning (review B4, batch 68).
+  CHECK_FALSE(additive_step(type_of<Undeclared>(), 2));
+  JsonValue u1;
+  REQUIRE(parse_json(R"({"rate": 2.0})", u1).ok);
+  Undeclared u;
+  ReadContext undeclared;
+  CHECK_FALSE(from_json_versioned(u, u1, 1, undeclared));
+  REQUIRE(undeclared.diagnostics.size() == 1);
+  CHECK(undeclared.diagnostics[0].message.find("no migration registered from version 1 to 2") !=
+        std::string::npos);
 }

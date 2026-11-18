@@ -395,6 +395,9 @@ class Parser {
       if (a.name == "doc" && !a.args.empty()) s.doc = a.args[0];
       if (a.name == "kind" && !a.args.empty()) s.tag = a.args[0];
       if (a.name == "transient") s.transient = true;
+      if (a.name == "additive")
+        for (const std::string& v : a.args)
+          s.additive.push_back(static_cast<uint16_t>(std::strtoul(v.c_str(), nullptr, 0)));
     }
     if (!expect_punct('{', error)) return false;
     while (!at_punct('}')) {

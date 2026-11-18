@@ -85,6 +85,9 @@ struct StructDecl {
   std::string doc;
   std::string tag;
   uint16_t version = 1;
+  // @additive(v, ...): the versions whose step only adds fields, each @since it with a default,
+  // so the reader derives the step (schemas/README.md, "Evolution rules").
+  std::vector<uint16_t> additive;
   // Struct-level @transient: the whole type is runtime-only and is never persisted
   // (docs/plan/03-data-model.md §3.4). Field-level @transient, on Field, is the narrower thing:
   // one field of an otherwise persisted type.

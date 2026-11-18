@@ -639,7 +639,7 @@ struct DepositLithology @version(1) {
 /// face; and adds the blocks shed below the faces and the formation's lithology. Version 3 (G191)
 /// adds `far_rings`: a tile's patches arrive with the tile, and rings past it draw none. Version 4
 /// (G198) adds `near_rings`: rings past it and before `far_rings` draw the tile's far tile.
-struct DepositLayer @version(4) {
+struct DepositLayer @version(4) @additive(3, 4) {
   seed: u64 = 1
   /// World metres, finite within +/-1e8; max exceeds min, aligned to spacing_m.
   region_min: f64[2]

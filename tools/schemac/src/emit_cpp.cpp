@@ -381,6 +381,11 @@ std::string emit_cpp_source(const Model& model, const SchemaFile& file) {
     out << "    .values = {},\n";
     out << "    .enum_underlying = engine::schema::Kind::U32,\n";
     out << "    .ops = &engine::schema::StructOpsFor<" << s.name << ">::ops,\n";
+    if (!s.additive.empty()) {
+      unsigned long long bits = 0;
+      for (uint16_t v : s.additive) bits |= 1ull << v;
+      out << "    .additive_versions = " << bits << "ull,\n";
+    }
     out << "};\n\n";
   }
 

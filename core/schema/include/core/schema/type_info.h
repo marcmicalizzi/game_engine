@@ -162,6 +162,9 @@ struct TypeInfo {
   std::span<const EnumValueInfo> values;  // Enum
   Kind enum_underlying;                   // Enum
   const StructOps* ops;                   // Struct
+  // Bit v set: the schema declares the step to version v additive (`@additive(v, ...)`), so
+  // `additive_step` may derive it (schemas/README.md, "Evolution rules"). 0 for every other type.
+  u64 additive_versions = 0;
 
   const FieldInfo* find_field(std::string_view field_name) const noexcept;
   const EnumValueInfo* find_value(std::string_view value_name) const noexcept;

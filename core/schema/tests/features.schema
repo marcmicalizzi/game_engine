@@ -49,7 +49,7 @@ struct Spatial @version(1) {
 }
 
 /// Two additive versions and no migration registered for either (D27): both steps are generated.
-struct Grown @version(3) {
+struct Grown @version(3) @additive(2, 3) {
   first: i32 = 1
   second: string = "two" @since(2)
   third: f32 = 3.5 @since(3)
@@ -58,6 +58,13 @@ struct Grown @version(3) {
 /// A version that added no field — a meaning changed — and registered no step: still refused.
 struct Retyped @version(2) {
   value: f64 = 0
+}
+
+/// A version that added a field and did not declare itself additive: it may also have changed
+/// what `rate` means under its name, so its step is not derived and the read is refused.
+struct Undeclared @version(2) {
+  rate: f32 = 1
+  added: i32 = 0 @since(2)
 }
 
 /// The f64 vector primitives (ADR-0053): a point in the world and a displacement.

@@ -544,8 +544,24 @@ bool resolve(Model& model, std::vector<std::string>& errors) {
         }
       }
       for (const Attribute& a : s.attrs) {
-        if (a.name != "version" && a.name != "kind" && a.name != "doc" && a.name != "transient")
+        if (a.name != "version" && a.name != "kind" && a.name != "doc" && a.name != "transient" &&
+            a.name != "additive")
           errors.push_back(err(a.loc, "unknown struct attribute '@" + a.name + "'"));
+        if (a.name == "additive" && a.args.empty())
+          errors.push_back(err(a.loc, "@additive names the versions whose step only adds fields"));
+      }
+      // @additive(v): the step to v is derived by the reader, so v must be a step this struct has
+      // and one that adds a field (review B4, batch 68: a step is generated only where declared).
+      for (uint16_t v : s.additive) {
+        bool adds = false;
+        for (const Field& f : s.fields) adds = adds || f.since == v;
+        if (v < 2 || v > s.version || v > 63)
+          errors.push_back(err(s.loc, "@additive(" + std::to_string(v) + ") on '" + s.name +
+                                          "' is not a step to one of its versions"));
+        else if (!adds)
+          errors.push_back(err(s.loc, "@additive(" + std::to_string(v) + ") on '" + s.name +
+                                          "', whose version " + std::to_string(v) +
+                                          " adds no field"));
       }
       // A component is registered with the entity store by name, so it needs a name nothing
       // else can take, and it must carry data or be a deliberate tag. What it may not be is

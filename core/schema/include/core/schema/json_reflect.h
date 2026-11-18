@@ -75,8 +75,8 @@ struct Migration {
   bool (*apply)(JsonValue& object, ReadContext& ctx);
 };
 
-// Whether the step to `to_version` only added fields: some field of `type` is `@since(to_version)`.
-// Such a step is generated — derived from the tables schemac emits — and changes nothing in the
+// Whether the step to `to_version` only added fields: the schema declares it `@additive` and some
+// field of `type` is `@since(to_version)`. Such a step is generated — derived from the tables schemac emits — and changes nothing in the
 // JSON, since an absent field takes its default (schemas/README.md, "Evolution rules").
 bool additive_step(const TypeInfo& type, u16 to_version) noexcept;
 
@@ -85,7 +85,7 @@ class MigrationRegistry {
   static MigrationRegistry& global();
   void add(const Migration& migration);
   // Applies every step from `from_version` up to `type.version`: the one registered for it, or else
-  // the generated additive step when the version only added fields; fails naming the first step
+  // the generated additive step when the version is declared additive; fails naming the first step
   // that is neither.
   bool migrate(const TypeInfo& type, JsonValue& object, u16 from_version, ReadContext& ctx) const;
 

@@ -608,6 +608,10 @@ void MigrationRegistry::add(const Migration& migration) { migrations_.push_back(
 
 bool additive_step(const TypeInfo& type, u16 to_version) noexcept {
   if (type.kind != Kind::Struct || to_version < 2 || to_version > type.version) return false;
+  // Only a version the schema declares additive (`@additive`; review B4, batch 68): a version
+  // that adds a field and also changes an existing one's meaning under its name must be refused
+  // until a step says what to do, and the tables cannot tell the two apart.
+  if (to_version > 63 || (type.additive_versions & (u64{1} << to_version)) == 0) return false;
   for (const FieldInfo& field : type.fields) {
     if (field.since_version == to_version) return true;
   }
