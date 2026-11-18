@@ -1,4 +1,5 @@
 #include <foundation/image/png.h>
+#include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
@@ -6,6 +7,7 @@
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <system_error>
 
 using namespace engine;
 using namespace engine::image;
@@ -152,4 +154,30 @@ TEST_CASE("png: bad arguments are rejected and write_png produces a file") {
   CHECK(std::filesystem::file_size(std::filesystem::path(path)) ==
         8 + 25 + 12 + (2 + 5 + 5 + 4) + 12);
   CHECK(write_png(path, 3, 1, 4, four) == io::Status::InvalidArgument);
+}
+
+// A hard link at the name is the other name's file too: write_png opened it "wb" and wrote the
+// picture into the file the link shares, so a capture into a writable root overwrote a file
+// outside it. By rename, the link alone is replaced.
+TEST_CASE("png: write_png onto a hard link replaces the link and leaves the other file") {
+  const test::TempDir dir("engine_png_link");
+  const std::string outside = dir.file("outside.bin");
+  REQUIRE(io::write_file(outside, "the file outside") == io::Status::Ok);
+  const std::string link = dir.file("shot.png");
+  std::error_code ec;
+  std::filesystem::create_hard_link(std::filesystem::path(outside), std::filesystem::path(link),
+                                    ec);
+  if (ec) {
+    MESSAGE("this file system makes no hard links; the case is skipped");
+    return;
+  }
+  u8 four[4] = {1, 2, 3, 4};
+  REQUIRE(write_png(link, 1, 1, 4, four, Compression::Stored) == io::Status::Ok);
+  std::string kept;
+  REQUIRE(io::read_file(outside, kept) == io::Status::Ok);
+  CHECK(kept == "the file outside");
+  std::string written;
+  REQUIRE(io::read_file(link, written) == io::Status::Ok);
+  REQUIRE(written.size() > 4);
+  CHECK(written.substr(1, 3) == "PNG");
 }

@@ -2865,3 +2865,45 @@ TEST_CASE("renderer: a turned joint's clusters are not culled by their rest-pose
     CHECK(visible[1] < visible[0]);
   }
 }
+
+// A protocol host admits every file a capture writes before it is written, from
+// `capture_file_names`; a channel added to `write_capture` and not to the list would be written
+// unadmitted. CPU only: a frame of every channel, one pixel, written and listed.
+TEST_CASE("renderer: write_capture writes exactly the files capture_file_names names") {
+  const test::TempDir tmp("engine_renderer_capture_names");
+  renderer::CapturedFrame frame;
+  frame.width = 1;
+  frame.height = 1;
+  frame.color = {1, 2, 3, 255};
+  frame.normals = {128, 128, 255};
+  frame.ids = {0, 1, 2};
+  frame.depth = {0.5f};
+  frame.depth_min = 0.25f;
+  frame.depth_max = 0.75f;
+  frame.covered = 1;
+  frame.motion = {0.5f, -0.5f};
+  frame.light = {0.1f, 0.2f, 0.3f};
+  frame.codes.bits = 8;
+  frame.codes.counts.resize(3u << 8);
+  renderer::CaptureFiles files;
+  std::string message;
+  REQUIRE(renderer::write_capture(tmp.path(), "shot", frame, files, message));
+  Vector<io::DirEntry> entries;
+  REQUIRE(io::list_directory(tmp.path(), entries) == io::Status::Ok);
+  const Vector<std::string> names = renderer::capture_file_names(frame, "shot");
+  REQUIRE(entries.size() == names.size());
+  for (const std::string& name : names) {
+    INFO(name);
+    bool found = false;
+    for (const io::DirEntry& e : entries)
+      found = found || e.name == name;
+    CHECK(found);
+  }
+  // A failure names the file, never the directory it was to be written in.
+  renderer::CapturedFrame bad = frame;
+  bad.color.clear();
+  bad.normals = {1};  // too few bytes for one RGB pixel: the PNG is refused
+  CHECK_FALSE(renderer::write_capture(tmp.path(), "bad", bad, files, message));
+  CHECK(message.find(tmp.path()) == std::string::npos);
+  CHECK(message.find("bad.normals.png") != std::string::npos);
+}

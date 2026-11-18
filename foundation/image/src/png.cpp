@@ -116,7 +116,10 @@ io::Status write_png(std::string_view native_path, u32 width, u32 height, u32 ch
   Vector<u8> bytes;
   if (!encode_png(width, height, channels, pixels, bytes, level))
     return io::Status::InvalidArgument;
-  return io::write_file(
+  // By rename: a reader sees the old picture or the new one, and a hard or symbolic link already at
+  // the name is replaced, never written through (io.md, "Roots"). It is cheaper than stdio's
+  // truncating write too (io.md, "Writing a file").
+  return io::write_file_atomic(
       native_path, std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
 }
 

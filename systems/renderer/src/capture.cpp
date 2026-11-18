@@ -15,12 +15,22 @@ std::string join(std::string_view dir, std::string_view name) {
   return dir.empty() ? std::string(name) : io::join_path(dir, name);
 }
 
+// A failure names the file and not the directory, which a protocol host's client named in its
+// root's form and must not be answered as the host's native path.
+std::string cannot_write(const std::string& path, io::Status status) {
+  return "cannot write " + std::string(io::file_name(path)) + ": " + io::status_name(status);
+}
+
 bool write_png_file(const std::string& path, u32 width, u32 height, u32 channels,
                     std::span<const u8> pixels, std::string& error) {
   const io::Status status = image::write_png(path, width, height, channels, pixels);
   if (status == io::Status::Ok) return true;
-  error = "cannot write " + path + ": " + io::status_name(status);
+  error = cannot_write(path, status);
   return false;
+}
+
+io::Status write_bytes(const std::string& path, std::string_view bytes) {
+  return io::write_file_atomic(path, bytes);
 }
 
 // `<stem>.codes.json`: the histogram of a captured picture's codes (`CodeHistogram`), with what a
@@ -85,7 +95,7 @@ bool write_capture(std::string_view dir, std::string_view base, const CapturedFr
   if (!dir.empty()) {
     const io::Status status = io::make_directories(dir);
     if (status != io::Status::Ok) {
-      error = "cannot create " + std::string(dir) + ": " + io::status_name(status);
+      error = std::string("cannot create the capture's directory: ") + io::status_name(status);
       return false;
     }
   }
@@ -117,16 +127,16 @@ bool write_capture(std::string_view dir, std::string_view base, const CapturedFr
       bytes[i * 4 + 2] = static_cast<u8>((v >> 16) & 0xffu);
       bytes[i * 4 + 3] = static_cast<u8>((v >> 24) & 0xffu);
     }
-    io::Status status = io::write_file(
+    io::Status status = write_bytes(
         out.ids, std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
     if (status != io::Status::Ok) {
-      error = "cannot write " + out.ids + ": " + io::status_name(status);
+      error = cannot_write(out.ids, status);
       return false;
     }
     out.ids_header = join(dir, stem + ".ids.json");
-    status = io::write_file(out.ids_header, id_buffer_header(frame, stem + ".ids.bin"));
+    status = write_bytes(out.ids_header, id_buffer_header(frame, stem + ".ids.bin"));
     if (status != io::Status::Ok) {
-      error = "cannot write " + out.ids_header + ": " + io::status_name(status);
+      error = cannot_write(out.ids_header, status);
       return false;
     }
   }
@@ -158,11 +168,11 @@ bool write_capture(std::string_view dir, std::string_view base, const CapturedFr
     // x and green for y round a mid grey that is "did not move", scaled so the frame's longest
     // component is full scale, with that scale in the header beside it.
     out.motion = join(dir, stem + ".motion.bin");
-    io::Status status = io::write_file(
-        out.motion, std::string_view(reinterpret_cast<const char*>(frame.motion.data()),
-                                     frame.motion.size() * sizeof(f32)));
+    io::Status status =
+        write_bytes(out.motion, std::string_view(reinterpret_cast<const char*>(frame.motion.data()),
+                                                 frame.motion.size() * sizeof(f32)));
     if (status != io::Status::Ok) {
-      error = "cannot write " + out.motion + ": " + io::status_name(status);
+      error = cannot_write(out.motion, status);
       return false;
     }
     f32 longest = 0.0f;
@@ -185,9 +195,10 @@ bool write_capture(std::string_view dir, std::string_view base, const CapturedFr
                   "{\"width\":%u,\"height\":%u,\"layout\":\"f32 x, f32 y per pixel, pixels\","
                   "\"picture_full_scale_px\":%.6g}\n",
                   frame.width, frame.height, static_cast<f64>(longest));
-    status = io::write_file(join(dir, stem + ".motion.json"), std::string_view(header));
+    const std::string motion_header = join(dir, stem + ".motion.json");
+    status = write_bytes(motion_header, std::string_view(header));
     if (status != io::Status::Ok) {
-      error = "cannot write " + out.motion + "'s header: " + io::status_name(status);
+      error = cannot_write(motion_header, status);
       return false;
     }
   }
@@ -205,19 +216,42 @@ bool write_capture(std::string_view dir, std::string_view base, const CapturedFr
         image::write_exr(out.light, frame.width, frame.height, 3,
                          std::span<const u16>(halves.data(), halves.size()), options);
     if (status != io::Status::Ok) {
-      error = "cannot write " + out.light + ": " + io::status_name(status);
+      error = cannot_write(out.light, status);
       return false;
     }
     if (frame.codes.bits != 0) {
       out.codes = join(dir, stem + ".codes.json");
-      const io::Status codes_status = io::write_file(out.codes, codes_json(frame, stem + ".exr"));
+      const io::Status codes_status = write_bytes(out.codes, codes_json(frame, stem + ".exr"));
       if (codes_status != io::Status::Ok) {
-        error = "cannot write " + out.codes + ": " + io::status_name(codes_status);
+        error = cannot_write(out.codes, codes_status);
         return false;
       }
     }
   }
   return true;
+}
+
+Vector<std::string> capture_file_names(const CapturedFrame& frame, std::string_view base) {
+  // In write_capture's order and on its conditions, channel by channel.
+  const std::string stem(base);
+  Vector<std::string> names;
+  if (!frame.color.empty()) names.push_back(stem + ".png");
+  if (!frame.normals.empty()) names.push_back(stem + ".normals.png");
+  if (!frame.ids.empty()) {
+    names.push_back(stem + ".ids.bin");
+    names.push_back(stem + ".ids.json");
+  }
+  if (!frame.depth.empty()) names.push_back(stem + ".depth.png");
+  if (!frame.motion.empty()) {
+    names.push_back(stem + ".motion.bin");
+    names.push_back(stem + ".motion.png");
+    names.push_back(stem + ".motion.json");
+  }
+  if (!frame.light.empty()) {
+    names.push_back(stem + ".exr");
+    if (frame.codes.bits != 0) names.push_back(stem + ".codes.json");
+  }
+  return names;
 }
 
 bool capture_light(const gfx::Capture& picture, gfx::DisplayEncoding encoding, f32 paper_white_nits,

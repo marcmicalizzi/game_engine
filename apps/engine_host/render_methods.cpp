@@ -1051,6 +1051,19 @@ bool render_capture(protocol::Context& ctx, const protocol::RenderCaptureParams&
   renderer::CaptureFiles files;
   // A kept capture with no directory is the listener's alone and touches no disk; every other
   // capture writes its files as it always has.
+  if (to_disk) {
+    // Every file the capture will write, admitted as a file and not only through its directory:
+    // a link or a junction planted at `<name>.png` is refused rather than written through, and
+    // `write_capture` replaces each by rename, so a hard link there is replaced, never written
+    // through (protocol.md, "The host's file roots", rule 10).
+    for (const std::string& file : renderer::capture_file_names(shot, params.name)) {
+      io::Admitted admitted;
+      if (!protocol::admit_output_file(ctx, "name",
+                                       params.out_dir.empty() ? "out://" : params.out_dir, out_at,
+                                       file, admitted, error))
+        return false;
+    }
+  }
   if (to_disk && !renderer::write_capture(out_at.native, params.name, shot, files, message)) {
     error = protocol::make_error(protocol::codes::k_io_error, std::move(message));
     return false;
@@ -1503,11 +1516,19 @@ bool render_evaluate(protocol::Context& ctx, const protocol::RenderEvaluateParam
   }
   auto write = [&](const char* channel, const std::string& suffix, u32 width, u32 height,
                    u32 channels, std::span<const u8> pixels) {
-    const std::string path = io::join_path(out_at.native, params.name + suffix);
+    // The file itself admitted (a link at its name is refused), and written by rename (a hard
+    // link there is replaced): the directory's admission says nothing of what is already in it.
+    io::Admitted file;
+    if (!protocol::admit_output_file(ctx, "name",
+                                     params.out_dir.empty() ? "out://" : params.out_dir, out_at,
+                                     params.name + suffix, file, error))
+      return false;
+    const std::string& path = file.native;
     const io::Status status = image::write_png(path, width, height, channels, pixels);
     if (status != io::Status::Ok) {
-      error = protocol::make_error(protocol::codes::k_io_error,
-                                   "cannot write " + path + ": " + io::status_name(status));
+      error =
+          protocol::make_error(protocol::codes::k_io_error, "cannot write " + params.name + suffix +
+                                                                ": " + io::status_name(status));
       return false;
     }
     out.files.insert_or_assign(channel, file_uri(path));
