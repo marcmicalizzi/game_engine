@@ -650,6 +650,24 @@ if (-not $sshExe) {
   }
 }
 
+# --- the formatter's pin: tools/dev.ps1 format (tools/lib/Format.psm1) -----------------------------------
+#
+# Here beside the compiler cache's Windows half, for the same reason: the one CTest test these
+# scripts' rules already have.
+
+Import-Module (Join-Path $PSScriptRoot 'lib/Format.psm1') -Force
+$fmtMajor = Get-ClangFormatMajor
+Test-That 'format takes the pinned major, whatever its minor and its vendor line' {
+  (Get-ClangFormatVerdict "clang-format version $fmtMajor.1.3 (https://github.com/llvm/llvm-project e9846648)").Ok -and
+    (Get-ClangFormatVerdict "Ubuntu clang-format version $fmtMajor.0.0 (1ubuntu1)").Ok
+}
+Test-That 'and refuses another major in one line naming both and what to install' {
+  $v = Get-ClangFormatVerdict 'clang-format version 19.1.5' -Path 'C:\x\clang-format.exe'
+  -not $v.Ok -and $v.Major -eq 19 -and @($v.Message -split "`n").Count -eq 1 -and $v.Message -match '^format: ' -and
+    $v.Message -match '19\.1\.5' -and $v.Message -match "formatted with $fmtMajor" -and $v.Message -match "LLVM $fmtMajor"
+}
+Test-That 'and a version line it cannot read' { -not (Get-ClangFormatVerdict 'nothing here').Ok -and -not (Get-ClangFormatVerdict '').Ok }
+
 # --- the script's own refusals, before docker is asked anything ---------------------------------------
 
 function Invoke-Script([string[]]$arguments, [hashtable]$environment = @{}) {
