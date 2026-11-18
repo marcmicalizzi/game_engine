@@ -86,8 +86,9 @@ const char* action_name(int action) noexcept {
 
 struct AuthState {
   // While the text after the first statement is prepared only to learn whether there is one,
-  // nothing is run and everything is admitted, so the refusal names the second statement rather
-  // than whatever it would have done.
+  // everything is denied: a prepare is not always free of effects (a flag pragma such as
+  // `query_only` or `writable_schema` takes effect as it is compiled, after its authorizer check),
+  // so a second statement must fail to compile, and any statement there at all is the refusal.
   bool tail = false;
   std::string why;
   // Every table and view the file's schema names, read before the authorizer is installed.
@@ -105,7 +106,7 @@ struct AuthState {
 int authorize(void* user, int action, const char* a1, const char* a2, const char* database,
               const char* /*inner*/) {
   AuthState& state = *static_cast<AuthState*>(user);
-  if (state.tail) return SQLITE_OK;
+  if (state.tail) return SQLITE_DENY;
   switch (action) {
     case SQLITE_SELECT:
     case SQLITE_RECURSIVE: return SQLITE_OK;

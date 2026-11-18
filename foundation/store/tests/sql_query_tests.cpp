@@ -185,6 +185,9 @@ TEST_CASE("sql query: one statement, or none at all") {
   // The plainest implementation runs the first and ignores the rest, or runs both.
   require_refused(path, "SELECT 1; DROP TABLE events", "more than one statement");
   require_refused(path, "SELECT 1;DELETE FROM events;", "more than one statement");
+  // A flag pragma takes effect as it is compiled, so the tail is prepared with everything denied.
+  require_refused(path, "SELECT 1; PRAGMA writable_schema = 1", "more than one statement");
+  require_refused(path, "SELECT 1; VACUUM", "more than one statement");
   require_refused(path, "", "no statement");
   require_refused(path, "  -- only a comment\n", "no statement");
   // A trailing semicolon, whitespace or comment is not a second statement.
