@@ -17,15 +17,21 @@ engine_capability_requires(animation ecs)
 # The capability's own component and event types (ADR-0007). They live here, not in the shared
 # schemas/ directory, so that adding them touches no file this capability does not own;
 # CAPABILITY ties them to the same switch, so they leave the build with it.
-engine_schema_library(NAME animation_schemas SCHEMAS schemas/animation.schema CAPABILITY animation)
+# animation_graph.schema is the graphs' records and their two components (S35); a file of its own
+# so the graph's types can move without touching the player's.
+engine_schema_library(NAME animation_schemas
+  SCHEMAS schemas/animation.schema schemas/animation_graph.schema CAPABILITY animation)
 
 engine_module(NAME animation LAYER systems OPTIONAL WHOLE_ARCHIVE
-  DEPS base containers math time log jobs ids json schema tunables geometry anim assets sim ecs animation_schemas
-  SOURCES src/library.cpp src/pose_pool.cpp src/animation.cpp src/gait.cpp src/visibility.cpp)
+  DEPS base containers math time log jobs ids hash json schema tunables geometry anim assets sim ecs doc
+       animation_schemas
+  SOURCES src/library.cpp src/pose_pool.cpp src/animation.cpp src/gait.cpp src/visibility.cpp
+          src/graph.cpp)
 
 engine_module_tests(NAME animation
   SOURCES tests/animation_tests.cpp tests/ancestor_tests.cpp tests/lod_tests.cpp tests/size_table.cpp
-          tests/gait_tests.cpp tests/visibility_tests.cpp tests/travel_tests.cpp)
+          tests/gait_tests.cpp tests/visibility_tests.cpp tests/travel_tests.cpp tests/graph_tests.cpp
+          tests/graph_pose_tests.cpp)
 # The gait's tests wear the Khronos RiggedFigure where tools/fetch-samples.ps1 has fetched it,
 # found through test_paths.h by this path or in a test bundle.
 if(TARGET engine_animation_tests)

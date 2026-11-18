@@ -470,27 +470,40 @@ TEST_CASE("animation: the descriptors declare what the queries touch") {
   }
   // The stance is the system's, not the phase's: the matrices are `Derived` because nothing reads
   // them back into gameplay, and they now say so from inside the phase they belong in.
+  // The five, in registration order: advance_players, graph_control (S35 stage 2), sample_poses,
+  // graph_sample, build_skinning_matrices.
   CHECK(descs[0].determinism == sim::Determinism::Hashed);
   CHECK(descs[1].determinism == sim::Determinism::Hashed);
-  CHECK(descs[2].determinism == sim::Determinism::Derived);
+  CHECK(descs[2].determinism == sim::Determinism::Hashed);
+  CHECK(descs[3].determinism == sim::Determinism::Hashed);
+  CHECK(descs[4].determinism == sim::Determinism::Derived);
 
   // Every ordering this capability needs is declared. `advance_players` writes the playhead and
   // `sample_poses` reads it — a component conflict. `sample_poses` writes the pose pool and
   // `build_skinning_matrices` reads it — a *resource* conflict, which is the whole point of
   // `SystemDesc::reads_resources`/`writes_resources`: the pool is not a component and must not be.
+  // The graph's two follow the same rules: `graph_control` writes the graph state `graph_sample`
+  // reads, and `graph_sample` writes the pool the matrices read.
   for (const sim::SystemDesc& desc : descs)
     CHECK(desc.phase == sim::TickPhase::Systems);
-  CHECK(descs[0].writes.intersects(descs[1].reads));
-  CHECK(descs[1].writes_resources.intersects(descs[2].reads_resources));
+  CHECK(descs[0].writes.intersects(descs[2].reads));
+  CHECK(descs[2].writes_resources.intersects(descs[4].reads_resources));
+  CHECK(descs[1].writes.intersects(descs[3].reads));
+  CHECK(descs[3].writes_resources.intersects(descs[4].reads_resources));
+  CHECK_FALSE(descs[0].writes.intersects(descs[1].writes));
 
-  // And the scheduler that owns the rule agrees: three systems, three waves, in declaration order.
+  // And the scheduler that owns the rule agrees, in declaration order: the two controls share a
+  // wave (disjoint queries: an entity has a player or a graph's pose, never both), then the
+  // player's sample, the graph's (both write the pool), and the matrices.
   sim::SimScheduler scheduler;
   for (const sim::SystemDesc& desc : descs)
     scheduler.add_system(desc);
-  CHECK(scheduler.wave_count(sim::TickPhase::Systems) == 3);
+  CHECK(scheduler.wave_count(sim::TickPhase::Systems) == 4);
   CHECK(scheduler.wave_of(0) == 0);
-  CHECK(scheduler.wave_of(1) == 1);
-  CHECK(scheduler.wave_of(2) == 2);
+  CHECK(scheduler.wave_of(1) == 0);
+  CHECK(scheduler.wave_of(2) == 1);
+  CHECK(scheduler.wave_of(3) == 2);
+  CHECK(scheduler.wave_of(4) == 3);
 }
 
 TEST_CASE("animation: two runs and eight workers give bit-identical matrices") {

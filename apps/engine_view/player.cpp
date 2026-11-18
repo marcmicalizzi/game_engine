@@ -769,19 +769,36 @@ void PlayerBody::tick_gait(const FlySession& session, const input::InputState& i
     fast_ = input.map() != nullptr ? input.map()->find_action("fast") : input::k_invalid_action;
   }
   const bool sprint = moving && fast_ != input::k_invalid_action && input.held(fast_);
-  const u8 gait = moving ? (sprint ? u8{3} : u8{1}) : u8{2};
-  if (gait != gait_) {
-    const f32 fade = gait_ == 0 ? 0.0f : k_gait_fade_s;
-    if (gait_ != 0) ++gait_changes_;
-    gait_ = gait;
-    if (moving) {
-      (void)actors_->play(k_player_actor, sprint ? rig_.run_clip : rig_.walk_clip, fade, true);
-    } else if (!rig_.idle_clip.empty()) {
-      // The idle plays at its own rate; the gait's clips are held at 0 and driven by distance.
-      (void)actors_->play(k_player_actor, rig_.idle_clip, fade, true);
-      (void)actors_->speed(k_player_actor, 1.0f);
-    } else {
-      (void)actors_->stop(k_player_actor, fade);
+  // **Stand, walk and run are a graph's** (S35 stage 1; animation.md, "Graphs"): the body's entity
+  // is driven by `animation::locomotion_graph`, compiled once on the first tick; the first tick
+  // cuts, a change after it fades, and what each state plays goes through the actors as before
+  // (the idle at its own rate; the gait's clips held at 0 and driven by distance, below).
+  if (scene_ != nullptr && loaded_ < scene_->entities.size()) {
+    const Id128 body = scene_->entities[loaded_];
+    animation::AnimationSystem& system = scene_->system;
+    bool driven = system.has_graph(body);
+    if (!driven) {
+      std::string why;
+      const animation::GraphDesc graph = animation::locomotion_graph(
+          {rig_.idle_clip, rig_.walk_clip, rig_.run_clip, k_gait_fade_s});
+      driven = system.add_graph(graph, why) && system.attach_graph(body, graph.id);
+    }
+    const u32 rate = session.header().params.tick_hz;
+    // The phase as it stood when the tick began; its advance by distance stays below, with the
+    // playheads it sets.
+    const f32 values[animation::k_locomotion_params] = {
+        moving ? 1.0f : 0.0f, sprint ? 1.0f : 0.0f, static_cast<f32>(phase_)};
+    animation::GraphEnter enter[animation::k_graph_max_machines];
+    if (driven && system.control_graph(body, values, 0u,
+                                       1.0f / static_cast<f32>(rate > 0 ? rate : 1u), enter) != 0) {
+      const animation::StateInfo& to = *enter[0].state;
+      if (!enter[0].first) ++gait_changes_;
+      if (to.clip.empty()) {
+        (void)actors_->stop(k_player_actor, enter[0].fade_s);
+      } else {
+        (void)actors_->play(k_player_actor, to.clip, enter[0].fade_s, to.looping);
+        if (!to.synced) (void)actors_->speed(k_player_actor, to.rate);
+      }
     }
   }
   if (!moving) return;

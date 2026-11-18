@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "S35-1",
+  "reason": "apps.md's procedural-gait bullet says the stand/walk/run choice is a graph's since S35 and links the animation page's Graphs section",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 77
+  }
+}

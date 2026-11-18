@@ -19,6 +19,7 @@
 #include <domain/assets/gltf.h>
 #include <foundation/bench/bench.h>
 #include <systems/animation/animation.h>
+#include <systems/animation/graph.h>
 
 #include <memory>
 #include <string>
@@ -76,6 +77,14 @@ void build_library(Library& library) {
     channel.path = assets::k_path_rotation;
     animation.samplers.push_back(sampler);
     animation.channels.push_back(channel);
+  }
+  mesh.animations.push_back(animation);
+  // A second clip for the graph's blends (S35 stage 2): the same rig and keys, a turn about x, so a
+  // blend of the two is a rotation neither clip has. The tick rows above play only "run".
+  animation.name = "walk";
+  for (assets::AnimationSampler& sampler : animation.samplers) {
+    sampler.values[4] = 0.70710678f;
+    sampler.values[6] = 0.0f;
   }
   mesh.animations.push_back(animation);
 
@@ -302,6 +311,184 @@ void run_travel(bench::State& state, u32 joints, u32 keys) {
 ENGINE_BENCH_ARGS(animation_travel_keys, "animation.travel.keys", 31, 61, 121, 241) {
   const u32 keys = static_cast<u32>(state.arg());
   run_travel(state, 37, bench::smoke_mode() ? 31u : keys);
+}
+
+// The graph's control pass (S35 stage 1, graph.h) over `n` instances of the walker's graph: per
+// instance, the inputs written (moving and fast flipping on a per-instance cadence, so a few
+// percent of the instances change state each tick and the rest stay), the transitions evaluated,
+// the clocks and the phase advanced. No pose: stage 1's pass decides states and hands the player
+// its calls, so this is the whole of what a graph adds to a tick before the sampler runs.
+ENGINE_BENCH_ARGS(animation_graph_control, "animation.graph.control", 1000, 10000, 100000) {
+  const u32 n = bench::smoke_mode() ? 256u : static_cast<u32>(state.arg());
+  CompiledGraph graph;
+  std::string why;
+  if (!compile_graph(locomotion_graph({"idle", "walk", "run", 0.2f}), nullptr, graph, why)) {
+    bench::keep(why);
+    return;
+  }
+  std::vector<AnimationGraphInput> inputs(n);
+  std::vector<AnimationGraphState> states(n);
+  std::vector<GraphStep> steps(n);
+  for (u32 i = 0; i < n; ++i)
+    init_graph_instance(graph, inputs[i], states[i]);
+  u32 tick = 0;
+  while (state.keep_running()) {
+    for (u32 i = 0; i < n; ++i) {
+      // Each instance flips `moving` every 37 + (i % 61) ticks and `fast` at half that rate.
+      const u32 period = 37u + (i % 61u);
+      const u32 at = tick + i;
+      inputs[i].values[k_locomotion_moving] = ((at / period) & 1u) != 0 ? 1.0f : 0.0f;
+      inputs[i].values[k_locomotion_fast] = ((at / (2u * period)) & 1u) != 0 ? 1.0f : 0.0f;
+      inputs[i].values[k_locomotion_phase] = static_cast<f32>(at % 64u) * (1.0f / 64.0f);
+    }
+    bench::keep(graph_control(graph, inputs, states, 1.0f / 64.0f, steps));
+    ++tick;
+  }
+  state.set_items(n);
+}
+
+// The pose program (S35 stage 2, graph.h) over `n` graph-driven instances of the 23-joint rig: a
+// graph of `stand` (one clip) and `move` (a Blend1D of walk and run by `speed`, led sync group),
+// cross-fades of 0.25 s between them. The instances' states are made once by 40 control ticks with
+// inputs spread per instance (most moving at a speed between the two clips, so most evaluate a
+// two-clip blend; a few percent mid-fade, so they evaluate both states), then frozen: a row
+// measures the program alone, `batch` instances at a time, into a pose arena of its own. Beside it,
+// `animation.graph.control` above is the control pass over the same population.
+namespace {
+
+struct GraphFixture {
+  Library library;
+  CompiledGraph graph;
+  std::vector<AnimationGraphInput> inputs;
+  std::vector<AnimationGraphState> states;
+  std::vector<Vec3> translation;
+  std::vector<Quat> rotation;
+  std::vector<Vec3> scale;
+  std::vector<GraphInstance> instances;
+};
+
+GraphDesc crowd_graph() {
+  GraphDesc d;
+  u64 low = 1;
+  const auto id = [&] { return Id128::from_parts(0xb3c4, low++); };
+  d.id = id();
+  d.graph.name = "crowd";
+  for (const char* name : {"moving", "speed"}) {
+    auto& p = d.params.emplace_back();
+    p.id = id();
+    p.parent = d.id;
+    p.record.name = name;
+  }
+  d.params[0].record.kind = GraphParamKind::Bool;
+  auto& m = d.machines.emplace_back();
+  m.id = id();
+  m.parent = d.id;
+  m.record.name = "body";
+  auto& stand = d.states.emplace_back();
+  stand.id = id();
+  stand.parent = m.id;
+  stand.record.name = "stand";
+  auto& sn = d.nodes.emplace_back();
+  sn.id = id();
+  sn.parent = stand.id;
+  sn.record.clip = "crowd/walk";
+  auto& move = d.states.emplace_back();
+  move.id = id();
+  move.parent = m.id;
+  move.record.name = "move";
+  auto& blend = d.nodes.emplace_back();
+  blend.id = id();
+  blend.parent = move.id;
+  blend.record.kind = GraphNodeKind::Blend1D;
+  blend.record.param = "speed";
+  blend.record.sync_group = 1;
+  const Id128 blend_id = blend.id;
+  for (const char* clip : {"crowd/walk", "crowd/run"}) {
+    auto& c = d.nodes.emplace_back();
+    c.id = id();
+    c.parent = blend_id;
+    c.record.clip = clip;
+    d.nodes[1].record.inputs.push_back(c.id);
+  }
+  d.nodes[1].record.thresholds = {1.0f, 3.0f};
+  d.machines[0].record.entry = d.states[0].id;
+  for (u32 k = 0; k < 2; ++k) {
+    auto& t = d.transitions.emplace_back();
+    t.id = id();
+    t.parent = d.machines[0].id;
+    t.record.from = d.states[k].id;
+    t.record.to = d.states[1 - k].id;
+    t.record.duration_s = 0.25f;
+    t.record.conditions.push_back(
+        GraphCondition{"moving", GraphCompare::Equal, k == 0 ? 1.0f : 0.0f});
+  }
+  return d;
+}
+
+GraphFixture& graph_fixture(u32 n) {
+  static std::vector<std::unique_ptr<GraphFixture>> cache;
+  static std::vector<u32> sizes;
+  for (usize i = 0; i < sizes.size(); ++i) {
+    if (sizes[i] == n) return *cache[i];
+  }
+  auto f = std::make_unique<GraphFixture>();
+  build_library(f->library);
+  std::string why;
+  if (!compile_graph(crowd_graph(), &f->library, f->graph, why)) bench::keep(why);
+  f->inputs.resize(n);
+  f->states.resize(n);
+  std::vector<GraphStep> steps(n);
+  for (u32 i = 0; i < n; ++i)
+    init_graph_instance(f->graph, f->inputs[i], f->states[i]);
+  for (u32 tick = 0; tick < 40; ++tick) {
+    for (u32 i = 0; i < n; ++i) {
+      // Moving for all but one tick in 37 of a per-instance cycle, at a speed spread over [0, 4].
+      const u32 period = 37u + (i % 61u);
+      f->inputs[i].values[0] = ((tick + i) % period) != 0 ? 1.0f : 0.0f;
+      f->inputs[i].values[1] = static_cast<f32>(i % 401u) * (4.0f / 400.0f);
+    }
+    (void)graph_control(f->graph, f->inputs, f->states, 1.0f / 64.0f, steps);
+  }
+  const u32 joints = f->library.skeleton_data(0).joint_count();
+  f->translation.resize(usize{n} * joints);
+  f->rotation.resize(usize{n} * joints);
+  f->scale.resize(usize{n} * joints);
+  f->instances.resize(n);
+  for (u32 i = 0; i < n; ++i) {
+    GraphInstance& gi = f->instances[i];
+    gi.input = &f->inputs[i];
+    gi.state = &f->states[i];
+    gi.lead = 1.0f / 64.0f;
+    gi.out = anim::PoseView{std::span<Vec3>(f->translation.data() + usize{i} * joints, joints),
+                            std::span<Quat>(f->rotation.data() + usize{i} * joints, joints),
+                            std::span<Vec3>(f->scale.data() + usize{i} * joints, joints)};
+  }
+  cache.push_back(std::move(f));
+  sizes.push_back(n);
+  return *cache.back();
+}
+
+void run_program(bench::State& state, u32 n, u32 batch) {
+  GraphFixture& f = graph_fixture(n);
+  PoseEvaluator evaluator;
+  const anim::Skeleton& skeleton = f.library.skeleton_data(0);
+  while (state.keep_running()) {
+    evaluator.evaluate(f.graph, f.library, skeleton, f.instances, batch);
+    bench::keep(f.rotation[0].w);
+  }
+  state.set_items(n);
+}
+
+}  // namespace
+
+// By the population, at the default batch of 64 (`animation.graph.batch`).
+ENGINE_BENCH_ARGS(animation_graph_sample, "animation.graph.sample", 1000, 10000) {
+  run_program(state, bench::smoke_mode() ? 256u : static_cast<u32>(state.arg()), 64);
+}
+
+// By the batch, at 10^4 instances: what the default is chosen from (the design's L2 sizing).
+ENGINE_BENCH_ARGS(animation_graph_batch, "animation.graph.batch", 16, 64, 256) {
+  run_program(state, bench::smoke_mode() ? 256u : 10000u, static_cast<u32>(state.arg()));
 }
 
 // By the rig: two seconds at 30 keys a second, 23 joints (the humanoid core), 37 (a bird of the
