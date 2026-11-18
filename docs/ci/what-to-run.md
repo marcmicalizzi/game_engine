@@ -642,7 +642,12 @@ its turn in the GPU's line before it finds there is no device. On the evening of
 that set the three and not the switch had `engine_view`'s parts each wait out their half-hour
 budget, in a line 12 to 21 deep, and skip with 75: about two hours of a run spent learning there
 was no GPU. The switch at `0` alone would be wrong the other way, since a run that forgot the three
-would open devices with no lock. So the four go together, from one switch.
+would open devices with no lock. So the four go together, from one switch. Measured on
+2026-11-18 in `msvc-debug` with the machine's lock held by others and 10 to 12 waiting:
+`engine_view.1` with the three alone skipped after 1,805 s (its `engine-view` seventh of ten in
+the line), and with `-NoDriver` passed in 25 s; the whole `test -Affected -NoDriver -Jobs 3` on
+this branch, which reached everything, passed 171 of 171 in 2,311 s, and no process in it waited
+for the machine's lock.
 
 ### The off-configurations' GPU cases
 
