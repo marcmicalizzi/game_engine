@@ -12,6 +12,7 @@
 #include <domain/gfx/pipeline_batch.h>
 #include <domain/gfx/water_swash.h>
 #include <foundation/io/vfs.h>
+#include <foundation/tunables/tunables.h>
 #include <systems/renderer/caster_volume.h>
 #include <systems/renderer/crown_priors.h>
 #include <systems/renderer/eye_shell.h>
@@ -93,6 +94,12 @@ constexpr u32 k_rt_words = gfx::k_cluster_record_count_words;
 // The resident cluster structure cache's passes and its build (renderer.md, "The resident cluster
 // structure cache"), all inside the chain's milliseconds.
 f64 cache_ms(const gfx::GpuTimer& timer) { return timer.ms("cache") + timer.ms("clas cache"); }
+// The pass audit's guard check 3 (R186; gfx.md, "Render graph v0"): a full barrier before every
+// pass. A test draws a frame with it and without it and holds the two to the same bytes.
+tunables::Bool graph_serialize{
+    "renderer.graph.serialize", false,
+    "Record a full barrier before every render graph pass, so nothing runs beside anything: a "
+    "picture that differs with it on has a dependency no pass declared (R186's guard check 3)"};
 // Per shadow cascade, behind the chain's block: its indirect block's three words, then the
 // vertex path's indexed-draw cursor and fallback count for its region.
 constexpr u32 k_shadow_stat_words = 5;
@@ -2925,6 +2932,7 @@ u64 SceneRenderer::submit_frame(const FrameDesc& frame, std::string* error) {
     return 0;
   }
   graph_->reset();
+  graph_->set_serialize(graph_serialize.get());  // the pass audit's guard check 3 (R186)
   const gfx::RgImage color_handle = graph_->import_image("color", color);
   if (!record_frame(frame, color_handle, error)) {
     frames_.end_frame();
@@ -4649,12 +4657,17 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const gfx::RgBuffer rg_stats = graph.import_buffer("stats", stat_blocks_[slot]);
   // A streamed world's table set, on the frame that brings it up to date: the changed instance
   // slots copied out of this slot's staging, then their pairs expanded from them. Every pass that
-  // reads a table says so (`read_tables`), so the graph orders them after the writes; on any other
+  // reads a table says so (`read_scene`), so the graph orders them after the writes; on any other
   // frame nothing writes the tables and nothing is declared.
   gfx::RgBuffer rg_instances{};
   gfx::RgBuffer rg_pair_table{};
   gfx::RgBuffer rg_table_staging{};
   PairExpandParams pair_expand{};
+  // **One handle a buffer** (R186 A2): the instance table is written by a table set's copies and
+  // by the record upload, and one import serves both, as last read everywhere when the record
+  // upload writes it (below) — a frame that does both orders the two copies, which two handles
+  // did not.
+  const bool instance_records = !records_.instances.empty();
   if (write_tables) {
     // A set an earlier frame's carry read (T167): this frame's first write waits for that read,
     // since the frame may still be in flight (GpuScene::prepare_tables, `after_carry_read`).
@@ -4662,7 +4675,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         tables_.after_carry_read ? gfx::PipelineStage::AllTransfer : gfx::PipelineStage::None;
     const gfx::MemoryAccess last_access =
         tables_.after_carry_read ? gfx::MemoryAccess::TransferRead : gfx::MemoryAccess::None;
-    rg_instances = graph.import_buffer("instances", scene.instances, last_stage, last_access);
+    rg_instances = instance_records
+                       ? graph.import_buffer("instances", scene.instances,
+                                             gfx::PipelineStage::AllCommands,
+                                             gfx::MemoryAccess::MemoryRead)
+                       : graph.import_buffer("instances", scene.instances, last_stage, last_access);
     rg_pair_table = graph.import_buffer("pair table", scene.pair_table, last_stage, last_access);
     rg_table_staging = graph.import_buffer("table staging", tables_.staging);
     pair_expand.instances = scene.instances.address;
@@ -4671,22 +4688,26 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     pair_expand.pairs = scene.pair_table.address;
     pair_expand.count = tables_.expand;
   }
-  auto read_tables = [&, write_tables](gfx::PassBuilder& b, gfx::Access access, bool pairs) {
-    if (!write_tables) return;
-    b.read(rg_instances, access);
-    if (pairs) b.read(rg_pair_table, access);
-  };
   gfx::RgBuffer rg_pool{};
   gfx::RgBuffer rg_slots{};
   gfx::RgBuffer rg_alloc{};
   gfx::RgBuffer rg_blocks{};  // the allocator's tile scratch (R104)
   gfx::RgBuffer rg_deform_args{};
+  gfx::RgBuffer rg_normals{};
+  gfx::RgBuffer rg_static_cache{};
   if (resolved_.deform_pass) {
     rg_pool = graph.import_buffer("deform pool", scene.deform_pool);
     rg_slots = graph.import_buffer("deform slots", scene.deform_slots);
     rg_alloc = graph.import_buffer("deform alloc", scene.deform_alloc);
     rg_blocks = graph.import_buffer("deform blocks", scene.deform_blocks);
     rg_deform_args = graph.import_buffer("deform args", scene.deform_args);
+    // Each under its own name (R186 D2, D3): the normals the pool pass writes beside the pool and
+    // the resolve family reads, and the static shape cache "deform cache" writes and the pool
+    // passes read, which the pool had stood in for.
+    if (scene.deform_normals.buffer.valid())
+      rg_normals = graph.import_buffer("deform normals", scene.deform_normals);
+    if (scene.static_cache.buffer.valid())
+      rg_static_cache = graph.import_buffer("deform static cache", scene.static_cache);
   }
   // Sampling over time's inputs (motion_pass.h): the motion buffer, and the second pool the pool
   // pass writes from last frame's inputs.
@@ -4741,11 +4762,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // On such a frame each buffer written is imported as last read everywhere, so the copy's first
   // barrier waits for every command submitted before it on the queue — the frames in flight
   // included, which is the write-after-read the copy has against them (renderer.md, "Moving an
-  // instance") — and every pass that reads one declares it (`read_pool`, `read_ring_geometry`), so
+  // instance") — and every pass that reads one declares it (`read_scene`), so
   // the graph orders it after the copies. Every other frame declares nothing, as a scene read whole
   // never has.
   const bool terrain_geometry = !terrain_frame_.geometry.empty();
-  const bool instance_records = !records_.instances.empty();
   const bool mesh_records = !records_.meshes.empty();
   struct TerrainGeometry {
     gfx::RgBuffer clusters, lods, quantized, attributes, triangles, meshes, vertices, indices8;
@@ -4783,18 +4803,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     if (!tg.materials.valid()) tg.materials = import_read("mesh materials", scene.materials);
     tg.water_surfaces = import_read("water surfaces", scene.water_surfaces());
   }
-  if (instance_records) tg.instances = import_read("instance records", scene.instances);
+  if (instance_records) {
+    tg.instances =
+        rg_instances.valid() ? rg_instances : import_read("instance records", scene.instances);
+  }
   if (instance_records || mesh_records) {
     tg.staging = graph.import_buffer("record staging", records_.staging, gfx::PipelineStage::Host,
                                      gfx::MemoryAccess::HostWrite);
   }
-  auto read_ring_geometry = [&](gfx::PassBuilder& b, gfx::Access access) {
-    for (const gfx::RgBuffer handle :
-         {tg.clusters, tg.lods, tg.quantized, tg.attributes, tg.triangles, tg.meshes, tg.vertices,
-          tg.indices8, tg.instances, tg.cluster_materials, tg.materials, tg.water_surfaces}) {
-      if (handle.valid()) b.read(handle, access);
-    }
-  };
   // The streamed scene's page pool and its feedback. The pool buffers have to be *declared*, not
   // only written: a page upload is a transfer into the same `clusters`, `quantized`, `attributes`
   // and `triangles` the cull pass, the rasterizers, the resolve and the CLAS builds read, and the
@@ -4804,11 +4820,16 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     gfx::RgBuffer pool_vertices, pool_indices8, stage;
     gfx::RgBuffer used, requests, request_count, request_mask, feedback;
   } sb{};
+  // A buffer the rings' copies write too keeps their handle (R186 A2: one import a buffer).
+  const auto import_pool = [&](const char* name, const gfx::BufferResource& buffer,
+                               gfx::RgBuffer ring) {
+    return ring.valid() ? ring : graph.import_buffer(name, buffer);
+  };
   if (streaming) {
-    sb.pool_clusters = graph.import_buffer("page clusters", scene.clusters);
-    sb.pool_quantized = graph.import_buffer("page quantized", scene.quantized);
-    sb.pool_attributes = graph.import_buffer("page attributes", scene.attributes);
-    sb.pool_triangles = graph.import_buffer("page triangles", scene.triangles);
+    sb.pool_clusters = import_pool("page clusters", scene.clusters, tg.clusters);
+    sb.pool_quantized = import_pool("page quantized", scene.quantized, tg.quantized);
+    sb.pool_attributes = import_pool("page attributes", scene.attributes, tg.attributes);
+    sb.pool_triangles = import_pool("page triangles", scene.triangles, tg.triangles);
     sb.stage = graph.import_buffer("page stage", scene.page_stage);
     sb.used = graph.import_buffer("page used", scene.page_used);
     sb.requests = graph.import_buffer("page requests", scene.page_requests);
@@ -4816,27 +4837,66 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     sb.request_mask = graph.import_buffer("page request mask", scene.request_mask);
     sb.feedback = graph.import_buffer("page feedback", streamer_.feedback(slot));
     if (rt_chain) {
-      sb.pool_vertices = graph.import_buffer("page vertices", scene.vertices);
-      sb.pool_indices8 = graph.import_buffer("page indices8", scene.indices8);
+      sb.pool_vertices = import_pool("page vertices", scene.vertices, tg.vertices);
+      sb.pool_indices8 = import_pool("page indices8", scene.indices8, tg.indices8);
     }
   }
-  // Every pass that reads geometry out of the pool says so with the access its own stage uses, so
-  // the one transfer that filled it this frame is made visible to each of them.
-  auto read_pool = [&, streaming, rt_chain](gfx::PassBuilder& b, gfx::Access access) {
-    read_ring_geometry(b, access);
-    if (!streaming) return;
-    b.read(sb.pool_clusters, access);
-    b.read(sb.pool_quantized, access);
-    b.read(sb.pool_attributes, access);
-    b.read(sb.pool_triangles, access);
-    if (rt_chain && access == gfx::Access::AccelerationBuildRead) {
-      b.read(sb.pool_vertices, access);
-      b.read(sb.pool_indices8, access);
+  // **The one scene-read helper** (R186 A2): every pass handed a scene address declares, with the
+  // access its own stage uses, every scene table and geometry buffer this frame writes — the
+  // table set's instances and (with `pairs`) pair table, the rings' and the records' copies, the
+  // page pool — once each, so the transfers and dispatches that wrote them are made visible to
+  // it. On a frame that writes none of them it declares nothing, as a scene read whole never has.
+  // The list, once a frame: the pair table only for a pass that asks for it, the page pool's
+  // float vertices and indices only for a build (the rings' are read wherever they are copied).
+  enum : u8 { k_read_always, k_read_pairs, k_read_build };
+  struct SceneRead {
+    gfx::RgBuffer handle;
+    u8 when;
+  };
+  SceneRead scene_reads[24];
+  gfx::RgBuffer scene_tables[24];  // what a frame pass is handed: every one but the build-only
+  u32 scene_read_count = 0;
+  u32 scene_table_count = 0;
+  const auto add_scene_read = [&](gfx::RgBuffer handle, u8 when) {
+    if (!handle.valid()) return;
+    for (u32 i = 0; i < scene_read_count; ++i) {
+      if (scene_reads[i].handle.index == handle.index) return;
+    }
+    ENGINE_ASSERT(scene_read_count < std::size(scene_reads), "record_frame: scene reads");
+    scene_reads[scene_read_count++] = {handle, when};
+    if (when != k_read_build) scene_tables[scene_table_count++] = handle;
+  };
+  if (write_tables) {
+    add_scene_read(rg_instances, k_read_always);
+    add_scene_read(rg_pair_table, k_read_pairs);
+  }
+  for (const gfx::RgBuffer handle :
+       {tg.clusters, tg.lods, tg.quantized, tg.attributes, tg.triangles, tg.meshes, tg.vertices,
+        tg.indices8, tg.instances, tg.cluster_materials, tg.materials, tg.water_surfaces}) {
+    add_scene_read(handle, k_read_always);
+  }
+  if (streaming) {
+    for (const gfx::RgBuffer handle :
+         {sb.pool_clusters, sb.pool_quantized, sb.pool_attributes, sb.pool_triangles}) {
+      add_scene_read(handle, k_read_always);
+    }
+    if (rt_chain) {
+      add_scene_read(sb.pool_vertices, k_read_build);
+      add_scene_read(sb.pool_indices8, k_read_build);
+    }
+  }
+  auto read_scene = [&](gfx::PassBuilder& b, gfx::Access access, bool pairs) {
+    for (u32 i = 0; i < scene_read_count; ++i) {
+      const SceneRead& r = scene_reads[i];
+      if (r.when == k_read_pairs && !pairs) continue;
+      if (r.when == k_read_build && access != gfx::Access::AccelerationBuildRead) continue;
+      b.read(r.handle, access);
     }
   };
   struct RtBuffers {
     gfx::RgBuffer records, record_count, slots, instance_counts, blas_records, hit_entries;
     gfx::RgBuffer blas_dense, blas_slots;  // R143: the records the build reads, and their places
+    gfx::RgBuffer scratch;  // R186 D1: one scratch for every build of the chain, in turn
     gfx::RgBuffer clas_addresses, clas_sizes, blas_data, blas_addresses, tlas, instances;
     // The frame's cluster set, a buffer and a build a chunk, and each chunk's count (R152).
     gfx::RgBuffer clas_chunks[GpuScene::k_rt_chunks_max], clas_chunk_counts;
@@ -4861,40 +4921,54 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     chunk_params.chunk_clusters = scene.rt_chunk_clusters();
     chunk_params.capacity = scene.rt_capacity();
   }
+  // **The chain's buffers are one set for every frame in flight** (R186, R189): the frame before
+  // may still be building into them or tracing through them (the resolve's shadow rays at the
+  // fragment stage, the ray path and the bounce in compute) when this one starts, and the queue
+  // orders nothing between two submissions. So each is imported naming that last use — every
+  // stage the chain is used at, every access — and its first use this frame gets the barrier
+  // behind it, as the uploads' imports do (renderer.md, "The frames in flight share the chain").
+  const auto import_chain = [&](const char* name, const gfx::BufferResource& buffer) {
+    return graph.import_buffer(name, buffer,
+                               gfx::PipelineStage::AccelerationBuild |
+                                   gfx::PipelineStage::ComputeShader |
+                                   gfx::PipelineStage::FragmentShader,
+                               gfx::MemoryAccess::MemoryRead | gfx::MemoryAccess::MemoryWrite);
+  };
   if (rt_cache) {
     const GpuScene::RtCacheBuffers& c = scene.rt_cache_buffers;
-    rt.cache_keys = graph.import_buffer("cache keys", c.keys);
-    rt.cache_owners = graph.import_buffer("cache owners", c.owners);
-    rt.cache_stamps = graph.import_buffer("cache stamps", c.stamps);
-    rt.cache_free = graph.import_buffer("cache free list", c.free_list);
-    rt.cache_misses = graph.import_buffer("cache misses", c.misses);
-    rt.cache_miss_records = graph.import_buffer("cache miss records", c.miss_records);
-    rt.cache_miss_destinations =
-        graph.import_buffer("cache miss destinations", c.miss_destinations);
-    rt.cache_scratch = graph.import_buffer("cache scratch", c.scratch);
-    rt.cache_slots = graph.import_buffer("cache slots", c.slots);
-    rt.cache_references = graph.import_buffer("cache references", c.references);
-    rt.cache_reference_keys = graph.import_buffer("cache reference keys", c.reference_keys);
-    rt.cache_args = graph.import_buffer("cache args", c.args);
+    rt.cache_keys = import_chain("cache keys", c.keys);
+    rt.cache_owners = import_chain("cache owners", c.owners);
+    rt.cache_stamps = import_chain("cache stamps", c.stamps);
+    rt.cache_free = import_chain("cache free list", c.free_list);
+    rt.cache_misses = import_chain("cache misses", c.misses);
+    rt.cache_miss_records = import_chain("cache miss records", c.miss_records);
+    rt.cache_miss_destinations = import_chain("cache miss destinations", c.miss_destinations);
+    rt.cache_scratch = import_chain("cache scratch", c.scratch);
+    rt.cache_slots = import_chain("cache slots", c.slots);
+    rt.cache_references = import_chain("cache references", c.references);
+    rt.cache_reference_keys = import_chain("cache reference keys", c.reference_keys);
+    rt.cache_args = import_chain("cache args", c.args);
   }
   if (rt_chain) {
-    rt.records = graph.import_buffer("clas records", scene.records);
-    rt.hit_entries = graph.import_buffer("clas hit entries", scene.hit_entries);
-    rt.record_count = graph.import_buffer("clas record count", scene.record_count);
-    rt.slots = graph.import_buffer("clas slots", scene.slots);
-    rt.instance_counts = graph.import_buffer("clas instance counts", scene.instance_counts);
-    rt.blas_records = graph.import_buffer("cluster blas records", scene.blas_records);
-    rt.blas_dense = graph.import_buffer("cluster blas records built", scene.blas_dense);
-    rt.blas_slots = graph.import_buffer("cluster blas places", scene.blas_slots);
+    rt.records = import_chain("clas records", scene.records);
+    rt.hit_entries = import_chain("clas hit entries", scene.hit_entries);
+    rt.record_count = import_chain("clas record count", scene.record_count);
+    rt.slots = import_chain("clas slots", scene.slots);
+    rt.instance_counts = import_chain("clas instance counts", scene.instance_counts);
+    rt.blas_records = import_chain("cluster blas records", scene.blas_records);
+    rt.blas_dense = import_chain("cluster blas records built", scene.blas_dense);
+    rt.blas_slots = import_chain("cluster blas places", scene.blas_slots);
     for (u32 k = 0; k < clas_chunks; ++k)
-      rt.clas_chunks[k] = graph.import_buffer("clas", scene.rt_chunk(k).data);
-    rt.clas_chunk_counts = graph.import_buffer("clas chunk counts", scene.clas_chunk_counts);
-    rt.clas_addresses = graph.import_buffer("clas addresses", scene.clas_set.addresses);
-    rt.clas_sizes = graph.import_buffer("clas sizes", scene.clas_set.sizes);
-    rt.blas_data = graph.import_buffer("cluster blas", scene.blas_set.data);
-    rt.blas_addresses = graph.import_buffer("cluster blas addresses", scene.blas_set.addresses);
-    rt.tlas = graph.import_buffer("tlas", scene.tlas.buffer);
-    rt.instances = graph.import_buffer("tlas instances", scene.rt_instances);
+      rt.clas_chunks[k] = import_chain("clas", scene.rt_chunk(k).data);
+    rt.clas_chunk_counts = import_chain("clas chunk counts", scene.clas_chunk_counts);
+    rt.clas_addresses = import_chain("clas addresses", scene.clas_set.addresses);
+    rt.clas_sizes = import_chain("clas sizes", scene.clas_set.sizes);
+    rt.blas_data = import_chain("cluster blas", scene.blas_set.data);
+    rt.blas_addresses = import_chain("cluster blas addresses", scene.blas_set.addresses);
+    rt.tlas = import_chain("tlas", scene.tlas.buffer);
+    rt.instances = import_chain("tlas instances", scene.rt_instances);
+    // R186 D1: every build of the chain starts its scratch at the same address.
+    rt.scratch = import_chain("rt scratch", scene.rt_scratch);
   }
   gfx::ClearColor sky{};
   const Vec4 clear_sky = stand_in_sky(k_sky, desc_.display, resolved_.settings);
@@ -5282,8 +5356,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   }
 
   auto cull_reads = [&](gfx::PassBuilder& b) {  // an instance pass's (R16, R173)
-    read_pool(b, gfx::Access::ComputeRead);
-    read_tables(b, gfx::Access::ComputeRead, false);
+    read_scene(b, gfx::Access::ComputeRead, false);
   };
   auto add_cull = [&](u32 block, u32 list) {
     cull_instances_->add_instance_pass(graph, "cull instances", params_[slot].address, block, 2,
@@ -5311,8 +5384,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           } else if (hiz_lod) {
             b.read(rg_hiz, gfx::Access::ComputeRead);  // last frame's, for the term (R118)
           }
-          read_pool(b, gfx::Access::ComputeRead);
-          read_tables(b, gfx::Access::ComputeRead, cull_table);  // the pair table (W6)
+          read_scene(b, gfx::Access::ComputeRead, cull_table);  // the pair table (W6)
           if (streaming) {  // the feedback: what the cut used, and what it could not refine into
             b.write(sb.used, gfx::Access::ComputeWrite);
             b.write(sb.requests, gfx::Access::ComputeWrite);
@@ -5349,8 +5421,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     graph.add_pass(
         "deform cache", gfx::PassKind::Compute,
         [&](gfx::PassBuilder& b) {
-          b.write(rg_pool, gfx::Access::ComputeWrite);
-          read_pool(b, gfx::Access::ComputeRead);  // the instance it rebuilds, and its mesh
+          b.write(rg_static_cache, gfx::Access::ComputeWrite);  // R186 D3: not the pool
+          read_scene(b, gfx::Access::ComputeRead, false);  // the instance it rebuilds, and its mesh
         },
         [&](gfx::CommandList cb, gfx::RenderGraph&) {
           timer.begin(cb, "deform cache");
@@ -5395,7 +5467,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.read(rg_visible, gfx::Access::ComputeRead);
           b.write(rg_slots, gfx::Access::ComputeWrite);
           b.write(rg_blocks, gfx::Access::ComputeWrite);
-          read_pool(b, gfx::Access::ComputeRead);
+          read_scene(b, gfx::Access::ComputeRead, false);
         },
         [&, zone, record, params](gfx::CommandList cb, gfx::RenderGraph&) {
           timer.begin(cb, zone);
@@ -5454,10 +5526,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.read(rg_deform_args, gfx::Access::IndirectRead);
           b.read(rg_visible, gfx::Access::ComputeRead);
           b.read(rg_slots, gfx::Access::ComputeRead);
-          b.write(rg_pool, gfx::Access::ComputeReadWrite);  // reads the static cache
+          b.write(rg_pool, gfx::Access::ComputeReadWrite);
+          if (rg_static_cache.valid()) b.read(rg_static_cache, gfx::Access::ComputeRead);  // D3
+          if (rg_normals.valid()) b.write(rg_normals, gfx::Access::ComputeReadWrite);  // D2
           if (motion_pool) b.write(rg_prev_pool, gfx::Access::ComputeWrite);
           read_terrain(b);
-          read_pool(b, gfx::Access::ComputeRead);
+          read_scene(b, gfx::Access::ComputeRead, false);
         },
         [&, run](gfx::CommandList cb, gfx::RenderGraph&) {
           cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.deform.pipeline);
@@ -5497,7 +5571,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.write(rg_vertex_headers, gfx::Access::ComputeReadWrite);
           b.read(rg_vertex_records, gfx::Access::ComputeRead);
           b.write(rg_vertex_indices, gfx::Access::ComputeWrite);
-          read_pool(b, gfx::Access::ComputeRead);
+          read_scene(b, gfx::Access::ComputeRead, false);
         },
         [&, run](gfx::CommandList cb, gfx::RenderGraph&) {
           cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.expand.pipeline);
@@ -5534,9 +5608,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               b.read(rg_pool, stage);
               b.read(rg_slots, stage);
             }
-            read_pool(b, stage);
-            read_tables(b, stage, false);
+            read_scene(b, stage, false);
             if (fading) b.read(rg_fade, gfx::Access::FragmentRead);  // the masked variants
+            // whose fragment stage reads the mask tables too (R186 A4)
+            if (masked_frame) read_scene(b, gfx::Access::FragmentRead, false);
           }
         },
         [&, list, run](gfx::CommandList cb, gfx::RenderGraph&) {
@@ -5657,13 +5732,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           cull_instances_->declare_items(b);
           b.write(rg_shadow_args, gfx::Access::ComputeReadWrite);
           b.write(rg_visible, gfx::Access::ComputeWrite);
-          read_tables(b, gfx::Access::ComputeRead, cull_table);  // the pair table (W6)
+          read_scene(b, gfx::Access::ComputeRead, cull_table);  // the pair table (W6)
           if (fading) b.write(rg_fade, gfx::Access::ComputeWrite);
           if (vertex_indexed) {
             b.write(rg_vertex_headers, gfx::Access::ComputeReadWrite);
             b.write(rg_vertex_records, gfx::Access::ComputeWrite);
           }
-          read_pool(b, gfx::Access::ComputeRead);
           if (streaming) {  // a caster the camera cannot see still asks for its pages
             b.write(sb.used, gfx::Access::ComputeWrite);
             b.write(sb.requests, gfx::Access::ComputeWrite);
@@ -5712,9 +5786,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_deform_args, gfx::Access::IndirectRead);
             b.read(rg_visible, gfx::Access::ComputeRead);
             b.read(rg_slots, gfx::Access::ComputeRead);
-            b.write(rg_pool, gfx::Access::ComputeReadWrite);  // reads the static cache
+            b.write(rg_pool, gfx::Access::ComputeReadWrite);
+            if (rg_static_cache.valid()) b.read(rg_static_cache, gfx::Access::ComputeRead);  // D3
+            if (rg_normals.valid()) b.write(rg_normals, gfx::Access::ComputeReadWrite);  // D2
             read_terrain(b);
-            read_pool(b, gfx::Access::ComputeRead);
+            read_scene(b, gfx::Access::ComputeRead, false);
           },
           [&, count](gfx::CommandList cb, gfx::RenderGraph&) {
             cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.deform.pipeline);
@@ -5738,7 +5814,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.write(rg_vertex_headers, gfx::Access::ComputeReadWrite);
             b.read(rg_vertex_records, gfx::Access::ComputeRead);
             b.write(rg_vertex_indices, gfx::Access::ComputeWrite);
-            read_pool(b, gfx::Access::ComputeRead);
+            read_scene(b, gfx::Access::ComputeRead, false);
           },
           [&, count](gfx::CommandList cb, gfx::RenderGraph&) {
             cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.expand.pipeline);
@@ -5771,9 +5847,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_pool, stage);
             b.read(rg_slots, stage);
           }
-          read_pool(b, stage);
-          read_tables(b, stage, false);
+          read_scene(b, stage, false);
           if (fading) b.read(rg_fade, gfx::Access::FragmentRead);  // the masked variants
+          // whose fragment stage reads the mask tables too (R186 A4)
+          if (masked_shadows) read_scene(b, gfx::Access::FragmentRead, false);
         },
         [&, count](gfx::CommandList cb, gfx::RenderGraph&) {
           timer.begin(cb, "shadow");
@@ -5846,8 +5923,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_pool, gfx::Access::MeshRead);
             b.read(rg_slots, gfx::Access::MeshRead);
           }
-          read_pool(b, gfx::Access::MeshRead);
-          read_tables(b, gfx::Access::MeshRead, false);
+          read_scene(b, gfx::Access::MeshRead, false);
           if (fading) b.read(rg_fade, gfx::Access::FragmentRead);  // the masked variants
         },
         [&, params](gfx::CommandList cb, gfx::RenderGraph&) {
@@ -5894,12 +5970,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.write(rg_vis, gfx::Access::ComputeReadWrite);
             b.read(rg_sw_args, gfx::Access::IndirectRead);
             b.read(rg_visible, gfx::Access::ComputeRead);
-            read_tables(b, gfx::Access::ComputeRead, false);
             if (deform_on) {
               b.read(rg_pool, gfx::Access::ComputeRead);
               b.read(rg_slots, gfx::Access::ComputeRead);
             }
-            read_pool(b, gfx::Access::ComputeRead);
+            read_scene(b, gfx::Access::ComputeRead, false);
           },
           [&](gfx::CommandList cb, gfx::RenderGraph&) {
             cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.software.pipeline);
@@ -5992,7 +6067,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                 b.write(rt.cache_references, gfx::Access::ComputeWrite);
                 b.write(rt.cache_args, gfx::Access::ComputeReadWrite);
               }
-              read_pool(b, gfx::Access::ComputeRead);
+              read_scene(b, gfx::Access::ComputeRead, false);
             },
             [&, p, record_passes, record_names, record_groups, drop_args, kept_args](
                 gfx::CommandList cb, gfx::RenderGraph&) {
@@ -6050,6 +6125,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                 b.write(rt.cache_miss_destinations, gfx::Access::ComputeWrite);
                 // A miss without a slot is appended to the frame's own records (R114).
                 b.write(rt.records, gfx::Access::ComputeWrite);
+                read_scene(b, gfx::Access::ComputeRead, false);  // the cluster table (R186 A2)
               }
               if (k == 3) {
                 b.read(rt.cache_reference_keys, gfx::Access::ComputeRead);
@@ -6076,7 +6152,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               b.read(rt.cache_miss_destinations, gfx::Access::AccelerationBuildRead);
               b.read(rt.record_count, gfx::Access::AccelerationBuildRead);
               b.write(rt.cache_slots, gfx::Access::AccelerationBuildWrite);
-              read_pool(b, gfx::Access::AccelerationBuildRead);
+              b.write(rt.scratch, gfx::Access::AccelerationBuildWrite);  // R186 D1
+              read_scene(b, gfx::Access::AccelerationBuildRead, false);
             },
             [&](gfx::CommandList cb, gfx::RenderGraph&) {
               // Explicit destinations: each miss into the slot `cache assign` gave it, the count
@@ -6113,9 +6190,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               b.read(rt.records, gfx::Access::AccelerationBuildRead);
               b.read(rt.record_count, gfx::Access::AccelerationBuildRead);
               if (clas_chunks > 1) b.read(rt.clas_chunk_counts, gfx::Access::AccelerationBuildRead);
-              // After the cache's build, which shares the scratch (the graph orders the two), and
-              // after the chunk before, which wrote the same arrays and shares it too.
+              // After the cache's build and the chunk before, which share the scratch: declared,
+              // so the barrier between two builds names its read and write (R186 D1).
               if (rt_cache) b.read(rt.cache_slots, gfx::Access::AccelerationBuildRead);
+              b.write(rt.scratch, gfx::Access::AccelerationBuildWrite);
               if (deform_on) {
                 b.read(rg_pool, gfx::Access::AccelerationBuildRead);
                 b.read(rg_slots, gfx::Access::AccelerationBuildRead);
@@ -6123,7 +6201,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               b.write(rt.clas_chunks[k], gfx::Access::AccelerationBuildWrite);
               b.write(rt.clas_addresses, gfx::Access::AccelerationBuildWrite);
               b.write(rt.clas_sizes, gfx::Access::AccelerationBuildWrite);
-              read_pool(b, gfx::Access::AccelerationBuildRead);
+              read_scene(b, gfx::Access::AccelerationBuildRead, false);
             },
             [&, k](gfx::CommandList cb, gfx::RenderGraph&) {
               // The same command either way: a set created with `instantiate` runs the instantiate
@@ -6180,6 +6258,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             }
             b.write(rt.blas_data, gfx::Access::AccelerationBuildWrite);
             b.write(rt.blas_addresses, gfx::Access::AccelerationBuildWrite);
+            b.write(rt.scratch, gfx::Access::AccelerationBuildWrite);  // R186 D1
           },
           [&](gfx::CommandList cb, gfx::RenderGraph&) {
             // Every instance's structure in **one** build, packed into one buffer by the driver
@@ -6202,8 +6281,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           [&](gfx::PassBuilder& b) {
             b.read(rt.blas_addresses, gfx::Access::ComputeRead);
             b.read(rt.blas_slots, gfx::Access::ComputeRead);  // an instance's place in the build
-            // The scene's instance records, which a frame that turns a terrain slot on writes.
-            read_ring_geometry(b, gfx::Access::ComputeRead);
+            // The scene's instance records, which a frame that turns a terrain slot on, moves a
+            // record or writes a table set writes (R186 A2).
+            read_scene(b, gfx::Access::ComputeRead, false);
             b.write(rt.instances, gfx::Access::ComputeReadWrite);  // reads its mask word
           },
           [&](gfx::CommandList cb, gfx::RenderGraph&) {
@@ -6220,6 +6300,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rt.blas_data, gfx::Access::AccelerationBuildRead);
             b.read(rt.instances, gfx::Access::AccelerationBuildRead);
             b.write(rt.tlas, gfx::Access::AccelerationBuildWrite);
+            b.write(rt.scratch, gfx::Access::AccelerationBuildWrite);  // R186 D1
           },
           [&](gfx::CommandList cb, gfx::RenderGraph&) {
             timer.begin(cb, "tlas");
@@ -6240,7 +6321,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_visible, gfx::Access::ComputeRead);  // a hit's entry -> its pair, the id
             if (fading) b.read(rg_fade, gfx::Access::ComputeRead);
             b.write(rg_vis, gfx::Access::ComputeWrite);
-            read_pool(b, gfx::Access::ComputeRead);
+            read_scene(b, gfx::Access::ComputeRead, false);
           },
           [&](gfx::CommandList cb, gfx::RenderGraph&) {
             cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.trace.pipeline);
@@ -6316,8 +6397,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               b.read(rg_prev_pool, gfx::Access::ComputeRead);
               b.read(rg_slots, gfx::Access::ComputeRead);
             }
-            read_tables(b, gfx::Access::ComputeRead, true);
-            read_pool(b, gfx::Access::ComputeRead);
+            read_scene(b, gfx::Access::ComputeRead, true);
             b.write(rg_motion, gfx::Access::ComputeWrite);
           },
           [&](gfx::CommandList cb, gfx::RenderGraph&) {
@@ -6341,9 +6421,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               b.read(rg_pool, gfx::Access::ComputeRead);
               b.read(rg_slots, gfx::Access::ComputeRead);
             }
-            read_tables(b, gfx::Access::ComputeRead, true);
+            read_scene(b, gfx::Access::ComputeRead, true);
             if (fading) b.read(rg_fade, gfx::Access::ComputeRead);
-            read_pool(b, gfx::Access::ComputeRead);
+            b.read(rg_visible, gfx::Access::ComputeRead);  // a masked candidate's pair (R186 A1)
             b.read(rt.tlas, gfx::Access::RayQueryRead);
             b.read(rt.hit_entries, gfx::Access::ComputeRead);
             b.read(rt.blas_data, gfx::Access::RayQueryRead);
@@ -6412,10 +6492,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                 b.read(rg_pool, gfx::Access::ComputeRead);
                 b.read(rg_slots, gfx::Access::ComputeRead);
               }
-              read_tables(b, gfx::Access::ComputeRead, true);
+              read_scene(b, gfx::Access::ComputeRead, true);
               if (fading) b.read(rg_fade, gfx::Access::ComputeRead);
-              read_pool(b, gfx::Access::ComputeRead);
+              b.read(rg_visible, gfx::Access::ComputeRead);  // every hit's pair (R186 A1)
+              if (rg_normals.valid()) b.read(rg_normals, gfx::Access::ComputeRead);  // D2
               if (sky_on) {
+                // The transmittance too: the hits' sky light reads it (R186 A5).
+                b.read(sb_sky.transmittance, gfx::Access::ComputeRead);
                 b.read(sb_sky.view, gfx::Access::ComputeRead);
                 b.read(sb_sky.frame, gfx::Access::ComputeRead);
               }
@@ -6463,12 +6546,17 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             "gi stats", gfx::PassKind::Transfer,
             [&](gfx::PassBuilder& b) {
               b.read(rg_gi, gfx::Access::TransferRead);
-              b.write(rg_gi, gfx::Access::TransferWrite);
               b.write(rg_stats, gfx::Access::TransferWrite);
             },
             [&, stat_target, at](gfx::CommandList cb, gfx::RenderGraph&) {
               const gfx::BufferCopy copy{0, at, sizeof(u32) * gfx::k_gi_stat_copy_words};
               cb.copy_buffer(gi_cache_.buffer, stat_target->buffer, copy);
+            });
+        // The clear after the copy, a pass of its own so the graph orders the two (R186 P1).
+        graph.add_pass(
+            "gi stats clear", gfx::PassKind::Transfer,
+            [&](gfx::PassBuilder& b) { b.write(rg_gi, gfx::Access::TransferWrite); },
+            [&](gfx::CommandList cb, gfx::RenderGraph&) {
               cb.fill_buffer(gi_cache_.buffer, 0, gfx::k_gi_header_bytes, 0u);
             });
       }
@@ -6503,7 +6591,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_vis, gfx::Access::FragmentRead);
             if (cull_on && deform_on) b.read(rg_pair_entries, gfx::Access::FragmentRead);
             if (occlusion) b.read(rg_hiz, gfx::Access::FragmentRead);  // the coverage mask
-            read_tables(b, gfx::Access::FragmentRead, true);
+            read_scene(b, gfx::Access::FragmentRead, true);
           },
           [&, class_plan](gfx::CommandList cb, gfx::RenderGraph&) {
             cb.bind_pipeline(gfx::BindPoint::Graphics, class_plan.classify);
@@ -6550,9 +6638,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_pool, gfx::Access::FragmentRead);
             b.read(rg_slots, gfx::Access::FragmentRead);
           }
-          read_tables(b, gfx::Access::FragmentRead, true);
+          read_scene(b, gfx::Access::FragmentRead, true);
           if (fading) b.read(rg_fade, gfx::Access::FragmentRead);  // the shadow rays
-          read_pool(b, gfx::Access::FragmentRead);
+          b.read(rg_visible, gfx::Access::FragmentRead);  // a masked candidate's pair (R186 A1)
+          if (rg_normals.valid()) b.read(rg_normals, gfx::Access::FragmentRead);  // D2
           if (shadows) {  // the shadow rays traverse them from the fragment stage
             b.read(rt.tlas, gfx::Access::FragmentRayQueryRead);
             b.read(rt.hit_entries, gfx::Access::FragmentRead);
@@ -6648,6 +6737,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     context.height = height_;
     context.visibility = rg_vis;
     context.motion = rg_motion;
+    context.scene_tables = scene_tables;  // R186 A3
+    context.scene_table_count = scene_table_count;
     context.view_count = views;
     context.views = pass_views;
     context.camera = &frame.camera;

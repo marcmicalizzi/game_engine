@@ -69,6 +69,8 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     tests/sun_arc_tests.cpp
                     # The sun's masks by region and by distance (R139).
                     tests/sun_region_tests.cpp
+                    # The serialized frame: the pass audit's guard check 3 (R186, R189).
+                    tests/serialized_frame_tests.cpp
                     # The caster policy's untraced species under a traced picture (R110).
                     tests/untraced_tests.cpp
                     tests/handoff_tests.cpp

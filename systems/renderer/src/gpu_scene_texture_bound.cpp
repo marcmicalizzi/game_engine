@@ -743,10 +743,23 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
         if (*field == old_slot) *field = slot;
       }
       std::memcpy(base + record_at, &record, sizeof(record));
-      pending_geometry_.push_back(TerrainUpdate::GeometryCopy{
+      // **One copy a record** (R186 P2): a material with two textures promoted in one frame was
+      // copied twice, each copy carrying the earlier change, and the copies of one pass are not
+      // ordered against each other, so the last was not sure to win. The later bytes take the
+      // earlier copy's place instead.
+      const TerrainUpdate::GeometryCopy copy{
           staging.buffer, materials.buffer,
           gfx::BufferCopy{record_at, u64{s.materials[c].index} * sizeof(gfx::ResolveMaterial),
-                          sizeof(gfx::ResolveMaterial)}});
+                          sizeof(gfx::ResolveMaterial)}};
+      bool joined = false;
+      for (TerrainUpdate::GeometryCopy& earlier : pending_geometry_) {
+        if (earlier.dst == copy.dst && earlier.region.dst_offset == copy.region.dst_offset &&
+            earlier.region.size == copy.region.size) {
+          earlier = copy;
+          joined = true;
+        }
+      }
+      if (!joined) pending_geometry_.push_back(copy);
       record_at += sizeof(gfx::ResolveMaterial);
     }
     pending_geometry_bytes_ += staged;
