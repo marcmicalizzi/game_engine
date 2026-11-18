@@ -638,6 +638,12 @@ TEST_CASE("content_class: the class hash is over names, and nothing classified h
   Vector<MaterialClass> renamed_material = two;
   renamed_material[0].name = "m9";
   CHECK(class_hash(glow_first, a, &renamed_material) != hm);
+
+  // Pinned, so that a change to the canonical form or to `hash_bytes` is seen: a cache key that
+  // mixes this in moves with it. Taken on MSVC at v3 on 2026-11-18; the form is text and
+  // `hash_bytes` reads little-endian words, so GCC and Clang must reproduce it.
+  CHECK(class_hash(glow_first, a) == 12194792233167631765ull);
+  CHECK(class_hash(glow_first, a, &two) == 12820774027028656574ull);
 }
 
 TEST_CASE(
