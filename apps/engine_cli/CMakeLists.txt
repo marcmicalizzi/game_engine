@@ -15,7 +15,15 @@ engine_app(NAME engine_cli OUTPUT engine-cli
   # a GPU chain. The rest — npc_replay_tests.cpp's 285 s of gate b66's 386 among them — start hosts
   # that open none, and are `engine_cli`, in the CPU pool (roadmap T170, what-to-run.md, "Tests
   # that open no device").
-  E2E_DEVICE_FILES render_tests.cpp ops_tests.cpp console_tests.cpp)
+  E2E_DEVICE_FILES render_tests.cpp ops_tests.cpp console_tests.cpp
+  # npc_replay_tests.cpp's two cases, 10^5 and 2 * 10^4 scheduled residents each streamed, saved,
+  # loaded and replayed in three hosts, are most of the CPU half: 467 s and 115 s of its 645 s here
+  # at 100 % CPU, and up to 594 s and 220 s in other rows' runs that day, against the 600 s every
+  # other end-to-end test has. They are `engine_cli.npc_replay`, a test of their own whose limit is
+  # twice the worst seen (814 s), and `engine_cli` is the rest, 63 s (roadmap T184; what-to-run.md,
+  # "Checks on events, not seconds").
+  E2E_OWN_FILES npc_replay_tests.cpp
+  E2E_OWN_TIMEOUT 1650)
 if(TARGET engine_engine_cli_tests)
   target_compile_definitions(engine_engine_cli_tests PRIVATE ENGINE_HOST_PATH="$<TARGET_FILE:engine_engine_host>")
   add_dependencies(engine_engine_cli_tests engine_engine_host)

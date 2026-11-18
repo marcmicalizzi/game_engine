@@ -1077,7 +1077,7 @@ render session's device for its memory row):
 | `engine_host`, `mcp_bridge`, `mcp_bridge.mcp_check`, `.mcp_check_connect` | 67, 18, 11, 5 | 3, 1, 0, 0 | yes: `render.*` through `engine-host` (one file each; the checks' capture and benchmark) | `gpu` |
 | `water` | 119 | 47 | nine of its sixteen files; 22 s of cases do not | `gpu`, whole (below) |
 | `doc_scene`, `volumetrics`, `scatter` | 27, 11, 10 | 4, 6, 2 | one or two files each; 0.5, 0.2 and 5 s of cases do not | `gpu`, whole |
-| `engine_cli` | 386 | 12 | `render_tests.cpp`, `console_tests.cpp`'s captured frame, `ops_tests.cpp`'s `engine.budgets`: 77 s of cases | split: `engine_cli.gpu`; `engine_cli` (308 s, `npc_replay_tests.cpp` 285 of it) in the CPU pool |
+| `engine_cli` | 386 | 12 | `render_tests.cpp`, `console_tests.cpp`'s captured frame, `ops_tests.cpp`'s `engine.budgets`: 77 s of cases | split: `engine_cli.gpu`; `engine_cli` (308 s, `npc_replay_tests.cpp` 285 of it) in the CPU pool; since T184 `npc_replay_tests.cpp` is `engine_cli.npc_replay` (below) |
 | `scene_collision` | 75 | 1 | `collision_draw_tests.cpp`: 0.8 s | split: `scene_collision.gpu`; `scene_collision` (72 s) in the CPU pool |
 | `rocks`, `landform`, `world`, `caves`, `soil`, `protocol`, `audio`, `audio_system` | 331, 47, 37, 30, 7, 6, 4, 2 | 0 | no (`protocol`'s `gpu.adapters` enumerates adapters, which opens no device) | `NO_DEVICE` |
 | `window` | 9 | 0 | no: its one Vulkan window holds a lock file in its own scratch directory | `NO_DEVICE` |
@@ -1178,5 +1178,16 @@ which at 100 % CPU took longer and replaced the host before the case began. The 
 held to that second (the same message, `timed_out`, waited 0.9 s and under 30); a quick call the
 deadline stopped on a host still starting is asked again and counted, and the generations add each
 such replacement in.
+
+**`engine_cli`'s CPU half was over its limit on a loaded machine, and the time is two cases.**
+`npc_replay_tests.cpp`'s 10^5 residents and its 2 * 10^4 crossing the simulated edge, each
+generated, streamed, saved, loaded and replayed in three hosts, took 467 s and 115 s of the half's
+645 s here on 2026-11-18 at 100 % CPU (the rest 63 s; the 10^5 world's generation 25 s, its save
+77 MB), and 594 s and 220 s in other rows' runs that day, against the 600 s every end-to-end test
+has. Shortening them is an edit to cases other rows held that day (three hosts that could be two at
+once: the replay from tick 0 needs nothing from the continuous run), so the file is a test of its
+own, `engine_cli.npc_replay` (`engine_app(... E2E_OWN_FILES <file> E2E_OWN_TIMEOUT <s>)`, beside
+the device split), whose limit is twice the worst seen, 1,650 s; `engine_cli` keeps the other 22
+cases at 600 s, and the three tests hold the suite's 55 cases between them, each once.
 
 `scene_collision`'s wall-clock check is another row's (T184 left it).
