@@ -63,7 +63,7 @@ void append_series(std::string& out, const char* name, const Vector<f64>& v) {
 
 }  // namespace
 
-void TemporalChange::count(u32 band, f64 codes, f64 light, bool lit) {
+void TemporalChange::count(u32 band, f64 codes, f64 light, bool lit, u32 channel_codes) {
   // A whole step computed as a difference of two weighted sums can come out a hair under 1.0: the
   // bin is taken a millionth of a bin up, so a step is counted as one.
   const f64 at = codes / k_code_bin + 1e-6;
@@ -74,6 +74,8 @@ void TemporalChange::count(u32 band, f64 codes, f64 light, bool lit) {
   for (const u32 row : {band, k_bands}) {
     ++code_hist_[row * k_code_bins + cb];
     code_sum_[row] += codes;
+    if (channel_codes >= 1) ++channel_one_[row];
+    if (channel_codes >= 3) ++channel_three_[row];
     if (lit) {
       ++light_hist_[row * k_light_bins + lb];
       light_sum_[row] += light;
@@ -91,6 +93,8 @@ bool TemporalChange::add(const u8* rgba, u32 width, u32 height) {
     code_sum_.resize(k_bands + 1, 0.0);
     light_sum_.resize(k_bands + 1, 0.0);
     lit_pairs_.resize(k_bands + 1, 0);
+    channel_one_.resize(k_bands + 1, 0);
+    channel_three_.resize(k_bands + 1, 0);
   }
   f64 luma_sum = 0.0;
   f64 light_sum = 0.0;
@@ -120,8 +124,14 @@ bool TemporalChange::add(const u8* rgba, u32 width, u32 height) {
       const f64 light_before = light_of(q);
       const f64 level = 0.5 * (light + light_before);
       const bool lit = level > floor;
+      // The largest step any one channel took, in whole codes (the forest session's measure).
+      u32 channel_codes = 0;
+      for (u32 c = 0; c < 3; ++c) {
+        const u32 d = p[c] > q[c] ? u32{p[c]} - q[c] : u32{q[c]} - p[c];
+        channel_codes = d > channel_codes ? d : channel_codes;
+      }
       count(band_of(0.5 * (luma + luma_before)), std::fabs(luma - luma_before),
-            lit ? std::fabs(light - light_before) / level : 0.0, lit);
+            lit ? std::fabs(light - light_before) / level : 0.0, lit, channel_codes);
     }
   }
   const f64 pixels = static_cast<f64>(width) * static_cast<f64>(height);
@@ -156,6 +166,8 @@ TemporalChange::Stats TemporalChange::stats(u32 band) const {
   for (u32 i = 32; i < k_code_bins; ++i) two += codes[i];
   s.at_least_one = static_cast<f64>(one) / n;
   s.at_least_two = static_cast<f64>(two) / n;
+  s.any_channel_one = static_cast<f64>(channel_one_[band]) / n;
+  s.any_channel_three = static_cast<f64>(channel_three_[band]) / n;
   s.light_pairs = lit_pairs_[band];
   if (s.light_pairs > 0) {
     s.mean_light = light_sum_[band] / static_cast<f64>(s.light_pairs);
@@ -169,7 +181,7 @@ TemporalChange::Stats TemporalChange::stats(u32 band) const {
 
 std::string TemporalChange::json() const {
   std::string out;
-  char buf[512];
+  char buf[768];
   std::snprintf(buf, sizeof(buf), "{\"format\":\"engine.temporal-change.v1\",\"frames\":%u,"
                                   "\"width\":%u,\"height\":%u,",
                 frames_, width_, height_);
@@ -179,10 +191,12 @@ std::string TemporalChange::json() const {
     std::snprintf(buf, sizeof(buf),
                   "\"pairs\":%llu,\"codes\":{\"mean\":%.4f,\"median\":%.4f,\"p95\":%.4f,"
                   "\"p99\":%.4f,\"p999\":%.4f,\"at_least_one\":%.6f,\"at_least_two\":%.6f},"
+                  "\"channels\":{\"at_least_one\":%.6f,\"at_least_three\":%.6f},"
                   "\"light\":{\"pairs\":%llu,\"mean\":%.5f,\"median\":%.4f,\"p95\":%.4f,"
                   "\"p99\":%.4f,\"p999\":%.4f}",
                   static_cast<unsigned long long>(s.pairs), s.mean_codes, s.median_codes,
                   s.p95_codes, s.p99_codes, s.p999_codes, s.at_least_one, s.at_least_two,
+                  s.any_channel_one, s.any_channel_three,
                   static_cast<unsigned long long>(s.light_pairs), s.mean_light, s.median_light,
                   s.p95_light, s.p99_light, s.p999_light);
     out += buf;

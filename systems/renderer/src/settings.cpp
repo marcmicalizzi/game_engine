@@ -523,11 +523,14 @@ tunables::Bool gi_spread{
 // The fourth leg ("R171: the memory made right") mended the half's rounding, the blobs and the
 // small change that trailed at their causes and turned it on; batch 67's fixes turned it off ("Off
 // again: the pre-roll's promise": the long mean kept the pre-roll's and the first frames' unsettled
-// samples). The fifth leg answered that — a fold of a cold frame's steps and of the frames just
-// after it holds every count at today's history (`gfx::k_gi_step_hold`), and the pre-roll's case,
-// which holds its frames to today's history's floor, passes with it on — and leaves it **off**
-// with the guide below, since the two were only run together and four other cases then fail
-// (renderer.md, "R171: where a dark room's light comes from", "Why both are off").
+// samples). The fifth leg answered that in part — a fold of a cold frame's steps and of the frames
+// just after it holds every count at today's history (`gfx::k_gi_step_hold`), which brings a cut's
+// frames within today's history's floor — and passed the pre-roll's case with it on only by
+// holding it to that floor. **Off** still, after the sixth leg (renderer.md, "R171: the cases,
+// each by its cause"): the pre-roll's case is main's again, twice the run's own floor, and with
+// the memory on a cut's furthest frame stands 2.65 of them; three of the cache's cases fail on
+// main's own code where that leg ran them, so a defaults-on tree could not be shown clean; and
+// under the memory the rounded rock's case lost its margin in two msvc-release runs of three.
 tunables::Bool gi_memory{
     "renderer.gi.memory", false,
     "A face's cache cell remembers up to sixteen times today's history while its light holds "
@@ -536,8 +539,11 @@ tunables::Bool gi_memory{
     "predicts, or a coarser cell of its ladder's does (false: today's history, as stage 8 left it) "
     "(renderer.md, Indirect light, R171: a cell's memory by its own spread; read at load)"};
 // **R171's fifth leg** (renderer.md, "Indirect light", "R171: where a dark room's light comes
-// from"): the guide. Built, measured and **off**: on, four of the cache's GPU cases fail ("Why both
-// are off" on the page names each and what mends it).
+// from"): the guide. Built, measured and **off**. The sixth leg ("R171: the cases, each by its
+// cause") found none of the cases the fifth saw fail to be the guide's, trained it by degrees
+// (`gfx::gi_guide_alpha`) and left it off for two things: the three cases that fail on main's own
+// code, without which no run shows it clean, and a guided wall that stands 0.5 % under the cosine
+// rays' under the sky alone, which the weight's arithmetic does not allow and is not explained.
 tunables::Bool gi_guide{
     "renderer.gi.guide", false,
     "The cache's samples learn where a coarse cell's light comes from and half of them are drawn "

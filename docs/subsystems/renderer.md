@@ -3353,7 +3353,13 @@ its change of displayed luma in code steps (Y′ = 0.2126 R′ + 0.7152 G′ + 0
 and of its light relative to its level (each channel through the encode's 2.2 power, Rec. 709's
 weights, |L₁ − L₀| over their mean; a pixel black in both frames has none), as histograms over all
 pixels and by the pixel's displayed luma in six bands (0–7, 8–15, 16–31, 32–63, 64–127, 128–255
-codes), with each frame's mean level over the picture and its centre for a moving case. The
+codes), with each frame's mean level over the picture and its centre for a moving case. Beside
+them (the sixth leg) **the forest session's own measure**, so that the engine and the forest quote
+one number: the share of pixels of which *any one channel* moved a whole code or more, and three
+or more (`Stats::any_channel_one`, `any_channel_three`; `channels` in the report). It is always
+the larger of the two shares: a grey step moves all three channels and the luma by one, and a step
+of one channel alone moves the luma by 0.07 to 0.72 of a code, which the luma's share does not
+count. The
 display's dither is a function of the pixel's place and nothing else, so a picture that does not
 change does not change a code: with the bounce off, a held view of the cave or the village moves
 no pixel at all (below), and every step the measure counts under the bounce is the cache's.
@@ -3581,8 +3587,19 @@ samples are drawn there:
   traced and counts for nothing.
 - **It learns from every sample of its cell**, guided or not: the sample's weighted light into the
   bin of its direction, folded a frame at a time into a history of sixteen frames
-  (`gfx::gi_guide_fold`), by the fold pass's first threads. A sample is drawn from a guide once it
-  averages 256 samples; one nothing sampled for 64 frames is freed. The picture's own samples make
+  (`gfx::gi_guide_fold`), by the fold pass's first threads. **A guide is not drawn from until it
+  is trained, and then by degrees** (the sixth leg, `gfx::gi_guide_alpha`): the fifth leg drew
+  half of a frame's samples from any guide holding 256 samples, which a coarse cell at 4K takes
+  in the one frame it is first seen. Mueller's practice, read from §3 and "Exponential sample
+  count" of the paper above: the first distribution is learned with BSDF sampling alone, the tree
+  being written is never the one drawn from, and each distribution has twice the samples of the
+  one before so that it "does not become noisier". Here a frame is an iteration: a guide's first
+  frame is cosine rays and no one draws from it, from its second fold its share of the mixture
+  grows by a seventh of the half a fold, and it is whole at the eighth, half its history; a
+  sample never weighs more than 1 / (1 − share) of what it weighed alone, so a guide two frames
+  old can cost a sample 8 % where one frame old it could cost it twice. The pre-roll's steps are
+  folds, so a cut's or a load's first picture has whole guides. One nothing sampled for 64 frames
+  is freed. The picture's own samples make
   guides; a sample round the eye only finds one, and adds to it only once a fold has trained it
   (whether it finds one a pixel's sample is making in the same pass is the order of two threads).
 - **Where it lives**: a table of one guide to 256 cells behind the cells in the cache's buffer
@@ -3651,8 +3668,11 @@ sample pass (the guide's lookup, its draw over 64 words and its two adds a sampl
 lookup too. It is the device's memory traffic, so it scales with the samples a frame and not with
 the scene. Ways down, not tried: a guide's shares as bytes, the draw by rows then columns.
 
-**Why both are off.** With both on by default every `gi cache:` case ran once (msvc-release, the
-RTX 5090): fourteen passed and five failed, and a default that fails a case is not a default.
+**Why both are off.** (The fifth leg's account, kept as it was written; the sixth leg's, "R171:
+the cases, each by its cause" below, took each of the five to its cause and corrects the first,
+the second, the third's last part and the fourth.) With both on by default every `gi cache:` case
+ran once (msvc-release, the RTX 5090): fourteen passed and five failed, and a default that fails
+a case is not a default.
 1. *The grain's law* (four times the rays, half the grain): the guide halves the base run's grain
    (0.89 % against 1.76 %) and what is left is no longer the cosine rays' sampling noise, so four
    times the rays take it to 0.83 of itself. The case now asks for cosine rays by name; its law is
@@ -3677,8 +3697,9 @@ RTX 5090): fourteen passed and five failed, and a default that fails a case is n
 
 With both off a frame draws what main draws: no sample reads or writes a guide and the buffer has
 none, and the hold changes nothing without the memory. **That configuration was not run on the GPU
-after these changes**; the cases above were run with both on, and the row's own case and the
-pre-roll's passed in msvc-debug with both asked for.
+after these changes** (the sixth leg ran it, below); the cases above were run with both on, and the row's own case and the
+pre-roll's passed in msvc-debug with both asked for (the pre-roll's against the fifth leg's own
+restated bound: the sixth leg put main's back, and against it the case fails with the memory on).
 
 **What this does not show, said plainly.** The forest's two dark rooms change 5.9 and 4.8 % a
 frame with cosine rays, three to four times the engine's house at a *brighter* level, so their
@@ -3696,6 +3717,156 @@ following its coarse cell's change as a ratio instead of re-averaging its own fe
 is not built. **A person in such a room would still see the walls' grain crawl, at about half its
 amplitude or less; in a room whose light holds still they would see it settle under a display
 step within three seconds of walking in.**
+
+### R171: the cases, each by its cause
+
+Sixth leg (2026-11-18). The fifth leg left the guide and the memory off because five of the
+cache's nineteen GPU cases failed with both on, in one run. This leg ran every case with each
+alone and with both, and with neither, and took each failure to its cause before mending
+anything. **Both are still off**, and the reason is no longer the five: three of
+the nineteen fail **on main's own code** on this card tonight, with the same figures whichever of
+the two is on or neither, so no run of the suite can show a defaults-on tree clean; under the
+memory a fourth case loses its margin in msvc-release; and the grain's law's new twin found the
+guided wall about half a percent darker than the cosine rays' under the sky alone, which the
+weight's arithmetic does not allow and this leg did not explain. With both off a frame draws
+what main draws, and that tree was run: every `gi cache:` case in msvc-debug, the same three
+failing as on main's executable in the same lease and every other passing.
+
+**The table** (the RTX 5090, the Windows session locked throughout; `gi cache:` cases, each
+configuration set as the process's defaults so that a case naming a tunable still overrides it):
+
+| case | neither | the guide alone | the memory alone | both |
+|---|---|---|---|---|
+| a scene moved by whole cells draws the same bytes | **fails** (sky 4,121 and 4,091 pixels, bounce 179 and 228) | fails (3,857, 3,960; 2,523, 2,573) | fails (3,890, 3,856; 670, 674) | fails (4,007, 4,080; 2,588, 2,449) |
+| a turn shows no fill, the first seven frames' change | **fails** (0.994 against 0.633) | fails (1.04) | fails (0.94) | fails (0.995) |
+| a turn to a stand of solid crowns | **fails** (the first frame 28.42 steps under) | fails (28.46) | fails (28.44) | fails (28.44) |
+| a rounded rock draws no cell-sized blocks | passes (1,220 under 1,251) | passes | fails in msvc-release (1,232 against 1,109) | fails in msvc-release (1,228 against 1,180), passes in msvc-debug (1,198 under 1,230) |
+| the pre-roll runs on the first frame and on a cut | passes (1.49 floors at the cut) | not run in main's terms | not run in main's terms | **fails main's bound** (2.65 of the run's own floors against 2; inside the fifth leg's, 0.93 of today's history's) |
+| the other fourteen, and this leg's twin of the grain's law | pass (every one) | pass | pass | pass (every one) |
+| **main's own executable**, the first three | **fails all three** (3,618, 3,562; 137, 153 — 1.009 against 0.634 — 28.41) | | | |
+
+"Neither" and "both" are msvc-debug at this leg's tree; the two middle columns are msvc-release at
+the fifth leg's tip, where the other fourteen are the fifth leg's cases. Main's figures for the
+first three from batch 67's stack on the same card (2026-11-17, msvc-debug): 0 pixels in all
+four; 0.559 against 0.632; 3.24 steps under.
+
+**The fifth leg's five, each by its cause.**
+1. *The grain's law.* Not a fault of the guide's. The fifth leg read one frame of each run (0.89
+   and 0.74 %) as four times the rays no longer halving the guided grain; one frame's figure
+   moves by a fifth of itself from run to run. Over five pictures a run, twenty frames apart, the
+   guided grain falls as the cosine rays' does: 1.03 to 0.66 % under the bounce and 3.08 to 1.85 %
+   under the sky alone for three times the samples (the stride is a whole number of pixels, so
+   "four times the rays" is 29,127 to 87,382 samples a frame), 0.64 and 0.60 where the law of a
+   mean says 0.58 and the cosine rays give 0.63 and 0.56. The guided wall's light is the cosine
+   rays' within 2.4 parts in ten thousand, and at equal samples its grain is 0.60 of theirs under
+   the bounce and 0.38 under the sky. The cosine rays' case still asks for them by name and tests
+   what it tested; its twin, `gi cache: the grain on a plain wall keeps the law of a mean with the
+   guide`, holds the three things for the mixture, by the same derivation (a guided sample's
+   expectation is the cosine ray's whatever the guide holds, and a frame's samples are
+   independent given the guide, which is folded between passes).
+2. *A scene moved by whole cells.* Not the guide's and not the memory's. It fails with neither on, and
+   it fails on **main's own renderer tests** — 0073605c's `domain/gfx` and `systems/renderer`
+   built in this worktree and run in the same lease as this tree's: 3,618 and 3,562 pixels apart
+   under the sky, 137 and 153 under the bounce, where batch 67's stack drew 0 in all four. Two
+   renders of one scene in one process differ, so something the cache's samples depend on is not
+   a function of the scene alone. With both features on the bounce's count is ten times the off
+   tree's (2,500 against 200): a longer memory and a learned guide carry any difference further,
+   which says nothing about whether they add one. The fifth leg's mend (a sample round the eye
+   adds only to a guide a fold has trained) is sound as read and **could not be shown**: the case
+   cannot pass for the guide until it passes without it.
+3. *A turn shows no fill.* Two things, as the fifth leg said, and a third. The case's run "with
+   the features off" left the guide on, so its bounds stood on a floor the guide had lowered
+   (0.475 where main's is 0.61): off now means both. With main's floor the furthest frame passes
+   with both on (1.18 against 1.22). And a guide is no longer drawn from after one frame's training
+   (`gi_guide_alpha`, above). The third: the first seven frames' change fails with *neither*
+   feature on, at the same figure. On main's executable it is 1.009 against 0.634, where the stack's
+   run had 0.559: the second case's fault or a neighbour of it, and not this row's.
+4. *A turn to a stand of solid crowns.* Explained as far as this: it is not the guide's, the
+   memory's or the hold's. The first frame stands 28.4 steps under with neither on — 28.41 on
+   main's executable, 28.42 on this tree's, the leaf cards 16.7 — where the stack's runs had 3.24
+   and 3.71. The figure is the same to a hundredth in seven runs of three executables, so it is
+   no race between threads: either something on main between the stack's run of 2026-11-17 06:49
+   and 0073605c darkened a crown's first frame after a turn (the foliage's two-sided light, its
+   traced hit's ambient and the streams' merge landed in that window), or this night's machine
+   does it every time (the session locked, some twenty agents building, the processors at 80 to
+   93 %). Which, cannot be told from here: main's executable was not run on a quiet machine.
+5. *The fifth leg's own check, printed as a message.* Removed, with the reason beside where it
+   stood: the guide under the memory against the memory alone is 0.1455 against 0.1443 % in one
+   run and 0.132 against 0.136 % in another, in a box where the memory alone already takes the
+   change to a quarter; neither order is a property the guide claims, and a line printing their
+   ratio read as a result. What the case holds is unchanged: the guide's runs draw from trained
+   guides, the level within 2 %, the guide alone under cosine rays (0.348 against 0.586 % a
+   frame), both under half of cosine rays and under seven tenths of the guide alone.
+
+**The guide's mean under the sky, found by the twin and not explained.** A guided sample counts
+for its lobe's density over the mixture's, so the guided cells' mean is the cosine rays' by
+construction, and the CPU's case holds the two within four deviations. On the GPU, on the grain
+case's wall under the sky alone, the wall's light with the guide is **0.59 % under** the cosine
+rays' in one run (0.002346 against 0.002360 over five pictures; 0.62 % under with three times
+the samples), **0.45 % under in the next and 0.26 % in a third**: always under, the guided
+figure the same to a part in a thousand each time (0.002346, 0.002347, 0.002345) and the cosine
+rays' moving by two (0.002360, 0.002357, 0.002351); under the bounce it is 0.08 and 0.05 % under. The twin holds the two within the 2 % the
+dark wall's case already asked of the same quantity and warns past 0.5 %, which the first run
+was and the second was not. Five parts in a thousand of a dark wall's indirect light
+is under anything a display shows, and it is still a term the arithmetic says is not there:
+weighed and not found were the draw against the density it is weighed by, the ratio's clamp
+(applied before the weight on both sides), the fixed point's rounding, and the mirror through
+the surface's plane. It is the second thing a leg that turns the guide on has to settle.
+
+**What turning either on takes.** The code is in place and the change is two defaults
+(`renderer.gi.guide`, `renderer.gi.memory` in `settings.cpp`) and the last run of `gi cache: a
+dark wall changes less…`, which then names no tunable. It takes, first, main's three cases
+passing again on main; then one run of every `gi cache:` case with both on on a quiet machine
+(with both on in msvc-debug this leg has fifteen of the nineteen and the twin's law passing, the
+four being main's three and the pre-roll's, below); for the memory, the pre-roll's case met in
+main's terms or the owner's word that today's history is the yardstick after a cut, and the
+rounded rock's margin; and the guide's half a percent
+under the sky.
+
+**The pre-roll's case is main's again** (the batch's review, finding A5). The fifth leg passed
+it with the memory on by holding the defaults' frames to the floor of the case's other run,
+forced to today's history ("The memory holds after a cold start", above): a bound that is looser
+exactly when the memory is on. Each run's bounds stand on that run's own floor again, as on
+main, and the two quantities are both written in the test: with the guide and the memory on, a
+cut's furthest frame is 0.472 of an 8-bit step, **0.93 floors of today's history and 2.65 of the
+run's own**; the load's frames from the twenty-fourth 0.585, against twice 0.447 and twice
+**0.211**. So the hold does what it was built to do — the frames after a cut stand inside
+today's history's noise — and the case still fails
+with the memory on, because the picture the memory settles to is quieter than any frame a second
+after a cut can be. Whether a person sees that (a wall a little grainier for a second and a half
+after a cut, settling) is a question for the screen and the owner, not for a bound moved to the
+other run. With both off the case's figures are 1.49 floors at the cut and 0.674 against 0.845.
+
+**A sixth, new: the rounded rock under the memory.** `blended < hard` compares two counts of
+steps between neighbouring pixels that differ by one to three percent of themselves (1,178 and
+1,191 on main), "as much as the cache's noise moves one", in the case's own words. With the
+memory on the blended count came out over the hard one in two release runs of three and under it
+in the debug run. The memory changes which noise a count of a few steps sees (its long mean is
+rounded by chance, a half-float's unit a frame); whether it lowers what the face blend buys or
+only moves a count that was never three deviations apart is **not decided here**, and it is the
+first thing a leg that turns the memory on has to settle.
+
+**A room whose light moves: not reproduced.** The forest's dark rooms change 5.9 % a frame at a
+brighter level than the engine's house, and the memory bought them a factor of 1.2; the fifth
+leg's reading was light that really moves, sun through swaying crowns outside the openings. A
+copy of the village with a wind the sky names (6 m/s) and a third scatter of birch and hazel
+close round house 0, flown held with the flora's motion on: sixty-eight trees stood round the
+house and **none before its door**, since the green there is the village's own shape and a
+scatter keeps off it, and the room's figures did not move — 1.37 % of light a frame with cosine
+rays (the plain village: 1.46), 0.36 % with the memory, 0.23 % with both; the cells that followed
+a coarser one's change were 411 a frame of 148,000 with the memory and 1,430 with both, under one
+in a hundred, and four let go. So the engine still has no room that does what the forest's do,
+and that scene was not kept: trees between a door and its sky need placing by hand, an instance
+each, which a scatter over a village cannot do. What the forest's rooms are made of is still
+unknown from here; one flight of theirs with `renderer.gi.log` on, reading `followed` and
+`let_go`, says whether their memory is engaged at all.
+
+**One number for the engine and the forest.** `engine-view --temporal` now reports the forest
+session's measure beside its own (above): in the house, frames 150 to 186, the share of pixels of
+which any channel moves a code is 27 % with cosine rays, 8.8 % with the memory and 5.8 % with
+both, and three codes or more 0.05 %, 0.003 % and 0.003 % — against the forest's rooms' 75 to 80 %
+and 11 %. A luma step of a whole code is the far rarer event (1.5 %, 0.08 %, 0.02 %), which is
+why the two sessions' figures never met.
 
 ## The sun's day
 

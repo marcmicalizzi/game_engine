@@ -47,6 +47,8 @@ TEST_CASE("temporal change: a held picture changes nothing, and one step is one 
   CHECK(s.pairs == 2u * w * h);
   CHECK(s.at_least_one == doctest::Approx(0.125));
   CHECK(s.at_least_two == 0.0);
+  CHECK(s.any_channel_one == doctest::Approx(0.125));
+  CHECK(s.any_channel_three == 0.0);
   CHECK(s.p95_codes == doctest::Approx(1.0));  // an eighth of the pairs moved a step
   CHECK(s.median_codes == 0.0);
   const f64 weber = 2.0 * (std::pow(101.0 / 255.0, 2.2) - std::pow(100.0 / 255.0, 2.2)) /
@@ -66,6 +68,18 @@ TEST_CASE("temporal change: a held picture changes nothing, and one step is one 
   CHECK(json.find("\"format\":\"engine.temporal-change.v1\"") != std::string::npos);
   CHECK(json.find("\"bands\":[") != std::string::npos);
   CHECK(json.find("\"mean_luma\":[100.00000,100.00000,100.25000]") != std::string::npos);
+  CHECK(json.find("\"channels\":{\"at_least_one\":0.125000,\"at_least_three\":0.000000}") !=
+        std::string::npos);
+  // The forest's measure counts a step of one channel that the luma's does not: the first pixel's
+  // blue alone three codes up moves its luma 0.22 of a code.
+  std::vector<u8> c = b;
+  c[2] = static_cast<u8>(c[2] + 3);
+  CHECK(t.add(c.data(), w, h));
+  s = t.stats(TemporalChange::k_bands);
+  const f64 pairs = 3.0 * w * h;
+  CHECK(s.any_channel_one == doctest::Approx((w * h / 4 + 1) / pairs));
+  CHECK(s.any_channel_three == doctest::Approx(1.0 / pairs));
+  CHECK(s.at_least_one == doctest::Approx((w * h / 4) / pairs));
 }
 
 TEST_CASE("temporal change: black stays out of the light's measure, and a new size starts again") {

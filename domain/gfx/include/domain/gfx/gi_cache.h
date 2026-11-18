@@ -918,7 +918,7 @@ constexpr u32 gi_shell_word(f32 reach_m, u32 refresh, bool first = true) noexcep
 //   [0] the key (0: empty)        [1] the last frame a sample reached it
 //   [2] this frame's samples      [3] the samples its shares average
 //   [4] the sum of the shares     [5] the largest share's value (a float: light a sample)
-//   [6..7] unused
+//   [6] the folds that brought it samples, up to `k_gi_guide_full_frames`   [7] unused
 //   then `k_gi_guide_bins` shares as u16 (65,535 is the largest), then as many u32 sums of this
 //   frame's contributions (luminance of the weighted ratio, `k_gi_fraction_bits` of fraction).
 // Bit 25 of `gi_shell_word` (`k_gi_guide`) turns it on; without it no sample reads or writes a
@@ -941,6 +941,28 @@ inline constexpr u32 k_gi_guide_trained = 256;
 inline constexpr f32 k_gi_guide_alpha = 0.5f;
 // Frames a guide nothing sampled is kept.
 inline constexpr u32 k_gi_guide_max_age = 64;
+// **A guide is not drawn from until it is trained, and then by degrees** (R171's sixth leg). The
+// fifth leg drew half of a frame's samples from any guide holding `k_gi_guide_trained` samples,
+// which a coarse cell at 3840x2160 takes in the one frame it is first seen: the next frame's
+// samples were steered by one frame's luck, and a view turned to showed it (`gi cache: a turn shows
+// no fill`: the first frame's change 1.01 of an 8-bit step where cosine rays' is 0.53). Mueller,
+// Gross and Novak (EGSR 2017, section 3 and "Exponential sample count", read from the authors'
+// text) learn the first distribution with BSDF sampling alone, never draw from the tree that is
+// being written, and give each distribution twice the samples of the one before, so that one "does
+// not become noisier than" the last. Here the frames are the iterations: a guide's first frame is
+// learned from cosine rays alone and drawn from by no one; from its second its share of the
+// mixture grows by a seventh of `k_gi_guide_alpha` a fold, and it is whole at
+// `k_gi_guide_full_frames`, half its history. A sample never weighs more than `1 / (1 - alpha)`
+// what it weighed alone, so a guide two frames old can cost a sample 8 % of weight, where one
+// frame old it could cost it twice. The pre-roll's steps are folds, so a cut's or a load's first
+// picture is drawn with whole guides.
+inline constexpr u32 k_gi_guide_full_frames = 8;
+constexpr f32 gi_guide_alpha(u32 trained, u32 frames) noexcept {
+  if (trained < k_gi_guide_trained || frames < 2) return 0.0f;
+  const u32 f = frames < k_gi_guide_full_frames ? frames : k_gi_guide_full_frames;
+  return k_gi_guide_alpha * static_cast<f32>(f - 1) /
+         static_cast<f32>(k_gi_guide_full_frames - 1);
+}
 
 // The guides a cache of `count` cells holds: one to 256 cells (a guide's cell is 64 own cells on a
 // flat wall, and only the view's pixels make one), a power of two.
@@ -1001,7 +1023,8 @@ struct GiGuide {
   u32 trained = 0;
   u32 sum = 0;
   f32 scale = 0.0f;
-  u32 unused[2] = {0, 0};
+  u32 frames = 0;
+  u32 unused = 0;
   u16 share[k_gi_guide_bins] = {};
   u32 frame_sum[k_gi_guide_bins] = {};
 };
@@ -1038,6 +1061,7 @@ inline void gi_guide_fold(GiGuide& g) noexcept {
   g.sum = sum;
   g.scale = largest;
   g.trained = total;
+  g.frames = g.frames < k_gi_guide_full_frames ? g.frames + 1 : g.frames;
   g.frame_count = 0;
 }
 
