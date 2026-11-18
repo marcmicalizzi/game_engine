@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "sweep-T2",
+  "reason": "renderer.md: T70's paragraph naming the frame record's resolve_stop and sun_ray_rule; apps.md: R124's deform_cache bucket replacing the paragraph that asked for it",
+  "date": "2026-11-17",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 550,
+    "page:docs/subsystems/apps.md": 315
+  }
+}

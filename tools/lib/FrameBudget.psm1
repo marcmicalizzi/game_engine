@@ -276,6 +276,10 @@ function Format-MachineState($summary) {
     if ($null -eq $s) { return '?' }
     $cpu = if ($null -ne $s.cpu_others_pct) { '{0:N1}% others' -f [double]$s.cpu_others_pct } else { 'cpu ?' }
     $gpu = if ($null -ne $s.gpu_util_pct) { 'GPU {0}%' -f $s.gpu_util_pct } else { 'GPU ?' }
+    # An end sample read again once nvidia-smi's period had passed: the first reading was the
+    # flight's own last frames, and saying so keeps the discount visible (bench.md, "The end
+    # sample is read after the run's own work").
+    if ($s.PSObject.Properties['gpu_own_tail_pct'] -and $null -ne $s.gpu_own_tail_pct) { $gpu += ' (own tail {0}%)' -f $s.gpu_own_tail_pct }
     "$cpu, $gpu"
   }
   $quiet = if ($summary.quiet) { 'quiet' } else { 'busy' }

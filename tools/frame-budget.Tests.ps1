@@ -119,6 +119,12 @@ $s.gpu_ms.PSObject.Properties.Remove('cull')
 $r = Test-FrameBudgetRun -Budget $b -Run $run -Summary $s
 Test-That 'a summary without a budgeted pass is malformed, and says which' { $r.Verdict -eq 'malformed' -and ($r.Missing -contains 'gpu_ms.cull.median') }
 Test-That 'the machine state is one line with the session and both ends' { (Format-MachineState (New-Summary)) -match '^quiet, session locked \(start 3\.0% others, GPU 2%; end 4\.0% others, GPU 5%\)$' }
+# The end sample engine-view reads again after nvidia-smi's period when its first reading was the
+# flight's own last frames (bench.md, "The end sample is read after the run's own work"): the
+# summary's `quiet` is engine-view's, and the line names the reading it set aside.
+$s = New-Summary
+$s.machine_state.end | Add-Member -NotePropertyName gpu_own_tail_pct -NotePropertyValue 97
+Test-That 'an end sample read past the flight''s own tail says what it set aside' { (Format-MachineState $s) -match '^quiet, session locked \(start 3\.0% others, GPU 2%; end 4\.0% others, GPU 5% \(own tail 97%\)\)$' }
 
 Write-Host 'the session state (T161): a locked card and an unlocked one are two cards'
 Test-That 'locked at both ends is locked' { (Get-SessionState -Summary (New-Summary -session 'locked')) -eq 'locked' }

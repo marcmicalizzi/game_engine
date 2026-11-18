@@ -1,0 +1,13 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T174",
+  "reason": "engine-view's device options in one helper with a test's profile (+3 lines net: the helper replaces three copies of four lines); apps.md: the new section Running as a weaker card",
+  "date": "2026-11-17",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "engine_view.main_cpp.lines": 3,
+    "engine_view.run_view.lines": -3,
+    "engine_view.run_offscreen.lines": -3,
+    "page:docs/subsystems/apps.md": 1374
+  }
+}

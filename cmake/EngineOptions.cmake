@@ -8,6 +8,7 @@ option(ENGINE_MINIMAL "Configure the minimal build: every optional capability OF
 option(ENGINE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 option(ENGINE_ASAN "Enable AddressSanitizer" OFF)
 option(ENGINE_UBSAN "Enable UndefinedBehaviorSanitizer (Clang/GCC only)" OFF)
+option(ENGINE_TSAN "Enable ThreadSanitizer (Clang/GCC only; not with ENGINE_ASAN)" OFF)
 
 # Per-tag memory attribution (pointer -> tag table). On for development configurations,
 # off for shipping builds where only totals are kept.
@@ -53,6 +54,21 @@ if(ENGINE_UBSAN AND NOT MSVC)
   # "Sanitizers"). Recovering would leave the report in a log nobody reads and the test green.
   add_compile_options(-fsanitize=undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
   add_link_options(-fsanitize=undefined -fno-sanitize-recover=all)
+endif()
+
+if(ENGINE_TSAN)
+  # ThreadSanitizer (linux-clang-tsan; docs/ci/what-to-run.md, "Sanitizers"): a data race between
+  # two threads, reported with both accesses, which no other build sees — batch 67's reentrant
+  # generator tiles could run no race check. It shadows memory as ASan does, so the two cannot
+  # share a build, and MSVC has none.
+  if(MSVC)
+    message(FATAL_ERROR "ENGINE_TSAN: MSVC has no ThreadSanitizer; use the linux-clang-tsan preset")
+  endif()
+  if(ENGINE_ASAN)
+    message(FATAL_ERROR "ENGINE_TSAN and ENGINE_ASAN cannot share a build")
+  endif()
+  add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=thread)
 endif()
 
 # Third-party files excused from one named check each, every entry with the reason it is the

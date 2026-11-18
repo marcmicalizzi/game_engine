@@ -116,12 +116,27 @@ struct DeviceReport {
   }
 };
 
+// The proof that a process runs under a test's main (roadmap T174; docs/subsystems/apps.md,
+// "Running as a weaker card"): `ENGINE_TEST_RUN` names a scratch directory this main made and
+// removes as it returns, so `engine-view` honours `ENGINE_GFX_TEST_DEVICE` only while the test that
+// started it is alive. Always this run's own, never inherited, as the variables above.
+struct TestRun {
+  std::optional<engine::test::TempDir> dir;
+
+  void begin() {
+    dir.emplace("run");
+    set_environment("ENGINE_TEST_RUN", dir->path());
+  }
+};
+
 }  // namespace
 
 int main(int argc, char** argv) {
   engine::platform::require_cpu_baseline();
   take_part_in_the_gpu_lock();
   read_no_default_materials();
+  TestRun run;
+  run.begin();
   DeviceReport devices;
   devices.begin();
   const int code = doctest::Context(argc, argv).run();

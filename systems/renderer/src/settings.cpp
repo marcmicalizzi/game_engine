@@ -750,7 +750,8 @@ ShadowRayRule shadow_ray_rule(u64 frame_index, f32 opaque_coverage) noexcept {
   rule.opaque = shadow_opaque_rays.get();
   rule.opaque_coverage = opaque_coverage;
   if (!shadow_sweep.get()) return rule;
-  switch ((frame_index / gfx::k_resolve_stops) % k_shadow_sweeps) {
+  const u32 index = static_cast<u32>((frame_index / gfx::k_resolve_stops) % k_shadow_sweeps);
+  switch (index) {
     case 1:
       rule = ShadowRayRule{};
       rule.opaque = true;
@@ -770,6 +771,7 @@ ShadowRayRule shadow_ray_rule(u64 frame_index, f32 opaque_coverage) noexcept {
     case 5: rule.count = true; break;
     default: break;  // the frame as set
   }
+  rule.index = index;
   return rule;
 }
 bool normal_filter_tunable() noexcept { return material_normal_filter.get(); }

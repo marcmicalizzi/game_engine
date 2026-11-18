@@ -265,6 +265,28 @@ MachineSampler& system_sampler() {
 
 MachineState sample_machine_state(i64 window_ms) { return system_sampler().sample(window_ms); }
 
+MachineState sample_after_own_gpu_work(MachineSampler& sampler, i64 window_ms, i64 settle_ms,
+                                       const QuietThresholds& thresholds) {
+  MachineState state = sampler.sample(window_ms);
+  if (!state.gpu_valid || state.gpu_util_pct <= thresholds.gpu_util_pct) return state;
+  if (settle_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(settle_ms));
+  const MachineState again = sampler.sample(0);
+  // A second reading that failed says nothing about who was using the card: keep the first,
+  // which can only make the run look busier than it was, never quieter.
+  if (!again.gpu_valid) return state;
+  state.gpu_settled = true;
+  state.gpu_own_tail_pct = state.gpu_util_pct;
+  state.gpu_util_pct = again.gpu_util_pct;
+  state.gpu_memory_used_mib = again.gpu_memory_used_mib;
+  state.gpu_memory_total_mib = again.gpu_memory_total_mib;
+  return state;
+}
+
+MachineState sample_machine_state_after_own_gpu_work(i64 window_ms) {
+  return sample_after_own_gpu_work(system_sampler(), window_ms, k_gpu_utilization_period_ms,
+                                   QuietThresholds{});
+}
+
 bool is_quiet(const MachineState& state, const QuietThresholds& thresholds) noexcept {
   if (state.cpu_valid && state.cpu_others_pct > thresholds.others_cpu_pct) return false;
   if (state.gpu_valid && state.gpu_util_pct > thresholds.gpu_util_pct) return false;
@@ -289,6 +311,8 @@ MachineState worst_of(const MachineState& a, const MachineState& b) noexcept {
     w.gpu_util_pct = std::max(x.gpu_util_pct, y.gpu_util_pct);
     w.gpu_memory_used_mib = std::max(x.gpu_memory_used_mib, y.gpu_memory_used_mib);
     w.gpu_memory_total_mib = std::max(x.gpu_memory_total_mib, y.gpu_memory_total_mib);
+    w.gpu_settled = x.gpu_settled || y.gpu_settled;
+    w.gpu_own_tail_pct = std::max(x.gpu_own_tail_pct, y.gpu_own_tail_pct);
   }
   w.session_locked =
       a.session_locked == Tristate::Yes || b.session_locked == Tristate::Yes
@@ -368,6 +392,9 @@ JsonValue machine_state_json(const MachineState& state) {
     o.set("gpu_util_pct", state.gpu_util_pct);
     o.set("gpu_memory_used_mib", state.gpu_memory_used_mib);
     o.set("gpu_memory_total_mib", state.gpu_memory_total_mib);
+    // Only on an end sample whose first reading was the run's own work ending: the reading the
+    // state set aside, so a reader can see what was discounted and why.
+    if (state.gpu_settled) o.set("gpu_own_tail_pct", state.gpu_own_tail_pct);
   } else {
     o.set("gpu_util_pct", JsonValue::null());
     o.set("gpu_memory_used_mib", JsonValue::null());

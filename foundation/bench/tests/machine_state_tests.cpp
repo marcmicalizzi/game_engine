@@ -171,6 +171,64 @@ TEST_CASE("machine state: describe names an unknown field rather than leaving it
   CHECK(known.find("session unlocked") != std::string::npos);
 }
 
+namespace {
+
+bench::MachineState gpu_at(f64 util_pct) {
+  bench::MachineState s = quiet_state();
+  s.gpu_util_pct = util_pct;
+  return s;
+}
+
+}  // namespace
+
+TEST_CASE("machine state: a run's end sample discounts its own GPU tail") {
+  // The frame budgets' erg walk at every gate of batches 66 and 67: other processes at 1% of the
+  // CPU, the card at 97% as the flight ended, idle once nvidia-smi's period had passed.
+  FakeSampler own_tail({gpu_at(97.0), gpu_at(2.0)});
+  const bench::MachineState s =
+      bench::sample_after_own_gpu_work(own_tail, bench::k_sample_window_ms, 0, {});
+  CHECK(own_tail.calls == 2);
+  CHECK(own_tail.last_window_ms == 0);  // the second look reads the GPU and samples no CPU
+  CHECK(s.gpu_settled);
+  CHECK(s.gpu_util_pct == doctest::Approx(2.0));
+  CHECK(s.gpu_own_tail_pct == doctest::Approx(97.0));
+  CHECK(s.cpu_others_pct == doctest::Approx(1.5));  // the CPU is the first sample's
+  CHECK(bench::is_quiet(s, bench::QuietThresholds{}));
+  CHECK(bench::machine_state_json(s)["gpu_own_tail_pct"] == JsonValue(97.0));
+
+  // Somebody else on the card: still busy after the period, so the run stays an upper bound.
+  FakeSampler other({gpu_at(97.0), gpu_at(95.0)});
+  const bench::MachineState busy =
+      bench::sample_after_own_gpu_work(other, bench::k_sample_window_ms, 0, {});
+  CHECK(busy.gpu_settled);
+  CHECK_FALSE(bench::is_quiet(busy, bench::QuietThresholds{}));
+
+  // A quiet first reading is the answer: no second look, nothing set aside.
+  FakeSampler calm({gpu_at(3.0), gpu_at(90.0)});
+  const bench::MachineState quiet =
+      bench::sample_after_own_gpu_work(calm, bench::k_sample_window_ms, 0, {});
+  CHECK(calm.calls == 1);
+  CHECK_FALSE(quiet.gpu_settled);
+  CHECK_FALSE(bench::machine_state_json(quiet).contains("gpu_own_tail_pct"));
+
+  // A second reading that failed keeps the first: never quieter on missing information.
+  bench::MachineState no_gpu = quiet_state();
+  no_gpu.gpu_valid = false;
+  FakeSampler lost({gpu_at(97.0), no_gpu});
+  const bench::MachineState kept =
+      bench::sample_after_own_gpu_work(lost, bench::k_sample_window_ms, 0, {});
+  CHECK_FALSE(kept.gpu_settled);
+  CHECK(kept.gpu_util_pct == doctest::Approx(97.0));
+
+  // The CPU and the lock are never discounted: only the card's own tail is the run's.
+  bench::MachineState loaded = gpu_at(97.0);
+  loaded.cpu_others_pct = 60.0;
+  FakeSampler cpu({loaded, gpu_at(2.0)});
+  CHECK_FALSE(
+      bench::is_quiet(bench::sample_after_own_gpu_work(cpu, bench::k_sample_window_ms, 0, {}),
+                      bench::QuietThresholds{}));
+}
+
 TEST_CASE("bench: --require-quiet refuses a busy machine and measures a quiet one") {
   FakeSampler busy({busy_cpu(55.0)});
   bench::Options o = quick("test.bench.noop", &busy);

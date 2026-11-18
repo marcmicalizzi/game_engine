@@ -2251,6 +2251,10 @@ void SceneRenderer::collect_slot(u32 slot) {
     last.water_refract_views = water.refract_views;
     last.water_refract_floor_m = water.refract_floor_m;
   }
+  // The words the frame's resolve drew under (T70), from its own index as `record_frame` took
+  // them: the tunables are measurement switches set before a run, never moved inside one.
+  last.resolve_stop = resolve_stop_tunable(last.frame);
+  last.sun_ray_rule = shadow_ray_rule(last.frame, resolved_.shadow_opaque_coverage).index;
   last.rt_cache_evicted = static_cast<u32>(stats_.rt.cache_evictions - rt_evictions_folded_);
   rt_evictions_folded_ = stats_.rt.cache_evictions;
   ++stats_.folded;
@@ -2266,6 +2270,9 @@ void SceneRenderer::collect_slot(u32 slot) {
       last.gpu_trace += timer_.ms(k_zone_names[k_zone_trace][v]);
     }
     last.gpu_deform_alloc = timer_.ms("deform alloc");
+    // The static shape caches' rebuilds (R124): one dispatch per cached instance on a frame whose
+    // morph weights changed, zero on every other.
+    last.gpu_deform_cache = timer_.ms("deform cache");
     last.gpu_rt_records = timer_.ms("records");
     last.gpu_rt_ranges = timer_.ms("ranges");
     last.gpu_rt_drop = timer_.ms("ranges drop");

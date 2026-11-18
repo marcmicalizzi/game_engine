@@ -54,6 +54,20 @@
   names, or with -BuildDir every test that build labels `gpu` and that is not a part (a part is
   costed by its files). Those tests' `*` rows are replaced and every other row kept.
 
+  tools/test-costs.ps1 -NoDevice -Log <LastTest.log>[,...] [-Tests <name>,...] [-Label <name>,...]
+
+  -NoDevice collects the line the test main prints when a test labelled `gpu` passed and nothing in
+  its tree called gfx::Device::create (`engine-test: labelled gpu and opened no device`, roadmap
+  T170; docs/ci/what-to-run.md, "Tests that open no device") from a gate's logs, so a label that is
+  no longer needed shows up without anyone reading them. It writes nothing; it prints one row a
+  test (a part's runs counted under its test, `renderer.1` to `renderer.4` under `renderer`) that
+  reported it at least once, with how many of its passing runs did, in which logs, and a verdict:
+  `label can come off` when every passing run of every part in every log reported it, `mixed` when
+  some did (a part that holds only CPU cases, or a weaker machine whose skips end a case before it
+  asks, reports where the test as a whole still opens a device). Only the logs' word is read: a
+  test the logs never ran is not in the answer, and a run that failed says nothing. -Tests limits
+  it to those tests. Exit 0 whatever it found, 1 a log missing, 2 usage.
+
   Exit 0 written or predicted, 1 refused, 2 usage.
 #>
 [CmdletBinding()]
@@ -66,6 +80,7 @@ param(
   [string]$Out,
   [switch]$Predict,
   [switch]$Whole,
+  [switch]$NoDevice,
   [string]$Table,
   [string]$Cmake
 )
@@ -236,6 +251,53 @@ if ($Whole) {
   [IO.File]::WriteAllText($Out, (((@($header) + @($keep) + $rows) -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding $false))
   $missing = @($names | Where-Object { -not $best.ContainsKey($_) })
   Write-Host ("test-costs: {0} whole test(s) from {1}; {2} not in any log{3}; wrote {4}" -f $rows.Count, (($Log | ForEach-Object { Split-Path -Leaf $_ }) -join ', '), $missing.Count, $(if ($missing.Count) { " ($($missing -join ', '))" } else { '' }), $Out)
+  exit 0
+}
+
+# ---- -NoDevice: the gpu labels a gate's logs say are no longer needed ------------------------------
+
+if ($NoDevice) {
+  if ($Log.Count -eq 0) {
+    Write-Host 'usage: tools/test-costs.ps1 -NoDevice -Log <LastTest.log>[,...] [-Tests <name>,...] [-Label <name>,...]'
+    exit 2
+  }
+  if ($Label.Count -gt 0 -and $Label.Count -ne $Log.Count) { Write-Host "test-costs: $($Label.Count) label(s) for $($Log.Count) log(s)"; exit 2 }
+  foreach ($l in $Log) { if (-not (Test-Path -LiteralPath $l)) { Write-Host "test-costs: no log at $l"; exit 1 } }
+  # Per test (its parts folded in): the passing runs, those that reported no device, and the logs.
+  $seen = @{}
+  for ($i = 0; $i -lt $Log.Count; $i++) {
+    $lbl = if ($Label.Count) { $Label[$i] } else { Get-LogLabel $Log[$i] }
+    $cur = $null
+    $flush = {
+      if ($null -eq $cur -or -not $cur.Passed) { return }
+      if (-not $seen.ContainsKey($cur.Test)) { $seen[$cur.Test] = [pscustomobject]@{ Passed = 0; Reported = 0; Logs = (New-Object System.Collections.Generic.List[string]) } }
+      $t = $seen[$cur.Test]
+      $t.Passed++
+      if ($cur.Reported) { $t.Reported++; if (-not $t.Logs.Contains($lbl)) { $t.Logs.Add($lbl) } }
+    }
+    foreach ($line in [IO.File]::ReadLines($Log[$i])) {
+      if ($line -match '^\d+/\d+ Test: (\S+)$') {
+        . $flush
+        $base = $Matches[1] -replace '\.\d+$', ''
+        $cur = if ($Tests.Count -eq 0 -or $base -in $Tests) { [pscustomobject]@{ Test = $base; Reported = $false; Passed = $false } } else { $null }
+        continue
+      }
+      if ($null -eq $cur) { continue }
+      if ($line.Contains('engine-test: labelled gpu and opened no device')) { $cur.Reported = $true; continue }
+      if ($line -match '^Test Passed\.?\s*$') { $cur.Passed = $true; continue }
+    }
+    . $flush
+  }
+  $rows = @((Sort-Ordinal @($seen.Keys)) | Where-Object { $seen[$_].Reported -gt 0 })
+  if ($rows.Count -eq 0) {
+    Write-Host ("test-costs: no test in {0} reported opening no device" -f (($Log | ForEach-Object { Split-Path -Leaf $_ }) -join ', '))
+    exit 0
+  }
+  foreach ($name in $rows) {
+    $t = $seen[$name]
+    $verdict = if ($t.Reported -eq $t.Passed) { 'label can come off' } else { 'mixed' }
+    Write-Host ("{0}  opened no device in {1} of {2} passing run(s)  [{3}]  {4}" -f $name, $t.Reported, $t.Passed, ((Sort-Ordinal @($t.Logs)) -join ', '), $verdict)
+  }
   exit 0
 }
 

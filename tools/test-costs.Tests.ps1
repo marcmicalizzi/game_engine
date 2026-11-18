@@ -351,6 +351,38 @@ try {
   Test-That "-Whole with -BuildDir: every test labelled gpu that is not a part, and nothing else" { $r.Code -eq 0 -and ($rows -join '|') -eq 'flora * 99  # linux-server' }
   $r = Invoke-Tool @('-Whole', '-Log', $serverLog, '-Out', $table)
   Test-That '-Whole with neither -Tests nor -BuildDir is usage, 2' { $r.Code -eq 2 }
+
+  # ---- -NoDevice: the labels a gate's logs say are no longer needed (T170's report)
+  $report = 'engine-test: labelled gpu and opened no device: nothing in this test''s tree called gfx::Device::create (docs/ci/what-to-run.md, "Tests that open no device")'
+  function New-RunText([string]$name, [bool]$reported, [string]$verdict = 'Passed') {
+    $out = if ($reported) { $report } else { '0.100000 s: a case' }
+    return "1/9 Testing: $name`n1/9 Test: $name`nCommand: `"x.exe`"`nOutput:`n----------------------------------------------------------`n$out`n<end of output>`nTest time =   1.00 sec`n----------------------------------------------------------`nTest $verdict.`n`"$name`" end time: Nov 17 01:00`n"
+  }
+  $gateA = Join-Path $scratch 'LastTest-gate-a.log'
+  $gateB = Join-Path $scratch 'LastTest-gate-b.log'
+  Write-Text $gateA ((New-RunText 'rocks' $true) + (New-RunText 'parted.1' $true) + (New-RunText 'parted.2' $true) +
+                     (New-RunText 'mixed' $true) + (New-RunText 'quiet' $false) + (New-RunText 'failed' $false 'Failed'))
+  Write-Text $gateB ((New-RunText 'rocks' $true) + (New-RunText 'parted.1' $true) + (New-RunText 'mixed' $false))
+  $r = Invoke-Tool @('-NoDevice', '-Log', "$gateA,$gateB")
+  $lines = @($r.Out -split "`r?`n" | Where-Object { $_ -match '\S' })
+  Test-That '-NoDevice: a test every passing run of which reported is a label that can come off, in both logs' {
+    $r.Code -eq 0 -and ($lines -contains 'rocks  opened no device in 2 of 2 passing run(s)  [gate-a, gate-b]  label can come off')
+  }
+  Test-That '-NoDevice: a parted test counts its parts as one test' {
+    $lines -contains 'parted  opened no device in 3 of 3 passing run(s)  [gate-a, gate-b]  label can come off'
+  }
+  Test-That '-NoDevice: a test that reported in one run and opened a device in another is mixed' {
+    $lines -contains 'mixed  opened no device in 1 of 2 passing run(s)  [gate-a]  mixed'
+  }
+  Test-That '-NoDevice: a test that never reported, and a failed run, are not in the answer' {
+    -not ($r.Out -match '(?m)^(quiet|failed) ') -and $lines.Count -eq 3
+  }
+  $r = Invoke-Tool @('-NoDevice', '-Log', $gateA, '-Tests', 'quiet')
+  Test-That '-NoDevice: -Tests limits it, and nothing to report says so with exit 0' { $r.Code -eq 0 -and $r.Out.Contains('no test in LastTest-gate-a.log reported opening no device') }
+  $r = Invoke-Tool @('-NoDevice')
+  Test-That '-NoDevice with no log is usage, 2' { $r.Code -eq 2 }
+  $r = Invoke-Tool @('-NoDevice', '-Log', (Join-Path $scratch 'missing.log'))
+  Test-That '-NoDevice with a missing log is refused, 1' { $r.Code -eq 1 }
 } finally {
   if ($KeepTemp) { Write-Host "kept $scratch" } else { Remove-Item -Recurse -Force -LiteralPath $scratch -ErrorAction SilentlyContinue }
 }

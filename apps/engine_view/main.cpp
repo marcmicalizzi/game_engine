@@ -28,6 +28,7 @@
 #include "pacing.h"
 #include "report.h"
 #include "startup.h"
+#include "test_device.h"
 #if ENGINE_VIEW_GAME
 #include "game_hud.h"
 #include "game_runner.h"
@@ -2652,6 +2653,17 @@ std::string pipeline_cache_dir(const Options& options) {
   return ddc.empty() ? std::string() : io::join_path(ddc, "pipeline-cache");
 }
 
+// Every path's device: the adapter, validation, the pipeline cache, and a test's device profile,
+// which only a test's main can give (test_device.h; apps.md, "Running as a weaker card").
+gfx::DeviceOptions device_options_of(const Options& options) {
+  gfx::DeviceOptions device_options;
+  device_options.adapter_index = options.adapter;
+  device_options.validation = options.validation;
+  device_options.pipeline_cache_dir = pipeline_cache_dir(options);
+  device_options.overrides = view::test_device_overrides();
+  return device_options;
+}
+
 // `--reference <spp>`: the whole run offscreen, with no window, no surface and no swapchain
 // (docs/plan/04-renderer.md §4.8, docs/subsystems/renderer.md "Reference renderer"). A converged
 // picture is minutes of compute showing nothing until it is done, the machines that run the
@@ -2661,10 +2673,7 @@ std::string pipeline_cache_dir(const Options& options) {
 // share is the frame loop, because there is one frame.
 int run_reference(Options& options) {
   std::string error;
-  gfx::DeviceOptions device_options;
-  device_options.adapter_index = options.adapter;
-  device_options.validation = options.validation;
-  device_options.pipeline_cache_dir = pipeline_cache_dir(options);
+  const gfx::DeviceOptions device_options = device_options_of(options);
   gfx::Device device;
   if (!device.create(device_options, &error)) return unavailable("no Vulkan device", error);
 
@@ -2797,7 +2806,7 @@ int run_reference(Options& options) {
       exit_code = fail("reference", error);
       break;
     }
-    machine_end = bench::sample_machine_state(bench::k_sample_window_ms);
+    machine_end = bench::sample_machine_state_after_own_gpu_work(bench::k_sample_window_ms);
     if (!options.capture.empty()) {
       const io::Status status =
           image::write_png(options.capture, frame.width, frame.height, 4,
@@ -2983,10 +2992,7 @@ bench::MachineState wait_for_quiet(u32 seconds) {
 // cameras, so no frame grouping can move them.
 int run_offscreen(Options& options, Interactive& interactive) {
   std::string error;
-  gfx::DeviceOptions device_options;
-  device_options.adapter_index = options.adapter;
-  device_options.validation = options.validation;
-  device_options.pipeline_cache_dir = pipeline_cache_dir(options);
+  const gfx::DeviceOptions device_options = device_options_of(options);
   gfx::Device device;
   view::StartupTrace& startup = view::startup_trace();  // `--startup-trace` (startup.h)
   {
@@ -3614,7 +3620,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       timed_seconds = static_cast<f64>(time::monotonic_ns() - started) / 1.0e9;
       if (!options.benchmark.empty()) {
         view_renderer.sample_gpu_memory();
-        machine_end = bench::sample_machine_state(bench::k_sample_window_ms);
+        machine_end = bench::sample_machine_state_after_own_gpu_work(bench::k_sample_window_ms);
         measured = true;
       }
     } else if (!options.benchmark.empty()) {
@@ -3679,7 +3685,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       }
       timed_seconds = flight.seconds;
       view_renderer.sample_gpu_memory();
-      machine_end = bench::sample_machine_state(bench::k_sample_window_ms);
+      machine_end = bench::sample_machine_state_after_own_gpu_work(bench::k_sample_window_ms);
       rendered = flight.submitted;
       measured = true;
 
@@ -5740,10 +5746,7 @@ int run_view(int argc, char** argv) {
     ENGINE_LOG_WARN(log_view, "the window could not go fullscreen; it stays windowed");
   }
 
-  gfx::DeviceOptions device_options;
-  device_options.adapter_index = options.adapter;
-  device_options.validation = options.validation;
-  device_options.pipeline_cache_dir = pipeline_cache_dir(options);
+  gfx::DeviceOptions device_options = device_options_of(options);
   device_options.instance_extensions = extensions.data();
   device_options.instance_extension_count = static_cast<u32>(extensions.size());
   gfx::Device device;

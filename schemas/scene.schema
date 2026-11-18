@@ -1966,7 +1966,7 @@ struct CameraPath @version(1) {
 
 /// GPU milliseconds of one frame, pass by pass, from `gfx::GpuTimer` (`renderer::Stats` names).
 /// Version 5 added `sky`. Version 6 added `frame_passes`. Version 7 added `half_sun`.
-struct PassMs @version(11) {
+struct PassMs @version(12) {
   cull: f64 = 0
   hw: f64 = 0
   sw: f64 = 0
@@ -2034,6 +2034,10 @@ struct PassMs @version(11) {
   /// pass over the visibility buffer and the pool pass's second write of every deformed vertex from
   /// last frame's inputs, every view's. Zero unless `renderer.reconstruction.inputs` is on.
   motion: f64 = 0 @since(11)
+  /// Version 12 (R124; docs/subsystems/apps.md, "Actors: the characters a game moves"): the static
+  /// shape caches' rebuild, one `deform_cache_main` dispatch per cached instance whose morph
+  /// weights changed. Zero on a frame that changed none; until version 12 it was in `unbucketed`.
+  deform_cache: f64 = 0 @since(12)
 }
 
 /// **What sampled the frame over time** (ADR-0064; docs/subsystems/renderer.md, "Sampling over
@@ -2322,7 +2326,12 @@ struct FrameWorld @version(1) {
 /// Version 20 (ADR-0064): `reconstruction`, what sampled the frame over time; `gpu_ms` is null and
 /// the times are under `reconstructed` when it was not a native measurement (see `Reconstruction`);
 /// `gpu_ms` carries the motion pass, `motion` (R154).
-struct FrameRecord @version(20) {
+///
+/// Version 21 (T70): `resolve_stop` and `sun_ray_rule`, the measurement switches' words the frame
+/// drew under.
+///
+/// Version 22 (R124): `gpu_ms` carries the static shape caches' rebuild, `deform_cache`.
+struct FrameRecord @version(22) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0; an interactive session's frame, from 0.
@@ -2484,6 +2493,14 @@ struct FrameRecord @version(20) {
   /// but a native frame with no provider (`gpu_ms` is then null).
   reconstruction: Reconstruction @since(20)
   reconstructed: ReconstructedMs? = null @since(20)
+  /// Version 21 (T70; docs/subsystems/renderer.md, "Where the resolve's time goes"): the stage the
+  /// frame's resolve stopped after (`renderer.resolve.stop_after`: 0 the picture, under `cycle` the
+  /// frame's index modulo 8) and the sun ray's rule (`renderer.shadow.sweep`: 0 the frame as set,
+  /// 1 every caster solid, 2 to 4 the proxy at 0.5, 0.3 and 0.2, 5 as set with the counting bit),
+  /// so an analysis of a flight under the sweep reads both rather than deriving them from a frame
+  /// number — which a live session's record does not share with the renderer's frame index.
+  resolve_stop: u32 = 0 @since(21)
+  sun_ray_rule: u32 = 0 @since(21)
 }
 
 /// What a flight's frame loop allocated on the frame's thread, over its recorded frames (every
@@ -2513,8 +2530,8 @@ struct Percentiles @version(1) {
 /// `PassMs`'s descriptor, so a bucket added there and not here fails the flythrough test that walks
 /// it ("the summary carries a median, p95 and p99 for every pass bucket"). Version 6 (T78) added
 /// the fifteen the hand-written list had missed since `PassMs` versions 3 to 9. Version 7 (R151):
-/// `resolve_classify`. Version 8 (R154): `motion`.
-struct PassPercentiles @version(8) {
+/// `resolve_classify`. Version 8 (R154): `motion`. Version 9 (R124): `deform_cache`.
+struct PassPercentiles @version(9) {
   cull: Percentiles
   hw: Percentiles
   sw: Percentiles
@@ -2553,6 +2570,7 @@ struct PassPercentiles @version(8) {
   gi_fold: Percentiles @since(6)
   resolve_classify: Percentiles @since(7)
   motion: Percentiles @since(8)
+  deform_cache: Percentiles @since(9)
 }
 
 /// A path's times with reconstruction on (see `Reconstruction`): never a cost.

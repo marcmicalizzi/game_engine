@@ -254,6 +254,15 @@ state), which writes that state's set and leaves the other alone.
 
 **`msvc-asan`, first built and run** (2026-10-09, this desktop, `tools/dev.ps1 configure`, `build` and `test -Preset msvc-asan`, with the RTX 5090, so the GPU tests ran too, which on the hosted runner they skip). It had never been built. The build's first link of `engine_ruins_tests` died with 0xC000009A, insufficient resources, beside other agents' builds with 15 GB of commit free; repeated once with 20 GB free, it built clean. MSVC 14.51 compiled the C dependencies (SQLite, miniaudio, SDL, flecs, volk) with `/RTC1` and `/fsanitize=address` together without a word, though its documentation calls the two incompatible, so `cmake/EngineOptions.cmake` now strips `/RTC1` from the C flags as it did from the C++ ones. The suite ran **95 of 96**, and the one was a finding: `systems/renderer/tests/vertex_id_tests.cpp` looped over `Quads{}.ids`, the member of a temporary, which standard C++ keeps alive for the loop and MSVC's code did not — ASan reported a stack use after scope of the compiler's temporary. GPU-only, so no Linux job could have seen it; the test names the object now, and the renderer's tests then passed under `msvc-asan` (1,021 s): **96 of 96**. The whole suite took 115 minutes beside a concurrent `msvc-debug -Affected` run and other agents' work, so read it as an upper bound: `engine_cli` 1,895 s and `renderer` 1,022 s, against 356 s and 355 s for the same tests in `msvc-debug` in the run beside it. It is in ci.yml's Windows matrix, blocking, since that run (T66, done); without a GPU there the renderer's cases skip, and `engine_cli` and the build are most of the job.
 
+**`linux-clang-tsan`, races** (2026-11-17, batch 68). `linux-clang-debug` with ThreadSanitizer (`ENGINE_TSAN`, `cmake/EngineOptions.cmake`; refused with `ENGINE_ASAN`, whose shadow memory it would share, and on MSVC, which has none): a data race between two threads, reported with both accesses and both stacks, which no other build here sees. It exists because batch 67's row that made the scene generators' `tile` reentrant (a generator declaring `tile_reentrant`, built on workers ahead of the walker's ring) could run no race check. It is not in ci.yml or in `tools/linux-build.ps1 -Preset all`: TSan costs a test five to fifteen times its time and the modules worth it are few, so it is run by hand with a filter, `tools/linux-build.ps1 -Preset linux-clang-tsan -Test -Filter '^(jobs|scene_gen|scene_collision|store)(\.|$)'` — the job system (`core/jobs`, its pools and their queues), the generators' tiles (`scene_gen`), the walker's collision built ahead on workers (`scene_collision`), and the persistent store (`foundation/store`, whose writer and readers are on different threads) — after a change to any of them. Its test preset's `TSAN_OPTIONS` keep TSan's defaults otherwise: every report printed, and the process's exit 66 when there was any, so a test with a race fails. The container needs nothing the ASan preset did not: the sanitizer runtime is `libclang-rt-18-dev`, already in the image. The platform module's fault probe already treats a TSan build as it does an ASan one (`ENGINE_FAULT_UNDER_SANITIZER` names `__SANITIZE_THREAD__`), so a whole-suite run would not stop there.
+
+**What its first run found** (2026-11-17, the local container, `-Filter '^(jobs|scene_gen|scene_collision|store|audio)(\.|$)'`; the build 28 minutes cold, every object compiled anew since TSan's flags share nothing with the cache, which stood at its 30 GB limit). The first build stopped at one link: `domain/audio`'s `realtime_tests.cpp` replaces the global allocation functions to count the audio thread's, and TSan's runtime links its own whole, so the two collide; replacing the rest of the set does not help. Under TSan the test now leaves them alone, says it cannot count `operator new`, and counts the engine's allocations and the log's records as before. Then **`store` and `scene_gen` passed clean** — the generators' reentrant tiles reported nothing — and `jobs`, `audio` and `scene_collision` failed on reports alone (every doctest case passed: `scene_collision` 47 of 47, in 739 s under TSan), 138 of them in `jobs`, all in the job system:
+
+- **`WorkDeque` publishes a pushed job by a release fence and a relaxed store** (`work_deque.h`, `push`: `atomic_thread_fence(release)` then `bottom_.store(relaxed)`), which C++ orders but TSan does not model, and `steal` copies the slot before its CAS decides whether it may — Chase–Lev's speculative read, a data race in the language's terms when the CAS loses. TSan therefore sees no order between a job's push and the thief that runs it, and every read of the job's data downstream is reported with it (`parallel_for`'s chunks at `job_system.h:171`, `run_job`'s counter at `job_system.cpp:272`, `Counter::signal`). `scene_collision`'s five reports and `audio`'s are this one. The mend is the deque's: a release store of `bottom_` (the same instruction on x86) and the slot read as atomic words, or the fence spelled where TSan sees it; not made here, since it is the job system's hot path and wants its own measurement.
+- **`JobSystem::stats()` reads each worker's counters while the worker writes them** (`jobs_executed`, `steals_*`, `inbox_pops`, `sleeps`: plain integers, `job_system.cpp:595` against `worker_main`), a real race on numbers that are only reported; relaxed atomics would close it.
+
+Until the first is mended a TSan run of anything that schedules jobs fails on it, so a run that asks about another module reads past those two signatures to whatever else is reported.
+
 ### Licences
 
 `tools/license-check.ps1` holds `third_party/LICENSES.md` to ADR-0014's list, to every
@@ -858,6 +867,11 @@ pwsh -NoProfile -File tools/dev.ps1 test -Preset msvc-debug -Filter '^renderer\.
 Remove-Item Env:ENGINE_GFX_TEST_DEVICE
 ```
 
+Since T174 (2026-11-17) `engine-view` takes the same profile under a test's main
+([apps](../subsystems/apps.md#running-as-a-weaker-card)), so the leg can reach the app's end-to-end
+tests too, `-Filter '^(renderer|engine_view)\.'`; whether the gate widens its filter is the
+coordinator's to decide, and no gate has run it yet.
+
 `titanxp` rather than `baseline`: it removes everything `baseline` removes (mesh shaders) and the
 ray-tracing rows besides, so it covers both of the faults the server leg found. A fault this leg
 reports is a test's, not the card's: the case skips before it builds what the device lacks
@@ -1050,7 +1064,12 @@ tree and only the run sees the tree. The finalize (`cmake/EngineTesting.cmake`) 
   no file prints `engine-test: labelled gpu and opened no device`. A report and not a failure: a
   part may hold only CPU cases, a script test (`tools.game_sdk`, the MCP checks) has no test main
   to make the file, and a case may skip on a weaker card before it asks. The line is in the CTest
-  log, where `Select-String 'opened no device'` finds the next candidate.
+  log, and **`tools/test-costs.ps1 -NoDevice -Log <a gate's LastTest logs>`** collects it (batch
+  68): one row a test that reported at least once, its parts folded in, with how many of its
+  passing runs reported and in which logs, and `label can come off` when every one did or `mixed`
+  when some did — so a label no longer needed shows up without anyone reading the logs. It reads
+  only what the logs say: a failed run and a test the logs never ran say nothing. Gate b67's
+  whole-suite `msvc-debug` log (2026-11-17, 166 passing tests) holds no such line.
 
 **What it gives back, replayed** (`replay.py` in T170's scratch: T89's model unchanged over gate
 b66's seconds — each test's holds with its CPU work between them, CTest's scheduler, one card
