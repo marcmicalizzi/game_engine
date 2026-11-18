@@ -3597,26 +3597,20 @@ void update_scene_bounds(SceneData& out) {
     out.center = WorldPos{};
     out.radius = 10.0f;
   } else {
-    // **In a local frame, then placed in f64** (ADR-0053): the instances' centres measured from
-    // the corner of the first instance's cell, so the box and the sphere are float32 numbers the
-    // size of the scene wherever in the world it is, and a scene moved by whole cells gets the
-    // same radius and a centre moved by exactly as much. **The cell is the lowest the instances
-    // hold**, x then y then z, not the first instance's (R164-3): the frame's rounding is in the
-    // centre and the radius, which place the stand-in lights, so a scene whose instances came in
-    // another order was lit from a few micrometres away and two leaves lit through from behind
-    // drew a code apart (impostor_view_tests.cpp, "the dither follows the placement"). The box and
-    // the sphere are a min and a max, which no order changes; the corner now is too.
-    Vec3i lowest = out.instances.empty() ? Vec3i{} : out.instances[0].cell;
-    for (const gfx::InstanceDesc& instance : out.instances) {
-      const Vec3i c = instance.cell;
-      if (c.x < lowest.x || (c.x == lowest.x && (c.y < lowest.y ||
-                                                 (c.y == lowest.y && c.z < lowest.z))))
-        lowest = c;
-    }
-    const WorldCell corner{lowest, Vec3{}};
-    const WorldEye frame = to_eye(to_world(corner));
-    Vec3 lo{1e30f, 1e30f, 1e30f};
-    Vec3 hi{-1e30f, -1e30f, -1e30f};
+    // **Each instance in its own cell, then everything in f64** (ADR-0053; T171): an instance's
+    // centre is placed in float32 in the frame of its own cell's corner, which no other instance
+    // decides, and the box, the centre and the sphere are taken in f64 from those. The centre and
+    // the radius place the stand-in lights, so a rounding that depends on which instances a scene
+    // holds moves the light: R164-3 framed the measure at the lowest cell the instances hold, which
+    // made it the same in any order (impostor_view_tests.cpp, "the dither follows the
+    // placement"), but a scene read whole then framed from another cell than the same scene
+    // streamed in (its slab alone at the load), and was lit from a few micrometres away: one
+    // pixel's colour on the Titan Xp (mesh_room_tests.cpp, "a streamed scene is the scene read
+    // whole"). In f64 a min, a max and a sum of whole cells round nowhere a float can see, so
+    // neither the order nor an instance inside the bounds moves them, and a scene moved by whole
+    // cells gets the same radius and a centre moved by as much, to f64's precision.
+    DVec3 lo{1e300, 1e300, 1e300};
+    DVec3 hi{-1e300, -1e300, -1e300};
     Vector<Vec3> centers(out.parts.size());
     Vector<f32> radii(out.parts.size(), 0.0f);
     for (u32 m = 0; m < out.parts.size(); ++m) {
@@ -3635,21 +3629,28 @@ void update_scene_bounds(SceneData& out) {
     // reason the cull pass inflates its spheres: the camera has to frame the character wherever
     // the clip puts it, not only where it rests.
     auto instance_radius = [&](const gfx::InstanceDesc& instance) {
-      return (radii[instance.mesh] + instance.bounds_padding) * instance.scale_max;
+      return static_cast<f64>((radii[instance.mesh] + instance.bounds_padding) *
+                              instance.scale_max);
+    };
+    auto instance_center = [&](const gfx::InstanceDesc& instance) {
+      const WorldPos corner = to_world(WorldCell{instance.cell, Vec3{}});
+      const Vec3 c =
+          transform_point(gfx::instance_matrix(instance, to_eye(corner)), centers[instance.mesh]);
+      return absolute(corner, c);
     };
     for (const gfx::InstanceDesc& instance : out.instances) {
-      const Vec3 c = transform_point(gfx::instance_matrix(instance, frame), centers[instance.mesh]);
-      const f32 r = instance_radius(instance);
-      lo = Vec3{std::min(lo.x, c.x - r), std::min(lo.y, c.y - r), std::min(lo.z, c.z - r)};
-      hi = Vec3{std::max(hi.x, c.x + r), std::max(hi.y, c.y + r), std::max(hi.z, c.z + r)};
+      const WorldPos c = instance_center(instance);
+      const f64 r = instance_radius(instance);
+      lo = DVec3{std::min(lo.x, c.x - r), std::min(lo.y, c.y - r), std::min(lo.z, c.z - r)};
+      hi = DVec3{std::max(hi.x, c.x + r), std::max(hi.y, c.y + r), std::max(hi.z, c.z + r)};
     }
-    const Vec3 center = (lo + hi) * 0.5f;
-    out.radius = 1e-6f;
-    for (const gfx::InstanceDesc& instance : out.instances) {
-      const Vec3 c = transform_point(gfx::instance_matrix(instance, frame), centers[instance.mesh]);
-      out.radius = std::max(out.radius, length(c - center) + instance_radius(instance));
-    }
-    out.center = absolute(to_world(frame), center);
+    const WorldPos center{(lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5, (lo.z + hi.z) * 0.5};
+    f64 radius = 1e-6;
+    for (const gfx::InstanceDesc& instance : out.instances)
+      radius =
+          std::max(radius, length(instance_center(instance) - center) + instance_radius(instance));
+    out.radius = static_cast<f32>(radius);
+    out.center = center;
   }
 }
 
