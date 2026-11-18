@@ -894,7 +894,7 @@ The engine as a server, its clients, and what agents and the human director work
 | A9 | More capture channels and a contact sheet | open | A8 | M | routine | [06 §6.6](plan/06-agent-tooling.md#66-introspection) |
 | A10 | `profile` over the protocol | open | T44 | M | routine | [06 §6.9](plan/06-agent-tooling.md#69-day-one-operations) |
 | A11 | Explicit begin, commit and rollback | done (2026-11-17: 9863fe4b) | A1 | S | routine | [protocol](subsystems/protocol.md#transactions-a-client-opens) |
-| A12 | `place_asset` and `instantiate_template` | in progress | A1 | M | design | [06 §6.9](plan/06-agent-tooling.md#69-day-one-operations) |
+| A12 | `place_asset` and `instantiate_template` | done (2026-11-17: 6d1c9fe6) | A1 | M | design | [protocol](subsystems/protocol.md#placing-an-asset-instantiating-a-template) |
 | A13 | `describe` an object, tile or region by detail | open | A1 | M | design | [06 §6.6](plan/06-agent-tooling.md#66-introspection) |
 | A14 | `query`: SQL over the store, filters over the document | open | D16 | M | design | [06 §6.6](plan/06-agent-tooling.md#66-introspection) |
 | A15 | Semantic summaries of diffs | open | D5 | M | design | [06 §6.4](plan/06-agent-tooling.md#64-transactions-checkpoints-rollback) |
