@@ -533,6 +533,9 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "engine-host: %s\n", error.c_str());
       return 2;
     }
+    // The roots' directories, once, for the operator alone: never into the log's ring, which
+    // log.tail hands every client (paths.h).
+    std::fputs(protocol::describe_host_roots(roots, "engine-host").c_str(), stderr);
   }
 
   protocol::SessionManager sessions(vfs);
@@ -606,8 +609,8 @@ int main(int argc, char** argv) {
     std::fwrite(line.data(), 1, line.size(), stdout);
     std::fputc('\n', stdout);
     std::fflush(stdout);
-    ENGINE_LOG_INFO(log_host, "listening on loopback", log::field("port", u64{listen.port()}),
-                    log::field("shell", shell_dir));
+    // The shell's directory is on stderr with the roots, not here: the ring is every client's.
+    ENGINE_LOG_INFO(log_host, "listening on loopback", log::field("port", u64{listen.port()}));
   }
 
   int exit_code = 0;

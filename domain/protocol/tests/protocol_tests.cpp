@@ -1,5 +1,6 @@
 #include <core/json/json.h>
 #include <core/log/log.h>
+#include <domain/protocol/paths.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
 #include <foundation/io/roots.h>
@@ -804,4 +805,80 @@ TEST_CASE("roots: a context with no roots refuses every path") {
       "session.open", obj({{"path", JsonValue(tmp.file("w"))}, {"create", JsonValue(true)}}));
   REQUIRE(resp.find("error") != nullptr);
   CHECK_FALSE(io::exists(tmp.file("w")));
+}
+
+namespace {
+// A text in one spelling for a search: forward slashes (JSON writes a backslash as two), lower
+// case.
+std::string folded(std::string_view text) {
+  std::string out;
+  for (usize i = 0; i < text.size(); ++i) {
+    char c = text[i];
+    if (c == '\\') {
+      if (i + 1 < text.size() && text[i + 1] == '\\') ++i;
+      c = '/';
+    }
+    out.push_back(c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c);
+  }
+  return out;
+}
+}  // namespace
+
+// log.tail is a read every role may make, and the ring holds every record the host logs, so the
+// check's log is the answer's twin: before, a refusal logged its reason and the canonical form it
+// resolved (the long, on-disk name of whatever existed, link targets included) and every root
+// logged its directory, while a missing file logged nothing, which told the two apart.
+TEST_CASE("roots: a refused path leaves nothing of the disk in log.tail") {
+  TempDir tmp("protocol_roots_log");
+  const std::string other = tmp.file("other");
+  Host h;
+  JsonValue made =
+      h.ok("session.open", obj({{"path", JsonValue(other)}, {"create", JsonValue(true)}}));
+  h.ok("session.close", obj({{"session", *made.find("session")}}));
+
+  log::add_sink(&h.ring);
+  log::set_global_min_level(log::Level::Trace);
+  io::Roots narrow;
+  HostRootsConfig config;
+  config.root_specs.push_back("work=" + tmp.file("work") + ":rw");
+  std::string error;
+  const bool configured = configure_host_roots(narrow, config, error);
+  h.dispatcher.context().roots = &narrow;
+  // Refused: a document that exists, outside the root it is spelled under. Missing: nothing inside.
+  const JsonValue refused = h.call("session.open", obj({{"path", JsonValue("work://../other")}}));
+  const JsonValue missing = h.call("session.open", obj({{"path", JsonValue("work://nothing")}}));
+  // An absolute spelling is the client's own, but it names the host's directories: not logged.
+  const JsonValue absolute = h.call("session.open", obj({{"path", JsonValue(other)}}));
+  log::remove_sink(&h.ring);
+  log::reset_levels();
+  h.dispatcher.context().roots = &h.roots;
+  REQUIRE(configured);
+  REQUIRE(refused.find("error") != nullptr);
+  REQUIRE(missing.find("error") != nullptr);
+  REQUIRE(absolute.find("error") != nullptr);
+
+  const JsonValue tail = h.ok("log.tail", obj({{"since", JsonValue(0)}}));
+  const std::string text = folded(write_json(tail));
+  CHECK(text.find(folded(tmp.path())) == std::string::npos);
+  CHECK(text.find("\"reason\"") == std::string::npos);
+  CHECK(text.find("\"resolved\"") == std::string::npos);
+  CHECK(text.find("\"canonical\"") == std::string::npos);
+  // The refused and the missing path leave one record each, alike but for the client's spelling.
+  const JsonValue& records = at(tail, "records");
+  Vector<const JsonValue*> paths;
+  for (usize i = 0; i < records.size(); ++i) {
+    if (at(records[i], "cat") == JsonValue("protocol.paths") &&
+        at(records[i], "level") == JsonValue("warn"))
+      paths.push_back(&records[i]);
+  }
+  REQUIRE(paths.size() == 3);
+  CHECK(at(*paths[0], "msg") == at(*paths[1], "msg"));
+  CHECK(at(at(*paths[0], "fields"), "access") == at(at(*paths[1], "fields"), "access"));
+  CHECK(at(at(*paths[0], "fields"), "field") == at(at(*paths[1], "fields"), "field"));
+  CHECK(at(at(*paths[0], "fields"), "path") == JsonValue("work://../other"));
+  CHECK(at(at(*paths[1], "fields"), "path") == JsonValue("work://nothing"));
+  CHECK(at(at(*paths[2], "fields"), "path") == JsonValue("(absolute)"));
+  // The root's directory is the operator's, on stderr at start.
+  CHECK(folded(describe_host_roots(narrow, "engine-host")).find(folded(tmp.file("work"))) !=
+        std::string::npos);
 }

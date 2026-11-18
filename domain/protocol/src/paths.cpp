@@ -16,9 +16,26 @@ std::string_view named_root(std::string_view path) noexcept {
   if (end == std::string_view::npos) return {};
   return path.substr(0, end);
 }
+
+// Whether a client's spelling may go into the operator's log as it is: a root-qualified or a
+// relative path says nothing of the disk; an absolute one names the host's own directories, and
+// `log.tail` is a read every role may make (protocol.md, "What is logged for the operator").
+bool loggable_spelling(std::string_view path) noexcept {
+  if (path.find("://") != std::string_view::npos) return true;
+  if (path.empty() || path.front() == '/' || path.front() == '\\') return false;
+  return !(path.size() >= 2 && path[1] == ':');
+}
 }  // namespace
 
 RpcError path_not_found(std::string_view field, std::string_view path, io::Access access) {
+  // One record for a refused path and a missing one, as the answer is one sentence for both: the
+  // field, the access and the client's own spelling when it names no directory of the host. The
+  // refusal's reason and the canonical form are never logged, because the ring is the client's to
+  // read and they are an existence oracle for the operator's disk.
+  ENGINE_LOG_WARN(
+      log_paths, "a client path was not admitted or is not there", log::field("field", field),
+      log::field("path", loggable_spelling(path) ? path : std::string_view("(absolute)")),
+      log::field("access", io::access_name(access)));
   JsonValue data = JsonValue::object();
   data.set("reason", "path");
   data.set("field", std::string(field));
@@ -32,14 +49,12 @@ bool admit_client_path(Context& ctx, std::string_view field, std::string_view pa
                        std::string_view base, io::Access access, io::Admitted& out,
                        RpcError& error) {
   io::Refusal why = io::Refusal::outside;
-  std::string resolved;
-  if (ctx.roots != nullptr && ctx.roots->admit(path, base, access, out, why, &resolved))
-    return true;
-  ENGINE_LOG_WARN(log_paths, "a client path was refused", log::field("field", field),
-                  log::field("path", path), log::field("access", io::access_name(access)),
-                  log::field("reason", io::refusal_name(why)), log::field("resolved", resolved),
-                  log::field("connection", ctx.connection));
+  if (ctx.roots != nullptr && ctx.roots->admit(path, base, access, out, why)) return true;
   if (why == io::Refusal::unknown_root) {
+    // The one refusal the answer names, so the log may name it too: the root, nothing of the disk.
+    ENGINE_LOG_WARN(log_paths, "a client path names a root this host lacks",
+                    log::field("field", field), log::field("root", named_root(path)),
+                    log::field("access", io::access_name(access)));
     JsonValue data = JsonValue::object();
     data.set("reason", "root");
     data.set("field", std::string(field));
@@ -95,12 +110,26 @@ bool add_root(io::Roots& roots, std::string_view name, std::string_view dir, boo
     return false;
   }
   const io::Root& r = roots.roots().back();
+  // The name and the access only: the directory is the operator's to read, on the host's stderr
+  // at start (`describe_host_roots`), never in the ring `log.tail` serves.
   ENGINE_LOG_INFO(log_paths, "a file root", log::field("name", r.name),
-                  log::field("spelled", r.spelled), log::field("canonical", r.canonical),
                   log::field("writable", r.writable), log::field("linked", r.linked));
   return true;
 }
 }  // namespace
+
+std::string describe_host_roots(const io::Roots& roots, std::string_view program) {
+  std::string out;
+  for (const io::Root& r : roots.roots()) {
+    out += std::string(program) + ": root " + r.name + " = " + r.canonical +
+           (r.writable ? " (read and write" : " (read");
+    if (r.linked) out += ", followed from " + r.spelled;
+    out += ")\n";
+  }
+  for (const std::string& s : roots.served())
+    out += std::string(program) + ": served, never written: " + s + "\n";
+  return out;
+}
 
 bool configure_host_roots(io::Roots& roots, const HostRootsConfig& config, std::string& error) {
   // The shell first, so a writable root over it is refused by name.
