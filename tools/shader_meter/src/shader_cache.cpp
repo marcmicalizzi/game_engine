@@ -668,8 +668,15 @@ std::string cache_store(const CacheRequest& request, const std::string& manifest
 
   const fs::path spv = result_path(request.store, entry.result, ".spv");
   fs::create_directories(spv.parent_path(), ec);
-  if (!fs::exists(spv, ec)) {
-    // The log and the cost first, the SPIR-V last: a result whose SPIR-V exists is whole.
+  // A result is whole when its three files are; a lookup needs all three. A trim removes files one
+  // by one, least recently used first, so it can take a result's log or cost and leave its SPIR-V:
+  // the result is then stored again, a part already there kept (rename_once) and the missing ones
+  // written, or it would miss for ever (review B8, batch 68).
+  const bool whole = fs::exists(spv, ec) &&
+                     fs::exists(result_path(request.store, entry.result, ".log"), ec) &&
+                     fs::exists(result_path(request.store, entry.result, ".cost"), ec);
+  if (!whole) {
+    // The log and the cost first, the SPIR-V last, so a reader never finds a SPIR-V before them.
     const std::pair<const char*, const std::string*> parts[] = {{".log", &log}, {".cost", &cost}};
     for (const auto& [extension, data] : parts) {
       const fs::path temp = cache_temp_path(request.store, extension);

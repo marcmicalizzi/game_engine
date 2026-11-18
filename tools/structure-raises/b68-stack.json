@@ -1,14 +1,14 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "b68-stack",
-  "reason": "The stack's joins: what-to-run.md holds four tool rows' sections (T177, T76, the T sweep, T171), each under the default page ceiling alone, 109,200 bytes together; gfx.md states the CullParams layout R173 and R158 meet at (fade_turn in a row of its own, 1,808 bytes)",
+  "reason": "The stack's joins: what-to-run.md holds the tool rows' sections together (T177, T76, T31, T171, sweep-T2) and B8's sentence on a result a trim left in part; gfx.md the CullParams join's fade_turn bullet",
   "date": "2026-11-18",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/renderer.md": -38,
+    "page:docs/subsystems/renderer.md": -221,
     "page:docs/subsystems/gfx.md": 780,
     "page:AGENTS.md": -8,
     "page:docs/subsystems/scene_gen.md": -8,
-    "page:docs/ci/what-to-run.md": 9200
+    "page:docs/ci/what-to-run.md": 9307
   }
 }

@@ -551,7 +551,8 @@ configure line of every preset, and `ENGINE_SHADER_CACHE=0` reaches the meter th
 or writing the store, with no configure; changing the setting through `dev.ps1` reconfigures, which
 changes every shader's command and compiles them once. The store holds itself under 4 GB
 (`ENGINE_SHADER_CACHE_MAX_MB`): at most every ten minutes a store walks it and removes the least
-recently used files down to nine tenths, a hit touching what it served. One commit's 63 shaders are
+recently used files down to nine tenths, a hit touching what it served; a result the walk left in
+part (its SPIR-V without its log or cost) misses once and is stored whole again. One commit's 63 shaders are
 30 MB, so 4 GB is over a hundred generations of every shader. Deleting the directory empties it
 for the machine; the next build of each checkout compiles once.
 

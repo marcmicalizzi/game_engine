@@ -228,6 +228,17 @@ _compile(after_race "${_dir}/a" race3 on FLAGS -DENGINE_PROBE=race)
 _expect("two compiles of one key at once both succeed (${_codes}) with one SPIR-V, and the next is served (${after_race_line})"
         "\"${_codes}\" STREQUAL \"0;0\" AND \"${_r1}\" STREQUAL \"${_r2}\" AND \"${after_race_line}\" STREQUAL \"cache hit\" AND \"${after_race_hash}\" STREQUAL \"${_r1}\"")
 
+# A result a trim left in part (its files go one by one, least recently used first, so one can
+# outlive another): a lookup misses, so the store must write the missing part again, or the result
+# misses for ever while every store skips it for the part it finds (review B8, batch 68).
+file(GLOB_RECURSE _logs LIST_DIRECTORIES false "${_store}/v1/r/*.log")
+list(LENGTH _logs _nlogs)
+file(REMOVE ${_logs})
+_compile(partial "${_dir}/a" race4 on FLAGS -DENGINE_PROBE=race)
+_compile(partial_again "${_dir}/a" race5 on FLAGS -DENGINE_PROBE=race)
+_expect("a result whose log a trim took misses once and is stored whole (${_nlogs} logs taken, '${partial_line}', then '${partial_again_line}')"
+        "_nlogs GREATER 0 AND \"${partial_line}\" STREQUAL \"cache stored\" AND \"${partial_again_line}\" STREQUAL \"cache hit\" AND \"${partial_again_hash}\" STREQUAL \"${_r1}\"")
+
 # The limit: a store over it drops its least recently used files at the next store's walk.
 _compile(limited "${_dir}/a" a11 on FLAGS -DENGINE_PROBE=limit MAX_MB 0)
 file(GLOB_RECURSE _results LIST_DIRECTORIES false "${_store}/v1/r/*")
