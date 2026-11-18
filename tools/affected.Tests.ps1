@@ -220,6 +220,12 @@ $r = Edges @('game/walk/src/level.cpp')
 Test-That 'a game module''s directory reaches the tests that start it, though no module holds it' { ($r.Modules -join ',') -eq 'engine_cli,engine_view' -and @($r.Notes).Count -eq 0 }
 $r = Edges @('tests/support/test_temp_dir.cpp')
 Test-That 'a support source no test target lists still selects everything' { $r.All }
+$r = Edges @('apps/engine_shell/index.html')
+Test-That 'a directory under a layer that no module holds and no target reaches selects everything (a glob''s copy)' { $r.All }
+$r = Get-AffectedTests -Modules $edgeModules -Layers $layers -Changed @('domain/ruins/src/blocks.cpp') -Disabled @('RUINS')
+Test-That 'unless the preset switched off a capability of that name, which it says' {
+  -not $r.All -and $r.Modules.Count -eq 0 -and @($r.Notes | Where-Object { $_ -match 'not in this preset' }).Count -eq 1
+}
 
 $r = Edges @('tests/support/tile_fixture.h') @((Ref 'includes' 'tests/support/tile_fixture.h' 'systems/renderer/tests/tile_tests.cpp'),
                                                (Ref 'includes' 'tests/support/tile_fixture.h' 'tests/support/other_fixture.h'))

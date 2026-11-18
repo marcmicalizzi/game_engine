@@ -294,7 +294,7 @@ function Get-AffectedOnce {
   $rule = if ($AffectedRule) { $AffectedRule } elseif ($env:ENGINE_AFFECTED_RULE) { $env:ENGINE_AFFECTED_RULE } else { 'edges' }
   if ($rule -notin @('edges', 'modules', 'all')) { throw "ENGINE_AFFECTED_RULE '$rule' is none of edges, modules, all" }
   $mentions = if ($rule -eq 'edges') { @(Get-AffectedMentions -Root $Root -Changed $changed) } else { @() }
-  $result = Get-AffectedTests -Modules $json.modules -Layers $json.layers -Changed $changed -Mentions $mentions -Rule $rule
+  $result = Get-AffectedTests -Modules $json.modules -Layers $json.layers -Changed $changed -Mentions $mentions -Rule $rule -Disabled @($json.disabled_capabilities)
   Write-Host ("affected: {0} path(s) differ from {1} (rule: {2})" -f $changed.Count, $Base, $rule) -ForegroundColor Cyan
   if ($result.All) {
     Write-Host "  everything: $($result.Reason)" -ForegroundColor Cyan

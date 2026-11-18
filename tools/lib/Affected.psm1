@@ -69,7 +69,8 @@ function Get-AffectedTests {
     [Parameter(Mandatory)] [string[]]$Layers,    # modules.json's "layers", lowest first
     [AllowEmptyCollection()] [string[]]$Changed = @(),
     [AllowEmptyCollection()] [object[]]$Mentions = @(),   # Get-AffectedMentions' records
-    [ValidateSet('edges', 'modules', 'all')] [string]$Rule = 'edges'
+    [ValidateSet('edges', 'modules', 'all')] [string]$Rule = 'edges',
+    [AllowEmptyCollection()] [string[]]$Disabled = @()    # modules.json's "disabled_capabilities"
   )
   if ($Rule -eq 'all') {
     $apps = @($Modules | Where-Object { $_.layer -eq 'apps' } | ForEach-Object { $_.name } | Sort-Object)
@@ -78,7 +79,7 @@ function Get-AffectedTests {
   }
   $withEdges = @($Modules | Where-Object { $_.PSObject.Properties.Name -contains 'test_reach' -and $null -ne $_.test_reach })
   if ($Rule -eq 'edges' -and $Modules.Count -gt 0 -and $withEdges.Count -eq $Modules.Count) {
-    return Get-AffectedByEdges -Modules $Modules -Changed $Changed -Mentions $Mentions
+    return Get-AffectedByEdges -Modules $Modules -Changed $Changed -Mentions $Mentions -Disabled $Disabled
   }
   $notes = New-Object System.Collections.Generic.List[string]
   if ($Rule -eq 'edges' -and $Modules.Count -gt 0) {
@@ -180,8 +181,10 @@ function Get-PathOwners([object[]]$ByPath, [string]$Path) {
 
 function Get-AffectedByEdges {
   # The `edges` rule (the header above). Same result shape as Get-AffectedTests.
-  param([object[]]$Modules, [string[]]$Changed, [object[]]$Mentions)
+  param([object[]]$Modules, [string[]]$Changed, [object[]]$Mentions, [string[]]$Disabled)
   $notes = New-Object System.Collections.Generic.List[string]
+  $disabledNames = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($d in @($Disabled)) { if ($d) { [void]$disabledNames.Add($d.ToLowerInvariant()) } }
   $changedModules = New-Object System.Collections.Generic.HashSet[string]   # reach every test linking them
   $direct = New-Object System.Collections.Generic.HashSet[string]           # these modules' tests, no further
   $script:edgeAll = $null
@@ -245,6 +248,7 @@ function Get-AffectedByEdges {
     if ($path -like 'docs/*' -or $path -like '*.md' -or $path -like '.github/*' -or
         $path -in @('.clang-format', '.gitignore', '.gitattributes', 'LICENSE', 'NOTICE')) { continue }
     if ($path -like 'tools/schemac/*') { Set-All "the schema compiler changed ($path)"; continue }
+    if ($path -like 'third_party/*') { Set-All "$path is vendored code"; continue }
     $reached = Find-Reached $path
     if ($reached.Count -gt 0) { foreach ($n in $reached) { [void]$direct.Add($n) }; continue }
     $parts = $path -split '/'
@@ -261,8 +265,12 @@ function Get-AffectedByEdges {
       continue
     }
     if ($path -match '^cmake/[^/]+\.cmake$') { $cmake.Add($path); continue }
+    # A directory under a layer that no module holds and no test target reaches: a capability this
+    # preset switched off when its name says so, and otherwise something built or read in a way
+    # the edges do not see (apps/engine_shell, which engine-host copies by a glob), so everything.
     if ($parts[0] -in $script:LayerDirs -and $parts.Count -gt 2) {
-      $notes.Add("not in this preset, so not tested by it: $path")
+      if ($disabledNames.Contains($parts[1].ToLowerInvariant())) { $notes.Add("not in this preset, so not tested by it: $path") }
+      else { Set-All "$path is in no module and no test target reaches it" }
       continue
     }
     Set-All "$path is built into or read by everything"

@@ -21,7 +21,11 @@
 #     with is an executable it runs), followed to the end; an imported target is a leaf.
 #
 # What it writes, for each module:
-#   modules  every engine module (or app) a target of that closure is, or is the _impl of;
+#   modules  every engine module (or app) a target of that closure is, or is the _impl of, and
+#            every module whose directory holds a source it compiles, an include directory it
+#            reads, or (for a target that is no module's, a custom target) the CMakeLists that
+#            declared it: engine-editor compiles engine-view's camera, water's tests include the
+#            renderer's test headers, engine-host's shell copy is engine-host's;
 #   files    every source file of the closure's targets outside its own target's directory and
 #            outside every module's (tests/support/test_main.cpp, apps/tests/...): a change to one
 #            reaches these tests and no module owns it;
@@ -38,24 +42,39 @@
 function(_engine_test_reach_prepare)
   get_property(_modules GLOBAL PROPERTY ENGINE_MODULES)
   set(_dirs "")
+  set(_names "")
   foreach(_m IN LISTS _modules)
     get_property(_dir TARGET engine_${_m} PROPERTY ENGINE_MODULE_DIR)
     list(APPEND _dirs "${_dir}")
+    list(APPEND _names "${_m}")
   endforeach()
   set_property(GLOBAL PROPERTY _ENGINE_TEST_REACH_MODULE_DIRS "${_dirs}")
+  set_property(GLOBAL PROPERTY _ENGINE_TEST_REACH_MODULE_NAMES "${_names}")
 endfunction()
 
-# TRUE when <path> (absolute) is <dir> or under it, for any <dir> of the module directories.
+# In <out>, the modules whose directory holds <path> (absolute): the deepest, and every module that
+# shares it (a capability and its schema types). Empty when no module's does.
 function(_engine_test_reach_in_module out path)
   get_property(_dirs GLOBAL PROPERTY _ENGINE_TEST_REACH_MODULE_DIRS)
+  get_property(_names GLOBAL PROPERTY _ENGINE_TEST_REACH_MODULE_NAMES)
+  set(_owners "")
+  set(_best -1)
+  set(_i 0)
   foreach(_dir IN LISTS _dirs)
     string(FIND "${path}/" "${_dir}/" _at)
     if(_at EQUAL 0)
-      set(${out} TRUE PARENT_SCOPE)
-      return()
+      string(LENGTH "${_dir}" _n)
+      list(GET _names ${_i} _name)
+      if(_n GREATER _best)
+        set(_best ${_n})
+        set(_owners "${_name}")
+      elseif(_n EQUAL _best)
+        list(APPEND _owners "${_name}")
+      endif()
     endif()
+    math(EXPR _i "${_i} + 1")
   endforeach()
-  set(${out} FALSE PARENT_SCOPE)
+  set(${out} "${_owners}" PARENT_SCOPE)
 endfunction()
 
 # TRUE when <path> (absolute) is inside the source tree and outside the build tree.
@@ -87,20 +106,43 @@ function(_engine_test_reach_target t)
     if(NOT _module AND t MATCHES "^engine_(.+)_impl$" AND TARGET engine_${CMAKE_MATCH_1})
       get_property(_module TARGET engine_${CMAKE_MATCH_1} PROPERTY ENGINE_MODULE_NAME)
     endif()
+    # A target that is no module's own belongs to the module whose CMakeLists declared it (a
+    # custom target: engine-host's copy of the shell's files), or to no module (a game module).
     get_property(_src_dir TARGET ${t} PROPERTY SOURCE_DIR)
     if(NOT _module AND NOT _src_dir STREQUAL CMAKE_SOURCE_DIR)
       _engine_test_reach_in_tree(_inside "${_src_dir}")
       if(_inside)
         _engine_test_reach_in_module(_owned "${_src_dir}")
-        if(NOT _owned)
+        if(_owned)
+          list(APPEND _module ${_owned})
+        else()
           file(RELATIVE_PATH _dir "${CMAKE_SOURCE_DIR}" "${_src_dir}")
         endif()
       endif()
     endif()
 
+    # Include directories in another module's directory (water's tests read the renderer's and
+    # gfx's tests/): that module is read. tests/support is every test's and its headers are
+    # placed by who includes them (tools/lib/Affected.psm1), the top of the tree by nothing.
+    foreach(_prop IN ITEMS INCLUDE_DIRECTORIES INTERFACE_INCLUDE_DIRECTORIES)
+      get_property(_incs TARGET ${t} PROPERTY ${_prop})
+      foreach(_inc IN LISTS _incs)
+        string(REGEX REPLACE "^\\$<BUILD_INTERFACE:(.*)>$" "\\1" _inc "${_inc}")
+        if(_inc MATCHES "\\$<" OR NOT IS_ABSOLUTE "${_inc}" OR _inc STREQUAL CMAKE_SOURCE_DIR)
+          continue()
+        endif()
+        _engine_test_reach_in_tree(_inside "${_inc}")
+        if(_inside)
+          _engine_test_reach_in_module(_owned "${_inc}")
+          list(APPEND _module ${_owned})
+        endif()
+      endforeach()
+    endforeach()
+
     # Sources from outside the target's own directory: the test main, a test file several hosts
-    # share. Those inside it belong to whoever owns that directory already — unless that
-    # directory is the top of the tree, which nothing owns (engine_test_main is declared there).
+    # share, another module's source compiled in again (engine-editor builds engine-view's camera).
+    # Those inside it belong to whoever owns that directory already — unless that directory is the
+    # top of the tree, which nothing owns (engine_test_main is declared there).
     set(_own "${_src_dir}")
     if(_src_dir STREQUAL CMAKE_SOURCE_DIR)
       set(_own "")
@@ -129,11 +171,16 @@ function(_engine_test_reach_target t)
         continue()
       endif()
       _engine_test_reach_in_module(_owned "${_s}")
-      if(NOT _owned)
+      if(_owned)
+        list(APPEND _module ${_owned})
+      else()
         file(RELATIVE_PATH _rel "${CMAKE_SOURCE_DIR}" "${_s}")
         list(APPEND _files "${_rel}")
       endif()
     endforeach()
+    if(_module)
+      list(REMOVE_DUPLICATES _module)
+    endif()
 
     # The edges: what it links, what links through it, what it builds before itself, and an
     # executable whose path it is compiled with ($<TARGET_FILE:...> in a definition: it runs it).

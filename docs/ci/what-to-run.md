@@ -83,9 +83,16 @@ help with: roadmap T76.
   by `cmake/EngineTestReach.cmake`. It holds every module the module depends on, and what the
   module graph alone could not say: `renderer`'s tests link `sky` and `terrain`, `water`'s and
   `scatter`'s link the renderer, `engine_cli`'s start engine-view, engine-host and
-  engine-content, `gpu_lock`'s start a probe that links `gfx`. It also holds the sources a test
-  target compiles from outside every module (`tests/support/test_main.cpp`, `apps/tests/`) and the
-  directories of targets that are no module (the game modules under `game/`).
+  engine-content, `gpu_lock`'s start a probe that links `gfx`. A module is in it too when its
+  directory holds a source a target of the closure compiles (engine-editor builds engine-view's
+  camera), an include directory one reads (`water`'s tests include the renderer's test headers),
+  or the `CMakeLists.txt` that declared a custom target in it (engine-host's copy of the shell).
+  It also holds the sources a test target compiles from outside every module
+  (`tests/support/test_main.cpp`, `apps/tests/`) and the directories of targets that are no
+  module (the game modules under `game/`). A path under a layer directory that no module holds
+  and nothing of the closure reaches — `apps/engine_shell`, which engine-host copies by a glob no
+  target lists — runs everything, unless its directory is named like a capability the preset
+  switched off.
 - **What a test reads at run time is found from the text** when the rule runs
   (`Get-AffectedMentions`, `git grep` over the working tree), so an edit that adds a reference
   counts without a configure. Comments (`//`, `#`) name nothing.
