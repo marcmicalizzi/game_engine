@@ -215,6 +215,11 @@ void write_file(const std::string& path, std::string_view text) {
   f << text;
 }
 
+std::string read_whole(const std::string& path) {
+  std::ifstream f(path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+}
+
 void put_u32(std::vector<u8>& out, u32 v) {
   for (u32 i = 0; i < 4; ++i)
     out.push_back(static_cast<u8>((v >> (8 * i)) & 0xffu));
@@ -1434,6 +1439,37 @@ TEST_CASE("listen: render.load of a session, the camera it framed, records, a ke
   CHECK(records[1].as_string() == k_right);
   const JsonValue* files = result.find("files");
   CHECK((files == nullptr || files->size() == 0));  // kept, with no directory: nothing on disk
+  // A capture's files are each admitted and written by rename (T174; protocol.md, "What is
+  // built, and what is left"): a symbolic link planted at a name is refused, a hard link there is
+  // replaced, and the file outside the root that either named is unchanged.
+  {
+    std::filesystem::create_directories(doc + "/out");
+    const std::string outside = tmp.file("outside.bin");
+    write_file(outside, "outside");
+    const auto capture_as = [&](const char* name) {
+      return c.call(
+          "render.capture",
+          R"({"scene":")" + scene +
+              R"(","width":32,"height":32,"channels":["color"],"out_dir":"out://","name":")" +
+              name + "\"}");
+    };
+    std::error_code ec;
+    std::filesystem::create_hard_link(outside, doc + "/out/hard.png", ec);
+    if (!ec) {
+      const JsonValue hard = capture_as("hard");
+      CHECK_MESSAGE(error_code(hard) == 0, write_json(hard));
+      CHECK(read_whole(outside) == "outside");
+      CHECK(read_whole(doc + "/out/hard.png").substr(1, 3) == "PNG");
+    }
+    std::filesystem::create_symlink(outside, doc + "/out/soft.png", ec);
+    if (!ec) {
+      const JsonValue soft = capture_as("soft");
+      CHECK_MESSAGE(error_code(soft) == 1003, write_json(soft));
+      CHECK(read_whole(outside) == "outside");
+    } else {
+      MESSAGE("this process may not make a symbolic link; the link half is skipped");
+    }
+  }
   const std::string id = std::string(at(result, "capture").as_string());
   REQUIRE_FALSE(id.empty());
   const HttpReply png = http_get(host.port, "/capture/" + id, {}, host.token);
