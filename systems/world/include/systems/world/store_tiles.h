@@ -57,7 +57,12 @@ struct StoreTilesStats {
 
 class StoreTiles {
  public:
-  explicit StoreTiles(const StoreTilesBinding& binding) noexcept : binding_(binding) {}
+  // **The store takes the document's world seed when it is bound** (W11; world.md, "The world
+  // seed"): a document with a settings record gives the store its seed here, before any tile is
+  // reconciled from it; one with none leaves the store's as it was (1 unless the host set another).
+  // Read once: a later edit of the record moves no tile seed of the run, and `rebind_document`
+  // reads nothing.
+  explicit StoreTiles(const StoreTilesBinding& binding) noexcept;
   ENGINE_NON_COPYABLE(StoreTiles);
 
   // The row to register: `rings` is the rings the simulation runs in.
@@ -82,5 +87,17 @@ class StoreTiles {
 // layer is partitioned. False when it has none, or one no cell can name (`world_cell_valid`). The
 // partition reads x and z; this reads all three, as the f64 the document holds (ADR-0053).
 bool record_position(const doc::Document& document, const Id128& id, WorldPos& out);
+
+// The document's world settings record (`engine.world.WorldSettings`, world_settings.schema): at
+// this fixed id, "world.settings" and a one in hexadecimal, `776f726c642e73657474696e67730001`.
+inline constexpr Id128 k_world_settings =
+    Id128::from_parts(0x776F726C642E7365ull, 0x7474696E67730001ull);
+inline constexpr const char* k_world_settings_type = "engine.world.WorldSettings";
+
+// The world seed a document names: true with `out` when a live record of the settings type stands
+// at `k_world_settings` (its `seed`, or the schema's 1 when the record leaves it out). False, with
+// `out` untouched, for a document with none — or with a record of another type at that id, or a
+// seed that is not a whole number from 0 to 2^64 - 1, which a validated document never holds.
+bool document_world_seed(const doc::Document& document, u64& out);
 
 }  // namespace engine::world

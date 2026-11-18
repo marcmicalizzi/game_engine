@@ -382,6 +382,74 @@ TEST_CASE("world consumers: a document on another grid is refused, once, with a 
   CHECK(fake.entities.empty());
 }
 
+TEST_CASE(
+    "world consumers: a document names its world seed in a settings record, and the store takes "
+    "it when it is bound") {
+  // W11 (world.md, "The world seed"): the seed every tile's seed is hashed from was 1 for every
+  // headless run, because a document could not name one. A settings record at the fixed id names
+  // it; the store consumer gives it to the store before any tile is reconciled.
+  char hex[33] = {};
+  k_world_settings.to_hex(hex);
+  CHECK(std::string(hex) == "776f726c642e73657474696e67730001");  // "world.settings", 1
+
+  doc::Document d = partitioned(32.0);
+  node(d, 1, 5.0, 5.0);
+  u64 seed = 77;
+  CHECK_FALSE(document_world_seed(d, seed));  // none: the store keeps its own
+  CHECK(seed == 77);
+
+  // A record of another type at the id names nothing.
+  {
+    doc::Document other = partitioned(32.0);
+    JsonValue props = JsonValue::object();
+    props.set("name", JsonValue("not the settings"));
+    props.set("position", vec3(1.0, 0.0, 1.0));
+    REQUIRE(other.apply(doc::cmd_create(k_world_settings, k_node, Id128{}, std::move(props)),
+                        nullptr, nullptr));
+    CHECK_FALSE(document_world_seed(other, seed));
+  }
+
+  // A seed past 2^53 and past 2^63, which a double could not hold: the document keeps it whole.
+  const u64 big = 0xFEDCBA9876543210ull;
+  JsonValue props = JsonValue::object();
+  props.set("seed", JsonValue(big));
+  Vector<doc::Diagnostic> diagnostics;
+  const bool created =
+      d.apply(doc::cmd_create(k_world_settings, k_world_settings_type, Id128{}, std::move(props)),
+              nullptr, &diagnostics);
+  REQUIRE_MESSAGE(created, (diagnostics.empty() ? std::string() : diagnostics[0].message));
+  REQUIRE(document_world_seed(d, seed));
+  CHECK(seed == big);
+
+  // Bound to the document, the store takes it, and every tile's seed follows from it.
+  WorldStore store;
+  REQUIRE(store.open_memory() == store::Status::Ok);
+  CHECK(store.world_seed() == 1);
+  StoreTilesBinding binding;
+  binding.store = &store;
+  binding.document = &d;
+  {
+    const StoreTiles tiles(binding);
+    CHECK(store.world_seed() == big);
+    CHECK(store.tile_seed(store_tile(TileCoord{3, -4})) ==
+          hash_combine(big, store_tile(TileCoord{3, -4})));
+  }
+
+  // The record without a seed is the schema's 1; deleted, it names none, and a store bound then
+  // keeps the seed its host gave it.
+  REQUIRE(d.apply(doc::cmd_clear(k_world_settings, "seed"), nullptr, nullptr));
+  REQUIRE(document_world_seed(d, seed));
+  CHECK(seed == 1);
+  REQUIRE(d.apply(doc::cmd_delete(k_world_settings), nullptr, nullptr));
+  CHECK_FALSE(document_world_seed(d, seed));
+  store.set_world_seed(99);
+  {
+    const StoreTiles tiles(binding);
+    CHECK(store.world_seed() == 99);
+  }
+  CHECK(d.validate_index());
+}
+
 TEST_CASE("world consumers: where a record is, from its partition's property") {
   doc::Document d = partitioned(32.0);
   node(d, 1, -12.5, 44.0);

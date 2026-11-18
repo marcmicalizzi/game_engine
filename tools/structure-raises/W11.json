@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W11",
+  "reason": "W11: the world seed a document names, its record and why it is a record, documented beside the store consumer it is bound through",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/world.md": 1058
+  }
+}

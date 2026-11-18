@@ -223,7 +223,7 @@ The tile ring, the ground drawn from the world's tiles, the dunes, residency, an
 | W8 | Deformed-vertex pool for the dynamic tail | open | W4, R23 | M | design | [renderer](subsystems/renderer.md#instances-that-come-and-go) |
 | W9 | Ray tracing a streamed scene's tail | open | W4, R51 | L | design | [renderer](subsystems/renderer.md#instances-that-come-and-go) |
 | W10 | A kit's geometry streamed per tile | open | W4, R9 | M | design | [04 §4.9](plan/04-renderer.md#49-streaming-and-residency) |
-| W11 | World seed in the document | open | W1 | S | routine | [world](subsystems/world.md#not-yet) |
+| W11 | World seed in the document | done (2026-11-18: an `engine.world.WorldSettings` record at a fixed id, `world::k_world_settings`, names the seed — a new record type, so no document or save migrates and the migration corpus is untouched — and `StoreTiles` gives it to the store when it is bound, before any tile is reconciled; the case is `consumer_tests.cpp`, "world consumers: a document names its world seed in a settings record, and the store takes it when it is bound". Not done: engine-host's headless run without a store reads no seed for its residents, one line where it makes the stream) | W1 | S | routine | [world](subsystems/world.md#the-consumers) |
 | W12 | Ground drawn from the world's tiles | done (83ed5ffb, de1d04ea) | W1, G35 | L | design | [ADR-0050](adr/0050-the-ground-is-drawn-from-the-worlds-tiles.md) |
 | W13 | Accept ADR-0050 | done (2026-10-07, the owner) | W12 | S | design | [ADR-0050](adr/0050-the-ground-is-drawn-from-the-worlds-tiles.md) |
 | W14 | Tiles keep up with a fast camera and a window | done (7c3239bd, 4afee714) | W12 | M | design | [world tiles in a window](experiments/world-tiles-window-2026-10-03.md) |
