@@ -11,7 +11,10 @@
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <cstdlib>
+#include <filesystem>
 #include <string>
+#include <system_error>
 
 using namespace engine;
 using namespace engine::doc;
@@ -38,7 +41,53 @@ std::string layer_with_parent_cycle() {
 // A layer whose `file` climbs out of the document's directory.
 std::string manifest_climbing_out() { return manifest_naming("../../outside.json"); }
 
+// A directory link at `link` to `target` (T190): a symbolic link where the platform lets this
+// process make one, else (Windows without the privilege) a junction, which any user may make.
+// False when neither could be made.
+bool make_directory_link(const std::string& target, const std::string& link) {
+  std::error_code ec;
+  std::filesystem::create_directory_symlink(target, link, ec);
+  if (!ec) return true;
+#ifdef _WIN32
+  std::string command = "cmd /c mklink /J \"" + link + "\" \"" + target + "\" >nul 2>nul";
+  for (char& c : command)
+    if (c == '/') c = '\\';
+  return std::system(command.c_str()) == 0 && std::filesystem::exists(link);
+#else
+  return false;
+#endif
+}
+
 }  // namespace hostile_store
+
+TEST_CASE(
+    "doc store hostile: a layer file under the document by name but out by a link is refused") {
+  const test::TempDir tmp("engine_doc_hostile_link");
+  io::Vfs vfs;
+  REQUIRE(vfs.mount("docs", tmp.path(), /*writable=*/true) == io::Status::Ok);
+  // A valid layer outside the document, and one inside it, each behind a directory link.
+  REQUIRE(vfs.write("docs://outside/base.json", hostile_store::empty_layer()) == io::Status::Ok);
+  REQUIRE(vfs.write("docs://d/manifest.json", hostile_store::manifest_naming("sub/base.json")) ==
+          io::Status::Ok);
+  REQUIRE(vfs.write("docs://d/kept/base.json", hostile_store::empty_layer()) == io::Status::Ok);
+  REQUIRE(vfs.make_directories("docs://d/layers") == io::Status::Ok);
+  REQUIRE(hostile_store::make_directory_link(tmp.file("outside"), tmp.file("d/layers/sub")));
+
+  Document doc;
+  DocumentManifest manifest;
+  std::string error;
+  CHECK_FALSE(DocumentStore::load(vfs, "docs://d", doc, manifest, &error));
+  CHECK(error.find("through a link") != std::string::npos);
+  CHECK(error.find("outside") == std::string::npos);  // where it leads is not told
+
+  // The same manifest with the link pointing inside the document loads: the resolved path is
+  // judged, not the link's presence.
+  std::error_code ec;
+  std::filesystem::remove(tmp.file("d/layers/sub"), ec);
+  REQUIRE_FALSE(ec);
+  REQUIRE(hostile_store::make_directory_link(tmp.file("d/kept"), tmp.file("d/layers/sub")));
+  REQUIRE_MESSAGE(DocumentStore::load(vfs, "docs://d", doc, manifest, &error), error);
+}
 
 TEST_CASE("doc store hostile: a layer file outside the document is refused by the rule alone") {
   const test::TempDir tmp("engine_doc_hostile_file");
