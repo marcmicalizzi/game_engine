@@ -420,4 +420,128 @@ bool prepare_terrain_masks(const TerrainDesc& terrain, TerrainMaskUpload& out, s
   out.record.height_blend = info.height_blend;
   return true;
 }
+
+bool terrain_mask_cover(const TerrainDesc& terrain, const scene_gen::GroundProvider& provider,
+                        Vector<f32>& cover, std::string* error) {
+  cover.clear();
+  if (!terrain.masks.has_value()) return true;
+  scene_gen::GroundMasks masks;
+  std::string why;
+  if (!provider.masks(masks, &why)) {
+    if (error != nullptr) *error = "terrain.masks: " + why;
+    return false;
+  }
+  if (!masks.valid() || masks.ops->present == nullptr || masks.ops->tile == nullptr) return true;
+  scene_gen::GroundMaskInfo info;
+  if (!masks.ops->info(masks.state, info) || info.cells == 0 || info.palette == 0) return true;
+  const u64 tiles_x = static_cast<u64>(info.tile_max_x - info.tile_min_x + 1);
+  const u64 range = scene_gen::mask_range_tiles(info);
+  if (range == 0) return true;
+  const auto tile_at = [&](u64 p, i32& tx, i32& tz) {
+    tx = info.tile_min_x + static_cast<i32>(p % tiles_x);
+    tz = info.tile_min_z + static_cast<i32>(p / tiles_x);
+  };
+  u64 present = 0;
+  for (u64 p = 0; p < range; ++p) {
+    i32 tx, tz;
+    tile_at(p, tx, tz);
+    present += masks.ops->present(masks.state, tx, tz) ? 1u : 0u;
+  }
+  const u32 palette = info.palette;
+  // Sums over the read tiles' points, a layer's share and last the root's; an edge point is half
+  // its tile's and a corner a quarter, since its neighbour holds it too.
+  Vector<f64> sums(palette + 1u, 0.0);
+  f64 points = 0.0;
+  u64 read = 0;
+  if (present > 0) {
+    const u64 stride = (present + k_mask_cover_tiles - 1u) / k_mask_cover_tiles;
+    Vector<u32> words(scene_gen::mask_tile_words(info.cells), 0u);
+    const u32 side = info.cells + 1u;
+    u64 seen = 0;
+    for (u64 p = 0; p < range; ++p) {
+      i32 tx, tz;
+      tile_at(p, tx, tz);
+      if (!masks.ops->present(masks.state, tx, tz) || seen++ % stride != 0) continue;
+      if (!masks.ops->tile(masks.state, tx, tz, std::span<u32>(words.data(), words.size())))
+        continue;
+      ++read;
+      const u32 table = words[0];
+      for (u32 z = 0; z < side; ++z) {
+        const f64 wz = z == 0 || z + 1 == side ? 0.5 : 1.0;
+        for (u32 x = 0; x < side; ++x) {
+          const f64 wq = wz * (x == 0 || x + 1 == side ? 0.5 : 1.0);
+          const u32 w = words[1u + z * side + x];
+          f64 weight[scene_gen::k_mask_channels];
+          u32 index[scene_gen::k_mask_channels];
+          f64 total = 0.0;
+          for (u32 c = 0; c < scene_gen::k_mask_channels; ++c) {
+            index[c] = (table >> (8u * c)) & 0xFFu;
+            weight[c] = index[c] == scene_gen::k_mask_no_layer || index[c] >= palette
+                            ? 0.0
+                            : static_cast<f64>((w >> (8u * c)) & 0xFFu) / 255.0;
+            total += weight[c];
+          }
+          const f64 covered = total < 1.0 ? total : 1.0;
+          for (u32 c = 0; c < scene_gen::k_mask_channels; ++c)
+            if (weight[c] > 0.0) sums[index[c]] += wq * covered * weight[c] / total;
+          sums[palette] += wq * (1.0 - covered);
+          points += wq;
+        }
+      }
+    }
+  }
+  // The present tiles' mean stands for every present tile; an absent one is the root's.
+  const f64 present_share = static_cast<f64>(present) / static_cast<f64>(range);
+  cover.assign(palette + 1u, 0.0f);
+  if (read > 0 && points > 0.0) {
+    for (u32 i = 0; i <= palette; ++i)
+      cover[i] = static_cast<f32>(sums[i] / points * present_share);
+  }
+  cover[palette] += static_cast<f32>(read > 0 ? 1.0 - present_share : 1.0);
+  return true;
+}
+
+Vec3 terrain_ground_albedo(const TerrainDesc& terrain, const assets::MeshData* source) {
+  const Vec3 root = terrain_surface_mean_albedo(terrain);
+  if (!terrain.materials.has_value() || source == nullptr) return root;
+  const auto& layers = terrain.materials->layers;
+  const u32 n = static_cast<u32>(layers.size());
+  // The layers' entries follow the root's in the terrain mesh (`append_terrain_materials`).
+  if (n == 0 || source->materials.size() < n + 1u) return root;
+  const auto mean = [&](u32 i) { return source->materials[1u + i].emissive; };
+  if (terrain.masks.has_value()) {
+    if (terrain.mask_cover.size() == n + 1u) {
+      Vec3 sum = root * terrain.mask_cover[n];
+      for (u32 i = 0; i < n; ++i)
+        sum = sum + mean(i) * terrain.mask_cover[i];
+      return sum;
+    }
+    Vec3 sum{0.0f, 0.0f, 0.0f};
+    for (u32 i = 0; i < n; ++i)
+      sum = sum + mean(i);
+    return sum * (1.0f / static_cast<f32>(n));
+  }
+  // W68's layers over the root in array order, each by its weight times its coverage map's mean
+  // (linear, read from R, as `terrain_hit_material` reads it).
+  Vec3 albedo = root;
+  for (u32 i = 0; i < n; ++i) {
+    f32 coverage = layers[i].weight;
+    const i32 map = source->materials[1u + i].occlusion_image;
+    if (map >= 0 && static_cast<u32>(map) < source->images.size() &&
+        !source->images[static_cast<u32>(map)].bytes.empty()) {
+      const auto& bytes = source->images[static_cast<u32>(map)].bytes;
+      image::Image decoded;
+      if (image::decode_image(std::span<const u8>(bytes.data(), bytes.size()), decoded, 4)) {
+        f64 sum = 0.0;
+        for (u32 p = 0; p < decoded.pixels.size(); p += 4)
+          sum += decoded.pixels[p] / 255.0;
+        const f64 count = static_cast<f64>(decoded.width) * decoded.height;
+        coverage *= count > 0.0 ? static_cast<f32>(sum / count) : 1.0f;
+      }
+    }
+    coverage = coverage < 0.0f ? 0.0f : (coverage > 1.0f ? 1.0f : coverage);
+    albedo = albedo + (mean(i) - albedo) * coverage;
+  }
+  return albedo;
+}
 }  // namespace engine::renderer

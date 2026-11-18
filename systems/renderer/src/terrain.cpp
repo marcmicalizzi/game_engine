@@ -431,10 +431,9 @@ u8 unorm8(f32 v) noexcept { return static_cast<u8>(std::clamp(v, 0.0f, 1.0f) * 2
 
 }  // namespace
 
+namespace {
 // The same order of precedence as `material_at`: a basin over everything, a ridge over sand.
-TerrainSurface terrain_surface(const TerrainSampler& field, f32 x, f32 z) noexcept {
-  const f32 basin = field.basin_weight(x, z);
-  const f32 ridge = field.ridge_weight(x, z);
+TerrainSurface surface_of(f32 ridge, f32 basin) noexcept {
   TerrainSurface s;
   s.albedo = Vec3{k_surfaces[0][0], k_surfaces[0][1], k_surfaces[0][2]};
   s.roughness = k_surfaces[0][3];
@@ -442,9 +441,37 @@ TerrainSurface terrain_surface(const TerrainSampler& field, f32 x, f32 z) noexce
   s = mix(s, 2, band(0.15f, basin));
   return mix(s, 3, band(0.55f, basin));
 }
+}  // namespace
+
+TerrainSurface terrain_surface(const TerrainSampler& field, f32 x, f32 z) noexcept {
+  return surface_of(field.ridge_weight(x, z), field.basin_weight(x, z));
+}
 
 Vec3 terrain_sand_albedo() noexcept {
   return Vec3{k_surfaces[0][0], k_surfaces[0][1], k_surfaces[0][2]};
+}
+
+// R185: `terrain_surface` at the centres of a 64 by 64 grid over the baked map's square, summed in
+// double. A ground with no ridge and no basin is the sand exactly, without the grid.
+Vec3 terrain_surface_mean_albedo(const TerrainDesc& desc) noexcept {
+  if (desc.ridges.empty() && desc.basins.empty()) return terrain_sand_albedo();
+  constexpr u32 k_side = 64;
+  const f64 step = 2.0 * static_cast<f64>(desc.extent) / k_side;
+  f64 sum[3]{};
+  for (u32 zi = 0; zi < k_side; ++zi) {
+    const f32 z = static_cast<f32>(-static_cast<f64>(desc.extent) + (zi + 0.5) * step);
+    for (u32 xi = 0; xi < k_side; ++xi) {
+      const f32 x = static_cast<f32>(-static_cast<f64>(desc.extent) + (xi + 0.5) * step);
+      const Vec3 a =
+          surface_of(terrain_ridge_weight(desc, x, z), terrain_basin_weight(desc, x, z)).albedo;
+      sum[0] += a.x;
+      sum[1] += a.y;
+      sum[2] += a.z;
+    }
+  }
+  const f64 n = static_cast<f64>(k_side) * k_side;
+  return Vec3{static_cast<f32>(sum[0] / n), static_cast<f32>(sum[1] / n),
+              static_cast<f32>(sum[2] / n)};
 }
 
 u32 terrain_map_side(const TerrainDesc& desc) noexcept { return std::max(desc.size, 2u) - 1u; }

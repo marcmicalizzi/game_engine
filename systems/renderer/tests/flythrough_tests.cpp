@@ -30,6 +30,7 @@
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/settings.h>
 #include <systems/renderer/terrain.h>
+#include <systems/renderer/terrain_materials.h>
 
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
@@ -1135,17 +1136,21 @@ TEST_CASE("flythrough: a terrain comes back from its cache entry as the terrain 
   CHECK(hit.data.images[0].bytes == first.sources[terrain].data.images[0].bytes);
   CHECK(hit.data.images[1].bytes == first.sources[terrain].data.images[1].bytes);
   CHECK(hit.textures.size() == 2);
-  // The ground under the hemisphere ambient is the terrain's sand, from a miss and from a hit, and
-  // the frame's lighting hands it to the resolve and the reference alike.
-  CHECK(near(first.ground_albedo, terrain_sand_albedo()));
-  CHECK(near(second.ground_albedo, terrain_sand_albedo()));
+  // The ground under the hemisphere ambient is what the terrain draws by its share — this one's
+  // sand and the ridge's rock across it (R185) — from a miss and from a hit, and the frame's
+  // lighting hands it to the resolve and the reference alike.
+  const Vec3 drawn = terrain_surface_mean_albedo(first.terrain);
+  CHECK(near(first.ground_albedo, drawn));
+  CHECK(near(second.ground_albedo, drawn));
+  CHECK(drawn.x < terrain_sand_albedo().x);  // the rock is darker than the sand
   FrameLighting lighting;
   frame_lighting(second, 0, LightingOptions{}, lighting);
-  CHECK(near(lighting.ground.xyz(), terrain_sand_albedo()));
+  CHECK(near(lighting.ground.xyz(), drawn));
 }
 
-TEST_CASE("lighting: the ground is the terrain's sand, or a neutral grey without a terrain") {
-  // The sand is `terrain_surface`'s own colour away from every feature, not a second spelling.
+TEST_CASE("lighting: the ground is what the terrain draws, or a neutral grey without a terrain") {
+  // The sand is `terrain_surface`'s own colour away from every feature, not a second spelling,
+  // and a ground with no ridge or basin is that sand to the bit (R185: no sand scene moves).
   TerrainDesc desc;
   desc.enabled = true;
   desc.size = 33;
@@ -1153,6 +1158,10 @@ TEST_CASE("lighting: the ground is the terrain's sand, or a neutral grey without
   desc.seed = 7;
   const TerrainSampler field(desc);
   CHECK(near(terrain_sand_albedo(), terrain_surface(field, 80.0f, -80.0f).albedo));
+  const Vec3 sand = terrain_sand_albedo();
+  const Vec3 bare = terrain_surface_mean_albedo(desc);
+  CHECK((bare.x == sand.x && bare.y == sand.y && bare.z == sand.z));
+  CHECK(near(terrain_ground_albedo(desc, nullptr), sand));
   // A scene with no terrain keeps the neutral default, and the frame carries it with w unused.
   const SceneData plain;
   FrameLighting lighting;

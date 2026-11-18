@@ -54,4 +54,25 @@ bool check_terrain_mask_resident(const TerrainDesc& terrain, const scene_gen::Gr
 // a placement is expanded. True for a terrain with no masks.
 bool check_terrain_masks(const TerrainDesc& terrain, const scene_gen::GroundProvider& provider,
                          std::string* error);
+
+// **Each palette layer's share of the ground** (R185; renderer.md, "The ground's albedo is a scene
+// value"): `palette + 1` numbers summing to one, a layer's share and last the root's, read off the
+// mask level the way the resolve weighs a point — a point's weights over their sum, times its
+// cover, the root where the cover falls short or no tile is — over mip 0 of at most
+// `k_mask_cover_tiles` of the present tiles, evenly strided in page order, with absent tiles of the
+// range the root's. Transient: one tile's words at a time. Empty for a terrain with no masks or a
+// provider with none; false, with a sentence, where the provider's masks cannot be had.
+inline constexpr u32 k_mask_cover_tiles = 256;
+bool terrain_mask_cover(const TerrainDesc& terrain, const scene_gen::GroundProvider& provider,
+                        Vector<f32>& cover, std::string* error);
+
+// **The ground the hemisphere ambient's lower half carries** (R185; `SceneData::ground_albedo`):
+// the mean base colour of what the terrain draws. The root is the desert's surfaces by their share
+// (`terrain_surface_mean_albedo`); a palette with masks is its layers' means (the colour a layer
+// fades to far away, which the content build carries in the layer material's emissive) by
+// `TerrainDesc::mask_cover`, or unweighted where that was not measured; layers without masks
+// composite over the root in array order by their weight times their coverage map's mean, as the
+// resolve does. `source` is the terrain mesh's (`SceneData::sources[terrain_mesh].data`), or null.
+// A snow layer's grain, a formation's tints and wetness are not in it.
+Vec3 terrain_ground_albedo(const TerrainDesc& terrain, const assets::MeshData* source);
 }  // namespace engine::renderer
