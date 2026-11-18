@@ -165,6 +165,14 @@ void ProxySource::build(const renderer::SceneData& scene, f32 mesh_error_m) {
       largest[m] = std::max(largest[m], k_copy_scale_headroom * fit_scale(scene, m));
     }
   }
+  // A game's props that collide by their mesh (P45; docs: "Props"): placed by nothing at the
+  // load, at whatever scale a module asks, so at the streamed entries' headroom over the fit.
+  for (const renderer::SceneProp& prop : scene.props) {
+    if (prop.mesh >= count || prop.collider.shape != renderer::PropShape::mesh) continue;
+    placed[prop.mesh] = 1;
+    largest[prop.mesh] =
+        std::max(largest[prop.mesh], k_copy_scale_headroom * fit_scale(scene, prop.mesh));
+  }
   if (scene.terrain_mesh < count) placed[scene.terrain_mesh] = 0;
   for (const renderer::FarForestTile& far : scene.far_forest.tiles)
     if (far.mesh < count) placed[far.mesh] = 0;

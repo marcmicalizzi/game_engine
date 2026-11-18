@@ -61,6 +61,7 @@
 #include <domain/geometry/cluster_file.h>
 #include <domain/physics/physics.h>
 #include <domain/scene_gen/scene_gen.h>
+#include <systems/renderer/scene.h>
 #include <systems/scene_collision/proxy_source.h>
 #include <systems/world/tile_ring.h>
 #include <systems/world/world.h>
@@ -269,6 +270,26 @@ struct Stats {
   i64 refresh_ns = 0;
   i64 max_refresh_ns = 0;
   i64 proxy_ns = 0;
+  // A game's props (`set_props`; docs: "Props"): handed now, with a body now (their tile held, a
+  // shape that collides), and the bodies made and let go over the consumer's life.
+  u32 props = 0;
+  u32 prop_bodies = 0;
+  u64 prop_bodies_created = 0;
+  u64 prop_bodies_destroyed = 0;
+};
+
+// **A prop a host places** (`SceneCollision::set_props`; docs: "Props"; roadmap P45): a scene mesh
+// standing at `origin`, turned by `rotation` and scaled uniformly by `scale` — the renderer's
+// `SceneInstance` of a game's prop, the mesh's fit applied as the renderer applies it — and the
+// body it gets (renderer::PropCollider). `key` is the host's name for it (a game prop's id),
+// unique among those handed, and the order bodies are made in.
+struct PropBody {
+  u32 key = 0;
+  u32 mesh = 0;
+  WorldPos origin{};
+  Quat rotation{};
+  f32 scale = 1.0f;
+  renderer::PropCollider collider{};
 };
 
 // **What a held tile holds, for a debug draw** (collision_draw.h). Spans are the consumer's and
@@ -290,7 +311,8 @@ struct HeldTile {
 // **What a cast met** (`describe_hit`; docs: "What a module can ask"): the ground of a held tile,
 // or one piece of its placements — a scene mesh's instance (`instance`) or a streamed entry's
 // placement (`entry`; `mesh` its scene mesh, or none for a mesh the tile handed).
-enum class HitKind : u8 { none = 0, ground = 1, piece = 2 };
+// A game's prop (`set_props`) is `prop`, its `instance` the prop's key and `mesh` its scene mesh.
+enum class HitKind : u8 { none = 0, ground = 1, piece = 2, prop = 3 };
 struct HitInfo {
   HitKind kind = HitKind::none;
   u32 mesh = k_no_index;
@@ -452,6 +474,18 @@ class SceneCollision {
   // nothing and allocates nothing.
   SupportAnswer supports_near(WorldPos at, f32 radius, f32 min_size,
                               std::span<Support> out) const noexcept;
+  // ---- a game's props (docs: "Props"; roadmap P45) ----
+  // **The props a host places**, copied: each is a static body of its own **while the tile it
+  // stands in is held** — made with the tile, let go with it — of its mesh's proxy (the cut every
+  // placement's is, at the prop's scale) or its declared box, or none. A host calls it when its
+  // props changed, on the tick they changed; nothing moves until `update_props`.
+  void set_props(std::span<const PropBody> props);
+  // **On the tick, after the ring's update and before the step**: every prop whose tile came in
+  // or which `set_props` changed gets its body, and every one whose tile went, or which changed or
+  // went, loses it — in key order, destroyed before made, so a replay makes the same bodies with
+  // the same ids. Returns the bodies made and let go; 0 at once when nothing changed, and a scene
+  // with no props pays one comparison. Allocates nothing once the props were handed.
+  u32 update_props();
   const Stats& stats() const noexcept { return stats_; }
   // **What is held** (docs: "Seeing the collision"): the held tiles, in the consumer's order, and a
   // tile's pieces where `Config::keep_shapes` kept them. False past the count.
@@ -729,6 +763,19 @@ class SceneCollision {
   std::mutex generators_mutex_;
   FlatMap<u64, Tile> tiles_;
   Stats stats_;
+  // A game's props (`set_props`, P45): held in key order with their bodies, the next set handed
+  // waiting beside them, and the tiles' activations and deactivations at the last update.
+  struct HeldProp {
+    PropBody prop;
+    physics::BodyId body{};
+    physics::ShapeId shape{};
+  };
+  Vector<HeldProp> props_;
+  Vector<HeldProp> props_next_;
+  bool props_handed_ = false;
+  u64 props_ring_ = ~u64{0};
+  bool make_prop_body(HeldProp& held);
+  void drop_prop_body(HeldProp& held) noexcept;
   // Scratch, reused: the tick's placements, and the refresh's order.
   PlacementScratch tick_scratch_;
   Vector<u64> order_;

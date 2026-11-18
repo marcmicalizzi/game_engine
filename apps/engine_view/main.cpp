@@ -1388,6 +1388,8 @@ void attach_game(view::FlySession& session, f64 sun_offset_s, f64 sun_rate, f64 
   session.set_tick_observer(&view::GameRunner::observe, g_game);
   g_game->set_session(&session);  // the walker's services act on this session (fly_camera.h)
   g_game->set_clock(sun_offset_s, sun_rate, renderer::scene_epoch_s(scene), world_rate);
+  // The props stop the walker (P45; game_props.h): asked on the walker's tick.
+  if (g_game->props().declared()) walker.set_props(&view::GameProps::walk_props, &g_game->props());
   // `ground_height` (ABI 5) is the walker's own ground: none without a terrain.
   if (walker.available()) {
     g_game->set_ground(
@@ -2616,6 +2618,7 @@ JsonValue load_summary(const renderer::SceneLoadReport& load, const gfx::Device&
   out.set("materials", JsonValue(load.materials));  // the pack it drew with; "" none (T103)
   out.set("meshes_ms", JsonValue(load.meshes_ms));
   out.set("instances_floating", JsonValue(load.instances_floating));
+  out.set("instances_in_structures", JsonValue(load.instances_in_structures));  // need 153 (f)
   out.set("instances_buried", JsonValue(load.instances_buried));
   JsonValue textures = JsonValue::object();
   textures.set("references", JsonValue(load.references));

@@ -351,12 +351,25 @@ struct StreamedPlacements {
 // renderer's rule for instances that come and go is that the meshes stay and only the instances
 // change, so a module's objects have to be meshes the scene loaded; this is how a scene says which.
 // `mesh` is the scene mesh index the prop's file became.
+//
+// **How a placed prop stops a walker** (`engine.scene.Prop.collision`, version 3; roadmap P45;
+// docs/subsystems/apps.md, "Props: the objects a game places"): by its own mesh — the LOD DAG cut
+// at the walk's error, as every placement's proxy is (scene_collision.md, "Why this shape") — by
+// a box the scene declares, or not at all. `half_extents` and `center` are metres in the prop's
+// frame at scale 1, its origin where the module places it; the module's scale scales them.
+enum class PropShape : u8 { mesh = 0, box = 1, none = 2 };
+struct PropCollider {
+  PropShape shape = PropShape::mesh;
+  Vec3 half_extents{};
+  Vec3 center{};
+};
 struct SceneProp {
   std::string name;
   u32 mesh = 0;
   // The prop's `fire` (fire.h): every placed instance of it carries this fire, its position from
   // the instance's origin. Absent: none.
   std::optional<FireDesc> fire{};
+  PropCollider collider{};
 };
 
 // **A streamed world's own instances, a tile at a time** (renderer.md, "Authored instances per
@@ -527,8 +540,12 @@ struct SceneDesc {
   // ground"): those with `ground: false` whose base `y` is more than `k_off_ground_m` above
   // (`floating`) or below (`buried`) the terrain's surface at their x and z, counted at the read
   // with the largest offset of each (metres, 0 when none) and the first one's index. A count, not a
-  // refusal: the author may mean it. Zero for a scene with no terrain.
+  // refusal: the author may mean it. Zero for a scene with no terrain. **One over a building is
+  // not floating** (need 153 (f)): an instance more than the threshold up whose x and z a
+  // placement entry's disc or polygon covers — a house's footprint, which it stands on a floor of
+  // or hangs from a joist of — is counted in `instances_in_structures` instead.
   u32 instances_floating = 0;
+  u32 instances_in_structures = 0;
   u32 instances_buried = 0;
   f64 floating_max_m = 0.0;
   f64 buried_max_m = 0.0;
@@ -725,7 +742,9 @@ struct SceneLoadReport {
   std::string materials;
   // The file's `ground: false` instances more than a metre above (`floating`) or below (`buried`)
   // the ground they stand over (`SceneDesc::instances_floating`); only counted, never refused.
+  // Those over a building's footprint are `in_structures`, not floating.
   u32 instances_floating = 0;
+  u32 instances_in_structures = 0;
   u32 instances_buried = 0;
   // **Seating by the footprint** (G201 stage 2; renderer.md, "A tree seated by its footprint"):
   // the loaded instances standing on the ground whose mesh has a seat (`seated`, each 17 ground

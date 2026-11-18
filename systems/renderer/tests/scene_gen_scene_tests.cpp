@@ -154,6 +154,37 @@ constexpr scene_gen::PlacementGeneratorDesc k_opening{.name = "scene-gen-test-op
                                                       .plan_ground = &opening_plan};
 const scene_gen::Registrar k_opening_registrar{k_opening};
 
+// **A house that places nothing and occupies its footprint** (need 153 (f)): the polygon x and z
+// in [10, 18] m and a lane's band along z = 30 m, 1 m either side, handed by the whole read and by
+// every tile alike (a shape is world-placed, and the reader asks whether it covers a point).
+const scene_gen::FootprintPoint k_house_corners[] = {
+    {10000, 10000}, {18000, 10000}, {18000, 18000}, {10000, 18000}};
+bool house_open(const JsonValue&, const scene_gen::Context&, void** state, std::string*) {
+  *state = nullptr;
+  return true;
+}
+void house_close(void*) noexcept {}
+bool house_shapes(scene_gen::Placements& out) {
+  out.shapes.add(scene_gen::Footprint::polygon(k_house_corners));
+  out.shapes.add(scene_gen::Footprint::band(0, 30000, 20000, 30000, 1000));
+  return true;
+}
+bool house_expand(void*, const scene_gen::Context&, scene_gen::Placements& out, std::string*) {
+  g_log += "house whole;";
+  return house_shapes(out);
+}
+bool house_tile(void*, scene_gen::TileCoord, const scene_gen::Context&, scene_gen::Placements& out,
+                std::string*) {
+  g_log += "house tile;";
+  return house_shapes(out);
+}
+constexpr scene_gen::PlacementGeneratorDesc k_house{.name = "scene-gen-test-house",
+                                                    .open = &house_open,
+                                                    .close = &house_close,
+                                                    .expand = &house_expand,
+                                                    .tile = &house_tile};
+const scene_gen::Registrar k_house_registrar{k_house};
+
 std::string scene_with(const std::string& placements, const std::string& world = std::string()) {
   return R"({"format":"engine.scene.v1","name":"rows",)"
          R"("meshes":[{"name":"marker","path":"marker.glb"}],)"
@@ -239,6 +270,48 @@ TEST_CASE("renderer: instances off the ground are counted at the read, grounded 
   REQUIRE_MESSAGE(read_scene_file(path, grounded, error), error);
   CHECK(grounded.instances_floating == 0);
   CHECK(grounded.instances_buried == 0);
+}
+
+TEST_CASE("renderer: an instance over a building's footprint stands in it and does not float") {
+  // Need 153 (f): the forest's chests on an upper floor and flitches hung from a joist, 1 to 3.5 m
+  // over the ground, were 53 `floating`. Over the test plane at 3 m: one 3.5 m up inside the
+  // house's polygon stands in it; one 9 m up over the lane's band and one outside both float. The
+  // same in a streamed world, where the house's tile is asked only because a lifted instance
+  // stands on it — and a scene with nothing lifted asks no tile.
+  const test::TempDir tmp("renderer_in_structures");
+  const std::string path = tmp.file("scene.json");
+  const auto scene = [](const char* instances, const char* world) {
+    return std::string(R"({"format":"engine.scene.v1","name":"house",)"
+                       R"("meshes":[{"name":"marker","path":"marker.glb"}],"instances":[)") +
+           instances +
+           R"(],"terrain":{"size":17,"extent":20,"dune_height":3,"provider":"scene-gen-test-plane"},)"
+           R"("placements":[{"generator":"scene-gen-test-house","params":{}}])" +
+           world + "}";
+  };
+  const char* lifted = R"({"mesh":0,"translation":[14,6.5,14],"name":"chest"},)"
+                       R"({"mesh":0,"translation":[10,12,30],"name":"sign"},)"
+                       R"({"mesh":0,"translation":[-8,9,-8],"name":"kite"})";
+  for (const char* world : {"", R"(,"world":{})"}) {
+    CAPTURE(world);
+    g_log.clear();
+    SceneDesc desc;
+    std::string error;
+    REQUIRE(write_text(path, scene(lifted, world)));
+    REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
+    CHECK(desc.instances_in_structures == 1);
+    CHECK(desc.instances_floating == 2);
+    CHECK(desc.floating_first == 1);  // the sign over the lane: a band holds nothing up
+    CHECK(desc.floating_max_m == doctest::Approx(9.0));
+    CHECK(g_log.find(world[0] == '\0' ? "house whole;" : "house tile;") != std::string::npos);
+    // Nothing lifted: a streamed read asks the house for no tile.
+    g_log.clear();
+    SceneDesc low;
+    REQUIRE(write_text(path, scene(R"({"mesh":0,"translation":[14,3.5,14]})", world)));
+    REQUIRE_MESSAGE(read_scene_file(path, low, error), error);
+    CHECK(low.instances_in_structures == 0);
+    CHECK(low.instances_floating == 0);
+    CHECK(g_log.find("house tile;") == std::string::npos);
+  }
 }
 
 TEST_CASE("renderer: the ground is made first, and the placements follow in the scene's order") {
