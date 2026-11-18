@@ -3870,6 +3870,69 @@ both, and three codes or more 0.05 %, 0.003 % and 0.003 % — against the forest
 and 11 %. A luma step of a whole code is the far rarer event (1.5 %, 0.08 %, 0.02 %), which is
 why the two sessions' figures never met.
 
+### Main's three: the cache's passes read what they declared only to write
+
+Found the same morning (2026-11-18, a diagnosis row of batch 68), and **mended: the three pass
+again, with the figures they had.** They had passed in batch 67's stack and gate on 2026-11-17
+(06:49 and about 12:40) and failed in every run after 16:41 that day, when the display driver
+went from **617.42** (the gate's own adapter line) to **621.24**; main's code had not moved.
+
+**The cause is the engine's.** The cache's passes — `gi clear`, each `gi preroll sample` and
+`gi sample`, each fold, and `gi stats` — declared the cache buffer as written only
+(`Access::ComputeWrite`, and `TransferWrite` for the copy), so the barrier the render graph puts
+between two of them named storage *write* as the only access behind it. Every one of them also
+**reads** what the pass before wrote: the sample pass a bucket's keys and a cell's mean, the fold
+the keys and the frame's sums, the copy the header's counts. A barrier orders an earlier write
+before the accesses its destination mask names and no others (Vulkan's memory dependency: a write
+is made visible to the access types of the second scope), so by the specification's letter those
+reads were never ordered behind the writes. 617.42 ran one pass after the other anyway; 621.24
+does not, and is entitled to. Nothing in the acceleration structures, the traversal or the
+rays' arithmetic changed: with the mode off the same field draws the same bytes twice and moved.
+
+**The evidence** (msvc-debug on the joined tree d2697bcf, the RTX 5090, 621.24; a scratch case
+that drew the translation case's field several times in one process and compared pictures and
+the passes' counts frame by frame):
+- **The same scene drawn twice, not moved, differed**: 2,394 pixels of 16,384 under the sky alone
+  (2,960 colour steps, the worst 4), 206 under the bounce (every one by a single code); moved by
+  6,548 cells 3,050 and 283. Identifiers and depths never differed, and with the mode off nothing
+  did. So the translation case was never measuring a move.
+- **One frame, no pre-roll, no samples round the eye**: after one sample pass and one fold the
+  cells held were **4,967, 4,612 and 4,927** in three renders of one scene, where the same frame
+  holds **20,061** every time once the passes are ordered — three quarters of a first frame's
+  inserts were cleared under it or folded before they landed (which, was not told apart). With
+  the pre-roll's sixteen steps
+  the counts agreed by the frame's end and the pictures still differed (802 pixels), the sums
+  having been folded at different steps.
+- The three cases fail the same way run by name and in the gate's whole part (`renderer.3`
+  through CTest, 132 cases: 129 pass and these three fail, 4,097 / 3,992 / 198 / 308 colour
+  steps; 0.975 against 0.633; 28.42 steps under), so no earlier case's state was in it.
+- **With the three declarations made true** (below) every figure above is 0 and the cases draw
+  what they drew on the old driver: 0 colour steps in all four; the first seven frames' change
+  **0.534** against 0.633 (the gate's 0.534); a crown's first frame after a turn **3.23** steps
+  under (the stack's 3.24).
+
+The turn's two cases were the same fault seen from the other side: a first frame after a turn
+reads cells the samples round the eye filled, and a fold that runs beside its sample pass folds
+part of them a frame late or not at all, so the crowns stood 28 steps dark for a frame and the
+turn showed its fill. Read, not measured: the figure repeated to a few hundredths (28.41 to
+28.46 over the runs) because a mean over 8,000 crown pixels of that many lost samples does, not
+because the passes ran in a fixed order.
+
+**The mend** (`SceneRenderer::record_frame`'s cache block): the clear, the sample passes and the
+folds declare `Access::ComputeReadWrite`, and `gi stats` declares the copy's read
+(`TransferRead`) before its write, so each barrier names the reads too. The graph emitted a
+barrier at each of these places already; only its masks change, and a frame's passes and their
+count are the same. [gfx](gfx.md) has the rule ("A pass that reads back what it writes says
+so").
+
+**Not done.** Twenty-one of `record_frame`'s passes declare a compute access as written only
+(the two culls, the pool's passes, the records chain, `tlas instances`, `trace`, `motion`,
+`half sun` and others). Most write and never read back; none of their tests fail on this
+driver; and none was read against its shader here for an atomic or a read of what an earlier
+pass left. That audit, or the graph naming the read with every storage write — a shader that
+can write through an address can read through it, an atomic is both, and the barrier is emitted
+either way — is a row of its own.
+
 ## The sun's day
 
 *A scene that names a sky takes its sun, its moon and its sky from it instead, on the world's clock ([The sky](#the-sky)); everything in this section is the stand-in's, which every other scene still draws, to the bit.*

@@ -6376,10 +6376,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       rg_gi = graph.import_buffer("gi cache", gi_cache_);
       // The fold over the cells, as one step's push block gives it: the cache's first frame clears
       // with it, every step folds with it, and the frame's last counts what it keeps.
+      // **Every pass here reads what the one before wrote, and declares the read**: a barrier orders
+      // a write before the accesses it names and no others (renderer.md, "Main's three").
       auto fold_pass = [&](const char* name, u32 step, u32 step_flags, bool timed) {
         graph.add_pass(
             name, gfx::PassKind::Compute,
-            [&](gfx::PassBuilder& b) { b.write(rg_gi, gfx::Access::ComputeWrite); },
+            [&](gfx::PassBuilder& b) { b.write(rg_gi, gfx::Access::ComputeReadWrite); },
             [&, step, step_flags, timed](gfx::CommandList cb, gfx::RenderGraph&) {
               cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.gi_fold.pipeline);
               bindless.bind(cb, gfx::BindPoint::Compute);
@@ -6422,7 +6424,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               b.read(rt.blas_data, gfx::Access::RayQueryRead);
               read_clas(b, gfx::Access::RayQueryRead);
               if (rt_cache) b.read(rt.cache_slots, gfx::Access::RayQueryRead);
-              b.write(rg_gi, gfx::Access::ComputeWrite);
+              b.write(rg_gi, gfx::Access::ComputeReadWrite);
             },
             [&, step, last_step](gfx::CommandList cb, gfx::RenderGraph&) {
               cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.gi_sample.pipeline);
@@ -6460,6 +6462,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         graph.add_pass(
             "gi stats", gfx::PassKind::Transfer,
             [&](gfx::PassBuilder& b) {
+              b.read(rg_gi, gfx::Access::TransferRead);
               b.write(rg_gi, gfx::Access::TransferWrite);
               b.write(rg_stats, gfx::Access::TransferWrite);
             },
