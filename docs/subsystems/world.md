@@ -345,7 +345,7 @@ Each is a test in `tests/world_tests.cpp`, `tile_store_tests.cpp`, `consumer_tes
 - `systems/world/world.h` — `k_determinism`, `max_activations_tunable`, `max_deactivations_tunable`, `TileConsumer`, `ConsumerStats`, `UpdateStats`, `World` (with `restore`).
 - `systems/world/tile_meshes.h` — `TileMeshSink`, `TileMeshConfig`, `TileMeshStats`, `TileMeshes` (`acquire`, `release`, `begin_commit`, `admit`, `evict_lingering`, `end_commit`), `mesh_linger_tunable`, `mesh_admissions_tunable`, `mesh_admission_bytes_tunable`; `PlacementTiles::set_meshes`, `meshes`; `connect_scene_meshes` in `scene_consumers.h` ([A tile's meshes](#a-tiles-meshes-residency-by-reference)).
 - `systems/world/world_log.h` — `WorldLog`.
-- `systems/world/tile_store.h` — `TileRow`, `WorldStore`.
+- `systems/world/tile_store.h` — `TileRow`, `WorldStore`, and `EventPayload`, `read_event_payload`: an event of the store read as this build's version of its type ([store](store.md), "Migrations").
 - `systems/world/store_tiles.h` — `StoreTilesBinding` (with `document_tiles`), `StoreTilesStats`, `StoreTiles`, `record_position`.
 - `systems/world/document_tiles.h` — `DocumentTilesStats` (with `refiled`, `left` and `arrived`), `DocumentTiles` (with `consumer(rings, ring)`, `settle`, `flush`).
 - `systems/world/input_observer.h` — `InputObserver` (`bind`, `catch_up`, `step`, `recorded`, `state_hash`).

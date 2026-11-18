@@ -1,5 +1,6 @@
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
+#include <core/schema/materialize.h>
 #include <core/schema/type_info.h>
 
 #include <doctest/doctest.h>
@@ -452,6 +453,19 @@ TEST_CASE("schema: an additive version's step is generated, and only an additive
   REQUIRE(from_json_versioned(g, v2, 2, ctx2));
   CHECK(g.second == "set");
   CHECK(g.third == 3.5f);
+
+  // The same steps without the mapping: what an event's payload goes through (D26). The JSON keeps
+  // what it had, and its missing fields read as their defaults.
+  JsonValue raw = v1;
+  ReadContext up;
+  CHECK(upcast(type_of<Grown>(), raw, 1, up));
+  CHECK(raw == v1);
+  ReadContext newer;
+  CHECK_FALSE(upcast(type_of<Grown>(), raw, 4, newer));
+  ReadContext zero;
+  CHECK_FALSE(upcast(type_of<Grown>(), raw, 0, zero));
+  CHECK(find_by_stable_id(stable_type_id("engine.schema_test.Grown")) == &type_of<Grown>());
+  CHECK(find_by_stable_id(stable_type_id("engine.schema_test.Nowhere")) == nullptr);
 
   // A field the generated step does not know of is still refused by the reader: a removal or a
   // rename needs a step written by hand.

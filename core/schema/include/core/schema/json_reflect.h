@@ -93,6 +93,12 @@ class MigrationRegistry {
   Vector<Migration> migrations_;
 };
 
+// Brings a JSON object stored at `stored_version` of `type` up to the build's version, through
+// every step the registry has or generates, without mapping it: what an event's payload read from
+// the store goes through (plan 03 §3.8, "events are upcast"). False, with the reason in `ctx`, for
+// a version newer than the build's, a version 0, or a missing step.
+bool upcast(const TypeInfo& type, JsonValue& object, u16 stored_version, ReadContext& ctx);
+
 // Reads an object stored at an older schema version: migrates the JSON, then maps it.
 bool from_json_versioned(const TypeInfo& type, void* object, JsonValue in, u16 stored_version,
                          ReadContext& ctx);

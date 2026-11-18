@@ -135,5 +135,8 @@ bool is_byte_comparable(const TypeRef& type) noexcept;
 // so every build and every machine agrees on it without a registry of numbers; `session.events`
 // prints it in decimal.
 u32 stable_type_id(std::string_view qualified_name) noexcept;
+// The registered type whose `stable_type_id` is `id`, or null: how a reader of the store turns an
+// event's or a projection's type back into its descriptor. A walk of the registry, for cold paths.
+const TypeInfo* find_by_stable_id(u32 id) noexcept;
 
 }  // namespace engine::schema

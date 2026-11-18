@@ -645,6 +645,19 @@ bool MigrationRegistry::migrate(const TypeInfo& type, JsonValue& object, u16 fro
   return true;
 }
 
+bool upcast(const TypeInfo& type, JsonValue& object, u16 stored_version, ReadContext& ctx) {
+  if (stored_version > type.version) {
+    ctx.error("stored schema version is newer than this build understands");
+    return false;
+  }
+  if (stored_version == 0) {
+    ctx.error("stored schema version 0 is not a version");
+    return false;
+  }
+  return stored_version == type.version ||
+         MigrationRegistry::global().migrate(type, object, stored_version, ctx);
+}
+
 bool from_json_versioned(const TypeInfo& type, void* object, JsonValue in, u16 stored_version,
                          ReadContext& ctx) {
   if (stored_version > type.version) {

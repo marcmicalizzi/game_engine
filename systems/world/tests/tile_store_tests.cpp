@@ -3,6 +3,8 @@
 // `SimScheduler::reconcile_tile` reading them — the gap from the snapshot, the summary from the
 // tile's seed, the records from the projections — where until now only tests' fakes stood.
 #include <core/hash/hash.h>
+#include <core/json/json.h>
+#include <core/schema/json_reflect.h>
 #include <core/schema/materialize.h>
 #include <domain/sim/scheduler.h>
 #include <domain/sim/timing_wheel.h>
@@ -12,6 +14,7 @@
 #include <test_temp_dir.h>
 
 #include <map>
+#include <schemas/world.h>
 #include <string>
 
 using namespace engine;
@@ -232,4 +235,43 @@ TEST_CASE(
     CHECK(result.records == 2);
     CHECK(result.promoted == 2);
   }
+}
+
+TEST_CASE("world: an event's payload reads as this build's version of its type, or is refused") {
+  // Plan 03 section 3.8, "events are upcast" (roadmap D26): what the store keeps is the type, the
+  // version it was written at and that version's JSON; the reader hands back the current version.
+  WriteBack event;
+  event.record = id_of(3);
+  event.type = "engine.world.Node";
+  event.patch = 7;
+  const std::string text = write_json(schema::to_json(event));
+  store::EventRecord record;
+  record.type = schema::stable_type_id(schema::type_of<WriteBack>().qualified_name);
+  record.payload_version = WriteBack::k_schema_version;
+  record.payload = std::span<const u8>(reinterpret_cast<const u8*>(text.data()), text.size());
+
+  EventPayload payload;
+  std::string error;
+  REQUIRE(read_event_payload(record, payload, error));
+  CHECK(payload.type == &schema::type_of<WriteBack>());
+  CHECK(payload.written_version == WriteBack::k_schema_version);
+  WriteBack back;
+  schema::ReadContext ctx;
+  REQUIRE(schema::from_json(back, payload.value, ctx));
+  CHECK(back == event);
+
+  // Written by a newer build: refused, naming the type.
+  store::EventRecord newer = record;
+  newer.payload_version = static_cast<u16>(WriteBack::k_schema_version + 1);
+  CHECK_FALSE(read_event_payload(newer, payload, error));
+  CHECK(error.find("engine.world.WriteBack") != std::string::npos);
+  CHECK(payload.type == nullptr);
+  // A type this build has never heard of, and bytes that are not an object.
+  store::EventRecord unknown = record;
+  unknown.type = schema::stable_type_id("engine.nowhere.Event");
+  CHECK_FALSE(read_event_payload(unknown, payload, error));
+  const std::string list = "[1]";
+  store::EventRecord garbled = record;
+  garbled.payload = std::span<const u8>(reinterpret_cast<const u8*>(list.data()), list.size());
+  CHECK_FALSE(read_event_payload(garbled, payload, error));
 }
