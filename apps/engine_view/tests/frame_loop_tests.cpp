@@ -32,12 +32,14 @@
 #include "view_process.h"
 
 #include <core/json/json.h>
+#include <foundation/image/decode.h>
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <cstring>
 #include <filesystem>
 #include <sstream>
 #include <string>
@@ -324,6 +326,227 @@ TEST_CASE(
   CHECK(flown.buffers == 0);
 }
 
+namespace {
+
+// What a standing camera's frames did (roadmap W149; world.md, "A camera that stands").
+struct Stood {
+  bool ran = false;
+  u32 records = 0;
+  // The first recorded frame from which every frame did nothing (~0u: some frame after it did).
+  u32 quiet_from = ~0u;
+  // Summed over the frames from `quiet_from` on — every one of them zero when it is set — and,
+  // apart, over the frames before it: the settling, reported.
+  u64 tiles_built = 0, slots_written = 0, chunks_built = 0, chunk_bytes = 0, page_bytes = 0;
+  u64 allocations = 0, buffers = 0, events = 0;
+  u64 settling_work = 0;
+  // The premise: the world filled in the warm-up, and every record says what its ground and its
+  // world did (a record with neither would make every count above zero for nothing).
+  u64 fill_events = 0;
+  u32 with_ground = 0;
+  u32 with_world = 0;
+  std::string capture;  // the last frame's picture
+  std::string busy;     // the frames that did something, for the message
+};
+
+// A count a record or a log line may leave out (a frame with no world, no terrain): zero then.
+u64 count(const JsonValue& object, const char* key) {
+  const u64 v = number(object, key);
+  return v == ~u64{0} ? 0 : v;
+}
+u64 field(const JsonValue& object, const char* parent, const char* key) {
+  const JsonValue* p = object.find(parent);
+  return p == nullptr || p->is_null() ? 0 : count(*p, key);
+}
+
+// Stands `frames` frames at the one camera of `path` (after `k_warmup` at it, where the world
+// fills) with the world clock running and the ground's time stopped, as the forest's staging is
+// loaded, and reads every frame's record and the world log's lines back.
+Stood stand(const test::TempDir& tmp, const std::string& name, const std::string& scene,
+            const std::string& path, u32 frames, const std::vector<std::string>& extra) {
+  Stood out;
+  const std::string jsonl = tmp.file(name + ".jsonl");
+  const std::string world_log = tmp.file(name + "-world.jsonl");
+  out.capture = tmp.file(name + ".png");
+  std::vector<std::string> args = {
+      "--scene",      scene,         "--camera-path",     path,         "--offscreen",
+      "--benchmark",  jsonl,         "--world-log",       world_log,    "--capture",
+      out.capture,    "--frames",    std::to_string(frames),            "--repeat",
+      "1",            "--warmup",    std::to_string(k_warmup),          "--warmup-seconds",
+      "0",            "--width",     "160",               "--height",   "96",
+      "--time-rate",  "0",           "--world-rate",      "1",          "--terrain-async",
+      "--ddc",        tmp.file("ddc")};
+  args.insert(args.end(), extra.begin(), extra.end());
+  const Run run = view(args);
+  if (run.exit_code == 3) {
+    MESSAGE(name << ": engine-view cannot draw it here: " << run.output);
+    return out;
+  }
+  REQUIRE_MESSAGE(run.exit_code == 0, name << ": " << run.output);
+  // Each recorded frame's work, by frame: the records' and the world log's.
+  std::vector<u64> work(frames, 0);
+  std::vector<std::string> what(frames);
+  std::string text;
+  REQUIRE(io::read_file(world_log, text) == io::Status::Ok);
+  {
+    std::istringstream lines(text);
+    for (std::string line; std::getline(lines, line);) {
+      JsonValue value;
+      if (line.empty() || !parse_json(line, value).ok) continue;
+      const JsonValue* recorded = value.find("recorded");
+      const u64 f = count(value, "frame");
+      const u64 events =
+          count(value, "activated") + count(value, "changed") + count(value, "deactivated");
+      if (recorded == nullptr || !recorded->as_bool()) {
+        out.fill_events += events;  // the warm-up's: the world filling round the camera
+        continue;
+      }
+      if (f < frames && events > 0) {
+        work[f] += events;
+        what[f] += " " + std::to_string(events) + " tile events";
+      }
+    }
+  }
+  REQUIRE(io::read_file(jsonl, text) == io::Status::Ok);
+  std::vector<JsonValue> records;
+  {
+    std::istringstream lines(text);
+    for (std::string line; std::getline(lines, line);) {
+      if (line.empty()) continue;
+      JsonValue value;
+      REQUIRE_MESSAGE(parse_json(line, value).ok, line);
+      if (value.find("format") != nullptr) continue;
+      records.push_back(std::move(value));
+    }
+  }
+  out.records = static_cast<u32>(records.size());
+  REQUIRE(out.records == frames);
+  for (u32 r = 0; r < out.records; ++r) {
+    const JsonValue& v = records[r];
+    const u64 f = number(v, "frame");
+    REQUIRE(f < frames);
+    const JsonValue* ground = v.find("terrain");
+    const JsonValue* world = v.find("world");
+    out.with_ground += ground != nullptr && ground->is_object() ? 1u : 0u;
+    out.with_world += world != nullptr && world->is_object() ? 1u : 0u;
+    const u64 parts[] = {field(v, "world", "tiles_built"),     field(v, "world", "slots_written"),
+                         field(v, "terrain", "chunks_built"),
+                         field(v, "terrain", "chunk_upload_bytes"), count(v, "upload_bytes"),
+                         count(v, "allocations"),                   count(v, "buffers")};
+    static const char* const names[] = {"tiles built", "slots written", "chunks built",
+                                        "chunk bytes", "page bytes",    "allocations",
+                                        "buffers"};
+    for (u32 k = 0; k < 7; ++k) {
+      if (parts[k] == 0) continue;
+      work[f] += parts[k];
+      what[f] += " " + std::to_string(parts[k]) + " " + names[k];
+    }
+  }
+  // Quiet from the first frame after the last that did anything.
+  u32 last_busy = ~0u;
+  for (u32 f = 0; f < frames; ++f)
+    if (work[f] > 0) last_busy = f;
+  out.quiet_from = last_busy == ~0u ? 0u : last_busy + 1;
+  for (u32 f = 0; f < frames; ++f) {
+    if (work[f] == 0) continue;
+    out.settling_work += work[f];
+    if (out.busy.size() < 600) out.busy += "frame " + std::to_string(f) + ":" + what[f] + "; ";
+  }
+  for (u32 r = 0; r < out.records; ++r) {
+    const JsonValue& v = records[r];
+    if (number(v, "frame") < out.quiet_from) continue;
+    out.tiles_built += field(v, "world", "tiles_built");
+    out.slots_written += field(v, "world", "slots_written");
+    out.chunks_built += field(v, "terrain", "chunks_built");
+    out.chunk_bytes += field(v, "terrain", "chunk_upload_bytes");
+    out.page_bytes += count(v, "upload_bytes");
+    out.allocations += count(v, "allocations");
+    out.buffers += count(v, "buffers");
+  }
+  MESSAGE(name << ": " << frames << " frames standing after " << k_warmup
+               << " at the camera (the warm-up's fill: " << out.fill_events
+               << " tile events); quiet from frame " << out.quiet_from
+               << (out.busy.empty() ? std::string(" (every one)") : " after: " + out.busy));
+  out.ran = true;
+  return out;
+}
+
+bool same_picture(const std::string& a, const std::string& b, u64& differing) {
+  image::Image x;
+  image::Image y;
+  if (image::read_image(a, x) != io::Status::Ok || image::read_image(b, y) != io::Status::Ok)
+    return false;
+  if (x.width != y.width || x.height != y.height || x.pixels.size() != y.pixels.size())
+    return false;
+  differing = 0;
+  for (u32 i = 0; i + 3 < x.pixels.size(); i += 4)
+    differing += std::memcmp(&x.pixels[i], &y.pixels[i], 4) != 0 ? 1u : 0u;
+  return true;
+}
+
+}  // namespace
+
+// Roadmap W149 (world.md, "A camera that stands"): the endless desert's world tiles and two far
+// levels, the camera standing where its path starts, the world clock running and the sand's time
+// stopped (`--time-rate 0 --world-rate 1 --terrain-async`, as the forest's staging is loaded).
+// Within the warm-up the place settles; from then on no frame activates, moves or deactivates a
+// tile, builds a placements tile or writes a table slot, builds or uploads a ground chunk, uploads
+// a geometry page, or allocates — and the picture at the end of the flight is the picture of its
+// first frame, byte for byte. A one-frame flight is that first frame.
+TEST_CASE("frame loop: the endless desert standing still builds, uploads and allocates nothing" *
+          doctest::skip()) {
+  const test::TempDir tmp("engine_view_frame_loop_standing");
+  const std::string dir = committed_dir("desert-endless");
+  JsonValue scene;
+  if (!read_json(dir + "/scene.json", scene)) {
+    MESSAGE("the endless desert is not in this bundle");
+    return;
+  }
+  JsonValue world = *scene.find("world");
+  JsonValue rings = JsonValue::array();
+  const f64 radii[3] = {1.5, 3.0, 6.0};
+  const u64 cells[3] = {32, 16, 8};
+  for (u32 k = 0; k < 3; ++k) {
+    JsonValue ring = JsonValue::object();
+    ring.set("radius", JsonValue(radii[k]));
+    ring.set("ground_cells", JsonValue(cells[k]));
+    rings.push_back(std::move(ring));
+  }
+  world.set("rings", std::move(rings));
+  scene.set("world", std::move(world));
+  // Standing where the committed path starts, looking where it looks.
+  const std::string path =
+      R"({"format":"engine.camera-path.v1","name":"standing","fps":60,"znear":0.1,"keys":[)"
+      R"({"time":0,"position":[-2000,90,0],"ground":true,"target":[-1300,0,0],"target_ground":true},)"
+      R"({"time":10,"position":[-2000,90,0],"ground":true,"target":[-1300,0,0],"target_ground":true}]})";
+  REQUIRE(io::write_file(tmp.file("standing.json"), path) == io::Status::Ok);
+  scene.set("camera_path", JsonValue(forward_slashes(tmp.file("standing.json"))));
+  const std::string file = tmp.file("endless.json");
+  REQUIRE(io::write_file(file, write_json(scene)) == io::Status::Ok);
+  const std::vector<std::string> far = {"--terrain-far", "2"};
+  const Stood first = stand(tmp, "first", file, tmp.file("standing.json"), 1, far);
+  if (!first.ran) return;
+  const Stood stood = stand(tmp, "standing", file, tmp.file("standing.json"), 240, far);
+  if (!stood.ran) return;
+  // The premise: the world filled round the camera, and every frame reported its ground and world.
+  CHECK(stood.fill_events > 0);
+  CHECK(stood.with_ground == stood.records);
+  CHECK(stood.with_world == stood.records);
+  // Settled by the end of the warm-up, or within its first frames: a frame that waits for its layout
+  // (offscreen) leaves the async ground nothing to finish later.
+  CHECK(stood.quiet_from <= 30);
+  CHECK(stood.tiles_built == 0);
+  CHECK(stood.slots_written == 0);
+  CHECK(stood.chunks_built == 0);
+  CHECK(stood.chunk_bytes == 0);
+  CHECK(stood.page_bytes == 0);
+  CHECK(stood.allocations == 0);
+  CHECK(stood.buffers == 0);
+  u64 differing = 0;
+  REQUIRE(same_picture(first.capture, stood.capture, differing));
+  CHECK_MESSAGE(differing == 0, differing << " pixels differ between the first frame standing "
+                                          << "and the 240th");
+}
+
 #if ENGINE_VIEW_TESTS_FLORA
 // Roadmap W74 (renderer.md, "Streamed trees sway"): a streamed world's own trees sway with their
 // tiles, each taking a record of its mesh's free list when its tile arrives and giving it back when
@@ -371,6 +594,46 @@ TEST_CASE("frame loop: a streamed world's swaying trees allocate nothing in thei
   CHECK(rigid.buffers == 0);
   CHECK_MESSAGE(flown.allocations == 0, flown.first << '\n' << flown.allocation_sites);
   CHECK(flown.buffers == 0);
+}
+
+// Roadmap W149, with the forest's other inputs: a streamed world's own trees, swaying on the world
+// clock, in two rings round a camera that stands among them. The sway moves the picture every frame
+// (so no picture is compared); nothing it reads reaches a tile's key, its placements or its ground,
+// so after the warm-up no tile is touched, built or uploaded and nothing is allocated.
+TEST_CASE("frame loop: a streamed world's swaying trees round a standing camera build nothing" *
+          doctest::skip()) {
+  const test::TempDir tmp("engine_view_frame_loop_standing_trees");
+  const std::string oak =
+      R"({"species":"broadleaf","broadleaf":{"seed":3,"height_m":8,"trunk_radius_m":0.25,)"
+      R"("triangle_budget":8000,"card_bake_px":16,"impostor_px":32}})";
+  REQUIRE(io::write_file(tmp.file("oak.flora.json"), oak) == io::Status::Ok);
+  const std::string scene =
+      R"({"format":"engine.scene.v1","name":"frame-loop-standing-trees",)"
+      R"("terrain":{"size":65,"extent":400,"seed":7,"dune_height":0.3,"dune_wavelength":60,)"
+      R"("generator":"Waves"},)"
+      R"("meshes":[{"name":"oak","path":"oak.flora.json"}],)"
+      R"("scatters":[{"mesh":0,"center":[0,0,0],"radius_min":2,"radius_max":120,"count":90,)"
+      R"("seed":11,"scale_min":0.8,"scale_max":1.2}],)"
+      R"("world":{"tile_size":32,"rings":[{"radius":1.5},{"radius":3}]}})";
+  REQUIRE(io::write_file(tmp.file("trees.json"), scene) == io::Status::Ok);
+  // Standing at the grove's edge, a tile boundary in reach of the second ring's band.
+  const std::string path = R"({"format":"engine.camera-path.v1","name":"standing","fps":60,"keys":[)"
+                           R"({"time":0,"position":[-40,6,10],"target":[0,4,0]},)"
+                           R"({"time":10,"position":[-40,6,10],"target":[0,4,0]}]})";
+  REQUIRE(io::write_file(tmp.file("path.json"), path) == io::Status::Ok);
+  const Stood stood = stand(tmp, "standing-trees", tmp.file("trees.json"), tmp.file("path.json"),
+                            240, {"--tunable", "renderer.flora.motion=true"});
+  if (!stood.ran) return;
+  CHECK(stood.fill_events > 0);
+  CHECK(stood.with_world == stood.records);
+  CHECK(stood.quiet_from <= 30);
+  CHECK(stood.tiles_built == 0);
+  CHECK(stood.slots_written == 0);
+  CHECK(stood.chunks_built == 0);
+  CHECK(stood.chunk_bytes == 0);
+  CHECK(stood.page_bytes == 0);
+  CHECK(stood.allocations == 0);
+  CHECK(stood.buffers == 0);
 }
 #endif  // ENGINE_VIEW_TESTS_FLORA
 #endif  // ENGINE_VIEW_WORLD
