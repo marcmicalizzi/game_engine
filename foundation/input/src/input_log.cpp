@@ -2,6 +2,8 @@
 #include <core/json/json.h>
 #include <foundation/input/input_log.h>
 
+#include <limits>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -42,6 +44,17 @@ bool event_from_json(const JsonValue& row, RawEvent& out, std::string* error) {
   }
   if (code > 0xFFFFFFFFull || device > 0xFFFFFFFFull) {
     if (error != nullptr) *error = "input log: a code or device does not fit in 32 bits";
+    return false;
+  }
+  // **A value past a 32-bit float's range is refused** (T190, as `json_reflect`'s `f32_of` since
+  // T187): the cast of a double past FLT_MAX is undefined behaviour, in practice an infinity an
+  // axis would then hand to every action bound to it. The parser refuses a non-finite double, so
+  // the range is the one check; within it the cast rounds as it always did, so every recording
+  // replays to the same bits.
+  constexpr f64 k_max_value = static_cast<f64>(std::numeric_limits<f32>::max());
+  if (!(value >= -k_max_value && value <= k_max_value)) {
+    if (error != nullptr)
+      *error = "input log: an event value is past a 32-bit float's range (about 3.4e38)";
     return false;
   }
   out.tick = SimTick{tick};
@@ -176,6 +189,20 @@ io::Status InputLog::load(std::string_view native_path, std::string* error) {
     }
     if (!events_.empty() && event.tick < events_.back().tick) {
       if (error != nullptr) *error = "input log: the events are not in tick order";
+      forget();
+      return io::Status::IoError;
+    }
+    // **The span a file can make a replay walk is bounded** (T190): `replay` and `feed_ticks` step
+    // every tick from the first to the last, the empty ones included, so two events at ticks 0 and
+    // 2^63 made a replay of the log's own range run for ever. The bound is on the span, not on the
+    // tick, so a log a long-running world records late in its life still loads.
+    if (!events_.empty() && event.tick.value - events_.front().tick.value > k_max_log_tick_span) {
+      if (error != nullptr) {
+        *error = "input log: the events span " +
+                 std::to_string(event.tick.value - events_.front().tick.value) +
+                 " ticks; at most " + std::to_string(k_max_log_tick_span) +
+                 " (seven days at 240 Hz) are replayed";
+      }
       forget();
       return io::Status::IoError;
     }

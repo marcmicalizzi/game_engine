@@ -490,3 +490,55 @@ TEST_CASE("input log: a broken file is refused with a message") {
   CHECK(log.size() == 1);
   CHECK(log.map_hash() == expected_map);
 }
+
+// Hostile logs (T190, docs/experiments/fuzzing-design.md): the text of a file a client can hand
+// `session.run_headless` or a save, built by a function so that the fuzz harness can lift it.
+namespace hostile_input_log {
+
+std::string with_rows(const std::string& rows) {
+  return "{\"type\":\"engine.input.log\",\"version\":1,\"map\":1}\n" + rows;
+}
+
+// An axis value of 1e39: the cast to f32 was undefined behaviour, in practice an infinity.
+std::string value_past_f32() { return with_rows("[1,\"gamepad_axis\",0,1e39,0]\n"); }
+
+// Two events 2^62 ticks apart: a replay of the log's range stepped every tick between them.
+std::string span_past_bound() {
+  return with_rows("[0,\"key\",4,1.0,0]\n[4611686018427387904,\"key\",4,0.0,0]\n");
+}
+
+// The span one tick past the bound, and the span at it.
+std::string span(u64 last) {
+  return with_rows("[7,\"key\",4,1.0,0]\n[" + std::to_string(7 + last) + ",\"key\",4,0.0,0]\n");
+}
+
+}  // namespace hostile_input_log
+
+TEST_CASE("input log hostile: a value past f32 and a span past the bound are refused by name") {
+  const TempDir tmp("engine_input_log_hostile");
+  const auto load = [&](const char* name, const std::string& text, std::string& error) {
+    const std::string path = io::join_path(tmp.path(), name);
+    REQUIRE(io::write_file(path, text) == io::Status::Ok);
+    InputLog log;
+    const io::Status status = log.load(path, &error);
+    if (status != io::Status::Ok) CHECK(log.empty());
+    return status;
+  };
+  std::string error;
+  CHECK(load("value.jsonl", hostile_input_log::value_past_f32(), error) != io::Status::Ok);
+  CHECK(error.find("past a 32-bit float's range") != std::string::npos);
+  // The largest float itself is a value.
+  CHECK_MESSAGE(load("max.jsonl",
+                     hostile_input_log::with_rows("[1,\"gamepad_axis\",0,"
+                                                  "3.4028234663852886e38,0]\n"),
+                     error) == io::Status::Ok,
+                error);
+
+  CHECK(load("far.jsonl", hostile_input_log::span_past_bound(), error) != io::Status::Ok);
+  CHECK(error.find("at most 145152000 (seven days at 240 Hz)") != std::string::npos);
+  CHECK(load("over.jsonl", hostile_input_log::span(k_max_log_tick_span + 1), error) !=
+        io::Status::Ok);
+  CHECK_MESSAGE(
+      load("at.jsonl", hostile_input_log::span(k_max_log_tick_span), error) == io::Status::Ok,
+      error);
+}
