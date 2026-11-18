@@ -115,6 +115,13 @@ VkAccessFlags2 barrier_access(const AccessInfo& info, bool writes) noexcept {
     access |= VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
   }
   if ((access & VK_ACCESS_2_TRANSFER_WRITE_BIT) != 0) access |= VK_ACCESS_2_TRANSFER_READ_BIT;
+  // A build reads what it writes too: its scratch (and an update's source), which the
+  // specification holds to the build stage with ACCELERATION_STRUCTURE_READ | _WRITE
+  // (vkCmdBuildAccelerationStructuresKHR, "Accesses to the acceleration structure scratch
+  // buffers"), so a build behind a build sharing a scratch is ordered by the read too (R186 D1).
+  if ((access & VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR) != 0) {
+    access |= VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+  }
   return access;
 }
 
@@ -220,6 +227,17 @@ RgImage RenderGraph::create_image(const char* name, const RgImageDesc& desc) {
 RgBuffer RenderGraph::import_buffer(const char* name, const BufferResource& buffer,
                                     PipelineStage last_stage, MemoryAccess last_access) {
   ENGINE_VERIFY(!compiled_, "RenderGraph: cannot add resources after compile");
+  // **One import a buffer** (the pass audit's guard check 1, R186): the graph keeps a state a
+  // handle, so a write through one handle and a read through another are strangers to it. A
+  // linear look over the imports so far, in a debug build only (gfx.md, "Render graph v0").
+#if ENGINE_DEBUG
+  if (buffer.buffer.valid()) {
+    for (const BufferNode& b : buffers_) {
+      ENGINE_ASSERT(!b.imported || b.resource.buffer != buffer.buffer,
+                    "RenderGraph::import_buffer: this buffer is already imported");
+    }
+  }
+#endif
   BufferNode node{};
   node.name = name;
   node.desc.size = buffer.size;
@@ -230,7 +248,8 @@ RgBuffer RenderGraph::import_buffer(const char* name, const BufferResource& buff
   node.state.access = last_access;
   node.state.written = any(last_access & (MemoryAccess::MemoryWrite | MemoryAccess::ShaderWrite |
                                           MemoryAccess::ShaderStorageWrite |
-                                          MemoryAccess::TransferWrite | MemoryAccess::HostWrite));
+                                          MemoryAccess::TransferWrite | MemoryAccess::HostWrite |
+                                          MemoryAccess::AccelerationStructureWrite));
   buffers_.push_back(node);
   return RgBuffer{buffers_.size() - 1};
 }
