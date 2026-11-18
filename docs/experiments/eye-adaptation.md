@@ -19,7 +19,7 @@ scratch script; nothing recalled). Where a number is a choice rather than a sour
 | Lagarde and de Rousiers 2014, *Moving Frostbite to PBR*, as Filament's documentation restates it (§8.1, "Physically based camera") | `EV = log2(L S / K)` with K = 12.5 (Canon, Nikon, Sekonic) and S = 100; incident `EV = log2(E S / C)`, C = 250 for a flat sensor; `L_max = 1.2 * 2^EV100` from q = 0.65 and the saturation-based 78 / S. §8.1.4: metering by a downsampled log average "can be unstable and its output should be smoothed over time"; a histogram "can ignore extreme values and offers more stable results"; spot (1 to 5% of the image), centre-weighted and matrix modes; adaptation as `L_avg += (L - L_avg)(1 - e^(-Δt τ))` after Pattanaik et al. 2000 | the units (the engine's rule is the incident form at C = 250, sky.h); the histogram over the log average; the exponential step |
 | Epic Games, *Auto Exposure in Unreal Engine* (documentation) | histogram metering between a low and a high percent, "a good starting range is 70 to 80" for the low and 80 to 95 for the high; speed up and speed down in f-stops a second, linear far from the target and exponential within 1.5 stops; an exposure compensation curve over the average scene EV100; a metering mask, "giving importance to pixels toward the center of the screen"; min and max brightness clamps | the shape (a window of the histogram, two speeds, a floor and a ceiling, centre weight); its window was **not** taken, below |
 | Durand and Dorsey 2000, *Interactive Tone Mapping* (EGWR) | §3.3: light adaptation simulated with exponential filters, "τR = 0.4 sec for rods and τC = 0.1 sec for cones" from Adelson 1982 and Hood et al. 1987; dark adaptation "can take up to tens of minutes" and is not modelled; the matinee: entering a theatre on a sunny day, "initially, everything inside appears too dark". §4.2: "Nikon's weighted centered metering uses 75% of the weight in the 12mm center of a 24x36 film"; spot metering with Gaussian weights | the light-adaptation constants; the centre weight |
-| Krawczyk 2007 (PhD thesis, MPI Informatik; the method of Krawczyk, Myszkowski and Seidel 2005, *Perceptual effects in real-time tone mapping*) | eq. 4.5, the exponential decay after Durand and Dorsey; eq. 4.6, `t_rod = 0.4 s`, `t_cone = 0.1 s`, which "describe the adaptation to light", dark adaptation "not simulated because the full process takes up to tens of minutes"; eq. 4.7, the rods' sensitivity `s(Y) = 0.04 / (0.04 + Y)` after Hunt 1995; eq. 4.11, the key `a(Y) = 1.03 - 2 / (2 + log10(Y + 1))` from the absolute adapting luminance, specified empirically ("a matter of experience") because a log-average-relative key makes "dark night scenes appearing too bright and very light too dark"; eq. 4.12, `t(Y) = s(Y) t_rod + (1 - s(Y)) t_cone`; ch. 3: scotopic light adaptation is "extremely rapid", 75% within the first 400 ms, the cones need about 3 minutes to reach full sensitivity | the key (the eye's partial compensation); the blend of the two constants |
+| Krawczyk 2007 (PhD thesis, MPI Informatik; the method of Krawczyk, Myszkowski and Seidel 2005, *Perceptual effects in real-time tone mapping*) | eqs. 4.1 and 4.2, Reinhard et al.'s operator: `Y_r = a Y / Ȳ` with Ȳ the log average, "an approximation of the adapting luminance", then `L = Y_r / (1 + Y_r)`; §3.1.5, entering a dark theatre on a sunny day the interior "is at first dark" and the neural processes are "mostly accomplished after several seconds", the pigments' take up to 30 minutes into the dark and about 5 back; eq. 4.5, the exponential decay after Durand and Dorsey; eq. 4.6, `t_rod = 0.4 s`, `t_cone = 0.1 s`, which "describe the adaptation to light", dark adaptation "not simulated because the full process takes up to tens of minutes"; eq. 4.7, the rods' sensitivity `s(Y) = 0.04 / (0.04 + Y)` after Hunt 1995; eq. 4.11, the key `a(Y) = 1.03 - 2 / (2 + log10(Y + 1))` from the absolute adapting luminance, specified empirically ("a matter of experience") because a log-average-relative key makes "dark night scenes appearing too bright and very light too dark"; eq. 4.12, `t(Y) = s(Y) t_rod + (1 - s(Y)) t_cone`; ch. 3: scotopic light adaptation is "extremely rapid", 75% within the first 400 ms, the cones need about 3 minutes to reach full sensitivity | the key (the eye's partial compensation); the blend of the two constants |
 | Kalloniatis and Luu, *Light and Dark Adaptation* (Webvision) | the rod–cone break of dark adaptation "after 5 to 8 minutes"; the absolute threshold "about 10^-5 cd/m2 after about forty minutes in the dark"; cones lose sensitivity below about 0.03 cd/m2 | why dark adaptation's real constant is not used (below) |
 
 Not read, and not used: Pattanaik et al. 2000's own text (its copies refused the fetch; Filament and
@@ -42,19 +42,28 @@ Filament quotes them).
 - **Centre-weighted**: a disc a third of the view's width across weighs 16 against 1 outside it,
   which puts 74.6% of the weight in it on a 16:9 view — the centre-weighted meter Durand and Dorsey
   cite (75% in the 12 mm circle of a 36 mm frame: the circle is a third of the frame's width).
-- **The target**: the exposure that shows the metered luminance at **Krawczyk's key** — `EV100 =
-  log2(π L / (2.5 a(L)))` in the engine's units (sky.h shows L at `L π / (2.5 · 2^EV100)`). The key
-  is the eye's partial compensation in one curve: 0.03 at a moonless ground, 0.42 in a room lit to
-  100 lux, 0.72 on sunlit sand. On the erg's sand at noon (0.7 × 110 klux / π) it lands within 0.05
-  of a stop of the sky's own rule (15.39 against 15.42), so adapting changes nothing where the rule
-  was right; in a room at 19 cd/m² it is 5.8, nine stops up from noon's 15; under a full moon (a
-  ground at 0.02 cd/m²) −0.45, against the rule's 0.9 — the same partial compensation the rule's
-  knee was fitted to by eye (sky-2026-09-30), from a published curve instead.
+- **The target**: the exposure that shows the metered luminance where **Krawczyk's operator**
+  shows it. The key is the eye's partial compensation in one curve: 0.03 at a moonless ground, 0.42
+  in a room lit to 100 lux, 0.72 on sunlit sand. Reinhard's operator, which the key was chosen for,
+  scales the adapting luminance to the key (eq. 4.1, `Y_r = a Y / Ȳ`) and maps it through `Y_r / (1
+  + Y_r)` (eq. 4.2), so the adapting luminance is shown at `a / (1 + a)` — 0.30 in that room, 0.42
+  on the sand. The engine's display has no such curve below its shoulder, so the target is the
+  exposure that puts the adapting luminance at that value: `EV100 = log2(π L (1 + a) / (2.5 a))` in
+  the engine's units (sky.h shows L at `L π / (2.5 · 2^EV100)`). In a room at 19 cd/m² that is 6.3,
+  nine stops up from noon's 15.4; on the erg's sand at noon (0.7 × 110 klux / π) 16.2, three
+  quarters of a stop under the sky's rule, which shows the sand at its albedo (the rule's noon was
+  already noted as metering the sand to white, sky-2026-09-30, "Why noon is slate"); under a full
+  moon (a ground at 0.02 cd/m²) −0.4, against the rule's 0.9 — the same partial compensation the
+  rule's knee was fitted to by eye, from a published curve instead. **A first version showed the
+  luminance at the key itself** (`a`, not `a / (1 + a)`): the cave's passage at noon, metered at
+  27 cd/m², came out nearly white (`captures` below), half a stop over the operator's reading.
 - **Light adaptation** (the picture darkening): Durand and Dorsey's constants, 0.1 s for the cones
   and 0.4 s for the rods, blended by the rods' share at the metered luminance (Krawczyk eq. 4.12).
 - **Dark adaptation** (the picture brightening): **1.5 s, a choice, not the eye's.** The eye's cone
   plateau takes minutes and the rods' forty; Krawczyk does not simulate it ("tens of minutes") and
-  runs the light constants both ways. A game cannot keep a room black for two minutes, and both ways
+  runs the light constants both ways, while his §3.1.5 puts the fast, neural part at "several
+  seconds": a dark theatre entered from the sun is at first dark, and only after several seconds do
+  silhouettes appear. A game cannot keep a room black for two minutes, and both ways
   at 0.1 s would make a doorway a flash. 1.5 s keeps the order the eye has — the room reads dark
   first, as in Durand and Dorsey's matinee, and opens up — and settles a nine-stop step to within a
   quarter stop in 5.4 s. Tunable (`renderer.exposure.dark_tau_s`).
