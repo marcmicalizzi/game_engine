@@ -23,7 +23,7 @@
 
 [[vk::binding(0, 0)]] Texture2D<float4> g_textures[];
 
-// Mirrors scene_renderer.cpp's FrameEncodePush (36 bytes).
+// Mirrors scene_renderer.cpp's FrameEncodePush (48 bytes).
 struct FrameEncodePush {
   uint view_x;  // the view's rectangle's corner in the target: the dither is the view's own
   uint view_y;
@@ -34,6 +34,10 @@ struct FrameEncodePush {
   float paper_white_nits;
   float peak_nits;
   uint ui_texture;  // bindless sampled slot of the overlay's UI layer; k_no_ui for none
+  uint pad;
+  // **The eye's adaptation** (FramePassReport::exposure; renderer.md, "Exposure: the eye's
+  // adaptation"): one float the picture is multiplied by before the display's curve, or 0 for none.
+  uint64_t exposure;
 };
 
 static const uint k_no_ui = 0xFFFFFFFFu;
@@ -79,7 +83,8 @@ float3 encode_under_ui(float3 exposed, float4 ui, float knee, uint2 pixel, Displ
 [shader("fragment")]
 float4 fs_encode(EncodeOut in) : SV_Target {
   const uint2 pixel = uint2(in.position.xy);
-  const float4 value = g_textures[g_push.texture].Load(int3(int2(pixel), 0));
+  float4 value = g_textures[g_push.texture].Load(int3(int2(pixel), 0));
+  if (g_push.exposure != 0) value.rgb *= ((float*)g_push.exposure)[0];
   DisplayTarget target;
   target.encoding = g_push.encoding;
   target.steps = g_push.steps;

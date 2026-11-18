@@ -1340,6 +1340,11 @@ enum SkyExposure : u8 {
   Auto = 0
   /// A fixed exposure value, `exposure_ev100`, whatever the light.
   Fixed = 1
+  /// The eye's adaptation (renderer.md, "Exposure: the eye's adaptation"): the frame drawn at the
+  /// rule's exposure, then metered — a histogram of what the eye looks at, centre-weighted — and
+  /// shown at the exposure an eye settles at for that light, reached at the eye's speeds, plus
+  /// `exposure_compensation_ev`. A room at noon is lit for a room, not for the sky.
+  Adapted = 2
 }
 
 /// A scene's sky (docs/subsystems/sky.md, ADR-0048): a physical atmosphere lit by a sun and a moon

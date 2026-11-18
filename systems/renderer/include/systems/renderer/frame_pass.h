@@ -49,12 +49,15 @@ struct ShadowCascades;
 
 // Where in the frame a pass runs: after the resolve has written every view's shaded pixels and its
 // sky, before the encode and the overlay. `AfterResolve` is a pass that composites light onto the
-// picture (a medium); `Reconstruction` runs after every one of those, whenever it was registered,
-// and is what samples the finished linear picture over time (the renderer's own accumulation,
-// renderer.md "Sampling over time: the accumulation"; a provider's, roadmap R159).
+// picture (a medium); `Exposure` meters the picture those passes finished (the renderer's own eye
+// adaptation, exposure.h; renderer.md "Exposure: the eye's adaptation"); `Reconstruction` runs
+// after every one of those, whenever it was registered, and is what samples the finished linear
+// picture over time (the renderer's own accumulation, renderer.md "Sampling over time: the
+// accumulation"; a provider's, roadmap R159). Only the order of the values means anything.
 enum class FramePassStage : u8 {
   AfterResolve = 0,
-  Reconstruction = 1,
+  Exposure = 1,
+  Reconstruction = 2,
 };
 
 // Passes a renderer holds at once.
@@ -105,6 +108,11 @@ struct FramePassReport {
   // the colour image, as before.
   gfx::RgImage color;
   u32 color_sampled = gfx::BindlessSet::k_invalid_slot;
+  // **The frame's exposure from here on**: a pass that metered the picture (the eye's adaptation)
+  // names the buffer and the address of one f32 the encode multiplies every pixel by before the
+  // display's curve. Left invalid, the encode multiplies by nothing, as before.
+  gfx::RgBuffer exposure;
+  u64 exposure_address = 0;
 };
 
 struct FramePassContext {

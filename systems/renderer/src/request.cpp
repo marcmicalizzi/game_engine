@@ -316,6 +316,16 @@ JsonValue sun_summary(const RenderSettings& settings, const SunDayState& day, co
   sky.set("ev100", static_cast<f64>(s.ev100));
   sky.set("lux", static_cast<f64>(s.lux));
   sky.set("sky_lux", static_cast<f64>(s.sky_lux));
+  // The eye's adaptation, where it ran (exposure.h): the exposure the frame was shown at, where it
+  // was going, and the adapting luminance it metered (cd/m^2). `ev100` above is the rule's.
+  if (const ExposureState& e = stats.exposure; e.frames > 0 || e.pinned != 0) {
+    JsonValue adapted = JsonValue::object();
+    adapted.set("ev100", static_cast<f64>(e.ev100));
+    adapted.set("target_ev100", static_cast<f64>(e.target_ev100));
+    adapted.set("luminance", static_cast<f64>(e.luminance));
+    adapted.set("pinned", e.pinned != 0);
+    sky.set("adapted", std::move(adapted));
+  }
   sky.set("gpu_ms", stats.sky_ms());
   out.set("sky", std::move(sky));
   return out;
