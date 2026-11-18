@@ -5486,11 +5486,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           timer.end(cb);
         });
     if (deform_on) {
-      // The cascades' entries of a deformed instance get pool blocks of their own, allocated after
-      // the camera's and deformed by the same pass, so a moving character casts its pose.
-      add_alloc("shadow", rg_shadow_args, &shadow_alloc);
       graph.add_pass(
-          "shadow deform args", gfx::PassKind::Compute,  // folded (T165)
+          "shadow deform args", gfx::PassKind::Compute,  // folded (T165), first after the cull (W147)
           [&](gfx::PassBuilder& b) {
             b.read(rg_shadow_args, gfx::Access::ComputeRead);
             b.write(rg_deform_args, gfx::Access::ComputeWrite);
@@ -5504,6 +5501,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                 scene.deform_args.address + scene.shadow_deform_args_offset(0),
                 gfx::k_draw_args_bytes, count);
           });
+      // The cascades' entries of a deformed instance get pool blocks of their own, allocated after
+      // the camera's and deformed by the same pass, so a moving character casts its pose.
+      add_alloc("shadow", rg_shadow_args, &shadow_alloc);
       graph.add_pass(
           "shadow deform", gfx::PassKind::Compute,
           [&](gfx::PassBuilder& b) {
