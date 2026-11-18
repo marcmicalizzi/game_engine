@@ -23,6 +23,7 @@
 
 #include <accumulation_pass.h>
 #include <cull_instances.h>
+#include <reconstruction_pass.h>
 #include <texture_feedback.h>
 #include <algorithm>
 #include <cmath>
@@ -1175,6 +1176,9 @@ bool SceneRenderer::create_motion(std::string* error) {
   ENGINE_LOG_INFO(log_renderer, "sampling over time's inputs",
                   log::field("device_bytes", motion_->device_bytes()),
                   log::field("pool_bytes", scene_->deform_pool.size));
+  // **A provider named outright** (reconstruction_pass.h; renderer.md, "Sampling over time: a
+  // reconstruction provider"; R159), through the same stage as the engine's own.
+  if (resolved_.reconstruction_provider[0] != '\0') return create_reconstruction(error);
   // **The engine's own accumulation** (accumulation_pass.h; renderer.md, "Sampling over time: the
   // accumulation"), only under `renderer.reconstruction.accumulation`: a frame pass of the
   // renderer's own, after every pass that composites light.
@@ -1186,6 +1190,9 @@ bool SceneRenderer::create_motion(std::string* error) {
   options.clip_still = resolved_.accumulation_clip_still;
   options.clip_moving = resolved_.accumulation_clip_moving;
   options.motion_match = resolved_.accumulation_motion_match;
+  options.filter = resolved_.accumulation_filter;
+  options.reactive_weight = resolved_.accumulation_reactive_weight;
+  motion_->set_fade_turn(resolved_.accumulation_fade_turn);
   accumulation_ = new AccumulationPass;
   if (!motion_->keep_motion(*device_, views_, error) ||
       !accumulation_->create(*device_, *scene_, *motion_, shaders_, width_, height_,
@@ -1206,6 +1213,10 @@ bool SceneRenderer::create_motion(std::string* error) {
 Reconstruction SceneRenderer::reconstruction() const noexcept {
   Reconstruction state;
   if (accumulation_ != nullptr) state.provider = ReconstructionProvider::Engine;
+  if (reconstruction_ != nullptr) {
+    state.provider = ReconstructionProvider::Registered;
+    state.registered = reconstruction_->name();
+  }
   state.inputs = motion_ != nullptr;
   // What the views are rasterized at and what the target holds: one size until a ratio (R160).
   state.internal_width = state.output_width = width_;
@@ -1668,6 +1679,11 @@ void SceneRenderer::destroy() noexcept {
     delete accumulation_;
     accumulation_ = nullptr;
   }
+  if (reconstruction_ != nullptr) {
+    reconstruction_->destroy();
+    delete reconstruction_;
+    reconstruction_ = nullptr;
+  }
   if (texture_feedback_ != nullptr) {
     texture_feedback_->destroy();
     delete texture_feedback_;
@@ -1778,6 +1794,7 @@ bool SceneRenderer::resize(u32 width, u32 height, std::string* error) {
   if (!targets_.create(*device_, views_, error) || !create_color_target(error)) return false;
   if (motion_ != nullptr && !motion_->resize(*device_, views_, error)) return false;
   if (accumulation_ != nullptr && !accumulation_->resize(width_, height_, error)) return false;
+  if (reconstruction_ != nullptr && !reconstruction_->resize(width_, height_, error)) return false;
   // The frame passes' linear image and the overlay's UI layer are the target's size (frame_pass.h).
   if (ui_layer_.image.valid() && !create_ui_layer(error)) return false;
   return !linear_wanted() || create_linear_target(error);
@@ -3162,6 +3179,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           ? frame.lod_px * (settings.lod_px > 0.0f ? settings.foliage_px / settings.lod_px : 1.0f)
           : settings.foliage_px;
   const f32 frame_fade = scene.has_coverage() && frame.lod_fade ? settings.lod_fade : 0.0f;
+  // The fade's turn with the phase, under the accumulation (motion_pass.h, `fade_turn`; R158).
+  const u32 fade_turn = motion_ != nullptr && frame_fade > 0.0f ? motion_->fade_turn() : 0u;
   const u64 coverage_address = scene.has_coverage() ? scene.lod_coverage.address : 0u;
   // The occlusion history ping-pongs on the renderer's own count of frames recorded, **not** on
   // the caller's frame number: that number drives the lights, and a caller may repeat it — a
@@ -3689,6 +3708,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull.coverage = coverage_address;
     cull.foliage_px = frame_foliage_px * cut_view.quality.lod_scale;
     cull.fade = frame_fade;
+    cull.fade_turn = fade_turn;
     cull.raster = Vec4{settings.sw_px, raster_mode, 0.0f, 0.0f};
     cull.cluster_count = cluster_count;
     cull.count_index = count_index;
@@ -4211,6 +4231,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull.coverage = coverage_address;
     cull.foliage_px = frame_foliage_px * lod_view.quality.lod_scale * settings.shadow_lod_scale;
     cull.fade = frame_fade;
+    cull.fade_turn = fade_turn;
     if (resolved_.shadow_texel_lod) {
       // **The cascade's own texels** (R103; renderer.md, "Cascaded shadow maps"): a transition the
       // camera's test refuses is still acceptable here when its world error is at most

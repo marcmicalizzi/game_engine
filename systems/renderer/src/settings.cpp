@@ -11,7 +11,9 @@
 #include <systems/renderer/view_set.h>
 
 #include <algorithm>
+#include <cstring>
 #include <iterator>
+#include <string>
 
 namespace engine::renderer {
 
@@ -94,7 +96,9 @@ bool parse_shadow_mode(std::string_view text, ShadowMode& out) noexcept {
 }
 
 const char* reconstruction_provider_name(ReconstructionProvider provider) noexcept {
-  return provider == ReconstructionProvider::Engine ? "engine" : "off";
+  return provider == ReconstructionProvider::Engine       ? "engine"
+         : provider == ReconstructionProvider::Registered ? "registered"
+                                                          : "off";
 }
 
 const char* water_quality_name(WaterQuality quality) noexcept {
@@ -613,6 +617,36 @@ tunables::Float reconstruction_motion_match{
     "motion now is taken as the pixel's own without asking what it names (a held view, a pan, a "
     "sway under it uncover nothing); past it the names decide; 0: the names always decide "
     "(renderer.md, Sampling over time: the accumulation; read at load)"};
+// R158 leg 3. Indexed by the accumulation pass's `k_accumulate_filter_*`.
+enum class HistoryFilter : u32 { Bilinear = 0, CatmullRom = 1 };
+constexpr const char* k_history_filter_choices[] = {"bilinear", "catmull_rom"};
+tunables::Enum<HistoryFilter> reconstruction_history_filter{
+    "renderer.reconstruction.history_filter", HistoryFilter::CatmullRom, k_history_filter_choices,
+    "How the accumulation reads its history between texels: catmull_rom, the default, the 4x4 "
+    "round it where the four nearest all held, held between those four; bilinear, the four alone, "
+    "which softens what moves by fractions of a pixel over the blend's length (renderer.md, "
+    "Sampling over time: the accumulation; read at load)"};
+tunables::Float reconstruction_reactive_weight{
+    "renderer.reconstruction.reactive_weight", 0.25, 0.01, 1.0,
+    "The least share of the new frame a reactive pixel takes under the accumulation: one whose "
+    "material is water, whose colour is its reflection's and what it refracts as much as its "
+    "surface's; such a pixel is also always clipped (renderer.md, Sampling over time: the "
+    "accumulation; read at load)"};
+// A reconstruction provider by name (R159; reconstruction.h).
+tunables::String reconstruction_provider{
+    "renderer.reconstruction.provider", "",
+    "A reconstruction provider registered by name (reconstruction.h): null, the built-in one that "
+    "hands the frame on, or one a host's capability registered; empty, the default, is the "
+    "engine's own accumulation when renderer.reconstruction.accumulation is on, and engine names "
+    "it outright. A frame drawn through any is a reconstructed frame (ADR-0064; renderer.md, "
+    "Sampling over time: a reconstruction provider; read at load)", 31};
+// The cross-fade's screen door turned with the phase (R158 leg 3; alpha_mask.slang, `fade_keeps`).
+tunables::Bool reconstruction_fade_turn{
+    "renderer.reconstruction.fade_turn", true,
+    "Under the accumulation, turn the cross-fade's per-pixel threshold by 1/n of its range at each "
+    "of the cycle's n phases, so a pixel in a fade band is kept in its band's share of the frames "
+    "and the two levels blend; false: the screen door is the pixel's alone and is never blended "
+    "(renderer.md, Sampling over time: the accumulation; read at load)"};
 tunables::Bool gi_shell_clip{
     "renderer.gi.shell_clip", false,
     "The rays the cache traces from the eye stop at renderer.gi.shell_m, the reach of the volume "
@@ -989,8 +1023,24 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // (`s`, the settings being resolved: `out.settings` is still the caller's until the end.)
   out.accumulation =
       s.raster != RasterMode::Direct ? reconstruction_accumulation.get() : Accumulation::Off;
+  // A provider named outright (R159): `engine` is the accumulation; any other turns it off and the
+  // inputs on, and the renderer finds it in the registry at load.
+  std::memset(out.reconstruction_provider, 0, sizeof(out.reconstruction_provider));
+  if (const std::string named = reconstruction_provider.get();
+      !named.empty() && s.raster != RasterMode::Direct) {
+    if (named == "engine") {
+      if (out.accumulation == Accumulation::Off) out.accumulation = Accumulation::On;
+    } else {
+      std::memcpy(out.reconstruction_provider, named.data(),
+                  named.size() < sizeof(out.reconstruction_provider)
+                      ? named.size()
+                      : sizeof(out.reconstruction_provider) - 1);
+      out.accumulation = Accumulation::Off;
+    }
+  }
   out.reconstruction_inputs =
-      (reconstruction_inputs.get() || out.accumulation != Accumulation::Off) &&
+      (reconstruction_inputs.get() || out.accumulation != Accumulation::Off ||
+       out.reconstruction_provider[0] != '\0') &&
       s.raster != RasterMode::Direct;
   out.reconstruction_phases = out.accumulation != Accumulation::Off
                                   ? static_cast<u32>(reconstruction_phases.get())
@@ -999,6 +1049,10 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   out.accumulation_clip_still = static_cast<f32>(reconstruction_clip_still.get());
   out.accumulation_clip_moving = static_cast<f32>(reconstruction_clip_moving.get());
   out.accumulation_motion_match = static_cast<f32>(reconstruction_motion_match.get());
+  out.accumulation_filter = static_cast<u32>(reconstruction_history_filter.get());
+  out.accumulation_reactive_weight = static_cast<f32>(reconstruction_reactive_weight.get());
+  out.accumulation_fade_turn =
+      out.accumulation != Accumulation::Off && reconstruction_fade_turn.get();
   out.gi_shell_clip = gi_shell_clip.get();
   out.gi_shell_first = gi_shell_first.get();
   out.gi_preroll = static_cast<u32>(gi_preroll.get());

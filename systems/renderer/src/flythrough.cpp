@@ -87,7 +87,9 @@ u64 FlightBookkeeping::buffers_left_out() noexcept { return t_left_out_buffers; 
 
 scene::Reconstruction reconstruction_block(const Reconstruction& state) {
   scene::Reconstruction out;
-  out.provider = reconstruction_provider_name(state.provider);
+  out.provider = state.provider == ReconstructionProvider::Registered && state.registered != nullptr
+                     ? state.registered
+                     : reconstruction_provider_name(state.provider);
   // The ratio's name once there is one (roadmap R160); until then a frame is the output's size.
   out.mode =
       state.internal_width == state.output_width && state.internal_height == state.output_height

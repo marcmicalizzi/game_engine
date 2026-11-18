@@ -202,8 +202,10 @@ ENGINE_EXPECT_SIZE(32, 8, gfx::ClusterChunkParams);
 // gives a pair its instance in one load and rejects a hole without the search, and two words of
 // padding to a whole float4 row; appended, so every field before it keeps its offset. 1792, not
 // 1776: the instance pass's items, their arguments and the meshes' bounds (R173, renderer.md, "The
-// cull culls instances first"), the first in W6's two pad words.
-ENGINE_EXPECT_SIZE(1792, 8, gfx::CullParams);
+// cull culls instances first"), the first in W6's two pad words. 1808, not 1792: the cross-fade's
+// turn (R158 leg 3, `fade_turn`) in a 16-byte row of its own after R173's fields, three words of
+// padding; R158 had taken a pad word R173 also took, and the stack kept R173's offsets.
+ENGINE_EXPECT_SIZE(1808, 8, gfx::CullParams);
 ENGINE_EXPECT_SIZE(32, 8, gfx::MaskTables);
 // The mask test reads one word of a material by offset (scene.slang,
 // `k_resolve_material_flags_offset`).

@@ -163,6 +163,13 @@ bool AccumulationPass::record(const FramePassContext& context, std::string* erro
     p.moved_count = p.moved != 0 ? motion_->moved_count() : 0;
     p.knee = context.display_knee;
     p.ceiling = context.display_ceiling;
+    p.filter = options_.filter;
+    p.reactive_weight = options_.reactive_weight;
+    if (scene_->has_water()) {
+      p.materials = scene_->materials.address;
+      p.cluster_materials = scene_->cluster_materials.address;
+      p.instances = scene_->instances.address;
+    }
     // A view that resamples a wider source (Panini) has no pixel-for-pixel motion or names: its
     // mean is still its mean, and otherwise it is drawn as it was.
     const bool resampled = view.panini;

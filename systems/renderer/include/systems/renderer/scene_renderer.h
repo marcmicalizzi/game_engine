@@ -1139,6 +1139,7 @@ class SceneRenderer {
   bool read_visibility(CapturedFrame& out, const CaptureChannels& channels, std::string* error);
   bool read_motion(CapturedFrame& out, std::string* error);
   bool create_motion(std::string* error);
+  bool create_reconstruction(std::string* error);  // reconstruction_pass.cpp (R159)
   // Sampling over time's inputs (src/motion_pass.h): null unless `renderer.reconstruction.inputs`.
   class MotionPass* motion_ = nullptr;
   // The cull's instance pass and its buffers (src/cull_instances.h; R16, R173): made with the
@@ -1147,6 +1148,9 @@ class SceneRenderer {
   // The engine's own accumulation (src/accumulation_pass.h): null unless
   // `renderer.reconstruction.accumulation` is on or mean.
   class AccumulationPass* accumulation_ = nullptr;
+  // A provider found by name (src/reconstruction_pass.h; R159): null unless
+  // `renderer.reconstruction.provider` names one other than the engine's own.
+  class ReconstructionPass* reconstruction_ = nullptr;
   // Which level of each texture the frames asked for (src/texture_feedback.h; R172): null unless
   // `renderer.textures.feedback` names a file.
   class TextureFeedback* texture_feedback_ = nullptr;

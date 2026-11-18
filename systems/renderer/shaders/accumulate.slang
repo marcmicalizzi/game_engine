@@ -38,7 +38,7 @@
 
 [[vk::binding(1, 0)]] RWTexture2D<float4> g_storage_images[];
 
-// Mirrors renderer::AccumulateParams (112 bytes).
+// Mirrors renderer::AccumulateParams (144 bytes).
 struct AccumulateParams {
   uint64_t visibility;       // u64[width * height]: this view's region of this frame's buffer
   uint64_t prev_visibility;  // the same region of last frame's
@@ -62,7 +62,21 @@ struct AccumulateParams {
   float ceiling;      // and its ceiling, in the linear image's units: 1 for an SDR picture
   float motion_match; // pixels: a tap whose surface moved within this of the pixel's is its own
   uint moved_count;
+  // **Reactive surfaces** (R158 leg 3): a pixel whose colour is not its surface's alone — a water
+  // surface's (`k_material_water`): its reflection and what it refracts move as the eye and the
+  // waves do, not as the surface — trusts its history less: it is always clipped (`clip_moving`)
+  // and takes at least `reactive_weight` of the new frame. The material of the pixel's pair is
+  // `materials[cluster_materials[cluster] + instances[instance].material_base]`, as everywhere;
+  // `materials` 0 (a scene with no such material) reads nothing.
+  uint64_t materials;          // gfx::ResolveMaterial[] (112 bytes, flags at 44)
+  uint64_t cluster_materials;  // u32 per cluster
+  uint64_t instances;          // gfx::InstanceDesc[] (96 bytes, material_base at 64)
+  float reactive_weight;
+  uint filter;  // k_filter_*: how a history is read between its texels
 };
+
+static const uint k_filter_bilinear = 0u;
+static const uint k_filter_catmull_rom = 1u;
 
 // Whether `instance` is one the host has ever moved (`SceneRenderer::move_instances`): the motion
 // pass's table, whose entries are 64 bytes with the instance first. Such an instance can jump
@@ -137,6 +151,62 @@ uint instance_of(AccumulateParams* p, uint64_t word) {
   if (p->pairs == 0) return 0;
   if (pair >= p->pair_count) return 0xfffffffeu;
   return ((uint2*)p->pairs)[pair].x;
+}
+
+// Whether the surface a visibility word names is a reactive one (above): its material's flags.
+bool reactive(AccumulateParams* p, uint64_t word) {
+  if (word == 0 || p->materials == 0 || p->pairs == 0) return false;
+  const uint pair = uint(word & 0xffffffffu) >> 8;
+  if (pair >= p->pair_count) return false;
+  const uint2 at = ((uint2*)p->pairs)[pair];
+  const uint base = *(uint*)(p->instances + uint64_t(at.x) * 96u + 64u);
+  const uint material = ((uint*)p->cluster_materials)[at.y] + base;
+  const uint flags = *(uint*)(p->materials + uint64_t(material) * 112u + 44u);
+  return (flags & 16u) != 0;  // k_material_water
+}
+
+// Catmull-Rom's four weights for a sample `t` past the second of four texels: the cubic through
+// the two inner texels with the outer ones setting its slopes (Catmull and Rom 1974). Karis 2014
+// names the blur a bilinear history read leaves, "reprojection diffusion"; this is the usual
+// answer to it, derived here and not taken from a source read for this row.
+float4 catmull_rom_weights(float t) {
+  const float t2 = t * t;
+  const float t3 = t2 * t;
+  return float4(-0.5 * t3 + t2 - 0.5 * t, 1.5 * t3 - 2.5 * t2 + 1.0, -1.5 * t3 + 2.0 * t2 + 0.5 * t,
+                0.5 * t3 - 0.5 * t2);
+}
+
+// **The sharper read** (R158 leg 3): the history at `base + t` through the 4x4 texels round it,
+// Catmull-Rom in both axes, as the display shows them. Only where the four bilinear taps all held
+// (the caller's test), so every texel it weighs is of a surface the pixel kept; the outer ring is
+// not tested by name, and its weight is at most 0.07 a texel. The result is held between the four
+// inner texels' least and greatest, so an edge does not ring. False when a texel is off the view
+// or not a number: the bilinear read stands.
+bool history_catmull_rom(AccumulateParams* p, int2 corner, int2 size, float2 base, float2 t,
+                         out float4 result) {
+  result = float4(0.0, 0.0, 0.0, 0.0);
+  const int2 first = int2(base) - 1;
+  if (first.x < 0 || first.y < 0 || first.x + 3 >= size.x || first.y + 3 >= size.y) return false;
+  const float4 wx = catmull_rom_weights(t.x);
+  const float4 wy = catmull_rom_weights(t.y);
+  float4 lo = float4(65504.0, 65504.0, 65504.0, 65504.0);
+  float4 hi = -lo;
+  for (int j = 0; j < 4; ++j) {
+    float4 row = float4(0.0, 0.0, 0.0, 0.0);
+    for (int i = 0; i < 4; ++i) {
+      const float4 h = g_storage_images[p->history][corner + first + int2(i, j)];
+      if (!all(h == h) || any(abs(h) > 65504.0)) return false;
+      const float4 s = shown(p, h);
+      row += s * wx[i];
+      if (i >= 1 && i <= 2 && j >= 1 && j <= 2) {
+        lo = min(lo, s);
+        hi = max(hi, s);
+      }
+    }
+    result += row * wy[j];
+  }
+  result = clamp(result, lo, hi);
+  return true;
 }
 
 [shader("compute")]
@@ -228,11 +298,22 @@ void accumulate_main(uint3 id : SV_DispatchThreadID) {
       }
       if (total > 1e-3) {
         history /= total;
+        // All four taps held and the read is the sharper one: the bilinear read softens a picture
+        // that moves by fractions of a pixel over the blend's length (a slow pan, a sway).
+        float4 sharp;
+        if (p->filter == k_filter_catmull_rom && total > 0.999 &&
+            history_catmull_rom(p, corner, size, base, t, sharp)) {
+          history = sharp;
+        }
         // A pixel whose surface moved no further than the match is clipped by `clip_still`, which
         // is none by default: its history is its own, and a clip there pulls every thin feature
-        // the nine samples of this frame happened to miss back out of the picture.
+        // the nine samples of this frame happened to miss back out of the picture. A reactive
+        // surface is clipped as a moving one is, whatever it did, and weighs the new frame more.
+        const bool shifting = reactive(p, now[local.y * size.x + local.x]);
         const float gamma =
-            dot(motion, motion) > p->motion_match * p->motion_match ? p->clip_moving : p->clip_still;
+            shifting || dot(motion, motion) > p->motion_match * p->motion_match ? p->clip_moving
+                                                                                 : p->clip_still;
+        const float weight = shifting ? max(p->weight, p->reactive_weight) : p->weight;
         if (gamma > 0.0) {
           const float3 mean = sum / 9.0;
           const float3 extent = gamma * sqrt(max(sum2 / 9.0 - mean * mean, 0.0)) + 1e-6;
@@ -243,7 +324,7 @@ void accumulate_main(uint3 id : SV_DispatchThreadID) {
           if (most > 1.0) history.rgb = from_ycocg(mean + offset / most);
           history.a = clamp(history.a, alpha_lo, alpha_hi);
         }
-        result = history + (colour - history) * p->weight;
+        result = history + (colour - history) * weight;
       }
     }
   }

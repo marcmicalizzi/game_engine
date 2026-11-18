@@ -136,9 +136,13 @@ struct CullParams {
   // a u32 count and a pad word, then {instance, first local cluster} a run of k_cull_item_pairs —
   // their folded dispatch, and a float4 sphere per mesh round all its clusters' spheres
   // (cull_instances_main, below).
-  uint64_t items;
-  uint64_t item_args;
-  uint64_t mesh_bounds;
+  uint64_t items;        // offset 1768
+  uint64_t item_args;    // offset 1776
+  uint64_t mesh_bounds;  // offset 1784
+  // gfx::CullParams::fade_turn (R158 leg 3): what the cross-fade's splits are turned by on the
+  // hash's ring of 65535 before they go into the fade table; 0 writes them as they are.
+  uint fade_turn;        // offset 1792
+  uint pad_fade[3];      // offsets 1796 to 1807; the block is 1,808 bytes
 };
 
 // gfx::CullParams::hiz_flags and the debug counters' layout (gfx::k_hidden_*).
@@ -208,6 +212,17 @@ float fade_split(float geometric, float coverage, bool fading, float threshold, 
 
 uint pack_splits(float own, float parent) {
   return uint(own * 65535.0 + 0.5) | (uint(parent * 65535.0 + 0.5) << 16);
+}
+
+// The packed splits turned by `turn` on the hash's ring (`fade_hash` gives 0 .. 65534, so the ring
+// is 65535 long and a split of 65535 is the ring's 0): [low, high) becomes [low + turn,
+// high + turn), which wraps when the second end passes the ring's end (`fade_keeps` reads a low
+// above its high as the wrapped interval). "Everything" (0, 65535) and a turn of 0 are as they were.
+uint turn_splits(uint packed, uint turn) {
+  if (turn == 0u || packed == 0xffff0000u) return packed;
+  const uint low = ((packed & 0xffffu) + turn) % 65535u;
+  const uint high = ((packed >> 16) + turn) % 65535u;
+  return low | (high << 16);
 }
 
 // ---- geometry streaming (docs/plan/04-renderer.md §4.9, domain/geometry/cluster_pages.h) ------
@@ -876,9 +891,13 @@ void cull_instance_pair(CullParams* params, uint pair, uint instance_index, bool
   // with, its two splits and its instance's seed, read by the masked readers of this frame only.
   // The seed is the instance's placement (`fade_seed`, scene.slang), never `instance_index`, which
   // follows the order the instances arrived in (R170).
+  // Under the accumulation the splits are turned with the phase (`fade_turn`): a pixel's threshold
+  // then takes every 1/n of the ring over a cycle of n, so it is kept in its band's share of the
+  // frames and the two levels blend; a pair outside every band keeps its "everything" as it is.
   if (params->masks.fade != 0) {
     uint2* fade = (uint2*)params->masks.fade;
-    fade[pair] = uint2(pack_splits(split_own, split_parent), fade_seed(instance));
+    fade[pair] = uint2(turn_splits(pack_splits(split_own, split_parent), params->fade_turn),
+                       fade_seed(instance));
   }
   // A caster is in the frame's ray tracing geometry and nowhere else. It is not drawn, so it is
   // not in the drawn-this-frame flags either — and a frame with casters has no second occlusion

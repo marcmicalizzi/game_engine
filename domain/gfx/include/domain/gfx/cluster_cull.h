@@ -166,7 +166,7 @@ struct MaskTables {
 };
 static_assert(sizeof(MaskTables) == 32);
 
-// Mirrors CullParams in cluster_cull.slang. 1792 bytes.
+// Mirrors CullParams in cluster_cull.slang. 1808 bytes.
 //
 // **Everything here is in the frame's space** (`eye`, above): the planes come from a
 // view-projection built with the frame's eye at the origin, `camera.xyz` is where this view's eye
@@ -355,11 +355,23 @@ struct CullParams {
   u64 items = 0;
   u64 item_args = 0;  // DispatchIndirectArgs: the items' folded dispatch
   u64 mesh_bounds = 0;
+  // **The cross-fade turned with the phase** (R158 leg 3; renderer.md, "Sampling over time: the
+  // accumulation"): what the pass turns a fading pair's two splits by on the hash's ring of 65535
+  // before it writes them to `masks.fade` (cluster_cull.slang, `turn_splits`), so that over a cycle
+  // of n offsets a pixel's threshold takes n evenly spaced places and the accumulation blends the
+  // two levels. 0, every frame drawn without the accumulation, writes the splits as they are. It
+  // opens a 16-byte row of its own after R173's fields, so the block is 1,808 bytes, a whole number
+  // of the float4 rows the GPU reads it as.
+  u32 fade_turn = 0;
+  u32 pad_fade[3] = {};
 };
-static_assert(sizeof(CullParams) == 1792);
+static_assert(sizeof(CullParams) == 1808);
 static_assert(offsetof(CullParams, sky_facing) == 1752);
 static_assert(offsetof(CullParams, pairs) == 1760);
 static_assert(offsetof(CullParams, items) == 1768);
+static_assert(offsetof(CullParams, mesh_bounds) == 1784);
+static_assert(offsetof(CullParams, fade_turn) == 1792);
+static_assert(offsetof(CullParams, pad_fade) == 1796);
 static_assert(offsetof(CullParams, hidden_counts) % 8 == 0);
 
 // CullParams::hiz_flags.

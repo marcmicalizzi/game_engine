@@ -1924,7 +1924,8 @@ pixel and the seed lies between them (`fade_keeps`, `alpha_mask.slang`) — scre
 through the masked variants' discard, so the visibility buffer keeps one id a pixel and the tie rule
 stands. Both sides of a transition hash the same pixels with the same seed (the instance's, never the
 pair's), so they are complementary: no holes, no doubles. The hash has nothing of the frame in it, so a
-still view does not shimmer. **The seed is the instance's placement, never its index**
+still view does not shimmer; only under the accumulation are the splits turned with the phase, so
+that the frames blend the two levels ([leg 3](#leg-3-the-sharper-read-reactive-surfaces-and-the-fade-turned-with-the-phase)). **The seed is the instance's placement, never its index**
 (`fade_seed` in `scene.slang`: the bits of its offset into its cell and of its rotation and scale,
 hashed; not the cell, so a scene moved by whole cells draws the same bytes). Until R170
 (2026-11-16) it was the instance's index, which is its place in the scene's layout and so the order
@@ -6767,3 +6768,114 @@ the pixels a moved instance leaves are, the frame after, within a quarter of wha
 colour was from what they settle to (a blend that kept the history would leave nine tenths); and
 the vertex tier (`RasterMode::Vertex`, which a card with mesh shaders takes when asked) accumulates
 twelve frames to the mesh path's bytes.
+
+### Leg 3: the sharper read, reactive surfaces and the fade turned with the phase
+
+Roadmap R158, 2026-11-17. Three of the leg before's "not built", each behind a tunable read at load
+and each only in a renderer that accumulates, so a frame drawn without the accumulation is the frame
+it was to the byte (the fade's change is in the cull pass and the masked readers, and with no turn
+it writes and keeps exactly what it did).
+
+- **The history is read through Catmull-Rom** (`renderer.reconstruction.history_filter`,
+  `catmull_rom` by default, `bilinear` the leg before's read). Karis's account of TAA names the
+  blur a bilinear history read leaves, "reprojection diffusion": every frame of a pan the history is
+  read between texels and a little softer, over the blend's length. Where the four bilinear taps all
+  held (the names and the match above), the history is read from the 4 × 4 round them with the
+  cubic through the inner two in each axis, and the result is held between the inner four's least
+  and greatest so a hard edge does not ring; where a tap failed, or the 4 × 4 leaves the view, the
+  validated bilinear read stands. A held view is untouched: its motion is zero, the read lands on a
+  texel and both reads are that texel. Measured by its test (a pan of a tenth of a pixel a frame,
+  32 frames, against a `mean` capture at the last camera): 1.15 codes rms with the bilinear read,
+  0.95 with Catmull-Rom.
+- **Reactive surfaces** (`renderer.reconstruction.reactive_weight`, 0.25). A pixel whose colour is
+  not its surface's alone trusts its history less: today that is a water surface
+  (`k_material_water`, read through the pair's material as the resolve reads it), whose reflection
+  and refraction move with the eye and the waves while the motion pass follows the surface. Such a
+  pixel is always clipped (`clip_moving`) and takes at least the reactive weight of the new frame.
+  It is what the vendors' reactive and transparency masks are for, and Karis's account does the same
+  for translucency with a stencil and "minimal feedback", which it says has to stay above zero or the
+  jitter shows. A scene with no water material reads nothing for it. A medium's thick regions (the
+  design's other reactive case) are not marked yet.
+- **The cross-fade turned with the phase** (`renderer.reconstruction.fade_turn`, on). The screen
+  door between two levels of a fading transition was a function of the pixel alone
+  ([the cross-fade](#the-cross-fade)), so no number of frames could blend it: a pixel in the band
+  drew one level for ever. Under the accumulation the cull pass turns each fading pair's two splits
+  by `k * 65535 / n` on the hash's ring at phase `k` of `n` (`gfx::CullParams::fade_turn`,
+  `turn_splits` in `cluster_cull.slang`; a turned interval may wrap the ring's end, which
+  `fade_keeps` reads as two), so over a cycle a pixel's threshold takes n evenly spaced places and
+  it is kept in its band's share of the frames. Both sides of a transition turn by the same amount,
+  so their pixels stay complementary and the tie rule stands; the shadow rays and the cascades read
+  the same table and turn with it. The fade table is written per pair per frame already, so it costs
+  an add and a modulo per fading pair.
+
+**Determinism.** The phase is the renderer's own count since the last reset, so all three are
+functions of the frames since a reset: a flight from its first path frame (`history_reset`) draws
+the same bytes twice, as before.
+
+**Measured** (2026-11-18, 00:00 to 01:15 local, `msvc-release`, RTX 5090, the Windows session
+locked and every core held 94 to 100 % by others throughout, so every time below is an upper bound
+and is not to be set beside an unlocked figure). Pictures: the renderer's own mean of 64 offsets
+is the reference; luma codes rms; "edges" are pixels whose reference 3 × 3 spans 24 codes or more.
+
+| still view, 1280 × 720, rt/rt, bounce off | as drawn: all / edges / interior | accumulated, 16th frame |
+|---|---|---|
+| the grove (a pose among the trunks) | 2.36 / 9.88 / 1.64 | 0.50 / 2.06 / 0.35 |
+| the village (its path's first pose) | 2.60 / 7.74 / 1.10 | 0.58 / 1.32 / 0.44 |
+| the beach (its first shot) | 1.65 / 11.76 / 0.82 | 0.31 / 2.00 / 0.20 |
+
+The spruce at 120 m (R154 leg 2's crop and 64-offset reference): held 10.80 as drawn, 2.53
+accumulated with either read (a held view's read is a texel); a slow pan of an eighth of a pixel a
+frame 3.90 from the slid reference with Catmull-Rom and 4.01 with the bilinear read, its
+frame-to-frame change 0.99 and 0.92 times the reference's; the wind 3.64 and 3.62. **Leaf-cards'
+oaks drew no crown on this main** in any of leg 2's views (the frames hold ground and sky), and the
+grove's walk shows its trees standing above the eye, on main's copied-out build as on this one: a
+fault of the scenes on this main, found here and not this row's, so the crowns' rows of the table
+above were not flown again. A turn on the beach and the walks of the grove and the village, read
+frame by frame with the accumulation on, show no trail behind a rock or the swash's edge; the walks'
+change between every fourth frame is 6.7, 26.2 and 6.6 codes on, 8.6, 27.2 and 7.3 off. Water was
+not isolated as a region, so the reactive rule has no figure of its own yet.
+
+**What it costs** (the grove's path at 3840 × 2160, `--raster rt --shadows rt`, the bounce on, 240
+warm-up frames, one alternation in one lease, locked as above): main's copied-out build 6.040 ms at
+the median (p99 6.567), this build with the accumulation off 6.023 (6.600), on 7.269 (7.958), of
+which the frame passes (the accumulation and the encode) 0.579 and the motion pass 0.101. Off costs
+nothing; on is 1.25 ms more here, where leg 2 measured 0.46 unlocked: the locked card's clocks are
+in that figure, and the sharper read's sixteen taps are not separated from them.
+
+## Sampling over time: a reconstruction provider
+
+Roadmap R159, stage 3 of [the design](../experiments/temporal-sampling.md#part-4-the-plan-in-stages):
+**the registration point** a reconstruction method plugs into, as a sky provider registers its
+model ([ADR-0048](../adr/0048-the-sky-is-a-providers-model-drawn-by-the-renderer.md)) and a frame
+pass its light. `systems/renderer/reconstruction.h` is the whole contract: a provider is a name
+and five functions (`create`, `destroy`, `resize`, `record`, `device_bytes`) over a state of its
+own, registered once at start-up (`register_reconstruction_provider`) and chosen by name at load
+(`renderer.reconstruction.provider`). Each frame it is handed one struct, `ReconstructionFrame`:
+the frame pass's context (the graph, the linear colour image, the views, the visibility buffer
+whose high words are the depth, the display's curve), the motion buffer and last frame's
+visibility buffer and motion per view, this frame's sub-pixel offset and phase, and whether the
+frame before is this one's history; it returns one image, which the encode reads in the colour
+image's place (`FramePassReport::color`). So a provider is a frame pass at
+`FramePassStage::Reconstruction` (`src/reconstruction_pass.h` is the adapter), declares its reads
+and writes through the graph, and records no barrier of its own.
+
+**Two are built in.** `engine` is the accumulation above (the renderer makes it from its own
+passes, so it is not a desc; naming it is `renderer.reconstruction.accumulation=on`), and `null`
+hands its input on: a frame drawn through it is the inputs' own frame through the linear image and
+its encode, which its test holds to a code. Naming any other turns the accumulation off and the
+inputs on; a name nothing registered refuses the load with a sentence. **The engine links no
+vendor's provider**: one comes from a capability its consumer builds against an SDK it supplies
+(roadmap R161, [ADR-0064](../adr/0064-every-measurement-is-native.md) decision 4), and registers
+itself the way a sky provider does. Every frame drawn through a provider is a reconstructed frame:
+`Reconstruction::provider` is `Registered`, `Reconstruction::registered` its name, and the record's
+`reconstruction` block names it and carries no cost ([the measurement rule](#sampling-over-time-the-measurement-rule)).
+
+**Not built.** `engine.protocol.RenderStats` does not carry the block yet: the protocol is another
+row's to change. A provider is handed no reactivity mask and no exposure scalar as such (the
+engine's own reads the material table and the display curve directly); a vendor's adapter will
+need both, and the depth as a float image, and those are its row's. Internal sizes below the
+output's are R160's: `output_width` and `output_height` are the frame's own until then.
+
+**Held by** `tests/accumulation_tests.cpp`: the built-in names cannot be taken and a name is
+registered once; the null provider's frames are the inputs' own within a code, and the renderer
+says it drew them through a registered provider.

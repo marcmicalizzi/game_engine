@@ -108,7 +108,10 @@ uint fade_hash(uint2 pixel, uint seed) {
 // pixel is kept where its hash is at or past the own split and below the parent's — so of every
 // path of the DAG exactly one cluster keeps each pixel, the visibility buffer keeps one id a pixel
 // and the tie rule stands. A pair outside every band has splits 0 and 65535 and keeps everything.
-// No table (`fade` 0, a frame with no fade) keeps everything and reads nothing.
+// No table (`fade` 0, a frame with no fade) keeps everything and reads nothing. **Under the
+// accumulation the splits are turned with the phase** (cluster_cull.slang, `turn_splits`; R158 leg
+// 3): a low above its high is the interval that wraps round the ring's end, and only a turned one
+// is ever written so, so a frame drawn without the accumulation keeps exactly what it kept.
 bool fade_keeps(MaskTables tables, uint pair, uint2 pixel) {
   if (tables.fade == 0) return true;
   uint2* table = (uint2*)tables.fade;
@@ -117,6 +120,7 @@ bool fade_keeps(MaskTables tables, uint pair, uint2 pixel) {
   const uint high = entry.x >> 16;
   if (low == 0u && high == 0xffffu) return true;
   const uint h = fade_hash(pixel, entry.y);
+  if (low > high) return h >= low || h < high;
   return h >= low && h < high;
 }
 
