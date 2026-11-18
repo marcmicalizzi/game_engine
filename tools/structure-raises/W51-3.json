@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W51-3",
+  "reason": "W51-3 stage 1: the upload decodes an image the load let go from its container (gpu_scene.cpp, five lines), and renderer.md says which images the load lets go after the texture pass and what each late reader does now",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.gpu_scene_cpp.lines": 5,
+    "page:docs/subsystems/renderer.md": 2483
+  }
+}

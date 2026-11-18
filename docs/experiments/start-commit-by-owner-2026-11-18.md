@@ -108,6 +108,32 @@ Sources for the split: Cyberpunk's path-traced 4K tier (24 GB / 16 GB) is the up
 
 After stages 1 to 3 the top setting stands at about **12.5 GB of commit with 2 GB on the host and 10.5 GB on the device** (25.0 − 7.3 − 2.5 − 2.7 at ready), and peaks at about 18 GB until stage 4. **So the host's 8 GB is one stage (stage 1 alone takes the host from 11.3 to 4 GB standing), the device's 10 GB is stages 3 and 5, and the peak's is stage 4: four small-to-medium stages before W47's residency manager, which is what the low setting and a larger world need.**
 
+## W51-3: what the stages returned
+
+**The owners, made sure of** (W51-3, 2026-11-18). A release build folds identical functions, so the
+table's frame names were checked in a build that does not: the base's own debug `engine-view` with
+the instrument (`--memory-report-floor-mib 1`) on `content/test-scenes/streamed-forest` (five
+generated trees and their eight authored forms), its `uploaded` snapshot's sites symbolized with
+`cdb` against its PDB.
+
+- **Stage 1's 7,330 MiB are the image bytes copied into every form**: `Vector<u8>` copy-constructed
+  inside `assets::ImageRef`'s copy, inside `Vector<ImageRef>`'s, inside `MeshData`'s, inside
+  `SourceMesh`'s — the copy `stream_authored`, `make_placement_forms` and `offer_far_forms` make of
+  a mesh for each form, embedded images and all.
+- **Stage 2's 2,520 MiB are not `u32` streams**: the frame under `read_cluster_file_memory` is
+  `Vector<u8>::resize`, the container's image bytes, which `adopt_container` moves into the original
+  mesh's `ImageRef::bytes`. They are the same owner as stage 1 — the originals where stage 1 is the
+  copies — and stage 1's release returns both, so **stage 2 is stage 1** and has no change of its
+  own.
+- A third owner the same check names: each form's copy of the per-vertex motion records and the
+  part map, cleared and refilled with the form's own subset — `clear()` keeps the source's whole
+  capacity, so every form of a tree held a whole tree's records (W51-2's `SourceMesh::SourceMesh`
+  sites, about 500 MiB). Given back now (`Vector()` assigned, not cleared), in the same commit.
+
+**Stage 1** (renderer.md, "The embedded image bytes go once the textures are built"): the load
+empties a mesh's image bytes once every image its materials sample has its `.tex` and the mesh has
+a container to read them back from; the readers that come late read the container again.
+
 ## Not measured
 
 - The cold load with a cache of its own: a cold load of the whole staging needs a 20-minute lease and 40 GB free (the staging agent's DONE note), and its cook does not ship; its peak is the staging agent's 32.2 GB.

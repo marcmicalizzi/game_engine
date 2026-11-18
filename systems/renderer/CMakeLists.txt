@@ -42,7 +42,7 @@ engine_module(NAME renderer LAYER systems
           src/overlay.cpp src/scene_water.cpp src/scene_wind.cpp src/scene_flora.cpp src/flora_motion.cpp
           src/flora_poser.cpp src/scene_fire.cpp src/far_forest.cpp src/far_tile.cpp src/far_offered.cpp src/water_reflect.cpp
           src/water_refract.cpp
-          src/scene_ground_plan.cpp src/sway_forms.cpp
+          src/scene_ground_plan.cpp src/sway_forms.cpp src/source_images.cpp
           src/resolve_classes.cpp src/temporal_change.cpp src/texture_feedback.cpp
           src/exposure_pass.cpp)
 # The renderer's own shader: the output encode after the frame passes (frame_pass.h,

@@ -35,8 +35,12 @@ bool decode_mask(const SourceMesh& source, const assets::Material& material, Mas
   const assets::ImageRef& ref = source.data.images[static_cast<u32>(index)];
   // Four channels and keep A: a one-channel request is the decoder's grey from RGB, not alpha.
   image::Image rgba;
-  if (!ref.bytes.empty()) {
-    out.ok = image::decode_image({ref.bytes.data(), ref.bytes.size()}, rgba, 4);
+  // W51-3: a mesh whose bytes the load let go reads them from its container, once a mask.
+  Vector<u8> read_again;
+  const std::span<const u8> bytes =
+      source_image_bytes(source, static_cast<u32>(index), read_again, nullptr);
+  if (!bytes.empty()) {
+    out.ok = image::decode_image(bytes, rgba, 4);
   } else if (!ref.uri.empty()) {
     const std::string file = source.image_dir.empty() || io::is_absolute_path(ref.uri)
                                  ? ref.uri
@@ -71,6 +75,10 @@ u64 mask_key(const SourceMesh& source, const assets::Material& material) {
   u64 key = 0;
   if (!ref.bytes.empty()) {
     key = hash_bytes(ref.bytes.data(), ref.bytes.size());
+  } else if (source.image_bytes_released && ref.uri.empty() &&
+             source.textures[static_cast<u32>(index)].source_hash != 0) {
+    // W51-3: the bytes went after the texture pass, which recorded this same hash of them.
+    key = source.textures[static_cast<u32>(index)].source_hash;
   } else if (!ref.uri.empty()) {
     const std::string file = source.image_dir.empty() || io::is_absolute_path(ref.uri)
                                  ? ref.uri

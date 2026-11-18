@@ -1400,3 +1400,105 @@ TEST_CASE("renderer: a texture trimmed then asked again ends on the whole pictur
   CHECK(resident_top(h.scene) == 0);
   CHECK(use.promotions >= 1);
 }
+
+// **The embedded image bytes go once the textures are built** (W51-3; renderer.md): a quad that
+// embeds its image as a data URI, loaded through a derived-data root, keeps none of the image's
+// bytes after the load's texture pass — on the first run, which builds the `.tex`, and on the next,
+// which trusts it — and `source_image_bytes` gives back the very bytes from the container. A load
+// with no derived-data root has nothing standing in for them and keeps them. No device.
+TEST_CASE("load: an embedded image goes once its texture is built and comes back from its container") {
+  const test::TempDir tmp("renderer_image_release");
+  const std::filesystem::path dir = tmp.native();
+  Vector<u8> png;
+  REQUIRE(write_image(dir, 64, smooth_image(64), png));
+  REQUIRE(write_quad(dir, 1.0f, "", "", "data:image/png;base64," + base64(png)));
+  std::filesystem::remove(dir / "image.png");  // nothing beside the glTF: the URI is the image
+  const std::string mesh = (dir / "quad.gltf").string();
+  const std::string ddc = (dir / "ddc").string();
+  std::string error;
+  for (const bool warm : {false, true}) {
+    CAPTURE(warm);  // false: the first run, which builds the `.tex`
+    SceneDesc desc;
+    desc.meshes.push_back(mesh);
+    desc.cache = true;
+    desc.ddc = ddc;
+    SceneData data;
+    REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+    CHECK(data.load.built == (warm ? 0u : 1u));
+    REQUIRE(data.sources.size() == 1);
+    const SourceMesh& source = data.sources[0];
+    CHECK(source.image_bytes_released);
+    REQUIRE(source.data.images.size() == 1);
+    CHECK(source.data.images[0].bytes.empty());
+    CHECK(source.data.images[0].bytes.capacity() == 0);
+    CHECK(data.load.image_bytes_released_meshes == 1);
+    CHECK(data.load.image_bytes_released >= png.size());
+    Vector<u8> storage;
+    const std::span<const u8> back = source_image_bytes(source, 0, storage, &error);
+    REQUIRE_MESSAGE(back.size() == png.size(), error);
+    CHECK(std::memcmp(back.data(), png.data(), png.size()) == 0);
+  }
+  SceneDesc desc;
+  desc.meshes.push_back(mesh);
+  desc.cache = false;
+  SceneData plain;
+  REQUIRE_MESSAGE(load_scene(desc, plain, error), error);
+  CHECK_FALSE(plain.sources[0].image_bytes_released);
+  CHECK(plain.load.image_bytes_released == 0);
+  REQUIRE(plain.sources[0].data.images.size() == 1);
+  CHECK(plain.sources[0].data.images[0].bytes.size() == png.size());
+}
+
+// **A reader that comes late reads the container again** (W51-3): the load let the quad's embedded
+// image go because its `.tex` was there; the `.tex` is then taken away before the upload, so the
+// upload cannot use it and decodes the image instead — from the bytes `source_image_bytes` reads
+// back out of the container. The picture is the one a load with no derived-data root draws from the
+// bytes it kept, byte for byte.
+TEST_CASE("renderer: an image the load let go is decoded from its container when its texture is gone") {
+  const test::TempDir tmp("renderer_image_late");
+  const std::filesystem::path dir = tmp.native();
+  Vector<u8> png;
+  REQUIRE(write_image(dir, k_size, smooth_image(k_size), png));
+  REQUIRE(write_quad(dir, 1.0f, "", "", "data:image/png;base64," + base64(png)));
+  std::filesystem::remove(dir / "image.png");
+  const std::string mesh = (dir / "quad.gltf").string();
+  const std::string ddc = (dir / "ddc").string();
+  CapturedFrame kept;
+  {
+    Harness h;
+    if (!h.build(mesh, ddc, false)) {
+      MESSAGE(h.skip);
+      return;
+    }
+    CHECK(h.scene.textures_decoded() == 1);
+    kept = h.shot(2.5f);
+  }
+  Harness h;
+  std::string error;
+  REQUIRE_MESSAGE(h.device.create(renderer_test::device_options(), &error), error);
+  SceneDesc desc;
+  desc.meshes.push_back(mesh);
+  desc.cache = true;
+  desc.ddc = ddc;
+  REQUIRE_MESSAGE(load_scene(desc, h.data, error), error);
+  REQUIRE(h.data.sources[0].image_bytes_released);
+  const std::string tex = texture::texture_cache_path(ddc, h.data.sources[0].textures[0].key);
+  REQUIRE(std::filesystem::remove(tex));  // between the load and the upload
+  RenderSettings settings;
+  settings.shadows = ShadowMode::Off;
+  settings.view_mode = k_albedo_view;
+  ResolvedSettings resolved;
+  resolve_settings(settings, h.device.features(), &h.data, resolved);
+  REQUIRE(check_availability(resolved, h.device.features()) == RenderAvailability::Ok);
+  REQUIRE_MESSAGE(h.scene.create(h.device, h.data, resolved, &error), "gpu scene: " << error);
+  CHECK(h.scene.textures_built() == 0);
+  CHECK(h.scene.textures_decoded() == 1);
+  SceneRenderer::Desc rd;
+  rd.width = k_size;
+  rd.height = k_size;
+  REQUIRE_MESSAGE(h.renderer.create(h.device, h.scene, resolved, rd, &error), error);
+  const CapturedFrame read_again = h.shot(2.5f);
+  REQUIRE(read_again.color.size() == kept.color.size());
+  CHECK(kept.covered > 0);
+  CHECK(std::memcmp(read_again.color.data(), kept.color.data(), kept.color.size()) == 0);
+}

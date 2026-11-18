@@ -1019,6 +1019,33 @@ runs it on a load thread. `load_scene` does its work in this order:
    is a `placement` stage whose detail is its generator, and the footprints handed to the entries
    after it a `footprints` stage, so `placements` says where its time went.
 
+**The embedded image bytes go once the textures are built** (W51-3, 2026-11-18;
+[the measurements](../experiments/start-commit-by-owner-2026-11-18.md#w51-3-what-the-stages-returned)).
+An image a container carries (a GLB's, a data URI's, a generator's leaf and bark atlases) arrives
+in `SourceMesh::data.images[i].bytes`, and until W51-3 it stayed there for the session: a second
+copy beside its built `.tex` and its GPU texture, and a third, fourth and fifth in every distance
+form, far-form level and placement form the load copies a mesh into — 9.8 GB of the forest
+staging's host commit, two thirds of the host at its start. Right after the texture pass and before
+anything copies a mesh, `release_built_image_bytes` (source_images.cpp) empties every image's bytes
+of a mesh when **every image its materials sample has its `.tex` under the mesh's root** (so
+`find_built_textures` takes the built path and decodes nothing) **and the mesh has a container**
+(the file it was read from or this load wrote, which holds the bytes), and marks the mesh
+`SourceMesh::image_bytes_released`; the load reports the meshes and bytes
+(`SceneLoadReport::image_bytes_released`). A mesh with no derived-data root, no container, or an
+image not built keeps every byte, exactly as before. The rule is the mesh's own state, never a
+generator's or a scene's name, so a glTF kit with embedded textures is treated as a tree is.
+**Who reads them after that, and what each does now**: `find_built_textures` and the prefetch read
+records and keys only; the upload's decode — when the built path cannot be used (the device has no
+BC formats, a `.tex` gone or refused between the load and the upload) — and the crowns' leaf masks
+(`build_crown_priors`, one decode a distinct mask, its key the record's source hash, which is the
+hash of the same bytes) read them back through `source_image_bytes`, which reads the container's
+resident sections (`geometry::ClusterFileReader`, no paged stream) and checks them against the
+record's source hash; a far forest's composite never copied bytes when records exist; a far tile and
+a placement tile load their own members (`load_placement_mesh`) and never see a released mesh, so
+the bytes a far tile writes into its container are unchanged. Every one of those readers runs in
+`load_scene` or `GpuScene::create`/`SceneRenderer::create`, never in a frame, so the frame loop reads
+no file for it. Nothing that is cached moved: no container, texture or key changes.
+
 **What it still reads before the first frame**, warm, for the forest v7 (2,074 MiB of 4,498): the
 `.clusters` containers (281 MiB) and the GLBs' own bytes for their source hash (195 MiB), every
 `.tex` whole at the upload (357 MiB, its content hash checked), the scene file and the region's

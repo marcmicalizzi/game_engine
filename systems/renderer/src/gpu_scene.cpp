@@ -4643,7 +4643,12 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           // this read followed by `decode_image`, so the pixels are the ones it gave.
           std::string file_bytes;
           std::span<const u8> encoded;
-          if (!ref.bytes.empty()) {
+          Vector<u8> read_again;  // W51-3: bytes the load let go come back from the container
+          if (source_mesh.image_bytes_released)
+            encoded = source_image_bytes(source_mesh, index, read_again, &image_error);
+          if (!encoded.empty() || !image_error.empty()) {
+            ok = !encoded.empty();
+          } else if (!ref.bytes.empty()) {
             encoded = std::span<const u8>(ref.bytes.data(), ref.bytes.size());
             ok = true;
           } else if (!ref.uri.empty()) {

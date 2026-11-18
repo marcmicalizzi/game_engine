@@ -161,9 +161,10 @@ bool offer_far_forms(SceneDesc& resolved, Vector<SourceMesh>& sources,
       const u32 pairs = dag.mesh.clusters.size();
       SourceMesh copy = sources[m];
       copy.part_of_cluster = std::move(part_of_cluster);
-      copy.lod_coverage.clear();
-      copy.motion_vertices.clear();
-      copy.motion_parts.clear();
+      // Given back, not cleared (W51-3): a cleared Vector keeps its source's whole capacity.
+      copy.lod_coverage = Vector<u32>();
+      copy.motion_vertices = Vector<geometry::ClusterFileMotionVertex>();
+      copy.motion_parts = Vector<geometry::ClusterFileMotionPart>();
       copy.far_form = geometry::FarForm{};
       const u32 drawn = resolved.meshes.size();
       std::string path = resolved.meshes[m];  // a copy: never push a Vector's own element

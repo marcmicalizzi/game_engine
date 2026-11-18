@@ -2,6 +2,7 @@
 #include "scene_far.h"
 #include "scene_flora.h"
 #include "scene_ground_plan.h"
+#include "source_images.h"
 #include "texture_bound_state.h"
 
 #include <core/containers/hash_map.h>
@@ -2013,12 +2014,13 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
         // more as the distance grows, so the same count is the same clusters.
         if (map.clusters.size() < kept) {
           SourceMesh copy = source;
-          copy.part_of_cluster.clear();
+          // Given back, not cleared (W51-3): a cleared Vector keeps its source's whole capacity.
+          copy.part_of_cluster = Vector<u32>();
+          copy.motion_vertices = Vector<geometry::ClusterFileMotionVertex>();
           for (const u32 c : map.clusters)
             copy.part_of_cluster.push_back(source.part_of_cluster[c]);
           copy.lod_coverage = std::move(coverage);
           if (source.motion_vertices.size() == dags[m].mesh.vertices.size()) {
-            copy.motion_vertices.clear();
             for (const u32 v : map.vertices)
               copy.motion_vertices.push_back(source.motion_vertices[v]);
             const u32 before = copy.motion_parts.size();
@@ -2324,11 +2326,12 @@ bool make_placement_forms(SceneDesc& resolved, Vector<SourceMesh>& sources,
         const bool first_still = still && !was_still;
         if (map.clusters.size() < kept || first_still) {
           SourceMesh copy = source;
-          copy.part_of_cluster.clear();
+          // Given back, not cleared (W51-3): a cleared Vector keeps its source's whole capacity.
+          copy.part_of_cluster = Vector<u32>();
           for (const u32 c : map.clusters)
             copy.part_of_cluster.push_back(source.part_of_cluster[c]);
           copy.lod_coverage = std::move(coverage);
-          copy.motion_vertices.clear();
+          copy.motion_vertices = Vector<geometry::ClusterFileMotionVertex>();
           if (sways && !still) {
             // **A swaying cut** keeps its vertices' records and the parts they use, each with its
             // source's id, so it sways in its source's phase (`prune_form_parts`).
@@ -3308,6 +3311,10 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   cap_scene_textures(resolved, {dags.data(), dags.size()}, out.sources);
   bound_scene_textures(resolved, {dags.data(), dags.size()}, out.sources);  // R172
   prepare_scene_textures(resolved, out.sources, identities, &*pool, out.load);
+  // W51-3: what the built textures now stand in for goes, before the forms below copy the meshes.
+  const ImageBytesReleased released_images = release_built_image_bytes(out.sources);
+  out.load.image_bytes_released_meshes = released_images.meshes;
+  out.load.image_bytes_released = released_images.bytes;
   // Each mesh's path as the scene named it, for a sentence about it (a form copies its source's).
   for (u32 m = 0; m < out.sources.size() && m < resolved.meshes.size(); ++m)
     out.sources[m].path = resolved.meshes[m];
