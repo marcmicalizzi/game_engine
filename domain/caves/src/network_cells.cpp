@@ -73,13 +73,8 @@ void recipe_field(const CellRecipe& rc, Field& field) {
   field.seed = rc.seed;
   field.has_water = rc.has_water;
   field.water_y = static_cast<f64>(rc.water - rc.anchor_y) / 1000.0;
-  if (rc.patch_nx >= 2 && rc.patch_nz >= 2 && rc.patch.size() == rc.patch_nx * rc.patch_nz) {
-    field.patch_i = rc.patch_i;
-    field.patch_j = rc.patch_j;
-    field.patch_nx = rc.patch_nx;
-    field.patch_nz = rc.patch_nz;
-    field.patch = rc.patch.data();
-  }
+  if (rc.patch_nx >= 2 && rc.patch_nz >= 2 && rc.patch.size() == rc.patch_nx * rc.patch_nz)
+    field.set_patch(rc.patch_i, rc.patch_j, rc.patch_nx, rc.patch_nz, rc.patch.data());
   const V3 n{field.frame.normal[0], field.frame.normal[1], field.frame.normal[2]};
   const V3 strike = normalized(V3{-field.frame.dip[2], 0.0, field.frame.dip[0]}, V3{0.0, 0.0, 1.0});
   for (const CellStation& s : rc.stations)
@@ -268,6 +263,12 @@ struct Tri {
   u8 cls;
 };
 
+// A lattice edge from a point in the air over the ground (bit 8) to a point past every window of
+// ground columns (bit 32 clear): the window's edge, which is no surface (the forest's need 142).
+constexpr bool window_edge(u8 air, u8 rock) noexcept {
+  return (air & 8u) != 0 && (rock & 32u) == 0;
+}
+
 bool mesh_rock(const CellRecipe& rc, assets::MeshData& out, CellReport* report,
                std::string& error) {
   Field field;
@@ -310,9 +311,12 @@ bool mesh_rock(const CellRecipe& rc, assets::MeshData& out, CellReport* report,
     for (u32 j = 0; j < cy; ++j) {
       for (u32 i = 0; i < cx; ++i) {
         f64 v[8];
+        u8 bits[8];
         u32 inside = 0;
         for (u32 c = 0; c < 8; ++c) {
-          v[c] = static_cast<f64>(phi[at(i + corner[c][0], j + corner[c][1], k + corner[c][2])]);
+          const u32 n = at(i + corner[c][0], j + corner[c][1], k + corner[c][2]);
+          v[c] = static_cast<f64>(phi[n]);
+          bits[c] = info[n];
           if (v[c] < 0.0) ++inside;
         }
         if (inside == 0 || inside == 8) continue;
@@ -321,12 +325,21 @@ bool mesh_rock(const CellRecipe& rc, assets::MeshData& out, CellReport* report,
         for (u32 e = 0; e < 12; ++e) {
           const u32 a = edges[e][0], b = edges[e][1];
           if ((v[a] < 0.0) == (v[b] < 0.0)) continue;
+          // **A crossing that is no surface places no vertex** (G220; caves.md, "Mouths"): the
+          // edge of a window of ground columns, which the quads below drop. Counted in the mean,
+          // it lifted a cube's vertex across that edge toward the air over the ground, up to half
+          // a lattice step, and where the apron reached a window's edge the apron's last row rose
+          // to it: a row of teeth standing over the ground where the sheets had stood (the forest's
+          // v50, marks 20 and 21: 5 to 17 cm over the ground at 0.25 m).
+          const u32 air = v[a] < 0.0 ? a : b, rock = air == a ? b : a;
+          if (window_edge(bits[air], bits[rock])) continue;
           const f64 t = v[a] / (v[a] - v[b]);
           for (u32 d = 0; d < 3; ++d)
             sum[d] += static_cast<f64>(corner[a][d]) +
                       t * (static_cast<f64>(corner[b][d]) - static_cast<f64>(corner[a][d]));
           ++crossings;
         }
+        if (crossings == 0) continue;  // only a window's edge crosses it: no surface here
         const f64 inv = 1.0 / static_cast<f64>(crossings);
         const f64 lattice[3] = {static_cast<f64>(rc.lo_x + i) + sum[0] * inv,
                                 static_cast<f64>(rc.lo_y + j) + sum[1] * inv,
@@ -377,7 +390,7 @@ bool mesh_rock(const CellRecipe& rc, assets::MeshData& out, CellReport* report,
           // that rock outside and the window's edge was drawn as a sheet from the buried ground
           // up to the cell's bounds, standing in the open air. A crossing whose air is the
           // ground's and whose rock is past the window is that edge: nothing.
-          if ((info[air] & 8u) != 0 && (info[rock] & 32u) == 0) {
+          if (window_edge(info[air], info[rock])) {
             ++grounds;
             continue;
           }

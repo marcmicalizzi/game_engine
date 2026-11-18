@@ -351,7 +351,43 @@ void Field::finish() {
   }
 }
 
-bool Field::ground_at(f64 x, f64 z, f64& out) const noexcept {
+void Field::set_patch(i64 i, i64 j, u32 nx, u32 nz, const i32* heights) {
+  patch_i = i;
+  patch_j = j;
+  patch_nx = nx;
+  patch_nz = nz;
+  patch = heights;
+  // The chessboard distance to the nearest column the ground is not known over, in two passes
+  // (Rosenfeld and Pfaltz 1966): integers, so every toolchain writes the same cell.
+  inset.assign(nx * nz, u8{0});
+  const auto edge = [&](u32 a, u32 b) { return a == 0 || b == 0 || a + 1 == nx || b + 1 == nz; };
+  for (u32 b = 0; b < nz; ++b)
+    for (u32 a = 0; a < nx; ++a)
+      inset[b * nx + a] = heights[b * nx + a] == k_no_ground ? u8{0} : (edge(a, b) ? u8{1} : u8{255});
+  const auto relax = [&](u32 a, u32 b, i32 da, i32 db) {
+    const i64 na = static_cast<i64>(a) + da, nb = static_cast<i64>(b) + db;
+    if (na < 0 || nb < 0 || na >= static_cast<i64>(nx) || nb >= static_cast<i64>(nz)) return;
+    u8& here = inset[b * nx + a];
+    const u8 there = inset[static_cast<u32>(nb) * nx + static_cast<u32>(na)];
+    if (there < 255 && there + 1 < here) here = static_cast<u8>(there + 1);
+  };
+  for (u32 b = 0; b < nz; ++b)
+    for (u32 a = 0; a < nx; ++a) {
+      relax(a, b, -1, -1);
+      relax(a, b, 0, -1);
+      relax(a, b, 1, -1);
+      relax(a, b, -1, 0);
+    }
+  for (u32 b = nz; b-- > 0;)
+    for (u32 a = nx; a-- > 0;) {
+      relax(a, b, 1, 1);
+      relax(a, b, 0, 1);
+      relax(a, b, -1, 1);
+      relax(a, b, 1, 0);
+    }
+}
+
+bool Field::ground_at(f64 x, f64 z, f64& out, f64* inset_m) const noexcept {
   if (patch == nullptr || patch_nx < 2 || patch_nz < 2) return false;
   const f64 step = static_cast<f64>(voxel_mm) / 1000.0;
   // The lattice's indices count from the anchor, as the point's metres do.
@@ -368,6 +404,13 @@ bool Field::ground_at(f64 x, f64 z, f64& out) const noexcept {
     return false;
   const f64 tx = fx - static_cast<f64>(i), tz = fz - static_cast<f64>(j);
   out = lerp(lerp(mm(h00), mm(h10), tx), lerp(mm(h01), mm(h11), tx), tz);
+  if (inset_m != nullptr) {
+    const auto in = [&](u32 a, u32 b) {
+      return static_cast<f64>(inset.empty() ? 255 : inset[b * patch_nx + a]) - 1.0;
+    };
+    *inset_m = lerp(lerp(in(i, j), in(i + 1, j), tx), lerp(in(i, j + 1), in(i + 1, j + 1), tx), tz) *
+               step;
+  }
   return true;
 }
 
@@ -489,12 +532,17 @@ FieldSample Field::sample(V3 p) const noexcept {
   }
   out.phi = out.void_f;
   f64 h = 0.0;
-  if (ground_at(p.x, p.z, h)) {
+  f64 inset_m = 0.0;
+  if (ground_at(p.x, p.z, h, &inset_m)) {
     out.known = true;
     // The mesh's ground stands 3 cm over the terrain's at the rim and sinks 6 cm under it at the
-    // apron's edge, so the lip covers the hole's teeth and its own edge is never seen.
-    const f64 lift =
+    // apron's edge, so the lip covers the hole's teeth and its own edge is never seen. **And at a
+    // window's edge** (G220; caves.md, "Mouths"): where the void comes within the apron of the
+    // ground past the window a mouth's near-surface stations made, the apron reaches the window's
+    // edge and ends there, so it sinks the same 6 cm over the last apron's width in from that edge.
+    f64 lift =
         apron > 0.0 ? 0.03 - 0.09 * smooth01((out.raw - 0.5 * apron) / (0.5 * apron)) : 0.0;
+    if (apron > 0.0) lift = std::min(lift, 0.03 - 0.09 * smooth01(1.0 - inset_m / apron));
     const f64 rock = h + lift - p.y;
     if (rock < out.void_f) {
       out.phi = rock;

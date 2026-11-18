@@ -138,6 +138,10 @@ struct Field {
   i64 patch_i = 0, patch_j = 0;
   u32 patch_nx = 0, patch_nz = 0;
   const i32* patch = nullptr;
+  // Per patch column, how many columns in from the edge of what the ground is known over (the
+  // nearest column with no ground, or past the patch, is 0; the last known column 1), capped at
+  // 255: what sinks the apron under the ground at a window's edge (`set_patch`, G220).
+  Vector<u8> inset;
   i64 voxel_mm = 250;
   i64 ax = 0, ay = 0, az = 0;  // the anchor, whole millimetres of the world
   f64 apron = 0.0;
@@ -155,10 +159,14 @@ struct Field {
   void add_hall(const CellHall& h);
   // Segments from the stations, bounds, bins: after the last `add_`.
   void finish();
+  // The ground under the mouths, `nx` by `nz` columns from (`i`, `j`), and its `inset`.
+  void set_patch(i64 i, i64 j, u32 nx, u32 nz, const i32* heights);
   FieldSample sample(V3 p) const noexcept;
   // The ground's height (metres from the anchor's) at a point in metres from the anchor; false
   // outside the patch.
-  bool ground_at(f64 x, f64 z, f64& out) const noexcept;
+  // `inset_m`, when asked: metres in from the edge of the known ground, bilinear over the columns'
+  // `inset`, 0 on the last known column.
+  bool ground_at(f64 x, f64 z, f64& out, f64* inset_m = nullptr) const noexcept;
 };
 
 // The no-ground sentinel a patch column holds where no mouth's window covered it.
