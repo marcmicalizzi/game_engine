@@ -291,6 +291,42 @@ TEST_CASE("mcp: --help, --version, and a host that cannot start") {
   }
 }
 
+// A role the roles file marks human is a person's, conferred only by a credential the operator
+// issued for it: an agent's bridge never runs in one, named by --role or by the file's default, and
+// exits 2 with a message rather than serve tools as a person (it served them before).
+TEST_CASE("mcp: a bridge refuses to start in a human role") {
+  const test::TempDir tmp("mcp_bridge_human_role");
+  const std::string ws = tmp.file("ws");
+  const auto exit_of = [](std::span<const std::string_view> argv) {
+    platform::Process p;
+    REQUIRE(p.spawn(argv));
+    p.close_stdin();
+    std::string out;
+    p.read_all(out);
+    CHECK(out.empty());  // stdout is MCP's, even for a refusal
+    return p.wait();
+  };
+  const auto roles_file = [&](const char* file, const char* default_role) {
+    const std::string path = tmp.file(file);
+    std::ofstream f(path, std::ios::binary);
+    f << R"({"default_role": ")" << default_role << R"(", "roles": [
+      {"name": "director", "methods": ["*"], "layers": ["*"], "object_types": ["*"]},
+      {"name": "reviewer", "human": true, "methods": ["review.*"]}]})";
+    return path;
+  };
+  const std::string named = roles_file("roles-director.json", "director");
+  {
+    const std::string_view argv[] = {bridge_exe(), "--workspace", ws,        "--roles",
+                                     named,        "--role",      "reviewer"};
+    CHECK(exit_of(argv) == 2);
+  }
+  {
+    const std::string by_default = roles_file("roles-reviewer.json", "reviewer");
+    const std::string_view argv[] = {bridge_exe(), "--workspace", ws, "--roles", by_default};
+    CHECK(exit_of(argv) == 2);
+  }
+}
+
 TEST_CASE("mcp: --connect takes a loopback ws:// URL and a token, and no flag of a spawned host") {
   const test::TempDir tmp("mcp_bridge_connect_usage");
   const std::string ws = tmp.file("ws");

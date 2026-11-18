@@ -312,6 +312,16 @@ bool fill_identity(Bridge& b, JsonValue& out, ToolOutcome& failure) {
          "started (--role).");
     return false;
   }
+  // A person's role is never forwarded, whatever the configuration: the host refuses it too, and
+  // an agent's bridge is the cheapest place to say so.
+  if (!blank("role") && b.is_human_role(text_of(out, "role"))) {
+    fail(failure,
+         "refused: role '" + text_of(out, "role") +
+             "' is marked human in the host's roles file, and a bridge never calls as a person.",
+         "Leave attribution.role out. A person closes their own review items over a credential "
+         "the operator issued them.");
+    return false;
+  }
   if (blank("actor")) out.set("actor", JsonValue(o.actor));
   if (blank("role") && !b.role_name().empty()) out.set("role", JsonValue(b.role_name()));
   if (blank("role") && !o.role.empty()) out.set("role", JsonValue(o.role));

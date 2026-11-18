@@ -347,8 +347,10 @@ int main(int argc, char** argv) {
   if (!bridge.start(error)) {
     std::fprintf(stderr, "engine-mcp: %s\n", error.c_str());
     log::remove_sink(&stderr_sink);
-    return error.starts_with("cannot start engine-host") || error.starts_with("cannot connect") ? 2
-                                                                                                : 1;
+    return error.starts_with("cannot start engine-host") || error.starts_with("cannot connect") ||
+                   error.starts_with("a human role")
+               ? 2
+               : 1;
   }
 
   std::string line;

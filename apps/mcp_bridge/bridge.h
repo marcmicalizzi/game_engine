@@ -303,6 +303,9 @@ class Bridge {
   // role every call of this bridge runs in; empty when a call that names none is not restricted.
   bool roles_loaded() const noexcept { return roles_loaded_; }
   const std::string& role_name() const noexcept { return role_name_; }
+  // The roles the host's file marks `human` (a person's: the reviewer). The bridge never runs in
+  // one and never forwards a call that names one (protocol.md, "The task ledger and review items").
+  bool is_human_role(std::string_view role) const noexcept;
   // Tools left out because the role may not call one of their methods.
   u32 tools_withheld() const noexcept { return tools_withheld_; }
 
@@ -350,6 +353,7 @@ class Bridge {
   bool roles_loaded_ = false;
   std::string role_name_;
   Vector<std::string> role_methods_;  // every method the role may call, reads included
+  Vector<std::string> human_roles_;
   u32 tools_withheld_ = 0;
   Notify notify_ = nullptr;
   // The resource URIs the client subscribed to; read on the socket's reader thread.

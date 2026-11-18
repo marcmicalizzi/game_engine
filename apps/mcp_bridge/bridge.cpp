@@ -324,6 +324,13 @@ Bridge::Bridge(BridgeOptions options) : options_(std::move(options)), schemas_(h
 
 Bridge::~Bridge() { shutdown(); }
 
+bool Bridge::is_human_role(std::string_view role) const noexcept {
+  if (role.empty()) return false;
+  for (const std::string& h : human_roles_)
+    if (h == role) return true;
+  return false;
+}
+
 bool Bridge::start(std::string& error) {
   host_.set_event_sink(
       [](void* user, const JsonValue& notification) {
@@ -350,12 +357,22 @@ bool Bridge::start(std::string& error) {
       for (usize i = 0; list != nullptr && i < list->size(); ++i) {
         const JsonValue& r = (*list)[i];
         const JsonValue* role = r.find("role");
+        if (role != nullptr && bool_of(*role, "human"))
+          human_roles_.push_back(text_of(*role, "name"));
         if (role == nullptr || text_of(*role, "name") != role_name_) continue;
         const JsonValue* allowed = r.find("allowed_methods");
         for (usize k = 0; allowed != nullptr && k < allowed->size(); ++k)
           role_methods_.push_back(std::string((*allowed)[k].as_string()));
       }
     }
+  }
+  // A role marked human is a person's, conferred only by a credential the operator issued for it;
+  // an agent's bridge never runs in one, whether --role named it or the file's default is one.
+  if (is_human_role(role_name_)) {
+    error = "a human role: engine-mcp does not run in role '" + role_name_ +
+            "', which the host's roles file marks human (a person's; an agent's bridge never "
+            "takes it). Start it with --role naming a role an agent works in";
+    return false;
   }
   const auto allowed = [&](std::string_view method) {
     if (!roles_loaded_ || role_name_.empty()) return true;
