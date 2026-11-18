@@ -4661,6 +4661,10 @@ The `sky_is_clear` path is also why the reference's background is now written fr
 
 **Cost.** The reference is not a frame path and the rules that keep readbacks and driver queries out of one do not reach it: `render()` blocks per batch, reads two buffers back, and is measured in wall seconds. `ReferenceFrame::trace_ms` is the integrator's own GPU milliseconds from a `gfx::GpuTimer`, summed over the batches; `seconds` is what a caller waits, including the real-time frame and the readbacks.
 
+## Content classes at load
+
+**Designed 2026-11-18, not built** (roadmap C3 and A26; [ADR-0074](../adr/0074-classes-travel-with-derived-data-and-policies-are-the-operators.md), proposed; the design is [content classes](../content-classes.md)). A view policy reaches this module as `SceneDesc::view_policy` and `PlacementMeshOptions::view_policy`. `load_scene` decides per mesh, before the mesh's geometry is read, through one function. A mesh within the cap loads as today. An `omit` instance is never made: its clusters and textures are not read into `SceneData`, so no rasterizer, structure, shadow map or channel sees them. A `proxy` instance is the engine's unit box at the mesh's bounds with a neutral material. `SceneData` keeps `held`, the join of what it made, and the policy it was made under, and `SceneLoadReport::substituted` counts what was replaced. A mesh admitted after the load joins `held`, which only rises, so it bounds every frame and every capture. **A scene with nothing classified costs nothing**: no GPU struct, shader or per-frame work changes, and the decision is one section-table lookup per container at load.
+
 ## Capture channels, and the id encoding
 
 `CaptureChannels` asks for any of four, and `CapturedFrame` carries what came back.

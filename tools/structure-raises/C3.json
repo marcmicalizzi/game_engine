@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "C3",
+  "reason": "C3 and A26 are designed and not built: protocol.md and renderer.md each gain a short section saying what the module will own of content classes and view policies, pointing at docs/content-classes.md, which holds the design so the hubs carry a paragraph each and not the design",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 1139,
+    "page:docs/subsystems/protocol.md": 2139
+  }
+}
