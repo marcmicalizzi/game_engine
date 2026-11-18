@@ -197,6 +197,18 @@ struct NamedCap {
   Substitution substitution = Substitution::omit;
 };
 
+// The hash of a class's canonical form, which a cache key mixes in (docs/content-classes.md,
+// "How it travels through derived data"). Names, never indexes, so a game that reorders its
+// categories keeps the hash and one that renames a level or reorders a ladder changes it: every
+// category above `none` in the class or in a material, sorted by name, with its whole ladder
+// lowest first; then the class's (category, level) names sorted by category; then every
+// material whose class is not `none`, sorted by name, with its own pairs. **Zero when nothing is
+// classified** (the class and every material all `none`), so an unclassified source's key does
+// not move; never zero otherwise. The same bytes on every toolchain (`core/hash`'s
+// `hash_bytes` over that form).
+u64 class_hash(const Categories& categories, const ContentClasses& classes,
+               const Vector<MaterialClass>* materials = nullptr);
+
 // The operator's policies, with `agent-default` compiled in. Cold data, built at start.
 struct NamedPolicy {
   std::string name;

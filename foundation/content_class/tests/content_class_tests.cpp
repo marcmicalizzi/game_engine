@@ -571,6 +571,75 @@ TEST_CASE(
   }
 }
 
+TEST_CASE("content_class: the class hash is over names, and nothing classified has none") {
+  std::string error;
+  const auto at = [](const Categories& t, const char* name) {
+    REQUIRE(t.find(name) >= 0);
+    return static_cast<u8>(t.find(name));
+  };
+  // Two tables holding the same two game categories in the other order.
+  Categories glow_first;
+  REQUIRE(glow_first.add_json(
+      R"({"categories":[{"name":"fixture_glow","levels":["none","dim","bright"]},{"name":"fixture_hum","levels":["none","loud"]}]})",
+      error));
+  Categories hum_first;
+  REQUIRE(hum_first.add_json(
+      R"({"categories":[{"name":"fixture_hum","levels":["none","loud"]},{"name":"fixture_glow","levels":["none","dim","bright"]}]})",
+      error));
+  const ContentClasses a =
+      join(join(classes_of(at(glow_first, "fixture_glow"), 2), classes_of(at(glow_first, "fixture_hum"), 1)),
+           classes_of(k_violence, 1));
+  const ContentClasses b =
+      join(join(classes_of(at(hum_first, "fixture_glow"), 2), classes_of(at(hum_first, "fixture_hum"), 1)),
+           classes_of(k_violence, 1));
+  CHECK(a != b);  // the same class by names, at other indexes
+  const u64 ha = class_hash(glow_first, a);
+  CHECK(ha != 0);
+  CHECK(ha == class_hash(hum_first, b));
+
+  // Nothing classified has no hash, so an unclassified source keeps its key.
+  CHECK(class_hash(glow_first, ContentClasses{}) == 0);
+  Vector<MaterialClass> neutral;
+  neutral.push_back(MaterialClass{"m0", ContentClasses{}});
+  CHECK(class_hash(glow_first, ContentClasses{}, &neutral) == 0);
+
+  // A renamed level, or a reordered ladder, is another class; so is another level.
+  Categories renamed;
+  REQUIRE(renamed.add_json(
+      R"({"categories":[{"name":"fixture_glow","levels":["none","faint","bright"]},{"name":"fixture_hum","levels":["none","loud"]}]})",
+      error));
+  CHECK(class_hash(renamed, a) != ha);
+  Categories reordered;
+  REQUIRE(reordered.add_json(
+      R"({"categories":[{"name":"fixture_glow","levels":["none","bright","dim"]},{"name":"fixture_hum","levels":["none","loud"]}]})",
+      error));
+  ContentClasses bright_first = a;
+  bright_first.levels[at(reordered, "fixture_glow")] = 1;  // `bright`, by name, as in `a`
+  CHECK(class_hash(reordered, bright_first) != ha);
+  ContentClasses dimmer = a;
+  dimmer.levels[at(glow_first, "fixture_glow")] = 1;
+  CHECK(class_hash(glow_first, dimmer) != ha);
+
+  // A classified material is part of it, by name, in whatever order the materials are given; a
+  // material at `none` adds nothing; a class only on a material is classified.
+  Vector<MaterialClass> two;
+  two.push_back(MaterialClass{"m1", classes_of(at(glow_first, "fixture_glow"), 1)});
+  two.push_back(MaterialClass{"m0", classes_of(at(glow_first, "fixture_hum"), 1)});
+  Vector<MaterialClass> swapped;
+  swapped.push_back(two[1]);
+  swapped.push_back(two[0]);
+  const u64 hm = class_hash(glow_first, a, &two);
+  CHECK(hm != ha);
+  CHECK(hm == class_hash(glow_first, a, &swapped));
+  Vector<MaterialClass> with_neutral = two;
+  with_neutral.push_back(MaterialClass{"m2", ContentClasses{}});
+  CHECK(class_hash(glow_first, a, &with_neutral) == hm);
+  CHECK(class_hash(glow_first, ContentClasses{}, &two) != 0);
+  Vector<MaterialClass> renamed_material = two;
+  renamed_material[0].name = "m9";
+  CHECK(class_hash(glow_first, a, &renamed_material) != hm);
+}
+
 TEST_CASE(
     "content_class: a policy caps a game's category by name, resolved when its ladder arrives") {
   std::string error;

@@ -1,3 +1,4 @@
+#include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/json/json_value.h>
 #include <core/schema/json_reflect.h>
@@ -357,6 +358,94 @@ bool read_sidecar_classes(const Categories& categories, std::string_view sidecar
     }
   }
   return read_classes(categories, typed, out, error, materials);
+}
+
+namespace {
+
+// The canonical form is length-prefixed text, so no two forms run together into one.
+void put_count(std::string& out, u32 n) {
+  for (u32 b = 0; b < 4; ++b)
+    out.push_back(static_cast<char>((n >> (8 * b)) & 0xFFu));
+}
+
+void put_text(std::string& out, std::string_view text) {
+  put_count(out, static_cast<u32>(text.size()));
+  out.append(text.data(), text.size());
+}
+
+// A category or level the table cannot name (a value made by hand, past its table or its
+// ladder's top) is written by number, apart from every name, since a name is never `#`.
+std::string category_text(const Categories& categories, u32 c) {
+  return c < categories.size() ? categories.name(c) : "#" + std::to_string(c);
+}
+
+std::string level_text(const Categories& categories, u32 c, u8 level) {
+  if (c < categories.size() && level <= categories.top(c)) return categories.level_name(c, level);
+  return "#" + std::to_string(level);
+}
+
+// The categories above `none` in `classes`, by name.
+u32 named_order(const Categories& categories, const ContentClasses& classes,
+                std::array<u32, k_max_categories>& order) {
+  u32 n = 0;
+  for (u32 c = 0; c < k_max_categories; ++c)
+    if (classes.levels[c] != k_none) order[n++] = c;
+  std::sort(order.begin(), order.begin() + n, [&categories](u32 a, u32 b) {
+    return category_text(categories, a) < category_text(categories, b);
+  });
+  return n;
+}
+
+void put_pairs(std::string& out, const Categories& categories, const ContentClasses& classes) {
+  std::array<u32, k_max_categories> order{};
+  const u32 n = named_order(categories, classes, order);
+  put_count(out, n);
+  for (u32 i = 0; i < n; ++i) {
+    put_text(out, category_text(categories, order[i]));
+    put_text(out, level_text(categories, order[i], classes.levels[order[i]]));
+  }
+}
+
+}  // namespace
+
+u64 class_hash(const Categories& categories, const ContentClasses& classes,
+               const Vector<MaterialClass>* materials) {
+  ContentClasses all = classes;
+  Vector<u32> classified;  // the materials that are not `none`, by name
+  if (materials) {
+    for (u32 m = 0; m < materials->size(); ++m) {
+      if (is_none((*materials)[m].classes)) continue;
+      all = join(all, (*materials)[m].classes);
+      classified.push_back(m);
+    }
+    std::sort(classified.begin(), classified.end(), [materials](u32 a, u32 b) {
+      return (*materials)[a].name < (*materials)[b].name;
+    });
+  }
+  if (is_none(all)) return 0;  // an unclassified source keeps its key
+
+  std::string form = "engine.content_class.hash/1";
+  // Each named category's ladder, so a renamed level or a reordered ladder is another class.
+  std::array<u32, k_max_categories> order{};
+  const u32 n = named_order(categories, all, order);
+  put_count(form, n);
+  for (u32 i = 0; i < n; ++i) {
+    const u32 c = order[i];
+    put_text(form, category_text(categories, c));
+    const u32 levels = c < categories.size() ? static_cast<u32>(categories.top(c)) + 1 : 0;
+    put_count(form, levels);
+    for (u32 l = 0; l < levels; ++l)
+      put_text(form, categories.level_name(c, static_cast<u8>(l)));
+  }
+  put_pairs(form, categories, classes);
+  put_count(form, static_cast<u32>(classified.size()));
+  for (u32 i = 0; i < classified.size(); ++i) {
+    const MaterialClass& material = (*materials)[classified[i]];
+    put_text(form, material.name);
+    put_pairs(form, categories, material.classes);
+  }
+  const u64 h = hash_bytes(form.data(), form.size());
+  return h == 0 ? 1 : h;
 }
 
 namespace {
