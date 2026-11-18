@@ -217,6 +217,8 @@ bool AccumulationPass::record(const FramePassContext& context, std::string* erro
         if (past.valid()) b.read(past, gfx::Access::ComputeRead);
         if (past_names.valid()) b.read(past_names, gfx::Access::ComputeRead);
         if (past_motion.valid()) b.read(past_motion, gfx::Access::ComputeRead);
+        // The pair table, the instance, the cluster's material and the material (R186 A3).
+        read_scene_tables(context, b, gfx::Access::ComputeRead);
         b.write(out, gfx::Access::ComputeWrite);
       },
       [this, slot, timer = context.timer, bindless = context.bindless](gfx::CommandList cb,

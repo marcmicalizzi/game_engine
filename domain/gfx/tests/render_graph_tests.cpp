@@ -417,6 +417,56 @@ TEST_CASE("render graph: a declared write names the read in its barriers") {
   graph.reset();
 }
 
+// A build behind a build that shares its scratch (R186 D1): the specification holds every access
+// to a build's scratch to the build stage with ACCELERATION_STRUCTURE_READ | _WRITE
+// (vkCmdBuildAccelerationStructuresKHR), so the barrier between two builds that each declared the
+// scratch as written names the read on both sides, as a storage or a transfer write does since
+// R184. And a scratch imported naming its last use, a build of the frame before, gives the first
+// build of this frame its barrier, which an import naming none would not.
+TEST_CASE("render graph: a build behind a build names the read of the scratch they share") {
+  using gfx::MemoryAccess;
+  using gfx::PipelineStage;
+  gfx::Device device;  // never opened
+  gfx::BufferResource fake{};
+  fake.size = 256;
+  gfx::RenderGraph graph(device);
+  const gfx::RgBuffer scratch =
+      graph.import_buffer("scratch", fake, PipelineStage::AccelerationBuild,
+                          MemoryAccess::AccelerationStructureRead |
+                              MemoryAccess::AccelerationStructureWrite);
+  const gfx::RgBuffer unnamed = graph.import_buffer("unnamed", fake);
+  auto add = [&](const char* name, auto&& setup) {
+    graph.add_pass(name, gfx::PassKind::Compute, setup,
+                   [](gfx::CommandList, gfx::RenderGraph&) {});
+  };
+  add("chunk 0", [&](gfx::PassBuilder& b) {
+    b.write(scratch, gfx::Access::AccelerationBuildWrite);
+    b.write(unnamed, gfx::Access::AccelerationBuildWrite);
+  });
+  add("chunk 1", [&](gfx::PassBuilder& b) {
+    b.write(scratch, gfx::Access::AccelerationBuildWrite);
+  });
+  std::string error;
+  REQUIRE_MESSAGE(graph.compile(&error), error);
+  const MemoryAccess build = MemoryAccess::AccelerationStructureRead |
+                             MemoryAccess::AccelerationStructureWrite;
+  auto has = [](MemoryAccess mask, MemoryAccess bits) { return (mask & bits) == bits; };
+  // chunk 0: the scratch's import names the frame before's build; the unnamed import gives none.
+  REQUIRE(graph.pass_barrier_count(0) == 1);
+  CHECK(graph.pass_barrier(0, 0).src_stage == PipelineStage::AccelerationBuild);
+  CHECK(has(graph.pass_barrier(0, 0).src_access, build));
+  CHECK(has(graph.pass_barrier(0, 0).dst_access, build));
+  // chunk 1: behind chunk 0, read and write on both sides, build stage to build stage.
+  REQUIRE(graph.pass_barrier_count(1) == 1);
+  const gfx::RenderGraph::BarrierMasks m = graph.pass_barrier(1, 0);
+  CHECK(m.src_stage == PipelineStage::AccelerationBuild);
+  CHECK(m.dst_stage == PipelineStage::AccelerationBuild);
+  CHECK(has(m.src_access, build));
+  CHECK(has(m.dst_access, build));
+  CHECK(graph.stats().buffer_barriers == 2);
+  graph.reset();
+}
+
 // A read in another stage behind a read that already has its barrier needs none of its own, but
 // it is ordered behind the write all the same: the barrier before the first reader is widened to
 // the second's stage and access. Before batch 68 the second reader (here an indirect dispatch

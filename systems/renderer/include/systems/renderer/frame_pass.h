@@ -150,6 +150,13 @@ struct FramePassContext {
   // resolve: valid only in a renderer with `renderer.reconstruction.inputs`. Read it as
   // `gfx::Access::ComputeRead`.
   gfx::RgBuffer motion;
+  // **The scene's tables and geometry this frame writes** (R186 A3): the instance and pair
+  // tables of a table set, the rings' and the records' copies, the page pool — each once. A pass
+  // whose shader reads the scene through an address (a pair, an instance, a material, a cluster)
+  // declares them with `read_scene_tables` at its own stage, so the copies that wrote them are
+  // made visible to it; on a frame that writes none of them the list is empty.
+  const gfx::RgBuffer* scene_tables = nullptr;
+  u32 scene_table_count = 0;
   u32 view_count = 0;
   const FramePassView* views = nullptr;
   // The camera and the frame's origin (ADR-0053): no absolute position reaches the GPU. A pass that
@@ -191,6 +198,13 @@ struct FramePassContext {
   const FrameFire* fires = nullptr;
   u32 fire_count = 0;
 };
+
+// Declares every scene table and geometry buffer the frame writes as read by `b` (R186 A3).
+inline void read_scene_tables(const FramePassContext& context, gfx::PassBuilder& b,
+                              gfx::Access access) {
+  for (u32 i = 0; i < context.scene_table_count; ++i)
+    b.read(context.scene_tables[i], access);
+}
 
 // A pass: adds its passes to `context.graph` and fills `context.report`. False, with `error`, fails
 // the frame (nothing is submitted beyond an empty command buffer). It is called between
