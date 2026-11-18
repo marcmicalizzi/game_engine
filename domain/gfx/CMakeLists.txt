@@ -52,7 +52,7 @@ engine_module(NAME gfx LAYER domain
           src/bindless.cpp src/swapchain.cpp src/capture.cpp src/shader_library.cpp src/pipeline_cache.cpp
           src/pipeline_batch.cpp
           src/gpu_timer.cpp src/acceleration.cpp src/cluster_acceleration.cpp src/opacity_micromap.cpp
-          src/display_probe.cpp)
+          src/display_probe.cpp src/rt_keep.cpp)
 target_link_libraries(engine_gfx PUBLIC engine_shaders_gfx)
 # The display probe (display_probe.h, E39) asks DXGI for the outputs' luminances on Windows.
 if(WIN32)
@@ -99,7 +99,10 @@ engine_module_tests(NAME gfx PARTS 2 CONFIG_INVARIANT
           tests/wind_tests.cpp
           # Foliage optics' closed forms against a sphere of normals (brdf_reference.h, R164); no
           # device.
-          tests/foliage_reference_tests.cpp)
+          tests/foliage_reference_tests.cpp
+          # The keep rule of a frame past the ray tracing chain's capacity (rt_keep.h, R174); no
+          # device.
+          tests/rt_keep_tests.cpp)
 
 # Shaders used by the RHI's own tests: the first .slang through the toolchain.
 engine_shaders(NAME gfx_tests

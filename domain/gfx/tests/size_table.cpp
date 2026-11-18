@@ -17,6 +17,7 @@
 #include <domain/gfx/pipeline.h>
 #include <domain/gfx/resources.h>
 #include <domain/gfx/rhi.h>
+#include <domain/gfx/rt_keep.h>
 #include <domain/gfx/sky.h>
 #include <domain/gfx/visibility_resolve.h>
 #include <domain/gfx/water_spectrum.h>
@@ -147,6 +148,10 @@ ENGINE_EXPECT_SIZE(200, 8, gfx::ClusterRecordParams);
 // The cache's tables, read through an address (R101). 120, not 112: the args block its passes
 // are dispatched from, so a pass with nothing to do dispatches no thread (R106).
 ENGINE_EXPECT_SIZE(120, 8, gfx::ClusterCacheTables);
+// The keep block a frame past its chain's capacity cuts through (rt_keep.h, R174): the frame's eye,
+// four addresses and the keys' length, read by `clas_records.slang`'s keep passes through
+// `ClusterRecordParams::keep`.
+ENGINE_EXPECT_SIZE(88, 8, gfx::ClusterKeepTables);
 // tlas_references.slang's push block: two addresses and the count (2026-10-04).
 // 80, not 24: the instance table and the frame's eye, because the dispatch writes each record's
 // transform from the eye every frame as well as its reference (ADR-0053, 2026-10-05).
