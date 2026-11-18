@@ -4,6 +4,9 @@
 #include <core/time/time.h>
 
 #include <algorithm>
+#include <filesystem>
+#include <string_view>
+#include <system_error>
 
 namespace engine::doc {
 
@@ -42,16 +45,27 @@ bool BlobStore::put(const io::Vfs& vfs, std::string_view dir, std::string_view b
   out.media = std::string(media);
   if (created != nullptr) *created = false;
   const std::string path = path_of(dir, out.blob);
-  // A blob already stored is the same bytes by its name; it is written again only when its file no
-  // longer is (damaged on disk), which a read would refuse.
-  io::FileInfo info;
-  if (vfs.stat(path, info) == io::Status::Ok && !info.is_directory && info.size == bytes.size()) {
-    std::string there;
-    if (vfs.read(path, there) == io::Status::Ok && name_of(there) == out.blob) return true;
-  }
   std::string native;
   if (const io::Status s = vfs.resolve(path, native, true); s != io::Status::Ok)
     return fail(error, path + ": " + io::status_name(s));
+  // A blob already stored is the same bytes by its name; it is written again only when its file no
+  // longer is (damaged on disk), which a read would refuse. A put is also the promise of a commit
+  // naming the blob, and the file's time is what a collection's grace period counts from: a put of
+  // bytes already stored starts it again (b68 review B3), or a blob left unnamed past the period,
+  // put again and collected before the commit, would be refused to the client that just put it.
+  io::FileInfo info;
+  if (vfs.stat(path, info) == io::Status::Ok && !info.is_directory && info.size == bytes.size()) {
+    std::string there;
+    if (vfs.read(path, there) == io::Status::Ok && name_of(there) == out.blob) {
+      std::error_code ec;
+      std::filesystem::last_write_time(
+          std::filesystem::path(
+              std::u8string_view(reinterpret_cast<const char8_t*>(native.data()), native.size())),
+          std::filesystem::file_time_type::clock::now(), ec);
+      if (!ec) return true;
+      // The time could not be set: writing the same bytes again gives the file a new one.
+    }
+  }
   if (const io::Status s = io::make_directories(io::parent_path(native)); s != io::Status::Ok)
     return fail(error, std::string(io::parent_path(path)) + ": " + io::status_name(s));
   // Atomic: a sibling file renamed into place, so a blob is whole or absent, never torn.
