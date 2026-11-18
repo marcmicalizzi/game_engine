@@ -1,10 +1,10 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "R174",
-  "reason": "R174 design: renderer.md gains 'Past the capacity, by size on screen' (where the layout's order enters the chain's drop, the keep key and the prefix cut, the passes, bytes and waste in numbers, what was considered and not chosen, the CPU mirror and the tests the build names) and a pointer from the chain's memory",
+  "reason": "R174 design and its second pass: renderer.md's 'Past the capacity, by size on screen' gains the guarantee at one capacity, the cache's misses and the counted exception, the cut's tables cleared every frame, a cut that keeps nothing at a small named budget, the kept set moving with the camera, the GPU sphere and the fixed-order centre",
   "date": "2026-11-18",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/renderer.md": 13739
+    "page:docs/subsystems/renderer.md": 25403
   }
 }
