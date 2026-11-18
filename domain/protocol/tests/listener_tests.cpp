@@ -686,6 +686,10 @@ TEST_CASE("listener: a person's review item is closed by a credential for a huma
       protocol::token_digest(director_token) + R"("}]})";
   std::string error;
   // The item, raised on the host's own side (a validator's host would raise it), for a person.
+  // `session.open` with `create` is a read that leaves a file (protocol.md, "What a read may do"),
+  // which is refused only to a connection bound to a credential with no role or an unenforced one;
+  // `direct` calls as the host's own stdin (connection 0, no credential), whose open stays a read
+  // confined by the roots, so it needs no attribution and no role to make the document.
   const auto raise = [&](BoundHost& host, const std::string& doc) {
     const JsonValue opened = result_of(direct(
         host,
