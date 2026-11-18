@@ -1126,6 +1126,41 @@ is that and W137's resistance law. Speeds and depths are the drawn stretches' me
 | depth over 30 % / all (m) | 0.065 / 0.076 | 0.066 / 0.076 | 0.065 / 0.075 | 0.066 / 0.076 | 0.084 / 0.091 |
 | link 515: runs, gaps, undrawn m, film m | 10, 9, 11.86, 8.70 | 7, 6, 5.88, 1.48 | 10, 9, 12.85, 8.70 | 6, 5, 3.65, 0 | 6, 5, 3.65, 0 |
 
+**A sixth column: `main` with the planner's half** (W140, 2026-11-17; `main` at 0073605c is "all
+three" with the white, whose solve writes the same flow file; the world re-planned under
+`k_channels_version` 16 into a root of its own, its cuts pasted, solved by the same command, a
+`msvc-debug` `engine-content` on one thread beside other rows' builds):
+
+| | main (all three) | main with the planner's half |
+|---|---|---|
+| walls / climbs drawn | 0 / 0 | 0 / 0 |
+| walls / climbs in the data | 3 / 52 over 30 % | 5 / 41 over 30 % |
+| pools written (open; spilled; reached back) | 331 (1,003; 149; 57) | 318 (964; 149; 58) |
+| stations over a bank (lines; held at an open edge) | 4,121 (159; 1,376) | 4,180 (158; 1,374) |
+| stations under the ground at the line (lines) | 1,645 (93) | 1,554 (94) |
+| over 30 %: film / undrawn | 0.60 / 1.42 % | 0.58 / 1.32 % |
+| over 30 %: runs / 100 m, gaps | 2.83, 93 | 2.83, 93 |
+| over 30 %: forest's thin, alternations / 100 m | 0.99 %, 3.60 | 0.97 %, 3.71 |
+| under 2 %: film / undrawn, gaps | 1.35 / 1.91 %, 10 | 1.35 / 1.91 %, 10 |
+| 5-15 % and 15-30 %: gaps | 4 and 11 | 5 and 12 |
+| speed over 30 % / all (m/s) | 0.267 / 0.205 | 0.265 / 0.205 |
+| depth over 30 % / all (m) | 0.084 / 0.091 | 0.083 / 0.091 |
+| link 515: runs, gaps, undrawn m, film m | 6, 5, 3.65, 0 | 4, 3, 3.14, 2.14 |
+| link 515: under the ground (worst), highest fall | 91 (1.50 m), 1.40 m | 83 (1.17 m), 1.79 m |
+
+**The pair is a small step on the steep lines and not better on every one.** Better: the stations
+under the ground (91 fewer, 5.5 %), over 30 % the undrawn share and the climbs in the data, and the
+owner's line (two gaps fewer, half a metre more drawn). The same: the gaps over 30 % (93; against
+W131 alone the planner's half took 93 to 85 the night before, and W138's draw rule and W137's
+deeper sheets have since changed which stretches a gap is made of). Worse: one gap more in each of
+the 5-15 % and 15-30 % classes, 59 more stations over a bank, and two more walls in the data (none
+drawn). **Why it does not move the gaps**: of the 93 gaps over 30 %, 83 are made only of films over
+a bank (both stations over a bank and under 2 cm; 272 such stretches) and 10 hold a climb; a film
+over a bank is a station held at an edge of the cut with no bank on its downhill side, which is the
+cut's width on a bench and the section's read of it, and neither of the planner's two rules (the
+trough test both ways, a fall's foot seated) changes a cut's width or gives a bench a bank. That
+is the next row's (W142).
+
 **W138+W131 is better than either alone on every steep line**: walls and climbs drawn, the stations
 under the ground, and over 30 % the film, the undrawn share, the runs, the gaps and link 515. **All
 three are not better than `main` on every line**: stations over a bank 4,121 against 1,623, open
@@ -1698,6 +1733,16 @@ that clung to the trench's wall now runs down the trench's floor, in the bed the
 *owner-b* the line is laid in a new trench and the water follows it, but stands there as stepped
 plates with vertical faces (W138's walls), and a raised plate still sits at the lip above the drop.
 The crop's over-30 % gaps went 20 to 15. The cook of the crop's tile set peaked at 38.3 GB of commit.
+
+**On `main`** (2026-11-17, `b68-W140`: the branch merged onto 0073605c, the roadmap its one
+conflict). The re-plan of v47 writes the plan of the night before byte for byte (the plan keys
+059464c22b2df633 and 9ba5cee8a4801079; 607 s beside other rows' builds, 2.05 GB of commit), so
+nothing `main` gained since changes what the planner lays. The first solve cooks the cuts' tile
+set again, because `main` keys it differently (b75d390c9a0e2993 where the night before's was
+e41845c920fbeab1): 1,681 s with the cook, **36.95 GB of commit** at its peak. With `main`'s three
+streams rows under it the planner's half is a small step and not better on every line; the table
+and why are in
+[the three streams rows measured together](#the-three-streams-rows-measured-together-w131-w137-w138).
 
 ### The section under the line
 
