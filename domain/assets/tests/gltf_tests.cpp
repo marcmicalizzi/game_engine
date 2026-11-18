@@ -507,6 +507,52 @@ TEST_CASE("gltf: a file stating diffuse transmission takes a key of its own") {
   }
 }
 
+// What a scene pins is the bytes; the importer's tags are the cache key's alone. A file that states
+// a tangent takes G2's tag in its key and keeps its bytes' hash; one that states nothing G2 reads
+// has a key equal to its bytes' hash. Before the split the pin compared the key, and the desert
+// overlook's Lantern, whose bytes had not moved, was refused after G2.
+TEST_CASE("gltf: the bytes' hash is the bytes and buffers, whatever the key folds in") {
+  const TempDir tmp("engine_assets_gltf_bytes_hash");
+  const Cube cube = make_cube();
+  const std::vector<std::uint8_t> binary = cube_buffer(cube);
+  REQUIRE(io::write_file(io::join_path(tmp.path(), "cube.bin"), view_of(binary)) == io::Status::Ok);
+  for (const bool tangent : {false, true}) {
+    CAPTURE(tangent);
+    std::string json = cube_json("cube.bin");
+    // The cube binds one texture to TEXCOORD_1 (a G2 reading); bind it to the first set, so the
+    // plain file states nothing G2 reads.
+    const std::string second_set = "\"texCoord\": 1";
+    const std::size_t set_at = json.find(second_set);
+    REQUIRE(set_at != std::string::npos);
+    json.replace(set_at, second_set.size(), "\"texCoord\": 0");
+    if (tangent) {
+      const std::string anchor = "\"TEXCOORD_0\": 2}, \"indices\": 4";
+      const std::size_t at = json.find(anchor);
+      REQUIRE(at != std::string::npos);
+      json.insert(at + std::string("\"TEXCOORD_0\": 2").size(), ", \"TANGENT\": 1");
+    }
+    const std::string path = io::join_path(tmp.path(), tangent ? "tangent.gltf" : "plain.gltf");
+    REQUIRE(io::write_file(path, json) == io::Status::Ok);
+    const u64 bytes_alone = hash_combine(hash_bytes(json.data(), json.size()),
+                                         hash_bytes(binary.data(), binary.size()));
+    u64 key = 0;
+    u64 bytes = 0;
+    std::string error;
+    REQUIRE_MESSAGE(source_mesh_hash(path, key, bytes, &error), error);
+    CHECK(bytes == bytes_alone);
+    u64 bytes_only = 0;
+    REQUIRE(source_bytes_hash(path, bytes_only, &error));
+    CHECK(bytes_only == bytes_alone);
+    u64 key_only = 0;
+    REQUIRE(source_mesh_hash(path, key_only, &error));
+    CHECK(key_only == key);
+    if (tangent)
+      CHECK(key == hash_combine(bytes_alone, u64{0x4732494d504f5231ull}));  // "G2IMPOR1"
+    else
+      CHECK(key == bytes_alone);
+  }
+}
+
 TEST_CASE("gltf: a .glb built in memory loads like the .gltf") {
   const Cube cube = make_cube();
   const std::vector<std::uint8_t> glb = make_glb(cube_json(""), cube_buffer(cube));

@@ -262,7 +262,7 @@ struct SceneWater {
 // be, where it came from, and how to fit it. Parallel to `SceneDesc::meshes`, or empty.
 struct SceneMeshInfo {
   std::string name;
-  u64 hash = 0;  // `assets::source_mesh_hash` the file must have; 0 is unchecked
+  u64 hash = 0;  // `assets::source_bytes_hash` the file must have; 0 is unchecked
   // "scene", "overlay" (a manifest's replacement), "prop", "terrain", or "water"
   const char* origin = "scene";
   MeshFit fit;

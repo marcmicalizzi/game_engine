@@ -66,7 +66,7 @@ std::string n(u32 v) { return std::to_string(v); }
 
 // A unit cube as a GLB with normals, one material and 12 triangles wound counter-clockwise seen
 // from outside: the renderer tests' fixture, minus the morph target.
-bool write_cube_glb(const std::string& path) {
+bool write_cube_glb(const std::string& path, bool tangent = false) {
   const Vec3 normals[6] = {Vec3{1, 0, 0},  Vec3{-1, 0, 0}, Vec3{0, 1, 0},
                            Vec3{0, -1, 0}, Vec3{0, 0, 1},  Vec3{0, 0, -1}};
   const Vec3 tangents[6] = {Vec3{0, 1, 0}, Vec3{0, 1, 0}, Vec3{0, 0, 1},
@@ -100,10 +100,32 @@ bool write_cube_glb(const std::string& path) {
       put_u32(bin, i);
   }
   const u32 index_bytes = static_cast<u32>(bin.size()) - index_offset;
+  // With `tangent`, the file states a TANGENT stream (VEC4, the face's tangent and +1), which G2
+  // reads: its cache key takes G2's tag and its bytes' hash does not.
+  const u32 tangent_offset = static_cast<u32>(bin.size());
+  if (tangent) {
+    for (u32 f = 0; f < 6; ++f) {
+      for (u32 c = 0; c < 4; ++c) {
+        put_f32(bin, tangents[f].x);
+        put_f32(bin, tangents[f].y);
+        put_f32(bin, tangents[f].z);
+        put_f32(bin, 1.0f);
+      }
+    }
+  }
+  const std::string tangent_attribute = tangent ? ",\"TANGENT\":3" : "";
+  const std::string tangent_accessor =
+      tangent ? ",{\"bufferView\":3,\"componentType\":5126,\"count\":24,\"type\":\"VEC4\"}" : "";
+  const std::string tangent_view =
+      tangent ? ",{\"buffer\":0,\"byteOffset\":" + n(tangent_offset) + ",\"byteLength\":" +
+                    n(static_cast<u32>(bin.size()) - tangent_offset) + "}"
+              : "";
   std::string json =
       "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
       "\"nodes\":[{\"mesh\":0}],"
-      "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1},"
+      "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1" +
+      tangent_attribute +
+      "},"
       "\"indices\":2,\"material\":0}]}],"
       "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.8,0.5,0.2,1],"
       "\"metallicFactor\":0,\"roughnessFactor\":0.6}}],"
@@ -111,13 +133,16 @@ bool write_cube_glb(const std::string& path) {
       "{\"bufferView\":0,\"componentType\":5126,\"count\":24,\"type\":\"VEC3\","
       "\"min\":[-0.5,-0.5,-0.5],\"max\":[0.5,0.5,0.5]},"
       "{\"bufferView\":1,\"componentType\":5126,\"count\":24,\"type\":\"VEC3\"},"
-      "{\"bufferView\":2,\"componentType\":5125,\"count\":36,\"type\":\"SCALAR\"}],"
+      "{\"bufferView\":2,\"componentType\":5125,\"count\":36,\"type\":\"SCALAR\"}" +
+      tangent_accessor +
+      "],"
       "\"bufferViews\":["
       "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":" +
       n(normal_offset) + "},{\"buffer\":0,\"byteOffset\":" + n(normal_offset) +
       ",\"byteLength\":" + n(index_offset - normal_offset) +
       "},{\"buffer\":0,\"byteOffset\":" + n(index_offset) + ",\"byteLength\":" + n(index_bytes) +
-      "}],\"buffers\":[{\"byteLength\":" + n(static_cast<u32>(bin.size())) + "}]}";
+      "}" + tangent_view + "],\"buffers\":[{\"byteLength\":" + n(static_cast<u32>(bin.size())) +
+      "}]}";
   while (json.size() % 4 != 0)
     json += ' ';
   std::vector<u8> glb;
@@ -647,9 +672,11 @@ TEST_CASE(
   CHECK_FALSE(read_scene_file(typo, refused, error));
   CHECK(error.find("grund") != std::string::npos);
 
-  // The cube's own bytes, which the scene may name and the load then insists on.
+  // The cube's own bytes, which the scene may name and the load then insists on; the cache's key
+  // beside them is what the load records it was built from.
   u64 cube_hash = 0;
-  REQUIRE(assets::source_mesh_hash(slashes(dir / "cube.glb"), cube_hash, &error));
+  u64 cube_key = 0;
+  REQUIRE(assets::source_mesh_hash(slashes(dir / "cube.glb"), cube_key, cube_hash, &error));
   const std::string scene_file = slashes(dir / "scene.json");
   REQUIRE(write_text(scene_file, std::string(R"({"format":"engine.scene.v1","name":"t",
       "meshes":[{"name":"cube","path":"cube.glb","hash":")") +
@@ -718,7 +745,7 @@ TEST_CASE(
   desc.ddc = slashes(dir / "ddc");
   SceneData data;
   REQUIRE_MESSAGE(load_scene(desc, data, error), error);
-  CHECK(data.sources[0].source_hash == cube_hash);
+  CHECK(data.sources[0].source_hash == cube_key);
   CHECK(data.sources[2].source_hash == terrain_hash(desc.terrain));
   CHECK(data.terrain.enabled);
   const gfx::InstanceDesc& tall = data.instances[0];
@@ -765,6 +792,46 @@ TEST_CASE(
   u64 bad = 0;
   CHECK_FALSE(parse_hash_hex("xyz", bad));
   CHECK_FALSE(parse_hash_hex("00000000000000AA", bad));
+}
+
+// A scene pins a mesh's bytes; the importer's tags are the cache key's. A file that states a
+// tangent (a G2 reading) has a key that differs from its bytes' hash, and the scene that pins the
+// bytes loads it, while one that pins anything else, the key included, is refused naming both.
+// Before the split the pin was compared with the key, and the desert overlook stopped loading.
+TEST_CASE("scene file: a pin names the bytes, not the importer's key") {
+  const test::TempDir tmp("engine_renderer_scene_pin");
+  const std::filesystem::path dir = tmp.native();
+  REQUIRE(write_cube_glb(slashes(dir / "tangent.glb"), true));
+  std::string error;
+  u64 key = 0;
+  u64 bytes = 0;
+  REQUIRE_MESSAGE(assets::source_mesh_hash(slashes(dir / "tangent.glb"), key, bytes, &error),
+                  error);
+  REQUIRE(key != bytes);  // the file states a tangent, so its key carries G2's tag
+  for (const bool pin_bytes : {true, false}) {
+    CAPTURE(pin_bytes);
+    const u64 pin = pin_bytes ? bytes : key;
+    const std::string scene_file = slashes(dir / "scene.json");
+    REQUIRE(write_text(scene_file, std::string(R"({"format":"engine.scene.v1","name":"pin",
+        "meshes":[{"name":"cube","path":"tangent.glb","hash":")") +
+                                       hash_hex(pin) + R"("}],
+        "instances":[{"mesh":0,"translation":[0,0,0]}]})"));
+    SceneDesc desc;
+    REQUIRE_MESSAGE(read_scene_file(scene_file, desc, error), error);
+    REQUIRE(!desc.mesh_info.empty());
+    CHECK(desc.mesh_info[0].hash == pin);
+    desc.ddc = slashes(dir / "ddc");
+    SceneData data;
+    if (pin_bytes) {
+      REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+      REQUIRE(!data.sources.empty());
+      CHECK(data.sources[0].source_hash == key);  // the cache still keys on the tagged value
+    } else {
+      CHECK_FALSE(load_scene(desc, data, error));
+      CHECK(error.find(hash_hex(bytes)) != std::string::npos);
+      CHECK(error.find(hash_hex(key)) != std::string::npos);
+    }
+  }
 }
 
 TEST_CASE("flythrough: percentiles and the per-frame summary") {

@@ -53,7 +53,7 @@ const char* block_role_name(BlockRole role) noexcept;
 struct KitBlock {
   std::string name;
   std::string mesh;  // resolved against the block kit file's directory
-  u64 hash = 0;      // assets::source_mesh_hash the mesh must have; 0 is unchecked
+  u64 hash = 0;      // assets::source_bytes_hash the mesh must have; 0 is unchecked
   BlockRole role = BlockRole::stretcher;
   i32 length_cm = 0;
   i32 height_cm = 0;

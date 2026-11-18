@@ -1594,7 +1594,18 @@ bool load_gltf(std::string_view path, MeshData& out, std::string* error) {
 }
 
 bool source_mesh_hash(std::string_view path, u64& out, std::string* error) {
+  u64 bytes = 0;
+  return source_mesh_hash(path, out, bytes, error);
+}
+
+bool source_bytes_hash(std::string_view path, u64& out, std::string* error) {
+  u64 key = 0;
+  return source_mesh_hash(path, key, out, error);
+}
+
+bool source_mesh_hash(std::string_view path, u64& out, u64& bytes_out, std::string* error) {
   out = 0;
+  bytes_out = 0;
   std::string contents;
   const io::Status status = io::read_file(path, contents);
   if (status != io::Status::Ok)
@@ -1623,6 +1634,10 @@ bool source_mesh_hash(std::string_view path, u64& out, std::string* error) {
     if (io::read_file(file, buffer) != io::Status::Ok) buffer.clear();
     hash = hash_combine(hash, hash_bytes(buffer.data(), buffer.size()));
   }
+  // What a scene's `hash` pins: the bytes alone. The tags below are the cache key's, so that an
+  // importer change rebuilds an entry; folding them into a pin made a scene refuse a file whose
+  // bytes had not moved (the desert overlook's Lantern, after G2).
+  bytes_out = hash;
   // A file with a BLEND material read as MASK imports differently since T139, so its key moves
   // and a cache built from the old reading is rebuilt; every other file keeps its key (and the
   // derived data cached under it), which a bump of the cache version would have thrown away.

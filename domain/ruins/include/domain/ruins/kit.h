@@ -46,7 +46,7 @@ const char* piece_kind_name(PieceKind kind) noexcept;
 struct Member {
   std::string name;
   std::string mesh;  // resolved against the kit file's directory
-  u64 hash = 0;      // assets::source_mesh_hash the mesh must have; 0 is unchecked
+  u64 hash = 0;      // assets::source_bytes_hash the mesh must have; 0 is unchecked
   PieceKind kind = PieceKind::section;
   i32 length_cm = 0;
   i32 arm_in_cm = 0;

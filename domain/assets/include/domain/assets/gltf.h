@@ -343,7 +343,17 @@ bool load_gltf_memory(std::span<const u8> bytes, std::string_view base_dir, Mesh
 // bytes, so the hash already covers it, which is what keeps the cache key sound now that a
 // container carries those bytes (`geometry::ClusterSection::Images`). Returns false and fills
 // `error` when the mesh file itself cannot be read or parsed.
+//
+// The value is the derived data's key, and it is the bytes' hash with a tag folded in for every
+// importer change that reads some files differently (BLEND read as MASK, a transmission, G2's
+// streams), so an entry built before the change is rebuilt and every other file keeps its key.
+// What a scene pins (`renderer::SceneMesh::hash`) is the bytes and nothing else, so a file whose
+// bytes did not move still matches its pin after an importer change: that is `source_bytes_hash`,
+// the same value before any tag. The four-argument form gives both from one read.
 bool source_mesh_hash(std::string_view path, u64& out, std::string* error = nullptr);
+bool source_mesh_hash(std::string_view path, u64& out, u64& bytes_out,
+                      std::string* error = nullptr);
+bool source_bytes_hash(std::string_view path, u64& out, std::string* error = nullptr);
 
 // Spans over the mesh's normals, UVs, skin bindings, morph channels and canonical vertex ids for
 // geometry::build_clusters and geometry::build_cluster_lod. Absent attributes stay empty, which is

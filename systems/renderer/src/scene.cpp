@@ -916,7 +916,8 @@ bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMe
 // glTF and these options address, or the glTF itself (imported, welded, clustered per primitive
 // so every cluster has a single material, merged, and written into the cache for the next run).
 // An empty `path` builds the scene's terrain when it has one and the procedural scene otherwise.
-// `expected_hash`, when not zero, is the source hash the file must have (a scene file's `hash`).
+// `expected_hash`, when not zero, is the hash the file's bytes must have (a scene file's `hash`,
+// `assets::source_bytes_hash`; for a generated mesh the generator's source hash).
 // `identities` is the load's table of its source images, when it has one (load_scene's); its
 // textures are not this function's — the load's pass builds or trusts them after every mesh is in.
 bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expected_hash,
@@ -1026,13 +1027,15 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
     out.cache = "file";
   } else if (desc.cache || expected_hash != 0) {
     profiling::TraceStage hash_stage("source hash");
-    if (!assets::source_mesh_hash(path, source_hash, &error)) return false;
+    u64 bytes_hash = 0;  // what a pin names; `source_hash` is the cache's key, importer tags in
+    if (!assets::source_mesh_hash(path, source_hash, bytes_hash, &error)) return false;
     hash_stage.end();
     out.source_hash = source_hash;
     // A scene that names a mesh by its bytes gets those bytes or nothing: a number measured on a
     // different file would still carry this scene's name (plan 09 §9.4, "content-addressed").
-    if (expected_hash != 0 && source_hash != expected_hash) {
-      error = path + " hashes to " + hash_hex(source_hash) + ", and the scene names " +
+    // The bytes, not the key: an importer change moves the key and must not refuse the same file.
+    if (expected_hash != 0 && bytes_hash != expected_hash) {
+      error = path + " hashes to " + hash_hex(bytes_hash) + ", and the scene names " +
               hash_hex(expected_hash);
       return false;
     }
