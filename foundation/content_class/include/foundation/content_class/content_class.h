@@ -127,6 +127,18 @@ class Categories {
   // The same from a categories file's JSON text (unknown fields refused).
   bool add_json(std::string_view json, std::string& error);
 
+  // A name a category may have: lower-case letters, digits and `_`, and not `levels` or
+  // `materials`, which a sidecar's two forms reserve. So `Nudity` and `nudity ` are refused rather
+  // than read as a second category beside `nudity`.
+  static bool valid_name(std::string_view name);
+  // Learns a category and its ladder from the data that carries them (a container's or a
+  // texture's classes section), so a host needs no categories file. The same ladder again is
+  // accepted; another ladder for a known name (an engine category's included), a seventeenth
+  // category, or a name or ladder a categories file would refuse is refused, and the data's
+  // class is then unreadable. `index` is the category's place in the table.
+  bool learn(std::string_view name, const Vector<std::string>& ladder, u32& index,
+             std::string& error);
+
   u32 size() const { return static_cast<u32>(names_.size()); }
   // The category's index, or -1 when neither the engine nor the game defines it.
   i32 find(std::string_view name) const;

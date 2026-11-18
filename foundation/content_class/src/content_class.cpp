@@ -115,6 +115,83 @@ Categories::Categories() {
   }
 }
 
+namespace {
+
+const char* const k_name_rule =
+    "lower-case letters, digits and '_', and not 'levels' or 'materials'";
+
+// A ladder as a categories file or data carries it: starting at `none`, no level empty or named
+// twice, at most `k_max_levels`.
+template <class Levels>
+bool check_ladder(const std::string& name, const Levels& levels, const std::string& where,
+                  std::string& error) {
+  if (levels.empty() || levels[0] != "none") {
+    error = where + ": '" + name + "' does not start at 'none'";
+    return false;
+  }
+  if (levels.size() > k_max_levels) {
+    error = where + ": '" + name + "' has more than " + std::to_string(k_max_levels) + " levels";
+    return false;
+  }
+  for (u32 a = 0; a < levels.size(); ++a) {
+    if (levels[a].empty()) {
+      error = where + ": '" + name + "' has an empty level";
+      return false;
+    }
+    for (u32 b = 0; b < a; ++b) {
+      if (levels[a] == levels[b]) {
+        error = where + ": '" + name + "' names level '" + levels[a] + "' twice";
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
+bool Categories::valid_name(std::string_view name) {
+  if (name.empty() || name == "levels" || name == "materials") return false;
+  for (const char ch : name) {
+    const bool ok = (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_';
+    if (!ok) return false;
+  }
+  return true;
+}
+
+bool Categories::learn(std::string_view name, const Vector<std::string>& ladder, u32& index,
+                       std::string& error) {
+  const std::string owned(name);
+  const std::string where = "category '" + owned + "'";
+  if (!valid_name(name)) {
+    error = where + ": not a category name (" + k_name_rule + ")";
+    return false;
+  }
+  if (!check_ladder(owned, ladder, where, error)) return false;
+  const i32 known = find(name);
+  if (known >= 0) {
+    const Vector<std::string>& mine = ladders_[static_cast<u32>(known)];
+    bool same = mine.size() == ladder.size();
+    for (u32 l = 0; same && l < ladder.size(); ++l)
+      same = mine[l] == ladder[l];
+    if (!same) {
+      // The first ladder met for a name is that name's; an engine category's is compiled in.
+      error = where + ": its ladder differs from the one this table already holds for it";
+      return false;
+    }
+    index = static_cast<u32>(known);
+    return true;
+  }
+  if (size() >= k_max_categories) {
+    error = where + ": a class holds at most " + std::to_string(k_max_categories) + " categories";
+    return false;
+  }
+  index = size();
+  names_.push_back(owned);
+  ladders_.push_back(ladder);
+  return true;
+}
+
 bool Categories::add(const content::ContentCategoriesFile& file, std::string& error) {
   const u32 total = size() + static_cast<u32>(file.categories.size());
   if (total > k_max_categories) {
@@ -129,6 +206,10 @@ bool Categories::add(const content::ContentCategoriesFile& file, std::string& er
       error = where + ": a category has no name";
       return false;
     }
+    if (!valid_name(c.name)) {
+      error = where + ": '" + c.name + "' is not a category name (" + k_name_rule + ")";
+      return false;
+    }
     bool known = find(c.name) >= 0;
     for (u32 j = 0; j < i; ++j)
       known |= file.categories[j].name == c.name;
@@ -136,27 +217,7 @@ bool Categories::add(const content::ContentCategoriesFile& file, std::string& er
       error = where + ": '" + c.name + "' is already a category";
       return false;
     }
-    if (c.levels.empty() || c.levels[0] != "none") {
-      error = where + ": '" + c.name + "' does not start at 'none'";
-      return false;
-    }
-    if (c.levels.size() > k_max_levels) {
-      error =
-          where + ": '" + c.name + "' has more than " + std::to_string(k_max_levels) + " levels";
-      return false;
-    }
-    for (u32 a = 0; a < c.levels.size(); ++a) {
-      if (c.levels[a].empty()) {
-        error = where + ": '" + c.name + "' has an empty level";
-        return false;
-      }
-      for (u32 b = 0; b < a; ++b) {
-        if (c.levels[a] == c.levels[b]) {
-          error = where + ": '" + c.name + "' names level '" + c.levels[a] + "' twice";
-          return false;
-        }
-      }
-    }
+    if (!check_ladder(c.name, c.levels, where, error)) return false;
   }
   for (u32 i = 0; i < file.categories.size(); ++i) {
     const content::ContentCategory& c = file.categories[i];
@@ -264,11 +325,36 @@ bool read_sidecar_classes(const Categories& categories, std::string_view sidecar
     if (materials) materials->clear();
     return true;
   }
-  content::ContentClasses typed;
-  schema::ReadContext ctx;
-  if (!schema::from_json(typed, *declared, ctx) || !ctx.ok()) {
-    error = "sidecar: content_classes: " + schema_error(ctx);
+  if (!declared->is_object()) {
+    error = "sidecar: content_classes is not an object";
     return refuse();
+  }
+  const JsonValue::Object& members = declared->as_object();
+  const bool schema_form = members.contains("levels") || members.contains("materials");
+  content::ContentClasses typed;
+  if (schema_form) {
+    for (u32 i = 0; i < members.size(); ++i) {
+      const std::string& key = members.key_at(i);
+      if (key != "levels" && key != "materials") {
+        error = "sidecar: content_classes mixes the schema's form with a category ('" + key + "')";
+        return refuse();
+      }
+    }
+    schema::ReadContext ctx;
+    if (!schema::from_json(typed, *declared, ctx) || !ctx.ok()) {
+      error = "sidecar: content_classes: " + schema_error(ctx);
+      return refuse();
+    }
+  } else {
+    // The generation tools' flat map, category to level, read as the asset's levels.
+    for (u32 i = 0; i < members.size(); ++i) {
+      const JsonValue& level = members.value_at(i);
+      if (!level.is_string()) {
+        error = "sidecar: content_classes: '" + members.key_at(i) + "' is not a level name";
+        return refuse();
+      }
+      typed.levels.insert(members.key_at(i), std::string(level.as_string()));
+    }
   }
   return read_classes(categories, typed, out, error, materials);
 }

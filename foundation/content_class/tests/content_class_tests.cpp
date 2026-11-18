@@ -315,6 +315,83 @@ TEST_CASE(
   CHECK(set.find("a") == nullptr);
 }
 
+TEST_CASE("content_class: category names are [a-z0-9_], and ladders are learned from data") {
+  std::string error;
+  CHECK(Categories::valid_name("fixture_glow2"));
+  const std::string tabbed = std::string("fixture") + static_cast<char>(9) + "glow";
+  for (const std::string& bad : {std::string("Nudity"), std::string("nudity "), tabbed,
+                                 std::string("levels"), std::string("materials"), std::string()}) {
+    INFO(bad);
+    CHECK_FALSE(Categories::valid_name(bad));
+  }
+  Categories file_table;
+  CHECK_FALSE(
+      file_table.add_json(R"({"categories":[{"name":"Nudity","levels":["none","x"]}]})", error));
+  CHECK(error.find("not a category name") != std::string::npos);
+  CHECK(file_table.size() == k_engine_categories);
+
+  Categories table;  // a host's: given no categories file
+  const Vector<std::string> glow_ladder = [] {
+    Vector<std::string> l;
+    l.push_back("none");
+    l.push_back("dim");
+    l.push_back("bright");
+    return l;
+  }();
+  u32 index = 99;
+  REQUIRE(table.learn("fixture_glow", glow_ladder, index, error));
+  CHECK(index == k_engine_categories);
+  CHECK(table.level(index, "bright") == 2);
+  REQUIRE(table.learn("fixture_glow", glow_ladder, index, error));  // the same ladder again
+  CHECK(index == k_engine_categories);
+  CHECK(table.size() == k_engine_categories + 1);
+  Vector<std::string> reordered = glow_ladder;
+  std::swap(reordered[1], reordered[2]);
+  CHECK_FALSE(table.learn("fixture_glow", reordered, index, error));  // another ladder
+  CHECK(error.find("differs") != std::string::npos);
+  Vector<std::string> short_violence;
+  short_violence.push_back("none");
+  short_violence.push_back("graphic");
+  CHECK_FALSE(table.learn("violence", short_violence, index, error));  // an engine category's
+  Vector<std::string> fill;
+  fill.push_back("none");
+  for (u32 i = table.size(); i < k_max_categories; ++i)
+    REQUIRE(table.learn("fixture_" + std::to_string(i), fill, index, error));
+  CHECK(table.size() == k_max_categories);
+  CHECK_FALSE(table.learn("fixture_seventeen", fill, index, error));  // a seventeenth
+  CHECK(table.size() == k_max_categories);
+}
+
+TEST_CASE("content_class: a sidecar's classes are read in both forms") {
+  const Categories categories = with_glow();
+  std::string error;
+  ContentClasses out;
+  // The generation tools' flat map, read as the asset's levels.
+  REQUIRE(read_sidecar_classes(
+      categories,
+      R"({"content_class":"general","content_classes":{"nudity":"none","sexual":"none","violence":"none"}})",
+      out, error));
+  CHECK(is_none(out));
+  REQUIRE(read_sidecar_classes(categories, R"({"content_classes":{"fixture_glow":"dim"}})", out,
+                               error));
+  CHECK(out == classes_of(glow(), 1));
+  // The schema's form.
+  REQUIRE(read_sidecar_classes(
+      categories, R"({"content_classes":{"materials":{"m0":{"levels":{"violence":"mild"}}}}})", out,
+      error));
+  CHECK(out == classes_of(k_violence, 1));
+  // Refused, each leaving the unreadable class: a mix of the two forms, a level of the wrong
+  // type, and content_classes that is not an object.
+  for (const char* bad :
+       {R"({"content_classes":{"levels":{},"fixture_glow":"dim"}})",
+        R"({"content_classes":{"fixture_glow":2}})", R"({"content_classes":"none"})"}) {
+    INFO(bad);
+    out = ContentClasses{};
+    CHECK_FALSE(read_sidecar_classes(categories, bad, out, error));
+    CHECK(out == unreadable(categories));
+  }
+}
+
 TEST_CASE("content_class: join is the per-category maximum") {
   const ContentClasses a = join(classes_of(k_nudity, 1), classes_of(glow(), 2));
   const ContentClasses b = join(classes_of(k_nudity, 2), classes_of(k_violence, 1));
