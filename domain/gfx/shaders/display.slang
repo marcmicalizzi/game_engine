@@ -2,7 +2,8 @@
 // "The output encode"; ADR-0052). No bindings and no entry points, like brdf.slang and sky.slang:
 // every writer of the picture includes it — the resolve (its shaded pixels and its sky) and the
 // reference path tracer's tonemap — so linear radiance becomes the target's code values in one
-// function and is quantized once, by the target's own store.
+// function and is quantized once, by that function (`display_stored`): the store is handed a
+// code's centre, and has nothing left to decide.
 //
 // **The encode** is the display's transfer curve, a 1/2.2 power, on radiance already exposed and
 // through the sky's shoulder. **The dither** follows it: triangular noise of one code step of the
@@ -52,11 +53,37 @@ float3 display_dithered(float3 encoded, uint2 pixel, uint steps) {
   return dithered;
 }
 
-// **The one output encode**: linear radiance, exposed and toned, to what the target's store
-// rounds. The resolve's shaded pixels and its sky, and the reference's tonemap, call nothing else.
+// **The one output encode**: linear radiance, exposed and toned, to the encoded value a quantizer
+// rounds — `display_stored` below for a picture target, the reference's tonemap its own bytes. The
+// resolve's shaded pixels and its sky, and the reference's tonemap, call nothing else.
 float3 display_output(float3 linear_color, uint2 pixel, uint steps) {
   return display_dithered(display_encode(linear_color), pixel, steps);
 }
+
+// **The engine's own quantizer** (display.h's `display_stored`; renderer.md, "The output encode",
+// "The code is the engine's, not the store's"): an encoded value as the centre of the code of a
+// UNORM target of `codes` steps it rounds to, nearest and a half up. Vulkan lets a store return
+// either of the two codes round a value that is not a whole one ("Conversion From Floating-Point
+// to Normalized Fixed-Point": to nearest is a "should"), and the cards here cut the value to four
+// bits under a code first, so a value handed over as it is lands on the lower code up to a
+// sixteenth of a code above an edge — where, is the driver's to say, and a last bit of a
+// driver's `pow` moves it. A code's centre is half a code from either edge, so whatever a store
+// does within that is this code: the picture's bytes are the shader's. `precise`, so the product
+// is rounded before the half is added, as display.h's is. `codes` 0 is the value as it came — a
+// float target, or a caller that leaves the rounding to the store.
+float3 display_stored(float3 value, uint codes) {
+  if (codes == 0) return value;
+  const float s = float(codes);
+  precise float3 scaled = saturate(value) * s;
+  precise float3 code = floor(scaled + 0.5);
+  return code / s;
+}
+
+// The two counts a picture's encode carries in one word (display.h's `display_word`, which says
+// why one word): the dither's steps in the low half, 0 for no noise, and the quantizer's codes in
+// the high half, 0 for a store left to round.
+uint display_word_steps(uint word) { return word & 0xFFFFu; }
+uint display_word_codes(uint word) { return word >> 16; }
 
 // ---- HDR output (E39; gfx/display.h says what and why; renderer.md, "HDR output") ------------
 //
@@ -70,12 +97,14 @@ static const uint k_display_scrgb = 2; // gfx::DisplayEncoding::ScRgb
 static const uint k_display_linear = 3; // gfx::DisplayEncoding::Linear: the exposed radiance
 
 // What the frame's output is: the encoding, the target's steps (the dither's, 0 for none), paper
-// white and the peak in nits. `ResolveParams`' display fields, gathered by the caller.
+// white and the peak in nits, and the target's codes the SDR encode rounds to itself
+// (`display_stored`; 0 for none). `ResolveParams`' display fields, gathered by the caller.
 struct DisplayTarget {
   uint encoding;
   uint steps;
   float paper_white_nits;
   float peak_nits;
+  uint codes;
 };
 
 // display.h's `display_tone`: at or below `knee` the value, above it a roll-off towards
@@ -120,7 +149,7 @@ float3 display_output(float3 exposed, float knee, uint2 pixel, DisplayTarget tar
     const float3 toned = float3(display_tone1(exposed.x, knee, 1.0),
                                 display_tone1(exposed.y, knee, 1.0),
                                 display_tone1(exposed.z, knee, 1.0));
-    return display_output(toned, pixel, target.steps);
+    return display_stored(display_output(toned, pixel, target.steps), target.codes);
   }
   const float ceiling = max(target.peak_nits / max(target.paper_white_nits, 1e-6), 1.0);
   const float3 e = max(exposed, 0.0);
@@ -128,6 +157,8 @@ float3 display_output(float3 exposed, float knee, uint2 pixel, DisplayTarget tar
                              display_tone1(e.z, knee, ceiling)) *
                       target.paper_white_nits;
   if (target.encoding == k_display_scrgb) return nits / 80.0;
+  // HDR10's codes are still the store's (renderer.md, "The code is the engine's, not the store's",
+  // says what holds it back): the SDR branch above is the only one that rounds.
   return display_dithered(pq_encode(bt709_to_bt2020(nits)), pixel, target.steps);
 }
 

@@ -3959,10 +3959,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     resolve.sky_is_clear = sky_on ? 0u : 1u;
     resolve.sky_params = sky_address;
     resolve.sky_view = v;
-    // The output encode's dither (gfx/display.h, ADR-0052): one code step of the target the
-    // pipelines draw into — 255 at 8 bits, 1023 at 10, none for a float target — so the picture is
-    // quantized once, at the depth the target holds.
-    resolve.dither_steps = settings.dither ? gfx::display_steps(desc_.color_format) : 0u;
+    // The output encode's dither and its codes (gfx/display.h, ADR-0052): the steps of the target
+    // the pipelines draw into — 255 at 8 bits, 1023 at 10, none for a float target — so the picture
+    // is quantized once, by the encode, at the depth the target holds, dithered or not.
+    resolve.dither_steps = gfx::display_target_word(settings.dither, desc_.color_format);
     // The display the encode is for (E39): SDR, or an HDR encoding at the run's paper white and
     // peak (`display_levels`: the setting, the tunable, what the display reports, the default).
     if (desc_.display != gfx::DisplayEncoding::Sdr) {
@@ -6691,7 +6691,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       push.view_y = views_[v].rect.y;
       push.texture = pass_report.color.valid() ? pass_report.color_sampled : linear_sampled_slot_;
       push.encoding = static_cast<u32>(desc_.display);
-      push.steps = settings.dither ? gfx::display_steps(desc_.color_format) : 0u;
+      push.steps = gfx::display_target_word(settings.dither, desc_.color_format);
       push.knee = frame_knee;
       push.paper_white_nits = levels.paper_white_nits;
       push.peak_nits = levels.peak_nits;

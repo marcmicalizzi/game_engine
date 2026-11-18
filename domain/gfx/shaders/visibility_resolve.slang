@@ -117,7 +117,7 @@ struct ResolveParams {
   uint64_t shadow_maps;   // ShadowMapParams*, read with k_shadow_cascades; 0: none
   uint64_t ground_detail;  // GroundDetail*, read for a k_material_ground_detail material; 0: none
   uint64_t sky_params;     // SkyParams* (sky.slang): the physical sky; 0: the stand-in
-  uint dither_steps;       // the target's code steps the output encode dithers by; 0: none
+  uint dither_steps;       // gfx::display_word: the dither's steps (0: none), the encode's codes
   // The scene grid's UV frame in millimetres (its corner on x and z, one over its side), which a world
   // tile's corner is placed in for its material's lookup (scene.slang, `terrain_uv_offset`).
   int terrain_uv_x0_mm;
@@ -271,9 +271,10 @@ uint half_sun_answer(ResolveParams* params, uint2 pixel, uint pair) {
 DisplayTarget display_target(ResolveParams* params) {
   DisplayTarget target;
   target.encoding = params->display_encoding;
-  target.steps = params->dither_steps;
+  target.steps = display_word_steps(params->dither_steps);
   target.paper_white_nits = params->display_paper_white_nits;
   target.peak_nits = params->display_peak_nits;
+  target.codes = display_word_codes(params->dither_steps);
   return target;
 }
 

@@ -1119,6 +1119,9 @@ struct ResolveParams {
   // view and a single view of that monitor draw the same noise). Zero is no dither: the encode
   // exactly as it was, which is what `domain/gfx`'s own tests and a data view draw with. The debug
   // and data modes (everything but Shaded, and the sky's stand-in clear) are never dithered.
+  // **And the encode's codes** (2026-11-18): the word is `display_word` — those steps in its low
+  // half, and in its high half the target's codes the encode rounds to itself (`display_stored`),
+  // zero leaving the rounding to the store. The renderer fills both (`display_target_word`).
   u32 dither_steps = 0;
   // **The scene grid's UV frame**, millimetres from the world's origin: its corner on x and z, and
   // one over its side (the frame's UV units per millimetre, so the shader multiplies where it would
