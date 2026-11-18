@@ -155,7 +155,7 @@ and the bodies it makes. A cast that meets a prop is `HitKind::prop`, its `insta
 
 `tests/prop_tests.cpp` (no device) holds it: a crate a metre on a side declared as a prop and
 placed by nothing stops a walker going north at its face less the capsule's radius; handed again
-unchanged nothing is made; moved 5 m the old body goes and the new one stops it there; at twice
+unchanged nothing is made; moved 3 m the old body goes and the new one stops it there; at twice
 the scale the face is a metre out; a declared box 0.25 m deep stops it at the box's face; `None`
 and a removal let it through; the ring moved a kilometre away lets the body go with the tile, and
 back it is made again; a cast names the prop by its key.

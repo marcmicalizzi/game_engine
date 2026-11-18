@@ -65,7 +65,7 @@ PropBody crate_at(f32 z, u32 key = 7) {
 }
 
 // A walker on a floor at y = 0 and one tile ring round it, the props handed and updated as a host
-// does on the tick, after the ring's update; `walk` steps it north from z = 12.
+// does on the tick, after the ring's update; `walk` steps it north from z = 15.
 struct Rig {
   physics::World physics;
   SceneCollision collision;
@@ -102,7 +102,7 @@ struct Rig {
     move_ring(place(Vec3{0.0f, 0.0f, 16.0f}));
     physics::CharacterConfig c;
     c.step_hz = 240;
-    REQUIRE(walker.create(physics, c, place(Vec3{0.0f, 0.02f, 12.0f})) == physics::Status::Ok);
+    REQUIRE(walker.create(physics, c, place(Vec3{0.0f, 0.02f, 15.0f})) == physics::Status::Ok);
   }
   void move_ring(WorldPos at) {
     observers.clear();
@@ -116,7 +116,7 @@ struct Rig {
     (void)collision.update_props();
   }
   f32 walk() {
-    walker.teleport(place(Vec3{0.0f, 0.02f, 12.0f}));
+    walker.teleport(place(Vec3{0.0f, 0.02f, 15.0f}));
     physics::CharacterInput north;
     north.move = Vec3{0.0f, 0.0f, 1.0f};
     for (u32 k = 0; k < 6 * 240; ++k)
@@ -136,7 +136,7 @@ TEST_CASE(
   Rig rig(scene);
   // No props: the walker goes six seconds north unstopped.
   const f32 free_z = rig.walk();
-  CHECK(free_z > 25.0f);
+  CHECK(free_z > 23.5f);
   CHECK(rig.collision.stats().prop_bodies == 0);
 
   // The crate at z = 20 by its mesh: stopped at its face, 19.5, less the capsule's radius.
@@ -152,11 +152,11 @@ TEST_CASE(
   rig.hand({crate_at(20.0f)});
   CHECK(rig.collision.stats().prop_bodies_created == made);
 
-  // Moved 5 m on (a module's `prop_move`): the old body goes, a new one stops the walker there.
-  rig.hand({crate_at(25.0f)});
+  // Moved 3 m on (a module's `prop_move`): the old body goes, a new one stops the walker there.
+  rig.hand({crate_at(23.0f)});
   CHECK(rig.collision.stats().prop_bodies == 1);
   CHECK(rig.collision.stats().prop_bodies_destroyed == 1);
-  CHECK(rig.walk() == doctest::Approx(24.5f - radius).epsilon(0.002));
+  CHECK(rig.walk() == doctest::Approx(22.5f - radius).epsilon(0.002));
 
   // Twice the size: its proxy at that scale, the face a metre out.
   PropBody big = crate_at(20.0f);
@@ -177,7 +177,7 @@ TEST_CASE(
   ghost.collider.shape = renderer::PropShape::none;
   rig.hand({ghost});
   CHECK(rig.collision.stats().prop_bodies == 0);
-  CHECK(rig.walk() > 25.0f);
+  CHECK(rig.walk() > 23.5f);
 
   // Removed: the body goes with it.
   rig.hand({crate_at(20.0f)});

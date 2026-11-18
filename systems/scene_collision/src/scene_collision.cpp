@@ -2196,7 +2196,7 @@ bool same_prop(const PropBody& a, const PropBody& b) noexcept {
 
 void SceneCollision::set_props(std::span<const PropBody> props) {
   props_next_.clear();
-  props_next_.reserve(props.size());
+  props_next_.reserve(static_cast<u32>(props.size()));
   for (const PropBody& p : props) {
     HeldProp held;
     held.prop = p;
