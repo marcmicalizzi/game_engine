@@ -1281,7 +1281,12 @@ TEST_CASE("gi cache key: a guided sample keeps the mean and loses its heavy tail
   std::vector<f32> plain_values;
   std::vector<f32> guided_values;
   for (u32 f = 0; f < k_frames; ++f) {
-    const f32 alpha = guide.trained >= k_gi_guide_trained && guide.sum != 0u ? k_gi_guide_alpha : 0.0f;
+    const f32 alpha = guide.sum != 0u ? gi_guide_alpha(guide.trained, guide.frames) : 0.0f;
+    // The sixth leg: the first frame's samples are cosine rays and the second's too (a guide one
+    // frame old is drawn from by no one), and the share is whole from the eighth fold.
+    if (f < 2) CHECK(alpha == 0.0f);
+    if (f == 2) CHECK(alpha == doctest::Approx(static_cast<f64>(k_gi_guide_alpha) / 7.0));
+    if (f >= k_gi_guide_full_frames) CHECK(alpha == k_gi_guide_alpha);
     for (u32 i = 0; i < k_frame; ++i) {
       f32 d[3];
       cosine(d);

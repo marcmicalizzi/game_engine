@@ -26,6 +26,15 @@ static const uint k_gi_guide_min_history = 1024u;
 static const uint k_gi_guide_trained = 256u;
 static const float k_gi_guide_alpha = 0.5;
 static const uint k_gi_guide_max_age = 64u;
+static const uint k_gi_guide_full_frames = 8u;
+
+// gfx::gi_guide_alpha (R171's sixth leg): a guide's share of the mixture by the samples and the
+// folds behind it. None for its first frame, whole at `k_gi_guide_full_frames`.
+float gi_guide_alpha(uint trained, uint frames) {
+  if (trained < k_gi_guide_trained || frames < 2u) return 0.0;
+  const uint f = min(frames, k_gi_guide_full_frames);
+  return k_gi_guide_alpha * float(f - 1u) / float(k_gi_guide_full_frames - 1u);
+}
 static const uint k_gi_no_guide = 0xffffffffu;
 
 // gfx::gi_guide_count, and where the table starts: behind the cells.
@@ -167,6 +176,7 @@ void gi_guide_fold(uint64_t guide, uint now) {
   words[3] = total;
   words[4] = sum;
   words[5] = asuint(largest);
+  words[6] = min(words[6] + 1u, k_gi_guide_full_frames);
 }
 
 #endif

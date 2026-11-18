@@ -56,6 +56,12 @@ class TemporalChange {
     f64 p999_codes = 0.0;
     f64 at_least_one = 0.0;  // the share whose luma moved a whole step or more
     f64 at_least_two = 0.0;
+    // The forest session's measure, so the engine and the forest quote one number (R171's sixth
+    // leg): the share of pixels of which any one channel moved a whole code or more, and three or
+    // more. A grey step of one code moves all three channels by one and the luma by one; a step
+    // of one channel alone moves the luma by 0.07 to 0.72 of a code, so this share is the larger.
+    f64 any_channel_one = 0.0;
+    f64 any_channel_three = 0.0;
     u64 light_pairs = 0;  // those with light in either frame
     f64 mean_light = 0.0;  // relative change of the light, a fraction
     f64 median_light = 0.0;
@@ -78,7 +84,7 @@ class TemporalChange {
   std::string json() const;
 
  private:
-  void count(u32 band, f64 codes, f64 light, bool lit);
+  void count(u32 band, f64 codes, f64 light, bool lit, u32 channel_codes);
 
   u32 width_ = 0;
   u32 height_ = 0;
@@ -89,6 +95,8 @@ class TemporalChange {
   Vector<f64> code_sum_;    // k_bands + 1
   Vector<f64> light_sum_;   // k_bands + 1
   Vector<u64> lit_pairs_;   // k_bands + 1
+  Vector<u64> channel_one_;    // k_bands + 1: pairs with a channel a code or more apart
+  Vector<u64> channel_three_;  // k_bands + 1: ... three or more
   Vector<f64> mean_luma_;
   Vector<f64> mean_light_;
   Vector<f64> centre_luma_;

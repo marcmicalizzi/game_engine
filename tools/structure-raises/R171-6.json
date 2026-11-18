@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R171-6",
+  "reason": "R171 leg 6: renderer.md's account of the sixth leg (the cases by cause, the guide's training, a room whose light moves) and the temporal measure's channel shares on renderer.md and apps.md",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 500,
+    "page:docs/subsystems/apps.md": 171
+  }
+}

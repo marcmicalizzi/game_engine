@@ -3287,7 +3287,13 @@ its change of displayed luma in code steps (Y′ = 0.2126 R′ + 0.7152 G′ + 0
 and of its light relative to its level (each channel through the encode's 2.2 power, Rec. 709's
 weights, |L₁ − L₀| over their mean; a pixel black in both frames has none), as histograms over all
 pixels and by the pixel's displayed luma in six bands (0–7, 8–15, 16–31, 32–63, 64–127, 128–255
-codes), with each frame's mean level over the picture and its centre for a moving case. The
+codes), with each frame's mean level over the picture and its centre for a moving case. Beside
+them (the sixth leg) **the forest session's own measure**, so that the engine and the forest quote
+one number: the share of pixels of which *any one channel* moved a whole code or more, and three
+or more (`Stats::any_channel_one`, `any_channel_three`; `channels` in the report). It is always
+the larger of the two shares: a grey step moves all three channels and the luma by one, and a step
+of one channel alone moves the luma by 0.07 to 0.72 of a code, which the luma's share does not
+count. The
 display's dither is a function of the pixel's place and nothing else, so a picture that does not
 change does not change a code: with the bounce off, a held view of the cave or the village moves
 no pixel at all (below), and every step the measure counts under the bounce is the cache's.
@@ -3515,8 +3521,19 @@ samples are drawn there:
   traced and counts for nothing.
 - **It learns from every sample of its cell**, guided or not: the sample's weighted light into the
   bin of its direction, folded a frame at a time into a history of sixteen frames
-  (`gfx::gi_guide_fold`), by the fold pass's first threads. A sample is drawn from a guide once it
-  averages 256 samples; one nothing sampled for 64 frames is freed. The picture's own samples make
+  (`gfx::gi_guide_fold`), by the fold pass's first threads. **A guide is not drawn from until it
+  is trained, and then by degrees** (the sixth leg, `gfx::gi_guide_alpha`): the fifth leg drew
+  half of a frame's samples from any guide holding 256 samples, which a coarse cell at 4K takes
+  in the one frame it is first seen. Mueller's practice, read from §3 and "Exponential sample
+  count" of the paper above: the first distribution is learned with BSDF sampling alone, the tree
+  being written is never the one drawn from, and each distribution has twice the samples of the
+  one before so that it "does not become noisier". Here a frame is an iteration: a guide's first
+  frame is cosine rays and no one draws from it, from its second fold its share of the mixture
+  grows by a seventh of the half a fold, and it is whole at the eighth, half its history; a
+  sample never weighs more than 1 / (1 − share) of what it weighed alone, so a guide two frames
+  old can cost a sample 8 % where one frame old it could cost it twice. The pre-roll's steps are
+  folds, so a cut's or a load's first picture has whole guides. One nothing sampled for 64 frames
+  is freed. The picture's own samples make
   guides; a sample round the eye only finds one, and adds to it only once a fold has trained it
   (whether it finds one a pixel's sample is making in the same pass is the order of two threads).
 - **Where it lives**: a table of one guide to 256 cells behind the cells in the cache's buffer
@@ -3630,6 +3647,10 @@ following its coarse cell's change as a ratio instead of re-averaging its own fe
 is not built. **A person in such a room would still see the walls' grain crawl, at about half its
 amplitude or less; in a room whose light holds still they would see it settle under a display
 step within three seconds of walking in.**
+
+### R171: the cases, each by its cause
+
+Sixth leg (2026-11-18). LEG6-BODY
 
 ## The sun's day
 
