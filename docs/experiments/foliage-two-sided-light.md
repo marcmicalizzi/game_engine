@@ -209,3 +209,52 @@ scene with no foliage +0.026 to +0.030 ms. Nothing tried inside the kernel moved
   spray blocks; a rule by material rather than by pair would take more.
 - G203's sprays (0.41 ms over flat cards on its own pair, not part of this row's number): a
   needle set whose roughness is one value could carry it as a factor.
+
+## A scene with none pays nothing (R177)
+
+R177, 2026-11-17. The first item above, by a cheaper road than a module of its own: a
+**specialization constant** (`material.slang`'s `k_scene_foliage`, `gfx::Specialization`; [gfx](../subsystems/gfx.md#specialization-constants))
+ANDed into `material_is_foliage`, which the resolve's family of pipelines sets false where no
+material row of the scene has the foliage byte. The driver folds it before register allocation,
+so such a pipeline is the forced-off build above from the same SPIR-V; the resolve's sixteen
+modules stay sixteen and no build time is added.
+
+**The pair** (the scenes' own paths, 3840 x 2160, `--raster rt --shadows rt`, the bounce on, the
+generated pack this row's `engine-content matgen` wrote; main is the copied-out build of a1eae86f,
+main's code, and R177 this row's first commit; each side flown in turn in one lease; 2026-11-17
+21:42 to 21:48 and 22:41 to 23:01, **the session locked on every flight**, other processes holding
+the CPU at 100 % and free commit 14 to 68 GB, so a frame's wall clock ran 110 to 180 ms at its p99
+and the GPU means carry the stalls: the medians are the figure). GPU milliseconds of resolve,
+median over the path:
+
+| scene | main | R177 | change |
+|---|---|---|---:|
+| rock field (no foliage material) | 1.522, 1.499, 1.528 | 1.453, 1.470, 1.463 | -0.054 |
+| desert erg (no foliage material) | 1.394, 1.428 | 1.377, 1.357 | -0.044 |
+| rock field, frame total | 2.911, 2.893, 2.924 | 2.842, 2.864, 2.853 | -0.056 |
+| desert erg, frame total | 2.715, 2.763 | 2.685, 2.679 | -0.057 |
+
+So a scene with no foliage material gets back what R164 cost it, and on this night's tree a little
+more than the 0.026 R164's second leg measured (that was the same scene on an unlocked card at 10
+to 74 % of the CPU; the register count the foliage lines cost has grown with the resolve since).
+Nothing else is in the difference: main's build and this row's are the same code but these
+commits.
+
+## The backlit sun's tier (R177)
+
+**What shipped foliage does with its back light.** Crysis's vegetation (Sousa, *GPU Gems 3* ch.
+16, read: Example 16-4 and the per-light listing) computes the leaf's back term from a wrapped
+`dot(-N, L)` and an `E.L` power, scales it by an artist's subsurface map, and multiplies it by the
+shadow factor the front's lighting loop already accumulated (`fOccShadowAcc`, averaged over the
+lights): no shadow test of its own. A shadow map's answer at a point is the same whichever side of
+the sheet asks, so that reuse is exact there. A traced shadow is not: a ray from the eye's side of
+a backlit card stops on the card, which is why R164 traces from the light's side, and why that
+ray is a second one a turned-away pixel never asked before.
+
+**The low tier** (`renderer.foliage.backlit_tier=0`) takes the nearest free answer this renderer
+has: the world-space cache's measure of what the scene lets through at the point, the same ratio
+that scales the foliage pixel's ambient (`scene_ambient` over the raw hemisphere at the sheet's
+normal, its luminance, clamped to one). It is a measured visibility of the sky over a cell, not of
+the sun along one line, so it keeps the mean of a crown's shade and loses where in the crown the
+sun gets through. The top tier is the default; the low tier applies only where the frame reads the
+cache, and a front-lit sheet traces in both.
