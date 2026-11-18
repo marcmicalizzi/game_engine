@@ -10,8 +10,9 @@
 # it reads a document through its composed index and the mapping table schemac compiled. Both are
 # domain- and core-layer and neither is a capability, so the scheduler stays switch-free.
 engine_module(NAME sim LAYER domain
-  DEPS base containers time math jobs log ids json schema memory doc
-  SOURCES src/timing_wheel.cpp src/tiers.cpp src/scheduler.cpp src/materialize.cpp)
+  DEPS base containers time math jobs log ids json schema memory doc io
+  SOURCES src/timing_wheel.cpp src/tiers.cpp src/scheduler.cpp src/materialize.cpp
+          src/hash_log.cpp)
 
 # Record types, components and the declarations joining them, for the driver's tests: the table
 # schemac emits is what the driver reads, so the tests read one schemac emitted.

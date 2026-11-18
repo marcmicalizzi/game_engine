@@ -5,7 +5,8 @@
 # and engine.run_tests, since a session's runtime world also lives in the host.
 engine_app(NAME engine_cli OUTPUT engine-cli
   SOURCES main.cpp
-  DEPS base containers json platform
+  # `sim` and `io` for --bisect, which reads two hash logs and two captures with no host.
+  DEPS base containers json platform sim io
   E2E_TESTS tests/cli_tests.cpp tests/render_tests.cpp tests/ops_tests.cpp tests/policy_tests.cpp
             tests/save_tests.cpp tests/npc_replay_tests.cpp tests/console_tests.cpp
             tests/content_build_parity_tests.cpp tests/profile_tests.cpp
@@ -36,6 +37,8 @@ if(TARGET engine_engine_cli_tests)
   # save_tests.cpp writes the player's action map and input log with the input module itself
   # (docs/subsystems/world.md, "The player"), and reads the save corpus under content/.
   target_link_libraries(engine_engine_cli_tests PRIVATE engine::input)
+  # cli_tests.cpp's --bisect case writes its hash logs and captures with the sim module itself.
+  target_link_libraries(engine_engine_cli_tests PRIVATE engine::sim)
   target_compile_definitions(engine_engine_cli_tests PRIVATE ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
   # session.events reads a document's world.db when the host has the store capability; the case
   # that checks it writes one with the store itself, so it links it exactly when the host does.

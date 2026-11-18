@@ -29,7 +29,9 @@ engine_module(NAME npc LAYER systems OPTIONAL WHOLE_ARCHIVE
 engine_module_tests(NAME npc
   SOURCES tests/routine_tests.cpp tests/npc_tests.cpp tests/generator_tests.cpp
           tests/size_table.cpp
-  DEPS doc)
+          # T53: 10^4 ticks of residents recorded with the state hash a tick and replayed.
+          tests/npc_hash_tests.cpp
+  DEPS doc io)
 
 # The routine's cost where it is paid: a tick with 10^5 residents held, a summary over them, and the
 # generator (plan 11 §11.8; docs/experiments/e38-scheduled-npcs.md).
