@@ -175,7 +175,7 @@ A `classified content review` item (C66) is raised **by the host and only by the
 
 **Looking happens on the person's own editor, in its native window, and nowhere else.**
 
-- **The editor's viewport rests held.** It draws under `agent-default` narrowed by the editor's own `--view-policy` (C65), so a person who started an editor wide enough to review sees nothing classified until they choose to: the subject is the proxy box or nothing, as an agent's capture would be. (The alternative, a viewport drawing at the editor's policy from the start, is the owner's first question below; the rest every other connection takes is decided either way.)
+- **The editor's viewport rests held.** It draws under `agent-default` narrowed by the editor's own `--view-policy` (C65), so a person who started an editor wide enough to review sees nothing classified until they choose to: the subject is the proxy box or nothing, as an agent's capture would be. (This is the held state, the default of an option the owner chose ([below](#open-questions)); an editor started not held has no look, and draws and serves at its own policy from the start.)
 - **The look is a scene of its own.** Look (embedded, on the seat only) sends `editor.look {review}`. The editor reads the subject's classes from **the main scene's own decisions** (C64's table), never from the item's report; instantiates a second scene holding the subject's records alone, under its own `--view-policy`; and draws it in the native window **in place of** the main viewport while the look lasts, framed, with "Looking" in the corner. **The main scene is never widened**, so the content classes' rule that a scene is instantiated under one policy stands, and no decision per placement is needed.
 - **The look is pinned.** It records the subject's record, mesh and class at its start, and ends when any of the three changes — a `SetProperty` of the placement's mesh from any connection, a sidecar that moves the class — as well as at **Hold** (`editor.look {review, end: true}`), when the item is closed, when the editor's window stops being the foreground window or the session locks (`window::desktop_state()`), and at exit.
 - Refused with 1008 (`seat`) to every connection but the seat, with -32601 on engine-host (it is the editor's method), and with 1011 when the editor's own policy does not cover the subject: "This editor may draw <category> up to <cap>; the subject is <level>. A person looks at it in an editor started with a view policy that covers it; nothing in this window widens one."
@@ -234,12 +234,13 @@ Each row is one leg, in dependency order. **Three facts of the platform that no 
 
 ### Open questions
 
-For the owner, with the recommendation the design is written to:
+None of the design's four questions for the owner is open. Decided on 2026-11-18:
 
-1. **The viewport at rest**: held until a look (recommended, and what the rows build) or drawing at the editor's policy from the start, with Look only selecting. Either way every connection but the seat stays at the rest.
-
-Decided since (2026-11-18):
-
+- **The viewport at rest: an option of the editor** (the owner). Holding classified content until a look is not a fixed behaviour but something an editor is started with or without: an agent that may have trouble with classified content runs the editor with it, and an agent or a person that has none runs it without. What follows is the coordinator's reading of that decision:
+  - **Held**, the default (the default is the coordinator's choice, not the owner's words), is what this section describes: the viewport rests at `agent-default` narrowed by the editor's policy, every connection but the seat runs at that rest, and the editor's own policy is reached only by a look.
+  - **Not held**: there is no look. The viewport draws at the editor's policy from the start, and the editor's connections run under the policy the content classes' design gives any host (the host's own, or a connection's credential's), every output naming its policy as that design already requires.
+  - **The option is not a view policy and widens none.** It chooses only whether an editor rests below the policy it was started under; which policy an editor has is still the operator's, by the content classes' rules, and an editor at `agent-default` draws the same in either state.
+  - How the option is given (a start flag and its name, whether it is also a stored preference) is decided by the row that builds it. Rows 12 and 13 (the rest under a seat, and the classified item's look) build the held state; the not-held state needs nothing from them.
 - **A sign-in on closing: no prompt** (the owner). The question was whether closing a person's item at the editor should also ask for the person's own system sign-in (Windows Hello) on each close, which a synthetic click could not pass. The owner chose no prompt. So the protection against a program that drives the desktop stays what this page says it is: the agents' rule (A52) and the record of how each item was closed (`closed_via`, with how the editor was started).
 - **The seat's roles: two** (decided by the coordinator as the design recommended; reversible): the editor's working role and the conferred human role, rather than one human role that may also edit.
 - **engine-host and a person: a browser against engine-host never closes a person's item** (decided by the coordinator as the design recommended; reversible), rather than an `engine-host --person` whose printed shell address is the seat.
