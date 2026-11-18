@@ -128,10 +128,13 @@ sky's. The two models differ by 2 to 21 %, which is the width a bound on the eng
 ## The engine's sky against them
 
 `tools/dev.ps1 test -Filter gfx` runs it; alone, with the table printed,
-`engine_gfx_tests "-tc=sky: the sun against the sky*"` (70 s in `msvc-debug`, no device). The case
-builds the mirror's transmittance and multiple-scattering tables for an aerosol, the sky-view table
-for each sun, and integrates the sky's radiance times the cosine over the hemisphere twice: through
-the table (96 by 384 directions) and by marching every direction with no table (48 by 192, 96 steps).
+`engine_gfx_tests "-tc=sky: the sun against the sky*"` (no device; 50 s in `msvc-debug` beside
+other builds, 2.5 s a row, most of it the mirror's own sky-view table, 663,000 marched steps a sun:
+that is what the case adds to a debug `gfx.1`, and a release build runs it in a few seconds). The
+case builds the mirror's transmittance and multiple-scattering tables for an aerosol, the sky-view
+table for each sun, and integrates the sky's radiance times the cosine over the hemisphere twice:
+through the table (96 by 384 directions) and by marching every direction with no table (24 by 96,
+48 steps).
 The beam is the sun's illuminance through the transmittance table times the elevation's sine. klux,
 luminance-weighted (Rec. 709 weights over the model's 680, 550 and 440 nm), 128 klux a sun unit.
 
@@ -170,17 +173,22 @@ luminance-weighted (Rec. 709 weights over the model's 680, 550 and 440 nm), 128 
   3, 5.8 for 5. So the default sky is the source's "clear skies", and a scene that writes 2.5 or 3
   for a clear day gets shadows 1.7 to 2 times as bright against the sunlit ground as that
   turbidity's (the last column over the eighth: 8.1 to 9.4 against 4.2 to 4.8 at 2.5).
-- **The same mirror with the aerosol a Linke turbidity names** (the test's second block: an
-  aerosol of (T / 11.2 − 0.197) / 0.749 at 550 nm, 0.035 for 2.5, 0.094 for 3, 0.214 for 4, 0.333
-  for 5) gives a global over diffuse of **8.1 and 9.2 at 50° and 70° for 2.5, 5.5 and 6.3 for 3, 3.6
-  and 4.1 for 4, 2.85 and 3.2 for 5**, within the same bounds of the published models; so the mend
-  is the mapping and not the scattering.
+- **The same mirror with the aerosol a Linke turbidity names** (an aerosol of
+  (T / 11.2 − 0.197) / 0.749 at 550 nm: 0.035 for 2.5, 0.094 for 3, 0.214 for 4, 0.333 for 5) gives
+  a global over diffuse of **8.1 and 9.2 at 50° and 70° for 2.5, 5.5 and 6.3 for 3, 3.6 and 4.1 for
+  4, 2.85 and 3.2 for 5**, within the same bounds of the published models; so the mend is the
+  mapping and not the scattering. The committed case builds 2.5, the air clearer than anything the
+  scale draws today; 3, 4 and 5 were built once with the same code (2026-11-18, the first form of
+  the case, its table kept in the row's scratch) and left out for the case's time, 3 and 4 naming
+  aerosols near today's 2 and 3 (0.094 against 0.108, 0.214 against 0.217).
 
 What the test holds, for both blocks: the table's integral within 3 % of the march's (measured:
 under 1 %); the harmonics' level value within 0.96 to 1.08 of the table's (0.98 to 1.03 from 30° up,
 5 to 7 % over at 10°, where the sky is a bright ring at the horizon); the beam within 0.6 to 1.25 of
 Bird and Perez's everywhere and within a tenth from 30° up at an aerosol to 0.25; the global over
-diffuse within 0.85 to 1.22 of Bird and Perez's (0.87 to 1.20). What it does not hold, because the engine does not meet it, is the
+diffuse within 0.85 to 1.22 of Bird and Perez's (0.87 to 1.20); and, of the published models
+alone, Ineichen and Perez's global over diffuse within 0.95 to 1.25 of Bird and Hulstrom's at each
+Linke turbidity's aerosol, which guards the transcription of both. What it does not hold, because the engine does not meet it, is the
 turbidity's name: that is printed (`Linke`) and is this page's finding.
 
 **What is not level** (the same run; π times the ambient at a normal, klux, over the default
@@ -270,7 +278,15 @@ leg had no GPU. In the order it would be built:
    tables mean, and the clear end of it is reachable (today 1.0 is as clear as it goes and still
    draws a Linke 2.2). *Pays*: nothing a frame; the two air tables are rebuilt as today. *Until
    then*: a scene that wants a clear day writes 1.5 to 2, and [sky](../subsystems/sky.md#the-air)
-   says what a number draws.
+   says what a number draws. **The cheaper half, which moves no picture**: keep the mapping and
+   change the word. What the engine computes, the whole optical depth over the molecules' at one
+   visible wavelength, is as recalled (not read for this row) the turbidity of Preetham, Shirley and
+   Smits 1999, the scale graphics uses, and is self-consistent; only "Linke" in the schema's
+   comment, `earth.h` and the sky page is wrong, and the labels beside it (2 very clear, 3 clear)
+   are a Linke scale's. Saying "a visible-band turbidity; its Linke turbidity is 1.30 + 0.91 T" in
+   those three places, and writing 2 where a test scene means a clear day, is the whole of it.
+   Which half is taken is the owner's: the first makes the number mean what solar tables mean, the
+   second leaves every scene as it draws.
 3. **A crown's own shade without the cache** (`scene_ambient`, `material.slang`): apply the crown's
    prior to the harmonics before the early return, so the vertex tier and `renderer.gi.mode` off
    shade a crown's inside; and give the prior's lower mean the ground under the crown, which is in

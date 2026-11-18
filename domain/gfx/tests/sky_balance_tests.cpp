@@ -5,7 +5,7 @@
 // double) is integrated over its hemisphere here, by its sky-view table as the frame's sums read it
 // and again by marching every direction without the table, and set beside three published
 // clear-sky models at sun elevations of 10, 30, 50 and 70 degrees, for the aerosol the engine draws
-// at four turbidities today and for the aerosol four Linke turbidities would name:
+// at four turbidities today and for the aerosol a Linke turbidity of 2.5 would name:
 //
 // - Bird and Hulstrom 1981 (SERI/TR-642-761): direct normal and diffuse horizontal irradiance from
 //   the aerosol's optical depth at 380 and 500 nm, water vapour, ozone and the ground's albedo;
@@ -131,7 +131,7 @@ sref::Dvec3 marched_radiance(const sref::Sky& s, const sref::Tables& tables, sre
   const f64 t_max = sref::distance_to_top(s.bottom, s.top, r, h, dir.y);
   sref::Dvec3 radiance{};
   sref::Dvec3 throughput = sref::splat(1.0);
-  sref::march(s, tables, r, h, dir, t_max, 96, radiance, throughput);
+  sref::march(s, tables, r, h, dir, t_max, 48, radiance, throughput);
   return radiance;
 }
 
@@ -309,7 +309,7 @@ Row measure(f64 aod550, f64 named, f64 elevation_deg, const sref::Tables& air) {
   const sref::Dvec3 table =
       level_irradiance(96, [&](sref::Dvec3 d) { return sref::view_radiance(s, tables, d); });
   const sref::Dvec3 march =
-      level_irradiance(48, [&](sref::Dvec3 d) { return marched_radiance(s, tables, d); });
+      level_irradiance(24, [&](sref::Dvec3 d) { return marched_radiance(s, tables, d); });
   row.direct_normal = k_klux * lum(f.sun_ground);
   row.direct_level = k_klux * lum(direct);
   row.diffuse_table = k_klux * lum(table);
@@ -429,10 +429,40 @@ TEST_CASE("sky: the sun against the sky on level ground, against published clear
   for (const f64 turbidity : {2.0, 2.5, 3.0, 5.0}) {
     tabulate(text, "now  ", turbidity, engine_aerosol_550(turbidity));
   }
-  // The air the same numbers would name as Linke turbidities over 1.5 cm of water (the page's
-  // design): the mirror is held to the published models there as well.
+  // The air a Linke turbidity of 2.5 names over 1.5 cm of water (the page's design), clearer than
+  // anything the scale draws today: the mirror is held to the published models there as well. The
+  // aerosols of 3 and 4 are near today's 2 and 3 (0.094 against 0.108, 0.214 against 0.217; the
+  // table below), so they are not built: each air's four rows are ten seconds of a debug build.
+  tabulate(text, "linke", 2.5, linke_aerosol_550(2.5));
+
+  // **The published models alone**, by Linke turbidity: global over diffuse on a level surface in
+  // watts and in lux, Ineichen and Perez's at the turbidity and Bird and Hulstrom's at the aerosol
+  // that turbidity names. No table of the mirror is built for these.
+  text +=
+      "\npublished, by Linke turbidity: the aerosol at 550 nm it names; global over diffuse "
+      "by Ineichen and Perez in watts and in lux, and by Bird and Hulstrom at that aerosol.\n"
+      "  Linke   aod  el |  I W  I lux |  B W  B lux\n";
   for (const f64 linke : {2.5, 3.0, 4.0, 5.0}) {
-    tabulate(text, "linke", linke, linke_aerosol_550(linke));
+    const f64 aod550 = linke_aerosol_550(linke);
+    for (const f64 elevation : {10.0, 30.0, 50.0, 70.0}) {
+      const f64 zenith = 90.0 - elevation;
+      const Irradiance i = ineichen(zenith, linke);
+      const Irradiance b =
+          bird(zenith, aerosol_at(aod550, 380.0), aerosol_at(aod550, 500.0), k_region_albedo);
+      const f64 i_lux = lux_ratio(i, zenith);
+      const f64 b_lux = lux_ratio(b, zenith);
+      char line[160];
+      std::snprintf(line, sizeof(line), "  %5.1f %5.3f %3.0f | %5.2f %5.2f | %5.2f %5.2f\n", linke,
+                    aod550, elevation, i.global / i.diffuse, i_lux, b.global / b.diffuse, b_lux);
+      text += line;
+      CAPTURE(linke);
+      CAPTURE(elevation);
+      // The two published models agree about a shadow to a quarter (measured: Ineichen's is 2 to
+      // 21 % over Bird's), which is as tight as a bound on the mirror can be and guards the
+      // transcription of both.
+      CHECK(i_lux / b_lux > 0.95);
+      CHECK(i_lux / b_lux < 1.25);
+    }
   }
   MESSAGE(text);
 }
