@@ -184,9 +184,15 @@ class Session {
   // The table as this session last read it under the file's lock; another host may have changed
   // the file since (`doc.transactions` reads it afresh).
   const TransactionsFile& transactions() const noexcept { return transactions_; }
-  // The journal patch that committed client transaction `transaction`, or -1: how a retried
-  // commit is answered with what landed (protocol.md, "Transactions a client opens").
+  // The journal patch that names client transaction `transaction`, or -1, wherever it stands: in
+  // the document, or in the redo tail (undone, or journaled by a commit whose save then failed).
   i64 landed_patch(u64 transaction) const noexcept;
+  // Whether `transaction`'s work is in the document as saved: its patch is in the journal before
+  // the undo position, and no save has failed since this session last wrote the document whole. A
+  // patch in the redo tail is not landed — a save that failed after the journal leaves the commit
+  // there, and the next host reads the undo position the layer files were saved at — so its table
+  // entry stays and a retried commit applies it again (protocol.md, "Transactions a client opens").
+  bool landed(u64 transaction) const noexcept;
   // Bounds on what a transaction holds (batch 68's review): every staging call applies everything
   // staged so far again, and every call that reads the table reads every open transaction. 1004
   // past them.
@@ -195,6 +201,9 @@ class Session {
   // Tests only (policy_tests.cpp): the next write of `transactions.json` fails, as a rename that a
   // scanner holds past its retries does, after everything before it in the call has happened.
   void fail_transactions_write_for_test() noexcept { test_fail_transactions_write_ = true; }
+  // Tests only (policy_tests.cpp): the next save of the document fails before it writes anything,
+  // as a layer file a scanner holds or a full disk does, after the journal has taken the patch.
+  void fail_save_for_test() noexcept { test_fail_save_ = true; }
   // --- blobs and checkpoints (roadmap D13, D14; session_history.cpp)
   // ------------------------------ docs/subsystems/protocol.md, "Blobs and checkpoints".
 
@@ -288,8 +297,8 @@ class Session {
   // Drops lapsed transactions, and the holds of every transaction no longer open; the number
   // dropped.
   u32 expire_transactions(i64 now_ms);
-  // Drops the open entries the journal shows committed (a table write that failed after the
-  // commit's journal); the number dropped.
+  // Drops the open entries whose work has `landed` (a table write that failed after the commit's
+  // save); the number dropped. An entry whose patch is only in the redo tail stays.
   u32 drop_landed_transactions();
   void forget_transaction_hold(u64 transaction);
   std::string base_file(std::string_view proposal) const;
@@ -307,6 +316,10 @@ class Session {
   u32 test_fail_rollback_at_ = ~0u;  // fail_rollback_for_test
   bool test_fail_take_back_ = false;
   bool test_fail_transactions_write_ = false;  // fail_transactions_write_for_test
+  bool test_fail_save_ = false;                // fail_save_for_test
+  // A save failed after the document in memory changed, so the files hold less than `doc_` does
+  // until a save succeeds: nothing in the journal counts as `landed` meanwhile.
+  bool unsaved_ = false;
   Vector<u64> holders_;
 };
 

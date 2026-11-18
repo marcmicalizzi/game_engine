@@ -45,11 +45,16 @@ i64 Session::landed_patch(u64 transaction) const noexcept {
   return -1;
 }
 
+bool Session::landed(u64 transaction) const noexcept {
+  const i64 at = landed_patch(transaction);
+  return at >= 0 && static_cast<u32>(at) < manifest_.undo_position && !unsaved_;
+}
+
 u32 Session::drop_landed_transactions() {
   u32 dropped = 0;
   Vector<TransactionEntry>& list = transactions_.transactions;
   for (u32 i = list.size(); i > 0; --i) {
-    if (landed_patch(list[i - 1].info.id) < 0) continue;
+    if (!landed(list[i - 1].info.id)) continue;
     forget_transaction_hold(list[i - 1].info.id);
     list.erase(list.begin() + (i - 1));
     ++dropped;
@@ -140,14 +145,28 @@ TransactionEntry* Session::find_transaction(u64 id, const Caller& caller, i64 no
       return nullptr;
     }
     if (held_elsewhere(id, caller, error)) return nullptr;
+    // Committed in this host's memory, and its save failed: staging more into it or rolling it back
+    // would be answered as if the patch were not there. doc.commit saves it.
+    if (const i64 at = landed_patch(id); at >= 0 && static_cast<u32>(at) < manifest_.undo_position) {
+      error = make_error(codes::k_invalid_argument,
+                         "transaction " + std::to_string(id) + " was committed as journal patch " +
+                             std::to_string(at) +
+                             ", and the document's save after it failed: doc.commit saves it");
+      return nullptr;
+    }
     return &e;
   }
-  const i64 landed = landed_patch(id);
+  const i64 at = landed_patch(id);
   std::string why = ": doc.transactions lists the open ones";
   if (lapsed) {
     why = ": it lapsed and was rolled back; nothing it staged landed";
-  } else if (landed >= 0) {
-    why = ": it was committed, as journal patch " + std::to_string(landed);
+  } else if (at >= 0 && static_cast<u32>(at) < manifest_.undo_position) {
+    why = ": it was committed, as journal patch " + std::to_string(at);
+  } else if (at >= 0) {
+    // Committed and saved, then undone: its work is not in the document, so nothing answers it
+    // committed. The journal does not record who undid it.
+    why = ": it was committed as journal patch " + std::to_string(at) +
+          " and is undone now, so its work is not in the document (doc.redo brings it back)";
   }
   error = make_error(codes::k_not_found, "no open transaction " + std::to_string(id) + why);
   return nullptr;
@@ -293,9 +312,14 @@ bool Session::commit_transaction(u64 transaction, const Caller& caller, i64 now_
   return update_transactions(
       [&](bool& write) {
         result.transaction = transaction;
-        // Landed already: a commit whose answer was lost, or whose table write failed after the
-        // journal took its patch. The journal is the truth, and nothing is applied again.
-        if (const i64 landed = landed_patch(transaction); landed >= 0) {
+        // In the document already: a commit whose answer was lost, whose table write failed after
+        // its save, or whose save failed in this host (the document in memory holds the patch, and
+        // the save below writes it). A patch only in the redo tail is not this: a save that failed
+        // before the next host read the files leaves the commit there, undone as far as the files
+        // say, and the entry the table still lists is committed afresh below; with no entry it
+        // was committed and undone, and find_transaction says so.
+        if (const i64 landed = landed_patch(transaction);
+            landed >= 0 && static_cast<u32>(landed) < manifest_.undo_position) {
           const doc::Patch& patch = doc_.journal()[static_cast<u32>(landed)];
           if (patch.attribution.actor != caller.who.actor) {
             error = forbidden("transaction " + std::to_string(transaction) + " was opened by " +
@@ -306,7 +330,11 @@ bool Session::commit_transaction(u64 transaction, const Caller& caller, i64 now_
           if (held_elsewhere(transaction, caller, error)) return false;
           // A save that failed after the journal: the document in memory holds the patch, and
           // this writes what it changed.
-          if (!persist(error)) return false;
+          if (unsaved_ && !persist(error)) return false;
+          for (const TransactionEntry& e : transactions_.transactions) {
+            if (e.info.id == transaction) write = true;
+          }
+          remove_entry(transactions_, transaction);
           forget_transaction_hold(transaction);
           result.committed = true;
           result.applied = static_cast<u32>(patch.forward.size());
@@ -315,10 +343,7 @@ bool Session::commit_transaction(u64 transaction, const Caller& caller, i64 now_
           Diagnostic note;
           note.message = "transaction " + std::to_string(transaction) +
                          " had already landed as journal patch " + std::to_string(landed) +
-                         "; nothing was applied again" +
-                         (static_cast<u32>(landed) >= manifest_.undo_position
-                              ? " (it is undone now: doc.redo brings it back)"
-                              : "");
+                         "; nothing was applied again";
           result.diagnostics.push_back(std::move(note));
           return true;
         }

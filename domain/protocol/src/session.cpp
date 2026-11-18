@@ -305,10 +305,20 @@ bool Session::load(RpcError& error) {
 
 bool Session::persist(RpcError& error) {
   std::string message;
+  if (test_fail_save_) {
+    test_fail_save_ = false;
+    unsaved_ = true;
+    error = make_error(codes::k_io_error, "the document's save failed for the test");
+    return false;
+  }
   if (!DocumentStore::save(*vfs_, dir_, doc_, manifest_, &message)) {
+    // The store leaves the files as they were when a save fails before its log is whole, so they
+    // may now hold less than memory does (a commit already journaled, an undo already made).
+    unsaved_ = true;
     error = make_error(codes::k_io_error, std::move(message));
     return false;
   }
+  unsaved_ = false;
   return true;
 }
 

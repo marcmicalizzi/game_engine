@@ -1201,6 +1201,54 @@ TEST_CASE("transactions: a commit whose table write failed lands once, here and 
   next.ok("doc.undo", obj({}));
   CHECK(next.property(oid(2), "color").is_null());
   CHECK(next.property(oid(1), "color") == JsonValue(4));
+  // Undone, it is not answered committed: its work is not in the document.
+  CHECK(next.fails("doc.commit", obj({{"transaction", JsonValue(u)}, {"attribution", who("a")}})) ==
+        codes::k_not_found);
+  CHECK(next.property(oid(2), "color").is_null());
+}
+
+// A commit whose save failed after the journal took its patch: the files keep the undo position
+// they were saved at, so the next host reads the patch as the redo tail's first, not as work in the
+// document. Its table entry stays, the retry commits the staged commands afresh (cutting that
+// tail, so nothing is applied twice), and another actor's commit after it keeps them. Before the
+// mend the next host's first read of the table dropped the entry, the retry answered "committed"
+// for work the document did not hold, and the other actor's commit cut it off for good.
+TEST_CASE("transactions: a commit whose save failed after the journal lands once in the next host") {
+  TempDir tmp("protocol_transactions");
+  const std::string dir = tmp.file("doc");
+  Host host;
+  host.make_world(dir);
+  const i64 before = journal_length(host);
+  Session* s = host.sessions.find(host.session);
+  const u64 t = begin_on(host, "world", who("a"));
+  staged(host, t, one(set(oid(1), "color", JsonValue(4))), who("a"));
+  s->fail_save_for_test();
+  CHECK(host.fails("doc.commit", obj({{"transaction", JsonValue(t)}, {"attribution", who("a")}})) ==
+        codes::k_io_error);
+  // This host's memory holds the patch, but nothing saved it: the table still lists it.
+  CHECK(at(host.ok("doc.transactions", obj({})), "transactions").size() == 1);
+
+  Host next;
+  next.open(dir, false);
+  CHECK(next.property(oid(1), "color").is_null());
+  CHECK(at(next.ok("doc.transactions", obj({})), "transactions").size() == 1);
+  const JsonValue r = ended(next, "doc.commit", t, who("a"));
+  CHECK(at(r, "committed") == JsonValue(true));
+  CHECK(num(at(r, "patch_index")) == before);
+  CHECK(journal_length(next) == before + 1);
+  CHECK(next.property(oid(1), "color") == JsonValue(4));
+  CHECK(at(next.ok("doc.transactions", obj({})), "transactions").size() == 0);
+
+  Host third;
+  third.open(dir, false);
+  CHECK(at(third.apply(one(set(oid(2), "color", JsonValue(5))), who("b"), "world"), "committed") ==
+        JsonValue(true));
+  CHECK(third.property(oid(1), "color") == JsonValue(4));
+  CHECK(third.property(oid(2), "color") == JsonValue(5));
+  Host last;
+  last.open(dir, false);
+  CHECK(last.property(oid(1), "color") == JsonValue(4));
+  CHECK(journal_length(last) == before + 2);
 }
 
 // The bounds: a transaction holds at most `k_max_staged_commands`, and an actor opens at most
