@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T190",
+  "reason": "texture.md records the read-side size bound T190 adds to validate_texture (a .tex past 16,384 a side is refused)",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/texture.md": 266
+  }
+}
