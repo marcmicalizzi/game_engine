@@ -1900,8 +1900,20 @@ bool SceneCollision::can_prefetch() const noexcept {
          (explicit_source_ || ground_->ops()->tile_source != nullptr);
 }
 
+void SceneCollision::count_build(const Build& build) noexcept {
+  // Only a build that ran: one let go before a worker reached it measured nothing.
+  const i64 ns = build.ground_ns + build.placement_ns;
+  if (ns <= 0) return;
+  const f64 s = static_cast<f64>(ns) / 1.0e9;
+  f64& estimate = stats_.build_estimate_s;
+  estimate = estimate > 0.0 ? 0.75 * estimate + 0.25 * s : s;
+}
+
 void SceneCollision::retire(std::unique_ptr<Build>&& build) {
-  if (build->ran.done()) return;  // its job has returned: nothing else touches it
+  if (build->ran.done()) {  // its job has returned: nothing else touches it
+    count_build(*build);
+    return;
+  }
   retired_.push_back(std::move(build));
 }
 
@@ -1928,6 +1940,7 @@ std::unique_ptr<SceneCollision::Build> SceneCollision::take_build(world::TileCoo
     } else {
       ++stats_.prefetched;
     }
+    count_build(build);
     // Where its time went: the activation's own split when the tick ran it, the worker's otherwise.
     if (here) {
       stats_.ground_sample_ns += build.ground_ns;
@@ -1949,6 +1962,7 @@ void SceneCollision::prefetch(WorldPos at, Vec3 velocity) {
   // Builds let go whose jobs have returned are freed, and with them any shape they built.
   for (u32 k = 0; k < retired_.size();) {
     if (retired_[k]->ran.done()) {
+      count_build(*retired_[k]);
       retired_[k] = std::move(retired_[retired_.size() - 1]);
       retired_.pop_back();
     } else {
@@ -2083,6 +2097,19 @@ void SceneCollision::submit_builds(WorldPos at, Vec3 velocity) {
   const f64 vv = vx * vx + vz * vz;
   // A walker standing still is given a walker's pace, so the tiles round it still go nearest first.
   const f64 pace = std::max(std::sqrt(vv), 1.0);
+  // **Outrun** (T172; docs: "Ahead of a running walker"): a build is of use only if the walker is
+  // still within the builds' reach when it is done, and a flying camera crosses the reach's
+  // diameter in `2 r / speed`. When that is less than a build takes here (the estimate from the
+  // builds that ran), nothing is handed over this tick, the tiles the ring wants now included:
+  // the workers stay free for the place the camera slows down at, where a drop's ring is wanted.
+  // A drop and a walker ask with no velocity or a walker's, and are never outrun.
+  if (vv > 0.0 && stats_.build_estimate_s > 0.0) {
+    const f64 reach_m = tile_m * static_cast<f64>(config_.prefetch_radius_tiles);
+    if (2.0 * reach_m < stats_.build_estimate_s * std::sqrt(vv)) {
+      ++stats_.prefetch_outrun;
+      return;
+    }
+  }
   u32 busy = 0;
   u32 waiting = 0;
   for (const std::unique_ptr<Build>& b : builds_) {

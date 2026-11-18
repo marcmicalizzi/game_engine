@@ -252,6 +252,11 @@ struct Stats {
   i64 max_prefetch_wait_ns = 0;
   u64 prefetch_inline = 0;
   u64 prefetch_dropped = 0;
+  // T172: ticks on which no build was handed over because the walker (or the flying camera) passes
+  // the builds' reach faster than a build takes (docs: "Ahead of a running walker"); and that
+  // estimate of a build's time, seconds, from the builds that ran.
+  u64 prefetch_outrun = 0;
+  f64 build_estimate_s = 0.0;
   // T166: `prefetch_submitted` counts the builds handed to the job system (with slots, a build
   // waits its turn first, and one the tick takes before its turn was never handed over); the
   // tile-handed meshes cut from a kept copy, against those read for want of one.
@@ -741,6 +746,9 @@ class SceneCollision {
   // The builds not yet handed to the job system, handed over most urgent first up to the slots
   // (`Config::prefetch_slots`; T166): every tick, from where the walker is and how it moves.
   void submit_builds(WorldPos at, Vec3 velocity);
+  // A build that ran, folded into `Stats::build_estimate_s` (T172): what one takes on this machine
+  // and this world, which the rule above reads against how long the walker stays in reach.
+  void count_build(const Build& build) noexcept;
   // The kept copies of tile-handed meshes, by identity (T166), and the order they were last used.
   FlatMap<u64, std::unique_ptr<MeshCopy>> mesh_copies_;
   Vector<std::unique_ptr<MeshCopy>> copies_orphans_;  // replaced while a cut still read them

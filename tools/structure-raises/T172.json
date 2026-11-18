@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T172",
+  "reason": "T172: scene_collision.md says what the owner's 1,410 ms drop on batch 67 was (a hover after a 1,375 m/s flight, the workers on builds the flight had passed), the outrun rule that hands no build over while the camera crosses the builds' reach faster than a build takes, its test, and the trace's new zones inside a collision build",
+  "date": "2026-11-17",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/scene_collision.md": 2219
+  }
+}
