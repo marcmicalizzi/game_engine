@@ -153,7 +153,9 @@ broadphase is rebuilt once an update that changed a prop's body, for the reason 
 went, is one comparison; a change is a walk over the props (at most `view::k_max_props`, 1,024)
 and the bodies it makes. A cast that meets a prop is `HitKind::prop`, its `instance` the prop's key.
 
-`tests/prop_tests.cpp` (no device) holds it: a crate a metre on a side declared as a prop and
+`scene_collision: a game's prop stops a walker, by its mesh or its box, while its tile is held`
+(`tests/far_forest_tests.cpp`, beside the far forest's case, whose scene is built the same way; no
+device) holds it: a crate a metre on a side declared as a prop and
 placed by nothing stops a walker going north at its face less the capsule's radius; handed again
 unchanged nothing is made; moved 3 m the old body goes and the new one stops it there; at twice
 the scale the face is a metre out; a declared box 0.25 m deep stops it at the box's face; `None`
