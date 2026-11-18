@@ -1,0 +1,12 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "A10",
+  "reason": "A10 adds the profile.* methods' section to protocol.md, their MCP tools to apps.md, and the renderer's frame capture hook to renderer.md",
+  "date": "2026-11-17",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 1204,
+    "page:docs/subsystems/apps.md": 386,
+    "page:docs/subsystems/protocol.md": 3928
+  }
+}

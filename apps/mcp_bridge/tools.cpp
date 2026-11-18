@@ -1873,6 +1873,61 @@ void run_budgets(Bridge& b, const JsonValue& args, ToolOutcome& out) {
   out.data = r;
 }
 
+// profile.* (roadmap A10; protocol.md, "profile.*: the frame capture over the protocol").
+bool schema_profile_start(Bridge& b, JsonValue& s, std::string& e) {
+  return b.schemas().params_schema("profile.start", s, e);
+}
+
+void run_profile_start(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!b.call("profile.start", args, r, out)) return;
+  out.summary = "Frame capture running (" + std::to_string(uint_of(r, "capacity")) +
+                " events); draw frames, then profile_stop.";
+  out.data = r;
+}
+
+bool schema_profile_report(Bridge& b, JsonValue& s, std::string& e) {
+  return b.schemas().params_schema("profile.report", s, e);
+}
+
+// The report's summary: the frame, then each list's largest series by median and p99.
+void profile_summary(const JsonValue& r, ToolOutcome& out) {
+  out.summary = std::to_string(uint_of(r, "frames")) + " frame(s) over " +
+                fixed(real_of(r, "window_ms"), 1) + " ms";
+  if (const JsonValue* frame = r.find("frame"))
+    out.summary += ", frame median " + fixed(real_of(*frame, "median_ms"), 3) + " ms, p99 " +
+                   fixed(real_of(*frame, "p99_ms"), 3) + " ms";
+  out.summary += "; " + std::to_string(uint_of(r, "dropped_events")) + " event(s) dropped.";
+  for (const char* list_name : {"gpu", "cpu", "zones"}) {
+    const JsonValue* list = r.find(list_name);
+    if (list == nullptr || list->size() == 0) continue;
+    out.summary += std::string("\n  ") + list_name + ":";
+    for (usize i = 0; i < list->size() && i < 8; ++i) {
+      const JsonValue& s = (*list)[i];
+      out.summary += " " + text_of(s, "name") + " " + fixed(real_of(s, "median_ms"), 3) + "/" +
+                     fixed(real_of(s, "p99_ms"), 3) + " ms;";
+    }
+  }
+  if (!text_of(r, "trace").empty()) out.summary += "\n  trace: " + text_of(r, "trace");
+  out.data = r;
+}
+
+void run_profile_report(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!b.call("profile.report", args, r, out)) return;
+  profile_summary(r, out);
+}
+
+bool schema_profile_stop(Bridge& b, JsonValue& s, std::string& e) {
+  return b.schemas().params_schema("profile.stop", s, e);
+}
+
+void run_profile_stop(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!b.call("profile.stop", args, r, out)) return;
+  profile_summary(r, out);
+}
+
 bool schema_run_headless(Bridge& b, JsonValue& s, std::string& e) {
   return schema_session_ref(b, "session.run_headless", s, e);
 }
@@ -2566,6 +2621,17 @@ constexpr ToolDef k_tools[] = {
      "The budgets the engine knows and what uses them (renderer, audio, memory, GPU), by stable "
      "name, with limit, use, unit and source.",
      "engine.budgets", true, false, true, &schema_budgets, &run_budgets},
+    {"profile_start", "Start profiling",
+     "Start the host's frame capture: every frame it draws from now on (capture, benchmark), "
+     "its GPU passes, CPU spans and zones, until profile_stop.",
+     "profile.start", true, false, false, &schema_profile_start, &run_profile_start},
+    {"profile_report", "Read the frame report",
+     "The running or last frame capture's report: per GPU pass, CPU span and zone, median, p95, "
+     "p99 and max ms a frame over a window, bounded by max_series; out_dir writes the trace.",
+     "profile.report", true, false, true, &schema_profile_report, &run_profile_report},
+    {"profile_stop", "Stop profiling",
+     "Stop the frame capture and return its report; out_dir writes the trace for Perfetto.",
+     "profile.stop", true, false, false, &schema_profile_stop, &run_profile_stop},
     {"run_headless", "Run headless",
      "Materialize the session's document into its runtime world and step it at the fixed step "
      "with no rendering, for game seconds or until a predicate over document properties and live "

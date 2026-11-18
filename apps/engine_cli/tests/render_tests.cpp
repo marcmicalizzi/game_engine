@@ -1546,3 +1546,43 @@ TEST_CASE("render: the endless desert benchmarked on its tiles, with its sky") {
   REQUIRE(read_bytes(view_png, view_bytes));
   same_bytes("the endless desert's far levels", view_png, host_png, view_bytes, host_bytes);
 }
+
+// The frame capture over the protocol (roadmap A10; protocol.md, "profile.*: the frame capture over
+// the protocol"): a benchmark drawn while a capture runs marks its frames, and the report names the
+// GPU timer's zones and the renderer's CPU spans per frame with their medians and tails.
+TEST_CASE("render: profile.* reports a benchmark's frames, GPU passes and CPU spans") {
+  Host host;
+  REQUIRE(host.ok);
+  const JsonValue loaded = host.call("render.load", R"({"grid":65})");
+  if (error_code(loaded) == k_render_unavailable) {
+    MESSAGE("render.load unavailable here: " << error_message(loaded));
+    return;
+  }
+  const std::string id = text(result_of(loaded), "scene");
+  (void)result_of(host.call("profile.start", "{}"));
+  const JsonValue bench = host.call(
+      "render.benchmark", "{\"scene\":\"" + id + "\",\"width\":64,\"height\":64,\"frames\":12}");
+  (void)result_of(bench);
+  const JsonValue stopped = host.call("profile.stop", R"({"max_series":64})");
+  const JsonValue& report = result_of(stopped);
+  CHECK(number(report, "frames") >= 12);
+  CHECK(number(report, "gpu_frames") >= 8);  // the last frames in flight may not have come back
+  CHECK(number(report, "dropped_events") == 0);
+  const JsonValue* gpu = report.find("gpu");
+  REQUIRE(gpu != nullptr);
+  CHECK(gpu->size() > 0);
+  f64 total = 0.0;
+  for (usize i = 0; i < gpu->size(); ++i) {
+    f64 median = -1.0;
+    REQUIRE((*gpu)[i].find("median_ms")->get_f64(median));
+    CHECK(median >= 0.0);
+    total += median;
+  }
+  CHECK(total > 0.0);
+  bool record = false;
+  const JsonValue* cpu = report.find("cpu");
+  REQUIRE(cpu != nullptr);
+  for (usize i = 0; i < cpu->size(); ++i)
+    if ((*cpu)[i].find("name")->as_string() == "renderer.record") record = true;
+  CHECK(record);
+}

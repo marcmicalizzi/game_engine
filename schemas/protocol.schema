@@ -2735,3 +2735,94 @@ struct SessionChangeEvent @version(1) {
   layer: string
   dropped: u64 = 0
 }
+
+// ---- profile.* ---------------------------------------------------------------------------------
+// 06 §6.6 and §6.9's `profile` (roadmap A10): core/profiling's frame capture turned on and off by a
+// client, and foundation/profiler's frame report as the result (docs/subsystems/profiler.md). The
+// frames are whatever the host draws meanwhile; the capture is the process's, one for every client.
+
+/// Parameters of `profile.start`.
+struct ProfileStartParams @version(1) {
+  /// Events the capture holds before it drops and counts the rest: a zone, a frame's mark or end,
+  /// or one measured time each, 48 bytes. 0 is the default, 262,144; at most 4,194,304.
+  capacity: u32 = 0
+}
+
+struct ProfileStartResult @version(1) {
+  running: bool = false
+  /// The events the capture holds.
+  capacity: u32 = 0
+}
+
+/// Parameters of `profile.report` and `profile.stop`.
+struct ProfileReportParams @version(1) {
+  /// The last this many frames; 0 is every frame of the capture.
+  window_frames: u32 = 0
+  /// Series kept in each of `gpu`, `cpu` and `zones`, largest total first; 1 to 64. What is cut is
+  /// counted in `series_dropped`, so the result is bounded by this and never by the capture.
+  max_series: u32 = 16
+  /// When set, the trace (Chrome's JSON Object Format, which Perfetto opens) is written here as
+  /// `<name>.trace.json`, and its path returned as `trace`.
+  out_dir: string
+  name: string = "profile"
+}
+
+/// One name's cost a frame over the window (docs/subsystems/profiler.md, "The frame report").
+struct ProfileSeries @version(1) {
+  /// A GPU timer's zone, a CPU span's name, or a zone's (`ENGINE_PROFILE_ZONE`).
+  name: string
+  /// The frames it was summarized over: every frame of the window for a zone, the frames its
+  /// track measured for a GPU or CPU time.
+  frames: u32 = 0
+  /// Of those, the frames it appeared in; a frame it did not counts as zero.
+  frames_seen: u32 = 0
+  /// Zone calls or measured times in the window.
+  count: u64 = 0
+  median_ms: f64 = 0
+  p95_ms: f64 = 0
+  p99_ms: f64 = 0
+  max_ms: f64 = 0
+  mean_ms: f64 = 0
+  total_ms: f64 = 0
+  /// A zone's calls outside every frame of the window, and their time (a request's dispatch
+  /// round its frames). Zero for a measured time.
+  outside_count: u64 = 0
+  outside_ms: f64 = 0
+}
+
+/// The result of `profile.report` and `profile.stop`.
+struct ProfileReport @version(1) {
+  /// "engine.profile.v1".
+  format: string
+  /// True when read from a capture still recording.
+  running: bool = false
+  /// Frames in the window, and their indices (the process's own frame numbers).
+  frames: u32 = 0
+  first_frame: u64 = 0
+  last_frame: u64 = 0
+  /// From the window's first frame's start to its last frame's end.
+  window_ms: f64 = 0
+  /// The frames' own intervals: from a frame's start to its end.
+  frame: ProfileSeries
+  /// The GPU timer's zones, per frame (inclusive of nothing: each is its own queries' time).
+  gpu: ProfileSeries[]
+  /// The renderer's CPU spans per frame (`renderer.begin`, `renderer.record`, `renderer.submit`,
+  /// ...), and any other a host records.
+  cpu: ProfileSeries[]
+  /// Zones: CPU time inclusive of nested zones and summed over threads.
+  zones: ProfileSeries[]
+  /// Frames of the window the GPU's times and the CPU's came back for.
+  gpu_frames: u32 = 0
+  cpu_frames: u32 = 0
+  /// Series cut by `max_series`, all three lists together.
+  series_dropped: u32 = 0
+  /// Events read, and events the capture's full buffer refused (not zero: the report is missing
+  /// that many).
+  events: u64 = 0
+  dropped_events: u64 = 0
+  threads: u32 = 0
+  /// The capture's length so far.
+  capture_ms: f64 = 0
+  /// The trace's path, when `out_dir` was set.
+  trace: string
+}

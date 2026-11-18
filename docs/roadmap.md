@@ -892,7 +892,7 @@ The engine as a server, its clients, and what agents and the human director work
 | A7 | Day-one operations | done (9a34cca1) | A1 | L | routine | [protocol](subsystems/protocol.md#the-day-one-operations) |
 | A8 | render.capture, benchmark, compare, evaluate | done (da851a1a, eb0a4b47) | R34 | L | routine | [protocol](subsystems/protocol.md#methods-an-app-registers-and-render) |
 | A9 | More capture channels and a contact sheet | open | A8 | M | routine | [06 §6.6](plan/06-agent-tooling.md#66-introspection) |
-| A10 | `profile` over the protocol | open | T44 | M | routine | [06 §6.9](plan/06-agent-tooling.md#69-day-one-operations) |
+| A10 | `profile` over the protocol | in progress | T44 | M | routine | [protocol](subsystems/protocol.md#profile-the-frame-capture-over-the-protocol) |
 | A11 | Explicit begin, commit and rollback | done (2026-11-17: 9863fe4b) | A1 | S | routine | [protocol](subsystems/protocol.md#transactions-a-client-opens) |
 | A12 | `place_asset` and `instantiate_template` | done (2026-11-17: 6d1c9fe6) | A1 | M | design | [protocol](subsystems/protocol.md#placing-an-asset-instantiating-a-template) |
 | A13 | `describe` an object, tile or region by detail | open | A1 | M | design | [06 §6.6](plan/06-agent-tooling.md#66-introspection) |
