@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "b68-stack-D",
+  "reason": "The render graph's rule that a declared write implies the read (gfx.md, Render graph v0) and what it says of the pool's fold (renderer.md)",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 307,
+    "page:docs/subsystems/gfx.md": 784
+  }
+}

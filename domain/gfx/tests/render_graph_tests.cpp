@@ -346,3 +346,189 @@ TEST_CASE("render graph: a read without a producer is rejected at compile") {
   graph.reset();
   device.destroy();
 }
+
+// A declared write implies the read (2026-11-18; gfx.md, "Render graph v0"): a pass that reads
+// what the pass before wrote and declared only a write is ordered all the same, because the
+// barrier between them names the storage read as well as the write, as destination and as the
+// next barrier's source. NVIDIA's 621.24 ran the world-space cache's passes, which declared the
+// write alone, out of order. The graph compiles without a device: every resource is imported.
+TEST_CASE("render graph: a declared write names the read in its barriers") {
+  using gfx::MemoryAccess;
+  gfx::Device device;  // never opened: compile() touches no device for imported resources
+  gfx::BufferResource fake{};
+  fake.size = 256;
+  gfx::ImageResource fake_image{};
+  fake_image.width = 4;
+  fake_image.height = 4;
+  fake_image.format = gfx::Format::R32Uint;
+  gfx::RenderGraph graph(device);
+  const gfx::RgBuffer buffer = graph.import_buffer("buffer", fake);
+  const gfx::RgBuffer copied = graph.import_buffer("copied", fake);
+  const gfx::RgImage image = graph.import_image("image", fake_image, gfx::ImageLayout::General);
+  auto add = [&](const char* name, auto&& setup) {
+    graph.add_pass(name, gfx::PassKind::Compute, setup,
+                   [](gfx::CommandList, gfx::RenderGraph&) {});
+  };
+  add("first", [&](gfx::PassBuilder& b) {
+    b.write(buffer, gfx::Access::ComputeWrite);
+    b.write(image, gfx::Access::ComputeWrite);
+  });
+  add("second", [&](gfx::PassBuilder& b) {
+    b.write(buffer, gfx::Access::ComputeWrite);
+    b.write(image, gfx::Access::ComputeWrite);
+  });
+  add("fill", [&](gfx::PassBuilder& b) { b.write(copied, gfx::Access::TransferWrite); });
+  add("copy", [&](gfx::PassBuilder& b) { b.write(copied, gfx::Access::TransferWrite); });
+  add("after copy", [&](gfx::PassBuilder& b) { b.write(copied, gfx::Access::ComputeWrite); });
+  add("reader", [&](gfx::PassBuilder& b) { b.read(buffer, gfx::Access::ComputeRead); });
+  std::string error;
+  REQUIRE_MESSAGE(graph.compile(&error), error);
+  const MemoryAccess storage = MemoryAccess::ShaderStorageRead | MemoryAccess::ShaderStorageWrite;
+  const MemoryAccess transfer = MemoryAccess::TransferRead | MemoryAccess::TransferWrite;
+  auto has = [](MemoryAccess mask, MemoryAccess bits) { return (mask & bits) == bits; };
+
+  // second: one barrier for the buffer and one for the image, each naming read and write on
+  // both sides, compute to compute.
+  REQUIRE(graph.pass_barrier_count(1) == 2);
+  for (u32 i = 0; i < 2; ++i) {
+    const gfx::RenderGraph::BarrierMasks m = graph.pass_barrier(1, i);
+    CHECK(has(m.src_access, storage));
+    CHECK(has(m.dst_access, storage));
+    CHECK(m.src_stage == gfx::PipelineStage::ComputeShader);
+    CHECK(m.dst_stage == gfx::PipelineStage::ComputeShader);
+  }
+  // copy after fill: a copy's buffer can be its own source, so the transfer write names the
+  // transfer read too.
+  REQUIRE(graph.pass_barrier_count(3) == 1);
+  CHECK(has(graph.pass_barrier(3, 0).src_access, transfer));
+  CHECK(has(graph.pass_barrier(3, 0).dst_access, transfer));
+  // A compute pass behind the copy that declared only a write still names the read.
+  REQUIRE(graph.pass_barrier_count(4) == 1);
+  CHECK(has(graph.pass_barrier(4, 0).src_access, transfer));
+  CHECK(has(graph.pass_barrier(4, 0).dst_access, storage));
+  // A read stays a read: the barrier before it names what was written and reads alone.
+  REQUIRE(graph.pass_barrier_count(5) == 1);
+  CHECK(has(graph.pass_barrier(5, 0).src_access, storage));
+  CHECK(graph.pass_barrier(5, 0).dst_access == MemoryAccess::ShaderStorageRead);
+  // Masks only: the buffer barriers are the declared accesses' (second, copy, after copy and
+  // reader one each; first and fill have no history to order behind).
+  CHECK(graph.stats().buffer_barriers == 4);
+  CHECK(graph.pass_barrier(9, 0).dst_access == MemoryAccess::None);
+  graph.reset();
+}
+
+// The same on a device: a chain of passes each of which multiplies a buffer in place by three
+// (an odd factor, so every pass leaves its own mark mod 2^32) and declares only the write. A pass
+// that ran before the one ahead of it had finished would leave a word short of a factor.
+TEST_CASE("render graph: passes that declare only a write still see the pass before") {
+  gfx::Device device;
+  std::string error;
+  if (!gfx_test::open_device(device)) return;
+  constexpr u32 k_count = 1u << 18;
+  constexpr u32 k_passes = 64;
+  constexpr u32 k_frames = 8;
+  const u64 bytes = u64{k_count} * sizeof(u32);
+
+  gfx::FrameContext frames;
+  REQUIRE(frames.create(device, 2, &error));
+  gfx::BufferResource data;
+  REQUIRE(gfx::create_buffer(device, bytes,
+                             gfx::BufferUsage::Storage | gfx::BufferUsage::TransferSrc, false, data,
+                             &error));
+  gfx::BufferResource readback;
+  REQUIRE(gfx::create_buffer(device, bytes, gfx::BufferUsage::TransferDst, true, readback, &error));
+  gfx::ShaderModuleHandle fill_module =
+      gfx::create_shader_module(device, shaders::k_fill_spirv, shaders::k_fill_spirv_size, &error);
+  gfx::ShaderModuleHandle scale_module = gfx::create_shader_module(
+      device, shaders::k_scale_spirv, shaders::k_scale_spirv_size, &error);
+  REQUIRE(fill_module.valid());
+  REQUIRE(scale_module.valid());
+  StorageSet fill_set;
+  StorageSet scale_set;
+  const gfx::BufferHandle fill_buffers[] = {data.buffer};
+  REQUIRE(fill_set.create(device, fill_buffers));
+  const gfx::BufferHandle scale_buffers[] = {data.buffer, data.buffer};  // in place
+  REQUIRE(scale_set.create(device, scale_buffers));
+  const gfx::DescriptorSetLayoutHandle fill_layouts[] = {gfx::vk::wrap(fill_set.layout)};
+  const gfx::DescriptorSetLayoutHandle scale_layouts[] = {gfx::vk::wrap(scale_set.layout)};
+  gfx::ComputePipeline fill_pipeline;
+  gfx::ComputePipeline scale_pipeline;
+  REQUIRE(gfx::create_compute_pipeline(device, fill_module, "fill", fill_layouts,
+                                       sizeof(FillParams), fill_pipeline, &error));
+  REQUIRE(gfx::create_compute_pipeline(device, scale_module, "scale", scale_layouts,
+                                       sizeof(ScaleParams), scale_pipeline, &error));
+
+  u32 factor = 1;  // 3^k_passes mod 2^32
+  for (u32 p = 0; p < k_passes; ++p) factor *= 3u;
+  u32 wrong_frames = 0;
+  u32 wrong_words = 0;
+  for (u32 frame = 0; frame < k_frames; ++frame) {
+    gfx::RenderGraph graph(device);
+    const gfx::RgBuffer rg_data = graph.import_buffer("data", data);
+    const gfx::RgBuffer rg_host = graph.import_buffer("readback", readback);
+    graph.add_pass(
+        "fill", gfx::PassKind::Compute,
+        [&](gfx::PassBuilder& b) { b.write(rg_data, gfx::Access::ComputeWrite); },
+        [&](gfx::CommandList commands, gfx::RenderGraph&) {
+          const FillParams params{k_count, 3, 1 + frame};
+          commands.bind_pipeline(gfx::BindPoint::Compute, fill_pipeline.pipeline);
+          vkCmdBindDescriptorSets(gfx::vk::native(commands), VK_PIPELINE_BIND_POINT_COMPUTE,
+                                  gfx::vk::native(fill_pipeline.layout), 0, 1, &fill_set.set, 0,
+                                  nullptr);
+          commands.push_constants(fill_pipeline.layout, gfx::ShaderStage::Compute, 0,
+                                  sizeof(params), &params);
+          commands.dispatch((k_count + 63) / 64, 1, 1);
+        });
+    for (u32 p = 0; p < k_passes; ++p) {
+      graph.add_pass(
+          "scale in place", gfx::PassKind::Compute,
+          // The shader reads the buffer it writes; the declaration says only the write.
+          [&](gfx::PassBuilder& b) { b.write(rg_data, gfx::Access::ComputeWrite); },
+          [&](gfx::CommandList commands, gfx::RenderGraph&) {
+            const ScaleParams params{k_count, 3};
+            commands.bind_pipeline(gfx::BindPoint::Compute, scale_pipeline.pipeline);
+            vkCmdBindDescriptorSets(gfx::vk::native(commands), VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    gfx::vk::native(scale_pipeline.layout), 0, 1, &scale_set.set,
+                                    0, nullptr);
+            commands.push_constants(scale_pipeline.layout, gfx::ShaderStage::Compute, 0,
+                                    sizeof(params), &params);
+            commands.dispatch((k_count + 63) / 64, 1, 1);
+          });
+    }
+    graph.add_pass(
+        "readback", gfx::PassKind::Transfer,
+        [&](gfx::PassBuilder& b) {
+          b.read(rg_data, gfx::Access::TransferRead);
+          b.write(rg_host, gfx::Access::TransferWrite);
+        },
+        [&](gfx::CommandList commands, gfx::RenderGraph& g) {
+          commands.copy_buffer(g.buffer(rg_data).buffer, g.buffer(rg_host).buffer,
+                               gfx::BufferCopy{0, 0, bytes});
+        });
+    REQUIRE_MESSAGE(graph.compile(&error), error);
+    std::memset(readback.mapped, 0, static_cast<usize>(bytes));
+    gfx::CommandList commands = frames.begin_frame();
+    graph.execute(commands);
+    REQUIRE(frames.wait(frames.end_frame()));
+    const auto* words = static_cast<const u32*>(readback.mapped);
+    u32 wrong = 0;
+    for (u32 i = 0; i < k_count; ++i) {
+      if (words[i] != (i * 3u + 1u + frame) * factor) ++wrong;
+    }
+    if (wrong != 0) ++wrong_frames;
+    wrong_words += wrong;
+  }
+  INFO("frames with a wrong word: " << wrong_frames << ", words: " << wrong_words);
+  CHECK(wrong_words == 0);
+
+  fill_set.destroy(device);
+  scale_set.destroy(device);
+  gfx::destroy_compute_pipeline(device, fill_pipeline);
+  gfx::destroy_compute_pipeline(device, scale_pipeline);
+  gfx::destroy_shader_module(device, fill_module);
+  gfx::destroy_shader_module(device, scale_module);
+  frames.destroy();
+  gfx::destroy_buffer(device, readback);
+  gfx::destroy_buffer(device, data);
+  device.destroy();
+}

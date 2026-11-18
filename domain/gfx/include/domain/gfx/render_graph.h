@@ -203,6 +203,18 @@ class RenderGraph {
   };
   const Stats& stats() const noexcept { return stats_; }
 
+  // After compile(): the barriers emitted before `pass`'s body, buffers first and then images,
+  // in the engine's vocabulary — what a test asserts the masks on (a declared write implies the
+  // read; gfx.md, "Render graph v0"). An index past the count gives all-None masks.
+  struct BarrierMasks {
+    PipelineStage src_stage = PipelineStage::None;
+    MemoryAccess src_access = MemoryAccess::None;
+    PipelineStage dst_stage = PipelineStage::None;
+    MemoryAccess dst_access = MemoryAccess::None;
+  };
+  u32 pass_barrier_count(u32 pass) const noexcept;
+  BarrierMasks pass_barrier(u32 pass, u32 index) const noexcept;
+
  private:
   friend class PassBuilder;
 

@@ -100,6 +100,24 @@ AccessInfo access_info(Access access) noexcept {
           true};
 }
 
+// The access mask a use puts in a barrier, as source for the next and as destination for the
+// last. **A declared write implies the read** (2026-11-18): a shader given a storage buffer or
+// image to write can read it, and a copy's buffer can be its own source, but a barrier orders an
+// earlier write before the accesses its destination mask names and no others, so a pass that
+// declared `ComputeWrite` and read what the pass before wrote was not ordered behind it — the
+// world-space cache's passes, which NVIDIA's 621.24 ran out of order
+// (gfx.md, "Render graph v0"). Masks only: whether a barrier is emitted, and which passes depend
+// on which, still follow the declared accesses.
+VkAccessFlags2 barrier_access(const AccessInfo& info, bool writes) noexcept {
+  VkAccessFlags2 access = info.access;
+  if (!writes) return access;
+  if ((access & VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT) != 0) {
+    access |= VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+  }
+  if ((access & VK_ACCESS_2_TRANSFER_WRITE_BIT) != 0) access |= VK_ACCESS_2_TRANSFER_READ_BIT;
+  return access;
+}
+
 VkImageAspectFlags aspect_for(Format format) noexcept {
   switch (vk::native(format)) {
     case VK_FORMAT_D16_UNORM:
@@ -380,6 +398,7 @@ void RenderGraph::compute_barriers() {
       const Use& use = uses_[u];
       const AccessInfo info = access_info(use.access);
       const bool writes = use.write || info.writes;
+      const VkAccessFlags2 access = barrier_access(info, writes);
       if (use.is_image) {
         ImageNode& node = images_[use.index];
         State& s = node.state;
@@ -394,7 +413,7 @@ void RenderGraph::compute_barriers() {
                                      : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
           barrier.srcAccessMask = vk::native(s.access);
           barrier.dstStageMask = info.stage;
-          barrier.dstAccessMask = info.access;
+          barrier.dstAccessMask = access;
           barrier.oldLayout = vk::native(s.layout);
           barrier.newLayout = info.layout;
           barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -406,10 +425,10 @@ void RenderGraph::compute_barriers() {
           ++stats_.image_barriers;
           if (layout_change) ++stats_.layout_transitions;
           s.stage = vk::pipeline_stage(info.stage);
-          s.access = vk::memory_access(info.access);
+          s.access = vk::memory_access(access);
         } else {
           s.stage |= vk::pipeline_stage(info.stage);
-          s.access |= vk::memory_access(info.access);
+          s.access |= vk::memory_access(access);
         }
         s.layout = layout;
         s.written = writes;
@@ -427,15 +446,15 @@ void RenderGraph::compute_barriers() {
                                      : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
           barrier.srcAccessMask = vk::native(s.access);
           barrier.dstStageMask = info.stage;
-          barrier.dstAccessMask = info.access;
+          barrier.dstAccessMask = access;
           barriers_->buffer.push_back(barrier);
           ++pass.buffer_barrier_count;
           ++stats_.buffer_barriers;
           s.stage = vk::pipeline_stage(info.stage);
-          s.access = vk::memory_access(info.access);
+          s.access = vk::memory_access(access);
         } else {
           s.stage |= vk::pipeline_stage(info.stage);
-          s.access |= vk::memory_access(info.access);
+          s.access |= vk::memory_access(access);
         }
         s.written = writes;
       }
@@ -553,6 +572,28 @@ void RenderGraph::execute(CommandList commands) {
     vkCmdPipelineBarrier2(cb, &dependency);
   }
   current_pass_ = ~u32{0};
+}
+
+u32 RenderGraph::pass_barrier_count(u32 pass) const noexcept {
+  if (pass >= passes_.size()) return 0;
+  return passes_[pass].buffer_barrier_count + passes_[pass].image_barrier_count;
+}
+
+RenderGraph::BarrierMasks RenderGraph::pass_barrier(u32 pass, u32 index) const noexcept {
+  BarrierMasks masks{};
+  if (pass >= passes_.size()) return masks;
+  const Pass& p = passes_[pass];
+  if (index < p.buffer_barrier_count) {
+    const VkMemoryBarrier2& b = barriers_->buffer[p.first_buffer_barrier + index];
+    masks = {vk::pipeline_stage(b.srcStageMask), vk::memory_access(b.srcAccessMask),
+             vk::pipeline_stage(b.dstStageMask), vk::memory_access(b.dstAccessMask)};
+  } else if (index < p.buffer_barrier_count + p.image_barrier_count) {
+    const VkImageMemoryBarrier2& b =
+        barriers_->image[p.first_image_barrier + index - p.buffer_barrier_count];
+    masks = {vk::pipeline_stage(b.srcStageMask), vk::memory_access(b.srcAccessMask),
+             vk::pipeline_stage(b.dstStageMask), vk::memory_access(b.dstAccessMask)};
+  }
+  return masks;
 }
 
 const BufferResource& RenderGraph::buffer(RgBuffer handle) const noexcept {
