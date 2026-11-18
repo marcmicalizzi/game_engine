@@ -10,12 +10,16 @@
 
 **Parser** (`parse_json`): strict JSON, no comments or trailing commas; duplicate keys keep the last value; `\u` escapes including surrogate pairs decode to UTF-8; integers beyond 64 bits become doubles; errors carry byte offset, line, and column. Nesting deeper than `max_depth` (default 256) is refused: the parser and destructor recurse once per level at roughly 1 KB of stack per level in debug builds, so a raised budget needs a matching thread stack.
 
+**A reader with no tree** (`JsonReader`, `core/json/json_reader.h`; roadmap D40). `parse_json` is built on a pull reader, and the reader is public: `next_value` reads the start of a value — a scalar whole, an array or object opened — and `next_element`/`next_member` walk a container, each member's value read with `next_value`, built with `rest`/`read_value` or passed over with `skip`/`skip_value`, which check every byte as the parser does; `finish` refuses what follows the top-level value. Because the tree parser is that reader building a tree, the two refuse a malformed text with the same message at the same offset, line and column, and hold the same depth budget. A string with no escape is a view of the text; one with escapes is decoded into a buffer the next string reuses. It is what lets a schema walk reflect a large file straight into its structs (`schema::read_json_text`, [schema](schema.md#json-text-with-no-tree)) instead of holding a tree of every value of the file while it is copied out.
+
+**One spelling, any sink** (`core/json/json_format.h`). The canonical writer's spellings — strings, integers, floats, indentation, a whole `JsonValue` — are templates over a sink with `append` and `put`; `write_json` is them with a string as the sink, and so is a writer that walks a schema type's fields instead of a tree, or compares what it would write against bytes in hand, so every walk spells a value one way.
+
 **Invariants.**
 - `parse_json(write_json(v)) == v` for every value without NaN/infinity.
 - `write_json(parse_json(text))` is idempotent.
 - On parse failure the output value is null.
 
-**Public API.** `core/json/json_value.h` (`JsonValue`), `core/json/json.h` (`parse_json`, `write_json`, options and result types).
+**Public API.** `core/json/json_value.h` (`JsonValue`), `core/json/json.h` (`parse_json`, `write_json`, options and result types), `core/json/json_reader.h` (`JsonReader`), `core/json/json_format.h` (the spellings over a sink).
 
 **Depends on.** `base`, `memory`, `containers`.
 
