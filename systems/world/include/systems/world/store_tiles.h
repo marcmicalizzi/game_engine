@@ -51,6 +51,10 @@ struct StoreTilesStats {
   u64 written = 0;  // tiles written on deactivation
   u64 rows = 0;
   u64 failures = 0;
+  // Roadmap D45: projections whose record the document no longer has (or has with no position a
+  // cell can name) — erased when their tile went, and skipped by a tile's load.
+  u64 erased = 0;
+  u64 skipped = 0;
   i64 reconcile_ns = 0;
   i64 write_ns = 0;
 };
@@ -74,12 +78,18 @@ class StoreTiles {
  private:
   static bool activate(void* context, const TileEvent& event);
   static void deactivate(void* context, const TileEvent& event);
+  // The store's seam with every record the document cannot place left out of `load_records` (D45).
+  static bool tile_state(void* context, u64 tile, sim::TileState& out);
+  static void load_records(void* context, u64 tile, Vector<sim::EntityRecord>& out);
 
   StoreTilesBinding binding_;
   StoreTilesStats stats_;
   sim::ReconcileResult last_;
+  sim::TileStore inner_;  // the store's own seam, which `load_records` reads through
   Vector<Id128> held_;
   Vector<TileRow> rows_;
+  Vector<Id128> stored_;  // scratch: the records a going tile's projections name
+  Vector<Id128> gone_;    // scratch: those the document no longer has
 };
 
 // Where a document record is: its composed position property under the partition of the layer that
@@ -109,10 +119,16 @@ bool document_world_seed(const doc::Document& document, u64& out);
 // — so the store's projections of live tiles are as current as the write-back's cadence. It reads
 // the document, never the world. No snapshot: that stays a tile's going. A host whose session
 // keeps a store calls it from its write-back sink after the commit, as engine-host's does.
+// **A record the flush finds gone loses its projection** in the same transaction (roadmap D45). A
+// write that fails leaves the store as it was and keeps the flush's records in
+// `WorldStore::unprojected`, which the next call projects again from the document as it is then
+// (world.md, "A record the document no longer has").
 struct ProjectWritebackStats {
   u32 written = 0;  // projections replaced
   u32 untiled = 0;  // records in no tile of a partitioned layer: a tile's projection has no place
   u32 gone = 0;     // records the document no longer has, or whose position no cell can name
+  u32 erased = 0;   // projections of `gone` records removed (when the write succeeded)
+  u32 retried = 0;  // records of an earlier failed call projected again
 };
 store::Status project_writeback(WorldStore& world_store, const doc::Document& document,
                                 const sim::WriteBackBatch& batch,

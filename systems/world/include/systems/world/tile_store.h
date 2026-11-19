@@ -74,16 +74,25 @@ class WorldStore {
   // consumer already made, and creates none (sim.md, "Which name each hook carries").
   sim::TileStore tile_store() noexcept;
 
-  // A tile going inactive: its projections replaced by `rows` (one transaction), then its
-  // snapshot at (tick, time). A record the tile held before and does not now keeps its old
-  // projection until the tile is written again with it gone: `upsert` cannot tell a deletion from
-  // a record that moved away, and the store's key leads with the tile (store.md).
-  // Projections and nothing else (roadmap S11): `rows[i]` replaces its record's projection under
-  // the store tile `tiles[i]` (`store_tile`), following the record out of any tile it was filed
-  // under before, all in one transaction. No snapshot: that is a tile's going.
-  store::Status write_projections(std::span<const TileRow> rows, std::span<const u64> tiles);
+  // Projections and nothing else (roadmap S11): every record of `erase` loses its projection,
+  // whatever tile it is filed under, then `rows[i]` replaces its record's projection under the
+  // store tile `tiles[i]` (`store_tile`), following the record out of any tile it was filed under
+  // before — all in one transaction, so a failure leaves the projections as they were. No
+  // snapshot: that is a tile's going. `upsert` cannot tell a deletion from a record that moved
+  // away (the store's key leads with the tile, store.md), so a record the document no longer has
+  // goes only by being named in `erase` (roadmap D45, world.md, "A record the document no longer
+  // has").
+  store::Status write_projections(std::span<const TileRow> rows, std::span<const u64> tiles,
+                                  std::span<const Id128> erase = {});
+  // A tile going inactive: `erase` and `rows` as `write_projections` (one transaction, every row
+  // under this tile), then its snapshot at (tick, time).
   store::Status write_tile(TileCoord tile, std::span<const TileRow> rows, u64 sim_tick,
-                           i64 game_time_us);
+                           i64 game_time_us, std::span<const Id128> erase = {});
+  // The records `tile`'s projections name, in the store's order, nothing decoded.
+  store::Status tile_records(TileCoord tile, Vector<Id128>& out);
+  // The records of a `project_writeback` whose write failed: the next call projects them again,
+  // as the document has them then (world.md, "A record the document no longer has").
+  Vector<Id128>& unprojected() noexcept { return unprojected_; }
   // What is stored for `tile`: its projections (decoded) and whether it has a snapshot.
   store::Status read_tile(TileCoord tile, Vector<TileRow>& rows, bool& has_snapshot,
                           store::SnapshotInfo& info);
@@ -100,6 +109,7 @@ class WorldStore {
   u64 world_seed_ = 1;
   Vector<u8> scratch_;
   Vector<u64> tiles_;  // scratch: write_tile's one tile, once a row
+  Vector<Id128> unprojected_;
 };
 
 // **An event's payload as this build reads it** (plan 03 §3.8, "events are upcast"; roadmap D26).

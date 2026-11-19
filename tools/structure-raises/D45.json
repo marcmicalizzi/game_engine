@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "D45",
+  "reason": "D45: world.md says what keeps a deleted record's projection out of the store, the three places that erase or skip it, and what a failed projection write leaves and how the next flush or going puts it right",
+  "date": "2026-11-19",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/world.md": 2645
+  }
+}
