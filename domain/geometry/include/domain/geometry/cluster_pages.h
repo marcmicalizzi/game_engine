@@ -163,6 +163,19 @@ bool validate_cluster_pages(const ClusterLodMesh& mesh, const ClusterPages& page
 bool validate_cluster_pages(const ClusterLodMesh& mesh, const ClusterPages& pages,
                             std::span<const ClusterMeshPart> parts, std::string* error = nullptr);
 
+// **A page's triangles as they land, checked before anything uploads them** (T194, from the review
+// of T187's mend): the paged reader carries no triangles at load, so `read_cluster_file`'s check
+// that a triangle names a vertex of its own cluster cannot run there, and a page read from a
+// container goes to the GPU, whose rasterizers add a triangle's 8-bit locals to the cluster's
+// vertex offset. True when every cluster of `page` (`clusters` is the whole array the page indexes,
+// offsets as the page's `first_*` count them) has its vertex and triangle runs inside the page's,
+// and every one of its triangles names three vertices below its `vertex_count`; otherwise false,
+// the cluster and the triangle named. `triangles` is the page's run, `page.triangle_count` words
+// at least. The cost is the page's triangles once, three unpacks each, and no allocation unless it
+// refuses.
+bool check_page_triangles(std::span<const ClusterDesc> clusters, const ClusterPageDesc& page,
+                          std::span<const u32> triangles, std::string* error = nullptr);
+
 // Joins meshes that have each been laid out in pages into the one set of buffers and the one page
 // table a scene streams from: `merge_cluster_meshes` over the geometry with `ClusterOrder::keep`,
 // so no mesh's page-ordered clusters are shuffled, and the page tables concatenated with every
