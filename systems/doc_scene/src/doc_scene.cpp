@@ -156,6 +156,21 @@ bool map_heightfield(Id128 id, const terrain::Heightfield& record, const std::st
     error = where + ": its source '" + source + "' has no grid of at least 2 x 2 points";
     return false;
   }
+  // **The header's sizes are bounded before the extent is computed from them** (T190): the file
+  // states `width`, `height` and `spacing_mm`, each up to 2^63 - 1, and `(width - 1) * spacing`
+  // below overflowed `i64` (undefined behaviour) before the provider read the header. The bounds
+  // are the tile set's own (`tileset::k_max_heightfield_side`, `k_max_spacing_mm` in
+  // `domain/tileset/tileset.h`, repeated here because this bridge may not link the capability), so
+  // a header this refuses is one the provider would refuse too, and the product stays under 2^36.
+  constexpr i64 k_max_side = 65536;
+  constexpr i64 k_max_spacing_mm = 1'000'000;
+  if (width > k_max_side || height > k_max_side || spacing > k_max_spacing_mm) {
+    error = where + ": its source '" + source + "' states a grid of " + std::to_string(width) +
+            " x " + std::to_string(height) + " points " + std::to_string(spacing) +
+            " mm apart; at most " + std::to_string(k_max_side) + " points a side, " +
+            std::to_string(k_max_spacing_mm) + " mm apart, are read";
+    return false;
+  }
   scene::Terrain entry;
   entry.provider = "tiles";
   scene::TerrainTileSet tiles;

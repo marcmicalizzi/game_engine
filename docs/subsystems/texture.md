@@ -45,7 +45,10 @@ sentence and an empty result: a truncated file, the wrong magic or version, a se
 a content hash that does not match, a missing required section, a format this build does not know,
 and a chain that does not validate — a level whose extent is not `max(1, side >> level)`, whose
 byte count is not `texture_level_bytes`, whose offset is unaligned or outside the payload, or a BC4
-or BC5 texture claiming sRGB (neither has an sRGB form in any API). `write_texture_file` refuses
+or BC5 texture claiming sRGB (neither has an sRGB form in any API), or a side past 16,384 (T190:
+the build's own `k_max_side`, so every built texture reads unchanged; a valid 128 KiB strip of
+65,536 x 4 BC4 texels used to be handed to the device past its `maxImageDimension2D`, 16,384 on
+the baseline cards and 4,096 Vulkan's floor). `write_texture_file` refuses
 the same and writes through `io::write_file_atomic`.
 
 ## Formats per slot, and why

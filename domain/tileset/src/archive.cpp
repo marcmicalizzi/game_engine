@@ -117,17 +117,21 @@ bool Reader::open(const std::string& path, std::string_view record, i64 spacing_
                   std::to_string(record_bytes) + " bytes at " + std::to_string(spacing_mm) +
                   " mm its manifest lists");
   const u32 n = header_.count;
-  if (header_.toc_offset < sizeof(Header) ||
-      file_.size() != header_.toc_offset + u64{n} * sizeof(Entry))
+  if (header_.toc_offset < sizeof(Header) || header_.toc_offset > file_.size() ||
+      file_.size() - header_.toc_offset != u64{n} * sizeof(Entry))
     return refuse("its table is not where its records end");
   if (!read_span(file_, header_.toc_offset, u64{n} * sizeof(Entry), bytes))
     return refuse("its table does not read");
   toc_.resize(n);
   if (n > 0) std::memcpy(toc_.data(), bytes.data(), bytes.size());
+  // **An entry's range is checked without a sum that can wrap** (T190): `offset` is the file's u64,
+  // so `offset + record_bytes` of an offset near 2^64 wrapped to a few bytes, passed, and named a
+  // record 2^64 bytes away; a read through the file then failed, but a reader of a mapped view of
+  // the archive (b69-T182's `MaskLevel`) adds the offset to the view's base.
   for (u32 i = 0; i < n; ++i) {
     const Entry& e = toc_[i];
-    if (e.offset < sizeof(Header) || e.offset + record_bytes > header_.toc_offset ||
-        e.bytes != record_bytes ||
+    if (e.offset < sizeof(Header) || e.offset > header_.toc_offset ||
+        record_bytes > header_.toc_offset - e.offset || e.bytes != record_bytes ||
         (i > 0 && tile_key(e.tx, e.tz) <= tile_key(toc_[i - 1].tx, toc_[i - 1].tz)))
       return refuse("its table is not sorted records within the file");
   }

@@ -703,6 +703,47 @@ class DiskView {
     return vfs_.exists(full(path));
   }
 
+  // **A file the document names is under its directory where it resolves, not only by its name**
+  // (T190). `stays_under_document` judges a path's text, so `layers/sub/base.json` passes it even
+  // when `layers/sub` is a symbolic link or a junction to anywhere on the machine, and the read
+  // followed it on Windows and on Linux alike. So every file `load` reads from the disk is held
+  // here: its directory, resolved (`canonical`: symbolic links on both platforms and junctions on
+  // Windows followed), must be the document's resolved directory or below it, once per directory;
+  // and the file itself, when it is a link, must resolve below it too. A link that stays inside
+  // the document is followed as before. A hard link cannot be told from a file by any path and is
+  // not judged. True when the file leaves; false for a file that does not exist (the read reports
+  // it) and for one the save log's text supplies.
+  bool leaves_by_link(const std::string& path) const {
+    namespace fs = std::filesystem;
+    if (overlay_.find_value(path) != nullptr) return false;
+    std::string native;
+    if (vfs_.resolve(full(path), native) != io::Status::Ok) return false;
+    std::error_code ec;
+    if (!root_resolved_) {
+      root_resolved_ = true;
+      std::string native_root;
+      if (vfs_.resolve(dir_, native_root) == io::Status::Ok) {
+        root_ = fs::canonical(native_path(native_root), ec);
+        if (ec) root_.clear();
+      }
+    }
+    if (root_.empty()) return false;
+    const std::string parent(io::parent_path(native));
+    bool inside = true;
+    if (const bool* cached = dirs_.find_value(parent)) {
+      inside = *cached;
+    } else {
+      const fs::path real = fs::canonical(native_path(parent), ec);
+      inside = ec ? true : within(real, /*or_equal=*/true);  // a missing directory: NotFound
+      dirs_.insert_or_assign(parent, inside);
+    }
+    if (!inside) return true;
+    const fs::path file = native_path(native);
+    if (!fs::is_symlink(fs::symlink_status(file, ec)) || ec) return false;
+    const fs::path real = fs::canonical(file, ec);
+    return !ec && !within(real, /*or_equal=*/false);
+  }
+
   io::Status list(const std::string& path, Vector<io::DirEntry>& out) const {
     io::Status s = vfs_.list(full(path), out);
     if (overlay_.empty()) return s;
@@ -735,10 +776,31 @@ class DiskView {
   }
 
  private:
+  // Native paths are UTF-8 (foundation/io), not the narrow code page a std::string means on
+  // Windows.
+  static std::filesystem::path native_path(std::string_view s) {
+    return std::filesystem::path(
+        std::u8string_view(reinterpret_cast<const char8_t*>(s.data()), s.size()));
+  }
+
+  // `real` is the resolved root or below it, by whole components.
+  bool within(const std::filesystem::path& real, bool or_equal) const {
+    auto r = root_.begin();
+    auto f = real.begin();
+    for (; r != root_.end(); ++r, ++f) {
+      if (r->empty()) continue;  // a root's trailing separator
+      if (f == real.end() || *f != *r) return false;
+    }
+    return or_equal || f != real.end();
+  }
+
   const io::Vfs& vfs_;
   std::string dir_;
   std::string log_;
   HashMap<std::string, FileOp> overlay_;  // views into log_
+  mutable bool root_resolved_ = false;
+  mutable std::filesystem::path root_;       // the document's directory, resolved; empty when not
+  mutable HashMap<std::string, bool> dirs_;  // a native directory: whether it resolves inside
 };
 
 // Defined with the journal's other helpers, below.
@@ -798,6 +860,12 @@ bool find_parent_cycle(const Document& doc, ObjectId& at) {
 // Reads one file of the document and remembers what it held.
 bool read_file(const DiskView& disk, const std::string& path, std::string& out, StoredState& known,
                std::string* error) {
+  if (disk.leaves_by_link(path)) {
+    set_error(error, disk.full(path),
+              "leaves the document's directory through a link (a symbolic link or a junction), "
+              "which a document may not do");
+    return false;
+  }
   if (const io::Status s = disk.read(path, out); s != io::Status::Ok) {
     set_error(error, disk.full(path), io::status_name(s));
     return false;

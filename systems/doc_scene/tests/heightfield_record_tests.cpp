@@ -184,6 +184,44 @@ TEST_CASE("doc_scene: a heightfield record's changes, and the refusals") {
   CHECK(error.find("whole number of its spacings") != std::string::npos);
 }
 
+// Hostile headers (T190, docs/experiments/fuzzing-design.md): a heightfield header a document's
+// record names, its text built by a function so that the fuzz harness can lift it as a seed.
+namespace hostile_heightfield {
+
+std::string header(const char* width, const char* spacing_mm) {
+  return std::string(R"({"format":"engine.terrain.heightfield","version":1,"width":)") + width +
+         R"(,"height":65,"spacing_mm":)" + spacing_mm +
+         R"(,"origin_mm":[0,0],"vertical_mm_per_unit":1000,"data":"ground.f32"})";
+}
+
+// 2^62 points 2^62 mm apart: `(width - 1) * spacing` overflowed `i64` before the provider was
+// asked (undefined behaviour; on MSVC a silent wrap and the provider's own refusal after it).
+std::string extent_overflows() { return header("4611686018427387904", "4611686018427387904"); }
+
+}  // namespace hostile_heightfield
+
+TEST_CASE(
+    "doc_scene hostile: a heightfield header whose extent overflows is refused by its bound") {
+  World w;
+  REQUIRE(io::write_file(w.tmp.file("terrain/huge.json"),
+                         hostile_heightfield::extent_overflows()) == io::Status::Ok);
+  REQUIRE(io::write_file(w.tmp.file("terrain/wide.json"),
+                         hostile_heightfield::header("65537", "1000")) == io::Status::Ok);
+  create(w.d, id_of(1), doc_scene::k_heightfield,
+         R"({"name":"huge","source":"terrain/huge.json"})");
+  doc_scene::DocumentScene scene;
+  std::string error;
+  CHECK_FALSE(doc_scene::read_document_scene(w.d, w.tmp.path(), {}, scene, error));
+  CHECK(error.find("at most 65536 points a side, 1000000 mm apart") != std::string::npos);
+  CHECK_FALSE(scene.terrain.has_value());
+  // One point past the side alone is refused by the same sentence; the ridge at 65 is read.
+  set(w.d, id_of(1), "source", R"("terrain/wide.json")");
+  CHECK_FALSE(doc_scene::read_document_scene(w.d, w.tmp.path(), {}, scene, error));
+  CHECK(error.find("65537 x 65 points") != std::string::npos);
+  set(w.d, id_of(1), "source", R"("terrain/ridge.json")");
+  REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), {}, scene, error), error);
+}
+
 // **The host's root, not the heightfield's** (T104, T119; doc_scene.md, "The ground's root"): a
 // host that names a root has the set built and found there, and the scene's `tiles` block carries
 // it so the load's own sampler reads the same set; the repository the document sits in, which the
