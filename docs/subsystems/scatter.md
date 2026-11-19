@@ -113,6 +113,7 @@ The layer as read (`Placer`, immutable once opened, so any number of tiles may b
 - The density is met within 5% over a large region wherever it is under the spacing's cap.
 - The budget keeps at most `per_tile` a tile, a subset of the uncapped tile; a far ring's tile is a subset of a near ring's.
 - `tile` over the region's tiles is `expand`.
+- A whole read's region is counted side by side before the product, so no region wraps past its cap of 16,777,216 tiles, and a polygon's corners are within 10^9 m before they become millimetres (T198, `scatter hostile: a whole read's region is counted side by side, corners within 10^9 m`).
 - The pinned hash is the same on MSVC, GCC and Clang.
 
 ## Public API

@@ -806,8 +806,10 @@ bool Placer::open(const Layer& desc, std::string_view dir, u64 world_seed, std::
   if (region.kind == RegionKind::Polygon) {
     if (region.polygon.size() < 3) return fail("its region's polygon has fewer than three corners");
     for (const auto& corner : region.polygon) {
-      if (!std::isfinite(corner[0]) || !std::isfinite(corner[1]))
-        return fail("its region's polygon has a corner that is not a number");
+      // Within 10^9 m, a route waypoint's bound (T198): `region_tiles` takes the corners' box to
+      // millimetres, whose floor `nearest_mm` casts to `i64`, undefined past 9.2 x 10^15 m.
+      if (!(corner[0] >= -1e9 && corner[0] <= 1e9 && corner[1] >= -1e9 && corner[1] <= 1e9))
+        return fail("its region's polygon has a corner that is not a number within 10^9 m");
       im.poly_x.push_back(corner[0]);
       im.poly_z.push_back(corner[1]);
     }
@@ -957,8 +959,13 @@ bool Placer::region_tiles(Vector<scene_gen::TileCoord>& out, std::string* error)
       break;
     }
   }
-  const i64 count = (tx1 - tx0 + 1) * (tz1 - tz0 + 1);
-  if (count > 16 * 1024 * 1024) {
+  // Each side held before the product (T198): a tiles region from INT32_MIN to INT32_MAX is 2^32
+  // tiles a side, whose product of 2^64 wrapped `i64` to 0 and passed, and the walk below was
+  // 2^64 tiles long.
+  constexpr i64 k_max_tiles = 16 * 1024 * 1024;
+  const i64 columns = tx1 - tx0 + 1, rows = tz1 - tz0 + 1;
+  const i64 count = columns > k_max_tiles || rows > k_max_tiles ? k_max_tiles + 1 : columns * rows;
+  if (count > k_max_tiles) {
     if (error != nullptr)
       *error = "its region covers " + std::to_string(count) +
                " tiles; a whole read takes at most 16,777,216";
