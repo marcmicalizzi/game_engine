@@ -52,7 +52,8 @@
 //      never written; a layer at weight 0 is not evaluated at all.
 //
 // What the compile refuses by name rather than ignores, with the stage that takes it: the
-// `Inertialize` blend (stage 4), the `Machine` kind, `exit_phase`, the `KeepPhase`/`MatchPhase`
+// `Inertialize` blend on a layer machine (stage 4 takes it on the base machine: inertialize.h), the
+// `Machine` kind, `exit_phase`, the `KeepPhase`/`MatchPhase`
 // offsets, `skeleton_roles`, `root_motion`, an `Override` or `Additive` node anywhere but as a
 // machine's layer node, a weight other than 1 on a node that is not a layer node, a blend of
 // blends, and two layers or a layer of a layer (no stage of the design builds them yet; a graph

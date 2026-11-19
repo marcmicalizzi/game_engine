@@ -6,7 +6,10 @@
 #include <foundation/tunables/tunables.h>
 #include <systems/animation/animation.h>
 
+#include <algorithm>
 #include <cmath>
+#include <memory>
+#include <mutex>
 #include <schemas/animation_ecs.h>
 #include <schemas/animation_graph_ecs.h>
 
@@ -452,7 +455,32 @@ namespace {
 struct GraphScratch {
   PoseEvaluator evaluator;
   Vector<GraphInstance> batch;
+  // Stage 4, per batch entry: its pose slot and what its inertialization asks this tick (below).
+  Vector<u32> slots;
+  Vector<u8> inertial;
+  // The entries capturing a transition this flush, and per capture two states and three poses:
+  // the source this tick and the target one tick back, evaluated through the same program, and
+  // what was shown one tick back (the pool slot before the program overwrites it).
+  Vector<u32> captures;
+  Vector<AnimationGraphState> virtual_states;
+  Vector<GraphInstance> virtual_batch;
+  Vector<Vec3> translation;
+  Vector<Quat> rotation;
+  Vector<Vec3> scale;
 };
+
+// What a graph-driven instance's inertialization asks of the sample pass this tick.
+constexpr u8 k_inertial_none = 0;
+constexpr u8 k_inertial_capture = 1;  // a transition starts: capture its offsets, show the source
+constexpr u8 k_inertial_apply = 2;    // one in flight: the target plus the offsets
+constexpr u8 k_inertial_release = 3;  // its slot is held and nothing is in flight: give it back
+
+bool graph_inertializes(const CompiledGraph& g) noexcept {
+  for (const ControlTransition& t : g.transitions) {
+    if (t.blend == static_cast<u8>(GraphBlend::Inertialize)) return true;
+  }
+  return false;
+}
 
 GraphScratch& graph_scratch() {
   thread_local GraphScratch instance;
@@ -500,15 +528,149 @@ void AnimationSystem::sample_graphs(flecs::iter& it) {
   const CompiledGraph* graph = nullptr;
   u32 skeleton_index = Library::k_not_found;
   u32 sampled = 0;
+  scratch.slots.clear();
+  scratch.inertial.clear();
+
+  // ---- stage 4: inertialized transitions (animation.md, "Graphs: inertialization") ----
+  // What an instance's inertialization asks this tick. Its base machine holds an inertialization
+  // as a cross-fade whose duration is negated (graph_control), weighed as the target alone; the
+  // tick it starts (elapsed 0) captures the offsets, the ticks after add them, and a slot held
+  // with nothing in flight (finished, cut by a cross-fade, or at a tier that does not
+  // interpolate: LOD1's cut opens no slot) goes back.
+  const auto inertial_mode = [&](const CompiledGraph& g, const AnimationGraphState& st,
+                                 const AnimationLod& lod, u32 pose_slot) -> u8 {
+    if (pose_slot >= inertial_.size()) return k_inertial_none;
+    const u32 m = g.base_machine;
+    const bool live = st.graph == g.id && st.revision == g.revision && st.state[m] != 0;
+    const bool flight = live && lod.interpolate && st.next[m] != 0 && st.duration[m] < 0.0f;
+    const bool held = inertial_[pose_slot].slot != InertialArena::k_none;
+    if (flight && st.elapsed[m] == 0.0f) return k_inertial_capture;
+    if (flight && held) return k_inertial_apply;
+    return held ? k_inertial_release : k_inertial_none;
+  };
+  // Three poses a capture, laid end to end in the worker's scratch: 0 what was shown one tick
+  // back, 1 the source this tick, 2 the target one tick back.
+  const auto scratch_pose = [&](u32 capture, u32 which, u32 joints) {
+    const usize at = (usize{capture} * 3u + which) * joints;
+    return anim::PoseView(std::span<Vec3>(scratch.translation.data() + at, joints),
+                          std::span<Quat>(scratch.rotation.data() + at, joints),
+                          std::span<Vec3>(scratch.scale.data() + at, joints));
+  };
+  const auto prepare_captures = [&](const CompiledGraph& g, u32 joints) {
+    const u32 n = scratch.captures.size();
+    const u32 cells = n * 3u * joints;
+    if (scratch.rotation.size() < cells) {
+      scratch.translation.resize(cells);
+      scratch.rotation.resize(cells);
+      scratch.scale.resize(cells);
+    }
+    scratch.virtual_states.clear();
+    scratch.virtual_batch.clear();
+    const u32 m = g.base_machine;
+    for (u32 c = 0; c < n; ++c) {
+      const u32 i = scratch.captures[c];
+      const anim::PoseView shown = poses_.pose(scratch.slots[i]);
+      const anim::PoseView prev = scratch_pose(c, 0, joints);
+      std::copy(shown.translation.begin(), shown.translation.end(), prev.translation.begin());
+      std::copy(shown.rotation.begin(), shown.rotation.end(), prev.rotation.begin());
+      std::copy(shown.scale.begin(), shown.scale.end(), prev.scale.begin());
+      // The source: the machine in the state it leaves, alone. The target one tick back: in the
+      // state it enters, at its clock, alone.
+      AnimationGraphState source = *scratch.batch[i].state;
+      source.next[m] = 0;
+      source.duration[m] = 0.0f;
+      source.elapsed[m] = 0.0f;
+      AnimationGraphState target = *scratch.batch[i].state;
+      target.state[m] = target.next[m];
+      target.time[m] = target.next_time[m];
+      target.next[m] = 0;
+      target.duration[m] = 0.0f;
+      target.elapsed[m] = 0.0f;
+      scratch.virtual_states.push_back(source);
+      scratch.virtual_states.push_back(target);
+    }
+    // Built after every state is in place, so the pointers do not move.
+    for (u32 c = 0; c < n; ++c) {
+      const GraphInstance& gi = scratch.batch[scratch.captures[c]];
+      GraphInstance& source = scratch.virtual_batch.emplace_back(gi);
+      source.state = &scratch.virtual_states[2u * c];
+      source.out = scratch_pose(c, 1, joints);
+      GraphInstance& target = scratch.virtual_batch.emplace_back(gi);
+      target.state = &scratch.virtual_states[2u * c + 1u];
+      target.lead = 0.0f;  // the tick's start: the pose shown one tick back
+      target.out = scratch_pose(c, 2, joints);
+    }
+  };
+  const auto inertialize = [&](const CompiledGraph& g, u32 i) {
+    Inertial& in = inertial_[scratch.slots[i]];
+    const GraphInstance& gi = scratch.batch[i];
+    const u8 mode = scratch.inertial[i];
+    if (mode == k_inertial_release) {
+      const std::lock_guard<std::mutex> lock(inertial_lock_);
+      arenas_[in.skeleton]->release(in.slot);
+      in = Inertial{};
+      return;
+    }
+    if (mode == k_inertial_apply) {
+      in.t += gi.lead;
+      inertial_apply(arenas_[in.skeleton]->slot(in.slot), in.t, in.duration, gi.out);
+      return;
+    }
+    // A capture. The source as it shows this tick: an inertialization it interrupts goes on in it
+    // (Holden's `off_x = (src_x + off_x) - dst_x`), and the pose shown one tick back has it too.
+    u32 c = 0;
+    while (scratch.captures[c] != i)
+      ++c;
+    const u32 joints = gi.out.joint_count();
+    const anim::PoseView source = scratch_pose(c, 1, joints);
+    if (in.slot != InertialArena::k_none) {
+      inertial_apply(arenas_[in.skeleton]->slot(in.slot), in.t + gi.lead, in.duration, source);
+    } else {
+      const u32 skeleton = poses_.skeleton_of(scratch.slots[i]);
+      if (skeleton >= arenas_.size() || !arenas_[skeleton]) return;
+      const std::lock_guard<std::mutex> lock(inertial_lock_);
+      in.slot = arenas_[skeleton]->acquire();
+      in.skeleton = skeleton;
+      if (in.slot == InertialArena::k_none) {  // past the arena's limit: the target at once
+        in = Inertial{};
+        return;
+      }
+    }
+    const std::span<InertialJoint> offsets = arenas_[in.skeleton]->slot(in.slot);
+    inertial_capture(source, scratch_pose(c, 0, joints), gi.out, scratch_pose(c, 2, joints),
+                     gi.lead, offsets);
+    in.t = 0.0f;
+    in.duration = -gi.state->duration[g.base_machine];
+    inertial_apply(offsets, 0.0f, in.duration, gi.out);
+  };
+
   // A batch is one graph's instances of one skeleton; a change of either flushes it. The
   // component pointers it holds stay valid for the whole run: nothing moves a table mid-system.
   const auto flush = [&] {
     if (!scratch.batch.empty() && graph != nullptr) {
+      const anim::Skeleton& skeleton = clips.skeleton_data(skeleton_index);
+      // Stage 4: what the transitions starting this tick need besides the program's output.
+      scratch.captures.clear();
+      for (u32 i = 0; i < scratch.batch.size(); ++i) {
+        if (scratch.inertial[i] == k_inertial_capture) scratch.captures.push_back(i);
+      }
+      if (!scratch.captures.empty()) prepare_captures(*graph, skeleton.joint_count());
       scratch.evaluator.evaluate(
-          *graph, clips, clips.skeleton_data(skeleton_index),
+          *graph, clips, skeleton,
           std::span<const GraphInstance>(scratch.batch.data(), scratch.batch.size()), batch);
+      if (!scratch.captures.empty()) {
+        scratch.evaluator.evaluate(*graph, clips, skeleton,
+                                   std::span<const GraphInstance>(scratch.virtual_batch.data(),
+                                                                  scratch.virtual_batch.size()),
+                                   batch);
+      }
+      for (u32 i = 0; i < scratch.batch.size(); ++i) {
+        if (scratch.inertial[i] != k_inertial_none) inertialize(*graph, i);
+      }
     }
     scratch.batch.clear();
+    scratch.slots.clear();
+    scratch.inertial.clear();
   };
 
   while (it.next()) {
@@ -536,12 +698,52 @@ void AnimationSystem::sample_graphs(flecs::iter& it) {
       gi.lead = step * static_cast<f32>(lod.divisor);
       gi.interpolate = lod.interpolate;
       gi.out = poses_.pose(instance.pose_slot);
+      scratch.slots.push_back(instance.pose_slot);
+      scratch.inertial.push_back(inertial_mode(*g, states[row], lod, instance.pose_slot));
       if (scratch.batch.size() >= batch) flush();
       ++sampled;
     }
   }
   flush();
   if (world_ref.get_stage_id() == 0) stats_.graph_sampled = sampled;
+}
+
+// ---- inertialization's slots (S35 stage 4) ------------------------------------------------------
+
+void AnimationSystem::reserve_inertial(u32 pose_slot) {
+  if (pose_slot == k_no_slot) return;
+  if (inertial_.size() <= pose_slot) inertial_.resize(pose_slot + 1u);
+  const u32 skeleton = poses_.skeleton_of(pose_slot);
+  if (arenas_.size() <= skeleton) arenas_.resize(skeleton + 1u);
+  if (!arenas_[skeleton])
+    arenas_[skeleton] = std::make_unique<InertialArena>(poses_.joint_count(pose_slot));
+}
+
+void AnimationSystem::release_inertial(u32 pose_slot) noexcept {
+  if (pose_slot >= inertial_.size()) return;
+  Inertial& in = inertial_[pose_slot];
+  if (in.slot != InertialArena::k_none) {
+    const std::lock_guard<std::mutex> lock(inertial_lock_);
+    arenas_[in.skeleton]->release(in.slot);
+  }
+  in = Inertial{};
+}
+
+u32 AnimationSystem::inertial_slots_held() const noexcept {
+  u32 n = 0;
+  for (const std::unique_ptr<InertialArena>& arena : arenas_) {
+    if (arena) n += arena->held();
+  }
+  return n;
+}
+
+usize AnimationSystem::inertial_bytes() const noexcept {
+  usize n = inertial_.capacity() * sizeof(Inertial) +
+            arenas_.capacity() * sizeof(std::unique_ptr<InertialArena>);
+  for (const std::unique_ptr<InertialArena>& arena : arenas_) {
+    if (arena) n += sizeof(InertialArena) + arena->bytes();
+  }
+  return n;
 }
 
 // ---- instances ----------------------------------------------------------------------------------
@@ -592,6 +794,7 @@ bool AnimationSystem::attach(flecs::entity entity, const Id128& skeleton, const 
 void AnimationSystem::detach(flecs::entity entity) {
   if (SkeletonInstance* instance = entity.try_get_mut<SkeletonInstance>()) {
     if (instance->pose_slot != k_no_slot) {
+      release_inertial(instance->pose_slot);
       poses_.release(instance->pose_slot);
       ++stats_.demotions;
     }
@@ -653,15 +856,18 @@ void AnimationSystem::apply_tier(flecs::entity entity, u8 tier) {
     // The playhead stops here and the slot goes back. `frozen_at_us` is what makes the promotion
     // below a jump rather than a rewind.
     lod->frozen_at_us = now.us;
+    release_inertial(instance->pose_slot);
     poses_.release(instance->pose_slot);
     instance->pose_slot = k_no_slot;
     ++stats_.demotions;
   } else if (!was_animated && plan.animated) {
+    bool inertial = false;
     if (!entity.has<AnimationPlayer>()) {
       // A graph-driven entity (S35 stage 2): its machines' clocks over the gap, the same way.
       AnimationGraphInput* input = entity.try_get_mut<AnimationGraphInput>();
       AnimationGraphState* state = entity.try_get_mut<AnimationGraphState>();
       const CompiledGraph* graph = input != nullptr ? graphs_.find(input->graph) : nullptr;
+      inertial = graph != nullptr && graph_inertializes(*graph);
       if (graph != nullptr && state != nullptr) {
         graph_catch_up(*graph, *input, *state,
                        static_cast<f32>(GameTime{now.us - lod->frozen_at_us}.seconds()));
@@ -703,6 +909,7 @@ void AnimationSystem::apply_tier(flecs::entity entity, u8 tier) {
     if (instance->pose_slot != k_no_slot) {
       anim::rest_pose(library_->skeleton_data(instance->skeleton_index),
                       poses_.pose(instance->pose_slot));
+      if (inertial) reserve_inertial(instance->pose_slot);
     }
     ++stats_.promotions;
   }
@@ -887,6 +1094,7 @@ bool AnimationSystem::attach_graph(const Id128& entity, const Id128& graph, cons
   if (instance.pose_slot != k_no_slot) {
     anim::rest_pose(data, poses_.pose(instance.pose_slot));
     ++stats_.promotions;
+    if (graph_inertializes(*compiled)) reserve_inertial(instance.pose_slot);
   }
   AnimationLod lod;
   const LodPlan plan = lod_plan(0);

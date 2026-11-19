@@ -244,6 +244,13 @@ void state_weights(const AnimationGraphState& st, u32 m, f32 lead, bool interpol
   w_cur = 1.0f;
   w_next = 0.0f;
   if (st.next[m] == 0) return;
+  // An inertialization in flight (a negative duration, stage 4): the target alone, from its first
+  // tick; the source is evaluated once, for the offsets, by the host (`inertial_capture`).
+  if (st.duration[m] < 0.0f) {
+    w_cur = 0.0f;
+    w_next = 1.0f;
+    return;
+  }
   f32 t = st.duration[m] > 0.0f ? clamp01((st.elapsed[m] + lead) / st.duration[m]) : 1.0f;
   if (!interpolate) t = t >= 0.5f ? 1.0f : 0.0f;
   w_cur = 1.0f - t;
@@ -1052,8 +1059,6 @@ bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph&
       if (to == k_absent) return refuse(why, desc, where + " goes to a state not of this machine");
       if (r.exit_phase.has_value())
         return refuse(why, desc, where + ": exit_phase is in no stage of the design yet");
-      if (r.blend == GraphBlend::Inertialize)
-        return refuse(why, desc, where + ": Inertialize is stage 4's");
       if (r.offset != GraphOffset::Zero) {
         return refuse(why, desc,
                       where +
@@ -1117,6 +1122,21 @@ bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph&
     return refuse(why, desc, "more transitions than the limit of 65,535");
   LayerPlan plan;
   if (!plan_layers(desc, machines, library, skeleton, out, plan, why)) return false;
+  // Stage 4 inertializes the base machine's pose (the host's `inertial_capture` over the program's
+  // output); a layer machine's transitions blend inside the program, which has no offsets.
+  if (plan.layered) {
+    const ControlMachine& layer = out.machines[plan.layer];
+    const u32 first = layer.any_first;
+    u32 last = first + layer.any_count;
+    for (u32 s = 0; s < layer.state_count; ++s) {
+      const ControlState& cs = out.states[layer.first_state + s];
+      last = std::max(last, u32{cs.first_transition} + cs.transition_count);
+    }
+    for (u32 t = first; t < last; ++t) {
+      if (out.transitions[t].blend == static_cast<u8>(GraphBlend::Inertialize))
+        return refuse(why, desc, "an Inertialize transition on a layer machine is in no stage yet");
+    }
+  }
   compile_program(out, plan);
   out.revision = graph_revision(out);
   return true;
@@ -1182,7 +1202,7 @@ u32 graph_control(const CompiledGraph& graph, AnimationGraphInput& input,
       if (state.next[m] != 0) {
         state.next_time[m] += dt;
         state.elapsed[m] += dt;
-        if (state.elapsed[m] >= state.duration[m]) {
+        if (state.elapsed[m] >= std::fabs(state.duration[m])) {
           state.state[m] = state.next[m];
           state.time[m] = state.next_time[m];
           state.next[m] = 0;
@@ -1210,8 +1230,11 @@ u32 graph_control(const CompiledGraph& graph, AnimationGraphInput& input,
           state.next[m] = 0;
           state.duration[m] = 0.0f;
         } else {
+          // An inertialization is held like a cross-fade with its duration negated: the evaluator
+          // then weighs the target alone (`state_weights`) and the host adds the offsets.
           state.next[m] = static_cast<u16>(tr.to + 1);
-          state.duration[m] = tr.duration_s;
+          state.duration[m] =
+              tr.blend == static_cast<u8>(GraphBlend::Inertialize) ? -tr.duration_s : tr.duration_s;
         }
         state.elapsed[m] = 0.0f;
         state.next_time[m] = 0.0f;
@@ -1245,7 +1268,7 @@ void graph_catch_up(const CompiledGraph& graph, const AnimationGraphInput& input
     if (state.next[m] != 0) {
       state.next_time[m] += gap;
       state.elapsed[m] += gap;
-      if (state.elapsed[m] >= state.duration[m]) {
+      if (state.elapsed[m] >= std::fabs(state.duration[m])) {
         state.state[m] = state.next[m];
         state.time[m] = state.next_time[m];
         state.next[m] = 0;

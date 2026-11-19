@@ -215,7 +215,8 @@ struct AnimationGraphState @version(2) @additive(2) @kind(component) {
   state: u16[2]
   /// Per machine: the destination of the transition in flight, as an index plus one; 0: none.
   next: u16[2]
-  /// Per machine: seconds into the transition in flight, and how long it lasts.
+  /// Per machine: seconds into the transition in flight, and how long it lasts; a negative
+  /// duration is an inertialization (stage 4), whose program weighs the destination alone.
   elapsed: f32[2]
   duration: f32[2]
   /// Per machine: seconds in the current state, and in the destination while a transition is in

@@ -49,10 +49,13 @@
 #include <domain/sim/scheduler.h>
 #include <domain/sim/tiers.h>
 #include <systems/animation/graph.h>
+#include <systems/animation/inertialize.h>
 #include <systems/animation/library.h>
 #include <systems/animation/pose_pool.h>
 
 #include <flecs.h>
+#include <memory>
+#include <mutex>
 #include <schemas/animation.h>
 #include <span>
 #include <string>
@@ -274,6 +277,10 @@ class AnimationSystem {
   bool set_graph_inputs(const Id128& entity, std::span<const f32> values, u32 triggers);
   // The entity's graph state as it stands (a copy). False for an entity with no graph.
   bool graph_state(const Id128& entity, AnimationGraphState& out) const;
+  // Stage 4: the inertialized transitions in flight (slots held across every skeleton's arena),
+  // and the bytes the arenas hold. Read between ticks.
+  u32 inertial_slots_held() const noexcept;
+  usize inertial_bytes() const noexcept;
 
   // --- LOD -------------------------------------------------------------------------------------
 
@@ -334,11 +341,28 @@ class AnimationSystem {
   void control_graphs(flecs::iter& it);
   void sample_graphs(flecs::iter& it);
   void apply_tier(flecs::entity entity, u8 tier);
+  // Stage 4: sizes the per-pose-slot table and the per-skeleton arenas for a graph-driven instance
+  // (outside the parallel phase), and gives back a released pose slot's inertial slot.
+  void reserve_inertial(u32 pose_slot);
+  void release_inertial(u32 pose_slot) noexcept;
 
   Library* library_ = nullptr;
   flecs::world* world_ = nullptr;
   PosePool poses_;
   GraphLibrary graphs_;  // empty, nothing allocated, for a world with no graph
+  // Stage 4: an inertialized transition in flight, per pose slot (its offsets' slot in its
+  // skeleton's arena, the seconds since it was captured, its duration). Written only by the worker
+  // that samples that instance; the arenas' acquire and release go through `inertial_lock_`.
+  // Both tables are empty for a world whose graphs inertialize nothing.
+  struct Inertial {
+    u32 slot = InertialArena::k_none;
+    u32 skeleton = 0;
+    f32 t = 0.0f;
+    f32 duration = 0.0f;
+  };
+  Vector<Inertial> inertial_;
+  Vector<std::unique_ptr<InertialArena>> arenas_;  // by skeleton index, sized outside a tick
+  std::mutex inertial_lock_;
   AnimationStats stats_;
   sim::SystemDesc descs_[k_system_count];
 };

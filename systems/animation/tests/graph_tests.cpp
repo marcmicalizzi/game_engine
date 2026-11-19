@@ -419,7 +419,11 @@ TEST_CASE("animation graph: the compile refuses what stage 1 does not build, by 
   {  // later stages' (stage 2 accepts the Blend1D: its own cases are below)
     GraphDesc d = two_state_graph();
     add_transition(d, 99, d.states[0].id, d.states[1].id, 0).record.blend = GraphBlend::Inertialize;
-    refused(d, "Inertialize is stage 4's");
+    {  // stage 4 takes it (b70): an Inertialize transition compiles on a graph's base machine
+      CompiledGraph accepted;
+      std::string accepted_why;
+      CHECK_MESSAGE(compile_graph(d, nullptr, accepted, accepted_why), accepted_why);
+    }
     d.transitions[0].record.blend = GraphBlend::CrossFade;
     d.transitions[0].record.exit_phase = 0.5f;
     refused(d, "exit_phase is in no stage of the design yet");
