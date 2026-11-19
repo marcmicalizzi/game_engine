@@ -949,7 +949,7 @@ What holds it on a GPU: `tests/flora_scene_tests.cpp`'s "a tree on a tread's edg
 
 ## What the load reads
 
-**The scene file is read with no tree of it** (roadmap D40). `read_scene_text` (`scene_text.h`, the first stage of `read_scene_file`) reads the text straight into `engine.scene.Scene` through `schema::read_json_text` ([schema](schema.md#json-text-with-no-tree)), with the tree path's verdicts word for word; only `water_channels` is still read as a tree, because a block written by versions 3 to 5 is told by its `fit` and migrated before it is mapped, and the water's cook drops the field unread. `read_scene_props` reads the same way. It is one startup stage, `schema read`, where it was `json parse` and then `schema read`. `bench/scene_read_bench.cpp` (`renderer.scene.read_text`) times it with no device on 470,641 instances of the forest staging's shape, or on the file `ENGINE_BENCH_SCENE` names.
+**The scene file is read with no tree of it** (D40): `read_scene_text` (`scene_text.h`) reads the text straight into `engine.scene.Scene` ([schema](schema.md#json-text-with-no-tree)), the tree path's verdicts word for word, and only `water_channels` as a tree, for its migration; `read_scene_props` the same. One startup stage, `schema read`; `renderer.scene.read_text` (`bench/scene_read_bench.cpp`) times it with no device.
 
 The mask upload (W76, 2026-10-26) counts `GroundMasks::ops->present` from the provider's
 manifest before its resident-budget check, then reads each present payload once into its final
