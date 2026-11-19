@@ -562,3 +562,96 @@ TEST_CASE(
   CHECK(std::memcmp(animation.joint_matrices().data() + fa, animation.joint_matrices().data() + fb,
                     count * sizeof(anim::JointMatrix)) == 0);
 }
+
+// Review of batch 69, finding 2 (b70): a graph replaced in place under its id left its instances'
+// indices pointing into the old compile, and a smaller one was read out of range — the control
+// pass's `g.states[...]` and the evaluator's `pose_states[...]` (each an `ENGINE_ASSERT` of
+// `Vector` in a debug build, so the old fault aborts this case there), and the `code_` write past
+// the program those drove (a raw pointer: only AddressSanitizer would see that one in a release
+// build). Now every instance of the replaced graph starts again at the entries before an index is
+// read: the pose evaluated before the next control tick is the entry's, and after it the state is.
+TEST_CASE("animation graph pose: a graph replaced by a smaller one restarts its instances") {
+  Rig rig;
+  GraphLibrary graphs;
+  const GraphDesc big =
+      blend_graph({{"rig/idle", 0.0f}, {"rig/walk", 0.5f}, {"rig/idle", 0.75f}, {"rig/walk", 1.0f}},
+                  true, true);
+  const GraphDesc small = blend_graph({{"rig/idle", 0.0f}}, false, true, false);
+  REQUIRE(big.id == small.id);
+  const u32 at = graphs.add(compiled(big, &rig.library));
+  const CompiledGraph* g = graphs.find(big.id);
+  REQUIRE(g != nullptr);
+  const u32 old_revision = g->revision;
+  CHECK(old_revision != 0);
+  REQUIRE(g->machines[0].state_count == 2);
+
+  // Eight instances, into `move` (index 1) by a cross-fade still in flight.
+  constexpr u32 k_n = 8;
+  std::vector<AnimationGraphInput> inputs(k_n);
+  std::vector<AnimationGraphState> states(k_n);
+  std::vector<GraphStep> steps(k_n);
+  for (u32 i = 0; i < k_n; ++i)
+    init_graph_instance(*g, inputs[i], states[i]);
+  graph_control(*g, inputs, states, k_dt, steps);
+  for (u32 i = 0; i < k_n; ++i) {
+    const f32 values[2] = {1.0f, 0.125f * static_cast<f32>(i)};
+    set_graph_inputs(*g, inputs[i], values, 0);
+  }
+  for (u32 t = 0; t < 3; ++t)
+    graph_control(*g, inputs, states, k_dt, steps);
+  for (const AnimationGraphState& st : states) {
+    REQUIRE(st.next[0] == 2);  // heading to `move`, past the one state the replacement has
+    REQUIRE(st.revision == old_revision);
+  }
+
+  // Replaced in place: the same index, the same object, another revision.
+  CHECK(graphs.add(compiled(small, &rig.library)) == at);
+  CHECK(graphs.find(small.id) == g);
+  REQUIRE(g->machines[0].state_count == 1);
+  REQUIRE(g->pose_clips.size() == 1);
+  CHECK(g->revision != old_revision);
+
+  // Evaluated before any control tick: every pose is the entry's, as a fresh instance's is.
+  const u32 joints = rig.skel().joint_count();
+  std::vector<anim::Pose> poses(k_n);
+  std::vector<GraphInstance> instances(k_n);
+  for (u32 i = 0; i < k_n; ++i) {
+    poses[i].resize(joints);
+    instances[i].input = &inputs[i];
+    instances[i].state = &states[i];
+    instances[i].lead = k_dt;
+    instances[i].out = anim::PoseView(poses[i]);
+  }
+  PoseEvaluator evaluator;
+  evaluator.evaluate(*g, rig.library, rig.skel(), instances, 4);
+  AnimationGraphInput fresh_in;
+  AnimationGraphState fresh;
+  init_graph_instance(*g, fresh_in, fresh);
+  anim::Pose entry;
+  entry.resize(joints);
+  GraphInstance one;
+  one.input = &fresh_in;
+  one.state = &fresh;
+  one.lead = k_dt;
+  one.out = anim::PoseView(entry);
+  evaluator.evaluate(*g, rig.library, rig.skel(), std::span<const GraphInstance>(&one, 1), 4);
+  for (u32 i = 0; i < k_n; ++i)
+    CHECK(same_pose(poses[i], entry));
+
+  // The next control tick starts every machine at its entry, with a cut, under the new revision.
+  graph_control(*g, inputs, states, k_dt, steps);
+  for (u32 i = 0; i < k_n; ++i) {
+    CHECK(states[i].revision == g->revision);
+    CHECK(states[i].state[0] == g->machines[0].entry + 1u);
+    CHECK(states[i].next[0] == 0);
+    CHECK(steps[i].first == 1);
+    CHECK(steps[i].blend == static_cast<u8>(GraphBlend::Cut));
+  }
+  // A catch-up for a state of another revision does nothing (the next control tick resets it).
+  AnimationGraphState stale = states[0];
+  stale.revision = old_revision;
+  stale.state[0] = 2;
+  const AnimationGraphState before = stale;
+  graph_catch_up(*g, inputs[0], stale, 1.0f);
+  CHECK(std::memcmp(&stale, &before, sizeof(stale)) == 0);
+}

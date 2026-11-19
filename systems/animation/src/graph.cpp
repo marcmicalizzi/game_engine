@@ -9,6 +9,7 @@
 #include <bit>
 #include <cmath>
 #include <initializer_list>
+#include <type_traits>
 #include <utility>
 
 namespace engine::animation {
@@ -670,6 +671,31 @@ usize CompiledGraph::bytes() const noexcept {
   return n;
 }
 
+// The compiled tables' revision: every table an instance's indices point into, and the program
+// they drive, hashed as bytes (each record's padding is a named field set to zero, so the bytes
+// are the values). Never 0, which a state written before `AnimationGraphState` version 2 holds.
+static u32 graph_revision(const CompiledGraph& g) noexcept {
+  u64 h = hash_bytes(&g.id, sizeof(g.id));
+  const auto add = [&h](const auto& table) {
+    using T = std::remove_cvref_t<decltype(table[0])>;
+    h = hash_bytes(table.data(), usize{table.size()} * sizeof(T), h);
+    h = hash_combine(h, table.size());
+  };
+  add(g.machines);
+  add(g.states);
+  add(g.transitions);
+  add(g.conditions);
+  add(g.pose_states);
+  add(g.pose_clips);
+  add(g.program);
+  add(g.layers);
+  add(g.layer_joints);
+  add(g.layer_weights);
+  h = hash_combine(h, g.registers);
+  const u32 r = static_cast<u32>(h ^ (h >> 32));
+  return r != 0 ? r : 1u;
+}
+
 bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph& out,
                    std::string& why, const anim::Skeleton* skeleton) {
   out = CompiledGraph{};
@@ -1011,6 +1037,7 @@ bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph&
   LayerPlan plan;
   if (!plan_layers(desc, machines, library, skeleton, out, plan, why)) return false;
   compile_program(out, plan);
+  out.revision = graph_revision(out);
   return true;
 }
 
@@ -1032,13 +1059,18 @@ void init_graph_instance(const CompiledGraph& graph, AnimationGraphInput& input,
     input.values[i] = graph.params[i].default_value;
   state = AnimationGraphState{};
   state.graph = graph.id;
+  state.revision = graph.revision;
 }
 
 u32 graph_control(const CompiledGraph& graph, AnimationGraphInput& input,
                   AnimationGraphState& state, f32 dt, GraphStep* steps) noexcept {
-  if (state.graph != graph.id) {
+  // Before any index of `state` is read: a state written for another graph, or for this graph
+  // before it was replaced in place, starts again at the entries (its indices may name states the
+  // new compile does not have).
+  if (state.graph != graph.id || state.revision != graph.revision) {
     state = AnimationGraphState{};
     state.graph = graph.id;
+    state.revision = graph.revision;
   }
   u32 entered = 0;
   for (u32 m = 0; m < graph.machines.size(); ++m) {
@@ -1125,7 +1157,7 @@ u32 graph_control(const CompiledGraph& graph, AnimationGraphInput& input,
 
 void graph_catch_up(const CompiledGraph& graph, const AnimationGraphInput& input,
                     AnimationGraphState& state, f32 gap) noexcept {
-  if (state.graph != graph.id || !(gap > 0.0f)) return;
+  if (state.graph != graph.id || state.revision != graph.revision || !(gap > 0.0f)) return;
   for (u32 m = 0; m < graph.machines.size(); ++m) {
     if (state.state[m] == 0) continue;
     state.time[m] += gap;
@@ -1449,7 +1481,9 @@ void PoseEvaluator::run_batch(const CompiledGraph& graph, const Library& library
     const ControlMachine& machine = graph.machines[m];
     const GraphInstance& gi = instances[i];
     const AnimationGraphState& st = *gi.state;
-    const bool live = st.graph == graph.id && st.state[m] != 0;
+    // A state of another graph, or of this one before a replacement, is read as not yet entered:
+    // its indices are never used (graph_control resets it on its next tick).
+    const bool live = st.graph == graph.id && st.revision == graph.revision && st.state[m] != 0;
     u32 at[2] = {live ? u32{st.state[m]} : u32{machine.entry} + 1u, live ? u32{st.next[m]} : 0u};
     f32 clock[2] = {(live ? st.time[m] : 0.0f) + gi.lead,
                     (live ? st.next_time[m] : 0.0f) + gi.lead};

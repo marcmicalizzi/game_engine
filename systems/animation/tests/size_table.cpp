@@ -34,8 +34,9 @@ ENGINE_EXPECT_SIZE(4, 1, animation::LodPlan);
 // walks: 16 (graph) + 8 parameters' f32 + the trigger bits, padded to the id's alignment ...
 ENGINE_EXPECT_SIZE(56, 8, animation::AnimationGraphInput);
 // ... and 16 (graph) + two machines' state, next (u16 each), elapsed, duration, time, next_time
-// (f32 each) + two sync groups' phase. 120 bytes an instance between the two.
-ENGINE_EXPECT_SIZE(64, 8, animation::AnimationGraphState);
+// (f32 each) + two sync groups' phase + (version 2, b70) the compiled graph's u32 revision, padded
+// to the id's alignment: 72. 128 bytes an instance between the two.
+ENGINE_EXPECT_SIZE(72, 8, animation::AnimationGraphState);
 
 // The compiled control table, read per instance per tick: a condition, a transition, a state's run
 // of transitions, a machine. (The design page's names for the first two are its record types';

@@ -231,7 +231,8 @@ TEST_CASE(
   // What a compiled graph and an instance hold (docs/subsystems/animation.md, "Graphs").
   MESSAGE("compiled walker graph bytes: " << a.bytes());
   CHECK(a.bytes() < 2048);
-  CHECK(sizeof(AnimationGraphInput) + sizeof(AnimationGraphState) == 120);
+  // 128 since AnimationGraphState version 2 (b70) carries the compiled graph's revision.
+  CHECK(sizeof(AnimationGraphInput) + sizeof(AnimationGraphState) == 128);
   GraphLibrary empty;
   CHECK(empty.bytes() == 0);
 }

@@ -300,6 +300,11 @@ class CompiledGraph {
   Vector<PoseClip> pose_clips;
   Vector<GraphOp> program;
   u32 registers = 0;  // what the program writes: 0..registers-1
+  // A hash of the compiled tables (never 0), written into every instance's `AnimationGraphState`:
+  // a graph replaced under the same id (`GraphLibrary::add`) has another, so an instance of the
+  // old one starts again at the entries before any of its state indices is read. A hash rather
+  // than a counter, so a save loaded by a process that compiles the same graph keeps its states.
+  u32 revision = 0;
   std::string program_why;
   // Per machine, in machine order: the program's normalize of the machine's output register (the
   // base's is register 0, a layer machine's `layer_register`); unset for a graph with no program.
@@ -387,7 +392,8 @@ void init_graph_instance(const CompiledGraph& graph, AnimationGraphInput& input,
 
 // One instance's control tick of `dt` seconds. `steps` holds one step a machine
 // (`graph.machines.size()` of them); returns a bit a machine that entered a state this tick. A
-// state whose `graph` is another graph's (a reload, a swap) starts again at the entries.
+// state whose `graph` is another graph's (a swap), or whose `revision` is not this compile's (a
+// graph replaced in place: a reload), starts again at the entries before any index is read.
 u32 graph_control(const CompiledGraph& graph, AnimationGraphInput& input,
                   AnimationGraphState& state, f32 dt, GraphStep* steps) noexcept;
 
@@ -458,7 +464,8 @@ class PoseEvaluator {
 class GraphLibrary {
  public:
   // Adds `graph`, replacing one with the same id in place (its index, and every pointer
-  // `find` returned for it, stay valid). Returns its index.
+  // `find` returned for it, stay valid; its instances carry the old `revision` and start again at
+  // the entries on their next control tick). Returns its index.
   u32 add(CompiledGraph&& graph);
   const CompiledGraph* find(const Id128& id) const noexcept;
   u32 size() const noexcept { return graphs_.size(); }
