@@ -1133,8 +1133,22 @@ TEST_CASE("flythrough: a terrain comes back from its cache entry as the terrain 
   CHECK(hit.data.materials[0].base_color_image == 0);
   CHECK(hit.data.materials[0].metallic_roughness_image == 1);
   REQUIRE(hit.data.images.size() == 2);
-  CHECK(hit.data.images[0].bytes == first.sources[terrain].data.images[0].bytes);
-  CHECK(hit.data.images[1].bytes == first.sources[terrain].data.images[1].bytes);
+  // Both loads release the embedded bytes once their textures are built (W51-3), so the maps are
+  // compared as an upload reads them, back through the container (`source_image_bytes`), and must
+  // not be empty: two released vectors compared equal and proved nothing.
+  for (u32 image = 0; image < 2; ++image) {
+    CAPTURE(image);
+    Vector<u8> miss_storage;
+    Vector<u8> hit_storage;
+    std::string why;
+    const std::span<const u8> miss_bytes =
+        source_image_bytes(first.sources[terrain], image, miss_storage, &why);
+    const std::span<const u8> hit_bytes = source_image_bytes(hit, image, hit_storage, &why);
+    CAPTURE(why);
+    REQUIRE_FALSE(miss_bytes.empty());
+    REQUIRE(miss_bytes.size() == hit_bytes.size());
+    CHECK(std::memcmp(miss_bytes.data(), hit_bytes.data(), miss_bytes.size()) == 0);
+  }
   CHECK(hit.textures.size() == 2);
   // The ground under the hemisphere ambient is what the terrain draws by its share — this one's
   // sand and the ridge's rock across it (R185) — from a miss and from a hit, and the frame's
