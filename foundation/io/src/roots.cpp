@@ -619,6 +619,22 @@ bool Roots::portable(std::string_view native, std::string& out) const {
   return true;
 }
 
+bool Roots::may_make_document(std::string_view native) const {
+  // `path_is_under(x, native)`: `native` is `x` or holds it.
+  for (const Root& r : roots_) {
+    if (path_is_under(r.canonical, native)) return false;
+  }
+  for (const std::string& s : served_) {
+    if (path_is_under(s, native)) return false;
+  }
+  for (const std::string& d : documents_) {
+    if (path_is_under(d, native)) return false;
+    const std::string out_dir = d + (d.back() == '/' ? "out" : "/out");
+    if (path_is_under(native, out_dir) && path_is_under(out_dir, native)) return false;
+  }
+  return true;
+}
+
 bool Roots::admit(std::string_view path, std::string_view base, Access access, Admitted& out,
                   Refusal& why, std::string* resolved) const {
   out = Admitted{};

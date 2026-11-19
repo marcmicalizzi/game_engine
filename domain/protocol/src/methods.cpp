@@ -87,10 +87,18 @@ bool session_open(Context& ctx, const SessionOpenParams& params, SessionInfo& ou
                          error)) {
     return false;
   }
-  if (params.create && !doc::DocumentStore::exists(ctx.sessions->vfs(), dir.native) &&
-      !admit_client_path(ctx, "path", params.path, client_base(ctx, {}), io::Access::make_directory,
-                         dir, error)) {
-    return false;
+  if (params.create && !doc::DocumentStore::exists(ctx.sessions->vfs(), dir.native)) {
+    if (!admit_client_path(ctx, "path", params.path, client_base(ctx, {}),
+                           io::Access::make_directory, dir, error)) {
+      return false;
+    }
+    // Not where the host keeps something else: a document made at the host's out/, a root's own
+    // directory or around an open document would be protected, and close it to every client write
+    // (roots.h, `may_make_document`). Refused as any place a client may not write is.
+    if (!ctx.roots->may_make_document(dir.native)) {
+      error = path_not_found("path", params.path, io::Access::make_directory);
+      return false;
+    }
   }
   SessionOpenParams opened = params;
   opened.path = dir.native;

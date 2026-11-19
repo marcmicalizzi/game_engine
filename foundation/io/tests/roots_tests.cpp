@@ -457,6 +457,42 @@ TEST_CASE("roots: an open document's own files are never written, out/ apart") {
   f.allow(doc + "/layers/base.json", Access::write);
 }
 
+// A client's `create` at the host's out/ or at a root's own directory made a document there, and
+// the document's protection then closed that place to every client write; the roots answer where
+// a document may be made.
+TEST_CASE("roots: a document is not made where the host keeps a root, a served or an open one") {
+  Fixture f;
+  make_dir(f.root + "/refs");
+  REQUIRE(f.roots.add("refs", f.root + "/refs", false) == Status::Ok);
+  const std::string doc = f.root + "/docs/world";
+  make_dir(doc + "/out");
+  REQUIRE(f.roots.protect(doc) == Status::Ok);
+  const auto native = [&](std::string_view path) { return f.allow(path, Access::read).native; };
+  CHECK_FALSE(f.roots.may_make_document(native("work://")));       // a root's own directory
+  CHECK_FALSE(f.roots.may_make_document(native("work://refs")));   // another root's
+  CHECK_FALSE(f.roots.may_make_document(native("work://docs")));   // holds an open document
+  CHECK_FALSE(f.roots.may_make_document(native(doc)));             // an open document
+  CHECK_FALSE(f.roots.may_make_document(native(doc + "/out")));    // its out/
+  CHECK(f.roots.may_make_document(native(doc + "/out/scratch")));  // a place under out/
+  CHECK(f.roots.may_make_document(native("work://docs/other")));
+  CHECK(f.roots.may_make_document(native("work://new/world")));
+  f.roots.release(doc);
+  CHECK(f.roots.may_make_document(native(doc + "/out")));
+  // A served directory, and one that holds it, under a read root beside the writable one.
+  TempDir tmp;
+  const std::string shell = tmp.path() + "/site/shell";
+  make_dir(shell);
+  Roots served;
+  REQUIRE(served.add("site", tmp.path() + "/site", false) == Status::Ok);
+  REQUIRE(served.serve(shell) == Status::Ok);
+  Admitted a;
+  Refusal why = Refusal::none;
+  REQUIRE(served.admit("site://shell", {}, Access::read, a, why));
+  CHECK_FALSE(served.may_make_document(a.native));
+  REQUIRE(served.admit("site://", {}, Access::read, a, why));
+  CHECK_FALSE(served.may_make_document(a.native));
+}
+
 // Every protect pushed an entry, so a document asked for again and again grew the list every
 // write's admission walks, and one release left the rest standing.
 TEST_CASE("roots: a document protected again and again is held once") {

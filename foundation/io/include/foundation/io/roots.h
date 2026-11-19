@@ -163,6 +163,12 @@ class Roots {
              Refusal& why, std::string* resolved = nullptr) const;
   // A path this host made or opened, as `<root>://<relative>`; false when no root holds it.
   bool portable(std::string_view native, std::string& out) const;
+  // Whether a client may make a new document at `native` (canonical, as `admit` answered it for
+  // make_directory): not where the host keeps something else, since an open document is
+  // protected and a document there would close it to every client write. False for a directory
+  // that is, or holds, a root's own directory, a served directory or an open document's
+  // directory, and for an open document's `out/`. It does not ask for an empty directory.
+  bool may_make_document(std::string_view native) const;
 
  private:
   Vector<Root> roots_;

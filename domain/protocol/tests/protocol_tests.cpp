@@ -1151,3 +1151,66 @@ TEST_CASE("roots: a document opened many times is protected once") {
   REQUIRE(h.sessions.count() == 0);
   CHECK(h.roots.protected_documents().empty());
 }
+
+namespace {
+// Whether a client may write `path` under the host's roots now.
+bool client_may_write(Host& h, std::string_view path) {
+  io::Admitted a;
+  RpcError error;
+  return admit_client_path(h.dispatcher.context(), "path", path, {}, io::Access::write, a, error);
+}
+}  // namespace
+
+// `out/` itself may be made, the document store does not ask for an empty directory, and every
+// open document is protected: so `create` at `out://` made the host's out/ a document, and every
+// capture, save and trace any client wrote there after was refused.
+TEST_CASE("roots: session.open does not make the host's out/ a document") {
+  TempDir tmp("protocol_roots_out_doc");
+  Host h;
+  const std::string doc = tmp.file("doc");
+  REQUIRE(io::make_directories(doc) == io::Status::Ok);
+  io::Roots hosted;
+  HostRootsConfig config;
+  config.doc_dir = doc;
+  std::string error;
+  REQUIRE(configure_host_roots(hosted, config, error));
+  REQUIRE(hosted.protect(doc) == io::Status::Ok);  // the host's --doc, open
+  h.dispatcher.context().roots = &hosted;
+  const JsonValue resp =
+      h.call("session.open", obj({{"path", JsonValue("out://")}, {"create", JsonValue(true)}}));
+  const JsonValue* refused = resp.find("error");
+  CHECK(refused != nullptr);
+  if (refused != nullptr) {
+    CHECK(refused->find("code")->as_int() == codes::k_not_found);
+    CHECK(refused->find("message")->as_string() ==
+          "path: no place this host may write at 'out://'");
+  }
+  CHECK_FALSE(io::exists(doc + "/out/manifest.json"));
+  CHECK(client_may_write(h, "out://captures/a.png"));
+  h.dispatcher.context().roots = &h.roots;
+}
+
+// The same at a writable root's own directory: `--root work=<dir>:rw` and `create` at `work://`.
+TEST_CASE("roots: session.open does not make a writable root's own directory a document") {
+  TempDir tmp("protocol_roots_root_doc");
+  Host h;
+  io::Roots narrow;
+  REQUIRE(narrow.add("work", tmp.file("work"), true) == io::Status::Ok);
+  h.dispatcher.context().roots = &narrow;
+  const JsonValue resp =
+      h.call("session.open", obj({{"path", JsonValue("work://")}, {"create", JsonValue(true)}}));
+  const JsonValue* refused = resp.find("error");
+  CHECK(refused != nullptr);
+  if (refused != nullptr) {
+    CHECK(refused->find("code")->as_int() == codes::k_not_found);
+    CHECK(refused->find("message")->as_string() ==
+          "path: no place this host may write at 'work://'");
+  }
+  CHECK_FALSE(io::exists(tmp.file("work") + "/manifest.json"));
+  CHECK(client_may_write(h, "work://a.txt"));
+  // A directory under it is a document's place, as before.
+  const JsonValue made =
+      h.ok("session.open", obj({{"path", JsonValue("work://world")}, {"create", JsonValue(true)}}));
+  h.ok("session.close", obj({{"session", at(made, "session")}}));
+  h.dispatcher.context().roots = &h.roots;
+}
