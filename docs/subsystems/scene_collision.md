@@ -354,12 +354,18 @@ bytes together; the boulder at 1.2, a size of its own, 9,112 more. **Before the 
 only the declared props' proxies at their own size, one a declared prop, which `create` builds
 from `SceneData::props`; every other is built when a prop in reach first wants it (a drop takes
 them at once) and let go with its tile, so what stays is bounded by the distinct sizes among the
-props round the walker, not by the props placed. A door keeps its `DoorBody` (64 bytes, pinned in
-the size table) and two physics ids for as long as it is handed, whether or not its tile is held,
-because its state is the world's; its leaf's record in a building's container is 48 bytes
-(`geometry::ClusterFileDoor`), loaded with the mesh; and while its tile is held, one kinematic box
-body of the physics library, the same as a box prop's. A scene with no props and no doors keeps
-none of it.
+props round the walker, not by the props placed. A door keeps its `DoorBody` (88 bytes, pinned in
+the size table) and two physics ids (16 bytes) for as long as it is held — a handed one until the
+next `set_doors`, a declared one from the first time a held tile holds its piece for the rest of
+the session — whether or not its tile is held, because its state is the world's; its leaf's
+record in a building's container is 48 bytes (`geometry::ClusterFileDoor`), loaded with the mesh
+and kept again in each proxy of that mesh (one a mesh and rounded scale, not one a placement);
+and while its tile is held, one kinematic box body of the physics library, the same as a box
+prop's. **Nothing of a door exists before the first frame** but the records inside the meshes the
+load reads anyway: a declared door is made at the first step after its tile comes in, so a
+village of 30 leaves keeps 30 × 104 bytes of doors once it has been walked through, and a tile
+with 30 leaves costs its first step the 30 records' walk, 30 bodies and one broadphase rebuild
+([What a door costs](#what-a-door-costs)). A scene with no props and no doors keeps none of it.
 
 `scene_collision: a game's prop stops a walker, by its mesh or its box, while its tile is held`
 (`tests/far_forest_tests.cpp`, beside the far forest's case, whose scene is built the same way; no
@@ -440,32 +446,47 @@ finishes once the walker steps away; and two worlds given the same toggles at th
 the same angle, the tile let go takes the body and keeps the door, and the body is made again when
 the tile comes back.
 
-**Not built of S91**: the leaf meshed on its own with its pivot on the hinge (the mesher draws it
-in the house's mesh, G65), doors handed from a building's description, the walker's interact
-action and a game module's service (an ABI step), the state written back through the document
-(D37), and a closed door as an area navigation opens.
+**Not built of S91**: the walker's interact action and a game module's service (an ABI step), the
+state written back through the document (D37), and a closed door as an area navigation opens.
 
-**What a door from a building's description needs** (2026-11-18). The description already says
-everything a door is: an opening with a leaf (`structure::Opening::leaf`, `leaf_open`, and the jamb
-it hangs on, `hinge_at_to`), which `structures::walk_records` turns into a `WalkLeaf` — the hinge's foot and the leaf's tip
-in the building's frame, its foot and head heights, its thickness and the angle it stands at — so
-`DoorBody`'s hinge, closed heading, half sizes and swing follow from it with no rule of the
-collision's own. What is missing is the way from the description to the scene, in three pieces, and
-none of them belongs in this module: **(1)** the structure mesh generator writes each leaf into the
-built container as a section of its own (append-only, as the perches and the structural table are,
-`geometry::cluster_file.h`), so a tile-handed house and an imported asset that declares doors carry
-them the same way and the collision reads them through `renderer::load_placement_mesh` as it reads
-a mesh's perches; **(2)** the mesher leaves the leaf out of the house's mesh, or marks its
-triangles as no collider (S89's no-collision flag per part), since the proxy today is cut from a
-mesh that holds the leaf standing at `leaf_open`, and a kinematic leaf beside it would leave the
-drawn open leaf a wall whatever the door's state; **(3)** a tile's gather makes one `DoorBody` a
-leaf of each placed piece, keyed by the piece's name (`support_placement`) and the opening's
-index, so a door is the same door whenever its tile comes in. Until then a host hands doors itself
-(`set_doors`), and nothing in a scene does. **Piece (1) is built** (2026-11-18): the structure
-generator writes every leaf into its container as section 53 (`geometry::ClusterFileDoor`,
-[geometry](geometry.md#doors)), shut, with its pivot, the way it swings and the angle it stands at,
-so `DoorBody`'s hinge, heading and swing are the record's and the angle needs no arc tangent; the
-loaded scene does not carry it to this module yet, and pieces (2) and (3) stand as written.
+### What a door costs
+
+A door standing costs nothing a tick but its place in the scan; a swinging one a move (the table
+above). A declared door costs its tile's first step its record's walk and its body.
+
+**A door a building declares** (2026-11-18). The description says everything a door is — an
+opening with a leaf, the jamb it hangs on and the side it opens to — and the way from it to the
+scene is three pieces, none of them a rule of this module's. **(1)** The structure mesh generator
+writes each leaf into its container as section 53 (`geometry::ClusterFileDoor`,
+[geometry](geometry.md#doors)): shut, its pivot, the way it swings, its sizes and the angle the
+description stands it at; the loaded mesh carries it (`renderer::SourceMesh::doors`), a cached
+build and a fresh one alike. **(2)** The leaf is a mesh of its own (the structures' `leaf` scope,
+[structures](structures.md#leaves-and-mullions)), so the house's proxy, cut from the house's mesh,
+no longer holds it standing at the description's angle as a wall whatever the door did; the frame
+is open in the proxy and the door is the only thing in it. **(3)** A proxy keeps its mesh's
+records (`Proxy::doors`, with the scale it was cut at), and **on a ring change `step_doors` takes
+in every held tile's declared doors** (`take_declared_doors`): each record of each piece a door
+(`declared_door`), its hinge the pivot placed by the piece, its turn the piece's turn times the
+shut leaf's heading — made from the record's direction by the half-angle identities, square roots
+alone, never an arc tangent — its swing the side the record opens to (`open_mdeg` ±90°, its
+thickness `face_z` behind its face on the other side), standing at the record's angle and open
+when that is not shut. **Its key is its place** (`declared_door_key`): the piece's name
+(`support_placement` — a scene instance's index, a streamed placement's entry and id, or its tile
+and place among the tile's placements) and the leaf's index, top bit set so it never meets a host's
+key below 2^63; never the order tiles came in. A key already held is not taken again, so **a
+restore wins** (a `set_doors` of the doors a save read back keeps their states, declared or not),
+and **a door outlives its tile**: let go, its body goes and its state stays and goes on turning;
+back, it is made where it stands. The doors found are sorted and merged by key, so the tiles'
+table order and the order they came in reach nothing. Nothing keys on a generator: an imported
+asset whose container declares section 53 gets the same doors, and a mesh that declares none
+costs the ring change one test of an empty list a piece. `scene_collision: a placed piece's
+declared leaf is a door, kept while its tile is away` (0.54 s in `msvc-debug`) stands a wall mesh
+declaring one leaf and hands no door: the door is made, a wall shut and a way through open,
+toggled while its tile is away it closes there and comes back where it was left, still one door,
+and a restore of its key wins; `a declared door turns with its piece and opens toward its swing`
+holds the hinge, the shut and open headings and the thickness's side under a quarter turn, both
+swings. **Not yet**: a drawn leaf (no tile hands the leaf's mesh beside its house; S91's picture
+leg), and `step_doors` called by a host (engine-view's walker, with the interact action).
 
 ## Holes
 

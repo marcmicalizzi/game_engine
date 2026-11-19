@@ -738,15 +738,21 @@ struct DoorRig {
   sim::ObserverSet observers;
   u64 tick = 0;
 
-  DoorRig() {
+  // `build`: the scene's own placed pieces stand for the wall (a building that declares its leaf);
+  // none, and the wall is two static boxes the case made.
+  explicit DoorRig(void (*build)(renderer::SceneData&) = nullptr) {
     physics::WorldOptions o;
     o.max_bodies = 1024;
     o.max_body_pairs = 4096;
     o.max_contact_constraints = 4096;
     REQUIRE(physics.init(o) == physics::Status::Ok);
-    wall(Vec3{0.0f, -0.5f, 0.0f}, Vec3{200.0f, 0.5f, 200.0f});     // the floor
-    wall(Vec3{-2.725f, 1.0f, 20.05f}, Vec3{2.275f, 1.0f, 0.05f});  // west of the gap
-    wall(Vec3{2.725f, 1.0f, 20.05f}, Vec3{2.275f, 1.0f, 0.05f});   // east of it
+    wall(Vec3{0.0f, -0.5f, 0.0f}, Vec3{200.0f, 0.5f, 200.0f});  // the floor
+    if (build != nullptr) {
+      build(scene);
+    } else {
+      wall(Vec3{-2.725f, 1.0f, 20.05f}, Vec3{2.275f, 1.0f, 0.05f});  // west of the gap
+      wall(Vec3{2.725f, 1.0f, 20.05f}, Vec3{2.275f, 1.0f, 0.05f});   // east of it
+    }
     scene.terrain_mesh = ~0u;
     std::string error;
     REQUIRE_MESSAGE(collision.create(physics, scene, nullptr, Config{}, &error), error);
@@ -801,7 +807,123 @@ DoorBody doorway() {
   return d;
 }
 
+// The doorway's wall as a building's mesh, placed once at the origin, declaring its leaf as the
+// structures capability writes section 53: hung on the wall's south face at x = -0.45, shut along
+// +x across the gap, swinging toward +z, its thickness behind its face to the south (-swing). The
+// leaf itself is in no mesh of the scene: a building's leaf is a mesh of its own.
+geometry::ClusterFileDoor doorway_leaf() {
+  geometry::ClusterFileDoor r;
+  r.pivot = Vec3{-0.45f, 0.0f, 20.0f};
+  r.shut_x = 1.0f, r.shut_z = 0.0f;
+  r.swing_x = 0.0f, r.swing_z = 1.0f;
+  r.width_m = 0.9f;
+  r.height_m = 2.0f;
+  r.thickness_m = 0.05f;
+  r.open_deg = 0;
+  r.flags = geometry::k_door_flag_door;
+  return r;
+}
+void doorway_house(renderer::SceneData& scene) {
+  MeshSource wall;
+  add_box(wall, Vec3{2.275f, 1.0f, 0.05f}, -2.725f, 20.05f);
+  add_box(wall, Vec3{2.275f, 1.0f, 0.05f}, 2.725f, 20.05f);
+  const MeshSource meshes[] = {wall};
+  build_scene(meshes, scene);
+  scene.sources.resize(scene.parts.size());
+  scene.sources[0].doors.push_back(doorway_leaf());
+}
+
 }  // namespace
+
+// **A placed piece's declared leaf is a door** (S91; scene_collision.md, "Doors"): the scene's
+// building declares one leaf (section 53) and no door is handed; the collision makes it, keyed by
+// the piece's place and the leaf's index, a wall shut, and it goes with the tile and comes back as
+// it was left, and a restore of the same key wins over the declaration.
+TEST_CASE(
+    "scene_collision: a placed piece's declared leaf is a door, kept while its tile is away") {
+  DoorRig rig(&doorway_house);
+  (void)rig.collision.step_doors(nullptr);
+  CHECK(rig.collision.door_stats().doors == 1);
+  CHECK(rig.collision.door_stats().declared == 1);
+  CHECK(rig.collision.door_stats().bodies == 1);
+  // The scene's instance 0, its first leaf: the key is its place's, not the load's or the tile's.
+  const u64 key = declared_door_key(support_placement(0, k_no_index, 0, 0, 0, 0), 0);
+  CHECK((key >> 63) == 1);
+  DoorBody now;
+  REQUIRE(rig.collision.door(key, now));
+  CHECK(std::fabs(relative(now.hinge, place(Vec3{-0.45f, 0.0f, 20.0f})).x) < 1e-5);
+  CHECK(now.open_mdeg == -90000);  // toward +z: the leaf's +x turned toward +z is a negative angle
+  CHECK(now.angle_mdeg == 0);
+  CHECK(now.face_z == doctest::Approx(-0.025f));
+  // Shut, it stops the walker at its south face (z 19.95) less the radius, as a handed one does.
+  const f32 radius = physics::CharacterConfig{}.radius;
+  const f32 stopped = rig.walk(3.0f, Vec3{0.0f, 0.0f, 1.0f});
+  CHECK(stopped == doctest::Approx(19.95f - radius).epsilon(0.002));
+  // Opened, it lets the walker through.
+  rig.walker.teleport(place(Vec3{0.0f, 0.02f, 17.0f}));
+  REQUIRE(rig.collision.toggle_door(key));
+  (void)rig.walk(1.0f, Vec3{});
+  REQUIRE(rig.collision.door(key, now));
+  CHECK(now.angle_mdeg == -90000);
+  CHECK(rig.walk(3.0f, Vec3{0.0f, 0.0f, 1.0f}) > 21.0f);
+  // Its tile goes: the body goes, the door stays open; toggled shut while away it closes there,
+  // and its tile back, it is made again where it stands, still one door.
+  rig.move_ring(place(Vec3{1000.0f, 0.0f, 1000.0f}));
+  (void)rig.collision.step_doors(nullptr);
+  CHECK(rig.collision.door_stats().bodies == 0);
+  CHECK(rig.collision.door_stats().doors == 1);
+  REQUIRE(rig.collision.toggle_door(key));
+  for (u32 k = 0; k < 120; ++k)
+    (void)rig.collision.step_doors(nullptr);
+  rig.move_ring(place(Vec3{0.0f, 0.0f, 16.0f}));
+  (void)rig.collision.step_doors(nullptr);
+  CHECK(rig.collision.door_stats().bodies == 1);
+  CHECK(rig.collision.door_stats().doors == 1);
+  REQUIRE(rig.collision.door(key, now));
+  CHECK(now.angle_mdeg == -90000 + 121 * 375);
+  // A restore hands it back open: the declaration does not take it over again.
+  now.angle_mdeg = -90000;
+  now.open = true;
+  rig.collision.set_doors({&now, 1});
+  (void)rig.collision.step_doors(nullptr);
+  CHECK(rig.collision.door_stats().doors == 1);
+  DoorBody back;
+  REQUIRE(rig.collision.door(key, back));
+  CHECK(back.angle_mdeg == -90000);
+}
+
+// A declared leaf stands where its piece stands it: the hinge and the turn follow the piece's
+// place and yaw, and the turn opens toward the side the record swings to, either way round.
+TEST_CASE("scene_collision: a declared door turns with its piece and opens toward its swing") {
+  const f32 h = 0.70710678f;
+  const Quat yaw{0.0f, h, 0.0f, h};  // a quarter turn about +y: +x to -z
+  const WorldPos origin = place(Vec3{10.0f, 1.0f, -4.0f});
+  for (const f32 swing : {1.0f, -1.0f}) {
+    geometry::ClusterFileDoor r = doorway_leaf();
+    r.swing_z = swing;
+    const DoorBody d = declared_door(r, origin, yaw, 1.0f, 5);
+    const DVec3 hinge = relative(d.hinge, origin);
+    const Vec3 at = rotate(yaw, r.pivot);
+    CHECK(std::fabs(hinge.x - static_cast<f64>(at.x)) < 1e-5);
+    CHECK(std::fabs(hinge.z - static_cast<f64>(at.z)) < 1e-5);
+    DoorBody shut = d;
+    const Vec3 along = rotate(door_leaf_pose(shut).rotation, Vec3{1.0f, 0.0f, 0.0f});
+    const Vec3 want_shut = rotate(yaw, Vec3{r.shut_x, 0.0f, r.shut_z});
+    CHECK(along.x == doctest::Approx(want_shut.x).epsilon(1e-5));
+    CHECK(along.z == doctest::Approx(want_shut.z).epsilon(1e-5));
+    DoorBody open = d;
+    open.angle_mdeg = d.open_mdeg;
+    const Vec3 opened = rotate(door_leaf_pose(open).rotation, Vec3{1.0f, 0.0f, 0.0f});
+    const Vec3 want_open = rotate(yaw, Vec3{r.swing_x, 0.0f, r.swing_z});
+    CHECK(opened.x == doctest::Approx(want_open.x).epsilon(1e-5));
+    CHECK(opened.z == doctest::Approx(want_open.z).epsilon(1e-5));
+    // Its thickness behind its face, away from the swing.
+    const Vec3 back = rotate(door_leaf_pose(shut).rotation, Vec3{0.0f, 0.0f, d.face_z});
+    const Vec3 want_back = rotate(yaw, Vec3{-r.swing_x, 0.0f, -r.swing_z} * 0.025f);
+    CHECK(back.x == doctest::Approx(want_back.x).epsilon(1e-5));
+    CHECK(back.z == doctest::Approx(want_back.z).epsilon(1e-5));
+  }
+}
 
 TEST_CASE(
     "scene_collision: a mesh prop's proxy is one a mesh and rounded scale, whatever its yaw, and "

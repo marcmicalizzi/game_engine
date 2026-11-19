@@ -9,4 +9,6 @@ using namespace engine;
 ENGINE_EXPECT_SIZE(32, 8, scene_collision::GroundTime);
 // A door, kept per door and walked by `step_doors` every tick whether or not its tile is held: what
 // a building's doors keep resident (scene_collision.md, "What props and doors keep resident").
-ENGINE_EXPECT_SIZE(64, 8, scene_collision::DoorBody);
+// 88 since a door may come from a placed piece's declared leaf (S91): a 64-bit key from its place,
+// the piece's turn (`base`) and where the leaf's middle stands through its thickness (`face_z`).
+ENGINE_EXPECT_SIZE(88, 8, scene_collision::DoorBody);

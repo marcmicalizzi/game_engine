@@ -323,7 +323,7 @@ SceneCollision::~SceneCollision() {
     }
     for (HeldProp& held : props_)
       drop_prop_body(held);  // P45
-    for (HeldDoor& held : doors_)
+    for (HeldDoor& held : door_bodies_)
       drop_door_body(held);  // S91
   }
   tiles_.clear();
@@ -992,6 +992,7 @@ SceneCollision::SupportSource SceneCollision::support_source(
       source.structural_parts.data(), source.structural_parts.size());
   out.motion_parts = std::span<const geometry::ClusterFileMotionPart>(source.motion_parts.data(),
                                                                       source.motion_parts.size());
+  out.doors = std::span<const geometry::ClusterFileDoor>(source.doors.data(), source.doors.size());
   out.species = &source.species;
   out.has_motion = source.has_motion();
   return out;
@@ -1013,7 +1014,14 @@ void SceneCollision::fill_supports(const SupportSource* source, Vec3 scale,
           Vec3{std::max(proxy.hi.x, v.x), std::max(proxy.hi.y, v.y), std::max(proxy.hi.z, v.z)};
     }
   }
+  proxy.doors.clear();
+  proxy.door_scale = 1.0f;
   if (source == nullptr) return;
+  // The leaves its mesh declares (section 53; docs: "Doors"), kept as recorded with the scale a
+  // door is placed at: a door each wherever a held tile holds the piece (`take_declared_doors`).
+  for (const geometry::ClusterFileDoor& d : source->doors)
+    proxy.doors.push_back(d);
+  proxy.door_scale = scale.x;
   const auto scaled = [&](Vec3 p) { return Vec3{p.x * scale.x, p.y * scale.y, p.z * scale.z}; };
   const f32 smallest =
       std::min(std::fabs(scale.x), std::min(std::fabs(scale.y), std::fabs(scale.z)));
@@ -1084,10 +1092,12 @@ HitInfo SceneCollision::describe_hit(physics::BodyId body, u32 child) const noex
     out.instance = held.prop.key;
     return out;
   }
-  for (const HeldDoor& held : doors_) {  // a door's leaf (S91)
-    if (!(held.body == body)) continue;
+  for (u32 i = 0; i < door_bodies_.size(); ++i) {  // a door's leaf (S91)
+    if (!(door_bodies_[i].body == body)) continue;
     out.kind = HitKind::door;
-    out.instance = held.door.key;
+    // The key's low half: a host's key whole, a declared door's as its low 32 bits (`door(key)`
+    // and `doors()` give the whole key).
+    out.instance = static_cast<u32>(doors_[i].key);
     return out;
   }
   return out;
@@ -1516,6 +1526,8 @@ const SceneCollision::Proxy* SceneCollision::tile_proxy_for(const scene_gen::Pla
           copy->structural_parts.data(), copy->structural_parts.size());
       supports.motion_parts = std::span<const geometry::ClusterFileMotionPart>(
           copy->motion_parts.data(), copy->motion_parts.size());
+      supports.doors =
+          std::span<const geometry::ClusterFileDoor>(copy->doors.data(), copy->doors.size());
       supports.species = &copy->species;
       supports.has_motion = copy->has_motion;
       fill_supports(&supports, scale, scratch, made->proxy);
@@ -1653,6 +1665,8 @@ SceneCollision::MeshCopy* SceneCollision::acquire_copy(const scene_gen::Placemen
       made->structural_parts.push_back(p);
     for (const geometry::ClusterFileMotionPart& p : data.source.motion_parts)
       made->motion_parts.push_back(p);
+    for (const geometry::ClusterFileDoor& d : data.source.doors)
+      made->doors.push_back(d);
     made->species = data.source.species;
     made->has_motion = data.source.has_motion();
   }
@@ -1660,6 +1674,7 @@ SceneCollision::MeshCopy* SceneCollision::acquire_copy(const scene_gen::Placemen
                 made->perches.capacity() * sizeof(geometry::ClusterFilePerch) +
                 made->structural_parts.capacity() * sizeof(geometry::ClusterFileStructuralPart) +
                 made->motion_parts.capacity() * sizeof(geometry::ClusterFileMotionPart) +
+                made->doors.capacity() * sizeof(geometry::ClusterFileDoor) +
                 made->species.capacity();
   std::lock_guard<std::mutex> lock(copies_mutex_);
   ++copies_reads_;
@@ -2707,6 +2722,44 @@ Quat door_rotation(i32 mdeg) noexcept {
   return Quat{0.0f, static_cast<f32>(det::sin(half)), 0.0f, static_cast<f32>(det::cos(half))};
 }
 
+DoorLeafPose door_leaf_pose(const DoorBody& door) noexcept {
+  return DoorLeafPose{door.hinge, door.base * door_rotation(door.closed_mdeg + door.angle_mdeg)};
+}
+
+DoorBody declared_door(const geometry::ClusterFileDoor& record, WorldPos origin, Quat rotation,
+                       f32 scale, u64 key) noexcept {
+  DoorBody d;
+  d.key = key;
+  const f32 s = scale > 0.0f ? scale : 1.0f;
+  d.hinge = origin + DVec3{rotate(rotation, record.pivot * s)};
+  // The shut leaf's heading: the turn about +y that takes +x to `shut`, from its cosine and sine
+  // by the half-angle identities, square roots alone (correctly rounded), never an arc tangent.
+  const f64 c = std::clamp(static_cast<f64>(record.shut_x), -1.0, 1.0);
+  const f64 half_cos = std::sqrt(std::max(0.0, (1.0 + c) * 0.5));
+  f64 half_sin = std::sqrt(std::max(0.0, (1.0 - c) * 0.5));
+  if (record.shut_z > 0.0f) half_sin = -half_sin;  // sin of the heading is -shut_z
+  d.base = rotation * Quat{0.0f, static_cast<f32>(half_sin), 0.0f, static_cast<f32>(half_cos)};
+  // shut x swing, its y: +1 when the leaf opens by turning its +x toward -z (a positive angle),
+  // which is also the side its thickness lies on in its own frame (structures' `leaf_side`).
+  const f32 cross_y = record.shut_z * record.swing_x - record.shut_x * record.swing_z;
+  const i32 side = cross_y >= 0.0f ? 1 : -1;
+  d.closed_mdeg = 0;
+  d.open_mdeg = side * k_door_open_mdeg;
+  d.half_extents =
+      Vec3{0.5f * record.width_m * s, 0.5f * record.height_m * s, 0.5f * record.thickness_m * s};
+  d.face_z = static_cast<f32>(side) * d.half_extents.z;
+  // Where its description stood it, and open when that was not shut: a door hung ajar finishes
+  // opening the first time a tick turns it, and a toggle shuts it.
+  const i32 declared = std::clamp(static_cast<i32>(record.open_deg), 0, 90);
+  d.open = declared > 0;
+  d.angle_mdeg = side * declared * 1000;
+  return d;
+}
+
+u64 declared_door_key(u64 placement, u32 leaf) noexcept {
+  return hash_combine(hash_combine(k_hash_seed, placement), leaf) | (u64{1} << 63);
+}
+
 namespace {
 // How far short of the walker's capsule a door holds: past the character's contact padding, so a
 // leaf that stops beside it never presses it, which the character would answer by stepping aside
@@ -2716,87 +2769,98 @@ constexpr f32 k_door_hold_margin_m = 0.05f;
 // at 17 m from its hinge moves the 0.3 m of the walker's radius, so no leaf a building hangs can
 // step over the capsule between two tests.
 constexpr i32 k_door_sweep_mdeg = 1000;
-// The leaf's turn about +y at `mdeg` millidegrees from its closed heading's zero.
-Quat door_turn(i32 mdeg) noexcept { return door_rotation(mdeg); }
 i32 door_target(const DoorBody& d) noexcept { return d.open ? d.open_mdeg : 0; }
 // The leaf box's centre at swing `mdeg`: half its width along the leaf from the hinge, half its
-// height up.
+// height up, and `face_z` through its thickness.
 physics::BodyTransform door_pose(const DoorBody& d, i32 mdeg) noexcept {
   physics::BodyTransform t;
-  t.rotation = door_turn(d.closed_mdeg + mdeg);
-  t.position = d.hinge + DVec3{rotate(t.rotation, Vec3{d.half_extents.x, d.half_extents.y, 0.0f})};
+  t.rotation = d.base * door_rotation(d.closed_mdeg + mdeg);
+  t.position =
+      d.hinge + DVec3{rotate(t.rotation, Vec3{d.half_extents.x, d.half_extents.y, d.face_z})};
   return t;
 }
-// Whether the leaf at swing `mdeg` reaches into an upright capsule whose feet stand at `feet`
-// (`radius`, `height` feet to crown). The leaf is upright too, so in its own frame the test is the
-// distance in x and z from the capsule's axis to the leaf's rectangle against the radius, with the
-// heights overlapping; exact for a capsule standing up, as the walker always does.
-bool leaf_meets(const DoorBody& d, i32 mdeg, WorldPos feet, f32 radius, f32 height) noexcept {
+// How far the leaf at swing `mdeg` reaches into an upright capsule whose feet stand at `feet`
+// (`radius`, `height` feet to crown): the radius less the distance in x and z from the capsule's
+// axis to the leaf's rectangle in the leaf's own frame, the heights overlapping; -1 where they do
+// not. Positive is in. Exact for a capsule standing up, as the walker always does, and a function
+// of the bits alone (a correctly rounded square root).
+f32 leaf_depth(const DoorBody& d, i32 mdeg, WorldPos feet, f32 radius, f32 height) noexcept {
   const DVec3 rel = feet - d.hinge;
   if (rel.y > 2.0 * static_cast<f64>(d.half_extents.y) || rel.y + static_cast<f64>(height) < 0.0)
-    return false;
-  const Quat back = conjugate(door_turn(d.closed_mdeg + mdeg));
+    return -1.0f;
+  const Quat back = conjugate(d.base * door_rotation(d.closed_mdeg + mdeg));
   const Vec3 local = rotate(back, Vec3{static_cast<f32>(rel.x), 0.0f, static_cast<f32>(rel.z)});
   const f32 dx = std::max(0.0f, std::fabs(local.x - d.half_extents.x) - d.half_extents.x);
-  const f32 dz = std::max(0.0f, std::fabs(local.z) - d.half_extents.z);
-  return dx * dx + dz * dz < radius * radius;
+  const f32 dz = std::max(0.0f, std::fabs(local.z - d.face_z) - d.half_extents.z);
+  return radius - std::sqrt(dx * dx + dz * dz);
 }
 }  // namespace
 
+u32 SceneCollision::find_door(u64 key) const noexcept {
+  u32 lo = 0, hi = doors_.size();
+  while (lo < hi) {
+    const u32 mid = lo + (hi - lo) / 2;
+    if (doors_[mid].key < key)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  return lo < doors_.size() && doors_[lo].key == key ? lo : k_no_index;
+}
+
 void SceneCollision::set_doors(std::span<const DoorBody> doors) {
-  for (HeldDoor& held : doors_)
+  for (HeldDoor& held : door_bodies_)
     drop_door_body(held);
   doors_.clear();
+  door_bodies_.clear();
   doors_.reserve(static_cast<u32>(doors.size()));
   // Every number a tick adds to is brought into range here, so the integer swing never overflows:
   // a speed of 1 to 180 degrees a tick (none or a negative one the default), a swing within a whole
   // turn either way, the closed heading within one turn, and the angle reached between closed and
   // open.
   for (const DoorBody& d : doors) {
-    HeldDoor held;
-    held.door = d;
-    DoorBody& h = held.door;
+    DoorBody h = d;
     if (h.speed_mdeg <= 0) h.speed_mdeg = k_door_speed_mdeg;
     h.speed_mdeg = std::min(h.speed_mdeg, 180000);
     h.open_mdeg = std::clamp(h.open_mdeg, -360000, 360000);
     h.closed_mdeg %= 360000;
     h.angle_mdeg = std::clamp(h.angle_mdeg, std::min(0, h.open_mdeg), std::max(0, h.open_mdeg));
-    doors_.push_back(held);
+    doors_.push_back(h);
   }
   // In key order, the first given of a key kept and every later one refused (`DoorStats::refused`):
   // a key names one door, and two with one key would make `toggle_door` and `door` answer for
   // whichever the sort left first.
   std::stable_sort(doors_.begin(), doors_.end(),
-                   [](const HeldDoor& a, const HeldDoor& b) { return a.door.key < b.door.key; });
+                   [](const DoorBody& a, const DoorBody& b) { return a.key < b.key; });
   u32 kept = 0;
   for (u32 i = 0; i < doors_.size(); ++i) {
-    if (kept > 0 && doors_[kept - 1].door.key == doors_[i].door.key) continue;
+    if (kept > 0 && doors_[kept - 1].key == doors_[i].key) continue;
     if (kept != i) doors_[kept] = doors_[i];
     ++kept;
   }
   door_stats_.refused = doors_.size() - kept;
   doors_.resize(kept);
+  door_bodies_.resize(kept);
   door_stats_.doors = doors_.size();
-  doors_ring_ = ~u64{0};
+  door_stats_.declared = 0;
+  for (const DoorBody& d : doors_)
+    door_stats_.declared += (d.key >> 63) != 0 ? 1u : 0u;
+  doors_ring_ = ~u64{0};  // the held tiles' declared doors are looked for again at the next step
 }
 
-bool SceneCollision::toggle_door(u32 key) {
-  for (HeldDoor& held : doors_) {
-    if (held.door.key != key) continue;
-    held.door.open = !held.door.open;
-    ++door_stats_.toggles;
-    return true;
-  }
-  return false;
+bool SceneCollision::toggle_door(u64 key) {
+  const u32 i = find_door(key);
+  if (i == k_no_index) return false;
+  doors_[i].open = !doors_[i].open;
+  ++door_stats_.toggles;
+  return true;
 }
 
-bool SceneCollision::door(u32 key, DoorBody& out) const noexcept {
-  for (const HeldDoor& held : doors_) {
-    if (held.door.key != key) continue;
-    out = held.door;
-    return true;
-  }
-  return false;
+bool SceneCollision::door(u64 key, DoorBody& out) const noexcept {
+  const u32 i = find_door(key);
+  if (i == k_no_index) return false;
+  out = doors_[i];
+  return true;
 }
 
 void SceneCollision::drop_door_body(HeldDoor& held) noexcept {
@@ -2806,24 +2870,78 @@ void SceneCollision::drop_door_body(HeldDoor& held) noexcept {
   held.shape = {};
 }
 
+// **A placed piece's declared leaves become doors** (docs: "Doors"): every held tile's pieces whose
+// proxy carries section 53's records, each record a door keyed by the piece's name and the leaf's
+// index, taken in when no door of that key is held. Collected, sorted and merged by key, so neither
+// the tiles' table order nor the order they came in reaches the doors. Runs on a ring change only.
+void SceneCollision::take_declared_doors() {
+  doors_found_.clear();
+  for (u32 t = 0; t < tiles_.size(); ++t) {
+    const Tile& tile = tiles_.value_at(t);
+    for (const PieceRecord& record : tile.pieces_held) {
+      const Proxy* proxy = record.proxy;
+      if (proxy == nullptr || proxy->doors.empty()) continue;
+      const WorldPos origin = tile_corner(tile.coord) + DVec3{record.offset};
+      const u64 placement = support_placement(record.instance, record.entry, record.id,
+                                              tile.coord.x, tile.coord.z, record.index);
+      for (u32 k = 0; k < proxy->doors.size(); ++k) {
+        const u64 key = declared_door_key(placement, k);
+        if (find_door(key) != k_no_index) continue;
+        doors_found_.push_back(
+            declared_door(proxy->doors[k], origin, record.rotation, proxy->door_scale, key));
+      }
+    }
+  }
+  if (doors_found_.empty()) return;
+  std::sort(doors_found_.begin(), doors_found_.end(),
+            [](const DoorBody& a, const DoorBody& b) { return a.key < b.key; });
+  Vector<DoorBody> merged;
+  Vector<HeldDoor> bodies;
+  merged.reserve(doors_.size() + doors_found_.size());
+  bodies.reserve(doors_.size() + doors_found_.size());
+  u32 i = 0, j = 0;
+  while (i < doors_.size() || j < doors_found_.size()) {
+    // A scene's instance is a piece of every tile its bounds reach: one door a key.
+    if (j < doors_found_.size() && !merged.empty() && merged.back().key == doors_found_[j].key) {
+      ++j;
+      continue;
+    }
+    if (j >= doors_found_.size() || (i < doors_.size() && doors_[i].key < doors_found_[j].key)) {
+      merged.push_back(doors_[i]);
+      bodies.push_back(door_bodies_[i]);
+      ++i;
+    } else {
+      merged.push_back(doors_found_[j]);
+      bodies.push_back(HeldDoor{});
+      ++door_stats_.declared;
+      ++j;
+    }
+  }
+  doors_ = std::move(merged);
+  door_bodies_ = std::move(bodies);
+  door_stats_.doors = doors_.size();
+}
+
 u32 SceneCollision::step_doors(const physics::CharacterBody* walker) {
-  if (doors_.empty()) return 0;
   const u64 ring = stats_.activated + stats_.deactivated;
   bool changed = false;
   if (ring != doors_ring_) {
     doors_ring_ = ring;
-    for (HeldDoor& held : doors_) {  // let go with the tile first, then made, in key order
-      if (held.body && !covers(held.door.hinge)) {
-        drop_door_body(held);
+    take_declared_doors();
+    for (u32 i = 0; i < doors_.size();
+         ++i) {  // let go with the tile first, then made, in key order
+      if (door_bodies_[i].body && !covers(doors_[i].hinge)) {
+        drop_door_body(door_bodies_[i]);
         changed = true;
       }
     }
-    for (HeldDoor& held : doors_) {
-      if (held.body || !covers(held.door.hinge)) continue;
-      if (physics_->create_box(held.door.half_extents, held.shape) != physics::Status::Ok) continue;
+    for (u32 i = 0; i < doors_.size(); ++i) {
+      HeldDoor& held = door_bodies_[i];
+      if (held.body || !covers(doors_[i].hinge)) continue;
+      if (physics_->create_box(doors_[i].half_extents, held.shape) != physics::Status::Ok) continue;
       physics::BodyDesc body;
       body.shape = held.shape;
-      body.transform = door_pose(held.door, held.door.angle_mdeg);
+      body.transform = door_pose(doors_[i], doors_[i].angle_mdeg);
       body.motion = physics::MotionType::Kinematic;
       body.layer = physics::Layer::Kinematic;
       body.friction = 0.8f;
@@ -2835,14 +2953,17 @@ u32 SceneCollision::step_doors(const physics::CharacterBody* walker) {
       changed = true;
     }
   }
+  if (doors_.empty()) return 0;
   // Each door toward its target, whether or not its tile is held (its state is the world's), held
   // where the leaf at the next angle would reach into the walker.
   const physics::CharacterConfig* c = walker != nullptr ? &walker->config() : nullptr;
   const WorldPos feet = walker != nullptr ? walker->feet() : WorldPos{};
+  const f32 reach = c != nullptr ? c->radius + k_door_hold_margin_m : 0.0f;
   u32 moved = 0;
   u32 bodies = 0;
-  for (HeldDoor& held : doors_) {
-    DoorBody& d = held.door;
+  for (u32 i = 0; i < doors_.size(); ++i) {
+    DoorBody& d = doors_[i];
+    HeldDoor& held = door_bodies_[i];
     bodies += held.body ? 1u : 0u;
     const i32 target = door_target(d);
     if (d.angle_mdeg == target) continue;
@@ -2858,9 +2979,7 @@ u32 SceneCollision::step_doors(const physics::CharacterBody* walker) {
       reached = 0;
       for (i32 s = std::min(travel, k_door_sweep_mdeg);;
            s = std::min(travel, s + k_door_sweep_mdeg)) {
-        if (leaf_meets(d, d.angle_mdeg + dir * s, feet, c->radius + k_door_hold_margin_m,
-                       c->height))
-          break;
+        if (leaf_depth(d, d.angle_mdeg + dir * s, feet, reach, c->height) > 0.0f) break;
         reached = s;
         if (s == travel) break;
       }
