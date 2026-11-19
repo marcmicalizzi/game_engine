@@ -81,15 +81,27 @@ Status MappedFile::open(std::string_view native_path) {
     open_ = true;
     return Status::Ok;
   }
-  HANDLE section = ::CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
+  // **Exactly the size read** (T194, from the review of batch 69's tree): a section of size zero is
+  // the file's size when the section is made, which a writer sharing the file may have truncated
+  // since `GetFileSizeEx`, leaving a view shorter than `size_`. A read-only section asked for more
+  // than the file holds is refused by the OS, so a file truncated in between fails here; once the
+  // section exists the file cannot be truncated under it (io.md, "Mapped files").
+  const u64 bytes = static_cast<u64>(size.QuadPart);
+  if (bytes > static_cast<u64>(static_cast<SIZE_T>(-1))) {
+    ::CloseHandle(file);
+    return Status::IoError;
+  }
+  HANDLE section =
+      ::CreateFileMappingW(file, nullptr, PAGE_READONLY, static_cast<DWORD>(bytes >> 32),
+                           static_cast<DWORD>(bytes & 0xFFFF'FFFFu), nullptr);
   // The view holds the section, and the section the file: both handles go now.
   ::CloseHandle(file);
   if (section == nullptr) return Status::IoError;
-  void* view = ::MapViewOfFile(section, FILE_MAP_READ, 0, 0, 0);
+  void* view = ::MapViewOfFile(section, FILE_MAP_READ, 0, 0, static_cast<SIZE_T>(bytes));
   ::CloseHandle(section);
   if (view == nullptr) return Status::IoError;
   data_ = static_cast<const u8*>(view);
-  size_ = static_cast<u64>(size.QuadPart);
+  size_ = bytes;
 #else
   const std::string native(native_path);
   const int fd = ::open(native.c_str(), O_RDONLY | O_CLOEXEC);
@@ -116,10 +128,21 @@ Status MappedFile::open(std::string_view native_path) {
     open_ = true;
     return Status::Ok;
   }
+  // Exactly the size read, as on Windows, but POSIX maps past a file's end without complaint and
+  // lets a writer truncate a mapped file, after which a read of the lost pages is SIGBUS: the size
+  // is read again once mapped, so a truncation before that fails the open, and one after it is the
+  // documented limit of a shared view (io.md, "Mapped files").
   void* view = ::mmap(nullptr, static_cast<size_t>(st.st_size), PROT_READ, MAP_SHARED, fd, 0);
+  struct stat after{};
+  const bool shrank =
+      view != MAP_FAILED && (::fstat(fd, &after) != 0 || after.st_size < st.st_size);
   // The mapping holds the file; the descriptor goes now.
   ::close(fd);
   if (view == MAP_FAILED) return Status::IoError;
+  if (shrank) {
+    ::munmap(view, static_cast<size_t>(st.st_size));
+    return Status::IoError;
+  }
   data_ = static_cast<const u8*>(view);
   size_ = static_cast<u64>(st.st_size);
 #endif
