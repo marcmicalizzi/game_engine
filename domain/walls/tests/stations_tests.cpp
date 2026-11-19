@@ -5,10 +5,42 @@
 #include <doctest/doctest.h>
 
 #include <cmath>
+#include <limits>
 
 using namespace engine;
 using namespace engine::walls;
 using walls::test::TestPlane;
+
+// Hostile (T194, fuzzing-design.md's fourth list): a layer's points are a scene's `i64`s. Two a
+// whole range apart made `x1 - x0` overflow (undefined, and able to pass the 10 km check), and
+// nothing counted the modules: the zigzag below, 2,000 segments of 9 km, planned 2,000 x 9 km /
+// the module's length, 6 x 10^6 slots at the default 3 m (about 380 MB) before the mend, and a
+// megabyte of such points 26 GB. That is the arithmetic; the before is not run.
+TEST_CASE("walls hostile: a layer's points are bounded, and so are its modules") {
+  Layer layer = walls::test::field_layer();
+  Plan plan;
+  std::string why;
+  REQUIRE(make_plan(layer, 32000, plan, why));
+  CHECK(plan.slots.size() < (u64{1} << 20));
+
+  Layer far = layer;
+  far.lines[1].points_mm = {std::numeric_limits<i64>::min() + 1, 0, std::numeric_limits<i64>::max(),
+                            0};
+  CHECK_FALSE(make_plan(far, 32000, plan, why));
+  CHECK(why.find("a million km") != std::string::npos);
+
+  Layer zigzag = layer;
+  WallLine line;
+  for (u32 i = 0; i <= 2000; ++i) {
+    line.points_mm.push_back((i % 2) * 9'000'000);
+    line.points_mm.push_back(i * 1000);
+  }
+  zigzag.lines[1] = line;
+  const u64 per_segment = 900'000 / static_cast<u64>(zigzag.module_cm);
+  CHECK(2000 * per_segment > (u64{1} << 20));
+  CHECK_FALSE(make_plan(zigzag, 32000, plan, why));
+  CHECK(why.find("more than 2^20 modules") != std::string::npos);
+}
 
 TEST_CASE("walls: a station's module is decided by the plan, whatever the tile size") {
   const Layer layer = walls::test::field_layer(1000, -2000, 0.3f);
