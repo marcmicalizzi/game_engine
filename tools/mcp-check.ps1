@@ -41,7 +41,10 @@
 
   -Connect runs the same loop with the bridge attached to a running host (roadmap A6): it starts
   `engine-host --listen 127.0.0.1:0 --doc <scratch>/world --create` (the engine-host beside
-  engine-mcp), saves the host's first stdout line and starts `engine-mcp --connect-from` it. A
+  engine-mcp), saves the host's first stdout line and starts `engine-mcp --connect-from` it. An
+  attached bridge forwards no root, so the host writes only where its operator admitted one: the
+  check, as that operator, gives it `--root workspace=<scratch>/workspace:rw` and
+  `--root check=<scratch>:rw`, the two roots the spawned run's host has (ADR-0071). A
   second, plain WebSocket client (.NET's ClientWebSocket, nothing of the bridge's) subscribes to
   the session's journal before the loop and, after the edits, must have been pushed an
   `event.journal` for each of the bridge's commits and must read the bridge's entries — actor,
@@ -331,8 +334,15 @@ if ($Connect) {
     Write-Host "mcp-check: -Connect needs engine-host beside engine-mcp ($hostExe)"
     exit 2
   }
+  # The check is the operator of the host it starts, so it admits what the spawned run's host is
+  # given: the bridge's workspace as the writable root "workspace" (what a bridge forwards to a host
+  # of its own) and the scratch directory as "check". An attached bridge can forward no root to a
+  # host already running, and that host writes only under its operator's (ADR-0071).
+  $ws = Join-Path $Scratch 'workspace'
+  New-Item -ItemType Directory -Force -Path $ws | Out-Null
   $psi = [Diagnostics.ProcessStartInfo]::new($hostExe)
-  foreach ($a in @('--listen', '127.0.0.1:0', '--doc', (Join-Path $Scratch 'world'), '--create', '--actor', 'owner')) { $psi.ArgumentList.Add($a) }
+  foreach ($a in @('--listen', '127.0.0.1:0', '--doc', (Join-Path $Scratch 'world'), '--create', '--actor', 'owner',
+                   '--root', "workspace=$($ws):rw", '--root', "check=$($Scratch):rw")) { $psi.ArgumentList.Add($a) }
   $psi.UseShellExecute = $false
   $psi.RedirectStandardInput = $true
   $psi.RedirectStandardOutput = $true
