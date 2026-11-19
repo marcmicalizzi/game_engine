@@ -2,6 +2,8 @@
 #include <core/schema/type_info.h>
 
 #include <cstring>
+#include <string>
+#include <utility>
 
 namespace engine::schema {
 
@@ -71,31 +73,70 @@ Registry& Registry::global() {
   return registry;
 }
 
-void Registry::add(const TypeInfo& info) {
+std::string Registry::collision(const TypeInfo& info) const {
   const std::string_view name(info.qualified_name);
   const TypeInfo* const* existing = by_name_.find_value(name);
   if (existing != nullptr) {
-    ENGINE_VERIFY(*existing == &info,
-                  "schema: two different types registered under the same qualified name");
-    return;
+    if (*existing == &info) return {};  // registered again by the same descriptor: nothing new
+    return "schema: two different types are registered under the name '" + std::string(name) + "'";
   }
-  types_.push_back(&info);
-  by_name_.insert(name, &info);
-  // A former name belongs to one type: two claiming it would make an old file's records whichever
-  // registered first. schemac refuses that within the files it compiles together; this is the check
-  // across libraries. A former name that is also a current one is not refused here (registration
-  // order decides nothing: `find` answers the current name first), but schemac refuses it too.
+  // A name means one type to a reader, current or former (`resolve` answers the current name
+  // first, so a former name that is another type's current one would read an old file's records
+  // as that other type, with no diagnostic; roadmap D44). schemac refuses every collision within
+  // the files it compiles together; this is the check across libraries, in either arrival order.
+  const TypeInfo* const* renamed = by_former_name_.find_value(name);
+  if (renamed != nullptr) {
+    return "schema: '" + std::string(name) + "' is the type " + std::string(name) +
+           " and a former name of " + std::string((*renamed)->qualified_name) +
+           ": a stored record naming it would be read as either";
+  }
   for (const char* former : info.aliases) {
     const std::string_view f(former);
-    const TypeInfo* const* other = by_former_name_.find_value(f);
-    ENGINE_VERIFY(other == nullptr || *other == &info,
-                  "schema: two different types registered under the same former name");
-    if (other == nullptr) by_former_name_.insert(f, &info);
+    if (f == name) continue;  // a type's own current name read as a former one is the same type
+    if (const TypeInfo* const* current = by_name_.find_value(f); current != nullptr) {
+      return "schema: '" + std::string(f) + "' is the type " + std::string(f) +
+             " and a former name of " + std::string(name) +
+             ": a stored record naming it would be read as either";
+    }
+    // Two types claiming one former name: an old file's records would be whichever registered
+    // first. Refused like the rest, never settled by order.
+    if (const TypeInfo* const* other = by_former_name_.find_value(f); other != nullptr) {
+      return "schema: '" + std::string(f) + "' is a former name of both " +
+             std::string((*other)->qualified_name) + " and " + std::string(name) +
+             ": a stored record naming it would be read as either";
+    }
+  }
+  return {};
+}
+
+bool Registry::try_add(const TypeInfo& info, std::string* error) {
+  std::string why = collision(info);
+  if (!why.empty()) {
+    if (error != nullptr) *error = std::move(why);
+    return false;
+  }
+  const std::string_view name(info.qualified_name);
+  if (by_name_.find_value(name) != nullptr) return true;  // the same descriptor again
+  types_.push_back(&info);
+  by_name_.insert(name, &info);
+  for (const char* former : info.aliases) {
+    const std::string_view f(former);
+    if (f != name && by_former_name_.find_value(f) == nullptr) by_former_name_.insert(f, &info);
   }
   for (const FieldAlias& a : info.field_aliases) {
     const std::string_view f(a.former_name);
     if (former_field_names_.find_value(f) == nullptr) former_field_names_.insert(f, &info);
   }
+  return true;
+}
+
+void Registry::add(const TypeInfo& info) {
+  // Registration runs at static initialization, before anything could read an error: a collision
+  // is a build that links two libraries disagreeing about a name, and it stops the process naming
+  // both types and the name.
+  std::string why;
+  const bool added = try_add(info, &why);
+  ENGINE_VERIFY(added, why.c_str());
 }
 
 const TypeInfo* Registry::find(std::string_view qualified_name) const noexcept {
