@@ -118,6 +118,13 @@ namespace engine::hotload {
 // word became `flags`, saying which of the two the host filled. `HostApi` did not change. The host
 // writes each record only as far as the module's `support_size` reaches, as ABI 8's `ActorState`
 // is copied, so a module built against 3 to 11 loads on a host of 12 and runs unchanged.
+//
+// **Still 12, but not every module built against 3 to 12 loads** (2026-11-18): D27 and then D28
+// grew `schema::TypeInfo` (D28: 112 to 144 bytes, a rename's former names), which is the schema
+// runtime's and not this table's, so the number did not move. A module with state hands the host
+// the `TypeInfo` size it was built against, and the host refuses any other with `AbiMismatch`: a
+// stateful module built against an SDK from before the growth is refused and is rebuilt against
+// this build's SDK; a module with no state is not asked, and loads as above (hotload.md).
 inline constexpr u32 k_abi_version = 12;
 // The oldest module ABI a host of this header loads (4, above, says why 3 and not 4).
 inline constexpr u32 k_abi_oldest = 3;
