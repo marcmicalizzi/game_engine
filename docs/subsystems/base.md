@@ -18,6 +18,6 @@
 
 **Depends on.** Nothing.
 
-**Testing.** `tools/dev.ps1 test -Filter base`. Tests cover macro consistency, assertion evaluation semantics, and empty-member folding.
+**Testing.** `tools/dev.ps1 test -Filter base`. Tests cover macro consistency, assertion evaluation semantics, and empty-member folding. **A compiler canary lives here too** (`tests/compiler_canary_tests.cpp`, T197), because this is the one module every build compiles and it depends on nothing: the shape of code MSVC 19.44 and 19.51 miscompile at `/O2` (an aggregate passed by value to two calls in one expression, in a function the build inlines), compiled with the build's own flags and checked against the scalar answer and a pin. Its first case fails, naming the compiler, in a build whose flags inline the function (`/Ob2`); its second reports, as a warning and not a failure until the tree carries a workaround, that the form main's `/Ob1` reaches is miscompiled too ([the miscompile](../experiments/msvc-ob2-avx2-miscompile.md)). Never make it pass by changing the test.
 
 **Performance notes.** Header-only apart from `assert_fail`; nothing here is on a hot path.
