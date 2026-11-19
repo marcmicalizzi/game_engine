@@ -19,9 +19,11 @@
 // Machines without efficiency cores still get an Efficiency pool: a few workers pinned to
 // performance CPUs at below-normal OS priority, so callers never special-case the topology.
 
+#include <core/base/assert.h>
 #include <core/base/macros.h>
 #include <core/base/types.h>
 #include <core/containers/small_vector.h>
+#include <core/platform/thread.h>
 #include <core/platform/topology.h>
 
 #include <atomic>
@@ -52,33 +54,58 @@ class WorkDeque;
 // A counter also names a group: the jobs scheduled with it. A thread waiting on it inside a job
 // it was lent (see JobSystem::wait) runs only that group's jobs, and `queued_` — how many of them
 // sit in a queue rather than running — tells it whether there is any to look for.
+//
+// A counter on a waiter's stack may be destroyed the moment it reads as done, so the signal that
+// brings it to zero must not touch it after that. The last decrement and a mark saying "a notify
+// is in flight" are one write, the notify follows, and taking the mark off is the signaller's last
+// touch of the counter; done() is the whole word at zero, so no waiter returns before it
+// (docs/subsystems/jobs.md, "A counter outlives its last signal"; P2616R4's workaround).
 class Counter {
  public:
   Counter() noexcept = default;
-  explicit Counter(u32 initial) noexcept : remaining_(initial) {}
+  explicit Counter(u32 initial) noexcept : state_(initial) {
+    ENGINE_ASSERT(initial <= k_count_mask, "a counter counts fewer than 2^28 jobs");
+  }
   ENGINE_NON_COPYABLE(Counter);
 
-  void add(u32 n = 1) noexcept { remaining_.fetch_add(n, std::memory_order_relaxed); }
-  bool done() const noexcept { return remaining_.load(std::memory_order_acquire) == 0; }
-  u32 remaining() const noexcept { return remaining_.load(std::memory_order_acquire); }
+  void add(u32 n = 1) noexcept {
+    [[maybe_unused]] const u32 before = state_.fetch_add(n, std::memory_order_relaxed);
+    ENGINE_ASSERT((before & k_count_mask) + n <= k_count_mask, "a counter counts fewer than 2^28 jobs");
+  }
+  bool done() const noexcept { return state_.load(std::memory_order_acquire) == 0; }
+  u32 remaining() const noexcept { return state_.load(std::memory_order_acquire) & k_count_mask; }
 
   // Called by the job system when a job completes; also usable for manual completion.
   void signal() noexcept {
-    if (remaining_.fetch_sub(1, std::memory_order_acq_rel) == 1) remaining_.notify_all();
+    u32 v = state_.load(std::memory_order_relaxed);
+    while (!state_.compare_exchange_weak(
+        v, (v & k_count_mask) == 1 ? v - 1 + k_notifying : v - 1, std::memory_order_acq_rel,
+        std::memory_order_relaxed)) {
+    }
+    if ((v & k_count_mask) != 1) return;
+    state_.notify_all();
+    state_.fetch_sub(k_notifying, std::memory_order_release);  // the last touch of *this
   }
 
-  // Blocks the calling thread without helping. Prefer JobSystem::wait.
+  // Blocks the calling thread without helping. Prefer JobSystem::wait. Blocks while jobs are
+  // outstanding; spins through the short window between the last signal's notify and its mark
+  // coming off, which no notify follows.
   void wait_blocking() noexcept {
-    u32 v = remaining_.load(std::memory_order_acquire);
+    u32 v = state_.load(std::memory_order_acquire);
     while (v != 0) {
-      remaining_.wait(v, std::memory_order_acquire);
-      v = remaining_.load(std::memory_order_acquire);
+      if ((v & k_count_mask) != 0) state_.wait(v, std::memory_order_acquire);
+      else platform::pause_cpu();
+      v = state_.load(std::memory_order_acquire);
     }
   }
 
  private:
   friend class JobSystem;
-  alignas(64) std::atomic<u32> remaining_{0};
+  // The low 28 bits count outstanding jobs; each unit above them is a final signal whose notify
+  // has not returned (more than one only when a counter is added to again as it reaches zero).
+  static constexpr u32 k_notifying = 1u << 28;
+  static constexpr u32 k_count_mask = k_notifying - 1;
+  alignas(64) std::atomic<u32> state_{0};
   std::atomic<u32> queued_{0};  // scheduled with this counter and not yet started; a hint
 };
 
