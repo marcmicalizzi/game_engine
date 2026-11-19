@@ -107,14 +107,6 @@ bool rt_swap_resize_tunable() noexcept;
 // frame slot reading its own copy of the cache's table (R130; `GpuScene::resize_ray_tracing`).
 // False waits for the device on such a step, as before: the comparison.
 bool rt_swap_references_tunable() noexcept;
-// `renderer.rt.scan_near_capacity` (true): a frame records the drop order's scan while the last
-// read-back demand is at least half the capacity, not only within 64 frames of one that dropped
-// (R130; renderer.md, "A resize is swapped in, not waited for"). False is the comparison.
-bool rt_scan_near_capacity_tunable() noexcept;
-// `renderer.rt.scan_every_frame` (true): every frame records the drop order's scan, so no frame
-// past its capacity takes the one-thread rule in `ranges_main` (R128; renderer.md, "A resize is
-// swapped in, not waited for"). False is R130's rule above, the comparison; read every frame.
-bool rt_scan_every_frame_tunable() noexcept;
 // `renderer.rt.free_on_worker` (true): the buffers a swapped resize retires are freed on a worker
 // once the frames that could read them have completed, not on the frame's thread when their slot
 // comes round (R128; renderer.md, "A resize is swapped in, not waited for"). Freeing a 1.6-2 GB
@@ -255,20 +247,6 @@ RtBudget resolve_rt_cache_mib(u32 tunable_mib, u64 device_local_bytes) noexcept;
 // first frames dropped instances while the capacity grew towards what they wanted. Arithmetic
 // only, so the rule is tested on the CPU.
 u32 first_rt_capacity(u32 limit, u32 union_clusters, u64 estimate, u32 floor) noexcept;
-
-// **The drop order** (renderer.md, "The ray tracing chain's memory"; `gfx::ClusterRecordParams::
-// drop_order`): what a frame past its capacity spends it on first. The prefix's slots (rank 0, in
-// slot order), then each block of a streamed tail at its ring's rank (ring + 1), the blocks of one
-// rank by tile key, a block's live slots in slot order — so the farthest ring loses its casters
-// first, then its instances, then the next ring in, and the same ones every run. `blocks` is
-// sorted in place; `out` is `u32 count, u32 0`, then `{slot, rank}` pairs.
-struct RtDropBlock {
-  u64 key = 0;
-  u32 rank = 0;
-  u32 first_slot = 0;
-  u32 slots = 0;
-};
-void rt_drop_order(u32 prefix_slots, std::span<RtDropBlock> blocks, Vector<u32>& out);
 
 // **Which bound bound** (renderer.md, "The warning names its bound"; R143). A frame that built less
 // than it wanted met one of four, and until R143 the warning named none of them and printed the

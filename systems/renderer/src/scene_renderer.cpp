@@ -395,7 +395,9 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   for (u32 v = 0; v < 2; ++v) {
     gfx::destroy_compute_pipeline(device, record_count[v]);
     gfx::destroy_compute_pipeline(device, record_ranges[v]);
-    gfx::destroy_compute_pipeline(device, record_drop[v]);
+    gfx::destroy_compute_pipeline(device, record_keep_cut[v]);
+    gfx::destroy_compute_pipeline(device, record_keep_ties[v]);
+    gfx::destroy_compute_pipeline(device, record_keep_fine[v]);
     gfx::destroy_compute_pipeline(device, record_kept_count[v]);
     gfx::destroy_compute_pipeline(device, record_kept[v]);
     gfx::destroy_compute_pipeline(device, record_emit[v]);
@@ -1454,17 +1456,20 @@ bool SceneRenderer::create_pipelines(std::string* error) {
     // beside them: a frame of a scene the cache serves no instance of takes the plain ones (R106).
     const u32 variants = scene_->rt_cache() ? 2u : 1u;
     for (u32 v = 0; v < variants; ++v) {
-      const char* names[6] = {v == 0 ? "ranges_count_main" : "ranges_count_cached_main",
+      const char* names[8] = {v == 0 ? "ranges_count_main" : "ranges_count_cached_main",
                               v == 0 ? "ranges_main" : "ranges_cached_main",
-                              v == 0 ? "ranges_drop_main" : "ranges_drop_cached_main",
+                              "keep_cut_main",
+                              "keep_ties_main",
+                              "keep_fine_main",
                               v == 0 ? "ranges_kept_count_main" : "ranges_kept_count_cached_main",
                               v == 0 ? "ranges_kept_main" : "ranges_kept_cached_main",
                               v == 0 ? "emit_main" : "emit_cached_main"};
-      gfx::ComputePipeline* outs[6] = {
-          &pipelines_.record_count[v], &pipelines_.record_ranges[v],
-          &pipelines_.record_drop[v],  &pipelines_.record_kept_count[v],
-          &pipelines_.record_kept[v],  &pipelines_.record_emit[v]};
-      for (u32 k = 0; k < 6; ++k) {
+      gfx::ComputePipeline* outs[8] = {
+          &pipelines_.record_count[v],     &pipelines_.record_ranges[v],
+          &pipelines_.record_keep_cut[v],  &pipelines_.record_keep_ties[v],
+          &pipelines_.record_keep_fine[v], &pipelines_.record_kept_count[v],
+          &pipelines_.record_kept[v],      &pipelines_.record_emit[v]};
+      for (u32 k = 0; k < 8; ++k) {
         if (!gfx::create_compute_pipeline(device, records->module, names[k], {},
                                           sizeof(gfx::ClusterRecordParams), *outs[k], error)) {
           return false;
@@ -2252,6 +2257,7 @@ void SceneRenderer::fold_visible(u32 slot) {
         chain.cache_build_frames += rt[7] > 0 ? 1u : 0u;
         chain.cache_overflow += rt[8];
         chain.cache_unbuilt += rt[11];
+        chain.cache_unbuilt_frames += rt[11] > 0 ? 1u : 0u;
         chain.cache_evictions += rt[9];
       }
       // Said once: a cost, not a change of the picture since R114 — those misses were built in the
@@ -2270,7 +2276,6 @@ void SceneRenderer::fold_visible(u32 slot) {
       }
     }
     if (rt[2] + rt[3] > 0) {
-      rt_frames_since_drop_ = 0;  // the drop order's scan stays recorded (R106)
       // The sums take each submitted frame once, as the cache's do: a frame somebody waited for
       // (`render_offscreen`, a capture) is folded when it finishes and again when its slot comes
       // round, from the same words — which counted every blocking frame twice (G133). And only a
@@ -4556,6 +4561,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // one view the geometry is the **union** of the views' cuts: the visible list is run-major, so
   // every view's first run is one contiguous range at the front and one dispatch covers them all.
   gfx::ClusterRecordParams record_params{};
+  gfx::ClusterKeepTables keep_block{};  // written into the scene's keep block every frame (R174)
   gfx::TlasReferenceParams tlas_references{};  // the BLAS addresses into the top-level records
   // **The cache, on this frame** (renderer.md, "The resident cluster structure cache"; R106): only
   // when the scene has an instance it serves. Without one — every instance deformed, untraced or a
@@ -4567,35 +4573,6 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                         (scene.rt_cache_instances() > 0 ||
                          (field_block != 0 && scene.flora_stats().field_instances > 0));
   rt_cache_recording_ = rt_cache;
-  // **The drop order's scan, on the frames that may need it** (R106; clas_records.slang, "past
-  // the capacity"): its three passes are recorded while a frame read back in the last
-  // `k_drop_scan_frames` dropped anything, and from the start; a frame past its capacity
-  // without them takes the one-thread rule, which writes the same words. So a scene that fits
-  // records no pass for a walk it never takes, and one that does not walks it as a scan from
-  // the frame after its first drop.
-  //
-  // **And while the demand is within reach of the capacity** (R130): the demand reaches this
-  // thread two frames late, so the frames that first pass the capacity at a turn into the woods
-  // were always recorded without the scan, and the one-thread rule cost 120-122 ms of the GPU's
-  // frame each on the replay of the owner's v27 walk, two frames a step (the record's
-  // `gpu_ms.rt_ranges`). A frame whose last read-back demand — its own structures or the cache's
-  // references — is at least half of what the chain holds records the scan too: a jump past the
-  // capacity within two frames is a jump of more than half of it, which the walk has not shown
-  // (its largest was 38%). Recorded on a frame that fits, the scan's three dispatches are of no
-  // group and cost 7 µs (the replay's median over 212 such frames).
-  //
-  // **And on every frame** (R128): one such frame remained on the replay, a demand that went from
-  // under half the capacity to past it within two frames, and nothing the frame thread reads can
-  // see that coming. Recorded on a frame that fits the scan costs its three empty dispatches and
-  // their barriers (7 µs, R130's median); the one-thread rule cost 118-168 ms a frame at 225,000
-  // instances. `renderer.rt.scan_every_frame=false` is R130's rule above, the comparison.
-  if (rt_chain && rt_frames_since_drop_ < k_drop_scan_frames) ++rt_frames_since_drop_;
-  const bool near_capacity =
-      rt_chain && rt_scan_near_capacity_tunable() &&
-      (u64{stats_.rt.wanted} * 2 >= scene.rt_capacity() ||
-       (scene.rt_cache() && u64{stats_.rt.references_wanted} * 2 >= scene.rt_reference_capacity()));
-  const bool drop_scan = (rt_chain && rt_scan_every_frame_tunable()) ||
-                         rt_frames_since_drop_ < k_drop_scan_frames || near_capacity;
   if (rt_chain) {
     tlas_references.addresses = scene.blas_set.addresses.address;
     tlas_references.records = scene.rt_instances.address;
@@ -4650,7 +4627,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // renderer.md, "What a frame past its capacity keeps"): there a dropped drawn instance is a
     // hole in the picture, and a dropped caster the far side of a shadow.
     record_params.mode = gfx::cluster_records_mode(
-        views, settings.rt_templates && !scene.has_masked(), drop_scan, untraced_drawn, ray_path);
+        views, settings.rt_templates && !scene.has_masked(), untraced_drawn, ray_path);
     // What the frame's structures hold room for: the records pass keeps no more, dropping whole
     // instances past it (gfx::ClusterRecordParams). The top-level instance records — one per scene
     // instance, the world transform and the instance as the custom index, shared by every view —
@@ -4659,9 +4636,16 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     record_params.capacity = scene.rt_capacity();
     record_params.mask_materials = mask_tables.materials;  // a masked pair is built non-opaque
     record_params.mask_cluster_materials = mask_tables.cluster_materials;
-    // Past the capacity, what the frame keeps: nearest rank first (renderer.md, "The ray tracing
-    // chain's memory"). This frame slot's copy, brought up to date while recording.
-    record_params.drop_order = scene.rt_drop_order_address(frames_.slot());
+    // Past the capacity, what the frame keeps: a prefix of the keep keys (renderer.md, "Past the
+    // capacity, by size on screen"), through the keep block the "keep clear" pass writes below.
+    record_params.keep = scene.rt_keep_tables.address;
+    keep_block.eye = gpu_eye;
+    keep_block.mesh_bounds = cull_instances_->active ? cull_instances_->bounds.address : 0u;
+    keep_block.keys =
+        scene.instance_counts.address + gfx::cluster_ranges_keys_offset(instance_count);
+    keep_block.cut = scene.rt_keep_tables.address + k_rt_keep_cut_at;
+    keep_block.histograms = scene.rt_keep_tables.address + k_rt_keep_histograms_at;
+    keep_block.slot_count = instance_count;
     // A rigid instance references the cache's structures and builds none of its own (renderer.md,
     // "The resident cluster structure cache"); the stamp is this frame's for the eviction.
     if (rt_cache) {
@@ -4977,7 +4961,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     }
   };
   struct RtBuffers {
-    gfx::RgBuffer records, record_count, slots, instance_counts, blas_records, hit_entries;
+    gfx::RgBuffer records, record_count, slots, instance_counts, blas_records, hit_entries, keep;
     gfx::RgBuffer blas_dense, blas_slots;  // R143: the records the build reads, and their places
     gfx::RgBuffer scratch;  // R186 D1: one scratch for every build of the chain, in turn
     gfx::RgBuffer clas_addresses, clas_sizes, blas_data, blas_addresses, tlas, instances;
@@ -5038,6 +5022,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     rt.record_count = import_chain("clas record count", scene.record_count);
     rt.slots = import_chain("clas slots", scene.slots);
     rt.instance_counts = import_chain("clas instance counts", scene.instance_counts);
+    // Named by its last use, so the reset's rewrite waits for the frame before (R174).
+    rt.keep = graph.import_buffer("rt keep", scene.rt_keep_tables, gfx::PipelineStage::AllCommands,
+                                  gfx::MemoryAccess::MemoryWrite);
     rt.blas_records = import_chain("cluster blas records", scene.blas_records);
     rt.blas_dense = import_chain("cluster blas records built", scene.blas_dense);
     rt.blas_slots = import_chain("cluster blas places", scene.blas_slots);
@@ -5102,6 +5089,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         if (fill_flags) b.write(rg_flags[prev_flags], gfx::Access::TransferWrite);
         if (fill_hiz) b.write(rg_hiz, gfx::Access::TransferWrite);
         if (rt_chain) b.write(rt.instance_counts, gfx::Access::TransferWrite);
+        if (rt_chain) b.write(rt.keep, gfx::Access::TransferWrite);
         if (rt_chain && scene.dynamic()) b.write(rt.blas_records, gfx::Access::TransferWrite);
         if (deform_on) b.write(rg_deform_args, gfx::Access::TransferWrite);
         if (vertex_indexed) b.write(rg_vertex_headers, gfx::Access::TransferWrite);
@@ -5161,6 +5149,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         // ranges' scratch, which they write before they read (R106), so it is not cleared.
         if (rt_chain && instance_count > 0) {
           cb.fill_buffer(scene.instance_counts.buffer, 0, u64{2} * instance_count * sizeof(u32), 0);
+        }
+        // The keep block written, its cut words and histograms zeroed (renderer.md, "The cut's
+        // tables are cleared every frame").
+        if (rt_chain) {
+          cb.update_buffer(scene.rt_keep_tables.buffer, 0, sizeof(keep_block), &keep_block);
+          cb.fill_buffer(scene.rt_keep_tables.buffer, k_rt_keep_cut_at, gfx::k_whole_size, 0);
         }
         // A dynamic scene builds its bottom-level set over every slot of its capacity, and the
         // records pass writes the frame's instances' only: the rest are empty structures.
@@ -6079,26 +6073,24 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       // same passes in the same order for both. Its dispatches cover every view's first run, and
       // with shadow casters every view's caster run as well — the bucketing pass reads both, the
       // emit pass covers the pair slots, which the casters share with the drawn pairs.
-      // The passes before the builds: the bucketing; the ranges, a scan over blocks of instances
-      // (R106) — `ranges_count_main` and `ranges_main`, and past the capacity the walk and the
-      // kept instances' scan (`ranges_drop_main`, `ranges_kept_count_main`, `ranges_kept_main`),
-      // which a frame that fits dispatches no thread of, their dispatches being words the ranges
-      // write into `instance_counts` — timed as one zone, "ranges"; and the emit pass. All but the
-      // bucketing in their cached variants on a frame that has the cache (`pipelines.record_*[1]`),
-      // and the plain ones — which never ask whether an instance is cached — on any other.
+      // The bucketing; the ranges (R106) and past the capacity the cut and the kept scan (R174),
+      // dispatched from words the ranges write, so a fitting frame runs no thread of them; the
+      // emit pass. Cached variants (`record_*[1]`) on a frame that has the cache.
       const u32 variant = rt_cache ? 1u : 0u;
-      constexpr u32 k_record_passes = 7;
+      constexpr u32 k_record_passes = 9;
       const gfx::ComputePipeline* record_passes[k_record_passes] = {
           &pipelines.records,
           &pipelines.record_count[variant],
           &pipelines.record_ranges[variant],
-          &pipelines.record_drop[variant],
+          &pipelines.record_keep_cut[variant],
+          &pipelines.record_keep_ties[variant],
+          &pipelines.record_keep_fine[variant],
           &pipelines.record_kept_count[variant],
           &pipelines.record_kept[variant],
           &pipelines.record_emit[variant]};
-      const char* record_names[k_record_passes] = {
-          "records",           "ranges count", "ranges", "ranges drop",
-          "ranges kept count", "ranges kept",  "emit"};
+      const char* record_names[k_record_passes] = {"records",           "ranges count", "ranges",
+                                                   "keep cut",          "keep ties",    "keep fine",
+                                                   "ranges kept count", "ranges kept",  "emit"};
       const u32 union_groups = (views * pair_stride + gfx::k_cluster_records_workgroup - 1) /
                                gfx::k_cluster_records_workgroup;
       const u32 bucket_groups =
@@ -6106,15 +6098,16 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           gfx::k_cluster_records_workgroup;
       const u32 range_groups = gfx::cluster_ranges_groups(instance_count);
       const u32 record_groups[k_record_passes] = {
-          bucket_groups, range_groups, range_groups, 0, 0, 0, union_groups};
-      // Where the walk's and the kept passes' dispatches are (0 groups unless past the capacity).
+          bucket_groups, range_groups, range_groups, 0, 0, 0, 0, 0, union_groups};
+      // Where the cut's and the kept passes' dispatches are (0 groups unless past the capacity).
       const u64 drop_args = gfx::cluster_ranges_drop_args(instance_count);
       const u64 kept_args = gfx::cluster_ranges_kept_args(instance_count);
+      const bool keep_bounds = cull_instances_->active;
       for (u32 p = 0; p < k_record_passes; ++p) {
-        if (p >= 3 && p <= 5 && !drop_scan) continue;  // no frame of late dropped anything
+        const bool past = p >= 3 && p <= 7;  // dispatched from the drop words
         graph.add_pass(
             record_names[p], gfx::PassKind::Compute,
-            [&, p](gfx::PassBuilder& b) {
+            [&, p, past](gfx::PassBuilder& b) {
               b.read(rg_args[0], gfx::Access::ComputeRead);
               if (casters) b.read(rg_sw_args, gfx::Access::ComputeRead);  // the casters' counts
               b.read(rg_visible, gfx::Access::ComputeRead);
@@ -6122,17 +6115,26 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               // pass leaves out a caster the pool had no room for.
               if (deform_on) b.read(rg_slots, gfx::Access::ComputeRead);
               b.write(rt.slots, gfx::Access::ComputeReadWrite);
-              // The walk and the kept passes take their sizes from it; the write is declared last.
-              if (p >= 3 && p <= 5) b.read(rt.instance_counts, gfx::Access::IndirectRead);
+              // The cut and the kept passes take their sizes from it; the write is declared last.
+              if (past) b.read(rt.instance_counts, gfx::Access::IndirectRead);
               b.write(rt.instance_counts, gfx::Access::ComputeReadWrite);
               if (p != 0) b.write(rt.records, gfx::Access::ComputeWrite);
-              if (p == 6) b.write(rt.hit_entries, gfx::Access::ComputeWrite);
+              if (p == 8) b.write(rt.hit_entries, gfx::Access::ComputeWrite);
               // The cross-fade's splits, which keep a fading pair's record free of its micromap.
-              if (p == 6 && record_params.omm_fade != 0) b.read(rg_fade, gfx::Access::ComputeRead);
+              if (p == 8 && record_params.omm_fade != 0) b.read(rg_fade, gfx::Access::ComputeRead);
               // The ranges' first dispatch clears the cache's words of the record count, the
               // rest write the others and the bottom-level records.
-              if (p >= 1 && p <= 5) b.write(rt.record_count, gfx::Access::ComputeReadWrite);
-              if (p == 2 || p == 3 || p == 5) b.write(rt.blas_records, gfx::Access::ComputeWrite);
+              if (p >= 1 && p <= 7) b.write(rt.record_count, gfx::Access::ComputeReadWrite);
+              if (p == 2 || p == 7) b.write(rt.blas_records, gfx::Access::ComputeWrite);
+              // The keep block (R174): the ranges key into it past the capacity, from the meshes'
+              // spheres the instance pass measured; the cut reads and writes its histograms and cut
+              // words, and the kept passes read the cut.
+              if (p == 2 && keep_bounds)
+                b.read(cull_instances_->rg_bounds, gfx::Access::ComputeRead);
+              if (p >= 2 && p <= 7) {
+                b.read(rt.keep, gfx::Access::ComputeRead);
+                b.write(rt.keep, gfx::Access::ComputeReadWrite);
+              }
               // The cache's look-ups: the ranges' first dispatch clears its counters and empties
               // its passes' dispatches; the emit pass addresses the resident references, lists the
               // pending ones, claims its misses and stamps what it draws, counting into the record
@@ -6141,7 +6143,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                 b.write(rt.cache_scratch, gfx::Access::ComputeReadWrite);
                 b.write(rt.cache_args, gfx::Access::ComputeWrite);
               }
-              if (rt_cache && p == 6) {
+              if (rt_cache && p == 8) {
                 b.write(rt.record_count, gfx::Access::ComputeReadWrite);
                 b.write(rt.cache_keys, gfx::Access::ComputeReadWrite);
                 b.write(rt.cache_stamps, gfx::Access::ComputeWrite);
@@ -6152,26 +6154,27 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               }
               read_scene(b, gfx::Access::ComputeRead, false);
             },
-            [&, p, record_passes, record_names, record_groups, drop_args, kept_args](
+            [&, p, past, record_passes, record_names, record_groups, drop_args, kept_args](
                 gfx::CommandList cb, gfx::RenderGraph&) {
-              // The scan past the capacity and the kept scan after it are their own zone, "ranges
-              // drop" (R130): on the owner's v27 walk the chain cost 118-164 ms on the frames past
-              // their capacity, none of it in `clas` or `blas`, and one zone over all five passes
-              // could not say which (it was the one-thread rule, in "ranges").
-              if (p == 0 || p == 1 || p == 3 || p == 6)
-                timer.begin(cb, p == 1 ? "ranges" : record_names[p]);
+              // The cut and the kept scan after it are their own zone, "ranges drop" (R130: one
+              // zone over every pass past the ranges could not say where a frame past its
+              // capacity spent its time; the name stays, R174, over the passes that replaced the
+              // walk).
+              if (p == 0 || p == 1 || p == 3 || p == 8)
+                timer.begin(cb, p == 1 ? "ranges" : p == 3 ? "ranges drop" : record_names[p]);
               cb.bind_pipeline(gfx::BindPoint::Compute, record_passes[p]->pipeline);
               cb.push_constants(record_passes[p]->layout, gfx::ShaderStage::Compute, 0,
                                 sizeof(record_params), &record_params);
-              if (p >= 3 && p <= 5) {
-                cb.dispatch_indirect(scene.instance_counts.buffer, p == 3 ? drop_args : kept_args);
-              } else if (p == 0 || p == 6) {  // a thread an entry: folded (T160)
+              if (past) {
+                cb.dispatch_indirect(scene.instance_counts.buffer,
+                                     p == 3 || p == 5 ? drop_args : kept_args);
+              } else if (p == 0 || p == 8) {  // a thread an entry: folded (T160)
                 gfx::dispatch_folded(cb, record_groups[p], device_->caps());
               } else {
                 cb.dispatch(record_groups[p], 1, 1);
               }
               // "ranges" ends with its scan, "ranges drop" with the kept scan.
-              if (p == 0 || p == 2 || p == 5 || p == 6) timer.end(cb);
+              if (p == 0 || p == 2 || p == 7 || p == 8) timer.end(cb);
             });
       }  // **The resident cluster structure cache** (renderer.md, "The resident cluster structure
       // cache"; clas_records.slang): the slot scan and the eviction, the misses' slots and records

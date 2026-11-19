@@ -35,6 +35,7 @@
 #include <domain/gfx/opacity_micromap.h>
 #include <domain/gfx/resources.h>
 #include <domain/gfx/rhi.h>
+#include <domain/gfx/rt_keep.h>
 #include <domain/gfx/shader_library.h>
 #include <domain/gfx/visibility_resolve.h>
 #include <systems/renderer/crown_priors.h>
@@ -62,6 +63,12 @@ struct TextureData;
 }
 
 namespace engine::renderer {
+
+// The keep block's layout (`GpuScene::rt_keep_tables`; R174): the `gfx::ClusterKeepTables` at 0,
+// the cut words, then the four histograms.
+inline constexpr u64 k_rt_keep_cut_at = 128;
+inline constexpr u64 k_rt_keep_histograms_at = 256;
+inline constexpr u64 k_rt_keep_bytes = k_rt_keep_histograms_at + gfx::k_rt_keep_histogram_bytes;
 
 struct TextureBoundState;  // R172: src/texture_bound_state.h
 
@@ -885,11 +892,6 @@ class GpuScene {
   // every frame until R143, and what the top-level structure still is.
   u32 rt_instance_slots() const noexcept { return rt_instance_slots_; }
   u32 static_instances() const noexcept { return static_instances_live_; }
-  // **The drop order** for frame slot `slot` (`gfx::ClusterRecordParams::drop_order`;
-  // `rt_drop_order` in rt_capacity.h): the device address of that slot's copy, brought up to date
-  // with the tables first — written while recording, after the slot's previous frame has finished,
-  // so no frame in flight reads it. 0 for a scene read whole, whose order is instance order.
-  u64 rt_drop_order_address(u32 slot, std::string* error = nullptr);
   u64 static_pairs() const noexcept { return static_pairs_live_; }
   // u64 per mesh: its static bottom-level structure's address, or 0 (TlasReferenceParams); 0 for
   // a scene with none. The static set has one record per mesh, so its address table is this.
@@ -1613,8 +1615,13 @@ class GpuScene {
   gfx::BufferResource record_count;
   gfx::BufferResource hit_entries;  // compact record index -> original visible entry
   gfx::BufferResource slots;        // u32 per pair per view: the records pass's bucketing scratch
-  // Three u32 per instance: its drawn clusters, its casters, then its dense record base.
+  // Three u32 per instance: its drawn clusters, its casters, then its dense record base; then the
+  // ranges' scratch and the keep keys, two u32 per instance (gfx::cluster_instance_count_words).
   gfx::BufferResource instance_counts;
+  // **The keep block** (R174; renderer.md, "Past the capacity, by size on screen"): a
+  // `gfx::ClusterKeepTables` at 0, the cut words at `k_rt_keep_cut_at`, the four histograms at
+  // `k_rt_keep_histograms_at`: 1 MiB, made once with the chain, whatever the scene's size.
+  gfx::BufferResource rt_keep_tables;
   gfx::BufferResource blas_records;  // one 16-byte bottom-level record per instance
   // **The bottom-level build is over what the frame drew** (R143; renderer.md, "The bottom-level
   // build is over what the frame drew"; `gfx::TlasReferenceParams`): the records of the instances
@@ -2324,16 +2331,8 @@ class GpuScene {
   void plan_static_forms();
   bool build_static_forms(std::string* error);
   void uncount_static(u32 slot) noexcept;
-  // The drop order (`rt_drop_order_address`): each slot's rank (0 the prefix, ring + 1 a tail
-  // block's), the order laid out from it when the tables change, and per frame slot a host-visible
-  // copy and the version it holds.
+  // Each slot's rank (0 the prefix, ring + 1 a tail block's).
   Vector<u32> slot_rank_;
-  Vector<RtDropBlock> rt_order_blocks_;
-  Vector<u32> rt_order_;
-  u64 rt_order_version_ = 0;
-  Vector<gfx::BufferResource> rt_order_buffers_;
-  Vector<u64> rt_order_written_;
-  void lay_out_rt_order();
   bool deform_ = false;
   bool streamed_ = false;
   u32 page_count_ = 0;

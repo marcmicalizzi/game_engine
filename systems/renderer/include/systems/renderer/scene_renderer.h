@@ -500,6 +500,9 @@ struct RtStats {
   u64 cache_build_frames = 0;
   u64 cache_overflow = 0;
   u64 cache_unbuilt = 0;
+  // The frames that had any (R174; renderer.md, "The cache's misses, and the guarantee"): outside
+  // the guarantee that two orders of the same placements keep the same set.
+  u64 cache_unbuilt_frames = 0;
   u64 cache_evictions = 0;
 };
 
@@ -1057,12 +1060,15 @@ class SceneRenderer {
     gfx::ComputePipeline deform_alloc_place;
     gfx::ComputePipeline hiz;
     gfx::ComputePipeline records;
-    // clas_records.slang's ranges (two dispatches, and three more past the capacity) and emit
-    // pass, each [0] for a frame with no cache and [1] for one with (R106: the plain variant never
-    // asks whether an instance is cached).
+    // clas_records.slang's ranges (two dispatches, and five more past the capacity: the cut's
+    // three and the kept two) and emit pass, each [0] for a frame with no cache and [1] for one
+    // with (R106: the plain variant never asks whether an instance is cached). The cut's three are
+    // one entry point each, made for both.
     gfx::ComputePipeline record_count[2];
     gfx::ComputePipeline record_ranges[2];
-    gfx::ComputePipeline record_drop[2];
+    gfx::ComputePipeline record_keep_cut[2];
+    gfx::ComputePipeline record_keep_ties[2];
+    gfx::ComputePipeline record_keep_fine[2];
     gfx::ComputePipeline record_kept_count[2];
     gfx::ComputePipeline record_kept[2];
     gfx::ComputePipeline record_emit[2];
@@ -1340,12 +1346,6 @@ class SceneRenderer {
   // the cache serves no instance of records none, and its words say nothing of the slots).
   Vector<u8> slot_rt_cache_;
   bool rt_cache_recording_ = false;  // the frame being recorded records them
-  // Frames recorded since one read back that dropped anything from the ray tracing chain: while it
-  // is under `k_drop_scan_frames` the frame records the drop order's scan (R106;
-  // clas_records.slang, "past the capacity"), and a frame past its capacity without it takes the
-  // one-thread rule.
-  static constexpr u32 k_drop_scan_frames = 64;
-  u32 rt_frames_since_drop_ = 0;
   Vector<u64> slot_terrain_bytes_;  // per frame slot: the terrain field bytes that frame uploaded
   Vector<FrameCpu> slot_cpu_;       // per frame slot: where that frame's CPU time went
   Vector<f32> slot_visibility_;     // per frame slot: what its frame passes reported

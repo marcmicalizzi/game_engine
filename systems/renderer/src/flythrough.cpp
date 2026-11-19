@@ -247,6 +247,7 @@ void summarize_rt(const RtStats& stats, scene::FlythroughRt& out) {
   out.cache_built_total = stats.cache_built_total;
   out.cache_build_frames = stats.cache_build_frames;
   out.cache_overflow = stats.cache_overflow;
+  out.cache_unbuilt_frames = stats.cache_unbuilt_frames;
   out.cache_evictions = stats.cache_evictions;
   out.peak_references_wanted = stats.peak_references_wanted;
   out.reference_capacity = stats.reference_capacity;

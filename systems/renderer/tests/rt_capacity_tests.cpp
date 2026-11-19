@@ -79,9 +79,23 @@ struct Rig {
   ResolvedSettings resolved;
   GpuScene scene;
   SceneRenderer renderer;
+  // `reversed`: the same placements listed last first, each instance's pairs moved with it (R174).
   bool build(const gfx::Device& device, const RenderSettings& settings, std::string& error,
-             const SceneDesc& desc_in = terrain_grid()) {
+             const SceneDesc& desc_in = terrain_grid(), bool reversed = false) {
     if (!load_scene(desc_in, data, error)) return false;
+    if (reversed) {
+      std::reverse(data.instances.begin(), data.instances.end());
+      std::reverse(data.instance_joints.begin(), data.instance_joints.end());
+      u32 first = 0;
+      for (gfx::InstanceDesc& instance : data.instances) {
+        instance.first_pair = first;
+        first += data.parts[instance.mesh].cluster_count;
+      }
+      if (first != data.pair_count) {
+        error = "the reversed instances do not cover the scene's pairs";
+        return false;
+      }
+    }
     resolve_settings(settings, device.features(), &data, resolved);
     if (!resolved.rt_chain) {
       error = "the settings resolved to no ray tracing chain";
@@ -820,29 +834,6 @@ TEST_CASE("rt capacity: a drop names the bound it met") {
   CHECK(std::string(rt_bound_remedy(k_rt_bound_capacity)).rfind("none", 0) == 0);
 }
 
-TEST_CASE("rt capacity: the drop order is the prefix, then the rings inside out by tile key") {
-  RtDropBlock blocks[] = {{.key = 9, .rank = 3, .first_slot = 10, .slots = 2},
-                          {.key = 4, .rank = 2, .first_slot = 12, .slots = 1},
-                          {.key = 2, .rank = 3, .first_slot = 13, .slots = 3},
-                          {.key = 7, .rank = 1, .first_slot = 16, .slots = 2}};
-  Vector<u32> order;
-  rt_drop_order(3, std::span<RtDropBlock>(blocks, 4), order);
-  const u32 expected[] = {11, 0,                               // count, pad
-                          0,  0, 1,  0, 2,  0,                 // the prefix
-                          16, 1, 17, 1,                        // ring 0: key 7
-                          12, 2,                               // ring 1: key 4
-                          13, 3, 14, 3, 15, 3, 10, 3, 11, 3};  // ring 2: key 2, then 9
-  REQUIRE(order.size() == std::size(expected));
-  for (u32 i = 0; i < order.size(); ++i)
-    CHECK(order[i] == expected[i]);
-  // The blocks handed over in another order lay out the same order.
-  RtDropBlock shuffled[] = {blocks[3], blocks[0], blocks[2], blocks[1]};
-  Vector<u32> again;
-  rt_drop_order(3, std::span<RtDropBlock>(shuffled, 4), again);
-  REQUIRE(again.size() == order.size());
-  for (u32 i = 0; i < order.size(); ++i)
-    CHECK(again[i] == order[i]);
-}
 TEST_CASE("rt capacity: a chain sized by the frame draws what a chain sized by the scene draws") {
   gfx::Device device;
   std::string error;
@@ -1038,6 +1029,115 @@ void run_starved(const gfx::Device& device) {
 }
 
 }  // namespace
+
+// **Past the budget the kept set is a function of the placements** (R174; renderer.md, "Past the
+// capacity, by size on screen"): the grid's nine instances listed in two orders — the loader's
+// and its reverse, every instance's pairs moved with it — and drawn past the starved case's budget
+// trace the same picture, on the ray path (where a dropped instance is a hole) and under traced
+// shadows. What it compares is waited-for frames, and only once both runs stand at one capacity
+// and one limit: the guarantee is stated at one capacity. The ids name an instance by its place in
+// the list, so they are compared through the reversal. A pixel the two orders already part on at a
+// chain that holds everything (a tie at equal depth goes to the larger pair, and the pairs moved)
+// is left out and counted; past the budget no other pixel may differ. This holds what the walk's
+// "two runs drop the same instances" case held, with the order changed between the runs.
+TEST_CASE("rt chain: past the budget the traced picture follows the placement, not the order") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(renderer_test::device_options(), &error) || !traces(device)) {
+    MESSAGE("tracing unavailable: " << error);
+    return;
+  }
+  ScopedTunable per_frame("renderer.rt.cache", "false");  // the frame's own builds past the budget
+  for (const RasterMode raster : {RasterMode::RayTrace, RasterMode::Hardware}) {
+    RenderSettings settings;
+    settings.raster = raster;
+    settings.shadows = ShadowMode::RayTraced;
+    settings.lights = false;
+    settings.lod_px = 0.25f;  // the starved case's cut: several times what 1 MiB holds
+    const f32 distance = 0.8f;
+    // One order's waited-for frame at a budget (0: the device's, which holds the scene).
+    const auto shoot = [&](u32 mib, bool reversed, CapturedFrame& out, RtStats& rt) {
+      settings.rt_budget_mib = mib;
+      Rig rig;
+      REQUIRE_MESSAGE(rig.build(device, settings, error, terrain_grid(), reversed), error);
+      for (u32 f = 0; f < 6; ++f) {
+        REQUIRE_MESSAGE(rig.renderer.render_offscreen(frame_at(rig.data, distance, f), &error),
+                        error);
+      }
+      REQUIRE_MESSAGE(rig.renderer.capture(frame_at(rig.data, distance, 6),
+                                           {.color = true, .ids = true}, out, &error),
+                      error);
+      REQUIRE(out.color.size() == u64{k_width} * k_height * 4);
+      REQUIRE(out.ids.size() == u64{k_width} * k_height * k_id_words);
+      rt = rig.renderer.stats().rt;
+    };
+    // Pixel by pixel through the reversal: colour, and the ids with the instance word mapped.
+    constexpr u32 k_grid_instances = 9;
+    const auto parts = [&](const CapturedFrame& a, const CapturedFrame& b, u32 p) {
+      for (u32 c = 0; c < 4; ++c)
+        if (a.color[u64{p} * 4 + c] != b.color[u64{p} * 4 + c]) return true;
+      const u32* ia = a.ids.data() + u64{p} * k_id_words;
+      const u32* ib = b.ids.data() + u64{p} * k_id_words;
+      const u32 mapped = ib[0] < k_grid_instances ? k_grid_instances - 1 - ib[0] : ib[0];
+      return ia[0] != mapped || ia[1] != ib[1] || ia[2] != ib[2];
+    };
+    CapturedFrame whole[2];
+    RtStats whole_rt[2];
+    for (u32 order = 0; order < 2; ++order)
+      shoot(0, order != 0, whole[order], whole_rt[order]);
+    // Past one, two and three mebibytes: at one the first instance in key order wants more than
+    // the whole capacity and the frame keeps nothing (renderer.md, "A cut can keep nothing at a
+    // small named budget"; the device's first run of this case), so the comparison is made at each
+    // and at least one of them must keep something.
+    u32 past = 0;
+    u32 kept = 0;
+    for (const u32 mib : {1u, 2u, 3u}) {
+      CapturedFrame shots[2];
+      RtStats rt[2];
+      for (u32 order = 0; order < 2; ++order)
+        shoot(mib, order != 0, shots[order], rt[order]);
+      REQUIRE(rt[0].capacity == rt[1].capacity);
+      REQUIRE(rt[0].limit == rt[1].limit);
+      if (rt[0].wanted <= rt[0].limit) {
+        MESSAGE(std::string(raster_name(raster))
+                << " at " << mib << " MiB: " << rt[0].wanted << " wanted fit " << rt[0].limit);
+        continue;
+      }
+      ++past;
+      kept += rt[0].built > 0 ? 1u : 0u;
+      for (const RtStats& r : rt) {
+        CHECK(r.overflow_frames > 0);
+        CHECK(r.built <= r.capacity);
+      }
+      CHECK(rt[0].wanted == rt[1].wanted);
+      CHECK(rt[0].built == rt[1].built);
+      CHECK(rt[0].dropped_instances == rt[1].dropped_instances);
+      CHECK(rt[0].dropped_caster_instances == rt[1].dropped_caster_instances);
+      u32 tied = 0;
+      u32 parted = 0;
+      for (u32 p = 0; p < k_width * k_height; ++p) {
+        if (parts(whole[0], whole[1], p)) {
+          ++tied;
+          continue;
+        }
+        parted += parts(shots[0], shots[1], p) ? 1u : 0u;
+      }
+      MESSAGE(std::string(raster_name(raster))
+              << " at " << mib << " MiB: capacity " << rt[0].capacity << " of " << rt[0].wanted
+              << " wanted, built " << rt[0].built << " in both orders ("
+              << (rt[0].capacity > 0 ? 100 * rt[0].built / rt[0].capacity : 0)
+              << "% of the capacity); " << rt[0].dropped_instances << " drawn and "
+              << rt[0].dropped_caster_instances << " casters' instances dropped over the run; "
+              << parted << " pixels part past the budget, " << tied
+              << " already parted at a whole chain");
+      CHECK(parted == 0);
+      CHECK(tied * 100 <= k_width * k_height);  // ties at equal depth are a seam, not the picture
+    }
+    CHECK(past > 0);  // the case is about frames past the budget
+    CHECK(kept > 0);  // and about a kept set that is not empty
+  }
+  device.destroy();
+}
 
 // ---- the resident cluster structure cache (renderer.md, "The resident cluster structure cache";
 // R101) ----------------------------------------------------------------------------------------
@@ -1902,139 +2002,6 @@ TEST_CASE("rt capacity: a frame's record names the capacity it was built against
   device.destroy();
 }
 
-namespace {
-
-bool read_back(const gfx::Device& device, const gfx::BufferResource& source, u64 bytes,
-               Vector<u8>& out, std::string* error) {
-  gfx::BufferResource staging;
-  if (!gfx::create_buffer(device, bytes, gfx::BufferUsage::TransferDst, true, staging, error))
-    return false;
-  const bool ok = gfx::submit_immediate(
-      device,
-      [&](gfx::CommandList cb) {
-        const gfx::BufferCopy copy{0, 0, bytes};
-        cb.copy_buffer(source.buffer, staging.buffer, copy);
-      },
-      error);
-  if (ok) {
-    out.resize(static_cast<u32>(bytes));
-    std::memcpy(out.data(), staging.mapped, bytes);
-  }
-  gfx::destroy_buffer(device, staging);
-  return ok;
-}
-
-struct ChainBytes {
-  Vector<u8> count;
-  Vector<u8> records;
-  Vector<u8> blas;
-};
-
-// The kept records as a set: within an instance's dense range the order is the bucketing pass's
-// atomics', and a record names its own dense index (its cluster id and the low 24 bits of its
-// geometry word, VkClusterAccelerationStructureBuildTriangleClusterInfoNV), so those are cleared
-// and the records sorted. Which instance kept how many, and where, is the bottom-level records'.
-std::vector<std::string> kept_records(const Vector<u8>& bytes) {
-  const u64 size = gfx::k_cluster_build_record_bytes;
-  std::vector<std::string> out;
-  for (u64 at = 0; at + size <= bytes.size(); at += size) {
-    std::string record(reinterpret_cast<const char*>(bytes.data() + at), size);
-    std::memset(record.data(), 0, 4);       // clusterID
-    std::memset(record.data() + 12, 0, 3);  // the base geometry index; its flags kept
-    out.push_back(std::move(record));
-  }
-  std::sort(out.begin(), out.end());
-  return out;
-}
-
-// The drop rule's result after the last frame: the record count's words, the kept records and
-// every instance's bottom-level record.
-ChainBytes chain_bytes(const gfx::Device& device, const GpuScene& scene) {
-  ChainBytes out;
-  std::string error;
-  REQUIRE_MESSAGE(read_back(device, scene.record_count,
-                            sizeof(u32) * gfx::k_cluster_record_count_words, out.count, &error),
-                  error);
-  u32 built = 0;
-  std::memcpy(&built, out.count.data(), sizeof(u32));
-  const u64 record_bytes = gfx::k_cluster_build_record_bytes;
-  if (built > 0) {
-    REQUIRE_MESSAGE(read_back(device, scene.records, record_bytes * built, out.records, &error),
-                    error);
-  }
-  REQUIRE_MESSAGE(
-      read_back(device, scene.blas_records,
-                gfx::k_cluster_blas_record_bytes * scene.instance_count(), out.blas, &error),
-      error);
-  return out;
-}
-
-}  // namespace
-
-// The scan on every frame writes what the one-thread rule wrote (R128). R130 recorded the drop
-// order's scan only after a drop or while the demand was within half the capacity; a frame past
-// its capacity without it took the one-thread rule in `ranges_main`, 118-168 ms at 225,000
-// instances, and one such frame remained on the replay of the owner's walk. Pinned first: a frame
-// past its capacity after a stretch that fitted, recorded under R130's rule — so without the scan,
-// on the one thread — and then the same pose recorded with the scan, whose words and bottom-level
-// records must be the same bytes and whose records the same set (`kept_records`).
-TEST_CASE("rt capacity: the drop order's scan on every frame writes the one-thread rule's bytes") {
-  gfx::Device device;
-  std::string error;
-  if (!device.create(renderer_test::device_options(), &error) || !traces(device)) {
-    MESSAGE("tracing unavailable: " << error);
-    return;
-  }
-  {
-    ScopedTunable per_frame("renderer.rt.cache", "false");
-    ScopedTunable never("renderer.rt.shrink_seconds", "86400");
-    RenderSettings settings;
-    settings.raster = RasterMode::Hardware;
-    settings.shadows = ShadowMode::RayTraced;
-    settings.lights = false;
-    settings.lod_px = 0.25f;
-    settings.rt_budget_mib = 1;  // about 165 clusters: the near pose wants several times that
-    Rig rig;
-    REQUIRE_MESSAGE(rig.build(device, settings, error), error);
-    ScopedTunable old_rule("renderer.rt.scan_every_frame", "false");
-    ScopedTunable not_near("renderer.rt.scan_near_capacity", "false");
-    // A stretch that fits, longer than the 64 frames after a drop the scan stays recorded for.
-    u64 frame_index = 0;
-    // (SceneRenderer::k_drop_scan_frames, 64, and eight more.)
-    for (; frame_index < 72; ++frame_index) {
-      rig.renderer.begin_frame();
-      REQUIRE_MESSAGE(
-          rig.renderer.submit_frame(frame_at(rig.data, 40.0f, frame_index), &error) != 0, error);
-    }
-    rig.renderer.wait_idle();
-    REQUIRE(rig.renderer.stats().rt.overflow_frames == 0);  // the far pose fits the budget
-    // Past the capacity on the one thread: the CPU has seen no drop for 64 frames.
-    rig.renderer.begin_frame();
-    REQUIRE_MESSAGE(rig.renderer.submit_frame(frame_at(rig.data, 0.8f, frame_index++), &error) != 0,
-                    error);
-    rig.renderer.wait_idle();
-    const ChainBytes serial = chain_bytes(device, rig.scene);
-    u32 words[2] = {};
-    std::memcpy(words, serial.count.data(), sizeof(words));
-    MESSAGE("past the capacity of " << rig.scene.rt_capacity() << ": built " << words[0] << " of "
-                                    << words[1] << " wanted");
-    REQUIRE(words[1] > rig.scene.rt_capacity());  // the case: the frame dropped
-    // The same pose with the scan.
-    ScopedTunable scan("renderer.rt.scan_every_frame", "true");
-    rig.renderer.begin_frame();
-    REQUIRE_MESSAGE(rig.renderer.submit_frame(frame_at(rig.data, 0.8f, frame_index++), &error) != 0,
-                    error);
-    rig.renderer.wait_idle();
-    const ChainBytes scanned = chain_bytes(device, rig.scene);
-    CHECK(scanned.count.size() == serial.count.size());
-    CHECK(std::memcmp(scanned.count.data(), serial.count.data(), serial.count.size()) == 0);
-    REQUIRE(scanned.records.size() == serial.records.size());
-    CHECK(kept_records(scanned.records) == kept_records(serial.records));
-    REQUIRE(scanned.blas.size() == serial.blas.size());
-    CHECK(std::memcmp(scanned.blas.data(), serial.blas.data(), serial.blas.size()) == 0);
-  }
-  device.destroy();
-}
 // Class C of the owner's v27 hitches (R128): frame 7390 spent 103 ms in `blas`, the first
 // bottom-level build after the capacity stepped. Neither replay of the walk reproduced it — 25
 // steps on the owner's pace with a capacity that follows the demand, every first build within the

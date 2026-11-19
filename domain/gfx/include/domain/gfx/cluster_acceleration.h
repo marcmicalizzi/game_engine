@@ -314,13 +314,13 @@ inline constexpr u64 k_cluster_blas_record_bytes = 16;
 //                   `record_count`, and one 16-byte bottom-level record per instance pointing at
 //                   that instance's run of CLAS addresses. Both dispatch
 //                   `cluster_ranges_groups(instance_count)` groups. A frame past its capacity takes
-//                   the rule below as three more passes, `ranges_drop_main` (one workgroup: the
-//                   walk), `ranges_kept_count_main` and `ranges_kept_main`, dispatched indirectly
-//                   from `cluster_ranges_drop_args` and `cluster_ranges_kept_args` in
-//                   `instance_counts`, which a frame that fits leaves empty — when the caller
-//                   records them (`k_cluster_records_drop_scan`); without them the rule runs on
-//                   one thread of `ranges_main`, as it did before R106. With a cache, the
-//                   `_cached_` entry points of all five and of the emit pass
+//                   the rule below as five more passes — `keep_cut_main` and `keep_fine_main` (one
+//                   workgroup each: the cut's two levels), `keep_ties_main`,
+//                   `ranges_kept_count_main` and `ranges_kept_main` — dispatched indirectly from
+//                   `cluster_ranges_drop_args` and `cluster_ranges_kept_args` in `instance_counts`,
+//                   which a frame that fits leaves empty, so they are recorded on every frame. With
+//                   a cache, the `_cached_` entry points of the ranges, the kept passes and the
+//                   emit pass
 //                   (`ClusterRecordParams::cache`).
 //   `emit_main`     one thread per pair slot: move the kept entries down to the dense `records`
 //                   array — an instance's drawn clusters first, then its casters — and write the
@@ -331,11 +331,12 @@ inline constexpr u64 k_cluster_blas_record_bytes = 16;
 // **The set is sized by the frame, not by the scene** (docs/subsystems/renderer.md, "The ray
 // tracing chain's memory"). `capacity` is how many structures the set was created for, which the
 // renderer keeps a step above what recent frames built; a frame that wants more than it holds
-// keeps what fits and drops the rest **whole instances at a time, casters before drawn clusters**:
-// every instance's drawn clusters are taken in instance order while they fit, an instance whose
-// drawn clusters do not fit is skipped entirely (its casters with them), and the other instances'
-// casters are then taken the same way from what is left — a rank of `drop_order` at a time when it
-// names one (below), nearest rank first. Whole instances because a partial one
+// keeps what fits and drops the rest **whole instances at a time, the smallest on screen first**:
+// each instance has a keep key from its placement and the eye (`rt_keep_key`, rt_keep.h), its drawn
+// and caster items take it with their kind placed in it, and each capacity — the frame's own and
+// the cache's references — is spent as a prefix of the keys, equal keys kept or dropped together
+// (`rt_keep` is the rule on the CPU; renderer.md, "Past the capacity, by size on screen"). An
+// instance whose drawn item is dropped loses its casters too. Whole instances because a partial one
 // would keep whichever clusters the atomics happened to bucket first, which is not the same twice;
 // casters last because a caster only adds a shadow of a surface facing away from the camera,
 // while a drawn cluster that loses its structure loses its shadow and, under the ray path, its
@@ -404,10 +405,10 @@ struct ClusterRecordParams {
   // `pair_count` threads and cannot exceed it, while the set holds `views` runs.
   u32 pair_count = 0;
   // The low 16 bits: how many views' cuts accumulate into this set (see above). Bit 16: write
-  // k_cluster_instantiate_record_bytes records from templates instead of build records. Bit 17
-  // (`k_cluster_records_drop_scan`): the passes that walk a frame past its capacity as a scan are
-  // recorded after the ranges. Bit 18 (`k_cluster_records_untraced_drawn`): a traced-primary
-  // frame, whose records build an untraced instance's drawn entries.
+  // k_cluster_instantiate_record_bytes records from templates instead of build records. Bit 17 is
+  // free (it asked for the drop order's scan until R174). Bit 18
+  // (`k_cluster_records_untraced_drawn`): a traced-primary frame, whose records build an untraced
+  // instance's drawn entries. Bit 19 (`k_cluster_records_drawn_first`): below.
   u32 mode = 1;
   u32 capacity = 0;  // the structures the set holds: ranges_main keeps no more (see above)
   // **Alpha-tested materials** (renderer.md, "Alpha-tested geometry"): the scene's material table
@@ -417,12 +418,12 @@ struct ClusterRecordParams {
   // extension has 256 bytes of push constants) are asked to take.
   u64 mask_materials = 0;
   u64 mask_cluster_materials = 0;
-  // **The drop order** (renderer.md, "The ray tracing chain's memory", 2026-10-25): what
-  // `ranges_main` keeps when a frame wants more than `capacity` — `u32 count, u32 pad`, then
-  // `count` `{instance, rank}` pairs in the order the capacity is spent, nearest rank first. A rank
-  // is kept drawn clusters first, then casters, before the next rank is touched; an instance the
-  // order does not name keeps nothing. 0 is instance order in one rank, the rule before.
-  u64 drop_order = 0;
+  // **The keep block** (renderer.md, "Past the capacity, by size on screen"; R174): a
+  // `ClusterKeepTables` (rt_keep.h) — the eye, the meshes' spheres, the keep keys, the histograms
+  // and the cut words — which the ranges read when a frame wants more than `capacity`. Each
+  // capacity is then spent as a prefix of the instances' keep keys, as `rt_keep` does on the CPU.
+  // Read only past the capacity; 0 is allowed for a caller whose frames always fit.
+  u64 keep = 0;
   // Optional compact geometry indices: emit writes the original visible entry at the record's
   // dense index. Zero preserves the direct visible-index records used by low-level callers.
   u64 hit_entries = 0;
@@ -604,10 +605,6 @@ inline constexpr u32 k_cluster_blas_none = 0xffffffffu;
 inline constexpr u32 k_tlas_references_workgroup = 64;
 inline constexpr u32 k_cluster_records_workgroup = 64;
 inline constexpr u32 k_cluster_records_instantiate = 1u << 16;  // ClusterRecordParams::mode
-// ClusterRecordParams::mode: the three passes after the ranges (`ranges_drop_main`,
-// `ranges_kept_count_main`, `ranges_kept_main`) are recorded, so a frame past its capacity walks
-// its drop order as a scan; without it such a frame takes the one-thread rule in `ranges_main`.
-inline constexpr u32 k_cluster_records_drop_scan = 1u << 17;
 // ClusterRecordParams::mode: **a traced-primary frame** (R110; renderer.md, "The caster policy").
 // An instance flagged `k_instance_untraced` is left out of the records — no slot, no count — in a
 // frame without this bit, which is every frame whose picture is rasterized; with it, the
@@ -617,22 +614,21 @@ inline constexpr u32 k_cluster_records_drop_scan = 1u << 17;
 // record's mask has no caster bit (`instance_ray_mask`, cluster_cull.h).
 inline constexpr u32 k_cluster_records_untraced_drawn = 1u << 18;
 // ClusterRecordParams::mode: **past the capacity, every drawn structure before any caster** (R143;
-// renderer.md, "What a frame past its capacity keeps"). Without it the rule spends the capacity a
-// rank of the drop order at a time — a ring's drawn clusters, then its casters, then the next ring
-// — which is right where the structures are the shadows only: a near tree's far side shadows more
-// pixels than a far tree does. Where they are the picture (a traced-primary frame), a dropped drawn
-// instance is a hole in it and a dropped caster a shadow's far side, so the whole order is one
-// rank: every instance's drawn clusters nearest first, then the casters nearest first. The
-// renderer sets it with the ray path.
+// renderer.md, "What a frame past its capacity keeps"). The kind is then the keep key's top bit
+// (`rt_keep_item_key`): every instance's drawn clusters are spent before any caster, largest on
+// screen first, then the casters. Without it the drawn go before the casters at one size, which is
+// right where the structures are the shadows only: a near tree's far side shadows more pixels than
+// a far tree does. Where they are the picture (a traced-primary frame), a dropped drawn instance is
+// a hole in it and a dropped caster a shadow's far side. The renderer sets it with the ray path.
 inline constexpr u32 k_cluster_records_drawn_first = 1u << 19;
 // The ranges' scan (clas_records.slang, `ranges_count_main` and `ranges_main`, and past the
-// capacity `ranges_drop_main`, `ranges_kept_count_main` and `ranges_kept_main`): a block of 1,024
-// instances to a group of 256 threads, four contiguous instances a thread. `instance_counts` holds,
-// past its three thirds, per group of the scan (`cluster_ranges_groups`) two words of block sums,
-// two of kept block sums and four of the order's sequence sums, then eight drop words — the drop
-// pass's indirect dispatch, the kept passes', and the state — then the order's sequence, two items
-// of four words an instance. `cluster_ranges_drop_args` and `cluster_ranges_kept_args` are the two
-// dispatches' byte offsets in it.
+// capacity `keep_cut_main`, `keep_ties_main`, `keep_fine_main`, `ranges_kept_count_main` and
+// `ranges_kept_main`): a block of 1,024 instances to a group of 256 threads, four contiguous
+// instances a thread. `instance_counts` holds, past its three thirds, per group of the scan
+// (`cluster_ranges_groups`) two words of block sums and two of kept block sums, then eight drop
+// words — the cut passes' indirect dispatch, the ties' and kept passes', and the state — then the
+// keep keys, two words an instance (`cluster_ranges_keys_offset`). `cluster_ranges_drop_args` and
+// `cluster_ranges_kept_args` are the two dispatches' byte offsets in it.
 inline constexpr u32 k_cluster_ranges_workgroup = 256;
 inline constexpr u32 k_cluster_ranges_block = 1024;
 constexpr u32 cluster_ranges_groups(u32 instance_count) noexcept {
@@ -640,13 +636,16 @@ constexpr u32 cluster_ranges_groups(u32 instance_count) noexcept {
   return blocks > 0 ? blocks : 1u;
 }
 constexpr u64 cluster_ranges_drop_args(u32 instance_count) noexcept {
-  return (u64{instance_count} * 3 + u64{8} * cluster_ranges_groups(instance_count)) * 4;
+  return (u64{instance_count} * 3 + u64{4} * cluster_ranges_groups(instance_count)) * 4;
 }
 constexpr u64 cluster_ranges_kept_args(u32 instance_count) noexcept {
   return cluster_ranges_drop_args(instance_count) + 12;
 }
+constexpr u64 cluster_ranges_keys_offset(u32 instance_count) noexcept {
+  return cluster_ranges_drop_args(instance_count) + 32;
+}
 constexpr u64 cluster_instance_count_words(u32 instance_count) noexcept {
-  return u64{instance_count} * 11 + u64{8} * cluster_ranges_groups(instance_count) + 8;
+  return u64{instance_count} * 5 + u64{4} * cluster_ranges_groups(instance_count) + 8;
 }
 // `record_count`'s words: 0 built (what the frame's own CLAS build reads as its count), 1 wanted, 2
 // instances that lost their drawn clusters, 3 instances that lost their casters; with a cache, 4
@@ -659,10 +658,9 @@ constexpr u64 cluster_instance_count_words(u32 instance_count) noexcept {
 // ranges' first dispatch clears and `blas_compact_main` (tlas_references.slang) counts.
 inline constexpr u32 k_cluster_record_count_blas = 12;
 inline constexpr u32 k_cluster_record_count_words = 13;
-constexpr u32 cluster_records_mode(u32 views, bool instantiate, bool drop_scan = false,
-                                   bool untraced_drawn = false, bool drawn_first = false) noexcept {
+constexpr u32 cluster_records_mode(u32 views, bool instantiate, bool untraced_drawn = false,
+                                   bool drawn_first = false) noexcept {
   return (views & 0xffffu) | (instantiate ? k_cluster_records_instantiate : 0u) |
-         (drop_scan ? k_cluster_records_drop_scan : 0u) |
          (untraced_drawn ? k_cluster_records_untraced_drawn : 0u) |
          (drawn_first ? k_cluster_records_drawn_first : 0u);
 }
