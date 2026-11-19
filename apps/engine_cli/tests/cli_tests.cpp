@@ -430,12 +430,14 @@ TEST_CASE("cli: --bisect names the first tick, phase, table and field two runs d
   CHECK(at(at(entity, "fields")[0], "b") == JsonValue("103"));
   CHECK(bisect({pa, dir.path() + "/missing.hashlog"}).exit_code == 2);
 
-  // T196: what a comparison cannot say is refused, exit 3 and nothing on stdout, where it was a 0.
+  // T196: what a comparison cannot say is refused, exit 4 and nothing on stdout, where it was a 0.
+  // Not 3, which an aborted engine-cli exits with on Windows (platform.md): a refusal must be told
+  // from a failed assertion.
   const auto refused = [&](const sim::HashLog& other, const char* name) {
     const std::string path = dir.path() + "/" + name;
     REQUIRE(other.save(path));
     const Run run = bisect({pa, path});
-    CHECK(run.exit_code == 3);
+    CHECK(run.exit_code == 4);
     CHECK(run.stdout_text.empty());
   };
   // An empty log.
@@ -470,6 +472,6 @@ TEST_CASE("cli: --bisect names the first tick, phase, table and field two runs d
     std::ofstream(eb) << write_json(sim::capture_to_json(early_b));
     std::ofstream(ob) << write_json(sim::capture_to_json(other_table));
   }
-  CHECK(bisect({pa, pb, ea, eb}).exit_code == 3);
-  CHECK(bisect({pa, pb, fa, ob}).exit_code == 3);
+  CHECK(bisect({pa, pb, ea, eb}).exit_code == 4);
+  CHECK(bisect({pa, pb, fa, ob}).exit_code == 4);
 }

@@ -33,7 +33,7 @@ const char* k_usage =
     "  --bisect           the divergence bisector, on files and with no host: the first tick,\n"
     "                     phase and tables two state-hash logs differ at, and with two captures\n"
     "                     of that table the entities and fields that differ. Exit 0 when the\n"
-    "                     logs agree, 1 when they differ, 2 when a file cannot be read, 3 when\n"
+    "                     logs agree, 1 when they differ, 2 when a file cannot be read, 4 when\n"
     "                     a comparison would say nothing (an empty log, one cut short, logs of\n"
     "                     different phases, captures of different points)\n"
     "\n"
@@ -213,9 +213,13 @@ int run_console(const Vector<std::string_view>& host_argv, const std::string& sc
 
 // `--bisect`: the divergence bisector on files, with no host (domain/sim/hash_log.h; apps.md, "The
 // divergence bisector"). Exit 0 when the logs agree row for row, 1 when they differ, 2 when a file
-// cannot be read, 3 when the files read but a comparison of them would say nothing
+// cannot be read, 4 when the files read but a comparison of them would say nothing
 // (`sim::bisect_refusal`, `sim::capture_refusal`: an empty log, a log cut short, logs of different
-// shapes, captures of different points).
+// shapes, captures of different points). Not 3: an engine binary's 3 is "unavailable here" to the
+// apps' end-to-end cases, and it is what the runtime's `abort()` exits with on Windows
+// (platform.md), so a refusal on 3 could not be told from a failed assertion.
+constexpr int k_exit_bisect_refused = 4;
+
 int run_bisect(int argc, char** argv, int first) {
   const int count = argc - first;
   if (count != 2 && count != 4) {
@@ -233,7 +237,7 @@ int run_bisect(int argc, char** argv, int first) {
   const sim::Divergence d = sim::first_divergence(a, b);
   if (const std::string why = sim::bisect_refusal(a, b, d); !why.empty()) {
     std::fprintf(stderr, "engine-cli: --bisect refused: %s\n", why.c_str());
-    return 3;
+    return k_exit_bisect_refused;
   }
   JsonValue out = JsonValue::object();
   out.set("diverged", d.found);
@@ -269,7 +273,7 @@ int run_bisect(int argc, char** argv, int first) {
     }
     if (const std::string why = sim::capture_refusal(ca, cb, d); !why.empty()) {
       std::fprintf(stderr, "engine-cli: --bisect refused: %s\n", why.c_str());
-      return 3;
+      return k_exit_bisect_refused;
     }
     u64 differing = 0;
     const sim::CaptureDiff diff = sim::diff_captures(ca, cb, 64, &differing);
