@@ -316,7 +316,8 @@ TEST_CASE("Counter: done only after the last signal has finished with it") {
     js.schedule(Pool::Performance, Job{hit, &ctx, &counter});
     js.schedule(Pool::Performance, Job{hit, &ctx, &counter});
     if (round % 2 == 0) {
-      while (!counter.done()) platform::pause_cpu();
+      while (!counter.done())
+        platform::pause_cpu();
     } else {
       counter.wait_blocking();
     }

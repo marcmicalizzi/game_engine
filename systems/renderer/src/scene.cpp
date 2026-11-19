@@ -3409,10 +3409,11 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     }
     if (resolved.terrain.enabled) {
       out.ground_albedo = terrain_ground_albedo(
-          resolved.terrain, terrain_mesh < out.sources.size() ? &out.sources[terrain_mesh].data
-                                                              : nullptr);
+          resolved.terrain,
+          terrain_mesh < out.sources.size() ? &out.sources[terrain_mesh].data : nullptr);
     }
-  }  // W51-3: what the built textures now stand in for goes, before the forms below copy the meshes.
+  }  // W51-3: what the built textures now stand in for goes, before the forms below copy the
+     // meshes.
   const ImageBytesReleased released_images = release_built_image_bytes(out.sources);
   out.load.image_bytes_released_meshes = released_images.meshes;
   out.load.image_bytes_released = released_images.bytes;

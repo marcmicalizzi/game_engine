@@ -70,7 +70,8 @@ class Counter {
 
   void add(u32 n = 1) noexcept {
     [[maybe_unused]] const u32 before = state_.fetch_add(n, std::memory_order_relaxed);
-    ENGINE_ASSERT((before & k_count_mask) + n <= k_count_mask, "a counter counts fewer than 2^28 jobs");
+    ENGINE_ASSERT((before & k_count_mask) + n <= k_count_mask,
+                  "a counter counts fewer than 2^28 jobs");
   }
   bool done() const noexcept { return state_.load(std::memory_order_acquire) == 0; }
   u32 remaining() const noexcept { return state_.load(std::memory_order_acquire) & k_count_mask; }
@@ -78,9 +79,8 @@ class Counter {
   // Called by the job system when a job completes; also usable for manual completion.
   void signal() noexcept {
     u32 v = state_.load(std::memory_order_relaxed);
-    while (!state_.compare_exchange_weak(
-        v, (v & k_count_mask) == 1 ? v - 1 + k_notifying : v - 1, std::memory_order_acq_rel,
-        std::memory_order_relaxed)) {
+    while (!state_.compare_exchange_weak(v, (v & k_count_mask) == 1 ? v - 1 + k_notifying : v - 1,
+                                         std::memory_order_acq_rel, std::memory_order_relaxed)) {
     }
     if ((v & k_count_mask) != 1) return;
     state_.notify_all();
@@ -93,8 +93,10 @@ class Counter {
   void wait_blocking() noexcept {
     u32 v = state_.load(std::memory_order_acquire);
     while (v != 0) {
-      if ((v & k_count_mask) != 0) state_.wait(v, std::memory_order_acquire);
-      else platform::pause_cpu();
+      if ((v & k_count_mask) != 0)
+        state_.wait(v, std::memory_order_acquire);
+      else
+        platform::pause_cpu();
       v = state_.load(std::memory_order_acquire);
     }
   }
