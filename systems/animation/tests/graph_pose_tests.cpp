@@ -517,6 +517,20 @@ TEST_CASE("animation graph pose: one worker and eight, any batch, two runs: the 
   CHECK(std::memcmp(s1.data(), s7.data(), sbytes) == 0);
 }
 
+// Two graph states hold the same bytes in every field. Not a memcmp of the whole struct: version 2
+// (S35-4's `revision`) is 68 bytes of fields in 72, and the four bytes of tail padding are whatever
+// the copy out of the entity store left there (linux-clang-debug read -61 between two equal
+// states, batch 70's stack). Every field is still compared bit for bit.
+static bool same_graph_state(const AnimationGraphState& a, const AnimationGraphState& b) {
+  static_assert(sizeof(AnimationGraphState) == 72, "a field added here is compared below too");
+  const auto same = [](const auto& x, const auto& y) {
+    return std::memcmp(&x, &y, sizeof(x)) == 0;
+  };
+  return same(a.graph, b.graph) && same(a.state, b.state) && same(a.next, b.next) &&
+         same(a.elapsed, b.elapsed) && same(a.duration, b.duration) && same(a.time, b.time) &&
+         same(a.next_time, b.next_time) && same(a.phase, b.phase) && same(a.revision, b.revision);
+}
+
 TEST_CASE(
     "animation graph pose: a graph-driven entity promoted from LOD3 lands where ticking would") {
   Rig rig;
@@ -554,7 +568,7 @@ TEST_CASE(
   AnimationGraphState b;
   REQUIRE(animation.graph_state(ticked, a));
   REQUIRE(animation.graph_state(frozen, b));
-  CHECK(std::memcmp(&a, &b, sizeof(a)) == 0);
+  CHECK(same_graph_state(a, b));
   u32 fa = 0;
   u32 fb = 0;
   REQUIRE(animation.joint_run(ticked, fa, count));
@@ -653,5 +667,5 @@ TEST_CASE("animation graph pose: a graph replaced by a smaller one restarts its 
   stale.state[0] = 2;
   const AnimationGraphState before = stale;
   graph_catch_up(*g, inputs[0], stale, 1.0f);
-  CHECK(std::memcmp(&stale, &before, sizeof(stale)) == 0);
+  CHECK(same_graph_state(stale, before));
 }
