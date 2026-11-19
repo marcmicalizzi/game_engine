@@ -85,12 +85,15 @@ Lean lean_of(const structure::Description& d, const structure::Wall& w) noexcept
 struct Context {
   const structure::Description* d = nullptr;
   structure::MeshScope scope = structure::MeshScope::whole;
+  u32 leaf = 0;  // the `leaf` scope's leaf, in `door_records`' order
   Vector<WallGeom> walls;
   MeshPart* parts = nullptr;  // k_surfaces of them
 
   MeshPart& part(structure::Surface s) const noexcept { return parts[index_of(s)]; }
-  // Whether a piece seen from outside (`exterior`) or from inside belongs to this pass's scope.
+  // Whether a piece seen from outside (`exterior`) or from inside belongs to this pass's scope. The
+  // `leaf` scope holds one leaf and nothing else.
   bool wants(bool exterior) const noexcept {
+    if (scope == structure::MeshScope::leaf) return false;
     return scope == structure::MeshScope::whole ||
            (scope == structure::MeshScope::exterior) == exterior;
   }
@@ -125,6 +128,16 @@ struct LeafPlace {
 // The leaves of opening `o` (0, 1 or 2), for the mesher and the walk records alike (shell.cpp).
 u32 leaf_places(const structure::Description& d, const structure::Opening& o,
                 LeafPlace (&out)[2]) noexcept;
+// The description's `index`-th leaf, in `door_records`' order (openings, then hinge first), shut:
+// its place with the opening's angle undone, and the opening. False past the last.
+bool leaf_shut(const structure::Description& d, u32 index, LeafPlace& out,
+               const structure::Opening*& opening) noexcept;
+// Which way a shut leaf's thickness lies in its own frame, whose +x is from the hinge to the free
+// edge: +1 along +z, -1 along -z, chosen so that the leaf opens by turning its +x toward -z for +1
+// (a positive angle about +y) and toward +z for -1 (structures.md, "A leaf is a mesh of its own").
+f64 leaf_side(const LeafPlace& shut) noexcept;
+// The `leaf` scope's mesh (shell.cpp): leaf `ctx.leaf` alone, shut, its hinge's foot at the origin.
+void mesh_leaf(const Context& ctx);
 
 // The two halves of the mesher. `mesh_shell` (shell.cpp): the walls with their openings, reveals
 // and frames, the roofs and the chimneys. `mesh_interior` (interior.cpp, **the interiors' seam**):

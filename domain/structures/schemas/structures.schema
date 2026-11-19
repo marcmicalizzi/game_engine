@@ -276,14 +276,19 @@ struct Description @version(1) {
 /// What one mesh of a description holds. `whole`: everything, one mesh. `exterior`: what is seen
 /// from outside (the walls' outer faces, the roof, the chimneys above it, the frames). `interior`:
 /// the rest. The two halves together are the whole, split so a host may keep an interior resident
-/// only where a walker can reach it.
-enum MeshScope : u8 { whole = 0, exterior = 1, interior = 2 }
+/// only where a walker can reach it. None of the three holds a leaf on a hinge (a door's, a
+/// shutter's): it moves, so it is a mesh of its own, `leaf`, the recipe's `leaf`-th in the order
+/// the container's section 53 lists them, shut, in its own frame with its hinge at the origin
+/// (structures.md, "A leaf is a mesh of its own").
+enum MeshScope : u8 { whole = 0, exterior = 1, interior = 2, leaf = 3 }
 
 /// The mesh generator `structure`'s file (`<name>.structure.json`): a description and which of
 /// its meshes to build.
-struct Recipe @version(1) {
+struct Recipe @version(2) {
   description: Description
   scope: MeshScope = whole
+  /// `leaf` scope only: which of the description's leaves (0 the first section 53 lists).
+  leaf: u32 = 0 @since(2)
 }
 
 /// A building as a **document record** (D37): its description, where it stands and how it is

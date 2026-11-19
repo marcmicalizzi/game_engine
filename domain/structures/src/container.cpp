@@ -45,17 +45,24 @@ std::string canonical_json(const structure::Recipe& recipe) {
 
 u64 source_hash(const structure::Recipe& recipe) {
   const std::string text = canonical_json(recipe);
-  u64 hash = hash_combine(hash_bytes(text.data(), text.size()), k_structure_version);
-  // A description that hangs a leaf has a container with section 53 since S91, so an entry built
-  // before it, which hands a host no doors, is rebuilt; every description with none keeps its key.
-  // A tag rather than a bump of `k_structure_version`, which would move every structure's key.
-  for (const structure::Opening& o : recipe.description.openings) {
-    if (o.leaf != structure::LeafKind::none && o.kind != structure::OpeningKind::doorway) {
-      hash = hash_combine(hash, u64{0x444f4f5253303533ull});  // "DOORS053"
-      break;
-    }
-  }
-  return hash;
+  // `k_structure_version` 6 (S91): a leaf left the house's mesh for its own, and the container of
+  // a description that hangs one carries section 53, so every entry built before is rebuilt.
+  return hash_combine(hash_bytes(text.data(), text.size()), k_structure_version);
+}
+
+std::string leaf_recipe(const structure::Recipe& house, u32 index) {
+  structure::Recipe leaf = house;
+  leaf.scope = structure::MeshScope::leaf;
+  leaf.leaf = index;
+  return canonical_json(leaf);
+}
+
+std::string leaf_path(std::string_view house_path, u32 index) {
+  std::string_view stem = house_path;
+  constexpr std::string_view k_suffix = ".structure.json";
+  if (stem.size() >= k_suffix.size() && stem.substr(stem.size() - k_suffix.size()) == k_suffix)
+    stem.remove_suffix(k_suffix.size());
+  return std::string(stem) + ".leaf" + std::to_string(index) + std::string(k_suffix);
 }
 
 // **The leaves as doors** (structures.md, "Leaves and mullions"; geometry.md, "Doors"; S91): every
@@ -100,7 +107,7 @@ bool build_container(const structure::Recipe& recipe, const assets::MeshGenerato
                      geometry::ClusterFileData& out, Report& report, std::string& error) {
   out = {};
   MeshPart parts[k_surfaces];
-  if (!solve(recipe.description, recipe.scope, parts, report, error)) return false;
+  if (!solve(recipe.description, recipe.scope, parts, report, error, recipe.leaf)) return false;
   geometry::ClusterLodOptions options = lod;
   // A floor, a ceiling and a roof's underside are sheets seen from one side only, but a wall's
   // face is not closed either: no cone may cull what the other side of a doorway shows.
@@ -185,7 +192,10 @@ bool build_container(const structure::Recipe& recipe, const assets::MeshGenerato
   for (u32 c = 0; c < out.mesh.lod.size(); ++c)
     if (out.mesh.lod[c].parent_error == geometry::k_lod_terminal_error)
       report.root_triangles += out.mesh.mesh.clusters[c].triangle_count;
-  door_records(recipe.description, out.doors);
+  // The doors go with what stands round them: the whole and the exterior (the interior beside an
+  // exterior would declare each twice), never the leaf's own mesh.
+  if (recipe.scope == structure::MeshScope::whole || recipe.scope == structure::MeshScope::exterior)
+    door_records(recipe.description, out.doors);
   out.source_hash = source_hash(recipe);
   out.build_key = assets::generated_mesh_build_key(out.source_hash, inputs, lod, page_bytes);
   out.generator = "structure";
