@@ -1,0 +1,15 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W51-3",
+  "reason": "W51-3 stages 1 and 4: the upload decodes an image the load let go from its container; GpuScene::create takes the host's SceneData to give back the upload-only streams before the textures and the chain are made, and engine-view's two loops pass it (the offscreen one not with --verify-occlusion); renderer.md says which images the load lets go and when the host streams go",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.gpu_scene_cpp.lines": 13,
+    "renderer.gpu_scene_h.lines": 5,
+    "engine_view.main_cpp.lines": 6,
+    "engine_view.run_view.lines": 2,
+    "engine_view.run_offscreen.lines": 4,
+    "page:docs/subsystems/renderer.md": 3693
+  }
+}

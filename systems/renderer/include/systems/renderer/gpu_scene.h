@@ -173,8 +173,13 @@ class GpuScene {
   // the scene's own meshes and uploads the chunks it holds into the first of them (renderer.md,
   // "The rings in the scene", "The ground from the world's tiles"); its chunks then know their
   // slots and give their DAGs up.
+  // `release` (W51-3; renderer.md, "The scene's host copy after the upload"): `&data` from a host
+  // that gives the uploaded streams back after `create` anyway (`release_uploaded_streams`), so the
+  // upload-only ones — the 16-bit grid, the attributes, the vertex ids — go as soon as the geometry
+  // is on the device and before the textures and the chain are made, which is where the load peaks.
   bool create(const gfx::Device& device, const SceneData& data, const ResolvedSettings& resolved,
-              std::string* error = nullptr, TerrainLevelSet* rings = nullptr);
+              std::string* error = nullptr, TerrainLevelSet* rings = nullptr,
+              SceneData* release = nullptr);
   void destroy() noexcept;
   bool valid() const noexcept { return device_ != nullptr; }
 

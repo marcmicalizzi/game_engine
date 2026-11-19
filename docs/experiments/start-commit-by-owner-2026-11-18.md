@@ -13,6 +13,8 @@ Each run with `--memory-report` (`apps.md`, "--memory-report: where the commit i
 
 ## The three points
 
+**Correction (W51-3, 2026-11-18): these loads were not standing.** An offscreen `engine-view` with no `--camera-path` flies `renderer::orbit_camera`, which on the staging swept about 300 m a frame (185 tiles in and out a tick, 48 ground rebuilds, 7.4 GB uploaded over 3,600 frames; found by roadmap row W149), so the peak and its owners (before any frame) stand, "ready" is nearly right, and "after a minute standing" was taken on that orbit and is not a standing figure; [W51-3's](#w51-3-what-the-stages-returned) after-run flies the scene's one-place path and gives the first standing one.
+
 Commit is the process's private commit (what the commit limit is charged); on Windows it includes one byte of untouched commit per byte the engine puts on the GPU (T129: [memory-commit-accounting](memory-commit-accounting.md)).
 
 | | Top (T3, 4K traced) | Low (T4, 1080p raster + cascades) |
@@ -107,6 +109,79 @@ Sources for the split: Cyberpunk's path-traced 4K tier (24 GB / 16 GB) is the up
 | 6 | **The residency manager (W47) over geometry, companions, tiles and the structure cache** | most of the 4.4 GB geometry and companions and part of the 1.4 GB cache | large (ADR-0063 stages b to j) |
 
 After stages 1 to 3 the top setting stands at about **12.5 GB of commit with 2 GB on the host and 10.5 GB on the device** (25.0 − 7.3 − 2.5 − 2.7 at ready), and peaks at about 18 GB until stage 4. **So the host's 8 GB is one stage (stage 1 alone takes the host from 11.3 to 4 GB standing), the device's 10 GB is stages 3 and 5, and the peak's is stage 4: four small-to-medium stages before W47's residency manager, which is what the low setting and a larger world need.**
+
+## W51-3: what the stages returned
+
+**The owners, made sure of** (W51-3, 2026-11-18). A release build folds identical functions, so the
+table's frame names were checked in a build that does not: the base's own debug `engine-view` with
+the instrument (`--memory-report-floor-mib 1`) on `content/test-scenes/streamed-forest` (five
+generated trees and their eight authored forms), its `uploaded` snapshot's sites symbolized with
+`cdb` against its PDB.
+
+- **Stage 1's 7,330 MiB are the image bytes copied into every form**: `Vector<u8>` copy-constructed
+  inside `assets::ImageRef`'s copy, inside `Vector<ImageRef>`'s, inside `MeshData`'s, inside
+  `SourceMesh`'s — the copy `stream_authored`, `make_placement_forms` and `offer_far_forms` make of
+  a mesh for each form, embedded images and all.
+- **Stage 2's 2,520 MiB are not `u32` streams**: the frame under `read_cluster_file_memory` is
+  `Vector<u8>::resize`, the container's image bytes, which `adopt_container` moves into the original
+  mesh's `ImageRef::bytes`. They are the same owner as stage 1 — the originals where stage 1 is the
+  copies — and stage 1's release returns both, so **stage 2 is stage 1** and has no change of its
+  own.
+- A third owner the same check names: each form's copy of the per-vertex motion records and the
+  part map, cleared and refilled with the form's own subset — `clear()` keeps the source's whole
+  capacity, so every form of a tree held a whole tree's records (W51-2's `SourceMesh::SourceMesh`
+  sites, about 500 MiB). Given back now (`Vector()` assigned, not cleared), in the same commit.
+
+**Stage 1** (renderer.md, "The embedded image bytes go once the textures are built"): the load
+empties a mesh's image bytes once every image its materials sample has its `.tex` and the mesh has
+a container to read them back from; the readers that come late read the container again.
+
+**How it was measured.** As W51-2's T3 and T4, one load a lease, warm (derived data and pipeline
+cache), 1,200 frames standing, `--memory-report-floor-mib 2`, the process sampled from outside every
+two seconds; the binary is the branch's own `msvc-release` build of each stage. The machine: the
+processors at 99 % from other agents' builds at every start, the session unlocked, free commit
+written beside each run. **The working sets after the peak are floors**: with free memory this low
+Windows trims a process's working set (W51-2's caveat), and these runs had less free memory than
+W51-2's (14.6 GB of commit at the lowest against 41 to 55 at its starts).
+
+| Top (4K, traced, bounce) | W51-2's T3 (the base) | Stage 1 (S1-top) |
+|---|---:|---:|
+| Free commit at the start / lowest during | 54.5 / — GB | 40.0 / 14.6 GB |
+| `scene loaded`: commit | 16.3 GB | **5.96 GB** |
+| **Peak** (end of `gpu scene`): commit / working set / GPU | 30.6 / 15.0 / 13.7 GB | **20.5** / 6.1 / 14.0 GB |
+| **Ready** (first frames): commit / working set / GPU | 27.5 / 11.6 / 14.5 GB | **17.4** / 2.6 / 14.5 GB |
+| After a minute **on the orbit** (not standing; see the correction above): commit / working set / GPU | 25.0 / 11.7 / 11.9 GB | 15.0 / 2.8 / 11.9 GB |
+| `uploaded` snapshot: commit / engine heap | 30,560 / 14,628 MiB | 19,966 / **4,708** MiB |
+| exit snapshot: commit / engine heap | 25,561 / 11,410 MiB | 15,150 / **1,471** MiB |
+| The image bytes in the forms' `SourceMesh` copies | 7,330 MiB | **0** |
+| The originals' image bytes (W51-2's "`u32` streams") | 2,520 MiB | **0** |
+| The forms' copies of the motion records and part maps | ~500 MiB | **0** (the originals' 50 MiB remain) |
+| The merged host copy at the peak | 3,502 MiB | 3,502 MiB (stage 4's) |
+
+**Stage 1 returns 10.1 GB of commit at every point of the load** — before the first frame, at its
+peak, and a minute on (both runs on the orbit) — and 9.9 GB of the engine heap; the device is unchanged. The engine scenes say
+the same in small, with pictures byte-identical (the captures of `streamed-forest` and `grove`,
+1280 × 720, six frames, base and stage 1, compared by hash): `streamed-forest`'s engine heap at
+`uploaded` 156 → 132 MiB and at exit 58 → 35, `grove`'s 17 → 13 and 9 → 5; the load's log names
+what went (`embedded image bytes released`: 6 meshes, 40 images, 7.9 MB; 4, 18, 3.9 MB).
+
+**Stage 4** (renderer.md, "The upload-only streams go inside `create`"): of the merged host copy
+that stood beside the device copy at the peak (3,502 MiB: the float positions 1,077, the attributes
+718, the 16-bit grid 538, three `u32` streams of 359, 359 and 302), the attributes, the grid and the
+vertex ids now go right after the geometry's upload, before the textures (3.1 GB), the working set
+and the chain's first capacity (2.8 GB) are made; the floats and the triangles stay for the chain's
+8-bit indices and the collision's copy, as T138 left them. On the engine scenes, pictures
+byte-identical to the base again: `streamed-forest`'s engine heap at `uploaded` 132 → 89 MiB (the log:
+19.5 MB of grid and 26.0 MB of attributes given back inside `create`, the 61 MB of floats at the
+host's release), commit 2,274 → 2,231 MiB; `grove`'s heap 13 → 9 MiB. On the staging the same rows
+fall by 1.26 GB at the peak and more if the 302 MiB stream is the ids (the owner rows above).
+**Not flown on the staging yet**: the one after-run with both stages, standing on the scene's
+one-place path (`--camera-path`, W149's `standing-path.json`), was asked five times between 19:23
+and 20:11 and refused each time at its start for free commit (19 to 32 GB against the 30 GB its
+20.5 GB peak needs with room), the machine full of other rows' loads. So the staging has stage 1's
+peak and ready (above, on the orbit), stage 4's share by its owner rows, and **no standing figure
+yet, before or after**: the first standing minute is owed by whoever next flies the staging, with
+`--camera-path` and `--memory-report-floor-mib 2`.
 
 ## Not measured
 

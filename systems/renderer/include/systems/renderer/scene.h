@@ -700,6 +700,11 @@ struct SourceMesh {
   // The derived-data root those textures are looked up under; empty when the load reads no cache
   // (`SceneDesc::cache` off), and then the built textures are not used either.
   std::string texture_ddc;
+  // **The embedded image bytes were let go** (W51-3; renderer.md, "The embedded image bytes go once
+  // the textures are built"): every `data.images[i].bytes` is empty because every image a material
+  // samples has its built `.tex`, and `container` holds the bytes for a reader that comes late
+  // (`source_image_bytes`). False wherever the bytes are where they always were.
+  bool image_bytes_released = false;
   // **A generated tree's motion contract** (flora.md, "Motion attributes"; renderer.md, "The flora
   // stage"): the container's sections 35 to 37 as `adopt_container` found them — the parts, one
   // record per vertex of this mesh's run of the merged vertex streams (`parts[m].first_vertex` on),
@@ -730,6 +735,16 @@ struct SourceMesh {
   geometry::FarForm far_form;
   bool has_motion() const noexcept { return !motion_parts.empty() && !motion_vertices.empty(); }
 };
+
+// **An image's encoded bytes, wherever they are now** (W51-3): the ones `data.images[image]`
+// carries, or — for a mesh whose bytes the load let go (`SourceMesh::image_bytes_released`) — the
+// container's, read again into `storage` and checked against the record's source hash. An empty
+// span with no error is an image that carries no bytes (named by path); an empty span with `error`
+// set is one that could not be read back. For the readers after the load that still want pixels —
+// a decode where the built textures cannot be used, the crowns' masks — never a frame's: each read
+// is a file's resident sections.
+std::span<const u8> source_image_bytes(const SourceMesh& mesh, u32 image, Vector<u8>& storage,
+                                       std::string* error = nullptr);
 
 // What `load_scene` read and did to have the scene's meshes and their textures (renderer.md, "What
 // the load reads"; roadmap W75): the numbers a test holds a cooked load to — no source image read —
@@ -773,6 +788,10 @@ struct SceneLoadReport {
   u32 images_hashed = 0;
   u32 source_image_reads = 0;
   u64 source_image_bytes = 0;
+  // The embedded image bytes let go after the pass (W51-3; `SourceMesh::image_bytes_released`):
+  // the meshes, and the bytes, before any form copied them.
+  u32 image_bytes_released_meshes = 0;
+  u64 image_bytes_released = 0;
   // The pass's wall milliseconds: the per-mesh loads, and the texture pass after them.
   f64 meshes_ms = 0.0;
   f64 textures_ms = 0.0;

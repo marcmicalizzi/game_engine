@@ -3230,7 +3230,11 @@ int run_offscreen(Options& options, Interactive& interactive) {
     {
       ENGINE_STARTUP_STAGE("gpu scene");
       scene_requested = resolved;
-      if (!scene.create(device, scene_data, resolved, &error, ground.level_set())) {
+      // W51-3: the upload-only streams go inside `create` (the occlusion check's second scene and
+      // a streamed scene's page source upload from them later, so neither gives them up early).
+      const bool early = !resolved.stream && !options.verify_occlusion;
+      if (!scene.create(device, scene_data, resolved, &error, ground.level_set(),
+                        early ? &scene_data : nullptr)) {
         exit_code = fail("scene", error);
         break;
       }
@@ -6210,7 +6214,9 @@ int run_view(int argc, char** argv) {
     // ---- the device's stages, on this thread, pumping between their slices ----------------------
     profiling::TraceStage gpu_scene_stage("gpu scene");
     scene_requested = resolved;
-    if (!scene.create(device, scene_data, resolved, &error, ground.level_set())) {
+    // W51-3: the upload-only streams go inside `create`, as `release_host_geometry` would after it.
+    if (!scene.create(device, scene_data, resolved, &error, ground.level_set(),
+                      resolved.stream ? nullptr : &scene_data)) {
       exit_code = fail("scene", error);
       break;
     }

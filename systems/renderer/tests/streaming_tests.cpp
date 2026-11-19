@@ -219,6 +219,9 @@ struct Harness {
   // `release` gives back the streams nothing reads after the upload (`release_uploaded_streams`)
   // between the scene and the renderer, where engine-view does, keeping what `readers` reads.
   HostReaders readers = HostReaders::collision;
+  // `early` hands `GpuScene::create` the scene's `SceneData` to give the upload-only streams back
+  // inside it (W51-3), as engine-view does.
+  bool early = false;
   bool build(const SceneDesc& desc, const RenderSettings& settings, jobs::JobSystem* jobs = nullptr,
              SlowPageSource* slow = nullptr, u32 latency = 0, bool release = false) {
     std::string error;
@@ -238,7 +241,8 @@ struct Harness {
       skip = "unavailable here: " + unavailable_reason(availability, device);
       return false;
     }
-    REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), "gpu scene: " << error);
+    REQUIRE_MESSAGE(scene.create(device, data, resolved, &error, nullptr, early ? &data : nullptr),
+                    "gpu scene: " << error);
     SceneRenderer::Desc rd;
     rd.width = k_width;
     rd.height = k_height;
@@ -758,6 +762,49 @@ TEST_CASE("streaming: a whole scene draws the same bytes after its float geometr
   CHECK(shots[0].ids == shots[1].ids);
   MESSAGE("released " << released.released << " bytes (" << floats << " of float geometry); "
                       << kept.scene.sky_facing_count() << " meshes face the sky");
+}
+
+TEST_CASE("streaming: a whole scene draws the same bytes when create gives the upload's streams back") {
+  // **The upload-only streams go inside `create`** (W51-3; renderer.md): handed the scene's
+  // `SceneData`, `GpuScene::create` gives back the 16-bit grid, the attributes and the vertex ids
+  // right after the geometry's upload — before the textures and the chain are made, where a load
+  // peaks — and keeps the floats for the chain and the collision. What it measures from them (the
+  // meshes that face the sky) it measured first, so the cascaded picture is the same bytes.
+  RenderSettings settings;
+  settings.raster = RasterMode::Hardware;
+  settings.shadows = ShadowMode::Cascaded;
+  Harness kept;
+  if (!kept.build(heightfield_desc(false), settings)) {
+    MESSAGE(kept.skip);
+    return;
+  }
+  Harness early;
+  early.early = true;
+  REQUIRE(early.build(heightfield_desc(false), settings));
+  const geometry::ClusterMesh& mesh = early.data.lod.mesh;
+  CHECK(mesh.quantized.empty());
+  CHECK(mesh.quantized.capacity() == 0);
+  CHECK(mesh.attributes.empty());
+  CHECK(mesh.vertex_ids.empty());
+  CHECK(mesh.vertices.size() == kept.data.lod.mesh.vertices.size());  // the floats stay
+  CHECK(mesh.triangles.size() == kept.data.lod.mesh.triangles.size());
+  CHECK(early.scene.sky_facing_count() == kept.scene.sky_facing_count());
+  std::string error;
+  CapturedFrame shots[2];
+  Harness* harnesses[2] = {&kept, &early};
+  for (u32 h = 0; h < 2; ++h) {
+    for (u32 f = 0; f < 4; ++f)
+      REQUIRE_MESSAGE(
+          harnesses[h]->renderer.render_offscreen(frame_at(harnesses[h]->data, 3.0f, f), &error),
+          error);
+    REQUIRE_MESSAGE(harnesses[h]->renderer.capture(frame_at(harnesses[h]->data, 3.0f, 4),
+                                                   {.color = true, .ids = true}, shots[h], &error),
+                    error);
+  }
+  CHECK(shots[0].covered > 0);
+  CHECK(shots[0].covered == shots[1].covered);
+  CHECK(shots[0].color == shots[1].color);
+  CHECK(shots[0].ids == shots[1].ids);
 }
 
 TEST_CASE("streaming: a fly-in is coarser at every step and never has a hole") {
