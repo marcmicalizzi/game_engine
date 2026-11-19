@@ -634,6 +634,29 @@ TEST_CASE("world save: a save reads back as written, and restores to the same by
     CHECK(error.find("engine.cloth.Drape, which this build does not have") != std::string::npos);
   }
   {
+    // Roadmap D41: a save written before a type was renamed names it by the name it had then
+    // (`engine.doc.test.Marker` was `engine.doc.test.Beacon`; doc_test_types.schema, linked for
+    // this case). It reads, as the type's own version; one newer than this build's is refused under
+    // the name the save used.
+    auto renamed_at = [&](const char* name, u32 version) {
+      return edited(name, [version](JsonValue& json) {
+        JsonValue v = JsonValue::object();
+        v.set("name", JsonValue("engine.doc.test.Beacon"));
+        v.set("version", JsonValue(version));
+        json["versions"].push_back(std::move(v));
+      });
+    };
+    const std::string former = renamed_at("former", 1);
+    REQUIRE_MESSAGE(read_save(former, read, check, error), error);
+    CHECK(check.migrations.empty());
+    u32 current = 0;
+    REQUIRE(current_version("engine.doc.test.Beacon", current));
+    CHECK(current == 1);
+    CHECK_FALSE(read_save(renamed_at("former-newer", 2), read, check, error));
+    CHECK(error.find("engine.doc.test.Beacon is version 2, newer than this build's 1") !=
+          std::string::npos);
+  }
+  {
     const std::string extra =
         edited("extra", [](JsonValue& json) { json.set("autosave_slot", JsonValue(3u)); });
     CHECK_FALSE(read_save(extra, read, check, error));

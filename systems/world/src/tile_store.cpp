@@ -21,6 +21,14 @@ u32 projection_kind() noexcept {
   return kind;
 }
 
+// A projection written before its record's type was renamed names the type by the name it had then
+// (`@alias`): read as the current name, so an entity's kind and a row's type are the ones the rest of
+// the build compares against (schemas/README.md, "Renaming a field or a type").
+std::string_view current_type_name(std::string_view stored) {
+  const schema::TypeInfo* info = schema::Registry::global().resolve(stored);
+  return info != nullptr ? std::string_view(info->qualified_name) : stored;
+}
+
 struct LoadContext {
   const WorldStore* store = nullptr;
   u64 tile = 0;
@@ -101,7 +109,7 @@ void WorldStore::load_records(void* context, u64 tile, Vector<sim::EntityRecord>
                                    hash_combine(projection.record.hi, projection.record.lo));
         entity.position = projection.position;
         entity.importance = projection.importance;
-        entity.kind = schema::stable_type_id(projection.type);
+        entity.kind = schema::stable_type_id(current_type_name(projection.type));
         ctx->out->push_back(entity);
       },
       &load);
@@ -170,7 +178,7 @@ store::Status WorldStore::read_tile(TileCoord tile, Vector<TileRow>& rows, bool&
         }
         TileRow row;
         row.record = projection.record;
-        row.type = std::move(projection.type);
+        row.type = std::string(current_type_name(projection.type));
         row.position = projection.position;
         row.importance = projection.importance;
         ctx->rows->push_back(std::move(row));
@@ -198,6 +206,16 @@ bool read_event_payload(const store::EventRecord& record, EventPayload& out, std
             std::to_string(record.payload_version) + " does not read as version " +
             std::to_string(type->version) +
             (ctx.diagnostics.empty() ? std::string() : ": " + ctx.diagnostics[0].message);
+    return false;
+  }
+  // Members under a field's former name (`@alias`) take its name, after the version steps, which
+  // see the payload as it was written: the value handed on is in this build's names, as the type
+  // found by a former name is this build's type (schemas/README.md, "Renaming a field or a type").
+  u32 renamed = 0;
+  if (!schema::rename_former_fields(*type, value.as_object(), ctx, renamed)) {
+    error = std::string("a ") + type->qualified_name + " event " +
+            (ctx.diagnostics.empty() ? std::string("names a field twice")
+                                     : ctx.diagnostics[0].path + ": " + ctx.diagnostics[0].message);
     return false;
   }
   out.type = type;

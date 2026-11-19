@@ -209,11 +209,29 @@ bool check_since(const schema::TypeInfo& type, const JsonValue& json, const Stor
                  const std::string& path, std::string& error) {
   if (!json.is_object()) return true;  // the reader says what is wrong with it
   u32 version = type.version;
-  stored.find(type.qualified_name, version);
+  // The save may name the type, and the object its fields, by names they had before a rename
+  // (`@alias`, schemas/README.md): the version is the one written under whichever name it used.
+  if (!stored.find(type.qualified_name, version)) {
+    for (const char* former : type.aliases) {
+      if (stored.find(former, version)) break;
+    }
+  }
   for (const schema::FieldInfo& field : type.fields) {
-    const JsonValue* value = json.find(field.name);
+    const char* name = field.name;
+    const JsonValue* value = json.find(name);
+    if (value == nullptr) {
+      const auto index = static_cast<u32>(&field - type.fields.data());
+      for (const schema::FieldAlias& a : type.field_aliases) {
+        if (a.field != index) continue;
+        value = json.find(a.former_name);
+        if (value != nullptr) {
+          name = a.former_name;
+          break;
+        }
+      }
+    }
     if (value == nullptr) continue;
-    const std::string where = path.empty() ? field.name : path + "." + field.name;
+    const std::string where = path.empty() ? std::string(name) : path + "." + name;
     if (field.since_version > version) {
       error = where + " was added to " + type.qualified_name + " in version " +
               std::to_string(field.since_version) + ", after the version " +
@@ -263,7 +281,8 @@ bool current_version(std::string_view name, u32& out) {
     out = input::k_log_version;
     return true;
   }
-  const schema::TypeInfo* type = schema::Registry::global().find(name);
+  // A save written before a type was renamed names it by the name it had then (`@alias`).
+  const schema::TypeInfo* type = schema::Registry::global().resolve(name);
   if (type == nullptr || type->kind != schema::Kind::Struct) return false;
   out = type->version;
   return true;

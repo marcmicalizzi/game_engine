@@ -522,6 +522,13 @@ TEST_CASE("schema: a former name reads as the field or the type, and is written 
   CHECK(registry.is_former_field_name("title"));
   CHECK(registry.is_former_field_name("length"));
   CHECK_FALSE(registry.is_former_field_name("label"));
+  // A store names a type by the id of its name: an event written under a former name finds the
+  // renamed type (roadmap D41), and a current name's id still finds its own.
+  CHECK(find_by_stable_id(stable_type_id("engine.schema_test.Formerly")) == &info);
+  CHECK(find_by_stable_id(stable_type_id("engine.schema_test.old.Earlier")) == &info);
+  CHECK(find_by_stable_id(stable_type_id("engine.schema_test.Renamed")) == &info);
+  CHECK(has_stable_id(info, stable_type_id("engine.schema_test.Formerly")));
+  CHECK_FALSE(has_stable_id(info, stable_type_id("engine.schema_test.Nowhere")));
 
   // Read under the former names, nested ones included; written under the new.
   JsonValue old;
