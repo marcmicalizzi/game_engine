@@ -5,6 +5,7 @@
 #include <domain/doc/merge.h>
 #include <domain/doc/partition.h>
 #include <domain/protocol/paths.h>
+#include <domain/protocol/record_paths.h>
 #include <domain/protocol/session.h>
 
 namespace engine::protocol {
@@ -599,6 +600,26 @@ bool Session::commit_commands(std::span<const doc::Command> commands, doc::Attri
       if (staging != nullptr) staging->accepted->push_back(i - held);
     }
   }
+  // **The paths the records gain** (record_paths.h; protocol.md, "Paths a document's records
+  // hold"): read off the records as they now stand, so a create, a set, a retype into a placement
+  // and a merge's or a promotion's replayed diff are one check. A refused path is refused as any
+  // path is, and the whole call with it, before anything is journaled or staged.
+  {
+    Vector<doc::ObjectId> ids;
+    ids.reserve(static_cast<u32>(commands.size()));
+    for (const doc::Command& command : commands)
+      ids.push_back(command.id);
+    RpcError refused_path;
+    if (!check_stored_paths(roots_, doc_, std::span<const doc::ObjectId>(ids.data(), ids.size()),
+                            dir_, refused_path)) {
+      tx.rollback();
+      doc_.set_edit_layer(edit_layer);
+      if (staging != nullptr) staging->accepted->clear();
+      result = ApplyResult{};
+      error = std::move(refused_path);
+      return false;
+    }
+  }
   if (staging != nullptr) {
     for (const auto& d : tx.diagnostics()) {
       Diagnostic diagnostic;
@@ -675,20 +696,29 @@ bool Session::commit_commands(std::span<const doc::Command> commands, doc::Attri
 bool Session::check_commands(std::span<const doc::Command> commands,
                              const doc::Attribution& attribution, u32 layer, const Caller* caller,
                              RpcError& error) {
-  if (caller == nullptr || commands.empty()) return true;
+  if (commands.empty()) return true;
   const i64 now =
       attribution.timestamp_unix_ms != 0 ? attribution.timestamp_unix_ms : time::wall_unix_ms();
+  // The role's and the leases' checks need a caller; the paths the records gain are checked for
+  // every writer (record_paths.h), as commit_commands checks them.
+  const bool guarded = caller != nullptr;
   Guard guard(*this, caller, now);
-  if (!guard.begin(layer, false, error)) return false;
-  guard.reserve(static_cast<u32>(commands.size()));
+  if (guarded && !guard.begin(layer, false, error)) return false;
+  if (guarded) guard.reserve(static_cast<u32>(commands.size()));
   const u32 edit_layer = doc_.edit_layer();
   doc_.set_edit_layer(layer);
   doc::Transaction tx = doc_.begin(attribution);
+  Vector<doc::ObjectId> ids;
+  ids.reserve(static_cast<u32>(commands.size()));
   for (const doc::Command& command : commands) {
-    guard.before(command.id);
+    if (guarded) guard.before(command.id);
+    ids.push_back(command.id);
     (void)tx.apply(command, false);
   }
-  const bool ok = guard.finish(error);
+  bool ok = !guarded || guard.finish(error);
+  if (ok)
+    ok = check_stored_paths(roots_, doc_, std::span<const doc::ObjectId>(ids.data(), ids.size()),
+                            dir_, error);
   tx.rollback();
   doc_.set_edit_layer(edit_layer);
   return ok;
@@ -913,7 +943,15 @@ bool Session::step(bool backwards, u32 steps, const Caller* caller, StepResult& 
                                                       " failed at patch " + std::to_string(at));
       return finish(false);
     }
-    if (!guard.finish(error)) {
+    // An undo or a redo that brings a path back brings it back to this host, whose roots may not be
+    // the ones it was written under (another host, another machine): admitted again.
+    Vector<doc::ObjectId> ids;
+    ids.reserve(static_cast<u32>(patch.forward.size()));
+    for (const doc::Command& c : patch.forward)
+      ids.push_back(c.id);
+    if (!guard.finish(error) ||
+        !check_stored_paths(roots_, doc_, std::span<const doc::ObjectId>(ids.data(), ids.size()),
+                            dir_, error)) {
       // Put the step back: undo and redo of one patch are each other's inverse.
       (void)(backwards ? doc_.redo(patch) : doc_.undo(patch));
       return finish(false);
@@ -1709,6 +1747,7 @@ Session* SessionManager::open(const SessionOpenParams& params, u64 holder, RpcEr
     parked_.erase_at(i - 1);
   }
   session->set_events(events_);
+  session->set_roots(roots_);
   session->set_shown_path(std::string(shown));
   session->hold(holder);
   if (guard != nullptr && guard->begin != nullptr) {
@@ -1724,6 +1763,12 @@ void SessionManager::set_events(Subscriptions* events) noexcept {
   events_ = events;
   for (const auto& s : sessions_)
     s->set_events(events);
+}
+
+void SessionManager::set_roots(const io::Roots* roots) noexcept {
+  roots_ = roots;
+  for (const auto& s : sessions_)
+    s->set_roots(roots);
 }
 
 Session* SessionManager::find(std::string_view id) noexcept {

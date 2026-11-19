@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T174-records",
+  "reason": "protocol.md gains the section on the paths a document's records hold (T174's review): what a record stores, when it is admitted, what a load leaves out, and what that breaks",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/protocol.md": 5024
+  }
+}

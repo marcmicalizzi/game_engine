@@ -924,6 +924,8 @@ struct Host {
     if (!protocol::configure_host_roots(roots, config, error)) return false;
     (void)roots.protect(config.doc_dir);
     dispatcher.context().roots = &roots;
+    // A path a record gains through the listener is admitted as it lands (record_paths.h).
+    state.document->sessions().set_roots(&roots);
     return true;
   }
 };
@@ -1136,6 +1138,8 @@ int run_window(const Options& options, editor::EditorDocument& document) {
       vo.color_format = swapchain.format();
       vo.offscreen = false;
       vo.ddc = options.ddc;
+      // The paths the records hold are clients' (the listener's): read under the same roots.
+      vo.roots = &host.roots;
       if (!viewport.build(device, document.document(), document.directory(), vo, error) ||
           !camera.start(viewport.framing_camera(), viewport.data().radius, error)) {
         std::fprintf(stderr, "engine-editor: %s\n", error.c_str());

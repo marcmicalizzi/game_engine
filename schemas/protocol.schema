@@ -866,7 +866,7 @@ struct RenderLoadParams @version(7) {
 ///
 /// Version 3 (ADR-0053): `center` is a `worldpos`, the scene's f64 centre, where version 2 wrote
 /// it rounded to a float32. The JSON is the same three numbers.
-struct RenderSceneInfo @version(7) {
+struct RenderSceneInfo @version(8) {
   scene: string
   adapter: string
   meshes: u32 = 0
@@ -913,6 +913,9 @@ struct RenderSceneInfo @version(7) {
   revision: u64 = 0 @since(4)
   moved: u32 = 0 @since(4)
   rebuilt: bool = false @since(4)
+  /// A session's scene: the records left out because a path they hold was refused (absolute, or
+  /// under none of the host's roots; protocol.md, "Paths a document's records hold"), never opened.
+  left_out: u32 = 0 @since(8)
   /// `render.load` with `startup_trace`: the startup block of the load (engine-view's summary
   /// `startup`). Null otherwise.
   startup: json @since(5)

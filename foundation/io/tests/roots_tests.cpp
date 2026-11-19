@@ -732,3 +732,39 @@ TEST_CASE("roots: check_path_text is the lexical half alone") {
   CHECK(check_path_text("CON") == Refusal::device);
   CHECK(check_path_text("a:b") == Refusal::stream);
 }
+
+TEST_CASE("roots: a stored path is portable or refused, then admitted from its document") {
+  TempDir tmp;
+  const std::string doc = tmp.path() + "/work/world";
+  const std::string outside = tmp.path() + "/elsewhere";
+  make_dir(doc + "/props");
+  make_dir(outside);
+  put(doc + "/props/hut.glb", "glb");
+  put(outside + "/secret.glb", "glb");
+  Roots roots;
+  REQUIRE(roots.add("work", tmp.path() + "/work", false) == Status::Ok);
+  Admitted out;
+  Refusal why = Refusal::none;
+  // Relative to the document, and by a root's name: both name the same file anywhere.
+  CHECK(admit_stored_path(roots, "props/hut.glb", doc, out, why));
+  CHECK(out.native == canon(doc) + "/props/hut.glb");
+  CHECK(admit_stored_path(roots, "work://world/props/hut.glb", doc, out, why));
+  CHECK(out.native == canon(doc) + "/props/hut.glb");
+  // A file not there yet is a path all the same: a record may name a mesh not built yet.
+  CHECK(admit_stored_path(roots, "props/later.glb", doc, out, why));
+  // Absolute, even under a root: the machine's own path, which names nothing on another one. Taken
+  // out, the first would be admitted (it is under "work").
+  CHECK_FALSE(admit_stored_path(roots, doc + "/props/hut.glb", doc, out, why));
+  CHECK(why == Refusal::absolute_stored);
+  CHECK(check_stored_path_form("/props/hut.glb") == Refusal::absolute_stored);
+  CHECK(check_stored_path_form("\\\\server\\share\\hut.glb") == Refusal::absolute_stored);
+  CHECK(check_stored_path_form("C:/props/hut.glb") == Refusal::absolute_stored);
+  CHECK(check_stored_path_form("work://C:/x") == Refusal::absolute_relative);
+  CHECK(check_stored_path_form("props/hut.glb") == Refusal::none);
+  CHECK(check_stored_path_form("work://world/props/hut.glb") == Refusal::none);
+  // Relative, and out of every root: refused as any client path is.
+  CHECK_FALSE(admit_stored_path(roots, "../../elsewhere/secret.glb", doc, out, why));
+  CHECK(why == Refusal::outside);
+  CHECK_FALSE(admit_stored_path(roots, "props/CON", doc, out, why));
+  CHECK(why == Refusal::device);
+}

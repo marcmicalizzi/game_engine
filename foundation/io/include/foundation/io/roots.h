@@ -68,6 +68,7 @@ enum class Refusal : u8 {
   not_regular,            // a write onto a directory, or make_directory onto a file
   unknown_root,       // `<name>://` naming a root this host does not have, or whose folder is gone
   absolute_relative,  // `<name>://` followed by an absolute path or a drive
+  absolute_stored,    // a path a document's record stores that is absolute (admit_stored_path)
 };
 const char* refusal_name(Refusal refusal) noexcept;
 
@@ -176,6 +177,20 @@ class Roots {
   Vector<std::string> documents_;  // canonical, each once
   Vector<u32> document_holds_;     // beside documents_: how many holders each has
 };
+
+// **A path a document's record stores** (a placement's mesh, a heightfield's source, a ground
+// material's images; protocol.md, "Paths a document's records hold"): `<root>://<relative>` or a
+// path relative to the document's directory, the two forms that name the same file on another
+// machine and in another checkout, and **never an absolute path** (`Refusal::absolute_stored`,
+// whether or not a root holds it: the document is committed, and an absolute path of the machine
+// it was written on names nothing anywhere else). Then admitted for reading as any client path is,
+// from `document_dir`. Whether the file is there is not asked: a record may name a mesh that is not
+// built yet, and its reader answers a missing file as it answers a refused one.
+bool admit_stored_path(const Roots& roots, std::string_view path, std::string_view document_dir,
+                       Admitted& out, Refusal& why);
+// The form alone, for a writer with no roots (a session no host gave any, the engine's own
+// writers): the text rules of `check_path_text` and not absolute. `Refusal::none` when it passes.
+Refusal check_stored_path_form(std::string_view path) noexcept;
 
 // Whether `path` is `dir` or continues it by whole components, both canonical (case-insensitive,
 // ordinal, on Windows; bytes on Linux).

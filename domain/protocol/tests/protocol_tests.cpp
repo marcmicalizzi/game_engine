@@ -1214,3 +1214,106 @@ TEST_CASE("roots: session.open does not make a writable root's own directory a d
   h.ok("session.close", obj({{"session", at(made, "session")}}));
   h.dispatcher.context().roots = &h.roots;
 }
+
+// Paths a document's records hold (record_paths.h; protocol.md, "Paths a document's records hold"):
+// a placement's mesh is admitted as the record lands, by each way a record lands. Taken out of
+// `Session::commit_commands` and `Session::step`, every refusal below is a commit.
+TEST_CASE("roots: a path a record holds is admitted as it lands, by every way a record lands") {
+  TempDir tmp("protocol_record_paths");
+  Host h;
+  h.sessions.set_roots(&h.roots);
+  REQUIRE(io::make_directories(tmp.file("assets")) == io::Status::Ok);
+  REQUIRE(h.roots.add("assets", tmp.file("assets"), false) == io::Status::Ok);
+  const std::string world = tmp.file("world");
+  const JsonValue made =
+      h.ok("session.open", obj({{"path", JsonValue(world)}, {"create", JsonValue(true)}}));
+  const JsonValue session = at(made, "session");
+  Session* s = h.sessions.find(session.as_string());
+  REQUIRE(s != nullptr);
+  const auto placement = [&](Id128 id, std::string mesh, std::string_view layer = {}) {
+    JsonValue commands = JsonValue::array();
+    commands.push_back(create_command(id, "engine.scene.MeshPlacement"));
+    commands.push_back(set_command(id, "mesh", JsonValue(std::move(mesh))));
+    JsonValue params =
+        obj({{"session", session}, {"commands", commands}, {"attribution", attribution()}});
+    if (!layer.empty()) params.set("layer", JsonValue(std::string(layer)));
+    return h.call("doc.apply", std::move(params));
+  };
+  const auto refused_mesh = [&](const JsonValue& resp, std::string_view spelled) {
+    const JsonValue* error = resp.find("error");
+    REQUIRE(error != nullptr);
+    CHECK(error->find("code")->as_int() == codes::k_not_found);
+    CHECK(at(at(*error, "data"), "reason") == JsonValue("path"));
+    CHECK(at(at(*error, "data"), "field") == JsonValue("mesh"));
+    CHECK(error->find("message")->as_string() ==
+          "mesh: no file this host may read at '" + std::string(spelled) + "'");
+  };
+
+  // The portable forms land: relative to the document, and by a root's name.
+  const Id128 a = Id128::from_parts(0x72, 1);
+  const Id128 b = Id128::from_parts(0x72, 2);
+  CHECK(placement(a, "props/a.glb").find("result") != nullptr);
+  CHECK(placement(b, "assets://b.glb").find("result") != nullptr);
+  CHECK(s->document().exists(a));
+  CHECK(s->document().exists(b));
+
+  // doc.apply: an absolute path (under a root, so only the stored form refuses it) and a relative
+  // one that leaves every root. Nothing lands.
+  const Id128 c = Id128::from_parts(0x72, 3);
+  const std::string absolute = world + "/props/c.glb";
+  refused_mesh(placement(c, absolute), absolute);
+  refused_mesh(placement(c, "../../../outside.glb"), "../../../outside.glb");
+  CHECK_FALSE(s->document().exists(c));
+  // A set on a record that holds a good path, to a bad one.
+  {
+    JsonValue commands = JsonValue::array();
+    commands.push_back(set_command(a, "mesh", JsonValue(absolute)));
+    refused_mesh(
+        h.call("doc.apply",
+               obj({{"session", session}, {"commands", commands}, {"attribution", attribution()}})),
+        absolute);
+  }
+
+  // An undo or a redo brings a path back to this host, whose roots are not the ones it was written
+  // under: b names `assets://`, which the next roots lack.
+  h.ok("doc.undo", obj({{"session", session}}));  // b goes
+  CHECK_FALSE(s->document().exists(b));
+  io::Roots fewer;
+  REQUIRE(fewer.add("tests", std::string(io::parent_path(h.roots_anchor.path())), true) ==
+          io::Status::Ok);
+  h.sessions.set_roots(&fewer);
+  h.dispatcher.context().roots = &fewer;
+  {
+    const JsonValue resp = h.call("doc.redo", obj({{"session", session}}));
+    const JsonValue* error = resp.find("error");
+    REQUIRE(error != nullptr);
+    CHECK(error->find("code")->as_int() == codes::k_not_found);
+    CHECK(at(at(*error, "data"), "field") == JsonValue("mesh"));
+  }
+  CHECK_FALSE(s->document().exists(b));
+
+  // A merge's result: a layer that names `assets://` merged under the roots that lack it.
+  h.sessions.set_roots(&h.roots);
+  h.dispatcher.context().roots = &h.roots;
+  for (const char* layer : {"ours", "theirs"})
+    h.ok("doc.add_layer",
+         obj({{"session", session}, {"name", JsonValue(layer)}, {"edit", JsonValue(false)}}));
+  const Id128 d = Id128::from_parts(0x72, 4);
+  CHECK(placement(d, "assets://d.glb", "theirs").find("result") != nullptr);
+  h.sessions.set_roots(&fewer);
+  h.dispatcher.context().roots = &fewer;
+  {
+    const JsonValue resp = h.call("doc.merge", obj({{"session", session},
+                                                    {"base_layer", JsonValue("base")},
+                                                    {"ours_layer", JsonValue("ours")},
+                                                    {"theirs_layer", JsonValue("theirs")},
+                                                    {"output_layer", JsonValue("merged")}}));
+    const JsonValue* error = resp.find("error");
+    REQUIRE(error != nullptr);
+    CHECK(error->find("code")->as_int() == codes::k_not_found);
+    CHECK(at(at(*error, "data"), "field") == JsonValue("mesh"));
+  }
+  h.sessions.set_roots(&h.roots);
+  h.dispatcher.context().roots = &h.roots;
+  h.ok("session.close", obj({{"session", session}}));
+}

@@ -39,6 +39,10 @@ class Viewport {
     bool offscreen = true;  // the renderer owns its target; false draws into the caller's image
     renderer::RenderSettings settings;
     std::string ddc;  // derived-data root; empty finds the repository's
+    // The editor's roots when it serves clients, against which every path a record holds is
+    // admitted on read (doc_scene.h); a record whose path is refused is left out and counted. Null
+    // (`--offscreen`, no listener): the operator's own reading of their document, as engine-view's.
+    const io::Roots* roots = nullptr;
   };
 
   Viewport() = default;

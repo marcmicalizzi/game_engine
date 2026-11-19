@@ -80,6 +80,10 @@ bool session_open(Context& ctx, const SessionOpenParams& params, SessionInfo& ou
     error = make_error(codes::k_invalid_argument, "path is required");
     return false;
   }
+  // A host that gave its sessions no roots still has the context's: the paths a record gains are
+  // admitted against them as they land (record_paths.h).
+  if (ctx.sessions != nullptr && ctx.sessions->roots() == nullptr && ctx.roots != nullptr)
+    ctx.sessions->set_roots(ctx.roots);
   // The directory is a client's path (roots.h): read when a document is there, made and written
   // when `create` makes one. A relative path starts at the host's own document.
   io::Admitted dir;

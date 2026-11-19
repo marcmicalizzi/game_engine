@@ -393,6 +393,7 @@ const char* refusal_name(Refusal refusal) noexcept {
     case Refusal::not_regular: return "not_regular";
     case Refusal::unknown_root: return "unknown_root";
     case Refusal::absolute_relative: return "absolute_relative";
+    case Refusal::absolute_stored: return "absolute_stored";
   }
   return "?";
 }
@@ -602,6 +603,37 @@ void Roots::release(std::string_view document_dir) {
       return;
     }
   }
+}
+
+Refusal check_stored_path_form(std::string_view path) noexcept {
+  const usize scheme_end = path.find("://");
+  if (scheme_end != std::string_view::npos && valid_root_name(path.substr(0, scheme_end))) {
+    const std::string_view rest = path.substr(scheme_end + 3);
+    if (rest.empty()) return Refusal::none;
+    const std::string rel = slashes(rest);
+    if (is_absolute_spelling(rel) || (rel.size() >= 2 && rel[1] == ':'))
+      return Refusal::absolute_relative;
+    return check_path_text(rest);
+  }
+  const Refusal text = check_path_text(path);
+  // Windows' text rules call `/x` drive-relative; stored, it is absolute on every system, and a
+  // record is refused for the same reason wherever it is written.
+  if (text == Refusal::drive_relative) return Refusal::absolute_stored;
+  if (text != Refusal::none) return text;
+  // After the text rules, so a stream (`C:x`) is a stream; what is left with a colon second is a
+  // drive (`C:/x`), and a leading separator is a volume's root or a share (`/x`, `\\server`).
+  const std::string spelled = slashes(path);
+  if (is_absolute_spelling(spelled) || (spelled.size() >= 2 && spelled[1] == ':'))
+    return Refusal::absolute_stored;
+  return Refusal::none;
+}
+
+bool admit_stored_path(const Roots& roots, std::string_view path, std::string_view document_dir,
+                       Admitted& out, Refusal& why) {
+  out = Admitted{};
+  why = check_stored_path_form(path);
+  if (why != Refusal::none) return false;
+  return roots.admit(path, document_dir, Access::read, out, why);
 }
 
 bool Roots::portable(std::string_view native, std::string& out) const {

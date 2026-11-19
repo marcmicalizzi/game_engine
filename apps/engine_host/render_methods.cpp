@@ -487,6 +487,7 @@ void fill_scene_info(const RenderHost::Scene& scene, const gfx::Device& device,
   if (scene.document != nullptr) {
     out.session = scene.session;
     out.revision = scene.document->revision;
+    out.left_out = scene.document->left_out;
   }
 }
 
@@ -593,7 +594,10 @@ bool load_session(protocol::Context& ctx, RenderHost& host,
   // walking up from the session, which no root admitted (protocol.md, "Where derived data goes").
   const std::string root = params.ddc.empty() ? protocol::derived_data_root(ctx, session)
                                               : scene_gen::document_derived_root(params.ddc, {});
-  if (!doc_scene::read_document_scene(document, session->dir(), root, *described, message)) {
+  // The records' paths under the host's roots (record_paths.h; protocol.md, "Paths a document's
+  // records hold"): a record whose path is refused is left out and counted, never opened.
+  if (!doc_scene::read_document_scene(document, session->dir(), root, *described, message,
+                                      ctx.roots)) {
     error = protocol::make_error(protocol::codes::k_document_error, std::move(message));
     return false;
   }

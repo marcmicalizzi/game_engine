@@ -14,6 +14,7 @@
 #include <domain/protocol/proposals.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/side_file.h>
+#include <foundation/io/roots.h>
 #include <foundation/io/vfs.h>
 
 #include <memory>
@@ -70,6 +71,11 @@ class Session {
   void set_read_only(std::string client_path) { read_only_as_ = std::move(client_path); }
   // True when the session may be written; otherwise false with that refusal in `error`.
   bool check_writable(RpcError& error) const;
+  // The host's roots, against which every path a record gains is admitted as it lands
+  // (record_paths.h): every commit, merge, promotion, rollback, undo and redo. Null (a session no
+  // host gave roots): the stored form alone, never an absolute path. Set by `SessionManager`.
+  void set_roots(const io::Roots* roots) noexcept { roots_ = roots; }
+  const io::Roots* roots() const noexcept { return roots_; }
 
   // One transaction: applies every command, commits (dropping any redo tail first), journals,
   // and saves. Command failures are reported in `result.diagnostics`, not as an RPC error;
@@ -352,9 +358,10 @@ class Session {
   io::Vfs* vfs_;
   std::string id_;
   std::string dir_;
-  std::string shown_path_;    // dir_ as `<root>://<relative>`, for events
-  DocumentGuard guard_;       // protects dir_ while open (SessionManager)
-  std::string read_only_as_;  // the client's path, when the session may not be written
+  std::string shown_path_;            // dir_ as `<root>://<relative>`, for events
+  DocumentGuard guard_;               // protects dir_ while open (SessionManager)
+  std::string read_only_as_;          // the client's path, when the session may not be written
+  const io::Roots* roots_ = nullptr;  // the host's, for the paths records gain (set_roots)
   doc::Document doc_;
   doc::DocumentManifest manifest_;
   LeaseTable leases_;
@@ -463,6 +470,11 @@ class SessionManager {
   // A session opened or closed with events set publishes `event.session`.
   void set_events(Subscriptions* events) noexcept;
   Subscriptions* events() const noexcept { return events_; }
+  // The host's roots (Context::roots), given to every session open now and opened later, so a path
+  // a record gains is admitted as it lands (Session::set_roots). A host sets it once at start,
+  // before its own document is opened; `session.open` sets it from the context when it is unset.
+  void set_roots(const io::Roots* roots) noexcept;
+  const io::Roots* roots() const noexcept { return roots_; }
   std::span<const std::unique_ptr<Session>> sessions() const noexcept {
     return {sessions_.data(), sessions_.size()};
   }
@@ -484,6 +496,7 @@ class SessionManager {
   Vector<std::unique_ptr<Session>> sessions_;
   u32 next_id_ = 1;
   Subscriptions* events_ = nullptr;
+  const io::Roots* roots_ = nullptr;
   // Connections that held a lease in a session closed under them, still connected (ascending),
   // and those of them that have since ended: a reopen drops the second kind's leases.
   // Bounded by the leases taken, not by the connections served.

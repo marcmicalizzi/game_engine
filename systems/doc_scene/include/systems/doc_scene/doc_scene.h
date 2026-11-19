@@ -21,6 +21,7 @@
 #include <core/containers/vector.h>
 #include <core/ids/id128.h>
 #include <domain/doc/document.h>
+#include <foundation/io/roots.h>
 #include <systems/renderer/scene.h>
 
 #include <optional>
@@ -57,6 +58,10 @@ struct DocumentScene {
   Id128 terrain_record;
   terrain::Heightfield heightfield;
   std::optional<scene::Terrain> terrain;
+  // **Records left out because a path they hold was refused** (read with roots: a placement whose
+  // `mesh`, a ground whose `source` or material image, is absolute or under no root): never
+  // opened, never an instance, counted here, and the scene drawn without them.
+  u32 left_out = 0;
 
   // The instance a record is, or ~0 when it is none.
   u32 instance_of(Id128 id) const noexcept;
@@ -75,8 +80,17 @@ struct DocumentScene {
 // reads the same one. A host passes `scene_gen::host_derived_root(<its --ddc>, {}, false)`: the
 // root it was named, else the repository's found from the executable. Empty only where neither
 // exists, and then the provider's own rule (the repository above the heightfield) holds.
+// **`roots`: a host's** (engine-host's `render.load {session}`, the editor serving clients;
+// doc_scene.md, "Paths the records hold"): every path a record holds is admitted by
+// `io::admit_stored_path` from `base_dir` before anything opens it — portable
+// (`<root>://<relative>` or relative to the document), under a root — and the native path admitted
+// is what the scene names. A record whose path is refused is left out and counted (`left_out`),
+// never opened: a document from a checkout or an archive can hold paths no host of this machine
+// admitted. Null: the operator's own reading (engine-view, the tools, a test of the reader), every
+// path resolved against `base_dir` as written.
 bool read_document_scene(const doc::Document& document, const std::string& base_dir,
-                         std::string_view ddc, DocumentScene& out, std::string& error);
+                         std::string_view ddc, DocumentScene& out, std::string& error,
+                         const io::Roots* roots = nullptr);
 
 // One placement record's properties as an instance of `scene`'s meshes: its mesh index found by
 // path. False, with `error`, when the record is not a live placement, does not read, or names a
