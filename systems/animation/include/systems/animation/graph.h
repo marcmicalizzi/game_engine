@@ -61,8 +61,9 @@
 // graph compiled without a skeleton.
 //
 // **Stated limits** (ADR-0017): 8 parameters, 2 machines, 2 sync groups (the components' widths),
-// 16 inputs a `Blend1D`, 65,534 states a machine and 65,535 transitions, conditions and pose ops a
-// graph (the tables' u16 indices). A graph past any of them is refused at compile with the count.
+// 16 inputs a `Blend1D`, 65,534 states a machine and 65,535 transitions, conditions, pose clips and
+// pose ops a graph (the tables' u16 indices). A graph past any of them is refused at compile with
+// the count. The compile is n log n in the records (binary searches over tables built once).
 //
 // **Determinism**: `hashed`, as the capability is. The control pass is per-instance arithmetic over
 // the instance's own two components — compares, adds of `dt`, a floor for the phase — with no
