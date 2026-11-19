@@ -89,6 +89,61 @@ TEST_CASE(
   REQUIRE_MESSAGE(DocumentStore::load(vfs, "docs://d", doc, manifest, &error), error);
 }
 
+TEST_CASE("doc store hostile: a save does not write through a link the load never read") {
+  // T191: a layer that did not exist at load gets a directory of its own at the next save, and a
+  // document someone else made can hold that directory already, as a link out of it.
+  const test::TempDir tmp("engine_doc_hostile_save_link");
+  io::Vfs vfs;
+  REQUIRE(vfs.mount("docs", tmp.path(), /*writable=*/true) == io::Status::Ok);
+  std::string error;
+  {
+    Document made;
+    DocumentManifest made_manifest;
+    REQUIRE_MESSAGE(DocumentStore::create(vfs, "docs://d", "D", made, made_manifest, &error),
+                    error);
+  }
+  REQUIRE(vfs.make_directories("docs://outside") == io::Status::Ok);
+  REQUIRE(hostile_store::make_directory_link(tmp.file("outside"), tmp.file("d/layers/placements")));
+
+  Document doc;
+  DocumentManifest manifest;
+  REQUIRE_MESSAGE(DocumentStore::load(vfs, "docs://d", doc, manifest, &error), error);
+  const u32 placements = doc.add_layer("placements", LayerRole::Feature);
+  LayerPartition grid;
+  grid.property = "position";
+  grid.tile_size = 32.0;
+  doc.set_layer_partition(placements, grid);
+  CHECK_FALSE(DocumentStore::save(vfs, "docs://d", doc, manifest, &error));
+  CHECK(error.find("through a link") != std::string::npos);
+  CHECK(error.find("outside") == std::string::npos);  // where it leads is not told
+  Vector<io::DirEntry> written;
+  REQUIRE(io::list_directory(tmp.file("outside"), written) == io::Status::Ok);
+  CHECK(written.empty());  // nothing landed there, the save's log included
+  CHECK_FALSE(std::filesystem::exists(tmp.file("d/save.pending")));
+
+  // The same save with the directory a plain one writes the layer.
+  std::error_code ec;
+  std::filesystem::remove(tmp.file("d/layers/placements"), ec);
+  REQUIRE_FALSE(ec);
+  REQUIRE_MESSAGE(DocumentStore::save(vfs, "docs://d", doc, manifest, &error), error);
+  CHECK(std::filesystem::exists(tmp.file("d/layers/placements/index.json")));
+
+  // A journal that is a link out of the document is refused at load, before the appends that
+  // follow a load would write through it. A file link needs the privilege on Windows: said, and
+  // not run, where the process lacks it.
+  REQUIRE(vfs.write("docs://outside/journal.jsonl", "") == io::Status::Ok);
+  std::filesystem::remove(tmp.file("d/journal.jsonl"), ec);
+  std::filesystem::create_symlink(tmp.file("outside/journal.jsonl"), tmp.file("d/journal.jsonl"),
+                                  ec);
+  if (ec) {
+    MESSAGE("no file link could be made here, so the journal's case does not run: "
+            << ec.message());
+    return;
+  }
+  CHECK_FALSE(DocumentStore::load(vfs, "docs://d", doc, manifest, &error));
+  CHECK(error.find("through a link") != std::string::npos);
+}
+
 TEST_CASE("doc store hostile: a layer file outside the document is refused by the rule alone") {
   const test::TempDir tmp("engine_doc_hostile_file");
   io::Vfs vfs;

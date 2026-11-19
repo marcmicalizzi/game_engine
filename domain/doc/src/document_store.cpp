@@ -391,6 +391,85 @@ void plan_partitioned_changes(SavePlan& plan, const Layer& layer, const LayerFil
   if (moved) plan.consider(lf.index, index_text(known.index), false);
 }
 
+// --- where a file resolves ------------------------------------------------------------------
+
+// Native paths are UTF-8 (foundation/io), not the narrow code page a std::string means on Windows.
+std::filesystem::path native_path(std::string_view s) {
+  return std::filesystem::path(
+      std::u8string_view(reinterpret_cast<const char8_t*>(s.data()), s.size()));
+}
+
+// **A file of the document is under its directory where it resolves, not only by its name**
+// (T190 for the reads, T191 for the writes). The lexical rules (`stays_under_document`, the save
+// log's `inside`) judge a path's text, so `layers/sub/base.json` passes them even when
+// `layers/sub` is a symbolic link or a junction to anywhere on the machine, and both a read and a
+// write followed it on Windows and on Linux alike. So a file the store reads or writes is held
+// here: its directory, resolved (`weakly_canonical`: symbolic links on both platforms and
+// junctions on Windows followed in the part that exists, the rest taken as named), must be the
+// document's resolved directory or below it, once per directory; and the file itself, when it is
+// a link, must resolve below it too. A link that stays inside the document is followed as before.
+// A hard link cannot be told from a file by any path and is not judged. A write asks before it
+// makes a directory, so `make_directories` never builds one through a link either.
+class UnderRoot {
+ public:
+  explicit UnderRoot(std::string native_root) : native_root_(std::move(native_root)) {}
+
+  // True when the native `file` leaves the root through a link. False when the root itself
+  // cannot be resolved (nothing to judge against: the read or write reports what is wrong).
+  bool leaves(const std::string& file) const {
+    namespace fs = std::filesystem;
+    if (!resolve_root()) return false;
+    if (leaves_directory(std::string(io::parent_path(file)))) return true;
+    std::error_code ec;
+    const fs::path path = native_path(file);
+    if (!fs::is_symlink(fs::symlink_status(path, ec)) || ec) return false;
+    const fs::path real = fs::canonical(path, ec);
+    return ec || !within(real, /*or_equal=*/false);  // a dangling link names nothing inside
+  }
+
+  // True when the native directory `dir`, as far as it exists, resolves outside the root.
+  bool leaves_directory(const std::string& dir) const {
+    if (!resolve_root()) return false;
+    if (const bool* cached = dirs_.find_value(dir)) return !*cached;
+    std::error_code ec;
+    const std::filesystem::path real = std::filesystem::weakly_canonical(native_path(dir), ec);
+    const bool inside = ec ? true : within(real, /*or_equal=*/true);  // unreadable: the I/O says
+    dirs_.insert_or_assign(dir, inside);
+    return !inside;
+  }
+
+ private:
+  bool resolve_root() const {
+    if (!root_resolved_) {
+      root_resolved_ = true;
+      std::error_code ec;
+      root_ = std::filesystem::weakly_canonical(native_path(native_root_), ec);
+      if (ec) root_.clear();
+    }
+    return !root_.empty();
+  }
+
+  // `real` is the resolved root or below it, by whole components.
+  bool within(const std::filesystem::path& real, bool or_equal) const {
+    auto r = root_.begin();
+    auto f = real.begin();
+    for (; r != root_.end(); ++r, ++f) {
+      if (r->empty()) continue;  // a root's trailing separator
+      if (f == real.end() || *f != *r) return false;
+    }
+    return or_equal || f != real.end();
+  }
+
+  std::string native_root_;
+  mutable bool root_resolved_ = false;
+  mutable std::filesystem::path root_;       // the document's directory, resolved; empty when not
+  mutable HashMap<std::string, bool> dirs_;  // a native directory: whether it resolves inside
+};
+
+constexpr std::string_view k_leaves_by_link =
+    "leaves the document's directory through a link (a symbolic link or a junction), which a "
+    "document may not do";
+
 // --- writing a file -------------------------------------------------------------------------
 //
 // The file system on this project's Windows machine charges by the operation and its kind, not by
@@ -582,6 +661,21 @@ bool apply_ops(const std::string& root, std::string_view dir, std::span<const Fi
   return true;
 }
 
+// **A save writes under the document where each file resolves** (T191, `UnderRoot`): asked of
+// every file before the log names it, so a save that would write through a link — a layer the
+// load never read, whose directory a document someone else made holds as a link — writes nothing
+// at all, the log included. True, naming the file, when one leaves.
+bool writes_leave(const UnderRoot& under, const std::string& root, std::string_view dir,
+                  std::span<const FileOp> ops, std::string* error) {
+  for (const FileOp& op : ops) {
+    if (under.leaves(join(root, op.path))) {
+      set_error(error, join(dir, op.path), k_leaves_by_link);
+      return true;
+    }
+  }
+  return false;
+}
+
 // Finishes what a save that did not finish began: carries out a whole log and removes it, or
 // removes a torn one, whose save touched nothing. Only a process that is about to write the
 // document does this; `load` reads through a log and never acts on it.
@@ -595,7 +689,10 @@ bool finish_pending(const std::string& root, std::string_view dir, std::string* 
     return false;
   }
   Vector<FileOp> ops;
-  if (parse_log(text, ops) && !apply_ops(root, dir, ops, nullptr, error)) return false;
+  if (parse_log(text, ops) &&
+      (writes_leave(UnderRoot(root), root, dir, ops, error) ||
+       !apply_ops(root, dir, ops, nullptr, error)))
+    return false;
   if (const io::Status r = io::remove_file(log_path);
       r != io::Status::Ok && r != io::Status::NotFound) {
     set_error(error, join(dir, DocumentStore::k_save_log), io::status_name(r));
@@ -608,7 +705,12 @@ bool finish_pending(const std::string& root, std::string_view dir, std::string* 
 
 bool carry_out(const SavePlan& plan, std::string_view dir, const SaveOptions& options,
                std::string* error, SaveReport& report) {
+  const UnderRoot under(plan.root());
   for (const std::string& d : plan.directories()) {
+    if (under.leaves_directory(plan.native(d))) {  // asked before it is made (T191)
+      set_error(error, join(dir, d), k_leaves_by_link);
+      return false;
+    }
     if (!ensure_directory(plan.native(d))) {
       set_error(error, join(dir, d), "could not make the directory");
       return false;
@@ -619,6 +721,11 @@ bool carry_out(const SavePlan& plan, std::string_view dir, const SaveOptions& op
 
   Mortality death(options);
   const std::string log_path = plan.native(DocumentStore::k_save_log);
+  if (writes_leave(under, plan.root(), dir, ops, error)) return false;
+  if (under.leaves(log_path)) {
+    set_error(error, join(dir, DocumentStore::k_save_log), k_leaves_by_link);
+    return false;
+  }
   const std::string log = log_text(ops);
   if (death.dies()) {
     if (death.torn()) tear(log_path, log);
@@ -703,45 +810,18 @@ class DiskView {
     return vfs_.exists(full(path));
   }
 
-  // **A file the document names is under its directory where it resolves, not only by its name**
-  // (T190). `stays_under_document` judges a path's text, so `layers/sub/base.json` passes it even
-  // when `layers/sub` is a symbolic link or a junction to anywhere on the machine, and the read
-  // followed it on Windows and on Linux alike. So every file `load` reads from the disk is held
-  // here: its directory, resolved (`canonical`: symbolic links on both platforms and junctions on
-  // Windows followed), must be the document's resolved directory or below it, once per directory;
-  // and the file itself, when it is a link, must resolve below it too. A link that stays inside
-  // the document is followed as before. A hard link cannot be told from a file by any path and is
-  // not judged. True when the file leaves; false for a file that does not exist (the read reports
-  // it) and for one the save log's text supplies.
+  // Every file `load` reads from the disk is held under the document where it resolves (T190,
+  // `UnderRoot`). True when the file leaves; false for one the save log's text supplies.
   bool leaves_by_link(const std::string& path) const {
-    namespace fs = std::filesystem;
     if (overlay_.find_value(path) != nullptr) return false;
     std::string native;
     if (vfs_.resolve(full(path), native) != io::Status::Ok) return false;
-    std::error_code ec;
-    if (!root_resolved_) {
-      root_resolved_ = true;
+    if (!under_) {
       std::string native_root;
-      if (vfs_.resolve(dir_, native_root) == io::Status::Ok) {
-        root_ = fs::canonical(native_path(native_root), ec);
-        if (ec) root_.clear();
-      }
+      if (vfs_.resolve(dir_, native_root) != io::Status::Ok) return false;
+      under_.emplace(std::move(native_root));
     }
-    if (root_.empty()) return false;
-    const std::string parent(io::parent_path(native));
-    bool inside = true;
-    if (const bool* cached = dirs_.find_value(parent)) {
-      inside = *cached;
-    } else {
-      const fs::path real = fs::canonical(native_path(parent), ec);
-      inside = ec ? true : within(real, /*or_equal=*/true);  // a missing directory: NotFound
-      dirs_.insert_or_assign(parent, inside);
-    }
-    if (!inside) return true;
-    const fs::path file = native_path(native);
-    if (!fs::is_symlink(fs::symlink_status(file, ec)) || ec) return false;
-    const fs::path real = fs::canonical(file, ec);
-    return !ec && !within(real, /*or_equal=*/false);
+    return under_->leaves(native);
   }
 
   io::Status list(const std::string& path, Vector<io::DirEntry>& out) const {
@@ -776,31 +856,11 @@ class DiskView {
   }
 
  private:
-  // Native paths are UTF-8 (foundation/io), not the narrow code page a std::string means on
-  // Windows.
-  static std::filesystem::path native_path(std::string_view s) {
-    return std::filesystem::path(
-        std::u8string_view(reinterpret_cast<const char8_t*>(s.data()), s.size()));
-  }
-
-  // `real` is the resolved root or below it, by whole components.
-  bool within(const std::filesystem::path& real, bool or_equal) const {
-    auto r = root_.begin();
-    auto f = real.begin();
-    for (; r != root_.end(); ++r, ++f) {
-      if (r->empty()) continue;  // a root's trailing separator
-      if (f == real.end() || *f != *r) return false;
-    }
-    return or_equal || f != real.end();
-  }
-
   const io::Vfs& vfs_;
   std::string dir_;
   std::string log_;
   HashMap<std::string, FileOp> overlay_;  // views into log_
-  mutable bool root_resolved_ = false;
-  mutable std::filesystem::path root_;       // the document's directory, resolved; empty when not
-  mutable HashMap<std::string, bool> dirs_;  // a native directory: whether it resolves inside
+  mutable std::optional<UnderRoot> under_;
 };
 
 // Defined with the journal's other helpers, below.
@@ -861,9 +921,7 @@ bool find_parent_cycle(const Document& doc, ObjectId& at) {
 bool read_file(const DiskView& disk, const std::string& path, std::string& out, StoredState& known,
                std::string* error) {
   if (disk.leaves_by_link(path)) {
-    set_error(error, disk.full(path),
-              "leaves the document's directory through a link (a symbolic link or a junction), "
-              "which a document may not do");
+    set_error(error, disk.full(path), k_leaves_by_link);
     return false;
   }
   if (const io::Status s = disk.read(path, out); s != io::Status::Ok) {
@@ -1302,6 +1360,12 @@ bool DocumentStore::load(const io::Vfs& vfs, std::string_view dir, Document& out
   Vector<Patch> journal;
   {
     const std::string journal_path = path_of(dir, k_journal_file);
+    // The journal is appended in place after a load (`append_journal`), which follows a link: one
+    // that leaves the document is refused here, before either read or append (T191).
+    if (disk.leaves_by_link(std::string(k_journal_file))) {
+      set_error(error, journal_path, k_leaves_by_link);
+      return false;
+    }
     std::string journal_text;
     const io::Status s = vfs.read(journal_path, journal_text);
     if (s != io::Status::Ok && s != io::Status::NotFound) {
