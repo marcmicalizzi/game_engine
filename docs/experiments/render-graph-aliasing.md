@@ -190,6 +190,16 @@ Every stage keeps the picture byte-identical: captures of color, ids, depth and 
 | 4 | **Attachment images**: a second heap for the atlas, the linear image, the UI layer and the depth when the direct path makes it; `UNDEFINED` first layouts; the `memoryTypeBits` check at create, falling back to separate allocations where it fails | M | as 3; and the same pair on the Titan Xp server for the pre-Turing guidance (`tools/remote-build.ps1 -Host <the server's alias> -Test -Filter renderer`) | as 3; the HDR overlay's case (`overlay: on HDR10 its white is paper white…`) byte-identical |
 | 5 | **The chain on the compute queue** for `--raster hw --shadows rt`: per-queue command buffers, a fork after the pool and a join before `half sun`, `gi sample` and the resolve, timeline semaphores, `CONCURRENT` buffers, a timer pool per queue and the frame's span in the record; behind a tunable, off on any device without a compute-only family and on the baseline tier | M | the pair at 3840 and 11520 on the forest staging and the village, on the 5090 and (the owner's) the 4070 laptop, with an Nsight GPU Trace of one frame each for the unit throughputs NVIDIA says to read first | the ray-query and cluster structure cases (traced visibility word for word, KHR and cluster pixel-identical) and the shadow cases, with the queue on and off |
 
+**Stages 1 and 2, built** (batch 69, R186-2; [renderer](../subsystems/renderer.md#the-targets-a-frame-reads), [gfx](../subsystems/gfx.md)): the Hi-Z and the depth image are made only where the settings or a frame read them, at the create or at the frame that first asks, and `RenderGraph::lifetimes` with `renderer.graph.lifetimes` reports each resource's first and last pass. **What the device gave back** (debug `engine-view`, the grove over seven frames of its path under `--raster rt --shadows rt`, the device's own `gpu_memory_used_mib`; "held" is the same binary with `renderer.lod.occluded_histogram` and `renderer.resolve.classes=draws`, which make both targets as every create did before, and nothing else of size; 2026-11-18 20:43, the lease ours, other processes 100 % of the CPU, the GPU idle beside it, the session unlocked):
+
+| size | held, MiB | lean, MiB | given back, MiB | §2's formula, MiB |
+|---|---:|---:|---:|---:|
+| 1920×1080 | 583 | 573 | 10 | 18.5 |
+| 3840×2160 | 735 | 660 | 75 | 73.8 |
+| 11520×2160 | 1,074 | 850 | 224 | 221.6 |
+
+At 1080p the two targets are small enough for VMA to place inside blocks the device already counts, so the device's figure moves by less than their bytes; at 4K and wider each is an allocation of its own and the device's figure is the formula's. Not built of the two: the memory report's `targets` block and the `frame` block's split (the renderer's `hiz_bytes()` and `depth_bytes()` say what it holds), and stage 2's sharing plan (`graph.alias_mib`).
+
 What a later stage takes up: post and denoise passes made as graph transients from their first commit (plan 04 §4.2 steps 6 and 8, and the reconstruction's internal-resolution targets), which is where §3's percentages grow toward Frostbite's.
 
 ## 8. What this design declines, and why

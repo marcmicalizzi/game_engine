@@ -467,6 +467,58 @@ TEST_CASE("render graph: a build behind a build names the read of the scratch th
   graph.reset();
 }
 
+// The lifetimes (R4 stage 2): each resource's first and last declaring pass, whether its first use
+// writes, buffers before images; a resource imported and never used has none. The same passes give
+// the same answer, and it is read from the declarations alone, before or after compile().
+TEST_CASE("render graph: lifetimes are each resource's first and last declaring pass") {
+  gfx::Device device;  // never opened
+  gfx::BufferResource a{};
+  a.size = 256;
+  gfx::BufferResource b{};
+  b.size = 64;
+  gfx::BufferResource unused{};
+  unused.size = 32;
+  gfx::RenderGraph graph(device);
+  const gfx::RgBuffer first = graph.import_buffer("a", a);
+  const gfx::RgBuffer second = graph.import_buffer("b", b);
+  (void)graph.import_buffer("unused", unused);
+  auto add = [&](const char* name, auto&& setup) {
+    graph.add_pass(name, gfx::PassKind::Compute, setup,
+                   [](gfx::CommandList, gfx::RenderGraph&) {});
+  };
+  add("write a", [&](gfx::PassBuilder& pb) { pb.write(first, gfx::Access::ComputeWrite); });
+  add("read a", [&](gfx::PassBuilder& pb) { pb.read(first, gfx::Access::ComputeRead); });
+  add("read b", [&](gfx::PassBuilder& pb) { pb.read(second, gfx::Access::ComputeRead); });
+  add("a again", [&](gfx::PassBuilder& pb) {
+    pb.read(first, gfx::Access::ComputeRead);
+    pb.write(second, gfx::Access::ComputeWrite);
+  });
+  Vector<gfx::RenderGraph::Lifetime> before;
+  graph.lifetimes(before);
+  std::string error;
+  REQUIRE_MESSAGE(graph.compile(&error), error);
+  Vector<gfx::RenderGraph::Lifetime> lives;
+  graph.lifetimes(lives);
+  REQUIRE(lives.size() == 3);
+  CHECK(std::string(lives[0].name) == "a");
+  CHECK(lives[0].first == 0);
+  CHECK(lives[0].last == 3);
+  CHECK(lives[0].first_writes);
+  CHECK(lives[0].imported);
+  CHECK(lives[0].bytes == 256);
+  CHECK(lives[1].first == 2);  // an import read first: imported, so not a transient's first use
+  CHECK(lives[1].last == 3);
+  CHECK_FALSE(lives[1].first_writes);
+  CHECK(lives[2].first == gfx::RenderGraph::k_unused);
+  CHECK(lives[2].last == gfx::RenderGraph::k_unused);
+  REQUIRE(before.size() == lives.size());
+  for (u32 i = 0; i < lives.size(); ++i) {
+    CHECK(before[i].first == lives[i].first);
+    CHECK(before[i].last == lives[i].last);
+  }
+  graph.reset();
+}
+
 // A read in another stage behind a read that already has its barrier needs none of its own, but
 // it is ordered behind the write all the same: the barrier before the first reader is widened to
 // the second's stage and access. Before batch 68 the second reader (here an indirect dispatch

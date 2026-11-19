@@ -100,6 +100,13 @@ tunables::Bool graph_serialize{
     "renderer.graph.serialize", false,
     "Record a full barrier before every render graph pass, so nothing runs beside anything: a "
     "picture that differs with it on has a dependency no pass declared (R186's guard check 3)"};
+// The graph's lifetimes as a report (R4 stage 2; gfx.md, "Render graph v0"): every resource of a
+// frame's graph with the first and the last pass that declares it, what a transient heap would be
+// packed from. Logged once each time the tunable is turned on, so a flight is not a log a frame.
+tunables::Bool graph_lifetimes{
+    "renderer.graph.lifetimes", false,
+    "Log the render graph's resources of the next recorded frame, each with the first and last "
+    "pass that uses it and its bytes (R4's lifetimes), once each time this is turned on"};
 // Per shadow cascade, behind the chain's block: its indirect block's three words, then the
 // vertex path's indexed-draw cursor and fallback count for its region.
 constexpr u32 k_shadow_stat_words = 5;
@@ -410,14 +417,23 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   resolve_linear = encode = {};
 }
 
+// TRANSFER_SRC on the visibility buffer is what a capture's id and depth channels read back;
+// nothing in a frame ever copies from it.
+constexpr gfx::BufferUsage k_target_buffer_usage =
+    gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress |
+    gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc;
+
 // The views' visibility regions and Hi-Z pyramids, packed back to back into one buffer each. A
 // view's region is as big as the rectangle it rasterizes, so for a single view the two buffers are
-// exactly the size and layout they have always been.
+// exactly the size and layout they have always been. The pyramid and the depth image are laid out
+// here and made only when wanted (`ensure`).
 bool SceneRenderer::Targets::create(const gfx::Device& device, const ViewSet& set,
-                                    std::string* error) {
+                                    bool want_hiz, bool want_depth, std::string* error) {
   destroy(device);
   width = set.source_width();
   height = set.source_height();
+  depth_width = set.width();
+  depth_height = set.height();
   views.resize(set.size());
   u64 vis_elements = 0;
   u32 hiz_elements = 0;
@@ -457,22 +473,41 @@ bool SceneRenderer::Targets::create(const gfx::Device& device, const ViewSet& se
     half_words += gfx::half_rate_blocks(views[v].width, views[v].height);
   }
   hiz_levels.resize(level_base);
+  hiz_words = hiz_elements;
   hiz_dirty = true;
-  // TRANSFER_SRC on the visibility buffer is what a capture's id and depth channels read back;
-  // nothing in a frame ever copies from it.
-  constexpr gfx::BufferUsage k_buffer_usage =
-      gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress |
-      gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc;
+  return gfx::create_buffer(device, vis_elements * sizeof(u64), k_target_buffer_usage, false, vis,
+                            error) &&
+         ensure(device, want_hiz, want_depth, error);
+}
+
+bool SceneRenderer::Targets::ensure(const gfx::Device& device, bool want_hiz, bool want_depth,
+                                    std::string* error) {
+  if (want_hiz && !hiz.buffer.valid()) {
+    if (!gfx::create_buffer(device, hiz_words * sizeof(f32), k_target_buffer_usage, false, hiz,
+                            error)) {
+      return false;
+    }
+    hiz_dirty = true;  // its first frame clears it: everything far, nothing hidden
+  }
   // The depth image is the direct path's depth buffer, and on every other path the resolve's
   // pixel classes (R151; resolve_classes.cpp), which a census reads back: TRANSFER_SRC.
-  return gfx::create_image_2d(
-             device, set.width(), set.height(), gfx::Format::D32Sfloat,
-             gfx::ImageUsage::DepthStencilAttachment | gfx::ImageUsage::TransferSrc, depth,
-             error) &&
-         gfx::create_buffer(device, vis_elements * sizeof(u64), k_buffer_usage, false, vis,
-                            error) &&
-         gfx::create_buffer(device, u64{hiz_elements} * sizeof(f32), k_buffer_usage, false, hiz,
-                            error);
+  if (want_depth && !depth.image.valid()) {
+    return gfx::create_image_2d(
+        device, depth_width, depth_height, gfx::Format::D32Sfloat,
+        gfx::ImageUsage::DepthStencilAttachment | gfx::ImageUsage::TransferSrc, depth, error);
+  }
+  return true;
+}
+
+bool SceneRenderer::targets_hiz_wanted() const noexcept {
+  return resolved_.occlusion || (!resolved_.direct && lod_occluded_active_tunable());
+}
+
+bool SceneRenderer::targets_depth_wanted() const noexcept {
+  return resolved_.direct ||
+         (pipelines_.classify.valid() &&
+          resolve_class_mode_for(resolve_classes_tunable(), scene_->has_masked()) !=
+              ResolveClassMode::Off);
 }
 
 void SceneRenderer::Targets::destroy(const gfx::Device& device) noexcept {
@@ -858,7 +893,8 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
 
   graph_ = new gfx::RenderGraph(device);
   if (!create_pipelines(error) || !scene.bake_shadow_coverage(shaders_, error) ||
-      !scene.bake_micromaps(shaders_, error) || !targets_.create(device, views_, error) ||
+      !scene.bake_micromaps(shaders_, error) ||
+      !targets_.create(device, views_, targets_hiz_wanted(), targets_depth_wanted(), error) ||
       !create_color_target(error) || !create_shadow_maps(error) ||
       !overlay_.create(device, scene.bindless(), shaders_, desc_.color_format,
                        desc_.frames_in_flight, error) ||
@@ -1845,7 +1881,11 @@ bool SceneRenderer::resize(u32 width, u32 height, std::string* error) {
   // because the scene's working set is sized by it, and no layout changes its count with size.
   if (!views_.build(desc_.views, width_, height_, error)) return false;
   fill_view_layout();
-  if (!targets_.create(*device_, views_, error) || !create_color_target(error)) return false;
+  // What the current settings read (a frame that asks for more makes it then: `Targets::ensure`).
+  if (!targets_.create(*device_, views_, targets_hiz_wanted(), targets_depth_wanted(), error) ||
+      !create_color_target(error)) {
+    return false;
+  }
   if (motion_ != nullptr && !motion_->resize(*device_, views_, error)) return false;
   if (accumulation_ != nullptr && !accumulation_->resize(width_, height_, error)) return false;
   if (reconstruction_ != nullptr && !reconstruction_->resize(width_, height_, error)) return false;
@@ -2939,6 +2979,11 @@ u64 SceneRenderer::submit_frame(const FrameDesc& frame, std::string* error) {
     recording_ = false;
     return 0;
   }
+  if (!graph_lifetimes.get()) {
+    lifetimes_logged_ = false;
+  } else if (!lifetimes_logged_) {
+    log_graph_lifetimes();
+  }
   u64 value = 0;
   if (frame.wait.valid() || frame.signal.valid()) {
     gfx::FrameContext::PresentSync sync;
@@ -3009,6 +3054,32 @@ u64 SceneRenderer::submit_frame(const FrameDesc& frame, std::string* error) {
                     log::field("submit_ms", frame_cpu_.submit_ms));
   }
   return value;
+}
+
+void SceneRenderer::log_graph_lifetimes() {
+  lifetimes_logged_ = true;
+  const gfx::RenderGraph& graph = *graph_;
+  graph.lifetimes(lifetimes_);
+  u32 unused = 0;
+  u64 unused_bytes = 0;
+  for (const gfx::RenderGraph::Lifetime& life : lifetimes_) {
+    const bool used = life.first != gfx::RenderGraph::k_unused;
+    if (!used) {
+      ++unused;
+      unused_bytes += life.bytes;
+    }
+    ENGINE_LOG_INFO(log_renderer, "graph lifetime", log::field("resource", life.name),
+                    log::field("kind", life.image ? "image" : "buffer"),
+                    log::field("imported", life.imported),
+                    log::field("first", used ? graph.pass_name(life.first) : ""),
+                    log::field("last", used ? graph.pass_name(life.last) : ""),
+                    log::field("first_pass", used ? static_cast<i64>(life.first) : i64{-1}),
+                    log::field("last_pass", used ? static_cast<i64>(life.last) : i64{-1}),
+                    log::field("first_writes", life.first_writes), log::field("bytes", life.bytes));
+  }
+  ENGINE_LOG_INFO(log_renderer, "graph lifetimes", log::field("passes", graph.pass_count()),
+                  log::field("resources", static_cast<u32>(lifetimes_.size())),
+                  log::field("unused", unused), log::field("unused_bytes", unused_bytes));
 }
 
 void SceneRenderer::abort_frame() {
@@ -3672,6 +3743,17 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       return false;
     }
   }
+  // The resolve by pixel class (R151; resolve_classes.cpp), planned before the imports, since it
+  // decides whether the frame reads the depth image. Off, the plan is empty.
+  const ResolveClassPlan class_plan =
+      direct ? ResolveClassPlan{} : plan_frame_classes(frame.frame_index, frame_passes_on);
+  // **The targets a frame reads** (R4 stage 1; renderer.md): the Hi-Z under two-pass occlusion or
+  // the occlusion term, the depth image for the direct path or the pixel classes. A target is made
+  // at the frame that first reads it and kept to the next resize; a frame that reads neither —
+  // traced shadows on the defaults — imports neither.
+  const bool hiz_on = occlusion || hiz_lod;
+  const bool depth_on = direct || class_plan.classes != 0;
+  if (!targets_.ensure(*device_, hiz_on, depth_on, error)) return false;
 
   // ---- indirect light: the world-space cache (R69; renderer.md, "Indirect light: the world-space
   // cache") ---------------------------------------------------------------------------------------
@@ -4606,7 +4688,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   Targets& targets = targets_;
   gfx::BindlessSet& bindless = scene.bindless();
   const gfx::RgImage color = color_handle;
-  const gfx::RgImage depth_target = graph.import_image("depth", targets.depth);
+  const gfx::RgImage depth_target =
+      depth_on ? graph.import_image("depth", targets.depth) : gfx::RgImage{};
   const gfx::RgBuffer rg_args[2] = {graph.import_buffer("draw_args", scene.draw_args[0]),
                                     graph.import_buffer("draw_args2", scene.draw_args[1])};
   const gfx::RgBuffer rg_visible = graph.import_buffer("visible", scene.visible);
@@ -4653,7 +4736,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                                    gfx::MemoryAccess::ShaderSampledRead);
   }
   const gfx::RgBuffer rg_vis = graph.import_buffer("visibility", targets.vis);
-  const gfx::RgBuffer rg_hiz = graph.import_buffer("hiz", targets.hiz);
+  const gfx::RgBuffer rg_hiz = hiz_on ? graph.import_buffer("hiz", targets.hiz) : gfx::RgBuffer{};
   const gfx::RgBuffer rg_stats = graph.import_buffer("stats", stat_blocks_[slot]);
   // A streamed world's table set, on the frame that brings it up to date: the changed instance
   // slots copied out of this slot's staging, then their pairs expanded from them. Every pass that
@@ -6562,25 +6645,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       }
       gi_reset_ = false;
     }
-    // **The resolve by pixel class** (R151; resolve_classes.h; renderer.md, "The resolve by pixel
-    // class"). Under `renderer.resolve.classes` a classify pass writes each pixel's class as depth
-    // (resolve_classify.slang, through the resolve's own block and tables) and the resolve below
-    // draws once per class, depth-equal, into the same target — the direct path's depth image,
-    // which no path with a visibility buffer draws into. Off, the plan is empty and the frame is
-    // the one it was.
-    ResolveClassFrame class_frame;
-    class_frame.mode =
-        resolve_class_mode_for(resolve_classes_tunable(frame.frame_index), scene.has_masked());
-    class_frame.one_draw = (frame_passes_on ? pipelines.resolve_linear : pipelines.resolve).valid();
-    class_frame.water = scene.has_water();
-    class_frame.open_sea = scene.water_open_instance() != gfx::k_no_water_open;
-    class_frame.resample = views_.resample();
-    class_frame.measuring = resolve_stop_tunable(frame.frame_index) != 0;
-    class_frame.mask = resolve_class_measure_tunables().mask;
-    const u32 class_format = frame_passes_on ? 1u : 0u;
-    const ResolveClassPlan class_plan =
-        plan_resolve_classes(class_frame, pipelines.classify, pipelines.resolve_class[class_format],
-                             pipelines.resolve_class_plain[class_format]);
+    // The resolve by pixel class, as planned before the imports (`class_plan`, above).
     resolve_classes_drawn_ = class_plan.classes;
     resolve_classes_plain_ = class_plan.plain;
     if (class_plan.classes != 0) {
