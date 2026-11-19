@@ -9,7 +9,8 @@
   repository's checkouts (present, main, locked, merged, dirty) and the containers holding volumes,
   so every case writes a machine down and checks the verdicts. **Nothing here talks to a Docker
   daemon**: the two cases that run the script stop before docker is asked anything, one at argument
-  validation and one with DOCKER_HOST pointed at a port nobody listens on.
+  validation and one with DOCKER_HOST pointed at a port nobody listens on. Nor does anything talk to
+  the GPU server: remote-build.ps1's reach step is held to a listener of the test's own on loopback.
 
       pwsh tools/linux-build.Tests.ps1
       Invoke-Pester tools/linux-build.Tests.ps1
@@ -200,11 +201,13 @@ Test-That 'and keeps one a container holds' {
 
 # --- the pieces it rests on -------------------------------------------------------------------------
 
-Test-That 'the volume id is the one the script has always used (D:\workspace\game_engine -> 049fb17c077a)' {
-  # Measured on 2026-10-07: the main checkout's volumes on this machine are engine-linux-*-049fb17c077a.
-  # If this changes, every unlabelled volume on every machine becomes an unknown checkout.
-  (Get-CheckoutVolumeId 'D:\workspace\game_engine') -eq '049fb17c077a' -and
-    (Get-CheckoutVolumeId 'd:\WORKSPACE\game_engine') -eq '049fb17c077a'
+Test-That 'the volume id is the one the script has always used (D:\work\engine -> 89e4adbf589b)' {
+  # The hash of a root's spelling, pinned on a neutral root (T175: no path of the machine in the
+  # tree). The same function gave the development machine's main checkout the id its volumes have
+  # carried since 2026-10-07 (engine-linux-*-049fb17c077a). If this changes, every unlabelled
+  # volume on every machine becomes an unknown checkout.
+  (Get-CheckoutVolumeId 'D:\work\engine') -eq '89e4adbf589b' -and
+    (Get-CheckoutVolumeId 'd:\WORK\engine') -eq '89e4adbf589b'
 }
 Test-That 'a checkout volume''s labels name its root, its role, its scope and a UTC time' {
   $l = Get-VolumeLabels -Role deps -Root $main -Created ([DateTime]::new(2026, 10, 7, 12, 30, 5, [DateTimeKind]::Utc))
@@ -332,14 +335,14 @@ Test-That 'without -Rebuild nothing is removed' {
 # compiler cache already has, and registering another is a cmake/ change for a pure function.
 
 Import-Module (Join-Path $PSScriptRoot 'lib/CompilerCache.psm1') -Force
-$mainRoot = 'D:\workspace\game_engine'
-$common = 'D:/workspace/game_engine/.git'
+$mainRoot = 'D:\work\engine'
+$common = 'D:/work/engine/.git'
 Test-That 'the main checkout is primary, an agent''s and the gate''s worktrees are theirs, any other is a worktree' {
-  (Get-CheckoutKind -Root $mainRoot -GitDir 'D:/workspace/game_engine/.git' -CommonDir $common -Branch 'main') -eq 'primary' -and
-    (Get-CheckoutKind -Root 'D:\workspace\game_engine' -GitDir 'd:\workspace\game_engine\.git\' -CommonDir $common) -eq 'primary' -and
-    (Get-CheckoutKind -Root 'D:\workspace\game_engine\.claude\worktrees\agent-a1' -GitDir "$common/worktrees/agent-a1" -CommonDir $common -Branch 'worktree-agent-a1') -eq 'agent' -and
-    (Get-CheckoutKind -Root 'D:\workspace\ge-gate' -GitDir "$common/worktrees/ge-gate" -CommonDir $common -Branch 'gate') -eq 'gate' -and
-    (Get-CheckoutKind -Root 'D:\workspace\mine' -GitDir "$common/worktrees/mine" -CommonDir $common -Branch 'gate-notes') -eq 'worktree'
+  (Get-CheckoutKind -Root $mainRoot -GitDir 'D:/work/engine/.git' -CommonDir $common -Branch 'main') -eq 'primary' -and
+    (Get-CheckoutKind -Root 'D:\work\engine' -GitDir 'd:\work\engine\.git\' -CommonDir $common) -eq 'primary' -and
+    (Get-CheckoutKind -Root 'D:\work\engine\.claude\worktrees\agent-a1' -GitDir "$common/worktrees/agent-a1" -CommonDir $common -Branch 'worktree-agent-a1') -eq 'agent' -and
+    (Get-CheckoutKind -Root 'D:\work\ge-gate' -GitDir "$common/worktrees/ge-gate" -CommonDir $common -Branch 'gate') -eq 'gate' -and
+    (Get-CheckoutKind -Root 'D:\work\mine' -GitDir "$common/worktrees/mine" -CommonDir $common -Branch 'gate-notes') -eq 'worktree'
 }
 Test-That 'ccache''s version line parses, and anything else is $null' {
   (ConvertFrom-CcacheVersion 'ccache version 4.13.1') -eq [version]'4.13.1' -and (ConvertFrom-CcacheVersion 'ccache version 4.9') -eq [version]'4.9' -and
@@ -379,11 +382,11 @@ Test-That 'no ccache on PATH, one older than 4.13, or not Windows: off, and the 
 }
 $on = Plan agent
 Test-That 'base_dir is the main checkout''s parent, which holds every worktree and the gate''s; the cache is beside it' {
-  $on.BaseDir -eq 'D:\workspace' -and $on.CacheDir -eq 'D:\workspace\game_engine_local\ccache' -and
+  $on.BaseDir -eq 'D:\work' -and $on.CacheDir -eq 'D:\work\engine_local\ccache' -and
     (Plan agent '' $exe ([version]'4.13') 'E:\cc').CacheDir -eq 'E:\cc'
 }
 Test-That 'the launcher carries every setting, so a build from an IDE or straight through ninja caches the same way' {
-  $on.Launcher -eq 'C:/Users/someone/AppData/Local/Microsoft/WinGet/Links/ccache.exe;base_dir=D:/workspace;cache_dir=D:/workspace/game_engine_local/ccache;hash_dir=false;max_size=30G'
+  $on.Launcher -eq 'C:/Users/someone/AppData/Local/Microsoft/WinGet/Links/ccache.exe;base_dir=D:/work;cache_dir=D:/work/engine_local/ccache;hash_dir=false;max_size=30G'
 }
 Test-That 'configured on: both launchers, debug information in the object for the configurations that carry it, no precompiled headers' {
   $a = @(Get-CcacheConfigureArgs -Plan $on -CachedLauncher '')
@@ -417,13 +420,13 @@ Test-That 'ENGINE_SHADER_CACHE=1 turns it on there, ENGINE_SHADER_CACHE=0 off ev
     -not (ShaderPlan gate '0').Enabled -and (ShaderPlan agent '0').Reason -eq 'ENGINE_SHADER_CACHE=0'
 }
 Test-That 'its store is beside ccache''s, forward slashes for CMake, or ENGINE_SHADER_CACHE_DIR' {
-  (ShaderPlan agent).Dir -eq 'D:/workspace/game_engine_local/shader-cache' -and (ShaderPlan gate '' 'E:\sc').Dir -eq 'E:/sc'
+  (ShaderPlan agent).Dir -eq 'D:/work/engine_local/shader-cache' -and (ShaderPlan gate '' 'E:\sc').Dir -eq 'E:/sc'
 }
 Test-That 'configured on: the store; off over a tree that named one: an empty store; otherwise nothing' {
   $a = @(Get-ShaderCacheConfigureArgs -Plan (ShaderPlan agent) -CachedDir '')
-  $b = @(Get-ShaderCacheConfigureArgs -Plan (ShaderPlan primary) -CachedDir 'D:/workspace/game_engine_local/shader-cache')
+  $b = @(Get-ShaderCacheConfigureArgs -Plan (ShaderPlan primary) -CachedDir 'D:/work/engine_local/shader-cache')
   $c = @(Get-ShaderCacheConfigureArgs -Plan (ShaderPlan primary) -CachedDir '')
-  $a.Count -eq 1 -and $a[0] -eq '-DENGINE_SHADER_CACHE_DIR=D:/workspace/game_engine_local/shader-cache' -and
+  $a.Count -eq 1 -and $a[0] -eq '-DENGINE_SHADER_CACHE_DIR=D:/work/engine_local/shader-cache' -and
     $b.Count -eq 1 -and $b[0] -eq '-DENGINE_SHADER_CACHE_DIR=' -and $c.Count -eq 0
 }
 Test-That 'a tree reconfigures when its store is not the one wanted, and only then' {
@@ -523,11 +526,11 @@ Test-That 'tools/dev.ps1 build retries once, with CCACHE_RECACHE=1 for the rebui
 # scripts' sweeps already have. No server is contacted.
 
 Import-Module (Join-Path $PSScriptRoot 'lib/RemoteTrees.psm1') -Force
-$alive = 'D:\workspace\game_engine\.claude\worktrees\agent-alive'
-$gone = 'D:\workspace\game_engine\.claude\worktrees\agent-gone'
-$main = 'D:\workspace\game_engine'
+$alive = 'D:\work\engine\.claude\worktrees\agent-alive'
+$gone = 'D:\work\engine\.claude\worktrees\agent-gone'
+$main = 'D:\work\engine'
 Test-That 'the tree id is remote-build.ps1''s: the checkout path lower-cased, as the volume id is' {
-  (Get-RemoteTreeId $main) -eq (Get-CheckoutVolumeId $main) -and (Get-RemoteTreeId 'D:\WORKSPACE\Game_Engine') -eq (Get-RemoteTreeId $main)
+  (Get-RemoteTreeId $main) -eq (Get-CheckoutVolumeId $main) -and (Get-RemoteTreeId 'D:\WORK\Engine') -eq (Get-RemoteTreeId $main)
 }
 $idUnknown = 'cf43458762cb'
 $listing = @(
@@ -564,6 +567,106 @@ Test-That 'the listing script reads only ~/game_engine-remote and twelve-hex nam
   $s = Get-RemoteTreeListingScript
   $s -match 'cd "\$HOME/game_engine-remote"' -and $s -match '\?{12}' -and $s -notmatch 'rm ' -and $s -notmatch 'ccache'
 }
+
+# --- the GPU server that never answers: remote-build.ps1's reach step (tools/lib/RemoteSsh.psm1) --------
+#
+# Three rows' runs sat at "reaching titanxp" for hours: ssh with ConnectTimeout and no keepalive
+# waits for ever on a server that sends its banner and then says nothing. The server here is a
+# listener of this test's own on 127.0.0.1 (loopback only: no firewall prompt, AGENTS.md's listener
+# rule), which accepts, sends a banner, and is silent; no real host is contacted. Where ssh is not
+# on PATH the two cases say so and pass, as the docker case above does where docker is missing.
+
+Import-Module (Join-Path $PSScriptRoot 'lib/RemoteSsh.psm1') -Force
+$sshExe = Get-Command ssh -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+# Starts what $start returns (a ProcessStartInfo, given the port) against a server that answers with
+# a banner and then nothing, until it exits or $deadline seconds pass; stopped then. The process's
+# exit code, whether it was still running at the deadline, its seconds, and how many connections
+# the server took.
+function Invoke-AgainstSilentServer([scriptblock]$start, [int]$deadline) {
+  $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+  $listener.Start()
+  $clients = New-Object System.Collections.Generic.List[object]
+  try {
+    $psi = & $start $listener.LocalEndpoint.Port
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $out = $p.StandardOutput.ReadToEndAsync()
+    $err = $p.StandardError.ReadToEndAsync()
+    $banner = [System.Text.Encoding]::ASCII.GetBytes("SSH-2.0-OpenSSH_9.6`r`n")
+    while (-not $p.HasExited -and $watch.Elapsed.TotalSeconds -lt $deadline) {
+      if ($listener.Pending()) {
+        $c = $listener.AcceptTcpClient()
+        $c.GetStream().Write($banner, 0, $banner.Length)
+        $clients.Add($c)   # held open and never written again: the silence is the case
+      }
+      $null = $p.WaitForExit(100)
+    }
+    $hung = -not $p.HasExited
+    if ($hung) { try { $p.Kill($true) } catch { } }
+    $p.WaitForExit()
+    $seconds = $watch.Elapsed.TotalSeconds
+    $text = @((($out.Result + "`n" + $err.Result) -split "`r?`n") | Where-Object { $_.Trim() })
+    return [pscustomobject]@{ Code = $(if ($hung) { $null } else { $p.ExitCode }); Hung = $hung; Seconds = $seconds; Accepted = $clients.Count; Lines = $text }
+  } finally {
+    foreach ($c in $clients) { $c.Dispose() }
+    $listener.Stop()
+  }
+}
+
+if (-not $sshExe) {
+  Test-That 'remote-build''s reach step against a silent server: not run, no ssh on PATH' { $true }
+} else {
+  Test-That 'every connection carries a keepalive, and with it ssh gives a silent server up by itself' {
+    $opts = Get-RemoteSshOptions
+    $defaults = ($opts -join ' ')
+    # The same options with a two-second keepalive, so the case takes seconds and not the minute the
+    # defaults allow; what is held is that ssh, not this test, ends the wait.
+    $short = Get-RemoteSshOptions -AliveSeconds 1 -AliveCount 2
+    $r = Invoke-AgainstSilentServer {
+      param($port)
+      $psi = [System.Diagnostics.ProcessStartInfo]::new($sshExe.Source)
+      foreach ($a in ($short + @("ssh://127.0.0.1:$port", 'true'))) { $psi.ArgumentList.Add($a) }
+      $psi
+    } 30
+    $defaults -match 'BatchMode=yes' -and $defaults -match 'ConnectTimeout=20' -and $defaults -match 'ServerAliveInterval=15' -and
+      $defaults -match 'ServerAliveCountMax=4' -and $r.Accepted -ge 1 -and -not $r.Hung -and $r.Code -ne 0 -and $r.Seconds -lt 20
+  }
+  Test-That 'remote-build.ps1 gives a silent server up at -ReachSeconds: one line, exit 69, ssh stopped' {
+    $pwshExe = (Get-Process -Id $PID).Path
+    $remote = Join-Path $PSScriptRoot 'remote-build.ps1'
+    $r = Invoke-AgainstSilentServer {
+      param($port)
+      $psi = [System.Diagnostics.ProcessStartInfo]::new($pwshExe)
+      foreach ($a in @('-NoProfile', '-File', $remote, '-Host', "ssh://127.0.0.1:$port", '-ReachSeconds', '3', '-ReachAttempts', '1')) { $psi.ArgumentList.Add($a) }
+      $psi
+    } 60
+    $last = @($r.Lines | Where-Object { $_ -match '^remote-build: ' })
+    $r.Accepted -ge 1 -and -not $r.Hung -and $r.Code -eq 69 -and $r.Seconds -lt 45 -and $last.Count -eq 1 -and
+      $last[0] -match 'not reachable' -and ($r.Lines -match 'no answer within 3 s') -and
+      -not ($r.Lines -match 'ScriptStackTrace|CategoryInfo|Line \||At .*:\d+ char:')
+  }
+}
+
+# --- the formatter's pin: tools/dev.ps1 format (tools/lib/Format.psm1) -----------------------------------
+#
+# Here beside the compiler cache's Windows half, for the same reason: the one CTest test these
+# scripts' rules already have.
+
+Import-Module (Join-Path $PSScriptRoot 'lib/Format.psm1') -Force
+$fmtMajor = Get-ClangFormatMajor
+Test-That 'format takes the pinned major, whatever its minor and its vendor line' {
+  (Get-ClangFormatVerdict "clang-format version $fmtMajor.1.3 (https://github.com/llvm/llvm-project e9846648)").Ok -and
+    (Get-ClangFormatVerdict "Ubuntu clang-format version $fmtMajor.0.0 (1ubuntu1)").Ok
+}
+Test-That 'and refuses another major in one line naming both and what to install' {
+  $v = Get-ClangFormatVerdict 'clang-format version 19.1.5' -Path 'C:\x\clang-format.exe'
+  -not $v.Ok -and $v.Major -eq 19 -and @($v.Message -split "`n").Count -eq 1 -and $v.Message -match '^format: ' -and
+    $v.Message -match '19\.1\.5' -and $v.Message -match "formatted with $fmtMajor" -and $v.Message -match "LLVM $fmtMajor"
+}
+Test-That 'and a version line it cannot read' { -not (Get-ClangFormatVerdict 'nothing here').Ok -and -not (Get-ClangFormatVerdict '').Ok }
 
 # --- the script's own refusals, before docker is asked anything ---------------------------------------
 

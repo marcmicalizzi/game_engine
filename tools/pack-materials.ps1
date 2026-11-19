@@ -9,7 +9,7 @@
   tiled set per role (`palm/bark`, `rock/granite`), a `pack.json` manifest and a `LICENSES.md`.
   `tools/fetch-materials.ps1` unpacks one into the git-ignored `content/materials/`; this script
   makes one. Neither the staging directory nor the zip belongs in the repository: generated images
-  live outside it (AGENTS.md, docs/content-generation.md), under D:\workspace\game_engine_local\.
+  live outside it (AGENTS.md, docs/content-generation.md), in the local folder (game_engine_local, beside the primary checkout).
 
   The staging directory holds one directory per role, `<From>/<species>/<part>/`, each with
 
@@ -36,8 +36,8 @@
       been read is not guessed at (docs/content-generation.md, "Material packs").
 
 .EXAMPLE
-  tools/pack-materials.ps1 -From D:\workspace\game_engine_local\packages\staging-palm `
-    -Out D:\workspace\game_engine_local\packages\materials-palm-2026-10-19.zip -Name palm-defaults
+  tools/pack-materials.ps1 -From $env:ENGINE_LOCAL_ROOT\packages\staging-palm `
+    -Out $env:ENGINE_LOCAL_ROOT\packages\materials-palm-2026-10-19.zip -Name palm-defaults
 #>
 [CmdletBinding()]
 param(

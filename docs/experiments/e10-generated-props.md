@@ -13,16 +13,16 @@
 
 **Meshes.** Meshy's `POST /openapi/v1/image-to-3d` with the body the owner's first task was verified with — `{"ai_model":"latest","should_texture":true,"enable_pbr":true,"topology":"triangle"}`, the image as a `data:` URI — five tasks in flight at a time. **All 20 succeeded on the first attempt, 30 credits each: 600 credits, balance 1,235 → 635** (the floor is 165 and this agent's cap was 700). A task took **100 s median** on the service (63 s for the signpost, 435 s and 592 s for the two meshes of six and seven million triangles). The service does not report what `latest` resolved to, so every sidecar records the alias and the date. Each GLB carries one material and three textures (base colour, metallic-roughness, normal), like the characters before them.
 
-**Tripo.** The same twenty images, byte for byte, are in the owner's manifest (`D:\workspace\game_engine_local\generated\tripo\manifest-2026-09-22.json`, with a README saying which image to upload under which name and where to drop the GLBs); `tools/generate.ps1 ingest` takes them back when they exist.
+**Tripo.** The same twenty images, byte for byte, are in the owner's manifest (`game_engine_local\generated\tripo\manifest-2026-09-22.json`, with a README saying which image to upload under which name and where to drop the GLBs); `tools/generate.ps1 ingest` takes them back when they exist.
 
 **The measurement.** `tools/e10-harness.ps1` over the twenty GLBs: `engine-content build` and `stats`, then `engine-view` twice from the same framing orbit (640×640, `--orbit 16 --frames 4 --shadows off`) at the default LOD threshold of **1 px** and at **0.05 px** (effectively the leaves), then `engine-image compare`. Pass means **0 warnings**, **smallest atlas island ≥ 1 texel of a 4096 atlas**, and **coarse-against-finest FLIP ≤ 0.02** — the value that passes every known-good build and fails every known-bad one in the seam fix's measurements ([geometry](../subsystems/geometry.md#what-the-simplifier-is-given-and-why): defective 0.0241 and 0.0223, fixed 0.0115 and 0.0083, FlightHelmet 0.0173).
 
 ```powershell
-pwsh tools/generate.ps1 image -Workflow D:\workspace\game_engine_local\workflows\krea2-turbo.json -Subjects content/generation/e10-desert-props.json
-pwsh tools/generate.ps1 manifest -Backend tripo-folder -Images D:\workspace\game_engine_local\generated\comfyui\2026-09-22
-pwsh tools/generate.ps1 3d -Backend meshy -Images D:\workspace\game_engine_local\generated\comfyui\2026-09-22 -Yes
+pwsh tools/generate.ps1 image -Workflow game_engine_local\workflows\krea2-turbo.json -Subjects content/generation/e10-desert-props.json
+pwsh tools/generate.ps1 manifest -Backend tripo-folder -Images game_engine_local\generated\comfyui\2026-09-22
+pwsh tools/generate.ps1 3d -Backend meshy -Images game_engine_local\generated\comfyui\2026-09-22 -Yes
 $names = ((Get-Content -Raw content/generation/e10-desert-props.json | ConvertFrom-Json).subjects.name) -join ','
-pwsh tools/e10-harness.ps1 -Folder D:\workspace\game_engine_local\generated\meshy\2026-09-22 -Only $names
+pwsh tools/e10-harness.ps1 -Folder game_engine_local\generated\meshy\2026-09-22 -Only $names
 ```
 
 (`-Only` because the same folder holds an earlier probe of the coordinator's, which is not part of the set.)
@@ -108,7 +108,7 @@ It does **not** decide whether generated props are usable in the game — every 
 - **Build milliseconds are upper bounds** from a machine whose other tenants used up to 46% of the CPU (100% in the first pass).
 - **Semantic fitness was judged by eye**, once, from thumbnails and captures.
 
-The generated images and meshes, their sidecars, the harness's reports, captures and heat maps are the owner's local data under `D:\workspace\game_engine_local\` (`generated\` and `e10\meshy-2026-09-22\`) and are not committed.
+The generated images and meshes, their sidecars, the harness's reports, captures and heat maps are the owner's local data under `game_engine_local\` (`generated\` and `e10\meshy-2026-09-22\`) and are not committed.
 
 ## Pass 2: the same twenty, remeshed to a triangle budget
 
@@ -123,12 +123,12 @@ The generated images and meshes, their sidecars, the harness's reports, captures
 
 ```powershell
 $names = ((Get-Content -Raw content/generation/e10-desert-props.json | ConvertFrom-Json).subjects.name) -join ','
-$images = 'D:\workspace\game_engine_local\generated\comfyui\2026-09-22'
+$images = 'game_engine_local\generated\comfyui\2026-09-22'
 pwsh tools/generate.ps1 balance                                    # 635
 pwsh tools/generate.ps1 3d -Backend meshy -Images $images -Only $names -Subjects content/generation/e10-desert-props.json -Remesh -MinBalance 0 -MaxCredits 635 -Yes
 pwsh tools/generate.ps1 3d -Backend meshy -Images $images -Only tin-cup -Subjects content/generation/e10-desert-props.json -Remesh -Topology quad -Date 2026-09-23-quad -MinBalance 0 -MaxCredits 35 -Yes
-pwsh tools/e10-harness.ps1 -Orbit 16 -Folder D:\workspace\game_engine_local\generated\meshy\2026-09-23 -Only $names
-pwsh tools/e10-harness.ps1 -Orbit 16 -Folder D:\workspace\game_engine_local\generated\meshy\2026-09-22 -Only $names -Out D:\workspace\game_engine_local\e10\meshy-2026-09-22-repaired
+pwsh tools/e10-harness.ps1 -Orbit 16 -Folder game_engine_local\generated\meshy\2026-09-23 -Only $names
+pwsh tools/e10-harness.ps1 -Orbit 16 -Folder game_engine_local\generated\meshy\2026-09-22 -Only $names -Out game_engine_local\e10\meshy-2026-09-22-repaired
 ```
 
 (Every capture in this section is at the first pass's fixed `--orbit 16`, so the three sets compare with it and with each other; the harness now frames the whole bounds by default, which is a different picture, and `-Orbit 16` reproduces these. The first remeshed task, the tin cup, went alone to confirm the price and the triangle count before the other nineteen; the quad probe went to a folder of its own because the tin cup's name was taken in the day's.)
@@ -259,7 +259,7 @@ All three measured with the same build. "Coarse / finest clusters" is the share 
 - **The known-bad builds are one defect.** The calibration says how well a threshold separates the seam defect from its fix; it says nothing about how well it separates a coarse cut that drops a rivet from one that does not, which is what the first pass's dense failures were.
 - **Busy machine:** another agent's TRELLIS.2 sweep held the GPU lock through every run, and other processes reached 100% of the CPU. The pictures and the counts are unaffected; the build seconds are upper bounds.
 
-The meshes, sidecars, the ledger, the five reports and the calibration captures are the owner's local data under `D:\workspace\game_engine_local\` (`generated\meshy\2026-09-23\`, `generated\meshy\2026-09-23-quad\`, and `e10\`) and are not committed.
+The meshes, sidecars, the ledger, the five reports and the calibration captures are the owner's local data under `game_engine_local\` (`generated\meshy\2026-09-23\`, `generated\meshy\2026-09-23-quad\`, and `e10\`) and are not committed.
 
 ## Local generation: the owner's two TRELLIS.2 samples
 
@@ -293,7 +293,7 @@ One subject, the E10 list's **wooden crate** (a hard-surface prop — planks, ba
 
 ```powershell
 pwsh tools/gpu-lock.ps1 run -Purpose "E10 TRELLIS.2 sweep" -Exec "pwsh -File sweep.ps1"   # eight `generate.ps1 3d -Backend comfyui-3d` runs, -NoFree on all but the last
-pwsh tools/e10-harness.ps1 -Folder D:\workspace\game_engine_local\generated\trellis\2026-09-23 -Only <the eight> -Out D:\workspace\game_engine_local\e10\trellis-sweep-2026-09-23
+pwsh tools/e10-harness.ps1 -Folder game_engine_local\generated\trellis\2026-09-23 -Only <the eight> -Out game_engine_local\e10\trellis-sweep-2026-09-23
 ```
 
 ### Results
@@ -354,7 +354,7 @@ The same pattern as the crate: `adaptive` makes half as many islands again and a
 - **Machine state**: the unwrap and run seconds of `adaptive` are upper bounds from a shared machine; the picture metrics and the counts do not depend on load.
 - **The sidecars of this batch record `bake_seconds` as null**, from a bug fixed after it (a role id PowerShell handed back wrapped, which the timing table then failed to find); every bake node's own seconds are in `timings.nodes`, which is where the numbers above come from. *(Confirmed fixed: the boulder's two runs after it record 53.3 and 60.5 s, and every one of the twenty [below](#trellis2-from-the-same-twenty-images) records it.)*
 
-The meshes, their sidecars and `runs.jsonl` are under `D:\workspace\game_engine_local\generated\trellis\2026-09-23\`, and the harness's reports, captures and heat maps under `e10\trellis-sweep-2026-09-23\` and `e10\trellis-boulder-2026-09-23\`; none is committed.
+The meshes, their sidecars and `runs.jsonl` are under `game_engine_local\generated\trellis\2026-09-23\`, and the harness's reports, captures and heat maps under `e10\trellis-sweep-2026-09-23\` and `e10\trellis-boulder-2026-09-23\`; none is committed.
 
 ## The collapse check: how far the LOD collapses
 
@@ -405,7 +405,7 @@ The judged known-good assets draw at most **0.46** (FlightHelmet at orbit 16); e
 - **One view per framing, one resolution.** The share and the density both move with distance, resolution and threshold; the line is calibrated at 640×640 and 1 px against 0.05 px, and says nothing about any other setting.
 - **Off Windows there is no coverage**, so no density, and every mesh is judged on its share alone.
 
-The Khronos and fit-framing reports, captures and heat maps are under `D:\workspace\game_engine_local\e10\` (`khronos-samples-*-2026-09-23\`, `*-fit\`); every re-judged report keeps its earlier verdicts beside it as `report.pre-collapse.json`. None is committed.
+The Khronos and fit-framing reports, captures and heat maps are under `game_engine_local\e10\` (`khronos-samples-*-2026-09-23\`, `*-fit\`); every re-judged report keeps its earlier verdicts beside it as `report.pre-collapse.json`. None is committed.
 
 ## TRELLIS.2 from the same twenty images
 
@@ -481,7 +481,7 @@ pwsh tools/e10-harness.ps1 -Folder generated\trellis\2026-09-23-e10 -Only <the t
 - **Load.** The batch ran beside another agent's captures for its first three props and the owner's open Blender session; the generation seconds are upper bounds (the barrel cactus's 302 s reconstruction overlapped the captures).
 - **One timing is misattributed** (the broken pot's unwrap, above); the per-node times are the gaps between socket messages, and a machine sample every 15 s can delay reading a burst of them by about a second.
 
-The meshes, their sidecars, the images the reconstruction saw, the atlas renders and `runs.jsonl` are under `D:\workspace\game_engine_local\generated\trellis\2026-09-23-e10\`; the batch script and its log under `e10\trellis-images-batch-2026-09-23.*`; the two reports under `e10\trellis-2026-09-23-e10-orbit16\` and `e10\trellis-2026-09-23-e10-fit\`. None is committed.
+The meshes, their sidecars, the images the reconstruction saw, the atlas renders and `runs.jsonl` are under `game_engine_local\generated\trellis\2026-09-23-e10\`; the batch script and its log under `e10\trellis-images-batch-2026-09-23.*`; the two reports under `e10\trellis-2026-09-23-e10-orbit16\` and `e10\trellis-2026-09-23-e10-fit\`. None is committed.
 
 ## Repack: the pipeline's own atlas
 
@@ -562,7 +562,7 @@ Prop by prop, each cell is the coarse cut's share of the finest, own atlas → r
 - **The ceiling is a bound, not a target.** Its seam-free collapses draw textures across islands; no atlas reaches it without the texture moving.
 - **One camera, one resolution, lights off.** The one-camera comparison has the sun and the sky only; with the orbiting lights on, the two builds are lit differently for a reason that has nothing to do with the atlas (above).
 
-The reports are under `D:\workspace\game_engine_local\e10\` (`atlas-<set>-orbit16-{keep,ceiling,repack}\`, and the rebased spot checks in `atlas-<set>-orbit16-repack-rebased\`); none is committed.
+The reports are under `game_engine_local\e10\` (`atlas-<set>-orbit16-{keep,ceiling,repack}\`, and the rebased spot checks in `atlas-<set>-orbit16-repack-rebased\`); none is committed.
 
 ## Quad smart-mesh exports
 
@@ -577,7 +577,7 @@ The reports are under `D:\workspace\game_engine_local\e10\` (`atlas-<set>-orbit1
 **2026-10-10, with the zero-area repair** (`msvc-release` at `0b734eb`, build stamps checked, none stale; the same framing, `-Offscreen`; 54.5 s for the ten; the machine sampled by hand around the runs: 18% CPU load, the GPU idle with 6.2 of 32.6 GB in use, the GPU lock free at both ends):
 
 ```powershell
-pwsh tools/e10-harness.ps1 -Folder D:\workspace\game_engine_local\e10\tripo-quad-2026-10-09\inbox -Out D:\workspace\game_engine_local\e10\tripo-quad-2026-10-10 -Preset msvc-release -Offscreen
+pwsh tools/e10-harness.ps1 -Folder game_engine_local\e10\tripo-quad-2026-10-09\inbox -Out game_engine_local\e10\tripo-quad-2026-10-10 -Preset msvc-release -Offscreen
 ```
 
 | asset | triangles | zero-area dropped (collinear / coincident) | UV repair, triangles | islands | seam % | median island, texels | coarse / finest pairs (share) | FLIP | 2026-10-09 → 2026-10-10 |
@@ -610,6 +610,6 @@ pwsh tools/e10-harness.ps1 -Folder <the inbox> -Only scorpion,scorpion-2,dining-
 
 **The atlas is recoverable on our side; the scorpions are not, at this budget, by any atlas.** The repack takes the scorpions from about 1,800 islands to about 140 and from 96% of vertices on a seam to 57%, folds 67–68 of their 10.7k triangles, and rebakes a picture 0.0009 FLIP from the original (55–57 dB) — and because fewer seams let clusters fill, their finest cut draws **134 clusters instead of 220–230**, 40% fewer at every distance. But their coarse cut is still 96–100% of the finest, and the ceiling shows why: with no atlas constraint at all it is 0.97 and 0.78. A scorpion at 10.7k triangles is legs and claws a few pixels wide at this view, and any simplification moves them by more than a pixel; that is geometry, which neither a repack nor a better export atlas fixes (the table, solid, collapses to 0.20 after the repack, against a ceiling of 0.10). **What the repack costs is the 8K texture:** the atlas step sizes its atlas to the largest source texture, so these rebakes are 8,192² — 18–34 s a prop, against about 10 s for September's 2K props on five to twenty times the triangles, and 49–86 MB of PNG — and the chart-and-pack half alone was 7–22 s here because packing scales with the atlas. At 2K the same step would rebake a sixteenth of the texels. So the order of fixes is the export first (2K or 4K PBR, normal map on) and the repack second, for an atlas still fragmented after it.
 
-**What it decides.** Smart mesh as exported on 2026-10-09 is not better than September's triangles for the engine: the zero-area triangles were a mechanical fault, now ours to handle and handled; the 8K albedo-only texture is an export setting that costs 89 MB a prop built and comes without the normal map a low-poly mesh most needs; the atlases are fragmented (54–98% seam vertices, against a median of 21% for September's Tripo props) and repairable by the repack at a cost; and the thin creatures do not coarsen at ~10k triangles whatever the atlas. Whether smart mesh at **2K or 4K PBR** beats September's exports **on the same objects** is the A/B (roadmap G58): wooden-crate and cart-wheel as smart mesh and as triangles at both sizes, eight files, measured with September's two in one run. The owner's sheet is `D:\workspace\game_engine_local\generated\tripo\quad-ab-2026-10-10.md` (with its manifest beside it); it ends with the decision rule. **Standing:** blocked on the owner's exports.
+**What it decides.** Smart mesh as exported on 2026-10-09 is not better than September's triangles for the engine: the zero-area triangles were a mechanical fault, now ours to handle and handled; the 8K albedo-only texture is an export setting that costs 89 MB a prop built and comes without the normal map a low-poly mesh most needs; the atlases are fragmented (54–98% seam vertices, against a median of 21% for September's Tripo props) and repairable by the repack at a cost; and the thin creatures do not coarsen at ~10k triangles whatever the atlas. Whether smart mesh at **2K or 4K PBR** beats September's exports **on the same objects** is the A/B (roadmap G58): wooden-crate and cart-wheel as smart mesh and as triangles at both sizes, eight files, measured with September's two in one run. The owner's sheet is `game_engine_local\generated\tripo\quad-ab-2026-10-10.md` (with its manifest beside it); it ends with the decision rule. **Standing:** blocked on the owner's exports.
 
-**Caveats.** Ten assets, none of them from the E10 images, so nothing here compares smart mesh with September's triangles on one object — that is what the A/B is for. The furniture is boxy, flat-faced geometry, where a collinear triangle from a quad split is common and a coarse cut loses little; the scorpions are the opposite case. The repack's times are upper bounds taken beside other agents' builds (the machine's state above); its counts and pictures are not load-dependent. The reports are under `D:\workspace\game_engine_local\e10\` (`tripo-quad-2026-10-09\`, `tripo-quad-2026-10-10\`, `-repack\`, `-ceiling\`); none is committed.
+**Caveats.** Ten assets, none of them from the E10 images, so nothing here compares smart mesh with September's triangles on one object — that is what the A/B is for. The furniture is boxy, flat-faced geometry, where a collinear triangle from a quad split is common and a coarse cut loses little; the scorpions are the opposite case. The repack's times are upper bounds taken beside other agents' builds (the machine's state above); its counts and pictures are not load-dependent. The reports are under `game_engine_local\e10\` (`tripo-quad-2026-10-09\`, `tripo-quad-2026-10-10\`, `-repack\`, `-ceiling\`); none is committed.

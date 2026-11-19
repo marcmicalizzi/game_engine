@@ -16,7 +16,7 @@ $env:ENGINE_GPU_LOCK_OWNER = 'agent-tail'
 pwsh tools/gpu-lock.ps1 run -Purpose "E37 ..." -Exec "pwsh -NoProfile -File run-e37.ps1 -Scenes boxes-world,ashlar-world-mid,ashlar-world-low"
 #   each: engine-view --scene <e35>\scene-<row>.json --camera-path content\test-scenes\desert-overlook\camera-path.json
 #     --offscreen --benchmark out\<build>-<row>.jsonl --frames 600 --repeat 3 --width 1920 --height 1080
-#     --shadows off --ddc D:\workspace\game_engine_local\ruins\blocks\ddc --log info --wait-quiet 60
+#     --shadows off --ddc game_engine_local\ruins\blocks\ddc --log info --wait-quiet 60
 #     --world-log out\<build>-<row>.world.jsonl  [--tunable renderer.tiles.compact_pct=12]
 pwsh analyze-e37.ps1 -Names <runs>
 ```

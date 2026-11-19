@@ -107,8 +107,8 @@ function Get-CcachePlan {
     MaxSize, Launcher (the CMake list for CMAKE_<LANG>_COMPILER_LAUNCHER).
   .PARAMETER MainRoot
     The repository's main checkout. base_dir is its parent, which holds it, its .claude\worktrees\
-    and the gate's worktree beside it (D:\workspace, for D:\workspace\game_engine and
-    D:\workspace\ge-gate); the cache is <MainRoot>_local\ccache beside it, where the owner's other
+    and the gate's worktree beside it (the workspace folder, for game_engine and ge-gate beside
+    it); the cache is <MainRoot>_local\ccache beside it, where the owner's other
     machine-local files already live, unless CacheDir names another.
   #>
   param(

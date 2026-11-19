@@ -137,4 +137,4 @@ Read bytes here are the trace's per-thread I/O counter, including provider/manif
 not resident bytes or a claim of physical disk traffic. Read-ahead can keep a small archive
 resident even across the old second pass, so halving payload calls need not halve I/O bytes.
 The archive format, hashes, mask words, GPU layout and per-frame work do not change.
-Evidence and command scripts are under `D:/workspace/ge-codex-scratch/sol/`.
+Evidence and command scripts are under `ge-codex-scratch/sol/`.

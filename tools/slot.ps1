@@ -124,7 +124,15 @@ function Read-Marker([string]$path) {
 # which are what a reset would break (LNK1168 for the next build).
 function Get-ProcessesUnder([string]$path) {
   $prefix = ([System.IO.Path]::GetFullPath($path)).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
-  @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase) })
+  # Path is read once. It is a script property (`$this.MainModule.FileName`) that asks the process
+  # again on every read, so `$_.Path -and $_.Path.StartsWith(...)` answers null the second time for
+  # a process that exits between the two reads, and the call on null stops this script: on a machine
+  # busy with compilers starting and ending, `reset` failed that way once in a full run and passed
+  # alone (docs/ci/what-to-run.md, "Checks on events, not seconds").
+  @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+      $exe = $_.Path
+      $exe -and $exe.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
+    })
 }
 
 function Get-SlotDirs {

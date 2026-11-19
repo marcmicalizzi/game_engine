@@ -1,0 +1,13 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T175",
+  "reason": "T175: AGENTS.md states the machine-path rule and names the local folder once; apps.md registers engine-mcp by the checkout and ENGINE_LOCAL_ROOT instead of this machine's paths",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 50,
+    "page:docs/experiments/e10-generated-props.md": -273,
+    "page:AGENTS.md": 1113,
+    "page:docs/experiments/gi-cache-2026-11-07.md": -13
+  }
+}

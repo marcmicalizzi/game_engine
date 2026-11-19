@@ -1,6 +1,6 @@
 # The hitches of the owner's v27 walk (R130, 2026-11-03)
 
-Roadmap R130, with R128 and T71 part 3. The owner walked the forest proof of concept's v27 at 3840×2160 HDR10, `--raster rt --shadows rt`, 416 animals and the creator body, windowed and uncapped (`D:/workspace/forest_wildlife_poc/reports/lab/20261103-095454-764/`, 59,826 frames), and saw "occasional jumps to 160 ms for a frame or few". Twenty records have a `frame_ms` over 100 ms. This page is what those records say once read against the frames before them, what the record could not say and now does, and what was changed.
+Roadmap R130, with R128 and T71 part 3. The owner walked the forest proof of concept's v27 at 3840×2160 HDR10, `--raster rt --shadows rt`, 416 animals and the creator body, windowed and uncapped (`forest_wildlife_poc/reports/lab/20261103-095454-764/`, 59,826 frames), and saw "occasional jumps to 160 ms for a frame or few". Twenty records have a `frame_ms` over 100 ms. This page is what those records say once read against the frames before them, what the record could not say and now does, and what was changed.
 
 ## Reading the records
 

@@ -121,8 +121,8 @@
   report says so instead of quoting one; the report records the mode.
 
 .EXAMPLE
-  tools/e10-harness.ps1 -Folder D:\workspace\game_engine_local\generated\meshy\2026-09-22
-  tools/e10-harness.ps1 -FromReport D:\workspace\game_engine_local\e10\meshy-2026-09-22\report.json -MaxFlip 0.03
+  tools/e10-harness.ps1 -Folder $env:ENGINE_LOCAL_ROOT\generated\meshy\2026-09-22
+  tools/e10-harness.ps1 -FromReport $env:ENGINE_LOCAL_ROOT\e10\meshy-2026-09-22\report.json -MaxFlip 0.03
 #>
 [CmdletBinding()]
 param(
@@ -567,7 +567,8 @@ if ($FromReport) {
   }
 
   if (-not $Out) {
-    $root = if ($LocalRoot) { $LocalRoot } elseif ($env:ENGINE_LOCAL_ROOT) { $env:ENGINE_LOCAL_ROOT } elseif ($IsWin) { 'D:\workspace\game_engine_local' } else { Join-Path $HOME 'game_engine_local' }
+    Import-Module (Join-Path $PSScriptRoot 'lib/LocalRoot.psm1') -Force
+    $root = Get-EngineLocalRoot -Explicit $LocalRoot
     $leaf = Split-Path -Leaf $folders[0]; $parent = Split-Path -Leaf (Split-Path -Parent $folders[0])
     $Out = Join-Path (Join-Path $root 'e10') "$parent-$leaf"
   }

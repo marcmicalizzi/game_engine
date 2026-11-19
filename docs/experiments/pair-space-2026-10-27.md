@@ -137,7 +137,7 @@ the capacity (`renderer.md`, "The ray tracing chain's index space").
   needed for the cap itself. A bump is needed only if a container built at 129–256 triangles could
   be *read* by a scene: those would have to be refused at load (a cluster with more than 128
   triangles names triangles the id cannot), which is a check in the container reader the proposal
-  would add. Not checked: containers under `D:\workspace\game_engine_assets` or the proof of
+  would add. Not checked: containers under `game_engine_assets` or the proof of
   concept's caches built with a non-default `max_triangles`.
 - Where 124 is pinned: `cluster_mesh.slang:39` (`k_max_triangles`, the mesh stage's output; a 128
   cap could raise it to 128 since its workgroup is already 128 wide),

@@ -89,6 +89,21 @@ the byte.
 The tree is clang-formatted, and every rule leans on that. Each is written so two people with the
 same tree get the same number.
 
+#### The formatter is pinned
+
+`tools/dev.ps1 format` runs **clang-format 22** (`tools/lib/Format.psm1`; Visual Studio 2026's own,
+`VC\Tools\Llvm\x64\bin`, which the script finds through the developer environment when PATH has
+none) and refuses any other major with one line that names what it found and what to install,
+because two majors lay a file out differently and a run with the wrong one rewraps files nobody
+touched. Measured on 2026-11-18 over the 1,751 C++ files of the tree (`--dry-run`): 22.1.3 would
+change 107, 19.1.5 (Visual Studio 2022's) 110, the 107 among them. So the drift that made `format`
+"rewrap 106 files no row touched" was **not** the version: those files were committed unformatted
+(71 of them on the two days before, by rows that format only their own files and some that did not),
+and a pin alone does not put them back. What does is one tree-wide `tools/dev.ps1 format` with 22,
+committed alone and last in a merge so that no branch carries it, by whoever makes the merge (roadmap
+T184). Until then, format only the files you changed: `clang-format -i --style=file <files>` with
+the pinned major.
+
 | Measure | What counts | Why this rule |
 |---|---|---|
 | `function-lines` | The lines of one function's definition: from the first line at column 0 that names it (`Class::name` or `name`, not preceded by a letter, digit, `_`, `:` or `~`) followed by `(` and does not end in `;`, through the first line after it that is exactly `}`. | A definition at namespace scope closes at column 0 and nothing inside it does, so the first `}` alone on a line is its end; a declaration ends in `;`. No parsing of C++ needed, and a signature wrapped over lines counts from its first. |

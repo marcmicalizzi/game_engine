@@ -8,7 +8,7 @@ Run your own checkout's `engine-view --offscreen --scene content/test-scenes/dea
 --camera-path content/test-scenes/deadwood/camera-path.json
 --frames 4 --capture <local-output>.png`. The fixed camera sees the entire gallery. Generated
 captures, measurements, mesh containers and their camera/recipe copies live under
-`D:/workspace/game_engine_local/deadwood/2026-10-29/`, never here. See
+`game_engine_local/deadwood/2026-10-29/`, never here. See
 [grounding and validation](../../../docs/experiments/deadwood.md).
 
 ## Tree-to-tree lean
@@ -29,4 +29,4 @@ content/test-scenes/deadwood/lean.camera.json` with the same offscreen capture c
 The pose is already baked: do not rotate the instance again. Support discovery, equilibrium,
 and joining a root plate are separate follow-ups; root plates belong to soil.
 External surface/lean captures and exact textured recipe copies are under
-`D:/workspace/game_engine_local/deadwood/2026-10-29-followup/`.
+`game_engine_local/deadwood/2026-10-29-followup/`.

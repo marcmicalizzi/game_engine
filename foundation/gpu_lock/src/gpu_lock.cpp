@@ -477,7 +477,7 @@ std::string default_path() {
   std::string configured = detail::environment("ENGINE_GPU_LOCK");
   if (!configured.empty()) return configured;
 #if ENGINE_PLATFORM_WINDOWS
-  return "D:\\workspace\\gpu.lock";
+  return "D:\\workspace\\gpu.lock";  // engine-lint: allow-machine-path the protocol's fixed path
 #else
   return "/tmp/gpu.lock";
 #endif

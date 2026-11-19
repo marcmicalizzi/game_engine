@@ -389,7 +389,7 @@ you, each once, and no longer a lottery a re-asker wins: there is nothing to gai
 and often. (The pause GPU-LOCK.md's rule 9 asks between back-to-back holds is still what lets in
 a tool that takes no ticket, the Blender agent's: with nobody in the line, a re-asker has the
 lock back at once.)
-`tools/gpu-lock.ps1 status` (with `-LockFile D:\workspace\linux-build.lock` for builds) prints the
+`tools/gpu-lock.ps1 status` (with `-Kind linux-build` for builds) prints the
 holder and the line, and a waiter's own log says where it stands. What it changes for a plan:
 GPU tests beside other agents' now take turns hold by hold, so a long GPU suite run beside five
 others runs at a sixth of its pace instead of all at once after a wait; and a waiter that is
@@ -660,7 +660,7 @@ on the one machine-wide GPU lock they share.
 
 ### Gate b57, measured
 
-From gate b57's second run (2026-11-09, `D:\workspace\ge-gate\build\<preset>\Testing\Temporary\LastTest.log`
+From gate b57's second run (2026-11-09, `ge-gate\build\<preset>\Testing\Temporary\LastTest.log`
 and the gate's console logs; the first run's logs for the same tests beside it). The lock's own
 record of holds (`ENGINE_GPU_LOCK_LOG`, [gpu_lock](../subsystems/gpu_lock.md)) was not on, so what a
 log gives is a test's wall seconds and the waits its own process printed (`gpu-lock: taken after N
@@ -1140,7 +1140,7 @@ render session's device for its memory row):
 | `engine_host`, `mcp_bridge`, `mcp_bridge.mcp_check`, `.mcp_check_connect` | 67, 18, 11, 5 | 3, 1, 0, 0 | yes: `render.*` through `engine-host` (one file each; the checks' capture and benchmark) | `gpu` |
 | `water` | 119 | 47 | nine of its sixteen files; 22 s of cases do not | `gpu`, whole (below) |
 | `doc_scene`, `volumetrics`, `scatter` | 27, 11, 10 | 4, 6, 2 | one or two files each; 0.5, 0.2 and 5 s of cases do not | `gpu`, whole |
-| `engine_cli` | 386 | 12 | `render_tests.cpp`, `console_tests.cpp`'s captured frame, `ops_tests.cpp`'s `engine.budgets`: 77 s of cases | split: `engine_cli.gpu`; `engine_cli` (308 s, `npc_replay_tests.cpp` 285 of it) in the CPU pool |
+| `engine_cli` | 386 | 12 | `render_tests.cpp`, `console_tests.cpp`'s captured frame, `ops_tests.cpp`'s `engine.budgets`: 77 s of cases | split: `engine_cli.gpu`; `engine_cli` (308 s, `npc_replay_tests.cpp` 285 of it) in the CPU pool; since T184 `npc_replay_tests.cpp` is `engine_cli.npc_replay` (below) |
 | `scene_collision` | 75 | 1 | `collision_draw_tests.cpp`: 0.8 s | split: `scene_collision.gpu`; `scene_collision` (72 s) in the CPU pool |
 | `rocks`, `landform`, `world`, `caves`, `soil`, `protocol`, `audio`, `audio_system` | 331, 47, 37, 30, 7, 6, 4, 2 | 0 | no (`protocol`'s `gpu.adapters` enumerates adapters, which opens no device) | `NO_DEVICE` |
 | `window` | 9 | 0 | no: its one Vulkan window holds a lock file in its own scratch directory | `NO_DEVICE` |
@@ -1212,3 +1212,45 @@ and `report` sees the try even though no device follows. A bundle (`tools/packag
 carries each test's arguments, so the split's filters travel, and not its environment: there
 `ENGINE_TEST_DEVICES` is unset and both checks do nothing, which is right for a machine whose run
 has no chains to protect. Outside CTest — an author running a test executable by hand — the same.
+
+## Checks on events, not seconds
+
+A check that passes alone and fails in a full run is a race or a clock until shown otherwise
+(roadmap T184), and the mend is to wait for the event the assertion is about, never to lengthen the
+sleep or loosen the assertion. A deadline may stay, to end a case that would otherwise hang; it is
+never what the case measures. What batch 68's runs found, with each check before and after:
+
+| Check | Before | After |
+|---|---|---|
+| `tools.slot`, "reset refuses while a process runs from under the slot" | the sleeper given 800 ms to start | waits until slot.ps1's own question (a process whose executable is under the slot) finds it; the same refusal, the same unmoved HEAD |
+| `tools.slot`, "and resets once it has ended" | kill, then at most 5 s for the process to end | waits until that question finds nothing; the same reset, the same new HEAD |
+| `tools.machine_lock`, "a build that releases and asks again is served after the build that was waiting" | the first hold 3 s, in which a second pwsh had to start and stand in the line; every hold seen by a look every 20 ms at holds of 0.3 s | the first hold ends only once the second build stands in the line (`linux-build.ps1 -LockOnlyUntil <file>`), and every hold ends only once the test has seen it; the same order, by pid and by hold |
+| `tools.machine_lock`, "and are served in that order" (three builds) | holds of 0.31 to 0.33 s against the same 20 ms look | each hold ends once seen; the same order, by pid and by hold |
+
+**The slot reset's own race was in the script, not the test.** `slot.ps1` asked
+`$_.Path -and $_.Path.StartsWith(...)` of every process, and `Path` is a script property
+(`$this.MainModule.FileName`) that asks the process again on each read: one that exits between the
+two reads answers null the second time, the call on null stops the script, and `reset` exits 1. On
+this machine with the rows' compilers starting and ending, the two-read form threw on 1 of 60
+enumerations of the process table and the one-read form on none (2026-11-18, about 1.9 s an
+enumeration). It reads `Path` once now, and so does the test's own question.
+
+`mcp_bridge`'s "a host that stops answering is stopped at the deadline and replaced" held every
+quick call to the one-second deadline it tests, a fresh debug host's first `engine.info` included,
+which at 100 % CPU took longer and replaced the host before the case began. The hung method is still
+held to that second (the same message, `timed_out`, waited 0.9 s and under 30); a quick call the
+deadline stopped on a host still starting is asked again and counted, and the generations add each
+such replacement in.
+
+**`engine_cli`'s CPU half was over its limit on a loaded machine, and the time is two cases.**
+`npc_replay_tests.cpp`'s 10^5 residents and its 2 * 10^4 crossing the simulated edge, each
+generated, streamed, saved, loaded and replayed in three hosts, took 467 s and 115 s of the half's
+645 s here on 2026-11-18 at 100 % CPU (the rest 63 s; the 10^5 world's generation 25 s, its save
+77 MB), and 594 s and 220 s in other rows' runs that day, against the 600 s every end-to-end test
+has. Shortening them is an edit to cases other rows held that day (three hosts that could be two at
+once: the replay from tick 0 needs nothing from the continuous run), so the file is a test of its
+own, `engine_cli.npc_replay` (`engine_app(... E2E_OWN_FILES <file> E2E_OWN_TIMEOUT <s>)`, beside
+the device split), whose limit is twice the worst seen, 1,650 s; `engine_cli` keeps the other 22
+cases at 600 s, and the three tests hold the suite's 55 cases between them, each once.
+
+`scene_collision`'s wall-clock check is another row's (T184 left it).

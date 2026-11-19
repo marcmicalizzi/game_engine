@@ -141,16 +141,31 @@ try {
       Copy-Item -LiteralPath $_.FullName -Destination $to -Force
     }
     $held = Join-Path $s2 ('build/pwsh/' + (Split-Path -Leaf $pwshExe))
-    $proc = Start-Process -FilePath $held -ArgumentList '-NoProfile', '-Command', 'Start-Sleep 60' -PassThru
-    Start-Sleep -Milliseconds 800
+    # Both checks wait on events, not seconds (docs/ci/what-to-run.md, "Checks on events, not
+    # seconds"): the refusal waits until slot.ps1's own question, a process whose executable is
+    # under the slot, finds the sleeper (it was an 800 ms sleep), and the reset waits until the
+    # same question finds nothing (it was a kill and a wait of at most 5 s, which a loaded machine
+    # outlasted once in a full run, so the reset saw the process still dying and refused). The
+    # deadlines only end a case that would otherwise hang; they are never what it measures.
+    # Path read once, as slot.ps1 reads it: a second read of a process that has just exited is null.
+    $prefix = $s2.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+    $under = { @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $exe = $_.Path; $exe -and $exe.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) }).Count }
+    $proc = Start-Process -FilePath $held -ArgumentList '-NoProfile', '-Command', 'Start-Sleep 300' -PassThru
+    $until = [DateTime]::UtcNow.AddSeconds(120)
+    while ((& $under) -eq 0 -and -not $proc.HasExited -and [DateTime]::UtcNow -lt $until) { Start-Sleep -Milliseconds 50 }
+    $seen = (& $under) -gt 0
     $r = Invoke-Slot @('reset', '-Slot', '2', '-To', $second)
-    Test-That 'reset refuses while a process runs from under the slot' { $r.Code -eq 1 -and $r.Out.Contains('running process') -and (Invoke-TGit $s2 @('rev-parse', 'HEAD')) -eq $first }
+    Test-That 'reset refuses while a process runs from under the slot' { $seen -and $r.Code -eq 1 -and $r.Out.Contains('running process') -and (Invoke-TGit $s2 @('rev-parse', 'HEAD')) -eq $first }
   } finally {
-    # The test started this one itself, so the test ends it.
-    if ($proc -and -not $proc.HasExited) { $proc.Kill(); $proc.WaitForExit(5000) | Out-Null }
+    # The test started this one itself, so the test ends it, and waits until it is gone.
+    if ($proc -and -not $proc.HasExited) { $proc.Kill() }
+    if ($proc) { $proc.WaitForExit(120000) | Out-Null }
   }
+  $until = [DateTime]::UtcNow.AddSeconds(120)
+  while ((& $under) -gt 0 -and [DateTime]::UtcNow -lt $until) { Start-Sleep -Milliseconds 50 }
+  $gone = (& $under) -eq 0
   $r = Invoke-Slot @('reset', '-Slot', '2', '-To', $second)
-  Test-That 'and resets once it has ended' { $r.Code -eq 0 -and (Invoke-TGit $s2 @('rev-parse', 'HEAD')) -eq $second }
+  Test-That 'and resets once it has ended' { $gone -and $r.Code -eq 0 -and (Invoke-TGit $s2 @('rev-parse', 'HEAD')) -eq $second }
 
   $r = Invoke-Slot @('release', '-Slot', '1')
   Test-That 'release of a free slot says so and exits 0' { $r.Code -eq 0 -and $r.Out.Contains('was not claimed') }

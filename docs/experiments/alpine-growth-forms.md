@@ -38,7 +38,7 @@ structural metadata: actual rosette height follows blade length and lift.
 
 ## Validation and measurements
 
-Evidence is under `D:/workspace/game_engine_local/alpine/2026-11-04/`: text recipes,
+Evidence is under `game_engine_local/alpine/2026-11-04/`: text recipes,
 camera paths, source containers, compiler/test logs, offscreen images and frame records.
 The committed [specimen scene](../../content/test-scenes/alpine/README.md) reproduces
 the views at metre scale. It has four plant patches and three granite boulders;

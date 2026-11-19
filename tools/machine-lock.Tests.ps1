@@ -5,7 +5,7 @@
   CTest as `tools.machine_lock`.
 
 .DESCRIPTION
-  The lock protocol (D:\workspace\GPU-LOCK.md) is shared with tools that are not this repository's
+  The lock protocol (GPU-LOCK.md in the workspace folder) is shared with tools that are not this repository's
   — a Blender agent takes the same GPU lock from Python — so the rules are tested as rules: create
   is atomic, an unexpired lock is never broken, an expired one is, a person's never is, a release
   deletes only its own lock, a refresh is never seen half-written, and a holder that runs long
@@ -446,64 +446,79 @@ Add-Content -LiteralPath '$order' -Value 'doomed'
   try {
     $p = New-LockPath
     $env:ENGINE_LINUX_BUILD_LOCK = $p
-    function Start-Build([double]$seconds, [string]$log) {
-      return Start-Process pwsh -PassThru -NoNewWindow -RedirectStandardOutput $log -RedirectStandardError "$log.err" `
-        -ArgumentList @('-NoProfile', '-File', "`"$build`"", '-LockOnly', "$seconds")
+    function Start-Build([double]$seconds, [string]$log, [string]$until = '') {
+      $a = @('-NoProfile', '-File', "`"$build`"", '-LockOnly', "$seconds")
+      if ($until) { $a += @('-LockOnlyUntil', "`"$until`"") }
+      return Start-Process pwsh -PassThru -NoNewWindow -RedirectStandardOutput $log -RedirectStandardError "$log.err" -ArgumentList $a
+    }
+    # The holds, followed one at a time. Each build holds until its go file exists (-LockOnlyUntil),
+    # and its go file is written only once this loop has read the lock and seen that hold, so no hold
+    # is too short to be seen however slowly a loaded machine runs this loop (until 2026-11-18 each
+    # held 0.3 s against a look every 20 ms; docs/ci/what-to-run.md, "Checks on events, not
+    # seconds"). A hold is named by its -LockOnly value, which is in its purpose. Returns the holds
+    # in the order they held, value@pid.
+    function Watch-Holds([string]$lock, [object[]]$procs, [hashtable]$go, [int]$timeoutSeconds = 180) {
+      $seen = New-Object System.Collections.Generic.List[string]
+      $last = ''
+      $until = [DateTime]::UtcNow.AddSeconds($timeoutSeconds)
+      while (@($procs | Where-Object { -not $_.HasExited }).Count -gt 0 -and [DateTime]::UtcNow -lt $until) {
+        $held = Read-MachineLock -Path $lock
+        if ($held.Readable -and $held.Purpose -match '-LockOnly (\S+) in ' -and $Matches[1] -ne $last) {
+          $last = $Matches[1]
+          $seen.Add("$last@$($held.Pid)")
+          if ($go.ContainsKey($last)) { [IO.File]::WriteAllText($go[$last], 'go') }
+        }
+        Start-Sleep -Milliseconds 20
+      }
+      return , $seen
     }
     Write-Lock $p 'claude-engine' 30
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $builds = @()
+    $go = @{}
     foreach ($n in 1..3) {
-      $builds += Start-Build (0.3 + $n / 100) "$p.build$n.log"
+      $go["60.$n"] = "$p.go$n"
+      $builds += Start-Build (60 + $n / 10) "$p.build$n.log" "$p.go$n"
       if (-not (Wait-Line $p $builds.Count)) { break }
     }
     $line = Get-MachineLockLine -Path $p
     Test-That 'three builds wait in the line in the order they started, each asking ten minutes' {
-      $line.Count -eq 3 -and ($line | ForEach-Object Purpose) -join '|' -match '^linux-build -LockOnly 0\.31 in .+\|linux-build -LockOnly 0\.32 in .+\|linux-build -LockOnly 0\.33 in ' -and
+      $line.Count -eq 3 -and ($line | ForEach-Object Purpose) -join '|' -match '^linux-build -LockOnly 60\.1 in .+\|linux-build -LockOnly 60\.2 in .+\|linux-build -LockOnly 60\.3 in ' -and
       @($line | Where-Object { $_.DeclaredSeconds -ne 600 }).Count -eq 0
     }
     $out = & pwsh -NoProfile -File $build -LockOnly 0.1 -NoWait 2>&1
     Test-That '-NoWait behind them exits 2 and names the holder and its place in the line' {
-      $LASTEXITCODE -eq 2 -and "$out" -match "linux-build: the build lock is not this build's to take: held by 'claude-engine': held by a test \(until .+\); this ask was behind 3 of the 4 in the line, first 'claude-engine' \(pid \d+\): linux-build -LockOnly 0\.31 in "
+      $LASTEXITCODE -eq 2 -and "$out" -match "linux-build: the build lock is not this build's to take: held by 'claude-engine': held by a test \(until .+\); this ask was behind 3 of the 4 in the line, first 'claude-engine' \(pid \d+\): linux-build -LockOnly 60\.1 in "
     }
     $out = & pwsh -NoProfile -File $cli status -LockFile $p
-    Test-That 'gpu-lock.ps1 status -LockFile shows the build lock''s line' { $out.Count -eq 5 -and $out[1] -eq '3 waiting, first served first:' -and $out[4] -match 'LockOnly 0\.33' }
-    # Who holds it, looked at every 20 ms while the three are served: their pids, in order.
-    $served = New-Object System.Collections.Generic.List[long]
+    Test-That 'gpu-lock.ps1 status -LockFile shows the build lock''s line' { $out.Count -eq 5 -and $out[1] -eq '3 waiting, first served first:' -and $out[4] -match 'LockOnly 60\.3' }
     Remove-Item -LiteralPath $p -Force
-    $until = [DateTime]::UtcNow.AddSeconds(120)
-    while (@($builds | Where-Object { -not $_.HasExited }).Count -gt 0 -and [DateTime]::UtcNow -lt $until) {
-      $held = Read-MachineLock -Path $p
-      if ($held.Readable -and ($served.Count -eq 0 -or $served[$served.Count - 1] -ne $held.Pid)) { $served.Add($held.Pid) }
-      Start-Sleep -Milliseconds 20
-    }
-    Test-That "and are served in that order (three script runs, $([int]$sw.Elapsed.TotalSeconds) s)" {
-      ($served -join '|') -eq (($builds | ForEach-Object Id) -join '|') -and -not (Test-Path -LiteralPath $p)
+    $served = Watch-Holds $p $builds $go
+    Test-That "and are served in that order, every hold seen (three script runs, $([int]$sw.Elapsed.TotalSeconds) s)" {
+      ($served -join '|') -eq (@(1..3 | ForEach-Object { "60.$_@$($builds[$_ - 1].Id)" }) -join '|') -and -not (Test-Path -LiteralPath $p)
     }
     Test-That 'a waiting build said who held the lock and where it stood' {
       (Get-Content -LiteralPath "$p.build3.log" -Raw) -match "linux-build: waiting; held by 'claude-engine': held by a test \(until .+\); this ask is behind 2 of the 3 in the line, first 'claude-engine' \(pid $($builds[0].Id)\)"
     }
 
     # A build that ends and asks again (an agent's second preset) goes behind the build that was
-    # waiting: one process runs the script twice, a second arrives during its first hold.
+    # waiting: one process runs the script twice, a second arrives during its first hold. The first
+    # hold ends only once the second build stands in the line — the rule's own premise, which until
+    # 2026-11-18 was a three-second hold that a loaded machine could start the second pwsh in
+    # (failed once in a full run, passed alone) — and every hold is followed by Watch-Holds.
     $p = New-LockPath
     $env:ENGINE_LINUX_BUILD_LOCK = $p
     $sw = [Diagnostics.Stopwatch]::StartNew()
-    [IO.File]::WriteAllText("$p.twice.ps1", "& '$build' -LockOnly 3`n& '$build' -LockOnly 0.3`n")
+    [IO.File]::WriteAllText("$p.twice.ps1", "& '$build' -LockOnly 60.4 -LockOnlyUntil '$p.go4'`n& '$build' -LockOnly 60.6 -LockOnlyUntil '$p.go6'`n")
     $twice = Start-Process pwsh -PassThru -NoNewWindow -RedirectStandardOutput "$p.twice.log" -RedirectStandardError "$p.twice.log.err" `
       -ArgumentList @('-NoProfile', '-File', "`"$p.twice.ps1`"")
-    $until = [DateTime]::UtcNow.AddSeconds(60)
-    while (-not (Read-MachineLock -Path $p).Readable -and [DateTime]::UtcNow -lt $until) { Start-Sleep -Milliseconds 20 }
-    $other = Start-Build 0.3 "$p.other.log"
-    $served = New-Object System.Collections.Generic.List[long]
     $until = [DateTime]::UtcNow.AddSeconds(120)
-    while (-not ($twice.HasExited -and $other.HasExited) -and [DateTime]::UtcNow -lt $until) {
-      $held = Read-MachineLock -Path $p
-      if ($held.Readable -and ($served.Count -eq 0 -or $served[$served.Count - 1] -ne $held.Pid)) { $served.Add($held.Pid) }
-      Start-Sleep -Milliseconds 20
-    }
+    while (-not (Read-MachineLock -Path $p).Readable -and [DateTime]::UtcNow -lt $until) { Start-Sleep -Milliseconds 20 }
+    $other = Start-Build 60.5 "$p.other.log" "$p.go5"
+    $lined = Wait-Line $p 1 120
+    $served = Watch-Holds $p @($twice, $other) @{ '60.4' = "$p.go4"; '60.5' = "$p.go5"; '60.6' = "$p.go6" }
     Test-That "a build that releases and asks again is served after the build that was waiting ($([int]$sw.Elapsed.TotalSeconds) s)" {
-      ($served -join '|') -eq "$($twice.Id)|$($other.Id)|$($twice.Id)" -and -not (Test-Path -LiteralPath $p)
+      $lined -and ($served -join '|') -eq "60.4@$($twice.Id)|60.5@$($other.Id)|60.6@$($twice.Id)" -and -not (Test-Path -LiteralPath $p)
     }
 
     # A waiting build whose script is killed (a tool timeout: no finally runs) leaves a ticket

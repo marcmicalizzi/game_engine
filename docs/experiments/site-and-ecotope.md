@@ -12,7 +12,7 @@ modelled; each number the code pins is here with its source and its range.
 ## What the reels show
 
 Four of the owner's reference reels carry the subject (catalogue text and contact sheets under
-`D:\workspace\game_engine_local\inspiration\_frames\`):
+`game_engine_local\inspiration\_frames\`):
 
 - **r06** "aspect-controlled vegetation (forest on one side, grass on the other)": a dense conifer
   forest on the shaded slope of a dry mountain valley, open grass on the sunny one, the boundary

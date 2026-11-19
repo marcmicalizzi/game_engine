@@ -92,6 +92,57 @@ TEST_CASE("schemac: a valid schema produces every output and exits 0") {
   CHECK(header.find("Kind::B") != std::string::npos);
 }
 
+// A schema saved with CRLF line ends (a Windows editor, a checkout with autocrlf) compiles to the
+// same bytes as the LF file, on every platform: schemac reads its input as bytes, so the CR reached
+// the doc comments and from them a generated string literal, which Clang and GCC refuse (T184).
+TEST_CASE("schemac: a schema with CRLF line ends compiles to the LF file's outputs") {
+  const std::string lf =
+      "/// The namespace's own words.\n"
+      "namespace t.lines\n"
+      "/// Documented enum.\n"
+      "enum Kind : u8 {\n"
+      "  /// The first.\n"
+      "  A = 0\n"
+      "  B = 1\n"
+      "}\n"
+      "/// Documented struct.\n"
+      "struct Item @version(2) {\n"
+      "  /// The name, with \"quotes\".\n"
+      "  name: string = \"x\"\n"
+      "  // a plain comment\n"
+      "  kind: Kind = B\n"
+      "  added: u32 = 0 @since(2)\n"
+      "}\n";
+  std::string crlf;
+  for (const char c : lf) {
+    if (c == '\n') crlf.push_back('\r');
+    crlf.push_back(c);
+  }
+  TempDir a("schemac-lf");
+  TempDir b("schemac-crlf");
+  const Run ra = compile(a, "lines", lf);
+  const Run rb = compile(b, "lines", crlf);
+  INFO(ra.output);
+  INFO(rb.output);
+  REQUIRE(ra.exit_code == 0);
+  REQUIRE(rb.exit_code == 0);
+  const char* const outputs[] = {"out/include/schemas/lines.h", "out/src/lines.cpp",
+                                 "out/json/lines.schema.json", "out/docs/lines.md",
+                                 "out/include/schemas/lines_ecs.h"};
+  for (const char* rel : outputs) {
+    CAPTURE(std::string(rel));
+    std::string from_lf;
+    std::string from_crlf;
+    REQUIRE(io::read_file(io::join_path(a.path(), rel), from_lf) == io::Status::Ok);
+    REQUIRE(io::read_file(io::join_path(b.path(), rel), from_crlf) == io::Status::Ok);
+    CHECK(from_crlf == from_lf);
+    CHECK(from_crlf.find('\r') == std::string::npos);
+  }
+  // A CRLF file's errors name the line an LF file's would.
+  expect_rejected(b, "crlf_bad", "namespace t.x\r\nstruct S {\r\n  a: nosuchtype\r\n}\r\n", 3,
+                  "nosuchtype");
+}
+
 TEST_CASE("schemac: syntax errors name the file and line") {
   TempDir tmp("schemac");
   expect_rejected(tmp, "no_namespace", "struct A { x: u8 }\n", 1, "file declares no namespace");

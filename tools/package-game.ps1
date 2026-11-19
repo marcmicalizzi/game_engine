@@ -31,7 +31,7 @@
   the SDK's (under <sdk>/content) or the game repository's own (anywhere else), whose content is
   resolved against the scene's own directory and carried under content/<its directory's name>/.
   In both layouts it refuses anything under the owner's local workspace
-  (D:\workspace\game_engine_local: generated assets and workflow files are never shipped, AGENTS.md).
+  (game_engine_local, beside the primary checkout: generated assets and workflow files are never shipped, AGENTS.md).
   The resolver is tools/lib/GameContent.psm1, shared with the exporter.
 
   The far end needs the Microsoft Visual C++ 2015-2022 Redistributable (x64), which almost every

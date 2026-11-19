@@ -7,7 +7,7 @@
 
 ## The recording
 
-`D:\workspace\game_engine_local\flythrough\interactive-2026-09-24T2253-input.jsonl` (3,882 events after its header: 180 key, 3,698 pointer-motion and 4 mouse-button; 51,918 ticks at 240 Hz, 216.3 s) and `interactive-2026-09-24T2253-frames.jsonl` (17,717 per-frame records and the summary). The session header names integration version 1 and the default map's hash, `95496522437046028`, which are this branch's too, so **the replay was accepted**, and it flew the live session's trajectory to the bit: hash `0b9b156b72fee89f` both times. The owner's five markers:
+`game_engine_local\flythrough\interactive-2026-09-24T2253-input.jsonl` (3,882 events after its header: 180 key, 3,698 pointer-motion and 4 mouse-button; 51,918 ticks at 240 Hz, 216.3 s) and `interactive-2026-09-24T2253-frames.jsonl` (17,717 per-frame records and the summary). The session header names integration version 1 and the default map's hash, `95496522437046028`, which are this branch's too, so **the replay was accepted**, and it flew the live session's trajectory to the bit: hash `0b9b156b72fee89f` both times. The owner's five markers:
 
 | Marker | Tick | Time | Camera | Looking at |
 |---|---|---|---|---|
@@ -26,7 +26,7 @@ Between markers 1, 2 and 3 the owner held S to back away from the helmet with th
 3. **Before and after.** The same replay through the build at `a43b7e5` (the owner's code for everything that draws: over a derived-data root with no built textures it takes the decoded path the owner's build had) and through the build with the material fix; ids compared word for word, albedo compared pixel by pixel and attributed to instances through the ids.
 4. **The texture pipeline.** The same ticks over a derived-data root where `engine-content build --cache` had built the seven samples' BC7/BC5 mip chains, against the root without them (decoded, one level, level-0 sampling — what the owner's build did).
 
-Everything is under `D:\workspace\game_engine_local\flythrough\diagnosis-2026-09-24\`: `sheets\index.html` is the contact sheet per marker (the second before, the marker, the second after; colour, albedo and the id buffer before the fix, colour and albedo after, and where the albedo moved), `analysis\report.json` the numbers below, and the scripts beside them.
+Everything is under `game_engine_local\flythrough\diagnosis-2026-09-24\`: `sheets\index.html` is the contact sheet per marker (the second before, the marker, the second after; colour, albedo and the id buffer before the fix, colour and albedo after, and where the albedo moved), `analysis\report.json` the numbers below, and the scripts beside them.
 
 ## (2) and (3): one bug — clusters drawn with other clusters' materials
 
@@ -78,7 +78,7 @@ in two phases. **The first 2.98 s** (frames 12–241) ran at the display's 12.21
 
 ## (4): the landmarks
 
-The session was started without `--overlay`, so the scene's placeholders were drawn: the Khronos stand-ins, by design ([the scene](../../content/test-scenes/desert-overlook/README.md)). `--overlay` already worked with `--interactive` and `--replay-input`; apps.md now says so with the command line. **Checked:** the owner's recording replayed offscreen with `--overlay D:/workspace/game_engine_local/scenes/desert-overlook/landmarks.json` (see [Overlay](#overlay) below).
+The session was started without `--overlay`, so the scene's placeholders were drawn: the Khronos stand-ins, by design ([the scene](../../content/test-scenes/desert-overlook/README.md)). `--overlay` already worked with `--interactive` and `--replay-input`; apps.md now says so with the command line. **Checked:** the owner's recording replayed offscreen with `--overlay game_engine_local/scenes/desert-overlook/landmarks.json` (see [Overlay](#overlay) below).
 
 ## (5): the start
 
@@ -96,7 +96,7 @@ At rest nothing alternates, so the same questions were asked of ticks inside the
 
 ## Overlay
 
-The owner's recording, replayed offscreen at 11520×2160 with the interactive replay's flags and `--overlay D:/workspace/game_engine_local/scenes/desert-overlook/landmarks.json` (the six landmarks clustered into the derived-data root beforehand by `engine-content build --cache`, 12–17 s each), loaded all six from the manifest — skyscraper 1,944,213 triangles, office tower 1,844,645, cathedral 1,896,103, mosque 1,870,300, airplane wreck 1,995,995, palm 242,720, each `"source":"overlay"` in the summary — with the seven props from the scene and the terrain, 876,537 pairs; flew the recording's trajectory to the same hash, `0b9b156b72fee89f`; and drew the five markers with the baroque cathedral and the skyscraper where the stand-ins had stood (`overlay\markers\`, and `sheets\overlay\` at a sixth of the size). A replay's header names the scene and not the overlay, so the flag has to be given to the replay as well.
+The owner's recording, replayed offscreen at 11520×2160 with the interactive replay's flags and `--overlay game_engine_local/scenes/desert-overlook/landmarks.json` (the six landmarks clustered into the derived-data root beforehand by `engine-content build --cache`, 12–17 s each), loaded all six from the manifest — skyscraper 1,944,213 triangles, office tower 1,844,645, cathedral 1,896,103, mosque 1,870,300, airplane wreck 1,995,995, palm 242,720, each `"source":"overlay"` in the summary — with the seven props from the scene and the terrain, 876,537 pairs; flew the recording's trajectory to the same hash, `0b9b156b72fee89f`; and drew the five markers with the baroque cathedral and the skyscraper where the stand-ins had stood (`overlay\markers\`, and `sheets\overlay\` at a sixth of the size). A replay's header names the scene and not the overlay, so the flag has to be given to the replay as well.
 
 ## What remains, and whose it is
 

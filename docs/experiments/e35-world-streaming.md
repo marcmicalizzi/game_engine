@@ -16,16 +16,16 @@
 **The flythrough**, E34's: `engine-view --offscreen` at 1920 × 1080, the desert overlook's path (40 s, 1,037 m over the ground, 26 m/s on average and 47 m/s at its start) resampled to 600 frames — so **1.7 m of camera movement between two updates**, about seventeen times what a running player covers in a 60 Hz tick — three repeats, occlusion on, shadows off, the hardware rasterizer. The streamed rows add `--world-log`; the handover rows fly the path once more afterwards with `--world-handover`. Scenes and scripts are under `game_engine_local\world\e35\` (never committed):
 
 ```powershell
-engine-content ruins-kit D:\workspace\game_engine_local\world\e35\kit-boxes --e33-sizes --inside-corner
-pwsh D:\workspace\game_engine_local\world\e35\make-scenes.ps1     # scene-<row>.json; a streamed one has "world": {...}
+engine-content ruins-kit game_engine_local\world\e35\kit-boxes --e33-sizes --inside-corner
+pwsh game_engine_local\world\e35\make-scenes.ps1     # scene-<row>.json; a streamed one has "world": {...}
 $env:ENGINE_GPU_LOCK_OWNER = 'agent-world'
-pwsh tools/gpu-lock.ps1 run -Purpose "E35 ..." -Exec "pwsh -NoProfile -File D:\workspace\game_engine_local\world\e35\run-group.ps1 -Scenes boxes-world,ashlar-world-mid"
+pwsh tools/gpu-lock.ps1 run -Purpose "E35 ..." -Exec "pwsh -NoProfile -File game_engine_local\world\e35\run-group.ps1 -Scenes boxes-world,ashlar-world-mid"
 #   each: engine-view --scene scene-<row>.json --camera-path content\test-scenes\desert-overlook\camera-path.json
 #     --offscreen --benchmark out\<row>.jsonl --frames 600 --repeat 3 --width 1920 --height 1080
 #     --shadows off --ddc <local ddc> --log info --wait-quiet 60 [--world-log out\<row>.world.jsonl]
 #   -Handover: --repeat 1 --world-handover out\handover-<row>.handover.jsonl
-pwsh D:\workspace\game_engine_local\world\e35\analyze.ps1 -Names <rows>      # the tables below
-pwsh D:\workspace\game_engine_local\world\e35\handovers.ps1 -Names <rows>
+pwsh game_engine_local\world\e35\analyze.ps1 -Names <rows>      # the tables below
+pwsh game_engine_local\world\e35\handovers.ps1 -Names <rows>
 build\msvc-release\systems\world\engine_world_bench.exe --wait-quiet=120 --repeats=5
 ```
 

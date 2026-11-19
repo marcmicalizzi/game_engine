@@ -51,7 +51,7 @@ passed. This checkout's two Linux volumes were pruned after validation. The merg
 multi-configuration and release frame-budget gate remains the coordinator's job.
 
 Captured 2026-10-29 using this branch's own MSVC debug binaries, offscreen, on RTX 5090.
-Artifacts and exact cameras/recipes: `D:/workspace/game_engine_local/deadwood/2026-10-29/`.
+Artifacts and exact cameras/recipes: `game_engine_local/deadwood/2026-10-29/`.
 `gallery.png` shows the nine forms; individual close captures show the hollow walls, opened
 collapsed roof, snag, leafless fall and retained conifer foliage. Flat stand-in materials make
 the geometry inspectable; leaf cards retain the living source's untextured rectangular outlines.

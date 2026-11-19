@@ -24,7 +24,7 @@ reach; this task does not change that authoring decision or make an oversized im
 
 Own baseline: c6527c71, `msvc-release`, engine-view copied to scratch before code changes.
 Own after: this worktree's rebuilt executable, implementation committed as 2f3e2557. The v13 cook and sward cook were copied to
-`D:/workspace/ge-codex-scratch/astra/poc-v13`; all reports and captures stay in scratch.
+`ge-codex-scratch/astra/poc-v13`; all reports and captures stay in scratch.
 Both runs use hardware raster, traced shadows, 11520x2160, 180 measured frames, the same clearing
 hold path, `--terrain-tiles --terrain-far 6 --time-rate 0 --world-rate 1 --no-lights
 --time-of-day 15 --lod 1 --deform-pool-mib 64 --rt-budget-mib 1024`, flora motion at wind 0.7,

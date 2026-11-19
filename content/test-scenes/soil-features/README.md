@@ -2,7 +2,7 @@
 
 The recipes here are input to `engine-content soil-cook`. Generated terrain, meshes,
 scenes, provenance and captures belong outside the repository:
-`D:/workspace/game_engine_local/soil/2026-10-28/`.
+`game_engine_local/soil/2026-10-28/`.
 
 First make a 32 m square source with 125 mm spacing:
 

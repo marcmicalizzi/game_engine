@@ -35,7 +35,7 @@
   for: the tests take the machine-wide GPU lock themselves, per GPU device
   (docs/subsystems/gpu_lock.md), and step 4 runs under the lock this script takes
   (tools/lib/MachineLock.psm1, docs/subsystems/bench.md "The GPU lock"). A machine
-  without the lock's directory (D:\workspace, or wherever ENGINE_GPU_LOCK points)
+  without the lock's directory (the workspace folder, or wherever ENGINE_GPU_LOCK points)
   runs without it.
 
   Default preset: msvc-release on Windows, linux-clang-debug elsewhere (the
@@ -111,7 +111,7 @@ Write-Section 'build'
 # engine-view runs, which take nothing by themselves, so the script takes the
 # lock around them — just before the first, released before the report is
 # written, whatever happened in between. A runner that does not use the lock (no
-# D:\workspace, or ENGINE_GPU_LOCK naming a directory that does not exist) warns
+# the workspace folder, or ENGINE_GPU_LOCK naming a directory that does not exist) warns
 # and runs without it. engine-view inherits ENGINE_GPU_LOCK_HOLDER, so its
 # machine-state samples know the lock is held on its behalf.
 $gpuLock = $null

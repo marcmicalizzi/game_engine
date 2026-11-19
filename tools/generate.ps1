@@ -49,8 +49,9 @@
   whose faces are quads). Both are refused without -Remesh, because the service ignores them then.
 
   WHERE THINGS GO. Every output lands at <LocalRoot>\generated\<service>\<yyyy-MM-dd>\<name>.<ext>
-  beside <name>.provenance.json. LocalRoot is $env:ENGINE_LOCAL_ROOT, else
-  D:\workspace\game_engine_local — deliberately outside the repository, and the tool refuses a
+  beside <name>.provenance.json. LocalRoot is $env:ENGINE_LOCAL_ROOT, else the local folder
+  beside the primary checkout (game_engine_local, tools/lib/LocalRoot.psm1) — deliberately
+  outside the repository, and the tool refuses a
   root inside it: generated images and meshes, and the owner's workflow files, are never
   committed (docs/content-generation.md). Services: `comfyui` (images), `comfyui-<workflow>`
   (meshes a ComfyUI image-to-3D workflow made), `meshy`, `tripo`.
@@ -79,14 +80,14 @@
   logged or written anywhere.
 
   THE GPU. An image batch (and a ComfyUI image-to-3D batch) holds the machine-wide GPU lock
-  (tools/gpu-lock.ps1, D:\workspace\GPU-LOCK.md) for the whole batch, refreshing it as it goes
-  rather than taking it per image, and asks ComfyUI to unload its models when the batch ends so
-  the next holder gets the memory back.
+  (tools/gpu-lock.ps1, the protocol in the workspace folder's GPU-LOCK.md) for the whole batch,
+  refreshing it as it goes rather than taking it per image, and asks ComfyUI to unload its models
+  when the batch ends so the next holder gets the memory back.
 
 .EXAMPLE
-  tools/generate.ps1 image -Workflow D:\workspace\game_engine_local\workflows\krea2-turbo.json -Subjects content/generation/e10-desert-props.json
-  tools/generate.ps1 manifest -Backend tripo-folder -Images D:\workspace\game_engine_local\generated\comfyui\2026-09-22
-  tools/generate.ps1 3d -Backend meshy -Images D:\workspace\game_engine_local\generated\comfyui\2026-09-22 -DryRun
+  tools/generate.ps1 image -Workflow $env:ENGINE_LOCAL_ROOT\workflows\krea2-turbo.json -Subjects content/generation/e10-desert-props.json
+  tools/generate.ps1 manifest -Backend tripo-folder -Images $env:ENGINE_LOCAL_ROOT\generated\comfyui\2026-09-22
+  tools/generate.ps1 3d -Backend meshy -Images $env:ENGINE_LOCAL_ROOT\generated\comfyui\2026-09-22 -DryRun
 #>
 [CmdletBinding()]
 param(
@@ -263,8 +264,8 @@ function Test-Name([string]$n) {
 }
 
 function Get-LocalRoot {
-  $root = if ($LocalRoot) { $LocalRoot } elseif ($env:ENGINE_LOCAL_ROOT) { $env:ENGINE_LOCAL_ROOT } elseif ($IsWin) { 'D:\workspace\game_engine_local' } else { Join-Path $HOME 'game_engine_local' }
-  $full = [IO.Path]::GetFullPath($root)
+  Import-Module (Join-Path $PSScriptRoot 'lib/LocalRoot.psm1') -Force
+  $full = Get-EngineLocalRoot -Explicit $LocalRoot
   # Never inside the repository, whichever checkout this script runs from: an output under the
   # tree is one `git add .` away from being committed. The main checkout is the parent of every
   # agent worktree, so its root is checked as well as this one's.

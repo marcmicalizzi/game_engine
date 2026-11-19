@@ -493,10 +493,19 @@ function Invoke-Docs {
 }
 
 function Invoke-Format {
+  # Visual Studio's own clang-format, when PATH has none: the developer environment puts its LLVM
+  # directory first.
+  if ($IsWin -and -not (Get-Command clang-format -ErrorAction SilentlyContinue)) { Import-VsDevEnvironment }
   Ensure-Tool clang-format
+  # The pinned major, refused otherwise with one line (tools/lib/Format.psm1): another major
+  # rewraps files nobody touched.
+  Import-Module (Join-Path $PSScriptRoot 'lib/Format.psm1') -Force
+  $exe = (Get-Command clang-format -CommandType Application | Select-Object -First 1).Source
+  $verdict = Get-ClangFormatVerdict -VersionText "$(& $exe --version 2>&1 | Select-Object -First 1)" -Path $exe
+  if (-not $verdict.Ok) { [Console]::Error.WriteLine($verdict.Message); exit 1 }
   $files = Get-ChildItem -Path $Root -Recurse -Include *.h, *.hpp, *.cpp, *.inl -File |
     Where-Object { $_.FullName -notmatch '[\\/](build|third_party|_deps)[\\/]' }
-  foreach ($f in $files) { & clang-format -i --style=file $f.FullName }
+  foreach ($f in $files) { & $exe -i --style=file $f.FullName }
   Write-Host "formatted $($files.Count) files"
 }
 

@@ -1256,9 +1256,29 @@ TEST_CASE("mcp: a host that stops answering is stopped at the deadline and repla
                              "--debug-hang", "--host-arg", "session.list"});
     REQUIRE(mcp.ok);
     mcp.initialize();
-    const JsonValue& before = ok(mcp.tool("host_info", "{}"));
+    // Only the hung method is held to the deadline under test; every other call waits for the event
+    // it needs, a host that answers (docs/ci/what-to-run.md, "Checks on events, not seconds"). The
+    // short deadline binds every quick call, a fresh debug host's first `engine.info` included,
+    // which at 100 % CPU took longer than 1 s and replaced the host before the case began (T184).
+    // So a quick call the deadline stopped is asked again, and each stop is counted: each is a
+    // replacement too, and the generations below add them in.
+    u64 stopped = 0;
+    const auto answered = [&](std::string_view name, std::string_view arguments) {
+      for (int attempt = 0; attempt < 30; ++attempt) {
+        const JsonValue r = mcp.tool(name, arguments);
+        if (!is_error(r)) return JsonValue(data_of(r));
+        const JsonValue* error = data_of(r).find("error");
+        const JsonValue* timed_out = error != nullptr ? error->find("timed_out") : nullptr;
+        REQUIRE_MESSAGE((timed_out != nullptr && *timed_out == JsonValue(true)), text_of(r));
+        ++stopped;
+      }
+      FAIL("no answer to " << std::string(name) << " in 30 tries");
+      return JsonValue();
+    };
+    const JsonValue before = answered("host_info", "{}");
     const u64 pid = num(at(before, "host"), "pid");
-    CHECK(num(at(before, "bridge"), "host_generation") == 1);
+    const u64 generation = num(at(before, "bridge"), "host_generation");
+    CHECK(generation == 1 + stopped);
     CHECK(at(at(before, "bridge"), "call_timeout_seconds") == JsonValue(1.0));
 
     const auto start = clock::now();
@@ -1273,14 +1293,17 @@ TEST_CASE("mcp: a host that stops answering is stopped at the deadline and repla
     CHECK(waited >= 0.9);
     CHECK(waited < 30.0);  // the short deadline, nowhere near the long one
 
-    // The next call starts another host: a new pid, generation 2, and it answers.
-    const JsonValue& after = ok(mcp.tool("host_info", "{}"));
+    // The next call starts another host: a new pid, the next generation, and it answers.
+    const u64 stopped_before = stopped;
+    const JsonValue after = answered("host_info", "{}");
     CHECK(num(at(after, "host"), "pid") != pid);
-    CHECK(num(at(after, "bridge"), "host_generation") == 2);
+    CHECK(num(at(after, "bridge"), "host_generation") ==
+          generation + 1 + (stopped - stopped_before));
     CHECK(at(at(after, "host"), "uptime_seconds").is_number());
-    const JsonValue& opened =
-        ok(mcp.tool("open_session", "{\"path\":\"" + tmp.file("doc") + "\",\"create\":true}"));
+    const JsonValue opened =
+        answered("open_session", "{\"path\":\"" + tmp.file("doc") + "\",\"create\":true}");
     CHECK_FALSE(str(opened, "session").empty());
+    MESSAGE("quick calls the 1 s deadline stopped on a host still starting: " << stopped);
   }
   {
     // A long-class method waits for the long deadline, not the short one.

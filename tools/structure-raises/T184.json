@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T184",
+  "reason": "Checks on events, not seconds: the rule for a check that fails only under load, T184's restated checks (slot, build lock, mcp's deadline), the slot script's double read of Path, and engine_cli's npc replay cases as a test of their own, on the page every pre-handover run is read from",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/ci/what-to-run.md": 3724
+  }
+}

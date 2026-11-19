@@ -72,7 +72,7 @@ Timing claims require a quiet run with machine state.
 ## Captures and resource costs
 
 Recipes, cameras, cooked containers, PNGs, comparison JSON and frame logs are retained in
-`D:/workspace/game_engine_local/deadwood/2026-10-29-followup/`. The original v1 outputs remain
+`game_engine_local/deadwood/2026-10-29-followup/`. The original v1 outputs remain
 in the sibling `2026-10-29/` directory. `gallery-before.png` and `gallery-after.png` use the
 same camera and renderer. Individual views cover bare oak, snag, stump, hollow/collapsed log,
 limb and spruce; `surface-{oak,maple,pine,fibrous,cubical}.png` show the new material groups.

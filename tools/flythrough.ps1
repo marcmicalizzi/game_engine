@@ -20,7 +20,7 @@
   is on the machine it describes (plan 04 §4.1, experiment E9).
 
   -Set overlay adds `--overlay` with the owner's landmark manifest (-Overlay, default
-  D:/workspace/game_engine_local/scenes/desert-overlook/landmarks.json); the scene falls back to
+  scenes/desert-overlook/landmarks.json in the local folder, tools/lib/LocalRoot.psm1); the scene falls back to
   its committed substitutes for anything the manifest does not name, and every run's summary says
   which mesh came from where.
 
@@ -60,7 +60,7 @@ param(
   [switch]$Verify,
   [switch]$Markers,
   [string]$Out = '',
-  [string]$Overlay = 'D:/workspace/game_engine_local/scenes/desert-overlook/landmarks.json',
+  [string]$Overlay = '',
   [int]$WaitQuiet = 600,
   [switch]$RequireQuiet,
   [string]$Exe = '',
@@ -88,6 +88,12 @@ $common = @('--scene', $Scene, '--camera-path', $CameraPath, '--raster', $Raster
 # cascaded shadow maps where it cannot).
 if ($Shadows -ne 'auto') { $common += @('--shadows', $Shadows) }
 if ($Set -eq 'overlay') {
+  # The owner's manifest lives in the local folder (tools/lib/LocalRoot.psm1), spelt with forward
+  # slashes as engine-view's summary has always recorded it.
+  if (-not $Overlay) {
+    Import-Module (Join-Path $PSScriptRoot 'lib/LocalRoot.psm1') -Force
+    $Overlay = (Join-Path (Get-EngineLocalRoot) 'scenes/desert-overlook/landmarks.json') -replace '\\', '/'
+  }
   if (-not (Test-Path $Overlay)) { throw "flythrough: no overlay manifest at $Overlay" }
   $common += @('--overlay', $Overlay)
 }

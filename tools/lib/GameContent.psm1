@@ -9,7 +9,7 @@
   file, a ruins kit, a mesh. Shipping the scene means shipping every file it names, resolved against
   the file naming it, recursively through the JSON files it names in turn — and refusing anything
   that lives where a package may not reach: the owner's local workspace
-  (D:\workspace\game_engine_local holds generated assets and workflow files that are never shipped,
+  (game_engine_local, beside the primary checkout, holds generated assets and workflow files that are never shipped,
   AGENTS.md) and anything outside the roots the caller allows (the repository's content/, an SDK's
   content/, a game repository's own scene directory).
 

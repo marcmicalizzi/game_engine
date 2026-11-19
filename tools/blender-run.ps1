@@ -57,8 +57,8 @@
   or an output is missing; 2 when the run was refused before it started.
 
 .EXAMPLE
-  pwsh tools/blender-run.ps1 -Script D:\workspace\game_engine_local\blender-kits\ruined-wall\scripts\ruined_wall.py `
-       -Out D:\workspace\game_engine_local\blender-kits\ruined-wall\out\cc0 -Name wall-10m `
+  pwsh tools/blender-run.ps1 -Script $env:ENGINE_LOCAL_ROOT\blender-kits\ruined-wall\scripts\ruined_wall.py `
+       -Out $env:ENGINE_LOCAL_ROOT\blender-kits\ruined-wall\out\cc0 -Name wall-10m `
        -- --preset wall10m --seed 7 --bond flemish --textures cc0
 #>
 # The script's own arguments are whatever this one does not bind. In a PowerShell session they
@@ -140,8 +140,8 @@ function Test-InsideRepo([string]$path) {
 }
 
 function Get-LocalRoot {
-  $root = if ($LocalRoot) { $LocalRoot } elseif ($env:ENGINE_LOCAL_ROOT) { $env:ENGINE_LOCAL_ROOT } elseif ($IsWin) { 'D:\workspace\game_engine_local' } else { Join-Path $HOME 'game_engine_local' }
-  $full = [IO.Path]::GetFullPath($root)
+  Import-Module (Join-Path $PSScriptRoot 'lib/LocalRoot.psm1') -Force
+  $full = Get-EngineLocalRoot -Explicit $LocalRoot
   $inside = Test-InsideRepo $full
   if ($inside) { Stop-Refused "local root '$full' is inside the repository ($inside); point -LocalRoot or ENGINE_LOCAL_ROOT outside it" }
   return $full

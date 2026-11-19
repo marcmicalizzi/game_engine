@@ -7,7 +7,7 @@ colours unless a pack is explicitly supplied. No binary assets are committed.
 
 The camera path inspects the row at 5, 20 and 60 m. Render offscreen from an isolated build,
 under `tools/gpu-lock.ps1 run`; captures and their exact cameras belong under
-`D:/workspace/game_engine_local/captures/2026-10-29/ground-plants-g103/`.
+`game_engine_local/captures/2026-10-29/ground-plants-g103/`.
 The scene deliberately omits tall trees so their detail cannot hide plant silhouettes.
 A near individual view is needed to inspect broad leaves, since a 30 cm rosette is small even
 at 5 m. The ordinary cluster DAG determines distance detail; these plants have no new impostor.

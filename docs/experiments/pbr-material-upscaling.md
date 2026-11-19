@@ -7,11 +7,11 @@
 
 ## Setup and reproduction
 
-All scripts, weights, editable workflows and generated assets are local, under `D:\workspace\game_engine_local\workflows\pbr-material-lab`. Nothing generated is committed. `README.txt` in that folder explains the launcher and limitations. From PowerShell:
+All scripts, weights, editable workflows and generated assets are local, under `game_engine_local\workflows\pbr-material-lab`. Nothing generated is committed. `README.txt` in that folder explains the launcher and limitations. From PowerShell:
 
 ```powershell
-pwsh -NoProfile -File D:\workspace\game_engine_local\workflows\pbr-material-lab\launch.ps1 -Mode Generate
-pwsh -NoProfile -File D:\workspace\game_engine_local\workflows\pbr-material-lab\launch.ps1 -Mode Open
+pwsh -NoProfile -File game_engine_local\workflows\pbr-material-lab\launch.ps1 -Mode Generate
+pwsh -NoProfile -File game_engine_local\workflows\pbr-material-lab\launch.ps1 -Mode Open
 ```
 
 `Generate` runs the comparison under the GPU lock, shuts down its isolated ComfyUI server, renders CPU previews through `tools/blender-run.ps1`, then assembles the report. `Open` serves the editable workflows on loopback port 8001 until Enter is pressed in its terminal; that terminal holds the GPU lock. The owner's port-8000 instance and its installed nodes are unchanged. The lab shares the installed Python/core and existing Krea weights, but has separate model additions, nodes, input, output and user folders. Its startup queue check cannot prevent the owner from subsequently submitting work to the main instance.

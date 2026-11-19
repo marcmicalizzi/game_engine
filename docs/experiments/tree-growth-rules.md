@@ -73,7 +73,7 @@ assertions remain unchanged. The game's existing recipes are not silently resize
 
 ## Geometry review and cost
 
-Flat-colour captures live outside Git under `D:/workspace/game_engine_local/tree-growth/`.
+Flat-colour captures live outside Git under `game_engine_local/tree-growth/`.
 The camera, source recipes, build logs and PNGs are kept together there. Comparisons use the same
 camera and light, with the version-5 baseline built from `84c183ac`, this branch's starting point.
 These are geometry counts, not timing claims; concurrent builds make the

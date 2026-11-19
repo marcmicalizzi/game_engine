@@ -6,7 +6,7 @@ Build integration: `engine_schema_library(NAME <module> SCHEMAS <files>)` in a `
 
 ## The language
 
-Line-oriented, no semicolons. `//` comments are ignored; `///` comments immediately before a declaration, field, or enumerator become its documentation.
+Line-oriented, no semicolons. `//` comments are ignored; `///` comments immediately before a declaration, field, or enumerator become its documentation. A file with CRLF line ends compiles to the same bytes as the LF file on every platform: schemac reads its input as bytes and ends a line, a `///` comment and a string literal at either (roadmap T184; a CR kept in a doc comment reached a generated string literal, which MSVC accepts and Clang and GCC refuse).
 
 ```
 namespace engine.content          // required; becomes the C++ namespace engine::content
