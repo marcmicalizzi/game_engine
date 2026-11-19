@@ -538,20 +538,25 @@ bool Checkpoints::read(const io::Vfs& vfs, std::string_view dir, std::string_vie
     if (!parse_file(*index_text, path, index, error)) return false;
     const std::string layer_dir(io::parent_path(path));
     Layer layer(ref.name, ref.role);
-    layer.set_partition(*ref.partition);
+    LayerPartition partition = *ref.partition;
+    // Every file read first, then each record checked against the tile it was filed under: a
+    // partition whose property was renamed follows the rename only if the layer's definitions do,
+    // as a document's load decides (doc.md, "A renamed type or field").
+    struct Part {
+      std::string path;
+      bool tiled = false;
+      TileCoord tile;
+      Layer records;
+    };
+    Vector<Part> parts;
     const auto take_records = [&](const std::string& file_path, const TileCoord* tile) {
       const std::string* text = file_in(files, file_path);
       if (text == nullptr)
         return fail(error, "checkpoint " + std::string(id) + " lacks " + file_path);
-      Layer part(ref.name, ref.role);
-      if (!parse_layer_text(*text, file_path, part, error)) return false;
-      for (const auto& entry : part.records()) {
-        TileCoord at;
-        const bool tiled = tile_of(entry.second, *ref.partition, at);
-        if (tile != nullptr ? (!tiled || at != *tile) : tiled)
-          return fail(error, file_path + ": a record filed where its position does not stand");
-        layer.set(entry.second);
-      }
+      Part part{file_path, tile != nullptr, tile != nullptr ? *tile : TileCoord{},
+                Layer(ref.name, ref.role)};
+      if (!parse_layer_text(*text, file_path, part.records, error)) return false;
+      parts.push_back(std::move(part));
       return true;
     };
     for (const TileRef& t : index.tiles) {
@@ -563,6 +568,26 @@ bool Checkpoints::read(const io::Vfs& vfs, std::string_view dir, std::string_vie
     if (!index.untiled.empty() &&
         !take_records(layer_dir + "/" + std::string(DocumentStore::k_untiled_file), nullptr))
       return false;
+    std::string former;
+    {
+      Vector<const ObjectRecord*> records;
+      for (const Part& part : parts)
+        for (const auto& entry : part.records.records())
+          records.push_back(&entry.second);
+      std::string why;
+      if (!follow_partition_rename(partition, records, former, why))
+        return fail(error, "checkpoint " + std::string(id) + ": " + path + ": " + why);
+    }
+    layer.set_partition(partition);
+    for (const Part& part : parts) {
+      for (const auto& entry : part.records.records()) {
+        TileCoord at;
+        const bool tiled = tile_of_read(entry.second, partition, former, at);
+        if (part.tiled ? (!tiled || at != part.tile) : tiled)
+          return fail(error, part.path + ": a record filed where its position does not stand");
+        layer.set(entry.second);
+      }
+    }
     out.layers.push_back(std::move(layer));
   }
   return true;

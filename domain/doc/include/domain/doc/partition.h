@@ -28,6 +28,7 @@
 #include <domain/doc/document.h>
 
 #include <schemas/doc.h>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -65,6 +66,25 @@ bool read_position(const JsonValue& value, f64& out_x, f64& out_y);
 // The tile `record` belongs to under `partition`. False when it has no usable position, or one
 // so far out that its tile coordinates leave i32: it belongs in untiled.json either way.
 bool tile_of(const ObjectRecord& record, const LayerPartition& partition, TileCoord& out);
+
+// **A partition whose property was renamed** (`@alias`; doc.md, "A renamed type or field"). A
+// layer's files written before a field was renamed name the field's former name as the property
+// they are tiled by. Given the layer's records as read — definitions already renamed
+// (`rename_defining_records`) — this decides what the layer is tiled by now: when every definition
+// whose type has `partition.property` as a former field name maps it to the same current name and
+// no definition still holds a field of that name (its type has one, or is unknown and carries it),
+// `partition.property` becomes the current name and `former` the old one, so the layer opens and
+// its next save writes what a layer partitioned after the rename would have written. When they
+// disagree it is refused, `why` naming both types and both names; otherwise nothing changes and
+// `former` is empty. Overrides carry no type and take no part.
+bool follow_partition_rename(LayerPartition& partition,
+                             std::span<const ObjectRecord* const> records, std::string& former,
+                             std::string& why);
+// `tile_of` for a record read under a partition `follow_partition_rename` followed: an override is
+// renamed only once the stack is whole, so until then it may carry the property's former name,
+// which then places it. `former` empty: `tile_of`.
+bool tile_of_read(const ObjectRecord& record, const LayerPartition& partition,
+                  std::string_view former, TileCoord& out);
 
 // The canonical index of `layer` as it stands: occupied tiles in (x, y) order, each tile's
 // records in id order, the untiled records in id order, and the bounds over the occupied
