@@ -168,6 +168,11 @@ class Session {
   // the like, naming the task or the review item (the other 0) and the actor who changed it.
   void publish_ledger(std::string_view change, u64 task, u64 review, std::string_view actor,
                       u64 connection) const;
+  // `event.session` for a proposal layer (session.cpp): "proposal_opened", "proposal_reopened",
+  // "proposal_promoted" or "proposal_rejected", with the layer and the actor who did it, published
+  // after `proposals.json` is written (a dry run and a refused promotion publish nothing).
+  void publish_proposal(std::string_view change, std::string_view layer, std::string_view actor,
+                        u64 connection) const;
 
   // --- the ledger's events (protocol.md, "The ledger's events"; ledger.cpp) -------------------
   // Watches the document's directory for writes to `ledger.json` (dir_watch.h) and tells `waker`

@@ -790,6 +790,19 @@ void Session::publish_ledger(std::string_view change, u64 task, u64 review, std:
   events_->publish(EventKind::Session, id_, schema::to_json(event));
 }
 
+void Session::publish_proposal(std::string_view change, std::string_view layer,
+                               std::string_view actor, u64 connection) const {
+  if (events_ == nullptr || !events_->wanted(EventKind::Session, id_)) return;
+  SessionChangeEvent event;
+  event.session = id_;
+  event.change = std::string(change);
+  event.path = shown_path_;
+  event.connection = connection;
+  event.actor = std::string(actor);
+  event.layer = std::string(layer);
+  events_->publish(EventKind::Session, id_, schema::to_json(event));
+}
+
 bool Session::merge(const MergeParams& params, MergeResult& result, RpcError& error) {
   return merge(params, nullptr, result, error);
 }
@@ -1428,7 +1441,9 @@ bool Session::propose_layer(const ProposeLayerParams& params, const Caller& call
       doc_.set_edit_layer(static_cast<u32>(existing));
       if (!persist(error)) return false;
     }
-    return save_proposals(params.name, error);
+    if (!save_proposals(params.name, error)) return false;
+    publish_proposal("proposal_reopened", params.name, caller.who.actor, caller.connection);
+    return true;
   }
 
   std::optional<doc::LayerPartition> partition;
@@ -1445,7 +1460,9 @@ bool Session::propose_layer(const ProposeLayerParams& params, const Caller& call
   info.opened_unix_ms = now;
   proposals_.add(std::move(info));
   (void)vfs_->remove(base_file(params.name));  // a leftover of an earlier layer of that name
-  return save_proposals(params.name, error);
+  if (!save_proposals(params.name, error)) return false;
+  publish_proposal("proposal_opened", params.name, caller.who.actor, caller.connection);
+  return true;
 }
 
 bool Session::clear_layer(u32 layer, doc::Attribution attribution, std::optional<u32>& patch_index,
@@ -1658,6 +1675,7 @@ bool Session::promote(const PromoteParams& params, const Caller& caller, Promote
   if (!save_proposals(params.proposal, error)) return false;
   result.commit_ms = ms_since(started);
   result.promoted = true;
+  publish_proposal("proposal_promoted", params.proposal, caller.who.actor, caller.connection);
   return true;
 }
 
@@ -1698,7 +1716,9 @@ bool Session::reject(const RejectParams& params, const Caller& caller, RpcError&
   entry = proposals_.find(params.proposal);
   ProposalTable::clear_base(*entry);
   (void)vfs_->remove(base_file(params.proposal));
-  return save_proposals(params.proposal, error);
+  if (!save_proposals(params.proposal, error)) return false;
+  publish_proposal("proposal_rejected", params.proposal, caller.who.actor, caller.connection);
+  return true;
 }
 
 // ---- SessionManager --------------------------------------------------------------------------

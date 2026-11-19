@@ -726,6 +726,55 @@ TEST_CASE("proposals: an owner's layer, promoted by merge, taken back by two und
   CHECK(host.property(oid(2), "color").is_null());
 }
 
+// A proposal's opening, promotion, reopening and rejection reach a subscriber as `event.session`
+// (protocol.md, "Proposal layers and promotion"), each after `proposals.json` is written, naming
+// the layer and who did it; a dry run publishes nothing.
+TEST_CASE("proposals: opening, promoting, reopening and rejecting are pushed as session events") {
+  struct Collect final : EventTransport {
+    std::vector<std::string> sent;
+    Post post(u64, std::string text, u32) override {
+      sent.push_back(std::move(text));
+      return Post::Queued;
+    }
+  } pushed;
+  Subscriptions subscriptions;
+  subscriptions.attach(&pushed);
+  TempDir tmp("protocol_proposals");
+  Host host;
+  host.sessions.set_events(&subscriptions);
+  (void)subscriptions.subscribe(7, "", event_bit(EventKind::Session));
+  host.make_world(tmp.file("doc"));
+  const auto proposal_changes = [&] {
+    std::vector<std::string> out;
+    for (const std::string& text : pushed.sent) {
+      JsonValue note;
+      REQUIRE(parse_json(text, note).ok);
+      const JsonValue& p = at(note, "params");
+      const std::string change(at(p, "change").as_string());
+      if (change.rfind("proposal_", 0) != 0) continue;
+      out.push_back(change + " " + std::string(at(p, "layer").as_string()) + " " +
+                    std::string(at(p, "actor").as_string()));
+    }
+    return out;
+  };
+  const JsonValue a = who("a"), d = who("d");
+  const JsonValue open =
+      obj({{"name", JsonValue("p.a")}, {"target", JsonValue("world")}, {"attribution", a}});
+  host.ok("doc.propose_layer", open);
+  host.apply(one(set(oid(1), "color", JsonValue(5))), a, "p.a");
+  host.ok("doc.promote",
+          obj({{"proposal", JsonValue("p.a")}, {"dry_run", JsonValue(true)}, {"attribution", d}}));
+  CHECK(proposal_changes() == std::vector<std::string>{"proposal_opened p.a a"});
+  REQUIRE(at(host.ok("doc.promote", obj({{"proposal", JsonValue("p.a")}, {"attribution", d}})),
+             "promoted") == JsonValue(true));
+  host.ok("doc.propose_layer", open);
+  host.apply(one(set(oid(2), "color", JsonValue(6))), a, "p.a");
+  host.ok("doc.reject", obj({{"proposal", JsonValue("p.a")}, {"attribution", a}}));
+  CHECK(proposal_changes() ==
+        std::vector<std::string>{"proposal_opened p.a a", "proposal_promoted p.a d",
+                                 "proposal_reopened p.a a", "proposal_rejected p.a a"});
+}
+
 TEST_CASE("proposals: a conflict refuses the promotion unless prefer settles it") {
   TempDir tmp("protocol_proposals");
   Host host;
