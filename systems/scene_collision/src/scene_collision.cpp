@@ -2973,19 +2973,28 @@ u32 SceneCollision::step_doors(const physics::CharacterBody* walker) {
     // **The arc, not only its end**: the leaf is tested every `k_door_sweep_mdeg` along this tick's
     // travel and goes as far as the last angle clear of the walker, so a fast door (a game's speed,
     // up to half a turn a tick) never passes through it in one tick. At the default speed the
-    // travel is one test, at its end, as it always was.
+    // travel is one test, at its end, as it always was. **A leaf already in the walker** (a
+    // restore, a drop or a teleport into its arc) moves while each angle reaches less far into it
+    // than the one before — away from it — and holds the moment one would reach further, so it
+    // clears the walker the way it can and never closes on it (docs: "Doors").
     i32 reached = travel;
+    bool was_in = false;
     if (c != nullptr) {
       reached = 0;
+      f32 before = leaf_depth(d, d.angle_mdeg, feet, reach, c->height);
+      was_in = before > 0.0f;
       for (i32 s = std::min(travel, k_door_sweep_mdeg);;
            s = std::min(travel, s + k_door_sweep_mdeg)) {
-        if (leaf_depth(d, d.angle_mdeg + dir * s, feet, reach, c->height) > 0.0f) break;
+        const f32 depth = leaf_depth(d, d.angle_mdeg + dir * s, feet, reach, c->height);
+        if (before > 0.0f ? !(depth < before) : depth > 0.0f) break;
         reached = s;
+        before = depth;
         if (s == travel) break;
       }
     }
     if (reached < travel) ++door_stats_.holds;
     if (reached == 0) continue;
+    if (was_in) ++door_stats_.clears;
     const i32 next = d.angle_mdeg + dir * reached;
     d.angle_mdeg = next;
     ++door_stats_.moves;

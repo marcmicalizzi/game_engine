@@ -367,6 +367,7 @@ struct DoorStats {
   u64 toggles = 0;
   u64 moves = 0;    // ticks a door's angle changed
   u64 holds = 0;    // ticks a door held its angle because its leaf would have entered the walker
+  u64 clears = 0;   // ticks a door already in the walker moved away from it (docs: "Doors")
   u32 refused = 0;  // doors the last `set_doors` refused: a key given before
 };
 // A leaf's turn about +y at `mdeg` millidegrees, a function of the integer's bits on every
@@ -614,8 +615,9 @@ class SceneCollision {
   // **On the tick, after the ring's update and before the walker's step**: a held tile's declared
   // doors taken in, bodies made and let go with their tiles (in key order), and every door turned
   // toward its target by its speed — held where the leaf at the next angle would reach into
-  // `walker`'s capsule (null: none) — its box put there. Returns the doors that moved; nothing to
-  // do costs a scan of the doors.
+  // `walker`'s capsule (null: none), except that one already in it moves when moving takes it
+  // away — its box put there. Returns the doors that moved; nothing to do costs a scan of the
+  // doors.
   u32 step_doors(const physics::CharacterBody* walker);
   // A door's state now: its angle and where it is heading, what a host writes back.
   bool door(u64 key, DoorBody& out) const noexcept;

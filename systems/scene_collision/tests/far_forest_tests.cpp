@@ -925,6 +925,35 @@ TEST_CASE("scene_collision: a declared door turns with its piece and opens towar
   }
 }
 
+// **A door already in the walker** (S91; scene_collision.md, "Doors"): restored half open with the
+// walker standing in its leaf's swing, 0.15 m off the leaf's face on the side it closes toward.
+// Until 2026-11-18 every next angle met the capsule, so it held whichever way it headed; now it
+// moves while each angle reaches less far into the walker, so it opens away from it, and holds
+// toward it.
+TEST_CASE("scene_collision: a door already in the walker moves away from it and holds toward it") {
+  DoorRig rig;
+  DoorBody d = doorway();
+  d.angle_mdeg = -45000;
+  d.open = false;  // heading shut, toward the walker
+  rig.collision.set_doors({&d, 1});
+  // The leaf at -45 degrees runs from the hinge toward (0.707, 0.707); the walker 0.15 m off its
+  // middle toward (0.707, -0.707), the side it closes toward.
+  REQUIRE(rig.walker.teleport(place(Vec3{-0.026f, 0.02f, 20.187f})) == physics::Status::Ok);
+  for (u32 k = 0; k < 240; ++k)
+    (void)rig.collision.step_doors(&rig.walker);
+  DoorBody now;
+  REQUIRE(rig.collision.door(3, now));
+  CHECK(now.angle_mdeg == -45000);  // held: closing would go further into the walker
+  CHECK(rig.collision.door_stats().holds == 240);
+  CHECK(rig.collision.door_stats().clears == 0);
+  REQUIRE(rig.collision.toggle_door(3));
+  for (u32 k = 0; k < 240; ++k)
+    (void)rig.collision.step_doors(&rig.walker);
+  REQUIRE(rig.collision.door(3, now));
+  CHECK(now.angle_mdeg == -90000);  // opened away from it, the whole way
+  CHECK(rig.collision.door_stats().clears > 0);
+}
+
 TEST_CASE(
     "scene_collision: a mesh prop's proxy is one a mesh and rounded scale, whatever its yaw, and "
     "goes when no prop names it") {

@@ -399,10 +399,16 @@ the same bits on every compiler` pins it over two turns at an eighth of a degree
 keeps the numbers in range and one door a key**: a speed of 1 to 180 degrees a tick (none the
 default), a swing within a whole turn either way, so the integer swing never overflows; the first
 door given of a key is kept and a later one refused and counted (`DoorStats::refused`), so `door`
-and `toggle_door` answer for one door. **Left**: a door whose leaf already stands in the walker
-(a walker teleported into its arc) holds both ways, since every next angle meets it; it should
-move away from the walker and hold only toward it, which needs the overlap's depth at the two
-angles compared, not a yes or no. **A door that
+and `toggle_door` answer for one door. **A door whose leaf already stands in the walker** (a
+restore, a drop or a teleport into its arc) moves away from it and holds only toward it: the test
+is how far the leaf reaches into the capsule (`leaf_depth`, the radius and margin less the
+distance, a correctly rounded square root), and from an angle that is in, the leaf goes while each
+next angle reaches less far than the one before and holds the moment one would reach further, then
+tests as below once it is clear (`DoorStats::clears` counts the ticks it moved so). Until
+2026-11-18 the test was a yes or no, and since every angle near one that meets the walker meets it
+too, such a door held whichever way it headed until the walker left (`scene_collision: a door
+already in the walker moves away from it and holds toward it`, 7 ms). A walker standing on the
+hinge line, whom no turn brings nearer or farther, holds the door both ways. **A door that
 would enter the walker holds its angle**: the leaf at the next angle is tested against the capsule
 — both upright, so the test is exact in the leaf's frame — and a door that would come within
 `k_door_hold_margin_m` (5 cm, past the character's contact padding, so a leaf never presses the
