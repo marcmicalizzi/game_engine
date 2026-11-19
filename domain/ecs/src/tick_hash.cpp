@@ -290,6 +290,72 @@ std::string entity_key(const Identity* identity, flecs::entity_t entity) {
   return "e" + std::to_string(entity);
 }
 
+// ---- tags and relationship pairs (ecs.md, "What the structure column sees"; T196) -------------
+
+constexpr u64 k_structure_tag = 0x5461670000000001ull;   // "Tag"
+constexpr u64 k_structure_pair = 0x5061697200000002ull;  // "Pair"
+
+// How an entity a tag or a pair names is named in the hash, as nothing that differs between two
+// runs of one world: the component registry's qualified name, else the record's `Id128`, else
+// flecs' symbol, else its name, else its flecs id — the last as an entity with no identity is
+// seeded today. `text` (a capture's) says the same in words.
+u64 stable_word(ecs_world_t* w, const ComponentRegistry& registry, flecs::entity_t identity,
+                flecs::entity_t e, std::string* text) {
+  if (e != 0 && ecs_is_alive(w, e)) {
+    if (const ComponentType* type = registry.find(e); type != nullptr && type->info != nullptr) {
+      const char* name = type->info->qualified_name;
+      if (text != nullptr) *text = name;
+      return word(1, hash_bytes(name, std::strlen(name)));
+    }
+    const auto* id = static_cast<const Identity*>(ecs_get_id(w, e, identity));
+    if (id != nullptr && !id->id.is_null()) {
+      if (text != nullptr) *text = entity_key(id, e);
+      return word(word(2, id->id.hi), id->id.lo);
+    }
+    for (const char* name : {ecs_get_symbol(w, e), ecs_get_name(w, e)}) {
+      if (name == nullptr || *name == 0) continue;
+      if (text != nullptr) *text = name;
+      return word(3, hash_bytes(name, std::strlen(name)));
+    }
+  }
+  if (text != nullptr) *text = entity_key(nullptr, e);
+  return word(4, e);
+}
+
+// Whether `id` of an archetype's type is a tag or a pair the structure column counts: every pair
+// but a name (`(Identifier, Name)`, flecs' own), and every id with no data but `Identity`'s seed —
+// a data component is a table of its own, or unhashed by choice. A transient tag only when the
+// config hashes transient components.
+bool structural(ecs_world_t* w, const ComponentRegistry& registry, ecs_id_t id, bool transient) {
+  if (ECS_IS_PAIR(id)) return ECS_PAIR_FIRST(id) != static_cast<u32>(ecs_id(EcsIdentifier));
+  if ((id & ECS_ID_FLAGS_MASK) != 0 || ecs_get_typeid(w, id) != 0) return false;
+  const ComponentType* type = registry.find(static_cast<flecs::entity_t>(id));
+  return type == nullptr || !type->transient || transient;
+}
+
+// One structural id as a word, and in words for a capture.
+u64 structure_word(ecs_world_t* w, const ComponentRegistry& registry, flecs::entity_t identity,
+                   ecs_id_t id, std::string* text) {
+  if (!ECS_IS_PAIR(id)) {
+    return mix64(word(k_structure_tag, stable_word(w, registry, identity, id, text)));
+  }
+  std::string first;
+  std::string second;
+  const u64 rel =
+      stable_word(w, registry, identity, ecs_pair_first(w, id), text != nullptr ? &first : nullptr);
+  // A value pair's second element is a number, not an entity.
+  u64 target = 0;
+  if (ECS_IS_VALUE_PAIR(id)) {
+    target = word(5, ECS_PAIR_SECOND(id));
+    if (text != nullptr) second = std::to_string(ECS_PAIR_SECOND(id));
+  } else {
+    target = stable_word(w, registry, identity, ecs_pair_second(w, id),
+                         text != nullptr ? &second : nullptr);
+  }
+  if (text != nullptr) *text = "(" + first + ", " + second + ")";
+  return mix64(word(word(k_structure_pair, rel), target));
+}
+
 }  // namespace
 
 TickHash::TickHash(SimWorld& world, sim::SimScheduler& scheduler, sim::HashLog& log,
@@ -313,6 +379,7 @@ TickHash::~TickHash() {
   for (Table& table : tables_) {
     if (table.query != nullptr) ecs_query_fini(table.query);
   }
+  if (identity_query_ != nullptr) ecs_query_fini(identity_query_);
 }
 
 bool TickHash::add_source(const TickHashSource& source) {
@@ -331,7 +398,7 @@ bool TickHash::capture_at(u64 tick, sim::TickPhase phase, std::string_view table
   request.out = out;
   if (frozen_) {
     request.table = ~0u;
-    for (u32 i = 0; i < tables_.size(); ++i) {
+    for (u32 i = 0; i <= tables_.size(); ++i) {  // the components, then the structure column
       if (names_[i] == table) request.table = i;
     }
     if (request.table == ~0u) return false;
@@ -389,6 +456,17 @@ void TickHash::freeze() {
     tables_.push_back(table);
     names_.push_back(type->info->qualified_name);
   }
+  // The structure column: the tags and relationship pairs of every entity the component tables or
+  // an `Identity` show (ecs.md, "What the structure column sees").
+  names_.push_back(k_tick_hash_structure);
+  structure_name_hash_ = hash_bytes(k_tick_hash_structure, std::strlen(k_tick_hash_structure));
+  {
+    ecs_query_desc_t desc = {};
+    desc.terms[0].id = identity_;
+    desc.terms[0].inout = EcsIn;
+    desc.cache_kind = EcsQueryCacheAuto;
+    identity_query_ = ecs_query_init(w.c_ptr(), &desc);
+  }
   for (const TickHashSource& source : sources_)
     names_.push_back(source.name);
   row_.resize(names_.size());
@@ -399,7 +477,7 @@ void TickHash::freeze() {
   // A request made before the set was fixed finds its table now, or is dropped.
   for (u32 i = 0; i < requests_.size();) {
     requests_[i].table = ~0u;
-    for (u32 t = 0; t < tables_.size(); ++t) {
+    for (u32 t = 0; t <= tables_.size(); ++t) {
       if (names_[t] == requests_[i].name) requests_[i].table = t;
     }
     if (requests_[i].table == ~0u) {
@@ -515,8 +593,115 @@ void TickHash::hash_into(sim::TickPhase phase, u64* out) {
       out[t] = hash_combine(hash_combine(out[t], counts[t]), tables_[t].name_hash);
     }
   }
+  out[tables_.size()] = hash_structure();
   for (u32 s = 0; s < sources_.size(); ++s)
-    out[tables_.size() + s] = sources_[s].hash(sources_[s].context, phase);
+    out[tables_.size() + 1 + s] = sources_[s].hash(sources_[s].context, phase);
+}
+
+void TickHash::gather_structure_tables() {
+  // Every archetype an entity the hash sees lives in, once: the tables the component queries and
+  // the `Identity` query match, deduplicated by address (an address is in no value: the column is a
+  // sum over entities).
+  ecs_world_t* w = world_->world().c_ptr();
+  structure_tables_.clear();
+  const auto add = [&](ecs_query_t* query) {
+    ecs_iter_t it = ecs_query_iter(w, query);
+    while (ecs_query_next(&it)) {
+      if (it.table != nullptr) structure_tables_.push_back(it.table);
+    }
+  };
+  for (const Table& table : tables_)
+    add(table.query);
+  add(identity_query_);
+  std::sort(structure_tables_.begin(), structure_tables_.end());
+  structure_tables_.erase(std::unique(structure_tables_.begin(), structure_tables_.end()),
+                          structure_tables_.end());
+}
+
+u64 TickHash::table_structure(ecs_table_t* table) const {
+  ecs_world_t* w = world_->world().c_ptr();
+  const ComponentRegistry& registry = components(world_->world());
+  const ecs_type_t* type = ecs_table_get_type(table);
+  u64 sum = 0;
+  for (i32 i = 0; type != nullptr && i < type->count; ++i) {
+    const ecs_id_t id = type->array[i];
+    if (id == identity_ || !structural(w, registry, id, config_.transient)) continue;
+    sum += structure_word(w, registry, identity_, id, nullptr);
+  }
+  return sum;
+}
+
+u64 TickHash::hash_structure() {
+  // **Tags and relationship pairs** (roadmap T196): an archetype's tags and pairs are its type, so
+  // each table's are hashed once, as a sum over its ids that no order of the type changes, and each
+  // entity in it adds that sum mixed with its seed — the entity's `Id128`, or its flecs id when it
+  // has none, as the component tables seed it. A table with neither adds nothing.
+  gather_structure_tables();
+  ecs_world_t* w = world_->world().c_ptr();
+  u64 sum = 0;
+  u64 count = 0;
+  for (ecs_table_t* table : structure_tables_) {
+    const u64 structure = table_structure(table);
+    if (structure == 0) continue;
+    const i32 rows = ecs_table_count(table);
+    const flecs::entity_t* entities = ecs_table_entities(table);
+    const auto* ids = static_cast<const Identity*>(ecs_table_get_id(w, table, identity_, 0));
+    for (i32 r = 0; r < rows; ++r) {
+      const Identity* identity = ids == nullptr ? nullptr : ids + r;
+      const u64 seed = identity != nullptr && !identity->id.is_null()
+                           ? word(word(k_hash_seed, identity->id.hi), identity->id.lo)
+                           : word(k_hash_seed ^ 1u, entities[r]);
+      sum += mix64(word(seed, structure));
+    }
+    count += static_cast<u64>(rows);
+  }
+  return hash_combine(hash_combine(sum, count), structure_name_hash_);
+}
+
+void TickHash::capture_structure(sim::Capture& out) {
+  gather_structure_tables();
+  ecs_world_t* w = world_->world().c_ptr();
+  const ComponentRegistry& registry = components(world_->world());
+  struct Entry {
+    std::string id;
+    JsonValue value;
+  };
+  Vector<Entry> entries;
+  for (ecs_table_t* table : structure_tables_) {
+    if (table_structure(table) == 0) continue;
+    // The table's tags and pairs in words, sorted, which every entity of it shares.
+    Vector<std::string> words;
+    const ecs_type_t* type = ecs_table_get_type(table);
+    for (i32 i = 0; i < type->count; ++i) {
+      const ecs_id_t id = type->array[i];
+      if (id == identity_ || !structural(w, registry, id, config_.transient)) continue;
+      std::string text;
+      (void)structure_word(w, registry, identity_, id, &text);
+      words.push_back(std::move(text));
+    }
+    std::sort(words.begin(), words.end());
+    JsonValue value = JsonValue::array();
+    for (std::string& text : words)
+      value.push_back(JsonValue(std::move(text)));
+    const i32 rows = ecs_table_count(table);
+    const flecs::entity_t* entities = ecs_table_entities(table);
+    const auto* ids = static_cast<const Identity*>(ecs_table_get_id(w, table, identity_, 0));
+    for (i32 r = 0; r < rows; ++r) {
+      Entry entry;
+      entry.id = entity_key(ids == nullptr ? nullptr : ids + r, entities[r]);
+      entry.value = value;
+      entries.push_back(std::move(entry));
+    }
+  }
+  std::sort(entries.begin(), entries.end(),
+            [](const Entry& a, const Entry& b) { return a.id < b.id; });
+  out.entities = JsonValue::array();
+  for (Entry& entry : entries) {
+    JsonValue item = JsonValue::object();
+    item.set("id", entry.id);
+    item.set("value", std::move(entry.value));
+    out.entities.push_back(std::move(item));
+  }
 }
 
 void TickHash::hash_now(sim::TickPhase phase, Vector<u64>& out) {
@@ -584,7 +769,11 @@ void TickHash::end_phase(sim::SystemContext& context) {
     request.out->tick = request.tick;
     request.out->phase = request.phase;
     request.out->table = self->names_[request.table];
-    self->capture(self->tables_[request.table], *request.out);
+    if (request.table == self->tables_.size()) {
+      self->capture_structure(*request.out);
+    } else {
+      self->capture(self->tables_[request.table], *request.out);
+    }
     ++self->stats_.captures;
     self->requests_.erase(self->requests_.begin() + static_cast<std::ptrdiff_t>(i));
   }

@@ -103,15 +103,32 @@ store::Status project_writeback(WorldStore& world_store, const doc::Document& do
     u64 tile = 0;
     TileRow row;
   };
-  Vector<Row> rows;
+  // The records to project: the batch's, in (record, row) order, one projection a record — and,
+  // after a call whose write failed, its records again (D45), as the document has them now.
+  Vector<Id128> ids;
+  ids.reserve(batch.changes.size());
   for (u32 i = 0; i < batch.changes.size(); ++i) {
-    // The batch is in (record, row) order: one projection a record.
     const Id128& id = batch.changes[i].record;
     if (i != 0 && batch.changes[i - 1].record == id) continue;
+    ids.push_back(id);
+  }
+  Vector<Id128>& unprojected = world_store.unprojected();
+  if (!unprojected.empty()) {
+    s.retried = unprojected.size();
+    for (const Id128& id : unprojected)
+      ids.push_back(id);
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+  }
+  Vector<Row> rows;
+  Vector<Id128> gone;
+  for (const Id128& id : ids) {
     doc::TileCoord tile;
     Row r;
     if (!document.exists(id) || !record_position(document, id, r.row.position)) {
+      // Its projection goes with it: a later load would read a record the document cannot place.
       ++s.gone;
+      gone.push_back(id);
       continue;
     }
     if (!document.object_tile(id, tile)) {
@@ -139,8 +156,16 @@ store::Status project_writeback(WorldStore& world_store, const doc::Document& do
   }
   const store::Status status =
       world_store.write_projections(std::span<const TileRow>(out.data(), out.size()),
-                                    std::span<const u64>(tiles.data(), tiles.size()));
-  if (status == store::Status::Ok) s.written = out.size();
+                                    std::span<const u64>(tiles.data(), tiles.size()),
+                                    std::span<const Id128>(gone.data(), gone.size()));
+  if (status == store::Status::Ok) {
+    s.written = out.size();
+    s.erased = gone.size();
+    unprojected.clear();
+  } else {
+    // Nothing was written (one transaction): the next call projects these again.
+    unprojected = std::move(ids);
+  }
   if (stats != nullptr) *stats = s;
   return status;
 }
@@ -175,7 +200,17 @@ bool StoreTiles::activate(void* context, const TileEvent& event) {
   params.materialize_tier = b.materialize_tier;
   static const sim::ObserverSet k_nobody;
   const sim::ObserverSet& observers = b.world != nullptr ? b.world->observers() : k_nobody;
-  self->last_ = b.scheduler->reconcile_tile(params, b.store->tile_store(), observers, b.tiers);
+  // With a document bound, the tile's projections are read through it: one whose record the
+  // document no longer has is left out (D45) — a store written before the flush and a tile's going
+  // erased them may still hold one, and the tile's next going erases it.
+  sim::TileStore seam = b.store->tile_store();
+  if (b.document != nullptr) {
+    self->inner_ = seam;
+    seam.context = self;
+    seam.tile_state = &StoreTiles::tile_state;
+    seam.load_records = &StoreTiles::load_records;
+  }
+  self->last_ = b.scheduler->reconcile_tile(params, seam, observers, b.tiers);
   StoreTilesStats& s = self->stats_;
   ++s.reconciled;
   s.known += self->last_.known ? 1u : 0u;
@@ -211,9 +246,23 @@ void StoreTiles::deactivate(void* context, const TileEvent& event) {
       self->rows_.push_back(std::move(row));
     }
   }
+  // What the tile's projections name that the document no longer has goes with the tile's rows, in
+  // their transaction (D45): a record deleted while its tile was live, or before this mend, would
+  // otherwise keep its projection here for good, since an upsert never removes a row.
+  self->gone_.clear();
+  if (b.document != nullptr) {
+    if (b.store->tile_records(event.tile, self->stored_) == store::Status::Ok) {
+      WorldPos unused;
+      for (const Id128& id : self->stored_) {
+        if (!b.document->exists(id) || !record_position(*b.document, id, unused))
+          self->gone_.push_back(id);
+      }
+    }
+  }
   const store::Status status = b.store->write_tile(
       event.tile, std::span<const TileRow>(self->rows_.data(), self->rows_.size()),
-      b.scheduler->tick().value, b.scheduler->game_time().us);
+      b.scheduler->tick().value, b.scheduler->game_time().us,
+      std::span<const Id128>(self->gone_.data(), self->gone_.size()));
   StoreTilesStats& s = self->stats_;
   if (status != store::Status::Ok) {
     ++s.failures;
@@ -223,8 +272,35 @@ void StoreTiles::deactivate(void* context, const TileEvent& event) {
   } else {
     ++s.written;
     s.rows += self->rows_.size();
+    s.erased += self->gone_.size();
   }
   s.write_ns += time::monotonic_ns() - start;
+}
+
+bool StoreTiles::tile_state(void* context, u64 tile, sim::TileState& out) {
+  const sim::TileStore& inner = static_cast<StoreTiles*>(context)->inner_;
+  return inner.tile_state != nullptr && inner.tile_state(inner.context, tile, out);
+}
+
+void StoreTiles::load_records(void* context, u64 tile, Vector<sim::EntityRecord>& out) {
+  auto* self = static_cast<StoreTiles*>(context);
+  const u32 first = out.size();
+  if (self->inner_.load_records != nullptr)
+    self->inner_.load_records(self->inner_.context, tile, out);
+  const doc::Document& document = *self->binding_.document;
+  // Kept in the store's order; a record the document cannot place is left out.
+  u32 kept = first;
+  WorldPos unused;
+  for (u32 i = first; i < out.size(); ++i) {
+    const Id128& id = out[i].entity;
+    if (!document.exists(id) || !record_position(document, id, unused)) {
+      ++self->stats_.skipped;
+      continue;
+    }
+    if (kept != i) out[kept] = out[i];
+    ++kept;
+  }
+  out.resize(kept);
 }
 
 }  // namespace engine::world

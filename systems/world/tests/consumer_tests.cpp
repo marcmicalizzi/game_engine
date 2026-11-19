@@ -17,7 +17,9 @@
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
 #include <map>
+#include <span>
 #include <string>
 
 using namespace engine;
@@ -515,11 +517,248 @@ TEST_CASE("world store: a flush's records' projections are kept current") {
   CHECK(east[0].position.x == 75.5);
   CHECK(east[0].position.z == 12.0);
 
-  // A record the document no longer has is not projected; its last row stays for the tile to
-  // replace when it goes.
+  // A record the document no longer has is not projected, and its last row goes in the same
+  // transaction (D45): an upsert never removes a row, so nothing else would.
   REQUIRE(d.apply(doc::cmd_delete(id_of(2)), nullptr, nullptr));
   REQUIRE(project_writeback(store, d, batch_of({2}), &stats) == store::Status::Ok);
   CHECK(stats.gone == 1);
+  CHECK(stats.erased == 1);
   CHECK(stats.written == 0);
-  CHECK(tile_rows(store, 1, 0).size() == 2);
+  const Vector<TileRow> left = tile_rows(store, 1, 0);
+  REQUIRE(left.size() == 1);
+  CHECK(left[0].record == id_of(1));
+}
+
+// D45: a flush whose projections cannot be written leaves the store as it was and is not lost — the
+// next call projects its records again, from the document as it is by then.
+TEST_CASE("world store: a flush's projections that failed to write are written by the next") {
+  WorldStore store;
+  REQUIRE(store.open_memory() == store::Status::Ok);
+  doc::Document d = partitioned(64.0);
+  node(d, 1, 10.0, 10.0);  // tile (0, 0)
+  node(d, 2, 20.0, 10.0);  // tile (0, 0)
+  ProjectWritebackStats stats;
+  REQUIRE(project_writeback(store, d, batch_of({1, 2}), &stats) == store::Status::Ok);
+  REQUIRE(tile_rows(store, 0, 0).size() == 2);
+
+  // Record 1 moves east and record 2 is deleted, and the write fails: a transaction already open on
+  // the connection refuses the flush's own, as a busy or full file would refuse it.
+  JsonValue moved = vec3(70.0, 1.0, 10.0);
+  REQUIRE(d.apply(doc::cmd_set(id_of(1), "position", std::move(moved)), nullptr, nullptr));
+  REQUIRE(d.apply(doc::cmd_delete(id_of(2)), nullptr, nullptr));
+  {
+    store::Transaction busy;
+    REQUIRE(store.database().begin(busy, true) == store::Status::Ok);
+    CHECK(project_writeback(store, d, batch_of({1, 2}), &stats) != store::Status::Ok);
+    CHECK(stats.written == 0);
+    CHECK(stats.erased == 0);
+    busy.rollback();
+  }
+  CHECK(tile_rows(store, 0, 0).size() == 2);  // as it was
+  CHECK(tile_rows(store, 1, 0).empty());
+  CHECK(store.unprojected().size() == 2);
+
+  // The next flush wrote nothing of either, and still puts both right.
+  REQUIRE(project_writeback(store, d, batch_of({}), &stats) == store::Status::Ok);
+  CHECK(stats.retried == 2);
+  CHECK(stats.written == 1);
+  CHECK(stats.erased == 1);
+  CHECK(store.unprojected().empty());
+  CHECK(tile_rows(store, 0, 0).empty());
+  const Vector<TileRow> east = tile_rows(store, 1, 0);
+  REQUIRE(east.size() == 1);
+  CHECK(east[0].record == id_of(1));
+  CHECK(east[0].position.x == 70.0);
+}
+
+namespace {
+
+// engine-host's write-back sink as far as the store goes: each command applied alone (a record
+// deleted since it was materialized refuses its own command and nothing else), then the flush's
+// records' projections kept current.
+struct ProjectingSink {
+  doc::Document* document = nullptr;
+  WorldStore* store = nullptr;
+  ProjectWritebackStats last;
+  static bool commit(void* c, const sim::WriteBackBatch& batch) {
+    auto* self = static_cast<ProjectingSink*>(c);
+    for (const doc::Command& command : batch.commands)
+      (void)self->document->apply(command, nullptr, nullptr);
+    return project_writeback(*self->store, *self->document, batch, &self->last) ==
+           store::Status::Ok;
+  }
+};
+
+// A streamed world over a store file: the document consumer, then the store consumer, on 32 m
+// tiles, the simulation in the inner ring, writing back through `ProjectingSink`.
+struct StreamedRig {
+  static sim::MaterializeConfig config() {
+    sim::MaterializeConfig c;
+    c.writeback_every = 0;
+    return c;
+  }
+  static RingParams ring() {
+    RingParams p;
+    p.ring_count = 2;
+    p.radius[0] = 1.5f;
+    p.radius[1] = 3.0f;
+    p.max_activations = 0;
+    p.max_deactivations = 0;
+    return p;
+  }
+  StoreTilesBinding binding(doc::Document& d) {
+    StoreTilesBinding b;
+    b.store = &store;
+    b.scheduler = &scheduler;
+    b.driver = &driver;
+    b.document = &d;
+    b.world = &world;
+    b.document_tiles = &document_tiles;
+    return b;
+  }
+
+  StreamedRig(doc::Document& d, const std::string& path)
+      : driver(scheduler, config()),
+        sink{&d, &store},
+        world(ring()),
+        document_tiles(driver, scheduler, 32.0f),
+        store_tiles(binding(d)) {
+    scheduler.add_hooks(fake.hooks());
+    driver.set_target(fake.target());
+    driver.set_writeback_sink(sim::WriteBackSink{&sink, &ProjectingSink::commit});
+    REQUIRE(store.open(path) == store::Status::Ok);
+    document_tiles.bind(&d);
+    world.add_consumer(document_tiles.consumer(0x1, &world.ring()));
+    world.add_consumer(store_tiles.consumer(0x1));
+  }
+
+  // The world moved record `n` to (x, z), for the next flush to write back.
+  void move(u64 n, f64 x, f64 z) {
+    const schema::MaterializeInfo* mapping = schema::MaterializeRegistry::global().find(k_node);
+    REQUIRE(mapping != nullptr);
+    u32 row = 0;
+    while (std::string_view(mapping->fields[row].property) != "position")
+      ++row;
+    sim::WriteBackChange change;
+    change.record = id_of(n);
+    change.mapping = mapping;
+    change.row = row;
+    change.value = vec3(x, 1.0, z);
+    fake.pending.push_back(change);
+  }
+
+  Vector<Id128> stored(i32 x, i32 z) {
+    Vector<TileRow> rows;
+    bool has_snapshot = false;
+    store::SnapshotInfo info;
+    REQUIRE(store.read_tile(TileCoord{x, z}, rows, has_snapshot, info) == store::Status::Ok);
+    Vector<Id128> ids;
+    for (const TileRow& r : rows)
+      ids.push_back(r.record);
+    std::sort(ids.begin(), ids.end());
+    return ids;
+  }
+
+  sim::SimScheduler scheduler;
+  FakeWorld fake;
+  sim::Materializer driver;
+  WorldStore store;
+  ProjectingSink sink;
+  World world;
+  DocumentTiles document_tiles;
+  StoreTiles store_tiles;
+};
+
+}  // namespace
+
+// D45: a record the document no longer has keeps no projection — erased by the flush that finds it
+// gone, and by its tile's going when no flush did — so a tile that comes back reads only what the
+// document still has.
+TEST_CASE(
+    "world store: a deleted record's projection goes with the flush that finds it gone and with "
+    "its tile") {
+  const test::TempDir tmp("engine_world_deleted");
+  doc::Document d = partitioned(32.0);
+  node(d, 1, 5.0, 5.0);    // tile (0, 0): stays
+  node(d, 2, 10.0, 5.0);   // tile (0, 0): written back, deleted, and a flush finds it gone
+  node(d, 3, 20.0, 20.0);  // tile (0, 0): deleted while live, which no flush sees
+  StreamedRig rig(d, tmp.file("world.db"));
+  rig.world.update(at(0.0f, 0.0f), 0);
+  REQUIRE(rig.driver.live() == 3);
+
+  // The tile goes and comes back: its three records projected, read back and resolved.
+  rig.world.update(at(1000.0f, 1000.0f), 1);
+  CHECK(rig.stored(0, 0).size() == 3);
+  u64 read = rig.store_tiles.stats().records;
+  rig.world.update(at(0.0f, 0.0f), 2);
+  CHECK(rig.store_tiles.stats().records - read == 3);
+
+  // Written and flushed.
+  rig.move(2, 12.0, 6.0);
+  REQUIRE(rig.driver.flush_writeback(SimTick{3}, GameTime{50000}) == 1);
+  CHECK(rig.sink.last.written == 1);
+  // Deleted, and the next flush still carries a change of it: the flush finds it gone, and its
+  // projection goes before the tile does.
+  REQUIRE(d.apply(doc::cmd_delete(id_of(2)), nullptr, nullptr));
+  rig.move(2, 14.0, 6.0);
+  (void)rig.driver.flush_writeback(SimTick{4}, GameTime{66667});
+  CHECK(rig.sink.last.gone == 1);
+  CHECK(rig.sink.last.erased == 1);
+  Vector<Id128> rows = rig.stored(0, 0);
+  REQUIRE(rows.size() == 2);
+  CHECK(rows[0] == id_of(1));
+  CHECK(rows[1] == id_of(3));
+
+  // Record 3 is deleted with no flush to see it; the tile's going erases its projection.
+  REQUIRE(d.apply(doc::cmd_delete(id_of(3)), nullptr, nullptr));
+  rig.world.update(at(1000.0f, 1000.0f), 5);
+  CHECK(rig.store_tiles.stats().erased == 1);
+  CHECK(rig.store_tiles.stats().failures == 0);
+  rows = rig.stored(0, 0);
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0] == id_of(1));
+
+  // Back again: the tile reads the one record the document still has.
+  rig.fake.resolved_from_store = 0;
+  read = rig.store_tiles.stats().records;
+  rig.world.update(at(0.0f, 0.0f), 6);
+  CHECK(rig.store_tiles.stats().records - read == 1);
+  CHECK(rig.store_tiles.stats().skipped == 0);
+  CHECK(rig.fake.resolved_from_store == 1);
+}
+
+// D45: a store written before the mend may hold the projection of a record its document has since
+// deleted. A load leaves it out and writes nothing; the tile's next going erases it.
+TEST_CASE(
+    "world store: a stale projection from before is skipped by a load and erased by a going") {
+  const test::TempDir tmp("engine_world_stale");
+  doc::Document d = partitioned(32.0);
+  node(d, 1, 5.0, 5.0);  // tile (0, 0)
+  {
+    // The store as an earlier build left it: record 9's projection outlived its record.
+    WorldStore before;
+    REQUIRE(before.open(tmp.file("world.db")) == store::Status::Ok);
+    TileRow rows[2];
+    rows[0].record = id_of(1);
+    rows[0].type = k_node;
+    rows[0].position = WorldPos{5.0, 1.0, 5.0};
+    rows[1].record = id_of(9);
+    rows[1].type = k_node;
+    rows[1].position = WorldPos{9.0, 1.0, 9.0};
+    REQUIRE(before.write_tile(TileCoord{0, 0}, std::span<const TileRow>(rows, 2), 1, 16667) ==
+            store::Status::Ok);
+  }
+  StreamedRig rig(d, tmp.file("world.db"));
+  rig.world.update(at(0.0f, 0.0f), 0);
+  CHECK(rig.store_tiles.stats().known == 1);
+  CHECK(rig.store_tiles.stats().records == 1);
+  CHECK(rig.store_tiles.stats().skipped == 1);
+  CHECK(rig.fake.resolved_from_store == 1);
+  CHECK(rig.stored(0, 0).size() == 2);  // a load reads; it writes nothing
+
+  rig.world.update(at(1000.0f, 1000.0f), 1);
+  CHECK(rig.store_tiles.stats().erased == 1);
+  const Vector<Id128> rows = rig.stored(0, 0);
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0] == id_of(1));
 }

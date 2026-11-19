@@ -13,13 +13,17 @@
 // installed** and it sees each phase's finished state.
 //
 // **A table is a component type**: every schema-declared component the world registered with a
-// size (tags carry nothing), `@transient` ones too unless the config leaves them out — determinism
+// size, `@transient` ones too unless the config leaves them out — determinism
 // is about what the tick computes, not only about what a save keeps — in qualified-name order, so
 // two hosts that registered the same components in different orders write the same header. A
 // component with no schema type (hand-registered, private) has no fields to read and is counted in
 // `stats().unhashed`; a source the host adds (`add_source`: the event bus's delivery hash, the
-// timing wheel's due list) is a table too, after the components. The table set is fixed at the
-// first hashed phase; a component registered later is counted (`stats().late`) and not hashed.
+// timing wheel's due list) is a table too, after the components. Between the two is **the structure
+// column** (`k_tick_hash_structure`, T196): what an entity is besides its data — its tags and its
+// relationship pairs, a pair by its relationship's and its target's names that no run changes (a
+// record's `Id128`, a component's qualified name) — so two worlds that differ only in a parent or a
+// tag hash differently. The table set is fixed at the first hashed phase; a component registered
+// later is counted (`stats().late`) and not hashed.
 //
 // **What a table's hash is.** Each entity's component is hashed field by field through schema
 // reflection — scalars by value, strings and byte arrays by contents, containers element by
@@ -62,6 +66,11 @@ class JobSystem;
 }
 
 namespace engine::ecs {
+
+// The structure column's name in the log's header, after the components and before the sources:
+// the tags and relationship pairs (`ChildOf` and the rest) of every entity the hash sees (ecs.md,
+// "What the structure column sees"; roadmap T196). Not a schema type's name, so it meets none.
+inline constexpr const char* k_tick_hash_structure = "ecs.structure";
 
 struct TickHashConfig {
   // Bit p: hash at the end of `TickPhase` p. All eight by default.
@@ -187,6 +196,12 @@ class TickHash {
   static void end_phase(sim::SystemContext& context);
   void freeze();
   void hash_into(sim::TickPhase phase, u64* out);
+  // The structure column (T196): the archetypes the hash sees, a table's tags and pairs as a sum,
+  // the column's hash, and its capture.
+  void gather_structure_tables();
+  u64 table_structure(ecs_table_t* table) const;
+  u64 hash_structure();
+  void capture_structure(sim::Capture& out);
   u64 hash_table(const Table& table);
   // Fills `runs_` with every table's entities, at most `grain` a run.
   void gather_runs(u32 grain);
@@ -200,6 +215,9 @@ class TickHash {
   bool frozen_ = false;
   u32 components_seen_ = 0;
   flecs::entity_t identity_ = 0;
+  ecs_query_t* identity_query_ = nullptr;
+  u64 structure_name_hash_ = 0;
+  Vector<ecs_table_t*> structure_tables_;
   Vector<Table> tables_;
   Vector<HashOp> ops_;
   Vector<Run> runs_;

@@ -33,7 +33,9 @@ const char* k_usage =
     "  --bisect           the divergence bisector, on files and with no host: the first tick,\n"
     "                     phase and tables two state-hash logs differ at, and with two captures\n"
     "                     of that table the entities and fields that differ. Exit 0 when the\n"
-    "                     logs agree, 1 when they differ, 2 when a file cannot be read\n"
+    "                     logs agree, 1 when they differ, 2 when a file cannot be read, 3 when\n"
+    "                     a comparison would say nothing (an empty log, one cut short, logs of\n"
+    "                     different phases, captures of different points)\n"
     "\n"
     "  --host <path>      engine-host executable (default: beside engine-cli)\n"
     "  --doc <dir>        open this document first and pass its session to the method\n"
@@ -210,8 +212,10 @@ int run_console(const Vector<std::string_view>& host_argv, const std::string& sc
 }
 
 // `--bisect`: the divergence bisector on files, with no host (domain/sim/hash_log.h; apps.md, "The
-// divergence bisector"). Exit 0 when the logs agree everywhere both cover, 1 when they differ, 2
-// when a file cannot be read.
+// divergence bisector"). Exit 0 when the logs agree row for row, 1 when they differ, 2 when a file
+// cannot be read, 3 when the files read but a comparison of them would say nothing
+// (`sim::bisect_refusal`, `sim::capture_refusal`: an empty log, a log cut short, logs of different
+// shapes, captures of different points).
 int run_bisect(int argc, char** argv, int first) {
   const int count = argc - first;
   if (count != 2 && count != 4) {
@@ -227,6 +231,10 @@ int run_bisect(int argc, char** argv, int first) {
     return 2;
   }
   const sim::Divergence d = sim::first_divergence(a, b);
+  if (const std::string why = sim::bisect_refusal(a, b, d); !why.empty()) {
+    std::fprintf(stderr, "engine-cli: --bisect refused: %s\n", why.c_str());
+    return 3;
+  }
   JsonValue out = JsonValue::object();
   out.set("diverged", d.found);
   out.set("rows_compared", d.rows_compared);
@@ -258,6 +266,10 @@ int run_bisect(int argc, char** argv, int first) {
         std::fprintf(stderr, "engine-cli: %s is not a capture %s\n", path, error.c_str());
         return 2;
       }
+    }
+    if (const std::string why = sim::capture_refusal(ca, cb, d); !why.empty()) {
+      std::fprintf(stderr, "engine-cli: --bisect refused: %s\n", why.c_str());
+      return 3;
     }
     u64 differing = 0;
     const sim::CaptureDiff diff = sim::diff_captures(ca, cb, 64, &differing);

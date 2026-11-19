@@ -121,20 +121,32 @@ void WorldStore::load_records(void* context, u64 tile, Vector<sim::EntityRecord>
 }
 
 store::Status WorldStore::write_tile(TileCoord tile, std::span<const TileRow> rows, u64 sim_tick,
-                                     i64 game_time_us) {
+                                     i64 game_time_us, std::span<const Id128> erase) {
   const u64 id = store_tile(tile);
   tiles_.clear();
   for (usize i = 0; i < rows.size(); ++i)
     tiles_.push_back(id);
   const store::Status status =
-      write_projections(rows, std::span<const u64>(tiles_.data(), tiles_.size()));
+      write_projections(rows, std::span<const u64>(tiles_.data(), tiles_.size()), erase);
   if (status != store::Status::Ok) return status;
   store::SnapshotInfo info;
   return log_.snapshot(id, sim_tick, game_time_us, info);
 }
 
+store::Status WorldStore::tile_records(TileCoord tile, Vector<Id128>& out) {
+  out.clear();
+  return log_.projections_by_tile(
+      store_tile(tile),
+      [](const store::ProjectionRecord& record, void* user) {
+        if (record.kind != projection_kind()) return;
+        static_cast<Vector<Id128>*>(user)->push_back(record.entity);
+      },
+      &out);
+}
+
 store::Status WorldStore::write_projections(std::span<const TileRow> rows,
-                                            std::span<const u64> tiles) {
+                                            std::span<const u64> tiles,
+                                            std::span<const Id128> erase) {
   ENGINE_ASSERT(rows.size() == tiles.size(), "world::WorldStore: a tile per row");
   // The blobs first, into one buffer that has stopped growing before any span points into it.
   Vector<u32> offsets;
@@ -162,9 +174,21 @@ store::Status WorldStore::write_projections(std::span<const TileRow> rows,
     record.blob = std::span<const u8>(scratch_.data() + offsets[i], offsets[i + 1] - offsets[i]);
     records.push_back(record);
   }
-  if (records.empty()) return store::Status::Ok;
-  return log_.upsert_projections(
-      std::span<const store::ProjectionRecord>(records.data(), records.size()));
+  if (records.empty() && erase.empty()) return store::Status::Ok;
+  // One transaction for the erasures and the rows (`upsert_projections` would open its own, and the
+  // store has no nested ones): a failure rolls both back, and the projections stay as they were.
+  store::Transaction transaction;
+  store::Status status = db_.begin(transaction, true);
+  if (status != store::Status::Ok) return status;
+  for (const Id128& record : erase) {
+    status = log_.erase_projection(record, projection_kind());
+    if (status != store::Status::Ok) return status;
+  }
+  for (const store::ProjectionRecord& record : records) {
+    status = log_.upsert_projection(record);
+    if (status != store::Status::Ok) return status;
+  }
+  return transaction.commit();
 }
 
 store::Status WorldStore::read_tile(TileCoord tile, Vector<TileRow>& rows, bool& has_snapshot,

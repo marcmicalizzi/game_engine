@@ -14,7 +14,9 @@ namespace {
 // table as u32 length + bytes, then each row as u64 tick, u32 phase, u32 0, and its table hashes as
 // u64. All little-endian (every supported platform is; the writer is the memcpy below).
 constexpr char k_magic[8] = {'E', 'N', 'G', 'H', 'L', 'O', 'G', '1'};
-constexpr u32 k_version = 1;
+// 2 (2026-11-19, T196): every row holds the structure column, an entity's tags and relationship
+// pairs, so a version 1 log's hashes are of a different function and compare with none of 2's.
+constexpr u32 k_version = 2;
 // A name past this is not a table name: a bound against a hostile header, not a format limit.
 constexpr u32 k_max_name = 4096;
 
@@ -198,8 +200,12 @@ bool HashLog::deserialize(std::string_view bytes, std::string* error) {
     return false;
   }
   if (version != k_version) {
-    fail(error, "the hash log's version " + std::to_string(version) + " is not " +
-                    std::to_string(k_version));
+    fail(error,
+         "the hash log is version " + std::to_string(version) + " and this build reads version " +
+             std::to_string(k_version) +
+             (version < k_version ? " (a version 1 log was hashed without tags and relationship "
+                                    "pairs: its hashes compare with none of this build's)"
+                                  : " (written by a newer build)"));
     return false;
   }
   if (phases > 0xFFu || tables > in.left() / 4) {
@@ -336,6 +342,48 @@ Divergence first_divergence(const HashLog& a, const HashLog& b) {
     ++rb;
   }
   return out;
+}
+
+std::string bisect_refusal(const HashLog& a, const HashLog& b, const Divergence& d) {
+  if (a.rows().empty() || b.rows().empty()) {
+    return std::string("the ") + (a.rows().empty() ? "first" : "second") +
+           " hash log has no rows: there is nothing to compare";
+  }
+  if (a.phases() != b.phases()) {
+    return "the two hash logs hashed different phases (mask " + std::to_string(a.phases()) +
+           " and " + std::to_string(b.phases()) + "): their rows do not line up";
+  }
+  if (d.found) return std::string();
+  if (d.rows_differ) {
+    return "the two hash logs agree on the " + std::to_string(d.rows_compared) +
+           " rows both have, but each has rows the other does not: one skipped a tick";
+  }
+  if (d.rows_a != d.rows_b) {
+    return "the two hash logs agree on the " + std::to_string(d.rows_compared) +
+           " rows both have, but the " + (d.rows_a < d.rows_b ? "first" : "second") + " ends at " +
+           std::to_string(std::min(d.rows_a, d.rows_b)) + " rows and the other runs to " +
+           std::to_string(std::max(d.rows_a, d.rows_b)) + ": one is cut short";
+  }
+  return std::string();
+}
+
+std::string capture_refusal(const Capture& a, const Capture& b, const Divergence& d) {
+  if (a.table != b.table || a.tick != b.tick || a.phase != b.phase) {
+    return "the two captures are of different points (" + a.table + " at tick " +
+           std::to_string(a.tick) + " " + phase_name(a.phase) + ", " + b.table + " at tick " +
+           std::to_string(b.tick) + " " + phase_name(b.phase) + "): a diff of them says nothing";
+  }
+  if (!d.found) return std::string();
+  bool named = false;
+  for (const TableDivergence& t : d.tables)
+    named = named || t.table == a.table;
+  if (a.tick != d.tick || a.phase != d.phase || !named) {
+    return "the captures are of " + a.table + " at tick " + std::to_string(a.tick) + " " +
+           phase_name(a.phase) + ", and the logs first differ at tick " + std::to_string(d.tick) +
+           " " + phase_name(d.phase) + (named ? "" : " in other tables") +
+           ": capture a table the divergence names, at its tick and phase";
+  }
+  return std::string();
 }
 
 // ---- captures ----------------------------------------------------------------------------------
