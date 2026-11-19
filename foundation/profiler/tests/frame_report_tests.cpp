@@ -311,6 +311,77 @@ TEST_CASE("profiler: a capture that filled ends its report at the last whole fra
   profiling::capture_reset();
 }
 
+// The case above failed one run in twenty in `msvc-release`, and most runs once the build inlined
+// the zone (batch 69): the clock steps 100 ns on Windows, a frame's last zone took less, and a zone
+// on the tick of its frame's end was outside it by the times alone, or in the next frame, or lost
+// with the cut one. The same stamps by hand, every one on a tick another event holds (profiler.md,
+// "Events on one tick of the clock"): where the times are equal, the order of recording places a
+// zone, and an end at its mark.
+TEST_CASE("profiler: events on one tick of the clock are placed by the order they were recorded") {
+  std::vector<CaptureEvent> events;
+  events.push_back(mark(1, 0));
+  events.push_back(zone("one", 0, 0));    // on its frame's mark, after it
+  events.push_back(zone("one", 10, 10));  // on its frame's end, before it: frame 1's
+  events.push_back(mark_end(1, 10));
+  events.push_back(zone("between", 10, 10));  // after that end and before the next mark: no frame's
+  events.push_back(mark(2, 10));
+  events.push_back(zone("two", 10, 10));  // after frame 2's mark: frame 2's, not frame 1's
+  events.push_back(zone("two", 20, 20));  // on frame 2's end and on frame 3's mark, before both
+  events.push_back(mark_end(2, 20));
+  events.push_back(mark(3, 20));
+  events.push_back(zone("three", 20, 20));
+  const auto check = [&](const FrameReport& r) {
+    REQUIRE(find(r.zones, "one") != nullptr);
+    CHECK(find(r.zones, "one")->count == 2);
+    CHECK(find(r.zones, "one")->frames_seen == 1);
+    CHECK(find(r.zones, "one")->outside_count == 0);
+    REQUIRE(find(r.zones, "two") != nullptr);
+    CHECK(find(r.zones, "two")->count == 2);
+    CHECK(find(r.zones, "two")->frames_seen == 1);
+    CHECK(find(r.zones, "two")->outside_count == 0);
+    REQUIRE(find(r.zones, "between") != nullptr);
+    CHECK(find(r.zones, "between")->count == 0);
+    CHECK(find(r.zones, "between")->outside_count == 1);
+  };
+  // Whole: frame 3 runs to the stop and holds its zone.
+  CaptureInfo info;
+  info.stopped_ns = 40 * k_ms;
+  const FrameReport whole = build_report(events, info);
+  CHECK(whole.frames == 3);
+  check(whole);
+  REQUIRE(find(whole.zones, "three") != nullptr);
+  CHECK(find(whole.zones, "three")->count == 1);
+  // Filled in frame 3: it is left out with its zone, and frame 2 keeps the zone on frame 3's mark.
+  info.dropped = 1;
+  info.full_ns = 20 * k_ms;
+  const FrameReport filled = build_report(events, info);
+  CHECK(filled.truncated_in_frame);
+  CHECK(filled.truncated_frame == 3);
+  CHECK(filled.frames == 2);
+  check(filled);
+  CHECK(find(filled.zones, "three") == nullptr);
+
+  // A host that numbers two frames alike, ending one and marking the next on one tick: the end is
+  // the frame's it was recorded after. And a capture that filled between frames keeps, outside, the
+  // zone recorded on the tick it filled: every recorded event was stamped before the fill.
+  const CaptureEvent again[] = {mark(5, 0),          zone("first", 1, 2),    mark_end(5, 10),
+                                mark(5, 10),         zone("second", 11, 15), mark_end(5, 30),
+                                zone("late", 32, 32)};
+  CaptureInfo between;
+  between.stopped_ns = 100 * k_ms;
+  between.dropped = 1;
+  between.full_ns = 32 * k_ms;
+  const FrameReport r = build_report(again, between);
+  CHECK_FALSE(r.truncated_in_frame);
+  REQUIRE(r.frames == 2);
+  CHECK(r.frame.total_ms == doctest::Approx(30.0));  // 0..10 and 10..30
+  CHECK(r.frame.max_ms == doctest::Approx(20.0));
+  CHECK(find(r.zones, "first")->frames_seen == 1);
+  CHECK(find(r.zones, "second")->frames_seen == 1);
+  REQUIRE(find(r.zones, "late") != nullptr);
+  CHECK(find(r.zones, "late")->outside_count == 1);
+}
+
 // The same rules over hand-made events: a capture that filled between frames keeps both whole
 // frames, but its GPU track's last frame lost one of its two passes, so that frame is not a
 // measured GPU frame (counting it would give pass b a zero there); and values that are not a

@@ -10,8 +10,9 @@
 // end (`capture_frame_end`), or to the next mark, or to the capture's stop — except in a capture
 // whose buffer filled, where a last frame with no end has no known end and is left out
 // (`FrameReport::truncated`). A zone belongs to the
-// frame its begin falls in; a value names its frame by index, which is how a GPU pass measured two
-// frames later lands on the frame that drew it.
+// frame its begin falls in, by its time and, on a tick of the clock it shares with a mark or an
+// end, by the order of recording; a value names its frame by index, which is how a GPU pass
+// measured two frames later lands on the frame that drew it.
 //
 // **What a series costs a frame.** For each name, the per-frame sum over the window: a zone's
 // calls summed (inclusive time, and summed over threads, so eight workers busy for a frame read as
@@ -112,7 +113,10 @@ struct CaptureCopy {
 };
 void copy_capture(CaptureCopy& out);
 
-// The report over `events` (`capture_snapshot`'s, in any order).
+// The report over `events`, `capture_snapshot`'s, in the order it gave them: the order they were
+// recorded in is what places two events that carry one stamp of the clock (a zone on the tick of
+// its frame's end is that frame's when it was recorded before the end; profiler.md, "Events on one
+// tick of the clock"). Events whose times all differ may come in any order.
 FrameReport build_report(std::span<const CaptureEvent> events, const CaptureInfo& info,
                          const ReportOptions& options = {});
 
