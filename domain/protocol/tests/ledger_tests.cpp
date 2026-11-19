@@ -868,15 +868,16 @@ TEST_CASE("ledger: another host's writes are pushed as ledger_changed, decided b
 TEST_CASE("ledger: the system's directory-change notice wakes the look, once for a storm") {
   test::TempDir tmp("protocol_ledger");
   const std::string dir = tmp.file("doc");
-  Host h;
-  Collect pushed;
-  Subscriptions subscriptions;
-  subscriptions.attach(&pushed);
+  // Before the host, so the session's watch, which calls the waker, stops before this goes.
   struct Woken {
     std::mutex mutex;
     std::condition_variable cv;
     int count = 0;
   } woken;
+  Collect pushed;
+  Subscriptions subscriptions;
+  subscriptions.attach(&pushed);
+  Host h;
   h.sessions.set_ledger_waker(
       [](void* context) {
         auto* w = static_cast<Woken*>(context);

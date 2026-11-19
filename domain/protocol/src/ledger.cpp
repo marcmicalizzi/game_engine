@@ -291,9 +291,6 @@ bool update_ledger(io::Vfs& vfs, Session& session, bool read_only, bool grows, u
   const bool ok = update_side_file(
       vfs, path, ledger,
       [&](LedgerFile& l, bool& write) {
-        // What another process wrote since this session last looked is told before this call
-        // changes anything (protocol.md, "The ledger's events").
-        if (session.watching_ledger()) session.ledger_read(l);
         io::FileInfo info;
         if (grows && vfs.stat(path, info) == io::Status::Ok && info.size >= k_ledger_bytes_max) {
           error = bound_error("ledger bytes", k_ledger_bytes_max,
@@ -311,8 +308,10 @@ bool update_ledger(io::Vfs& vfs, Session& session, bool read_only, bool grows, u
         return changed;
       },
       error);
-  // What this process wrote is what its own watch has seen, so the notice its write raises
-  // publishes no "ledger_changed" beside the event the call publishes itself.
+  // What this process wrote is what its own watch has seen once the call's event goes out
+  // (`Session::flush_ledger_written`), so the notice its write raises publishes nothing more, and
+  // what else the write carried — another process's writes since, lapsed claims — is told first.
+  // Only a write pays for it: a read that writes nothing serializes nothing here.
   if (wrote && session.watching_ledger()) session.ledger_written(ledger);
   return ok;
 }
@@ -346,11 +345,13 @@ void fill_seen(const LedgerFile& ledger, const std::string& text, LedgerSeen& se
   entries_of(ledger.reviews, seen.reviews);
 }
 
-// The ids whose entries differ between two lists sorted by id — made, changed or gone — the first
-// `k_event_max_ids` of them, and how many in all.
+// The ids whose entries differ between two lists sorted by id — made, changed or gone — but
+// `own` (the call's own, which its event names; 0 for none), the first `k_event_max_ids` of them,
+// and how many in all.
 void changed_ids(const Vector<LedgerSeen::Entry>& from, const Vector<LedgerSeen::Entry>& to,
-                 Vector<u64>& ids, u32& total) {
+                 u64 own, Vector<u64>& ids, u32& total) {
   const auto add = [&](u64 id) {
+    if (id == own && own != 0) return;
     ++total;
     if (ids.size() < k_event_max_ids) ids.push_back(id);
   };
@@ -703,7 +704,7 @@ bool task_list(Context& ctx, const TaskListParams& params, TasksResult& out, Rpc
   if (!list_bounds_ok(params.limit, params.tasks.size(), "tasks", error)) return false;
   const i64 now = time::wall_unix_ms();
   out.now_unix_ms = now;
-  return update_ledger(
+  const bool ok = update_ledger(
       ctx.sessions->vfs(), *s, true, false, out.ledger_revision,
       [&](LedgerFile& ledger, bool& write, RpcError& e) {
         out.lapsed = lapse_claims(ledger, now);
@@ -724,6 +725,9 @@ bool task_list(Context& ctx, const TaskListParams& params, TasksResult& out, Rpc
         return true;
       },
       error);
+  // A list that let claims lapse wrote them, and nobody else tells a subscriber of those.
+  s->flush_ledger_written(0, 0);
+  return ok;
 }
 
 // ---- review.* ----------------------------------------------------------------------------------
@@ -1013,36 +1017,35 @@ bool Session::ledger_watch_polling() const noexcept {
   return ledger_watch_ != nullptr && ledger_watch_->polling();
 }
 
-void Session::ledger_read(const LedgerFile& ledger) {
-  const std::string text = canonical(ledger);
-  if (ledger_seen_.present && ledger_seen_.size == text.size() &&
-      ledger_seen_.hash == text_hash(text))
-    return;
-  LedgerSeen now;
-  fill_seen(ledger, text, now);
-  now.raw_size = now.size;
-  now.raw_hash = now.hash;
-  (void)publish_ledger_changed(ledger_seen_, now);
-  ledger_seen_ = std::move(now);
-  ++ledger_seen_moves_;
-}
-
 void Session::ledger_written(const LedgerFile& ledger) {
   const std::string text = canonical(ledger);
-  LedgerSeen now;
-  fill_seen(ledger, text, now);
-  now.raw_size = now.size;
-  now.raw_hash = now.hash;
-  ledger_seen_ = std::move(now);
+  ledger_written_ = LedgerSeen{};
+  fill_seen(ledger, text, ledger_written_);
+  // The file's bytes are the canonical ones: this tree wrote them.
+  ledger_written_.raw_size = ledger_written_.size;
+  ledger_written_.raw_hash = ledger_written_.hash;
+  ledger_has_written_ = true;
   ++ledger_seen_moves_;
 }
 
-bool Session::publish_ledger_changed(const LedgerSeen& from, const LedgerSeen& to) const {
+void Session::flush_ledger_written(u64 own_task, u64 own_review) {
+  if (!ledger_has_written_) return;
+  (void)publish_ledger_changed(ledger_seen_, ledger_written_, own_task, own_review);
+  ledger_seen_ = std::move(ledger_written_);
+  ledger_written_ = LedgerSeen{};
+  ledger_has_written_ = false;
+  ++ledger_seen_moves_;
+}
+
+bool Session::publish_ledger_changed(const LedgerSeen& from, const LedgerSeen& to, u64 own_task,
+                                     u64 own_review) const {
   if (events_ == nullptr || !events_->wanted(EventKind::Session, id_)) return false;
   SessionChangeEvent event;
-  changed_ids(from.tasks, to.tasks, event.tasks, event.tasks_total);
-  changed_ids(from.reviews, to.reviews, event.reviews, event.reviews_total);
-  if (event.tasks_total == 0 && event.reviews_total == 0 && from.revision == to.revision)
+  changed_ids(from.tasks, to.tasks, own_task, event.tasks, event.tasks_total);
+  changed_ids(from.reviews, to.reviews, own_review, event.reviews, event.reviews_total);
+  const bool own_write = own_task != 0 || own_review != 0;
+  if (event.tasks_total == 0 && event.reviews_total == 0 &&
+      (own_write || from.revision == to.revision))
     return false;
   event.session = id_;
   event.change = "ledger_changed";
@@ -1058,6 +1061,8 @@ void SessionManager::begin_ledger_looks(bool all, Vector<LedgerLook>& looks) {
     if (!s->watching_ledger()) continue;
     const bool noticed = s->take_ledger_notice();
     if (!noticed && !all) continue;
+    // A write of this host's whose call was refused after it wrote (a lapse) is told first.
+    s->flush_ledger_written(0, 0);
     LedgerLook look;
     look.session = s->id();
     look.path = doc::DocumentStore::path_of(s->dir(), k_ledger_file);

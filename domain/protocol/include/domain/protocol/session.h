@@ -165,9 +165,10 @@ class Session {
   void publish_session(std::string_view change, const LeaseInfo* lease = nullptr,
                        u64 connection = 0, std::string_view reason = {}) const;
   // `event.session` for a change to the document's task ledger (ledger.cpp): "task_created" and
-  // the like, naming the task or the review item (the other 0) and the actor who changed it.
+  // the like, naming the task or the review item (the other 0) and the actor who changed it. What
+  // else the write changed goes first, as "ledger_changed" (`flush_ledger_written`).
   void publish_ledger(std::string_view change, u64 task, u64 review, std::string_view actor,
-                      u64 connection) const;
+                      u64 connection);
   // `event.session` for a proposal layer (session.cpp): "proposal_opened", "proposal_reopened",
   // "proposal_promoted" or "proposal_rejected", with the layer and the actor who did it, published
   // after `proposals.json` is written (a dry run and a refused promotion publish nothing).
@@ -181,17 +182,21 @@ class Session {
   void watch_ledger(LedgerWaker* waker);
   bool watching_ledger() const noexcept { return ledger_watch_ != nullptr; }
   bool ledger_watch_polling() const noexcept;
-  // The ledger as this process read it under its lock, before a call changes it: what another
-  // process wrote since the session last saw it is published as "ledger_changed" now, before the
-  // call's own event, so no write of this host's swallows another's.
-  void ledger_read(const LedgerFile& ledger);
-  // The ledger as this process wrote it: what the session has seen, so the notice its own write
-  // raises publishes nothing beside the event the call publishes itself.
+  // The ledger as this process wrote it (ledger.cpp, `update_ledger`), kept until the call's own
+  // event goes out. A read that writes nothing costs nothing here.
   void ledger_written(const LedgerFile& ledger);
-  // "ledger_changed": the ids whose entries differ between `from` and `to`, and `to`'s revision.
-  // False, and nothing sent, when nobody wants it or no entry and not the revision differ (the
-  // bytes changed and the content did not: a file rewritten by hand with other spacing).
-  bool publish_ledger_changed(const LedgerSeen& from, const LedgerSeen& to) const;
+  // What the write changed beside the call's own task or item (`own_task`, `own_review`; 0 for
+  // none) — another process's writes since the session last saw the ledger, claims the call let
+  // lapse — published as "ledger_changed", and the write taken as seen, so the notice the write
+  // raises publishes nothing more and no write of this host's swallows another's. `publish_ledger`
+  // calls it before the call's own event; a list that let claims lapse, and a look, call it too.
+  void flush_ledger_written(u64 own_task, u64 own_review);
+  // "ledger_changed": the ids whose entries differ between `from` and `to`, but the two named, and
+  // `to`'s revision. False, and nothing sent, when nobody wants it, or when no other entry differs
+  // and either the revision does not or this host's own write moved it (the bytes changed and the
+  // content did not: a file rewritten by hand with other spacing).
+  bool publish_ledger_changed(const LedgerSeen& from, const LedgerSeen& to, u64 own_task = 0,
+                              u64 own_review = 0) const;
   // A notice the watch's thread left, taken by a look; and one put back when a look is retried.
   bool take_ledger_notice() noexcept { return ledger_notice_.exchange(false); }
   void note_ledger_notice() noexcept { ledger_notice_.store(true); }
@@ -452,6 +457,8 @@ class Session {
   Vector<u64> holders_;
   // The ledger's watch (protocol.md, "The ledger's events").
   LedgerSeen ledger_seen_;
+  LedgerSeen ledger_written_;  // valid while `ledger_has_written_`
+  bool ledger_has_written_ = false;
   u64 ledger_seen_moves_ = 0;
   std::atomic<bool> ledger_notice_{false};
   LedgerWaker* ledger_waker_ = nullptr;
