@@ -185,7 +185,7 @@ f64 percent_of(u64 part, u64 whole) noexcept {
 bool read_gpu(MachineState& state) {
   const std::string_view argv[] = {
       "nvidia-smi",
-      "--query-gpu=utilization.gpu,memory.used,memory.total",
+      "--query-gpu=utilization.gpu,memory.used,memory.total,clocks.sm,clocks.max.sm",
       "--format=csv,noheader,nounits",
   };
   platform::Process process;
@@ -197,29 +197,7 @@ bool read_gpu(MachineState& state) {
   (void)process.read_all(ignored);
   const i32 code = process.wait();
   if (!have_line || code != 0) return false;
-
-  // "41, 14336, 32607"
-  f64 values[3] = {0, 0, 0};
-  u32 found = 0;
-  usize i = 0;
-  while (found < 3 && i < line.size()) {
-    while (i < line.size() && (line[i] == ' ' || line[i] == ',' || line[i] == '\r'))
-      ++i;
-    const usize start = i;
-    while (i < line.size() && line[i] != ',' && line[i] != ' ' && line[i] != '\r')
-      ++i;
-    if (i == start) break;
-    f64 value = 0;
-    const auto r = std::from_chars(line.data() + start, line.data() + i, value);
-    if (r.ec != std::errc{}) return false;  // "[N/A]" on a GPU that reports no utilization
-    values[found++] = value;
-  }
-  if (found < 3) return false;
-  state.gpu_valid = true;
-  state.gpu_util_pct = values[0];
-  state.gpu_memory_used_mib = static_cast<u64>(values[1]);
-  state.gpu_memory_total_mib = static_cast<u64>(values[2]);
-  return true;
+  return parse_gpu_query(line, state);
 }
 
 class SystemSampler final : public MachineSampler {
@@ -255,6 +233,38 @@ class SystemSampler final : public MachineSampler {
 };
 
 }  // namespace
+
+bool parse_gpu_query(std::string_view line, MachineState& state) {
+  // "41, 14336, 32607, 2730, 3090": utilization, memory used and total, the SM clock now and its
+  // ceiling. The first three are the reading; a card that answers "[N/A]" for one of them has no
+  // reading. The clocks are optional beside it: "[N/A]" (a card or a driver that does not report
+  // them) leaves `gpu_clock_valid` false and keeps the rest.
+  f64 values[5] = {0, 0, 0, 0, 0};
+  bool numeric[5] = {false, false, false, false, false};
+  u32 found = 0;
+  usize i = 0;
+  while (found < 5 && i < line.size()) {
+    while (i < line.size() && (line[i] == ' ' || line[i] == ',' || line[i] == '\r'))
+      ++i;
+    const usize start = i;
+    while (i < line.size() && line[i] != ',' && line[i] != ' ' && line[i] != '\r')
+      ++i;
+    if (i == start) break;
+    f64 value = 0;
+    const auto r = std::from_chars(line.data() + start, line.data() + i, value);
+    numeric[found] = r.ec == std::errc{} && r.ptr == line.data() + i;
+    values[found++] = value;
+  }
+  if (found < 3 || !numeric[0] || !numeric[1] || !numeric[2]) return false;
+  state.gpu_valid = true;
+  state.gpu_util_pct = values[0];
+  state.gpu_memory_used_mib = static_cast<u64>(values[1]);
+  state.gpu_memory_total_mib = static_cast<u64>(values[2]);
+  state.gpu_clock_valid = found == 5 && numeric[3] && numeric[4];
+  state.gpu_sm_clock_mhz = state.gpu_clock_valid ? static_cast<u32>(values[3]) : 0;
+  state.gpu_sm_clock_max_mhz = state.gpu_clock_valid ? static_cast<u32>(values[4]) : 0;
+  return true;
+}
 
 MachineSampler::~MachineSampler() = default;
 
@@ -314,6 +324,14 @@ MachineState worst_of(const MachineState& a, const MachineState& b) noexcept {
     w.gpu_settled = x.gpu_settled || y.gpu_settled;
     w.gpu_own_tail_pct = std::max(x.gpu_own_tail_pct, y.gpu_own_tail_pct);
   }
+  // The slower of two clock readings: a card that throttled at either end is the one to say so.
+  w.gpu_clock_valid = a.gpu_clock_valid || b.gpu_clock_valid;
+  if (w.gpu_clock_valid) {
+    const MachineState& x = a.gpu_clock_valid ? a : b;
+    const MachineState& y = b.gpu_clock_valid ? b : a;
+    w.gpu_sm_clock_mhz = std::min(x.gpu_sm_clock_mhz, y.gpu_sm_clock_mhz);
+    w.gpu_sm_clock_max_mhz = std::max(x.gpu_sm_clock_max_mhz, y.gpu_sm_clock_max_mhz);
+  }
   w.session_locked =
       a.session_locked == Tristate::Yes || b.session_locked == Tristate::Yes
           ? Tristate::Yes
@@ -365,6 +383,13 @@ std::string describe(const MachineState& state) {
                   static_cast<unsigned long long>(state.gpu_memory_used_mib),
                   static_cast<unsigned long long>(state.gpu_memory_total_mib));
     out.append(buffer);
+    if (state.gpu_clock_valid) {
+      std::snprintf(buffer, sizeof(buffer), ", sm %u/%u MHz", state.gpu_sm_clock_mhz,
+                    state.gpu_sm_clock_max_mhz);
+      out.append(buffer);
+    } else {
+      out.append(", sm clock unknown");
+    }
   } else {
     out.append(", gpu unknown");
   }
@@ -399,6 +424,15 @@ JsonValue machine_state_json(const MachineState& state) {
     o.set("gpu_util_pct", JsonValue::null());
     o.set("gpu_memory_used_mib", JsonValue::null());
     o.set("gpu_memory_total_mib", JsonValue::null());
+  }
+  // The SM clock beside the busy share (roadmap T69): a run on a throttled or a boosted card says
+  // so. null when there is no reading, or the card reports no clock.
+  if (state.gpu_valid && state.gpu_clock_valid) {
+    o.set("gpu_sm_clock_mhz", static_cast<u64>(state.gpu_sm_clock_mhz));
+    o.set("gpu_sm_clock_max_mhz", static_cast<u64>(state.gpu_sm_clock_max_mhz));
+  } else {
+    o.set("gpu_sm_clock_mhz", JsonValue::null());
+    o.set("gpu_sm_clock_max_mhz", JsonValue::null());
   }
   switch (state.session_locked) {
     case Tristate::Yes: o.set("session_locked", true); break;
