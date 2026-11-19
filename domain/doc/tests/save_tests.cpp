@@ -17,6 +17,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <optional>
 #include <schemas/doc_test_types.h>
@@ -378,6 +379,75 @@ TEST_CASE("doc save: incremental saves leave the bytes a full write would, step 
   CHECK(full_writes > 0);
 }
 
+// What a save serialises a layer or a tile with (D42): the text written straight from the records,
+// with no file of copies and no tree, against the tree path the reference above spells, over
+// layers built to break a writer that splices text — a name holding the very `"objects": []` the
+// splice looks for, quotes, line breaks and control characters in names and values, nested values,
+// empty ones, overrides with no type, tombstones, a type the registry does not have, no records.
+TEST_CASE("doc save: a layer's text written from its records is the tree path's, byte for byte") {
+  Rng rng{0xd42u};
+  const char* const names[] = {"world", "a \"objects\": [] b", "line\nbreak \"q\" \\ \t", ""};
+  const char* const types[] = {k_placement, "", "engine.doc.test.NotAType"};
+  const auto text = [&](u32 n) {
+    const char* const parts[] = {"plain",    "\"objects\": []",   "\n  \"x\": 1\n",     "\\\"",
+                                 "\x01\x1f", "\xc3\xa9t\xc3\xa9", "]\n  ],\n  \"role\""};
+    std::string s;
+    for (u32 k = 0; k < n; ++k)
+      s += parts[rng.next(7)];
+    return s;
+  };
+  std::function<JsonValue(u32)> value = [&](u32 depth) -> JsonValue {
+    switch (rng.next(depth > 2 ? 5 : 7)) {
+      case 0: return JsonValue(text(rng.next(3)));
+      case 1: return JsonValue(static_cast<f64>(static_cast<i32>(rng.next(2000)) - 1000) / 8.0);
+      case 2: return JsonValue(rng.next(2) == 0);
+      case 3: return JsonValue();
+      case 4:
+        return rng.next(2) == 0 ? JsonValue(static_cast<u64>(rng.next(1u << 30)) * 4096u)
+                                : JsonValue(static_cast<i64>(rng.next(2000)) - 1000);
+      case 5: {
+        JsonValue::Array a;
+        for (u32 k = rng.next(4); k > 0; --k)
+          a.push_back(value(depth + 1));
+        return JsonValue(std::move(a));
+      }
+      default: {
+        JsonValue o = JsonValue::object();
+        for (u32 k = rng.next(4); k > 0; --k)
+          o.set(text(1 + rng.next(2)), value(depth + 1));
+        return o;
+      }
+    }
+  };
+  for (u32 round = 0; round < 60; ++round) {
+    CAPTURE(round);
+    Layer layer(names[rng.next(4)], static_cast<LayerRole>(rng.next(4)));
+    Vector<ObjectId> held;
+    for (u32 k = rng.next(round % 5 == 0 ? 1 : 24); k > 0; --k) {
+      ObjectRecord r;
+      r.id = id_of(rng.next(400));
+      r.type = types[rng.next(3)];
+      if (rng.next(3) != 0) r.parent = rng.next(2) == 0 ? ObjectId{} : id_of(rng.next(400));
+      r.deleted = rng.next(6) == 0;
+      for (u32 p = rng.next(5); p > 0; --p)
+        r.properties.insert_or_assign(text(1 + rng.next(2)), value(0));
+      held.push_back(r.id);
+      layer.set(std::move(r));
+    }
+    CHECK(layer.to_json_text() == write_json(schema::to_json(layer.to_file())));
+    // A tile's ids: some of the layer's, in increasing order, and some it does not hold.
+    std::set<ObjectId> chosen;
+    for (const ObjectId id : held)
+      if (rng.next(2) == 0) chosen.insert(id);
+    for (u32 k = rng.next(3); k > 0; --k)
+      chosen.insert(id_of(400 + rng.next(10)));
+    Vector<ObjectId> ids;
+    for (const ObjectId id : chosen)
+      ids.push_back(id);
+    CHECK(layer.to_json_text(ids) == write_json(schema::to_json(layer.to_file(ids))));
+  }
+}
+
 TEST_CASE("doc save: one record in one tile rewrites that tile, the journal and the manifest") {
   TempDir tmp("engine_doc_save_one_tile");
   io::Vfs vfs;
@@ -434,6 +504,10 @@ TEST_CASE("doc save: one record in one tile rewrites that tile, the journal and 
   REQUIRE(report.written.size() == 2);
   CHECK(report.written[0] == "layers/world/tiles/2_1.json");
   CHECK(report.written[1] == "manifest.json");
+  // And serialised nothing else (D42): the 15 other tiles, the index and the overrides layer were
+  // neither written nor made to be compared — the text made is exactly the text written.
+  CHECK(report.files_serialized == 2);
+  CHECK(report.bytes_serialized == report.bytes_written);
 
   const Files after = files_on_disk(tmp.file("world"), /*with_journal=*/true);
   const Times after_times = times_on_disk(tmp.file("world"));
@@ -458,6 +532,7 @@ TEST_CASE("doc save: one record in one tile rewrites that tile, the journal and 
   REQUIRE(DocumentStore::save(vfs, dir, doc, manifest, &error, &same));
   REQUIRE(same.written.size() == 1);
   CHECK(same.written[0] == "manifest.json");
+  CHECK(same.files_serialized == 2);  // the tile, found the same, and the manifest
 
   // A move across the grid: the tile it left, the tile it joined, the index, the manifest.
   {
@@ -471,12 +546,14 @@ TEST_CASE("doc save: one record in one tile rewrites that tile, the journal and 
         std::set<std::string>{"layers/world/tiles/2_1.json", "layers/world/tiles/12_12.json",
                               "layers/world/index.json", "manifest.json"});
   CHECK(moved.files_removed == 0);
+  CHECK(moved.files_serialized == 4);
 
-  // And nothing changed at all: nothing written, nothing removed.
+  // And nothing changed at all: nothing written, nothing removed, nothing serialised.
   SaveReport nothing;
   REQUIRE(DocumentStore::save(vfs, dir, doc, manifest, &error, &nothing));
   CHECK(nothing.files_written == 0);
   CHECK(nothing.files_removed == 0);
+  CHECK(nothing.files_serialized == 1);  // the manifest alone, which is always compared
   CHECK(files_on_disk(tmp.file("world")) == reference_files(doc, manifest));
 }
 

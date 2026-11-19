@@ -89,7 +89,12 @@ class Layer {
   LayerFile to_file() const;
   LayerFile to_file(std::span<const ObjectId> ids) const;
   static Layer from_file(LayerFile&& file);
+  // The canonical text of `to_file()` and `to_file(ids)` — `write_json(schema::to_json(...))` byte
+  // for byte — written straight from the records, with no LayerFile of copies and no tree (roadmap
+  // D42: what a save serialises for a tile it must look at). `ids` in increasing order, as an
+  // index files them; one the layer does not hold is skipped, as `to_file` skips it.
   std::string to_json_text() const;
+  std::string to_json_text(std::span<const ObjectId> ids) const;
   static bool from_json_text(std::string_view text, Layer& out, schema::ReadContext& ctx);
 
   friend bool operator==(const Layer& a, const Layer& b) {

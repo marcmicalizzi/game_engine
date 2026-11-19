@@ -52,6 +52,10 @@ struct SaveReport {
   u32 tiles_written = 0;
   u32 tiles_removed = 0;  // tile files that no longer have any records
   u32 tiles_total = 0;    // occupied tiles across every partitioned layer
+  // The files whose text the save made, to write or to find already there, and that text's bytes:
+  // the work a save does to learn what to write, where `bytes_written` is what it wrote (D42).
+  u32 files_serialized = 0;
+  u64 bytes_serialized = 0;
   // The paths written and removed, under the document directory, in the order they were.
   Vector<std::string> written;
   Vector<std::string> removed;

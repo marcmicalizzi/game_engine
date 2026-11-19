@@ -136,27 +136,103 @@ LayerFile Layer::to_file(std::span<const ObjectId> ids) const {
   return file;
 }
 
-void stamp_record_types(LayerFile& file) {
-  file.types.clear();
-  const schema::Registry& registry = schema::Registry::global();
-  std::string_view last;  // records of one type come in runs; skip the lookup for a repeat
-  for (const ObjectRecord& record : file.objects) {
+namespace {
+
+// The type-version table `stamp_record_types` gives, built one record at a time, so that a file's
+// text can be written from records it never copies (Layer::to_json_text).
+class TypeStamp {
+ public:
+  explicit TypeStamp(Vector<RecordTypeVersion>& types) : types_(types) { types_.clear(); }
+
+  void add(const ObjectRecord& record) {
     const std::string_view type = record.type;
-    if (type.empty() || type == last) continue;
-    last = type;
-    bool seen = false;
-    for (const RecordTypeVersion& v : file.types)
-      seen = seen || v.name == type;
-    if (seen) continue;
-    const schema::TypeInfo* info = registry.find(type);
-    if (info == nullptr || info->kind != schema::Kind::Struct) continue;
+    if (type.empty() || type == last_) return;
+    last_ = type;  // records of one type come in runs; skip the lookup for a repeat
+    for (const RecordTypeVersion& v : types_)
+      if (v.name == type) return;
+    const schema::TypeInfo* info = registry_.find(type);
+    if (info == nullptr || info->kind != schema::Kind::Struct) return;
     RecordTypeVersion v;
     v.name = std::string(type);
     v.version = info->version;
-    file.types.push_back(std::move(v));
+    types_.push_back(std::move(v));
   }
-  std::sort(file.types.begin(), file.types.end(),
-            [](const RecordTypeVersion& a, const RecordTypeVersion& b) { return a.name < b.name; });
+
+  void finish() {
+    std::sort(
+        types_.begin(), types_.end(),
+        [](const RecordTypeVersion& a, const RecordTypeVersion& b) { return a.name < b.name; });
+  }
+
+ private:
+  Vector<RecordTypeVersion>& types_;
+  const schema::Registry& registry_ = schema::Registry::global();
+  std::string_view last_;
+};
+
+// `"objects": []` as the writer spells an empty record array in the canonical (pretty) form.
+constexpr std::string_view k_no_objects = "\"objects\": []";
+
+// `write_json(schema::to_json(file))` for the LayerFile of `name`, `role` and the records `each`
+// visits in id order, without that file (no record copied) and without the tree (roadmap D42).
+// The header — the name, the role and the type table — is the writer's own text for a file with
+// no records; each record is the writer's text for the record alone, moved two levels in. That is
+// the same text because the canonical form is the writer's two-space indentation and every line
+// break in it is structural (a string's own line breaks are escapes): the record array's elements
+// sit at depth 2, so each of a record's lines gains four spaces. The byte-for-byte cases
+// (save_tests.cpp, the corpus) hold it to the tree path.
+template <class Each>
+std::string layer_json_text(const std::string& name, LayerRole role, const Each& each) {
+  LayerFile shell;
+  shell.name = name;
+  shell.role = role;
+  {
+    TypeStamp stamp(shell.types);
+    each([&](const ObjectRecord& r) { stamp.add(r); });
+    stamp.finish();
+  }
+  std::string head;
+  (void)schema::write_json_text(schema::type_of<LayerFile>(), &shell, head);
+  // The last match: what follows `objects` (the role, the type table's registry names) holds no
+  // quote, where the layer's name before it may.
+  const usize at = head.rfind(k_no_objects);
+  ENGINE_VERIFY(at != std::string::npos, "doc: a layer file's header has no record array");
+  std::string out;
+  out.reserve(head.size() + 64);
+  out.append(head, 0, at + k_no_objects.size() - 1);  // up to and with the '['
+  std::string record;
+  bool first = true;
+  each([&](const ObjectRecord& r) {
+    if (!first) out.push_back(',');
+    first = false;
+    out.append("\n    ");
+    record.clear();
+    (void)schema::write_json_text(schema::type_of<ObjectRecord>(), &r, record);
+    usize from = 0;
+    for (;;) {
+      const usize nl = record.find('\n', from);
+      if (nl == std::string::npos) {
+        out.append(record, from, std::string::npos);
+        break;
+      }
+      out.append(record, from, nl + 1 - from);
+      out.append("    ");
+      from = nl + 1;
+    }
+  });
+  if (first) return head;  // no records: the writer's own `[]`
+  out.append("\n  ]");
+  out.append(head, at + k_no_objects.size(), std::string::npos);
+  return out;
+}
+
+}  // namespace
+
+void stamp_record_types(LayerFile& file) {
+  TypeStamp stamp(file.types);
+  for (const ObjectRecord& record : file.objects)
+    stamp.add(record);
+  stamp.finish();
 }
 
 bool check_record_types(const LayerFile& file, std::string& why) {
@@ -253,7 +329,20 @@ Layer Layer::from_file(LayerFile&& file) {
   return layer;
 }
 
-std::string Layer::to_json_text() const { return write_json(schema::to_json(to_file())); }
+std::string Layer::to_json_text() const {
+  return layer_json_text(name_, role_, [this](const auto& visit) {
+    for (u32 i = 0; i < records_.size(); ++i)
+      visit(records_.value_at(i));
+  });
+}
+
+std::string Layer::to_json_text(std::span<const ObjectId> ids) const {
+  return layer_json_text(name_, role_, [this, ids](const auto& visit) {
+    for (const ObjectId id : ids) {
+      if (const ObjectRecord* r = records_.find_value(id)) visit(*r);
+    }
+  });
+}
 
 bool Layer::from_json_text(std::string_view text, Layer& out, schema::ReadContext& ctx) {
   // Straight from the text, with no tree of it: the tree path's verdicts word for word (D40).
