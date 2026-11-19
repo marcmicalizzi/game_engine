@@ -47,8 +47,8 @@ const ObjectId k_well = Id128::from_parts(0xD41, 2);
 TEST_CASE("former names: a client's command is refused with the current name, a replay renamed") {
   Document doc;
   doc.add_layer("base", LayerRole::Base);
-  doc.layer(0).set(record(k_gate, "engine.doc.test.Marker",
-                          R"({"label": "gate", "position": [1, 0, 2]})"));
+  doc.layer(0).set(
+      record(k_gate, "engine.doc.test.Marker", R"({"label": "gate", "position": [1, 0, 2]})"));
 
   // A client generated from the schema before the rename (strict): refused, naming what to write.
   const auto refusal = [&](const Command& c) {

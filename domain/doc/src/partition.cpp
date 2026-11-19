@@ -201,9 +201,9 @@ bool follow_partition_rename(LayerPartition& partition,
       renamed_by = record;
       renamed_to = field->name;
     } else if (std::string_view(renamed_to) != field->name) {
-      why = "the layer is tiled by '" + property + "', which " +
-            renamed_by->type + " renamed '" + renamed_to + "' and " + record->type + " renamed '" +
-            field->name + "': a partition names one property";
+      why = "the layer is tiled by '" + property + "', which " + renamed_by->type + " renamed '" +
+            renamed_to + "' and " + record->type + " renamed '" + field->name +
+            "': a partition names one property";
       return false;
     }
   }
@@ -211,8 +211,10 @@ bool follow_partition_rename(LayerPartition& partition,
   if (kept_by != nullptr) {
     why = "the layer is tiled by '" + property + "', which " + renamed_by->type + " renamed '" +
           renamed_to + "' while " + kept_by->type + " (record " + id_text(kept_by->id) +
-          ") still names '" + property + "': a partition names one property, so rename the field "
-          "of both or partition the layer by '" + renamed_to + "' after moving the other records";
+          ") still names '" + property +
+          "': a partition names one property, so rename the field "
+          "of both or partition the layer by '" +
+          renamed_to + "' after moving the other records";
     return false;
   }
   former = property;

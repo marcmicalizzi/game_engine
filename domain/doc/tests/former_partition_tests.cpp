@@ -73,10 +73,10 @@ TEST_CASE("former names: a layer partitioned by a renamed field follows it") {
     const u32 posts = doc.add_layer("posts", LayerRole::Feature);
     grid.property = "place";
     doc.set_layer_partition(posts, grid);
-    doc.layer(posts).set(record(k_gate, "engine.doc.test.Post",
-                                R"({"name": "gate", "place": [5, 0, 5]})"));
-    doc.layer(posts).set(record(k_well, "engine.doc.test.Post",
-                                R"({"name": "well", "place": [100, 0, -40]})"));
+    doc.layer(posts).set(
+        record(k_gate, "engine.doc.test.Post", R"({"name": "gate", "place": [5, 0, 5]})"));
+    doc.layer(posts).set(
+        record(k_well, "engine.doc.test.Post", R"({"name": "well", "place": [100, 0, -40]})"));
     REQUIRE_MESSAGE(DocumentStore::save(vfs, old_dir, doc, manifest, &error), error);
   }
   // The same content authored after the rename: tiled by `spot`.
@@ -88,10 +88,10 @@ TEST_CASE("former names: a layer partitioned by a renamed field follows it") {
     const u32 posts = doc.add_layer("posts", LayerRole::Feature);
     grid.property = "spot";
     doc.set_layer_partition(posts, grid);
-    doc.layer(posts).set(record(k_gate, "engine.doc.test.Post",
-                                R"({"name": "gate", "spot": [5, 0, 5]})"));
-    doc.layer(posts).set(record(k_well, "engine.doc.test.Post",
-                                R"({"name": "well", "spot": [100, 0, -40]})"));
+    doc.layer(posts).set(
+        record(k_gate, "engine.doc.test.Post", R"({"name": "gate", "spot": [5, 0, 5]})"));
+    doc.layer(posts).set(
+        record(k_well, "engine.doc.test.Post", R"({"name": "well", "spot": [100, 0, -40]})"));
     REQUIRE_MESSAGE(DocumentStore::save(vfs, new_dir, doc, manifest, &error), error);
   }
 
@@ -121,10 +121,10 @@ TEST_CASE("former names: a layer partitioned by a renamed field follows it") {
     const u32 layer = mixed.add_layer("posts", LayerRole::Feature);
     grid.property = "place";
     mixed.set_layer_partition(layer, grid);
-    mixed.layer(layer).set(record(k_gate, "engine.doc.test.Post",
-                                  R"({"name": "gate", "place": [5, 0, 5]})"));
-    mixed.layer(layer).set(record(k_well, "engine.doc.test.Stall",
-                                  R"({"name": "well", "place": [6, 0, 6]})"));
+    mixed.layer(layer).set(
+        record(k_gate, "engine.doc.test.Post", R"({"name": "gate", "place": [5, 0, 5]})"));
+    mixed.layer(layer).set(
+        record(k_well, "engine.doc.test.Stall", R"({"name": "well", "place": [6, 0, 6]})"));
     REQUIRE_MESSAGE(DocumentStore::save(vfs, mixed_dir, mixed, mixed_manifest, &error), error);
   }
   Document refused;

@@ -71,9 +71,8 @@ TEST_CASE("former names: a checkpoint's overrides are renamed before a rollback 
   doc.layer(notes).set(record(k_gate, "", R"({"title": "the north gate"})"));
   REQUIRE_MESSAGE(DocumentStore::save(vfs, dir, doc, manifest, &error), error);
   CheckpointInfo taken;
-  REQUIRE_MESSAGE(Checkpoints::take(vfs, dir, doc, manifest, "before the rename", who(), taken,
-                                    &error),
-                  error);
+  REQUIRE_MESSAGE(
+      Checkpoints::take(vfs, dir, doc, manifest, "before the rename", who(), taken, &error), error);
 
   CheckpointState state;
   REQUIRE_MESSAGE(Checkpoints::read(vfs, dir, taken.id, state, &error), error);

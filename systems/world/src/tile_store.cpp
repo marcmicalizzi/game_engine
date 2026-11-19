@@ -22,8 +22,8 @@ u32 projection_kind() noexcept {
 }
 
 // A projection written before its record's type was renamed names the type by the name it had then
-// (`@alias`): read as the current name, so an entity's kind and a row's type are the ones the rest of
-// the build compares against (schemas/README.md, "Renaming a field or a type").
+// (`@alias`): read as the current name, so an entity's kind and a row's type are the ones the rest
+// of the build compares against (schemas/README.md, "Renaming a field or a type").
 std::string_view current_type_name(std::string_view stored) {
   const schema::TypeInfo* info = schema::Registry::global().resolve(stored);
   return info != nullptr ? std::string_view(info->qualified_name) : stored;

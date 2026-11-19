@@ -902,7 +902,8 @@ bool load_partitioned(const DiskView& disk, const LayerRef& ref, Layer& out, Sto
     for (u32 k = 0; k < untiled.objects.size(); ++k) {
       ObjectRecord& r = untiled.objects[k];
       if (!(r.id == index.untiled[k])) {
-        set_error(error, untiled_path, "record " + hex_of(r.id) + " is not the one the index lists");
+        set_error(error, untiled_path,
+                  "record " + hex_of(r.id) + " is not the one the index lists");
         return false;
       }
       gathered.push_back(Gathered{std::move(r), index.tiles.size()});

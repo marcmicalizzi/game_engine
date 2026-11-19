@@ -863,7 +863,8 @@ Document::CommandNames Document::rename_command(const Command& cmd, Command& out
     if (!schema::rename_former_fields(info, members, ctx, n)) {
       refuse(ctx);
     } else if (n > 0) {
-      note(whole != nullptr ? "a value names a field by a former name: write " + write_json(*whole, JsonWriteOptions{false})
+      note(whole != nullptr ? "a value names a field by a former name: write " +
+                                  write_json(*whole, JsonWriteOptions{false})
                             : std::string("the record names a field by a former name"));
     }
   };
@@ -911,8 +912,8 @@ Document::CommandNames Document::rename_command(const Command& cmd, Command& out
       ObjectRecord& record = *out.record;
       if (!record.type.empty() && registry.find(record.type) == nullptr) {
         if (const schema::TypeInfo* info = registry.find_former(record.type)) {
-          note("'" + record.type + "' is a former name of '" + info->qualified_name +
-               "': write '" + info->qualified_name + "'");
+          note("'" + record.type + "' is a former name of '" + info->qualified_name + "': write '" +
+               info->qualified_name + "'");
           record.type = info->qualified_name;
         }
       }
