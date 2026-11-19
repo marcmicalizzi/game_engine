@@ -1021,6 +1021,41 @@ TEST_CASE("tileset hostile: an archive entry whose offset wraps is refused at op
   CHECK(error.find("not sorted records within the file") != std::string::npos);
 }
 
+// Hostile (T194, fuzzing-design.md's fourth list): a manifest names its levels' archives, and the
+// reader joined the name to the manifest's directory unchecked, so `../<name>` read a file outside
+// the set. Before the mend the set below opened, reading the copy one directory up.
+TEST_CASE("tileset hostile: a level's archive named outside the set is refused at open") {
+  SmallSet s;
+  std::string name;
+  {
+    TileSet set;
+    REQUIRE_MESSAGE(set.open(s.built.manifest, s.error), s.error);
+    name = set.manifest().levels[0].archive;
+  }
+  const std::string dir = s.tmp.file("set");
+  std::string archive_bytes;
+  REQUIRE(io::read_file(io::join_path(dir, name), archive_bytes) == io::Status::Ok);
+  REQUIRE(io::write_file(s.tmp.file(name), archive_bytes) == io::Status::Ok);  // the outside copy
+  std::string manifest;
+  REQUIRE(io::read_file(s.built.manifest, manifest) == io::Status::Ok);
+  const std::string quoted = "\"" + name + "\"";
+  const usize at = manifest.find(quoted);
+  REQUIRE(at != std::string::npos);
+  for (const char* outside : {"../", "..\\\\"}) {
+    CAPTURE(outside);
+    std::string edited = manifest;
+    edited.replace(at, quoted.size(), "\"" + std::string(outside) + name + "\"");
+    REQUIRE(io::write_file(s.built.manifest, edited) == io::Status::Ok);
+    TileSet hostile;
+    std::string error;
+    CHECK_FALSE(hostile.open(s.built.manifest, error));
+    CHECK(error.find("names an archive that is not a file beside it") != std::string::npos);
+  }
+  REQUIRE(io::write_file(s.built.manifest, manifest) == io::Status::Ok);
+  TileSet again;
+  CHECK_MESSAGE(again.open(s.built.manifest, s.error), s.error);
+}
+
 // **The whole level at once** (tileset.md, "Reading a level"): read in file order in large runs,
 // every tile once, and a window over all of it afterwards reads nothing; with a cache smaller than
 // the level it reads what fits and evicts nothing it read.

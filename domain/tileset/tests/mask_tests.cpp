@@ -1127,3 +1127,42 @@ TEST_CASE("tileset masks: the span, the check and the build agree on the level's
   CHECK(again.hit);
   CHECK(again.hash == built.hash);
 }
+
+// Hostile (T194, fuzzing-design.md's fourth list): the manifest names its archive, and the reader
+// joined the name to the manifest's directory unchecked (`masks.cpp`, T191's list), so
+// `../<name>` read a file outside the level. Before the mend the level below opened from the copy
+// one directory up.
+TEST_CASE("tileset masks hostile: an archive named outside the level is refused at open") {
+  Fixture fx;
+  MaskBuildResult built;
+  REQUIRE_MESSAGE(
+      ensure_mask_level(fx.set, fx.in, fx.tmp.file("masks"), "", false, built, fx.error), fx.error);
+  std::string name;
+  {
+    MaskLevel level;
+    REQUIRE_MESSAGE(level.open(built.manifest, fx.error), fx.error);
+    name = level.manifest().archive;
+  }
+  std::string archive_bytes;
+  REQUIRE(io::read_file(io::join_path(fx.tmp.file("masks"), name), archive_bytes) ==
+          io::Status::Ok);
+  REQUIRE(io::write_file(fx.tmp.file(name), archive_bytes) == io::Status::Ok);
+  std::string manifest;
+  REQUIRE(io::read_file(built.manifest, manifest) == io::Status::Ok);
+  const std::string quoted = "\"" + name + "\"";
+  const usize at = manifest.find(quoted);
+  REQUIRE(at != std::string::npos);
+  std::string edited = manifest;
+  edited.replace(at, quoted.size(), "\"../" + name + "\"");
+  REQUIRE(io::write_file(built.manifest, edited) == io::Status::Ok);
+  for (const bool unbuffered : {false, true}) {
+    CAPTURE(unbuffered);
+    MaskLevel level;
+    std::string error;
+    CHECK_FALSE(level.open(built.manifest, error, unbuffered));
+    CHECK(error.find("names an archive that is not a file beside it") != std::string::npos);
+  }
+  REQUIRE(io::write_file(built.manifest, manifest) == io::Status::Ok);
+  MaskLevel again;
+  CHECK_MESSAGE(again.open(built.manifest, fx.error), fx.error);
+}

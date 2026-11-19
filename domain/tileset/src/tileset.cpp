@@ -1121,6 +1121,14 @@ bool TileSet::open(const std::string& manifest_path, std::string& error) {
     level->ntz = static_cast<u32>(ntz);
     // The level's archive, opened once: its header and table read and checked here, every tile
     // after a read at an offset. A table listing more tiles than the manifest is not this set's.
+    // The archive is a file beside the manifest, named by one component (`archive::plain_name`,
+    // T194): a name holding a separator or `..` read a file anywhere.
+    if (!record.archive.empty() && !archive::plain_name(record.archive)) {
+      error = "'" + manifest_path + "': its level of " + std::to_string(record.spacing_mm) +
+              " mm names an archive that is not a file beside it: '" + record.archive + "'";
+      levels_.clear();
+      return false;
+    }
     std::string why;
     const std::string path = io::join_path(dir_, record.archive);
     if (record.archive.empty() ||

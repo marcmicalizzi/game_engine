@@ -24,6 +24,12 @@ namespace engine::tileset::archive {
 
 inline constexpr u32 k_archive_version = 1;
 
+// **An archive a manifest names is a file beside it** (T194, fuzzing-design.md's fourth list): the
+// builds write `<spacing>.masks` and the height levels' names, one component each, and a reader
+// joins the name to the manifest's directory. A name that is empty, `.` or `..`, or holds a
+// separator, a drive's colon or a NUL would have read a file anywhere the process can: refused.
+bool plain_name(std::string_view name) noexcept;
+
 // The key a tile is filed under: z, then x, both signed, so the archive's order is the order the
 // builds write in (rows of x in order of z) and the order the renderer asks the masks in.
 constexpr u64 tile_key(i32 tx, i32 tz) noexcept {

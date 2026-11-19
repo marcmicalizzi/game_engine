@@ -1341,6 +1341,15 @@ bool MaskLevel::open(const std::string& manifest_path, std::string& error, bool 
   // header and table read from the view (tileset.md, "The table read from the view"), so the table
   // commits nothing and a tile is a copy out of the OS's file cache. An unbuffered open, or a file
   // the OS will not map, reads its table into memory and its tiles through the window as before.
+  // The archive is a file beside the manifest, named by one component (`archive::plain_name`,
+  // T194): a name holding a separator or `..` read a file anywhere.
+  if (!manifest_.archive.empty() && !archive::plain_name(manifest_.archive)) {
+    error = "'" + manifest_path + "' names an archive that is not a file beside it: '" +
+            manifest_.archive + "'";
+    info_ = scene_gen::GroundMaskInfo{};
+    present_ = Vector<u64>{};
+    return false;
+  }
   const std::string path =
       manifest_.archive.empty() ? std::string() : io::join_path(dir_, manifest_.archive);
   if (!unbuffered && !path.empty() && reading_->view.open(path) != io::Status::Ok)

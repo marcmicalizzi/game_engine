@@ -83,6 +83,13 @@ std::string check_entries(const u8* table, u32 n, u64 toc_offset, u32 record_byt
 
 }  // namespace
 
+bool plain_name(std::string_view name) noexcept {
+  if (name.empty() || name == "." || name == "..") return false;
+  for (const char c : name)
+    if (c == '/' || c == '\\' || c == ':' || c == '\0') return false;
+  return true;
+}
+
 // ---- the writer ---------------------------------------------------------------------------------
 
 Writer::Writer(std::string_view record, i64 spacing_mm, u32 record_bytes) {
