@@ -4,6 +4,7 @@
 // how deep a stack goes (F26), so a change to the helping rule shows here what it cost in time.
 // How deep it went is the tests' to check (tests/help_depth_tests.cpp).
 
+#include <core/jobs/detail/work_deque.h>
 #include <core/jobs/job_system.h>
 #include <foundation/bench/bench.h>
 
@@ -55,6 +56,39 @@ ENGINE_BENCH_ARGS(jobs_parallel_for_small, "jobs.parallel_for.small", 1, 8) {
   }
   bench::keep(sum.load());
   state.set_items(1024);
+}
+
+// The deque's own paths with no other thread (T186): a worker's push and pop of its own jobs, and a
+// push taken back by steal, the thief's path. 256 jobs a round, so the ring's slots are reused as a
+// worker's are; the memory orders of these three calls are what a change to the deque costs.
+ENGINE_BENCH(jobs_deque_push_pop, "jobs.deque.push_pop") {
+  detail::WorkDeque<Job> deque(4096);
+  constexpr u32 k_jobs = 256;
+  u64 sum = 0;
+  while (state.keep_running()) {
+    for (u32 i = 0; i < k_jobs; ++i)
+      deque.push(Job{nullptr, reinterpret_cast<void*>(static_cast<usize>(i)), nullptr});
+    Job job;
+    while (deque.pop(job))
+      sum += reinterpret_cast<usize>(job.data);
+  }
+  bench::keep(sum);
+  state.set_items(k_jobs);
+}
+
+ENGINE_BENCH(jobs_deque_push_steal, "jobs.deque.push_steal") {
+  detail::WorkDeque<Job> deque(4096);
+  constexpr u32 k_jobs = 256;
+  u64 sum = 0;
+  while (state.keep_running()) {
+    for (u32 i = 0; i < k_jobs; ++i)
+      deque.push(Job{nullptr, reinterpret_cast<void*>(static_cast<usize>(i)), nullptr});
+    Job job;
+    while (deque.steal(job))
+      sum += reinterpret_cast<usize>(job.data);
+  }
+  bench::keep(sum);
+  state.set_items(k_jobs);
 }
 
 // 64 texture-like jobs scheduled from the main thread and waited on, each a parallel_for of 16

@@ -265,7 +265,7 @@ state), which writes that state's set and leaves the other alone.
 - **`WorkDeque` publishes a pushed job by a release fence and a relaxed store** (`work_deque.h`, `push`: `atomic_thread_fence(release)` then `bottom_.store(relaxed)`), which C++ orders but TSan does not model, and `steal` copies the slot before its CAS decides whether it may — Chase–Lev's speculative read, a data race in the language's terms when the CAS loses. TSan therefore sees no order between a job's push and the thief that runs it, and every read of the job's data downstream is reported with it (`parallel_for`'s chunks at `job_system.h:171`, `run_job`'s counter at `job_system.cpp:272`, `Counter::signal`). `scene_collision`'s five reports and `audio`'s are this one. The mend is the deque's: a release store of `bottom_` (the same instruction on x86) and the slot read as atomic words, or the fence spelled where TSan sees it; not made here, since it is the job system's hot path and wants its own measurement.
 - **`JobSystem::stats()` reads each worker's counters while the worker writes them** (`jobs_executed`, `steals_*`, `inbox_pops`, `sleeps`: plain integers, `job_system.cpp:595` against `worker_main`), a real race on numbers that are only reported; relaxed atomics would close it.
 
-Until the first is mended a TSan run of anything that schedules jobs fails on it, so a run that asks about another module reads past those two signatures to whatever else is reported.
+Both mended by T186 (2026-11-18; [jobs](../subsystems/jobs.md#what-a-job-may-assume)).
 
 ### Licences
 
