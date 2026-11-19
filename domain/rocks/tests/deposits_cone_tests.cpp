@@ -651,6 +651,44 @@ TEST_CASE("deposits: a version-1 layer is migrated: no cap, and a zero cap asks 
   }
 }
 
+// Hostile (T194, fuzzing-design.md's fourth list): the generator's cache key cast a layer's spacing
+// and region to whole millimetres before the plan checked them, an `f64`-to-`i64` cast undefined
+// past 9.2 x 10^15 mm (MSVC gives INT64_MIN, and the sums after it overflow). Now a layer past the
+// plan's bounds is keyed by its bytes alone and refused by the plan with its own sentence.
+TEST_CASE("deposits hostile: a region or a spacing past every bound is refused, never cast") {
+  test::TempDir scratch;
+  scene_gen::Context c;
+  const std::string dir = scratch.path();
+  c.dir = dir;
+  c.ddc = dir;
+  c.ground = ground();
+  c.tile_size = 16;
+  const auto* desc = scene_gen::GeneratorRegistry::global().find_placement("deposits");
+  REQUIRE(desc != nullptr);
+  struct Case {
+    const char* field;
+    u32 index;
+    f64 value;
+    const char* says;
+  };
+  for (const Case& k :
+       {Case{"region_min", 0, -1.0e300, "region_min/max"},
+        Case{"region_max", 1, 1.0e19, "region_min/max"}, Case{"spacing_m", 0, 3.0e38, "spacing"}}) {
+    const std::string field = k.field;
+    CAPTURE(field);
+    JsonValue params = schema::to_json(layer());
+    if (std::string(k.field) == "spacing_m")
+      params["spacing_m"] = JsonValue(k.value);
+    else
+      params[k.field].as_array()[k.index] = JsonValue(k.value);
+    void* state = nullptr;
+    std::string error;
+    CHECK_FALSE(desc->open(params, c, &state, &error));
+    CHECK(state == nullptr);
+    CHECK_MESSAGE(error.find(k.says) != std::string::npos, error);
+  }
+}
+
 TEST_CASE("deposits: a cone across patch and tile borders meets itself to the millimetre") {
   test::TempDir scratch;
   scene_gen::Context c;

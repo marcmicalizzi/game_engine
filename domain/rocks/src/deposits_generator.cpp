@@ -153,6 +153,18 @@ bool plan_key(const DepositLayer& layer, const scene_gen::Ground& ground,
   const std::string text = write_json(schema::to_json(layer), compact);
   u64 h = hash_combine(hash_bytes(text.data(), text.size()),
                        hash_combine(world_seed, k_deposit_version));
+  // **The plan's own ranges before the casts** (T194, fuzzing-design.md's fourth list): the
+  // spacing and the region go to whole millimetres by an `f64`-to-`i64` cast, undefined past 9.2 x
+  // 10^15 mm, and a layer's numbers are a scene's. Past the plan's bounds (`deposits.cpp`: the
+  // region within 10^8 m, the spacing at most 8 m) the plan refuses the layer with its own
+  // sentence, so the key is the layer's alone, as below.
+  const auto bounded = [](f64 v, f64 limit) { return std::isfinite(v) && std::fabs(v) <= limit; };
+  if (!bounded(static_cast<f64>(layer.spacing_m), 1.0e8) || !bounded(layer.region_min[0], 1.0e8) ||
+      !bounded(layer.region_min[1], 1.0e8) || !bounded(layer.region_max[0], 1.0e8) ||
+      !bounded(layer.region_max[1], 1.0e8)) {
+    out = h;
+    return true;
+  }
   const i64 spacing = scene_gen::nearest_mm(static_cast<f64>(layer.spacing_m));
   if (spacing <= 0) {
     error = "engine.rocks deposits: invalid spacing_m";
