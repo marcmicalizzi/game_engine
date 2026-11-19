@@ -28,5 +28,6 @@ engine_module_tests(NAME tileset WALL_CLOCK
           tests/size_table.cpp)
 
 # What a mask level's reads cost on several threads at once and at load, on a level of the forest's
-# size (T182; tileset.md, "Read without a lock").
-engine_module_bench(NAME tileset SOURCES bench/tileset_bench.cpp DEPS platform)
+# size (T182; tileset.md, "Read without a lock"); many heights through the provider's bounded cache,
+# in a file's order and by place (W150).
+engine_module_bench(NAME tileset SOURCES bench/tileset_bench.cpp bench/heights_bench.cpp DEPS platform)
