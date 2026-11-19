@@ -1042,10 +1042,9 @@ void PlacementTiles::reform(TileBlock& block, u8 ring) {
   u32 moved_at = ~0u;  // the first index of the new list a placement came into or left from
   auto place = [&](const renderer::SceneInstance& from, u32 source, u8 tag, bool was_drawn) {
     // A hand-off role keeps its own mesh, as `generate` gives it (G204).
-    const u32 form =
-        from.handoff != 0
-            ? source
-            : renderer::pick_ring_form(scene_->ring_forms, source, ring, from.transform.scale);
+    const u32 form = from.handoff != 0 ? source
+                                       : renderer::pick_ring_form(scene_->ring_forms, source, ring,
+                                                                  from.transform.scale);
     const bool shown = form != renderer::k_no_ring_form;
     if (shown != was_drawn && moved_at == ~0u)
       moved_at = static_cast<u32>(reform_instances_.size());

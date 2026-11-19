@@ -226,13 +226,13 @@ ENGINE_BENCH(anim_skinning_crowd, "anim.skeleton.skinning.crowd") {
 
 // --- sampling a clip ---------------------------------------------------------------------------
 
-// What one sample of a playing clip costs, by the clip's length (A48). The rig is the size of a game
-// animal as an exporter writes it — 37 joints (a bird of the forest's roster) with a translation, a
-// rotation and a scale track on every one, 111 tracks, each **baked** at 30 keys a second, Blender's
-// default — and the clip is played forward at 60 samples a second and wrapped, so every sample lands
-// at a different key and the rows read what a playing actor's tick reads. Before A48, `locate` walked
-// each track's keys from the front, so the cost grew with the clip's length: four keys (a short
-// hand-keyed loop), and one, two and eight seconds baked.
+// What one sample of a playing clip costs, by the clip's length (A48). The rig is the size of a
+// game animal as an exporter writes it — 37 joints (a bird of the forest's roster) with a
+// translation, a rotation and a scale track on every one, 111 tracks, each **baked** at 30 keys a
+// second, Blender's default — and the clip is played forward at 60 samples a second and wrapped, so
+// every sample lands at a different key and the rows read what a playing actor's tick reads. Before
+// A48, `locate` walked each track's keys from the front, so the cost grew with the clip's length:
+// four keys (a short hand-keyed loop), and one, two and eight seconds baked.
 namespace {
 
 constexpr u32 k_clip_joints = 37;

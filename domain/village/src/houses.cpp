@@ -530,8 +530,8 @@ Draw house_draw(const HouseAsk& ask) noexcept {
   w.drawn_persons = w.household.persons;
   // Sixteenths, so a one-storey ask (r % 2) keeps the draw it had.
   const u64 r = mix64(ask.seed ^ 0x9E3779B97F4A7C15ull) % 16;
-  w.household.means = ask.storeys >= 2 ? (r < 4 ? u8{0} : (r < 10 ? u8{1} : u8{2}))
-                                       : static_cast<u8>(r % 2);
+  w.household.means =
+      ask.storeys >= 2 ? (r < 4 ? u8{0} : (r < 10 ? u8{1} : u8{2})) : static_cast<u8>(r % 2);
   w.seed = filler_seed(w);
   return w;
 }

@@ -442,7 +442,8 @@ TEST_CASE("renderer: a texture capped by the scene's density draws the same pixe
 // so 32 caps it), loaded with no device — the cap is the load's — and counted by `capped`:
 //
 //   - a scene with no instances of its own knows no placement and caps nothing;
-//   - one instance at scale 1, and nothing else may place the mesh: capped (the case above draws it);
+//   - one instance at scale 1, and nothing else may place the mesh: capped (the case above draws
+//   it);
 //   - the same, with the mesh also a prop, a streamed entry's resident mesh, or an actor's: not
 //     capped by the scene's density, since a module, a tile or `actor_scale` may place it larger;
 //   - a prop that states its own `Mesh.texel_density`: capped by it, at its known scale.
@@ -1349,9 +1350,9 @@ TEST_CASE("renderer: the texture residency with no pressure changes no pixel and
 
 // **A trim, then a return, ends on the picture the whole texture draws** (R172 stage 2). Under a
 // ceiling of 10 KiB with a hold of 0.25 s: the quad seen from 0.6 m (level 0), then 60 frames from
-// 30 m (the trim takes it to the floor), then back to 0.6 m. The return draws the floor's levels for the
-// frames the feedback and the reader take — softer, never absent — and then the whole texture's
-// picture byte for byte, with the levels promoted off the frame.
+// 30 m (the trim takes it to the floor), then back to 0.6 m. The return draws the floor's levels
+// for the frames the feedback and the reader take — softer, never absent — and then the whole
+// texture's picture byte for byte, with the levels promoted off the frame.
 TEST_CASE("renderer: a texture trimmed then asked again ends on the whole picture") {
   const test::TempDir tmp("renderer_texture_trim_return");
   const std::filesystem::path dir = tmp.native();
@@ -1390,10 +1391,10 @@ TEST_CASE("renderer: a texture trimmed then asked again ends on the whole pictur
     }
   }
   const TextureBoundUse& use = h.scene.texture_bound_use();
-  MESSAGE("back at " << k_near_m << " m: " << softer_frames << " frames softer, identical from frame "
-                            << identical_from << "; " << use.promotions << " promotions, "
-                            << use.demotions << " demotions, worst admission "
-                            << use.worst_admit_ms << " ms");
+  MESSAGE("back at " << k_near_m << " m: " << softer_frames
+                     << " frames softer, identical from frame " << identical_from << "; "
+                     << use.promotions << " promotions, " << use.demotions
+                     << " demotions, worst admission " << use.worst_admit_ms << " ms");
   CHECK(softer_frames >= 1);  // the trim did take the levels
   REQUIRE(identical_from != ~0u);
   CHECK(identical_from < k_back / 2);
@@ -1406,7 +1407,8 @@ TEST_CASE("renderer: a texture trimmed then asked again ends on the whole pictur
 // bytes after the load's texture pass — on the first run, which builds the `.tex`, and on the next,
 // which trusts it — and `source_image_bytes` gives back the very bytes from the container. A load
 // with no derived-data root has nothing standing in for them and keeps them. No device.
-TEST_CASE("load: an embedded image goes once its texture is built and comes back from its container") {
+TEST_CASE(
+    "load: an embedded image goes once its texture is built and comes back from its container") {
   const test::TempDir tmp("renderer_image_release");
   const std::filesystem::path dir = tmp.native();
   Vector<u8> png;
@@ -1454,7 +1456,8 @@ TEST_CASE("load: an embedded image goes once its texture is built and comes back
 // upload cannot use it and decodes the image instead — from the bytes `source_image_bytes` reads
 // back out of the container. The picture is the one a load with no derived-data root draws from the
 // bytes it kept, byte for byte.
-TEST_CASE("renderer: an image the load let go is decoded from its container when its texture is gone") {
+TEST_CASE(
+    "renderer: an image the load let go is decoded from its container when its texture is gone") {
   const test::TempDir tmp("renderer_image_late");
   const std::filesystem::path dir = tmp.native();
   Vector<u8> png;

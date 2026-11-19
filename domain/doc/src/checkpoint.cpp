@@ -1,10 +1,9 @@
-#include <domain/doc/checkpoint.h>
-
 #include <core/json/json.h>
 #include <core/platform/process.h>
 #include <core/schema/json_reflect.h>
 #include <core/time/time.h>
 #include <domain/doc/blob_store.h>
+#include <domain/doc/checkpoint.h>
 #include <domain/doc/document_store.h>
 #include <domain/doc/partition.h>
 
@@ -178,14 +177,22 @@ bool parse_log(std::string_view text, Vector<CheckpointInfo>& out) {
       const std::string_view key = line.substr(0, colon);
       const std::string value = one_line(line.substr(colon + 2));
       const auto number = [&]() { return std::strtoll(value.c_str(), nullptr, 10); };
-      if (key == "Engine-Actor") info.attribution.actor = value;
-      else if (key == "Engine-Role") info.attribution.role = value;
-      else if (key == "Engine-Task") info.attribution.task = value;
-      else if (key == "Engine-Rationale") info.attribution.rationale = value;
-      else if (key == "Engine-Time") info.attribution.timestamp_unix_ms = number();
-      else if (key == "Engine-Journal-Length") info.journal_length = static_cast<u32>(number());
-      else if (key == "Engine-Undo-Position") info.undo_position = static_cast<u32>(number());
-      else if (key == "Engine-Journal-From") info.journal_from = static_cast<u32>(number());
+      if (key == "Engine-Actor")
+        info.attribution.actor = value;
+      else if (key == "Engine-Role")
+        info.attribution.role = value;
+      else if (key == "Engine-Task")
+        info.attribution.task = value;
+      else if (key == "Engine-Rationale")
+        info.attribution.rationale = value;
+      else if (key == "Engine-Time")
+        info.attribution.timestamp_unix_ms = number();
+      else if (key == "Engine-Journal-Length")
+        info.journal_length = static_cast<u32>(number());
+      else if (key == "Engine-Undo-Position")
+        info.undo_position = static_cast<u32>(number());
+      else if (key == "Engine-Journal-From")
+        info.journal_from = static_cast<u32>(number());
     }
     out.push_back(std::move(info));
   }
@@ -375,8 +382,9 @@ bool Checkpoints::check_label(std::string_view label, std::string* error) {
                            " bytes; this one is " + std::to_string(label.size()));
   for (const char c : label)
     if (is_control(c))
-      return fail(error, "a checkpoint label is one line of text: no control character (a newline, "
-                         "a tab, U+0000 to U+001F or U+007F)");
+      return fail(error,
+                  "a checkpoint label is one line of text: no control character (a newline, "
+                  "a tab, U+0000 to U+001F or U+007F)");
   return true;
 }
 
@@ -403,7 +411,8 @@ bool Checkpoints::take(const io::Vfs& vfs, std::string_view dir, const Document&
   out = CheckpointInfo{};
   out.label = one_line(label.empty() ? std::string_view("checkpoint") : label);
   out.attribution = attribution;
-  if (out.attribution.timestamp_unix_ms == 0) out.attribution.timestamp_unix_ms = time::wall_unix_ms();
+  if (out.attribution.timestamp_unix_ms == 0)
+    out.attribution.timestamp_unix_ms = time::wall_unix_ms();
   out.journal_length = doc.journal().size();
   out.undo_position = manifest.undo_position;
   // The patches since the previous checkpoint, when the journal still holds them in order; after
@@ -411,7 +420,8 @@ bool Checkpoints::take(const io::Vfs& vfs, std::string_view dir, const Document&
   out.journal_from = 0;
   if (!previous.empty()) {
     out.parent = previous[0].id;
-    if (previous[0].undo_position <= out.undo_position) out.journal_from = previous[0].undo_position;
+    if (previous[0].undo_position <= out.undo_position)
+      out.journal_from = previous[0].undo_position;
   }
 
   std::string message = out.label + "\n\n";
@@ -492,8 +502,9 @@ bool Checkpoints::find(const io::Vfs& vfs, std::string_view dir, std::string_vie
   for (const char c : id)
     hex = hex && ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'));
   if (!hex || id.size() < 4)
-    return fail(error, "'" + std::string(id) + "' is not a checkpoint id (a commit name, at least "
-                       "four hexadecimal characters)");
+    return fail(error, "'" + std::string(id) +
+                           "' is not a checkpoint id (a commit name, at least "
+                           "four hexadecimal characters)");
   if (!initialized(vfs, dir)) return fail(error, "this document has no checkpoints");
   std::string native;
   if (!native_dir(vfs, dir, false, native, error)) return false;
@@ -552,7 +563,8 @@ bool Checkpoints::read(const io::Vfs& vfs, std::string_view dir, std::string_vie
     }
     // A partitioned layer: the index, every tile it lists, and the untiled records.
     const std::string* index_text = file_in(files, path);
-    if (index_text == nullptr) return fail(error, "checkpoint " + std::string(id) + " lacks " + path);
+    if (index_text == nullptr)
+      return fail(error, "checkpoint " + std::string(id) + " lacks " + path);
     LayerIndex index;
     if (!parse_file(*index_text, path, index, error)) return false;
     const std::string layer_dir(io::parent_path(path));

@@ -870,9 +870,10 @@ bool RuntimeWorld::commit_writeback(void* context, const sim::WriteBackBatch& ba
   self->log_writeback(batch, result.patch_index);
 #if defined(ENGINE_HOST_WORLD)
   // The flush's projections, kept current (roadmap S11; store.md, "Tiles: projections and
-  // snapshots"): with a streamed world's store open, every record the flush wrote has its projection
-  // replaced as the document now has it, under the tile the document now puts it in — after the
-  // commit, so it reads what the document took. The events above go through the same connection.
+  // snapshots"): with a streamed world's store open, every record the flush wrote has its
+  // projection replaced as the document now has it, under the tile the document now puts it in —
+  // after the commit, so it reads what the document took. The events above go through the same
+  // connection.
   if (self->streamed_ != nullptr && self->streamed_->store_open) {
     world::ProjectWritebackStats stats;
     const store::Status status = world::project_writeback(

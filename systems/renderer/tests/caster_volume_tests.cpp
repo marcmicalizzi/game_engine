@@ -447,7 +447,7 @@ TEST_CASE("caster volume: a widened volume holds what lies within the margin of 
   CHECK(wide.plane_count == volume.plane_count);
   CHECK(caster_volume_contains_sphere(wide, below_far + up * 102.0f, 0.0f));
   CHECK(!caster_volume_contains_sphere(wide, below_far + up * 103.5f, 0.0f));
-  CHECK(caster_volume_contains_sphere(wide, below_far - up * (lowest + 2.0f), 0.0f));  // 1.73 out
+  CHECK(caster_volume_contains_sphere(wide, below_far - up * (lowest + 2.0f), 0.0f));   // 1.73 out
   CHECK(!caster_volume_contains_sphere(wide, below_far - up * (lowest + 4.0f), 0.0f));  // 3.46
   // Every point the volume held, it still holds, with room to spare.
   CHECK(caster_volume_contains_sphere(wide, below_far + up * 99.0f, 2.9f));

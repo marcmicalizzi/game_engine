@@ -86,10 +86,11 @@ f64 exposure_key(f64 luminance) noexcept;
 f64 exposure_shown(f64 key) noexcept;
 // The rods' share of vision at a luminance, 0.04 / (0.04 + L) (Krawczyk 2007 eq. 4.7, after Hunt).
 f64 exposure_rod_share(f64 luminance) noexcept;
-// **The exposure the eye settles at**, EV100, for an adapting luminance: the one that shows it where
-// the operator does. The renderer's exposure shows a luminance L at L pi / (2.5 2^EV100) (sky.h,
-// `gfx::sky_exposure_scale`), so EV100 = log2(pi L / (2.5 shown(key(L)))). Then `compensation`
-// stops are taken off (positive brighter) and the result is held within the floor and ceiling.
+// **The exposure the eye settles at**, EV100, for an adapting luminance: the one that shows it
+// where the operator does. The renderer's exposure shows a luminance L at L pi / (2.5 2^EV100)
+// (sky.h, `gfx::sky_exposure_scale`), so EV100 = log2(pi L / (2.5 shown(key(L)))). Then
+// `compensation` stops are taken off (positive brighter) and the result is held within the floor
+// and ceiling.
 f64 exposure_target_ev100(f64 luminance, f64 compensation, const ExposureOptions& options) noexcept;
 // The time constant towards `target` from `current` (EV100) when the adapting luminance is
 // `luminance`: dark adaptation's when the picture brightens (the target is lower), light

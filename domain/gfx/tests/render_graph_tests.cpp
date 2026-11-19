@@ -366,8 +366,7 @@ TEST_CASE("render graph: a declared write names the read in its barriers") {
   const gfx::RgBuffer copied = graph.import_buffer("copied", fake);
   const gfx::RgImage image = graph.import_image("image", fake_image, gfx::ImageLayout::General);
   auto add = [&](const char* name, auto&& setup) {
-    graph.add_pass(name, gfx::PassKind::Compute, setup,
-                   [](gfx::CommandList, gfx::RenderGraph&) {});
+    graph.add_pass(name, gfx::PassKind::Compute, setup, [](gfx::CommandList, gfx::RenderGraph&) {});
   };
   add("first", [&](gfx::PassBuilder& b) {
     b.write(buffer, gfx::Access::ComputeWrite);
@@ -430,26 +429,23 @@ TEST_CASE("render graph: a build behind a build names the read of the scratch th
   gfx::BufferResource fake{};
   fake.size = 256;
   gfx::RenderGraph graph(device);
-  const gfx::RgBuffer scratch =
-      graph.import_buffer("scratch", fake, PipelineStage::AccelerationBuild,
-                          MemoryAccess::AccelerationStructureRead |
-                              MemoryAccess::AccelerationStructureWrite);
+  const gfx::RgBuffer scratch = graph.import_buffer(
+      "scratch", fake, PipelineStage::AccelerationBuild,
+      MemoryAccess::AccelerationStructureRead | MemoryAccess::AccelerationStructureWrite);
   const gfx::RgBuffer unnamed = graph.import_buffer("unnamed", fake);
   auto add = [&](const char* name, auto&& setup) {
-    graph.add_pass(name, gfx::PassKind::Compute, setup,
-                   [](gfx::CommandList, gfx::RenderGraph&) {});
+    graph.add_pass(name, gfx::PassKind::Compute, setup, [](gfx::CommandList, gfx::RenderGraph&) {});
   };
   add("chunk 0", [&](gfx::PassBuilder& b) {
     b.write(scratch, gfx::Access::AccelerationBuildWrite);
     b.write(unnamed, gfx::Access::AccelerationBuildWrite);
   });
-  add("chunk 1", [&](gfx::PassBuilder& b) {
-    b.write(scratch, gfx::Access::AccelerationBuildWrite);
-  });
+  add("chunk 1",
+      [&](gfx::PassBuilder& b) { b.write(scratch, gfx::Access::AccelerationBuildWrite); });
   std::string error;
   REQUIRE_MESSAGE(graph.compile(&error), error);
-  const MemoryAccess build = MemoryAccess::AccelerationStructureRead |
-                             MemoryAccess::AccelerationStructureWrite;
+  const MemoryAccess build =
+      MemoryAccess::AccelerationStructureRead | MemoryAccess::AccelerationStructureWrite;
   auto has = [](MemoryAccess mask, MemoryAccess bits) { return (mask & bits) == bits; };
   // chunk 0: the scratch's import names the frame before's build; the unnamed import gives none.
   REQUIRE(graph.pass_barrier_count(0) == 1);
@@ -483,8 +479,7 @@ TEST_CASE("render graph: lifetimes are each resource's first and last declaring 
   const gfx::RgBuffer second = graph.import_buffer("b", b);
   (void)graph.import_buffer("unused", unused);
   auto add = [&](const char* name, auto&& setup) {
-    graph.add_pass(name, gfx::PassKind::Compute, setup,
-                   [](gfx::CommandList, gfx::RenderGraph&) {});
+    graph.add_pass(name, gfx::PassKind::Compute, setup, [](gfx::CommandList, gfx::RenderGraph&) {});
   };
   add("write a", [&](gfx::PassBuilder& pb) { pb.write(first, gfx::Access::ComputeWrite); });
   add("read a", [&](gfx::PassBuilder& pb) { pb.read(first, gfx::Access::ComputeRead); });
@@ -532,8 +527,7 @@ TEST_CASE("render graph: a reader in another stage widens the barrier before the
   gfx::RenderGraph graph(device);
   const gfx::RgBuffer count = graph.import_buffer("count", fake);
   auto add = [&](const char* name, auto&& setup) {
-    graph.add_pass(name, gfx::PassKind::Compute, setup,
-                   [](gfx::CommandList, gfx::RenderGraph&) {});
+    graph.add_pass(name, gfx::PassKind::Compute, setup, [](gfx::CommandList, gfx::RenderGraph&) {});
   };
   add("cull", [&](gfx::PassBuilder& b) { b.write(count, gfx::Access::ComputeReadWrite); });
   add("fold", [&](gfx::PassBuilder& b) { b.read(count, gfx::Access::ComputeRead); });
@@ -601,7 +595,8 @@ TEST_CASE("render graph: passes that declare only a write still see the pass bef
                                        sizeof(ScaleParams), scale_pipeline, &error));
 
   u32 factor = 1;  // 3^k_passes mod 2^32
-  for (u32 p = 0; p < k_passes; ++p) factor *= 3u;
+  for (u32 p = 0; p < k_passes; ++p)
+    factor *= 3u;
   u32 wrong_frames = 0;
   u32 wrong_words = 0;
   for (u32 frame = 0; frame < k_frames; ++frame) {
@@ -630,8 +625,8 @@ TEST_CASE("render graph: passes that declare only a write still see the pass bef
             const ScaleParams params{k_count, 3};
             commands.bind_pipeline(gfx::BindPoint::Compute, scale_pipeline.pipeline);
             vkCmdBindDescriptorSets(gfx::vk::native(commands), VK_PIPELINE_BIND_POINT_COMPUTE,
-                                    gfx::vk::native(scale_pipeline.layout), 0, 1, &scale_set.set,
-                                    0, nullptr);
+                                    gfx::vk::native(scale_pipeline.layout), 0, 1, &scale_set.set, 0,
+                                    nullptr);
             commands.push_constants(scale_pipeline.layout, gfx::ShaderStage::Compute, 0,
                                     sizeof(params), &params);
             commands.dispatch((k_count + 63) / 64, 1, 1);

@@ -246,10 +246,10 @@ RgBuffer RenderGraph::import_buffer(const char* name, const BufferResource& buff
   node.has_producer = true;
   node.state.stage = last_stage;
   node.state.access = last_access;
-  node.state.written = any(last_access & (MemoryAccess::MemoryWrite | MemoryAccess::ShaderWrite |
-                                          MemoryAccess::ShaderStorageWrite |
-                                          MemoryAccess::TransferWrite | MemoryAccess::HostWrite |
-                                          MemoryAccess::AccelerationStructureWrite));
+  node.state.written =
+      any(last_access & (MemoryAccess::MemoryWrite | MemoryAccess::ShaderWrite |
+                         MemoryAccess::ShaderStorageWrite | MemoryAccess::TransferWrite |
+                         MemoryAccess::HostWrite | MemoryAccess::AccelerationStructureWrite));
   buffers_.push_back(node);
   return RgBuffer{buffers_.size() - 1};
 }

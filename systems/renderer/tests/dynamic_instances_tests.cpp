@@ -667,7 +667,8 @@ gfx::InstanceDesc gpu_record(gfx::Device& device, const GpuScene& scene, u32 ind
 // runs either, so a slot it marked between the growth and that frame was in no set until something
 // wrote it again. Here a loaded box is moved on that frame: the set each frame after it reads holds
 // the CPU's record, and the picture is the scene loaded with the box where it was moved.
-TEST_CASE("dynamic instances: a loaded instance moved right after the tables grow is in every set") {
+TEST_CASE(
+    "dynamic instances: a loaded instance moved right after the tables grow is in every set") {
   Gpu gpu;
   if (!gpu.ok) {
     MESSAGE(gpu.why);
@@ -685,9 +686,10 @@ TEST_CASE("dynamic instances: a loaded instance moved right after the tables gro
   moved[0] = placed(0, Vec3{1.5f, 0.4f, -0.5f}, 1.0f, 0.4f);
   for (const u32 in_flight : {2u, 3u}) {
     Rig dynamic;
-    REQUIRE_MESSAGE(dynamic.build(gpu.device, std::span<const SceneInstance>(head.data(), head.size()),
-                                  true, settings, in_flight),
-                    dynamic.error);
+    REQUIRE_MESSAGE(
+        dynamic.build(gpu.device, std::span<const SceneInstance>(head.data(), head.size()), true,
+                      settings, in_flight),
+        dynamic.error);
     std::string error;
     for (u32 f = 0; f < 3; ++f)
       REQUIRE_MESSAGE(dynamic.renderer.render_offscreen(frame_at(k_eye), &error), error);
@@ -697,10 +699,10 @@ TEST_CASE("dynamic instances: a loaded instance moved right after the tables gro
                     error);
     REQUIRE(dynamic.scene.pair_stride() != stride);  // the tables grew
     const u32 index = 0;
-    REQUIRE_MESSAGE(dynamic.scene.place_instances(std::span<const u32>(&index, 1),
-                                                  std::span<const SceneInstance>(moved.data(), 1),
-                                                  &error),
-                    error);
+    REQUIRE_MESSAGE(
+        dynamic.scene.place_instances(std::span<const u32>(&index, 1),
+                                      std::span<const SceneInstance>(moved.data(), 1), &error),
+        error);
     const gfx::InstanceDesc want = *dynamic.scene.instance_record(0);
     u32 stale = 0;
     const u32 frames = 2 * dynamic.scene.table_sets();
@@ -716,9 +718,10 @@ TEST_CASE("dynamic instances: a loaded instance moved right after the tables gro
     REQUIRE_MESSAGE(dynamic.renderer.capture(frame_at(k_eye), channels(), shot, &error), error);
     const Vector<SceneInstance> whole = join({&moved, &tail});
     CapturedFrame expected;
-    REQUIRE_MESSAGE(reference(gpu.device, std::span<const SceneInstance>(whole.data(), whole.size()),
-                              settings, expected, error),
-                    error);
+    REQUIRE_MESSAGE(
+        reference(gpu.device, std::span<const SceneInstance>(whole.data(), whole.size()), settings,
+                  expected, error),
+        error);
     const Difference d = compare(shot, expected);
     MESSAGE(in_flight << " in flight: " << stale << " of " << frames
                       << " frames' sets held the box where it was; " << d.ids << " id, " << d.depth
@@ -2133,7 +2136,7 @@ void check_folded(const Vector<u32>& args, u32 first, u32 count, u32 limit, cons
   REQUIRE(args.size() >= first + 3);
   const u32 rows = (count + gfx::k_dispatch_pitch - 1) / gfx::k_dispatch_pitch;
   MESSAGE(std::string(what) << ": " << count << " workgroups dispatched as {" << args[first] << ", "
-               << args[first + 1] << ", " << args[first + 2] << "}");
+                            << args[first + 1] << ", " << args[first + 2] << "}");
   CHECK(args[first] <= limit);
   CHECK(args[first] == std::min(count, gfx::k_dispatch_pitch));
   CHECK(args[first + 1] == rows);
@@ -2210,10 +2213,9 @@ TEST_CASE("dynamic instances: indirect dispatches fold past 65,535 workgroups, t
       }
     } else {
       REQUIRE(last.visible_hw > limit);
-      const Vector<u32> expand =
-          read_words(device, rig.scene.vertex_headers,
-                     rig.scene.vertex_header_offset(0, 0) + gfx::k_vertex_draw_expand_offset, 3,
-                     error);
+      const Vector<u32> expand = read_words(
+          device, rig.scene.vertex_headers,
+          rig.scene.vertex_header_offset(0, 0) + gfx::k_vertex_draw_expand_offset, 3, error);
       check_folded(expand, 0, last.visible_hw, limit, "vertex expansion");
     }
     RenderSettings mesh = settings;
@@ -2222,7 +2224,7 @@ TEST_CASE("dynamic instances: indirect dispatches fold past 65,535 workgroups, t
     REQUIRE_MESSAGE(reference(device, all, mesh, expected, error), error);
     const Difference d = compare(shot, expected);
     MESSAGE(name << ": " << shot.covered << " pixels covered; " << d.ids << " id, " << d.depth
-            << " depth and " << d.color << " colour differences against the hardware path");
+                 << " depth and " << d.color << " colour differences against the hardware path");
     if (!software) {
       CHECK(shot.covered == expected.covered);
       CHECK(d.ids == 0);

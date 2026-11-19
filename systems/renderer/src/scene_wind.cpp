@@ -23,11 +23,13 @@ tunables::Float wind_to{
 
 tunables::Float swell_height{
     "renderer.swell.height_m", -1.0, -1.0, 15.0,
-    "A hand swell arriving from a distant storm, significant height in deep water, metres, on every "
+    "A hand swell arriving from a distant storm, significant height in deep water, metres, on "
+    "every "
     "open body that draws a wave table, at once (2 a fair surf, 4 a big one, 6 a storm swell); "
     "below 0 the scene's"};
-tunables::Float swell_period{"renderer.swell.period_s", 12.0, 4.0, 25.0,
-                             "The hand swell's peak period, seconds (10 to 20 for a storm's swell)"};
+tunables::Float swell_period{
+    "renderer.swell.period_s", 12.0, 4.0, 25.0,
+    "The hand swell's peak period, seconds (10 to 20 for a storm's swell)"};
 tunables::Float swell_to{
     "renderer.swell.to_deg", -1.0, -1.0, 360.0,
     "Where the hand swell travels to: degrees in the ground plane from +x towards +z; below 0 as "

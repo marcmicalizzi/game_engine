@@ -544,7 +544,8 @@ MemoryRun memory_run(bool memory, f32 scale, u32 seed) {
       gi_memory_fold(parents[p], k_n * k_children,
                      static_cast<f32>(parent_sum / static_cast<f64>(k_n * k_children)), false,
                      memory);
-      handed[p] = static_cast<u8>((parents[p].changed ? 1u : 0u) | (parents[p].following ? 2u : 0u));
+      handed[p] =
+          static_cast<u8>((parents[p].changed ? 1u : 0u) | (parents[p].following ? 2u : 0u));
     }
     const f64 cells = static_cast<f64>(k_parents * k_children);
     const f64 mean = all_means / cells;
@@ -607,8 +608,9 @@ TEST_CASE("gi cache key: a cell remembers longer while its light holds still, an
     CHECK(longer.still_variance < 2.0 * today.still_variance * 501.0 / 8181.0);
     // Since the fourth leg an own cell (eleven a frame, under k_gi_test_samples) does not test
     // itself, so none is sent back by its own chance (leg 3's run sent back 3, the blobs). A coarse
-    // cell's chance let-go would send its 64 children together: four of its short mean's deviations,
-    // 1.1e-5 a frame (k_gi_change_sigmas), 0.09 expected in the run's 8,000 coarse-cell frames.
+    // cell's chance let-go would send its 64 children together: four of its short mean's
+    // deviations, 1.1e-5 a frame (k_gi_change_sigmas), 0.09 expected in the run's 8,000 coarse-cell
+    // frames.
     CHECK(longer.still_drops <= 64u);
     CHECK(today.still_drops == 0u);
     CHECK(longer.settled <= today.settled);
@@ -624,7 +626,7 @@ TEST_CASE("gi cache key: a cell remembers longer while its light holds still, an
     const MemoryRun today = memory_run(false, 0.9f, 4242u);
     const MemoryRun longer = memory_run(true, 0.9f, 4242u);
     MESSAGE("a change of 10 %: settled within a tenth in " << today.settled << " frames today, "
-                                                             << longer.settled << " with the memory");
+                                                           << longer.settled << " with the memory");
     CHECK(longer.settled <= 3u * today.settled);
   }
   // The memory off is today's fold: the count and the mean as `gi_history` and its rate take them.
@@ -706,15 +708,16 @@ TEST_CASE("gi cache key: a long mean in halves holds its level when rounded with
       }
       count = total;
       if (frame >= k_frames / 2)
-        for (u32 k = 0; k < 3; ++k) level[k] += static_cast<f64>(m[k]);
+        for (u32 k = 0; k < 3; ++k)
+          level[k] += static_cast<f64>(m[k]);
     }
   }
   const f64 frames = static_cast<f64>(k_cells * (k_frames / 2));
   const f64 floating = level[0] / frames;
   const f64 nearest = level[1] / frames;
   const f64 unbiased = level[2] / frames;
-  MESSAGE("the long mean's level: in float " << floating << ", halves to nearest " << nearest << " ("
-                                             << 100.0 * (nearest / floating - 1.0)
+  MESSAGE("the long mean's level: in float " << floating << ", halves to nearest " << nearest
+                                             << " (" << 100.0 * (nearest / floating - 1.0)
                                              << " %), halves without a bias " << unbiased << " ("
                                              << 100.0 * (unbiased / floating - 1.0) << " %)");
   CHECK(nearest > floating * 1.03);  // the defect the rounding removes, seen
@@ -1225,8 +1228,9 @@ TEST_CASE("gi cache key: the guide's bins tile the sphere in equal solid angles"
   // The density integrates to one over the sphere whatever the shares are.
   f64 integral = 0.0;
   for (u32 bin = 0; bin < k_gi_guide_bins; ++bin)
-    integral += static_cast<f64>(gi_guide_pdf(bin + 1u, k_gi_guide_bins * (k_gi_guide_bins + 1u) / 2u)) *
-                (12.566370614359172 / k_gi_guide_bins);
+    integral +=
+        static_cast<f64>(gi_guide_pdf(bin + 1u, k_gi_guide_bins * (k_gi_guide_bins + 1u) / 2u)) *
+        (12.566370614359172 / k_gi_guide_bins);
   CHECK(integral == doctest::Approx(1.0).epsilon(1e-5));
   CHECK(gi_guide_pdf(7u, 0u) == 0.0f);
   // No sample counts for more than 1 / (1 - alpha) of what it counted unguided, and one the guide
@@ -1294,8 +1298,8 @@ TEST_CASE("gi cache key: a guided sample keeps the mean and loses its heavy tail
       u32 bin = k_gi_guide_bins;
       if (alpha > 0.0f && next() < alpha) {
         // The shader's draw: the first bin whose running share passes the target.
-        const u32 target = std::min(static_cast<u32>(next() * static_cast<f32>(guide.sum)),
-                                    guide.sum - 1u);
+        const u32 target =
+            std::min(static_cast<u32>(next() * static_cast<f32>(guide.sum)), guide.sum - 1u);
         u32 running = 0;
         for (bin = 0; bin + 1 < k_gi_guide_bins; ++bin) {
           if (target < running + guide.share[bin]) break;
@@ -1307,8 +1311,8 @@ TEST_CASE("gi cache key: a guided sample keeps the mean and loses its heavy tail
       f32 value = 0.0f;
       if (d[0] > 0.0f) {
         if (bin == k_gi_guide_bins) bin = gi_guide_bin(d[0], d[1], d[2]);
-        const f32 weight = gi_guide_weight(d[0] / 3.14159265f,
-                                           gi_guide_pdf(guide.share[bin], guide.sum), alpha);
+        const f32 weight =
+            gi_guide_weight(d[0] / 3.14159265f, gi_guide_pdf(guide.share[bin], guide.sum), alpha);
         CHECK(weight <= 1.0f / (1.0f - k_gi_guide_alpha) + 1e-4f);
         value = radiance(d) * weight;
         guide.frame_sum[bin] += static_cast<u32>(value * 1024.0f + 0.5f);
@@ -1334,8 +1338,9 @@ TEST_CASE("gi cache key: a guided sample keeps the mean and loses its heavy tail
   const f64 plain_var = plain_square / n - plain_mean * plain_mean;
   const f64 guided_var = guided_square / n - guided_mean * guided_mean;
   MESSAGE("the guide: mean " << guided_mean << " against " << plain_mean << " unguided; variance "
-                             << guided_var << " against " << plain_var << " (" << plain_var / guided_var
-                             << " times less); heaviest sample " << heaviest << " against 1");
+                             << guided_var << " against " << plain_var << " ("
+                             << plain_var / guided_var << " times less); heaviest sample "
+                             << heaviest << " against 1");
   // The means agree within four deviations of their difference.
   CHECK(std::fabs(guided_mean - plain_mean) <= 4.0 * std::sqrt((plain_var + guided_var) / n));
   CHECK(guided_var * 3.0 <= plain_var);
@@ -1355,8 +1360,8 @@ TEST_CASE("gi cache key: a guided sample keeps the mean and loses its heavy tail
   };
   const f64 plain_top = top_share(plain_values);
   const f64 guided_top = top_share(guided_values);
-  MESSAGE("the heaviest hundredth of the samples carries " << plain_top << " of the light unguided, "
-                                                           << guided_top << " guided");
+  MESSAGE("the heaviest hundredth of the samples carries "
+          << plain_top << " of the light unguided, " << guided_top << " guided");
   CHECK(guided_top * 3.0 <= plain_top);
   CHECK(heaviest <= 1.0 / (1.0 - static_cast<f64>(k_gi_guide_alpha)));
   CHECK(guide.trained == k_frame * k_gi_guide_history_frames);

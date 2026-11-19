@@ -247,9 +247,9 @@ int caves_command(int argc, char** argv) {
           build_ms += static_cast<f64>(time::monotonic_ns() - t1) * 1.0e-6;
           clusters += data.mesh.mesh.clusters.size();
           if (write) {
-            const std::string path = io::join_path(
-                out_dir, name + ".cell" + std::to_string(cell) + (part == 0 ? "" : ".dress") +
-                             ".clusters");
+            const std::string path =
+                io::join_path(out_dir, name + ".cell" + std::to_string(cell) +
+                                           (part == 0 ? "" : ".dress") + ".clusters");
             if (!geometry::write_cluster_file(path, data, &error)) return fail(error);
           }
           for (const geometry::ClusterLodDesc& d : data.mesh.lod)

@@ -20,16 +20,16 @@
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <utility>
 #include <schemas/ecs_demo.h>
 #include <schemas/ecs_demo_ecs.h>
 #include <string>
-#include <test_temp_dir.h>
+#include <utility>
 
 using namespace engine;
 using namespace engine::ecs;
@@ -130,8 +130,9 @@ struct World {
     Vector<std::pair<const u32*, u32>> by_address;
     for (u32 i = 0; i < k_entities; ++i)
       by_address.push_back({&self->slots[self->order[i]], i});
-    std::sort(by_address.begin(), by_address.end(),
-              [](const auto& a, const auto& b) { return std::less<const u32*>()(a.first, b.first); });
+    std::sort(by_address.begin(), by_address.end(), [](const auto& a, const auto& b) {
+      return std::less<const u32*>()(a.first, b.first);
+    });
     i64 rank = 0;
     for (const auto& [slot, i] : by_address) {
       flecs::entity e(self->sim.world().c_ptr(), self->entities[i]);
@@ -359,7 +360,8 @@ TEST_CASE("bisector: iteration in address order is found at its tick, phase, tab
   CHECK(back.table == ca.table);
 }
 
-TEST_CASE("replay: a recorded run played again from its record reports nothing, one input changed") {
+TEST_CASE(
+    "replay: a recorded run played again from its record reports nothing, one input changed") {
   test::TempDir dir;
   // Record: the player pushes at four ticks; the run writes its input log, its hash log and the
   // record that names them.

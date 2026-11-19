@@ -153,8 +153,8 @@ MeshCapability mesh_capability_of(std::string_view name) {
 std::string MeshGeneratorRegistry::unknown(std::string_view path, std::string_view name) const {
   const MeshCapability capability = mesh_capability_of(name);
   std::string text = std::string(path) + " is a mesh made by the generator \"" + std::string(name) +
-                     "\", which this build does not carry: it comes with the " +
-                     capability.module + " capability (ENGINE_WITH_" + capability.capability +
+                     "\", which this build does not carry: it comes with the " + capability.module +
+                     " capability (ENGINE_WITH_" + capability.capability +
                      "), switched off here or not linked into this program; the generators "
                      "it has: ";
   const Vector<std::string_view> have = names();

@@ -1,12 +1,11 @@
-#include <domain/ecs/tick_hash.h>
-
 #include <core/hash/hash.h>
+#include <core/jobs/job_system.h>
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
-#include <core/jobs/job_system.h>
 #include <core/schema/type_info.h>
 #include <domain/ecs/components.h>
 #include <domain/ecs/identity.h>
+#include <domain/ecs/tick_hash.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -21,8 +20,8 @@ using schema::Kind;
 
 // One name per phase, so a schedule listing says which of the hash's systems is which.
 constexpr const char* k_system_names[sim::k_phase_count] = {
-    "ecs.tick_hash.input",   "ecs.tick_hash.events_in",    "ecs.tick_hash.lod",
-    "ecs.tick_hash.systems", "ecs.tick_hash.physics",      "ecs.tick_hash.post_physics",
+    "ecs.tick_hash.input",      "ecs.tick_hash.events_in", "ecs.tick_hash.lod",
+    "ecs.tick_hash.systems",    "ecs.tick_hash.physics",   "ecs.tick_hash.post_physics",
     "ecs.tick_hash.events_out", "ecs.tick_hash.persist"};
 
 u64 word(u64 h, u64 value) noexcept { return hash_detail::mix_word(h, value); }
@@ -110,8 +109,7 @@ u64 hash_ref(const schema::TypeRef& type, const void* p, u64 h) {
       const std::string text = write_json(*static_cast<const JsonValue*>(p));
       return word(h, hash_bytes(text.data(), text.size()));
     }
-    case Kind::Enum:
-      return type.type != nullptr ? hash_kind(type.type->enum_underlying, p, h) : h;
+    case Kind::Enum: return type.type != nullptr ? hash_kind(type.type->enum_underlying, p, h) : h;
     case Kind::Struct: return type.type != nullptr ? hash_struct(*type.type, p, h) : h;
     case Kind::Optional: {
       if (type.optional_ops == nullptr || type.element == nullptr) return h;
@@ -369,7 +367,8 @@ void TickHash::freeze() {
     table.info = type->info;
     table.component = type->id;
     table.size = type->size;
-    table.name_hash = hash_bytes(type->info->qualified_name, std::strlen(type->info->qualified_name));
+    table.name_hash =
+        hash_bytes(type->info->qualified_name, std::strlen(type->info->qualified_name));
     // Its flat program, where it has one (and the config does not ask for reflection alone).
     table.op_first = ops_.size();
     if (!config_.reflected && flatten_struct(*type->info, 0, ops_)) {
@@ -454,9 +453,8 @@ void TickHash::gather_runs(u32 grain) {
         Run part = run;
         part.count = std::min<u32>(grain, static_cast<u32>(it.count) - at);
         part.values = run.values + (run.values_self ? usize{at} * table.size : 0u);
-        part.ids = run.ids == nullptr || !run.ids_self
-                       ? run.ids
-                       : static_cast<const Identity*>(run.ids) + at;
+        part.ids = run.ids == nullptr || !run.ids_self ? run.ids
+                                                       : static_cast<const Identity*>(run.ids) + at;
         part.entities = it.entities + at;
         runs_.push_back(part);
       }
@@ -538,9 +536,10 @@ void TickHash::capture(const Table& table, sim::Capture& out) {
   while (ecs_query_next(&it)) {
     const auto* base = static_cast<const u8*>(ecs_field_w_size(&it, table.size, 0));
     const bool self = ecs_field_is_self(&it, 0);
-    const Identity* ids = ecs_field_is_set(&it, 1)
-                              ? static_cast<const Identity*>(ecs_field_w_size(&it, sizeof(Identity), 1))
-                              : nullptr;
+    const Identity* ids =
+        ecs_field_is_set(&it, 1)
+            ? static_cast<const Identity*>(ecs_field_w_size(&it, sizeof(Identity), 1))
+            : nullptr;
     const bool ids_self = ids != nullptr && ecs_field_is_self(&it, 1);
     for (i32 i = 0; i < it.count; ++i) {
       Entry entry;

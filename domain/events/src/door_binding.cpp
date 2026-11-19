@@ -1,8 +1,7 @@
 // External raises through the one recorded door (events.h, `DoorBinding`; events.md, "Through the
 // door"; roadmap S18).
-#include <domain/events/events.h>
-
 #include <core/schema/materialize.h>
+#include <domain/events/events.h>
 
 namespace engine::events {
 

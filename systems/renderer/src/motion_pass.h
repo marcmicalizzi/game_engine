@@ -113,9 +113,9 @@ class MotionPass {
   void set_phases(u32 phases) noexcept { phases_ = phases > 0 ? phases : 1; }
   u32 phases() const noexcept { return phases_; }
   // **The cross-fade's turn for the frame being drawn** (R158 leg 3; `gfx::CullParams::fade_turn`):
-  // phase k of n turns the hash's ring of 65535 by k * 65535 / n, so a cycle's thresholds are evenly
-  // spaced; 0 unless a reader asked (`renderer.reconstruction.fade_turn` under the accumulation).
-  // Read where `frame_offset` is, before `prepare` moves the phase on.
+  // phase k of n turns the hash's ring of 65535 by k * 65535 / n, so a cycle's thresholds are
+  // evenly spaced; 0 unless a reader asked (`renderer.reconstruction.fade_turn` under the
+  // accumulation). Read where `frame_offset` is, before `prepare` moves the phase on.
   void set_fade_turn(bool on) noexcept { fade_turn_ = on; }
   // The phase the last prepared frame was drawn at (a reader after `prepare`: a frame pass).
   u32 drawn_phase() const noexcept {

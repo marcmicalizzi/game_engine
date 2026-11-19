@@ -281,8 +281,9 @@ class GpuScene {
   // before the next frame is recorded. With no `retired` it must be called with no frame in flight
   // and destroys what it replaces. **With `retired` it is swapped in** (T152; renderer.md, "A
   // relayout is swapped in"): the new buffers are made beside the old, which the frames in flight
-  // still read and which go to `retired` — and the chain's per-instance half and top-level structure
-  // with them; the cluster set is kept — for the caller to free once those frames have completed
+  // still read and which go to `retired` — and the chain's per-instance half and top-level
+  // structure with them; the cluster set is kept — for the caller to free once those frames have
+  // completed
   // (`SceneRenderer::set_dynamic_instances`). Nothing in it waits for the device or uploads. When
   // the device cannot hold the chain's new half beside the old, it does nothing, sets `must_wait`
   // and leaves the relayout pending: the caller waits for the device and calls it without. **When
@@ -941,9 +942,10 @@ class GpuScene {
   std::span<const u32> water_deforms() const noexcept {
     return {water_deforms_.data(), water_deforms_.size()};
   }
-  // **The scene's wind on the water** (scene_wind.h; gfx.md, "The wind a scene names"; W136): the copies that bring every
-  // body that draws a wave table to the sea of sky time `sky_time_s`, made by the frame's "water
-  // wind" transfer into `materials` and `water_surfaces()`; empty when nothing moved.
+  // **The scene's wind on the water** (scene_wind.h; gfx.md, "The wind a scene names"; W136): the
+  // copies that bring every body that draws a wave table to the sea of sky time `sky_time_s`, made
+  // by the frame's "water wind" transfer into `materials` and `water_surfaces()`; empty when
+  // nothing moved.
   std::span<const WaterWindUpload> water_wind_frame(f64 sky_time_s);
   const gfx::BufferResource& water_surfaces() const noexcept { return water_surfaces_; }
   u32 max_joints() const noexcept { return max_joints_; }
@@ -1429,8 +1431,8 @@ class GpuScene {
   bool texture_bound_active() const noexcept { return texture_bound_ != nullptr; }
   const TextureBoundUse& texture_bound_use() const noexcept;
   // **The residency** (R172 stage 2; texture.md, "Stage 2: the trim under a ceiling"): with a
-  // ceiling, the run of slots its feedback reads (false: none), that feedback's codes for a recorded
-  // frame of `texture_residency_frame`'s count, and its GPU time.
+  // ceiling, the run of slots its feedback reads (false: none), that feedback's codes for a
+  // recorded frame of `texture_residency_frame`'s count, and its GPU time.
   bool texture_residency_run(u32& first_slot, u32& count) const noexcept;
   u64 texture_residency_frame() const noexcept;
   void texture_residency_fold(const u32* codes, u32 count, u64 frame) noexcept;
@@ -1677,7 +1679,8 @@ class GpuScene {
     gfx::BufferResource pairs;
     Vector<InstanceRange> pending;
     bool all = true;
-    bool carry_read = false;  // a frame's carry read it since its last write (T167, `prepare_tables`)
+    bool carry_read =
+        false;  // a frame's carry read it since its last write (T167, `prepare_tables`)
     // What the numberings since this set was last written did to its slots' `first_pair`s, as
     // runs (T154, `number_first_pairs`): applied on the GPU before its copies, and the pairs of
     // the live slots among them not copied expanded again. Their records and their top-level
@@ -1879,9 +1882,9 @@ class GpuScene {
                              std::string* error);
   TextureRoom texture_room_;
   TextureUse texture_use_;
-  Vector<TileTexture> tile_textures_;        // the admitted ones held now, unordered
-  Vector<TileTexture> leaving_textures_;     // let go, their images alive a few frames more
-  HashMap<u64, TextureInfo> load_textures_;  // the load's built textures by key: pinned
+  Vector<TileTexture> tile_textures_;           // the admitted ones held now, unordered
+  Vector<TileTexture> leaving_textures_;        // let go, their images alive a few frames more
+  HashMap<u64, TextureInfo> load_textures_;     // the load's built textures by key: pinned
   Vector<TextureRecord> load_texture_records_;  // every texture the load uploaded (R172)
   // The bound's state (R172 stage 1), null when it manages nothing; its load-time half.
   struct TextureBoundDelete {  // the state is complete only in gpu_scene_texture_bound.cpp
@@ -2157,9 +2160,9 @@ class GpuScene {
   // set written carries them over on the GPU as it carries a table, else written whole.
   bool rt_records_all_ = false;
   gfx::BufferResource rt_records_from_;
-  u32 compact_pct_ = k_default_compact_pct;    // `renderer.tiles.compact_pct`, read at create
-  u32 pair_limit_ = k_max_pairs;               // what the tail's layout may reach (`pair_limit`)
-  bool relayout_pending_ = false;              // a growth the pool or the chain has not followed
+  u32 compact_pct_ = k_default_compact_pct;  // `renderer.tiles.compact_pct`, read at create
+  u32 pair_limit_ = k_max_pairs;             // what the tail's layout may reach (`pair_limit`)
+  bool relayout_pending_ = false;            // a growth the pool or the chain has not followed
   bool rt_relayout_failed_ = false;  // a swapped chain lay-out failed part way: redo it whole
   u32 fail_rt_steps_ = 0;            // `fail_next`: the test's faults still to come
   u32 fail_flora_ = 0;
@@ -2177,8 +2180,9 @@ class GpuScene {
   // per-frame sets (`resize_ray_tracing`). Made at create and again by `relayout`.
   bool lay_out_ray_tracing(std::string* error, RelayoutRetired* retired = nullptr);
   void destroy_ray_tracing_layout() noexcept;
-  // The chain's layout no longer matches the instance capacity or the stride (T152): a growth of the
-  // tail's trees alone leaves it as it is. And whether the device holds its new half beside the old.
+  // The chain's layout no longer matches the instance capacity or the stride (T152): a growth of
+  // the tail's trees alone leaves it as it is. And whether the device holds its new half beside the
+  // old.
   bool rt_layout_outgrown() const noexcept;
   bool rt_relayout_fits() const noexcept;
   u64 compactions_ = 0;

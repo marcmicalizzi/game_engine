@@ -2,10 +2,9 @@
 // in"): `GpuScene::relayout` and the streamed trees' tables' growth, moved here from gpu_scene.cpp,
 // and since T152 made beside the frames in flight rather than after waiting for them.
 
-#include <systems/renderer/gpu_scene.h>
-
 #include <core/profiling/startup_trace.h>  // stages only: timing, never logic
 #include <domain/gfx/device.h>
+#include <systems/renderer/gpu_scene.h>
 
 #include <algorithm>
 #include <string>

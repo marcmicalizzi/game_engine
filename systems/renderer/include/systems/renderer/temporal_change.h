@@ -20,8 +20,8 @@
 // 4K run of hundreds of frames costs the last picture's 33 MB and a few hundred kilobytes.
 //
 // Beside the histograms, each frame's mean luma and mean light over the whole picture and over its
-// centre (the middle half in each direction): the series a moving case (the sun at the day's rate, a
-// walk through a doorway) is read from — how many frames the picture's level takes to settle, and
+// centre (the middle half in each direction): the series a moving case (the sun at the day's rate,
+// a walk through a doorway) is read from — how many frames the picture's level takes to settle, and
 // whether it overshoots or trails.
 
 #include <core/base/types.h>
@@ -62,7 +62,7 @@ class TemporalChange {
     // of one channel alone moves the luma by 0.07 to 0.72 of a code, so this share is the larger.
     f64 any_channel_one = 0.0;
     f64 any_channel_three = 0.0;
-    u64 light_pairs = 0;  // those with light in either frame
+    u64 light_pairs = 0;   // those with light in either frame
     f64 mean_light = 0.0;  // relative change of the light, a fraction
     f64 median_light = 0.0;
     f64 p95_light = 0.0;
@@ -90,11 +90,11 @@ class TemporalChange {
   u32 height_ = 0;
   u32 frames_ = 0;
   Vector<u8> previous_;
-  Vector<u64> code_hist_;   // (k_bands + 1) * k_code_bins
-  Vector<u64> light_hist_;  // (k_bands + 1) * k_light_bins
-  Vector<f64> code_sum_;    // k_bands + 1
-  Vector<f64> light_sum_;   // k_bands + 1
-  Vector<u64> lit_pairs_;   // k_bands + 1
+  Vector<u64> code_hist_;      // (k_bands + 1) * k_code_bins
+  Vector<u64> light_hist_;     // (k_bands + 1) * k_light_bins
+  Vector<f64> code_sum_;       // k_bands + 1
+  Vector<f64> light_sum_;      // k_bands + 1
+  Vector<u64> lit_pairs_;      // k_bands + 1
   Vector<u64> channel_one_;    // k_bands + 1: pairs with a channel a code or more apart
   Vector<u64> channel_three_;  // k_bands + 1: ... three or more
   Vector<f64> mean_luma_;

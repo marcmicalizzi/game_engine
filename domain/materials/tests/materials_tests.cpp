@@ -159,8 +159,8 @@ TEST_CASE("materials hostile: a map's file climbing out of its pack is refused")
   // T191: a pack's manifest is bytes a scene's `load.materials` may point anywhere; a map is held
   // under its pack by the rule a document holds a layer's file to.
   // As JSON text: `\\` is one backslash once read.
-  for (const char* climbing : {"../r/b.png", "r/../../b.png", R"(r\\..\\..\\b.png)", "C:b.png",
-                               "/r/b.png", "r//b.png"}) {
+  for (const char* climbing :
+       {"../r/b.png", "r/../../b.png", R"(r\\..\\..\\b.png)", "C:b.png", "/r/b.png", "r//b.png"}) {
     CAPTURE(climbing);
     std::string text = pack_text("rock/granite");
     text.replace(text.find("r/b.png"), 7, climbing);

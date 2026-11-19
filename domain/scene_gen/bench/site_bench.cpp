@@ -58,7 +58,8 @@ void run(bench::State& state, u32 fields) {
     f64 sum = 0.0;
     for (u32 i = 0; i < 1024; ++i) {
       at = (at + 7919 * 1000 + 13) % 2000000;
-      const SiteSample s = site.sample_mm(ground, at - 1000000, (at * 3) % 2000000 - 1000000, fields);
+      const SiteSample s =
+          site.sample_mm(ground, at - 1000000, (at * 3) % 2000000 - 1000000, fields);
       sum += s.slope + s.water_m() + s.heat_load;
     }
     bench::keep(sum);

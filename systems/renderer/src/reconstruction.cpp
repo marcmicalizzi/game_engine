@@ -18,9 +18,8 @@ bool null_record(void*, const ReconstructionFrame&, ReconstructionOutput& out, s
 }
 u64 null_bytes(const void*) noexcept { return 0; }
 
-constexpr ReconstructionProviderDesc k_null_provider{k_reconstruction_null, &null_create,
-                                                     &null_destroy,        &null_resize,
-                                                     &null_record,         &null_bytes};
+constexpr ReconstructionProviderDesc k_null_provider{
+    k_reconstruction_null, &null_create, &null_destroy, &null_resize, &null_record, &null_bytes};
 
 ReconstructionProviderDesc g_providers[k_max_reconstruction_providers] = {k_null_provider};
 u32 g_provider_count = 1;

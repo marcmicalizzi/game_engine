@@ -2,15 +2,14 @@
 // docs/subsystems/doc.md, "Checkpoints"), through the git on PATH: taken, listed newest first with
 // their attribution and journal positions, found by an abbreviated name and refused for a name that
 // is not one of this document's, and read back — a single-file layer and a tile-partitioned one —
-// record for record as they were saved, with a blob the checkpoint holds read back by name after the
-// store collected it. A machine with no git skips every case, saying so; `ENGINE_GIT` naming nothing
-// runnable is the unavailable path.
+// record for record as they were saved, with a blob the checkpoint holds read back by name after
+// the store collected it. A machine with no git skips every case, saying so; `ENGINE_GIT` naming
+// nothing runnable is the unavailable path.
+#include <core/platform/process.h>
+#include <core/schema/json_reflect.h>
 #include <domain/doc/blob_store.h>
 #include <domain/doc/checkpoint.h>
 #include <domain/doc/document_store.h>
-
-#include <core/platform/process.h>
-#include <core/schema/json_reflect.h>
 
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
@@ -85,7 +84,8 @@ TEST_CASE("checkpoints: taken, listed, found, and read back as they were saved")
   REQUIRE(Checkpoints::list(vfs, dir, 0, listed, &error));
   CHECK(listed.empty());  // no repository yet
 
-  const ObjectId a = Id128::from_parts(3, 1), b = Id128::from_parts(3, 2), f = Id128::from_parts(3, 3);
+  const ObjectId a = Id128::from_parts(3, 1), b = Id128::from_parts(3, 2),
+                 f = Id128::from_parts(3, 3);
   doc.set_edit_layer(tiles);
   JsonValue pa = JsonValue::object();
   pa.set("position", position(5, 5));
@@ -184,8 +184,8 @@ TEST_CASE("checkpoints: taken, listed, found, and read back as they were saved")
   // Nothing of the protocol's or the journal's is in a checkpoint: only the document's files.
   REQUIRE(vfs.write(DocumentStore::path_of(dir, "leases.json"), "{}\n") == io::Status::Ok);
   CheckpointInfo third;
-  REQUIRE(Checkpoints::take(vfs, dir, doc, manifest, "with a side file", who("cy", ""), third,
-                            &error));
+  REQUIRE(
+      Checkpoints::take(vfs, dir, doc, manifest, "with a side file", who("cy", ""), third, &error));
   REQUIRE(Checkpoints::read(vfs, dir, third.id, state, &error));
   CHECK(state.layers.size() == 2);
 }
@@ -207,19 +207,22 @@ TEST_CASE("checkpoints: a label is one bounded line, and the listing lists only 
   REQUIRE(Checkpoints::take(vfs, dir, doc, manifest, "first", who("ann", ""), info, &error));
 
   const std::string forged = std::string(40, 'a');
-  const std::string hostile =
-      std::string("evil\x1f\x1f\x1e") + forged + "\x1f\x1f" + "forged\x1f";
+  const std::string hostile = std::string("evil\x1f\x1f\x1e") + forged + "\x1f\x1f" + "forged\x1f";
   CHECK_FALSE(Checkpoints::take(vfs, dir, doc, manifest, hostile, who("ann", ""), info, &error));
   CHECK(error.find("control character") != std::string::npos);
-  CHECK_FALSE(Checkpoints::take(vfs, dir, doc, manifest, "two\nlines", who("ann", ""), info, &error));
+  CHECK_FALSE(
+      Checkpoints::take(vfs, dir, doc, manifest, "two\nlines", who("ann", ""), info, &error));
   const std::string longest(Checkpoints::k_max_label_bytes, 'l');
-  CHECK_FALSE(Checkpoints::take(vfs, dir, doc, manifest, longest + "l", who("ann", ""), info,
-                                &error));
+  CHECK_FALSE(
+      Checkpoints::take(vfs, dir, doc, manifest, longest + "l", who("ann", ""), info, &error));
   CHECK(error.find("at most") != std::string::npos);
   REQUIRE(Checkpoints::take(vfs, dir, doc, manifest, longest, who("ann", ""), info, &error));
   CHECK(info.label == longest);
   // An actor holding the separators is a trailer's value: it is written as one line of text.
-  Attribution odd = who("b\x1e" "ob", "");
+  Attribution odd =
+      who("b\x1e"
+          "ob",
+          "");
   REQUIRE(Checkpoints::take(vfs, dir, doc, manifest, "odd actor", odd, info, &error));
 
   // By hand, past the engine: the hostile subject, which the format before this change listed as
@@ -229,10 +232,23 @@ TEST_CASE("checkpoints: a label is one bounded line, and the listing lists only 
   const std::string git_dir = "--git-dir=" + native + "/.git";
   const std::string work_tree = "--work-tree=" + native;
   const std::string hooks = "core.hooksPath=" + native + "/.git/no-hooks";
-  const std::string_view argv[] = {git,  git_dir, work_tree, "-c", "user.name=someone", "-c",
-                                   "user.email=someone@localhost", "-c", "commit.gpgsign=false",
-                                   "-c", hooks, "commit", "-q", "--allow-empty",
-                                   "--cleanup=verbatim", "-F", "-"};
+  const std::string_view argv[] = {git,
+                                   git_dir,
+                                   work_tree,
+                                   "-c",
+                                   "user.name=someone",
+                                   "-c",
+                                   "user.email=someone@localhost",
+                                   "-c",
+                                   "commit.gpgsign=false",
+                                   "-c",
+                                   hooks,
+                                   "commit",
+                                   "-q",
+                                   "--allow-empty",
+                                   "--cleanup=verbatim",
+                                   "-F",
+                                   "-"};
   platform::Process process;
   std::string why;
   REQUIRE_MESSAGE(process.spawn(argv, &why, true, true), why);

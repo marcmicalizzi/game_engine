@@ -171,10 +171,10 @@ inline constexpr f32 k_gi_change_sigmas = 4.0f;
 // small to be told from the noise at four deviations (under about 11 % of a coarse cell's light)
 // still crosses two and a half within a few frames and is followed at today's pace while it lasts,
 // where leg 3's rule left it to the long memory (a 10 % step settled in 258 frames against today's
-// 84). Chosen by a simulation of the fold (sixteen coarse cells over 1,024 own ones, the plain wall's
-// heavy samples; renderer.md has the table): at 2.5 a 10 % step settles in 122 frames, at 3 in 303,
-// and the still wall's variance rises 13 % at 2.5 (the frames a parent's chance excursion lets its
-// children step at today's rate), its 99th percentile change between frames by 0.2 %.
+// 84). Chosen by a simulation of the fold (sixteen coarse cells over 1,024 own ones, the plain
+// wall's heavy samples; renderer.md has the table): at 2.5 a 10 % step settles in 122 frames, at 3
+// in 303, and the still wall's variance rises 13 % at 2.5 (the frames a parent's chance excursion
+// lets its children step at today's rate), its 99th percentile change between frames by 0.2 %.
 inline constexpr f32 k_gi_follow_sigmas = 2.5f;
 // **R171, fourth leg: only a cell that takes this many samples a frame tests itself.** An own cell
 // taking the trickle's eleven tests a short mean of 10 % noise, and across a 4K view's fifty
@@ -500,10 +500,10 @@ inline void gi_memory_fold(GiMemoryCell& c, u32 n, f32 frame_mean, bool drop, bo
 // over it (a few heavy samples). Rounded to nearest, the frequent small steps down are lost under
 // half a unit of the half and the rare large ones up are kept, so the mean climbs: +9 % in a
 // simulation of the plain wall's samples (+0.2 % with the mean in float), which is the level's rise
-// leg 3 measured (0.2 to 1.8 %) and could not place. Rounded up or down with the chance its distance
-// from each says, a half is the float in expectation. The chance is drawn from a hash of the cell's
-// own words (its frame's sums and its count and old mean), which the same samples make the same
-// wherever the scene stands, so the bytes still follow the scene and not the slot.
+// leg 3 measured (0.2 to 1.8 %) and could not place. Rounded up or down with the chance its
+// distance from each says, a half is the float in expectation. The chance is drawn from a hash of
+// the cell's own words (its frame's sums and its count and old mean), which the same samples make
+// the same wherever the scene stands, so the bytes still follow the scene and not the slot.
 inline u32 gi_round_hash(u32 a, u32 b, u32 c, u32 d) noexcept {
   u32 h = a * 0x9e3779b1u ^ (b + 0x7f4a7c15u);
   h = (h ^ (h >> 16)) * 0x85ebca6bu;
@@ -960,8 +960,7 @@ inline constexpr u32 k_gi_guide_full_frames = 8;
 constexpr f32 gi_guide_alpha(u32 trained, u32 frames) noexcept {
   if (trained < k_gi_guide_trained || frames < 2) return 0.0f;
   const u32 f = frames < k_gi_guide_full_frames ? frames : k_gi_guide_full_frames;
-  return k_gi_guide_alpha * static_cast<f32>(f - 1) /
-         static_cast<f32>(k_gi_guide_full_frames - 1);
+  return k_gi_guide_alpha * static_cast<f32>(f - 1) / static_cast<f32>(k_gi_guide_full_frames - 1);
 }
 
 // The guides a cache of `count` cells holds: one to 256 cells (a guide's cell is 64 own cells on a
@@ -986,9 +985,11 @@ inline u32 gi_guide_bin(f32 x, f32 y, f32 z) noexcept {
   const f32 u = (1.0f - y) * 0.5f * static_cast<f32>(k_gi_guide_rows);
   f32 v = std::atan2(z, x) * (1.0f / 6.28318530718f);
   v = (v - std::floor(v)) * static_cast<f32>(k_gi_guide_cols);
-  const u32 row = u <= 0.0f ? 0u : (u >= static_cast<f32>(k_gi_guide_rows) ? k_gi_guide_rows - 1
-                                                                            : static_cast<u32>(u));
-  const u32 col = v >= static_cast<f32>(k_gi_guide_cols) ? k_gi_guide_cols - 1 : static_cast<u32>(v);
+  const u32 row = u <= 0.0f ? 0u
+                            : (u >= static_cast<f32>(k_gi_guide_rows) ? k_gi_guide_rows - 1
+                                                                      : static_cast<u32>(u));
+  const u32 col =
+      v >= static_cast<f32>(k_gi_guide_cols) ? k_gi_guide_cols - 1 : static_cast<u32>(v);
   return row * k_gi_guide_cols + col;
 }
 // The direction at (`u`, `v`) of 0..1 inside bin `bin`: uniform in the bin's solid angle.
@@ -1037,10 +1038,10 @@ inline void gi_guide_fold(GiGuide& g) noexcept {
   const u32 n = g.frame_count;
   if (n == 0) return;
   const u64 frames = u64{n} * k_gi_guide_history_frames;
-  const u32 cap = frames > 0x7fffffffu
-                      ? 0x7fffffffu
-                      : (frames < k_gi_guide_min_history ? k_gi_guide_min_history
-                                                         : static_cast<u32>(frames));
+  const u32 cap =
+      frames > 0x7fffffffu
+          ? 0x7fffffffu
+          : (frames < k_gi_guide_min_history ? k_gi_guide_min_history : static_cast<u32>(frames));
   const u32 total = g.trained + n < cap ? g.trained + n : cap;
   const f32 rate = static_cast<f32>(n) / static_cast<f32>(total);
   const f32 per_sample = 1.0f / (static_cast<f32>(1u << k_gi_fraction_bits) * static_cast<f32>(n));

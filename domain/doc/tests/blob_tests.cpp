@@ -1,14 +1,13 @@
 // The blob store beside a document (blob_store.h; docs/subsystems/doc.md, "Blobs"): the same bytes
 // the same name and file, a read checked against the name, a reference found wherever it stands in
-// a value, a save that writes no blob, a merge that treats a reference as a value, and — the property
-// the store exists for — a seeded run of puts, references, clears, undos, redos, dropped redo tails,
-// saves, reloads and collections after which every name the document or its journal can still reach
-// is stored and readable, and nothing else is.
+// a value, a save that writes no blob, a merge that treats a reference as a value, and — the
+// property the store exists for — a seeded run of puts, references, clears, undos, redos, dropped
+// redo tails, saves, reloads and collections after which every name the document or its journal can
+// still reach is stored and readable, and nothing else is.
+#include <core/schema/json_reflect.h>
 #include <domain/doc/blob_store.h>
 #include <domain/doc/document_store.h>
 #include <domain/doc/merge.h>
-
-#include <core/schema/json_reflect.h>
 
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
@@ -288,7 +287,8 @@ TEST_CASE("blobs: a merge treats a reference as a value") {
   CHECK(merged.conflicts[0].theirs == ref_json(r2));
 }
 
-TEST_CASE("blobs: seeded puts, references, undo, redo, saves and collections keep what can come back") {
+TEST_CASE(
+    "blobs: seeded puts, references, undo, redo, saves and collections keep what can come back") {
   TempDir tmp("engine_doc_blob_property");
   io::Vfs vfs;
   REQUIRE(vfs.mount("docs", tmp.path(), /*writable=*/true) == io::Status::Ok);
@@ -348,8 +348,7 @@ TEST_CASE("blobs: seeded puts, references, undo, redo, saves and collections kee
       const BlobRef ref = m.ref;
       if (!BlobStore::has(vfs, dir, ref.blob, ref.size)) {
         BlobRef again;
-        REQUIRE(BlobStore::put(vfs, dir, bytes_of(m.seed, m.size), "test", again, nullptr,
-                               &error));
+        REQUIRE(BlobStore::put(vfs, dir, bytes_of(m.seed, m.size), "test", again, nullptr, &error));
         CHECK(again.blob == ref.blob);
       }
       JsonValue value = JsonValue::array();
@@ -427,8 +426,8 @@ TEST_CASE("blobs: seeded puts, references, undo, redo, saves and collections kee
   JsonValue root = JsonValue::object();
   root.set("blob", JsonValue(fresh.blob));
   BlobCollectReport rooted;
-  REQUIRE(BlobStore::collect(vfs, dir, doc, std::span<const JsonValue>(&root, 1), now, rooted,
-                             &error));
+  REQUIRE(
+      BlobStore::collect(vfs, dir, doc, std::span<const JsonValue>(&root, 1), now, rooted, &error));
   CHECK(BlobStore::has(vfs, dir, fresh.blob));
   // A dry run removes nothing and says what it would.
   BlobCollectOptions dry = now;

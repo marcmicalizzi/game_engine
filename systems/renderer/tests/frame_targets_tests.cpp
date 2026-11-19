@@ -185,9 +185,9 @@ TEST_CASE("frame targets: a renderer holds the Hi-Z and the depth image only whe
     }
     CapturedFrame shot;
     REQUIRE_MESSAGE(shoot(rig, 0, 2, shot), rig.error);
-    MESSAGE(name << ": occlusion " << rig.resolved.occlusion << ", direct "
-                      << rig.resolved.direct << "; Hi-Z " << rig.renderer.hiz_bytes()
-                      << " bytes, depth " << rig.renderer.depth_bytes() << " bytes");
+    MESSAGE(name << ": occlusion " << rig.resolved.occlusion << ", direct " << rig.resolved.direct
+                 << "; Hi-Z " << rig.renderer.hiz_bytes() << " bytes, depth "
+                 << rig.renderer.depth_bytes() << " bytes");
     CHECK((rig.renderer.hiz_bytes() > 0) == rig.resolved.occlusion);
     CHECK((rig.renderer.depth_bytes() > 0) == rig.resolved.direct);
     if (mode.raster == RasterMode::RayTrace) {  // the traced defaults: neither, by name

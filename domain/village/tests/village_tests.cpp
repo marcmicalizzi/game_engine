@@ -993,7 +993,8 @@ TEST_CASE("village: houses differ by household, each household fits its house, a
   std::string error;
   REQUIRE_MESSAGE(plan_scene_village(p, context, plan, error), error);
   MESSAGE("houses that differ: " << plan.built << " of " << p.houses << " built, " << plan.refused
-                                 << " refused, " << plan.no_fit << " no fit: " << plan.first_refusal);
+                                 << " refused, " << plan.no_fit
+                                 << " no fit: " << plan.first_refusal);
   CHECK(plan.built == p.houses);
   CHECK(plan.refused == 0);
   u32 one = 0, two = 0, fitted = 0;
@@ -1016,10 +1017,10 @@ TEST_CASE("village: houses differ by household, each household fits its house, a
     one += storeys == 1 ? 1u : 0u;
     two += storeys == 2 ? 1u : 0u;
     fitted += hh.find("drawn_persons")->as_uint() != persons ? 1u : 0u;
-    const u64 sleeps = type == "cot"              ? 2u
-                       : type == "hall-parlour"   ? (storeys >= 2 ? 6u : 4u)
+    const u64 sleeps = type == "cot"             ? 2u
+                       : type == "hall-parlour"  ? (storeys >= 2 ? 6u : 4u)
                        : type == "cross-passage" ? 8u
-                                                  : 6u;
+                                                 : 6u;
     CHECK_MESSAGE(persons <= sleeps, "house " << q.house << ": " << persons << " in a " << type);
   }
   MESSAGE("tenements of one storey " << one << ", of two " << two << ", households fitted "
@@ -1489,9 +1490,9 @@ TEST_CASE("village: one state's tiles asked on eight threads are the tiles asked
   };
   const f64 locked_ms = fill_ms(true), side_ms = fill_ms(false);
   MESSAGE(asks.size() << " tiles (" << houses << " houses, " << shapes << " shapes), asked on "
-                      << k_threads << " threads at once, " << k_rounds << " rounds: "
-                      << differ.load() << " differ; a fill on eight threads " << locked_ms
-                      << " ms under one lock, " << side_ms << " ms side by side");
+                      << k_threads << " threads at once, " << k_rounds
+                      << " rounds: " << differ.load() << " differ; a fill on eight threads "
+                      << locked_ms << " ms under one lock, " << side_ms << " ms side by side");
   CHECK(failed.load() == 0);
   CHECK(differ.load() == 0);
   desc->close(state);

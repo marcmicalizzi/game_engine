@@ -1,21 +1,25 @@
 #pragma once
 
-// Content-addressed blobs beside a document (docs/plan/03-data-model.md §3.2; docs/subsystems/doc.md,
-// "Blobs"): bytes too large or too binary for a property — a heightfield's grid, a painted mask, a
-// generated image — kept once each under the document's directory and named by their SHA-256,
+// Content-addressed blobs beside a document (docs/plan/03-data-model.md §3.2;
+// docs/subsystems/doc.md, "Blobs"): bytes too large or too binary for a property — a heightfield's
+// grid, a painted mask, a generated image — kept once each under the document's directory and named
+// by their SHA-256,
 //
 //     <dir>/blobs/<first two hex digits>/<the other 62>
 //
 // and referenced from a property by an `engine.doc.BlobRef` (`{"blob": <name>, "size": n, "media":
-// ...}`). The document holds the name, never the bytes, so its JSON stays small and diffable, a merge
-// treats the reference as a value like any other, and two references to equal bytes are one blob.
+// ...}`). The document holds the name, never the bytes, so its JSON stays small and diffable, a
+// merge treats the reference as a value like any other, and two references to equal bytes are one
+// blob.
 //
 // One store per document, not per layer or per tile: a tile file names a blob by its hash, and the
 // bytes are found by the hash alone, so moving a record between tiles moves only the reference.
 //
-// - **The same bytes always get the same name and the same file.** The file is the bytes and nothing
+// - **The same bytes always get the same name and the same file.** The file is the bytes and
+// nothing
 //   else, so the name is a function of the content and the content of the name.
-// - **A blob is written when it is put, not when the document is saved**, atomically (a sibling file
+// - **A blob is written when it is put, not when the document is saved**, atomically (a sibling
+// file
 //   renamed into place), and never changed after: a save writes no blob and its log names none. A
 //   blob nothing references yet is harmless; a reference to a blob that is not there is not, which
 //   is why a session refuses a command naming one its store does not hold.
@@ -28,11 +32,10 @@
 //   not taken from under it. Collection is explicit (`collect`, `doc.collect_blobs`), never a side
 //   effect of a save: it reads the whole document and its journal.
 
+#include <core/containers/hash_set.h>
 #include <domain/doc/document.h>
 #include <domain/doc/document_store.h>
 #include <foundation/io/vfs.h>
-
-#include <core/containers/hash_set.h>
 
 #include <span>
 #include <string>
@@ -58,10 +61,10 @@ struct BlobCollectOptions {
 };
 
 struct BlobCollectReport {
-  u32 stored = 0;           // blobs in the store before the collection
+  u32 stored = 0;  // blobs in the store before the collection
   u64 stored_bytes = 0;
-  u32 referenced = 0;       // distinct names the document, its journal and the roots reference
-  u32 kept_young = 0;       // referenced by nothing, but younger than the grace period
+  u32 referenced = 0;  // distinct names the document, its journal and the roots reference
+  u32 kept_young = 0;  // referenced by nothing, but younger than the grace period
   u64 removed_bytes = 0;
   Vector<std::string> removed;  // names removed (or that a dry run would remove), in name order
   Vector<std::string> missing;  // referenced names the store does not hold, in name order

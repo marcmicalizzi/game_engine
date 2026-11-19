@@ -159,7 +159,8 @@ void load(const gfx::Device& device, const test::TempDir& tmp, const std::string
   if (as.second_water) {
     for (u32 i = 0; i < out.data.instances.size(); ++i) {
       const u32 mesh = out.data.instances[i].mesh;
-      if (mesh >= out.data.mesh_info.size() || !out.data.mesh_info[mesh].water.has_value()) continue;
+      if (mesh >= out.data.mesh_info.size() || !out.data.mesh_info[mesh].water.has_value())
+        continue;
       gfx::InstanceDesc copy = out.data.instances[i];
       copy.first_pair = out.data.pair_count;
       out.data.pair_count += out.data.parts[mesh].cluster_count;
@@ -385,10 +386,10 @@ TEST_CASE("water wind: a hand gale raises the bound of every instance of a water
     const f32 back_padding = shot.scene.instance_record(water[1])->bounds_padding;
     const f64 fetch = 20000.0;
     const f64 rise = 2.0 * (gfx::sea_height(20.0, fetch) - gfx::sea_height(3.0, fetch));
-    MESSAGE("two instances of one body: loaded " << load_padding[0] << " and " << load_padding[1]
-                                                 << " m, under a hand gale " << gale_padding[0]
-                                                 << " and " << gale_padding[1] << " m, the second "
-                                                 << back_padding << " m cleared");
+    MESSAGE("two instances of one body: loaded "
+            << load_padding[0] << " and " << load_padding[1] << " m, under a hand gale "
+            << gale_padding[0] << " and " << gale_padding[1] << " m, the second " << back_padding
+            << " m cleared");
     CHECK(load_padding[1] == load_padding[0]);
     CHECK(static_cast<f64>(gale_padding[1]) >= static_cast<f64>(load_padding[1]) + rise - 1e-3);
     CHECK(gale_padding[1] == gale_padding[0]);
@@ -400,9 +401,9 @@ TEST_CASE("water wind: a hand gale raises the bound of every instance of a water
 // **A bound the wind raises on the frame after the tables grow reaches the GPU's table** (review
 // A2 of batch 67): in a scene that takes a tail, a tail that grows the per-pair buffers makes every
 // table set again, and the next frame carries its set over from the old one (T167). The wind's
-// raise marks the water's slot before that frame's tables are prepared; until 2026-11-17 such a mark
-// reached no set, and the water kept its smaller cull spheres under the gale's higher crests. Each
-// set in turn is read back and must hold the CPU's bound.
+// raise marks the water's slot before that frame's tables are prepared; until 2026-11-17 such a
+// mark reached no set, and the water kept its smaller cull spheres under the gale's higher crests.
+// Each set in turn is read back and must hold the CPU's bound.
 TEST_CASE("water wind: a hand gale on the frame after the tables grow reaches every table set") {
   const test::TempDir tmp("water_wind_grown");
   gfx::Device device;
@@ -431,10 +432,9 @@ TEST_CASE("water wind: a hand gale on the frame after the tables grow reaches ev
       tail.push_back(ground);
     }
     std::string error;
-    REQUIRE_MESSAGE(
-        shot.renderer.set_dynamic_instances(std::span<const SceneInstance>(tail.data(), tail.size()),
-                                            &error),
-        error);
+    REQUIRE_MESSAGE(shot.renderer.set_dynamic_instances(
+                        std::span<const SceneInstance>(tail.data(), tail.size()), &error),
+                    error);
     REQUIRE(shot.scene.pair_stride() != stride);
     const f32 load_padding = shot.scene.instance_record(shot.water_instance)->bounds_padding;
     REQUIRE(tunables::apply_overrides("renderer.wind.speed_m_s=20"));
@@ -447,10 +447,9 @@ TEST_CASE("water wind: a hand gale on the frame after the tables grow reaches ev
       stale += held.bounds_padding != gale_padding ? 1u : 0u;
     }
     REQUIRE(tunables::apply_overrides("renderer.wind.speed_m_s=-1"));
-    MESSAGE("bound after the tables grew: loaded " << load_padding << " m, the gale's "
-                                                   << gale_padding << " m; " << stale << " of "
-                                                   << 2 * shot.scene.table_sets()
-                                                   << " frames' sets held another");
+    MESSAGE("bound after the tables grew: loaded "
+            << load_padding << " m, the gale's " << gale_padding << " m; " << stale << " of "
+            << 2 * shot.scene.table_sets() << " frames' sets held another");
     CHECK(gale_padding > load_padding);
     CHECK(stale == 0);
   }
@@ -467,16 +466,19 @@ TEST_CASE("water wind: a sky's swell comes ashore and is drawn, a function of th
   {
     Shot none;
     Shot swell;
-    load(device, tmp, "none",
-         wind_scene(R"("wind_m_s": 2, "fetch_km": 20)", R"("wind": {"speed_m_s": 3, "to_deg": 30})"),
-         none);
-    load(device, tmp, "swell",
-         wind_scene(R"("wind_m_s": 2, "fetch_km": 20)",
-                    R"("wind": {"speed_m_s": 3, "to_deg": 30}, "swell": {"period_h": 24, "track": [)"
-                    R"({"hour": 0, "height_m": 0.4, "period_s": 12, "to_deg": 45},)"
-                    R"({"hour": 12, "height_m": 1.2, "period_s": 10, "to_deg": 45}]})"),
-         swell);
-    const SceneWater& water = *swell.data.mesh_info[swell.data.instances[swell.water_instance].mesh].water;
+    load(
+        device, tmp, "none",
+        wind_scene(R"("wind_m_s": 2, "fetch_km": 20)", R"("wind": {"speed_m_s": 3, "to_deg": 30})"),
+        none);
+    load(
+        device, tmp, "swell",
+        wind_scene(R"("wind_m_s": 2, "fetch_km": 20)",
+                   R"("wind": {"speed_m_s": 3, "to_deg": 30}, "swell": {"period_h": 24, "track": [)"
+                   R"({"hour": 0, "height_m": 0.4, "period_s": 12, "to_deg": 45},)"
+                   R"({"hour": 12, "height_m": 1.2, "period_s": 10, "to_deg": 45}]})"),
+        swell);
+    const SceneWater& water =
+        *swell.data.mesh_info[swell.data.instances[swell.water_instance].mesh].water;
     // The body's first train is the swell at its largest, and the body draws the sky's swell.
     CHECK(water.scene_swell);
     CHECK(water.swell_train_m == doctest::Approx(1.2f).epsilon(0.02));

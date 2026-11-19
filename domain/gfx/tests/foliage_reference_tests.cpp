@@ -122,11 +122,17 @@ TEST_CASE("foliage optics: reflected plus transmitted never passes one") {
   };
   const Case cases[] = {
       // A pack's extremes: a white texel, a light one, and the pair that sums to one.
-      {1.0, 1.0, 0.0},  {1.0, 1.0, 1.0},   {0.8, 1.0, 0.0},  {0.8, 1.0, 0.5},
-      {0.5, 1.0, 0.0},  {0.5, 1.0, 1.0},
+      {1.0, 1.0, 0.0},
+      {1.0, 1.0, 1.0},
+      {0.8, 1.0, 0.0},
+      {0.8, 1.0, 0.5},
+      {0.5, 1.0, 0.0},
+      {0.5, 1.0, 1.0},
       // The importer's: base colour 1 at t = 0.25, 0.5 and 0.75, reflectance 1 - t and the share
       // t / (1 - t) at most 1, which the extension's colour factor of white does not change.
-      {0.75, 1.0 / 3.0, 0.0}, {0.5, 1.0, 0.0}, {0.25, 1.0, 0.0},
+      {0.75, 1.0 / 3.0, 0.0},
+      {0.5, 1.0, 0.0},
+      {0.25, 1.0, 0.0},
   };
   for (const double view_deg : {0.0, 60.0, 89.0}) {
     const double a = view_deg * ref::k_pi / 180.0;

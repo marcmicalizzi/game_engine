@@ -191,38 +191,38 @@ struct GiStats {
 //   shadow_cull    the light-view cull's share of `shadow`
 //   total          what the timer measured
 //   unbucketed     `total` less every top-level bucket: zero when every zone is named (R124, R130)
-#define ENGINE_RENDERER_PASS_BUCKETS(X)                                                       \
-  X(cull, true)                                                                               \
-  X(hw, true)                                                                                 \
-  X(sw, true)                                                                                 \
-  X(hiz, true)                                                                                \
-  X(resolve, true)                                                                            \
-  X(deform, true)                                                                             \
-  X(deform_alloc, true)                                                                       \
-  X(deform_cache, true)                                                                       \
-  X(trace, true)                                                                              \
-  X(rt, true)                                                                                 \
-  X(shadow, true)                                                                             \
-  X(tables, true)                                                                             \
-  X(terrain_upload, true)                                                                     \
-  X(sky, true)                                                                                \
-  X(frame_passes, true)                                                                       \
-  X(half_sun, true)                                                                           \
-  X(gi_trace, true)                                                                           \
-  X(gi_fold, true)                                                                            \
-  X(resolve_classify, true)                                                                   \
-  X(motion, true)                                                                             \
-  X(clas, false)                                                                              \
-  X(blas, false)                                                                              \
-  X(clas_cache, false)                                                                        \
-  X(rt_records, false)                                                                        \
-  X(rt_ranges, false)                                                                         \
-  X(rt_drop, false)                                                                           \
-  X(rt_emit, false)                                                                           \
-  X(rt_cache, false)                                                                          \
-  X(tlas, false)                                                                              \
-  X(shadow_cull, false)                                                                       \
-  X(total, false)                                                                             \
+#define ENGINE_RENDERER_PASS_BUCKETS(X) \
+  X(cull, true)                         \
+  X(hw, true)                           \
+  X(sw, true)                           \
+  X(hiz, true)                          \
+  X(resolve, true)                      \
+  X(deform, true)                       \
+  X(deform_alloc, true)                 \
+  X(deform_cache, true)                 \
+  X(trace, true)                        \
+  X(rt, true)                           \
+  X(shadow, true)                       \
+  X(tables, true)                       \
+  X(terrain_upload, true)               \
+  X(sky, true)                          \
+  X(frame_passes, true)                 \
+  X(half_sun, true)                     \
+  X(gi_trace, true)                     \
+  X(gi_fold, true)                      \
+  X(resolve_classify, true)             \
+  X(motion, true)                       \
+  X(clas, false)                        \
+  X(blas, false)                        \
+  X(clas_cache, false)                  \
+  X(rt_records, false)                  \
+  X(rt_ranges, false)                   \
+  X(rt_drop, false)                     \
+  X(rt_emit, false)                     \
+  X(rt_cache, false)                    \
+  X(tlas, false)                        \
+  X(shadow_cull, false)                 \
+  X(total, false)                       \
   X(unbucketed, false)
 #define ENGINE_RENDERER_PASS_FIELD(name, top) f64 gpu_##name = 0.0;
 // How many entries the list has, for the test that holds it to `scene::PassMs`.
@@ -254,8 +254,8 @@ struct FrameStats {
   u32 shadow_casters = 0;
   // The casters the horizon kept out of the structures (ResolvedSettings::caster_horizon), one
   // frame late like the rest.
-  u32 horizon_casters = 0;    // Stats::shadow_casters: built into the structures, not drawn
-  u32 shadow_pairs = 0;       // Stats::shadow_pairs: drawn into the cascaded maps
+  u32 horizon_casters = 0;  // Stats::shadow_casters: built into the structures, not drawn
+  u32 shadow_pairs = 0;     // Stats::shadow_pairs: drawn into the cascaded maps
   // The measurement switches' words this frame drew under (T70): the resolve's stop stage
   // (`resolve_stop_tunable`, 0 the picture) and the sun ray's rule (`ShadowRayRule::index`, 0 the
   // frame as set), from the frame's own index, so an analysis reads them instead of deriving them.
@@ -970,8 +970,8 @@ class SceneRenderer {
   // **What samples this renderer's frames over time** (ADR-0064; settings.h, `Reconstruction`): the
   // block every frame's statistics carry. Its `native()` says whether a frame's times are a cost.
   Reconstruction reconstruction() const noexcept;
-  // **The eye's adaptation as the last submitted frame left it** (exposure.h): waits for the device.
-  // False when adaptation is off in this renderer.
+  // **The eye's adaptation as the last submitted frame left it** (exposure.h): waits for the
+  // device. False when adaptation is off in this renderer.
   bool exposure_state(ExposureState& out);
   // The next frame has no frame before it (`FrameDesc::history_reset`, for a host that knows before
   // it has a frame to say it on). Nothing without `renderer.reconstruction.inputs`.
@@ -987,7 +987,9 @@ class SceneRenderer {
   // setting reads them — two-pass occlusion or the occlusion term for the one, the direct path or
   // the resolve by pixel class for the other.
   u64 hiz_bytes() const noexcept { return targets_.hiz.size; }
-  u64 depth_bytes() const noexcept { return targets_.depth.image.valid() ? targets_.depth.bytes : 0; }
+  u64 depth_bytes() const noexcept {
+    return targets_.depth.image.valid() ? targets_.depth.bytes : 0;
+  }
 
   // The overlay pass (overlay.h, ADR-0054), for its textures; a frame draws it when
   // `FrameDesc::overlay` names lists. A texture is removed only once no frame in flight reads it,
@@ -1250,7 +1252,7 @@ class SceneRenderer {
   void log_graph_lifetimes();
   Vector<gfx::RenderGraph::Lifetime> lifetimes_;
   bool lifetimes_logged_ = false;
-  gfx::ImageResource color_;           // the offscreen target, when the renderer owns one
+  gfx::ImageResource color_;  // the offscreen target, when the renderer owns one
   // The sun's depth atlas: one `shadow_map`-texel square per cascade, side by side, D32, drawn as
   // a depth attachment and sampled by the resolve through the scene's bindless set. It is sized
   // by the settings, not the screen, so a resize leaves it alone.
@@ -1346,11 +1348,11 @@ class SceneRenderer {
   // the cache serves no instance of records none, and its words say nothing of the slots).
   Vector<u8> slot_rt_cache_;
   bool rt_cache_recording_ = false;  // the frame being recorded records them
-  Vector<u64> slot_terrain_bytes_;  // per frame slot: the terrain field bytes that frame uploaded
-  Vector<FrameCpu> slot_cpu_;       // per frame slot: where that frame's CPU time went
-  Vector<f32> slot_visibility_;     // per frame slot: what its frame passes reported
-  FrameCpu frame_cpu_;              // the frame being begun and recorded's, until submit_frame
-  GpuScene::TableUpdate tables_;    // the frame being recorded's table update; its copies are kept
+  Vector<u64> slot_terrain_bytes_;   // per frame slot: the terrain field bytes that frame uploaded
+  Vector<FrameCpu> slot_cpu_;        // per frame slot: where that frame's CPU time went
+  Vector<f32> slot_visibility_;      // per frame slot: what its frame passes reported
+  FrameCpu frame_cpu_;               // the frame being begun and recorded's, until submit_frame
+  GpuScene::TableUpdate tables_;     // the frame being recorded's table update; its copies are kept
   // The frame being recorded's terrain levels: its table, the fields it copies in and reads.
   GpuScene::TerrainUpdate terrain_frame_;
   // The frame being recorded's record upload: instances moved and ring slots' records since the

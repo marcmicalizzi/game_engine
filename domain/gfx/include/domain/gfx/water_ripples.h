@@ -3,10 +3,10 @@
 // **Wave ripples on a sandy bed, as closed forms** (roadmap S102; the owner, 2026-11-12: sand
 // under water should carry ripples as the dunes do; the design and the sources:
 // docs/experiments/shore-mechanics.md, "Stage 4: the sand"). Under a wave the water at the bed
-// moves to and fro, and a bed of sand answers with ripples whose crests lie across that motion — along the
-// wave's crests — and whose size follows from the motion's reach and the grain. These are the
-// published forms in double, held by a case (`water_tests.cpp`), **and nothing draws them yet**:
-// the bottom's normal is the volume's, which the channels' row held when this was written.
+// moves to and fro, and a bed of sand answers with ripples whose crests lie across that motion —
+// along the wave's crests — and whose size follows from the motion's reach and the grain. These are
+// the published forms in double, held by a case (`water_tests.cpp`), **and nothing draws them
+// yet**: the bottom's normal is the volume's, which the channels' row held when this was written.
 //
 // As the coastal engineering reference page on wave ripples gives them (the papers not opened):
 //   the orbit's amplitude at the bed   A = a / sinh(k d), a the wave's amplitude, U0 = A omega;

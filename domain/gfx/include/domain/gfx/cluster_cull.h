@@ -73,9 +73,9 @@ struct FrameEye {
   Vec3i cell;
   // Flags, 0 everywhere but a `CullParams::eye`. `k_eye_mask_tables`: the block carries the
   // scene's mask tables right after it (`CullParams::masks`), what a rasterizer reads through
-  // `ClusterDrawParams::eye` to know the frame has alpha-tested clusters (renderer.md, "Alpha-tested
-  // geometry"). `k_eye_software_count`: the block is a view's, whose `sw_args` the software
-  // rasterizer reads its run's count through to bound its folded dispatch (T165).
+  // `ClusterDrawParams::eye` to know the frame has alpha-tested clusters (renderer.md,
+  // "Alpha-tested geometry"). `k_eye_software_count`: the block is a view's, whose `sw_args` the
+  // software rasterizer reads its run's count through to bound its folded dispatch (T165).
   u32 masks = 0;
   Vec3 local;
   f32 pad1 = 0.0f;
@@ -405,7 +405,7 @@ inline constexpr u64 k_cull_params_eye_offset = 480;  // offsetof(CullParams, ey
 // constants are at Vulkan's guaranteed 128 bytes, with no room for the count's address.
 inline constexpr u64 k_cull_params_sw_args_offset = 200;
 // `FrameEye::masks`' bits, read by a rasterizer through `ClusterDrawParams::eye` (scene.slang).
-inline constexpr u32 k_eye_mask_tables = 1;     // the mask tables follow the eye (`CullParams::masks`)
+inline constexpr u32 k_eye_mask_tables = 1;  // the mask tables follow the eye (`CullParams::masks`)
 inline constexpr u32 k_eye_software_count = 2;  // a view's CullParams eye, whose `sw_args` it names
 static_assert(sizeof(CullParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 

@@ -50,9 +50,8 @@ bool read_span(const io::FileHandle& file, u64 offset, u64 bytes, void* out) {
 std::string check_table(const Header& h, u64 size, u32 record_bytes) {
   const u64 table_bytes = u64{h.count} * sizeof(Entry);
   if (h.toc_offset < sizeof(Header) || h.toc_offset > size || size - h.toc_offset != table_bytes)
-    return "its table (" + std::to_string(h.count) + " entries at " +
-           std::to_string(h.toc_offset) + ") does not end where its " + std::to_string(size) +
-           " bytes do";
+    return "its table (" + std::to_string(h.count) + " entries at " + std::to_string(h.toc_offset) +
+           ") does not end where its " + std::to_string(size) + " bytes do";
   if (h.toc_offset - sizeof(Header) < record_bytes && h.count > 0)
     return "its table names records the file has no room for";
   return {};

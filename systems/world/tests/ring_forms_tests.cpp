@@ -297,7 +297,8 @@ bool same_instance(const renderer::SceneInstance& a, const renderer::SceneInstan
 
 }  // namespace
 
-TEST_CASE("ring forms: a ring change of forms alone calls no generator and hands over the changed") {
+TEST_CASE(
+    "ring forms: a ring change of forms alone calls no generator and hands over the changed") {
   // G202 (world.md, "A ring change rewrites the forms in place"): a tile whose entries draw two
   // rings as one representation keeps what its placements were picked from, so a ring change that
   // changes only forms is a rewrite of its instances' meshes, with no `tile` call; what it hands
@@ -419,8 +420,8 @@ TEST_CASE("ring forms: a ring change of forms alone calls no generator and hands
   for (u32 i = 0; i < ring2.size(); ++i)
     CHECK(same_instance(handed.instances[i], ring2[i]));
   CHECK(tiles.stats().reformed == 3u);
-  MESSAGE("a 16-placement tile, rings 0 -> 1 -> 2 -> 3 -> 2: " << g_field_tiles
-          << " generator call, " << tiles.stats().reformed << " rewrites of "
+  MESSAGE("a 16-placement tile, rings 0 -> 1 -> 2 -> 3 -> 2: "
+          << g_field_tiles << " generator call, " << tiles.stats().reformed << " rewrites of "
           << tiles.stats().reformed_instances << " instances in "
           << static_cast<f64>(tiles.stats().reform_ns) / 1000.0 << " us; a placement keeps 4 bytes"
           << " drawn, " << sizeof(renderer::SceneInstance) + 5 << " drawn as nothing");

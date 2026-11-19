@@ -1106,14 +1106,15 @@ TEST_CASE("engine-editor: the shell's three methods, through the editor's dispat
   protocol::Policy policy;
   std::string error;
   const auto roles = [&](const char* default_role) {
-    REQUIRE_MESSAGE(policy.load_roles("roles.json", std::string(R"({"default_role":")") +
-                                                        default_role + R"(","roles":[
+    REQUIRE_MESSAGE(
+        policy.load_roles("roles.json",
+                          std::string(R"({"default_role":")") + default_role + R"(","roles":[
       {"name":"watcher","doc":"reads","methods":[],"layers":[],"tiles":[],"untiled":false,
        "object_types":[],"review_required":false},
       {"name":"seat","doc":"the person's page","methods":["editor.*"],"layers":[],"tiles":[],
        "untiled":false,"object_types":[],"review_required":false}]})",
-                                      error),
-                    error);
+                          error),
+        error);
   };
   roles("watcher");
   protocol::Dispatcher d(

@@ -286,10 +286,10 @@ void summarize_textures(const GpuScene& scene, scene::FlythroughTextures& out) {
   out.residency_pressure_frames = bound.pressure_frames;
   out.residency_refused_in_hold = bound.refused_in_hold;
   out.residency_asked_late = bound.asked_late;
-  out.residency_feedback_ms = bound.feedback_frames == 0
-                                  ? 0.0
-                                  : bound.feedback_ms_total /
-                                        static_cast<f64>(bound.feedback_frames);
+  out.residency_feedback_ms =
+      bound.feedback_frames == 0
+          ? 0.0
+          : bound.feedback_ms_total / static_cast<f64>(bound.feedback_frames);
   out.residency_feedback_ms_max = bound.feedback_ms_max;
   out.residency_worst_demote_ms = bound.worst_demote_ms;
 }

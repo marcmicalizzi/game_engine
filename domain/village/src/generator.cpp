@@ -111,14 +111,12 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
   // at the cook: a warning when fewer stand than the entry asked, with what took the rest.
   const VillagePlan& vp = e->plan;
   if (vp.built < e->layer.houses) {
-    ENGINE_LOG_WARN(log_village, "fewer houses built than asked",
-                    log::field("entry", e->layer.name.c_str()),
-                    log::field("asked", e->layer.houses), log::field("built", vp.built),
-                    log::field("plots", static_cast<u32>(vp.plots.size())),
-                    log::field("refused", vp.refused), log::field("no_fit", vp.no_fit),
-                    log::field("steep", vp.steep), log::field("wet", vp.wet),
-                    log::field("outside", vp.outside),
-                    log::field("first_refusal", vp.first_refusal.c_str()));
+    ENGINE_LOG_WARN(
+        log_village, "fewer houses built than asked", log::field("entry", e->layer.name.c_str()),
+        log::field("asked", e->layer.houses), log::field("built", vp.built),
+        log::field("plots", static_cast<u32>(vp.plots.size())), log::field("refused", vp.refused),
+        log::field("no_fit", vp.no_fit), log::field("steep", vp.steep), log::field("wet", vp.wet),
+        log::field("outside", vp.outside), log::field("first_refusal", vp.first_refusal.c_str()));
   } else {
     ENGINE_LOG_INFO(log_village, "houses built as asked",
                     log::field("entry", e->layer.name.c_str()),

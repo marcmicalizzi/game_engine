@@ -60,8 +60,9 @@ TEST_CASE("io: a mapped file refuses what is not there or not a file") {
 }
 
 // **A mapped file and a replacement** (io.md, "Mapped files"): a build replaces a level's archive
-// by renaming a new file over it (`write_file_atomic`) while a reader may hold the old one. The view
-// must not stop the replacement, and keeps reading the bytes it mapped; a new view reads the new.
+// by renaming a new file over it (`write_file_atomic`) while a reader may hold the old one. The
+// view must not stop the replacement, and keeps reading the bytes it mapped; a new view reads the
+// new.
 TEST_CASE("io: a mapped file and a replacement") {
   test::TempDir tmp("engine_io_mapped");
   const std::string path = tmp.file("level.bin");

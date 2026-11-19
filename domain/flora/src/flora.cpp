@@ -394,8 +394,8 @@ std::string canonical_flora_json(const FloraFile& file) {
 }
 
 u64 fold_foliage_optics(u64 h) noexcept {
-  for (const f32 optic : {detail::k_leaf_transmission, detail::k_needle_transmission,
-                          detail::k_needle_spread})
+  for (const f32 optic :
+       {detail::k_leaf_transmission, detail::k_needle_transmission, detail::k_needle_spread})
     h = hash_combine(h, hash_bytes(&optic, sizeof(optic)));
   return h;
 }

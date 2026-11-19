@@ -38,7 +38,8 @@ TEST_CASE("sha256: a million a's, whole and in uneven pieces") {
   }
 }
 
-TEST_CASE("sha256: every length across the padding's block edge agrees fed whole and byte by byte") {
+TEST_CASE(
+    "sha256: every length across the padding's block edge agrees fed whole and byte by byte") {
   std::string message;
   for (u32 length = 0; length < 200; ++length) {
     Sha256 bytewise;

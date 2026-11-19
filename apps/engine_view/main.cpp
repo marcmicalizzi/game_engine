@@ -4975,7 +4975,7 @@ int run_view(int argc, char** argv) {
     } else if (a == "--startup-trace") {
       if (!next_value(argc, argv, i, a, options.startup_trace)) return k_exit_usage;
     } else if (a == "--memory-report") {
-      view::memory_report().enable();  // before the load, so its blocks are logged
+      view::memory_report().enable();               // before the load, so its blocks are logged
     } else if (a == "--memory-report-floor-mib") {  // the report, its logs down to n MiB (apps.md)
       u32 n = 0;
       if (!next_value(argc, argv, i, a, value) || !parse_u32(value, n) || n == 0)

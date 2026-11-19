@@ -177,8 +177,8 @@ struct RowShot {
 };
 
 // The row drawn by `raster` in a wind of `strength`, two seconds into the sway.
-bool draw_row(const gfx::Device& device, const test::TempDir& tmp, RasterMode raster,
-              f32 strength, RowShot& out, std::string& error) {
+bool draw_row(const gfx::Device& device, const test::TempDir& tmp, RasterMode raster, f32 strength,
+              RowShot& out, std::string& error) {
   SceneDesc desc;
   desc.meshes.push_back(tmp.file("sward.flora.json"));
   desc.ddc = tmp.file("ddc");
@@ -245,9 +245,9 @@ f32 patch_distance(u32 i) {
 // where the two differ in id or depth.
 struct PatchDiff {
   u32 pixels = 0;
-  u32 differ = 0;      // in id or in the depth's bits
-  u32 ids = 0;         // in id alone (or covered by it in one capture only)
-  f32 depth_rel = 0;   // the largest relative depth difference where the ids agree
+  u32 differ = 0;     // in id or in the depth's bits
+  u32 ids = 0;        // in id alone (or covered by it in one capture only)
+  f32 depth_rel = 0;  // the largest relative depth difference where the ids agree
 };
 PatchDiff compare(const CapturedFrame& a, const CapturedFrame& b, u32 instance) {
   PatchDiff c;
@@ -258,10 +258,9 @@ PatchDiff compare(const CapturedFrame& a, const CapturedFrame& b, u32 instance) 
     const bool covered_b = b.depth[px] != 0.0f && ib == instance;
     if (!covered_a && !covered_b) continue;
     ++c.pixels;
-    const bool same_id =
-        covered_a && covered_b &&
-        std::memcmp(&a.ids[u64{px} * k_id_words], &b.ids[u64{px} * k_id_words],
-                    k_id_words * sizeof(u32)) == 0;
+    const bool same_id = covered_a && covered_b &&
+                         std::memcmp(&a.ids[u64{px} * k_id_words], &b.ids[u64{px} * k_id_words],
+                                     k_id_words * sizeof(u32)) == 0;
     const bool same = same_id && std::memcmp(&a.depth[px], &b.depth[px], sizeof(f32)) == 0;
     c.differ += same ? 0u : 1u;
     c.ids += same_id ? 0u : 1u;
@@ -286,8 +285,9 @@ u32 differing(const CapturedFrame& a, const CapturedFrame& b) {
 
 }  // namespace
 
-TEST_CASE("renderer: past its rest distance a field stands as in a calm, short of the band it "
-          "sways as before") {
+TEST_CASE(
+    "renderer: past its rest distance a field stands as in a calm, short of the band it "
+    "sways as before") {
   Gpu gpu;
   if (!gpu.ok) {
     MESSAGE("renderer unavailable here: " << gpu.why);

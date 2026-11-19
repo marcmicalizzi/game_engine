@@ -28,8 +28,9 @@ f64 massif(const void*, i64 x_mm, i64 z_mm) noexcept {
 }
 }  // namespace
 
-TEST_CASE("deposits: no mesh a tile hands at the forest's density is over a streamed host's "
-          "cluster limit") {
+TEST_CASE(
+    "deposits: no mesh a tile hands at the forest's density is over a streamed host's "
+    "cluster limit") {
   // A streamed host refuses a tile's mesh over `renderer.meshes.max_clusters` (4,096) by name at
   // the walk, and the tile draws the rest without it: a hole in the talus that appears as a
   // walker comes near. The forest's 128,000 triangles a 16 m patch at 1 m samples, with 160 loose

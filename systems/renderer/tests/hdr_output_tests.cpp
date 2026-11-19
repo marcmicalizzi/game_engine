@@ -524,10 +524,9 @@ TEST_CASE("hdr output: HDR10's codes are the CPU mirror's, rounded by the encode
           if (d == 0) continue;
           ++differ;
           if (d > 1 || d < -1) ++over_one;
-          const f64 handed =
-              static_cast<f64>(gfx::display_dithered(pq_values[c], x, y,
-                                                     dither ? gfx::k_pq_codes : 0u)) *
-              static_cast<f64>(gfx::k_pq_codes);
+          const f64 handed = static_cast<f64>(gfx::display_dithered(
+                                 pq_values[c], x, y, dither ? gfx::k_pq_codes : 0u)) *
+                             static_cast<f64>(gfx::k_pq_codes);
           edge = std::max(edge, std::fabs(handed - std::floor(handed) - 0.5));
         }
       }

@@ -162,7 +162,8 @@ void WaterQuery::prepare(const scene_gen::Ground* ground) {
       const u32 j0 = cell_of(az, cells_z_, grid_z_);
       const u32 j1 = cell_of(bz, cells_z_, grid_z_);
       for (u32 j = j0; j <= j1; ++j)
-        for (u32 k = i0; k <= i1; ++k) claims.push_back(Claim{j * cells_x_ + k, c, i});
+        for (u32 k = i0; k <= i1; ++k)
+          claims.push_back(Claim{j * cells_x_ + k, c, i});
     }
   }
   std::sort(claims.begin(), claims.end(), [](const Claim& a, const Claim& b) {
@@ -181,7 +182,8 @@ void WaterQuery::prepare(const scene_gen::Ground* ground) {
     cell_start_[head.cell + 1] += 1;
     n = m;
   }
-  for (u32 k = 0; k < cells_x_ * cells_z_; ++k) cell_start_[k + 1] += cell_start_[k];
+  for (u32 k = 0; k < cells_x_ * cells_z_; ++k)
+    cell_start_[k + 1] += cell_start_[k];
 }
 
 u32 WaterQuery::cell_of(f64 v, u32 cells, f64 origin) const noexcept {

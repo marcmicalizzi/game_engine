@@ -509,9 +509,9 @@ TEST_CASE("engine-content: city makes the committed plan, fragment and yield on 
 // section moves, and the ancient does not. The folds were 0x8b8915bc944c047d (broadleaf) and
 // 0xc6f1032af64051fd (pine).
 // A45's second leg (2026-11-15, MSVC 14.51): the parts leaf and needle cards ride are flagged
-// foliage in section 37, and `k_flora_structure_version` 2 moves section 15; no mesh or bake section
-// moves. The folds were 0xb7e58f0544dad18e (broadleaf) and 0x02983d79da59bddf (pine).
-// A45's third leg (2026-11-15, MSVC 14.51): the trunk is flagged full sway in section 37, and
+// foliage in section 37, and `k_flora_structure_version` 2 moves section 15; no mesh or bake
+// section moves. The folds were 0xb7e58f0544dad18e (broadleaf) and 0x02983d79da59bddf (pine). A45's
+// third leg (2026-11-15, MSVC 14.51): the trunk is flagged full sway in section 37, and
 // `k_flora_structure_version` 3 moves section 15; nothing else moves, the ancient included. The
 // folds were 0x5c5759895db85465 (broadleaf) and 0x7f0141b2949c7e9b (pine).
 // G203 (2026-11-14, MSVC 14.51): a mask's texture key mixes `texture::k_alpha_mask_version` (2),
@@ -548,8 +548,8 @@ constexpr u64 k_ancient_container_golden = 0x84d34a728af9a21aull;
 // a debug run builds it in seconds. Its section 15 carries `k_conifer_chain_version`.
 // G203 (2026-11-16): the conifers' sprays are folded with leaning normals and
 // `k_conifer_chain_version` is 2, so the pine's container moved (it was 0xcb41f869870c00cd); the
-// broadleaf's and the ancient tree's did not. R164: the needles' optics and `k_flora_version` 13, as
-// above; it was 0xac0cb951cd8d4dc8.
+// broadleaf's and the ancient tree's did not. R164: the needles' optics and `k_flora_version` 13,
+// as above; it was 0xac0cb951cd8d4dc8.
 constexpr u64 k_pine_container_golden = 0x390a578bb83b9091ull;
 
 TEST_CASE("engine-content: the allometric crowns build the committed bytes on every toolchain") {

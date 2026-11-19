@@ -63,7 +63,8 @@ inline const std::string& profile_failure() {
     if (profile.empty()) return std::string();
     gfx::Device probe;
     std::string why;
-    if (!probe.create(options_of(profile), &why)) return why.empty() ? std::string("no reason") : why;
+    if (!probe.create(options_of(profile), &why))
+      return why.empty() ? std::string("no reason") : why;
     probe.destroy();
     return std::string();
   }();

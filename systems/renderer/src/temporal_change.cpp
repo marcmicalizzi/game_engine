@@ -13,7 +13,8 @@ namespace {
 struct LightTable {
   f64 value[256];
   LightTable() {
-    for (u32 i = 0; i < 256; ++i) value[i] = std::pow(static_cast<f64>(i) / 255.0, 2.2);
+    for (u32 i = 0; i < 256; ++i)
+      value[i] = std::pow(static_cast<f64>(i) / 255.0, 2.2);
   }
 };
 const LightTable& light_table() {
@@ -152,7 +153,8 @@ TemporalChange::Stats TemporalChange::stats(u32 band) const {
   if (code_hist_.empty() || band > k_bands) return s;
   const u64* codes = code_hist_.data() + band * k_code_bins;
   const u64* light = light_hist_.data() + band * k_light_bins;
-  for (u32 i = 0; i < k_code_bins; ++i) s.pairs += codes[i];
+  for (u32 i = 0; i < k_code_bins; ++i)
+    s.pairs += codes[i];
   if (s.pairs == 0) return s;
   const f64 n = static_cast<f64>(s.pairs);
   s.mean_codes = code_sum_[band] / n;
@@ -162,8 +164,10 @@ TemporalChange::Stats TemporalChange::stats(u32 band) const {
   s.p999_codes = quantile(codes, k_code_bins, k_code_bin, s.pairs, 0.999);
   u64 one = 0;
   u64 two = 0;
-  for (u32 i = 16; i < k_code_bins; ++i) one += codes[i];
-  for (u32 i = 32; i < k_code_bins; ++i) two += codes[i];
+  for (u32 i = 16; i < k_code_bins; ++i)
+    one += codes[i];
+  for (u32 i = 32; i < k_code_bins; ++i)
+    two += codes[i];
   s.at_least_one = static_cast<f64>(one) / n;
   s.at_least_two = static_cast<f64>(two) / n;
   s.any_channel_one = static_cast<f64>(channel_one_[band]) / n;
@@ -182,8 +186,9 @@ TemporalChange::Stats TemporalChange::stats(u32 band) const {
 std::string TemporalChange::json() const {
   std::string out;
   char buf[768];
-  std::snprintf(buf, sizeof(buf), "{\"format\":\"engine.temporal-change.v1\",\"frames\":%u,"
-                                  "\"width\":%u,\"height\":%u,",
+  std::snprintf(buf, sizeof(buf),
+                "{\"format\":\"engine.temporal-change.v1\",\"frames\":%u,"
+                "\"width\":%u,\"height\":%u,",
                 frames_, width_, height_);
   out += buf;
   const auto stats_json = [&](u32 band) {

@@ -431,8 +431,8 @@ TEST_CASE("doc index: the tile index through five thousand random commands") {
   Vector<Patch> undone;
   u32 mismatch_at = k_commands;
   std::string first_failure;
-  // The rollback a checkpoint makes (protocol's doc.rollback_to, roadmap D14): every layer made what
-  // a snapshot of the stack held — emptied when the snapshot lacks it — by one non-strict
+  // The rollback a checkpoint makes (protocol's doc.rollback_to, roadmap D14): every layer made
+  // what a snapshot of the stack held — emptied when the snapshot lacks it — by one non-strict
   // transaction of diff_layers' commands per layer, as the session does; the index and the tile
   // index checked after it like after any command.
   Vector<Layer> snapshot;

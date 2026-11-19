@@ -56,7 +56,8 @@ inline void dispatch_folded(CommandList cb, u64 groups, const DeviceCaps& caps) 
   cb.dispatch(g.x, g.y, 1);
 }
 
-// ---- indirect dispatches (T165) ------------------------------------------------------------------
+// ---- indirect dispatches (T165)
+// ------------------------------------------------------------------
 //
 // A dispatch whose count the GPU writes is folded the same way, on the GPU: its arguments are
 // `{min(groups, pitch), rows, 1}`, written by the pass that knows the count. Three forms:

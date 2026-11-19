@@ -169,14 +169,15 @@ f64 blue_linear(u32 c) { return std::pow(static_cast<f64>(k_blue_codes[c]) / 255
 // light times one minus the layer's coverage plus the layer's light, at paper white. A check in
 // Rec. 709 light (the figure this replaced: 3 % of the light, a measurement and not a bound, which
 // one colour in six of the space exceeds under either rounding) reads three BT.2020 channels
-// through a matrix whose red row is about 1.66, -0.59, -0.07, so a code on a bright green lands on a
-// dark red at the green's size. The case knows the under only as the frame-without-it's stored code
-// `u` (the stand-in sky's undithered clear), the layer only as the colour and alpha it was given,
-// so the window is an interval, and PQ being monotone it is exact at its ends:
+// through a matrix whose red row is about 1.66, -0.59, -0.07, so a code on a bright green lands on
+// a dark red at the green's size. The case knows the under only as the frame-without-it's stored
+// code `u` (the stand-in sky's undithered clear), the layer only as the colour and alpha it was
+// given, so the window is an interval, and PQ being monotone it is exact at its ends:
 //   - the under's true PQ value lies in [u - 1/2, u + 9/16]: rounded to nearest, or by a store that
 //     cuts to four bits under a code first (a sixteenth below the edge) — the clear is still the
 //     store's;
-//   - the linear image holds the under as a half (relative error 2^-11; the matrix's entries are all
+//   - the linear image holds the under as a half (relative error 2^-11; the matrix's entries are
+//   all
 //     positive, so the BT.2020 nits keep that bound);
 //   - the 8-bit sRGB layer holds the premultiplied colour at one of the two codes round it;
 //   - the dither moves the value at most a code, and the rounding half a code (a sixteenth more for
@@ -230,7 +231,8 @@ CodeWindow hdr10_blend_window(const u32 under[3], const u32 ui[3], u32 alpha, f6
     const f64 u = static_cast<f64>(under[i]);
     const f64 ui_lo = bt2020_of(layer_lo, i) * white;
     const f64 ui_hi = bt2020_of(layer_hi, i) * white;
-    w.lo[i] = pq_code((1.0 - a) * pq_nits(u - 0.5) * (1.0 - k_half) + ui_lo) - 25.0 / 16.0 - k_float;
+    w.lo[i] =
+        pq_code((1.0 - a) * pq_nits(u - 0.5) * (1.0 - k_half) + ui_lo) - 25.0 / 16.0 - k_float;
     w.hi[i] = pq_code((1.0 - a) * pq_nits(u + 9.0 / 16.0) * (1.0 + k_half) + ui_hi) + 1.5 + k_float;
   }
   return w;
@@ -284,11 +286,11 @@ void hold_hdr(gfx::DisplayEncoding encoding, f64 white_tolerance, f64 outside_to
   if (pq) stored_codes(gpu.device, rig, with_codes);
 
   f64 white_low = 1.0e9, white_high = 0.0, blend_worst = 0.0, outside_worst = 0.0;
-  u32 outside_codes = 0;      // HDR10: the most a channel's code moved outside the quads
-  u64 blend_out = 0;          // HDR10: channels of the blue outside their window
-  f64 blend_margin = 1.0e9;   // HDR10: the least room any code had inside its window, in codes
+  u32 outside_codes = 0;     // HDR10: the most a channel's code moved outside the quads
+  u64 blend_out = 0;         // HDR10: channels of the blue outside their window
+  f64 blend_margin = 1.0e9;  // HDR10: the least room any code had inside its window, in codes
   u32 blend_lo[3] = {1023, 1023, 1023}, blend_hi[3] = {0, 0, 0};
-  bool one_under = true;      // HDR10: every pixel under the blue is one colour (the window's under)
+  bool one_under = true;  // HDR10: every pixel under the blue is one colour (the window's under)
   for (u32 y = 0; y < k_height; ++y) {
     for (u32 x = 0; x < k_width; ++x) {
       const u32 p = y * k_width + x;
@@ -338,16 +340,13 @@ void hold_hdr(gfx::DisplayEncoding encoding, f64 white_tolerance, f64 outside_to
     const u32* u = &before_codes[3 * (20 * k_width + 100)];
     const CodeWindow w =
         hdr10_blend_window(u, k_blue_codes, k_blue_alpha, static_cast<f64>(k_paper_white));
-    MESSAGE("hdr10: under the blue (" << u[0] << ", " << u[1] << ", " << u[2]
-                                      << "), the blend's codes red " << blend_lo[0] << ".."
-                                      << blend_hi[0] << ", green " << blend_lo[1] << ".."
-                                      << blend_hi[1] << ", blue " << blend_lo[2] << ".."
-                                      << blend_hi[2] << " in windows " << w.lo[0] << ".."
-                                      << w.hi[0] << ", " << w.lo[1] << ".." << w.hi[1] << ", "
-                                      << w.lo[2] << ".." << w.hi[2] << " (" << blend_out
-                                      << " outside, least room " << blend_margin
-                                      << " codes); outside the quads a code moved at most "
-                                      << outside_codes);
+    MESSAGE("hdr10: under the blue ("
+            << u[0] << ", " << u[1] << ", " << u[2] << "), the blend's codes red " << blend_lo[0]
+            << ".." << blend_hi[0] << ", green " << blend_lo[1] << ".." << blend_hi[1] << ", blue "
+            << blend_lo[2] << ".." << blend_hi[2] << " in windows " << w.lo[0] << ".." << w.hi[0]
+            << ", " << w.lo[1] << ".." << w.hi[1] << ", " << w.lo[2] << ".." << w.hi[2] << " ("
+            << blend_out << " outside, least room " << blend_margin
+            << " codes); outside the quads a code moved at most " << outside_codes);
     CHECK(one_under);
     CHECK(blend_out == 0);
   } else {

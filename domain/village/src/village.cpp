@@ -3,10 +3,10 @@
 // each plot the ground allows, back lanes behind the rows, and what the plan is handed over as —
 // ground edits, footprints, mask regions, placements. Every number is grounded, or marked as a
 // choice, in docs/experiments/village-growth-grounding.md and village-plan-grounding.md.
+#include "detail.h"
+
 #include <core/hash/hash.h>
 #include <domain/village/village.h>
-
-#include "detail.h"
 
 #include <algorithm>
 #include <cmath>

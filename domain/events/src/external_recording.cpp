@@ -1,7 +1,6 @@
 // A recorded run's external raises (events.h, `ExternalRecording`; events.md, "Events and the
 // replay"; roadmap T53).
 #include <domain/events/events.h>
-
 #include <foundation/io/vfs.h>
 
 #include <cstring>

@@ -764,7 +764,8 @@ TEST_CASE("streaming: a whole scene draws the same bytes after its float geometr
                       << kept.scene.sky_facing_count() << " meshes face the sky");
 }
 
-TEST_CASE("streaming: a whole scene draws the same bytes when create gives the upload's streams back") {
+TEST_CASE(
+    "streaming: a whole scene draws the same bytes when create gives the upload's streams back") {
   // **The upload-only streams go inside `create`** (W51-3; renderer.md): handed the scene's
   // `SceneData`, `GpuScene::create` gives back the 16-bit grid, the attributes and the vertex ids
   // right after the geometry's upload — before the textures and the chain are made, where a load

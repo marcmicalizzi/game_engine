@@ -994,12 +994,11 @@ TEST_CASE("flora motion: a broadleaf's and a conifer's trunk sway as with no tab
         bare_table += table.reach[p];
       }
     }
-    MESSAGE(std::string_view(species) << ": " << table.part_count() << " parts, " << pushable
-                                      << " pushable, "
-                    << foliage << " carrying leaves or needles (" << kept
-                    << " reached exactly as with no table), " << bare << " bare: mean reach "
-                    << (bare > 0 ? bare_table / bare : 0.0f) << " m with the table, "
-                    << (bare > 0 ? bare_none / bare : 0.0f) << " m with none");
+    MESSAGE(std::string_view(species)
+            << ": " << table.part_count() << " parts, " << pushable << " pushable, " << foliage
+            << " carrying leaves or needles (" << kept << " reached exactly as with no table), "
+            << bare << " bare: mean reach " << (bare > 0 ? bare_table / bare : 0.0f)
+            << " m with the table, " << (bare > 0 ? bare_none / bare : 0.0f) << " m with none");
     CHECK(foliage > 0);
     CHECK(foliage * 2 > pushable);  // most of a crown's parts carry its leaves
     // The sway. The outer limb: the trunk's child whose rest tip stands farthest from the trunk.
@@ -1025,7 +1024,8 @@ TEST_CASE("flora motion: a broadleaf's and a conifer's trunk sway as with no tab
         const FloraMesh& mesh = *meshes[m];
         Vector<FloraPartState> state(mesh.part_count(), FloraPartState{});
         Vector<gfx::FloraPartPose> poses(mesh.part_count(), gfx::FloraPartPose{});
-        const Vec3 trunk_rest = mesh.parts[0].pivot + mesh.parts[0].direction * mesh.parts[0].length;
+        const Vec3 trunk_rest =
+            mesh.parts[0].pivot + mesh.parts[0].direction * mesh.parts[0].length;
         const Vec3 limb_rest =
             mesh.parts[outer].pivot + mesh.parts[outer].direction * mesh.parts[outer].length;
         constexpr u32 k_samples = 720;  // twelve seconds at 60 Hz
@@ -1040,13 +1040,14 @@ TEST_CASE("flora motion: a broadleaf's and a conifer's trunk sway as with no tab
           limb_peak[m] = std::max(limb_peak[m], limb);
         }
       }
-      MESSAGE(std::string_view(species) << " at wind " << strength << ": the trunk's top (" << table.parts[0].length
-                      << " m) moves " << trunk_mean[0] << " m on average, " << trunk_peak[0]
-                      << " at most with no table; " << trunk_mean[1] << ", " << trunk_peak[1]
-                      << " with it. The outer limb's tip (part " << outer << ", "
-                      << table.parts[outer].length << " m, " << farthest << " m out) " << limb_mean[0]
-                      << ", " << limb_peak[0] << " with none; " << limb_mean[1] << ", "
-                      << limb_peak[1] << " with it");
+      MESSAGE(std::string_view(species)
+              << " at wind " << strength << ": the trunk's top (" << table.parts[0].length
+              << " m) moves " << trunk_mean[0] << " m on average, " << trunk_peak[0]
+              << " at most with no table; " << trunk_mean[1] << ", " << trunk_peak[1]
+              << " with it. The outer limb's tip (part " << outer << ", "
+              << table.parts[outer].length << " m, " << farthest << " m out) " << limb_mean[0]
+              << ", " << limb_peak[0] << " with none; " << limb_mean[1] << ", " << limb_peak[1]
+              << " with it");
       // A45's third leg: a broadleaf's and a conifer's trunk sway as with no table. The trunk is
       // load-bearing (it collides, a structure may rest on it) and flagged `k_full_sway`, so it
       // keeps its class's compliance, and so does every limb riding it: the same parts, the same
@@ -1060,7 +1061,8 @@ TEST_CASE("flora motion: a broadleaf's and a conifer's trunk sway as with no tab
     // What the table still changes about the sway, part by part: a part the table gives no wood
     // sways as a leaf where with no table it swayed by its depth.
     u32 differ = 0;
-    for (u32 p = 0; p < table.part_count(); ++p) differ += table.compliance[p] != none.compliance[p];
+    for (u32 p = 0; p < table.part_count(); ++p)
+      differ += table.compliance[p] != none.compliance[p];
     MESSAGE(std::string_view(species) << ": " << differ << " of " << table.part_count()
                                       << " parts sway otherwise than with no table");
     // The collision: with no table the trunk alone collides (part zero); with it, the load-bearing

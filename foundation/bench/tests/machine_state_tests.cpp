@@ -378,7 +378,8 @@ TEST_CASE("bench: the header records the session's state at both ends") {
   // worst_of keeps a lock seen at either end, so a one-line summary of the run cannot call it
   // unlocked; and an unknown end does not hide the other's answer.
   CHECK(bench::worst_of(quiet_state(), locked).session_locked == bench::Tristate::Yes);
-  CHECK(bench::worst_of(bench::MachineState{}, quiet_state()).session_locked == bench::Tristate::No);
+  CHECK(bench::worst_of(bench::MachineState{}, quiet_state()).session_locked ==
+        bench::Tristate::No);
 }
 
 TEST_CASE("bench: run_main parses the hygiene flags") {

@@ -413,7 +413,8 @@ void walk_tick(ModuleContext* context) {
   put(",\"by_entry_mesh\":[");
   for (u32 c = 0; c < g_walk_cell_count; ++c) {
     const WalkCell& cell = g_walk_cells[c];
-    std::snprintf(line, sizeof line, "%s{\"entry\":%u,\"mesh\":%u,\"perch\":%u,\"limb\":%u,\"top\":%u}",
+    std::snprintf(line, sizeof line,
+                  "%s{\"entry\":%u,\"mesh\":%u,\"perch\":%u,\"limb\":%u,\"top\":%u}",
                   c == 0 ? "" : ",", cell.entry, cell.mesh, cell.kinds[k_support_perch],
                   cell.kinds[k_support_limb], cell.kinds[k_support_top]);
     put(line);

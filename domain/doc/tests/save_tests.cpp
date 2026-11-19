@@ -787,10 +787,10 @@ TEST_CASE("doc save: a file that is not in the canonical form is rewritten by th
 }
 
 // D40: the load learns whether a file is canonical as it reads it, comparing the text with what a
-// save would write (doc.md, "Reading a file without a tree"), where it used to serialize every layer
-// again after the load. Each way a file can hold the same records in other bytes marks its layer —
-// and only its layer — for the next save, which leaves exactly what a store that rewrote everything
-// would; a document the store wrote marks nothing.
+// save would write (doc.md, "Reading a file without a tree"), where it used to serialize every
+// layer again after the load. Each way a file can hold the same records in other bytes marks its
+// layer — and only its layer — for the next save, which leaves exactly what a store that rewrote
+// everything would; a document the store wrote marks nothing.
 namespace {
 
 std::string replaced(std::string text, std::string_view from, std::string_view to) {
@@ -826,7 +826,9 @@ TEST_CASE("doc save: every kind of file not in the canonical form is found as it
        },
        1},
       {"a tile naming another role", "layers/world/tiles/0_0.json",
-       [](const std::string& t) { return replaced(t, "\"role\": \"Feature\"", "\"role\": \"Base\""); },
+       [](const std::string& t) {
+         return replaced(t, "\"role\": \"Feature\"", "\"role\": \"Base\"");
+       },
        1},
       {"untiled.json without its spaces", "layers/world/untiled.json", &without_spaces, 1},
       {"an index with a bound off", "layers/world/index.json",

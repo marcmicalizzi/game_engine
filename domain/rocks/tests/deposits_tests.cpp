@@ -569,10 +569,10 @@ TEST_CASE("deposits: the recipes go under the host's root, never the working dir
   REQUIRE(opened.desc->expand(opened.state, c, whole, &error));
   REQUIRE_FALSE(whole.instances.empty());
   const auto first = whole.instances[0].position;  // the tile of the first patch the read lists
-  REQUIRE(opened.desc->tile(opened.state,
-                            {static_cast<i32>(std::floor(first.x / 16)),
-                             static_cast<i32>(std::floor(first.z / 16))},
-                            c, tile, &error));
+  REQUIRE(opened.desc->tile(
+      opened.state,
+      {static_cast<i32>(std::floor(first.x / 16)), static_cast<i32>(std::floor(first.z / 16))}, c,
+      tile, &error));
   REQUIRE_FALSE(whole.meshes.empty());
   REQUIRE_FALSE(tile.meshes.empty());
   for (const auto* handed : {&whole, &tile})

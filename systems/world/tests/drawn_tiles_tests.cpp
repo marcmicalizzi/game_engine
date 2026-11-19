@@ -239,10 +239,10 @@ TEST_CASE(
     stand(budgeted, walking, standing, settled_at);
     MESSAGE(std::string(budgeted ? "budgeted" : "unbudgeted")
             << ": walking " << walking.events << " tile events, " << walking.rebuilds
-            << " rebuilds, " << walking.chunks_built << " chunks built; settled "
-            << settled_at << " frames after the stop; standing " << k_stand << " frames: "
-            << standing.events << " events, " << standing.layouts << " layouts asked, "
-            << standing.rebuilds << " rebuilds, " << standing.chunks_built << " chunks built");
+            << " rebuilds, " << walking.chunks_built << " chunks built; settled " << settled_at
+            << " frames after the stop; standing " << k_stand << " frames: " << standing.events
+            << " events, " << standing.layouts << " layouts asked, " << standing.rebuilds
+            << " rebuilds, " << standing.chunks_built << " chunks built");
     // The walk did move the place: the premise of what follows.
     CHECK(walking.events > 0);
     CHECK(walking.rebuilds > 0);

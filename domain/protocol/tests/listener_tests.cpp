@@ -797,8 +797,9 @@ TEST_CASE("listener: every response carries the shell's content security policy 
     const usize at = head.find("\r\n" + policy + "\r\n");
     CHECK_MESSAGE(at != std::string::npos, what << ":\n" << reply.head);
     if (at == std::string::npos) return;
-    CHECK_MESSAGE(head.find("Content-Security-Policy:", at + 2 + policy.size()) == std::string::npos,
-                  what << " carries the policy once");
+    CHECK_MESSAGE(
+        head.find("Content-Security-Policy:", at + 2 + policy.size()) == std::string::npos,
+        what << " carries the policy once");
     CHECK_MESSAGE(head.find("Content-Security-Policy:") == at + 2, what << " carries it once");
   };
   once("the page", http_get(port, "/"), 200);

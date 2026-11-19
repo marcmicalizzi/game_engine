@@ -23,16 +23,15 @@
 #include <systems/renderer/water_refract.h>
 
 #include <accumulation_pass.h>
-#include <cull_instances.h>
-#include <reconstruction_pass.h>
-#include <exposure_pass.h>
-#include <texture_feedback.h>
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <cull_instances.h>
+#include <exposure_pass.h>
 #include <memory>
 #include <motion_pass.h>
+#include <reconstruction_pass.h>
 #include <renderer_log.h>
 #include <resolve_classes.h>
 #include <shaders/alpha_coverage.spv.h>
@@ -76,6 +75,7 @@
 #include <shaders/visibility_resolve_water_stochastic.spv.h>
 #include <shaders/visibility_resolve_water_terrain.spv.h>
 #include <shaders/visibility_resolve_water_terrain_stochastic.spv.h>
+#include <texture_feedback.h>
 
 namespace engine::renderer {
 
@@ -429,8 +429,8 @@ constexpr gfx::BufferUsage k_target_buffer_usage =
 // view's region is as big as the rectangle it rasterizes, so for a single view the two buffers are
 // exactly the size and layout they have always been. The pyramid and the depth image are laid out
 // here and made only when wanted (`ensure`).
-bool SceneRenderer::Targets::create(const gfx::Device& device, const ViewSet& set,
-                                    bool want_hiz, bool want_depth, std::string* error) {
+bool SceneRenderer::Targets::create(const gfx::Device& device, const ViewSet& set, bool want_hiz,
+                                    bool want_depth, std::string* error) {
   destroy(device);
   width = set.source_width();
   height = set.source_height();
@@ -685,8 +685,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
     RtCapacityConfig references = config;
     references.limit = scene.rt_reference_limit();
     rt_reference_policy_.reset(references, scene.rt_reference_capacity(), now);
-    rt_reference_policy_.first_is_guess(scene.rt_reference_capacity() <
-                                        scene.rt_union_clusters());
+    rt_reference_policy_.first_is_guess(scene.rt_reference_capacity() < scene.rt_union_clusters());
     rt_guess_estimate_ = scene.rt_frame_estimate() + scene.rt_reference_estimate();
     note_rt_bytes();
   }
@@ -703,10 +702,11 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
       // its capacity one (R130, "ranges drop").
       // And with sampling over time's inputs the motion pass one and the pool's second write three
       // (the accumulation's zone is one of the frame passes' eight).
-      // Counted again on 2026-11-18 (batch 68, review A's open question): R173's instance passes add
-      // five (the mesh bounds, two a cull pass) and two with the cascades; R168's exposure is one of
-      // the frame passes' eight, beside the volumetrics' four, the collision's and the accumulation's.
-      // One view with every feature on and four cascades opens about 57 of the 67; not raised.
+      // Counted again on 2026-11-18 (batch 68, review A's open question): R173's instance passes
+      // add five (the mesh bounds, two a cull pass) and two with the cascades; R168's exposure is
+      // one of the frame passes' eight, beside the volumetrics' four, the collision's and the
+      // accumulation's. One view with every feature on and four cascades opens about 57 of the 67;
+      // not raised.
       !timer_.create(device, desc.frames_in_flight,
                      63 + 16 * (views - 1) + (resolved.reconstruction_inputs ? 4 : 0), error)) {
     destroy();
@@ -1192,13 +1192,13 @@ void SceneRenderer::remove_frame_pass(FramePassFn fn, void* user) noexcept {
 // **Sampling over time's inputs** (motion_pass.h; renderer.md, "Sampling over time: the inputs"):
 // made only under `renderer.reconstruction.inputs`, so a renderer without it holds a null pointer
 // and nothing else of this.
-// The texture residency's feedback (R172 stage 2; texture_feedback.h): one pixel in sixteen of every
-// view's visibility buffer, recorded after the resolve and never through the linear image, so a
-// frame that registers no frame pass still draws straight into its target.
+// The texture residency's feedback (R172 stage 2; texture_feedback.h): one pixel in sixteen of
+// every view's visibility buffer, recorded after the resolve and never through the linear image, so
+// a frame that registers no frame pass still draws straight into its target.
 bool SceneRenderer::record_texture_residency(gfx::RenderGraph& graph, u32 slot, u64 frame_index,
                                              gfx::RgBuffer visibility, u32 view_count,
-                                             const FramePassView* views,
-                                             const gfx::FrameEye& eye, std::string* error) {
+                                             const FramePassView* views, const gfx::FrameEye& eye,
+                                             std::string* error) {
   FramePassContext sparse;
   sparse.graph = &graph;
   sparse.timer = &timer_;
@@ -1217,8 +1217,7 @@ bool SceneRenderer::create_motion(std::string* error) {
   // frame pass of the renderer's own when the tunable or the scene's sky asks for it, and nothing
   // otherwise.
   if (const ExposureOptions options = exposure_options_from_tunables();
-      options.adapt ||
-      (sky_.active() && sky_.entry().exposure == scene::SkyExposure::Adapted)) {
+      options.adapt || (sky_.active() && sky_.entry().exposure == scene::SkyExposure::Adapted)) {
     exposure_ = new ExposurePass;
     if (!exposure_->create(*device_, *scene_, shaders_, desc_.frames_in_flight, options, error) ||
         !add_frame_pass(FramePassStage::Exposure, &ExposurePass::record_thunk, exposure_,
@@ -2015,8 +2014,8 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
     for (u32 i = 0; i < relayout_retired_.chain.count; ++i)
       retire_rt_buffer(relayout_retired_.chain.buffers[i]);
     if (relayout_retired_.tlas.handle.valid()) {
-      retired_tlas_.push_back(RetiredTlas{relayout_retired_.tlas, relayout_retired_.tlas_slot,
-                                          frames_.frame_index()});
+      retired_tlas_.push_back(
+          RetiredTlas{relayout_retired_.tlas, relayout_retired_.tlas_slot, frames_.frame_index()});
     }
     const bool must_wait = relayout_retired_.must_wait;
     relayout_retired_.clear();
@@ -3323,8 +3322,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const u32 cascade_runs = csm ? scene.shadow_cascades() : 0u;
   if (!cull_instances_->prepare(*device_, frames_, cull_instances_tunable() && settings.cull,
                                 views * 2 + cascade_runs, instance_count, pair_count,
-                                scene.meshes.size, scene.meshes.address,
-                                !records_.meshes.empty(), error))  // R16, R173
+                                scene.meshes.size, scene.meshes.address, !records_.meshes.empty(),
+                                error))  // R16, R173
     return false;
   ENGINE_ASSERT(!csm || ((!shadows || resolved_.hybrid) && !use_sw && !ray_path && !direct),
                 "cascaded shadow maps are drawn on the hw and vertex paths, beside rays only in "
@@ -4742,11 +4741,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         tables_.after_carry_read ? gfx::PipelineStage::AllTransfer : gfx::PipelineStage::None;
     const gfx::MemoryAccess last_access =
         tables_.after_carry_read ? gfx::MemoryAccess::TransferRead : gfx::MemoryAccess::None;
-    rg_instances = instance_records
-                       ? graph.import_buffer("instances", scene.instances,
-                                             gfx::PipelineStage::AllCommands,
-                                             gfx::MemoryAccess::MemoryRead)
-                       : graph.import_buffer("instances", scene.instances, last_stage, last_access);
+    rg_instances =
+        instance_records
+            ? graph.import_buffer("instances", scene.instances, gfx::PipelineStage::AllCommands,
+                                  gfx::MemoryAccess::MemoryRead)
+            : graph.import_buffer("instances", scene.instances, last_stage, last_access);
     rg_pair_table = graph.import_buffer("pair table", scene.pair_table, last_stage, last_access);
     rg_table_staging = graph.import_buffer("table staging", tables_.staging);
     pair_expand.instances = scene.instances.address;
@@ -5437,8 +5436,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   };
   auto add_cull = [&](u32 block, u32 list) {
     cull_instances_->add_instance_pass(graph, "cull instances", params_[slot].address, block, 2,
-                                       views, instance_count,
-                                       occlusion ? rg_hiz : gfx::RgBuffer{}, cull_reads);
+                                       views, instance_count, occlusion ? rg_hiz : gfx::RgBuffer{},
+                                       cull_reads);
     graph.add_pass(
         "cull", gfx::PassKind::Compute,
         [&, list](gfx::PassBuilder& b) {
@@ -5605,7 +5604,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.read(rg_slots, gfx::Access::ComputeRead);
           b.write(rg_pool, gfx::Access::ComputeReadWrite);
           if (rg_static_cache.valid()) b.read(rg_static_cache, gfx::Access::ComputeRead);  // D3
-          if (rg_normals.valid()) b.write(rg_normals, gfx::Access::ComputeReadWrite);  // D2
+          if (rg_normals.valid()) b.write(rg_normals, gfx::Access::ComputeReadWrite);      // D2
           if (motion_pool) b.write(rg_prev_pool, gfx::Access::ComputeWrite);
           read_terrain(b);
           read_scene(b, gfx::Access::ComputeRead, false);
@@ -5839,19 +5838,19 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         });
     if (deform_on) {
       graph.add_pass(
-          "shadow deform args", gfx::PassKind::Compute,  // folded (T165), first after the cull (W147)
+          "shadow deform args",
+          gfx::PassKind::Compute,  // folded (T165), first after the cull (W147)
           [&](gfx::PassBuilder& b) {
             b.read(rg_shadow_args, gfx::Access::ComputeRead);
             b.write(rg_deform_args, gfx::Access::ComputeWrite);
           },
           [&, count](gfx::CommandList cb, gfx::RenderGraph&) {
-            record_fold_args(
-                cb, pipelines.fold,
-                scene.shadow_args.address + scene.shadow_args_offset(0) +
-                    u64{count_index} * sizeof(u32),
-                gfx::k_draw_args_bytes,
-                scene.deform_args.address + scene.shadow_deform_args_offset(0),
-                gfx::k_draw_args_bytes, count);
+            record_fold_args(cb, pipelines.fold,
+                             scene.shadow_args.address + scene.shadow_args_offset(0) +
+                                 u64{count_index} * sizeof(u32),
+                             gfx::k_draw_args_bytes,
+                             scene.deform_args.address + scene.shadow_deform_args_offset(0),
+                             gfx::k_draw_args_bytes, count);
           });
       // The cascades' entries of a deformed instance get pool blocks of their own, allocated after
       // the camera's and deformed by the same pass, so a moving character casts its pose.
@@ -5865,7 +5864,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_slots, gfx::Access::ComputeRead);
             b.write(rg_pool, gfx::Access::ComputeReadWrite);
             if (rg_static_cache.valid()) b.read(rg_static_cache, gfx::Access::ComputeRead);  // D3
-            if (rg_normals.valid()) b.write(rg_normals, gfx::Access::ComputeReadWrite);  // D2
+            if (rg_normals.valid()) b.write(rg_normals, gfx::Access::ComputeReadWrite);      // D2
             read_terrain(b);
             read_scene(b, gfx::Access::ComputeRead, false);
           },
@@ -6542,8 +6541,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       rg_gi = graph.import_buffer("gi cache", gi_cache_);
       // The fold over the cells, as one step's push block gives it: the cache's first frame clears
       // with it, every step folds with it, and the frame's last counts what it keeps.
-      // **Every pass here reads what the one before wrote, and declares the read**: a barrier orders
-      // a write before the accesses it names and no others (renderer.md, "Main's three").
+      // **Every pass here reads what the one before wrote, and declares the read**: a barrier
+      // orders a write before the accesses it names and no others (renderer.md, "Main's three").
       auto fold_pass = [&](const char* name, u32 step, u32 step_flags, bool timed) {
         graph.add_pass(
             name, gfx::PassKind::Compute,

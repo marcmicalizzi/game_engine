@@ -213,8 +213,8 @@ bool mask_point(const TileSet& set, const MaskInputs& in, i64 x_mm, i64 z_mm, Ve
 // buffer, the OS's file cache is the read-ahead, and the view commits nothing (T182: the walk's
 // collision workers waited 56 of a sward call's 59 ms on the one window this replaced). An archive
 // opened `unbuffered` (a cold measurement), or one the OS will not map, is read as before: a
-// **read-ahead window** of the tiles from the one asked onwards in file order, up to 2 MiB, behind a
-// lock. Safe to call from several threads either way.
+// **read-ahead window** of the tiles from the one asked onwards in file order, up to 2 MiB, behind
+// a lock. Safe to call from several threads either way.
 class MaskLevel {
  public:
   MaskLevel();

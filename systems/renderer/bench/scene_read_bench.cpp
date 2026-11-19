@@ -11,9 +11,9 @@
 #include <foundation/io/vfs.h>
 #include <systems/renderer/scene_text.h>
 
-#include <bench_peak.h>
 #include <test_paths.h>
 
+#include <bench_peak.h>
 #include <charconv>
 #include <schemas/scene.h>
 #include <string>
@@ -68,7 +68,8 @@ std::string synthetic_scene(u32 instances, u32 meshes) {
                              (c == 1 ? static_cast<f64>(next() % 1000) * 1.3e-5 : 0.0));
     }
     out.append("\n      ],\n      \"yaw_deg\": ");
-    append_number(out, static_cast<f64>(static_cast<f32>(static_cast<f64>(next() % 36000) / 100.0)));
+    append_number(out,
+                  static_cast<f64>(static_cast<f32>(static_cast<f64>(next() % 36000) / 100.0)));
     out.append("\n    }");
   }
   out.append("\n  ],\n  \"meshes\": [");
@@ -85,7 +86,8 @@ std::string synthetic_scene(u32 instances, u32 meshes) {
 }
 
 std::string scene_text() {
-  if (const std::string path = engine::test::detail::environment("ENGINE_BENCH_SCENE"); !path.empty()) {
+  if (const std::string path = engine::test::detail::environment("ENGINE_BENCH_SCENE");
+      !path.empty()) {
     std::string text;
     ENGINE_VERIFY(io::read_file(path, text) == io::Status::Ok, "scene bench: cannot read the file");
     return text;

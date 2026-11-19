@@ -367,14 +367,36 @@ Stood stand(const test::TempDir& tmp, const std::string& name, const std::string
   const std::string jsonl = tmp.file(name + ".jsonl");
   const std::string world_log = tmp.file(name + "-world.jsonl");
   out.capture = tmp.file(name + ".png");
-  std::vector<std::string> args = {
-      "--scene",      scene,         "--camera-path",     path,         "--offscreen",
-      "--benchmark",  jsonl,         "--world-log",       world_log,    "--capture",
-      out.capture,    "--frames",    std::to_string(frames),            "--repeat",
-      "1",            "--warmup",    std::to_string(k_warmup),          "--warmup-seconds",
-      "0",            "--width",     "160",               "--height",   "96",
-      "--time-rate",  "0",           "--world-rate",      "1",          "--terrain-async",
-      "--ddc",        tmp.file("ddc")};
+  std::vector<std::string> args = {"--scene",
+                                   scene,
+                                   "--camera-path",
+                                   path,
+                                   "--offscreen",
+                                   "--benchmark",
+                                   jsonl,
+                                   "--world-log",
+                                   world_log,
+                                   "--capture",
+                                   out.capture,
+                                   "--frames",
+                                   std::to_string(frames),
+                                   "--repeat",
+                                   "1",
+                                   "--warmup",
+                                   std::to_string(k_warmup),
+                                   "--warmup-seconds",
+                                   "0",
+                                   "--width",
+                                   "160",
+                                   "--height",
+                                   "96",
+                                   "--time-rate",
+                                   "0",
+                                   "--world-rate",
+                                   "1",
+                                   "--terrain-async",
+                                   "--ddc",
+                                   tmp.file("ddc")};
   args.insert(args.end(), extra.begin(), extra.end());
   const Run run = view(args);
   if (run.exit_code == 3) {
@@ -428,10 +450,13 @@ Stood stand(const test::TempDir& tmp, const std::string& name, const std::string
     const JsonValue* world = v.find("world");
     out.with_ground += ground != nullptr && ground->is_object() ? 1u : 0u;
     out.with_world += world != nullptr && world->is_object() ? 1u : 0u;
-    const u64 parts[] = {field(v, "world", "tiles_built"),     field(v, "world", "slots_written"),
+    const u64 parts[] = {field(v, "world", "tiles_built"),
+                         field(v, "world", "slots_written"),
                          field(v, "terrain", "chunks_built"),
-                         field(v, "terrain", "chunk_upload_bytes"), count(v, "upload_bytes"),
-                         count(v, "allocations"),                   count(v, "buffers")};
+                         field(v, "terrain", "chunk_upload_bytes"),
+                         count(v, "upload_bytes"),
+                         count(v, "allocations"),
+                         count(v, "buffers")};
     static const char* const names[] = {"tiles built", "slots written", "chunks built",
                                         "chunk bytes", "page bytes",    "allocations",
                                         "buffers"};
@@ -531,8 +556,8 @@ TEST_CASE("frame loop: the endless desert standing still builds, uploads and all
   CHECK(stood.fill_events > 0);
   CHECK(stood.with_ground == stood.records);
   CHECK(stood.with_world == stood.records);
-  // Settled by the end of the warm-up, or within its first frames: a frame that waits for its layout
-  // (offscreen) leaves the async ground nothing to finish later.
+  // Settled by the end of the warm-up, or within its first frames: a frame that waits for its
+  // layout (offscreen) leaves the async ground nothing to finish later.
   CHECK(stood.quiet_from <= 30);
   CHECK(stood.tiles_built == 0);
   CHECK(stood.slots_written == 0);
@@ -617,9 +642,10 @@ TEST_CASE("frame loop: a streamed world's swaying trees round a standing camera 
       R"("world":{"tile_size":32,"rings":[{"radius":1.5},{"radius":3}]}})";
   REQUIRE(io::write_file(tmp.file("trees.json"), scene) == io::Status::Ok);
   // Standing at the grove's edge, a tile boundary in reach of the second ring's band.
-  const std::string path = R"({"format":"engine.camera-path.v1","name":"standing","fps":60,"keys":[)"
-                           R"({"time":0,"position":[-40,6,10],"target":[0,4,0]},)"
-                           R"({"time":10,"position":[-40,6,10],"target":[0,4,0]}]})";
+  const std::string path =
+      R"({"format":"engine.camera-path.v1","name":"standing","fps":60,"keys":[)"
+      R"({"time":0,"position":[-40,6,10],"target":[0,4,0]},)"
+      R"({"time":10,"position":[-40,6,10],"target":[0,4,0]}]})";
   REQUIRE(io::write_file(tmp.file("path.json"), path) == io::Status::Ok);
   const Stood stood = stand(tmp, "standing-trees", tmp.file("trees.json"), tmp.file("path.json"),
                             240, {"--tunable", "renderer.flora.motion=true"});

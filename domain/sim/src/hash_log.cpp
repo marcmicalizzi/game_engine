@@ -1,6 +1,5 @@
-#include <domain/sim/hash_log.h>
-
 #include <core/json/json.h>
+#include <domain/sim/hash_log.h>
 #include <foundation/io/vfs.h>
 
 #include <algorithm>
@@ -361,9 +360,9 @@ bool capture_from_json(const JsonValue& value, Capture& out, std::string* error)
   const JsonValue* p = value.find("phase");
   const JsonValue* n = value.find("table");
   const JsonValue* e = value.find("entities");
-  if (f == nullptr || !f->get_string(format) || format != "engine.sim.capture.v1" ||
-      t == nullptr || !t->get_u64(out.tick) || p == nullptr || !p->get_string(phase) ||
-      n == nullptr || !n->get_string(table) || e == nullptr || !e->is_array()) {
+  if (f == nullptr || !f->get_string(format) || format != "engine.sim.capture.v1" || t == nullptr ||
+      !t->get_u64(out.tick) || p == nullptr || !p->get_string(phase) || n == nullptr ||
+      !n->get_string(table) || e == nullptr || !e->is_array()) {
     fail(error, "not an engine.sim.capture.v1 object");
     return false;
   }
@@ -507,11 +506,10 @@ bool read_run_record(std::string_view directory, RunRecord& out, std::string* er
     return false;
   }
   out.hz = static_cast<u32>(hz);
-  const std::pair<const char*, std::string*> files[] = {
-      {"input_log", &out.input_log},
-      {"external_log", &out.external_log},
-      {"hash_log", &out.hash_log},
-      {"door_log", &out.door_log}};
+  const std::pair<const char*, std::string*> files[] = {{"input_log", &out.input_log},
+                                                        {"external_log", &out.external_log},
+                                                        {"hash_log", &out.hash_log},
+                                                        {"door_log", &out.door_log}};
   for (const auto& [key, to] : files) {
     std::string_view name;
     const JsonValue* v = value.find(key);

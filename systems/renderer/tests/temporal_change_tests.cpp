@@ -16,7 +16,8 @@ namespace {
 
 std::vector<u8> picture(u32 w, u32 h, u8 grey) {
   std::vector<u8> p(static_cast<usize>(w) * h * 4u, grey);
-  for (usize i = 3; i < p.size(); i += 4) p[i] = 255;
+  for (usize i = 3; i < p.size(); i += 4)
+    p[i] = 255;
   return p;
 }
 
@@ -28,7 +29,8 @@ TEST_CASE("temporal change: a held picture changes nothing, and one step is one 
   TemporalChange t;
   std::vector<u8> a = picture(w, h, 100);
   CHECK(t.add(a.data(), w, h));
-  CHECK(t.stats(TemporalChange::k_bands).pairs == 0);  // the first picture only sets the next's base
+  CHECK(t.stats(TemporalChange::k_bands).pairs ==
+        0);  // the first picture only sets the next's base
   CHECK(t.add(a.data(), w, h));
   TemporalChange::Stats s = t.stats(TemporalChange::k_bands);
   CHECK(s.pairs == w * h);
@@ -40,7 +42,8 @@ TEST_CASE("temporal change: a held picture changes nothing, and one step is one 
   // by (101/100)^2.2 - 1 relative to their level, about 2.2 %.
   std::vector<u8> b = a;
   for (u32 i = 0; i < w * h / 4; ++i)
-    for (u32 c = 0; c < 3; ++c) b[i * 4u + c] = 101;
+    for (u32 c = 0; c < 3; ++c)
+      b[i * 4u + c] = 101;
   CHECK(t.add(b.data(), w, h));
   CHECK(t.frames() == 3);
   s = t.stats(TemporalChange::k_bands);

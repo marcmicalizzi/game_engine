@@ -786,8 +786,8 @@ void PlayerBody::tick_gait(const FlySession& session, const input::InputState& i
     const u32 rate = session.header().params.tick_hz;
     // The phase as it stood when the tick began; its advance by distance stays below, with the
     // playheads it sets.
-    const f32 values[animation::k_locomotion_params] = {
-        moving ? 1.0f : 0.0f, sprint ? 1.0f : 0.0f, static_cast<f32>(phase_)};
+    const f32 values[animation::k_locomotion_params] = {moving ? 1.0f : 0.0f, sprint ? 1.0f : 0.0f,
+                                                        static_cast<f32>(phase_)};
     animation::GraphEnter enter[animation::k_graph_max_machines];
     if (driven && system.control_graph(body, values, 0u,
                                        1.0f / static_cast<f32>(rate > 0 ? rate : 1u), enter) != 0) {

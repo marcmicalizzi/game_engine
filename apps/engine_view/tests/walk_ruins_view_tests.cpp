@@ -152,11 +152,26 @@ TEST_CASE("engine-view: a walk into a ruin's wall is stopped at the wall") {
   const std::string recorded = tmp.file("recorded.jsonl");
   const std::string ddc = tmp.file("ddc");
   const Run live =
-      run_view({"--interactive", "--walk", "--start",
+      run_view({"--interactive",
+                "--walk",
+                "--start",
                 number_text(from.x) + "," + number_text(from.y + 20.0f) + "," + number_text(from.z),
-                number_text(yaw_deg) + ",0", "--inject-input", inject, "--record-input", recorded,
-                "--scene", scene, "--width", "160", "--height", "96", "--no-vsync", "--ddc", ddc,
-                "--log", "info"});
+                number_text(yaw_deg) + ",0",
+                "--inject-input",
+                inject,
+                "--record-input",
+                recorded,
+                "--scene",
+                scene,
+                "--width",
+                "160",
+                "--height",
+                "96",
+                "--no-vsync",
+                "--ddc",
+                ddc,
+                "--log",
+                "info"});
   if (live.exit_code == 3) {
     MESSAGE("engine-view unavailable here: " << live.output);
     return;

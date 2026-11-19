@@ -218,8 +218,8 @@ class Enum final : public EnumBase {
 
 // A free-form text value: the name of a thing that is data rather than a dimension (a clip, a
 // file stem), where an `Enum` would need the list of its values at compile time. **Not for a hot
-// path**: `get()` takes a lock and copies, so read it once, at load. The value is any text without a
-// newline, trimmed of the spaces around it as every text form is; a command line's
+// path**: `get()` takes a lock and copies, so read it once, at load. The value is any text without
+// a newline, trimmed of the spaces around it as every text form is; a command line's
 // "name=value,name=value" cannot carry a comma in it (`apply_overrides` splits there), a JSON file
 // can. Text and JSON both set it to exactly the text; `max_length` (the default 256) bounds it.
 class String final : public Tunable {

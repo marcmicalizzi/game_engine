@@ -1,7 +1,6 @@
-#include <domain/doc/blob_store.h>
-
 #include <core/hash/sha256.h>
 #include <core/time/time.h>
+#include <domain/doc/blob_store.h>
 
 #include <algorithm>
 #include <filesystem>
@@ -25,7 +24,9 @@ bool is_hex(std::string_view text) noexcept {
 
 }  // namespace
 
-bool BlobStore::is_name(std::string_view text) noexcept { return text.size() == 64 && is_hex(text); }
+bool BlobStore::is_name(std::string_view text) noexcept {
+  return text.size() == 64 && is_hex(text);
+}
 
 std::string BlobStore::name_of(std::string_view bytes) { return sha256_hex(sha256(bytes)); }
 

@@ -1,8 +1,8 @@
 #pragma once
 
 // The state hash a tick, its log, a recorded run and the divergence bisector's two halves
-// (docs/plan/09-testing-profiling.md §9.2, docs/plan/05-simulation.md §5.10; docs/subsystems/sim.md,
-// "The hash log and the bisector"; roadmap T53).
+// (docs/plan/09-testing-profiling.md §9.2, docs/plan/05-simulation.md §5.10;
+// docs/subsystems/sim.md, "The hash log and the bisector"; roadmap T53).
 //
 // **What is here and what is not.** This module is free of flecs (sim.md, "The tick"), so what
 // computes a table's hash — `ecs::TickHash`, which walks the entity store's tables through schema
@@ -17,8 +17,8 @@
 // the second step reads two *captures*: the table's entities at that (tick, phase), each as its
 // component's canonical JSON, taken by re-running each side to that point (`ecs::TickHash`'s
 // capture). `diff_captures` names the entities on one side only and, for the rest, every field
-// whose value differs, by its path in the component (`position[0]`, `wealth`). `engine-cli --bisect`
-// is both steps on files (docs/subsystems/apps.md).
+// whose value differs, by its path in the component (`position[0]`, `wealth`). `engine-cli
+// --bisect` is both steps on files (docs/subsystems/apps.md).
 //
 // **A recorded run** (`RunRecord`) is what a replay needs and nothing else: the world's seed, the
 // clock it started at and the ticks it ran, and the names of the files beside it — the input log
@@ -107,8 +107,8 @@ struct Divergence {
   bool found = false;
   u64 tick = 0;
   TickPhase phase = TickPhase::Input;
-  // Every table that differs at (tick, phase), in the first log's header order and then the second's
-  // own tables.
+  // Every table that differs at (tick, phase), in the first log's header order and then the
+  // second's own tables.
   Vector<TableDivergence> tables;
   // A (tick, phase) one log has and the other does not, before any hash differed: the two hashed
   // different phases, or one skipped a tick.

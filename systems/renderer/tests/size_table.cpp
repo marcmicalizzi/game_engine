@@ -5,13 +5,13 @@
 // exposure_pass.h; exposure.slang) and the accumulation's parameters (accumulation_pass.h;
 // accumulate.slang; review A8, batch 68). A change to one is a change to its shader in the same
 // commit.
+#include "../src/accumulation_pass.h"
+#include "../src/exposure_pass.h"
+
 #include <core/base/size_table.h>
 #include <systems/renderer/exposure.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/overlay.h>
-
-#include "../src/accumulation_pass.h"
-#include "../src/exposure_pass.h"
 
 using namespace engine;
 

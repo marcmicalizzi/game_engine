@@ -237,7 +237,8 @@ struct Rig {
 void light_on_the_ground(ShadowMode shadows, const char* name) {
   gfx::Device device;
   std::string error;
-  if (!device.create(renderer_test::device_options(), &error) || !device.features().buffer_int64_atomics) {
+  if (!device.create(renderer_test::device_options(), &error) ||
+      !device.features().buffer_int64_atomics) {
     MESSAGE("skipped: no device with 64-bit buffer atomics: " << error);
     return;
   }

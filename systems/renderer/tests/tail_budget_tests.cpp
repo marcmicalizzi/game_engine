@@ -230,11 +230,11 @@ TEST_CASE("tail budget: the trees' tables grow beside the old ones and wait for 
     blocks.push_back(block);
     palms(tail, tile.x, tile.count);
   }
-  REQUIRE_MESSAGE(scene.set_dynamic_instances(
-                      std::span<const SceneInstance>(tail.data(), tail.size()),
-                      std::span<const DynamicBlock>(blocks.data(), blocks.size()), change, nullptr,
-                      &error),
-                  error);
+  REQUIRE_MESSAGE(
+      scene.set_dynamic_instances(std::span<const SceneInstance>(tail.data(), tail.size()),
+                                  std::span<const DynamicBlock>(blocks.data(), blocks.size()),
+                                  change, nullptr, &error),
+      error);
   REQUIRE(scene.relayout_pending());
   const u64 waits = gfx::device_waits_on_thread();
   GpuScene::RelayoutRetired retired;
@@ -255,9 +255,9 @@ TEST_CASE("tail budget: the trees' tables grow beside the old ones and wait for 
     CHECK(old.buffer.valid());
     CHECK(old.address != scene.deform_table.address);
   }
-  MESSAGE("grown beside: " << retired.buffers.size() << " buffers handed back; the table "
-                           << table << " to " << scene.deform_table.size << " bytes, the poses "
-                           << poses << " to " << scene.flora_stats().pose_table_bytes);
+  MESSAGE("grown beside: " << retired.buffers.size() << " buffers handed back; the table " << table
+                           << " to " << scene.deform_table.size << " bytes, the poses " << poses
+                           << " to " << scene.flora_stats().pose_table_bytes);
   for (gfx::BufferResource& old : retired.buffers)
     gfx::destroy_buffer(rig.device, old);
   scene.destroy();
@@ -304,11 +304,11 @@ TEST_CASE("tail budget: a growth of the trees' tables that fails is put back and
     blocks.push_back(block);
     palms(tail, tile.x, tile.count);
   }
-  REQUIRE_MESSAGE(scene.set_dynamic_instances(
-                      std::span<const SceneInstance>(tail.data(), tail.size()),
-                      std::span<const DynamicBlock>(blocks.data(), blocks.size()), change, nullptr,
-                      &error),
-                  error);
+  REQUIRE_MESSAGE(
+      scene.set_dynamic_instances(std::span<const SceneInstance>(tail.data(), tail.size()),
+                                  std::span<const DynamicBlock>(blocks.data(), blocks.size()),
+                                  change, nullptr, &error),
+      error);
   REQUIRE(scene.relayout_pending());
   scene.fail_next(GpuScene::Fault::flora_tables);
   GpuScene::RelayoutRetired retired;

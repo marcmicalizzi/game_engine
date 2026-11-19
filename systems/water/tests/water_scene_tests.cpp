@@ -362,9 +362,9 @@ void shoot(const gfx::Device& device, const std::string& path, const std::string
 
 }  // namespace
 
-// **The scene's wind** (gfx.md, "The water reads the wind"; W136): a sky's fixed wind gives a body that
-// follows it exactly the table, direction and fetch its own `wind_m_s` at that direction did; a
-// track makes it follow a varying wind on one grid; a track out of order refuses the file.
+// **The scene's wind** (gfx.md, "The water reads the wind"; W136): a sky's fixed wind gives a body
+// that follows it exactly the table, direction and fetch its own `wind_m_s` at that direction did;
+// a track makes it follow a varying wind on one grid; a track out of order refuses the file.
 TEST_CASE("water: a body follows the sky's wind, and a fixed one draws what its own wind drew") {
   const test::TempDir tmp("water_scene_wind");
   const auto read = [&](const char* name, const std::string& sky, const std::string& body,

@@ -76,9 +76,9 @@ bool doc_blob(Context& ctx, const BlobParams& params, BlobResult& out, RpcError&
   if (s == nullptr) return false;
   std::string bytes, message;
   if (!doc::BlobStore::read(ctx.sessions->vfs(), s->dir(), params.blob, 0, bytes, &message)) {
-    error = make_error(doc::BlobStore::is_name(params.blob) ? codes::k_not_found
-                                                            : codes::k_invalid_argument,
-                       std::move(message));
+    error = make_error(
+        doc::BlobStore::is_name(params.blob) ? codes::k_not_found : codes::k_invalid_argument,
+        std::move(message));
     return false;
   }
   out.ref.blob = params.blob;

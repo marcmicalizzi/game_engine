@@ -136,8 +136,8 @@ TEST_CASE("doc store hostile: a save does not write through a link the load neve
   std::filesystem::create_symlink(tmp.file("outside/journal.jsonl"), tmp.file("d/journal.jsonl"),
                                   ec);
   if (ec) {
-    MESSAGE("no file link could be made here, so the journal's case does not run: "
-            << ec.message());
+    MESSAGE(
+        "no file link could be made here, so the journal's case does not run: " << ec.message());
     return;
   }
   CHECK_FALSE(DocumentStore::load(vfs, "docs://d", doc, manifest, &error));

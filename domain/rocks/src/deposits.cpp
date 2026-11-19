@@ -1176,8 +1176,8 @@ DepositForm deposit_form(const DepositPatch& p, const Vector<u8>& active,
   for (u32 s = static_cast<u32>(
            std::clamp<i64>((spacing_mm + k_clast_step_mm / 2) / k_clast_step_mm, 1, 16));
        s > 1; --s)
-    if (spacing_mm % s == 0 && bed_surface(p, active, cells, s) + 432ull * p.fragments <=
-                                   p.triangle_budget) {
+    if (spacing_mm % s == 0 &&
+        bed_surface(p, active, cells, s) + 432ull * p.fragments <= p.triangle_budget) {
       f.sub = s;
       break;
     }
@@ -1315,8 +1315,7 @@ bool split_cut(const DepositPatch& p, const DepositForm& form, const Cut& c, Cut
       if (!block_in(p, block, c.x0, c.x1, c.z0, c.z1)) continue;
       const f64 at = along_x ? wide(block.x_m) / s : wide(block.z_m) / s;
       const i64 column = static_cast<i64>(std::floor(at)) - (along_x ? c.x0 : c.z0);
-      weight[static_cast<u32>(std::clamp<i64>(column, 0, static_cast<i64>(n) - 1))] +=
-          block_weight;
+      weight[static_cast<u32>(std::clamp<i64>(column, 0, static_cast<i64>(n) - 1))] += block_weight;
     }
     u64 total = 0;
     for (u64 v : weight)
@@ -1833,7 +1832,8 @@ bool build_deposit_container(const DepositPatch& input, const geometry::ClusterL
     const bool least = q.triangle_budget <= 500 && q.fragments == 0 && q.block_triangles <= 192;
     if (least || attempt + 1 >= k_deposit_cluster_attempts) return refuse();
     ENGINE_LOG_INFO(log_deposit_build, "deposit patch built again under the cluster limit",
-                    log::field("patch", deposit_source_hash(input)), log::field("clusters", clusters),
+                    log::field("patch", deposit_source_hash(input)),
+                    log::field("clusters", clusters),
                     log::field("triangle_budget", static_cast<u64>(q.triangle_budget)),
                     log::field("fragments", static_cast<u64>(q.fragments)),
                     log::field("blocks", static_cast<u64>(q.blocks.size())));

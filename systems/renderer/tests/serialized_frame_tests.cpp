@@ -1,16 +1,18 @@
-// The serialized frame: the pass audit's guard check 3 (docs/experiments/pass-declarations-audit.md,
-// "The guard"; roadmap R189). Under `renderer.graph.serialize` the render graph records a full
-// barrier before every pass, so no command runs beside another and every read waits for every
-// write before it. A frame drawn that way and drawn as the graph's declarations order it must be
-// the same bytes: a difference is a dependency no pass declared, which a driver may or may not
-// happen to order. It sees what no declaration can name — bindless images, addresses inside GPU
-// tables, a block a list got wrong — and the frame before, since the first pass's barrier orders
-// it behind every command submitted earlier; it sees nothing inside one pass body.
+// The serialized frame: the pass audit's guard check 3
+// (docs/experiments/pass-declarations-audit.md, "The guard"; roadmap R189). Under
+// `renderer.graph.serialize` the render graph records a full barrier before every pass, so no
+// command runs beside another and every read waits for every write before it. A frame drawn that
+// way and drawn as the graph's declarations order it must be the same bytes: a difference is a
+// dependency no pass declared, which a driver may or may not happen to order. It sees what no
+// declaration can name — bindless images, addresses inside GPU tables, a block a list got wrong —
+// and the frame before, since the first pass's barrier orders it behind every command submitted
+// earlier; it sees nothing inside one pass body.
 //
-// Two engine scenes (the grove and the oasis's palms), each drawn both ways in two configurations: the traced frame with the bounce
+// Two engine scenes (the grove and the oasis's palms), each drawn both ways in two configurations:
+// the traced frame with the bounce
 // (`--raster rt --shadows rt`, `renderer.gi.mode=bounce`), and the hardware rasterizer with the
-// cascades (`--shadows csm`, the baseline tier's shadows). Each draw is a renderer of its own, three
-// frames and a capture, so the two sides start from the same state.
+// cascades (`--shadows csm`, the baseline tier's shadows). Each draw is a renderer of its own,
+// three frames and a capture, so the two sides start from the same state.
 
 #include "test_device.h"
 
@@ -63,9 +65,9 @@ Shot draw(const SceneData& data, const Config& config, bool serialize) {
   Shot out;
   const TunableScope gi((std::string("renderer.gi.mode=") + config.gi).c_str(),
                         "renderer.gi.mode=off");
-  const TunableScope graph(serialize ? "renderer.graph.serialize=true"
-                                     : "renderer.graph.serialize=false",
-                           "renderer.graph.serialize=false");
+  const TunableScope graph(
+      serialize ? "renderer.graph.serialize=true" : "renderer.graph.serialize=false",
+      "renderer.graph.serialize=false");
   gfx::Device device;
   std::string error;
   if (!device.create(renderer_test::device_options(), &error)) {
@@ -122,10 +124,9 @@ void check_same(const char* scene_dir) {
     }
     probe.destroy();
   }
-  const std::string file =
-      test::data_path(std::string(ENGINE_SOURCE_DIR "/content/test-scenes/") + scene_dir +
-                          "/scene.json",
-                      std::string("content/test-scenes/") + scene_dir + "/scene.json");
+  const std::string file = test::data_path(
+      std::string(ENGINE_SOURCE_DIR "/content/test-scenes/") + scene_dir + "/scene.json",
+      std::string("content/test-scenes/") + scene_dir + "/scene.json");
   const Config configs[] = {
       {"traced with the bounce", RasterMode::RayTrace, ShadowMode::RayTraced, "bounce"},
       {"hardware with the cascades", RasterMode::Hardware, ShadowMode::Cascaded, "off"},

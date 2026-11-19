@@ -305,10 +305,10 @@ TEST_CASE("ruins generator hostile: a scatter's square and tile size are bounded
   CHECK(error.find("16777216") != std::string::npos);
   constexpr i32 k_first = -2147483647 - 1;
   constexpr i32 k_last = 2147483647;
-  CHECK(ruins::chosen_span(ruins::TileCoord{k_first, k_first},
-                           ruins::TileCoord{k_last, k_last}) == ~u64{0});  // saturated
-  CHECK(ruins::chosen_span(ruins::TileCoord{k_first, 0}, ruins::TileCoord{k_last, 0}) ==
-        u64{1} << 32);
+  CHECK(ruins::chosen_span(ruins::TileCoord{k_first, k_first}, ruins::TileCoord{k_last, k_last}) ==
+        ~u64{0});  // saturated
+  CHECK(ruins::chosen_span(ruins::TileCoord{k_first, 0}, ruins::TileCoord{k_last, 0}) == u64{1}
+                                                                                             << 32);
   CHECK_FALSE(generator->open(entry_json(R"({"kit":"kit/kit.json","count":1,"tile_size":1e30})"),
                               context, &state, &error));
   CHECK(error.find("at most 10000 m") != std::string::npos);

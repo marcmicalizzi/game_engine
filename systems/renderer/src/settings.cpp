@@ -666,7 +666,8 @@ tunables::String reconstruction_provider{
     "hands the frame on, or one a host's capability registered; empty, the default, is the "
     "engine's own accumulation when renderer.reconstruction.accumulation is on, and engine names "
     "it outright. A frame drawn through any is a reconstructed frame (ADR-0064; renderer.md, "
-    "Sampling over time: a reconstruction provider; read at load)", 31};
+    "Sampling over time: a reconstruction provider; read at load)",
+    31};
 // The cross-fade's screen door turned with the phase (R158 leg 3; alpha_mask.slang, `fade_keeps`).
 tunables::Bool reconstruction_fade_turn{
     "renderer.reconstruction.fade_turn", true,

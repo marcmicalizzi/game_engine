@@ -56,8 +56,7 @@ f32 reference_bound(const anim::Skeleton& skeleton, const anim::Clip& clip,
     walked->evaluations = static_cast<u32>(times.size());
     Vector<f32> sorted = times;
     std::sort(sorted.begin(), sorted.end());
-    walked->distinct =
-        static_cast<u32>(std::unique(sorted.begin(), sorted.end()) - sorted.begin());
+    walked->distinct = static_cast<u32>(std::unique(sorted.begin(), sorted.end()) - sorted.begin());
   }
   anim::Pose pose;
   Vector<Mat4> model(joint_count, Mat4::identity());

@@ -1236,12 +1236,12 @@ TEST_CASE("gfx: the far terrain's read rules are bands, and exactly off under a 
     dropped_far += v[i].x == 0.0f || v[i].y == 0.0f ? 1u : 0u;
     dropped_near += v[i].z == 0.0f || v[i].w == 0.0f ? 1u : 0u;
     if (i != 0) {
-      far_jump = std::max({far_jump,
-                           std::abs(static_cast<f64>(v[i].x) - static_cast<f64>(v[i - 1].x)),
-                           std::abs(static_cast<f64>(v[i].y) - static_cast<f64>(v[i - 1].y))});
-      near_jump = std::max({near_jump,
-                            std::abs(static_cast<f64>(v[i].z) - static_cast<f64>(v[i - 1].z)),
-                            std::abs(static_cast<f64>(v[i].w) - static_cast<f64>(v[i - 1].w))});
+      far_jump =
+          std::max({far_jump, std::abs(static_cast<f64>(v[i].x) - static_cast<f64>(v[i - 1].x)),
+                    std::abs(static_cast<f64>(v[i].y) - static_cast<f64>(v[i - 1].y))});
+      near_jump =
+          std::max({near_jump, std::abs(static_cast<f64>(v[i].z) - static_cast<f64>(v[i - 1].z)),
+                    std::abs(static_cast<f64>(v[i].w) - static_cast<f64>(v[i - 1].w))});
     }
   }
   MESSAGE("largest share change in 0.01 degree: far " << far_jump << ", near " << near_jump

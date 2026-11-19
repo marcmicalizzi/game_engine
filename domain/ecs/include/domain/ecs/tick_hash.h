@@ -39,9 +39,9 @@
 // (tick, phase) `sim::first_divergence` named, and diffed with `sim::diff_captures`.
 //
 // **What it holds** (`memory()`): per table, its name and one cached flecs query; per entity,
-// nothing; per tick, one `sim::HashLogRow` and one u64 per table for each phase hashed, in the log —
-// which `TickHashConfig::reserve_ticks` sizes up front, so a run of known length allocates nothing
-// once it ticks.
+// nothing; per tick, one `sim::HashLogRow` and one u64 per table for each phase hashed, in the log
+// — which `TickHashConfig::reserve_ticks` sizes up front, so a run of known length allocates
+// nothing once it ticks.
 
 #include <core/base/macros.h>
 #include <core/base/types.h>
@@ -51,7 +51,6 @@
 #include <domain/sim/scheduler.h>
 
 #include <flecs.h>
-
 #include <string>
 #include <string_view>
 
@@ -91,13 +90,13 @@ struct TickHashSource {
 };
 
 struct TickHashStats {
-  u64 rows = 0;             // (tick, phase) rows appended to the log
-  u64 entities = 0;         // entity components hashed, summed over rows
-  u32 unhashed = 0;         // components with no schema type, not hashed
-  u32 late = 0;             // components registered after the table set was fixed
-  u32 captures = 0;         // captures delivered
-  u32 refused = 0;          // rows the log refused (a tick stepped twice, a log reset under it)
-  u32 fast_tables = 0;      // component tables hashed through a flat program (ecs.md)
+  u64 rows = 0;         // (tick, phase) rows appended to the log
+  u64 entities = 0;     // entity components hashed, summed over rows
+  u32 unhashed = 0;     // components with no schema type, not hashed
+  u32 late = 0;         // components registered after the table set was fixed
+  u32 captures = 0;     // captures delivered
+  u32 refused = 0;      // rows the log refused (a tick stepped twice, a log reset under it)
+  u32 fast_tables = 0;  // component tables hashed through a flat program (ecs.md)
 };
 
 // The two ways a component's value is hashed, for the case that holds them equal on every
@@ -120,11 +119,11 @@ struct TickHashOp {
 }  // namespace detail
 
 struct TickHashMemory {
-  u32 tables = 0;            // components and sources
-  usize per_table = 0;       // bytes kept per table: its name and its query's handle
-  usize per_entity = 0;      // bytes kept per entity: none
-  usize per_tick = 0;        // log bytes a tick adds: a row and a hash per table per phase hashed
-  usize log = 0;             // what the log holds now
+  u32 tables = 0;        // components and sources
+  usize per_table = 0;   // bytes kept per table: its name and its query's handle
+  usize per_entity = 0;  // bytes kept per entity: none
+  usize per_tick = 0;    // log bytes a tick adds: a row and a hash per table per phase hashed
+  usize log = 0;         // what the log holds now
 };
 
 class TickHash {

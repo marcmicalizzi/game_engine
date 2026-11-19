@@ -3,6 +3,8 @@
 // with the ground under it — a channel answered from its solved stations (the flow fixture's), the
 // channels' index answering what every stretch answers over 300 channels, dry where neither is,
 // and the answers pinned so every toolchain gives the same bits. No device.
+#include "channel_fixture.h"
+
 #include <core/hash/hash.h>
 #include <core/math/math.h>
 #include <core/math/world.h>
@@ -18,8 +20,6 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
-
-#include "channel_fixture.h"
 
 using namespace engine;
 
@@ -63,8 +63,7 @@ water::Channel fixture_channel(const scene::WaterChannel& block) {
 
 // The pond's bowl north of z = 30, the flow fixture's trenches south of it.
 f64 bowl_and_trenches(const void* context, i64 x_mm, i64 z_mm) noexcept {
-  return z_mm > 30000 ? bowl(context, x_mm, z_mm)
-                      : channel_fixture::ground_fn(context, x_mm, z_mm);
+  return z_mm > 30000 ? bowl(context, x_mm, z_mm) : channel_fixture::ground_fn(context, x_mm, z_mm);
 }
 
 scene_gen::Ground both_grounds() {
@@ -263,8 +262,8 @@ TEST_CASE("water: the channels' index answers what every stretch answers, over 3
     const f64 us =
         std::chrono::duration<f64, std::micro>(std::chrono::steady_clock::now() - t0).count();
     MESSAGE("1000 water questions over 300 channels, "
-            << std::string(q == &indexed ? "indexed" : "every stretch") << ": " << us << " us, " << hits
-            << " wet");
+            << std::string(q == &indexed ? "indexed" : "every stretch") << ": " << us << " us, "
+            << hits << " wet");
   }
 }
 
@@ -284,8 +283,7 @@ TEST_CASE("water: a module's water answers are pinned, the same from every toolc
   u64 h = 0;
   for (u32 k = 0; k < 64; ++k) {
     // A walk across the pond, and down the step's channel over its fall and its jump.
-    const f64 x =
-        k < 32 ? 88.0 + 0.77 * static_cast<f64>(k) : 8.0 + 1.6 * static_cast<f64>(k - 32);
+    const f64 x = k < 32 ? 88.0 + 0.77 * static_cast<f64>(k) : 8.0 + 1.6 * static_cast<f64>(k - 32);
     const f64 z =
         k < 32 ? 50.0 + 0.31 * static_cast<f64>(k) : 0.05 * static_cast<f64>(k - 32) - 0.8;
     water::WaterPoint w;

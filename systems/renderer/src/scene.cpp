@@ -39,6 +39,7 @@
 #include <systems/renderer/gpu_scene.h>  // k_max_pairs: the bound a scatter's count is held to
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_text.h>
+#include <systems/renderer/scene_wind.h>
 #include <systems/renderer/sway_forms.h>
 #include <systems/renderer/terrain.h>
 #include <systems/renderer/terrain_materials.h>
@@ -54,7 +55,6 @@
 #include <renderer_log.h>
 #include <scene_fire.h>
 #include <scene_water.h>
-#include <systems/renderer/scene_wind.h>
 #include <schemas/scene.h>
 #include <thread>
 #include <utility>
@@ -2516,8 +2516,8 @@ bool read_scene_file(const std::string& path, SceneDesc& out, std::string& error
 namespace {
 
 // The file's `water_channels`, read as a tree before it is mapped: dropped for the water's cook,
-// which writes them (W120), and a block of versions 3 to 5 read through `WaterChannel`'s migration —
-// a scene stores no version, so the block itself says which it is (water_channel.h).
+// which writes them (W120), and a block of versions 3 to 5 read through `WaterChannel`'s migration
+// — a scene stores no version, so the block itself says which it is (water_channel.h).
 bool prepare_water_channels(JsonValue& value, schema::ReadContext& ctx, void* without) {
   if (*static_cast<const bool*>(without)) value = JsonValue::array();
   JsonValue root = JsonValue::object();
@@ -2624,7 +2624,8 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       return false;
     }
     out.sky = *file.sky;
-    // The scene's wind (gfx.md, "The wind a scene names"; W136), checked here so a wind nobody can draw refuses the file.
+    // The scene's wind (gfx.md, "The wind a scene names"; W136), checked here so a wind nobody can
+    // draw refuses the file.
     if (file.sky->wind.has_value() && !read_scene_wind(*file.sky->wind, path, out.wind, error))
       return false;
     // The swell arriving beside it (gfx.md, "A swell a scene names"; W136-3).
@@ -3445,9 +3446,9 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   const f32 grey = gfx::k_neutral_ground_albedo;
   out.ground_albedo = Vec3{grey, grey, grey};
   if (out.terrain.enabled) {
-    out.ground_albedo = terrain_ground_albedo(
-        out.terrain, out.terrain_mesh < out.sources.size() ? &out.sources[out.terrain_mesh].data
-                                                            : nullptr);
+    out.ground_albedo = terrain_ground_albedo(out.terrain, out.terrain_mesh < out.sources.size()
+                                                               ? &out.sources[out.terrain_mesh].data
+                                                               : nullptr);
   }
   out.mesh_info = resolved.mesh_info;
   out.name = resolved.name;

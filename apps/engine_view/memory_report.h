@@ -2,7 +2,8 @@
 
 // **`engine-view --memory-report`** (docs/subsystems/apps.md, "--memory-report: where the commit
 // is"; roadmap T129): where this process's commit is, taken at the first frame and at exit (and
-// once uploaded, W51-2) — as the summary's `memory` block, a block of `--report`'s file, and one log line each.
+// once uploaded, W51-2) — as the summary's `memory` block, a block of `--report`'s file, and one
+// log line each.
 //
 // Each snapshot is the address space walked by kind (core/platform/address_space.h: private, mapped
 // file, image; committed, resident, reserved only), the owners the engine can name — its own heap
@@ -41,10 +42,11 @@ class MemoryReport {
   void enable(u64 floor_bytes = 0) noexcept;
   bool on() const noexcept { return on_; }
   // A snapshot named `when` ("uploaded", "first_frame", "exit"), logged as one line and kept for
-  // `block`. The device may be null (no device yet, or none any more). With a scene, the snapshot carries
-  // `place`: what that scene holds where the eye stands, by kind (`GpuScene::place_bytes`, T138),
-  // and one more log line. Does nothing when off or when a snapshot of that name was already taken.
-  // Returns the nanoseconds it took (0 when it did nothing), for a loop to take out of its clocks.
+  // `block`. The device may be null (no device yet, or none any more). With a scene, the snapshot
+  // carries `place`: what that scene holds where the eye stands, by kind (`GpuScene::place_bytes`,
+  // T138), and one more log line. Does nothing when off or when a snapshot of that name was already
+  // taken. Returns the nanoseconds it took (0 when it did nothing), for a loop to take out of its
+  // clocks.
   i64 take(const char* when, const gfx::Device* device, const renderer::GpuScene* scene = nullptr);
   // `{ "uploaded": {...}, "first_frame": {...}, "exit": {...}, "floor_mib": n }` as taken so far,
   // or null when off.

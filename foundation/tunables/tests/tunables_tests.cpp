@@ -161,7 +161,8 @@ TEST_CASE("tunables: String holds one line of text, in text and JSON forms") {
   CHECK(t_text.set_from_text("none", &error));
   CHECK(t_text.set_from_text("", &error));  // empty is a value
   CHECK(t_text.get().empty());
-  CHECK(t_text.set_from_json(JsonValue("a, b=c"), &error));  // JSON carries what a command line cannot
+  CHECK(t_text.set_from_json(JsonValue("a, b=c"),
+                             &error));  // JSON carries what a command line cannot
   CHECK(t_text.get() == "a, b=c");
   CHECK_FALSE(t_text.set_from_json(JsonValue(3), &error));
   CHECK(error.find("string") != std::string::npos);

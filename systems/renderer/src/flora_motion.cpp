@@ -241,8 +241,7 @@ bool flora_mesh(std::span<const geometry::ClusterFileMotionPart> parts,
     // A part with wood is reached within its wood, unless leaves or needles ride it (the table's
     // foliage flag, A45): then as far as they stand out, the reach a part with no table has.
     const f32 leaves = k_flora_leaf_reach * part.length;
-    const bool foliage =
-        structured && (structure[p].flags & geometry::k_structural_foliage) != 0;
+    const bool foliage = structured && (structure[p].flags & geometry::k_structural_foliage) != 0;
     out.reach[p] = wood > 0.0f ? (foliage ? std::fmax(wood, leaves) : wood) : leaves;
     // A part that collides is never pushed: the walker stops at it rather than bending it.
     const bool collider = structured && (structure[p].flags & geometry::k_structural_collider) != 0;

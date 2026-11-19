@@ -209,9 +209,9 @@ TEST_CASE("engine-view: a ring change of forms alone calls no generator and is r
   const Placements with = sum_placements(tmp.file("on.jsonl"));
   const Placements without = sum_placements(tmp.file("off.jsonl"));
   MESSAGE("forms on: " << with.built << " tiles built, " << with.reformed << " rewritten in place ("
-                       << with.reformed_instances << " instances), " << with.told
-                       << " told, " << with.compared << " compared; forms off: " << without.built
-                       << " built, " << without.compared << " compared");
+                       << with.reformed_instances << " instances), " << with.told << " told, "
+                       << with.compared << " compared; forms off: " << without.built << " built, "
+                       << without.compared << " compared");
   CHECK(with.reformed > 0);
   CHECK(with.told > 0);
   CHECK(with.built == without.built);

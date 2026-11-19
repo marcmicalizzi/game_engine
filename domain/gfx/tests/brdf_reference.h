@@ -348,9 +348,8 @@ inline Dvec3 shade(const Surface& s, Dvec3 sun_dir, double sun_intensity, Dvec3 
   const Dvec3 specular = env_specular(f0_of(s.albedo, s.metallic), s.roughness, n_dot_v);
   if (is_foliage(s)) {
     const auto at = [&](Dvec3 n) { return hemisphere_ambient(sky_radiance(sky), lit_ground, n.y); };
-    const Dvec3 diffuse =
-        foliage_ambient(ambient, at(-s.normal), at(s.view), at(-s.view),
-                        foliage_share(s.albedo, s.transmit), s.spread);
+    const Dvec3 diffuse = foliage_ambient(ambient, at(-s.normal), at(s.view), at(-s.view),
+                                          foliage_share(s.albedo, s.transmit), s.spread);
     return color + (diffuse * s.albedo * (1.0 - s.metallic) + ambient * specular) * occlusion +
            emissive;
   }
@@ -499,7 +498,6 @@ inline double ggx_vndf_pdf_below(Dvec3 v, Dvec3 l, double alpha) {
   return ggx_g1(v.z, alpha) * d_ggx(h.z, alpha) / (denom < 1e-9 ? 1e-9 : denom);
 }
 
-
 inline double mis_power_heuristic(double pdf_a, double pdf_b) {
   const double a = pdf_a * pdf_a;
   const double b = pdf_b * pdf_b;
@@ -565,10 +563,9 @@ inline bool sample_foliage_bsdf(const Surface& s, Dvec3 v_local, const double u[
     l_local = sample_cosine_hemisphere(u[2], u[3]);
   }
   if (l_local.z == 0.0) return false;
-  out.pdf = l_local.z > 0.0
-                ? 0.5 * bsdf_pdf(v_local, l_local, alpha, p_specular)
-                : 0.5 * (-l_local.z / k_pi) +
-                      0.5 * p_specular * ggx_vndf_pdf_below(v_local, l_local, alpha);
+  out.pdf = l_local.z > 0.0 ? 0.5 * bsdf_pdf(v_local, l_local, alpha, p_specular)
+                            : 0.5 * (-l_local.z / k_pi) +
+                                  0.5 * p_specular * ggx_vndf_pdf_below(v_local, l_local, alpha);
   if (!(out.pdf > 0.0)) return false;
   out.direction = l_local;
   Surface local = s;

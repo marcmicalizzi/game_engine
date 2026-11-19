@@ -267,7 +267,9 @@ inline f64 surf_similarity(f64 slope, f64 height_m, f64 period_s) noexcept {
 }
 inline BreakerType breaker_type(f64 xi) noexcept {
   if (!(xi > 0.0)) return BreakerType::none;
-  return xi < 0.5 ? BreakerType::spilling : xi <= 3.3 ? BreakerType::plunging : BreakerType::surging;
+  return xi < 0.5    ? BreakerType::spilling
+         : xi <= 3.3 ? BreakerType::plunging
+                     : BreakerType::surging;
 }
 
 // The turbulence intensity over ground of roughness `z0` at 10 m: 1 / ln(z / z0) (the log law's
@@ -365,8 +367,8 @@ struct SeaState {
   Vec2 wind_to{1.0f, 0.0f};
   f64 sea_fetch_m = 0.0;  // the wind sea's equivalent fetch under the wind now; 0: none
   Vec2 sea_to{1.0f, 0.0f};
-  f64 sea_height_m = 0.0;  // its significant height (Hm0)
-  f64 sea_period_s = 0.0;  // its peak period
+  f64 sea_height_m = 0.0;    // its significant height (Hm0)
+  f64 sea_period_s = 0.0;    // its peak period
   f64 swell_height_m = 0.0;  // the swell the wind's own sea left behind
   f64 swell_period_s = 0.0;
   Vec2 swell_to{1.0f, 0.0f};
@@ -541,8 +543,8 @@ inline f64 sea_breaking_probability(const SeaState& s) noexcept {
 inline f64 groundswell_band_variance(const SeaState& s, f64 a0, f64 a1) noexcept {
   if (!s.has_groundswell()) return 0.0;
   const f64 p = 2.0 * k_wind_pi / s.groundswell_period_s;
-  const f64 alpha = s.groundswell_height_m * s.groundswell_height_m / 16.0 * (p * p * p * p) /
-                    sea_jonswap_unit();
+  const f64 alpha =
+      s.groundswell_height_m * s.groundswell_height_m / 16.0 * (p * p * p * p) / sea_jonswap_unit();
   const u32 steps = 32;
   const f64 dw = (a1 - a0) / static_cast<f64>(steps);
   f64 m0 = 0.0;
@@ -608,11 +610,11 @@ inline void water_spectrum_on_grid(const SeaState& s, WaterWaveGrid grid, u32 se
     const bool swell_band = !ground_band && swell && (!sea || s_swell > s_sea);
     const Vec2 about = ground_band ? s.groundswell_to : swell_band ? s.swell_to : s.sea_to;
     // W136-3: the wind sea's spread opens above its peak as its age says (`wind_sea_beta`).
-    const f64 beta =
-        ground_band  ? spread_beta_of_s(goda_spread_s(omega / ground_peak, s.groundswell_s))
-        : swell_band ? donelan_banner_beta(omega / swell_peak)
-        : peak > 0.0 ? wind_sea_beta(omega / peak, nu)
-                     : donelan_banner_beta(1.0);
+    const f64 beta = ground_band
+                         ? spread_beta_of_s(goda_spread_s(omega / ground_peak, s.groundswell_s))
+                     : swell_band ? donelan_banner_beta(omega / swell_peak)
+                     : peak > 0.0 ? wind_sea_beta(omega / peak, nu)
+                                  : donelan_banner_beta(1.0);
     const f64 u = water_wave_uniform(seed, i, 1);
     const f64 theta = std::atanh(std::tanh(beta * 3.141592653589793) * (2.0 * u - 1.0)) / beta;
     const f64 wx = static_cast<f64>(about.x);
@@ -713,7 +715,8 @@ inline WaterWindRange water_wind_range(const WindDesc& w, f64 fetch_m) noexcept 
     r.grid.hi = std::min(k_water_band_high * hi, k_water_grid_max_ratio * r.grid.lo);
     if (!(r.grid.hi > r.grid.lo)) r.grid.hi = k_water_band_high * lo;
     // A fixed swell stands on a band's centre (W136-3): the grid slides by under half a band so
-    // the swell's period is drawn as it is, not the nearest centre's (up to 11 % off on a wide grid).
+    // the swell's period is drawn as it is, not the nearest centre's (up to 11 % off on a wide
+    // grid).
     if (w.swell.kind == SwellKind::fixed && r.max_groundswell_m > 0.0)
       r.grid = water_grid_on(r.grid, 2.0 * k_wind_pi / r.groundswell_period_s);
   }

@@ -3,14 +3,14 @@
 // SHA-256 (FIPS 180-4 §6.2), for content addressing: a document's blobs are named by the SHA-256 of
 // their bytes (domain/doc/blob_store.h; docs/subsystems/doc.md, "Blobs"), so that the same bytes
 // always get the same name and a file whose bytes do not hash to its name is known to be damaged.
-// The 64-bit `hash_bytes` beside it is a table hash: two different heightfields could share a value,
-// and a name shared by two contents would make a document read the wrong bytes without a word.
-// SHA-256 is what git's newer object format and every content-addressed store of note uses, and has
-// no known collision.
+// The 64-bit `hash_bytes` beside it is a table hash: two different heightfields could share a
+// value, and a name shared by two contents would make a document read the wrong bytes without a
+// word. SHA-256 is what git's newer object format and every content-addressed store of note uses,
+// and has no known collision.
 //
 // Header-only like the rest of this module. Whole 64-byte blocks are compressed straight from the
-// caller's bytes; only a partial block is copied, so hashing a 64 MiB grid costs the compression and
-// not a byte-by-byte copy.
+// caller's bytes; only a partial block is copied, so hashing a 64 MiB grid costs the compression
+// and not a byte-by-byte copy.
 
 #include <core/base/types.h>
 

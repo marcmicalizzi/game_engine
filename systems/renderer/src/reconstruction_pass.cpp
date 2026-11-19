@@ -1,8 +1,9 @@
+#include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/scene_renderer.h>
+
 #include <motion_pass.h>
 #include <reconstruction_pass.h>
 #include <renderer_log.h>
-#include <systems/renderer/gpu_scene.h>
-#include <systems/renderer/scene_renderer.h>
 
 namespace engine::renderer {
 
@@ -82,11 +83,12 @@ bool ReconstructionPass::record_thunk(const FramePassContext& context, void* use
   for (u32 v = 0; v < context.view_count && v < k_max_views; ++v) {
     in.motion[v] = motion.motion_address(v);
     in.prev_visibility_address[v] = motion.prev_visibility_address(v);
-    in.prev_motion_address[v] = motion.prev_motion().buffer.valid() ? motion.prev_motion_address(v)
-                                                                    : 0;
+    in.prev_motion_address[v] =
+        motion.prev_motion().buffer.valid() ? motion.prev_motion_address(v) : 0;
   }
   if (in.history) {
-    in.prev_visibility = context.graph->import_buffer("visibility before", motion.prev_visibility());
+    in.prev_visibility =
+        context.graph->import_buffer("visibility before", motion.prev_visibility());
     if (motion.prev_motion().buffer.valid())
       in.prev_motion = context.graph->import_buffer("motion before", motion.prev_motion());
   }

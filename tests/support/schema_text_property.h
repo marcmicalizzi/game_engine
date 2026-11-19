@@ -54,7 +54,7 @@ struct Outcome {
 };
 
 inline Outcome by_tree(const TypeInfo& type, void* object, std::string_view text,
-                const TextReadOptions& options = {}) {
+                       const TextReadOptions& options = {}) {
   Outcome o;
   JsonValue root;
   o.parse = parse_json(text, root, options.parse);
@@ -71,7 +71,7 @@ inline Outcome by_tree(const TypeInfo& type, void* object, std::string_view text
 }
 
 inline Outcome by_text(const TypeInfo& type, void* object, std::string_view text, bool* streamed,
-                const TextReadOptions& options = {}) {
+                       const TextReadOptions& options = {}) {
   Outcome o;
   ReadContext ctx;
   o.ok = read_json_text(type, object, text, ctx, o.parse, options, streamed);
@@ -114,9 +114,21 @@ struct Generator {
   bool coin() { return (next() & 1) != 0; }
 
   std::string text() {
-    static const char* const k_pieces[] = {"a", "Z", "0", " ", "\"", "\\", "\n", "\t", "/",
-                                           "\x01", "\xc3\xa9", "\xe2\x82\xac", "\xf0\x9f\x8c\xb2",
-                                           "key", "_"};
+    static const char* const k_pieces[] = {"a",
+                                           "Z",
+                                           "0",
+                                           " ",
+                                           "\"",
+                                           "\\",
+                                           "\n",
+                                           "\t",
+                                           "/",
+                                           "\x01",
+                                           "\xc3\xa9",
+                                           "\xe2\x82\xac",
+                                           "\xf0\x9f\x8c\xb2",
+                                           "key",
+                                           "_"};
     std::string s;
     const u32 n = below(6);
     for (u32 i = 0; i < n; ++i)
@@ -145,8 +157,8 @@ struct Generator {
 
   f32 any_float() {
     if (coin())
-      return static_cast<f32>(std::ldexp(static_cast<f64>(below(2000)) - 1000.0,
-                                         static_cast<int>(below(60)) - 30));
+      return static_cast<f32>(
+          std::ldexp(static_cast<f64>(below(2000)) - 1000.0, static_cast<int>(below(60)) - 30));
     f32 f;
     do {
       const u32 bits = static_cast<u32>(next());
@@ -244,7 +256,8 @@ struct Generator {
       case Kind::Enum: {
         const TypeInfo& info = *type.type;
         if (!info.values.empty() && below(8) != 0)
-          return JsonValue(std::string_view(info.values[below(static_cast<u32>(info.values.size()))].name));
+          return JsonValue(
+              std::string_view(info.values[below(static_cast<u32>(info.values.size()))].name));
         return JsonValue(static_cast<i64>(below(4)));
       }
       case Kind::Struct: {
@@ -304,7 +317,9 @@ struct Generator {
     switch (below(4)) {
       case 0: s.resize(at); break;
       case 1: s[at] = k_bytes[below(sizeof(k_bytes) - 1)]; break;
-      case 2: s.insert(s.begin() + static_cast<std::ptrdiff_t>(at), k_bytes[below(sizeof(k_bytes) - 1)]); break;
+      case 2:
+        s.insert(s.begin() + static_cast<std::ptrdiff_t>(at), k_bytes[below(sizeof(k_bytes) - 1)]);
+        break;
       default: s.erase(at, 1 + below(8)); break;
     }
     return s;
@@ -320,8 +335,8 @@ inline TypeRef ref_of(const TypeInfo& type) {
   return ref;
 }
 
-
-// Every registered struct type, `rounds` generated values each, compact and pretty; counts what it ran.
+// Every registered struct type, `rounds` generated values each, compact and pretty; counts what it
+// ran.
 inline void run_property(u64 seed, u32 rounds, u32& types, u32& texts) {
   Generator gen(seed);
   for (const TypeInfo* info : Registry::global().all()) {
@@ -350,8 +365,8 @@ inline void run_property(u64 seed, u32 rounds, u32& types, u32& texts) {
         CHECK(canonical_json_equals(*info, a.p, canonical, {}, options));
         CHECK(canonical_json_equals(*info, a.p, canonical + "\n", "\n", options));
         CHECK_FALSE(canonical_json_equals(*info, a.p, canonical + "\n", {}, options));
-        CHECK_FALSE(canonical_json_equals(*info, a.p, canonical.substr(0, canonical.size() - 1),
-                                          {}, options));
+        CHECK_FALSE(canonical_json_equals(*info, a.p, canonical.substr(0, canonical.size() - 1), {},
+                                          options));
         std::string changed = canonical;
         changed[gen.next() % changed.size()] ^= 0x20;
         CHECK_FALSE(canonical_json_equals(*info, a.p, changed, {}, options));

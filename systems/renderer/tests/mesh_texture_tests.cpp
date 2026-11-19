@@ -833,9 +833,8 @@ TEST_CASE("mesh textures: a tile's foliage material arriving after the first fra
                   undeclared.error);
   CHECK(undeclared.scene.has_foliage_materials());
   Rig declared;
-  REQUIRE_MESSAGE(
-      declared.build(gpu.device, describe(tmp, false, look), plain(), true, look, true),
-      declared.error);
+  REQUIRE_MESSAGE(declared.build(gpu.device, describe(tmp, false, look), plain(), true, look, true),
+                  declared.error);
   Rig sheet;  // the same rocks two-sided with no transmission: no foliage optics
   REQUIRE_MESSAGE(sheet.build(gpu.device, describe(tmp, false, look), plain(), true, look),
                   sheet.error);
@@ -854,10 +853,9 @@ TEST_CASE("mesh textures: a tile's foliage material arriving after the first fra
   REQUIRE_MESSAGE(declared.shoot(d), declared.error);
   REQUIRE_MESSAGE(sheet.shoot(s), sheet.error);
   const Difference same = compare(u, undeclared, d, declared);
-  MESSAGE("foliage tiles, undeclared against declared: " << same.depth << " depths, "
-                                                        << same.color << " colours, " << same.ids
-                                                        << " ids over " << same.rock_pixels
-                                                        << " rock pixels");
+  MESSAGE("foliage tiles, undeclared against declared: " << same.depth << " depths, " << same.color
+                                                         << " colours, " << same.ids << " ids over "
+                                                         << same.rock_pixels << " rock pixels");
   CHECK(same.rock_pixels > 3000);
   CHECK(same.depth == 0);
   CHECK(same.ids == 0);

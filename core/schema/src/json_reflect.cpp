@@ -864,7 +864,8 @@ bool from_json_versioned(const TypeInfo& type, void* object, JsonValue in, u16 s
   return from_json(type, object, in, ctx);
 }
 
-// --- JSON text without a tree (D40; json_text.h) --------------------------------------------------
+// --- JSON text without a tree (D40; json_text.h)
+// --------------------------------------------------
 
 namespace {
 
@@ -1045,7 +1046,8 @@ bool TextWalker::structure(const TypeInfo& info, void* object, bool root) {
     first = false;
     const FieldInfo* f = info.find_field(key);
     if (f == nullptr && !info.field_aliases.empty() && info.find_field_alias(key) != nullptr) {
-      irregular_ = true;  // a former name: the tree path reads it, and refuses two names of one field
+      irregular_ =
+          true;  // a former name: the tree path reads it, and refuses two names of one field
       return false;
     }
     if (f == nullptr) {
@@ -1242,7 +1244,8 @@ class TextWriter {
         std::memcpy(v, p, sizeof(v));
         return numbers(v, 3, depth);
       }
-      case Kind::Json: return json_format::value(out_, *static_cast<const JsonValue*>(p), pretty_, depth);
+      case Kind::Json:
+        return json_format::value(out_, *static_cast<const JsonValue*>(p), pretty_, depth);
       case Kind::Enum: {
         const i64 v = load_integer(type.type->enum_underlying, p);
         if (const EnumValueInfo* ev = type.type->find_value(v))

@@ -1,11 +1,12 @@
 // What a mask level's reads cost when several threads read it at once (T182; tileset.md, "Read
-// without a lock"). T172-2 found the walk's collision workers reading one level through one lock and
-// one 2 MiB read-ahead window refilled under it: four workers on tiles far apart kept moving the
-// window, and a sward call's mask reads took 56 of its 59 ms.
+// without a lock"). T172-2 found the walk's collision workers reading one level through one lock
+// and one 2 MiB read-ahead window refilled under it: four workers on tiles far apart kept moving
+// the window, and a sward call's mask reads took 56 of its 59 ms.
 //
 // The level is synthetic and the staging's size: 777 x 777 tiles of 8 cells at 1 m, every one
 // present, 632 bytes a record, about 381 MB of archive (the forest's level is 603,905 such tiles).
-// Its records are a function of the tile, so a read is checked as it is made. A smoke run makes 32 x
+// Its records are a function of the tile, so a read is checked as it is made. A smoke run makes 32
+// x
 // 32. `ENGINE_TILESET_BENCH_LEVEL=<manifest.json>` reads a level that is already built instead
 // (opened read-only; nothing is written beside it), which is how the staging's real level is read
 // by hand.
@@ -47,14 +48,13 @@ namespace {
 
 constexpr u32 k_cells = 8;
 constexpr i64 k_spacing_mm = 1000;
-constexpr i32 k_block = 8;           // a call's block of tiles a side: 64 reads
-constexpr u32 k_calls = 16;          // calls a thread makes an iteration
+constexpr i32 k_block = 8;   // a call's block of tiles a side: 64 reads
+constexpr u32 k_calls = 16;  // calls a thread makes an iteration
 
 // A record's i-th word: a function of the tile alone, so any read can be checked.
 u32 word_of(i32 tx, i32 tz, u32 i) noexcept {
-  return static_cast<u32>(hash_combine(hash_combine(k_hash_seed, static_cast<u64>(tx) << 32 |
-                                                                     static_cast<u32>(tz)),
-                                       i));
+  return static_cast<u32>(hash_combine(
+      hash_combine(k_hash_seed, static_cast<u64>(tx) << 32 | static_cast<u32>(tz)), i));
 }
 
 struct Fixture {
@@ -242,12 +242,12 @@ void memory_line(const char* when) {
       r.kinds[static_cast<u32>(platform::RegionKind::mapped_file)];
   const platform::RegionKindTotals& own =
       r.kinds[static_cast<u32>(platform::RegionKind::private_memory)];
-  std::fprintf(stderr,
-               "tileset bench memory (%s): commit %.1f MiB (private allocations %.1f MiB, %.1f "
-               "resident), working set %.1f MiB, mapped views %.1f MiB of which resident %.1f MiB\n",
-               when, mib(r.process_commit), mib(own.committed), mib(own.resident),
-               mib(r.working_set), mib(mapped.committed + mapped.reserved_only),
-               mib(mapped.resident));
+  std::fprintf(
+      stderr,
+      "tileset bench memory (%s): commit %.1f MiB (private allocations %.1f MiB, %.1f "
+      "resident), working set %.1f MiB, mapped views %.1f MiB of which resident %.1f MiB\n",
+      when, mib(r.process_commit), mib(own.committed), mib(own.resident), mib(r.working_set),
+      mib(mapped.committed + mapped.reserved_only), mib(mapped.resident));
 }
 
 }  // namespace

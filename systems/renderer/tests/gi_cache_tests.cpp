@@ -1088,7 +1088,8 @@ TEST_CASE("gi cache: the grain on a plain wall is its cells' sampling noise") {
 // rays "no longer halving" the guided grain, which this measure does not bear out. First run
 // (2026-11-18, RTX 5090, msvc-release): bounce, cosine 1.70 %, guide 1.02 %, guide with three
 // times the samples 0.67 % (0.65 of it; the law says 0.58); sky, cosine 8.24 %, guide 3.18 %,
-// three times the samples 1.85 % (0.58). The same in msvc-debug: 1.70, 1.03, 0.66; 8.25, 3.12, 1.85.
+// three times the samples 1.85 % (0.58). The same in msvc-debug: 1.70, 1.03,
+// 0.66; 8.25, 3.12, 1.85.
 TEST_CASE("gi cache: the grain on a plain wall keeps the law of a mean with the guide") {
   Gpu gpu;
   if (!gpu.ok) {
@@ -1174,11 +1175,11 @@ TEST_CASE("gi cache: the grain on a plain wall keeps the law of a mean with the 
     REQUIRE(samples[r] > 0);
     spread[r] = std::sqrt(square / kept);
     level[r] /= static_cast<f64>(counted);
-    MESSAGE("the box's plain wall, "
-            << std::string(runs[r].name) << ": grain " << 100.0 * spread[r]
-            << " % of the indirect term over " << kept << " pictures; samples a frame "
-            << samples[r] << ", with a trained guide " << guided << "; the wall's light "
-            << level[r]);
+    MESSAGE("the box's plain wall, " << std::string(runs[r].name) << ": grain " << 100.0 * spread[r]
+                                     << " % of the indirect term over " << kept
+                                     << " pictures; samples a frame " << samples[r]
+                                     << ", with a trained guide " << guided << "; the wall's light "
+                                     << level[r]);
     // A guided run draws from trained guides, a cosine run from none.
     CHECK((guided > 0) == (std::string(runs[r].guide) == "true"));
   }
@@ -1700,10 +1701,11 @@ TEST_CASE("gi cache: a turn shows no fill") {
   // and the guide (the read's shrinkage is off by default): its floor is the bounds' (below). The
   // fifth leg's run of this case left the guide on in it, so the bounds stood on a floor the guide
   // had lowered (0.475 against 0.61) and were not main's; off means both.
-  const Run runs[] = {{"the plain read, nothing round the eye", "1", "0", "0", nullptr},
-                      {"the defaults", "255", "24", "65536", nullptr},
-                      {"the ladder alone, nothing round the eye", "255", "0", "0", nullptr},
-                      {"the defaults, the memory and the guide off", "255", "24", "65536", "false"}};
+  const Run runs[] = {
+      {"the plain read, nothing round the eye", "1", "0", "0", nullptr},
+      {"the defaults", "255", "24", "65536", nullptr},
+      {"the ladder alone, nothing round the eye", "255", "0", "0", nullptr},
+      {"the defaults, the memory and the guide off", "255", "24", "65536", "false"}};
   constexpr u32 k_runs = sizeof(runs) / sizeof(runs[0]);
   EventCurve curves[k_runs];
   std::string memory_default;
@@ -2229,9 +2231,9 @@ TEST_CASE("gi cache: the pre-roll runs on the first frame and on a cut, and neit
   f64 cut_worst = 0.0;
   for (const f64 apart : jump[1].apart)
     cut_worst = std::max(cut_worst, apart);
-  MESSAGE("the cut's furthest frame " << cut_worst << ": " << cut_worst / jump[1].floor
-                                      << " floors of the defaults' own, " << cut_worst / jump[0].floor
-                                      << " of the run's without the pre-roll");
+  MESSAGE("the cut's furthest frame "
+          << cut_worst << ": " << cut_worst / jump[1].floor << " floors of the defaults' own, "
+          << cut_worst / jump[0].floor << " of the run's without the pre-roll");
   CHECK(cut_worst <= 2.0 * jump[1].floor);
   // The load. The pre-roll's first frame stands at under half of what the load's first frame
   // stood at without it, and from the twenty-fourth frame on every frame is within twice the

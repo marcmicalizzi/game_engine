@@ -19,8 +19,8 @@ namespace engine::renderer {
 namespace {
 
 // Whether every image a material of `mesh` samples has its built `.tex` under the mesh's root: what
-// `find_built_textures` will find, so the upload decodes none of them. `exists` remembers each key's
-// answer for the load, since a forest's meshes share a few hundred textures.
+// `find_built_textures` will find, so the upload decodes none of them. `exists` remembers each
+// key's answer for the load, since a forest's meshes share a few hundred textures.
 bool every_sampled_image_built(const SourceMesh& mesh, HashMap<u64, u8>& exists) {
   const assets::MeshData& data = mesh.data;
   for (const assets::Material& material : data.materials) {

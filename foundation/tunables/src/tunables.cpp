@@ -363,9 +363,9 @@ String::String(const char* name, const char* default_value, const char* doc,
       value_(default_value != nullptr ? default_value : ""),
       default_(value_),
       max_length_(max_length) {
-  ENGINE_VERIFY(max_length > 0 && default_.size() <= max_length &&
-                    default_.find('\n') == std::string::npos,
-                "tunables::String: the default is longer than max_length or holds a newline");
+  ENGINE_VERIFY(
+      max_length > 0 && default_.size() <= max_length && default_.find('\n') == std::string::npos,
+      "tunables::String: the default is longer than max_length or holds a newline");
 }
 
 std::string String::get() const {
@@ -392,8 +392,9 @@ bool String::set(std::string_view value) {
 bool String::set_from_text(std::string_view text, std::string* error) {
   text = trim(text);
   if (!set(text)) {
-    set_error(error, *this, "expected text on one line of at most " + std::to_string(max_length_) +
-                                " characters");
+    set_error(
+        error, *this,
+        "expected text on one line of at most " + std::to_string(max_length_) + " characters");
     return false;
   }
   return true;

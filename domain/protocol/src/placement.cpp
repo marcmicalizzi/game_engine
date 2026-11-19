@@ -3,6 +3,8 @@
 // CreateObject commands with ids and transforms worked out by hand. Each is one `doc.apply` (or a
 // staging call into an open transaction), so roles, proposals, leases, the journal and undo treat
 // it exactly as they treat the commands it compiles to.
+#include "document_path.h"
+
 #include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
@@ -14,8 +16,6 @@
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
 #include <foundation/io/vfs.h>
-
-#include "document_path.h"
 
 #include <cstring>
 #include <schemas/scene.h>

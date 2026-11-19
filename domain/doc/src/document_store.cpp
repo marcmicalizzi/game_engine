@@ -720,9 +720,8 @@ bool finish_pending(const std::string& root, std::string_view dir, std::string* 
     return false;
   }
   Vector<FileOp> ops;
-  if (parse_log(text, ops) &&
-      (writes_leave(UnderRoot(root), root, dir, ops, error) ||
-       !apply_ops(root, dir, ops, nullptr, error)))
+  if (parse_log(text, ops) && (writes_leave(UnderRoot(root), root, dir, ops, error) ||
+                               !apply_ops(root, dir, ops, nullptr, error)))
     return false;
   if (const io::Status r = io::remove_file(log_path);
       r != io::Status::Ok && r != io::Status::NotFound) {

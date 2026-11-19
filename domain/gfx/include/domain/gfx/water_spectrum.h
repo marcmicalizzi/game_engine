@@ -325,7 +325,8 @@ inline constexpr f64 k_breaking_threshold = 0.0045;
 inline constexpr f64 k_breaking_slope = 33.0;
 inline f64 water_breaking_probability(f64 omega, f64 density) noexcept {
   const f64 w2 = omega * omega;
-  const f64 saturation = w2 * w2 * omega * density / (2.0 * k_water_spectrum_g * k_water_spectrum_g);
+  const f64 saturation =
+      w2 * w2 * omega * density / (2.0 * k_water_spectrum_g * k_water_spectrum_g);
   const f64 theta = 0.9068996821171089 / k_water_peak_beta;  // sech²'s σ at the peak, radians
   return std::clamp(k_breaking_slope * (saturation / theta - k_breaking_threshold), 0.0, 1.0);
 }
@@ -335,7 +336,8 @@ inline f64 water_breaking_probability(f64 omega, f64 density) noexcept {
 // give way first and the breaking ones keep their sharp crests; only if those alone pass it are all
 // scaled alike, as before. (Measured: the sum is 0.48 for any fully developed sea and 0.66 for the
 // beach's young gale, so the old shared scale bound only the young seas, and by under a tenth.)
-inline void water_band_steepness(const f64 (&ka)[k_water_waves], const f64 (&breaking)[k_water_waves],
+inline void water_band_steepness(const f64 (&ka)[k_water_waves],
+                                 const f64 (&breaking)[k_water_waves],
                                  WaterWave (&out)[k_water_waves]) noexcept {
   f64 hard = 0.0;
   f64 soft = 0.0;

@@ -11,8 +11,8 @@
 
 #include <doctest/doctest.h>
 
-#include <schemas/features.h>
 #include <schema_text_property.h>
+#include <schemas/features.h>
 #include <string>
 
 using namespace engine;
@@ -129,8 +129,8 @@ TEST_CASE("json text: a field read through a tree is prepared as the tree path's
 }
 
 TEST_CASE("json reader: parse_json and the reader refuse one way") {
-  for (const char* text : {"", "{", "[1,]", "{\"a\" 1}", "{\"a\":1,}", "tru", "\"\\x\"", "01",
-                           "1.", "-", "1e", "\"\\ud800\"", "[1] 2", "{\"a\":[}", "  ", "nul"}) {
+  for (const char* text : {"", "{", "[1,]", "{\"a\" 1}", "{\"a\":1,}", "tru", "\"\\x\"", "01", "1.",
+                           "-", "1e", "\"\\ud800\"", "[1] 2", "{\"a\":[}", "  ", "nul"}) {
     JsonValue v;
     const JsonParseResult tree = parse_json(text, v);
     JsonReader reader(text);

@@ -1601,10 +1601,10 @@ TEST_CASE("renderer: the cascades' light-view cull never changes the shadow") {
       u32 id_differ = 0;
       for (u32 i = 0; i < shots[0].ids.size(); ++i)
         id_differ += shots[0].ids[i] != shots[k].ids[i] ? 1u : 0u;
-      MESSAGE("heightfield" << std::string(deform ? " under --deform wave" : "") << ": "
-                            << pairs[0] << " pairs in the maps by box and swept frusta, "
-                            << pairs[k] << (k == 1 ? " by box alone" : " unculled") << "; "
-                            << differ << " colour bytes and " << id_differ << " id words differ");
+      MESSAGE("heightfield" << std::string(deform ? " under --deform wave" : "") << ": " << pairs[0]
+                            << " pairs in the maps by box and swept frusta, " << pairs[k]
+                            << (k == 1 ? " by box alone" : " unculled") << "; " << differ
+                            << " colour bytes and " << id_differ << " id words differ");
       CHECK(differ == 0);
       CHECK(id_differ == 0);
     }

@@ -1119,7 +1119,8 @@ TEST_CASE("engine-view: past the budget the chain drops the same structures in e
       for (const std::string& a :
            {std::string("--raster"), std::string("rt"), std::string("--rt-budget-mib"),
             std::string("4096"), std::string("--frames"), std::string("3"),
-            std::string("--capture"), tmp.file(order == 0 ? "fit-forward.png" : "fit-reversed.png")})
+            std::string("--capture"),
+            tmp.file(order == 0 ? "fit-forward.png" : "fit-reversed.png")})
         args.push_back(a);
       for (const char* a : mode.args)
         args.push_back(a);

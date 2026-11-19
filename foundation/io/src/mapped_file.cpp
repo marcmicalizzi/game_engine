@@ -52,8 +52,8 @@ void MappedFile::close() noexcept {
 Status MappedFile::open(std::string_view native_path) {
   close();
 #if ENGINE_PLATFORM_WINDOWS
-  const std::filesystem::path p(std::u8string_view(
-      reinterpret_cast<const char8_t*>(native_path.data()), native_path.size()));
+  const std::filesystem::path p(
+      std::u8string_view(reinterpret_cast<const char8_t*>(native_path.data()), native_path.size()));
   // Shared for reading, writing and deletion, as `FileHandle` opens a file: the view must not be
   // what stops a build replacing the file it maps.
   HANDLE file =
@@ -65,8 +65,7 @@ Status MappedFile::open(std::string_view native_path) {
     if (err == ERROR_ACCESS_DENIED) {
       // A directory opened without FILE_FLAG_BACKUP_SEMANTICS is refused as access denied.
       std::error_code ec;
-      return std::filesystem::is_directory(p, ec) ? Status::IsDirectory
-                                                  : Status::PermissionDenied;
+      return std::filesystem::is_directory(p, ec) ? Status::IsDirectory : Status::PermissionDenied;
     }
     if (err == ERROR_SHARING_VIOLATION) return Status::PermissionDenied;
     return Status::IoError;

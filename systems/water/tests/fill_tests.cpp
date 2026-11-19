@@ -80,8 +80,7 @@ f64 mesh_area(const water::Mesh& mesh) {
     const Vec3 a = mesh.positions[mesh.indices[t]];
     const Vec3 b = mesh.positions[mesh.indices[t + 1]];
     const Vec3 c = mesh.positions[mesh.indices[t + 2]];
-    area += 0.5 *
-            (static_cast<f64>(c.x - a.x) * static_cast<f64>(b.z - a.z) -
+    area += 0.5 * (static_cast<f64>(c.x - a.x) * static_cast<f64>(b.z - a.z) -
                    static_cast<f64>(b.x - a.x) * static_cast<f64>(c.z - a.z));
   }
   return area;

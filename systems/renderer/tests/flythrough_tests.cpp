@@ -118,8 +118,8 @@ bool write_cube_glb(const std::string& path, bool tangent = false) {
   const std::string tangent_accessor =
       tangent ? ",{\"bufferView\":3,\"componentType\":5126,\"count\":24,\"type\":\"VEC4\"}" : "";
   const std::string tangent_view =
-      tangent ? ",{\"buffer\":0,\"byteOffset\":" + n(tangent_offset) + ",\"byteLength\":" +
-                    n(static_cast<u32>(bin.size()) - tangent_offset) + "}"
+      tangent ? ",{\"buffer\":0,\"byteOffset\":" + n(tangent_offset) +
+                    ",\"byteLength\":" + n(static_cast<u32>(bin.size()) - tangent_offset) + "}"
               : "";
   std::string json =
       "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"

@@ -329,8 +329,8 @@ TEST_CASE("wind: a named swell is in the sea state and the table, at its own per
 
 TEST_CASE("wind: a swell's track disperses, and its spread narrows with distance") {
   // A storm 3,000 km away: the period arriving t hours after its first waves is 4 pi D / (g t),
-  // keyed every six hours from 17 s down; the blend is linear in frequency, which is the dispersion's
-  // own law (f = g t / 4 pi D), so between two keys the period is the formula's.
+  // keyed every six hours from 17 s down; the blend is linear in frequency, which is the
+  // dispersion's own law (f = g t / 4 pi D), so between two keys the period is the formula's.
   SwellDesc s;
   s.kind = SwellKind::track;
   s.period_h = 48.0;

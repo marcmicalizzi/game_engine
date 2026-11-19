@@ -184,9 +184,8 @@ bool Process::spawn(std::span<const std::string_view> argv, std::string* error, 
   si.hStdOutput = out_write;
   si.hStdError = merge_stderr ? out_write : ::GetStdHandle(STD_ERROR_HANDLE);
   PROCESS_INFORMATION pi{};
-  const BOOL ok =
-      ::CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
-                       no_window ? CREATE_NO_WINDOW : 0, nullptr, nullptr, &si, &pi);
+  const BOOL ok = ::CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
+                                   no_window ? CREATE_NO_WINDOW : 0, nullptr, nullptr, &si, &pi);
   ::CloseHandle(in_read);
   ::CloseHandle(out_write);
   if (!ok) {

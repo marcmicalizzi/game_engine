@@ -232,16 +232,16 @@ TEST_CASE("water dry bank: ground outside an outline is dry ground, whatever its
         above_worst = std::max(above_worst, step);
       }
     }
-    MESSAGE(std::string(tier.name) << ": " << water << " water pixels; " << under
-                      << " dry pixels under the level, " << under_changed << " of them changed, by "
-                      << under_worst << " codes at worst; " << above
-                      << " dry pixels above the wet band, by " << above_worst << " at worst");
+    MESSAGE(std::string(tier.name)
+            << ": " << water << " water pixels; " << under << " dry pixels under the level, "
+            << under_changed << " of them changed, by " << under_worst << " codes at worst; "
+            << above << " dry pixels above the wet band, by " << above_worst << " at worst");
     if (under_worst > above_worst) {
       tmp.keep();
       CaptureFiles files;
       std::string why;
-      (void)write_capture(tmp.path(), std::string("with-") + std::to_string(tiers_drawn), a,
-                          files, why);
+      (void)write_capture(tmp.path(), std::string("with-") + std::to_string(tiers_drawn), a, files,
+                          why);
       (void)write_capture(tmp.path(), std::string("without-") + std::to_string(tiers_drawn), b,
                           files, why);
     }

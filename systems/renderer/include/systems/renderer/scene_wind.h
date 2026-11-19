@@ -47,10 +47,11 @@ WindHand wind_hand_tunable() noexcept;
 bool read_scene_swell(const scene::Swell& swell, const std::string& path, gfx::SwellDesc& out,
                       std::string& error);
 
-// **The hand swell** (`renderer.swell.height_m`, `renderer.swell.period_s`, `renderer.swell.to_deg`;
-// W136-3): a height of 0 or more holds every open body that draws a wave table at that arriving
-// swell, at once, at `period_s` (12 s by default), travelling to `to_deg` when that is 0 or more and
-// otherwise as the body's shore train does. Below 0, the default, the scene's swell (or none).
+// **The hand swell** (`renderer.swell.height_m`, `renderer.swell.period_s`,
+// `renderer.swell.to_deg`; W136-3): a height of 0 or more holds every open body that draws a wave
+// table at that arriving swell, at once, at `period_s` (12 s by default), travelling to `to_deg`
+// when that is 0 or more and otherwise as the body's shore train does. Below 0, the default, the
+// scene's swell (or none).
 struct SwellHand {
   bool set = false;
   f64 height_m = 0.0;
@@ -87,7 +88,7 @@ struct WaterWindBody {
   Vec2 train_to{1.0f, 0.0f};
   f64 hand_key[5]{-2.0, -2.0, -2.0, -2.0, -2.0};
   gfx::WaterWaveGrid hand_grid{};
-  f64 slope = 0.0;             // the foreshore's mean slope, for the run-up
+  f64 slope = 0.0;  // the foreshore's mean slope, for the run-up
   f64 bank_max = 0.0;
   f64 period_s = 0.0;  // the train's period at load (the arrival field's), unrounded
   gfx::WaterWave load_waves[gfx::k_water_waves]{};

@@ -12,9 +12,9 @@
 
 #include <atomic>
 #include <cstring>
-#include <string>
 #include <schemas/events.h>
 #include <schemas/events_test.h>
+#include <string>
 #include <utility>
 
 using namespace engine;

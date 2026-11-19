@@ -76,8 +76,8 @@ class AccumulationPass {
     f32 weight = 0.1f;  // a new frame's share once the history is long
     f32 clip_still = 0.0f;
     f32 clip_moving = 0.0f;
-    f32 motion_match = 0.25f;  // `renderer.reconstruction.motion_match`, pixels
-    f32 reactive_weight = 0.25f;  // `renderer.reconstruction.reactive_weight`
+    f32 motion_match = 0.25f;                      // `renderer.reconstruction.motion_match`, pixels
+    f32 reactive_weight = 0.25f;                   // `renderer.reconstruction.reactive_weight`
     u32 filter = k_accumulate_filter_catmull_rom;  // `renderer.reconstruction.history_filter`
   };
 

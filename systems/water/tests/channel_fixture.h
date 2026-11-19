@@ -30,7 +30,8 @@ struct Station {
   u16 flags;
 };
 
-inline scene::WaterChannel solved(const char* name, f64 z, std::initializer_list<Station> stations) {
+inline scene::WaterChannel solved(const char* name, f64 z,
+                                  std::initializer_list<Station> stations) {
   scene::WaterChannel c;
   c.name = name;
   for (const Station& s : stations) {

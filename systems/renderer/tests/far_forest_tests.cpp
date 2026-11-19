@@ -111,7 +111,8 @@ constexpr const char* k_oak =
 constexpr const char* k_spruce =
     R"({"species":"conifer","conifer":{"seed":5,"height_m":6,"trunk_radius_m":0.1,)"
     R"("whorls":6,"branches_per_whorl":4,"crown_radius_m":1.5,"triangle_budget":8000,)"
-    R"("card_bake_px":0,"impostor_px":0}})";  // no chain (G120): the decimated top, cooked in a second
+    R"("card_bake_px":0,"impostor_px":0}})";  // no chain (G120): the decimated top, cooked in a
+                                              // second
 constexpr const char* k_scene =
     R"({"format":"engine.scene.v1","name":"far-forest-test",)"
     R"("terrain":{"size":65,"extent":256,"seed":7,"dune_height":0.2,"dune_wavelength":40,)"

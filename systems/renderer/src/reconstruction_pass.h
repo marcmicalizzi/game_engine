@@ -32,8 +32,8 @@ class ReconstructionPass {
   const ReconstructionProviderDesc* desc_ = nullptr;
   void* state_ = nullptr;
   const MotionPass* motion_ = nullptr;
-  bool drawn_ = false;      // the provider drew the frame before the last one it was handed
-  u64 drawn_serial_ = 0;    // the motion pass's count when it last drew
+  bool drawn_ = false;    // the provider drew the frame before the last one it was handed
+  u64 drawn_serial_ = 0;  // the motion pass's count when it last drew
 };
 
 }  // namespace engine::renderer

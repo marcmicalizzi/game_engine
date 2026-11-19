@@ -421,10 +421,10 @@ TEST_CASE("exposure: walked from noon into a room and out, the eye's adaptation 
     const f64 luminance = static_cast<f64>(s.luminance);
     const f64 target = exposure_target_ev100(luminance, 0.0, options);
     worst_target = std::max(worst_target, std::abs(target - static_cast<f64>(s.target_ev100)));
-    const f64 want = i == 0 ? static_cast<f64>(s.target_ev100)
-                            : exposure_step(static_cast<f64>(states[i - 1].ev100),
-                                            static_cast<f64>(s.target_ev100), luminance, k_dt,
-                                            options);
+    const f64 want =
+        i == 0 ? static_cast<f64>(s.target_ev100)
+               : exposure_step(static_cast<f64>(states[i - 1].ev100),
+                               static_cast<f64>(s.target_ev100), luminance, k_dt, options);
     worst_step = std::max(worst_step, std::abs(want - static_cast<f64>(s.ev100)));
     CHECK(
         std::abs(static_cast<f64>(s.scale) - std::exp2(static_cast<f64>(s.base_ev100 - s.ev100))) <=

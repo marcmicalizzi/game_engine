@@ -24,11 +24,11 @@
 #include <foundation/bench/bench.h>
 #include <foundation/io/vfs.h>
 
-#include <bench_peak.h>
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
 #include <algorithm>
+#include <bench_peak.h>
 #include <cstdio>
 #include <filesystem>
 #include <schemas/provenance.h>
@@ -787,13 +787,16 @@ ObjectRecord npc_record(u32 n) {
     h *= 0xBF58476D1CE4E5B9ull;
     return h ^ (h >> 32);
   };
-  const auto coord = [&] { return static_cast<f64>(static_cast<i64>(next() % 2048) - 1024) * 0.25; };
+  const auto coord = [&] {
+    return static_cast<f64>(static_cast<i64>(next() % 2048) - 1024) * 0.25;
+  };
   const bool place = n % 1000 < 234;  // about 30,500 places in 130,500 records
   ObjectRecord r;
   r.id = npc_id(place, n);
   r.parent = ObjectId{};
   r.properties.insert_or_assign(
-      "position", JsonValue(JsonValue::Array{JsonValue(coord()), JsonValue(0.0), JsonValue(coord())}));
+      "position",
+      JsonValue(JsonValue::Array{JsonValue(coord()), JsonValue(0.0), JsonValue(coord())}));
   if (place) {
     r.type = "engine.npc.Place";
     r.properties.insert_or_assign("capacity", JsonValue(u64{4}));
@@ -803,12 +806,17 @@ ObjectRecord npc_record(u32 n) {
   }
   r.type = "engine.npc.Resident";
   r.properties.insert_or_assign("clock_offset", JsonValue(u64{25195000000}));
-  r.properties.insert_or_assign("home", JsonValue(hex_id(npc_id(true, static_cast<u32>(next() % 30500)))));
-  r.properties.insert_or_assign("job", JsonValue(hex_id(npc_id(true, static_cast<u32>(next() % 30500)))));
-  r.properties.insert_or_assign("leisure", JsonValue(hex_id(npc_id(true, static_cast<u32>(next() % 30500)))));
-  r.properties.insert_or_assign("next_event", JsonValue(static_cast<u64>(next() % 86400) * 1000000));
+  r.properties.insert_or_assign("home",
+                                JsonValue(hex_id(npc_id(true, static_cast<u32>(next() % 30500)))));
+  r.properties.insert_or_assign("job",
+                                JsonValue(hex_id(npc_id(true, static_cast<u32>(next() % 30500)))));
+  r.properties.insert_or_assign("leisure",
+                                JsonValue(hex_id(npc_id(true, static_cast<u32>(next() % 30500)))));
+  r.properties.insert_or_assign("next_event",
+                                JsonValue(static_cast<u64>(next() % 86400) * 1000000));
   r.properties.insert_or_assign("routine", JsonValue((next() & 1) != 0 ? "DayWorker" : "Idle"));
-  r.properties.insert_or_assign("service", JsonValue(hex_id(npc_id(true, static_cast<u32>(next() % 30500)))));
+  r.properties.insert_or_assign("service",
+                                JsonValue(hex_id(npc_id(true, static_cast<u32>(next() % 30500)))));
   r.properties.insert_or_assign("state", JsonValue("Sleeping"));
   return r;
 }
@@ -859,7 +867,8 @@ ENGINE_BENCH_ARGS(store_load_residents, "doc.store.load.residents", k_resident_r
   while (state.keep_running()) {
     Document doc;
     DocumentManifest manifest;
-    ENGINE_VERIFY(DocumentStore::load(vfs, dir, doc, manifest, &error), "doc load bench: load failed");
+    ENGINE_VERIFY(DocumentStore::load(vfs, dir, doc, manifest, &error),
+                  "doc load bench: load failed");
     bench::keep(doc.layer_count());
   }
   state.set_items(records);
@@ -876,7 +885,8 @@ ENGINE_BENCH_ARGS(layer_parse, "doc.layer.parse", k_resident_records) {
     ENGINE_VERIFY(parse_json(text, tree).ok, "doc layer bench: parse failed");
     const u64 held = mem::total_stats().bytes_current - before;
     std::fprintf(stderr, "doc.layer.parse: a tree of %llu B of text holds %llu B (%.2f per byte)\n",
-                 static_cast<unsigned long long>(text.size()), static_cast<unsigned long long>(held),
+                 static_cast<unsigned long long>(text.size()),
+                 static_cast<unsigned long long>(held),
                  static_cast<f64>(held) / static_cast<f64>(text.size()));
   }
   while (state.keep_running()) {

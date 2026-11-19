@@ -243,8 +243,8 @@ int api_log(lua_State* L) {
 }
 
 // engine.tunable(name) — a tunable's current value: numbers for Int and Float, a boolean for Bool,
-// the choice's name for Enum, the text for String. A lookup by name scans the registry, so read it once, at load or at
-// the top of a call, not inside a loop.
+// the choice's name for Enum, the text for String. A lookup by name scans the registry, so read it
+// once, at load or at the top of a call, not inside a loop.
 int api_tunable(lua_State* L) {
   size_t len = 0;
   const char* name = luaL_checklstring(L, 1, &len);
