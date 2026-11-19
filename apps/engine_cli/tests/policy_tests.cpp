@@ -10,7 +10,9 @@
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <cstdio>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -40,6 +42,8 @@ struct Run {
 };
 
 Run run(std::vector<std::string> args) {
+  if (args.size() > 1 && args[1] != "--help")
+    args.insert(args.begin() + 1, {"--root", test::scratch_root_spec()});
   std::vector<std::string_view> argv(args.begin(), args.end());
   platform::Process p;
   std::string error;
@@ -67,7 +71,7 @@ struct Host {
   bool ok = false;
 
   explicit Host(std::vector<std::string> flags) {
-    std::vector<std::string> args = {host_exe(), "--stdio"};
+    std::vector<std::string> args = {host_exe(), "--stdio", "--root", test::scratch_root_spec()};
     args.insert(args.end(), flags.begin(), flags.end());
     std::vector<std::string_view> argv(args.begin(), args.end());
     std::string error;
@@ -128,6 +132,62 @@ std::string apply(const std::string& command, const char* actor, const char* lay
 }
 
 }  // namespace
+
+// ADR-0072: a role marked human is conferred only by a credential presented on a connection.
+// engine-cli forwards `--role` to the host it starts, so before the mend `engine-cli --role
+// reviewer review.close` closed a person's item. Both refuse the start line now, engine-cli before
+// any host starts (its document directory is never made), and issuing a credential for the role
+// still works.
+TEST_CASE("host and engine-cli: no start line runs in a role marked human") {
+  test::TempDir tmp("engine_cli_roles");
+  const std::string roles = tmp.file("roles.json");
+  write_file(roles, R"({"roles":[{"name":"reviewer","methods":["review.*"],"human":true},
+                                 {"name":"designer","methods":["doc.apply"]}]})");
+  const std::string request = R"({"jsonrpc":"2.0","id":1,"method":"engine.roles"})";
+  CHECK(run({host_exe(), "--roles", roles, "--role", "reviewer", "--request", request}).exit_code ==
+        2);
+  CHECK(run({host_exe(), "--roles", roles, "--role", "reviewer", "--stdio"}).exit_code == 2);
+  const std::string doc = tmp.file("doc");
+  const Run cli = run({cli_exe(), "--host", host_exe(), "--roles", roles, "--role", "reviewer",
+                       "--doc", doc, "--create", "review.list", "{}"});
+  CHECK(cli.exit_code == 2);
+  CHECK(!test::path_exists(doc));
+  // The two refusals, and engine-mcp's (mcp_tests, "a bridge refuses to start in a human role"),
+  // are one voice: exit 2, what is marked where, and the one way a person's role is conferred.
+  const auto said = [](std::vector<std::string> args) {
+    args.insert(args.begin() + 1, {"--root", test::scratch_root_spec()});
+    std::vector<std::string_view> argv(args.begin(), args.end());
+    platform::Process p;
+    std::string error;
+    std::string out;
+    REQUIRE_MESSAGE(
+        p.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error, true), error);
+    p.close_stdin();
+    p.read_all(out);
+    CHECK(p.wait() == 2);
+    return out;
+  };
+  const std::string conferred =
+      "a person's role is conferred only by a credential the operator issued for it (engine-host "
+      "--issue-credential <file> --role reviewer), presented on a connection to engine-host "
+      "--listen --credentials <file>";
+  const std::string host_said =
+      said({host_exe(), "--roles", roles, "--role", "reviewer", "--stdio"});
+  CHECK(host_said.find("engine-host: role 'reviewer' is marked human in " + roles) !=
+        std::string::npos);
+  CHECK(host_said.find(conferred) != std::string::npos);
+  const std::string cli_said = said({cli_exe(), "--host", host_exe(), "--roles", roles, "--role",
+                                     "reviewer", "--doc", doc, "--create", "review.list", "{}"});
+  CHECK(cli_said.find("engine-cli: role 'reviewer' is marked human in " + roles) !=
+        std::string::npos);
+  CHECK(cli_said.find(conferred) != std::string::npos);
+  CHECK(run({host_exe(), "--roles", roles, "--role", "designer", "--request", request}).exit_code ==
+        0);
+  const Run issued =
+      run({host_exe(), "--roles", roles, "--issue-credential", tmp.file("credentials.json"),
+           "--name", "person", "--actor", "person-a", "--role", "reviewer"});
+  CHECK(issued.exit_code == 0);
+}
 
 TEST_CASE("host: a roles file it cannot use is a usage error") {
   test::TempDir tmp("engine_cli_roles");
@@ -270,10 +330,121 @@ TEST_CASE("cli: a transaction staged by several processes lands as one patch") {
   CHECK(at(call("doc.objects", "{}").result, "total") == JsonValue(u32{2}));
   const Run info = call("session.info", "{}");
   CHECK(at(info.result, "journal_length") == JsonValue(u32{1}));
-  // Committed and gone: committing again is a usage error the cli exits 1 on.
-  CHECK(
-      call("doc.commit", R"({"transaction":)" + t + R"(,"attribution":{"actor":"a"}})").exit_code ==
-      1);
+  // Committed: committing again — a retry whose first answer was lost — is answered with the patch
+  // that landed, and applies nothing (protocol.md, "Transactions a client opens").
+  const Run again =
+      call("doc.commit", R"({"transaction":)" + t + R"(,"attribution":{"actor":"a"}})");
+  REQUIRE(again.exit_code == 0);
+  CHECK(at(again.result, "committed") == JsonValue(true));
+  CHECK(at(again.result, "patch_index") == JsonValue(u32{0}));
+  CHECK(at(call("session.info", "{}").result, "journal_length") == JsonValue(u32{1}));
+  // Rolling it back is a usage error the cli exits 1 on.
+  CHECK(call("doc.rollback", R"({"transaction":)" + t + R"(,"attribution":{"actor":"a"}})")
+            .exit_code == 1);
+}
+
+// Two hosts on one document through the executables (protocol.md, "Two hosts, one side file"):
+// eight engine-cli processes, each with a host of its own, stage into one transaction at once, as
+// an agent's parallel tool calls do. Every one is staged, and the commit lands all eight.
+TEST_CASE("cli: eight processes staging into one transaction at once lose none") {
+  test::TempDir tmp("engine_cli_transactions");
+  const std::string doc = tmp.file("doc");
+  REQUIRE(cli({"--doc", doc, "--create", "session.info"}).exit_code == 0);
+  const Run begun = cli({"--doc", doc, "--compact", "doc.begin",
+                         R"({"layer":"base","attribution":{"actor":"a","rationale":"eight"}})"});
+  REQUIRE(begun.exit_code == 0);
+  const std::string t = std::to_string(at(begun.result, "id").as_int());
+  constexpr u32 k_writers = 8;
+  std::unique_ptr<platform::Process[]> writers(new platform::Process[k_writers]);
+  for (u32 i = 0; i < k_writers; ++i) {
+    char id[33];
+    std::snprintf(id, sizeof(id), "000000000000001000000000000000%02x", i + 1);
+    const std::vector<std::string> args = {cli_exe(),
+                                           "--host",
+                                           host_exe(),
+                                           "--doc",
+                                           doc,
+                                           "--compact",
+                                           "doc.apply",
+                                           R"({"commands":[)" + create(id, 0) +
+                                               R"(],"attribution":{"actor":"a"},"transaction":)" +
+                                               t + "}"};
+    std::vector<std::string_view> argv(args.begin(), args.end());
+    std::string error;
+    REQUIRE_MESSAGE(
+        writers[i].spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error),
+        error);
+    writers[i].close_stdin();
+  }
+  for (u32 i = 0; i < k_writers; ++i) {
+    std::string out;
+    writers[i].read_all(out);
+    CHECK_MESSAGE(writers[i].wait() == 0, out);
+  }
+  const Run listed = cli({"--doc", doc, "--compact", "doc.transactions", "{}"});
+  REQUIRE(listed.exit_code == 0);
+  REQUIRE(at(listed.result, "transactions").size() == 1);
+  CHECK(at(at(listed.result, "transactions")[0], "commands") == JsonValue(k_writers));
+  const Run committed = cli({"--doc", doc, "--compact", "doc.commit",
+                             R"({"transaction":)" + t + R"(,"attribution":{"actor":"a"}})"});
+  REQUIRE(committed.exit_code == 0);
+  CHECK(at(committed.result, "applied") == JsonValue(k_writers));
+  CHECK(at(cli({"--doc", doc, "--compact", "doc.objects", "{}"}).result, "total") ==
+        JsonValue(k_writers));
+}
+
+TEST_CASE("cli: eight processes at once write one ledger and lose nothing") {
+  // The task ledger (protocol.md, "The task ledger and review items") is read and written under a
+  // lock between processes on every call, so eight engine-cli calls started together, each with
+  // its own host, mint eight ids and keep eight tasks.
+  test::TempDir tmp("engine_cli_ledger");
+  const std::string doc = tmp.file("doc");
+  REQUIRE(cli({"--doc", doc, "--create", "session.info"}).exit_code == 0);
+  constexpr int k_processes = 8;
+  std::vector<std::unique_ptr<platform::Process>> running;
+  for (int i = 0; i < k_processes; ++i) {
+    const std::string params = R"({"title":"part )" + std::to_string(i) +
+                               R"(","attribution":{"actor":"agent-)" + std::to_string(i) + "\"}}";
+    std::vector<std::string> args = {cli_exe(), "--host",    host_exe(),    "--doc",
+                                     doc,       "--compact", "task.create", params};
+    std::vector<std::string_view> argv(args.begin(), args.end());
+    auto p = std::make_unique<platform::Process>();
+    std::string error;
+    REQUIRE_MESSAGE(p->spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error),
+                    error);
+    p->close_stdin();
+    running.push_back(std::move(p));
+  }
+  for (auto& p : running) {
+    std::string out;
+    p->read_all(out);
+    CHECK_MESSAGE(p->wait() == 0, out);
+  }
+  const Run listed = cli({"--doc", doc, "--compact", "task.list", R"({"brief":true})"});
+  REQUIRE(listed.exit_code == 0);
+  const JsonValue& tasks = at(listed.result, "tasks");
+  REQUIRE(tasks.size() == k_processes);
+  // Ids are drawn, not counted (protocol.md, "The task ledger and review items"): eight tasks,
+  // eight different ids, each a JSON number every client carries exactly.
+  std::vector<i64> ids;
+  for (u32 i = 0; i < tasks.size(); ++i) {
+    i64 id = 0;
+    REQUIRE(at(tasks[i], "id").get_i64(id));
+    REQUIRE(id >= 1);
+    REQUIRE(id < (i64{1} << 53));
+    for (const i64 seen : ids)
+      CHECK(seen != id);
+    ids.push_back(id);
+  }
+  // A review item raised by one process and read by the next.
+  const std::string task = std::to_string(ids[2]);
+  const Run raised = cli({"--doc", doc, "--compact", "review.raise",
+                          R"({"kind":"validation","summary":"two parts overlap","task":)" + task +
+                              R"(,"attribution":{"actor":"qa-agent"}})"});
+  REQUIRE(raised.exit_code == 0);
+  const Run reviews = cli({"--doc", doc, "--compact", "review.list", R"({"task":)" + task + "}"});
+  REQUIRE(reviews.exit_code == 0);
+  CHECK(at(reviews.result, "reviews").size() == 1);
 }
 
 TEST_CASE("host: doc.begin, doc.commit and doc.rollback refused over --stdio") {

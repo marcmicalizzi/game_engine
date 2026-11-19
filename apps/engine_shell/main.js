@@ -10,8 +10,10 @@
 // highlight. When the host cannot push (an older host), the page polls `session.info` every ten
 // seconds instead, and the status strip's "events" badge says which it is doing.
 //
-// The URL carries the host's token and, when the host was started with --doc, the session:
-// http://127.0.0.1:<port>/?token=<token>&session=<id>, which is the `shell` the host printed.
+// The page is opened from the `shell` address the host printed, http://127.0.0.1:<port>/?ticket=...&session=<id>:
+// the host spends the one-time ticket for this page's cookie and sends it on to /?session=<id>, so
+// the page never sees a credential and its address holds none (ADR-0069). The socket and the
+// captures carry the cookie.
 import { Console } from "./console.js";
 import { $, toast } from "./dom.js";
 import { Journal } from "./journal.js";
@@ -27,7 +29,6 @@ class App extends EventTarget {
   constructor() {
     super();
     const query = new URLSearchParams(location.search);
-    this.token = query.get("token") || "";
     this.session = query.get("session") || "";
     // `?embedded=1`: the page fills engine-editor's webview beside its native viewport (embedded.js).
     this.embedded = query.get("embedded") === "1";
@@ -37,7 +38,7 @@ class App extends EventTarget {
     this.journalLength = -1;
     this.undoPosition = -1;
     this.started = false;
-    this.rpc = new Rpc(`ws://${location.host}/?token=${encodeURIComponent(this.token)}`);
+    this.rpc = new Rpc(`ws://${location.host}/`);
     this.outliner = new Outliner(this);
     this.properties = new Properties(this);
     this.journal = new Journal(this);
@@ -58,10 +59,6 @@ class App extends EventTarget {
       if (done) this.viewport.capture("final");
     });
     this.status();
-    if (!this.token) {
-      this.setConnection("refused", "no token in this page's address: open the shell URL engine-host printed");
-      return;
-    }
     this.rpc.addEventListener("state", (e) => this.onState(e.detail));
     this.rpc.start();
     $("btn-undo").addEventListener("click", () => this.step("doc.undo"));
@@ -383,7 +380,7 @@ class App extends EventTarget {
     item("st-session", "session", this.session || "none");
     item("st-actor", "actor", this.identity.actor || "—");
     item("st-role", "role", this.identity.role || "unrestricted");
-    item("st-token", "token", this.token ? "present" : "missing");
+    item("st-token", "credential", "cookie");
     if (this.embedded) item("st-tool", "tool", this.tool === "rotate" ? "rotate (R)" : "move (T)");
     // Which way the page learns of changes: pushed events, or the ten-second poll and why.
     const events = $("st-events");

@@ -6,3 +6,9 @@ engine_module(NAME json LAYER core
 
 engine_module_tests(NAME json
   SOURCES tests/json_tests.cpp tests/size_table.cpp)
+
+# The hostile-input harness's first target, and the harness's own tests, which live here because
+# core/json is the lowest module the harness needs (roadmap T13; docs/ci/fuzzing.md).
+engine_module_fuzz(NAME json
+  TARGETS parse_json=tests/fuzz_parse_json.cpp
+  SOURCES tests/fuzz_harness_tests.cpp)

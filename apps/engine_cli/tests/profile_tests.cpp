@@ -33,9 +33,10 @@ struct Host {
   bool ok = false;
 
   Host() {
-    const std::string_view argv[2] = {host_exe(), "--stdio"};
+    const std::string roots = test::scratch_root_spec();
+    const std::string_view argv[4] = {host_exe(), "--stdio", "--root", roots};
     std::string error;
-    if (!process.spawn(std::span<const std::string_view>(argv, 2), &error)) {
+    if (!process.spawn(std::span<const std::string_view>(argv, 4), &error)) {
       FAIL("cannot spawn engine-host: " << error);
       return;
     }
@@ -133,6 +134,17 @@ TEST_CASE(
   CHECK(error_code(host.call("profile.stop", R"({"max_series":0})")) == k_invalid_argument);
   CHECK(error_code(host.call("profile.stop", R"({"out_dir":".","name":"../x"})")) ==
         k_invalid_argument);
+  CHECK(error_code(host.call("profile.stop", R"({"out_dir":".","name":"CON"})")) ==
+        k_invalid_argument);
+  // The trace is written only under a writable root: before, `out_dir` was made and written
+  // wherever it said, for every role, since the profile methods are reads (protocol.md, "The
+  // host's file roots"). Refused as a missing place is, and the capture still running.
+  {
+    const JsonValue escaped =
+        host.call("profile.stop", R"({"out_dir":"tests://../escape","name":"run"})");
+    CHECK(error_code(escaped) == k_not_found);
+    CHECK_FALSE(std::filesystem::exists(test::scratch_root() + "/../escape"));
+  }
 
   test::TempDir dir("profile-stop");
   const std::string out = dir.path();
@@ -147,9 +159,11 @@ TEST_CASE(
   REQUIRE(stopped.find("truncated")->get_bool(flag));
   CHECK_FALSE(flag);  // a buffer that did not fill (profiler.md, "A capture that filled")
   CHECK(number(stopped, "invalid_values") == 0);
+  // Answered as the root and the relative path, never the host's own path.
   const std::string trace(stopped.find("trace")->as_string());
-  CHECK(std::filesystem::path(trace).filename() == "run.trace.json");
-  std::ifstream file(trace, std::ios::binary);
+  CHECK(trace.starts_with("tests://"));
+  CHECK(trace.ends_with("/run.trace.json"));
+  std::ifstream file(dir.file("run.trace.json"), std::ios::binary);
   REQUIRE(file.good());
   std::stringstream text;
   text << file.rdbuf();
@@ -180,4 +194,18 @@ TEST_CASE(
   CHECK(number(second, "capture") == 2);
   REQUIRE(second.find("running")->get_bool(flag));
   CHECK_FALSE(flag);
+
+  // A small capture after a default one drops where it said it would, not at the larger buffer's
+  // end (batch 68's review of the capture found it kept the larger buffer): every ping is a
+  // dispatch zone, so 100 of them fill 64 events.
+  const JsonValue small_response = host.call("profile.start", R"({"capacity":64})");
+  CHECK(number(result_of(small_response), "capacity") == 64);
+  for (int i = 0; i < 100; ++i)
+    (void)host.call("engine.ping", "{}");
+  const JsonValue small_stop = host.call("profile.stop", "{}");
+  const JsonValue& small = result_of(small_stop);
+  CHECK(number(small, "events") == 64);
+  CHECK(number(small, "dropped_events") > 0);
+  REQUIRE(small.find("truncated")->get_bool(flag));
+  CHECK(flag);
 }

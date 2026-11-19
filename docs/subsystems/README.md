@@ -43,6 +43,7 @@ One page per module, created in the same change that creates the module. Templat
 | gpu_lock | foundation | [gpu_lock.md](gpu_lock.md) |
 | profiler | foundation | [profiler.md](profiler.md) |
 | bench | foundation | [bench.md](bench.md) |
+| content_class | foundation | [content_class.md](content_class.md) |
 | store (capability) | foundation | [store.md](store.md) |
 | scripting (capability) | foundation | [scripting.md](scripting.md) |
 | net | foundation | [net.md](net.md) |

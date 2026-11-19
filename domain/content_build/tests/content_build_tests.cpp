@@ -294,6 +294,208 @@ TEST_CASE(
   CHECK(std::string(failed.error.rule) == "source.unreadable");
 }
 
+// ---- C62: the source's class (docs/content-classes.md, "How it travels through derived data") --
+//
+// Every fixture is neutral: a flat grid, a made-up game category `fixture_glow` (`none`, `dim`,
+// `bright`), and the engine's categories as names only.
+
+namespace {
+
+const char* const k_glow_categories =
+    R"({"categories":[{"name":"fixture_glow","levels":["none","dim","bright"]}]})";
+
+// One task over `entry`, run to its end.
+content_build::MeshTask run_entry(const content_build::ManifestEntry& entry, const std::string& ddc,
+                                  bool force = false) {
+  content_build::MeshTask task;
+  task.entry = &entry;
+  task.ddc = &ddc;
+  task.force = force;
+  content_build::run_mesh_task(&task);
+  return task;
+}
+
+bool read_bytes(const std::string& path, std::string& out) {
+  return io::read_file(path, out) == io::Status::Ok;
+}
+
+}  // namespace
+
+TEST_CASE("content_build: an unclassified source builds yesterday's bytes under yesterday's key") {
+  const test::TempDir tmp("content_build_classes");
+  REQUIRE(tmp.ok());
+  REQUIRE(write_grid(tmp.path(), "grid", 16, 0.25f));
+  const std::string ddc = tmp.file("ddc");
+  content_build::ManifestEntry entry;
+  entry.source = tmp.file("grid.gltf");
+  entry.output = tmp.file("plain.clusters");
+  const content_build::MeshTask plain = run_entry(entry, ddc);
+  REQUIRE_MESSAGE(plain.state == content_build::TaskState::Built, plain.error.message);
+  CHECK(plain.result.content_classes.is_null());
+  u64 source_hash = 0;
+  REQUIRE(content_build::source_hash_of(entry.source, source_hash, nullptr));
+  CHECK(plain.result.build_key == content_build::mesh_build_key(entry.source, source_hash, {}));
+
+  // The generation tools' sidecar, its flat map at `none`: the same key, the same bytes.
+  REQUIRE(write_text(tmp.file("grid.provenance.json"),
+                     R"({"schema":"engine.generation.provenance/1","content_class":"general",
+                         "content_classes":{"nudity":"none","sexual":"none","violence":"none"}})"));
+  entry.output = tmp.file("flat.clusters");
+  const content_build::MeshTask flat = run_entry(entry, ddc);
+  REQUIRE_MESSAGE(flat.state == content_build::TaskState::Built, flat.error.message);
+  CHECK(flat.result.build_key == plain.result.build_key);
+  CHECK(flat.result.hash == plain.result.hash);
+  std::string a;
+  std::string b;
+  REQUIRE(read_bytes(tmp.file("plain.clusters"), a));
+  REQUIRE(read_bytes(tmp.file("flat.clusters"), b));
+  CHECK(a == b);
+  geometry::ClusterFileData read;
+  std::string error;
+  REQUIRE(geometry::read_cluster_file(tmp.file("flat.clusters"), read, &error));
+  CHECK(read.content_classes.empty());  // no section 54
+}
+
+TEST_CASE("content_build: a classified source gets its own key and section 54 with its ladder") {
+  const test::TempDir tmp("content_build_classes");
+  REQUIRE(tmp.ok());
+  REQUIRE(write_grid(tmp.path(), "grid", 16, 0.25f));
+  const std::string ddc = tmp.file("ddc");
+  content_class::Categories categories;
+  std::string error;
+  REQUIRE(categories.add_json(k_glow_categories, error));
+  content_build::ManifestEntry entry;
+  entry.source = tmp.file("grid.gltf");  // to the cache: the key addresses the entry
+  REQUIRE(io::make_directories(io::join_path(ddc, "clusters")) == io::Status::Ok);
+  entry.options.categories = &categories;
+
+  // Built neutral first, then given a sidecar: a new key, so a new entry, never the old one.
+  const content_build::MeshTask neutral = run_entry(entry, ddc);
+  REQUIRE_MESSAGE(neutral.state == content_build::TaskState::Built, neutral.error.message);
+  REQUIRE(write_text(tmp.file("grid.provenance.json"),
+                     R"({"name":"grid","content_classes":{"levels":{"fixture_glow":"bright"}}})"));
+  const content_build::MeshTask bright = run_entry(entry, ddc);
+  REQUIRE_MESSAGE(bright.state == content_build::TaskState::Built, bright.error.message);
+  CHECK(bright.result.build_key != neutral.result.build_key);
+  CHECK(bright.result.path != neutral.result.path);
+  CHECK(io::exists(neutral.result.path));  // the neutral entry is left as it was
+  REQUIRE_FALSE(bright.result.content_classes.is_null());
+  CHECK(bright.result.content_classes.find("levels")->find("fixture_glow")->as_string() ==
+        "bright");
+
+  // Section 54 holds the class with its ladder, and a host with no categories file learns it.
+  geometry::ClusterFileData read;
+  REQUIRE_MESSAGE(geometry::read_cluster_file(bright.result.path, read, &error), error);
+  REQUIRE_FALSE(read.content_classes.empty());
+  CHECK(read.build_key == bright.result.build_key);
+  content_class::Categories host;
+  content_class::ContentClasses classes;
+  REQUIRE_MESSAGE(
+      content_class::decode_classes(
+          host, std::span<const u8>(read.content_classes.data(), read.content_classes.size()),
+          classes, error),
+      error);
+  const i32 glow = host.find("fixture_glow");
+  REQUIRE(glow >= 0);
+  CHECK(classes.levels[static_cast<u32>(glow)] == 2);
+  CHECK(host.level_name(static_cast<u32>(glow), 1) == "dim");
+
+  // Again: the classified container is the answer to the classified source.
+  const content_build::MeshTask again = run_entry(entry, ddc);
+  CHECK(again.state == content_build::TaskState::Skipped);
+  CHECK(again.result.build_key == bright.result.build_key);
+}
+
+TEST_CASE("content_build: a sidecar that cannot be read refuses the source and names it") {
+  const test::TempDir tmp("content_build_classes");
+  REQUIRE(tmp.ok());
+  REQUIRE(write_grid(tmp.path(), "grid", 8));
+  const std::string ddc = tmp.file("ddc");
+  content_class::Categories categories;
+  std::string error;
+  REQUIRE(categories.add_json(k_glow_categories, error));
+  content_build::ManifestEntry entry;
+  entry.source = tmp.file("grid.gltf");
+  entry.output = tmp.file("grid.clusters");
+  entry.options.categories = &categories;
+  for (const char* sidecar : {
+           "{ not json",                                                           // not JSON
+           R"({"content_classes":["fixture_glow"]})",                              // wrong shape
+           R"({"content_classes":{"fixture_glow":2}})",                            // wrong type
+           R"({"content_classes":{"fixture_glow":"dim","fixture_glow":"none"}})",  // a key twice
+           R"({"content_classes":{"fixture_hum":"dim"}})",                         // undeclared
+       }) {
+    CAPTURE(sidecar);
+    REQUIRE(write_text(tmp.file("grid.provenance.json"), sidecar));
+    const content_build::MeshTask task = run_entry(entry, ddc);
+    CHECK(task.state == content_build::TaskState::Failed);
+    CHECK(std::string(task.error.rule) == content_build::k_rule_content_class);
+    CHECK(task.error.message.find("grid.provenance.json") != std::string::npos);
+    CHECK_FALSE(io::exists(entry.output));  // nothing written
+  }
+  // A game's category with no categories file given: refused, never read as `none`.
+  REQUIRE(write_text(tmp.file("grid.provenance.json"),
+                     R"({"content_classes":{"fixture_glow":"dim"}})"));
+  content_build::ManifestEntry bare = entry;
+  bare.options.categories = nullptr;
+  const content_build::MeshTask task = run_entry(bare, ddc);
+  CHECK(task.state == content_build::TaskState::Failed);
+}
+
+TEST_CASE(
+    "content_build: the key holds names, so a reordered file keeps it and a renamed level not") {
+  const test::TempDir tmp("content_build_classes");
+  REQUIRE(tmp.ok());
+  REQUIRE(write_grid(tmp.path(), "grid", 8));
+  REQUIRE(write_text(tmp.file("grid.provenance.json"),
+                     R"({"content_classes":{"fixture_glow":"dim"}})"));
+  const auto key_under = [&](const char* categories_json) {
+    content_class::Categories categories;
+    std::string error;
+    REQUIRE_MESSAGE(categories.add_json(categories_json, error), error);
+    content_build::MeshOptions options;
+    options.categories = &categories;
+    content_build::SourceClasses classes;
+    content_build::Diagnostic diagnostic;
+    REQUIRE_MESSAGE(
+        content_build::read_source_classes(tmp.file("grid.gltf"), options, classes, diagnostic),
+        diagnostic.message);
+    return content_build::classified_build_key(tmp.file("grid.gltf"), 1234u, options, classes);
+  };
+  const u64 key = key_under(k_glow_categories);
+  CHECK(key != content_build::mesh_build_key(tmp.file("grid.gltf"), 1234u, {}));
+  // Another game category listed first: `fixture_glow` has another index, and the same key.
+  CHECK(key_under(R"({"categories":[{"name":"fixture_hum","levels":["none","low"]},
+                     {"name":"fixture_glow","levels":["none","dim","bright"]}]})") == key);
+  // A level renamed: another key.
+  CHECK(
+      key_under(R"({"categories":[{"name":"fixture_glow","levels":["none","dim","blazing"]}]})") !=
+      key);
+}
+
+TEST_CASE("content_build: a manifest names its categories file, and refuses one it cannot read") {
+  const test::TempDir tmp("content_build_classes");
+  REQUIRE(tmp.ok());
+  REQUIRE(write_text(tmp.file("glow.categories.json"), k_glow_categories));
+  REQUIRE(write_text(tmp.file("m.json"),
+                     R"({"categories":"glow.categories.json","meshes":[{"source":"grid.gltf"}]})"));
+  content_class::Categories categories;
+  Vector<content_build::ManifestEntry> entries;
+  std::string error;
+  REQUIRE_MESSAGE(
+      content_build::read_manifest(tmp.file("m.json"), {}, entries, error, {}, &categories), error);
+  REQUIRE(entries.size() == 1u);
+  CHECK(entries[0].options.categories == &categories);
+  CHECK(categories.find("fixture_glow") >= 0);
+  // A host that reads no categories file refuses the manifest rather than read it as `none`.
+  entries.clear();
+  CHECK_FALSE(content_build::read_manifest(tmp.file("m.json"), {}, entries, error));
+  REQUIRE(write_text(tmp.file("n.json"),
+                     R"({"categories":"missing.json","meshes":[{"source":"grid.gltf"}]})"));
+  content_class::Categories other;
+  CHECK_FALSE(content_build::read_manifest(tmp.file("n.json"), {}, entries, error, {}, &other));
+}
+
 TEST_CASE("content_build: the protocol's ContentBuildOptions states the build's own defaults") {
   // `content.build` reads its options from this schema type; if a builder default moves and the
   // IDL does not, the protocol and engine-content would build different containers from the

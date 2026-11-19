@@ -207,9 +207,9 @@ void EditorDocument::journal(Vector<JournalRow>& out, u32 limit) const {
   }
 }
 
-bool EditorDocument::apply(std::span<const doc::Command> commands, const std::string& rationale,
-                           std::string& error) {
-  protocol::Caller caller = caller_;
+bool EditorDocument::apply(std::span<const doc::Command> commands, const protocol::Caller& who,
+                           const std::string& rationale, std::string& error) {
+  protocol::Caller caller = who;
   caller.who.rationale =
       rationale.empty() ? "edit in engine-editor (" + std::to_string(commands.size()) + " commands)"
                         : rationale;

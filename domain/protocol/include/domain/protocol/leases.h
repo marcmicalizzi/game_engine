@@ -6,7 +6,8 @@
 // it rather than when their work is merged.
 //
 // One table per document, kept in the document directory as `leases.json` (schema `LeaseFile`)
-// and written before every answer that changed it, the way the document's own files are: a host
+// and written before every answer that changed it, the way the document's own files are, each
+// change a read-modify-write under the file's lock (side_file.h) so two hosts lose nothing: a host
 // started for one call (engine-cli spawns one per invocation) sees the leases an earlier host
 // granted, and a host restarted after a deadline does not silently drop them. Expiry is by the
 // host's wall clock (`time::wall_unix_ms`), so it means the same thing to every process on the
@@ -32,6 +33,7 @@
 #include <schemas/protocol.h>
 #include <span>
 #include <string_view>
+#include <utility>
 
 namespace engine::protocol {
 
@@ -50,9 +52,10 @@ class LeaseTable {
   // a shared type), or null.
   const LeaseInfo* overlap(const LeaseInfo& wanted, i64 now_ms) const noexcept;
 
-  // Adds a lease, giving it the next id, and returns that id.
+  // Adds a lease with a fresh id (side_file.h: random, none the table holds) and returns the id.
   u64 add(LeaseInfo lease);
   LeaseInfo* find(u64 id) noexcept;
+  const LeaseInfo* find_id(u64 id) const noexcept;
   bool remove(u64 id);
 
   enum class Cover : u8 {
@@ -70,11 +73,11 @@ class LeaseTable {
               std::string_view type, i64 now_ms, const LeaseInfo** other) const noexcept;
 
   const LeaseFile& file() const noexcept { return file_; }
-  // Replaces the table with a file's contents, sorting its leases by id.
-  void assign(LeaseFile file);
+  // Replaces the table with a file's contents.
+  void assign(LeaseFile file) { file_ = std::move(file); }
 
  private:
-  LeaseFile file_;  // leases in id order
+  LeaseFile file_;  // leases in the order they were granted
 };
 
 // Whether `lease` covers a record on `layer` in `tile` (null: none) of `type` (empty: none).

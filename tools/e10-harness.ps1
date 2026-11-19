@@ -300,7 +300,11 @@ function Get-FitOrbit([int]$w, [int]$h) {
 function Invoke-OneCamera([string]$HostExe, [string]$First, [string]$Second, [string]$OutDir, [double]$Distance, [double]$Lod, [int]$Frame) {
   $psi = New-Object Diagnostics.ProcessStartInfo
   $psi.FileName = $HostExe
-  $psi.Arguments = '--stdio'
+  # The host reads the two meshes and writes the captures only under roots it is given (protocol.md,
+  # "The host's file roots").
+  # One argument each (ArgumentList): a directory ending in a backslash, as a mesh at a drive's
+  # root gives (`D:\`), would escape the closing quote of a single command line.
+  foreach ($a in @('--stdio', '--root', "first=$(Split-Path -Parent $First)", '--root', "second=$(Split-Path -Parent $Second)", '--root', "out=$($OutDir):rw")) { $psi.ArgumentList.Add($a) }
   $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
   $psi.UseShellExecute = $false
   $process = [Diagnostics.Process]::Start($psi)
@@ -349,7 +353,7 @@ function Invoke-OneCamera([string]$HostExe, [string]$First, [string]$Second, [st
 function Invoke-OffscreenCuts([string]$HostExe, [string]$Clusters, [string]$OutDir, [double]$Distance, $Cuts, [int]$Frame, [string]$ShadowMode) {
   $psi = New-Object Diagnostics.ProcessStartInfo
   $psi.FileName = $HostExe
-  $psi.Arguments = '--stdio'
+  foreach ($a in @('--stdio', '--root', "mesh=$(Split-Path -Parent $Clusters)", '--root', "out=$($OutDir):rw")) { $psi.ArgumentList.Add($a) }
   $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
   $psi.UseShellExecute = $false
   $process = [Diagnostics.Process]::Start($psi)

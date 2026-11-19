@@ -13,6 +13,7 @@
 //   session.state_hash     StateHashParams     -> StateHashResult       (05 §5.10's hash)
 //   session.save_game      SaveGameParams      -> SaveGameResult        (03 §3.5's save game)
 //   session.load_game      LoadGameParams      -> LoadGameResult        (and its load)
+//   store.query            StoreQueryParams    -> StoreQueryResult      (06 §6.6's query(sql))
 //
 // The last three are the world capability's (docs/subsystems/world.md, "Save and load") and answer
 // 1006 in a build without it.
@@ -75,7 +76,12 @@ class OpsHost {
 
 // Registers content.build, session.events, engine.budgets, session.run_headless,
 // engine.run_tests, session.materialize, session.state_hash, session.save_game and
-// session.load_game. `Context::app` must point at the host's `HostState`.
+// session.load_game, and store.query. `Context::app` must point at the host's `HostState`.
 void add_ops_methods(protocol::Dispatcher& dispatcher);
+
+// store.query (store_query.cpp): one SELECT a client wrote over the session's document's store,
+// under store::run_sql_query's rules (docs/subsystems/store.md, "SQL a client wrote"); 1006 in a
+// build without the store capability. add_ops_methods registers it.
+void add_store_query_method(protocol::Dispatcher& dispatcher);
 
 }  // namespace engine::host

@@ -59,10 +59,12 @@ bool is_long_call(std::string_view method) noexcept {
   // bookkeeping over a document or the host's own state, and a host that takes minutes over it is
   // a host that has stopped. render.unload and render.scenes are in the short class: they release
   // or list what is there, and the release waits only for the frames already submitted.
+  // doc.checkpoint and doc.rollback_to copy a whole document into its repository and back out, as
+  // save and load copy a world.
   constexpr std::string_view k_long[] = {
-      "render.load",       "render.capture",   "render.benchmark",     "render.evaluate",
-      "render.compare",    "content.build",    "session.run_headless", "engine.run_tests",
-      "session.save_game", "session.load_game"};
+      "render.load",       "render.capture",    "render.benchmark",     "render.evaluate",
+      "render.compare",    "content.build",     "session.run_headless", "engine.run_tests",
+      "session.save_game", "session.load_game", "doc.checkpoint",       "doc.rollback_to"};
   for (const std::string_view m : k_long) {
     if (method == m) return true;
   }
@@ -250,6 +252,20 @@ bool HostClient::start(const BridgeOptions& options, std::string& error) {
   if (!options.roles.empty()) {
     argv.push_back("--roles");
     argv.push_back(options.roles);
+  }
+  // The workspace is the host's writable root "workspace" (protocol.md, "The host's file roots"),
+  // so the captures, benchmarks, compares, evaluations and builds the bridge names there land where
+  // they always have; every other path an agent names is admitted against the roots its operator
+  // forwarded (--root) and nothing else.
+  const std::string workspace_root =
+      options.workspace.empty() ? std::string() : "workspace=" + options.workspace + ":rw";
+  if (!workspace_root.empty()) {
+    argv.push_back("--root");
+    argv.push_back(workspace_root);
+  }
+  for (const std::string& r : options.roots) {
+    argv.push_back("--root");
+    argv.push_back(r);
   }
   for (const std::string& a : options.host_args)
     argv.push_back(a);

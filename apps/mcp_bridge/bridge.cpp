@@ -7,6 +7,8 @@
 #include <core/log/log.h>
 
 #include <cstdio>
+#include <fstream>
+#include <iterator>
 
 #ifndef ENGINE_VERSION
 #define ENGINE_VERSION "0.0.0"
@@ -190,6 +192,13 @@ std::string hint_for(std::string_view method, i32 code, std::string_view message
       if (message.find("scene") != std::string_view::npos)
         return "Scene ids live until unload releases them or the host exits; scenes lists the "
                "loaded ones. Pass `load` instead of `scene` to load it again.";
+      if (method == "doc.blob")
+        return "A blob is named by the blob of the BlobRef a property holds; put_blob stores "
+               "bytes and answers that name.";
+      if (method == "doc.put_blob")
+        return "path names a file under the document's directory, relative to it; send bytes "
+               "the agent holds as data_base64 instead.";
+      if (method == "doc.rollback_to") return "checkpoints lists the document's checkpoint ids.";
       if (message.find("layer") != std::string_view::npos)
         return "layers lists the document's layer names.";
       return "Check the id or name: objects lists ids and layers lists layer names.";
@@ -197,7 +206,11 @@ std::string hint_for(std::string_view method, i32 code, std::string_view message
     case 1005:
       return "A file could not be read or written: check the path, and that its directory "
              "exists and is writable.";
-    case 1006: return "This host does not offer that service.";
+    case 1006:
+      if (method == "doc.checkpoint" || method == "doc.rollback_to")
+        return "Checkpoints need git where the host runs (on its PATH, or ENGINE_GIT naming "
+               "one); checkpoints says which git answered. The document tools still work.";
+      return "This host does not offer that service.";
     case 1007:
       return "There is no GPU on this machine that can render this. If the message names a "
              "missing ray-tracing extension, load again with settings {\"shadows\":\"off\"} and "
@@ -313,7 +326,57 @@ Bridge::Bridge(BridgeOptions options) : options_(std::move(options)), schemas_(h
 
 Bridge::~Bridge() { shutdown(); }
 
+bool Bridge::is_human_role(std::string_view role) const noexcept {
+  if (role.empty()) return false;
+  for (const std::string& h : human_roles_)
+    if (h == role) return true;
+  return false;
+}
+
+namespace {
+
+// Whether the roles file at `path` marks human the role a bridge started with `named` runs in:
+// `named`, or the file's `default_role` when it is empty; that role in `role`. An unreadable or
+// malformed file says no: the host the bridge starts reads it again and reports it.
+bool marked_human_in_file(const std::string& path, std::string_view named, std::string& role) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in.good()) return false;
+  const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  JsonValue file;
+  if (!parse_json(text, file).ok || !file.is_object()) return false;
+  role = named.empty() ? text_of(file, "default_role") : std::string(named);
+  if (role.empty()) return false;
+  const JsonValue* roles = file.find("roles");
+  for (usize i = 0; roles != nullptr && roles->is_array() && i < roles->size(); ++i) {
+    const JsonValue& r = (*roles)[i];
+    if (r.is_object() && text_of(r, "name") == role && bool_of(r, "human")) return true;
+  }
+  return false;
+}
+
+// The refusal of a human role, in the words engine-host's and engine-cli's start lines use for it
+// (ADR-0072): what is refused, where the mark is, and the one way a person's role is conferred.
+// engine-mcp's main exits 2 on it, as the two hosts do.
+std::string human_role_refusal(std::string_view role, std::string_view roles_file) {
+  const std::string r(role);
+  return "role '" + r + "' is marked human in " + std::string(roles_file) +
+         ", and an agent's bridge never runs in a person's role: a person's role is conferred "
+         "only by a credential the operator issued for it (engine-host --issue-credential <file> "
+         "--role " +
+         r + "), presented on a connection to engine-host --listen --credentials <file>";
+}
+
+}  // namespace
+
 bool Bridge::start(std::string& error) {
+  // Before a host starts, as engine-cli refuses before it starts one: the host would refuse the
+  // same --role on its own start line (and a file whose default is human), and the bridge could
+  // then say only that its host went away.
+  if (std::string human; options_.connect_port == 0 && !options_.roles.empty() &&
+                         marked_human_in_file(options_.roles, options_.role, human)) {
+    error = human_role_refusal(human, options_.roles);
+    return false;
+  }
   host_.set_event_sink(
       [](void* user, const JsonValue& notification) {
         static_cast<Bridge*>(user)->on_host_event(notification);
@@ -339,12 +402,21 @@ bool Bridge::start(std::string& error) {
       for (usize i = 0; list != nullptr && i < list->size(); ++i) {
         const JsonValue& r = (*list)[i];
         const JsonValue* role = r.find("role");
+        if (role != nullptr && bool_of(*role, "human"))
+          human_roles_.push_back(text_of(*role, "name"));
         if (role == nullptr || text_of(*role, "name") != role_name_) continue;
         const JsonValue* allowed = r.find("allowed_methods");
         for (usize k = 0; allowed != nullptr && k < allowed->size(); ++k)
           role_methods_.push_back(std::string((*allowed)[k].as_string()));
       }
     }
+  }
+  // A role marked human is a person's, conferred only by a credential the operator issued for it;
+  // an agent's bridge never runs in one, whether --role named it or the file's default is one.
+  if (is_human_role(role_name_)) {
+    error = human_role_refusal(role_name_,
+                               options_.roles.empty() ? "the host's roles file" : options_.roles);
+    return false;
   }
   const auto allowed = [&](std::string_view method) {
     if (!roles_loaded_ || role_name_.empty()) return true;

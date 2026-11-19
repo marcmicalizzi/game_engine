@@ -1,0 +1,1 @@
+[{"jsonrpc": "2.0", "id": 1, "method": "session.info"}, {"jsonrpc": "2.0", "id": "two", "method": "render.load", "params": {"scene": "content/test-scenes/desert-overlook/scene.json"}}, {"jsonrpc": "2.0", "method": "doc.undo"}, {"jsonrpc": "2.0", "id": null, "method": "engine.methods", "params": {}}]

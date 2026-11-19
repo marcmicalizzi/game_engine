@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "A51",
+  "reason": "engine-editor's two new start rules are the row's point and its flags live on apps.md: --no-viewport, the page test with no GPU device, and --test-page refused outside the tests' scratch root",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 1369
+  }
+}

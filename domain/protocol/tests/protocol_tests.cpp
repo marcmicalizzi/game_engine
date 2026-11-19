@@ -1,7 +1,10 @@
 #include <core/json/json.h>
 #include <core/log/log.h>
+#include <domain/protocol/paths.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
+#include <foundation/io/roots.h>
+#include <foundation/io/vfs.h>
 #include <foundation/tunables/tunables.h>
 
 #include <doctest/doctest.h>
@@ -22,8 +25,16 @@ struct Host {
   io::Vfs vfs;
   SessionManager sessions{vfs};
   log::RingSink ring{64};
+  // Every path a case names is under a TempDir, and every TempDir under one parent: that parent is
+  // the host's one writable root, as an operator's --root would be (paths.h).
+  test::TempDir roots_anchor{"roots"};
+  io::Roots roots;
   Dispatcher dispatcher{Context{&sessions, &ring, nullptr}};
-  Host() { add_builtin_methods(dispatcher); }
+  Host() {
+    (void)roots.add("tests", std::string(io::parent_path(roots_anchor.path())), true);
+    dispatcher.context().roots = &roots;
+    add_builtin_methods(dispatcher);
+  }
 
   // Sends one request and returns the parsed response.
   JsonValue call(std::string_view method, JsonValue params = {}, JsonValue id = JsonValue(1)) {
@@ -732,4 +743,328 @@ TEST_CASE("protocol: the day-one operations' schema types, their defaults and th
   schema::ReadContext build_ctx;
   CHECK_FALSE(schema::from_json(build, obj({{"sorce", JsonValue("a.gltf")}}), build_ctx));
   CHECK_FALSE(build_ctx.diagnostics.empty());
+}
+
+// session.open is registered read-only, so every role reaches it: before the roots it opened any
+// engine document on the disk, said whether one was there, and made one wherever it was told (the
+// survey's rows 1-3). Now it reads under a root, makes a document only under a writable one, and
+// answers a refusal exactly as it answers a directory that holds nothing.
+TEST_CASE("roots: session.open reaches only the host's roots, and a refusal reads as missing") {
+  TempDir tmp("protocol_roots_open");
+  const std::string other = tmp.file("other");
+  Host h;
+  // A document outside the root the case narrows the host to, made while the host could reach it.
+  JsonValue made =
+      h.ok("session.open", obj({{"path", JsonValue(other)}, {"create", JsonValue(true)}}));
+  h.ok("session.close", obj({{"session", *made.find("session")}}));
+  io::Roots narrow;
+  REQUIRE(narrow.add("work", tmp.file("work"), true) == io::Status::Ok);
+  h.dispatcher.context().roots = &narrow;
+
+  auto refused = [&](JsonValue params) {
+    const JsonValue resp = h.call("session.open", std::move(params));
+    const JsonValue* error = resp.find("error");
+    REQUIRE(error != nullptr);
+    CHECK(error->find("code")->as_int() == codes::k_not_found);
+    return std::string(error->find("message")->as_string());
+  };
+  // An existing document outside, and nothing at all inside: one sentence, the client's own path.
+  const std::string outside_message = refused(obj({{"path", JsonValue(other)}}));
+  CHECK(outside_message == "path: no file this host may read at '" + other + "'");
+  const std::string missing = tmp.file("work") + "/nothing";
+  CHECK(refused(obj({{"path", JsonValue(missing)}})) ==
+        "path: no file this host may read at '" + missing + "'");
+  // Spellings that reach the same document from inside the root.
+  CHECK(!refused(obj({{"path", JsonValue("work://../other")}})).empty());
+  CHECK(!refused(obj({{"path", JsonValue(tmp.file("work") + "/../other")}})).empty());
+  // A document is made only under a writable root.
+  const std::string elsewhere = tmp.file("elsewhere");
+  (void)refused(obj({{"path", JsonValue(elsewhere)}, {"create", JsonValue(true)}}));
+  CHECK_FALSE(io::exists(elsewhere));
+  // A root this host does not have says so, and says nothing else.
+  {
+    const JsonValue resp = h.call("session.open", obj({{"path", JsonValue("nope://world")}}));
+    REQUIRE(resp.find("error") != nullptr);
+    CHECK(resp.find("error")->find("message")->as_string() ==
+          "path: root nope is not present on this host");
+  }
+  // Inside, it works, and the session is answered as root and relative, never the host's path.
+  const JsonValue opened =
+      h.ok("session.open", obj({{"path", JsonValue("work://world")}, {"create", JsonValue(true)}}));
+  CHECK(opened.find("path")->as_string() == "work://world");
+  CHECK(io::exists(tmp.file("work") + "/world/manifest.json"));
+  h.dispatcher.context().roots = &h.roots;
+}
+
+// With a root on a network share, a client's //server/share had to be resolved to be compared,
+// which made the host connect to the client's server with the operator's credentials; so the
+// start refuses one, says why, and the host exits 2.
+TEST_CASE("roots: a root on a network share is refused at start with a message") {
+  io::Roots roots;
+  HostRootsConfig config;
+  config.root_specs.push_back("art=//engine-tests.invalid/art");
+  std::string error;
+  CHECK_FALSE(configure_host_roots(roots, config, error));
+  CHECK(error.find("network share") != std::string::npos);
+  CHECK(roots.find("art") == nullptr);
+  io::Roots rw;
+  HostRootsConfig writable;
+  writable.root_specs.push_back("work=\\\\engine-tests.invalid\\work:rw");
+  error.clear();
+  CHECK_FALSE(configure_host_roots(rw, writable, error));
+  CHECK(error.find("network share") != std::string::npos);
+}
+
+// A document's out/ was added wherever it resolved: a file named out became a writable "root",
+// and a link at out made its target the host's writable root (io's roots_tests has the link).
+// Now it is the document's own plain directory or no root at all, and the host still starts.
+TEST_CASE("roots: a document whose out is not its own directory opens with no out root") {
+  TempDir tmp("protocol_roots_out_file");
+  const std::string doc = tmp.file("doc");
+  REQUIRE(io::make_directories(doc) == io::Status::Ok);
+  REQUIRE(io::write_file(doc + "/out", "a file, not a directory") == io::Status::Ok);
+  io::Roots roots;
+  HostRootsConfig config;
+  config.doc_dir = doc;
+  std::string error;
+  REQUIRE(configure_host_roots(roots, config, error));
+  CHECK(roots.find("doc") != nullptr);
+  CHECK(roots.find("out") == nullptr);
+  // A plain one is the root, as before.
+  TempDir plain("protocol_roots_out_plain");
+  io::Roots ok;
+  HostRootsConfig plain_config;
+  plain_config.doc_dir = plain.file("doc");
+  REQUIRE(io::make_directories(plain_config.doc_dir) == io::Status::Ok);
+  REQUIRE(configure_host_roots(ok, plain_config, error));
+  CHECK(ok.find("out") != nullptr);
+}
+
+// A session's derived data went to the repository's ddc/ found by walking up from the document,
+// else to <doc>/ddc: inside an open document outside its out/, or under no root at all, where no
+// client write could go. Now it is the host's own "ddc" root, else the document's out/ddc.
+TEST_CASE("roots: a session's derived data goes to the host's ddc root, else its out/ddc") {
+  TempDir tmp("protocol_roots_ddc");
+  Host h;
+  io::Roots without;
+  HostRootsConfig plain;
+  plain.root_specs.push_back("work=" + tmp.file("work") + ":rw");
+  std::string error;
+  REQUIRE(configure_host_roots(without, plain, error));
+  h.dispatcher.context().roots = &without;
+  const JsonValue opened =
+      h.ok("session.open", obj({{"path", JsonValue("work://world")}, {"create", JsonValue(true)}}));
+  const Session* session =
+      h.dispatcher.context().sessions->find(std::string(at(opened, "session").as_string()));
+  REQUIRE(session != nullptr);
+  const std::string out_ddc = derived_data_root(h.dispatcher.context(), session);
+  CHECK(out_ddc == io::join_path(session->dir(), "out/ddc"));
+  // Under out/, so the roots' own rule for a document's files holds for it.
+  CHECK(io::path_is_under(out_ddc, session->dir() + "/out"));
+  h.ok("session.close", obj({{"session", at(opened, "session")}}));
+  // With a "ddc" root, that, made at start and read-only to clients.
+  io::Roots with;
+  HostRootsConfig config = plain;
+  config.ddc_dir = tmp.file("derived");
+  REQUIRE(configure_host_roots(with, config, error));
+  REQUIRE(with.find("ddc") != nullptr);
+  CHECK_FALSE(with.find("ddc")->writable);
+  CHECK(io::exists(tmp.file("derived")));
+  h.dispatcher.context().roots = &with;
+  CHECK(derived_data_root(h.dispatcher.context(), nullptr) == with.find("ddc")->canonical);
+  h.dispatcher.context().roots = &h.roots;
+}
+
+// The session's events went to every subscriber with the host's own directory in `path`, and a
+// file admitted under a root but missing was answered later, and differently, than a refused one.
+TEST_CASE("roots: a session's events show its root form, and a missing file reads as refused") {
+  TempDir tmp("protocol_roots_shown");
+  Host h;
+  const JsonValue opened = h.ok(
+      "session.open", obj({{"path", JsonValue(tmp.file("world"))}, {"create", JsonValue(true)}}));
+  const Session* session =
+      h.dispatcher.context().sessions->find(std::string(at(opened, "session").as_string()));
+  REQUIRE(session != nullptr);
+  CHECK(session->shown_path().starts_with("tests://"));
+  CHECK(session->shown_path().ends_with("/world"));
+  CHECK(session->shown_path() == std::string(at(opened, "path").as_string()));
+  h.ok("session.close", obj({{"session", at(opened, "session")}}));
+
+  // Missing under a root and outside every root: one error, one sentence, at admission.
+  Context& ctx = h.dispatcher.context();
+  io::Admitted a;
+  RpcError missing;
+  CHECK_FALSE(admit_existing_path(ctx, "mesh", tmp.file("nothing.glb"), {}, a, missing));
+  CHECK(a.native.empty());
+  io::Roots narrow;
+  REQUIRE(narrow.add("work", tmp.file("work"), true) == io::Status::Ok);
+  ctx.roots = &narrow;
+  RpcError refused;
+  CHECK_FALSE(admit_existing_path(ctx, "mesh", tmp.file("nothing.glb"), {}, a, refused));
+  ctx.roots = &h.roots;
+  CHECK(missing.code == refused.code);
+  CHECK(missing.message == refused.message);
+  // And a present one is admitted.
+  REQUIRE(io::write_file(tmp.file("there.glb"), "x") == io::Status::Ok);
+  RpcError none;
+  CHECK(admit_existing_path(ctx, "mesh", tmp.file("there.glb"), {}, a, none));
+  // A reader's message is told the client's spelling, never the native path.
+  CHECK(shown_message("'D/x/save' is not a save; D/x/save has no manifest", "D/x/save",
+                      "out://save") == "'out://save' is not a save; out://save has no manifest");
+}
+
+// `<dir>:rw` was split on its suffix alone, so a directory whose name ends in ":rw" (Linux allows
+// it) could not be named read-only and was silently made writable; `:ro` says read-only outright.
+TEST_CASE("roots: --root takes :ro, so a directory named with :rw can be read-only") {
+  TempDir tmp("protocol_roots_ro");
+  const std::string dir = tmp.file("lib");
+  REQUIRE(io::make_directories(dir) == io::Status::Ok);
+  io::Roots roots;
+  HostRootsConfig config;
+  config.root_specs.push_back("lib=" + dir + ":ro");
+  config.root_specs.push_back("work=" + tmp.file("work") + ":rw");
+  std::string error;
+  REQUIRE(configure_host_roots(roots, config, error));
+  REQUIRE(roots.find("lib") != nullptr);
+  CHECK_FALSE(roots.find("lib")->writable);
+  CHECK(roots.find("lib")->spelled == dir);
+  CHECK(roots.find("work")->writable);
+}
+
+// No roots, no paths: a dispatcher made without them refuses every client path.
+TEST_CASE("roots: a context with no roots refuses every path") {
+  TempDir tmp("protocol_roots_none");
+  Host h;
+  h.dispatcher.context().roots = nullptr;
+  const JsonValue resp = h.call(
+      "session.open", obj({{"path", JsonValue(tmp.file("w"))}, {"create", JsonValue(true)}}));
+  REQUIRE(resp.find("error") != nullptr);
+  CHECK_FALSE(io::exists(tmp.file("w")));
+}
+
+namespace {
+// A text in one spelling for a search: forward slashes (JSON writes a backslash as two), lower
+// case.
+std::string folded(std::string_view text) {
+  std::string out;
+  for (usize i = 0; i < text.size(); ++i) {
+    char c = text[i];
+    if (c == '\\') {
+      if (i + 1 < text.size() && text[i + 1] == '\\') ++i;
+      c = '/';
+    }
+    out.push_back(c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c);
+  }
+  return out;
+}
+}  // namespace
+
+// log.tail is a read every role may make, and the ring holds every record the host logs, so the
+// check's log is the answer's twin: before, a refusal logged its reason and the canonical form it
+// resolved (the long, on-disk name of whatever existed, link targets included) and every root
+// logged its directory, while a missing file logged nothing, which told the two apart.
+TEST_CASE("roots: a refused path leaves nothing of the disk in log.tail") {
+  TempDir tmp("protocol_roots_log");
+  const std::string other = tmp.file("other");
+  Host h;
+  JsonValue made =
+      h.ok("session.open", obj({{"path", JsonValue(other)}, {"create", JsonValue(true)}}));
+  h.ok("session.close", obj({{"session", *made.find("session")}}));
+
+  log::add_sink(&h.ring);
+  log::set_global_min_level(log::Level::Trace);
+  io::Roots narrow;
+  HostRootsConfig config;
+  config.root_specs.push_back("work=" + tmp.file("work") + ":rw");
+  std::string error;
+  const bool configured = configure_host_roots(narrow, config, error);
+  h.dispatcher.context().roots = &narrow;
+  // Refused: a document that exists, outside the root it is spelled under. Missing: nothing inside.
+  const JsonValue refused = h.call("session.open", obj({{"path", JsonValue("work://../other")}}));
+  const JsonValue missing = h.call("session.open", obj({{"path", JsonValue("work://nothing")}}));
+  // An absolute spelling is the client's own, but it names the host's directories: not logged.
+  const JsonValue absolute = h.call("session.open", obj({{"path", JsonValue(other)}}));
+  log::remove_sink(&h.ring);
+  log::reset_levels();
+  h.dispatcher.context().roots = &h.roots;
+  REQUIRE(configured);
+  REQUIRE(refused.find("error") != nullptr);
+  REQUIRE(missing.find("error") != nullptr);
+  REQUIRE(absolute.find("error") != nullptr);
+
+  const JsonValue tail = h.ok("log.tail", obj({{"since", JsonValue(0)}}));
+  const std::string text = folded(write_json(tail));
+  CHECK(text.find(folded(tmp.path())) == std::string::npos);
+  CHECK(text.find("\"reason\"") == std::string::npos);
+  CHECK(text.find("\"resolved\"") == std::string::npos);
+  CHECK(text.find("\"canonical\"") == std::string::npos);
+  // The refused and the missing path leave one record each, alike but for the client's spelling.
+  const JsonValue& records = at(tail, "records");
+  Vector<const JsonValue*> paths;
+  for (usize i = 0; i < records.size(); ++i) {
+    if (at(records[i], "cat") == JsonValue("protocol.paths") &&
+        at(records[i], "level") == JsonValue("warn"))
+      paths.push_back(&records[i]);
+  }
+  REQUIRE(paths.size() == 3);
+  CHECK(at(*paths[0], "msg") == at(*paths[1], "msg"));
+  CHECK(at(at(*paths[0], "fields"), "access") == at(at(*paths[1], "fields"), "access"));
+  CHECK(at(at(*paths[0], "fields"), "field") == at(at(*paths[1], "fields"), "field"));
+  CHECK(at(at(*paths[0], "fields"), "path") == JsonValue("work://../other"));
+  CHECK(at(at(*paths[1], "fields"), "path") == JsonValue("work://nothing"));
+  CHECK(at(at(*paths[2], "fields"), "path") == JsonValue("(absolute)"));
+  // The root's directory is the operator's, on stderr at start.
+  CHECK(folded(describe_host_roots(narrow, "engine-host")).find(folded(tmp.file("work"))) !=
+        std::string::npos);
+}
+
+// session.open needs only read, so before this a document under a root the operator named
+// read-only was opened and then saved in place by doc.save (every role), and rewritten with new
+// content by a writing role's doc.apply: the host wrote inside a root it was told not to.
+TEST_CASE("roots: a document under a read-only root opens and does not save") {
+  TempDir tmp("protocol_roots_readonly");
+  const Id128 a = Id128::from_parts(0x71, 1);
+  Host h;
+  const std::string world = tmp.file("lib") + "/world";
+  JsonValue made =
+      h.ok("session.open", obj({{"path", JsonValue(world)}, {"create", JsonValue(true)}}));
+  h.ok("session.close", obj({{"session", *made.find("session")}}));
+  std::string manifest_before;
+  REQUIRE(io::read_file(world + "/manifest.json", manifest_before) == io::Status::Ok);
+
+  io::Roots read_only;
+  REQUIRE(read_only.add("lib", tmp.file("lib"), false) == io::Status::Ok);
+  h.dispatcher.context().roots = &read_only;
+  const JsonValue opened = h.ok("session.open", obj({{"path", JsonValue("lib://world")}}));
+  const JsonValue session = at(opened, "session");
+  // Read as before.
+  CHECK(at(h.ok("session.info", obj({{"session", session}})), "path") == JsonValue("lib://world"));
+  // Every write to its directory is the refusal a path outside the roots gets.
+  const auto refused = [&](std::string_view method, JsonValue params) {
+    const JsonValue resp = h.call(method, std::move(params));
+    const JsonValue* error = resp.find("error");
+    REQUIRE(error != nullptr);
+    CHECK(error->find("code")->as_int() == codes::k_not_found);
+    CHECK(error->find("message")->as_string() ==
+          "path: no place this host may write at 'lib://world'");
+  };
+  refused("doc.save", obj({{"session", session}}));
+  JsonValue commands = JsonValue::array();
+  commands.push_back(create_command(a, "engine.content.AssetProvenance"));
+  refused("doc.apply",
+          obj({{"session", session}, {"commands", commands}, {"attribution", attribution()}}));
+  refused("doc.undo", obj({{"session", session}}));
+  std::string manifest_after;
+  REQUIRE(io::read_file(world + "/manifest.json", manifest_after) == io::Status::Ok);
+  CHECK(manifest_after == manifest_before);
+  h.ok("session.close", obj({{"session", session}}));
+
+  // The same document under a root the operator made writable saves.
+  io::Roots writable;
+  REQUIRE(writable.add("lib", tmp.file("lib"), true) == io::Status::Ok);
+  h.dispatcher.context().roots = &writable;
+  const JsonValue again = h.ok("session.open", obj({{"path", JsonValue("lib://world")}}));
+  h.ok("doc.save", obj({{"session", at(again, "session")}}));
+  h.ok("session.close", obj({{"session", at(again, "session")}}));
+  h.dispatcher.context().roots = &h.roots;
 }

@@ -14,3 +14,9 @@
 *.wav binary
 *.flac binary
 *.bin binary
+
+# The hostile-input harness's seeds and regressions are bytes, not text: an input is named by its
+# seed and an iteration, and reproduces only if the seed is the same bytes on every checkout
+# (docs/ci/fuzzing.md). No line-ending conversion.
+content/fuzz/*/seeds/** -text
+content/fuzz/*/regress/** -text

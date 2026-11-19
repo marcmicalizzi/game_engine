@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "protocol-ledger",
+  "reason": "A23, A11 and A4 mends from the first review of the joined protocol work: a retried commit lands only when the document holds it; a person's role only by a credential, held over a listener; how each ledger caller was known, drawn ids, item revisions and the ledger's bounds; proposals.json through the side-file helper; a live host's leases kept by its mark. The pages say each rule and why the first forms fell",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 783,
+    "page:docs/subsystems/protocol.md": 9011
+  }
+}

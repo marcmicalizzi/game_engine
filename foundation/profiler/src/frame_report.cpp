@@ -1,8 +1,10 @@
+#include <core/containers/hash_map.h>
 #include <foundation/profiler/frame_report.h>
 
 #include <algorithm>
 #include <cinttypes>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -31,16 +33,29 @@ struct Accumulator {
   f64 outside_ms = 0.0;
 };
 
-bool same_name(const char* a, const char* b) noexcept { return a == b || std::strcmp(a, b) == 0; }
+// One list's names and the pointers they were met by. A report reads every event once and a name
+// is almost always one string literal, so a pointer met before is a hash lookup, and only a pointer
+// never met is compared by its characters against the names so far: the walk of every name with
+// `strcmp` for every event it replaces was events × names (batch 68's review of the capture).
+struct Accumulators {
+  Vector<Accumulator> list;
+  HashMap<u64, u32> by_pointer;
+};
 
-Accumulator& find_or_add(Vector<Accumulator>& list, const char* name, u32 frames) {
-  for (Accumulator& a : list)
-    if (same_name(a.name, name)) return a;
-  Accumulator& a = list.emplace_back();
-  a.name = name;
-  a.sums.resize(frames, 0.0);
-  a.seen.resize(frames, 0);
-  return a;
+Accumulator& find_or_add(Accumulators& names, const char* name, u32 frames) {
+  const u64 key = static_cast<u64>(reinterpret_cast<std::uintptr_t>(name));
+  if (const u32* at = names.by_pointer.find_value(key); at != nullptr) return names.list[*at];
+  u32 at = 0;
+  while (at < names.list.size() && std::strcmp(names.list[at].name, name) != 0)
+    ++at;
+  if (at == names.list.size()) {
+    Accumulator& a = names.list.emplace_back();
+    a.name = name;
+    a.sums.resize(frames, 0.0);
+    a.seen.resize(frames, 0);
+  }
+  names.by_pointer[key] = at;
+  return names.list[at];
 }
 
 // The window frame holding `ns`, or `~0u`: frames are sorted by begin and do not overlap.
@@ -160,15 +175,32 @@ Vector<Frame> frames_of(std::span<const CaptureEvent> events, const CaptureInfo&
     if (e.kind == profiling::CaptureKind::frame) frames.push_back({e.frame, e.begin_ns, -1});
   std::stable_sort(frames.begin(), frames.end(),
                    [](const Frame& a, const Frame& b) { return a.begin_ns < b.begin_ns; });
+  // Each end is matched to the latest mark of its index that began at or before it, found by a
+  // binary search over the marks sorted by (index, begin) — the walk back from the newest frame it
+  // replaces was frames² / 2 compares with a renderer's increasing indices, run twice for a report
+  // with a trace (batch 68's review of the capture). Marks equal in both keep their begin order, so
+  // the last of them is the one the walk found.
+  struct Mark {
+    u64 index = 0;
+    i64 begin_ns = 0;
+    u32 at = 0;
+  };
+  Vector<Mark> marks;
+  marks.reserve(frames.size());
+  for (u32 i = 0; i < frames.size(); ++i)
+    marks.push_back({frames[i].index, frames[i].begin_ns, i});
+  const auto before = [](const Mark& a, const Mark& b) {
+    return a.index != b.index ? a.index < b.index : a.begin_ns < b.begin_ns;
+  };
+  std::stable_sort(marks.begin(), marks.end(), before);
   for (const CaptureEvent& e : events) {
     if (e.kind != profiling::CaptureKind::frame_end) continue;
-    // The latest mark of that index that began at or before the end.
-    for (u32 i = frames.size(); i-- > 0;) {
-      if (frames[i].index == e.frame && frames[i].begin_ns <= e.begin_ns) {
-        if (frames[i].end_ns < 0 || e.begin_ns < frames[i].end_ns) frames[i].end_ns = e.begin_ns;
-        break;
-      }
-    }
+    const Mark* first = marks.data();
+    const Mark* after =
+        std::upper_bound(first, first + marks.size(), Mark{e.frame, e.begin_ns, 0}, before);
+    if (after == first || (after - 1)->index != e.frame) continue;
+    Frame& f = frames[(after - 1)->at];
+    if (f.end_ns < 0 || e.begin_ns < f.end_ns) f.end_ns = e.begin_ns;
   }
   cut = cut_of(events, info);
   if (cut.truncated && !frames.empty() && frames[frames.size() - 1].end_ns < 0) {
@@ -266,8 +298,13 @@ void copy_capture(CaptureCopy& out) {
       std::span<CaptureEvent>(out.events.data(), out.events.size()), out.info);
   out.events.resize(n);
   out.thread_names.clear();
-  for (u32 t = 0; t < out.info.threads; ++t)
-    out.thread_names.push_back(std::string(profiling::capture_thread_name(t)));
+  // Each name whole or empty, never torn by its thread naming itself meanwhile (profiling.md,
+  // "Thread names").
+  char name[profiling::k_capture_thread_name_bytes];
+  for (u32 t = 0; t < out.info.threads; ++t) {
+    profiling::capture_thread_name(t, name);
+    out.thread_names.push_back(std::string(name));
+  }
 }
 
 FrameReport build_report(std::span<const CaptureEvent> events, const CaptureInfo& info,
@@ -299,8 +336,18 @@ FrameReport build_report(std::span<const CaptureEvent> events, const CaptureInfo
     report.last_frame = frames[n - 1].index;
     report.window_ms = static_cast<f64>(frames[n - 1].end_ns - frames[0].begin_ns) * k_ms_per_ns;
   }
+  // The frames near the fill are kept but marked (profiler.md, "A capture that filled"): a zone
+  // stamped before such a frame's end may have lost the last slot to a later stamp.
+  if (cut.truncated && info.full_ns >= 0) {
+    const i64 from = cut.at_ns - k_partial_stretch_ns;
+    for (const Frame& f : frames) {
+      if (f.end_ns < from) continue;
+      if (report.partial_frames == 0) report.partial_first_frame = f.index;
+      ++report.partial_frames;
+    }
+  }
 
-  Vector<Accumulator> gpu, cpu, zones;
+  Accumulators gpu, cpu, zones;
   Vector<u8> gpu_measured, cpu_measured;
   gpu_measured.resize(n, 0);
   cpu_measured.resize(n, 0);
@@ -379,9 +426,9 @@ FrameReport build_report(std::span<const CaptureEvent> events, const CaptureInfo
     s.max_ms = p.max;
     s.mean_ms = p.mean;
   }
-  summarize(gpu, &gpu_measured, n, options.max_series, report.gpu, report.series_dropped);
-  summarize(cpu, &cpu_measured, n, options.max_series, report.cpu, report.series_dropped);
-  summarize(zones, nullptr, n, options.max_series, report.zones, report.series_dropped);
+  summarize(gpu.list, &gpu_measured, n, options.max_series, report.gpu, report.series_dropped);
+  summarize(cpu.list, &cpu_measured, n, options.max_series, report.cpu, report.series_dropped);
+  summarize(zones.list, nullptr, n, options.max_series, report.zones, report.series_dropped);
   return report;
 }
 

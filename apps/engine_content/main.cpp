@@ -452,7 +452,13 @@ int build(const BuildCommandOptions& options_in) {
   u64 source_hash = 0;
   std::string message;
   if (!source_hash_of(options.input, source_hash, &message)) return failed(message);
-  const u64 key = mesh_build_key(options.input, source_hash, options.mesh);
+  // Its sidecar's class is part of the key when there is one (C62), and one that cannot be read
+  // refuses the source.
+  SourceClasses classes;
+  Diagnostic class_error;
+  if (!read_source_classes(options.input, options.mesh, classes, class_error))
+    return failed(std::string(class_error.rule) + ": " + class_error.message);
+  const u64 key = classified_build_key(options.input, source_hash, options.mesh, classes);
 
   std::string output = options.output;
   if (options.cache) {
@@ -468,7 +474,7 @@ int build(const BuildCommandOptions& options_in) {
   BuildResult result;
   Diagnostic error;
   const bool ok = build_one(options.input, output, options.mesh, options.strict, &pool, source_hash,
-                            key, result, error);
+                            key, result, error, &classes);
   log_warnings(options.input, result.warnings);
   if (!ok) return failed(std::string(error.rule) + ": " + error.message);
   print_repairs(options.input, result);
@@ -485,7 +491,7 @@ int build(const BuildCommandOptions& options_in) {
     const Vector<u32> mesh_of(sources.size(), 0u);
     run_texture_step(std::span<const TextureSource* const>(sources.data(), sources.size()),
                      std::span<const u32>(mesh_of.data(), mesh_of.size()), options.ddc, pool,
-                     texture_results);
+                     texture_results, options.mesh.categories);
   }
   const u32 texture_failures = report_texture_problems(texture_results);
 
@@ -526,6 +532,8 @@ int build(const BuildCommandOptions& options_in) {
   summary.set("warnings", JsonValue(result.warnings.size()));
   summary.set("repairs", repairs_json(result));
   summary.set("atlas", atlas_json(result, options.mesh));
+  // The source's class, by name, only when it has one (C62): an unclassified line is unchanged.
+  if (!result.content_classes.is_null()) summary.set("content_classes", result.content_classes);
   summary.set("textures", textures_json(texture_results, ~u32{0}, textures, true));
   summary.set("bytes", JsonValue(result.bytes));
   summary.set("build_ms", JsonValue(result.build_ms));
@@ -688,8 +696,11 @@ int build_all(const BuildAllCommandOptions& options) {
   Vector<const char*> step_arrays;
   for (const DerivedStep* step : steps)
     step_arrays.push_back(step->manifest_array);
+  // A manifest's own categories file (C62), which outlives the entries that point at it.
+  content_class::Categories categories;
   if (!read_manifest(options.manifest, options.defaults, entries, message,
-                     std::span<const char* const>(step_arrays.data(), step_arrays.size()))) {
+                     std::span<const char* const>(step_arrays.data(), step_arrays.size()),
+                     &categories)) {
     return failed(message);
   }
   for (ManifestEntry& entry : entries)
@@ -773,7 +784,7 @@ int build_all(const BuildAllCommandOptions& options) {
     }
     run_texture_step(std::span<const TextureSource* const>(sources.data(), sources.size()),
                      std::span<const u32>(mesh_of.data(), mesh_of.size()), options.ddc, pool,
-                     texture_results);
+                     texture_results, &categories);
   }
   const u32 texture_failures = report_texture_problems(texture_results);
 
@@ -787,6 +798,9 @@ int build_all(const BuildAllCommandOptions& options) {
     line.set("source", JsonValue(task.entry->source));
     line.set("path", JsonValue(task.result.path));
     line.set("textures", textures_json(texture_results, m, textures, false));
+    // The source's class, by name, only when it has one (C62), built or skipped alike.
+    if (!task.result.content_classes.is_null())
+      line.set("content_classes", task.result.content_classes);
     switch (task.state) {
       case TaskState::Built: {
         ++built;
@@ -957,6 +971,8 @@ struct TextureCommandOptions {
 // One image into a `.tex`: the same function the mesh build's texture step calls, with the options
 // given on the command line instead of taken from a material slot, so a texture built here for the
 // same bytes and options is the same bytes and the same cache entry.
+void put_classes(JsonValue& summary, const Vector<u8>& record);  // below, beside `info`
+
 int texture_command_run(const TextureCommandOptions& options) {
   const i64 start_ns = time::monotonic_ns();
   std::string bytes;
@@ -1040,6 +1056,7 @@ int texture_command_run(const TextureCommandOptions& options) {
   summary.set("ms", std::move(ms));
   summary.set("jobs", JsonValue(pool.worker_count(jobs::Pool::Performance)));
   summary.set("hash", JsonValue(texture::texture_file_hash(data)));
+  put_classes(summary, data.content_classes);
   print_json(summary);
   return k_exit_ok;
 }
@@ -1177,6 +1194,7 @@ int texture_info(const std::string& path) {
   summary.set("flags", JsonValue(header.flags));
   summary.set("total_bytes", JsonValue(header.total_bytes));
   summary.set("hash", JsonValue(header.content_hash));
+  put_classes(summary, data.content_classes);
   summary.set("sections", std::move(sections));
   summary.set("format", JsonValue(texture::texture_format_name(data.format)));
   summary.set("color_space", JsonValue(texture::color_space_name(data.color_space)));
@@ -1289,6 +1307,25 @@ JsonValue cost_json(const geometry::ClusterFileData& data, u64 total_bytes, u64 
   return cost;
 }
 
+// The class a container's section 54 or a texture's section 6 records (C62), as data, its ladders
+// learned from the record itself, so `info` needs no categories file. Nothing for an unclassified
+// file, whose line is what it was; a record that cannot be read says why.
+void put_classes(JsonValue& summary, const Vector<u8>& record) {
+  if (record.empty()) return;
+  content_class::Categories categories;
+  content_class::ContentClasses classes;
+  Vector<content_class::MaterialClass> materials;
+  std::string error;
+  if (content_class::decode_classes(categories, std::span<const u8>(record.data(), record.size()),
+                                    classes, error, &materials)) {
+    summary.set("content_classes", content_class::classes_json(categories, classes, &materials));
+    return;
+  }
+  JsonValue unreadable = JsonValue::object();
+  unreadable.set("unreadable", JsonValue(error));
+  summary.set("content_classes", std::move(unreadable));
+}
+
 int info(const std::string& path) {
   // A clip, a texture or a container, told apart by the magic rather than by the file's name.
   int clip_code = k_exit_ok;
@@ -1333,6 +1370,7 @@ int info(const std::string& path) {
   summary.set("flags", JsonValue(header.flags));
   summary.set("total_bytes", JsonValue(header.total_bytes));
   summary.set("hash", JsonValue(header.content_hash));
+  put_classes(summary, data.content_classes);
   summary.set("sections", std::move(sections));
   summary.set("clusters", JsonValue(lod.mesh.clusters.size()));
   summary.set("leaf_clusters",

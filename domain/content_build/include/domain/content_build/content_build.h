@@ -35,6 +35,7 @@
 #include <domain/geometry/zero_area_repair.h>
 #include <domain/texture/texture_build.h>
 #include <domain/texture/texture_file.h>
+#include <foundation/content_class/content_class.h>
 
 #include <span>
 #include <string>
@@ -93,6 +94,12 @@ struct MeshOptions {
   // the host, never by a manifest, and read only for a generated mesh, whose key it moves through
   // `assets::generated_mesh_build_key`. Null is no pack.
   const materials::Pack* materials = nullptr;
+  // The categories a source's sidecar is read against (C62; docs/content-classes.md, "Where a class
+  // is declared, and by whom"): the engine's three and a game's, from the categories file a
+  // manifest names (`read_manifest`). Set by the host, never by an entry; null is the engine's
+  // three alone, so a sidecar naming a game's category is refused. Not in the key itself: a class
+  // is, by name (`read_source_classes`).
+  const content_class::Categories* categories = nullptr;
 };
 
 // **The pack a host hands a generated mesh** (docs/subsystems/materials.md; T78): the repository's,
@@ -164,6 +171,10 @@ inline constexpr const char* k_rule_zero_area = "geometry.zero_area";
 // The atlas step's failure (xatlas refused the mesh, or a rebaked image could not be encoded). A
 // material it merely could not repack is not one: it keeps its own atlas and the report says why.
 inline constexpr const char* k_rule_atlas_repack = "atlas.repack";
+// A sidecar that cannot be read (C62): not JSON, a key given twice, a `content_classes` of the
+// wrong shape or type, or a category neither the engine nor the game defines. **It refuses the
+// source**, naming the sidecar and why: a class that cannot be read is never `none`.
+inline constexpr const char* k_rule_content_class = "content.class";
 
 // The visibility buffer packs `cluster << 8 | triangle` into 32 bits (AGENTS.md, ADR-0005), so a
 // container with more clusters than this cannot be drawn whatever else is right about it.
@@ -233,7 +244,39 @@ struct BuildResult {
   atlas::RepackReport atlas;
   // The images the texture step builds for this mesh, from the records the container carries.
   Vector<TextureSource> texture_sources;
+  // The source's own class as data (`content_class::classes_json`), null when nothing is
+  // classified, so an unclassified build reports exactly what it reported before (C62).
+  JsonValue content_classes;
 };
+
+// ---- the source's class (C62; docs/content-classes.md, "How it travels through derived data") ---
+
+// What a source declares through its sidecar, read once by the host before the key is taken.
+struct SourceClasses {
+  content_class::ContentClasses classes;           // the asset's, materials joined in
+  Vector<content_class::MaterialClass> materials;  // each material's own, by name
+  u64 hash = 0;  // `content_class::class_hash`: zero when nothing is classified
+  Vector<u8>
+      record;  // `content_class::encode_classes`: section 54's bytes, empty when unclassified
+};
+
+// The categories a build reads against: `options.categories`, or the engine's three.
+const content_class::Categories& categories_of(const MeshOptions& options);
+
+// Reads `<stem>.provenance.json` beside `source` through the classes module's one reader
+// (`content_class::read_sidecar_classes`); a source with no sidecar is `none` everywhere. For a
+// generated mesh, the sets of the pack its key covers (`options.materials`) are joined in, every
+// set's `pack.json` class, since the generator's output is the join of what it baked. False, with
+// `error` (`k_rule_content_class`, naming the sidecar and why) and `out.classes` the unreadable
+// class, when the sidecar cannot be read: the build refuses the source.
+bool read_source_classes(const std::string& source, const MeshOptions& options, SourceClasses& out,
+                         Diagnostic& error);
+
+// The key a source's container records and the cache addresses it by: `mesh_build_key`, moved by
+// the class only when there is one (`content_class::classified_key`), so an unclassified source
+// keeps the key, and the entry, it had before C62.
+u64 classified_build_key(const std::string& path, u64 source_hash, const MeshOptions& options,
+                         const SourceClasses& classes) noexcept;
 
 // Imports, validates, clusters, and writes one mesh, always (the identity skip is the manifest's,
 // `run_mesh_task` below). `pool` is where the per-primitive DAG builds run; null builds them one
@@ -246,9 +289,12 @@ struct BuildResult {
 // generator through the registry instead, which makes the whole container as the renderer's scene
 // reader has it made; the import, the repairs, the weld and the atlas do not apply to it. A build
 // without the generator's capability refuses it with the registry's sentence.
+//
+// `classes` is what `read_source_classes` read and `build_key` already holds
+// (`classified_build_key`); its record becomes section 54. Null is a source with no class.
 bool build_one(const std::string& input, const std::string& output, const MeshOptions& options,
                bool strict, jobs::JobSystem* pool, u64 source_hash, u64 build_key, BuildResult& out,
-               Diagnostic& error);
+               Diagnostic& error, const SourceClasses* classes = nullptr);
 
 // A mesh source's identity: `assets::source_mesh_hash` for a glTF, the generator's hash of what
 // the file says (canonicalized) for a generated mesh. False, with a sentence, when it cannot be
@@ -311,6 +357,8 @@ struct TextureResult {
   u32 levels = 0;
   f64 build_ms = 0.0;
   texture::TextureBuildReport report;
+  // The image's own class as data, null when it has none (C62).
+  JsonValue content_classes;
 };
 
 // The texture step over `sources` (with `mesh_of`, the manifest entry each came from), into
@@ -329,8 +377,15 @@ struct TextureResult {
 //
 // Every job writes its own slot and its own file, so neither the files nor `out`'s order depends
 // on which finished first.
+//
+// **An image named by path is read with its sidecar** (C62; texture.md, "Content classes"): its
+// class, through the classes module's reader against `categories` (null: the engine's three),
+// moves its key only when it is classified and becomes the texture's section 6. A sidecar that
+// cannot be read fails that texture (`content.class` in its error), which fails the command, as a
+// write that fails does. An embedded image has no sidecar: its class is the container's.
 void run_texture_step(std::span<const TextureSource* const> sources, std::span<const u32> mesh_of,
-                      const std::string& ddc, jobs::JobSystem& pool, Vector<TextureResult>& out);
+                      const std::string& ddc, jobs::JobSystem& pool, Vector<TextureResult>& out,
+                      const content_class::Categories* categories = nullptr);
 
 // The step's totals and rows as a build's `textures` object, over the results of `mesh` or of every
 // mesh (`~0`). `enabled` false says why nothing was built, so an empty object is never mistaken
@@ -358,8 +413,16 @@ struct ManifestEntry {
 // naming the manifest and the entry, on the first problem. A manifest with no "meshes" array is
 // refused unless it has one of `other_arrays` — a derived step's array (below) — in which case it
 // has no meshes.
+//
+// **A manifest names its game's categories** (C62): an optional top-level `"categories"`, a path
+// resolved like the entries', read into `categories` (`Categories::add_json`), and every entry's
+// `options.categories` set to it, so the build is given a game's categories by its content and a
+// host gains no flag. A manifest that names one when `categories` is null, or one that cannot be
+// read, is refused: a category nobody can order cannot be capped. `categories` must outlive the
+// entries.
 bool read_manifest(const std::string& path, const MeshOptions& defaults, Vector<ManifestEntry>& out,
-                   std::string& error, std::span<const char* const> other_arrays = {});
+                   std::string& error, std::span<const char* const> other_arrays = {},
+                   content_class::Categories* categories = nullptr);
 
 enum class TaskState : u8 { Built, Skipped, Failed };
 

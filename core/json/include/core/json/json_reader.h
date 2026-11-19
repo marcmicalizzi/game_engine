@@ -17,6 +17,10 @@
 //
 // Strings are views: into the text when the string holds no escape, else into a buffer of the
 // reader's own that the next string read reuses. A failed read stays failed; `result` says where.
+//
+// `JsonParseOptions::refuse_duplicate_keys` (C61) is held by `next_member`, which every path walks
+// — `parse_json`'s tree, `skip`, and a schema walker reading straight into its structs — so a key
+// given twice in one object is refused at the second wherever the text is read from.
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
@@ -78,13 +82,22 @@ class JsonReader {
   bool read_string();
   bool read_number(Event& out);
 
+  // The strict mode's refusal (C61) at the key just read, whose quote is at `key_start`.
+  bool refuse_duplicate(usize key_start);
+
   std::string_view text_;
   u32 max_depth_ = 0;
+  bool refuse_duplicate_keys_ = false;
   usize pos_ = 0;
   bool failed_ = false;
   JsonParseResult error_;
   // One byte per open container: bit 0 an object, bit 1 a member or element already read.
   Vector<u8> frames_;
+  // With `refuse_duplicate_keys` only: the keys of every open object, and where each object's
+  // keys begin. A strict file is a small authored one (a sidecar, a categories or policies file, a
+  // pack), so a key is looked for among its object's keys by a walk.
+  Vector<std::string> keys_;
+  Vector<u32> key_marks_;
   std::string buffer_;  // a string with escapes, decoded
   std::string_view string_;
   bool bool_ = false;

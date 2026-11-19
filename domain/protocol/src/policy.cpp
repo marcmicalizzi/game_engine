@@ -126,6 +126,13 @@ bool Policy::load_roles(std::string_view path, std::string_view text, std::strin
     roles_ = RolesFile{};
     return false;
   }
+  // Every call with no credential would run in it, and no such call is a person's.
+  if (const Role* d = find_role(roles_.default_role); d != nullptr && d->human) {
+    error = std::string(path) + ": default_role '" + roles_.default_role +
+            "' is marked human, and a person's role is conferred only by a credential (ADR-0072)";
+    roles_ = RolesFile{};
+    return false;
+  }
   path_ = std::string(path);
   loaded_ = true;
   return true;
@@ -161,10 +168,116 @@ bool Policy::resolve_role(std::string_view named, const Role*& out, RpcError& er
   if (blank(name)) name = roles_.default_role;
   if (blank(name)) return true;
   out = find_role(name);
+  if (out != nullptr && out->human) {
+    out = nullptr;
+    error = forbidden("role '" + std::string(name) +
+                          "' is marked human, and a call is a person's only by a credential the "
+                          "host's operator issued for that role, presented on its connection: "
+                          "naming the role (in an attribution, a hello or a start line) does not "
+                          "make a call a person's (ADR-0072)",
+                      "human review", name);
+    return false;
+  }
   if (out != nullptr) return true;
   error = forbidden("no role named '" + std::string(name) + "' in the host's roles file (" + path_ +
                         "): a call must name a configured role",
                     "unknown role", name);
+  return false;
+}
+
+bool Policy::is_human_role(std::string_view name) const noexcept {
+  const Role* role = loaded_ ? find_role(name) : nullptr;
+  return role != nullptr && role->human;
+}
+
+namespace {
+
+// What a bound connection whose role the host cannot enforce runs in: a role that names no method,
+// no layer and no type, so the dispatcher's gate and every check a handler makes refuse its writes,
+// and its reads pass as every read does (ADR-0069).
+const Role& no_role() {
+  static const Role k_none = [] {
+    Role r;
+    r.name = "(none)";
+    return r;
+  }();
+  return k_none;
+}
+
+}  // namespace
+
+const Role& bound_role(const Policy* policy, std::string_view name) noexcept {
+  if (policy == nullptr || !policy->roles_loaded() || blank(name)) return no_role();
+  const Role* role = policy->find_role(name);
+  return role != nullptr ? *role : no_role();
+}
+
+const Client* bound_client(const Context& ctx) noexcept {
+  if (ctx.clients == nullptr || ctx.connection == 0) return nullptr;
+  const Client* client = ctx.clients->find(ctx.connection);
+  return client != nullptr && client->bound ? client : nullptr;
+}
+
+bool bound_allows_method(const Context& ctx, const Client& client, const MethodDesc& method,
+                         RpcError& error) {
+  if (method.read_only) return true;
+  const Role& role = bound_role(ctx.policy, client.who.role);
+  if (&role != &no_role()) {
+    if (any_glob_match(role.methods, method.name)) return true;
+    JsonValue extra = JsonValue::object();
+    extra.set("method", JsonValue(method.name));
+    extra.set("credential", JsonValue(client.credential));
+    error = forbidden("role '" + role.name + "' of the credential '" + client.credential +
+                          "' may not call " + std::string(method.name) +
+                          ": it is not among the role's methods (read-only methods are always "
+                          "allowed)",
+                      "method", role.name, std::move(extra));
+    return false;
+  }
+  JsonValue extra = JsonValue::object();
+  extra.set("method", JsonValue(method.name));
+  extra.set("credential", JsonValue(client.credential));
+  const bool has_role = !blank(client.who.role);
+  const bool no_file = ctx.policy == nullptr || !ctx.policy->roles_loaded();
+  std::string why;
+  if (!has_role) {
+    why = "names no role, so its connection may only read";
+  } else if (no_file) {
+    why = "names role '" + client.who.role +
+          "', and this host loaded no roles file to enforce it, so its connection may only read";
+  } else {
+    why = "names role '" + client.who.role + "', which the host's roles file does not have";
+  }
+  error = forbidden("the credential '" + client.credential + "' " + why + ": " +
+                        std::string(method.name) +
+                        " writes. Ask the host's operator for a credential with a role of the "
+                        "host's roles file (ADR-0069)",
+                    has_role ? "unenforced role" : "no role", client.who.role, std::move(extra));
+  return false;
+}
+
+bool bound_allows_files(const Context& ctx, const Client& client, const MethodDesc& method,
+                        RpcError& error) {
+  if (&bound_role(ctx.policy, client.who.role) != &no_role()) return true;
+  JsonValue extra = JsonValue::object();
+  extra.set("method", JsonValue(method.name));
+  extra.set("credential", JsonValue(client.credential));
+  const bool has_role = !blank(client.who.role);
+  const bool no_file = ctx.policy == nullptr || !ctx.policy->roles_loaded();
+  std::string why;
+  if (!has_role) {
+    why = "names no role";
+  } else if (no_file) {
+    why = "names role '" + client.who.role + "', and this host loaded no roles file to enforce it";
+  } else {
+    why = "names role '" + client.who.role + "', which the host's roles file does not have";
+  }
+  error = forbidden("the credential '" + client.credential + "' " + why +
+                        ", so its connection may only read and nothing is written on its behalf: " +
+                        std::string(method.name) +
+                        " as called leaves a file on the host's disk. Ask the host's operator for "
+                        "a credential with a role of the host's roles file (ADR-0069)",
+                    has_role ? "unenforced role" : "no role", client.who.role, std::move(extra));
   return false;
 }
 
@@ -189,11 +302,59 @@ const doc::Attribution* client_identity(const Context& ctx) noexcept {
   return client != nullptr && client->identified ? &client->who : nullptr;
 }
 
+bool identity_allows(const Context& ctx, std::string_view actor, std::string_view role,
+                     RpcError& error) {
+  if (ctx.clients == nullptr || ctx.connection == 0) return true;
+  const Client* client = ctx.clients->find(ctx.connection);
+  if (client == nullptr || !client->bound) return true;
+  const bool other_actor = !blank(actor) && actor != client->who.actor;
+  const bool other_role = !blank(role) && role != client->who.role;
+  if (!other_actor && !other_role) return true;
+  JsonValue extra = JsonValue::object();
+  extra.set("credential", JsonValue(client->credential));
+  extra.set("actor", JsonValue(client->who.actor));
+  error = forbidden(
+      "this connection is " + client->who.actor +
+          (client->who.role.empty() ? std::string() : " in role '" + client->who.role + "'") +
+          " by the credential '" + client->credential +
+          "' it presented, and may not "
+          "call as " +
+          (other_actor ? "actor " + std::string(actor) : "role " + std::string(role)) +
+          ": leave attribution's actor and role blank, or ask the host's operator "
+          "for a credential that is",
+      "identity", client->who.role, std::move(extra));
+  return false;
+}
+
 bool resolve_caller(const Context& ctx, const doc::Attribution* given, Caller& out,
                     RpcError& error) {
   out.who = given != nullptr ? *given : doc::Attribution{};
   out.role = nullptr;
   out.connection = ctx.connection;
+  out.human_via.clear();
+  out.human_role.clear();
+  out.via = ctx.connection == 0 ? "stdio" : "operator";
+  // A connection bound to a credential is its credential and nothing else (ADR-0069): the host's
+  // own identity never fills it, and its role is the credential's as the roles file defines it, or
+  // the role that may write nothing when the host cannot enforce one. The dispatcher's identity
+  // gate looks only at a top-level `attribution` of object params, so this does not lean on it: a
+  // named actor or role that is not the credential's is refused here too, and the role every
+  // handler checks is the credential's, whatever the call said.
+  if (const Client* bound = bound_client(ctx)) {
+    if (!identity_allows(ctx, out.who.actor, out.who.role, error)) return false;
+    if (blank(out.who.actor)) out.who.actor = bound->who.actor;
+    if (blank(out.who.role)) out.who.role = bound->who.role;
+    if (blank(out.who.task)) out.who.task = bound->who.task;
+    out.role = &bound_role(ctx.policy, bound->who.role);
+    out.via = "credential:" + bound->credential;
+    // The one place a person is conferred: the operator issued this credential for a role the
+    // roles file marks human, and the connection presented it.
+    if (out.role->human) {
+      out.human_via = bound->credential;
+      out.human_role = out.role->name;
+    }
+    return true;
+  }
   // The connection's identity first: several clients share one host, and each is who it said it
   // was, not who the host was started as.
   if (const doc::Attribution* client = client_identity(ctx)) {

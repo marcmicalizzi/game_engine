@@ -105,6 +105,25 @@ function New-Fixture {
   Set-FixtureFile $root 'domain/nav/CMakeLists.txt' "engine_module(NAME nav LAYER domain DEPS base)`nengine_module_tests(NAME nav SOURCES tests/nav_tests.cpp)`n"
   Set-FixtureFile $root 'tools/size-table-exemptions.txt' "# a comment`n`ndomain/nav: nothing per element, mirrored or on disk; closed by its first such type`n"
   Set-FixtureFile $root 'apps/engine_view/CMakeLists.txt' "# Not a module: an app, which this comment's engine_module(...) does not change.`nengine_app(NAME engine_view OUTPUT engine-view SOURCES main.cpp)`n"
+  # The shell (shell-html-sink): a page whose one script is a file, a comment that names a handler,
+  # and a module that builds nodes and sets text, imports a literal and passes a timer a function.
+  Set-FixtureFile $root 'apps/engine_shell/index.html' "<!doctype html>`n<!--`n  Never <img onerror=x> or style=`"`" here.`n-->`n<link rel=`"stylesheet`" href=`"/shell/shell.css`">`n<script type=`"module`" src=`"/shell/main.js`"></script>`n<div class=`"app`" id=`"app`"></div>`n"
+  Set-FixtureFile $root 'apps/engine_shell/main.js' "// Text, never innerHTML or eval(s).`n/* insertAdjacentHTML is not used:`n   document.write(s) neither. */`nexport function show(el, s) { el.textContent = s; el.append(document.createTextNode(s)); }`nsetTimeout(() => show(document.body, `"x`"), 10);`nimport(`"./testhook.js`").then((m) => m.install());`n"
+  # The editor's person flag (person-flag): a script, a batch file, a workflow and a CMake file that
+  # start engine-editor with no seat, each naming the flag only in a comment of its own kind, a
+  # --person given to another program, and engine-content's own --persons beside the editor.
+  Set-FixtureFile $root 'tools/run-editor.ps1' @'
+<#
+  Never --person here: a seat is a person's.
+#>
+$editor = Join-Path $bin 'engine-editor.exe'
+& $editor --doc $doc --roles roles.json  # not --person
+& engine-content dwelling $out --persons 4
+'@
+  Set-FixtureFile $root 'tools/bundle/run-editor.cmd' "@echo off`nrem engine-editor --person ada is a person's to type`n:: --person-role reviewer neither`nengine-editor.exe --doc world`n"
+  Set-FixtureFile $root '.github/workflows/editor.yml' "jobs:`n  editor:`n    steps:`n      # never with --person`n      - run: build/msvc-debug/bin/engine-editor --doc world --no-shell`n"
+  Set-FixtureFile $root 'apps/engine_editor/CMakeLists.txt' "#[[ A seat (--person) is a person's.`n]]`nadd_test(NAME editor.doc COMMAND `$<TARGET_FILE:engine_engine_editor> --doc world)  # no --person`n"
+  Set-FixtureFile $root 'tools/greet.ps1' "& greeter --person ada`n"
   return $root
 }
 
@@ -349,6 +368,116 @@ try {
   Set-FixtureFile $root 'systems/water/src/water.cpp' "#if ENGINE_WITH_TERRAIN`nvoid shore() {}`n#endif`n"
   Test-That 'the same conditional in a module that is not CONFIG_INVARIANT passes, a commented mention included' { (Invoke-Lint $root).Code -eq 0 }
 
+  # shell-html-sink (docs/subsystems/engine_shell.md, "What another client's content cannot do"):
+  # every file of apps/engine_shell/ puts text on the page as text. Each sink is reported in a
+  # module of its own, on its own line; the fixture's page and module, whose comments name sinks and
+  # whose code uses textContent, a text node, a literal import() and a timer given a function, pass.
+  Test-That 'the shell''s text, its literal import and its function timer pass' {
+    ($result.Code -eq 0) -and -not $result.Out.Contains('apps/engine_shell')
+  }
+  $sinks = [ordered]@{
+    'innerHTML'                = 'el.innerHTML = s;'
+    'outerHTML'                = 'el.outerHTML = s;'
+    'insertAdjacentHTML'       = 'el.insertAdjacentHTML("beforeend", s);'
+    'document.write'           = 'document.write(s);'
+    'eval'                     = 'const v = eval(s);'
+    'Function'                 = 'const f = new Function(s);'
+    'a timer given a string'   = 'setTimeout("show()", 10);'
+    'import() of a name'       = 'import(name).then((m) => m.run());'
+    'createContextualFragment' = 'el.append(range.createContextualFragment(s));'
+    'parseFromString'          = 'const d = new DOMParser().parseFromString(s, "text/html");'
+    'srcdoc'                   = 'frame.srcdoc = s;'
+  }
+  foreach ($name in $sinks.Keys) {
+    $root = New-Fixture
+    Set-FixtureFile $root 'apps/engine_shell/queue.js' "// A module of the shell.`nexport function draw(el, s, name, range, frame) {`n  $($sinks[$name])`n}`n"
+    Test-Reports "the shell's $name is reported" $root 'apps/engine_shell/queue.js:3: [shell-html-sink]'
+  }
+  $pageSinks = [ordered]@{
+    'an inline script'    = '<script>start();</script>'
+    'an inline handler'   = '<button onclick="start()">Start</button>'
+    'a style attribute'   = '<div style="color: red"></div>'
+    'a style element'     = '<style>body { color: red; }</style>'
+    'a javascript: URL'   = '<a href="javascript:start()">Start</a>'
+  }
+  foreach ($name in $pageSinks.Keys) {
+    $root = New-Fixture
+    Set-FixtureFile $root 'apps/engine_shell/queue.html' "<!doctype html>`n<!-- a page of the shell -->`n$($pageSinks[$name])`n"
+    Test-Reports "the shell page's $name is reported" $root 'apps/engine_shell/queue.html:3: [shell-html-sink]'
+  }
+  $root = New-Fixture
+  Set-FixtureFile $root 'apps/engine_shell/queue.js' "export function draw(el, s) {`n  el.innerHTML = s;`n}`n"
+  Test-Reports 'and the message names the way out' $root 'build nodes with dom.js''s h() and set text'
+  $root = New-Fixture
+  Set-FixtureFile $root 'apps/engine_shell/queue.js' "export function draw(el, s) {`n  el.innerHTML = s;  // engine-lint: allow-html-sink the reason, stated`n}`n"
+  Test-That 'a line-level allow-html-sink marker opts a line out' { (Invoke-Lint $root).Code -eq 0 }
+  $root = New-Fixture
+  Set-FixtureFile $root 'tools/report/page.js' "document.body.innerHTML = report;`n"
+  Test-That 'a script outside apps/engine_shell/ is not the shell''s' { (Invoke-Lint $root).Code -eq 0 }
+
+  # person-flag (AGENTS.md, the agents' rule beside the view-policy one; engine_shell.md, "Who the
+  # person at the editor is"): a committed script or launch configuration that starts engine-editor
+  # passes --person on no line. The clean fixture holds one of each kind with the flag only in
+  # comments, a --person given to another program, and engine-content's --persons.
+  Test-That 'engine-editor started with no seat, the flag in a comment of each kind, another program''s --person and engine-content''s --persons pass' {
+    ($result.Code -eq 0) -and -not $result.Out.Contains('person-flag')
+  }
+  $root = New-Fixture
+  Set-FixtureFile $root 'tools/review.ps1' @'
+$editor = Join-Path $bin 'engine-editor.exe'
+& $editor --doc $doc --roles roles.json --person ada
+'@
+  Test-Reports 'a scratch script starting engine-editor with --person is refused' $root 'tools/review.ps1:2: [person-flag]'
+  Test-Reports 'and the message says whose a review item for a person is' $root 'a review item for a person is closed by a person'
+  $starts = [ordered]@{
+    'a batch file, with --person-role'  = @('tools/bundle/review.cmd', "@echo off`nengine-editor.exe --doc world --person-role reviewer`n", 2)
+    'a CI workflow'                     = @('.github/workflows/review.yml', "jobs:`n  review:`n    steps:`n      - run: build/msvc-debug/bin/engine-editor --doc world --person ada`n", 4)
+    'a CMake test definition'           = @('apps/engine_editor/CMakeLists.txt', "add_test(NAME editor.seat COMMAND `$<TARGET_FILE:engine_engine_editor>`n  --doc world --person ada)`n", 2)
+    'a launch configuration'            = @('.claude/launch.json', "{`n  `"configurations`": [{`n    `"runtimeExecutable`": `"build/msvc-debug/bin/engine-editor.exe`",`n    `"runtimeArgs`": [`"--doc`", `"world`", `"--person`", `"ada`"]`n  }]`n}`n", 4)
+    'a game repository''s template'     = @('templates/game-repo/run.ps1', "& (Join-Path `$sdk 'bin/engine-editor.exe') --doc `$doc --person `$env:USERNAME`n", 1)
+  }
+  foreach ($name in $starts.Keys) {
+    $root = New-Fixture
+    $case = $starts[$name]
+    Set-FixtureFile $root $case[0] $case[1]
+    Test-Reports "engine-editor started with a seat from $name is refused" $root "$($case[0]):$($case[2]): [person-flag]"
+  }
+  $root = New-Fixture
+  Set-FixtureFile $root 'tools/review.ps1' @'
+$editor = Join-Path $bin 'engine-editor.exe'
+& $editor --doc $doc --person ada  # engine-lint: allow-person-flag the reason, stated
+'@
+  Test-That 'a line-level allow-person-flag marker with its reason opts a line out' { (Invoke-Lint $root).Code -eq 0 }
+  $root = New-Fixture
+  Set-FixtureFile $root 'tools/review.ps1' @'
+$editor = Join-Path $bin 'engine-editor.exe'
+& $editor --doc $doc --person ada  # engine-lint: allow-person-flag
+'@
+  Test-Reports 'the marker without a reason is refused' $root 'tools/review.ps1:2: [person-flag] an allow-person-flag marker says why'
+  # The tree itself: nothing committed starts engine-editor with a seat, and nothing uses the marker
+  # (the lint's own two files name both to define and test the rule).
+  $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+  $tree = Invoke-Lint $repo
+  Test-That 'the rule finds nothing in the tree today' {
+    -not [string]::IsNullOrEmpty($tree.Out) -and -not $tree.Out.Contains('[person-flag]')
+  }
+  Test-That 'and no script, CMake file or launch configuration in the tree uses its marker' {
+    if (Test-Path -LiteralPath (Join-Path $repo '.git')) {
+      $uses = @(git -C $repo grep -l -e 'engine-lint: allow-person-flag' -- '*.ps1' '*.psm1' '*.cmd' '*.bat' '*.sh' '*.yml' '*.yaml' '*.json' '*CMakeLists.txt' '*.cmake' ':!tools/lint.ps1' ':!tools/lint.Tests.ps1')
+      ($LASTEXITCODE -eq 1) -and $uses.Count -eq 0
+    } else {
+      # A tree that is no checkout (the Linux container's synced copy has no .git): the same kinds
+      # of file, found by name outside the build and derived-data trees, the lint's own two files
+      # left out.
+      $own = @('tools/lint.ps1', 'tools/lint.Tests.ps1')
+      $tops = @(Get-ChildItem -LiteralPath $repo -Force | Where-Object { @('build', 'ddc', '.claude') -notcontains $_.Name })
+      $uses = @($tops | Get-ChildItem -Recurse -File -Include '*.ps1', '*.psm1', '*.cmd', '*.bat', '*.sh', '*.yml', '*.yaml', '*.json', 'CMakeLists.txt', '*.cmake' |
+          Where-Object { $own -notcontains (([IO.Path]::GetRelativePath($repo, $_.FullName)) -replace '\\', '/') } |
+          Select-String -SimpleMatch 'engine-lint: allow-person-flag' -List)
+      $uses.Count -eq 0
+    }
+  }
+
   # machine-path (docs/ci/machine-paths.md, roadmap T175): every tracked text file, whatever its
   # kind, names no path of the machine it was written on. The samples are put together from pieces
   # so that this file, which the rule reads too, names none itself.
@@ -436,6 +565,27 @@ try {
   Set-FixtureFile $root 'docs/notes.md' "under ``$ws\game_engine_local``"
   $result = Invoke-Lint $root -Untracked
   Test-That 'a tree that is no checkout skips the rule, and says so' { $result.Code -eq 0 -and $result.Out.Contains('machine-path skipped') }
+
+  # human-flag (docs/subsystems/protocol.md, "The task ledger and review items"): a role's `human`
+  # flag is read in domain/protocol/src/policy.cpp alone, and every other check that a caller is a
+  # person reads Caller::human_via, so a check copied from the working role's flag is reported.
+  $root = New-Fixture
+  Set-FixtureFile $root 'domain/protocol/src/policy.cpp' "namespace engine::protocol {`nbool person(const Role* role) { return role->human; }`n}`n"
+  Set-FixtureFile $root 'domain/protocol/src/ledger.cpp' "namespace engine::protocol {`n// Not role->human: a person is known by caller.human_via alone.`nbool may_close(const Caller& caller) { return !caller.human_via.empty(); }`n}`n"
+  Test-That 'the flag read in policy.cpp, human_via elsewhere and a comment naming the flag pass' { (Invoke-Lint $root).Code -eq 0 }
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'domain/protocol/src/ledger.cpp' "namespace engine::protocol {`nbool may_close(const Caller& caller) { return caller.role != nullptr && caller.role->human; }`n}`n"
+  Test-Reports 'a read of the flag outside policy.cpp is reported' $root 'domain/protocol/src/ledger.cpp:2: [human-flag]'
+  Test-Reports 'and the message names the field to read instead' $root 'reads Caller::human_via'
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'apps/engine_editor/review.cpp' "bool person(const Role& r) { return r.human; }`n"
+  Test-Reports 'a read through a reference, in an app, is reported' $root 'apps/engine_editor/review.cpp:1: [human-flag]'
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'domain/protocol/tests/policy_tests.cpp' "bool shipped(const Role& r) { return r.human; }  // engine-lint: allow-human-flag the shipped file's one person`n"
+  Test-That 'a line-level allow-human-flag marker opts a line out' { (Invoke-Lint $root).Code -eq 0 }
 } finally {
   foreach ($r in $roots) {
     if ($KeepTemp) {

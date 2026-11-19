@@ -1,0 +1,33 @@
+{
+  "actions": [
+    {
+      "bindings": [
+        {
+          "code": 7,
+          "scale": 1.0,
+          "source": "key"
+        },
+        {
+          "code": 4,
+          "scale": -1.0,
+          "source": "key"
+        },
+        {
+          "code": 26,
+          "component": 1,
+          "scale": 1.0,
+          "source": "key"
+        },
+        {
+          "code": 22,
+          "component": 1,
+          "scale": -1.0,
+          "source": "key"
+        }
+      ],
+      "kind": "axis2",
+      "name": "move"
+    }
+  ],
+  "version": 1
+}

@@ -393,7 +393,7 @@ const assets::MeshGeneratorDesc* generator_for(const std::string& path, std::str
 // apply: the generator's mesh is made the way it is meant to be.
 bool build_generated(const std::string& input, const std::string& output,
                      const MeshOptions& options, u64 source_hash, u64 build_key, BuildResult& out,
-                     Diagnostic& error) {
+                     Diagnostic& error, const SourceClasses* classes) {
   const i64 start_ns = time::monotonic_ns();
   out.path = output;
   out.source_hash = source_hash;
@@ -421,10 +421,21 @@ bool build_generated(const std::string& input, const std::string& output,
     return false;
   }
   data.source_path = input;
-  if (data.source_hash != source_hash || data.build_key != build_key) {
+  // The generator keys what it made as the scene reader does; the class moves that key only when
+  // there is one (C62), so compare the two after the same move, and record the moved one.
+  const u64 moved_by = classes != nullptr ? classes->hash : 0;
+  if (data.source_hash != source_hash ||
+      content_class::classified_key(data.build_key, moved_by) != build_key) {
     error.rule = "source.unreadable";
     error.message = input + ": the generator built under another identity than it hashed";
     return false;
+  }
+  data.build_key = build_key;
+  if (classes != nullptr) {
+    data.content_classes = classes->record;
+    if (classes->hash != 0)
+      out.content_classes = content_class::classes_json(categories_of(options), classes->classes,
+                                                        &classes->materials);
   }
   if (!geometry::write_cluster_file(output, data, &message)) {
     error.rule = "output.unwritable";
@@ -481,11 +492,104 @@ u64 mesh_build_key(const std::string& path, u64 source_hash, const MeshOptions& 
   return build_key_of(source_hash, options);
 }
 
+const content_class::Categories& categories_of(const MeshOptions& options) {
+  static const content_class::Categories engine_only;
+  return options.categories != nullptr ? *options.categories : engine_only;
+}
+
+namespace {
+
+// A sidecar's text, or none: a file that is not there declares nothing.
+bool read_sidecar_text(const std::string& sidecar, std::string& text, bool& present,
+                       std::string& why) {
+  present = io::exists(sidecar);
+  if (!present) return true;
+  const io::Status status = io::read_file(sidecar, text);
+  if (status == io::Status::Ok) return true;
+  why = "cannot be read: " + std::string(io::status_name(status));
+  return false;
+}
+
+// Every set of a pack, through the same reader: a role's `pack.json` entry is read as a sidecar,
+// its `content_classes` the set's class. The pack's file is parsed strictly, so a key given twice
+// in a role is refused here as in a sidecar.
+bool read_pack_classes(const materials::Pack& pack, const content_class::Categories& categories,
+                       content_class::ContentClasses& out, std::string& why) {
+  const std::string path = io::join_path(pack.dir, "pack.json");
+  std::string text;
+  const io::Status status = io::read_file(path, text);
+  if (status != io::Status::Ok) {
+    why = path + " cannot be read: " + std::string(io::status_name(status));
+    return false;
+  }
+  JsonParseOptions strict;
+  strict.refuse_duplicate_keys = true;
+  JsonValue document;
+  const JsonParseResult parsed = parse_json(text, document, strict);
+  const JsonValue* roles = parsed.ok && document.is_object() ? document.find("roles") : nullptr;
+  // `roles` is an object, a role's name to its entry (materials.h, `read_pack`).
+  if (!parsed.ok || roles == nullptr || !roles->is_object()) {
+    why = path + ": not a pack's roles" +
+          (parsed.duplicate_key.empty() ? "" : " (the key '" + parsed.duplicate_key + "' twice)");
+    return false;
+  }
+  const JsonValue::Object& entries = roles->as_object();
+  for (u32 r = 0; r < entries.size(); ++r) {
+    const JsonValue& role = entries.value_at(r);
+    if (!role.is_object() || !role.contains("content_classes")) continue;
+    content_class::ContentClasses one;
+    std::string error;
+    if (!content_class::read_sidecar_classes(categories, write_json(role), one, error)) {
+      why = path + " role '" + entries.key_at(r) + "': " + error;
+      return false;
+    }
+    out = content_class::join(out, one);
+  }
+  return true;
+}
+
+}  // namespace
+
+bool read_source_classes(const std::string& source, const MeshOptions& options, SourceClasses& out,
+                         Diagnostic& error) {
+  const content_class::Categories& categories = categories_of(options);
+  out = SourceClasses{};
+  const auto refuse = [&](std::string message) {
+    out.classes = content_class::unreadable(categories);
+    out.materials.clear();
+    out.hash = 0;
+    out.record.clear();
+    error.rule = k_rule_content_class;
+    error.message = std::move(message);
+    return false;
+  };
+  const std::string sidecar = content_class::sidecar_path_of(source);
+  std::string text;
+  bool present = false;
+  std::string why;
+  if (!read_sidecar_text(sidecar, text, present, why)) return refuse(sidecar + " " + why);
+  if (present &&
+      !content_class::read_sidecar_classes(categories, text, out.classes, why, &out.materials))
+    return refuse(sidecar + ": " + why + "; the build refuses " + source);
+  // A generator's output is the join of the sets it baked, which its key covers through the pack.
+  if (!assets::mesh_generator_of(source).empty() && options.materials != nullptr &&
+      !read_pack_classes(*options.materials, categories, out.classes, why))
+    return refuse(why + "; the build refuses " + source);
+  out.hash = content_class::class_hash(categories, out.classes, &out.materials);
+  content_class::encode_classes(categories, out.classes, &out.materials, out.record);
+  return true;
+}
+
+u64 classified_build_key(const std::string& path, u64 source_hash, const MeshOptions& options,
+                         const SourceClasses& classes) noexcept {
+  return content_class::classified_key(mesh_build_key(path, source_hash, options), classes.hash);
+}
+
 bool build_one(const std::string& input, const std::string& output, const MeshOptions& options,
                bool strict, jobs::JobSystem* pool, u64 source_hash, u64 build_key, BuildResult& out,
-               Diagnostic& error) {
+               Diagnostic& error, const SourceClasses* classes) {
   if (!assets::mesh_generator_of(input).empty())
-    return build_generated(input, output, options, source_hash, build_key, out, error);
+    return build_generated(input, output, options, source_hash, build_key, out, error, classes);
   const i64 start_ns = time::monotonic_ns();
   out.path = output;
   out.source_hash = source_hash;
@@ -765,6 +869,14 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
   data.source_path = input;
   data.source_hash = source_hash;
   data.build_key = build_key;
+  // The source's own class (C62): section 54, written only when there is one, so an unclassified
+  // source's container is the bytes it was.
+  if (classes != nullptr) {
+    data.content_classes = classes->record;
+    if (classes->hash != 0)
+      out.content_classes = content_class::classes_json(categories_of(options), classes->classes,
+                                                        &classes->materials);
+  }
 
   if (!geometry::write_cluster_file(output, data, &message)) {
     error.rule = "output.unwritable";
@@ -945,7 +1057,8 @@ jobs::JobSystemConfig job_config(u32 worker_count) {
 // Reads the manifest and resolves every path against the manifest's own directory, so a manifest
 // is movable as a unit and says the same thing from any working directory.
 bool read_manifest(const std::string& path, const MeshOptions& defaults, Vector<ManifestEntry>& out,
-                   std::string& error, std::span<const char* const> other_arrays) {
+                   std::string& error, std::span<const char* const> other_arrays,
+                   content_class::Categories* categories) {
   std::string text;
   const io::Status status = io::read_file(path, text);
   if (status != io::Status::Ok) {
@@ -976,6 +1089,26 @@ bool read_manifest(const std::string& path, const MeshOptions& defaults, Vector<
     return io::is_absolute_path(relative) ? io::normalize_path(relative)
                                           : io::join_path(dir, relative);
   };
+  // The game's categories (C62), which every entry's sidecar is read against.
+  if (const JsonValue* named = document.find("categories"); named != nullptr) {
+    if (!named->is_string()) {
+      error = "manifest '" + path + "' has a \"categories\" that is not a path";
+      return false;
+    }
+    const std::string file = resolve(named->as_string());
+    if (categories == nullptr) {
+      error = "manifest '" + path + "' names a categories file this host does not read";
+      return false;
+    }
+    std::string body;
+    std::string why;
+    const io::Status read = io::read_file(file, body);
+    if (read != io::Status::Ok || !categories->add_json(body, why)) {
+      error = "manifest '" + path + "': categories file '" + file +
+              "': " + (read != io::Status::Ok ? std::string(io::status_name(read)) : why);
+      return false;
+    }
+  }
   for (usize i = 0; i < meshes->size(); ++i) {
     const JsonValue& entry = (*meshes)[i];
     const std::string at = "manifest '" + path + "' mesh " + std::to_string(i);
@@ -990,6 +1123,7 @@ bool read_manifest(const std::string& path, const MeshOptions& defaults, Vector<
     }
     ManifestEntry built;
     built.options = defaults;  // the command line sets what an entry does not say
+    if (document.find("categories") != nullptr) built.options.categories = categories;
     built.source = resolve(source->as_string());
     if (const JsonValue* output = entry.find("output"); output != nullptr) {
       if (!output->is_string()) {
@@ -1060,13 +1194,23 @@ void run_mesh_task(void* data) {
     task.state = TaskState::Failed;
     return;
   }
-  const u64 key = mesh_build_key(entry.source, source_hash, entry.options);
+  // The sidecar is read before the key, because the class is in it (C62): a source whose sidecar
+  // gains a class has a new key, so the container built before is never its answer.
+  SourceClasses classes;
+  if (!read_source_classes(entry.source, entry.options, classes, task.error)) {
+    task.state = TaskState::Failed;
+    return;
+  }
+  const u64 key = classified_build_key(entry.source, source_hash, entry.options, classes);
   const bool to_cache = entry.output.empty();
   const std::string output = to_cache ? geometry::cluster_cache_path(*task.ddc, key) : entry.output;
   task.result.path = output;
   task.result.cached = to_cache;
   task.result.source_hash = source_hash;
   task.result.build_key = key;
+  if (classes.hash != 0)  // reported for a skipped entry too: the container on disk holds it
+    task.result.content_classes = content_class::classes_json(categories_of(entry.options),
+                                                              classes.classes, &classes.materials);
 
   // Up to date when the container that is already there was built from these bytes with these
   // options. A container that records no identity — an older build, or one engine-view wrote
@@ -1085,7 +1229,7 @@ void run_mesh_task(void* data) {
   // manifest is the coarser level and already fills the pool, and one wait per mesh keeps the
   // helper stack shallow. A single mesh run on its own hands its pool down instead.
   task.state = build_one(entry.source, output, entry.options, task.strict, task.pool, source_hash,
-                         key, task.result, task.error)
+                         key, task.result, task.error, &classes)
                    ? TaskState::Built
                    : TaskState::Failed;
 }
@@ -1124,6 +1268,7 @@ struct TextureTask {
   texture::TextureBuildOptions options;
   jobs::JobSystem* pool = nullptr;
   i64 start_ns = 0;
+  Vector<u8> class_record;  // section 6: the image's own class, empty when it has none (C62)
 };
 
 void build_texture_task(void* data) {
@@ -1138,6 +1283,10 @@ void build_texture_task(void* data) {
     out.error = error;
     return;
   }
+  // The key the step took holds the image's class when it has one (C62), and the identity an
+  // incremental build compares is that key; the class itself is section 6.
+  built.build_key = out.key;
+  built.content_classes = task.class_record;
   const io::Status made = io::make_directories(io::parent_path(out.path));
   if (made != io::Status::Ok || !texture::write_texture_file(out.path, built, &error)) {
     out.state = TextureState::Failed;
@@ -1161,7 +1310,10 @@ void build_texture_task(void* data) {
 }  // namespace
 
 void run_texture_step(std::span<const TextureSource* const> sources, std::span<const u32> mesh_of,
-                      const std::string& ddc, jobs::JobSystem& pool, Vector<TextureResult>& out) {
+                      const std::string& ddc, jobs::JobSystem& pool, Vector<TextureResult>& out,
+                      const content_class::Categories* categories) {
+  static const content_class::Categories engine_only;
+  const content_class::Categories& table = categories != nullptr ? *categories : engine_only;
   out.clear();
   Vector<TextureTask> tasks(static_cast<u32>(sources.size()));
   Vector<u64> seen;
@@ -1199,6 +1351,32 @@ void run_texture_step(std::span<const TextureSource* const> sources, std::span<c
                         ? source.source_hash
                         : hash_bytes(task.bytes.data(), task.bytes.size());
     r.key = texture::texture_cache_key(r.source_hash, task.options);
+    // An image named by path is read with its sidecar (C62; texture.md, "Content classes"); an
+    // embedded one has none, its class being the container's. A sidecar that cannot be read fails
+    // the texture, and so the command: a class that cannot be read is never `none`.
+    if (!source.file.empty()) {
+      const std::string sidecar = content_class::sidecar_path_of(source.file);
+      if (io::exists(sidecar)) {
+        std::string text;
+        std::string why;
+        content_class::ContentClasses classes;
+        Vector<content_class::MaterialClass> materials;
+        const io::Status read = io::read_file(sidecar, text);
+        if (read != io::Status::Ok ||
+            !content_class::read_sidecar_classes(table, text, classes, why, &materials)) {
+          r.state = TextureState::Failed;
+          r.path = source.file;
+          r.error = std::string(k_rule_content_class) + ": " + sidecar + ": " +
+                    (read != io::Status::Ok ? std::string(io::status_name(read)) : why);
+          continue;
+        }
+        r.key = content_class::classified_key(
+            r.key, content_class::class_hash(table, classes, &materials));
+        content_class::encode_classes(table, classes, &materials, task.class_record);
+        if (!task.class_record.empty())
+          r.content_classes = content_class::classes_json(table, classes, &materials);
+      }
+    }
     r.path = texture::texture_cache_path(ddc, r.key);
     bool shared = false;
     for (const u64 key : seen)

@@ -330,6 +330,10 @@ state), which writes that state's set and leaves the other alone.
 
 Both mended by T186 (2026-11-18; [jobs](../subsystems/jobs.md#what-a-job-may-assume)).
 
+### The hostile-input cases
+
+Roadmap T13 ([the harness](fuzzing.md)). A reader's fuzz target is a CPU-only doctest case, `fuzz: <target>`, in its own test executable, bounded by counts, never a time, so `-Affected` selects it with its module and nothing new is scheduled. **Budget: 10 s a target, 60 s for all, serial `msvc-debug`**, measured in the commit that sets a target's counts; beside the GPU chain on three jobs that adds about nothing to the gate's wall clock ([the design](../experiments/fuzzing-design.md#3-what-the-gate-pays)). Under `linux-clang-asan` the same cases are a sanitized fuzz run on every push. The libFuzzer preset, `linux-clang-fuzz`, is no gate step.
+
 ### Licences
 
 `tools/license-check.ps1` holds `third_party/LICENSES.md` to ADR-0014's list, to every

@@ -312,6 +312,33 @@ to 14 with the section, because an entry without records would be drawn by decod
 samplers wrap with ("The mip chain"), because an entry built at 14 names textures whose mips were
 filtered as clamped.
 
+## Content classes
+
+**Section 6, `content_classes`** (C62; [content classes](../content-classes.md#how-it-travels-through-derived-data),
+ADR-0073 decision 3): **the source image's own class**, read from the image's sidecar
+(`<stem>.provenance.json` beside an image named by path) through the classes module's one reader,
+and recorded as that module's bytes ([content_class](content_class.md#what-derived-data-carries-c62)),
+which this module keeps opaque (`TextureData::content_classes`). A streamed tail of the chain
+(`read_texture_file_levels`, `texture_levels_from`) keeps it: it is the same image.
+
+- **Written only when some level is above `none`**, so every texture built today, and every
+  unclassified one built later, is the bytes it was; no golden hash, pin or
+  `k_texture_cache_version` moves.
+- **The key holds it only then**: the content build's texture step takes
+  `content_class::classified_key(texture_cache_key(source hash, options), class_hash)`, which is the
+  key itself for an unclassified image. So a classified image's texture is an entry of its own, and
+  one image is still one entry whoever samples it.
+- **The image's alone.** A texture is not built from the meshes that sample it, so it inherits
+  nothing from them, and its key holds nothing about who samples it. An image a container embeds has
+  no sidecar of its own: its class is the source's, in the container's section 54
+  ([geometry](geometry.md#content-classes)), and its texture carries none. The instance's decision
+  joins the two at load (C64), which is also where a load must read an image's sidecar to find the
+  classified texture; until C64 a load takes the unclassified key, misses, and decodes the image as
+  it does for any image with no built texture.
+- Test "texture file: content classes are section 6, written only when classified" (the plain
+  fixture's hash unchanged with the field empty, the bytes round-tripped, a tail keeping them).
+  **Built 2026-11-18** in `msvc-debug`, its tests passing with no device and every existing determinism pin unchanged.
+
 ## In the renderer
 
 `systems/renderer`'s texture upload (`gpu_scene.cpp`, `find_built_textures`) takes a mesh's built

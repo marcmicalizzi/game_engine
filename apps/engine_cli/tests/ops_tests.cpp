@@ -56,6 +56,9 @@ Run cli(std::vector<std::string> args) {
   argv.push_back(cli_exe());
   argv.push_back("--host");
   argv.push_back(host_exe());
+  static const std::string roots = test::scratch_root_spec();
+  argv.push_back("--root");
+  argv.push_back(roots);
   for (const std::string& a : args)
     argv.push_back(a);
   platform::Process p;
@@ -78,10 +81,12 @@ struct Host {
   u32 next_id = 1;
   bool ok = false;
 
-  Host() {
-    const std::string_view argv[2] = {host_exe(), "--stdio"};
+  // `flags` after `--stdio`: the tests' scratch root unless a case names the host's roots itself.
+  explicit Host(std::vector<std::string> flags = {"--root", test::scratch_root_spec()}) {
+    flags.insert(flags.begin(), {host_exe(), "--stdio"});
+    std::vector<std::string_view> argv(flags.begin(), flags.end());
     std::string error;
-    if (!process.spawn(std::span<const std::string_view>(argv, 2), &error)) {
+    if (!process.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error)) {
       FAIL("cannot spawn engine-host: " << error);
       return;
     }
@@ -326,6 +331,10 @@ TEST_CASE(
   const JsonValue& first = at(built.result, "outputs")[0];
   CHECK(text(first, "status") == "built");
   CHECK(text(first, "path") == output);
+  // The source as a root's name and a path under it: before, the host's canonical path.
+  CHECK(text(first, "source").find("://") != std::string::npos);
+  CHECK(text(first, "source").ends_with("/grid.gltf"));
+  CHECK(text(first, "source").find(tmp.path()) == std::string::npos);
   CHECK(number(first, "triangles") == 512);
   CHECK(number(first, "clusters") > number(first, "leaf_clusters"));
   CHECK(number(first, "bytes") > 0);
@@ -387,7 +396,10 @@ TEST_CASE(
   CHECK(number(listed.result, "built") == 1);
   CHECK(number(listed.result, "skipped") == 1);
   CHECK(number(listed.result, "failed") == 1);
-  CHECK(text(listed.result, "ddc") == ddc);
+  // The root answered as a root's name and a path under it, never the host's directory.
+  CHECK(text(listed.result, "ddc").find("://") != std::string::npos);
+  CHECK(text(listed.result, "ddc").ends_with("/ddc"));
+  CHECK(text(listed.result, "ddc").find(tmp.path()) == std::string::npos);
   const JsonValue& outputs = at(listed.result, "outputs");
   REQUIRE(outputs.size() == 3);
   CHECK(text(outputs[0], "status") == "skipped");
@@ -418,6 +430,55 @@ TEST_CASE(
                                                   ",\"output\":" + json_string(output) +
                                                   ",\"options\":{\"max_triangles\":2}}")) ==
         k_invalid_argument);
+}
+
+// content.build's output was written over any file the host could write, a document's own
+// layers/base.json among them, behind its journal, roles and leases (the survey's row 17). Now
+// every path is the host's roots': the document read, its out/ written, nothing else (here the
+// manifest stands for every file of the document, which none of the spellings below may reach). The
+// host is started on the document with no other root, as engine-cli starts one.
+TEST_CASE("ops: content.build writes only under a writable root, never over a document's files") {
+  const test::TempDir tmp("ops_content_roots");
+  REQUIRE(tmp.ok());
+  const std::string doc = tmp.file("world");
+  REQUIRE(std::filesystem::create_directories(doc));
+  REQUIRE(write_grid(doc, "grid", 16));
+  REQUIRE(write_grid(tmp.path(), "far", 16));
+  Host host({"--doc", doc, "--create"});
+  REQUIRE(host.ok);
+  // The host made the document at start; one answer says it has.
+  REQUIRE(error_code(host.call("session.list", "{}")) == 0);
+  const std::string base_before = [&] {
+    std::ifstream in(doc + "/manifest.json", std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  }();
+  REQUIRE_FALSE(base_before.empty());
+  auto build = [&](std::string_view source, std::string_view output) {
+    return host.call("content.build", "{\"source\":" + json_string(source) +
+                                          ",\"output\":" + json_string(output) + "}");
+  };
+  // Over the document's own files, by any spelling: refused as a missing place is.
+  for (const std::string& out : {std::string("manifest.json"), std::string("doc://manifest.json"),
+                                 std::string("layers/x.clusters"), doc + "/manifest.json",
+                                 std::string("out://../manifest.json")}) {
+    INFO(out);
+    const JsonValue r = build("grid.gltf", out);
+    CHECK(error_code(r) == 1003);
+  }
+  const std::string base_after = [&] {
+    std::ifstream in(doc + "/manifest.json", std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  }();
+  CHECK(base_after == base_before);
+  // Outside every root: refused, nothing written; a source outside is not read.
+  CHECK(error_code(build("grid.gltf", tmp.file("outside.clusters"))) == 1003);
+  CHECK_FALSE(std::filesystem::exists(tmp.file("outside.clusters")));
+  CHECK(error_code(build(tmp.file("far.gltf"), "out://far.clusters")) == 1003);
+  CHECK_FALSE(std::filesystem::exists(doc + "/out/far.clusters"));
+  // Under out/: built.
+  const JsonValue built = build("grid.gltf", "out://grid.clusters");
+  CHECK_MESSAGE(error_code(built) == 0, write_json(built));
+  CHECK(std::filesystem::exists(doc + "/out/grid.clusters"));
 }
 
 TEST_CASE("ops: session.events pages the journal's commits after two apply commands") {
@@ -494,6 +555,108 @@ TEST_CASE("ops: session.events pages the journal's commits after two apply comma
   CHECK(error_code(host.call("session.events", "{\"session\":\"nope\"}")) == k_session_not_found);
 }
 
+TEST_CASE("ops: store.query runs one SELECT over the document's world.db and refuses the rest") {
+  const test::TempDir tmp("ops_store_query");
+  REQUIRE(tmp.ok());
+  const std::string dir = tmp.file("world");
+  REQUIRE(cli({"--doc", dir, "--create", "--name", "Queried", "session.info"}).exit_code == 0);
+  Host host;
+  REQUIRE(host.ok);
+  const std::string session = open_session(host, dir, false);
+  const std::string s = "{\"session\":\"" + session + "\"";
+#if defined(ENGINE_CLI_TESTS_STORE)
+  constexpr i32 k_not_found = 1003;
+  // No world.db yet: not found, and the query makes none.
+  CHECK(error_code(host.call("store.query", s + ",\"sql\":\"SELECT 1\"}")) == k_not_found);
+  CHECK_FALSE(std::filesystem::exists(dir + "/world.db"));
+  {
+    store::Database db;
+    REQUIRE(db.open(dir + "/world.db") == store::Status::Ok);
+    store::EventLog event_log(db);
+    REQUIRE(event_log.open() == store::Status::Ok);
+    const u8 payload[2] = {9, 9};
+    store::EventRecord events[2];
+    for (u32 i = 0; i < 2; ++i) {
+      events[i].tile = 7;
+      events[i].sim_tick = 10 + i;
+      events[i].type = 40 + i;
+      events[i].subject = Id128::from_seed(1, i);
+      events[i].payload = std::span<const u8>(payload, 2);
+    }
+    REQUIRE(event_log.append(std::span<store::EventRecord>(events, 2)) == store::Status::Ok);
+    const u8 blob[4] = {0x00, 0x01, 0xFF, 0x00};
+    store::ProjectionRecord p;
+    p.entity = Id128::from_seed(2, 1);
+    p.tile = 7;
+    p.kind = 5;
+    p.blob = std::span<const u8>(blob, 4);
+    REQUIRE(event_log.upsert_projection(p) == store::Status::Ok);
+  }
+
+  // Values bound from params come back as they went in: text that would end a spliced
+  // statement, a blob as base64, null, and an integer.
+  const JsonValue r =
+      host.call("store.query",
+                s + ",\"sql\":\"SELECT seq, ?1 AS t, ?2 AS b, ?3 AS n, typeof(?2) AS k FROM events "
+                    "WHERE tile = ?4 ORDER BY seq\",\"params\":[\"'; DROP TABLE events; --\","
+                    "{\"blob\":\"AAH/AA==\"},null,7]}");
+  REQUIRE(error_code(r) == 0);
+  const JsonValue& result = at(r, "result");
+  CHECK(at(result, "columns").size() == 5);
+  CHECK(at(result, "columns")[1].as_string() == "t");
+  const JsonValue& rows = at(result, "rows");
+  REQUIRE(rows.size() == 2);
+  CHECK(rows[0][1].as_string() == "'; DROP TABLE events; --");
+  CHECK(text(rows[0][2], "blob") == "AAH/AA==");
+  CHECK(rows[0][3].is_null());
+  CHECK(rows[0][4].as_string() == "blob");
+  CHECK(at(result, "complete").as_bool());
+  // A blob column comes back as base64.
+  const JsonValue blob = host.call("store.query", s + ",\"sql\":\"SELECT blob FROM projections\"}");
+  REQUIRE(error_code(blob) == 0);
+  CHECK(text(at(at(blob, "result"), "rows")[0][0], "blob") == "AAH/AA==");
+  // A bound named in the result.
+  const JsonValue cut =
+      host.call("store.query", s + ",\"sql\":\"SELECT seq FROM events\",\"max_rows\":1}");
+  REQUIRE(error_code(cut) == 0);
+  CHECK(text(at(cut, "result"), "bound") == "max_rows");
+  CHECK_FALSE(at(at(cut, "result"), "complete").as_bool());
+  // Refusals: a write, two statements, PRAGMA, ATTACH, the schema table, a parameter of a shape
+  // it does not take, out-of-range bounds, and a path, which the method does not take at all.
+  for (const char* sql : {"DROP TABLE events", "SELECT 1; SELECT 2", "PRAGMA user_version",
+                          "ATTACH 'x.db' AS x", "SELECT sql FROM sqlite_schema"}) {
+    CAPTURE(sql);
+    CHECK(error_code(host.call("store.query", s + ",\"sql\":\"" + sql + "\"}")) ==
+          k_invalid_argument);
+  }
+  CHECK(error_code(host.call("store.query", s + ",\"sql\":\"SELECT ?1\",\"params\":[[1]]}")) ==
+        k_invalid_argument);
+  CHECK(error_code(host.call("store.query", s + ",\"sql\":\"SELECT 1\",\"params\":{}}")) ==
+        k_invalid_argument);
+  CHECK(error_code(host.call("store.query", s + ",\"sql\":\"SELECT 1\",\"max_rows\":0}")) ==
+        k_invalid_argument);
+  CHECK(error_code(host.call("store.query", s + ",\"sql\":\"SELECT 1\",\"max_bytes\":10}")) ==
+        k_invalid_argument);
+  CHECK(error_code(host.call("store.query", s + ",\"sql\":\"SELECT 1\",\"store\":\"x.db\"}")) != 0);
+  const JsonValue count = host.call("store.query", s + ",\"sql\":\"SELECT count(*) FROM events\"}");
+  REQUIRE_MESSAGE(error_code(count) == 0, write_json(count));
+  CHECK(at(at(count, "result"), "rows")[0][0].as_int() == 2);
+  // An infinity is written as a tagged string, which JSON's numbers cannot hold; the NaN an
+  // infinity less itself would be is NULL in SQLite, so it is null here and never an infinity.
+  const JsonValue reals =
+      host.call("store.query", s + ",\"sql\":\"SELECT 9e999, -9e999, 9e999 - 9e999\"}");
+  REQUIRE_MESSAGE(error_code(reals) == 0, write_json(reals));
+  const JsonValue& real_row = at(at(reals, "result"), "rows")[0];
+  CHECK(text(real_row[0], "real") == "inf");
+  CHECK(text(real_row[1], "real") == "-inf");
+  CHECK(real_row[2].is_null());
+#else
+  CHECK(error_code(host.call("store.query", s + ",\"sql\":\"SELECT 1\"}")) == k_unavailable);
+#endif
+  CHECK(error_code(host.call("store.query", "{\"session\":\"nope\",\"sql\":\"SELECT 1\"}")) ==
+        k_session_not_found);
+}
+
 #if defined(ENGINE_CLI_TESTS_STORE)
 TEST_CASE("ops: session.events reads the document's world.db when the store is built") {
   const test::TempDir tmp("ops_store");
@@ -557,6 +720,18 @@ TEST_CASE("ops: session.events reads the document's world.db when the store is b
   Run late =
       cli({"--doc", dir, "--compact", "session.events", "{\"source\":\"store\",\"since\":11}"});
   CHECK(at(late.result, "events").size() == 2);
+
+  // A store the client names is a client path (protocol.md, "The host's file roots"): before, any
+  // file on the disk was opened as an event log, "no event log at" told a missing file from one
+  // that is there, and `store_path` answered the host's own path. Outside the roots it is 1003,
+  // the answer a missing file gets.
+  Host host;
+  REQUIRE(host.ok);
+  const std::string session = open_session(host, dir, false);
+  const JsonValue outside =
+      host.call("session.events", "{\"session\":\"" + session +
+                                      "\",\"source\":\"store\",\"store\":\"../../../escape.db\"}");
+  CHECK(error_code(outside) == 1003);
 }
 #else
 TEST_CASE(
@@ -1143,6 +1318,14 @@ TEST_CASE("ops: engine.run_tests over a valid and an invalid document and two co
   CHECK(error_code(host.call("engine.run_tests", "{\"tissue\":\"any.tissue\"}")) == k_unavailable);
 #endif
   CHECK(error_code(host.call("engine.run_tests", "{\"session\":\"nope\"}")) == k_session_not_found);
+  // The files a call names are client paths (protocol.md, "The host's file roots"): before, any
+  // file on the disk was read as a container or a tissue file and the verdict told what it was.
+  // Outside the roots, and missing under them, both are 1003 for the field before any check runs.
+  CHECK(error_code(host.call("engine.run_tests",
+                             "{\"containers\":[\"tests://../escape.clusters\"]}")) == 1003);
+  CHECK(error_code(host.call(
+            "engine.run_tests",
+            "{\"containers\":[" + json_string(tmp.file("none.clusters")) + "]}")) == 1003);
   // Nothing asked, nothing checked, and nothing failed.
   const JsonValue empty = host.call("engine.run_tests", "{}");
   CHECK(at(result_of(empty), "checks").size() == 0);

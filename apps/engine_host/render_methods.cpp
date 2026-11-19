@@ -9,12 +9,14 @@
 #include <core/profiling/startup_trace.h>
 #include <core/time/time.h>
 #include <domain/gfx/cluster_cull.h>
+#include <domain/protocol/paths.h>
 #include <domain/protocol/session.h>
 #include <domain/scene_gen/derived_root.h>
 #include <foundation/bench/machine_state.h>
 #include <foundation/image/decode.h>
 #include <foundation/image/metrics.h>
 #include <foundation/image/png.h>
+#include <foundation/io/roots.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/camera_path.h>
 #include <systems/renderer/capture.h>
@@ -65,6 +67,22 @@ std::optional<u64> gpu_used_bytes(const RenderHost& host) {
   gfx::MemoryBudget budget;
   if (device == nullptr || !device->memory_budget(budget) || !budget.valid) return std::nullopt;
   return budget.used_bytes;
+}
+
+// Where a writer's files go (protocol.md, "The host's file roots"): `out_dir` admitted for making
+// a directory under a writable root, the host's `out/` when it is empty, and `name` one plain file
+// name, so "../../x" cannot climb out of a directory that was checked (the survey's rows 10, 14).
+bool admit_output_dir(protocol::Context& ctx, std::string_view session, const std::string& out_dir,
+                      const std::string& name, io::Admitted& dir, protocol::RpcError& error) {
+  if (!name.empty() &&
+      (name == "." || name == ".." || name.find('/') != std::string::npos ||
+       name.find('\\') != std::string::npos || io::check_path_text(name) != io::Refusal::none)) {
+    error = invalid("name must be one plain file name, with no directory, '..' or device name");
+    return false;
+  }
+  return protocol::admit_client_path(ctx, "out_dir", out_dir.empty() ? "out://" : out_dir,
+                                     protocol::client_base(ctx, session),
+                                     io::Access::make_directory, dir, error);
 }
 
 // A `file://` URI of a native path, which is what a client needs to open the file without
@@ -569,9 +587,11 @@ bool load_session(protocol::Context& ctx, RenderHost& host,
     }
   }
   auto described = std::make_unique<doc_scene::DocumentScene>();
-  // The ground's set under the host's root (T104, T119): `render.load`'s `ddc`, else the
-  // document's own — the repository's `ddc/` above the session's directory, else its own `ddc/`.
-  const std::string root = scene_gen::document_derived_root(params.ddc, session->dir());
+  // The ground's set under the host's root (T104, T119): `render.load`'s `ddc`, else the host's
+  // own derived-data root, else the document's `out/ddc` — never `<doc>/ddc` or a `ddc/` found by
+  // walking up from the session, which no root admitted (protocol.md, "Where derived data goes").
+  const std::string root = params.ddc.empty() ? protocol::derived_data_root(ctx, session)
+                                              : scene_gen::document_derived_root(params.ddc, {});
   if (!doc_scene::read_document_scene(document, session->dir(), root, *described, message)) {
     error = protocol::make_error(protocol::codes::k_document_error, std::move(message));
     return false;
@@ -611,7 +631,8 @@ bool load_session(protocol::Context& ctx, RenderHost& host,
     RenderHost::release(*scene);  // the GPU state goes; the id stays the session's
   }
   scene->kind = "session";
-  scene->source = session->dir();
+  // As the mesh and scene forms answer it: the root's name and a path under it, never the host's.
+  scene->source = protocol::portable_path(ctx, session->dir());
   scene->session = params.session;
   scene->request = request;
   scene->requested = settings;
@@ -729,6 +750,29 @@ bool render_load_followed(protocol::Context& ctx, const protocol::RenderLoadPara
     error = invalid("name one of a mesh, a scene file and a session, not two");
     return false;
   }
+  // Every path the call names is admitted before anything is opened or a device is asked for
+  // (domain/protocol/paths.h; the survey's rows 5-8): the mesh, the scene file and its overlay
+  // read, a named derived-data root written, each under the host's roots. Not yet: the paths a
+  // scene file or a glTF names inside itself, and a session's records' paths (ADR-0071, "Not
+  // built").
+  const std::string base = protocol::client_base(ctx, params.session);
+  io::Admitted mesh_at;
+  io::Admitted scene_at;
+  io::Admitted overlay_at;
+  io::Admitted ddc_at;
+  // A missing file is answered here, as a refused one is, before the other parameters are read:
+  // found later, its answer told a path under a root from one outside.
+  if ((!params.mesh.empty() &&
+       !protocol::admit_existing_path(ctx, "mesh", params.mesh, base, mesh_at, error)) ||
+      (!params.scene.empty() &&
+       !protocol::admit_existing_path(ctx, "scene", params.scene, base, scene_at, error)) ||
+      (!params.overlay.empty() &&
+       !protocol::admit_existing_path(ctx, "overlay", params.overlay, base, overlay_at, error)) ||
+      (!params.ddc.empty() &&
+       !protocol::admit_client_path(ctx, "ddc", params.ddc, base, io::Access::make_directory,
+                                    ddc_at, error))) {
+    return false;
+  }
   if (params.grid_instances > 64) {
     error = invalid("grid_instances must be at most 64");
     return false;
@@ -773,8 +817,11 @@ bool render_load_followed(protocol::Context& ctx, const protocol::RenderLoadPara
     error = unavailable(std::move(device_error));
     return false;
   }
-  if (!params.session.empty())
-    return load_session(ctx, *host, params, request, *device, out, error);
+  if (!params.session.empty()) {
+    protocol::RenderLoadParams admitted = params;
+    admitted.ddc = ddc_at.native;
+    return load_session(ctx, *host, admitted, request, *device, out, error);
+  }
 
   // Which procedural scene an empty mesh path builds. An unknown name is refused rather than
   // silently drawing the terrain, because a corpus scene that asked for the atlas fixture and
@@ -793,7 +840,7 @@ bool render_load_followed(protocol::Context& ctx, const protocol::RenderLoadPara
   desc.procedural = procedural;
   desc.heightfield_grid = params.grid;
   desc.grid_instances = params.grid_instances;
-  desc.ddc = params.ddc;
+  desc.ddc = ddc_at.native;
   desc.cache = params.cache;
   // Whether loading keeps a page table at all, and what the heightfield's pages are sized at.
   // `SceneDesc::stream` is the load's question and `RenderSettings::stream` the frame's; the
@@ -809,15 +856,23 @@ bool render_load_followed(protocol::Context& ctx, const protocol::RenderLoadPara
   }
   if (!params.scene.empty()) {
     renderer::SceneFileOptions file_options;
-    file_options.overlay = params.overlay;
+    file_options.overlay = overlay_at.native;
     renderer::scene_file_options(request, file_options);
     ENGINE_STARTUP_STAGE_DETAIL("scene file", params.scene);
-    if (!renderer::read_scene_file(params.scene, file_options, desc, load_error)) {
+    if (!io::exists(scene_at.native)) {
+      error = protocol::path_not_found("scene", params.scene, io::Access::read);
+      return false;
+    }
+    if (!renderer::read_scene_file(scene_at.native, file_options, desc, load_error)) {
       error = protocol::make_error(protocol::codes::k_io_error, std::move(load_error));
       return false;
     }
   } else {
-    desc.meshes.push_back(params.mesh);  // empty: the procedural heightfield
+    if (!params.mesh.empty() && !io::exists(mesh_at.native)) {
+      error = protocol::path_not_found("mesh", params.mesh, io::Access::read);
+      return false;
+    }
+    desc.meshes.push_back(mesh_at.native);  // empty: the procedural heightfield
   }
   (void)profiling::trace_milestone("scene_read");
 
@@ -857,10 +912,10 @@ bool render_load_followed(protocol::Context& ctx, const protocol::RenderLoadPara
   scene->data = std::move(data);
   if (!params.scene.empty()) {
     scene->kind = "scene";
-    scene->source = params.scene;
+    scene->source = scene_at.portable();
   } else if (!params.mesh.empty()) {
     scene->kind = "mesh";
-    scene->source = params.mesh;
+    scene->source = mesh_at.portable();
   } else {
     scene->kind = "procedural";
     scene->source = procedural == renderer::Procedural::shredded_atlas
@@ -936,6 +991,13 @@ bool render_capture(protocol::Context& ctx, const protocol::RenderCaptureParams&
   renderer::RenderRequest request;
   renderer::RenderSettings settings;
   if (!call_request(*scene, params.settings, params.clock, request, settings, error)) return false;
+  // The request is read whole before its directory is admitted, so a malformed one is answered as
+  // malformed (1004) wherever it would write; still before anything is drawn or written. A kept
+  // capture with no directory touches no disk; every other one writes under the roots.
+  const bool to_disk = !(params.keep && params.out_dir.empty());
+  io::Admitted out_at;
+  if (to_disk && !admit_output_dir(ctx, {}, params.out_dir, params.name, out_at, error))
+    return false;
   const renderer::Camera camera = camera_of(*scene, params.camera, params.orbit);
   std::string message;
   bool no_device = false;
@@ -993,8 +1055,20 @@ bool render_capture(protocol::Context& ctx, const protocol::RenderCaptureParams&
   renderer::CaptureFiles files;
   // A kept capture with no directory is the listener's alone and touches no disk; every other
   // capture writes its files as it always has.
-  if (!(params.keep && params.out_dir.empty()) &&
-      !renderer::write_capture(params.out_dir, params.name, shot, files, message)) {
+  if (to_disk) {
+    // Every file the capture will write, admitted as a file and not only through its directory:
+    // a link or a junction planted at `<name>.png` is refused rather than written through, and
+    // `write_capture` replaces each by rename, so a hard link there is replaced, never written
+    // through (protocol.md, "The host's file roots", rule 10).
+    for (const std::string& file : renderer::capture_file_names(shot, params.name)) {
+      io::Admitted admitted;
+      if (!protocol::admit_output_file(ctx, "name",
+                                       params.out_dir.empty() ? "out://" : params.out_dir, out_at,
+                                       file, admitted, error))
+        return false;
+    }
+  }
+  if (to_disk && !renderer::write_capture(out_at.native, params.name, shot, files, message)) {
     error = protocol::make_error(protocol::codes::k_io_error, std::move(message));
     return false;
   }
@@ -1047,6 +1121,12 @@ bool render_capture(protocol::Context& ctx, const protocol::RenderCaptureParams&
 
 bool render_benchmark(protocol::Context& ctx, const protocol::RenderBenchmarkParams& params,
                       protocol::RenderBenchmarkResult& out, protocol::RpcError& error) {
+  io::Admitted camera_path_at;
+  if (!params.camera_path.empty() &&
+      !protocol::admit_existing_path(ctx, "camera_path", params.camera_path,
+                                     protocol::client_base(ctx, {}), camera_path_at, error)) {
+    return false;
+  }
   RenderHost* host = host_of(ctx);
   RenderHost::Scene* scene = host != nullptr ? host->find(params.scene) : nullptr;
   if (scene == nullptr) {
@@ -1072,10 +1152,13 @@ bool render_benchmark(protocol::Context& ctx, const protocol::RenderBenchmarkPar
   renderer::CameraPath path;
   if (flythrough) {
     std::string path_error;
-    if (!renderer::read_camera_path(params.camera_path,
+    if (!renderer::read_camera_path(camera_path_at.native,
                                     scene->data.terrain.enabled ? &scene->data.terrain : nullptr,
                                     path, path_error)) {
-      error = protocol::make_error(protocol::codes::k_io_error, std::move(path_error));
+      error =
+          protocol::make_error(protocol::codes::k_io_error,
+                               protocol::shown_message(std::move(path_error), camera_path_at.native,
+                                                       params.camera_path));
       return false;
     }
   }
@@ -1228,21 +1311,30 @@ bool render_benchmark(protocol::Context& ctx, const protocol::RenderBenchmarkPar
 
 // ---- render.compare ----------------------------------------------------------------------------
 
-bool render_compare(protocol::Context&, const protocol::RenderCompareParams& params,
+bool render_compare(protocol::Context& ctx, const protocol::RenderCompareParams& params,
                     protocol::RenderCompareResult& out, protocol::RpcError& error) {
+  // Both images read, the heat map written, under the roots (the survey's rows 12-13): a compare
+  // is not a way to turn any picture on the disk into a heat map written anywhere.
+  const std::string base = protocol::client_base(ctx, {});
+  io::Admitted a_at;
+  io::Admitted b_at;
+  io::Admitted flip_at;
+  if (!protocol::admit_client_path(ctx, "a", params.a, base, io::Access::read, a_at, error) ||
+      !protocol::admit_client_path(ctx, "b", params.b, base, io::Access::read, b_at, error) ||
+      (!params.flip_out.empty() &&
+       !protocol::admit_client_path(ctx, "flip_out", params.flip_out, base, io::Access::write,
+                                    flip_at, error))) {
+    return false;
+  }
   image::Image a;
   image::Image b;
   std::string message;
-  if (image::read_image(params.a, a, 4, &message) != io::Status::Ok) {
-    error =
-        protocol::make_error(protocol::codes::k_io_error,
-                             "cannot read " + params.a + (message.empty() ? "" : ": " + message));
+  if (image::read_image(a_at.native, a, 4, &message) != io::Status::Ok) {
+    error = protocol::path_not_found("a", params.a, io::Access::read);
     return false;
   }
-  if (image::read_image(params.b, b, 4, &message) != io::Status::Ok) {
-    error =
-        protocol::make_error(protocol::codes::k_io_error,
-                             "cannot read " + params.b + (message.empty() ? "" : ": " + message));
+  if (image::read_image(b_at.native, b, 4, &message) != io::Status::Ok) {
+    error = protocol::path_not_found("b", params.b, io::Access::read);
     return false;
   }
   if (a.width != b.width || a.height != b.height) {
@@ -1293,14 +1385,14 @@ bool render_compare(protocol::Context&, const protocol::RenderCompareParams& par
       return false;
     }
     const io::Status status =
-        image::write_png(params.flip_out, heat.width, heat.height, heat.channels,
+        image::write_png(flip_at.native, heat.width, heat.height, heat.channels,
                          std::span<const u8>(heat.pixels.data(), heat.pixels.size()));
     if (status != io::Status::Ok) {
       error = protocol::make_error(protocol::codes::k_io_error, "cannot write " + params.flip_out +
                                                                     ": " + io::status_name(status));
       return false;
     }
-    out.flip_image = file_uri(params.flip_out);
+    out.flip_image = flip_at.portable();
   }
   return true;
 }
@@ -1328,6 +1420,10 @@ bool render_evaluate(protocol::Context& ctx, const protocol::RenderEvaluateParam
   if (!call_request(*scene, params.settings, params.clock, request, settings, error)) return false;
   renderer::ReferenceSettings reference_settings;
   if (!read_reference(params.reference, params.frame, reference_settings, error)) return false;
+  // Read whole before the directory is admitted, as render.capture is: a malformed request is
+  // answered as malformed (1004) wherever it would write.
+  io::Admitted out_at;
+  if (!admit_output_dir(ctx, {}, params.out_dir, params.name, out_at, error)) return false;
   const renderer::Camera camera = camera_of(*scene, params.camera, params.orbit);
 
   std::string message;
@@ -1416,8 +1512,8 @@ bool render_evaluate(protocol::Context& ctx, const protocol::RenderEvaluateParam
 
   // The files. Everything an agent needs to look at the result by eye is on disk beside the
   // numbers, because a FLIP figure with no heat map says where nothing.
-  if (!params.out_dir.empty()) {
-    const io::Status status = io::make_directories(params.out_dir);
+  {
+    const io::Status status = io::make_directories(out_at.native);
     if (status != io::Status::Ok) {
       error = protocol::make_error(protocol::codes::k_io_error, "cannot create " + params.out_dir +
                                                                     ": " + io::status_name(status));
@@ -1426,13 +1522,19 @@ bool render_evaluate(protocol::Context& ctx, const protocol::RenderEvaluateParam
   }
   auto write = [&](const char* channel, const std::string& suffix, u32 width, u32 height,
                    u32 channels, std::span<const u8> pixels) {
-    const std::string path = params.out_dir.empty()
-                                 ? params.name + suffix
-                                 : io::join_path(params.out_dir, params.name + suffix);
+    // The file itself admitted (a link at its name is refused), and written by rename (a hard
+    // link there is replaced): the directory's admission says nothing of what is already in it.
+    io::Admitted file;
+    if (!protocol::admit_output_file(ctx, "name",
+                                     params.out_dir.empty() ? "out://" : params.out_dir, out_at,
+                                     params.name + suffix, file, error))
+      return false;
+    const std::string& path = file.native;
     const io::Status status = image::write_png(path, width, height, channels, pixels);
     if (status != io::Status::Ok) {
-      error = protocol::make_error(protocol::codes::k_io_error,
-                                   "cannot write " + path + ": " + io::status_name(status));
+      error =
+          protocol::make_error(protocol::codes::k_io_error, "cannot write " + params.name + suffix +
+                                                                ": " + io::status_name(status));
       return false;
     }
     out.files.insert_or_assign(channel, file_uri(path));
@@ -1777,37 +1879,61 @@ bool RenderHost::ensure_reference(Scene& scene, std::string& error, bool& unavai
   return true;
 }
 
+namespace {
+
+// Which `render.*` calls leave a file (protocol.md, "What a read may do"): a capture unless it is
+// kept in memory with no directory named, a compare that names a heat map.
+bool capture_leaves_files(const JsonValue& params) {
+  return !(protocol::param_is_true(params, "keep") && !protocol::param_is_named(params, "out_dir"));
+}
+bool compare_leaves_files(const JsonValue& params) {
+  return protocol::param_is_named(params, "flip_out");
+}
+
+}  // namespace
+
 void add_render_methods(protocol::Dispatcher& d) {
-  d.add(protocol::read_only(protocol::method<protocol::RenderLoadParams, protocol::RenderSceneInfo,
-                                             &render_load>(
-      "render.load",
-      "Load a mesh or a scene file into a GPU scene the session holds; returns its id and "
-      "counts. `settings.stream` also keeps the scene's streaming page table, which `page_bytes` "
-      "sizes for the procedural heightfield.")));
-  d.add(protocol::read_only(protocol::method<protocol::RenderCaptureParams,
-                                             protocol::RenderCaptureResult, &render_capture>(
-      "render.capture",
-      "Render one frame of a loaded scene offscreen and write the asked-for channels (color, "
-      "ids, depth, normals) as files.")));
+  // A read that leaves a file every time: a load may build derived data (the meshes' clusters, the
+  // textures, the ground's tile sets) into the derived-data root, which is the caller's choosing
+  // whenever `ddc` is named and the cache is cold.
+  d.add(protocol::read_leaving_files(
+      protocol::method<protocol::RenderLoadParams, protocol::RenderSceneInfo, &render_load>(
+          "render.load",
+          "Load a mesh or a scene file into a GPU scene the session holds; returns its id and "
+          "counts. `settings.stream` also keeps the scene's streaming page table, which "
+          "`page_bytes` sizes for the procedural heightfield.")));
+  d.add(protocol::read_leaving_files(
+      protocol::method<protocol::RenderCaptureParams, protocol::RenderCaptureResult,
+                       &render_capture>(
+          "render.capture",
+          "Render one frame of a loaded scene offscreen and write the asked-for channels (color, "
+          "ids, depth, normals) as files."),
+      &capture_leaves_files));
   d.add(protocol::read_only(protocol::method<protocol::RenderBenchmarkParams,
                                              protocol::RenderBenchmarkResult, &render_benchmark>(
       "render.benchmark",
       "Render a loaded scene for n frames with the camera held still; returns GPU milliseconds "
       "per pass, CPU milliseconds per frame, and the run's geometry residency in stats.stream.")));
-  d.add(protocol::read_only(protocol::method<protocol::RenderCompareParams,
-                                             protocol::RenderCompareResult, &render_compare>(
-      "render.compare", "FLIP, PSNR, and SSIM between two images, with an optional heat map.")));
-  d.add(protocol::read_only(protocol::method<protocol::RenderEvaluateParams,
-                                             protocol::RenderEvaluateResult, &render_evaluate>(
-      "render.evaluate",
-      "Render one frame of a loaded scene through the real-time path and through the reference "
-      "path tracer, compare them, write both pictures and the FLIP heat map, and return the "
-      "numbers and the times: plan 04 section 4.8's optimization loop in one call.")));
-  d.add(protocol::read_only(protocol::method<protocol::RenderUnloadParams,
-                                             protocol::RenderUnloadResult, &render_unload>(
+  d.add(protocol::read_leaving_files(
+      protocol::method<protocol::RenderCompareParams, protocol::RenderCompareResult,
+                       &render_compare>(
+          "render.compare", "FLIP, PSNR, and SSIM between two images, with an optional heat map."),
+      &compare_leaves_files));
+  d.add(protocol::read_leaving_files(
+      protocol::method<protocol::RenderEvaluateParams, protocol::RenderEvaluateResult,
+                       &render_evaluate>(
+          "render.evaluate",
+          "Render one frame of a loaded scene through the real-time path and through the "
+          "reference path tracer, compare them, write both pictures and the FLIP heat map, and "
+          "return the numbers and the times: plan 04 section 4.8's optimization loop in one "
+          "call.")));
+  // A write: the host's scenes are every client's, so releasing one by its id ends what another
+  // client loaded and is looking at, not only the caller's own handle.
+  d.add(protocol::method<protocol::RenderUnloadParams, protocol::RenderUnloadResult,
+                         &render_unload>(
       "render.unload",
       "Release a loaded scene: its GPU buffers, textures, acceleration structures, renderer and "
-      "host arrays. The id names nothing afterwards; the device stays open for the next load.")));
+      "host arrays. The id names nothing afterwards; the device stays open for the next load."));
   d.add(protocol::read_only(
       protocol::method_no_params<protocol::RenderProgressResult, &render_progress>(
           "render.progress",

@@ -20,6 +20,7 @@
 #include <core/json/json_value.h>
 #include <core/platform/process.h>
 #include <domain/gfx/device.h>
+#include <domain/protocol/clients.h>
 #include <domain/protocol/listener.h>
 #include <domain/protocol/policy.h>
 #include <domain/protocol/rpc.h>
@@ -29,6 +30,7 @@
 
 #include <doctest/doctest.h>
 #include <test_desktop.h>
+#include <test_environment.h>
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
@@ -1095,18 +1097,25 @@ TEST_CASE("engine-editor: the shell's three methods, through the editor's dispat
   const test::TempDir tmp("engine_editor_methods");
   editor::EditorDocument document;
   make_fixture(document, tmp.path());
-  // The editor's host as main.cpp makes it, with a roles file whose default role may write
-  // nothing: the three methods are UI state, registered read-only, and a role that may not write
-  // still lays out, selects and reads.
+  // The editor's host as main.cpp makes it, with a roles file. Moving the viewport, the selection
+  // and the gizmo is what is on the person's screen, so they are writes (protocol.md, "What a read
+  // may do"): a role that may write nothing is refused them and still reads; the role the person's
+  // page runs in names them. Before, they were registered read-only and every role moved the view.
   editor::EditorState state;
   state.document = &document;
   protocol::Policy policy;
   std::string error;
-  REQUIRE_MESSAGE(policy.load_roles("roles.json", R"({"default_role":"watcher","roles":[
+  const auto roles = [&](const char* default_role) {
+    REQUIRE_MESSAGE(policy.load_roles("roles.json", std::string(R"({"default_role":")") +
+                                                        default_role + R"(","roles":[
       {"name":"watcher","doc":"reads","methods":[],"layers":[],"tiles":[],"untiled":false,
-       "object_types":[],"review_required":false}]})",
-                                    error),
-                  error);
+       "object_types":[],"review_required":false},
+      {"name":"seat","doc":"the person's page","methods":["editor.*"],"layers":[],"tiles":[],
+       "untiled":false,"object_types":[],"review_required":false}]})",
+                                      error),
+                    error);
+  };
+  roles("watcher");
   protocol::Dispatcher d(
       protocol::Context{&document.sessions(), nullptr, nullptr, &state, &policy});
   protocol::add_builtin_methods(d);
@@ -1117,6 +1126,16 @@ TEST_CASE("engine-editor: the shell's three methods, through the editor's dispat
     REQUIRE_MESSAGE(parse_json(out, response).ok, out);
     return response;
   };
+  {
+    const JsonValue refused =
+        call(R"({"jsonrpc":"2.0","id":9,"method":"editor.layout","params":)"
+             R"({"x":1,"y":1,"width":10,"height":10,"device_pixel_ratio":1}})");
+    const JsonValue* e = refused.find("error");
+    REQUIRE_MESSAGE(e != nullptr, write_json(refused));
+    CHECK(e->find("code")->as_int() == 1008);
+    CHECK(state.layouts == 0);
+  }
+  roles("seat");
 
   // editor.layout as the page sends it — a notification, so nothing comes back — moves the
   // recorded rectangle; as a request it says where the window will put the viewport.
@@ -1379,15 +1398,19 @@ namespace {
 
 // The embedded runs' document: one cube three metres across at the origin, and with `provenance`
 // an AssetProvenance record, whose `license_class` is an enum the properties panel lists.
-std::string embedded_fixture(const test::TempDir& tmp, bool provenance) {
+// `name` and `actor` are the placement's name and who the fixture's transaction is attributed to:
+// the page test plants markup in both, which the page must draw as text (A50).
+std::string embedded_fixture(const test::TempDir& tmp, bool provenance,
+                             const std::string& name = "only",
+                             const std::string& actor = "editor-test") {
   editor::EditorDocument document;
   std::string error;
   REQUIRE(write_cube_glb(tmp.path() + "/cube.glb"));
-  REQUIRE_MESSAGE(document.open(tmp.path(), true, "editor-test", error), error);
+  REQUIRE_MESSAGE(document.open(tmp.path(), true, actor, error), error);
   Vector<doc::Command> commands;
-  commands.push_back(doc::cmd_create(
-      k_left, k_placement, Id128{},
-      json(R"({"name":"only","mesh":"cube.glb","translation":[0,0,0],"scale":[3,3,3]})")));
+  JsonValue placement = json(R"({"mesh":"cube.glb","translation":[0,0,0],"scale":[3,3,3]})");
+  placement.set("name", JsonValue(name));
+  commands.push_back(doc::cmd_create(k_left, k_placement, Id128{}, std::move(placement)));
   if (provenance) {
     commands.push_back(doc::cmd_create(
         k_yard, "engine.content.AssetProvenance", Id128{},
@@ -1589,16 +1612,29 @@ TEST_CASE("engine-editor: the look gesture through the platform's queue turns th
   }
 }
 
-TEST_CASE("engine-editor: the embedded page keeps its popups off the viewport, and reconnects") {
+TEST_CASE(
+    "engine-editor: the page with no viewport keeps its popups off the cell, and reconnects") {
   const test::TempDir tmp("engine_editor_page");
-  const std::string doc_dir = embedded_fixture(tmp, true);
+  // Another client's strings holding markup, as a record's name and as an actor's: the hook's
+  // "hostile" check finds both drawn as text and no element with an `onerror` (A50).
+  const std::string hostile = "<img src=x onerror=alert(1)>";
+  const std::string doc_dir = embedded_fixture(tmp, true, hostile, hostile);
   const std::string exe = test::app_path(ENGINE_APP_PATH);
-  const std::string ddc = tmp.file("ddc");
   // The page's test hook (?test=1, only with --test-page) opens the command line's completions
   // and the properties panel's enum list by DOM events and reports whether each stays in its panel
   // and off the cell; then the editor sends editor.relayout (the page answers with a layout) and
-  // shuts every connection under the page, which must show its pill, reconnect and say so, while
-  // the viewport goes on drawing.
+  // shuts every connection under the page, which must show its pill, reconnect and say so. With
+  // --no-viewport (A51) all of it runs with no GPU device and no GPU lock: the lock's own log, on
+  // for the child as for every test's, is the witness that no hold was taken, beside what the
+  // editor says of itself. The viewport drawing on through a drop is the window's, and the
+  // embedded case above holds it.
+  // Only a hold a process takes itself is logged (at its release); a child told that its parent
+  // holds the lock for it (ENGINE_GPU_LOCK_HOLDER) takes none and logs none, so the variable is
+  // cleared for the child, which would then take, and log, a hold of its own for any device.
+  const std::string holds = tmp.file("gpu-lock-holds.jsonl");
+  const test::ScopedEnv on_device("ENGINE_GPU_LOCK_ON_DEVICE", "1");
+  const test::ScopedEnv hold_log("ENGINE_GPU_LOCK_LOG", holds);
+  const test::ScopedEnv no_holder("ENGINE_GPU_LOCK_HOLDER", "");
   const std::vector<std::string_view> argv = {exe,
                                               "--doc",
                                               doc_dir,
@@ -1606,20 +1642,26 @@ TEST_CASE("engine-editor: the embedded page keeps its popups off the viewport, a
                                               "900",
                                               "--height",
                                               "560",
-                                              "--frames",
-                                              "40",
-                                              "--ddc",
-                                              ddc,
                                               "--test-page",
                                               "--test-relayout-at",
                                               "10",
                                               "--test-drop-socket-at",
                                               "20",
+                                              "--no-viewport",
                                               "--embedded"};
   JsonValue summary;
   std::string output;
   if (!run_editor(argv, summary, output)) return;
+  CHECK_MESSAGE(std::string(summary.find("mode")->as_string()) == "page", output);
+  CHECK_MESSAGE(write_json(*summary.find("device")) == "false", output);
+  CHECK_MESSAGE(std::string(summary.find("browser_arguments")->as_string()) == "--disable-gpu",
+                output);
+  std::string held;
+  const io::Status read = io::read_file(holds, held);
+  CHECK_MESSAGE((read != io::Status::Ok || held.empty()), "the GPU lock was held: " << held);
   CHECK_MESSAGE(report_ok(page_report(summary, "completions")), output);
+  CHECK_MESSAGE(report_ok(page_report(summary, "hostile")), output);
+  CHECK_MESSAGE(report_ok(page_report(summary, "policy")), output);
   CHECK_MESSAGE(report_ok(page_report(summary, "enum")), output);
   CHECK_MESSAGE(report_ok(page_report(summary, "done")), output);
   // editor.relayout reached the page, which answered with a layout.
@@ -1634,7 +1676,54 @@ TEST_CASE("engine-editor: the embedded page keeps its popups off the viewport, a
   const f64 back_at = number(summary.find("frames_at_reconnect"));
   CHECK_MESSAGE(dropped_at > 0.0, output);
   CHECK_MESSAGE(back_at > dropped_at, output);
-  CHECK_MESSAGE(number(summary.find("frames")) > back_at, output);
+  CHECK_MESSAGE(number(summary.find("frames")) >= back_at, output);
+}
+
+namespace {
+
+// engine-editor's exit code and its output, for a start that is refused before any window.
+i32 run_refused(const std::vector<std::string_view>& argv, std::string& output) {
+  platform::Process p;
+  std::string error;
+  REQUIRE_MESSAGE(p.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error,
+                          /*merge_stderr=*/true),
+                  error);
+  p.close_stdin();
+  p.read_all(output);
+  return p.wait();
+}
+
+}  // namespace
+
+TEST_CASE(
+    "engine-editor: --test-page runs only under the tests' scratch root; --no-viewport is its") {
+  const test::TempDir tmp("engine_editor_page_refusals");
+  const std::string exe = test::app_path(ENGINE_APP_PATH);
+  // The hook clicks the page's buttons, so it must never run against a real document: a document
+  // outside `<system temp>/engine-tests/` is refused before anything is opened or made, including
+  // one named through `..` from inside it. Nothing is created at the refused path.
+  const std::string outside = tmp.path() + "/../../engine-editor-not-a-test-doc";
+  std::string output;
+  CHECK(run_refused({exe, "--doc", outside, "--create", "--embedded", "--test-page"}, output) == 2);
+  CHECK_MESSAGE(
+      output.find("runs only on a document under the tests' scratch root") != std::string::npos,
+      output);
+  std::error_code ec;
+  CHECK_FALSE(std::filesystem::exists(std::filesystem::path(outside), ec));
+  output.clear();
+  CHECK(
+      run_refused({exe, "--doc", outside, "--create", "--embedded", "--test-page", "--no-viewport"},
+                  output) == 2);
+  // A page with no viewport is the page test's alone, and has nothing to pick or draw from.
+  output.clear();
+  CHECK(run_refused({exe, "--doc", tmp.file("doc"), "--create", "--embedded", "--no-viewport"},
+                    output) == 2);
+  CHECK_MESSAGE(output.find("--no-viewport is the page test's") != std::string::npos, output);
+  output.clear();
+  CHECK(run_refused({exe, "--doc", tmp.file("doc"), "--create", "--embedded", "--test-page",
+                     "--no-viewport", "--pick", "center"},
+                    output) == 2);
+  CHECK_MESSAGE(output.find("--no-viewport has no viewport") != std::string::npos, output);
 }
 
 namespace {
@@ -2006,6 +2095,30 @@ TEST_CASE("engine-editor: editor.tool, editor.pick_file and editor.import_mesh")
   CHECK(call("editor.import_mesh", import).find("error") != nullptr);
   CHECK_FALSE(io::exists(tmp.path() + "/assets/broken/broken.glb"));
   CHECK(document.document().journal().size() == before + 2);
+
+  // ADR-0069 decision 5: an import a client asks for is that client's in the journal, as every
+  // other write of the protocol is, and not the editor's own; a call naming nobody from the page
+  // (no client entry) stays the editor's, as above.
+  protocol::Clients clients;
+  d.context().clients = &clients;
+  {
+    protocol::Client& agent = clients.touch(5, 0);
+    agent.who.actor = "agent-1";
+    agent.who.task = "t-agent";
+    agent.identified = true;
+  }
+  d.context().connection = 5;
+  import.set("path", JsonValue(source_dir + "/crate.gltf"));
+  REQUIRE(write_cube_gltf(source_dir, "crate"));  // the bytes the store holds again
+  answer = call("editor.import_mesh", import);
+  d.context().connection = 0;
+  d.context().clients = nullptr;
+  REQUIRE_MESSAGE(answer.find("result") != nullptr, write_json(answer));
+  document.journal(journal, 10);
+  CHECK(journal[0].actor == "agent-1");
+  CHECK(journal[0].task == "t-agent");
+  CHECK(journal[0].role == "director");  // its hello named none: the host's, as on engine-host
+  CHECK(document.document().journal().size() == before + 3);
 
   // A sample from content/samples, when tools/fetch-samples.ps1 has fetched it: the viewport
   // rebuilds with one more instance, its pixel picks back to the new record, and undo removes it.

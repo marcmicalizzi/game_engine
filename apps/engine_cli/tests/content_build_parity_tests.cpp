@@ -38,7 +38,10 @@ struct Run {
   std::string out;
 };
 
-Run run(const std::vector<std::string>& args) {
+Run run(std::vector<std::string> args) {
+  // A host engine-cli starts reaches the tests' scratch directories through their root (paths.h).
+  if (args[0].find("engine-cli") != std::string::npos)
+    args.insert(args.begin() + 1, {"--root", test::scratch_root_spec()});
   std::vector<std::string_view> argv(args.begin(), args.end());
   platform::Process p;
   std::string error;
@@ -88,14 +91,19 @@ bool write_stripes(const std::filesystem::path& path, u8 a, u8 b) {
 }
 
 // The palm's three roles, every map a file of its own (the cooked-load test's pack).
-void write_pack(const std::filesystem::path& dir) {
+// `bark_classes`, when given, is the bark role's `content_classes` (C62): a pack set's entry
+// declaring a class.
+void write_pack(const std::filesystem::path& dir, const char* bark_classes = nullptr) {
   const char* roles[] = {"palm/bark", "palm/frond", "palm/skirt"};
   const char* maps[] = {"base_color", "normal", "roughness", "metallic", "height"};
   std::string pack = R"({"format":"engine.materials.pack/1","name":"t","version":"1","roles":{)";
   for (u32 r = 0; r < 3; ++r) {
     std::filesystem::create_directories(dir / roles[r]);
     pack += std::string(r > 0 ? "," : "") + "\"" + roles[r] +
-            R"(":{"tile_m":0.25,"normal_convention":"opengl","maps":{)";
+            R"(":{"tile_m":0.25,"normal_convention":"opengl",)";
+    if (r == 0 && bark_classes != nullptr)
+      pack += std::string("\"content_classes\":") + bark_classes + ",";
+    pack += R"("maps":{)";
     for (u32 i = 0; i < 5; ++i) {
       REQUIRE(write_stripes(dir / roles[r] / (std::string(maps[i]) + ".png"),
                             static_cast<u8>(10 + 30 * i + r), static_cast<u8>(20 + 30 * i)));
@@ -180,6 +188,60 @@ TEST_CASE("content build: build-all and content.build give one manifest's palm t
   const bool same = a == b;  // not the bytes themselves into a failure's message
   CHECK_MESSAGE(
       same, "the two hosts' containers differ: " << a.size() << " and " << b.size() << " bytes");
+}
+
+// C62 (content_build.md, "Content classes"): a generated mesh is the join of the pack sets its key
+// covers, so a pack whose bark role declares a class (an engine category as a name, on striped
+// maps) classes the palm. Both hosts key it alike, write the same bytes with section 54, and
+// content.build's result (ContentBuildOutput version 2) names the class by name.
+TEST_CASE("content build: a classified pack set classes the palm the same through both hosts") {
+  const test::TempDir tmp("cli_content_classes");
+  REQUIRE(tmp.ok());
+  const test::ScopedEnv default_materials(test::k_default_materials_env, "1");
+  const std::filesystem::path repo = tmp.native() / "repo";
+  std::filesystem::create_directories(repo / "bin");
+  REQUIRE(write_text(repo / "AGENTS.md", "a repository of the test's own\n"));
+  write_pack(repo / "content" / "materials", R"({"violence":"mild"})");
+  const std::filesystem::path content = repo / "bin" / exe_name("engine-content");
+  const std::filesystem::path host = repo / "bin" / exe_name("engine-host");
+  std::filesystem::copy_file(test::app_path(ENGINE_CONTENT_PATH), content);
+  std::filesystem::copy_file(test::app_path(ENGINE_HOST_PATH), host);
+  REQUIRE(write_text(repo / "palm.flora.json",
+                     R"({"species":"date_palm","palm":{"seed":9,"height_m":5,"frond_count":8,)"
+                     R"("leaflet_count":12,"dead_skirt_fronds":2,"triangle_budget":2000}})"));
+  for (const char* side : {"cli", "host"}) {
+    std::filesystem::create_directories(repo / side);
+    REQUIRE(write_text(repo / side / "meshes.json",
+                       R"({"meshes":[{"source":"../palm.flora.json","output":"palm.clusters"}]})"));
+  }
+  const Run by_cli = run({content.string(), "build-all", (repo / "cli" / "meshes.json").string()});
+  REQUIRE_MESSAGE(by_cli.exit_code == 0, by_cli.out);
+  const Run by_host =
+      run({test::app_path(ENGINE_APP_PATH), "--host", host.string(), "--compact", "content.build",
+           "{\"manifest\":" + json_string((repo / "host" / "meshes.json").generic_string()) +
+               ",\"stats\":false}"});
+  REQUIRE_MESSAGE(by_host.exit_code == 0, by_host.out);
+
+  JsonValue result;
+  REQUIRE(parse_json(by_host.out, result).ok);
+  const JsonValue* outputs = result.find("outputs");
+  REQUIRE((outputs != nullptr && outputs->size() == 1));
+  const JsonValue* classes = (*outputs)[0].find("content_classes");
+  REQUIRE_MESSAGE((classes != nullptr && classes->is_object()), by_host.out);
+  CHECK(classes->find("levels")->find("violence")->as_string() == "mild");
+  JsonValue line;
+  REQUIRE(parse_json(by_cli.out.substr(0, by_cli.out.find('\n')), line).ok);
+  REQUIRE(line.find("content_classes") != nullptr);
+  u64 host_key = 0;
+  u64 cli_key = 0;
+  REQUIRE((*outputs)[0].find("build_key")->get_u64(host_key));
+  REQUIRE(line.find("build_key")->get_u64(cli_key));
+  CHECK(host_key == cli_key);
+  const std::string a = read_bytes(repo / "cli" / "palm.clusters");
+  const std::string b = read_bytes(repo / "host" / "palm.clusters");
+  REQUIRE(!a.empty());
+  const bool same = a == b;
+  CHECK_MESSAGE(same, "the two hosts' classified containers differ");
 }
 
 #endif

@@ -40,7 +40,8 @@ endforeach()
 # configure stops if the three differ.
 engine_host_generators(engine_host _host_deps)
 engine_app(NAME engine_host OUTPUT engine-host
-  SOURCES main.cpp render_methods.cpp ops_methods.cpp profile_methods.cpp console.cpp listen.cpp
+  SOURCES main.cpp render_methods.cpp ops_methods.cpp store_query.cpp profile_methods.cpp
+          console.cpp listen.cpp
   DEPS ${_host_deps}
   E2E_TESTS tests/transport_tests.cpp)
 if(_host_defs)
@@ -75,6 +76,10 @@ add_dependencies(engine_engine_host engine_shell_files)
 if(TARGET engine_engine_host_tests)
   if(TARGET engine::tileset)
     target_compile_definitions(engine_engine_host_tests PRIVATE ENGINE_HOST_TEST_TILESET=1)
+  endif()
+  # store.query beside other clients when the store is built, its 1006 answer when it is not.
+  if(TARGET engine::store)
+    target_compile_definitions(engine_engine_host_tests PRIVATE ENGINE_HOST_TEST_STORE=1)
   endif()
   # transport_tests.cpp starts engine-host with --listen and drives it through foundation/net's own
   # client (engine_app above links the host's modules into it and marks it as one that can wait for

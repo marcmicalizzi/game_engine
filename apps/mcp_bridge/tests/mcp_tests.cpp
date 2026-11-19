@@ -6,8 +6,10 @@
 // fixture: they load the procedural heightfield. Where a case renders, it accepts either answer a
 // machine can honestly give — a picture, or "no GPU on this machine" — and says which it got; the
 // no-GPU answer itself is pinned on every machine by hiding the Vulkan drivers from the host.
+#include <core/hash/sha256.h>
 #include <core/json/json.h>
 #include <core/platform/process.h>
+#include <foundation/net/server.h>
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
@@ -19,6 +21,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <mutex>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -74,8 +78,9 @@ struct Mcp {
   bool ok = false;
 
   explicit Mcp(const std::string& workspace, std::vector<std::string> extra = {}) {
-    std::vector<std::string> args = {bridge_exe(), "--host",  host_exe(), "--workspace",
-                                     workspace,    "--actor", "mcp-test"};
+    std::vector<std::string> args = {bridge_exe(), "--root",   test::scratch_root_spec(),
+                                     "--host",     host_exe(), "--workspace",
+                                     workspace,    "--actor",  "mcp-test"};
     for (std::string& e : extra)
       args.push_back(std::move(e));
     std::vector<std::string_view> argv(args.begin(), args.end());
@@ -286,9 +291,76 @@ TEST_CASE("mcp: --help, --version, and a host that cannot start") {
   }
 }
 
+// A role the roles file marks human is a person's, conferred only by a credential the operator
+// issued for it: an agent's bridge never runs in one, named by --role or by the file's default, and
+// exits 2 with a message rather than serve tools as a person (it served them before).
+TEST_CASE("mcp: a bridge refuses to start in a human role") {
+  const test::TempDir tmp("mcp_bridge_human_role");
+  const std::string ws = tmp.file("ws");
+  const auto exit_of = [](std::span<const std::string_view> argv) {
+    platform::Process p;
+    REQUIRE(p.spawn(argv));
+    p.close_stdin();
+    std::string out;
+    p.read_all(out);
+    CHECK(out.empty());  // stdout is MCP's, even for a refusal
+    return p.wait();
+  };
+  const auto roles_file = [&](const char* file, const char* default_role) {
+    const std::string path = tmp.file(file);
+    std::ofstream f(path, std::ios::binary);
+    f << R"({"default_role": ")" << default_role << R"(", "roles": [
+      {"name": "director", "methods": ["*"], "layers": ["*"], "object_types": ["*"]},
+      {"name": "reviewer", "human": true, "methods": ["review.*"]}]})";
+    return path;
+  };
+  const std::string named = roles_file("roles-director.json", "director");
+  {
+    const std::string_view argv[] = {bridge_exe(), "--workspace", ws,        "--roles",
+                                     named,        "--role",      "reviewer"};
+    CHECK(exit_of(argv) == 2);
+  }
+  {
+    const std::string by_default = roles_file("roles-reviewer.json", "reviewer");
+    const std::string_view argv[] = {bridge_exe(), "--workspace", ws, "--roles", by_default};
+    CHECK(exit_of(argv) == 2);
+  }
+  // In the words engine-host's and engine-cli's refusals use (engine_cli's policy_tests, "no start
+  // line runs in a role marked human"), and the bridge's own, before a host starts: the host it
+  // would start refuses --role reviewer too, and the bridge then said only that its host went away.
+  const auto said = [](std::span<const std::string_view> argv) {
+    platform::Process p;
+    REQUIRE(p.spawn(argv, nullptr, true));
+    p.close_stdin();
+    std::string out;
+    p.read_all(out);
+    CHECK(p.wait() == 2);
+    return out;
+  };
+  const std::string_view argv[] = {bridge_exe(), "--workspace", ws,        "--roles",
+                                   named,        "--role",      "reviewer"};
+  const std::string text = said(argv);
+  CHECK(text.find("engine-mcp: role 'reviewer' is marked human in ") != std::string::npos);
+  CHECK(text.find("a person's role is conferred only by a credential the operator issued for it "
+                  "(engine-host --issue-credential <file> --role reviewer), presented on a "
+                  "connection to engine-host --listen --credentials <file>") != std::string::npos);
+  CHECK(text.find("engine-host:") == std::string::npos);
+  const std::string by_default = roles_file("roles-reviewer.json", "reviewer");
+  const std::string_view by_default_argv[] = {bridge_exe(), "--workspace", ws, "--roles",
+                                              by_default};
+  const std::string default_text = said(by_default_argv);
+  CHECK(default_text.find("engine-mcp: role 'reviewer' is marked human in ") != std::string::npos);
+  CHECK(default_text.find("engine-host:") == std::string::npos);
+}
+
 TEST_CASE("mcp: --connect takes a loopback ws:// URL and a token, and no flag of a spawned host") {
   const test::TempDir tmp("mcp_bridge_connect_usage");
   const std::string ws = tmp.file("ws");
+  const std::string token_file = tmp.file("token.json");
+  {
+    std::ofstream out(token_file, std::ios::binary);
+    out << R"({"token":"t"})" << "\n";
+  }
   const auto exit_of = [](std::span<const std::string_view> argv) {
     platform::Process p;
     REQUIRE(p.spawn(argv));
@@ -301,13 +373,14 @@ TEST_CASE("mcp: --connect takes a loopback ws:// URL and a token, and no flag of
   // A host the bridge would start is configured by flags an attached bridge must not take: the
   // running host's roles and mounts are its own.
   for (const char* flag : {"--host", "--host-arg", "--mount", "--roles"}) {
-    const std::string_view argv[] = {bridge_exe(), "--connect", "ws://127.0.0.1:9/", "--token", "t",
-                                     flag,         "x"};
+    const std::string_view argv[] = {
+        bridge_exe(), "--connect", "ws://127.0.0.1:9/", "--token-file", token_file, flag, "x"};
     CHECK_MESSAGE(exit_of(argv) == 2, flag);
   }
   {
     // Loopback only, as the listener binds.
-    const std::string_view argv[] = {bridge_exe(), "--connect", "ws://10.0.0.1:9/", "--token", "t"};
+    const std::string_view argv[] = {bridge_exe(), "--connect", "ws://10.0.0.1:9/", "--token-file",
+                                     token_file};
     CHECK(exit_of(argv) == 2);
   }
   {
@@ -315,7 +388,7 @@ TEST_CASE("mcp: --connect takes a loopback ws:// URL and a token, and no flag of
     CHECK(exit_of(argv) == 2);  // no token
   }
   {
-    const std::string_view argv[] = {bridge_exe(), "--token", "t"};
+    const std::string_view argv[] = {bridge_exe(), "--token-file", token_file};
     CHECK(exit_of(argv) == 2);  // a token with nothing to connect to
   }
   {
@@ -328,13 +401,108 @@ TEST_CASE("mcp: --connect takes a loopback ws:// URL and a token, and no flag of
     const std::string_view argv[] = {bridge_exe(), "--connect-from", file, "--workspace", ws};
     CHECK(exit_of(argv) == 2);
   }
+  // A line that parses but holds the wrong kinds is refused the same way: the file is external
+  // input, so a debug build must not assert on it (it did on {"listen":1,"token":2}).
+  for (const char* line :
+       {R"({"listen":1,"token":2})", R"({"listen":"ws://127.0.0.1:1/","token":""})",
+        R"(["listen","token"])", "7"}) {
+    const std::string file = tmp.file("announcement-kinds.json");
+    {
+      std::ofstream out(file, std::ios::binary | std::ios::trunc);
+      out << line << "\n";
+    }
+    const std::string_view argv[] = {bridge_exe(), "--connect-from", file, "--workspace", ws};
+    CHECK_MESSAGE(exit_of(argv) == 2, line);
+  }
   {
     // Nobody listening on that port: the bridge says it cannot connect and exits 2, as it does
     // when it cannot start a host.
     const std::string_view argv[] = {
-        bridge_exe(), "--connect", "ws://127.0.0.1:9/", "--token", "t", "--workspace", ws};
+        bridge_exe(),  "--connect", "ws://127.0.0.1:9/", "--token-file", token_file,
+        "--workspace", ws};
     CHECK(exit_of(argv) == 2);
   }
+}
+
+namespace {
+
+// Records the token an upgrade presented, and refuses it, as a host refuses a token it does not
+// know: what the bridge sent, seen from the host's side.
+struct TokenRecorder final : net::ServerHandler {
+  std::mutex mutex;
+  std::string seen;
+  u32 upgrades = 0;
+  void http(const net::HttpRequest&, net::HttpResponse& response) override {
+    response = net::http_error(404);
+  }
+  bool accept(u64, const net::HttpRequest& request, u16& close, std::string& reason) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    ++upgrades;
+    if (const std::string* token = request.header("x-engine-token")) seen = *token;
+    close = net::close_code::k_policy;
+    reason = "recorded";
+    return false;
+  }
+  std::string message(u64, std::string_view) override { return {}; }
+};
+
+}  // namespace
+
+// ADR-0069 decision 4: a process's command line
+// is readable by every process of its user, so the bridge takes a token from a file — the line
+// engine-host --issue-credential printed, saved — and refuses one on the command line before it
+// connects anywhere.
+TEST_CASE("mcp: --connect reads its token from a file, never from the command line") {
+  const test::TempDir tmp("mcp_bridge_token_file");
+  TokenRecorder recorder;
+  net::Server server;
+  std::string error;
+  REQUIRE_MESSAGE(server.start(0, recorder, error), error);
+  const std::string url = "ws://127.0.0.1:" + std::to_string(server.port()) + "/";
+  const std::string ws = tmp.file("ws");
+  const auto exit_of = [](std::span<const std::string_view> argv) {
+    platform::Process p;
+    REQUIRE(p.spawn(argv));
+    p.close_stdin();
+    std::string out;
+    p.read_all(out);
+    return p.wait();
+  };
+  const std::string file = tmp.file("bot.json");
+  {
+    std::ofstream out(file, std::ios::binary);
+    out << R"({"credential":"bot","token":"test-token-from-file"})" << "\n";
+  }
+  {
+    const std::string_view argv[] = {bridge_exe(), "--connect",   url, "--token-file",
+                                     file,         "--workspace", ws};
+    CHECK(exit_of(argv) == 1);  // connected, and the recorder refused it
+  }
+  {
+    std::lock_guard<std::mutex> lock(recorder.mutex);
+    CHECK(recorder.upgrades >= 1);
+    CHECK(recorder.seen == "test-token-from-file");
+  }
+  const u32 before = recorder.upgrades;
+  {
+    const std::string_view argv[] = {
+        bridge_exe(), "--connect", url, "--token", "test-token-on-the-line", "--workspace", ws};
+    CHECK(exit_of(argv) == 2);
+  }
+  {
+    // A file that is not {"token": ...} is refused before anything connects, too.
+    const std::string bad = tmp.file("bad.json");
+    {
+      std::ofstream out(bad, std::ios::binary);
+      out << "test-token-bare\n";
+    }
+    const std::string_view argv[] = {bridge_exe(), "--connect",   url, "--token-file",
+                                     bad,          "--workspace", ws};
+    CHECK(exit_of(argv) == 2);
+  }
+  std::lock_guard<std::mutex> lock(recorder.mutex);
+  CHECK(recorder.upgrades == before);  // neither reached the host
+  server.stop();
 }
 
 TEST_CASE("mcp: initialize agrees a protocol version and advertises tools") {
@@ -440,7 +608,13 @@ TEST_CASE("mcp: tools/list gives every tool a JSON Schema generated from the eng
                           "profile_report",
                           "profile_stop",
                           "describe_document",
-                          "query"};
+                          "query",
+                          "put_blob",
+                          "read_blob",
+                          "collect_blobs",
+                          "checkpoint",
+                          "checkpoints",
+                          "rollback_to"};
   // Every tool offered is named here, so the count in docs/subsystems/apps.md cannot drift again
   // (it said 45 while there were 46: materialize was offered and never listed).
   CHECK(tools.size() == std::size(wanted));
@@ -541,7 +715,11 @@ TEST_CASE("mcp: tools/list gives every tool a JSON Schema generated from the eng
         str(tools[i], "name") == "state_hash") {
       CHECK(at(at(tools[i], "annotations"), "readOnlyHint") == JsonValue(true));
     }
-    if (str(tools[i], "name") == "save_game" || str(tools[i], "name") == "load_game") {
+    // A tool over a write, or a read that may leave a file, is not read-only to a client either
+    // (protocol.md, "What a read may do"): the frame capture is one switch for the whole host.
+    if (str(tools[i], "name") == "save_game" || str(tools[i], "name") == "load_game" ||
+        str(tools[i], "name") == "profile_start" || str(tools[i], "name") == "profile_stop" ||
+        str(tools[i], "name") == "profile_report") {
       CHECK(at(at(tools[i], "annotations"), "readOnlyHint") == JsonValue(false));
     }
     if (str(tools[i], "name") == "delete_object" || str(tools[i], "name") == "unload") {
@@ -859,11 +1037,126 @@ TEST_CASE("mcp: a transaction stages changes from several tools and lands them a
   const JsonValue committed = ok(mcp.tool("commit", "{" + s + ",\"transaction\":" + t + "}"));
   CHECK(num(committed, "applied") == 2);
   CHECK(num(ok(mcp.tool("objects", "{" + s + "}")), "total") == 2);
-  // Committed is closed: a second commit and a rollback are errors a model can read.
-  CHECK(is_error(mcp.tool("commit", "{" + s + ",\"transaction\":" + t + "}")));
+  // Committed is closed: a second commit (a retry whose answer was lost) is answered with the
+  // patch that landed and applies nothing; a rollback is an error a model can read.
+  const JsonValue again = ok(mcp.tool("commit", "{" + s + ",\"transaction\":" + t + "}"));
+  CHECK(num(again, "applied") == 2);
+  CHECK(num(ok(mcp.tool("objects", "{" + s + "}")), "total") == 2);
   CHECK(is_error(mcp.tool("rollback", "{" + s + ",\"transaction\":" + t + "}")));
   ok(mcp.tool("undo", "{" + s + "}"));
   CHECK(num(ok(mcp.tool("objects", "{" + s + "}")), "total") == 0);
+}
+
+// doc.put_blob and doc.blob both answer where the blob is as `<root>://<relative>` (protocol.md,
+// "The host's file roots"), and the bridge reads the one through the roots of the host it started:
+// a blob put from a file under the document is named by the roots on the way in and found by them
+// on the way out, and nothing either answer holds is a path of the machine.
+TEST_CASE("mcp: a blob put from the document's file is named and read back portably") {
+  const test::TempDir tmp("mcp_bridge_blob_paths");
+  Mcp mcp(tmp.file("ws"));
+  REQUIRE(mcp.ok);
+  mcp.initialize();
+  const std::string world = tmp.file("world");
+  const JsonValue opened =
+      ok(mcp.tool("open_session", "{\"path\":\"" + world + "\",\"create\":true}"));
+  const std::string s = "\"session\":\"" + str(opened, "session") + "\"";
+  {
+    std::ofstream f(std::filesystem::path(world) / "notes.txt", std::ios::binary);
+    f << "notes for a blob";
+  }
+  const std::string name = sha256_hex(sha256("notes for a blob"));
+  const JsonValue put = ok(mcp.tool("put_blob", "{" + s + R"(,"path":"notes.txt"})"));
+  CHECK(str(at(put, "ref"), "blob") == name);
+  const std::string place = str(put, "path");
+  CHECK(place.find("://") != std::string::npos);
+  CHECK(place.ends_with("/blobs/" + name.substr(0, 2) + "/" + name.substr(2)));  // blob_store.h
+  CHECK(place.find(':') == place.find("://"));  // no drive letter, no second scheme
+  const JsonValue read = ok(mcp.tool("read_blob", "{" + s + ",\"blob\":\"" + name + "\"}"));
+  CHECK(str(read, "file") == "workspace://blobs/" + name);
+  std::ifstream file(std::filesystem::path(tmp.file("ws")) / "blobs" / name, std::ios::binary);
+  REQUIRE(file.good());
+  const std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+  CHECK(bytes == "notes for a blob");
+}
+
+// The blob and checkpoint tools (apps.md, "Blobs reach an agent as a file"; roadmap A49).
+TEST_CASE("mcp: a blob reaches the workspace as a file, and a checkpoint is rolled back to") {
+  const test::TempDir tmp("mcp_bridge_blobs");
+  Mcp mcp(tmp.file("ws"));
+  REQUIRE(mcp.ok);
+  mcp.initialize();
+  const JsonValue opened =
+      ok(mcp.tool("open_session", "{\"path\":\"" + tmp.file("world") + "\",\"create\":true}"));
+  const std::string s = "\"session\":\"" + str(opened, "session") + "\"";
+  const std::string name = sha256_hex(sha256("hello blob"));
+  // Inline, then the same bytes again: one blob, the second put told it was there.
+  const std::string put = "{" + s + R"(,"data_base64":"aGVsbG8gYmxvYg==","media":"text/plain"})";
+  const JsonValue first = ok(mcp.tool("put_blob", put));
+  CHECK(str(at(first, "ref"), "blob") == name);
+  CHECK(num(at(first, "ref"), "size") == 10);
+  CHECK(text_of(mcp.tool("put_blob", put)).find("already held") != std::string::npos);
+  // Read back as a file under the workspace, named in the portable form the host's paths take, with
+  // the bytes it was put with; the host answered where they are as `<root>://<relative>` too.
+  const JsonValue read = ok(mcp.tool("read_blob", "{" + s + ",\"blob\":\"" + name + "\"}"));
+  CHECK(str(read, "file") == "workspace://blobs/" + name);
+  {
+    std::ifstream file(std::filesystem::path(tmp.file("ws")) / "blobs" / name, std::ios::binary);
+    REQUIRE(file.good());
+    const std::string bytes((std::istreambuf_iterator<char>(file)),
+                            std::istreambuf_iterator<char>());
+    CHECK(bytes == "hello blob");
+    // A copy a reader holds open is the answer already: a second read leaves it and says where.
+    CHECK(str(ok(mcp.tool("read_blob", "{" + s + ",\"blob\":\"" + name + "\"}")), "file") ==
+          "workspace://blobs/" + name);
+  }
+  // The bytes never come inline: `data` is not an argument the tool takes.
+  CHECK(is_error(mcp.tool("read_blob", "{" + s + ",\"blob\":\"" + name + "\",\"data\":true}")));
+  const JsonValue unknown =
+      mcp.tool("read_blob", "{" + s + ",\"blob\":\"" + std::string(64, '0') + "\"}");
+  CHECK(is_error(unknown));
+  CHECK(text_of(unknown).find("put_blob") != std::string::npos);
+  // Nothing names the blob: a dry run says it would go and leaves it, a collection takes it.
+  const std::string collect = "{" + s + ",\"min_age_s\":0";
+  CHECK(at(ok(mcp.tool("collect_blobs", collect + ",\"dry_run\":true}")), "removed").size() == 1);
+  ok(mcp.tool("read_blob", "{" + s + ",\"blob\":\"" + name + "\"}"));
+  CHECK(at(ok(mcp.tool("collect_blobs", collect + "}")), "removed").size() == 1);
+  CHECK(is_error(mcp.tool("read_blob", "{" + s + ",\"blob\":\"" + name + "\"}")));
+
+  const JsonValue listed = ok(mcp.tool("checkpoints", "{" + s + "}"));
+  bool available = false;
+  REQUIRE(at(listed, "available").get_bool(available));
+  if (!available) {
+    // No git here: the tool says why, and the rest of the case needs one.
+    CHECK(text_of(mcp.tool("checkpoints", "{" + s + "}")).find("not available") !=
+          std::string::npos);
+    MESSAGE("no git where the host runs: " << str(listed, "git"));
+    return;
+  }
+  CHECK(at(listed, "checkpoints").size() == 0);
+  // A checkpoint is history others roll back to, so it says why.
+  CHECK(is_error(mcp.tool("checkpoint", "{" + s + ",\"label\":\"empty\"}")));
+  const JsonValue taken = ok(mcp.tool(
+      "checkpoint", "{" + s + ",\"label\":\"empty\"," + attribution("before any object") + "}"));
+  const std::string id = str(taken, "id");
+  CHECK(id.size() == 40);
+  ok(mcp.tool("create_object", "{" + s + ",\"id\":\"" + k_b + "\",\"type\":\"" + k_type + "\"," +
+                                   attribution("an object to roll back") + "}"));
+  const std::string back =
+      "{" + s + ",\"checkpoint\":\"" + id + "\"," + attribution("back to the empty world");
+  const JsonValue dry = ok(mcp.tool("rollback_to", back + ",\"dry_run\":true}"));
+  CHECK(text_of(mcp.tool("rollback_to", back + ",\"dry_run\":true}")).find("Dry run") !=
+        std::string::npos);
+  CHECK_FALSE(at(dry, "committed") == JsonValue(true));
+  CHECK(num(ok(mcp.tool("objects", "{" + s + "}")), "total") == 1);
+  const JsonValue rolled = ok(mcp.tool("rollback_to", back + "}"));
+  CHECK(num(rolled, "patches") >= 1);
+  CHECK(num(ok(mcp.tool("objects", "{" + s + "}")), "total") == 0);
+  CHECK(at(ok(mcp.tool("checkpoints", "{" + s + "}")), "checkpoints").size() == 1);
+  // An unknown checkpoint names the tool that lists them.
+  const JsonValue missing =
+      mcp.tool("rollback_to", "{" + s + ",\"checkpoint\":\"" + std::string(40, 'f') + "\"," +
+                                  attribution("no such checkpoint") + "}");
+  CHECK(is_error(missing));
 }
 
 // describe_document (protocol.md, "Describing an object, a tile or a region").

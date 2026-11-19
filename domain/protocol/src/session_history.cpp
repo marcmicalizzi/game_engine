@@ -1,7 +1,8 @@
 // A session's blobs and checkpoints (roadmap D13, D14; docs/subsystems/protocol.md, "Blobs and
-// checkpoints"). The store and the repository are domain/doc's (blob_store.h, checkpoint.h); what is
-// here is what a session adds: the checks a client's write gets, the proposals' merge bases as roots
-// a collection keeps, and a rollback made of journaled, undoable patches rather than files put back.
+// checkpoints"). The store and the repository are domain/doc's (blob_store.h, checkpoint.h); what
+// is here is what a session adds: the checks a client's write gets, the proposals' merge bases as
+// roots a collection keeps, and a rollback made of journaled, undoable patches rather than files
+// put back.
 #include <core/hash/base64.h>
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
@@ -42,8 +43,8 @@ bool Session::blobs_held(const doc::Command& command, ApplyResult& result) const
     if (BlobStore::has(*vfs_, dir_, name)) continue;
     Diagnostic d;
     d.path = doc::describe_path(doc_.layer(doc_.edit_layer()).name(), command.id, command.name);
-    d.message = "names blob " + name +
-                ", which the document's store does not hold: doc.put_blob it first";
+    d.message =
+        "names blob " + name + ", which the document's store does not hold: doc.put_blob it first";
     result.diagnostics.push_back(std::move(d));
     held = false;
   }
@@ -52,6 +53,7 @@ bool Session::blobs_held(const doc::Command& command, ApplyResult& result) const
 
 bool Session::put_blob(std::string_view bytes, std::string_view media, BlobResult& out,
                        RpcError& error) {
+  if (!check_writable(error)) return false;
   std::string message;
   if (!BlobStore::put(*vfs_, dir_, bytes, media, out.ref, &out.created, &message)) {
     error = make_error(codes::k_io_error, std::move(message));
@@ -63,6 +65,7 @@ bool Session::put_blob(std::string_view bytes, std::string_view media, BlobResul
 
 bool Session::collect_blobs(const CollectBlobsParams& params, CollectBlobsResult& out,
                             RpcError& error) {
+  if (!check_writable(error)) return false;
   if (!(params.min_age_s >= 0)) {
     error = make_error(codes::k_invalid_argument, "min_age_s must be zero or more");
     return false;
@@ -73,7 +76,15 @@ bool Session::collect_blobs(const CollectBlobsParams& params, CollectBlobsResult
   // A command staged in an open transaction names its blobs before any layer does, and its commit
   // is refused if one was collected: kept like the journal's (review B2, batch 68). Lapsed
   // transactions are rolled back first, as `doc.transactions` does, so their blobs are not kept.
-  if (expire_transactions(time::wall_unix_ms()) > 0 && !save_transactions(error)) return false;
+  // The table as the file holds it now, under its lock: another host may have staged since.
+  const i64 now_ms = time::wall_unix_ms();
+  if (!update_transactions(
+          [&](bool& write) {
+            write = expire_transactions(now_ms) > 0;
+            return true;
+          },
+          error))
+    return false;
   for (const TransactionEntry& entry : transactions_.transactions)
     roots.push_back(schema::to_json(entry));
   for (const ProposalTable::Entry& entry : proposals_.entries())
@@ -101,6 +112,7 @@ bool Session::collect_blobs(const CollectBlobsParams& params, CollectBlobsResult
 
 bool Session::checkpoint(std::string_view label, const Caller& caller, doc::CheckpointInfo& out,
                          RpcError& error) {
+  if (!check_writable(error)) return false;
   // The label is a client's text that becomes the commit's subject: refused, not altered.
   std::string message;
   if (!Checkpoints::check_label(label, &message)) {
@@ -122,6 +134,7 @@ bool Session::checkpoint(std::string_view label, const Caller& caller, doc::Chec
 
 bool Session::rollback_to(const RollbackParams& params, const Caller& caller, RollbackResult& out,
                           RpcError& error) {
+  if (!check_writable(error)) return false;
   std::string message;
   doc::CheckpointInfo info;
   if (!Checkpoints::find(*vfs_, dir_, params.checkpoint, info, &message)) {
@@ -242,7 +255,7 @@ bool Session::rollback_to(const RollbackParams& params, const Caller& caller, Ro
   // error's `data` is the RollbackResult of exactly what stands: `doc.undo` with its `patches`
   // steps takes those back. Blobs written back from the checkpoint stay; a collection decides.
   const u32 start = manifest_.undo_position;
-  Vector<u32> landed;  // the steps whose patch landed, in order
+  Vector<u32> landed;    // the steps whose patch landed, in order
   Vector<u32> reformed;  // the steps whose storage form was changed, in order
   u32 added = 0;
   const auto take_back = [&](RpcError cause) {
@@ -255,7 +268,8 @@ bool Session::rollback_to(const RollbackParams& params, const Caller& caller, Ro
       RpcError undo_error;
       const bool ok = this->step(true, standing, nullptr, stepped, undo_error);
       standing -= stepped.stepped;
-      if (!ok || standing > 0) why = undo_error.message.empty() ? "undo stopped" : undo_error.message;
+      if (!ok || standing > 0)
+        why = undo_error.message.empty() ? "undo stopped" : undo_error.message;
     }
     if (why.empty()) {
       for (u32 i = reformed.size(); i-- > 0;) {

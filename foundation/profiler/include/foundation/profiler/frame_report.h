@@ -55,6 +55,12 @@ struct SeriesStats {
 
 // The largest magnitude a value may have and still be read as a time: about 2.8 hours.
 inline constexpr f64 k_max_value_ms = 1.0e7;
+// How far before a fill a frame's end must be to be sure of its zones (profiler.md, "A capture that
+// filled"): an event's stamp and its claim are tens of nanoseconds apart unless its thread is
+// preempted between them, and 50 ms is longer than one scheduler quantum on either system (Windows
+// gives a client thread two 15.6 ms clock ticks, Linux's scheduler aims at 6 to 24 ms). A thread
+// held off the processor for longer still escapes it.
+inline constexpr i64 k_partial_stretch_ns = 50'000'000;
 
 struct ReportOptions {
   u32 window_frames = 0;  // the last this many frames; 0: every frame of the capture
@@ -84,6 +90,11 @@ struct FrameReport {
   bool truncated_in_frame = false;
   u64 truncated_frame = 0;
   f64 truncated_ms = 0.0;
+  // Frames whose end falls within k_partial_stretch_ns before the fill, counted above but possibly
+  // short of a zone: an event is stamped before it claims a slot, so a thread that stamped a zone's
+  // end before a frame's end can still lose the last slot to it. How many, and the first's index.
+  u32 partial_frames = 0;
+  u64 partial_first_frame = 0;
   // Values left out because their milliseconds were not a time (NaN, infinite, or past
   // `k_max_value_ms` either way): a broken timer's answer is counted, never averaged in.
   u64 invalid_values = 0;

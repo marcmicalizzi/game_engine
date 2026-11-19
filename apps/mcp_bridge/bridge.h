@@ -52,6 +52,10 @@ struct BridgeOptions {
   // Appended to engine-host's command line as given (`--host-arg`, repeatable): `--log` or
   // `--tunables` for the host, or the test hook `--debug-hang`.
   Vector<std::string> host_args;
+  // Forwarded to the host it starts as `--root <name>=<dir>[:rw]` (engine-mcp's `--root`): the
+  // directories an agent's paths may name beside the workspace, which is always the root
+  // "workspace", read and write.
+  Vector<std::string> roots;
   // Absolute, forward slashes, no trailing slash. Created on the first bulk write.
   std::string workspace;
   // The attribution a mutation carries when the caller leaves a field out: the actor always has
@@ -78,7 +82,8 @@ struct BridgeOptions {
 
 // Whether a protocol method is in the long class: render.load, render.capture, render.benchmark,
 // render.evaluate, render.compare, content.build, session.run_headless, engine.run_tests, and
-// session.save_game and session.load_game, which copy a world's store and document.
+// session.save_game and session.load_game, which copy a world's store and document, and
+// doc.checkpoint and doc.rollback_to, which copy a document into its repository and back.
 bool is_long_call(std::string_view method) noexcept;
 // The deadline a call to `method` gets under these options, in milliseconds; 0 is none.
 u64 call_deadline_ms(const BridgeOptions& options, std::string_view method) noexcept;
@@ -298,6 +303,9 @@ class Bridge {
   // role every call of this bridge runs in; empty when a call that names none is not restricted.
   bool roles_loaded() const noexcept { return roles_loaded_; }
   const std::string& role_name() const noexcept { return role_name_; }
+  // The roles the host's file marks `human` (a person's: the reviewer). The bridge never runs in
+  // one and never forwards a call that names one (protocol.md, "The task ledger and review items").
+  bool is_human_role(std::string_view role) const noexcept;
   // Tools left out because the role may not call one of their methods.
   u32 tools_withheld() const noexcept { return tools_withheld_; }
 
@@ -345,6 +353,7 @@ class Bridge {
   bool roles_loaded_ = false;
   std::string role_name_;
   Vector<std::string> role_methods_;  // every method the role may call, reads included
+  Vector<std::string> human_roles_;
   u32 tools_withheld_ = 0;
   Notify notify_ = nullptr;
   // The resource URIs the client subscribed to; read on the socket's reader thread.

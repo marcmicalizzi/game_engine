@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "A14-2",
+  "reason": "A14's SQL half: protocol.md says what store.query is, what it refuses, how it writes what JSON cannot hold, what the view policy will have to cap in it, and how its statement runs with the dispatch lock let go and what keeps that safe; apps.md gains its engine-cli line",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 195,
+    "page:docs/subsystems/protocol.md": 7573
+  }
+}

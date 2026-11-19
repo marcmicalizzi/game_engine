@@ -23,6 +23,10 @@ struct JsonParseOptions {
   // parser and JsonValue's destructor recurse once per level, at roughly 1 KB of stack per
   // level in debug builds, so a raised budget needs a correspondingly sized thread stack.
   u32 max_depth = 256;
+  // The strict mode: an object holding the same key twice is an error at the second, rather
+  // than its last value kept. For a file whose meaning a text merge or a tool's append could
+  // change silently (docs/subsystems/json.md, "Parser").
+  bool refuse_duplicate_keys = false;
 };
 
 struct JsonParseResult {
@@ -31,6 +35,8 @@ struct JsonParseResult {
   u32 line = 0;      // 1-based
   u32 column = 0;    // 1-based
   const char* message = "";
+  // The key given twice, when `refuse_duplicate_keys` refused one; empty otherwise.
+  std::string duplicate_key;
 };
 
 // Parses a complete JSON text. Trailing whitespace is allowed; anything else after the value

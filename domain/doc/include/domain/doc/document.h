@@ -467,6 +467,8 @@ class Transaction {
   bool ok() const noexcept { return diagnostics_.empty(); }
   const Vector<Diagnostic>& diagnostics() const noexcept { return diagnostics_; }
   const Patch& patch() const noexcept { return patch_; }
+  // The client transaction this commit lands (`Patch::transaction`); domain/protocol's to set.
+  void set_transaction(u64 transaction) noexcept { patch_.transaction = transaction; }
 
   bool commit();
   void rollback();

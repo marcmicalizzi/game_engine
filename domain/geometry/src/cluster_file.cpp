@@ -338,6 +338,12 @@ u64 encode(const ClusterFileData& data, std::string& out) {
     add_section(payloads, ClusterSection::Cameras, static_cast<u32>(sizeof(ClusterFileCamera)),
                 data.cameras.size(), data.cameras.data());
   }
+  // The source's own class (C62), only when it is not `none`: the module's record is empty then,
+  // so every unclassified container is the bytes it was before the section existed.
+  if (!data.content_classes.empty()) {
+    add_section(payloads, ClusterSection::ContentClasses, 1u, data.content_classes.size(),
+                data.content_classes.data());
+  }
 
   u64 offset = k_header_bytes + k_record_bytes * payloads.size();
   for (Payload& payload : payloads) {
@@ -570,6 +576,7 @@ const char* cluster_section_name(u32 kind) noexcept {
     case ClusterSection::MaterialUv1: return "material_uv1";
     case ClusterSection::Lights: return "lights";
     case ClusterSection::Cameras: return "cameras";
+    case ClusterSection::ContentClasses: return "content_classes";
   }
   return "unknown";
 }
@@ -900,6 +907,13 @@ bool read_memory(std::span<const u8> bytes, ClusterFileData& out, std::string* e
     if (cameras->element_size != sizeof(ClusterFileCamera))
       return fail(error, "cluster file section cameras is not 80-byte records");
     copy_section(bytes, *cameras, result.cameras);
+  }
+  // The source's own class (C62), the module's record as bytes; absent is `none`.
+  if (const ClusterFileSection* classes = found[static_cast<u32>(ClusterSection::ContentClasses)];
+      classes != nullptr && classes->element_count != 0) {
+    if (classes->element_size != 1)
+      return fail(error, "cluster file section content_classes is not bytes");
+    copy_section(bytes, *classes, result.content_classes);
   }
   // The far form (G198): five sections or none; a file without them has none.
   if (const ClusterFileSection* far = found[static_cast<u32>(ClusterSection::FarForm)];
@@ -1415,6 +1429,9 @@ constexpr ClusterSection k_resident_kinds[] = {
     ClusterSection::MaterialUv1,
     ClusterSection::Lights,
     ClusterSection::Cameras,
+    // A few dozen bytes, and only in a container whose source is classified (C62): the load
+    // decides an instance on it before it reads a page.
+    ClusterSection::ContentClasses,
 };
 
 // The per-page streams, which a resident read leaves on disk. They are still *listed*, with zero

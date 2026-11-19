@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "protocol-read-sort",
+  "reason": "protocol.md gains the table that sorts every read-only registration into a read, a read that leaves a file, or a write, with each reason (the decision asked for it on the page); apps.md gains the paragraphs on engine-mcp's start flags being the operator's paths, on read_blob reading through the host's roots, and on the bridge never running in a human role",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 1825,
+    "page:docs/subsystems/protocol.md": 5238
+  }
+}

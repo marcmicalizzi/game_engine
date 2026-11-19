@@ -19,9 +19,14 @@
 #include <core/log/log.h>
 #include <core/platform/cpu_baseline.h>
 #include <core/platform/process.h>
+#include <core/schema/json_reflect.h>
 #include <core/time/time.h>
+#include <domain/geometry/cluster_file.h>
+#include <domain/protocol/clients.h>
+#include <domain/protocol/paths.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
+#include <foundation/io/roots.h>
 #include <foundation/io/vfs.h>
 #include <foundation/net/socket.h>
 #include <foundation/tunables/tunables.h>
@@ -59,6 +64,7 @@ const char* k_usage =
     "                   [--log <spec>] [--log-json <path>] [--tunables <file>]\n"
     "                   [--roles <file.json>] [--actor <name>] [--role <name>] [--task <id>]\n"
     "                   [--doc <dir> [--create]] [--listen 127.0.0.1:<port>] [--shell <dir>]\n"
+    "                   [--root <name>=<dir>[:rw]]...\n"
     "\n"
     "  --stdio          serve JSON-RPC 2.0: one request per line on stdin, one response per\n"
     "                   line on stdout (default)\n"
@@ -73,7 +79,8 @@ const char* k_usage =
     "                   who a call that names no actor, role or task is: its attribution, and\n"
     "                   with --roles the role it is checked as (--role must be in the file)\n"
     "  --doc <dir>      open a session on this document at start, as session.open would; with\n"
-    "                   --create, create it when the directory holds none\n"
+    "                   --create, create it when the directory holds none (named --name, else\n"
+    "                   after its directory)\n"
     "  --listen <addr>  also serve the protocol over a WebSocket on 127.0.0.1:<port> (or\n"
     "                   localhost:<port>; port 0 picks a free one). Loopback only: any other\n"
     "                   address is refused. Prints one line first, {\"listen\":\"ws://...\",\n"
@@ -83,6 +90,16 @@ const char* k_usage =
     "                   (docs/subsystems/engine_shell.md). The host serves until its standard\n"
     "                   input closes, as without --listen\n"
     "  --shell <dir>    the shell's static files (default: <bin>/../shell)\n"
+    "  --credentials <file.json>  the credentials --listen accepts beside its own token:\n"
+    "                   each binds a connection to its actor, role and task (ADR-0069)\n"
+    "  --issue-credential <file.json> --name <n> --actor <a> [--role <r>] [--task <t>]\n"
+    "                   append a credential to the file, print its token once, and exit\n"
+    "  --root <name>=<dir>[:rw]\n"
+    "                   a directory a client may name paths under, as <name>://<path>; ':rw'\n"
+    "                   lets a client make the host write there. Repeatable. Without any, a\n"
+    "                   client reaches --doc (doc://, read) and its out/ (out://, read and\n"
+    "                   write) and nothing else; every --mount is a root too\n"
+    "                   (docs/subsystems/protocol.md, \"The host's file roots\")\n"
     "\n"
     "       engine-host --console [--script <file.luau>] [--step-budget <n>] [--memory-mb <n>]\n"
     "                   [the options above] [-- <script args>...]\n"
@@ -190,12 +207,17 @@ int main(int argc, char** argv) {
   std::string tunables_file;
   std::string hang_method;
   std::string roles_file;
+  std::string credentials_file;  // --credentials (ADR-0069)
+  std::string issue_file;        // --issue-credential
+  std::string issue_name;
   std::string listen_address;
   std::string doc_dir;
+  std::string doc_name;
   std::string shell_dir;
   bool create_doc = false;
   protocol::Policy policy;
   Vector<std::string> mounts;
+  Vector<std::string> root_specs;
   bool console = false;
   bool console_only_flag = false;  // a flag that means something only with --console
   host::ConsoleOptions console_options;
@@ -253,8 +275,21 @@ int main(int argc, char** argv) {
       if (!next_value(argc, argv, i, a, doc_dir)) return 2;
     } else if (a == "--create") {
       create_doc = true;
+    } else if (a == "--name") {
+      // One flag, two readers: the credential's name under --issue-credential (ADR-0069), which
+      // serves nothing, and otherwise the name --create gives the document.
+      if (!next_value(argc, argv, i, a, doc_name)) return 2;
+      issue_name = doc_name;
     } else if (a == "--shell") {
       if (!next_value(argc, argv, i, a, shell_dir)) return 2;
+    } else if (a == "--credentials") {
+      if (!next_value(argc, argv, i, a, credentials_file)) return 2;
+    } else if (a == "--issue-credential") {
+      if (!next_value(argc, argv, i, a, issue_file)) return 2;
+    } else if (a == "--root") {
+      // The host's file roots (T174; host_roots.h): one flag, one block.
+      if (!next_value(argc, argv, i, a, value)) return 2;
+      root_specs.push_back(value);
     } else {
       std::fprintf(stderr, "engine-host: unknown option '%s'\n%s", argv[i], k_usage);
       return 2;
@@ -374,6 +409,140 @@ int main(int argc, char** argv) {
     }
   }
 
+  // --issue-credential (ADR-0069): the operator's act, never a protocol method. A token is made,
+  // its digest appended to the file under --name with --actor, --role and --task, and the token
+  // printed once on stdout; nothing is served.
+  if (!issue_file.empty()) {
+    if (issue_name.empty() || policy.identity.actor.empty()) {
+      std::fprintf(stderr, "engine-host: --issue-credential needs --name and --actor\n");
+      return 2;
+    }
+    protocol::Credentials existing;
+    std::string text;
+    const io::Status read = io::read_file(issue_file, text);
+    if (read != io::Status::Ok && read != io::Status::NotFound) {
+      std::fprintf(stderr, "engine-host: cannot read '%s': %s\n", issue_file.c_str(),
+                   io::status_name(read));
+      return 2;
+    }
+    std::string error;
+    if (read == io::Status::Ok && !existing.load(issue_file, text, &policy, error)) {
+      std::fprintf(stderr, "engine-host: %s\n", error.c_str());
+      return 2;
+    }
+    protocol::CredentialsFile file = existing.file();
+    for (const protocol::Credential& c : file.credentials) {
+      if (c.name == issue_name) {
+        std::fprintf(stderr, "engine-host: %s already has a credential named '%s'\n",
+                     issue_file.c_str(), issue_name.c_str());
+        return 2;
+      }
+    }
+    protocol::Credential issued;
+    std::string token;
+    if (!protocol::make_token(token)) {
+      std::fprintf(stderr, "engine-host: the system's secure random source did not answer\n");
+      return 2;
+    }
+    issued.name = issue_name;
+    issued.actor = policy.identity.actor;
+    issued.role = policy.identity.role;
+    issued.task = policy.identity.task;
+    issued.token_sha256 = protocol::token_digest(token);
+    issued.issued_unix_ms = time::wall_unix_ms();
+    file.credentials.push_back(std::move(issued));
+    if (const io::Status s = io::write_file(issue_file, write_json(schema::to_json(file)));
+        s != io::Status::Ok) {
+      std::fprintf(stderr, "engine-host: cannot write '%s': %s\n", issue_file.c_str(),
+                   io::status_name(s));
+      return 2;
+    }
+    JsonValue line = JsonValue::object();
+    line.set("credential", issue_name);
+    line.set("token", token);
+    const std::string out = write_json(line, JsonWriteOptions{.pretty = false});
+    std::fwrite(out.data(), 1, out.size(), stdout);
+    std::fputc('\n', stdout);
+    if (policy.identity.role.empty()) {
+      std::fprintf(stderr,
+                   "engine-host: '%s' names no role, so a connection presenting it may only read "
+                   "(ADR-0069); issue it with --role to let it write\n",
+                   issue_name.c_str());
+    }
+    return 0;
+  }
+  // A role marked human is a person's, and a start line is something any process types (ADR-0072):
+  // no host runs in one, in any mode. Issuing a credential for it, above, is how the operator
+  // confers it, on the connection that presents the credential.
+  if (policy.is_human_role(policy.identity.role)) {
+    std::fprintf(stderr,
+                 "engine-host: role '%s' is marked human in %s, and no host runs in a person's "
+                 "role: a person's role is conferred only by a credential the operator issued "
+                 "for it (engine-host --issue-credential <file> --role %s), presented on a "
+                 "connection to engine-host --listen --credentials <file>\n",
+                 policy.identity.role.c_str(), roles_file.c_str(), policy.identity.role.c_str());
+    return 2;
+  }
+  protocol::Credentials credentials;
+  if (!credentials_file.empty()) {
+    std::string text;
+    if (const io::Status s = io::read_file(credentials_file, text); s != io::Status::Ok) {
+      std::fprintf(stderr, "engine-host: cannot read credentials file '%s': %s\n",
+                   credentials_file.c_str(), io::status_name(s));
+      return 2;
+    }
+    std::string error;
+    if (!credentials.load(credentials_file, text, &policy, error)) {
+      std::fprintf(stderr, "engine-host: %s\n", error.c_str());
+      return 2;
+    }
+    if (listen_address.empty()) {
+      std::fprintf(stderr, "engine-host: --credentials is for --listen: stdio is the operator's\n");
+      return 2;
+    }
+    // A role this host cannot enforce is never a label (ADR-0069): said once, here, so the operator
+    // learns it at start rather than at an agent's first refused write.
+    if (const u32 readers = credentials.read_only_count(&policy); readers > 0) {
+      std::fprintf(stderr,
+                   "engine-host: %u of the %u credentials in '%s' may only read here: they name no "
+                   "role%s\n",
+                   readers, static_cast<u32>(credentials.file().credentials.size()),
+                   credentials_file.c_str(),
+                   policy.roles_loaded() ? "" : ", or this host has no --roles to enforce theirs");
+    }
+  }
+  // The host's file roots (domain/protocol/paths.h, ADR-0071): where a client's paths may reach.
+  // The operator's --doc and its out/, every --mount and every --root; the shell's directory is
+  // served and never written. A document --create makes is made here, by the operator's flag,
+  // before the roots are read.
+  if (!listen_address.empty() && shell_dir.empty())
+    shell_dir = platform::executable_directory() + "/../shell";
+  if (create_doc) {
+    if (const io::Status s = io::make_directories(doc_dir); s != io::Status::Ok) {
+      std::fprintf(stderr, "engine-host: --doc %s: %s\n", doc_dir.c_str(), io::status_name(s));
+      return 2;
+    }
+  }
+  io::Roots roots;
+  {
+    protocol::HostRootsConfig config;
+    config.doc_dir = doc_dir;
+    config.root_specs = root_specs;
+    config.mounts = &vfs;
+    config.shell_dir = shell_dir;
+    // The host's derived-data folder, the repository's `ddc/` as AGENTS.md finds it; a host with
+    // none puts a session's derived data in its document's `out/ddc`.
+    config.ddc_dir = geometry::find_ddc_root(platform::executable_directory());
+    std::string error;
+    if (!protocol::configure_host_roots(roots, config, error)) {
+      std::fprintf(stderr, "engine-host: %s\n", error.c_str());
+      return 2;
+    }
+    // The roots' directories, once, for the operator alone: never into the log's ring, which
+    // log.tail hands every client (paths.h).
+    std::fputs(protocol::describe_host_roots(roots, "engine-host").c_str(), stderr);
+  }
+
   protocol::SessionManager sessions(vfs);
   // The host's own methods' state reaches their handlers through Context::app (host_state.h): the
   // renderer's device and scenes, and the sessions' runtime worlds. It must outlive the
@@ -382,6 +551,7 @@ int main(int argc, char** argv) {
   host::HostState state;
   state.started_ns = started_ns;
   protocol::Dispatcher dispatcher(protocol::Context{&sessions, &ring, nullptr, &state, &policy});
+  dispatcher.context().roots = &roots;
   protocol::add_builtin_methods(dispatcher);
   dispatcher.add(protocol::read_only(protocol::method_no_params<protocol::PingResult, &engine_ping>(
       "engine.ping",
@@ -404,40 +574,47 @@ int main(int argc, char** argv) {
                     log::field("method", hang_method));
   }
 
-  // --doc: a session opened at start exactly as a client's `session.open` would open it (through
-  // the dispatcher, so nothing about it is special), and named in --listen's announcement so the
-  // shell can be pointed at it.
+  // --doc: a session opened at start on the operator's own document, held by stdio (0) as a
+  // client's `session.open` would be, protected as every open document is, and named in --listen's
+  // announcement so the shell can be pointed at it. It is opened directly rather than through
+  // `session.open`: the operator named it, and `--create` makes a document where no client may.
   std::string doc_session;
   if (!doc_dir.empty()) {
-    JsonValue open = JsonValue::object();
-    open.set("jsonrpc", "2.0");
-    open.set("id", 0);
-    open.set("method", "session.open");
-    JsonValue open_params = JsonValue::object();
-    open_params.set("path", doc_dir);
-    open_params.set("create", create_doc);
-    open.set("params", std::move(open_params));
-    const JsonValue response = dispatcher.dispatch(open);
-    const JsonValue* result = response.find("result");
-    const JsonValue* session = result != nullptr ? result->find("session") : nullptr;
-    std::string_view id;
-    if (session == nullptr || !session->get_string(id)) {
+    protocol::SessionOpenParams open;
+    open.path = roots.find("doc")->canonical;
+    open.create = create_doc;
+    open.name = doc_name;
+    protocol::RpcError open_error;
+    std::string shown;
+    (void)roots.portable(open.path, shown);
+    protocol::Session* opened = sessions.open(open, 0, open_error, {}, shown);
+    if (opened == nullptr) {
       std::fprintf(stderr, "engine-host: --doc %s: %s\n", doc_dir.c_str(),
-                   write_json(response).c_str());
+                   open_error.message.c_str());
       return 2;
     }
-    doc_session = std::string(id);
+    (void)roots.protect(opened->dir());
+    doc_session = opened->id();
   }
 
   // --listen (protocol::Listener; listen.h is the captures it serves; docs/subsystems/apps.md):
   // the same dispatcher over a loopback WebSocket, beside the stdio loop. Every dispatch, from
   // either side, holds `dispatch_lock`, which is what keeps the host's state single-threaded with a
-  // socket in the process.
+  // socket in the process; a handler whose work reads none of it lets it go for that work
+  // (`protocol::without_dispatch_lock`), so the context names the lock for each request.
   std::mutex dispatch_lock;
   host::HostCaptures captures(state);
   protocol::Listener listen(dispatcher, dispatch_lock, &captures);
+  if (credentials.loaded()) listen.set_credentials(&credentials);
+  const auto dispatch_held = [&](std::string_view text) {
+    std::lock_guard<std::mutex> lock(dispatch_lock);
+    protocol::Context& ctx = dispatcher.context();
+    ctx.dispatch_lock = &dispatch_lock;
+    std::string reply = dispatcher.dispatch_text(text);
+    ctx.dispatch_lock = nullptr;
+    return reply;
+  };
   if (!listen_address.empty()) {
-    if (shell_dir.empty()) shell_dir = platform::executable_directory() + "/../shell";
     std::string error;
     if (!listen.start(listen_port, shell_dir, doc_session, error)) {
       std::fprintf(stderr, "engine-host: --listen %s: %s\n", listen_address.c_str(), error.c_str());
@@ -448,8 +625,8 @@ int main(int argc, char** argv) {
     std::fwrite(line.data(), 1, line.size(), stdout);
     std::fputc('\n', stdout);
     std::fflush(stdout);
-    ENGINE_LOG_INFO(log_host, "listening on loopback", log::field("port", u64{listen.port()}),
-                    log::field("shell", shell_dir));
+    // The shell's directory is on stderr with the roots, not here: the ring is every client's.
+    ENGINE_LOG_INFO(log_host, "listening on loopback", log::field("port", u64{listen.port()}));
   }
 
   int exit_code = 0;
@@ -458,11 +635,7 @@ int main(int argc, char** argv) {
     exit_code = host::run_console(dispatcher, console_options);
   } else if (!request.empty()) {
     if (!hang_method.empty() && names_method(request, hang_method)) hang_forever(hang_method);
-    std::string out;
-    {
-      std::lock_guard<std::mutex> lock(dispatch_lock);
-      out = dispatcher.dispatch_text(request);
-    }
+    const std::string out = dispatch_held(request);
     if (!out.empty()) {
       std::fwrite(out.data(), 1, out.size(), stdout);
       std::fputc('\n', stdout);
@@ -473,11 +646,7 @@ int main(int argc, char** argv) {
       if (!line.empty() && line.back() == '\r') line.pop_back();
       if (line.empty()) continue;
       if (!hang_method.empty() && names_method(line, hang_method)) hang_forever(hang_method);
-      std::string out;
-      {
-        std::lock_guard<std::mutex> lock(dispatch_lock);
-        out = dispatcher.dispatch_text(line);
-      }
+      const std::string out = dispatch_held(line);
       if (!out.empty()) {
         std::fwrite(out.data(), 1, out.size(), stdout);
         std::fputc('\n', stdout);

@@ -173,7 +173,8 @@ io::Status write_exr(std::string_view native_path, u32 width, u32 height, u32 ch
   if (!encode_exr(width, height, channels, halves, bytes, options)) {
     return io::Status::InvalidArgument;
   }
-  return io::write_file(
+  // By rename, as write_png: a link already at the name is replaced, never written through.
+  return io::write_file_atomic(
       native_path, std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
 }
 

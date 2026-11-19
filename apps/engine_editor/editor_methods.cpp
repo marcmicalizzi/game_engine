@@ -6,6 +6,7 @@
 #include <core/json/json.h>
 #include <core/json/json_value.h>
 #include <core/math/math.h>
+#include <domain/protocol/policy.h>
 
 #include <algorithm>
 #include <cmath>
@@ -56,6 +57,11 @@ bool editor_import_mesh(protocol::Context& ctx, const protocol::EditorImportMesh
     return false;
   }
   EditorDocument& document = *state.document;
+  // Whoever called: the shell's page is the editor's own identity through the host's policy, and a
+  // client that said who it is (client.hello) or presented a credential is itself, connection and
+  // all, in the journal and in the events the commit publishes (ADR-0069).
+  protocol::Caller caller;
+  if (!protocol::resolve_caller(ctx, nullptr, caller, error)) return false;
   ImportedFiles files;
   std::string why;
   if (!import_mesh_files(p.path, document.directory(), files, why)) {
@@ -80,7 +86,7 @@ bool editor_import_mesh(protocol::Context& ctx, const protocol::EditorImportMesh
   // The file's own name in the rationale, as the person chose it.
   const usize slash = p.path.find_last_of("/\\");
   const std::string file = slash == std::string::npos ? p.path : p.path.substr(slash + 1);
-  if (!document.apply(std::span<const doc::Command>(&create, 1), "import " + file, why)) {
+  if (!document.apply(std::span<const doc::Command>(&create, 1), caller, "import " + file, why)) {
     remove_imported(document.directory(), files);
     error = protocol::make_error(protocol::codes::k_document_error, "editor.import_mesh: " + why);
     return false;
@@ -286,34 +292,37 @@ protocol::RenderFramedCamera framed_camera(const renderer::Camera& camera) noexc
 }
 
 void add_editor_methods(protocol::Dispatcher& d) {
-  d.add(protocol::read_only(
+  // What the person at the editor sees is theirs: moving the viewport, the selection, the gizmo's
+  // tool and a dialog on their screen are writes (protocol.md, "What a read may do"), so a
+  // credential that may only read cannot change the picture a person is judging. The shell's own
+  // page is the operator's connection, which no role restricts here: the editor loads no roles
+  // file.
+  d.add(
       protocol::method<protocol::EditorLayoutParams, protocol::EditorLayoutResult, &editor_layout>(
           "editor.layout",
           "engine-editor only: where the embedded shell's viewport cell is, in CSS pixels, and the "
           "page's device pixel ratio. The page sends it as a notification on load, on a split drag "
           "and on a resize; the editor moves its native viewport there. UI state, never the "
-          "document.")));
-  d.add(protocol::read_only(
-      protocol::method<protocol::EditorSelectParams, protocol::EditorStateResult, &editor_select>(
-          "editor.select",
-          "engine-editor only: select a live record of the editor's session (null clears), so the "
-          "native viewport outlines it and its gizmo attaches. UI state, never the document.")));
+          "document."));
+  d.add(protocol::method<protocol::EditorSelectParams, protocol::EditorStateResult, &editor_select>(
+      "editor.select",
+      "engine-editor only: select a live record of the editor's session (null clears), so the "
+      "native viewport outlines it and its gizmo attaches. UI state, never the document."));
   d.add(protocol::read_only(protocol::method_no_params<protocol::EditorStateResult, &editor_state>(
       "editor.state",
       "engine-editor only: the selection, the viewport's camera (render.capture's shape), the "
       "last layout and the gizmo's tool, so a click in the native viewport reaches the shell's "
       "outliner.")));
-  d.add(protocol::read_only(
-      protocol::method<protocol::EditorToolParams, protocol::EditorStateResult, &editor_tool>(
-          "editor.tool",
-          "engine-editor only: the viewport gizmo's tool, \"translate\" or \"rotate\" (the T and R "
-          "keys in the viewport). UI state, never the document.")));
-  d.add(protocol::read_only(protocol::method<protocol::EditorPickFileParams,
-                                             protocol::EditorPickFileResult, &editor_pick_file>(
+  d.add(protocol::method<protocol::EditorToolParams, protocol::EditorStateResult, &editor_tool>(
+      "editor.tool",
+      "engine-editor only: the viewport gizmo's tool, \"translate\" or \"rotate\" (the T and R "
+      "keys in the viewport). UI state, never the document."));
+  d.add(protocol::method<protocol::EditorPickFileParams, protocol::EditorPickFileResult,
+                         &editor_pick_file>(
       "editor.pick_file",
       "engine-editor only: the platform's open-file dialog on the editor's window, answering "
       "the chosen path or null; null at once in a test or an editor with no window. Reads "
-      "nothing and writes nothing.")));
+      "no file and writes none."));
   // A write: it changes the document, so roles govern it (protocol.md, "Roles, leases and
   // proposals").
   d.add(protocol::method<protocol::EditorImportMeshParams, protocol::EditorImportMeshResult,
@@ -339,11 +348,12 @@ std::string tool_notification(std::string_view tool) {
 }
 
 void add_editor_test_methods(protocol::Dispatcher& d) {
-  d.add(protocol::read_only(protocol::method<protocol::EditorTestReportParams,
-                                             protocol::EditorTestReportResult, &editor_test_report>(
+  // A write: it adds to what the run reports as passed or failed.
+  d.add(protocol::method<protocol::EditorTestReportParams, protocol::EditorTestReportResult,
+                         &editor_test_report>(
       "editor.test_report",
       "engine-editor --test-page only: one of the embedded page's own checks (a popup kept out of "
-      "the viewport cell, a reconnect), for the run's summary. UI state, never the document.")));
+      "the viewport cell, a reconnect), for the run's summary. UI state, never the document."));
 }
 
 }  // namespace engine::editor

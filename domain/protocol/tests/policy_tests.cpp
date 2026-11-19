@@ -9,15 +9,21 @@
 #include <domain/protocol/proposals.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
+#include <domain/protocol/side_file.h>
+#include <foundation/io/roots.h>
+#include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <thread>
+#include <vector>
 
 using namespace engine;
 using namespace engine::protocol;
@@ -138,10 +144,18 @@ struct Host {
   io::Vfs vfs;
   SessionManager sessions{vfs};
   Policy policy;
+  // Every path a case names is under a TempDir, and every TempDir under one parent: that parent is
+  // the host's one writable root, as an operator's --root would be (paths.h).
+  test::TempDir roots_anchor{"roots"};
+  io::Roots roots;
   Dispatcher dispatcher{Context{&sessions, nullptr, nullptr, nullptr, &policy}};
   std::string session;
 
-  Host() { add_builtin_methods(dispatcher); }
+  Host() {
+    (void)roots.add("tests", std::string(io::parent_path(roots_anchor.path())), true);
+    dispatcher.context().roots = &roots;
+    add_builtin_methods(dispatcher);
+  }
 
   JsonValue call(std::string_view method, JsonValue params) {
     JsonValue req = obj({{"jsonrpc", JsonValue("2.0")}, {"id", JsonValue(1)}});
@@ -280,11 +294,61 @@ TEST_CASE("policy: a roles file is checked when it is read") {
   const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   Policy shipped;
   REQUIRE_MESSAGE(shipped.load_roles(path, text, error), error);
-  for (const char* name : {"director", "designer", "environment", "qa", "performance"})
+  for (const char* name : {"director", "designer", "environment", "qa", "performance", "reviewer"})
     CHECK_MESSAGE(shipped.find_role(name) != nullptr, name);
+  // A person's role is the reviewer alone: no role an agent runs in closes a human review item.
+  for (const Role& role : shipped.roles().roles) {
+    const bool human = role.human;  // engine-lint: allow-human-flag the shipped file's own flags
+    CHECK_MESSAGE(human == (role.name == "reviewer"), role.name);
+  }
   CHECK(shipped.roles().default_role == "qa");
-  CHECK(shipped.find_role("qa")->methods.empty());
+  // QA writes nothing of a document: what it may call is the host's own state that looking needs
+  // (protocol.md, "What a read may do"), and no layer, tile or object type.
+  {
+    const Role& qa = *shipped.find_role("qa");
+    const char* const expect[] = {"profile.start", "profile.stop", "render.unload",
+                                  "session.materialize"};
+    REQUIRE(qa.methods.size() == 4);
+    for (u32 i = 0; i < 4; ++i)
+      CHECK(qa.methods[i] == expect[i]);
+    CHECK(qa.layers.empty());
+    CHECK(qa.object_types.empty());
+  }
   CHECK(shipped.find_role("designer")->review_required);
+}
+
+// Every method's class (protocol.md, "What a read may do"): a read, a read that leaves a file, or a
+// write. The builtin table's three that the sort moved are pinned here so a later registration
+// cannot quietly put them back; engine-host's and the editor's are pinned by their own tests.
+TEST_CASE("roles: a read that leaves a file says so, and doc.save is a write") {
+  TempDir tmp("protocol_roles_sort");
+  Host host;
+  host.make_world(tmp.file("doc"));
+  const JsonValue methods = host.ok("engine.methods", JsonValue());
+  int seen = 0;
+  for (usize i = 0; i < at(methods, "methods").size(); ++i) {
+    const JsonValue& m = at(methods, "methods")[i];
+    const JsonValue& name = at(m, "name");
+    const bool read = at(m, "read_only") == JsonValue(true);
+    const bool files = at(m, "leaves_files") == JsonValue(true);
+    // No write claims to leave a file: the flag is a read's.
+    CHECK_MESSAGE(!(files && !read), at(m, "name").as_string());
+    if (name == JsonValue("doc.save")) {
+      CHECK_FALSE(read);
+      ++seen;
+    }
+    if (name == JsonValue("session.open")) {
+      CHECK(read);
+      CHECK(files);
+      ++seen;
+    }
+    if (name == JsonValue("doc.get") || name == JsonValue("lease.list")) {
+      CHECK(read);
+      CHECK_FALSE(files);
+      ++seen;
+    }
+  }
+  CHECK(seen == 4);
 }
 
 TEST_CASE("roles: no roles file restricts nothing, and the gate reads only writes") {
@@ -389,7 +453,8 @@ TEST_CASE("leases: acquisition refuses overlap with another holder") {
                                                {"tiles", ranges({range(0, 0, 1, 1)})},
                                                {"attribution", a}}));
   CHECK(at(la, "actor") == JsonValue("a"));
-  CHECK(at(la, "id") == JsonValue(u64{1}));
+  const JsonValue first = at(la, "id");  // drawn, not counted (protocol.md, "Leases")
+  CHECK(first.as_uint() > 0);
   // b overlapping a: refused, naming a's lease. a overlapping itself: fine.
   JsonValue e;
   CHECK(host.fails("lease.acquire",
@@ -398,9 +463,11 @@ TEST_CASE("leases: acquisition refuses overlap with another holder") {
                         {"attribution", b}}),
                    &e) == codes::k_lease_conflict);
   CHECK(at(at(at(e, "data"), "lease"), "actor") == JsonValue("a"));
-  host.ok("lease.acquire", obj({{"layer", JsonValue("world")},
-                                {"tiles", ranges({range(1, 1, 1, 1)})},
-                                {"attribution", a}}));
+  const JsonValue second = at(host.ok("lease.acquire", obj({{"layer", JsonValue("world")},
+                                                            {"tiles", ranges({range(1, 1, 1, 1)})},
+                                                            {"attribution", a}})),
+                              "id");
+  CHECK_FALSE(second == first);
   // Next door, and another layer: fine.
   host.ok("lease.acquire", obj({{"layer", JsonValue("world")},
                                 {"tiles", ranges({range(2, 0, 3, 3)})},
@@ -436,17 +503,17 @@ TEST_CASE("leases: acquisition refuses overlap with another holder") {
   JsonValue list = host.ok("lease.list", obj({}));
   CHECK(at(list, "leases").size() == 5);
   CHECK(at(host.ok("lease.list", obj({{"actor", JsonValue("b")}})), "leases").size() == 2);
-  CHECK(host.fails("lease.release", obj({{"lease", JsonValue(u64{1})}, {"attribution", b}})) ==
+  CHECK(host.fails("lease.release", obj({{"lease", first}, {"attribution", b}})) ==
         codes::k_forbidden);
-  CHECK(host.fails("lease.renew", obj({{"lease", JsonValue(u64{1})}, {"attribution", b}})) ==
+  CHECK(host.fails("lease.renew", obj({{"lease", first}, {"attribution", b}})) ==
         codes::k_forbidden);
-  JsonValue renewed = host.ok(
-      "lease.renew",
-      obj({{"lease", JsonValue(u64{1})}, {"ttl_seconds", JsonValue(3600.0)}, {"attribution", a}}));
+  JsonValue renewed =
+      host.ok("lease.renew",
+              obj({{"lease", first}, {"ttl_seconds", JsonValue(3600.0)}, {"attribution", a}}));
   CHECK(num(at(renewed, "expires_unix_ms")) > num(at(la, "expires_unix_ms")));
-  host.ok("lease.release", obj({{"lease", JsonValue(u64{1})}, {"attribution", a}}));
-  host.ok("lease.release", obj({{"lease", JsonValue(u64{2})}, {"attribution", a}}));
-  CHECK(host.fails("lease.release", obj({{"lease", JsonValue(u64{1})}, {"attribution", a}})) ==
+  host.ok("lease.release", obj({{"lease", first}, {"attribution", a}}));
+  host.ok("lease.release", obj({{"lease", second}, {"attribution", a}}));
+  CHECK(host.fails("lease.release", obj({{"lease", first}, {"attribution", a}})) ==
         codes::k_not_found);
   // Released, the tiles are b's to take.
   host.ok("lease.acquire", obj({{"layer", JsonValue("world")},
@@ -502,7 +569,21 @@ TEST_CASE("leases: expiry is by the host's clock, and the table is kept beside t
   CHECK(s2->leases().required());
   REQUIRE(s2->leases().leases().size() == 1);
   CHECK(s2->leases().leases()[0].id == held.id);
-  CHECK(s2->leases().file().next_id == held.id + 1);
+  // Two hosts on the document at once (protocol.md, "Two hosts, one side file"): each grants a
+  // lease from the table the file holds at the time, not the one it read at its open, and the ids
+  // are drawn rather than counted from a number both read.
+  LeaseInfo second;
+  REQUIRE(s2->acquire_lease(p, a, time::wall_unix_ms(), second, error));
+  CHECK(second.id != held.id);
+  LeaseInfo third;
+  REQUIRE(s->acquire_lease(p, a, time::wall_unix_ms(), third, error));
+  CHECK(third.id != second.id);
+  LeasesResult all;
+  REQUIRE(s2->list_leases("", "", time::wall_unix_ms(), all, error));
+  REQUIRE(all.leases.size() == 3);
+  CHECK(all.leases[0].id == held.id);
+  CHECK(all.leases[1].id == second.id);
+  CHECK(all.leases[2].id == third.id);
 }
 
 TEST_CASE("leases: when the document requires them, every write is covered") {
@@ -896,7 +977,7 @@ TEST_CASE("transactions: several calls land as one patch, the patch one doc.appl
   host.make_world(tmp.file("doc"));
   const i64 before = journal_length(host);
   const u64 t = begin_on(host, "world", who("a", "", "a lamp beside the first prop"));
-  CHECK(t == 1);
+  CHECK(t > 0);
   JsonValue r = staged(host, t, one(commands[0]), who("a"));
   CHECK(at(r, "committed") == JsonValue(false));
   CHECK(num(at(r, "applied")) == 1);
@@ -929,11 +1010,25 @@ TEST_CASE("transactions: several calls land as one patch, the patch one doc.appl
   CHECK(num(at(r, "staged")) == 0);
   CHECK(journal_length(host) == before + 1);
   CHECK(host.property(oid(10), "color") == JsonValue(8));
-  CHECK(write_json(schema::to_json(
-            host.sessions.find(host.session)->document().journal().back())) == expected);
+  // The patch one doc.apply journals, and it names the transaction it is the commit of.
+  doc::Patch patch = host.sessions.find(host.session)->document().journal().back();
+  CHECK(patch.transaction == t);
+  patch.transaction = 0;
+  CHECK(write_json(schema::to_json(patch)) == expected);
   CHECK(at(host.ok("doc.transactions", obj({})), "transactions").size() == 0);
-  CHECK(host.fails("doc.commit", obj({{"transaction", JsonValue(t)}, {"attribution", who("a")}})) ==
-        codes::k_not_found);
+  // Committed: committing it again (an answer the client never saw) is answered with the patch
+  // that landed, and nothing is applied twice; rolling it back is 1003 naming that patch.
+  r = ended(host, "doc.commit", t, who("a"));
+  CHECK(at(r, "committed") == JsonValue(true));
+  CHECK(num(at(r, "patch_index")) == before);
+  CHECK(at(r, "diagnostics").size() == 1);
+  CHECK(journal_length(host) == before + 1);
+  CHECK(host.fails("doc.commit", obj({{"transaction", JsonValue(t)}, {"attribution", who("b")}})) ==
+        codes::k_forbidden);
+  JsonValue gone;
+  CHECK(host.fails("doc.rollback", obj({{"transaction", JsonValue(t)}, {"attribution", who("a")}}),
+                   &gone) == codes::k_not_found);
+  CHECK(std::string(at(gone, "message").as_string()).find("journal patch") != std::string::npos);
   // Landed together, so one undo takes them back together.
   host.ok("doc.undo", obj({}));
   CHECK(host.property(oid(1), "color").is_null());
@@ -1017,6 +1112,258 @@ TEST_CASE("transactions: rollback and lapse leave nothing, and a transaction is 
   CHECK(num(at(at(listed, "transactions")[0], "id")) == static_cast<i64>(t));
   CHECK(at(ended(next, "doc.commit", t, who("a")), "committed") == JsonValue(true));
   CHECK(next.property(oid(3), "color") == JsonValue(9));
+}
+
+// Batch 68's review (2026-11-18; protocol.md, "Two hosts, one side file"): two host processes on
+// one document — two engine-cli calls an agent made at once — each read `transactions.json` at
+// their open. The second writer is a second session manager in this process on the same directory,
+// interleaved the way two parallel calls are.
+TEST_CASE("transactions: two hosts on one document lose no staged command and no transaction") {
+  TempDir tmp("protocol_two_hosts");
+  const std::string dir = tmp.file("doc");
+  Host left;
+  left.make_world(dir);
+  const u64 t = begin_on(left, "world", who("a"));
+  Host right;
+  right.open(dir, false);
+  staged(left, t, one(set(oid(1), "color", JsonValue(1))), who("a"));
+  staged(right, t, one(set(oid(2), "color", JsonValue(2))), who("a"));
+  const JsonValue r = staged(left, t, one(set(oid(3), "color", JsonValue(3))), who("a"));
+  CHECK(num(at(r, "staged")) == 3);
+  // A begin in each: two transactions with two ids, though each host read the same table.
+  const u64 u = begin_on(right, "world", who("b"));
+  const u64 v = begin_on(left, "world", who("c"));
+  CHECK(u != v);
+  CHECK(u != t);
+  CHECK(v != t);
+  CHECK(at(right.ok("doc.transactions", obj({})), "transactions").size() == 3);
+  const JsonValue committed = ended(right, "doc.commit", t, who("a"));
+  CHECK(at(committed, "committed") == JsonValue(true));
+  CHECK(num(at(committed, "applied")) == 3);
+  CHECK(right.property(oid(1), "color") == JsonValue(1));
+  CHECK(right.property(oid(2), "color") == JsonValue(2));
+  CHECK(right.property(oid(3), "color") == JsonValue(3));
+}
+
+// The same with real concurrency: eight writers, each its own session manager on its own thread,
+// staging four calls each into one transaction at once. The lock is taken by handle, so two in one
+// process exclude each other as two processes do.
+TEST_CASE("transactions: eight writers at once stage every command") {
+  TempDir tmp("protocol_two_hosts");
+  const std::string dir = tmp.file("doc");
+  Host host;
+  host.make_world(dir);
+  const u64 t = begin_on(host, "world", who("a"));
+  constexpr u32 k_writers = 8;
+  constexpr u32 k_calls = 4;
+  Vector<doc::Command> commands;
+  for (u32 i = 0; i < k_writers * k_calls; ++i) {
+    doc::Command c;
+    schema::ReadContext ctx;
+    REQUIRE(schema::from_json(c, set(oid(1 + i % 4), "color", JsonValue(i)), ctx));
+    commands.push_back(std::move(c));
+  }
+  u32 failures[k_writers] = {};
+  std::string first_error[k_writers];
+  {
+    std::vector<std::thread> writers;
+    for (u32 w = 0; w < k_writers; ++w) {
+      writers.emplace_back([&, w] {
+        io::Vfs vfs;
+        SessionManager sessions(vfs);
+        SessionOpenParams open;
+        open.path = dir;
+        RpcError error;
+        Session* s = sessions.open(open, 0, error);
+        if (s == nullptr) {
+          failures[w] = k_calls;
+          first_error[w] = error.message;
+          return;
+        }
+        Caller a;
+        a.who.actor = "a";
+        for (u32 c = 0; c < k_calls; ++c) {
+          ApplyResult result;
+          const doc::Command& command = commands[w * k_calls + c];
+          if (!s->stage(t, {&command, 1}, a, true, "", time::wall_unix_ms(), result, error) ||
+              result.applied != 1) {
+            if (failures[w]++ == 0) first_error[w] = error.message;
+          }
+        }
+      });
+    }
+    for (std::thread& w : writers)
+      w.join();
+  }
+  for (u32 w = 0; w < k_writers; ++w)
+    CHECK_MESSAGE(failures[w] == 0, "writer " << w << ": " << first_error[w]);
+  const JsonValue listed = host.ok("doc.transactions", obj({}));
+  REQUIRE(at(listed, "transactions").size() == 1);
+  CHECK(num(at(at(listed, "transactions")[0], "commands")) == k_writers * k_calls);
+  CHECK(num(at(at(listed, "transactions")[0], "applies")) == k_writers * k_calls);
+}
+
+// A commit that landed and was reported failed: a commit whose patch is journaled and saved, and
+// whose write of `transactions.json` then fails (a scanner holding the file past the rename's
+// retries, a host killed there), left the transaction open, and a retry applied its commands again.
+// The patch names its transaction, so a retry — in this host, or in the next process, which reads
+// the table that still lists it — is answered with the patch that landed.
+TEST_CASE("transactions: a commit whose table write failed lands once, here and in the next host") {
+  TempDir tmp("protocol_transactions");
+  const std::string dir = tmp.file("doc");
+  Host host;
+  host.make_world(dir);
+  const i64 before = journal_length(host);
+  Session* s = host.sessions.find(host.session);
+  const u64 t = begin_on(host, "world", who("a"));
+  staged(host, t, one(set(oid(1), "color", JsonValue(4))), who("a"));
+  s->fail_transactions_write_for_test();
+  CHECK(host.fails("doc.commit", obj({{"transaction", JsonValue(t)}, {"attribution", who("a")}})) ==
+        codes::k_io_error);
+  CHECK(journal_length(host) == before + 1);
+  CHECK(s->landed_patch(t) == before);
+  JsonValue r = ended(host, "doc.commit", t, who("a"));
+  CHECK(at(r, "committed") == JsonValue(true));
+  CHECK(num(at(r, "patch_index")) == before);
+  CHECK(at(r, "diagnostics").size() == 1);
+  CHECK(journal_length(host) == before + 1);
+  CHECK(host.property(oid(1), "color") == JsonValue(4));
+
+  const u64 u = begin_on(host, "world", who("a"));
+  staged(host, u, one(set(oid(2), "color", JsonValue(5))), who("a"));
+  s->fail_transactions_write_for_test();
+  CHECK(host.fails("doc.commit", obj({{"transaction", JsonValue(u)}, {"attribution", who("a")}})) ==
+        codes::k_io_error);
+  std::string table;
+  REQUIRE(io::read_file(dir + "/transactions.json", table) == io::Status::Ok);
+  CHECK(table.find(std::to_string(u)) != std::string::npos);  // still listed on disk
+  Host next;
+  next.open(dir, false);
+  CHECK(at(next.ok("doc.transactions", obj({})), "transactions").size() == 0);
+  r = ended(next, "doc.commit", u, who("a"));
+  CHECK(at(r, "committed") == JsonValue(true));
+  CHECK(num(at(r, "patch_index")) == before + 1);
+  CHECK(journal_length(next) == before + 2);
+  CHECK(next.property(oid(2), "color") == JsonValue(5));
+  // One patch, so one undo takes it back.
+  next.ok("doc.undo", obj({}));
+  CHECK(next.property(oid(2), "color").is_null());
+  CHECK(next.property(oid(1), "color") == JsonValue(4));
+  // Undone, it is not answered committed: its work is not in the document.
+  CHECK(next.fails("doc.commit", obj({{"transaction", JsonValue(u)}, {"attribution", who("a")}})) ==
+        codes::k_not_found);
+  CHECK(next.property(oid(2), "color").is_null());
+}
+
+// A commit whose save failed after the journal took its patch: the files keep the undo position
+// they were saved at, so the next host reads the patch as the redo tail's first, not as work in the
+// document. Its table entry stays, the retry commits the staged commands afresh (cutting that
+// tail, so nothing is applied twice), and another actor's commit after it keeps them. Before the
+// mend the next host's first read of the table dropped the entry, the retry answered "committed"
+// for work the document did not hold, and the other actor's commit cut it off for good.
+TEST_CASE(
+    "transactions: a commit whose save failed after the journal lands once in the next host") {
+  TempDir tmp("protocol_transactions");
+  const std::string dir = tmp.file("doc");
+  Host host;
+  host.make_world(dir);
+  const i64 before = journal_length(host);
+  Session* s = host.sessions.find(host.session);
+  const u64 t = begin_on(host, "world", who("a"));
+  staged(host, t, one(set(oid(1), "color", JsonValue(4))), who("a"));
+  s->fail_save_for_test();
+  CHECK(host.fails("doc.commit", obj({{"transaction", JsonValue(t)}, {"attribution", who("a")}})) ==
+        codes::k_io_error);
+  // This host's memory holds the patch, but nothing saved it: the table still lists it.
+  CHECK(at(host.ok("doc.transactions", obj({})), "transactions").size() == 1);
+
+  Host next;
+  next.open(dir, false);
+  CHECK(next.property(oid(1), "color").is_null());
+  CHECK(at(next.ok("doc.transactions", obj({})), "transactions").size() == 1);
+  const JsonValue r = ended(next, "doc.commit", t, who("a"));
+  CHECK(at(r, "committed") == JsonValue(true));
+  CHECK(num(at(r, "patch_index")) == before);
+  CHECK(journal_length(next) == before + 1);
+  CHECK(next.property(oid(1), "color") == JsonValue(4));
+  CHECK(at(next.ok("doc.transactions", obj({})), "transactions").size() == 0);
+
+  Host third;
+  third.open(dir, false);
+  CHECK(at(third.apply(one(set(oid(2), "color", JsonValue(5))), who("b"), "world"), "committed") ==
+        JsonValue(true));
+  CHECK(third.property(oid(1), "color") == JsonValue(4));
+  CHECK(third.property(oid(2), "color") == JsonValue(5));
+  Host last;
+  last.open(dir, false);
+  CHECK(last.property(oid(1), "color") == JsonValue(4));
+  CHECK(journal_length(last) == before + 2);
+}
+
+// The bounds: a transaction holds at most `k_max_staged_commands`, and an actor opens at most
+// `k_max_open_transactions` at once; past either, 1004 and nothing changes.
+TEST_CASE("transactions: bounded in commands and in open transactions per actor") {
+  TempDir tmp("protocol_transactions");
+  Host host;
+  host.make_world(tmp.file("doc"));
+  const u64 t = begin_on(host, "world", who("a"));
+  JsonValue many = JsonValue::array();
+  for (u32 i = 0; i <= Session::k_max_staged_commands; ++i)
+    many.push_back(set(oid(1), "color", JsonValue(i)));
+  CHECK(staged_fails(host, t, many, who("a")) == codes::k_invalid_argument);
+  CHECK(num(at(at(host.ok("doc.transactions", obj({})), "transactions")[0], "commands")) == 0);
+  for (u32 i = 1; i < Session::k_max_open_transactions; ++i)
+    (void)begin_on(host, "world", who("a"));
+  CHECK(host.fails("doc.begin", obj({{"layer", JsonValue("world")}, {"attribution", who("a")}})) ==
+        codes::k_invalid_argument);
+  // Another actor's count is its own.
+  (void)begin_on(host, "world", who("b"));
+}
+
+TEST_CASE("side files: the lock excludes a second holder, and a version-1 table still reads") {
+  TempDir tmp("protocol_side_file");
+  const std::string path = tmp.file("table.json");
+  SideFileLock first;
+  SideFileLock second;
+  std::string message;
+  REQUIRE(first.acquire(path, 0, message));
+  CHECK(first.held());
+  const i64 start = time::monotonic_ns();
+  CHECK_FALSE(second.acquire(path, 50, message));
+  CHECK(time::monotonic_ns() - start >= 50'000'000);
+  CHECK(message.find("another host process") != std::string::npos);
+  first.release();
+  CHECK(second.acquire(path, 0, message));
+  second.release();
+
+  // Ids: never zero, under 2^53, and never one the caller calls taken.
+  u32 refusals = 0;
+  const u64 id = fresh_side_file_id(
+      [](const void* context, u64) {
+        u32& n = *static_cast<u32*>(const_cast<void*>(context));
+        return n++ < 3;
+      },
+      &refusals);
+  CHECK(refusals == 4);
+  CHECK(id > 0);
+  CHECK(id < (u64{1} << 53));
+
+  // A table written before ids were drawn names its counter; it reads through the version step.
+  io::Vfs vfs;
+  {
+    std::ofstream f(tmp.file("leases.json"), std::ios::binary);
+    f << R"({"required":true,"next_id":3,"leases":[{"id":2,"actor":"a","layer":"world"}]})";
+  }
+  Session warmup(vfs, "s", tmp.path());  // registers the version steps
+  LeaseFile leases;
+  bool present = false;
+  RpcError error;
+  REQUIRE_MESSAGE(read_side_file(vfs, tmp.file("leases.json"), leases, present, error),
+                  error.message);
+  CHECK(present);
+  CHECK(leases.required);
+  REQUIRE(leases.leases.size() == 1);
+  CHECK(leases.leases[0].id == 2);
 }
 
 TEST_CASE("transactions: roles, proposals and leases check every staging call and the commit") {
@@ -1168,6 +1515,25 @@ TEST_CASE("place_asset: a checked mesh placed as MeshPlacement records, ids from
   CHECK(host.fails("doc.place_asset", params("fake.glb", two)) == codes::k_invalid_argument);
   CHECK(host.fails("doc.place_asset", params("crate.glb", JsonValue::array())) ==
         codes::k_invalid_argument);
+  // The one check (paths.h, admit_document_file): the roots are asked as well as the lexical rule,
+  // so a host whose roots do not hold the document reads none of its assets; and a link inside the
+  // document that leads out of it is refused, which the lexical rule alone let through.
+  {
+    TempDir elsewhere("protocol_place_elsewhere");
+    io::Roots narrow;
+    REQUIRE(narrow.add("elsewhere", elsewhere.path(), false) == io::Status::Ok);
+    host.dispatcher.context().roots = &narrow;
+    CHECK(host.fails("doc.place_asset", params("crate.glb", two)) == codes::k_not_found);
+    host.dispatcher.context().roots = &host.roots;
+    std::error_code link_error;
+    std::filesystem::create_directories(tmp.file("outside"), link_error);
+    write_bytes(tmp.file("outside") + "/crate.glb", std::string("glTF\x02\0\0\0", 8));
+    std::filesystem::create_directory_symlink(tmp.file("outside"), dir + "/linked", link_error);
+    if (!link_error)
+      CHECK(host.fails("doc.place_asset", params("linked/crate.glb", two)) == codes::k_not_found);
+    else
+      MESSAGE("no symbolic link here (" << link_error.message() << "), so that form is not tried");
+  }
   // A role that may not write is refused at the gate, as for doc.apply.
   std::string message;
   REQUIRE(host.policy.load_roles("roles.json", k_roles, message));
@@ -1204,9 +1570,9 @@ TEST_CASE("place_asset: reads only under the document's directory, and says noth
   REQUIRE(host.fails("doc.place_asset", params("props/missing.glb"), &missing) ==
           codes::k_not_found);
   const std::string climbing[] = {
-      tmp.file("outside.glb"), "../outside.glb",        "props/../../outside.glb",
-      "..\\outside.glb",       "/outside.glb",          "\\\\host\\share\\outside.glb",
-      "C:outside.glb",         "props/crate.glb:x.glb", "props//crate.glb",
+      tmp.file("outside.glb"), "../outside.glb", "props/../../outside.glb", "..\\outside.glb",
+      "/outside.glb", "\\\\host\\share\\outside.glb", "C:outside.glb", "props/crate.glb:x.glb",
+      "props//crate.glb",
       // Either separator on every platform: the mixed forms are refused on Linux as on Windows,
       // never read as one file name holding a backslash (protocol.md, "Blobs and checkpoints"). A
       // name that is only a backslash is an empty component between two separators. (A whole asset
@@ -1574,4 +1940,87 @@ TEST_CASE("query: a structured filter over the document, in id order, a page at 
   REQUIRE(host.policy.load_roles("roles.json", k_roles, message));
   host.policy.identity.role = "qa";
   CHECK(at(query(host, JsonValue()), "rows").size() == 8);
+}
+
+// `proposals.json` goes through the side files' one helper (protocol.md, "Two hosts, one side
+// file"): each change reads the table afresh under its lock and replaces only its own proposal.
+// Before, a host wrote its whole table from memory, so the second host to open a proposal wrote a
+// table without the first host's.
+TEST_CASE("side files: two hosts that each open a proposal keep both in proposals.json") {
+  test::TempDir tmp("protocol_proposals_two_hosts");
+  const std::string dir = tmp.file("doc");
+  Host a;
+  a.open(dir, true);
+  Host b;
+  b.open(dir, false);  // read the table while it was empty
+  (void)a.ok("doc.propose_layer", obj({{"name", JsonValue("roads")},
+                                       {"target", JsonValue("base")},
+                                       {"edit", JsonValue(false)},
+                                       {"attribution", who("a")}}));
+  (void)b.ok("doc.propose_layer", obj({{"name", JsonValue("dunes")},
+                                       {"target", JsonValue("base")},
+                                       {"edit", JsonValue(false)},
+                                       {"attribution", who("b")}}));
+  ProposalsFile file;
+  bool present = false;
+  RpcError error;
+  REQUIRE_MESSAGE(read_side_file(a.vfs, dir + "/proposals.json", file, present, error),
+                  error.message);
+  REQUIRE(present);
+  std::vector<std::string> layers;
+  for (const ProposalInfo& p : file.proposals) {
+    layers.push_back(p.layer);
+    CHECK(p.state == ProposalState::Open);
+  }
+  CHECK(layers.size() == 2);
+  CHECK(std::find(layers.begin(), layers.end(), "roads") != layers.end());
+  CHECK(std::find(layers.begin(), layers.end(), "dunes") != layers.end());
+  CHECK(a.vfs.exists(dir + "/proposals.json.lock"));
+}
+// A host holds a mark on a document while its socket connections may hold leases there (the lock
+// of `leases.<host>`, session.cpp): a second host's open drops a connection's lease as a gone
+// host's only when nobody holds that host's mark. Before the mark, `host` alone could not tell the
+// two apart, so the open, a read any credential may make, ended a live host's clients' leases.
+TEST_CASE("side files: a second host's open keeps a live host's connection leases") {
+  test::TempDir tmp("protocol_live_host_leases");
+  const std::string dir = tmp.file("doc");
+  {
+    Host first;
+    first.open(dir, true);
+  }
+  const i64 now = time::wall_unix_ms();
+  const auto lease = [&](u64 id, const char* host) {
+    return std::string(R"({"id":)") + std::to_string(id) + R"(,"connection":3,"host":")" + host +
+           R"(","actor":"c","layer":"base","acquired_unix_ms":)" + std::to_string(now) +
+           R"(,"expires_unix_ms":)" + std::to_string(now + 3'600'000) + "}";
+  };
+  {
+    std::ofstream out(dir + "/leases.json", std::ios::binary);
+    out << R"({"leases":[)" << lease(77, "feedfacefeedface") << "," << lease(78, "0000000000000001")
+        << "]}";
+  }
+  // The live host's mark, held as that host holds it; the other host left none.
+  SideFileLock mark;
+  std::string message;
+  REQUIRE_MESSAGE(mark.acquire(dir + "/leases.feedfacefeedface", 10'000, message), message);
+  const auto listed = [&](Host& h) {
+    std::vector<i64> ids;
+    const JsonValue result = h.ok("lease.list");
+    const JsonValue& leases = at(result, "leases");
+    for (u32 i = 0; i < leases.size(); ++i) {
+      i64 id = 0;
+      REQUIRE(at(leases[i], "id").get_i64(id));
+      ids.push_back(id);
+    }
+    return ids;
+  };
+  Host second;
+  second.open(dir, false);
+  CHECK(listed(second) == std::vector<i64>{77});
+  // Once the host is gone its mark is free: the next open drops its lease and the mark with it.
+  mark.release();
+  Host third;
+  third.open(dir, false);
+  CHECK(listed(third).empty());
+  CHECK_FALSE(third.vfs.exists(dir + "/leases.feedfacefeedface.lock"));
 }

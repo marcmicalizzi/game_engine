@@ -52,6 +52,41 @@ TEST_CASE("json text: keys out of order, twice, or under a former name take the 
   CHECK(streamed);
 }
 
+TEST_CASE("json text: the strict mode refuses a key given twice on the walk as the parser does") {
+  // C61's `refuse_duplicate_keys` lives in the reader's `next_member`, which the walk, a skipped
+  // value and the tree path all go through: the refusal is the parser's, word for word.
+  using namespace engine::schema_test;
+  TextReadOptions strict;
+  strict.parse.refuse_duplicate_keys = true;
+  const auto refused = [&](const char* text, const char* key) {
+    JsonValue tree;
+    const JsonParseResult tree_parse = parse_json(text, tree, strict.parse);
+    CHECK_FALSE(tree_parse.ok);
+    CHECK(tree_parse.duplicate_key == key);
+    Everything object;
+    ReadContext ctx;
+    JsonParseResult parse;
+    bool streamed = true;
+    CHECK_FALSE(read_json_text(object, text, ctx, parse, strict, &streamed));
+    CHECK_FALSE(parse.ok);
+    CHECK(parse.duplicate_key == key);
+    CHECK(parse.offset == tree_parse.offset);
+    CHECK(std::string(parse.message) == "duplicate key in object");
+  };
+  refused(R"({"inners": [{"x": 1, "y": 2, "x": 3}]})", "x");
+  refused(R"({"inners": [], "inners": [{"x": 1}]})", "inners");
+  // In a value the walk passes over, a key it does not know.
+  refused(R"({"unknown": {"k": 1, "k": 2}, "inners": []})", "k");
+  // The same key in two objects is no duplicate, and the default is unchanged.
+  Everything ok;
+  ReadContext ctx;
+  JsonParseResult parse;
+  CHECK(read_json_text(ok, R"({"inners": [{"x": 1}, {"x": 2}]})", ctx, parse, strict));
+  CHECK(parse.ok);
+  CHECK(read_json_text(ok, R"({"inners": [{"x": 1, "x": 2}]})", ctx, parse));
+  CHECK(parse.ok);
+}
+
 TEST_CASE("json text: T187's hostile values are refused both ways, word for word") {
   using namespace engine::schema_test;
   check_same(type_of<Inner>(), R"({"x": 1e39})");

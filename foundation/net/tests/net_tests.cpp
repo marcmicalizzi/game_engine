@@ -26,7 +26,7 @@ class EchoHandler final : public ServerHandler {
     response.content_type = "text/plain";
     response.body = "path " + request.path;
   }
-  bool accept(const HttpRequest& request, u16& close, std::string& reason) override {
+  bool accept(u64, const HttpRequest& request, u16& close, std::string& reason) override {
     std::string value;
     if (request.query_param("refuse", value)) {
       close = close_code::k_policy;
@@ -250,13 +250,78 @@ TEST_CASE("net: a server and a client on loopback") {
   CHECK(server.connections() == 0);
 }
 
+// net.md, "Two bounds": sockets that never send a byte hold no place a client needs.
+// Before, the cap counted them, so twice its number of silent sockets kept every client out with a
+// 503 for the head timeout; now the newest needing a place shuts the oldest silent one down.
+// The head's timeout is one deadline for the whole head (net.md, "One deadline for the head"): a
+// client that sends a byte every half timeout never lets a per-wait timeout run out, and before the
+// mend held the read for as long as 16 KiB of single bytes takes.
+TEST_CASE("net: a head sent a byte at a time is cut at the head timeout") {
+  Listener listener;
+  std::string error;
+  REQUIRE_MESSAGE(listener.open_loopback(0, error), error);
+  Socket client;
+  REQUIRE_MESSAGE(connect_loopback(listener.port(), client, error), error);
+  Socket served;
+  REQUIRE_MESSAGE(listener.accept(10000, served, error), error);
+  constexpr i32 k_timeout_ms = 400;
+  std::atomic<bool> done{false};
+  std::thread trickle([&] {
+    const std::string head = "GET /a-long-path-sent-slowly HTTP/1.1\r\nHost: 127.0.0.1\r\n";
+    for (usize i = 0; i < head.size() && !done.load(); ++i) {
+      if (!client.send_all(std::string_view(head).substr(i, 1))) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(k_timeout_ms / 2));
+    }
+  });
+  HttpRequest request;
+  std::string leftover;
+  const auto started = std::chrono::steady_clock::now();
+  const HttpRead read = read_http_request(served, k_timeout_ms, request, leftover);
+  const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - started)
+                        .count();
+  done.store(true);
+  trickle.join();
+  CHECK((read == HttpRead::TimedOut));
+  // The deadline plus one wait's slack for a loaded machine; the trickle alone runs some fifty
+  // bytes at 200 ms, ten seconds and more, so a per-wait timeout cannot pass this.
+  CHECK(took < 4 * k_timeout_ms);
+}
+
+TEST_CASE("net: silent sockets do not keep a client off the server") {
+  EchoHandler handler;
+  Server server;
+  std::string error;
+  REQUIRE_MESSAGE(server.start(0, handler, error), error);
+  Vector<Socket> silent;
+  for (u32 i = 0; i < Server::k_max_connections + Server::k_max_pending; ++i) {
+    Socket s;
+    REQUIRE_MESSAGE(connect_loopback(server.port(), s, error), error);
+    silent.push_back(std::move(s));
+  }
+  WebSocket ws;
+  REQUIRE_MESSAGE(websocket_connect(server.port(), "/", {}, ws, error), error);
+  REQUIRE(ws.send_text("through"));
+  Message m;
+  REQUIRE(ws.receive(m, 10000));
+  CHECK(m.data == "echo:7:through");
+  // The silent ones were shut as newer ones came: no more than the pending bound is left open
+  // beside the client (a thread each, so the bound is on threads too), once the shut ones' threads
+  // have seen their reads fail.
+  for (u32 look = 0; look < 100 && server.connections() > Server::k_max_pending + 1; ++look)
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  CHECK(server.connections() <= Server::k_max_pending + 1);
+  ws.close(close_code::k_normal, "done");
+  server.stop();
+}
+
 namespace {
 
 // Answers "ok" and remembers which connection asked, so a test can push to it.
 class PushHandler final : public ServerHandler {
  public:
   void http(const HttpRequest&, HttpResponse& response) override { response.body = "no"; }
-  bool accept(const HttpRequest&, u16&, std::string&) override { return true; }
+  bool accept(u64, const HttpRequest&, u16&, std::string&) override { return true; }
   std::string message(u64 connection, std::string_view) override {
     last.store(connection);
     return "ok";

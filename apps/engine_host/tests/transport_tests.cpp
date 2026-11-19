@@ -26,7 +26,10 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <optional>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -60,6 +63,11 @@ std::string request(u32 id, std::string_view method, std::string_view params) {
          std::string(method) + "\",\"params\":" + std::string(params) + "}";
 }
 
+// The token as a header, which is the only way a program presents one (ADR-0069).
+std::vector<std::pair<std::string, std::string>> token_header(std::string_view token) {
+  return {{"X-Engine-Token", std::string(token)}};
+}
+
 // One engine-host with --listen and the given flags: the announcement read, stdin kept for
 // requests on the stdio side, and closed at the end, which is what ends the host.
 struct ListeningHost {
@@ -71,7 +79,8 @@ struct ListeningHost {
   bool ok = false;
 
   explicit ListeningHost(std::vector<std::string> flags) {
-    std::vector<std::string> args = {host_exe(), "--listen", "127.0.0.1:0"};
+    std::vector<std::string> args = {host_exe(), "--listen", "127.0.0.1:0", "--root",
+                                     test::scratch_root_spec()};
     args.insert(args.end(), flags.begin(), flags.end());
     std::vector<std::string_view> argv(args.begin(), args.end());
     std::string error;
@@ -97,7 +106,9 @@ struct ListeningHost {
       session = std::string(s->as_string());
     }
     const std::string_view shell = at(announcement, "shell").as_string();
-    CHECK(shell.find("token=" + token) != std::string_view::npos);
+    // A one-time ticket, never the token: a credential is never in a URL (ADR-0069).
+    CHECK(shell.find("ticket=") != std::string_view::npos);
+    CHECK(shell.find(token) == std::string_view::npos);
   }
   ~ListeningHost() {
     if (!ok) return;
@@ -122,8 +133,7 @@ struct Client {
 
   bool connect(u16 port, std::string_view token) {
     std::string error;
-    const bool connected =
-        net::websocket_connect(port, "/?token=" + std::string(token), {}, ws, error);
+    const bool connected = net::websocket_connect(port, "/", token_header(token), ws, error);
     CHECK_MESSAGE(connected, error);
     return connected;
   }
@@ -172,15 +182,18 @@ struct HttpReply {
   std::string body;
 };
 
-HttpReply http_get(u16 port, std::string_view target, std::string_view host = {}) {
+HttpReply http_get(u16 port, std::string_view target, std::string_view host = {},
+                   std::string_view token = {}) {
   net::Socket s;
   std::string error;
   HttpReply reply;
   REQUIRE_MESSAGE(net::connect_loopback(port, s, error), error);
   const std::string host_line =
       host.empty() ? "127.0.0.1:" + std::to_string(port) : std::string(host);
-  REQUIRE(
-      s.send_all("GET " + std::string(target) + " HTTP/1.1\r\nHost: " + host_line + "\r\n\r\n"));
+  const std::string token_line =
+      token.empty() ? std::string() : "X-Engine-Token: " + std::string(token) + "\r\n";
+  REQUIRE(s.send_all("GET " + std::string(target) + " HTTP/1.1\r\nHost: " + host_line + "\r\n" +
+                     token_line + "\r\n"));
   std::string all;
   u8 chunk[16384];
   while (s.wait_readable(30000) > 0) {
@@ -200,6 +213,11 @@ HttpReply http_get(u16 port, std::string_view target, std::string_view host = {}
 void write_file(const std::string& path, std::string_view text) {
   std::ofstream f(path, std::ios::binary);
   f << text;
+}
+
+std::string read_whole(const std::string& path) {
+  std::ifstream f(path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
 }
 
 void put_u32(std::vector<u8>& out, u32 v) {
@@ -318,23 +336,25 @@ TEST_CASE("listen: the handshake needs the token, and refuses without it with 10
     net::Message m;
     CHECK_FALSE(ws.receive(m, 30000));
     CHECK(ws.close_code() == net::close_code::k_policy);
-    CHECK(ws.close_reason().find("token is required") != std::string::npos);
+    CHECK(ws.close_reason().find("a credential is required") != std::string::npos);
   }
   {
     net::WebSocket ws;
     std::string error;
-    REQUIRE(net::websocket_connect(host.port, "/?token=AAAAAAAAAAAAAAAAAAAAAA", {}, ws, error));
+    REQUIRE(
+        net::websocket_connect(host.port, "/", token_header("AAAAAAAAAAAAAAAAAAAAAA"), ws, error));
     net::Message m;
     CHECK_FALSE(ws.receive(m, 30000));
     CHECK(ws.close_code() == net::close_code::k_policy);
-    CHECK(ws.close_reason().find("does not match") != std::string::npos);
+    CHECK(ws.close_reason().find("names no token or credential") != std::string::npos);
   }
   {
     // A browser page from elsewhere is refused even with the token.
     net::WebSocket ws;
     std::string error;
     const std::pair<std::string, std::string> origin[] = {{"Origin", "http://evil.example"}};
-    REQUIRE(net::websocket_connect(host.port, "/?token=" + host.token, origin, ws, error));
+    const std::pair<std::string, std::string> both[] = {origin[0], {"X-Engine-Token", host.token}};
+    REQUIRE(net::websocket_connect(host.port, "/", both, ws, error));
     net::Message m;
     CHECK_FALSE(ws.receive(m, 30000));
     CHECK(ws.close_code() == net::close_code::k_policy);
@@ -467,7 +487,8 @@ TEST_CASE("listen: the shell's files, and nothing outside them") {
   CHECK(http_get(host.port, "/shell/").status == 404);
   CHECK(http_get(host.port, "/elsewhere").status == 404);
   CHECK(http_get(host.port, "/capture/c1").status == 403);                      // no token
-  CHECK(http_get(host.port, "/capture/c1?token=" + host.token).status == 404);  // none kept yet
+  CHECK(http_get(host.port, "/capture/c1?token=" + host.token).status == 403);  // never from a URL
+  CHECK(http_get(host.port, "/capture/c1", {}, host.token).status == 404);      // none kept yet
   // A name that is not the listener's own (DNS rebinding) is refused.
   CHECK(http_get(host.port, "/", "evil.example:" + std::to_string(host.port)).status == 403);
 }
@@ -823,6 +844,148 @@ TEST_CASE("listen: a client's transactions and placements are its hello's, its c
   check_hello(at(last_patch(), "attribution"), "t-agent");
 }
 
+// store.query's statement runs with the dispatch lock let go (protocol.md, "Work outside the
+// dispatch lock"). Under the lock, one client's query that runs to its max_ms stopped every other
+// client and the world's ticks for as long; each part below fails that way: the twin's calls wait
+// out the agent's statement, the later call of the agent's batch loses its connection's caller to
+// the twin's request, and a close, a reopen and the host's exit each wait behind the statement.
+TEST_CASE("listen: a long store.query holds up no other client, no tick, no close and no exit") {
+  test::TempDir tmp("engine_host_listen_store_query");
+  const std::string roles = tmp.file("roles.json");
+  write_file(roles, R"({"default_role":"director","roles":[{"name":"director","methods":["*"],
+    "layers":["*"],"object_types":["*"]},{"name":"builder","methods":["*"],"layers":["*"],
+    "object_types":["*"]}]})");
+  const std::string doc = tmp.file("doc");
+  std::optional<ListeningHost> host;
+  host.emplace(std::vector<std::string>{"--roles", roles, "--doc", doc, "--create", "--actor",
+                                        "cli", "--task", "t-cli"});
+  const std::string in_session = R"({"session":")" + host->session + "\"";
+  // An empty file is an empty SQLite database, and a statement that reads no table needs no more.
+  write_file(doc + "/world.db", "");
+  constexpr i64 k_query_ms = 4000;
+  const auto forever = [&](const std::string& in) {
+    return in +
+           R"(,"sql":"WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) )"
+           R"(SELECT count(*) FROM c","max_ms":)" +
+           std::to_string(k_query_ms) + "}";
+  };
+  Client agent;
+  Client twin;
+  REQUIRE(agent.connect(host->port, host->token));
+  REQUIRE(twin.connect(host->port, host->token));
+#if !defined(ENGINE_HOST_TEST_STORE)
+  // A host built without the store answers 1006 naming the switch, over the socket as on stdin.
+  const JsonValue refused = agent.call("store.query", forever(in_session));
+  CHECK(error_code(refused) == 1006);
+  CHECK(std::string(at(at(refused, "error"), "message").as_string()).find("ENGINE_WITH_STORE") !=
+        std::string::npos);
+#else
+  using Clock = std::chrono::steady_clock;
+  const auto ms_since = [](Clock::time_point t) {
+    return std::chrono::duration<f64, std::milli>(Clock::now() - t).count();
+  };
+  REQUIRE(error_code(agent.call("client.hello", R"({"name":"agent","attribution":{
+    "actor":"agent-1","role":"builder","task":"t-agent"}})")) == 0);
+
+  // 1. A batch: the statement, then an edit that names nobody, which is the agent's hello's.
+  const std::string batch =
+      "[" + request(101, "store.query", forever(in_session)) + "," +
+      request(102, "doc.apply",
+              in_session + R"(,"commands":[)" + create_placement(k_left, "left", "[0,0,0]") +
+                  R"(],"attribution":{"rationale":"after the query"}})") +
+      "]";
+  const auto sent = Clock::now();
+  REQUIRE(agent.ws.send_text(batch));
+  // Time for the agent's statement to start; the twin is then answered beside it, and the world
+  // the twin runs ticks.
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  const auto asked = Clock::now();
+  CHECK(error_code(twin.call("engine.ping", "{}")) == 0);
+  const JsonValue ran = twin.call("session.run_headless", in_session + R"(,"seconds":0.25})");
+  const f64 twin_ms = ms_since(asked);
+  REQUIRE_MESSAGE(error_code(ran) == 0, write_json(ran));
+  CHECK(at(at(ran, "result"), "tick").as_int() > 0);
+  const JsonValue answers = agent.receive_one();
+  const f64 agent_ms = ms_since(sent);
+  REQUIRE_MESSAGE(answers.is_array(), write_json(answers));
+  REQUIRE(answers.size() == 2);
+  for (u32 i = 0; i < 2; ++i) {
+    const JsonValue& answer = answers[i];
+    REQUIRE_MESSAGE(error_code(answer) == 0, write_json(answer));
+    if (at(answer, "id").as_int() == 101) {
+      CHECK(at(at(answer, "result"), "bound").as_string() == "max_ms");
+    }
+  }
+  MESSAGE("the twin's ping and 0.25 s of ticks took " << twin_ms << " ms beside the agent's "
+                                                      << agent_ms << " ms statement");
+  // Under the lock the twin waited out the rest of the statement, about 3.5 s.
+  CHECK(twin_ms < 0.5 * static_cast<f64>(k_query_ms));
+  CHECK(agent_ms >= static_cast<f64>(k_query_ms));
+  const JsonValue journal = host->stdio("doc.journal", in_session + "}");
+  const JsonValue& patches = at(at(journal, "result"), "patches");
+  REQUIRE(patches.size() > 0);
+  CHECK(at(at(patches[patches.size() - 1], "attribution"), "task").as_string() == "t-agent");
+
+  // 2. The session closed, and its document opened again, while a statement runs over its store:
+  // the statement keeps its own connection and answers with its rows.
+  REQUIRE(agent.ws.send_text(request(103, "store.query", forever(in_session))));
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  const auto closing = Clock::now();
+  const JsonValue closed = host->stdio("session.close", in_session + "}");
+  REQUIRE_MESSAGE(error_code(closed) == 0, write_json(closed));
+  CHECK(at(at(closed, "result"), "closed").as_bool());
+  const JsonValue reopened =
+      host->stdio("session.open", R"({"path":)" + json_text(doc) + R"(,"create":false})");
+  REQUIRE_MESSAGE(error_code(reopened) == 0, write_json(reopened));
+  CHECK(ms_since(closing) < 0.5 * static_cast<f64>(k_query_ms));
+  const std::string again =
+      R"({"session":")" + std::string(at(at(reopened, "result"), "session").as_string()) + "\"";
+  const JsonValue kept = agent.receive_one();
+  REQUIRE_MESSAGE(error_code(kept) == 0, write_json(kept));
+  CHECK(at(at(kept, "result"), "bound").as_string() == "max_ms");
+  const JsonValue one = agent.call("store.query", again + R"(,"sql":"SELECT 1"})");
+  REQUIRE_MESSAGE(error_code(one) == 0, write_json(one));
+  CHECK(at(at(one, "result"), "rows")[0][0].as_int() == 1);
+  if (again != in_session)
+    CHECK(error_code(agent.call("store.query", forever(in_session))) == 1000);
+
+  // 3. The host told to exit while a statement runs: it waits for the statement, which is bounded,
+  // and exits cleanly (the destructor checks the exit code).
+  REQUIRE(agent.ws.send_text(request(104, "store.query", forever(again))));
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  const auto exiting = Clock::now();
+  host.reset();
+  CHECK(ms_since(exiting) < 4.0 * static_cast<f64>(k_query_ms));
+#endif
+}
+
+#if defined(ENGINE_HOST_TEST_STORE)
+// Text a statement makes that is not UTF-8 comes back in the blob form (protocol.md, "Querying the
+// document"). Written as it was, it is an invalid text frame, which the client is right to end the
+// connection for; the second call on the same connection is what fails then.
+TEST_CASE("listen: store.query's text that is not UTF-8 comes back as bytes, the connection up") {
+  test::TempDir tmp("engine_host_listen_store_utf8");
+  const std::string doc = tmp.file("doc");
+  ListeningHost host({"--doc", doc, "--create"});
+  write_file(doc + "/world.db", "");
+  const std::string in_session = R"({"session":")" + host.session + "\"";
+  Client agent;
+  REQUIRE(agent.connect(host.port, host.token));
+  const std::string sql =
+      "SELECT CAST(x'ff' AS TEXT), typeof(CAST(x'ff' AS TEXT)), CAST(x'c3bc' AS TEXT), "
+      "CAST(x'c0af' AS TEXT)";
+  const JsonValue r = agent.call("store.query", in_session + ",\"sql\":" + json_text(sql) + "}");
+  REQUIRE_MESSAGE(error_code(r) == 0, write_json(r));
+  const JsonValue& row = at(at(r, "result"), "rows")[0];
+  CHECK(at(row[0], "blob").as_string() == "/w==");
+  CHECK(row[1].as_string() == "text");
+  CHECK(row[2].as_string() == "\xC3\xBC");          // well-formed text stays text
+  CHECK(at(row[3], "blob").as_string() == "wK8=");  // an overlong form is not UTF-8 either
+  const JsonValue pinged = agent.call("engine.ping", "{}");
+  CHECK(error_code(pinged) == 0);
+}
+#endif
+
 // A session closed before its connection drops (protocol.md, "Several clients, one host"): the
 // lease and the transaction the connection took in it are still its own while it is connected,
 // across the close and a reopen by someone else, and are let go when it drops although no session
@@ -898,6 +1061,83 @@ TEST_CASE("listen: a lease and a transaction outlive their session's close, not 
   const JsonValue& held = at(at(leases, "result"), "leases");
   REQUIRE(held.size() == 1);
   CHECK(at(held[0], "actor").as_string() == "owner");
+}
+
+// Roadmap A4 (ADR-0069; protocol.md, "Who a connection is"): the operator's own act end to end.
+// `--issue-credential` prints a token once and writes only its digest; a host started with
+// `--credentials` binds the connection that presents it, and refuses it a call as anyone else.
+TEST_CASE("listen: an issued credential is printed once, kept as a digest, and binds its socket") {
+  test::TempDir tmp("engine_host_listen_credential");
+  const std::string file = tmp.file("credentials.json");
+  std::string token;
+  {
+    platform::Process issue;
+    const std::string_view argv[] = {host_exe(), "--issue-credential",
+                                     file,       "--name",
+                                     "agent-1",  "--actor",
+                                     "agent-1",  "--role",
+                                     "builder",  "--task",
+                                     "t-agent"};
+    std::string error;
+    REQUIRE_MESSAGE(issue.spawn(argv, &error), error);
+    std::string line;
+    REQUIRE(issue.read_line(line));
+    issue.close_stdin();
+    REQUIRE(issue.wait() == 0);
+    JsonValue printed;
+    REQUIRE_MESSAGE(parse_json(line, printed).ok, line);
+    CHECK(at(printed, "credential").as_string() == "agent-1");
+    token = std::string(at(printed, "token").as_string());
+    CHECK(token.size() == 22);
+  }
+  std::string kept;
+  {
+    std::ifstream in(file, std::ios::binary);
+    kept.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  }
+  CHECK(kept.find(token) == std::string::npos);  // the file holds no secret
+  JsonValue parsed;
+  REQUIRE(parse_json(kept, parsed).ok);
+  CHECK(at(at(parsed, "credentials")[0], "token_sha256").as_string().size() == 64);
+
+  // A credential's role binds only where a roles file defines it (ADR-0069): with none, this one
+  // could read and not write.
+  const std::string roles = tmp.file("roles.json");
+  write_file(roles, R"({"default_role":"director","roles":[{"name":"director","methods":["*"],
+    "layers":["*"],"object_types":["*"]},{"name":"builder","methods":["doc.*"],"layers":["*"],
+    "object_types":["*"]}]})");
+  ListeningHost host({"--roles", roles, "--credentials", file, "--doc", tmp.file("doc"), "--create",
+                      "--actor", "cli"});
+  const std::string in_session = R"({"session":")" + host.session + "\"";
+  Client agent;
+  REQUIRE(agent.connect(host.port, token));
+  const JsonValue list = agent.call("client.list", "null");
+  const JsonValue& me = at(at(list, "result"), "clients")[0];
+  CHECK(at(me, "credential").as_string() == "agent-1");
+  CHECK(at(me, "bound").as_bool());
+  CHECK(write_json(list).find(token) == std::string::npos);
+  const auto apply = [&](const char* attribution) {
+    return agent.call("doc.apply", in_session + R"(,"commands":[)" +
+                                       create_placement(k_left, "left", "[0,0,0]") +
+                                       R"(],"attribution":)" + attribution + "}");
+  };
+  const JsonValue as_owner = apply(R"({"actor":"owner","rationale":"x"})");
+  CHECK(error_code(as_owner) == 1008);
+  CHECK(at(at(at(as_owner, "error"), "data"), "reason").as_string() == "identity");
+  CHECK(write_json(as_owner).find(token) == std::string::npos);
+  const JsonValue own = apply(R"({"rationale":"mine"})");
+  REQUIRE_MESSAGE(error_code(own) == 0, write_json(own));
+  const JsonValue journal = host.stdio("doc.journal", in_session + "}");
+  CHECK(at(at(at(at(journal, "result"), "patches")[0], "attribution"), "actor").as_string() ==
+        "agent-1");
+  // A token nobody issued is refused before any method runs.
+  net::WebSocket stranger;
+  std::string error;
+  REQUIRE(net::websocket_connect(host.port, "/", token_header("AAAAAAAAAAAAAAAAAAAAAA"), stranger,
+                                 error));
+  net::Message m;
+  CHECK_FALSE(stranger.receive(m, 30000));
+  CHECK(stranger.close_code() == net::close_code::k_policy);
 }
 
 TEST_CASE("listen: a subscriber that never reads gets the bounded queue and a dropped count") {
@@ -1075,13 +1315,14 @@ TEST_CASE("listen: document terrain tile intent rebuilds a bounded carrier") {
   check_load(true, false, 2 * 16 * 16);
 }
 
-// **A document's ground with no root named lands with the document** (T104, T119; doc_scene.md,
-// "The ground's root"): `render.load` of a session with no `ddc` builds the heightfield's set under
-// the repository's `ddc/` above the document's directory when there is one, else under the
-// document's own `ddc/` — never under the repository the host was started from, which is where a
-// host outside any checkout (an SDK's) used to have no root at all. The mesh cache is off, so the
-// fixture writes nothing outside its scratch directory.
-TEST_CASE("listen: a document's ground with no root named is built beside the document") {
+// **A session load writes only under out/** (T174; protocol.md, "Where derived data goes"):
+// `render.load` of a session with no `ddc` builds the heightfield's set under the host's own
+// derived-data root (`ddc`, the repository's above the host's executable), else under the
+// document's `out/ddc`. Before, it went to the repository's `ddc/` above the document's directory,
+// else to the document's own `ddc/`: inside an open document outside its `out/`, or under no root.
+// The mesh cache is off; the ground's set is content-addressed in the host's root, as every
+// derived node is.
+TEST_CASE("listen: a session load writes only under out/") {
   test::TempDir tmp("engine_host_document_root");
   const auto heightfield = [&](const std::string& doc) {
     std::vector<f32> heights(33 * 33);
@@ -1121,19 +1362,33 @@ TEST_CASE("listen: a document's ground with no root named is built beside the do
     REQUIRE_MESSAGE(error_code(loaded) == 0, write_json(loaded));
     return true;
   };
-  // Outside any checkout: the document's own `ddc/`.
+  // The document's directory holds its own files, the ground's and at most out/ afterwards.
+  const auto only_its_own = [](const std::string& doc) {
+    for (const auto& e : std::filesystem::directory_iterator(doc)) {
+      const std::string name = e.path().filename().string();
+      INFO(name);
+      CHECK((name == "manifest.json" || name == "layers" || name == "out" || name == "ground.f32" ||
+             name == "ground.json" || name.starts_with(".") || name.starts_with("journal") ||
+             name.ends_with(".lock") || name.ends_with(".json")));
+      CHECK(name != "ddc");
+    }
+  };
+  // Outside any checkout: never the document's own `ddc/`.
   std::filesystem::create_directories(tmp.file("alone"));
   const std::string alone = tmp.file("alone/doc");
   if (!load(alone)) return;
-  CHECK(std::filesystem::is_directory(alone + "/ddc"));
-  // Inside a repository (the directory above holds AGENTS.md): that repository's `ddc/`.
+  CHECK_FALSE(std::filesystem::exists(alone + "/ddc"));
+  only_its_own(alone);
+  // Inside a repository (the directory above holds AGENTS.md): not that repository's `ddc/`
+  // either, which no root of the host's names.
   const std::string game = tmp.file("game");
   std::filesystem::create_directories(game + "/worlds");
   write_file(game + "/AGENTS.md", "a game repository's root\n");
   const std::string inside = game + "/worlds/doc";
   if (!load(inside)) return;
-  CHECK(std::filesystem::is_directory(game + "/ddc"));
+  CHECK_FALSE(std::filesystem::exists(game + "/ddc"));
   CHECK_FALSE(std::filesystem::exists(inside + "/ddc"));
+  only_its_own(inside);
 }
 #endif
 
@@ -1184,13 +1439,44 @@ TEST_CASE("listen: render.load of a session, the camera it framed, records, a ke
   CHECK(records[1].as_string() == k_right);
   const JsonValue* files = result.find("files");
   CHECK((files == nullptr || files->size() == 0));  // kept, with no directory: nothing on disk
+  // A capture's files are each admitted and written by rename (T174; protocol.md, "What is
+  // built, and what is left"): a symbolic link planted at a name is refused, a hard link there is
+  // replaced, and the file outside the root that either named is unchanged.
+  {
+    std::filesystem::create_directories(doc + "/out");
+    const std::string outside = tmp.file("outside.bin");
+    write_file(outside, "outside");
+    const auto capture_as = [&](const char* name) {
+      return c.call(
+          "render.capture",
+          R"({"scene":")" + scene +
+              R"(","width":32,"height":32,"channels":["color"],"out_dir":"out://","name":")" +
+              name + "\"}");
+    };
+    std::error_code ec;
+    std::filesystem::create_hard_link(outside, doc + "/out/hard.png", ec);
+    if (!ec) {
+      const JsonValue hard = capture_as("hard");
+      CHECK_MESSAGE(error_code(hard) == 0, write_json(hard));
+      CHECK(read_whole(outside) == "outside");
+      CHECK(read_whole(doc + "/out/hard.png").substr(1, 3) == "PNG");
+    }
+    std::filesystem::create_symlink(outside, doc + "/out/soft.png", ec);
+    if (!ec) {
+      const JsonValue soft = capture_as("soft");
+      CHECK_MESSAGE(error_code(soft) == 1003, write_json(soft));
+      CHECK(read_whole(outside) == "outside");
+    } else {
+      MESSAGE("this process may not make a symbolic link; the link half is skipped");
+    }
+  }
   const std::string id = std::string(at(result, "capture").as_string());
   REQUIRE_FALSE(id.empty());
-  const HttpReply png = http_get(host.port, "/capture/" + id + "?token=" + host.token);
+  const HttpReply png = http_get(host.port, "/capture/" + id, {}, host.token);
   CHECK(png.status == 200);
   CHECK(png.head.find("image/png") != std::string::npos);
   CHECK(png.body.substr(1, 3) == "PNG");
-  const HttpReply ids = http_get(host.port, "/capture/" + id + "/ids?token=" + host.token);
+  const HttpReply ids = http_get(host.port, "/capture/" + id + "/ids", {}, host.token);
   REQUIRE(ids.status == 200);
   REQUIRE(ids.body.size() == usize{96} * 64 * 3 * 4);
   // Some pixel shows each cube, and every covered pixel's instance has a record.
@@ -1214,8 +1500,8 @@ TEST_CASE("listen: render.load of a session, the camera it framed, records, a ke
   REQUIRE_MESSAGE(error_code(again) == 0, write_json(again));
   CHECK(write_json(at(at(again, "result"), "camera")) == write_json(camera));
   const HttpReply png2 = http_get(
-      host.port, "/capture/" + std::string(at(at(again, "result"), "capture").as_string()) +
-                     "?token=" + host.token);
+      host.port, "/capture/" + std::string(at(at(again, "result"), "capture").as_string()) + "", {},
+      host.token);
   CHECK(png2.body == png.body);
 
   // A second connection follows the scene through its events.
@@ -1238,8 +1524,8 @@ TEST_CASE("listen: render.load of a session, the camera it framed, records, a ke
   const JsonValue after = c.call("render.capture", again_params);
   REQUIRE(error_code(after) == 0);
   const HttpReply png3 = http_get(
-      host.port, "/capture/" + std::string(at(at(after, "result"), "capture").as_string()) +
-                     "?token=" + host.token);
+      host.port, "/capture/" + std::string(at(at(after, "result"), "capture").as_string()) + "", {},
+      host.token);
   CHECK(png3.body != png.body);  // the right cube is somewhere else now
   const JsonValue moved_event = watcher.next_event();
   CHECK(at(moved_event, "method").as_string() == "event.scene");

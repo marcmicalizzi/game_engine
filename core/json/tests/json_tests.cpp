@@ -119,6 +119,36 @@ TEST_CASE("parse_json: valid documents") {
   CHECK(parse_ok(R"({"k": 1, "k": 2})").find("k")->as_int() == 2);
 }
 
+TEST_CASE("parse_json: the strict mode refuses a key given twice, naming it") {
+  JsonParseOptions strict;
+  strict.refuse_duplicate_keys = true;
+  JsonValue v(i64{99});
+  // At the top level, and nested, wherever the second one is.
+  JsonParseResult r = parse_json(R"({"a": 1, "b": 2, "a": 3})", v, strict);
+  CHECK_FALSE(r.ok);
+  CHECK(v.is_null());
+  CHECK(r.duplicate_key == "a");
+  CHECK(r.offset == 17);
+  CHECK(std::string(r.message) == "duplicate key in object");
+  r = parse_json("{\"levels\": {\"x\": \"none\",\n \"x\": \"full\"}}", v, strict);
+  CHECK_FALSE(r.ok);
+  CHECK(r.duplicate_key == "x");
+  CHECK(r.line == 2);
+  // The same key in two different objects is not a duplicate.
+  r = parse_json(R"({"a": {"k": 1}, "b": {"k": 2}, "c": [{"k": 1}, {"k": 2}]})", v, strict);
+  CHECK(r.ok);
+  CHECK(r.duplicate_key.empty());
+  // An escape that spells the same key is the same key: the second key is backslash-u-006b.
+  const std::string escaped =
+      std::string(R"({"k": 1, ")") + static_cast<char>(92) + std::string(R"(u006b": 2})");
+  r = parse_json(escaped, v, strict);
+  CHECK_FALSE(r.ok);
+  CHECK(r.duplicate_key == "k");
+  // The default is unchanged: the last wins.
+  CHECK(parse_json(R"({"a": 1, "a": 3})", v).ok);
+  CHECK(v.find("a")->as_int() == 3);
+}
+
 TEST_CASE("parse_json: errors are reported with positions and leave the value null") {
   struct Case {
     const char* text;

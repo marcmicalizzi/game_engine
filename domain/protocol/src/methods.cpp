@@ -9,6 +9,7 @@
 #include <domain/gfx/display_probe.h>
 #include <domain/protocol/clients.h>
 #include <domain/protocol/events.h>
+#include <domain/protocol/paths.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
 #include <foundation/tunables/tunables.h>
@@ -57,6 +58,7 @@ bool engine_methods(Context& ctx, MethodsResult& out, RpcError&) {
     info.params_type = m.params_type != nullptr ? m.params_type : "";
     info.result_type = m.result_type != nullptr ? m.result_type : "";
     info.read_only = m.read_only;
+    info.leaves_files = m.read_only && m.leaves_files != nullptr;
     out.methods.push_back(std::move(info));
   }
   return true;
@@ -64,13 +66,55 @@ bool engine_methods(Context& ctx, MethodsResult& out, RpcError&) {
 
 // ---- session.* -------------------------------------------------------------------------------
 
+// What a client is told of a session: its directory as `<root>://<relative>`, never the host's
+// absolute path (protocol.md, "The host's file roots").
+SessionInfo client_info(const Context& ctx, const Session& s) {
+  SessionInfo info = s.info();
+  info.path = portable_path(ctx, s.dir());
+  return info;
+}
+
 bool session_open(Context& ctx, const SessionOpenParams& params, SessionInfo& out,
                   RpcError& error) {
+  if (params.path.empty()) {
+    error = make_error(codes::k_invalid_argument, "path is required");
+    return false;
+  }
+  // The directory is a client's path (roots.h): read when a document is there, made and written
+  // when `create` makes one. A relative path starts at the host's own document.
+  io::Admitted dir;
+  if (!admit_client_path(ctx, "path", params.path, client_base(ctx, {}), io::Access::read, dir,
+                         error)) {
+    return false;
+  }
+  if (params.create && !doc::DocumentStore::exists(ctx.sessions->vfs(), dir.native) &&
+      !admit_client_path(ctx, "path", params.path, client_base(ctx, {}), io::Access::make_directory,
+                         dir, error)) {
+    return false;
+  }
+  SessionOpenParams opened = params;
+  opened.path = dir.native;
+  // Read is not write: a document opened from a read-only root is never saved in place
+  // (Session::writable). Asked of the roots before the session protects the directory, and
+  // without a log line, since nothing is refused yet; a document already open is shared as it is.
+  io::Admitted write_probe;
+  io::Refusal write_why = io::Refusal::outside;
+  const bool may_write = ctx.roots->admit(params.path, client_base(ctx, {}),
+                                          io::Access::make_directory, write_probe, write_why);
   // Held by the connection that asked (0: stdio and in-process callers), so a client that
   // vanishes lets go of what it opened and a close lets go of the caller's hold alone.
-  Session* s = ctx.sessions->open(params, ctx.connection, error);
-  if (s == nullptr) return false;
-  out = s->info();
+  Session* s = ctx.sessions->open(opened, ctx.connection, error,
+                                  may_write ? std::string_view{} : std::string_view(params.path),
+                                  portable_path(ctx, dir.native));
+  if (s == nullptr) {
+    // "no document at <path>" named the host's path; say only what the client sent.
+    if (error.code == codes::k_not_found)
+      error = path_not_found("path", params.path, io::Access::read);
+    return false;
+  }
+  // An open document's own files are written through doc.* alone, never by a client's path.
+  (void)ctx.roots->protect(s->dir());
+  out = client_info(ctx, *s);
   return true;
 }
 
@@ -80,6 +124,7 @@ bool session_close(Context& ctx, const SessionRef& params, SessionCloseResult& o
                    RpcError& error) {
   Session* s = ctx.sessions->require(params.session, error);
   if (s == nullptr) return false;
+  const std::string dir = s->dir();  // `s` is gone once the last holder lets go
   bool closed = false;
   if (!ctx.sessions->release(params.session, ctx.connection, closed)) {
     std::string holders;
@@ -101,6 +146,7 @@ bool session_close(Context& ctx, const SessionRef& params, SessionCloseResult& o
   }
   out.session = params.session;
   out.closed = closed;
+  if (closed && ctx.roots != nullptr) ctx.roots->release(dir);
   if (!closed) {
     for (const u64 h : s->holders())
       out.holders.push_back(h);
@@ -110,14 +156,14 @@ bool session_close(Context& ctx, const SessionRef& params, SessionCloseResult& o
 
 bool session_list(Context& ctx, SessionsResult& out, RpcError&) {
   for (const auto& s : ctx.sessions->sessions())
-    out.sessions.push_back(s->info());
+    out.sessions.push_back(client_info(ctx, *s));
   return true;
 }
 
 bool session_info(Context& ctx, const SessionRef& params, SessionInfo& out, RpcError& error) {
   Session* s = ctx.sessions->require(params.session, error);
   if (s == nullptr) return false;
-  out = s->info();
+  out = client_info(ctx, *s);
   return true;
 }
 
@@ -210,6 +256,8 @@ void fill_client(const Context& ctx, const Client& c, ClientInfo& out) {
   out.identified = c.identified;
   out.connected_unix_ms = c.connected_unix_ms;
   out.requests = c.requests;
+  out.credential = c.credential;
+  out.bound = c.bound;
   if (ctx.sessions == nullptr) return;
   for (const auto& s : ctx.sessions->sessions()) {
     if (s->held_by(c.connection)) out.sessions.push_back(s->id());
@@ -241,10 +289,14 @@ bool client_hello(Context& ctx, const ClientHelloParams& params, ClientInfo& out
   }
   Client& c = ctx.clients->touch(ctx.connection, time::wall_unix_ms());
   c.name = params.name;
-  c.who = doc::Attribution{};
-  c.who.actor = params.attribution.actor;
-  c.who.role = params.attribution.role;
-  c.who.task = params.attribution.task;
+  // A connection bound to a credential keeps its credential's identity (ADR-0069): the dispatcher
+  // already refused a hello naming another, and one naming the same, or none, changes nothing.
+  if (!c.bound) {
+    c.who = doc::Attribution{};
+    c.who.actor = params.attribution.actor;
+    c.who.role = params.attribution.role;
+    c.who.task = params.attribution.task;
+  }
   c.identified = true;
   fill_client(ctx, c, out);
   return true;
@@ -460,7 +512,7 @@ bool doc_save(Context& ctx, const SessionRef& params, SessionInfo& out, RpcError
   Session* s = ctx.sessions->require(params.session, error);
   if (s == nullptr) return false;
   if (!s->save(error)) return false;
-  out = s->info();
+  out = client_info(ctx, *s);
   return true;
 }
 
@@ -686,13 +738,22 @@ void add_placement_methods(Dispatcher& d);
 void add_introspection_methods(Dispatcher& d);  // describe.cpp
 // history_methods.cpp.
 void add_history_methods(Dispatcher& d);
+// task.* and review.* (ledger.cpp).
+void add_ledger_methods(Dispatcher& d);
 
 // Read-only methods are marked `read_only` and no role restricts them (plan 06 §6.5: read access
 // is unrestricted); every other one is a write a role must name. A method is read-only when it
-// changes no document, no lease and no host setting. `doc.save` is one — it writes what the
-// document already holds — and so are the housekeeping of a caller's own handles, `session.open`
-// and `session.close` (as `render.unload` is in engine-host): a role that may only look must still
-// be able to open what it looks at and let it go.
+// changes no document, no lease, no host setting, not the running world and not what is on a
+// person's screen; a read that leaves a file the caller asked for says so (`read_leaving_files`),
+// and protocol.md's "What a read may do" sorts every registration with its reason. `session.open`
+// and `session.close` are the housekeeping of a caller's own handles: a role that may only look
+// must still be able to open what it looks at and let it go, so only an open that creates the
+// document leaves a file. `doc.save` is a write: it rewrites the document's files from this host's
+// memory, over whatever another host saved since.
+namespace {
+bool open_creates(const JsonValue& params) { return param_is_true(params, "create"); }
+}  // namespace
+
 void add_builtin_methods(Dispatcher& d) {
   d.add(read_only(method_no_params<EngineInfo, &engine_info>(
       "engine.info", "Engine name, version, build configuration, process id, and counts.")));
@@ -701,9 +762,11 @@ void add_builtin_methods(Dispatcher& d) {
       "The method catalogue with parameter and result schema types, and which methods are "
       "read-only.")));
 
-  d.add(read_only(method<SessionOpenParams, SessionInfo, &session_open>(
-      "session.open",
-      "Open a document directory (create it with `create`); returns the session.")));
+  d.add(read_leaving_files(
+      method<SessionOpenParams, SessionInfo, &session_open>(
+          "session.open",
+          "Open a document directory (create it with `create`); returns the session."),
+      &open_creates));
   d.add(read_only(method<SessionRef, SessionCloseResult, &session_close>(
       "session.close",
       "Let go of a session this client opened; it closes when no client holds it.")));
@@ -781,8 +844,8 @@ void add_builtin_methods(Dispatcher& d) {
       "doc.validate", "Validate every record against the schema registry.")));
   d.add(read_only(method<JournalParams, JournalResult, &doc_journal>(
       "doc.journal", "Committed patches with attribution.")));
-  d.add(read_only(method<SessionRef, SessionInfo, &doc_save>(
-      "doc.save", "Write layer files and the manifest.")));
+  d.add(method<SessionRef, SessionInfo, &doc_save>(
+      "doc.save", "Write layer files and the manifest from what this host holds."));
 
   d.add(read_only(method_no_params<TunablesResult, &tunables_list>(
       "tunables.list", "Every tunable with value and range.")));
@@ -812,6 +875,8 @@ void add_builtin_methods(Dispatcher& d) {
   // Blobs and checkpoints: doc.put_blob, doc.blob, doc.collect_blobs, doc.checkpoint,
   // doc.checkpoints and doc.rollback_to (history_methods.cpp).
   add_history_methods(d);
+  // The task ledger and review items (plan 06 §6.8): task.* and review.* (ledger.cpp).
+  add_ledger_methods(d);
 }
 
 }  // namespace engine::protocol

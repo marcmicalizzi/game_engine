@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "protocol-stack",
+  "reason": "The protocol line's joins: protocol.md says a session that may not be saved writes nothing beside its document (no lock file, no gone host's mark, reads that let lapsed entries go only in their answer); apps.md says engine-mcp refuses a human role before it starts a host, in the words engine-host and engine-cli use, and that put_blob answers its place in the portable form",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 704,
+    "page:docs/subsystems/protocol.md": 519
+  }
+}

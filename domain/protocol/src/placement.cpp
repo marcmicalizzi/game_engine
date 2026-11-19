@@ -9,6 +9,7 @@
 #include <core/schema/type_info.h>
 #include <core/time/time.h>
 #include <domain/doc/document_store.h>
+#include <domain/protocol/paths.h>
 #include <domain/protocol/policy.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
@@ -56,8 +57,8 @@ bool ends_with(std::string_view s, std::string_view suffix) {
 // .clusters' magic, a .gltf's JSON with its `asset.version`. The record keeps the path as given.
 // A path refused for leaving the document's directory and one with no readable file under it get
 // the same code and the same sentence, so the answer says nothing about the disk outside.
-bool check_asset(const Session& s, std::string_view asset, std::string& kind, u64& bytes,
-                 RpcError& error) {
+bool check_asset(Context& ctx, const Session& s, std::string_view asset, std::string& kind,
+                 u64& bytes, RpcError& error) {
   if (asset.empty()) {
     error = make_error(codes::k_invalid_argument, "asset is required: a .gltf, .glb or .clusters");
     return false;
@@ -80,9 +81,11 @@ bool check_asset(const Session& s, std::string_view asset, std::string& kind, u6
                        ".gltf, .glb or .clusters file by a path relative to it, without '..'");
     return false;
   };
-  const std::string relative = document_relative_path(asset);
-  if (relative.empty()) return unreadable();
-  const std::string path = doc::DocumentStore::path_of(s.dir(), relative);
+  // The one check (paths.h): the document-path rule, the roots, and still inside the document once
+  // links are resolved — before, the rule was lexical, so a link inside the document led out.
+  io::Admitted admitted;
+  if (!admit_document_file(ctx, s.dir(), "asset", asset, admitted)) return unreadable();
+  const std::string& path = admitted.native;
   // The header's four bytes and the size: the asset may be hundreds of megabytes, and nothing here
   // needs more of it.
   io::FileInfo info;
@@ -127,7 +130,7 @@ bool place_asset(Context& ctx, const PlaceAssetParams& params, PlaceResult& out,
     error = make_error(codes::k_invalid_argument, "placements is empty: nothing to place");
     return false;
   }
-  if (!check_asset(*s, params.asset, out.kind, out.bytes, error)) return false;
+  if (!check_asset(ctx, *s, params.asset, out.kind, out.bytes, error)) return false;
   // Generated ids are a function of the seed, the asset and the placement's index: the same call
   // places the same ids, and another asset under the same seed others.
   const u64 asset_key = hash_bytes(params.asset.data(), params.asset.size());

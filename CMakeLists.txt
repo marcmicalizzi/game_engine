@@ -27,6 +27,9 @@ include(EngineModule)
 # The commit every app was built from (`--version`), refreshed on every build: engine_app links it.
 include(EngineBuildStamp)
 include(EngineTesting)
+# The hostile-input harness (roadmap T13): engine_module_fuzz(), and ENGINE_FUZZ's instrumentation
+# for the linux-clang-fuzz preset, before any engine target exists (docs/ci/fuzzing.md).
+include(EngineFuzz)
 include(EngineListenerCheck)
 include(EngineSchema)
 # Hot-reloadable game modules (foundation/hotload): engine_game_module(), used by game/ and by

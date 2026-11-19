@@ -92,11 +92,17 @@ struct Attribution @version(1) {
 }
 
 /// A committed transaction: the forward commands and the inverse that undoes them.
-struct Patch @version(1) @kind(journal) {
+struct Patch @version(2) @kind(journal) @additive(2) {
   attribution: Attribution
   layer: string
   forward: Command[]
   inverse: Command[]
+  /// The client transaction (`doc.begin`, engine.protocol.TransactionInfo.id) this patch is the
+  /// commit of; 0 for every other write. It is how a `doc.commit` retried after a failure that
+  /// came after the journal (a side file's write, a host killed) finds the patch already landed
+  /// and applies nothing twice (docs/subsystems/protocol.md, "Transactions a client opens"). Set
+  /// by the session, never from a client's attribution.
+  transaction: u64 = 0 @since(2)
 }
 
 /// How a layer's records are spread over tile files (docs/plan/03-data-model.md §3.7). A layer

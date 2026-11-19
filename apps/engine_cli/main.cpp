@@ -40,6 +40,9 @@ const char* k_usage =
     "  --create           with --doc: create the document when it does not exist\n"
     "  --name <name>      with --create: the document's name\n"
     "  --mount <spec>     forwarded to engine-host (<scheme>=<dir>[:rw]); repeatable\n"
+    "  --root <spec>      forwarded to engine-host (<name>=<dir>[:rw]): a directory a call's\n"
+    "                     paths may name, as <name>://<path>; repeatable. --doc is the root\n"
+    "                     doc:// and its out/ the writable out://\n"
     "  --roles <file>     forwarded to engine-host: the role configurations calls are checked\n"
     "                     against (content/roles/roles.json)\n"
     "  --actor, --role, --task <value>\n"
@@ -336,7 +339,8 @@ int main(int argc, char** argv) {
       std::string m;
       if (!value(m)) return 2;
       mounts.push_back(m);
-    } else if (a == "--roles" || a == "--actor" || a == "--role" || a == "--task") {
+    } else if (a == "--roles" || a == "--actor" || a == "--role" || a == "--task" ||
+               a == "--root") {
       std::string v;
       if (!value(v)) return 2;
       forwarded.push_back(std::string(a));
@@ -386,6 +390,50 @@ int main(int argc, char** argv) {
     std::fputs(k_usage, stderr);
     return 2;
   }
+  // A role marked human is a person's, conferred only by a credential presented on a connection
+  // (ADR-0072): engine-cli is the cheapest command an agent has, so it refuses one before any host
+  // starts, rather than leave it to the host it would start. The roles file is read here only for
+  // that flag; an unreadable one is the host's to report.
+  {
+    std::string roles_file, role;
+    for (u32 i = 0; i + 1 < forwarded.size(); i += 2) {
+      if (forwarded[i] == "--roles") roles_file = forwarded[i + 1];
+      if (forwarded[i] == "--role") role = forwarded[i + 1];
+    }
+    std::string text;
+    if (!roles_file.empty() && !role.empty()) {
+      std::FILE* f = nullptr;
+#if defined(_MSC_VER)
+      if (fopen_s(&f, roles_file.c_str(), "rb") != 0) f = nullptr;
+#else
+      f = std::fopen(roles_file.c_str(), "rb");
+#endif
+      if (f != nullptr) {
+        char buffer[4096];
+        for (usize n; (n = std::fread(buffer, 1, sizeof(buffer), f)) > 0;)
+          text.append(buffer, n);
+        std::fclose(f);
+      }
+    }
+    JsonValue roles_json;
+    const JsonValue* roles = nullptr;
+    if (!text.empty() && parse_json(text, roles_json).ok && roles_json.is_object())
+      roles = roles_json.find("roles");
+    for (u32 i = 0; roles != nullptr && roles->is_array() && i < roles->size(); ++i) {
+      const JsonValue& r = (*roles)[i];
+      const JsonValue* name = r.is_object() ? r.find("name") : nullptr;
+      const JsonValue* human = r.is_object() ? r.find("human") : nullptr;
+      if (name == nullptr || !name->is_string() || name->as_string() != role) continue;
+      if (human == nullptr || !human->is_bool() || !human->as_bool()) continue;
+      std::fprintf(stderr,
+                   "engine-cli: role '%s' is marked human in %s, and no call engine-cli makes "
+                   "is a person's: a person's role is conferred only by a credential the operator "
+                   "issued for it (engine-host --issue-credential <file> --role %s), presented on "
+                   "a connection to engine-host --listen --credentials <file>\n",
+                   role.c_str(), roles_file.c_str(), role.c_str());
+      return 2;
+    }
+  }
 
   JsonValue params;
   if (!params_text.empty()) {
@@ -416,6 +464,18 @@ int main(int argc, char** argv) {
   }
   for (const std::string& f : forwarded)
     host_argv.push_back(f);
+  // The document is the operator's, typed on this command line: the host opens it at start and
+  // takes it as its "doc" root (and its out/ as "out"), so engine-cli's own session.open below
+  // names it as `doc://` like any client (protocol.md, "The host's file roots").
+  if (!doc_dir.empty()) {
+    host_argv.push_back("--doc");
+    host_argv.push_back(doc_dir);
+    if (create) host_argv.push_back("--create");
+    if (create && !doc_name.empty()) {
+      host_argv.push_back("--name");
+      host_argv.push_back(doc_name);
+    }
+  }
   if (console) return run_console(host_argv, console_script, script_args);
 
   Client client;
@@ -430,9 +490,7 @@ int main(int argc, char** argv) {
   int exit_code = 0;
   if (!doc_dir.empty()) {
     JsonValue open = JsonValue::object();
-    open.set("path", JsonValue(doc_dir));
-    open.set("create", JsonValue(create));
-    if (!doc_name.empty()) open.set("name", JsonValue(doc_name));
+    open.set("path", JsonValue("doc://"));
     JsonValue info;
     if (!client.call("session.open", std::move(open), info)) {
       exit_code = 1;

@@ -4,6 +4,7 @@
 #include <core/time/time.h>
 #include <domain/doc/merge.h>
 #include <domain/doc/partition.h>
+#include <domain/protocol/paths.h>
 #include <domain/protocol/session.h>
 
 namespace engine::protocol {
@@ -71,46 +72,63 @@ JsonValue tile_json(doc::TileCoord tile) {
 
 f64 ms_since(i64 start_ns) { return static_cast<f64>(time::monotonic_ns() - start_ns) / 1.0e6; }
 
-template <class T>
-bool read_json_file(const io::Vfs& vfs, const std::string& path, T& out, bool& present,
-                    RpcError& error) {
-  std::string text;
-  const io::Status s = vfs.read(path, text);
-  present = s == io::Status::Ok;
-  if (s == io::Status::NotFound) return true;
-  if (s != io::Status::Ok) {
-    error = make_error(codes::k_io_error, path + ": " + io::status_name(s));
-    return false;
-  }
-  JsonValue value;
-  if (const JsonParseResult r = parse_json(text, value); !r.ok) {
-    error = make_error(codes::k_io_error, path + ": " + r.message);
-    return false;
-  }
-  schema::ReadContext ctx;
-  if (!schema::from_json(out, value, ctx)) {
-    std::string message = path + ": invalid";
-    if (!ctx.diagnostics.empty()) message += ": " + ctx.diagnostics[0].message;
-    error = make_error(codes::k_io_error, std::move(message));
-    return false;
+// `leases.json` and `transactions.json` at version 1 counted their ids in `next_id`; version 2
+// draws them (side_file.h), and the step drops the counter.
+bool drop_next_id(JsonValue& object, schema::ReadContext&) {
+  if (object.is_object()) object.as_object().erase(std::string_view("next_id"));
+  return true;
+}
+
+// `ledger.json` at version 1 counted its task and review ids; version 2 draws them, and each item
+// carries a revision that moves on every change (ledger.cpp). The step drops the two counters and
+// gives every item revision 1, so 0 stays what a `review.close` that names none sends.
+bool drop_ledger_counters(JsonValue& object, schema::ReadContext&) {
+  if (!object.is_object()) return true;
+  object.as_object().erase(std::string_view("next_task"));
+  object.as_object().erase(std::string_view("next_review"));
+  if (JsonValue* reviews = object.find("reviews"); reviews != nullptr && reviews->is_array()) {
+    for (JsonValue& r : reviews->as_array()) {
+      if (r.is_object() && r.find("revision") == nullptr) r.set("revision", JsonValue(u64{1}));
+    }
   }
   return true;
 }
 
-// Written beside the document through the store (DocumentStore::write_side_file): atomically, and
-// not at all when the bytes are the ones there (docs/subsystems/doc.md, "Writing a file").
-template <class T>
-bool write_json_file(const io::Vfs& vfs, const std::string& path, const T& value, RpcError& error) {
-  std::string text = write_json(schema::to_json(value));
-  text.push_back('\n');
+// The mark a host holds on a document while its socket connections may hold leases there: the
+// lock of `leases.<host>` (`leases.<host>.lock`, side_file.h), taken with the first such lease and
+// let go with the session or the process. Another host's open asks it before it drops that host's
+// connection leases as a gone host's (load_side_files).
+std::string host_mark_path(std::string_view dir, std::string_view host) {
+  return DocumentStore::path_of(dir, "leases." + std::string(host));
+}
+
+// Whether the host named `host` still holds its mark on `dir`. No mark, or a mark nobody holds, is
+// a host that has gone (a host's name is drawn once per process and never reused, so a free mark
+// is never taken again, and is removed here when `may_remove`: the session's gate on writes beside
+// its document said yes). A mark that cannot be opened is counted alive: the lease then stands
+// until its own expiry rather than being dropped from a live host.
+bool host_alive(const io::Vfs& vfs, std::string_view dir, std::string_view host, bool may_remove) {
+  const std::string mark = host_mark_path(dir, host);
+  if (!vfs.exists(mark + ".lock")) return false;
+  std::string native;
+  if (vfs.resolve(mark, native, /*for_write=*/false) != io::Status::Ok) return true;
+  SideFileLock probe;
   std::string message;
-  if (!DocumentStore::write_side_file(vfs, path, text, &message)) {
-    error = make_error(codes::k_io_error, std::move(message));
-    return false;
-  }
-  return true;
+  if (!probe.acquire(native, 0, message)) return true;
+  if (may_remove) (void)vfs.remove(mark + ".lock");
+  return false;
 }
 
+void register_side_file_steps() {
+  static const bool registered = [] {
+    schema::MigrationRegistry::global().add({"engine.protocol.LeaseFile", 1, &drop_next_id});
+    schema::MigrationRegistry::global().add({"engine.protocol.TransactionsFile", 1, &drop_next_id});
+    schema::MigrationRegistry::global().add(
+        {"engine.protocol.LedgerFile", 1, &drop_ledger_counters});
+    return true;
+  }();
+  (void)registered;
+}
 }  // namespace
 
 // ---- Guard ------------------------------------------------------------------------------------
@@ -136,6 +154,7 @@ class Session::Guard {
   // change those records now.
   bool begin(u32 layer, bool step, RpcError& error) {
     if (caller_ == nullptr) return true;
+    if (!session_.refresh_leases(error)) return false;
     const doc::Document& d = session_.doc_;
     const std::string& name = d.layer(layer).name();
     lease_layer_ = name;
@@ -305,7 +324,9 @@ class Session::Guard {
 // ---- Session ---------------------------------------------------------------------------------
 
 Session::Session(io::Vfs& vfs, std::string id, std::string dir)
-    : vfs_(&vfs), id_(std::move(id)), dir_(std::move(dir)) {}
+    : vfs_(&vfs), id_(std::move(id)), dir_(std::move(dir)) {
+  register_side_file_steps();
+}
 
 bool Session::create(std::string_view name, RpcError& error) {
   std::string message;
@@ -325,12 +346,29 @@ bool Session::load(RpcError& error) {
   return load_side_files(error);
 }
 
+bool Session::check_writable(RpcError& error) const {
+  if (read_only_as_.empty()) return true;
+  error = path_not_found("path", read_only_as_, io::Access::write);
+  return false;
+}
+
 bool Session::persist(RpcError& error) {
+  if (!check_writable(error)) return false;
   std::string message;
+  if (test_fail_save_) {
+    test_fail_save_ = false;
+    unsaved_ = true;
+    error = make_error(codes::k_io_error, "the document's save failed for the test");
+    return false;
+  }
   if (!DocumentStore::save(*vfs_, dir_, doc_, manifest_, &message)) {
+    // The store leaves the files as they were when a save fails before its log is whole, so they
+    // may now hold less than memory does (a commit already journaled, an undo already made).
+    unsaved_ = true;
     error = make_error(codes::k_io_error, std::move(message));
     return false;
   }
+  unsaved_ = false;
   return true;
 }
 
@@ -346,8 +384,13 @@ std::string Session::base_file(std::string_view proposal) const {
 
 bool Session::load_side_files(RpcError& error) {
   bool present = false;
+  // A session that may not be written reads every table without its lock, which would make a lock
+  // file in its directory (side_file.h), and removes no gone host's mark: the gate's answer.
+  RpcError refused;
+  const bool may_write = may_write_side_files(refused);
   LeaseFile leases;
-  if (!read_json_file(*vfs_, DocumentStore::path_of(dir_, k_leases_file), leases, present, error))
+  if (!read_side_file_locked(*vfs_, DocumentStore::path_of(dir_, k_leases_file), leases, present,
+                             error, may_write))
     return false;
   // A lease a client connection took lives no longer than the connection, and connections are a
   // host's: one in the file that another host granted was left by a host that has gone, with its
@@ -356,26 +399,44 @@ bool Session::load_side_files(RpcError& error) {
   // opened again while the client is still connected keeps its client's lease, and the session
   // manager drops those of this host's connections that ended meanwhile
   // (`drop_ended_connection_leases`).
-  u32 orphaned = 0;
-  for (u32 i = leases.leases.size(); i > 0; --i) {
-    const LeaseInfo& l = leases.leases[i - 1];
-    if (l.connection != 0 && l.host != host_instance()) {
-      leases.leases.erase_at(i - 1);
-      ++orphaned;
-    }
-  }
+  // Looked for without the lock, which a document with nothing to drop never takes, and dropped
+  // under it from the table as it stands then.
+  // A host that is alive holds its mark (`host_mark_path`), so its clients' leases stay: before
+  // the mark, `host` alone could not tell a live host from a gone one, and a second host's open (a
+  // read any credential may make) ended a live host's socket clients' leases.
+  const auto orphan = [this, may_write](const LeaseInfo& l) {
+    return l.connection != 0 && l.host != host_instance() &&
+           !host_alive(*vfs_, dir_, l.host, may_write);
+  };
+  bool orphans = false;
+  for (const LeaseInfo& l : leases.leases)
+    orphans = orphans || orphan(l);
   leases_.assign(std::move(leases));
-  if (orphaned > 0 && !save_leases(error)) return false;
+  // A session that may not be written leaves them in the file, where they refuse nothing it could
+  // do anyway.
+  if (orphans && may_write &&
+      !update_leases(
+          [&](bool& write) {
+            const LeaseFile& file = leases_.file();
+            for (u32 i = file.leases.size(); i > 0; --i) {
+              if (!orphan(file.leases[i - 1])) continue;
+              leases_.remove(file.leases[i - 1].id);
+              write = true;
+            }
+            return true;
+          },
+          error))
+    return false;
 
   ProposalsFile proposals;
-  if (!read_json_file(*vfs_, DocumentStore::path_of(dir_, k_proposals_file), proposals, present,
-                      error))
+  if (!read_side_file_locked(*vfs_, DocumentStore::path_of(dir_, k_proposals_file), proposals,
+                             present, error, may_write))
     return false;
   proposals_.assign(std::move(proposals));
 
   transactions_ = TransactionsFile{};
-  if (!read_json_file(*vfs_, DocumentStore::path_of(dir_, k_transactions_file), transactions_,
-                      present, error))
+  if (!read_side_file_locked(*vfs_, DocumentStore::path_of(dir_, k_transactions_file),
+                             transactions_, present, error, may_write))
     return false;
   for (const ProposalTable::Entry& e : proposals_.entries()) {
     ProposalTable::Entry* entry = proposals_.find(e.info.layer);
@@ -407,18 +468,53 @@ bool Session::load_side_files(RpcError& error) {
   return true;
 }
 
-bool Session::save_leases(RpcError& error) {
-  return write_json_file(*vfs_, DocumentStore::path_of(dir_, k_leases_file), leases_.file(), error);
+std::string Session::leases_path() const { return DocumentStore::path_of(dir_, k_leases_file); }
+
+bool Session::hold_host_mark(RpcError& error) {
+  if (host_mark_.held()) return true;
+  if (!may_write_side_files(error)) return false;
+  return lock_side_file(*vfs_, host_mark_path(dir_, host_instance()), host_mark_, error);
 }
 
-bool Session::save_proposals(RpcError& error) {
-  return write_json_file(*vfs_, DocumentStore::path_of(dir_, k_proposals_file),
-                         proposals_.to_file(), error);
+std::string Session::transactions_path() const {
+  return DocumentStore::path_of(dir_, k_transactions_file);
 }
 
-bool Session::save_transactions(RpcError& error) {
-  return write_json_file(*vfs_, DocumentStore::path_of(dir_, k_transactions_file), transactions_,
-                         error);
+bool Session::refresh_leases(RpcError& error) {
+  LeaseFile file;
+  bool present = false;
+  if (!read_side_file_locked(*vfs_, leases_path(), file, present, error, writable())) return false;
+  leases_.assign(std::move(file));
+  return true;
+}
+
+// proposals.json through the side files' one helper: the file is read afresh under its lock and
+// only this call's proposal is replaced in it (or added), so two hosts that each change a different
+// proposal both keep theirs. It was written whole from this host's table, which dropped every
+// proposal another host had opened or closed since this one read the file, and on Windows a reader
+// outside the lock made a writer's rename fail. A proposal's layer is the document's, which a host
+// still holds in memory and saves whole: that is not made safe here (two hosts changing layers at
+// once is unsupported), only the table.
+bool Session::save_proposals(std::string_view layer, RpcError& error) {
+  if (!may_write_side_files(error)) return false;
+  const ProposalTable::Entry* mine = proposals_.find(layer);
+  if (mine == nullptr) return true;
+  ProposalInfo info = mine->info;
+  info.touched = 0;  // derived from the base when reported, never stored
+  ProposalsFile file;
+  return update_side_file(
+      *vfs_, DocumentStore::path_of(dir_, k_proposals_file), file,
+      [&](ProposalsFile& f, bool& write) {
+        write = true;
+        for (ProposalInfo& p : f.proposals) {
+          if (p.layer != layer) continue;
+          p = std::move(info);
+          return true;
+        }
+        f.proposals.push_back(std::move(info));
+        return true;
+      },
+      error);
 }
 
 bool Session::note_proposal_touches(const doc::Patch& patch, RpcError& error) {
@@ -466,7 +562,10 @@ bool Session::apply(std::span<const doc::Command> commands, const Caller& caller
 
 bool Session::commit_commands(std::span<const doc::Command> commands, doc::Attribution attribution,
                               bool atomic, bool strict, u32 layer, const Caller* caller,
-                              ApplyResult& result, RpcError& error, const Staging* staging) {
+                              ApplyResult& result, RpcError& error, const Staging* staging,
+                              u64 transaction) {
+  // Refused before the document changes in memory, not at the save (Session::writable).
+  if (!check_writable(error)) return false;
   if (attribution.timestamp_unix_ms == 0) attribution.timestamp_unix_ms = time::wall_unix_ms();
   Guard guard(*this, caller, attribution.timestamp_unix_ms);
   if (!guard.begin(layer, false, error)) return false;
@@ -547,6 +646,7 @@ bool Session::commit_commands(std::span<const doc::Command> commands, doc::Attri
   // A new commit discards the redo tail.
   const bool truncated = manifest_.undo_position < doc_.journal().size();
   if (truncated) doc_.truncate_journal(manifest_.undo_position);
+  tx.set_transaction(transaction);
   tx.commit();
   doc_.set_edit_layer(edit_layer);
   manifest_.undo_position = doc_.journal().size();
@@ -633,7 +733,7 @@ void Session::publish_session(std::string_view change, const LeaseInfo* lease, u
   SessionChangeEvent event;
   event.session = id_;
   event.change = std::string(change);
-  event.path = dir_;
+  event.path = shown_path_;  // every subscriber's, so never the host's own path
   event.connection = connection;
   event.reason = std::string(reason);
   if (lease != nullptr) {
@@ -641,6 +741,20 @@ void Session::publish_session(std::string_view change, const LeaseInfo* lease, u
     event.actor = lease->actor;
     event.layer = lease->layer;
   }
+  events_->publish(EventKind::Session, id_, schema::to_json(event));
+}
+
+void Session::publish_ledger(std::string_view change, u64 task, u64 review, std::string_view actor,
+                             u64 connection) const {
+  if (events_ == nullptr || !events_->wanted(EventKind::Session, id_)) return;
+  SessionChangeEvent event;
+  event.session = id_;
+  event.change = std::string(change);
+  event.path = shown_path_;
+  event.connection = connection;
+  event.actor = std::string(actor);
+  event.task = task;
+  event.review = review;
   events_->publish(EventKind::Session, id_, schema::to_json(event));
 }
 
@@ -754,6 +868,7 @@ bool Session::redo(u32 steps, const Caller* caller, StepResult& result, RpcError
 
 bool Session::step(bool backwards, u32 steps, const Caller* caller, StepResult& result,
                    RpcError& error) {
+  if (!check_writable(error)) return false;
   u32 done = 0;
   const i64 now = time::wall_unix_ms();
   // The patches stepped, in order, for their events once the step is saved.
@@ -931,18 +1046,25 @@ bool Session::let_go(u64 holder) {
 
 u32 Session::release_connection_leases(u64 connection, i64 now_ms) {
   if (connection == 0) return 0;
-  Vector<LeaseInfo> gone;
-  for (const LeaseInfo& l : leases_.leases()) {
-    if (l.connection == connection) gone.push_back(l);
-  }
-  if (gone.empty()) return 0;
-  for (const LeaseInfo& l : gone)
-    leases_.remove(l.id);
-  (void)leases_.expire(now_ms);
+  bool any = false;
+  for (const LeaseInfo& l : leases_.leases())
+    any = any || l.connection == connection;
+  if (!any) return 0;
   // Nobody is waiting for an answer: a save that fails leaves the lease in the file, where the
   // next open of the document drops it anyway (it names a connection of a host that has gone).
+  Vector<LeaseInfo> gone;
   RpcError ignored;
-  (void)save_leases(ignored);
+  (void)update_leases(
+      [&](bool& write) {
+        for (const LeaseInfo& l : leases_.leases()) {
+          if (l.connection == connection && l.host == host_instance()) gone.push_back(l);
+        }
+        for (const LeaseInfo& l : gone)
+          leases_.remove(l.id);
+        write = !gone.empty() || leases_.expire(now_ms) > 0;
+        return true;
+      },
+      ignored);
   for (const LeaseInfo& l : gone)
     publish_session("lease_released", &l, connection, "connection closed");
   return gone.size();
@@ -950,20 +1072,32 @@ u32 Session::release_connection_leases(u64 connection, i64 now_ms) {
 
 u32 Session::drop_ended_connection_leases(std::span<const u64> ended) {
   if (ended.empty()) return 0;
-  Vector<u64> gone;
-  for (const LeaseInfo& l : leases_.leases()) {
-    if (l.connection == 0 || l.host != host_instance()) continue;
+  const auto ended_here = [&](const LeaseInfo& l) {
+    if (l.connection == 0 || l.host != host_instance()) return false;
     for (const u64 c : ended) {
-      if (c == l.connection) gone.push_back(l.id);
+      if (c == l.connection) return true;
     }
-  }
-  if (gone.empty()) return 0;
-  for (const u64 id : gone)
-    leases_.remove(id);
+    return false;
+  };
+  bool any = false;
+  for (const LeaseInfo& l : leases_.leases())
+    any = any || ended_here(l);
+  if (!any) return 0;
   // As at the load: a save that fails leaves the lease in the file, and it is dropped again at the
   // next open.
+  Vector<u64> gone;
   RpcError ignored;
-  (void)save_leases(ignored);
+  (void)update_leases(
+      [&](bool& write) {
+        for (const LeaseInfo& l : leases_.leases()) {
+          if (ended_here(l)) gone.push_back(l.id);
+        }
+        for (const u64 id : gone)
+          leases_.remove(id);
+        write = !gone.empty();
+        return true;
+      },
+      ignored);
   return gone.size();
 }
 
@@ -1051,7 +1185,6 @@ bool Session::acquire_lease(const LeaseAcquireParams& params, const Caller& call
       }
     }
   }
-  const u32 expired = leases_.expire(now_ms);
   LeaseInfo wanted;
   wanted.actor = caller.who.actor;
   wanted.role = caller.who.role;
@@ -1065,26 +1198,31 @@ bool Session::acquire_lease(const LeaseAcquireParams& params, const Caller& call
   // host"): one that vanishes must not hold tiles for the rest of a ttl nobody will renew.
   wanted.connection = caller.connection;
   if (caller.connection != 0) wanted.host = host_instance();
-  if (const LeaseInfo* held = leases_.overlap(wanted, now_ms)) {
-    JsonValue data = JsonValue::object();
-    data.set("lease", schema::to_json(*held));
-    error = make_error(codes::k_lease_conflict,
-                       "lease " + std::to_string(held->id) + " on " + held->layer + ", held by " +
-                           held->actor +
-                           (held->task.empty() ? std::string() : " for task " + held->task) +
-                           ", overlaps what was asked for; it expires at " +
-                           std::to_string(held->expires_unix_ms) +
-                           " (unix ms). Ask again after that, or for tiles nobody holds",
-                       std::move(data));
-    if (expired > 0) {
-      RpcError ignored;
-      (void)save_leases(ignored);
-    }
-    return false;
-  }
-  const u64 id = leases_.add(std::move(wanted));
-  if (!save_leases(error)) return false;
-  out = *leases_.find(id);
+  // The mark another host's open tells this host's live leases by (load_side_files).
+  if (caller.connection != 0 && !hold_host_mark(error)) return false;
+  const bool ok = update_leases(
+      [&](bool& write) {
+        if (leases_.expire(now_ms) > 0) write = true;
+        if (const LeaseInfo* held = leases_.overlap(wanted, now_ms)) {
+          JsonValue data = JsonValue::object();
+          data.set("lease", schema::to_json(*held));
+          error = make_error(codes::k_lease_conflict,
+                             "lease " + std::to_string(held->id) + " on " + held->layer +
+                                 ", held by " + held->actor +
+                                 (held->task.empty() ? std::string() : " for task " + held->task) +
+                                 ", overlaps what was asked for; it expires at " +
+                                 std::to_string(held->expires_unix_ms) +
+                                 " (unix ms). Ask again after that, or for tiles nobody holds",
+                             std::move(data));
+          return false;
+        }
+        const u64 id = leases_.add(std::move(wanted));
+        out = *leases_.find(id);
+        write = true;
+        return true;
+      },
+      error);
+  if (!ok) return false;
   publish_session("lease_acquired", &out, caller.connection);
   return true;
 }
@@ -1092,75 +1230,92 @@ bool Session::acquire_lease(const LeaseAcquireParams& params, const Caller& call
 bool Session::renew_lease(u64 lease, f64 ttl_seconds, const Caller& caller, i64 now_ms,
                           LeaseInfo& out, RpcError& error) {
   if (!check_actor(caller, error) || !check_ttl(ttl_seconds, error)) return false;
-  LeaseInfo* held = leases_.find(lease);
-  if (held == nullptr || held->expires_unix_ms <= now_ms) {
-    const bool lapsed = held != nullptr;
-    if (lapsed) {
-      leases_.expire(now_ms);
-      RpcError ignored;
-      (void)save_leases(ignored);
-    }
-    error = make_error(codes::k_not_found,
-                       "no live lease " + std::to_string(lease) +
-                           (lapsed ? ": it expired and was dropped; lease.acquire again"
-                                   : ": lease.list shows the live ones"));
-    return false;
-  }
-  if (held->actor != caller.who.actor) {
-    error = forbidden("lease " + std::to_string(lease) + " is held by " + held->actor +
-                          ", and only its holder renews it",
-                      "lease holder", caller.who.role);
-    return false;
-  }
-  held->expires_unix_ms = expiry(now_ms, ttl_seconds);
-  out = *held;
-  return save_leases(error);
+  return update_leases(
+      [&](bool& write) {
+        LeaseInfo* held = leases_.find(lease);
+        if (held == nullptr || held->expires_unix_ms <= now_ms) {
+          const bool lapsed = held != nullptr;
+          if (lapsed) write = leases_.expire(now_ms) > 0;
+          error = make_error(codes::k_not_found,
+                             "no live lease " + std::to_string(lease) +
+                                 (lapsed ? ": it expired and was dropped; lease.acquire again"
+                                         : ": lease.list shows the live ones"));
+          return false;
+        }
+        if (held->actor != caller.who.actor) {
+          error = forbidden("lease " + std::to_string(lease) + " is held by " + held->actor +
+                                ", and only its holder renews it",
+                            "lease holder", caller.who.role);
+          return false;
+        }
+        held->expires_unix_ms = expiry(now_ms, ttl_seconds);
+        out = *held;
+        write = true;
+        return true;
+      },
+      error);
 }
 
 bool Session::release_lease(u64 lease, const Caller& caller, i64 now_ms, LeaseInfo& out,
                             RpcError& error) {
   if (!check_actor(caller, error)) return false;
-  const LeaseInfo* held = leases_.find(lease);
-  if (held == nullptr) {
-    error = make_error(codes::k_not_found, "no lease " + std::to_string(lease) +
-                                               " (an expired lease is dropped by itself)");
-    return false;
-  }
-  if (held->actor != caller.who.actor) {
-    error = forbidden("lease " + std::to_string(lease) + " is held by " + held->actor +
-                          ", and only its holder releases it",
-                      "lease holder", caller.who.role);
-    return false;
-  }
-  out = *held;
-  leases_.remove(lease);
-  (void)leases_.expire(now_ms);
-  if (!save_leases(error)) return false;
+  const bool ok = update_leases(
+      [&](bool& write) {
+        const LeaseInfo* held = leases_.find(lease);
+        if (held == nullptr) {
+          error = make_error(codes::k_not_found, "no lease " + std::to_string(lease) +
+                                                     " (an expired lease is dropped by itself)");
+          return false;
+        }
+        if (held->actor != caller.who.actor) {
+          error = forbidden("lease " + std::to_string(lease) + " is held by " + held->actor +
+                                ", and only its holder releases it",
+                            "lease holder", caller.who.role);
+          return false;
+        }
+        out = *held;
+        leases_.remove(lease);
+        (void)leases_.expire(now_ms);
+        write = true;
+        return true;
+      },
+      error);
+  if (!ok) return false;
   publish_session("lease_released", &out, caller.connection);
   return true;
 }
 
 bool Session::list_leases(std::string_view layer, std::string_view actor, i64 now_ms,
                           LeasesResult& out, RpcError& error) {
-  out.expired = leases_.expire(now_ms);
-  out.required = leases_.required();
-  out.now_unix_ms = now_ms;
-  for (const LeaseInfo& l : leases_.leases()) {
-    if (!layer.empty() && l.layer != layer) continue;
-    if (!actor.empty() && l.actor != actor) continue;
-    out.leases.push_back(l);
-  }
-  return out.expired == 0 || save_leases(error);
+  return update_leases(
+      [&](bool& write) {
+        out.expired = leases_.expire(now_ms);
+        write = out.expired > 0;
+        out.required = leases_.required();
+        out.now_unix_ms = now_ms;
+        for (const LeaseInfo& l : leases_.leases()) {
+          if (!layer.empty() && l.layer != layer) continue;
+          if (!actor.empty() && l.actor != actor) continue;
+          out.leases.push_back(l);
+        }
+        return true;
+      },
+      error, /*read=*/true);
 }
 
 bool Session::require_leases(bool required, i64 now_ms, LeasesResult& out, RpcError& error) {
-  leases_.set_required(required);
-  out.expired = leases_.expire(now_ms);
-  out.required = required;
-  out.now_unix_ms = now_ms;
-  for (const LeaseInfo& l : leases_.leases())
-    out.leases.push_back(l);
-  return save_leases(error);
+  return update_leases(
+      [&](bool& write) {
+        leases_.set_required(required);
+        out.expired = leases_.expire(now_ms);
+        out.required = required;
+        out.now_unix_ms = now_ms;
+        for (const LeaseInfo& l : leases_.leases())
+          out.leases.push_back(l);
+        write = true;
+        return true;
+      },
+      error);
 }
 
 // ---- proposal layers ---------------------------------------------------------------------------
@@ -1233,7 +1388,7 @@ bool Session::propose_layer(const ProposeLayerParams& params, const Caller& call
       doc_.set_edit_layer(static_cast<u32>(existing));
       if (!persist(error)) return false;
     }
-    return save_proposals(error);
+    return save_proposals(params.name, error);
   }
 
   std::optional<doc::LayerPartition> partition;
@@ -1250,7 +1405,7 @@ bool Session::propose_layer(const ProposeLayerParams& params, const Caller& call
   info.opened_unix_ms = now;
   proposals_.add(std::move(info));
   (void)vfs_->remove(base_file(params.name));  // a leftover of an earlier layer of that name
-  return save_proposals(error);
+  return save_proposals(params.name, error);
 }
 
 bool Session::clear_layer(u32 layer, doc::Attribution attribution, std::optional<u32>& patch_index,
@@ -1460,7 +1615,7 @@ bool Session::promote(const PromoteParams& params, const Caller& caller, Promote
   entry = proposals_.find(params.proposal);
   ProposalTable::clear_base(*entry);
   (void)vfs_->remove(base_file(params.proposal));
-  if (!save_proposals(error)) return false;
+  if (!save_proposals(params.proposal, error)) return false;
   result.commit_ms = ms_since(started);
   result.promoted = true;
   return true;
@@ -1503,12 +1658,13 @@ bool Session::reject(const RejectParams& params, const Caller& caller, RpcError&
   entry = proposals_.find(params.proposal);
   ProposalTable::clear_base(*entry);
   (void)vfs_->remove(base_file(params.proposal));
-  return save_proposals(error);
+  return save_proposals(params.proposal, error);
 }
 
 // ---- SessionManager --------------------------------------------------------------------------
 
-Session* SessionManager::open(const SessionOpenParams& params, u64 holder, RpcError& error) {
+Session* SessionManager::open(const SessionOpenParams& params, u64 holder, RpcError& error,
+                              std::string_view read_only_as, std::string_view shown) {
   if (params.path.empty()) {
     error = make_error(codes::k_invalid_argument, "path is required");
     return nullptr;
@@ -1519,11 +1675,13 @@ Session* SessionManager::open(const SessionOpenParams& params, u64 holder, RpcEr
   for (const auto& s : sessions_) {
     if (s->dir() == path) {
       // One document, however many clients: the second opener shares the first's session.
+      if (read_only_as.empty()) s->set_read_only({});
       s->hold(holder);
       return s.get();
     }
   }
   auto session = std::make_unique<Session>(*vfs_, "s" + std::to_string(next_id_), path);
+  session->set_read_only(std::string(read_only_as));
   if (DocumentStore::exists(*vfs_, path)) {
     if (!session->load(error)) return nullptr;
   } else if (params.create) {
@@ -1544,6 +1702,7 @@ Session* SessionManager::open(const SessionOpenParams& params, u64 holder, RpcEr
     parked_.erase_at(i - 1);
   }
   session->set_events(events_);
+  session->set_shown_path(std::string(shown));
   session->hold(holder);
   sessions_.push_back(std::move(session));
   sessions_.back()->publish_session("opened");

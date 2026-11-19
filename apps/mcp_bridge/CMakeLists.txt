@@ -4,9 +4,11 @@
 # loopback WebSocket, which is what `net` (the client half of foundation/net) is for. It links no
 # protocol or schema library: every tool's input schema is generated at startup from the host's
 # own `schema.describe`, so the host is the one source of truth and the bridge cannot drift from it.
+# It links `io` for one thing: the host roots it started a host with, to open a path the host
+# answers as `<root>://<relative>` through the same checks (read_blob).
 engine_app(NAME mcp_bridge OUTPUT engine-mcp
   SOURCES main.cpp bridge.cpp host_client.cpp schema_gen.cpp tools.cpp
-  DEPS base containers json ids log platform hash net
+  DEPS base containers json ids log platform hash io net
   E2E_TESTS tests/mcp_tests.cpp)
 target_compile_definitions(engine_mcp_bridge PRIVATE ENGINE_VERSION="${PROJECT_VERSION}")
 # The bridge finds engine-host beside itself, so building one builds the other.

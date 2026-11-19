@@ -36,8 +36,11 @@ class ServerHandler {
   virtual void http(const HttpRequest& request, HttpResponse& response) = 0;
   // An upgrade request whose handshake is valid. False refuses it: the handshake still completes,
   // and the connection is closed at once with `close` and `reason` — because a browser's WebSocket
-  // reports a close code and its reason to the page, and an HTTP status to nobody.
-  virtual bool accept(const HttpRequest& request, u16& close, std::string& reason) = 0;
+  // reports a close code and its reason to the page, and an HTTP status to nobody. `connection` is
+  // the number its messages will carry, so a handler can bind what it learnt from the handshake (a
+  // credential, protocol.md "Who a connection is") to the connection before its first message.
+  virtual bool accept(u64 connection, const HttpRequest& request, u16& close,
+                      std::string& reason) = 0;
   // One text message on connection `connection`; the text to send back, or empty for none.
   virtual std::string message(u64 connection, std::string_view text) = 0;
   // A binary message; the connection is closed with 1003 when this returns false (the default).
@@ -60,8 +63,15 @@ enum class Post : u8 {
 
 class Server {
  public:
-  // More connections than this at once are answered 503 and closed.
+  // **Two bounds, so a socket that has proved nothing cannot keep a client out** (net.md, "Two
+  // bounds"). WebSocket connections the handler accepted (for the protocol, those that presented
+  // a credential) are at most `k_max_connections`; one more completes its handshake and is closed
+  // with 1013. Connections the handler has not accepted yet (sending their request head, a plain
+  // GET being answered) are at most `k_max_pending`; a new one past that shuts down the oldest of
+  // them, so a local process holding silent sockets open delays a client by one eviction rather
+  // than refusing it for the head timeout. Together they bound the threads.
   static constexpr u32 k_max_connections = 32;
+  static constexpr u32 k_max_pending = 16;
   // How long a connection may take to send its request head.
   static constexpr i32 k_head_timeout_ms = 10000;
 
@@ -102,6 +112,12 @@ class Server {
     u64 id = 0;
     std::intptr_t handle = Socket::k_invalid;  // for stop(), valid while `done` is false
     std::atomic<bool> done{false};
+    // Guarded by the server's `mutex_`: the handler accepted it (or is accepting it), so it counts
+    // against `k_max_connections`; or it was shut down to make room for a newer pending one.
+    bool established = false;
+    // Written under `mutex_`; read by the connection's own thread without it, between the slices
+    // of its head read (http.h, `read_http_request`'s `stop`), so its thread ends when it is shut.
+    std::atomic<bool> evicted{false};
     std::thread thread;
     // The outbox (post), guarded by `out_mutex`. `ws` is the connection's WebSocket while its
     // message loop runs, and null before and after, which is what makes a post `Gone`.

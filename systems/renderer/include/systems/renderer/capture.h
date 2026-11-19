@@ -108,9 +108,16 @@ bool capture_light(const gfx::Capture& picture, gfx::DisplayEncoding encoding, f
 // than a picture to be looked at, and any lossy or reordered image form would make a pixel's
 // instance number unreadable. Depth is an 8-bit gray PNG normalized over the frame's own depth
 // range, which is in the header and in the result, so it can be looked at; the exact values are
-// in the stats, not in the pixels.
+// in the stats, not in the pixels. **Every file is written by rename** (`io::write_file_atomic`),
+// so a hard link or a symbolic link already at a name is replaced, never written through, and a
+// reader sees the old file or the new one. A failure's `error` names the file, never `dir`.
 bool write_capture(std::string_view dir, std::string_view base, const CapturedFrame& frame,
                    CaptureFiles& out, std::string& error);
+
+// The file names `write_capture` writes for `frame` under `base`, in the order it writes them, so
+// a protocol host admits each one as a file before the capture is written (protocol.md, "The
+// host's file roots"). One list for both, so the two cannot drift.
+Vector<std::string> capture_file_names(const CapturedFrame& frame, std::string_view base);
 
 // The JSON header the id buffer is written with, also returned by engine-host so a client that
 // reads the bytes over a protocol rather than off disk needs no second file.

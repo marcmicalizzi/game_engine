@@ -50,10 +50,12 @@ struct Host {
   u32 next_id = 1;
   bool ok = false;
 
-  Host() {
-    const std::string_view argv[2] = {host_exe(), "--stdio"};
+  // `flags` after `--stdio`: the tests' scratch root unless a case names the host's roots itself.
+  explicit Host(std::vector<std::string> flags = {"--root", test::scratch_root_spec()}) {
+    flags.insert(flags.begin(), {host_exe(), "--stdio"});
+    std::vector<std::string_view> argv(flags.begin(), flags.end());
     std::string error;
-    if (!process.spawn(std::span<const std::string_view>(argv, 2), &error)) {
+    if (!process.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error)) {
       FAIL("cannot spawn engine-host: " << error);
       return;
     }
@@ -470,10 +472,13 @@ TEST_CASE("save: a save that is not what its manifest says is refused, naming wh
 
   // Refusals: a save inside the document; a directory that is not empty; a file changed since;
   // a load into a directory that is not empty; an unknown session.
+  // A save inside the open document is refused by the host's roots before the save looks: the
+  // document's own directory is never a client's to write but under its out/ (protocol.md, "The
+  // host's file roots"), and the answer is the one a missing place gets.
   const JsonValue inside =
       host.call("session.save_game", s + ",\"path\":" + json_string(doc + "/saves/one") + "}");
-  CHECK(error_code(inside) == k_invalid_argument);
-  CHECK(error_message(inside).find("inside the document") != std::string::npos);
+  CHECK(error_code(inside) == 1003);
+  CHECK(error_message(inside).find("no place this host may write") != std::string::npos);
   const JsonValue occupied =
       host.call("session.save_game", s + ",\"path\":" + json_string(save) + "}");
   CHECK(error_code(occupied) == k_invalid_argument);
@@ -556,20 +561,26 @@ const std::vector<CorpusSave>& corpus() {
       // and `SaveObserver` 2 (their positions are f64) are three more steps for every older save,
       // and rewrite nothing: a file with no type table reads as before, and a float32 position's
       // JSON is the double it widens to.
+      //
+      // 2026-11-18: `Patch` 2 (a journal patch names the client transaction it commits, protocol.md
+      // "Transactions a client opens") is one more step for every older save, rewriting nothing: a
+      // patch with no `transaction` reads as 0. `v5` is the save it writes.
       {"v1",
        300,
        "8a6d7d078e00bcbf",
        "3d528309eea2b9df",
-       {"engine.doc.LayerFile 1 -> 2", "engine.kinematics.Mover 1 -> 2", "engine.world.Node 1 -> 2",
-        "engine.world.SaveManifest 1 -> 2", "engine.world.SaveObserver 1 -> 2",
-        "engine.world.TileProjection 1 -> 2", "store.tables 1 -> 2"},
+       {"engine.doc.LayerFile 1 -> 2", "engine.doc.Patch 1 -> 2", "engine.kinematics.Mover 1 -> 2",
+        "engine.world.Node 1 -> 2", "engine.world.SaveManifest 1 -> 2",
+        "engine.world.SaveObserver 1 -> 2", "engine.world.TileProjection 1 -> 2",
+        "store.tables 1 -> 2"},
        "232aa2a53b31c9ac"},
       {"v2",
        300,
        "3d528309eea2b9df",
        "3d528309eea2b9df",
-       {"engine.doc.LayerFile 1 -> 2", "engine.kinematics.Mover 1 -> 2", "engine.world.Node 1 -> 2",
-        "engine.world.SaveObserver 1 -> 2", "engine.world.TileProjection 1 -> 2"},
+       {"engine.doc.LayerFile 1 -> 2", "engine.doc.Patch 1 -> 2", "engine.kinematics.Mover 1 -> 2",
+        "engine.world.Node 1 -> 2", "engine.world.SaveObserver 1 -> 2",
+        "engine.world.TileProjection 1 -> 2"},
        "232aa2a53b31c9ac"},
       // Written by the build that made them version 2: the same world, its carts moved in f64 for
       // the 300 ticks before the save, which is why its hashes are not v2's.
@@ -577,13 +588,21 @@ const std::vector<CorpusSave>& corpus() {
        300,
        "8cdae985e86ab1d5",
        "8cdae985e86ab1d5",
-       {"engine.doc.LayerFile 1 -> 2", "engine.world.SaveObserver 1 -> 2",
-        "engine.world.TileProjection 1 -> 2"},
+       {"engine.doc.LayerFile 1 -> 2", "engine.doc.Patch 1 -> 2",
+        "engine.world.SaveObserver 1 -> 2", "engine.world.TileProjection 1 -> 2"},
        "c9b72a04d230351f"},
       // Written by the build that made those three version 2: the same world and the same state
       // at tick 300 as v3 — nothing the 300 ticks wrote depended on the change — in files that
       // name their versions.
-      {"v4", 300, "8cdae985e86ab1d5", "8cdae985e86ab1d5", {}, "c9b72a04d230351f"},
+      {"v4",
+       300,
+       "8cdae985e86ab1d5",
+       "8cdae985e86ab1d5",
+       {"engine.doc.Patch 1 -> 2"},
+       "c9b72a04d230351f"},
+      // Written by the build that made `Patch` version 2: v4's world and state in files whose
+      // journal names its patches' transactions.
+      {"v5", 300, "8cdae985e86ab1d5", "8cdae985e86ab1d5", {}, "c9b72a04d230351f"},
       // The npc capability's record types (D23): 400 generated residents and their places on 64 m
       // tiles, streamed round a walking and a still observer and saved at tick 300 by
       // npc_replay_tests.cpp's helper, in v4's formats. No player, so it continues on its own.
@@ -591,7 +610,7 @@ const std::vector<CorpusSave>& corpus() {
        300,
        "30fe42fed65a7a18",
        "30fe42fed65a7a18",
-       {},
+       {"engine.doc.Patch 1 -> 2"},
        "31278070c16babc9",
        {"engine.npc.Resident", "engine.npc.Place"}},
   };
@@ -625,6 +644,35 @@ TEST_CASE("save corpus: write the current version's save when asked") {
   MESSAGE("wrote " << out << ": " << write_json(result_of(saved), JsonWriteOptions{false}));
 }
 
+// The player's map and log are client paths (protocol.md, "The host's file roots"): before, both
+// went through the vfs, which passes a native path through, so any file on the disk was read and
+// parsed, and the two answers ("not an action map it can read" with or without a reason) told a
+// file that is there from one that is not. Outside the roots, and missing under them: 1003.
+TEST_CASE("save: run_headless reads the player's map and log only under the roots") {
+  const test::TempDir tmp("cli_save_player_roots");
+  REQUIRE(tmp.ok());
+  const std::string start = tmp.file("start");
+  const std::string map_path = tmp.file("move-map.json");
+  const std::string log_path = tmp.file("walk.jsonl");
+  make_input(map_path, log_path);
+  {
+    Host maker;
+    REQUIRE(maker.ok);
+    make_world(maker, start);
+  }
+  Host host;
+  REQUIRE(host.ok);
+  const std::string session = open_session(host, start, false);
+  const std::string s = "{\"session\":\"" + session + "\",\"seconds\":1";
+  CHECK(error_code(host.call("session.run_headless",
+                             s + stream_params("tests://../escape.json", log_path) + "}")) == 1003);
+  CHECK(error_code(host.call("session.run_headless",
+                             s + stream_params(map_path, tmp.file("none.jsonl")) + "}")) == 1003);
+  const JsonValue ran =
+      host.call("session.run_headless", s + stream_params(map_path, log_path) + "}");
+  CHECK(number(result_of(ran), "tick") == 60);
+}
+
 TEST_CASE("save corpus: every save loads, migrates, and runs on as it was measured to") {
   const std::string root = test::data_path(ENGINE_SOURCE_DIR "/content/migration-corpus/saves",
                                            "content/migration-corpus/saves");
@@ -649,7 +697,8 @@ TEST_CASE("save corpus: every save loads, migrates, and runs on as it was measur
 
   const test::TempDir tmp("cli_save_corpus");
   REQUIRE(tmp.ok());
-  Host host;
+  // The corpus is read under a root of its own, beside the tests' scratch root it loads into.
+  Host host({"--root", test::scratch_root_spec(), "--root", "corpus=" + root});
   REQUIRE(host.ok);
   for (const CorpusSave& save : corpus()) {
     const std::string name = save.name;  // a string, so a failure prints the name, not a pointer
@@ -751,7 +800,55 @@ TEST_CASE("document corpus: every save's document opens and saves to what this v
   if (saved.count("v1") != 0 && saved.count("v2") != 0) CHECK(saved["v1"] == saved["v2"]);
   if (saved.count("v3") != 0) CHECK(saved["v3"] == committed("v4"));
   if (saved.count("v4") != 0) CHECK(saved["v4"] == committed("v4"));
+  if (saved.count("v5") != 0) CHECK(saved["v5"] == committed("v5"));
   if (saved.count("v4-residents") != 0) CHECK(saved["v4-residents"] == committed("v4-residents"));
+}
+
+// session.save_game and session.load_game are read-only, so every role reaches them: before the
+// roots a role that may write nothing made a directory anywhere and copied the document and its
+// store into it, or a save's into it and opened a session there (the survey's rows 21-23). Now
+// both write only under a writable root, never into an open document, and answer root and path.
+TEST_CASE("save: a save and a load write only under the host's writable roots") {
+  const test::TempDir tmp("cli_save_roots");
+  REQUIRE(tmp.ok());
+  const std::string work = tmp.file("work");
+  Host host({"--root", "work=" + work + ":rw"});
+  REQUIRE(host.ok);
+  const std::string doc = work + "/world";
+  make_world(host, doc);
+  const std::string session = open_session(host, doc, false);
+  const std::string s = "{\"session\":\"" + session + "\"";
+  // Outside every root, and into the open document's own files: one answer, nothing made.
+  const std::string outside = tmp.file("outside") + "/save";
+  const JsonValue far =
+      host.call("session.save_game", s + ",\"path\":" + json_string(outside) + "}");
+  CHECK(error_code(far) == 1003);
+  CHECK(error_message(far) == "path: no place this host may write at '" + outside + "'");
+  CHECK_FALSE(std::filesystem::exists(tmp.file("outside")));
+  CHECK(error_code(host.call("session.save_game", s + ",\"path\":\"layers/x\"}")) == 1003);
+  CHECK(error_code(host.call("session.save_game", s + ",\"path\":\"work://world/layers/x\"}")) ==
+        1003);
+  CHECK(error_code(host.call("session.save_game", s + ",\"path\":\"work://../outside/save\"}")) ==
+        1003);
+  CHECK_FALSE(std::filesystem::exists(doc + "/layers/x"));
+  // Under the root: written, and answered as the root and the path under it.
+  const JsonValue saved = host.call("session.save_game", s + ",\"path\":\"work://saves/one\"}");
+  CHECK(text(result_of(saved), "path") == "work://saves/one");
+  CHECK(std::filesystem::exists(work + "/saves/one/save.json"));
+  // A load reads under a root and makes its directory under a writable one.
+  const JsonValue away =
+      host.call("session.load_game",
+                "{\"path\":\"work://saves/one\",\"dir\":" + json_string(tmp.file("loaded")) + "}");
+  CHECK(error_code(away) == 1003);
+  CHECK_FALSE(std::filesystem::exists(tmp.file("loaded")));
+  const JsonValue loaded =
+      host.call("session.load_game", R"({"path":"work://saves/one","dir":"work://loaded"})");
+  CHECK(text(result_of(loaded), "dir") == "work://loaded");
+  // The loaded document is open, so its own files are protected as the first one's are.
+  const std::string other = text(result_of(loaded), "session");
+  CHECK(error_code(host.call("session.save_game", "{\"session\":\"" + other +
+                                                      "\",\"path\":\"work://loaded/layers/y\"}")) ==
+        1003);
 }
 
 #else

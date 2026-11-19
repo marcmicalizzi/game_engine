@@ -23,9 +23,11 @@
 #include <domain/geometry/cluster_pages.h>
 #include <domain/gfx/adapter.h>
 #include <domain/gfx/device.h>
+#include <domain/protocol/paths.h>
 #include <domain/protocol/session.h>
 #include <domain/sim/materialize.h>
 #include <domain/sim/scheduler.h>
+#include <foundation/io/roots.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/rt_capacity.h>
@@ -496,6 +498,12 @@ bool RuntimeWorld::make_stream(const world::RingParams& ring, u32 simulated_ring
   made->document->bind(&session_ptr_->document());
   made->world.add_consumer(made->document->consumer(rings, &made->world.ring()));
   if (keep_store) {
+    // Written beside the document, so never for a document read from a read-only root
+    // (Session::writable).
+    if (!session_ptr_->writable()) {
+      error = "world.db: the session's document was opened from a root this host may only read";
+      return false;
+    }
     // The document's own store, `session.events`' convention: `world.db` beside it.
     std::string native;
     const std::string wanted = io::join_path(session_ptr_->dir(), "world.db");
@@ -1072,6 +1080,7 @@ void fill_output(const content_build::MeshTask& task, bool want_stats,
   out.cached = r.cached;
   out.source_hash = r.source_hash;
   out.build_key = r.build_key;
+  out.content_classes = r.content_classes;  // null unless the source is classified (C62)
   switch (task.state) {
     case content_build::TaskState::Built: {
       out.status = "built";
@@ -1123,7 +1132,7 @@ void fill_output(const content_build::MeshTask& task, bool want_stats,
   }
 }
 
-bool content_build_method(protocol::Context&, const protocol::ContentBuildParams& params,
+bool content_build_method(protocol::Context& ctx, const protocol::ContentBuildParams& params,
                           protocol::ContentBuildResult& out, protocol::RpcError& error) {
   const i64 start_ns = time::monotonic_ns();
   if (params.source.empty() == params.manifest.empty()) {
@@ -1149,30 +1158,77 @@ bool content_build_method(protocol::Context&, const protocol::ContentBuildParams
   content_build::MeshOptions options;
   if (!read_mesh_options(params.options, options, error)) return false;
 
+  // Every path is a client's (protocol.md, "The host's file roots"): the source and the manifest
+  // read, the output written — never over an open document's own files or into the shell's
+  // directory (the survey's row 17) — and a manifest's entries the same, from its directory.
+  const std::string base = protocol::client_base(ctx, {});
   Vector<content_build::ManifestEntry> entries;
   if (!params.manifest.empty()) {
-    if (!io::exists(params.manifest)) {
-      error = io_error("no manifest at '" + params.manifest + "'");
+    io::Admitted manifest;
+    if (!protocol::admit_client_path(ctx, "manifest", params.manifest, base, io::Access::read,
+                                     manifest, error)) {
+      return false;
+    }
+    if (!io::exists(manifest.native)) {
+      error = protocol::path_not_found("manifest", params.manifest, io::Access::read);
       return false;
     }
     std::string message;
-    if (!content_build::read_manifest(params.manifest, options, entries, message)) {
+    // No categories table (C62): a manifest naming a categories file is refused here, because
+    // that path would be read without the roots' admission every other path of the call takes.
+    if (!content_build::read_manifest(manifest.native, options, entries, message)) {
       error = invalid(std::move(message));
       return false;
     }
-    for (const content_build::ManifestEntry& entry : entries) {
+    const std::string manifest_dir(io::parent_path(manifest.native));
+    for (content_build::ManifestEntry& entry : entries) {
       if (entry.output.empty() && !params.cache) {
         error = invalid("manifest '" + params.manifest + "' entry '" + entry.source +
                         "' has no \"output\" and cache was not asked for");
         return false;
       }
+      io::Admitted source;
+      if (!protocol::admit_client_path(ctx, "manifest.source", entry.source, manifest_dir,
+                                       io::Access::read, source, error)) {
+        return false;
+      }
+      entry.source = source.native;
+      if (!entry.output.empty()) {
+        io::Admitted output;
+        if (!protocol::admit_client_path(ctx, "manifest.output", entry.output, manifest_dir,
+                                         io::Access::write, output, error)) {
+          return false;
+        }
+        entry.output = output.native;
+      }
     }
   } else {
     content_build::ManifestEntry entry;
-    entry.source = params.source;
-    entry.output = params.output;
+    io::Admitted source;
+    if (!protocol::admit_existing_path(ctx, "source", params.source, base, source, error)) {
+      return false;
+    }
+    entry.source = source.native;
+    if (!params.output.empty()) {
+      io::Admitted output;
+      if (!protocol::admit_client_path(ctx, "output", params.output, base, io::Access::write,
+                                       output, error)) {
+        return false;
+      }
+      entry.output = output.native;
+    }
     entry.options = options;
     entries.push_back(std::move(entry));
+  }
+  // An admitted output's directory is made, as a capture's is: a document's `out/` exists only once
+  // something is written under it. The message names no host path.
+  for (const content_build::ManifestEntry& entry : entries) {
+    if (entry.output.empty()) continue;
+    const io::Status made = io::make_directories(io::parent_path(entry.output));
+    if (made != io::Status::Ok) {
+      error = io_error(std::string("cannot make an output's directory: ") + io::status_name(made));
+      return false;
+    }
   }
   // A generated mesh's parts fall back to the repository's material pack, as `engine-content build`
   // and `build-all` have them do and through the same function, so the two hosts build the same
@@ -1187,11 +1243,23 @@ bool content_build_method(protocol::Context&, const protocol::ContentBuildParams
   bool to_cache = false;
   for (const content_build::ManifestEntry& entry : entries)
     to_cache = to_cache || entry.output.empty();
-  std::string ddc = params.ddc;
+  std::string ddc;
+  if (!params.ddc.empty()) {
+    // A client-named cache is a place the host writes: under a writable root, as any output.
+    io::Admitted named;
+    if (!protocol::admit_client_path(ctx, "ddc", params.ddc, base, io::Access::make_directory,
+                                     named, error)) {
+      return false;
+    }
+    ddc = named.native;
+  }
   if (to_cache && ddc.empty()) {
-    ddc = geometry::find_ddc_root(platform::executable_directory());
+    // The host's own derived-data root, as a session's load takes it.
+    ddc = protocol::derived_data_root(ctx, nullptr);
     if (ddc.empty()) {
-      error = invalid("cache found no repository root above the host executable; pass ddc");
+      error = invalid(
+          "cache: this host has no derived-data root (--ddc, or a repository above the "
+          "host executable); pass ddc");
       return false;
     }
   }
@@ -1264,6 +1332,10 @@ bool content_build_method(protocol::Context&, const protocol::ContentBuildParams
     }
     protocol::ContentBuildOutput output;
     fill_output(task, params.stats, output);
+    // The source as the client may see it, `<root>://<relative>`: before, it was the canonical
+    // path of the host's machine (it had echoed the client's string). `path` stays the file to
+    // open, as the captures' `file://` answers do (protocol.md, "What is built, and what is left").
+    output.source = protocol::portable_path(ctx, output.source);
     output.textures = content_build::textures_json(texture_results, m, textures, true);
     switch (task.state) {
       case content_build::TaskState::Built: ++out.built; break;
@@ -1283,7 +1355,9 @@ bool content_build_method(protocol::Context&, const protocol::ContentBuildParams
                     log::field("detail", r.error));
   }
   out.textures = content_build::textures_json(texture_results, ~u32{0}, textures, false);
-  out.ddc = ddc;
+  // The derived-data root as a root's name and a path under it (the host's `ddc`, or the
+  // client's own admitted one), never the host's directory.
+  out.ddc = protocol::portable_path(ctx, ddc);
   out.seconds = ms_since(start_ns) / 1000.0;
   ENGINE_LOG_INFO(log_ops, "content.build", log::field("built", out.built),
                   log::field("skipped", out.skipped), log::field("failed", out.failed),
@@ -1460,23 +1534,28 @@ bool session_events(protocol::Context& ctx, const protocol::SessionEventsParams&
     out.store_status = "not asked";
   } else {
 #if defined(ENGINE_HOST_STORE)
+    // A client's `store` is a client path (protocol.md, "The host's file roots"): read under a
+    // root, relative to the session's document, and a refused one answers as a missing one does.
+    // The session's own world.db is the host's, beside the document it opened.
     std::string native;
-    const std::string wanted =
-        params.store.empty() ? io::join_path(session->dir(), "world.db") : params.store;
-    const io::Status resolved = ctx.sessions->vfs().resolve(wanted, native);
-    if (resolved != io::Status::Ok) {
-      error = io_error("cannot resolve the event log path '" + wanted +
-                       "': " + io::status_name(resolved));
-      return false;
+    if (params.store.empty()) {
+      native = io::join_path(session->dir(), "world.db");
+    } else {
+      io::Admitted admitted;
+      if (!protocol::admit_client_path(ctx, "store", params.store,
+                                       protocol::client_base(ctx, params.session), io::Access::read,
+                                       admitted, error))
+        return false;
+      native = admitted.native;
     }
     if (!io::exists(native)) {
       if (!params.store.empty()) {
-        error = io_error("no event log at '" + params.store + "'");
+        error = protocol::path_not_found("store", params.store, io::Access::read);
         return false;
       }
       out.store_status = "absent";
     } else {
-      out.store_path = native;
+      out.store_path = protocol::portable_path(ctx, native);
       store::Database db;
       store::OpenOptions options;
       options.read_only = true;  // session.events is read-only, and says so to SQLite as well
@@ -1486,7 +1565,8 @@ bool session_events(protocol::Context& ctx, const protocol::SessionEventsParams&
       store::EventLog event_log(db);
       if (status == store::Status::Ok) status = event_log.open();
       if (status != store::Status::Ok) {
-        error = io_error("cannot read the event log '" + native +
+        error = io_error("cannot read the event log '" +
+                         (params.store.empty() ? std::string("world.db") : params.store) +
                          "': " + store::status_name(status) + " " + std::string(db.last_error()));
         return false;
       }
@@ -2075,6 +2155,33 @@ bool session_run_headless(protocol::Context& ctx, const protocol::RunHeadlessPar
       return false;
     }
   }
+  // The player's map and log are client paths (protocol.md, "The host's file roots"): read under a
+  // root, from the session's document, refused or missing alike 1003 for the field, and the world
+  // is handed the admitted paths. Before, each went through the vfs, which passes a native path
+  // through, so any file was read and parsed with the host's rights.
+  std::optional<protocol::HeadlessWorld> admitted_stream;
+  std::string spelled[2];
+  std::string natives[2];
+  if (params.stream.has_value() && params.stream->player.has_value()) {
+    admitted_stream = *params.stream;
+    protocol::HeadlessPlayer& p = *admitted_stream->player;
+    const std::string base = protocol::client_base(ctx, params.session);
+    std::string* fields[2] = {&p.map, &p.log};
+    const char* names[2] = {"stream.player.map", "stream.player.log"};
+    for (u32 i = 0; i < 2; ++i) {
+      io::Admitted admitted;
+      if (!protocol::admit_client_path(ctx, names[i], *fields[i], base, io::Access::read, admitted,
+                                       error))
+        return false;
+      if (!io::exists(admitted.native)) {
+        error = protocol::path_not_found(names[i], *fields[i], io::Access::read);
+        return false;
+      }
+      spelled[i] = *fields[i];
+      natives[i] = admitted.native;
+      *fields[i] = std::move(admitted.native);
+    }
+  }
 
   RuntimeWorld* world = state->ops.world(params.session, *ctx.sessions, true);
   world->bind(session, &ctx.sessions->vfs());
@@ -2091,7 +2198,15 @@ bool session_run_headless(protocol::Context& ctx, const protocol::RunHeadlessPar
   if (streamed) {
 #if defined(ENGINE_HOST_WORLD)
     std::string why;
-    if (!world->stream(*params.stream, fill, why)) {
+    if (!world->stream(admitted_stream.has_value() ? *admitted_stream : *params.stream, fill,
+                       why)) {
+      // Said with the client's own spelling, never the admitted path.
+      for (u32 i = 0; i < 2; ++i) {
+        if (natives[i].empty()) continue;
+        for (usize at = why.find(natives[i]); at != std::string::npos;
+             at = why.find(natives[i], at + spelled[i].size()))
+          why.replace(at, natives[i].size(), spelled[i]);
+      }
       error = invalid(std::move(why));
       return false;
     }
@@ -2293,14 +2408,18 @@ bool session_save_game(protocol::Context& ctx, const protocol::SaveGameParams& p
     return false;
   }
   io::Vfs& vfs = ctx.sessions->vfs();
-  std::string path;
   std::string document_dir;
-  if (vfs.resolve(params.path, path, true) != io::Status::Ok) {
-    error = invalid("path '" + params.path + "' is not a place a save can be written");
+  // A save is a directory the host makes and fills: admitted under a writable root, outside every
+  // open document but its out/ (protocol.md, "The host's file roots"; the survey's rows 21-23).
+  io::Admitted admitted;
+  if (!protocol::admit_client_path(ctx, "path", params.path,
+                                   protocol::client_base(ctx, params.session),
+                                   io::Access::make_directory, admitted, error)) {
     return false;
   }
+  const std::string path = admitted.native;
   if (vfs.resolve(session->dir(), document_dir) != io::Status::Ok) {
-    error = io_error("the session's document directory '" + session->dir() + "' does not resolve");
+    error = io_error("the session's document directory does not resolve");
     return false;
   }
   HostState* state = state_of(ctx);
@@ -2338,7 +2457,7 @@ bool session_save_game(protocol::Context& ctx, const protocol::SaveGameParams& p
     error = invalid(std::move(why));
     return false;
   }
-  out.path = path;
+  out.path = admitted.portable();
   out.tick = manifest.tick;
   out.game_time_us = manifest.game_time_us;
   out.state_hash = manifest.state_hash;
@@ -2385,23 +2504,29 @@ bool session_load_game(protocol::Context& ctx, const protocol::LoadGameParams& p
     return false;
   }
   io::Vfs& vfs = ctx.sessions->vfs();
-  std::string save_dir;
-  std::string target;
-  if (vfs.resolve(params.path, save_dir) != io::Status::Ok) {
-    error = invalid("path '" + params.path + "' does not resolve");
+  // The save is read under any root; the directory it is loaded into is made under a writable one,
+  // and becomes an open, protected document.
+  io::Admitted save_at;
+  io::Admitted target_at;
+  const std::string base = protocol::client_base(ctx, {});
+  // A save that is not there is answered as a refused path, before anything else is checked.
+  if (!protocol::admit_existing_path(ctx, "path", params.path, base, save_at, error) ||
+      !protocol::admit_client_path(ctx, "dir", params.dir, base, io::Access::make_directory,
+                                   target_at, error)) {
     return false;
   }
-  if (vfs.resolve(params.dir, target, true) != io::Status::Ok) {
-    error = invalid("dir '" + params.dir + "' is not a place a document can be written");
-    return false;
-  }
+  const std::string save_dir = save_at.native;
+  const std::string target = target_at.native;
   // Everything a load must know before it touches anything: the save is one, of versions this
   // build reads, with every file as its manifest says.
   world::SaveManifest manifest;
   world::SaveCheck check;
   std::string why;
   if (!world::read_save(save_dir, manifest, check, why)) {
-    error = protocol::make_error(protocol::codes::k_validation_failed, std::move(why));
+    // The reader names the directory it read; the client is told its own spelling of it.
+    error = protocol::make_error(
+        protocol::codes::k_validation_failed,
+        protocol::shown_message(std::move(why), io::normalize_path(save_dir), params.path));
     return false;
   }
   if (manifest.hz != RuntimeWorld::hz()) {
@@ -2412,12 +2537,12 @@ bool session_load_game(protocol::Context& ctx, const protocol::LoadGameParams& p
   if (io::exists(target)) {
     Vector<io::DirEntry> entries;
     if (io::list_directory(target, entries) != io::Status::Ok || !entries.empty()) {
-      error = invalid("dir '" + target +
+      error = invalid("dir '" + params.dir +
                       "' is not empty: a save is loaded into a new directory, never over one");
       return false;
     }
   } else if (io::make_directories(target) != io::Status::Ok) {
-    error = io_error("cannot create '" + target + "'");
+    error = io_error("cannot create '" + params.dir + "'");
     return false;
   }
   if (!world::restore_save_files(save_dir, manifest, target, why)) {
@@ -2440,9 +2565,11 @@ bool session_load_game(protocol::Context& ctx, const protocol::LoadGameParams& p
     }
   }
   protocol::SessionOpenParams open;
-  open.path = params.dir;
-  protocol::Session* session = ctx.sessions->open(open, ctx.connection, error);
+  open.path = target;
+  protocol::Session* session =
+      ctx.sessions->open(open, ctx.connection, error, {}, protocol::portable_path(ctx, target));
   if (session == nullptr) return false;
+  (void)ctx.roots->protect(session->dir());
   const std::string session_id = session->id();
   auto refuse = [&](protocol::RpcError e) {
     ctx.sessions->close(session_id);
@@ -2470,7 +2597,7 @@ bool session_load_game(protocol::Context& ctx, const protocol::LoadGameParams& p
   protocol::RpcError hash_error;
   if (!hash_session(world, *session, vfs, h, has_store, hash_error)) return refuse(hash_error);
   out.session = session_id;
-  out.dir = target;
+  out.dir = target_at.portable();
   out.tick = world->tick();
   out.game_time_us = world->game_time_us();
   out.saved_state_hash = manifest.state_hash;
@@ -2562,7 +2689,10 @@ void document_checks(protocol::Context& ctx, protocol::Session& session,
   }
 }
 
-void content_checks(const std::string& path, protocol::RunTestsResult& out) {
+// The container at `native` (admitted by engine_run_tests), reported under `path`, the client's own
+// spelling: no check's subject or message names the host's path.
+void content_checks(const std::string& native, const std::string& path,
+                    protocol::RunTestsResult& out) {
   std::string file;
   geometry::ClusterFileHeader header{};
   Vector<geometry::ClusterFileSection> sections;
@@ -2570,7 +2700,10 @@ void content_checks(const std::string& path, protocol::RunTestsResult& out) {
   std::string error;
   const char* later[] = {"content.cluster_budget", "content.lod", "content.pages",
                          "content.identity", "content.images"};
-  if (!content_build::load_container(path, file, header, sections, data, error)) {
+  if (!content_build::load_container(native, file, header, sections, data, error)) {
+    for (usize at = error.find(native); at != std::string::npos;
+         at = error.find(native, at + path.size()))
+      error.replace(at, native.size(), path);
     add_check(out, "content", "content.read", path, "error", "fail", error);
     for (const char* id : later)
       add_check(out, "content", id, path, "error", "skipped", "the container could not be read");
@@ -2649,14 +2782,18 @@ void content_checks(const std::string& path, protocol::RunTestsResult& out) {
 }
 
 #if defined(ENGINE_HOST_TISSUE)
-bool tissue_checks(const protocol::RunTestsParams& params, protocol::RunTestsResult& out) {
+bool tissue_checks(const std::string& native, const protocol::RunTestsParams& params,
+                   protocol::RunTestsResult& out) {
   const std::string& path = params.tissue;
   tissue::TissueFile file;
   std::string error;
   const bool json = path.size() >= 5 && path.compare(path.size() - 5, 5, ".json") == 0;
-  const bool loaded = json ? tissue::import_interchange(path, file, &error)
-                           : tissue::read_tissue_file(path, file, &error);
+  const bool loaded = json ? tissue::import_interchange(native, file, &error)
+                           : tissue::read_tissue_file(native, file, &error);
   if (!loaded) {
+    for (usize at = error.find(native); at != std::string::npos;
+         at = error.find(native, at + path.size()))
+      error.replace(at, native.size(), path);
     add_check(out, "tissue", "tissue.read", path, "error", "fail", error);
     return true;
   }
@@ -2696,12 +2833,34 @@ bool engine_run_tests(protocol::Context& ctx, const protocol::RunTestsParams& pa
     return false;
   }
 #endif
+  // Every file the call names is a client path (protocol.md, "The host's file roots"): read under
+  // a root, from the session's document, and refused or missing alike answer 1003 for the field
+  // before any check runs, so a check's verdict never tells what exists outside the roots.
+  const std::string base = protocol::client_base(ctx, params.session);
+  const auto admit_file = [&](std::string_view field, const std::string& spelled,
+                              std::string& native) {
+    io::Admitted admitted;
+    if (!protocol::admit_client_path(ctx, field, spelled, base, io::Access::read, admitted, error))
+      return false;
+    if (!io::exists(admitted.native)) {
+      error = protocol::path_not_found(field, spelled, io::Access::read);
+      return false;
+    }
+    native = std::move(admitted.native);
+    return true;
+  };
+  std::string tissue_native;
+  if (!params.tissue.empty() && !admit_file("tissue", params.tissue, tissue_native)) return false;
+  Vector<std::string> container_natives;
+  for (const std::string& container : params.containers) {
+    if (!admit_file("containers", container, container_natives.emplace_back())) return false;
+  }
   if (session != nullptr) document_checks(ctx, *session, out);
 #if defined(ENGINE_HOST_TISSUE)
-  if (!params.tissue.empty()) tissue_checks(params, out);
+  if (!params.tissue.empty()) tissue_checks(tissue_native, params, out);
 #endif
-  for (const std::string& container : params.containers)
-    content_checks(container, out);
+  for (u32 i = 0; i < params.containers.size(); ++i)
+    content_checks(container_natives[i], params.containers[i], out);
 
   for (const protocol::TestCheck& check : out.checks) {
     if (check.verdict == "pass") ++out.passed;
@@ -2730,6 +2889,7 @@ void add_ops_methods(protocol::Dispatcher& d) {
       "What has happened to a document, a page at a time: its journal's commits with attribution "
       "and, when the host has the store capability and the document a world.db, the world's event "
       "log. Filter by kind and actor; pass next back as cursor to continue or to poll.")));
+  add_store_query_method(d);
   d.add(protocol::read_only(protocol::method<protocol::BudgetsParams, protocol::BudgetsResult,
                                              &engine_budgets>(
       "engine.budgets",
@@ -2747,16 +2907,17 @@ void add_ops_methods(protocol::Dispatcher& d) {
       "time round declared observers that may walk, and each tile reconciled from the document's "
       "store (the world capability). Returns ticks, game time, the materialization, the "
       "write-backs and the streamed tiles."));
-  d.add(protocol::read_only(protocol::method<protocol::MaterializeParams,
-                                             protocol::MaterializeResult, &session_materialize>(
+  // A write (protocol.md, "What a read may do"): it changes the session's running world, which
+  // every other client of the session runs and reads.
+  d.add(protocol::method<protocol::MaterializeParams, protocol::MaterializeResult,
+                         &session_materialize>(
       "session.materialize",
       "Materialize the session's document (or one tile of it) into its runtime world now, and "
       "report which record types mapped, how many records became entities, which were skipped and "
-      "why, and every mapping this build compiled.")));
-  // Read-only in the protocol's sense (protocol.md, "Identity, and what a role restricts"): none
-  // changes a document, a lease or a host setting. A save writes a new directory from what the
-  // session holds, as `doc.save` and `render.capture` write theirs; a load opens a new session on a
-  // new directory, as `session.open` with `create` does; the hash reads.
+      "why, and every mapping this build compiled."));
+  // The hash reads. A save is a read that leaves a file: a new directory from what the session
+  // holds, so a credential that may only read is refused it. A load is a write: it copies a save
+  // into a new directory and makes a running world there, as `session.run_headless` runs one.
   d.add(protocol::read_only(protocol::method<protocol::StateHashParams, protocol::StateHashResult,
                                              &session_state_hash>(
       "session.state_hash",
@@ -2764,20 +2925,19 @@ void add_ops_methods(protocol::Dispatcher& d) {
       "document's live records composed across the layers, and its store's events, projections "
       "and snapshots in key order, as one 64-bit number and its parts. Two runs of a world agree "
       "on it exactly when they left the same persistent state; a replay compares it.")));
-  d.add(protocol::read_only(protocol::method<protocol::SaveGameParams, protocol::SaveGameResult,
-                                             &session_save_game>(
-      "session.save_game",
-      "Save the session's running world into a new directory: its document, a consistent backup "
-      "of its store, the clock and seed, the streamed world's observers and active tiles, the "
-      "player's input log so far, and a save.json naming and hashing every file. Changes nothing "
-      "in the session.")));
-  d.add(protocol::read_only(protocol::method<protocol::LoadGameParams, protocol::LoadGameResult,
-                                             &session_load_game>(
+  d.add(protocol::read_leaving_files(
+      protocol::method<protocol::SaveGameParams, protocol::SaveGameResult, &session_save_game>(
+          "session.save_game",
+          "Save the session's running world into a new directory: its document, a consistent "
+          "backup of its store, the clock and seed, the streamed world's observers and active "
+          "tiles, the player's input log so far, and a save.json naming and hashing every file. "
+          "Changes nothing in the session.")));
+  d.add(protocol::method<protocol::LoadGameParams, protocol::LoadGameResult, &session_load_game>(
       "session.load_game",
       "Open a session on a save: its document and store copied into a new directory, the world "
       "made at the save's tick with its tiles, observers and player restored, so "
       "session.run_headless continues the run. Refuses a save newer than this build or whose files "
-      "do not match its manifest, naming what is wrong; migrates an older one.")));
+      "do not match its manifest, naming what is wrong; migrates an older one."));
   d.add(protocol::read_only(
       protocol::method<protocol::RunTestsParams, protocol::RunTestsResult, &engine_run_tests>(
           "engine.run_tests",

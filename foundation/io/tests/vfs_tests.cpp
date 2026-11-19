@@ -43,6 +43,21 @@ TEST_CASE("io: path helpers normalize and decompose") {
   CHECK(std::string_view(status_name(Status::NotFound)) == "not found");
 }
 
+TEST_CASE("io: a UNC path keeps its server and share through normalize_path and join_path") {
+  // Folded to one leading slash, //server/share/x is /server/share/x: a directory on whichever
+  // drive is current, which every caller then opened in place of the share.
+  CHECK(normalize_path("//server/share/a/../b") == "//server/share/b");
+  CHECK(normalize_path("\\\\server\\share\\a\\") == "//server/share/a");
+  CHECK(normalize_path("//server/share/../../x") == "//server/share/x");
+  CHECK(normalize_path("//server/share") == "//server/share");
+  CHECK(join_path("//server/share", "x") == "//server/share/x");
+  CHECK(join_path("//server/share/a", "../b") == "//server/share/b");
+  CHECK(join_path("a/b", "//server/share/x") == "//server/share/x");
+  CHECK(is_absolute_path("//server/share"));
+  // One leading slash is still one.
+  CHECK(normalize_path("/a//b") == "/a/b");
+}
+
 TEST_CASE("io: native read, write, stat, list, remove") {
   TempDir tmp("engine_io");
   const std::string file = join_path(tmp.path(), "sub/dir/hello.txt");

@@ -33,8 +33,23 @@ void append_utf8(std::string& s, u32 cp) {
 }  // namespace
 
 JsonReader::JsonReader(std::string_view text, const JsonParseOptions& options)
-    : text_(text), max_depth_(options.max_depth) {
+    : text_(text),
+      max_depth_(options.max_depth),
+      refuse_duplicate_keys_(options.refuse_duplicate_keys) {
   frames_.reserve(16);
+}
+
+bool JsonReader::refuse_duplicate(usize key_start) {
+  const u32 first = key_marks_.back();
+  for (u32 i = first; i < keys_.size(); ++i) {
+    if (keys_[i] != string_) continue;
+    pos_ = key_start;  // the error names the second key's place
+    fail("duplicate key in object");
+    error_.duplicate_key = std::string(string_);
+    return true;
+  }
+  keys_.push_back(std::string(string_));
+  return false;
 }
 
 bool JsonReader::fail(const char* message) {
@@ -91,6 +106,7 @@ bool JsonReader::next_value(Event& out) {
     case '{':
       ++pos_;
       frames_.push_back(k_frame_object);
+      if (refuse_duplicate_keys_) key_marks_.push_back(keys_.size());
       out = Event::Object;
       return true;
     case '[':
@@ -158,26 +174,31 @@ bool JsonReader::next_member(bool& more, std::string_view& key) {
   ENGINE_ASSERT(!frames_.empty() && (frames_.back() & k_frame_object) != 0,
                 "JsonReader: next_member outside an object");
   u8& frame = frames_.back();
+  const auto close = [&] {
+    ++pos_;
+    frames_.pop_back();
+    if (refuse_duplicate_keys_) {
+      keys_.resize(key_marks_.back());
+      key_marks_.pop_back();
+    }
+    return true;
+  };
   skip_ws();
   if ((frame & k_frame_started) == 0) {
-    if (peek() == '}') {
-      ++pos_;
-      frames_.pop_back();
-      return true;
-    }
+    if (peek() == '}') return close();
     frame |= k_frame_started;
   } else if (peek() == ',') {
     ++pos_;
   } else if (peek() == '}') {
-    ++pos_;
-    frames_.pop_back();
-    return true;
+    return close();
   } else {
     return fail("expected ',' or '}' in object");
   }
   skip_ws();
   if (peek() != '"') return fail("expected a string key");
+  const usize key_start = pos_;
   if (!read_string()) return false;
+  if (refuse_duplicate_keys_ && refuse_duplicate(key_start)) return false;
   key = string_;
   skip_ws();
   if (peek() != ':') return fail("expected ':' after key");
@@ -220,7 +241,8 @@ bool JsonReader::rest(Event begun, JsonValue& out) {
       std::string name(key);
       JsonValue value;
       if (!read_value(value)) return false;
-      members.insert_or_assign(std::move(name), std::move(value));  // duplicate keys: last wins
+      // Duplicate keys: the last wins, unless the strict mode refused the second in next_member.
+      members.insert_or_assign(std::move(name), std::move(value));
     }
     if (failed_) return false;
     out = JsonValue(std::move(members));
