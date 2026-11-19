@@ -80,6 +80,13 @@ ArchetypeWeight weight(Archetype a, f32 w) {
 bool positive(f32 v) { return v > 0.0f && std::isfinite(v); }
 bool fraction(f32 v) { return v >= 0.0f && v <= 1.0f; }
 
+// Every length the plan keeps in centimetres is an `i32`, and `to_cm` casts it there unchecked: a
+// length held only from below took 2^30 m to a tile of 0 cm and an infinite one to whatever
+// `llround` gives (T198). 100 km is twice the largest island's radius, so no honest length is
+// longer, and 10^7 cm leaves the planner's sums and products of them far inside `i32` and `i64`.
+constexpr f32 k_max_length_m = 100'000.0f;
+bool length_in_range(f32 v) { return v >= -k_max_length_m && v <= k_max_length_m; }
+
 }  // namespace
 
 const char* district_kind_name(DistrictKind kind) noexcept {
@@ -385,6 +392,13 @@ bool convert_style(const DistrictStyle& s, Style& out, std::string& error) {
     error = where + ": floors are 1 to 200, floors_max at least floors_min, height_max positive";
     return false;
   }
+  if (!length_in_range(s.block_max) || !length_in_range(s.lot_width_max) ||
+      !length_in_range(s.lot_depth_max) || !length_in_range(s.setback_front) ||
+      !length_in_range(s.setback_side) || !length_in_range(s.setback_rear) ||
+      !length_in_range(s.height_max)) {
+    error = where + ": a block, lot, setback or height is longer than 100 km";
+    return false;
+  }
   out.kind = s.kind;
   out.pattern = s.pattern;
   out.lot_layout = s.lot_layout;
@@ -596,6 +610,19 @@ bool params_from_schema(const IslandParams& source, Params& out, std::string& er
         "greenbelt and the harbour must not be negative; tile_size at least 8 m, "
         "arterial_spacing at least 120 m, district_size positive";
     return false;
+  }
+  if (!length_in_range(p.greenbelt) || !length_in_range(p.harbour_width) ||
+      !length_in_range(p.harbour_depth) || !length_in_range(p.tile_size) ||
+      !length_in_range(p.arterial_spacing) || !length_in_range(p.district_size)) {
+    error =
+        "greenbelt, the harbour, tile_size, arterial_spacing and district_size are at most 100 km";
+    return false;
+  }
+  for (const Vec2& v : p.coastline) {
+    if (!length_in_range(v.x) || !length_in_range(v.y)) {
+      error = "an authored coastline's points lie within 100 km of the island's centre";
+      return false;
+    }
   }
   if (p.coastline.size() != 0 && p.coastline.size() < 3) {
     error = "an authored coastline needs three points or more";

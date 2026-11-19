@@ -195,6 +195,7 @@ Each is a test in `tests/` unless it says otherwise.
 - Each pin does what the table says, the rest of the plan is what the rules made, and a pin naming nothing refuses the plan.
 - The plan file reads back to the same plan; a record changed by a centimetre, or another generator's file, is refused.
 - A plan file is a writer's, and its hash is not a MAC: a lot naming a district past the plan's, and a park naming a block or a lot the plan lacks, are refused by name before anything indexes by them (T194, "city plan hostile: a lot's district and a park's block must be the plan's own").
+- Every length the plan keeps is an `i32` of centimetres, so the island's lengths (`tile_size`, `greenbelt`, the harbour, `arterial_spacing`, `district_size`), an authored coastline's points and a style's maxima are held to 100 km, twice the largest radius, before they are cast; a NaN or an infinity is refused with them (T198, "city params hostile: a length past 100 km is refused before it becomes centimetres").
 - The key is the parameters' and not their spelling.
 - Each LOD stage is a prefix of the next; a floor's spaces tile its footprint; every wall parts two different spaces and an exterior wall lies on a facade; openings lie in their walls and zones in their rooms; the footprint lies in its lot.
 - The occupancy summary counts the units' homes and jobs, and only dwellings have residents.

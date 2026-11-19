@@ -11,6 +11,7 @@
 #include <test_temp_dir.h>
 
 #include <algorithm>
+#include <limits>
 #include <string>
 
 using namespace engine;
@@ -409,6 +410,40 @@ TEST_CASE("city plan hostile: a lot's district and a park's block must be the pl
   file.parks[0].block = 0xFFFF'FFF0u;  // no block of the plan's
   CHECK_FALSE(plan_from_schema(file, back, error));
   CHECK(error.find("a park names a block or a lot") != std::string::npos);
+}
+
+// Hostile (T198, fuzzing-design.md's fifth list): every length the plan keeps is an i32 of
+// centimetres, and `to_cm` casts to it unchecked. A tile_size held only from below took 2^30 m to
+// 2^30 * 100 = 25 * 2^32 cm, which is 0 in an i32 (the arithmetic below, as the cast made it), and
+// every tile lookup then divided by it; a NaN greenbelt passed `< 0`. Before the mend each of
+// these read as a valid island.
+TEST_CASE("city params hostile: a length past 100 km is refused before it becomes centimetres") {
+  const f64 cm = static_cast<f64>(1u << 30) * 100.0;
+  CHECK(static_cast<i32>(static_cast<i64>(cm)) == 0);  // the tile the old cast made
+
+  auto refused = [](IslandParams source, const char* what) {
+    Params p;
+    std::string error;
+    INFO(what);
+    CHECK_FALSE(params_from_schema(source, p, error));
+    CHECK_MESSAGE(error.find("100 km") != std::string::npos, error);
+  };
+  IslandParams source = default_island_params();
+  source.tile_size = static_cast<f32>(1u << 30);
+  refused(source, "tile_size 2^30 m");
+  source = default_island_params();
+  source.greenbelt = std::numeric_limits<f32>::quiet_NaN();
+  refused(source, "a NaN greenbelt");
+  source = default_island_params();
+  source.district_size = 1.0e9f;  // finite, so `positive` let it by; 10^11 cm is no i32
+  refused(source, "district_size 10^9 m");
+  source = default_island_params();
+  source.coastline = {Vec2{0.0f, 0.0f}, Vec2{1000.0f, 0.0f}, Vec2{0.0f, 1.0e30f}};
+  refused(source, "a coastline point at 10^30 m");
+  source = default_island_params();
+  if (source.styles.empty()) source.styles.push_back(DistrictStyle{});
+  source.styles[0].block_max = std::numeric_limits<f32>::infinity();
+  refused(source, "an infinite block_max");
 }
 
 TEST_CASE("city plan: the key is the parameters' and not their spelling") {
