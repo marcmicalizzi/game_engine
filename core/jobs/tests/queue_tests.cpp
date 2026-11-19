@@ -84,6 +84,53 @@ TEST_CASE("WorkDeque: thieves take from the top; every item is taken exactly onc
   CHECK(sum.load() + owner_sum == static_cast<long long>(k_items) * (k_items - 1) / 2);
 }
 
+// A ring of eight slots, so every slot is written again thousands of times while thieves read it:
+// a thief's read before its CAS meets the owner's rewrite of the same slot here (T186), which the
+// case above, whose ring never wraps, cannot reach. Each item is two words that must agree, so a
+// steal that kept a torn or stale copy shows as a pair that does not match.
+TEST_CASE("WorkDeque: a small ring reused under thieves hands each item over once and whole") {
+  struct Pair {
+    u64 value;
+    u64 check;
+  };
+  constexpr u64 k_items = 200000;
+  constexpr u64 k_mix = 0x9E3779B97F4A7C15ull;
+  WorkDeque<Pair> d(8);
+  std::atomic<u64> taken{0};
+  std::atomic<u64> sum{0};
+  std::atomic<u64> torn{0};
+  std::atomic<bool> done_pushing{false};
+  auto take = [&](const Pair& p) {
+    if (p.check != (p.value ^ k_mix)) torn.fetch_add(1);
+    taken.fetch_add(1);
+    sum.fetch_add(p.value);
+  };
+  auto thief = [&] {
+    Pair p;
+    while (!done_pushing.load() || d.size() > 0) {
+      if (d.steal(p)) take(p);
+    }
+  };
+  std::vector<std::thread> thieves;
+  for (int i = 0; i < 3; ++i)
+    thieves.emplace_back(thief);
+  Pair p;
+  for (u64 i = 0; i < k_items; ++i) {
+    while (!d.push(Pair{i, i ^ k_mix})) {
+      if (d.pop(p)) take(p);  // full: the owner takes its newest back, as a worker would
+    }
+    if ((i & 7) == 0 && d.pop(p)) take(p);
+  }
+  done_pushing.store(true);
+  for (auto& t : thieves)
+    t.join();
+  while (d.pop(p))
+    take(p);
+  CHECK(torn.load() == 0);
+  CHECK(taken.load() == k_items);
+  CHECK(sum.load() == k_items * (k_items - 1) / 2);
+}
+
 TEST_CASE("MpmcQueue: FIFO single-threaded and full/empty reporting") {
   MpmcQueue<int> q(4);
   int v;

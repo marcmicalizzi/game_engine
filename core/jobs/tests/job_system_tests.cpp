@@ -269,3 +269,35 @@ TEST_CASE("JobSystem: idle workers sleep rather than spin forever") {
   js.wait(counter);
   CHECK(hits.load() == 256);
 }
+
+// stats() is read while the workers count (T186: the counters were plain integers, a race TSan
+// reported). Each total only grows between reads, and once the wait returns it holds every job.
+TEST_CASE("JobSystem: stats() may be read while workers run, and only grows") {
+  JobSystemConfig config;
+  config.performance_workers = 4;
+  config.efficiency_workers = 1;
+  JobSystem js(config);
+  std::atomic<u32> hits{0};
+  CounterJob ctx{&hits};
+  constexpr u32 k_jobs = 20000;
+  std::vector<Job> jobs(k_jobs, Job{hit, &ctx, nullptr});
+  std::atomic<bool> stop{false};
+  std::atomic<bool> grew_only{true};
+  std::thread reader([&] {
+    u64 last = 0;
+    while (!stop.load(std::memory_order_acquire)) {
+      const JobSystemStats s = js.stats();
+      if (s.jobs_executed < last) grew_only.store(false, std::memory_order_relaxed);
+      last = s.jobs_executed;
+    }
+  });
+  Counter counter;
+  js.schedule(Pool::Performance, std::span<const Job>(jobs.data(), jobs.size()), counter);
+  js.wait(counter);
+  const JobSystemStats after = js.stats();
+  stop.store(true, std::memory_order_release);
+  reader.join();
+  CHECK(hits.load() == k_jobs);
+  CHECK(after.jobs_executed == k_jobs);
+  CHECK(grew_only.load());
+}

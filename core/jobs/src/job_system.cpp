@@ -25,6 +25,13 @@ thread_local u32 t_lent_depth = 0;
 
 constexpr u32 k_max_pool_workers = 4096;
 
+// A count one thread writes and stats() reads from any thread: an atomic, so the read is not a
+// race, but bumped with a relaxed load and store rather than a locked add, since the writer is
+// alone — on x86 the same instructions as a plain increment.
+void bump(std::atomic<u64>& count) noexcept {
+  count.store(count.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+}
+
 }  // namespace
 
 struct alignas(64) JobSystem::Worker {
@@ -34,11 +41,12 @@ struct alignas(64) JobSystem::Worker {
   u32 local_victim_count = 0;    // how many leading entries of `victims` share our cache domain
   u32 rng_state = 0x9E3779B9u;
   std::thread thread;
-  alignas(64) u64 jobs_executed = 0;
-  u64 steals_local = 0;
-  u64 steals_remote = 0;
-  u64 inbox_pops = 0;
-  u64 sleeps = 0;
+  // Written only by this worker's thread (bump), read by stats() on any thread.
+  alignas(64) std::atomic<u64> jobs_executed{0};
+  std::atomic<u64> steals_local{0};
+  std::atomic<u64> steals_remote{0};
+  std::atomic<u64> inbox_pops{0};
+  std::atomic<u64> sleeps{0};
 
   explicit Worker(u32 queue_capacity) : deque(queue_capacity) {}
 
@@ -257,7 +265,7 @@ void JobSystem::worker_main(JobSystem* self, Worker* worker) {
       pool.sleepers.fetch_sub(1, std::memory_order_acq_rel);
       continue;
     }
-    ++worker->sleeps;
+    bump(worker->sleeps);
     pool.epoch.wait(epoch, std::memory_order_acquire);
     pool.sleepers.fetch_sub(1, std::memory_order_acq_rel);
   }
@@ -280,7 +288,7 @@ void JobSystem::run_job(const Job& job, Worker* worker) noexcept {
   // Count before signaling: a waiter released by the signal may read stats() at once, and the
   // counter's release/acquire pair is what makes the count visible to it.
   if (worker != nullptr) {
-    ++worker->jobs_executed;
+    bump(worker->jobs_executed);
   } else {
     helper_runs_.fetch_add(1, std::memory_order_relaxed);
   }
@@ -319,7 +327,7 @@ bool JobSystem::try_run_one(Worker* worker, const Counter* waited) {
   }
   PoolState& pool = pools_[static_cast<u32>(worker->info.pool)];
   if (pool.inbox.try_pop(job)) {
-    ++worker->inbox_pops;
+    bump(worker->inbox_pops);
     run_taken(job, worker, waited);
     return true;
   }
@@ -331,7 +339,7 @@ bool JobSystem::try_run_one(Worker* worker, const Counter* waited) {
     for (u32 k = 0; k < local; ++k) {
       Worker* victim = pool.workers[worker->victims[(start + k) % local]];
       if (victim->deque.steal(job)) {
-        ++worker->steals_local;
+        bump(worker->steals_local);
         run_taken(job, worker, waited);
         return true;
       }
@@ -343,7 +351,7 @@ bool JobSystem::try_run_one(Worker* worker, const Counter* waited) {
     for (u32 k = 0; k < remote; ++k) {
       Worker* victim = pool.workers[worker->victims[local + (start + k) % remote]];
       if (victim->deque.steal(job)) {
-        ++worker->steals_remote;
+        bump(worker->steals_remote);
         run_taken(job, worker, waited);
         return true;
       }
@@ -351,7 +359,7 @@ bool JobSystem::try_run_one(Worker* worker, const Counter* waited) {
   }
   // Last, the outside thread's deque: what the main thread scheduled.
   if (pool.guest.steal(job)) {
-    ++worker->steals_remote;
+    bump(worker->steals_remote);
     run_taken(job, worker, waited);
     return true;
   }
@@ -414,7 +422,7 @@ bool JobSystem::help_own(Counter& counter, PoolState& pool, Worker* self_worker,
       break;
     }
     if (job.counter == &counter) {
-      if (self_worker != nullptr) ++self_worker->inbox_pops;
+      if (self_worker != nullptr) bump(self_worker->inbox_pops);
       run_job(job, self_worker);
       return true;
     }
@@ -426,7 +434,7 @@ bool JobSystem::help_own(Counter& counter, PoolState& pool, Worker* self_worker,
     detail_deque* victim = i < victims ? &pool.workers[i]->deque : &pool.guest;
     if (victim == own || !victim->steal(job)) continue;
     if (job.counter == &counter) {
-      if (self_worker != nullptr) ++self_worker->steals_remote;
+      if (self_worker != nullptr) bump(self_worker->steals_remote);
       run_job(job, self_worker);
       return true;
     }
@@ -584,15 +592,19 @@ const WorkerInfo& JobSystem::worker_info(Pool pool, u32 index) const noexcept {
 const WorkerInfo* JobSystem::current_worker() noexcept { return t_current_worker; }
 JobSystem* JobSystem::current() noexcept { return t_current_system; }
 
+// Each counter is read once, relaxed: the sum is not a snapshot taken at one instant across the
+// workers, but every counter only grows, and a job is counted before it signals its counter, so
+// after wait(c) returns the totals include every job of c (docs/subsystems/jobs.md, "What a job
+// may assume").
 JobSystemStats JobSystem::stats() const noexcept {
   JobSystemStats s;
   for (u32 i = 0; i < worker_total_; ++i) {
     const Worker* w = workers_[i];
-    s.jobs_executed += w->jobs_executed;
-    s.steals_local += w->steals_local;
-    s.steals_remote += w->steals_remote;
-    s.inbox_pops += w->inbox_pops;
-    s.sleeps += w->sleeps;
+    s.jobs_executed += w->jobs_executed.load(std::memory_order_relaxed);
+    s.steals_local += w->steals_local.load(std::memory_order_relaxed);
+    s.steals_remote += w->steals_remote.load(std::memory_order_relaxed);
+    s.inbox_pops += w->inbox_pops.load(std::memory_order_relaxed);
+    s.sleeps += w->sleeps.load(std::memory_order_relaxed);
   }
   s.helper_runs = helper_runs_.load(std::memory_order_relaxed);
   s.jobs_executed += s.helper_runs;
