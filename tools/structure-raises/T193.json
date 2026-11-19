@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T193",
+  "reason": "what-to-run.md: the release preset's code generation (T193), the switch, what it measured and the one-time recompile",
+  "date": "2026-11-19",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/ci/what-to-run.md": 1227
+  }
+}

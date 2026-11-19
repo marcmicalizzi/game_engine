@@ -301,3 +301,37 @@ TEST_CASE("JobSystem: stats() may be read while workers run, and only grows") {
   CHECK(after.jobs_executed == k_jobs);
   CHECK(grew_only.load());
 }
+
+// A counter on the waiter's stack, destroyed the moment it reads as done (T193): the last signal
+// marks a notify in flight with its decrement, so done() waits for the notify to return, and
+// remaining() never shows the mark. Thousands of short-lived counters, each waited by spinning
+// and by blocking, and one added to again as it reaches zero.
+TEST_CASE("Counter: done only after the last signal has finished with it") {
+  JobSystem js;
+  std::atomic<u32> hits{0};
+  CounterJob ctx{&hits};
+  for (u32 round = 0; round < 4000; ++round) {
+    Counter counter;
+    counter.add(2);
+    js.schedule(Pool::Performance, Job{hit, &ctx, &counter});
+    js.schedule(Pool::Performance, Job{hit, &ctx, &counter});
+    if (round % 2 == 0) {
+      while (!counter.done()) platform::pause_cpu();
+    } else {
+      counter.wait_blocking();
+    }
+    CHECK(counter.remaining() == 0);
+  }
+  CHECK(hits.load() == 8000);
+
+  Counter reused(1);
+  std::thread signaller([&] { reused.signal(); });
+  reused.add(1);  // may land before, during or after the first signal's notify
+  CHECK(reused.remaining() <= 2);
+  signaller.join();
+  CHECK(reused.remaining() == 1);
+  CHECK_FALSE(reused.done());
+  reused.signal();
+  reused.wait_blocking();
+  CHECK(reused.done());
+}

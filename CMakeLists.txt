@@ -22,6 +22,8 @@ include(EngineCpuBaseline)
 # Also before everything: -ffp-contract=off for every target, so GCC and Clang compute what the
 # source says, as MSVC does, and the content build's bytes do not depend on the compiler (ADR-0035).
 include(EngineFpContraction)
+# /Ob2 and the link for the engine's own targets in MSVC's RelWithDebInfo (T193).
+include(EngineReleaseCodegen)
 include(EngineWarnings)
 include(EngineModule)
 # The commit every app was built from (`--version`), refreshed on every build: engine_app links it.

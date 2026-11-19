@@ -78,7 +78,8 @@ function(engine_fetch_recast)
         # against 7.39 / 32.7 / 135.8 ms with /Ob2 for 32, 64 and 128 m tiles. Recast marks its
         # own hot helpers `inline` in the headers, so /Ob1 already has them. The flag is left off
         # rather than kept "just in case", because an option nobody can justify is one the next
-        # person has to re-measure.
+        # person has to re-measure. The engine's own targets take /Ob2 from the release preset's
+        # rule (cmake/EngineReleaseCodegen.cmake, T193); Recast, being third party, keeps /Ob1.
       else()
         target_compile_options(${_target} PRIVATE -w)
       endif()

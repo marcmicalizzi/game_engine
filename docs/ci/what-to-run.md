@@ -655,6 +655,23 @@ memory: a hit holds no `slangc` (its pool slot for a moment), so the 12 GiB of t
 paid once a machine per change to what the resolve includes, not once a worktree. The miss path
 costs a depfile and the store's writes, inside the noise of the compiles beside it.
 
+### The release preset's code generation (T193)
+
+`msvc-release` is CMake's `RelWithDebInfo`, kept for its PDBs (the sampler and Tracy need them),
+which by CMake's default compiles `/O2 /Ob1` (inline only what is marked so) and links `/debug
+/INCREMENTAL` (every call through a thunk, no `/OPT:REF,ICF`). Since T193 the engine's own targets
+build `/Ob2` and link `/INCREMENTAL:NO /OPT:REF /OPT:ICF` there, debug information kept, by one
+switch, `ENGINE_MSVC_RELEASE_CODEGEN` (`full`, the default; `inline` for `/Ob2` alone; `cmake`
+for CMake's own), set in `cmake/EngineReleaseCodegen.cmake` and applied through
+`engine_apply_warnings()`, so no module opts in alone. Third-party targets and the host tools keep
+`/Ob1` (Jolt has its own `/Ob2`, Recast measured none). Measured
+([the experiment](../experiments/release-codegen.md)): the binaries half their size (173
+executables 1,337 to 644 MB, `engine-view` 62.9 to 43.5 MB, 3.8 GB of `.ilk` gone, the tree 24.5
+to 21.4 GB), no compile-time cost found, every determinism pin unmoved, and the bench rows the
+experiment lists. **The first build after it merges recompiles the whole release preset in every
+checkout** (the flags are in ccache's key), once. A developer who wants to step through code a
+debugger can follow configures with `-DENGINE_MSVC_RELEASE_CODEGEN=cmake`.
+
 ## The gate's wall clock (T77)
 
 The owner, 2026-11-09: five to ten hours a day waiting for gates is too high. Until T77 every leg of
