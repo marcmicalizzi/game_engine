@@ -211,6 +211,12 @@ void leaf_bounds(const geometry::ClusterLodMesh& lod, Vec3& lo, Vec3& hi) {
 
 namespace {
 
+// The load makes the instances itself (the implicit one, or a grid that replaces the file's), all
+// of mesh 0 with no raise.
+bool made_by_load(const SceneDesc& desc) noexcept {
+  return desc.instances.empty() || desc.grid_instances > 1;
+}
+
 ReadClass raise_of(const LoadAdmission& state, u16 raise) {
   return raise == 0 || raise > state.raises.size() ? ReadClass{} : state.raises[raise - 1u];
 }
@@ -290,13 +296,13 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
     const ReadClass c = join(state.mesh[mesh], raise_of(state, raise));
     return content_class::decide(c.classes, policy).outcome != content_class::Outcome::omit;
   };
-  if (desc.instances.empty()) {
+  if (made_by_load(desc)) {
     if (meshes > 0) {
       named[0] = 1;
       if (drawn(0, 0)) state.load[0] = 1;
     }
   }
-  for (u32 i = 0; i < desc.instances.size(); ++i) {
+  for (u32 i = 0; desc.grid_instances <= 1 && i < desc.instances.size(); ++i) {
     const SceneInstance& instance = desc.instances[i];
     if (instance.content_classes != 0 && instance.content_classes > desc.raises.size()) {
       error = "instance " + std::to_string(i) + " names raise " +
@@ -359,7 +365,7 @@ void admission_after_meshes(SceneDesc& desc, SceneData& out, LoadAdmission& stat
   Vector<content_class::Outcome> outcome(desc.instances.size(), content_class::Outcome::admit);
   Vector<u32> admitted(meshes, 0u);
   Vector<u8> proxied(meshes, u8{0});
-  for (u32 i = 0; i < desc.instances.size(); ++i) {
+  for (u32 i = 0; desc.grid_instances <= 1 && i < desc.instances.size(); ++i) {
     const SceneInstance& instance = desc.instances[i];
     if (instance.mesh >= meshes) continue;
     outcome[i] = admit_instance(out, state.mesh[instance.mesh], textures[instance.mesh],
@@ -368,7 +374,7 @@ void admission_after_meshes(SceneDesc& desc, SceneData& out, LoadAdmission& stat
     if (outcome[i] == content_class::Outcome::admit) ++admitted[instance.mesh];
     if (outcome[i] == content_class::Outcome::proxy) proxied[instance.mesh] = 1;
   }
-  if (desc.instances.empty() && meshes > 0) {
+  if (made_by_load(desc) && meshes > 0) {
     // The instances the load makes after the merge (the implicit one, or the grid's), all of mesh
     // 0 with no raise: each through the door, all deciding alike.
     const u32 count = desc.grid_instances > 1 ? desc.grid_instances * desc.grid_instances : 1u;
@@ -379,9 +385,9 @@ void admission_after_meshes(SceneDesc& desc, SceneData& out, LoadAdmission& stat
   }
   // A mesh no instance names (a prop, a generator's resident mesh) is admitted by its own class.
   Vector<u8> named(meshes, u8{0});
-  for (const SceneInstance& instance : desc.instances)
-    if (instance.mesh < meshes) named[instance.mesh] = 1;
-  if (desc.instances.empty() && meshes > 0) named[0] = 1;
+  for (u32 i = 0; desc.grid_instances <= 1 && i < desc.instances.size(); ++i)
+    if (desc.instances[i].mesh < meshes) named[desc.instances[i].mesh] = 1;
+  if (made_by_load(desc) && meshes > 0) named[0] = 1;
   for (u32 m = 0; m < meshes; ++m) {
     if (named[m] != 0) continue;
     const content_class::Decision d = admit_instance(out, state.mesh[m], textures[m], ReadClass{});
@@ -434,7 +440,7 @@ void admission_after_meshes(SceneDesc& desc, SceneData& out, LoadAdmission& stat
   // 5. The instances: a proxied one draws its proxy, an omitted one is marked for the instance
   // table to leave out, and in a streamed world neither is handed to the tail, so the tail never
   // holds what the policy withheld (the tile's own admission is the live re-decision's, C67).
-  for (u32 i = 0; i < desc.instances.size(); ++i) {
+  for (u32 i = 0; desc.grid_instances <= 1 && i < desc.instances.size(); ++i) {
     SceneInstance& instance = desc.instances[i];
     if (outcome[i] == content_class::Outcome::admit) continue;
     if (outcome[i] == content_class::Outcome::proxy) {

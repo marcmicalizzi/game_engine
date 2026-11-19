@@ -28,7 +28,7 @@
 # registry's sentence, which the minimal presets prove. ADR-0037's conditional link to `ruins`, and
 # the second one to `terrain` it grew, ended here.
 set(_renderer_deps base containers hash math time jobs log platform io image geometry materials anim assets
-                   gfx json texture tunables content_build schema schemas scene_gen profiling)
+                   gfx json texture tunables content_build content_class schema schemas scene_gen profiling)
 engine_module(NAME renderer LAYER systems
   DEPS ${_renderer_deps}
   SOURCES src/settings.cpp src/view_set.cpp src/motion_pass.cpp src/accumulation_pass.cpp src/reconstruction.cpp src/reconstruction_pass.cpp src/scene.cpp src/gpu_scene.cpp src/gpu_scene_meshes.cpp src/gpu_scene_place.cpp src/gpu_scene_textures.cpp src/gpu_scene_texture_bound.cpp src/gpu_scene_rt_step.cpp src/gpu_scene_relayout.cpp src/gpu_scene_runs.cpp src/scene_renderer_runs.cpp
@@ -36,7 +36,7 @@ engine_module(NAME renderer LAYER systems
           src/page_source.cpp src/streaming.cpp src/scene_renderer.cpp src/cull_instances.cpp src/cull_nodes.cpp src/node_layout.cpp src/reference.cpp
           src/capture.cpp src/terrain.cpp src/terrain_materials.cpp src/camera_path.cpp src/flythrough.cpp
           src/rt_capacity.cpp src/shadow_cascades.cpp src/caster_volume.cpp src/eye_shell.cpp src/crown_priors.cpp src/tile_layout.cpp src/pair_shift.cpp
-          src/pair_account.cpp src/ground_sample.cpp src/ring_forms.cpp
+          src/pair_account.cpp src/ground_sample.cpp src/ring_forms.cpp src/scene_admission.cpp
           src/terrain_time.cpp
           src/terrain_rings.cpp src/terrain_tiles.cpp src/sky.cpp src/request.cpp
           src/overlay.cpp src/scene_leaves.cpp src/scene_water.cpp src/scene_wind.cpp src/scene_flora.cpp src/flora_motion.cpp
@@ -97,6 +97,9 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     # the protocol field that reaches it or the reason none does, by a structured
                     # binding that stops compiling when a field is added; no device.
                     tests/request_tests.cpp
+                    # C64: content classes decided at the load, on the CPU, over neutral fixtures
+                    # of the test's own (a made-up category on a grid and a box).
+                    tests/content_class_load_tests.cpp
                     # The types the renderer mirrors on the GPU itself (ADR-0019); no device.
                     tests/size_table.cpp
                     # The reader through the registry with generators of the test's own, in every
