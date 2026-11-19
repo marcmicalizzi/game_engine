@@ -633,7 +633,7 @@ Import, the content build, validation, provenance, generators, scripting and tex
 | G38 | Roads and rivers as spline networks | open | G36 | L | design | [07 §7.6](plan/07-content-pipeline.md#76-procedural-generation-volume-content) |
 | G39 | Ruin assembler and block layer | done (15b32ade, f36f1d94) | G35 | L | design | [ruins](subsystems/ruins.md#the-block-layer) |
 | G40 | Hard-surface kits in Blender (E33) | done (10 §10.5 2026-09-24) | | L | research | [E33](experiments/e33-hard-surface-kits.md) |
-| G41 | An ADR for where kit scripts live | open | G40 | S | design | [10 §10.5](plan/10-roadmap-risks.md#105-experiments-to-run-before-committing) |
+| G41 | An ADR for where kit scripts live | done (2026-11-19: [ADR-0077](adr/0077-kit-scripts-live-outside-the-repository.md), proposed, written from what the tree does: the scripts under the local root, the wrapper the one piece in the repository, no build step starting Blender, the sidecar the record of a run; its acceptance is the owner's) | G40 | S | design | [10 §10.5](plan/10-roadmap-risks.md#105-experiments-to-run-before-committing) |
 | G42 | Ruins' far tier: the kit's slab | open | G23, G40 | M | design | [E33](experiments/e33-hard-surface-kits.md#what-it-decides) |
 | G43 | Kit schema and ashlar kit fixes | open | G39, G40 | M | design | [E33](experiments/e33-hard-surface-kits.md#what-the-assemblers-kit-schema-cannot-say) |
 | G44 | Clutter and furniture generator | open | P22 | M | design | [city](subsystems/city.md#what-is-left-open) |
