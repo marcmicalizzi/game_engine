@@ -789,6 +789,19 @@ bool AnimationSystem::add_graph(const GraphDesc& desc, std::string& why) {
   return true;
 }
 
+bool AnimationSystem::add_graph(const GraphDesc& desc, const Id128& skeleton, std::string& why) {
+  const u32 index = library_->skeleton_index(skeleton);
+  if (index == Library::k_not_found) {
+    why = "graph '" + desc.graph.name + "': no such skeleton in the library";
+    return false;
+  }
+  CompiledGraph compiled;
+  if (!compile_graph(desc, library_, compiled, why, &library_->skeleton_data(index))) return false;
+  if (compiled.skeleton_joints != 0) compiled.skeleton = skeleton;
+  (void)graphs_.add(std::move(compiled));
+  return true;
+}
+
 bool AnimationSystem::attach_graph(const Id128& entity, const Id128& graph) {
   if (world_ == nullptr) return false;
   const CompiledGraph* compiled = graphs_.find(graph);
@@ -856,6 +869,7 @@ bool AnimationSystem::attach_graph(const Id128& entity, const Id128& graph, cons
   if (world_ == nullptr) return false;
   const CompiledGraph* compiled = graphs_.find(graph);
   if (compiled == nullptr || compiled->program.empty()) return false;
+  if (compiled->skeleton_joints != 0 && compiled->skeleton != skeleton) return false;
   const flecs::entity found = ecs::entity_for(*world_, entity);
   if (found == 0 || found.has<AnimationPlayer>()) return false;
   const u32 skeleton_index = library_->skeleton_index(skeleton);

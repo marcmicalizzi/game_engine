@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "S35-3",
+  "reason": "S35 stage 3: the graphs' layers and masks section (records, mask compile, the two layer ops and their sources, memory, the bench rows, the cases and pins) on the capability's own page",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/animation.md": 12928
+  }
+}

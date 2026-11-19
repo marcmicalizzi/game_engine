@@ -5,12 +5,14 @@
 // change feed names the part that moved. None of the record types has a `materialize` declaration:
 // a graph is an asset entities refer to, like a clip, never an entity of its own.
 //
-// Stage 1 compiles machines whose states are single `Clip` nodes into a control table, and stage 2
-// a state's pose as a `Clip` or a `Blend1D` of clips into a pose program (systems/animation/graph.h;
-// the records did not change, so this file's version stays 1). `Override`, `Additive` (stage 3),
-// `Machine`, a transition's `exit_phase`, the `Inertialize` blend (stage 4) and the
-// `KeepPhase`/`MatchPhase` offsets are declared here so a document can name them, and are refused
-// by the compiler, by name, with the stage that builds them or "no stage of the design yet".
+// Stage 1 compiles machines whose states are single `Clip` nodes into a control table, stage 2 a
+// state's pose as a `Clip` or a `Blend1D` of clips into a pose program, and stage 3 a second
+// machine as a layer over the first, by an `Override` or `Additive` node with a weight and a
+// `GraphMask` (systems/animation/graph.h; `GraphNode` version 2 added `mask` and `reference`,
+// declared additive). `Machine`, a transition's `exit_phase`, the `Inertialize` blend (stage 4) and
+// the `KeepPhase`/`MatchPhase` offsets are declared here so a document can name them, and are
+// refused by the compiler, by name, with the stage that builds them or "no stage of the design
+// yet".
 //
 // The two components are the persisted half of a graph-driven entity: the inputs gameplay writes
 // and the machines' state a save needs to put the same pose back. They are fixed-width because they
@@ -98,8 +100,12 @@ struct GraphParam @version(1) @kind(record) {
   range_max: f32?
 }
 
-/// A node of a graph: the pose of a `GraphState` (its one child node), or a child of another node.
-struct GraphNode @version(1) @kind(record) {
+/// A node of a graph: the pose of a `GraphState` (its one child node), a child of another node, or
+/// (stage 3) a machine's **layer node**: an `Override` or `Additive` child of a `GraphMachine`, which
+/// applies that machine's pose over the graph's other machine (the base) with `weight`, scaled by
+/// the float parameter `param` when one is named, through `mask`. Version 2 added `mask` and
+/// `reference` (additive: a record saved before it reads them as empty).
+struct GraphNode @version(2) @additive(2) @kind(record) {
   kind: GraphNodeKind = Clip
   /// Child nodes, for the kinds that take inputs.
   inputs: id128[]
@@ -117,7 +123,37 @@ struct GraphNode @version(1) @kind(record) {
   sync_group: u8 = 0
   /// A `Blend1D`'s thresholds, one per input.
   thresholds: f32[]
+  /// A layer node's weight, in [0, 1]; 1 on every other node (a weight inside a state's pose is in
+  /// no stage of the design).
   weight: f32 = 1.0
+  /// A layer node's joint mask: a `GraphMask` of the graph, by name. Empty: every joint at 1.
+  mask: string = "" @since(2)
+  /// An `Additive` layer's reference pose: the clip, as the library names it, whose first key the
+  /// layer's pose is a difference from (ozz-animation's default reference, Unreal's "selected
+  /// animation frame" at index 0). Empty: the skeleton's rest pose.
+  reference: string = "" @since(2)
+}
+
+/// One entry of a mask: a joint by standard-skeleton role (`anim::StandardJoint`'s names, "Neck",
+/// "Head", ...) or, when no role of that name maps on the skeleton, by the joint's own name.
+struct GraphMaskJoint @version(1) {
+  joint: string
+  /// The joint's descendants too.
+  subtree: bool = true
+  /// In [0, 1].
+  weight: f32 = 1.0
+  /// Unreal's "Blend Depth": over a subtree, the weight tapers in from the named joint through this
+  /// many generations, the joint at `depth` steps below it (and deeper) at the full weight and the
+  /// named joint at 1 / `depth` of it. 0: no taper.
+  depth: u8 = 0
+}
+
+/// A joint mask of a graph (stage 3): a child of the `Graph`, named by a layer node's `mask`, and
+/// compiled once per skeleton into a joint list and a weight per joint. A joint named by two
+/// entries takes the larger weight.
+struct GraphMask @version(1) @kind(record) {
+  name: string
+  joints: GraphMaskJoint[]
 }
 
 /// A state machine of a graph.

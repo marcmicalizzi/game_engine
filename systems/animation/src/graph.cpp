@@ -1,5 +1,6 @@
 #include <core/hash/hash.h>
 #include <core/schema/json_reflect.h>
+#include <domain/anim/standard_skeleton.h>
 #include <domain/doc/document.h>
 #include <systems/animation/graph.h>
 #include <systems/animation/library.h>
@@ -68,6 +69,8 @@ bool read_children(const doc::Document& document, const Id128& parent, GraphDesc
       ok = read_record(object, out.transitions.emplace_back(), why);
     } else if (is_type<GraphNode>(object)) {
       ok = read_record(object, out.nodes.emplace_back(), why);
+    } else if (is_type<GraphMask>(object)) {
+      ok = read_record(object, out.masks.emplace_back(), why);
     } else {
       continue;  // not a part of a graph: skipped, and so is what is under it
     }
@@ -222,40 +225,56 @@ f32 leader_cycles(const CompiledGraph& g, u32 m, const AnimationGraphInput& inpu
 
 f32 wrap01(f32 v) noexcept { return v - std::floor(v); }
 
-// The pose program for machine 0 (graph.h, "the pose program"): per state in index order its ops,
-// then the output's normalize. Register 0 is the instance's slot, 1 a clip's sample, 2 a Blend1D's
-// sum.
-void compile_program(CompiledGraph& g) {
+// What the compile found about layers (stage 3), for the program: which machine is the base and
+// which the layer, or why there is no program.
+struct LayerPlan {
+  bool layered = false;
+  u32 base = 0;
+  u32 layer = 0;
+  std::string no_program;
+};
+
+// The pose program (graph.h, "the pose program"): per state of the base machine in index order its
+// ops into register 0, then that register's normalize; with a layer, the layer machine's the same
+// into the layer register, its normalize, and the layer op. Register 0 is the instance's slot, 1 a
+// clip's sample, 2 a Blend1D's sum, and the layer register the one after.
+void compile_program(CompiledGraph& g, const LayerPlan& plan) {
   g.program.clear();
   g.registers = 0;
   g.program_why.clear();
-  if (g.machines.size() != 1) {
-    g.program_why = "a graph of " + std::to_string(g.machines.size()) +
-                    " machines: composing their poses is a layer's (stage 3)";
+  if (!plan.no_program.empty()) {
+    g.program_why = plan.no_program;
     return;
   }
-  const ControlMachine& machine = g.machines[0];
+  const u32 order[2] = {plan.base, plan.layer};
+  const u32 machine_count = plan.layered ? 2u : 1u;
   // A state cross-faded into itself would be two copies of one state on two clocks, which the
   // program's one op run a state cannot play.
-  for (u32 s = 0; s < machine.state_count; ++s) {
-    const ControlState& cs = g.states[machine.first_state + s];
-    for (u32 t = cs.first_transition; t < u32{cs.first_transition} + cs.transition_count; ++t) {
-      const ControlTransition& tr = g.transitions[t];
-      if (tr.to == s && tr.blend != static_cast<u8>(GraphBlend::Cut)) {
-        g.program_why = "state '" + g.state_info[machine.first_state + s].name +
-                        "' cross-fades into itself: one clock a state cannot play two copies "
-                        "(inertialization, stage 4, restarts a state)";
-        return;
+  for (u32 mi = 0; mi < machine_count; ++mi) {
+    const ControlMachine& machine = g.machines[order[mi]];
+    for (u32 s = 0; s < machine.state_count; ++s) {
+      const ControlState& cs = g.states[machine.first_state + s];
+      for (u32 t = cs.first_transition; t < u32{cs.first_transition} + cs.transition_count; ++t) {
+        const ControlTransition& tr = g.transitions[t];
+        if (tr.to == s && tr.blend != static_cast<u8>(GraphBlend::Cut)) {
+          g.program_why = "state '" + g.state_info[machine.first_state + s].name +
+                          "' cross-fades into itself: one clock a state cannot play two copies "
+                          "(inertialization, stage 4, restarts a state)";
+          return;
+        }
       }
     }
   }
-  usize ops = 1;
+  usize ops = machine_count + (plan.layered ? 1u : 0u);
   bool any_blend = false;
-  for (u32 s = 0; s < machine.state_count; ++s) {
-    const PoseState& ps = g.pose_states[machine.first_state + s];
-    const bool blend = (ps.flags & k_pose_state_blend) != 0;
-    any_blend = any_blend || blend;
-    ops += blend ? 2u * ps.clip_count + 2u : 2u;
+  for (u32 mi = 0; mi < machine_count; ++mi) {
+    const ControlMachine& machine = g.machines[order[mi]];
+    for (u32 s = 0; s < machine.state_count; ++s) {
+      const PoseState& ps = g.pose_states[machine.first_state + s];
+      const bool blend = (ps.flags & k_pose_state_blend) != 0;
+      any_blend = any_blend || blend;
+      ops += blend ? 2u * ps.clip_count + 2u : 2u;
+    }
   }
   if (ops > k_graph_max_records) {
     g.program_why = std::to_string(ops) + " pose ops, past the limit of 65,535";
@@ -289,23 +308,219 @@ void compile_program(CompiledGraph& g) {
     op.dst = dst;
     op.node = static_cast<u16>(s);
   };
-  for (u32 s = 0; s < machine.state_count; ++s) {
-    PoseState& ps = g.pose_states[machine.first_state + s];
-    ps.first_op = static_cast<u16>(g.program.size());
-    if ((ps.flags & k_pose_state_blend) == 0) {
-      sample(s, ps, 0);
-      accumulate(s, 0, 1, 0, k_pose_op_state);
-    } else {
-      for (u32 c = 0; c < ps.clip_count; ++c) {
-        sample(s, ps, c);
-        accumulate(s, 2, 1, c, 0);
+  const u8 layer_register = plan.layered ? (any_blend ? u8{3} : u8{2}) : u8{0};
+  for (u32 mi = 0; mi < machine_count; ++mi) {
+    const u32 m = order[mi];
+    const ControlMachine& machine = g.machines[m];
+    const u8 out = mi == 0 ? u8{0} : layer_register;
+    for (u32 s = 0; s < machine.state_count; ++s) {
+      PoseState& ps = g.pose_states[machine.first_state + s];
+      ps.first_op = static_cast<u16>(g.program.size());
+      if ((ps.flags & k_pose_state_blend) == 0) {
+        sample(s, ps, 0);
+        accumulate(s, out, 1, 0, k_pose_op_state);
+      } else {
+        for (u32 c = 0; c < ps.clip_count; ++c) {
+          sample(s, ps, c);
+          accumulate(s, 2, 1, c, 0);
+        }
+        normalize(s, 2);
+        accumulate(s, out, 2, 0, k_pose_op_state);
       }
-      normalize(s, 2);
-      accumulate(s, 0, 2, 0, k_pose_op_state);
+    }
+    g.out_op[m] = static_cast<u16>(g.program.size());
+    g.out_register[m] = out;
+    normalize(0xFFFFu, out);
+  }
+  g.base_machine = static_cast<u8>(plan.base);
+  g.layer_register = layer_register;
+  if (plan.layered) {
+    GraphLayer& layer = g.layers[0];
+    layer.op = static_cast<u16>(g.program.size());
+    GraphOp& op = g.program.emplace_back();
+    op.kind = layer.kind;
+    op.dst = 0;
+    op.a = layer_register;
+    op.node = 0xFFFFu;
+    op.data = 0;
+  }
+  g.registers = plan.layered ? u32{layer_register} + 1u : (any_blend ? 3u : 2u);
+}
+
+// The mask of a layer node, compiled for `skeleton` into a weight per joint (graph.h, "Layers";
+// GraphMaskJoint in the schema). An entry names a standard-skeleton role, or failing that a joint;
+// with `subtree` its descendants take its weight too, tapered over `depth` generations (Unreal's
+// Blend Depth: the joint `k` generations below the named one at min(1, (k + 1) / depth) of the
+// weight). A joint two entries reach takes the larger weight.
+bool compile_mask(const GraphDesc& desc, const std::string& name, const anim::Skeleton& skeleton,
+                  Vector<f32>& weights, std::string& why) {
+  const u32 joints = skeleton.joint_count();
+  weights.assign(joints, name.empty() ? 1.0f : 0.0f);
+  if (name.empty()) return true;
+  const GraphItem<GraphMask>* mask = nullptr;
+  for (const GraphItem<GraphMask>& m : desc.masks) {
+    if (m.parent != desc.id || m.record.name != name) continue;
+    if (mask != nullptr) return refuse(why, desc, "two masks named '" + name + "'");
+    mask = &m;
+  }
+  if (mask == nullptr)
+    return refuse(why, desc, "a layer node names mask '" + name + "', not a mask of the graph");
+  const anim::JointMapping roles = anim::map_joints(skeleton);
+  Vector<i32> depth(joints, -1);  // generations below the entry's joint; -1: outside its subtree
+  for (const GraphMaskJoint& entry : mask->record.joints) {
+    const std::string where = "mask '" + name + "': joint '" + entry.joint + "'";
+    if (!std::isfinite(entry.weight) || entry.weight < 0.0f || entry.weight > 1.0f)
+      return refuse(why, desc, where + ": a weight outside [0, 1]");
+    i32 at = anim::k_no_joint;
+    const anim::StandardJoint role = anim::standard_joint_from_name(entry.joint);
+    if (role != anim::StandardJoint::Count) at = roles[role];
+    if (at == anim::k_no_joint) at = skeleton.find(entry.joint);
+    if (at == anim::k_no_joint) {
+      return refuse(why, desc,
+                    where + " is neither a role this skeleton maps nor one of its joints");
+    }
+    for (u32 j = 0; j < joints; ++j)
+      depth[j] = -1;
+    depth[static_cast<u32>(at)] = 0;
+    // A parent comes before its joint (anim::Skeleton), so one forward pass finds the subtree.
+    if (entry.subtree) {
+      for (u32 j = static_cast<u32>(at) + 1; j < joints; ++j) {
+        const i32 p = skeleton.parents[j];
+        if (p != anim::k_no_joint && depth[static_cast<u32>(p)] >= 0)
+          depth[j] = depth[static_cast<u32>(p)] + 1;
+      }
+    }
+    for (u32 j = 0; j < joints; ++j) {
+      if (depth[j] < 0) continue;
+      f32 taper = 1.0f;
+      if (entry.depth != 0 && depth[j] + 1 < static_cast<i32>(entry.depth))
+        taper = static_cast<f32>(depth[j] + 1) / static_cast<f32>(entry.depth);
+      const f32 w = entry.weight * taper;
+      if (w > weights[j]) weights[j] = w;
     }
   }
-  normalize(0xFFFFu, 0);
-  g.registers = any_blend ? 3u : 2u;
+  return true;
+}
+
+// Which machine is a layer, its node's weight, parameter, mask and reference pose (stage 3). A
+// refusal is returned false with `why`; a graph that compiles but has no program says why in
+// `plan.no_program`.
+bool plan_layers(const GraphDesc& desc, const Vector<const GraphItem<GraphMachine>*>& machines,
+                 const Library* library, const anim::Skeleton* skeleton, CompiledGraph& out,
+                 LayerPlan& plan, std::string& why) {
+  const GraphItem<GraphNode>* node[k_graph_max_machines] = {nullptr, nullptr};
+  u32 layers = 0;
+  for (u32 m = 0; m < machines.size(); ++m) {
+    for (const GraphItem<GraphNode>& n : desc.nodes) {
+      if (n.parent != machines[m]->id) continue;
+      if (node[m] != nullptr) {
+        return refuse(why, desc,
+                      "machine '" + machines[m]->record.name +
+                          "' has two layer nodes (two layers of one machine are in no stage of "
+                          "the design yet)");
+      }
+      node[m] = &n;
+      ++layers;
+    }
+  }
+  if (machines.size() == 1) {
+    if (layers != 0) {
+      return refuse(why, desc,
+                    "machine '" + machines[0]->record.name +
+                        "' is a layer over no base (a graph of one machine)");
+    }
+    return true;
+  }
+  if (layers == 0) {
+    plan.no_program =
+        "a graph of 2 machines and no layer node: composing their poses is a layer's, an "
+        "Override or Additive child node of one machine";
+    return true;
+  }
+  if (layers == 2) {
+    return refuse(why, desc,
+                  "both machines are layers (a layer of a layer is in no stage of the design "
+                  "yet)");
+  }
+  plan.layered = true;
+  plan.layer = node[0] != nullptr ? 0u : 1u;
+  plan.base = 1u - plan.layer;
+  const GraphNode& r = node[plan.layer]->record;
+  const std::string where = "the layer node of machine '" + machines[plan.layer]->record.name + "'";
+  if (!std::isfinite(r.weight) || r.weight < 0.0f || r.weight > 1.0f)
+    return refuse(why, desc, where + ": a weight outside [0, 1]");
+  if (!r.inputs.empty() || !r.thresholds.empty() || !r.clip.empty() || r.sync_group != 0)
+    return refuse(why, desc, where + " takes a weight, a parameter, a mask and a reference only");
+  GraphLayer layer;
+  layer.kind = static_cast<u8>(r.kind == GraphNodeKind::Override ? PoseOpKind::Override
+                                                                 : PoseOpKind::Additive);
+  layer.machine = static_cast<u8>(plan.layer);
+  layer.weight = r.weight;
+  if (!r.param.empty()) {
+    const u32 p = out.param_index(r.param);
+    if (p == k_absent || out.params[p].kind != GraphParamKind::Float)
+      return refuse(why, desc,
+                    where + ": its weight reads a float parameter, not '" + r.param + "'");
+    layer.param = static_cast<u16>(p);
+  }
+  if (skeleton == nullptr) {
+    plan.no_program =
+        "a layer's mask and reference pose are compiled per skeleton, and this graph was "
+        "compiled with none";
+    out.layers.push_back(layer);
+    return true;
+  }
+  const u32 joints = skeleton->joint_count();
+  if (joints == 0 || joints > 0xFFFFu)
+    return refuse(why, desc, where + ": a skeleton of " + std::to_string(joints) + " joints");
+  Vector<f32> weights;
+  if (!compile_mask(desc, r.mask, *skeleton, weights, why)) return false;
+  layer.first_joint = out.layer_joints.size();
+  for (u32 pass = 0; pass < 2; ++pass) {
+    for (u32 j = 0; j < joints; ++j) {
+      const bool full = weights[j] == 1.0f;
+      if (pass == 0 ? !full : (full || !(weights[j] > 0.0f))) continue;
+      out.layer_joints.push_back(static_cast<u16>(j));
+      out.layer_weights.push_back(weights[j]);
+      if (pass == 0)
+        ++layer.full;
+      else
+        ++layer.partial;
+    }
+  }
+  if (layer.full + layer.partial == 0)
+    return refuse(why, desc, where + ": mask '" + r.mask + "' touches no joint");
+  if (r.kind == GraphNodeKind::Additive) {
+    // The reference: the skeleton's rest pose, then the named clip's first key over it.
+    anim::Pose reference;
+    anim::rest_pose(*skeleton, reference);
+    if (!r.reference.empty() && library != nullptr) {
+      const u32 clip = library->clip_index(Library::clip_id(r.reference));
+      if (clip == Library::k_not_found) {
+        return refuse(why, desc,
+                      where + ": reference clip '" + r.reference + "' is not in the library");
+      }
+      library->clip_data(clip).sample(0.0f, reference, false);
+    }
+    for (u32 j = 0; j < joints; ++j) {
+      const Vec3 s = reference.scale[j];
+      if (!(s.x != 0.0f && s.y != 0.0f && s.z != 0.0f) || !std::isfinite(s.x) ||
+          !std::isfinite(s.y) || !std::isfinite(s.z)) {
+        return refuse(why, desc,
+                      where + ": the reference pose has a zero or non-finite scale at joint " +
+                          std::to_string(j) + " (an additive scale is a quotient)");
+      }
+    }
+    layer.reference = out.reference_rotation.size();
+    for (u32 j = 0; j < joints; ++j) {
+      out.reference_translation.push_back(reference.translation[j]);
+      out.reference_rotation.push_back(reference.rotation[j]);
+      out.reference_scale.push_back(reference.scale[j]);
+    }
+  }
+  out.layers.push_back(layer);
+  out.skeleton_joints = joints;
+  return true;
 }
 
 }  // namespace
@@ -448,11 +663,15 @@ usize CompiledGraph::bytes() const noexcept {
   n += pose_clips.capacity() * sizeof(PoseClip);
   n += program.capacity() * sizeof(GraphOp);
   n += heap(program_why);
+  n += layers.capacity() * sizeof(GraphLayer);
+  n += layer_joints.capacity() * sizeof(u16) + layer_weights.capacity() * sizeof(f32);
+  n += reference_translation.capacity() * sizeof(Vec3) +
+       reference_rotation.capacity() * sizeof(Quat) + reference_scale.capacity() * sizeof(Vec3);
   return n;
 }
 
 bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph& out,
-                   std::string& why) {
+                   std::string& why, const anim::Skeleton* skeleton) {
   out = CompiledGraph{};
   out.id = desc.id;
   out.name = desc.graph.name;
@@ -502,23 +721,46 @@ bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph&
                   std::to_string(machines.size()) + " machines, past the limit of " +
                       std::to_string(k_graph_max_machines));
   }
-  // A node is a state's pose or an input of a Blend1D that is one; anything else is a layer's.
+  // A node is a state's pose, an input of a Blend1D that is one, or a machine's layer node (stage
+  // 3); nothing else is in any stage of the design.
   const auto is_state = [&](const Id128& id) {
     for (const GraphItem<GraphState>& s : desc.states) {
       if (s.id == id) return true;
     }
     return false;
   };
+  const auto is_machine = [&](const Id128& id) {
+    for (const GraphItem<GraphMachine>* m : machines) {
+      if (m->id == id) return true;
+    }
+    return false;
+  };
   for (const GraphItem<GraphNode>& n : desc.nodes) {
-    bool placed = is_state(n.parent);
+    bool placed = is_state(n.parent) || is_machine(n.parent);
     for (const GraphItem<GraphNode>& p : desc.nodes) {
       placed = placed ||
                (p.id == n.parent && p.record.kind == GraphNodeKind::Blend1D && is_state(p.parent));
     }
     if (!placed) {
       return refuse(why, desc,
-                    "a node outside a state's pose or a Blend1D's inputs is a layer's (stage 3)");
+                    "a node outside a state's pose, a Blend1D's inputs or a machine's layer node "
+                    "is in no stage of the design yet");
     }
+    const bool layer = is_machine(n.parent);
+    if (layer && n.record.kind != GraphNodeKind::Override &&
+        n.record.kind != GraphNodeKind::Additive) {
+      return refuse(why, desc, "a machine's child node is its layer node: an Override or Additive");
+    }
+    if (!layer &&
+        (n.record.kind == GraphNodeKind::Override || n.record.kind == GraphNodeKind::Additive)) {
+      return refuse(why, desc,
+                    "an Override or Additive node is a machine's layer node (a layer inside a "
+                    "state's pose is in no stage of the design yet)");
+    }
+    if (!layer && (!n.record.mask.empty() || !n.record.reference.empty()))
+      return refuse(why, desc, "a mask or a reference is a layer node's");
+    if (layer && n.record.kind == GraphNodeKind::Override && !n.record.reference.empty())
+      return refuse(why, desc, "a reference pose is an Additive layer's, not an Override's");
   }
   // A clip by name: its library index and duration when a library is given.
   const auto resolve = [&](const std::string& where, const GraphNode& node, PoseClip& clip,
@@ -583,8 +825,6 @@ bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph&
                           " pose nodes; a state's pose is one node");
       }
       const GraphNode& node = pose[0]->record;
-      if (node.kind == GraphNodeKind::Override || node.kind == GraphNodeKind::Additive)
-        return refuse(why, desc, where + ": an Override or Additive node is stage 3's");
       if (node.kind != GraphNodeKind::Clip && node.kind != GraphNodeKind::Blend1D) {
         return refuse(why, desc,
                       where +
@@ -596,8 +836,12 @@ bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph&
                       where + ": sync group " + std::to_string(node.sync_group) +
                           ", past the limit of " + std::to_string(k_graph_max_sync_groups));
       }
-      if (!std::isfinite(node.rate) || !std::isfinite(node.weight) || node.weight != 1.0f)
-        return refuse(why, desc, where + ": a weight other than 1 is a layer's (stage 3)");
+      if (!std::isfinite(node.rate) || !std::isfinite(node.weight) || node.weight != 1.0f) {
+        return refuse(why, desc,
+                      where +
+                          ": a weight other than 1 is a layer node's (a weight inside a state's "
+                          "pose is in no stage of the design yet)");
+      }
       StateInfo& info = out.state_info.emplace_back();
       info.id = s->id;
       info.name = s->record.name;
@@ -764,7 +1008,9 @@ bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph&
   }
   if (out.transitions.size() > k_graph_max_records)
     return refuse(why, desc, "more transitions than the limit of 65,535");
-  compile_program(out);
+  LayerPlan plan;
+  if (!plan_layers(desc, machines, library, skeleton, out, plan, why)) return false;
+  compile_program(out, plan);
   return true;
 }
 
@@ -927,6 +1173,7 @@ namespace {
 
 // One batch as the kernels see it: its instances, and registers 1.. in the evaluator's scratch.
 struct Batch {
+  const CompiledGraph* graph = nullptr;
   const GraphInstance* instances = nullptr;
   u32 count = 0;
   u32 joints = 0;
@@ -1030,9 +1277,130 @@ void kernel_normalize(const GraphOp& op, const Batch& b, const u16* list, u32 n,
   }
 }
 
-// Indexed by `PoseOpKind` for an op's first list (code 1); an Accumulate's second list (code 2)
-// is `kernel_add`.
-constexpr Kernel k_kernels[k_pose_op_kinds] = {kernel_sample, kernel_set, kernel_normalize};
+// ---- the layer ops (stage 3) ----
+
+// One joint of an override at `t` (the layer's weight × the joint's mask weight, in (0, 1)): the
+// normalized weighted sum of the base at 1 − t and the layer at t — ozz-animation's blend of two
+// layers whose weights sum to 1, with the per-joint weight its `joint_weights` are — so a weight
+// below 1 leaves the rest to the base and never to the rest pose.
+inline void override_joint(const anim::PoseView& dst, const anim::PoseView& src, u32 j, f32 t) {
+  const f32 u = 1.0f - t;
+  const f32 sum = u + t;
+  const Quat b = dst.rotation[j];
+  const Quat l = src.rotation[j];
+  const f32 d = b.x * l.x + b.y * l.y + b.z * l.z + b.w * l.w;
+  const f32 lt = d < 0.0f ? -t : t;
+  const Quat q{b.x * u + l.x * lt, b.y * u + l.y * lt, b.z * u + l.z * lt, b.w * u + l.w * lt};
+  const f32 len = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+  dst.rotation[j] = len > 0.0f ? Quat{q.x / len, q.y / len, q.z / len, q.w / len} : b;
+  const Vec3 bt = dst.translation[j];
+  const Vec3 tt = src.translation[j];
+  dst.translation[j] =
+      Vec3{(bt.x * u + tt.x * t) / sum, (bt.y * u + tt.y * t) / sum, (bt.z * u + tt.z * t) / sum};
+  const Vec3 bs = dst.scale[j];
+  const Vec3 ts = src.scale[j];
+  dst.scale[j] =
+      Vec3{(bs.x * u + ts.x * t) / sum, (bs.y * u + ts.y * t) / sum, (bs.z * u + ts.z * t) / sum};
+}
+
+// An override at weight 1 (code 1): the mask's full joints are the layer's, copied; its partial
+// joints blended at their mask weights. No other joint is written.
+void kernel_override_full(const GraphOp& op, const Batch& b, const u16* list, u32 n, const f32*,
+                          const Library&, const anim::Skeleton&) {
+  const GraphLayer& layer = b.graph->layers[op.data];
+  const u16* joints = b.graph->layer_joints.data() + layer.first_joint;
+  const f32* weights = b.graph->layer_weights.data() + layer.first_joint;
+  for (u32 k = 0; k < n; ++k) {
+    const u32 i = list[k];
+    const anim::PoseView src = b.reg(op.a, i);
+    const anim::PoseView dst = b.reg(op.dst, i);
+    for (u32 m = 0; m < layer.full; ++m) {
+      const u32 j = joints[m];
+      dst.translation[j] = src.translation[j];
+      dst.rotation[j] = src.rotation[j];
+      dst.scale[j] = src.scale[j];
+    }
+    for (u32 m = layer.full; m < u32{layer.full} + layer.partial; ++m)
+      override_joint(dst, src, joints[m], weights[m]);
+  }
+}
+
+// An override at a weight in (0, 1) (code 2): every joint of the mask at the weight × its own.
+void kernel_override_partial(const GraphOp& op, const Batch& b, const u16* list, u32 n,
+                             const f32* value, const Library&, const anim::Skeleton&) {
+  const GraphLayer& layer = b.graph->layers[op.data];
+  const u16* joints = b.graph->layer_joints.data() + layer.first_joint;
+  const f32* weights = b.graph->layer_weights.data() + layer.first_joint;
+  const u32 count = u32{layer.full} + layer.partial;
+  for (u32 k = 0; k < n; ++k) {
+    const u32 i = list[k];
+    const f32 w = value[i];
+    const anim::PoseView src = b.reg(op.a, i);
+    const anim::PoseView dst = b.reg(op.dst, i);
+    for (u32 m = 0; m < count; ++m)
+      override_joint(dst, src, joints[m], w * weights[m]);
+  }
+}
+
+// An additive layer at any weight in (0, 1] (codes 1 and 2), over the mask's joints: the layer's
+// difference from its reference pose — translation `l − r`, rotation `conj(r) · l`, scale `l / r`
+// (ozz-animation's additive builder) — applied to the base by ozz's blending job's additive pass at
+// `t` (the weight × the joint's mask weight): translation `+ d · t`; rotation **on the right**,
+// `base · normalize(lerp(identity, ±d, t))`, the difference's sign taken so the lerp is the short
+// way; scale `× (d · t + (1 − t))`. A joint whose layer pose is its reference pose exactly is left
+// as the base — that is what an additive of nothing is, and it keeps the bits (a −0 in the base
+// would otherwise come back +0).
+void kernel_additive(const GraphOp& op, const Batch& b, const u16* list, u32 n, const f32* value,
+                     const Library&, const anim::Skeleton&) {
+  const CompiledGraph& g = *b.graph;
+  const GraphLayer& layer = g.layers[op.data];
+  const u16* joints = g.layer_joints.data() + layer.first_joint;
+  const f32* weights = g.layer_weights.data() + layer.first_joint;
+  const Vec3* rt = g.reference_translation.data() + layer.reference;
+  const Quat* rr = g.reference_rotation.data() + layer.reference;
+  const Vec3* rs = g.reference_scale.data() + layer.reference;
+  const u32 count = u32{layer.full} + layer.partial;
+  for (u32 k = 0; k < n; ++k) {
+    const u32 i = list[k];
+    const f32 w = value[i];
+    const anim::PoseView src = b.reg(op.a, i);
+    const anim::PoseView dst = b.reg(op.dst, i);
+    for (u32 m = 0; m < count; ++m) {
+      const u32 j = joints[m];
+      const f32 t = w * weights[m];
+      const Vec3 lt = src.translation[j];
+      const Quat lr = src.rotation[j];
+      const Vec3 ls = src.scale[j];
+      const bool still = lt.x == rt[j].x && lt.y == rt[j].y && lt.z == rt[j].z && lr.x == rr[j].x &&
+                         lr.y == rr[j].y && lr.z == rr[j].z && lr.w == rr[j].w && ls.x == rs[j].x &&
+                         ls.y == rs[j].y && ls.z == rs[j].z;
+      const Quat d = conjugate(rr[j]) * lr;
+      const f32 sign = d.w < 0.0f ? -1.0f : 1.0f;
+      const Quat q{d.x * sign * t, d.y * sign * t, d.z * sign * t, (d.w * sign - 1.0f) * t + 1.0f};
+      const f32 len = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+      const Quat e = len > 0.0f ? Quat{q.x / len, q.y / len, q.z / len, q.w / len} : Quat{};
+      const Vec3 bt = dst.translation[j];
+      const Quat br = dst.rotation[j];
+      const Vec3 bs = dst.scale[j];
+      const f32 u = 1.0f - t;
+      const Vec3 ot{bt.x + (lt.x - rt[j].x) * t, bt.y + (lt.y - rt[j].y) * t,
+                    bt.z + (lt.z - rt[j].z) * t};
+      const Quat orr = br * e;
+      const Vec3 os{bs.x * ((ls.x / rs[j].x) * t + u), bs.y * ((ls.y / rs[j].y) * t + u),
+                    bs.z * ((ls.z / rs[j].z) * t + u)};
+      dst.translation[j] = still ? bt : ot;
+      dst.rotation[j] = still ? br : orr;
+      dst.scale[j] = still ? bs : os;
+    }
+  }
+}
+
+// Indexed by `PoseOpKind`: the kernel over an op's first list (code 1), and over its second list
+// (code 2) where the kind has one — an Accumulate's later contributors, a layer's weights below 1.
+constexpr Kernel k_kernels[k_pose_op_kinds] = {kernel_sample, kernel_set, kernel_normalize,
+                                               kernel_override_full, kernel_additive};
+constexpr Kernel k_second_kernels[k_pose_op_kinds] = {nullptr, kernel_add, nullptr,
+                                                      kernel_override_partial, kernel_additive};
 
 }  // namespace
 
@@ -1040,6 +1408,8 @@ void PoseEvaluator::evaluate(const CompiledGraph& graph, const Library& library,
                              const anim::Skeleton& skeleton,
                              std::span<const GraphInstance> instances, u32 batch) {
   if (graph.program.empty() || instances.empty()) return;
+  // A layered graph's masks and reference pose are one skeleton's (compile_graph).
+  if (graph.skeleton_joints != 0 && graph.skeleton_joints != skeleton.joint_count()) return;
   const usize step = batch == 0 ? usize{1} : (batch > 0xFFFFu ? usize{0xFFFFu} : usize{batch});
   for (usize first = 0; first < instances.size(); first += step) {
     const usize n = instances.size() - first < step ? instances.size() - first : step;
@@ -1072,17 +1442,19 @@ void PoseEvaluator::run_batch(const CompiledGraph& graph, const Library& library
   // Each instance's ops: which apply, as what, with what weight or time. Its two states are
   // visited in index order, the program's, so the first contributor to a sum is the program's
   // first and the sum's order is the compiled one.
-  const ControlMachine& machine = graph.machines[0];
   f32 w[k_graph_max_blend_inputs];
-  for (u32 i = 0; i < count; ++i) {
+  // One machine's ops for instance `i`: its states' samples and sums into its output register,
+  // and that register's normalize.
+  const auto mark = [&](u32 m, u32 i) {
+    const ControlMachine& machine = graph.machines[m];
     const GraphInstance& gi = instances[i];
     const AnimationGraphState& st = *gi.state;
-    const bool live = st.graph == graph.id && st.state[0] != 0;
-    u32 at[2] = {live ? u32{st.state[0]} : u32{machine.entry} + 1u, live ? u32{st.next[0]} : 0u};
-    f32 clock[2] = {(live ? st.time[0] : 0.0f) + gi.lead,
-                    (live ? st.next_time[0] : 0.0f) + gi.lead};
+    const bool live = st.graph == graph.id && st.state[m] != 0;
+    u32 at[2] = {live ? u32{st.state[m]} : u32{machine.entry} + 1u, live ? u32{st.next[m]} : 0u};
+    f32 clock[2] = {(live ? st.time[m] : 0.0f) + gi.lead,
+                    (live ? st.next_time[m] : 0.0f) + gi.lead};
     f32 weight[2] = {1.0f, 0.0f};
-    if (live) state_weights(st, 0, gi.lead, gi.interpolate, weight[0], weight[1]);
+    if (live) state_weights(st, m, gi.lead, gi.interpolate, weight[0], weight[1]);
     if (at[1] != 0 && at[1] < at[0]) {
       std::swap(at[0], at[1]);
       std::swap(clock[0], clock[1]);
@@ -1124,13 +1496,28 @@ void PoseEvaluator::run_batch(const CompiledGraph& graph, const Library& library
       ++n0;
       sum0 += weight[k];
     }
-    const usize last = ops - 1u;
+    const usize last = graph.out_op[m];
     code[last * count + i] = n0 >= 2 ? u8{1} : u8{0};
     value[last * count + i] = sum0;
+  };
+  const GraphLayer* layer = graph.layers.empty() ? nullptr : &graph.layers[0];
+  for (u32 i = 0; i < count; ++i) {
+    mark(graph.base_machine, i);
+    if (layer == nullptr) continue;
+    // The layer's weight: the node's, times its parameter's value when it names one, in [0, 1]. At
+    // 0 (or NaN) nothing of the layer is evaluated: no sample, no op.
+    f32 lw = layer->weight;
+    if (layer->param != k_graph_no_param) lw = lw * instances[i].input->values[layer->param];
+    lw = clamp01(lw);
+    if (!(lw > 0.0f)) continue;
+    mark(layer->machine, i);
+    code[usize{layer->op} * count + i] = lw >= 1.0f ? u8{1} : u8{2};
+    value[usize{layer->op} * count + i] = lw;
   }
 
   // Op by op: the compacted list of the instances it applies to, and its kernel over that list.
   Batch b;
+  b.graph = &graph;
   b.instances = instances.data();
   b.count = count;
   b.joints = joints;
@@ -1148,13 +1535,14 @@ void PoseEvaluator::run_batch(const CompiledGraph& graph, const Library& library
       n += codes[i] == 1 ? 1u : 0u;
     }
     if (n != 0) k_kernels[op.kind](op, b, list, n, values, library, skeleton);
-    if (op.kind != static_cast<u8>(PoseOpKind::Accumulate)) continue;
+    const Kernel second = k_second_kernels[op.kind];
+    if (second == nullptr) continue;
     n = 0;
     for (u32 i = 0; i < count; ++i) {
       list[n] = static_cast<u16>(i);
       n += codes[i] == 2 ? 1u : 0u;
     }
-    if (n != 0) kernel_add(op, b, list, n, values, library, skeleton);
+    if (n != 0) second(op, b, list, n, values, library, skeleton);
   }
 }
 

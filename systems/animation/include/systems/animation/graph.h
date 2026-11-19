@@ -39,13 +39,26 @@
 //      `AnimationSystem` runs it as the scheduled `animation.graph_sample` for graph-driven
 //      entities that carry no `AnimationPlayer`, after the scheduled `animation.graph_control`.
 //
+// Stage 3 (animation.md, "Graphs: layers and masks") adds the fifth:
+//
+//   5. **Layers**: a graph's second machine is a layer over its first when it has an `Override` or
+//      `Additive` child node, with a weight (times a float parameter's value when it names one)
+//      and a `GraphMask` compiled per skeleton. The program evaluates the base machine into
+//      register 0, the layer machine into its own register, and ends with one layer op over the
+//      mask's joints only: an override blends each toward the layer by the weight × the joint's
+//      mask weight (the base keeps the rest of the weight, so the two sum to 1), an additive
+//      composes the layer's difference from its reference pose (ozz-animation's form: translation
+//      added, rotation on the right from identity, scale multiplied). A joint outside the mask is
+//      never written; a layer at weight 0 is not evaluated at all.
+//
 // What the compile refuses by name rather than ignores, with the stage that takes it: the
-// `Override` and `Additive` kinds and a node outside a state's pose or a `Blend1D`'s inputs (stage
-// 3's layers), a weight other than 1 on a node (stage 3), the `Inertialize` blend (stage 4), the
-// `Machine` kind, `exit_phase`, the `KeepPhase`/`MatchPhase` offsets, `skeleton_roles` and
-// `root_motion` (no stage of the design builds them yet). A graph of two machines compiles its
-// control tables but no pose program: composing two machines' poses is a layer (stage 3), so it
-// cannot be attached for sampling (`CompiledGraph::program_why` says so).
+// `Inertialize` blend (stage 4), the `Machine` kind, `exit_phase`, the `KeepPhase`/`MatchPhase`
+// offsets, `skeleton_roles`, `root_motion`, an `Override` or `Additive` node anywhere but as a
+// machine's layer node, a weight other than 1 on a node that is not a layer node, a blend of
+// blends, and two layers or a layer of a layer (no stage of the design builds them yet; a graph
+// has two machines). A graph of two machines neither of which is a layer, or both, compiles its
+// control tables but no pose program (`CompiledGraph::program_why` says so), and so does a layered
+// graph compiled without a skeleton.
 //
 // **Stated limits** (ADR-0017): 8 parameters, 2 machines, 2 sync groups (the components' widths),
 // 16 inputs a `Blend1D`, 65,534 states a machine and 65,535 transitions, conditions and pose ops a
@@ -105,7 +118,9 @@ struct GraphDesc {
   Vector<GraphItem<GraphMachine>> machines;
   Vector<GraphItem<GraphState>> states;            // parent: a machine
   Vector<GraphItem<GraphTransition>> transitions;  // parent: a machine
-  Vector<GraphItem<GraphNode>> nodes;              // parent: a state (its pose) or another node
+  Vector<GraphItem<GraphNode>> nodes;  // parent: a state (its pose), another node, or a machine
+                                       // (its layer node, stage 3)
+  Vector<GraphItem<GraphMask>> masks;  // parent: the graph (stage 3)
 };
 
 // Reads graph `graph` and every record under it from `document`: its parameters, machines, states,
@@ -225,11 +240,15 @@ enum class PoseOpKind : u8 {
   Sample = 0,      // the rest pose, then the clip at the instance's time, into `dst`
   Accumulate = 1,  // `dst = w * a` for the first contributor, `dst += sign * w * a` after it
   Normalize = 2,   // `dst`'s translation and scale over the weights' sum, its rotations to unit
+  Override = 3,    // stage 3: `dst`'s masked joints toward the layer `a` by the weight × the mask
+  Additive = 4,    // stage 3: `dst`'s masked joints composed with (`a` − reference) × the weight
 };
-inline constexpr u32 k_pose_op_kinds = 3;
+inline constexpr u32 k_pose_op_kinds = 5;
 
 // One op of a graph's pose program. 16 bytes. Registers: 0 is the instance's own pool slot (the
-// program's output), 1 a clip's sample, 2 a Blend1D's sum.
+// program's output and the base machine's pose), 1 a clip's sample, 2 a Blend1D's sum, and with a
+// layer (stage 3) the next one the layer machine's pose (`CompiledGraph::layer_register`: 2 when
+// no state of the graph is a Blend1D, 3 when one is, so a layered graph has three or four).
 inline constexpr u8 k_pose_op_synced = 1u;   // Sample: its time is the group's phase × `k`
 inline constexpr u8 k_pose_op_looping = 2u;  // Sample: the clip loops
 inline constexpr u8 k_pose_op_state = 4u;    // Accumulate into register 0: weighted by its state
@@ -238,10 +257,30 @@ struct GraphOp {
   u8 dst = 0;     // the register written
   u8 a = 0;       // Accumulate: the register read
   u8 b = 0;       // k_pose_op_* flags
-  u16 node = 0;   // the state (its index in machine 0) the op is part of; 0xFFFF: the output's
+  u16 node = 0;   // the state (its index in its machine) the op is part of; 0xFFFF: a machine's
+                  // output normalize or a layer op
   u16 param = 0;  // Sample and a Blend1D's Accumulate: the clip, as an index into its state's run
-  u32 data = 0;   // Sample: the clip's index in the library (0xFFFFFFFF: the rest pose)
+  u32 data = 0;   // Sample: the clip's index in the library (0xFFFFFFFF: the rest pose); a layer
+                  // op: its index in `CompiledGraph::layers`
   f32 k = 0.0f;   // Sample: the rate on the state's clock, or the clip's duration when phase-locked
+};
+
+// A layer (stage 3): the graph's second machine applied over its first by an `Override` or an
+// `Additive` node. Its mask is compiled per skeleton into `CompiledGraph::layer_joints` and
+// `layer_weights`: `full` joints at weight 1 first, then `partial` joints at their weights in
+// (0, 1); a joint in neither is never touched. 24 bytes.
+struct GraphLayer {
+  u32 first_joint = 0;           // into `layer_joints` and `layer_weights`
+  u16 full = 0;                  // joints of the mask at weight 1
+  u16 partial = 0;               // joints of the mask at a weight in (0, 1), after them
+  u32 reference = 0xFFFF'FFFFu;  // Additive: the first joint of its reference pose, into
+                                 // `reference_*`; unset for an Override
+  u16 param = k_graph_no_param;  // the float parameter the weight is multiplied by
+  u8 kind = 0;                   // PoseOpKind::Override or ::Additive
+  u8 machine = 0;                // the layer machine's index
+  f32 weight = 1.0f;             // the node's weight, in [0, 1]
+  u16 op = 0;                    // the layer op's index in the program
+  u16 _pad = 0;
 };
 
 class CompiledGraph {
@@ -262,6 +301,24 @@ class CompiledGraph {
   Vector<GraphOp> program;
   u32 registers = 0;  // what the program writes: 0..registers-1
   std::string program_why;
+  // Per machine, in machine order: the program's normalize of the machine's output register (the
+  // base's is register 0, a layer machine's `layer_register`); unset for a graph with no program.
+  u16 out_op[k_graph_max_machines] = {0xFFFFu, 0xFFFFu};
+  u8 out_register[k_graph_max_machines] = {0, 0};
+  u8 base_machine = 0;    // the machine that is not a layer
+  u8 layer_register = 0;  // 0: no layer
+  // Stage 3: the layers (one at most: a graph has two machines), their masks' joints and weights
+  // and the additive layers' reference poses, all compiled for one skeleton of `skeleton_joints`
+  // joints (0: a graph with no layer, which any skeleton plays).
+  Vector<GraphLayer> layers;
+  Vector<u16> layer_joints;
+  Vector<f32> layer_weights;
+  Vector<Vec3> reference_translation;
+  Vector<Quat> reference_rotation;
+  Vector<Vec3> reference_scale;
+  u32 skeleton_joints = 0;
+  // The skeleton a host compiled a layered graph for (`AnimationSystem::add_graph`).
+  Id128 skeleton;
 
   u32 param_index(std::string_view param_name) const noexcept;  // 0xFFFFFFFF when absent
   // A state of machine `machine` by name, as its index in the machine; 0xFFFFFFFF when absent.
@@ -278,8 +335,14 @@ class CompiledGraph {
 // `StateInfo::clip_index` stays unset (the program then samples the rest pose, and a led group,
 // knowing no duration, does not advance). False, with `why`, for everything refused (above). The
 // pose program is compiled with the control tables when the graph has one machine.
+//
+// Stage 3: a graph of two machines is a base and a layer — the machine with an `Override` or
+// `Additive` child node is the layer, the other the base — and its masks and an additive layer's
+// reference pose are compiled for `skeleton` (a graph's masks name joints by role, which only a
+// skeleton resolves). A layered graph compiled without a skeleton (or without a library) compiles
+// its control tables and no program, and `program_why` says so.
 bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph& out,
-                   std::string& why);
+                   std::string& why, const anim::Skeleton* skeleton = nullptr);
 
 // ---- the control pass --------------------------------------------------------------------------
 
