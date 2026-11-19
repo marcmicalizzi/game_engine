@@ -10,6 +10,7 @@
 // suite skips on exit 3. That is what the distinct code is for.
 #include <core/json/json.h>
 #include <core/platform/process.h>
+#include <domain/gfx/test_profile.h>
 #include <foundation/image/decode.h>
 #if ENGINE_CLI_TESTS_SKY
 #include <domain/sky/ephemeris.h>
@@ -156,7 +157,17 @@ std::string uri_at(const JsonValue& files, const char* channel) {
 // vertex-shader baseline tier where it does not (ADR-0024). Asked of `gpu.adapters` rather than
 // assumed, because the assumption is what the first GPU run on a Pascal card broke: every machine
 // this case had run on until then had mesh shaders, and the host was right to answer "vertex".
+//
+// **Less what a test's device profile removes** (roadmap R193): under `ENGINE_GFX_TEST_DEVICE` the
+// host opens the adapter without the profile's rows (gfx/test_profile.h), while `gpu.adapters`
+// goes on reporting the card as it is, so the profile's absences are taken off the report here by
+// the function the host takes them off its device with.
 std::string expected_hw_raster(Host& host, const std::string& adapter) {
+  const gfx::DeviceOverrides profile =
+      gfx::test_profile_overrides(test::detail::environment(gfx::k_test_device_env));
+  for (const std::string& row : profile.absent) {
+    if (row == "VK_EXT_mesh_shader") return "vertex";
+  }
   const JsonValue response = host.call("gpu.adapters", "{}");
   const JsonValue* adapters = result_of(response).find("adapters");
   REQUIRE(adapters != nullptr);

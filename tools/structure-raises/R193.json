@@ -1,11 +1,11 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "R193",
-  "reason": "R193: why a test profile must reach every host a test starts (gfx.md, under What a device has to have), engine-host taking it (apps.md, Running as a weaker card) and what that means for a weaker-card leg (what-to-run.md): the record of a two-day misdiagnosis",
+  "reason": "R193: why a test profile must reach every host a test starts (gfx.md, under What a device has to have), engine-host taking it and gpu.adapters still describing the card (apps.md, Running as a weaker card) and what that means for a weaker-card leg (what-to-run.md): the record of a two-day misdiagnosis",
   "date": "2026-11-19",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/apps.md": 967,
+    "page:docs/subsystems/apps.md": 1261,
     "page:docs/subsystems/gfx.md": 2316,
     "page:docs/ci/what-to-run.md": 390
   }
