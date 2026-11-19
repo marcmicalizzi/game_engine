@@ -6,15 +6,15 @@
 // caller can fall back to another queue or run the job inline.
 //
 // The orders, and why each is there (docs/subsystems/jobs.md, "What a job may assume"):
-// - Every store of `bottom_` is a release. A push's is what publishes the slot it wrote to the
-// thief
-//   whose acquire load of `bottom_` reads it. The paper writes a release fence and a relaxed store;
-//   a release store orders the same writes before that store, is the same instruction on x86 (a
-//   plain mov) and an stlr on ARM, and is what ThreadSanitizer models (it ignores fences, so it saw
-//   every stolen job as unpublished: T179's 138 reports). The owner's other stores (pop's decrement
-//   and its restore) are releases too: C++20 dropped a thread's later plain stores from a release
-//   sequence (P0982), so a thief that reads `bottom_` from one of them would otherwise acquire
-//   nothing, where the paper's C11 proof had them in the push's release sequence.
+// - Every store of `bottom_` is a release. A push's is what publishes the slot it wrote to
+//   the thief whose acquire load of `bottom_` reads it. The paper writes a release fence and a
+//   relaxed store; a release store orders the same writes before that store, is the same
+//   instruction on x86 (a plain mov) and an stlr on ARM, and is what ThreadSanitizer models (it
+//   ignores fences, so it saw every stolen job as unpublished: T179's 138 reports). The owner's
+//   other stores (pop's decrement and its restore) are releases too: C++20 dropped a thread's later
+//   plain stores from a release sequence (P0982), so a thief that reads `bottom_` from one of them
+//   would otherwise acquire nothing, where the paper's C11 proof had them in the push's release
+//   sequence.
 // - A slot is read and written as relaxed atomic words. A thief copies the slot before its CAS on
 //   `top_` decides whether the item is its own (Chase-Lev's read-before-CAS: once the CAS succeeds
 //   the owner may refill the slot); a thief whose CAS loses may have read a slot the owner was
@@ -22,7 +22,11 @@
 //   discarded value. The paper's buffer is atomic for that reason. A torn copy is harmless: it is
 //   kept only when the CAS wins, and then no write to that slot can have happened since the push
 //   that published it (the owner reaches it again only after an acquire load of `top_` reads a
-//   value past it, which orders the thief's read before the owner's write).
+//   value past it, which orders the thief's read before the owner's write). The words are
+//   reached through the compilers' own relaxed atomic intrinsics, which are what
+//   std::atomic_ref<u64> compiles to: in RelWithDebInfo MSVC inlines only what is marked inline
+//   (/Ob1), and the library's atomic_ref then cost a call per word, 10 to 16 ns a push and pop
+//   (jobs.md, "What a job may assume").
 // - push loads `top_` with acquire, for that last reason.
 // - pop's seq_cst fence between its store of `bottom_` and its load of `top_`, and steal's between
 //   its loads of `top_` and `bottom_`, are what stop the owner and a thief both taking the last
@@ -38,8 +42,32 @@
 #include <cstring>
 #include <new>
 #include <type_traits>
+#include <utility>
+
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h>
+#endif
 
 namespace engine::jobs::detail {
+
+// A relaxed atomic load and store of one aligned 8-byte word: std::atomic_ref<u64> with
+// memory_order_relaxed, spelled as the intrinsic it is built on so that no build inlines it away
+// into a call (above). ThreadSanitizer instruments the __atomic builtins as atomics.
+inline u64 load_word_relaxed(u64* word) noexcept {
+#if defined(_MSC_VER) && !defined(__clang__)
+  return static_cast<u64>(__iso_volatile_load64(reinterpret_cast<volatile __int64*>(word)));
+#else
+  return __atomic_load_n(word, __ATOMIC_RELAXED);
+#endif
+}
+
+inline void store_word_relaxed(u64* word, u64 value) noexcept {
+#if defined(_MSC_VER) && !defined(__clang__)
+  __iso_volatile_store64(reinterpret_cast<volatile __int64*>(word), static_cast<__int64>(value));
+#else
+  __atomic_store_n(word, value, __ATOMIC_RELAXED);
+#endif
+}
 
 template <class T>
 class WorkDeque {
@@ -128,19 +156,27 @@ class WorkDeque {
     return words_ + (static_cast<u64>(index) & mask_) * k_words;
   }
 
+  // Unrolled: a volatile access is never merged or looped away by the compiler, so a loop over
+  // the words stays a loop.
+  template <usize... W>
+  static void store_words(u64* dst, const u64* src, std::index_sequence<W...>) noexcept {
+    (store_word_relaxed(dst + W, src[W]), ...);
+  }
+  template <usize... W>
+  static void load_words(u64* dst, u64* src, std::index_sequence<W...>) noexcept {
+    ((dst[W] = load_word_relaxed(src + W)), ...);
+  }
+
   void store_slot(i64 index, const T& item) noexcept {
     u64 words[k_words] = {};
     std::memcpy(words, &item, sizeof(T));
     u64* dst = slot(index);
-    for (u32 w = 0; w < k_words; ++w)
-      std::atomic_ref<u64>(dst[w]).store(words[w], std::memory_order_relaxed);
+    store_words(dst, words, std::make_index_sequence<k_words>{});
   }
 
   T load_slot(i64 index) const noexcept {
     u64 words[k_words];
-    u64* src = slot(index);
-    for (u32 w = 0; w < k_words; ++w)
-      words[w] = std::atomic_ref<u64>(src[w]).load(std::memory_order_relaxed);
+    load_words(words, slot(index), std::make_index_sequence<k_words>{});
     T item;
     std::memcpy(&item, words, sizeof(T));
     return item;
