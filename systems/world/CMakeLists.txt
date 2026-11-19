@@ -46,7 +46,8 @@ engine_module(NAME world LAYER systems OPTIONAL WHOLE_ARCHIVE
 # scene_order_tests.cpp registers a ground and a placement generator of its own, so it needs no
 # capability and runs in every configuration that has the world.
 set(_world_tests tests/world_tests.cpp tests/tile_store_tests.cpp tests/consumer_tests.cpp
-                 tests/save_tests.cpp tests/scene_order_tests.cpp tests/drawn_tiles_tests.cpp
+                 tests/save_tests.cpp tests/hostile_save_tests.cpp
+                 tests/scene_order_tests.cpp tests/drawn_tiles_tests.cpp
                  tests/tile_meshes_tests.cpp tests/tile_mesh_textures_tests.cpp
                  tests/size_table.cpp
                  # T131 with W118: when a tile is admitted, released and built, and on which
