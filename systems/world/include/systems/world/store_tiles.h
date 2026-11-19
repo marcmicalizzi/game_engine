@@ -99,5 +99,23 @@ inline constexpr const char* k_world_settings_type = "engine.world.WorldSettings
 // `out` untouched, for a document with none — or with a record of another type at that id, or a
 // seed that is not a whole number from 0 to 2^64 - 1, which a validated document never holds.
 bool document_world_seed(const doc::Document& document, u64& out);
+// **The projections a write-back flush wrote, kept current** (roadmap S11; plan 03 §3.5,
+// "Projections ... kept in memory for loaded tiles and in the persistent store for all tiles";
+// store.md, "Tiles: projections and snapshots"). A tile's projections were written only when it
+// went, so the store said where a live tile's records were when that tile last went, or nothing.
+// Called with a flush's batch after the document took it, this replaces the projection of every
+// record the flush wrote, as the document now has it, under the tile the document now puts it in —
+// one transaction, in (tile, record) order, a moved record's row following it out of its old tile
+// — so the store's projections of live tiles are as current as the write-back's cadence. It reads
+// the document, never the world. No snapshot: that stays a tile's going. A host whose session
+// keeps a store calls it from its write-back sink after the commit; engine-host does not yet.
+struct ProjectWritebackStats {
+  u32 written = 0;  // projections replaced
+  u32 untiled = 0;  // records in no tile of a partitioned layer: a tile's projection has no place
+  u32 gone = 0;     // records the document no longer has, or whose position no cell can name
+};
+store::Status project_writeback(WorldStore& world_store, const doc::Document& document,
+                                const sim::WriteBackBatch& batch,
+                                ProjectWritebackStats* stats = nullptr);
 
 }  // namespace engine::world

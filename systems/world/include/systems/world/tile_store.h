@@ -78,6 +78,10 @@ class WorldStore {
   // snapshot at (tick, time). A record the tile held before and does not now keeps its old
   // projection until the tile is written again with it gone: `upsert` cannot tell a deletion from
   // a record that moved away, and the store's key leads with the tile (store.md).
+  // Projections and nothing else (roadmap S11): `rows[i]` replaces its record's projection under
+  // the store tile `tiles[i]` (`store_tile`), following the record out of any tile it was filed
+  // under before, all in one transaction. No snapshot: that is a tile's going.
+  store::Status write_projections(std::span<const TileRow> rows, std::span<const u64> tiles);
   store::Status write_tile(TileCoord tile, std::span<const TileRow> rows, u64 sim_tick,
                            i64 game_time_us);
   // What is stored for `tile`: its projections (decoded) and whether it has a snapshot.
@@ -95,6 +99,7 @@ class WorldStore {
   store::EventLog log_{db_};
   u64 world_seed_ = 1;
   Vector<u8> scratch_;
+  Vector<u64> tiles_;  // scratch: write_tile's one tile, once a row
 };
 
 // **An event's payload as this build reads it** (plan 03 §3.8, "events are upcast"; roadmap D26).

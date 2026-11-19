@@ -38,6 +38,15 @@
 // archetype for its children (ADR-0028's guard rails): a document of n parents with children makes
 // about n more tables. That is flecs' hierarchy and what `cascade()` queries need; the table
 // watchdog is what notices a hierarchy nobody sized.
+//
+// **Write-back visits what changed** (roadmap S11; docs/subsystems/ecs.md, "Write-back by change
+// detection"). A flush compares the shadow only in the tables flecs' own change detection says a
+// tracked write touched since the last flush — a system's `inout` term, `set`, or `ensure` followed
+// by `modified` — and skips the rest whole. What it cannot see is a write through a raw pointer
+// with no `modified` after it: a capability that writes a `@writeback` component outside a system's
+// query calls `modified`. `WritebackScan::Every` is the scan of every watched entity it replaced,
+// kept as the oracle, and `verify` runs it behind the tracked scan and counts what the tracking
+// missed.
 
 #include <core/base/macros.h>
 #include <core/base/types.h>
@@ -62,14 +71,41 @@ struct RecordStats {
   u64 unlinked_children = 0;  // children moved to the root instead of cascading
   u64 writeback_scans = 0;    // collect_writeback calls
   u64 writeback_changes = 0;  // changed fields they reported
+  u64 writeback_tables = 0;   // tables a tracked scan compared (a table once per scan)
+  u64 writeback_skipped = 0;  // tables a tracked scan skipped because nothing tracked wrote them
+  u64 writeback_rows = 0;     // watched entities compared against their shadow
+  u64 writeback_missed = 0;   // with `verify`: changed fields the tracked scan did not see
+};
+
+// How a write-back flush finds what changed.
+enum class WritebackScan : u8 {
+  // The tables flecs' change detection says a tracked write touched since the last flush, and
+  // nothing else: one cached query per mapping that writes back, a byte compare per watched entity
+  // of a changed table. The default.
+  Changed,
+  // Every watched entity, every flush (what write-back did before roadmap S11): the oracle a
+  // tracked scan is held to, and the answer for a world whose writers cannot all call `modified`.
+  Every,
+};
+
+struct RecordMaterializerConfig {
+  WritebackScan scan = WritebackScan::Changed;
+  // With `Changed`: also run the scan of every entity after the tracked one, report what it found
+  // as well (so the flush is the oracle's), count it in `writeback_missed` and warn once per flush
+  // that missed something, naming the record and the component. For finding a writer that
+  // bypasses the tracking; it costs the full scan.
+  bool verify = false;
 };
 
 class RecordMaterializer {
  public:
   // The world must outlive this object. Construct it outside a tick: it makes sure the identity
   // map and the component table exist, as `WorldCommands` does, for the same reason.
-  explicit RecordMaterializer(flecs::world& world);
+  explicit RecordMaterializer(flecs::world& world, const RecordMaterializerConfig& config = {});
+  ~RecordMaterializer();
   ENGINE_NON_COPYABLE(RecordMaterializer);
+
+  const RecordMaterializerConfig& config() const noexcept { return config_; }
 
   // The hooks row. Register it with `SimScheduler::add_hooks` **before** any capability's: the
   // first hook to give a record a runtime existence names it, and the others attach to what this
@@ -82,6 +118,15 @@ class RecordMaterializer {
   const RecordStats& stats() const noexcept { return stats_; }
   // Entities whose writable fields are being watched for write-back.
   u32 watched() const noexcept { return watches_.size(); }
+  // What the write-back holds, in bytes (the owner's memory budget): the shadow slabs and the
+  // watch map, which grow with the watched entities, and the tracked scan's cached queries, one per
+  // mapping that writes back and nothing until the first entity of that mapping is watched. flecs'
+  // own per-table cost of the tracking — a change counter per column and a query's monitor per
+  // matched table — is not in it; `docs/subsystems/ecs.md` states it.
+  usize writeback_bytes() const noexcept;
+  // Cached queries the tracked scan holds (one per mapping with `@writeback` rows that has watched
+  // an entity).
+  u32 writeback_queries() const noexcept;
 
  private:
   // One mapping, resolved against this world once: flecs ids, field descriptors, the write-back
@@ -103,6 +148,11 @@ class RecordMaterializer {
     Vector<u8> shadow;                        // slots of shadow_bytes
     Vector<u32> free_slots;
     u32 slots = 0;
+    // The tracked scan's query: `Identity` and every component a writable row lives in, `in`, with
+    // change detection; made when the mapping's first entity is watched. `writable_term[k]` is the
+    // query field of `writable[k]`'s component.
+    ecs_query_t* query = nullptr;
+    Vector<u8> writable_term;
   };
   struct Watch {
     u32 resolved = 0;
@@ -120,15 +170,20 @@ class RecordMaterializer {
   sim::EntityHandle materialize(const sim::EntityRecord& record);
   void dematerialize(sim::EntityHandle handle);
   void collect(Vector<sim::WriteBackChange>& out);
+  void collect_every(Vector<sim::WriteBackChange>& out);
+  void collect_changed(Vector<sim::WriteBackChange>& out);
+  void make_query(u32 resolved);
   void snapshot(const Id128& id, u32 resolved, flecs::entity_t entity);
   void release_watch(const Id128& id);
 
   flecs::world* world_ = nullptr;
+  RecordMaterializerConfig config_;
   Vector<Resolved> resolved_;
   HashMap<const schema::MaterializeInfo*, u32> by_mapping_;
   HashMap<Id128, Watch> watches_;
   Vector<ecs_id_t> ids_;              // scratch: the archetype of an entity being created
   Vector<flecs::entity_t> children_;  // scratch: children to unlink
+  Vector<const u8*> columns_;         // scratch: a changed table's writable columns
   RecordStats stats_;
 };
 

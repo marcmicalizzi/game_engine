@@ -43,9 +43,12 @@ engine_module_tests(NAME ecs
 #
 # materialize_bench.cpp is the materialization driver over the entity store's hook: 10^4 and 10^5
 # document records into a fresh world, the no-change pass after it, and a 1% change
-# (docs/subsystems/sim.md, "Performance notes").
+# (docs/subsystems/sim.md, "Performance notes"). writeback_bench.cpp is the write-back flush at
+# 10^3 to 10^5 watched entities, tracked and scanning every entity (ecs.md, "Write-back by change
+# detection").
 engine_module_bench(NAME ecs
   SOURCES bench/ecs_bench.cpp bench/materialize_bench.cpp bench/tick_hash_bench.cpp
+          bench/writeback_bench.cpp
   DEPS ecs_test_types doc)
 # The bench reports the process working set, which is psapi's on Windows and /proc/self/statm's
 # on Linux.

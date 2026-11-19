@@ -460,3 +460,66 @@ TEST_CASE("world consumers: where a record is, from its partition's property") {
   CHECK(p.z == 44.0);
   CHECK_FALSE(record_position(d, id_of(9), p));
 }
+
+namespace {
+
+sim::WriteBackBatch batch_of(std::initializer_list<u64> records) {
+  sim::WriteBackBatch batch;
+  for (const u64 n : records) {
+    sim::WriteBackChange change;
+    change.record = id_of(n);
+    batch.changes.push_back(std::move(change));
+  }
+  return batch;
+}
+
+Vector<TileRow> tile_rows(WorldStore& store, i32 x, i32 z) {
+  Vector<TileRow> rows;
+  bool has_snapshot = true;
+  store::SnapshotInfo info;
+  REQUIRE(store.read_tile(TileCoord{x, z}, rows, has_snapshot, info) == store::Status::Ok);
+  CHECK_FALSE(has_snapshot);  // a flush writes projections, never a tile's snapshot
+  return rows;
+}
+
+}  // namespace
+
+// Roadmap S11: the projections of what a write-back flush wrote, kept current in the store as the
+// document has them, under the tile it puts them in, a moved record's row following it.
+TEST_CASE("world store: a flush's records' projections are kept current") {
+  WorldStore store;
+  REQUIRE(store.open_memory() == store::Status::Ok);
+  doc::Document d = partitioned(64.0);
+  node(d, 1, 10.0, 10.0);  // tile (0, 0)
+  node(d, 2, 70.0, 10.0);  // tile (1, 0)
+  node(d, 3, 80.0, 20.0);  // tile (1, 0), not written back
+
+  ProjectWritebackStats stats;
+  REQUIRE(project_writeback(store, d, batch_of({2, 1}), &stats) == store::Status::Ok);
+  CHECK(stats.written == 2);
+  Vector<TileRow> west = tile_rows(store, 0, 0);
+  REQUIRE(west.size() == 1);
+  CHECK(west[0].record == id_of(1));
+  CHECK(west[0].type == k_node);
+  CHECK(west[0].position.x == 10.0);
+  REQUIRE(tile_rows(store, 1, 0).size() == 1);  // only what the flush wrote
+
+  // The world moved 1 east: the document says so, and the flush's projection follows it.
+  JsonValue moved = vec3(75.5, 1.0, 12.0);
+  REQUIRE(d.apply(doc::cmd_set(id_of(1), "position", std::move(moved)), nullptr, nullptr));
+  REQUIRE(project_writeback(store, d, batch_of({1}), &stats) == store::Status::Ok);
+  CHECK(tile_rows(store, 0, 0).empty());
+  const Vector<TileRow> east = tile_rows(store, 1, 0);
+  REQUIRE(east.size() == 2);
+  CHECK(east[0].record == id_of(1));
+  CHECK(east[0].position.x == 75.5);
+  CHECK(east[0].position.z == 12.0);
+
+  // A record the document no longer has is not projected; its last row stays for the tile to
+  // replace when it goes.
+  REQUIRE(d.apply(doc::cmd_delete(id_of(2)), nullptr, nullptr));
+  REQUIRE(project_writeback(store, d, batch_of({2}), &stats) == store::Status::Ok);
+  CHECK(stats.gone == 1);
+  CHECK(stats.written == 0);
+  CHECK(tile_rows(store, 1, 0).size() == 2);
+}

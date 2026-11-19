@@ -10,6 +10,7 @@
 // write-back flush off the cadence, and the door's record alone replays it two ways.
 #include <core/json/json.h>
 #include <domain/doc/document.h>
+#include <domain/ecs/identity.h>
 #include <domain/ecs/materialize.h>
 #include <domain/ecs/scheduled_tick.h>
 #include <domain/ecs/sim_world.h>
@@ -97,10 +98,23 @@ struct Run {
     return c;
   }
 
-  Run(const sim::RunRecord& record, sim::HashLog& log, bool door_run = false)
+  // A write past the change tracking (roadmap S11): at `plant_tick` a system writes one resident's
+  // `next_event` through a raw pointer and calls no `modified`. The resident is alone in its table
+  // (a tag puts it there), so nothing else's tracked write covers it.
+  u64 plant_tick = 0;
+  Id128 planted;
+
+  static ecs::RecordMaterializerConfig records_config(ecs::WritebackScan scan) {
+    ecs::RecordMaterializerConfig c;
+    c.scan = scan;
+    return c;
+  }
+
+  Run(const sim::RunRecord& record, sim::HashLog& log, bool door_run = false,
+      ecs::WritebackScan scan = ecs::WritebackScan::Changed, u64 plant_at = 0)
       : sim(world_config(record.hz)),
         scheduler(scheduler_config(record)),
-        records(sim.world()),
+        records(sim.world(), records_config(scan)),
         npc(npc_config(record.seed)),
         driver(scheduler, driver_config()),
         with_door(door_run) {
@@ -143,6 +157,20 @@ struct Run {
     npc.set_observers(&observers);
     npc.places().refresh(document);
     driver.materialize(document);
+    if (plant_at != 0) {
+      plant_tick = plant_at;
+      for (const Id128& id : document.objects()) {
+        if (document.type_of(id) == k_resident_type && (planted.is_null() || id < planted))
+          planted = id;
+      }
+      ecs::entity_for(sim.world(), planted).add(sim.world().entity("test_planted"));
+      sim::SystemDesc planter;
+      planter.name = "test.plant";
+      planter.phase = sim::TickPhase::Systems;
+      planter.context = this;
+      planter.begin_tick = &Run::plant;
+      scheduler.add_system(planter);
+    }
     if (with_door) {
       driver.set_writeback_sink(sim::WriteBackSink{this, &Run::commit});
       driver.set_writeback_every(k_cadence);
@@ -170,6 +198,13 @@ struct Run {
     const f64 dz = 0.5 * static_cast<f64>(self->state.axis(self->move_z));
     self->observers.clear();
     self->observers.add(WorldPos{at.x + dx, at.y, at.z + dz}, 1.0f);
+  }
+
+  static void plant(sim::SystemContext& context) {
+    auto* self = static_cast<Run*>(context.context);
+    if (context.tick.value != self->plant_tick) return;
+    const flecs::entity e = ecs::entity_for(self->sim.world(), self->planted);
+    if (NpcState* state = e.try_get_mut<NpcState>()) state->next_event += 1;  // and no `modified`
   }
 
   // A write-back committed the way a session would, and hashed: the tick and every change.
@@ -416,4 +451,87 @@ TEST_CASE("npc: 10^4 ticks with a player's input and calls off the cadence repla
     // The flush after the recorded run's last tick is in no row; the door applied it here.
     CHECK(run.writeback_hash == recorded_writeback);
   }
+}
+
+// Roadmap S11: the write-back by change detection writes what the scan of every resident wrote.
+// The door's run — residents, a player, flushes on a cadence of 97 and at calls that end off it —
+// is recorded with the write-back scanning every resident every flush (the oracle, what it did
+// before), and replayed from the door's record with the change tracking: the same hash log tick for
+// tick over 10^4 ticks, the write-backs' table included, so the same commits to the document and
+// the same events a host logs from them. Then a write past the tracking — one resident's
+// `next_event` through a raw pointer, no `modified` — planted in both: the bisector names the
+// write-backs' table at the first flush after it, and no other.
+TEST_CASE("npc: write-back by change detection writes what the scan of every resident writes") {
+  test::TempDir dir;
+  sim::RunRecord record;
+  record.seed = 42;
+  record.hz = k_hz;
+  record.start_time_us = k_morning;
+  record.ticks = k_ticks;
+  record.hash_log = "residents.hashlog";
+  record.door_log = "inputs.door";
+
+  sim::HashLog recorded;
+  u64 recorded_writeback = 0;
+  u64 every_rows = 0;
+  {
+    Run run(record, recorded, true, ecs::WritebackScan::Every);
+    record_frames(run, k_ticks, 2026);
+    REQUIRE(run.scheduler.tick().value == k_ticks);
+    recorded_writeback = run.writeback_hash;
+    every_rows = run.records.stats().writeback_rows;
+    MESSAGE("every resident: " << run.records.stats().writeback_scans << " flushes compared "
+                               << every_rows << " residents, " << run.commits << " commits of "
+                               << run.records.stats().writeback_changes << " fields");
+    CHECK(run.commits > 0);
+    CHECK(run.records.writeback_queries() == 0);
+    REQUIRE(run.door.save(sim::run_file(dir.path(), record.door_log)));
+  }
+  std::string error;
+  {
+    sim::HashLog replayed;
+    Run run(record, replayed, true, ecs::WritebackScan::Changed);
+    REQUIRE_MESSAGE(run.door.load(sim::run_file(dir.path(), record.door_log), &error), error);
+    run.door.begin_replay();
+    for (u64 i = 0; i < record.ticks; ++i)
+      run.tick->step();
+    run.door.replay_pending();
+    const sim::Divergence d = sim::first_divergence(recorded, replayed);
+    CHECK_FALSE(d.found);
+    CHECK_FALSE(d.rows_differ);
+    CHECK(d.rows_compared == k_ticks * sim::k_phase_count);
+    CHECK(run.writeback_hash == recorded_writeback);
+    const ecs::RecordStats& s = run.records.stats();
+    MESSAGE("changed tables: " << s.writeback_scans << " flushes compared " << s.writeback_rows
+                               << " residents in " << s.writeback_tables << " tables, skipped "
+                               << s.writeback_skipped << "; " << run.records.writeback_bytes()
+                               << " bytes held for " << run.records.watched() << " watched");
+    CHECK(run.records.writeback_queries() == 1);
+    CHECK(s.writeback_rows < every_rows);
+  }
+
+  // The plant, at a tick no cadence flush falls on, in both scans; each run replays the door's
+  // record up to a few cadences past it.
+  constexpr u64 k_plant = 20 * k_cadence + 13;
+  constexpr u64 k_until = k_plant + 3 * k_cadence;
+  sim::HashLog logs[2];
+  for (u32 side = 0; side < 2; ++side) {
+    sim::RunRecord partial = record;
+    partial.ticks = k_until;
+    const ecs::WritebackScan scan =
+        side == 0 ? ecs::WritebackScan::Every : ecs::WritebackScan::Changed;
+    Run run(partial, logs[side], true, scan, k_plant);
+    REQUIRE_MESSAGE(run.door.load(sim::run_file(dir.path(), record.door_log), &error), error);
+    run.door.begin_replay();
+    for (u64 i = 0; i < k_until; ++i)
+      run.tick->step();
+  }
+  const sim::Divergence d = sim::first_divergence(logs[0], logs[1]);
+  REQUIRE(d.found);
+  MESSAGE("the planted write at tick " << k_plant << ": found at tick " << d.tick << ", phase "
+                                       << std::string(sim::phase_name(d.phase)));
+  CHECK(d.tick >= k_plant);
+  CHECK(d.tick <= k_plant + k_cadence);
+  REQUIRE(d.tables.size() == 1);
+  CHECK(d.tables[0].table == "writeback");
 }

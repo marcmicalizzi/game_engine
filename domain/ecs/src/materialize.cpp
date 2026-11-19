@@ -11,11 +11,36 @@ namespace engine::ecs {
 
 ENGINE_LOG_CATEGORY_DECLARE(log_ecs);
 
-RecordMaterializer::RecordMaterializer(flecs::world& world) : world_(&world) {
+RecordMaterializer::RecordMaterializer(flecs::world& world, const RecordMaterializerConfig& config)
+    : world_(&world), config_(config) {
   // Both singletons exist before the first record arrives, for the reason `WorldCommands` forces
   // them: a world is writable here, and nothing later should have to create them.
   components(world);
   identity_map(world);
+}
+
+RecordMaterializer::~RecordMaterializer() {
+  for (Resolved& r : resolved_) {
+    if (r.query != nullptr) ecs_query_fini(r.query);
+  }
+}
+
+usize RecordMaterializer::writeback_bytes() const noexcept {
+  usize bytes = static_cast<usize>(watches_.capacity()) * (sizeof(Id128) + sizeof(Watch)) +
+                static_cast<usize>(watches_.bucket_count()) * sizeof(u32);
+  for (const Resolved& r : resolved_) {
+    bytes += r.shadow.capacity() + r.free_slots.capacity() * sizeof(u32);
+    bytes += r.writable_term.capacity();
+    if (r.query != nullptr) bytes += sizeof(ecs_query_t);
+  }
+  return bytes;
+}
+
+u32 RecordMaterializer::writeback_queries() const noexcept {
+  u32 n = 0;
+  for (const Resolved& r : resolved_)
+    n += r.query != nullptr ? 1u : 0u;
+  return n;
 }
 
 sim::MaterializationHooks RecordMaterializer::hooks() noexcept {
@@ -247,6 +272,7 @@ void RecordMaterializer::snapshot(const Id128& id, u32 resolved, flecs::entity_t
     }
     watches_.insert(id, Watch{resolved, slot});
     watch = watches_.find_value(id);
+    if (config_.scan == WritebackScan::Changed && r.query == nullptr) make_query(resolved);
   }
   // What was just written is the baseline: a field differs from it only once a system writes it.
   u8* shadow = r.shadow.data() + static_cast<usize>(watch->slot) * r.shadow_bytes;
@@ -269,9 +295,128 @@ void RecordMaterializer::release_watch(const Id128& id) {
   watches_.erase(id);
 }
 
+// The tracked scan's query for one mapping: `Identity` first, then each component a writable row
+// lives in, all `in` — reading them marks nothing dirty — with change detection, which makes flecs
+// keep a change counter per column of every table it matches and a monitor of what this query last
+// saw. Disabled and prefab entities match too, because the scan of every entity it stands in for
+// reached them through the identity map.
+void RecordMaterializer::make_query(u32 resolved) {
+  Resolved& r = resolved_[resolved];
+  ecs_query_desc_t desc = {};
+  desc.terms[0].id = world_->id<Identity>().raw_id();
+  desc.terms[0].inout = EcsIn;
+  u8 terms = 1;
+  r.writable_term.clear();
+  for (const u32 row : r.writable) {
+    const flecs::entity_t component = r.groups[r.row_group[row]].component;
+    u8 term = 1;
+    while (term < terms && desc.terms[term].id != component)
+      ++term;
+    if (term == terms) {
+      ENGINE_ASSERT(terms < FLECS_TERM_COUNT_MAX, "ecs::RecordMaterializer: too many components");
+      desc.terms[terms].id = component;
+      desc.terms[terms].inout = EcsIn;
+      ++terms;
+    }
+    r.writable_term.push_back(term);
+  }
+  desc.flags = EcsQueryDetectChanges | EcsQueryMatchDisabled | EcsQueryMatchPrefab;
+  desc.cache_kind = EcsQueryCacheAuto;
+  r.query = ecs_query_init(world_->c_ptr(), &desc);
+  ENGINE_ASSERT(r.query != nullptr, "ecs::RecordMaterializer: the write-back query was refused");
+}
+
 void RecordMaterializer::collect(Vector<sim::WriteBackChange>& out) {
   ++stats_.writeback_scans;
   const u32 before = out.size();
+  if (config_.scan == WritebackScan::Every) {
+    collect_every(out);
+  } else {
+    collect_changed(out);
+    if (config_.verify) {
+      // What the tracked scan already took is in the shadow now, so the full scan behind it finds
+      // exactly what the tracking missed.
+      const u32 tracked = out.size();
+      collect_every(out);
+      const u32 missed = out.size() - tracked;
+      if (missed != 0) {
+        stats_.writeback_missed += missed;
+        const sim::WriteBackChange& first = out[tracked];
+        const schema::MaterializeField& row = first.mapping->fields[first.row];
+        ENGINE_LOG_WARN(log_ecs, "write-back: a write the change tracking did not see",
+                        log::field("fields", missed), log::field("record", first.record),
+                        log::field("component", row.component->qualified_name),
+                        log::field("field", row.field));
+      }
+    }
+  }
+  // By record, then row: the hash map's order and flecs' table order are not orders anything may
+  // depend on.
+  std::sort(out.begin() + before, out.end(),
+            [](const sim::WriteBackChange& a, const sim::WriteBackChange& b) {
+              if (!(a.record == b.record)) return a.record < b.record;
+              return a.row < b.row;
+            });
+  stats_.writeback_changes += out.size() - before;
+}
+
+void RecordMaterializer::collect_changed(Vector<sim::WriteBackChange>& out) {
+  ecs_world_t* raw = world_->c_ptr();
+  for (u32 index = 0; index < resolved_.size(); ++index) {
+    Resolved& r = resolved_[index];
+    if (r.query == nullptr) continue;
+    // Nothing tracked wrote any table this mapping's entities live in: the whole mapping is one
+    // check of each matched table's counters against the query's monitor.
+    if (!ecs_query_changed(r.query)) continue;
+    ecs_iter_t it = ecs_query_iter(raw, r.query);
+    while (ecs_query_next(&it)) {
+      if (!ecs_iter_changed(&it)) {
+        ecs_iter_skip(&it);
+        ++stats_.writeback_skipped;
+        continue;
+      }
+      ++stats_.writeback_tables;
+      const auto* ids =
+          static_cast<const Identity*>(ecs_field_w_size(&it, sizeof(Identity), i8{0}));
+      // Each writable row's column in this table, once a table rather than once an entity.
+      columns_.clear();
+      for (u32 k = 0; k < r.writable.size(); ++k) {
+        const Group& group = r.groups[r.row_group[r.writable[k]]];
+        columns_.push_back(static_cast<const u8*>(
+            ecs_field_w_size(&it, group.size, static_cast<i8>(r.writable_term[k]))));
+      }
+      for (i32 row_index = 0; row_index < it.count; ++row_index) {
+        const Id128& id = ids[row_index].id;
+        const Watch* watch = watches_.find_value(id);
+        // Not watched, or watched under another mapping whose own query reaches it.
+        if (watch == nullptr || watch->resolved != index) continue;
+        ++stats_.writeback_rows;
+        u8* shadow = r.shadow.data() + static_cast<usize>(watch->slot) * r.shadow_bytes;
+        u32 offset = 0;
+        for (u32 k = 0; k < r.writable.size(); ++k) {
+          const u32 row = r.writable[k];
+          const Group& group = r.groups[r.row_group[row]];
+          const schema::FieldInfo& field = *r.fields[row];
+          const u32 size = static_cast<u32>(field.type.size);
+          const u8* component = columns_[k] + static_cast<usize>(row_index) * group.size;
+          const u8* now = component + field.offset;
+          if (std::memcmp(now, shadow + offset, size) != 0) {
+            sim::WriteBackChange change;
+            change.record = id;
+            change.mapping = r.info;
+            change.row = row;
+            if (schema::write_mapped(r.info->fields[row], field, component, change.value))
+              out.push_back(std::move(change));
+            std::memcpy(shadow + offset, now, size);
+          }
+          offset += size;
+        }
+      }
+    }
+  }
+}
+
+void RecordMaterializer::collect_every(Vector<sim::WriteBackChange>& out) {
   const IdentityMap* map = identity_map_if_present(*world_);
   if (map == nullptr) return;
   ecs_world_t* raw = world_->c_ptr();
@@ -283,6 +428,7 @@ void RecordMaterializer::collect(Vector<sim::WriteBackChange>& out) {
     Resolved& r = resolved_[watch.resolved];
     const flecs::entity_t entity = map->find(id);
     if (entity == 0) continue;
+    ++stats_.writeback_rows;
     u8* shadow = r.shadow.data() + static_cast<usize>(watch.slot) * r.shadow_bytes;
     u32 offset = 0;
     for (const u32 row : r.writable) {
@@ -305,13 +451,6 @@ void RecordMaterializer::collect(Vector<sim::WriteBackChange>& out) {
       offset += size;
     }
   }
-  // By record, then row: the hash map's order is not an order anything may depend on.
-  std::sort(out.begin() + before, out.end(),
-            [](const sim::WriteBackChange& a, const sim::WriteBackChange& b) {
-              if (!(a.record == b.record)) return a.record < b.record;
-              return a.row < b.row;
-            });
-  stats_.writeback_changes += out.size() - before;
 }
 
 }  // namespace engine::ecs

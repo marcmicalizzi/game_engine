@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "b69-S11",
+  "reason": "S11: world.md's public API line names project_writeback, the flush's records' tile projections kept current (roadmap S11); the behaviour itself is on store.md",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/world.md": 226
+  }
+}
