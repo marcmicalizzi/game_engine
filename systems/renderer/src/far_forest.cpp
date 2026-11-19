@@ -326,6 +326,24 @@ bool read_entry(const std::string& path, u64 key, geometry::ClusterLodMesh& mesh
   if (!r.ok || r.at != bytes.size() || parts.size() != m.mesh.clusters.size() ||
       m.lod.size() != m.mesh.clusters.size() || m.mesh.attributes.size() != m.mesh.vertices.size())
     return false;
+  // **A cluster's ranges against the streams, as a `.clusters` file's are** (T198; T187's class):
+  // an entry is derived data whose key is no MAC, and its offsets become device addresses and CPU
+  // indices once the tile is merged. A cluster past a stream, a triangle naming a vertex its
+  // cluster lacks, or a quantized stream that is not three coordinates a vertex (and the one pad
+  // word) is a miss, built again.
+  const u64 coordinates = u64{m.mesh.vertices.size()} * 3;
+  if (m.mesh.quantized.size() != coordinates && m.mesh.quantized.size() != coordinates + 1)
+    return false;
+  for (const geometry::ClusterDesc& cluster : m.mesh.clusters) {
+    if (u64{cluster.vertex_offset} + cluster.vertex_count > m.mesh.vertices.size() ||
+        u64{cluster.triangle_offset} + cluster.triangle_count > m.mesh.triangles.size())
+      return false;
+    for (u32 t = 0; t < cluster.triangle_count; ++t) {
+      const u32 packed = m.mesh.triangles[cluster.triangle_offset + t];
+      for (u32 k = 0; k < 3; ++k)
+        if (geometry::ClusterMesh::unpack(packed, k) >= cluster.vertex_count) return false;
+    }
+  }
   mesh = std::move(m);
   part_of_cluster = std::move(parts);
   return true;
