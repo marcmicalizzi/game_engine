@@ -58,6 +58,30 @@ ENGINE_BENCH_ARGS(jobs_parallel_for_small, "jobs.parallel_for.small", 1, 8) {
   state.set_items(1024);
 }
 
+// One job at a time from the main thread (T195): 256 single-job schedule() calls with one counter,
+// then the wait. Each call publishes its job and then looks for a sleeper, so whatever that look
+// costs (a fence since T195) is paid per job here, where a parallel_for pays it once a batch.
+ENGINE_BENCH_ARGS(jobs_schedule_single, "jobs.schedule.single", 1, 8) {
+  JobSystem js(config_for(static_cast<u32>(state.arg())));
+  std::atomic<u32> sum{0};
+  constexpr u32 k_jobs = 256;
+  const Job job{
+      [](void* p) { static_cast<std::atomic<u32>*>(p)->fetch_add(1, std::memory_order_relaxed); },
+      &sum, nullptr};
+  while (state.keep_running()) {
+    Counter counter;
+    for (u32 i = 0; i < k_jobs; ++i) {
+      counter.add();
+      Job counted = job;
+      counted.counter = &counter;
+      js.schedule(Pool::Performance, counted);
+    }
+    js.wait(counter);
+  }
+  bench::keep(sum.load());
+  state.set_items(k_jobs);
+}
+
 // The deque's own paths with no other thread (T186): a worker's push and pop of its own jobs, and a
 // push taken back by steal, the thief's path. 256 jobs a round, so the ring's slots are reused as a
 // worker's are; the memory orders of these three calls are what a change to the deque costs.
