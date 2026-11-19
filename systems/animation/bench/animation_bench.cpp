@@ -20,6 +20,7 @@
 #include <foundation/bench/bench.h>
 #include <systems/animation/animation.h>
 #include <systems/animation/graph.h>
+#include <systems/animation/inertialize.h>
 
 #include <memory>
 #include <string>
@@ -367,7 +368,8 @@ struct GraphFixture {
   std::vector<GraphInstance> instances;
 };
 
-GraphDesc crowd_graph(GraphNodeKind layer = GraphNodeKind::Clip) {
+GraphDesc crowd_graph(GraphNodeKind layer = GraphNodeKind::Clip,
+                      GraphBlend transition_blend = GraphBlend::CrossFade) {
   GraphDesc d;
   u64 low = 1;
   const auto id = [&] { return Id128::from_parts(0xb3c4, low++); };
@@ -458,6 +460,7 @@ GraphDesc crowd_graph(GraphNodeKind layer = GraphNodeKind::Clip) {
     t.record.from = d.states[k].id;
     t.record.to = d.states[1 - k].id;
     t.record.duration_s = 0.25f;
+    t.record.blend = transition_blend;
     t.record.conditions.push_back(
         GraphCondition{"moving", GraphCompare::Equal, k == 0 ? 1.0f : 0.0f});
   }
@@ -544,6 +547,76 @@ ENGINE_BENCH_ARGS(animation_graph_layered, "animation.graph.layered", 1000, 1000
 ENGINE_BENCH_ARGS(animation_graph_additive, "animation.graph.additive", 1000, 10000) {
   run_program(state, bench::smoke_mode() ? 256u : static_cast<u32>(state.arg()), 64,
               GraphNodeKind::Additive);
+}
+
+// S35 stage 4: 10^4 instances of the crowd's graph, a quarter of them in a transition from stand
+// to move 0.1 s into its 0.25 s: arg 0 a cross-fade (both states evaluated and summed), arg 1
+// inertialized (the target alone, then `inertial_apply` over its 23 joints, the offsets captured
+// before the loop). The program and the offsets, as `animation.graph_sample` runs them; beside
+// `animation.graph.sample`.
+ENGINE_BENCH_ARGS(animation_graph_transition, "animation.graph.transition", 0, 1) {
+  const bool inertial = state.arg() == 1;
+  const u32 n = bench::smoke_mode() ? 256u : 10000u;
+  static Library library;
+  static bool built = false;
+  if (!built) {
+    build_library(library);
+    built = true;
+  }
+  const anim::Skeleton& skeleton = library.skeleton_data(0);
+  const u32 joints = skeleton.joint_count();
+  CompiledGraph graph;
+  std::string why;
+  if (!compile_graph(crowd_graph(GraphNodeKind::Clip,
+                                 inertial ? GraphBlend::Inertialize : GraphBlend::CrossFade),
+                     &library, graph, why, &skeleton))
+    bench::keep(why);
+  std::vector<AnimationGraphInput> inputs(n);
+  std::vector<AnimationGraphState> states(n);
+  std::vector<Vec3> translation(usize{n} * joints);
+  std::vector<Quat> rotation(usize{n} * joints);
+  std::vector<Vec3> scale(usize{n} * joints);
+  std::vector<GraphInstance> instances(n);
+  std::vector<InertialJoint> offsets(usize{n / 4u} * joints);
+  for (u32 i = 0; i < n; ++i) {
+    init_graph_instance(graph, inputs[i], states[i]);
+    inputs[i].values[0] = 1.0f;
+    inputs[i].values[1] = static_cast<f32>(i % 401u) * (4.0f / 400.0f);
+    AnimationGraphState& st = states[i];
+    st.state[0] = 2;  // move
+    st.time[0] = 0.01f * static_cast<f32>(i % 97u);
+    if (i % 4u == 0) {  // in flight from stand
+      st.state[0] = 1;
+      st.next[0] = 2;
+      st.elapsed[0] = 0.1f;
+      st.duration[0] = inertial ? -0.25f : 0.25f;
+      st.next_time[0] = 0.1f;
+    }
+    GraphInstance& gi = instances[i];
+    gi.input = &inputs[i];
+    gi.state = &states[i];
+    gi.lead = 1.0f / 64.0f;
+    gi.out = anim::PoseView{std::span<Vec3>(translation.data() + usize{i} * joints, joints),
+                            std::span<Quat>(rotation.data() + usize{i} * joints, joints),
+                            std::span<Vec3>(scale.data() + usize{i} * joints, joints)};
+  }
+  for (usize k = 0; k < offsets.size(); ++k) {
+    const f32 j = static_cast<f32>(k % joints);
+    offsets[k] = InertialJoint{Vec3{0.01f * j, 0.0f, 0.02f}, Vec3{-0.05f, 0.0f, -0.1f},
+                               Vec3{0.0f, 0.1f + 0.01f * j, 0.0f}, Vec3{0.0f, -0.3f, 0.0f}};
+  }
+  PoseEvaluator evaluator;
+  while (state.keep_running()) {
+    evaluator.evaluate(graph, library, skeleton, instances, 64);
+    if (inertial) {
+      for (u32 q = 0; q < n / 4u; ++q) {
+        inertial_apply(std::span<const InertialJoint>(offsets.data() + usize{q} * joints, joints),
+                       0.1f + 1.0f / 64.0f, 0.25f, instances[4u * q].out);
+      }
+    }
+    bench::keep(rotation[0].w);
+  }
+  state.set_items(n);
 }
 
 // By the rig: two seconds at 30 keys a second, 23 joints (the humanoid core), 37 (a bird of the

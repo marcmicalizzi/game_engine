@@ -8,6 +8,7 @@
 #include <core/base/size_table.h>
 #include <systems/animation/animation.h>
 #include <systems/animation/graph.h>
+#include <systems/animation/inertialize.h>
 #include <systems/animation/pose_pool.h>
 
 using namespace engine;
@@ -34,8 +35,9 @@ ENGINE_EXPECT_SIZE(4, 1, animation::LodPlan);
 // walks: 16 (graph) + 8 parameters' f32 + the trigger bits, padded to the id's alignment ...
 ENGINE_EXPECT_SIZE(56, 8, animation::AnimationGraphInput);
 // ... and 16 (graph) + two machines' state, next (u16 each), elapsed, duration, time, next_time
-// (f32 each) + two sync groups' phase. 120 bytes an instance between the two.
-ENGINE_EXPECT_SIZE(64, 8, animation::AnimationGraphState);
+// (f32 each) + two sync groups' phase + (version 2, b70) the compiled graph's u32 revision, padded
+// to the id's alignment: 72. 128 bytes an instance between the two.
+ENGINE_EXPECT_SIZE(72, 8, animation::AnimationGraphState);
 
 // The compiled control table, read per instance per tick: a condition, a transition, a state's run
 // of transitions, a machine. (The design page's names for the first two are its record types';
@@ -61,6 +63,10 @@ ENGINE_EXPECT_SIZE(16, 4, animation::PoseClip);
 // mask's run (first joint, full and partial counts), the reference pose's first joint, the weight's
 // parameter, the kind, the machine, the weight and the op.
 ENGINE_EXPECT_SIZE(24, 4, animation::GraphLayer);
+// An inertialized transition's per-joint offset (S35 stage 4; animation.md, "Graphs:
+// inertialization"): translation and rotation offsets and their velocities, a slot of them per
+// instance in flight, read per joint per tick while it lasts — the design's 48/4.
+ENGINE_EXPECT_SIZE(48, 4, animation::InertialJoint);
 // One instance of a batch the program runs over: its input and state, the tick's lead, the LOD
 // flag, and its output pose as three spans (48).
 ENGINE_EXPECT_SIZE(72, 8, animation::GraphInstance);

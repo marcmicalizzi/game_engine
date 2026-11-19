@@ -206,6 +206,9 @@ bool default_fly_map_for(u64 hash, input::ActionMap& out);
 // False, naming the first camera action missing or any action of the wrong kind.
 bool resolve_fly_actions(const input::ActionMap& map, FlyActions& out, std::string* error);
 
+// Both are `core/math/portable_trig.h`'s `portable_sin_cos` and `portable_atan2` since 2026-11-19
+// (moved there unchanged; these names forward), described as they were:
+//
 // sin and cos of `angle` from arithmetic alone (see the file comment): a Taylor polynomial in f64
 // on [-pi/2, pi/2] after reduction by whole turns and by pi - x, good to about 1e-13 before the
 // round to f32. Not a general replacement for the C library — slower, and meant for angles within

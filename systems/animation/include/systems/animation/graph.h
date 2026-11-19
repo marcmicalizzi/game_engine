@@ -52,7 +52,8 @@
 //      never written; a layer at weight 0 is not evaluated at all.
 //
 // What the compile refuses by name rather than ignores, with the stage that takes it: the
-// `Inertialize` blend (stage 4), the `Machine` kind, `exit_phase`, the `KeepPhase`/`MatchPhase`
+// `Inertialize` blend on a layer machine (stage 4 takes it on the base machine: inertialize.h), the
+// `Machine` kind, `exit_phase`, the `KeepPhase`/`MatchPhase`
 // offsets, `skeleton_roles`, `root_motion`, an `Override` or `Additive` node anywhere but as a
 // machine's layer node, a weight other than 1 on a node that is not a layer node, a blend of
 // blends, and two layers or a layer of a layer (no stage of the design builds them yet; a graph
@@ -61,8 +62,9 @@
 // graph compiled without a skeleton.
 //
 // **Stated limits** (ADR-0017): 8 parameters, 2 machines, 2 sync groups (the components' widths),
-// 16 inputs a `Blend1D`, 65,534 states a machine and 65,535 transitions, conditions and pose ops a
-// graph (the tables' u16 indices). A graph past any of them is refused at compile with the count.
+// 16 inputs a `Blend1D`, 65,534 states a machine and 65,535 transitions, conditions, pose clips and
+// pose ops a graph (the tables' u16 indices). A graph past any of them is refused at compile with
+// the count. The compile is n log n in the records (binary searches over tables built once).
 //
 // **Determinism**: `hashed`, as the capability is. The control pass is per-instance arithmetic over
 // the instance's own two components — compares, adds of `dt`, a floor for the phase — with no
@@ -300,6 +302,11 @@ class CompiledGraph {
   Vector<PoseClip> pose_clips;
   Vector<GraphOp> program;
   u32 registers = 0;  // what the program writes: 0..registers-1
+  // A hash of the compiled tables (never 0), written into every instance's `AnimationGraphState`:
+  // a graph replaced under the same id (`GraphLibrary::add`) has another, so an instance of the
+  // old one starts again at the entries before any of its state indices is read. A hash rather
+  // than a counter, so a save loaded by a process that compiles the same graph keeps its states.
+  u32 revision = 0;
   std::string program_why;
   // Per machine, in machine order: the program's normalize of the machine's output register (the
   // base's is register 0, a layer machine's `layer_register`); unset for a graph with no program.
@@ -387,7 +394,8 @@ void init_graph_instance(const CompiledGraph& graph, AnimationGraphInput& input,
 
 // One instance's control tick of `dt` seconds. `steps` holds one step a machine
 // (`graph.machines.size()` of them); returns a bit a machine that entered a state this tick. A
-// state whose `graph` is another graph's (a reload, a swap) starts again at the entries.
+// state whose `graph` is another graph's (a swap), or whose `revision` is not this compile's (a
+// graph replaced in place: a reload), starts again at the entries before any index is read.
 u32 graph_control(const CompiledGraph& graph, AnimationGraphInput& input,
                   AnimationGraphState& state, f32 dt, GraphStep* steps) noexcept;
 
@@ -458,7 +466,8 @@ class PoseEvaluator {
 class GraphLibrary {
  public:
   // Adds `graph`, replacing one with the same id in place (its index, and every pointer
-  // `find` returned for it, stay valid). Returns its index.
+  // `find` returned for it, stay valid; its instances carry the old `revision` and start again at
+  // the entries on their next control tick). Returns its index.
   u32 add(CompiledGraph&& graph);
   const CompiledGraph* find(const Id128& id) const noexcept;
   u32 size() const noexcept { return graphs_.size(); }
