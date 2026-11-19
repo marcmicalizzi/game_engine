@@ -94,6 +94,17 @@ inline constexpr u32 k_branch_taper_version = 2;
 //    the change is to the sprays the chain is baked from: no other species' entry moves.
 inline constexpr u32 k_conifer_chain_version = 2;
 
+// The broadleaf solver's impostor chain (G121; flora.md, "The coverage under the mask"): mixed
+// into the source hash a container of a species the broadleaf solver builds records (`broadleaf`
+// and the deciduous profiles: oak, maple, elm, walnut, beech, ash, basswood, black_cherry,
+// sycamore, aspen, alder), after the conifers' place, the same way and for the same reason as
+// `k_conifer_chain_version`: those entries rebuild with the chain and no other species' moves, and
+// the deadwood, which keys a tree by `flora_source_hash` and draws no chain, keeps its key.
+//
+// 1: the levels are baked with the leaves' coverage kept and fitted
+//    (`ImpostorSpec::coverage_dither`, `bake_matched`), as the conifers' have been since G120.
+inline constexpr u32 k_broadleaf_chain_version = 1;
+
 // The version of the needle cards a tree of this file is built with: `k_conifer_chain_version`
 // for a species the conifer solver builds, 0 for every other (and for a regeneration form, whose
 // needles are ribbons). For a builder that keeps a tree's needle cards and keys itself by

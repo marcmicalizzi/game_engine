@@ -98,6 +98,7 @@ struct World::Impl {
     // per-cage timings to split it any other way.
     u32 iterations = 1;
     f32 max_strain = 0.0f;
+    f32 max_velocity = 0.0f;  // C50: re-applied after the strain clamp's velocity corrections
     bool hero = false;
   };
 

@@ -1133,6 +1133,17 @@ images of both materials (the last two since G93); same-path edits invalidate th
 hash takes each image's hash from the host's `hash_image` when it has one (since W75: a load's one
 identity per image, a material pack's from its index, so a cooked forest reads no base colour to key
 its trees) and from the bytes otherwise — the same number either way.
+**Which species the images key is the species table's answer** (G122, 2026-11-18): every profile
+of the table (`geometry::k_flora_species` with `profile`, `detail::is_tree_species`) bakes a chain
+from `Tree::card_bake_px`/`impostor_px`, so every one is keyed by its atlases, beside the bare
+`broadleaf`, `birch`, `ancient`, `conifer`, the alpine profiles and every regeneration form. Until
+then a list kept beside the key named maple, oak, elm, beech, ash and walnut and missed the five
+profiles added after it — basswood, black_cherry, sycamore, aspen and alder baked their atlases and
+an edit to a leaf or bark image did not move their key. `impostor_tests.cpp` walks the table and
+flips a byte of each atlas for every profile. **What rebuilds**: in a world with any of the five
+whose recipe bakes a chain (the default does) and whose materials name an image (a recipe's or a
+pack's), each such container is keyed anew once and recooks at its next load; no other species'
+key moves, and a world without images keys them as it did.
 Direct pure calls without an image host retain solver colours and the ellipse fallback, and the
 faces' geometry normals and the leaf's scalar roughness. Solver cache version **9** invalidated
 the previous geometry and atlases. Normal and roughness images are baked since G93 (the bake
@@ -1329,8 +1340,23 @@ since its coverage term counts texels that differ and both masks are a dither at
 measurement's scale, so the switch distances stay where the plain bake put them. **What it costs**:
 the bake is drawn once and measured up to four times; `pine-0`'s container went from 0.97 s to 42 s
 in msvc-debug (the star's 16 tiles of 256 texels and its measures, as every broadleaf's star
-costs). **Not done**: the broadleaf keeps the plain mask, byte for byte (its pins hold); its stars
-over-cover the same way where a crown is sparse, which the same flag would fit.
+costs).
+
+**The broadleaf's levels keep it too** (G121, 2026-11-18): the broadleaf solver — `broadleaf` and
+every deciduous profile, oak, maple, elm, walnut, beech, ash, basswood, black_cherry, sycamore,
+aspen, alder — bakes its cards and its star with `coverage_dither` and `bake_matched` fits them,
+the conifer's rule unchanged. Its leaves are opaque, so the coin it tossed was at the leaves'
+edges and the crown's gaps rather than inside a shoot, but the star's four directions over-cover a
+sparse crown the same way, and so do the cards: on the 8 m test oak (`impostor_tests.cpp`, "a
+broadleaf's levels keep its leaves' coverage", MSVC) the plain bake drew **1.339, 1.325 and 1.356**
+of the leaves' coverage (two card levels, the star) and the kept one **1.002 (scale 178), 1.003
+(183) and 1.055 (144)**; D moved from 0.642, 0.645 and 0.331 to 0.669, 0.663 and 0.338, so the
+switch distances hardly move. The key: `k_broadleaf_chain_version` (1) is mixed into the
+container's source hash of those species where the conifers take theirs, and not into
+`flora_source_hash`, so every broadleaf entry rebuilds once with the chain and no dead tree's key
+(the deadwood's) moves; the birch and the ancient tree have solvers of their own and keep the plain
+mask, byte for byte. **What it costs**: up to three more bakes and measures a level when the plain
+bake over-covers, as the conifer's.
 ### The broadleaf
 
 An oak by default (12 m, `content/flora/oak.flora.json`). The **trunk** leans by `lean_deg` towards

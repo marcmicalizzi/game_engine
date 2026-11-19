@@ -531,7 +531,12 @@ TEST_CASE("engine-content: city makes the committed plan, fragment and yield on 
 // 0x222a6d4a9af0e6e6 (ancient) and 0xac0cb951cd8d4dc8 (pine), so these are the same bytes re-keyed.
 // R164-3 (MSVC first): the optics folded into every flora key move section 15 again; R164's folds
 // were 0x1e8c99414891bf84, 0x483b28ec33fa1f12 and 0x7a1d3d945d56c024.
-constexpr u64 k_broadleaf_container_golden = 0xcf85a7f05a6fe432ull;
+// G121 (2026-11-18, MSVC alone): the broadleaf's levels are baked with the coverage kept and
+// fitted, the conifer's rule (G120) now the broadleaf solver's, with `k_broadleaf_chain_version` in
+// section 15, so its atlases and identity move (the bake's own comparison on the test oak: 1.32
+// to 1.36 of the leaves' coverage plain, 1.00 to 1.06 kept); the ancient and the pine do not. It
+// was 0xcf85a7f05a6fe432.
+constexpr u64 k_broadleaf_container_golden = 0x932e65e3cef415f8ull;
 constexpr u64 k_ancient_container_golden = 0x5b688161bda21d84ull;
 // G120 (2026-11-01, MSVC 14.51): a pine, the conifer solver's chain — one three-plane card group a
 // live branch and the star, coverage-kept and fitted to the needles' coverage — at small tiles so

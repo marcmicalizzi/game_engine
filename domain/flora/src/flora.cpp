@@ -241,6 +241,12 @@ namespace {
 bool builds_conifer(const std::string& species) {
   return species == k_species_conifer || detail::is_evergreen_species(species);
 }
+// The species the broadleaf solver builds: the bare `broadleaf` and every deciduous profile, whose
+// chain keys their containers by `k_broadleaf_chain_version` (G121).
+bool builds_broadleaf(const std::string& species) {
+  return species == k_species_broadleaf ||
+         (detail::is_tree_species(species) && !detail::is_evergreen_species(species));
+}
 
 // A container's identity before the bake's images: the parameters' (`flora_source_hash`), and for
 // the conifers the chain's version (G120). Mixed here and not into `flora_source_hash`, which is
@@ -260,6 +266,9 @@ u64 container_hash(const FloraFile& file) {
   u64 h = flora_source_hash(file);
   if (!file.regeneration && builds_conifer(file.species))
     h = hash_combine(h, k_conifer_chain_version);
+  // The broadleaf solver's chain (G121) the same way: `broadleaf` and the deciduous profiles.
+  if (!file.regeneration && builds_broadleaf(file.species))
+    h = hash_combine(h, k_broadleaf_chain_version);
   // The seat (G201 stage 2) is the container's and not the tree's shape: keyed here, so a tree's
   // entry rebuilds to carry it and the deadwood's key, which takes the shape, does not move.
   if (seated_species(file)) h = hash_combine(h, k_flora_seat_version);
@@ -283,12 +292,15 @@ bool flora_source_hash_with(const FloraFile& file, const assets::MeshGeneratorIn
   // The bake samples a material's base-colour, normal and roughness images (G93), so the three of
   // each of the two materials key the tree. The key moves exactly when the atlases' bytes can: a
   // pack with no normal or roughness image hashes the base colours alone, as it did, and the
-  // species that bake no chain take none of this. The conifers bake one since G120.
+  // species that bake no chain take none of this. The conifers bake one since G120. Every profile
+  // of the species table bakes one from `Tree::card_bake_px`/`impostor_px` (`resolve`,
+  // species.cpp), so the table answers, not a list kept beside it: until G122 a list named six
+  // broadleaf profiles and missed the five added after it (basswood, black_cherry, sycamore, aspen,
+  // alder), whose atlases did not move their key.
   const bool baked = file.regeneration.has_value() || file.species == k_species_broadleaf ||
                      file.species == k_species_birch || file.species == k_species_ancient ||
-                     file.species == "maple" || file.species == "oak" || file.species == "elm" ||
-                     file.species == "beech" || file.species == "ash" || file.species == "walnut" ||
-                     builds_conifer(file.species) || alpine_profile(file.species) != nullptr;
+                     builds_conifer(file.species) || detail::is_tree_species(file.species) ||
+                     alpine_profile(file.species) != nullptr;
   if (!baked) return true;
   const bool enabled = file.regeneration ? file.regeneration->impostor_px != 0
                        : alpine_profile(file.species) != nullptr ? file.alpine.impostor_px != 0

@@ -335,6 +335,10 @@ class World {
   // a stale id). A renderer passes its eye or the volume's anchor; a world built round the origin
   // passes `WorldPos::origin()`.
   u32 read_soft_body_vertices(SoftBodyId body, WorldPos origin, std::span<Vec3> out) const;
+  // Writes the particles' velocities in the world's axes, metres a second, as the last step left
+  // them (`SoftBodyDesc::max_velocity` bounds them); returns how many were written, as
+  // `read_soft_body_vertices`. A velocity is a direction and a speed, so it needs no frame.
+  u32 read_soft_body_velocities(SoftBodyId body, std::span<Vec3> out) const;
   // The body's bounds relative to `origin`, as `read_soft_body_vertices`.
   bool soft_body_bounds(SoftBodyId body, WorldPos origin, Aabb3& out) const;
   bool soft_body_active(SoftBodyId body) const;
