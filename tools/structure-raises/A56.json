@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "A56",
+  "reason": "protocol.md gains what a review item's close and a promotion are tied to (roadmap A56): the subject digest, what it covers and leaves out, where a hash may be reused, the cost not yet measured, the detail form, and the cases",
+  "date": "2026-11-20",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/protocol.md": 11114
+  }
+}
