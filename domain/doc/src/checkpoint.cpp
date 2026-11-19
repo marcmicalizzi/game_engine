@@ -28,7 +28,12 @@ void base_args(const std::string& native, Vector<std::string>& args) {
   args.push_back("--work-tree=" + native);
   for (const char* c : {"core.autocrlf=false", "core.safecrlf=false", "core.fsmonitor=false",
                         "commit.gpgsign=false", "gc.auto=0", "maintenance.auto=false",
-                        "core.quotepath=off", "user.name=engine", "user.email=engine@localhost"}) {
+                        "core.quotepath=off", "user.name=engine", "user.email=engine@localhost",
+                        // A rollback checks out a tree another machine may have committed: a
+                        // link entry in it is written as a plain file holding its target, never
+                        // as a link out of the document that the store then writes through
+                        // (T174's review; doc.md, "Checkpoints").
+                        "core.symlinks=false"}) {
     args.push_back("-c");
     args.push_back(c);
   }
