@@ -464,9 +464,9 @@ Vec3 terrain_surface_mean_albedo(const TerrainDesc& desc) noexcept {
       const f32 x = static_cast<f32>(-static_cast<f64>(desc.extent) + (xi + 0.5) * step);
       const Vec3 a =
           surface_of(terrain_ridge_weight(desc, x, z), terrain_basin_weight(desc, x, z)).albedo;
-      sum[0] += a.x;
-      sum[1] += a.y;
-      sum[2] += a.z;
+      sum[0] += static_cast<f64>(a.x);
+      sum[1] += static_cast<f64>(a.y);
+      sum[2] += static_cast<f64>(a.z);
     }
   }
   const f64 n = static_cast<f64>(k_side) * k_side;
