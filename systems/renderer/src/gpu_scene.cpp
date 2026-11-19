@@ -6104,9 +6104,12 @@ bool GpuScene::lay_out_ray_tracing(std::string* error, RelayoutRetired* retired)
                 k_address | gfx::BufferUsage::TransferDst | gfx::BufferUsage::Indirect, false,
                 instance_counts, error) &&
             // The keep block (R174; renderer.md, "Past the capacity, by size on screen"): 1 MiB of
-            // histograms and the cut words, written and cleared by every frame's reset pass.
-            gfx::create_buffer(device, k_rt_keep_bytes, k_address | gfx::BufferUsage::TransferDst,
-                               false, rt_keep_tables, error) &&
+            // histograms and the cut words, written and cleared by every frame's reset pass. Its
+            // size is the scene's never, so a swapped relayout keeps it (one set is shared by the
+            // frames in flight); making it again leaked the old one until engine-view's exit.
+            (rt_keep_tables.buffer.valid() ||
+             gfx::create_buffer(device, k_rt_keep_bytes, k_address | gfx::BufferUsage::TransferDst,
+                                false, rt_keep_tables, error)) &&
             // A dynamic scene's set is built over every slot of the capacity, so the records past
             // the frame's instances are cleared to empty structures every frame.
             // A transfer source too, so a test can read the drop rule's result back (R128).
