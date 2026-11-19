@@ -15,6 +15,7 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <map>
 
 using namespace engine;
@@ -165,6 +166,36 @@ TEST_CASE("bridges: the form rule at the smallest and the largest crossing of ea
   BridgePlan none = solved(stream(12000, 1200));
   CHECK(none.form == BridgeForm::none);
   CHECK(none.members.empty());
+}
+
+// Hostile (T198, fuzzing-design.md's fifth list): a crossing is a writer's, and its heights were
+// held only as water above bed. A clapper's water 10^9 mm over its bed stacks its piers from below
+// the bed to the soffit above the water, 10^9 / 300 = 3.3 x 10^6 stones a pier (that arithmetic,
+// never solved); 2^40 mm wraps in `water_mm - bed_mm`'s cast to i32, and a profile point far from
+// the bed wraps in `ground_rel`'s. Before the mend each crossing below was in range.
+TEST_CASE("bridges hostile: a crossing's heights stay within 100 m of its bed") {
+  const Crossing honest = stream(1500, 800, 256);
+  std::string why;
+  REQUIRE_MESSAGE(crossing_in_range(honest, why), why);
+  CHECK((honest.bed_mm + 1'000'000'000 - honest.bed_mm) / 300 > 3'000'000);
+
+  Crossing c = honest;
+  c.water_mm = c.bed_mm + 1'000'000'000;
+  CHECK_FALSE(crossing_in_range(c, why));
+  CHECK(why.find("water_mm") != std::string::npos);
+  c.water_mm = c.bed_mm + (i64{1} << 40);
+  CHECK_FALSE(crossing_in_range(c, why));
+  c = honest;
+  c.profile_mm[0] = c.bed_mm - 200'000;
+  CHECK_FALSE(crossing_in_range(c, why));
+  CHECK(why.find("profile_mm") != std::string::npos);
+  c = honest;
+  c.bed_mm = std::numeric_limits<i64>::min() / 2;
+  c.water_mm = c.bed_mm + 500;
+  CHECK_FALSE(crossing_in_range(c, why));
+  BridgePlan p;
+  CHECK_FALSE(plan_bridge(c, 7, p, why));
+  CHECK(p.members.empty());
 }
 
 TEST_CASE(

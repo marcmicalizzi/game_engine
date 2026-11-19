@@ -287,6 +287,7 @@ recipe (the same size again), and a bridge's mesh exists only while its tile is 
 - The approaches the hook plans are the command's pasted ones read back from text, field for
   field, and the two tile sets are the same ground to the bit, and raised where the approaches are
   (`bridges ground plan: …`, `tests/ground_plan_tests.cpp`, compiled where the tile set is).
+- A crossing is a writer's: its bed within 10^9 m and its water and every profile point within 100 m of the bed, or it is refused before a member is made, since a support is a stone a 300 mm course and heights are `i32` millimetres over the bed (T198, `bridges hostile: a crossing's heights stay within 100 m of its bed`).
 - The same bytes everywhere (`… pinned`).
 
 **Public API.** `include/domain/bridges/bridges.h`.

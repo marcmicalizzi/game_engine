@@ -370,6 +370,26 @@ bool crossing_in_range(const Crossing& c, std::string& why) {
     why = "profile_mm must reach 4 m past the bankfull width each side";
     return false;
   }
+  // Heights in the bridge's frame are `i32` millimetres over the bed, and a support is a stone a
+  // 300 mm course: a crossing is a writer's, and a water 1,000 km over its bed was a pier of 3.3 x
+  // 10^6 stones, one 2^40 mm over it wrapped in its cast (T198). 100 m over or under the bed holds
+  // any stream a footpath bridges; the bed itself within 10^9 m, as a route's waypoints are, so no
+  // difference of two of them overflows.
+  constexpr i64 k_max_bed_mm = 1'000'000'000'000;
+  constexpr i64 k_max_relief_mm = 100'000;
+  const auto relief = [&](i64 y) {
+    return y >= c.bed_mm - k_max_relief_mm && y <= c.bed_mm + k_max_relief_mm;
+  };
+  if (c.bed_mm < -k_max_bed_mm || c.bed_mm > k_max_bed_mm || !relief(c.water_mm)) {
+    why = "bed_mm must lie within 10^9 m and water_mm within 100 m above it";
+    return false;
+  }
+  for (const i64 y : c.profile_mm) {
+    if (!relief(y)) {
+      why = "profile_mm must stay within 100 m of bed_mm";
+      return false;
+    }
+  }
   return true;
 }
 
