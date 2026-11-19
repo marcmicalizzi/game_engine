@@ -59,12 +59,20 @@ std::string emit_docs(const Model& model, const SchemaFile& file) {
           << (s.transient ? "; transient, so it is never persisted" : "") << ".\n\n";
     }
     if (!s.doc.empty()) out << s.doc << "\n\n";
+    if (!s.aliases.empty()) {
+      out << "Formerly";
+      for (size_t i = 0; i < s.aliases.size(); ++i)
+        out << (i ? ", " : " ") << "`" << s.aliases[i] << "`";
+      out << ": a reader takes the former name as this type.\n\n";
+    }
     out << "| Field | Type | Default | Since | Flags | Doc |\n|---|---|---|---|---|---|\n";
     for (const Field& f : s.fields) {
       std::string flags;
       if (f.transient) flags += "transient ";
       if (f.deprecated) flags += "deprecated ";
       if (!f.unit.empty()) flags += "unit " + f.unit + " ";
+      for (const std::string& a : f.aliases)
+        flags += "formerly `" + a + "` ";
       out << "| `" << f.name << "` | `" << idl_type(f.type) << "` | " << default_text(f) << " | "
           << f.since << " | " << flags << " | " << one_line(f.doc) << " |\n";
     }
