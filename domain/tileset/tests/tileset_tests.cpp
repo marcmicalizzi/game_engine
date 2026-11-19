@@ -1,6 +1,8 @@
 // The tile set (docs/subsystems/tileset.md): the heightfield source and its synthetic shapes, the
 // set's writer and reader with its far mip chain, the box filter against a direct computation, the
 // build through the derived-data cache, and the `tiles` ground provider through the registry.
+#include "../src/archive.h"
+
 #include <core/hash/hash.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <domain/tileset/tileset.h>
@@ -1155,4 +1157,20 @@ TEST_CASE("tileset: every depth, run and unbuffered reading answers the same hei
     CHECK(set.reads() == s.built.tiles);
     CHECK(stats.most_in_flight <= way.depth);
   }
+}
+
+// Hostile (T194): an unbuffered read stages its sectors in a buffer whose length is a `u32`, and
+// the length was cast down to it, so the smallest table past 4 GiB (178,956,971 entries of 24
+// bytes) staged 4,104 bytes and read 4 GiB into them. A bounded stand-in, not run: the arithmetic
+// of the cast, and the guard the read now asks first. A real table that large needs a 4 GiB file.
+TEST_CASE("tileset hostile: an unbuffered read past 4 GiB is refused before it is staged") {
+  const u64 entries = 178'956'971;
+  const u64 table = entries * 24;
+  CHECK(table > 0xFFFF'FFFFull);
+  CHECK(static_cast<u32>(table + io::k_unbuffered_alignment) == 4'104u);  // the before
+  CHECK_FALSE(tileset::archive::stage_fits(0, table));
+  CHECK_FALSE(tileset::archive::stage_fits(4096, tileset::archive::k_max_staged_bytes));
+  CHECK_FALSE(tileset::archive::stage_fits(~u64{0} - 10, 64));  // an offset whose end wraps
+  CHECK(tileset::archive::stage_fits(4096, tileset::archive::k_max_staged_bytes - 4096));
+  CHECK(tileset::archive::stage_fits(123, 2'076));
 }

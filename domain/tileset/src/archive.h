@@ -36,6 +36,20 @@ constexpr u64 tile_key(i32 tx, i32 tz) noexcept {
   return (u64{static_cast<u32>(tz) ^ 0x8000'0000u} << 32) | (static_cast<u32>(tx) ^ 0x8000'0000u);
 }
 
+// The most an unbuffered read stages at once (a `Vector<u8>` of `u32` length, a sector of slack):
+// a table larger than this is refused rather than staged in a buffer its length was cut to fit
+// (T194: the length was cast to `u32`, so a table of 2^32 + 8 bytes staged 4,104).
+inline constexpr u64 k_max_staged_bytes = 0xFFFF'FFFFull - 2 * io::k_unbuffered_alignment;
+// Whether an unbuffered read of `bytes` at `offset`, widened to whole sectors, can be staged.
+constexpr bool stage_fits(u64 offset, u64 bytes) noexcept {
+  if (bytes > k_max_staged_bytes || offset > ~u64{0} - bytes - io::k_unbuffered_alignment)
+    return false;
+  const u64 from = offset - offset % io::k_unbuffered_alignment;
+  const u64 end = (offset + bytes + io::k_unbuffered_alignment - 1) / io::k_unbuffered_alignment *
+                  io::k_unbuffered_alignment;
+  return end - from <= k_max_staged_bytes;
+}
+
 struct Header {
   char magic[4] = {'E', 'T', 'A', 'R'};
   u32 version = k_archive_version;
