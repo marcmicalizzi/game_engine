@@ -457,8 +457,42 @@ state written back through the document (D37), and a closed door as an area navi
 
 ### What a door costs
 
-A door standing costs nothing a tick but its place in the scan; a swinging one a move (the table
-above). A declared door costs its tile's first step its record's walk and its body.
+(2026-11-18, S91's second leg; `msvc-release`, five alternating pairs of the same two binaries —
+before, this leg's parent's scene collision, after, this leg's — with the machine at 100 % CPU,
+12 to 22 compilers of other rows running and 15 to 30 GB of commit free, so every number is an
+upper bound; medians of the five medians in microseconds.) A difference is called real only when
+it holds its sign in all five pairs.
+
+| case | before | after | |
+|---|---:|---:|---|
+| a tick, 0 of 30 doors swinging | 10.9 | 11.3 | not shown (one pair the other way) |
+| a tick, 1 of 30 swinging | 11.5 | 11.7 | not shown (two pairs equal) |
+| a tick, 30 of 30 swinging | 24.9 | 26.2 | real: +0.3 to +1.7 in every pair |
+
+The 30-door row's 1.2 µs, about 40 ns a swinging door, is what a declared door's frame costs every
+test: its turn is the piece's times the door's (`base * door_rotation`, one quaternion product in
+the pose and one in the walker's test), and the test is a depth with a square root rather than a
+yes or no. It buys a door that turns with the building it hangs in and one that can leave a walker
+it is already in. A first version that asked the depth at the angle a door stands at on every tick
+cost 3.2 µs over the same 30 (+1.8 to +7.3 in every pair); it is asked now only when the first
+angle tested is in, which a door swinging clear of the walker never is.
+
+**A tile's load with its leaves** (`scene_collision: a tile's declared leaves cost its first step
+their doors alone`, after only, since the case is new; the same machine): a wall placed once
+whose mesh declares no leaf or 30, its tiles let go and taken again twenty times with the doors
+forgotten between, so each return is a first sight.
+
+| leaves on the tile | ring update (the tile's bodies) | first `step_doors` (the doors) |
+|---:|---:|---:|
+| 0 | 22.9 | 0.1 |
+| 30 | 27.2 | 55.0 |
+
+The ring update is not shown to differ (one pair of five the other way: the 30 records are copied
+into the piece's proxy, nothing else); the first step after the tile came in is the doors' own,
+about 1.8 µs a door — its box shape, its kinematic body and its share of the one broadphase
+rebuild — paid once a tile's arrival, never on a standing tick (300 standing ticks with the 30
+doors made allocate nothing). What stays is the 104 bytes a door ([What props and doors keep
+resident](#a-props-proxy)), and before the first frame nothing.
 
 **A door a building declares** (2026-11-18). The description says everything a door is — an
 opening with a leaf, the jamb it hangs on and the side it opens to — and the way from it to the

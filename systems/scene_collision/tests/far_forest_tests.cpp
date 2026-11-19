@@ -832,6 +832,22 @@ void doorway_house(renderer::SceneData& scene) {
   scene.sources.resize(scene.parts.size());
   scene.sources[0].doors.push_back(doorway_leaf());
 }
+// The same wall declaring 30 leaves (a village's worth on one tile), or none.
+void wall_leaves(renderer::SceneData& scene, u32 leaves) {
+  MeshSource wall;
+  add_box(wall, Vec3{2.275f, 1.0f, 0.05f}, -2.725f, 20.05f);
+  add_box(wall, Vec3{2.275f, 1.0f, 0.05f}, 2.725f, 20.05f);
+  const MeshSource meshes[] = {wall};
+  build_scene(meshes, scene);
+  scene.sources.resize(scene.parts.size());
+  for (u32 i = 0; i < leaves; ++i) {
+    geometry::ClusterFileDoor r = doorway_leaf();
+    r.pivot = Vec3{-14.5f + static_cast<f32>(i), 0.0f, 24.0f};
+    scene.sources[0].doors.push_back(r);
+  }
+}
+void wall_no_leaves(renderer::SceneData& scene) { wall_leaves(scene, 0); }
+void wall_30_leaves(renderer::SceneData& scene) { wall_leaves(scene, 30); }
 
 }  // namespace
 
@@ -1488,5 +1504,49 @@ TEST_CASE("scene_collision: a swinging door costs the walker's tick a move, not 
                               << c.allocations << " over 300 ticks");
     CHECK(c.allocations == 0);
     CHECK(c.moves == 300u * k);  // a swinging door moves every tick
+  }
+}
+
+// **What a tile's leaves cost its load** (scene_collision.md, "What a door costs"): a wall placed
+// once whose mesh declares 0 or 30 leaves; twenty times its tiles are let go, the doors forgotten
+// (`set_doors` of none, so each return is a first sight), and taken in again, timing the ring's
+// update that makes the tiles' bodies and the `step_doors` that makes the doors; then 300 standing
+// ticks with every door made, which allocate nothing.
+TEST_CASE("scene_collision: a tile's declared leaves cost its first step their doors alone") {
+  for (const u32 leaves : {0u, 30u}) {
+    DoorRig rig(leaves == 0 ? &wall_no_leaves : &wall_30_leaves);
+    Vector<f64> load_us;
+    Vector<f64> doors_us;
+    for (u32 round = 0; round < 20; ++round) {
+      rig.move_ring(place(Vec3{1000.0f, 0.0f, 1000.0f}));
+      (void)rig.collision.step_doors(nullptr);
+      rig.collision.set_doors({});
+      const i64 t0 = time::monotonic_ns();
+      rig.move_ring(place(Vec3{0.0f, 0.0f, 16.0f}));
+      const i64 t1 = time::monotonic_ns();
+      (void)rig.collision.step_doors(nullptr);
+      const i64 t2 = time::monotonic_ns();
+      load_us.push_back(static_cast<f64>(t1 - t0) / 1000.0);
+      doors_us.push_back(static_cast<f64>(t2 - t1) / 1000.0);
+      REQUIRE(rig.collision.door_stats().doors == leaves);
+      REQUIRE(rig.collision.door_stats().bodies == leaves);
+    }
+    std::sort(load_us.begin(), load_us.end());
+    std::sort(doors_us.begin(), doors_us.end());
+    physics::CharacterInput still{};
+    u64 allocations = 0;
+    for (u32 t = 0; t < 300; ++t) {
+      const u64 a0 = mem::allocations_on_thread();
+      rig.world->update(rig.observers, rig.tick++, true);
+      (void)rig.collision.step_doors(&rig.walker);
+      REQUIRE(rig.walker.step(still) == physics::Status::Ok);
+      allocations += mem::allocations_on_thread() - a0;
+    }
+    MESSAGE("tile leaves " << leaves << ": ring update median " << load_us[load_us.size() / 2]
+                           << " us, first step_doors median " << doors_us[doors_us.size() / 2]
+                           << " us; doors " << rig.collision.door_stats().doors << " bytes "
+                           << rig.collision.door_stats().doors * (sizeof(DoorBody) + 16)
+                           << "; standing allocations " << allocations);
+    CHECK(allocations == 0);
   }
 }

@@ -2977,16 +2977,24 @@ u32 SceneCollision::step_doors(const physics::CharacterBody* walker) {
     // restore, a drop or a teleport into its arc) moves while each angle reaches less far into it
     // than the one before — away from it — and holds the moment one would reach further, so it
     // clears the walker the way it can and never closes on it (docs: "Doors").
+    // The depth at the angle it stands at is asked only when the first angle tested is in: a leaf
+    // clear there goes either way (from in, it is less far; from clear, it is clear), so a door
+    // swinging clear of the walker pays one test a degree, as before the rule.
     i32 reached = travel;
     bool was_in = false;
     if (c != nullptr) {
       reached = 0;
-      f32 before = leaf_depth(d, d.angle_mdeg, feet, reach, c->height);
-      was_in = before > 0.0f;
-      for (i32 s = std::min(travel, k_door_sweep_mdeg);;
-           s = std::min(travel, s + k_door_sweep_mdeg)) {
+      f32 before = 0.0f;
+      const i32 first = std::min(travel, k_door_sweep_mdeg);
+      for (i32 s = first;; s = std::min(travel, s + k_door_sweep_mdeg)) {
         const f32 depth = leaf_depth(d, d.angle_mdeg + dir * s, feet, reach, c->height);
-        if (before > 0.0f ? !(depth < before) : depth > 0.0f) break;
+        if (depth > 0.0f) {
+          if (s == first) {
+            before = leaf_depth(d, d.angle_mdeg, feet, reach, c->height);
+            was_in = before > 0.0f;
+          }
+          if (!(before > 0.0f && depth < before)) break;
+        }
         reached = s;
         before = depth;
         if (s == travel) break;
