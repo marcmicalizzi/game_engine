@@ -327,7 +327,7 @@ which this module keeps opaque (`TextureData::content_classes`). A streamed tail
   it does for any image with no built texture.
 - Test "texture file: content classes are section 6, written only when classified" (the plain
   fixture's hash unchanged with the field empty, the bytes round-tripped, a tail keeping them).
-  **Written 2026-11-18 without a compiler, and not built yet.**
+  **Built 2026-11-18** in `msvc-debug`, its tests passing with no device and every existing determinism pin unchanged.
 
 ## In the renderer
 

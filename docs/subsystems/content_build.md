@@ -39,7 +39,7 @@ Why an index beside the derived data and not a key in the container: a container
 
 ## Content classes
 
-**A source's class is read before its key is taken** (C62; [content classes](../content-classes.md#how-it-travels-through-derived-data), ADR-0073 decision 3). **Written 2026-11-18 without a compiler, and not built yet.**
+**A source's class is read before its key is taken** (C62; [content classes](../content-classes.md#how-it-travels-through-derived-data), ADR-0073 decision 3). **Built 2026-11-18** in `msvc-debug`, its tests passing with no device and every existing determinism pin unchanged.
 
 - **One reader.** `read_source_classes` reads `<stem>.provenance.json` beside the source through `content_class::read_sidecar_classes`, against `MeshOptions::categories` (the engine's three when null). No sidecar is `none`. A sidecar that cannot be read (not JSON, a key twice, the wrong shape or type, a category nobody defines) **refuses the source** with `content.class`, naming the sidecar, and nothing is written.
 - **The key**: `classified_build_key` is `mesh_build_key` moved by `content_class::classified_key` only when the class hash is not zero. Every host takes it (`engine-content build`, `build-all`'s tasks, `content.build`), so an unclassified source keeps its key and entry, and a source whose sidecar gains a class is rebuilt into a new entry, the one built before it never its answer. A generated mesh's key is the generator's, moved the same way after the generator's own identity check.

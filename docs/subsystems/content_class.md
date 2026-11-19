@@ -62,7 +62,7 @@ A review of the module and of the design found three faults in the readers built
 
 ## What derived data carries (C62)
 
-The content build's row (roadmap C62; [content classes](../content-classes.md#how-it-travels-through-derived-data)) records a class in what it builds. The record's form is this module's, so the two containers keep its bytes and know nothing about them, and the load (C64) reads them back through the same function. **Written 2026-11-18 without a compiler, and not built yet.**
+The content build's row (roadmap C62; [content classes](../content-classes.md#how-it-travels-through-derived-data)) records a class in what it builds. The record's form is this module's, so the two containers keep its bytes and know nothing about them, and the load (C64) reads them back through the same function. **Built 2026-11-18** in `msvc-debug`, its tests passing with no device and every existing determinism pin unchanged.
 
 - **Where a sidecar is** (`sidecar_path_of`): `<stem>.provenance.json` beside the source, the stem being the file name without its last extension, which is the name the generation tools write. Test "a source's sidecar is <stem>.provenance.json beside it".
 - **The key** (`classified_key(key, class_hash)`): the key itself when the class hash is zero, so every unclassified source keeps its key and every existing cache entry, golden and pin; otherwise a key over both that is never the unclassified one. The content build moves the container's key and the texture's by this one function, after every other step has moved them, so it composes with `--no-morph`, `--atlas repack` and a generator's pack. Test "a key holds a class only when there is one".
