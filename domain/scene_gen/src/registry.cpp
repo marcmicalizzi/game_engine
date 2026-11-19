@@ -7,6 +7,7 @@
 #include <cmath>
 #include <limits>
 #include <span>
+#include <utility>
 
 namespace engine::scene_gen {
 
@@ -146,6 +147,45 @@ f32 GroundProvider::height_mm(f64 time_s, i64 x_mm, i64 z_mm) const noexcept {
   }
   // Otherwise the provider's own point function at its own time, which takes float32 metres.
   return ops_->height(state_, metres_f32(x_mm), metres_f32(z_mm));
+}
+
+namespace {
+
+// A coordinate's 16.384 m cell (2^14 mm), offset into 32 unsigned bits; a point beyond them is put
+// at the curve's edge, which changes only the order it is asked in.
+u32 place_cell(i64 mm) noexcept {
+  const i64 cell = (mm >> 14) + (i64{1} << 31);
+  return cell < 0 ? 0u : cell > i64{0xFFFFFFFF} ? 0xFFFFFFFFu : static_cast<u32>(cell);
+}
+
+// The bits of `v` spread to the even bits of the result.
+u64 spread_bits(u32 v) noexcept {
+  u64 x = v;
+  x = (x | (x << 16)) & 0x0000FFFF0000FFFFull;
+  x = (x | (x << 8)) & 0x00FF00FF00FF00FFull;
+  x = (x | (x << 4)) & 0x0F0F0F0F0F0F0F0Full;
+  x = (x | (x << 2)) & 0x3333333333333333ull;
+  x = (x | (x << 1)) & 0x5555555555555555ull;
+  return x;
+}
+
+}  // namespace
+
+void heights_by_place(const GroundProvider& ground, f64 time_s, std::span<const i64> x_mm,
+                      std::span<const i64> z_mm, std::span<f32> out) {
+  ENGINE_ASSERT(x_mm.size() == z_mm.size() && out.size() == x_mm.size(),
+                "heights_by_place: the spans are parallel");
+  const usize n = std::min(out.size(), std::min(x_mm.size(), z_mm.size()));
+  // (Morton key, index), sorted: the index breaks a tie, so the order is a function of the points.
+  Vector<std::pair<u64, u32>> order;
+  order.reserve(static_cast<u32>(n));
+  for (usize k = 0; k < n; ++k) {
+    const u64 key = spread_bits(place_cell(x_mm[k])) | (spread_bits(place_cell(z_mm[k])) << 1);
+    order.push_back({key, static_cast<u32>(k)});
+  }
+  std::sort(order.begin(), order.end());
+  for (const auto& [key, k] : order)
+    out[k] = ground.height_mm(time_s, x_mm[k], z_mm[k]);
 }
 
 f32 GroundProvider::surface_mm(i64 x_mm, i64 z_mm) const noexcept {

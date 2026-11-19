@@ -10,6 +10,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 
 using namespace engine;
@@ -406,4 +407,55 @@ TEST_CASE("scene_gen: a ground seen as tiles is its heights on the world's latti
   // The source is the provider's: two views of one provider are one source.
   CHECK(slide.tiles() == moving);
   CHECK_FALSE(GroundProvider{}.tiles().valid());
+}
+
+namespace {
+
+// A ground that remembers the order it was asked in: its height is a function of the point alone,
+// and each answer is written down with the place it was asked from.
+struct Asked {
+  mutable Vector<i64> x;
+};
+f32 asked_height_mm(const void* state, f64 time_s, i64 x_mm, i64 z_mm) noexcept {
+  static_cast<const Asked*>(state)->x.push_back(x_mm);
+  return static_cast<f32>(std::sin(static_cast<f64>(x_mm) * 1.3e-4) * 40.0 +
+                          static_cast<f64>(z_mm) * 2.0e-6 + time_s);
+}
+f32 asked_height(const void*, f32, f32) noexcept { return 0.0f; }
+constexpr GroundOps k_asked_ops{.height = &asked_height, .height_mm = &asked_height_mm};
+
+}  // namespace
+
+TEST_CASE("scene_gen: many heights asked by place are each point's own, asked near each other") {
+  // W150 (scene_gen.md, "Many heights at once"): the answers are the provider's per point, to the
+  // bit, whatever the order the points came in; and the points are asked grouped by place, so a
+  // provider with a cache of tiles reads each about once.
+  Asked asked;
+  const GroundProvider ground(&k_asked_ops, &asked);
+  Vector<i64> xs;
+  Vector<i64> zs;
+  u64 state = 0x2545F4914F6CDD1Dull;
+  for (u32 k = 0; k < 4000; ++k) {  // alternating between two places 3 km apart, as a file may
+    state ^= state << 13;
+    state ^= state >> 7;
+    state ^= state << 17;
+    const i64 base = (k % 2 == 0) ? -1'500'000 : 1'500'000;
+    xs.push_back(base + static_cast<i64>(state % 200'000));
+    zs.push_back(static_cast<i64>((state >> 24) % 200'000));
+  }
+  Vector<f32> by_place(xs.size());
+  heights_by_place(ground, 2.5, std::span<const i64>(xs.data(), xs.size()),
+                   std::span<const i64>(zs.data(), zs.size()),
+                   std::span<f32>(by_place.data(), by_place.size()));
+  REQUIRE(asked.x.size() == xs.size());
+  u32 crossings = 0;  // how often the questions jumped between the two places
+  for (u32 k = 1; k < asked.x.size(); ++k)
+    crossings += (asked.x[k] < 0) != (asked.x[k - 1] < 0) ? 1u : 0u;
+  CHECK(crossings == 1);
+  for (u32 k = 0; k < xs.size(); ++k)
+    CHECK(by_place[k] == ground.height_mm(2.5, xs[k], zs[k]));
+  // No points: nothing asked.
+  asked.x.clear();
+  heights_by_place(ground, 0.0, {}, {}, {});
+  CHECK(asked.x.empty());
 }

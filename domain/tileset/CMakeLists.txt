@@ -26,3 +26,5 @@ engine_module(NAME tileset LAYER domain OPTIONAL WHOLE_ARCHIVE GENERATOR ground:
 engine_module_tests(NAME tileset WALL_CLOCK
   SOURCES tests/tileset_tests.cpp tests/determinism_tests.cpp tests/mask_tests.cpp tests/cut_tests.cpp
           tests/size_table.cpp)
+# Many heights through the provider's bounded cache, in a file's order and by place (W150).
+engine_module_bench(NAME tileset SOURCES bench/heights_bench.cpp)

@@ -780,6 +780,17 @@ class GroundProvider {
   void* state_ = nullptr;
 };
 
+// **Many points' heights, asked by place** (W150; scene_gen.md, "Many heights at once"):
+// `out[k] = ground.height_mm(time_s, x_mm[k], z_mm[k])` for every k, each the provider's own answer
+// to the bit, asked in the order of a Morton curve over 16.384 m cells rather than the caller's.
+// A provider that reads its ground through a bounded cache (the `tiles` provider's 64 MiB of tiles)
+// reads each tile under the points about once, where points in a file's order — grouped by kind,
+// spread over the region — evict and read the same tiles again: the forest staging's 470,641
+// instances read 126,302 tiles in their file's order and 53,086 by place. One thread; the spans
+// are parallel and of one size.
+void heights_by_place(const GroundProvider& ground, f64 time_s, std::span<const i64> x_mm,
+                      std::span<const i64> z_mm, std::span<f32> out);
+
 // A ground provider (ADR-0046 decision 1): made from a scene's terrain entry. `make` checks the
 // entry and says why it cannot be drawn with a sentence (no path: the caller adds where it is).
 struct GroundProviderDesc {

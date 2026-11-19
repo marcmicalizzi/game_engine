@@ -3005,6 +3005,34 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   // "authored" generator (`load_scene`; renderer.md, "Authored instances per tile").
   out.authored_first = out.instances.size();
   out.authored.enabled = options.world_instances;
+  // **Every instance's ground, asked by place** (W150; renderer.md, "What the load reads"): the
+  // same `ground_at_world` per instance, grounded or not, through `heights_by_place`, which asks in
+  // the order of the places rather than the file's. The forest staging's 470,641 instances, in
+  // their file's order, read 126,302 tiles of 18 KB through the `tiles` provider's cache of 3,737
+  // (17.8 s of its warm load); by place they read the 53,086 the instances stand on. Each height is
+  // the provider's answer to the bit; only the order of the questions changed.
+  Vector<f32> instance_ground;
+  if (out.terrain.enabled && !file.instances.empty()) {
+    profiling::TraceStage heights_stage("instance heights");
+    profiling::trace_items(file.instances.size());
+    const u32 n = file.instances.size();
+    Vector<i64> xs(n);
+    Vector<i64> zs(n);
+    for (u32 i = 0; i < n; ++i) {
+      xs[i] = scene_gen::nearest_mm(file.instances[i].translation.x);
+      zs[i] = scene_gen::nearest_mm(file.instances[i].translation.z);
+    }
+    instance_ground.resize(n);
+    const std::span<const i64> x_mm(xs.data(), n);
+    const std::span<const i64> z_mm(zs.data(), n);
+    const std::span<f32> heights(instance_ground.data(), n);
+    scene_gen::heights_by_place(ground.provider(), out.terrain.time_s, x_mm, z_mm, heights);
+  }
+  const auto instance_ground_at = [&](u32 i) {
+    return out.terrain.enabled ? static_cast<f64>(instance_ground[i]) : 0.0;
+  };
+  // Grown once from the file's count: the array's growth was the read's peak (D40).
+  out.instances.reserve(out.instances.size() + file.instances.size());
   Vector<Lifted> lifted;  // `ground: false` instances over a metre above the ground
   for (u32 i = 0; i < file.instances.size(); ++i) {
     const scene::Instance& entry = file.instances[i];
@@ -3023,12 +3051,12 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     // on the way to the instance's cell. A version 2 file's numbers read as they are written.
     instance.origin = entry.translation;
     if (entry.ground) {
-      instance.origin.y += ground_at_world(entry.translation);
+      instance.origin.y += instance_ground_at(i);
       instance.grounded = true;  // seated by the load when its mesh has a seat (G201 stage 2)
     } else if (out.terrain.enabled) {
       // T74: an instance placed at an absolute `y` over a ground that has moved since (the forest
       // proof of concept floated trees 26 m when its landform changed). Counted, not refused.
-      const f64 off = entry.translation.y - ground_at_world(entry.translation);
+      const f64 off = entry.translation.y - instance_ground_at(i);
       if (off > k_off_ground_m) {
         // Floating only if no building stands under it: decided once the placements say what
         // they occupy (`expand_placements`; need 153 (f)).
