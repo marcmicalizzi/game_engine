@@ -2986,6 +2986,13 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     error = path + ": " + error;
     return false;
   }
+  // R185: the palette's share of the ground, which the ambient's lower half is weighed by
+  // (`load_scene`; terrain_materials.h, `terrain_mask_cover`). A field the sampler never reads.
+  if (out.terrain.enabled &&
+      !terrain_mask_cover(out.terrain, ground.provider(), out.terrain.mask_cover, &error)) {
+    error = path + ": " + error;
+    return false;
+  }
   // The surface under a world position (ADR-0053): asked at its whole millimetre, which never
   // passes through a float32 metre, at the terrain's own time — the heights the sampler's float
   // `height` gives at a point a float holds to the millimetre (`GroundOps::height_mm`), and the
@@ -3387,10 +3394,16 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
       }
     }
   }
-  // The ground the hemisphere ambient's lower half carries: a terrain's sand, which is most of
-  // any terrain, or the neutral grey (renderer.md, "The sky above, the ground below").
+  // The ground the hemisphere ambient's lower half carries: the mean of what the terrain draws
+  // (R185; `terrain_ground_albedo`), or the neutral grey without one (renderer.md, "The ground's
+  // albedo is a scene value"). Once, here, from what the scene already holds.
   const f32 grey = gfx::k_neutral_ground_albedo;
-  out.ground_albedo = out.terrain.enabled ? terrain_sand_albedo() : Vec3{grey, grey, grey};
+  out.ground_albedo = Vec3{grey, grey, grey};
+  if (out.terrain.enabled) {
+    out.ground_albedo = terrain_ground_albedo(
+        out.terrain, out.terrain_mesh < out.sources.size() ? &out.sources[out.terrain_mesh].data
+                                                            : nullptr);
+  }
   out.mesh_info = resolved.mesh_info;
   out.name = resolved.name;
   out.file_hash = resolved.file_hash;
@@ -3599,7 +3612,9 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   ENGINE_LOG_INFO(
       log_renderer, "scene loaded", log::field("ms", static_cast<f64>(out.build_ns) / 1.0e6),
       log::field("meshes", out.parts.size()), log::field("instances", out.instances.size()),
-      log::field("pairs", out.pair_count), log::field("clusters", out.cluster_count()));
+      log::field("pairs", out.pair_count), log::field("clusters", out.cluster_count()),
+      log::field("ground_r", out.ground_albedo.x), log::field("ground_g", out.ground_albedo.y),
+      log::field("ground_b", out.ground_albedo.z));
   return true;
 }
 

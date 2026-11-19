@@ -439,6 +439,63 @@ TEST_CASE("renderer: mask upload reads present tiles once and checks budget befo
   CHECK(counted.state.reads == 1);
   CHECK(error.find("(-2, -2)") != std::string::npos);
 }
+
+TEST_CASE("renderer: the ambient's ground is the palette's layers by their share of the masks") {
+  // R185 (renderer.md, "The ground's albedo is a scene value"). The probe's level is layer 0 west
+  // of x = 0 and layer 1 east of it over four columns of tiles, the seam's points split 128 to
+  // 127: half each, and no root.
+  struct Counting {
+    ProbeReads state;
+    Counting() { probe_reads = &state; }
+    ~Counting() { probe_reads = nullptr; }
+  } counted;
+  TerrainDesc desc;
+  desc.enabled = true;
+  desc.provider = "mask_probe";
+  desc.size = 17;
+  desc.extent = 32;
+  desc.masks.emplace();
+  const TerrainSampler ground(desc);
+  REQUIRE(ground.ok());
+  Vector<f32> cover;
+  std::string error;
+  REQUIRE_MESSAGE(terrain_mask_cover(desc, ground.provider(), cover, &error), error);
+  REQUIRE(cover.size() == 3);
+  CHECK(cover[0] == doctest::Approx(0.5).epsilon(1e-3));
+  CHECK(cover[1] == doctest::Approx(0.5).epsilon(1e-3));
+  CHECK(cover[2] == doctest::Approx(0.0).epsilon(1e-6));
+  CHECK(counted.state.reads == 16);  // under `k_mask_cover_tiles`: every present tile, once
+  // A tile with no mask is the root's: one of sixteen.
+  counted.state.sparse = true;
+  REQUIRE_MESSAGE(terrain_mask_cover(desc, ground.provider(), cover, &error), error);
+  CHECK(cover[2] == doctest::Approx(1.0 / 16.0).epsilon(1e-4));
+  CHECK(cover[0] + cover[1] + cover[2] == doctest::Approx(1.0).epsilon(1e-5));
+  // The layers' means are what the content build carried in their entries' emissive; the root, a
+  // ground with no feature, is the sand.
+  desc.materials.emplace();
+  desc.materials->layers.resize(2);
+  assets::MeshData mesh;
+  mesh.materials.resize(4);
+  mesh.materials[1].emissive = Vec3{0.6f, 0.1f, 0.1f};
+  mesh.materials[2].emissive = Vec3{0.1f, 0.1f, 0.5f};
+  desc.mask_cover = {0.25f, 0.5f, 0.25f};
+  const Vec3 sand = terrain_sand_albedo();
+  const Vec3 masked = terrain_ground_albedo(desc, &mesh);
+  CHECK(masked.x == doctest::Approx(0.25f * 0.6f + 0.5f * 0.1f + 0.25f * sand.x));
+  CHECK(masked.z == doctest::Approx(0.25f * 0.1f + 0.5f * 0.5f + 0.25f * sand.z));
+  // Not measured (a description built in code): the layers unweighted.
+  desc.mask_cover.clear();
+  CHECK(terrain_ground_albedo(desc, &mesh).y == doctest::Approx(0.1f));
+  // Without masks, W68's layers over the root in order by weight: half of the second over all of
+  // the first.
+  desc.masks.reset();
+  desc.materials->layers[1].weight = 0.5f;
+  const Vec3 composed = terrain_ground_albedo(desc, &mesh);
+  CHECK(composed.x == doctest::Approx(0.35f));
+  CHECK(composed.z == doctest::Approx(0.3f));
+  // And no terrain mesh to read: the root alone.
+  CHECK(terrain_ground_albedo(desc, nullptr).x == sand.x);
+}
 TEST_CASE("renderer: ground masks shade their layers, wet them, and agree with the path tracer") {
   gfx::Device device;
   std::string error;

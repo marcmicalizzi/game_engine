@@ -107,6 +107,10 @@ struct TerrainDesc {
   // weights, built by the `tiles` provider beside its set, its images' paths resolved and its water
   // bodies' outlines copied in by the scene reader. Empty: the layers draw as W68 drew them.
   std::optional<scene::TerrainMasks> masks;
+  // With `masks`: each palette layer's share of the level's ground, and last the root's where the
+  // masks' cover falls short (R185; `terrain_mask_cover`, terrain_materials.h), measured by the
+  // scene reader beside its masks check. Lighting only: in no hash. Empty: not measured.
+  Vector<f32> mask_cover;
   // With `dunes`: the wind's day and the storms' transport gains (terrain.md, "The day's wind",
   // "A storm scales transport"; `engine.scene.Terrain` version 5). The defaults are the record as
   // it was and leave the hash as it was.
@@ -289,11 +293,14 @@ struct TerrainSurface {
 };
 TerrainSurface terrain_surface(const TerrainSampler& field, f32 x, f32 z) noexcept;
 
-// The sand's base colour, linear: `terrain_surface`'s albedo away from every ridge and basin, and
-// the ground a scene with a terrain lights its hemisphere ambient's lower half with
-// (`SceneData::ground_albedo`) — most of a desert is this sand, so a slip face in shade is lit by
-// the colour it stands in.
+// The sand's base colour, linear: `terrain_surface`'s albedo away from every ridge and basin.
 Vec3 terrain_sand_albedo() noexcept;
+// **The desert's surfaces by their share** (R185): `terrain_surface`'s albedo averaged over the
+// square its maps are baked over, on a 64 by 64 grid — the sand exactly for a ground with no ridge
+// and no basin. What the hemisphere ambient's lower half takes for a terrain drawn by its own maps
+// (`terrain_ground_albedo`, terrain_materials.h; renderer.md, "The ground's albedo is a scene
+// value").
+Vec3 terrain_surface_mean_albedo(const TerrainDesc& desc) noexcept;
 
 // The side of the terrain's material maps in texels: one texel per grid cell (`size - 1`),
 // at least one. A cell is 2.5 m on the desert's 2049 grid over 5,120 m, and the colour changes

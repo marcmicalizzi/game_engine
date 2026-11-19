@@ -2193,10 +2193,27 @@ dim blue sky under it, which is what the third owner session's dunes asked about
 A real bounce is Phase 4's; this is the smallest term that lets the ground's colour reach a surface
 facing it.
 
-**The ground's albedo is a scene value.** `SceneData::ground_albedo`: `load_scene` makes it the
-terrain's sand when the scene has a terrain (`terrain_sand_albedo`, `terrain_surface`'s own colour
-away from every ridge and basin, (0.84, 0.69, 0.47) linear — most of a desert is that sand) and
-leaves the neutral grey `gfx::k_neutral_ground_albedo`, 0.2, otherwise; `frame_lighting` hands it to
+**The ground's albedo is a scene value.** `SceneData::ground_albedo`: `load_scene` makes it **the
+mean base colour of what the scene's terrain draws** (R185, `terrain_ground_albedo` in
+`terrain_materials.h`) and leaves the neutral grey `gfx::k_neutral_ground_albedo`, 0.2, without a
+terrain. The root — the desert's four surfaces, the baked maps every terrain carries — is
+`terrain_surface` averaged over the maps' square on a 64 by 64 grid (`terrain_surface_mean_albedo`),
+which is the sand (0.84, 0.69, 0.47) to the bit for a ground with no ridge or basin, so a sand scene
+draws what it drew. A palette with masks ("Ground materials by place") is its layers' means — the
+colour each fades to far away, carried in the layer entry's emissive by the content build — by
+each layer's share of the mask level (`terrain_mask_cover`: a point's weights over their sum times
+its cover, the root where the cover falls short or no tile is, over mip 0 of at most 256 present
+tiles strided in page order), measured by the scene reader beside its masks check and kept in
+`TerrainDesc::mask_cover`; a description built in code that was never measured takes the layers
+unweighted. W68's layers without masks composite over the root in array order by weight times
+their coverage map's mean, as the resolve does. A snow layer's grain, a formation's tints and
+wetness are left out. Until R185 any terrain was the desert's sand, which R182 found to be four
+fifths of the light on a shaded wall, trunk or needle with the bounce off on ground that is not
+sand ([its page](../experiments/sun-and-sky-on-level-ground.md#the-mend-designed)). **It is computed
+once at load from what the scene already holds and adds nothing resident**: a mask tile's words
+and a decoded coverage map are held only while they are summed, and what stays is a float per
+palette layer. The rule reads the scene's own materials and never a generator's name; the sky's
+`local_albedo` and the region's hue follow it with no shader change. `frame_lighting` hands it to
 both integrators as `FrameLighting::ground`, which becomes `gfx::ResolveParams::ground` and
 `gfx::PathTraceParams::ground` (each block 16 bytes larger, 320 and 272). No scene-file field or
 flag sets it yet. **Why 0.2:** under the stand-in sun and sky a face turned straight down then
