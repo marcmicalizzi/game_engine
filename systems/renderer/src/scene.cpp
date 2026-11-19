@@ -1947,6 +1947,9 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
                      : flora_motion_tunable() && flora_tail_tunable() ? flora_sway_m_tunable()
                                                                       : 0.0f;
   Vector<f32> sway_padding(meshes, -1.0f);  // -1: the mesh does not sway
+  // The stages below name what "authored forms" spends before the far forest (W150: 29.5 s of the
+  // forest staging's warm load in one unnamed run on the main thread).
+  profiling::TraceStage sway_stage("authored sway");
   if (sway_m > 0.0f) {
     for (u32 m = 0; m < meshes; ++m) {
       const SourceMesh& source = sources[m];
@@ -1968,6 +1971,8 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
                                                              source.motion_vertices.size()));
     }
   }
+  sway_stage.end();
+  profiling::TraceStage rings_stage("authored rings");
   scene::AuthoredSet set;
   set.tile_size = tile;
   Vector<u32> set_of(meshes, ~0u);
@@ -2053,6 +2058,8 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
     set_of[m] = set.forms.size();
     set.forms.push_back(std::move(forms));
   }
+  rings_stage.end();
+  profiling::TraceStage set_stage("authored set");
 
   // The set, in the file's order with each instance's place in it as its id, and the prefix
   // without it. The floor: the most pairs one tile's instances hold drawn whole.
@@ -2106,6 +2113,7 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
     i = j;
   }
   out.tail_floor_pairs = static_cast<u32>(std::min<u64>(floor_pairs, 0xFFFFFFFFu));
+  set_stage.end();
   // **The far forest** (renderer.md, "The far forest"; ADR-0059): the streamed instances' coarsest
   // forms merged per world tile, each tile a mesh after every other and an instance after the
   // prefix, which the renderer draws wherever the ring's tail does not draw that tile.
@@ -2138,7 +2146,9 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
   resolved.instances = std::move(kept_instances);
   StreamedPlacements entry;
   entry.generator = "authored";
+  profiling::TraceStage params_stage("authored params");
   entry.params = schema::to_json(set);
+  params_stage.end();
   entry.where = (resolved.name.empty() ? std::string("scene") : resolved.name) + ": instances";
   entry.meshes = std::move(resident);
   entry.motion_key_base = first;  // id n is instance first + n - 1 of the whole read
@@ -3604,7 +3614,10 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   out.mesh_options =
       PlacementMeshOptions{resolved.lod, resolved.ddc, resolved.cache, resolved.materials};
   out.world = resolved.world;
-  out.streamed = resolved.streamed;
+  // Moved, not copied (W150): the authored entry's parameters are a tree of every instance it
+  // streams (about 465,000 in the forest staging), and the copy and then the original's free at
+  // the end of the load were 2 s of its "instances" stage and its tail.
+  out.streamed = std::move(resolved.streamed);
   out.tile_meshes = false;
   out.tile_meshes_masked = false;
   for (const StreamedPlacements& entry : out.streamed) {
@@ -3613,7 +3626,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   }
   // A streamed world's instances come and go — unless all it streams is its ground (the world's
   // tiles, which are terrain levels in fixed slots, not instances of the tail).
-  out.dynamic = resolved.world.enabled && !(resolved.world.ground && resolved.streamed.empty());
+  out.dynamic = resolved.world.enabled && !(resolved.world.ground && out.streamed.empty());
   out.sky = resolved.sky;
   out.wind = resolved.wind;
   out.medium = resolved.medium;

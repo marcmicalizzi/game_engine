@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W150",
+  "reason": "W150 records the load's CPU stages: renderer.md's 'What the load reads' and scene_gen.md's 'Many heights at once' name what the load now does and why",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 495,
+    "page:docs/subsystems/scene_gen.md": 1334
+  }
+}
