@@ -1354,9 +1354,27 @@ of the leaves' coverage (two card levels, the star) and the kept one **1.002 (sc
 switch distances hardly move. The key: `k_broadleaf_chain_version` (1) is mixed into the
 container's source hash of those species where the conifers take theirs, and not into
 `flora_source_hash`, so every broadleaf entry rebuilds once with the chain and no dead tree's key
-(the deadwood's) moves; the birch and the ancient tree have solvers of their own and keep the plain
-mask, byte for byte. **What it costs**: up to three more bakes and measures a level when the plain
-bake over-covers, as the conifer's.
+(the deadwood's) moves; the birch and the ancient tree have solvers of their own and kept the plain
+mask until sweep-P1 (below). **What it costs**: up to three more bakes and measures a level when the
+plain bake over-covers, as the conifer's.
+
+**So do the birch's and the ancient tree's** (sweep-P1, 2026-11-18). Measured the same way first
+(`impostor_tests.cpp`, "a birch's and an ancient tree's levels keep their leaves' coverage", MSVC):
+the 14 m default birch's three card levels and star drew **1.349, 1.517, 1.408 and 1.444** of its
+leaves' coverage plain — its fine pendulous branchlets the sparsest crown of the trees — and the
+100 m ancient tree's (at the content build's 100,000-triangle budget) **1.307, 1.225, 1.216 and
+1.341**: both over-cover as the oak did, so both solvers now set `coverage_dither`. Kept and
+fitted, the birch draws **0.999 (scale 185), 1.000 (160), 0.999 (184) and 1.055 (131)** and the
+ancient tree **1.002 (186), 1.005 (200), 1.003 (198) and 1.101 (130)**. The ancient tree's star is
+the one level the fit's three steps (`bake_matched`, `k_match_steps`) leave a thousandth past the
+conifer's tenth: it keeps 0.10 of the plain bake's 0.34 over, and the case holds it to a third.
+More steps would move every species' fit, and so every flora key, and is left for a row of its
+own. Each solver keys its own entries: `k_birch_chain_version` and `k_ancient_chain_version` (1)
+are mixed into the container hash of `birch` and of `ancient` after the broadleaf's place, not
+into `flora_source_hash`, so a world recooks its birches' and ancient trees' containers once and
+nothing else, the deadwood's keys included (the forest staging: 67 birch and 4 ancient of the
+3,159 flora containers it names). Nothing resident changes: the atlases are the same
+size, only which texels pass the mask.
 ### The broadleaf
 
 An oak by default (12 m, `content/flora/oak.flora.json`). The **trunk** leans by `lean_deg` towards

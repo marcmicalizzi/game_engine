@@ -269,6 +269,11 @@ u64 container_hash(const FloraFile& file) {
   // The broadleaf solver's chain (G121) the same way: `broadleaf` and the deciduous profiles.
   if (!file.regeneration && builds_broadleaf(file.species))
     h = hash_combine(h, k_broadleaf_chain_version);
+  // The birch's and the ancient tree's own solvers' chains (sweep-P1) the same way.
+  if (!file.regeneration && file.species == k_species_birch)
+    h = hash_combine(h, k_birch_chain_version);
+  if (!file.regeneration && file.species == k_species_ancient)
+    h = hash_combine(h, k_ancient_chain_version);
   // The seat (G201 stage 2) is the container's and not the tree's shape: keyed here, so a tree's
   // entry rebuilds to carry it and the deadwood's key, which takes the shape, does not move.
   if (seated_species(file)) h = hash_combine(h, k_flora_seat_version);

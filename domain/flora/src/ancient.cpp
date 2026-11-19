@@ -1619,7 +1619,9 @@ bool solve_ancient_chain(const Ancient& p, assets::MeshData& out, TreeReport* re
         crown.footprint > 0.0 ? report->leaf_area_m2 / report->footprint_m2 : 0.0f;
   }
   // The impostor chain above the finest leaves (impostor.h): appended past everything, so the
-  // mesh above is the bytes it is without it.
+  // mesh above is the bytes it is without it. The bake keeps the leaves' coverage under the mask
+  // as the broadleaf's does (sweep-P1; `ImpostorSpec::coverage_dither`): plain, the 100 m tree's
+  // levels drew 1.22 to 1.34 of its leaves' coverage.
   if (levels != nullptr) {
     *levels = TreeLevels{};
     levels->leaf_first_index = leaf_first;
@@ -1627,6 +1629,7 @@ bool solve_ancient_chain(const Ancient& p, assets::MeshData& out, TreeReport* re
     ImpostorSpec chain_spec;
     chain_spec.card_px = p.card_bake_px;
     chain_spec.tree_px = p.impostor_px;
+    chain_spec.coverage_dither = true;
     crown_levels(crown, plan.crown, spray_ranges, chain_spec, emit, *levels);
     tree_star(chain_spec, crown.nodes[named.trunk].part, emit, *levels);
   }

@@ -537,7 +537,12 @@ TEST_CASE("engine-content: city makes the committed plan, fragment and yield on 
 // to 1.36 of the leaves' coverage plain, 1.00 to 1.06 kept); the ancient and the pine do not. It
 // was 0xcf85a7f05a6fe432.
 constexpr u64 k_broadleaf_container_golden = 0x932e65e3cef415f8ull;
-constexpr u64 k_ancient_container_golden = 0x5b688161bda21d84ull;
+// sweep-P1 (2026-11-18, MSVC alone): the ancient tree's levels are baked with the coverage kept
+// and fitted, the broadleaf's rule (G121) now its solver's, with `k_ancient_chain_version` in
+// section 15, so its atlases and identity move (the 100 m tree's own comparison: 1.22 to 1.34 of
+// its leaves' coverage plain, 1.00 to 1.10 kept); the broadleaf and the pine do not. It was
+// 0x5b688161bda21d84.
+constexpr u64 k_ancient_container_golden = 0x84d34a728af9a21aull;
 // G120 (2026-11-01, MSVC 14.51): a pine, the conifer solver's chain — one three-plane card group a
 // live branch and the star, coverage-kept and fitted to the needles' coverage — at small tiles so
 // a debug run builds it in seconds. Its section 15 carries `k_conifer_chain_version`.
