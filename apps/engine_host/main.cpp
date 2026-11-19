@@ -587,13 +587,13 @@ int main(int argc, char** argv) {
     protocol::RpcError open_error;
     std::string shown;
     (void)roots.portable(open.path, shown);
-    protocol::Session* opened = sessions.open(open, 0, open_error, {}, shown);
+    const protocol::DocumentGuard guard = protocol::document_guard(roots);
+    protocol::Session* opened = sessions.open(open, 0, open_error, {}, shown, &guard);
     if (opened == nullptr) {
       std::fprintf(stderr, "engine-host: --doc %s: %s\n", doc_dir.c_str(),
                    open_error.message.c_str());
       return 2;
     }
-    (void)roots.protect(opened->dir());
     doc_session = opened->id();
   }
 

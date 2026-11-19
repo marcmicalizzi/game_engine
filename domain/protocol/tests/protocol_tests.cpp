@@ -1068,3 +1068,86 @@ TEST_CASE("roots: a document under a read-only root opens and does not save") {
   h.ok("session.close", obj({{"session", at(again, "session")}}));
   h.dispatcher.context().roots = &h.roots;
 }
+
+namespace {
+// Opens `path` as connection `connection`, as a socket client's session.open is dispatched.
+JsonValue open_as(Host& h, u64 connection, const std::string& path, bool create = false) {
+  h.dispatcher.context().connection = connection;
+  JsonValue params = obj({{"path", JsonValue(path)}});
+  if (create) params.set("create", JsonValue(true));
+  JsonValue opened = h.ok("session.open", std::move(params));
+  h.dispatcher.context().connection = 0;
+  return opened;
+}
+void close_as(Host& h, u64 connection, const JsonValue& opened) {
+  h.dispatcher.context().connection = connection;
+  h.ok("session.close", obj({{"session", at(opened, "session")}}));
+  h.dispatcher.context().connection = 0;
+}
+// The session `opened` names may be written: it says so, and a doc.apply commits.
+void check_writable(Host& h, const JsonValue& opened, u64 tag) {
+  const Session* session = h.sessions.find(std::string(at(opened, "session").as_string()));
+  REQUIRE(session != nullptr);
+  CHECK(session->writable());
+  JsonValue commands = JsonValue::array();
+  commands.push_back(
+      create_command(Id128::from_parts(0x72, tag), "engine.content.AssetProvenance"));
+  h.ok("doc.apply", obj({{"session", at(opened, "session")},
+                         {"commands", commands},
+                         {"attribution", attribution()}}));
+}
+}  // namespace
+
+// The protection session.open put on a document's directory was taken off only by a session.close
+// that closed the session, so a client whose socket dropped (a crashed bridge, a reloaded page)
+// left its document protected until the host restarted: the next open's write probe was refused
+// and every reconnect got a document it could not write.
+TEST_CASE("roots: a document a dropped connection held opens writable again") {
+  TempDir tmp("protocol_roots_dropped");
+  Host h;
+  const std::string world = tmp.file("world");
+  (void)open_as(h, 1, world, true);
+  h.sessions.release_connection(1, 0);  // as the listener does when a socket closes
+  REQUIRE(h.sessions.count() == 0);
+  CHECK(h.roots.protected_documents().empty());
+  const JsonValue again = open_as(h, 2, world);
+  check_writable(h, again, 1);
+  close_as(h, 2, again);
+  CHECK(h.roots.protected_documents().empty());
+}
+
+// Each open added a protection and the last close took one off, so two clients that shared one
+// document and both closed it properly left it protected.
+TEST_CASE("roots: a document two clients opened and closed opens writable again") {
+  TempDir tmp("protocol_roots_shared");
+  Host h;
+  const std::string world = tmp.file("world");
+  const JsonValue first = open_as(h, 1, world, true);
+  const JsonValue second = open_as(h, 2, world);
+  CHECK(at(first, "session") == at(second, "session"));
+  close_as(h, 1, first);
+  close_as(h, 2, second);
+  REQUIRE(h.sessions.count() == 0);
+  CHECK(h.roots.protected_documents().empty());
+  const JsonValue third = open_as(h, 3, world);
+  check_writable(h, third, 2);
+  close_as(h, 3, third);
+}
+
+// A loop of session.open on one path grew the protected list by one each time, and every write's
+// admission walks that list.
+TEST_CASE("roots: a document opened many times is protected once") {
+  TempDir tmp("protocol_roots_many");
+  Host h;
+  const std::string world = tmp.file("world");
+  Vector<JsonValue> opened;
+  opened.push_back(open_as(h, 1, world, true));
+  // The same connection again, and seven others: one session, one document.
+  for (u32 c = 1; c <= 8; ++c)
+    opened.push_back(open_as(h, c, world));
+  CHECK(h.roots.protected_documents().size() == 1);
+  for (u32 c = 1; c <= 8; ++c)
+    close_as(h, c, opened[c]);
+  REQUIRE(h.sessions.count() == 0);
+  CHECK(h.roots.protected_documents().empty());
+}

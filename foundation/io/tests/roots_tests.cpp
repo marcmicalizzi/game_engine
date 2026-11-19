@@ -457,6 +457,31 @@ TEST_CASE("roots: an open document's own files are never written, out/ apart") {
   f.allow(doc + "/layers/base.json", Access::write);
 }
 
+// Every protect pushed an entry, so a document asked for again and again grew the list every
+// write's admission walks, and one release left the rest standing.
+TEST_CASE("roots: a document protected again and again is held once") {
+  Fixture f;
+  const std::string doc = f.root + "/docs/world";
+  make_dir(doc);
+  for (int i = 0; i < 8; ++i)
+    REQUIRE(f.roots.protect(doc) == Status::Ok);
+#if ENGINE_PLATFORM_WINDOWS
+  REQUIRE(f.roots.protect(f.root + "/docs/WORLD") == Status::Ok);  // the same directory
+#endif
+  CHECK(f.roots.protected_documents().size() == 1);
+  // Each holder lets go once, and the directory is free when the last has.
+  for (int i = 0; i < 8; ++i) {
+    CHECK(f.refuse(doc + "/manifest.json", Access::write) == Refusal::document);
+    f.roots.release(doc);
+  }
+#if ENGINE_PLATFORM_WINDOWS
+  CHECK(f.refuse(doc + "/manifest.json", Access::write) == Refusal::document);
+  f.roots.release(f.root + "/docs/WORLD");
+#endif
+  CHECK(f.roots.protected_documents().empty());
+  f.allow(doc + "/manifest.json", Access::write);
+}
+
 TEST_CASE("roots: a served directory is never written, and no writable root may hold it") {
   TempDir tmp;
   const std::string shell = tmp.path() + "/bin/shell";

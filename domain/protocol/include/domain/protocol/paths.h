@@ -26,6 +26,12 @@
 namespace engine::protocol {
 
 class Session;
+struct DocumentGuard;
+
+// The guard every host hands SessionManager::open (session.h): `roots.protect` when a session is
+// made and `roots.release` when it closes, so an open document's own files are written through
+// doc.* alone, and only while it is open. `roots` outlives every close the guard sees.
+DocumentGuard document_guard(io::Roots& roots) noexcept;
 
 // True with `out` the admitted path. False with `error` set and the record `path_not_found` logs
 // (the same for a missing file), or for a root the host lacks the root's name.

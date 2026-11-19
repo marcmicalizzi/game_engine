@@ -577,7 +577,16 @@ Status Roots::protect(std::string_view document_dir) {
   std::string canonical;
   if (canonical_path(document_dir, current_directory(), canonical) != Refusal::none)
     return Status::InvalidPath;
+  // Held once, however often it is asked and however it is spelled: a second holder counts, so the
+  // list every write's admission walks is as long as the documents open, never the opens made.
+  for (u32 i = 0; i < documents_.size(); ++i) {
+    if (path_is_under(documents_[i], canonical) && path_is_under(canonical, documents_[i])) {
+      ++document_holds_[i];
+      return Status::Ok;
+    }
+  }
   documents_.push_back(std::move(canonical));
+  document_holds_.push_back(1);
   return Status::Ok;
 }
 
@@ -586,7 +595,10 @@ void Roots::release(std::string_view document_dir) {
   if (canonical_path(document_dir, current_directory(), canonical) != Refusal::none) return;
   for (u32 i = 0; i < documents_.size(); ++i) {
     if (path_is_under(documents_[i], canonical) && path_is_under(canonical, documents_[i])) {
-      documents_.erase_at(i);
+      if (--document_holds_[i] == 0) {
+        documents_.erase_at(i);
+        document_holds_.erase_at(i);
+      }
       return;
     }
   }

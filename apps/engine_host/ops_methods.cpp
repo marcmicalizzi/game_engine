@@ -2566,10 +2566,11 @@ bool session_load_game(protocol::Context& ctx, const protocol::LoadGameParams& p
   }
   protocol::SessionOpenParams open;
   open.path = target;
-  protocol::Session* session =
-      ctx.sessions->open(open, ctx.connection, error, {}, protocol::portable_path(ctx, target));
+  // Protected while it is open, as every session.open is, and freed when it closes.
+  const protocol::DocumentGuard guard = protocol::document_guard(*ctx.roots);
+  protocol::Session* session = ctx.sessions->open(open, ctx.connection, error, {},
+                                                  protocol::portable_path(ctx, target), &guard);
   if (session == nullptr) return false;
-  (void)ctx.roots->protect(session->dir());
   const std::string session_id = session->id();
   auto refuse = [&](protocol::RpcError e) {
     ctx.sessions->close(session_id);
