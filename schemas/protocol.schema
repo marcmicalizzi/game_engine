@@ -2584,24 +2584,54 @@ enum ReviewResolution : u8 {
 }
 
 /// Exactly what a review item asks about: the identity and the version, never a picture.
-struct ReviewSubject @version(1) {
+/// Version 2: `assets`, the files it is about beyond those its records name, which the subject
+/// digest reads (protocol.md, "What a close is tied to").
+struct ReviewSubject @version(2) @additive(2) {
   /// The layer the records are judged in (a proposal layer, a feature layer); empty: the composed
   /// document.
   layer: string
   /// The records, at most 1,024; each must be live when the item is raised.
   records: id128[]
   /// The document's version when raised, stamped by the host, not the caller: the journal's length
-  /// and the undo position (`session.info`).
+  /// and the undo position (`session.info`). Colour for a reader and never what decides: they are
+  /// one process's history, and an undo then a redo puts them back. The digest decides.
   journal_length: u32 = 0
   undo_position: u32 = 0
   /// A checkpoint holding that version, when the raiser took one.
   checkpoint: string
   /// Blobs it is about (`doc.put_blob`'s names).
   blobs: string[]
+  /// Files it is about beyond those its records name, at most 256, each `<root>://<path>` or
+  /// relative to the document: read through the host's roots and hashed by the digest. One the host
+  /// may not read, or that is not there, digests as not readable and is never opened.
+  assets: string[] @since(2)
+}
+
+/// What a review item's subject is now (protocol.md, "What a close is tied to"): answered by
+/// `review.raise` and by `review.list` with `digest` for one item, never for the rows of a list.
+struct SubjectState @version(1) {
+  /// SHA-256 of the subject's canonical stream now, 64 lowercase hex; empty when not asked.
+  digest: string
+  /// It is the item's `raised_digest`: what the item is about is as it was when it was raised.
+  same: bool = false
+  /// Subject records no longer live.
+  gone: id128[]
+  /// Files the subject names that this host may not read or that are not there, as they were
+  /// spelled: digested as such, never opened.
+  unreadable: string[]
+  /// What the stream covered: the subject's records with their ancestors each once, the blobs and
+  /// the assets they and the subject name, and the bytes of the assets read and hashed.
+  records: u32 = 0
+  blobs: u32 = 0
+  assets: u32 = 0
+  asset_bytes: u64 = 0
+  /// Milliseconds the computation took.
+  ms: f64 = 0
 }
 
 /// One review item of the ledger.
-struct ReviewInfo @version(2) @additive(2) {
+/// Version 3: `raised_digest` and `decided_at`, the subject digests it was raised and decided at.
+struct ReviewInfo @version(3) @additive(2, 3) {
   /// Drawn at random against the ledger's other items, as a task's is.
   id: u64 = 0
   /// What kind of check it is: data, not code. "classified content review" (plan 06 §6.10) is the
@@ -2633,14 +2663,23 @@ struct ReviewInfo @version(2) @additive(2) {
   raised_via: string @since(2)
   closed_via: string @since(2)
   closed_human_via: string @since(2)
+  /// The subject digest the raising host computed from its own document when the item was raised
+  /// (`SubjectState.digest`): content, so a digest another process computes compares with it where
+  /// journal numbers do not. Empty on an item raised before digests.
+  raised_digest: string @since(3)
+  /// The subject digest the close was decided at: the one its closer saw, which the host found
+  /// equal to the subject's digest then. Empty while open.
+  decided_at: string @since(3)
 }
 
 /// `ledger.json` in a document directory: the tasks and review items. Never cached by a host:
 /// every call reads it, changes it and writes it back while it holds `ledger.json.lock`
 /// exclusively, so two hosts on one directory lose nothing to each other. Version 1 counted its ids
 /// (`next_task`, `next_review`); version 2 draws them, and its registered step drops the counters
-/// and gives every item revision 1. Version 3 adds the ledger's own `revision`.
-struct LedgerFile @version(3) @kind(document) @additive(3) {
+/// and gives every item revision 1. Version 3 adds the ledger's own `revision`. Version 4: its items
+/// are `ReviewInfo` 3 and their subjects `ReviewSubject` 2, whose fields are all additions; it adds
+/// no field of its own, so its step is registered (it has nothing to change), not declared additive.
+struct LedgerFile @version(4) @kind(document) @additive(3) {
   tasks: TaskInfo[]
   reviews: ReviewInfo[]
   /// Moves on every write the ledger takes (a call that changes nothing writes nothing, so it moves
@@ -2769,7 +2808,8 @@ struct ReviewCloseParams @version(2) @additive(2) {
 }
 
 /// Parameters of `review.list`. Version 2: `reviews`, `order` and `limit`, as `task.list`'s.
-struct ReviewListParams @version(2) @additive(2) {
+/// Version 3: `digest`, one item's opened detail.
+struct ReviewListParams @version(3) @additive(2, 3) {
   session: string
   /// One item by id; 0 for every item that passes the filters below.
   review: u64 = 0
@@ -2787,18 +2827,26 @@ struct ReviewListParams @version(2) @additive(2) {
   order: LedgerOrder = Oldest @since(2)
   /// At most this many items, 1 to 1,024; 0 for every match. `more` says how many matched past it.
   limit: u32 = 0 @since(2)
+  /// Compute the item's subject digest now, into `ReviewsResult.subject`: an item's detail, opened.
+  /// Only with `review`, and with no `reviews`, no `order` but the default and no `limit`, which
+  /// select a list's rows; refused (1004) otherwise, since a list's rows never compute one.
+  digest: bool = false @since(3)
 }
 
 /// Result of `review.list`, and of the writes, which answer the item they changed in `reviews[0]`.
 /// Version 2: its items are `ReviewInfo` 2 (random ids, a revision, how each caller was known).
-/// Version 3: `more` and `ledger_revision`, as `TasksResult`'s.
-struct ReviewsResult @version(3) @additive(3) {
+/// Version 3: `more` and `ledger_revision`, as `TasksResult`'s. Version 4: its items are
+/// `ReviewInfo` 3, and `subject`.
+struct ReviewsResult @version(4) @additive(3, 4) {
   now_unix_ms: i64 = 0
   reviews: ReviewInfo[]
   /// For a list: how many items matched past its `limit` and are not in `reviews`.
   more: u32 = 0 @since(3)
   /// The ledger's revision this answer was read at, or written as.
   ledger_revision: u64 = 0 @since(3)
+  /// The subject of `reviews[0]` now: from `review.raise` (the stamp), from `review.list` with
+  /// `digest`, and from `review.close` (what the close was decided at). Empty otherwise.
+  subject: SubjectState @since(4)
 }
 
 // ---- describe (plan 06 §6.6; protocol.md, "Describing an object, a tile or a region") ---------

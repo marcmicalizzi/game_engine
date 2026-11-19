@@ -6,6 +6,8 @@
 // takes `ledger.json.lock` between processes, reads the file, changes it and writes it back
 // (`update_ledger`, over side_file.h), so two engine-cli calls at once, or engine-host beside
 // engine-cli, lose nothing to each other and never mint one id twice.
+#include "subject_digest.h"
+
 #include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
@@ -37,6 +39,7 @@ constexpr u32 k_subject_records_max = 1024;
 constexpr u32 k_link_max = 256;
 constexpr usize k_name_max = 200;
 constexpr usize k_report_max = 64 * 1024;
+constexpr usize k_asset_path_max = 1024;
 constexpr f64 k_claim_ttl_max = 7.0 * 24.0 * 3600.0;
 // The ledger's bounds (protocol.md, "The ledger's bounds", where each number's reason is): every
 // call reads, parses and rewrites the whole file under a lock other callers wait 10 s for, so a
@@ -749,10 +752,14 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
     return false;
   }
   if (params.subject.records.size() > k_subject_records_max ||
-      params.subject.blobs.size() > k_link_max) {
+      params.subject.blobs.size() > k_link_max || params.subject.assets.size() > k_link_max) {
     error = make_error(codes::k_invalid_argument,
-                       "subject names at most 1024 records and 256 blobs: raise one item per part");
+                       "subject names at most 1024 records, 256 blobs and 256 assets: raise one "
+                       "item per part");
     return false;
+  }
+  for (const std::string& a : params.subject.assets) {
+    if (!text_ok("subject.assets entries", a, 1, k_asset_path_max, false, error)) return false;
   }
   for (const Id128 id : params.subject.records) {
     if (d.exists(id)) continue;
@@ -769,6 +776,11 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
                        "the subject names carries anything larger)");
     return false;
   }
+  // The subject's digest, stamped by the host from its own document (protocol.md, "What a close is
+  // tied to"). Computed before the ledger's lock is taken: it reads the subject's assets, which may
+  // be large, and the lock is one every other caller of the ledger waits for.
+  SubjectState stamped;
+  subject_digest(ctx, *s, params.subject, stamped);
   const i64 now = time::wall_unix_ms();
   ReviewInfo made;
   if (!update_ledger(
@@ -802,6 +814,7 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
             // The version is the host's to say, not the raiser's.
             r.subject.journal_length = static_cast<u32>(d.journal().size());
             r.subject.undo_position = s->undo_position();
+            r.raised_digest = stamped.digest;
             r.report = params.report;
             r.task = params.task;
             r.raised_by = caller.who;
@@ -822,6 +835,8 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
     return false;
   out.now_unix_ms = now;
   out.reviews.push_back(std::move(made));
+  out.subject = std::move(stamped);
+  out.subject.same = true;
   s->publish_ledger("review_raised", 0, out.reviews[0].id, caller.who.actor, caller.connection);
   return true;
 }
@@ -916,27 +931,54 @@ bool review_list(Context& ctx, const ReviewListParams& params, ReviewsResult& ou
   Session* s = begin(ctx, params.session, nullptr, caller, error);
   if (s == nullptr) return false;
   if (!list_bounds_ok(params.limit, params.reviews.size(), "reviews", error)) return false;
+  if (params.digest && params.review == 0) {
+    error = make_error(codes::k_invalid_argument,
+                       "digest is computed for one item (review), the detail a person opens, and "
+                       "never for the rows of a list: it reads every asset the subject names");
+    return false;
+  }
+  // The detail form is one item by id: a list's selection beside it (ids, an order, a limit) would
+  // either change nothing or hide the item it names, so it is refused rather than ignored.
+  if (params.digest &&
+      (!params.reviews.empty() || params.limit != 0 || params.order != LedgerOrder::Oldest)) {
+    JsonValue data = JsonValue::object();
+    data.set("reason", JsonValue("detail form"));
+    error = make_error(codes::k_invalid_argument,
+                       "digest opens one item's detail (review): reviews, order and limit select "
+                       "a list's rows and are not given beside it",
+                       std::move(data));
+    return false;
+  }
   out.now_unix_ms = time::wall_unix_ms();
-  return update_ledger(
-      ctx.sessions->vfs(), *s, true, false, out.ledger_revision,
-      [&](LedgerFile& ledger, bool& write, RpcError& e) {
-        write = false;
-        if (params.review != 0 && find_review(ledger, params.review, e) == nullptr) return false;
-        list_in_order(
-            ledger.reviews, params.order, params.limit, params.brief,
-            [&](const ReviewInfo& r) {
-              if (params.review != 0 && r.id != params.review) return false;
-              if (!params.reviews.empty() && !contains(params.reviews, r.id)) return false;
-              if (params.state && r.state != *params.state) return false;
-              if (params.audience && r.audience != *params.audience) return false;
-              if (!params.kind.empty() && r.kind != params.kind) return false;
-              if (params.task != 0 && r.task != params.task) return false;
-              return true;
-            },
-            out.reviews, out.more);
-        return true;
-      },
-      error);
+  if (!update_ledger(
+          ctx.sessions->vfs(), *s, true, false, out.ledger_revision,
+          [&](LedgerFile& ledger, bool& write, RpcError& e) {
+            write = false;
+            if (params.review != 0 && find_review(ledger, params.review, e) == nullptr)
+              return false;
+            list_in_order(
+                ledger.reviews, params.order, params.limit, params.brief,
+                [&](const ReviewInfo& r) {
+                  if (params.review != 0 && r.id != params.review) return false;
+                  if (!params.reviews.empty() && !contains(params.reviews, r.id)) return false;
+                  if (params.state && r.state != *params.state) return false;
+                  if (params.audience && r.audience != *params.audience) return false;
+                  if (!params.kind.empty() && r.kind != params.kind) return false;
+                  if (params.task != 0 && r.task != params.task) return false;
+                  return true;
+                },
+                out.reviews, out.more);
+            return true;
+          },
+          error))
+    return false;
+  // The detail's statement, computed after the ledger's lock is let go (the assets' reads are the
+  // cost, and every other caller of the ledger waits for that lock).
+  if (params.digest && !out.reviews.empty()) {
+    subject_digest(ctx, *s, out.reviews[0].subject, out.subject);
+    out.subject.same = out.subject.digest == out.reviews[0].raised_digest;
+  }
+  return true;
 }
 
 }  // namespace

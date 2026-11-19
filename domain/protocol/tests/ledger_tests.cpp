@@ -999,3 +999,168 @@ TEST_CASE("ledger: a ledger refuses work past its bounds, and a full one can be 
               .as_string() == "Done");
   }
 }
+
+namespace {
+
+// A placement under a node, its mesh a file beside the document, for the subject digest's cases
+// (protocol.md, "What a close is tied to"): the placement is the subject, the node its ancestor,
+// and the mesh an asset its record names.
+struct DigestWorld {
+  Id128 node = Id128::from_parts(0x20, 1);
+  Id128 placement = Id128::from_parts(0x20, 2);
+  std::string mesh;  // the asset's native path, for a case to rewrite
+
+  void make(Host& h, const std::string& dir) {
+    std::filesystem::create_directories(std::filesystem::path(dir) / "props");
+    mesh = (std::filesystem::path(dir) / "props" / "crate.glb").string();
+    {
+      std::ofstream out(mesh, std::ios::binary);
+      out << "glTF one";
+    }
+    JsonValue cmds = JsonValue::array();
+    cmds.push_back(obj({{"kind", JsonValue("CreateObject")},
+                        {"id", JsonValue(hex(node))},
+                        {"type", JsonValue("engine.world.Node")},
+                        {"value", obj({{"name", JsonValue("yard")}})}}));
+    cmds.push_back(obj(
+        {{"kind", JsonValue("CreateObject")},
+         {"id", JsonValue(hex(placement))},
+         {"type", JsonValue("engine.scene.MeshPlacement")},
+         {"parent", JsonValue(hex(node))},
+         {"value", obj({{"name", JsonValue("crate")}, {"mesh", JsonValue("props/crate.glb")}})}}));
+    (void)h.ok("doc.apply", obj({{"commands", cmds}, {"attribution", who("setup", "director")}}));
+  }
+  void set(Host& h, Id128 id, const char* property, JsonValue value) const {
+    JsonValue cmds = JsonValue::array();
+    cmds.push_back(obj({{"kind", JsonValue("SetProperty")},
+                        {"id", JsonValue(hex(id))},
+                        {"name", JsonValue(property)},
+                        {"value", std::move(value)}}));
+    (void)h.ok("doc.apply", obj({{"commands", cmds}, {"attribution", who("agent", "director")}}));
+  }
+  JsonValue raise(Host& h, const char* audience = "Human") const {
+    return h.ok("review.raise",
+                obj({{"kind", JsonValue("validation")},
+                     {"audience", JsonValue(audience)},
+                     {"summary", JsonValue("the crate sits right")},
+                     {"subject", obj({{"records", strings({hex(placement).c_str()})}})},
+                     {"attribution", who("checker", "director")}}));
+  }
+};
+
+// The subject as an item's opened detail sees it now.
+JsonValue opened_detail(Host& h, const JsonValue& item) {
+  return at(h.ok("review.list", obj({{"review", item}, {"digest", JsonValue(true)}})), "subject");
+}
+
+}  // namespace
+
+// The subject digest, stamped at the raise and computed again when a detail is opened
+// (protocol.md, "What a close is tied to"): content, so another host on the same directory
+// computes the same one, and never for the rows of a list.
+TEST_CASE("ledger: a raise stamps the subject's digest, and another host's detail agrees") {
+  test::TempDir tmp("protocol_ledger_digest");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  h.open(dir, true);
+  DigestWorld w;
+  w.make(h, dir);
+
+  const JsonValue raised = w.raise(h, "Agent");
+  const JsonValue& item = at(raised, "reviews")[0];
+  const std::string stamp(at(item, "raised_digest").as_string());
+  CHECK(stamp.size() == 64);
+  const JsonValue& stamped = at(raised, "subject");
+  CHECK(at(stamped, "digest").as_string() == stamp);
+  CHECK(num(at(stamped, "records")) == 2);  // the placement and its node
+  CHECK(num(at(stamped, "assets")) == 1);   // the mesh its record names
+  CHECK(num(at(stamped, "asset_bytes")) == 8);
+  CHECK(at(stamped, "unreadable").size() == 0);
+
+  JsonValue now = opened_detail(h, at(item, "id"));
+  CHECK(at(now, "digest").as_string() == stamp);
+  CHECK(at(now, "same").as_bool());
+  // A list never computes one, and its rows carry the stamp with no statement.
+  JsonValue error;
+  CHECK(h.fails("review.list", obj({{"digest", JsonValue(true)}}), &error) ==
+        codes::k_invalid_argument);
+  CHECK(at(at(h.ok("review.list"), "subject"), "digest").as_string().empty());
+
+  // Another host on the same directory loads the same files and computes the same digest: journal
+  // numbers are one process's history, content is not.
+  Host other;
+  other.open(dir, false);
+  CHECK(at(opened_detail(other, at(item, "id")), "digest").as_string() == stamp);
+
+  // A file the subject lists that the host may not read, or that is not there, digests as not
+  // readable and is never opened.
+  const JsonValue outside = at(
+      h.ok("review.raise",
+           obj({{"kind", JsonValue("validation")},
+                {"summary", JsonValue("and the file beside it")},
+                {"subject", obj({{"records", strings({hex(w.placement).c_str()})},
+                                 {"assets", strings({"nowhere://x.glb", "props/missing.glb"})}})},
+                {"attribution", who("checker", "director")}})),
+      "subject");
+  CHECK(at(outside, "unreadable").size() == 2);
+  CHECK(at(outside, "digest").as_string() != stamp);
+
+  // An edit of the subject moves it.
+  w.set(h, w.placement, "name", JsonValue("crate, moved"));
+  now = opened_detail(h, at(item, "id"));
+  CHECK_FALSE(at(now, "same").as_bool());
+  CHECK(at(now, "digest").as_string() != stamp);
+}
+
+// The detail form is one item by id (protocol.md, "What a close is tied to"): a list's ids, order
+// or limit beside `digest` is refused rather than ignored. And a ledger written before digests —
+// at version 2, with no ledger revision, or at version 3, with one — reads, its item carrying no
+// stamp, which no digest equals, so its detail says what it is about changed since it was raised.
+TEST_CASE("ledger: the detail form stands alone, and ledgers from before digests read") {
+  test::TempDir tmp("protocol_ledger_digest");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  h.open(dir, true);
+  DigestWorld w;
+  w.make(h, dir);
+  const JsonValue id = at(at(w.raise(h, "Agent"), "reviews")[0], "id");
+
+  JsonValue error;
+  JsonValue one = JsonValue::array();
+  one.push_back(id);
+  CHECK(h.fails("review.list", obj({{"review", id}, {"digest", JsonValue(true)}, {"reviews", one}}),
+                &error) == codes::k_invalid_argument);
+  CHECK(reason_of(error) == "detail form");
+  CHECK(h.fails("review.list",
+                obj({{"review", id}, {"digest", JsonValue(true)}, {"limit", JsonValue(1)}}),
+                &error) == codes::k_invalid_argument);
+  CHECK(reason_of(error) == "detail form");
+  CHECK(h.fails("review.list",
+                obj({{"review", id}, {"digest", JsonValue(true)}, {"order", JsonValue("Newest")}}),
+                &error) == codes::k_invalid_argument);
+  CHECK(reason_of(error) == "detail form");
+  // Without `digest` the same selection is a list's, as it was.
+  CHECK(at(h.ok("review.list", obj({{"review", id}, {"limit", JsonValue(1)}})), "reviews").size() ==
+        1);
+
+  // The item as a host before digests wrote it: version 2 (main's hosts before the ledger's
+  // revision) has no `revision` of its own; version 3 has one.
+  const std::string item = R"({"id":7,"kind":"validation","summary":"s","revision":1,)"
+                           R"("raised_via":"declared","raised_by":{"actor":"checker"},)"
+                           R"("subject":{"records":[")" +
+                           hex(w.placement) + R"("]}})";
+  for (const char* ledger_revision : {"", R"("revision":5,)"}) {
+    CAPTURE(ledger_revision);
+    {
+      std::ofstream out(dir + "/ledger.json", std::ios::binary);
+      out << "{" << ledger_revision << R"("tasks":[],"reviews":[)" << item << "]}";
+    }
+    const JsonValue answer =
+        h.ok("review.list", obj({{"review", JsonValue(u64{7})}, {"digest", JsonValue(true)}}));
+    CHECK(num(at(answer, "ledger_revision")) == (*ledger_revision == 0 ? 0 : 5));
+    CHECK(at(at(answer, "reviews")[0], "raised_digest").as_string().empty());
+    const JsonValue& now = at(answer, "subject");
+    CHECK(at(now, "digest").as_string().size() == 64);
+    CHECK_FALSE(at(now, "same").as_bool());
+  }
+}

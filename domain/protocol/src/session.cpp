@@ -95,6 +95,15 @@ bool drop_ledger_counters(JsonValue& object, schema::ReadContext&) {
   return true;
 }
 
+// `ledger.json` at version 3 held items without subject digests; version 4's items carry
+// `raised_digest` and `decided_at` and their subjects `assets`, every one an addition with an empty
+// default. LedgerFile itself adds no field at 4 (its 2-to-3 step, the ledger's `revision`, is the
+// generated additive one), so this step is registered rather than declared additive — schemac
+// refuses `@additive` on a version that adds no field — and there is nothing in the JSON for it to
+// change: an item raised before digests reads with an empty stamp, which no digest equals, so its
+// detail says it changed since it was raised.
+bool ledger_items_gain_digests(JsonValue&, schema::ReadContext&) { return true; }
+
 // The mark a host holds on a document while its socket connections may hold leases there: the
 // lock of `leases.<host>` (`leases.<host>.lock`, side_file.h), taken with the first such lease and
 // let go with the session or the process. Another host's open asks it before it drops that host's
@@ -126,6 +135,8 @@ void register_side_file_steps() {
     schema::MigrationRegistry::global().add({"engine.protocol.TransactionsFile", 1, &drop_next_id});
     schema::MigrationRegistry::global().add(
         {"engine.protocol.LedgerFile", 1, &drop_ledger_counters});
+    schema::MigrationRegistry::global().add(
+        {"engine.protocol.LedgerFile", 3, &ledger_items_gain_digests});
     return true;
   }();
   (void)registered;
