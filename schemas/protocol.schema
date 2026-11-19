@@ -2639,10 +2639,24 @@ struct ReviewInfo @version(2) @additive(2) {
 /// every call reads it, changes it and writes it back while it holds `ledger.json.lock`
 /// exclusively, so two hosts on one directory lose nothing to each other. Version 1 counted its ids
 /// (`next_task`, `next_review`); version 2 draws them, and its registered step drops the counters
-/// and gives every item revision 1.
-struct LedgerFile @version(2) @kind(document) {
+/// and gives every item revision 1. Version 3 adds the ledger's own `revision`.
+struct LedgerFile @version(3) @kind(document) @additive(3) {
   tasks: TaskInfo[]
   reviews: ReviewInfo[]
+  /// Moves on every write the ledger takes (a call that changes nothing writes nothing, so it moves
+  /// only when the content does). What a list answers and `ledger_changed` names, so a reader tells
+  /// whether its read is the one an event spoke of. Compared for inequality, never "greater": a
+  /// ledger restored from a copy has a revision that went back (protocol.md, "The ledger's
+  /// events").
+  revision: u64 = 0 @since(3)
+}
+
+/// The order a ledger list answers in (protocol.md, "The ledger's lists"): by each entry's last
+/// change — a task's `updated_unix_ms`, a review item's newest history line — then by id, so two
+/// reads of one ledger list the same entries in the same order. `Newest` is `Oldest` reversed.
+enum LedgerOrder : u8 {
+  Oldest = 0
+  Newest = 1
 }
 
 /// Parameters of `task.create`.
@@ -2686,8 +2700,9 @@ struct TaskUpdateParams @version(1) {
   attribution: engine.doc.Attribution
 }
 
-/// Parameters of `task.list`.
-struct TaskListParams @version(1) {
+/// Parameters of `task.list`. Version 2: `tasks`, `order` and `limit`, so a reader asks for the ids
+/// an event named, or the newest fifty, without reading everything.
+struct TaskListParams @version(2) @additive(2) {
   session: string
   /// One task by id; 0 for every task that passes the filters below.
   task: u64 = 0
@@ -2699,16 +2714,28 @@ struct TaskListParams @version(1) {
   claimant: string
   /// Leave each task's history out (it is the bulk of a long-lived ledger).
   brief: bool = false
+  /// Only these tasks, at most 1,024 ids (what `ledger_changed` and the task events named); an id
+  /// the ledger no longer holds is left out, not refused. Empty for all.
+  tasks: u64[] @since(2)
+  /// The order of the answer: by last change, then by id.
+  order: LedgerOrder = Oldest @since(2)
+  /// At most this many tasks, 1 to 1,024; 0 for every match. `more` says how many matched past it.
+  limit: u32 = 0 @since(2)
 }
 
 /// Result of `task.list`, and of the writes, which answer the task they changed in `tasks[0]`.
-/// Version 2: its tasks are `TaskInfo` 2 (random ids, how each caller was known).
-struct TasksResult @version(2) {
+/// Version 2: its tasks are `TaskInfo` 2 (random ids, how each caller was known). Version 3:
+/// `more` and `ledger_revision`.
+struct TasksResult @version(3) @additive(3) {
   /// The host's clock, which every claim's expiry is judged by.
   now_unix_ms: i64 = 0
   tasks: TaskInfo[]
   /// Claims that had lapsed and were let go by this call.
   lapsed: u32 = 0
+  /// For a list: how many tasks matched past its `limit` and are not in `tasks`.
+  more: u32 = 0 @since(3)
+  /// The ledger's revision this answer was read at, or written as (`LedgerFile.revision`).
+  ledger_revision: u64 = 0 @since(3)
 }
 
 /// Parameters of `review.raise`.
@@ -2741,8 +2768,8 @@ struct ReviewCloseParams @version(2) @additive(2) {
   revision: u64 = 0 @since(2)
 }
 
-/// Parameters of `review.list`.
-struct ReviewListParams @version(1) {
+/// Parameters of `review.list`. Version 2: `reviews`, `order` and `limit`, as `task.list`'s.
+struct ReviewListParams @version(2) @additive(2) {
   session: string
   /// One item by id; 0 for every item that passes the filters below.
   review: u64 = 0
@@ -2753,13 +2780,25 @@ struct ReviewListParams @version(1) {
   /// Only items raised for this task; 0 for all.
   task: u64 = 0
   brief: bool = false
+  /// Only these items, at most 1,024 ids; an id the ledger no longer holds is left out. Empty for
+  /// all.
+  reviews: u64[] @since(2)
+  /// The order of the answer: by last change (the newest history line), then by id.
+  order: LedgerOrder = Oldest @since(2)
+  /// At most this many items, 1 to 1,024; 0 for every match. `more` says how many matched past it.
+  limit: u32 = 0 @since(2)
 }
 
 /// Result of `review.list`, and of the writes, which answer the item they changed in `reviews[0]`.
 /// Version 2: its items are `ReviewInfo` 2 (random ids, a revision, how each caller was known).
-struct ReviewsResult @version(2) {
+/// Version 3: `more` and `ledger_revision`, as `TasksResult`'s.
+struct ReviewsResult @version(3) @additive(3) {
   now_unix_ms: i64 = 0
   reviews: ReviewInfo[]
+  /// For a list: how many items matched past its `limit` and are not in `reviews`.
+  more: u32 = 0 @since(3)
+  /// The ledger's revision this answer was read at, or written as.
+  ledger_revision: u64 = 0 @since(3)
 }
 
 // ---- describe (plan 06 §6.6; protocol.md, "Describing an object, a tile or a region") ---------

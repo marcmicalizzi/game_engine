@@ -631,7 +631,7 @@ TEST_CASE("ledger: two hosts writing one directory at once lose nothing") {
 // `ledger.json` version 1 counted its ids (`next_task`, `next_review`) and had no revisions; the
 // registered step (session.cpp) drops the counters and gives every item revision 1. Its tasks and
 // items keep the ids they were known by, a new one is drawn against them, and the file written
-// back is version 2.
+// back is the current version (3 since the ledger's own revision; version 2 to 3 is additive).
 TEST_CASE("ledger: a version-1 ledger reads, keeps its ids and draws new ones") {
   test::TempDir tmp("protocol_ledger");
   const std::string dir = tmp.file("doc");
@@ -664,6 +664,93 @@ TEST_CASE("ledger: a version-1 ledger reads, keeps its ids and draws new ones") 
                                                          {"attribution", who("b")}}));
   CHECK(num(at(closed, "revision")) == 2);
 }
+// The lists' order, limit and ids (protocol.md, "The ledger's lists"): by last change, then by id,
+// `Newest` the reverse; `limit` and how many more matched; the ids an event named, one gone; a
+// limit past 1,024 refused rather than clamped; and the ledger's revision, moved by a write and
+// not by a read. The ledger is written by hand so the times are the case's, not the clock's.
+TEST_CASE("ledger: a list answers in a stated order, to a limit, and by ids") {
+  test::TempDir tmp("protocol_ledger");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  h.open(dir, true);
+  {
+    std::ofstream out(dir + "/ledger.json", std::ios::binary);
+    out << R"({"tasks":[)"
+           R"({"id":5,"key":"task/5","title":"e","updated_unix_ms":300,"created_by":{"actor":"a"}},)"
+           R"({"id":3,"key":"task/3","title":"c","updated_unix_ms":100,"created_by":{"actor":"a"}},)"
+           R"({"id":9,"key":"task/9","title":"i","updated_unix_ms":200,"created_by":{"actor":"a"}},)"
+           R"({"id":7,"key":"task/7","title":"g","updated_unix_ms":200,"created_by":{"actor":"a"}}],)"
+           R"("reviews":[)"
+           R"({"id":2,"kind":"k","summary":"s","raised_unix_ms":10,"revision":1,)"
+           R"("history":[{"at_unix_ms":50,"actor":"a","change":"raised"}],"raised_by":{"actor":"a"}},)"
+           R"({"id":1,"kind":"k","summary":"s","raised_unix_ms":20,"revision":1,"audience":"Human",)"
+           R"("raised_by":{"actor":"a"}}]})";
+  }
+  const auto ids = [](const JsonValue& list) {
+    std::vector<i64> out;
+    for (u32 i = 0; i < list.size(); ++i)
+      out.push_back(num(at(list[i], "id")));
+    return out;
+  };
+
+  // Oldest (the default) by last change, the tie at 200 by id; Newest the reverse.
+  JsonValue r = h.ok("task.list");
+  CHECK(ids(at(r, "tasks")) == std::vector<i64>{3, 7, 9, 5});
+  CHECK(num(at(r, "more")) == 0);
+  CHECK(num(at(r, "ledger_revision")) == 0);  // a version-2 file has none yet
+  r = h.ok("task.list", obj({{"order", JsonValue("Newest")}}));
+  CHECK(ids(at(r, "tasks")) == std::vector<i64>{5, 9, 7, 3});
+  // A limit answers the first of the order and says how many more matched.
+  r = h.ok("task.list", obj({{"order", JsonValue("Newest")}, {"limit", JsonValue(2)}}));
+  CHECK(ids(at(r, "tasks")) == std::vector<i64>{5, 9});
+  CHECK(num(at(r, "more")) == 2);
+  // The ids an event named, in the list's order; one the ledger no longer holds is left out.
+  JsonValue named = JsonValue::array();
+  for (const u64 id : {u64{9}, u64{5}, u64{42}})
+    named.push_back(JsonValue(id));
+  r = h.ok("task.list", obj({{"tasks", named}, {"brief", JsonValue(true)}}));
+  CHECK(ids(at(r, "tasks")) == std::vector<i64>{9, 5});
+  CHECK(num(at(r, "more")) == 0);
+  // Past the cap is refused, not clamped, and so is a list of more than 1,024 ids.
+  JsonValue error;
+  CHECK(h.fails("task.list", obj({{"limit", JsonValue(1025)}}), &error) ==
+        codes::k_invalid_argument);
+  CHECK(reason_of(error) == "list limit");
+  JsonValue many = JsonValue::array();
+  for (u64 i = 1; i <= 1025; ++i)
+    many.push_back(JsonValue(i));
+  CHECK(h.fails("review.list", obj({{"reviews", many}}), &error) == codes::k_invalid_argument);
+  CHECK(reason_of(error) == "list limit");
+  CHECK(h.ok("task.list", obj({{"limit", JsonValue(1024)}})).find("tasks") != nullptr);
+
+  // An item's last change is its newest history line: item 2 (raised at 10, a line at 50) after
+  // item 1 (raised at 20).
+  r = h.ok("review.list");
+  CHECK(ids(at(r, "reviews")) == std::vector<i64>{1, 2});
+  r = h.ok("review.list", obj({{"order", JsonValue("Newest")}, {"limit", JsonValue(1)}}));
+  CHECK(ids(at(r, "reviews")) == std::vector<i64>{2});
+  CHECK(num(at(r, "more")) == 1);
+  // `more` counts what matched the filters, not the ledger.
+  r = h.ok("review.list", obj({{"audience", JsonValue("Human")}, {"limit", JsonValue(1)}}));
+  CHECK(ids(at(r, "reviews")) == std::vector<i64>{1});
+  CHECK(num(at(r, "more")) == 0);
+
+  // A write moves the ledger's revision by one; a read that lets nothing lapse leaves it, and the
+  // file, as they were.
+  const JsonValue made =
+      h.ok("task.create", obj({{"title", JsonValue("new")}, {"attribution", who("b")}}));
+  CHECK(num(at(made, "ledger_revision")) == 1);
+  std::string before;
+  REQUIRE(h.vfs.read(dir + "/ledger.json", before) == io::Status::Ok);
+  CHECK(num(at(h.ok("review.list"), "ledger_revision")) == 1);
+  std::string after;
+  REQUIRE(h.vfs.read(dir + "/ledger.json", after) == io::Status::Ok);
+  CHECK(after == before);
+  // The new task changed last, so it is the newest.
+  r = h.ok("task.list", obj({{"order", JsonValue("Newest")}, {"limit", JsonValue(1)}}));
+  CHECK(num(at(at(r, "tasks")[0], "id")) == num(at(at(made, "tasks")[0], "id")));
+}
+
 // The ledger's bounds (protocol.md, "The ledger's bounds"): 256 open tasks and 256 open items per
 // actor, and 8 MiB of file, each refused 1004 naming the bound. The ledgers are written by hand,
 // since filling one through calls would cost each case a few thousand of them.

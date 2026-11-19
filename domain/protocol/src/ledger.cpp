@@ -15,6 +15,7 @@
 #include <domain/protocol/session.h>
 #include <domain/protocol/side_file.h>
 
+#include <algorithm>
 #include <string>
 #include <string_view>
 
@@ -258,9 +259,12 @@ RpcError bound_error(std::string_view bound, u64 limit, std::string message) {
 // `grows`: the call adds a task, an item, a note or links, and is refused once the file holds
 // `k_ledger_bytes_max` (looked at under the lock, so no two writers both pass it); a claim, a
 // status change and a close still answer, so a full ledger can be worked down.
+// `revision` is the ledger's revision the call read, or wrote: every write moves it by one, so it
+// moves only when the content does (a call that changes nothing sets no write).
 template <class F>
-bool update_ledger(io::Vfs& vfs, const Session& session, bool read_only, bool grows, F&& change,
-                   RpcError& error) {
+bool update_ledger(io::Vfs& vfs, Session& session, bool read_only, bool grows, u64& revision,
+                   F&& change, RpcError& error) {
+  revision = 0;
   const std::string path = doc::DocumentStore::path_of(session.dir(), k_ledger_file);
   if (read_only && !vfs.exists(path)) {
     LedgerFile none;
@@ -275,12 +279,14 @@ bool update_ledger(io::Vfs& vfs, const Session& session, bool read_only, bool gr
     LedgerFile ledger;
     bool present = false;
     if (!read_side_file(vfs, path, ledger, present, error)) return false;
+    revision = ledger.revision;
     bool write = false;
     return change(ledger, write, error);
   }
   if (!session.may_write_side_files(error)) return false;
   LedgerFile ledger;
-  return update_side_file(
+  bool wrote = false;
+  const bool ok = update_side_file(
       vfs, path, ledger,
       [&](LedgerFile& l, bool& write) {
         io::FileInfo info;
@@ -290,11 +296,74 @@ bool update_ledger(io::Vfs& vfs, const Session& session, bool read_only, bool gr
                                   " bytes, past its bound of 8 MiB: close, finish or drop work "
                                   "before adding more (a claim, a status change and a close "
                                   "still answer)");
+          revision = l.revision;
           return false;
         }
-        return change(l, write, error);
+        const bool changed = change(l, write, error);
+        if (write) ++l.revision;
+        revision = l.revision;
+        wrote = write;
+        return changed;
       },
       error);
+  (void)wrote;
+  return ok;
+}
+
+// The order a list answers in (protocol.md, "The ledger's lists"): by last change, then by id, so
+// two reads of one ledger agree; `Newest` is that reversed.
+i64 changed_ms(const TaskInfo& t) noexcept {
+  return t.updated_unix_ms > t.created_unix_ms ? t.updated_unix_ms : t.created_unix_ms;
+}
+
+i64 changed_ms(const ReviewInfo& r) noexcept {
+  i64 at = r.raised_unix_ms > r.closed_unix_ms ? r.raised_unix_ms : r.closed_unix_ms;
+  if (!r.history.empty() && r.history.back().at_unix_ms > at) at = r.history.back().at_unix_ms;
+  return at;
+}
+
+// A list's `limit` past this is refused rather than clamped: a clamp answers fewer than were asked
+// for with only `more` to say so, and a caller that wants every match says 0 (the ledger's own
+// 8 MiB bound bounds that answer). The same number bounds the ids a list may name.
+constexpr u32 k_list_max = 1024;
+
+bool list_bounds_ok(u32 limit, usize ids, const char* field, RpcError& error) {
+  if (limit <= k_list_max && ids <= k_list_max) return true;
+  JsonValue data = JsonValue::object();
+  data.set("reason", JsonValue("list limit"));
+  data.set("limit", JsonValue(k_list_max));
+  error = make_error(codes::k_invalid_argument,
+                     std::string("limit is 0 (every match) or 1 to 1024, and ") + field +
+                         " names at most 1024 ids",
+                     std::move(data));
+  return false;
+}
+
+// The matches `keep` chose, in `order`, the first `limit` of them (0: all) copied into `out` and
+// the rest counted in `more`. Sorted by key and index, so nothing is copied that is not answered.
+template <class T, class Keep>
+void list_in_order(const Vector<T>& all, LedgerOrder order, u32 limit, bool brief, Keep&& keep,
+                   Vector<T>& out, u32& more) {
+  struct Key {
+    i64 at = 0;
+    u64 id = 0;
+    u32 index = 0;
+  };
+  Vector<Key> keys;
+  for (u32 i = 0; i < all.size(); ++i) {
+    if (keep(all[i])) keys.push_back(Key{changed_ms(all[i]), all[i].id, i});
+  }
+  const bool newest = order == LedgerOrder::Newest;
+  std::sort(keys.begin(), keys.end(), [newest](const Key& a, const Key& b) {
+    if (a.at != b.at) return newest ? a.at > b.at : a.at < b.at;
+    return newest ? a.id > b.id : a.id < b.id;
+  });
+  const u32 n = limit == 0 || limit > keys.size() ? keys.size() : limit;
+  more = keys.size() - n;
+  for (u32 i = 0; i < n; ++i) {
+    out.push_back(all[keys[i].index]);
+    if (brief) out.back().history.clear();
+  }
 }
 
 // The session and the caller every method starts from.
@@ -344,7 +413,7 @@ bool task_create(Context& ctx, const TaskCreateParams& params, TasksResult& out,
   const i64 now = time::wall_unix_ms();
   TaskInfo made;
   if (!update_ledger(
-          ctx.sessions->vfs(), *s, false, true,
+          ctx.sessions->vfs(), *s, false, true, out.ledger_revision,
           [&](LedgerFile& ledger, bool& write, RpcError& e) {
             out.lapsed = lapse_claims(ledger, now);
             write = out.lapsed > 0;
@@ -403,7 +472,7 @@ bool task_claim(Context& ctx, const TaskClaimParams& params, TasksResult& out, R
   bool renewed = false;
   TaskInfo changed;
   if (!update_ledger(
-          ctx.sessions->vfs(), *s, false, false,
+          ctx.sessions->vfs(), *s, false, false, out.ledger_revision,
           [&](LedgerFile& ledger, bool& write, RpcError& e) {
             out.lapsed = lapse_claims(ledger, now);
             write = out.lapsed > 0;
@@ -480,6 +549,7 @@ bool task_update(Context& ctx, const TaskUpdateParams& params, TasksResult& out,
   TaskInfo changed;
   if (!update_ledger(
           ctx.sessions->vfs(), *s, false, !blank(params.note) || !links_empty(params.links),
+          out.ledger_revision,
           [&](LedgerFile& ledger, bool& write, RpcError& e) {
             out.lapsed = lapse_claims(ledger, now);
             write = out.lapsed > 0;
@@ -569,23 +639,27 @@ bool task_list(Context& ctx, const TaskListParams& params, TasksResult& out, Rpc
   Caller caller;
   Session* s = begin(ctx, params.session, nullptr, caller, error);
   if (s == nullptr) return false;
+  if (!list_bounds_ok(params.limit, params.tasks.size(), "tasks", error)) return false;
   const i64 now = time::wall_unix_ms();
   out.now_unix_ms = now;
   return update_ledger(
-      ctx.sessions->vfs(), *s, true, false,
+      ctx.sessions->vfs(), *s, true, false, out.ledger_revision,
       [&](LedgerFile& ledger, bool& write, RpcError& e) {
         out.lapsed = lapse_claims(ledger, now);
         write = out.lapsed > 0;
         if (params.task != 0 && find_task(ledger, params.task, e) == nullptr) return false;
-        for (const TaskInfo& t : ledger.tasks) {
-          if (params.task != 0 && t.id != params.task) continue;
-          if (!params.statuses.empty() && !contains(params.statuses, t.status)) continue;
-          if (!params.owner_role.empty() && t.owner_role != params.owner_role) continue;
-          if (!params.claimant.empty() && (!held(t.status) || t.claimant != params.claimant))
-            continue;
-          out.tasks.push_back(t);
-          if (params.brief) out.tasks.back().history.clear();
-        }
+        list_in_order(
+            ledger.tasks, params.order, params.limit, params.brief,
+            [&](const TaskInfo& t) {
+              if (params.task != 0 && t.id != params.task) return false;
+              if (!params.tasks.empty() && !contains(params.tasks, t.id)) return false;
+              if (!params.statuses.empty() && !contains(params.statuses, t.status)) return false;
+              if (!params.owner_role.empty() && t.owner_role != params.owner_role) return false;
+              if (!params.claimant.empty() && (!held(t.status) || t.claimant != params.claimant))
+                return false;
+              return true;
+            },
+            out.tasks, out.more);
         return true;
       },
       error);
@@ -633,7 +707,7 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
   const i64 now = time::wall_unix_ms();
   ReviewInfo made;
   if (!update_ledger(
-          ctx.sessions->vfs(), *s, false, true,
+          ctx.sessions->vfs(), *s, false, true, out.ledger_revision,
           [&](LedgerFile& ledger, bool& write, RpcError& e) {
             write = lapse_claims(ledger, now) > 0;
             u32 open = 0;
@@ -702,7 +776,7 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
   const i64 now = time::wall_unix_ms();
   ReviewInfo changed;
   if (!update_ledger(
-          ctx.sessions->vfs(), *s, false, false,
+          ctx.sessions->vfs(), *s, false, false, out.ledger_revision,
           [&](LedgerFile& ledger, bool& write, RpcError& e) {
             ReviewInfo* r = find_review(ledger, params.review, e);
             if (r == nullptr) return false;
@@ -776,21 +850,25 @@ bool review_list(Context& ctx, const ReviewListParams& params, ReviewsResult& ou
   Caller caller;
   Session* s = begin(ctx, params.session, nullptr, caller, error);
   if (s == nullptr) return false;
+  if (!list_bounds_ok(params.limit, params.reviews.size(), "reviews", error)) return false;
   out.now_unix_ms = time::wall_unix_ms();
   return update_ledger(
-      ctx.sessions->vfs(), *s, true, false,
+      ctx.sessions->vfs(), *s, true, false, out.ledger_revision,
       [&](LedgerFile& ledger, bool& write, RpcError& e) {
         write = false;
         if (params.review != 0 && find_review(ledger, params.review, e) == nullptr) return false;
-        for (const ReviewInfo& r : ledger.reviews) {
-          if (params.review != 0 && r.id != params.review) continue;
-          if (params.state && r.state != *params.state) continue;
-          if (params.audience && r.audience != *params.audience) continue;
-          if (!params.kind.empty() && r.kind != params.kind) continue;
-          if (params.task != 0 && r.task != params.task) continue;
-          out.reviews.push_back(r);
-          if (params.brief) out.reviews.back().history.clear();
-        }
+        list_in_order(
+            ledger.reviews, params.order, params.limit, params.brief,
+            [&](const ReviewInfo& r) {
+              if (params.review != 0 && r.id != params.review) return false;
+              if (!params.reviews.empty() && !contains(params.reviews, r.id)) return false;
+              if (params.state && r.state != *params.state) return false;
+              if (params.audience && r.audience != *params.audience) return false;
+              if (!params.kind.empty() && r.kind != params.kind) return false;
+              if (params.task != 0 && r.task != params.task) return false;
+              return true;
+            },
+            out.reviews, out.more);
         return true;
       },
       error);
