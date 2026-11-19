@@ -239,6 +239,59 @@ TEST_CASE(
   device.destroy();
 }
 
+// The ground under the hemisphere ambient weighs each layer by its coverage map (R185), and a load
+// releases a built mesh's embedded image bytes (W51-3): the ground is measured before the release,
+// so a load through the cache and one without it carry the same ground, and neither is the layers'
+// weights alone (the stack's review found the release first and the maps gone).
+TEST_CASE("renderer: a layered ground's albedo is its maps' with the cache on and off") {
+  const test::TempDir tmp("terrain_material_albedo");
+  const std::string colour = tmp.file("colour.png");
+  write_pixel(colour, 24, 160, 48);
+  write_pixel(tmp.file("blue.png"), 0, 0, 200);
+  write_pixel(tmp.file("red.png"), 240, 0, 0);
+  write_pixel(tmp.file("half.png"), 128, 128, 128);
+  write_pixel(tmp.file("zero.png"), 0, 0, 0);
+  Vec3 albedo[2];
+  Vec3 weights_alone{};
+  for (const bool cache : {false, true}) {
+    SceneDesc desc;
+    desc.meshes.push_back("");
+    desc.terrain = ground(colour);
+    scene::TerrainMaterialLayer blue;
+    blue.base_color = tmp.file("blue.png");
+    blue.mask = tmp.file("half.png");
+    desc.terrain.materials->layers.push_back(blue);
+    scene::TerrainMaterialLayer red;
+    red.base_color = tmp.file("red.png");
+    red.mask = tmp.file("zero.png");
+    desc.terrain.materials->layers.push_back(red);
+    REQUIRE_FALSE(desc.terrain.masks.has_value());
+    desc.cache = cache;
+    desc.ddc = tmp.file("ddc");
+    SceneData data;
+    std::string error;
+    REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+    albedo[cache ? 1 : 0] = data.ground_albedo;
+    if (!cache) {
+      // The same terrain with its maps' bytes taken away: the layers by their weights alone.
+      assets::MeshData bare = data.sources[0].data;
+      for (assets::ImageRef& image : bare.images)
+        image.bytes = Vector<u8>();
+      weights_alone = terrain_ground_albedo(data.terrain, &bare);
+    } else {
+      CHECK(data.sources[0].image_bytes_released);  // the release this case is about happened
+    }
+  }
+  MESSAGE("ground without the cache " << albedo[0].x << " " << albedo[0].y << " " << albedo[0].z
+                                      << ", with it " << albedo[1].x << " " << albedo[1].y << " "
+                                      << albedo[1].z);
+  CHECK(albedo[0].x == albedo[1].x);
+  CHECK(albedo[0].y == albedo[1].y);
+  CHECK(albedo[0].z == albedo[1].z);
+  // The red layer's map is black: by its weight alone it would cover the ground red.
+  CHECK(std::abs(albedo[0].x - weights_alone.x) + std::abs(albedo[0].z - weights_alone.z) > 0.05f);
+}
+
 TEST_CASE("renderer: ground masks are a palette's, over a tile set, and refused otherwise") {
   const test::TempDir tmp("terrain_masks_scene");
   write_pixel(tmp.file("a.png"), 22, 110, 45);

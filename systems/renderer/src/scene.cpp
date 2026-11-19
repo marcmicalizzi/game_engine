@@ -3391,7 +3391,28 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   cap_scene_textures(resolved, {dags.data(), dags.size()}, out.sources);
   bound_scene_textures(resolved, {dags.data(), dags.size()}, out.sources);  // R172
   prepare_scene_textures(resolved, out.sources, identities, &*pool, out.load);
-  // W51-3: what the built textures now stand in for goes, before the forms below copy the meshes.
+  // The ground the hemisphere ambient's lower half carries: the mean of what the terrain draws
+  // (R185; `terrain_ground_albedo`), or the neutral grey without one (renderer.md, "The ground's
+  // albedo is a scene value"). Once, here, from what the scene already holds — **before the release
+  // below**, which takes the terrain mesh's embedded coverage maps with every other built image's
+  // bytes: measured after it, a cached load weighted each layer by its weight alone and a load
+  // without the cache by its map too (the stack's review of R185 with W51-3).
+  {
+    const f32 grey = gfx::k_neutral_ground_albedo;
+    out.ground_albedo = Vec3{grey, grey, grey};
+    u32 terrain_mesh = ~0u;
+    for (u32 m = 0; resolved.terrain.enabled && m < resolved.meshes.size(); ++m) {
+      if (resolved.meshes[m].empty()) {
+        terrain_mesh = m;
+        break;
+      }
+    }
+    if (resolved.terrain.enabled) {
+      out.ground_albedo = terrain_ground_albedo(
+          resolved.terrain, terrain_mesh < out.sources.size() ? &out.sources[terrain_mesh].data
+                                                              : nullptr);
+    }
+  }  // W51-3: what the built textures now stand in for goes, before the forms below copy the meshes.
   const ImageBytesReleased released_images = release_built_image_bytes(out.sources);
   out.load.image_bytes_released_meshes = released_images.meshes;
   out.load.image_bytes_released = released_images.bytes;
@@ -3439,16 +3460,6 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
         break;
       }
     }
-  }
-  // The ground the hemisphere ambient's lower half carries: the mean of what the terrain draws
-  // (R185; `terrain_ground_albedo`), or the neutral grey without one (renderer.md, "The ground's
-  // albedo is a scene value"). Once, here, from what the scene already holds.
-  const f32 grey = gfx::k_neutral_ground_albedo;
-  out.ground_albedo = Vec3{grey, grey, grey};
-  if (out.terrain.enabled) {
-    out.ground_albedo = terrain_ground_albedo(out.terrain, out.terrain_mesh < out.sources.size()
-                                                               ? &out.sources[out.terrain_mesh].data
-                                                               : nullptr);
   }
   out.mesh_info = resolved.mesh_info;
   out.name = resolved.name;
