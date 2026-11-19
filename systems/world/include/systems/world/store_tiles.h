@@ -108,7 +108,7 @@ bool document_world_seed(const doc::Document& document, u64& out);
 // one transaction, in (tile, record) order, a moved record's row following it out of its old tile
 // — so the store's projections of live tiles are as current as the write-back's cadence. It reads
 // the document, never the world. No snapshot: that stays a tile's going. A host whose session
-// keeps a store calls it from its write-back sink after the commit; engine-host does not yet.
+// keeps a store calls it from its write-back sink after the commit, as engine-host's does.
 struct ProjectWritebackStats {
   u32 written = 0;  // projections replaced
   u32 untiled = 0;  // records in no tile of a partitioned layer: a tile's projection has no place

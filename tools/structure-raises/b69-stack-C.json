@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "b69-stack-C",
+  "reason": "S11 built world::project_writeback for engine-host's write-back sink and left the call to the stack (the host was not its row's to edit); the call needs the streamed world's store, which only ENGINE_HOST_WORLD has, so one #if line",
+  "date": "2026-11-19",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "engine_host.ops_methods.if_engine_host": 1
+  }
+}
