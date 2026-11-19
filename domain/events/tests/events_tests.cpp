@@ -394,7 +394,9 @@ struct World {
     }
   }
 
-  World() {
+  // With a door, the door is installed first (events.h, `DoorBinding`).
+  explicit World(sim::Door* door = nullptr) {
+    if (door != nullptr) door->install(scheduler);
     blast = bus.register_type<test::Blast>();
     ping = bus.register_type<test::Ping>();
     player = bus.add_source("player", true);
@@ -536,4 +538,53 @@ TEST_CASE("events: external raises written to a file replay to the same deliveri
   // A file cut short is refused, and leaves nothing behind.
   CHECK_FALSE(read.deserialize(std::string_view(bytes).substr(0, bytes.size() - 1), &error));
   CHECK(read.size() == 0u);
+}
+
+// The same run through the one recorded door (roadmap S18): the player's raises recorded into a
+// `sim::Door` as player-origin entries, the door's record written and read back, and the replay
+// driven by the door alone — the host raises nothing and calls nothing between ticks, and its own
+// attempts to raise are not what the world hears.
+TEST_CASE("events: external raises recorded through the door replay to the same deliveries") {
+  std::string bytes;
+  u64 recorded_hash = 0;
+  u64 recorded_state = 0;
+  {
+    sim::Door door;
+    World w(&door);
+    Vector<u16> types;
+    subscribe_world(w, types);
+    DoorBinding binding(w.bus, door);
+    for (u32 t = 0; t < 40u; ++t) {
+      if (t % 3u == 0u) {
+        Emitter emit = w.bus.emitter(w.player, t);
+        test::Blast blast;
+        blast.n = t * 17u;
+        blast.at = WorldPos{static_cast<f64>(t), 0.0, 0.0};
+        emit.raise(w.blast, blast);
+      }
+      w.scheduler.step();
+    }
+    recorded_hash = w.bus.delivery_hash();
+    recorded_state = w.state;
+    REQUIRE(door.entries().size() == 14u);
+    CHECK(door.entries()[0].origin == sim::DoorOrigin::Player);
+    CHECK(door.entries()[0].delivery == sim::DoorDelivery::Between);
+    CHECK(door.entries()[0].kind == DoorBinding::kind());
+    CHECK(door.entries()[0].tick == 1u);  // raised before tick 1, so between tick 0 and tick 1
+    door.serialize(bytes);
+  }
+  sim::Door door;
+  std::string error;
+  REQUIRE_MESSAGE(door.deserialize(bytes, &error), error);
+  World w(&door);
+  Vector<u16> types;
+  subscribe_world(w, types);
+  DoorBinding binding(w.bus, door);
+  door.begin_replay();
+  for (u32 t = 0; t < 40u; ++t)
+    w.scheduler.step();
+  CHECK(door.stats().replayed == 14u);
+  CHECK(binding.refused() == 0u);
+  CHECK(w.bus.delivery_hash() == recorded_hash);
+  CHECK(w.state == recorded_state);
 }

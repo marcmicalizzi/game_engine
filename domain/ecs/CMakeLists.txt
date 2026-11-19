@@ -35,6 +35,7 @@ engine_module_tests(NAME ecs
   SOURCES tests/ecs_tests.cpp tests/component_tests.cpp tests/system_tests.cpp
           tests/identity_tests.cpp tests/world_command_tests.cpp tests/materialize_tests.cpp
           tests/scheduled_tick_tests.cpp tests/size_table.cpp tests/tick_hash_tests.cpp
+          tests/door_cadence_tests.cpp
   DEPS ecs_test_types doc input io)
 
 # The E6 half that measures flecs: 10^5 entities with relationships and a hierarchy, four
