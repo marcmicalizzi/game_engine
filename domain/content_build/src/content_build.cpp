@@ -527,18 +527,20 @@ bool read_pack_classes(const materials::Pack& pack, const content_class::Categor
   JsonValue document;
   const JsonParseResult parsed = parse_json(text, document, strict);
   const JsonValue* roles = parsed.ok && document.is_object() ? document.find("roles") : nullptr;
-  if (!parsed.ok || roles == nullptr || !roles->is_array()) {
+  // `roles` is an object, a role's name to its entry (materials.h, `read_pack`).
+  if (!parsed.ok || roles == nullptr || !roles->is_object()) {
     why = path + ": not a pack's roles" +
           (parsed.duplicate_key.empty() ? "" : " (the key '" + parsed.duplicate_key + "' twice)");
     return false;
   }
-  for (usize r = 0; r < roles->size(); ++r) {
-    const JsonValue& role = (*roles)[r];
+  const JsonValue::Object& entries = roles->as_object();
+  for (u32 r = 0; r < entries.size(); ++r) {
+    const JsonValue& role = entries.value_at(r);
     if (!role.is_object() || !role.contains("content_classes")) continue;
     content_class::ContentClasses one;
     std::string error;
     if (!content_class::read_sidecar_classes(categories, write_json(role), one, error)) {
-      why = path + " role " + std::to_string(r) + ": " + error;
+      why = path + " role '" + entries.key_at(r) + "': " + error;
       return false;
     }
     out = content_class::join(out, one);
