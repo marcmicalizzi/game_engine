@@ -16,11 +16,31 @@ namespace {
 
 constexpr f64 k_ms_per_ns = 1e-6;
 
-// One frame of the capture: its mark's index and its interval, nanoseconds from the origin.
+// A moment of the capture: a time, and the event's place in the recording. **The clock is coarser
+// than the code it times** (profiler.md, "Events on one tick of the clock"): on Windows it steps
+// 100 ns, and a zone, a frame's end and the next frame's mark can all carry one stamp. Where the
+// clock cannot tell two events apart, the order they were recorded in does, and every comparison
+// that places a zone in a frame, or an end at its mark, is on this pair, never on the time alone.
+struct Moment {
+  i64 ns = 0;
+  u64 seq = 0;
+};
+bool before(const Moment& a, const Moment& b) noexcept {
+  return a.ns != b.ns ? a.ns < b.ns : a.seq < b.seq;
+}
+// What a frame ended by the capture's stop has for its end's place: after every event.
+constexpr u64 k_seq_stop = ~0ull;
+
+// One frame of the capture: its mark's index and its interval, nanoseconds from the origin, with
+// the places of its mark and of what ended it (its end event, the next mark, or the stop).
 struct Frame {
   u64 index = 0;
   i64 begin_ns = 0;
   i64 end_ns = 0;
+  u64 begin_seq = 0;
+  u64 end_seq = k_seq_stop;
+  Moment begin() const noexcept { return {begin_ns, begin_seq}; }
+  Moment end() const noexcept { return {end_ns, end_seq}; }
 };
 
 // One name while the report is built: its per-frame sums in `sums` (one per window frame).
@@ -58,19 +78,21 @@ Accumulator& find_or_add(Accumulators& names, const char* name, u32 frames) {
   return names.list[at];
 }
 
-// The window frame holding `ns`, or `~0u`: frames are sorted by begin and do not overlap.
-u32 frame_at(const Vector<Frame>& frames, i64 ns) noexcept {
+// The window frame holding `at`, or `~0u`: frames are sorted by begin and do not overlap. A frame
+// holds what is at or after its mark and before what ended it, by time and then by recording: a
+// zone stamped on the tick of its frame's end and recorded before that end is the frame's, and one
+// recorded after it is not.
+u32 frame_at(const Vector<Frame>& frames, const Moment& at) noexcept {
   u32 lo = 0, hi = frames.size();
   while (lo < hi) {
     const u32 mid = lo + (hi - lo) / 2;
-    if (frames[mid].begin_ns <= ns)
+    if (!before(at, frames[mid].begin()))
       lo = mid + 1;
     else
       hi = mid;
   }
   if (lo == 0) return ~0u;
-  const Frame& f = frames[lo - 1];
-  return ns < f.end_ns ? lo - 1 : ~0u;
+  return before(at, frames[lo - 1].end()) ? lo - 1 : ~0u;
 }
 
 // The frames by their marks' indices, for a value's lookup: a capture holds thousands of frames
@@ -145,11 +167,12 @@ bool usable_ms(f64 ms) noexcept { return std::isfinite(ms) && std::fabs(ms) <= k
 
 // Where a capture whose buffer filled stops being whole (profiler.md, "A capture that filled").
 struct Cut {
-  bool truncated = false;  // events were refused
-  i64 at_ns = 0;           // when the buffer filled (or, with no stamp, the last event recorded)
-  bool in_frame = false;   // a frame was in progress then and is left out
-  u64 frame = 0;           // its mark's index
-  i64 frame_begin_ns = 0;  // and its mark: zones from here on belong to no whole frame
+  bool truncated = false;   // events were refused
+  i64 at_ns = 0;            // when the buffer filled (or, with no stamp, the last event recorded)
+  bool in_frame = false;    // a frame was in progress then and is left out
+  u64 frame = 0;            // its mark's index
+  i64 frame_begin_ns = 0;   // and its mark: zones from here on belong to no whole frame
+  u64 frame_begin_seq = 0;  // the mark's place in the recording
 };
 
 Cut cut_of(std::span<const CaptureEvent> events, const CaptureInfo& info) {
@@ -171,36 +194,47 @@ Cut cut_of(std::span<const CaptureEvent> events, const CaptureInfo& info) {
 // than stretched to the stop (which made a 20 s capture that filled at 4 s report a 16 s frame).
 Vector<Frame> frames_of(std::span<const CaptureEvent> events, const CaptureInfo& info, Cut& cut) {
   Vector<Frame> frames;
-  for (const CaptureEvent& e : events)
-    if (e.kind == profiling::CaptureKind::frame) frames.push_back({e.frame, e.begin_ns, -1});
+  for (u64 i = 0; i < events.size(); ++i) {
+    const CaptureEvent& e = events[i];
+    if (e.kind == profiling::CaptureKind::frame)
+      frames.push_back({e.frame, e.begin_ns, -1, i, k_seq_stop});
+  }
+  // By time; marks on one tick keep the order they were recorded in (the sort is stable).
   std::stable_sort(frames.begin(), frames.end(),
                    [](const Frame& a, const Frame& b) { return a.begin_ns < b.begin_ns; });
-  // Each end is matched to the latest mark of its index that began at or before it, found by a
-  // binary search over the marks sorted by (index, begin) — the walk back from the newest frame it
-  // replaces was frames² / 2 compares with a renderer's increasing indices, run twice for a report
-  // with a trace (batch 68's review of the capture). Marks equal in both keep their begin order, so
-  // the last of them is the one the walk found.
+  // Each end is matched to the latest mark of its index at or before it, found by a binary search
+  // over the marks sorted by (index, moment) — the walk back from the newest frame it replaces was
+  // frames² / 2 compares with a renderer's increasing indices, run twice for a report with a trace
+  // (batch 68's review of the capture). "Before" is by time and then by recording, so an end
+  // stamped on the tick of the next mark of its own index (a host that numbers its frames by
+  // something else, ending one and marking the next in one tick) ends the frame it was recorded
+  // after, not the next.
   struct Mark {
     u64 index = 0;
-    i64 begin_ns = 0;
+    Moment begin;
     u32 at = 0;
   };
   Vector<Mark> marks;
   marks.reserve(frames.size());
   for (u32 i = 0; i < frames.size(); ++i)
-    marks.push_back({frames[i].index, frames[i].begin_ns, i});
-  const auto before = [](const Mark& a, const Mark& b) {
-    return a.index != b.index ? a.index < b.index : a.begin_ns < b.begin_ns;
+    marks.push_back({frames[i].index, frames[i].begin(), i});
+  const auto mark_before = [](const Mark& a, const Mark& b) {
+    return a.index != b.index ? a.index < b.index : before(a.begin, b.begin);
   };
-  std::stable_sort(marks.begin(), marks.end(), before);
-  for (const CaptureEvent& e : events) {
+  std::stable_sort(marks.begin(), marks.end(), mark_before);
+  for (u64 i = 0; i < events.size(); ++i) {
+    const CaptureEvent& e = events[i];
     if (e.kind != profiling::CaptureKind::frame_end) continue;
     const Mark* first = marks.data();
-    const Mark* after =
-        std::upper_bound(first, first + marks.size(), Mark{e.frame, e.begin_ns, 0}, before);
+    const Mark* after = std::upper_bound(first, first + marks.size(),
+                                         Mark{e.frame, Moment{e.begin_ns, i}, 0}, mark_before);
     if (after == first || (after - 1)->index != e.frame) continue;
     Frame& f = frames[(after - 1)->at];
-    if (f.end_ns < 0 || e.begin_ns < f.end_ns) f.end_ns = e.begin_ns;
+    if (f.end_ns < 0 ||
+        e.begin_ns < f.end_ns) {  // the earliest end, and of two on a tick the first
+      f.end_ns = e.begin_ns;
+      f.end_seq = i;
+    }
   }
   cut = cut_of(events, info);
   if (cut.truncated && !frames.empty() && frames[frames.size() - 1].end_ns < 0) {
@@ -208,14 +242,22 @@ Vector<Frame> frames_of(std::span<const CaptureEvent> events, const CaptureInfo&
     cut.in_frame = true;
     cut.frame = last.index;
     cut.frame_begin_ns = last.begin_ns;
+    cut.frame_begin_seq = last.begin_seq;
     frames.pop_back();
   }
   for (u32 i = 0; i < frames.size(); ++i) {
-    const i64 next = i + 1 < frames.size() ? frames[i + 1].begin_ns
-                     : cut.in_frame        ? cut.frame_begin_ns
-                                           : info.stopped_ns;
-    if (frames[i].end_ns < 0 || frames[i].end_ns > next) frames[i].end_ns = next;
-    frames[i].end_ns = std::max(frames[i].end_ns, frames[i].begin_ns);
+    Frame& f = frames[i];
+    const Moment next = i + 1 < frames.size() ? frames[i + 1].begin()
+                        : cut.in_frame        ? Moment{cut.frame_begin_ns, cut.frame_begin_seq}
+                                              : Moment{info.stopped_ns, k_seq_stop};
+    if (f.end_ns < 0 || before(next, f.end())) {
+      f.end_ns = next.ns;
+      f.end_seq = next.seq;
+    }
+    if (f.end_ns < f.begin_ns) {  // a stop read before the mark: an empty frame, holding nothing
+      f.end_ns = f.begin_ns;
+      f.end_seq = f.begin_seq;
+    }
   }
   return frames;
 }
@@ -374,12 +416,20 @@ FrameReport build_report(std::span<const CaptureEvent> events, const CaptureInfo
     }
   }
 
-  for (const CaptureEvent& e : events) {
+  for (u64 i = 0; i < events.size(); ++i) {
+    const CaptureEvent& e = events[i];
     if (e.kind == profiling::CaptureKind::zone) {
       // A zone that began in the frame cut off, or after the buffer filled, belongs to no whole
-      // frame and is not counted, inside a frame or outside.
-      if (cut.truncated && e.begin_ns >= (cut.in_frame ? cut.frame_begin_ns : cut.at_ns)) continue;
-      const u32 f = frame_at(frames, e.begin_ns);
+      // frame and is not counted, inside a frame or outside. "In the frame cut off" is at or after
+      // its mark by time and then by recording: the last whole frame's last zone can carry the
+      // stamp of the mark that follows it. And a recorded zone on the tick the buffer filled was
+      // stamped before the fill (every recorded event was), so only one after it is left out.
+      const Moment began{e.begin_ns, i};
+      if (cut.truncated &&
+          (cut.in_frame ? !before(began, Moment{cut.frame_begin_ns, cut.frame_begin_seq})
+                        : e.begin_ns > cut.at_ns))
+        continue;
+      const u32 f = frame_at(frames, began);
       Accumulator& a = find_or_add(zones, e.name, n);
       const f64 ms = static_cast<f64>(e.duration_ns()) * k_ms_per_ns;
       if (f == ~0u) {
