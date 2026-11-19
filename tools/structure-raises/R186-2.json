@@ -1,0 +1,12 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R186-2",
+  "reason": "R186-2: R4 stage 1 and 2 (the targets a frame reads, the graph's lifetimes) on renderer.md and gfx.md, the pages that describe them",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": -6,
+    "page:docs/subsystems/renderer.md": 2827,
+    "page:docs/subsystems/gfx.md": 707
+  }
+}
