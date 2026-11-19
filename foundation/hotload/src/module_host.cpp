@@ -1180,7 +1180,11 @@ Result ModuleHost::resolve(std::string_view type_name, std::string_view path, Fi
       return Result::Ok;
     }
   }
-  const TypeInfo* root = schema::Registry::global().find(type_name);
+  // A module built against an older schema names a type or a field by a name it had before a
+  // rename (`@alias`, D28): it gets the answer every other reader gets (`Registry::resolve`,
+  // `TypeInfo::find_field_alias`; roadmap D43), and the entry is kept under the current names, so
+  // the old and the new spelling of one path share it and a message names what the schema says.
+  const TypeInfo* root = schema::Registry::global().resolve(type_name);
   if (root == nullptr || root->kind != Kind::Struct) {
     pending_unresolved_.push_back("no schema struct named '" + std::string(type_name) + "'");
     return Result::NotFound;
@@ -1189,10 +1193,12 @@ Result ModuleHost::resolve(std::string_view type_name, std::string_view path, Fi
   const TypeRef* ref = nullptr;
   u32 offset = 0;
   std::string_view rest = path;
+  std::string current_path;
   while (true) {
     const usize dot = rest.find('.');
     const std::string_view segment = rest.substr(0, dot);
     const schema::FieldInfo* field = type->find_field(segment);
+    if (field == nullptr) field = type->find_field_alias(segment);
     if (field == nullptr) {
       pending_unresolved_.push_back(std::string(type->qualified_name) + " has no field '" +
                                     std::string(segment) + "'" +
@@ -1201,6 +1207,8 @@ Result ModuleHost::resolve(std::string_view type_name, std::string_view path, Fi
     }
     offset += field->offset;
     ref = &field->type;
+    if (!current_path.empty()) current_path += '.';
+    current_path += field->name;
     if (dot == std::string_view::npos) break;
     if (ref->kind != Kind::Struct || ref->type == nullptr) {
       pending_unresolved_.push_back(std::string(type->qualified_name) + "." + std::string(segment) +
@@ -1211,8 +1219,17 @@ Result ModuleHost::resolve(std::string_view type_name, std::string_view path, Fi
     type = ref->type;
     rest = rest.substr(dot + 1);
   }
+  const std::string_view current_type = root->qualified_name;
+  for (usize i = 0; i < fields_.size(); ++i) {
+    const Field& f = fields_[static_cast<u32>(i)];
+    if (f.type_name == current_type && f.path == current_path) {
+      out.index = static_cast<u32>(i);
+      return Result::Ok;
+    }
+  }
   out.index = static_cast<u32>(fields_.size());
-  fields_.push_back(Field{root, ref, offset, ref->kind, std::string(type_name), std::string(path)});
+  fields_.push_back(
+      Field{root, ref, offset, ref->kind, std::string(current_type), std::move(current_path)});
   return Result::Ok;
 }
 

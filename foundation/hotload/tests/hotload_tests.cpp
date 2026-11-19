@@ -1083,6 +1083,17 @@ TEST_CASE("hotload: views read through the host's descriptors, and go stale") {
   FieldRef again;
   REQUIRE(host.resolve(type, "health", again) == Result::Ok);
   CHECK(again.index == health.index);  // one entry per path, however often it is resolved
+  // A module built before a rename names the type, or a field, by its former name (`@alias`;
+  // roadmap D43): it resolves to the same entry the current names do, as every other reader of a
+  // name answers through `Registry::resolve` and `find_field_alias`.
+  FieldRef former;
+  REQUIRE(host.resolve("engine.hotload_test.Person", "health", former) == Result::Ok);
+  CHECK(former.index == health.index);
+  REQUIRE(host.resolve(type, "attributes.might", former) == Result::Ok);
+  CHECK(former.index == strength.index);
+  REQUIRE(host.resolve("engine.hotload_test.Person", "attributes.might", former) == Result::Ok);
+  CHECK(former.index == strength.index);
+  CHECK(host.resolve("engine.hotload_test.Person", "helth", bad) == Result::NotFound);
 
   View view = host.bind(a);
   Value v;
