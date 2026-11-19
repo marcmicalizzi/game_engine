@@ -1041,7 +1041,8 @@ TEST_CASE("engine-view: past the budget the chain drops the same structures in e
        {"--tunable", "renderer.rt.cache=true", "--tunable", "renderer.flora.motion=true"},
        true}};
   for (const Mode& mode : modes) {
-    CAPTURE(mode.name);
+    const std::string name = mode.name;
+    CAPTURE(name);
     JsonValue summaries[2];
     for (u32 order = 0; order < 2; ++order) {
       std::vector<std::string> args =
@@ -1092,11 +1093,9 @@ TEST_CASE("engine-view: past the budget the chain drops the same structures in e
       REQUIRE(built[order][1] > 0);  // some frame was recorded
       CHECK(built[order][0] > 0);    // and none kept nothing
       CHECK(built[order][1] <= field_u64(*rt[order], "capacity"));
-      if (mode.cache) {
-        const JsonValue* cache = rt[order]->find("cache");
-        REQUIRE(cache != nullptr);
-        CHECK(field_u64(*cache, "meshes") > 0);
-        CHECK(field_u64(*cache, "unbuilt_frames") == 0);
+      if (mode.cache) {  // a benchmark's summary is FlythroughRt's, its cache fields flat
+        CHECK(field_u64(*rt[order], "cache_meshes") > 0);
+        CHECK(field_u64(*rt[order], "cache_unbuilt_frames") == 0);
       }
     }
     REQUIRE(field_u64(*rt[0], "capacity") == field_u64(*rt[1], "capacity"));
