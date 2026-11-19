@@ -417,6 +417,44 @@ bool layer_in_range(const RouteLayer& p, std::string& error) {
   return true;
 }
 
+bool detail::plan_fits_layer(const RouteLayer& p, const RouteNetwork& net, std::string& error) {
+  if (!layer_in_range(p, error)) return false;
+  const i64 s_mm = scene_gen::nearest_mm(wide(p.spacing_m));
+  const i64 x_mm = scene_gen::nearest_mm(p.region_min[0]);
+  const i64 z_mm = scene_gen::nearest_mm(p.region_min[1]);
+  const i64 w = (scene_gen::nearest_mm(p.region_max[0]) - x_mm) / s_mm + 1;
+  const i64 h = (scene_gen::nearest_mm(p.region_max[1]) - z_mm) / s_mm + 1;
+  if (net.spacing_mm != s_mm || net.x_mm != x_mm || net.z_mm != z_mm || i64{net.width} != w ||
+      i64{net.depth} != h) {
+    error = "routes: the plan's lattice is not its layer's";
+    return false;
+  }
+  // A station lies on a line through lattice points (to the centimetre), and the stationing spaces
+  // a line's stations at most one and a half `station_m` apart along it (`station`'s count rounds
+  // the stations a line holds); a centimetre of rounding each side on top.
+  const f64 x0 = static_cast<f64>(x_mm) / 1000.0 - .01, z0 = static_cast<f64>(z_mm) / 1000.0 - .01;
+  const f64 x1 = static_cast<f64>(x_mm + (w - 1) * s_mm) / 1000.0 + .01;
+  const f64 z1 = static_cast<f64>(z_mm + (h - 1) * s_mm) / 1000.0 + .01;
+  const f64 apart = 1.5 * wide(p.station_m) + .02;
+  for (const RouteLine& l : net.lines) {
+    for (u32 k = 0; k < l.stations.size(); ++k) {
+      const Station& st = l.stations[k];
+      if (!in(st.at.x, x0, x1) || !in(st.at.z, z0, z1) || !in(st.at.y, -1e9, 1e9) ||
+          !in(wide(st.ground), -1e9, 1e9)) {
+        error = "routes: the plan holds a station off its lattice";
+        return false;
+      }
+      if (k == 0) continue;
+      const f64 dx = st.at.x - l.stations[k - 1].at.x, dz = st.at.z - l.stations[k - 1].at.z;
+      if (!(dx * dx + dz * dz <= apart * apart)) {
+        error = "routes: the plan holds two stations further apart than its stationing makes them";
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 bool detail::sample_lattice(const RouteLayer& p, const scene_gen::Ground& ground,
                             jobs::JobSystem* jobs, RouteNetwork& out, std::string& error,
                             const scene_gen::Exclusion* water) {

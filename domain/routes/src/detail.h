@@ -16,5 +16,11 @@ bool sample_lattice(const RouteLayer& layer, const scene_gen::Ground& ground, jo
 // the lines. The one place it runs, counted for `plans_made`.
 bool plan_from_lattice(const RouteLayer& layer, const scene_gen::Ground& ground, RouteNetwork& net,
                        std::string& error, const scene_gen::Exclusion* water);
+// A plan read from the cache against the layer it claims (T198; routes.md, "One plan"): its
+// lattice is the one `sample_lattice` makes of the layer's region, and every station is finite,
+// inside that lattice, and as near the one before it as the stationing spaces them. A plan's
+// closing hash is not a MAC, so a writer's stations are refused here before a band is made of
+// them. False with a sentence.
+bool plan_fits_layer(const RouteLayer& layer, const RouteNetwork& net, std::string& error);
 
 }  // namespace engine::routes::detail
