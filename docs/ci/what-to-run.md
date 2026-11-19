@@ -33,23 +33,37 @@ what the slot pool is for.
 An early attempt at a persistent worktree per agent was refused by the harness (an isolated agent may
 write only in its own worktree; one launched from the repository root may not switch into another).
 That is a fact about the harness's own isolation, not about this arrangement: the coordinator keeps
-four **slot worktrees**, `.claude/worktrees/slot-1` to `slot-4`, each with warm `build/msvc-debug` and
-`build/msvc-release`, and **assigns one to each heavy agent by its brief**. The agent leaves its
-harness worktree untouched, works in the slot on a branch of its own (`b57-<row>`), and the
-coordinator resets the slot to `main` after the merge. A slot has no branch of its own: between agents
-it is detached at a commit of `main`, so no two worktrees ever hold one branch.
+**slot worktrees**, `.claude/worktrees/slot-1` to `slot-N` (ten since 2026-11-18, `slot.ps1 add`
+makes another; the pool grows with the agents two accounts run), each with a warm
+`build/msvc-debug`, and `build/msvc-release` where a row flies or measures, and **assigns one to each
+heavy agent by its brief**. The slots exist for warmer builds and for fewer bytes written: a fresh
+worktree writes a whole build tree before its first useful edit, a warm slot writes what its change
+touched ([what a build writes](#what-a-build-writes)). The coordinator claims the slot for the row
+before the agent starts and the agent never runs `slot.ps1`; it works in the slot on a branch of its
+own (`b57-<row>`), and the coordinator releases the slot and resets it to `main` after the merge
+(`reset` refuses a claimed slot: release first). A slot has no branch of its own: between agents it
+is detached at a commit of `main`, so no two worktrees ever hold one branch.
+
+**A slot agent's shell starts in the primary checkout, not in its slot**, because the harness starts
+it at the repository root. So every command names the slot (`git -C <slot>`,
+`pwsh -WorkingDirectory <slot>`) and every path is absolute: a relative path writes into the primary
+checkout, which no agent writes (four stray writes landed there in batch 68). A slot builds
+`msvc-debug` unless its row flies or measures. A slot's build trees are about 21 GB for `msvc-debug`
+and 20 GB for `msvc-release`, about 20,000 files each, so `slot.ps1 list` prints each tree's size and
+last use and the pool's total; a new slot's first build is whole, from the compiler cache.
 
 `tools/slot.ps1` keeps that honest (exit 0 done, 1 refused with the reason, 2 usage):
 
 | Command | What it does |
 |---|---|
-| `slot.ps1 list` | each slot's path, HEAD, branch or detached, dirty count, its build directories with the time of the newest file under each, and its owner |
+| `slot.ps1 list` | each slot's path, HEAD, branch or detached, dirty count, its build directories with the time of the newest file under each (its last use), size and file count, and its owner; then the pool's total |
+| `slot.ps1 add -Slot 11 [-To <sha\|main>]` | `git worktree add --detach` at the commit in the slots directory; refuses a slot that exists and an unknown commit; no build: warm it |
 | `slot.ps1 claim -Slot 2 -Owner S100` / `release -Slot 2` | writes or removes `build/slot-owner.json` (owner, time, branch; git-ignored with `build/`); a second owner is refused |
 | `slot.ps1 reset -Slot 2 [-To <sha\|main>] [-Force]` | `git checkout --detach`, `build/` left in place; refuses a dirty tree, a process whose executable is under the slot (best effort: a compiler, a test run, an engine binary), and a claimed slot unless `-Force` |
 | `slot.ps1 warm -Slot 2 [-Preset msvc-debug,msvc-release] [-Base <sha>]` | `tools/dev.ps1 build` for each preset inside the slot, `-Affected -Base` when a base is given; honours `CMAKE_BUILD_PARALLEL_LEVEL` |
 
 `tools/slot.Tests.ps1` (CTest `tools.slot`) drives every command over a throwaway repository with two
-worktrees, including the refusals. A slot is not an agent's own checkout to leave dirty: whoever
+worktrees (and a third that `add` makes), including the refusals. A slot is not an agent's own checkout to leave dirty: whoever
 finishes commits or abandons the branch, and the coordinator releases and resets the slot.
 
 What it saves, measured on 2026-11-08 (host i9-10980XE, 36 threads, `CMAKE_BUILD_PARALLEL_LEVEL=4`,
@@ -67,6 +81,27 @@ with ccache on and warm from earlier worktrees:
 So a fresh worktree costs about eight minutes of build before the first useful edit, a third of it
 shaders that nothing caches, and a warm slot costs seconds. The shader step is the part ccache cannot
 help with: roadmap T76.
+
+### What a build writes
+
+Drive wear is a cost the owner watches (2026-11-18), so the pool is also judged by the bytes a build
+writes ([T185's measurements](../experiments/build-writes-2026-11-18.md), 2026-11-18, `msvc-debug`):
+
+- **A fresh worktree's first build writes the whole tree, about 18.5 GB** (17.5 GB in 21,000 files:
+  `.pdb` 5.8, `.ilk` 4.1, objects 3.4, executables 1.8, libraries 1.4; plus 0.9 GB of dependency
+  sources), **where a warm slot writes about 0.4 GB for a one-line change**: one object, its module's
+  `.lib` archived again whole (the renderer's 136 MB, the largest single write), and incremental
+  relinks that change a few percent of their outputs' pages. That difference is what the pool saves.
+- **ccache's `hard_link` stays off**: it would save the objects' 3.4 GB of a cold build and nothing
+  of an incremental one, but a linked object is stored uncompressed, and these `/Z7` objects compress
+  5.1 to 1, so the 30 GB cache would hold about two hours of use instead of a day; the page has the
+  rest.
+
+To watch the machine as a whole over a window, `tools/disk-writes.ps1` (read-only, no elevation)
+prints the bytes written per physical disk and per volume, and the processes that asked to write the
+most, from the performance counters; `-Out` keeps the same as JSON. A process that lives less than
+one sample (a compiler) and a mapped file's writes do not show in its process list, which is why the
+per-build figures were taken with a job object instead. It is not run by the gate.
 
 ## What "affected" means
 

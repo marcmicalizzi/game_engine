@@ -14,7 +14,12 @@
 
   Commands:
     list      Each slot's path, HEAD, branch or detached, dirty count, the build directories that
-              exist with the time of the newest file under each, and the owner marker.
+              exist with the time of the newest file under each (its last use), its size and file
+              count, and the owner marker; then the pool's total. A warm msvc-debug tree is about
+              21 GB in 20,000 files, so the sizes are what the pool costs the drive it lives on.
+    add       -Slot N [-To <sha|main>]. Makes slot-N: `git worktree add --detach` at the commit
+              (default main) in the slots directory. Refuses a slot that exists. The new slot has
+              no build/: its first build is whole, from the compiler cache (warm it).
     reset     -Slot N [-To <sha|main>] [-Force]. Detaches the slot at the commit (default main).
               Refuses a dirty tree, a slot with a process whose executable is under it, and a
               claimed slot unless -Force. Leaves build/ in place.
@@ -27,14 +32,19 @@
 
   -SlotsDir overrides where the slot-N directories are looked for (the tests use it); the default
   is <main checkout>/.claude/worktrees, found through the git common directory so the script works
-  from any worktree.
+  from any worktree. -Repo names the repository `add` makes a worktree of (the tests use it); the
+  default is that main checkout.
+
+  Who runs it: the coordinator claims a slot for a row before the row's agent starts, and resets it
+  after the merge; the agent works in the slot and never runs this script (docs/ci/what-to-run.md,
+  "The slot pool").
 
   Exit codes: 0 done, 1 refused or failed (the reason is printed), 2 usage error.
 #>
 [CmdletBinding()]
 param(
   [Parameter(Position = 0)]
-  [ValidateSet('list', 'reset', 'claim', 'release', 'warm')]
+  [ValidateSet('list', 'add', 'reset', 'claim', 'release', 'warm')]
   [string]$Command = 'list',
   [int]$Slot = 0,
   [string]$To = 'main',
@@ -42,6 +52,7 @@ param(
   [string[]]$Preset = @('msvc-debug', 'msvc-release'),
   [string]$Base,
   [string]$SlotsDir,
+  [string]$Repo,
   [switch]$Force
 )
 
@@ -58,12 +69,34 @@ function Stop-Refused([string]$message) {
   exit 1
 }
 
-function Get-SlotsDir {
-  if ($SlotsDir) { return [System.IO.Path]::GetFullPath($SlotsDir) }
+function Get-MainRoot {
+  if ($Repo) { return [System.IO.Path]::GetFullPath($Repo) }
   $common = & git -C $ScriptRoot rev-parse --path-format=absolute --git-common-dir 2>$null
   if (-not $common) { Stop-Usage 'not inside a git checkout' }
-  $main = Split-Path -Parent ([System.IO.Path]::GetFullPath($common))
-  return Join-Path $main '.claude/worktrees'
+  return Split-Path -Parent ([System.IO.Path]::GetFullPath($common))
+}
+
+function Get-SlotsDir {
+  if ($SlotsDir) { return [System.IO.Path]::GetFullPath($SlotsDir) }
+  return Join-Path (Get-MainRoot) '.claude/worktrees'
+}
+
+# A size as list prints it: MB under a gigabyte, GB above (10^6 and 10^9 bytes).
+function Format-Size([long]$bytes) {
+  if ($bytes -lt 1e9) { return ('{0:N0} MB' -f ($bytes / 1e6)) }
+  return ('{0:N1} GB' -f ($bytes / 1e9))
+}
+
+# One pass over a build tree: its size, its file count and its newest write (the tree's last use).
+# DirectoryInfo's enumeration carries each file's length and time, so this costs one directory walk
+# and no stat per file: a few seconds for a 20,000-file tree.
+function Measure-BuildTree([string]$path) {
+  $bytes = [long]0; $files = 0; $newest = [datetime]::MinValue
+  foreach ($f in ([System.IO.DirectoryInfo]::new($path)).EnumerateFiles('*', [System.IO.SearchOption]::AllDirectories)) {
+    $bytes += $f.Length; $files++
+    if ($f.LastWriteTime -gt $newest) { $newest = $f.LastWriteTime }
+  }
+  [pscustomobject]@{ Bytes = $bytes; Files = $files; Newest = if ($files -gt 0) { $newest } else { $null } }
 }
 
 function Get-SlotPath([int]$n) {
@@ -105,6 +138,7 @@ function Get-SlotDirs {
 function Invoke-List {
   $slots = Get-SlotDirs
   if ($slots.Count -eq 0) { Write-Host "slot: no slot worktrees under $(Get-SlotsDir)"; return }
+  $poolBytes = [long]0; $poolFiles = 0
   foreach ($s in $slots) {
     $head = (Invoke-Git $s.FullName @('rev-parse', '--short=8', 'HEAD')).Out | Select-Object -First 1
     $branch = (Invoke-Git $s.FullName @('symbolic-ref', '--short', '-q', 'HEAD')).Out | Select-Object -First 1
@@ -116,16 +150,32 @@ function Invoke-List {
     $builds = @()
     if (Test-Path -LiteralPath $buildRoot) {
       foreach ($b in Get-ChildItem -LiteralPath $buildRoot -Directory) {
-        $newest = Get-ChildItem -LiteralPath $b.FullName -Recurse -File -ErrorAction SilentlyContinue |
-          Sort-Object LastWriteTime -Descending | Select-Object -First 1
-        $when = if ($newest) { $newest.LastWriteTime.ToString('yyyy-MM-dd HH:mm') } else { 'empty' }
-        $builds += "$($b.Name) (last $when)"
+        $t = Measure-BuildTree $b.FullName
+        $poolBytes += $t.Bytes; $poolFiles += $t.Files
+        $when = if ($t.Newest) { $t.Newest.ToString('yyyy-MM-dd HH:mm') } else { 'empty' }
+        $builds += "$($b.Name) (last $when, $(Format-Size $t.Bytes), $($t.Files) files)"
       }
     }
     Write-Host "  builds: $(if ($builds.Count) { $builds -join ', ' } else { 'none' })"
     $m = Read-Marker $s.FullName
     if ($m) { Write-Host "  owner: $($m.owner) since $($m.time) on $($m.branch)" } else { Write-Host '  owner: free' }
   }
+  Write-Host "pool: $($slots.Count) slots, build trees $(Format-Size $poolBytes) in $poolFiles files"
+}
+
+function Invoke-Add {
+  if ($Slot -lt 1) { Stop-Usage '-Slot N is required (1 or more)' }
+  $dir = Get-SlotsDir
+  $path = Join-Path $dir "slot-$Slot"
+  if (Test-Path -LiteralPath $path) { Stop-Refused "slot-$Slot already exists at $path" }
+  $main = Get-MainRoot
+  $rev = Invoke-Git $main @('rev-parse', '--verify', '--quiet', "$To^{commit}")
+  if ($rev.Code -ne 0 -or -not $rev.Out[0]) { Stop-Refused "'$To' is not a commit" }
+  $sha = $rev.Out[0]
+  New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  $add = Invoke-Git $main @('worktree', 'add', '--detach', $path, $sha)
+  if ($add.Code -ne 0) { Stop-Refused "git worktree add failed: $($add.Out -join ' ')" }
+  Write-Host "slot-$Slot added at $path, detached at $($sha.Substring(0, 8)) ($To); no build yet: its first is whole, from the compiler cache (slot.ps1 warm -Slot $Slot)"
 }
 
 function Invoke-Reset {
@@ -188,6 +238,7 @@ function Invoke-Warm {
 
 switch ($Command) {
   'list'    { Invoke-List }
+  'add'     { Invoke-Add }
   'reset'   { Invoke-Reset }
   'claim'   { Invoke-Claim }
   'release' { Invoke-Release }
