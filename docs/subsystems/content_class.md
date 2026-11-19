@@ -4,7 +4,7 @@
 
 ## Purpose
 
-The vocabulary of content classes and view policies, and **the one decision every output calls**: given what a mesh is classified as and the policy of the view it is being instantiated for, admit it, omit it, or put a proxy in its place. Nothing calls it yet. The content build (C62), the record and the store (C63), `load_scene` (C64), the hosts (C65) and the refusals (C66) are the callers, and each calls this function rather than a test of its own, so that a policy means the same thing at every one of the twenty-four exits.
+The vocabulary of content classes and view policies, and **the one decision every output calls**: given what a mesh is classified as and the policy of the view it is being instantiated for, admit it, omit it, or put a proxy in its place. The scene load calls it per instance through the renderer's admission door (C64; [renderer](renderer.md#content-classes-at-load)), which reads what the content build (C62) writes. The record and the store (C63), the hosts (C65) and the refusals (C66) are the callers still to come, and each calls this function rather than a test of its own, so that a policy means the same thing at every one of the twenty-four exits.
 
 ## Owned data
 
