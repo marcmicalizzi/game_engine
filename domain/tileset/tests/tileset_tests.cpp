@@ -167,6 +167,20 @@ TEST_CASE("tileset: a heightfield round-trips, and a grid that is not its header
   off.origin_x_mm = 100;
   CHECK_FALSE(write_heightfield(tmp.file("off.json"), off, error));
   CHECK(error.find("whole number of its spacings") != std::string::npos);
+
+  // Hostile (T194): both sides at the cap made a `u32` product of 2^32 points, which wrapped to 0,
+  // so a 16 GiB grid would have been copied into an empty vector. A bounded stand-in: the header
+  // names the square over a 16-byte grid, refused by its size before the grid is read; the before
+  // needed the 16 GiB file and is the arithmetic, not run.
+  CHECK(((u64{k_max_heightfield_side} * k_max_heightfield_side) & 0xFFFF'FFFFull) == 0u);
+  REQUIRE(io::write_file(tmp.file("square.f32"), std::string(16, '\0')) == io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("square.json"),
+                         R"({"format":"engine.terrain.heightfield","version":1,"width":65536,)"
+                         R"("height":65536,"spacing_mm":1000,"origin_mm":[0,0],)"
+                         R"("data":"square.f32","data_hash":"0000000000000000"})") ==
+          io::Status::Ok);
+  CHECK_FALSE(read_heightfield(tmp.file("square.json"), back, hash, error));
+  CHECK(error.find("more than a heightfield holds") != std::string::npos);
 }
 
 TEST_CASE("tileset: every tile of every level reads back as the build computed it") {

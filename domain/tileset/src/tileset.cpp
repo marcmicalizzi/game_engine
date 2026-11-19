@@ -225,14 +225,32 @@ bool read_heightfield(const std::string& json_path, Heightfield& out, u64& sourc
   const std::string data_path = io::is_absolute_path(header.data) || dir.empty()
                                     ? header.data
                                     : io::join_path(dir, header.data);
+  // **The header's size checked before the grid is read or held** (T194, fuzzing-design.md's
+  // fourth list): `width * height` was a `u32` product, so a 65,536-point square (both sides at the
+  // cap) wrapped to 0 points and the 16 GiB grid was copied into an empty vector; and the whole
+  // file was read before its size was compared. The points must fit a `Vector`'s `u32` length, and
+  // the file is measured first.
+  const u64 points = u64{header.width} * header.height;
+  const u64 want = points * sizeof(f32);
+  if (header.width > k_max_heightfield_side || header.height > k_max_heightfield_side ||
+      points > 0xFFFF'FFFFull) {
+    error = "'" + json_path + "': its grid of " + std::to_string(header.width) + " x " +
+            std::to_string(header.height) + " points is more than a heightfield holds (" +
+            std::to_string(k_max_heightfield_side) + " a side, 2^32 - 1 points)";
+    return false;
+  }
+  io::FileInfo info;
+  if (io::stat_file(data_path, info) == io::Status::Ok && !info.is_directory && info.size != want) {
+    error = "'" + json_path + "': its grid is " + std::to_string(info.size) + " bytes, not " +
+            std::to_string(want) + " (width times height float32)";
+    return false;
+  }
   std::string grid;
   if (io::read_file(data_path, grid) != io::Status::Ok) {
     error = "'" + json_path + "': its grid '" + data_path + "' could not be read";
     return false;
   }
-  const u64 want = u64{header.width} * header.height * sizeof(f32);
-  if (header.width > k_max_heightfield_side || header.height > k_max_heightfield_side ||
-      grid.size() != want) {
+  if (grid.size() != want) {
     error = "'" + json_path + "': its grid is " + std::to_string(grid.size()) + " bytes, not " +
             std::to_string(want) + " (width times height float32)";
     return false;
@@ -244,7 +262,7 @@ bool read_heightfield(const std::string& json_path, Heightfield& out, u64& sourc
         "'" + json_path + "': its grid's bytes do not hash to data_hash '" + header.data_hash + "'";
     return false;
   }
-  out.data.resize(header.width * header.height);
+  out.data.resize(static_cast<u32>(points));
   std::memcpy(out.data.data(), grid.data(), grid.size());
   if (!check_field(out, error)) {
     error = "'" + json_path + "': " + error;
