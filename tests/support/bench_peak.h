@@ -19,8 +19,10 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include <psapi.h>
+// clang-format off: psapi.h needs windows.h first, and the include sort would put it after.
 #include <windows.h>
+#include <psapi.h>
+// clang-format on
 // minwindef.h's, which core/math's headers use as names when they come after this one.
 #undef near
 #undef far
