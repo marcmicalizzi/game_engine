@@ -296,7 +296,8 @@ void hold_hdr(gfx::DisplayEncoding encoding, f64 white_tolerance, f64 outside_to
         const u32* u = &before_codes[3 * p];
         for (u32 c = 0; c < 3; ++c)
           one_under = one_under && u[c] == before_codes[3 * (20 * k_width + 100) + c];
-        const CodeWindow w = hdr10_blend_window(u, k_blue_codes, k_blue_alpha, k_paper_white);
+        const CodeWindow w =
+            hdr10_blend_window(u, k_blue_codes, k_blue_alpha, static_cast<f64>(k_paper_white));
         for (u32 c = 0; c < 3; ++c) {
           const u32 code = with_codes[3 * p + c];
           const f64 v = static_cast<f64>(code);
@@ -335,7 +336,8 @@ void hold_hdr(gfx::DisplayEncoding encoding, f64 white_tolerance, f64 outside_to
   CHECK(outside_worst <= outside_tolerance);
   if (pq) {
     const u32* u = &before_codes[3 * (20 * k_width + 100)];
-    const CodeWindow w = hdr10_blend_window(u, k_blue_codes, k_blue_alpha, k_paper_white);
+    const CodeWindow w =
+        hdr10_blend_window(u, k_blue_codes, k_blue_alpha, static_cast<f64>(k_paper_white));
     MESSAGE("hdr10: under the blue (" << u[0] << ", " << u[1] << ", " << u[2]
                                       << "), the blend's codes red " << blend_lo[0] << ".."
                                       << blend_hi[0] << ", green " << blend_lo[1] << ".."
