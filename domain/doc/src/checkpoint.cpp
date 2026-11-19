@@ -321,6 +321,25 @@ bool parse_layer_text(const std::string& text, std::string_view path, Layer& out
   return true;
 }
 
+// A checkpoint's overrides renamed by the same rule as a loaded document's (doc.md, "A renamed type
+// or field"): its definitions were renamed as their files were read (`Layer::from_json_text`), and
+// an override's type is the one the checkpoint's own stack composes for it, asked of a document's
+// index over those layers. Without it `doc.rollback_to` diffs the document, renamed when it was
+// loaded, against a checkpoint still in the old names, and writes the old names back.
+bool rename_checkpoint_overrides(CheckpointState& out, std::string_view id, std::string* error) {
+  if (!schema::Registry::global().has_field_aliases() || out.layers.empty()) return true;
+  Document stack;
+  for (Layer& layer : out.layers)
+    stack.add_layer(std::move(layer));
+  u32 renamed = 0;
+  std::string why;
+  const bool ok = stack.rename_override_records(renamed, out.kept_names, why);
+  for (u32 i = 0; i < out.layers.size(); ++i)
+    out.layers[i] = std::move(stack.layer(i));
+  if (!ok) return fail(error, "checkpoint " + std::string(id) + ": " + why);
+  return true;
+}
+
 }  // namespace
 
 // Read at every call, not once: a test names a git that is not there for one case
@@ -590,7 +609,7 @@ bool Checkpoints::read(const io::Vfs& vfs, std::string_view dir, std::string_vie
     }
     out.layers.push_back(std::move(layer));
   }
-  return true;
+  return rename_checkpoint_overrides(out, id, error);
 }
 
 bool Checkpoints::read_blobs(const io::Vfs& vfs, std::string_view dir, std::string_view id,
