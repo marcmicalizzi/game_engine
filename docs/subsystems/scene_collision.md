@@ -491,8 +491,27 @@ declaring one leaf and hands no door: the door is made, a wall shut and a way th
 toggled while its tile is away it closes there and comes back where it was left, still one door,
 and a restore of its key wins; `a declared door turns with its piece and opens toward its swing`
 holds the hinge, the shut and open headings and the thickness's side under a quarter turn, both
-swings. **Not yet**: a drawn leaf (no tile hands the leaf's mesh beside its house; S91's picture
-leg), and `step_doors` called by a host (engine-view's walker, with the interact action).
+swings.
+
+**What is drawn swings with what collides** (2026-11-18). A leaf is drawn as an instance of its
+own mesh whose transform the tick sets, the props' path: the structures capability meshes each
+leaf alone in the door's own frame (the `leaf` scope: the hinge's foot at the origin, shut along
++x, its thickness on the `face_z` side), so the instance's transform is `door_leaf_pose(door)` —
+the hinge and the door's whole turn, nothing else — and the box the walker meets is the same pose
+moved half the leaf along, up and through. `scene_collision: a building's leaf mesh stands in its
+door's box at every angle` (`tests/structure_walk_tests.cpp`, 4 ms) meshes each of the example
+cot's five leaves, places its door off the origin under a turn of the house, and holds every vertex
+of the leaf moved by the pose inside the box at five angles of its swing (the proud board's 3 mm
+through the thickness allowed). **Built**: the leaf's mesh and recipe (`structures::leaf_recipe`,
+`leaf_path`), the pose, and the doors as a span a host reads (`doors()`). **Not built, and how**:
+the hand-over to the picture. A tile that hands a house's mesh hands each declared leaf's mesh
+beside it (its recipe is the house's in the `leaf` scope; a generator-neutral way is for the
+container to name its leaves' meshes, so the renderer's tile build adds them without knowing who
+built the house), one instance a leaf in the tile's block keyed as its door is, placed at its
+declared angle; on a tick a door turned, the host rewrites that instance in its block from
+`door_leaf_pose` (`renderer::DynamicBlock::changed`, the instances that changed and no others), so
+a frame with no door moving rewrites nothing. Until then a placed house draws its frames empty and
+its doors collide unseen.
 
 ## Holes
 

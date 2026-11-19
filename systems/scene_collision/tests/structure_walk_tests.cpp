@@ -416,3 +416,48 @@ TEST_CASE(
   MESSAGE("climbed " << climbed << " of " << flights << " flights, four house types, three seeds");
   CHECK(climbed == flights);
 }
+
+// **What is drawn swings with what collides** (S91; scene_collision.md, "Doors"; structures.md, "A
+// leaf is a mesh of its own"): every leaf of the example cot, meshed on its own (the `leaf` scope)
+// and stood where its section 53 record makes its door (`declared_door`, the house turned and
+// placed off the origin), lies inside the door's box at every angle of its swing: each vertex of
+// the leaf mesh moved by `door_leaf_pose` is within the box's half sizes of its centre in the box's
+// frame, the box's thickness short only by the proud board's 3 mm.
+TEST_CASE("scene_collision: a building's leaf mesh stands in its door's box at every angle") {
+  const structure::Description cot = structures::example_cot();
+  Vector<geometry::ClusterFileDoor> records;
+  structures::door_records(cot, records);
+  REQUIRE(records.size() == 5);
+  const f32 h = 0.38268343f, c = 0.92387953f;  // 45 degrees about +y, by halves
+  const Quat turn{0.0f, h, 0.0f, c};
+  const WorldPos origin = absolute(WorldPos::origin(), Vec3{40.0f, 2.0f, -12.0f});
+  u32 checked = 0;
+  for (u32 k = 0; k < records.size(); ++k) {
+    structures::MeshPart parts[structures::k_surfaces];
+    structures::Report report;
+    std::string error;
+    REQUIRE(structures::solve(cot, structure::MeshScope::leaf, parts, report, error, k));
+    const structures::MeshPart& leaf = parts[static_cast<u32>(structure::Surface::timber)];
+    REQUIRE(!leaf.positions.empty());
+    DoorBody door = declared_door(records[k], origin, turn, 1.0f, k + 1);
+    for (const i32 step : {0, 1, 2, 3, 4}) {
+      door.angle_mdeg = door.open_mdeg / 4 * step;
+      const DoorLeafPose pose = door_leaf_pose(door);
+      const WorldPos centre =
+          door.hinge +
+          DVec3{rotate(pose.rotation, Vec3{door.half_extents.x, door.half_extents.y, door.face_z})};
+      const Quat back = conjugate(pose.rotation);
+      f32 worst = 0.0f;
+      for (const Vec3& v : leaf.positions) {
+        const WorldPos at = pose.origin + DVec3{rotate(pose.rotation, v)};
+        const Vec3 local = rotate(back, Vec3{relative(at, centre)});
+        worst = std::max(worst, std::fabs(local.x) - door.half_extents.x);
+        worst = std::max(worst, std::fabs(local.y) - door.half_extents.y);
+        worst = std::max(worst, std::fabs(local.z) - door.half_extents.z - 0.003f);
+      }
+      CHECK(worst < 1e-4f);
+      ++checked;
+    }
+  }
+  CHECK(checked == 25);
+}
