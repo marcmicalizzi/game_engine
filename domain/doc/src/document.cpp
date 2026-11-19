@@ -18,6 +18,33 @@ namespace engine::doc {
 
 // --- helpers ------------------------------------------------------------------------------------
 
+void append_composed_record(const Document& doc, ObjectId id, std::string& out) {
+  const auto hex_of = [](ObjectId of) {
+    char hex[Id128::k_hex_length + 1];
+    of.to_hex(hex);
+    return JsonValue(std::string_view(hex, Id128::k_hex_length));
+  };
+  JsonValue line = JsonValue::array();
+  line.push_back(hex_of(id));
+  ResolvedObject r;
+  if (!doc.resolve(id, r)) {
+    line.push_back(JsonValue("gone"));
+  } else if (r.deleted) {
+    line.push_back(JsonValue("deleted"));
+    line.push_back(JsonValue(r.type));
+  } else {
+    line.push_back(JsonValue("live"));
+    line.push_back(JsonValue(r.type));
+    line.push_back(hex_of(r.parent));
+    JsonValue properties = JsonValue::object();
+    for (auto [name, value] : r.properties)
+      properties.set(name, *value);
+    line.push_back(std::move(properties));
+  }
+  out += write_json(line, JsonWriteOptions{.pretty = false});  // one line: the compact form
+  out += '\n';
+}
+
 std::string describe_path(std::string_view layer, ObjectId id, std::string_view property) {
   char hex[33];
   id.to_hex(hex);
