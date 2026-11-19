@@ -23,10 +23,13 @@
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/settings.h>
+#include <systems/renderer/view_set.h>
 
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
+#include <cmath>
 #include <string>
 
 using namespace engine;
@@ -406,6 +409,25 @@ TEST_CASE("content classes at load: the proxy box is a closed box at the bounds 
   CHECK(lo.x == doctest::Approx(-1.0f));
   CHECK(hi.y == doctest::Approx(3.0f));
   CHECK(hi.z - lo.z == doctest::Approx(0.001f));  // a flat extent widened to a millimetre
+  // Every triangle faces out of the box (counter-clockwise seen from outside, as every built mesh
+  // is), and the twelve close it: their area-weighted normals sum to nothing.
+  const Vec3 middle{(lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f, (lo.z + hi.z) * 0.5f};
+  const geometry::ClusterDesc& cluster = box.mesh.clusters[0];
+  Vec3 closure{0.0f, 0.0f, 0.0f};
+  u32 outward = 0;
+  for (u32 t = 0; t < cluster.triangle_count; ++t) {
+    const u32 packed = box.mesh.triangles[cluster.triangle_offset + t];
+    Vec3 corner[3];
+    for (u32 k = 0; k < 3; ++k)
+      corner[k] =
+          box.mesh.vertices[cluster.vertex_offset + geometry::ClusterMesh::unpack(packed, k)];
+    const Vec3 n = cross(corner[1] - corner[0], corner[2] - corner[0]);
+    const Vec3 centroid = (corner[0] + corner[1] + corner[2]) * (1.0f / 3.0f);
+    outward += dot(n, centroid - middle) > 0.0f ? 1u : 0u;
+    closure = closure + n;
+  }
+  CHECK(outward == 12u);
+  CHECK(length(closure) < 1e-4f);
   const assets::Material material = proxy_material();
   CHECK(material.base_color_image == -1);
   CHECK(material.base_color.x == k_proxy_albedo);
@@ -415,6 +437,74 @@ namespace {
 
 constexpr u32 k_shot_width = 192;
 constexpr u32 k_shot_height = 128;
+// The meshes side by side (`scene_of`: 30 m apart), seen from above their middle. High enough that
+// every triangle of the proxy fits the software rasterizer's box (below): from 40 m its lid's two
+// triangles each had a box of 9,328 pixels, and that path drew the walls alone.
+const Vec3 k_shot_eye{15.0f, 70.0f, -7.0f};
+const Vec3 k_shot_target{15.0f, 0.0f, 0.0f};
+
+// `k_max_bbox_pixels` in cluster_sw_raster.slang: `--raster sw` draws every pair itself and skips
+// a triangle whose pixel bounding box is larger than this (renderer.md, "Content classes at load").
+// A tessellated mesh's triangles stay under it from far less height than the proxy's twelve do.
+constexpr u32 k_software_box_pixels = 64 * 64;
+
+Camera shot_camera() {
+  Camera camera;
+  camera.position = absolute(WorldPos::origin(), k_shot_eye);
+  camera.target = absolute(WorldPos::origin(), k_shot_target);
+  return camera;
+}
+
+// The largest pixel bounding box any leaf triangle of `instance` has in the shot, measured as the
+// software rasterizer measures it (clamped to the target; a triangle off the target or reaching
+// behind the eye is not counted, because that rasterizer skips it for its own reason).
+u32 largest_triangle_box(const SceneData& data, u32 instance) {
+  ViewSet views;
+  REQUIRE(views.build(ViewSetDesc{}, k_shot_width, k_shot_height));
+  views.update(shot_camera());
+  const Mat4& view_proj = views[0].view_proj;
+  const gfx::InstanceDesc& desc = data.instances[instance];
+  const geometry::ClusterMeshPart& part = data.parts[desc.mesh];
+  // The frame's space: metres from the eye, the instance's cell moved there in f64.
+  const Vec3 cell{static_cast<f32>(64.0 * desc.cell.x - static_cast<f64>(k_shot_eye.x)),
+                  static_cast<f32>(64.0 * desc.cell.y - static_cast<f64>(k_shot_eye.y)),
+                  static_cast<f32>(64.0 * desc.cell.z - static_cast<f64>(k_shot_eye.z))};
+  const f32 w = static_cast<f32>(k_shot_width);
+  const f32 h = static_cast<f32>(k_shot_height);
+  u32 largest = 0;
+  const u32 first = part.first_cluster + part.first_leaf_cluster;
+  for (u32 c = first; c < first + part.leaf_cluster_count; ++c) {
+    const geometry::ClusterDesc& cluster = data.lod.mesh.clusters[c];
+    for (u32 t = 0; t < cluster.triangle_count; ++t) {
+      const u32 packed = data.lod.mesh.triangles[cluster.triangle_offset + t];
+      Vec2 lo{1e30f, 1e30f};
+      Vec2 hi{-1e30f, -1e30f};
+      bool in_front = true;
+      for (u32 k = 0; k < 3; ++k) {
+        const Vec3 p =
+            data.lod.mesh
+                .vertices[cluster.vertex_offset + geometry::ClusterMesh::unpack(packed, k)];
+        const Vec3 q{dot(Vec3{desc.rows[0].x, desc.rows[0].y, desc.rows[0].z}, p) + desc.rows[0].w,
+                     dot(Vec3{desc.rows[1].x, desc.rows[1].y, desc.rows[1].z}, p) + desc.rows[1].w,
+                     dot(Vec3{desc.rows[2].x, desc.rows[2].y, desc.rows[2].z}, p) + desc.rows[2].w};
+        const Vec4 clip = view_proj * Vec4{q.x + cell.x, q.y + cell.y, q.z + cell.z, 1.0f};
+        in_front = in_front && clip.w > 1e-6f;
+        if (!in_front) break;
+        const f32 x = (clip.x / clip.w * 0.5f + 0.5f) * w;
+        const f32 y = (0.5f - clip.y / clip.w * 0.5f) * h;
+        lo = Vec2{std::min(lo.x, x), std::min(lo.y, y)};
+        hi = Vec2{std::max(hi.x, x), std::max(hi.y, y)};
+      }
+      if (!in_front || hi.x < 0.0f || hi.y < 0.0f || lo.x >= w || lo.y >= h) continue;
+      const i32 x0 = static_cast<i32>(std::max(std::floor(lo.x), 0.0f));
+      const i32 y0 = static_cast<i32>(std::max(std::floor(lo.y), 0.0f));
+      const i32 x1 = static_cast<i32>(std::min(std::ceil(hi.x), w - 1.0f));
+      const i32 y1 = static_cast<i32>(std::min(std::ceil(hi.y), h - 1.0f));
+      largest = std::max(largest, static_cast<u32>((x1 - x0 + 1) * (y1 - y0 + 1)));
+    }
+  }
+  return largest;
+}
 
 struct Shot {
   CapturedFrame frame;
@@ -422,8 +512,7 @@ struct Shot {
   std::string why;
 };
 
-// The meshes side by side (`scene_of`: 30 m apart), seen from 40 m above their middle, every
-// channel captured.
+// The scene in the shot (`k_shot_eye`), every channel captured.
 Shot shoot(const gfx::Device& device, const test::TempDir& tmp,
            std::initializer_list<const Grid*> meshes, const content_class::NamedPolicy& policy,
            RasterMode raster) {
@@ -454,8 +543,7 @@ Shot shoot(const gfx::Device& device, const test::TempDir& tmp,
   rd.height = k_shot_height;
   REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), error);
   FrameDesc frame;
-  frame.camera.position = absolute(WorldPos::origin(), Vec3{15.0f, 40.0f, -4.0f});
-  frame.camera.target = absolute(WorldPos::origin(), Vec3{15.0f, 0.0f, 0.0f});
+  frame.camera = shot_camera();
   CaptureChannels channels;
   channels.color = true;
   channels.ids = true;
@@ -479,6 +567,28 @@ u32 pixels_of(const Shot& s, u32 instance) {
 }
 
 }  // namespace
+
+// **The shot keeps the proxy inside the software rasterizer's box.** The case below holds every
+// path to the hardware's box, and `--raster sw` skips any triangle wider than 64 x 64 pixels of
+// bounding box. A box's face is two triangles each as wide as the face, so from too near the
+// software path draws the box's walls and not its lid, whatever the proxy is; this is the shot's
+// half of that, held without a device.
+TEST_CASE("content classes at load: the capture's shot keeps the proxy in the software box") {
+  const test::TempDir tmp("renderer_classes_shot");
+  REQUIRE(tmp.ok());
+  const Grid a = write_grid(tmp, "a.clusters", 9, "a.png");
+  const Grid glow = write_grid(tmp, "glow.clusters", 17, "glow.png", glow_record(2));
+  SceneDesc desc = scene_of(tmp, {&a, &glow});
+  desc.view_policy = policy_named("glow-proxy");
+  SceneData data;
+  std::string error;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  REQUIRE(data.instances.size() == 2);
+  const u32 largest = largest_triangle_box(data, 1);
+  MESSAGE("the proxy's largest triangle box in the shot: " << largest << " pixels");
+  CHECK(largest > 0u);
+  CHECK(largest <= k_software_box_pixels);
+}
 
 // **The capture holds the box or nothing** (for the merge's GPU run, and a run by name on both
 // tiers): under `agent-default` the classified grid is not in any channel (colour, ids, depth and
