@@ -106,6 +106,12 @@ std::string emit_json_schema(const Model& model, const SchemaFile& file) {
     out << "      \"x-schema-version\": " << s.version << ",\n";
     if (!s.tag.empty()) out << "      \"x-kind\": \"" << escape_json_string(s.tag) << "\",\n";
     if (s.transient) out << "      \"x-transient\": true,\n";
+    if (!s.aliases.empty()) {
+      out << "      \"x-aliases\": [";
+      for (size_t i = 0; i < s.aliases.size(); ++i)
+        out << (i ? ", " : "") << "\"" << escape_json_string(s.aliases[i]) << "\"";
+      out << "],\n";
+    }
     out << "      \"properties\": {\n";
     bool first_field = true;
     std::vector<std::string> required;
@@ -126,6 +132,15 @@ std::string emit_json_schema(const Model& model, const SchemaFile& file) {
         schema += "}";
       }
       out << schema;
+      // A former name (`@alias`) is what a file written before the rename carries: the same value,
+      // never required, deprecated, and pointing at the name a writer uses now.
+      for (const std::string& a : f.aliases) {
+        std::string former = type_schema(f.type, file);
+        former.pop_back();
+        if (former.size() > 1) former += ", ";
+        former += "\"deprecated\": true, \"x-alias-of\": \"" + escape_json_string(f.name) + "\"}";
+        out << ",\n        \"" << a << "\": " << former;
+      }
       const bool has_default = f.default_kind != DefaultKind::None;
       if (!has_default && f.type.kind != TypeExpr::Kind::Optional &&
           f.type.kind != TypeExpr::Kind::Array && f.type.kind != TypeExpr::Kind::Map) {

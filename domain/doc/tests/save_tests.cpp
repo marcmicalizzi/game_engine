@@ -786,6 +786,118 @@ TEST_CASE("doc save: a file that is not in the canonical form is rewritten by th
   CHECK(files_on_disk(tmp.file("world")) == reference_files(loaded, loaded_manifest));
 }
 
+// D40: the load learns whether a file is canonical as it reads it, comparing the text with what a
+// save would write (doc.md, "Reading a file without a tree"), where it used to serialize every layer
+// again after the load. Each way a file can hold the same records in other bytes marks its layer —
+// and only its layer — for the next save, which leaves exactly what a store that rewrote everything
+// would; a document the store wrote marks nothing.
+namespace {
+
+std::string replaced(std::string text, std::string_view from, std::string_view to) {
+  const usize at = text.find(from);
+  REQUIRE(at != std::string::npos);
+  return text.replace(at, from.size(), to);
+}
+
+std::string without_spaces(const std::string& text) {
+  std::string out;
+  for (const char c : text)
+    if (c != ' ') out.push_back(c);
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("doc save: every kind of file not in the canonical form is found as it is read") {
+  struct Edit {
+    const char* name;
+    const char* file;  // under the document directory
+    std::string (*change)(const std::string& text);
+    u32 layer;  // the layer that must be marked whole; 99 for none
+  };
+  const Edit edits[] = {
+      {"untouched", "layers/world/index.json", [](const std::string& t) { return t; }, 99},
+      {"a tile without its spaces", "layers/world/tiles/0_0.json", &without_spaces, 1},
+      // The role a second time, first: the tree path's reading (the last wins), and not canonical.
+      {"a tile with a key twice and out of order", "layers/world/tiles/0_0.json",
+       [](const std::string& t) {
+         return replaced(t, "{\n  \"name\": \"world\",",
+                         "{\n  \"role\": \"Feature\",\n  \"name\": \"world\",");
+       },
+       1},
+      {"a tile naming another role", "layers/world/tiles/0_0.json",
+       [](const std::string& t) { return replaced(t, "\"role\": \"Feature\"", "\"role\": \"Base\""); },
+       1},
+      {"untiled.json without its spaces", "layers/world/untiled.json", &without_spaces, 1},
+      {"an index with a bound off", "layers/world/index.json",
+       [](const std::string& t) { return replaced(t, "\"max_x\": 1", "\"max_x\": 2"); }, 1},
+      {"a single-file layer with its records out of order", "layers/notes.json",
+       [](const std::string& t) {
+         const usize first = t.find("    {\n      \"deleted\"");
+         const usize second = t.find("    {\n      \"deleted\"", first + 1);
+         const usize end = t.find("\n  ]", second);
+         REQUIRE(first != std::string::npos);
+         REQUIRE(second != std::string::npos);
+         const std::string a = t.substr(first, second - first - 2);  // without ",\n"
+         const std::string b = t.substr(second, end - second);
+         return t.substr(0, first) + b + ",\n" + a + t.substr(end);
+       },
+       2},
+  };
+  for (const Edit& edit : edits) {
+    INFO(edit.name);
+    TempDir tmp("engine_doc_save_canonical_kinds");
+    io::Vfs vfs;
+    REQUIRE(vfs.mount("docs", tmp.path(), /*writable=*/true) == io::Status::Ok);
+    const std::string dir = "docs://world";
+    std::string error;
+    Document doc;
+    DocumentManifest manifest;
+    REQUIRE(DocumentStore::create(vfs, dir, "World", doc, manifest, &error));
+    Layer world("world", LayerRole::Feature);
+    for (u32 i = 0; i < 8; ++i) {
+      ObjectRecord r;
+      r.id = id_of(i);
+      r.type = k_placement;
+      r.parent = ObjectId{};
+      r.properties.insert_or_assign("name", JsonValue("p" + std::to_string(i)));
+      if (i < 6)
+        r.properties.insert_or_assign("position", point(static_cast<f64>(i % 2) * 16.0 + 1.0, 1.0));
+      else
+        r.properties.insert_or_assign("rank", JsonValue(u64{7}));
+      world.set(std::move(r));
+    }
+    const u32 world_index = doc.add_layer(std::move(world));
+    doc.set_layer_partition(world_index, tiles_of(16));
+    Layer notes("notes", LayerRole::Feature);
+    for (u32 i = 0; i < 3; ++i) {
+      ObjectRecord r;
+      r.id = id_of(i);
+      r.properties.insert_or_assign("note", JsonValue("n" + std::to_string(i)));
+      notes.set(std::move(r));
+    }
+    doc.add_layer(std::move(notes));
+    REQUIRE(DocumentStore::save(vfs, dir, doc, manifest, &error));
+
+    const std::string path = tmp.file(std::string("world/") + edit.file);
+    std::string text;
+    REQUIRE(io::read_file(path, text) == io::Status::Ok);
+    const std::string changed = edit.change(text);
+    REQUIRE((edit.layer == 99) == (changed == text));
+    REQUIRE(io::write_file(path, changed) == io::Status::Ok);
+
+    Document loaded;
+    DocumentManifest loaded_manifest;
+    REQUIRE_MESSAGE(DocumentStore::load(vfs, dir, loaded, loaded_manifest, &error), error);
+    for (u32 l = 0; l < loaded.layer_count(); ++l)
+      CHECK(loaded.changes(l).whole == (l == edit.layer));
+    SaveReport report;
+    REQUIRE(DocumentStore::save(vfs, dir, loaded, loaded_manifest, &error, &report));
+    CHECK(report.written.size() == (edit.layer == 99 ? 0u : 1u));
+    CHECK(files_on_disk(tmp.file("world")) == reference_files(loaded, loaded_manifest));
+  }
+}
+
 TEST_CASE("doc save: a layer names its record types' versions; a newer one is refused by name") {
   // LayerFile version 2 (doc.md, "A layer says which versions it holds"): a tiled layer defining a
   // Placement 419 km out, and a single-file layer defining another and overriding the first.

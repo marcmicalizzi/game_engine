@@ -1,0 +1,29 @@
+{
+  "name": "places",
+  "objects": [
+    {
+      "deleted": false,
+      "id": "00000000000000280000000000000001",
+      "parent": null,
+      "properties": {
+        "glow": {
+          "strength": 2.5
+        },
+        "label": "lamp",
+        "position": [
+          5.5,
+          0.0,
+          3.25
+        ]
+      },
+      "type": "engine.doc.test.Marker"
+    }
+  ],
+  "role": "Feature",
+  "types": [
+    {
+      "name": "engine.doc.test.Marker",
+      "version": 1
+    }
+  ]
+}

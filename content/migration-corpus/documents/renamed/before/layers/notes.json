@@ -1,0 +1,50 @@
+{
+  "name": "notes",
+  "objects": [
+    {
+      "deleted": false,
+      "id": "00000000000000280000000000000001",
+      "parent": null,
+      "properties": {
+        "title": "harbour lamp"
+      },
+      "type": ""
+    },
+    {
+      "deleted": false,
+      "id": "00000000000000280000000000000003",
+      "parent": null,
+      "properties": {
+        "glow": {
+          "power": 0.5
+        }
+      },
+      "type": ""
+    },
+    {
+      "deleted": false,
+      "id": "00000000000000280000000000000004",
+      "parent": null,
+      "properties": {
+        "claim": "the lamp is lit"
+      },
+      "type": "engine.doc.test.Fact"
+    },
+    {
+      "deleted": false,
+      "id": "00000000000000280000000000000005",
+      "parent": null,
+      "properties": {
+        "title": "nobody's"
+      },
+      "type": ""
+    }
+  ],
+  "role": "Feature",
+  "types": [
+    {
+      "name": "engine.doc.test.Fact",
+      "version": 1
+    }
+  ]
+}

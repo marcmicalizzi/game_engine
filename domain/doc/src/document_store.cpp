@@ -6,6 +6,7 @@
 #include <core/json/json.h>
 #include <core/profiling/profile.h>
 #include <core/schema/json_reflect.h>
+#include <core/schema/json_text.h>
 #include <domain/doc/document_store.h>
 #include <domain/doc/partition.h>
 
@@ -58,19 +59,49 @@ std::string manifest_text(const DocumentManifest& manifest) {
   return text;
 }
 
+// Straight from the text, with no tree of it (roadmap D40; core/schema/json_text.h): the tree
+// path's verdicts word for word.
 template <class T>
 bool parse_schema_text(std::string_view text, const std::string& path, T& out, std::string* error) {
-  JsonValue value;
-  if (const JsonParseResult r = parse_json(text, value); !r.ok) {
-    set_error(error, path, r.message);
-    return false;
-  }
   schema::ReadContext ctx;
-  out = T{};
-  if (!schema::from_json(out, value, ctx)) {
+  JsonParseResult parsed;
+  if (schema::read_json_text(out, text, ctx, parsed)) return true;
+  if (!parsed.ok)
+    set_error(error, path, parsed.message);
+  else
     set_error(error, path, ctx);
+  return false;
+}
+
+// **Whether a file read is the bytes a save would write** (doc.md, "Reading a file without a
+// tree"): its record types stamped as a save stamps them and its role the layer's, then compared
+// with the text in hand as it is written — no second serialization into a string, no hash. What a
+// load once asked by serializing every layer again after reading it (`canonical_on_disk`).
+bool canonical_file(LayerFile& file, LayerRole role, std::string_view text) {
+  file.role = role;
+  stamp_record_types(file);
+  return schema::canonical_json_equals(file, text);
+}
+
+// `Layer::from_json_text` for the store, which also learns whether the text is canonical: the
+// records in strictly increasing id order (a layer writes them so), and the bytes a save of the
+// layer it makes would write. False with the reasons in `ctx`, as `from_json_text` gives them.
+bool read_layer_text(std::string_view text, LayerFile& file, schema::ReadContext& ctx,
+                     bool& canonical) {
+  JsonParseResult parsed;
+  if (!schema::read_json_text(file, text, ctx, parsed)) {
+    if (!parsed.ok) ctx.error(std::string("invalid JSON: ") + parsed.message);
     return false;
   }
+  std::string why;
+  if (!check_record_types(file, why) || !rename_defining_records(file, why)) {
+    ctx.error(why);
+    return false;
+  }
+  canonical = true;
+  for (u32 k = 1; k < file.objects.size() && canonical; ++k)
+    canonical = file.objects[k - 1].id < file.objects[k].id;
+  canonical = canonical && canonical_file(file, file.role, text);
   return true;
 }
 
@@ -745,6 +776,56 @@ class DiskView {
 bool parse_journal(std::string_view text, const std::string& path, Vector<Patch>& out,
                    Vector<u64>* ends, std::string* error);
 
+// **Where a manifest may name a layer's file: under the document, by the rule alone** (T187).
+// `session.open` loads any directory a client names, so a manifest is someone else's bytes, and a
+// `file` of `../../x.json` read outside the document, and told the client, by "not found" against a
+// parse error and the native path, whether a file existed anywhere on the machine. This is the rule
+// `doc.place_asset` and `doc.put_blob` hold a client's path to (`stays_under_document`,
+// domain/protocol's document_path.h, which this module cannot include; the same behaviour under the
+// same name): relative, no drive or stream (`:`), no `..` component, no empty name, no control
+// character, `\` a separator on every platform. A path it refuses is never handed to the file
+// system, so the refusal names the layer and says nothing of the disk.
+bool stays_under_document(std::string_view path) noexcept {
+  if (path.empty() || path[0] == '/' || path[0] == '\\') return false;
+  usize start = 0;
+  for (usize i = 0; i <= path.size(); ++i) {
+    const char c = i < path.size() ? path[i] : '/';
+    if (static_cast<unsigned char>(c) < 0x20 || c == ':') return false;
+    if (c != '/' && c != '\\') continue;
+    const std::string_view name = path.substr(start, i - start);
+    if (name.empty() || name == "..") return false;
+    start = i + 1;
+  }
+  return true;
+}
+
+// **A `$parent` cycle is refused at load** (T187): the composed index, `children`, the
+// materializer's parents-first walk and flecs' `ChildOf` all assume a forest, and only
+// `Document::validate` (not run at load) said otherwise. Each live object is settled once, so a
+// chain of n objects costs O(n); true, with an object on the cycle in `at`, when there is one.
+bool find_parent_cycle(const Document& doc, ObjectId& at) {
+  HashMap<ObjectId, u8> state;  // 1 on the walk being made, 2 settled
+  Vector<ObjectId> walk;
+  for (const ObjectId id : doc.objects()) {
+    walk.clear();
+    for (ObjectId cursor = id; !cursor.is_null(); cursor = doc.parent_of(cursor)) {
+      const u8* seen = state.find_value(cursor);
+      if (seen != nullptr) {
+        if (*seen == 1) {
+          at = cursor;
+          return true;
+        }
+        break;
+      }
+      state.insert_or_assign(cursor, u8{1});
+      walk.push_back(cursor);
+    }
+    for (const ObjectId settled : walk)
+      state.insert_or_assign(settled, u8{2});
+  }
+  return false;
+}
+
 // Reads one file of the document and remembers what it held.
 bool read_file(const DiskView& disk, const std::string& path, std::string& out, StoredState& known,
                std::string* error) {
@@ -756,8 +837,9 @@ bool read_file(const DiskView& disk, const std::string& path, std::string& out, 
   return true;
 }
 
+// `canonical`: whether every file of the layer is the bytes a save would write for it (D40).
 bool load_partitioned(const DiskView& disk, const LayerRef& ref, Layer& out, StoredState& known,
-                      std::string* error) {
+                      bool& canonical, std::string* error) {
   const LayerFiles lf = files_of(ref.name);
   const std::string index_path = disk.full(lf.index);
   const std::string untiled_path = disk.full(lf.untiled);
@@ -766,6 +848,8 @@ bool load_partitioned(const DiskView& disk, const LayerRef& ref, Layer& out, Sto
   if (!read_file(disk, lf.index, text, known, error) ||
       !parse_schema_text(text, index_path, index, error))
     return false;
+  // And the index is the one this load rebuilds from the layer once its records are in, below.
+  canonical = schema::canonical_json_equals(index, text, "\n");
   if (index.name != ref.name) {
     set_error(error, index_path,
               "index names layer '" + index.name + "', the manifest says '" + ref.name + "'");
@@ -835,7 +919,8 @@ bool load_partitioned(const DiskView& disk, const LayerRef& ref, Layer& out, Sto
     if (!read_file(disk, lf.tile(t.file), text, known, error) ||
         !parse_schema_text(text, path, file, error))
       return false;
-    if (std::string why; !check_record_types(file, why)) {
+    // Renamed before its tile is checked: a record's tile is read from its type's position field.
+    if (std::string why; !check_record_types(file, why) || !rename_defining_records(file, why)) {
       set_error(error, path, why);
       return false;
     }
@@ -850,6 +935,7 @@ bool load_partitioned(const DiskView& disk, const LayerRef& ref, Layer& out, Sto
                     std::to_string(t.objects.size()));
       return false;
     }
+    canonical = canonical && canonical_file(file, ref.role, text);
     for (u32 k = 0; k < file.objects.size(); ++k) {
       ObjectRecord& r = file.objects[k];
       if (!(r.id == t.objects[k])) {
@@ -886,6 +972,7 @@ bool load_partitioned(const DiskView& disk, const LayerRef& ref, Layer& out, Sto
       return false;
     }
     if (!commit()) return false;
+    canonical = canonical && build_layer_index(out) == index;
     stored.index = std::move(index);
     fill_places(stored);
     return true;
@@ -894,7 +981,8 @@ bool load_partitioned(const DiskView& disk, const LayerRef& ref, Layer& out, Sto
   if (!read_file(disk, lf.untiled, text, known, error) ||
       !parse_schema_text(text, untiled_path, untiled, error))
     return false;
-  if (std::string why; !check_record_types(untiled, why)) {
+  if (std::string why;
+      !check_record_types(untiled, why) || !rename_defining_records(untiled, why)) {
     set_error(error, untiled_path, why);
     return false;
   }
@@ -904,6 +992,7 @@ bool load_partitioned(const DiskView& disk, const LayerRef& ref, Layer& out, Sto
                   std::to_string(index.untiled.size()));
     return false;
   }
+  canonical = canonical && canonical_file(untiled, ref.role, text);
   for (u32 k = 0; k < untiled.objects.size(); ++k) {
     ObjectRecord& r = untiled.objects[k];
     if (!(r.id == index.untiled[k])) {
@@ -920,29 +1009,10 @@ bool load_partitioned(const DiskView& disk, const LayerRef& ref, Layer& out, Sto
     gathered.push_back(Gathered{std::move(r), index.tiles.size()});
   }
   if (!commit()) return false;
+  canonical = canonical && build_layer_index(out) == index;
   stored.index = std::move(index);
   fill_places(stored);
   return true;
-}
-
-// True when every file of `layer` on disk holds the bytes a save would write for it. A file that
-// does not — written by hand, or by something other than this store — is rewritten by the next
-// save, exactly as a store that rewrote everything would have done.
-bool canonical_on_disk(const Layer& layer, const StoredState& known) {
-  auto same = [&](const std::string& path, std::string_view text) {
-    const StoredFile* f = known.files.find_value(path);
-    return f != nullptr && *f == StoredFile::of(text);
-  };
-  const LayerFiles lf = files_of(layer.name());
-  if (!layer.partitioned()) return same(lf.single, layer.to_json_text());
-  const StoredLayer* stored = known.layers.find_value(layer.name());
-  if (stored == nullptr) return false;
-  const LayerIndex& index = stored->index;
-  if (!same(lf.index, index_text(build_layer_index(layer)))) return false;
-  for (const TileRef& t : index.tiles) {
-    if (!same(lf.tile(t.file), file_text(layer.to_file(t.objects)))) return false;
-  }
-  return index.untiled.empty() || same(lf.untiled, file_text(layer.to_file(index.untiled)));
 }
 
 }  // namespace
@@ -1138,30 +1208,68 @@ bool DocumentStore::load(const io::Vfs& vfs, std::string_view dir, Document& out
     return false;
 
   Document doc;
+  // Per layer, whether its files are the bytes a save would write for it, learnt as they are read.
+  Vector<u8> canonical;
   for (const LayerRef& ref : manifest.layers) {
     Layer layer(ref.name, ref.role);
+    bool layer_canonical = false;
     if (ref.partition.has_value() && ref.partition->tile_size > 0) {
-      if (!load_partitioned(disk, ref, layer, *known, error)) return false;
+      if (!load_partitioned(disk, ref, layer, *known, layer_canonical, error)) return false;
     } else {
-      const std::string rel = join(k_layers_dir, ref.file);
+      if (!stays_under_document(ref.file)) {
+        set_error(error, manifest_path,
+                  "layer '" + ref.name +
+                      "' names a file outside the document's layers directory, which a document "
+                      "may not name");
+        return false;
+      }
+      std::string file(ref.file);
+      for (char& c : file)
+        if (c == '\\') c = '/';
+      const std::string rel = join(k_layers_dir, file);
       std::string layer_text;
       if (!read_file(disk, rel, layer_text, *known, error)) return false;
       schema::ReadContext layer_ctx;
-      if (!Layer::from_json_text(layer_text, layer, layer_ctx)) {
+      LayerFile read;
+      if (!read_layer_text(layer_text, read, layer_ctx, layer_canonical)) {
         set_error(error, join(dir, rel), layer_ctx);
         return false;
       }
+      // A save writes the layer where its name puts it, which a manifest may not have named.
+      layer_canonical = layer_canonical && rel == files_of(read.name).single;
+      layer = Layer::from_file(std::move(read));
       StoredLayer& stored = known->layers[ref.name];
       stored.partitioned = false;
     }
     doc.add_layer(std::move(layer));
+    canonical.push_back(layer_canonical ? 1 : 0);
   }
   if (doc.layer_count() == 0) {
     set_error(error, manifest_path, "document has no layers");
     return false;
   }
+  if (ObjectId at; find_parent_cycle(doc, at)) {
+    set_error(error, manifest_path,
+              "the layers' parents form a cycle through object " + hex_of(at) +
+                  "; a document's parents are a forest");
+    return false;
+  }
   const i32 edit = doc.find_layer(manifest.edit_layer);
   doc.set_edit_layer(edit >= 0 ? static_cast<u32>(edit) : doc.layer_count() - 1);
+
+  // **Former names** (doc.md, "A renamed type or field"): definitions were renamed as their files
+  // were read; an override's type is the composed one, so its properties are renamed now that the
+  // whole stack is here. A layer that changed is not what its files say, so the canonical check
+  // below has the next save write it in the new names. An override no layer defines keeps its
+  // names, and the document says which (`Document::kept_names`).
+  {
+    u32 renamed = 0;
+    std::string why;
+    if (!doc.rename_override_records(renamed, doc.kept_names_, why)) {
+      set_error(error, dir, why);
+      return false;
+    }
+  }
 
   // The journal, and where each of its lines ends: what lets the next append cut a dropped redo
   // tail, or a line an append died in, off in place.
@@ -1183,11 +1291,15 @@ bool DocumentStore::load(const io::Vfs& vfs, std::string_view dir, Document& out
   doc.set_journal(std::move(journal));
 
   // What is in memory is what is on disk — except a layer whose files are not in the canonical
-  // form, which the next save writes as it would have written them itself.
+  // form, which the next save writes as it would have written them itself. That was learnt as each
+  // file was read, by comparing the text with what a save would write from it (D40); a layer one of
+  // whose overrides was renamed above is not what its files say either.
+  for (u32 i = 0; i < doc.layer_count(); ++i) {
+    if (!doc.changes(i).ids.empty()) canonical[i] = 0;
+  }
   doc.clear_dirty();
   for (u32 i = 0; i < doc.layer_count(); ++i) {
-    const Document& read = doc;
-    if (!canonical_on_disk(read.layer(i), *known)) doc.changes_[i].whole = true;
+    if (canonical[i] == 0) doc.changes_[i].whole = true;
   }
   doc.stored_ = std::move(known);
   out = std::move(doc);

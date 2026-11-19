@@ -332,7 +332,15 @@ function Get-AffectedOnce {
   $rule = if ($AffectedRule) { $AffectedRule } elseif ($env:ENGINE_AFFECTED_RULE) { $env:ENGINE_AFFECTED_RULE } else { 'edges' }
   if ($rule -notin @('edges', 'modules', 'all')) { throw "ENGINE_AFFECTED_RULE '$rule' is none of edges, modules, all" }
   $mentions = if ($rule -eq 'edges') { @(Get-AffectedMentions -Root $Root -Changed $changed) } else { @() }
-  $result = Get-AffectedTests -Modules $json.modules -Layers $json.layers -Changed $changed -Mentions $mentions -Rule $rule -Disabled @($json.disabled_capabilities)
+  # Which tests run which script under tools/, from the commands CTest holds (roadmap T183): a
+  # changed script selects those tests and not every tools.* test. No CTest file, no map, and the
+  # rule runs every tools test for a change there, as before.
+  $toolTests = $null
+  if ($rule -eq 'edges' -and (Get-Command ctest -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath (Join-Path $BuildDir 'CTestTestfile.cmake'))) {
+    $listing = (& ctest --test-dir $BuildDir --show-only=json-v1 2>$null) -join "`n"
+    if ($LASTEXITCODE -eq 0) { $toolTests = Get-ToolTests -Json $listing -Root $Root }
+  }
+  $result = Get-AffectedTests -Modules $json.modules -Layers $json.layers -Changed $changed -Mentions $mentions -Rule $rule -Disabled @($json.disabled_capabilities) -ToolTests $toolTests
   Write-Host ("affected: {0} path(s) differ from {1} (rule: {2})" -f $changed.Count, $Base, $rule) -ForegroundColor Cyan
   if ($result.All) {
     Write-Host "  everything: $($result.Reason)" -ForegroundColor Cyan
@@ -340,7 +348,7 @@ function Get-AffectedOnce {
     $touched = if ($result.Changed.Count -gt 0) { $result.Changed -join ', ' } else { 'no module' }
     Write-Host ("  changed: {0}" -f $touched) -ForegroundColor Cyan
     Write-Host ("  tests of {0} of {1} modules{2}: {3}" -f $result.Modules.Count, $json.modules.Count,
-                $(if ($result.Tools) { ", and the tools' own" } else { '' }),
+                $(if ($result.Filter -match '\^tools\\\.') { ", and the tools' own" } elseif (@($result.ToolTests).Count -gt 0) { ", and $(@($result.ToolTests) -join ' ')" } else { '' }),
                 $(if ($result.Modules.Count -gt 0) { $result.Modules -join ' ' } else { 'only the lint and the documentation check' })) -ForegroundColor Cyan
   }
   foreach ($note in $result.Notes) { Write-Host "  $note" -ForegroundColor Cyan }

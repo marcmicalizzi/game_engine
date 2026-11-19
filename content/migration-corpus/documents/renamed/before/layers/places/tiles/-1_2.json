@@ -1,0 +1,27 @@
+{
+  "name": "places",
+  "objects": [
+    {
+      "deleted": false,
+      "id": "00000000000000280000000000000003",
+      "parent": null,
+      "properties": {
+        "glow": {},
+        "position": [
+          -12.25,
+          0.0,
+          70.0
+        ],
+        "title": "mast"
+      },
+      "type": "engine.doc.test.Beacon"
+    }
+  ],
+  "role": "Feature",
+  "types": [
+    {
+      "name": "engine.doc.test.Beacon",
+      "version": 1
+    }
+  ]
+}

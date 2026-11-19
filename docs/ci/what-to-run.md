@@ -104,9 +104,17 @@ help with: roadmap T76.
     directory whose files refer to that one (a scene's `../../flora/oak.flora.json`) brings its
     readers too; a file that builds a content path out of pieces (`"content"` joined to a name:
     `materials`) reads every directory. A file at the top of `content/` runs everything.
-  - `tools/...` runs the tools' own tests and builds the apps, as before, and reaches the modules
-    whose files run a script from the tree (`"tools/...`, `${CMAKE_SOURCE_DIR}/tools/...`:
-    `gpu_lock`, `mcp_bridge`, `engine_host`, `engine_view`). `templates/` is the tools'.
+  - A script under `tools/` (`.ps1`, `.psm1`, `.sh`, `.cmd`, or a `.json` or `.txt` one reads)
+    runs the tests whose command names it or names a file of `tools/` that names it, through any
+    number of others (`affected.Tests.ps1` imports `lib/Affected.psm1`; `no-driver.Tests.ps1` runs
+    `dev.ps1`, which imports it too) — the commands are CTest's own (`ctest --show-only=json-v1`),
+    so a module's test that runs a script (`mcp_bridge.mcp_check`) is selected by its name; a
+    script no test runs selects no tools test, and the run says so (roadmap T183: the tools' own
+    tests had been about 1,100 s of a 1,839 s run for any change there). Anything else under
+    `tools/` (the shader meter's C++), a tree with no CTest file, and `templates/` still run every
+    tools test; any of them builds the apps. It also reaches the modules whose files run a script
+    from the tree (`"tools/...`, `${CMAKE_SOURCE_DIR}/tools/...`: `gpu_lock`, `mcp_bridge`,
+    `engine_host`, `engine_view`).
   - A `tests/support` header reaches the files that include it, through the support headers that
     do; a support source no test target lists runs everything.
   - A shader is also a change to every module whose shaders include it, by relative path.
@@ -117,6 +125,12 @@ help with: roadmap T76.
   - A reference in a module's `tests/` or `bench/` source reaches that module's tests; one
     anywhere else in a module (its sources, its headers, a test header another module's tests may
     include, its `CMakeLists.txt`) is a change to the module and reaches what links it.
+- **A changed file in a module's `tests/` or `bench/` runs that module's tests alone** (roadmap
+  T183): it is compiled into, or read by, that module's test and bench executables, which nothing
+  links. A header there also runs the tests whose files include it, through the headers that do
+  (`water`'s tests include gfx's `water_reference.h`), and is a change to a module whose own source
+  includes it; a shader there is a shader. Until 2026-11-18 such a file was a change to the module,
+  and three test sources of the renderer ran the fifteen modules whose tests link it.
 - **It never selects too little**: the build system's core (`CMakeLists.txt`, `CMakePresets.json`,
   `cmake/*.txt`), vendored code, the schema compiler, and a reference from a file no module holds
   run everything, and the run says why. `-AffectedRule modules` (or `ENGINE_AFFECTED_RULE=modules`)
@@ -173,6 +187,20 @@ to a game module (`game/walk_poc`, which `engine_view`'s tests start) selected n
 Reading the targets once each keeps the configure where it was (182 s against 194 s for this
 worktree's first, both under load); reading them once per closure had cost 300 s more. Finding
 the text references takes about 20 s of `git grep`.
+
+**A module's test files and the tools' scripts, measured** (roadmap T183, 2026-11-18). Batch 68's
+41 merged branches replayed the same way through the base's rule and this one (the edges of the
+tree at 5d0634bb, the tools tests' commands from its CTest file, 175 tests; minutes from the same
+fastest-run table): **3,809 tests and 1,603 minutes become 3,286 and 1,442**. A raise file under
+`tools/structure-raises/` now runs `structure_check` and `tools.structure_check` rather than all 22
+tools tests (23 branches), and leg G's one renderer test source 9 tests rather than 37 (5.7
+minutes rather than 20.8). Every test that failed that night on a branch's own change is still
+selected (the renderer's parts for R173, R158, R168, R171-5 and -6, R173-fix, the banding mend, G2
+and leg G; water for R177, R177-fix and W147; `protocol` for A12; `village` for G219;
+`tools.affected` for T31). The one it drops is the swash case that failed on the tree where R181
+was joined to W147: R181's diff kept was a renderer test source, a raise and pages, the case had
+passed on W147's tip and passed again on the same code an hour later, and W147's own merge selects
+`water`.
 
 On the tree of 2026-10-03 (70 modules, `msvc-debug`, serial, with the GPU lock free):
 

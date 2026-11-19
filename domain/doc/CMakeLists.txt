@@ -16,6 +16,9 @@ engine_module_tests(NAME doc
   SOURCES tests/document_tests.cpp tests/document_store_tests.cpp tests/merge_tests.cpp
           tests/index_tests.cpp tests/partition_tests.cpp tests/change_feed_tests.cpp
           tests/save_tests.cpp tests/blob_tests.cpp tests/checkpoint_tests.cpp tests/size_table.cpp
+          tests/rename_tests.cpp tests/hostile_store_tests.cpp tests/json_text_property_tests.cpp
   DEPS doc_test_types)
+# The migration corpus's renamed document (content/migration-corpus/documents/renamed, roadmap D28).
+target_compile_definitions(engine_doc_tests PRIVATE ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 engine_module_bench(NAME doc SOURCES bench/doc_bench.cpp)

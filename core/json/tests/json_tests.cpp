@@ -209,6 +209,24 @@ TEST_CASE("write_json: floats round-trip exactly through shortest representation
   CHECK(out == "null");
 }
 
+// Strings are read and written a run at a time (roadmap T183): an escape at either end, two in a
+// row, an empty string and a long run between them come out as they did a byte at a time.
+TEST_CASE("json strings: runs between escapes, at the ends and empty") {
+  CHECK(write_json(JsonValue("")) == "\"\"");
+  CHECK(write_json(JsonValue("\"a\"")) == R"("\"a\"")");
+  CHECK(write_json(JsonValue("\n\n")) == R"("\n\n")");
+  CHECK(write_json(JsonValue(std::string("x\x1fy\x7fz"))) == "\"x\\u001fy\x7fz\"");
+  const std::string run(5000, 'r');
+  CHECK(write_json(JsonValue(run + "\\" + run)) == "\"" + run + "\\\\" + run + "\"");
+  CHECK(parse_ok(R"("")").as_string().empty());
+  CHECK(parse_ok(R"("\"a\"")").as_string() == "\"a\"");
+  CHECK(parse_ok("\"" + run + "\\n" + run + "\"").as_string() == run + "\n" + run);
+  JsonValue v;
+  CHECK_FALSE(parse_json("\"abc", v).ok);
+  CHECK_FALSE(parse_json("\"abc\\", v).ok);
+  CHECK_FALSE(parse_json("\"ab\x01c\"", v).ok);
+}
+
 TEST_CASE("write_json: UTF-8 passes through unescaped") {
   JsonValue v("héllo 😀");
   CHECK(write_json(v) == "\"héllo 😀\"");
