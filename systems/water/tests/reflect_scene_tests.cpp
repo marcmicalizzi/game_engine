@@ -493,10 +493,12 @@ const char* k_scene = R"({
              "wave_amplitude_m": 0, "wet_m": 0, "foam_m": 0}]
 })";
 
-bool ray_queries_here() {
+// Asked of the device the case opens: a case that opens the test profile's device
+// (`renderer_test::device_options()`) asks with the same options, or it asks the card as it is.
+bool ray_queries_here(const gfx::DeviceOptions& options = gfx::DeviceOptions{}) {
   gfx::Device probe;
   std::string why;
-  if (!probe.create(gfx::DeviceOptions{}, &why)) {
+  if (!probe.create(options, &why)) {
     MESSAGE("renderer unavailable here: " << why);
     return false;
   }
@@ -866,7 +868,9 @@ f64 linear22(u8 code) { return std::pow(static_cast<f64>(code) / 255.0, 2.2); }
 }  // namespace
 
 TEST_CASE("water reflect: a foliage card in the water is shaded as the card on the screen") {
-  if (!ray_queries_here()) return;
+  // The reflected hit is a ray query: without one the water reflects the sky alone and there is no
+  // card in it to compare, so the case stands down on such a device, the test profile's included.
+  if (!ray_queries_here(renderer_test::device_options())) return;
   const test::TempDir tmp("water_reflect_foliage");
   RestoreReflect restore;
   struct RestoreShadow {
