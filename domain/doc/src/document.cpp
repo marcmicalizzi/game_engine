@@ -825,6 +825,107 @@ void Document::prune(Layer& layer, ObjectId id) noexcept {
   if (r != nullptr && is_override_only(*r)) layer.remove(id);
 }
 
+// --- Document: a command naming a former name ---------------------------------------------------
+
+Document::CommandNames Document::rename_command(const Command& cmd, Command& out,
+                                                std::string& why) const {
+  const schema::Registry& registry = schema::Registry::global();
+  const auto struct_of = [&](std::string_view type) -> const schema::TypeInfo* {
+    const schema::TypeInfo* info = registry.resolve(type);
+    return info != nullptr && info->kind == schema::Kind::Struct ? info : nullptr;
+  };
+  CommandNames result = CommandNames::current;
+  // The first former name found is the one the refusal names.
+  const auto note = [&](std::string message) {
+    if (result == CommandNames::current) why = std::move(message);
+    if (result != CommandNames::refused) result = CommandNames::renamed;
+  };
+  const auto refuse = [&](const schema::ReadContext& ctx) {
+    why = ctx.diagnostics.empty()
+              ? std::string("a field is named twice")
+              : ctx.diagnostics.front().path + ": " + ctx.diagnostics.front().message;
+    result = CommandNames::refused;
+  };
+  // An object of `info` held as `members`: a member under a former name is named outright, one
+  // inside a struct value by the value's renamed form.
+  const auto rename_members = [&](const schema::TypeInfo& info, JsonValue::Object& members,
+                                  const JsonValue* whole) {
+    for (u32 i = 0; i < members.size(); ++i) {
+      const std::string& key = members.key_at(i);
+      if (info.find_field(key) != nullptr) continue;
+      if (const schema::FieldInfo* f = info.find_field_alias(key)) {
+        note("'" + key + "' is a former name of " + info.qualified_name + "'s '" + f->name +
+             "': write '" + f->name + "'");
+      }
+    }
+    schema::ReadContext ctx;
+    u32 n = 0;
+    if (!schema::rename_former_fields(info, members, ctx, n)) {
+      refuse(ctx);
+    } else if (n > 0) {
+      note(whole != nullptr ? "a value names a field by a former name: write " + write_json(*whole, JsonWriteOptions{false})
+                            : std::string("the record names a field by a former name"));
+    }
+  };
+
+  out = cmd;
+  switch (cmd.kind) {
+    case CommandKind::CreateObject: {
+      if (registry.find(cmd.type) == nullptr) {
+        if (const schema::TypeInfo* info = registry.find_former(cmd.type)) {
+          out.type = info->qualified_name;
+          note("'" + cmd.type + "' is a former name of '" + out.type + "': write '" + out.type +
+               "'");
+        }
+      }
+      const schema::TypeInfo* info = struct_of(out.type);
+      if (info != nullptr && out.value.is_object())
+        rename_members(*info, out.value.as_object(), &out.value);
+      break;
+    }
+    case CommandKind::SetProperty:
+    case CommandKind::ClearProperty: {
+      const schema::TypeInfo* info = struct_of(type_of(cmd.id));
+      if (info == nullptr) break;
+      if (info->find_field(cmd.name) == nullptr) {
+        if (const schema::FieldInfo* f = info->find_field_alias(cmd.name)) {
+          out.name = f->name;
+          note("'" + cmd.name + "' is a former name of " + info->qualified_name + "'s '" + f->name +
+               "': write '" + f->name + "'");
+        }
+      }
+      const schema::FieldInfo* field = info->find_field(out.name);
+      if (cmd.kind != CommandKind::SetProperty || field == nullptr) break;
+      schema::ReadContext ctx;
+      u32 n = 0;
+      if (!schema::rename_former_fields(field->type, out.value, ctx, n)) {
+        refuse(ctx);
+      } else if (n > 0) {
+        note("the value of '" + out.name + "' names a field by a former name: write " +
+             write_json(out.value, JsonWriteOptions{false}));
+      }
+      break;
+    }
+    case CommandKind::RestoreRecord: {
+      if (!out.record.has_value()) break;
+      ObjectRecord& record = *out.record;
+      if (!record.type.empty() && registry.find(record.type) == nullptr) {
+        if (const schema::TypeInfo* info = registry.find_former(record.type)) {
+          note("'" + record.type + "' is a former name of '" + info->qualified_name +
+               "': write '" + info->qualified_name + "'");
+          record.type = info->qualified_name;
+        }
+      }
+      const schema::TypeInfo* info =
+          struct_of(record.type.empty() ? type_of(cmd.id) : std::string_view(record.type));
+      if (info != nullptr) rename_members(*info, record.properties, nullptr);
+      break;
+    }
+    default: break;
+  }
+  return result;
+}
+
 // --- Document: mutation -------------------------------------------------------------------------
 
 bool Document::apply(const Command& cmd, Command* inverse, Vector<Diagnostic>* diagnostics,
@@ -846,6 +947,25 @@ bool Document::apply(const Command& cmd, Command* inverse, Vector<Diagnostic>* d
   };
 
   if (cmd.id.is_null()) return fail("command needs an object id");
+
+  // **Former names** (`@alias`; doc.md, "A command that names a former name"): a client's command
+  // (strict) naming a type or a property by a name it had before a rename is refused, the message
+  // naming what to write instead; the engine's own (not strict: undo and redo of a journal written
+  // before the rename, a rollback's diff) is renamed and applied, so the document never holds a
+  // field under a name the next load would refuse beside its current one.
+  if (schema::Registry::global().has_former_names()) {
+    Command renamed;
+    std::string why;
+    const CommandNames names = rename_command(cmd, renamed, why);
+    if (names != CommandNames::current) {
+      // One field under two names is refused either way: nothing says which value was meant.
+      if (strict || names == CommandNames::refused) {
+        diag(diagnostics, describe_path(layer_name, cmd.id, cmd.name), std::move(why));
+        return false;
+      }
+      return apply(renamed, inverse, diagnostics, strict);
+    }
+  }
 
   // Every case that changes the edit layer ends with edited(cmd.id): a command edits one record,
   // so exactly one object's place in the composed index moved, and one record of one layer is

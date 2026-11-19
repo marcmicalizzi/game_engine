@@ -335,6 +335,13 @@ class Document {
   friend class Transaction;
   friend class DocumentStore;
 
+  // What `apply` makes of a command naming a type or a property by a former name (`@alias`; doc.md,
+  // "A command that names a former name"): `renamed`, with `out` the command in the current names
+  // and `why` the refusal a client's command gets; `refused` when it holds one field under two
+  // names; `current` when it names nothing former.
+  enum class CommandNames : u8 { current, renamed, refused };
+  CommandNames rename_command(const Command& cmd, Command& out, std::string& why) const;
+
   // One id's composed position across the stack. `layer_mask` names the layers holding a record
   // for the id so a query visits only those; bit 63 stands for "layer 63 and every layer above
   // it", so a stack deeper than 63 costs a scan of the tail and nothing else breaks.
