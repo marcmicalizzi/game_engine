@@ -212,7 +212,9 @@ void same_parts(const Parts& a, const Parts& b) {
 // (MSVC, 2026-09-25) and reproduced by Clang 18 and GCC 13 in the Linux container and by GCC 14 at
 // the v2 baseline on the server. A change to the residents' routines, the generator, the wheel, the
 // document consumer or the store moves it; re-pin only when the change is the point of the commit.
-constexpr const char* k_pinned = "53a8c6295e6d4e78";
+// 53a8c6295e6d4e78 until 2026-11-19, when engine-host's write-back sink began keeping the
+// projections of the records each flush wrote current (`world::project_writeback`, S11).
+constexpr const char* k_pinned = "085f2539aea63c5e";
 
 }  // namespace
 
@@ -304,8 +306,9 @@ TEST_CASE("npc: 10^5 scheduled residents streamed, saved, loaded and replayed to
 
 // The number the crossing world's three runs reach at tick 600 (below), pinned like `k_pinned`:
 // taken on MSVC on 2026-09-25 and reproduced by Clang 18 in the Linux container. It moves with
-// everything `k_pinned` moves with, and with the schedule index (npc.md).
-constexpr const char* k_crossing_pinned = "16a407bfad492334";
+// everything `k_pinned` moves with, and with the schedule index (npc.md). 16a407bfad492334 until
+// 2026-11-19, moved with `k_pinned` by the flush's projections (S11).
+constexpr const char* k_crossing_pinned = "125b4f3415759b91";
 
 // The schedule index end to end (npc.md, "The schedule index"): residents whose
 // routines take them across the edge of the simulated tiles, saved, loaded and replayed to one

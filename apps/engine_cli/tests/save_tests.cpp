@@ -436,8 +436,9 @@ TEST_CASE(
   // c2168e9307bca23b until 2026-10-05, when the carts began to integrate in f64 (ADR-0053);
   // 034b0fdc9cda96f0 until 2026-10-06, when a tile's projections began to keep its records' f64
   // positions (`TileProjection` 2) instead of the float32 each rounded to. The same on MSVC and
-  // Clang 18.
-  CHECK(a.value == "15b4cd29460682f8");
+  // Clang 18. 15b4cd29460682f8 until 2026-11-19, when engine-host's write-back sink began keeping the
+  // projections of the records each flush wrote current (`world::project_writeback`, S11).
+  CHECK(a.value == "ebbd622d15c54250");
 #endif
 }
 
@@ -565,6 +566,10 @@ const std::vector<CorpusSave>& corpus() {
       // 2026-11-18: `Patch` 2 (a journal patch names the client transaction it commits, protocol.md
       // "Transactions a client opens") is one more step for every older save, rewriting nothing: a
       // patch with no `transaction` reads as 0. `v5` is the save it writes.
+      //
+      // 2026-11-19: the carts' saves continue to other hashes (v1 and v2 232aa2a53b31c9ac, v3 to v5
+      // c9b72a04d230351f before), because engine-host's write-back now keeps the projections of the
+      // records each flush wrote current (`world::project_writeback`, S11); the residents' do not.
       {"v1",
        300,
        "8a6d7d078e00bcbf",
@@ -573,7 +578,7 @@ const std::vector<CorpusSave>& corpus() {
         "engine.world.Node 1 -> 2", "engine.world.SaveManifest 1 -> 2",
         "engine.world.SaveObserver 1 -> 2", "engine.world.TileProjection 1 -> 2",
         "store.tables 1 -> 2"},
-       "232aa2a53b31c9ac"},
+       "62b5d7d8f5126517"},
       {"v2",
        300,
        "3d528309eea2b9df",
@@ -581,7 +586,7 @@ const std::vector<CorpusSave>& corpus() {
        {"engine.doc.LayerFile 1 -> 2", "engine.doc.Patch 1 -> 2", "engine.kinematics.Mover 1 -> 2",
         "engine.world.Node 1 -> 2", "engine.world.SaveObserver 1 -> 2",
         "engine.world.TileProjection 1 -> 2"},
-       "232aa2a53b31c9ac"},
+       "62b5d7d8f5126517"},
       // Written by the build that made them version 2: the same world, its carts moved in f64 for
       // the 300 ticks before the save, which is why its hashes are not v2's.
       {"v3",
@@ -590,7 +595,7 @@ const std::vector<CorpusSave>& corpus() {
        "8cdae985e86ab1d5",
        {"engine.doc.LayerFile 1 -> 2", "engine.doc.Patch 1 -> 2",
         "engine.world.SaveObserver 1 -> 2", "engine.world.TileProjection 1 -> 2"},
-       "c9b72a04d230351f"},
+       "3be7b6fddba56eb3"},
       // Written by the build that made those three version 2: the same world and the same state
       // at tick 300 as v3 — nothing the 300 ticks wrote depended on the change — in files that
       // name their versions.
@@ -599,10 +604,10 @@ const std::vector<CorpusSave>& corpus() {
        "8cdae985e86ab1d5",
        "8cdae985e86ab1d5",
        {"engine.doc.Patch 1 -> 2"},
-       "c9b72a04d230351f"},
+       "3be7b6fddba56eb3"},
       // Written by the build that made `Patch` version 2: v4's world and state in files whose
       // journal names its patches' transactions.
-      {"v5", 300, "8cdae985e86ab1d5", "8cdae985e86ab1d5", {}, "c9b72a04d230351f"},
+      {"v5", 300, "8cdae985e86ab1d5", "8cdae985e86ab1d5", {}, "3be7b6fddba56eb3"},
       // The npc capability's record types (D23): 400 generated residents and their places on 64 m
       // tiles, streamed round a walking and a still observer and saved at tick 300 by
       // npc_replay_tests.cpp's helper, in v4's formats. No player, so it continues on its own.
