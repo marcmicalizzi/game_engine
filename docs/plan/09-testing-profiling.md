@@ -29,6 +29,8 @@
 - A "record everything" mode for bug reports: input, events, and LLM outputs.
 - A replay viewer in the editor with scrubbing and state inspection.
 
+**Status (2026-11-18, roadmap T53): the hash a tick and the bisector are built.** `ecs::TickHash` hashes every schema component table of the entity store at the end of every phase it is asked for, field by field through reflection, into a `sim::HashLog` (off unless a host constructs it, nothing per entity when on: [ecs](../subsystems/ecs.md#the-state-hash-a-tick)); `sim::first_divergence` names the first tick, phase and tables two logs differ at, and a capture of that table from each side, re-run to that point, gives the entities and fields (`sim::diff_captures`; `engine-cli --bisect` on files: [sim](../subsystems/sim.md#the-hash-log-and-the-bisector)). A recorded run is a `sim::RunRecord` naming its seed, clock, input log, external raises (`events::ExternalRecording`) and hash log. Proved by a system made nondeterministic on purpose (it ranks entities by a slot's address) found at its tick, phase, table and field, and by 10^4 ticks of residents recorded and replayed from the record to no divergence. Not built: RNG streams as tables (no RNG stream registry exists to hash), the "record everything" mode's LLM outputs, the replay viewer, and protocol methods for a host's session (a `session.replay` would be the host's; nothing here needed one).
+
 ## 9.3 Profiling infrastructure (before optimizing anything)
 
 - Tracy instrumentation in every system; GPU zones via timestamp queries; capture export as part of the `profile` tool result.

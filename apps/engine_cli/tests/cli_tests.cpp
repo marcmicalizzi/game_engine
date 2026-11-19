@@ -3,6 +3,7 @@
 // through engine-cli, with every step a separate process.
 #include <core/json/json.h>
 #include <core/platform/process.h>
+#include <domain/sim/hash_log.h>
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
@@ -12,6 +13,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace engine;
@@ -351,4 +353,77 @@ TEST_CASE("cli: two layers that diverged from a common base are merged in one ca
   REQUIRE(cli({"--doc", dir, "doc.undo"}).exit_code == 0);
   Run after_undo = cli({"--doc", dir, "doc.get", std::string("{\"id\":\"") + k_a + "\"}"});
   CHECK(at(at(after_undo.result, "properties"), "generator") == JsonValue("theirs"));
+}
+
+// `--bisect` (apps.md, "The divergence bisector"): two hash logs and two captures read with no
+// host, the first (tick, phase, table) that differs and the entity and field under it.
+TEST_CASE("cli: --bisect names the first tick, phase, table and field two runs differ at") {
+  test::TempDir dir;
+  const std::string names[] = {"engine.demo.A", "engine.demo.B"};
+  sim::HashLog a;
+  sim::HashLog b;
+  a.set_tables(names, 0x09u);  // input and systems
+  b.set_tables(names, 0x09u);
+  for (u64 t = 1; t <= 6; ++t) {
+    for (const sim::TickPhase p : {sim::TickPhase::Input, sim::TickPhase::Systems}) {
+      const u64 same[] = {t * 3u, t * 5u};
+      const u64 other[] = {t * 3u, t >= 4u && p == sim::TickPhase::Systems ? 99u : t * 5u};
+      REQUIRE(a.append(t, p, same));
+      REQUIRE(b.append(t, p, other));
+    }
+  }
+  const std::string pa = dir.path() + "/a.hashlog";
+  const std::string pb = dir.path() + "/b.hashlog";
+  REQUIRE(a.save(pa));
+  REQUIRE(b.save(pb));
+  sim::Capture ca;
+  ca.tick = 4;
+  ca.phase = sim::TickPhase::Systems;
+  ca.table = names[1];
+  sim::Capture cb = ca;
+  JsonValue va = JsonValue::object();
+  va.set("wealth", 100);
+  JsonValue vb = JsonValue::object();
+  vb.set("wealth", 103);
+  for (auto [capture, value] : {std::pair{&ca, &va}, std::pair{&cb, &vb}}) {
+    JsonValue item = JsonValue::object();
+    item.set("id", "0000000000000001000000000000000a");
+    item.set("value", *value);
+    capture->entities.push_back(std::move(item));
+  }
+  const std::string fa = dir.path() + "/a.capture.json";
+  const std::string fb = dir.path() + "/b.capture.json";
+  {
+    std::ofstream(fa) << write_json(sim::capture_to_json(ca));
+    std::ofstream(fb) << write_json(sim::capture_to_json(cb));
+  }
+  const auto bisect = [](std::vector<std::string> args) {
+    std::vector<std::string_view> argv{cli_exe(), "--bisect"};
+    for (const std::string& s : args)
+      argv.push_back(s);
+    platform::Process p;
+    std::string error;
+    Run run;
+    REQUIRE_MESSAGE(p.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error),
+                    error);
+    p.close_stdin();
+    p.read_all(run.stdout_text);
+    run.exit_code = p.wait();
+    if (!run.stdout_text.empty()) (void)parse_json(run.stdout_text, run.result);
+    return run;
+  };
+  const Run same = bisect({pa, pa});
+  CHECK(same.exit_code == 0);
+  CHECK(at(same.result, "diverged") == JsonValue(false));
+  const Run found = bisect({pa, pb, fa, fb});
+  REQUIRE(found.exit_code == 1);
+  u64 tick = 0;
+  CHECK(at(found.result, "tick").get_u64(tick));
+  CHECK(tick == 4u);
+  CHECK(at(found.result, "phase") == JsonValue("systems"));
+  CHECK(at(at(found.result, "tables")[0], "table") == JsonValue("engine.demo.B"));
+  const JsonValue& entity = at(at(found.result, "capture"), "entities")[0];
+  CHECK(at(at(entity, "fields")[0], "field") == JsonValue("wealth"));
+  CHECK(at(at(entity, "fields")[0], "b") == JsonValue("103"));
+  CHECK(bisect({pa, dir.path() + "/missing.hashlog"}).exit_code == 2);
 }
