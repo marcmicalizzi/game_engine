@@ -9,9 +9,14 @@
 # `doc`, `schema` and `json` are the materialization driver's (docs/subsystems/sim.md, "The driver"):
 # it reads a document through its composed index and the mapping table schemac compiled. Both are
 # domain- and core-layer and neither is a capability, so the scheduler stays switch-free.
+#
+# `input` is the door's (docs/subsystems/sim.md, "The door"): a player's input reaches the world as
+# events the door feeds an `input::InputState` with at the tick's Input phase. Foundation, not a
+# capability.
 engine_module(NAME sim LAYER domain
-  DEPS base containers time math jobs log ids json schema memory doc
-  SOURCES src/timing_wheel.cpp src/tiers.cpp src/scheduler.cpp src/materialize.cpp)
+  DEPS base containers time math jobs log ids json schema memory doc io input
+  SOURCES src/timing_wheel.cpp src/tiers.cpp src/scheduler.cpp src/materialize.cpp
+          src/hash_log.cpp src/door.cpp)
 
 # Record types, components and the declarations joining them, for the driver's tests: the table
 # schemac emits is what the driver reads, so the tests read one schemac emitted.
@@ -21,7 +26,7 @@ engine_schema_library(NAME sim_test_types
 engine_module_tests(NAME sim
   SOURCES tests/timing_wheel_tests.cpp tests/fast_forward_tests.cpp tests/tier_tests.cpp
           tests/scheduler_tests.cpp tests/static_table_tests.cpp tests/materialize_tests.cpp
-          tests/size_table.cpp
+          tests/door_tests.cpp tests/size_table.cpp
   DEPS jobs sim_test_types)
 
 # 10^6 timers through insert, cancel and advance; tier assignment over 10^5 entities at 1/4/8

@@ -37,7 +37,7 @@ set(_world_sources src/tile_ring.cpp src/world.cpp src/world_log.cpp src/tile_st
                    src/state_hash.cpp src/save_game.cpp src/input_observer.cpp
                    src/store_tiles.cpp src/document_tiles.cpp src/placement_tiles.cpp
                    src/ground_tiles.cpp src/scene_consumers.cpp src/drawn_tiles.cpp
-                   src/tile_meshes.cpp src/handoff_cells.cpp)
+                   src/tile_meshes.cpp src/handoff_cells.cpp src/door_events.cpp)
 
 engine_module(NAME world LAYER systems OPTIONAL WHOLE_ARCHIVE
   DEPS ${_world_deps}
@@ -48,7 +48,7 @@ engine_module(NAME world LAYER systems OPTIONAL WHOLE_ARCHIVE
 set(_world_tests tests/world_tests.cpp tests/tile_store_tests.cpp tests/consumer_tests.cpp
                  tests/save_tests.cpp tests/scene_order_tests.cpp tests/drawn_tiles_tests.cpp
                  tests/tile_meshes_tests.cpp tests/tile_mesh_textures_tests.cpp
-                 tests/size_table.cpp
+                 tests/size_table.cpp tests/door_events_tests.cpp
                  # T131 with W118: when a tile is admitted, released and built, and on which
                  # thread, over fixture generators of the test's own.
                  tests/tile_admission_tests.cpp

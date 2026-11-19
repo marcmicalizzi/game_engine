@@ -47,13 +47,17 @@
 #include <core/ids/id128.h>
 #include <core/schema/type_info.h>
 #include <core/time/time.h>
+#include <domain/sim/door.h>
 #include <domain/sim/scheduler.h>
 
 #include <atomic>
 #include <cstring>
 #include <mutex>
 #include <span>
+#include <string>
+#include <string_view>
 #include <type_traits>
+#include <utility>
 
 namespace engine::doc {
 class Document;
@@ -528,6 +532,91 @@ class EventBus {
   u8 phase_ = 0;
   bool delivering_ = false;
   bool installed_ = false;
+};
+
+// ---- a recorded run's external raises (events.md, "Events and the replay"; roadmap T53) --------
+//
+// The `ExternalLog` hook's other end: every external raise copied as it is raised, kept in raise
+// order with its payload in one arena, written to a file a recorded run names beside its input log
+// (`sim::RunRecord::external_log`), read back, and raised again tick by tick. The file is
+// little-endian with fixed-width entries, and a read checks every entry against the file's size
+// before it trusts it. A host that records through the one door uses `DoorBinding` below instead,
+// which also puts the raises in the store's event log.
+class ExternalRecording {
+ public:
+  ExternalRecording() = default;
+
+  // A hook for `EventBus::set_external_log` that records into this object, which must outlive it.
+  ExternalLog hook() noexcept { return ExternalLog{this, &ExternalRecording::record_hook}; }
+  void record(const ExternalRaise& raise);
+  void clear() noexcept;
+
+  u32 size() const noexcept { return entries_.size(); }
+  // The raise `index`, its payload a view into this object.
+  ExternalRaise at(u32 index) const noexcept;
+
+  // Raises again on `bus` every recorded raise of tick `tick` from the cursor on, in recorded
+  // order, and moves the cursor past them. Call it before stepping tick `tick`, as the host's own
+  // raises were made. Returns how many the bus took; `refused` counts the rest.
+  u32 replay_tick(EventBus& bus, u64 tick, u32* refused = nullptr);
+  void rewind() noexcept { cursor_ = 0; }
+
+  bool save(std::string_view native_path, std::string* error = nullptr) const;
+  bool load(std::string_view native_path, std::string* error = nullptr);
+  // The file's bytes, which `save` writes and `load` reads.
+  void serialize(std::string& out) const;
+  bool deserialize(std::string_view bytes, std::string* error = nullptr);
+
+ private:
+  struct Entry {
+    u64 tick = 0;
+    u64 key = 0;
+    u64 tile = 0;
+    u32 source = 0;
+    u32 seq = 0;
+    u32 type_id = 0;
+    u32 phase = 0;
+    u32 offset = 0;
+    u32 bytes = 0;
+  };
+  static void record_hook(void* context, const ExternalRaise& raise);
+
+  Vector<Entry> entries_;
+  Vector<u8> payload_;
+  u32 cursor_ = 0;
+};
+
+// ---- external raises through the one recorded door (events.md, "Through the door"; S18) --------
+//
+// Binds a bus's external sources to a `sim::Door`: every external raise is recorded into the door
+// as a `Between` entry of the origin its source was given (the player's by default) — so it is in
+// the run's record and, through `systems/world`'s `append_door_events`, in the store's event log —
+// and a replay re-raises it from the door at the start of the tick after the one it was raised in,
+// which is where the bus would have delivered it. **The door must be installed in the scheduler
+// before the bus is**, so that its replay runs while the bus still stands at the tick the raise was
+// made in. The binding replaces `ExternalRecording` for a host that records through the door; both
+// keep the raise's whole key (tick, phase, source, key, sequence), so the deliveries are the same.
+class DoorBinding {
+ public:
+  DoorBinding(EventBus& bus, sim::Door& door, sim::DoorOrigin origin = sim::DoorOrigin::Player);
+  ENGINE_NON_COPYABLE(DoorBinding);
+  // The origin a source's raises are recorded with (an agent's source, a network peer's).
+  void set_origin(u32 source, sim::DoorOrigin origin);
+  // `schema::stable_type_id("engine.events.ExternalRaise")`: the door kind of a raise.
+  static u32 kind() noexcept;
+  // Raises the door handed back that the bus refused (a type it does not carry, a full bank).
+  u32 refused() const noexcept { return refused_; }
+
+ private:
+  static void record_hook(void* context, const ExternalRaise& raise);
+  static void replay(void* context, const sim::DoorEntry& entry, std::span<const u8> payload);
+
+  EventBus* bus_ = nullptr;
+  sim::Door* door_ = nullptr;
+  sim::DoorOrigin origin_ = sim::DoorOrigin::Player;
+  Vector<std::pair<u32, sim::DoorOrigin>> origins_;
+  Vector<u8> scratch_;
+  u32 refused_ = 0;
 };
 
 }  // namespace engine::events

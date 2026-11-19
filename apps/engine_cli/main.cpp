@@ -6,6 +6,8 @@
 #include <core/json/json.h>
 #include <core/platform/cpu_baseline.h>
 #include <core/platform/process.h>
+#include <domain/sim/hash_log.h>
+#include <foundation/io/vfs.h>
 
 #include <cstdio>
 #include <ctime>
@@ -26,6 +28,12 @@ namespace {
 const char* k_usage =
     "usage: engine-cli [options] <method> [params-json]\n"
     "       engine-cli [options] --console <file.luau | -> [-- <script args>...]\n"
+    "       engine-cli --bisect <a.hashlog> <b.hashlog> [<a.capture.json> <b.capture.json>]\n"
+    "\n"
+    "  --bisect           the divergence bisector, on files and with no host: the first tick,\n"
+    "                     phase and tables two state-hash logs differ at, and with two captures\n"
+    "                     of that table the entities and fields that differ. Exit 0 when the\n"
+    "                     logs agree, 1 when they differ, 2 when a file cannot be read\n"
     "\n"
     "  --host <path>      engine-host executable (default: beside engine-cli)\n"
     "  --doc <dir>        open this document first and pass its session to the method\n"
@@ -198,10 +206,94 @@ int run_console(const Vector<std::string_view>& host_argv, const std::string& sc
   return host.wait();
 }
 
+// `--bisect`: the divergence bisector on files, with no host (domain/sim/hash_log.h; apps.md, "The
+// divergence bisector"). Exit 0 when the logs agree everywhere both cover, 1 when they differ, 2
+// when a file cannot be read.
+int run_bisect(int argc, char** argv, int first) {
+  const int count = argc - first;
+  if (count != 2 && count != 4) {
+    std::fputs("engine-cli: --bisect <a.hashlog> <b.hashlog> [<a.capture.json> <b.capture.json>]\n",
+               stderr);
+    return 2;
+  }
+  sim::HashLog a;
+  sim::HashLog b;
+  std::string error;
+  if (!a.load(argv[first], &error) || !b.load(argv[first + 1], &error)) {
+    std::fprintf(stderr, "engine-cli: %s\n", error.c_str());
+    return 2;
+  }
+  const sim::Divergence d = sim::first_divergence(a, b);
+  JsonValue out = JsonValue::object();
+  out.set("diverged", d.found);
+  out.set("rows_compared", d.rows_compared);
+  out.set("rows_a", d.rows_a);
+  out.set("rows_b", d.rows_b);
+  out.set("rows_differ", d.rows_differ);
+  if (d.found) {
+    out.set("tick", d.tick);
+    out.set("phase", sim::phase_name(d.phase));
+    JsonValue tables = JsonValue::array();
+    for (const sim::TableDivergence& t : d.tables) {
+      JsonValue row = JsonValue::object();
+      row.set("table", t.table);
+      if (t.only_in_a) row.set("only_in", "a");
+      if (t.only_in_b) row.set("only_in", "b");
+      tables.push_back(std::move(row));
+    }
+    out.set("tables", std::move(tables));
+  }
+  if (count == 4) {
+    sim::Capture ca;
+    sim::Capture cb;
+    for (int side = 0; side < 2; ++side) {
+      std::string text;
+      JsonValue value;
+      const char* path = argv[first + 2 + side];
+      if (io::read_file(path, text) != io::Status::Ok || !parse_json(text, value).ok ||
+          !sim::capture_from_json(value, side == 0 ? ca : cb, &error)) {
+        std::fprintf(stderr, "engine-cli: %s is not a capture %s\n", path, error.c_str());
+        return 2;
+      }
+    }
+    u64 differing = 0;
+    const sim::CaptureDiff diff = sim::diff_captures(ca, cb, 64, &differing);
+    JsonValue entities = JsonValue::array();
+    for (const sim::EntityDifference& e : diff.entities) {
+      JsonValue row = JsonValue::object();
+      row.set("id", e.id);
+      if (e.only_in_a) row.set("only_in", "a");
+      if (e.only_in_b) row.set("only_in", "b");
+      JsonValue fields = JsonValue::array();
+      for (const sim::FieldDifference& f : e.fields) {
+        JsonValue field = JsonValue::object();
+        field.set("field", f.path);
+        field.set("a", f.a);
+        field.set("b", f.b);
+        fields.push_back(std::move(field));
+      }
+      row.set("fields", std::move(fields));
+      entities.push_back(std::move(row));
+    }
+    JsonValue capture = JsonValue::object();
+    capture.set("table", ca.table);
+    capture.set("tick", ca.tick);
+    capture.set("phase", sim::phase_name(ca.phase));
+    capture.set("compared", diff.compared);
+    capture.set("differing", differing);
+    capture.set("entities", std::move(entities));
+    out.set("capture", std::move(capture));
+  }
+  std::fputs(write_json(out).c_str(), stdout);
+  std::fputc('\n', stdout);
+  return d.found ? 1 : 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   engine::platform::require_cpu_baseline();  // ADR-0031, first statement
+  if (argc >= 2 && std::string_view(argv[1]) == "--bisect") return run_bisect(argc, argv, 2);
   std::string host_path;
   std::string doc_dir;
   std::string doc_name;

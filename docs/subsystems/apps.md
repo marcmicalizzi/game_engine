@@ -42,10 +42,15 @@ engine-cli [--host <path>] [--doc <dir>] [--create] [--name <name>] [--mount <sp
            [--compact] [--report <file>] <method> [params-json]
 engine-cli [--host <path>] [--mount <spec>]... [--roles <file>] [--actor <name>] [--role <name>] [--task <id>] [--step-budget <n>] [--memory-mb <n>]
            --console <file.luau | -> [-- <script args>...]
+engine-cli --bisect <a.hashlog> <b.hashlog> [<a.capture.json> <b.capture.json>]
 ```
 With `--doc` the CLI opens the document first (creating it with `--create`) and injects the session id into the params. Results print as pretty JSON (or one line with `--compact`); errors print `error <code>: <message>` and any diagnostics to stderr and exit 1; usage problems exit 2. The host is found beside the CLI unless `--host` says otherwise. `--roles`, `--actor`, `--role` and `--task` are handed to the host as they are (engine-host's, above), so a one-shot call can be attributed and checked like any client's. `--console <file>` runs a Luau script against the host instead of one method — [the console](#the-console-luau-scripts-over-the-protocol), below.
 
 `--report <file>` writes the same result to a file as one JSON document — `{"tool", "method", "generated_utc", "result"}` — **after** printing it, so a file that cannot be written never costs the caller the answer it already has. It is generic across methods and exists for one: `engine-cli gpu.adapters --report adapters.json` is what somebody runs on a machine no one here can log in to, and the file that comes back carries the whole requirements table and the verdict for every device on it (see [gfx](gfx.md#what-a-device-has-to-have)). The timestamp is there because such a file is read weeks later.
+
+### The divergence bisector
+
+`engine-cli --bisect <a.hashlog> <b.hashlog> [<a.capture.json> <b.capture.json>]` starts no host: it reads two state-hash logs (`ecs::TickHash`'s, [ecs](ecs.md#the-state-hash-a-tick)) and prints the first tick, phase and tables they differ at, and with two captures of that table at that point the entities on one side only and every field that differs, with both values ([sim](sim.md#the-hash-log-and-the-bisector)). Exit 0 when the logs agree everywhere both cover, 1 when they differ, 2 when a file cannot be read. It is a verb and not a protocol method because nothing in it needs a session: the runs it compares are a host's to make (roadmap T53).
 
 **Example (the exit criterion).**
 ```bash
