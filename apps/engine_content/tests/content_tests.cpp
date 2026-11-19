@@ -1433,3 +1433,139 @@ TEST_CASE("engine-content: failures and usage errors have their own exit codes")
   CHECK(content({"info", out, "--extra"}, true).exit_code == 2);
   CHECK(content({"--help"}).exit_code == 0);
 }
+
+// ---- C62: content classes (docs/content-classes.md, "How it travels through derived data") ----
+//
+// Neutral data only: the checker cube, a 4x4 checker PNG made here, and an engine category used as
+// a name (`violence: mild`), so `build` needs no categories file.
+
+namespace {
+
+// The `.tex` files under a derived-data root, sorted.
+std::vector<std::string> textures_in(const std::string& ddc) {
+  std::vector<std::string> out;
+  const std::filesystem::path dir = std::filesystem::path(ddc) / "textures";
+  std::error_code ec;
+  if (!std::filesystem::exists(dir, ec)) return out;
+  for (const auto& entry : std::filesystem::directory_iterator(dir, ec))
+    if (entry.path().extension() == ".tex") out.push_back(slashes(entry.path()));
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
+bool write_checker_png(const std::string& path) {
+  Vector<u8> pixels(4 * 4 * 4);
+  for (u32 i = 0; i < 16; ++i) {
+    const u8 v = ((i + i / 4) & 1) != 0 ? 200 : 60;
+    pixels[i * 4 + 0] = v;
+    pixels[i * 4 + 1] = v;
+    pixels[i * 4 + 2] = v;
+    pixels[i * 4 + 3] = 255;
+  }
+  Vector<u8> png;
+  if (!image::encode_png(4, 4, 4, std::span<const u8>(pixels.data(), pixels.size()), png))
+    return false;
+  std::ofstream file(path, std::ios::binary);
+  file.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+  return file.good();
+}
+
+}  // namespace
+
+TEST_CASE("engine-content: a classified source's line and info name its class; others do not") {
+  const test::TempDir tmp("engine_content_classes");
+  const std::filesystem::path dir = tmp.native();
+  const std::string mesh = slashes(dir / "cube.glb");
+  REQUIRE(write_cube_glb(mesh));
+
+  const Run plain = content({"build", mesh, slashes(dir / "plain.clusters")});
+  REQUIRE_MESSAGE(plain.exit_code == 0, plain.output);
+  CHECK(plain.result.find("content_classes") == nullptr);
+  const Run plain_info = content({"info", slashes(dir / "plain.clusters")});
+  REQUIRE_MESSAGE(plain_info.exit_code == 0, plain_info.output);
+  CHECK(plain_info.result.find("content_classes") == nullptr);
+
+  REQUIRE(write_text(slashes(dir / "cube.provenance.json"),
+                     R"({"name":"cube","content_classes":{"violence":"mild"}})"));
+  const std::string out = slashes(dir / "classed.clusters");
+  const Run built = content({"build", mesh, out});
+  REQUIRE_MESSAGE(built.exit_code == 0, built.output);
+  CHECK(number(built.result, "build_key") != number(plain.result, "build_key"));
+  const JsonValue* line = built.result.find("content_classes");
+  REQUIRE_MESSAGE(line != nullptr, built.output);
+  CHECK(line->find("levels")->find("violence")->as_string() == "mild");
+  const Run info = content({"info", out});
+  REQUIRE_MESSAGE(info.exit_code == 0, info.output);
+  const JsonValue* recorded = info.result.find("content_classes");
+  REQUIRE_MESSAGE(recorded != nullptr, info.output);
+  CHECK(recorded->find("levels")->find("violence")->as_string() == "mild");
+  const JsonValue* ladders = recorded->find("categories");
+  REQUIRE(ladders != nullptr);
+  REQUIRE(ladders->size() == 1u);
+  CHECK((*ladders)[0].find("name")->as_string() == "violence");
+  CHECK((*ladders)[0].find("levels")->size() == 3u);  // none, mild, graphic, by name
+  bool named = false;
+  for (usize s = 0; s < info.result.find("sections")->size(); ++s)
+    named =
+        named || (*info.result.find("sections"))[s].find("name")->as_string() == "content_classes";
+  CHECK(named);
+
+  // A sidecar that cannot be read refuses the build, naming it, and writes nothing.
+  REQUIRE(
+      write_text(slashes(dir / "cube.provenance.json"), R"({"content_classes":{"glow":"on"}})"));
+  const Run refused = content({"build", mesh, slashes(dir / "refused.clusters")}, true);
+  CHECK(refused.exit_code != 0);
+  CHECK(refused.output.find("content.class") != std::string::npos);
+  CHECK(refused.output.find("cube.provenance.json") != std::string::npos);
+  CHECK_FALSE(std::filesystem::exists(dir / "refused.clusters"));
+}
+
+TEST_CASE("engine-content: an image's sidecar classes its texture and never moves the container") {
+  const test::TempDir tmp("engine_content_classes");
+  const std::filesystem::path dir = tmp.native();
+  const std::string mesh = slashes(dir / "cube.glb");
+  const std::string ddc = slashes(dir / "ddc");
+  CubeOptions options;
+  options.external_image = true;  // the glTF names textures/not_there.png
+  REQUIRE(write_cube_glb(mesh, options));
+  std::filesystem::create_directories(dir / "textures");
+  REQUIRE(write_checker_png(slashes(dir / "textures" / "not_there.png")));
+
+  const Run neutral = content({"build", mesh, "--cache", "--ddc", ddc});
+  REQUIRE_MESSAGE(neutral.exit_code == 0, neutral.output);
+  const std::vector<std::string> before = textures_in(ddc);
+  REQUIRE(before.size() == 1u);
+  const Run neutral_tex = content({"info", before[0]});
+  REQUIRE_MESSAGE(neutral_tex.exit_code == 0, neutral_tex.output);
+  CHECK(neutral_tex.result.find("content_classes") == nullptr);
+  const std::string container = file_bytes(text_of(neutral.result, "path"));
+
+  // The image gains a class: the container is the same entry with the same bytes, and the image
+  // has a texture of its own, keyed apart, carrying section 6.
+  REQUIRE(write_text(slashes(dir / "textures" / "not_there.provenance.json"),
+                     R"({"content_classes":{"violence":"mild"}})"));
+  const Run classed = content({"build", mesh, "--cache", "--ddc", ddc});
+  REQUIRE_MESSAGE(classed.exit_code == 0, classed.output);
+  CHECK(text_of(classed.result, "path") == text_of(neutral.result, "path"));
+  CHECK(number(classed.result, "build_key") == number(neutral.result, "build_key"));
+  CHECK(classed.result.find("content_classes") == nullptr);  // the source itself is neutral
+  CHECK(file_bytes(text_of(classed.result, "path")) == container);
+  const std::vector<std::string> after = textures_in(ddc);
+  REQUIRE(after.size() == 2u);
+  u32 classified = 0;
+  for (const std::string& tex : after) {
+    const Run tex_info = content({"info", tex});
+    REQUIRE_MESSAGE(tex_info.exit_code == 0, tex_info.output);
+    if (const JsonValue* c = tex_info.result.find("content_classes"); c != nullptr) {
+      CHECK(c->find("levels")->find("violence")->as_string() == "mild");
+      ++classified;
+    }
+  }
+  CHECK(classified == 1u);
+
+  // An image sidecar that cannot be read fails the command.
+  REQUIRE(write_text(slashes(dir / "textures" / "not_there.provenance.json"), "{ not json"));
+  const Run refused = content({"build", mesh, "--cache", "--ddc", ddc}, true);
+  CHECK(refused.exit_code != 0);
+  CHECK(refused.output.find("content.class") != std::string::npos);
+}
