@@ -1009,6 +1009,12 @@ TEST_CASE("mcp: a scripted editing session") {
       mcp.tool("open_session", "{\"path\":\"" + tmp.file("nothing-here") + "\"}");
   CHECK(is_error(missing));
   CHECK(text_of(missing).find("\"create\": true") != std::string::npos);
+  // A create the host refuses (at the workspace root itself) is told where a document is made,
+  // not to pass the create it passed.
+  const JsonValue at_root = mcp.tool("open_session", R"({"path":"workspace://","create":true})");
+  CHECK(is_error(at_root));
+  CHECK(text_of(at_root).find("\"create\": true") == std::string::npos);
+  CHECK(text_of(at_root).find("below a writable root") != std::string::npos);
 }
 
 TEST_CASE("mcp: a transaction stages changes from several tools and lands them as one patch") {

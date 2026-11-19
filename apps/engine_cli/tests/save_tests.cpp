@@ -851,6 +851,44 @@ TEST_CASE("save: a save and a load write only under the host's writable roots") 
         1003);
 }
 
+// A load makes its directory a document and opens it, and an open document is protected: so a load
+// into `out://` (empty or missing) made the host's out/ a document, and every capture, save and
+// trace a client wrote under `out://` after it was refused; the same at a writable root's own
+// directory. Refused now as session.open's `create` is there (io::Roots::may_make_document).
+TEST_CASE("save: a load does not make the host's out/ or a root's own directory a document") {
+  const test::TempDir tmp("cli_save_load_places");
+  REQUIRE(tmp.ok());
+  const std::string work = tmp.file("work");
+  const std::string empty = tmp.file("empty");
+  const std::string doc = tmp.file("doc");
+  Host host({"--root", "work=" + work + ":rw", "--root", "empty=" + empty + ":rw", "--doc", doc,
+             "--create"});
+  REQUIRE(host.ok);
+  make_world(host, work + "/world");
+  const std::string s = "{\"session\":\"" + open_session(host, work + "/world", false) + "\"";
+  REQUIRE(text(result_of(host.call("session.save_game", s + ",\"path\":\"work://saves/one\"}")),
+               "path") == "work://saves/one");
+  const auto refused = [&](std::string_view dir) {
+    const JsonValue loaded = host.call(
+        "session.load_game", R"({"path":"work://saves/one","dir":")" + std::string(dir) + "\"}");
+    CHECK(error_code(loaded) == 1003);
+    CHECK(error_message(loaded) ==
+          "dir: no place this host may write at '" + std::string(dir) + "'");
+  };
+  refused("out://");
+  CHECK_FALSE(std::filesystem::exists(doc + "/out/manifest.json"));
+  CHECK(text(result_of(host.call("session.save_game", s + ",\"path\":\"out://saves/two\"}")),
+             "path") == "out://saves/two");
+  refused("empty://");
+  CHECK_FALSE(std::filesystem::exists(empty + "/manifest.json"));
+  CHECK(text(result_of(host.call("session.save_game", s + ",\"path\":\"empty://saves/three\"}")),
+             "path") == "empty://saves/three");
+  // Below them, a load is a document's place, as before.
+  CHECK(text(result_of(host.call("session.load_game",
+                                 R"({"path":"work://saves/one","dir":"empty://loaded"})")),
+             "dir") == "empty://loaded");
+}
+
 #else
 
 // A build without the world capability has no save format, no state hash and no ring to restore:

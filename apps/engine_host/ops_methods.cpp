@@ -2515,6 +2515,13 @@ bool session_load_game(protocol::Context& ctx, const protocol::LoadGameParams& p
                                    target_at, error)) {
     return false;
   }
+  // The directory becomes a document's, and an open one is protected: not where the host keeps
+  // something else (the host's out/, a root's own directory, an open document), answered as
+  // session.open's `create` is there (roots.h, `may_make_document`).
+  if (!ctx.roots->may_make_document(target_at.native)) {
+    error = protocol::path_not_found("dir", params.dir, io::Access::make_directory);
+    return false;
+  }
   const std::string save_dir = save_at.native;
   const std::string target = target_at.native;
   // Everything a load must know before it touches anything: the save is one, of versions this
