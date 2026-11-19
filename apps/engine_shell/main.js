@@ -144,8 +144,10 @@ class App extends EventTarget {
   async addMesh() {
     try {
       const picked = await this.call("editor.pick_file", { filter: ["gltf", "glb", "clusters"] });
-      if (!picked || !picked.path) return;
-      const made = await this.call("editor.import_mesh", { path: picked.path });
+      if (!picked || !picked.grant) return;
+      // The grant, not a path: the chosen file may lie outside the roots, and its path is never
+      // answered (protocol.md, "Where each method is carried").
+      const made = await this.call("editor.import_mesh", { grant: picked.grant });
       toast(`Imported ${made.name} (${made.mesh})`);
     } catch (err) {
       // reportError has said why (a missing file, a format the loader refuses, a copy refused).

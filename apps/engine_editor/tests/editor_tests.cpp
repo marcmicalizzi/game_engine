@@ -2017,6 +2017,11 @@ TEST_CASE("engine-editor: editor.tool, editor.pick_file and editor.import_mesh")
       protocol::Context{&document.sessions(), nullptr, nullptr, &state, &policy});
   protocol::add_builtin_methods(d);
   editor::add_editor_methods(d);
+  // The editor's roots, as engine-editor's Host::set_roots gives its listener: the document's
+  // directory, which holds the fixture's source files too.
+  io::Roots roots;
+  REQUIRE(roots.add("doc", tmp.path(), false) == io::Status::Ok);
+  d.context().roots = &roots;
   const auto call = [&](const std::string& method, const JsonValue& params) {
     JsonValue request = JsonValue::object();
     request.set("jsonrpc", JsonValue("2.0"));
@@ -2097,6 +2102,34 @@ TEST_CASE("engine-editor: editor.tool, editor.pick_file and editor.import_mesh")
   CHECK_FALSE(io::exists(tmp.path() + "/assets/broken/broken.glb"));
   CHECK(document.document().journal().size() == before + 2);
 
+  // A path outside every root is refused as any client path is, with nothing copied (before
+  // 2026-11-18 any file the host could read was imported, and every role could read it back from
+  // the document); the same file chosen in the editor's own window is a grant, imported once.
+  {
+    const test::TempDir elsewhere("engine_editor_import_outside");
+    REQUIRE(write_cube_gltf(elsewhere.path(), "barrel"));
+    JsonValue outside = JsonValue::object();
+    outside.set("path", JsonValue(elsewhere.path() + "/barrel.gltf"));
+    answer = call("editor.import_mesh", outside);
+    REQUIRE(answer.find("error") != nullptr);
+    CHECK(answer.find("error")->find("code")->as_int() == protocol::codes::k_not_found);
+    CHECK_FALSE(io::exists(tmp.path() + "/assets/barrel/barrel.gltf"));
+    CHECK(document.document().journal().size() == before + 2);
+    const std::string grant = editor::grant_file(state, elsewhere.path() + "/barrel.gltf");
+    REQUIRE(grant.size() == 32);
+    JsonValue granted = JsonValue::object();
+    granted.set("grant", JsonValue(grant));
+    answer = call("editor.import_mesh", granted);
+    REQUIRE_MESSAGE(answer.find("result") != nullptr, write_json(answer));
+    CHECK(std::string(answer.find("result")->find("mesh")->as_string()) ==
+          "assets/barrel/barrel.gltf");
+    CHECK(document.document().journal().size() == before + 3);
+    // One import a grant: the second is refused, and so are both forms at once.
+    CHECK(call("editor.import_mesh", granted).find("error") != nullptr);
+    granted.set("path", JsonValue(source_dir + "/crate.gltf"));
+    CHECK(call("editor.import_mesh", granted).find("error") != nullptr);
+    CHECK(document.document().journal().size() == before + 3);
+  }
   // ADR-0069 decision 5: an import a client asks for is that client's in the journal, as every
   // other write of the protocol is, and not the editor's own; a call naming nobody from the page
   // (no client entry) stays the editor's, as above.
@@ -2119,7 +2152,7 @@ TEST_CASE("engine-editor: editor.tool, editor.pick_file and editor.import_mesh")
   CHECK(journal[0].actor == "agent-1");
   CHECK(journal[0].task == "t-agent");
   CHECK(journal[0].role == "director");  // its hello named none: the host's, as on engine-host
-  CHECK(document.document().journal().size() == before + 3);
+  CHECK(document.document().journal().size() == before + 4);
 
   // A sample from content/samples, when tools/fetch-samples.ps1 has fetched it: the viewport
   // rebuilds with one more instance, its pixel picks back to the new record, and undo removes it.

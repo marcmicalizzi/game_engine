@@ -3233,9 +3233,14 @@ struct EditorToolParams @version(1) {
 
 /// Parameters of `editor.import_mesh`, a write: copy a mesh file into the document's `assets/`
 /// directory and place it in one transaction (docs/subsystems/apps.md, "Adding assets").
-struct EditorImportMeshParams @version(1) {
-  /// A `.gltf`, `.glb` or `.clusters` file, absolute or relative to the editor's working directory.
+struct EditorImportMeshParams @version(2) {
+  /// A `.gltf`, `.glb` or `.clusters` file a client names, admitted by the editor's roots as every
+  /// client path is (`<root>://<relative>`, relative to the document, or absolute under a root).
+  /// Exactly one of `path` and `grant`.
   path: string
+  /// A file the person chose in the editor's own window: `EditorPickFileResult.grant`, or a drop on
+  /// the viewport. One import within ten minutes; it may lie outside the roots.
+  grant: string @since(2)
   /// The new record's `name`; absent: the file's stem.
   name: string?
   /// Where to place it; absent: on the ground under the viewport's centre, or 10 m in front.
@@ -3261,10 +3266,12 @@ struct EditorPickFileParams @version(1) {
   filter: string[]
 }
 
-/// What `editor.pick_file` answers: the chosen file's path, or null when the dialog was cancelled
-/// or there is none to show (a test, an editor without a window).
-struct EditorPickFileResult @version(1) {
+/// What `editor.pick_file` answers: the chosen file's name and a grant to import it by, or null
+/// when the dialog was cancelled or there is none to show (a test, an editor without a window). The
+/// file's own path never crosses the protocol.
+struct EditorPickFileResult @version(2) {
   path: string?
+  grant: string? @since(2)
 }
 
 /// The editor's UI state, as `editor.state` and `editor.select` report it.

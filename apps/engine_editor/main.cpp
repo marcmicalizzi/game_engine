@@ -1259,7 +1259,9 @@ int run_window(const Options& options, editor::EditorDocument& document) {
           request.set("id", JsonValue(u64{1}));
           request.set("method", JsonValue("editor.import_mesh"));
           JsonValue params = JsonValue::object();
-          params.set("path", JsonValue(std::string(event.text)));
+          // The person's own drop: a grant, as the dialog's choice is (EditorState::Grant), so a
+          // file outside the roots is imported and no client can name one.
+          params.set("grant", JsonValue(editor::grant_file(host.state, std::string(event.text))));
           request.set("params", std::move(params));
           JsonWriteOptions compact;
           compact.pretty = false;
