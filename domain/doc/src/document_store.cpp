@@ -703,6 +703,47 @@ class DiskView {
     return vfs_.exists(full(path));
   }
 
+  // **A file the document names is under its directory where it resolves, not only by its name**
+  // (T190). `stays_under_document` judges a path's text, so `layers/sub/base.json` passes it even
+  // when `layers/sub` is a symbolic link or a junction to anywhere on the machine, and the read
+  // followed it on Windows and on Linux alike. So every file `load` reads from the disk is held
+  // here: its directory, resolved (`canonical`: symbolic links on both platforms and junctions on
+  // Windows followed), must be the document's resolved directory or below it, once per directory;
+  // and the file itself, when it is a link, must resolve below it too. A link that stays inside
+  // the document is followed as before. A hard link cannot be told from a file by any path and is
+  // not judged. True when the file leaves; false for a file that does not exist (the read reports
+  // it) and for one the save log's text supplies.
+  bool leaves_by_link(const std::string& path) const {
+    namespace fs = std::filesystem;
+    if (overlay_.find_value(path) != nullptr) return false;
+    std::string native;
+    if (vfs_.resolve(full(path), native) != io::Status::Ok) return false;
+    std::error_code ec;
+    if (!root_resolved_) {
+      root_resolved_ = true;
+      std::string native_root;
+      if (vfs_.resolve(dir_, native_root) == io::Status::Ok) {
+        root_ = fs::canonical(native_path(native_root), ec);
+        if (ec) root_.clear();
+      }
+    }
+    if (root_.empty()) return false;
+    const std::string parent(io::parent_path(native));
+    bool inside = true;
+    if (const bool* cached = dirs_.find_value(parent)) {
+      inside = *cached;
+    } else {
+      const fs::path real = fs::canonical(native_path(parent), ec);
+      inside = ec ? true : within(real, /*or_equal=*/true);  // a missing directory: NotFound
+      dirs_.insert_or_assign(parent, inside);
+    }
+    if (!inside) return true;
+    const fs::path file = native_path(native);
+    if (!fs::is_symlink(fs::symlink_status(file, ec)) || ec) return false;
+    const fs::path real = fs::canonical(file, ec);
+    return !ec && !within(real, /*or_equal=*/false);
+  }
+
   io::Status list(const std::string& path, Vector<io::DirEntry>& out) const {
     io::Status s = vfs_.list(full(path), out);
     if (overlay_.empty()) return s;
@@ -735,19 +776,96 @@ class DiskView {
   }
 
  private:
+  // Native paths are UTF-8 (foundation/io), not the narrow code page a std::string means on
+  // Windows.
+  static std::filesystem::path native_path(std::string_view s) {
+    return std::filesystem::path(
+        std::u8string_view(reinterpret_cast<const char8_t*>(s.data()), s.size()));
+  }
+
+  // `real` is the resolved root or below it, by whole components.
+  bool within(const std::filesystem::path& real, bool or_equal) const {
+    auto r = root_.begin();
+    auto f = real.begin();
+    for (; r != root_.end(); ++r, ++f) {
+      if (r->empty()) continue;  // a root's trailing separator
+      if (f == real.end() || *f != *r) return false;
+    }
+    return or_equal || f != real.end();
+  }
+
   const io::Vfs& vfs_;
   std::string dir_;
   std::string log_;
   HashMap<std::string, FileOp> overlay_;  // views into log_
+  mutable bool root_resolved_ = false;
+  mutable std::filesystem::path root_;       // the document's directory, resolved; empty when not
+  mutable HashMap<std::string, bool> dirs_;  // a native directory: whether it resolves inside
 };
 
 // Defined with the journal's other helpers, below.
 bool parse_journal(std::string_view text, const std::string& path, Vector<Patch>& out,
                    Vector<u64>* ends, std::string* error);
 
+// **Where a manifest may name a layer's file: under the document, by the rule alone** (T187).
+// `session.open` loads any directory a client names, so a manifest is someone else's bytes, and a
+// `file` of `../../x.json` read outside the document, and told the client, by "not found" against a
+// parse error and the native path, whether a file existed anywhere on the machine. This is the rule
+// `doc.place_asset` and `doc.put_blob` hold a client's path to (`stays_under_document`,
+// domain/protocol's document_path.h, which this module cannot include; the same behaviour under the
+// same name): relative, no drive or stream (`:`), no `..` component, no empty name, no control
+// character, `\` a separator on every platform. A path it refuses is never handed to the file
+// system, so the refusal names the layer and says nothing of the disk.
+bool stays_under_document(std::string_view path) noexcept {
+  if (path.empty() || path[0] == '/' || path[0] == '\\') return false;
+  usize start = 0;
+  for (usize i = 0; i <= path.size(); ++i) {
+    const char c = i < path.size() ? path[i] : '/';
+    if (static_cast<unsigned char>(c) < 0x20 || c == ':') return false;
+    if (c != '/' && c != '\\') continue;
+    const std::string_view name = path.substr(start, i - start);
+    if (name.empty() || name == "..") return false;
+    start = i + 1;
+  }
+  return true;
+}
+
+// **A `$parent` cycle is refused at load** (T187): the composed index, `children`, the
+// materializer's parents-first walk and flecs' `ChildOf` all assume a forest, and only
+// `Document::validate` (not run at load) said otherwise. Each live object is settled once, so a
+// chain of n objects costs O(n); true, with an object on the cycle in `at`, when there is one.
+bool find_parent_cycle(const Document& doc, ObjectId& at) {
+  HashMap<ObjectId, u8> state;  // 1 on the walk being made, 2 settled
+  Vector<ObjectId> walk;
+  for (const ObjectId id : doc.objects()) {
+    walk.clear();
+    for (ObjectId cursor = id; !cursor.is_null(); cursor = doc.parent_of(cursor)) {
+      const u8* seen = state.find_value(cursor);
+      if (seen != nullptr) {
+        if (*seen == 1) {
+          at = cursor;
+          return true;
+        }
+        break;
+      }
+      state.insert_or_assign(cursor, u8{1});
+      walk.push_back(cursor);
+    }
+    for (const ObjectId settled : walk)
+      state.insert_or_assign(settled, u8{2});
+  }
+  return false;
+}
+
 // Reads one file of the document and remembers what it held.
 bool read_file(const DiskView& disk, const std::string& path, std::string& out, StoredState& known,
                std::string* error) {
+  if (disk.leaves_by_link(path)) {
+    set_error(error, disk.full(path),
+              "leaves the document's directory through a link (a symbolic link or a junction), "
+              "which a document may not do");
+    return false;
+  }
   if (const io::Status s = disk.read(path, out); s != io::Status::Ok) {
     set_error(error, disk.full(path), io::status_name(s));
     return false;
@@ -1143,7 +1261,17 @@ bool DocumentStore::load(const io::Vfs& vfs, std::string_view dir, Document& out
     if (ref.partition.has_value() && ref.partition->tile_size > 0) {
       if (!load_partitioned(disk, ref, layer, *known, error)) return false;
     } else {
-      const std::string rel = join(k_layers_dir, ref.file);
+      if (!stays_under_document(ref.file)) {
+        set_error(error, manifest_path,
+                  "layer '" + ref.name +
+                      "' names a file outside the document's layers directory, which a document "
+                      "may not name");
+        return false;
+      }
+      std::string file(ref.file);
+      for (char& c : file)
+        if (c == '\\') c = '/';
+      const std::string rel = join(k_layers_dir, file);
       std::string layer_text;
       if (!read_file(disk, rel, layer_text, *known, error)) return false;
       schema::ReadContext layer_ctx;
@@ -1158,6 +1286,12 @@ bool DocumentStore::load(const io::Vfs& vfs, std::string_view dir, Document& out
   }
   if (doc.layer_count() == 0) {
     set_error(error, manifest_path, "document has no layers");
+    return false;
+  }
+  if (ObjectId at; find_parent_cycle(doc, at)) {
+    set_error(error, manifest_path,
+              "the layers' parents form a cycle through object " + hex_of(at) +
+                  "; a document's parents are a forest");
     return false;
   }
   const i32 edit = doc.find_layer(manifest.edit_layer);

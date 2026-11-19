@@ -472,3 +472,36 @@ TEST_CASE("texture file: the tail from a level reads by range what the whole rea
     CHECK_FALSE(read_texture_file_levels(path, whole.levels.size(), past, &error));
   }
 }
+
+// Hostile sizes (T190, docs/experiments/fuzzing-design.md): a chain whose every field agrees with
+// its stated size, built by a function, so the only thing wrong is the size itself.
+namespace hostile_texture {
+
+// One BC4 level `width` x 4: valid as a container, 128 KiB at 65,536 wide.
+TextureData strip(u32 width) {
+  TextureData data;
+  data.format = TextureFormat::bc4;
+  data.width = width;
+  data.height = 4;
+  TextureFileLevel level;
+  level.width = width;
+  level.height = 4;
+  level.bytes = texture_level_bytes(TextureFormat::bc4, width, 4);
+  data.levels.push_back(level);
+  data.data.resize(static_cast<u32>(level.bytes));
+  return data;
+}
+
+}  // namespace hostile_texture
+
+TEST_CASE("texture file hostile: a side past what the build writes is refused, not handed on") {
+  std::string error;
+  CHECK_MESSAGE(validate_texture(hostile_texture::strip(16384), &error), error);
+  CHECK_FALSE(validate_texture(hostile_texture::strip(65536), &error));
+  CHECK(error.find("65536x4, past the 16384 a side") != std::string::npos);
+  CHECK_FALSE(validate_texture(hostile_texture::strip(16385), &error));
+  // The reader validates what it read with the same function, so a file stating the size is
+  // refused by the same sentence; the writer will not write one.
+  const test::TempDir tmp("engine_texture_hostile");
+  CHECK_FALSE(write_texture_file(tmp.file("wide.tex"), hostile_texture::strip(65536), &error));
+}

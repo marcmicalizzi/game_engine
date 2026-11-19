@@ -712,10 +712,21 @@ bool read_accessor(const GltfDocument& doc, u32 accessor, Vector<f64>& out, u32&
   if (buffer != 0) return set_error(error, name + " is not in buffer 0");
   const u64 element = static_cast<u64>(size) * components;
   if (stride == 0) stride = element;
-  const u64 base = view_offset + accessor_offset;
-  if (count > 0 && (base + (count - 1) * stride + element > doc.bin.size() ||
-                    accessor_offset + (count - 1) * stride + element > view_length))
-    return set_error(error, name + " runs past its buffer view");
+  // **The extent is computed so that it cannot wrap** (T190, the class T187 mended in
+  // `gltf.cpp`'s `check_extents`): the file chooses `count`, `byteStride` and both offsets, each up
+  // to 2^63 - 1, so `(count - 1) * stride + element` could wrap to a few bytes, pass both checks,
+  // and the loop below would read `stride` bytes past (or before) the buffer. Each sum and product
+  // is checked against the room left; a valid file's accessor passes unchanged.
+  const u64 base = view_offset + accessor_offset;  // both below 2^63: no wrap
+  if (count > 0) {
+    const u64 last = count - 1;
+    const bool wraps = base < view_offset || (last != 0 && stride > (~0ull - element) / last);
+    const u64 span = wraps ? 0 : last * stride + element;
+    if (wraps || span > doc.bin.size() || base > doc.bin.size() - span ||
+        accessor_offset > view_length || span > view_length - accessor_offset)
+      return set_error(
+          error, name + " (" + std::to_string(count) + " elements) runs past its buffer view");
+  }
   if (count * components > 0xFFFFFFFFull) return set_error(error, name + " is too large");
   out.resize(static_cast<u32>(count * components));
   for (u64 e = 0; e < count; ++e) {

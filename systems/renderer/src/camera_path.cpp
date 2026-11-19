@@ -155,6 +155,15 @@ bool parse_camera_path(std::string_view text, const TerrainDesc* terrain, Camera
     key.fov_y = radians(source.fov_deg);
     out.keys.push_back(key);
   }
+  // The duration and the rate are the file's, and their product sizes a flight (T187): bounded in
+  // double before `frame_count` rounds it into a `u32`, which a long enough path wrapped.
+  if (const f64 frames = out.duration() * static_cast<f64>(out.fps);
+      !(frames < static_cast<f64>(k_max_camera_path_frames) - 0.5)) {
+    error = "the path is " + std::to_string(out.duration()) + " s at " + std::to_string(out.fps) +
+            " frames a second, more than the " + std::to_string(k_max_camera_path_frames) +
+            " frames a path may make";
+    return false;
+  }
   for (const scene::CameraMarker& marker : file.markers) {
     if (marker.frame >= out.frame_count()) {
       error = "marker '" + marker.name + "' is at frame " + std::to_string(marker.frame) +

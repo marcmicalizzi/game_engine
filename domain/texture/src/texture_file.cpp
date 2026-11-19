@@ -275,6 +275,17 @@ bool validate_texture(const TextureData& data, std::string* error) {
                            " has no sRGB form");
   }
   if (data.width == 0 || data.height == 0) return fail(error, "texture has no texels");
+  // **A side past what the build writes is refused at read too** (T190): a file states its size,
+  // and a strip of 65,536 x 4 BC4 texels is a valid 128 KiB chain whose image the device is then
+  // asked to create past its `maxImageDimension2D` (16,384 on the baseline cards, 4,096 Vulkan's
+  // floor): invalid usage, not a refusal. 16,384 is `texture_build`'s own `k_max_side`, so every
+  // texture the engine builds reads unchanged.
+  constexpr u32 k_max_side = 16384;
+  if (data.width > k_max_side || data.height > k_max_side) {
+    return fail(error, "texture is " + std::to_string(data.width) + "x" +
+                           std::to_string(data.height) + ", past the " +
+                           std::to_string(k_max_side) + " a side a built texture may be");
+  }
   if (data.levels.empty()) return fail(error, "texture has no levels");
   if (data.levels.size() > texture_full_level_count(data.width, data.height)) {
     return fail(error, "texture has " + std::to_string(data.levels.size()) +

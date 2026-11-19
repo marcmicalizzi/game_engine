@@ -13,4 +13,5 @@ engine_schema_library(NAME schema_test_types
 
 engine_module_tests(NAME schema
   SOURCES tests/schema_tests.cpp tests/materialize_tests.cpp tests/size_table.cpp
+          tests/hostile_schema_tests.cpp
   DEPS schema_test_types)

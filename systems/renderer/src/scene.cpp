@@ -34,6 +34,7 @@
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/far_tile.h>
 #include <systems/renderer/flora_motion.h>
+#include <systems/renderer/gpu_scene.h>  // k_max_pairs: the bound a scatter's count is held to
 #include <systems/renderer/scene.h>
 #include <systems/renderer/sway_forms.h>
 #include <systems/renderer/terrain.h>
@@ -3054,6 +3055,16 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     }
     if (scatter.ground && !out.terrain.enabled) {
       error = path + ": scatter " + std::to_string(s) + " stands on a terrain the scene has not";
+      return false;
+    }
+    // A file's count sizes this read's instance list, so it is bounded before the first is placed
+    // (T187): a scene names at most `k_max_pairs` (instance, cluster) pairs, the visibility id's
+    // 2^24, and every instance is at least one, so instances past it could never be drawn.
+    if (u64{out.instances.size()} + scatter.count > k_max_pairs) {
+      error = path + ": scatter " + std::to_string(s) + " would place " +
+              std::to_string(scatter.count) + " instances beside " +
+              std::to_string(out.instances.size()) + "; a scene draws at most " +
+              std::to_string(k_max_pairs) + " (instance, cluster) pairs";
       return false;
     }
     u64 state = static_cast<u64>(scatter.seed) * 0x9E3779B97F4A7C15ull + s;

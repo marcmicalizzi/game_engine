@@ -226,6 +226,10 @@ bool unpack_accessor(const cgltf_accessor& accessor, u32 components, const char*
   if (cgltf_num_components(accessor.type) != components)
     return fail(error, std::string("glTF: ") + what + " is not a vector of " +
                            std::to_string(components) + " components");
+  // Divided rather than multiplied: a count of 2^60 sixteen-float matrices wraps the product to 0,
+  // which read as an empty accessor and left its readers indexing nothing (T187).
+  if (accessor.count > std::numeric_limits<u32>::max() / components)
+    return fail(error, std::string("glTF: ") + what + " has too many components");
   const cgltf_size total = accessor.count * components;
   if (total > std::numeric_limits<u32>::max())
     return fail(error, std::string("glTF: ") + what + " has too many components");
@@ -1232,6 +1236,10 @@ bool collect_skins(const cgltf_data& data, const Vector<u32>& remap, MeshData& o
                            error)) {
         return false;
       }
+      if (matrices.size() / 16 < joint_count) {
+        return fail(error, "glTF: skin " + std::to_string(i) +
+                               " has fewer inverse bind matrices than joints");
+      }
       for (u32 j = 0; j < joint_count; ++j) {
         const f32* m = matrices.data() + static_cast<usize>(j) * 16;
         entry.inverse_bind[j] =
@@ -1507,6 +1515,114 @@ void log_g2_import(const MeshData& mesh, std::string_view name) {
 bool load_bytes(std::span<const u8> bytes, std::string_view base_dir, std::string_view name,
                 MeshData& out, std::string* error);
 
+// `a + b` and `a * b` in 64 bits, false when the true value does not fit.
+bool add_fits(u64 a, u64 b, u64& out) noexcept {
+  out = a + b;
+  return out >= a;
+}
+bool mul_fits(u64 a, u64 b, u64& out) noexcept {
+  if (a != 0 && b > std::numeric_limits<u64>::max() / a) return false;
+  out = a * b;
+  return true;
+}
+
+// **Every extent a file states, checked before cgltf_validate reads through it** (T187). cgltf's
+// own checks compute an accessor's end as `offset + stride * (count - 1) + element_size` in
+// `size_t` (cgltf.h, `cgltf_validate`), and a count is parsed by `atoll`, so a count near 2^62
+// wraps the end to a few bytes, passes, and the index-bound loop that follows walks the whole
+// count past the buffer; a sparse accessor's two extents wrap the same way. cgltf is fetched and
+// not patched here (cmake/EngineAssets.cmake), so the engine makes the same checks first, with
+// arithmetic that cannot wrap; cgltf's then see only extents that fit. A valid file passes every
+// one unchanged, so nothing about its import, its hash or its cache key moves.
+bool check_extents(const cgltf_data& data, std::string* error) {
+  for (cgltf_size i = 0; i < data.buffer_views_count; ++i) {
+    const cgltf_buffer_view& view = data.buffer_views[i];
+    u64 end = 0;
+    if (view.buffer != nullptr &&
+        (!add_fits(view.offset, view.size, end) || end > view.buffer->size))
+      return fail(error, "glTF: buffer view " + std::to_string(i) + " reaches past its buffer");
+  }
+  for (cgltf_size i = 0; i < data.accessors_count; ++i) {
+    const cgltf_accessor& accessor = data.accessors[i];
+    const u64 element = cgltf_calc_size(accessor.type, accessor.component_type);
+    if (element == 0) continue;  // an invalid type or component: cgltf_validate refuses it by name
+    const std::string label = "glTF: accessor " + std::to_string(i);
+    if (accessor.buffer_view != nullptr && accessor.count != 0) {
+      u64 last = 0;
+      u64 end = 0;
+      if (!mul_fits(accessor.stride, accessor.count - 1, last) ||
+          !add_fits(accessor.offset, last, end) || !add_fits(end, element, end) ||
+          end > accessor.buffer_view->size) {
+        return fail(error, label + " (" + std::to_string(accessor.count) +
+                               " elements) reaches past its buffer view");
+      }
+    }
+    if (accessor.is_sparse != 0) {
+      const cgltf_accessor_sparse& sparse = accessor.sparse;
+      if (sparse.count > accessor.count)
+        return fail(error, label + " has more sparse entries than elements");
+      const u64 index_size = cgltf_component_size(sparse.indices_component_type);
+      u64 indices_end = 0;
+      u64 values_end = 0;
+      if (sparse.indices_buffer_view == nullptr || sparse.values_buffer_view == nullptr ||
+          !mul_fits(index_size, sparse.count, indices_end) ||
+          !add_fits(indices_end, sparse.indices_byte_offset, indices_end) ||
+          indices_end > sparse.indices_buffer_view->size ||
+          !mul_fits(element, sparse.count, values_end) ||
+          !add_fits(values_end, sparse.values_byte_offset, values_end) ||
+          values_end > sparse.values_buffer_view->size) {
+        return fail(error, label + "'s sparse entries reach past their buffer views");
+      }
+    }
+  }
+  return true;
+}
+
+// **How deep below its scene's root a node may sit** (T187): `append_node` walks the hierarchy
+// recursively, so the depth is stack, and a file chooses it. 256 is the JSON parser's own nesting
+// cap (`JsonParseOptions::max_depth`) and the walk `subtree_has_mesh` already stops at; it keeps
+// the walk inside a quarter of a 1 MiB thread stack at up to 1 KiB a debug frame, far above a
+// character rig's few dozen levels. Past it a file is refused by name.
+inline constexpr u32 k_max_node_depth = 256;
+
+// Every node's depth below its root, each node settled once (so a chain of n nodes costs O(n),
+// where cgltf_validate's cycle walk and `collect_nodes`' ancestor walk each cost O(n * depth)),
+// refused past `k_max_node_depth`. Before cgltf_validate, so a parent cycle is not proven absent
+// yet: a cycle's nodes never settle and are refused as too deep, which is what bounds the walk.
+bool check_hierarchy(const cgltf_data& data, std::string* error) {
+  if (data.nodes_count > std::numeric_limits<u32>::max())
+    return fail(error, "glTF: too many nodes");
+  const u32 count = static_cast<u32>(data.nodes_count);
+  Vector<u32> settled(count, 0u);  // depth + 1 once known, 0 before
+  Vector<u32> path;
+  for (u32 i = 0; i < count; ++i) {
+    path.clear();
+    u32 depth = 0;  // the settled ancestor's depth + 1, or 0 when the walk reached a root
+    for (const cgltf_node* n = &data.nodes[i]; n != nullptr; n = n->parent) {
+      const u32 index = static_cast<u32>(n - data.nodes);
+      if (settled[index] != 0) {
+        depth = settled[index];
+        break;
+      }
+      if (path.size() > k_max_node_depth) {
+        return fail(error, "glTF: node " + std::to_string(i) + " sits more than " +
+                               std::to_string(k_max_node_depth) +
+                               " levels below its root (or in a cycle), deeper than the "
+                               "importer walks");
+      }
+      path.push_back(index);
+    }
+    for (u32 k = path.size(); k-- > 0;)
+      settled[path[k]] = ++depth;
+    if (depth > k_max_node_depth + 1) {
+      return fail(error, "glTF: node " + std::to_string(i) + " sits more than " +
+                             std::to_string(k_max_node_depth) +
+                             " levels below its root, deeper than the importer walks");
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 bool load_gltf_memory(std::span<const u8> bytes, std::string_view base_dir, MeshData& out,
@@ -1552,6 +1668,8 @@ bool load_bytes(std::span<const u8> bytes, std::string_view base_dir, std::strin
   if (result != cgltf_result_success)
     return fail(error, std::string("glTF: reading buffers failed (") + result_text(result) + ")");
 
+  if (!check_extents(*document.data, error)) return false;
+  if (!check_hierarchy(*document.data, error)) return false;
   result = cgltf_validate(document.data);
   if (result != cgltf_result_success)
     return fail(error,

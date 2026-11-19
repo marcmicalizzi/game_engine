@@ -41,6 +41,13 @@ struct CameraPathMarker {
   std::string note;
 };
 
+// The most frames a camera path's own rate may make of it (T187): a file states its duration and
+// its rate, and their product sized a flight's records. It is `render.benchmark`'s cap on a
+// client's own `path_frames`, so a file can ask for no more than a client may; at 60 frames a
+// second it is 27 minutes of flight, against a walk of 2,400 frames. `parse_camera_path` refuses
+// a path past it, with the number.
+inline constexpr u32 k_max_camera_path_frames = 100000;
+
 struct CameraPath {
   std::string name;
   bool smooth = true;  // cubic through the keys; false is straight segments

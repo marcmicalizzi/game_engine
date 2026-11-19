@@ -50,6 +50,12 @@ namespace engine::input {
 inline constexpr u32 k_log_version = 1;
 inline constexpr const char* k_log_type = "engine.input.log";
 
+// The most ticks from a loaded log's first event to its last (T190): seven days at the 240 Hz a
+// session ticks at by default (7 x 86,400 x 240). A replay walks every tick of its range, the
+// empty ones too, so the span is work a file chooses; `load` refuses a longer one by name. The
+// committed recordings span under 600.
+inline constexpr u64 k_max_log_tick_span = 145'152'000;
+
 // Called after every tick of a replay, with the state the tick ended in. Declared at namespace
 // scope because a nested struct's default member initializers cannot serve as a default argument
 // inside the enclosing class (GCC and Clang reject it).

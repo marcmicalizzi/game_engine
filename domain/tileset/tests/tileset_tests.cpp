@@ -987,6 +987,40 @@ TEST_CASE("tileset: every level's archive holds its tiles' records in order, fou
   }
 }
 
+// Hostile archives (T190, docs/experiments/fuzzing-design.md): a built level's archive with one
+// field of its table rewritten by a function, so the fuzz harness can lift the bytes as a seed.
+namespace hostile_archive {
+
+// The archive's first entry moved to 2^64 - `record` + 64: `offset + record` wrapped to 64, inside
+// the file, and the table was accepted naming a record 2^64 bytes away.
+std::string first_offset_wraps(std::string file, u64 record) {
+  const u64 toc = read_u64(file, 24);
+  const u64 offset = ~u64{0} - record + 65;
+  std::memcpy(file.data() + toc + 8, &offset, sizeof(offset));
+  return file;
+}
+
+}  // namespace hostile_archive
+
+TEST_CASE("tileset hostile: an archive entry whose offset wraps is refused at open") {
+  SmallSet s;
+  std::string path;
+  {
+    TileSet set;  // closed again before the archive is rewritten
+    REQUIRE_MESSAGE(set.open(s.built.manifest, s.error), s.error);
+    path = io::join_path(s.tmp.file("set"), set.manifest().levels[0].archive);
+  }
+  const u64 record = 32 + u64{s.options.cells + 3} * (s.options.cells + 3) * 4;
+  std::string file;
+  REQUIRE(io::read_file(path, file) == io::Status::Ok);
+  REQUIRE(io::write_file(path, hostile_archive::first_offset_wraps(file, record)) ==
+          io::Status::Ok);
+  TileSet hostile;
+  std::string error;
+  CHECK_FALSE(hostile.open(s.built.manifest, error));
+  CHECK(error.find("not sorted records within the file") != std::string::npos);
+}
+
 // **The whole level at once** (tileset.md, "Reading a level"): read in file order in large runs,
 // every tile once, and a window over all of it afterwards reads nothing; with a cache smaller than
 // the level it reads what fits and evicts nothing it read.
