@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <memory>
 #include <schemas/ecs_demo.h>
 #include <schemas/ecs_demo_ecs.h>
 #include <string>
@@ -77,7 +78,8 @@ struct Rig {
   RecordMaterializer records;
   sim::Materializer driver;
 
-  Rig() : records(world.world()), driver(scheduler, config()) {
+  explicit Rig(const RecordMaterializerConfig& records_config = {})
+      : records(world.world(), records_config), driver(scheduler, config()) {
     demo::register_ecs_demo_components(world.world());
     scheduler.add_hooks(records.hooks());
     driver.set_target(records.target());
@@ -277,6 +279,147 @@ TEST_CASE("ecs: what a system changes goes back to the document at Persist, attr
   CHECK(after.unchanged == 2);
   CHECK(rig.driver.stats().hook_calls == calls);
   CHECK(rig.records.stats().writeback_changes == 12);
+}
+
+namespace {
+
+//   M 30 Market            S 20, 21, 22 Stall (roots: a second table)
+//   └ S 10, 11, 12 Stall   (one table: the children of 30)
+doc::Document two_tables() {
+  doc::Document d;
+  d.add_layer("base", doc::LayerRole::Base);
+  JsonValue m = JsonValue::object();
+  m.set("position", vec3(100, 0, 0));
+  create(d, 30, k_market, 0, std::move(m));
+  for (u64 n : {10u, 11u, 12u})
+    create(d, n, k_stall, 30, stall(static_cast<f64>(n), "fish"));
+  for (u64 n : {20u, 21u, 22u})
+    create(d, n, k_stall, 0, stall(static_cast<f64>(n), "bread"));
+  return d;
+}
+
+std::vector<std::string> collect(Rig& rig) {
+  Vector<sim::WriteBackChange> out;
+  const sim::MaterializeTarget target = rig.records.target();
+  target.collect_writeback(target.context, out);
+  std::vector<std::string> lines;
+  for (const sim::WriteBackChange& c : out) {
+    lines.push_back(std::to_string(c.record.lo) + "." + c.mapping->fields[c.row].property + "=" +
+                    write_json(c.value, JsonWriteOptions{}));
+  }
+  return lines;
+}
+
+}  // namespace
+
+// Roadmap S11: a flush compares the shadow only in the tables flecs' change detection says a
+// tracked write touched since the last flush, reports exactly what the scan of every entity reports
+// for every tracked write, and holds nothing until a mapping that writes back has an entity. What
+// it cannot see — a write through a raw pointer with no `modified` — the scan of every entity does,
+// and `verify` counts.
+TEST_CASE("ecs: write-back compares only the tables a tracked write touched") {
+  doc::Document d = two_tables();
+  RecordMaterializerConfig verify;
+  verify.verify = true;
+  RecordMaterializerConfig every;
+  every.scan = WritebackScan::Every;
+  Rig tracked;
+  Rig checked(verify);
+  Rig oracle(every);
+  Rig* rigs[] = {&tracked, &checked, &oracle};
+  for (Rig* rig : rigs) {
+    CHECK(rig->records.writeback_queries() == 0);  // nothing held before anything is watched
+    rig->driver.materialize(d);
+    CHECK(rig->records.watched() == 6);
+  }
+  // One query, for the stalls' mapping; the market writes nothing back. The scan of every entity
+  // holds none.
+  CHECK(tracked.records.writeback_queries() == 1);
+  CHECK(oracle.records.writeback_queries() == 0);
+
+  // The first flush sees the two tables the creation touched, and nothing differs from what was
+  // just written. The second sees no table changed and compares nothing.
+  for (Rig* rig : rigs)
+    CHECK(collect(*rig).empty());
+  // The children of 30, the root stalls, and the market's table (it has `Identity` and `Standing`,
+  // and nothing in it is watched).
+  CHECK(tracked.records.stats().writeback_tables == 3);
+  const RecordStats quiet = tracked.records.stats();
+  CHECK(collect(tracked).empty());
+  CHECK(tracked.records.stats().writeback_tables == quiet.writeback_tables);
+  CHECK(tracked.records.stats().writeback_rows == quiet.writeback_rows);
+
+  // A tracked write to one root stall: its table is compared, the children's is skipped.
+  for (Rig* rig : rigs) {
+    const flecs::entity e = rig->entity(21);
+    e.get_mut<demo::Standing>().wealth = 250;
+    e.modified<demo::Standing>();
+  }
+  const RecordStats before = tracked.records.stats();
+  const std::vector<std::string> one = collect(tracked);
+  REQUIRE(one.size() == 1);
+  CHECK(one[0] == "21.wealth=250");
+  CHECK(tracked.records.stats().writeback_tables == before.writeback_tables + 1);
+  CHECK(tracked.records.stats().writeback_skipped == before.writeback_skipped + 2);
+  CHECK(tracked.records.stats().writeback_rows == before.writeback_rows + 3);
+  CHECK(collect(checked) == one);
+  CHECK(collect(oracle) == one);
+  CHECK(checked.records.stats().writeback_missed == 0);
+
+  // The same value written again and marked: the table is compared and nothing is a change, as the
+  // full scan would say — a write-back is a function of the values, never of who touched them.
+  for (Rig* rig : rigs) {
+    rig->entity(21).get_mut<demo::Standing>().wealth = 250;
+    rig->entity(21).modified<demo::Standing>();
+    CHECK(collect(*rig).empty());
+  }
+
+  // A write past the tracking: a raw pointer and no `modified`. The tracked scan does not see it;
+  // the full scan does, and so does `verify`, which counts it.
+  for (Rig* rig : rigs)
+    rig->entity(11).get_mut<demo::Standing>().position.x = 77.0f;
+  CHECK(collect(tracked).empty());
+  const std::vector<std::string> missed = collect(oracle);
+  REQUIRE(missed.size() == 1);
+  CAPTURE(missed[0]);
+  CHECK(missed[0].rfind("11.position=", 0) == 0);
+  CHECK(missed[0].find("77") != std::string::npos);
+  CHECK(collect(checked) == missed);
+  CHECK(checked.records.stats().writeback_missed == 1);
+  // The tracked rig catches up the next time anything tracked touches the table.
+  tracked.entity(10).modified<demo::Standing>();
+  CHECK(collect(tracked) == missed);
+
+  // A system's `inout` term marks what it iterates: four ticks of a system that pays every stall
+  // and moves the roots, flushed between ticks, write the same changes under all three.
+  std::unique_ptr<ScheduledTick> ticks[3];
+  for (u32 i = 0; i < 3; ++i) {
+    Rig* rig = rigs[i];
+    sim::SystemDesc desc;
+    desc.name = "test.pay";
+    desc.phase = TickPhase::Systems;
+    desc.writes = mask_of<demo::Standing>(rig->world.world());
+    register_system(rig->world, desc, [](flecs::world& world, flecs::entity phase) {
+      return world.system<demo::Standing>("test.pay")
+          .kind(phase)
+          .each([](flecs::entity e, demo::Standing& s) {
+            s.wealth += 3;
+            if (!e.target(flecs::ChildOf).is_valid()) s.position.z += 0.5f;
+          });
+    });
+    ticks[i] = std::make_unique<ScheduledTick>(rig->world, rig->scheduler);
+  }
+  for (int t = 0; t < 4; ++t) {
+    std::vector<std::string> flushed[3];
+    for (u32 i = 0; i < 3; ++i) {
+      ticks[i]->step();
+      flushed[i] = collect(*rigs[i]);
+    }
+    CHECK(flushed[0].size() == 9);  // six wealths, three root positions
+    CHECK(flushed[0] == flushed[2]);
+    CHECK(flushed[1] == flushed[2]);
+  }
+  CHECK(checked.records.stats().writeback_missed == 1);
 }
 
 // ADR-0053: a `worldpos` row fills a `WorldPos` field with the record's double, exactly, at 420 km,

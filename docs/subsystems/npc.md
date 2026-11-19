@@ -44,6 +44,7 @@ materialize Resident @tiers(0, 1, 2) {
 ```
 
 - `position` fills two rows: the anchor, which is written back and so moves the record between tiles, and the transform, which a tier may move along a trip. Only the anchor row writes back (a property has one writer).
+- **A transition marks `NpcState` modified** (roadmap S11): the capability writes it through a pointer, outside any system's query, and the write-back finds what changed through flecs' change tracking, which sees a write only when it is marked ([ecs](ecs.md#write-back-by-change-detection)). The drawn `Transform` is written the same way and not marked: it is never written back, and marking it every motion tick would cost the tracking for nothing. `npc_hash_tests.cpp`'s third case holds the tracked write-back to the scan of every resident over 10^4 ticks.
 - `@tiers(0, 1, 2)`: LOD3 is not an entity.
 - A place does not move and nothing may move it, so its rows are not written back and its entity is not watched.
 - `appearance` is [ADR-0032](../adr/0032-characters-are-parameter-vectors.md)'s parameter vector, reserved beside home and job as a fixed array of eight and read by nothing. The generator leaves it at its default, so it costs a document nothing until something writes it.

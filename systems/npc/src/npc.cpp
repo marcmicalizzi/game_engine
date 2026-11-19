@@ -437,6 +437,10 @@ void NpcSystem::write_components(u32 i) {
     state->state = p.state;
     state->next_event = p.end_us;
     state->anchor = place_position(i, p.place);
+    // `NpcState` is what a resident writes back (npc.schema), and this is a write outside any
+    // system's query: marked, so the write-back's change tracking sees its table (ecs.md,
+    // "Write-back by change detection"). The transform below is drawn and never written back.
+    e.modified<NpcState>();
   }
   if (world::Transform* transform = e.try_get_mut<world::Transform>())
     transform->position = drawn_[i];

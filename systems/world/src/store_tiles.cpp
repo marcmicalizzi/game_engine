@@ -4,6 +4,7 @@
 #include <domain/doc/partition.h>
 #include <systems/world/store_tiles.h>
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 #include <utility>
@@ -75,6 +76,57 @@ bool record_position(const doc::Document& document, const Id128& id, WorldPos& o
   if (value == nullptr || !read_point(*value, p) || !world_cell_valid(p)) return false;
   out = p;
   return true;
+}
+
+// ---- the projections a flush wrote --------------------------------------------------------------
+
+store::Status project_writeback(WorldStore& world_store, const doc::Document& document,
+                                const sim::WriteBackBatch& batch, ProjectWritebackStats* stats) {
+  ProjectWritebackStats s;
+  struct Row {
+    u64 tile = 0;
+    TileRow row;
+  };
+  Vector<Row> rows;
+  for (u32 i = 0; i < batch.changes.size(); ++i) {
+    // The batch is in (record, row) order: one projection a record.
+    const Id128& id = batch.changes[i].record;
+    if (i != 0 && batch.changes[i - 1].record == id) continue;
+    doc::TileCoord tile;
+    Row r;
+    if (!document.exists(id) || !record_position(document, id, r.row.position)) {
+      ++s.gone;
+      continue;
+    }
+    if (!document.object_tile(id, tile)) {
+      ++s.untiled;
+      continue;
+    }
+    r.tile = store_tile(TileCoord{tile.x, tile.y});
+    r.row.record = id;
+    r.row.type = std::string(document.type_of(id));
+    rows.push_back(std::move(r));
+  }
+  // Clustered by tile (store.md: a flush sorts by tile before it writes, 4.5x), then by record, so
+  // the rows go in in an order that is a function of the batch.
+  std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) {
+    if (a.tile != b.tile) return a.tile < b.tile;
+    return a.row.record < b.row.record;
+  });
+  Vector<TileRow> out;
+  Vector<u64> tiles;
+  out.reserve(rows.size());
+  tiles.reserve(rows.size());
+  for (Row& r : rows) {
+    tiles.push_back(r.tile);
+    out.push_back(std::move(r.row));
+  }
+  const store::Status status =
+      world_store.write_projections(std::span<const TileRow>(out.data(), out.size()),
+                                    std::span<const u64>(tiles.data(), tiles.size()));
+  if (status == store::Status::Ok) s.written = out.size();
+  if (stats != nullptr) *stats = s;
+  return status;
 }
 
 // ---- the store consumer -------------------------------------------------------------------------

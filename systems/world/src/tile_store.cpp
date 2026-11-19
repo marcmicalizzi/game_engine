@@ -115,6 +115,19 @@ void WorldStore::load_records(void* context, u64 tile, Vector<sim::EntityRecord>
 store::Status WorldStore::write_tile(TileCoord tile, std::span<const TileRow> rows, u64 sim_tick,
                                      i64 game_time_us) {
   const u64 id = store_tile(tile);
+  tiles_.clear();
+  for (usize i = 0; i < rows.size(); ++i)
+    tiles_.push_back(id);
+  const store::Status status =
+      write_projections(rows, std::span<const u64>(tiles_.data(), tiles_.size()));
+  if (status != store::Status::Ok) return status;
+  store::SnapshotInfo info;
+  return log_.snapshot(id, sim_tick, game_time_us, info);
+}
+
+store::Status WorldStore::write_projections(std::span<const TileRow> rows,
+                                            std::span<const u64> tiles) {
+  ENGINE_ASSERT(rows.size() == tiles.size(), "world::WorldStore: a tile per row");
   // The blobs first, into one buffer that has stopped growing before any span points into it.
   Vector<u32> offsets;
   offsets.reserve(static_cast<u32>(rows.size()) + 1);
@@ -136,18 +149,14 @@ store::Status WorldStore::write_tile(TileCoord tile, std::span<const TileRow> ro
   for (u32 i = 0; i < rows.size(); ++i) {
     store::ProjectionRecord record;
     record.entity = rows[i].record;
-    record.tile = id;
+    record.tile = tiles[i];
     record.kind = projection_kind();
     record.blob = std::span<const u8>(scratch_.data() + offsets[i], offsets[i + 1] - offsets[i]);
     records.push_back(record);
   }
-  if (!records.empty()) {
-    const store::Status status = log_.upsert_projections(
-        std::span<const store::ProjectionRecord>(records.data(), records.size()));
-    if (status != store::Status::Ok) return status;
-  }
-  store::SnapshotInfo info;
-  return log_.snapshot(id, sim_tick, game_time_us, info);
+  if (records.empty()) return store::Status::Ok;
+  return log_.upsert_projections(
+      std::span<const store::ProjectionRecord>(records.data(), records.size()));
 }
 
 store::Status WorldStore::read_tile(TileCoord tile, Vector<TileRow>& rows, bool& has_snapshot,
