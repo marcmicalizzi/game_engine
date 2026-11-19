@@ -188,12 +188,15 @@ u64 paged_stream_bytes(const SceneData& data) noexcept;
 // per-vertex source indices go too (T138): `GpuScene::create` measures what the renderer reads from
 // them (a swaying tail tree's padding, the crowns' priors, the meshes that face the sky) before it
 // returns, so after it only the collision's cut proxies read them, and a host with no walker passes
-// `none`. **`HostReaders::collision`** keeps those three for the proxies. **Always kept**: the
-// cluster and LOD descriptors; skin and morph streams (whether the scene is skinned or morphed is
-// read from them).
+// `none`. **`HostReaders::collision`** keeps those three for the proxies. **`HostReaders::chain`**
+// (W51-4) keeps the triangles alone, which `GpuScene::create_ray_tracing` packs into the chain's
+// 8-bit indices: what `GpuScene::create` passes when its host made every copy of its own before
+// (renderer.md, "The floats go inside `create`"). **Always kept**: the cluster and LOD descriptors;
+// skin and morph streams (whether the scene is skinned or morphed is read from them).
 enum class HostReaders : u8 {
   none,       // nothing reads the scene's host geometry after the upload
   collision,  // a walker's collision cuts proxies from the float positions and triangles
+  chain,      // the chain's 8-bit indices are still to be packed from the triangles
 };
 u64 release_uploaded_streams(SceneData& data, HostReaders readers);
 

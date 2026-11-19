@@ -3228,6 +3228,9 @@ int run_offscreen(Options& options, Interactive& interactive) {
         break;
       }
     }
+    // Before any release, `create`'s included (W51-4: the floats go inside it).
+    view::copy_collision_geometry(scene_data, interactive.on ? &interactive.header.walk : nullptr,
+                                  options.collision_draw, collision_copy);
     {
       ENGINE_STARTUP_STAGE("gpu scene");
       scene_requested = resolved;
@@ -3255,8 +3258,6 @@ int run_offscreen(Options& options, Interactive& interactive) {
       }
       resolved_off = scene_off.resolved();
     }
-    view::copy_collision_geometry(scene_data, interactive.on ? &interactive.header.walk : nullptr,
-                                  options.collision_draw, collision_copy);  // before any release
     if (resolved.stream && options.page_source != Options::PageSource::host) {
       std::string why;
       if (!renderer::attach_page_source(scene_data, scene, page_jobs, page_source, &why)) {
@@ -6213,6 +6214,9 @@ int run_view(int argc, char** argv) {
     }
 
     // ---- the device's stages, on this thread, pumping between their slices ----------------------
+    // Before any release, `create`'s included (W51-4: the floats go inside it).
+    view::copy_collision_geometry(scene_data, interactive.on ? &interactive.header.walk : nullptr,
+                                  options.collision_draw, collision_copy);
     profiling::TraceStage gpu_scene_stage("gpu scene");
     scene_requested = resolved;
     // W51-3: the upload-only streams go inside `create`, as `release_host_geometry` would after it.
@@ -6283,8 +6287,6 @@ int run_view(int argc, char** argv) {
     // Where a streamed page's bytes come from. Attaching the container-backed source is also what
     // releases the merged host streams, so it happens here, after the upload and before the
     // renderer that will read from it.
-    view::copy_collision_geometry(scene_data, interactive.on ? &interactive.header.walk : nullptr,
-                                  options.collision_draw, collision_copy);  // before any release
     if (resolved.stream && options.page_source != Options::PageSource::host) {
       std::string why;
       // Which source won is reported by the summary out of `StreamStats::from_file`, not from
