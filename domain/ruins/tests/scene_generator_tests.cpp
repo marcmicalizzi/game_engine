@@ -273,3 +273,43 @@ TEST_CASE("ruins generator: an entry is refused with the reader's sentences") {
                               context, &state, &error));
   CHECK(error.find("must be one grid") != std::string::npos);
 }
+
+TEST_CASE("ruins generator hostile: a scatter's square and tile size are bounded before the walk") {
+  // T191: every tile of [tile_min, tile_max] is ranked whatever `count` is, and both corners are
+  // i32s a client's scene names. One tile past 4,096 a side chooses nothing (it ranked 16.8 million
+  // tiles before), and the generator says the bound.
+  Vector<ruins::TileCoord> chosen;
+  ruins::choose_tiles(11, ruins::TileCoord{0, 0}, ruins::TileCoord{4096, 4095}, 4, 0.0f, chosen);
+  CHECK(chosen.empty());
+  ruins::choose_tiles(11, ruins::TileCoord{-3, -3}, ruins::TileCoord{2, 2}, 4, 0.0f, chosen);
+  CHECK(chosen.size() == 4);
+
+  const test::TempDir tmp("ruins_scene_generator_hostile");
+  std::string error;
+  REQUIRE_MESSAGE(ruins::write_synthetic_kit(tmp.file("kit"), ruins::SyntheticKitOptions{}, &error),
+                  error);
+  const scene_gen::PlacementGeneratorDesc* generator =
+      scene_gen::GeneratorRegistry::global().find_placement("ruins");
+  REQUIRE(generator != nullptr);
+  scene_gen::Context context;
+  context.dir = tmp.path();
+  context.where = "scene.json: ruins 0";
+  void* state = nullptr;
+  // One tile past the bound, so that the code before the mend ranks 16.8 million tiles (about
+  // 200 MB) and stops: the full i32 square, as a hostile scene names it, walked without end and
+  // took 29 GB before it was stopped (T191's log). Its count is checked as arithmetic alone.
+  CHECK_FALSE(generator->open(entry_json(R"({"kit":"kit/kit.json","count":1,)"
+                                         R"("tile_min":[0,0],"tile_max":[4096,4095]})"),
+                              context, &state, &error));
+  CHECK(error.find("4097 x 4096") != std::string::npos);
+  CHECK(error.find("16777216") != std::string::npos);
+  constexpr i32 k_first = -2147483647 - 1;
+  constexpr i32 k_last = 2147483647;
+  CHECK(ruins::chosen_span(ruins::TileCoord{k_first, k_first},
+                           ruins::TileCoord{k_last, k_last}) == ~u64{0});  // saturated
+  CHECK(ruins::chosen_span(ruins::TileCoord{k_first, 0}, ruins::TileCoord{k_last, 0}) ==
+        u64{1} << 32);
+  CHECK_FALSE(generator->open(entry_json(R"({"kit":"kit/kit.json","count":1,"tile_size":1e30})"),
+                              context, &state, &error));
+  CHECK(error.find("at most 10000 m") != std::string::npos);
+}

@@ -120,20 +120,29 @@ bool tile_has_building(u64 world_seed, TileCoord tile, f32 density) noexcept {
   return tile_rank(world_seed, tile) < threshold;
 }
 
+u64 chosen_span(TileCoord min, TileCoord max) noexcept {
+  if (max.x < min.x || max.z < min.z) return 0;
+  // Each side is at most 2^32 in i64; the product of two such is 2^64, so it saturates.
+  const u64 w = static_cast<u64>(i64{max.x} - i64{min.x} + 1);
+  const u64 h = static_cast<u64>(i64{max.z} - i64{min.z} + 1);
+  return h > ~u64{0} / w ? ~u64{0} : w * h;
+}
+
 void choose_tiles(u64 world_seed, TileCoord min, TileCoord max, u32 count, f32 density,
                   Vector<TileCoord>& out) {
   out.clear();
-  if (max.x < min.x || max.z < min.z) return;
+  const u64 span = chosen_span(min, max);
+  if (span == 0 || span > k_max_chosen_tiles) return;
   struct Ranked {
     u32 rank;
     TileCoord tile;
   };
   Vector<Ranked> ranked;
-  const u64 span = static_cast<u64>(max.x - min.x + 1) * static_cast<u64>(max.z - min.z + 1);
-  ranked.reserve(static_cast<u32>(std::min<u64>(span, 1u << 26)));
-  for (i32 z = min.z; z <= max.z; ++z) {
-    for (i32 x = min.x; x <= max.x; ++x) {
-      const TileCoord t{x, z};
+  ranked.reserve(static_cast<u32>(span));
+  // i64 counters: a square ending at the last i32 does not wrap.
+  for (i64 z = min.z; z <= max.z; ++z) {
+    for (i64 x = min.x; x <= max.x; ++x) {
+      const TileCoord t{static_cast<i32>(x), static_cast<i32>(z)};
       const u32 rank = tile_rank(world_seed, t);
       if (count == 0 && !tile_has_building(world_seed, t, density)) continue;
       ranked.push_back(Ranked{rank, t});

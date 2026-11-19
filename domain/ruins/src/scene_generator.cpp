@@ -176,8 +176,21 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
     if (!read_block_kit_file(entry->block_path, entry->block_kit, why))
       return fail(where + ": " + why);
   }
+  // Held before the cast to centimetres, which is undefined past an i32 (T191): 0 to 10 km.
+  if (!(scatter.tile_size > 0.0f && scatter.tile_size <= 10000.0f))
+    return fail(where + ": tile_size must be positive and at most 10000 m");
   const i32 tile_cm = to_cm(scatter.tile_size);
   if (tile_cm <= 0) return fail(where + ": tile_size must be positive");
+  // Every tile of the square is ranked, whatever `count` is (choose_tiles).
+  const u64 span = chosen_span(TileCoord{scatter.tile_min[0], scatter.tile_min[1]},
+                               TileCoord{scatter.tile_max[0], scatter.tile_max[1]});
+  if (span > k_max_chosen_tiles) {
+    const i64 w = i64{scatter.tile_max[0]} - i64{scatter.tile_min[0]} + 1;
+    const i64 h = i64{scatter.tile_max[1]} - i64{scatter.tile_min[1]} + 1;
+    return fail(where + ": tile_min to tile_max is " + std::to_string(w) + " x " +
+                std::to_string(h) + " tiles, past the " + std::to_string(k_max_chosen_tiles) +
+                " a scatter ranks (4096 a side)");
+  }
   choose_tiles(scatter.seed, TileCoord{scatter.tile_min[0], scatter.tile_min[1]},
                TileCoord{scatter.tile_max[0], scatter.tile_max[1]}, scatter.count, scatter.density,
                entry->tiles);
