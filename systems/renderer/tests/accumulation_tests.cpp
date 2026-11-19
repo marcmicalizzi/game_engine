@@ -490,6 +490,32 @@ TEST_CASE("reconstruction: the null provider draws the frame it is handed") {
   CHECK(worst <= 1);
 }
 
+// The accumulation and a provider each import last frame's visibility ("visibility before") in a
+// frame pass of their own, and the graph refuses a second import of one buffer in a debug build
+// (the pass audit's guard check 1, R186). Both named at once is one pass, never two: a provider
+// named outright is made instead of the accumulation (SceneRenderer::create_motion), so the frames
+// with history import it once. Fails, in a debug build by the assert, if both ever record.
+TEST_CASE("reconstruction: a provider named beside the accumulation imports last frame's once") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  ScopedTunable mode("renderer.reconstruction.accumulation", "on");
+  ScopedTunable provider("renderer.reconstruction.provider", "null");
+  Rig rig;
+  REQUIRE_MESSAGE(rig.build(gpu.device, ground_scene()), rig.error);
+  const Reconstruction state = rig.renderer.reconstruction();
+  CHECK(state.provider == ReconstructionProvider::Registered);
+  CHECK(rig.renderer.accumulation_bytes() == 0);
+  FrameDesc frame = held_frame(rig);
+  for (u32 k = 0; k < 4; ++k) {  // the second on has a history, and imports
+    frame.history_reset = k == 0;
+    CapturedFrame shot;
+    REQUIRE_MESSAGE(rig.shoot(frame, shot), rig.error);
+  }
+}
+
 // The vertex tier runs it: the pass reads buffers and images and no rasterizer, and the vertex
 // tier's visibility buffer is the mesh path's word for word (the vertex path tests), so the same
 // frames accumulate to the same bytes. `RasterMode::Vertex` takes the vertex tier on a card with
