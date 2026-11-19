@@ -241,6 +241,69 @@ TEST_CASE("routes: one plan, read again and named on its own treads") {
   CHECK_FALSE(read_plan(std::string_view(bytes).substr(0, bytes.size() / 2), refused, error));
 }
 
+// Hostile (T198, fuzzing-design.md's fifth list): a plan's closing hash is not a MAC, and its
+// stations were read from the cache as they were. A station moved 10^6 m off the lattice made one
+// thinned band about 10^6 m long, filed under every tile of its disc: about (10^6 / 32)^2, 10^9
+// entries on 32 m tiles (that arithmetic, never run). Now a named plan whose stations leave its
+// lattice, or stand further apart than the stationing spaces them, is refused, and an unnamed hit
+// that does so is a miss planned again. Before the mend both named files read back.
+TEST_CASE("routes hostile: a cached plan's stations are held to its lattice and its stationing") {
+  test::TempDir scratch;
+  std::string dir, error;
+  REQUIRE_MESSAGE(derived_dir(scratch.path(), dir, error), error);
+  scene_gen::Context c;
+  c.ground = ground(hill);
+  RouteLayer p = region(-50, -30, 50, 50);
+  p.routes.push_back(route("a", -44, -20, 40, 40));
+  RoutePlan first;
+  REQUIRE_MESSAGE(ensure_plan(p, c, dir, first, error), error);
+  REQUIRE_FALSE(first.network.lines.empty());
+  REQUIRE(first.network.lines[0].stations.size() >= 4);
+  RouteLayer named = p;
+  named.plan = plan_key_text(first.key);
+  auto rewrite = [&](RoutePlan plan) {  // the writer's own closing hash
+    REQUIRE(io::write_file(plan_path(dir, first.key), plan_bytes(plan)) == io::Status::Ok);
+  };
+  RoutePlan read;
+  RoutePlan off = first;
+  off.network.lines[0].stations[1].at.x = 1.0e6;
+  rewrite(off);
+  CHECK_FALSE(ensure_plan(named, c, dir, read, error));
+  CHECK(error.find("station off its lattice") != std::string::npos);
+
+  RoutePlan apart = first;  // inside the lattice, but a whole region from the station before
+  apart.network.lines[0].stations[1].at.x = 49.0;
+  apart.network.lines[0].stations[1].at.z = 49.0;
+  apart.network.lines[0].stations[2].at.x = -49.0;
+  apart.network.lines[0].stations[2].at.z = -29.0;
+  rewrite(apart);
+  CHECK_FALSE(ensure_plan(named, c, dir, read, error));
+  CHECK(error.find("further apart") != std::string::npos);
+
+  // Unnamed, the same file is a miss: planned again, to the honest bytes.
+  const u64 before = plans_made();
+  REQUIRE_MESSAGE(ensure_plan(p, c, dir, read, error), error);
+  CHECK(read.planned);
+  CHECK(plans_made() == before + 1);
+  CHECK(plan_bytes(read) == plan_bytes(first));
+}
+
+// Hostile (T198): a layer's legs were not counted, and each is a search over up to `max_samples`
+// cells that adds its path to the edges: a route of a million waypoints was a million searches.
+// 1,025 waypoints are 1,024 legs; one more is refused. Before the mend both layers were in range.
+TEST_CASE("routes hostile: a layer's legs are counted") {
+  std::string error;
+  RouteLayer many = region(-50, -30, 50, 50);
+  many.routes.push_back(route("a", -44, -20, 40, 40));
+  many.routes[0].waypoints.clear();
+  for (u32 k = 0; k < 1025; ++k)
+    many.routes[0].waypoints.push_back(WorldPos{-40.0 + 0.05 * k, 0.0, 0.0});
+  CHECK(layer_in_range(many, error));
+  many.routes[0].waypoints.push_back(WorldPos{0.0, 0.0, 10.0});
+  CHECK_FALSE(layer_in_range(many, error));
+  CHECK(error.find("1,024 legs") != std::string::npos);
+}
+
 // **The generator hands the plan over** (routes.md, "In a scene"; R144): through the registry, as
 // a host calls it. The edits it plans for the ground are `tread_edits_json`'s, field for field;
 // the plan stands on the ground before any edit, so an entry opened on a ground that carries its

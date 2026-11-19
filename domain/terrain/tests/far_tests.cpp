@@ -22,6 +22,49 @@ using namespace engine::terrain;
 // and on the walker's 1 mm one: the window's heights are the field's own to the bit, and so is the
 // point entry (`GroundProvider::height_mm`), which alone reaches past the 1 mm lattice's i32 index
 // (2,147 km).
+// Hostile (T194, fuzzing-design.md's fourth list): a scene's dune height, wavelength, ridges,
+// basins and bands went to millimetres and centimetres by an `f32`-to-`i64` cast before anything
+// checked them (`field_desc_of`, `band_from_metres` before `validate_bands`), undefined past 9.2 x
+// 10^15 mm. Before the mend each entry below passed `validate_terrain_entry` and was cast.
+TEST_CASE("terrain hostile: a dune field's lengths are bounded before they are cast") {
+  scene::Terrain valid;
+  REQUIRE(validate_terrain_entry(valid));
+  std::string error;
+  scene::Terrain tall = valid;
+  tall.dune_height = 3.0e38f;
+  CHECK_FALSE(validate_terrain_entry(tall, &error));
+  CHECK(error.find("dune_height") != std::string::npos);
+  scene::Terrain wide = valid;
+  wide.dune_wavelength = -1.0e20f;
+  CHECK_FALSE(validate_terrain_entry(wide, &error));
+  scene::Terrain ridge = valid;
+  ridge.ridges.push_back(scene::Ridge{});
+  ridge.ridges.back().to.x = 1.0e30f;
+  CHECK_FALSE(validate_terrain_entry(ridge, &error));
+  CHECK(error.find("ridges") != std::string::npos);
+  scene::Terrain basin = valid;
+  basin.basins.push_back(scene::Basin{});
+  basin.basins.back().radius = 1.0e30f;
+  CHECK_FALSE(validate_terrain_entry(basin, &error));
+  CHECK(error.find("basins") != std::string::npos);
+  scene::Terrain band = valid;
+  band.bands.emplace();
+  band.bands->push_back(scene::TerrainBand{});
+  band.bands->back().name = "huge";
+  band.bands->back().cell = 3.0e38f;
+  CHECK_FALSE(validate_terrain_entry(band, &error));
+  CHECK(error.find("band 'huge'") != std::string::npos);
+  // At the bounds, accepted: a ridge 1000 km out, a basin of 100 km, a band's defaults.
+  scene::Terrain edge = valid;
+  edge.ridges.push_back(scene::Ridge{});
+  edge.ridges.back().from.x = 1.0e6f;
+  edge.basins.push_back(scene::Basin{});
+  edge.basins.back().radius = 100'000.0f;
+  edge.bands.emplace();
+  edge.bands->push_back(scene::TerrainBand{});
+  CHECK_MESSAGE(validate_terrain_entry(edge, &error), error);
+}
+
 TEST_CASE("terrain: the dunes' tile source at a far lattice point is the field's own height") {
   scene::Terrain entry;
   REQUIRE(validate_terrain_entry(entry));

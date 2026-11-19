@@ -21,6 +21,7 @@ bool fail(std::string& error, std::string_view field) {
 }
 bool in(f64 v, f64 lo, f64 hi) { return v >= lo && v <= hi; }  // a NaN fails
 f64 wide(f32 v) { return static_cast<f64>(v); }
+constexpr u64 k_max_legs = 1024;
 // Whole centimetres and millimetres, halves away from zero: exact operations, the same everywhere.
 f64 to_cm(f64 metres) { return static_cast<f64>(std::llround(metres * 100.0)) / 100.0; }
 f64 to_mm(f64 metres) { return static_cast<f64>(std::llround(metres * 1000.0)) / 1000.0; }
@@ -409,10 +410,54 @@ bool layer_in_range(const RouteLayer& p, std::string& error) {
   if (!in(wide(p.wear_m), 0, 20)) return fail(error, "wear_m (0 to 20)");
   if (!in(wide(p.tread_cover), 0, 1)) return fail(error, "tread_cover (0 to 1)");
   if (!in(wide(p.tread_feather_m), 0, 2)) return fail(error, "tread_feather_m (0 to 2)");
+  // Each leg is a search over up to `max_samples` cells and adds its path to the edges, so their
+  // count is the plan's time and memory (T198): uncounted, a layer of a million waypoints was a
+  // million searches. An honest layer names a handful.
+  u64 legs = 0;
   for (const Route& r : p.routes) {
     if (r.waypoints.size() < 2) return fail(error, "routes (two or more waypoints each)");
+    legs += r.waypoints.size() - 1;
+    if (legs > k_max_legs) return fail(error, "routes (at most 1,024 legs, a search each)");
     for (const WorldPos& w : r.waypoints)
       if (!in(w.x, -1e9, 1e9) || !in(w.z, -1e9, 1e9)) return fail(error, "a waypoint (finite)");
+  }
+  return true;
+}
+
+bool detail::plan_fits_layer(const RouteLayer& p, const RouteNetwork& net, std::string& error) {
+  if (!layer_in_range(p, error)) return false;
+  const i64 s_mm = scene_gen::nearest_mm(wide(p.spacing_m));
+  const i64 x_mm = scene_gen::nearest_mm(p.region_min[0]);
+  const i64 z_mm = scene_gen::nearest_mm(p.region_min[1]);
+  const i64 w = (scene_gen::nearest_mm(p.region_max[0]) - x_mm) / s_mm + 1;
+  const i64 h = (scene_gen::nearest_mm(p.region_max[1]) - z_mm) / s_mm + 1;
+  if (net.spacing_mm != s_mm || net.x_mm != x_mm || net.z_mm != z_mm || i64{net.width} != w ||
+      i64{net.depth} != h) {
+    error = "routes: the plan's lattice is not its layer's";
+    return false;
+  }
+  // A station lies on a line through lattice points (to the centimetre), and the stationing spaces
+  // a line's stations at most one and a half `station_m` apart along it (`station`'s count rounds
+  // the stations a line holds); a centimetre of rounding each side on top.
+  const f64 x0 = static_cast<f64>(x_mm) / 1000.0 - .01, z0 = static_cast<f64>(z_mm) / 1000.0 - .01;
+  const f64 x1 = static_cast<f64>(x_mm + (w - 1) * s_mm) / 1000.0 + .01;
+  const f64 z1 = static_cast<f64>(z_mm + (h - 1) * s_mm) / 1000.0 + .01;
+  const f64 apart = 1.5 * wide(p.station_m) + .02;
+  for (const RouteLine& l : net.lines) {
+    for (u32 k = 0; k < l.stations.size(); ++k) {
+      const Station& st = l.stations[k];
+      if (!in(st.at.x, x0, x1) || !in(st.at.z, z0, z1) || !in(st.at.y, -1e9, 1e9) ||
+          !in(wide(st.ground), -1e9, 1e9)) {
+        error = "routes: the plan holds a station off its lattice";
+        return false;
+      }
+      if (k == 0) continue;
+      const f64 dx = st.at.x - l.stations[k - 1].at.x, dz = st.at.z - l.stations[k - 1].at.z;
+      if (!(dx * dx + dz * dz <= apart * apart)) {
+        error = "routes: the plan holds two stations further apart than its stationing makes them";
+        return false;
+      }
+    }
   }
   return true;
 }

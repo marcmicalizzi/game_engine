@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -620,6 +621,38 @@ TEST_CASE("scatter: a polygon region places inside it, on the tiles it reaches")
   const f64 want = 0.05 * 20000.0;
   MESSAGE("polygon: " << points.size() << " placed, " << want << " expected");
   CHECK(std::fabs(static_cast<f64>(points.size()) - want) < 0.1 * want);
+}
+
+// Hostile (T198, fuzzing-design.md's fifth list): a whole read's region was counted as one `i64`
+// product, so a tiles region from INT32_MIN to INT32_MAX, 2^32 tiles a side, made 2^64, which
+// wrapped to 0, passed the 16,777,216-tile cap, and walked 2^64 tiles (that arithmetic, never
+// walked); and a polygon's corners were held only finite, so a corner at 10^300 m reached
+// `nearest_mm`'s floor cast to `i64`. Before the mend the first region was counted as 0 tiles and
+// the second layer opened.
+TEST_CASE("scatter hostile: a whole read's region is counted side by side, corners within 10^9 m") {
+  const u64 side = u64{0xFFFF'FFFFu} + 1;  // INT32_MIN to INT32_MAX inclusive
+  CHECK(side * side == 0);                 // the product the count wrapped to
+  Layer layer;
+  layer.seed = 8;
+  layer.density.per_m2 = 0.05;
+  layer.kinds.push_back(rock_kind("a", 2.0f));
+  layer.region.kind = RegionKind::Tiles;
+  layer.region.tile_min = {std::numeric_limits<i32>::min(), std::numeric_limits<i32>::min()};
+  layer.region.tile_max = {std::numeric_limits<i32>::max(), std::numeric_limits<i32>::max()};
+  const Placer placer = open_layer(layer);
+  Vector<scene_gen::TileCoord> tiles;
+  std::string error;
+  CHECK_FALSE(placer.region_tiles(tiles, &error));
+  CHECK(error.find("a whole read takes at most") != std::string::npos);
+  CHECK(tiles.empty());
+
+  layer.region.kind = RegionKind::Polygon;
+  layer.region.polygon.push_back({0.0, 0.0});
+  layer.region.polygon.push_back({1.0e300, 0.0});
+  layer.region.polygon.push_back({0.0, 200.0});
+  Placer far;
+  CHECK_FALSE(far.open(layer, std::string(), 7, &error));
+  CHECK(error.find("within 10^9 m") != std::string::npos);
 }
 
 TEST_CASE("scatter: the procedural rock goes to the checkout's derived data, or where it is told") {

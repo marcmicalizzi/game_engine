@@ -1207,4 +1207,41 @@ u32 PageResidencyManager::evict_to_budget() {
   return evicted;
 }
 
+bool check_page_triangles(std::span<const ClusterDesc> clusters, const ClusterPageDesc& page,
+                          std::span<const u32> triangles, std::string* error) {
+  if (u64{page.first_cluster} + page.cluster_count > clusters.size())
+    return fail(error, "names clusters past the " + std::to_string(clusters.size()) + " it has");
+  if (triangles.size() < page.triangle_count) {
+    return fail(error, "holds " + std::to_string(triangles.size()) + " triangles of its " +
+                           std::to_string(page.triangle_count));
+  }
+  for (u32 k = 0; k < page.cluster_count; ++k) {
+    const u32 c = page.first_cluster + k;
+    const ClusterDesc& cluster = clusters[c];
+    // Both runs inside the page's, by differences that cannot wrap: the offset at or after the
+    // page's first, then the count no more than what is left of the page after it.
+    if (cluster.vertex_offset < page.first_vertex ||
+        cluster.vertex_offset - page.first_vertex > page.vertex_count ||
+        cluster.vertex_count > page.vertex_count - (cluster.vertex_offset - page.first_vertex) ||
+        cluster.triangle_offset < page.first_triangle ||
+        cluster.triangle_offset - page.first_triangle > page.triangle_count ||
+        cluster.triangle_count >
+            page.triangle_count - (cluster.triangle_offset - page.first_triangle)) {
+      return fail(error, "cluster " + std::to_string(c) + " names a run outside its page");
+    }
+    const u32 first = cluster.triangle_offset - page.first_triangle;
+    for (u32 t = 0; t < cluster.triangle_count; ++t) {
+      const u32 packed = triangles[first + t];
+      for (u32 corner = 0; corner < 3; ++corner) {
+        if (ClusterMesh::unpack(packed, corner) >= cluster.vertex_count) {
+          return fail(error, "cluster " + std::to_string(c) + " triangle " + std::to_string(t) +
+                                 " names a vertex outside the cluster's " +
+                                 std::to_string(cluster.vertex_count));
+        }
+      }
+    }
+  }
+  return true;
+}
+
 }  // namespace engine::geometry

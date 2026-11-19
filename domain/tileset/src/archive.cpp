@@ -15,14 +15,18 @@ constexpr u64 k_align = io::k_unbuffered_alignment;
 u64 align_down(u64 v) noexcept { return v - v % k_align; }
 u64 align_up(u64 v) noexcept { return (v + k_align - 1) / k_align * k_align; }
 
-// A buffer whose start is a whole sector: what an unbuffered read lands in.
+// A buffer whose start is a whole sector: what an unbuffered read lands in. False, and nothing
+// staged, past `k_max_staged_bytes`: the storage's length is a `u32`, and a length cast down to it
+// (T194) was a buffer of a few KiB for a read of 4 GiB.
 struct Aligned {
   Vector<u8> storage;
   u8* data = nullptr;
-  void reserve(u64 bytes) {
+  bool reserve(u64 bytes) {
+    if (bytes > k_max_staged_bytes) return false;
     storage.resize(static_cast<u32>(bytes + k_align));
     const auto at = reinterpret_cast<std::uintptr_t>(storage.data());
     data = storage.data() + (k_align - at % k_align) % k_align;
+    return true;
   }
 };
 
@@ -32,10 +36,11 @@ bool read_span(const io::FileHandle& file, u64 offset, u64 bytes, void* out) {
   u64 got = 0;
   if (!file.unbuffered())
     return file.read_at(offset, out, bytes, got) == io::Status::Ok && got == bytes;
+  if (!stage_fits(offset, bytes)) return false;
   const u64 from = align_down(offset);
   const u64 length = align_up(offset + bytes) - from;
   Aligned staging;
-  staging.reserve(length);
+  if (!staging.reserve(length)) return false;
   if (file.read_at(from, staging.data, length, got) != io::Status::Ok ||
       got < offset + bytes - from)
     return false;
@@ -82,6 +87,13 @@ std::string check_entries(const u8* table, u32 n, u64 toc_offset, u32 record_byt
 }
 
 }  // namespace
+
+bool plain_name(std::string_view name) noexcept {
+  if (name.empty() || name == "." || name == "..") return false;
+  for (const char c : name)
+    if (c == '/' || c == '\\' || c == ':' || c == '\0') return false;
+  return true;
+}
 
 // ---- the writer ---------------------------------------------------------------------------------
 
@@ -296,7 +308,12 @@ void Reader::fetch(std::span<Fetch> fetches, const FetchOptions& options, Landed
   Aligned staging;
   if (slot_bytes > 0) {
     slot_bytes = align_up(slot_bytes);
-    staging.reserve(slot_bytes * slots);
+    // A run is at most `run_bytes` plus a sector each side, far inside the stage's limit.
+    if (!staging.reserve(slot_bytes * slots)) {
+      for (Fetch& f : fetches)
+        f.ok = false;
+      return;
+    }
     for (u32 r = 0; r < runs.size(); ++r)
       if (runs[r].staged) requests[r].dst = staging.data + u64{r % slots} * slot_bytes;
   }

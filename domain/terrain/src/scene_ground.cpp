@@ -396,6 +396,41 @@ bool validate_terrain_entry(const scene::Terrain& entry, std::string* error) {
         "the wind's day: diurnal_strength must be within [0, 2], diurnal_veer_deg within [0, 90] "
         "and the two hours within [0, 24)");
   }
+  // **Every length checked before it is cast** (T194, fuzzing-design.md's fourth list):
+  // `field_desc_of` turns the field's lengths into whole millimetres and the bands' into
+  // centimetres and 16.16 with an `f32`-to-`i64` cast, undefined for a value past 9.2 x 10^15 mm,
+  // and the field multiplies a height in millimetres by 1,000 and a 16.16 roll. So a scene's height
+  // is held to 1 km, its wavelength, widths and radii to 100 km, its ridges' and basins' places to
+  // 1,000 km from the origin (a square of one in millimetres fits an `i64`), and every number of a
+  // band to 10^6 before the band table's own checks see it.
+  const auto within = [](f32 v, f32 limit) { return std::isfinite(v) && std::fabs(v) <= limit; };
+  if (!within(entry.dune_height, 1'000.0f) || !within(entry.dune_wavelength, 100'000.0f))
+    return fail(
+        "the dune generator's dune_height must be within 1 km and its dune_wavelength "
+        "within 100 km");
+  for (const scene::Ridge& r : entry.ridges) {
+    if (!within(r.from.x, 1.0e6f) || !within(r.from.y, 1.0e6f) || !within(r.to.x, 1.0e6f) ||
+        !within(r.to.y, 1.0e6f) || !within(r.width, 100'000.0f))
+      return fail(
+          "ridges: a ridge's ends must be within 1000 km of the origin and its width "
+          "within 100 km");
+  }
+  for (const scene::Basin& b : entry.basins) {
+    if (!within(b.center.x, 1.0e6f) || !within(b.center.y, 1.0e6f) || !within(b.radius, 100'000.0f))
+      return fail(
+          "basins: a basin's center must be within 1000 km of the origin and its radius "
+          "within 100 km");
+  }
+  if (entry.bands.has_value()) {
+    for (const scene::TerrainBand& band : *entry.bands) {
+      for (const f32 v : {band.height_min, band.height_max, band.cell, band.share, band.length_min,
+                          band.length_max, band.stoss, band.bend, band.sinuosity, band.spread_deg,
+                          band.sharpness, band.couple_width, band.celerity_scale}) {
+        if (!within(v, 1.0e6f))
+          return fail("terrain.bands: band '" + band.name + "' holds a number past 10^6");
+      }
+    }
+  }
   const auto gain = [](f32 g) { return g > 0.0f && g <= 1000.0f; };
   if (!gain(entry.storm_gain)) return fail("storm_gain must be within (0, 1000]");
   const u32 storms = entry.storms_per_year * static_cast<u32>(k_record_years);

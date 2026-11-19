@@ -396,6 +396,58 @@ TEST_CASE("cluster pages: a target smaller than a group makes oversized pages, n
   CHECK(empty.pages.empty());
 }
 
+// Hostile (T194, docs/experiments/fuzzing-design.md's fourth list): the paged reader carries no
+// triangles at load, so a page read from a container reached the GPU with whatever locals its
+// bytes held; the renderer's streamer now refuses a page `check_page_triangles` refuses. Before the
+// mend nothing checked a landed page (the function did not exist, so the before is the compile).
+TEST_CASE("cluster pages hostile: a landed page whose triangle leaves its cluster is refused") {
+  Vector<Vec3> positions;
+  Vector<u32> indices;
+  make_terrain(33, 4.0f, positions, indices);
+  ClusterLodMesh lod;
+  std::string error;
+  REQUIRE_MESSAGE(build_cluster_lod(positions, indices, ClusterLodOptions{}, lod, &error), error);
+  ClusterPagesOptions options;
+  options.page_bytes = 8192;
+  ClusterPages pages;
+  REQUIRE_MESSAGE(build_cluster_pages(lod, options, pages, &error), error);
+  REQUIRE(pages.pages.size() > 1);
+  const std::span<const ClusterDesc> clusters(lod.mesh.clusters.data(), lod.mesh.clusters.size());
+  const auto landed = [&](const Vector<u32>& triangles, const ClusterPageDesc& page) {
+    return std::span<const u32>(triangles.data() + page.first_triangle, page.triangle_count);
+  };
+  // Every page a build wrote passes, as it lands.
+  for (const ClusterPageDesc& page : pages.pages)
+    CHECK_MESSAGE(check_page_triangles(clusters, page, landed(lod.mesh.triangles, page), &error),
+                  error);
+
+  // One triangle of the last page's last cluster names the vertex one past its cluster: the
+  // rasterizer would have read the next cluster's vertex, or past the page's slot.
+  const ClusterPageDesc& page = pages.pages.back();
+  const u32 last = page.first_cluster + page.cluster_count - 1;
+  const ClusterDesc& cluster = lod.mesh.clusters[last];
+  REQUIRE(cluster.triangle_count > 0);
+  Vector<u32> bytes = lod.mesh.triangles;
+  bytes[cluster.triangle_offset + cluster.triangle_count - 1] =
+      ClusterMesh::pack(0, cluster.vertex_count, 1);
+  CHECK_FALSE(check_page_triangles(clusters, page, landed(bytes, page), &error));
+  CHECK(error == "cluster " + std::to_string(last) + " triangle " +
+                     std::to_string(cluster.triangle_count - 1) +
+                     " names a vertex outside the cluster's " +
+                     std::to_string(cluster.vertex_count));
+
+  // A cluster whose run leaves its page, and a page shorter than its count, are refused before
+  // any triangle is read.
+  Vector<ClusterDesc> moved(lod.mesh.clusters);
+  moved[last].triangle_offset = page.first_triangle + page.triangle_count;
+  CHECK_FALSE(check_page_triangles(std::span<const ClusterDesc>(moved.data(), moved.size()), page,
+                                   landed(lod.mesh.triangles, page), &error));
+  CHECK(error.find("names a run outside its page") != std::string::npos);
+  CHECK_FALSE(check_page_triangles(
+      clusters, page, landed(lod.mesh.triangles, page).first(page.triangle_count - 1), &error));
+  CHECK(error.find("triangles of its") != std::string::npos);
+}
+
 TEST_CASE("cluster pages: streaming selection is select_lod when every page is resident") {
   Vector<Vec3> positions;
   Vector<u32> indices;

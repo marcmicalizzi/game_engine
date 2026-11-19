@@ -24,10 +24,30 @@ namespace engine::tileset::archive {
 
 inline constexpr u32 k_archive_version = 1;
 
+// **An archive a manifest names is a file beside it** (T194, fuzzing-design.md's fourth list): the
+// builds write `<spacing>.masks` and the height levels' names, one component each, and a reader
+// joins the name to the manifest's directory. A name that is empty, `.` or `..`, or holds a
+// separator, a drive's colon or a NUL would have read a file anywhere the process can: refused.
+bool plain_name(std::string_view name) noexcept;
+
 // The key a tile is filed under: z, then x, both signed, so the archive's order is the order the
 // builds write in (rows of x in order of z) and the order the renderer asks the masks in.
 constexpr u64 tile_key(i32 tx, i32 tz) noexcept {
   return (u64{static_cast<u32>(tz) ^ 0x8000'0000u} << 32) | (static_cast<u32>(tx) ^ 0x8000'0000u);
+}
+
+// The most an unbuffered read stages at once (a `Vector<u8>` of `u32` length, a sector of slack):
+// a table larger than this is refused rather than staged in a buffer its length was cut to fit
+// (T194: the length was cast to `u32`, so a table of 2^32 + 8 bytes staged 4,104).
+inline constexpr u64 k_max_staged_bytes = 0xFFFF'FFFFull - 2 * io::k_unbuffered_alignment;
+// Whether an unbuffered read of `bytes` at `offset`, widened to whole sectors, can be staged.
+constexpr bool stage_fits(u64 offset, u64 bytes) noexcept {
+  if (bytes > k_max_staged_bytes || offset > ~u64{0} - bytes - io::k_unbuffered_alignment)
+    return false;
+  const u64 from = offset - offset % io::k_unbuffered_alignment;
+  const u64 end = (offset + bytes + io::k_unbuffered_alignment - 1) / io::k_unbuffered_alignment *
+                  io::k_unbuffered_alignment;
+  return end - from <= k_max_staged_bytes;
 }
 
 struct Header {

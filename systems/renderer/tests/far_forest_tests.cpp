@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <string>
 
@@ -249,6 +250,85 @@ TEST_CASE(
   CHECK(std::equal(
       again.lod.mesh.vertices.begin(), again.lod.mesh.vertices.end(), one.lod.mesh.vertices.begin(),
       [](const Vec3& p, const Vec3& q) { return p.x == q.x && p.y == q.y && p.z == q.z; }));
+}
+
+// Hostile (T194, fuzzing-design.md's fourth list): a far tile's cache entry ends with a part index
+// a cluster, and the hit's check counted the parts used as `p + 1`, which wrapped to 0 for an
+// index of 0xFFFFFFFF, so the entry was taken as a hit naming a part past the tile's. Before the
+// mend the second load below counted every tile a hit; now each such entry is a miss and rebuilt.
+TEST_CASE("far forest hostile: a cached tile naming a part past its tile's is rebuilt") {
+  if (!generator_present()) {
+    MESSAGE("no authored generator in this build");
+    return;
+  }
+  const test::TempDir tmp("renderer_far_forest");
+  REQUIRE(tmp.ok());
+  REQUIRE(prepare(tmp));
+  std::string error;
+  SceneDesc desc;
+  SceneData first;
+  REQUIRE_MESSAGE(load(tmp, tmp.file("ddc"), true, 2, desc, first, error), error);
+  const u32 tiles = first.far_forest.stats.tiles;
+  REQUIRE(tiles > 0);
+  Vector<std::pair<std::string, std::string>> cached;
+  entries(tmp.file("ddc"), cached);
+  REQUIRE(cached.size() == tiles);
+  for (const auto& [name, bytes] : cached) {
+    std::string edited = bytes;
+    const u32 wrap = 0xFFFF'FFFFu;
+    std::memcpy(edited.data() + edited.size() - sizeof(wrap), &wrap, sizeof(wrap));
+    REQUIRE(io::write_file(io::join_path(io::join_path(tmp.file("ddc"), "far_forest"), name),
+                           edited) == io::Status::Ok);
+  }
+  SceneDesc again_desc;
+  SceneData again;
+  REQUIRE_MESSAGE(load(tmp, tmp.file("ddc"), true, 2, again_desc, again, error), error);
+  CHECK(again.far_forest.stats.cache_hits == 0);
+  CHECK(again.far_forest.stats.cache_misses == tiles);
+  CHECK(again.pair_count == first.pair_count);
+}
+
+// Hostile (T198, fuzzing-design.md's fifth list): a far tile's cache entry's cluster ranges were
+// not checked against its streams, the class T187 mended for `.clusters` files, so a first
+// cluster whose vertices start at 0xFFFFFF00 was taken as a hit and its offset became an index
+// and a device address 4 x 10^9 vertices past the stream (never drawn here). Before the mend the
+// second load below counted every tile a hit; now each such entry is a miss and rebuilt.
+TEST_CASE("far forest hostile: a cached tile whose cluster leaves its streams is rebuilt") {
+  if (!generator_present()) {
+    MESSAGE("no authored generator in this build");
+    return;
+  }
+  const test::TempDir tmp("renderer_far_forest");
+  REQUIRE(tmp.ok());
+  REQUIRE(prepare(tmp));
+  std::string error;
+  SceneDesc desc;
+  SceneData first;
+  REQUIRE_MESSAGE(load(tmp, tmp.file("ddc"), true, 2, desc, first, error), error);
+  const u32 tiles = first.far_forest.stats.tiles;
+  REQUIRE(tiles > 0);
+  Vector<std::pair<std::string, std::string>> cached;
+  entries(tmp.file("ddc"), cached);
+  REQUIRE(cached.size() == tiles);
+  // The header (magic, version, key: 16 bytes), the clusters' count, then the first cluster,
+  // whose `vertex_offset` is its first word.
+  constexpr usize k_first_vertex_offset = 16 + sizeof(u32);
+  for (const auto& [name, bytes] : cached) {
+    std::string edited = bytes;
+    u32 count = 0;
+    std::memcpy(&count, edited.data() + 16, sizeof(count));
+    REQUIRE(count > 0);
+    const u32 past = 0xFFFF'FF00u;
+    std::memcpy(edited.data() + k_first_vertex_offset, &past, sizeof(past));
+    REQUIRE(io::write_file(io::join_path(io::join_path(tmp.file("ddc"), "far_forest"), name),
+                           edited) == io::Status::Ok);
+  }
+  SceneDesc again_desc;
+  SceneData again;
+  REQUIRE_MESSAGE(load(tmp, tmp.file("ddc"), true, 2, again_desc, again, error), error);
+  CHECK(again.far_forest.stats.cache_hits == 0);
+  CHECK(again.far_forest.stats.cache_misses == tiles);
+  CHECK(again.pair_count == first.pair_count);
 }
 
 namespace {

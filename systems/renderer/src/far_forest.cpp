@@ -326,6 +326,24 @@ bool read_entry(const std::string& path, u64 key, geometry::ClusterLodMesh& mesh
   if (!r.ok || r.at != bytes.size() || parts.size() != m.mesh.clusters.size() ||
       m.lod.size() != m.mesh.clusters.size() || m.mesh.attributes.size() != m.mesh.vertices.size())
     return false;
+  // **A cluster's ranges against the streams, as a `.clusters` file's are** (T198; T187's class):
+  // an entry is derived data whose key is no MAC, and its offsets become device addresses and CPU
+  // indices once the tile is merged. A cluster past a stream, a triangle naming a vertex its
+  // cluster lacks, or a quantized stream that is not three coordinates a vertex (and the one pad
+  // word) is a miss, built again.
+  const u64 coordinates = u64{m.mesh.vertices.size()} * 3;
+  if (m.mesh.quantized.size() != coordinates && m.mesh.quantized.size() != coordinates + 1)
+    return false;
+  for (const geometry::ClusterDesc& cluster : m.mesh.clusters) {
+    if (u64{cluster.vertex_offset} + cluster.vertex_count > m.mesh.vertices.size() ||
+        u64{cluster.triangle_offset} + cluster.triangle_count > m.mesh.triangles.size())
+      return false;
+    for (u32 t = 0; t < cluster.triangle_count; ++t) {
+      const u32 packed = m.mesh.triangles[cluster.triangle_offset + t];
+      for (u32 k = 0; k < 3; ++k)
+        if (geometry::ClusterMesh::unpack(packed, k) >= cluster.vertex_count) return false;
+    }
+  }
   mesh = std::move(m);
   part_of_cluster = std::move(parts);
   return true;
@@ -453,10 +471,13 @@ void run_tile(void* data) {
   const std::string path =
       options.cache && !options.ddc.empty() ? entry_path(options.ddc, job.key) : std::string();
   if (!path.empty() && read_entry(path, job.key, job.mesh, job.part_of_cluster)) {
-    u32 parts_used = 0;
+    // Every cluster's part one of this tile's, compared as it is (T194): the count of parts used,
+    // `p + 1`, wrapped to 0 for a part index of 0xFFFFFFFF and passed an entry naming a part 4
+    // billion past the tile's.
+    bool parts_known = true;
     for (const u32 p : job.part_of_cluster)
-      parts_used = std::max(parts_used, p + 1);
-    if (parts_used <= job.parts.size()) {
+      parts_known = parts_known && p < job.parts.size();
+    if (parts_known) {
       job.triangles = job.mesh.leaf_triangle_count;
       job.hit = true;
       job.ok = true;

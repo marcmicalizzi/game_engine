@@ -24,6 +24,14 @@ i64 div_round(i64 n, i64 d) noexcept { return floor_div(2 * n + d, 2 * d); }
 
 constexpr i64 k_max_segment_mm = 10'000'000;  // 10 km: dx * dx stays exact in an f64
 constexpr i64 k_min_segment_mm = 500;
+// **A layer's points and its slots bounded before they are used** (T194, fuzzing-design.md's
+// fourth list): a point is a scene's `i64`, so two of them a whole range apart made `x1 - x0` a
+// signed overflow that could pass the 10 km check, and a tile index a wrapped `i32`; and nothing
+// counted the slots, so a megabyte of zigzag points (80,000 segments of 10 km at a 2 m module) made
+// 4 x 10^8 of them, about 26 GB. A point within 10^12 mm (a million km) of the origin, and at most
+// 2^20 slots (2,000 km of wall at the shortest module) in a layer.
+constexpr i64 k_max_point_mm = 1'000'000'000'000;
+constexpr u64 k_max_slots = u64{1} << 20;
 constexpr i64 k_min_run_cm = 60;
 
 bool fail(std::string& why, std::string_view what) {
@@ -199,6 +207,10 @@ bool make_plan(const Layer& layer, i64 tile_mm, Plan& out, std::string& why) {
     const std::string where = "line " + std::to_string(li) + ": ";
     if (w.points_mm.size() < 4 || w.points_mm.size() % 2 != 0)
       return fail(why, where + "points_mm must hold two or more x, z pairs");
+    for (const i64 v : w.points_mm) {
+      if (v > k_max_point_mm || -v > k_max_point_mm)
+        return fail(why, where + "a point is more than a million km from the origin");
+    }
     LinePlan line;
     for (u32 i = 0; i < w.points_mm.size(); i += 2) {
       line.x_mm.push_back(w.points_mm[i]);
@@ -261,6 +273,8 @@ bool make_plan(const Layer& layer, i64 tile_mm, Plan& out, std::string& why) {
       const Run& r = runs[run_index];
       const i64 len = r.b - r.a;
       const i64 n = std::max<i64>(1, div_round(len, static_cast<i64>(layer.module_cm)));
+      if (u64{out.slots.size()} + static_cast<u64>(n) > k_max_slots)
+        return fail(why, where + "the layer's walls hold more than 2^20 modules");
       // The corner's mitre: each module at a vertex runs on past it by half its width times the
       // tangent of half the turn, so the outside of the corner is closed (to a 120 degree turn).
       auto mitre_mm = [&](u32 vertex) -> f64 {

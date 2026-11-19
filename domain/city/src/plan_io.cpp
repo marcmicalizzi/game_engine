@@ -9,6 +9,7 @@
 #include <domain/city/plan.h>
 #include <foundation/io/vfs.h>
 
+#include <algorithm>
 #include <charconv>
 #include <cstdio>
 
@@ -31,6 +32,38 @@ bool parse_hex16(const std::string& text, u64& out) {
 
 void put_rect(const Rect& r, std::array<i32, 4>& out) { out = {r.x0, r.z0, r.x1, r.z1}; }
 Rect get_rect(const std::array<i32, 4>& a) { return Rect{a[0], a[1], a[2], a[3]}; }
+
+// How far from the island's centre a plan's records may lie (T198). An island's radius is at most
+// 50 km and an authored coastline's points at most 100 km (`params_from_schema`), and the
+// generator places nothing beyond its coastline, so 2^24 cm (about 168 km) holds every honest
+// record; it keeps a rectangle's sides (`Rect::width`), a tile's corner (`tile_rect`) and the park
+// trees' stepping (`park_proxies`) far inside `i32`.
+constexpr i32 k_plan_reach_cm = 1 << 24;
+bool coordinate_in_reach(i64 v) { return v >= -k_plan_reach_cm && v <= k_plan_reach_cm; }
+// Not their order: a narrow block's buildable rectangle, inset by its streets, may be inverted, and
+// whatever walks one walks nothing.
+bool rect_in_reach(const Rect& r) {
+  return coordinate_in_reach(r.x0) && coordinate_in_reach(r.x1) && coordinate_in_reach(r.z0) &&
+         coordinate_in_reach(r.z1);
+}
+
+// The tile index's entries, one per tile a lot's closed rectangle touches, counted before any is
+// made (T198): a plan's hash is not a MAC, and one lot spanning the reach on 8 m tiles was about
+// 1.8 x 10^9 entries. 2^28 is the order of the largest honest island's index (a 50 km radius on
+// 8 m tiles touches about 1.2 x 10^8 tiles), so a hostile plan costs no more than an honest one.
+constexpr u64 k_max_tile_entries = u64{1} << 28;
+u64 tile_index_entries(const Plan& plan) {
+  u64 total = 0;
+  for (const Lot& l : plan.lots) {
+    const TileCoord lo = tile_of(plan, l.rect.x0, l.rect.z0);
+    const TileCoord hi = tile_of(plan, l.rect.x1, l.rect.z1);
+    const i64 columns = std::max<i64>(0, i64{hi.x} - lo.x + 1);
+    const i64 rows = std::max<i64>(0, i64{hi.z} - lo.z + 1);
+    total += static_cast<u64>(columns) * static_cast<u64>(rows);
+    if (total > k_max_tile_entries) break;  // no sum can wrap past this
+  }
+  return total;
+}
 
 bool write_text(const std::string& path, const std::string& text, std::string* error) {
   const std::string_view dir = io::parent_path(path);
@@ -184,6 +217,11 @@ bool plan_from_schema(const PlanFile& file, Plan& out, std::string& error) {
     s.width_cm = r.width;
     s.superblock = r.superblock;
     s.interior = r.superblock != k_no_id && (r.id & 1023u) >= 512 ? 1 : 0;
+    if (!coordinate_in_reach(r.line) || !coordinate_in_reach(r.from) ||
+        !coordinate_in_reach(r.to) || r.width < 0 || r.width > k_plan_reach_cm) {
+      error = "street " + std::to_string(r.id) + " lies outside the plan's reach";
+      return false;
+    }
     out.streets.push_back(s);
   }
   for (const PlanBlock& r : file.blocks) {
@@ -197,6 +235,14 @@ bool plan_from_schema(const PlanFile& file, Plan& out, std::string& error) {
     b.civic = r.civic;
     for (u32 k = 0; k < 4; ++k)
       b.streets[k] = r.streets[k];
+    // A block's district is an index, as a lot's is (T198: the validator reads its style there),
+    // and its rectangles bound everything built from them.
+    if (r.district >= out.districts.size() || !rect_in_reach(b.rect) ||
+        !rect_in_reach(b.buildable)) {
+      error = "block " + std::to_string(r.id) +
+              " names a district the plan lacks or lies outside the plan's reach";
+      return false;
+    }
     out.blocks.push_back(b);
   }
   for (const PlanLot& r : file.lots) {
@@ -215,6 +261,16 @@ bool plan_from_schema(const PlanFile& file, Plan& out, std::string& error) {
       error = "lot " + std::to_string(r.id) + " names a block the plan does not have";
       return false;
     }
+    // A lot's district is an index into the districts (T194): a building reads its style there.
+    if (r.district >= out.districts.size()) {
+      error = "lot " + std::to_string(r.id) + " names district " + std::to_string(r.district) +
+              " of the plan's " + std::to_string(out.districts.size());
+      return false;
+    }
+    if (!rect_in_reach(l.rect)) {
+      error = "lot " + std::to_string(r.id) + " lies outside the plan's reach";
+      return false;
+    }
     out.lots.push_back(l);
   }
   for (u32 l = 0; l < out.lots.size(); ++l) {
@@ -229,15 +285,32 @@ bool plan_from_schema(const PlanFile& file, Plan& out, std::string& error) {
     park.lot = r.lot != k_no_id ? out.find_lot(r.lot) : k_no_id;
     park.district = r.district;
     park.rect = get_rect(r.rect);
+    // A park's block, and its lot when it names one, refused as a lot's are (T194): the trees'
+    // seed reads `blocks[park.block]` or `lots[park.lot]`, and a name the plan lacks was 2^32 - 1.
+    if (park.block == k_no_id || (r.lot != k_no_id && park.lot == k_no_id)) {
+      error = "a park names a block or a lot the plan does not have";
+      return false;
+    }
+    if (!rect_in_reach(park.rect)) {
+      error = "a park lies outside the plan's reach";
+      return false;
+    }
     out.parks.push_back(park);
   }
   build_graph(out);
-  build_tile_index(out);
   u64 stored_hash = 0;
   if (!parse_hex16(file.hash, stored_hash) || stored_hash != hash_plan(out)) {
     error = "the plan's records do not hash to the hash it carries";
     return false;
   }
+  // The index is not hashed, so it is built last, and only once its size is known (T198).
+  const u64 entries = tile_index_entries(out);
+  if (entries > k_max_tile_entries) {
+    error =
+        "the plan's lots touch more than " + std::to_string(k_max_tile_entries) + " tiles together";
+    return false;
+  }
+  build_tile_index(out);
   return true;
 }
 

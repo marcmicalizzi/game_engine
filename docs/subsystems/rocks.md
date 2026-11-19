@@ -1408,7 +1408,10 @@ onto it from a real face above. Held by `deposits: a channel cut through a slope
 3 m channel with 56-degree banks down a 20-degree hillside sheds 312 piles over 2,103 talus samples
 read on the cut ground alone, and none read against the ground before it, directly and through the
 generator's `Context` hook. The plan's key (T120, [A tile solves](#a-tile-solves)) covers both
-grounds.
+grounds. A layer whose spacing or region lies past the plan's own bounds (10^8 m) is keyed by its
+bytes alone, before any of them is cast to millimetres, and the plan refuses it with its sentence
+(T194: the cast was undefined past 9.2 x 10^15 mm; "deposits hostile: a region or a spacing past
+every bound is refused, never cast").
 
 **What it does not do yet.** A pile leaning on ground at the repose angle itself lies parallel to it
 and holds only its toe: 37% of what it was asked at 35 degrees, and a moved pile against a 45-degree

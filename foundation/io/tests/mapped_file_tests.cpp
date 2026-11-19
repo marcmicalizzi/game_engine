@@ -6,6 +6,7 @@
 #include <test_temp_dir.h>
 
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <utility>
 
@@ -79,4 +80,28 @@ TEST_CASE("io: a mapped file and a replacement") {
   std::string read;
   REQUIRE(read_file(path, read) == Status::Ok);
   CHECK(read == after);
+}
+
+// **The view is the size read, and holds it** (T194, io.md, "Mapped files"): the size is read,
+// then exactly that much is mapped, so a file a writer truncated between the two fails the map
+// instead of leaving a view shorter than `size()`. That window is a race this case cannot open;
+// what it holds is the rest: a view is the size the file had, a file grown under it does not grow
+// the view, and on Windows the file cannot be cut below the view while it exists.
+TEST_CASE("io hostile: a mapped view is exactly the size read, and a writer cannot cut it") {
+  test::TempDir tmp("engine_io_mapped");
+  const std::string path = tmp.file("level.bin");
+  REQUIRE(write_file(path, std::string(9'000, 'a')) == Status::Ok);
+  MappedFile m;
+  REQUIRE(m.open(path) == Status::Ok);
+  REQUIRE(m.size() == 9'000);
+  REQUIRE(append_file(path, std::string(5'000, 'b')) == Status::Ok);
+  CHECK(m.size() == 9'000);
+  CHECK(m.bytes().size() == 9'000);
+  CHECK(m.bytes()[8'999] == static_cast<u8>('a'));
+#if ENGINE_PLATFORM_WINDOWS
+  std::error_code ec;
+  std::filesystem::resize_file(path, 100, ec);
+  CHECK(ec);  // ERROR_USER_MAPPED_FILE: the section holds the file's length
+  CHECK(m.bytes()[8'999] == static_cast<u8>('a'));
+#endif
 }

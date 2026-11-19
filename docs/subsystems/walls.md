@@ -8,6 +8,8 @@
 
 ## Stations
 
+**A layer's size is bounded** (T194): a point lies within 10^12 mm (a million km) of the origin, so no difference of two overflows, and a layer plans at most 2^20 modules (2,000 km of wall at the shortest module), refused by name before the slots are made; a megabyte of zigzag points had made about 26 GB of them ("walls hostile: a layer's points are bounded, and so are its modules").
+
 A line is integer millimetres in the entry (`WallLine.points_mm`, x, z pairs; `closed` joins the last to the first). **A station is arc length from the line's start in whole centimetres**: each segment's length is one correctly rounded square root of an integer (a segment is at most 10 km, so its squared length is exact in an f64), rounded to the centimetre, and the stations are their running sum. Everything along the line is decided by station and the layer's seed, never by tile (`make_plan`, `src/stations.cpp`):
 
 - **Runs**: the stretches between vertices and gateways. A gateway is a station in `gateways_cm` with `gateway_cm` clear (3 m by default) between two heads; a run shorter than 60 cm is left open.

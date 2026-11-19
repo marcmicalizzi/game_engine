@@ -223,6 +223,11 @@ bool ensure_plan(const RouteLayer& layer, const scene_gen::Context& context, std
               remake;
       return false;
     }
+    if (!detail::plan_fits_layer(layer, out.network, error)) {
+      out = {};
+      error += remake;
+      return false;
+    }
     return true;
   }
   // No plan named: **the plan stands on the ground before any edit** (`Context::uncut()`;
@@ -255,8 +260,9 @@ bool ensure_plan(const RouteLayer& layer, const scene_gen::Context& context, std
     std::string bytes;
     found = io::read_file(plan_path(dir, key), bytes) == io::Status::Ok;
     std::string why;
+    // A cached plan that does not fit its layer is a miss, planned again (T198).
     if (found && read_plan(bytes, cached, why) && cached.key == key &&
-        cached.layer_hash == layer_hash) {
+        cached.layer_hash == layer_hash && detail::plan_fits_layer(layer, cached.network, why)) {
       out = std::move(cached);
       return true;
     }

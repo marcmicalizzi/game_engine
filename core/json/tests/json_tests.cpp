@@ -1,8 +1,10 @@
 #include <core/json/json.h>
+#include <core/json/json_reader.h>
 
 #include <doctest/doctest.h>
 
 #include <cmath>
+#include <cstdio>
 #include <string>
 
 using namespace engine;
@@ -147,6 +149,48 @@ TEST_CASE("parse_json: the strict mode refuses a key given twice, naming it") {
   // The default is unchanged: the last wins.
   CHECK(parse_json(R"({"a": 1, "a": 3})", v).ok);
   CHECK(v.find("a")->as_int() == 3);
+}
+
+// Hostile (T194, docs/experiments/fuzzing-design.md's fourth list): the strict mode looked for a
+// key among its object's keys by a walk, n(n-1)/2 compares for an object of n keys — about 5 x 10^9
+// for the 100,000 here and 5 x 10^11 for the review's million, a hang. One lookup a key now; the
+// before is that arithmetic, not run. Read by the pull reader's skip, so no tree is built.
+TEST_CASE("parse_json hostile: the strict mode finds a key given twice in a wide object at once") {
+  constexpr u32 n = 100'000;
+  CHECK(u64{n} * (n - 1) / 2 == 4'999'950'000ull);
+  std::string text = "{";
+  char key[16];
+  for (u32 i = 0; i < n; ++i) {
+    std::snprintf(key, sizeof(key), "\"k%06u\":%u,", i, i % 10);
+    text += key;
+  }
+  JsonParseOptions strict;
+  strict.refuse_duplicate_keys = true;
+  {
+    std::string whole = text;
+    whole.back() = '}';
+    JsonReader reader(whole, strict);
+    CHECK(reader.skip_value());
+    CHECK(reader.finish());
+  }
+  // The last key given again: refused at its own quote.
+  const usize second = text.size();
+  text += "\"k099999\":1}";
+  JsonReader reader(text, strict);
+  CHECK_FALSE(reader.skip_value());
+  CHECK(reader.result().duplicate_key == "k099999");
+  CHECK(reader.result().offset == second);
+
+  // An object's keys leave with it: a key of a closed inner object is free in the outer one and in
+  // a sibling, and an outer key given again after an inner object is still found.
+  JsonValue v;
+  CHECK(
+      parse_json(R"({"a": {"b": 1, "c": {"b": 2}}, "b": 3, "d": {"a": 1, "b": 2}})", v, strict).ok);
+  const JsonParseResult r =
+      parse_json(R"({"a": {"b": 1, "c": {"b": 2}}, "b": 3, "a": 4})", v, strict);
+  CHECK_FALSE(r.ok);
+  CHECK(r.duplicate_key == "a");
+  CHECK(r.offset == 39);
 }
 
 TEST_CASE("parse_json: errors are reported with positions and leave the value null") {

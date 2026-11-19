@@ -1,6 +1,8 @@
 // The tile set (docs/subsystems/tileset.md): the heightfield source and its synthetic shapes, the
 // set's writer and reader with its far mip chain, the box filter against a direct computation, the
 // build through the derived-data cache, and the `tiles` ground provider through the registry.
+#include "../src/archive.h"
+
 #include <core/hash/hash.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <domain/tileset/tileset.h>
@@ -165,6 +167,20 @@ TEST_CASE("tileset: a heightfield round-trips, and a grid that is not its header
   off.origin_x_mm = 100;
   CHECK_FALSE(write_heightfield(tmp.file("off.json"), off, error));
   CHECK(error.find("whole number of its spacings") != std::string::npos);
+
+  // Hostile (T194): both sides at the cap made a `u32` product of 2^32 points, which wrapped to 0,
+  // so a 16 GiB grid would have been copied into an empty vector. A bounded stand-in: the header
+  // names the square over a 16-byte grid, refused by its size before the grid is read; the before
+  // needed the 16 GiB file and is the arithmetic, not run.
+  CHECK(((u64{k_max_heightfield_side} * k_max_heightfield_side) & 0xFFFF'FFFFull) == 0u);
+  REQUIRE(io::write_file(tmp.file("square.f32"), std::string(16, '\0')) == io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("square.json"),
+                         R"({"format":"engine.terrain.heightfield","version":1,"width":65536,)"
+                         R"("height":65536,"spacing_mm":1000,"origin_mm":[0,0],)"
+                         R"("data":"square.f32","data_hash":"0000000000000000"})") ==
+          io::Status::Ok);
+  CHECK_FALSE(read_heightfield(tmp.file("square.json"), back, hash, error));
+  CHECK(error.find("more than a heightfield holds") != std::string::npos);
 }
 
 TEST_CASE("tileset: every tile of every level reads back as the build computed it") {
@@ -1021,6 +1037,41 @@ TEST_CASE("tileset hostile: an archive entry whose offset wraps is refused at op
   CHECK(error.find("not sorted records within the file") != std::string::npos);
 }
 
+// Hostile (T194, fuzzing-design.md's fourth list): a manifest names its levels' archives, and the
+// reader joined the name to the manifest's directory unchecked, so `../<name>` read a file outside
+// the set. Before the mend the set below opened, reading the copy one directory up.
+TEST_CASE("tileset hostile: a level's archive named outside the set is refused at open") {
+  SmallSet s;
+  std::string name;
+  {
+    TileSet set;
+    REQUIRE_MESSAGE(set.open(s.built.manifest, s.error), s.error);
+    name = set.manifest().levels[0].archive;
+  }
+  const std::string dir = s.tmp.file("set");
+  std::string archive_bytes;
+  REQUIRE(io::read_file(io::join_path(dir, name), archive_bytes) == io::Status::Ok);
+  REQUIRE(io::write_file(s.tmp.file(name), archive_bytes) == io::Status::Ok);  // the outside copy
+  std::string manifest;
+  REQUIRE(io::read_file(s.built.manifest, manifest) == io::Status::Ok);
+  const std::string quoted = "\"" + name + "\"";
+  const usize at = manifest.find(quoted);
+  REQUIRE(at != std::string::npos);
+  for (const char* outside : {"../", "..\\\\"}) {
+    CAPTURE(outside);
+    std::string edited = manifest;
+    edited.replace(at, quoted.size(), "\"" + std::string(outside) + name + "\"");
+    REQUIRE(io::write_file(s.built.manifest, edited) == io::Status::Ok);
+    TileSet hostile;
+    std::string error;
+    CHECK_FALSE(hostile.open(s.built.manifest, error));
+    CHECK(error.find("names an archive that is not a file beside it") != std::string::npos);
+  }
+  REQUIRE(io::write_file(s.built.manifest, manifest) == io::Status::Ok);
+  TileSet again;
+  CHECK_MESSAGE(again.open(s.built.manifest, s.error), s.error);
+}
+
 // **The whole level at once** (tileset.md, "Reading a level"): read in file order in large runs,
 // every tile once, and a window over all of it afterwards reads nothing; with a cache smaller than
 // the level it reads what fits and evicts nothing it read.
@@ -1120,4 +1171,108 @@ TEST_CASE("tileset: every depth, run and unbuffered reading answers the same hei
     CHECK(set.reads() == s.built.tiles);
     CHECK(stats.most_in_flight <= way.depth);
   }
+}
+
+// Hostile (T194): an unbuffered read stages its sectors in a buffer whose length is a `u32`, and
+// the length was cast down to it, so the smallest table past 4 GiB (178,956,971 entries of 24
+// bytes) staged 4,104 bytes and read 4 GiB into them. A bounded stand-in, not run: the arithmetic
+// of the cast, and the guard the read now asks first. A real table that large needs a 4 GiB file.
+TEST_CASE("tileset hostile: an unbuffered read past 4 GiB is refused before it is staged") {
+  const u64 entries = 178'956'971;
+  const u64 table = entries * 24;
+  CHECK(table > 0xFFFF'FFFFull);
+  CHECK(static_cast<u32>(table + io::k_unbuffered_alignment) == 4'104u);  // the before
+  CHECK_FALSE(tileset::archive::stage_fits(0, table));
+  CHECK_FALSE(tileset::archive::stage_fits(4096, tileset::archive::k_max_staged_bytes));
+  CHECK_FALSE(tileset::archive::stage_fits(~u64{0} - 10, 64));  // an offset whose end wraps
+  CHECK(tileset::archive::stage_fits(4096, tileset::archive::k_max_staged_bytes - 4096));
+  CHECK(tileset::archive::stage_fits(123, 2'076));
+}
+
+// Hostile (T198, fuzzing-design.md's fifth list): a manifest's `index_min` and `index_max` were not
+// tied to its tiles, and a read finds a point's tile by casting its index over the cells to `i32`.
+// `index_max` 2^40 on these 16-cell tiles cast to tile (i32)2^36 = 0, which the archive holds, and
+// read its grid 2^40 values past its start (that arithmetic, never read). Before the mend the set
+// below opened.
+TEST_CASE("tileset hostile: a level's index window is its tiles'") {
+  SmallSet s;
+  CHECK(static_cast<i32>((i64{1} << 40) / 16) == 0);  // the tile the read cast to
+  std::string manifest;
+  REQUIRE(io::read_file(s.built.manifest, manifest) == io::Status::Ok);
+  const usize key = manifest.find("\"index_max\"");
+  REQUIRE(key != std::string::npos);
+  const usize open = manifest.find('[', key);
+  const usize comma = manifest.find(',', open);
+  REQUIRE((open != std::string::npos && comma != std::string::npos));
+  std::string edited = manifest;
+  edited.replace(open + 1, comma - open - 1, "1099511627776");  // 2^40
+  REQUIRE(io::write_file(s.built.manifest, edited) == io::Status::Ok);
+  TileSet hostile;
+  std::string error;
+  CHECK_FALSE(hostile.open(s.built.manifest, error));
+  CHECK(error.find("index window that is not its tiles'") != std::string::npos);
+  REQUIRE(io::write_file(s.built.manifest, manifest) == io::Status::Ok);
+  TileSet again;
+  CHECK_MESSAGE(again.open(s.built.manifest, error), error);
+}
+
+// Hostile (T198): the far chain is `ring_spacing_mm * far_ratio * 2^k`, both held only from below,
+// so a scene's ring of 2^50 mm at a ratio of 2^20 wrapped `i64` in the first product. Now a ring
+// is at most 1 km and a ratio at most 128 (the renderer's own cap), and the 16th level of the
+// largest chain is under 2^42 mm. Before the mend both hostile chains below were made.
+TEST_CASE("tileset hostile: the far chain's parameters are bounded above") {
+  BuildOptions o;
+  Vector<i64> chain;
+  o.ring_spacing_mm = i64{1} << 50;
+  o.far_ratio = 1u << 20;
+  CHECK_FALSE(chain_spacings(o, chain));
+  o.ring_spacing_mm = 2000;
+  o.far_ratio = 129;
+  CHECK_FALSE(chain_spacings(o, chain));
+  o.ring_spacing_mm = k_max_spacing_mm;
+  o.far_ratio = 128;
+  o.far_levels = 16;
+  REQUIRE(chain_spacings(o, chain));
+  REQUIRE(chain.size() == 16);
+  CHECK(chain.back() == k_max_spacing_mm * 128 * (i64{1} << 15));
+  CHECK(chain.back() < (i64{1} << 42));
+}
+
+// Hostile (T198): a heightfield's origin and the offset a build moves it by were unbounded, so
+// `origin + (width - 1) * spacing` and the level windows wrapped `i64`; a scene's origin reached
+// `nearest_mm`, whose floor cast to `i64` is undefined past 9.2 x 10^15 m. Each is held within
+// 10^9 m. Before the mend the field below quantized and the provider made its ground.
+TEST_CASE("tileset hostile: an origin past 10^9 m is refused") {
+  BuildOptions o;
+  Vector<i32> mm;
+  std::string error;
+  const Heightfield far = synth_heightfield(SynthKind::basin, 9, 500, 0, i64{500} << 52, 0);
+  CHECK_FALSE(quantize_heights(far, o, mm, error));
+  CHECK(error.find("within 10^9 m") != std::string::npos);
+  test::TempDir tmp{"engine_tileset_far_origin"};
+  const Heightfield field = synth_heightfield(SynthKind::basin, 49, 1000);
+  REQUIRE_MESSAGE(write_heightfield(tmp.file("bowl.json"), field, error), error);
+  o.cells = 16;
+  o.far_levels = 2;
+  o.offset_x_mm = k_max_origin_mm + 1000;
+  BuildResult built;
+  CHECK_FALSE(ensure_tileset(tmp.file("bowl.json"), o, "", tmp.file("ddc"), false, built, error));
+  CHECK(error.find("within 10^9 m") != std::string::npos);
+  scene::Terrain entry;
+  entry.provider = "tiles";
+  entry.tiles = scene::TerrainTileSet{};
+  entry.tiles->heightfield = "bowl.json";
+  entry.tiles->ddc = "ddc";
+  entry.tiles->cells = 16;
+  entry.tiles->far_levels = 2;
+  entry.tiles->origin = WorldPos{2.0e9, 0.0, 0.0};
+  scene_gen::Context context;
+  const std::string dir = tmp.path();
+  context.dir = dir;
+  const scene_gen::GroundProviderDesc* desc =
+      scene_gen::GeneratorRegistry::global().find_ground("tiles");
+  REQUIRE(desc != nullptr);
+  scene_gen::GroundProvider ground;
+  CHECK_FALSE(desc->make(entry, context, ground, &error));
+  CHECK(error.find("10^9 m") != std::string::npos);
 }

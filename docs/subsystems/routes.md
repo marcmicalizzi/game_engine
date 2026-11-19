@@ -222,6 +222,8 @@ scene carries, whose cost is the tile set's (W98: about 1 ms a tile for 16 bench
   (`… the same bytes from any thread count and any host, and pinned`).
 - A plan is made once; a named plan is read whatever the ground; a stale or missing one is refused
   (`… one plan, read again and named on its own treads`).
+- A plan's closing hash is not a MAC: a cached plan whose lattice is not its layer's, or whose stations leave that lattice or stand further apart than the stationing spaces them (one and a half `station_m`), is refused when named and planned again when not (T198, `routes hostile: a cached plan's stations are held to its lattice and its stationing`).
+- A layer of more than 1,024 legs is refused: each is a search over the lattice that adds its path to the edges (T198, `routes hostile: a layer's legs are counted`).
 - The tread is flat across its width at its top and meets the ground two metres past its edges
   (`… benched flat across a side slope and meets the ground`).
 - The band footprints cover the tread and nothing else (`… exclude the tread and nothing else`).

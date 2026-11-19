@@ -218,6 +218,63 @@ TEST_CASE("door: a replay hands every input back at its tick from the record, an
   CHECK_FALSE(bad.deserialize(origin, &error));
 }
 
+// Hostile (T194, docs/experiments/fuzzing-design.md's fourth list): a door record whose entries all
+// name the same payload bytes. Built here, a field at a time, by the layout `Door::serialize`
+// writes: a 16-byte header (magic, entry count, payload bytes), 32 bytes an entry, the payload.
+namespace hostile_door {
+
+std::string record(u32 count, u32 payload_bytes, u32 (*offset_of)(u32), u32 size) {
+  std::string out("ENGDOOR1", 8);
+  const auto put32 = [&](u32 v) { out.append(reinterpret_cast<const char*>(&v), 4); };
+  const auto put64 = [&](u64 v) { out.append(reinterpret_cast<const char*>(&v), 8); };
+  put32(count);
+  put32(payload_bytes);
+  for (u32 i = 0; i < count; ++i) {
+    put64(1);  // every entry at tick 1, so the ticks are in order
+    put64(0);
+    put32(7);  // a kind
+    put32(offset_of(i));
+    put32(size);
+    out.push_back(static_cast<char>(DoorOrigin::Agent));
+    out.push_back(static_cast<char>(DoorDelivery::Between));
+    out.append(2, '\0');
+  }
+  out.append(payload_bytes, 'p');
+  return out;
+}
+
+}  // namespace hostile_door
+
+TEST_CASE("door hostile: entries that alias one payload are refused, so a load copies no more") {
+  // 256 entries of 4 KiB each, laid end to end over 1 MiB: what a writer makes, and it loads.
+  const std::string apart =
+      hostile_door::record(256, 256 * 4096, [](u32 i) { return i * 4096u; }, 4096);
+  Door door;
+  std::string error;
+  REQUIRE_MESSAGE(door.deserialize(apart, &error), error);
+  CHECK(door.entries().size() == 256);
+  CHECK(door.memory_bytes() >= 256 * 4096);
+
+  // The same 256 entries all naming the one 4 KiB payload, a file of 12 KiB. Before the mend each
+  // entry's bytes were appended: 256 x 4 KiB = 1 MiB from 12 KiB, and the review's shape — 4,096
+  // entries over 1 MiB, a 1.1 MiB file — appended 4 GiB before `k_max_payload` refused it. The
+  // before is that arithmetic, never the allocation.
+  const std::string aliased = hostile_door::record(256, 4096, [](u32) { return 0u; }, 4096);
+  CHECK(aliased.size() == 16 + 256 * 32 + 4096);
+  CHECK(u64{256} * 4096 == u64{1} << 20);
+  CHECK(u64{4096} * (u64{1} << 20) > 0xFFFF'FFFFull);
+  CHECK_FALSE(door.deserialize(aliased, &error));
+  CHECK(door.entries().empty());
+  CHECK(error.find("door record entry 1 names payload bytes 0 to 4096") != std::string::npos);
+
+  // Overlapping by one byte is refused the same way; touching is not overlapping.
+  const std::string overlap = hostile_door::record(2, 8192, [](u32 i) { return i * 4095u; }, 4096);
+  CHECK_FALSE(door.deserialize(overlap, &error));
+  CHECK(error.find("entry 1") != std::string::npos);
+  const std::string touching = hostile_door::record(2, 8192, [](u32 i) { return i * 4096u; }, 4096);
+  CHECK_MESSAGE(door.deserialize(touching, &error), error);
+}
+
 TEST_CASE("door: the record is a file a run record names beside its hash log") {
   World rec;
   rec.press_between_ticks();

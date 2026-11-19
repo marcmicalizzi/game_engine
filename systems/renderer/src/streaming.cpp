@@ -366,6 +366,26 @@ GeometryStreamer::Stage GeometryStreamer::stage_page(u32 page, u8* ring, u64 rin
     return Stage::blocked;
   }
   if (bytes > remaining) return Stage::pending;  // the bytes are here; the budget is not
+  // **A page's triangles checked as they land** (T194; geometry::check_page_triangles): they came
+  // from a container's bytes, which the load could not check without reading every page, and the
+  // rasterizers add a triangle's locals to its cluster's offset on the GPU. A page that fails is
+  // refused by name, dropped as a failed read is, and never staged.
+  {
+    const SceneData& data = scene_->data();
+    const geometry::ClusterPageDesc& desc = data.pages.pages[page];
+    const auto* landed = reinterpret_cast<const u32*>(source_->bytes(handle) +
+                                                      scene_->page_stage_layout(page).triangles);
+    std::string why;
+    if (!geometry::check_page_triangles(
+            std::span<const geometry::ClusterDesc>(data.lod.mesh.clusters.data(),
+                                                   data.lod.mesh.clusters.size()),
+            desc, std::span<const u32>(landed, desc.triangle_count), &why)) {
+      ENGINE_LOG_WARN(log_renderer, "geometry page refused: its triangles leave their clusters",
+                      log::field("page", page), log::field("why", why));
+      cancel_load(page);
+      return Stage::blocked;
+    }
+  }
   const u32 pool_slot = slot_of_page_[page];
   u8* dst = ring + at;
   std::memcpy(dst, source_->bytes(handle), static_cast<usize>(bytes));

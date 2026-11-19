@@ -126,6 +126,14 @@ bool check_field(const Heightfield& f, std::string& error) {
             std::to_string(f.spacing_mm);
     return false;
   }
+  // An origin within 10^9 m (T198), a route's waypoints' and a crossing's bed's bound: unbounded,
+  // `origin + (width - 1) * spacing` and the build's level windows wrapped `i64`.
+  if (f.origin_x_mm < -k_max_origin_mm || f.origin_x_mm > k_max_origin_mm ||
+      f.origin_z_mm < -k_max_origin_mm || f.origin_z_mm > k_max_origin_mm) {
+    error = "a heightfield's origin is within 10^9 m of the world's; this one is (" +
+            std::to_string(f.origin_x_mm) + ", " + std::to_string(f.origin_z_mm) + ") mm";
+    return false;
+  }
   if (f.origin_x_mm % f.spacing_mm != 0 || f.origin_z_mm % f.spacing_mm != 0) {
     error =
         "a heightfield's origin is a whole number of its spacings, so its points are the "
@@ -225,14 +233,32 @@ bool read_heightfield(const std::string& json_path, Heightfield& out, u64& sourc
   const std::string data_path = io::is_absolute_path(header.data) || dir.empty()
                                     ? header.data
                                     : io::join_path(dir, header.data);
+  // **The header's size checked before the grid is read or held** (T194, fuzzing-design.md's
+  // fourth list): `width * height` was a `u32` product, so a 65,536-point square (both sides at the
+  // cap) wrapped to 0 points and the 16 GiB grid was copied into an empty vector; and the whole
+  // file was read before its size was compared. The points must fit a `Vector`'s `u32` length, and
+  // the file is measured first.
+  const u64 points = u64{header.width} * header.height;
+  const u64 want = points * sizeof(f32);
+  if (header.width > k_max_heightfield_side || header.height > k_max_heightfield_side ||
+      points > 0xFFFF'FFFFull) {
+    error = "'" + json_path + "': its grid of " + std::to_string(header.width) + " x " +
+            std::to_string(header.height) + " points is more than a heightfield holds (" +
+            std::to_string(k_max_heightfield_side) + " a side, 2^32 - 1 points)";
+    return false;
+  }
+  io::FileInfo info;
+  if (io::stat_file(data_path, info) == io::Status::Ok && !info.is_directory && info.size != want) {
+    error = "'" + json_path + "': its grid is " + std::to_string(info.size) + " bytes, not " +
+            std::to_string(want) + " (width times height float32)";
+    return false;
+  }
   std::string grid;
   if (io::read_file(data_path, grid) != io::Status::Ok) {
     error = "'" + json_path + "': its grid '" + data_path + "' could not be read";
     return false;
   }
-  const u64 want = u64{header.width} * header.height * sizeof(f32);
-  if (header.width > k_max_heightfield_side || header.height > k_max_heightfield_side ||
-      grid.size() != want) {
+  if (grid.size() != want) {
     error = "'" + json_path + "': its grid is " + std::to_string(grid.size()) + " bytes, not " +
             std::to_string(want) + " (width times height float32)";
     return false;
@@ -244,7 +270,7 @@ bool read_heightfield(const std::string& json_path, Heightfield& out, u64& sourc
         "'" + json_path + "': its grid's bytes do not hash to data_hash '" + header.data_hash + "'";
     return false;
   }
-  out.data.resize(header.width * header.height);
+  out.data.resize(static_cast<u32>(points));
   std::memcpy(out.data.data(), grid.data(), grid.size());
   if (!check_field(out, error)) {
     error = "'" + json_path + "': " + error;
@@ -384,11 +410,16 @@ Heightfield synth_heightfield(SynthKind kind, u32 size, i64 spacing_mm, u64 seed
 
 bool chain_spacings(const BuildOptions& o, Vector<i64>& out, std::string* error) {
   out.clear();
-  if (o.ring_spacing_mm < 1 || o.far_ratio < 1 || o.far_levels > 16) {
+  // Bounded above as well (T198): the chain is `ring_spacing_mm * far_ratio * 2^k`, and a scene's
+  // ring spacing and ratio were held only from below, so the product wrapped `i64`. A ring at most
+  // a heightfield's own largest spacing (1 km) and a ratio at most 128 (the renderer's own cap on
+  // a request's) keep the 16th level under 2^42 mm.
+  if (o.ring_spacing_mm < 1 || o.ring_spacing_mm > k_max_spacing_mm || o.far_ratio < 1 ||
+      o.far_ratio > 128 || o.far_levels > 16) {
     if (error != nullptr)
       *error =
-          "the far levels' parameters are a ring spacing of at least 1 mm, a ratio of at "
-          "least 1 and at most 16 levels";
+          "the far levels' parameters are a ring spacing of 1 mm to 1 km, a ratio of 1 to 128 "
+          "and at most 16 levels";
     return false;
   }
   i64 s = o.ring_spacing_mm * static_cast<i64>(o.far_ratio);
@@ -561,6 +592,14 @@ bool build_tileset(const Heightfield& field, u64 source_hash, std::string_view s
   out = BuildResult{};
   if (options.cells < 1 || options.cells > 4096) {
     error = "a tile is 1 to 4096 cells a side";
+    return false;
+  }
+  // The field first, so its spacing is not 0 under the `%` below, and the offset within 10^9 m as
+  // its origin is (T198), so the origin moved stays an `i64` with room for the grid's extent.
+  if (!check_field(field, error)) return false;
+  if (options.offset_x_mm < -k_max_origin_mm || options.offset_x_mm > k_max_origin_mm ||
+      options.offset_z_mm < -k_max_origin_mm || options.offset_z_mm > k_max_origin_mm) {
+    error = "the origin a heightfield is moved by is within 10^9 m of the world's";
     return false;
   }
   if (options.offset_x_mm % field.spacing_mm != 0 || options.offset_z_mm % field.spacing_mm != 0) {
@@ -1117,10 +1156,39 @@ bool TileSet::open(const std::string& manifest_path, std::string& error) {
       levels_.clear();
       return false;
     }
+    // **The index window is its tiles'** (T198): a build writes `tile_min` and `tile_max` as the
+    // tiles of `index_min` and `index_max`, and a read finds a point's tile by casting its index
+    // over the cells to `i32`. An index past its tiles cast to a tile the archive holds and read
+    // that tile's grid at the index's distance from it: `index_max` 2^40 on 16-cell tiles cast
+    // to tile 0 and read 2^40 values past its start. So each bound is its tile's, the spacing is at
+    // most 2^42 mm (past the longest chain a build makes), and every index times the spacing is a
+    // millimetre `i64` holds with room for a sum.
+    const i64 c = manifest_.cells;
+    const auto index_fits = [&](i64 index) {
+      return index >= -(i64{1} << 61) / level->spacing && index <= (i64{1} << 61) / level->spacing;
+    };
+    if (level->spacing > (i64{1} << 42) || floor_div(level->imin, c) != record.tile_min[0] ||
+        floor_div(level->imax, c) != record.tile_max[0] ||
+        floor_div(level->jmin, c) != record.tile_min[1] ||
+        floor_div(level->jmax, c) != record.tile_max[1] || !index_fits(level->imin) ||
+        !index_fits(level->imax) || !index_fits(level->jmin) || !index_fits(level->jmax)) {
+      error = "'" + manifest_path + "': its level of " + std::to_string(record.spacing_mm) +
+              " mm has an index window that is not its tiles'";
+      levels_.clear();
+      return false;
+    }
     level->ntx = static_cast<u32>(ntx);
     level->ntz = static_cast<u32>(ntz);
     // The level's archive, opened once: its header and table read and checked here, every tile
     // after a read at an offset. A table listing more tiles than the manifest is not this set's.
+    // The archive is a file beside the manifest, named by one component (`archive::plain_name`,
+    // T194): a name holding a separator or `..` read a file anywhere.
+    if (!record.archive.empty() && !archive::plain_name(record.archive)) {
+      error = "'" + manifest_path + "': its level of " + std::to_string(record.spacing_mm) +
+              " mm names an archive that is not a file beside it: '" + record.archive + "'";
+      levels_.clear();
+      return false;
+    }
     std::string why;
     const std::string path = io::join_path(dir_, record.archive);
     if (record.archive.empty() ||

@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T198",
+  "reason": "T198 records each hostile-input mend on the page of the reader it hardens (renderer, tileset, city, routes, bridges, scatter) and the fifth list on the fuzzing design, one sentence or bullet each, as AGENTS.md's docs rule asks",
+  "date": "2026-11-19",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 402,
+    "page:docs/subsystems/tileset.md": 1130
+  }
+}

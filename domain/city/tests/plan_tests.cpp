@@ -11,6 +11,7 @@
 #include <test_temp_dir.h>
 
 #include <algorithm>
+#include <limits>
 #include <string>
 
 using namespace engine;
@@ -386,6 +387,105 @@ TEST_CASE("city plan: the plan file reads back to the same plan, and refuses a t
   file.generator += 1;
   CHECK_FALSE(plan_from_schema(file, back, error));
   CHECK(error.find("generator") != std::string::npos);
+}
+
+// Hostile (T194, fuzzing-design.md's fourth list): the plan's hash is not a MAC, so a plan file a
+// writer edits and rehashes is read as it says. A lot's district was an index nobody checked (a
+// building read `districts[lot.district]`), and a park's block a name nobody resolved (its trees'
+// seed read `blocks[0xFFFFFFFF]`). Before the mend the lot's plan below read back.
+TEST_CASE("city plan hostile: a lot's district and a park's block must be the plan's own") {
+  const Plan& plan = small_plan();
+  REQUIRE_FALSE(plan.lots.empty());
+  Plan far = plan;
+  far.lots[0].district = 60'000;
+  PlanFile file;
+  plan_to_schema(far, file);  // carries `far`'s own hash: the rehash a writer would make
+  Plan back;
+  std::string error;
+  CHECK_FALSE(plan_from_schema(file, back, error));
+  CHECK(error.find("names district 60000 of the plan's") != std::string::npos);
+
+  if (plan.parks.empty()) return;
+  plan_to_schema(plan, file);
+  file.parks[0].block = 0xFFFF'FFF0u;  // no block of the plan's
+  CHECK_FALSE(plan_from_schema(file, back, error));
+  CHECK(error.find("a park names a block or a lot") != std::string::npos);
+}
+
+// Hostile (T198, fuzzing-design.md's fifth list): every length the plan keeps is an i32 of
+// centimetres, and `to_cm` casts to it unchecked. A tile_size held only from below took 2^30 m to
+// 2^30 * 100 = 25 * 2^32 cm, which is 0 in an i32 (the arithmetic below, as the cast made it), and
+// every tile lookup then divided by it; a NaN greenbelt passed `< 0`. Before the mend each of
+// these read as a valid island.
+TEST_CASE("city params hostile: a length past 100 km is refused before it becomes centimetres") {
+  const f64 cm = static_cast<f64>(1u << 30) * 100.0;
+  CHECK(static_cast<i32>(static_cast<i64>(cm)) == 0);  // the tile the old cast made
+
+  auto refused = [](IslandParams source, const char* what) {
+    Params p;
+    std::string error;
+    INFO(what);
+    CHECK_FALSE(params_from_schema(source, p, error));
+    CHECK_MESSAGE(error.find("100 km") != std::string::npos, error);
+  };
+  IslandParams source = default_island_params();
+  source.tile_size = static_cast<f32>(1u << 30);
+  refused(source, "tile_size 2^30 m");
+  source = default_island_params();
+  source.greenbelt = std::numeric_limits<f32>::quiet_NaN();
+  refused(source, "a NaN greenbelt");
+  source = default_island_params();
+  source.district_size = 1.0e9f;  // finite, so `positive` let it by; 10^11 cm is no i32
+  refused(source, "district_size 10^9 m");
+  source = default_island_params();
+  source.coastline = {Vec2{0.0f, 0.0f}, Vec2{1000.0f, 0.0f}, Vec2{0.0f, 1.0e30f}};
+  refused(source, "a coastline point at 10^30 m");
+  source = default_island_params();
+  if (source.styles.empty()) source.styles.push_back(DistrictStyle{});
+  source.styles[0].block_max = std::numeric_limits<f32>::infinity();
+  refused(source, "an infinite block_max");
+}
+
+// Hostile (T198): a plan's rectangles were never ranged and its tile index was built, one entry a
+// tile each lot touches, before the hash was checked and with no count. Every lot of the small
+// island stretched over +/-2^24 cm on its 64 m tiles asks for the count below, about 2.8 x 10^7
+// entries a lot and past 10^9 for the plan (16 bytes each): proven by that arithmetic, never by
+// building it. A lot at 2^30 cm, past the plan's reach, and a block naming a district the plan
+// lacks are refused as well. Before the mend each file below read back (its hash is its own).
+TEST_CASE("city plan hostile: rectangles stay in the plan's reach and the tile index is counted") {
+  const Plan& plan = small_plan();
+  REQUIRE(plan.lots.size() >= 16);
+  const i64 t = plan.params.tile_cm;
+  auto floor_div = [](i64 a, i64 b) { return a / b - ((a % b != 0) && ((a < 0) != (b < 0))); };
+  const i64 side = floor_div(1 << 24, t) - floor_div(-(1 << 24), t) + 1;
+  const u64 asked = static_cast<u64>(side * side) * plan.lots.size();
+  CHECK(asked > (u64{1} << 28));
+
+  Plan wide = plan;
+  for (Lot& l : wide.lots)
+    l.rect = Rect{-(1 << 24), -(1 << 24), 1 << 24, 1 << 24};
+  PlanFile file;
+  plan_to_schema(wide, file);  // `wide`'s own hash
+  Plan back;
+  std::string error;
+  CHECK_FALSE(plan_from_schema(file, back, error));
+  CHECK(error.find("tiles together") != std::string::npos);
+
+  Plan far = plan;
+  far.lots[0].rect.x1 = 1 << 30;
+  plan_to_schema(far, file);
+  CHECK_FALSE(plan_from_schema(file, back, error));
+  CHECK(error.find("outside the plan's reach") != std::string::npos);
+
+  plan_to_schema(plan, file);
+  REQUIRE_FALSE(file.blocks.empty());
+  file.blocks[0].district = 60'000;
+  CHECK_FALSE(plan_from_schema(file, back, error));
+  CHECK(error.find("names a district the plan lacks") != std::string::npos);
+
+  plan_to_schema(plan, file);  // and the honest plan still reads back whole
+  REQUIRE_MESSAGE(plan_from_schema(file, back, error), error);
+  CHECK(back.tile_index.size() == plan.tile_index.size());
 }
 
 TEST_CASE("city plan: the key is the parameters' and not their spelling") {
