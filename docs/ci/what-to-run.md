@@ -659,18 +659,19 @@ costs a depfile and the store's writes, inside the noise of the compiles beside 
 
 `msvc-release` is CMake's `RelWithDebInfo`, kept for its PDBs (the sampler and Tracy need them),
 which by CMake's default compiles `/O2 /Ob1` (inline only what is marked so) and links `/debug
-/INCREMENTAL` (every call through a thunk, no `/OPT:REF,ICF`). Since T193 the engine's own targets
-build `/Ob2` and link `/INCREMENTAL:NO /OPT:REF /OPT:ICF` there, debug information kept, by one
-switch, `ENGINE_MSVC_RELEASE_CODEGEN` (`full`, the default; `inline` for `/Ob2` alone; `cmake`
-for CMake's own), set in `cmake/EngineReleaseCodegen.cmake` and applied through
+/INCREMENTAL` (every call through a thunk, no `/OPT:REF,ICF`). Since T193 one switch,
+`ENGINE_MSVC_RELEASE_CODEGEN`, can build the engine's own targets `/Ob2` and link them
+`/INCREMENTAL:NO /OPT:REF /OPT:ICF`, debug information kept (`full`; `inline` for `/Ob2` alone;
+`cmake`, **the default**, for CMake's own). The default stays `cmake` until `full` holds every
+pin: under it batch 69's whole release suite failed `profiler`'s filled-capture case and
+`rocks`' escarpment bytes, both passing in debug (the experiment has the numbers). The switch is set in `cmake/EngineReleaseCodegen.cmake` and applied through
 `engine_apply_warnings()`, so no module opts in alone. Third-party targets and the host tools keep
 `/Ob1` (Jolt has its own `/Ob2`, Recast measured none). Measured
 ([the experiment](../experiments/release-codegen.md)): the binaries half their size (173
 executables 1,337 to 644 MB, `engine-view` 62.9 to 43.5 MB, 3.8 GB of `.ilk` gone, the tree 24.5
-to 21.4 GB), no compile-time cost found, every determinism pin unmoved, and the bench rows the
-experiment lists. **The first build after it merges recompiles the whole release preset in every
-checkout** (the flags are in ccache's key), once. A developer who wants to step through code a
-debugger can follow configures with `-DENGINE_MSVC_RELEASE_CODEGEN=cmake`.
+to 21.4 GB), no compile-time cost found, the 13 determinism and state-hash tests its author ran unmoved, and the bench rows the
+experiment lists. **Switching a tree to `full` recompiles the whole release preset** (the flags are
+in ccache's key), once.
 
 ## The gate's wall clock (T77)
 

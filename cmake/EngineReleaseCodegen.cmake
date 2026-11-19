@@ -8,7 +8,8 @@
 #   cmake   CMake's RelWithDebInfo as it is.
 #   inline  `/Ob2` on the engine's own targets.
 #   full    `/Ob2`, and every executable and module of the engine's linked `/INCREMENTAL:NO
-#           /OPT:REF /OPT:ICF` (the default: measured, T193).
+#           /OPT:REF /OPT:ICF` (measured, T193; not the default until it holds every pin:
+#           under it the release suite failed `profiler` and `rocks`' escarpment bytes).
 #
 # Debug information stays in every setting (`/Z7` and `/debug`, and `/Zo`, which MSVC turns on
 # with them in an optimized build): the sampler and Tracy need the PDBs. Only MSVC's
@@ -17,7 +18,7 @@
 # them, and the third-party targets, which never pass through engine_apply_warnings() and keep
 # `/Ob1` (Jolt has its own `/Ob2`, cmake/EnginePhysics.cmake; Recast measured none,
 # cmake/EngineNav.cmake).
-set(ENGINE_MSVC_RELEASE_CODEGEN "full" CACHE STRING
+set(ENGINE_MSVC_RELEASE_CODEGEN "cmake" CACHE STRING
   "MSVC RelWithDebInfo code generation for the engine's own targets: cmake, inline or full")
 set_property(CACHE ENGINE_MSVC_RELEASE_CODEGEN PROPERTY STRINGS cmake inline full)
 if(NOT ENGINE_MSVC_RELEASE_CODEGEN MATCHES "^(cmake|inline|full)$")

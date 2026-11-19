@@ -1,13 +1,13 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "b69-stack-C",
-  "reason": "S11 built world::project_writeback for engine-host's write-back sink and left the call to the stack (the host was not its row's to edit); the call needs the streamed world's store, which only ENGINE_HOST_WORLD has, so one #if line. gpu_scene.h: the one tree-wide clang-format 22 pass (T184) rewrapped four comments other rows had committed past the column limit. world.md: the review's mend of T191's save rule, said where the rule is. what-to-run.md: T193's section beside T183's, T184's and T185's rows, whose raises did not foresee each other",
+  "reason": "S11 built world::project_writeback for engine-host's write-back sink and left the call to the stack (the host was not its row's to edit); the call needs the streamed world's store, which only ENGINE_HOST_WORLD has, so one #if line. gpu_scene.h: the one tree-wide clang-format 22 pass (T184) rewrapped four comments other rows had committed past the column limit. world.md: the review's mend of T191's save rule, said where the rule is. what-to-run.md: T193's section beside T183's, T184's and T185's rows, whose raises did not foresee each other; and the release preset's default set back to cmake, with why",
   "date": "2026-11-19",
   "by": "Marc Micalizzi",
   "deltas": {
     "renderer.gpu_scene_h.lines": 4,
     "engine_host.ops_methods.if_engine_host": 1,
-    "page:docs/subsystems/world.md": 678,
-    "page:docs/ci/what-to-run.md": 97
+    "page:docs/subsystems/world.md": 669,
+    "page:docs/ci/what-to-run.md": 229
   }
 }
