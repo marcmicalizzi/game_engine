@@ -399,10 +399,10 @@ bool Session::update_leases(Change&& change, RpcError& error, bool read) {
   if (!may_write_side_files(error)) return false;
   return update_side_file(
       *vfs_, leases_path(), file,
-      [&](LeaseFile& read, bool& write) {
-        leases_.assign(std::move(read));
+      [&](LeaseFile& stored, bool& write) {
+        leases_.assign(std::move(stored));
         const bool ok = change(write);
-        if (write) read = leases_.file();
+        if (write) stored = leases_.file();
         return ok;
       },
       error);
