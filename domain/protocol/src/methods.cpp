@@ -87,10 +87,18 @@ bool session_open(Context& ctx, const SessionOpenParams& params, SessionInfo& ou
                          error)) {
     return false;
   }
-  if (params.create && !doc::DocumentStore::exists(ctx.sessions->vfs(), dir.native) &&
-      !admit_client_path(ctx, "path", params.path, client_base(ctx, {}), io::Access::make_directory,
-                         dir, error)) {
-    return false;
+  if (params.create && !doc::DocumentStore::exists(ctx.sessions->vfs(), dir.native)) {
+    if (!admit_client_path(ctx, "path", params.path, client_base(ctx, {}),
+                           io::Access::make_directory, dir, error)) {
+      return false;
+    }
+    // Not where the host keeps something else: a document made at the host's out/, a root's own
+    // directory or around an open document would be protected, and close it to every client write
+    // (roots.h, `may_make_document`). Refused as any place a client may not write is.
+    if (!ctx.roots->may_make_document(dir.native)) {
+      error = path_not_found("path", params.path, io::Access::make_directory);
+      return false;
+    }
   }
   SessionOpenParams opened = params;
   opened.path = dir.native;
@@ -102,18 +110,20 @@ bool session_open(Context& ctx, const SessionOpenParams& params, SessionInfo& ou
   const bool may_write = ctx.roots->admit(params.path, client_base(ctx, {}),
                                           io::Access::make_directory, write_probe, write_why);
   // Held by the connection that asked (0: stdio and in-process callers), so a client that
-  // vanishes lets go of what it opened and a close lets go of the caller's hold alone.
+  // vanishes lets go of what it opened and a close lets go of the caller's hold alone. An open
+  // document's own files are written through doc.* alone, never by a client's path: the guard
+  // protects the directory while the session is open and frees it when the session closes, by a
+  // close or a dropped connection alike.
+  const DocumentGuard guard = document_guard(*ctx.roots);
   Session* s = ctx.sessions->open(opened, ctx.connection, error,
                                   may_write ? std::string_view{} : std::string_view(params.path),
-                                  portable_path(ctx, dir.native));
+                                  portable_path(ctx, dir.native), &guard);
   if (s == nullptr) {
     // "no document at <path>" named the host's path; say only what the client sent.
     if (error.code == codes::k_not_found)
       error = path_not_found("path", params.path, io::Access::read);
     return false;
   }
-  // An open document's own files are written through doc.* alone, never by a client's path.
-  (void)ctx.roots->protect(s->dir());
   out = client_info(ctx, *s);
   return true;
 }
@@ -124,7 +134,6 @@ bool session_close(Context& ctx, const SessionRef& params, SessionCloseResult& o
                    RpcError& error) {
   Session* s = ctx.sessions->require(params.session, error);
   if (s == nullptr) return false;
-  const std::string dir = s->dir();  // `s` is gone once the last holder lets go
   bool closed = false;
   if (!ctx.sessions->release(params.session, ctx.connection, closed)) {
     std::string holders;
@@ -145,8 +154,7 @@ bool session_close(Context& ctx, const SessionRef& params, SessionCloseResult& o
     return false;
   }
   out.session = params.session;
-  out.closed = closed;
-  if (closed && ctx.roots != nullptr) ctx.roots->release(dir);
+  out.closed = closed;  // and its directory freed by its guard (SessionManager::close)
   if (!closed) {
     for (const u64 h : s->holders())
       out.holders.push_back(h);

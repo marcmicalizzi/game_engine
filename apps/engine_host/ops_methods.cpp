@@ -2531,6 +2531,13 @@ bool session_load_game(protocol::Context& ctx, const protocol::LoadGameParams& p
                                    target_at, error)) {
     return false;
   }
+  // The directory becomes a document's, and an open one is protected: not where the host keeps
+  // something else (the host's out/, a root's own directory, an open document), answered as
+  // session.open's `create` is there (roots.h, `may_make_document`).
+  if (!ctx.roots->may_make_document(target_at.native)) {
+    error = protocol::path_not_found("dir", params.dir, io::Access::make_directory);
+    return false;
+  }
   const std::string save_dir = save_at.native;
   const std::string target = target_at.native;
   // Everything a load must know before it touches anything: the save is one, of versions this
@@ -2582,10 +2589,11 @@ bool session_load_game(protocol::Context& ctx, const protocol::LoadGameParams& p
   }
   protocol::SessionOpenParams open;
   open.path = target;
-  protocol::Session* session =
-      ctx.sessions->open(open, ctx.connection, error, {}, protocol::portable_path(ctx, target));
+  // Protected while it is open, as every session.open is, and freed when it closes.
+  const protocol::DocumentGuard guard = protocol::document_guard(*ctx.roots);
+  protocol::Session* session = ctx.sessions->open(open, ctx.connection, error, {},
+                                                  protocol::portable_path(ctx, target), &guard);
   if (session == nullptr) return false;
-  (void)ctx.roots->protect(session->dir());
   const std::string session_id = session->id();
   auto refuse = [&](protocol::RpcError e) {
     ctx.sessions->close(session_id);

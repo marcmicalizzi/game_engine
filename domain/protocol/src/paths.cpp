@@ -28,7 +28,18 @@ bool loggable_spelling(std::string_view path) noexcept {
   if (path.empty() || path.front() == '/' || path.front() == '\\') return false;
   return !(path.size() >= 2 && path[1] == ':');
 }
+
+void protect_document(void* roots, std::string_view dir) {
+  (void)static_cast<io::Roots*>(roots)->protect(dir);
+}
+void release_document(void* roots, std::string_view dir) {
+  static_cast<io::Roots*>(roots)->release(dir);
+}
 }  // namespace
+
+DocumentGuard document_guard(io::Roots& roots) noexcept {
+  return DocumentGuard{&roots, &protect_document, &release_document};
+}
 
 RpcError path_not_found(std::string_view field, std::string_view path, io::Access access) {
   // One record for a refused path and a missing one, as the answer is one sentence for both: the

@@ -1664,7 +1664,8 @@ bool Session::reject(const RejectParams& params, const Caller& caller, RpcError&
 // ---- SessionManager --------------------------------------------------------------------------
 
 Session* SessionManager::open(const SessionOpenParams& params, u64 holder, RpcError& error,
-                              std::string_view read_only_as, std::string_view shown) {
+                              std::string_view read_only_as, std::string_view shown,
+                              const DocumentGuard* guard) {
   if (params.path.empty()) {
     error = make_error(codes::k_invalid_argument, "path is required");
     return nullptr;
@@ -1676,6 +1677,12 @@ Session* SessionManager::open(const SessionOpenParams& params, u64 holder, RpcEr
     if (s->dir() == path) {
       // One document, however many clients: the second opener shares the first's session.
       if (read_only_as.empty()) s->set_read_only({});
+      // A session opened with no guard (an in-process caller's) is protected from the first open
+      // that brings one; a guarded one is never protected twice.
+      if (guard != nullptr && guard->begin != nullptr && s->guard().begin == nullptr) {
+        s->set_guard(*guard);
+        guard->begin(guard->context, s->dir());
+      }
       s->hold(holder);
       return s.get();
     }
@@ -1704,6 +1711,10 @@ Session* SessionManager::open(const SessionOpenParams& params, u64 holder, RpcEr
   session->set_events(events_);
   session->set_shown_path(std::string(shown));
   session->hold(holder);
+  if (guard != nullptr && guard->begin != nullptr) {
+    session->set_guard(*guard);
+    guard->begin(guard->context, session->dir());
+  }
   sessions_.push_back(std::move(session));
   sessions_.back()->publish_session("opened");
   return sessions_.back().get();
@@ -1736,7 +1747,12 @@ bool SessionManager::close(std::string_view id) {
     if (sessions_[i]->id() == id) {
       note_closing(*sessions_[i]);
       sessions_[i]->publish_session("closed");
+      // Its directory is free once it is closed, however it came to close: a session.close, a
+      // dropped connection, the host's own clean-up.
+      const DocumentGuard guard = sessions_[i]->guard();
+      const std::string dir = sessions_[i]->dir();
       sessions_.erase_at(i);
+      if (guard.end != nullptr) guard.end(guard.context, dir);
       return true;
     }
   }

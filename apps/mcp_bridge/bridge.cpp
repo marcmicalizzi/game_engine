@@ -187,6 +187,13 @@ std::string hint_for(std::string_view method, i32 code, std::string_view message
              "which part. validate lists every problem in an open document.";
     case 1002: return "Fix what the diagnostics list, then try again.";
     case 1003:
+      // A refused `create` is answered "no place this host may write"; a missing document "no file
+      // this host may read" (domain/protocol/paths.h).
+      if (method == "session.open" &&
+          message.find("no place this host may write") != std::string_view::npos)
+        return "A document is made below a writable root, never at a root's own directory, at an "
+               "out/ or around an open document: name a new directory under one "
+               "(\"work://world\", \"out://scratch/world\").";
       if (method == "session.open")
         return "Nothing is there yet: pass \"create\": true to make a new document at that path.";
       if (message.find("scene") != std::string_view::npos)

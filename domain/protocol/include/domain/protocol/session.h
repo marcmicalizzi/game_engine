@@ -24,6 +24,16 @@
 
 namespace engine::protocol {
 
+// What keeps an open document's directory from a client's writes for exactly as long as a session
+// has it open (protocol.md, "The host's file roots"): `begin` when SessionManager makes the
+// session, `end` when it closes, by whichever path it closes. A host's roots are behind
+// `context` (`document_guard` in paths.h); SessionManager knows nothing of them.
+struct DocumentGuard {
+  void* context = nullptr;
+  void (*begin)(void* context, std::string_view dir) = nullptr;
+  void (*end)(void* context, std::string_view dir) = nullptr;
+};
+
 class Session {
  public:
   Session(io::Vfs& vfs, std::string id, std::string dir);
@@ -36,6 +46,10 @@ class Session {
   // it. What the session's events carry: `dir()` is the host's own path and never leaves it.
   const std::string& shown_path() const noexcept { return shown_path_; }
   void set_shown_path(std::string path) { shown_path_ = std::move(path); }
+  // Who protects the directory while the session is open; set by SessionManager::open, ended by
+  // SessionManager::close. Empty for a session opened with none.
+  const DocumentGuard& guard() const noexcept { return guard_; }
+  void set_guard(const DocumentGuard& guard) noexcept { guard_ = guard; }
   const std::string& name() const noexcept { return manifest_.name; }
   doc::Document& document() noexcept { return doc_; }
   const doc::Document& document() const noexcept { return doc_; }
@@ -339,6 +353,7 @@ class Session {
   std::string id_;
   std::string dir_;
   std::string shown_path_;    // dir_ as `<root>://<relative>`, for events
+  DocumentGuard guard_;       // protects dir_ while open (SessionManager)
   std::string read_only_as_;  // the client's path, when the session may not be written
   doc::Document doc_;
   doc::DocumentManifest manifest_;
@@ -422,15 +437,23 @@ class SessionManager {
   // already open session is shared as it is, and made writable when this opener may write.
   // `shown` is the directory as `<root>://<relative>` (Session::shown_path), set before the
   // "opened" event is published so no event ever carries the host's own path.
+  // `guard` (copied) protects the directory from the moment the session is made until it closes:
+  // its `begin` runs once, when this call makes the session (or gives one opened with no guard its
+  // first), and its `end` in `close`, which every way a session ends goes through. A session
+  // already open and guarded is shared without a second `begin`.
   Session* open(const SessionOpenParams& params, u64 holder, RpcError& error,
-                std::string_view read_only_as = {}, std::string_view shown = {});
+                std::string_view read_only_as = {}, std::string_view shown = {},
+                const DocumentGuard* guard = nullptr);
   Session* find(std::string_view id) noexcept;
   // Looks up the session named in params; sets SessionNotFound otherwise.
   Session* require(std::string_view id, RpcError& error) noexcept;
   // `holder` lets go of the session (`session.close`); it closes when no holder is left. False
   // when `holder` did not hold it; `closed` says whether it closed.
   bool release(std::string_view id, u64 holder, bool& closed);
-  // Closes the session whoever holds it: the host's own clean-up of a session it just opened.
+  // Closes the session whoever holds it: the host's own clean-up of a session it just opened. The
+  // one place a session ends, so the one place its guard ends: `release` and `release_connection`
+  // close through it. Destroying the manager is not a close: it publishes no "closed" and ends no
+  // guard, since the roots a guard names may be gone first.
   bool close(std::string_view id);
   // A client connection has ended: its leases on every session are released, then its holds,
   // closing each session nobody else holds.

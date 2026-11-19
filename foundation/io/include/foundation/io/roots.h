@@ -140,7 +140,11 @@ class Roots {
   // A directory the host serves to a browser: never written, whatever the roots say. Refused
   // (`InvalidArgument`) when a writable root holds it or lies under it.
   Status serve(std::string_view dir);
-  // An open document's directory: no write lands in it but under its `out/`. `release` at close.
+  // An open document's directory: no write lands in it but under its `out/`. Held once per
+  // directory, compared canonically, with a count of its holders: each `protect` adds one and each
+  // `release` takes one off, and the directory is free again when none is left. One holder a
+  // session (protocol::SessionManager begins and ends it, protocol.md, "The host's file roots"),
+  // since two sessions can name one directory by two spellings.
   Status protect(std::string_view document_dir);
   void release(std::string_view document_dir);
 
@@ -159,11 +163,18 @@ class Roots {
              Refusal& why, std::string* resolved = nullptr) const;
   // A path this host made or opened, as `<root>://<relative>`; false when no root holds it.
   bool portable(std::string_view native, std::string& out) const;
+  // Whether a client may make a new document at `native` (canonical, as `admit` answered it for
+  // make_directory): not where the host keeps something else, since an open document is
+  // protected and a document there would close it to every client write. False for a directory
+  // that is, or holds, a root's own directory, a served directory or an open document's
+  // directory, and for an open document's `out/`. It does not ask for an empty directory.
+  bool may_make_document(std::string_view native) const;
 
  private:
   Vector<Root> roots_;
   Vector<std::string> served_;     // canonical
-  Vector<std::string> documents_;  // canonical
+  Vector<std::string> documents_;  // canonical, each once
+  Vector<u32> document_holds_;     // beside documents_: how many holders each has
 };
 
 // Whether `path` is `dir` or continues it by whole components, both canonical (case-insensitive,

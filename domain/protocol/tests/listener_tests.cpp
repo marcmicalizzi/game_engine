@@ -104,9 +104,10 @@ TEST_CASE("listener: the protocol over a loopback WebSocket, with the token, fro
   io::Vfs vfs;
   protocol::SessionManager sessions(vfs);
   protocol::Dispatcher dispatcher(protocol::Context{&sessions, nullptr, nullptr, nullptr, nullptr});
-  // The document the case opens is under the host's one writable root (paths.h).
+  // The document the case opens is under the host's one writable root (paths.h), below it: a
+  // root's own directory is not a place a client makes a document.
   io::Roots roots;
-  REQUIRE(roots.add("doc", tmp.file("doc"), true) == io::Status::Ok);
+  REQUIRE(roots.add("tests", tmp.path(), true) == io::Status::Ok);
   dispatcher.context().roots = &roots;
   protocol::add_builtin_methods(dispatcher);
   std::mutex lock;
