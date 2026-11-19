@@ -34,9 +34,9 @@ if(MSVC AND NOT ENGINE_MSVC_RELEASE_CODEGEN STREQUAL "cmake")
   # to the engine's own and the `/Ob1` they had to everything else, so no command line carries
   # both (cl's D9025 on every file). Before any target exists: a directory's options reach only
   # the targets created after them, and every target here, fetched ones too, is created below.
-  foreach(_lang C CXX)
-    string(REPLACE "/Ob1" "" CMAKE_${_lang}_FLAGS_RELWITHDEBINFO "${CMAKE_${_lang}_FLAGS_RELWITHDEBINFO}")
-  endforeach()
+  # C++ only: C is enabled later, by the third-party projects that use it, and every C target is
+  # third party, so its flags keep their `/Ob1` (the second one added below changes nothing).
+  string(REPLACE "/Ob1" "" CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO}")
   add_compile_options("$<$<CONFIG:RelWithDebInfo>:$<IF:${_engine_own_code},/Ob2,/Ob1>>")
 endif()
 

@@ -136,6 +136,8 @@ function(engine_fetch_jolt)
   # of small unmarked helpers, so that is not a small loss: measured on msvc-release, a step of
   # the 1000-box bench with no job system cost 6.70 ms with /Ob1 and 2.43 ms with /Ob2. Restore
   # the inlining level on this target alone rather than changing the preset for the whole tree.
+  # The engine's own targets got the same from T193's rule (cmake/EngineReleaseCodegen.cmake),
+  # which leaves third-party targets alone, so Jolt still says it here.
   if(MSVC)
     target_compile_options(Jolt PRIVATE $<$<CONFIG:RelWithDebInfo>:/Ob2>)
   endif()
