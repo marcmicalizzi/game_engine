@@ -16,8 +16,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <set>
 #include <string>
 #include <thread>
@@ -749,6 +751,172 @@ TEST_CASE("ledger: a list answers in a stated order, to a limit, and by ids") {
   // The new task changed last, so it is the newest.
   r = h.ok("task.list", obj({{"order", JsonValue("Newest")}, {"limit", JsonValue(1)}}));
   CHECK(num(at(at(r, "tasks")[0], "id")) == num(at(at(made, "tasks")[0], "id")));
+}
+
+namespace {
+
+// The params of every `ledger_changed` event pushed since `from`.
+std::vector<JsonValue> ledger_changes(const Collect& pushed, usize from) {
+  std::vector<JsonValue> out;
+  for (usize i = from; i < pushed.sent.size(); ++i) {
+    JsonValue note;
+    REQUIRE(parse_json(pushed.sent[i], note).ok);
+    const JsonValue& params = at(note, "params");
+    if (at(params, "change").as_string() == "ledger_changed") out.push_back(params);
+  }
+  return out;
+}
+
+std::set<i64> id_set(const JsonValue& list) {
+  std::set<i64> out;
+  for (u32 i = 0; i < list.size(); ++i)
+    out.insert(num(list[i]));
+  return out;
+}
+
+}  // namespace
+
+// Another process's writes reach a subscriber as `ledger_changed` (protocol.md, "The ledger's
+// events"), decided from what the file holds and never from the notices: here the looks are made
+// by hand, `all` standing for a notice the system said it dropped, so the case holds the decision
+// to the bytes whatever the platform's notices do. Two hosts on one directory, as engine-cli's
+// host per call is beside engine-host.
+TEST_CASE("ledger: another host's writes are pushed as ledger_changed, decided by content") {
+  test::TempDir tmp("protocol_ledger");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  Collect pushed;
+  Subscriptions subscriptions;
+  subscriptions.attach(&pushed);
+  h.sessions.set_events(&subscriptions);
+  (void)subscriptions.subscribe(7, "", event_bit(EventKind::Session));
+  h.open(dir, true);
+  Host b;
+  b.open(dir, false);
+  const auto make = [](Host& on, const char* title) {
+    return num(
+        at(on.task("task.create", obj({{"title", JsonValue(title)}, {"attribution", who("b")}})),
+           "id"));
+  };
+
+  // A burst of three of the other host's writes, and one look: one event naming the three.
+  usize mark = pushed.sent.size();
+  const std::set<i64> burst{make(b, "one"), make(b, "two"), make(b, "three")};
+  CHECK(h.sessions.look_at_ledgers(true) == 1);
+  std::vector<JsonValue> changes = ledger_changes(pushed, mark);
+  REQUIRE(changes.size() == 1);
+  CHECK(id_set(at(changes[0], "tasks")) == burst);
+  CHECK(num(at(changes[0], "tasks_total")) == 3);
+  CHECK(num(at(changes[0], "ledger_revision")) == 3);
+  // Nothing changed since: a second look publishes nothing.
+  mark = pushed.sent.size();
+  CHECK(h.sessions.look_at_ledgers(true) == 0);
+  CHECK(pushed.sent.size() == mark);
+
+  // A rewrite with the same bytes, and one with the same content in other spacing, change nothing.
+  std::string three;
+  REQUIRE(h.vfs.read(dir + "/ledger.json", three) == io::Status::Ok);
+  {
+    std::ofstream out(dir + "/ledger.json", std::ios::binary);
+    out << three;
+  }
+  CHECK(h.sessions.look_at_ledgers(true) == 0);
+  {
+    std::ofstream out(dir + "/ledger.json", std::ios::binary);
+    out << "  " << three << "\n\n";
+  }
+  CHECK(h.sessions.look_at_ledgers(true) == 0);
+  CHECK(pushed.sent.size() == mark);
+
+  // A fourth, then the ledger restored to the copy of three: its revision went back, and that is a
+  // change naming the task that is gone.
+  const i64 fourth = make(b, "four");
+  CHECK(h.sessions.look_at_ledgers(true) == 1);
+  changes = ledger_changes(pushed, mark);
+  REQUIRE(changes.size() == 1);
+  CHECK(id_set(at(changes[0], "tasks")) == std::set<i64>{fourth});
+  CHECK(num(at(changes[0], "ledger_revision")) == 4);
+  mark = pushed.sent.size();
+  {
+    std::ofstream out(dir + "/ledger.json", std::ios::binary);
+    out << three;
+  }
+  CHECK(h.sessions.look_at_ledgers(true) == 1);
+  changes = ledger_changes(pushed, mark);
+  REQUIRE(changes.size() == 1);
+  CHECK(id_set(at(changes[0], "tasks")) == std::set<i64>{fourth});
+  CHECK(num(at(changes[0], "ledger_revision")) == 3);  // inequality, not "greater"
+
+  // The other host writes and this one writes before any look: the other's write is told first,
+  // then this host's own event, and the notice of its own write publishes nothing more.
+  mark = pushed.sent.size();
+  const i64 fifth = make(b, "five");
+  const i64 sixth = make(h, "six");
+  REQUIRE(pushed.sent.size() == mark + 2);
+  changes = ledger_changes(pushed, mark);
+  REQUIRE(changes.size() == 1);
+  CHECK(id_set(at(changes[0], "tasks")) == std::set<i64>{fifth});
+  CHECK(pushed.sent[mark + 1].find("\"change\":\"task_created\"") != std::string::npos);
+  CHECK(pushed.sent[mark + 1].find("\"task\":" + std::to_string(sixth)) != std::string::npos);
+  CHECK(h.sessions.look_at_ledgers(true) == 0);
+  CHECK(pushed.sent.size() == mark + 2);
+}
+
+// The platform's own notice reaches the session's watch (dir_watch.h): a storm of another host's
+// writes wakes the looker, and one look after it is one event naming every write. Where the system
+// gives no notice the watch looks once a second, which wakes the looker too.
+TEST_CASE("ledger: the system's directory-change notice wakes the look, once for a storm") {
+  test::TempDir tmp("protocol_ledger");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  Collect pushed;
+  Subscriptions subscriptions;
+  subscriptions.attach(&pushed);
+  struct Woken {
+    std::mutex mutex;
+    std::condition_variable cv;
+    int count = 0;
+  } woken;
+  h.sessions.set_ledger_waker(
+      [](void* context) {
+        auto* w = static_cast<Woken*>(context);
+        {
+          std::lock_guard<std::mutex> lock(w->mutex);
+          ++w->count;
+        }
+        w->cv.notify_all();
+      },
+      &woken);
+  h.sessions.set_events(&subscriptions);
+  (void)subscriptions.subscribe(7, "", event_bit(EventKind::Session));
+  h.open(dir, true);
+  Host b;
+  b.open(dir, false);
+
+  const usize mark = pushed.sent.size();
+  std::set<i64> made;
+  for (int i = 0; i < 20; ++i)
+    made.insert(num(
+        at(b.task("task.create", obj({{"title", JsonValue("storm")}, {"attribution", who("b")}})),
+           "id")));
+  {
+    std::unique_lock<std::mutex> lock(woken.mutex);
+    REQUIRE(woken.cv.wait_for(lock, std::chrono::seconds(10), [&] { return woken.count > 0; }));
+  }
+#if ENGINE_PLATFORM_WINDOWS || defined(__linux__)
+  // The system's own notice woke it, not the once-a-second fallback, which marks itself before its
+  // first look: both platforms give one.
+  const Session* watched = h.sessions.find(h.session);
+  REQUIRE(watched != nullptr);
+  CHECK_FALSE(watched->ledger_watch_polling());
+#endif
+  // Notices may still arrive for the last writes; the look decides from the file all the same.
+  CHECK(h.sessions.look_at_ledgers(false) + h.sessions.look_at_ledgers(true) == 1);
+  const std::vector<JsonValue> changes = ledger_changes(pushed, mark);
+  REQUIRE(changes.size() == 1);
+  CHECK(id_set(at(changes[0], "tasks")) == made);
+  CHECK(num(at(changes[0], "tasks_total")) == 20);
+  h.sessions.set_ledger_waker(nullptr, nullptr);
 }
 
 // The ledger's bounds (protocol.md, "The ledger's bounds"): 256 open tasks and 256 open items per

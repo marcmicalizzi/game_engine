@@ -6,6 +6,7 @@
 // takes `ledger.json.lock` between processes, reads the file, changes it and writes it back
 // (`update_ledger`, over side_file.h), so two engine-cli calls at once, or engine-host beside
 // engine-cli, lose nothing to each other and never mint one id twice.
+#include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
 #include <core/time/time.h>
@@ -16,6 +17,7 @@
 #include <domain/protocol/side_file.h>
 
 #include <algorithm>
+#include <mutex>
 #include <string>
 #include <string_view>
 
@@ -289,6 +291,9 @@ bool update_ledger(io::Vfs& vfs, Session& session, bool read_only, bool grows, u
   const bool ok = update_side_file(
       vfs, path, ledger,
       [&](LedgerFile& l, bool& write) {
+        // What another process wrote since this session last looked is told before this call
+        // changes anything (protocol.md, "The ledger's events").
+        if (session.watching_ledger()) session.ledger_read(l);
         io::FileInfo info;
         if (grows && vfs.stat(path, info) == io::Status::Ok && info.size >= k_ledger_bytes_max) {
           error = bound_error("ledger bytes", k_ledger_bytes_max,
@@ -306,8 +311,64 @@ bool update_ledger(io::Vfs& vfs, Session& session, bool read_only, bool grows, u
         return changed;
       },
       error);
-  (void)wrote;
+  // What this process wrote is what its own watch has seen, so the notice its write raises
+  // publishes no "ledger_changed" beside the event the call publishes itself.
+  if (wrote && session.watching_ledger()) session.ledger_written(ledger);
   return ok;
+}
+
+// ---- the ledger's events (protocol.md, "The ledger's events") ---------------------------------
+
+u64 text_hash(const std::string& text) noexcept { return hash_bytes(text.data(), text.size()); }
+
+// The ledger's bytes as the side-file helper writes them (side_file.cpp, `write_side_json`).
+std::string canonical(const LedgerFile& ledger) {
+  std::string text = write_json(schema::to_json(ledger));
+  text.push_back('\n');
+  return text;
+}
+
+template <class T>
+void entries_of(const Vector<T>& all, Vector<LedgerSeen::Entry>& out) {
+  out.clear();
+  for (const T& e : all)
+    out.push_back(LedgerSeen::Entry{e.id, text_hash(write_json(schema::to_json(e)))});
+  std::sort(out.begin(), out.end(),
+            [](const LedgerSeen::Entry& a, const LedgerSeen::Entry& b) { return a.id < b.id; });
+}
+
+void fill_seen(const LedgerFile& ledger, const std::string& text, LedgerSeen& seen) {
+  seen.present = true;
+  seen.revision = ledger.revision;
+  seen.size = text.size();
+  seen.hash = text_hash(text);
+  entries_of(ledger.tasks, seen.tasks);
+  entries_of(ledger.reviews, seen.reviews);
+}
+
+// The ids whose entries differ between two lists sorted by id — made, changed or gone — the first
+// `k_event_max_ids` of them, and how many in all.
+void changed_ids(const Vector<LedgerSeen::Entry>& from, const Vector<LedgerSeen::Entry>& to,
+                 Vector<u64>& ids, u32& total) {
+  const auto add = [&](u64 id) {
+    ++total;
+    if (ids.size() < k_event_max_ids) ids.push_back(id);
+  };
+  u32 i = 0;
+  u32 j = 0;
+  while (i < from.size() || j < to.size()) {
+    if (j == to.size() || (i < from.size() && from[i].id < to[j].id)) {
+      add(from[i].id);  // gone
+      ++i;
+    } else if (i == from.size() || to[j].id < from[i].id) {
+      add(to[j].id);  // made
+      ++j;
+    } else {
+      if (from[i].hash != to[j].hash) add(to[j].id);  // changed
+      ++i;
+      ++j;
+    }
+  }
 }
 
 // The order a list answers in (protocol.md, "The ledger's lists"): by last change, then by id, so
@@ -903,6 +964,192 @@ void add_ledger_methods(Dispatcher& d) {
   d.add(read_only(method<ReviewListParams, ReviewsResult, &review_list>(
       "review.list",
       "The document's review items, by id, state, audience, kind or task, visible to everyone.")));
+}
+
+// ---- the ledger's watch (protocol.md, "The ledger's events") ----------------------------------
+
+void LedgerWaker::set(void (*wake)(void* context), void* context) noexcept {
+  std::lock_guard<std::mutex> lock(mutex_);
+  wake_ = wake;
+  context_ = context;
+}
+
+void LedgerWaker::notify() noexcept {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (wake_ != nullptr) wake_(context_);
+}
+
+void Session::watch_ledger(LedgerWaker* waker) {
+  if (waker == nullptr) {
+    ledger_watch_.reset();  // joins its thread before anything it reads goes
+    ledger_waker_ = nullptr;
+    ledger_notice_.store(false);
+    return;
+  }
+  if (ledger_watch_ != nullptr) return;
+  std::string native;
+  if (vfs_->resolve(dir_, native, /*for_write=*/false) != io::Status::Ok) return;
+  // What the file holds now is what the session has seen: the watch reports changes from here on.
+  SessionManager::LedgerLook look;
+  look.path = doc::DocumentStore::path_of(dir_, k_ledger_file);
+  look.make_lock = writable();
+  SessionManager::read_ledger_look(*vfs_, look);
+  ledger_seen_ = look.read && !look.same ? std::move(look.now) : LedgerSeen{};
+  ++ledger_seen_moves_;
+  ledger_waker_ = waker;
+  auto watch = std::make_unique<DirWatch>();
+  watch->start(
+      std::move(native), std::string(k_ledger_file),
+      [](void* context) {
+        Session* self = static_cast<Session*>(context);
+        self->ledger_notice_.store(true);
+        if (self->ledger_waker_ != nullptr) self->ledger_waker_->notify();
+      },
+      this);
+  ledger_watch_ = std::move(watch);
+}
+
+bool Session::ledger_watch_polling() const noexcept {
+  return ledger_watch_ != nullptr && ledger_watch_->polling();
+}
+
+void Session::ledger_read(const LedgerFile& ledger) {
+  const std::string text = canonical(ledger);
+  if (ledger_seen_.present && ledger_seen_.size == text.size() &&
+      ledger_seen_.hash == text_hash(text))
+    return;
+  LedgerSeen now;
+  fill_seen(ledger, text, now);
+  now.raw_size = now.size;
+  now.raw_hash = now.hash;
+  (void)publish_ledger_changed(ledger_seen_, now);
+  ledger_seen_ = std::move(now);
+  ++ledger_seen_moves_;
+}
+
+void Session::ledger_written(const LedgerFile& ledger) {
+  const std::string text = canonical(ledger);
+  LedgerSeen now;
+  fill_seen(ledger, text, now);
+  now.raw_size = now.size;
+  now.raw_hash = now.hash;
+  ledger_seen_ = std::move(now);
+  ++ledger_seen_moves_;
+}
+
+bool Session::publish_ledger_changed(const LedgerSeen& from, const LedgerSeen& to) const {
+  if (events_ == nullptr || !events_->wanted(EventKind::Session, id_)) return false;
+  SessionChangeEvent event;
+  changed_ids(from.tasks, to.tasks, event.tasks, event.tasks_total);
+  changed_ids(from.reviews, to.reviews, event.reviews, event.reviews_total);
+  if (event.tasks_total == 0 && event.reviews_total == 0 && from.revision == to.revision)
+    return false;
+  event.session = id_;
+  event.change = "ledger_changed";
+  event.path = shown_path_;
+  event.ledger_revision = to.revision;
+  events_->publish(EventKind::Session, id_, schema::to_json(event));
+  return true;
+}
+
+void SessionManager::begin_ledger_looks(bool all, Vector<LedgerLook>& looks) {
+  looks.clear();
+  for (const auto& s : sessions_) {
+    if (!s->watching_ledger()) continue;
+    const bool noticed = s->take_ledger_notice();
+    if (!noticed && !all) continue;
+    LedgerLook look;
+    look.session = s->id();
+    look.path = doc::DocumentStore::path_of(s->dir(), k_ledger_file);
+    look.make_lock = s->writable();
+    look.seen_moves = s->ledger_seen_moves();
+    const LedgerSeen& seen = s->ledger_seen();
+    look.seen_present = seen.present;
+    look.seen_raw_size = seen.raw_size;
+    look.seen_raw_hash = seen.raw_hash;
+    looks.push_back(std::move(look));
+  }
+}
+
+void SessionManager::read_ledger_look(io::Vfs& vfs, LedgerLook& look) {
+  look.read = false;
+  look.same = false;
+  look.now = LedgerSeen{};
+  std::string text;
+  if (vfs.exists(look.path)) {
+    // Under the ledger's own lock between processes, for the read alone: a reader holding the
+    // file open on Windows makes a writer's rename over it fail (side_file.h).
+    SideFileLock lock;
+    RpcError error;
+    if (look.make_lock && !lock_side_file(vfs, look.path, lock, error)) return;
+    const io::Status s = vfs.read(look.path, text);
+    lock.release();
+    if (s == io::Status::Ok) {
+      look.now.present = true;
+    } else if (s != io::Status::NotFound) {
+      return;  // looked at again at the next notice
+    }
+  }
+  look.now.raw_size = text.size();
+  look.now.raw_hash = look.now.present ? text_hash(text) : 0;
+  look.read = true;
+  // The bytes already seen: nothing to parse, nothing changed.
+  if (look.now.present == look.seen_present && look.now.raw_size == look.seen_raw_size &&
+      look.now.raw_hash == look.seen_raw_hash) {
+    look.same = true;
+    return;
+  }
+  if (!look.now.present) return;
+  JsonValue value;
+  RpcError error;
+  LedgerFile ledger;
+  if (!parse_json(text, value).ok ||
+      !detail::map_side_json(
+          schema::type_of<LedgerFile>(), &ledger,
+          [](void* object) { *static_cast<LedgerFile*>(object) = LedgerFile{}; }, value, look.path,
+          error)) {
+    look.read = false;  // a file this tree did not write whole: looked at again at the next notice
+    return;
+  }
+  const u64 raw_size = look.now.raw_size;
+  const u64 raw_hash = look.now.raw_hash;
+  fill_seen(ledger, canonical(ledger), look.now);
+  look.now.raw_size = raw_size;
+  look.now.raw_hash = raw_hash;
+}
+
+u32 SessionManager::finish_ledger_looks(Vector<LedgerLook>& looks, bool& again) {
+  again = false;
+  u32 published = 0;
+  for (LedgerLook& look : looks) {
+    Session* s = find(look.session);
+    if (s == nullptr || !s->watching_ledger() || !look.read) continue;
+    if (s->ledger_seen_moves() != look.seen_moves) {
+      // This process read or wrote the ledger after the look read it: what the look holds may be
+      // older than what the session has seen, so it looks again rather than step back.
+      s->note_ledger_notice();
+      again = true;
+      continue;
+    }
+    if (look.same) continue;
+    const LedgerSeen& seen = s->ledger_seen();
+    // Inequality of the revision, the size and the content hash, never "greater": a ledger restored
+    // from an older copy has a revision that went back, and it is a change.
+    const bool changed = look.now.present != seen.present || look.now.revision != seen.revision ||
+                         look.now.size != seen.size || look.now.hash != seen.hash;
+    if (changed && s->publish_ledger_changed(seen, look.now)) ++published;
+    s->set_ledger_seen(std::move(look.now));
+  }
+  return published;
+}
+
+u32 SessionManager::look_at_ledgers(bool all) {
+  Vector<LedgerLook> looks;
+  begin_ledger_looks(all, looks);
+  for (LedgerLook& look : looks)
+    read_ledger_look(*vfs_, look);
+  bool again = false;
+  return finish_ledger_looks(looks, again);
 }
 
 }  // namespace engine::protocol

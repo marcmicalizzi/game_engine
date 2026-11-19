@@ -8,7 +8,7 @@ engine_module(NAME protocol LAYER domain
   SOURCES src/rpc.cpp src/session.cpp src/methods.cpp src/policy.cpp src/leases.cpp
           src/proposals.cpp src/policy_methods.cpp src/listener.cpp src/events.cpp src/transactions.cpp src/placement.cpp
           src/describe.cpp src/query.cpp src/session_history.cpp src/history_methods.cpp
-          src/ledger.cpp src/side_file.cpp src/paths.cpp src/record_paths.cpp)
+          src/ledger.cpp src/side_file.cpp src/paths.cpp src/record_paths.cpp src/dir_watch.cpp)
 target_compile_definitions(engine_protocol PRIVATE ENGINE_VERSION="${PROJECT_VERSION}")
 
 # Types the roles, leases and proposals tests and experiment E12 place in a world: a prop that

@@ -8,6 +8,8 @@
 #include <domain/protocol/session.h>
 #include <foundation/io/vfs.h>
 
+#include <chrono>
+
 namespace engine::protocol {
 
 namespace {
@@ -199,8 +201,77 @@ Listener::~Listener() {
 }
 
 void Listener::stop() {
+  stop_looker();
   events_.attach(nullptr);
   server_.stop();
+}
+
+// ---- the ledger's looker (protocol.md, "The ledger's events") ---------------------------------
+
+void Listener::wake_looker(void* self) {
+  Listener* l = static_cast<Listener*>(self);
+  {
+    std::lock_guard<std::mutex> lock(l->look_mutex_);
+    l->look_wanted_ = true;
+  }
+  l->look_cv_.notify_one();
+}
+
+void Listener::start_looker() {
+  SessionManager* sessions = dispatcher_->context().sessions;
+  if (sessions == nullptr || looker_.joinable()) return;
+  {
+    std::lock_guard<std::mutex> lock(look_mutex_);
+    look_stop_ = false;
+    look_wanted_ = false;
+  }
+  looker_ = std::thread([this] { look_loop(); });
+  sessions->set_ledger_waker(&Listener::wake_looker, this);
+}
+
+void Listener::stop_looker() {
+  // The waker goes first, so no watch wakes a looker that is gone.
+  if (SessionManager* sessions = dispatcher_->context().sessions; sessions != nullptr)
+    sessions->set_ledger_waker(nullptr, nullptr);
+  {
+    std::lock_guard<std::mutex> lock(look_mutex_);
+    look_stop_ = true;
+  }
+  look_cv_.notify_all();
+  if (looker_.joinable()) looker_.join();
+}
+
+void Listener::look_loop() {
+  std::unique_lock<std::mutex> wait(look_mutex_);
+  Vector<SessionManager::LedgerLook> looks;
+  for (;;) {
+    // No timeout: the looker wakes for a notice and for nothing else.
+    look_cv_.wait(wait, [this] { return look_wanted_ || look_stop_; });
+    if (look_stop_) return;
+    // The rest of a burst lands in this quarter second and is the same look.
+    if (look_cv_.wait_for(wait, std::chrono::milliseconds(k_ledger_look_ms),
+                          [this] { return look_stop_; }))
+      return;
+    look_wanted_ = false;
+    wait.unlock();
+    bool again = false;
+    {
+      SessionManager* sessions = dispatcher_->context().sessions;
+      std::unique_lock<std::mutex> host(*lock_);
+      if (sessions != nullptr) {
+        sessions->begin_ledger_looks(false, looks);
+        // The read, the hash and the parse are the look's cost and touch nothing of the host's,
+        // so the host's clients are answered beside them; the lock is taken back to publish.
+        host.unlock();
+        for (SessionManager::LedgerLook& look : looks)
+          SessionManager::read_ledger_look(sessions->vfs(), look);
+        host.lock();
+        (void)sessions->finish_ledger_looks(looks, again);
+      }
+    }
+    wait.lock();
+    if (again) look_wanted_ = true;
+  }
 }
 
 bool Listener::start(u16 port, std::string shell_dir, std::string session, std::string& error) {
@@ -218,7 +289,10 @@ bool Listener::start(u16 port, std::string shell_dir, std::string session, std::
   }
   session_ = std::move(session);
   events_.attach(this);
-  if (server_.start(port, *this, error)) return true;
+  if (server_.start(port, *this, error)) {
+    start_looker();
+    return true;
+  }
   events_.attach(nullptr);
   return false;
 }

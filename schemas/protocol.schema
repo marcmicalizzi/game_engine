@@ -3427,11 +3427,15 @@ struct SceneEvent @version(1) {
 }
 
 /// `event.session`: a session opened or closed, or a lease on it was taken or released. (Not
-/// `SessionEvent`, which is one entry of `session.events`' log.)
-struct SessionChangeEvent @version(3) {
+/// `SessionEvent`, which is one entry of `session.events`' log.) Version 4: "ledger_changed" with
+/// the ids it names, and the proposals' changes.
+struct SessionChangeEvent @version(4) @additive(4) {
   session: string
-  /// "opened", "closed", "lease_acquired", "lease_released", "checkpoint", "rollback", and the
-  /// ledger's "task_created", "task_claimed", "task_updated", "review_raised" and "review_closed".
+  /// "opened", "closed", "lease_acquired", "lease_released", "checkpoint", "rollback", the
+  /// ledger's "task_created", "task_claimed", "task_updated", "review_raised" and "review_closed",
+  /// "ledger_changed" (the ledger changed by a write this host did not make: `tasks`, `reviews`,
+  /// `ledger_revision`), and a proposal's "proposal_opened", "proposal_reopened",
+  /// "proposal_promoted" and "proposal_rejected" (`layer` the proposal, `actor` who did it).
   change: string
   /// The document's directory.
   path: string
@@ -3449,6 +3453,17 @@ struct SessionChangeEvent @version(3) {
   /// `actor` is then who made the change.
   task: u64 = 0 @since(3)
   review: u64 = 0 @since(3)
+  /// For "ledger_changed": the tasks and review items whose entries differ from what this host last
+  /// saw of the ledger — made, changed, or gone — by id, at most 1,024 of each, with how many there
+  /// were in all. Ids, never content: a reader reads them with `task.list {tasks}` and
+  /// `review.list {reviews}` (protocol.md, "The ledger's events").
+  tasks: u64[] @since(4)
+  tasks_total: u32 = 0 @since(4)
+  reviews: u64[] @since(4)
+  reviews_total: u32 = 0 @since(4)
+  /// For "ledger_changed": the ledger's revision now (`LedgerFile.revision`); compared for
+  /// inequality, never order.
+  ledger_revision: u64 = 0 @since(4)
 }
 
 // ---- clients of one host (roadmap A3; docs/subsystems/protocol.md, "Several clients, one host") -
