@@ -89,7 +89,10 @@ class SaveRoot {
     usize start = 0;
     for (usize i = 0; i <= relative.size(); ++i) {
       if (i < relative.size() && relative[i] != '/') continue;
-      if (i > start) {
+      // An empty component is refused, never skipped: the walk and `save_path_admissible` must
+      // name the same file, and a skipped one let `document//abs` pass here and be written there.
+      if (i == start) return false;
+      {
         const fs::path name = native(relative.substr(start, i - start));
         walked /= name;
         expected /= name;
@@ -118,6 +121,10 @@ class SaveRoot {
   mutable bool resolved_ = false;
   mutable std::filesystem::path real_root_;
 };
+
+std::string outside_itself(std::string_view path) {
+  return "the save names a file outside itself: '" + std::string(path) + "'";
+}
 
 std::string through_link(std::string_view path) {
   return "the save's file " + std::string(path) +
@@ -338,6 +345,34 @@ bool check_since_ref(const schema::TypeRef& ref, const JsonValue& json,
 
 }  // namespace
 
+bool save_path_admissible(std::string_view path) noexcept {
+  if (path.empty()) return false;
+  usize start = 0;
+  for (usize i = 0; i <= path.size(); ++i) {
+    if (i < path.size()) {
+      const auto c = static_cast<unsigned char>(path[i]);
+      if (c == '\\' || c == ':' || c < 0x20 || c == 0x7F) return false;
+      if (c != '/') continue;
+    }
+    const std::string_view part = path.substr(start, i - start);
+    if (part.empty() || part == "." || part == "..") return false;
+    start = i + 1;
+  }
+  return true;
+}
+
+std::string restore_destination(std::string_view to, std::string_view relative) {
+  if (!save_path_admissible(relative) || io::is_absolute_path(relative)) return {};
+  const std::string base = io::normalize_path(to);
+  std::string out = io::join_path(base, relative);
+  // Strictly under `to`, by whole components.
+  const bool slash = !base.empty() && base.back() == '/';
+  if (out.size() <= base.size() || out.compare(0, base.size(), base) != 0 ||
+      (!slash && out[base.size()] != '/'))
+    return {};
+  return out;
+}
+
 bool is_store_file(std::string_view name) noexcept {
   return name == k_save_store_file || (name.size() > 9 && name.compare(0, 9, "world.db-") == 0);
 }
@@ -550,10 +585,8 @@ bool read_save(std::string_view dir, SaveManifest& out, SaveCheck& check, std::s
   // Every file the manifest names, as it names it, where it names it.
   const SaveRoot save(root);
   for (const SaveFile& file : manifest.files) {
-    if (file.path.empty() || file.path.find("..") != std::string::npos ||
-        io::is_absolute_path(file.path) || file.path.find('\\') != std::string::npos ||
-        file.path.find(':') != std::string::npos) {
-      error = "the save names a file outside itself: '" + file.path + "'";
+    if (!save_path_admissible(file.path)) {
+      error = outside_itself(file.path);
       return false;
     }
     if (!save.in_place(file.path)) {
@@ -596,8 +629,7 @@ bool read_save(std::string_view dir, SaveManifest& out, SaveCheck& check, std::s
                        file.path.compare(0, manifest.document.size(), manifest.document) == 0 &&
                        file.path[manifest.document.size()] == '/');
   }
-  if (manifest.document.empty() || manifest.document.find("..") != std::string::npos ||
-      io::is_absolute_path(manifest.document) || !document_listed) {
+  if (!save_path_admissible(manifest.document) || !document_listed) {
     error = "the save's document '" + manifest.document + "' is not a directory of its files";
     return false;
   }
@@ -646,9 +678,11 @@ bool restore_save_files(std::string_view dir, const SaveManifest& manifest, std:
     const std::string relative = file.path.substr(prefix.size());
     // The store's own files at the document's top are backed up, never copied (as `write_save`).
     if (relative.find('/') == std::string::npos && is_store_file(relative)) continue;
-    if (file.path.find("..") != std::string::npos || file.path.find('\\') != std::string::npos ||
-        file.path.find(':') != std::string::npos) {
-      error = "the save names a file outside itself: '" + file.path + "'";
+    // The destination is checked for itself (the stack's mend of T191): `document//<an absolute
+    // path>` once passed the text checks and the walk, and `join_path` returned the absolute half.
+    const std::string out = restore_destination(to, relative);
+    if (!save_path_admissible(file.path) || out.empty()) {
+      error = outside_itself(file.path);
       return false;
     }
     if (!save.in_place(file.path)) {
@@ -666,7 +700,6 @@ bool restore_save_files(std::string_view dir, const SaveManifest& manifest, std:
       error = "the save's file " + file.path + " changed after the save was checked";
       return false;
     }
-    const std::string out = io::join_path(to, relative);
     const std::string_view parent = io::parent_path(out);
     if (!parent.empty()) {
       status = io::make_directories(parent);
@@ -682,6 +715,16 @@ bool restore_save_files(std::string_view dir, const SaveManifest& manifest, std:
     }
   }
   if (manifest.store.empty()) return true;
+  // The store is a listed file (`read_save`), so it is held to the rule and checked against its
+  // size and hash again like every other file copied here.
+  const SaveFile* store_file = nullptr;
+  for (const SaveFile& file : manifest.files) {
+    if (file.path == manifest.store) store_file = &file;
+  }
+  if (store_file == nullptr || !save_path_admissible(manifest.store)) {
+    error = outside_itself(manifest.store);
+    return false;
+  }
   if (!save.in_place(manifest.store)) {
     error = through_link(manifest.store);
     return false;
@@ -690,6 +733,11 @@ bool restore_save_files(std::string_view dir, const SaveManifest& manifest, std:
   status = io::read_file(from, bytes);
   if (status != io::Status::Ok) {
     error = io_message("cannot read", from, status);
+    return false;
+  }
+  if (bytes.size() != store_file->bytes ||
+      hash_hex(hash_bytes(bytes.data(), bytes.size())) != store_file->hash) {
+    error = "the save's file " + manifest.store + " changed after the save was checked";
     return false;
   }
   const std::string store_path = io::join_path(to, k_save_store_file);

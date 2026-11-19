@@ -96,6 +96,18 @@ struct SaveCheck {
   u64 bytes = 0;  // every file of the set
 };
 
+// **The lexical rule for a path a save's manifest names** (T191, and the stack's mend of it;
+// world.md, "A save is the files its manifest lists, read where it names them"): '/'-separated,
+// every component non-empty and neither `.` nor `..`, so no leading, doubled or trailing '/'; no
+// '\\', no ':' and no control character. `read_save` and the restore hold every path to it, the
+// document's and the store's included.
+bool save_path_admissible(std::string_view path) noexcept;
+
+// Where the restore writes a document's file named `relative` under `to`: the join, or empty when
+// `relative` breaks the rule above or the join would not lie strictly under `to`. The destination
+// is checked for itself, never inferred from the source's check.
+std::string restore_destination(std::string_view to, std::string_view relative);
+
 // Reads `<dir>/save.json` and checks the save before anything is loaded from it: the format; every
 // version it names against this build's; every file against the size and hash the manifest gives
 // it; then the manifest itself under the version it was written at.
