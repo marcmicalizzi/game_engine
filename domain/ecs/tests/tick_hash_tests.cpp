@@ -4,7 +4,11 @@
 // keyed by pointer — is found at its tick, its phase and its table, and then at its entities and
 // their field; a run replayed from its recorded input reports nothing, and one input changed is
 // found at its tick.
+#include <core/hash/hash.h>
+#include <core/jobs/job_system.h>
 #include <core/memory/memory.h>
+#include <core/schema/type_info.h>
+#include <domain/ecs/components.h>
 #include <domain/ecs/identity.h>
 #include <domain/ecs/scheduled_tick.h>
 #include <domain/ecs/sim_world.h>
@@ -18,6 +22,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <utility>
@@ -94,8 +99,7 @@ struct World {
     tick = std::make_unique<ScheduledTick>(sim, scheduler);
   }
 
-  void hash_into(sim::HashLog& log, u64 reserve = 0) {
-    TickHashConfig config;
+  void hash_into(sim::HashLog& log, u64 reserve = 0, TickHashConfig config = {}) {
     config.reserve_ticks = reserve;
     hash = std::make_unique<TickHash>(sim, scheduler, log, config);
   }
@@ -197,6 +201,102 @@ TEST_CASE("tick hash: the same world twice hashes the same, row for row and byte
   CHECK(sr == sa);
   CHECK_FALSE(read.deserialize(std::string_view(sa).substr(0, sa.size() - 3), &error));
   CHECK(read.rows().empty());
+}
+
+namespace {
+
+// Every Bool inside a value of `info` set to 0 or 1, so random bytes are a value both paths may
+// read (any other scalar's bits are one of its values).
+void fix_bools(const schema::TypeInfo& info, u8* p, u64& rng) {
+  for (const schema::FieldInfo& field : info.fields) {
+    u8* at = p + field.offset;
+    if (field.type.kind == schema::Kind::Bool) {
+      rng = hash_combine(rng, 1);
+      *at = static_cast<u8>(rng & 1u);
+    } else if (field.type.kind == schema::Kind::Struct && field.type.type != nullptr) {
+      fix_bools(*field.type.type, at, rng);
+    }
+  }
+}
+
+}  // namespace
+
+// **The fast path is the reflected one, bit for bit** (ecs.md, "The tick hash's fast path"): on
+// every component type the world registered, a value of random bytes hashed through the type's
+// flat program, where it has one, gives the word reflection gives; a type with a string, a
+// container or an optional has no program and is hashed by reflection.
+TEST_CASE("tick hash: the fast path hashes every registered component as reflection does") {
+  World world(false);
+  u32 fast = 0;
+  u32 reflected_only = 0;
+  u64 rng = 0x5eedu;
+  for (const ComponentType& type : components(world.sim.world()).all()) {
+    if (type.size == 0 || type.info == nullptr) continue;
+    CAPTURE(std::string(type.info->qualified_name));
+    // A default value first (strings, containers and all), then, for a type with a program, a
+    // hundred of random bytes.
+    Vector<u8> storage(type.info->size + 64);
+    u8* p = storage.data() + (64 - reinterpret_cast<std::uintptr_t>(storage.data()) % 64) % 64;
+    REQUIRE(type.info->ops != nullptr);
+    type.info->ops->construct(p);
+    u64 r = 0, f = 0;
+    const bool has_program = tick_hash_both_ways(*type.info, p, k_seed, r, f);
+    type.info->ops->destroy(p);
+    if (!has_program) {
+      ++reflected_only;
+      continue;
+    }
+    ++fast;
+    CHECK(f == r);
+    for (u32 trial = 0; trial < 100; ++trial) {
+      for (u32 b = 0; b < type.info->size; ++b) {
+        rng = hash_combine(rng, b);
+        p[b] = static_cast<u8>(rng);
+      }
+      fix_bools(*type.info, p, rng);
+      REQUIRE(tick_hash_both_ways(*type.info, p, rng, r, f));
+      CHECK(f == r);
+    }
+  }
+  MESSAGE(fast << " component types with a flat program, " << reflected_only << " without");
+  // Beacon, Perception and Standing have one; Label (a string) has none.
+  CHECK(fast >= 3u);
+  CHECK(reflected_only >= 1u);
+}
+
+// **On the job system, or by reflection alone, the log is the same bytes** (ecs.md, "The tick
+// hash's fast path"): four runs of the same world, hashed serially through the flat programs, by
+// reflection alone, and on a job system in runs of four entities either way, write logs equal byte
+// for byte over 200 ticks of all eight phases, the ranking's ticks included.
+TEST_CASE("tick hash: in parallel or by reflection alone, the log is the same bit for bit") {
+  jobs::JobSystemConfig jc;
+  jc.performance_workers = 4;
+  jc.efficiency_workers = 0;
+  jc.pin_threads = false;
+  jobs::JobSystem js(jc);
+  std::string expected;
+  for (u32 way = 0; way < 4; ++way) {
+    CAPTURE(way);
+    TickHashConfig config;
+    config.reflected = (way & 1u) != 0;
+    config.jobs = (way & 2u) != 0 ? &js : nullptr;
+    config.grain = 4;
+    sim::HashLog log;
+    World world(false);
+    world.hash_into(log, 0, config);
+    world.run(200);
+    // Beacon (two world positions), Perception (an id, an f32, a bool) and Standing (its
+    // transient `scratch` left out) have programs; Label (a string) has none.
+    CHECK(world.hash->stats().fast_tables == (config.reflected ? 0u : 3u));
+    CHECK(world.hash->stats().entities == 200u * sim::k_phase_count * 2u * k_entities);
+    std::string bytes;
+    log.serialize(bytes);
+    if (way == 0) {
+      expected = bytes;
+    } else {
+      CHECK(bytes == expected);
+    }
+  }
 }
 
 TEST_CASE("bisector: iteration in address order is found at its tick, phase, table and field") {
