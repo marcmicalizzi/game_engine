@@ -259,6 +259,43 @@ TEST_CASE("engine-view: --player walks and runs RiggedFigure on the procedural g
   CHECK(text(at(a, {"animation", "hash"})) == text(at(w, {"animation", "hash"})));
   CHECK(!text(at(w, {"animation", "hash"})).empty());
 
+  // `animation.graph.inertialize_walker` (S35-4b): the body graph-sampled, its changes
+  // inertialized. A session that ends 25 ticks (0.1 s) after the walker stops, inside the 0.2 s
+  // change: the walk and its trajectory are the walker's as before, the body's pose is not the
+  // player path's (one is a fade of the weight to rest, the other an inertialization), and a
+  // replay reproduces it.
+  const std::string stopping_mid = session(tmp, scene, true, false, 175, 150, "stop-mid.jsonl");
+  const std::vector<std::string> inertial = {
+      "--tunable", "view.player.walk_clip=gait,animation.graph.inertialize_walker=true"};
+  const Run faded = run_with(stopping_mid, gait);
+  const Run inert = run_with(stopping_mid, inertial);
+  const Run inert_again = run_with(stopping_mid, inertial);
+  REQUIRE_MESSAGE(faded.exit_code == 0, faded.output);
+  JsonValue f;
+  REQUIRE(summary_of(faded, f));
+  REQUIRE(animated_instance(f) != nullptr);
+  REQUIRE_MESSAGE(inert.exit_code == 0, inert.output);
+  REQUIRE_MESSAGE(inert_again.exit_code == 0, inert_again.output);
+  JsonValue i1;
+  JsonValue i2;
+  REQUIRE(summary_of(inert, i1));
+  REQUIRE(summary_of(inert_again, i2));
+  CHECK(text(at(i1, {"interactive", "player", "gait", "graph_sampled"})) == "inertialize");
+  CHECK(at(f, {"interactive", "player", "gait", "graph_sampled"}) == nullptr);
+  CHECK(number(at(i1, {"interactive", "player", "gait_changes"})) ==
+        number(at(f, {"interactive", "player", "gait_changes"})));
+  CHECK(number(at(i1, {"interactive", "player", "gait", "cycles"})) ==
+        number(at(f, {"interactive", "player", "gait", "cycles"})));
+  CHECK(text(at(i1, {"interactive", "trajectory", "hash"})) ==
+        text(at(f, {"interactive", "trajectory", "hash"})));
+  REQUIRE(animated_instance(i1) != nullptr);
+  REQUIRE(animated_instance(i2) != nullptr);
+  CHECK(text(animated_instance(i1)->find("pose_hash")) !=
+        text(animated_instance(f)->find("pose_hash")));
+  CHECK(text(animated_instance(i1)->find("pose_hash")) ==
+        text(animated_instance(i2)->find("pose_hash")));
+  CHECK(text(at(i1, {"animation", "hash"})) == text(at(i2, {"animation", "hash"})));
+
   // Without the tunable the session is the one it was: RiggedFigure's own clip, no gait block, and
   // the hashes those of the default spelled out.
   const Run plain = run_with(walking, {});
