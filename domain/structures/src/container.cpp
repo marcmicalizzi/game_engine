@@ -222,8 +222,26 @@ bool build_recipe(std::span<const u8> bytes, const assets::MeshGeneratorInputs& 
   return read_file(text_of(bytes), recipe, error) &&
          build_container(recipe, inputs, lod, page_bytes, out, report, error);
 }
-constexpr assets::MeshGeneratorDesc k_mesh_generator{
-    .name = "structure", .source_hash = hash_recipe, .build = build_recipe};
+// The leaves a recipe's mesh leaves out and a host hangs (structures.md, "A leaf is a mesh of its
+// own"): only the whole and the exterior declare them, as their containers' section 53 does.
+bool recipe_leaves(std::span<const u8> bytes, std::string_view path,
+                   Vector<assets::GeneratedLeaf>& out, std::string& error) {
+  out.clear();
+  structure::Recipe recipe;
+  if (!read_file(text_of(bytes), recipe, error)) return false;
+  if (recipe.scope != structure::MeshScope::whole && recipe.scope != structure::MeshScope::exterior)
+    return true;
+  Vector<geometry::ClusterFileDoor> records;
+  door_records(recipe.description, records);
+  out.reserve(records.size());
+  for (u32 i = 0; i < records.size(); ++i)
+    out.push_back(assets::GeneratedLeaf{records[i], leaf_path(path, i), leaf_recipe(recipe, i)});
+  return true;
+}
+constexpr assets::MeshGeneratorDesc k_mesh_generator{.name = "structure",
+                                                     .source_hash = hash_recipe,
+                                                     .build = build_recipe,
+                                                     .leaves = recipe_leaves};
 const assets::MeshGeneratorRegistrar k_mesh_registrar{k_mesh_generator};
 }  // namespace
 

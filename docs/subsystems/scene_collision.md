@@ -461,8 +461,9 @@ key on a tie; a game module's `game_door` may refuse it, and a module's own `doo
 the same point of the next step. `scene_collision: an interact reaches the door in front of the
 walker, none behind it` holds the choice.
 
-**Not built of S91**: the drawn leaf's hand-over (above), the state written back through the
-document (D37), and a closed door as an area navigation opens.
+**Not built of S91**: a turned door's leaf on a streamed tile (below, "What is drawn swings with
+what collides"), the state written back through the document (D37), and a closed door as an area
+navigation opens.
 
 ### What a door costs
 
@@ -545,16 +546,48 @@ moved half the leaf along, up and through. `scene_collision: a building's leaf m
 door's box at every angle` (`tests/structure_walk_tests.cpp`, 4 ms) meshes each of the example
 cot's five leaves, places its door off the origin under a turn of the house, and holds every vertex
 of the leaf moved by the pose inside the box at five angles of its swing (the proud board's 3 mm
-through the thickness allowed). **Built**: the leaf's mesh and recipe (`structures::leaf_recipe`,
-`leaf_path`), the pose, and the doors as a span a host reads (`doors()`). **Not built, and how**:
-the hand-over to the picture. A tile that hands a house's mesh hands each declared leaf's mesh
-beside it (its recipe is the house's in the `leaf` scope; a generator-neutral way is for the
-container to name its leaves' meshes, so the renderer's tile build adds them without knowing who
-built the house), one instance a leaf in the tile's block keyed as its door is, placed at its
-declared angle; on a tick a door turned, the host rewrites that instance in its block from
-`door_leaf_pose` (`renderer::DynamicBlock::changed`, the instances that changed and no others), so
-a frame with no door moving rewrites nothing. Until then a placed house draws its frames empty and
-its doors collide unseen.
+through the thickness allowed).
+
+**The leaf is drawn where its door is** (2026-11-18, S91's third leg). A mesh generator may answer
+`leaves` (`assets::MeshGeneratorDesc::leaves`, `assets::GeneratedLeaf`): for a file's bytes, each
+leaf its mesh leaves out — the record its container's section 53 holds, and the leaf's own mesh as
+a path beside the file's and a recipe (the structures capability answers with `leaf_path` and
+`leaf_recipe`, the whole and the exterior scopes only, as section 53 is written). The renderer
+hangs them, naming no generator: **a scene** (`renderer::hang_scene_leaves`, the last thing
+`read_scene_file` does before the terrain's mesh) gives every instance of such a mesh one instance
+of each leaf's mesh after every other instance, so the instances before keep their places and the
+collision's keys (a scene instance's index) do not move; and **a streamed tile**
+(`renderer::hang_placement_leaves`, in the placements consumer's `generate`, never for a query)
+appends each leaf's mesh to the meshes it hands and a placement of it after its own. Each stands at
+its record's declared angle by the functions the collision's door is made by
+(`renderer::hinge_turn`, `leaf_heading`, `leaf_side`, `leaf_declared_mdeg`; the collision's
+`door_rotation` and `declared_door` call them), so **a house nobody has touched draws what it drew
+when the leaf was in its mesh**: `scene_collision: a house's leaves are drawn where its doors stand,
+shut as it drew them` (`tests/structure_walk_tests.cpp`) hangs the example cot's five leaves turned
+45 degrees and off the origin, as a scene's instance and as a tile's placement, and holds every
+vertex of each drawn leaf within 0.1 mm of the door's box pose and of the leaf the house's mesh held
+— the old mesher's frame rebuilt from the record (its pivot, its run `cos a shut + sin a swing`, its
+thickness `sin a shut - cos a swing`) — and the tile's within 10 µm of the scene's. Two houses of
+one description draw one leaf mesh each leaf (the leaf's path names its recipe). **The collision
+leaves a drawn leaf out** (`SceneData::leaves`): its door's box is what a walker meets, and a leaf's
+instance binned as a static piece would wall the doorway shut whatever the door did.
+
+**On the ticks a door turns, and on no others, its leaf is written** (engine-view's walker,
+`Walker::leaf_moves`, `flush_leaves`): the walker counts the doors `step_doors` moved, and a flush
+after a step that moved none reads nothing; after one that did, each loaded leaf whose door's angle
+is not the one it is drawn at is placed at `door_leaf_pose` and handed between frames in one
+`SceneRenderer::move_instances`, the actors' path, from scratch sized when the walker starts, so a
+standing door allocates nothing and writes nothing to the GPU. `walk: the interact opens the door in
+front, its leaf drawn as it turns, and a no holds it` (apps/engine_view, no device) walks at a
+declared door through the session and its input log, presses E against it, and holds 240 writes of
+the leaf on the 240 ticks it turns and none after, the last at the door's hinge a quarter turn
+round, the walker through; with a game's door service answering no the door stays shut, nothing is
+written and the walker stops at the leaf. A scene with no leaf costs the read one null test a mesh
+and the walker one comparison a flush. **Not built**: a turned door on a **streamed tile** is not
+redrawn — its leaf stands at the declared angle in the tile's block (writing it through
+`renderer::DynamicBlock::changed` is the next step), and a house in a streamed world's authored run
+hangs no leaf (its leaves would outstay it in the prefix); a mesh the scene fits
+(`SceneMeshInfo::fit`) hangs none, since its records are in the unfitted frame.
 
 ## Holes
 

@@ -45,6 +45,7 @@
 namespace engine::renderer {
 struct SceneData;
 struct FrameFlora;
+class SceneRenderer;
 }  // namespace engine::renderer
 namespace engine::scene_collision {
 class ProxySource;
@@ -349,6 +350,16 @@ class Walker {
   bool request_door_toggle(u64 key) noexcept;
   u64 door_interacts() const noexcept;  // the interacts that reached a door and moved it
   u64 door_refusals() const noexcept;   // the ones a game's door service refused
+  // **The drawn leaves** (S91; scene_collision.md, "What is drawn swings with what collides"): the
+  // scene's leaves (`renderer::SceneData::leaves`) whose door turned since the last call, each its
+  // leaf's instance placed at `door_leaf_pose` — what `flush_leaves` hands the renderer's
+  // `move_instances` between frames. Both spans are empty after ticks on which no door turned, so a
+  // standing door costs a comparison and writes nothing; neither allocates. `leaf_writes` counts
+  // the leaves written.
+  void leaf_moves(std::span<const u32>& indices,
+                  std::span<const renderer::SceneInstance>& placements) noexcept;
+  bool flush_leaves(renderer::SceneRenderer& renderer, std::string* error);
+  u64 leaf_writes() const noexcept;
   // **A teleport** (game_runner.h, `walker_teleport`): the feet put at `at`'s x and z on the ground
   // under it — the highest surface below, or the ground's height — as a `drop` is, counted as one
   // and as a teleport; the eye returned.

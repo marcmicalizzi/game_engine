@@ -1376,6 +1376,14 @@ void report_device(const gfx::Device& device, const renderer::ResolvedSettings& 
   note_game_graphics(device, resolved, width, height);
 }
 
+// **The walker's doors drawn** (walk.h `flush_leaves`; scene_collision.md, "What is drawn swings
+// with what collides"): the session's walker, whose turned doors' leaves go to the renderer between
+// frames, beside the game's props. Null without a walker.
+view::Walker* g_walker = nullptr;
+bool flush_walker_leaves(renderer::SceneRenderer& renderer, std::string* error) {
+  return g_walker == nullptr || g_walker->flush_leaves(renderer, error);
+}
+
 // ---- --game: the session's game module (game_runner.h) ---------------------------------------
 // One per process, like the report: started in `main` before any device (so a module the host
 // refuses is refused at once, in the host's words), hung on whichever session the run flies, polled
@@ -1658,6 +1666,7 @@ void keep_game_actors(renderer::SceneDesc& desc) {
 template <class World>
 bool hand_over_game_props([[maybe_unused]] World* world, renderer::SceneRenderer& renderer,
                           std::string* error) {
+  if (!flush_walker_leaves(renderer, error)) return false;
 #if ENGINE_VIEW_ANIMATION
   // The actors moved since the last frame, in one write of the instance table (animation.h).
   if (g_actors != nullptr && !g_actors->flush(renderer, error)) return false;
@@ -1852,8 +1861,8 @@ const renderer::OverlayDrawData* game_hud_overlay(renderer::SceneRenderer&) { re
 bool attach_game_scene(renderer::SceneData&, std::string&) { return true; }
 void keep_game_actors(renderer::SceneDesc&) {}
 template <class World>
-bool hand_over_game_props(World*, renderer::SceneRenderer&, std::string*) {
-  return true;
+bool hand_over_game_props(World*, renderer::SceneRenderer& renderer, std::string* error) {
+  return flush_walker_leaves(renderer, error);
 }
 #endif
 
@@ -3418,6 +3427,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       wading.attach(scene_data, walker);  // brief-water: wading (S63; water.md)
 #endif
       session.set_walker(&walker);
+      g_walker = &walker;  // its doors' leaves drawn (S91)
 #if ENGINE_VIEW_GAME
       attach_game(session, clock.sky_start_s, clock.sun_rate, clock.world_rate, scene_data, walker);
 #endif
@@ -6416,6 +6426,7 @@ int run_view(int argc, char** argv) {
       wading.attach(scene_data, walker);  // brief-water: wading (S63; water.md)
 #endif
       session.set_walker(&walker);
+      g_walker = &walker;  // its doors' leaves drawn (S91)
       if (interactive.header.walking && !walker.available()) {
         std::fprintf(stderr, "engine-view: nothing to walk on here (%s); flying\n",
                      walker.why().c_str());

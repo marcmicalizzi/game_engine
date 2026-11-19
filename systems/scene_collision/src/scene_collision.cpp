@@ -445,9 +445,16 @@ bool SceneCollision::create(physics::World& physics, const renderer::SceneData& 
   }
   stats_.far_forest_left_out = 0;
   {
+    // **A drawn leaf is its door's box, never a static piece** (S91; docs: "Doors"): its instance
+    // stands where the door does, and a door is made from the house's records.
+    Vector<u8> leaf_instance;
+    if (!scene.leaves.empty()) leaf_instance.resize(scene.instances.size(), u8{0});
+    for (const renderer::SceneLeaf& leaf : scene.leaves)
+      if (leaf.instance < leaf_instance.size()) leaf_instance[leaf.instance] = 1;
     for (u32 i = 0; i < scene.instances.size(); ++i) {
       const gfx::InstanceDesc& instance = scene.instances[i];
       if (instance.mesh == scene.terrain_mesh || instance.mesh >= scene.parts.size()) continue;
+      if (i < leaf_instance.size() && leaf_instance[i] != 0) continue;
       if (water_mesh(scene, instance.mesh)) continue;
       if (far_mesh(instance.mesh)) {
         ++stats_.far_forest_left_out;
@@ -2714,13 +2721,9 @@ u32 SceneCollision::update_props(bool at_once) {
 // library's, whose last bit differs between MSVC's UCRT and glibc — which would make a walk
 // through a door replay differently on another compiler, since the body's pose and the walker's
 // hold both turn on it (scene_collision.md, "Doors").
-Quat door_rotation(i32 mdeg) noexcept {
-  i64 m = static_cast<i64>(mdeg) % 360000;
-  if (m > 180000) m -= 360000;
-  if (m <= -180000) m += 360000;
-  const f64 half = static_cast<f64>(m) * (3.14159265358979323846 / 360000.0);
-  return Quat{0.0f, static_cast<f32>(det::sin(half)), 0.0f, static_cast<f32>(det::cos(half))};
-}
+// The renderer's `hinge_turn`, which a drawn leaf stands by too: one function, so what is drawn and
+// what collides turn by the same bits.
+Quat door_rotation(i32 mdeg) noexcept { return renderer::hinge_turn(mdeg); }
 
 DoorLeafPose door_leaf_pose(const DoorBody& door) noexcept {
   return DoorLeafPose{door.hinge, door.base * door_rotation(door.closed_mdeg + door.angle_mdeg)};
@@ -2732,17 +2735,10 @@ DoorBody declared_door(const geometry::ClusterFileDoor& record, WorldPos origin,
   d.key = key;
   const f32 s = scale > 0.0f ? scale : 1.0f;
   d.hinge = origin + DVec3{rotate(rotation, record.pivot * s)};
-  // The shut leaf's heading: the turn about +y that takes +x to `shut`, from its cosine and sine
-  // by the half-angle identities, square roots alone (correctly rounded), never an arc tangent.
-  const f64 c = std::clamp(static_cast<f64>(record.shut_x), -1.0, 1.0);
-  const f64 half_cos = std::sqrt(std::max(0.0, (1.0 + c) * 0.5));
-  f64 half_sin = std::sqrt(std::max(0.0, (1.0 - c) * 0.5));
-  if (record.shut_z > 0.0f) half_sin = -half_sin;  // sin of the heading is -shut_z
-  d.base = rotation * Quat{0.0f, static_cast<f32>(half_sin), 0.0f, static_cast<f32>(half_cos)};
-  // shut x swing, its y: +1 when the leaf opens by turning its +x toward -z (a positive angle),
-  // which is also the side its thickness lies on in its own frame (structures' `leaf_side`).
-  const f32 cross_y = record.shut_z * record.swing_x - record.shut_x * record.swing_z;
-  const i32 side = cross_y >= 0.0f ? 1 : -1;
+  // The shut leaf's heading (the turn about +y that takes +x to `shut`, square roots alone) and the
+  // sense of its opening, by the renderer's functions, which its drawn leaf is stood by too.
+  d.base = rotation * renderer::leaf_heading(record);
+  const i32 side = renderer::leaf_side(record);
   d.closed_mdeg = 0;
   d.open_mdeg = side * k_door_open_mdeg;
   d.half_extents =
@@ -2750,9 +2746,8 @@ DoorBody declared_door(const geometry::ClusterFileDoor& record, WorldPos origin,
   d.face_z = static_cast<f32>(side) * d.half_extents.z;
   // Where its description stood it, and open when that was not shut: a door hung ajar finishes
   // opening the first time a tick turns it, and a toggle shuts it.
-  const i32 declared = std::clamp(static_cast<i32>(record.open_deg), 0, 90);
-  d.open = declared > 0;
-  d.angle_mdeg = side * declared * 1000;
+  d.angle_mdeg = renderer::leaf_declared_mdeg(record);
+  d.open = d.angle_mdeg != 0;
   return d;
 }
 

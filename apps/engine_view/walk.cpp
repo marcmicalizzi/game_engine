@@ -11,6 +11,7 @@
 #include <systems/renderer/flora_motion.h>
 #include <systems/renderer/page_source.h>
 #include <systems/renderer/scene.h>
+#include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/terrain.h>
 
 #if ENGINE_VIEW_WALK_PHYSICS
@@ -444,7 +445,7 @@ struct Walker::Impl {
         }
       }
     }
-    (void)consumer.step_doors(&body);
+    doors_moved += consumer.step_doors(&body);
   }
   static WalkDoor walk_door(const scene_collision::DoorBody& d) noexcept {
     WalkDoor out;
@@ -476,6 +477,33 @@ struct Walker::Impl {
     last_ahead = at;
     has_last_ahead = true;
     return Vec3{};
+  }
+  // **The drawn leaves** (walk.h `flush_leaves`, S91): each loaded leaf instance with its door's
+  // key and the angle it is drawn at; the doors' moves counted by `step_doors`, and the count the
+  // last flush saw, so a flush after no turn reads nothing. The scratch is sized at the start, so a
+  // flush allocates nothing.
+  struct DrawnLeaf {
+    u64 key = 0;
+    u32 instance = 0;
+    u32 mesh = 0;
+    f32 scale = 1.0f;
+    i32 angle_mdeg = 0;
+  };
+  Vector<DrawnLeaf> leaves;
+  Vector<u32> leaf_indices;
+  Vector<renderer::SceneInstance> leaf_moves;
+  u64 doors_moved = 0;
+  u64 doors_flushed = 0;
+  u64 leaf_writes = 0;
+  void attach_leaves(const renderer::SceneData& data) {
+    leaves.clear();
+    for (const renderer::SceneLeaf& leaf : data.leaves) {
+      // A scene instance's piece is named by its index (`support_placement`).
+      const u64 key = scene_collision::declared_door_key(leaf.house, leaf.leaf);
+      leaves.push_back(DrawnLeaf{key, leaf.instance, leaf.mesh, leaf.scale, leaf.angle_mdeg});
+    }
+    leaf_indices.reserve(leaves.size());
+    leaf_moves.reserve(leaves.size());
   }
 #endif
 
@@ -670,6 +698,7 @@ bool Walker::start(const WalkParams& params, u32 tick_hz, const renderer::SceneD
     w.has_boom_sphere = boom_radius > 0.0f &&
                         w.world.create_sphere(boom_radius, w.boom_sphere) == physics::Status::Ok;
     w.support_scratch.resize(k_max_walk_supports);
+    w.attach_leaves(scene);
     w.physical = true;
     w.collision = "physics";
     w.why.clear();
@@ -737,6 +766,53 @@ f32 Walker::crouch_amount() const noexcept {
 }
 
 WorldPos Walker::feet() const noexcept { return impl_->feet; }
+
+// **The drawn leaves** (walk.h; scene_collision.md, "What is drawn swings with what collides"):
+// read only after a step that moved a door, and then only the leaves whose door's angle is not the
+// one they are drawn at, each at the pose its door's box stands at — so what is drawn swings with
+// what collides, by the same function.
+void Walker::leaf_moves(std::span<const u32>& indices,
+                        std::span<const renderer::SceneInstance>& placements) noexcept {
+  indices = {};
+  placements = {};
+#if ENGINE_VIEW_WALK_PHYSICS
+  Impl& w = *impl_;
+  if (!w.physical || w.doors_moved == w.doors_flushed) return;
+  w.doors_flushed = w.doors_moved;
+  w.leaf_indices.clear();
+  w.leaf_moves.clear();
+  for (Impl::DrawnLeaf& leaf : w.leaves) {
+    scene_collision::DoorBody door;
+    if (!w.consumer.door(leaf.key, door) || door.angle_mdeg == leaf.angle_mdeg) continue;
+    leaf.angle_mdeg = door.angle_mdeg;
+    const scene_collision::DoorLeafPose pose = scene_collision::door_leaf_pose(door);
+    renderer::SceneInstance placed;
+    placed.mesh = leaf.mesh;
+    placed.transform = Transform3{Vec3{}, pose.rotation, Vec3{leaf.scale, leaf.scale, leaf.scale}};
+    placed.origin = pose.origin;
+    w.leaf_indices.push_back(leaf.instance);
+    w.leaf_moves.push_back(placed);
+  }
+  w.leaf_writes += w.leaf_indices.size();
+  indices = std::span<const u32>(w.leaf_indices.data(), w.leaf_indices.size());
+  placements = std::span<const renderer::SceneInstance>(w.leaf_moves.data(), w.leaf_moves.size());
+#endif
+}
+
+bool Walker::flush_leaves(renderer::SceneRenderer& renderer, std::string* error) {
+  std::span<const u32> indices;
+  std::span<const renderer::SceneInstance> placements;
+  leaf_moves(indices, placements);
+  return indices.empty() || renderer.move_instances(indices, placements, error);
+}
+
+u64 Walker::leaf_writes() const noexcept {
+#if ENGINE_VIEW_WALK_PHYSICS
+  return impl_->leaf_writes;
+#else
+  return 0;
+#endif
+}
 
 bool Walker::cast_boom(WorldPos from, Vec3 direction, f32 length, f32& out) const noexcept {
 #if ENGINE_VIEW_WALK_PHYSICS

@@ -107,6 +107,17 @@ void host_mesh_of(const geometry::ClusterFileData& container, GeneratorHostMesh&
 u64 generated_mesh_build_key(u64 source_hash, const MeshGeneratorInputs& inputs,
                              const geometry::ClusterLodOptions& lod, u32 page_bytes) noexcept;
 
+// **A leaf a file's mesh hangs on a hinge, as a mesh of its own** (S91; scene_collision.md, "What
+// is drawn swings with what collides"): the record the file's built container holds for it in
+// section 53 (mesh space, shut, with the angle the file stands it at), and the leaf's own mesh — a
+// path beside the file's and the recipe it is built from — whose frame is the door's: the hinge's
+// foot at the origin, the free edge along +x shut, turned about +y to open.
+struct GeneratedLeaf {
+  geometry::ClusterFileDoor record;
+  std::string path;
+  std::string recipe;
+};
+
 struct MeshGeneratorDesc {
   // The generator, as its files' names give it: "flora".
   const char* name = "";
@@ -129,6 +140,13 @@ struct MeshGeneratorDesc {
   // this when it is set and `source_hash` otherwise; `source_hash` alone answers without a host.
   bool (*source_hash_with)(std::span<const u8> bytes, const MeshGeneratorInputs& inputs, u64& out,
                            std::string& error) = nullptr;
+  // Optional (S91): **the leaves the file's mesh hangs as meshes of their own**, into `out` in
+  // section 53's order (cleared first; empty for a file that hangs none), `path` the file's own
+  // name, which each leaf's is made beside. A host draws each leaf as an instance of its mesh where
+  // its record puts it, so the file's own mesh leaves the leaf out and a door can turn it. Null for
+  // a generator whose meshes hang none.
+  bool (*leaves)(std::span<const u8> bytes, std::string_view path, Vector<GeneratedLeaf>& out,
+                 std::string& error) = nullptr;
 };
 
 // The source hash a host keys a generated mesh by: `desc.source_hash_with` with the inputs where

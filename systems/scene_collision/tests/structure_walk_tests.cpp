@@ -461,3 +461,105 @@ TEST_CASE("scene_collision: a building's leaf mesh stands in its door's box at e
   }
   CHECK(checked == 25);
 }
+
+// **A house's leaves are drawn where its doors stand** (S91; scene_collision.md, "What is drawn
+// swings with what collides"): a scene placing the example cot turned and off the origin, and a
+// tile handing it, hang each of its five leaves as an instance of the leaf's own mesh. Every vertex
+// of each drawn leaf is where the door's box stands it (`door_leaf_pose` of the door the collision
+// makes from the same record), and where the house's own mesh had it before the leaf left it: the
+// old mesher's frame for the leaf at the description's angle, rebuilt from the record (its pivot,
+// its run `cos a shut + sin a swing` and its thickness `sin a shut - cos a swing`), so an untouched
+// house draws what it drew.
+TEST_CASE(
+    "scene_collision: a house's leaves are drawn where its doors stand, shut as it drew them") {
+  const structure::Description cot = structures::example_cot();
+  structure::Recipe recipe;
+  recipe.description = cot;
+  recipe.scope = structure::MeshScope::whole;
+  const std::string text = structures::canonical_json(recipe);
+  Vector<geometry::ClusterFileDoor> records;
+  structures::door_records(cot, records);
+  REQUIRE(records.size() == 5);
+  const f32 h = 0.38268343f, c = 0.92387953f;  // 45 degrees about +y, by halves
+  const Quat turn{0.0f, h, 0.0f, c};
+  const WorldPos origin = absolute(WorldPos::origin(), Vec3{40.0f, 2.0f, -12.0f});
+
+  // A scene file's instance of the recipe, and a tile's placement of it.
+  renderer::SceneDesc desc;
+  desc.meshes.push_back("village/cot.structure.json");
+  desc.recipes.push_back(renderer::MeshRecipe{"village/cot.structure.json", text});
+  renderer::SceneInstance house;
+  house.mesh = 0;
+  house.transform = Transform3{Vec3{}, turn, Vec3::one()};
+  house.origin = origin;
+  desc.instances.push_back(house);
+  std::string error;
+  REQUIRE_MESSAGE(renderer::hang_scene_leaves(desc, error), error);
+  REQUIRE(desc.leaves.size() == 5);
+  CHECK(desc.meshes.size() == 6);  // the house's and one a leaf
+  CHECK(desc.instances.size() == 6);
+  CHECK(desc.instances[0].mesh == 0);  // the house keeps its place
+
+  scene_gen::Placements tile;
+  tile.meshes.push_back(
+      scene_gen::PlacementMesh("village/cot.structure.json", "cot", 0, text, 6.0f));
+  scene_gen::Placement placed;
+  placed.position = origin;
+  placed.rotation = turn;
+  placed.mesh = 2;  // two resident meshes before the tile's own
+  tile.instances.push_back(placed);
+  Vector<renderer::SceneLeaf> hung;
+  REQUIRE_MESSAGE(renderer::hang_placement_leaves(tile, 2, &hung, error), error);
+  REQUIRE(hung.size() == 5);
+  CHECK(tile.meshes.size() == 6);
+  CHECK(tile.instances.size() == 6);
+  CHECK(tile.instances[0].mesh == 2);
+
+  u32 checked = 0;
+  for (u32 k = 0; k < records.size(); ++k) {
+    const geometry::ClusterFileDoor& r = records[k];
+    structures::MeshPart parts[structures::k_surfaces];
+    structures::Report report;
+    REQUIRE(structures::solve(cot, structure::MeshScope::leaf, parts, report, error, k));
+    const structures::MeshPart& leaf = parts[static_cast<u32>(structure::Surface::timber)];
+    REQUIRE(!leaf.positions.empty());
+    const renderer::SceneLeaf& drawn = desc.leaves[k];
+    CHECK(drawn.house == 0);
+    CHECK(drawn.leaf == k);
+    const renderer::SceneInstance& at = desc.instances[drawn.instance];
+    CHECK(desc.meshes[at.mesh] == structures::leaf_path("village/cot.structure.json", k));
+    CHECK(hung[k].leaf == k);
+    const scene_gen::Placement& on_tile = tile.instances[hung[k].instance];
+    CHECK(on_tile.mesh == 2 + hung[k].mesh);
+    // The door the collision makes from the same record, at the angle it is declared at.
+    const DoorBody door = declared_door(r, origin, turn, 1.0f, k + 1);
+    CHECK(door.angle_mdeg == drawn.angle_mdeg);
+    const DoorLeafPose pose = door_leaf_pose(door);
+    // The old mesher's frame for this leaf in the house's frame: the leaf frame's x, y and z, its
+    // run, up and its thickness (the leaf's own z is that side's, `face_z`'s sign).
+    const f64 a = static_cast<f64>(r.open_deg) * (3.14159265358979323846 / 180.0);
+    const f64 ca = std::cos(a), sa = std::sin(a);
+    const Vec3 shut{r.shut_x, 0.0f, r.shut_z}, swing{r.swing_x, 0.0f, r.swing_z};
+    const Vec3 run = shut * static_cast<f32>(ca) + swing * static_cast<f32>(sa);
+    const Vec3 thick = shut * static_cast<f32>(sa) - swing * static_cast<f32>(ca);
+    const f32 side = door.face_z < 0.0f ? -1.0f : 1.0f;
+    f32 worst_pose = 0.0f, worst_old = 0.0f, worst_tile = 0.0f;
+    for (const Vec3& v : leaf.positions) {
+      const WorldPos drawn_at = at.origin + DVec3{rotate(at.transform.rotation, v)};
+      const WorldPos tile_at = on_tile.position + DVec3{rotate(on_tile.rotation, v)};
+      const WorldPos collides = pose.origin + DVec3{rotate(pose.rotation, v)};
+      const Vec3 old_local = r.pivot + run * v.x + Vec3{0.0f, v.y, 0.0f} + thick * (side * v.z);
+      const WorldPos old_at = origin + DVec3{rotate(turn, old_local)};
+      worst_pose = std::max(worst_pose, length(Vec3{relative(drawn_at, collides)}));
+      worst_old = std::max(worst_old, length(Vec3{relative(drawn_at, old_at)}));
+      worst_tile = std::max(worst_tile, length(Vec3{relative(tile_at, drawn_at)}));
+    }
+    INFO("leaf " << k << ": " << worst_pose << " m from its door's pose, " << worst_old
+                 << " m from the house mesh's leaf, " << worst_tile << " m tile to scene");
+    CHECK(worst_pose < 1e-4f);
+    CHECK(worst_old < 1e-4f);
+    CHECK(worst_tile < 1e-5f);
+    ++checked;
+  }
+  CHECK(checked == 5);
+}

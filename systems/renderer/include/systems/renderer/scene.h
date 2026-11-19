@@ -457,13 +457,74 @@ struct MeshRecipe {
   std::string bytes;
 };
 
+// ---- leaves on hinges (S91; scene_collision.md, "What is drawn swings with what collides") ------
+//
+// **A leaf a mesh declares is drawn as an instance of its own mesh where its door is.** A building
+// leaves its doors' and casements' leaves out of its own mesh, because they turn; a mesh whose
+// generator names them (`assets::MeshGeneratorDesc::leaves`) gets one instance of each leaf's mesh
+// beside every instance of it, standing at the angle the record declares — so a house nobody has
+// touched draws what it drew when the leaf was in its mesh — and a host that turns a door moves
+// that one instance (`SceneRenderer::move_instances`) on the ticks it turns and on no others.
+// Nothing here names a generator: any mesh whose generator answers `leaves` gets this, and a mesh
+// with none costs one null test at the read.
+
+// The turn about +y at `mdeg` millidegrees, from the integer alone: reduced to (-180, 180] degrees
+// in integers, the half angle's sine and cosine `core/math`'s deterministic ones, so the turn is
+// the same bits on every compiler (what the collision's `door_rotation` is).
+Quat hinge_turn(i32 mdeg) noexcept;
+// The shut leaf's heading in its mesh's frame: the turn about +y that takes +x to the record's
+// `shut`, by the half-angle identities (square roots alone, never an arc tangent).
+Quat leaf_heading(const geometry::ClusterFileDoor& record) noexcept;
+// The sense of a positive opening: +1 when the leaf opens by turning its +x toward -z (shut x swing
+// points up), -1 otherwise — also the side its thickness lies on in its own frame.
+i32 leaf_side(const geometry::ClusterFileDoor& record) noexcept;
+// The record's declared angle as the integer a door turns by: `side * open_deg * 1000`, the angle
+// held to 0..90 degrees as the collision's door holds it.
+i32 leaf_declared_mdeg(const geometry::ClusterFileDoor& record) noexcept;
+
+// One drawn leaf: its instance, the instance of the mesh that declares it, the leaf's index among
+// that mesh's records (section 53's order, what the collision keys its door by), the leaf's mesh,
+// the house's uniform scale and the angle the leaf is drawn at (`leaf_declared_mdeg`). In a
+// `SceneDesc` the instances are the whole read's; in a `SceneData` the loaded ones.
+struct SceneLeaf {
+  u32 instance = 0;
+  u32 house = 0;
+  u32 leaf = 0;
+  u32 mesh = 0;
+  f32 scale = 1.0f;
+  i32 angle_mdeg = 0;
+};
+
+// **A generator's placements hang their leaves** (a streamed tile's and a whole read's alike):
+// for every handed mesh with a recipe whose generator answers `leaves`, each leaf's mesh is
+// appended to `placed.meshes` and, for every placement of it — index `resident + k` names
+// `placed.meshes[k]` — a placement of the leaf where its record stands it, after all the placements
+// that were there, so the ones before keep their places. `hung`, when given, gets one entry a leaf
+// placement (indices into `placed.instances`). False, with `error`, for a recipe its generator
+// refuses.
+bool hang_placement_leaves(scene_gen::Placements& placed, u32 resident, Vector<SceneLeaf>* hung,
+                           std::string& error);
+// **A scene's instances hang their leaves** (what `read_scene_file` does last, before the
+// terrain's mesh): every mesh of `desc` that is a generator's file or a handed recipe whose
+// generator answers `leaves`, read once; each leaf's mesh appended (a recipe handed under the
+// leaf's path, one mesh for every house that shares it) and one instance of it beside each instance
+// of the house, into `desc.leaves`. A mesh the scene fits (`SceneMeshInfo::fit`) hangs none, since
+// its records are in the unfitted frame; nor does an instance of the authored run a streamed world
+// may stream, whose leaves would outstay it. False, with `error`, for a file that cannot be read.
+struct SceneDesc;
+bool hang_scene_leaves(SceneDesc& desc, std::string& error);
+
 struct SceneDesc {
   Vector<std::string> meshes;  // glTF, GLB, or .clusters; one empty path = procedural
   // The recipes of the meshes above that were handed and not written (`MeshRecipe`), by path. A
   // whole read's placement entries fill it; empty for every scene whose meshes are all files.
   Vector<MeshRecipe> recipes;
   Vector<SceneInstance> instances;  // empty: one identity instance of every mesh
-  u32 grid_instances = 0;           // n: n x n copies of mesh 0, varied in rotation and scale
+  // The leaves the read hung (`SceneLeaf`, the whole read's instances): one instance of each leaf's
+  // mesh after every other instance and before the terrain's, beside each instance of a mesh that
+  // declares one. Empty for a scene with none.
+  Vector<SceneLeaf> leaves;
+  u32 grid_instances = 0;  // n: n x n copies of mesh 0, varied in rotation and scale
   Procedural procedural = Procedural::heightfield;  // which mesh an empty path builds
   // A still authored terrain drawn from tile levels needs only a small material/UV carrier,
   // independent of its heightfield's extent and resolution (ADR-0057).
@@ -940,6 +1001,11 @@ struct SceneData {
   // Carried from the `SceneDesc`: the props a game module may place (`SceneProp`), each naming its
   // mesh among `parts`. The load placed none of them.
   Vector<SceneProp> props;
+  // **The drawn leaves** (`SceneLeaf`, loaded instances; scene_collision.md, "What is drawn swings
+  // with what collides"): what a host moves when a door turns, and what the collision leaves out
+  // (a leaf is its door's box, never a static piece). A leaf whose house or own instance the load
+  // did not keep is not here. Empty for a scene with none.
+  Vector<SceneLeaf> leaves;
   // Carried from the `SceneDesc`: the scene's own fires (fire.h), lit by the renderer's `FireSet`.
   Vector<FireDesc> fires;
 
