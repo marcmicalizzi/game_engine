@@ -56,6 +56,8 @@ inline constexpr std::string_view k_manifest_name = "manifest.json";
 
 inline constexpr u32 k_max_heightfield_side = 65536;
 inline constexpr i64 k_max_spacing_mm = 1'000'000;
+// A heightfield's origin, and the offset a build moves it by, within 10^9 m of the world's (T198).
+inline constexpr i64 k_max_origin_mm = 1'000'000'000'000;
 
 // ---- the source ---------------------------------------------------------------------------------
 

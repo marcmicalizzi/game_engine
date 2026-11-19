@@ -1237,3 +1237,42 @@ TEST_CASE("tileset hostile: the far chain's parameters are bounded above") {
   CHECK(chain.back() == k_max_spacing_mm * 128 * (i64{1} << 15));
   CHECK(chain.back() < (i64{1} << 42));
 }
+
+// Hostile (T198): a heightfield's origin and the offset a build moves it by were unbounded, so
+// `origin + (width - 1) * spacing` and the level windows wrapped `i64`; a scene's origin reached
+// `nearest_mm`, whose floor cast to `i64` is undefined past 9.2 x 10^15 m. Each is held within
+// 10^9 m. Before the mend the field below quantized and the provider made its ground.
+TEST_CASE("tileset hostile: an origin past 10^9 m is refused") {
+  BuildOptions o;
+  Vector<i32> mm;
+  std::string error;
+  const Heightfield far = synth_heightfield(SynthKind::basin, 9, 500, 0, i64{500} << 52, 0);
+  CHECK_FALSE(quantize_heights(far, o, mm, error));
+  CHECK(error.find("within 10^9 m") != std::string::npos);
+  test::TempDir tmp{"engine_tileset_far_origin"};
+  const Heightfield field = synth_heightfield(SynthKind::basin, 49, 1000);
+  REQUIRE_MESSAGE(write_heightfield(tmp.file("bowl.json"), field, error), error);
+  o.cells = 16;
+  o.far_levels = 2;
+  o.offset_x_mm = k_max_origin_mm + 1000;
+  BuildResult built;
+  CHECK_FALSE(ensure_tileset(tmp.file("bowl.json"), o, "", tmp.file("ddc"), false, built, error));
+  CHECK(error.find("within 10^9 m") != std::string::npos);
+  scene::Terrain entry;
+  entry.provider = "tiles";
+  entry.tiles = scene::TerrainTileSet{};
+  entry.tiles->heightfield = "bowl.json";
+  entry.tiles->ddc = "ddc";
+  entry.tiles->cells = 16;
+  entry.tiles->far_levels = 2;
+  entry.tiles->origin = WorldPos{2.0e9, 0.0, 0.0};
+  scene_gen::Context context;
+  const std::string dir = tmp.path();
+  context.dir = dir;
+  const scene_gen::GroundProviderDesc* desc =
+      scene_gen::GeneratorRegistry::global().find_ground("tiles");
+  REQUIRE(desc != nullptr);
+  scene_gen::GroundProvider ground;
+  CHECK_FALSE(desc->make(entry, context, ground, &error));
+  CHECK(error.find("10^9 m") != std::string::npos);
+}

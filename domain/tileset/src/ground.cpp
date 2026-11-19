@@ -239,6 +239,13 @@ bool resolve_tile_set(const scene::Terrain& entry, std::string_view dir, const s
   options.far_ratio = t.far_ratio;
   options.far_levels = t.far_levels;
   options.vertical_scale = static_cast<f64>(t.vertical_scale);
+  // A scene's origin is finite and within 10^9 m before it becomes millimetres (T198): `nearest_mm`
+  // casts its floor to `i64`, which is undefined for an infinity or past 9.2 x 10^15 m.
+  for (const f64 v :
+       {static_cast<f64>(t.origin.x), static_cast<f64>(t.origin.y), static_cast<f64>(t.origin.z)}) {
+    if (!(v >= -1e9 && v <= 1e9))
+      return fail("the ground provider \"tiles\" has an origin past 10^9 m or not finite");
+  }
   options.offset_x_mm = scene_gen::nearest_mm(t.origin.x);
   options.offset_y_mm = scene_gen::nearest_mm(t.origin.y);
   options.offset_z_mm = scene_gen::nearest_mm(t.origin.z);

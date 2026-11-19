@@ -126,6 +126,14 @@ bool check_field(const Heightfield& f, std::string& error) {
             std::to_string(f.spacing_mm);
     return false;
   }
+  // An origin within 10^9 m (T198), a route's waypoints' and a crossing's bed's bound: unbounded,
+  // `origin + (width - 1) * spacing` and the build's level windows wrapped `i64`.
+  if (f.origin_x_mm < -k_max_origin_mm || f.origin_x_mm > k_max_origin_mm ||
+      f.origin_z_mm < -k_max_origin_mm || f.origin_z_mm > k_max_origin_mm) {
+    error = "a heightfield's origin is within 10^9 m of the world's; this one is (" +
+            std::to_string(f.origin_x_mm) + ", " + std::to_string(f.origin_z_mm) + ") mm";
+    return false;
+  }
   if (f.origin_x_mm % f.spacing_mm != 0 || f.origin_z_mm % f.spacing_mm != 0) {
     error =
         "a heightfield's origin is a whole number of its spacings, so its points are the "
@@ -584,6 +592,14 @@ bool build_tileset(const Heightfield& field, u64 source_hash, std::string_view s
   out = BuildResult{};
   if (options.cells < 1 || options.cells > 4096) {
     error = "a tile is 1 to 4096 cells a side";
+    return false;
+  }
+  // The field first, so its spacing is not 0 under the `%` below, and the offset within 10^9 m as
+  // its origin is (T198), so the origin moved stays an `i64` with room for the grid's extent.
+  if (!check_field(field, error)) return false;
+  if (options.offset_x_mm < -k_max_origin_mm || options.offset_x_mm > k_max_origin_mm ||
+      options.offset_z_mm < -k_max_origin_mm || options.offset_z_mm > k_max_origin_mm) {
+    error = "the origin a heightfield is moved by is within 10^9 m of the world's";
     return false;
   }
   if (options.offset_x_mm % field.spacing_mm != 0 || options.offset_z_mm % field.spacing_mm != 0) {
