@@ -63,8 +63,10 @@ struct alignas(64) JobSystem::Worker {
 
 // Sleeping uses an eventcount: a sleeper reads `epoch`, announces itself in `sleepers`,
 // re-checks the queues, then waits for `epoch` to change. A submitter that sees sleepers > 0
-// bumps `epoch` and notifies. Spurious notifications cost a loop iteration and nothing else,
-// unlike a semaphore whose surplus tokens would accumulate.
+// bumps `epoch` and notifies. A seq_cst fence on each side, between its write and its read
+// (worker_main, wake), is what keeps both from missing the other (T195). Spurious notifications
+// cost a loop iteration and nothing else, unlike a semaphore whose surplus tokens would
+// accumulate.
 //
 // The guest deque is a worker's deque for the one outside thread that claims it first, normally
 // the main thread: what it schedules goes there instead of the inbox, so a parallel_for it runs
@@ -257,10 +259,21 @@ void JobSystem::worker_main(JobSystem* self, Worker* worker) {
     }
     if (found) continue;
 
+    // The sleeper's half of the eventcount (docs/subsystems/jobs.md, "Sleeping, and why a queued
+    // job always wakes a worker"): read the epoch, announce, fence, look again, wait. The epoch is
+    // read first so that a bump made after it, by a submitter that saw this announcement, makes
+    // the wait below return at once. The announcement and the look that follows it are a store
+    // and a load of different words, the store-buffer shape a submitter's publish-then-look also
+    // has; with no sequentially consistent operation between each side's two, both may read the
+    // other's old value and this worker sleeps on a queued job (T195). This fence is the sleeper's
+    // (on x86 the locked add already drains the store buffer; the fence is for the language,
+    // which orders the look after the announcement only through a seq_cst fence, and for ARM),
+    // and it pairs with the submitter's in wake(): whichever fence is first in their single total
+    // order, the side after it sees the other side's write. The sleep path is cold, so it costs
+    // nothing a job pays for.
     const u32 epoch = pool.epoch.load(std::memory_order_acquire);
-    pool.sleepers.fetch_add(1, std::memory_order_acq_rel);
-    // Re-check after announcing ourselves as a sleeper: a concurrent submit either sees the
-    // sleeper count and bumps the epoch, or we see its job here.
+    pool.sleepers.fetch_add(1, std::memory_order_seq_cst);
+    std::atomic_thread_fence(std::memory_order_seq_cst);
     if (self->try_run_one(worker) || !self->running_.load(std::memory_order_acquire)) {
       pool.sleepers.fetch_sub(1, std::memory_order_acq_rel);
       continue;
@@ -450,7 +463,7 @@ bool JobSystem::help_own(Counter& counter, PoolState& pool, Worker* self_worker,
 void JobSystem::park(PoolState& pool, detail_deque* own, Worker* self_worker, const Job& job) {
   parked_.fetch_add(1, std::memory_order_relaxed);
   if (pool.inbox.try_push(job) || (own != nullptr && own->push(job))) {
-    wake_one(pool);
+    wake(pool, false);
     return;
   }
   help_escapes_.fetch_add(1, std::memory_order_relaxed);
@@ -462,10 +475,26 @@ void JobSystem::park(PoolState& pool, detail_deque* own, Worker* self_worker, co
 
 // --- submission -------------------------------------------------------------------------------
 
-void JobSystem::wake_one(PoolState& pool) noexcept {
+// The submitter's half of the eventcount, called after a job is published (a deque's release
+// store of its bottom, an inbox cell's release store of its sequence). The seq_cst fence between
+// that store and the look at `sleepers` is the submitter's fence: without it the store may still
+// sit in this core's store buffer when the load reads `sleepers` as zero while a worker that has
+// just announced itself reads the queue without the job (T195; the worker's fence is in
+// worker_main). It is Vyukov's eventcount, as in Eigen's EventCount::Notify (a seq_cst fence, then
+// the load); folly's EventCount gets the same order from a read-modify-write of the word that holds
+// both the epoch and the waiters, which would put a locked add on the one line every submitter
+// shares where this costs one fence on the submitter's own core and no shared write while nobody
+// sleeps. The load stays an acquire: it is what receives the announcement's release, so the bump
+// below comes after the sleeper's read of the epoch and its wait returns.
+void JobSystem::wake(PoolState& pool, bool all) noexcept {
+  std::atomic_thread_fence(std::memory_order_seq_cst);
   if (pool.sleepers.load(std::memory_order_acquire) > 0) {
     pool.epoch.fetch_add(1, std::memory_order_release);
-    pool.epoch.notify_one();
+    if (all) {
+      pool.epoch.notify_all();
+    } else {
+      pool.epoch.notify_one();
+    }
   }
 }
 
@@ -485,11 +514,11 @@ void JobSystem::schedule(Pool pool_id, const Job& job) {
   PoolState& pool = pools_[static_cast<u32>(pool_id)];
   detail_deque* own = own_deque(pool);
   if (own != nullptr && own->push(job)) {
-    wake_one(pool);
+    wake(pool, false);
     return;
   }
   if (pool.inbox.try_push(job)) {
-    wake_one(pool);
+    wake(pool, false);
     return;
   }
   // Every queue is full: apply backpressure by running the job on the submitter.
@@ -514,14 +543,8 @@ void JobSystem::schedule(Pool pool_id, std::span<const Job> jobs, Counter& count
     }
   }
   // A batch wakes every sleeper; those that find nothing go back to sleep after a short spin.
-  if (pool.sleepers.load(std::memory_order_acquire) > 0) {
-    pool.epoch.fetch_add(1, std::memory_order_release);
-    if (jobs.size() == 1) {
-      pool.epoch.notify_one();
-    } else {
-      pool.epoch.notify_all();
-    }
-  }
+  // One fence for the whole batch: every push above is before it.
+  wake(pool, jobs.size() > 1);
 }
 
 // --- waiting ----------------------------------------------------------------------------------
