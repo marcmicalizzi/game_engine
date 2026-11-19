@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "b70-stack",
+  "reason": "batch 70 stack leg A: apps.md says why engine-cli --bisect's refusals exit 4 and not 3 (a mend of the sweep-S2 join); world.md is 9 bytes over where D45's raise, measured on its older base, meets main's page",
+  "date": "2026-11-19",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 218,
+    "page:docs/subsystems/world.md": 9
+  }
+}
