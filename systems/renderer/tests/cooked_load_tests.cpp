@@ -246,6 +246,34 @@ TEST_CASE("cooked load: the meshes load on the job system into the tables one wo
   CHECK(error.find("frond_count") != std::string::npos);
 }
 
+// C64: a generated mesh whose recipe's sidecar declares a class is built into an entry of its own,
+// the content build's key for it (the class by name), carrying section 54; the same recipe with no
+// sidecar keeps the key it had. `violence: mild` is a name only, within `agent-default`'s cap.
+TEST_CASE("cooked load: a classified recipe has a cache entry of its own, carrying its class") {
+  const test::TempDir tmp("renderer_cooked_classified");
+  REQUIRE(tmp.ok());
+  make_pack(tmp);
+  REQUIRE(write_text(tmp.file("a.flora.json"), palm_recipe(9)));
+  std::string error;
+  SceneData plain;
+  REQUIRE_MESSAGE(load_scene(scene_of(tmp, {"a.flora.json"}), plain, error), error);
+  REQUIRE(write_text(tmp.file("a.flora.provenance.json"),
+                     R"({"content_classes":{"violence":"mild"}})"));
+  SceneData classified;
+  REQUIRE_MESSAGE(load_scene(scene_of(tmp, {"a.flora.json"}), classified, error), error);
+  CHECK(classified.instances.size() == 1);                    // within the cap: admitted
+  CHECK(std::string(classified.sources[0].cache) == "miss");  // not the neutral recipe's entry
+  REQUIRE_FALSE(classified.sources[0].container.empty());
+  CHECK(classified.sources[0].container != plain.sources[0].container);
+  geometry::ClusterFileData entry;
+  REQUIRE_MESSAGE(geometry::read_cluster_file(classified.sources[0].container, entry, &error),
+                  error);
+  CHECK_FALSE(entry.content_classes.empty());
+  SceneData again;
+  REQUIRE_MESSAGE(load_scene(scene_of(tmp, {"a.flora.json"}), again, error), error);
+  CHECK(std::string(again.sources[0].cache) == "hit");
+}
+
 #endif  // ENGINE_RENDERER_TESTS_FLORA
 
 // **More meshes than the pool's queues hold load on every thread** (T73): the job system queues

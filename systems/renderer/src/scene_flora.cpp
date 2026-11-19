@@ -13,6 +13,7 @@
 #include <domain/content_build/generator_hosts.h>
 #include <domain/geometry/cluster_pages.h>
 #include <domain/materials/materials.h>
+#include <foundation/content_class/content_class.h>
 #include <foundation/io/vfs.h>
 
 #include <cstdio>
@@ -26,7 +27,8 @@ bool is_generated_mesh(const std::string& path) { return !assets::mesh_generator
 bool load_generated_mesh(const std::string& path, const SceneDesc& desc, u64 expected_hash,
                          geometry::ClusterFileData& data, std::string& container,
                          const char*& cache, u64& source_hash, std::string& error,
-                         content_build::ImageIdentities* identities) {
+                         content_build::ImageIdentities* identities, u64 class_hash,
+                         const Vector<u8>* class_record) {
   container.clear();
   cache = "none";
   const std::string_view name = assets::mesh_generator_of(path);
@@ -88,7 +90,10 @@ bool load_generated_mesh(const std::string& path, const SceneDesc& desc, u64 exp
   }
   // The key `engine-content flora` writes under too, so either app finds what the other built —
   // with the material pack the parts fall back to in it, when there is one (materials.md).
-  const u64 key = assets::generated_mesh_build_key(source_hash, inputs, desc.lod, page_bytes);
+  // A classified recipe's entry is its own (C62's rule, C64 at the load): the class of its recipe's
+  // sidecar and the pack sets it bakes, by name, only when there is one.
+  const u64 key = content_class::classified_key(
+      assets::generated_mesh_build_key(source_hash, inputs, desc.lod, page_bytes), class_hash);
   std::string cache_path;
   if (desc.cache) {
     cache_path = geometry::cluster_cache_path(desc.ddc, key);
@@ -121,6 +126,10 @@ bool load_generated_mesh(const std::string& path, const SceneDesc& desc, u64 exp
     return false;
   }
   data.source_path = path;
+  if (class_record != nullptr) {
+    data.content_classes = *class_record;  // section 54, as the build's
+    data.build_key = key;  // the identity the entry is found by: the class moved the generator's
+  }
   ENGINE_LOG_INFO(log_renderer, "mesh generated", log::field("path", path),
                   log::field("generator", generator->name), log::field("kind", data.generator_kind),
                   log::field("triangles", data.mesh.leaf_triangle_count),

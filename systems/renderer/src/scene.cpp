@@ -1037,7 +1037,7 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
     geometry::ClusterFileData generated;
     std::string where;
     if (!load_generated_mesh(path, desc, expected_hash, generated, where, out.cache,
-                             out.source_hash, error, identities)) {
+                             out.source_hash, error, identities, class_hash, class_record)) {
       return false;
     }
     // The images its parts sample — a recipe's sets, a material pack's — are the load's texture

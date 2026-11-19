@@ -257,6 +257,9 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
       content_build::Diagnostic why;
       state.mesh[m].unreadable = !content_build::read_source_classes(path, options, classes, why);
       state.mesh[m].classes = classes.classes;
+      // What its cache key holds and the entry the load builds carries, as the content build's.
+      state.mesh_hash[m] = classes.hash;
+      state.record[m] = std::move(classes.record);
     } else if (io::extension(path) == ".clusters") {
       state.mesh[m] = read_container_class(path, out.categories);
     } else {

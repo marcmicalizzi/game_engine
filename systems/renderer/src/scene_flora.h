@@ -30,6 +30,7 @@ bool is_generated_mesh(const std::string& path);
 bool load_generated_mesh(const std::string& path, const SceneDesc& desc, u64 expected_hash,
                          geometry::ClusterFileData& data, std::string& container,
                          const char*& cache, u64& source_hash, std::string& error,
-                         content_build::ImageIdentities* identities = nullptr);
+                         content_build::ImageIdentities* identities = nullptr, u64 class_hash = 0,
+                         const Vector<u8>* class_record = nullptr);
 
 }  // namespace engine::renderer
