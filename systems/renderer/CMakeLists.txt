@@ -138,6 +138,8 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     tests/crown_prior_measure_tests.cpp
                     # R151: the resolve drawn once per pixel class is the one draw's bytes.
                     tests/resolve_class_tests.cpp
+                    # R4 stage 1: the Hi-Z and the depth image made only for a frame that reads them.
+                    tests/frame_targets_tests.cpp
                     # R168: the eye's adaptation's model on the CPU (exposure.h); no device.
                     tests/exposure_model_tests.cpp)
 if(TARGET engine::ruins)

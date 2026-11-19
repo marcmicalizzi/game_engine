@@ -61,6 +61,26 @@ void record_resolve_class_draws(gfx::CommandList commands, const ResolveClassPla
   }
 }
 
+// **The resolve by pixel class** (R151; renderer.md, "The resolve by pixel class"), one frame's
+// plan. Under `renderer.resolve.classes` a classify pass writes each pixel's class as depth
+// (resolve_classify.slang, through the resolve's own block and tables) and the resolve draws once
+// per class, depth-equal, into the same target — the direct path's depth image, which no path with
+// a visibility buffer draws into. Off, the plan is empty and the frame is the one it was.
+ResolveClassPlan SceneRenderer::plan_frame_classes(u64 frame_index, bool frame_passes_on) const {
+  GpuScene& scene = *scene_;
+  ResolveClassFrame frame;
+  frame.mode = resolve_class_mode_for(resolve_classes_tunable(frame_index), scene.has_masked());
+  frame.one_draw = (frame_passes_on ? pipelines_.resolve_linear : pipelines_.resolve).valid();
+  frame.water = scene.has_water();
+  frame.open_sea = scene.water_open_instance() != gfx::k_no_water_open;
+  frame.resample = views_.resample();
+  frame.measuring = resolve_stop_tunable(frame_index) != 0;
+  frame.mask = resolve_class_measure_tunables().mask;
+  const u32 format = frame_passes_on ? 1u : 0u;
+  return plan_resolve_classes(frame, pipelines_.classify, pipelines_.resolve_class[format],
+                              pipelines_.resolve_class_plain[format]);
+}
+
 // The classify pass, and the resolve's depth-equal pipelines for each colour format the resolve
 // draws into. Inside `create_pipelines`' batch they compile beside everything else; from a frame
 // pass's first registration, in a batch of their own.

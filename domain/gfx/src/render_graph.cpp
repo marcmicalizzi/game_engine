@@ -646,6 +646,38 @@ RenderGraph::BarrierMasks RenderGraph::pass_barrier(u32 pass, u32 index) const n
   return masks;
 }
 
+void RenderGraph::lifetimes(Vector<Lifetime>& out) const {
+  const u32 buffers = buffers_.size();
+  out.clear();
+  out.resize(buffers + images_.size());
+  for (u32 b = 0; b < buffers; ++b) {
+    const BufferNode& node = buffers_[b];
+    out[b].name = node.name;
+    out[b].imported = node.imported;
+    out[b].bytes = node.resource.size != 0 ? node.resource.size : node.desc.size;
+  }
+  for (u32 i = 0; i < images_.size(); ++i) {
+    Lifetime& life = out[buffers + i];
+    life.name = images_[i].name;
+    life.image = true;
+    life.imported = images_[i].imported;
+    life.bytes = images_[i].resource.bytes;
+  }
+  // The uses in pass order: a pass's uses are contiguous and passes are declared in order.
+  for (u32 p = 0; p < passes_.size(); ++p) {
+    const Pass& pass = passes_[p];
+    for (u32 u = pass.first_use; u < pass.first_use + pass.use_count; ++u) {
+      const Use& use = uses_[u];
+      Lifetime& life = out[use.is_image ? buffers + use.index : use.index];
+      if (life.first == k_unused) {
+        life.first = p;
+        life.first_writes = use.write;
+      }
+      life.last = p;
+    }
+  }
+}
+
 const BufferResource& RenderGraph::buffer(RgBuffer handle) const noexcept {
   ENGINE_ASSERT(handle.index < buffers_.size(), "RenderGraph::buffer: invalid handle");
   return buffers_[handle.index].resource;

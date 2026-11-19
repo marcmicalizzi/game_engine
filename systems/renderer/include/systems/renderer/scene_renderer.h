@@ -57,6 +57,8 @@
 
 namespace engine::renderer {
 
+struct ResolveClassPlan;  // src/resolve_classes.h: one frame's resolve by pixel class
+
 // One view's share of a frame. The milliseconds are sums over `Stats::timed_frames`, like the
 // totals beside them, and `Stats::view_ms` divides. The rectangle and the tier are copied out of
 // the `ViewSet` so a summary can say which numbers belong to which monitor.
@@ -978,6 +980,11 @@ class SceneRenderer {
   // blocks; renderer.md, "Sampling over time: the accumulation"): zero without it. The linear
   // image and the encode it draws through are the frame passes'.
   u64 accumulation_bytes() const noexcept;
+  // The device bytes of the Hi-Z pyramid and the depth image (R4 stage 1): zero until a frame or a
+  // setting reads them — two-pass occlusion or the occlusion term for the one, the direct path or
+  // the resolve by pixel class for the other.
+  u64 hiz_bytes() const noexcept { return targets_.hiz.size; }
+  u64 depth_bytes() const noexcept { return targets_.depth.image.valid() ? targets_.depth.bytes : 0; }
 
   // The overlay pass (overlay.h, ADR-0054), for its textures; a frame draws it when
   // `FrameDesc::overlay` names lists. A texture is removed only once no frame in flight reads it,
@@ -1114,11 +1121,16 @@ class SceneRenderer {
     u32 coverage_pitch = 0;   // tiles per row of it
     u64 half_offset = 0;      // this view's first word of the half pass's answers (R126)
   };
-  // Screen-sized resources, recreated on resize.
+  // Screen-sized resources, recreated on resize. The visibility buffer is always made; the depth
+  // image and the Hi-Z only for a frame that reads them (`ensure`; R4 stage 1, renderer.md, "The
+  // targets a frame reads"): under traced shadows neither is read on the defaults.
   struct Targets {
-    gfx::ImageResource depth;  // the direct path's depth buffer
+    gfx::ImageResource depth;  // the direct path's depth buffer, and the resolve's pixel classes
     gfx::BufferResource vis;   // the visibility buffer: u64 per pixel, the views back to back
     gfx::BufferResource hiz;   // the Hi-Z pyramids of the farthest depth, the views back to back
+    u64 hiz_words = 0;         // its size in f32 words, laid out by `create` whether made or not
+    u32 depth_width = 0;       // the depth image's size: the whole target, every view's rectangle
+    u32 depth_height = 0;
     // The half pass's answers, one u32 per 2x2 block of every view's region, back to back (R126;
     // renderer.md, "A shading rate by region"): made by the first frame that records the pass,
     // so a frame at full rate keeps none resident.
@@ -1130,11 +1142,23 @@ class SceneRenderer {
     // 2 x dispatches per view: stable storage for the pass bodies, which capture by pointer.
     Vector<gfx::HizParams> hiz_levels;
     bool hiz_dirty = true;
-    bool create(const gfx::Device& device, const ViewSet& views, std::string* error);
+    bool create(const gfx::Device& device, const ViewSet& views, bool want_hiz, bool want_depth,
+                std::string* error);
+    // Makes the Hi-Z and the depth image if a frame wants them and they are not made: at a create
+    // or a resize, or at the frame a setting first asks for one (never in a steady state, since a
+    // made target is kept until the next resize). A new pyramid is marked dirty, so it is cleared.
+    bool ensure(const gfx::Device& device, bool want_hiz, bool want_depth, std::string* error);
     void destroy(const gfx::Device& device) noexcept;
   };
 
   bool create_pipelines(std::string* error);
+  // Whether the renderer's settings read the Hi-Z (two-pass occlusion, the occlusion term of the
+  // LOD threshold) and the depth image (the direct path, the resolve by pixel class while its
+  // tunable names a mode and its pipelines are made) at a create or a resize.
+  bool targets_hiz_wanted() const noexcept;
+  bool targets_depth_wanted() const noexcept;
+  // One frame's plan of the resolve by pixel class (resolve_classes.cpp; empty when it is off).
+  ResolveClassPlan plan_frame_classes(u64 frame_index, bool frame_passes_on) const;
   bool create_color_target(std::string* error);
   bool create_shadow_maps(std::string* error);
   void destroy_shadow_maps() noexcept;
@@ -1215,6 +1239,11 @@ class SceneRenderer {
   gfx::GpuTimer timer_;
   GeometryStreamer streamer_;
   gfx::RenderGraph* graph_ = nullptr;  // heap: RenderGraph is not default-constructible
+  // The graph's lifetimes as a report (R4 stage 2): logged once each time
+  // `renderer.graph.lifetimes` is turned on, from the frame recorded then.
+  void log_graph_lifetimes();
+  Vector<gfx::RenderGraph::Lifetime> lifetimes_;
+  bool lifetimes_logged_ = false;
   gfx::ImageResource color_;           // the offscreen target, when the renderer owns one
   // The sun's depth atlas: one `shadow_map`-texel square per cascade, side by side, D32, drawn as
   // a depth attachment and sampled by the resolve through the scene's bindless set. It is sized

@@ -221,6 +221,24 @@ class RenderGraph {
   u32 pass_barrier_count(u32 pass) const noexcept;
   BarrierMasks pass_barrier(u32 pass, u32 index) const noexcept;
 
+  // **Lifetimes** (R4 stage 2; gfx.md, "Render graph v0"): every resource of the graph, buffers in
+  // declaration order and then images, with the first and the last pass that declares a use of it
+  // (`k_unused` for a resource imported and never used) and whether its first use writes. Read
+  // from the declarations on request and kept nowhere, so a frame that does not ask pays nothing.
+  // It is what a transient heap would pack from: two resources whose [first, last] do not meet
+  // could share memory, if neither is imported.
+  static constexpr u32 k_unused = ~u32{0};
+  struct Lifetime {
+    const char* name = "";
+    bool image = false;
+    bool imported = false;
+    bool first_writes = false;  // the first use is a write (a clear, an attachment, a store)
+    u32 first = k_unused;       // pass indices, as pass_name() takes them
+    u32 last = k_unused;
+    u64 bytes = 0;  // a buffer's size, an image's allocation (VMA's); a transient's after compile()
+  };
+  void lifetimes(Vector<Lifetime>& out) const;
+
  private:
   friend class PassBuilder;
 
