@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <numeric>
 #include <string>
 #include <thread>
@@ -593,6 +594,53 @@ TEST_CASE("tileset masks: a table naming bytes outside the file is refused at op
   REQUIRE(io::write_file_atomic(path, good) == io::Status::Ok);
   MaskLevel level;
   CHECK_MESSAGE(level.open(built.manifest, fx.error), fx.error);
+}
+
+// Hostile (T194, docs/experiments/fuzzing-design.md's fourth list): the table is read where it
+// lies in a shared mapping at every `tile()`, and was checked only at open, so a writer changing
+// the archive in place under an open level moved an entry's offset past the view and the next read
+// of that tile copied from wherever the offset named. Before the mend this case read 2^40 bytes
+// past the view (a fault); it is not run that way.
+TEST_CASE("tileset masks hostile: an entry rewritten in place under a mapped level is held to it") {
+  Fixture fx;
+  MaskBuildResult built;
+  REQUIRE_MESSAGE(
+      ensure_mask_level(fx.set, fx.in, fx.tmp.file("masks"), "", false, built, fx.error), fx.error);
+  MaskLevel level;
+  REQUIRE_MESSAGE(level.open(built.manifest, fx.error), fx.error);
+  if (!level.read_stats().mapped) {
+    MESSAGE("the archive is not mapped on this file system; the case has nothing to read");
+    return;
+  }
+  const std::string path = io::join_path(fx.tmp.file("masks"), level.manifest().archive);
+  std::string good;
+  REQUIRE(io::read_file(path, good) == io::Status::Ok);
+  u64 toc = 0;
+  std::memcpy(&toc, good.data() + 24, 8);
+  i32 tx = 0;
+  i32 tz = 0;
+  REQUIRE(level.tile_at(0, tx, tz));
+  std::vector<u32> words(scene_gen::mask_tile_words(level.info().cells));
+  REQUIRE(level.tile(tx, tz, std::span<u32>(words.data(), words.size())));
+  {
+    // In place, as a tool that does not write by rename would: the file is the one the view maps.
+    std::fstream file(path, std::ios::in | std::ios::out | std::ios::binary);
+    REQUIRE(file.good());
+    const u64 far = u64{1} << 40;
+    file.seekp(static_cast<std::streamoff>(toc + 8));
+    file.write(reinterpret_cast<const char*>(&far), sizeof(far));
+    REQUIRE(file.good());
+  }
+  CHECK_FALSE(level.tile(tx, tz, std::span<u32>(words.data(), words.size())));
+  // An offset one byte short of a whole record from the view's end is refused the same way.
+  {
+    std::fstream file(path, std::ios::in | std::ios::out | std::ios::binary);
+    const u64 short_by_one = good.size() - 1;
+    file.seekp(static_cast<std::streamoff>(toc + 8));
+    file.write(reinterpret_cast<const char*>(&short_by_one), sizeof(short_by_one));
+    REQUIRE(file.good());
+  }
+  CHECK_FALSE(level.tile(tx, tz, std::span<u32>(words.data(), words.size())));
 }
 
 TEST_CASE("tileset masks determinism: the fixture's level hashes to the pinned value") {

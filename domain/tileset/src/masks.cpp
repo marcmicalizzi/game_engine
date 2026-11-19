@@ -1428,9 +1428,14 @@ bool MaskLevel::tile(i32 tx, i32 tz, std::span<u32> words) const noexcept {
     return true;
   };
   if (r.mapped) {
-    // **No lock** (tileset.md, "Read without a lock"): the view and the table are fixed from `open`
-    // on, and the entry's range was checked there to lie inside the file.
-    return copy_out(r.view.bytes().data() + r.archive.entry(at).offset);
+    // **No lock** (tileset.md, "Read without a lock"): the view is fixed from `open` on. The table
+    // is read where it lies in a shared mapping, so an entry's range was checked at open but is
+    // read again here, and a writer changing the file in place under the view changes it too
+    // (T194): the range read now is held to the view, two compares a tile (io.md, "Mapped files").
+    const std::span<const u8> view = r.view.bytes();
+    const u64 offset = r.archive.entry(at).offset;
+    if (offset > view.size() || view.size() - offset < rb) return false;
+    return copy_out(view.data() + offset);
   }
   const std::lock_guard<std::mutex> lock(r.mutex);
   if (at < r.first || at >= r.first + r.count) {
