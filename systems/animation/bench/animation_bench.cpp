@@ -367,7 +367,7 @@ struct GraphFixture {
   std::vector<GraphInstance> instances;
 };
 
-GraphDesc crowd_graph() {
+GraphDesc crowd_graph(GraphNodeKind layer = GraphNodeKind::Clip) {
   GraphDesc d;
   u64 low = 1;
   const auto id = [&] { return Id128::from_parts(0xb3c4, low++); };
@@ -412,6 +412,45 @@ GraphDesc crowd_graph() {
   }
   d.nodes[1].record.thresholds = {1.0f, 3.0f};
   d.machines[0].record.entry = d.states[0].id;
+  if (layer != GraphNodeKind::Clip) {
+    // S35 stage 3: a second machine of one state (the run, on its own clock) applied over the
+    // first by `layer`, weighted by the parameter `w`, through a mask of the chain's upper half
+    // tapered over four joints (three partial, eight full: joint12 to joint22).
+    auto& w = d.params.emplace_back();
+    w.id = id();
+    w.parent = d.id;
+    w.record.name = "w";
+    w.record.range_min = 0.0f;
+    w.record.range_max = 1.0f;
+    auto& lm = d.machines.emplace_back();
+    lm.id = id();
+    lm.parent = d.id;
+    lm.record.name = "upper";
+    auto& ls = d.states.emplace_back();
+    ls.id = id();
+    ls.parent = lm.id;
+    ls.record.name = "carry";
+    d.machines[1].record.entry = ls.id;
+    auto& lc = d.nodes.emplace_back();
+    lc.id = id();
+    lc.parent = ls.id;
+    lc.record.clip = "crowd/run";
+    auto& ln = d.nodes.emplace_back();
+    ln.id = id();
+    ln.parent = d.machines[1].id;
+    ln.record.kind = layer;
+    ln.record.param = "w";
+    ln.record.mask = "upper";
+    if (layer == GraphNodeKind::Additive) ln.record.reference = "crowd/walk";
+    auto& mask = d.masks.emplace_back();
+    mask.id = id();
+    mask.parent = d.id;
+    mask.record.name = "upper";
+    GraphMaskJoint j;
+    j.joint = "joint12";
+    j.depth = 4;
+    mask.record.joints.push_back(j);
+  }
   for (u32 k = 0; k < 2; ++k) {
     auto& t = d.transitions.emplace_back();
     t.id = id();
@@ -425,16 +464,18 @@ GraphDesc crowd_graph() {
   return d;
 }
 
-GraphFixture& graph_fixture(u32 n) {
+GraphFixture& graph_fixture(u32 n, GraphNodeKind layer = GraphNodeKind::Clip) {
   static std::vector<std::unique_ptr<GraphFixture>> cache;
-  static std::vector<u32> sizes;
+  static std::vector<u64> sizes;
+  const u64 key = (u64{static_cast<u8>(layer)} << 32) | n;
   for (usize i = 0; i < sizes.size(); ++i) {
-    if (sizes[i] == n) return *cache[i];
+    if (sizes[i] == key) return *cache[i];
   }
   auto f = std::make_unique<GraphFixture>();
   build_library(f->library);
   std::string why;
-  if (!compile_graph(crowd_graph(), &f->library, f->graph, why)) bench::keep(why);
+  if (!compile_graph(crowd_graph(layer), &f->library, f->graph, why, &f->library.skeleton_data(0)))
+    bench::keep(why);
   f->inputs.resize(n);
   f->states.resize(n);
   std::vector<GraphStep> steps(n);
@@ -446,6 +487,8 @@ GraphFixture& graph_fixture(u32 n) {
       const u32 period = 37u + (i % 61u);
       f->inputs[i].values[0] = ((tick + i) % period) != 0 ? 1.0f : 0.0f;
       f->inputs[i].values[1] = static_cast<f32>(i % 401u) * (4.0f / 400.0f);
+      // A layer's weight: 0, 0.1, ..., 1 across the population (one in eleven at each end).
+      f->inputs[i].values[2] = static_cast<f32>(i % 11u) / 10.0f;
     }
     (void)graph_control(f->graph, f->inputs, f->states, 1.0f / 64.0f, steps);
   }
@@ -464,12 +507,12 @@ GraphFixture& graph_fixture(u32 n) {
                             std::span<Vec3>(f->scale.data() + usize{i} * joints, joints)};
   }
   cache.push_back(std::move(f));
-  sizes.push_back(n);
+  sizes.push_back(key);
   return *cache.back();
 }
 
-void run_program(bench::State& state, u32 n, u32 batch) {
-  GraphFixture& f = graph_fixture(n);
+void run_program(bench::State& state, u32 n, u32 batch, GraphNodeKind layer = GraphNodeKind::Clip) {
+  GraphFixture& f = graph_fixture(n, layer);
   PoseEvaluator evaluator;
   const anim::Skeleton& skeleton = f.library.skeleton_data(0);
   while (state.keep_running()) {
@@ -489,6 +532,18 @@ ENGINE_BENCH_ARGS(animation_graph_sample, "animation.graph.sample", 1000, 10000)
 // By the batch, at 10^4 instances: what the default is chosen from (the design's L2 sizing).
 ENGINE_BENCH_ARGS(animation_graph_batch, "animation.graph.batch", 16, 64, 256) {
   run_program(state, bench::smoke_mode() ? 256u : 10000u, static_cast<u32>(state.arg()));
+}
+
+// S35 stage 3: the same population with a second machine over the first, by an override of the
+// chain's upper half (eleven of 23 joints, three of them tapered) weighted 0 to 1 across the
+// instances, and by an additive of the same, at the default batch. Beside `animation.graph.sample`.
+ENGINE_BENCH_ARGS(animation_graph_layered, "animation.graph.layered", 1000, 10000) {
+  run_program(state, bench::smoke_mode() ? 256u : static_cast<u32>(state.arg()), 64,
+              GraphNodeKind::Override);
+}
+ENGINE_BENCH_ARGS(animation_graph_additive, "animation.graph.additive", 1000, 10000) {
+  run_program(state, bench::smoke_mode() ? 256u : static_cast<u32>(state.arg()), 64,
+              GraphNodeKind::Additive);
 }
 
 // By the rig: two seconds at 30 keys a second, 23 joints (the humanoid core), 37 (a bird of the

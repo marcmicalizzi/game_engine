@@ -453,13 +453,14 @@ bool plan_layers(const GraphDesc& desc, const Vector<const GraphItem<GraphMachin
     return refuse(why, desc, where + " takes a weight, a parameter, a mask and a reference only");
   GraphLayer layer;
   layer.kind = static_cast<u8>(r.kind == GraphNodeKind::Override ? PoseOpKind::Override
-                                                                   : PoseOpKind::Additive);
+                                                                 : PoseOpKind::Additive);
   layer.machine = static_cast<u8>(plan.layer);
   layer.weight = r.weight;
   if (!r.param.empty()) {
     const u32 p = out.param_index(r.param);
     if (p == k_absent || out.params[p].kind != GraphParamKind::Float)
-      return refuse(why, desc, where + ": its weight reads a float parameter, not '" + r.param + "'");
+      return refuse(why, desc,
+                    where + ": its weight reads a float parameter, not '" + r.param + "'");
     layer.param = static_cast<u16>(p);
   }
   if (skeleton == nullptr) {
@@ -481,8 +482,10 @@ bool plan_layers(const GraphDesc& desc, const Vector<const GraphItem<GraphMachin
       if (pass == 0 ? !full : (full || !(weights[j] > 0.0f))) continue;
       out.layer_joints.push_back(static_cast<u16>(j));
       out.layer_weights.push_back(weights[j]);
-      if (pass == 0) ++layer.full;
-      else ++layer.partial;
+      if (pass == 0)
+        ++layer.full;
+      else
+        ++layer.partial;
     }
   }
   if (layer.full + layer.partial == 0)
@@ -748,8 +751,8 @@ bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph&
         n.record.kind != GraphNodeKind::Additive) {
       return refuse(why, desc, "a machine's child node is its layer node: an Override or Additive");
     }
-    if (!layer && (n.record.kind == GraphNodeKind::Override ||
-                   n.record.kind == GraphNodeKind::Additive)) {
+    if (!layer &&
+        (n.record.kind == GraphNodeKind::Override || n.record.kind == GraphNodeKind::Additive)) {
       return refuse(why, desc,
                     "an Override or Additive node is a machine's layer node (a layer inside a "
                     "state's pose is in no stage of the design yet)");
@@ -1368,9 +1371,9 @@ void kernel_additive(const GraphOp& op, const Batch& b, const u16* list, u32 n, 
       const Vec3 lt = src.translation[j];
       const Quat lr = src.rotation[j];
       const Vec3 ls = src.scale[j];
-      const bool still = lt.x == rt[j].x && lt.y == rt[j].y && lt.z == rt[j].z &&
-                         lr.x == rr[j].x && lr.y == rr[j].y && lr.z == rr[j].z &&
-                         lr.w == rr[j].w && ls.x == rs[j].x && ls.y == rs[j].y && ls.z == rs[j].z;
+      const bool still = lt.x == rt[j].x && lt.y == rt[j].y && lt.z == rt[j].z && lr.x == rr[j].x &&
+                         lr.y == rr[j].y && lr.z == rr[j].z && lr.w == rr[j].w && ls.x == rs[j].x &&
+                         ls.y == rs[j].y && ls.z == rs[j].z;
       const Quat d = conjugate(rr[j]) * lr;
       const f32 sign = d.w < 0.0f ? -1.0f : 1.0f;
       const Quat q{d.x * sign * t, d.y * sign * t, d.z * sign * t, (d.w * sign - 1.0f) * t + 1.0f};

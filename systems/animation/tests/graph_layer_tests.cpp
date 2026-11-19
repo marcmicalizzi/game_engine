@@ -36,13 +36,13 @@ constexpr u32 k_joints = anim::k_standard_joint_count;  // 23: the humanoid core
 
 // Literal unit quaternions (x, y, z, w), so a key is the same float on every C library.
 constexpr f32 k_turns[7][4] = {
-    {0.0f, 0.0f, 0.25881905f, 0.96592583f},  // 30 degrees about z
-    {0.17364818f, 0.0f, 0.0f, 0.98480775f},  // 20 about x
-    {0.0f, 0.30070580f, 0.0f, 0.95371695f},  // 35 about y
-    {0.34202015f, 0.0f, 0.0f, 0.93969262f},  // 40 about x
-    {-0.25881905f, 0.0f, 0.0f, 0.96592583f}, // -30 about x
-    {0.57357644f, 0.0f, 0.0f, 0.81915204f},  // 70 about x
-    {0.0f, 0.0f, 0.0f, 1.0f},                // none
+    {0.0f, 0.0f, 0.25881905f, 0.96592583f},   // 30 degrees about z
+    {0.17364818f, 0.0f, 0.0f, 0.98480775f},   // 20 about x
+    {0.0f, 0.30070580f, 0.0f, 0.95371695f},   // 35 about y
+    {0.34202015f, 0.0f, 0.0f, 0.93969262f},   // 40 about x
+    {-0.25881905f, 0.0f, 0.0f, 0.96592583f},  // -30 about x
+    {0.57357644f, 0.0f, 0.0f, 0.81915204f},   // 70 about x
+    {0.0f, 0.0f, 0.0f, 1.0f},                 // none
 };
 
 i32 parent_of(anim::StandardJoint j) {
@@ -145,36 +145,37 @@ struct Humanoid {
       skin.joints.push_back(static_cast<i32>(j));
     mesh.skins.push_back(skin);
     // The base: every joint moving, so a layer has something to differ from.
-    Keys all_from = {{S::Hips, 0},          {S::Spine, 1},          {S::Chest, 2},
-                     {S::UpperChest, 3},    {S::Neck, 4},           {S::Head, 5},
-                     {S::LeftShoulder, 0},  {S::LeftUpperArm, 1},   {S::LeftLowerArm, 2},
-                     {S::LeftHand, 3},      {S::RightShoulder, 4},  {S::RightUpperArm, 5},
-                     {S::RightLowerArm, 0}, {S::RightHand, 1},      {S::LeftUpperLeg, 2},
-                     {S::LeftLowerLeg, 3},  {S::LeftFoot, 4},       {S::LeftToes, 5},
-                     {S::RightUpperLeg, 0}, {S::RightLowerLeg, 1},  {S::RightFoot, 2},
-                     {S::RightToes, 3}};
-    Keys all_to = {{S::Hips, 2},          {S::Spine, 3},          {S::Chest, 4},
-                   {S::UpperChest, 5},    {S::Neck, 0},           {S::Head, 1},
-                   {S::LeftShoulder, 2},  {S::LeftUpperArm, 3},   {S::LeftLowerArm, 4},
-                   {S::LeftHand, 5},      {S::RightShoulder, 0},  {S::RightUpperArm, 1},
-                   {S::RightLowerArm, 2}, {S::RightHand, 3},      {S::LeftUpperLeg, 4},
-                   {S::LeftLowerLeg, 5},  {S::LeftFoot, 0},       {S::LeftToes, 1},
-                   {S::RightUpperLeg, 2}, {S::RightLowerLeg, 3},  {S::RightFoot, 4},
-                   {S::RightToes, 5}};
+    Keys all_from = {
+        {S::Hips, 0},          {S::Spine, 1},     {S::Chest, 2},         {S::UpperChest, 3},
+        {S::Neck, 4},          {S::Head, 5},      {S::LeftShoulder, 0},  {S::LeftUpperArm, 1},
+        {S::LeftLowerArm, 2},  {S::LeftHand, 3},  {S::RightShoulder, 4}, {S::RightUpperArm, 5},
+        {S::RightLowerArm, 0}, {S::RightHand, 1}, {S::LeftUpperLeg, 2},  {S::LeftLowerLeg, 3},
+        {S::LeftFoot, 4},      {S::LeftToes, 5},  {S::RightUpperLeg, 0}, {S::RightLowerLeg, 1},
+        {S::RightFoot, 2},     {S::RightToes, 3}};
+    Keys all_to = {
+        {S::Hips, 2},          {S::Spine, 3},     {S::Chest, 4},         {S::UpperChest, 5},
+        {S::Neck, 0},          {S::Head, 1},      {S::LeftShoulder, 2},  {S::LeftUpperArm, 3},
+        {S::LeftLowerArm, 4},  {S::LeftHand, 5},  {S::RightShoulder, 0}, {S::RightUpperArm, 1},
+        {S::RightLowerArm, 2}, {S::RightHand, 3}, {S::LeftUpperLeg, 4},  {S::LeftLowerLeg, 5},
+        {S::LeftFoot, 0},      {S::LeftToes, 1},  {S::RightUpperLeg, 2}, {S::RightLowerLeg, 3},
+        {S::RightFoot, 4},     {S::RightToes, 5}};
     mesh.animations.push_back(clip("walk", all_from, all_to, 0.02f));
     mesh.animations.push_back(clip("idle", {}, {{S::Spine, 1}, {S::Head, 2}}));
     // The crouch, held: a lean of the spine and chest, the hips 0.25 m lower, the knees bent.
-    Keys crouch = {{S::Spine, 1},        {S::Chest, 1},        {S::LeftUpperLeg, 4},
-                   {S::LeftLowerLeg, 5}, {S::LeftFoot, 4},     {S::RightUpperLeg, 4},
+    Keys crouch = {{S::Spine, 1},         {S::Chest, 1},    {S::LeftUpperLeg, 4},
+                   {S::LeftLowerLeg, 5},  {S::LeftFoot, 4}, {S::RightUpperLeg, 4},
                    {S::RightLowerLeg, 5}, {S::RightFoot, 4}};
     assets::Animation c = clip("crouch", crouch, crouch, -0.25f);
     // Held from the first key: the translation's first key is the low one too.
     c.samplers.back().values[1] = c.samplers.back().values[4];
     mesh.animations.push_back(c);
     // The look: the neck and head turned, both ends held.
-    mesh.animations.push_back(clip("look_left", {{S::Neck, 2}, {S::Head, 2}}, {{S::Neck, 2}, {S::Head, 2}}));
-    mesh.animations.push_back(clip("look_center", {{S::Neck, 6}, {S::Head, 6}}, {{S::Neck, 6}, {S::Head, 6}}));
-    mesh.animations.push_back(clip("look_right", {{S::Neck, 0}, {S::Head, 0}}, {{S::Neck, 0}, {S::Head, 0}}));
+    mesh.animations.push_back(
+        clip("look_left", {{S::Neck, 2}, {S::Head, 2}}, {{S::Neck, 2}, {S::Head, 2}}));
+    mesh.animations.push_back(
+        clip("look_center", {{S::Neck, 6}, {S::Head, 6}}, {{S::Neck, 6}, {S::Head, 6}}));
+    mesh.animations.push_back(
+        clip("look_right", {{S::Neck, 0}, {S::Head, 0}}, {{S::Neck, 0}, {S::Head, 0}}));
     std::string error;
     REQUIRE_MESSAGE(library.add(mesh, "body", nullptr, &error), error);
     REQUIRE(library.skeleton_index(skeleton) != Library::k_not_found);
@@ -528,10 +529,10 @@ TEST_CASE("animation graph layers: an additive of its reference pose changes not
   const CompiledGraph base = compiled(rig, base_only("body/walk"));
   anim::Pose got;
   anim::Pose want;
-  // The crouch over its own first key, at its keys; the rest pose over the rest pose (an empty clip,
-  // an empty reference) at any time; masked and not. Between two equal keys the crouch is not its
-  // key to the bit — the sampler's slerp of a rotation with itself moves it by an ulp (anim's, not
-  // the layer's) — so a held clip is the reference only where it is sampled at a key.
+  // The crouch over its own first key, at its keys; the rest pose over the rest pose (an empty
+  // clip, an empty reference) at any time; masked and not. Between two equal keys the crouch is not
+  // its key to the bit — the sampler's slerp of a rotation with itself moves it by an ulp (anim's,
+  // not the layer's) — so a held clip is the reference only where it is sampled at a key.
   struct Case {
     const char* clip;
     const char* reference;
@@ -544,7 +545,8 @@ TEST_CASE("animation graph layers: an additive of its reference pose changes not
     spec.layer_clip = c.clip;
     spec.reference = c.reference;
     spec.mask = c.mask;
-    const CompiledGraph g = compiled(rig, layered(spec, {entry("LeftUpperLeg"), entry("Spine", false)}));
+    const CompiledGraph g =
+        compiled(rig, layered(spec, {entry("LeftUpperLeg"), entry("Spine", false)}));
     for (const f32 w : {0.25f, 0.5f, 1.0f}) {
       for (const f32 time : {0.0f, 0.375f, 1.0f}) {
         if (c.clip[0] != '\0' && time != 0.0f && time != 1.0f) continue;
@@ -563,8 +565,8 @@ TEST_CASE("animation graph layers: an additive of its reference pose changes not
   evaluate(rig, g, {0.0f, 1.0f, 0.0f}, 1.0f, got);
   evaluate(rig, base, {}, 1.0f, want);
   const u32 spine = joint(anim::StandardJoint::Spine);
-  const Quat expect = normalize(want.rotation[spine] * Quat{k_turns[1][0], k_turns[1][1],
-                                                           k_turns[1][2], k_turns[1][3]});
+  const Quat expect = normalize(want.rotation[spine] *
+                                Quat{k_turns[1][0], k_turns[1][1], k_turns[1][2], k_turns[1][3]});
   CHECK(std::fabs(got.rotation[spine].x - expect.x) < 1e-6f);
   CHECK(std::fabs(got.rotation[spine].w - expect.w) < 1e-6f);
   const u32 hips = joint(anim::StandardJoint::Hips);
@@ -619,10 +621,9 @@ TEST_CASE("animation graph layers: the walker's crouch and head-look as layers")
     spec.layer_clip = "body/crouch";
     spec.mask = "crouch";
     spec.stand = true;
-    const CompiledGraph g = compiled(rig, layered(spec, {entry("Hips", false), entry("Spine", false),
-                                                         entry("Chest", false),
-                                                         entry("LeftUpperLeg"),
-                                                         entry("RightUpperLeg")}));
+    const CompiledGraph g = compiled(
+        rig, layered(spec, {entry("Hips", false), entry("Spine", false), entry("Chest", false),
+                            entry("LeftUpperLeg"), entry("RightUpperLeg")}));
     CHECK(g.layers[0].full == 11);
     // Standing up (crouch 0): the walk; crouched: the hips lower, the arms and head untouched.
     evaluate(rig, g, {1.0f, 0.0f, 0.0f}, 1.0f, got);  // state index 0 of `body` is `move`
@@ -720,7 +721,8 @@ TEST_CASE("animation graph layers: one worker and eight, two batches, two runs: 
   spec.look_blend = true;
   spec.mask = "upper";
   spec.stand = true;
-  const GraphDesc desc = layered(spec, {entry("Spine", true, 1.0f, 3), entry("LeftUpperLeg", false, 0.5f)});
+  const GraphDesc desc =
+      layered(spec, {entry("Spine", true, 1.0f, 3), entry("LeftUpperLeg", false, 0.5f)});
   constexpr u32 k_instances = 96;
 
   const auto run = [&](u32 workers, i64 batch, std::vector<anim::JointMatrix>& out,

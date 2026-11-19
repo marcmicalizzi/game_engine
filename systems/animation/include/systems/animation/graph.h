@@ -270,16 +270,16 @@ struct GraphOp {
 // `layer_weights`: `full` joints at weight 1 first, then `partial` joints at their weights in
 // (0, 1); a joint in neither is never touched. 24 bytes.
 struct GraphLayer {
-  u32 first_joint = 0;               // into `layer_joints` and `layer_weights`
-  u16 full = 0;                      // joints of the mask at weight 1
-  u16 partial = 0;                   // joints of the mask at a weight in (0, 1), after them
-  u32 reference = 0xFFFF'FFFFu;      // Additive: the first joint of its reference pose, into
-                                     // `reference_*`; unset for an Override
-  u16 param = k_graph_no_param;      // the float parameter the weight is multiplied by
-  u8 kind = 0;                       // PoseOpKind::Override or ::Additive
-  u8 machine = 0;                    // the layer machine's index
-  f32 weight = 1.0f;                 // the node's weight, in [0, 1]
-  u16 op = 0;                        // the layer op's index in the program
+  u32 first_joint = 0;           // into `layer_joints` and `layer_weights`
+  u16 full = 0;                  // joints of the mask at weight 1
+  u16 partial = 0;               // joints of the mask at a weight in (0, 1), after them
+  u32 reference = 0xFFFF'FFFFu;  // Additive: the first joint of its reference pose, into
+                                 // `reference_*`; unset for an Override
+  u16 param = k_graph_no_param;  // the float parameter the weight is multiplied by
+  u8 kind = 0;                   // PoseOpKind::Override or ::Additive
+  u8 machine = 0;                // the layer machine's index
+  f32 weight = 1.0f;             // the node's weight, in [0, 1]
+  u16 op = 0;                    // the layer op's index in the program
   u16 _pad = 0;
 };
 
@@ -305,8 +305,8 @@ class CompiledGraph {
   // base's is register 0, a layer machine's `layer_register`); unset for a graph with no program.
   u16 out_op[k_graph_max_machines] = {0xFFFFu, 0xFFFFu};
   u8 out_register[k_graph_max_machines] = {0, 0};
-  u8 base_machine = 0;     // the machine that is not a layer
-  u8 layer_register = 0;   // 0: no layer
+  u8 base_machine = 0;    // the machine that is not a layer
+  u8 layer_register = 0;  // 0: no layer
   // Stage 3: the layers (one at most: a graph has two machines), their masks' joints and weights
   // and the additive layers' reference poses, all compiled for one skeleton of `skeleton_joints`
   // joints (0: a graph with no layer, which any skeleton plays).
@@ -317,7 +317,8 @@ class CompiledGraph {
   Vector<Quat> reference_rotation;
   Vector<Vec3> reference_scale;
   u32 skeleton_joints = 0;
-  Id128 skeleton;  // the skeleton a host compiled a layered graph for (`AnimationSystem::add_graph`)
+  // The skeleton a host compiled a layered graph for (`AnimationSystem::add_graph`).
+  Id128 skeleton;
 
   u32 param_index(std::string_view param_name) const noexcept;  // 0xFFFFFFFF when absent
   // A state of machine `machine` by name, as its index in the machine; 0xFFFFFFFF when absent.
