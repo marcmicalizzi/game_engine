@@ -387,11 +387,22 @@ TEST_CASE("ledger: roles, and a review item for a person that no agent closes") 
                 &error) == codes::k_invalid_argument);
   CHECK(reason_of(error) == "revision moved");
   CHECK(num(at(at(error, "data"), "revision")) == 1);
+  // Nor without the subject's digest its detail showed (protocol.md, "What a close is tied to").
+  CHECK(h.fails("review.close",
+                obj({{"review", item},
+                     {"resolution", JsonValue("Accepted")},
+                     {"revision", JsonValue(u64{1})},
+                     {"attribution", who("person")}}),
+                &error) == codes::k_invalid_argument);
+  CHECK(reason_of(error) == "seen required");
+  const JsonValue seen_digest = at(r, "raised_digest");
   r = h.review("review.close", obj({{"review", item},
                                     {"resolution", JsonValue("Accepted")},
                                     {"note", JsonValue("looked at full policy; fine")},
                                     {"revision", JsonValue(u64{1})},
+                                    {"digest", seen_digest},
                                     {"attribution", who("person")}}));
+  CHECK(at(r, "decided_at").as_string() == seen_digest.as_string());
   CHECK(at(r, "state").as_string() == "Closed");
   CHECK(at(r, "resolution").as_string() == "Accepted");
   CHECK(at(at(r, "closed_by"), "actor").as_string() == "person");
@@ -1163,4 +1174,210 @@ TEST_CASE("ledger: the detail form stands alone, and ledgers from before digests
     CHECK(at(now, "digest").as_string().size() == 64);
     CHECK_FALSE(at(now, "same").as_bool());
   }
+}
+
+// A person's close is tied to what their detail showed (protocol.md, "What a close is tied to"):
+// the review of the queue's design found four ways to make a person accept a state they never
+// looked at, each one a close refused here that the item's revision alone let through. Edits come
+// on a director's connection (6), closes on the person's (5).
+TEST_CASE(
+    "ledger: a person's close is refused when what the item is about moved since it was seen") {
+  test::TempDir tmp("protocol_ledger_seen");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  h.roles(k_roles);
+  h.open(dir, true);
+  DigestWorld w;
+  w.make(h, dir);
+  const auto agent = [&] { h.bind(6, "agent-key", "agent", "director"); };
+  const auto person = [&] { h.bind(5, "person-at-desk", "person", "reviewer"); };
+  // What the person's detail shows: the item's revision and its subject's digest now.
+  struct Seen {
+    JsonValue revision;
+    JsonValue digest;
+  };
+  const auto look = [&](const JsonValue& id) {
+    const JsonValue listed =
+        h.ok("review.list", obj({{"review", id}, {"digest", JsonValue(true)}}));
+    return Seen{at(at(listed, "reviews")[0], "revision"), at(at(listed, "subject"), "digest")};
+  };
+  const auto close = [&](const JsonValue& id, const Seen& seen, JsonValue* error) {
+    person();
+    JsonValue params = obj({{"review", id},
+                            {"resolution", JsonValue("Accepted")},
+                            {"revision", seen.revision},
+                            {"digest", seen.digest},
+                            {"attribution", who("person")}});
+    if (error == nullptr) return h.ok("review.close", std::move(params));
+    CHECK(h.fails("review.close", std::move(params), error) == codes::k_invalid_argument);
+    return JsonValue();
+  };
+  const auto raise = [&] {
+    h.stdio();  // the checker raises over stdio, naming itself
+    return at(at(w.raise(h), "reviews")[0], "id");
+  };
+  JsonValue error;
+
+  SUBCASE("an edit of the subject's own record") {
+    const JsonValue id = raise();
+    const Seen seen = look(id);
+    agent();
+    w.set(h, w.placement, "name", JsonValue("crate, swapped"));
+    (void)close(id, seen, &error);
+    CHECK(reason_of(error) == "subject moved");
+    CHECK(at(at(error, "data"), "digest").as_string() != seen.digest.as_string());
+    // Looked at again, the person decides on what it is now, and the record says so.
+    const Seen again = look(id);
+    const JsonValue closed = close(id, again, nullptr);
+    CHECK(at(at(closed, "reviews")[0], "decided_at").as_string() == again.digest.as_string());
+    CHECK_FALSE(at(at(closed, "subject"), "same").as_bool());
+  }
+  SUBCASE("an edit of a record the subject hangs under") {
+    const JsonValue id = raise();
+    const Seen seen = look(id);
+    agent();
+    w.set(h, w.node, "name", JsonValue("the back yard"));
+    (void)close(id, seen, &error);
+    CHECK(reason_of(error) == "subject moved");
+  }
+  SUBCASE("a layer added over the stack") {
+    const JsonValue id = raise();
+    const Seen seen = look(id);
+    agent();
+    (void)h.ok("doc.add_layer", obj({{"name", JsonValue("late")}, {"edit", JsonValue(false)}}));
+    (void)close(id, seen, &error);
+    CHECK(reason_of(error) == "subject moved");
+  }
+  SUBCASE("an asset its record names rewritten, with its time put back") {
+    const JsonValue id = raise();
+    const Seen seen = look(id);
+    const auto when = std::filesystem::last_write_time(w.mesh);
+    {
+      std::ofstream out(w.mesh, std::ios::binary | std::ios::trunc);
+      out << "glTF two";  // the same length: neither the size nor the time says it changed
+    }
+    std::filesystem::last_write_time(w.mesh, when);
+    (void)close(id, seen, &error);
+    CHECK(reason_of(error) == "subject moved");
+  }
+  SUBCASE("an undo below the stamp, and the redo after it") {
+    agent();
+    w.set(h, w.placement, "name", JsonValue("crate, second"));
+    const JsonValue id = raise();
+    const Seen seen = look(id);
+    agent();
+    (void)h.ok("doc.undo", obj({{"attribution", who("agent", "director")}}));
+    (void)close(id, seen, &error);
+    CHECK(reason_of(error) == "subject moved");
+    // Redone, the document is what the person saw again, and the close is the same digest's: the
+    // check is the content, not the journal's position, which an undo then a redo also restores.
+    agent();
+    (void)h.ok("doc.redo", obj({{"attribution", who("agent", "director")}}));
+    const JsonValue closed = close(id, seen, nullptr);
+    CHECK(at(at(closed, "reviews")[0], "decided_at").as_string() == seen.digest.as_string());
+    CHECK(at(at(closed, "subject"), "same").as_bool());
+  }
+  SUBCASE("nothing changed: accepted, with the digest it was decided at") {
+    const JsonValue id = raise();
+    const Seen seen = look(id);
+    const JsonValue closed = close(id, seen, nullptr);
+    CHECK(at(at(closed, "reviews")[0], "state").as_string() == "Closed");
+    CHECK(at(at(closed, "reviews")[0], "decided_at").as_string() == seen.digest.as_string());
+  }
+  SUBCASE("a digest stamped by another host, of another state") {
+    // Another host on the same directory raises and stamps; this host's document then moves, and
+    // the other host's stamp is what a page that read it would send.
+    Host other;
+    other.roles(k_roles);
+    other.open(dir, false);
+    const JsonValue raised = w.raise(other);
+    const JsonValue id = at(at(raised, "reviews")[0], "id");
+    const Seen stamped{at(at(raised, "reviews")[0], "revision"),
+                       at(at(raised, "reviews")[0], "raised_digest")};
+    CHECK(look(id).digest.as_string() == stamped.digest.as_string());  // the same content
+    agent();
+    w.set(h, w.placement, "name", JsonValue("crate, here only"));
+    (void)close(id, stamped, &error);
+    CHECK(reason_of(error) == "subject moved");
+  }
+}
+
+// One write, one event (protocol.md, "The ledger's events" and "What a close is tied to"): the
+// raise's stamp and the close's `decided_at` are part of the write that raises or closes, which
+// pushes its one event; a close refused for what its closer saw ("seen required", "subject moved")
+// writes nothing and pushes nothing.
+TEST_CASE("ledger: a stamp and a decision are one write and one event, a refused close neither") {
+  test::TempDir tmp("protocol_ledger_seen");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  Collect pushed;
+  Subscriptions subscriptions;
+  subscriptions.attach(&pushed);
+  h.sessions.set_events(&subscriptions);
+  (void)subscriptions.subscribe(7, "", event_bit(EventKind::Session));
+  h.roles(k_roles);
+  h.open(dir, true);
+  DigestWorld w;
+  w.make(h, dir);
+  const auto changes_since = [&](usize from) {
+    std::vector<std::string> out;
+    for (usize i = from; i < pushed.sent.size(); ++i) {
+      JsonValue note;
+      REQUIRE(parse_json(pushed.sent[i], note).ok);
+      out.emplace_back(at(at(note, "params"), "change").as_string());
+    }
+    return out;
+  };
+  const auto ledger_text = [&] {
+    std::string text;
+    REQUIRE(h.vfs.read(dir + "/ledger.json", text) == io::Status::Ok);
+    return text;
+  };
+  const auto write_mesh = [&](const char* bytes) {
+    const auto when = std::filesystem::last_write_time(w.mesh);
+    {
+      std::ofstream out(w.mesh, std::ios::binary | std::ios::trunc);
+      out << bytes;
+    }
+    std::filesystem::last_write_time(w.mesh, when);
+  };
+
+  h.stdio();
+  usize mark = pushed.sent.size();
+  const JsonValue raised = w.raise(h);
+  CHECK(changes_since(mark) == std::vector<std::string>{"review_raised"});
+  const JsonValue item = at(raised, "reviews")[0];
+  CHECK(at(item, "raised_digest").as_string().size() == 64);
+  const i64 written = num(at(raised, "ledger_revision"));
+  const JsonValue id = at(item, "id");
+  const JsonValue listed = h.ok("review.list", obj({{"review", id}, {"digest", JsonValue(true)}}));
+  const JsonValue revision = at(at(listed, "reviews")[0], "revision");
+  const JsonValue digest = at(at(listed, "subject"), "digest");
+
+  h.bind(5, "person-at-desk", "person", "reviewer");
+  const auto close = [&](bool with_digest) {
+    JsonValue params = obj({{"review", id},
+                            {"resolution", JsonValue("Accepted")},
+                            {"revision", revision},
+                            {"attribution", who("person")}});
+    if (with_digest) params.set("digest", digest);
+    return params;
+  };
+  const std::string before = ledger_text();
+  mark = pushed.sent.size();
+  JsonValue error;
+  CHECK(h.fails("review.close", close(false), &error) == codes::k_invalid_argument);
+  CHECK(reason_of(error) == "seen required");
+  write_mesh("glTF two");  // the same length, its time put back
+  CHECK(h.fails("review.close", close(true), &error) == codes::k_invalid_argument);
+  CHECK(reason_of(error) == "subject moved");
+  CHECK(pushed.sent.size() == mark);
+  CHECK(ledger_text() == before);
+
+  // Put back, the close is one write carrying `decided_at`, and one event.
+  write_mesh("glTF one");
+  const JsonValue closed = h.ok("review.close", close(true));
+  CHECK(changes_since(mark) == std::vector<std::string>{"review_closed"});
+  CHECK(num(at(closed, "ledger_revision")) == written + 1);
+  CHECK(at(at(closed, "reviews")[0], "decided_at").as_string() == digest.as_string());
 }

@@ -853,6 +853,25 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
         make_error(codes::k_invalid_argument, "resolution must be Accepted, Rejected or Withdrawn");
     return false;
   }
+  // The subject's digest now (protocol.md, "What a close is tied to"), read again in full: the
+  // computation that decides reuses nothing. The subject is read first and hashed with no lock
+  // held, since the assets' reads are the cost and every caller of the ledger waits for its lock;
+  // an item's subject never changes after the raise, so the one read is the one the close checks.
+  ReviewSubject subject;
+  u64 read_at = 0;  // the close answers the revision it writes, not this read's
+  if (!update_ledger(
+          ctx.sessions->vfs(), *s, true, false, read_at,
+          [&](LedgerFile& ledger, bool& write, RpcError& e) {
+            write = false;
+            const ReviewInfo* r = find_review(ledger, params.review, e);
+            if (r == nullptr) return false;
+            subject = r->subject;
+            return true;
+          },
+          error))
+    return false;
+  SubjectState seen_now;
+  subject_digest(ctx, *s, subject, seen_now);
   const i64 now = time::wall_unix_ms();
   ReviewInfo changed;
   if (!update_ledger(
@@ -902,6 +921,34 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
                             "review raiser", role);
               return false;
             }
+            // What the closer saw. A person's close carries both halves of it, so a page that
+            // dropped one could not decide past a change; an agent's checks what it sends.
+            if (r->audience == ReviewAudience::Human &&
+                (params.revision == 0 || params.digest.empty())) {
+              JsonValue data = JsonValue::object();
+              data.set("reason", JsonValue("seen required"));
+              data.set("review", JsonValue(r->id));
+              e = make_error(codes::k_invalid_argument,
+                             "review item " + id +
+                                 " is a person's: its close carries the revision and the subject "
+                                 "digest its detail was drawn with (review.list with digest)",
+                             std::move(data));
+              return false;
+            }
+            if (!params.digest.empty() && params.digest != seen_now.digest) {
+              JsonValue data = JsonValue::object();
+              data.set("reason", JsonValue("subject moved"));
+              data.set("review", JsonValue(r->id));
+              data.set("digest", JsonValue(seen_now.digest));
+              data.set("same", JsonValue(seen_now.digest == r->raised_digest));
+              e = make_error(codes::k_invalid_argument,
+                             "what review item " + id +
+                                 " is about changed since its detail was drawn: review.list it "
+                                 "with digest again, and decide on what it is now",
+                             std::move(data));
+              return false;
+            }
+            r->decided_at = seen_now.digest;
             r->state = ReviewState::Closed;
             r->resolution = params.resolution;
             r->closed_by = caller.who;
@@ -920,7 +967,9 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
           error))
     return false;
   out.now_unix_ms = now;
+  seen_now.same = seen_now.digest == changed.raised_digest;
   out.reviews.push_back(std::move(changed));
+  out.subject = std::move(seen_now);
   s->publish_ledger("review_closed", 0, params.review, caller.who.actor, caller.connection);
   return true;
 }

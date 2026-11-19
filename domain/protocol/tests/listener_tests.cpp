@@ -706,10 +706,21 @@ TEST_CASE("listener: a person's review item is closed by a credential for a huma
     REQUIRE(id != nullptr);
     return write_json(*id);
   };
+  // A close carries what the closer's detail showed: the item's revision and its subject's digest
+  // (protocol.md, "What a close is tied to"), read first on the same connection.
   const auto close = [&](net::WebSocket& ws, const std::string& session, const std::string& id) {
+    const JsonValue shown =
+        call(ws, rpc(4, "review.list",
+                     R"({"session":")" + session + R"(","review":)" + id + R"(,"digest":true})"));
+    std::string seen;
+    if (const JsonValue* listed = shown.find("result"); listed != nullptr) {
+      const JsonValue& item = (*listed->find("reviews"))[0];
+      seen = R"(,"revision":)" + write_json(*item.find("revision")) + R"(,"digest":)" +
+             write_json(*listed->find("subject")->find("digest"));
+    }
     return call(ws, rpc(3, "review.close",
                         R"({"session":")" + session + R"(","review":)" + id +
-                            R"(,"resolution":"Accepted","attribution":{}})"));
+                            R"(,"resolution":"Accepted")" + seen + R"(,"attribution":{}})"));
   };
 
   SUBCASE("the shipped roles file: reviewer closes it, the director is refused") {

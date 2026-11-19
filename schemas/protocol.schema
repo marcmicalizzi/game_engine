@@ -2792,8 +2792,9 @@ struct ReviewRaiseParams @version(1) {
   attribution: engine.doc.Attribution
 }
 
-/// Parameters of `review.close`.
-struct ReviewCloseParams @version(2) @additive(2) {
+/// Parameters of `review.close`. Version 3: `digest`, the subject digest its closer saw; with
+/// `revision` it is what the page showed (protocol.md, "What a close is tied to").
+struct ReviewCloseParams @version(3) @additive(2, 3) {
   session: string
   review: u64 = 0
   /// Accepted, Rejected, or Withdrawn (its raiser, an agent-audience item only).
@@ -2805,6 +2806,12 @@ struct ReviewCloseParams @version(2) @additive(2) {
   /// `data.reason` "revision moved") when the item has changed since, so a decision is never
   /// recorded against a version its maker did not see.
   revision: u64 = 0 @since(2)
+  /// The subject digest its closer's detail was drawn with (`review.list` with `digest`): refused
+  /// (1004, `data.reason` "subject moved", the digest now in `data.digest`) when the subject's
+  /// digest now differs, so a decision is never recorded against a state its maker did not see.
+  /// Empty checks nothing on an agent's item. A person's item is closed only with both `revision`
+  /// and `digest` (1004, "seen required"): the close a person makes is tied to what they saw.
+  digest: string @since(3)
 }
 
 /// Parameters of `review.list`. Version 2: `reviews`, `order` and `limit`, as `task.list`'s.
