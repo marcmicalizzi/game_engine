@@ -50,7 +50,8 @@ constexpr u32 k_size = 128;
 
 // The barycentrics of (x, z) in the triangle (a, b, c) of the y = 0 plane.
 ref::Dvec3 barycentrics_xz(Vec3 a, Vec3 b, Vec3 c, f64 x, f64 z) {
-  const f64 ax = a.x, az = a.z, bx = b.x, bz = b.z, cx = c.x, cz = c.z;
+  const f64 ax = static_cast<f64>(a.x), az = static_cast<f64>(a.z), bx = static_cast<f64>(b.x),
+            bz = static_cast<f64>(b.z), cx = static_cast<f64>(c.x), cz = static_cast<f64>(c.z);
   const f64 det = (bx - ax) * (cz - az) - (cx - ax) * (bz - az);
   const f64 u = ((x - ax) * (cz - az) - (cx - ax) * (z - az)) / det;
   const f64 v = ((bx - ax) * (z - az) - (x - ax) * (bz - az)) / det;
@@ -383,8 +384,10 @@ TEST_CASE("material resolve: the author's tangent frame against the derived one"
       const u32 q = left ? 0u : 4u;
       const Vec3 a = positions[q];
       const Vec3 c = positions[q + 2];
-      const f64 along = ((p.x - a.x) * (c.z - a.z) - (p.z - a.z) * (c.x - a.x)) /
-                        std::sqrt((c.x - a.x) * (c.x - a.x) + (c.z - a.z) * (c.z - a.z));
+      const f64 along =
+          ((p.x - static_cast<f64>(a.x)) * static_cast<f64>(c.z - a.z) -
+           (p.z - static_cast<f64>(a.z)) * static_cast<f64>(c.x - a.x)) /
+          static_cast<f64>(std::sqrt((c.x - a.x) * (c.x - a.x) + (c.z - a.z) * (c.z - a.z)));
       if (std::abs(along) < 0.3) continue;
       // Which of the quad's two triangles holds the pixel: (q, q+2, q+1) or (q, q+3, q+2).
       const ref::Dvec3 b_first =
