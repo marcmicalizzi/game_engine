@@ -198,7 +198,7 @@ if(TARGET engine_renderer_tests AND TARGET engine_shaders_renderer_tests)
   target_link_libraries(engine_renderer_tests PRIVATE engine_shaders_renderer_tests)
 endif()
 # What posing the trees costs on the frame's thread and on the poser's pool (flora_poser.h).
-engine_module_bench(NAME renderer SOURCES bench/flora_bench.cpp)
+engine_module_bench(NAME renderer SOURCES bench/flora_bench.cpp bench/scene_read_bench.cpp)
 if(TARGET engine_renderer_tests AND TARGET engine::sky AND TARGET engine::terrain)
   target_compile_definitions(engine_renderer_tests PRIVATE ENGINE_SKY_TESTS_TERRAIN=1)
 endif()

@@ -4,6 +4,7 @@
 #include <core/containers/flat_set.h>
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
+#include <core/schema/json_text.h>
 #include <core/schema/type_info.h>
 #include <core/time/time.h>
 #include <domain/doc/document.h>
@@ -255,14 +256,13 @@ Layer Layer::from_file(LayerFile&& file) {
 std::string Layer::to_json_text() const { return write_json(schema::to_json(to_file())); }
 
 bool Layer::from_json_text(std::string_view text, Layer& out, schema::ReadContext& ctx) {
-  JsonValue json;
-  const JsonParseResult r = parse_json(text, json);
-  if (!r.ok) {
-    ctx.error(std::string("invalid JSON: ") + r.message);
+  // Straight from the text, with no tree of it: the tree path's verdicts word for word (D40).
+  LayerFile file;
+  JsonParseResult r;
+  if (!schema::read_json_text(file, text, ctx, r)) {
+    if (!r.ok) ctx.error(std::string("invalid JSON: ") + r.message);
     return false;
   }
-  LayerFile file;
-  if (!schema::from_json(file, json, ctx)) return false;
   std::string why;
   if (!check_record_types(file, why) || !rename_defining_records(file, why)) {
     ctx.error(why);

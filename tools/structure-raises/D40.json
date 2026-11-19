@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "D40",
+  "reason": "renderer.md: the scene file read with no tree (D40), one paragraph in What the load reads",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 427
+  }
+}
