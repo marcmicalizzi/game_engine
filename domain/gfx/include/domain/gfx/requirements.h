@@ -171,6 +171,11 @@ struct DeviceCaps {
   u32 max_set_uab_samplers = 0;
   u32 max_set_uab_acceleration_structures = 0;
   u32 subgroup_size = 0;
+  // The largest side of a 2D image (`maxImageDimension2D`, 4,096 at Vulkan's floor). No row of its
+  // own: it is not a requirement the engine refuses a device on, but a bound every image it makes
+  // is held to (`image_extent_fits`, resources.h; T191). 0, as in caps nothing filled, checks
+  // nothing.
+  u32 max_image_dimension_2d = 0;
 
   // Queues: families that carry graphics and compute together, which is what the engine's
   // primary queue has to be.

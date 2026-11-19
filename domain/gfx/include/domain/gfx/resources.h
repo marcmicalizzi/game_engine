@@ -91,6 +91,15 @@ bool upload_image_2d_levels(const Device& device, u32 width, u32 height, Format 
 // nothing reads it before this, and every later reader samples it through the bindless set.
 // `upload_image_2d_levels` is these two around a submission it waits for.
 inline constexpr u32 k_max_image_levels = 16;
+// **Every 2D image the engine makes is held to the device's largest side** (T191): a `.tex` states
+// its own extent, and the reader's bound (16,384, the content build's) is above Vulkan's floor of
+// 4,096, so a valid file can still name an image a smaller device cannot make, which is invalid
+// usage that a driver may answer with anything. `create_image_2d` and
+// `create_sampled_image_levels` (and through them both uploads) refuse it here, on the engine's
+// side of the device, with the image's extent and the device's limit in the message.
+// `max_dimension` is `DeviceCaps::max_image_dimension_2d`; 0 checks nothing. A function of
+// numbers, so its case runs with no device.
+bool image_extent_fits(u32 width, u32 height, u32 max_dimension, std::string* error = nullptr);
 bool create_sampled_image_levels(const Device& device, u32 width, u32 height, Format format,
                                  u32 levels, ImageResource& out, std::string* error = nullptr);
 void record_image_levels_upload(CommandList commands, const ImageResource& image,

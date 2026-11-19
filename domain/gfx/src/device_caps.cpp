@@ -219,6 +219,7 @@ void read_device_caps(VkPhysicalDevice physical, DeviceCaps& out) {
   out.max_compute_shared_memory_size = limits.maxComputeSharedMemorySize;
   out.max_memory_allocation_count = limits.maxMemoryAllocationCount;
   out.max_storage_buffer_range = limits.maxStorageBufferRange;
+  out.max_image_dimension_2d = limits.maxImageDimension2D;
   out.subgroup_size = subgroup.subgroupSize;
   out.max_per_stage_uab_sampled_images = indexing.maxPerStageDescriptorUpdateAfterBindSampledImages;
   out.max_per_stage_uab_storage_images = indexing.maxPerStageDescriptorUpdateAfterBindStorageImages;

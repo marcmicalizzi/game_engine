@@ -525,6 +525,23 @@ TEST_CASE("gfx: an Intel-Gen9-like device clamps the bindless set and still draw
   device.destroy();
 }
 
+// T191: a `.tex` the reader takes (16,384 a side) on a device at Vulkan's floor (4,096). The check
+// is a function of the extent and the limit, so this case gives the limit as a number and opens
+// no device; `create_image_2d` and `create_sampled_image_levels` call it with
+// `DeviceCaps::max_image_dimension_2d`, read from the device by `read_device_caps`.
+TEST_CASE("an image past the device's largest 2D side is refused, with both numbers") {
+  std::string error;
+  CHECK(gfx::image_extent_fits(4096, 4096, 4096, &error));
+  CHECK(gfx::image_extent_fits(65536, 4, 0, &error));  // a limit nobody read checks nothing
+  CHECK_FALSE(gfx::image_extent_fits(16384, 4, 4096, &error));
+  CHECK(error.find("16384 x 4") != std::string::npos);
+  CHECK(error.find("4096") != std::string::npos);
+  CHECK(error.find("maxImageDimension2D") != std::string::npos);
+  error.clear();
+  CHECK_FALSE(gfx::image_extent_fits(4, 4097, 4096, &error));
+  CHECK(error.find("4 x 4097") != std::string::npos);
+}
+
 TEST_CASE("gfx: a device without 64-bit buffer atomics says exactly what stops") {
   if (!driver_available()) return;
   gfx::Device device;
