@@ -38,6 +38,10 @@ if(TARGET engine_engine_cli_tests)
     ENGINE_VIEW_PATH="$<TARGET_FILE:engine_engine_view>")
   add_dependencies(engine_engine_cli_tests engine_engine_view)
   target_link_libraries(engine_engine_cli_tests PRIVATE engine::image)
+  # And it predicts which raster path the host resolves under a test's device profile with the
+  # function the host opens its device through (domain/gfx/test_profile.h, roadmap R193): that
+  # header names no Vulkan type, and nothing here opens a device.
+  target_link_libraries(engine_engine_cli_tests PRIVATE engine::gfx)
   if(TARGET engine::sky)
     target_link_libraries(engine_engine_cli_tests PRIVATE engine::sky)
     target_compile_definitions(engine_engine_cli_tests PRIVATE ENGINE_CLI_TESTS_SKY=1)

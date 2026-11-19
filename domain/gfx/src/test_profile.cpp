@@ -1,13 +1,15 @@
-#include "test_device.h"
-
 #include <core/base/macros.h>
+#include <core/log/log.h>
+#include <domain/gfx/test_profile.h>
 
-#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <string>
 #include <system_error>
 
-namespace engine::view {
+namespace engine::gfx {
+
+ENGINE_LOG_CATEGORY_DEFINE(log_test_profile, "gfx.test_profile");
 
 namespace {
 
@@ -49,8 +51,8 @@ TestProfile judge_test_profile(std::string_view profile, std::string_view test_r
   return TestProfile::honoured;
 }
 
-gfx::DeviceOverrides test_profile_overrides(std::string_view profile) {
-  gfx::DeviceOverrides overrides;
+DeviceOverrides test_profile_overrides(std::string_view profile) {
+  DeviceOverrides overrides;
   if (profile == "baseline") {
     overrides.absent.push_back("VK_EXT_mesh_shader");
   } else if (profile == "titanxp") {
@@ -78,10 +80,10 @@ gfx::DeviceOverrides test_profile_overrides(std::string_view profile) {
   return overrides;
 }
 
-const gfx::DeviceOverrides& test_device_overrides() {
-  static const gfx::DeviceOverrides overrides = [] {
+const DeviceOverrides& test_device_overrides() {
+  static const DeviceOverrides overrides = [] {
     const std::string profile = read_environment(k_test_device_env);
-    if (profile.empty()) return gfx::DeviceOverrides{};
+    if (profile.empty()) return DeviceOverrides{};
     const std::string run = read_environment(k_test_run_env);
     // The root the test main's scratch directories live under (tests/support/test_temp_dir.h).
     std::error_code temp_error;
@@ -91,25 +93,25 @@ const gfx::DeviceOverrides& test_device_overrides() {
     const bool exists = !run.empty() && std::filesystem::is_directory(run, run_error);
     switch (judge_test_profile(profile, run, root, exists)) {
       case TestProfile::honoured:
-        std::fprintf(stderr,
-                     "engine-view: %s=%s: the device opens as that profile (a test's run)\n",
-                     k_test_device_env, profile.c_str());
+        ENGINE_LOG_INFO(log_test_profile, "the device opens as a test's profile",
+                        log::field("profile", profile));
         return test_profile_overrides(profile);
       case TestProfile::no_test:
-        std::fprintf(stderr,
-                     "engine-view: %s is set and ignored: it is honoured only under a test's main "
-                     "(%s unset)\n",
-                     k_test_device_env, k_test_run_env);
+        ENGINE_LOG_WARN(log_test_profile,
+                        "a device profile is set and ignored: it is honoured only under a test's "
+                        "main, and no test run is named",
+                        log::field("profile", profile));
         break;
       case TestProfile::stale_run:
-        std::fprintf(stderr, "engine-view: %s is set and ignored: %s names no live test run\n",
-                     k_test_device_env, k_test_run_env);
+        ENGINE_LOG_WARN(log_test_profile,
+                        "a device profile is set and ignored: the test run named is not a live one",
+                        log::field("profile", profile));
         break;
       case TestProfile::none: break;
     }
-    return gfx::DeviceOverrides{};
+    return DeviceOverrides{};
   }();
   return overrides;
 }
 
-}  // namespace engine::view
+}  // namespace engine::gfx

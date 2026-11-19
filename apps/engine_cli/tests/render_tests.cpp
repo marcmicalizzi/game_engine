@@ -10,6 +10,7 @@
 // suite skips on exit 3. That is what the distinct code is for.
 #include <core/json/json.h>
 #include <core/platform/process.h>
+#include <domain/gfx/test_profile.h>
 #include <foundation/image/decode.h>
 #if ENGINE_CLI_TESTS_SKY
 #include <domain/sky/ephemeris.h>
@@ -156,7 +157,17 @@ std::string uri_at(const JsonValue& files, const char* channel) {
 // vertex-shader baseline tier where it does not (ADR-0024). Asked of `gpu.adapters` rather than
 // assumed, because the assumption is what the first GPU run on a Pascal card broke: every machine
 // this case had run on until then had mesh shaders, and the host was right to answer "vertex".
+//
+// **Less what a test's device profile removes** (roadmap R193): under `ENGINE_GFX_TEST_DEVICE` the
+// host opens the adapter without the profile's rows (gfx/test_profile.h), while `gpu.adapters`
+// goes on reporting the card as it is, so the profile's absences are taken off the report here by
+// the function the host takes them off its device with.
 std::string expected_hw_raster(Host& host, const std::string& adapter) {
+  const gfx::DeviceOverrides profile =
+      gfx::test_profile_overrides(test::detail::environment(gfx::k_test_device_env));
+  for (const std::string& row : profile.absent) {
+    if (row == "VK_EXT_mesh_shader") return "vertex";
+  }
   const JsonValue response = host.call("gpu.adapters", "{}");
   const JsonValue* adapters = result_of(response).find("adapters");
   REQUIRE(adapters != nullptr);
@@ -960,6 +971,37 @@ void same_bytes(const std::string& what, const std::string& view_png, const std:
   CHECK(view_bytes == host_bytes);
 }
 
+// engine-view's summary: the last line it printed that is a JSON object (its log is interleaved
+// before it).
+bool view_summary_of(const std::string& output, JsonValue& summary) {
+  for (usize end = output.size(); end > 0;) {
+    const usize start = output.rfind('\n', end - 1);
+    const usize from = start == std::string::npos ? 0 : start + 1;
+    const std::string_view line = std::string_view(output).substr(from, end - from);
+    if (!line.empty() && line.front() == '{' && parse_json(line, summary).ok) return true;
+    end = start == std::string::npos ? 0 : start;
+  }
+  return false;
+}
+
+// The two hosts drew on **one device**: the raster path and the shadows each resolved for itself
+// have the same names. `same_bytes` holds only between two processes that opened the same device,
+// so the devices are compared before the bytes are. Until 2026-11-19 they were not, and under a
+// test's device profile (`ENGINE_GFX_TEST_DEVICE=titanxp`) engine-view opened the card without
+// ray queries and mesh shaders while engine-host, which read no profile, opened it whole: the
+// vertex path under the cascaded maps against the hardware path under traced shadows, a few bytes
+// apart (2, 13 and 67 of 61,440), which read for two days like an order the engine had not
+// declared (roadmap R193; apps.md, "Running as a weaker card").
+void same_device(const std::string& what, const std::string& host_raster,
+                 const std::string& host_shadows, const JsonValue& view_summary) {
+  const std::string view_raster = text(view_summary, "raster");
+  const std::string view_shadows = text(view_summary, "shadows");
+  MESSAGE(what << ": the host draws " << host_raster << " with shadows " << host_shadows
+               << ", engine-view " << view_raster << " with shadows " << view_shadows);
+  CHECK(host_raster == view_raster);
+  CHECK(host_shadows == view_shadows);
+}
+
 }  // namespace
 
 TEST_CASE("render: the erg at two hours, its sun where the ephemeris puts it") {
@@ -1071,6 +1113,8 @@ TEST_CASE("render: the dunes three years on, as engine-view draws them, byte for
   std::string own;
   std::string own_explicit;
   std::string moved;
+  std::string host_raster;
+  std::string host_shadows;
   {
     // The host's own scope: it holds the machine's GPU lock for as long as it has a device open,
     // and engine-view below takes it too.
@@ -1084,6 +1128,8 @@ TEST_CASE("render: the dunes three years on, as engine-view draws them, byte for
         "render.load", "{\"scene\":" + json_path(erg.path) + ",\"ddc\":" + json_path(ddc) + "}");
     if (skipped(loaded)) return;
     const std::string id = text(result_of(loaded), "scene");
+    host_raster = text(result_of(loaded), "raster");
+    host_shadows = text(result_of(loaded), "shadows");
     const JsonValue a = host.call(
         "render.capture", "{\"scene\":\"" + id + "\"" + capture_tail + ",\"name\":\"own\"}");
     REQUIRE(read_bytes(uri_at(member(result_of(a), "files"), "color"), own));
@@ -1114,6 +1160,7 @@ TEST_CASE("render: the dunes three years on, as engine-view draws them, byte for
   CHECK(own != moved);
 
   // engine-view with the same flags: the scene, the orbit, the size, and --ground-time.
+  JsonValue view_summary;
   const auto view = [&](bool with_time, const std::string& png, std::string& out) {
     std::vector<std::string> args = {"--scene",  erg.path,  "--ddc",   ddc,         "--offscreen",
                                      "--frames", "1",       "--width", "160",       "--height",
@@ -1130,13 +1177,16 @@ TEST_CASE("render: the dunes three years on, as engine-view draws them, byte for
     }
     REQUIRE_MESSAGE(code == 0, output);
     REQUIRE(read_bytes(png, out));
+    REQUIRE_MESSAGE(view_summary_of(output, view_summary), output);
     return true;
   };
   std::string view_own;
   std::string view_later;
   if (!view(false, tmp.file("view-own.png"), view_own)) return;
   REQUIRE(view(true, tmp.file("view-later.png"), view_later));
-  // engine-view's picture is the host's, byte for byte, at both times (`same_bytes`).
+  // The two hosts opened one device (`same_device`), and engine-view's picture is the host's, byte
+  // for byte, at both times (`same_bytes`).
+  same_device("the dunes", host_raster, host_shadows, view_summary);
   same_bytes("the scene's own time", tmp.file("view-own.png"), out_dir + "/own.png", view_own, own);
   same_bytes("three years on", tmp.file("view-later.png"), out_dir + "/later.png", view_later,
              moved);
@@ -1458,6 +1508,8 @@ TEST_CASE("render: the endless desert benchmarked on its tiles, with its sky") {
   const std::string ddc = tmp.file("ddc");
   const std::string out_dir = tmp.file("captures");
   std::string host_png;
+  std::string host_raster;
+  std::string host_shadows;
   u64 host_far = 0;
   {
     // The host's own scope: it holds the machine's GPU lock for as long as it has a device open,
@@ -1519,6 +1571,8 @@ TEST_CASE("render: the endless desert benchmarked on its tiles, with its sky") {
                               json_path(out_dir) + ",\"name\":\"far\"}");
     host_far = number(member(member(result_of(shot), "stats"), "ground"), "far_levels");
     host_png = uri_at(member(result_of(shot), "files"), "color");
+    host_raster = text(result_of(plain), "raster");
+    host_shadows = text(result_of(plain), "shadows");
   }
   std::string host_bytes;
   REQUIRE(read_bytes(host_png, host_bytes));
@@ -1533,21 +1587,13 @@ TEST_CASE("render: the endless desert benchmarked on its tiles, with its sky") {
     return;
   }
   REQUIRE_MESSAGE(code == 0, output);
-  // The summary is the last line that is a JSON object; the log is interleaved before it.
   JsonValue view_summary;
-  bool found = false;
-  for (usize end = output.size(); !found && end > 0;) {
-    const usize start = output.rfind('\n', end - 1);
-    const usize from = start == std::string::npos ? 0 : start + 1;
-    const std::string_view line = std::string_view(output).substr(from, end - from);
-    found = !line.empty() && line.front() == '{' && parse_json(line, view_summary).ok;
-    end = start == std::string::npos ? 0 : start;
-  }
-  REQUIRE_MESSAGE(found, output);
+  REQUIRE_MESSAGE(view_summary_of(output, view_summary), output);
   const u64 view_far = number(member(member(view_summary, "time_lapse"), "rings"), "far_levels");
   MESSAGE("far levels with none named: the host " << host_far << ", engine-view " << view_far);
   CHECK(host_far > 0);
   CHECK(host_far == view_far);
+  same_device("the endless desert", host_raster, host_shadows, view_summary);
   std::string view_bytes;
   REQUIRE(read_bytes(view_png, view_bytes));
   same_bytes("the endless desert's far levels", view_png, host_png, view_bytes, host_bytes);
