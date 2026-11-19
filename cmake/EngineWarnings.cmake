@@ -5,6 +5,9 @@ function(engine_apply_warnings target)
   if(_type STREQUAL "INTERFACE_LIBRARY")
     return()
   endif()
+  # Every engine target passes through here, so the release preset's code generation is set here
+  # too (cmake/EngineReleaseCodegen.cmake).
+  engine_apply_release_codegen(${target})
 
   if(MSVC)
     target_compile_options(${target} PRIVATE
