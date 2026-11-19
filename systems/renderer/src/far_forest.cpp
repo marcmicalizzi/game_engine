@@ -453,10 +453,13 @@ void run_tile(void* data) {
   const std::string path =
       options.cache && !options.ddc.empty() ? entry_path(options.ddc, job.key) : std::string();
   if (!path.empty() && read_entry(path, job.key, job.mesh, job.part_of_cluster)) {
-    u32 parts_used = 0;
+    // Every cluster's part one of this tile's, compared as it is (T194): the count of parts used,
+    // `p + 1`, wrapped to 0 for a part index of 0xFFFFFFFF and passed an entry naming a part 4
+    // billion past the tile's.
+    bool parts_known = true;
     for (const u32 p : job.part_of_cluster)
-      parts_used = std::max(parts_used, p + 1);
-    if (parts_used <= job.parts.size()) {
+      parts_known = parts_known && p < job.parts.size();
+    if (parts_known) {
       job.triangles = job.mesh.leaf_triangle_count;
       job.hit = true;
       job.ok = true;
