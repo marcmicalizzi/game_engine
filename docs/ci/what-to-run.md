@@ -942,7 +942,11 @@ Remove-Item Env:ENGINE_GFX_TEST_DEVICE
 Since T181 (2026-11-17) `engine-view` takes the same profile under a test's main
 ([apps](../subsystems/apps.md#running-as-a-weaker-card)), so the leg can reach the app's end-to-end
 tests too, `-Filter '^(renderer|engine_view)\.'`; whether the gate widens its filter is the
-coordinator's to decide, and no gate has run it yet.
+coordinator's to decide, and no gate has run it yet. `engine-host` took no profile until R193
+(2026-11-19), so `engine_cli`'s cases that hold the viewer's picture to the host's were red on such
+a leg by construction, two devices compared as one; it takes the same profile now, and those cases
+check which device each host opened before they compare a byte ([gfx](../subsystems/gfx.md), "A
+test's device profile reaches every host it starts").
 
 `titanxp` rather than `baseline`: it removes everything `baseline` removes (mesh shaders) and the
 ray-tracing rows besides, so it covers both of the faults the server leg found. A fault this leg

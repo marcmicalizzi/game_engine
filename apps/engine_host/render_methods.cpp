@@ -9,6 +9,7 @@
 #include <core/profiling/startup_trace.h>
 #include <core/time/time.h>
 #include <domain/gfx/cluster_cull.h>
+#include <domain/gfx/test_profile.h>
 #include <domain/protocol/paths.h>
 #include <domain/protocol/session.h>
 #include <domain/scene_gen/derived_root.h>
@@ -1751,6 +1752,10 @@ gfx::Device* RenderHost::device(u32 adapter, std::string& error) {
   }
   gfx::DeviceOptions options;
   options.adapter_index = adapter;  // no surface extensions: this process presents nothing
+  // A test's device profile, which only a test's main can give (gfx/test_profile.h; apps.md,
+  // "Running as a weaker card"): the host opens the device engine-view opens under the same test,
+  // or a case that compares their pictures compares two cards (roadmap R193).
+  options.overrides = gfx::test_device_overrides();
   if (!device_.create(options, &device_error_)) {
     device_failed_ = true;
     error = device_error_;

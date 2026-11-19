@@ -28,7 +28,6 @@
 #include "pacing.h"
 #include "report.h"
 #include "startup.h"
-#include "test_device.h"
 #if ENGINE_VIEW_GAME
 #include "game_hud.h"
 #include "game_runner.h"
@@ -58,6 +57,7 @@
 #include <domain/gfx/display.h>
 #include <domain/gfx/display_probe.h>
 #include <domain/gfx/pipeline_batch.h>
+#include <domain/gfx/test_profile.h>
 #include <foundation/bench/machine_state.h>
 #include <foundation/image/png.h>
 #include <foundation/input/input.h>
@@ -2661,13 +2661,13 @@ std::string pipeline_cache_dir(const Options& options) {
 }
 
 // Every path's device: the adapter, validation, the pipeline cache, and a test's device profile,
-// which only a test's main can give (test_device.h; apps.md, "Running as a weaker card").
+// which only a test's main can give (gfx/test_profile.h; apps.md, "Running as a weaker card").
 gfx::DeviceOptions device_options_of(const Options& options) {
   gfx::DeviceOptions device_options;
   device_options.adapter_index = options.adapter;
   device_options.validation = options.validation;
   device_options.pipeline_cache_dir = pipeline_cache_dir(options);
-  device_options.overrides = view::test_device_overrides();
+  device_options.overrides = gfx::test_device_overrides();
   return device_options;
 }
 
