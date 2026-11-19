@@ -88,7 +88,9 @@ if(TARGET engine::rocks)
 endif()
 # NO_DEVICE: the cases read scenes and lay tiles out with the renderer's CPU half and open no
 # device (roadmap T170, what-to-run.md, "Tests that open no device").
-engine_module_tests(NAME world NO_DEVICE SOURCES ${_world_tests})
+# doc_test_types: a type renamed with `@alias` (engine.doc.test.Marker, formerly Beacon) for the cases
+# that read a save and an event written before a rename (roadmap D41).
+engine_module_tests(NAME world NO_DEVICE SOURCES ${_world_tests} DEPS doc_test_types)
 engine_test_generators(engine_world_tests authored city rocks ruins sky terrain)
 
 # The ring's update over a moving observer at the default rings, a first fill, and one tile's round

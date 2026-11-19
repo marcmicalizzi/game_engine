@@ -1014,11 +1014,8 @@ bool load_partitioned(const DiskView& disk, const LayerRef& ref, Layer& out, Sto
         set_error(error, index_path, "records are not in id order at " + hex_of(r.id));
         return false;
       }
-      TileCoord actual;
-      if (!tile_of(r, index.partition, actual) || !(actual == tile)) {
-        set_error(error, path, "record " + hex_of(r.id) + " does not fall in this tile");
-        return false;
-      }
+      // Whether it falls in this tile is checked once every file is read (`file_where`, below):
+      // a partition whose property was renamed follows the rename only if the layer's records do.
       gathered.push_back(Gathered{std::move(r), i});
     }
   }
@@ -1039,42 +1036,72 @@ bool load_partitioned(const DiskView& disk, const LayerRef& ref, Layer& out, Sto
       set_error(error, untiled_path, "present although the index lists no untiled records");
       return false;
     }
-    if (!commit()) return false;
-    canonical = canonical && build_layer_index(out) == index;
-    stored.index = std::move(index);
-    fill_places(stored);
-    return true;
-  }
-  LayerFile untiled;
-  if (!read_file(disk, lf.untiled, text, known, error) ||
-      !parse_schema_text(text, untiled_path, untiled, error))
-    return false;
-  if (std::string why;
-      !check_record_types(untiled, why) || !rename_defining_records(untiled, why)) {
-    set_error(error, untiled_path, why);
-    return false;
-  }
-  if (untiled.objects.size() != index.untiled.size()) {
-    set_error(error, untiled_path,
-              "holds " + std::to_string(untiled.objects.size()) + " records, the index lists " +
-                  std::to_string(index.untiled.size()));
-    return false;
-  }
-  canonical = canonical && canonical_file(untiled, ref.role, text);
-  for (u32 k = 0; k < untiled.objects.size(); ++k) {
-    ObjectRecord& r = untiled.objects[k];
-    if (!(r.id == index.untiled[k])) {
-      set_error(error, untiled_path, "record " + hex_of(r.id) + " is not the one the index lists");
+  } else {
+    LayerFile untiled;
+    if (!read_file(disk, lf.untiled, text, known, error) ||
+        !parse_schema_text(text, untiled_path, untiled, error))
+      return false;
+    if (std::string why;
+        !check_record_types(untiled, why) || !rename_defining_records(untiled, why)) {
+      set_error(error, untiled_path, why);
       return false;
     }
-    TileCoord tile;
-    if (tile_of(r, index.partition, tile)) {
-      set_error(
-          error, untiled_path,
-          "record " + hex_of(r.id) + " has a position and belongs in " + tile_file_name(tile));
+    if (untiled.objects.size() != index.untiled.size()) {
+      set_error(error, untiled_path,
+                "holds " + std::to_string(untiled.objects.size()) + " records, the index lists " +
+                    std::to_string(index.untiled.size()));
       return false;
     }
-    gathered.push_back(Gathered{std::move(r), index.tiles.size()});
+    canonical = canonical && canonical_file(untiled, ref.role, text);
+    for (u32 k = 0; k < untiled.objects.size(); ++k) {
+      ObjectRecord& r = untiled.objects[k];
+      if (!(r.id == index.untiled[k])) {
+        set_error(error, untiled_path,
+                  "record " + hex_of(r.id) + " is not the one the index lists");
+        return false;
+      }
+      gathered.push_back(Gathered{std::move(r), index.tiles.size()});
+    }
+  }
+
+  // **A partition whose property was renamed** (`@alias`; doc.md, "A renamed type or field"): the
+  // layer is tiled by the field's current name when its definitions, renamed as their files were
+  // read, say so, and refused by name when they disagree. Overrides are renamed once the stack is
+  // whole, so until then one may still carry the former name (`tile_of_read`).
+  std::string former;
+  {
+    Vector<const ObjectRecord*> records;
+    records.reserve(gathered.size());
+    for (const Gathered& g : gathered)
+      records.push_back(&g.record);
+    std::string why;
+    if (!follow_partition_rename(index.partition, records, former, why)) {
+      set_error(error, index_path, why);
+      return false;
+    }
+    if (!former.empty()) out.set_partition(index.partition);
+  }
+  // A partition followed through a rename leaves the index on disk naming the former field, which
+  // the next save rewrites (D40's canonical form; `index` is renamed in place above, so the check
+  // after the commit below would not see it).
+  if (!former.empty()) canonical = false;
+  // Every record stands where its file says.
+  for (const Gathered& g : gathered) {
+    TileCoord actual;
+    const bool tiled = tile_of_read(g.record, index.partition, former, actual);
+    if (g.source < index.tiles.size()) {
+      const TileRef& t = index.tiles[g.source];
+      if (!tiled || !(actual == TileCoord{t.x, t.y})) {
+        set_error(error, disk.full(lf.tile(t.file)),
+                  "record " + hex_of(g.record.id) + " does not fall in this tile");
+        return false;
+      }
+    } else if (tiled) {
+      set_error(error, untiled_path,
+                "record " + hex_of(g.record.id) + " has a position and belongs in " +
+                    tile_file_name(actual));
+      return false;
+    }
   }
   if (!commit()) return false;
   canonical = canonical && build_layer_index(out) == index;

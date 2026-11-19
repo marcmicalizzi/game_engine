@@ -137,6 +137,12 @@ bool is_byte_comparable(const TypeRef& type) noexcept;
 u32 stable_type_id(std::string_view qualified_name) noexcept;
 // The registered type whose `stable_type_id` is `id`, or null: how a reader of the store turns an
 // event's or a projection's type back into its descriptor. A walk of the registry, for cold paths.
+// The id of a name the type had before a rename (`TypeInfo::aliases`) finds it too, after every
+// current name, so what was written before the rename reads (schemas/README.md, "Renaming a field
+// or a type").
 const TypeInfo* find_by_stable_id(u32 id) noexcept;
+// Whether `id` is the `stable_type_id` of `type`'s name or of one of its former names: what a
+// reader that already holds the candidate types compares a stored id against.
+bool has_stable_id(const TypeInfo& type, u32 id) noexcept;
 
 }  // namespace engine::schema

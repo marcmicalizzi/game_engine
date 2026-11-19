@@ -275,3 +275,32 @@ TEST_CASE("world: an event's payload reads as this build's version of its type, 
   garbled.payload = std::span<const u8>(reinterpret_cast<const u8*>(list.data()), list.size());
   CHECK_FALSE(read_event_payload(garbled, payload, error));
 }
+
+TEST_CASE("world: an event written before its type was renamed reads under the new names") {
+  // Roadmap D41: the store names an event's type by the id of the name it had when it was written.
+  // `engine.doc.test.Marker` was `engine.doc.test.Beacon`, its `label` was `title` and its glow's
+  // `strength` was `power` (domain/doc/tests/doc_test_types.schema, linked for this case).
+  const schema::TypeInfo* marker = schema::Registry::global().find("engine.doc.test.Marker");
+  REQUIRE(marker != nullptr);
+  const std::string text =
+      R"({"glow":{"power":2},"position":[1,2,3],"title":"gate"})";  // as the old build wrote it
+  store::EventRecord record;
+  record.type = schema::stable_type_id("engine.doc.test.Beacon");
+  record.payload_version = 1;
+  record.payload = std::span<const u8>(reinterpret_cast<const u8*>(text.data()), text.size());
+  EventPayload payload;
+  std::string error;
+  REQUIRE_MESSAGE(read_event_payload(record, payload, error), error);
+  CHECK(payload.type == marker);
+  CHECK(payload.value.find("title") == nullptr);
+  REQUIRE(payload.value.find("label") != nullptr);
+  CHECK(*payload.value.find("label") == JsonValue("gate"));
+  REQUIRE(payload.value.find("glow") != nullptr);
+  CHECK(payload.value.find("glow")->find("strength") != nullptr);
+  CHECK(payload.value.find("glow")->find("power") == nullptr);
+  // One field under two names is refused, naming both.
+  const std::string both = R"({"label":"gate","position":[1,2,3],"title":"gate"})";
+  record.payload = std::span<const u8>(reinterpret_cast<const u8*>(both.data()), both.size());
+  CHECK_FALSE(read_event_payload(record, payload, error));
+  CHECK(error.find("'title' and 'label'") != std::string::npos);
+}

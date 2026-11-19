@@ -38,7 +38,13 @@ namespace engine::doc {
 // partition.
 struct CheckpointState {
   DocumentManifest manifest;
+  // In the current names: a record written before a rename (`@alias`) is read renamed, its
+  // overrides by the type the checkpoint's own stack gives them
+  // (doc.md, "A renamed type or field").
   Vector<Layer> layers;
+  // Overrides no layer of the checkpoint defines that keep a former field name, as a document's
+  // load reports them (`Document::kept_names`).
+  Vector<Document::KeptName> kept_names;
 };
 
 class Checkpoints {

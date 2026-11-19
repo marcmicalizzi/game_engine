@@ -1,0 +1,17 @@
+// Object types the former-name readers' cases place in a world (roadmap D41; docs/subsystems/doc.md,
+// "A renamed type or field"): a layer partitioned by a field that was renamed, and a type that still
+// has a field of that name, which a layer holding both cannot follow.
+namespace engine.doc.test
+
+/// A post whose position `spot` was `place`: a layer partitioned by `place` before the rename
+/// follows it.
+struct Post @version(1) @kind(record) {
+  name: string
+  spot: worldpos @unit(m) @alias("place")
+}
+
+/// A stall that still calls its position `place`.
+struct Stall @version(1) @kind(record) {
+  name: string
+  place: worldpos @unit(m)
+}

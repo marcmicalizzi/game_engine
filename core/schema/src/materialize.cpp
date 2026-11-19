@@ -197,9 +197,26 @@ u32 stable_type_id(std::string_view qualified_name) noexcept {
   return hash;
 }
 
+bool has_stable_id(const TypeInfo& type, u32 id) noexcept {
+  if (stable_type_id(type.qualified_name) == id) return true;
+  for (const char* former : type.aliases) {
+    if (stable_type_id(former) == id) return true;
+  }
+  return false;
+}
+
 const TypeInfo* find_by_stable_id(u32 id) noexcept {
-  for (const TypeInfo* type : Registry::global().all()) {
+  const std::span<const TypeInfo* const> all = Registry::global().all();
+  for (const TypeInfo* type : all) {
     if (stable_type_id(type->qualified_name) == id) return type;
+  }
+  // A name the type had before a rename (`@alias`), as `Registry::resolve` answers a stored name:
+  // an event or a projection written before the rename names its type by that name's id. A current
+  // name is looked for first, so a former name never shadows one.
+  for (const TypeInfo* type : all) {
+    for (const char* former : type->aliases) {
+      if (stable_type_id(former) == id) return type;
+    }
   }
   return nullptr;
 }

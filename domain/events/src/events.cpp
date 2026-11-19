@@ -596,8 +596,12 @@ bool EventBus::raise_from(Emitter& from, u16 type, const void* bytes, u32 size, 
 bool EventBus::replay_external(const ExternalRaise& entry) {
   if (entry.tick != tick_) return false;
   u16 type = k_invalid_type;
-  for (u16 i = 0; i < types_.size(); ++i) {
+  // A log written before an event type was renamed names it by its former name's id (`@alias`).
+  for (u16 i = 0; i < types_.size() && type == k_invalid_type; ++i) {
     if (schema::stable_type_id(types_[i]->qualified_name) == entry.type_id) type = i;
+  }
+  for (u16 i = 0; i < types_.size() && type == k_invalid_type; ++i) {
+    if (schema::has_stable_id(*types_[i], entry.type_id)) type = i;
   }
   if (type == k_invalid_type || entry.payload.size() != types_[type]->size) return false;
   EventRecord head;

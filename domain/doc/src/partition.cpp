@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <limits>
+#include <string>
 
 namespace engine::doc {
 
@@ -155,6 +156,78 @@ bool tile_of(const ObjectRecord& record, const LayerPartition& partition, TileCo
   const std::string_view property = position_property(record, partition);
   if (property.empty()) return false;
   const JsonValue* value = record.properties.find_value(property);
+  return value != nullptr && tile_of_position(*value, partition.tile_size, out);
+}
+
+namespace {
+
+std::string id_text(const ObjectId& id) {
+  char hex[33];
+  id.to_hex(hex);
+  return std::string(hex, 32);
+}
+
+}  // namespace
+
+bool follow_partition_rename(LayerPartition& partition,
+                             std::span<const ObjectRecord* const> records, std::string& former,
+                             std::string& why) {
+  former.clear();
+  const schema::Registry& registry = schema::Registry::global();
+  const std::string& property = partition.property;
+  // Nothing to decide unless some type of this build was once given a field of this name.
+  if (property.empty() || !registry.is_former_field_name(property)) return true;
+  // One definition of each side, to name in a refusal: one that renamed the field (and to what),
+  // and one that still holds it.
+  const ObjectRecord* renamed_by = nullptr;
+  const char* renamed_to = nullptr;
+  const ObjectRecord* kept_by = nullptr;
+  for (const ObjectRecord* record : records) {
+    if (record->type.empty()) continue;  // an override: its type is the stack's, not the file's
+    const schema::TypeInfo* info = registry.find(record->type);
+    const bool carries = record->properties.find_value(property) != nullptr;
+    if (info == nullptr || info->kind != schema::Kind::Struct) {
+      // A type this build does not have keeps its records as data: tiled by what it carries.
+      if (carries && kept_by == nullptr) kept_by = record;
+      continue;
+    }
+    if (info->find_field(property) != nullptr) {
+      if (kept_by == nullptr) kept_by = record;
+      continue;
+    }
+    const schema::FieldInfo* field = info->find_field_alias(property);
+    if (field == nullptr) continue;  // a type with no such field: untiled either way
+    if (renamed_by == nullptr) {
+      renamed_by = record;
+      renamed_to = field->name;
+    } else if (std::string_view(renamed_to) != field->name) {
+      why = "the layer is tiled by '" + property + "', which " + renamed_by->type + " renamed '" +
+            renamed_to + "' and " + record->type + " renamed '" + field->name +
+            "': a partition names one property";
+      return false;
+    }
+  }
+  if (renamed_by == nullptr) return true;
+  if (kept_by != nullptr) {
+    why = "the layer is tiled by '" + property + "', which " + renamed_by->type + " renamed '" +
+          renamed_to + "' while " + kept_by->type + " (record " + id_text(kept_by->id) +
+          ") still names '" + property +
+          "': a partition names one property, so rename the field "
+          "of both or partition the layer by '" +
+          renamed_to + "' after moving the other records";
+    return false;
+  }
+  former = property;
+  partition.property = renamed_to;
+  return true;
+}
+
+bool tile_of_read(const ObjectRecord& record, const LayerPartition& partition,
+                  std::string_view former, TileCoord& out) {
+  if (tile_of(record, partition, out)) return true;
+  if (former.empty() || !record.type.empty() || !(partition.tile_size > 0)) return false;
+  if (record.properties.find_value(partition.property) != nullptr) return false;
+  const JsonValue* value = record.properties.find_value(former);
   return value != nullptr && tile_of_position(*value, partition.tile_size, out);
 }
 
