@@ -18,12 +18,14 @@ enum Faction : u8 {
 }
 
 struct Attributes @version(1) {
-  strength: i32 = 10
+  /// Formerly `might`: the former name a module built before the rename still resolves (D43).
+  strength: i32 = 10 @alias("might")
   agility: f32 = 1.5
 }
 
-/// A person in the world.
-struct Character @version(1) @kind(record) {
+/// A person in the world. Formerly `engine.hotload_test.Person`, so a module that names the old
+/// type still resolves its fields (D43).
+struct Character @version(1) @kind(record) @alias("engine.hotload_test.Person") {
   name: string
   /// Hit points; 0 is dead.
   health: f32 = 100

@@ -10,8 +10,9 @@
 // to measure or wait until it is quiet.
 //
 // What is recorded, and nothing else: CPU busy percentage of the whole machine and of this
-// process (from which "others" follows by subtraction), GPU utilization and memory, whether
-// the Windows session is locked, and the machine-wide GPU lock (foundation/gpu_lock/gpu_lock.h).
+// process (from which "others" follows by subtraction), GPU utilization, memory and SM clock,
+// whether the Windows session is locked, and the machine-wide GPU lock
+// (foundation/gpu_lock/gpu_lock.h).
 // **No process names, no command lines, no user names** — the question is "how loaded is this box",
 // and the answer does not need to say by whom. The one exception is the GPU lock's owner label and
 // purpose line, which its holder wrote into a file every tool on the machine reads precisely so
@@ -30,6 +31,7 @@
 
 #include <cstdio>
 #include <string>
+#include <string_view>
 
 namespace engine {
 class JsonValue;
@@ -61,6 +63,14 @@ struct MachineState {
   // second reading, `gpu_own_tail_pct` the first.
   bool gpu_settled = false;
   f64 gpu_own_tail_pct = 0.0;
+  // The SM clock when the GPU was read, and the most it may run at (nvidia-smi's `clocks.sm` and
+  // `clocks.max.sm`, MHz; roadmap T69), so a number taken on a throttled or a boosted card says so.
+  // An instant's reading, not an average: an idle card reads its idle clock. False, with zeros,
+  // when the card answers no clock; the rest of the GPU reading stands without it. Kept from the
+  // first reading by sample_after_own_gpu_work, which is the run's own clock.
+  bool gpu_clock_valid = false;
+  u32 gpu_sm_clock_mhz = 0;
+  u32 gpu_sm_clock_max_mhz = 0;
 
   // Yes when a lock screen is up (Windows: a LogonUI.exe process exists). Unknown elsewhere.
   Tristate session_locked = Tristate::Unknown;
@@ -91,15 +101,21 @@ struct QuietThresholds {
 bool is_quiet(const MachineState& state, const QuietThresholds& thresholds) noexcept;
 
 // Field-wise maximum, for reporting the worst of the samples a run took. For the GPU lock the
-// worse is the one somebody else held, then any one present.
+// worse is the one somebody else held, then any one present; for the SM clock the slower reading.
 MachineState worst_of(const MachineState& a, const MachineState& b) noexcept;
 
-// One line for a human: "cpu 12.3% (others 9.1%), gpu 41% util 14336/32607 MiB, session
-// unlocked, gpu lock free". Unknown fields are named as unknown rather than left out.
+// One line for a human: "cpu 12.3% (others 9.1%), gpu 41% util 14336/32607 MiB, sm 2730/3090
+// MHz, session unlocked, gpu lock free". Unknown fields are named as unknown rather than left out.
 std::string describe(const MachineState& state);
 
 // The `machine_state` object of a report: every field, with null where it is unknown.
 JsonValue machine_state_json(const MachineState& state);
+
+// One line of `nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,clocks.sm,
+// clocks.max.sm --format=csv,noheader,nounits` into state's GPU fields. False, nothing set, when
+// the first three are not numbers; the clocks are optional (`gpu_clock_valid`). Public for the
+// tests, which hand it the lines a card gives without running the tool.
+bool parse_gpu_query(std::string_view line, MachineState& state);
 
 // One WARNING line to `out` when the machine was busier than the thresholds allow; returns
 // whether it wrote one. Every consumer of a machine state warns with this function, so the

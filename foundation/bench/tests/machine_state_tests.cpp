@@ -161,6 +161,52 @@ TEST_CASE("machine state: the JSON object is null field by field, never absent")
   CHECK(o["session_locked"] == JsonValue(false));
 }
 
+TEST_CASE("machine state: the SM clock is read beside the busy share, and null when not read") {
+  // T69: the line nvidia-smi gives for the query, a card with no clock, and one with no reading.
+  bench::MachineState s;
+  REQUIRE(bench::parse_gpu_query("41, 14336, 32607, 2730, 3090\r", s));
+  CHECK(s.gpu_valid);
+  CHECK(s.gpu_util_pct == doctest::Approx(41.0));
+  CHECK(s.gpu_memory_total_mib == 32607);
+  CHECK(s.gpu_clock_valid);
+  CHECK(s.gpu_sm_clock_mhz == 2730);
+  CHECK(s.gpu_sm_clock_max_mhz == 3090);
+  JsonValue o = bench::machine_state_json(s);
+  u64 clock = 0;
+  REQUIRE(o["gpu_sm_clock_mhz"].get_u64(clock));
+  CHECK(clock == 2730);
+  REQUIRE(o["gpu_sm_clock_max_mhz"].get_u64(clock));
+  CHECK(clock == 3090);
+  CHECK(bench::describe(s).find("sm 2730/3090 MHz") != std::string::npos);
+
+  bench::MachineState no_clock;
+  REQUIRE(bench::parse_gpu_query("3, 512, 12288, [N/A], [N/A]", no_clock));
+  CHECK(no_clock.gpu_valid);  // the busy share and memory stand without a clock
+  CHECK_FALSE(no_clock.gpu_clock_valid);
+  o = bench::machine_state_json(no_clock);
+  CHECK(o["gpu_util_pct"].is_number());
+  CHECK(o["gpu_sm_clock_mhz"].is_null());
+  CHECK(o["gpu_sm_clock_max_mhz"].is_null());
+  CHECK(bench::describe(no_clock).find("sm clock unknown") != std::string::npos);
+
+  bench::MachineState none;
+  CHECK_FALSE(bench::parse_gpu_query("[N/A], 512, 12288, 1500, 1800", none));
+  CHECK_FALSE(none.gpu_valid);
+  CHECK_FALSE(bench::parse_gpu_query("", none));
+  o = bench::machine_state_json(bench::MachineState{});
+  CHECK(o["gpu_sm_clock_mhz"].is_null());  // no card, no tool: null, never absent
+  CHECK(o["gpu_sm_clock_max_mhz"].is_null());
+
+  // The worse of two readings is the slower clock.
+  bench::MachineState fast = s;
+  bench::MachineState slow = s;
+  slow.gpu_sm_clock_mhz = 1200;
+  const bench::MachineState w = bench::worst_of(fast, slow);
+  CHECK(w.gpu_clock_valid);
+  CHECK(w.gpu_sm_clock_mhz == 1200);
+  CHECK(bench::worst_of(bench::MachineState{}, fast).gpu_sm_clock_mhz == 2730);
+}
+
 TEST_CASE("machine state: describe names an unknown field rather than leaving it out") {
   const std::string unknown = bench::describe(bench::MachineState{});
   CHECK(unknown.find("cpu unknown") != std::string::npos);

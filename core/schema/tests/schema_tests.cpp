@@ -595,3 +595,86 @@ TEST_CASE("schema: a former name reads as the field or the type, and is written 
   CHECK_FALSE(rename_former_fields(info, nested.as_object(), nested_ctx, n));
   CHECK(nested_ctx.diagnostics[0].path == "parts[0].length");
 }
+
+// --- D44: a name, current or former, means one type across libraries -------------------------
+namespace {
+TypeInfo d44_type(const char* qualified, std::span<const char* const> aliases = {}) {
+  TypeInfo t{};
+  t.qualified_name = qualified;
+  t.name = qualified;
+  t.ns = "";
+  t.kind = Kind::Struct;
+  t.tag = "";
+  t.doc = "";
+  t.aliases = aliases;
+  return t;
+}
+}  // namespace
+
+TEST_CASE("schema: a former name equal to another type's current name is refused in either order") {
+  static const char* const k_was_door[] = {"lib.Door"};
+  const TypeInfo door = d44_type("lib.Door");
+  const TypeInfo portal = d44_type("lib.Portal", k_was_door);  // renamed from lib.Door elsewhere
+  {
+    Registry registry;  // the current name first, then the type that claims it as former
+    REQUIRE(registry.try_add(door));
+    std::string why;
+    CHECK_FALSE(registry.try_add(portal, &why));
+    CHECK(why.find("'lib.Door'") != std::string::npos);
+    CHECK(why.find("lib.Portal") != std::string::npos);
+    CHECK(registry.find("lib.Portal") == nullptr);  // refused whole: nothing half-registered
+    CHECK(registry.resolve("lib.Door") == &door);
+  }
+  {
+    Registry registry;  // the former name first, then a type whose current name it is
+    REQUIRE(registry.try_add(portal));
+    CHECK(registry.resolve("lib.Door") == &portal);
+    std::string why;
+    CHECK_FALSE(registry.try_add(door, &why));
+    CHECK(why.find("'lib.Door'") != std::string::npos);
+    CHECK(why.find("lib.Portal") != std::string::npos);
+    CHECK(registry.find("lib.Door") == nullptr);
+    CHECK(registry.collision(door) ==
+          why);  // the same answer asked again: the registry is unchanged
+  }
+}
+
+TEST_CASE("schema: two types claiming one former name are refused, and a rename still resolves") {
+  static const char* const k_was_gate[] = {"lib.Gate"};
+  const TypeInfo arch = d44_type("lib.Arch", k_was_gate);
+  const TypeInfo hatch = d44_type("lib.Hatch", k_was_gate);
+  Registry registry;
+  REQUIRE(registry.try_add(arch));
+  // An old record of `lib.Gate` would be whichever registered first: refused, never settled by
+  // the order two libraries' static initializers happen to run in.
+  std::string why;
+  CHECK_FALSE(registry.try_add(hatch, &why));
+  CHECK(why.find("'lib.Gate'") != std::string::npos);
+  CHECK(why.find("lib.Arch") != std::string::npos);
+  CHECK(why.find("lib.Hatch") != std::string::npos);
+  // The ordinary rename: the former name reads as the type, the current one too, and the same
+  // descriptor registered again changes nothing.
+  CHECK(registry.resolve("lib.Gate") == &arch);
+  CHECK(registry.resolve("lib.Arch") == &arch);
+  CHECK(registry.find("lib.Gate") == nullptr);
+  CHECK(registry.try_add(arch));
+  CHECK(registry.all().size() == 1);
+  // A third type with no name in common registers beside it.
+  const TypeInfo other = d44_type("lib.Other");
+  CHECK(registry.try_add(other));
+  CHECK(registry.collision(other).empty());
+}
+
+TEST_CASE("schema: the global registry holds no name that means two types") {
+  // Every type the test links registered through `add`, before any test ran: read the maps back.
+  const Registry& registry = Registry::global();
+  for (const TypeInfo* type : registry.all()) {
+    const TypeInfo* former_owner = registry.find_former(type->qualified_name);
+    CHECK_MESSAGE((former_owner == nullptr || former_owner == type), type->qualified_name);
+    for (const char* former : type->aliases) {
+      const TypeInfo* current_owner = registry.find(former);
+      CHECK_MESSAGE((current_owner == nullptr || current_owner == type), former);
+      CHECK_MESSAGE(registry.find_former(former) == type, former);
+    }
+  }
+}

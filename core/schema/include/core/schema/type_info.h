@@ -13,6 +13,7 @@
 #include <core/containers/vector.h>
 
 #include <span>
+#include <string>
 #include <string_view>
 
 namespace engine::schema {
@@ -201,7 +202,15 @@ class Registry {
  public:
   static Registry& global();
 
+  // A name — current or former — means one type (roadmap D44): `add` stops the process, naming both
+  // types and the name, when `info` would make a name two types', in whichever order the two
+  // arrive: its current name another type's current or former name, or one of its former names
+  // another type's current or former name. The same descriptor registered again is no change.
+  // `try_add` is the same check answered as false with the reason (the registry's tests);
+  // `collision` the reason alone, empty when there is none.
   void add(const TypeInfo& info);
+  bool try_add(const TypeInfo& info, std::string* error = nullptr);
+  std::string collision(const TypeInfo& info) const;
   // By the type's current name only: what a writer names, and what a check that a name is a
   // registered one asks.
   const TypeInfo* find(std::string_view qualified_name) const noexcept;

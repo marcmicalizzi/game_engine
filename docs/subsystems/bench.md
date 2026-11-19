@@ -23,6 +23,7 @@ The development machine is not an idle benchmark rig. It runs GPU diffusion jobs
 |---|---|---|
 | `cpu_total_pct`, `cpu_own_pct`, `cpu_others_pct` | `GetSystemTimes` + `GetProcessTimes` on Windows, `/proc/stat` + `/proc/self/stat` on Linux, over a 250 ms window; "others" is total minus own, clamped at zero | the counters could not be read |
 | `gpu_util_pct`, `gpu_memory_used_mib`, `gpu_memory_total_mib` | `nvidia-smi --query-gpu=...` when it is on PATH | no such tool: an AMD or Intel box, or a CI runner |
+| `gpu_sm_clock_mhz`, `gpu_sm_clock_max_mhz` | the same `nvidia-smi` line, `clocks.sm` and `clocks.max.sm` (roadmap T69): the SM clock at the instant of the reading and the most it may run at, so a number taken on a throttled or a boosted card says so. An instant, not an average: an idle card at the start sample reads its idle clock, and the end sample keeps the first reading, taken as the run's own work ends, which is the run's clock; `worst_of` keeps the slower | no GPU reading, or a card that answers `[N/A]` for its clock (the busy share and memory still stand) |
 | `session_locked` | a `LogonUI.exe` process exists (Windows) | anywhere else — reported as `null`, never as "unlocked" |
 | `gpu_lock` | the machine-wide GPU lock file (see "The GPU lock" below): `owner`, `purpose`, `expires` as its holder wrote them, plus `mine` and `expired` | there is no lock file — reported as `null`, which is also what a machine that does not use the lock reports |
 
