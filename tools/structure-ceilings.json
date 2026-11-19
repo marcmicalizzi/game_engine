@@ -16,7 +16,7 @@
       "file": "systems/renderer/src/scene_renderer.cpp",
       "function": "SceneRenderer::record_frame",
       "why": "every pass and every feature flag of a frame",
-      "ceiling": 3796
+      "ceiling": 3871
     },
     {
       "id": "renderer.record_frame.add_pass",
@@ -25,28 +25,28 @@
       "function": "SceneRenderer::record_frame",
       "pattern": "\\badd_pass\\s*[(<]",
       "why": "the passes a frame adds inline rather than through a frame-pass seam",
-      "ceiling": 52
+      "ceiling": 53
     },
     {
       "id": "renderer.gpu_scene_cpp.lines",
       "measure": "file-lines",
       "file": "systems/renderer/src/gpu_scene.cpp",
       "why": "every feature's GPU state",
-      "ceiling": 6929
+      "ceiling": 6901
     },
     {
       "id": "renderer.gpu_scene_h.lines",
       "measure": "file-lines",
       "file": "systems/renderer/include/systems/renderer/gpu_scene.h",
       "why": "every feature's GPU state",
-      "ceiling": 2345
+      "ceiling": 2353
     },
     {
       "id": "engine_view.main_cpp.lines",
       "measure": "file-lines",
       "file": "apps/engine_view/main.cpp",
       "why": "every play feature and every flag",
-      "ceiling": 7647
+      "ceiling": 7664
     },
     {
       "id": "engine_view.run_view.lines",
@@ -54,7 +54,7 @@
       "file": "apps/engine_view/main.cpp",
       "function": "run_view",
       "why": "the windowed loop",
-      "ceiling": 3206
+      "ceiling": 3214
     },
     {
       "id": "engine_view.run_offscreen.lines",
@@ -62,7 +62,7 @@
       "file": "apps/engine_view/main.cpp",
       "function": "run_offscreen",
       "why": "the offscreen loop",
-      "ceiling": 1199
+      "ceiling": 1204
     },
     {
       "id": "gfx.resolve_modules",
@@ -101,67 +101,67 @@
       "path": "apps/engine_host/ops_methods.cpp",
       "macro_prefix": "ENGINE_HOST_",
       "why": "every ticking capability's wiring",
-      "ceiling": 65
+      "ceiling": 66
     },
     {
       "id": "page:docs/subsystems/renderer.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/renderer.md",
-      "ceiling": 1354166
+      "ceiling": 1385963
     },
     {
       "id": "page:docs/subsystems/apps.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/apps.md",
-      "ceiling": 714506
+      "ceiling": 733156
     },
     {
       "id": "page:docs/subsystems/gfx.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/gfx.md",
-      "ceiling": 372705
+      "ceiling": 376459
     },
     {
       "id": "page:docs/subsystems/geometry.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/geometry.md",
-      "ceiling": 309865
+      "ceiling": 313097
     },
     {
       "id": "page:docs/subsystems/flora.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/flora.md",
-      "ceiling": 260191
+      "ceiling": 264022
     },
     {
       "id": "page:docs/plan/05-simulation.md",
       "measure": "page-bytes",
       "file": "docs/plan/05-simulation.md",
-      "ceiling": 215864
+      "ceiling": 218376
     },
     {
       "id": "page:docs/subsystems/tissue.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/tissue.md",
-      "ceiling": 150065
+      "ceiling": 150276
     },
     {
       "id": "page:docs/subsystems/water.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/water.md",
-      "ceiling": 263906
+      "ceiling": 264873
     },
     {
       "id": "page:docs/subsystems/protocol.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/protocol.md",
-      "ceiling": 165669
+      "ceiling": 258516
     },
     {
       "id": "page:docs/experiments/e10-generated-props.md",
       "measure": "page-bytes",
       "file": "docs/experiments/e10-generated-props.md",
-      "ceiling": 113204
+      "ceiling": 112931
     },
     {
       "id": "page:docs/subsystems/terrain.md",
@@ -173,13 +173,13 @@
       "id": "page:docs/subsystems/world.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/world.md",
-      "ceiling": 148771
+      "ceiling": 158304
     },
     {
       "id": "page:AGENTS.md",
       "measure": "page-bytes",
       "file": "AGENTS.md",
-      "ceiling": 72871
+      "ceiling": 75637
     },
     {
       "id": "page:docs/subsystems/rocks.md",
@@ -191,7 +191,7 @@
       "id": "page:docs/experiments/gi-cache-2026-11-07.md",
       "measure": "page-bytes",
       "file": "docs/experiments/gi-cache-2026-11-07.md",
-      "ceiling": 119711
+      "ceiling": 119698
     },
     {
       "id": "page:docs/subsystems/channels.md",
@@ -215,19 +215,31 @@
       "id": "page:docs/subsystems/scene_gen.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/scene_gen.md",
-      "ceiling": 102318
+      "ceiling": 103652
     },
     {
       "id": "page:docs/subsystems/texture.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/texture.md",
-      "ceiling": 116242
+      "ceiling": 119278
     },
     {
       "id": "page:docs/ci/what-to-run.md",
       "measure": "page-bytes",
       "file": "docs/ci/what-to-run.md",
-      "ceiling": 109637
+      "ceiling": 120798
+    },
+    {
+      "id": "page:docs/subsystems/animation.md",
+      "measure": "page-bytes",
+      "file": "docs/subsystems/animation.md",
+      "ceiling": 122217
+    },
+    {
+      "id": "page:docs/subsystems/tileset.md",
+      "measure": "page-bytes",
+      "file": "docs/subsystems/tileset.md",
+      "ceiling": 103561
     }
   ],
   "rebaselines": [
@@ -2779,6 +2791,674 @@
           "id": "page:docs/ci/what-to-run.md",
           "old": 100000,
           "new": 109637
+        }
+      ]
+    },
+    {
+      "date": "2026-11-19",
+      "by": "Marc Micalizzi",
+      "reason": "",
+      "commit": "1f5ff68ff",
+      "folded": [
+        {
+          "name": "A11-2",
+          "reason": "A11: what batch 68's review found, on protocol.md: the new section on two host processes sharing a document's side files (the lock, drawn ids, what stays unsafe), a retried commit landing once, and the staging pass's bookkeeping and bounds",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/protocol.md": 7386
+          }
+        },
+        {
+          "name": "A14-2",
+          "reason": "A14's SQL half: protocol.md says what store.query is, what it refuses, how it writes what JSON cannot hold, what the view policy will have to cap in it, and how its statement runs with the dispatch lock let go and what keeps that safe; apps.md gains its engine-cli line",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 195,
+            "page:docs/subsystems/protocol.md": 7573
+          }
+        },
+        {
+          "name": "A23",
+          "reason": "A23: the task ledger and review items are protocol methods, so their design belongs on the protocol page beside leases, proposals and transactions",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/protocol.md": 11123
+          }
+        },
+        {
+          "name": "A4",
+          "reason": "A4: protocol.md gains the section on who a connection is (credentials, the identity gate, the shell's one-time ticket and cookie); apps.md the credential flags of engine-host and engine-editor; then what a security review of this work, 2026-11-18, found: what a credential's role is worth on a host with and without a roles file, the agent's attach by an issued credential in a file, the port-named cookie and the client's import, on protocol.md and apps.md",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 2547,
+            "page:docs/subsystems/protocol.md": 7567,
+            "page:AGENTS.md": -10
+          }
+        },
+        {
+          "name": "A49",
+          "reason": "A49: engine-mcp's six blob and history tools, with the decision that a blob's bytes reach an agent as a file and its measured costs, on the pages that describe the tools and the methods",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 5255,
+            "page:docs/subsystems/protocol.md": 240
+          }
+        },
+        {
+          "name": "A51",
+          "reason": "engine-editor's two new start rules are the row's point and its flags live on apps.md: --no-viewport, the page test with no GPU device, and --test-page refused outside the tests' scratch root",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 1369
+          }
+        },
+        {
+          "name": "A52",
+          "reason": "A52: AGENTS.md gains the agents' rule beside the view-policy one, that an agent never takes the editor's seat or operates its review queue, because the owner chose no sign-in on a person's close and this rule and the record of each close are the protection; and the lint that checks it",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:AGENTS.md": 893
+          }
+        },
+        {
+          "name": "b69-S11",
+          "reason": "S11: world.md's public API line names project_writeback, the flush's records' tile projections kept current (roadmap S11); the behaviour itself is on store.md",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/world.md": 226
+          }
+        },
+        {
+          "name": "b69-S18",
+          "reason": "S18: plan 05 §5.10 gains its status note for the door (what was built, the cases' numbers, what is not done); world.md gains the section The door in the store (what the store's log guarantees and the four calls a host must make) and its invariant and API lines",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/plan/05-simulation.md": 2512,
+            "page:docs/subsystems/world.md": 3809
+          }
+        },
+        {
+          "name": "b69-stack-B",
+          "reason": "tileset.md: T190's and sweep-P1's raises were each taken against a page without the other's text (T182 and T190 both edit 'The archive' and 'The mask level'); together they are 118 bytes past the sum",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/ci/what-to-run.md": -97,
+            "page:docs/subsystems/tileset.md": 118
+          }
+        },
+        {
+          "name": "b69-stack-C",
+          "reason": "S11 built world::project_writeback for engine-host's write-back sink and left the call to the stack (the host was not its row's to edit); the call needs the streamed world's store, which only ENGINE_HOST_WORLD has, so one #if line. gpu_scene.h: the one tree-wide clang-format 22 pass (T184) rewrapped four comments other rows had committed past the column limit. world.md: the review's mend of T191's save rule, said where the rule is. what-to-run.md: T193's section beside T183's, T184's and T185's rows, whose raises did not foresee each other; and the release preset's default set back to cmake, with why",
+          "date": "2026-11-19",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.gpu_scene_h.lines": 4,
+            "engine_host.ops_methods.if_engine_host": 1,
+            "page:docs/subsystems/world.md": 669,
+            "page:docs/ci/what-to-run.md": 229
+          }
+        },
+        {
+          "name": "b69-sweep-G1",
+          "reason": "G122 and G121: flora.md says which species the bake's images key (the species table) and what rebuilds, and that the broadleaf's chain keeps its coverage, with the measured coverage and key; G11: texture.md links and restates Castano's method it closes; C50: tissue.md names the velocity limit SoftBodyOptions carries",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/flora.md": 2246,
+            "page:docs/subsystems/tissue.md": 211,
+            "page:docs/subsystems/texture.md": 399
+          }
+        },
+        {
+          "name": "b69-sweep-P1",
+          "reason": "sweep-P1: tileset.md gains 'The table read from the view' (the mask level's table and tile list kept once, the refusals); flora.md gains the birch's and the ancient tree's coverage measurements and keys; ecs.md gains 'The tick hash's fast path'",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/flora.md": 1585,
+            "page:docs/subsystems/tileset.md": 1878
+          }
+        },
+        {
+          "name": "b69-T53",
+          "reason": "T53: apps.md gains the engine-cli --bisect verb's usage line and its short section (The divergence bisector), the documentation of a new CLI flag in the same commit",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 763
+          }
+        },
+        {
+          "name": "C3",
+          "reason": "C3 and A26 are designed and not built: protocol.md and renderer.md each gain a short section saying what the module will own of content classes and view policies, pointing at docs/content-classes.md, which holds the design so the hubs carry a paragraph each and not the design; revised after a review, the two sections say the per-instance decision, the one admission door, the capture check and the composed-class rule, and AGENTS.md's rule on view policies names the flags an agent never passes and the audit trail that stands for a wall; after the owner let agents choose a wider policy (2026-11-18), AGENTS.md's rule says the starter chooses among the operator's policies, on the record, and an agent never writes a policies file or changes a cap",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 1720,
+            "page:docs/subsystems/protocol.md": 3258,
+            "page:AGENTS.md": 584
+          }
+        },
+        {
+          "name": "C62",
+          "reason": "C62 writes down the content classes the containers now carry (section 54, the texture's section 6), what each costs resident, and what the content build, engine-content and content.build read and report of them, on the pages that own each",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 842,
+            "page:docs/subsystems/geometry.md": 2698,
+            "page:docs/subsystems/protocol.md": 515,
+            "page:docs/subsystems/texture.md": 2064
+          }
+        },
+        {
+          "name": "D40",
+          "reason": "renderer.md: the scene file read with no tree (D40), one paragraph in What the load reads",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 427
+          }
+        },
+        {
+          "name": "line-join",
+          "reason": "Two pieces of the line replaced the same machine path in apps.md's engine-mcp registration line (T175 with <checkout>, A49 with <repository>); the joined line keeps one replacement, so the two raise files count its shortening twice",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 12
+          }
+        },
+        {
+          "name": "protocol-join",
+          "reason": "The protocol line over the ceilings that batch 68's raises were folded into: protocol.md grows by the capture mends A10 describes in its profile section (a writer word a thread, a buffer of exactly the capacity asked), whose raise file the fold removed; apps.md is 12 bytes under the sum of its raises after the joins",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": -12,
+            "page:docs/subsystems/protocol.md": 206
+          }
+        },
+        {
+          "name": "protocol-ledger",
+          "reason": "A23, A11 and A4 mends from the first review of the joined protocol work: a retried commit lands only when the document holds it; a person's role only by a credential, held over a listener; how each ledger caller was known, drawn ids, item revisions and the ledger's bounds; proposals.json through the side-file helper; a live host's leases kept by its mark. The pages say each rule and why the first forms fell",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 783,
+            "page:docs/subsystems/protocol.md": 9011
+          }
+        },
+        {
+          "name": "protocol-read-sort",
+          "reason": "protocol.md gains the table that sorts every read-only registration into a read, a read that leaves a file, or a write, with each reason (the decision asked for it on the page); apps.md gains the paragraphs on engine-mcp's start flags being the operator's paths, on read_blob reading through the host's roots, and on the bridge never running in a human role",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 1825,
+            "page:docs/subsystems/protocol.md": 5238
+          }
+        },
+        {
+          "name": "protocol-stack",
+          "reason": "The protocol line's joins: protocol.md says a session that may not be saved writes nothing beside its document (no lock file, no gone host's mark, reads that let lapsed entries go only in their answer); apps.md says engine-mcp refuses a human role before it starts a host, in the words engine-host and engine-cli use, and that put_blob answers its place in the portable form",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 704,
+            "page:docs/subsystems/protocol.md": 519
+          }
+        },
+        {
+          "name": "R171-7",
+          "reason": "renderer.md: the seventh leg's section (the tables on the ordered cache, the forest's room)",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 10950
+          }
+        },
+        {
+          "name": "R174",
+          "reason": "R174: gfx.md's 'The keep rule past the chain's capacity' for the CPU rule and the keep block the records chain reads; renderer.md's drop-order rule replaced by the keep-by-size section (what runs, the guarantee at one capacity, the cache's counted exception, the tables cleared every frame, the cases that hold it), the reasoning kept in ADR-0074; engine-view's summary line and apps.md gain the cache's unbuilt_frames, the count of frames outside the guarantee",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": -2,
+            "renderer.gpu_scene_cpp.lines": -41,
+            "renderer.gpu_scene_h.lines": -1,
+            "engine_view.main_cpp.lines": 1,
+            "page:docs/subsystems/renderer.md": 4192,
+            "page:docs/subsystems/apps.md": 380,
+            "page:docs/subsystems/gfx.md": 436
+          }
+        },
+        {
+          "name": "R182",
+          "reason": "R182: gfx.md's sky section names the mirror's new no-device case against published clear-sky models (sky_balance_tests.cpp) and links its measurement",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/gfx.md": 400
+          }
+        },
+        {
+          "name": "R185",
+          "reason": "R185: the ambient's lower half from the scene's own ground, the rule and why on the renderer page",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 1633
+          }
+        },
+        {
+          "name": "R186-1",
+          "reason": "R186-1 (R189): the pass audit's mends declare what the passes' shaders touch: one import a buffer and one scene-read helper with its list (A2), the chain's imports naming the frame before's use (C1), the builds' scratch (D1), the normals and the static cache under their own names (D2, D3), 'gi stats' split in two passes (P1, one more add_pass), and the pages that say so",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 83,
+            "renderer.record_frame.add_pass": 1,
+            "page:docs/subsystems/renderer.md": 2840,
+            "page:docs/subsystems/gfx.md": 1715
+          }
+        },
+        {
+          "name": "R186-2",
+          "reason": "R186-2: R4 stage 1 and 2 (the targets a frame reads, the graph's lifetimes) on renderer.md and gfx.md, the pages that describe them",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": -6,
+            "page:docs/subsystems/renderer.md": 2827,
+            "page:docs/subsystems/gfx.md": 707
+          }
+        },
+        {
+          "name": "R187-1",
+          "reason": "R187-1: renderer.md and gfx.md say HDR10's codes are the encode's (ADR-0075), the figures that hold it, and the overlay's window in BT.2020 codes",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 2009,
+            "page:docs/subsystems/gfx.md": 141
+          }
+        },
+        {
+          "name": "S35-1",
+          "reason": "apps.md's procedural-gait bullet says the stand/walk/run choice is a graph's since S35 and links the animation page's Graphs section",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 77
+          }
+        },
+        {
+          "name": "S35-2",
+          "reason": "S35 stage 2: the pose program's section (Blend1D, sync groups, the normalized sum, the program, LOD, memory, cost, determinism) on the capability's own page",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/animation.md": 9289
+          }
+        },
+        {
+          "name": "S35-3",
+          "reason": "S35 stage 3: the graphs' layers and masks section (records, mask compile, the two layer ops and their sources, memory, the bench rows, the cases and pins) on the capability's own page",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/animation.md": 12928
+          }
+        },
+        {
+          "name": "T13",
+          "reason": "T13: what-to-run.md gains the hostile-input cases' section, what a fuzz target costs the gate (10 s a target, 60 s in all, msvc-debug), which the design asked that page to say",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/ci/what-to-run.md": 681
+          }
+        },
+        {
+          "name": "T174-attached",
+          "reason": "T174: apps.md says that an attached engine-mcp writes only under a root the running host's operator admitted (ADR-0071), and that mcp-check -Connect gives the host it starts the spawned run's two roots",
+          "date": "2026-11-19",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 369
+          }
+        },
+        {
+          "name": "T174-paths",
+          "reason": "T174's paths review mended on the roots section: what the log may hold, a session that may not be written, the profile trace, the event log, run_tests' and run_headless' files and the document-file check under the roots",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/protocol.md": 3441
+          }
+        },
+        {
+          "name": "T174-roots-3b",
+          "reason": "the host's file roots gain where derived data goes, the derived out root, the share refusal, the capture's per-file admission, and the answers with no absolute path (T174's review)",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/protocol.md": 3793
+          }
+        },
+        {
+          "name": "T174-session-guard",
+          "reason": "T174: the roots section says how an open document's protection begins and ends with its session and why the roots count holders, and that a client makes documents below a root, not at it, by session.open or session.load_game",
+          "date": "2026-11-19",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/protocol.md": 3032
+          }
+        },
+        {
+          "name": "T174",
+          "reason": "T174: protocol.md's 'The host's file roots' gains what was built and what is left, the owner's decision and the root-name form; apps.md documents --root on engine-host, engine-cli, engine-mcp and engine-editor and engine-cli's --doc handed to the host",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 2363,
+            "page:docs/subsystems/protocol.md": 29945
+          }
+        },
+        {
+          "name": "T175",
+          "reason": "T175: AGENTS.md states the machine-path rule and names the local folder once; apps.md registers engine-mcp by the checkout and ENGINE_LOCAL_ROOT instead of this machine's paths",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 50,
+            "page:docs/experiments/e10-generated-props.md": -273,
+            "page:AGENTS.md": 1113,
+            "page:docs/experiments/gi-cache-2026-11-07.md": -13
+          }
+        },
+        {
+          "name": "T182",
+          "reason": "T182: tileset.md's mask level says how a level is read without a lock (the mapped view, what it commits and keeps resident) and its performance notes carry the window-to-view bench on several threads and the staging's level",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/tileset.md": 1565
+          }
+        },
+        {
+          "name": "T183",
+          "reason": "T183: gfx.md says the embedded shader header is written only when its bytes differ; what-to-run.md states the affected rule's two new cases (a module's test files, the tools' scripts by the tests that run them) and their replay over batch 68; bench.md says how a pair of copied-out binaries avoids reading a cold pipeline compile as a cost",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/gfx.md": 175,
+            "page:docs/ci/what-to-run.md": 2462
+          }
+        },
+        {
+          "name": "T184",
+          "reason": "Checks on events, not seconds: the rule for a check that fails only under load, T184's restated checks (slot, build lock, mcp's deadline), the slot script's double read of Path, and engine_cli's npc replay cases as a test of their own, on the page every pre-handover run is read from",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/ci/what-to-run.md": 3724
+          }
+        },
+        {
+          "name": "T185",
+          "reason": "T185: the slot pool as it is (ten slots, who claims, the primary-checkout shell) and a summary of what a build writes, with the measurements moved to docs/experiments/build-writes-2026-11-18.md; AGENTS.md names slot.ps1 add and tools/disk-writes.ps1",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:AGENTS.md": 186,
+            "page:docs/ci/what-to-run.md": 2935
+          }
+        },
+        {
+          "name": "T187",
+          "reason": "T187: the hostile-input mends' rules on the pages that own them (the .clusters reader's range check on geometry.md, the scatter and camera-path bounds on renderer.md)",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 1011,
+            "page:docs/subsystems/geometry.md": 534
+          }
+        },
+        {
+          "name": "T190",
+          "reason": "texture.md records the read-side size bound T190 adds to validate_texture (a .tex past 16,384 a side is refused)",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/texture.md": 266
+          }
+        },
+        {
+          "name": "T191",
+          "reason": "T191: world.md says a save restores exactly its listed files through no link and that a ring window is bounded; texture.md says every 2D image is held to the device maxImageDimension2D. Rules a reader of those paths needs, on the pages that own them.",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/world.md": 2429,
+            "page:docs/subsystems/texture.md": 307
+          }
+        },
+        {
+          "name": "T193",
+          "reason": "what-to-run.md: the release preset's code generation (T193), the switch, what it measured and the one-time recompile",
+          "date": "2026-11-19",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/ci/what-to-run.md": 1227
+          }
+        },
+        {
+          "name": "W11",
+          "reason": "W11: the world seed a document names, its record and why it is a record, documented beside the store consumer it is bound through",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/world.md": 1058
+          }
+        },
+        {
+          "name": "W148",
+          "reason": "W148: water.md's swash gains what holds the band on both tiers (the ground the swash changes, why the darker-than-dry count failed on the TITAN Xp), its numbers on shore-mechanics.md",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/water.md": 967
+          }
+        },
+        {
+          "name": "W149",
+          "reason": "world.md gains 'A camera that stands': the invariant that a settled standing camera costs no tile work, its two cases, and why engine-view's offscreen camera is an orbit unless a path of one place says otherwise (what W51-2's 'standing' load misread)",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/world.md": 1342
+          }
+        },
+        {
+          "name": "W150",
+          "reason": "W150 records the load's CPU stages: renderer.md's 'What the load reads' and scene_gen.md's 'Many heights at once' name what the load now does and why",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 495,
+            "page:docs/subsystems/scene_gen.md": 1334
+          }
+        },
+        {
+          "name": "W51-2",
+          "reason": "W51-2: the memory report's floor flag, its uploaded snapshot (both loops) and heap sampler, and the pages that describe them",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "engine_view.main_cpp.lines": 10,
+            "engine_view.run_view.lines": 6,
+            "engine_view.run_offscreen.lines": 1,
+            "page:docs/subsystems/apps.md": 1128,
+            "page:docs/subsystems/gfx.md": 180
+          }
+        },
+        {
+          "name": "W51-3",
+          "reason": "W51-3 stages 1 and 4: the upload decodes an image the load let go from its container; GpuScene::create takes the host's SceneData to give back the upload-only streams before the textures and the chain are made, and engine-view's two loops pass it (the offscreen one not with --verify-occlusion); renderer.md says which images the load lets go and when the host streams go",
+          "date": "2026-11-18",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.gpu_scene_cpp.lines": 13,
+            "renderer.gpu_scene_h.lines": 5,
+            "engine_view.main_cpp.lines": 6,
+            "engine_view.run_view.lines": 2,
+            "engine_view.run_offscreen.lines": 4,
+            "page:docs/subsystems/renderer.md": 3693
+          }
+        }
+      ],
+      "changes": [
+        {
+          "id": "renderer.record_frame.lines",
+          "old": 3796,
+          "new": 3871
+        },
+        {
+          "id": "renderer.record_frame.add_pass",
+          "old": 52,
+          "new": 53
+        },
+        {
+          "id": "renderer.gpu_scene_cpp.lines",
+          "old": 6929,
+          "new": 6901
+        },
+        {
+          "id": "renderer.gpu_scene_h.lines",
+          "old": 2345,
+          "new": 2353
+        },
+        {
+          "id": "engine_view.main_cpp.lines",
+          "old": 7647,
+          "new": 7664
+        },
+        {
+          "id": "engine_view.run_view.lines",
+          "old": 3206,
+          "new": 3214
+        },
+        {
+          "id": "engine_view.run_offscreen.lines",
+          "old": 1199,
+          "new": 1204
+        },
+        {
+          "id": "engine_host.ops_methods.if_engine_host",
+          "old": 65,
+          "new": 66
+        },
+        {
+          "id": "page:docs/subsystems/renderer.md",
+          "old": 1354166,
+          "new": 1385963
+        },
+        {
+          "id": "page:docs/subsystems/apps.md",
+          "old": 714506,
+          "new": 733156
+        },
+        {
+          "id": "page:docs/subsystems/gfx.md",
+          "old": 372705,
+          "new": 376459
+        },
+        {
+          "id": "page:docs/subsystems/geometry.md",
+          "old": 309865,
+          "new": 313097
+        },
+        {
+          "id": "page:docs/subsystems/flora.md",
+          "old": 260191,
+          "new": 264022
+        },
+        {
+          "id": "page:docs/plan/05-simulation.md",
+          "old": 215864,
+          "new": 218376
+        },
+        {
+          "id": "page:docs/subsystems/tissue.md",
+          "old": 150065,
+          "new": 150276
+        },
+        {
+          "id": "page:docs/subsystems/water.md",
+          "old": 263906,
+          "new": 264873
+        },
+        {
+          "id": "page:docs/subsystems/protocol.md",
+          "old": 165669,
+          "new": 258516
+        },
+        {
+          "id": "page:docs/experiments/e10-generated-props.md",
+          "old": 113204,
+          "new": 112931
+        },
+        {
+          "id": "page:docs/subsystems/world.md",
+          "old": 148771,
+          "new": 158304
+        },
+        {
+          "id": "page:AGENTS.md",
+          "old": 72871,
+          "new": 75637
+        },
+        {
+          "id": "page:docs/experiments/gi-cache-2026-11-07.md",
+          "old": 119711,
+          "new": 119698
+        },
+        {
+          "id": "page:docs/subsystems/scene_gen.md",
+          "old": 102318,
+          "new": 103652
+        },
+        {
+          "id": "page:docs/subsystems/texture.md",
+          "old": 116242,
+          "new": 119278
+        },
+        {
+          "id": "page:docs/ci/what-to-run.md",
+          "old": 109637,
+          "new": 120798
+        },
+        {
+          "id": "page:docs/subsystems/animation.md",
+          "old": 100000,
+          "new": 122217
+        },
+        {
+          "id": "page:docs/subsystems/tileset.md",
+          "old": 100000,
+          "new": 103561
         }
       ]
     }
