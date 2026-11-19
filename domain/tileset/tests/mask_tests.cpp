@@ -17,7 +17,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <numeric>
 #include <string>
+#include <thread>
+#include <vector>
 
 using namespace engine;
 using namespace engine::tileset;
@@ -449,8 +452,69 @@ TEST_CASE("tileset masks: the level's archive holds every tile and reads it in w
   CHECK_FALSE(level.tile(m.tile_max[0] + 1, m.tile_max[1] + 1, {got.data(), words}));
   const MaskLevel::ReadStats stats = level.read_stats();
   MESSAGE(read << " tiles read in " << stats.windows << " windows, " << stats.bytes << " bytes");
-  // 289 tiles of 7.5 KB are 2.2 MB: two windows a pass.
+  // Mapped (T182), the level fills no window; read through the window, 289 tiles of 7.5 KB are
+  // 2.2 MB: two windows a pass.
+  CHECK(stats.mapped);
   CHECK(stats.windows <= 6);
+}
+
+// **Eight threads read the same bytes as one** (T182; tileset.md, "Read without a lock"): every
+// tile of the level read on one thread, then on eight at once, each in an order of its own over
+// the whole level (so they are far apart and none follows another), through the mapped view and
+// again through the window an unbuffered open reads with, and every copy equal to the one thread's.
+TEST_CASE("tileset masks: eight threads read the same bytes as one") {
+  Fixture fx;
+  MaskBuildResult built;
+  REQUIRE_MESSAGE(
+      ensure_mask_level(fx.set, fx.in, fx.tmp.file("masks"), "", false, built, fx.error), fx.error);
+  for (const bool unbuffered : {false, true}) {
+    CAPTURE(unbuffered);
+    MaskLevel level;
+    if (!level.open(built.manifest, fx.error, unbuffered)) {
+      // A file system that cannot read unbuffered refuses it at open; the mapped case is the one
+      // that must run.
+      REQUIRE(unbuffered);
+      MESSAGE("unbuffered open refused here: " << fx.error);
+      continue;
+    }
+    CHECK(level.read_stats().mapped == !unbuffered);
+    const MaskLevelManifest& m = level.manifest();
+    const u32 count = static_cast<u32>(m.present.size() / 2);
+    REQUIRE(count > 64);
+    const u32 words = scene_gen::mask_tile_words(m.cells);
+    Vector<u32> one(count * words);
+    for (u32 i = 0; i < count; ++i)
+      REQUIRE(level.tile(m.present[2 * i], m.present[2 * i + 1],
+                         {one.data() + u64{i} * words, words}));
+    constexpr u32 k_threads = 8;
+    Vector<u32> copies[k_threads];
+    u32 failed[k_threads] = {};
+    {
+      std::vector<std::thread> threads;
+      for (u32 t = 0; t < k_threads; ++t) {
+        copies[t].resize(count * words);
+        threads.emplace_back([&, t] {
+          // Thread t starts an eighth of the level further on and steps by a stride prime to the
+          // count, so it visits every tile once in an order no other thread shares.
+          u32 stride = 97 + 2 * t;
+          while (std::gcd(stride, count) != 1)
+            stride += 2;
+          u32 i = t * (count / k_threads);
+          for (u32 k = 0; k < count; ++k, i = (i + stride) % count)
+            if (!level.tile(m.present[2 * i], m.present[2 * i + 1],
+                            {copies[t].data() + u64{i} * words, words}))
+              ++failed[t];
+        });
+      }
+      for (std::thread& th : threads)
+        th.join();
+    }
+    for (u32 t = 0; t < k_threads; ++t) {
+      CAPTURE(t);
+      CHECK(failed[t] == 0);
+      CHECK(std::memcmp(copies[t].data(), one.data(), one.size() * sizeof(u32)) == 0);
+    }
+  }
 }
 
 TEST_CASE("tileset masks determinism: the fixture's level hashes to the pinned value") {

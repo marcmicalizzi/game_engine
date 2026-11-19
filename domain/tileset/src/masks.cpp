@@ -13,6 +13,7 @@
 #include <domain/tileset/masks.h>
 #include <foundation/image/decode.h>
 #include <foundation/image/png.h>
+#include <foundation/io/mapped_file.h>
 #include <foundation/io/vfs.h>
 
 #include <algorithm>
@@ -1250,10 +1251,14 @@ bool write_mask_priors(const TileSet& set, const MaskInputs& in, const std::stri
 
 // ---- the reader ---------------------------------------------------------------------------------
 
-// The archive and the read-ahead window (masks.h): the records from `first` onwards in file order,
-// `count` of them, each `ok` when it arrived whole.
+// The archive, its mapped view, and the read-ahead window the view replaces where there is one
+// (masks.h): the records from `first` onwards in file order, `count` of them, each `ok` when it
+// arrived whole. `view` and `mapped` are written by `open` alone and only read after, so a mapped
+// tile takes no lock; the window and the stats are the mutex's.
 struct MaskLevel::Reading {
   archive::Reader archive;
+  io::MappedFile view;
+  bool mapped = false;
   std::mutex mutex;
   Vector<u8> window;
   Vector<u8> ok;
@@ -1275,7 +1280,9 @@ MaskLevel& MaskLevel::operator=(MaskLevel&&) noexcept = default;
 MaskLevel::ReadStats MaskLevel::read_stats() const noexcept {
   if (reading_ == nullptr) return ReadStats{};
   const std::lock_guard<std::mutex> lock(reading_->mutex);
-  return reading_->stats;
+  ReadStats s = reading_->stats;
+  s.mapped = reading_->mapped;
+  return s;
 }
 
 bool MaskLevel::open(const std::string& manifest_path, std::string& error, bool unbuffered) {
@@ -1283,6 +1290,8 @@ bool MaskLevel::open(const std::string& manifest_path, std::string& error, bool 
   present_.clear();
   if (reading_ == nullptr) reading_ = std::make_unique<Reading>();
   reading_->archive.close();
+  reading_->view.close();
+  reading_->mapped = false;
   reading_->count = 0;
   reading_->stats = ReadStats{};
   std::string bytes;
@@ -1337,6 +1346,23 @@ bool MaskLevel::open(const std::string& manifest_path, std::string& error, bool 
     info_ = scene_gen::GroundMaskInfo{};
     return false;
   }
+  // **The view** (tileset.md, "Read without a lock"): the same file mapped read-only, taken when it
+  // is the archive the table was read from — its header the one checked, its table inside it — so
+  // a tile is a copy out of the OS's file cache. Anything else (an unbuffered open, a file the OS
+  // will not map, one replaced between the two opens) reads through the window as before.
+  if (!unbuffered) {
+    const std::string path = io::join_path(dir_, manifest_.archive);
+    const archive::Header& header = reading_->archive.header();
+    const u64 table_end =
+        header.toc_offset + u64{header.count} * static_cast<u64>(sizeof(archive::Entry));
+    // The table's entries were checked at open to lie inside [header, table), and the file to end
+    // where the table does: a view of that length with that header is that file.
+    if (reading_->view.open(path) == io::Status::Ok && reading_->view.size() == table_end &&
+        std::memcmp(reading_->view.bytes().data(), &header, sizeof(header)) == 0)
+      reading_->mapped = true;
+    else
+      reading_->view.close();
+  }
   return true;
 }
 
@@ -1351,6 +1377,22 @@ bool MaskLevel::tile(i32 tx, i32 tz, std::span<u32> words) const noexcept {
   const u32 at = r.archive.find(tx, tz);
   if (at == archive::Reader::k_absent) return false;
   const u32 rb = record_bytes(info_.cells);
+  // A record checked against the tile asked and copied out: from the view or from the window.
+  const auto copy_out = [&](const u8* bytes) noexcept {
+    MaskHeader header;
+    std::memcpy(&header, bytes, sizeof(header));
+    if (std::memcmp(header.magic, "EMSK", 4) != 0 || header.version != k_mask_record_version ||
+        header.cells != info_.cells || header.words != n || header.tx != tx || header.tz != tz ||
+        header.spacing_mm != info_.spacing_mm)
+      return false;
+    std::memcpy(words.data(), bytes + sizeof(header), static_cast<u32>(n) * 4);
+    return true;
+  };
+  if (r.mapped) {
+    // **No lock** (tileset.md, "Read without a lock"): the view and the table are fixed from `open`
+    // on, and the entry's range was checked there to lie inside the file.
+    return copy_out(r.view.bytes().data() + r.archive.table()[at].offset);
+  }
   const std::lock_guard<std::mutex> lock(r.mutex);
   if (at < r.first || at >= r.first + r.count) {
     // Not in the window: fill it from this tile onwards, the records' destinations contiguous so
@@ -1378,15 +1420,7 @@ bool MaskLevel::tile(i32 tx, i32 tz, std::span<u32> words) const noexcept {
     r.stats.bytes += stats.bytes;
   }
   if (r.ok[at - r.first] == 0) return false;
-  const u8* bytes = r.window.data() + u64{at - r.first} * rb;
-  MaskHeader header;
-  std::memcpy(&header, bytes, sizeof(header));
-  if (std::memcmp(header.magic, "EMSK", 4) != 0 || header.version != k_mask_record_version ||
-      header.cells != info_.cells || header.words != n || header.tx != tx || header.tz != tz ||
-      header.spacing_mm != info_.spacing_mm)
-    return false;
-  std::memcpy(words.data(), bytes + sizeof(header), static_cast<u32>(n) * 4);
-  return true;
+  return copy_out(r.window.data() + u64{at - r.first} * rb);
 }
 
 bool MaskLevel::sample(i64 x_mm, f64 x_frac, i64 z_mm, f64 z_frac, f32 level, Vector<f32>& weights,

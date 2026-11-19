@@ -533,6 +533,7 @@ int read_command(int argc, char** argv) {
     const tileset::MaskLevel::ReadStats stats = level.read_stats();
     bytes = stats.bytes;
     report.set("windows", stats.windows);
+    report.set("mapped", stats.mapped);
   } else {
     tileset::TileSet set(cache_mib * 1024 * 1024, read);
     if (!set.open(target, error)) return failed("terrain-read", error);
