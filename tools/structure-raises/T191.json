@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T191",
+  "reason": "T191: world.md says a save restores exactly its listed files through no link and that a ring window is bounded; texture.md says every 2D image is held to the device maxImageDimension2D. Rules a reader of those paths needs, on the pages that own them.",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/world.md": 2429,
+    "page:docs/subsystems/texture.md": 307
+  }
+}
