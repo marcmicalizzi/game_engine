@@ -7,7 +7,7 @@
 // tables, a block a list got wrong — and the frame before, since the first pass's barrier orders
 // it behind every command submitted earlier; it sees nothing inside one pass body.
 //
-// Two engine scenes, each drawn both ways in two configurations: the traced frame with the bounce
+// Two engine scenes (the grove and the oasis's palms), each drawn both ways in two configurations: the traced frame with the bounce
 // (`--raster rt --shadows rt`, `renderer.gi.mode=bounce`), and the hardware rasterizer with the
 // cascades (`--shadows csm`, the baseline tier's shadows). Each draw is a renderer of its own, three
 // frames and a capture, so the two sides start from the same state.
@@ -111,6 +111,17 @@ Shot draw(const SceneData& data, const Config& config, bool serialize) {
 }
 
 void check_same(const char* scene_dir) {
+  // A device first: the scene's load is the case's longest part in a debug build, and a run with
+  // no driver (`tools/dev.ps1 test -NoDriver`) has nothing to draw it with.
+  {
+    gfx::Device probe;
+    std::string why;
+    if (!probe.create(renderer_test::device_options(), &why)) {
+      MESSAGE("skipped: device unavailable: " << why);
+      return;
+    }
+    probe.destroy();
+  }
   const std::string file =
       test::data_path(std::string(ENGINE_SOURCE_DIR "/content/test-scenes/") + scene_dir +
                           "/scene.json",
@@ -157,6 +168,9 @@ TEST_CASE("serialized frame: the grove draws the same bytes with every pass seri
   check_same("grove");
 }
 
-TEST_CASE("serialized frame: the desert erg draws the same bytes with every pass serialized") {
-  check_same("desert-erg");
+// The oasis's palms over their ground: a second generator mix, small enough for a debug build (the
+// desert erg, its first second scene, regenerated its whole terrain in debug for over an hour, and
+// a run with no driver timed out loading it before it found no device).
+TEST_CASE("serialized frame: the oasis draws the same bytes with every pass serialized") {
+  check_same("oasis-palms");
 }
