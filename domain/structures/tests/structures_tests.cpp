@@ -638,8 +638,10 @@ TEST_CASE("structures: a leaf hangs in its frame, shut across the opening or ope
     CHECK(r.shut_x * r.swing_x + r.shut_z * r.swing_z == doctest::Approx(0.0).epsilon(1e-6));
     if (w.open_deg != 0 && w.open_deg != 90) continue;  // the two angles with exact turns
     const f64 c = w.open_deg == 90 ? 0.0 : 1.0, s = w.open_deg == 90 ? 1.0 : 0.0;
-    const f64 ux = c * r.shut_x + s * r.swing_x, uz = c * r.shut_z + s * r.swing_z;
-    const f64 vx = s * r.shut_x - c * r.swing_x, vz = s * r.shut_z - c * r.swing_z;
+    const f64 ux = c * static_cast<f64>(r.shut_x) + s * static_cast<f64>(r.swing_x),
+              uz = c * static_cast<f64>(r.shut_z) + s * static_cast<f64>(r.swing_z);
+    const f64 vx = s * static_cast<f64>(r.shut_x) - c * static_cast<f64>(r.swing_x),
+              vz = s * static_cast<f64>(r.shut_z) - c * static_cast<f64>(r.swing_z);
     const f64 half = static_cast<f64>(r.thickness_m) * 0.5;
     CHECK(static_cast<f64>(r.pivot.x) + vx * half == doctest::Approx(w.hinge.x).epsilon(1e-4));
     CHECK(static_cast<f64>(r.pivot.z) + vz * half == doctest::Approx(w.hinge.y).epsilon(1e-4));
