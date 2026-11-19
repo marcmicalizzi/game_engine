@@ -260,6 +260,29 @@ inline bool tangent_frame(const Dvec3* p, const Vec2* uv, Dvec3 normal, Dvec3& t
   return true;
 }
 
+// **The author's frame** (roadmap G2): the CPU mirror of `tangent_frame`'s first branch in
+// material.slang, which the resolve takes where all three corners of a triangle carry an imported
+// tangent. The corner tangents (`xyz` a direction, `w` glTF's handedness) interpolated at the
+// barycentrics `b`, made orthogonal to the shading normal, and the bitangent
+// `cross(normal, tangent) * sign(w)` exactly as glTF 2.0 defines it (3.7.2.1, "TANGENT"). False
+// when the interpolated tangent lies along the normal, where the resolve derives the frame instead.
+inline bool authored_frame(const Vec4* corner_tangents, Dvec3 b, Dvec3 normal, Dvec3& tangent,
+                           Dvec3& bitangent) {
+  Dvec3 t{};
+  double w = 0.0;
+  const double weight[3] = {b.x, b.y, b.z};
+  for (u32 i = 0; i < 3; ++i) {
+    t = t + dvec3(corner_tangents[i]) * weight[i];
+    w += static_cast<double>(corner_tangents[i].w) * weight[i];
+  }
+  t = t - normal * dot(normal, t);
+  const double t_length = std::sqrt(dot(t, t));
+  if (t_length < 1e-12) return false;
+  tangent = t * (1.0 / t_length);
+  bitangent = cross(normal, tangent) * (w < 0.0 ? -1.0 : 1.0);
+  return true;
+}
+
 // The shading normal a tangent-space normal map gives, from the three UNORM bytes a sampler
 // returns: remap to -1..1, scale the tangential part, renormalize, rotate into the frame. The
 // mirror of the normal-map block of fs_resolve; `normal_scale` of 0 gives `normal` back.

@@ -35,6 +35,16 @@ struct VertexAttributes {
   uint uv_half2;
 };
 
+// Mirrors geometry::VertexExtra (12 bytes): what an imported asset says about a vertex beyond its
+// normal and first UV (roadmap G2) — the author's tangent (`geometry::encode_tangent`; zero is "no
+// tangent"), a second UV set in two halves, and an RGBA8 colour. Scene-wide and parallel to the
+// attributes when any mesh of the scene carries one, and absent (address 0) otherwise. Read as words
+// (`vertex_extra_word`), since a 12-byte stride is not one every pointer layout agrees on.
+static const uint k_vertex_extra_words = 3u;
+uint vertex_extra_word(uint64_t extra, uint vertex, uint word) {
+  return ((uint*)extra)[vertex * k_vertex_extra_words + word];
+}
+
 // Mirrors gfx::MeshDesc (64 bytes): one per mesh of the scene. The last four addresses are
 // where a deformed instance's positions come from instead of the grid.
 struct MeshDesc {

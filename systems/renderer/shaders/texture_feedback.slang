@@ -129,6 +129,8 @@ void texture_feedback_main(uint3 thread : SV_DispatchThreadID) {
   geo.cluster_materials = params->cluster_materials;
   geo.visible = 0;
   geo.normal_pool = 0;
+  geo.extra = 0;
+  geo.extra_vertices = 0;
   geo.eye = params->eye;
   InstanceDesc instance = ((InstanceDesc*)params->instances)[entry.x];
   const ResolveMaterial material = material_of(geo, instance, entry.y);

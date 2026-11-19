@@ -51,7 +51,7 @@
 
 [[vk::binding(3, 0)]] RaytracingAccelerationStructure g_scenes[];
 
-// Mirrors gfx::PathTraceParams (352 bytes).
+// Mirrors gfx::PathTraceParams (368 bytes).
 struct PathTraceParams {
   column_major float4x4 clip_to_ray;  // clip to the world direction of a primary ray (view_ray.slang)
   float4 camera;  // xyz the eye in the frame's space (PathTraceParams::eye)
@@ -92,9 +92,9 @@ struct PathTraceParams {
   int terrain_uv_x0_mm;
   int terrain_uv_z0_mm;
   float terrain_uv_per_mm;
-  uint terrain_uv_pad;
+  uint extra_vertices;  // the count of xtra below (ResolveParams::extra_vertices)
   uint64_t hit_entries;
-  uint64_t hit_pad;
+  uint64_t extra;  // VertexExtra[] parallel to the attributes (scene.slang); 0: none
 };
 
 struct PathTracePush {
@@ -148,6 +148,8 @@ SceneGeometry geometry_of(PathTraceParams* params) {
   // structures, but it is a *reference*, and a morphed scene's comparison against it is the next
   // step rather than this one.
   geo.normal_pool = 0;
+  geo.extra = params->extra;
+  geo.extra_vertices = params->extra_vertices;
   geo.eye = params->eye;
   return geo;
 }
@@ -342,7 +344,7 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
     if (material.normal_texture != k_no_texture) {
       float3 tangent;
       float3 bitangent;
-      if (tangent_frame(geo, tri, s.normal, tangent, bitangent)) {
+      if (tangent_frame(geo, instance, tri, b, s.normal, tangent, bitangent)) {
         shading_normal = apply_normal_map(material, uv, s.normal, tangent, bitangent);
       }
     }
