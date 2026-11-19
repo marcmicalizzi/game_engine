@@ -1345,13 +1345,18 @@ bool MaskLevel::open(const std::string& manifest_path, std::string& error, bool 
       manifest_.archive.empty() ? std::string() : io::join_path(dir_, manifest_.archive);
   if (!unbuffered && !path.empty() && reading_->view.open(path) != io::Status::Ok)
     reading_->view.close();
-  // The archive, opened once, its table checked: at most the tiles the manifest lists.
+  // The archive, opened once, its table checked: at most the tiles the manifest lists. **Mapped
+  // means the view has bytes, the one span both sides test** (T194): an empty file maps as an open
+  // view with no bytes, which the archive reads as "no view" and opens from the file, so a reader
+  // that asked `is_open()` instead took a file that grew between the two opens for a mapped one and
+  // read its tiles from a null base.
+  const std::span<const u8> view = reading_->view.bytes();
   std::string why;
   if (path.empty() ||
       !reading_->archive.open(path, "EMSK", manifest_.spacing_mm, record_bytes(manifest_.cells),
                               manifest_.present.size() / 2,
                               unbuffered ? io::ReadMode::unbuffered : io::ReadMode::buffered, why,
-                              reading_->view.bytes())) {
+                              view)) {
     error = "'" + manifest_path + "' has no archive it can read" +
             (why.empty() ? std::string() : ": " + why);
     info_ = scene_gen::GroundMaskInfo{};
@@ -1359,7 +1364,7 @@ bool MaskLevel::open(const std::string& manifest_path, std::string& error, bool 
     present_ = Vector<u64>{};
     return false;
   }
-  reading_->mapped = reading_->view.is_open();
+  reading_->mapped = !view.empty();
   // **The list of tiles kept once** (tileset.md, "The table read from the view"): the manifest's
   // pairs are released, and where the archive's table holds exactly the tiles they list (every
   // level the build writes) the sorted keys are too, so `present` and `tile_at` read the table.
