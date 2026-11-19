@@ -447,6 +447,46 @@ TEST_CASE("listen: a role that may not write is refused over the socket as on st
   CHECK(error_code(c.call("doc.objects", R"({"session":")" + host.session + "\"}")) == 0);
 }
 
+// Another process's write to the ledger reaches a subscriber of a listening host as
+// `ledger_changed` (protocol.md, "The ledger's events"): two engine-host processes on one document,
+// the second raising an item on its stdin as engine-cli's host per call would, and nothing asked of
+// the first. Its look comes a quarter second after the system's notice; ten seconds is the case's
+// patience, so a host that never looks fails the case rather than hanging it.
+TEST_CASE("listen: a review item another process raises is pushed as ledger_changed") {
+  test::TempDir tmp("engine_host_listen_ledger");
+  const std::string doc = tmp.file("doc");
+  ListeningHost first({"--doc", doc, "--create", "--actor", "editor"});
+  Client watcher;
+  REQUIRE(watcher.connect(first.port, first.token));
+  REQUIRE(error_code(watcher.call("session.subscribe", R"({"kinds":["session"]})")) == 0);
+  ListeningHost second({"--doc", doc, "--actor", "cli"});
+  const JsonValue raised =
+      second.stdio("review.raise", R"({"session":")" + second.session +
+                                       R"(","kind":"validation","summary":"look at it"})");
+  REQUIRE_MESSAGE(raised.find("result") != nullptr, write_json(raised));
+  const i64 id = at(at(at(raised, "result"), "reviews")[0], "id").as_int();
+  bool pushed = false;
+  for (int i = 0; i < 32 && !pushed; ++i) {
+    net::Message m;
+    if (!watcher.ws.receive(m, 10'000)) break;
+    JsonValue note;
+    REQUIRE_MESSAGE(parse_json(m.data, note).ok, m.data);
+    const JsonValue* params = note.find("params");
+    if (params == nullptr || at(*params, "change").as_string() != "ledger_changed") continue;
+    const JsonValue& reviews = at(*params, "reviews");
+    REQUIRE(reviews.size() == 1);
+    CHECK(reviews[0].as_int() == id);
+    CHECK(at(*params, "ledger_revision").as_int() == 1);
+    pushed = true;
+  }
+  CHECK(pushed);
+  // Read by the id the event named, one item and not the list.
+  const JsonValue listed =
+      watcher.call("review.list", R"({"session":")" + first.session + R"(","reviews":[)" +
+                                      std::to_string(id) + "]}");
+  CHECK(at(at(listed, "result"), "reviews").size() == 1);
+}
+
 TEST_CASE("listen: a second connection is served while the first is open") {
   ListeningHost host({});
   Client a;
