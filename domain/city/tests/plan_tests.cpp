@@ -446,6 +446,48 @@ TEST_CASE("city params hostile: a length past 100 km is refused before it become
   refused(source, "an infinite block_max");
 }
 
+// Hostile (T198): a plan's rectangles were never ranged and its tile index was built, one entry a
+// tile each lot touches, before the hash was checked and with no count. Every lot of the small
+// island stretched over +/-2^24 cm on its 64 m tiles asks for the count below, about 2.8 x 10^7
+// entries a lot and past 10^9 for the plan (16 bytes each): proven by that arithmetic, never by
+// building it. A lot at 2^30 cm, past the plan's reach, and a block naming a district the plan
+// lacks are refused as well. Before the mend each file below read back (its hash is its own).
+TEST_CASE("city plan hostile: rectangles stay in the plan's reach and the tile index is counted") {
+  const Plan& plan = small_plan();
+  REQUIRE(plan.lots.size() >= 16);
+  const i64 t = plan.params.tile_cm;
+  auto floor_div = [](i64 a, i64 b) { return a / b - ((a % b != 0) && ((a < 0) != (b < 0))); };
+  const i64 side = floor_div(1 << 24, t) - floor_div(-(1 << 24), t) + 1;
+  const u64 asked = static_cast<u64>(side * side) * plan.lots.size();
+  CHECK(asked > (u64{1} << 28));
+
+  Plan wide = plan;
+  for (Lot& l : wide.lots)
+    l.rect = Rect{-(1 << 24), -(1 << 24), 1 << 24, 1 << 24};
+  PlanFile file;
+  plan_to_schema(wide, file);  // `wide`'s own hash
+  Plan back;
+  std::string error;
+  CHECK_FALSE(plan_from_schema(file, back, error));
+  CHECK(error.find("tiles together") != std::string::npos);
+
+  Plan far = plan;
+  far.lots[0].rect.x1 = 1 << 30;
+  plan_to_schema(far, file);
+  CHECK_FALSE(plan_from_schema(file, back, error));
+  CHECK(error.find("outside the plan's reach") != std::string::npos);
+
+  plan_to_schema(plan, file);
+  REQUIRE_FALSE(file.blocks.empty());
+  file.blocks[0].district = 60'000;
+  CHECK_FALSE(plan_from_schema(file, back, error));
+  CHECK(error.find("names a district the plan lacks") != std::string::npos);
+
+  plan_to_schema(plan, file);  // and the honest plan still reads back whole
+  REQUIRE_MESSAGE(plan_from_schema(file, back, error), error);
+  CHECK(back.tile_index.size() == plan.tile_index.size());
+}
+
 TEST_CASE("city plan: the key is the parameters' and not their spelling") {
   // A file that leaves the tables empty and one that spells the defaults out are one island.
   IslandParams sparse;
