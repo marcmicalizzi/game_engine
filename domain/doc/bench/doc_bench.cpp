@@ -536,6 +536,160 @@ ENGINE_BENCH_ARGS(store_commit_e12, "doc.store.commit.e12", 4, 16) {
   report_io(state, files, bytes, commits);
 }
 
+// ---- what a save costs after a small transaction (roadmap D42) ---------------------------------
+//
+// One partitioned layer of 10^5 records over 64 x 64 tiles (4,096, about 24 records each), saved
+// whole once; then each iteration commits a transaction outside the timing and times the save
+// alone. The transactions: one record's property; sixteen records of one tile; sixteen records in
+// sixteen tiles; one record moved to the next tile and back on the next iteration. The items column
+// is the files the save serialised (written or found already there) and the bytes column their
+// text, `SaveReport::files_serialized`/`bytes_serialized`: the work a save does to learn what to
+// write. Under CTest's smoke run the layer is 8 x 8 tiles of 16 records.
+
+namespace {
+
+struct LargeShape {
+  u32 grid = 64;  // tiles a side
+  u32 records = 100'000;
+};
+
+LargeShape large_shape() {
+  LargeShape s;
+  if (bench::smoke_mode()) {
+    s.grid = 8;
+    s.records = 1024;
+  }
+  return s;
+}
+
+constexpr f64 k_large_tile = 16.0;
+
+// Record n's position: in tile n % (grid * grid), so consecutive ids spread over the grid, and
+// `shift` tiles along x from there.
+JsonValue large_position(u32 n, const LargeShape& s, u32 shift) {
+  const u32 tiles = s.grid * s.grid;
+  const u32 t = n % tiles;
+  const f64 inside = static_cast<f64>((n / tiles) % 89) / 89.0 * (k_large_tile * 0.9);
+  const f64 x = static_cast<f64>(t % s.grid + shift) * k_large_tile + inside + 0.5;
+  const f64 z = static_cast<f64>(t / s.grid) * k_large_tile + inside + 0.5;
+  return JsonValue(JsonValue::Array{JsonValue(x), JsonValue(0.0), JsonValue(z)});
+}
+
+struct LargeFixture {
+  engine::test::TempDir tmp{"engine_doc_save_bench"};
+  io::Vfs vfs;
+  std::string dir = "docs://world";
+  Document doc;
+  DocumentManifest manifest;
+  LargeShape shape;
+  u32 world = 0;
+  u64 revision = 0;
+
+  LargeFixture() : shape(large_shape()) {
+    (void)vfs.mount("docs", tmp.path(), /*writable=*/true);
+    std::string error;
+    ENGINE_VERIFY(DocumentStore::create(vfs, dir, "Bench", doc, manifest, &error),
+                  "doc save bench: create failed");
+    Layer layer("world", LayerRole::Feature);
+    for (u32 n = 0; n < shape.records; ++n) {
+      ObjectRecord r;
+      r.id = store_id(n);
+      r.type = k_type;
+      r.parent = ObjectId{};
+      r.properties.insert_or_assign("generator", JsonValue("prop-" + std::to_string(n)));
+      r.properties.insert_or_assign("position", large_position(n, shape, 0));
+      layer.set(std::move(r));
+    }
+    world = doc.add_layer(std::move(layer));
+    LayerPartition partition;
+    partition.property = "position";
+    partition.tile_size = k_large_tile;
+    doc.set_layer_partition(world, partition);
+    doc.set_edit_layer(world);
+    ENGINE_VERIFY(DocumentStore::save(vfs, dir, doc, manifest, &error),
+                  "doc save bench: first save failed");
+  }
+
+  u32 tiles() const noexcept { return shape.grid * shape.grid; }
+
+  // Commits one transaction of `commands`, untimed.
+  void commit(const Vector<Command>& commands) {
+    Attribution who;
+    who.actor = "bench";
+    who.role = "bench";
+    who.timestamp_unix_ms = 1;
+    Transaction tx = doc.begin(who);
+    for (const Command& c : commands)
+      tx.apply(c, /*strict=*/false);
+    tx.commit();
+  }
+
+  // Times one save; adds what it serialised.
+  void save(bench::State& state, u64& files, u64& bytes) {
+    std::string error;
+    SaveReport report;
+    state.resume_timing();
+    ENGINE_VERIFY(DocumentStore::save(vfs, dir, doc, manifest, &error, &report),
+                  "doc save bench: save failed");
+    state.pause_timing();
+    files += report.files_serialized;
+    bytes += report.bytes_serialized;
+  }
+};
+
+// The commands of one iteration of `kind`: 0 one record, 1 sixteen in one tile, 2 sixteen in
+// sixteen tiles, 3 one record moved a tile along x (and back the next time).
+Vector<Command> large_commands(const LargeFixture& f, u32 kind, u64 i) {
+  Vector<Command> out;
+  const u32 tiles = f.tiles();
+  const u32 per_tile = f.shape.records / tiles;
+  const u32 t = static_cast<u32>((i * 1031) % tiles);
+  const JsonValue value(static_cast<u64>(i));
+  switch (kind) {
+    case 0:
+      out.push_back(
+          cmd_set(store_id(static_cast<u32>((i * 7919) % f.shape.records)), "generator", value));
+      break;
+    case 1:
+      for (u32 k = 0; k < 16; ++k)
+        out.push_back(cmd_set(store_id(t + (k % per_tile) * tiles), "generator", value));
+      break;
+    case 2:
+      for (u32 k = 0; k < 16; ++k)
+        out.push_back(cmd_set(store_id((t + k * 67) % tiles), "generator", value));
+      break;
+    default: {
+      // A record in the grid's first column, moved to the second and back: never off the grid.
+      const u32 n = ((i / 2) % f.shape.grid) * f.shape.grid;
+      out.push_back(cmd_set(store_id(n), "position",
+                            large_position(n, f.shape, static_cast<u32>(i % 2 == 0 ? 1 : 0))));
+      break;
+    }
+  }
+  return out;
+}
+
+void run_large(bench::State& state, u32 kind) {
+  LargeFixture f;
+  u64 files = 0, bytes = 0, saves = 0;
+  while (state.keep_running()) {
+    state.pause_timing();
+    const Vector<Command> commands = large_commands(f, kind, saves);
+    f.commit(commands);
+    f.save(state, files, bytes);
+    state.resume_timing();
+    ++saves;
+  }
+  report_io(state, files, bytes, saves);
+}
+
+}  // namespace
+
+ENGINE_BENCH(save_one, "doc.store.save.one") { run_large(state, 0); }
+ENGINE_BENCH(save_tile16, "doc.store.save.tile16") { run_large(state, 1); }
+ENGINE_BENCH(save_tiles16, "doc.store.save.tiles16") { run_large(state, 2); }
+ENGINE_BENCH(save_move, "doc.store.save.move") { run_large(state, 3); }
+
 // ---- the file operations a save is made of -----------------------------------------------------
 //
 // One operation per iteration on a native path in a scratch directory, at 64 B, 4 KiB, 64 KiB and
@@ -874,6 +1028,57 @@ ENGINE_BENCH_ARGS(store_load_residents, "doc.store.load.residents", k_resident_r
   state.set_items(records);
   state.set_bytes(bytes);
   engine::test::report_peak("doc.store.load.residents", bytes);
+}
+
+// The npc case's commit (roadmap D42): the same world saved whole, then one resident's `state`
+// changed per iteration (outside the timing) and the save timed alone, which serialises the one
+// tile of about 2,000 records — about 1.2 MB — the resident is filed in. Items and bytes are what
+// the save serialised (`SaveReport::files_serialized`/`bytes_serialized`).
+ENGINE_BENCH_ARGS(store_save_residents, "doc.store.save.residents", k_resident_records) {
+  const u32 records = resident_records(state.arg());
+  engine::test::TempDir tmp("engine_doc_save_residents_bench");
+  io::Vfs vfs;
+  (void)vfs.mount("docs", tmp.path(), /*writable=*/true);
+  const std::string dir = "docs://residents";
+  std::string error;
+  Document doc;
+  DocumentManifest manifest;
+  ENGINE_VERIFY(DocumentStore::create(vfs, dir, "Residents", doc, manifest, &error),
+                "doc save bench: create failed");
+  const u32 layer = doc.add_layer(resident_layer(records));
+  LayerPartition partition;
+  partition.property = "position";
+  partition.tile_size = 64;
+  doc.set_layer_partition(layer, partition);
+  doc.set_edit_layer(layer);
+  ENGINE_VERIFY(DocumentStore::save(vfs, dir, doc, manifest, &error),
+                "doc save bench: first save failed");
+  u64 files = 0, bytes = 0, saves = 0;
+  Attribution who;
+  who.actor = "bench";
+  who.role = "bench";
+  who.timestamp_unix_ms = 1;
+  while (state.keep_running()) {
+    state.pause_timing();
+    u32 n = static_cast<u32>((saves * 7919) % records);
+    while (n % 1000 < 234)  // a place: the next record is a resident
+      n = (n + 1) % records;
+    {
+      Transaction tx = doc.begin(who);
+      tx.apply(
+          cmd_set(npc_id(false, n), "state", JsonValue(saves % 2 == 0 ? "Working" : "Sleeping")),
+          /*strict=*/false);
+      tx.commit();
+    }
+    SaveReport report;
+    state.resume_timing();
+    ENGINE_VERIFY(DocumentStore::save(vfs, dir, doc, manifest, &error, &report),
+                  "doc save bench: save failed");
+    files += report.files_serialized;
+    bytes += report.bytes_serialized;
+    ++saves;
+  }
+  report_io(state, files, bytes, saves);
 }
 
 // The text's parse into a tree, alone; once, what the tree holds in the engine heap.

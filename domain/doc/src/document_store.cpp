@@ -250,6 +250,8 @@ class SavePlan {
 
   // Queues `text` for `path` unless the file already holds exactly these bytes.
   void consider(std::string path, std::string text, bool tile) {
+    ++serialized_files_;
+    serialized_bytes_ += text.size();
     const StoredFile* f = next_.files.find_value(path);
     if (f != nullptr && *f == StoredFile::of(text)) return;
     const u64 was = f != nullptr ? f->size : k_unknown_size;
@@ -279,11 +281,15 @@ class SavePlan {
   const Vector<PlannedWrite>& writes() const noexcept { return writes_; }
   const Vector<PlannedRemoval>& removals() const noexcept { return removals_; }
   const Vector<std::string>& directories() const noexcept { return directories_; }
+  u32 serialized_files() const noexcept { return serialized_files_; }
+  u64 serialized_bytes() const noexcept { return serialized_bytes_; }
 
  private:
   std::string root_;
   StoredState& next_;
   bool probe_all_ = false;
+  u32 serialized_files_ = 0;
+  u64 serialized_bytes_ = 0;
   Vector<PlannedWrite> writes_;
   Vector<PlannedRemoval> removals_;
   Vector<std::string> directories_;
@@ -1317,6 +1323,8 @@ bool DocumentStore::save(const io::Vfs& vfs, std::string_view dir, Document& doc
   manifest.edit_layer =
       document.layer_count() > 0 ? document.layer(document.edit_layer()).name() : "";
   plan.consider(std::string(k_manifest_file), manifest_text(manifest), false);
+  stats.files_serialized = plan.serialized_files();
+  stats.bytes_serialized = plan.serialized_bytes();
 
   if (!carry_out(plan, dir, options, error, stats)) {
     // The disk holds the old state and perhaps a log of this one: the next save knows nothing,
