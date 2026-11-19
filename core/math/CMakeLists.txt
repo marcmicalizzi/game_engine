@@ -5,7 +5,7 @@ engine_module(NAME math LAYER core
 
 engine_module_tests(NAME math
   SOURCES tests/math_tests.cpp tests/world_tests.cpp tests/deterministic_tests.cpp
-          tests/size_table.cpp)
+          tests/portable_trig_tests.cpp tests/size_table.cpp)
 
 # The hot functions, one row each (docs/subsystems/math.md). Every one of them is inline and used
 # across the tree, so a codegen regression here is paid everywhere and shows up nowhere in
