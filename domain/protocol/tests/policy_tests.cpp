@@ -824,6 +824,64 @@ TEST_CASE("proposals: a conflict refuses the promotion unless prefer settles it"
   CHECK(host.property(oid(4), "scale") == JsonValue(2.0));
 }
 
+// "Take the proposal's" applies to the values the person saw (protocol.md, "What a promotion is
+// tied to"): a promotion carrying its dry run's digest is refused when the proposal's owner added a
+// command since, or the target's value at a conflict moved, and taken when neither did.
+TEST_CASE("proposals: a promotion is refused when what its dry run showed has moved") {
+  TempDir tmp("protocol_proposals_seen");
+  Host host;
+  host.make_world(tmp.file("doc"));
+  const JsonValue a = who("a"), b = who("b"), d = who("d");
+  for (const char* name : {"p.a", "p.b"}) {
+    host.ok("doc.propose_layer", obj({{"name", JsonValue(name)},
+                                      {"target", JsonValue("world")},
+                                      {"edit", JsonValue(false)},
+                                      {"attribution", name[2] == 'a' ? a : b}}));
+  }
+  host.apply(one(set(oid(1), "color", JsonValue(1))), a, "p.a");
+  host.apply(one(set(oid(1), "color", JsonValue(2))), b, "p.b");
+  REQUIRE(at(host.ok("doc.promote", obj({{"proposal", JsonValue("p.a")}, {"attribution", d}})),
+             "promoted") == JsonValue(true));
+  const auto dry_run = [&] {
+    const JsonValue dry = host.ok(
+        "doc.promote",
+        obj({{"proposal", JsonValue("p.b")}, {"dry_run", JsonValue(true)}, {"attribution", d}}));
+    REQUIRE(at(dry, "conflicts").size() == 1);
+    return at(dry, "digest");
+  };
+  const auto take = [&](const JsonValue& seen, JsonValue* error) {
+    JsonValue params = obj({{"proposal", JsonValue("p.b")},
+                            {"prefer", JsonValue("Proposal")},
+                            {"digest", seen},
+                            {"attribution", d}});
+    if (error == nullptr) return host.ok("doc.promote", std::move(params));
+    CHECK(host.fails("doc.promote", std::move(params), error) == codes::k_invalid_argument);
+    CHECK(at(at(*error, "data"), "reason").as_string() == "proposal moved");
+    return JsonValue();
+  };
+  JsonValue error;
+
+  const JsonValue seen = dry_run();
+  CHECK(seen.as_string().size() == 64);
+  CHECK(dry_run() == seen);  // nothing moved, nothing differs
+
+  // The owner adds a command between the person's dry run and the promotion.
+  host.apply(one(set(oid(2), "color", JsonValue(7))), b, "p.b");
+  (void)take(seen, &error);
+  CHECK(at(at(error, "data"), "digest") != seen);
+
+  // The target's value at the conflict moves.
+  const JsonValue again = dry_run();
+  host.apply(one(set(oid(1), "color", JsonValue(5))), d, "world");
+  (void)take(again, &error);
+  CHECK(host.layer_property("world", oid(1), "color") == JsonValue(5));  // nothing promoted
+
+  // Seen as it is, taken.
+  const JsonValue taken = take(dry_run(), nullptr);
+  CHECK(at(taken, "promoted") == JsonValue(true));
+  CHECK(host.property(oid(1), "color") == JsonValue(2));
+}
+
 TEST_CASE("proposals: the base is the record as the proposal first found it") {
   TempDir tmp("protocol_proposals");
   const std::string dir = tmp.file("doc");

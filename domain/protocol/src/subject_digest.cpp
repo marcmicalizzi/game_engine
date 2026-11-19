@@ -231,4 +231,37 @@ void subject_digest(const Context& ctx, const Session& session, const ReviewSubj
   out.ms = static_cast<f64>(time::monotonic_ns() - started) / 1.0e6;
 }
 
+std::string promotion_digest(std::string_view proposal, std::string_view target,
+                             const doc::Layer& layer, const Vector<MergeConflictInfo>& conflicts) {
+  Sha256 h;
+  h.update(std::string_view("engine.protocol.promotion-digest 1\n"));
+  {
+    JsonValue line = JsonValue::array();
+    line.push_back(JsonValue("promote"));
+    line.push_back(JsonValue(proposal));
+    line.push_back(JsonValue(target));
+    add_line(h, line);
+  }
+  // The layer's records in id order (a FlatMap is sorted), each as the layer holds it.
+  for (auto [id, record] : layer.records()) {
+    const doc::ObjectRecord& held = record;
+    JsonValue line = JsonValue::array();
+    line.push_back(JsonValue("record"));
+    line.push_back(hex_of(id));
+    line.push_back(schema::to_json(held));
+    add_line(h, line);
+  }
+  // The conflicts in the merge's order, which is a function of the three layers (merge.h).
+  for (const MergeConflictInfo& c : conflicts) {
+    JsonValue line = JsonValue::array();
+    line.push_back(JsonValue("conflict"));
+    line.push_back(hex_of(c.object));
+    line.push_back(JsonValue(c.property));
+    line.push_back(JsonValue(static_cast<u64>(c.kind)));
+    line.push_back(c.ours);
+    add_line(h, line);
+  }
+  return sha256_hex(h.finish());
+}
+
 }  // namespace engine::protocol

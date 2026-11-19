@@ -3091,8 +3091,8 @@ enum PromotePrefer : u8 {
   Base = 3
 }
 
-/// Parameters of `doc.promote`.
-struct PromoteParams @version(1) {
+/// Parameters of `doc.promote`. Version 2: `digest`, what the promoter's dry run showed.
+struct PromoteParams @version(2) @additive(2) {
   session: string
   /// The proposal layer.
   proposal: string
@@ -3101,10 +3101,15 @@ struct PromoteParams @version(1) {
   dry_run: bool = false
   /// The promoter. The journal records the promotion under it, with the proposal's own rationale.
   attribution: engine.doc.Attribution
+  /// The `PromoteResult.digest` of the dry run this promotion was decided on: refused (1004,
+  /// `data.reason` "proposal moved", the digest now in `data.digest`) when the proposal's records
+  /// or the target's values at its conflicts have changed since, so a `prefer` applies to the
+  /// values its promoter saw (protocol.md, "What a promotion is tied to"). Empty checks nothing.
+  digest: string @since(2)
 }
 
-/// Result of `doc.promote`.
-struct PromoteResult @version(1) {
+/// Result of `doc.promote`. Version 2: `digest`.
+struct PromoteResult @version(2) @additive(2) {
   /// Nothing stands in the way: no conflict `prefer` leaves open, and no new validation problem.
   ok: bool = false
   /// The target now holds the proposal's opinions and the proposal is empty.
@@ -3131,6 +3136,10 @@ struct PromoteResult @version(1) {
   merge_ms: f64 = 0
   validate_ms: f64 = 0
   commit_ms: f64 = 0
+  /// SHA-256 of what this merge showed: the proposal's records as it holds them and the target's
+  /// value at each conflict, 64 lowercase hex. A promotion passes its dry run's back in
+  /// `PromoteParams.digest`.
+  digest: string @since(2)
 }
 
 /// Parameters of `doc.reject`: empty an open proposal without merging it.

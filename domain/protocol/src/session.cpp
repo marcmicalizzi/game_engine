@@ -1,3 +1,5 @@
+#include "subject_digest.h"
+
 #include <core/json/json.h>
 #include <core/platform/random.h>
 #include <core/schema/json_reflect.h>
@@ -1588,6 +1590,24 @@ bool Session::promote(const PromoteParams& params, const Caller& caller, Promote
     info.ours = c.ours;
     info.theirs = c.theirs;
     result.conflicts.push_back(std::move(info));
+  }
+  // What this merge shows, and the refusal of a promotion decided on a dry run that showed
+  // something else (protocol.md, "What a promotion is tied to"): checked before validation and
+  // before anything is committed, so a refused promotion changes nothing.
+  result.digest =
+      promotion_digest(entry->info.layer, entry->info.target, proposal, result.conflicts);
+  if (!params.digest.empty() && params.digest != result.digest) {
+    JsonValue data = JsonValue::object();
+    data.set("reason", JsonValue("proposal moved"));
+    data.set("proposal", JsonValue(entry->info.layer));
+    data.set("digest", JsonValue(result.digest));
+    error = make_error(codes::k_invalid_argument,
+                       "proposal " + params.proposal +
+                           " or the target's values at its conflicts changed since the dry run "
+                           "this promotion was decided on: dry-run it again and decide on what it "
+                           "shows now",
+                       std::move(data));
+    return false;
   }
   const Vector<doc::Command> commands = doc::diff_layers(target, merged.merged);
   {

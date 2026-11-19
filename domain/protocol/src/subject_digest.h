@@ -38,4 +38,14 @@ namespace engine::protocol {
 void subject_digest(const Context& ctx, const Session& session, const ReviewSubject& subject,
                     SubjectState& out);
 
+// What a promotion's merge showed (protocol.md, "What a promotion is tied to"), as 64 lowercase
+// hex: the proposal and its target by name, every record the proposal layer holds as it holds it
+// (in id order), and each conflict's object, property, kind and the target's value there (`ours`).
+// A dry run answers it, and a promotion carrying it is refused when the same merge now gives
+// another: the owner added, changed or removed an opinion, or the target's value at a conflict
+// moved, or a conflict came or went. The target's values elsewhere take no part: the promotion
+// takes them as the merge does whatever they are.
+std::string promotion_digest(std::string_view proposal, std::string_view target,
+                             const doc::Layer& layer, const Vector<MergeConflictInfo>& conflicts);
+
 }  // namespace engine::protocol
