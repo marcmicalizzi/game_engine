@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "S35-4",
+  "reason": "S35 stage 4 (inertialization) and the two mends of batch 69's review: animation.md gains the section 'Graphs: inertialization' and the mends' notes",
+  "date": "2026-11-19",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/animation.md": 10363
+  }
+}

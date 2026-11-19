@@ -26,12 +26,13 @@ engine_module(NAME animation LAYER systems OPTIONAL WHOLE_ARCHIVE
   DEPS base containers math time log jobs ids hash json schema tunables geometry anim assets sim ecs doc
        animation_schemas
   SOURCES src/library.cpp src/pose_pool.cpp src/animation.cpp src/gait.cpp src/visibility.cpp
-          src/graph.cpp)
+          src/graph.cpp src/inertialize.cpp)
 
 engine_module_tests(NAME animation
   SOURCES tests/animation_tests.cpp tests/ancestor_tests.cpp tests/lod_tests.cpp tests/size_table.cpp
           tests/gait_tests.cpp tests/visibility_tests.cpp tests/travel_tests.cpp tests/graph_tests.cpp
-          tests/graph_pose_tests.cpp tests/graph_layer_tests.cpp)
+          tests/graph_pose_tests.cpp tests/graph_layer_tests.cpp tests/inertialize_tests.cpp
+          tests/graph_inertial_tests.cpp)
 # The gait's tests wear the Khronos RiggedFigure where tools/fetch-samples.ps1 has fetched it,
 # found through test_paths.h by this path or in a test bundle.
 if(TARGET engine_animation_tests)

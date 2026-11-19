@@ -1,6 +1,7 @@
 #include "fly_camera.h"
 
 #include <core/hash/hash.h>
+#include <core/math/portable_trig.h>
 #include <foundation/input/input_log.h>
 #include <foundation/tunables/tunables.h>
 
@@ -58,14 +59,8 @@ constexpr u32 k_pad_right_stick = 9;
 constexpr f32 k_stick_deadzone = 0.15f;
 constexpr f32 k_trigger_deadzone = 0.05f;
 
-constexpr f64 k_pi = 3.14159265358979323846;
-constexpr f64 k_two_pi = 6.28318530717958647692;
-constexpr f64 k_half_pi = 1.57079632679489661923;
 constexpr f32 k_pi_f = 3.14159265f;
 constexpr f32 k_two_pi_f = 6.28318531f;
-// Further than this from zero an angle is not one the camera can reach by turning; it is a broken
-// input, and the answer is the one for zero rather than a loop that never ends.
-constexpr f64 k_angle_limit = 1.0e6;
 
 u32 bits(f32 v) noexcept {
   if (v == 0.0f) v = 0.0f;  // -0 and +0 are the same camera
@@ -357,98 +352,12 @@ bool resolve_fly_actions(const input::ActionMap& map, FlyActions& out, std::stri
   return true;
 }
 
-f32 fly_atan2(f32 y_in, f32 x_in) noexcept {
-  const f64 y = static_cast<f64>(y_in);
-  const f64 x = static_cast<f64>(x_in);
-  if (!std::isfinite(y) || !std::isfinite(x) || (y == 0.0 && x == 0.0)) return 0.0f;
-  const f64 ay = y < 0.0 ? -y : y;
-  const f64 ax = x < 0.0 ? -x : x;
-  // Into [0, 1] by atan(z) = pi/2 - atan(1/z), then twice through the half angle,
-  // atan(z) = 2 atan(z / (1 + sqrt(1 + z^2))), to |z| <= tan(pi/16) = 0.199, where the series
-  // through z^21 leaves out a term of 4e-18. `sqrt` is correctly rounded by IEEE, so every step is
-  // the same bits on every compiler, and Horner's order is the source's (ADR-0035).
-  const bool swapped = ay > ax;
-  f64 z = swapped ? ax / ay : ay / ax;
-  z = z / (1.0 + std::sqrt(1.0 + z * z));
-  z = z / (1.0 + std::sqrt(1.0 + z * z));
-  const f64 z2 = z * z;
-  f64 a = -1.0 / 21.0;
-  a = a * z2 + 1.0 / 19.0;
-  a = a * z2 - 1.0 / 17.0;
-  a = a * z2 + 1.0 / 15.0;
-  a = a * z2 - 1.0 / 13.0;
-  a = a * z2 + 1.0 / 11.0;
-  a = a * z2 - 1.0 / 9.0;
-  a = a * z2 + 1.0 / 7.0;
-  a = a * z2 - 1.0 / 5.0;
-  a = a * z2 + 1.0 / 3.0;
-  a = a * z2 - 1.0;
-  a = -(a * z);  // z - z^3/3 + z^5/5 - ...
-  a = 4.0 * a;
-  if (swapped) a = k_half_pi - a;
-  if (x < 0.0) a = k_pi - a;
-  if (y < 0.0) a = -a;
-  return static_cast<f32>(a);
-}
+// Both moved to core/math (portable_trig.h) on 2026-11-19, unchanged, so a capability can use them
+// (S35 stage 4); these names stay for engine-view's call sites and the fly integration's version.
+f32 fly_atan2(f32 y, f32 x) noexcept { return portable_atan2(y, x); }
 
 void fly_sin_cos(f32 angle, f32& sin_out, f32& cos_out) noexcept {
-  f64 x = static_cast<f64>(angle);
-  if (!(x >= -k_angle_limit && x <= k_angle_limit)) x = 0.0;
-  while (x > k_pi)
-    x -= k_two_pi;
-  while (x < -k_pi)
-    x += k_two_pi;
-  // Into [-pi/2, pi/2]: sin(pi - x) = sin x and cos(pi - x) = -cos x, and the same about -pi.
-  f64 cos_sign = 1.0;
-  if (x > k_half_pi) {
-    x = k_pi - x;
-    cos_sign = -1.0;
-  } else if (x < -k_half_pi) {
-    x = -k_pi - x;
-    cos_sign = -1.0;
-  }
-  // Taylor series through x^17 and x^16: at |x| = pi/2 the first terms left out are 4e-14 and
-  // 5e-13, a hundred thousand times under an f32's ulp at 1. Every coefficient is one division of
-  // two exactly representable integers, which every compiler folds to the same correctly rounded
-  // double, and Horner's order is the source's (no contraction, ADR-0035).
-  constexpr f64 s3 = -1.0 / 6.0;
-  constexpr f64 s5 = 1.0 / 120.0;
-  constexpr f64 s7 = -1.0 / 5040.0;
-  constexpr f64 s9 = 1.0 / 362880.0;
-  constexpr f64 s11 = -1.0 / 39916800.0;
-  constexpr f64 s13 = 1.0 / 6227020800.0;
-  constexpr f64 s15 = -1.0 / 1307674368000.0;
-  constexpr f64 s17 = 1.0 / 355687428096000.0;
-  constexpr f64 c2 = -1.0 / 2.0;
-  constexpr f64 c4 = 1.0 / 24.0;
-  constexpr f64 c6 = -1.0 / 720.0;
-  constexpr f64 c8 = 1.0 / 40320.0;
-  constexpr f64 c10 = -1.0 / 3628800.0;
-  constexpr f64 c12 = 1.0 / 479001600.0;
-  constexpr f64 c14 = -1.0 / 87178291200.0;
-  constexpr f64 c16 = 1.0 / 20922789888000.0;
-  const f64 x2 = x * x;
-  f64 s = s17;
-  s = s * x2 + s15;
-  s = s * x2 + s13;
-  s = s * x2 + s11;
-  s = s * x2 + s9;
-  s = s * x2 + s7;
-  s = s * x2 + s5;
-  s = s * x2 + s3;
-  s = s * x2 + 1.0;
-  s = s * x;
-  f64 c = c16;
-  c = c * x2 + c14;
-  c = c * x2 + c12;
-  c = c * x2 + c10;
-  c = c * x2 + c8;
-  c = c * x2 + c6;
-  c = c * x2 + c4;
-  c = c * x2 + c2;
-  c = c * x2 + 1.0;
-  sin_out = static_cast<f32>(s);
-  cos_out = static_cast<f32>(cos_sign * c);
+  portable_sin_cos(angle, sin_out, cos_out);
 }
 
 Vec3 fly_forward(const FlyState& state) noexcept {

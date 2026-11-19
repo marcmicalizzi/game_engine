@@ -9,6 +9,7 @@
 #include <bit>
 #include <cmath>
 #include <initializer_list>
+#include <type_traits>
 #include <utility>
 
 namespace engine::animation {
@@ -97,6 +98,61 @@ Vector<const GraphItem<T>*> sorted(const Vector<GraphItem<T>>& items, const Id12
   sort_by_id(out);
   return out;
 }
+
+// A list's items grouped by parent, each group in id order, found by binary search: what `sorted`
+// gives for one parent, for every parent at once. Built once in n log n, so the compile visits a
+// record a bounded number of times however many states and nodes a graph has (the review of batch
+// 69, finding 6: a `sorted` a state and a scan a node made the compile quadratic in both).
+template <class T>
+class ByParent {
+ public:
+  explicit ByParent(const Vector<GraphItem<T>>& items) {
+    items_.reserve(items.size());
+    for (const GraphItem<T>& item : items)
+      items_.push_back(&item);
+    std::stable_sort(items_.begin(), items_.end(),
+                     [](const GraphItem<T>* a, const GraphItem<T>* b) {
+                       return a->parent != b->parent ? a->parent < b->parent : a->id < b->id;
+                     });
+  }
+  std::span<const GraphItem<T>* const> children(const Id128& parent) const noexcept {
+    const auto lo =
+        std::lower_bound(items_.begin(), items_.end(), parent,
+                         [](const GraphItem<T>* item, const Id128& p) { return item->parent < p; });
+    const auto hi =
+        std::upper_bound(lo, items_.end(), parent,
+                         [](const Id128& p, const GraphItem<T>* item) { return p < item->parent; });
+    return {lo, static_cast<usize>(hi - lo)};
+  }
+
+ private:
+  Vector<const GraphItem<T>*> items_;
+};
+
+// A list's items by id, found by binary search (several items may share an id: a malformed graph).
+template <class T>
+class ById {
+ public:
+  explicit ById(const Vector<GraphItem<T>>& items) {
+    items_.reserve(items.size());
+    for (const GraphItem<T>& item : items)
+      items_.push_back(&item);
+    std::stable_sort(items_.begin(), items_.end(),
+                     [](const GraphItem<T>* a, const GraphItem<T>* b) { return a->id < b->id; });
+  }
+  std::span<const GraphItem<T>* const> find(const Id128& id) const noexcept {
+    const auto lo =
+        std::lower_bound(items_.begin(), items_.end(), id,
+                         [](const GraphItem<T>* item, const Id128& i) { return item->id < i; });
+    const auto hi =
+        std::upper_bound(lo, items_.end(), id,
+                         [](const Id128& i, const GraphItem<T>* item) { return i < item->id; });
+    return {lo, static_cast<usize>(hi - lo)};
+  }
+
+ private:
+  Vector<const GraphItem<T>*> items_;
+};
 
 bool refuse(std::string& why, const GraphDesc& desc, std::string_view what) {
   why = "graph '" + desc.graph.name + "': ";
@@ -188,6 +244,13 @@ void state_weights(const AnimationGraphState& st, u32 m, f32 lead, bool interpol
   w_cur = 1.0f;
   w_next = 0.0f;
   if (st.next[m] == 0) return;
+  // An inertialization in flight (a negative duration, stage 4): the target alone, from its first
+  // tick; the source is evaluated once, for the offsets, by the host (`inertial_capture`).
+  if (st.duration[m] < 0.0f) {
+    w_cur = 0.0f;
+    w_next = 1.0f;
+    return;
+  }
   f32 t = st.duration[m] > 0.0f ? clamp01((st.elapsed[m] + lead) / st.duration[m]) : 1.0f;
   if (!interpolate) t = t >= 0.5f ? 1.0f : 0.0f;
   w_cur = 1.0f - t;
@@ -670,6 +733,31 @@ usize CompiledGraph::bytes() const noexcept {
   return n;
 }
 
+// The compiled tables' revision: every table an instance's indices point into, and the program
+// they drive, hashed as bytes (each record's padding is a named field set to zero, so the bytes
+// are the values). Never 0, which a state written before `AnimationGraphState` version 2 holds.
+static u32 graph_revision(const CompiledGraph& g) noexcept {
+  u64 h = hash_bytes(&g.id, sizeof(g.id));
+  const auto add = [&h](const auto& table) {
+    using T = std::remove_cvref_t<decltype(table[0])>;
+    h = hash_bytes(table.data(), usize{table.size()} * sizeof(T), h);
+    h = hash_combine(h, table.size());
+  };
+  add(g.machines);
+  add(g.states);
+  add(g.transitions);
+  add(g.conditions);
+  add(g.pose_states);
+  add(g.pose_clips);
+  add(g.program);
+  add(g.layers);
+  add(g.layer_joints);
+  add(g.layer_weights);
+  h = hash_combine(h, g.registers);
+  const u32 r = static_cast<u32>(h ^ (h >> 32));
+  return r != 0 ? r : 1u;
+}
+
 bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph& out,
                    std::string& why, const anim::Skeleton* skeleton) {
   out = CompiledGraph{};
@@ -723,12 +811,14 @@ bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph&
   }
   // A node is a state's pose, an input of a Blend1D that is one, or a machine's layer node (stage
   // 3); nothing else is in any stage of the design.
-  const auto is_state = [&](const Id128& id) {
-    for (const GraphItem<GraphState>& s : desc.states) {
-      if (s.id == id) return true;
-    }
-    return false;
-  };
+  // Every lookup below is a binary search over a table built once, so the compile is n log n in
+  // the records (it was quadratic in the nodes, and in states times nodes; finding 6 above).
+  const ById<GraphState> states_by_id(desc.states);
+  const ById<GraphNode> nodes_by_id(desc.nodes);
+  const ByParent<GraphNode> nodes_by_parent(desc.nodes);
+  const ByParent<GraphState> states_by_parent(desc.states);
+  const ByParent<GraphTransition> transitions_by_parent(desc.transitions);
+  const auto is_state = [&](const Id128& id) { return !states_by_id.find(id).empty(); };
   const auto is_machine = [&](const Id128& id) {
     for (const GraphItem<GraphMachine>* m : machines) {
       if (m->id == id) return true;
@@ -737,9 +827,8 @@ bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph&
   };
   for (const GraphItem<GraphNode>& n : desc.nodes) {
     bool placed = is_state(n.parent) || is_machine(n.parent);
-    for (const GraphItem<GraphNode>& p : desc.nodes) {
-      placed = placed ||
-               (p.id == n.parent && p.record.kind == GraphNodeKind::Blend1D && is_state(p.parent));
+    for (const GraphItem<GraphNode>* p : nodes_by_id.find(n.parent)) {
+      placed = placed || (p->record.kind == GraphNodeKind::Blend1D && is_state(p->parent));
     }
     if (!placed) {
       return refuse(why, desc,
@@ -786,7 +875,8 @@ bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph&
   for (u32 mi = 0; mi < machines.size(); ++mi) {
     const GraphItem<GraphMachine>& machine = *machines[mi];
     const std::string& mname = machine.record.name;
-    const Vector<const GraphItem<GraphState>*> states = sorted(desc.states, machine.id);
+    const std::span<const GraphItem<GraphState>* const> states =
+        states_by_parent.children(machine.id);
     if (states.empty()) return refuse(why, desc, "machine '" + mname + "' has no state");
     if (states.size() > k_graph_max_states) {
       return refuse(why, desc,
@@ -796,11 +886,13 @@ bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph&
     ControlMachine& cm = out.machines.emplace_back();
     cm.first_state = out.states.size();
     cm.state_count = static_cast<u16>(states.size());
+    // A state's index in the machine: the first of its id in the id-ordered states.
     const auto local = [&](const Id128& id) {
-      for (u32 i = 0; i < states.size(); ++i) {
-        if (states[i]->id == id) return i;
-      }
-      return k_absent;
+      const auto at = std::lower_bound(
+          states.begin(), states.end(), id,
+          [](const GraphItem<GraphState>* s, const Id128& i) { return s->id < i; });
+      return at != states.end() && (*at)->id == id ? static_cast<u32>(at - states.begin())
+                                                   : k_absent;
     };
     const u32 entry = local(machine.record.entry);
     if (entry == k_absent)
@@ -817,7 +909,7 @@ bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph&
 
     // The states and what plays each.
     for (const GraphItem<GraphState>* s : states) {
-      const Vector<const GraphItem<GraphNode>*> pose = sorted(desc.nodes, s->id);
+      const std::span<const GraphItem<GraphNode>* const> pose = nodes_by_parent.children(s->id);
       const std::string where = "state '" + mname + "." + s->record.name + "'";
       if (pose.size() != 1) {
         return refuse(why, desc,
@@ -850,13 +942,18 @@ bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph&
       PoseState& ps = out.pose_states.emplace_back();
       ps.first_clip = static_cast<u16>(out.pose_clips.size());
       ps.flags = node.looping ? k_pose_state_looping : u8{0};
-      const Vector<const GraphItem<GraphNode>*> children = sorted(desc.nodes, pose[0]->id);
+      const std::span<const GraphItem<GraphNode>* const> children =
+          nodes_by_parent.children(pose[0]->id);
       if (node.kind == GraphNodeKind::Clip) {
         if (!node.inputs.empty() || !node.thresholds.empty() || !node.param.empty() ||
             !children.empty()) {
           return refuse(why, desc,
                         where + ": a Clip node takes no inputs, thresholds or parameter");
         }
+        // A Clip state's one clip counts against the same limit a Blend1D's do: `first_clip` is a
+        // u16 (the review of batch 69, finding 6: two machines of Clip states could pass it).
+        if (out.pose_clips.size() + 1u > k_graph_max_records)
+          return refuse(why, desc, "more pose clips than the limit of 65,535");
         info.clip = node.clip;
         PoseClip& clip = out.pose_clips.emplace_back();
         if (!resolve(where, node, clip, info.clip_id)) return false;
@@ -897,7 +994,7 @@ bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph&
                               " is not one of its child nodes");
           const GraphNode& in = input->record;
           if (in.kind != GraphNodeKind::Clip || !in.inputs.empty() || !in.thresholds.empty() ||
-              !in.param.empty() || !sorted(desc.nodes, input->id).empty()) {
+              !in.param.empty() || !nodes_by_parent.children(input->id).empty()) {
             return refuse(why, desc,
                           where +
                               ": a Blend1D's inputs are Clip nodes (a blend of "
@@ -936,10 +1033,22 @@ bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph&
     }
 
     // The transitions: `any` first, then each state's run, each sorted by (priority, id).
-    Vector<const GraphItem<GraphTransition>*> transitions = sorted(desc.transitions, machine.id);
+    const std::span<const GraphItem<GraphTransition>* const> by_id =
+        transitions_by_parent.children(machine.id);
+    Vector<const GraphItem<GraphTransition>*> transitions;
+    transitions.reserve(static_cast<u32>(by_id.size()));
+    for (const GraphItem<GraphTransition>* t : by_id)
+      transitions.push_back(t);
     std::stable_sort(transitions.begin(), transitions.end(),
                      [](const GraphItem<GraphTransition>* a, const GraphItem<GraphTransition>* b) {
                        return a->record.priority < b->record.priority;
+                     });
+    // The same order grouped by the state each leaves (stable: (priority, id) within a group), so
+    // a state's run is found by a binary search rather than a pass over the machine's transitions.
+    Vector<const GraphItem<GraphTransition>*> by_from = transitions;
+    std::stable_sort(by_from.begin(), by_from.end(),
+                     [](const GraphItem<GraphTransition>* a, const GraphItem<GraphTransition>* b) {
+                       return a->record.from < b->record.from;
                      });
     const auto emit = [&](const GraphItem<GraphTransition>& t) {
       const GraphTransition& r = t.record;
@@ -950,8 +1059,6 @@ bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph&
       if (to == k_absent) return refuse(why, desc, where + " goes to a state not of this machine");
       if (r.exit_phase.has_value())
         return refuse(why, desc, where + ": exit_phase is in no stage of the design yet");
-      if (r.blend == GraphBlend::Inertialize)
-        return refuse(why, desc, where + ": Inertialize is stage 4's");
       if (r.offset != GraphOffset::Zero) {
         return refuse(why, desc,
                       where +
@@ -993,8 +1100,13 @@ bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph&
     for (u32 si = 0; si < states.size(); ++si) {
       ControlState& cs = out.states[cm.first_state + si];
       cs.first_transition = static_cast<u16>(out.transitions.size());
-      for (const GraphItem<GraphTransition>* t : transitions) {
-        if (t->record.from == states[si]->id && !emit(*t)) return false;
+      const Id128& from = states[si]->id;
+      for (auto t = std::lower_bound(by_from.begin(), by_from.end(), from,
+                                     [](const GraphItem<GraphTransition>* a, const Id128& f) {
+                                       return a->record.from < f;
+                                     });
+           t != by_from.end() && (*t)->record.from == from; ++t) {
+        if (!emit(**t)) return false;
       }
       cs.transition_count = static_cast<u16>(out.transitions.size() - cs.first_transition);
     }
@@ -1010,7 +1122,23 @@ bool compile_graph(const GraphDesc& desc, const Library* library, CompiledGraph&
     return refuse(why, desc, "more transitions than the limit of 65,535");
   LayerPlan plan;
   if (!plan_layers(desc, machines, library, skeleton, out, plan, why)) return false;
+  // Stage 4 inertializes the base machine's pose (the host's `inertial_capture` over the program's
+  // output); a layer machine's transitions blend inside the program, which has no offsets.
+  if (plan.layered) {
+    const ControlMachine& layer = out.machines[plan.layer];
+    const u32 first = layer.any_first;
+    u32 last = first + layer.any_count;
+    for (u32 s = 0; s < layer.state_count; ++s) {
+      const ControlState& cs = out.states[layer.first_state + s];
+      last = std::max(last, u32{cs.first_transition} + cs.transition_count);
+    }
+    for (u32 t = first; t < last; ++t) {
+      if (out.transitions[t].blend == static_cast<u8>(GraphBlend::Inertialize))
+        return refuse(why, desc, "an Inertialize transition on a layer machine is in no stage yet");
+    }
+  }
   compile_program(out, plan);
+  out.revision = graph_revision(out);
   return true;
 }
 
@@ -1032,13 +1160,18 @@ void init_graph_instance(const CompiledGraph& graph, AnimationGraphInput& input,
     input.values[i] = graph.params[i].default_value;
   state = AnimationGraphState{};
   state.graph = graph.id;
+  state.revision = graph.revision;
 }
 
 u32 graph_control(const CompiledGraph& graph, AnimationGraphInput& input,
                   AnimationGraphState& state, f32 dt, GraphStep* steps) noexcept {
-  if (state.graph != graph.id) {
+  // Before any index of `state` is read: a state written for another graph, or for this graph
+  // before it was replaced in place, starts again at the entries (its indices may name states the
+  // new compile does not have).
+  if (state.graph != graph.id || state.revision != graph.revision) {
     state = AnimationGraphState{};
     state.graph = graph.id;
+    state.revision = graph.revision;
   }
   u32 entered = 0;
   for (u32 m = 0; m < graph.machines.size(); ++m) {
@@ -1069,7 +1202,7 @@ u32 graph_control(const CompiledGraph& graph, AnimationGraphInput& input,
       if (state.next[m] != 0) {
         state.next_time[m] += dt;
         state.elapsed[m] += dt;
-        if (state.elapsed[m] >= state.duration[m]) {
+        if (state.elapsed[m] >= std::fabs(state.duration[m])) {
           state.state[m] = state.next[m];
           state.time[m] = state.next_time[m];
           state.next[m] = 0;
@@ -1097,8 +1230,11 @@ u32 graph_control(const CompiledGraph& graph, AnimationGraphInput& input,
           state.next[m] = 0;
           state.duration[m] = 0.0f;
         } else {
+          // An inertialization is held like a cross-fade with its duration negated: the evaluator
+          // then weighs the target alone (`state_weights`) and the host adds the offsets.
           state.next[m] = static_cast<u16>(tr.to + 1);
-          state.duration[m] = tr.duration_s;
+          state.duration[m] =
+              tr.blend == static_cast<u8>(GraphBlend::Inertialize) ? -tr.duration_s : tr.duration_s;
         }
         state.elapsed[m] = 0.0f;
         state.next_time[m] = 0.0f;
@@ -1125,14 +1261,14 @@ u32 graph_control(const CompiledGraph& graph, AnimationGraphInput& input,
 
 void graph_catch_up(const CompiledGraph& graph, const AnimationGraphInput& input,
                     AnimationGraphState& state, f32 gap) noexcept {
-  if (state.graph != graph.id || !(gap > 0.0f)) return;
+  if (state.graph != graph.id || state.revision != graph.revision || !(gap > 0.0f)) return;
   for (u32 m = 0; m < graph.machines.size(); ++m) {
     if (state.state[m] == 0) continue;
     state.time[m] += gap;
     if (state.next[m] != 0) {
       state.next_time[m] += gap;
       state.elapsed[m] += gap;
-      if (state.elapsed[m] >= state.duration[m]) {
+      if (state.elapsed[m] >= std::fabs(state.duration[m])) {
         state.state[m] = state.next[m];
         state.time[m] = state.next_time[m];
         state.next[m] = 0;
@@ -1449,7 +1585,9 @@ void PoseEvaluator::run_batch(const CompiledGraph& graph, const Library& library
     const ControlMachine& machine = graph.machines[m];
     const GraphInstance& gi = instances[i];
     const AnimationGraphState& st = *gi.state;
-    const bool live = st.graph == graph.id && st.state[m] != 0;
+    // A state of another graph, or of this one before a replacement, is read as not yet entered:
+    // its indices are never used (graph_control resets it on its next tick).
+    const bool live = st.graph == graph.id && st.revision == graph.revision && st.state[m] != 0;
     u32 at[2] = {live ? u32{st.state[m]} : u32{machine.entry} + 1u, live ? u32{st.next[m]} : 0u};
     f32 clock[2] = {(live ? st.time[m] : 0.0f) + gi.lead,
                     (live ? st.next_time[m] : 0.0f) + gi.lead};

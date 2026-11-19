@@ -206,7 +206,7 @@ struct AnimationGraphInput @version(1) @kind(component) {
 }
 
 /// A graph-driven entity's machines, as a save needs them to put the same pose back.
-struct AnimationGraphState @version(1) @kind(component) {
+struct AnimationGraphState @version(2) @additive(2) @kind(component) {
   /// The graph this state was written for; a different graph's id makes the next control tick
   /// start the machines at their entries.
   graph: id128
@@ -215,7 +215,8 @@ struct AnimationGraphState @version(1) @kind(component) {
   state: u16[2]
   /// Per machine: the destination of the transition in flight, as an index plus one; 0: none.
   next: u16[2]
-  /// Per machine: seconds into the transition in flight, and how long it lasts.
+  /// Per machine: seconds into the transition in flight, and how long it lasts; a negative
+  /// duration is an inertialization (stage 4), whose program weighs the destination alone.
   elapsed: f32[2]
   duration: f32[2]
   /// Per machine: seconds in the current state, and in the destination while a transition is in
@@ -224,4 +225,9 @@ struct AnimationGraphState @version(1) @kind(component) {
   next_time: f32[2]
   /// Per sync group: the phase, in [0, 1).
   phase: f32[2]
+  /// The compiled graph's revision this state was written for (`CompiledGraph::revision`, a hash
+  /// of its compiled tables): a graph replaced under the same id has another, and the next control
+  /// tick starts the machines at their entries before any index above is read. 0 (a state written
+  /// before version 2) is no revision and starts at the entries too.
+  revision: u32 = 0 @since(2)
 }

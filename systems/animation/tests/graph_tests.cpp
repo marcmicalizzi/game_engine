@@ -231,7 +231,8 @@ TEST_CASE(
   // What a compiled graph and an instance hold (docs/subsystems/animation.md, "Graphs").
   MESSAGE("compiled walker graph bytes: " << a.bytes());
   CHECK(a.bytes() < 2048);
-  CHECK(sizeof(AnimationGraphInput) + sizeof(AnimationGraphState) == 120);
+  // 128 since AnimationGraphState version 2 (b70) carries the compiled graph's revision.
+  CHECK(sizeof(AnimationGraphInput) + sizeof(AnimationGraphState) == 128);
   GraphLibrary empty;
   CHECK(empty.bytes() == 0);
 }
@@ -418,7 +419,11 @@ TEST_CASE("animation graph: the compile refuses what stage 1 does not build, by 
   {  // later stages' (stage 2 accepts the Blend1D: its own cases are below)
     GraphDesc d = two_state_graph();
     add_transition(d, 99, d.states[0].id, d.states[1].id, 0).record.blend = GraphBlend::Inertialize;
-    refused(d, "Inertialize is stage 4's");
+    {  // stage 4 takes it (b70): an Inertialize transition compiles on a graph's base machine
+      CompiledGraph accepted;
+      std::string accepted_why;
+      CHECK_MESSAGE(compile_graph(d, nullptr, accepted, accepted_why), accepted_why);
+    }
     d.transitions[0].record.blend = GraphBlend::CrossFade;
     d.transitions[0].record.exit_phase = 0.5f;
     refused(d, "exit_phase is in no stage of the design yet");
@@ -571,4 +576,42 @@ TEST_CASE("animation graph: a graph-driven entity's player and pose are what pla
                       animation.joint_matrices().data() + fb, ca * sizeof(anim::JointMatrix)) == 0);
   }
   MESSAGE("graph library bytes with the walker's graph: " << animation.graphs().bytes());
+}
+
+// Review of batch 69, finding 6 (b70): a machine of `Clip` states counted no clip against the
+// pose-clip limit (only a Blend1D's did), so two machines of Clip states past 65,535 between them
+// truncated `PoseState::first_clip` (a u16) and the led group read another state's clip. Now the
+// 65,536th pose clip is refused with the limit. The case builds the graph at the limit and one
+// past it; it takes seconds because the compile is n log n in its records now (it was quadratic in
+// the states times the nodes, and this graph would have taken minutes to compile).
+TEST_CASE("animation graph: two machines of Clip states past the pose-clip limit are refused") {
+  const auto build = [](u32 second_machine_states) {
+    GraphDesc d;
+    d.id = Id128::from_parts(0x5c6, 1);
+    d.graph.name = "many clips";
+    for (u32 m = 0; m < 2; ++m) {
+      auto& machine = d.machines.emplace_back();
+      machine.id = Id128::from_parts(0x5c6, 2 + m);
+      machine.parent = d.id;
+      machine.record.name = m == 0 ? "a" : "b";
+      const u32 n = m == 0 ? 32768u : second_machine_states;
+      for (u32 s = 0; s < n; ++s) {
+        auto& state = d.states.emplace_back();
+        state.id = Id128::from_parts(0x5c6'0000'0000ull | (u64{m + 1} << 24), s);
+        state.parent = machine.id;
+        auto& node = d.nodes.emplace_back();
+        node.id = Id128::from_parts(0x5c7'0000'0000ull | (u64{m + 1} << 24), s);
+        node.parent = state.id;
+      }
+      machine.record.entry = d.states[d.states.size() - n].id;
+    }
+    return d;
+  };
+  CompiledGraph g;
+  std::string why;
+  CHECK_MESSAGE(compile_graph(build(32767), nullptr, g, why), why);  // 65,535 pose clips
+  CHECK(g.pose_clips.size() == 65535);
+  CHECK(g.pose_states[g.pose_states.size() - 1].first_clip == 65534);
+  CHECK_FALSE(compile_graph(build(32768), nullptr, g, why));  // 65,536
+  CHECK(why.find("more pose clips than the limit of 65,535") != std::string::npos);
 }
