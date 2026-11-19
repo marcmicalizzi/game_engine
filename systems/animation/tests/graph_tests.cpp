@@ -427,14 +427,15 @@ TEST_CASE("animation graph: the compile refuses what stage 1 does not build, by 
     refused(d, "an offset other than Zero is in no stage of the design yet");
     d.transitions[0].record.offset = GraphOffset::Zero;
     d.nodes[0].record.kind = GraphNodeKind::Override;
-    refused(d, "an Override or Additive node is stage 3's");
+    // Stage 3 builds layers; an Override as a state's pose is still refused, by its new name.
+    refused(d, "an Override or Additive node is a machine's layer node");
     d.nodes[0].record.kind = GraphNodeKind::Machine;
     refused(d, "a Machine node");
     d.nodes[0].record.kind = GraphNodeKind::Blend1D;
     refused(d, "a Blend1D of 0 inputs");
     d.nodes[0].record.kind = GraphNodeKind::Clip;
     d.nodes[0].record.weight = 0.5f;
-    refused(d, "a weight other than 1 is a layer's (stage 3)");
+    refused(d, "a weight other than 1 is a layer node's");
     d.nodes[0].record.weight = 1.0f;
     d.graph.skeleton_roles = true;
     refused(d, "skeleton_roles is in no stage of the design yet");

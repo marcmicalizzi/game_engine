@@ -240,12 +240,12 @@ TEST_CASE("animation graph pose: a Blend1D compiles to a program, and what it ca
     d.nodes[1].record.param = "moving";
     refused(d, "reads a float parameter");
   }
-  {  // a node under a Clip is a layer's
+  {  // a node under a Clip is no stage's (stage 3 places layer nodes under machines only)
     GraphDesc d = blend_graph({{"rig/idle", 0.0f}, {"rig/walk", 1.0f}}, false, true);
     auto& extra = d.nodes.emplace_back();
     extra.id = Id128::from_parts(0x5b3, 1);
     extra.parent = d.nodes[2].id;
-    refused(d, "a layer's (stage 3)");
+    refused(d, "or a machine's layer node is in no stage of the design yet");
   }
   {
     GraphDesc d = blend_graph({{"rig/idle", 0.0f}, {"rig/sprint", 1.0f}}, false, true);
@@ -263,7 +263,7 @@ TEST_CASE("animation graph pose: a Blend1D compiles to a program, and what it ca
     }
     refused(d, "a Blend1D of 17 inputs (1 to 16)");
   }
-  {  // two machines compile their tables, and no program
+  {  // two machines and no layer node compile their tables, and no program
     GraphDesc d = blend_graph({{"rig/idle", 0.0f}, {"rig/walk", 1.0f}}, false, true);
     auto& m = d.machines.emplace_back();
     m.id = Id128::from_parts(0x5b5, 1);
@@ -279,7 +279,7 @@ TEST_CASE("animation graph pose: a Blend1D compiles to a program, and what it ca
     m.record.entry = s.id;
     const CompiledGraph two = compiled(d, &rig.library);
     CHECK(two.program.empty());
-    CHECK(two.program_why.find("composing their poses is a layer's (stage 3)") !=
+    CHECK(two.program_why.find("no layer node: composing their poses is a layer's") !=
           std::string::npos);
   }
   {  // a state cross-faded into itself

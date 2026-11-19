@@ -233,6 +233,10 @@ class AnimationSystem {
   // adds it to `graphs()`, replacing a graph with the same id. False, with `why`, when the compile
   // refuses it. Outside a tick; allocates.
   bool add_graph(const GraphDesc& desc, std::string& why);
+  // The same for a layered graph (S35 stage 3), whose masks and reference pose are compiled for
+  // `skeleton` (a skeleton of the library): the graph is then attached for sampling to instances
+  // of that skeleton only. False, with `why`, for a skeleton the library lacks.
+  bool add_graph(const GraphDesc& desc, const Id128& skeleton, std::string& why);
   // Makes `entity` graph-driven by `graph` (in `graphs()`): its inputs at the parameters' defaults,
   // no machine entered, so its first control tick enters with a cut. False for an entity or a
   // graph this world does not hold.
@@ -262,8 +266,8 @@ class AnimationSystem {
   // `animation.graph_sample` evaluates the graph's pose program into its pool slot, which
   // `build_skinning_matrices` then skins as it does a player's. False for an entity, a graph or a
   // skeleton this world does not hold, an entity that already has a player (an entity is
-  // graph-driven or player-driven, never both), and a graph with no pose program
-  // (`CompiledGraph::program_why`).
+  // graph-driven or player-driven, never both), a graph with no pose program
+  // (`CompiledGraph::program_why`), and a layered graph compiled for another skeleton.
   bool attach_graph(const Id128& entity, const Id128& graph, const Id128& skeleton);
   // Writes `values` (by parameter index) and `triggers` into a graph-driven entity's inputs, for
   // the next control tick. False for an entity with no graph.

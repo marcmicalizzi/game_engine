@@ -57,6 +57,10 @@ ENGINE_EXPECT_SIZE(16, 4, animation::GraphOp);
 ENGINE_EXPECT_SIZE(8, 2, animation::PoseState);
 // A clip a state samples: the library index, the rate, the duration, the threshold.
 ENGINE_EXPECT_SIZE(16, 4, animation::PoseClip);
+// A layer (S35 stage 3; animation.md, "Graphs: layers and masks"), read per layer op per batch: its
+// mask's run (first joint, full and partial counts), the reference pose's first joint, the weight's
+// parameter, the kind, the machine, the weight and the op.
+ENGINE_EXPECT_SIZE(24, 4, animation::GraphLayer);
 // One instance of a batch the program runs over: its input and state, the tick's lead, the LOD
 // flag, and its output pose as three spans (48).
 ENGINE_EXPECT_SIZE(72, 8, animation::GraphInstance);
