@@ -21,6 +21,7 @@ bool fail(std::string& error, std::string_view field) {
 }
 bool in(f64 v, f64 lo, f64 hi) { return v >= lo && v <= hi; }  // a NaN fails
 f64 wide(f32 v) { return static_cast<f64>(v); }
+constexpr u64 k_max_legs = 1024;
 // Whole centimetres and millimetres, halves away from zero: exact operations, the same everywhere.
 f64 to_cm(f64 metres) { return static_cast<f64>(std::llround(metres * 100.0)) / 100.0; }
 f64 to_mm(f64 metres) { return static_cast<f64>(std::llround(metres * 1000.0)) / 1000.0; }
@@ -409,8 +410,14 @@ bool layer_in_range(const RouteLayer& p, std::string& error) {
   if (!in(wide(p.wear_m), 0, 20)) return fail(error, "wear_m (0 to 20)");
   if (!in(wide(p.tread_cover), 0, 1)) return fail(error, "tread_cover (0 to 1)");
   if (!in(wide(p.tread_feather_m), 0, 2)) return fail(error, "tread_feather_m (0 to 2)");
+  // Each leg is a search over up to `max_samples` cells and adds its path to the edges, so their
+  // count is the plan's time and memory (T198): uncounted, a layer of a million waypoints was a
+  // million searches. An honest layer names a handful.
+  u64 legs = 0;
   for (const Route& r : p.routes) {
     if (r.waypoints.size() < 2) return fail(error, "routes (two or more waypoints each)");
+    legs += r.waypoints.size() - 1;
+    if (legs > k_max_legs) return fail(error, "routes (at most 1,024 legs, a search each)");
     for (const WorldPos& w : r.waypoints)
       if (!in(w.x, -1e9, 1e9) || !in(w.z, -1e9, 1e9)) return fail(error, "a waypoint (finite)");
   }

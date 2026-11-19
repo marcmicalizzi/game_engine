@@ -288,6 +288,22 @@ TEST_CASE("routes hostile: a cached plan's stations are held to its lattice and 
   CHECK(plan_bytes(read) == plan_bytes(first));
 }
 
+// Hostile (T198): a layer's legs were not counted, and each is a search over up to `max_samples`
+// cells that adds its path to the edges: a route of a million waypoints was a million searches.
+// 1,025 waypoints are 1,024 legs; one more is refused. Before the mend both layers were in range.
+TEST_CASE("routes hostile: a layer's legs are counted") {
+  std::string error;
+  RouteLayer many = region(-50, -30, 50, 50);
+  many.routes.push_back(route("a", -44, -20, 40, 40));
+  many.routes[0].waypoints.clear();
+  for (u32 k = 0; k < 1025; ++k)
+    many.routes[0].waypoints.push_back(WorldPos{-40.0 + 0.05 * k, 0.0, 0.0});
+  CHECK(layer_in_range(many, error));
+  many.routes[0].waypoints.push_back(WorldPos{0.0, 0.0, 10.0});
+  CHECK_FALSE(layer_in_range(many, error));
+  CHECK(error.find("1,024 legs") != std::string::npos);
+}
+
 // **The generator hands the plan over** (routes.md, "In a scene"; R144): through the registry, as
 // a host calls it. The edits it plans for the ground are `tread_edits_json`'s, field for field;
 // the plan stands on the ground before any edit, so an entry opened on a ground that carries its
