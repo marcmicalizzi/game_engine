@@ -129,6 +129,19 @@ float3 instance_from_eye(InstanceDesc instance, FrameEye eye) {
       relative_axis(instance.cell.z, instance.rows[2].w, eye.cell.z, eye.local.z, eye.residual.z));
 }
 
+// Mirrors gfx::CullNodeDesc (32 bytes; R188 stage 1, renderer.md "Nodes before instances"): up to
+// 64 consecutive instance slots of one block of the layout, with a sphere round every live
+// instance's tested sphere in the frame of its anchor's cell (`node_from_eye`, below).
+struct CullNodeDesc {
+  float4 sphere;    // xyz the centre in the anchor cell's frame, w the radius; w < 0: nothing live
+  uint first_slot;
+  uint span;        // slots | live << 8 | the largest cascade policy << 16 (0: every cascade)
+  uint terrain;     // the live instances' one terrain level, or k_cull_node_mixed_terrain
+  uint anchor;      // the slot whose cell the sphere is measured from
+};
+static const uint k_cull_node_slots = 64u;              // gfx::k_cull_node_slots
+static const uint k_cull_node_mixed_terrain = 0xffffffffu;  // gfx::k_cull_node_mixed_terrain
+
 // A mesh-space direction through the instance's linear part.
 float3 instance_direction(InstanceDesc instance, float3 v) {
   return float3(dot(instance.rows[0].xyz, v), dot(instance.rows[1].xyz, v),

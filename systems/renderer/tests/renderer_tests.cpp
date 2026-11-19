@@ -1645,7 +1645,10 @@ TEST_CASE("renderer: occlusion keeps a surface in front of the Hi-Z off the view
     return;
   }
   struct Restore {
-    ~Restore() { (void)tunables::apply_overrides("renderer.cull.instances=true"); }
+    ~Restore() {
+      (void)tunables::apply_overrides("renderer.cull.instances=true");
+      (void)tunables::apply_overrides("renderer.cull.nodes=false");
+    }
   } restore;
   const test::TempDir tmp("engine_renderer_occlusion_off_axis");
   const std::filesystem::path dir = tmp.native();
@@ -1705,7 +1708,11 @@ TEST_CASE("renderer: occlusion keeps a surface in front of the Hi-Z off the view
       bell_px += reference.ids[u64{p} * k_id_words] == k_dumbbell ? 1u : 0u;
     // The witness: the near cube shows in front of the wall.
     REQUIRE(bell_px > 0);
-    for (const bool first : {false, true}) {
+    // The third: nodes before instances (R188 stage 1), the wall and the dumbbell one node.
+    for (const u32 mode : {0u, 1u, 2u}) {
+      const bool first = mode != 0;
+      REQUIRE(tunables::apply_overrides(mode == 2 ? "renderer.cull.nodes=true"
+                                                  : "renderer.cull.nodes=false"));
       CapturedFrame shot;
       shoot(true, first, shot);
       u64 colour = 0;
@@ -1719,8 +1726,10 @@ TEST_CASE("renderer: occlusion keeps a surface in front of the Hi-Z off the view
               shot.ids[u64{p} * k_id_words + w] != reference.ids[u64{p} * k_id_words + w] ? 1u : 0u;
         shown += shot.ids[u64{p} * k_id_words] == k_dumbbell ? 1u : 0u;
       }
-      const std::string what = std::string(split ? "two clusters, " : "one cluster, ") +
-                               (first ? "instances first" : "every pair");
+      const std::string what =
+          std::string(split ? "two clusters, " : "one cluster, ") + (mode == 2 ? "nodes first"
+                                                                     : first   ? "instances first"
+                                                                               : "every pair");
       MESSAGE(what << ": the near cube " << shown << " px of " << bell_px << " without occlusion; "
                    << colour << " colour and " << surface << " surface differences");
       CHECK(shown == bell_px);

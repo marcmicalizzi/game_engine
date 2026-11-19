@@ -244,9 +244,11 @@ struct Picture {
   bool ok = false;
 };
 
-// Every frame of `eyes` for a scene placed at `at`, on one path, on its own device.
+// Every frame of `eyes` for a scene placed at `at`, on one path, on its own device; `guard`, when
+// given, the nodes' guard's two counts after the last (R188: failures, instances checked).
 bool draw(const Path& path, const std::string& mesh, const std::string& ddc, WorldPos at,
-          const std::vector<Camera>& cameras, std::vector<CapturedFrame>& out, std::string& why) {
+          const std::vector<Camera>& cameras, std::vector<CapturedFrame>& out, std::string& why,
+          u32* guard = nullptr) {
   gfx::DeviceOptions options = renderer_test::device_options();
   if (path.capacity) {
     options.overrides.absent.push_back("VK_EXT_mesh_shader");
@@ -277,6 +279,7 @@ bool draw(const Path& path, const std::string& mesh, const std::string& ddc, Wor
       ok = rig.renderer.capture(frame, channels, captured, &why);
       out.push_back(std::move(captured));
     }
+    if (guard != nullptr) (void)rig.renderer.cull_node_guard(guard[0], guard[1]);
   }
   device.destroy();
   return ok;
@@ -557,5 +560,185 @@ TEST_CASE(
             << " steps moved the picture");
     CHECK(differing == 0);
     CHECK(moved == steps.size() - 1);
+  }
+}
+
+// **Nodes before instances change no byte** (R188 stage 1; renderer.md, "Nodes before
+// instances"). The scene read whole is the load's prefix, cut into nodes in slot order: the slab
+// and the 28 cubes of the cell-edge layout are one node whose instances stand either side of the
+// cell edge at x = 64, two cells, and whose sphere is measured from its anchor's cell. On every
+// path — the three rasterizers, the vertex path's capacity draw, the ray path, traced shadows and
+// the cascaded maps — the frame with the nodes on is the frame with them off to the byte, at the
+// origin and moved by 156,250 cells; with them on, the frame moved is the frame at home (outside
+// the cascaded maps' texel band, as above); and the guard found no instance outside its node.
+TEST_CASE("world translation: nodes before instances change no byte, at home and moved by cells") {
+  {
+    gfx::Device probe;
+    std::string why;
+    if (!probe.create(renderer_test::device_options(), &why)) {
+      MESSAGE("renderer unavailable here: " << why);
+      return;
+    }
+    if (!probe.features().buffer_int64_atomics) {
+      MESSAGE("no 64-bit buffer atomics here");
+      probe.destroy();
+      return;
+    }
+    probe.destroy();
+  }
+  const test::TempDir tmp("engine_world_translation_nodes");
+  const ScopedTunable near_m("renderer.flora.sward_near_m", "10");
+  const ScopedTunable fade_m("renderer.flora.sward_fade_m", "12");
+  const ScopedTunable guard("renderer.cull.node_guard", "true");
+  const std::filesystem::path dir = tmp.native();
+  const std::string mesh = slashes(dir / "cube.glb");
+  const std::string ddc = slashes(dir / "ddc");
+  REQUIRE(write_cube_glb(mesh));
+  const WorldPos origin{60.0, 0.0, 0.0};
+  Camera edge;
+  edge.position = WorldPos{4.0 - 1.0 / 1024.0, 2.5, 6.0};
+  edge.target = WorldPos{0.0, 0.5, -2.0};
+  edge.znear = 0.05f;
+  const std::vector<Camera> cameras{edge};
+  const f64 shifts[] = {0.0, 156250.0};
+  for (const Path& path : k_paths) {
+    std::vector<CapturedFrame> pictures[2][2];  // [shift][nodes]
+    bool drawn = true;
+    for (u32 s = 0; s < 2 && drawn; ++s) {
+      for (u32 on = 0; on < 2 && drawn; ++on) {
+        const ScopedTunable nodes("renderer.cull.nodes", on != 0 ? "true" : "false");
+        std::string why;
+        u32 counts[2] = {0, 0};
+        if (!draw(path, mesh, ddc, origin + cells(shifts[s]), cameras, pictures[s][on], why,
+                  counts)) {
+          MESSAGE(std::string(path.name) << ": not drawn here: " << why);
+          drawn = false;
+          break;
+        }
+        if (on != 0) {
+          MESSAGE(std::string(path.name) << ", moved by " << shifts[s] << " cells, nodes on: the "
+                                         << "guard checked " << counts[1] << " instances, "
+                                         << counts[0] << " outside their node");
+          CHECK(counts[1] > 0);
+          CHECK(counts[0] == 0);
+        }
+      }
+    }
+    if (!drawn) continue;
+    for (u32 s = 0; s < 2; ++s) {
+      const Difference d = compare(pictures[s][0][0], pictures[s][1][0]);
+      MESSAGE(std::string(path.name)
+              << ", moved by " << shifts[s] << " cells, nodes off against on: " << d.color
+              << " colour bytes, " << d.ids << " id words, " << d.depth << " depths differ over "
+              << pictures[s][1][0].covered << " covered");
+      CHECK(pictures[s][1][0].covered > pictures[s][1][0].width * pictures[s][1][0].height / 8);
+      CHECK(d.color == 0);
+      CHECK(d.ids == 0);
+      CHECK(d.depth == 0);
+    }
+    const Difference moved = compare(pictures[0][1][0], pictures[1][1][0]);
+    CHECK(moved.ids == 0);
+    CHECK(moved.depth == 0);
+    if (path.shadows != ShadowMode::Cascaded) CHECK(moved.color == 0);
+  }
+}
+// **A moved instance is drawn on the next frame with the nodes on** (R188 stage 1; renderer.md,
+// "Nodes before instances", "What keeps a node's sphere true"). A scene read whole moves an
+// instance through the next frame's record upload (`move_instances`); the frame that copies it
+// measures its node again before the node pass. One cube of the 28 is carried 30 m down the view,
+// far out of its node's old sphere (the scene's 24 m slab), then a step back towards it, then home,
+// a frame each with the frames before still in flight: every frame is the frame with the nodes off
+// to the byte, on the mesh path with occlusion and on the vertex path, and the guard finds nothing.
+TEST_CASE("world translation: a cube carried out of its node's sphere is drawn on the next frame") {
+  {
+    gfx::Device probe;
+    std::string why;
+    if (!probe.create(renderer_test::device_options(), &why)) {
+      MESSAGE("renderer unavailable here: " << why);
+      return;
+    }
+    if (!probe.features().buffer_int64_atomics) {
+      MESSAGE("no 64-bit buffer atomics here");
+      probe.destroy();
+      return;
+    }
+    probe.destroy();
+  }
+  const test::TempDir tmp("engine_world_translation_node_move");
+  const ScopedTunable guard("renderer.cull.node_guard", "true");
+  const std::filesystem::path dir = tmp.native();
+  const std::string mesh = slashes(dir / "cube.glb");
+  const std::string ddc = slashes(dir / "ddc");
+  REQUIRE(write_cube_glb(mesh));
+  Camera eye;
+  eye.position = WorldPos{3.25, 4.5, 9.75};
+  eye.target = WorldPos{-0.5, 0.25, -1.5};
+  eye.znear = 0.05f;
+  const SceneDesc desc = scene_at(mesh, ddc, WorldPos{});
+  constexpr u32 k_moved = 12;  // a cube near the middle of the grid
+  SceneInstance home = desc.instances[k_moved];
+  const Vec3 places[4] = {Vec3{-6.0f, 1.0f, -30.0f}, Vec3{-3.0f, 1.0f, -14.0f},
+                          home.transform.position, Vec3{-6.0f, 1.0f, -30.0f}};
+  const Path paths[2] = {k_paths[0], k_paths[2]};
+  for (const Path& path : paths) {
+    std::vector<CapturedFrame> shots[2];
+    for (u32 on = 0; on < 2; ++on) {
+      const ScopedTunable nodes("renderer.cull.nodes", on != 0 ? "true" : "false");
+      gfx::Device device;
+      std::string why;
+      REQUIRE_MESSAGE(device.create(renderer_test::device_options(), &why), why);
+      {
+        RenderSettings settings;
+        settings.raster = path.raster;
+        settings.shadows = path.shadows;
+        settings.occlusion = path.raster == RasterMode::Hardware;
+        Rig rig;
+        REQUIRE_MESSAGE(rig.build(device, desc, settings, 192, 128), rig.error);
+        CaptureChannels channels;
+        channels.ids = true;
+        channels.depth = true;
+        FrameDesc frame;
+        frame.camera = eye;
+        for (u32 k = 0; k < 2; ++k)
+          REQUIRE_MESSAGE(rig.renderer.render_offscreen(frame, &why), why);
+        for (const Vec3& place : places) {
+          SceneInstance moved = home;
+          moved.transform.position = place;
+          const u32 index = k_moved;
+          REQUIRE_MESSAGE(
+              rig.renderer.move_instances(std::span<const u32>(&index, 1),
+                                          std::span<const SceneInstance>(&moved, 1), &why),
+              why);
+          CapturedFrame shot;
+          REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, shot, &why), why);
+          shots[on].push_back(std::move(shot));
+        }
+        u32 counts[2] = {0, 0};
+        if (on != 0) {
+          REQUIRE(rig.renderer.cull_node_guard(counts[0], counts[1]));
+          MESSAGE(std::string(path.name) << ": the guard checked " << counts[1] << " instances, "
+                                         << counts[0] << " outside their node");
+          CHECK(counts[1] > 0);
+          CHECK(counts[0] == 0);
+        }
+      }
+      device.destroy();
+    }
+    for (u32 k = 0; k < 4; ++k) {
+      const Difference d = compare(shots[0][k], shots[1][k]);
+      MESSAGE(std::string(path.name)
+              << ", place " << k << ": nodes off against on, " << d.color << " colour bytes, "
+              << d.ids << " id words, " << d.depth << " depths differ over " << shots[1][k].covered
+              << " covered");
+      CHECK(d.color == 0);
+      CHECK(d.ids == 0);
+      CHECK(d.depth == 0);
+    }
+    // The cube is in the picture at its far place: its id is on the screen.
+    u64 far_px = 0;
+    for (u32 p = 0; p < shots[1][0].width * shots[1][0].height; ++p)
+      far_px += shots[1][0].ids[u64{p} * k_id_words] == k_moved ? 1u : 0u;
+    MESSAGE(std::string(path.name) << ": the cube 30 m out over " << far_px << " pixels");
+    CHECK(far_px > 0);
   }
 }

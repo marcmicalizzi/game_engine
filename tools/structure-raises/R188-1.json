@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R188-1",
+  "reason": "R188 stage 1, nodes before instances: record_frame gains the nodes' prepare call beside the instance pass's (two lines; everything else is in cull_nodes and cull_instances), and renderer.md gains the section 'Nodes before instances' describing the passes, what keeps a node's sphere true, the guard and what holds it",
+  "date": "2026-11-19",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": 2,
+    "page:docs/subsystems/renderer.md": 7236
+  }
+}

@@ -790,6 +790,14 @@ bool cull_pair_table_tunable() noexcept;
 // only the survivors' pairs, with no lookup (R16, R173; renderer.md, "The cull culls instances
 // first"); off runs the pass over every pair, as before.
 bool cull_instances_tunable() noexcept;
+// `renderer.cull.nodes` (false until its pair is flown): with the instance pass on, every cull run
+// first tests nodes of up to 64 slots of one block and runs the instance pass over the survivors'
+// slots alone (R188 stage 1; renderer.md, "Nodes before instances").
+bool cull_nodes_tunable() noexcept;
+// `renderer.cull.node_guard` (on in debug builds): each frame with nodes checks every live
+// instance's sphere is inside its node's and counts the ones that are not
+// (`SceneRenderer::cull_node_guard`).
+bool cull_node_guard_tunable() noexcept;
 // What the frame actually shadows with, as a summary reports it: "rt", "csm", "hybrid", or "off".
 const char* resolved_shadow_name(const ResolvedSettings& resolved) noexcept;
 // "none", "identity", "wave", or "lattice" into `deform` and `deform_kind`.

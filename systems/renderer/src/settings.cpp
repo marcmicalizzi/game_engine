@@ -292,9 +292,26 @@ tunables::Bool cull_instances{
     "renderer.cull.instances", true,
     "Every cull run tests each instance's sphere first and culls only the survivors' pairs "
     "(R16, R173); false runs the pass over every pair, as before"};
+// **Nodes before instances** (R188 stage 1; renderer.md, "Nodes before instances"): off until its
+// pair is flown and holds the culled set to the frame. Read once a frame.
+tunables::Bool cull_nodes{
+    "renderer.cull.nodes", false,
+    "With renderer.cull.instances, every cull run first tests nodes of up to 64 slots of one "
+    "block and runs the instance pass over the surviving nodes' slots alone (R188 stage 1)"};
+#ifdef NDEBUG
+constexpr bool k_node_guard_default = false;
+#else
+constexpr bool k_node_guard_default = true;
+#endif
+tunables::Bool cull_node_guard{
+    "renderer.cull.node_guard", k_node_guard_default,
+    "With renderer.cull.nodes, check every frame that each live instance's sphere is inside its "
+    "node's and count those that are not (R188's guard; on in debug builds)"};
 }  // namespace
 bool cull_pair_table_tunable() noexcept { return cull_pair_table.get(); }
 bool cull_instances_tunable() noexcept { return cull_instances.get(); }
+bool cull_nodes_tunable() noexcept { return cull_nodes.get(); }
+bool cull_node_guard_tunable() noexcept { return cull_node_guard.get(); }
 
 namespace {
 tunables::Float display_paper_white{"renderer.display.paper_white_nits", 0.0, 0.0, 10000.0,

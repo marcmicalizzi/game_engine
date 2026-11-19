@@ -583,6 +583,15 @@ void run_tiles(const gfx::Device& device, const RenderSettings& settings, const 
   CHECK(diff.ids == 0);
   CHECK(diff.depth == 0);
   CHECK(diff.color == 0);
+  // With the nodes on (R188), the guard found every live instance inside its node on every frame.
+  u32 failures = 0;
+  u32 checked = 0;
+  if (cull_nodes_tunable() && dynamic.renderer.cull_node_guard(failures, checked)) {
+    MESSAGE(std::string(name) << ": the nodes' guard checked " << checked << " instances, "
+                              << failures << " outside their node");
+    CHECK(checked > 0);
+    CHECK(failures == 0);
+  }
 }
 
 }  // namespace
@@ -803,6 +812,42 @@ TEST_CASE("dynamic instances: the cull draws the same with instances culled firs
                 2);
     }
   }
+}
+// R188 stage 1 behind `renderer.cull.nodes` (renderer.md, "Nodes before instances"): off by
+// default; on, every cull run tests nodes of up to 64 slots of one block first and runs the
+// instance pass over the survivors' slots alone. The tiled world — blocks placed, freed, reused,
+// rewritten in place, moved by a compaction and numbered again, so the layout's nodes are given,
+// kept and freed, and each table set measures the nodes its pending runs write — draws the loaded
+// scene's ids, depth and colour at every step with the nodes on, through the camera's two occlusion
+// passes and the cascades' runs, and through the vertex path's indexed draw, with two and three
+// table sets; and the guard finds every live instance inside its node on every frame.
+TEST_CASE("dynamic instances: the cull draws the same with nodes before instances") {
+  CHECK_FALSE(cull_nodes_tunable());
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE(gpu.why);
+    return;
+  }
+  struct Restore {
+    bool guard = cull_node_guard_tunable();
+    ~Restore() {
+      (void)tunables::apply_overrides("renderer.cull.nodes=false");
+      (void)tunables::apply_overrides(guard ? "renderer.cull.node_guard=true"
+                                            : "renderer.cull.node_guard=false");
+    }
+  } restore;
+  REQUIRE(tunables::apply_overrides("renderer.cull.nodes=true"));
+  REQUIRE(tunables::apply_overrides("renderer.cull.node_guard=true"));
+  REQUIRE(cull_nodes_tunable());
+  RenderSettings settings;
+  settings.raster = RasterMode::Hardware;
+  settings.shadows = ShadowMode::Cascaded;
+  settings.occlusion = true;
+  run_tiles(gpu.device, settings, "nodes, hw, occlusion, cascades", 2);
+  run_tiles(gpu.device, settings, "nodes, hw, occlusion, cascades", 3);
+  settings.raster = RasterMode::Vertex;
+  settings.shadows = ShadowMode::Off;
+  run_tiles(gpu.device, settings, "nodes, the vertex path", 2);
 }
 
 // T137 (renderer.md, "At the cap the pairs are numbered again"). A world held at its pair cap: the

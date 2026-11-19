@@ -166,7 +166,7 @@ struct MaskTables {
 };
 static_assert(sizeof(MaskTables) == 32);
 
-// Mirrors CullParams in cluster_cull.slang. 1808 bytes.
+// Mirrors CullParams in cluster_cull.slang. 1840 bytes.
 //
 // **Everything here is in the frame's space** (`eye`, above): the planes come from a
 // view-projection built with the frame's eye at the origin, `camera.xyz` is where this view's eye
@@ -363,15 +363,66 @@ struct CullParams {
   // opens a 16-byte row of its own after R173's fields, so the block is 1,808 bytes, a whole number
   // of the float4 rows the GPU reads it as.
   u32 fade_turn = 0;
-  u32 pad_fade[3] = {};
+  // **Nodes before instances** (R188 stage 1; renderer.md, "Nodes before instances", behind
+  // `renderer.cull.nodes`): a level above the instance pass. `nodes` is the frame's node table,
+  // `node_count` `CullNodeDesc`s, each up to `k_cull_node_slots` consecutive slots of one block of
+  // the layout with a sphere round every instance's tested sphere, measured on the GPU
+  // (`cull_node_measure_main`, from `node_list`: a u32 count, three pad words, then
+  // `CullNodeListEntry`s). `cull_nodes_main` runs one thread a node over this block with the
+  // instance pass's own tests on the node's sphere and appends the survivors to `node_items` — a
+  // u32 count and a pad word, then a u32 node id each — and `cull_node_instances_main` runs the
+  // instance pass over their slots alone, a workgroup a node. `node_guard`, when set, is two u32s
+  // the guard pass (`cull_node_guard_main`) counts into: instances not inside their node's sphere,
+  // and instances checked. `nodes` 0 is the instance pass over every instance, as before.
+  u32 node_count = 0;
+  u64 nodes = 0;
+  u64 node_items = 0;
+  u64 node_list = 0;
+  u64 node_guard = 0;
+  u64 pad_nodes = 0;
 };
-static_assert(sizeof(CullParams) == 1808);
+static_assert(sizeof(CullParams) == 1840);
 static_assert(offsetof(CullParams, sky_facing) == 1752);
 static_assert(offsetof(CullParams, pairs) == 1760);
 static_assert(offsetof(CullParams, items) == 1768);
 static_assert(offsetof(CullParams, mesh_bounds) == 1784);
 static_assert(offsetof(CullParams, fade_turn) == 1792);
-static_assert(offsetof(CullParams, pad_fade) == 1796);
+static_assert(offsetof(CullParams, node_count) == 1796);
+static_assert(offsetof(CullParams, nodes) == 1800);
+static_assert(offsetof(CullParams, node_items) == 1808);
+static_assert(offsetof(CullParams, node_list) == 1816);
+static_assert(offsetof(CullParams, node_guard) == 1824);
+
+// **A node of the cull** (R188 stage 1; renderer.md, "Nodes before instances"): up to
+// `k_cull_node_slots` consecutive instance slots of one block of the layout. Mirrored once, in
+// scene.slang. Everything but `first_slot` and the slot count is measured on the GPU from the
+// table set's instances (`cull_node_measure_main`), so a node is always the instances it holds.
+struct CullNodeDesc {
+  // In the frame of the anchor's cell (its corner at the origin): xyz the centre, w the radius
+  // round every live instance's tested sphere, less its terrain level's padding; w < 0 for a node
+  // with no live instance.
+  Vec4 sphere;
+  u32 first_slot = 0;
+  // The slots (0 to 64) in the low byte, the live instances in the next, and in the third the
+  // largest cascade policy of its live instances (`k_instance_cascade_mask`), 0 when one casts
+  // into every cascade.
+  u32 span = 0;
+  // The terrain level every live instance has (`InstanceDesc::terrain`, 0 none), or
+  // `k_cull_node_mixed_terrain`: such a node is never culled.
+  u32 terrain = 0;
+  u32 anchor = 0;  // the slot whose cell the sphere is measured from: its first live instance
+};
+static_assert(sizeof(CullNodeDesc) == 32);
+inline constexpr u32 k_cull_node_slots = 64;  // a workgroup of the instance pass from nodes
+inline constexpr u32 k_cull_node_mixed_terrain = ~0u;
+// One node to measure (`CullParams::node_list`): its id and the slots the CPU's layout gives it.
+struct CullNodeListEntry {
+  u32 node = 0;
+  u32 first_slot = 0;
+  u32 count = 0;  // 0: a free id, which the node pass rejects
+  u32 pad = 0;
+};
+static_assert(sizeof(CullNodeListEntry) == 16);
 static_assert(offsetof(CullParams, hidden_counts) % 8 == 0);
 
 // CullParams::hiz_flags.
