@@ -1471,7 +1471,7 @@ TEST_CASE("renderer: an image the load let go is decoded from its container when
       return;
     }
     CHECK(h.scene.textures_decoded() == 1);
-    kept = h.shot(2.5f);
+    kept = h.shot(2.5f, true);  // with the ids, which is what counts `covered`
   }
   Harness h;
   std::string error;
@@ -1497,7 +1497,7 @@ TEST_CASE("renderer: an image the load let go is decoded from its container when
   rd.width = k_size;
   rd.height = k_size;
   REQUIRE_MESSAGE(h.renderer.create(h.device, h.scene, resolved, rd, &error), error);
-  const CapturedFrame read_again = h.shot(2.5f);
+  const CapturedFrame read_again = h.shot(2.5f, true);
   REQUIRE(read_again.color.size() == kept.color.size());
   CHECK(kept.covered > 0);
   CHECK(std::memcmp(read_again.color.data(), kept.color.data(), kept.color.size()) == 0);
