@@ -1,10 +1,10 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "C64",
-  "reason": "renderer.md gains the section C64's code cites, Content classes at load: the one admission door, where each class is read, what omit and proxy make, what a scene remembers and what an unclassified scene pays",
+  "reason": "renderer.md gains the section C64's code cites, Content classes at load: the one admission door, where each class is read, what omit and proxy make, what a scene remembers and what an unclassified scene pays, measured",
   "date": "2026-11-19",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/renderer.md": 6143
+    "page:docs/subsystems/renderer.md": 6900
   }
 }

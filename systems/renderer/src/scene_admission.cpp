@@ -244,9 +244,22 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
   state.record.resize(meshes);
   state.load.assign(meshes, u8{0});
   const materials::Pack* pack = materials::pack_at(desc.materials);
+  // One read a distinct path: a scene naming one container ten thousand times opens it once (the
+  // per-mesh read cost 0.46 ms a mesh in `msvc-debug` before this, measured on such a scene).
+  HashMap<u64, u32> first_of_path;
   for (u32 m = 0; m < meshes; ++m) {
     const std::string& path = desc.meshes[m];
     if (path.empty()) continue;  // the terrain and the procedural scenes: the engine's own, `none`
+    const u64 path_hash = hash_bytes(path.data(), path.size());
+    if (const u32* first = first_of_path.find_value(path_hash);
+        first != nullptr && desc.meshes[*first] == path) {
+      state.mesh[m] = state.mesh[*first];
+      state.mesh_hash[m] = state.mesh_hash[*first];
+      state.record[m] = state.record[*first];
+      continue;
+    } else if (first == nullptr) {
+      first_of_path.try_emplace(path_hash, m);
+    }
     if (is_generated_mesh(path)) {
       // A generator's output is the join of what it baked: its recipe's sidecar and every set of
       // the pack it falls back to (content_build.h, `read_source_classes`).
