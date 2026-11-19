@@ -402,11 +402,16 @@ Heightfield synth_heightfield(SynthKind kind, u32 size, i64 spacing_mm, u64 seed
 
 bool chain_spacings(const BuildOptions& o, Vector<i64>& out, std::string* error) {
   out.clear();
-  if (o.ring_spacing_mm < 1 || o.far_ratio < 1 || o.far_levels > 16) {
+  // Bounded above as well (T198): the chain is `ring_spacing_mm * far_ratio * 2^k`, and a scene's
+  // ring spacing and ratio were held only from below, so the product wrapped `i64`. A ring at most
+  // a heightfield's own largest spacing (1 km) and a ratio at most 128 (the renderer's own cap on
+  // a request's) keep the 16th level under 2^42 mm.
+  if (o.ring_spacing_mm < 1 || o.ring_spacing_mm > k_max_spacing_mm || o.far_ratio < 1 ||
+      o.far_ratio > 128 || o.far_levels > 16) {
     if (error != nullptr)
       *error =
-          "the far levels' parameters are a ring spacing of at least 1 mm, a ratio of at "
-          "least 1 and at most 16 levels";
+          "the far levels' parameters are a ring spacing of 1 mm to 1 km, a ratio of 1 to 128 "
+          "and at most 16 levels";
     return false;
   }
   i64 s = o.ring_spacing_mm * static_cast<i64>(o.far_ratio);

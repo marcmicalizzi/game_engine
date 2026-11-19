@@ -1215,3 +1215,25 @@ TEST_CASE("tileset hostile: a level's index window is its tiles'") {
   TileSet again;
   CHECK_MESSAGE(again.open(s.built.manifest, error), error);
 }
+
+// Hostile (T198): the far chain is `ring_spacing_mm * far_ratio * 2^k`, both held only from below,
+// so a scene's ring of 2^50 mm at a ratio of 2^20 wrapped `i64` in the first product. Now a ring
+// is at most 1 km and a ratio at most 128 (the renderer's own cap), and the 16th level of the
+// largest chain is under 2^42 mm. Before the mend both hostile chains below were made.
+TEST_CASE("tileset hostile: the far chain's parameters are bounded above") {
+  BuildOptions o;
+  Vector<i64> chain;
+  o.ring_spacing_mm = i64{1} << 50;
+  o.far_ratio = 1u << 20;
+  CHECK_FALSE(chain_spacings(o, chain));
+  o.ring_spacing_mm = 2000;
+  o.far_ratio = 129;
+  CHECK_FALSE(chain_spacings(o, chain));
+  o.ring_spacing_mm = k_max_spacing_mm;
+  o.far_ratio = 128;
+  o.far_levels = 16;
+  REQUIRE(chain_spacings(o, chain));
+  REQUIRE(chain.size() == 16);
+  CHECK(chain.back() == k_max_spacing_mm * 128 * (i64{1} << 15));
+  CHECK(chain.back() < (i64{1} << 42));
+}
