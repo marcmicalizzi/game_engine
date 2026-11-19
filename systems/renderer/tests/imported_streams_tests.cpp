@@ -73,8 +73,8 @@ bool write_normal_quad(const std::filesystem::path& dir, bool tangents, u8 green
     bin.push_back(static_cast<u8>(i & 0xff));
     bin.push_back(static_cast<u8>(i >> 8));
   }
-  bin.push_back(0);
-  bin.push_back(0);  // to 144, so the tangents start on a 4-byte boundary
+  for (u32 i = 0; i < 4; ++i)
+    bin.push_back(0);  // 140 to 144, so the tangents start on a 4-byte boundary
   for (const f32 v : tangent_values)
     put_f32(bin, v);
   if (!write_file((dir / "quad.bin").string(), bin.data(), bin.size())) return false;
