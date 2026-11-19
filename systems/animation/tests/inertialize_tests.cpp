@@ -268,7 +268,8 @@ TEST_CASE("inertialization: the curve and the offsets are pinned (MSVC; GCC and 
     h = hash_bytes(out.rotation.data(), sizeof(Quat) * k_joints, h);
   }
   constexpr u64 k_pinned = 0x51889d72b6e7daedull;
-  if (h != k_pinned) std::printf("inertialization hash: 0x%016llx\n", (unsigned long long)h);
+  if (h != k_pinned)
+    std::printf("inertialization hash: 0x%016llx\n", static_cast<unsigned long long>(h));
   CHECK(h == k_pinned);
 }
 

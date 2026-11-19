@@ -619,7 +619,7 @@ struct StreamedRig {
 
   StreamedRig(doc::Document& d, const std::string& path)
       : driver(scheduler, config()),
-        sink{&d, &store},
+        sink{&d, &store, {}},
         world(ring()),
         document_tiles(driver, scheduler, 32.0f),
         store_tiles(binding(d)) {

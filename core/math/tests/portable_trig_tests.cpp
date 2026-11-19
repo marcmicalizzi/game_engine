@@ -47,7 +47,8 @@ TEST_CASE("portable trig: the table's outputs are pinned (MSVC; GCC and Clang re
   // Taken on MSVC (msvc-debug, x86-64-v3) on 2026-11-19, when the two moved from engine-view.
   constexpr u64 k_pinned = 0x7d3ed0e441d8cd6dull;
   const u64 h = table_hash();
-  if (h != k_pinned) std::printf("portable trig table hash: 0x%016llx\n", (unsigned long long)h);
+  if (h != k_pinned)
+    std::printf("portable trig table hash: 0x%016llx\n", static_cast<unsigned long long>(h));
   CHECK(h == k_pinned);
 }
 
