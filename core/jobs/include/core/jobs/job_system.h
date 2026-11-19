@@ -103,6 +103,7 @@ class Counter {
 
  private:
   friend class JobSystem;
+  friend struct JobSystemTestPeek;  // reads `queued_` in core/jobs' wakeup tests
   // The low 28 bits count outstanding jobs; each unit above them is a final signal whose notify
   // has not returned (more than one only when a counter is added to again as it reaches zero).
   static constexpr u32 k_notifying = 1u << 28;
@@ -217,6 +218,13 @@ class JobSystem {
   const platform::Topology& topology() const noexcept { return topo_; }
 
  private:
+  // Read-only, for core/jobs' own tests alone (wakeup_tests.cpp defines the friend): a pool's
+  // announced sleepers and its wake epoch, so a missed deadline can tell a worker asleep on a
+  // queued job from one that is awake and was not scheduled.
+  friend struct JobSystemTestPeek;
+  u32 pool_sleepers(Pool pool) const noexcept;
+  u32 pool_epoch(Pool pool) const noexcept;
+
   struct Worker;
   struct PoolState;
   using detail_deque = detail::WorkDeque<Job>;

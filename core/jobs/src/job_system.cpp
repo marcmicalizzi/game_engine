@@ -615,6 +615,13 @@ const WorkerInfo& JobSystem::worker_info(Pool pool, u32 index) const noexcept {
 const WorkerInfo* JobSystem::current_worker() noexcept { return t_current_worker; }
 JobSystem* JobSystem::current() noexcept { return t_current_system; }
 
+u32 JobSystem::pool_sleepers(Pool pool) const noexcept {
+  return pools_[static_cast<u32>(pool)].sleepers.load(std::memory_order_acquire);
+}
+u32 JobSystem::pool_epoch(Pool pool) const noexcept {
+  return pools_[static_cast<u32>(pool)].epoch.load(std::memory_order_acquire);
+}
+
 // Each counter is read once, relaxed: the sum is not a snapshot taken at one instant across the
 // workers, but every counter only grows, and a job is counted before it signals its counter, so
 // after wait(c) returns the totals include every job of c (docs/subsystems/jobs.md, "What a job
