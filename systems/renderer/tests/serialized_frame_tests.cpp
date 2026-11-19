@@ -119,6 +119,18 @@ void check_same(const char* scene_dir) {
       {"traced with the bounce", RasterMode::RayTrace, ShadowMode::RayTraced, "bounce"},
       {"hardware with the cascades", RasterMode::Hardware, ShadowMode::Cascaded, "off"},
   };
+  // A device before the scene, as every GPU case skips before it builds: with none, loading the
+  // scene is minutes of CPU in a debug build for nothing (the stack's no-driver run of batch 69
+  // spent `renderer.3`'s whole 2,400 s building the desert erg's ground).
+  {
+    gfx::Device probe;
+    std::string why;
+    if (!probe.create(renderer_test::device_options(), &why)) {
+      MESSAGE("skipped " << scene_dir << ": device unavailable: " << why);
+      return;
+    }
+    probe.destroy();
+  }
   // Loaded once: the four draws share the scene's data and differ in their GPU objects alone.
   SceneDesc desc;
   desc.cache = false;
