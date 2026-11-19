@@ -155,6 +155,28 @@ TEST_CASE("materials: a pack's manifest is read whole or refused with the role n
   CHECK(error.find("tile_m") != std::string::npos);
 }
 
+TEST_CASE("materials hostile: a map's file climbing out of its pack is refused") {
+  // T191: a pack's manifest is bytes a scene's `load.materials` may point anywhere; a map is held
+  // under its pack by the rule a document holds a layer's file to.
+  // As JSON text: `\\` is one backslash once read.
+  for (const char* climbing : {"../r/b.png", "r/../../b.png", R"(r\\..\\..\\b.png)", "C:b.png",
+                               "/r/b.png", "r//b.png"}) {
+    CAPTURE(climbing);
+    std::string text = pack_text("rock/granite");
+    text.replace(text.find("r/b.png"), 7, climbing);
+    std::string error;
+    materials::Pack pack;
+    CHECK_FALSE(materials::parse_pack(text, "D:/p", pack, error));
+    CHECK(error.find("base_color names no file in the pack") != std::string::npos);
+  }
+  // A map in a directory of the pack, `\` or `/`, reads as before.
+  std::string nested = pack_text("rock/granite");
+  nested.replace(nested.find("r/b.png"), 7, R"(r\\deep\\b.png)");
+  std::string error;
+  materials::Pack pack;
+  REQUIRE_MESSAGE(materials::parse_pack(nested, "D:/p", pack, error), error);
+}
+
 TEST_CASE("materials: a role's sampling places its texels, and the container records it") {
   std::string error;
   materials::Pack pack;

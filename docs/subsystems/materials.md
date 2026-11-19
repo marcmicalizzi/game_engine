@@ -93,7 +93,11 @@ A directory holding `pack.json` and the maps, one directory per role:
 
 `parse_pack` reads it whole or refuses it with the role named: a format word other than
 `engine.materials.pack/1`, a role that is not `<word>/<word>`, a missing `tile_m` or map, a file
-outside the pack, a convention other than `opengl` (the renderer reads glTF's tangent space; a
+outside the pack (T191: by the rule a document holds a layer's file to — relative, no drive or
+stream, no `..` component, no empty name, no control character, `\` a separator everywhere; it was
+refused only when absolute, so `../../x.png` sampled any image the host could read, and a scene's
+`load.materials` may name any pack directory; lexical, as that rule is, and no pack the tools write
+names a `..`), a convention other than `opengl` (the renderer reads glTF's tangent space; a
 DirectX map lit from below is the packer's to flip, not a guess here) or a number out of range. The
 SHA-256s, resolutions, provenance and licences are for `tools/fetch-materials.ps1` and for people;
 the engine reads the files and the numbers — and **takes the manifest's text as the pin of its files'

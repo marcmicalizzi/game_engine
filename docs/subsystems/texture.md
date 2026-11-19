@@ -48,7 +48,10 @@ byte count is not `texture_level_bytes`, whose offset is unaligned or outside th
 or BC5 texture claiming sRGB (neither has an sRGB form in any API), or a side past 16,384 (T190:
 the build's own `k_max_side`, so every built texture reads unchanged; a valid 128 KiB strip of
 65,536 x 4 BC4 texels used to be handed to the device past its `maxImageDimension2D`, 16,384 on
-the baseline cards and 4,096 Vulkan's floor). `write_texture_file` refuses
+the baseline cards and 4,096 Vulkan's floor). A side under 16,384 can still pass a device whose
+limit is lower: `gfx` holds every 2D image it makes to the device's own `maxImageDimension2D`
+(T191, `image_extent_fits` in `create_image_2d` and `create_sampled_image_levels`, so both
+uploads), refused with the image's extent and the limit in the message. `write_texture_file` refuses
 the same and writes through `io::write_file_atomic`.
 
 ## Formats per slot, and why

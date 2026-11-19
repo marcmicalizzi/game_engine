@@ -56,6 +56,8 @@ bool valid_ring_params(const RingParams& params, const char** error) noexcept {
         why = "every ring's radius must be positive";
       } else if (r > 0 && !(params.radius[r] > params.radius[r - 1])) {
         why = "the rings' radii must increase outward";
+      } else if (static_cast<f64>(params.radius[r]) > k_max_reach_tiles) {
+        why = "a ring's radius is at most 1024 tiles";
       }
     }
   }
@@ -134,6 +136,8 @@ void TileRing::add_candidates(WorldPos observer, f32 weight) {
 bool TileRing::reaches(WorldPos observer, f32 weight) const noexcept {
   // The reach exactly as `add_candidates` forms it, so the window checked is the window walked.
   const f32 reach = reach_tiles_ * (weight > 0.0f ? weight : 0.0f);
+  // A weight that would walk a window past the bound observes nothing (T191; NaN fails it too).
+  if (!(static_cast<f64>(reach) <= k_max_reach_tiles + 1.0)) return false;
   return tile_reachable(observer, params_.tile_size, static_cast<f64>(reach));
 }
 

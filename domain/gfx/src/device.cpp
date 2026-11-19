@@ -912,8 +912,22 @@ void destroy_buffer(const Device& device, BufferResource& buffer) noexcept {
   buffer = BufferResource{};
 }
 
+bool image_extent_fits(u32 width, u32 height, u32 max_dimension, std::string* error) {
+  if (max_dimension == 0 || (width <= max_dimension && height <= max_dimension)) return true;
+  if (error != nullptr) {
+    *error = "a " + std::to_string(width) + " x " + std::to_string(height) +
+             " image is past this device's largest 2D image side, " +
+             std::to_string(max_dimension) + " (maxImageDimension2D)";
+  }
+  return false;
+}
+
 bool create_image_2d(const Device& device, u32 width, u32 height, Format format, ImageUsage usage,
                      ImageResource& out, std::string* error) {
+  if (!image_extent_fits(width, height, device.caps().max_image_dimension_2d, error)) {
+    out = ImageResource{};
+    return false;
+  }
   const Handles& h = device.handles();
   VkImageCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -1545,6 +1559,7 @@ bool create_sampled_image_levels(const Device& device, u32 width, u32 height, Fo
     if (error != nullptr) *error = "create_sampled_image_levels: no extent, or a chain past 16";
     return false;
   }
+  if (!image_extent_fits(width, height, device.caps().max_image_dimension_2d, error)) return false;
   const Handles& h = device.handles();
   VkImageCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;

@@ -137,6 +137,27 @@ bool string_of(const JsonValue* value, std::string& out) {
   return true;
 }
 
+// **A map is a file in its pack** (T191): `pack.json` is bytes a scene's `load.materials` may
+// point anywhere, so a map's `file` is held to the rule a document holds a layer's file to
+// (`stays_under_document`, domain/doc and domain/protocol): relative, no drive or stream (`:`), no
+// `..` component, no empty name, no control character, `\` a separator on every platform. It was
+// refused only when absolute, so `../../x.png` sampled any image the host could read. Lexical, as
+// that rule is: a pack is the host's directory, and a link inside it is the host's own choice. No
+// pack written by `tools/pack-materials.ps1` or `engine-content matgen` names a `..`.
+bool stays_in_pack(std::string_view path) noexcept {
+  if (path.empty() || path[0] == '/' || path[0] == '\\') return false;
+  usize start = 0;
+  for (usize i = 0; i <= path.size(); ++i) {
+    const char c = i < path.size() ? path[i] : '/';
+    if (static_cast<unsigned char>(c) < 0x20 || c == ':') return false;
+    if (c != '/' && c != '\\') continue;
+    const std::string_view name = path.substr(start, i - start);
+    if (name.empty() || name == "..") return false;
+    start = i + 1;
+  }
+  return true;
+}
+
 }  // namespace
 
 bool parse_pack(std::string_view text, std::string_view dir, Pack& out, std::string& error) {
@@ -235,7 +256,7 @@ bool parse_pack(std::string_view text, std::string_view dir, Pack& out, std::str
       const JsonValue* map = maps->find(slot.name);
       std::string file;
       if (map == nullptr || !map->is_object() || !string_of(map->find("file"), file) ||
-          file.empty() || io::is_absolute_path(file)) {
+          !stays_in_pack(file)) {
         error = where + ".maps." + slot.name + " names no file in the pack";
         return false;
       }

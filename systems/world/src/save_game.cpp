@@ -10,6 +10,7 @@
 #include <systems/world/state_hash.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <schemas/doc.h>
 #include <schemas/world.h>
 #include <schemas/world_tiles.h>
@@ -56,8 +57,77 @@ bool fresh_directory(const std::string& dir, const char* what, std::string& erro
   return true;
 }
 
+// **A save's file is read where its manifest names it, through no link** (T191). A manifest path
+// passes a lexical check (relative, no `..`), but `document/layers` may be a symbolic link or a
+// junction to anywhere the host can read, and every read below followed it: the hash check gave a
+// client the size of any file it named, and the restore copied it into the world. A save is files
+// `write_save` wrote, never a link, so the rule is stricter than the document store's (which
+// follows a link that stays inside): the file's resolved path must be the save's resolved directory
+// with the manifest's path appended, component for component, so a link anywhere below the save's
+// directory — even one back inside it — is refused. The save's own directory is resolved, so a save
+// that is itself reached through a link (a mounted drive, a linked saves folder) is not.
+class SaveRoot {
+ public:
+  explicit SaveRoot(const std::string& root) : root_(root) {}
+
+  // True when `relative` (a manifest path, '/'-separated, already held to the lexical rule) is
+  // reached from the save's directory through no link. Asked before whether the file exists, so a
+  // link's target is never told apart by "missing": each component is looked at without following
+  // it (a dangling link is still a link), and what exists is resolved and compared whole, which
+  // catches any other redirection the platform has.
+  bool in_place(std::string_view relative) const {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!resolved_) {
+      resolved_ = true;
+      real_root_ = fs::canonical(native(root_), ec);
+      if (ec) real_root_.clear();
+    }
+    if (real_root_.empty()) return false;
+    fs::path walked = native(root_);
+    fs::path expected = real_root_;
+    usize start = 0;
+    for (usize i = 0; i <= relative.size(); ++i) {
+      if (i < relative.size() && relative[i] != '/') continue;
+      if (i > start) {
+        const fs::path name = native(relative.substr(start, i - start));
+        walked /= name;
+        expected /= name;
+        const fs::file_status st = fs::symlink_status(walked, ec);
+        if (ec || !fs::exists(st)) return true;  // missing from here on: the caller says so
+        if (fs::is_symlink(st)) return false;
+#ifdef _MSC_VER
+        if (st.type() == fs::file_type::junction) return false;
+#endif
+      }
+      start = i + 1;
+    }
+    const fs::path real = fs::canonical(walked, ec);
+    return !ec && real == expected;
+  }
+
+ private:
+  // Native paths are UTF-8 (foundation/io), not the narrow code page a std::string means on
+  // Windows.
+  static std::filesystem::path native(std::string_view s) {
+    return std::filesystem::path(
+        std::u8string_view(reinterpret_cast<const char8_t*>(s.data()), s.size()));
+  }
+
+  std::string root_;
+  mutable bool resolved_ = false;
+  mutable std::filesystem::path real_root_;
+};
+
+std::string through_link(std::string_view path) {
+  return "the save's file " + std::string(path) +
+         " is reached through a link (a symbolic link or a junction), which a save may not hold";
+}
+
 // A directory tree, file by file. At the top of a document directory the store's own files are
-// left out: the store is backed up, never copied while it may be open.
+// left out: the store is backed up, never copied while it may be open. Writing a save only: the
+// document is the session's own directory. A restore copies the files the manifest lists, never a
+// tree (`restore_save_files`).
 bool copy_tree(const std::string& from, const std::string& to, bool skip_store,
                std::string& error) {
   const io::Status made = io::make_directories(to);
@@ -477,11 +547,17 @@ bool read_save(std::string_view dir, SaveManifest& out, SaveCheck& check, std::s
     return false;
   }
 
-  // Every file the manifest names, as it names it.
+  // Every file the manifest names, as it names it, where it names it.
+  const SaveRoot save(root);
   for (const SaveFile& file : manifest.files) {
     if (file.path.empty() || file.path.find("..") != std::string::npos ||
-        io::is_absolute_path(file.path)) {
+        io::is_absolute_path(file.path) || file.path.find('\\') != std::string::npos ||
+        file.path.find(':') != std::string::npos) {
       error = "the save names a file outside itself: '" + file.path + "'";
+      return false;
+    }
+    if (!save.in_place(file.path)) {
+      error = through_link(file.path);
       return false;
     }
     const std::string path = io::join_path(root, file.path);
@@ -544,15 +620,74 @@ bool restore_save_files(std::string_view dir, const SaveManifest& manifest, std:
                         std::string& error) {
   const std::string root = io::normalize_path(dir);
   const std::string to = io::normalize_path(target);
-  if (!copy_tree(
-          io::join_path(root, manifest.document.empty() ? k_save_document_dir : manifest.document),
-          to, true, error)) {
+  // **Exactly the files the manifest lists** (T191): a save is the set its manifest names and
+  // hashes, so a file under `document/` it does not list is left behind, not copied and not
+  // refused. Refusing would be as safe, but a copy tool or the platform may leave a file of its own
+  // in a save someone moved (`Thumbs.db`, `.DS_Store`, a sync client's marker), and that save is
+  // still whole; copying it, as the tree copy did, brought an unhashed file — or, through a link,
+  // any file the host can read — into the restored world. Each listed file is read where the
+  // manifest names it, through no link (`SaveRoot`), and checked against its size and hash again,
+  // so what is written is what `read_save` checked. Every save this engine wrote lists every file
+  // of its document (`write_save`), so the migration corpus's saves restore whole.
+  const std::string document =
+      manifest.document.empty() ? std::string(k_save_document_dir) : manifest.document;
+  const std::string prefix = document + "/";
+  const SaveRoot save(root);
+  io::Status status = io::make_directories(to);
+  if (status != io::Status::Ok) {
+    error = io_message("cannot create", to, status);
     return false;
   }
-  if (manifest.store.empty()) return true;
   std::string bytes;
+  for (const SaveFile& file : manifest.files) {
+    if (file.path.size() <= prefix.size() || file.path.compare(0, prefix.size(), prefix) != 0) {
+      continue;
+    }
+    const std::string relative = file.path.substr(prefix.size());
+    // The store's own files at the document's top are backed up, never copied (as `write_save`).
+    if (relative.find('/') == std::string::npos && is_store_file(relative)) continue;
+    if (file.path.find("..") != std::string::npos || file.path.find('\\') != std::string::npos ||
+        file.path.find(':') != std::string::npos) {
+      error = "the save names a file outside itself: '" + file.path + "'";
+      return false;
+    }
+    if (!save.in_place(file.path)) {
+      error = through_link(file.path);
+      return false;
+    }
+    const std::string source = io::join_path(root, file.path);
+    status = io::read_file(source, bytes);
+    if (status != io::Status::Ok) {
+      error = io_message("cannot read", source, status);
+      return false;
+    }
+    if (bytes.size() != file.bytes ||
+        hash_hex(hash_bytes(bytes.data(), bytes.size())) != file.hash) {
+      error = "the save's file " + file.path + " changed after the save was checked";
+      return false;
+    }
+    const std::string out = io::join_path(to, relative);
+    const std::string_view parent = io::parent_path(out);
+    if (!parent.empty()) {
+      status = io::make_directories(parent);
+      if (status != io::Status::Ok) {
+        error = io_message("cannot create", std::string(parent), status);
+        return false;
+      }
+    }
+    status = io::write_file(out, bytes);
+    if (status != io::Status::Ok) {
+      error = io_message("cannot write", out, status);
+      return false;
+    }
+  }
+  if (manifest.store.empty()) return true;
+  if (!save.in_place(manifest.store)) {
+    error = through_link(manifest.store);
+    return false;
+  }
   const std::string from = io::join_path(root, manifest.store);
-  io::Status status = io::read_file(from, bytes);
+  status = io::read_file(from, bytes);
   if (status != io::Status::Ok) {
     error = io_message("cannot read", from, status);
     return false;

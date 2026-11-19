@@ -265,7 +265,14 @@ u32 tile_rank(u64 world_seed, TileCoord tile) noexcept;
 bool tile_has_building(u64 world_seed, TileCoord tile, f32 density) noexcept;
 // The tiles of the square [min, max] (both included) that hold a building: the `count`
 // lowest-ranked (ties by z, then x), or with `count` zero every tile under `density`. In the
-// order of their rank, which is the order the buildings are numbered in.
+// order of their rank, which is the order the buildings are numbered in. **Every tile of the square
+// is ranked**, whatever `count` is, so a square past `k_max_chosen_tiles` chooses none (T191): a
+// scene's `tile_min` and `tile_max` are i32s a client names, and the full i32 square walked about
+// 2^64 tiles with i32 counters that overflowed at its edge. 2^24 is 4,096 tiles a side (131 km at
+// the ruins' 32 m tiles); `ruins_scene`'s generator refuses past it with the bound in its sentence.
+inline constexpr u64 k_max_chosen_tiles = u64{1} << 24;
+// The square's tile count in 64 bits, never wrapping; 0 when it is empty.
+u64 chosen_span(TileCoord min, TileCoord max) noexcept;
 void choose_tiles(u64 world_seed, TileCoord min, TileCoord max, u32 count, f32 density,
                   Vector<TileCoord>& out);
 

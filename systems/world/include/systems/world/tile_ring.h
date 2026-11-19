@@ -114,8 +114,17 @@ struct RingParams {
   u32 max_deactivations = 16;
 };
 
+// **The farthest an observer's window reaches, in tiles** (T191): the window it walks is
+// (2 x reach + 1)^2 tiles a update, and a save's or a client's ring names the radius and each
+// observer's weight, so radius 3 at weight 10^8 walked about 10^17 tiles. 1,024 tiles is 43 times
+// the default outer radius (24) and a window of about 3.3 million tiles; an outer radius past it is
+// refused, and an observer whose radius times weight passes it observes nothing and is counted
+// unreached, as one past the world's last tile is.
+inline constexpr f64 k_max_reach_tiles = 1024.0;
+
 // True when the parameters make a ring: a positive tile size, 1..k_max_rings rings of positive,
-// strictly increasing radius, a non-negative hysteresis. `error` says which is wrong.
+// strictly increasing radius no farther than `k_max_reach_tiles`, a non-negative hysteresis.
+// `error` says which is wrong.
 bool valid_ring_params(const RingParams& params, const char** error = nullptr) noexcept;
 
 enum class TileEventKind : u8 {
