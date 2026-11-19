@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "S35-4b",
+  "reason": "S35-4b: the walker graph-sampled and inertialized behind animation.graph.inertialize_walker, documented on animation.md (why off keeps the player, the case) and apps.md (the tunable)",
+  "date": "2026-11-19",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 1116,
+    "page:docs/subsystems/animation.md": 3373
+  }
+}

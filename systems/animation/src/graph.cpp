@@ -620,6 +620,9 @@ GraphDesc locomotion_graph(const LocomotionClips& clips) {
     seed = hash_combine(seed, hash_bytes(name.data(), name.size()));
   }
   seed = hash_combine(seed, std::bit_cast<u32>(clips.fade_s));
+  // A blend other than the cross-fade is a different graph; the cross-fade's ids are as they were.
+  if (clips.blend != GraphBlend::CrossFade)
+    seed = hash_combine(seed, static_cast<u64>(clips.blend));
   // One high word and a counter for the low: the ids sort in the order they are made, so a
   // parameter's slot is its declaration order here (the `k_locomotion_*` indices) and the states
   // sort stand, walk, run.
@@ -675,7 +678,7 @@ GraphDesc locomotion_graph(const LocomotionClips& clips) {
     t.parent = machine_id;
     t.record.to = to;
     t.record.duration_s = clips.fade_s;
-    t.record.blend = GraphBlend::CrossFade;
+    t.record.blend = clips.blend;
     t.record.conditions.push_back(GraphCondition{"moving", GraphCompare::Equal, moving});
     if (reads_fast)
       t.record.conditions.push_back(GraphCondition{"fast", GraphCompare::Equal, fast});

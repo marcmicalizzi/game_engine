@@ -258,6 +258,10 @@ class PlayerBody {
   // The gait's tick (`rig_.gait`): walk, run (the `fast` action held while moving) or stand, and
   // the phase advanced by the distance this tick over the stride at this tick's speed.
   void tick_gait(const FlySession& session, const input::InputState& input, f64 walked);
+  // `animation.graph.inertialize_walker` (S35 stage 4): the body made graph-driven by the walker's
+  // graph with inertialized transitions, and its tick then (the graph's inputs, no playheads).
+  bool sample_through_graph();
+  void tick_gait_graph(const FlySession& session, const input::InputState& input, f64 walked);
   // `GeneratedClips` (animation.h): the walk and the run into the animated world's library.
   static bool generate(void* user, AnimatedScene& scene, std::string& error);
   // The head-look layer's shares for `drawn`'s pitch, set on the body's entry when the rig has the
@@ -312,6 +316,10 @@ class PlayerBody {
   u64 running_ticks_ = 0;
   input::ActionId fast_ = input::k_invalid_action;
   bool fast_found_ = false;
+  // `animation.graph.inertialize_walker`: 0 not yet decided, 1 player-driven (off, or refused), 2
+  // graph-sampled; and the state the graph heads for (1 stand, 2 walk, 3 run; 0 before a tick).
+  u8 graph_mode_ = 0;
+  u8 graph_gait_ = 0;
 };
 
 }  // namespace engine::view

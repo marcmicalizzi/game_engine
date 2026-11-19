@@ -586,6 +586,14 @@ void AnimationSystem::sample_graphs(flecs::iter& it) {
       target.next[m] = 0;
       target.duration[m] = 0.0f;
       target.elapsed[m] = 0.0f;
+      // A phase-locked target is sampled at its group's phase, so one tick back is the phase the
+      // instance was last sampled at (S35-4b: without it the target's velocity read as zero, and a
+      // change into the walker's walk or run moved at the target's speed plus the source's).
+      const u32 pose_slot = scratch.slots[i];
+      if (pose_slot < inertial_.size()) {
+        target.phase[0] = inertial_[pose_slot].phase_prev[0];
+        target.phase[1] = inertial_[pose_slot].phase_prev[1];
+      }
       scratch.virtual_states.push_back(source);
       scratch.virtual_states.push_back(target);
     }
@@ -666,6 +674,11 @@ void AnimationSystem::sample_graphs(flecs::iter& it) {
       }
       for (u32 i = 0; i < scratch.batch.size(); ++i) {
         if (scratch.inertial[i] != k_inertial_none) inertialize(*graph, i);
+        // The phases this sample was taken at, for a capture on the instance's next one.
+        if (scratch.slots[i] < inertial_.size()) {
+          inertial_[scratch.slots[i]].phase_prev[0] = scratch.batch[i].state->phase[0];
+          inertial_[scratch.slots[i]].phase_prev[1] = scratch.batch[i].state->phase[1];
+        }
       }
     }
     scratch.batch.clear();
@@ -1108,6 +1121,27 @@ bool AnimationSystem::attach_graph(const Id128& entity, const Id128& graph, cons
   found.set<AnimationLod>(lod);
   found.set<AnimationGraphInput>(input);
   found.set<AnimationGraphState>(state);
+  return true;
+}
+
+bool AnimationSystem::drive_by_graph(const Id128& entity, const Id128& graph,
+                                     const Id128& skeleton) {
+  if (world_ == nullptr) return false;
+  const flecs::entity found = ecs::entity_for(*world_, entity);
+  if (found == 0 || !found.has<AnimationPlayer>()) return false;
+  // What `attach_graph` would refuse is refused before anything is removed.
+  const CompiledGraph* compiled = graphs_.find(graph);
+  if (compiled == nullptr || compiled->program.empty()) return false;
+  if (compiled->skeleton_joints != 0 && compiled->skeleton != skeleton) return false;
+  if (library_->skeleton_index(skeleton) == Library::k_not_found) return false;
+  const AnimationLod* lod = found.try_get<AnimationLod>();
+  const u8 tier = lod != nullptr ? lod->tier : u8{0};
+  detach(found);
+  found.remove<AnimationPlayer>();
+  found.remove<AnimationGraphInput>();
+  found.remove<AnimationGraphState>();
+  if (!attach_graph(entity, graph, skeleton)) return false;
+  if (tier != 0) apply_tier(found, tier);
   return true;
 }
 

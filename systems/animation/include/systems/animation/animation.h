@@ -272,6 +272,13 @@ class AnimationSystem {
   // graph-driven or player-driven, never both), a graph with no pose program
   // (`CompiledGraph::program_why`), and a layered graph compiled for another skeleton.
   bool attach_graph(const Id128& entity, const Id128& graph, const Id128& skeleton);
+  // Turns a player-driven entity into a graph-driven one (S35 stage 4, the walker: engine-view's
+  // `animation.graph.inertialize_walker`): its `AnimationPlayer` and its pose slot go, any stage-1
+  // graph components with them, and `graph` is attached as `attach_graph(entity, graph,
+  // skeleton)` attaches it, then put back at the tier the entity stood at. Called between ticks.
+  // False, and the entity untouched, for an entity with no player, or a graph or skeleton
+  // `attach_graph` would refuse.
+  bool drive_by_graph(const Id128& entity, const Id128& graph, const Id128& skeleton);
   // Writes `values` (by parameter index) and `triggers` into a graph-driven entity's inputs, for
   // the next control tick. False for an entity with no graph.
   bool set_graph_inputs(const Id128& entity, std::span<const f32> values, u32 triggers);
@@ -359,6 +366,10 @@ class AnimationSystem {
     u32 skeleton = 0;
     f32 t = 0.0f;
     f32 duration = 0.0f;
+    // The sync groups' phases at the instance's last sample (S35-4b): a capture evaluates its
+    // target one tick back, and a phase-locked target is sampled at its group's phase, which the
+    // state holds only for this tick.
+    f32 phase_prev[2] = {0.0f, 0.0f};
   };
   Vector<Inertial> inertial_;
   Vector<std::unique_ptr<InertialArena>> arenas_;  // by skeleton index, sized outside a tick
