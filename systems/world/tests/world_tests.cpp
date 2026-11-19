@@ -478,3 +478,35 @@ TEST_CASE("world: a refused tile is counted and stays active for the others") {
 }
 
 TEST_CASE("world declares a determinism stance") { CHECK(std::string(k_determinism) == "hashed"); }
+
+TEST_CASE("world hostile: a ring's radius and an observer's weight bound the window walked") {
+  // T191: a save's `ring` (or a client's `stream`) names the radii and each observer's weight, and
+  // the window an update walks is (2 x radius x weight + 1)^2 tiles. Past `k_max_reach_tiles` a
+  // radius is refused and an observer observes nothing (counted unreached), so no save makes an
+  // update walk 10^17 tiles. The heavy observer here walks 4.8 million tiles without the bound, so
+  // the case before the mend is bounded too.
+  RingParams params;
+  params.ring_count = 1;
+  params.radius[0] = 2000.0f;
+  const char* why = nullptr;
+  CHECK_FALSE(valid_ring_params(params, &why));
+  REQUIRE(why != nullptr);
+  CHECK(std::string(why).find("1024") != std::string::npos);
+  params.radius[0] = 1024.0f;
+  CHECK(valid_ring_params(params));
+
+  params.radius[0] = 10.0f;  // reach 11 tiles a unit of weight
+  TileRing ring;
+  ring.configure(params);
+  Vector<TileEvent> events;
+  sim::ObserverSet heavy;
+  heavy.add(WorldPos{16.0, 0.0, 16.0}, 100.0f);  // 1,100 tiles
+  ring.update(heavy, events, /*unlimited=*/true);
+  CHECK(ring.stats().unreached == 1);
+  CHECK(events.empty());
+  sim::ObserverSet plain;
+  plain.add(WorldPos{16.0, 0.0, 16.0}, 1.0f);
+  ring.update(plain, events, /*unlimited=*/true);
+  CHECK(ring.stats().unreached == 0);
+  CHECK_FALSE(events.empty());
+}
