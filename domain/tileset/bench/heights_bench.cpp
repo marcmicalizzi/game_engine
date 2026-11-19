@@ -40,8 +40,8 @@ f32 set_height_mm(const void* state, f64, i64 x_mm, i64 z_mm) noexcept {
   return static_cast<const tileset::TileSet*>(state)->height_mm(x_mm, z_mm);
 }
 f32 set_height(const void* state, f32 x, f32 z) noexcept {
-  return static_cast<const tileset::TileSet*>(state)->height_mm(scene_gen::nearest_mm(x),
-                                                                scene_gen::nearest_mm(z));
+  return static_cast<const tileset::TileSet*>(state)->height_mm(
+      scene_gen::nearest_mm(static_cast<f64>(x)), scene_gen::nearest_mm(static_cast<f64>(z)));
 }
 const scene_gen::GroundOps k_ops = [] {
   scene_gen::GroundOps ops;
