@@ -1390,7 +1390,7 @@ void TileSet::landed(void* context, u32 first, u32 count) noexcept {
     TimedLock lock(set.mutex_, *set.counters_);
     for (u32 k = first; k < first + count; ++k) {
       Cache::Entry& entry = *cache.entries[b.slots[k]];
-      const archive::Entry& at = b.level->archive.table()[b.fetches[k].entry];
+      const archive::Entry at = b.level->archive.entry(b.fetches[k].entry);
       entry.loading = false;
       if (b.fetches[k].ok && set.valid_record(b.records[k].get(), *b.level, at.tx, at.tz)) {
         entry.record = std::move(b.records[k]);
@@ -1477,9 +1477,11 @@ u32 TileSet::prefetch_level(u32 level) const noexcept {
   if (level >= levels_.size()) return 0;
   const Level& l = *levels_[level];
   Vector<u64> keys;
-  keys.reserve(static_cast<u32>(l.archive.table().size()));
-  for (const archive::Entry& e : l.archive.table())
+  keys.reserve(l.archive.entries());
+  for (u32 i = 0; i < l.archive.entries(); ++i) {
+    const archive::Entry e = l.archive.entry(i);
     keys.push_back(archive::tile_key(e.tx, e.tz));
+  }
   return fetch(l, std::span<const u64>(keys.data(), keys.size()), cache_->capacity);
 }
 

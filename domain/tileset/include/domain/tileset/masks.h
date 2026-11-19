@@ -224,9 +224,19 @@ class MaskLevel {
   // `unbuffered`: the archive read past the OS's file cache (a cold measurement).
   bool open(const std::string& manifest_path, std::string& error, bool unbuffered = false);
   bool is_open() const noexcept { return info_.cells != 0; }
+  // The manifest as read, **except its list of tiles** (`present`), which is released at open:
+  // the level keeps that list once, as the archive's table where the table holds every tile it
+  // lists (tileset.md, "The table read from the view"). Ask `tile_count` and `tile_at` for it.
   const MaskLevelManifest& manifest() const noexcept { return manifest_; }
   const scene_gen::GroundMaskInfo& info() const noexcept { return info_; }
   bool present(i32 tx, i32 tz) const noexcept;
+  // The tiles the manifest lists, in the archive's order (z, then x): `tile_count` of them, the
+  // i-th by `tile_at` (false past the end).
+  u32 tile_count() const noexcept { return tiles_; }
+  bool tile_at(u32 i, i32& tx, i32& tz) const noexcept;
+  // Private memory the level holds for its table and its list of tiles, in bytes: zero where the
+  // table is read from the mapped view and lists every tile (the window path copies the table).
+  u64 private_bytes() const noexcept;
   // Tile (tx, tz)'s words (`scene_gen::mask_tile_words`); false for a tile not present or a file
   // that is not the manifest's.
   bool tile(i32 tx, i32 tz, std::span<u32> words) const noexcept;
@@ -250,7 +260,9 @@ class MaskLevel {
   MaskLevelManifest manifest_;
   scene_gen::GroundMaskInfo info_;
   std::string dir_;
-  Vector<u64> present_;  // sorted keys of the tiles written
+  Vector<u64> present_;  // sorted keys of the tiles written, unless the table is that list
+  u32 tiles_ = 0;
+  bool present_is_table_ = false;
   struct Reading;
   std::unique_ptr<Reading> reading_;
 };

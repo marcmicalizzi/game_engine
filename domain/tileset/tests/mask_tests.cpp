@@ -422,6 +422,16 @@ TEST_CASE("tileset masks: the level's archive holds every tile and reads it in w
   std::memcpy(&count, file.data() + 12, 4);
   std::memcpy(&toc, file.data() + 24, 8);
   REQUIRE(count == built.tiles);
+  REQUIRE(level.tile_count() == count);
+  // The level keeps its list of tiles once, as the mapped table: no private bytes for either, and
+  // the manifest's own list released (tileset.md, "The table read from the view").
+  CHECK(m.present.empty());
+  CHECK(level.private_bytes() == 0);
+  const auto tile_x = [&](u32 i) {
+    i32 tx = 0, tz = 0;
+    REQUIRE(level.tile_at(i, tx, tz));
+    return std::pair<i32, i32>{tx, tz};
+  };
   const u32 words = scene_gen::mask_tile_words(m.cells);
   const u64 record = 32 + u64{words} * 4;
   CHECK(toc == 64 + u64{count} * record);
@@ -432,8 +442,8 @@ TEST_CASE("tileset masks: the level's archive holds every tile and reads it in w
     std::memcpy(&tx, file.data() + toc + u64{i} * 24, 4);
     std::memcpy(&tz, file.data() + toc + u64{i} * 24 + 4, 4);
     std::memcpy(&offset, file.data() + toc + u64{i} * 24 + 8, 8);
-    CHECK(tx == m.present[2 * i]);
-    CHECK(tz == m.present[2 * i + 1]);
+    CHECK(tx == tile_x(i).first);
+    CHECK(tz == tile_x(i).second);
     h = hash_combine(h, hash_bytes(file.data() + offset, record));
   }
   char hex[17];
@@ -444,7 +454,7 @@ TEST_CASE("tileset masks: the level's archive holds every tile and reads it in w
   u32 read = 0;
   for (u32 pass = 0; pass < 2; ++pass)
     for (u32 i = 0; i < count; ++i) {
-      REQUIRE(level.tile(m.present[2 * i], m.present[2 * i + 1], {got.data(), words}));
+      REQUIRE(level.tile(tile_x(i).first, tile_x(i).second, {got.data(), words}));
       const u64 offset = 64 + u64{i} * record + 32;
       CHECK(std::memcmp(got.data(), file.data() + offset, words * 4) == 0);
       ++read;
@@ -479,13 +489,17 @@ TEST_CASE("tileset masks: eight threads read the same bytes as one") {
     }
     CHECK(level.read_stats().mapped == !unbuffered);
     const MaskLevelManifest& m = level.manifest();
-    const u32 count = static_cast<u32>(m.present.size() / 2);
+    const u32 count = level.tile_count();
     REQUIRE(count > 64);
+    // The window path copies the table; the mapped one reads it where it lies.
+    CHECK((level.private_bytes() == 0) == !unbuffered);
+    Vector<i32> xz(count * 2);
+    for (u32 i = 0; i < count; ++i)
+      REQUIRE(level.tile_at(i, xz[2 * i], xz[2 * i + 1]));
     const u32 words = scene_gen::mask_tile_words(m.cells);
     Vector<u32> one(count * words);
     for (u32 i = 0; i < count; ++i)
-      REQUIRE(level.tile(m.present[2 * i], m.present[2 * i + 1],
-                         {one.data() + u64{i} * words, words}));
+      REQUIRE(level.tile(xz[2 * i], xz[2 * i + 1], {one.data() + u64{i} * words, words}));
     constexpr u32 k_threads = 8;
     Vector<u32> copies[k_threads];
     u32 failed[k_threads] = {};
@@ -501,8 +515,7 @@ TEST_CASE("tileset masks: eight threads read the same bytes as one") {
             stride += 2;
           u32 i = t * (count / k_threads);
           for (u32 k = 0; k < count; ++k, i = (i + stride) % count)
-            if (!level.tile(m.present[2 * i], m.present[2 * i + 1],
-                            {copies[t].data() + u64{i} * words, words}))
+            if (!level.tile(xz[2 * i], xz[2 * i + 1], {copies[t].data() + u64{i} * words, words}))
               ++failed[t];
         });
       }
@@ -515,6 +528,71 @@ TEST_CASE("tileset masks: eight threads read the same bytes as one") {
       CHECK(std::memcmp(copies[t].data(), one.data(), one.size() * sizeof(u32)) == 0);
     }
   }
+}
+
+// **A table that names a range outside the file is refused by name** (tileset.md, "The table read
+// from the view"): the table is bytes from a file, read in place from the view, so every range it
+// names is checked against the file's size before anything reads through it. The level's archive
+// is rewritten with one entry's record past the table, another's offset where adding the record
+// would wrap, and the table itself said to start past the file's end, an entry early, and inside
+// the header; each open — mapped, and through the window — fails with a sentence naming it.
+TEST_CASE("tileset masks: a table naming bytes outside the file is refused at open") {
+  Fixture fx;
+  MaskBuildResult built;
+  REQUIRE_MESSAGE(
+      ensure_mask_level(fx.set, fx.in, fx.tmp.file("masks"), "", false, built, fx.error), fx.error);
+  std::string archive_name;
+  {
+    MaskLevel level;
+    REQUIRE_MESSAGE(level.open(built.manifest, fx.error), fx.error);
+    archive_name = level.manifest().archive;
+  }
+  const std::string path = io::join_path(fx.tmp.file("masks"), archive_name);
+  std::string good;
+  REQUIRE(io::read_file(path, good) == io::Status::Ok);
+  u32 count = 0;
+  u64 toc = 0;
+  std::memcpy(&count, good.data() + 12, 4);
+  std::memcpy(&toc, good.data() + 24, 8);
+  REQUIRE(count > 2);
+  const struct {
+    const char* what;
+    u64 at;     // the byte the case writes `value` to
+    u64 value;  // little-endian, 8 bytes
+    const char* says;
+  } cases[] = {
+      // Entry 1's offset (8 bytes into its 24) at the table's own start: inside the file, past
+      // the records.
+      {"an entry past the records", toc + 24 + 8, toc, "names bytes"},
+      // Entry 2's offset near 2^64, where offset + record wraps to a small number.
+      {"an entry whose end wraps", toc + 48 + 8, ~u64{0} - 16, "names bytes"},
+      // The header's table offset past the end of the file.
+      {"a table past the end", 24, good.size() + 4096, "does not end where"},
+      // The header's table offset an entry early: the table would run past the file's end.
+      {"a table that runs past the end", 24, toc - 24, "does not end where"},
+      // The header's table offset inside the header itself.
+      {"a table inside the header", 24, 8, "does not end where"},
+  };
+  for (const auto& c : cases) {
+    CAPTURE(c.what);
+    std::string bad = good;
+    std::memcpy(bad.data() + c.at, &c.value, 8);
+    REQUIRE(io::write_file_atomic(path, bad) == io::Status::Ok);
+    for (const bool unbuffered : {false, true}) {
+      CAPTURE(unbuffered);
+      MaskLevel level;
+      std::string error;
+      CHECK_FALSE(level.open(built.manifest, error, unbuffered));
+      CHECK_FALSE(level.is_open());
+      MESSAGE(error);
+      // An unbuffered open a file system refuses says so instead; the mapped open must name it.
+      if (!unbuffered || error.find("could not be opened") == std::string::npos)
+        CHECK(error.find(c.says) != std::string::npos);
+    }
+  }
+  REQUIRE(io::write_file_atomic(path, good) == io::Status::Ok);
+  MaskLevel level;
+  CHECK_MESSAGE(level.open(built.manifest, fx.error), fx.error);
 }
 
 TEST_CASE("tileset masks determinism: the fixture's level hashes to the pinned value") {

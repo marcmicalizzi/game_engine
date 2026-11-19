@@ -27,12 +27,11 @@ struct Aligned {
 };
 
 // `bytes` at `offset` into `out`, through whole sectors when the file is unbuffered.
-bool read_span(const io::FileHandle& file, u64 offset, u64 bytes, Vector<u8>& out) {
-  out.resize(static_cast<u32>(bytes));
+bool read_span(const io::FileHandle& file, u64 offset, u64 bytes, void* out) {
   if (bytes == 0) return true;
   u64 got = 0;
   if (!file.unbuffered())
-    return file.read_at(offset, out.data(), bytes, got) == io::Status::Ok && got == bytes;
+    return file.read_at(offset, out, bytes, got) == io::Status::Ok && got == bytes;
   const u64 from = align_down(offset);
   const u64 length = align_up(offset + bytes) - from;
   Aligned staging;
@@ -40,8 +39,46 @@ bool read_span(const io::FileHandle& file, u64 offset, u64 bytes, Vector<u8>& ou
   if (file.read_at(from, staging.data, length, got) != io::Status::Ok ||
       got < offset + bytes - from)
     return false;
-  std::memcpy(out.data(), staging.data + (offset - from), static_cast<usize>(bytes));
+  std::memcpy(out, staging.data + (offset - from), static_cast<usize>(bytes));
   return true;
+}
+
+// **The table checked before it is used** (tileset.md, "The table read from the view"): it is bytes
+// from a file, so every range it names is held to the file's own `size` with arithmetic that cannot
+// wrap — the table itself from `toc_offset` to the end, and each entry's record inside [header,
+// table) — and the entries sorted. An empty string, or the sentence that refuses it.
+std::string check_table(const Header& h, u64 size, u32 record_bytes) {
+  const u64 table_bytes = u64{h.count} * sizeof(Entry);
+  if (h.toc_offset < sizeof(Header) || h.toc_offset > size || size - h.toc_offset != table_bytes)
+    return "its table (" + std::to_string(h.count) + " entries at " +
+           std::to_string(h.toc_offset) + ") does not end where its " + std::to_string(size) +
+           " bytes do";
+  if (h.toc_offset - sizeof(Header) < record_bytes && h.count > 0)
+    return "its table names records the file has no room for";
+  return {};
+}
+
+std::string check_entries(const u8* table, u32 n, u64 toc_offset, u32 record_bytes) {
+  // Every record lies in [sizeof(Header), toc_offset): offset >= the header and offset <= the last
+  // place a whole record still fits, which `check_table` showed is not below the header.
+  const u64 last = toc_offset - record_bytes;
+  u64 previous = 0;
+  for (u32 i = 0; i < n; ++i) {
+    Entry e;
+    std::memcpy(&e, table + u64{i} * sizeof(Entry), sizeof(Entry));
+    const auto named = [&] {
+      return "its table's entry " + std::to_string(i) + " (tile " + std::to_string(e.tx) + ", " +
+             std::to_string(e.tz) + ")";
+    };
+    if (e.offset < sizeof(Header) || e.offset > last || e.bytes != record_bytes)
+      return named() + " names bytes " + std::to_string(e.offset) + " to " +
+             std::to_string(e.offset + e.bytes) + ", outside its records (" +
+             std::to_string(sizeof(Header)) + " to " + std::to_string(toc_offset) + ")";
+    const u64 key = tile_key(e.tx, e.tz);
+    if (i > 0 && key <= previous) return named() + " is out of order";
+    previous = key;
+  }
+  return {};
 }
 
 }  // namespace
@@ -91,7 +128,8 @@ bool Writer::write(const std::string& path, u64& file_bytes, std::string& error)
 // ---- the reader ---------------------------------------------------------------------------------
 
 bool Reader::open(const std::string& path, std::string_view record, i64 spacing_mm,
-                  u32 record_bytes, u32 count, io::ReadMode mode, std::string& error) {
+                  u32 record_bytes, u32 count, io::ReadMode mode, std::string& error,
+                  std::span<const u8> view) {
   close();
   const io::Status opened = file_.open(path, mode);
   if (opened != io::Status::Ok) {
@@ -103,9 +141,15 @@ bool Reader::open(const std::string& path, std::string_view record, i64 spacing_
     close();
     return false;
   };
-  Vector<u8> bytes;
-  if (!read_span(file_, 0, sizeof(Header), bytes)) return refuse("its header does not read");
-  std::memcpy(&header_, bytes.data(), sizeof(Header));
+  // With a view, everything is read from it, so the header, the table and every record are one
+  // file's even if the path was replaced between the two opens; without one, from the file.
+  const bool mapped = !view.empty();
+  const u64 size = mapped ? view.size() : file_.size();
+  if (size < sizeof(Header)) return refuse("it is shorter than its header");
+  if (mapped)
+    std::memcpy(&header_, view.data(), sizeof(Header));
+  else if (!read_span(file_, 0, sizeof(Header), &header_))
+    return refuse("its header does not read");
   if (std::memcmp(header_.magic, "ETAR", 4) != 0 || header_.version != k_archive_version)
     return refuse("not an archive of version " + std::to_string(k_archive_version));
   // At most the tiles the manifest lists: one the table lacks is refused when it is asked, as a
@@ -116,37 +160,42 @@ bool Reader::open(const std::string& path, std::string_view record, i64 spacing_
     return refuse("its records are not the " + std::to_string(count) + " of " +
                   std::to_string(record_bytes) + " bytes at " + std::to_string(spacing_mm) +
                   " mm its manifest lists");
+  if (const std::string why = check_table(header_, size, record_bytes); !why.empty())
+    return refuse(why);
   const u32 n = header_.count;
-  if (header_.toc_offset < sizeof(Header) ||
-      file_.size() != header_.toc_offset + u64{n} * sizeof(Entry))
-    return refuse("its table is not where its records end");
-  if (!read_span(file_, header_.toc_offset, u64{n} * sizeof(Entry), bytes))
-    return refuse("its table does not read");
-  toc_.resize(n);
-  if (n > 0) std::memcpy(toc_.data(), bytes.data(), bytes.size());
-  for (u32 i = 0; i < n; ++i) {
-    const Entry& e = toc_[i];
-    if (e.offset < sizeof(Header) || e.offset + record_bytes > header_.toc_offset ||
-        e.bytes != record_bytes ||
-        (i > 0 && tile_key(e.tx, e.tz) <= tile_key(toc_[i - 1].tx, toc_[i - 1].tz)))
-      return refuse("its table is not sorted records within the file");
+  // **The table where it lies** (sweep-P1, after T182): a mapped table is read in place, so the
+  // level commits nothing for it (24 bytes a tile: 14.5 MB for the forest's level); a table read
+  // from the file is copied, straight into place.
+  if (mapped) {
+    table_ = view.data() + header_.toc_offset;
+  } else {
+    toc_.resize_exact(n);
+    if (!read_span(file_, header_.toc_offset, u64{n} * sizeof(Entry), toc_.data()))
+      return refuse("its table does not read");
+    table_ = reinterpret_cast<const u8*>(toc_.data());
   }
+  count_ = n;
+  if (const std::string why = check_entries(table_, n, header_.toc_offset, record_bytes);
+      !why.empty())
+    return refuse(why);
   return true;
 }
 
 void Reader::close() noexcept {
   file_.close();
   header_ = Header{};
-  toc_.clear();
+  table_ = nullptr;
+  count_ = 0;
+  toc_ = Vector<Entry>{};
 }
 
 u32 Reader::find(i32 tx, i32 tz) const noexcept {
   const u64 key = tile_key(tx, tz);
   u32 lo = 0;
-  u32 hi = toc_.size();
+  u32 hi = count_;
   while (lo < hi) {
     const u32 mid = lo + (hi - lo) / 2;
-    const u64 k = tile_key(toc_[mid].tx, toc_[mid].tz);
+    const u64 k = key_at(mid);
     if (k == key) return mid;
     if (k < key) {
       lo = mid + 1;
@@ -208,10 +257,10 @@ void Reader::fetch(std::span<Fetch> fetches, const FetchOptions& options, Landed
     run.first = i;
     run.count = 1;
     bool contiguous = true;
-    const u64 offset = toc_[fetches[i].entry].offset;
+    const u64 offset = offset_at(fetches[i].entry);
     while (i + run.count < n) {
       const Fetch& next = fetches[i + run.count];
-      if (toc_[next.entry].offset != offset + u64{run.count} * rb) break;
+      if (offset_at(next.entry) != offset + u64{run.count} * rb) break;
       if ((u64{run.count} + 1) * rb > options.run_bytes) break;
       contiguous = contiguous && static_cast<const u8*>(next.dst) ==
                                      static_cast<const u8*>(fetches[i + run.count - 1].dst) + rb;

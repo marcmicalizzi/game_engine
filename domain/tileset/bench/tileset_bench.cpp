@@ -121,6 +121,8 @@ bool make_level(Fixture& f, i32 side, std::string& manifest_path, std::string& e
   return true;
 }
 
+void memory_line(const char* when);
+
 Fixture& fixture() {
   static std::unique_ptr<Fixture> made;
   if (made != nullptr) return *made;
@@ -145,10 +147,17 @@ Fixture& fixture() {
     std::fprintf(stderr, "tileset bench: %s\n", error.c_str());
     return f;
   }
+  // The open's own commit: the table and the list of tiles it keeps (none where the table is read
+  // from the view; tileset.md, "The table read from the view").
+  memory_line("before the open");
   if (!f.level.open(manifest, error)) {
     std::fprintf(stderr, "tileset bench: %s\n", error.c_str());
     return f;
   }
+  memory_line("after the open");
+  if (!bench::smoke_mode())
+    std::fprintf(stderr, "tileset bench: %u tiles, the level's private bytes %llu\n",
+                 f.level.tile_count(), static_cast<unsigned long long>(f.level.private_bytes()));
   const scene_gen::GroundMaskInfo& info = f.level.info();
   f.tx0 = info.tile_min_x;
   f.tz0 = info.tile_min_z;
