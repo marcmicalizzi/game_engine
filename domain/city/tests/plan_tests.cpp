@@ -388,6 +388,29 @@ TEST_CASE("city plan: the plan file reads back to the same plan, and refuses a t
   CHECK(error.find("generator") != std::string::npos);
 }
 
+// Hostile (T194, fuzzing-design.md's fourth list): the plan's hash is not a MAC, so a plan file a
+// writer edits and rehashes is read as it says. A lot's district was an index nobody checked (a
+// building read `districts[lot.district]`), and a park's block a name nobody resolved (its trees'
+// seed read `blocks[0xFFFFFFFF]`). Before the mend the lot's plan below read back.
+TEST_CASE("city plan hostile: a lot's district and a park's block must be the plan's own") {
+  const Plan& plan = small_plan();
+  REQUIRE_FALSE(plan.lots.empty());
+  Plan far = plan;
+  far.lots[0].district = 60'000;
+  PlanFile file;
+  plan_to_schema(far, file);  // carries `far`'s own hash: the rehash a writer would make
+  Plan back;
+  std::string error;
+  CHECK_FALSE(plan_from_schema(file, back, error));
+  CHECK(error.find("names district 60000 of the plan's") != std::string::npos);
+
+  if (plan.parks.empty()) return;
+  plan_to_schema(plan, file);
+  file.parks[0].block = 0xFFFF'FFF0u;  // no block of the plan's
+  CHECK_FALSE(plan_from_schema(file, back, error));
+  CHECK(error.find("a park names a block or a lot") != std::string::npos);
+}
+
 TEST_CASE("city plan: the key is the parameters' and not their spelling") {
   // A file that leaves the tables empty and one that spells the defaults out are one island.
   IslandParams sparse;

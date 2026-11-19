@@ -215,6 +215,12 @@ bool plan_from_schema(const PlanFile& file, Plan& out, std::string& error) {
       error = "lot " + std::to_string(r.id) + " names a block the plan does not have";
       return false;
     }
+    // A lot's district is an index into the districts (T194): a building reads its style there.
+    if (r.district >= out.districts.size()) {
+      error = "lot " + std::to_string(r.id) + " names district " + std::to_string(r.district) +
+              " of the plan's " + std::to_string(out.districts.size());
+      return false;
+    }
     out.lots.push_back(l);
   }
   for (u32 l = 0; l < out.lots.size(); ++l) {
@@ -229,6 +235,12 @@ bool plan_from_schema(const PlanFile& file, Plan& out, std::string& error) {
     park.lot = r.lot != k_no_id ? out.find_lot(r.lot) : k_no_id;
     park.district = r.district;
     park.rect = get_rect(r.rect);
+    // A park's block, and its lot when it names one, refused as a lot's are (T194): the trees'
+    // seed reads `blocks[park.block]` or `lots[park.lot]`, and a name the plan lacks was 2^32 - 1.
+    if (park.block == k_no_id || (r.lot != k_no_id && park.lot == k_no_id)) {
+      error = "a park names a block or a lot the plan does not have";
+      return false;
+    }
     out.parks.push_back(park);
   }
   build_graph(out);
