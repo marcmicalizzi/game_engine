@@ -340,6 +340,11 @@ class GameRunner {
   // ---- ABI 7: the load and the hand-over (apps.md, "The loading presentation") ------------------
   // Whether the module exports `game_loading`; if so the host's own loading screen steps aside.
   bool has_loading() const noexcept;
+  // **A module's door service** (ABI 13 `game_door`; S91; apps.md, "Doors a module answers for"):
+  // walk.h's `DoorAskFn`, `context` a `GameRunner`. The walker's interact asks door `door` to go
+  // `open`; a module that exports `game_door` answers (0 refuses: a locked door), and one that
+  // does not, or none, lets it go.
+  static bool walk_door_ask(void* context, const WalkDoor& door, bool open);
   // Calls `game_loading` with `progress` (nothing when the module has none). The module says its
   // HUD from inside it; a failure there ends the session as a tick's would.
   void loading(const hotload::GameLoadProgress& progress);

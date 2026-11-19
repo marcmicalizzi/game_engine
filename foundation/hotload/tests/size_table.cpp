@@ -22,8 +22,15 @@ ENGINE_EXPECT_SIZE(48, 8, hotload::Value);
 // against 8 the first 344. ABI 10 what a module can ask the world — the two casts, the water at a
 // point and the supports near one — four more (400); one against 9 reads the first 368. ABI 11 an
 // actor's animation detail and its clips — the tier bias, the clips' names and durations and the
-// seek — three more after ABI 10's (424 = 400 + 3 × 8); one against 10 reads the first 400.
-ENGINE_EXPECT_SIZE(424, 8, hotload::HostApi);
+// seek — three more after ABI 10's (424 = 400 + 3 × 8); one against 10 reads the first 400. ABI 13
+// the doors — the nearest, one by its key and a toggle — three more (448 = 424 + 3 × 8); one
+// against 11 or 12 reads the first 424.
+ENGINE_EXPECT_SIZE(448, 8, hotload::HostApi);
+// ABI 13's structs, each led by its size. A door: two words, its u64 key, the f64 hinge, four
+// words (heading open, the angle, the angle it opens to, a reserved word) (56). The interact's
+// question: two words and the door (64).
+ENGINE_EXPECT_SIZE(56, 8, hotload::DoorState);
+ENGINE_EXPECT_SIZE(64, 8, hotload::DoorRequest);
 // ABI 10's structs, each led by its size. A cast's answer: two words, the f64 point, the normal,
 // the distance and six words (72). The water at a point: two words, the f64 level, the depth, the
 // velocity and three words (40). A support: the f64 point, `up`, the size, the distance and seven

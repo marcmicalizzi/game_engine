@@ -1393,8 +1393,8 @@ void attach_game(view::FlySession& session, f64 sun_offset_s, f64 sun_rate, f64 
   session.set_tick_observer(&view::GameRunner::observe, g_game);
   g_game->set_session(&session);  // the walker's services act on this session (fly_camera.h)
   g_game->set_clock(sun_offset_s, sun_rate, renderer::scene_epoch_s(scene), world_rate);
-  // The props stop the walker (P45; game_props.h): asked on the walker's tick.
   if (g_game->props().declared()) walker.set_props(&view::GameProps::walk_props, &g_game->props());
+  walker.set_door_service(&view::GameRunner::walk_door_ask, g_game);  // props P45, doors S91
   // `ground_height` (ABI 5) is the walker's own ground: none without a terrain.
   if (walker.available()) {
     g_game->set_ground(

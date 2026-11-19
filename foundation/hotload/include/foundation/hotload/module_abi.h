@@ -125,7 +125,19 @@ namespace engine::hotload {
 // the `TypeInfo` size it was built against, and the host refuses any other with `AbiMismatch`: a
 // stateful module built against an SDK from before the growth is refused and is rebuilt against
 // this build's SDK; a module with no state is not asked, and loads as above (hotload.md).
-inline constexpr u32 k_abi_version = 12;
+//
+// **13** (2026-11-18): **doors** (roadmap S91; apps.md, "Doors a module answers for"). `HostApi`
+// gained, at its end, the doors the walker's collision holds — the nearest one to a point
+// (`door_nearest`), one by its key (`door_state`) and a turn toward its other state at this tick
+// (`door_toggle`), each answering in a `DoorState` led by its size — and modules one **optional
+// export**, `game_door` (`DoorFn`), which the host calls when the walker's interact asks a door
+// to open or to shut: nonzero lets it go, 0 refuses (a locked door). Additive as 4 to 12 were, as
+// far as this table goes: a module built against 3 to 12 loads on a host of 13 and runs
+// unchanged, and with no `game_door` every door the walker asks goes. The `TypeInfo` rule above
+// still decides for a module with state (one built against 12 before the growth is refused by
+// size); 13 is the first number given since that growth, so every module built against 13 carries
+// the grown `TypeInfo`.
+inline constexpr u32 k_abi_version = 13;
 // The oldest module ABI a host of this header loads (4, above, says why 3 and not 4).
 inline constexpr u32 k_abi_oldest = 3;
 
@@ -575,6 +587,32 @@ struct GameLoadProgress {
   const char* detail = "";  // what it is doing inside ("cluster read: tree.clusters"), or ""
 };
 
+// **A door** (ABI 13; apps.md, "Doors a module answers for"), as the walker's collision holds it:
+// its key (a host's, or a building's declared leaf's — a function of where the leaf is placed, the
+// same in every session over that scene), its hinge's foot (world metres), whether it is heading
+// open, the angle it has reached and the one it opens to (millidegrees from shut, signed: the side
+// it swings to), and `flags` (`k_door_declared`: a building declared it). Led by its size; the host
+// writes it as far as the module's `size` reaches.
+inline constexpr u32 k_door_declared = 1u << 0;
+inline constexpr f32 k_door_radius_max_m = 64.0f;  // `door_nearest`'s farthest
+struct DoorState {
+  u32 size = sizeof(DoorState);
+  u32 flags = 0;
+  u64 key = 0;
+  f64 hinge[3] = {0.0, 0.0, 0.0};
+  u32 open = 0;  // 1: heading open
+  i32 angle_mdeg = 0;
+  i32 open_mdeg = 0;
+  u32 reserved = 0;
+};
+// **What the walker's interact asks** (ABI 13; `game_door`): the door, and which way it is asked to
+// go (`open` 1: open it, 0: shut it). Led by its size, as the host built it.
+struct DoorRequest {
+  u32 size = sizeof(DoorRequest);
+  u32 open = 0;
+  DoorState door{};
+};
+
 // The engine as a module sees it. Every function takes the table's `host` first. The table and
 // everything it points at outlive every call into the module; the module may keep the pointer.
 struct HostApi {
@@ -854,6 +892,18 @@ struct HostApi {
   // a fade, then seek it to the phase the old one stands at. `NotFound` for a handle that is not an
   // actor or one standing at rest (no clip), `InvalidArgument` for a time that is not finite.
   Result (*actor_seek)(void* host, u32 actor, f32 seconds);
+
+  // ---- ABI 13: doors (roadmap S91; apps.md, "Doors a module answers for") ----
+  // **The door nearest `point`** (world metres, three f64) whose hinge is within `radius_m`, into
+  // the caller's struct up to its size; ties go to the smaller key. `NotFound` when none is,
+  // `InvalidArgument` for a non-finite point, a radius outside (0, k_door_radius_max_m] or a struct
+  // smaller than ABI 13's, `Unsupported` where the session has no walker's collision.
+  Result (*door_nearest)(void* host, const f64* point, f32 radius_m, DoorState* io);
+  // **Door `key` now**, into the caller's struct up to its size. `NotFound` for a key no door has.
+  Result (*door_state)(void* host, u64 key, DoorState* io);
+  // **Door `key` heads for its other state** at this tick — a game's own door: a lever, a script —
+  // without `game_door` being asked. `NotFound` for a key no door has.
+  Result (*door_toggle)(void* host, u64 key);
 };
 
 // Whether the host's table reaches the entry at `offset` (`offsetof(HostApi, hud_element)`): a
@@ -887,6 +937,9 @@ using ConditionFn = bool (*)(ModuleContext*, View a, View b);
 // ABI 7's optional exports: `game_loading` and `game_ready_milestone` (a `GameMilestone`).
 using LoadingFn = void (*)(ModuleContext*, const GameLoadProgress* progress);
 using MilestoneFn = u32 (*)(ModuleContext*);
+// ABI 13's optional export `game_door`: the walker's interact asks door `request->door` to go
+// `request->open`; nonzero lets it, 0 refuses. Called on the tick, before the walker's step.
+using DoorFn = u32 (*)(ModuleContext*, const DoorRequest* request);
 
 // A signature's number. A function type that is not in the list does not compile into an export
 // table, and the host refuses to hand out a function under a signature it was not exported with,
@@ -907,8 +960,10 @@ template <>
 inline constexpr u32 k_signature<LoadingFn> = 6;
 template <>
 inline constexpr u32 k_signature<MilestoneFn> = 7;
+template <>
+inline constexpr u32 k_signature<DoorFn> = 8;
 // The largest signature number this header knows (an export naming a larger one is refused).
-inline constexpr u32 k_signature_max = 7;
+inline constexpr u32 k_signature_max = 8;
 
 struct Export {
   const char* name;
@@ -921,7 +976,7 @@ Export export_function(const char* name, F function) noexcept {
   static_assert(k_signature<F> != 0,
                 "engine hotload: this function's type is not one of the export signatures in "
                 "module_abi.h (VoidFn, NumberFn, ViewNumberFn, TickFn, ConditionFn, LoadingFn, "
-                "MilestoneFn)");
+                "MilestoneFn, DoorFn)");
   return Export{name, k_signature<F>, reinterpret_cast<void (*)()>(function)};
 }
 

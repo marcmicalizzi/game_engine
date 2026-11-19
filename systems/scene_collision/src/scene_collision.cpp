@@ -2848,6 +2848,38 @@ void SceneCollision::set_doors(std::span<const DoorBody> doors) {
   doors_ring_ = ~u64{0};  // the held tiles' declared doors are looked for again at the next step
 }
 
+u32 SceneCollision::door_to_reach(WorldPos feet, Vec3 facing, f32 reach) const noexcept {
+  const f64 fx = static_cast<f64>(facing.x), fz = static_cast<f64>(facing.z);
+  const f64 flen = std::sqrt(fx * fx + fz * fz);
+  u32 best = k_no_index;
+  f64 best_d2 = static_cast<f64>(reach) * static_cast<f64>(reach);
+  for (u32 i = 0; i < doors_.size(); ++i) {
+    const WorldPos middle = door_pose(doors_[i], doors_[i].angle_mdeg).position;
+    const DVec3 to = middle - feet;
+    if (to.y < -2.5 || to.y > 2.5) continue;
+    const f64 d2 = to.x * to.x + to.z * to.z;
+    if (d2 >= best_d2) continue;  // in key order: the first of two at one distance stays
+    // In front: the bearing within 60 degrees of the facing, cos 60 = 1/2, without a division.
+    if (flen > 0.0 && 2.0 * (to.x * fx + to.z * fz) < std::sqrt(d2) * flen) continue;
+    best = i;
+    best_d2 = d2;
+  }
+  return best;
+}
+
+u32 SceneCollision::door_nearest(WorldPos point, f32 radius) const noexcept {
+  u32 best = k_no_index;
+  f64 best_d2 = static_cast<f64>(radius) * static_cast<f64>(radius);
+  for (u32 i = 0; i < doors_.size(); ++i) {
+    const DVec3 to = doors_[i].hinge - point;
+    const f64 d2 = to.x * to.x + to.y * to.y + to.z * to.z;
+    if (d2 > best_d2 || (d2 == best_d2 && best != k_no_index)) continue;
+    best = i;
+    best_d2 = d2;
+  }
+  return best;
+}
+
 bool SceneCollision::toggle_door(u64 key) {
   const u32 i = find_door(key);
   if (i == k_no_index) return false;

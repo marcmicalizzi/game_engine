@@ -1251,6 +1251,26 @@ TEST_CASE(
   }
 }
 
+// **The door an interact reaches** (S91; scene_collision.md, "Doors"): the nearest one in front of
+// the walker within reach, by its leaf's middle; none behind it or past the reach.
+TEST_CASE("scene_collision: an interact reaches the door in front of the walker, none behind it") {
+  DoorRig rig;
+  DoorBody first = doorway();
+  DoorBody far = doorway();
+  far.key = 4;
+  far.hinge = place(Vec3{-0.45f, 0.0f, 23.0f});
+  const DoorBody doors[2] = {first, far};
+  rig.collision.set_doors({doors, 2});
+  const WorldPos feet = place(Vec3{0.0f, 0.0f, 19.0f});
+  CHECK(rig.collision.door_to_reach(feet, Vec3{0.0f, 0.0f, 1.0f}, 1.5f) == 0u);
+  CHECK(rig.collision.door_to_reach(feet, Vec3{0.0f, 0.0f, -1.0f}, 1.5f) == k_no_index);
+  CHECK(rig.collision.door_to_reach(feet, Vec3{0.0f, 0.0f, 1.0f}, 0.5f) == k_no_index);
+  CHECK(rig.collision.door_to_reach(feet, Vec3{0.0f, 0.0f, 1.0f}, 10.0f) == 0u);  // the nearer
+  CHECK(rig.collision.door_to_reach(place(Vec3{0.0f, 0.0f, 22.0f}), Vec3{0.0f, 0.0f, 1.0f}, 1.5f) ==
+        1u);
+  CHECK(rig.collision.door_nearest(place(Vec3{-0.45f, 0.0f, 22.0f}), 2.0f) == 1u);
+  CHECK(rig.collision.door_nearest(place(Vec3{40.0f, 0.0f, 22.0f}), 2.0f) == k_no_index);
+}
 TEST_CASE("scene_collision: a closed door stops a walker, an open one lets it through") {
   DoorRig rig;
   const f32 radius = physics::CharacterConfig{}.radius;

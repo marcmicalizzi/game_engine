@@ -623,6 +623,14 @@ class SceneCollision {
   bool door(u64 key, DoorBody& out) const noexcept;
   // Every door, in key order (what a host saves, draws a leaf for, or searches for an interact).
   std::span<const DoorBody> doors() const noexcept { return {doors_.data(), doors_.size()}; }
+  // **The door a walker's interact reaches** (docs: "Doors"): of the doors whose leaf's middle, at
+  // its angle now, is within `reach` metres of `feet` on the ground and less than 2.5 m above or
+  // below them, the nearest whose bearing from the feet is within 60 degrees of `facing` (on the
+  // ground; unit or not) — its index in `doors()`, the smaller key on a tie; `k_no_index` for
+  // none. And the door whose hinge is nearest `point` within `radius` (a module's
+  // `door_nearest`), the same way.
+  u32 door_to_reach(WorldPos feet, Vec3 facing, f32 reach) const noexcept;
+  u32 door_nearest(WorldPos point, f32 radius) const noexcept;
   const DoorStats& door_stats() const noexcept { return door_stats_; }
   const Stats& stats() const noexcept { return stats_; }
   // **What is held** (docs: "Seeing the collision"): the held tiles, in the consumer's order, and a

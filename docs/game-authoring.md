@@ -284,6 +284,12 @@ and `placement`, the piece's name in the world: **key a reservation by `placemen
 no instance. A module built against 10 or 11 still gets its 72-byte records; check `flags` for
 `k_support_has_along` before reading the new fields on a host you did not build against.
 
+**Doors** (ABI 13, 2026-11-18; [apps.md, "Doors a module answers for"](subsystems/apps.md#doors-a-module-answers-for)):
+a building's declared leaves are doors the walker opens with `interact`. Export `game_door` to
+answer for them — return 0 to keep one shut (a lock, a story beat) — and use `door_nearest`,
+`door_state` and `door_toggle` for doors of your own; keep a door by its `key`, which names the same
+door in every session over the scene. A module without `game_door` lets every door open.
+
 ## The HUD, and how far `nearest_placement` sees
 
 The HUD is a proof-of-concept panel, not the game UI framework

@@ -680,6 +680,38 @@ struct HostCallbacks {
     if (g.actor_seek == nullptr) return Result::Unsupported;
     return g.actor_seek(g.user, actor, seconds);
   }
+  // ---- ABI 13: the doors (S91) ----
+  // The host's own `DoorState` to the runner, copied back as far as the module's `size` reaches.
+  static void copy_door(const DoorState& from, DoorState* io) noexcept {
+    const u32 size = io->size;
+    const usize n = size < sizeof(DoorState) ? size : sizeof(DoorState);
+    std::memcpy(static_cast<void*>(io), &from, n);
+    io->size = size;
+  }
+  static Result door_nearest(void* host, const f64* point, f32 radius_m, DoorState* io) {
+    const GameServices& g = self(host).game_;
+    if (point == nullptr || io == nullptr || io->size < sizeof(DoorState))
+      return Result::InvalidArgument;
+    if (g.door_nearest == nullptr) return Result::Unsupported;
+    DoorState door;
+    const Result r = g.door_nearest(g.user, point, radius_m, door);
+    if (r == Result::Ok) copy_door(door, io);
+    return r;
+  }
+  static Result door_state(void* host, u64 key, DoorState* io) {
+    const GameServices& g = self(host).game_;
+    if (io == nullptr || io->size < sizeof(DoorState)) return Result::InvalidArgument;
+    if (g.door_state == nullptr) return Result::Unsupported;
+    DoorState door;
+    const Result r = g.door_state(g.user, key, door);
+    if (r == Result::Ok) copy_door(door, io);
+    return r;
+  }
+  static Result door_toggle(void* host, u64 key) {
+    const GameServices& g = self(host).game_;
+    if (g.door_toggle == nullptr) return Result::Unsupported;
+    return g.door_toggle(g.user, key);
+  }
   static Result ground_height(void* host, f64 x, f64 z, f64* out_height) {
     const GameServices& g = self(host).game_;
     if (out_height == nullptr) return Result::InvalidArgument;
@@ -779,6 +811,9 @@ ModuleHost::ModuleHost(HostConfig config) : config_(std::move(config)) {
   api_.actor_lod_bias = &HostCallbacks::actor_lod_bias;
   api_.actor_clip_info = &HostCallbacks::actor_clip_info;
   api_.actor_seek = &HostCallbacks::actor_seek;
+  api_.door_nearest = &HostCallbacks::door_nearest;
+  api_.door_state = &HostCallbacks::door_state;
+  api_.door_toggle = &HostCallbacks::door_toggle;
   context_.api = &api_;
   context_.state = nullptr;
 }

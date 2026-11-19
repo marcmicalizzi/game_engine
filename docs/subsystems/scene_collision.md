@@ -452,8 +452,17 @@ finishes once the walker steps away; and two worlds given the same toggles at th
 the same angle, the tile let go takes the body and keeps the door, and the body is made again when
 the tile comes back.
 
-**Not built of S91**: the walker's interact action and a game module's service (an ABI step), the
-state written back through the document (D37), and a closed door as an area navigation opens.
+**The walker's interact and a module's door service** (ABI 13, 2026-11-18; [apps](apps.md#doors-a-module-answers-for)).
+engine-view's walker calls `step_doors(&body)` on every step after the ring's update and before the
+character moves, and before it its interact: `door_to_reach` finds the nearest door whose leaf's
+middle stands within reach of the feet on the ground (1.5 m, and within 2.5 m up or down) and
+within 60 degrees of the way the walker faces (a comparison of products, no angle), the smaller
+key on a tie; a game module's `game_door` may refuse it, and a module's own `door_toggle` lands at
+the same point of the next step. `scene_collision: an interact reaches the door in front of the
+walker, none behind it` holds the choice.
+
+**Not built of S91**: the drawn leaf's hand-over (above), the state written back through the
+document (D37), and a closed door as an area navigation opens.
 
 ### What a door costs
 

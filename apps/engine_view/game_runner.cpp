@@ -277,6 +277,11 @@ struct GameRunner::Impl {
   FlySession* session = nullptr;
   u64 walker_sets = 0;
   u64 teleports = 0;
+  // ABI 13 (S91): the module's door service, if it exports one, and what the doors were asked.
+  hotload::FunctionId game_door;
+  u64 door_toggles = 0;
+  u64 door_asks = 0;
+  u64 door_refused = 0;
   f32 speed_scale = 1.0f;
   f32 sprint_scale = 1.0f;
   bool sound_said = false;
@@ -567,6 +572,52 @@ struct GameRunner::Impl {
     if (self.session == nullptr) return hotload::Result::Unsupported;
     self.session->request_teleport(at, heading, pitch);
     ++self.teleports;
+    return hotload::Result::Ok;
+  }
+  // ---- ABI 13: the doors (S91; apps.md, "Doors a module answers for") ----
+  // The walker's collision's doors: read through the session's walker, toggled through the session
+  // so the toggle lands at the walker's next step, before its interact.
+  static hotload::DoorState door_state_of(const WalkDoor& d) noexcept {
+    hotload::DoorState out;
+    out.flags = d.declared ? hotload::k_door_declared : 0u;
+    out.key = d.key;
+    out.hinge[0] = d.hinge.x;
+    out.hinge[1] = d.hinge.y;
+    out.hinge[2] = d.hinge.z;
+    out.open = d.open ? 1u : 0u;
+    out.angle_mdeg = d.angle_mdeg;
+    out.open_mdeg = d.open_mdeg;
+    return out;
+  }
+  static hotload::Result door_nearest(void* user, const f64* point, f32 radius_m,
+                                      hotload::DoorState& out) {
+    Impl& self = *static_cast<Impl*>(user);
+    if (!finite3(point) || !std::isfinite(radius_m) || !(radius_m > 0.0f) ||
+        radius_m > hotload::k_door_radius_max_m) {
+      return hotload::Result::InvalidArgument;
+    }
+    if (self.walker == nullptr) return hotload::Result::Unsupported;
+    const u32 i = self.walker->door_nearest(WorldPos{point[0], point[1], point[2]}, radius_m);
+    WalkDoor d;
+    if (i == k_no_walk_index || !self.walker->door(i, d)) return hotload::Result::NotFound;
+    out = door_state_of(d);
+    return hotload::Result::Ok;
+  }
+  static hotload::Result door_state(void* user, u64 key, hotload::DoorState& out) {
+    Impl& self = *static_cast<Impl*>(user);
+    if (self.walker == nullptr) return hotload::Result::Unsupported;
+    WalkDoor d;
+    if (!self.walker->door_by_key(key, d)) return hotload::Result::NotFound;
+    out = door_state_of(d);
+    return hotload::Result::Ok;
+  }
+  static hotload::Result door_toggle(void* user, u64 key) {
+    Impl& self = *static_cast<Impl*>(user);
+    if (self.session == nullptr || self.walker == nullptr) return hotload::Result::Unsupported;
+    WalkDoor d;
+    if (!self.walker->door_by_key(key, d)) return hotload::Result::NotFound;
+    if (!self.session->request_door_toggle(key)) return hotload::Result::OutOfRange;
+    ++self.door_toggles;
     return hotload::Result::Ok;
   }
   // ---- ABI 4: the HUD's structured elements (GameHud) ----
@@ -1261,6 +1312,9 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
   services.actor_lod_bias = &Impl::actor_lod_bias;
   services.actor_clip_info = &Impl::actor_clip_info;
   services.actor_seek = &Impl::actor_seek;
+  services.door_nearest = &Impl::door_nearest;
+  services.door_state = &Impl::door_state;
+  services.door_toggle = &Impl::door_toggle;
   host.set_game_services(services);
 
   const auto refuse = [&](const std::string& why) {
@@ -1283,6 +1337,9 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
   // ABI 7's optional exports: absent is the default, a module of 3 to 6 has neither.
   if (host.find<hotload::LoadingFn>("game_loading", g.game_loading) != hotload::Status::Ok)
     g.game_loading = hotload::FunctionId{};
+  // ABI 13's optional export: absent, every door the walker's interact asks goes.
+  if (host.find<hotload::DoorFn>("game_door", g.game_door) != hotload::Status::Ok)
+    g.game_door = hotload::FunctionId{};
   hotload::FunctionId milestone;
   if (host.find<hotload::MilestoneFn>("game_ready_milestone", milestone) == hotload::Status::Ok) {
     const u32 m = host.function<hotload::MilestoneFn>(milestone)(host.context());
@@ -1571,6 +1628,25 @@ void GameRunner::loading(const hotload::GameLoadProgress& progress) {
   }
 }
 
+bool GameRunner::walk_door_ask(void* context, const WalkDoor& door, bool open) {
+  Impl& g = *static_cast<GameRunner*>(context)->impl_;
+  if (!g.host || !g.game_door.valid() || g.failed) return true;
+  hotload::ModuleHost& host = *g.host;
+  hotload::DoorRequest request;
+  request.open = open ? 1u : 0u;
+  request.door = Impl::door_state_of(door);
+  ++g.door_asks;
+  const u32 yes = host.function<hotload::DoorFn>(g.game_door)(host.context(), &request);
+  std::string failure = host.take_failure();
+  if (!failure.empty()) {
+    g.failed = true;
+    g.ended = true;
+    g.error = "game_door failed: " + failure;
+    return false;
+  }
+  if (yes == 0) ++g.door_refused;
+  return yes != 0;
+}
 u32 GameRunner::ready_milestone() const noexcept { return impl_->ready_milestone; }
 
 void GameRunner::hold(u64 until_tick) noexcept {

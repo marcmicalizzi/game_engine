@@ -335,8 +335,11 @@ bool resolve_fly_actions(const input::ActionMap& map, FlyActions& out, std::stri
   const struct {
     const char* name;
     input::ActionId* slot;
-  } walking[] = {
-      {"walk", &out.walk}, {"jump", &out.jump}, {"camera", &out.camera}, {"crouch", &out.crouch}};
+  } walking[] = {{"walk", &out.walk},
+                 {"jump", &out.jump},
+                 {"camera", &out.camera},
+                 {"crouch", &out.crouch},
+                 {"interact", &out.interact}};
   for (const auto& w : walking) {
     const input::ActionId id = map.find_action(w.name);
     *w.slot = input::k_invalid_action;
@@ -839,6 +842,8 @@ void FlySession::on_tick(void* user, SimTick tick, const input::InputState& stat
     in.sprint = state.held(self.actions_.fast);
     in.jump = self.actions_.jump != input::k_invalid_action && state.pressed(self.actions_.jump);
     in.crouch = self.actions_.crouch != input::k_invalid_action && state.held(self.actions_.crouch);
+    in.interact =
+        self.actions_.interact != input::k_invalid_action && state.pressed(self.actions_.interact);
     self.state_.position = self.walker_->step(in);
     f32 target = 0.0f;
     if (walk_move_heading(in.move, look.yaw, target)) {
@@ -858,6 +863,8 @@ void FlySession::on_tick(void* user, SimTick tick, const input::InputState& stat
     in.jump = self.actions_.jump != input::k_invalid_action && state.pressed(self.actions_.jump);
     // Crouching (P54): held, on the map's seventh revision; an earlier map's walk never crouches.
     in.crouch = self.actions_.crouch != input::k_invalid_action && state.held(self.actions_.crouch);
+    in.interact =
+        self.actions_.interact != input::k_invalid_action && state.pressed(self.actions_.interact);
     self.state_.position = self.walker_->step(in);
     self.state_.look_yaw = self.state_.yaw;
   } else {

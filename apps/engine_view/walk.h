@@ -105,6 +105,23 @@ struct WalkInput {
   bool sprint = false;
   bool jump = false;
   bool crouch = false;  // held: crouch, and stand again where the standing capsule fits
+  // Pressed: the walker's interact (S91; scene_collision.md, "Doors"): the nearest door in front
+  // of it within `k_walk_door_reach_m` is asked to go to its other state, at this tick, before the
+  // step. A walk recorded before the field never presses it.
+  bool interact = false;
+};
+inline constexpr f32 k_walk_door_reach_m = 1.5f;
+inline constexpr u32 k_walk_door_toggles = 16;
+// A door as the walker's collision holds it (scene_collision.h `DoorBody`), what a game is told:
+// its key, its hinge's foot, whether it heads open, its angle and the angle it opens to
+// (millidegrees from shut, signed), and whether a building declared it.
+struct WalkDoor {
+  u64 key = 0;
+  WorldPos hinge{};
+  bool open = false;
+  i32 angle_mdeg = 0;
+  i32 open_mdeg = 0;
+  bool declared = false;
 };
 
 // **The orbit mode's heading** (apps.md, "Third person"; roadmap P14): the movement keys are read
@@ -313,6 +330,25 @@ class Walker {
   // ticks after it appears, except at a drop, a teleport and the first step after either, which
   // take every proxy in reach at once, so the walker is never dropped inside a prop.
   void set_props(PropsFn props, void* context) noexcept;
+  // **The doors** (S91; scene_collision.md, "Doors"): a building's declared leaves and none other,
+  // made by the walker's collision as their tiles come in and turned on every step before the
+  // character moves, held where a leaf would enter it. `DoorAskFn` is a game's door service
+  // (game_runner.h, `game_door`): asked when the walker's interact sends door `door` toward `open`,
+  // and false refuses (a locked door); null lets every door go. `request_door_toggle` is a game's
+  // own toggle (ABI 13 `door_toggle`), applied at the next step before the interact, asking no
+  // one; false for a key no door has or past `k_walk_door_toggles` pending. `door` reads door
+  // `index` of the collision's, in key order; `door_by_key` one by its key; `door_nearest` the
+  // index of the one whose hinge is nearest `point` within `radius` (none: `k_no_walk_index`).
+  // `context` must outlive the walker.
+  using DoorAskFn = bool (*)(void* context, const WalkDoor& door, bool open);
+  void set_door_service(DoorAskFn ask, void* context) noexcept;
+  u32 door_count() const noexcept;
+  bool door(u32 index, WalkDoor& out) const noexcept;
+  bool door_by_key(u64 key, WalkDoor& out) const noexcept;
+  u32 door_nearest(WorldPos point, f32 radius) const noexcept;
+  bool request_door_toggle(u64 key) noexcept;
+  u64 door_interacts() const noexcept;  // the interacts that reached a door and moved it
+  u64 door_refusals() const noexcept;   // the ones a game's door service refused
   // **A teleport** (game_runner.h, `walker_teleport`): the feet put at `at`'s x and z on the ground
   // under it — the highest surface below, or the ground's height — as a `drop` is, counted as one
   // and as a teleport; the eye returned.

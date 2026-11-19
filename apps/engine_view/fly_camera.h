@@ -170,6 +170,10 @@ struct FlyActions {
   // Button, the seventh revision's (P54): held while the session walks, the walker crouches
   // (walk.h, `WalkInput::crouch`). `k_invalid_action` in an earlier revision's map.
   input::ActionId crouch = input::k_invalid_action;
+  // Button, the game actions' `interact` (S91): pressed while the session walks, the walker asks
+  // the nearest door in front of it to go to its other state (walk.h, `WalkInput::interact`). A map
+  // without it presses nothing; the game module reads the same press as it always did.
+  input::ActionId interact = input::k_invalid_action;
 };
 
 // **The map's revisions.** 1 is the eight actions the camera reads (2026-09-24); 2 appends the
@@ -524,6 +528,11 @@ class FlySession {
     teleport_pitch_ = pitch;
   }
   void set_walk_scale(f32 speed, f32 sprint) noexcept;
+  // A game's door toggle (game_runner.h, `door_toggle`; S91): to the walker, applied at its next
+  // step before the interact. False with no walker, or as `Walker::request_door_toggle` is.
+  bool request_door_toggle(u64 key) noexcept {
+    return walker_ != nullptr && walker_->request_door_toggle(key);
+  }
   u32 teleports() const noexcept { return teleports_; }
 
  private:
