@@ -44,20 +44,21 @@ void set_error(std::string* error, std::string_view path, const schema::ReadCont
 }
 
 // The canonical bytes of each kind of file. A save compares these against what it last wrote or
-// read, and load compares what it read against them, so there is exactly one spelling of each.
-std::string file_text(const LayerFile& file) { return write_json(schema::to_json(file)); }
-
-std::string index_text(const LayerIndex& index) {
-  std::string text = write_json(schema::to_json(index));
+// read, and load compares what it read against them, so there is exactly one spelling of each. A
+// layer's file and a tile are `Layer::to_json_text`; the index and the manifest are written
+// straight to text too, `write_json(schema::to_json(...))` without the tree (roadmap D42: a move's
+// index names every record of the layer).
+template <class T>
+std::string line_text(const T& value) {
+  std::string text;
+  (void)schema::write_json_text(schema::type_of<T>(), &value, text);
   text.push_back('\n');
   return text;
 }
 
-std::string manifest_text(const DocumentManifest& manifest) {
-  std::string text = write_json(schema::to_json(manifest));
-  text.push_back('\n');
-  return text;
-}
+std::string index_text(const LayerIndex& index) { return line_text(index); }
+
+std::string manifest_text(const DocumentManifest& manifest) { return line_text(manifest); }
 
 // Straight from the text, with no tree of it (roadmap D40; core/schema/json_text.h): the tree
 // path's verdicts word for word.
@@ -235,6 +236,7 @@ struct PlannedWrite {
   std::string text;
   bool tile = false;
   u64 was_size = k_unknown_size;  // what the file held before, as far as the store knows
+  StoredFile stored;              // `text`'s length and hash, taken once (record() keeps it)
 };
 
 struct PlannedRemoval {
@@ -252,10 +254,11 @@ class SavePlan {
   void consider(std::string path, std::string text, bool tile) {
     ++serialized_files_;
     serialized_bytes_ += text.size();
+    const StoredFile now = StoredFile::of(text);
     const StoredFile* f = next_.files.find_value(path);
-    if (f != nullptr && *f == StoredFile::of(text)) return;
+    if (f != nullptr && *f == now) return;
     const u64 was = f != nullptr ? f->size : k_unknown_size;
-    writes_.push_back(PlannedWrite{std::move(path), std::move(text), tile, was});
+    writes_.push_back(PlannedWrite{std::move(path), std::move(text), tile, was, now});
   }
   // Queues the removal of a file the store knows is there.
   void remove_known(const std::string& path, bool tile) {
@@ -338,9 +341,8 @@ void plan_partitioned_whole(SavePlan& plan, const Layer& layer, const LayerFiles
   LayerIndex index = build_layer_index(layer);
   plan.directory(lf.tiles);
   for (const TileRef& t : index.tiles)
-    plan.consider(lf.tile(t.file), file_text(layer.to_file(t.objects)), true);
-  if (!index.untiled.empty())
-    plan.consider(lf.untiled, file_text(layer.to_file(index.untiled)), false);
+    plan.consider(lf.tile(t.file), layer.to_json_text(t.objects), true);
+  if (!index.untiled.empty()) plan.consider(lf.untiled, layer.to_json_text(index.untiled), false);
   plan.consider(lf.index, index_text(index), false);
 
   if (was == nullptr) {
@@ -413,7 +415,7 @@ void plan_partitioned_changes(SavePlan& plan, const Layer& layer, const LayerFil
   for (const TileCoord tile : affected) {
     const std::string path = lf.tile(tile_file_name(tile));
     if (const TileRef* ref = find_tile(known.index, tile)) {
-      plan.consider(path, file_text(layer.to_file(ref->objects)), true);
+      plan.consider(path, layer.to_json_text(ref->objects), true);
     } else {
       plan.remove_known(path, true);  // its last record left
     }
@@ -422,7 +424,7 @@ void plan_partitioned_changes(SavePlan& plan, const Layer& layer, const LayerFil
     if (known.index.untiled.empty()) {
       plan.remove_known(lf.untiled, false);
     } else {
-      plan.consider(lf.untiled, file_text(layer.to_file(known.index.untiled)), false);
+      plan.consider(lf.untiled, layer.to_json_text(known.index.untiled), false);
     }
   }
   if (moved) plan.consider(lf.index, index_text(known.index), false);
@@ -803,7 +805,7 @@ bool carry_out(const SavePlan& plan, std::string_view dir, const SaveOptions& op
 // What the store now knows: the files it wrote, and not the ones it removed.
 void record(const SavePlan& plan, StoredState& next) {
   for (const PlannedWrite& w : plan.writes())
-    next.files.insert_or_assign(w.path, StoredFile::of(w.text));
+    next.files.insert_or_assign(w.path, w.stored);
   for (const PlannedRemoval& r : plan.removals())
     next.files.erase(r.path);
 }
