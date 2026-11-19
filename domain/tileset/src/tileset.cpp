@@ -1135,6 +1135,27 @@ bool TileSet::open(const std::string& manifest_path, std::string& error) {
       levels_.clear();
       return false;
     }
+    // **The index window is its tiles'** (T198): a build writes `tile_min` and `tile_max` as the
+    // tiles of `index_min` and `index_max`, and a read finds a point's tile by casting its index
+    // over the cells to `i32`. An index past its tiles cast to a tile the archive holds and read
+    // that tile's grid at the index's distance from it: `index_max` 2^40 on 16-cell tiles cast
+    // to tile 0 and read 2^40 values past its start. So each bound is its tile's, the spacing is at
+    // most 2^42 mm (past the longest chain a build makes), and every index times the spacing is a
+    // millimetre `i64` holds with room for a sum.
+    const i64 c = manifest_.cells;
+    const auto index_fits = [&](i64 index) {
+      return index >= -(i64{1} << 61) / level->spacing && index <= (i64{1} << 61) / level->spacing;
+    };
+    if (level->spacing > (i64{1} << 42) || floor_div(level->imin, c) != record.tile_min[0] ||
+        floor_div(level->imax, c) != record.tile_max[0] ||
+        floor_div(level->jmin, c) != record.tile_min[1] ||
+        floor_div(level->jmax, c) != record.tile_max[1] || !index_fits(level->imin) ||
+        !index_fits(level->imax) || !index_fits(level->jmin) || !index_fits(level->jmax)) {
+      error = "'" + manifest_path + "': its level of " + std::to_string(record.spacing_mm) +
+              " mm has an index window that is not its tiles'";
+      levels_.clear();
+      return false;
+    }
     level->ntx = static_cast<u32>(ntx);
     level->ntz = static_cast<u32>(ntz);
     // The level's archive, opened once: its header and table read and checked here, every tile

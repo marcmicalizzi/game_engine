@@ -1188,3 +1188,30 @@ TEST_CASE("tileset hostile: an unbuffered read past 4 GiB is refused before it i
   CHECK(tileset::archive::stage_fits(4096, tileset::archive::k_max_staged_bytes - 4096));
   CHECK(tileset::archive::stage_fits(123, 2'076));
 }
+
+// Hostile (T198, fuzzing-design.md's fifth list): a manifest's `index_min` and `index_max` were not
+// tied to its tiles, and a read finds a point's tile by casting its index over the cells to `i32`.
+// `index_max` 2^40 on these 16-cell tiles cast to tile (i32)2^36 = 0, which the archive holds, and
+// read its grid 2^40 values past its start (that arithmetic, never read). Before the mend the set
+// below opened.
+TEST_CASE("tileset hostile: a level's index window is its tiles'") {
+  SmallSet s;
+  CHECK(static_cast<i32>((i64{1} << 40) / 16) == 0);  // the tile the read cast to
+  std::string manifest;
+  REQUIRE(io::read_file(s.built.manifest, manifest) == io::Status::Ok);
+  const usize key = manifest.find("\"index_max\"");
+  REQUIRE(key != std::string::npos);
+  const usize open = manifest.find('[', key);
+  const usize comma = manifest.find(',', open);
+  REQUIRE((open != std::string::npos && comma != std::string::npos));
+  std::string edited = manifest;
+  edited.replace(open + 1, comma - open - 1, "1099511627776");  // 2^40
+  REQUIRE(io::write_file(s.built.manifest, edited) == io::Status::Ok);
+  TileSet hostile;
+  std::string error;
+  CHECK_FALSE(hostile.open(s.built.manifest, error));
+  CHECK(error.find("index window that is not its tiles'") != std::string::npos);
+  REQUIRE(io::write_file(s.built.manifest, manifest) == io::Status::Ok);
+  TileSet again;
+  CHECK_MESSAGE(again.open(s.built.manifest, error), error);
+}
