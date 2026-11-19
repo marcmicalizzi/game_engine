@@ -1,18 +1,28 @@
 // Content classes decided when a scene is loaded (C64; renderer.md, "Content classes at load";
 // docs/content-classes.md, "What decided at instantiation means"). CPU only, no device.
 //
+// The last case opens a device (the merge's GPU run, or a run by its name); every other one is CPU
+// only.
+//
 // Every fixture is neutral data of the test's own: a heightfield grid written as a container, a
 // 32 x 32 stripe image, and a made-up game category `fixture_glow` (`none`, `dim`, `bright`). The
 // classified mesh is a grid of another size than the neutral ones, so its vertices are counted
 // apart from theirs and "not in the scene" is a count of bytes, not a picture.
+#include "test_device.h"
+
 #include <core/hash/hash.h>
 #include <domain/geometry/cluster_file.h>
+#include <domain/gfx/device.h>
 #include <domain/texture/material_textures.h>
 #include <foundation/content_class/content_class.h>
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/admission.h>
+#include <systems/renderer/capture.h>
+#include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/scene.h>
+#include <systems/renderer/scene_renderer.h>
+#include <systems/renderer/settings.h>
 
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
@@ -399,4 +409,128 @@ TEST_CASE("content classes at load: the proxy box is a closed box at the bounds 
   const assets::Material material = proxy_material();
   CHECK(material.base_color_image == -1);
   CHECK(material.base_color.x == k_proxy_albedo);
+}
+
+namespace {
+
+constexpr u32 k_shot_width = 192;
+constexpr u32 k_shot_height = 128;
+
+struct Shot {
+  CapturedFrame frame;
+  bool available = true;
+  std::string why;
+};
+
+// The meshes side by side (`scene_of`: 30 m apart), seen from 40 m above their middle, every
+// channel captured.
+Shot shoot(const gfx::Device& device, const test::TempDir& tmp,
+           std::initializer_list<const Grid*> meshes, const content_class::NamedPolicy& policy,
+           RasterMode raster) {
+  Shot shot;
+  SceneDesc desc = scene_of(tmp, meshes);
+  desc.view_policy = policy;
+  SceneData data;
+  std::string error;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  RenderSettings settings;
+  settings.raster = raster;
+  settings.shadows = ShadowMode::Cascaded;
+  settings.occlusion = false;
+  settings.lights = false;
+  ResolvedSettings resolved;
+  resolve_settings(settings, device.features(), &data, resolved);
+  const RenderAvailability availability = check_availability(resolved, device.features());
+  if (availability != RenderAvailability::Ok) {
+    shot.available = false;
+    shot.why = unavailable_reason(availability, device);
+    return shot;
+  }
+  GpuScene scene;
+  REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), error);
+  SceneRenderer renderer;
+  SceneRenderer::Desc rd;
+  rd.width = k_shot_width;
+  rd.height = k_shot_height;
+  REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), error);
+  FrameDesc frame;
+  frame.camera.position = absolute(WorldPos::origin(), Vec3{15.0f, 40.0f, -4.0f});
+  frame.camera.target = absolute(WorldPos::origin(), Vec3{15.0f, 0.0f, 0.0f});
+  CaptureChannels channels;
+  channels.color = true;
+  channels.ids = true;
+  channels.depth = true;
+  channels.normals = true;
+  REQUIRE_MESSAGE(renderer.capture(frame, channels, shot.frame, &error), error);
+  return shot;
+}
+
+template <typename T>
+u64 bytes_of(const Vector<T>& v) {
+  return hash_bytes(v.data(), v.size() * sizeof(T));
+}
+
+// Pixels whose first id word names `instance`.
+u32 pixels_of(const Shot& s, u32 instance) {
+  u32 n = 0;
+  for (u32 p = 0; p < k_shot_width * k_shot_height; ++p)
+    n += s.frame.ids[u64{p} * k_id_words] == instance ? 1u : 0u;
+  return n;
+}
+
+}  // namespace
+
+// **The capture holds the box or nothing** (for the merge's GPU run, and a run by name on both
+// tiers): under `agent-default` the classified grid is not in any channel (colour, ids, depth and
+// normals are the bytes of the scene without it); under the proxy policy a box stands where it
+// stood; under a policy that covers it the grid itself; on every rasterizer and the ray path.
+TEST_CASE("content classes at load: a capture holds the box or nothing, on every path") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(renderer_test::device_options(), &error) ||
+      !device.features().buffer_int64_atomics) {
+    MESSAGE("skipped: no Vulkan device with 64-bit buffer atomics: " << error);
+    return;
+  }
+  const test::TempDir tmp("renderer_classes_capture");
+  REQUIRE(tmp.ok());
+  const Grid a = write_grid(tmp, "a.clusters", 9, "a.png");
+  const Grid glow = write_grid(tmp, "glow.clusters", 17, "glow.png", glow_record(2));
+  const content_class::NamedPolicy omit = agent_default_view_policy();
+  const content_class::NamedPolicy proxy = policy_named("glow-proxy");
+  const content_class::NamedPolicy wide = policy_named("glow-wide");
+  u32 hardware_box = 0;
+  for (const RasterMode mode :
+       {RasterMode::Hardware, RasterMode::Vertex, RasterMode::Software, RasterMode::RayTrace}) {
+    const Shot omitted = shoot(device, tmp, {&a, &glow}, omit, mode);
+    if (!omitted.available) {
+      MESSAGE("raster mode " << static_cast<u32>(mode) << " unavailable: " << omitted.why);
+      continue;
+    }
+    const Shot alone = shoot(device, tmp, {&a}, omit, mode);
+    const Shot boxed = shoot(device, tmp, {&a, &glow}, proxy, mode);
+    const Shot whole = shoot(device, tmp, {&a, &glow}, wide, mode);
+    INFO("raster mode " << static_cast<u32>(mode));
+    // Omitted: every channel the bytes of the scene that never had it.
+    CHECK(bytes_of(omitted.frame.ids) == bytes_of(alone.frame.ids));
+    CHECK(bytes_of(omitted.frame.depth) == bytes_of(alone.frame.depth));
+    CHECK(bytes_of(omitted.frame.normals) == bytes_of(alone.frame.normals));
+    CHECK(bytes_of(omitted.frame.color) == bytes_of(alone.frame.color));
+    CHECK(pixels_of(omitted, 1) == 0u);
+    // Proxied: a box where it stood, and not the grid.
+    const u32 box = pixels_of(boxed, 1);
+    const u32 grid = pixels_of(whole, 1);
+    MESSAGE("raster mode " << static_cast<u32>(mode) << ": box " << box << " pixels, grid " << grid
+                           << " pixels");
+    CHECK(box > 1000u);
+    CHECK(grid > 1000u);
+    CHECK(bytes_of(boxed.frame.ids) != bytes_of(whole.frame.ids));
+    // Every path draws the box alike: the vertex path to the pixel, the others within its rim.
+    if (mode == RasterMode::Hardware) hardware_box = box;
+    if (mode == RasterMode::Vertex) CHECK(box == hardware_box);
+    if (hardware_box != 0u) {
+      CHECK(box + k_shot_width >= hardware_box);
+      CHECK(box <= hardware_box + k_shot_width);
+    }
+  }
 }
