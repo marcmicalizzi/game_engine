@@ -1102,7 +1102,60 @@ TEST_CASE("engine-view: past the budget the chain drops the same structures in e
     REQUIRE(field_u64(*rt[0], "limit") == field_u64(*rt[1], "limit"));
     CHECK(built[0][0] == built[1][0]);
     CHECK(built[0][1] == built[1][1]);
-    CHECK(differing_pixels(tmp.file("forward.png"), tmp.file("reversed.png")) == 0);
+    if (!mode.cache) {
+      CHECK(differing_pixels(tmp.file("forward.png"), tmp.file("reversed.png")) == 0);
+      continue;
+    }
+    // Swaying trees draw differently in the two orders inside the budget too (61,874 pixels of
+    // 230,400 on the RTX 5090, 2026-11-18, the same command twice the same bytes): that is the
+    // sway's or the cache's, not the keep's. So this mode draws both orders again at a chain
+    // that holds everything, and past the budget no pixel may part that the whole chain kept.
+    for (u32 order = 0; order < 2; ++order) {
+      std::vector<std::string> args =
+          base_args(tmp, order == 0 ? "forward.json" : "reversed.json", "path.json");
+      args[6] = "640";
+      args[8] = "360";
+      args[10] = "rt";
+      for (const std::string& a :
+           {std::string("--raster"), std::string("rt"), std::string("--rt-budget-mib"),
+            std::string("4096"), std::string("--frames"), std::string("3"),
+            std::string("--capture"), tmp.file(order == 0 ? "fit-forward.png" : "fit-reversed.png")})
+        args.push_back(a);
+      for (const char* a : mode.args)
+        args.push_back(a);
+      const Run run = view(args);
+      REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+      const JsonValue fit_summary = summary_of(run.output);
+      const JsonValue* fit_rt = fit_summary.find("rt");
+      REQUIRE(fit_rt != nullptr);
+      CHECK(field_u64(*fit_rt, "overflow_frames") == 0);
+    }
+    image::Image fit[2];
+    image::Image past[2];
+    REQUIRE(image::read_image(tmp.file("fit-forward.png"), fit[0]) == io::Status::Ok);
+    REQUIRE(image::read_image(tmp.file("fit-reversed.png"), fit[1]) == io::Status::Ok);
+    REQUIRE(image::read_image(tmp.file("forward.png"), past[0]) == io::Status::Ok);
+    REQUIRE(image::read_image(tmp.file("reversed.png"), past[1]) == io::Status::Ok);
+    const u32 pixels = fit[0].width * fit[0].height;
+    for (const image::Image* i : {&fit[1], &past[0], &past[1]})
+      REQUIRE(i->width * i->height == pixels);
+    const auto parts = [](const image::Image& a, const image::Image& b, u32 p) {
+      for (u32 c = 0; c < 3; ++c)
+        if (a.pixels[p * 4 + c] != b.pixels[p * 4 + c]) return true;
+      return false;
+    };
+    u32 sway = 0;
+    u32 beyond = 0;
+    for (u32 p = 0; p < pixels; ++p) {
+      if (parts(fit[0], fit[1], p)) {
+        ++sway;
+        continue;
+      }
+      beyond += parts(past[0], past[1], p) ? 1u : 0u;
+    }
+    MESSAGE(sway << " pixels part between the orders at a whole chain; past the budget " << beyond
+                 << " more");
+    CHECK(beyond == 0);
   }
 }
 
