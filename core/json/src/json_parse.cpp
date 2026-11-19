@@ -39,16 +39,25 @@ JsonReader::JsonReader(std::string_view text, const JsonParseOptions& options)
   frames_.reserve(16);
 }
 
+// **One lookup a key, not a walk of its object's keys** (T194, from the review of batch 69's tree):
+// the walk was quadratic in an object's keys, so a sidecar or a `pack.json` with a million keys in
+// one object held its reader for about 5 x 10^11 compares. Every open object's keys live in one
+// hash set, each prefixed with its object's depth (the open objects' depths differ), so a key is
+// looked for among its own object's alone; an object's keys are the set's newest, so its close
+// erases them from the dense tail, which moves nothing. Expected linear in the keys; the hash is
+// not keyed, so keys crafted to collide would cost more, which is the file's size and not a hang of
+// this shape.
 bool JsonReader::refuse_duplicate(usize key_start) {
-  const u32 first = key_marks_.back();
-  for (u32 i = first; i < keys_.size(); ++i) {
-    if (keys_[i] != string_) continue;
+  const u32 depth = static_cast<u32>(frames_.size());
+  probe_.assign(reinterpret_cast<const char*>(&depth), sizeof(depth));
+  probe_.append(string_);
+  if (keys_.contains(probe_)) {
     pos_ = key_start;  // the error names the second key's place
     fail("duplicate key in object");
     error_.duplicate_key = std::string(string_);
     return true;
   }
-  keys_.push_back(std::string(string_));
+  keys_.insert(probe_);
   return false;
 }
 
@@ -178,7 +187,8 @@ bool JsonReader::next_member(bool& more, std::string_view& key) {
     ++pos_;
     frames_.pop_back();
     if (refuse_duplicate_keys_) {
-      keys_.resize(key_marks_.back());
+      while (keys_.size() > key_marks_.back())
+        keys_.erase_at(keys_.size() - 1);
       key_marks_.pop_back();
     }
     return true;

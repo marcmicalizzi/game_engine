@@ -23,6 +23,7 @@
 // given twice in one object is refused at the second wherever the text is read from.
 
 #include <core/base/types.h>
+#include <core/containers/hash_set.h>
 #include <core/containers/vector.h>
 #include <core/json/json.h>
 #include <core/json/json_value.h>
@@ -93,11 +94,13 @@ class JsonReader {
   JsonParseResult error_;
   // One byte per open container: bit 0 an object, bit 1 a member or element already read.
   Vector<u8> frames_;
-  // With `refuse_duplicate_keys` only: the keys of every open object, and where each object's
-  // keys begin. A strict file is a small authored one (a sidecar, a categories or policies file, a
-  // pack), so a key is looked for among its object's keys by a walk.
-  Vector<std::string> keys_;
+  // With `refuse_duplicate_keys` only: the keys of every open object, each prefixed with its
+  // object's depth, and how many the set held when each open object began (its keys are the set's
+  // tail). One lookup a key (`refuse_duplicate`), whatever an object's size; `probe_` is the
+  // prefixed key looked up, reused.
+  HashSet<std::string> keys_;
   Vector<u32> key_marks_;
+  std::string probe_;
   std::string buffer_;  // a string with escapes, decoded
   std::string_view string_;
   bool bool_ = false;
