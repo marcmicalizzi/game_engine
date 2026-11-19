@@ -137,6 +137,127 @@ TEST_CASE("world drawn ground: the ring hands the renderer the tiles it holds, a
 }
 
 TEST_CASE(
+    "world drawn ground: a camera that stands after a walk settles, and then nothing is "
+    "activated, moved, laid out or rebuilt") {
+  // Roadmap W149 (world.md, "A camera that stands"): engine-view's frame on the CPU — the world's
+  // ring from the camera, then the time-lapse's half for the drawn ground (the layout the camera
+  // asks for, the tiles taken, a rebuild when it differs) — over a world with far levels past its
+  // rings, as the forest's staging is loaded (`--terrain-tiles --terrain-far`). The camera walks
+  // 200 m at 100 m/s and stops; once a frame has asked for nothing, ten seconds of frames standing
+  // (600 at 60 Hz) activate, move and deactivate no tile, ask for no new layout and rebuild no
+  // chunk. The surface's time is the scene's own and does not pass (`--time-rate 0`): nothing the
+  // two decisions read is a clock (`World::update` takes the observers alone, `next_layout` the
+  // camera and the tiles held), so the world clock running changes neither. Both rings: under the
+  // world's default budget (eight promotions an update, what a budgeted host runs), and unbudgeted
+  // (engine-view's drawn ground).
+  renderer::TerrainDesc grid;
+  grid.enabled = true;
+  grid.size = 3;
+  grid.extent = 3072.0f;
+  renderer::TerrainTilesDesc t;
+  t.tile_size = 32.0f;
+  t.ring_count = 3;
+  t.radius[0] = 1.5f;
+  t.radius[1] = 4.0f;
+  t.radius[2] = 8.0f;
+  t.cells[0] = 8;
+  t.cells[1] = 4;
+  t.cells[2] = 2;
+  t.far_levels = 2;
+  t.far_cells = 4;
+  t.far_ratio = 2;
+  std::string error;
+  REQUIRE_MESSAGE(renderer::validate_terrain_tiles(t, &error), error);
+  const WorldPos start{-100.0, 60.0, 37.0};
+  constexpr u32 k_walk = 120;    // frames at 1.6667 m a frame: 200 m
+  constexpr u32 k_stand = 600;   // ten seconds at 60 Hz
+  constexpr u32 k_settle = 120;  // the most frames the place may take to settle
+  struct Counts {
+    u32 events = 0;
+    u32 layouts = 0;  // frames whose camera asked for another layout than the one drawn
+    u32 rebuilds = 0;
+    u32 chunks_built = 0;
+    u32 commits = 0;
+    u64 generations = 0;
+  };
+  const auto stand = [&](bool budgeted, Counts& walking, Counts& standing, u32& settled_at) {
+    renderer::TerrainTileSet set;
+    REQUIRE_MESSAGE(set.build(grid, t, k_flat, ground(start), nullptr, &error), error);
+    REQUIRE(set.far_levels() == 2);
+    World world;
+    RingParams params = DrawnTiles::ring_params(t);
+    if (!budgeted) {
+      params.max_activations = 0;
+      params.max_deactivations = 0;
+    }
+    REQUIRE(world.configure(params));
+    DrawnTiles drawn;
+    drawn.create(set);
+    world.add_consumer(drawn.consumer());
+    sim::ObserverSet observers;
+    renderer::TerrainRingLayout shown = set.layout();
+    const WorldPos stop{start.x + 1.6667 * static_cast<f64>(k_walk), start.y, start.z};
+    settled_at = ~0u;
+    u32 standing_from = ~0u;
+    for (u32 f = 0; f < k_walk + k_settle + k_stand; ++f) {
+      const WorldPos p =
+          f < k_walk ? WorldPos{start.x + 1.6667 * static_cast<f64>(f), start.y, start.z} : stop;
+      observers.clear();
+      observers.add(p, 1.0f);
+      const u64 generation = set.generation();
+      const u64 commits = drawn.stats().commits;
+      world.update(observers, f, f == 0);
+      const renderer::TerrainRingLayout next = set.next_layout(ground(p), shown);
+      const bool asked = !(next == shown);
+      Counts& c = f >= standing_from ? standing : walking;
+      c.events += world.last().events;
+      c.commits += static_cast<u32>(drawn.stats().commits - commits);
+      c.generations += set.generation() - generation;
+      if (asked) {
+        ++c.layouts;
+        set.prepare(next);
+        u32 moved = 0;
+        REQUIRE_MESSAGE(set.update(ground(p), 0.0, next, {}, nullptr, moved, &error), error);
+        shown = set.layout();
+        ++c.rebuilds;
+        c.chunks_built += set.last_built();
+      }
+      // Settled: the camera has stopped, and a frame changed nothing and asked for nothing. The
+      // standing count starts on the next frame and runs `k_stand` frames.
+      if (f >= k_walk && standing_from == ~0u && world.last().events == 0 && !asked &&
+          set.generation() == generation) {
+        settled_at = f - k_walk;
+        standing_from = f + 1;
+      }
+      if (standing_from != ~0u && f + 1 >= standing_from + k_stand) break;
+    }
+  };
+  for (const bool budgeted : {true, false}) {
+    Counts walking;
+    Counts standing;
+    u32 settled_at = ~0u;
+    stand(budgeted, walking, standing, settled_at);
+    MESSAGE(std::string(budgeted ? "budgeted" : "unbudgeted")
+            << ": walking " << walking.events << " tile events, " << walking.rebuilds
+            << " rebuilds, " << walking.chunks_built << " chunks built; settled "
+            << settled_at << " frames after the stop; standing " << k_stand << " frames: "
+            << standing.events << " events, " << standing.layouts << " layouts asked, "
+            << standing.rebuilds << " rebuilds, " << standing.chunks_built << " chunks built");
+    // The walk did move the place: the premise of what follows.
+    CHECK(walking.events > 0);
+    CHECK(walking.rebuilds > 0);
+    REQUIRE(settled_at != ~0u);
+    CHECK(settled_at <= k_settle);
+    CHECK(standing.events == 0);
+    CHECK(standing.commits == 0);
+    CHECK(standing.generations == 0);
+    CHECK(standing.layouts == 0);
+    CHECK(standing.rebuilds == 0);
+    CHECK(standing.chunks_built == 0);
+  }
+}
+
+TEST_CASE(
     "world drawn ground: an unbudgeted ring keeps up with a fast camera, a budgeted one not") {
   // engine-view's frame with the renderer's half on the CPU, over desert-endless's rings: the
   // world's ring updated from a camera flying 1.67 m a frame (100 m/s at 60 Hz), and then what the
