@@ -1068,16 +1068,30 @@ TEST_CASE("engine-view: past the budget the chain drops the same structures in e
     const JsonValue* rt[2] = {summaries[0].find("rt"), summaries[1].find("rt")};
     REQUIRE(rt[0] != nullptr);
     REQUIRE(rt[1] != nullptr);
+    // What each frame built, from its record: the summary's `built_last` is not a path frame's.
+    u64 built[2][2] = {};  // per order: the least and the most a frame built
     for (u32 order = 0; order < 2; ++order) {
-      const u64 wanted = wanted_most(tmp.file(order == 0 ? "forward.jsonl" : "reversed.jsonl"));
+      const std::string bench = tmp.file(order == 0 ? "forward.jsonl" : "reversed.jsonl");
+      const u64 wanted = wanted_most(bench);
+      built[order][0] = ~u64{0};
+      std::ifstream log(bench, std::ios::binary);
+      std::string line;
+      while (std::getline(log, line)) {
+        JsonValue record;
+        if (!parse_json(line, record).ok || record.find("frame") == nullptr) continue;
+        built[order][0] = std::min(built[order][0], field_u64(record, "rt_built"));
+        built[order][1] = std::max(built[order][1], field_u64(record, "rt_built"));
+      }
       MESSAGE((order == 0 ? "first to last: " : "last to first: ")
               << wanted << " wanted against a capacity of " << field_u64(*rt[order], "capacity")
-              << " and a limit of " << field_u64(*rt[order], "limit") << ", built "
-              << field_u64(*rt[order], "built_last") << ", "
+              << " and a limit of " << field_u64(*rt[order], "limit") << ", a frame built "
+              << built[order][0] << " to " << built[order][1] << ", "
               << field_u64(*rt[order], "overflow_frames") << " frames past it");
       REQUIRE(wanted > field_u64(*rt[order], "limit"));  // the premise: past the budget
       CHECK(field_u64(*rt[order], "overflow_frames") > 0);
-      CHECK(field_u64(*rt[order], "built_last") > 0);  // the kept set is not empty
+      REQUIRE(built[order][1] > 0);  // some frame was recorded
+      CHECK(built[order][0] > 0);    // and none kept nothing
+      CHECK(built[order][1] <= field_u64(*rt[order], "capacity"));
       if (mode.cache) {
         const JsonValue* cache = rt[order]->find("cache");
         REQUIRE(cache != nullptr);
@@ -1087,7 +1101,8 @@ TEST_CASE("engine-view: past the budget the chain drops the same structures in e
     }
     REQUIRE(field_u64(*rt[0], "capacity") == field_u64(*rt[1], "capacity"));
     REQUIRE(field_u64(*rt[0], "limit") == field_u64(*rt[1], "limit"));
-    CHECK(field_u64(*rt[0], "built_last") == field_u64(*rt[1], "built_last"));
+    CHECK(built[0][0] == built[1][0]);
+    CHECK(built[0][1] == built[1][1]);
     CHECK(differing_pixels(tmp.file("forward.png"), tmp.file("reversed.png")) == 0);
   }
 }
