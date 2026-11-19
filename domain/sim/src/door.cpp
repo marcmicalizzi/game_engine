@@ -303,6 +303,12 @@ bool Door::deserialize(std::string_view bytes, std::string* error) {
   const u8* payload = p + k_header_bytes + count * k_entry_bytes;
   entries_.reserve(static_cast<u32>(count));
   payload_.reserve(static_cast<u32>(payload_bytes));
+  // **The entries' payloads in order and apart** (T194, from the review of batch 69's tree): each
+  // entry's bytes are copied, so entries that all named the same bytes made the copy the payload
+  // times the count — 4,096 entries over 1 MiB of a 1.1 MiB file reached the 4 GiB cap before the
+  // cap refused it. An entry begins at or after the end of the one before it, so the copies sum to
+  // no more than the payload the file holds; the writer lays them end to end, so it always does.
+  u64 previous_end = 0;
   for (u64 i = 0; i < count; ++i) {
     const u8* e = p + k_header_bytes + i * k_entry_bytes;
     DoorEntry entry;
@@ -314,6 +320,15 @@ bool Door::deserialize(std::string_view bytes, std::string* error) {
     entry.origin = static_cast<DoorOrigin>(e[28]);
     entry.delivery = static_cast<DoorDelivery>(e[29]);
     entry.reserved = get<u16>(e + 30);
+    if (offset < previous_end) {
+      clear();
+      fail(error, "door record entry " + std::to_string(i) + " names payload bytes " +
+                      std::to_string(offset) + " to " + std::to_string(offset + size) +
+                      ", which overlap or come before the entry before it's (to " +
+                      std::to_string(previous_end) + ")");
+      return false;
+    }
+    previous_end = offset + size;
     if (offset + size > payload_bytes ||
         !add_recorded(entry, std::span<const u8>(payload + offset, static_cast<usize>(size)))) {
       clear();
