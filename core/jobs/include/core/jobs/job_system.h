@@ -232,7 +232,8 @@ class JobSystem {
   detail_deque* own_deque(PoolState& pool) noexcept;
   void run_job(const Job& job, Worker* worker) noexcept;
   void run_helped(const Job& job, Worker* worker, const Counter& waited) noexcept;
-  void wake_one(PoolState& pool) noexcept;
+  // Wakes one sleeper of `pool` (`all`: every one) if any; call after publishing a job.
+  void wake(PoolState& pool, bool all) noexcept;
   void build_workers(const JobSystemConfig& config);
 
   const platform::Topology& topo_;
