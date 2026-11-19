@@ -3,6 +3,7 @@
 #include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
+#include <core/jobs/job_system.h>
 #include <core/schema/type_info.h>
 #include <domain/ecs/components.h>
 #include <domain/ecs/identity.h>
@@ -140,6 +141,148 @@ u64 hash_ref(const schema::TypeRef& type, const void* p, u64 h) {
   }
 }
 
+// ---- the flat program (ecs.md, "The tick hash's fast path") -------------------------------------
+//
+// A type whose every hashed field is a fixed group of scalars at a fixed offset is hashed by a
+// program computed once: runs of (offset, count, load), each load turning one scalar into the very
+// word `hash_kind` and `hash_ref` feed `mix_word` for it, in the same order, so the hash is the
+// reflected one bit for bit with no walk of the type, no switch a field and no recursion.
+
+using Op = detail::TickHashOp;
+
+enum Load : u8 {
+  k_load_u8,    // U8, widened by value
+  k_load_u16,   // U16
+  k_load_u32,   // U32, F32's bits
+  k_load_u64,   // U64, I64, F64's bits, a world position's and an id's words
+  k_load_i8,    // I8, sign-extended
+  k_load_i16,   // I16
+  k_load_i32,   // I32
+  k_load_bool,  // Bool: 0 or 1
+};
+
+constexpr u32 k_load_width[] = {1, 2, 4, 8, 1, 2, 4, 1};
+
+void push_op(Vector<Op>& ops, u32 offset, u8 load, u32 count) {
+  const u32 width = k_load_width[load];
+  for (u32 k = 0; k < count; ++k) {
+    const u32 at = offset + k * width;
+    // A run grows while the next scalar of the same load lies right after it.
+    if (!ops.empty() && ops.back().load == load && ops.back().count < 0xFFFFu &&
+        ops.back().offset + u32{ops.back().count} * width == at) {
+      ++ops.back().count;
+    } else {
+      ops.push_back(Op{at, 1, load});
+    }
+  }
+}
+
+bool scalar_load(Kind kind, u8& load) {
+  switch (kind) {
+    case Kind::Bool: load = k_load_bool; return true;
+    case Kind::U8: load = k_load_u8; return true;
+    case Kind::U16: load = k_load_u16; return true;
+    case Kind::U32:
+    case Kind::F32: load = k_load_u32; return true;
+    case Kind::U64:
+    case Kind::I64:
+    case Kind::F64: load = k_load_u64; return true;
+    case Kind::I8: load = k_load_i8; return true;
+    case Kind::I16: load = k_load_i16; return true;
+    case Kind::I32: load = k_load_i32; return true;
+    default: return false;
+  }
+}
+
+bool flatten_struct(const schema::TypeInfo& info, u32 base, Vector<Op>& ops);
+
+// What `hash_ref` does with a field of `type` at `offset`, as runs; false where it does anything a
+// fixed run cannot say (a length, a pointer, a text).
+bool flatten_ref(const schema::TypeRef& type, u32 offset, Vector<Op>& ops) {
+  u8 load = 0;
+  switch (type.kind) {
+    case Kind::Vec2: push_op(ops, offset, k_load_u32, 2); return true;
+    case Kind::Vec3: push_op(ops, offset, k_load_u32, 3); return true;
+    case Kind::Vec4:
+    case Kind::Quat: push_op(ops, offset, k_load_u32, 4); return true;
+    case Kind::WorldPos:
+    case Kind::DVec3: push_op(ops, offset, k_load_u64, 3); return true;
+    case Kind::Id128:
+      // `hash_ref` takes `hi` then `lo`, which is their order in the struct.
+      static_assert(offsetof(Id128, hi) == 0 && offsetof(Id128, lo) == 8);
+      push_op(ops, offset, k_load_u64, 2);
+      return true;
+    case Kind::Enum:
+      if (type.type == nullptr) return true;  // `hash_ref` adds nothing for it either
+      if (!scalar_load(type.type->enum_underlying, load)) return false;
+      push_op(ops, offset, load, 1);
+      return true;
+    case Kind::Struct: return type.type == nullptr || flatten_struct(*type.type, offset, ops);
+    default:
+      if (!scalar_load(type.kind, load)) return false;
+      push_op(ops, offset, load, 1);
+      return true;
+  }
+}
+
+bool flatten_struct(const schema::TypeInfo& info, u32 base, Vector<Op>& ops) {
+  for (const schema::FieldInfo& field : info.fields) {
+    if ((field.flags & schema::FieldFlag::transient) != 0) continue;  // as `hash_struct`
+    if (!flatten_ref(field.type, base + field.offset, ops)) return false;
+  }
+  return true;
+}
+
+template <class T>
+T load_as(const u8* p) noexcept {
+  T v;
+  std::memcpy(&v, p, sizeof(T));
+  return v;
+}
+
+// The flat program over one value: the words `hash_struct` would mix, in its order.
+u64 hash_ops(const Op* op, const Op* end, const u8* p, u64 h) noexcept {
+  for (; op != end; ++op) {
+    const u8* q = p + op->offset;
+    const u32 n = op->count;
+    switch (op->load) {
+      case k_load_u32:
+        for (u32 k = 0; k < n; ++k)
+          h = word(h, load_as<u32>(q + 4u * k));
+        break;
+      case k_load_u64:
+        for (u32 k = 0; k < n; ++k)
+          h = word(h, load_as<u64>(q + 8u * k));
+        break;
+      case k_load_u8:
+        for (u32 k = 0; k < n; ++k)
+          h = word(h, q[k]);
+        break;
+      case k_load_u16:
+        for (u32 k = 0; k < n; ++k)
+          h = word(h, load_as<u16>(q + 2u * k));
+        break;
+      case k_load_i8:
+        for (u32 k = 0; k < n; ++k)
+          h = word(h, static_cast<u64>(static_cast<i64>(load_as<i8>(q + k))));
+        break;
+      case k_load_i16:
+        for (u32 k = 0; k < n; ++k)
+          h = word(h, static_cast<u64>(static_cast<i64>(load_as<i16>(q + 2u * k))));
+        break;
+      case k_load_i32:
+        for (u32 k = 0; k < n; ++k)
+          h = word(h, static_cast<u64>(static_cast<i64>(load_as<i32>(q + 4u * k))));
+        break;
+      default:  // k_load_bool
+        for (u32 k = 0; k < n; ++k)
+          h = word(h, q[k] != 0 ? 1u : 0u);
+        break;
+    }
+  }
+  return h;
+}
+
 std::string entity_key(const Identity* identity, flecs::entity_t entity) {
   if (identity != nullptr && !identity->id.is_null()) {
     char hex[Id128::k_hex_length + 1];
@@ -227,6 +370,15 @@ void TickHash::freeze() {
     table.component = type->id;
     table.size = type->size;
     table.name_hash = hash_bytes(type->info->qualified_name, std::strlen(type->info->qualified_name));
+    // Its flat program, where it has one (and the config does not ask for reflection alone).
+    table.op_first = ops_.size();
+    if (!config_.reflected && flatten_struct(*type->info, 0, ops_)) {
+      table.fast = true;
+      table.op_count = ops_.size() - table.op_first;
+      ++stats_.fast_tables;
+    } else {
+      ops_.resize(table.op_first);
+    }
     ecs_query_desc_t desc = {};
     desc.terms[0].id = type->id;
     desc.terms[0].inout = EcsIn;
@@ -259,35 +411,112 @@ void TickHash::freeze() {
   }
 }
 
-u64 TickHash::hash_table(const Table& table) {
+// One run of a table's entities: the sum of each entity's value hashed from its seed, through the
+// table's flat program where it has one and through reflection where it does not.
+u64 TickHash::hash_run(const Run& run) const noexcept {
+  const Table& table = tables_[run.table];
+  const auto* ids = static_cast<const Identity*>(run.ids);
+  const usize stride = run.values_self ? table.size : 0u;
+  const auto seed_of = [&](u32 i) {
+    const Identity* identity = ids == nullptr ? nullptr : (run.ids_self ? ids + i : ids);
+    return identity != nullptr && !identity->id.is_null()
+               ? word(word(k_hash_seed, identity->id.hi), identity->id.lo)
+               : word(k_hash_seed ^ 1u, run.entities[i]);
+  };
+  u64 sum = 0;
+  if (table.fast) {
+    const Op* first = ops_.data() + table.op_first;
+    const Op* end = first + table.op_count;
+    for (u32 i = 0; i < run.count; ++i)
+      sum += mix64(hash_ops(first, end, run.values + i * stride, seed_of(i)));
+  } else {
+    for (u32 i = 0; i < run.count; ++i)
+      sum += mix64(hash_struct(*table.info, run.values + i * stride, seed_of(i)));
+  }
+  return sum;
+}
+
+void TickHash::gather_runs(u32 grain) {
   ecs_world_t* w = world_->world().c_ptr();
+  runs_.clear();
+  for (u32 t = 0; t < tables_.size(); ++t) {
+    const Table& table = tables_[t];
+    ecs_iter_t it = ecs_query_iter(w, table.query);
+    while (ecs_query_next(&it)) {
+      Run run;
+      run.table = t;
+      run.values = static_cast<const u8*>(ecs_field_w_size(&it, table.size, 0));
+      run.values_self = ecs_field_is_self(&it, 0);
+      run.ids = ecs_field_is_set(&it, 1) ? ecs_field_w_size(&it, sizeof(Identity), 1) : nullptr;
+      run.ids_self = run.ids != nullptr && ecs_field_is_self(&it, 1);
+      // The world is not changed while a phase is hashed, so these pointers hold until it ends.
+      for (u32 at = 0; at < static_cast<u32>(it.count); at += grain) {
+        Run part = run;
+        part.count = std::min<u32>(grain, static_cast<u32>(it.count) - at);
+        part.values = run.values + (run.values_self ? usize{at} * table.size : 0u);
+        part.ids = run.ids == nullptr || !run.ids_self
+                       ? run.ids
+                       : static_cast<const Identity*>(run.ids) + at;
+        part.entities = it.entities + at;
+        runs_.push_back(part);
+      }
+    }
+  }
+}
+
+u64 TickHash::hash_table(const Table& table) {
+  // One table on the calling thread: its runs as they come, never gathered.
+  ecs_world_t* w = world_->world().c_ptr();
+  const u32 t = static_cast<u32>(&table - tables_.data());
   u64 sum = 0;
   u64 count = 0;
   ecs_iter_t it = ecs_query_iter(w, table.query);
   while (ecs_query_next(&it)) {
-    const auto* base = static_cast<const u8*>(ecs_field_w_size(&it, table.size, 0));
-    const bool self = ecs_field_is_self(&it, 0);
-    const Identity* ids = ecs_field_is_set(&it, 1)
-                              ? static_cast<const Identity*>(ecs_field_w_size(&it, sizeof(Identity), 1))
-                              : nullptr;
-    const bool ids_self = ids != nullptr && ecs_field_is_self(&it, 1);
-    for (i32 i = 0; i < it.count; ++i) {
-      const Identity* identity = ids == nullptr ? nullptr : (ids_self ? ids + i : ids);
-      const u64 seed = identity != nullptr && !identity->id.is_null()
-                           ? word(word(k_hash_seed, identity->id.hi), identity->id.lo)
-                           : word(k_hash_seed ^ 1u, it.entities[i]);
-      const void* value = base + (self ? static_cast<usize>(i) * table.size : 0u);
-      sum += mix64(hash_struct(*table.info, value, seed));
-      ++count;
-    }
+    Run run;
+    run.table = t;
+    run.count = static_cast<u32>(it.count);
+    run.values = static_cast<const u8*>(ecs_field_w_size(&it, table.size, 0));
+    run.values_self = ecs_field_is_self(&it, 0);
+    run.ids = ecs_field_is_set(&it, 1) ? ecs_field_w_size(&it, sizeof(Identity), 1) : nullptr;
+    run.ids_self = run.ids != nullptr && ecs_field_is_self(&it, 1);
+    run.entities = it.entities;
+    sum += hash_run(run);
+    count += run.count;
   }
   stats_.entities += count;
   return hash_combine(hash_combine(sum, count), table.name_hash);
 }
 
 void TickHash::hash_into(sim::TickPhase phase, u64* out) {
-  for (u32 t = 0; t < tables_.size(); ++t)
-    out[t] = hash_table(tables_[t]);
+  if (config_.jobs == nullptr) {
+    for (u32 t = 0; t < tables_.size(); ++t)
+      out[t] = hash_table(tables_[t]);
+  } else {
+    // **In parallel, to the same values** (ecs.md, "The tick hash's fast path"): the runs are
+    // gathered here, on the one thread that may walk the world's queries, hashed a run a job, and
+    // summed into their tables here again. A table's hash is a sum of its entities' words mod 2^64,
+    // which no split and no order of addition changes, and each table's is written to its own
+    // column of the row, so the order the jobs ran in is in no value; the runs are even summed in
+    // the order they were gathered, which is the serial path's.
+    gather_runs(config_.grain == 0 ? 1u : config_.grain);
+    config_.jobs->parallel_for(jobs::Pool::Performance, runs_.size(), 1,
+                               [this](u32 begin, u32 end) {
+                                 for (u32 r = begin; r < end; ++r)
+                                   runs_[r].sum = hash_run(runs_[r]);
+                               });
+    for (u32 t = 0; t < tables_.size(); ++t)
+      out[t] = 0;
+    Vector<u64>& counts = run_counts_;
+    counts.assign(tables_.size(), 0);
+    for (const Run& run : runs_) {
+      out[run.table] += run.sum;
+      counts[run.table] += run.count;
+    }
+    for (u32 t = 0; t < tables_.size(); ++t) {
+      stats_.entities += counts[t];
+      out[t] = hash_combine(hash_combine(out[t], counts[t]), tables_[t].name_hash);
+    }
+  }
   for (u32 s = 0; s < sources_.size(); ++s)
     out[tables_.size() + s] = sources_[s].hash(sources_[s].context, phase);
 }
@@ -360,6 +589,15 @@ void TickHash::end_phase(sim::SystemContext& context) {
     ++self->stats_.captures;
     self->requests_.erase(self->requests_.begin() + static_cast<std::ptrdiff_t>(i));
   }
+}
+
+bool tick_hash_both_ways(const schema::TypeInfo& info, const void* value, u64 seed, u64& reflected,
+                         u64& fast) {
+  reflected = hash_struct(info, value, seed);
+  Vector<Op> ops;
+  if (!flatten_struct(info, 0, ops)) return false;
+  fast = hash_ops(ops.data(), ops.data() + ops.size(), static_cast<const u8*>(value), seed);
+  return true;
 }
 
 TickHashMemory TickHash::memory() const noexcept {

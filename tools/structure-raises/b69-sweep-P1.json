@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "b69-sweep-P1",
+  "reason": "sweep-P1: tileset.md gains 'The table read from the view' (the mask level's table and tile list kept once, the refusals); flora.md gains the birch's and the ancient tree's coverage measurements and keys; ecs.md gains 'The tick hash's fast path'",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/flora.md": 1585,
+    "page:docs/subsystems/tileset.md": 1878
+  }
+}

@@ -14,6 +14,8 @@
 #include <core/containers/vector.h>
 #include <foundation/io/vfs.h>
 
+#include <cstddef>
+#include <cstring>
 #include <span>
 #include <string>
 #include <string_view>
@@ -99,14 +101,26 @@ using Landed = void (*)(void* context, u32 first, u32 count) noexcept;
 class Reader {
  public:
   // `record` and `record_bytes` are what the caller's manifest says every record is; `count` the
-  // tiles it lists (the table must hold exactly that many). False, with a sentence, for a file
-  // that is not that archive.
+  // tiles it lists (at most that many). False, with a sentence, for a file that is not that
+  // archive, a table naming a range outside the file among them. `view`, when not empty, is the
+  // same file mapped read-only (`io::MappedFile::bytes`), kept mapped while this reader is open:
+  // the header and the table are read from it, every range checked against its size, and the
+  // table used where it lies, with no copy (tileset.md, "The table read from the view").
   bool open(const std::string& path, std::string_view record, i64 spacing_mm, u32 record_bytes,
-            u32 count, io::ReadMode mode, std::string& error);
+            u32 count, io::ReadMode mode, std::string& error, std::span<const u8> view = {});
   void close() noexcept;
   bool is_open() const noexcept { return file_.valid(); }
   const Header& header() const noexcept { return header_; }
-  std::span<const Entry> table() const noexcept { return {toc_.data(), toc_.size()}; }
+  // The table: `entries()` of them, the i-th copied out of wherever it lies (an entry in a view
+  // need not be aligned: a record's size sets where the table starts).
+  u32 entries() const noexcept { return count_; }
+  Entry entry(u32 i) const noexcept {
+    Entry e;
+    std::memcpy(&e, table_ + u64{i} * sizeof(Entry), sizeof(Entry));
+    return e;
+  }
+  // Whether the table is read in place from the view rather than copied (no commit for it).
+  bool table_in_view() const noexcept { return count_ > 0 && toc_.empty(); }
   // The table's index of (tx, tz), or `k_absent`: a binary search.
   static constexpr u32 k_absent = ~u32{0};
   u32 find(i32 tx, i32 tz) const noexcept;
@@ -122,7 +136,20 @@ class Reader {
  private:
   io::FileHandle file_;
   Header header_;
-  Vector<Entry> toc_;
+  Vector<Entry> toc_;          // the table copied, where it is not read in place
+  const u8* table_ = nullptr;  // the table: `toc_`'s bytes, or the view's own
+  u32 count_ = 0;
+  // The tile key of entry i, read without copying the rest of it.
+  u64 key_at(u32 i) const noexcept {
+    i32 xz[2];
+    std::memcpy(xz, table_ + u64{i} * sizeof(Entry), sizeof(xz));
+    return tile_key(xz[0], xz[1]);
+  }
+  u64 offset_at(u32 i) const noexcept {
+    u64 o;
+    std::memcpy(&o, table_ + u64{i} * sizeof(Entry) + offsetof(Entry, offset), sizeof(o));
+    return o;
+  }
 };
 
 }  // namespace engine::tileset::archive

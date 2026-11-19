@@ -29,6 +29,9 @@
 // the table's rows in, so nothing is sorted and nothing is allocated a phase; a world whose rows
 // moved between archetypes but whose values did not hashes the same. It is a multiset hash: two
 // worlds that differ in one entity's one field differ in the table's hash but for a 2^-64 chance.
+// A table whose fields are all fixed groups of scalars is hashed through a flat program computed
+// once (runs of offset, count and load) to the same words, and a config with `jobs` hashes a
+// phase's tables in runs on the job system to the same sums (ecs.md, "The tick hash's fast path").
 //
 // **The capture**: `capture_at(tick, phase, table, out)` asks for one table's entities as canonical
 // JSON (`schema::to_json`, which leaves out the same transient fields the hash skips) at a (tick,
@@ -55,6 +58,9 @@
 namespace engine::schema {
 struct TypeInfo;
 }
+namespace engine::jobs {
+class JobSystem;
+}
 
 namespace engine::ecs {
 
@@ -65,6 +71,16 @@ struct TickHashConfig {
   bool transient = true;
   // Ticks of log rows reserved at the first hashed phase.
   u64 reserve_ticks = 0;
+  // **Hash a phase's tables on this job system's performance pool** (ecs.md, "The tick hash's fast
+  // path"): every table's entities cut into runs of at most `grain`, a run a job, each run's sum
+  // added into its table's afterwards. The values are the serial ones bit for bit: a table's hash
+  // is a sum over its entities, which no split or order changes, and each table's goes to its own
+  // column of the row. Null: one thread, the caller's.
+  jobs::JobSystem* jobs = nullptr;
+  u32 grain = 4096;
+  // Hash every table field by field through reflection, never through a flat program: the path a
+  // table with a string, a container or an optional takes anyway. For checking the fast path.
+  bool reflected = false;
 };
 
 // A table that is not a component: `hash` is called at the end of every phase hashed.
@@ -81,7 +97,27 @@ struct TickHashStats {
   u32 late = 0;             // components registered after the table set was fixed
   u32 captures = 0;         // captures delivered
   u32 refused = 0;          // rows the log refused (a tick stepped twice, a log reset under it)
+  u32 fast_tables = 0;      // component tables hashed through a flat program (ecs.md)
 };
+
+// The two ways a component's value is hashed, for the case that holds them equal on every
+// registered type: `reflected` field by field through schema reflection, and, where `info` has a
+// flat program — every field not marked `@transient` a scalar, an enum, a vector, a quaternion, a
+// world position, an id, or a struct of those, at any depth — `fast` through it. False where it
+// has none (a string, bytes, JSON, an optional, an array or a map anywhere in it); `fast` is then
+// untouched.
+bool tick_hash_both_ways(const schema::TypeInfo& info, const void* value, u64 seed, u64& reflected,
+                         u64& fast);
+
+namespace detail {
+// One run of a table's flat program: `count` scalars of one load laid end to end from `offset`
+// in the component (ecs.md, "The tick hash's fast path").
+struct TickHashOp {
+  u32 offset = 0;
+  u16 count = 0;
+  u8 load = 0;
+};
+}  // namespace detail
 
 struct TickHashMemory {
   u32 tables = 0;            // components and sources
@@ -119,12 +155,27 @@ class TickHash {
   std::span<const std::string> tables() const noexcept { return {names_.data(), names_.size()}; }
 
  private:
+  using HashOp = detail::TickHashOp;
   struct Table {
     const schema::TypeInfo* info = nullptr;
     flecs::entity_t component = 0;
     u32 size = 0;
     ecs_query_t* query = nullptr;
     u64 name_hash = 0;
+    u32 op_first = 0;  // its flat program in `ops_`, when `fast`
+    u32 op_count = 0;
+    bool fast = false;
+  };
+  // A run of one table's entities, gathered on the calling thread and hashed on a worker.
+  struct Run {
+    u32 table = 0;
+    u32 count = 0;
+    const u8* values = nullptr;  // the first entity's component, or the one shared value
+    const void* ids = nullptr;   // `Identity`s, or the one shared, or null
+    const flecs::entity_t* entities = nullptr;
+    bool values_self = true;
+    bool ids_self = true;
+    u64 sum = 0;
   };
   struct Request {
     u64 tick = 0;
@@ -138,6 +189,9 @@ class TickHash {
   void freeze();
   void hash_into(sim::TickPhase phase, u64* out);
   u64 hash_table(const Table& table);
+  // Fills `runs_` with every table's entities, at most `grain` a run.
+  void gather_runs(u32 grain);
+  u64 hash_run(const Run& run) const noexcept;
   void capture(const Table& table, sim::Capture& out);
 
   SimWorld* world_ = nullptr;
@@ -148,6 +202,9 @@ class TickHash {
   u32 components_seen_ = 0;
   flecs::entity_t identity_ = 0;
   Vector<Table> tables_;
+  Vector<HashOp> ops_;
+  Vector<Run> runs_;
+  Vector<u64> run_counts_;
   Vector<TickHashSource> sources_;
   Vector<std::string> names_;
   Vector<u64> row_;

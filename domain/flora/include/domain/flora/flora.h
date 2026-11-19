@@ -94,6 +94,28 @@ inline constexpr u32 k_branch_taper_version = 2;
 //    the change is to the sprays the chain is baked from: no other species' entry moves.
 inline constexpr u32 k_conifer_chain_version = 2;
 
+// The broadleaf solver's impostor chain (G121; flora.md, "The coverage under the mask"): mixed
+// into the source hash a container of a species the broadleaf solver builds records (`broadleaf`
+// and the deciduous profiles: oak, maple, elm, walnut, beech, ash, basswood, black_cherry,
+// sycamore, aspen, alder), after the conifers' place, the same way and for the same reason as
+// `k_conifer_chain_version`: those entries rebuild with the chain and no other species' moves, and
+// the deadwood, which keys a tree by `flora_source_hash` and draws no chain, keeps its key.
+//
+// 1: the levels are baked with the leaves' coverage kept and fitted
+//    (`ImpostorSpec::coverage_dither`, `bake_matched`), as the conifers' have been since G120.
+inline constexpr u32 k_broadleaf_chain_version = 1;
+
+// The birch's and the ancient tree's impostor chains (sweep-P1, after G121; flora.md, "The
+// coverage under the mask"): each solver has its own, mixed into the container hash of `birch`
+// and of `ancient` after the broadleaf's place, the same way and for the same reason as
+// `k_broadleaf_chain_version`, so only those entries rebuild and the deadwood's keys stay.
+//
+// 1: the levels are baked with the leaves' coverage kept and fitted, as the broadleaf's since G121
+//    (a plain bake drew 1.35 to 1.52 of the 14 m birch's leaf coverage and 1.22 to 1.34 of the
+//    100 m ancient tree's; kept, 1.00 to 1.06 and 1.00 to 1.10).
+inline constexpr u32 k_birch_chain_version = 1;
+inline constexpr u32 k_ancient_chain_version = 1;
+
 // The version of the needle cards a tree of this file is built with: `k_conifer_chain_version`
 // for a species the conifer solver builds, 0 for every other (and for a regeneration form, whose
 // needles are ribbons). For a builder that keeps a tree's needle cards and keys itself by

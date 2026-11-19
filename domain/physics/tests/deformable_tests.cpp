@@ -12,7 +12,9 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 
 using namespace engine;
 using namespace engine::physics;
@@ -285,6 +287,93 @@ TEST_CASE("physics: an authored strain limit is enforced, and nothing enforced i
   // thousand of the limit, not a licence: the clamp sweeps until nothing is outside, and what is
   // left is the float error of the projection itself.
   CHECK(clamped <= (1.0f + k_limit) * 1.001f);
+}
+
+TEST_CASE("physics: an authored velocity limit holds at every step boundary (C50)") {
+  // plan 07 §7.10's `limits.max_velocity`, "a per-element velocity clamp", which nothing read
+  // until C50. Two procedural lattices under thirty gravities, nothing for them to land on: one
+  // falling free, where the backend's own clamp is all there is, and one hung from its top face
+  // with the strain limit on, where the clamp's `dx / dt` corrections run after the backend's and
+  // only the second pass keeps the bound. Each is stepped once with no speed limit for contrast.
+  constexpr u32 k_n = 3;
+  constexpr f32 k_spacing = 0.1f;
+  constexpr f32 k_limit = 2.0f;  // m/s: thirty gravities pass it inside half a dozen steps
+  const LatticeVolume lattice = build_lattice_volume(k_n, k_spacing, 1.0e-3f, 1.0e-6f);
+  const u32 vertex_count = static_cast<u32>(lattice.vertices.size());
+
+  // The fastest particle at any step boundary of 90 steps.
+  const auto fastest = [&lattice, vertex_count](f32 max_velocity, bool hang) {
+    World world;
+    REQUIRE(world.init(small_world_options()) == Status::Ok);
+    Vector<SoftAttachment> attachments;
+    if (hang) {
+      for (u32 z = 0; z < k_n; ++z) {
+        for (u32 x = 0; x < k_n; ++x) {
+          SoftAttachment attachment;
+          attachment.vertex = lattice.index(x, k_n - 1, z);
+          attachment.local_point = lattice.vertices[attachment.vertex];
+          attachments.push_back(attachment);
+        }
+      }
+    }
+    SoftBodyDesc desc;
+    desc.vertices = std::span<const Vec3>(lattice.vertices);
+    desc.inverse_masses = std::span<const f32>(lattice.inverse_masses);
+    desc.edges = std::span<const SoftEdge>(lattice.edges);
+    desc.volumes = std::span<const SoftVolumeConstraint>(lattice.volumes);
+    desc.faces = std::span<const u32>(lattice.faces);
+    desc.attachments = std::span<const SoftAttachment>(attachments);
+    desc.transform.position = place(Vec3(0.0f, 50.0f, 0.0f));
+    desc.iterations = k_cage_iterations_default;
+    desc.gravity_factor = 30.0f;
+    desc.linear_damping = 0.0f;
+    desc.max_strain = hang ? 0.5f : 0.0f;
+    desc.max_velocity = max_velocity;
+    desc.allow_sleeping = false;
+    SoftBodyId cage;
+    REQUIRE(world.create_soft_body(desc, cage) == Status::Ok);
+    const f32 dt = world.step_seconds();
+    Vector<Vec3> velocities(vertex_count);
+    f32 worst = 0.0f;
+    for (u32 i = 0; i < 90; ++i) {
+      REQUIRE(world.step(dt, k_cage_sub_steps_default) == Status::Ok);
+      REQUIRE(world.read_soft_body_velocities(cage, std::span<Vec3>(velocities)) == vertex_count);
+      for (const Vec3& v : velocities)
+        worst = std::max(worst, std::sqrt(dot(v, v)));
+    }
+    return worst;
+  };
+
+  for (const bool hang : {false, true}) {
+    CAPTURE(hang);
+    // A hung cage is held to a lower limit, under the speeds the strain clamp's corrections give:
+    // with the backend's clamp alone it left a step at 0.83 m/s against 0.25 (MSVC, 2026-11-18).
+    const f32 limit = hang ? k_limit / 8.0f : k_limit;
+    const f32 free = fastest(0.0f, hang);
+    const f32 limited = fastest(limit, hang);
+    MESSAGE(std::string(hang ? "hung, strain-clamped" : "falling free")
+            << ": the fastest particle with no limit " << free << " m/s, limited to " << limit
+            << ": " << limited << " m/s");
+    // Without the limit thirty gravities carry a particle well past it (a hung cage's particles
+    // swing and snap against the strain limit; a free one falls).
+    CHECK(free > 2.0f * limit);
+    // With it, no particle leaves a step faster: the tolerance is a float's rounding of the scale.
+    CHECK(limited <= limit * 1.0001f);
+  }
+
+  // A negative or non-finite limit is a typo, refused like a negative strain limit.
+  World world;
+  REQUIRE(world.init(small_world_options()) == Status::Ok);
+  SoftBodyDesc desc;
+  desc.vertices = std::span<const Vec3>(lattice.vertices);
+  desc.edges = std::span<const SoftEdge>(lattice.edges);
+  SoftBodyId cage;
+  desc.max_velocity = -1.0f;
+  CHECK(world.create_soft_body(desc, cage) == Status::InvalidArgument);
+  desc.max_velocity = std::numeric_limits<f32>::infinity();
+  CHECK(world.create_soft_body(desc, cage) == Status::InvalidArgument);
+  desc.max_velocity = 20.0f;  // plan 07 §7.10's default
+  CHECK(world.create_soft_body(desc, cage) == Status::Ok);
 }
 
 TEST_CASE("physics: the strain clamp stops the cell inversion the divergence comes from") {

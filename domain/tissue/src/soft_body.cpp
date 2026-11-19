@@ -355,6 +355,7 @@ bool settle_soft_body(const TissueFile& file, const SoftBodyOptions& options, Se
   desc.restitution = 0.0f;
   desc.vertex_radius = 0.0f;
   desc.max_strain = options.max_strain;
+  desc.max_velocity = options.max_velocity;
   desc.iterations = options.iterations;
   desc.allow_sleeping = false;
   desc.hero = body.hero;
@@ -463,6 +464,7 @@ JsonValue settle_json(const TissueFile& file, const SoftBodyOptions& options,
   solver.set("sub_steps", JsonValue(options.sub_steps));
   solver.set("linear_damping_per_s", JsonValue(static_cast<f64>(options.linear_damping)));
   solver.set("max_strain", JsonValue(static_cast<f64>(options.max_strain)));
+  solver.set("max_velocity_m_s", JsonValue(static_cast<f64>(options.max_velocity)));
   solver.set("friction", JsonValue(static_cast<f64>(options.friction)));
   solver.set("settle_speed_m_s", JsonValue(static_cast<f64>(options.settle_speed_m_s)));
   solver.set("settle_quantile", JsonValue(static_cast<f64>(options.settle_quantile)));

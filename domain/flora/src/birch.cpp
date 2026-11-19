@@ -526,7 +526,9 @@ bool solve_birch_chain(const Birch& p, assets::MeshData& out, TreeReport* report
     report->stems = stems;
   }
   // The impostor chain above the finest leaves (impostor.h), appended past everything, so the
-  // mesh above is the bytes it is without it.
+  // mesh above is the bytes it is without it. The bake keeps the leaves' coverage under the mask
+  // as the broadleaf's does (sweep-P1; `ImpostorSpec::coverage_dither`): plain, the 14 m birch's
+  // levels drew 1.35 to 1.52 of its leaves' coverage, its fine pendulous crown the sparsest.
   if (levels != nullptr) {
     *levels = TreeLevels{};
     levels->leaf_first_index = leaf_first;
@@ -534,6 +536,7 @@ bool solve_birch_chain(const Birch& p, assets::MeshData& out, TreeReport* report
     ImpostorSpec chain_spec;
     chain_spec.card_px = p.card_bake_px;
     chain_spec.tree_px = p.impostor_px;
+    chain_spec.coverage_dither = true;
     crown_levels(crown, plan.crown, spray_ranges, chain_spec, emit, *levels);
     tree_star(chain_spec, crown.nodes[0].part, emit, *levels);
   }

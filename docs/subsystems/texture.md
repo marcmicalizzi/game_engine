@@ -187,8 +187,12 @@ does not, and says it did them with `k_texture_alpha_coverage` in the file's fla
   cut; the bilinear filter and the mip chain both mix that into the leaf's edge, which is the dark
   halo a cutout gets at distance. Eight rings cover a level-3 texel's footprint. Integer
   arithmetic, so the bytes are the same everywhere.
-- **Every level keeps level 0's coverage at the cutoff** (Castaño, "Computing Alpha Mipmaps", 2010;
-  the method *The Witness* shipped). A mask filtered as stored loses its thin parts down the chain:
+- **Every level keeps level 0's coverage at the cutoff** (Castaño, ["Computing Alpha
+  Mipmaps"](https://www.ludicon.com/castano/blog/articles/computing-alpha-mipmaps/), 2010;
+  the method *The Witness* shipped; re-read 2026-11-18 for G11, which this closes: level 0's
+  coverage at the test value, a bisection per level for the reference value that gives the same
+  coverage, the level's alpha scaled by the test value over it — the rule below, which measures
+  the coverage on the filtered surface where the article counts texels). A mask filtered as stored loses its thin parts down the chain:
   a needle a texel wide is half alpha one level down and is cut away whole, so a conifer goes bald
   with distance. `preserve_alpha_coverage` scales the level's alpha by `cutoff / t`, rounded down
   and clamped, for the 8-bit `t` at which the level's coverage is closest to level 0's. **The

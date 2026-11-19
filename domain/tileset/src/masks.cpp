@@ -1173,7 +1173,7 @@ bool ensure_mask_level(const TileSet& set, const MaskInputs& in, const std::stri
       out.manifest = manifest_path;
       out.key = key;
       out.hit = true;
-      out.tiles = level.manifest().present.size() / 2;
+      out.tiles = level.tile_count();
       out.bytes = level.manifest().bytes;
       u64 h = 0;
       for (const char ch : level.manifest().hash)
@@ -1287,7 +1287,9 @@ MaskLevel::ReadStats MaskLevel::read_stats() const noexcept {
 
 bool MaskLevel::open(const std::string& manifest_path, std::string& error, bool unbuffered) {
   info_ = scene_gen::GroundMaskInfo{};
-  present_.clear();
+  present_ = Vector<u64>{};
+  tiles_ = 0;
+  present_is_table_ = false;
   if (reading_ == nullptr) reading_ = std::make_unique<Reading>();
   reading_->archive.close();
   reading_->view.close();
@@ -1331,48 +1333,80 @@ bool MaskLevel::open(const std::string& manifest_path, std::string& error, bool 
   info_.height_blend = manifest_.height_blend;
   u64 h = hash_combine(k_hash_seed, hash_bytes(manifest_.key.data(), manifest_.key.size()));
   info_.hash = hash_combine(h, hash_bytes(manifest_.hash.data(), manifest_.hash.size()));
+  present_.reserve(manifest_.present.size() / 2);
   for (u32 i = 0; i < manifest_.present.size(); i += 2)
     present_.push_back(tile_key(manifest_.present[i], manifest_.present[i + 1]));
   std::sort(present_.begin(), present_.end());
-  // The archive, opened once, its table read: at most the tiles the manifest lists.
+  // **The view** (tileset.md, "Read without a lock"): the archive mapped read-only first, and its
+  // header and table read from the view (tileset.md, "The table read from the view"), so the table
+  // commits nothing and a tile is a copy out of the OS's file cache. An unbuffered open, or a file
+  // the OS will not map, reads its table into memory and its tiles through the window as before.
+  const std::string path =
+      manifest_.archive.empty() ? std::string() : io::join_path(dir_, manifest_.archive);
+  if (!unbuffered && !path.empty() && reading_->view.open(path) != io::Status::Ok)
+    reading_->view.close();
+  // The archive, opened once, its table checked: at most the tiles the manifest lists.
   std::string why;
-  if (manifest_.archive.empty() ||
-      !reading_->archive.open(io::join_path(dir_, manifest_.archive), "EMSK", manifest_.spacing_mm,
-                              record_bytes(manifest_.cells), manifest_.present.size() / 2,
-                              unbuffered ? io::ReadMode::unbuffered : io::ReadMode::buffered,
-                              why)) {
+  if (path.empty() ||
+      !reading_->archive.open(path, "EMSK", manifest_.spacing_mm, record_bytes(manifest_.cells),
+                              manifest_.present.size() / 2,
+                              unbuffered ? io::ReadMode::unbuffered : io::ReadMode::buffered, why,
+                              reading_->view.bytes())) {
     error = "'" + manifest_path + "' has no archive it can read" +
             (why.empty() ? std::string() : ": " + why);
     info_ = scene_gen::GroundMaskInfo{};
+    reading_->view.close();
+    present_ = Vector<u64>{};
     return false;
   }
-  // **The view** (tileset.md, "Read without a lock"): the same file mapped read-only, taken when it
-  // is the archive the table was read from — its header the one checked, its table inside it — so
-  // a tile is a copy out of the OS's file cache. Anything else (an unbuffered open, a file the OS
-  // will not map, one replaced between the two opens) reads through the window as before.
-  if (!unbuffered) {
-    const std::string path = io::join_path(dir_, manifest_.archive);
-    const archive::Header& header = reading_->archive.header();
-    const u64 table_end =
-        header.toc_offset + u64{header.count} * static_cast<u64>(sizeof(archive::Entry));
-    // The table's entries were checked at open to lie inside [header, table), and the file to end
-    // where the table does: a view of that length with that header is that file.
-    if (reading_->view.open(path) == io::Status::Ok && reading_->view.size() == table_end &&
-        std::memcmp(reading_->view.bytes().data(), &header, sizeof(header)) == 0)
-      reading_->mapped = true;
-    else
-      reading_->view.close();
+  reading_->mapped = reading_->view.is_open();
+  // **The list of tiles kept once** (tileset.md, "The table read from the view"): the manifest's
+  // pairs are released, and where the archive's table holds exactly the tiles they list (every
+  // level the build writes) the sorted keys are too, so `present` and `tile_at` read the table.
+  tiles_ = static_cast<u32>(present_.size());
+  manifest_.present = Vector<i32>{};
+  const archive::Reader& table = reading_->archive;
+  present_is_table_ = table.entries() == present_.size();
+  for (u32 i = 0; present_is_table_ && i < table.entries(); ++i) {
+    const archive::Entry e = table.entry(i);
+    present_is_table_ = tile_key(e.tx, e.tz) == present_[i];
   }
+  if (present_is_table_) present_ = Vector<u64>{};
   return true;
 }
 
 bool MaskLevel::present(i32 tx, i32 tz) const noexcept {
+  if (present_is_table_)
+    return reading_ != nullptr && reading_->archive.find(tx, tz) != archive::Reader::k_absent;
   return std::binary_search(present_.begin(), present_.end(), tile_key(tx, tz));
+}
+
+bool MaskLevel::tile_at(u32 i, i32& tx, i32& tz) const noexcept {
+  if (i >= tiles_) return false;
+  if (present_is_table_) {
+    const archive::Entry e = reading_->archive.entry(i);
+    tx = e.tx;
+    tz = e.tz;
+  } else {
+    tx = static_cast<i32>(static_cast<u32>(present_[i]) ^ 0x8000'0000u);
+    tz = static_cast<i32>(static_cast<u32>(present_[i] >> 32) ^ 0x8000'0000u);
+  }
+  return true;
+}
+
+u64 MaskLevel::private_bytes() const noexcept {
+  if (reading_ == nullptr) return 0;
+  return u64{present_.capacity()} * sizeof(u64) +
+         (reading_->archive.table_in_view()
+              ? 0
+              : u64{reading_->archive.entries()} * sizeof(archive::Entry));
 }
 
 bool MaskLevel::tile(i32 tx, i32 tz, std::span<u32> words) const noexcept {
   const u32 n = scene_gen::mask_tile_words(info_.cells);
-  if (!present(tx, tz) || words.size() < n || reading_ == nullptr) return false;
+  // Where the table is the list of tiles, its search is the presence test too.
+  if ((!present_is_table_ && !present(tx, tz)) || words.size() < n || reading_ == nullptr)
+    return false;
   Reading& r = *reading_;
   const u32 at = r.archive.find(tx, tz);
   if (at == archive::Reader::k_absent) return false;
@@ -1391,13 +1425,13 @@ bool MaskLevel::tile(i32 tx, i32 tz, std::span<u32> words) const noexcept {
   if (r.mapped) {
     // **No lock** (tileset.md, "Read without a lock"): the view and the table are fixed from `open`
     // on, and the entry's range was checked there to lie inside the file.
-    return copy_out(r.view.bytes().data() + r.archive.table()[at].offset);
+    return copy_out(r.view.bytes().data() + r.archive.entry(at).offset);
   }
   const std::lock_guard<std::mutex> lock(r.mutex);
   if (at < r.first || at >= r.first + r.count) {
     // Not in the window: fill it from this tile onwards, the records' destinations contiguous so
     // each run is read straight into place.
-    const u32 table = static_cast<u32>(r.archive.table().size());
+    const u32 table = r.archive.entries();
     const u32 count =
         std::min<u32>(table - at, std::max<u32>(1, static_cast<u32>(k_mask_window_bytes / rb)));
     r.window.resize(count * rb);

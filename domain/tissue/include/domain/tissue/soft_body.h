@@ -58,9 +58,11 @@ struct SoftBodyOptions {
   u32 step_hz = 60;
   u32 iterations = physics::k_cage_iterations_default;
   u32 sub_steps = physics::k_cage_sub_steps_default;
-  // Plan 07 §7.10's defaults: `material.damping` 4 per second, `limits.max_strain` 0.5.
+  // Plan 07 §7.10's defaults: `material.damping` 4 per second, `limits.max_strain` 0.5,
+  // `limits.max_velocity` 20 m/s (C50; `physics::SoftBodyDesc::max_velocity`).
   f32 linear_damping = 4.0f;
   f32 max_strain = 0.5f;
+  f32 max_velocity = 20.0f;
   // A sliding attachment is free tangentially: the contact carries no friction.
   f32 friction = 0.0f;
   // Settled: the `settle_quantile` of the nodes' speeds below `settle_speed_m_s` for

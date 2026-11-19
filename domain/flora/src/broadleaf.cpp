@@ -484,7 +484,10 @@ bool detail::solve_broadleaf_rules(const Broadleaf& p, const GrowthRules& rules,
         crown.footprint > 0.0 ? report->leaf_area_m2 / report->footprint_m2 : 0.0f;
   }
   // The impostor chain above the finest leaves (impostor.h): appended past everything, so the
-  // mesh above is the bytes it is without it.
+  // mesh above is the bytes it is without it. The bake keeps the leaves' coverage under the mask
+  // as the conifer's does (G121; `ImpostorSpec::coverage_dither`): a plain star draws every leaf in
+  // each of its four directions and over-covers where a crown is sparse, and `bake_matched` fits
+  // the level down to the leaves' own coverage.
   if (levels != nullptr) {
     *levels = TreeLevels{};
     levels->leaf_first_index = leaf_first;
@@ -492,6 +495,7 @@ bool detail::solve_broadleaf_rules(const Broadleaf& p, const GrowthRules& rules,
     ImpostorSpec chain_spec;
     chain_spec.card_px = p.card_bake_px;
     chain_spec.tree_px = p.impostor_px;
+    chain_spec.coverage_dither = true;
     crown_levels(crown, plan.crown, spray_ranges, chain_spec, emit, *levels);
     tree_star(chain_spec, crown.nodes[0].part, emit, *levels);
   }
