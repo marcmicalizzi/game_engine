@@ -429,4 +429,47 @@ TEST_CASE("cli: --bisect names the first tick, phase, table and field two runs d
   CHECK(at(at(entity, "fields")[0], "field") == JsonValue("wealth"));
   CHECK(at(at(entity, "fields")[0], "b") == JsonValue("103"));
   CHECK(bisect({pa, dir.path() + "/missing.hashlog"}).exit_code == 2);
+
+  // T196: what a comparison cannot say is refused, exit 3 and nothing on stdout, where it was a 0.
+  const auto refused = [&](const sim::HashLog& other, const char* name) {
+    const std::string path = dir.path() + "/" + name;
+    REQUIRE(other.save(path));
+    const Run run = bisect({pa, path});
+    CHECK(run.exit_code == 3);
+    CHECK(run.stdout_text.empty());
+  };
+  // An empty log.
+  sim::HashLog empty;
+  empty.set_tables(names, 0x09u);
+  refused(empty, "empty.hashlog");
+  // A log cut short: the first three ticks of `a`, which agree with it as far as they go.
+  sim::HashLog cut;
+  cut.set_tables(names, 0x09u);
+  for (u32 r = 0; r < 6; ++r)
+    REQUIRE(cut.append(a.rows()[r].tick, static_cast<sim::TickPhase>(a.rows()[r].phase),
+                       a.row_hashes(r)));
+  refused(cut, "cut.hashlog");
+  // A log of another shape: the same hashes at the input phase alone.
+  sim::HashLog input_only;
+  input_only.set_tables(names, 0x01u);
+  for (u32 r = 0; r < a.rows().size(); r += 2)
+    REQUIRE(input_only.append(a.rows()[r].tick, sim::TickPhase::Input, a.row_hashes(r)));
+  refused(input_only, "input-only.hashlog");
+  // Captures of a table at another tick than the divergence's, and of two different tables.
+  sim::Capture early = ca;
+  early.tick = 3;
+  sim::Capture early_b = cb;
+  early_b.tick = 3;
+  const std::string ea = dir.path() + "/early-a.capture.json";
+  const std::string eb = dir.path() + "/early-b.capture.json";
+  sim::Capture other_table = cb;
+  other_table.table = names[0];
+  const std::string ob = dir.path() + "/other-b.capture.json";
+  {
+    std::ofstream(ea) << write_json(sim::capture_to_json(early));
+    std::ofstream(eb) << write_json(sim::capture_to_json(early_b));
+    std::ofstream(ob) << write_json(sim::capture_to_json(other_table));
+  }
+  CHECK(bisect({pa, pb, ea, eb}).exit_code == 3);
+  CHECK(bisect({pa, pb, fa, ob}).exit_code == 3);
 }

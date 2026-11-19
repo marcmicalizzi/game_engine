@@ -6,6 +6,7 @@
 // found at its tick.
 #include <core/hash/hash.h>
 #include <core/jobs/job_system.h>
+#include <core/json/json.h>
 #include <core/memory/memory.h>
 #include <core/schema/type_info.h>
 #include <domain/ecs/components.h>
@@ -24,6 +25,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <schemas/ecs_demo.h>
@@ -158,10 +160,12 @@ TEST_CASE("tick hash: off is nothing, and on it holds nothing per entity") {
   CHECK(memory.tables == world.hash->tables().size());
   CHECK(memory.per_tick == sim::k_phase_count * (sizeof(sim::HashLogRow) + 8u * memory.tables));
   // Every schema component the demo registers with a size, by name: Beacon, Label, the transient
-  // Perception and Standing — empty tables too, so the header is the registration's.
-  REQUIRE(world.hash->tables().size() == 4);
+  // Perception and Standing — empty tables too, so the header is the registration's — then the
+  // structure column (T196).
+  REQUIRE(world.hash->tables().size() == 5);
   CHECK(world.hash->tables()[0] == "engine.ecs.demo.Beacon");
   CHECK(world.hash->tables()[3] == "engine.ecs.demo.Standing");
+  CHECK(world.hash->tables()[4] == k_tick_hash_structure);
   CHECK(world.hash->stats().rows == 2u * sim::k_phase_count);
   CHECK(world.hash->stats().entities == 2u * sim::k_phase_count * 2u * k_entities);
   // A steady tick appends into the reserved log and allocates nothing of the engine's.
@@ -202,6 +206,88 @@ TEST_CASE("tick hash: the same world twice hashes the same, row for row and byte
   CHECK(sr == sa);
   CHECK_FALSE(read.deserialize(std::string_view(sa).substr(0, sa.size() - 3), &error));
   CHECK(read.rows().empty());
+
+  // T196: a log of version 1, hashed before tags and pairs were, is refused by its version.
+  std::string v1 = sa;
+  const u32 old_version = 1;
+  std::memcpy(v1.data() + 8, &old_version, sizeof(old_version));
+  CHECK_FALSE(read.deserialize(v1, &error));
+  CHECK(error.find("version 1") != std::string::npos);
+  CHECK(error.find("tags and relationship pairs") != std::string::npos);
+}
+
+namespace {
+
+// A tag no schema declares, as a game's marker would be.
+struct Marked {};
+
+// The world's row at the end of `systems` of its first tick, with entity 3 a child of entity
+// `parent` (none past k_entities) and entity 5 marked when `tag`.
+Vector<u64> row_with(u32 parent, bool tag, sim::Capture* structure = nullptr) {
+  World world(false);
+  flecs::world& w = world.sim.world();
+  w.component<Marked>();
+  if (parent < k_entities) {
+    flecs::entity(w.c_ptr(), world.entities[3])
+        .child_of(flecs::entity(w.c_ptr(), world.entities[parent]));
+  }
+  if (tag) flecs::entity(w.c_ptr(), world.entities[5]).add<Marked>();
+  sim::HashLog log;
+  world.hash_into(log);
+  if (structure != nullptr)
+    REQUIRE(world.hash->capture_at(1, sim::TickPhase::Systems, k_tick_hash_structure, structure));
+  world.run(1);
+  const u32 row = 3;  // input, events in, lod, systems
+  REQUIRE(log.rows().size() == sim::k_phase_count);
+  REQUIRE(log.rows()[row].phase == static_cast<u32>(sim::TickPhase::Systems));
+  Vector<u64> out;
+  for (const u64 h : log.row_hashes(row))
+    out.push_back(h);
+  return out;
+}
+
+}  // namespace
+
+// **What the structure column sees** (ecs.md; roadmap T196): two worlds whose data are the same and
+// whose entities differ only in a parent, or only in a tag, hash differently — in the structure
+// column alone — and the same structure hashes the same, run after run.
+TEST_CASE(
+    "tick hash: two worlds that differ only in a parent, or only in a tag, hash differently") {
+  const Vector<u64> none = row_with(k_entities, false);
+  const Vector<u64> under_0 = row_with(0, false);
+  const Vector<u64> under_0_again = row_with(0, false);
+  const Vector<u64> under_1 = row_with(1, false);
+  const Vector<u64> marked = row_with(k_entities, true);
+  REQUIRE(none.size() == 5);
+  const u32 structure = 4;
+  CHECK(under_0 == under_0_again);
+  CHECK(under_0[structure] != under_1[structure]);
+  CHECK(under_0[structure] != none[structure]);
+  CHECK(marked[structure] != none[structure]);
+  for (u32 t = 0; t < structure; ++t) {
+    CAPTURE(t);
+    CHECK(under_0[t] == under_1[t]);  // the data agree: only the structure column tells them apart
+    CHECK(marked[t] == none[t]);
+  }
+
+  // The column's capture names the pair by its target's record id and the tag by its name.
+  sim::Capture capture;
+  (void)row_with(0, true, &capture);
+  char hex[Id128::k_hex_length + 1];
+  entity_id(0).to_hex(hex);
+  char child[Id128::k_hex_length + 1];
+  entity_id(3).to_hex(child);
+  bool found_pair = false;
+  bool found_tag = false;
+  for (usize i = 0; i < capture.entities.size(); ++i) {
+    const JsonValue& entity = capture.entities[i];
+    const std::string text = write_json(entity);
+    if (text.find(child) != std::string::npos)
+      found_pair = text.find(std::string("ChildOf, ") + hex) != std::string::npos;
+    if (text.find("Marked") != std::string::npos) found_tag = true;
+  }
+  CHECK(found_pair);
+  CHECK(found_tag);
 }
 
 namespace {

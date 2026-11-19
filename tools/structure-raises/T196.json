@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T196",
+  "reason": "T196: apps.md names engine-cli --bisect's new exit code 3 and what it refuses; the page was at its ceiling",
+  "date": "2026-11-19",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 156
+  }
+}

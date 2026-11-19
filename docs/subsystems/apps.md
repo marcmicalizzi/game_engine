@@ -52,7 +52,7 @@ With `--doc` the CLI starts the host on the document (`--doc`, and `--create` an
 
 ### The divergence bisector
 
-`engine-cli --bisect <a.hashlog> <b.hashlog> [<a.capture.json> <b.capture.json>]` starts no host: it reads two state-hash logs (`ecs::TickHash`'s, [ecs](ecs.md#the-state-hash-a-tick)) and prints the first tick, phase and tables they differ at, and with two captures of that table at that point the entities on one side only and every field that differs, with both values ([sim](sim.md#the-hash-log-and-the-bisector)). Exit 0 when the logs agree everywhere both cover, 1 when they differ, 2 when a file cannot be read. It is a verb and not a protocol method because nothing in it needs a session: the runs it compares are a host's to make (roadmap T53).
+`engine-cli --bisect <a.hashlog> <b.hashlog> [<a.capture.json> <b.capture.json>]` starts no host: it reads two state-hash logs (`ecs::TickHash`'s, [ecs](ecs.md#the-state-hash-a-tick)) and prints the first tick, phase and tables they differ at, and with two captures of that table at that point the entities on one side only and every field that differs, with both values ([sim](sim.md#the-hash-log-and-the-bisector)). Exit 0 when the logs agree row for row, 1 when they differ, 2 when a file cannot be read, 3 when a comparison would say nothing: an empty or cut-short log, logs of other shapes, captures of other points ([sim](sim.md#the-hash-log-and-the-bisector), T196). It is a verb and not a protocol method because nothing in it needs a session: the runs it compares are a host's to make (roadmap T53).
 
 **Example (the exit criterion).**
 ```bash

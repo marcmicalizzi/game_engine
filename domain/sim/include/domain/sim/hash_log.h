@@ -122,6 +122,13 @@ struct Divergence {
 // both cover: a log is compared once, and a row is a few words.
 Divergence first_divergence(const HashLog& a, const HashLog& b);
 
+// **Why a bisection of `a` and `b` says nothing**, or empty when it says something (roadmap T196;
+// sim.md, "The hash log and the bisector"): a log with no rows; logs of different phase masks; and,
+// when no row differs, logs that do not cover the same rows — one cut short or one that skipped a
+// tick — since "they agree" would then be a claim about rows one of them never had. A divergence
+// found in the rows both cover is an answer whatever follows it.
+std::string bisect_refusal(const HashLog& a, const HashLog& b, const Divergence& d);
+
 // ---- captures and their diff -------------------------------------------------------------------
 
 // One table's entities at one (tick, phase): `entities` is an array of {"id", "value"} objects
@@ -159,6 +166,11 @@ struct CaptureDiff {
 // bounds what is listed (the count of differing entities is still exact in `differing`).
 CaptureDiff diff_captures(const Capture& a, const Capture& b, u32 max_entities = 64,
                           u64* differing = nullptr);
+
+// Why two captures cannot be diffed as the bisector's second step, or empty: they are of different
+// tables, ticks or phases, or — when the logs diverged — not of a table `d` names at its tick and
+// phase (T196).
+std::string capture_refusal(const Capture& a, const Capture& b, const Divergence& d);
 
 // ---- a recorded run ----------------------------------------------------------------------------
 
