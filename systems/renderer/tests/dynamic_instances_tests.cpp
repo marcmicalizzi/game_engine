@@ -1965,6 +1965,160 @@ TEST_CASE("dynamic instances: a relayout whose chain fails part way is retried w
   CHECK(d.color == 0);
 }
 
+// W51-5b, M2 (renderer.md, "The visible list's runs are sized by the frame"): a lay-out of the runs
+// is all or nothing. A skinned bar beside a tail, so the runs size the deformed-vertex pool's
+// per-entry slots and the allocator's scratch as well as the list. With the test's fault in the
+// make (`GpuScene::Fault::runs`), swapped beside frames in flight and waited: nothing is handed to
+// `retired`, the list, the records, the slots and the scratch are the buffers they were, and the
+// next capture is the scene loaded whole's. Through the renderer, runs too short to draw with and
+// every growth refused: the refusals are counted, the frames draw at the runs they had, and once
+// the device takes the growth the capture is whole again. And a lay-out that succeeds beside
+// frames in flight points every mesh record at the new slots, the same picture.
+TEST_CASE("dynamic instances: a refused lay-out of the runs leaves the scene as it was") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE(gpu.why);
+    return;
+  }
+  Bar bar;
+  build_bar(bar);
+  Vector<anim::JointMatrix> matrices;
+  bend(bar, 40.0f, matrices);
+  const InstanceJoints runs[1] = {{0, 2}};
+  const auto posed = [&]() {
+    FrameDesc frame = frame_at(k_eye);
+    frame.joints = std::span<const anim::JointMatrix>(matrices.data(), matrices.size());
+    frame.instance_joints = std::span<const InstanceJoints>(runs, 1);
+    return frame;
+  };
+  const Vector<SceneInstance> head = renumbered(prefix());
+  const Vector<SceneInstance> a = renumbered(tile_a());
+  const Vector<SceneInstance> whole = join({&head, &a});
+  RenderSettings settings;
+  settings.shadows = ShadowMode::Cascaded;
+  settings.occlusion = false;
+  SkinnedRig dynamic;
+  REQUIRE_MESSAGE(
+      dynamic.build(gpu.device, bar, std::span<const SceneInstance>(head.data(), head.size()), true,
+                    settings),
+      dynamic.error);
+  REQUIRE(dynamic.resolved.deform_pass);
+  SkinnedRig loaded_whole;
+  REQUIRE_MESSAGE(loaded_whole.build(gpu.device, bar,
+                                     std::span<const SceneInstance>(whole.data(), whole.size()),
+                                     false, settings),
+                  loaded_whole.error);
+  std::string error;
+  REQUIRE_MESSAGE(dynamic.renderer.set_dynamic_instances(
+                      std::span<const SceneInstance>(a.data(), a.size()), &error),
+                  error);
+  CapturedFrame expected;
+  REQUIRE_MESSAGE(loaded_whole.renderer.capture(posed(), channels(), expected, &error), error);
+  const auto same = [&](const char* what) {
+    CapturedFrame shot;
+    REQUIRE_MESSAGE(dynamic.renderer.capture(posed(), channels(), shot, &error), error);
+    const Difference d = compare(shot, expected);
+    MESSAGE(std::string(what) << ": runs of " << dynamic.scene.run_capacity() << ", " << d.ids << " id, "
+                 << d.depth << " depth and " << d.color << " colour differences");
+    return d.ids + d.depth + d.color;
+  };
+  CHECK(same("the tail") == 0);
+  GpuScene& scene = dynamic.scene;
+  REQUIRE(scene.deform_slots.buffer.valid());
+  struct Held {
+    u32 capacity = 0;
+    u64 visible = 0;
+    u64 visible_size = 0;
+    u64 records = 0;
+    u64 slots = 0;
+    u64 blocks = 0;
+  };
+  const auto held = [&]() {
+    return Held{scene.run_capacity(),       scene.visible.address,
+                scene.visible.size,         scene.vertex_records.address,
+                scene.deform_slots.address, scene.deform_blocks.address};
+  };
+  const auto unchanged = [&](const Held& was) {
+    const Held now = held();
+    CHECK(now.capacity == was.capacity);
+    CHECK(now.visible == was.visible);
+    CHECK(now.visible_size == was.visible_size);
+    CHECK(now.records == was.records);
+    CHECK(now.slots == was.slots);
+    CHECK(now.blocks == was.blocks);
+    CHECK(now.visible != 0);
+    CHECK(now.slots != 0);
+  };
+  const auto in_flight = [&]() {
+    for (u32 f = 0; f < 2; ++f) {
+      dynamic.renderer.begin_frame();
+      REQUIRE_MESSAGE(dynamic.renderer.submit_frame(posed(), &error) != 0, error);
+    }
+  };
+  const u32 capacity = scene.run_capacity();
+  REQUIRE(capacity > 2);
+  // Swapped, beside frames in flight: refused, nothing retired, the scene as it was.
+  in_flight();
+  {
+    const Held was = held();
+    Vector<gfx::BufferResource> retired;
+    scene.fail_next(GpuScene::Fault::runs);
+    CHECK_FALSE(scene.fit_runs(capacity / 2, &retired, &error));
+    MESSAGE("refused: " << error);
+    CHECK(retired.empty());
+    unchanged(was);
+    CHECK_FALSE(scene.relayout_pending());
+  }
+  // Waited: the same.
+  dynamic.renderer.wait_idle();
+  {
+    const Held was = held();
+    scene.fail_next(GpuScene::Fault::runs);
+    CHECK_FALSE(scene.fit_runs(capacity / 2, nullptr, &error));
+    unchanged(was);
+  }
+  CHECK(same("after two refused lay-outs") == 0);
+  // Through the renderer: runs of one entry, and every growth refused. Each refusal is counted and
+  // said, the frame draws with the runs it had (its drops counted), and nothing reads a buffer that
+  // is gone.
+  REQUIRE_MESSAGE(scene.fit_runs(1, nullptr, &error), error);
+  const u64 refusals = dynamic.renderer.stats().run_refusals;
+  scene.fail_next(GpuScene::Fault::runs, 1000);
+  {
+    CapturedFrame shot;
+    REQUIRE_MESSAGE(dynamic.renderer.capture(posed(), channels(), shot, &error), error);
+  }
+  const Stats& s = dynamic.renderer.stats();
+  MESSAGE("runs of one, every growth refused: " << s.run_refusals - refusals << " refusals, "
+                                                << s.run_drops + s.cascade_run_drops
+                                                << " appends turned away by the last frame");
+  CHECK(s.run_refusals > refusals);
+  CHECK(scene.run_capacity() == 1);
+  CHECK(s.run_drops + s.cascade_run_drops > 0);
+  // The device takes it again: the capture grows the runs and is whole.
+  scene.fail_next(GpuScene::Fault::runs, 0);
+  CHECK(same("the growth taken") == 0);
+  CHECK(scene.run_capacity() > 1);
+  // A lay-out that succeeds beside frames in flight: the old buffers to `retired`, every mesh
+  // record pointed at the new slots by the next frame, the same picture.
+  in_flight();
+  {
+    const Held was = held();
+    Vector<gfx::BufferResource> retired;
+    const u32 next = scene.run_capacity() == scene.pair_stride() ? scene.run_capacity() - 1
+                                                                 : scene.run_capacity() + 1;
+    REQUIRE_MESSAGE(scene.fit_runs(next, &retired, &error), error);
+    CHECK(scene.run_capacity() == next);
+    CHECK(retired.size() >= 3);  // the list, the slots, the scratch (and the records, indexed)
+    CHECK(scene.deform_slots.address != was.slots);
+    CHECK_FALSE(scene.relayout_pending());
+    dynamic.renderer.wait_idle();
+    for (gfx::BufferResource& buffer : retired)
+      gfx::destroy_buffer(gpu.device, buffer);
+  }
+  CHECK(same("laid out again beside frames in flight") == 0);
+}
+
 // ---- dispatches folded into rows (T160; gfx.md, "A dispatch that grows with the scene") --------
 //
 // Vulkan guarantees 65,535 workgroups a dimension. The pair expansion's three passes and the cull
