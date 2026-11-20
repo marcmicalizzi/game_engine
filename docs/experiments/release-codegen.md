@@ -4,6 +4,7 @@
 - **Question.** `msvc-release` is CMake's `RelWithDebInfo`. Every performance figure the project takes comes from it, and nobody had measured what its inlining level and its link cost the engine's own code. T186 found one case where they mattered: an `atomic_ref` word access compiled to a library call reached through an incremental-link thunk, doubling a deque push and pop. `domain/physics` already gives Jolt `/Ob2`, measured at 6.70 against 2.43 ms a step ([physics](../subsystems/physics.md)); `cmake/EngineNav.cmake` measured Recast both ways and found nothing ([nav](../subsystems/nav.md)).
 - **Decision, as measured:** the engine's own targets build with `/Ob2` and link `/INCREMENTAL:NO /OPT:REF /OPT:ICF` in `RelWithDebInfo` (`ENGINE_MSVC_RELEASE_CODEGEN=full`, `cmake/EngineReleaseCodegen.cmake`; [what to run](../ci/what-to-run.md#the-release-presets-code-generation-t193)).
 - **The default is `cmake` (batch 69's stack, 2026-11-19).** Under `full` the whole `msvc-release` suite failed `profiler` (the filled capture's report counted 37 to 39 of its 40 zones, 2 outside) and `rocks` (the committed escarpment's bytes, 12883758243324567365 against the pin 5793705113405651943), both passing in debug; `full` becomes the default when both are understood and every determinism pin holds under it (a row of the next batch). The measurements below stand.
+- **Both are understood, every pin holds, and the default is still `cmake` (T197-2, batch 70, 2026-11-19).** `profiler`'s case was the report's own fault, mended; `rocks`' bytes were [a compiler fault](msvc-ob2-avx2-miscompile.md), mended in source where `/Ob2` reached it and searched for everywhere else. What is left is the fault itself: the canary in `core/base` plants its shape, and its first case fails under `/Ob2` on this compiler by design, so `base` is red under `full` until the build carries a workaround or the compiler is mended (["`full` run whole"](#full-run-whole-t197-2-batch-70)).
 
 ## What the preset passes, and from where
 
@@ -69,6 +70,55 @@ A row **moved** when the two variants' run medians do not overlap and differ by 
 **a against b: 8 of 102 rows moved, 4 faster and 4 slower; a against c: 3 moved, 2 faster and 1 slower; 99 inside their spread.** The faster rows are the ones the question was about: the job system's push and pop (T186's thunk, now gone for every word the deque touches), a nested job tree, the animation tick and a world store's tile. The slower ones are sub-microsecond `anim` rows and the pool's churn in (b) alone, and a multi-threaded tier assignment in (c) alone whose spread is half its value; none of them moved in both (b) and (c), which is what a real cost of `/Ob2` would do. On a machine at 97 % that is all the speed this can claim: **no row is slower in both inlining variants, the hot paths that moved got faster, and the rest is inside the noise.** A quiet re-take of this rotation (the same command, the row's `bench-run.ps1`) is what would settle the small rows.
 
 **Why `full` and not `inline`:** the link is where the certain gain is (half the binaries, no `.ilk`, 3 GB less tree, less written on every relink: the owner watches the drives), it changes no code, and with `/OPT:REF,ICF` the incremental thunks the T186 finding went through are gone.
+
+## `full` run whole (T197-2, batch 70)
+
+2026-11-19, the tree at batch 70's base with `rocks`' mend, `build/msvc-release` configured `-DENGINE_MSVC_RELEASE_CODEGEN=full`, a second tree beside it configured `cmake` for the pairs. The machine was shared all evening (five rows and the other coordinator's device runs); each figure says what stood beside it.
+
+**The suite, no driver** (`tools/dev.ps1 test -Preset msvc-release -NoDriver -Jobs 3`, beside two scans compiling at 22 jobs): 179 of 183 pass.
+
+| failed | what it was |
+|---|---|
+| `base` | **the canary's first case: 480 of 960 values wrong, as it is under `/Ob2` on this compiler by design.** The one failure that is `full`'s |
+| `docs_check` | this row's own script citing a section not yet written; passes since |
+| `jobs` | "parallel_for covers the range exactly once and runs on workers": no worker took part. Run again by case, ten rounds, the two builds in turn, others' CPU 80 to 100 %: **4 of 10 fail under `full`, 2 of 10 under `cmake`**. A saturated machine, not the flags |
+| `scene_collision` | a wall-clock case (135.9 ms against a bound of 120). The same ten rounds: 10 of 10 pass on both builds |
+
+**The pins**, all in that run: `rocks` (126 cases, the escarpment's bytes), `geometry`, `texture`, `content_build`, `flora`, `landform`, `walls`, `tileset`, `soil`, `physics`, `world`, `matgen`, `math`, `engine_content.1` and `.2`, `engine_cli` and `engine_cli.npc_replay`, and `profiler`: **every one passes, no value moved, nothing re-pinned.** `tools.check_no_listeners` passes.
+
+**The end-to-end tests on the device** (`-Jobs 1`, one GPU process at a time, the GPU's line long all evening): of 18 tests, 13 pass: `tools.game_sdk`, the three `*.generators`, `engine_host`, `engine_host.host_ws`, `engine_cli`, `engine_cli.gpu`, `engine_cli.npc_replay`, `engine_editor`, `mcp_bridge` and its two `mcp_check` tests. `engine_view.frame_loop` **failed one case of seven**, "a streamed world's swaying trees allocate nothing in their second flight": 7 allocations in frames 54 to 69, no buffers, flown beside 24 compile jobs. Run again by name once those had ended, the two builds in turn (others' CPU 5 to 48 %): **0 allocations under `full`, twice, and 0 under `cmake`, twice**. The load, not the flags. `engine_view.1` to `.4` each stood half an hour in the GPU lock's line and gave up (exit 75): no verdict.
+
+**The benches**, the rotation T193 could not take quiet: cmake, full, cmake, full, `--repeats=5 --wait-quiet=60`, no driver, 19:11 to 19:36; others' CPU at the runs' starts 3 to 74 % (the wait ran out every time, so not quiet; T193's rotation stood in a median of 97 %). 72 rows of `jobs`, `math`, `anim`, `animation`, `geometry`. A row **moved** when both `full` takes lie outside both `cmake` takes on one side and the means differ by over 10 %.
+
+| row | `cmake` (two takes) | `full` (two takes) | |
+|---|---|---|---|
+| `animation.tick.lod3` | 78.7 / 78.2 µs | 21.0 / 22.2 µs | −72 % |
+| `jobs.deque.push_pop` (256) | 3.29 / 3.28 µs | 2.28 / 2.19 µs | −32 % |
+| `animation.graph.control/100000` | 5.94 / 3.69 ms | 3.35 / 3.39 ms | −30 % (the `cmake` takes 61 % apart) |
+| `animation.graph.control/10000` | 541 / 341 µs | 308 / 307 µs | −30 % (as above) |
+| `jobs.deque.push_steal` | 5.05 / 5.06 µs | 3.90 / 4.38 µs | −18 % |
+| `anim.clip.sample.keys/61` | 3.75 / 4.57 µs | 3.44 / 3.47 µs | −17 % |
+| `animation.graph.additive/1000` | 5.08 / 4.00 ms | 3.90 / 3.94 ms | −14 % |
+| `animation.graph.control/1000` | 33.6 / 33.3 µs | 29.3 / 29.6 µs | −12 % |
+| `animation.graph.layered/10000`, `sample/10000` | 47.3 / 38.7, 37.3 / 30.5 ms | 37.8 / 37.7, 29.7 / 29.7 ms | −12 % |
+| `geometry.limit.build.fixture` | 11.9 / 11.6 ms | 10.9 / 9.7 ms | −12 % |
+| `jobs.parallel_for.small/8` | 13.6 / 14.3 µs | 16.5 / 18.5 µs | **+26 %** (others' CPU 74 % at the last `full` run's start) |
+| `anim.skeleton.skinning.crowd` | 198.9 / 197.4 µs | 269.3 / 215.8 µs | **+22 %** (the `full` takes 25 % apart) |
+| `anim.skeleton.skinning.one` | 0.72 / 0.74 µs | 1.02 / 0.74 µs | +21 % (one `full` take is `cmake`'s) |
+
+**All 72 rows: `full` is 4.7 % faster as a geometric mean, the two `cmake` takes differing between themselves by 4.4 %; `math` −0.6 %, `anim` +0.3 %, `geometry` −3.7 %, `jobs` +8.5 % (six rows: two moved faster, one slower), `animation` −11.9 %.** T193's findings hold where they were clear (the deque, the animation tick) and its doubtful slower rows (`animation.pool.churn`, `anim.clip.sample.keys/241`, `local_matrices.one`) are not among the rows that moved here; `parallel_for.small/8` and the skinning rows are the ones a quiet take should look at.
+
+**The frame budgets, a pair for three runs of the six** (`tools/frame-budget.ps1 -Exe <each tree's engine-view> -WaitQuiet 120`, `cmake` from 20:01 and `full` from 20:50, the GPU lock's line up to six deep, about ten minutes a flight): **no run flown under `full` is over its budget.**
+
+| run | `cmake`: GPU total, CPU (median / p99, ms) | `full` | |
+|---|---|---|---|
+| `erg-walk-1080p-rt` | 0.720 / 1.043, 0.232 / 0.876; pass, quiet | 0.726 / 1.271, 0.225 / 0.640; pass, others' CPU 7 to 11 % | within |
+| `endless-1080p-csm` | 0.975 / 1.626, 0.442 / 0.767; pass, others' CPU 9 to 13 % | 0.988 / 1.813, 0.432 / 0.711; pass, 7 to 13 % | within |
+| `endless-surround3-rt` | 4.287 / 5.646, 0.587 / 0.922; three p99 lines over on a busy machine (inconclusive), session unlocked | 4.094 / 4.974, 0.542 / 0.889; pass, **session locked**, so its other baseline | not a pair: the session state differs |
+| `erg-walk-surround3-rt` | 3.787 / 4.613, 0.339 / 0.997; pass, quiet | not flown | |
+| `overlook-1080p`, `static-1080p-rt` | cannot be flown in this checkout: `content/samples/Lantern` is fetched, not committed, and the row downloads nothing | | |
+
+The CPU's side of a frame is the same or a little less under `full` in each run flown on both (the medians 0.225 against 0.232, 0.432 against 0.442 ms), and the GPU's is the same, as it should be: inlining does not reach it. **What `full` still owes on the device:** the other three budget runs as a pair, flown where the samples are (the gate's tree), and the four `engine_view` parts that gave up waiting.
 
 ## Stacks
 

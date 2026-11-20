@@ -322,6 +322,14 @@ if(ENGINE_PWSH)
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   set_tests_properties(tools.disk_writes PROPERTIES LABELS "tools")
 
+  # The miscompile scan's matcher (T197, docs/experiments/msvc-ob2-avx2-miscompile.md) over canned
+  # listings: no compiler runs, so it holds on every system though the scan itself is MSVC's.
+  add_test(NAME tools.miscompile_scan
+    COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/tools/miscompile-scan.Tests.ps1"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  set_tests_properties(tools.miscompile_scan PROPERTIES LABELS "tools")
+
   # The capability scaffold (ADR-0027) generates into a temporary tree and checks the result.
   add_test(NAME tools.new_capability
     COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass

@@ -662,9 +662,7 @@ which by CMake's default compiles `/O2 /Ob1` (inline only what is marked so) and
 /INCREMENTAL` (every call through a thunk, no `/OPT:REF,ICF`). Since T193 one switch,
 `ENGINE_MSVC_RELEASE_CODEGEN`, can build the engine's own targets `/Ob2` and link them
 `/INCREMENTAL:NO /OPT:REF /OPT:ICF`, debug information kept (`full`; `inline` for `/Ob2` alone;
-`cmake`, **the default**, for CMake's own). The default stays `cmake` until `full` holds every
-pin: under it batch 69's whole release suite failed `profiler`'s filled-capture case and
-`rocks`' escarpment bytes, both passing in debug (the experiment has the numbers). The switch is set in `cmake/EngineReleaseCodegen.cmake` and applied through
+`cmake`, **the default**, for CMake's own). The default stays `cmake`: batch 69's two failures under `full` are mended and every pin holds under it, but MSVC's fault is still in the compiler and the canary in `core/base` fails on it under `/Ob2` by design, until a workaround or a mended compiler is in ([the run](../experiments/release-codegen.md#full-run-whole-t197-2-batch-70)). The switch is set in `cmake/EngineReleaseCodegen.cmake` and applied through
 `engine_apply_warnings()`, so no module opts in alone. Third-party targets and the host tools keep
 `/Ob1` (Jolt has its own `/Ob2`, Recast measured none). Measured
 ([the experiment](../experiments/release-codegen.md)): the binaries half their size (173
@@ -673,6 +671,15 @@ to 21.4 GB), no compile-time cost found, the 13 determinism and state-hash tests
 experiment lists. **Switching a tree to `full` recompiles the whole release preset** (the flags are
 in ccache's key), once.
 
+### The miscompile scan (T197)
+
+`tools/miscompile-scan.ps1 [-Level Ob1,Ob2] [-Filter <regex>] [-Jobs 8] [-Keep]` looks in the
+compiler's own listings for the MSVC fault that `rocks`' pin found
+([the page](../experiments/msvc-ob2-avx2-miscompile.md#the-search-as-a-tool) has what it reads, what
+a candidate is and what a run costs). **It runs weekly, and before and after a change of compiler
+or of the release flags** (`/Ob`, `/arch`, `ENGINE_MSVC_RELEASE_CODEGEN`'s default), on a built
+`msvc-release` tree; it is not a test and no gate waits for it. Its matcher is tested in every
+suite (`tools.miscompile_scan`).
 ## The gate's wall clock (T77)
 
 The owner, 2026-11-09: five to ten hours a day waiting for gates is too high. Until T77 every leg of

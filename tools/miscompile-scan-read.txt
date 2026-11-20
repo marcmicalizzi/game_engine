@@ -1,0 +1,50 @@
+# Sites tools/miscompile-scan.ps1 reports that have been read and are not the compiler's fault
+# (docs/experiments/msvc-ob2-avx2-miscompile.md, "Reading a candidate"), and the one that is the
+# fault on purpose. One line a site:
+#
+#   <unit, or * for any> <place> <callee, or its start and a *> : <why>
+#
+# <place> is where the address travels (rcx, rdx, r8, r9, stack), as the report prints it. A line
+# needs its reason, and the scan says when a line matches nothing any more: remove it then. A site
+# is added here only after its listing was read, never to make a run pass.
+
+# The canary. Its cases plant the fault's shape, the second in an inline function that /Ob1
+# reaches, so the scan must find it on a compiler that has the fault: when this line stops
+# matching, either the compiler was mended or the scan lost its sight, and which has to be found out.
+core/base/tests/compiler_canary_tests.cpp rdx ?noise3@* : the canary's planted instance (found on purpose; real, and kept)
+
+# doctest's assertion macros: the String bound to ResultBuilder's sixth parameter is built by its
+# own constructor on the line above the call; that constructor's `this` is loaded on another path.
+* stack ??0ResultBuilder@detail@doctest@@QEAA@W4Enum@assertType@2@PEBDH11AEBVString@2@@Z : a doctest::String its constructor built
+foundation/hotload/tests/hotload_tests.cpp rdx ??0Subcase@detail@doctest@@QEAA@AEBVString@2@PEBDH@Z : a doctest::String its constructor built
+
+# flecs' C function ecs_cpp_set returns a struct by value: rcx is the result, and the five
+# arguments follow in rdx, r8, r9 and two stack slots.
+* rcx ecs_cpp_set : a C function returning a struct: rcx is its result
+
+# Indirect calls: the callee has no name in the listing. Each is through a pointer to a function
+# returning a struct by value, as the enclosing function's own signature says: rcx is the result.
+domain/gfx/tests/ground_detail_preview_tests.cpp rcx * : an indirect call's return slot (a pointer to a function returning Detail)
+systems/renderer/src/camera_path.cpp rcx * : an indirect call's return slot (tangent's pointer to a function returning WorldPos)
+
+# A member function returning a pair: rdx is the result. Its name holds a local type, whose
+# enclosing function's signature keeps the scan from reading the callee's own.
+systems/water/tests/water_scene_tests.cpp rdx ??$_Try_emplace@* : a member returning std::pair by value: rdx is its result
+
+# An address in rdx, then a jmp; the next call in the listing is num(i64), whose rdx is the
+# integer itself and can be no address.
+domain/structures/src/description.cpp rdx ?num@* : paired through a jmp; num takes an integer in rdx
+
+# The standard library's allocator arguments: std::allocator is an empty class, so the temporary
+# passed for it has nothing to be written. Whole names, so the place is the allocator's and no other.
+* r8 ??0?$vector@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V?$allocator@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@@std@@QEAA@V?$initializer_list@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@1@AEBV?$allocator@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@1@@Z : the allocator argument, an empty object: nothing to write
+* r9 ??$?0V?$_Vector_iterator@V?$_Vector_val@U?$_Simple_types@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@std@@@std@@@std@@$0A@@?$vector@V?$basic_string_view@DU?$char_traits@D@std@@@std@@V?$allocator@V?$basic_string_view@DU?$char_traits@D@std@@@std@@@2@@std@@QEAA@V?$_Vector_iterator@V?$_Vector_val@U?$_Simple_types@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@std@@@std@@@1@0AEBV?$allocator@V?$basic_string_view@DU?$char_traits@D@std@@@std@@@1@@Z : the allocator argument, an empty object: nothing to write
+* r9 ??$?0PEAD$0A@@?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAA@PEAD0AEBV?$allocator@D@1@@Z : the allocator argument, an empty object: nothing to write
+* r8 ??$_Convert_wide_to@U?$char_traits@D@std@@V?$allocator@D@2@D@filesystem@std@@YA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@1@V?$basic_string_view@_WU?$char_traits@_W@std@@@1@AEBV?$allocator@D@1@@Z : the allocator argument, an empty object: nothing to write
+* r8 ??$?0V?$basic_string_view@DU?$char_traits@D@std@@@std@@$0A@@?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAA@AEBV?$basic_string_view@DU?$char_traits@D@std@@@1@AEBV?$allocator@D@1@@Z : the allocator argument, an empty object: nothing to write
+* r8 ??0?$vector@EV?$allocator@E@std@@@std@@QEAA@_KAEBV?$allocator@E@1@@Z : the allocator argument, an empty object: nothing to write
+* r8 ??0?$vector@UFrameEye@gfx@engine@@V?$allocator@UFrameEye@gfx@engine@@@std@@@std@@QEAA@_KAEBV?$allocator@UFrameEye@gfx@engine@@@1@@Z : the allocator argument, an empty object: nothing to write
+* r9 ??$_Convert_wide_to_narrow@U?$char_traits@D@std@@V?$allocator@D@2@@std@@YA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@0@W4__std_code_page@@V?$basic_string_view@_WU?$char_traits@_W@std@@@0@AEBV?$allocator@D@0@@Z : the allocator argument, an empty object: nothing to write
+* r8 ??$generic_string@DU?$char_traits@D@std@@V?$allocator@D@2@$0A@@path@filesystem@std@@QEBA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@AEBV?$allocator@D@2@@Z : the allocator argument, an empty object: nothing to write
+* r8 ??0?$vector@Vpath@filesystem@std@@V?$allocator@Vpath@filesystem@std@@@3@@std@@QEAA@V?$initializer_list@Vpath@filesystem@std@@@1@AEBV?$allocator@Vpath@filesystem@std@@@1@@Z : the allocator argument, an empty object: nothing to write
+* r8 ??0?$vector@UV3@?A0x6fc739b6@content@engine@@V?$allocator@UV3@?A0x6fc739b6@content@engine@@@std@@@std@@QEAA@_KAEBV?$allocator@UV3@?A0x6fc739b6@content@engine@@@1@@Z : the allocator argument, an empty object: nothing to write

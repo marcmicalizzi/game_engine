@@ -383,9 +383,17 @@ struct ChartUv {
 // Smooth one-to-one-ish metric variation, not random UV islands. Every PBR channel shares
 // these coordinates and the renderer derives its tangent frame from them. This disrupts
 // straight repeat rows without extra runtime samples; it cannot erase repeated motifs.
+//
+// This function is where the compiler's fault was found
+// (docs/experiments/msvc-ob2-avx2-miscompile.md): with `noise3` taking `q` by value and both calls
+// in one expression, MSVC at /O2 /Ob2 inlined it into the box emitters' chart lambdas and never
+// wrote the second call's copy of `q`. `noise3` takes a reference now, and the two calls are two
+// statements, either of which alone compiles rightly; keep both.
 ChartUv weathered_uv(ChartUv uv, u64 seed, f64 amount) {
   const D3 q{uv.a / 7.0, uv.b / 7.0, 0.25};
-  return {uv.a + amount * (noise3(seed, q) - 0.5), uv.b + amount * (noise3(seed + 1u, q) - 0.5)};
+  const f64 na = noise3(seed, q);
+  const f64 nb = noise3(seed + 1u, q);
+  return {uv.a + amount * (na - 0.5), uv.b + amount * (nb - 0.5)};
 }
 
 // Emits one closed box: `n` cells along (i, j, k), `pos(i, j, k)` the lattice point's place and
