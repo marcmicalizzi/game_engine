@@ -78,6 +78,9 @@ bool write_side_json(const io::Vfs& vfs, std::string_view path, const JsonValue&
 // Maps `value` onto `object` of `type` at the build's version, then at each older one.
 bool map_side_json(const schema::TypeInfo& type, void* object, void (*reset)(void* object),
                    const JsonValue& value, std::string_view path, RpcError& error);
+// Tests only: the next `count` writes of any side file fail before they touch the disk, as a
+// rename a scanner holds past its retries or a full disk does.
+void fail_next_side_writes_for_test(u32 count) noexcept;
 }  // namespace detail
 
 // Reads the side file at `path` into `out`: its type's default, with `present` false, when there
@@ -128,9 +131,12 @@ bool write_side_file(const io::Vfs& vfs, std::string_view path, const T& value, 
 // `change(value, write)` runs — `bool(T&, bool& write)`, its result the call's — and `value` is
 // written back when it set `write`, whether or not it succeeded (a refusal may still have dropped
 // lapsed entries). A failed write is the call's error unless `change` had already set one.
+// `written`, when given, says whether `value` is now what the file holds because this call wrote
+// it: set only after the write succeeded, never for a write that was asked for and failed.
 template <class T, class Change>
 bool update_side_file(const io::Vfs& vfs, std::string_view path, T& value, Change&& change,
-                      RpcError& error) {
+                      RpcError& error, bool* written = nullptr) {
+  if (written != nullptr) *written = false;
   SideFileLock lock;
   if (!lock_side_file(vfs, path, lock, error)) return false;
   bool present = false;
@@ -143,6 +149,7 @@ bool update_side_file(const io::Vfs& vfs, std::string_view path, T& value, Chang
     if (ok) error = std::move(write_error);
     return false;
   }
+  if (written != nullptr) *written = true;
   return ok;
 }
 

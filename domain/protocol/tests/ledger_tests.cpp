@@ -1540,3 +1540,33 @@ TEST_CASE("ledger: a claim the host's clock let lapse is told as ledger_changed"
   CHECK(h.sessions.look_at_ledgers(true) == 0);
 }
 
+// A write that failed wrote nothing anyone can read, so it is told as nothing: no event for it
+// then, and none later naming what it would have made.
+TEST_CASE("ledger: a write that failed is not a write") {
+  test::TempDir tmp("protocol_ledger");
+  const std::string dir = tmp.file("doc");
+  Woken woken;
+  Collect pushed;
+  Subscriptions subscriptions;
+  subscriptions.attach(&pushed);
+  Host h;
+  watch_ledgers(h, subscriptions, woken);
+  h.open(dir, true);
+  Host b;
+  b.open(dir, false);
+  (void)make_task(b, "first");
+  (void)h.sessions.look_at_ledgers(true);
+
+  const usize mark = pushed.sent.size();
+  detail::fail_next_side_writes_for_test(1);
+  CHECK(h.fails("task.create", obj({{"title", JsonValue("lost")}, {"attribution", who("h")}})) ==
+        codes::k_io_error);
+  CHECK(h.sessions.look_at_ledgers(true) == 0);
+  CHECK(pushed.sent.size() == mark);
+  const i64 kept = make_task(b, "kept");
+  CHECK(h.sessions.look_at_ledgers(true) == 1);
+  const std::vector<JsonValue> changes = ledger_changes(pushed, mark);
+  REQUIRE(changes.size() == 1);
+  CHECK(id_set(at(changes[0], "tasks")) == std::set<i64>{kept});
+}
+

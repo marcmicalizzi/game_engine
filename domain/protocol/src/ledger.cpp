@@ -290,7 +290,7 @@ bool update_ledger(io::Vfs& vfs, Session& session, bool read_only, bool grows, u
   }
   if (!session.may_write_side_files(error)) return false;
   LedgerFile ledger;
-  bool wrote = false;
+  bool wrote = false;  // the file holds `ledger` because this call wrote it, not only asked to
   const bool ok = update_side_file(
       vfs, path, ledger,
       [&](LedgerFile& l, bool& write) {
@@ -307,14 +307,14 @@ bool update_ledger(io::Vfs& vfs, Session& session, bool read_only, bool grows, u
         const bool changed = change(l, write, error);
         if (write) ++l.revision;
         revision = l.revision;
-        wrote = write;
         return changed;
       },
-      error);
+      error, &wrote);
   // What this process wrote is what its own watch has seen once the call's event goes out
   // (`Session::flush_ledger_written`), so the notice its write raises publishes nothing more, and
   // what else the write carried — another process's writes since, lapsed claims — is told first.
-  // Only a write pays for it: a read that writes nothing serializes nothing here.
+  // Only a write that reached the file counts: one that failed wrote nothing anyone can read, so
+  // it is told as nothing (A55). A read that writes nothing serializes nothing here.
   if (wrote && session.watching_ledger()) session.ledger_written(ledger);
   return ok;
 }

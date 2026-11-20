@@ -5,6 +5,7 @@
 #include <domain/doc/document_store.h>
 #include <domain/protocol/side_file.h>
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <span>
@@ -192,8 +193,20 @@ bool read_side_json(const io::Vfs& vfs, std::string_view path, JsonValue& value,
   return true;
 }
 
+namespace {
+std::atomic<u32> g_fail_writes{0};  // fail_next_side_writes_for_test
+}  // namespace
+
+void fail_next_side_writes_for_test(u32 count) noexcept { g_fail_writes.store(count); }
+
 bool write_side_json(const io::Vfs& vfs, std::string_view path, const JsonValue& value,
                      RpcError& error) {
+  for (u32 n = g_fail_writes.load(); n > 0;) {
+    if (g_fail_writes.compare_exchange_weak(n, n - 1)) {
+      error = make_error(codes::k_io_error, std::string(path) + ": failed for the test");
+      return false;
+    }
+  }
   std::string text = write_json(value);
   text.push_back('\n');
   std::string message;
