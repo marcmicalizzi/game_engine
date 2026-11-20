@@ -64,22 +64,24 @@ content_class::Decision admit_instance(SceneData& scene, const ReadClass& mesh,
 
 ReadClass read_sidecar_class(const std::string& source, const content_class::Categories& categories,
                              Vector<content_class::MaterialClass>* materials) {
+  // Through the content build's own reader, so the load and the build agree on what a sidecar says
+  // and on the key it moves: nothing of that name is `none`, and anything else there that cannot
+  // be read (a link or a junction that leads nowhere, a look that fails, text the classes module
+  // refuses) is the unreadable class, never `none` (content_build.md, "Content classes"). An
+  // existence probe that follows a link once read a dangling one as no sidecar, and the load then
+  // served the classless entry. No pack is named, so nothing but the sidecar is joined in.
+  content_build::MeshOptions options;
+  options.categories = &categories;
+  content_build::SourceClasses read;
+  content_build::Diagnostic why;
   ReadClass out;
-  const std::string sidecar = content_class::sidecar_path_of(source);
-  if (!io::exists(sidecar)) return out;
-  std::string text;
-  std::string error;
-  if (io::read_file(sidecar, text) != io::Status::Ok) {
-    error = "the sidecar could not be read";
-    out.classes = content_class::unreadable(categories);
-    out.unreadable = true;
-  } else if (!content_class::read_sidecar_classes(categories, text, out.classes, error,
-                                                  materials)) {
-    out.unreadable = true;  // `out.classes` is the unreadable class: the reader wrote it
-  }
+  out.unreadable = !content_build::read_source_classes(source, options, read, why);
+  out.classes = read.classes;  // the unreadable class on a refusal: the reader wrote it
+  if (materials != nullptr) *materials = std::move(read.materials);
   if (out.unreadable) {
     ENGINE_LOG_WARN(log_renderer, "a class that cannot be read decides as every category's top",
-                    log::field("sidecar", sidecar), log::field("error", error));
+                    log::field("sidecar", content_class::sidecar_path_of(source)),
+                    log::field("error", why.message));
   }
   return out;
 }
@@ -343,7 +345,15 @@ void admission_after_meshes(SceneDesc& desc, SceneData& out, LoadAdmission& stat
   Vector<ReadClass> textures(meshes, ReadClass{});
   state.image_hash.resize(meshes);
   HashMap<u64, u32> probed;  // path hash to its index in `seen`
-  Vector<std::pair<std::string, ReadClass>> seen;
+  // A probed file: its path, its class, and the hash its texture key holds, over its materials
+  // too, as the content build's texture step takes it, so the `.tex` the step writes on a miss is
+  // the one this key names.
+  struct Probed {
+    std::string path;
+    ReadClass read;
+    u64 hash = 0;
+  };
+  Vector<Probed> seen;
   for (u32 m = 0; m < meshes; ++m) {
     if (state.load[m] == 0) continue;
     const SourceMesh& source = out.sources[m];
@@ -355,23 +365,27 @@ void admission_after_meshes(SceneDesc& desc, SceneData& out, LoadAdmission& stat
       const u64 key = hash_bytes(path.data(), path.size());
       u32 index = ~0u;
       const u32* found = probed.find_value(key);
-      if (found != nullptr && seen[*found].first == path) {
+      if (found != nullptr && seen[*found].path == path) {
         index = *found;
       } else {
         // A hash two paths share keeps the first; the second is probed every time it is met.
         index = seen.size();
-        ReadClass read = read_sidecar_class(path, out.categories);
+        Vector<content_class::MaterialClass> materials;
+        Probed probe;
+        probe.path = path;
+        probe.read = read_sidecar_class(path, out.categories, &materials);
+        probe.hash = content_class::class_hash(out.categories, probe.read.classes, &materials);
         ++out.load.image_sidecars_probed;
-        if (!content_class::is_none(read.classes)) ++out.load.image_sidecars_found;
+        if (!content_class::is_none(probe.read.classes)) ++out.load.image_sidecars_found;
         if (found == nullptr) probed.try_emplace(key, index);
-        seen.push_back({path, read});
+        seen.push_back(std::move(probe));
       }
-      const ReadClass read = seen[index].second;
+      const ReadClass read = seen[index].read;
       if (content_class::is_none(read.classes)) continue;
       state.classified = true;
       textures[m] = join(textures[m], read);
       if (state.image_hash[m].empty()) state.image_hash[m].assign(source.data.images.size(), 0ull);
-      state.image_hash[m][i] = content_class::class_hash(out.categories, read.classes);
+      state.image_hash[m][i] = seen[index].hash;
     }
   }
   state.proxy_of.assign(meshes, ~0u);

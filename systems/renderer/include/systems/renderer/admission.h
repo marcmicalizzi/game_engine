@@ -65,9 +65,11 @@ content_class::Decision admit_instance(SceneData& scene, const ReadClass& mesh,
 // opened reads as `none` here, because its load fails on its own with a sentence of its own.
 ReadClass read_container_class(const std::string& path, content_class::Categories& categories);
 
-// What a provenance sidecar beside `source` declares (`content_class::sidecar_path_of`), through
-// the module's one reader: `none` with no sidecar (one existence probe), and the unreadable class
-// for one that cannot be read. `materials`, when given, receives each material's own class.
+// What a provenance sidecar beside `source` declares (`content_class::sidecar_path_of`), read as
+// the content build reads it (`content_build::read_source_classes`, through the module's one
+// reader): `none` only when nothing of that name is there (one look at the name, a link not
+// followed), and the unreadable class for anything there that cannot be read, a link or junction
+// that leads nowhere included. `materials`, when given, receives each material's own class.
 ReadClass read_sidecar_class(const std::string& source, const content_class::Categories& categories,
                              Vector<content_class::MaterialClass>* materials = nullptr);
 
