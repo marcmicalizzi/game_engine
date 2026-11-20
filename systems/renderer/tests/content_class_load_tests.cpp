@@ -25,6 +25,7 @@
 #include <systems/renderer/admission.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/reference.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/settings.h>
@@ -1088,23 +1089,29 @@ u32 largest_triangle_box(const SceneData& data, u32 instance) {
 
 struct Shot {
   CapturedFrame frame;
+  Vector<u8> reference;  // the reference integrator's colour, when asked for and available
   bool available = true;
   std::string why;
 };
 
-// The scene in the shot (`k_shot_eye`), every channel captured.
+// The scene in the shot (`k_shot_eye`), every channel captured, under `shadows`. `overhead` lifts
+// the second mesh 6 m over the first, so that it would shadow it; `reference` also renders the
+// reference integrator's picture where the device can.
 Shot shoot(const gfx::Device& device, const test::TempDir& tmp,
            std::initializer_list<const Grid*> meshes, const content_class::NamedPolicy& policy,
-           RasterMode raster) {
+           RasterMode raster, ShadowMode shadows = ShadowMode::Cascaded, bool overhead = false,
+           bool reference = false);
+
+// The same of a scene description the caller made.
+Shot shoot_scene(const gfx::Device& device, const SceneDesc& desc, RasterMode raster,
+                 ShadowMode shadows, bool reference) {
   Shot shot;
-  SceneDesc desc = scene_of(tmp, meshes);
-  desc.view_policy = policy;
   SceneData data;
   std::string error;
   REQUIRE_MESSAGE(load_scene(desc, data, error), error);
   RenderSettings settings;
   settings.raster = raster;
-  settings.shadows = ShadowMode::Cascaded;
+  settings.shadows = shadows;
   settings.occlusion = false;
   settings.lights = false;
   ResolvedSettings resolved;
@@ -1130,7 +1137,27 @@ Shot shoot(const gfx::Device& device, const test::TempDir& tmp,
   channels.depth = true;
   channels.normals = true;
   REQUIRE_MESSAGE(renderer.capture(frame, channels, shot.frame, &error), error);
+  if (reference && reference_available(resolved, device)) {
+    ReferenceRenderer integrator;
+    REQUIRE_MESSAGE(integrator.create(device, scene, renderer, ReferenceRenderer::Desc{}, &error),
+                    error);
+    ReferenceSettings rs;
+    rs.spp = 8;
+    rs.pixel_center = true;
+    ReferenceFrame picture;
+    REQUIRE_MESSAGE(integrator.render(shot_camera(), rs, picture, &error), error);
+    shot.reference = std::move(picture.color);
+  }
   return shot;
+}
+
+Shot shoot(const gfx::Device& device, const test::TempDir& tmp,
+           std::initializer_list<const Grid*> meshes, const content_class::NamedPolicy& policy,
+           RasterMode raster, ShadowMode shadows, bool overhead, bool reference) {
+  SceneDesc desc = scene_of(tmp, meshes);
+  if (overhead && desc.instances.size() > 1) desc.instances[1].origin = WorldPos{0.0, 6.0, 0.0};
+  desc.view_policy = policy;
+  return shoot_scene(device, desc, raster, shadows, reference);
 }
 
 template <typename T>
@@ -1214,13 +1241,46 @@ TEST_CASE("content classes at load: a capture holds the box or nothing, on every
                            << " pixels");
     CHECK(box > 1000u);
     CHECK(grid > 1000u);
+    // Every channel holds the box, not the grid and not nothing.
     CHECK(bytes_of(boxed.frame.ids) != bytes_of(whole.frame.ids));
+    CHECK(bytes_of(boxed.frame.color) != bytes_of(whole.frame.color));
+    CHECK(bytes_of(boxed.frame.depth) != bytes_of(whole.frame.depth));
+    CHECK(bytes_of(boxed.frame.normals) != bytes_of(whole.frame.normals));
+    CHECK(bytes_of(boxed.frame.color) != bytes_of(alone.frame.color));
+    CHECK(bytes_of(boxed.frame.depth) != bytes_of(alone.frame.depth));
+    CHECK(bytes_of(boxed.frame.normals) != bytes_of(alone.frame.normals));
     // Every path draws the box alike: the vertex path to the pixel, the others within its rim.
     if (mode == RasterMode::Hardware) hardware_box = box;
     if (mode == RasterMode::Vertex) CHECK(box == hardware_box);
     if (hardware_box != 0u) {
       CHECK(box + k_shot_width >= hardware_box);
       CHECK(box <= hardware_box + k_shot_width);
+    }
+  }
+  // **Nor its shadow**: the classified grid 6 m over the other, so that drawn it would shadow it,
+  // under the maps and under traced shadows, and through the reference integrator: omitted, every
+  // channel is the bytes of the scene that never had it; covered, it is there and casts.
+  for (const ShadowMode shadows : {ShadowMode::Cascaded, ShadowMode::RayTraced}) {
+    const RasterMode mode = RasterMode::Hardware;
+    const bool reference = shadows == ShadowMode::RayTraced;
+    const Shot omitted = shoot(device, tmp, {&a, &glow}, omit, mode, shadows, true, reference);
+    if (!omitted.available) {
+      MESSAGE("shadow mode " << static_cast<u32>(shadows) << " unavailable: " << omitted.why);
+      continue;
+    }
+    INFO("shadow mode " << static_cast<u32>(shadows));
+    const Shot alone = shoot(device, tmp, {&a}, omit, mode, shadows, true, reference);
+    const Shot whole = shoot(device, tmp, {&a, &glow}, wide, mode, shadows, true, reference);
+    CHECK(bytes_of(omitted.frame.color) == bytes_of(alone.frame.color));
+    CHECK(bytes_of(omitted.frame.ids) == bytes_of(alone.frame.ids));
+    CHECK(bytes_of(omitted.frame.depth) == bytes_of(alone.frame.depth));
+    CHECK(bytes_of(omitted.frame.normals) == bytes_of(alone.frame.normals));
+    CHECK(bytes_of(whole.frame.color) != bytes_of(alone.frame.color));
+    if (!omitted.reference.empty()) {
+      CHECK(bytes_of(omitted.reference) == bytes_of(alone.reference));
+      CHECK(bytes_of(whole.reference) != bytes_of(alone.reference));
+    } else {
+      MESSAGE("the reference integrator is unavailable on this device");
     }
   }
 }
