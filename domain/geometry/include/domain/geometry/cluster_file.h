@@ -475,9 +475,13 @@ struct ClusterFilePerch {
 // `sin a * shut - cos a * swing`. `width_m`, `height_m` and `thickness_m` are the leaf's own,
 // `opening` the index of the opening in the description that declared it, `open_deg` the angle
 // the description stands it at (0 to 180), and `flags` `k_door_flag_*`. A record whose sizes are
-// not positive, whose directions are not unit and perpendicular within 1e-3, or whose angle is
-// out of range is refused by the reader.
+// not positive and finite or past `k_door_max_size_m`, whose directions are not unit and
+// perpendicular within 1e-3, or whose angle is out of range is refused by the reader.
 inline constexpr u16 k_door_flag_door = 1u << 0;    // a door's leaf; without it, a casement's
+// The largest width, height or thickness a leaf may have: 12 m, so a leaf's far edge
+// (`sqrt(w*w + t*t)` from its hinge) is within the 17 m a host's swing test assumes when it tries
+// the arc every degree (scene_collision.md, "Doors"), and a host's box is never infinite.
+inline constexpr f32 k_door_max_size_m = 12.0f;
 inline constexpr u16 k_door_flag_paired = 1u << 1;  // one of a pair hung in one opening
 struct ClusterFileDoor {
   Vec3 pivot{};

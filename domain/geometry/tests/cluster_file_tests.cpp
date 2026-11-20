@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <string>
 
 using namespace engine;
@@ -1275,6 +1276,53 @@ TEST_CASE(
   REQUIRE_MESSAGE(write_cluster_file(tmp.file("bad-angle.clusters"), data, &error), error);
   REQUIRE(io::read_file(tmp.file("bad-angle.clusters"), bad) == io::Status::Ok);
   CHECK_FALSE(read_cluster_file_memory(view(bad), refused, &error));
+}
+
+// S91 (geometry.md, "Doors"): a host builds a box from a leaf's sizes and tries its arc every
+// degree out to 17 m from the hinge, so a size that is not finite, or past `k_door_max_size_m`,
+// is refused; one at the ceiling reads.
+TEST_CASE("cluster file: a door whose size is not finite or past the ceiling is refused") {
+  const test::TempDir tmp("engine_cluster_file");
+  ClusterFileData data;
+  Vector<u32> indices;
+  make_fixture(data, indices);
+  ClusterFileDoor door;
+  door.shut_x = 1.0f;
+  door.swing_z = 1.0f;
+  door.width_m = 0.9f;
+  door.height_m = 2.0f;
+  door.thickness_m = 0.05f;
+  door.flags = k_door_flag_door;
+  const f32 inf = std::numeric_limits<f32>::infinity();
+  const f32 nan = std::numeric_limits<f32>::quiet_NaN();
+  const f32 bad_sizes[] = {inf, 1e30f, k_door_max_size_m * 1.001f, 13.0f, nan};
+  std::string error;
+  for (u32 field = 0; field < 3; ++field) {
+    for (const f32 size : bad_sizes) {
+      CAPTURE(field);
+      CAPTURE(size);
+      ClusterFileDoor d = door;
+      (field == 0 ? d.width_m : field == 1 ? d.height_m : d.thickness_m) = size;
+      data.doors.clear();
+      data.doors.push_back(d);
+      const std::string path = tmp.file("big.clusters");
+      REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
+      std::string bytes;
+      REQUIRE(io::read_file(path, bytes) == io::Status::Ok);
+      ClusterFileData refused;
+      error.clear();
+      CHECK_FALSE(read_cluster_file_memory(view(bytes), refused, &error));
+      CHECK(error.find("doors") != std::string::npos);
+    }
+  }
+  door.width_m = door.height_m = door.thickness_m = k_door_max_size_m;
+  data.doors.clear();
+  data.doors.push_back(door);
+  const std::string path = tmp.file("ceiling.clusters");
+  REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
+  ClusterFileData read;
+  REQUIRE_MESSAGE(read_cluster_file(path, read, &error), error);
+  CHECK(read.doors.size() == 1u);
 }
 
 TEST_CASE("cluster file: the source identity reads back without decoding the mesh") {
