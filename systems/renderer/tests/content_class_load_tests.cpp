@@ -772,6 +772,26 @@ TEST_CASE("content classes at load: a raise refuses its instance, not the mesh o
   CHECK(scene.instances[1].mesh == 1);  // the lamp's slot is its box
 }
 
+// `substituted` counts instances (C64): a classified mesh no instance names, placed by a prop, is
+// decided (its class in the table, its slot a box) and counted nowhere.
+TEST_CASE("content classes at load: a mesh no instance names is decided, not counted") {
+  const test::TempDir tmp("renderer_classes_unnamed");
+  REQUIRE(tmp.ok());
+  const Grid a = write_grid(tmp, "a.clusters", 9, "a.png");
+  const Grid glow = write_grid(tmp, "glow.clusters", 17, "glow.png", glow_record(1));
+  SceneDesc desc = scene_of(tmp, {&a});
+  desc.meshes.push_back(glow.path);
+  desc.props.push_back(SceneProp{"lamp", 1});
+  std::string error;
+  SceneData scene;
+  REQUIRE_MESSAGE(load_scene(desc, scene, error), error);
+  CHECK(scene.instances.size() == 1);
+  CHECK(scene.parts[1].cluster_count == 1);  // the lamp's slot is its box
+  CHECK(scene.decisions.size() == 2);
+  CHECK(row(scene, "fixture_glow") == nullptr);
+  CHECK(scene.load.unreadable_omitted == 0);
+}
+
 namespace {
 
 // A generator of the test's own whose output grows over a host its recipe names (`{"host": ...}`),

@@ -536,10 +536,24 @@ void admission_after_meshes(SceneDesc& desc, SceneData& out, LoadAdmission& stat
   for (u32 i = 0; desc.grid_instances <= 1 && i < desc.instances.size(); ++i)
     if (desc.instances[i].mesh < meshes) named[desc.instances[i].mesh] = 1;
   if (made_by_load(desc) && meshes > 0) named[0] = 1;
+  // Decided outside the door's accounting (C64): `substituted` counts instances, and such a mesh
+  // is none. One another placer places is drawn by it, so its class enters the table and, when
+  // admitted, `held`; one nothing places draws nothing, and is decided alone.
   for (u32 m = 0; m < meshes; ++m) {
     if (named[m] != 0) continue;
-    const content_class::Decision d = admit_instance(out, state.mesh[m], textures[m], ReadClass{});
-    if (d.outcome == content_class::Outcome::admit) ++admitted[m];
+    const ReadClass own = join(state.mesh[m], textures[m]);
+    const bool placed = m < state.placed.size() && state.placed[m] != 0;
+    content_class::Outcome decided = content_class::Outcome::admit;
+    if (content_class::is_none(own.classes)) {
+      decided = content_class::Outcome::admit;
+    } else if (placed) {
+      decided = out.decisions.decide(own.classes).outcome;
+      if (decided == content_class::Outcome::admit)
+        out.held = content_class::join(out.held, own.classes);
+    } else {
+      decided = content_class::decide(own.classes, out.instantiated_under.policy).outcome;
+    }
+    if (decided == content_class::Outcome::admit) ++admitted[m];
   }
 
   // 3. A mesh becomes its proxy box when its own class (its own and its textures', never an
