@@ -183,6 +183,59 @@ peak and ready (above, on the orbit), stage 4's share by its owner rows, and **n
 yet, before or after**: the first standing minute is owed by whoever next flies the staging, with
 `--camera-path` and `--memory-report-floor-mib 2`.
 
+## W51-4: a launch standing, and the next stages
+
+**How it was flown** (2026-11-19). Every load stands at the staging's one-place path (`--camera-path` with both keys at one camera, W149's), so the frames after the first are a player standing still; the rest of the command is the staging's own (DONE note: `--terrain-tiles --terrain-far 6 --terrain-async --time-rate 0`, flora motion), at the **top** setting (3840 × 2160, `--raster rt --shadows rt`, the bounce, micromaps) and the **low** one (1920 × 1080, `--raster hw --shadows csm`, no bounce, no micromaps), with `--memory-report-floor-mib 2` where the binary has it and the process sampled from outside every two seconds. Three binaries, the same evening: **b68** (main before any of W51's stages, 09ed028b), **b69** (main with stage 1 and stage 4, 1f5ff68f) and **the tip** (this row's, b69 plus stage A below). The derived data is a copy of the staging's own read set under the row's scratch (the clusters, textures and far-forest entries the 09ed028b loads read; everything else linked), because batch 69's main rekeys about forty broadleaf trees and a load of it cooks them: the first load of b69 (a declared 20-minute lease) cooked them and compiled its pipelines into that copy, and is not in the table. "GB" here is 2³⁰ bytes, as the page's other tables. The machine: processors at 80 to 100 % from other rows' builds at every start, the session unlocked, free commit 50.9 to 52.6 GB at each start and as low as 16 GB during; the working sets are floors, as above.
+
+**Where the load's maximum is now.** Until stage 1 the commit peaked at the end of `gpu scene`, where the host copy stood beside the device copy. After stages 1 and 4 it peaks **at the first frame**: the world's first commit builds every mesh its tiles name (`world::TileMeshes`, below) and the traced chain resizes its first capacity, which the device's own usage shows (16.8 GB at that moment against 14.4 at ready and 13.4 after a minute). So a stage that lowers the end of `gpu scene` lowers the stretch from there to the first frame and not the maximum.
+
+| Top (4K traced, bounce), standing | b68 | b69 (stages 1, 4) | tip (stage A) |
+|---|---:|---:|---:|
+| End of `gpu scene` (`uploaded`): commit / engine heap / host geometry | — (no snapshot) | 18.0 GB / 3,120 / 1,887 MiB | **16.3 GB / 1,381 / 149 MiB** |
+| Maximum, and when | 32.4 GB at the first frame (with a cook, below) | 22.7 GB at the first frame | 22.7 GB at the first frame |
+| Ready (first frame): commit / device | 30.5 / 13.9 GB | 19.8 / 14.4 GB | 19.0 / 14.4 GB |
+| One minute standing | 28.9 GB | 19.1 GB | 19.1 GB |
+| Standing at the run's end | 28.7 GB (+2 min) | 18.9 GB (+4.7 min) | 18.8 GB (+3.4 min) |
+| Exit snapshot: commit / engine heap / C runtime heaps (committed / used) / device-local | 29,405 / 13,613 / 14,839 / 14,365 / 13,384 MiB | 19,302 / 3,707 / 4,886 / 4,368 / 13,311 | 19,300 / 3,707 / 4,878 / 4,353 / 13,311 |
+
+The standing curve is flat from the first minute in every run (within 0.3 GB), so the run's end stands for five minutes; the runs ended earlier than five minutes where the machine drew faster than the first calibration (28 ms a frame at b69's start, 19 at the tip's). **b68's top run is not clean**: it was the first through the row's cache copy, which lacked 349 of the channels' clast meshes, and its world built them in the first minute (its maximum and its first minute carry that cook; its end does not). W51-2's T3 is the clean figure for b68's peak (30.6 GB, on the orbit).
+
+| Low (1080p raster, cascades), standing | b68 | b69 (stages 1, 4) | tip (stage A) |
+|---|---:|---:|---:|
+| End of `gpu scene` (`uploaded`): commit / engine heap / host geometry | not flown standing (W51-2's T4 on the orbit: peak 24.0 GB) | 12.2 GB / 3,074 / 1,854 MiB | **10.5 GB / 1,366 / 146 MiB** |
+| Maximum, and when | — | 15.8 GB at the first frame | 15.6 GB at the first frame |
+| One minute standing / at the run's end (+5 min) | 21.0 GB after a minute (T4, orbit) | 15.8 / 15.6 GB | 15.6 / 15.3 GB |
+| Exit snapshot: commit / engine heap / C runtime heaps / device-local / the frame's own | — | 15,955 / 3,408 / 4,702 / 10,451 / 2,923 MiB | 15,693 / 3,408 / 4,677 / 10,451 / 2,923 |
+
+The low pair was flown 40 minutes apart (b69's on a quieter machine, 8 % against 40 % of the processors); the two pictures at the run's end, 12,000 standing frames each, are the same file (SHA-256 `FD8CF17D6291F45E…`, 8,295,480 raw bytes, none differing). **At the low setting the device holds 10.5 GB standing, of which the frame's own is 2.9 GB** (1.1 at the end of `gpu scene` and on W51-2's orbit): standing at this view the visible runs and the pair tables grow with the world's tail to nearly three times their load size, which is the largest single thing between the low setting and a 4.5 GB card after the textures.
+
+**Stage A: the floats go inside `create`** (renderer.md, "The floats go inside `create`"). Of the merged host copy stage 4 kept through `create`, nothing in `create` read the float positions or the per-vertex source indices after `measure_host_reads`, and the chain reads only the triangles, to pack its 8-bit indices; the collision's copy came after `create` only because engine-view made it there. engine-view makes it first now, and `create` gives the floats and the source indices back with the upload-only streams and the triangles after the pack: on the staging the log says 3.20 GB inside `create` (1.51 GB of it floats and source indices) and 0.32 GB of triangles after the pack, and the `uploaded` snapshot's host geometry falls from 1,887 to 149 MiB (the descriptors). The commit from the end of `gpu scene` to the first frame stands 1.7 GB lower (16.1 GB against 17.1 to 19.0); the maximum and the standing figures do not move, because neither held the floats any more. Pictures: the low pair's last frames are the same file (above); `streaming: a whole scene draws the same bytes when create gives its host geometry back` holds the cascaded and the traced pictures of a scene that gave everything back to one that kept it, byte for byte and on both tiers.
+
+**What the host holds standing, by owner** (b69 and the tip alike, exit snapshot, heap sites symbolized with `cdb`): the engine heap's 3.7 GB is
+
+| Owner | MiB | Who reads it later | Released? |
+|---|---:|---|---|
+| **Meshes the tiles name that the mesh room withholds**: their built textures read for the admission (`load_placement_textures`, 1,352) and their merged streams (`load_placement_mesh`, about 820) | **~2,170** | the admission, when the room has space (`TileMeshes::admit`; the room was full: 52 meshes resident, 99,902 of 101,989 clusters, 189 withheld, `renderer.meshes.budget_mib` 256) | No: the reader is real; W47's stage 3 (the root pool) and the room's budget are where it goes |
+| The `authored` entry's instances as a JSON tree (`schema::to_json<AuthoredSet>`, scene.cpp) beside the generator's typed copy (43) | ~280 | the world's and the collision's opens of the entry | No (two readers); a typed hand-off instead of the tree is the next cut |
+| The waters' depth maps (`SceneWater`) | 168 | the swash's numbers when the wind turns (`water_swash_numbers`) | No |
+| The forms' and originals' motion records (`stream_authored`, `load_generated_mesh`, `flora::motion_records`) | ~250 | the tail's forms | Not measured further |
+| The cluster and LOD descriptors | 149 | every frame's cull | No |
+| The world's tiles' instances (`PlacementTiles`) | 132 | the world | No |
+
+Beside the engine heap: **1.2 GB of the C runtime heaps is not the engine's** (4.4 GB used against 3.7), and **0.5 GB is free but committed**. The free part does not come back by asking: a scratch program that frees six of every seven of 1.5 GB of mixed blocks keeps 1.45 GB private, and `_heapmin` and `HeapCompact` return none of it (fragmentation; freed whole, the heap gives it back by itself). An allocator that returns whole spans (ADR-0012's mimalloc) or load-scoped arenas is the cure, not a call.
+
+**What a launch commits, after each stage** (standing, GB of commit; the stages are this page's):
+
+| | Top: maximum / standing | Low: maximum / standing |
+|---|---:|---:|
+| Main before W51's stages (b68) | 30.6 (W51-2 T3) / 28.7 | 24.0 / 21.0 (W51-2 T4, orbit) |
+| Stage 1 (W51-3, on the orbit) | 20.5 / 15.0 (orbit) | — |
+| Stages 1 and 4 (b69) | 22.7 / 18.9 | 15.8 / 15.6 |
+| Stage A (the tip) | 22.7 / 18.8 (16.3 at the end of `gpu scene`, was 18.0) | 15.6 / 15.3 (10.5 at the end of `gpu scene`, was 12.2) |
+| Next: the chain's first capacity from the first frame (stage 3) and no tile mesh built that the room cannot take | about 20 / 16.6 (estimates: the 2.4 GB device transient and the 2.2 GB of withheld meshes) | about 13.4 / 13.1 (no chain at this setting) |
+
+**What is left for the residency manager** (W47), on the tip at the top setting standing (exit, MiB): device-local 13,311 — textures 3,150, geometry 2,656, the frame's own 2,272 (twice the orbit's 1,080: standing at this view the visible runs and pair tables grow to it), structures 1,346 (the cache 1,036, static forms 352), tiles 1,218, companions 721, micromaps 369, materials 364 — which Windows charges once more as the driver's backing, all of it in the commit; and on the host the withheld meshes' 2.2 GB, which are the mesh room's. Of the 18.8 GB standing 13.0 is the device's and 5.8 the host's, and every large host owner left has a reader after the upload: what nothing reads again is the C runtime heap's free 0.5 GB, an allocator's matter.
+
 ## Not measured
 
 - The cold load with a cache of its own: a cold load of the whole staging needs a 20-minute lease and 40 GB free (the staging agent's DONE note), and its cook does not ship; its peak is the staging agent's 32.2 GB.
