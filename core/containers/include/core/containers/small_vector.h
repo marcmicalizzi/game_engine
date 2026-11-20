@@ -49,8 +49,8 @@ class SmallVector {
 
   SmallVector() noexcept : data_(inline_ptr()) {}
   explicit SmallVector(Alloc alloc) noexcept : data_(inline_ptr()), alloc_(std::move(alloc)) {}
-  explicit SmallVector(size_type count) : SmallVector() { resize(count); }
-  SmallVector(size_type count, const T& value) : SmallVector() { assign(count, value); }
+  explicit SmallVector(size_type n) : SmallVector() { resize(n); }
+  SmallVector(size_type n, const T& value) : SmallVector() { assign(n, value); }
   SmallVector(std::initializer_list<T> init) : SmallVector() { assign(init.begin(), init.end()); }
   template <class InputIt>
   SmallVector(InputIt first, InputIt last) : SmallVector() {
@@ -196,11 +196,11 @@ class SmallVector {
     const size_type b = index_of(first);
     const size_type e = index_of(last);
     ENGINE_ASSERT(b <= e && e <= size_, "SmallVector::erase: bad range");
-    const size_type count = e - b;
-    for (size_type k = b; k + count < size_; ++k)
-      data_[k] = std::move(data_[k + count]);
-    containers::detail::destroy_n(data_ + (size_ - count), count);
-    size_ -= count;
+    const size_type removed = e - b;
+    for (size_type k = b; k + removed < size_; ++k)
+      data_[k] = std::move(data_[k + removed]);
+    containers::detail::destroy_n(data_ + (size_ - removed), removed);
+    size_ -= removed;
     return data_ + b;
   }
   // Order-destroying erase, O(1): the last element takes the vacated place.
@@ -267,12 +267,12 @@ class SmallVector {
     for (; first != last; ++first)
       emplace_back(*first);
   }
-  void assign(size_type count, const T& value) {
+  void assign(size_type n, const T& value) {
     clear();
-    reserve(count);
-    for (size_type i = 0; i < count; ++i)
+    reserve(n);
+    for (size_type i = 0; i < n; ++i)
       std::construct_at(data_ + i, value);
-    size_ = count;
+    size_ = n;
   }
   template <class InputIt>
   void append(InputIt first, InputIt last) {

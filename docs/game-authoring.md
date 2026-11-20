@@ -380,6 +380,7 @@ press reaching the module once through the exported map, the HUD's elements list
 the exported `content/input-map.json` checked against the synthetic walk's header digit for digit,
 packed with the SDK's `package-game.ps1` on `-ModuleDll` and the zip's `package.json`, `run.cmd` and
 module checked, then a scene of the repository's own packed and found under `content/<its directory>/`;
+the SDK's container headers compiled, with its own compiler, flags and `include/`, under a module's globals named `capacity`, `size`, `count`, `data` and `index` with every container instantiated, no warning allowed (a game author's module failed on C4459 against batch 69's SDK);
 plus the refusals. 61 checks, 127 s in `msvc-debug` on 2026-10-18 (the module's build 16 s, the
 run 77 s, the package 5 s; 56 checks and 74 s before, on a quieter machine) on the RTX 5090
 beside five other agents' builds; it skips with a sentence where the build

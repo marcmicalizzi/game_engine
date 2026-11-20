@@ -52,34 +52,34 @@ void relocate_n(T* src, usize n, T* dst) noexcept {
 // Opens an uninitialized slot at index i in a live range of n elements by shifting [i, n)
 // to [i + 1, n + 1). Storage for n + 1 elements must exist. Slot i is left uninitialized.
 template <class T>
-void open_hole(T* data, usize n, usize i) noexcept {
+void open_hole(T* elems, usize n, usize i) noexcept {
   if (i == n) return;
   if constexpr (is_trivially_relocatable_v<T>) {
-    std::memmove(static_cast<void*>(data + i + 1), static_cast<const void*>(data + i),
+    std::memmove(static_cast<void*>(elems + i + 1), static_cast<const void*>(elems + i),
                  (n - i) * sizeof(T));
   } else {
-    std::construct_at(data + n, std::move(data[n - 1]));
+    std::construct_at(elems + n, std::move(elems[n - 1]));
     for (usize k = n - 1; k > i; --k) {
-      data[k] = std::move(data[k - 1]);
+      elems[k] = std::move(elems[k - 1]);
     }
-    std::destroy_at(data + i);
+    std::destroy_at(elems + i);
   }
 }
 
 // Removes the live element at index i from a range of n elements by shifting [i + 1, n) to
 // [i, n - 1). Slot n - 1 is left uninitialized.
 template <class T>
-void close_hole(T* data, usize n, usize i) noexcept {
+void close_hole(T* elems, usize n, usize i) noexcept {
   if constexpr (is_trivially_relocatable_v<T>) {
     if (i + 1 < n) {
-      std::memmove(static_cast<void*>(data + i), static_cast<const void*>(data + i + 1),
+      std::memmove(static_cast<void*>(elems + i), static_cast<const void*>(elems + i + 1),
                    (n - i - 1) * sizeof(T));
     }
   } else {
     for (usize k = i; k + 1 < n; ++k) {
-      data[k] = std::move(data[k + 1]);
+      elems[k] = std::move(elems[k + 1]);
     }
-    std::destroy_at(data + n - 1);
+    std::destroy_at(elems + n - 1);
   }
 }
 

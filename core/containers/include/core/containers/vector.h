@@ -45,8 +45,8 @@ class Vector {
 
   Vector() noexcept = default;
   explicit Vector(Alloc alloc) noexcept : alloc_(std::move(alloc)) {}
-  explicit Vector(size_type count) { resize(count); }
-  Vector(size_type count, const T& value) { assign(count, value); }
+  explicit Vector(size_type n) { resize(n); }
+  Vector(size_type n, const T& value) { assign(n, value); }
   Vector(std::initializer_list<T> init) { assign(init.begin(), init.end()); }
   template <class InputIt>
   Vector(InputIt first, InputIt last) {
@@ -199,11 +199,11 @@ class Vector {
     const size_type b = index_of(first);
     const size_type e = index_of(last);
     ENGINE_ASSERT(b <= e && e <= size_, "Vector::erase: bad range");
-    const size_type count = e - b;
-    for (size_type k = b; k + count < size_; ++k)
-      data_[k] = std::move(data_[k + count]);
-    containers::detail::destroy_n(data_ + (size_ - count), count);
-    size_ -= count;
+    const size_type removed = e - b;
+    for (size_type k = b; k + removed < size_; ++k)
+      data_[k] = std::move(data_[k + removed]);
+    containers::detail::destroy_n(data_ + (size_ - removed), removed);
+    size_ -= removed;
     return data_ + b;
   }
   iterator erase_unordered(const_iterator pos) noexcept {
@@ -289,13 +289,13 @@ class Vector {
     for (; first != last; ++first)
       emplace_back(*first);
   }
-  void assign(size_type count, const T& value) {
+  void assign(size_type n, const T& value) {
     check_type();
     clear();
-    reserve(count);
-    for (size_type i = 0; i < count; ++i)
+    reserve(n);
+    for (size_type i = 0; i < n; ++i)
       std::construct_at(data_ + i, value);
-    size_ = count;
+    size_ = n;
   }
   template <class InputIt>
   void append(InputIt first, InputIt last) {

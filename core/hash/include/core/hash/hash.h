@@ -58,8 +58,8 @@ inline u64 load_partial(const unsigned char* p, usize len) noexcept {
 
 }  // namespace hash_detail
 
-inline u64 hash_bytes(const void* data, usize len, u64 seed = k_hash_seed) noexcept {
-  const auto* p = static_cast<const unsigned char*>(data);
+inline u64 hash_bytes(const void* bytes, usize len, u64 seed = k_hash_seed) noexcept {
+  const auto* p = static_cast<const unsigned char*>(bytes);
   u64 h = seed ^ mix64(len);
   while (len >= 8) {
     u64 word;

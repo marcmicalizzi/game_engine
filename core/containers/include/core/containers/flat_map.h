@@ -414,15 +414,15 @@ class FlatMap {
   static constexpr usize block_align() noexcept {
     return containers::detail::max_align(alignof(Key), alignof(Value));
   }
-  static constexpr usize values_offset(size_type capacity) noexcept {
-    return containers::detail::align_up(static_cast<usize>(capacity) * sizeof(Key), alignof(Value));
+  static constexpr usize values_offset(size_type cap) noexcept {
+    return containers::detail::align_up(static_cast<usize>(cap) * sizeof(Key), alignof(Value));
   }
-  static constexpr usize block_bytes(size_type capacity) noexcept {
-    return values_offset(capacity) + static_cast<usize>(capacity) * sizeof(Value);
+  static constexpr usize block_bytes(size_type cap) noexcept {
+    return values_offset(cap) + static_cast<usize>(cap) * sizeof(Value);
   }
-  static Value* values_at(Key* keys, size_type capacity) noexcept {
+  static Value* values_at(Key* keys, size_type cap) noexcept {
     void* base = static_cast<void*>(keys);
-    void* p = static_cast<std::byte*>(base) + values_offset(capacity);
+    void* p = static_cast<std::byte*>(base) + values_offset(cap);
     return static_cast<Value*>(p);
   }
 

@@ -28,6 +28,7 @@ Planned: `IntrusiveList`, `BitSet`, `RingBuffer`.
 - Map iteration yields `std::pair<const K&, V&>`; write `for (auto [k, v] : map)`. Map iterators are index-based proxies, 16 bytes, invalidated by insert and erase.
 - `SizeType` bounds a container at 2^32 entries by default; pass `u64` where a single structure needs more (8 bytes more per object).
 - Allocator policies: `mem::DefaultAlloc` (empty) or `mem::ArenaAlloc{&arena}` (one pointer).
+- **No parameter or local in these headers is named after a common global** (`capacity`, `size`, `count`, `data`, `index`): a game module includes them through the SDK under `/W4 /WX`, and a module's own global of that name turns the header's parameter into C4459 and the module's build into an error (batch 70: a `capacity` in the dense hash table). Name such a parameter for what it holds (`cap`, `n`, `removed`, `buckets`, `elems`); `tools.game_sdk` compiles a translation unit that declares those five globals before every container header and instantiates each container, and fails on any warning ([game authoring](../game-authoring.md#testing)).
 
 **Per-container notes.**
 - `FlatMap`/`FlatSet`: binary search touches only keys; `append_sorted` for pre-sorted input; `insert_bulk` is O((n+m) log(n+m)) with last-wins semantics. Growth combines reallocation with the insertion hole so elements move once.

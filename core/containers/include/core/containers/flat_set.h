@@ -280,8 +280,8 @@ class FlatSet {
  private:
   static constexpr size_type k_no_hole = std::numeric_limits<size_type>::max();
 
-  static constexpr usize block_bytes(size_type capacity) noexcept {
-    return static_cast<usize>(capacity) * sizeof(Key);
+  static constexpr usize block_bytes(size_type cap) noexcept {
+    return static_cast<usize>(cap) * sizeof(Key);
   }
 
   size_type grow(size_type minimum) const noexcept {

@@ -117,23 +117,23 @@ class DenseHashTable {
   static constexpr usize block_align() noexcept {
     return k_has_value ? max_align(alignof(Key), alignof(ValueStorage)) : alignof(Key);
   }
-  static constexpr usize values_offset(SizeType capacity) noexcept {
-    return align_up(static_cast<usize>(capacity) * sizeof(Key), alignof(ValueStorage));
+  static constexpr usize values_offset(SizeType cap) noexcept {
+    return align_up(static_cast<usize>(cap) * sizeof(Key), alignof(ValueStorage));
   }
-  static constexpr usize dense_block_bytes(SizeType capacity) noexcept {
+  static constexpr usize dense_block_bytes(SizeType cap) noexcept {
     if constexpr (k_has_value) {
-      return values_offset(capacity) + static_cast<usize>(capacity) * sizeof(ValueStorage);
+      return values_offset(cap) + static_cast<usize>(cap) * sizeof(ValueStorage);
     } else {
-      return static_cast<usize>(capacity) * sizeof(Key);
+      return static_cast<usize>(cap) * sizeof(Key);
     }
   }
-  static ValueStorage* values_at(Key* keys, SizeType capacity) noexcept {
+  static ValueStorage* values_at(Key* keys, SizeType cap) noexcept {
     void* base = static_cast<void*>(keys);
-    void* p = static_cast<std::byte*>(base) + values_offset(capacity);
+    void* p = static_cast<std::byte*>(base) + values_offset(cap);
     return static_cast<ValueStorage*>(p);
   }
-  static constexpr usize bucket_bytes(SizeType count) noexcept {
-    return static_cast<usize>(count) * sizeof(Bucket);
+  static constexpr usize bucket_bytes(SizeType buckets) noexcept {
+    return static_cast<usize>(buckets) * sizeof(Bucket);
   }
 
   Key* keys_ptr() noexcept { return keys_; }

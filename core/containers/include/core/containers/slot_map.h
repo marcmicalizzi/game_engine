@@ -251,16 +251,15 @@ class SlotMap {
   static constexpr usize dense_align() noexcept {
     return containers::detail::max_align(alignof(T), alignof(size_type));
   }
-  static constexpr usize slots_offset(size_type capacity) noexcept {
-    return containers::detail::align_up(static_cast<usize>(capacity) * sizeof(T),
-                                        alignof(size_type));
+  static constexpr usize slots_offset(size_type cap) noexcept {
+    return containers::detail::align_up(static_cast<usize>(cap) * sizeof(T), alignof(size_type));
   }
-  static constexpr usize dense_bytes(size_type capacity) noexcept {
-    return slots_offset(capacity) + static_cast<usize>(capacity) * sizeof(size_type);
+  static constexpr usize dense_bytes(size_type cap) noexcept {
+    return slots_offset(cap) + static_cast<usize>(cap) * sizeof(size_type);
   }
-  static size_type* dense_to_slot_at(T* values, size_type capacity) noexcept {
+  static size_type* dense_to_slot_at(T* values, size_type cap) noexcept {
     void* base = static_cast<void*>(values);
-    void* p = static_cast<std::byte*>(base) + slots_offset(capacity);
+    void* p = static_cast<std::byte*>(base) + slots_offset(cap);
     return static_cast<size_type*>(p);
   }
   size_type* dense_to_slot() noexcept { return dense_to_slot_at(values_, dense_capacity_); }

@@ -142,6 +142,93 @@ try {
   $relocatable = Get-Content -LiteralPath (Join-Path $sdk 'cmake/build_config.cmake') -Raw
   Check ($relocatable -match 'GM_SDK_ROOT' -and $relocatable -notmatch [regex]::Escape($Root.Replace('\', '/'))) 'the relocatable config names no path into the tree'
 
+  # ---- the headers under a module's own globals ------------------------------------------------
+  # A game author's module failed to build against an SDK (batch 70): a parameter named `capacity`
+  # in core/containers' dense hash table hid a global of that name in the module, C4459 under the
+  # SDK's /W4 /WX. A module's globals are called what a header's parameters are, so this compiles,
+  # with the SDK's own compiler, flags and include/, a translation unit that declares the common
+  # ones before every container header and instantiates each container with an allocator of its
+  # own (member templates called once), and fails on any warning. Compiled, not linked: a module
+  # that instantiates a container links engine::assert_fail, which a module does not have.
+  $sdkConfig = Get-Content -LiteralPath (Join-Path $sdk 'cmake/build_config.cmake') -Raw
+  $sdkGm = @{}
+  foreach ($m in [regex]::Matches($sdkConfig, '(?m)^set\((GM_\w+) \[==\[(.*?)\]==\]\)\s*$')) { $sdkGm[$m.Groups[1].Value] = $m.Groups[2].Value }
+  if ($sdkConfig -match '(?m)^set\(GM_MSVC TRUE\)' -and (Test-Path -LiteralPath $sdkGm['GM_CXX'] -PathType Leaf)) {
+    $namesCpp = Join-Path $scratch 'common_names.cpp'
+    Set-Content -LiteralPath $namesCpp -Encoding utf8 -Value @'
+#include <cstdlib>
+
+static int capacity = 1;
+static int size = 2;
+static int count = 3;
+static int data = 4;
+static int index = 5;
+
+#include <core/containers/fixed_vector.h>
+#include <core/containers/flat_map.h>
+#include <core/containers/flat_set.h>
+#include <core/containers/hash_map.h>
+#include <core/containers/hash_set.h>
+#include <core/containers/slot_map.h>
+#include <core/containers/small_vector.h>
+#include <core/containers/vector.h>
+
+namespace {
+struct ModuleAlloc {
+  static void* allocate(engine::usize bytes, engine::usize align) { return _aligned_malloc(bytes, align); }
+  static void deallocate(void* p, engine::usize, engine::usize) noexcept { _aligned_free(p); }
+  constexpr bool operator==(const ModuleAlloc&) const noexcept = default;
+};
+using U32 = engine::u32;
+}  // namespace
+
+template class engine::Vector<int, U32, ModuleAlloc>;
+template class engine::SmallVector<int, 4, U32, ModuleAlloc>;
+template class engine::FixedVector<int, 4>;
+template class engine::HashMap<int, int, engine::Hash<int>, std::equal_to<>, U32, ModuleAlloc>;
+template class engine::HashSet<int, engine::Hash<int>, std::equal_to<>, U32, ModuleAlloc>;
+template class engine::FlatMap<int, int, std::less<>, U32, ModuleAlloc>;
+template class engine::FlatSet<int, std::less<>, U32, ModuleAlloc>;
+template class engine::SlotMap<int, ModuleAlloc>;
+
+int sdk_common_names_check() {
+  const int values[] = {capacity, size, count, data, index};
+  engine::Vector<int, U32, ModuleAlloc> v(values, values + 5);
+  v.insert(v.begin(), 7);
+  v.erase(v.begin(), v.begin() + 1);
+  engine::SmallVector<int, 4, U32, ModuleAlloc> s(values, values + 5);
+  s.erase(s.begin(), s.begin() + 2);
+  engine::FixedVector<int, 4> f;
+  f.push_back(values[0]);
+  engine::HashMap<int, int, engine::Hash<int>, std::equal_to<>, U32, ModuleAlloc> m;
+  m.try_emplace(1, 2);
+  engine::HashSet<int, engine::Hash<int>, std::equal_to<>, U32, ModuleAlloc> h;
+  h.insert(3);
+  engine::FlatMap<int, int, std::less<>, U32, ModuleAlloc> fm;
+  fm.try_emplace(4, 5);
+  fm.erase(4);
+  engine::FlatSet<int, std::less<>, U32, ModuleAlloc> fs;
+  fs.insert(6);
+  engine::SlotMap<int, ModuleAlloc> sm;
+  sm.erase(sm.insert(8));
+  return static_cast<int>(v.size() + s.size() + f.size() + m.size() + h.size() + fm.size() + fs.size() + sm.size());
+}
+'@
+    $savedEnv = @{ INCLUDE = $env:INCLUDE; PATH = $env:PATH }
+    try {
+      if ($sdkGm['GM_ENV_INCLUDE']) { $env:INCLUDE = $sdkGm['GM_ENV_INCLUDE'] }
+      if ($sdkGm['GM_ENV_PATH']) { $env:PATH = $sdkGm['GM_ENV_PATH'] + ';' + $env:PATH }
+      $ccArgs = @('/nologo', '/c') + @($sdkGm['GM_FLAGS'] -split ';' | Where-Object { $_ }) +
+                @($sdkGm['GM_DEFINES'] -split ';' | Where-Object { $_ } | ForEach-Object { "/D$_" }) +
+                @("/I$(Join-Path $sdk 'include')", "/Fo$(Join-Path $scratch 'common_names.obj')", $namesCpp)
+      $cc = & $sdkGm['GM_CXX'] @ccArgs 2>&1 | ForEach-Object { "$_" }
+      $ccCode = $LASTEXITCODE
+    }
+    finally { $env:INCLUDE = $savedEnv.INCLUDE; $env:PATH = $savedEnv.PATH }
+    $said = @($cc | Where-Object { $_ -match 'warning|error' } | ForEach-Object { ($_ -split '[\\/]include[\\/]')[-1] })
+    Check ($ccCode -eq 0 -and $said.Count -eq 0) "the container headers compile under a module's globals named capacity, size, count, data and index: $($said -join ' | ')"
+  }
+
   # ---- the template -----------------------------------------------------------------------------
   $bad = Run (Join-Path $Root 'tools/new-game-repo.ps1') @('-Name', '9lives', '-Out', (Join-Path $scratch 'bad'), '-Sdk', $sdk)
   Check ($bad.Code -eq 2 -and $bad.Output -match 'not a C identifier') 'a name that is not a C identifier is refused'
