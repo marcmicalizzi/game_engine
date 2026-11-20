@@ -733,6 +733,70 @@ TEST_CASE("content classes at load: a scene file that gives a key twice is refus
           "fixture_glow");
 }
 
+namespace {
+
+// A generator of the test's own whose output grows over a host its recipe names (`{"host": ...}`),
+// as a cover or a vine does: its key covers the host through the hosts' seam, and it builds
+// nothing, so a load that reached its build would fail.
+bool fixture_host_hash(std::span<const u8> bytes, u64& out, std::string&) {
+  out = hash_bytes(bytes.data(), bytes.size());
+  return true;
+}
+bool fixture_host_hash_with(std::span<const u8> bytes, const assets::MeshGeneratorInputs& inputs,
+                            u64& out, std::string& error) {
+  JsonValue recipe;
+  const std::string_view text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+  const JsonValue* host = parse_json(text, recipe).ok ? recipe.find("host") : nullptr;
+  if (host == nullptr || !host->is_string()) {
+    error = "a fixture recipe names its host";
+    return false;
+  }
+  u64 identity = 0;
+  if (inputs.hosts == nullptr ||
+      !inputs.hosts->identify(inputs.hosts->context, host->as_string(), identity, error))
+    return false;
+  out = hash_combine(hash_bytes(bytes.data(), bytes.size()), identity);
+  return true;
+}
+bool fixture_host_build(std::span<const u8>, const assets::MeshGeneratorInputs&,
+                        const geometry::ClusterLodOptions&, u32, geometry::ClusterFileData&,
+                        std::string& error) {
+  error = "the fixture generator builds nothing";
+  return false;
+}
+constexpr assets::MeshGeneratorDesc k_fixture_host{.name = "fixturehost",
+                                                   .source_hash = fixture_host_hash,
+                                                   .build = fixture_host_build,
+                                                   .source_hash_with = fixture_host_hash_with};
+
+}  // namespace
+
+// **A generated mesh carries its inputs' classes** (C64): a recipe that grows over a host is
+// decided on the join of its own class and its host's, read from the host's sidecar before the
+// host is read, so a host the policy refuses refuses the output and the host's file is never read.
+TEST_CASE("content classes at load: a generated mesh over a refused host is left out, unread") {
+  REQUIRE(assets::MeshGeneratorRegistry::global().add(k_fixture_host));
+  const test::TempDir tmp("renderer_classes_host");
+  REQUIRE(tmp.ok());
+  const Grid glow = write_grid(tmp, "glow.clusters", 17, "glow.png", glow_record(1));
+  REQUIRE(io::write_file(tmp.file("moss.fixturehost.json"), R"({"host":"statue.gltf"})") ==
+          io::Status::Ok);
+  // The host is not a glTF at all: reading it fails the load.
+  REQUIRE(io::write_file(tmp.file("statue.gltf"), "not a glTF") == io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("statue.provenance.json"),
+                         R"({"content_classes":{"fixture_glow":"bright"}})") == io::Status::Ok);
+  Grid moss;
+  moss.path = tmp.file("moss.fixturehost.json");
+  std::string error;
+  SceneData scene;
+  REQUIRE_MESSAGE(load_scene(scene_of(tmp, {&glow, &moss}), scene, error), error);
+  CHECK(scene.instances.empty());
+  CHECK(loaded_instance(scene, 1) == k_not_loaded);
+  CHECK(std::string(scene.sources[1].cache) == "none");  // never generated
+  REQUIRE(row(scene, "fixture_glow") != nullptr);
+  CHECK(row(scene, "fixture_glow")->omitted == 2);
+}
+
 // **The bytes that are loaded are the bytes that are decided** (C64): the probe of a container's
 // classes section is a saving, so a container replaced or finished between the probe and the
 // load's whole read is decided again by what the read found.

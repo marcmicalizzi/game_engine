@@ -571,10 +571,104 @@ bool read_pack_classes(const materials::Pack& pack, const content_class::Categor
   return true;
 }
 
+// **The hosts a recipe's generator names** (C64): its key's hash run against hooks that read no
+// host, each `identify` recorded (resolved beside the recipe, as `GeneratorHosts::resolve` does)
+// and answered with zero, so only the recipe is read. A generator that reaches another mesh names
+// it through this seam, because its key covers the host. False when the recipe cannot be hashed:
+// the build or the load then fails on it with its own sentence.
+struct HostProbe {
+  std::string dependant;
+  Vector<std::string> hosts;
+};
+bool probe_identify(void* context, std::string_view path, u64& out, std::string&) {
+  auto* probe = static_cast<HostProbe*>(context);
+  const std::string_view dir = io::parent_path(probe->dependant);
+  probe->hosts.push_back(io::is_absolute_path(path) || dir.empty() ? std::string(path)
+                                                                   : io::join_path(dir, path));
+  out = 0;
+  return true;
+}
+bool probe_load(void*, std::string_view, assets::GeneratorHostMesh&, std::string& error) {
+  error = "the class probe reads no host";
+  return false;
+}
+bool probe_image(void*, std::string_view, Vector<u8>& out, std::string&) {
+  out.clear();
+  return true;
+}
+bool probe_hash(void*, std::string_view, u64& out, std::string&) {
+  out = 0;
+  return true;
+}
+bool generator_hosts(const std::string& recipe, const materials::Pack* pack,
+                     Vector<std::string>& hosts) {
+  const assets::MeshGeneratorDesc* generator =
+      assets::MeshGeneratorRegistry::global().find(assets::mesh_generator_of(recipe));
+  std::string text;
+  if (generator == nullptr || io::read_file(recipe, text) != io::Status::Ok) return false;
+  HostProbe probe{recipe, {}};
+  assets::MeshGeneratorHosts hooks;
+  hooks.context = &probe;
+  hooks.identify = probe_identify;
+  hooks.load = probe_load;
+  hooks.read_image = probe_image;
+  hooks.hash_image = probe_hash;
+  u64 hash = 0;
+  std::string why;
+  if (!assets::generated_source_hash(
+          *generator, std::span<const u8>(reinterpret_cast<const u8*>(text.data()), text.size()),
+          assets::MeshGeneratorInputs{pack, &hooks}, hash, why))
+    return false;
+  hosts = std::move(probe.hosts);
+  return true;
+}
+
+// A container host's own section 54, against a copy of the build's table: a class naming a
+// category the table does not hold cannot be the dependant's, and is refused.
+bool host_container_classes(const std::string& path, const content_class::Categories& categories,
+                            content_class::ContentClasses& out, std::string& why) {
+  geometry::ClusterFileReader reader;
+  std::string error;
+  if (!reader.open(path, nullptr, &error)) return true;  // its own read fails, with its sentence
+  const u64 count = reader.element_count(geometry::ClusterSection::ContentClasses);
+  if (count == 0) return true;
+  u64 offset = 0;
+  u64 bytes = 0;
+  Vector<u8> record;
+  bool read = reader.range(geometry::ClusterSection::ContentClasses, 1u, 0, count, offset, bytes);
+  if (read) {
+    record.resize(static_cast<u32>(bytes));
+    u64 got = 0;
+    read =
+        reader.file().read_at(offset, record.data(), bytes, got) == io::Status::Ok && got == bytes;
+  }
+  content_class::Categories copy = categories;
+  if (!read || !content_class::decode_classes(
+                   copy, std::span<const u8>(record.data(), record.size()), out, error)) {
+    why = path + ": its classes section cannot be read: " + error;
+    return false;
+  }
+  if (copy.size() != categories.size()) {
+    why = path + ": its classes name a category this build does not know";
+    return false;
+  }
+  return true;
+}
+
+bool read_classes_at(const std::string& source, const MeshOptions& options, SourceClasses& out,
+                     Diagnostic& error, u32 depth);
+
 }  // namespace
 
 bool read_source_classes(const std::string& source, const MeshOptions& options, SourceClasses& out,
                          Diagnostic& error) {
+  return read_classes_at(source, options, out, error, 0);
+}
+
+namespace {
+
+bool read_classes_at(const std::string& source, const MeshOptions& options, SourceClasses& out,
+                     Diagnostic& error, u32 depth) {
   const content_class::Categories& categories = categories_of(options);
   out = SourceClasses{};
   const auto refuse = [&](std::string message) {
@@ -598,10 +692,35 @@ bool read_source_classes(const std::string& source, const MeshOptions& options, 
   if (!assets::mesh_generator_of(source).empty() && options.materials != nullptr &&
       !read_pack_classes(*options.materials, categories, out.classes, why))
     return refuse(why + "; the build refuses " + source);
+  // **And of every mesh it reads** (C64): each host its generator names, by the host's own class
+  // (its sidecar; a recipe's, recursively; a container's section 54 too), read before the host is,
+  // joined as a whole asset, so its key and section 54 carry it.
+  Vector<std::string> hosts;
+  if (!assets::mesh_generator_of(source).empty() &&
+      generator_hosts(source, options.materials, hosts)) {
+    for (const std::string& host : hosts) {
+      if (depth + 1 >= k_host_depth)
+        return refuse(source + ": a host's host is more than " + std::to_string(k_host_depth) +
+                      " levels deep: a loop of recipes?");
+      SourceClasses inner;
+      Diagnostic inner_error;
+      if (!read_classes_at(host, options, inner, inner_error, depth + 1))
+        return refuse(inner_error.message + "; the host of " + source);
+      out.classes = content_class::join(out.classes, inner.classes);
+      if (io::extension(host) == ".clusters") {
+        content_class::ContentClasses own;
+        if (!host_container_classes(host, categories, own, why))
+          return refuse(why + "; the host of " + source);
+        out.classes = content_class::join(out.classes, own);
+      }
+    }
+  }
   out.hash = content_class::class_hash(categories, out.classes, &out.materials);
   content_class::encode_classes(categories, out.classes, &out.materials, out.record);
   return true;
 }
+
+}  // namespace
 
 u64 classified_build_key(const std::string& path, u64 source_hash, const MeshOptions& options,
                          const SourceClasses& classes) noexcept {
