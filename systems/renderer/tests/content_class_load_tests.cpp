@@ -10,10 +10,12 @@
 // apart from theirs and "not in the scene" is a count of bytes, not a picture.
 #include "test_device.h"
 
+#include <core/base/macros.h>
 #include <core/hash/hash.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/gfx/device.h>
 #include <domain/texture/material_textures.h>
+#include <domain/texture/texture_build.h>
 #include <foundation/content_class/content_class.h>
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
@@ -30,7 +32,21 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <filesystem>
 #include <string>
+#include <system_error>
+
+#if ENGINE_PLATFORM_WINDOWS
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <winioctl.h>
+#endif
 
 using namespace engine;
 using namespace engine::renderer;
@@ -151,6 +167,76 @@ u64 tables_hash(const SceneData& data) {
     h = hash_combine(h, bytes(source.textures));
   return h;
 }
+
+std::filesystem::path fs_path(const std::string& p) {
+  return std::filesystem::path(
+      std::u8string_view(reinterpret_cast<const char8_t*>(p.data()), p.size()));
+}
+
+// A symbolic link to `target`, where the process may make one (Windows needs developer mode or
+// elevation for it).
+bool make_file_symlink(const std::string& target, const std::string& link) {
+  std::error_code ec;
+  std::filesystem::create_symlink(fs_path(target), fs_path(link), ec);
+  return !ec;
+}
+
+#if ENGINE_PLATFORM_WINDOWS
+std::wstring wide(const std::string& s) {
+  std::wstring w(static_cast<usize>(MultiByteToWideChar(CP_UTF8, 0, s.data(),
+                                                        static_cast<int>(s.size()), nullptr, 0)),
+                 L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(),
+                      static_cast<int>(w.size()));
+  for (wchar_t& c : w)
+    if (c == L'/') c = L'\\';
+  return w;
+}
+
+// A junction, which any user may make: an empty directory given a mount-point reparse point. Its
+// target need not exist (the content build's tests and foundation/io's make them the same way).
+bool make_junction(const std::string& target, const std::string& link) {
+  if (!CreateDirectoryW(wide(link).c_str(), nullptr)) return false;
+  const HANDLE h = CreateFileW(wide(link).c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                               FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return false;
+  const std::wstring substitute = L"\\??\\" + wide(target);
+  const std::wstring print = wide(target);
+  const usize names = (substitute.size() + 1 + print.size() + 1) * sizeof(wchar_t);
+  std::string buf(8 + 8 + names, '\0');
+  auto put16 = [&](usize at, usize v) {
+    buf[at] = static_cast<char>(v & 0xFF);
+    buf[at + 1] = static_cast<char>((v >> 8) & 0xFF);
+  };
+  const u32 tag = 0xA0000003u;  // IO_REPARSE_TAG_MOUNT_POINT
+  std::memcpy(buf.data(), &tag, 4);
+  put16(4, 8 + names);                                   // ReparseDataLength
+  put16(8, 0);                                           // SubstituteNameOffset
+  put16(10, substitute.size() * sizeof(wchar_t));        // SubstituteNameLength
+  put16(12, (substitute.size() + 1) * sizeof(wchar_t));  // PrintNameOffset
+  put16(14, print.size() * sizeof(wchar_t));             // PrintNameLength
+  std::memcpy(buf.data() + 16, substitute.c_str(), (substitute.size() + 1) * sizeof(wchar_t));
+  std::memcpy(buf.data() + 16 + (substitute.size() + 1) * sizeof(wchar_t), print.c_str(),
+              (print.size() + 1) * sizeof(wchar_t));
+  DWORD returned = 0;
+  const BOOL ok = DeviceIoControl(h, FSCTL_SET_REPARSE_POINT, buf.data(),
+                                  static_cast<DWORD>(buf.size()), nullptr, 0, &returned, nullptr);
+  CloseHandle(h);
+  return ok != FALSE;
+}
+#endif
+
+// The forms of a sidecar that is there and leads nowhere which this system lets a test make.
+struct DanglingForm {
+  const char* name;
+  bool (*make)(const std::string& target, const std::string& link);
+};
+const DanglingForm k_dangling_forms[] = {
+    {"a symbolic link to a file that is not there", make_file_symlink},
+#if ENGINE_PLATFORM_WINDOWS
+    {"a junction to a directory that is not there", make_junction},
+#endif
+};
 
 }  // namespace
 
@@ -347,6 +433,97 @@ TEST_CASE("content classes at load: an unreadable sidecar beside a glTF omits it
   CHECK(scene.load.unreadable_omitted == 1);
   CHECK(scene.sources[1].data.images.empty());
   CHECK(std::string(scene.sources[1].cache) == "none");  // never read: no cache lookup at all
+}
+
+// A sidecar written after the derived-data root was filled (texture.md, "Content classes"): the
+// load reads it before it takes either key, so a glTF's mesh and an image named by path are decided
+// by what it declares, each under a cache entry of its own keyed as the content build keys it, and
+// never served the entry the root holds from before, which records no class. A sidecar that is
+// there and leads nowhere is one that cannot be read, never `none`, as the content build reads it.
+TEST_CASE(
+    "content classes at load: a sidecar that comes after the cache decides, not the old entry") {
+  std::string error;
+  {
+    const test::TempDir tmp("renderer_classes_later");
+    REQUIRE(tmp.ok());
+    REQUIRE(io::write_file(tmp.file("tri.gltf"), k_triangle_gltf) == io::Status::Ok);
+    const Grid glow = write_grid(tmp, "glow.clusters", 17, "glow.png", glow_record(1));
+    const Grid a = write_grid(tmp, "a.clusters", 9, "a_color.png");
+    Grid tri;
+    tri.path = tmp.file("tri.gltf");
+    // `glow` teaches the scene the ladder; `glow-wide` admits all of it, so every asset is read.
+    SceneDesc desc = scene_of(tmp, {&glow, &a, &tri});
+    desc.view_policy = policy_named("glow-wide");
+    const auto load = [&](SceneData& scene) {
+      REQUIRE_MESSAGE(load_scene(desc, scene, error), error);
+    };
+    SceneData cold;
+    load(cold);
+    CHECK(cold.instances.size() == 3);
+    CHECK(cold.load.built == 2);
+    SceneData warm;
+    load(warm);
+    CHECK(warm.load.trusted == 2);
+    CHECK(warm.load.built == 0);
+    CHECK(std::string(warm.sources[2].cache) == "hit");
+    REQUIRE(warm.sources[1].textures.size() == 1);
+    const u64 plain_key = warm.sources[1].textures[0].key;
+    CHECK(io::exists(texture::texture_cache_path(desc.ddc, plain_key)));
+
+    // The image's sidecar declares its class on a material, the glTF's on the whole asset.
+    REQUIRE(io::write_file(
+                tmp.file("a_color.provenance.json"),
+                R"({"content_classes":{"materials":{"m0":{"levels":{"fixture_glow":"dim"}}}}})") ==
+            io::Status::Ok);
+    REQUIRE(io::write_file(tmp.file("tri.provenance.json"),
+                           R"({"content_classes":{"fixture_glow":"dim"}})") == io::Status::Ok);
+    SceneData declared;
+    load(declared);
+    CHECK(declared.instances.size() == 3);
+    CHECK(declared.load.unreadable_omitted == 0);
+    CHECK(declared.held.levels[static_cast<u32>(declared.categories.find("fixture_glow"))] == 1);
+    CHECK(std::string(declared.sources[2].cache) == "miss");  // not the classless entry
+    REQUIRE(declared.sources[1].textures.size() == 1);
+    CHECK(declared.sources[1].textures[0].key != plain_key);
+    CHECK(declared.load.built == 1);
+    // What the load built is what it asks for the next time: its keys are the content build's, so
+    // the texture its records name is the one the step wrote.
+    SceneData again;
+    load(again);
+    CHECK(std::string(again.sources[2].cache) == "hit");
+    CHECK(again.sources[1].textures[0].key == declared.sources[1].textures[0].key);
+    CHECK(io::exists(texture::texture_cache_path(desc.ddc, again.sources[1].textures[0].key)));
+    CHECK(again.load.trusted == 2);
+    CHECK(again.load.built == 0);
+  }
+  u32 made = 0;
+  for (const DanglingForm& form : k_dangling_forms) {
+    const std::string form_name = form.name;
+    CAPTURE(form_name);
+    const test::TempDir tmp("renderer_classes_nowhere");
+    REQUIRE(tmp.ok());
+    REQUIRE(io::write_file(tmp.file("tri.gltf"), k_triangle_gltf) == io::Status::Ok);
+    const Grid a = write_grid(tmp, "a.clusters", 9, "a_color.png");
+    Grid tri;
+    tri.path = tmp.file("tri.gltf");
+    const SceneDesc desc = scene_of(tmp, {&a, &tri});
+    SceneData plain;
+    REQUIRE_MESSAGE(load_scene(desc, plain, error), error);
+    CHECK(plain.instances.size() == 2);
+    if (!form.make(tmp.file("gone"), tmp.file("tri.provenance.json"))) {
+      MESSAGE("skipped: this process may not make " << form.name);
+      continue;
+    }
+    REQUIRE(form.make(tmp.file("gone_too"), tmp.file("a_color.provenance.json")));
+    ++made;
+    SceneData scene;
+    REQUIRE_MESSAGE(load_scene(desc, scene, error), error);
+    CHECK(scene.instances.empty());
+    CHECK(scene.load.unreadable_omitted == 2);
+    CHECK(std::string(scene.sources[1].cache) == "none");  // the glTF is never read
+  }
+  // At least the junction on Windows and the symbolic link elsewhere.
+  CHECK(made >= 1u);
 }
 
 TEST_CASE("content classes at load: a scene with nothing classified loads what it loaded") {
