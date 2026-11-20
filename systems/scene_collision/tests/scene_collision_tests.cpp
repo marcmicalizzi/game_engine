@@ -25,6 +25,8 @@
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <tile_mesh_fixture.h>
@@ -1628,15 +1630,68 @@ namespace {
 
 // A tile source that takes `delay_ms` a call, as an authored ground's cold read or a rebuild's
 // queue can: the periodic ground's heights, after a sleep, counted.
+// The cases below check how builds are scheduled by counts and orders the machine's load cannot
+// decide (T199): a fill's wall time on a busy machine is the scheduler's, and bounds on it failed
+// the gate when three suites ran at once. What they count:
+// - `now`/`most`: how many calls ran at once. With `meet` set, a call waits (a minute at most) for
+//   that many to run at once before it goes on, so a pool that builds side by side is seen to
+//   whenever its threads are scheduled, and one that cannot never is.
+// - `hold_outside`: a call for a tile outside [x0, x1] x [z0, z1] (32 m tiles) waits until
+//   `open()`, a minute at most, counted in `held_too_long` if it is still shut: a fill that waited
+//   for a build past its own ring, or built one on the tick, would wait for it.
+// - `tick_calls`: the calls made on the thread named `tick`.
 struct SlowSource {
+  static constexpr auto k_deadline = std::chrono::seconds(60);
   u32 delay_ms = 0;
   std::atomic<u32> calls{0};
+  std::atomic<u32> now{0};
+  std::atomic<u32> most{0};
+  u32 meet = 0;
+  bool hold_outside = false;
+  i64 x0 = 0, x1 = -1, z0 = 0, z1 = -1;
+  bool opened = false;
+  std::atomic<u32> held_too_long{0};
+  std::thread::id tick{};
+  std::atomic<u32> tick_calls{0};
+  std::mutex mutex;
+  std::condition_variable changed;
+  void open() {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      opened = true;
+    }
+    changed.notify_all();
+  }
 };
 bool slow_heights(const void* state, f64 t, i64 spacing_mm, i64 filter_mm, i32 i0, i32 j0, u32 nx,
                   u32 nz, u32 b0, u32 b1, std::span<f32> out) noexcept {
   auto* s = static_cast<SlowSource*>(const_cast<void*>(state));
   s->calls.fetch_add(1);
+  if (std::this_thread::get_id() == s->tick) s->tick_calls.fetch_add(1);
+  const u32 at_once = s->now.fetch_add(1) + 1;
+  u32 most = s->most.load();
+  while (at_once > most && !s->most.compare_exchange_weak(most, at_once)) {
+  }
+  {
+    std::unique_lock<std::mutex> lock(s->mutex);
+    s->changed.notify_all();
+    const auto until = std::chrono::steady_clock::now() + SlowSource::k_deadline;
+    if (s->meet > 0) s->changed.wait_until(lock, until, [s] { return s->most.load() >= s->meet; });
+    // The tile this call is for: its window's middle, in 32 m tiles.
+    const auto tile_of = [spacing_mm](i32 first, u32 n) {
+      const f64 middle_m = (static_cast<f64>(first) + 0.5 * static_cast<f64>(n)) *
+                           static_cast<f64>(spacing_mm) / 1000.0;
+      return static_cast<i64>(std::floor(middle_m / 32.0));
+    };
+    const i64 x = tile_of(i0, nx);
+    const i64 z = tile_of(j0, nz);
+    if (s->hold_outside && (x < s->x0 || x > s->x1 || z < s->z0 || z > s->z1)) {
+      if (!s->changed.wait_until(lock, until, [s] { return s->opened; }))
+        s->held_too_long.fetch_add(1);
+    }
+  }
   if (s->delay_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(s->delay_ms));
+  s->now.fetch_sub(1);
   return periodic_heights(nullptr, t, spacing_mm, filter_mm, i0, j0, nx, nz, b0, b1, out);
 }
 constexpr scene_gen::TileSourceOps k_slow_ops{.heights = &slow_heights};
@@ -1971,6 +2026,15 @@ TEST_CASE("scene_collision: a tile activated with its build pending waits for th
   scene_gen::GroundProvider ground(&k_still_ops, &g);
   SlowSource slow;
   slow.delay_ms = k_delay_ms;
+  // The ring round (4016, -2000): tiles 124 to 126 across, -64 to -62 along. The builds queued
+  // past it wait until the fill is over, so a fill that waited for the queue, or built a tile of
+  // it on the tick, would wait a minute for a shut gate and count it (T199: this case held the
+  // slowest activation and wait under 120 ms, and on a busy machine took 244).
+  slow.hold_outside = true;
+  slow.x0 = 124;
+  slow.x1 = 126;
+  slow.z0 = -64;
+  slow.z1 = -62;
   const scene_gen::TileSource source{&k_slow_ops, &slow};
   renderer::SceneData scene;
   physics::World physics;
@@ -1987,10 +2051,15 @@ TEST_CASE("scene_collision: a tile activated with its build pending waits for th
   const WorldPos there{4016.0, 0.0, -2000.0};
   collision.prefetch(there);
   const u64 queued = collision.stats().prefetch_submitted;
+  slow.tick = std::this_thread::get_id();
   const auto from = std::chrono::steady_clock::now();
   world.update(observer_at(there), 0, true);
   const f64 fill_ms =
       std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - from).count();
+  slow.tick = std::thread::id{};
+  const u32 tick_calls = slow.tick_calls.load();
+  const u32 held = slow.held_too_long.load();
+  slow.open();
   const Stats& s = collision.stats();
   const f64 most_ms = static_cast<f64>(s.max_activate_ns) / 1.0e6;
   const f64 wait_ms = static_cast<f64>(s.max_prefetch_wait_ns) / 1.0e6;
@@ -2001,9 +2070,11 @@ TEST_CASE("scene_collision: a tile activated with its build pending waits for th
   CHECK(s.tiles == 9);
   CHECK(queued > s.activated);
   CHECK(s.prefetched + s.prefetch_waits + s.prefetch_inline == s.activated);
-  // One tile's cost, with room for a shared machine: the queue behind it is 40 ms a tile more.
-  CHECK(most_ms < 3.0 * k_delay_ms);
-  CHECK(wait_ms < 3.0 * k_delay_ms);
+  // One tile's work at most: the fill finished while every build past the ring was still shut, so
+  // no activation waited for the queue; and the tick asked the source once for each tile it built
+  // itself and for nothing else.
+  CHECK(held == 0);
+  CHECK(tick_calls == s.prefetch_inline);
   // And the ground is the source's wherever it was built: (4016, -2000) is a lattice point.
   f32 h = 0.0f;
   REQUIRE(collision.ground_height(there, h));
@@ -2021,11 +2092,12 @@ TEST_CASE("scene_collision: a tile activated with its build pending waits for th
 // slots keep the tiles past the ring waiting their turn instead of queued in front of them.
 TEST_CASE("scene_collision: a drop's ring is built on every worker at once") {
   constexpr u32 k_delay_ms = 40;
-  const auto fill = [&](u32 workers_n, u32 slots, u64& submitted, Stats& out) {
+  const auto fill = [&](u32 workers_n, u32 slots, u32 meet, u64& submitted, Stats& out, u32& most) {
     TestGround g;
     scene_gen::GroundProvider ground(&k_still_ops, &g);
     SlowSource slow;
     slow.delay_ms = k_delay_ms;
+    slow.meet = meet;
     const scene_gen::TileSource source{&k_slow_ops, &slow};
     renderer::SceneData scene;
     physics::World physics;
@@ -2051,6 +2123,7 @@ TEST_CASE("scene_collision: a drop's ring is built on every worker at once") {
     const f64 ms =
         std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - from).count();
     out = collision.stats();
+    most = slow.most.load();
     f32 h = 0.0f;
     CHECK(collision.ground_height(there, h));
     return ms;
@@ -2059,22 +2132,28 @@ TEST_CASE("scene_collision: a drop's ring is built on every worker at once") {
   u64 parallel_submitted = 0;
   Stats serial;
   Stats parallel;
-  const f64 serial_ms = fill(1, 0, serial_submitted, serial);
-  const f64 parallel_ms = fill(4, 8, parallel_submitted, parallel);
+  u32 serial_most = 0;
+  u32 parallel_most = 0;
+  const f64 serial_ms = fill(1, 0, 0, serial_submitted, serial, serial_most);
+  const f64 parallel_ms = fill(4, 8, 3, parallel_submitted, parallel, parallel_most);
   MESSAGE("a fill of " << serial.activated << " tiles at 40 ms: one worker, every build queued ("
-                       << serial_submitted << "): " << serial_ms << " ms, "
-                       << serial.prefetch_inline << " on the tick; four workers by need ("
-                       << parallel_submitted << " handed over): " << parallel_ms << " ms, "
-                       << parallel.prefetch_inline << " on the tick, " << parallel.prefetch_waits
-                       << " waited for");
+                       << serial_submitted << "): " << serial_ms << " ms, " << serial_most
+                       << " at once, " << serial.prefetch_inline
+                       << " on the tick; four workers by need (" << parallel_submitted
+                       << " handed over): " << parallel_ms << " ms, " << parallel_most
+                       << " at once, " << parallel.prefetch_inline << " on the tick, "
+                       << parallel.prefetch_waits << " waited for");
   CHECK(serial.tiles == 9);
   CHECK(parallel.tiles == 9);
   // The ring's tiles alone were handed over: the rest wait their turn behind them.
   CHECK(parallel_submitted == parallel.activated);
   CHECK(parallel_submitted < serial_submitted);
   // Nine tiles on five threads (four workers and the tick) take two or three tiles' time; one
-  // after another take nine. Half is room for a shared machine.
-  CHECK(parallel_ms < 0.5 * serial_ms);
+  // after another take nine. Counted, not timed (T199: the time is the scheduler's on a busy
+  // machine): one worker and the tick build two tiles at once at most, four workers and the tick
+  // were seen to build three.
+  CHECK(serial_most <= 2);
+  CHECK(parallel_most >= 3);
 }
 
 // **A flight that outruns the builds hands none over** (T172; scene_collision.md, "Ahead of a
@@ -2141,12 +2220,25 @@ namespace {
 // nothing, which the collision asks under its one lock, and one whose tile says it is reentrant.
 std::atomic<u32> g_slow_now{0};
 std::atomic<u32> g_slow_most{0};
+// With `g_slow_meet` set, a call waits (a minute at most) until that many have run at once, as
+// `SlowSource::meet` does: side by side is then seen whenever the threads are scheduled (T199).
+std::atomic<u32> g_slow_meet{0};
+std::mutex g_slow_mutex;
+std::condition_variable g_slow_changed;
 constexpr u32 k_slow_tile_ms = 40;
 bool slow_tile(void*, scene_gen::TileCoord tile, const scene_gen::Context& context,
                scene_gen::Placements& out, std::string*) {
   const u32 now = g_slow_now.fetch_add(1) + 1;
   u32 most = g_slow_most.load();
   while (now > most && !g_slow_most.compare_exchange_weak(most, now)) {
+  }
+  {
+    std::unique_lock<std::mutex> lock(g_slow_mutex);
+    g_slow_changed.notify_all();
+    const u32 meet = g_slow_meet.load();
+    if (meet > 0)
+      g_slow_changed.wait_until(lock, std::chrono::steady_clock::now() + std::chrono::seconds(60),
+                                [meet] { return g_slow_most.load() >= meet; });
   }
   std::this_thread::sleep_for(std::chrono::milliseconds(k_slow_tile_ms));
   g_slow_now.fetch_sub(1);
@@ -2210,7 +2302,7 @@ void one_entry_scene(const char* generator, renderer::SceneData& scene) {
 // one lock — the forest's 339 ms drop after T166 — while one whose tile is reentrant is asked on
 // all five threads at once.
 TEST_CASE("scene_collision: a drop's ring asks a reentrant generator side by side") {
-  const auto fill = [&](const char* generator, u32& most, Stats& out) {
+  const auto fill = [&](const char* generator, u32 meet, u32& most, Stats& out) {
     renderer::SceneData scene;
     one_entry_scene(generator, scene);
     physics::World physics;
@@ -2230,6 +2322,7 @@ TEST_CASE("scene_collision: a drop's ring asks a reentrant generator side by sid
     world.add_consumer(collision.consumer());
     g_slow_now = 0;
     g_slow_most = 0;
+    g_slow_meet = meet;
     const WorldPos there{4016.0, 0.0, -2000.0};
     collision.prefetch(there);
     const auto from = std::chrono::steady_clock::now();
@@ -2238,14 +2331,15 @@ TEST_CASE("scene_collision: a drop's ring asks a reentrant generator side by sid
         std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - from).count();
     out = collision.stats();
     most = g_slow_most.load();
+    g_slow_meet = 0;
     return ms;
   };
   u32 locked_most = 0;
   u32 side_most = 0;
   Stats locked;
   Stats side;
-  const f64 locked_ms = fill("collision_test_slow", locked_most, locked);
-  const f64 side_ms = fill("collision_test_slow_side", side_most, side);
+  const f64 locked_ms = fill("collision_test_slow", 0, locked_most, locked);
+  const f64 side_ms = fill("collision_test_slow_side", 2, side_most, side);
   MESSAGE("a fill of " << locked.activated << " tiles whose generator takes 40 ms, on four workers "
                        << "and the tick: under the one lock " << locked_ms << " ms (at most "
                        << locked_most << " call at once), side by side " << side_ms
@@ -2257,10 +2351,11 @@ TEST_CASE("scene_collision: a drop's ring asks a reentrant generator side by sid
   CHECK(side.placements == 9);
   CHECK(locked_most == 1);
   CHECK(side_most > 1);
-  // Nine calls of 40 ms one after another, against two or three rounds on five threads. Half is
-  // room for a shared machine.
+  // Nine calls of 40 ms one after another (a floor no load lowers), against calls side by side:
+  // counted above, not timed (T199: the side-by-side fill's time is the scheduler's on a busy
+  // machine, and once took 348 ms against the locked fill's 454).
   CHECK(locked_ms > 7.0 * k_slow_tile_ms);
-  CHECK(side_ms < 0.5 * locked_ms);
+  MESSAGE("side by side " << side_ms << " ms against " << locked_ms << " ms under the lock");
 }
 
 namespace {

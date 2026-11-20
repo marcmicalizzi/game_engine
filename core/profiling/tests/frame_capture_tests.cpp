@@ -4,6 +4,7 @@
 #include <doctest/doctest.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <string>
 #include <thread>
@@ -203,23 +204,36 @@ TEST_CASE("frame capture: a name read while threads name themselves is whole or 
   REQUIRE(capture_start(options));
   constexpr u32 k_workers = 8;
   std::atomic<bool> go{true};
+  std::atomic<u32> named{0};  // workers that have named themselves and made their first event
   std::vector<std::thread> threads;
   for (u32 w = 0; w < k_workers; ++w) {
-    threads.emplace_back([w, &go] {
+    threads.emplace_back([w, &go, &named] {
       const std::string a = "worker-" + std::to_string(w) + "-" + std::string(40, 'a');
       const std::string b = "worker-" + std::to_string(w) + "-" + std::string(40, 'b');
       capture_name_thread(a.c_str());
       u32 turn = 0;
+      bool first = true;
       while (go.load(std::memory_order_relaxed)) {
         {
           ENGINE_PROFILE_ZONE_NAMED("capture tests: naming zone");
         }
+        if (first) named.fetch_add(1);
+        first = false;
         capture_name_thread((++turn & 1u) != 0 ? b.c_str() : a.c_str());
       }
     });
   }
+  // The looks start at once, while the workers make their first events, and run 2000 times; on a
+  // loaded machine the workers may not have run by then (T199: 2000 looks once ended before any
+  // worker had a name, and `whole` was 0), so the looks go on until every worker has named itself
+  // and one look has been taken after that, which must read names. A worker not scheduled in a
+  // minute fails the case by name rather than passing it on no names at all.
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(60);
   u32 whole = 0;
-  for (u32 look = 0; look < 2000; ++look) {
+  bool all_named = false;
+  for (u32 look = 0; look < 2000 || !all_named; ++look) {
+    if (look >= 2000 && std::chrono::steady_clock::now() > until) break;
+    all_named = named.load() == k_workers;  // read before the look, so the look comes after
     CaptureInfo info;
     (void)snapshot(info);
     for (u32 t = 0; t < info.threads; ++t) {
@@ -242,6 +256,7 @@ TEST_CASE("frame capture: a name read while threads name themselves is whole or 
   for (std::thread& th : threads)
     th.join();
   capture_stop();
+  REQUIRE_MESSAGE(all_named, "a worker had not made its first event after a minute");
   CHECK(whole > 0);
   capture_reset();
 }

@@ -82,18 +82,28 @@ TEST_CASE("JobSystem: parallel_for covers the range exactly once and runs on wor
   std::vector<std::atomic<u8>> seen(k_n);
   std::atomic<u32> on_worker{0};
   std::atomic<u32> chunks{0};
+  // The caller helps while it waits, and on a loaded machine it could run every chunk before a
+  // worker was scheduled (T199: 4 runs in 10 at full load). `parallel_for` hands every chunk to the
+  // pool before the caller helps, so a chunk the caller takes holds it until a worker has run one:
+  // the workers are then the only threads that can take the rest, and a pool that never runs the
+  // chunks it was handed fails by name after a minute instead of passing on the caller's work.
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(60);
   js.parallel_for(Pool::Performance, k_n, 4096, [&](u32 begin, u32 end) {
     chunks.fetch_add(1);
-    if (JobSystem::current_worker() != nullptr) on_worker.fetch_add(1);
+    if (JobSystem::current_worker() != nullptr) {
+      on_worker.fetch_add(1);
+    } else {
+      while (on_worker.load() == 0 && std::chrono::steady_clock::now() < until)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
     for (u32 i = begin; i < end; ++i)
       seen[i].fetch_add(1);
   });
   for (u32 i = 0; i < k_n; ++i)
     REQUIRE(seen[i].load() == 1);
   CHECK(chunks.load() == (k_n + 4095) / 4096);
-  // The main thread helps while waiting, so not every chunk is on a worker; most should be
-  // when there is more than one worker.
-  if (js.worker_count(Pool::Performance) > 1) CHECK(on_worker.load() > 0);
+  // The main thread helps while waiting, so not every chunk is on a worker; at least one is.
+  CHECK(on_worker.load() > 0);
 }
 
 TEST_CASE("JobSystem: parallel_for reduction") {
