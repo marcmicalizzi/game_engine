@@ -860,6 +860,44 @@ TEST_CASE("content classes at load: a streamed scene with a box in it still stre
   }
 }
 
+// **A classes section the file cannot hold allocates nothing** (C64): the probe sizes its read
+// from the section table, and `ClusterFileReader::open` refuses a table whose section runs past
+// the file before anything is sized from it; the whole read refuses it the same way, so the load
+// fails with its own sentence rather than reading a count of 4 GiB.
+TEST_CASE("content classes at load: a classes section the file cannot hold allocates nothing") {
+  const test::TempDir tmp("renderer_classes_huge");
+  REQUIRE(tmp.ok());
+  const Grid glow = write_grid(tmp, "glow.clusters", 17, "glow.png", glow_record(2));
+  std::string bytes;
+  REQUIRE(io::read_file(glow.path, bytes) == io::Status::Ok);
+  geometry::ClusterFileHeader header;
+  REQUIRE(bytes.size() >= sizeof(header));
+  std::memcpy(&header, bytes.data(), sizeof(header));
+  bool patched = false;
+  for (u32 s = 0; s < header.section_count; ++s) {
+    const usize at = sizeof(header) + usize{s} * sizeof(geometry::ClusterFileSection);
+    REQUIRE(at + sizeof(geometry::ClusterFileSection) <= bytes.size());
+    geometry::ClusterFileSection section;
+    std::memcpy(&section, bytes.data() + at, sizeof(section));
+    if (section.kind != static_cast<u32>(geometry::ClusterSection::ContentClasses)) continue;
+    section.element_count = 0xFFFFFFF0ull;  // a count the file's bytes cannot hold
+    std::memcpy(bytes.data() + at, &section, sizeof(section));
+    patched = true;
+  }
+  REQUIRE(patched);
+  REQUIRE(io::write_file(glow.path, bytes) == io::Status::Ok);
+  content_class::Categories categories;
+  ContainerProbe probe;
+  const ReadClass read = read_container_class(glow.path, categories, &probe);
+  CHECK_FALSE(probe.opened);
+  CHECK(probe.section.empty());
+  CHECK(content_class::is_none(read.classes));  // and the whole read decides it, below
+  std::string error;
+  SceneData scene;
+  CHECK_FALSE(load_scene(scene_of(tmp, {&glow}), scene, error));
+  CHECK_MESSAGE(error.find("section") != std::string::npos, error);
+}
+
 // `substituted` counts instances (C64): a classified mesh no instance names, placed by a prop, is
 // decided (its class in the table, its slot a box) and counted nowhere.
 TEST_CASE("content classes at load: a mesh no instance names is decided, not counted") {
