@@ -332,9 +332,16 @@ which this module keeps opaque (`TextureData::content_classes`). A streamed tail
   nothing from them, and its key holds nothing about who samples it. An image a container embeds has
   no sidecar of its own: its class is the source's, in the container's section 54
   ([geometry](geometry.md#content-classes)), and its texture carries none. The instance's decision
-  joins the two at load (C64), which is also where a load must read an image's sidecar to find the
-  classified texture; until C64 a load takes the unclassified key, misses, and decodes the image as
-  it does for any image with no built texture.
+  joins the two at load (C64). **Until C64 a load reads no sidecar and takes the unclassified
+  key**: section 32's records (`material_textures.cpp`) and the renderer's references
+  (`systems/renderer/src/scene.cpp`, `gpu_scene.cpp`) key an image by `texture_cache_key` alone.
+  So a classified image whose `.tex` was built before its sidecar existed **hits that old
+  classless `.tex`** and draws it, its class unread; one with no texture under that key misses and
+  is decoded, as any image with no built texture is, while the classified texture the content
+  build made (or the cold cache's fill, `run_texture_step`, which does read the sidecar) sits
+  under a key that load never asks for. A glTF the renderer loads is the same: its cluster cache
+  key (`cluster_cache_key` in `scene.cpp`) holds no class, so a mesh built before its sidecar
+  existed hits its classless container. **C64 reads the sidecar before it takes either key.**
 - **One file, one answer** (C69): a section 6 whose elements are not bytes is not the classes
   module's record, and both readers refuse it through one check (`classes_section` in
   `texture_file.cpp`): the whole-file reader and the streamed tail's (`read_texture_file_levels`),
