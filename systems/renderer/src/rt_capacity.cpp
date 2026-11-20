@@ -98,7 +98,9 @@ tunables::Bool rt_static_build{
 tunables::Int rt_initial_clusters{"renderer.rt.initial_clusters", k_initial_rt_clusters, 1, 1 << 24,
                                   "The ray tracing chain's first capacity is at least this many "
                                   "clusters where the scene could want more, before the first "
-                                  "frame has said what it builds"};
+                                  "frame has said what it builds, and exactly this many (under "
+                                  "the budget) where it could want more than the budget: 16777216 "
+                                  "starts such a scene at its budget, the rule before W51-6"};
 
 tunables::Bool rt_caster_horizon{
     "renderer.rt.caster_horizon", false,
@@ -270,7 +272,10 @@ const char* rt_bound_remedy(u32 bound) noexcept {
 }
 
 u32 first_rt_capacity(u32 limit, u32 union_clusters, u64 estimate, u32 floor) noexcept {
-  u64 first = estimate > floor ? estimate : u64{floor};
+  // Past the budget (W51-6): the floor, never the card's share (rt_capacity.h). A union the budget
+  // holds whole is not past it.
+  const bool past = estimate > limit && limit < union_clusters;
+  u64 first = past || estimate < floor ? u64{floor} : estimate;
   if (first > union_clusters) first = union_clusters;
   if (first > limit) first = limit;
   return static_cast<u32>(first > 0 ? first : 1);

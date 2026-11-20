@@ -57,6 +57,27 @@ u64 large_buffer_floor() noexcept;
 u32 large_buffers(LargeBuffer* out, u32 capacity) noexcept;
 u64 large_buffers_dropped() noexcept;
 
+// **The large-buffer log's events, in order** (W51-6; gfx.md, "What the device holds"): every make
+// and every free of a logged buffer since the log was turned on, with the monotonic time it
+// happened, its size and the stack that made it (a free carries its make's), so a report can say
+// what the device took and gave back between two moments — and which blocks it held twice. The
+// first `k_large_buffer_events` are kept and the rest counted; turning the log on or setting its
+// floor empties it. A load makes a few thousand at a 2 MiB floor; a steady frame makes none.
+inline constexpr u32 k_large_buffer_events = 16384;
+struct LargeBufferEvent {
+  i64 ns = 0;  // core/time's monotonic clock
+  u64 bytes = 0;
+  bool made = false;  // false: a free
+  bool host_visible = false;
+  u16 depth = 0;
+  void* stack[k_large_buffer_frames]{};
+};
+// Copies the events kept (up to `capacity`, oldest first) and returns how many were kept.
+u32 large_buffer_events(LargeBufferEvent* out, u32 capacity) noexcept;
+u64 large_buffer_events_dropped() noexcept;
+// When the log was last turned on (0 while off): the events' times are read against it.
+i64 large_buffer_log_started_ns() noexcept;
+
 namespace detail {
 bool large_buffer_log_on() noexcept;
 // On, and `bytes` at or above the floor: whether a buffer of that size is the log's.

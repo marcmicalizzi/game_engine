@@ -6277,8 +6277,8 @@ bool GpuScene::lay_out_ray_tracing(std::string* error, RelayoutRetired* retired)
   // capacity the frames had grown it to.
   // Since 2026-10-25 from what the scene knows (`first_rt_capacity`): every pair a frame could
   // build, less the static forms', in every view, clamped to the budget and the union, at least
-  // `renderer.rt.initial_clusters` where the union is larger — so a scene past the budget starts at
-  // it rather than growing over its first frames, and one inside it can never drop anything.
+  // `renderer.rt.initial_clusters` where the union is larger, so one inside it can never drop
+  // anything; a scene past the budget starts at that floor and grows by its frames (W51-6).
   const u32 first = keep_capacity != 0
                         ? keep_capacity
                         : first_rt_capacity(rt_capacity_limit_, rt_union_clusters_,

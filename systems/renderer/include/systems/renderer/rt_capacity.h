@@ -241,11 +241,19 @@ RtBudget resolve_rt_cache_mib(u32 tunable_mib, u64 device_local_bytes) noexcept;
 // pair a frame could build, which is the scene's pairs less the static forms' (they are built once,
 // not per frame), in every view — clamped to the budget (`limit`) and to the union, and never under
 // `floor` where the union is larger: so a scene whose every pair fits in the budget is allocated
-// for all of them and can never drop anything, and one past it starts at the budget, where its
-// first frame is drawn as complete as the budget allows instead of growing over its first frames.
-// Until 2026-10-25 it was the union or 65,536 clusters, whichever was less, and a streamed forest's
-// first frames dropped instances while the capacity grew towards what they wanted. Arithmetic
-// only, so the rule is tested on the CPU.
+// for all of them and can never drop anything. Until 2026-10-25 it was the union or 65,536
+// clusters, whichever was less, and a streamed forest's first frames dropped instances while the
+// capacity grew towards what they wanted. Arithmetic only, so the rule is tested on the CPU.
+// **A scene past the budget starts at `floor`, not at the budget** (W51-6, 2026-11-19; renderer.md,
+// "A guess past the budget is not made at it"): the budget is a share of the card and says nothing
+// of the scene, so starting there was a guess of the card's size — the forest's staging held
+// 337,597 clusters, 3.1 GB of chunks and their bottom-level set, through its load and its first ten
+// seconds of frames for a first frame that built 6,306, and that hold was the load's peak. It
+// starts at what the budget would have started a scene inside it at, and grows by what its frames
+// ask (a step made on the worker; a frame already short for it waits for the allocation); a frame
+// in flight before the first read-back that wants more keeps whole instances and counts what it
+// dropped, and a frame somebody waits for is drawn complete as ever. `floor` 2^24 is the rule
+// before, the comparison.
 u32 first_rt_capacity(u32 limit, u32 union_clusters, u64 estimate, u32 floor) noexcept;
 
 // **Which bound bound** (renderer.md, "The warning names its bound"; R143). A frame that built less

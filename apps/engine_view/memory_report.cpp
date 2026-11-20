@@ -368,6 +368,35 @@ JsonValue snapshot(const char* when, const gfx::Device* device) {
   buffer_block.set("host_visible_mib", mib(host_visible_bytes));
   buffer_block.set("sites", static_cast<u32>(buffer_sites.size()));
   buffer_block.set("by_site", std::move(buffer_list));
+  // **The device's blocks in order** (W51-6; apps.md, "--memory-report: where the commit is"): at
+  // exit, every make and free of a logged buffer since the log was on, its time in seconds from
+  // then, its size (a free negative), the logged device-local bytes live after it, and the stack's
+  // first frames — what was held twice, and when, which a snapshot cannot say.
+  if (std::strcmp(when, "exit") == 0) {
+    Vector<gfx::LargeBufferEvent> events;
+    events.resize(gfx::k_large_buffer_events);
+    const u32 kept = gfx::large_buffer_events(events.data(), gfx::k_large_buffer_events);
+    const i64 origin = gfx::large_buffer_log_started_ns();
+    JsonValue list = JsonValue::array();
+    i64 live_bytes = 0;
+    for (u32 i = 0; i < kept && i < gfx::k_large_buffer_events; ++i) {
+      const gfx::LargeBufferEvent& ev = events[i];
+      const i64 signed_bytes = ev.made ? static_cast<i64>(ev.bytes) : -static_cast<i64>(ev.bytes);
+      if (!ev.host_visible) live_bytes += signed_bytes;
+      JsonValue e = JsonValue::object();
+      e.set("t_s", static_cast<f64>(ev.ns - origin) / 1e9);
+      e.set("mib", static_cast<f64>(signed_bytes) / (1024.0 * 1024.0));
+      e.set("live_mib", static_cast<f64>(live_bytes) / (1024.0 * 1024.0));
+      if (ev.host_visible) e.set("host_visible", true);
+      JsonValue stack = JsonValue::array();
+      for (u32 f = 0; f < ev.depth && f < 8; ++f)
+        stack.push_back(frame_name(ev.stack[f]));
+      e.set("stack", std::move(stack));
+      list.push_back(std::move(e));
+    }
+    buffer_block.set("events", std::move(list));
+    buffer_block.set("events_dropped", gfx::large_buffer_events_dropped());
+  }
   out.set("device_buffers", std::move(buffer_block));
   const f64 walk_ms = static_cast<f64>(time::monotonic_ns() - t0) / 1e6;
   out.set("walk_ms", walk_ms);

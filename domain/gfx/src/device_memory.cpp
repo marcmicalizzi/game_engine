@@ -1,4 +1,5 @@
 #include <core/base/macros.h>
+#include <core/time/time.h>
 #include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/device_memory.h>
@@ -27,6 +28,26 @@ std::atomic<bool> g_lock{false};
 LargeBuffer g_buffers[k_large_buffer_slots];
 u32 g_count = 0;  // under g_lock
 std::atomic<u64> g_dropped{0};
+// The events in order (W51-6), under g_lock: the first k_large_buffer_events since the log was on.
+LargeBufferEvent g_events[k_large_buffer_events];
+u32 g_event_count = 0;
+std::atomic<u64> g_events_dropped{0};
+std::atomic<i64> g_started_ns{0};
+
+void push_event(const LargeBuffer& entry, bool made) noexcept {  // under g_lock
+  if (g_event_count >= k_large_buffer_events) {
+    g_events_dropped.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+  LargeBufferEvent& e = g_events[g_event_count++];
+  e.ns = time::monotonic_ns();
+  e.bytes = entry.bytes;
+  e.made = made;
+  e.host_visible = entry.host_visible;
+  e.depth = entry.depth;
+  for (u32 f = 0; f < k_large_buffer_frames; ++f)
+    e.stack[f] = entry.stack[f];
+}
 
 void lock() noexcept {
   while (g_lock.exchange(true, std::memory_order_acquire)) {
@@ -37,12 +58,29 @@ void unlock() noexcept { g_lock.store(false, std::memory_order_release); }
 }  // namespace
 
 void set_large_buffer_log(bool on) noexcept {
-  g_on.store(on, std::memory_order_relaxed);
-  if (on) return;
   lock();
-  g_count = 0;
+  if (!on) g_count = 0;
+  g_event_count = 0;
+  g_events_dropped.store(0, std::memory_order_relaxed);
+  g_started_ns.store(on ? time::monotonic_ns() : 0, std::memory_order_relaxed);
   unlock();
+  g_on.store(on, std::memory_order_relaxed);
 }
+
+u32 large_buffer_events(LargeBufferEvent* out, u32 capacity) noexcept {
+  lock();
+  const u32 count = g_event_count;
+  for (u32 i = 0; i < count && i < capacity; ++i)
+    out[i] = g_events[i];
+  unlock();
+  return count;
+}
+
+u64 large_buffer_events_dropped() noexcept {
+  return g_events_dropped.load(std::memory_order_relaxed);
+}
+
+i64 large_buffer_log_started_ns() noexcept { return g_started_ns.load(std::memory_order_relaxed); }
 
 u32 large_buffers(LargeBuffer* out, u32 capacity) noexcept {
   lock();
@@ -60,6 +98,7 @@ void set_large_buffer_floor(u64 bytes) noexcept {
   g_floor.store(bytes < k_large_buffer_min_bytes ? k_large_buffer_min_bytes : bytes,
                 std::memory_order_relaxed);
   g_count = 0;
+  g_event_count = 0;
   unlock();
 }
 
@@ -91,6 +130,7 @@ void note_large_buffer(u64 key, u64 bytes, bool host_visible) noexcept {
   } else {
     g_dropped.fetch_add(1, std::memory_order_relaxed);
   }
+  push_event(entry, true);
   unlock();
 }
 
@@ -98,6 +138,7 @@ void forget_large_buffer(u64 key) noexcept {
   lock();
   for (u32 i = 0; i < g_count; ++i) {
     if (g_buffers[i].key != key) continue;
+    push_event(g_buffers[i], false);
     g_buffers[i] = g_buffers[--g_count];
     break;
   }

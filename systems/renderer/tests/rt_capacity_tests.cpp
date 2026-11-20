@@ -644,8 +644,15 @@ TEST_CASE("rt capacity: removing the last untraced tile restores the frame estim
 TEST_CASE("rt capacity: the first capacity is the scene's estimate, the budget its ceiling") {
   // A scene inside the budget is allocated for every pair: it never drops anything.
   CHECK(first_rt_capacity(150000, 20000, 20000, 65536) == 20000);
-  // A scene past it starts at the budget, not at 65,536 below it.
-  CHECK(first_rt_capacity(118214, 7284526, 7284526, 65536) == 118214);
+  // W51-6: a scene past it starts at the floor, not at the budget, which is the card's share and
+  // no frame's demand: the forest's staging, whose first frame built 6,306 of the budget's 337,597.
+  CHECK(first_rt_capacity(118214, 7284526, 7284526, 65536) == 65536);
+  CHECK(first_rt_capacity(337597, 16777216, 13216067, 65536) == 65536);
+  // A budget smaller than the floor is still the ceiling; a floor of 2^24 is the rule before.
+  CHECK(first_rt_capacity(40000, 3400000, 3400000, 65536) == 40000);
+  CHECK(first_rt_capacity(118214, 7284526, 7284526, 1u << 24) == 118214);
+  // An estimate past the budget whose union the budget holds whole is not past it.
+  CHECK(first_rt_capacity(30000, 30000, 45000, 4096) == 30000);
   // What the static forms take off the estimate is not allocated: 3.3 M pairs of forms in a union
   // of 3.4 M leave 80,000 a frame can build.
   CHECK(first_rt_capacity(150000, 3400000, 80000, 4096) == 80000);
