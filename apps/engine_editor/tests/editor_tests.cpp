@@ -2129,6 +2129,63 @@ TEST_CASE("engine-editor: editor.tool, editor.pick_file and editor.import_mesh")
     granted.set("path", JsonValue(source_dir + "/crate.gltf"));
     CHECK(call("editor.import_mesh", granted).find("error") != nullptr);
     CHECK(document.document().journal().size() == before + 3);
+
+    // **No answer names a directory of this machine** (T174): a .gltf whose buffer is missing is
+    // refused naming the client's spelling and the buffer's own name — not the root's directory,
+    // and by grant not the directory of the file the person chose, which never crosses the
+    // protocol.
+    const auto names_no_machine_path = [&](const JsonValue& response) {
+      const JsonValue* error = response.find("error");
+      REQUIRE(error != nullptr);
+      const std::string message(error->find("message")->as_string());
+      INFO(message);
+      for (usize i = 0; i + 2 < message.size(); ++i) {
+        const char c = message[i];
+        const bool letter = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+        CHECK_FALSE(
+            (letter && message[i + 1] == ':' && (message[i + 2] == '/' || message[i + 2] == '\\')));
+      }
+      for (usize i = 0; i < message.size(); ++i) {
+        if (message[i] != '/' && message[i] != '\\') continue;
+        CHECK_FALSE(
+            (i == 0 || message[i - 1] == '\'' || message[i - 1] == ' ' || message[i - 1] == '('));
+      }
+      CHECK(message.find(std::string(io::file_name(tmp.path()))) == std::string::npos);
+      CHECK(message.find(std::string(io::file_name(elsewhere.path()))) == std::string::npos);
+    };
+    // The loader does not open a .gltf's images, so a missing one is found by the copy.
+    const auto with_lost_image = [](const std::string& dir) {
+      REQUIRE(write_cube_gltf(dir, "lost"));
+      std::string text;
+      REQUIRE(io::read_file(dir + "/lost.gltf", text) == io::Status::Ok);
+      JsonValue gltf;
+      REQUIRE(parse_json(text, gltf).ok);
+      JsonValue images = JsonValue::array();
+      JsonValue image = JsonValue::object();
+      image.set("uri", JsonValue("lost.png"));
+      images.push_back(std::move(image));
+      gltf.set("images", std::move(images));
+      REQUIRE(io::write_file(dir + "/lost.gltf", write_json(gltf)) == io::Status::Ok);
+    };
+    with_lost_image(source_dir);
+    JsonValue lost = JsonValue::object();
+    lost.set("path", JsonValue("doc://source/lost.gltf"));
+    answer = call("editor.import_mesh", lost);
+    names_no_machine_path(answer);
+    CHECK(std::string(answer.find("error")->find("message")->as_string()).find("lost.png") !=
+          std::string::npos);
+    with_lost_image(elsewhere.path());
+    JsonValue lost_grant = JsonValue::object();
+    lost_grant.set("grant", JsonValue(editor::grant_file(state, elsewhere.path() + "/lost.gltf")));
+    answer = call("editor.import_mesh", lost_grant);
+    names_no_machine_path(answer);
+    // A missing buffer the loader itself reads is answered without a path (it held before).
+    REQUIRE(write_cube_gltf(source_dir, "gone"));
+    REQUIRE(io::remove_file(source_dir + "/gone.bin") == io::Status::Ok);
+    JsonValue gone = JsonValue::object();
+    gone.set("path", JsonValue("doc://source/gone.gltf"));
+    names_no_machine_path(call("editor.import_mesh", gone));
+    CHECK(document.document().journal().size() == before + 3);
   }
   // ADR-0069 decision 5: an import a client asks for is that client's in the journal, as every
   // other write of the protocol is, and not the editor's own; a call naming nobody from the page

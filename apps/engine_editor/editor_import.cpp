@@ -148,7 +148,9 @@ bool import_mesh_files(const std::string& source, const std::string& doc_dir, Im
     std::string data;
     const std::string from = from_dir + "/" + rel;
     if (io::read_file(from, data) != io::Status::Ok) {
-      error = name + " names " + rel + ", which is not there (" + from + ")";
+      // The file's own name and the name it gave, never the directory either lies in: the answer
+      // goes to a client, and by a grant that directory is the person's (T174).
+      error = name + " names " + rel + ", which is not there";
       return false;
     }
     const std::string to = doc_dir + "/" + rel_dir + "/" + rel;
@@ -175,7 +177,7 @@ bool import_mesh_files(const std::string& source, const std::string& doc_dir, Im
     const std::string to = doc_dir + "/" + rel;
     if (io::make_directories(directory_of(to)) != io::Status::Ok ||
         io::write_file(to, bytes[i]) != io::Status::Ok) {
-      error = "cannot write " + to;
+      error = "cannot write " + rel + " in the document";
       remove_imported(doc_dir, out);
       return false;
     }

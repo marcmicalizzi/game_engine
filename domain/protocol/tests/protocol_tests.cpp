@@ -914,6 +914,45 @@ TEST_CASE("roots: a session's events show its root form, and a missing file read
                       "out://save") == "'out://save' is not a save; out://save has no manifest");
 }
 
+// **The one shown form, over the roots** (paths.h, `shown_message`; T174): a loader's sentence
+// names the files it opened as the roots admitted them — the reader's grid beside its header, a
+// mesh it could not read, the derived-data folder — and every one of them is under a root, so each
+// is answered in its `<root>://` form; a path named outright is answered as named first, a file
+// before its directory, and its separators and (on Windows) its case are not what tells it apart.
+TEST_CASE("roots: an answer names a root's file by its root, never by the host's directory") {
+  TempDir tmp("protocol_shown_roots");
+  const std::string world = tmp.file("work") + "/world";
+  REQUIRE(io::make_directories(world + "/out") == io::Status::Ok);
+  REQUIRE(io::make_directories(tmp.file("ddc")) == io::Status::Ok);
+  io::Roots roots;
+  REQUIRE(roots.add("work", tmp.file("work"), false) == io::Status::Ok);
+  REQUIRE(roots.add("out", world + "/out", true) == io::Status::Ok);
+  REQUIRE(roots.add("ddc", tmp.file("ddc"), false) == io::Status::Ok);
+  const std::string work = roots.find("work")->canonical;
+  const std::string out = roots.find("out")->canonical;
+  const std::string ddc = roots.find("ddc")->canonical;
+  // A tile-set provider's sentence, a mesh loader's, and the derived-data folder alone.
+  CHECK(shown_message("'" + work + "/world/terrain/ground.json': its grid '" + work +
+                          "/world/terrain/ground.f32' could not be read",
+                      {}, &roots) ==
+        "'work://world/terrain/ground.json': its grid 'work://world/terrain/ground.f32' could not "
+        "be read");
+  CHECK(shown_message("glTF: cannot read '" + out + "/later.gltf'", {}, &roots) ==
+        "glTF: cannot read 'out://later.gltf'");
+  CHECK(shown_message("the set under " + ddc + " is torn", {}, &roots) ==
+        "the set under ddc:// is torn");
+  // A directory's name that only begins like a root's is not that root.
+  CHECK(shown_message(work + "x/y", {}, &roots) == work + "x/y");
+  // Named outright first: the record's spelling for its file, the client's for a directory.
+  std::string backslashed = work + "/world/props/a.glb";
+  for (char& c : backslashed)
+    if (c == '/') c = '\\';
+  const ShownPath named[] = {{work + "/world/props/a.glb", "props/a.glb"},
+                             {"/elsewhere/chosen/", ""}};
+  CHECK(shown_message("cannot read '" + backslashed + "' nor '/elsewhere/chosen/a.bin'", named,
+                      &roots) == "cannot read 'props/a.glb' nor 'a.bin'");
+}
+
 // `<dir>:rw` was split on its suffix alone, so a directory whose name ends in ":rw" (Linux allows
 // it) could not be named read-only and was silently made writable; `:ro` says read-only outright.
 TEST_CASE("roots: --root takes :ro, so a directory named with :rw can be read-only") {

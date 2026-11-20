@@ -223,6 +223,45 @@ TEST_CASE(
   REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), {}, scene, error), error);
 }
 
+namespace {
+// Whether `message` names no path of this machine: no drive letter, no leading separator, and not
+// the scratch directory the document lives in.
+bool names_no_machine_path(const std::string& message, std::string_view dir) {
+  for (usize i = 0; i + 2 < message.size(); ++i) {
+    const char c = message[i];
+    if (((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) && message[i + 1] == ':' &&
+        (message[i + 2] == '/' || message[i + 2] == '\\'))
+      return false;
+  }
+  for (usize i = 0; i < message.size(); ++i) {
+    if ((message[i] == '/' || message[i] == '\\') &&
+        (i == 0 || message[i - 1] == '\'' || message[i - 1] == ' ' || message[i - 1] == '('))
+      return false;
+  }
+  return message.find(io::file_name(dir)) == std::string::npos;
+}
+}  // namespace
+
+// The reader's own sentences under a host's roots name the record's spelling, never the native path
+// the roots admitted (T174): its answer reaches every client of `render.load {session}`, which
+// passes the provider's and the loader's sentences through the one shown form (protocol's
+// `shown_message`) as well.
+TEST_CASE("doc_scene: under a host's roots the reader's refusals name the record's spelling") {
+  World w;
+  io::Roots roots;
+  REQUIRE(roots.add("work", w.tmp.path(), false) == io::Status::Ok);
+  REQUIRE(io::write_file(w.tmp.file("terrain/wide.json"),
+                         hostile_heightfield::header("70000", "1000")) == io::Status::Ok);
+  create(w.d, id_of(1), doc_scene::k_heightfield,
+         R"({"name":"wide","source":"terrain/wide.json"})");
+  doc_scene::DocumentScene scene;
+  std::string error;
+  CHECK_FALSE(doc_scene::read_document_scene(w.d, w.tmp.path(), {}, scene, error, &roots));
+  CHECK(error.find("its source 'terrain/wide.json' states a grid of 70000 x 65") !=
+        std::string::npos);
+  CHECK_MESSAGE(names_no_machine_path(error, w.tmp.path()), error);
+}
+
 // **A header's grid is held to the header's own directory** (T174): the reader admits the record's
 // `source` by the roots, and the header it reads names its grid file in `data`. Absolute, or
 // climbing with `..`, it would be opened wherever it points, and the provider's answer would say

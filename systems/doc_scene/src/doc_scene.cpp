@@ -234,10 +234,10 @@ bool map_heightfield(Id128 id, const terrain::Heightfield& record, const std::st
   constexpr i64 k_max_side = 65536;
   constexpr i64 k_max_spacing_mm = 1'000'000;
   if (width > k_max_side || height > k_max_side || spacing > k_max_spacing_mm) {
-    error = where + ": its source '" + source + "' states a grid of " + std::to_string(width) +
-            " x " + std::to_string(height) + " points " + std::to_string(spacing) +
-            " mm apart; at most " + std::to_string(k_max_side) + " points a side, " +
-            std::to_string(k_max_spacing_mm) + " mm apart, are read";
+    error = where + ": its source '" + record.source + "' states a grid of " +
+            std::to_string(width) + " x " + std::to_string(height) + " points " +
+            std::to_string(spacing) + " mm apart; at most " + std::to_string(k_max_side) +
+            " points a side, " + std::to_string(k_max_spacing_mm) + " mm apart, are read";
     return false;
   }
   scene::Terrain entry;

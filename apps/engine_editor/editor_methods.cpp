@@ -98,9 +98,17 @@ bool editor_import_mesh(protocol::Context& ctx, const protocol::EditorImportMesh
   ImportedFiles files;
   std::string why;
   if (!import_mesh_files(source, document.directory(), files, why)) {
+    // The one shown form (paths.h): the file as the client spelled it, the files beside it by the
+    // spelling of its directory (by a grant, by their own names: the person's directory never
+    // crosses the protocol), and anything under the editor's roots by its root.
+    const usize slash = spelled.find_last_of("/\\");
+    const protocol::ShownPath named[] = {
+        {source, spelled},
+        {std::string(io::parent_path(source)) + "/",
+         slash == std::string::npos ? std::string() : spelled.substr(0, slash + 1)}};
     error = protocol::make_error(
         protocol::codes::k_invalid_argument,
-        "editor.import_mesh: " + protocol::shown_message(std::move(why), source, spelled));
+        "editor.import_mesh: " + protocol::shown_message(std::move(why), named, ctx.roots));
     return false;
   }
   const WorldPos at = p.at.has_value()
