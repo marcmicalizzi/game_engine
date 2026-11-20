@@ -2495,12 +2495,14 @@ SceneCollision::PropProxy* SceneCollision::want_prop_proxy(const HeldProp& held,
   return out;
 }
 
-// Whether the proxy is ready for a body at this update: built, or its update come — then built
-// here if no worker started it, or waited for while one runs. Never before its update, so the
-// body's tick is the hand-over's plus the updates, whatever the workers did.
+// Whether the proxy is ready for a body at this update: its update come (`due`, which `at_once`
+// brings forward), and then built — here if no worker started it, or waited for while one runs.
+// **Never before its update, built or not**, so the body's tick, its id and every id after it are
+// the hand-over's plus the updates, whatever the workers did: until 2026-11-20 the update was asked
+// only while the proxy was unbuilt, so one a worker had finished got its body at the next update.
 bool SceneCollision::finish_prop_proxy(PropProxy& entry) {
+  if (prop_updates_ < entry.due) return false;
   if (entry.state.load(std::memory_order_acquire) != PropProxy::k_done) {
-    if (prop_updates_ < entry.due) return false;
     u32 expected = PropProxy::k_queued;
     if (entry.state.compare_exchange_strong(expected, PropProxy::k_running,
                                             std::memory_order_acq_rel)) {

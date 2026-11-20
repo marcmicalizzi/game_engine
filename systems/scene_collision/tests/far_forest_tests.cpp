@@ -21,9 +21,11 @@
 
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <memory>
 #include <string>
+#include <thread>
 
 using namespace engine;
 using namespace engine::scene_collision;
@@ -1060,6 +1062,64 @@ TEST_CASE(
     CHECK(rig.collision.stats().prop_proxies == 2);
     CHECK(rig.collision.stats().prop_proxies_freed == 1);
   }
+}
+
+TEST_CASE("scene_collision: a proxy a worker finished early still gets its body at its update") {
+  // Until 2026-11-20 `finish_prop_proxy` asked for the update only while the proxy was not built,
+  // so one a worker had finished got its body at the next update, wherever the worker was: a walk
+  // at 240 Hz gave the worker 50 ms to build it in about two, the body came at update 2 or 3, and
+  // every body made after it took another id in a replay (S91). Here the worker is given all the
+  // time it needs before the first update after the hand-over; the body still comes at the
+  // promised update, and the next body's id is the one a run with no workers gives it.
+  renderer::SceneData scene;
+  crate_and_boulder_scene(scene);
+  Config config;
+  config.prop_build_updates = k_walk_prop_build_updates;
+  jobs::JobSystemConfig workers;
+  workers.performance_workers = 2;
+  workers.pin_threads = false;
+  jobs::JobSystem jobs(workers);
+  const auto body_at = [](Rig& rig, f32 z) {
+    physics::RayHit hit;
+    if (!rig.physics.cast_ray(place(Vec3{0.0f, 10.0f, z}), Vec3{0.0f, -20.0f, 0.0f}, hit))
+      return physics::BodyId{};
+    return static_cast<f32>(relative(hit.position, WorldPos::origin()).y) > 0.5f
+               ? hit.body
+               : physics::BodyId{};
+  };
+  physics::BodyId next[2];
+  u32 run = 0;
+  for (jobs::JobSystem* with : {&jobs, static_cast<jobs::JobSystem*>(nullptr)}) {
+    CAPTURE(with != nullptr);
+    Rig rig(scene, config, with);
+    const u64 built = rig.collision.stats().prop_proxy_builds;
+    PropBody rock = crate_at(20.0f, 9);
+    rock.mesh = 1;
+    rock.scale = 1.2f;
+    rig.hand({rock});
+    if (with != nullptr) {
+      // The worker done: a quarter of a second for a build of about two milliseconds. On a machine
+      // too busy to run it in that time the case asks less, never wrongly.
+      std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+    u32 updates = 1;
+    while (rig.collision.stats().prop_bodies == 0 && updates < 40) {
+      (void)rig.collision.update_props();
+      ++updates;
+      // Counted at the update its body is made, not when the worker finished.
+      if (rig.collision.stats().prop_bodies == 0)
+        CHECK(rig.collision.stats().prop_proxy_builds == built);
+    }
+    CHECK(updates == 1 + config.prop_build_updates);
+    CHECK(rig.collision.stats().prop_proxy_builds == built + 1);
+    CHECK(body_at(rig, 20.0f));
+    // The next body made, a crate handed beside it: its id is the same in both runs.
+    rig.hand({rock, crate_at(30.0f, 11)});
+    next[run] = body_at(rig, 30.0f);
+    CHECK(next[run]);
+    ++run;
+  }
+  CHECK(next[0] == next[1]);
 }
 
 TEST_CASE(

@@ -248,7 +248,13 @@ own (`SceneCollision::PropProxy`):
   worker is still on it (`Stats::prop_proxy_waits`), built there if none started it
   (`prop_proxy_inline`). **A count of updates, never a clock**, so the body is made at the same tick
   in a recording and its replay whatever the workers did, and with no job system at the same tick
-  too (built on it). For those 12 ticks the new prop has no body: the walker can pass through a prop
+  too (built on it). **A proxy a worker finished early still waits for its update** (2026-11-20):
+  the update is asked first, built or not, so neither the body nor the ids of the bodies made after
+  it move with the worker's speed; until then a finished proxy skipped the question and its body
+  came at the next update, at 240 Hz the second or third (`scene_collision: a proxy a worker
+  finished early still gets its body at its update` gives the worker a quarter of a second before
+  the first update and holds the body to the twelfth and the next body's id to the one a run with no
+  workers gives it). For those 12 ticks the new prop has no body: the walker can pass through a prop
   of a mesh and size never placed before for a twentieth of a second after it appears. A host with
   no job system and the tests' default (`prop_build_updates` 0) build it on the update that wants
   it, as before.
