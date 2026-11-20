@@ -49,6 +49,23 @@ bool stored(const io::Roots* roots, const std::string& base_dir, const std::stri
   return true;
 }
 
+// A file a header names beside itself (a heightfield's `data`): relative, not absolute, no `..`
+// component, no `<root>://`, by the text rules the roots use (`io::check_stored_path_form`). Held
+// lexically, before anything opens it, because nothing a host's roots admitted says where a file
+// the record's file names may lead (T174).
+bool names_a_file_beside(std::string_view name) {
+  if (name.empty() || name.find("://") != std::string_view::npos) return false;
+  if (io::check_stored_path_form(name) != io::Refusal::none) return false;
+  usize start = 0;
+  while (start <= name.size()) {
+    usize end = name.find_first_of("/\\", start);
+    if (end == std::string_view::npos) end = name.size();
+    if (name.substr(start, end - start) == "..") return false;
+    start = end + 1;
+  }
+  return true;
+}
+
 // The record's composed properties as the schema type. Unknown properties are left alone: the
 // document validates its records against their types (`doc::Document::validate`), and a viewport
 // that refused to draw a record over a property it does not read would hide the record, not the
@@ -183,6 +200,17 @@ bool map_heightfield(Id128 id, const terrain::Heightfield& record, const std::st
       !header.is_object()) {
     error = where + ": its source '" + record.source + "' does not read as a heightfield header";
     return false;
+  }
+  // **The grid the header names is held to the header's own directory** (T174): under a host's
+  // roots the record's `source` was admitted, but the header's `data` is the header's author's,
+  // and opened as written it would read any file and say whether it exists and how large it is.
+  // Refused, the ground is left out as a refused path leaves it, before the provider opens it.
+  if (roots != nullptr) {
+    const JsonValue* data = header.find("data");
+    if (data != nullptr && (!data->is_string() || !names_a_file_beside(data->as_string()))) {
+      refused = true;
+      return true;
+    }
   }
   const i64 width = header_int(header, "width", 0);
   const i64 height = header_int(header, "height", 0);
