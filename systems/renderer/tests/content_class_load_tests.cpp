@@ -13,6 +13,7 @@
 #include <core/base/macros.h>
 #include <core/hash/hash.h>
 #include <core/json/json.h>
+#include <domain/assets/gltf.h>
 #include <domain/assets/mesh_generator.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/gfx/device.h>
@@ -535,32 +536,6 @@ TEST_CASE(
   CHECK(made >= 1u);
 }
 
-TEST_CASE("content classes at load: a scene with nothing classified loads what it loaded") {
-  const test::TempDir tmp("renderer_classes_none");
-  REQUIRE(tmp.ok());
-  const Grid a = write_grid(tmp, "a.clusters", 9, "a.png");
-  const Grid b = write_grid(tmp, "b.clusters", 11, "b.png");
-  std::string error;
-  SceneData under_default;
-  REQUIRE_MESSAGE(load_scene(scene_of(tmp, {&a, &b}), under_default, error), error);
-  SceneDesc wide_desc = scene_of(tmp, {&a, &b});
-  wide_desc.view_policy = policy_named("glow-wide");
-  SceneData wide;
-  REQUIRE_MESSAGE(load_scene(wide_desc, wide, error), error);
-  CHECK(tables_hash(under_default) == tables_hash(wide));
-  for (const SceneData* scene : {&under_default, &wide}) {
-    CHECK(scene->decisions.size() == 1);
-    CHECK(scene->load.substituted.empty());
-    CHECK(scene->load.unreadable_omitted == 0);
-    CHECK(content_class::is_none(scene->held));
-    CHECK(scene->loaded_of_read.empty());
-    CHECK(scene->instances.size() == 2);
-    CHECK(scene->load.image_sidecars_probed == 2);
-  }
-  CHECK(under_default.instantiated_under.name == content_class::k_agent_default_name);
-  CHECK(wide.instantiated_under.name == "glow-wide");
-}
-
 namespace {
 
 // A ground of the scene file's own (`terrain`, 17 x 17 over 8 m), whose one layer samples
@@ -594,6 +569,73 @@ u32 files_in(const std::string& dir) {
 }
 
 }  // namespace
+
+// **Nothing classified, nothing changed** (C64): the same tables under two policies, and every key
+// the load takes, the mesh's, each image's and the ground's, the plain key function's value
+// computed here without any class, with its entry under that name.
+TEST_CASE("content classes at load: a scene with nothing classified loads what it loaded") {
+  const test::TempDir tmp("renderer_classes_none");
+  REQUIRE(tmp.ok());
+  const Grid a = write_grid(tmp, "a.clusters", 9, "a.png");
+  const Grid b = write_grid(tmp, "b.clusters", 11, "b.png");
+  REQUIRE(io::write_file(tmp.file("tri.gltf"), k_triangle_gltf) == io::Status::Ok);
+  Grid tri;
+  tri.path = tmp.file("tri.gltf");
+  std::string error;
+  SceneData under_default;
+  REQUIRE_MESSAGE(load_scene(scene_of(tmp, {&a, &b, &tri}), under_default, error), error);
+  SceneDesc wide_desc = scene_of(tmp, {&a, &b, &tri});
+  wide_desc.view_policy = policy_named("glow-wide");
+  SceneData wide;
+  REQUIRE_MESSAGE(load_scene(wide_desc, wide, error), error);
+  CHECK(tables_hash(under_default) == tables_hash(wide));
+  u64 tri_hash = 0;
+  REQUIRE_MESSAGE(assets::source_mesh_hash(tri.path, tri_hash, &error), error);
+  const std::string tri_entry = geometry::cluster_cache_path(
+      tmp.file("ddc"),
+      geometry::cluster_cache_key(tri_hash, geometry::imported_lod_options(SceneDesc{}.lod), true,
+                                  geometry::ClusterPagesOptions{}.page_bytes));
+  for (const SceneData* scene : {&under_default, &wide}) {
+    CHECK(scene->decisions.size() == 1);
+    CHECK(scene->load.substituted.empty());
+    CHECK(scene->load.unreadable_omitted == 0);
+    CHECK(content_class::is_none(scene->held));
+    CHECK(scene->loaded_of_read.empty());
+    CHECK(scene->instances.size() == 3);
+    CHECK(scene->load.image_sidecars_probed == 2);
+    // Each image's: the texture key over the file's bytes and the record's options, and no class.
+    for (u32 m = 0; m < 2; ++m) {
+      CAPTURE(m);
+      REQUIRE(scene->sources[m].textures.size() == 1);
+      const geometry::ClusterFileTexture& record = scene->sources[m].textures[0];
+      std::string bytes;
+      REQUIRE(io::read_file(tmp.file(m == 0 ? "a.png" : "b.png"), bytes) == io::Status::Ok);
+      texture::TextureBuildOptions options;
+      REQUIRE(texture::unpack_texture_options(record.options, options));
+      const u64 plain = texture::texture_cache_key(hash_bytes(bytes.data(), bytes.size()), options);
+      CHECK(record.key == plain);
+      CHECK(io::exists(texture::texture_cache_path(tmp.file("ddc"), plain)));
+    }
+    // The glTF's: the cluster key over its source hash, as the content build takes it.
+    CHECK(scene->sources[2].container == tri_entry);
+  }
+  CHECK(io::exists(tri_entry));
+  CHECK(under_default.instantiated_under.name == content_class::k_agent_default_name);
+  CHECK(wide.instantiated_under.name == "glow-wide");
+  // The ground's: `load_terrain`'s key with no class term.
+  write_image(tmp.file("ground.png"), 40);
+  REQUIRE(io::write_file(tmp.file("scene.json"), ground_scene(false)) == io::Status::Ok);
+  SceneDesc ground_desc;
+  REQUIRE_MESSAGE(read_scene_file(tmp.file("scene.json"), ground_desc, error), error);
+  ground_desc.ddc = tmp.file("ddc");
+  SceneData ground;
+  REQUIRE_MESSAGE(load_scene(ground_desc, ground, error), error);
+  REQUIRE(ground.terrain_mesh < ground.sources.size());
+  const std::string ground_entry =
+      geometry::cluster_cache_path(ground_desc.ddc, classless_ground_key(ground_desc));
+  CHECK(ground.sources[ground.terrain_mesh].container == ground_entry);
+  CHECK(io::exists(ground_entry));
+}
 
 // **The ground goes through the door** (C64): its class is the join of what the sidecars beside
 // its heightfield source and every layer's images declare, read before any of them is; a ground

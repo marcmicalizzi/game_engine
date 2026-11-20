@@ -6,6 +6,8 @@
 // same tables at one worker as at every one.
 #include <core/hash/hash.h>
 #include <core/platform/process.h>
+#include <domain/assets/mesh_generator.h>
+#include <domain/geometry/cluster_file.h>
 #include <domain/materials/materials.h>
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
@@ -257,6 +259,15 @@ TEST_CASE("cooked load: a classified recipe has a cache entry of its own, carryi
   std::string error;
   SceneData plain;
   REQUIRE_MESSAGE(load_scene(scene_of(tmp, {"a.flora.json"}), plain, error), error);
+  // With no sidecar the recipe's entry is the generator's own key, no class term in it (C64).
+  const std::string plain_entry = geometry::cluster_cache_path(
+      tmp.file("ddc"),
+      assets::generated_mesh_build_key(
+          plain.sources[0].source_hash,
+          assets::MeshGeneratorInputs{materials::pack_at(tmp.file("pack")), nullptr},
+          SceneDesc{}.lod, geometry::ClusterPagesOptions{}.page_bytes));
+  CHECK(plain.sources[0].container == plain_entry);
+  CHECK(io::exists(plain_entry));
   REQUIRE(write_text(tmp.file("a.flora.provenance.json"),
                      R"({"content_classes":{"violence":"mild"}})"));
   SceneData classified;
