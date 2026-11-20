@@ -1537,6 +1537,31 @@ TEST_CASE("ledger: a digest lets the host go for its reads, and composes again p
   h.sessions.set_digest_read_hook_for_test(nullptr, nullptr);
 }
 
+// The detail's filters (protocol.md, "What a close is tied to"): beside `digest`, a list's `state`,
+// `audience`, `kind` or `task` would hide the item the detail names when it does not match, and
+// answer nothing with no error; so they are refused as `reviews`, `limit` and `order` are.
+TEST_CASE("ledger: the detail form refuses a list's filters beside it") {
+  test::TempDir tmp("protocol_ledger_detail");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  h.open(dir, true);
+  DigestWorld w;
+  w.make(h, dir);
+  const JsonValue id = at(at(w.raise(h, "Agent"), "reviews")[0], "id");
+  JsonValue error;
+  for (const auto& [name, value] :
+       {std::pair<const char*, JsonValue>{"state", JsonValue("Closed")},
+        std::pair<const char*, JsonValue>{"audience", JsonValue("Human")},
+        std::pair<const char*, JsonValue>{"kind", JsonValue("promotion")},
+        std::pair<const char*, JsonValue>{"task", JsonValue(u64{77})}}) {
+    CAPTURE(name);
+    JsonValue params = obj({{"review", id}, {"digest", JsonValue(true)}});
+    params.set(name, value);
+    CHECK(h.fails("review.list", std::move(params), &error) == codes::k_invalid_argument);
+    CHECK(reason_of(error) == "detail form");
+  }
+}
+
 // The detail form is one item by id (protocol.md, "What a close is tied to"): a list's ids, order
 // or limit beside `digest` is refused rather than ignored. And a ledger written before digests —
 // at version 2, with no ledger revision, or at version 3, with one — reads, its item carrying no

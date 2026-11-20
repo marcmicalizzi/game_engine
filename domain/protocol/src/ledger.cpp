@@ -1107,6 +1107,7 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
             return false;
           }
           r->decided_at = seen_now.digest;
+
           r->state = ReviewState::Closed;
           r->resolution = params.resolution;
           r->closed_by = caller.who;
@@ -1147,15 +1148,17 @@ bool review_list(Context& ctx, const ReviewListParams& params, ReviewsResult& ou
                        "never for the rows of a list: it reads every asset the subject names");
     return false;
   }
-  // The detail form is one item by id: a list's selection beside it (ids, an order, a limit) would
-  // either change nothing or hide the item it names, so it is refused rather than ignored.
+  // The detail form is one item by id: a list's selection beside it (ids, an order, a limit, a
+  // state, an audience, a kind, a task) would either change nothing or hide the item it names, so
+  // it is refused rather than ignored.
   if (params.digest &&
-      (!params.reviews.empty() || params.limit != 0 || params.order != LedgerOrder::Oldest)) {
+      (!params.reviews.empty() || params.limit != 0 || params.order != LedgerOrder::Oldest ||
+       params.state || params.audience || !params.kind.empty() || params.task != 0)) {
     JsonValue data = JsonValue::object();
     data.set("reason", JsonValue("detail form"));
     error = make_error(codes::k_invalid_argument,
-                       "digest opens one item's detail (review): reviews, order and limit select "
-                       "a list's rows and are not given beside it",
+                       "digest opens one item's detail (review): reviews, order, limit, state, "
+                       "audience, kind and task select a list's rows and are not given beside it",
                        std::move(data));
     return false;
   }
@@ -1189,14 +1192,10 @@ bool review_list(Context& ctx, const ReviewListParams& params, ReviewsResult& ou
   // held (the assets' reads are the cost, and every other caller of the ledger waits for that
   // lock); the ledger read again under the dispatch lock says whether the item it answers is the
   // one the pass composed for.
-  bool hidden = false;  // the item exists and the filters beside `digest` hide it
+  // With no filter beside it the detail answers its item, which `find_review` found.
   const auto first = [&](Session& session, ReviewSubject& subject, u64& revision, RpcError& e) {
     if (!list(session, revision, e)) return false;
     out.ledger_revision = revision;
-    if (out.reviews.empty()) {
-      hidden = true;
-      return false;
-    }
     subject = out.reviews[0].subject;
     return true;
   };
@@ -1214,7 +1213,7 @@ bool review_list(Context& ctx, const ReviewListParams& params, ReviewsResult& ou
     return ok;
   };
   if (!digest_passes(ctx, params.session, DigestFor::detail, first, decide, out.subject, s, error))
-    return hidden;
+    return false;
   // A host that cannot see a file cannot say the subject is as it was: it says so (`comparable`).
   out.subject.same = out.subject.comparable && out.subject.digest == out.reviews[0].raised_digest;
   return true;
