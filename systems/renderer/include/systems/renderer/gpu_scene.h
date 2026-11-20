@@ -183,7 +183,9 @@ class GpuScene {
   // `release` (W51-3; renderer.md, "The scene's host copy after the upload"): `&data` from a host
   // that gives the uploaded streams back after `create` anyway (`release_uploaded_streams`), so the
   // upload-only ones — the 16-bit grid, the attributes, the vertex ids — go as soon as the geometry
-  // is on the device and before the textures and the chain are made, which is where the load peaks.
+  // is on the device and before the textures and the chain are made, which is where the load peaks;
+  // and the floats and the source indices with them, the triangles once the chain has packed them
+  // (W51-4), so **a host that passes it has made its own copies first** (the collision's).
   bool create(const gfx::Device& device, const SceneData& data, const ResolvedSettings& resolved,
               std::string* error = nullptr, TerrainLevelSet* rings = nullptr,
               SceneData* release = nullptr);

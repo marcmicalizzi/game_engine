@@ -261,22 +261,27 @@ u64 release_uploaded_streams(SceneData& data, HostReaders readers) {
   // `GpuScene::create` has measured the sway bounds, the crowns and the sky-facing meshes from
   // them.
   u64 floats = 0;
-  if (readers == HostReaders::none) {
+  if (readers != HostReaders::collision) {
     floats = u64{mesh.vertices.capacity()} * sizeof(Vec3) +
-             u64{mesh.triangles.capacity()} * sizeof(u32) +
              u64{mesh.vertex_source.capacity()} * sizeof(u32);
     mesh.vertices.clear();
     mesh.vertices.shrink_to_fit();
-    mesh.triangles.clear();
-    mesh.triangles.shrink_to_fit();
     mesh.vertex_source.clear();
     mesh.vertex_source.shrink_to_fit();
+  }
+  // The triangles last (W51-4): the chain packs its 8-bit indices from them inside `create`.
+  if (readers == HostReaders::none) {
+    floats += u64{mesh.triangles.capacity()} * sizeof(u32);
+    mesh.triangles.clear();
+    mesh.triangles.shrink_to_fit();
   }
   const u64 freed = quantized + attributes + ids + floats;
   ENGINE_LOG_INFO(log_renderer, "uploaded host streams released", log::field("bytes", freed),
                   log::field("quantized", quantized), log::field("attributes", attributes),
                   log::field("vertex_ids", ids), log::field("floats", floats),
-                  log::field("kept_for", readers == HostReaders::none ? "nothing" : "collision"));
+                  log::field("kept_for", readers == HostReaders::none    ? "nothing"
+                                         : readers == HostReaders::chain ? "chain"
+                                                                         : "collision"));
   return freed;
 }
 

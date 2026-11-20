@@ -904,15 +904,19 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
     return false;
   }
   measure_host_reads(data, resolved);  // before a host may release what they read (T138)
-  // W51-3: what only the geometry's upload read goes before the textures and the chain are made;
-  // the floats stay for the chain's builds and the collision, and go when the host releases.
-  if (release == &data && !streamed_)
-    (void)release_uploaded_streams(*release, HostReaders::collision);
+  // W51-3, W51-4: what only the upload and the measures read goes before the textures and the
+  // chain are made, the floats with it (a host that passes `release` copied the collision's
+  // first); the triangles once the chain has packed its 8-bit indices from them.
+  const bool early = release == &data && !streamed_;
+  const HostReaders keep = ray_tracing_ ? HostReaders::chain : HostReaders::none;
+  if (early) (void)release_uploaded_streams(*release, keep);
   if (!upload_materials(resolved, error) || !create_working_set(resolved, error) ||
       !create_ray_tracing(resolved, error)) {
     destroy();
     return false;
   }
+  if (early && keep == HostReaders::chain)
+    (void)release_uploaded_streams(*release, HostReaders::none);
   // The sand's detail: the terrain's ground, asked for the wind the ripples lie across, and the
   // time its surface stands at — the scene's own until a moving terrain's motion moves it
   // (renderer.md, "The sand close up").
