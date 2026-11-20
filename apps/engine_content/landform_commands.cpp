@@ -44,6 +44,10 @@ int landform_command(int argc, char** argv) {
     return 2;
   }
   const std::string sketch_path = argv[2], out_dir = argv[3];
+  if (refuse_dash_output("landform", "output directory", out_dir)) {
+    std::fputs(usage, stderr);
+    return 2;
+  }
   std::string name;
   u64 workers = 0;
   bool relief = true;

@@ -45,6 +45,10 @@ int channels_command(int argc, char** argv) {
     return 2;
   }
   const std::string scene_path = argv[2], out_path = argv[3];
+  if (refuse_dash_output("channels", "output", out_path)) {
+    std::fputs(usage, stderr);
+    return 2;
+  }
   std::string ddc, measure_path;
   f64 min_area = 50000.0;
   f64 stage = .5;

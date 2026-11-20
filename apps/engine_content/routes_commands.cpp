@@ -40,6 +40,10 @@ int routes_command(int argc, char** argv) {
     return 2;
   }
   const std::string scene_path = argv[2], out_path = argv[3];
+  if (refuse_dash_output("routes", "output", out_path)) {
+    std::fputs(usage, stderr);
+    return 2;
+  }
   std::string ddc;
   i64 only = -1;
   for (int i = 4; i < argc; ++i) {

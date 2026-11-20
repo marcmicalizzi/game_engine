@@ -39,10 +39,29 @@
 
 #include <domain/content_build/content_build.h>
 
+#include <cstdio>
 #include <span>
 #include <string>
+#include <string_view>
 
 namespace engine::content {
+
+// `--help` or `-h`: a command that takes it prints its usage on stdout and exits 0.
+inline bool is_help_flag(std::string_view arg) noexcept { return arg == "--help" || arg == "-h"; }
+
+// **An output named with a leading dash is an option where a path was expected** (T210): one
+// command once took `--help` for its output directory and wrote a folder of that name into the
+// directory it ran from. Refused, with one line naming what and why; true when refused, and the
+// caller prints its usage and exits 2. A path that really begins with a dash is named `./-x`.
+inline bool refuse_dash_output(const char* command, const char* what, std::string_view path) {
+  if (path.empty() || path.front() != '-') return false;
+  std::fprintf(stderr,
+               "engine-content %s: the %s '%.*s' begins with a dash: an option where a path was "
+               "expected (name such a path ./%.*s)\n",
+               command, what, static_cast<int>(path.size()), path.data(),
+               static_cast<int>(path.size()), path.data());
+  return true;
+}
 
 // The steps this configuration has, in the order `build` asks them whether they take a source.
 std::span<const content_build::DerivedStep* const> derived_steps();

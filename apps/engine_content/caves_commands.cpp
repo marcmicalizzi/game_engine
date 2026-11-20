@@ -86,6 +86,10 @@ int caves_command(int argc, char** argv) {
     return 2;
   }
   const std::string network_path = argv[2], out_dir = argv[3];
+  if (refuse_dash_output("cave-plan", "output directory", out_dir)) {
+    std::fputs(usage, stderr);
+    return 2;
+  }
   std::string name;
   Hill hill;
   f64 tile_m = 32.0;

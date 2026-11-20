@@ -57,7 +57,7 @@ int falls_command(int argc, char** argv) {
       continue;
     }
     if (flag.substr(0, 2) != "--") {
-      if (!out_path.empty()) {
+      if (!out_path.empty() || refuse_dash_output("falls", "output", flag)) {
         std::fputs(usage, stderr);
         return 2;
       }
