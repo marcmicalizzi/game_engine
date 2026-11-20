@@ -2282,8 +2282,11 @@ TEST_CASE("engine-editor: editor.tool, editor.pick_file and editor.import_mesh")
       return;
     }
     const usize instances = viewport.scene().records.size();
+    // The sample lies outside the editor's roots (the document's scratch directory), so it comes
+    // as the person's choice in the editor's own window, a grant, as the shell's Add imports it
+    // (T174): a path to it is refused like any client path outside the roots.
     import = JsonValue::object();
-    import.set("path", JsonValue(sample));
+    import.set("grant", JsonValue(editor::grant_file(state, sample)));
     JsonValue where = JsonValue::array();
     for (const f64 v : {0.0, 0.0, 0.0})
       where.push_back(JsonValue(v));
