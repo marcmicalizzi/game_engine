@@ -445,6 +445,23 @@ bool probe_texture_file(std::string_view path, u64& source_hash, u64& build_key,
   return true;
 }
 
+namespace {
+
+// Section 6 as every reader takes it (C69): absent or empty is no class, and one of elements that
+// are not bytes is not the classes module's record and is refused. Both readers ask this, so a
+// file is never refused by one and read as `none` by the other. `out` is the section to read, or
+// null.
+bool classes_section(const TextureFileSection* section, const TextureFileSection*& out,
+                     std::string* error) {
+  out = nullptr;
+  if (section == nullptr || section->element_count == 0) return true;
+  if (section->element_size != 1) return fail(error, "content classes require byte elements");
+  out = section;
+  return true;
+}
+
+}  // namespace
+
 bool read_texture_file_memory(std::span<const u8> bytes, TextureData& out, std::string* error) {
   out = TextureData{};
   TextureFileHeader header;
@@ -522,9 +539,10 @@ bool read_texture_file_memory(std::span<const u8> bytes, TextureData& out, std::
                   static_cast<usize>(variance->element_count));
   }
   // The image's own class (C62), the classes module's record as bytes; absent is `none`.
-  const TextureFileSection* classes = found[static_cast<u32>(TextureSection::ContentClasses)];
-  if (classes != nullptr && classes->element_count != 0) {
-    if (classes->element_size != 1) return fail(error, "content classes require byte elements");
+  const TextureFileSection* classes = nullptr;
+  if (!classes_section(found[static_cast<u32>(TextureSection::ContentClasses)], classes, error))
+    return false;
+  if (classes != nullptr) {
     result.content_classes.resize(static_cast<u32>(classes->element_count));
     std::memcpy(result.content_classes.data(), bytes.data() + classes->offset,
                 static_cast<usize>(classes->element_count));
@@ -691,9 +709,12 @@ bool read_texture_file_levels(std::string_view path, u32 first, TextureData& out
       return fail(error, "texture file's variance levels cannot be read");
     }
   }
-  // The image's class (C62) travels with any range of the chain: a streamed tail is the same image.
-  if (const TextureFileSection* classes = found[static_cast<u32>(TextureSection::ContentClasses)];
-      classes != nullptr && classes->element_size == 1 && classes->element_count != 0) {
+  // The image's class (C62) travels with any range of the chain: a streamed tail is the same image,
+  // and a section the whole-file reader refuses is refused here too (`classes_section`).
+  const TextureFileSection* classes = nullptr;
+  if (!classes_section(found[static_cast<u32>(TextureSection::ContentClasses)], classes, error))
+    return false;
+  if (classes != nullptr) {
     result.content_classes.resize(static_cast<u32>(classes->element_count));
     if (file.read_at(classes->offset, result.content_classes.data(), result.content_classes.size(),
                      got) != io::Status::Ok ||

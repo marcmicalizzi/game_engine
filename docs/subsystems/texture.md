@@ -335,6 +335,11 @@ which this module keeps opaque (`TextureData::content_classes`). A streamed tail
   joins the two at load (C64), which is also where a load must read an image's sidecar to find the
   classified texture; until C64 a load takes the unclassified key, misses, and decodes the image as
   it does for any image with no built texture.
+- **One file, one answer** (C69): a section 6 whose elements are not bytes is not the classes
+  module's record, and both readers refuse it through one check (`classes_section` in
+  `texture_file.cpp`): the whole-file reader and the streamed tail's (`read_texture_file_levels`),
+  which once skipped such a section and returned the texture with no class, which is `none`. Test
+  "texture file: a classes section of elements that are not bytes is refused by both".
 - Test "texture file: content classes are section 6, written only when classified" (the plain
   fixture's hash unchanged with the field empty, the bytes round-tripped, a tail keeping them).
   **Built 2026-11-18** in `msvc-debug`, its tests passing with no device and every existing determinism pin unchanged.
