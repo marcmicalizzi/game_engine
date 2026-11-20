@@ -608,6 +608,79 @@ TEST_CASE("tile meshes: a farther tile never shelves a mesh a nearer one is admi
   CHECK(told.violations == 0);
 }
 
+// W51-5b, M1 (world.md, "A withheld mesh is let go and built again"): a shelved mesh's build
+// again reserves the room it was asked for, so room for one starts one build. Six rocks shelved
+// standing in a room of three; the room frees by one rock's clusters (any rock's, never two): a
+// budgeted commit starts one build, on the committing thread or the job system, and a whole commit
+// after it admits that one and starts no other. Until this every shelved rock that fitted alone
+// was built again in the same commit, and all but one shelved again a commit or two later.
+TEST_CASE("tile meshes: room for one shelved mesh starts one build") {
+  test::TempDir tmp{"engine_world_tile_meshes_reserved"};
+  const renderer::SceneData scene = scene_of(tmp, R"({"reach":6,"n":10})");
+  // The rocks' clusters, from a room that holds them all.
+  u32 least = ~0u;
+  u32 most = 0;
+  {
+    Recorder told;
+    PlacementTiles placements;
+    PlacementTilesConfig config;
+    config.ring_count = 1;
+    std::string error;
+    REQUIRE_MESSAGE(placements.create(scene, config, &error), error);
+    placements.set_meshes(room(32, 1u << 20, 0), told.sink());
+    placements.set_run_sink(&Recorder::runs, &told);
+    World world(ring(1.5f));
+    add_scene_consumers(world, nullptr, &placements);
+    for (u64 tick = 0; tick < 2; ++tick)
+      step(world, placements, at(0, 0), tick);
+    REQUIRE(told.held.size() == 9);
+    for (const Recorder::Held& h : told.held) {
+      least = std::min(least, h.clusters);
+      most = std::max(most, h.clusters);
+    }
+  }
+  REQUIRE(least > 0);
+  for (const bool on_jobs : {false, true}) {
+    CAPTURE(on_jobs);
+    jobs::JobSystem pool(jobs::JobSystemConfig{.performance_workers = 2, .pin_threads = false});
+    Recorder told;
+    told.most = 3;
+    PlacementTiles placements;
+    PlacementTilesConfig config;
+    config.ring_count = 1;
+    std::string error;
+    REQUIRE_MESSAGE(placements.create(scene, config, &error), error);
+    placements.set_meshes(room(32, 1u << 20, 0), told.sink(), on_jobs ? &pool : nullptr);
+    placements.set_run_sink(&Recorder::runs, &told);
+    World world(ring(1.5f));
+    add_scene_consumers(world, nullptr, &placements);
+    u64 tick = 0;
+    for (; tick < 3; ++tick)
+      step(world, placements, at(0, 0), tick);
+    const TileMeshStats& s = placements.meshes().stats();
+    REQUIRE(told.held.size() == 3);
+    const u32 shelved = s.shelved;
+    REQUIRE(shelved >= 5);
+    // Room for any one rock more, and never for two.
+    told.most = ~0u;
+    told.room = told.clusters + most + least - 1;
+    const u64 rebuilds = s.rebuilds;
+    step(world, placements, at(0, 0), tick++, 4);
+    MESSAGE("room for one rock: " << s.rebuilds - rebuilds << " of " << shelved
+                                  << " shelved rocks built again in the commit");
+    CHECK(s.rebuilds - rebuilds == 1);
+    CHECK(s.shelved == shelved - 1);
+    // Whole: the one built is admitted, and nothing else is started.
+    step(world, placements, at(0, 0), tick++, 0);
+    CHECK(told.held.size() == 4);
+    CHECK(s.rebuilds - rebuilds == 1);
+    CHECK(s.shelved == shelved - 1);
+    CHECK(s.waiting == 0);
+    CHECK(s.host_bytes == 0);
+    CHECK(told.violations == 0);
+  }
+}
+
 TEST_CASE("tile meshes: two walks to one place hold the same tail") {
   test::TempDir tmp{"engine_world_tile_meshes_walks"};
   const renderer::SceneData scene = scene_of(tmp, R"({"reach":6,"n":10})");

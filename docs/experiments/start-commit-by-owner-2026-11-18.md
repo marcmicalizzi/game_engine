@@ -340,6 +340,7 @@ What is left at the top setting's maximum is the first frame's device transient,
 An independent read of W51-5 and W51-6 (batch 71) found four things on W51-5 a suite did not catch; each was made to fail on the joined tree first and mended at its cause.
 
 - **A farther tile shelved a mesh a nearer one was admitting** (world.md, "A withheld mesh is let go and built again"). Mended: a mesh kept from being asked is let go only when no ticket asked for it this commit and it holds no texture yet.
+- **Every shelved mesh that fitted alone was built again in one commit** (the same section). Mended: a build again reserves the room it was asked for until the mesh is in or let go.
 
 ## Not measured
 

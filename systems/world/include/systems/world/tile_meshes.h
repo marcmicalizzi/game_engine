@@ -200,6 +200,8 @@ class TileMeshes {
   // is in (or the mesh draws its constants), false when the allowance left one for a later commit.
   bool admit_textures(Entry& entry);
   void release_textures(Entry& entry);
+  bool room_for(const Entry& entry) const;
+  void reserve(Entry& entry, bool on) noexcept;
 
   renderer::PlacementMeshOptions options_;
   TileMeshConfig config_;
@@ -209,6 +211,9 @@ class TileMeshes {
   Vector<u32> free_;                        // free slots, the lowest last
   FlatMap<u64, u32> by_identity_;
   u32 used_clusters_ = 0;  // a host with no sink counts the room itself
+  // What the shelved meshes being built again hold of the room until they are in (W51-5b).
+  u64 reserved_clusters_ = 0;
+  u64 reserved_materials_ = 0;
   bool whole_ = true;
   u32 commit_admissions_ = 0;
   u64 commit_bytes_ = 0;
