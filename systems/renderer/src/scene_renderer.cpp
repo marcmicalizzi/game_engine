@@ -3128,12 +3128,14 @@ void SceneRenderer::abort_frame() {
 }
 
 bool SceneRenderer::render_offscreen(const FrameDesc& frame, std::string* error) {
-  // At most twice: once, and once more if the frame's ray tracing structures did not fit. While
-  // the second is drawn the capacity policy holds still: that frame's own `begin_frame` folds an
-  // older frame's demand, which must not undo the growth before the frame that asked for it is
-  // drawn.
+  // At most three times: once; once more if the frame's ray tracing structures did not fit or a
+  // run of the visible list filled; and, if a run filled again, a last time with every run as long
+  // as the pair stride, which no frame can overfill. While a redraw is drawn the chain's capacity
+  // policy holds still: that frame's own `begin_frame` folds an older frame's demand, which must
+  // not undo the growth before the frame that asked for it is drawn.
   bool ok = true;
-  for (u32 attempt = 0; attempt < 2 && ok; ++attempt) {
+  bool runs_refused = false;
+  for (u32 attempt = 0; attempt < 3 && ok; ++attempt) {
     begin_frame();
     const u64 value = submit_frame(frame, error);
     if (value == 0) {
@@ -3164,9 +3166,31 @@ bool SceneRenderer::render_offscreen(const FrameDesc& frame, std::string* error)
     const bool short_references = scene_->rt_cache() &&
                                   stats_.rt.references_wanted > stats_.rt.references &&
                                   scene_->rt_reference_capacity() < reference_ceiling;
-    if (attempt > 0 || !resolved_.rt_chain || (!short_built && !short_references)) break;
-    u32 capacity = scene_->rt_capacity();
+    const bool short_chain =
+        attempt == 0 && resolved_.rt_chain && (short_built || short_references);
+    // **The runs the same way** (W51-5b): a run that filled turned pairs away from the picture, so
+    // the runs grow to hold what the frame drew and what it turned away — the policy's growth, or
+    // exactly that with no policy — and the frame is drawn again; a second filling (an occlusion
+    // pass that drew more the second time) takes the stride. The turned-away appends stay in the
+    // run's totals (`run_drops_total`, `run_drop_frames`); `run_redraws` counts the redraws.
+    const u32 dropped = stats_.run_drops + stats_.cascade_run_drops;
+    const bool short_runs = dropped != 0 && scene_->run_capacity() < scene_->pair_stride();
+    if (attempt == 2 || (!short_chain && !short_runs)) break;
     const f64 now = static_cast<f64>(time::monotonic_ns()) / 1.0e9;
+    if (short_runs) {
+      const u32 wanted = stats_.run_high + dropped;
+      u32 runs = scene_->pair_stride();
+      if (attempt == 0) runs = run_policy_set_ ? run_policy_.grow_to(wanted, now) : wanted;
+      ++stats_.run_redraws;
+      // Refused (the device's memory): the frame stands at the runs it had, its drops counted and
+      // the refusal said (`resize_runs`); there is nothing else to draw it with.
+      if (!resize_runs(std::max(runs, wanted), now)) runs_refused = true;
+    }
+    if (!short_chain) {
+      if (runs_refused) break;
+      continue;
+    }
+    u32 capacity = scene_->rt_capacity();
     if (short_built) {
       capacity = rt_capacity_.grow_to(stats_.rt.wanted, now);
       if (frame.rt_complete) capacity = std::max(capacity, std::min(stats_.rt.wanted, ceiling));

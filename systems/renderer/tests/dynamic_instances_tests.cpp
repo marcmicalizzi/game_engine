@@ -853,9 +853,11 @@ TEST_CASE("dynamic instances: the cull draws the same with nodes before instance
 // W51-5 (renderer.md, "The visible list's runs are sized by the frame"). A tiled world drawn with
 // every run as long as its stride, then with runs exactly as long as the fullest run the frames
 // filled, draws the loaded scene's ids, depth and colour both ways, and drops nothing; with runs
-// half that long the frames count the appends they turned away, and with the policy back on the
-// first such frame grows the runs and the picture is the loaded scene's again. With the hardware
-// and the software rasterizers, both occlusion passes and the cascades' runs.
+// half that long, **a frame somebody waits for is still the picture asked for** (W51-5b): the frame
+// that filled a run counts the appends it turned away, grows the runs and is drawn again, so the
+// capture is the loaded scene's — the policy off, so no frame in flight did the growing — and with
+// the policy back on nothing drops. With the hardware and the software rasterizers, both occlusion
+// passes and the cascades' runs.
 TEST_CASE("dynamic instances: runs sized by the frame draw the same, and a full run counts drops") {
   Gpu gpu;
   if (!gpu.ok) {
@@ -902,10 +904,10 @@ TEST_CASE("dynamic instances: runs sized by the frame draw the same, and a full 
     const Difference diff = compare_through_tail(shot, dynamic.scene, expected);
     const Stats& s = dynamic.renderer.stats();
     MESSAGE(std::string(what) << ": runs of " << dynamic.scene.run_capacity() << " (stride "
-                 << dynamic.scene.pair_stride() << "), fullest " << s.run_high << ", dropped "
-                 << s.run_drops << " + " << s.cascade_run_drops << "; " << diff.ids << " id, "
-                 << diff.depth << " depth and " << diff.color << " colour differences over "
-                 << shot.covered << " covered");
+                              << dynamic.scene.pair_stride() << "), fullest " << s.run_high
+                              << ", dropped " << s.run_drops << " + " << s.cascade_run_drops << "; "
+                              << diff.ids << " id, " << diff.depth << " depth and " << diff.color
+                              << " colour differences over " << shot.covered << " covered");
     return diff;
   };
   REQUIRE(tunables::apply_overrides("renderer.runs.by_frame=false"));
@@ -926,17 +928,22 @@ TEST_CASE("dynamic instances: runs sized by the frame draw the same, and a full 
   CHECK(diff.ids + diff.depth + diff.color == 0);
   CHECK(dynamic.renderer.stats().run_drops == 0);
   CHECK(dynamic.renderer.stats().cascade_run_drops == 0);
-  // Half that: a run fills, and the frame says how many appends it turned away.
+  // Half that: a run fills, the frame says how many appends it turned away, and since every frame
+  // here is one somebody waits for, it grows the runs and is drawn again — the capture complete.
   dynamic.renderer.wait_idle();
   REQUIRE_MESSAGE(dynamic.scene.fit_runs(fullest / 2, nullptr, &error), error);
   REQUIRE_MESSAGE(dynamic.scene.relayout(&error, nullptr), error);
-  (void)draw("runs half the fullest, the policy off", 4);
+  const u64 drops_before = dynamic.renderer.stats().run_drops_total;
+  const u64 redraws_before = dynamic.renderer.stats().run_redraws;
+  diff = draw("runs half the fullest, the policy off", 1);
   const Stats& short_runs = dynamic.renderer.stats();
-  CHECK(short_runs.run_drops + short_runs.cascade_run_drops > 0);
-  CHECK(short_runs.run_high <= fullest / 2);
+  CHECK(short_runs.run_drops_total > drops_before);  // the first attempt turned appends away
   CHECK(short_runs.run_drop_frames > 0);
-  // The policy on: the first frame read back with drops grows the runs, and the picture is the
-  // loaded scene's again.
+  CHECK(short_runs.run_redraws > redraws_before);
+  CHECK(short_runs.run_drops + short_runs.cascade_run_drops == 0);  // the frame returned drew all
+  CHECK(dynamic.scene.run_capacity() > fullest / 2);
+  CHECK(diff.ids + diff.depth + diff.color == 0);
+  // The policy on: nothing drops, and the picture is the loaded scene's.
   REQUIRE(tunables::apply_overrides("renderer.runs.by_frame=true"));
   diff = draw("the policy on again", 6);
   CHECK(dynamic.scene.run_capacity() > fullest / 2);

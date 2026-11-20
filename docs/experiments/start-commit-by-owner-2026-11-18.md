@@ -341,6 +341,9 @@ An independent read of W51-5 and W51-6 (batch 71) found four things on W51-5 a s
 
 - **A farther tile shelved a mesh a nearer one was admitting** (world.md, "A withheld mesh is let go and built again"). Mended: a mesh kept from being asked is let go only when no ticket asked for it this commit and it holds no texture yet.
 - **Every shelved mesh that fitted alone was built again in one commit** (the same section). Mended: a build again reserves the room it was asked for until the mesh is in or let go.
+- **A frame somebody waits for returned with pairs dropped** (renderer.md, "The visible list's runs are sized by the frame"): W51-5's own case measured it (runs half the fullest: 1,615 appends turned away and 4,610 ids differing in the capture). Mended: `render_offscreen` grows the runs and draws again, as it does for the chain; the case now asserts the capture is the loaded scene's.
+- **A refused lay-out of the runs leaked the old list or left the frame none**, and the pool's slots followed in a relayout that destroyed what the mesh records named before making its replacement (the same section). Mended: `fit_runs` makes every buffer before any old one goes and leaves the scene as it was on a refusal, counted; a test seam (`GpuScene::Fault::runs`) proves each path.
+- Lows: a pair a full run turned away is no longer counted or flagged drawn; the large-buffer log records a make only with its table entry; two stale sentences on the first frame past the budget; two stray control bytes.
 
 ## Not measured
 
