@@ -1583,6 +1583,30 @@ TEST_CASE("ledger: a close that sent no digest records none it was decided at") 
   CHECK(at(b, "decided_at").as_string().empty());
 }
 
+// Only the judged layer's record's properties are searched for file names, never its type
+// (protocol.md, "Which strings are files"): `engine.world.Node` looks like a file with the
+// extension `Node`, and was listed as one.
+TEST_CASE("ledger: a subject judged in a layer names no file by its record's type") {
+  test::TempDir tmp("protocol_ledger_layer");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  h.open(dir, true);
+  DigestWorld w;
+  w.make(h, dir);
+  const JsonValue layers = h.ok("doc.layers");
+  const JsonValue base = at(at(layers, "layers")[0], "name");
+  JsonValue params = w.raise_params("Agent");
+  JsonValue subject = at(params, "subject");
+  JsonValue records = JsonValue::array();
+  records.push_back(JsonValue(hex(w.node)));
+  subject.set("records", std::move(records));
+  subject.set("layer", base);
+  params.set("subject", std::move(subject));
+  const JsonValue stamped = at(h.ok("review.raise", std::move(params)), "subject");
+  CHECK(at(stamped, "unreadable").size() == 0);
+  CHECK(num(at(stamped, "assets")) == 0);
+}
+
 // The detail form is one item by id (protocol.md, "What a close is tied to"): a list's ids, order
 // or limit beside `digest` is refused rather than ignored. And a ledger written before digests —
 // at version 2, with no ledger revision, or at version 3, with one — reads, its item carrying no

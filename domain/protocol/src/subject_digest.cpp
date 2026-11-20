@@ -318,9 +318,13 @@ void compose_subject(const Context& ctx, const Session& session, const ReviewSub
       line.push_back(hex_of(id));
       const doc::ObjectRecord* own = d.layer(static_cast<u32>(judged)).find(id);
       if (own != nullptr) {
-        JsonValue record = schema::to_json(*own);
-        names_in(record, blobs, files);
-        line.push_back(std::move(record));
+        // Its properties are searched for names, never its type (`engine.world.Node` passes the
+        // file rule with the extension `Node`).
+        for (const auto& [name, value] : own->properties) {
+          (void)name;
+          names_in(value, blobs, files);
+        }
+        line.push_back(schema::to_json(*own));
       } else {
         line.push_back(JsonValue::null());
       }
