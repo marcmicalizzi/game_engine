@@ -503,8 +503,67 @@ function Get-PresetScript {
   return ($lines -join "`n")
 }
 
+# **rsync's exit 24 is a warning, not a failure** (2026-11-20): "some files vanished before they
+# could be transferred". The checkout is live while the sync reads it — an agent's scratch file, a
+# build's temporary, an editor's swap file — and a file that is gone by the time rsync reaches it
+# was never going to be compiled. Until this the sync's `set -e` ended the run on it: the morning's
+# gate lost its Linux leg to one scratch file. Every other code still ends the run with its own
+# status. `rsync_sync` runs one stage and remembers a 24; the script finishes both stages and exits
+# 24 only at its end, so `Resolve-SyncStatus` can say so and go on (docs/ci/local-linux.md, "The sync").
+$script:RsyncVanished = @'
+rsync_vanished=0
+rsync_sync() {
+  local rc=0
+  rsync "$@" || rc=$?
+  if [ "$rc" -eq 24 ]; then rsync_vanished=1; return 0; fi
+  return "$rc"
+}
+'@
+
+function Get-SyncScript {
+  <#
+  .SYNOPSIS
+    The bash script the sync container runs: the host into the mirror with `rsync -a`, the mirror
+    into /src by checksum (linux-build.ps1, Invoke-Sync, says why two stages), a one-line summary.
+    Each stage goes through `rsync_sync`, so a file that vanished mid-sync (exit 24) lets the run
+    finish and the script exit 24 at its end; any other non-zero code ends it at once with its own.
+  #>
+  param([Parameter(Mandatory)][AllowEmptyString()][string]$ExcludeArgs)
+  $text = @'
+set -eo pipefail
+@VANISHED@
+mkdir -p /deps/.host-mirror
+rsync_sync -a --delete --modify-window=-1 @EXCLUDES@ /host/ /deps/.host-mirror/
+rsync_sync -rlp --checksum --delete --out-format='%i %n' @EXCLUDES@ /deps/.host-mirror/ /src/ > /tmp/sync.log
+copied=$(grep -c '^>f' /tmp/sync.log || true)
+removed=$(grep -c '^\*deleting' /tmp/sync.log || true)
+files=$(find /src -path /src/build -prune -o -type f -print | wc -l)
+echo "sync: $files files, $copied copied, $removed removed"
+if [ "$copied" -gt 0 ] && [ "$copied" -le 12 ]; then grep '^>f' /tmp/sync.log | cut -d' ' -f2- | sed 's/^/  copied: /'; fi
+if [ "$rsync_vanished" -ne 0 ]; then echo "sync: warning: rsync exit 24, some files vanished before they could be transferred" >&2; exit 24; fi
+'@
+  return $text.Replace('@VANISHED@', $script:RsyncVanished.TrimEnd()).Replace('@EXCLUDES@', $ExcludeArgs)
+}
+
+# The wrapper alone, so a test can run it over a stub rsync without touching /src or /deps.
+function Get-RsyncVanishedScript { return $script:RsyncVanished }
+
+function Resolve-SyncStatus {
+  <#
+  .SYNOPSIS
+    What the sync container's exit status means: 'ok' (0), 'vanished' (24: rsync could not transfer
+    files that disappeared while it ran; both stages finished, a warning, the run goes on), or
+    'failed' (anything else, which ends the run).
+  #>
+  param([Parameter(Mandatory)][int]$Status)
+  if ($Status -eq 0) { return 'ok' }
+  if ($Status -eq 24) { return 'vanished' }
+  return 'failed'
+}
+
 Export-ModuleMember -Function Get-ShortHash, Get-CheckoutVolumeId, Get-CheckoutVolumeName, ConvertTo-CheckoutRoot,
   ConvertTo-RootKey, Get-VolumeLabels, ConvertFrom-WorktreePorcelain, ConvertFrom-ContainerMounts,
   ConvertFrom-DockerSize, Format-DockerSize, New-VolumeFact, New-CheckoutFact, Get-VolumeVerdict,
   Get-OwnVolumeVerdict, Format-VolumeVerdict, Get-SharedVolume, Get-CcacheMaxSize, Get-BuildContainerArgs,
-  Get-CcacheReportScript, Get-PresetScript, Get-ShaderCacheDir
+  Get-CcacheReportScript, Get-PresetScript, Get-ShaderCacheDir, Get-SyncScript, Get-RsyncVanishedScript,
+  Resolve-SyncStatus

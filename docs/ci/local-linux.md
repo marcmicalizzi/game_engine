@@ -235,6 +235,20 @@ again, which takes about 4½ s once, and copies nothing into `/src` that has not
 line says what it copied, for example `sync: 682 files, 1 copied, 0 removed`, followed by the file
 names when there are twelve or fewer: that is the list of sources the build is about to recompile.
 
+**A file that vanishes during the sync is a warning, not a failure** (2026-11-20). The checkout is
+live while the sync reads it, and a file deleted between rsync's listing and its transfer (an
+agent's scratch file, a build's temporary, an editor's swap file) makes rsync exit 24, "some files
+vanished before they could be transferred". Until then the sync script's `set -e` ended the run
+there, and on 2026-11-20 the gate lost its Linux leg to one scratch file. Now each stage runs
+through `rsync_sync` (`Get-SyncScript` in `tools/lib/LinuxVolumes.psm1`), which remembers a 24 and
+goes on; the script finishes both stages and its summary line, prints `sync: warning: rsync exit
+24 ...` and exits 24, and `Invoke-Sync` reads that (`Resolve-SyncStatus`) as a warning it prints
+and builds. A file that vanished from the host is gone from the mirror and so from `/src` too, as
+a deletion would be. Every other non-zero code still ends the run with `source sync failed (<code>)`.
+`tools/linux-build.Tests.ps1` holds the script's shape, the status's three meanings, and the
+wrapper itself run by bash over a stub rsync (24 remembered and the next stage run; 23 ending the
+script at once).
+
 **Measured** on 2026-09-24, five syncs of each kind, with the build lock held and nothing else
 running (host CPU 5–9 %, GPU 0 %, no other container). "Wall" is the `docker run` including the
 container's start, "rsync" the time inside it. 682 files, 9.2 MB:

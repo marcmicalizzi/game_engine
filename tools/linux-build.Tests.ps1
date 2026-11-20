@@ -329,6 +329,53 @@ Test-That 'without -Rebuild nothing is removed' {
   $s -notmatch 'find /src/build' -and $s -notmatch 'rm -rf'
 }
 
+# --- the source sync: a file that vanished mid-sync is a warning (rsync's exit 24) ----------------
+
+$syncScript = Get-SyncScript -ExcludeArgs '--exclude=build --exclude=ddc'
+Test-That 'the sync runs both rsync stages through the wrapper that remembers an exit 24' {
+  $stages = @([regex]::Matches($syncScript, '(?m)^rsync_sync ')).Count
+  $bare = @([regex]::Matches($syncScript, '(?m)^rsync ')).Count
+  $stages -eq 2 -and $bare -eq 0 -and $syncScript -match '(?m)^rsync_sync\(\) \{' -and
+    $syncScript -match '--exclude=build --exclude=ddc /host/ /deps/\.host-mirror/' -and $syncScript -notmatch '@EXCLUDES@|@VANISHED@'
+}
+Test-That 'the sync script ends with exit 24 and a warning only when a stage saw 24, after both stages and the summary' {
+  $lines = $syncScript -split "`n"
+  $last = $lines[-1]
+  $summary = [Array]::FindIndex($lines, [Predicate[string]]{ param($l) $l -like 'echo "sync: $files files*' })
+  $last -match 'rsync_vanished" -ne 0 \]; then echo "sync: warning: rsync exit 24' -and $last -match 'exit 24; fi$' -and
+    $summary -gt 0 -and $summary -lt $lines.Count - 1
+}
+Test-That 'the container''s status: 0 is ok, 24 is a warning, every other code fails' {
+  (Resolve-SyncStatus -Status 0) -eq 'ok' -and (Resolve-SyncStatus -Status 24) -eq 'vanished' -and
+    (@(1, 2, 12, 23, 25, 30, 125, 137, 255, -1) | Where-Object { (Resolve-SyncStatus -Status $_) -ne 'failed' }).Count -eq 0
+}
+# The wrapper itself, run by bash over a stub rsync that exits with the code it is given: a 24 lets
+# the next stage run and is remembered, a 23 ends the script with 23 before the next line. Where no
+# bash is installed (WSL's launcher is not one: it would start a distribution) the case says so and
+# does not pass.
+$bash = @(Get-Command bash -All -CommandType Application -ErrorAction SilentlyContinue |
+  Where-Object { $_.Source -notmatch '\\(System32|WindowsApps)\\' } | Select-Object -ExpandProperty Source)[0]
+if (-not $bash -and $IsWindows) {
+  $gitBash = Join-Path (Split-Path (Split-Path (Get-Command git -ErrorAction SilentlyContinue).Source)) 'bin/bash.exe'
+  if (Test-Path -LiteralPath $gitBash) { $bash = $gitBash }
+}
+function Invoke-RsyncStub([string]$body) {
+  $text = "set -eo pipefail`n" + (Get-RsyncVanishedScript) + "`nrsync() { return `"`$1`"; }`n" + $body + "`n"
+  $out = $text.Replace("`r", '') | & $bash -s 2>&1
+  [pscustomobject]@{ Code = $LASTEXITCODE; Out = (@($out) -join "`n") }
+}
+Test-That 'run by bash: a stage that exits 24 is remembered and the next stage runs' {
+  if (-not $bash) { throw 'no bash to run the wrapper (Git for Windows'' bash, or /bin/bash)' }
+  $r = Invoke-RsyncStub "rsync_sync 24 a`nrsync_sync 0 b`necho `"after: `$rsync_vanished`""
+  $r.Code -eq 0 -and $r.Out -eq 'after: 1'
+}
+Test-That 'run by bash: any other code ends the script at once with that code' {
+  if (-not $bash) { throw 'no bash to run the wrapper (Git for Windows'' bash, or /bin/bash)' }
+  $r23 = Invoke-RsyncStub "rsync_sync 23 a`necho reached"
+  $r0 = Invoke-RsyncStub "rsync_sync 0 a`necho `"clean: `$rsync_vanished`""
+  $r23.Code -eq 23 -and $r23.Out -notmatch 'reached' -and $r0.Code -eq 0 -and $r0.Out -eq 'clean: 0'
+}
+
 # --- the compiler cache: the Windows half (tools/lib/CompilerCache.psm1, `tools/dev.ps1 configure`) -----
 #
 # Tested here rather than in a test of its own because tools.linux_build is the CTest test the

@@ -290,20 +290,9 @@ function Invoke-Sync([string]$image) {
   # protected from it by default, which is what keeps /src/build alive across syncs. The second
   # stage takes the same excludes for that reason alone: the mirror never holds a build/.
   #
-  # A single-quoted here-string with the excludes substituted afterwards, so that bash's `$` and
-  # quotes reach bash as written.
-  $syncScript = @'
-set -eo pipefail
-mkdir -p /deps/.host-mirror
-rsync -a --delete --modify-window=-1 @EXCLUDES@ /host/ /deps/.host-mirror/
-rsync -rlp --checksum --delete --out-format='%i %n' @EXCLUDES@ /deps/.host-mirror/ /src/ > /tmp/sync.log
-copied=$(grep -c '^>f' /tmp/sync.log || true)
-removed=$(grep -c '^\*deleting' /tmp/sync.log || true)
-files=$(find /src -path /src/build -prune -o -type f -print | wc -l)
-echo "sync: $files files, $copied copied, $removed removed"
-if [ "$copied" -gt 0 ] && [ "$copied" -le 12 ]; then grep '^>f' /tmp/sync.log | cut -d' ' -f2- | sed 's/^/  copied: /'; fi
-'@
-  $syncScript = $syncScript.Replace('@EXCLUDES@', $excludeArgs)
+  # The script is the module's (Get-SyncScript), where tools/linux-build.Tests.ps1 checks it: a file
+  # that vanished while rsync read the checkout (exit 24) is a warning, every other code a failure.
+  $syncScript = Get-SyncScript -ExcludeArgs $excludeArgs
   $script:CurrentContainer = "engine-linux-$VolumeId-$PID-sync"
   $syncArgs = @('run', '--rm', '--name', $script:CurrentContainer, '--label', "$RoleLabel=sync",
                 '-v', "${HostMount}:/host:ro", '-v', "${SrcVolume}:/src", '-v', "${DepsVolume}:/deps",
@@ -312,7 +301,13 @@ if [ "$copied" -gt 0 ] && [ "$copied" -le 12 ]; then grep '^>f' /tmp/sync.log | 
   & docker @syncArgs
   $status = $LASTEXITCODE
   $script:CurrentContainer = $null
-  if ($status -ne 0) { throw "source sync failed ($status)" }
+  switch (Resolve-SyncStatus -Status $status) {
+    'vanished' {
+      Write-Warning ('source sync: rsync exit 24, some files vanished before they could be transferred ' +
+                     '(a file deleted in the checkout while the sync read it); both stages finished, going on')
+    }
+    'failed' { throw "source sync failed ($status)" }
+  }
   Write-Host ("   in {0:N1}s" -f ([DateTime]::UtcNow - $started).TotalSeconds)
 }
 
