@@ -1381,3 +1381,162 @@ TEST_CASE("ledger: a stamp and a decision are one write and one event, a refused
   CHECK(num(at(closed, "ledger_revision")) == written + 1);
   CHECK(at(at(closed, "reviews")[0], "decided_at").as_string() == digest.as_string());
 }
+
+// ---- who is told of a ledger's change, and when (protocol.md, "The ledger's events"; A55) -----
+
+namespace {
+
+// A waker that counts, for a case that waits for the platform's notice.
+struct Woken {
+  std::mutex mutex;
+  std::condition_variable cv;
+  int count = 0;
+  static void wake(void* context) {
+    auto* w = static_cast<Woken*>(context);
+    {
+      std::lock_guard<std::mutex> lock(w->mutex);
+      ++w->count;
+    }
+    w->cv.notify_all();
+  }
+  int seen() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return count;
+  }
+  // Up to `seconds` for a wake past `after`.
+  bool wait_past(int after, int seconds) {
+    std::unique_lock<std::mutex> lock(mutex);
+    return cv.wait_for(lock, std::chrono::seconds(seconds), [&] { return count > after; });
+  }
+};
+
+// A session manager watching its ledgers as a listening host's does, `woken` (declared before the
+// host, so the watches stop first) told of each notice; the looks are made by hand.
+void watch_ledgers(Host& h, Subscriptions& subscriptions, Woken& woken) {
+  h.sessions.set_events(&subscriptions);
+  h.sessions.set_ledger_waker(&Woken::wake, &woken);
+  (void)subscriptions.subscribe(7, "", event_bit(EventKind::Session));
+}
+
+// The change of every event pushed since `from`.
+std::vector<std::string> changes_of(const std::vector<std::string>& sent, usize from) {
+  std::vector<std::string> out;
+  for (usize i = from; i < sent.size(); ++i) {
+    JsonValue note;
+    REQUIRE(parse_json(sent[i], note).ok);
+    out.emplace_back(at(at(note, "params"), "change").as_string());
+  }
+  return out;
+}
+
+i64 make_task(Host& on, const char* title, const char* actor = "b") {
+  return num(
+      at(on.task("task.create", obj({{"title", JsonValue(title)}, {"attribution", who(actor)}})),
+         "id"));
+}
+
+}  // namespace
+
+// A host's own write is told by its own event and never as `ledger_changed`, which is another
+// process's write or a claim this host's clock let lapse: a raise for a task changes the item and
+// the task, and both are the raise's.
+TEST_CASE("ledger: a write's own event is the one event it pushes, its task included") {
+  test::TempDir tmp("protocol_ledger");
+  const std::string dir = tmp.file("doc");
+  Woken woken;
+  Collect pushed;
+  Subscriptions subscriptions;
+  subscriptions.attach(&pushed);
+  Host h;
+  watch_ledgers(h, subscriptions, woken);
+  h.open(dir, true);
+  Host b;
+  b.open(dir, false);
+  const i64 task = make_task(h, "the road", "director");
+  CHECK(h.sessions.look_at_ledgers(true) == 0);
+
+  usize mark = pushed.sent.size();
+  const JsonValue item = h.review("review.raise", obj({{"kind", JsonValue("validation")},
+                                                       {"summary", JsonValue("the road")},
+                                                       {"task", JsonValue(task)},
+                                                       {"attribution", who("director")}}));
+  CHECK(changes_of(pushed.sent, mark) == std::vector<std::string>{"review_raised"});
+  CHECK(at(item, "raised_digest").as_string().size() == 64);  // the stamp rides the same write
+  CHECK(h.sessions.look_at_ledgers(true) == 0);
+  CHECK(pushed.sent.size() == mark + 1);
+  // The close, with what its closer saw, is one write and one event too.
+  mark = pushed.sent.size();
+  const JsonValue listed =
+      h.ok("review.list", obj({{"review", at(item, "id")}, {"digest", JsonValue(true)}}));
+  const JsonValue closed =
+      h.review("review.close", obj({{"review", at(item, "id")},
+                                    {"resolution", JsonValue("Accepted")},
+                                    {"revision", at(at(listed, "reviews")[0], "revision")},
+                                    {"digest", at(at(listed, "subject"), "digest")},
+                                    {"attribution", who("director")}}));
+  CHECK(at(closed, "decided_at").as_string() == at(at(listed, "subject"), "digest").as_string());
+  CHECK(changes_of(pushed.sent, mark) == std::vector<std::string>{"review_closed"});
+  CHECK(h.sessions.look_at_ledgers(true) == 0);
+  CHECK(pushed.sent.size() == mark + 1);
+
+  // Another process's write to the same task is `ledger_changed`, naming it.
+  mark = pushed.sent.size();
+  (void)b.task("task.update", obj({{"task", JsonValue(task)},
+                                   {"note", JsonValue("from the other host")},
+                                   {"attribution", who("director")}}));
+  CHECK(h.sessions.look_at_ledgers(true) == 1);
+  const std::vector<JsonValue> changes = ledger_changes(pushed, mark);
+  REQUIRE(changes.size() == 1);
+  CHECK(id_set(at(changes[0], "tasks")) == std::set<i64>{task});
+  CHECK(at(changes[0], "reviews").size() == 0);
+}
+
+// A claim this host's clock let lapse is not a call's own change, and nothing else tells it: a
+// list that lapses one pushes `ledger_changed` naming it, and a call that lapses another actor's
+// claim beside its own write pushes its own event and one `ledger_changed` naming only the lapse.
+TEST_CASE("ledger: a claim the host's clock let lapse is told as ledger_changed") {
+  test::TempDir tmp("protocol_ledger");
+  const std::string dir = tmp.file("doc");
+  Woken woken;
+  Collect pushed;
+  Subscriptions subscriptions;
+  subscriptions.attach(&pushed);
+  Host h;
+  watch_ledgers(h, subscriptions, woken);
+  h.open(dir, true);
+  // Written by hand, with claims that ran out long ago and one that stands.
+  const auto write = [&](const char* tasks) {
+    {
+      std::ofstream out(dir + "/ledger.json", std::ios::binary);
+      out << R"({"tasks":[)" << tasks << R"(],"reviews":[]})";
+    }
+    (void)h.sessions.look_at_ledgers(true);  // what the session has seen, told as another's write
+  };
+  const char* k_gone = R"({"id":11,"key":"task/11","title":"t","created_by":{"actor":"c"},)"
+                       R"("status":"Claimed","claimant":"gone","claim_expires_unix_ms":1,)"
+                       R"("claim_ttl_seconds":60})";
+  write(k_gone);
+  usize mark = pushed.sent.size();
+  CHECK(num(at(h.ok("task.list"), "lapsed")) == 1);
+  std::vector<JsonValue> changes = ledger_changes(pushed, mark);
+  REQUIRE(changes.size() == 1);
+  CHECK(id_set(at(changes[0], "tasks")) == std::set<i64>{11});
+  CHECK(pushed.sent.size() == mark + 1);
+
+  const std::string both =
+      std::string(k_gone) +
+      R"(,{"id":12,"key":"task/12","title":"t","created_by":{"actor":"c"},"status":"Claimed",)"
+      R"("claimant":"worker","claim_expires_unix_ms":9000000000000,"claim_ttl_seconds":60})";
+  write(both.c_str());
+  mark = pushed.sent.size();
+  (void)h.task(
+      "task.update",
+      obj({{"task", JsonValue(12)}, {"note", JsonValue("on it")}, {"attribution", who("worker")}}));
+  CHECK(changes_of(pushed.sent, mark) ==
+        std::vector<std::string>{"ledger_changed", "task_updated"});
+  changes = ledger_changes(pushed, mark);
+  REQUIRE(changes.size() == 1);
+  CHECK(id_set(at(changes[0], "tasks")) == std::set<i64>{11});
+  CHECK(h.sessions.look_at_ledgers(true) == 0);
+}
+

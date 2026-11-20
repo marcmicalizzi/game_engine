@@ -3497,8 +3497,8 @@ struct SessionChangeEvent @version(4) @additive(4) {
   session: string
   /// "opened", "closed", "lease_acquired", "lease_released", "checkpoint", "rollback", the
   /// ledger's "task_created", "task_claimed", "task_updated", "review_raised" and "review_closed",
-  /// "ledger_changed" (the ledger changed by a write this host did not make: `tasks`, `reviews`,
-  /// `ledger_revision`), and a proposal's "proposal_opened", "proposal_reopened",
+  /// "ledger_changed" (another process's write, or a claim this host's clock let lapse: `tasks`,
+  /// `reviews`, `ledger_revision`; never a call's own change, which its own event names), and a proposal's "proposal_opened", "proposal_reopened",
   /// "proposal_promoted" and "proposal_rejected" (`layer` the proposal, `actor` who did it).
   change: string
   /// The document's directory.

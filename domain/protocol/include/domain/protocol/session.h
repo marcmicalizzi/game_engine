@@ -165,10 +165,13 @@ class Session {
   void publish_session(std::string_view change, const LeaseInfo* lease = nullptr,
                        u64 connection = 0, std::string_view reason = {}) const;
   // `event.session` for a change to the document's task ledger (ledger.cpp): "task_created" and
-  // the like, naming the task or the review item (the other 0) and the actor who changed it. What
-  // else the write changed goes first, as "ledger_changed" (`flush_ledger_written`).
+  // the like, naming the task or the item (the other 0) and the actor who changed it.
+  // `touched_task` is a task the call changed beside the item it names (a raise for a task adds the
+  // item to it): the call's own too, so it is not told again. What else the write carried —
+  // another process's writes, claims this host's clock let lapse — goes first, as
+  // "ledger_changed" (`flush_ledger_written`).
   void publish_ledger(std::string_view change, u64 task, u64 review, std::string_view actor,
-                      u64 connection);
+                      u64 connection, u64 touched_task = 0);
   // `event.session` for a proposal layer (session.cpp): "proposal_opened", "proposal_reopened",
   // "proposal_promoted" or "proposal_rejected", with the layer and the actor who did it, published
   // after `proposals.json` is written (a dry run and a refused promotion publish nothing).

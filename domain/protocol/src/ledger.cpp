@@ -837,7 +837,9 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
   out.reviews.push_back(std::move(made));
   out.subject = std::move(stamped);
   out.subject.same = true;
-  s->publish_ledger("review_raised", 0, out.reviews[0].id, caller.who.actor, caller.connection);
+  // The item and the task it was raised for are both this call's change, told by its one event.
+  s->publish_ledger("review_raised", 0, out.reviews[0].id, caller.who.actor, caller.connection,
+                    params.task);
   return true;
 }
 

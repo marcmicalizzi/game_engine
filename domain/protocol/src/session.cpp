@@ -790,8 +790,9 @@ void Session::publish_session(std::string_view change, const LeaseInfo* lease, u
 }
 
 void Session::publish_ledger(std::string_view change, u64 task, u64 review, std::string_view actor,
-                             u64 connection) {
-  flush_ledger_written(task, review);
+                             u64 connection, u64 touched_task) {
+  // Every entry the call's own change made is its event's, never "ledger_changed".
+  flush_ledger_written(task != 0 ? task : touched_task, review);
   if (events_ == nullptr || !events_->wanted(EventKind::Session, id_)) return;
   SessionChangeEvent event;
   event.session = id_;
