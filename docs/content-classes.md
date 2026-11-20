@@ -92,6 +92,8 @@ A built thing records the class of exactly what its cache key covers, and a cach
 - **the class of every texture its materials sample**: each image's sidecar, read at load beside the image (above), and its `.tex`'s section 6; each pack set's entry;
 - **its own raise**: `SceneInstance::content_classes`, filled by `doc_scene` from the placement record's composed `content_classes`, and by the scene-file reader from an instance's optional `content_classes`, read by the same reader.
 
+**The ground is decided as a mesh is** (C64): its class is the join of what the sidecars beside its heightfield source and beside each of its material layers' images declare, read before any of them is, and its cache key holds that class as a mesh's does. A ground the policy refuses is left out whole (never a box) and counted on its own in the load report ([renderer](subsystems/renderer.md#content-classes-at-load)). A neutral stand-in for one refused layer, so that the rest of the ground still draws, is not built.
+
 Then it decides, through one function (`content_class::decide(classes, policy)`):
 
 - **within the cap**: loaded and drawn as today;

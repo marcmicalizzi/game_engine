@@ -785,8 +785,13 @@ void adopt_container(geometry::ClusterFileData& container_data, const std::strin
 // materials: the terrain is a mesh like any other from here on, which is what lets it share a
 // scene with glTF meshes (the classic heightfield's height-banded palette is the GPU scene's own
 // and only exists when the heightfield is the whole scene).
+//
+// `class_hash` and `class_record` are the ground's class (C64; renderer.md, "Content classes at
+// load"): its key moves by the hash only when it is not zero, so a ground with no sidecar beside
+// any of its inputs keeps the key it had, and the entry it builds carries the record as section 54.
 bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMesh& lod,
-                  geometry::ClusterPages& pages, std::string& error) {
+                  geometry::ClusterPages& pages, std::string& error, u64 class_hash = 0,
+                  const Vector<u8>* class_record = nullptr) {
   // A palette with a wind-sand layer draws the detail over that layer's share (R99, renderer.md
   // "Sand and snow"); any other palette and the detail stay alternatives.
   if (desc.terrain.materials.has_value() && desc.terrain.has_detail &&
@@ -809,8 +814,10 @@ bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMe
   std::string cache_path;
   u64 key = 0;
   if (desc.cache) {
-    key = geometry::cluster_cache_key(hash, lod_options, false,
-                                      geometry::ClusterPagesOptions{}.page_bytes);
+    key = content_class::classified_key(
+        geometry::cluster_cache_key(hash, lod_options, false,
+                                    geometry::ClusterPagesOptions{}.page_bytes),
+        class_hash);
     cache_path = geometry::cluster_cache_path(desc.ddc, key);
     out.cache = "miss";
     if (io::exists(cache_path)) {
@@ -933,7 +940,7 @@ bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMe
                   log::field("sloppy_folded", lod.fold_guard.sloppy_folded));
   if (!cache_path.empty() &&
       write_cluster_cache(cache_path, "", out.data, out.part_material, out.part_of_cluster, lod,
-                          built, out.textures, hash, key)) {
+                          built, out.textures, hash, key, class_record)) {
     out.container = cache_path;
   }
   if (desc.stream) pages = std::move(built);
@@ -958,7 +965,8 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
   // Built textures live in the same derived-data root as built meshes, and a load that reads no
   // cache reads neither (texture.md, "In the renderer").
   out.texture_ddc = desc.cache ? desc.ddc : std::string();
-  if (path.empty() && desc.terrain.enabled) return load_terrain(desc, out, lod, pages, error);
+  if (path.empty() && desc.terrain.enabled)
+    return load_terrain(desc, out, lod, pages, error, class_hash, class_record);
   if (path.empty() && desc.procedural == Procedural::shredded_atlas) {
     // The atlas stress fixture, built here rather than committed as a file so that the scene
     // corpus can guard the LOD seam defect on a fresh clone and without a third-party model
@@ -3347,6 +3355,15 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   // load"): each mesh's own class, the scene's policy and table, and which meshes are read at all.
   LoadAdmission admission;
   if (!admission_before_meshes(resolved, out, admission, error)) return false;
+  if (admission.ground_refused) {
+    // **A ground the policy refuses is left out whole** (C64): not built, so nothing of it is in
+    // a cache entry, a texture or the picture, and no ring, tile or world tile draws its shape.
+    // Instances are still seated on the ground the file described (`desc`): the world is not an
+    // output (content-classes.md, "In the world").
+    resolved.terrain.enabled = false;
+    resolved.world.ground = false;
+    resolved.terrain_tiles = false;
+  }
   out.sources.resize(resolved.meshes.size());
   Vector<geometry::ClusterLodMesh> dags(resolved.meshes.size());
   Vector<geometry::ClusterPages> tables(resolved.meshes.size());

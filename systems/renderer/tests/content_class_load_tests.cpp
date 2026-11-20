@@ -12,6 +12,8 @@
 
 #include <core/base/macros.h>
 #include <core/hash/hash.h>
+#include <core/json/json.h>
+#include <domain/assets/mesh_generator.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/gfx/device.h>
 #include <domain/texture/material_textures.h>
@@ -25,6 +27,7 @@
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/settings.h>
+#include <systems/renderer/terrain.h>
 #include <systems/renderer/view_set.h>
 
 #include <doctest/doctest.h>
@@ -550,6 +553,129 @@ TEST_CASE("content classes at load: a scene with nothing classified loads what i
   }
   CHECK(under_default.instantiated_under.name == content_class::k_agent_default_name);
   CHECK(wide.instantiated_under.name == "glow-wide");
+}
+
+namespace {
+
+// A ground of the scene file's own (`terrain`, 17 x 17 over 8 m), whose one layer samples
+// `ground.png` beside the file; `glow.clusters` first when `with_glow` (it teaches the ladder).
+std::string ground_scene(bool with_glow) {
+  std::string json = R"({"format":"engine.scene.v1",)";
+  if (with_glow) {
+    json += R"("meshes":[{"path":"glow.clusters"}],)"
+            R"("instances":[{"mesh":0,"translation":[0,0,0],"rotation":[0,0,0,1]}],)";
+  }
+  json += R"("terrain":{"size":17,"extent":8,)"
+          R"("materials":{"layers":[{"base_color":"ground.png","projection":"Map"}]}}})";
+  return json;
+}
+
+// The key the ground's cache entry has with no class at all: `load_terrain`'s own terms.
+u64 classless_ground_key(const SceneDesc& desc) {
+  geometry::ClusterLodOptions lod = desc.lod;
+  lod.up = Vec3{0.0f, 1.0f, 0.0f};
+  return geometry::cluster_cache_key(terrain_hash(desc.terrain), lod, false,
+                                     geometry::ClusterPagesOptions{}.page_bytes);
+}
+
+u32 files_in(const std::string& dir) {
+  std::error_code ec;
+  u32 n = 0;
+  for (std::filesystem::directory_iterator it(fs_path(dir), ec), end; !ec && it != end;
+       it.increment(ec))
+    ++n;
+  return n;
+}
+
+}  // namespace
+
+// **The ground goes through the door** (C64): its class is the join of what the sidecars beside
+// its heightfield source and every layer's images declare, read before any of them is; a ground
+// the policy refuses is left out whole (never a box), and counted apart from the instances.
+TEST_CASE(
+    "content classes at load: a ground whose layer image is above the cap is left out whole") {
+  const test::TempDir tmp("renderer_classes_ground");
+  REQUIRE(tmp.ok());
+  const Grid glow = write_grid(tmp, "glow.clusters", 17, "glow.png", glow_record(1));
+  write_image(tmp.file("ground.png"), 40);
+  REQUIRE(io::write_file(tmp.file("scene.json"), ground_scene(true)) == io::Status::Ok);
+  std::string error;
+  SceneDesc desc;
+  REQUIRE_MESSAGE(read_scene_file(tmp.file("scene.json"), desc, error), error);
+  desc.ddc = tmp.file("ddc");
+  const u64 classless = classless_ground_key(desc);
+  REQUIRE(io::write_file(tmp.file("ground.provenance.json"),
+                         R"({"content_classes":{"fixture_glow":"bright"}})") == io::Status::Ok);
+  std::string image;
+  REQUIRE(io::read_file(tmp.file("ground.png"), image) == io::Status::Ok);
+  // The image is not one any more: a load that read it would fail.
+  REQUIRE(io::write_file(tmp.file("ground.png"), "not an image") == io::Status::Ok);
+  for (const std::string name : {"agent-default", "glow-proxy"}) {
+    CAPTURE(name);
+    SceneDesc under = desc;
+    if (name != "agent-default") under.view_policy = policy_named(name.c_str());
+    SceneData scene;
+    REQUIRE_MESSAGE(load_scene(under, scene, error), error);
+    CHECK(scene.load.grounds_omitted == 1);
+    CHECK(scene.terrain_mesh == ~0u);
+    CHECK_FALSE(scene.terrain.enabled);
+    // Not a box: under the proxy policy the dim container is one, and the ground nothing.
+    CHECK(scene.instances.size() == (name == "glow-proxy" ? 1u : 0u));
+    CHECK_FALSE(io::exists(geometry::cluster_cache_path(desc.ddc, classless)));
+    CHECK(files_in(io::join_path(desc.ddc, "clusters")) == 0u);
+  }
+  // Under a policy that covers it, the ground is drawn, from an entry of its own carrying its
+  // class.
+  REQUIRE(io::write_file(tmp.file("ground.png"), image) == io::Status::Ok);
+  desc.view_policy = policy_named("glow-wide");
+  SceneData wide;
+  REQUIRE_MESSAGE(load_scene(desc, wide, error), error);
+  CHECK(wide.load.grounds_omitted == 0);
+  CHECK(wide.instances.size() == 2);
+  REQUIRE(wide.terrain_mesh < wide.sources.size());
+  const SourceMesh& ground = wide.sources[wide.terrain_mesh];
+  REQUIRE_FALSE(ground.container.empty());
+  CHECK(ground.container != geometry::cluster_cache_path(desc.ddc, classless));
+  geometry::ClusterFileData entry;
+  REQUIRE_MESSAGE(geometry::read_cluster_file(ground.container, entry, &error), error);
+  CHECK_FALSE(entry.content_classes.empty());
+  CHECK(wide.held.levels[static_cast<u32>(wide.categories.find("fixture_glow"))] == 2);
+}
+
+// A ground with nothing beside its inputs keeps the key it had (the terrain's key gains a term only
+// when there is a class); a sidecar beside a layer's image that leads nowhere refuses it, as it
+// refuses a mesh.
+TEST_CASE("content classes at load: a ground keeps its key with no sidecar, and fails closed") {
+  std::string error;
+  u32 made = 0;
+  for (const DanglingForm& form : k_dangling_forms) {
+    const std::string form_name = form.name;
+    CAPTURE(form_name);
+    const test::TempDir tmp("renderer_classes_ground_key");
+    REQUIRE(tmp.ok());
+    write_image(tmp.file("ground.png"), 40);
+    REQUIRE(io::write_file(tmp.file("scene.json"), ground_scene(false)) == io::Status::Ok);
+    SceneDesc desc;
+    REQUIRE_MESSAGE(read_scene_file(tmp.file("scene.json"), desc, error), error);
+    desc.ddc = tmp.file("ddc");
+    SceneData plain;
+    REQUIRE_MESSAGE(load_scene(desc, plain, error), error);
+    CHECK(plain.instances.size() == 1);
+    REQUIRE(plain.terrain_mesh < plain.sources.size());
+    const std::string entry = geometry::cluster_cache_path(desc.ddc, classless_ground_key(desc));
+    CHECK(plain.sources[plain.terrain_mesh].container == entry);
+    CHECK(io::exists(entry));
+    if (!form.make(tmp.file("gone"), tmp.file("ground.provenance.json"))) {
+      MESSAGE("skipped: this process may not make " << form.name);
+      continue;
+    }
+    ++made;
+    SceneData scene;
+    REQUIRE_MESSAGE(load_scene(desc, scene, error), error);
+    CHECK(scene.instances.empty());
+    CHECK(scene.load.grounds_omitted == 1);
+  }
+  CHECK(made >= 1u);
 }
 
 // The raise is two bytes in what was `SceneInstance`'s padding: the struct without it, laid out the

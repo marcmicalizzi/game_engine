@@ -921,6 +921,9 @@ struct SceneLoadReport {
   Vector<SubstitutedCount> substituted;
   u32 unreadable_omitted = 0;
   u32 unreadable_proxied = 0;
+  // The scene's grounds the policy refused (the terrain's heightfield and layer images; never a
+  // box: a ground refused is left out whole), counted apart from the instances above.
+  u32 grounds_omitted = 0;
   // Image sidecars probed for a class (one existence check per distinct image named by path of a
   // mesh some instance would draw), and of those the ones that declared one.
   u32 image_sidecars_probed = 0;

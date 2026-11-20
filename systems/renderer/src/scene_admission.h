@@ -34,13 +34,20 @@ struct LoadAdmission {
   content_class::Outcome mesh0 = content_class::Outcome::admit;
   Vector<u32> proxy_of;
   bool classified = false;  // anything at all above `none`: false and the second pass is free
+  // Per mesh: 1 for the scene's ground (an empty path with the terrain on), whose class is its
+  // heightfield source's and its layers' images' sidecars'. `ground_refused`: the policy refused
+  // it, so it is not built, and the load leaves the ground out whole (`load_scene`).
+  Vector<u8> ground;
+  bool ground_refused = false;
 };
 
 // Before any mesh is read: the scene's policy, every mesh's own class (its ladders learned into
-// `out.categories`), the policy resolved and `out.decisions` made under it, the raises read, and
-// which meshes are read at all: one an instance would draw under the policy (admitted or proxied),
-// or one no instance names (a prop, a generator's resident mesh) whose own class admits. False,
-// with `error`, for an instance naming a raise the scene has not.
+// `out.categories`; the ground's from the sidecars beside its heightfield source and its layers'
+// images, before any of them is read), the policy resolved and `out.decisions` made under it, the
+// raises read, and which meshes are read at all: one an instance would draw under the policy
+// (admitted or proxied), or one no instance names (a prop, a generator's resident mesh) whose own
+// class admits; the ground only when the policy admits it. False, with `error`, for an instance
+// naming a raise the scene has not.
 bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmission& state,
                              std::string& error);
 

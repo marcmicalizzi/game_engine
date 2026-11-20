@@ -59,6 +59,14 @@ ReadClass join(const ReadClass& a, const ReadClass& b);
 content_class::Decision admit_instance(SceneData& scene, const ReadClass& mesh,
                                        const ReadClass& textures, const ReadClass& raise);
 
+// **The door's form for the scene's ground** (the terrain; C64): decided as an instance is,
+// through `scene.decisions`, on its class, the join of what the sidecars beside its heightfield
+// source and every layer's images declare. Anything but `admit` leaves the ground out whole, since
+// a box at a ground's bounds stands for nothing (the outcome returned is then `omit`), and is
+// counted in `scene.load.grounds_omitted`, apart from the instances. An all-`none` ground is one
+// branch.
+content_class::Decision admit_ground(SceneData& scene, const ReadClass& ground);
+
 // What a `.clusters` container says it is: its section 54, looked up in the section table and read
 // only when present (a few dozen bytes), its ladders learned into `categories`; joined with a
 // sidecar beside it (`<stem>.provenance.json`) when there is one. A container that cannot be

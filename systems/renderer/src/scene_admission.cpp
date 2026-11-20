@@ -62,6 +62,20 @@ content_class::Decision admit_instance(SceneData& scene, const ReadClass& mesh,
   return decision;
 }
 
+content_class::Decision admit_ground(SceneData& scene, const ReadClass& ground) {
+  if (content_class::is_none(ground.classes)) return content_class::Decision{};
+  content_class::Decision decision = scene.decisions.decide(ground.classes);
+  if (decision.outcome == content_class::Outcome::admit) {
+    scene.held = content_class::join(scene.held, ground.classes);
+    return decision;
+  }
+  decision.outcome = content_class::Outcome::omit;  // never a box: the ground is left out whole
+  ++scene.load.grounds_omitted;
+  ENGINE_LOG_INFO(log_renderer, "the scene's ground left out by its policy",
+                  log::field("unreadable", ground.unreadable));
+  return decision;
+}
+
 ReadClass read_sidecar_class(const std::string& source, const content_class::Categories& categories,
                              Vector<content_class::MaterialClass>* materials) {
   // Through the content build's own reader, so the load and the build agree on what a sidecar says
@@ -223,6 +237,27 @@ ReadClass raise_of(const LoadAdmission& state, u16 raise) {
   return raise == 0 || raise > state.raises.size() ? ReadClass{} : state.raises[raise - 1u];
 }
 
+// The ground's class (C64): the join of what the sidecars beside its heightfield source (a tile
+// set's manifest or heightfield header) and beside every image its layers name declare, each read
+// as the content build reads one, so a sidecar there that cannot be read refuses the ground.
+ReadClass ground_class(const TerrainDesc& terrain, const content_class::Categories& categories) {
+  ReadClass out;
+  const auto beside = [&](const std::string& input) {
+    if (!input.empty()) out = join(out, read_sidecar_class(input, categories));
+  };
+  if (terrain.tiles.has_value()) {
+    beside(terrain.tiles->manifest);
+    beside(terrain.tiles->heightfield);
+  }
+  if (terrain.materials.has_value()) {
+    for (const scene::TerrainMaterialLayer& layer : terrain.materials->layers)
+      for (const std::string* image :
+           {&layer.base_color, &layer.normal, &layer.roughness, &layer.mask, &layer.height})
+        beside(*image);
+  }
+  return out;
+}
+
 // The source a proxy box stands in with: one material, every cluster its one part, no image, no
 // container to page from, no motion, no seat, no far form.
 SourceMesh proxy_source(const geometry::ClusterLodMesh& box) {
@@ -249,9 +284,24 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
   // One read a distinct path: a scene naming one container ten thousand times opens it once (the
   // per-mesh read cost 0.46 ms a mesh in `msvc-debug` before this, measured on such a scene).
   HashMap<u64, u32> first_of_path;
+  state.ground.assign(meshes, u8{0});
   for (u32 m = 0; m < meshes; ++m) {
     const std::string& path = desc.meshes[m];
-    if (path.empty()) continue;  // the terrain and the procedural scenes: the engine's own, `none`
+    if (path.empty()) {
+      // A procedural scene is the engine's own, `none`. The ground is its inputs' (C64): the join
+      // of the sidecars beside its heightfield source and every layer's images, read before any of
+      // them is; its cache key and the entry the load builds hold that class, as a mesh's do.
+      if (!desc.terrain.enabled) continue;
+      state.ground[m] = 1;
+      state.mesh[m] = ground_class(desc.terrain, out.categories);
+      if (!content_class::is_none(state.mesh[m].classes)) {
+        state.mesh_hash[m] = content_class::class_hash(out.categories, state.mesh[m].classes);
+        content_class::encode_classes(out.categories, state.mesh[m].classes, nullptr,
+                                      state.record[m]);
+        state.classified = true;
+      }
+      continue;
+    }
     const u64 path_hash = hash_bytes(path.data(), path.size());
     if (const u32* first = first_of_path.find_value(path_hash);
         first != nullptr && desc.meshes[*first] == path) {
@@ -334,6 +384,14 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
   }
   for (u32 m = 0; m < meshes; ++m)
     if (named[m] == 0 && drawn(m, 0)) state.load[m] = 1;
+  // The ground is built only when the policy admits it: refused, nothing of it is read (C64).
+  for (u32 m = 0; m < meshes; ++m) {
+    if (state.ground[m] == 0) continue;
+    const bool admitted = content_class::decide(state.mesh[m].classes, policy).outcome ==
+                          content_class::Outcome::admit;
+    state.ground_refused = state.ground_refused || !admitted;
+    state.load[m] = admitted ? 1 : 0;
+  }
   return true;
 }
 
@@ -395,12 +453,15 @@ void admission_after_meshes(SceneDesc& desc, SceneData& out, LoadAdmission& stat
   Vector<content_class::Outcome> outcome(desc.instances.size(), content_class::Outcome::admit);
   Vector<u32> admitted(meshes, 0u);
   Vector<u8> proxied(meshes, u8{0});
+  // The door, or for the ground its own form (left out whole, never a box).
+  const auto door = [&](u32 mesh, const ReadClass& raise) {
+    if (state.ground[mesh] != 0) return admit_ground(out, state.mesh[mesh]).outcome;
+    return admit_instance(out, state.mesh[mesh], textures[mesh], raise).outcome;
+  };
   for (u32 i = 0; desc.grid_instances <= 1 && i < desc.instances.size(); ++i) {
     const SceneInstance& instance = desc.instances[i];
     if (instance.mesh >= meshes) continue;
-    outcome[i] = admit_instance(out, state.mesh[instance.mesh], textures[instance.mesh],
-                                raise_of(state, instance.content_classes))
-                     .outcome;
+    outcome[i] = door(instance.mesh, raise_of(state, instance.content_classes));
     if (outcome[i] == content_class::Outcome::admit) ++admitted[instance.mesh];
     if (outcome[i] == content_class::Outcome::proxy) proxied[instance.mesh] = 1;
   }
@@ -409,7 +470,7 @@ void admission_after_meshes(SceneDesc& desc, SceneData& out, LoadAdmission& stat
     // 0 with no raise: each through the door, all deciding alike.
     const u32 count = desc.grid_instances > 1 ? desc.grid_instances * desc.grid_instances : 1u;
     for (u32 k = 0; k < count; ++k)
-      state.mesh0 = admit_instance(out, state.mesh[0], textures[0], ReadClass{}).outcome;
+      state.mesh0 = door(0, ReadClass{});
     if (state.mesh0 == content_class::Outcome::admit) admitted[0] += count;
     if (state.mesh0 == content_class::Outcome::proxy) proxied[0] = 1;
   }
