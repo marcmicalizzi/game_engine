@@ -259,6 +259,20 @@ ReadClass raise_of(const LoadAdmission& state, u16 raise) {
   return raise == 0 || raise > state.raises.size() ? ReadClass{} : state.raises[raise - 1u];
 }
 
+// A box's page table when the scene streams (C64), so a substitution keeps a streamed scene on
+// the streaming path, and keeps the gate the authored instances stream by where it was; none when
+// the scene does not stream, as a mesh read whole has none.
+geometry::ClusterPages proxy_pages(const SceneDesc& desc, geometry::ClusterLodMesh& box) {
+  geometry::ClusterPages pages;
+  if (!desc.stream) return pages;
+  std::string why;
+  if (!geometry::build_cluster_pages(box, geometry::ClusterPagesOptions{}, pages, &why)) {
+    ENGINE_LOG_WARN(log_renderer, "proxy box pages", log::field("error", why));
+    pages = geometry::ClusterPages{};
+  }
+  return pages;
+}
+
 // The ground's class (C64): the join of what the sidecars beside its heightfield source (a tile
 // set's manifest or heightfield header) and beside every image its layers name declare, each read
 // as the content build reads one, so a sidecar there that cannot be read refuses the ground.
@@ -577,7 +591,7 @@ void admission_after_meshes(SceneDesc& desc, SceneData& out, LoadAdmission& stat
     if (!build_proxy_box(lo, hi, desc.lod, box, &why))
       ENGINE_LOG_WARN(log_renderer, "proxy box", log::field("error", why));
     dags[m] = std::move(box);
-    tables[m] = geometry::ClusterPages{};
+    tables[m] = proxy_pages(desc, dags[m]);
     out.sources[m] = proxy_source(dags[m]);
     state.image_hash[m].clear();
     state.proxy_of[m] = m;
@@ -604,8 +618,8 @@ void admission_after_meshes(SceneDesc& desc, SceneData& out, LoadAdmission& stat
       desc.mesh_info.push_back(std::move(info));
     }
     out.sources.push_back(proxy_source(box));
+    tables.push_back(proxy_pages(desc, box));
     dags.push_back(std::move(box));
-    tables.push_back(geometry::ClusterPages{});
     state.image_hash.push_back(Vector<u64>());
   }
   // 5. The instances: a proxied one draws its proxy, an omitted one is marked for the instance

@@ -814,6 +814,26 @@ TEST_CASE("content classes at load: a raise refuses its instance, not the mesh o
   CHECK(scene.instances[1].mesh == 1);  // the lamp's slot is its box
 }
 
+// A substitution keeps a streamed scene on the streaming path (C64): the box has a page table of
+// its own, so the scene's merged table is still built.
+TEST_CASE("content classes at load: a streamed scene with a box in it still streams") {
+  const test::TempDir tmp("renderer_classes_streamed");
+  REQUIRE(tmp.ok());
+  const Grid a = write_grid(tmp, "a.clusters", 9, "a.png");
+  const Grid glow = write_grid(tmp, "glow.clusters", 17, "glow.png", glow_record(2));
+  std::string error;
+  for (const bool proxy : {false, true}) {
+    CAPTURE(proxy);
+    SceneDesc desc = scene_of(tmp, {&a, &glow});
+    desc.stream = true;
+    if (proxy) desc.view_policy = policy_named("glow-proxy");
+    SceneData scene;
+    REQUIRE_MESSAGE(load_scene(desc, scene, error), error);
+    CHECK(scene.instances.size() == (proxy ? 2u : 1u));
+    CHECK_FALSE(scene.pages.pages.empty());
+  }
+}
+
 // `substituted` counts instances (C64): a classified mesh no instance names, placed by a prop, is
 // decided (its class in the table, its slot a box) and counted nowhere.
 TEST_CASE("content classes at load: a mesh no instance names is decided, not counted") {
