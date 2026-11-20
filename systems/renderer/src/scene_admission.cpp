@@ -341,6 +341,12 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
     }
     state.classified = state.classified || !content_class::is_none(state.mesh[m].classes);
   }
+  // **What could not be read is decided with what the scene knows at the decision** (C64): the
+  // read keeps the fact (`ReadClass::unreadable`), and its levels are made here, from every
+  // category the scene knows now, so a ladder a container later in the scene taught is in it and
+  // the outcome does not depend on the order of the meshes.
+  for (ReadClass& read : state.mesh)
+    if (read.unreadable) read.classes = content_class::unreadable(out.categories);
   // Every ladder the containers carry is in the table now: the policy's game caps resolve against
   // it, and the scene's table is made under what they resolve to.
   const content_class::ViewPolicy policy =

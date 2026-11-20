@@ -61,7 +61,13 @@ constexpr const char* k_glow_categories =
 constexpr const char* k_policies =
     R"({"policies":[)"
     R"({"name":"glow-proxy","caps":[{"category":"fixture_glow","cap":"none","substitution":"proxy"}]},)"
-    R"({"name":"glow-wide","caps":[{"category":"fixture_glow","cap":"bright","substitution":"omit"}]}]})";
+    R"({"name":"glow-wide","caps":[{"category":"fixture_glow","cap":"bright","substitution":"omit"}]},)"
+    // Every engine category at its top and the made-up one at `none`: what decides a class that
+    // could not be read by the categories the scene knows (C64).
+    R"({"name":"tops","caps":[{"category":"nudity","cap":"full","substitution":"omit"},)"
+    R"({"category":"sexual","cap":"explicit","substitution":"omit"},)"
+    R"({"category":"violence","cap":"graphic","substitution":"omit"},)"
+    R"({"category":"fixture_glow","cap":"none","substitution":"omit"}]}]})";
 
 content_class::NamedPolicy policy_named(const char* name) {
   content_class::ViewPolicies set;
@@ -676,6 +682,32 @@ TEST_CASE("content classes at load: a ground keeps its key with no sidecar, and 
     CHECK(scene.load.grounds_omitted == 1);
   }
   CHECK(made >= 1u);
+}
+
+// **An unreadable class is decided with what the scene knows at the decision** (C64): a glTF whose
+// sidecar names a category a container later in the scene teaches is unreadable when it is read,
+// and the class it decides on is made at the decision, when the scene knows that category too. So
+// the order of the meshes does not change the outcome, under a policy that caps every engine
+// category at its top and the game's at `none`.
+TEST_CASE("content classes at load: an unreadable class decides the same in either mesh order") {
+  const test::TempDir tmp("renderer_classes_order");
+  REQUIRE(tmp.ok());
+  REQUIRE(io::write_file(tmp.file("tri.gltf"), k_triangle_gltf) == io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("tri.provenance.json"),
+                         R"({"content_classes":{"fixture_glow":"bright"}})") == io::Status::Ok);
+  const Grid glow = write_grid(tmp, "glow.clusters", 17, "glow.png", glow_record(1));
+  Grid tri;
+  tri.path = tmp.file("tri.gltf");
+  std::string error;
+  for (const bool tri_first : {true, false}) {
+    CAPTURE(tri_first);
+    SceneDesc desc = tri_first ? scene_of(tmp, {&tri, &glow}) : scene_of(tmp, {&glow, &tri});
+    desc.view_policy = policy_named("tops");
+    SceneData scene;
+    REQUIRE_MESSAGE(load_scene(desc, scene, error), error);
+    CHECK(loaded_instance(scene, tri_first ? 0u : 1u) == k_not_loaded);
+    CHECK(scene.instances.empty());
+  }
 }
 
 // The raise is two bytes in what was `SceneInstance`'s padding: the struct without it, laid out the
