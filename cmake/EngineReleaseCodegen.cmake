@@ -8,8 +8,10 @@
 #   cmake   CMake's RelWithDebInfo as it is.
 #   inline  `/Ob2` on the engine's own targets.
 #   full    `/Ob2`, and every executable and module of the engine's linked `/INCREMENTAL:NO
-#           /OPT:REF /OPT:ICF` (measured, T193; not the default until it holds every pin:
-#           under it the release suite failed `profiler` and `rocks`' escarpment bytes).
+#           /OPT:REF /OPT:ICF` (measured, T193). Not the default: every pin holds under it
+#           (T197), but MSVC 19.44 and 19.51 miscompile a shape `/Ob2` reaches more of, and the
+#           canary in core/base fails on it under `/Ob2` by design until a workaround or a mended
+#           compiler is in (docs/experiments/msvc-ob2-avx2-miscompile.md, "What it means").
 #
 # Debug information stays in every setting (`/Z7` and `/debug`, and `/Zo`, which MSVC turns on
 # with them in an optimized build): the sampler and Tracy need the PDBs. Only MSVC's
