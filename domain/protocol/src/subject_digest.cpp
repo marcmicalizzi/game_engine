@@ -4,11 +4,11 @@
 #include <core/hash/sha256.h>
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
-#include <core/time/time.h>
 #include <domain/doc/blob_store.h>
 #include <domain/doc/document.h>
 #include <foundation/io/roots.h>
 #include <foundation/io/vfs.h>
+#include <foundation/tunables/tunables.h>
 
 #include <algorithm>
 #include <string>
@@ -18,13 +18,25 @@ namespace engine::protocol {
 namespace {
 
 constexpr std::string_view k_stream_version = "engine.protocol.subject-digest 1\n";
-// A record's ancestors are walked to the root; the document refuses a cycle, and this bounds the
-// walk anyway, so a damaged index cannot make a digest run without end.
-constexpr u32 k_ancestors_max = 4096;
 // How deep a property's value is searched for blob references and file names.
 constexpr u32 k_value_depth_max = 32;
 constexpr usize k_file_name_max = 1024;
 constexpr u64 k_read_chunk = 1u << 20;
+
+// The four bounds (protocol.md, "What it costs"). What one digest reads is the sum of what its
+// subject names, so each is a bound on that sum and none is hidden: a raise past one is refused
+// naming it, and a detail or a close past one says so in the stream.
+tunables::Int files_tunable{"protocol.review.subject_files", 256, 1, 1 << 16,
+                            "Files one review item's subject may name in all, listed and named by "
+                            "its records together"};
+tunables::Int file_bytes_tunable{"protocol.review.file_bytes", i64{256} << 20, 1, i64{1} << 40,
+                                 "Bytes of one file a review item's subject digest reads"};
+tunables::Int subject_bytes_tunable{"protocol.review.subject_bytes", i64{1} << 30, 1, i64{1} << 44,
+                                    "Bytes a review item's subject digest reads of all its files "
+                                    "together"};
+tunables::Int records_tunable{"protocol.review.subject_records", 4096, 1, 1 << 20,
+                              "Records a review item's subject digest composes, the subject's "
+                              "and their ancestors, each once"};
 
 JsonValue hex_of(Id128 id) {
   char hex[Id128::k_hex_length + 1];
@@ -94,35 +106,87 @@ void sort_unique(Vector<T>& v) {
   v = std::move(unique);
 }
 
-// The SHA-256 of a file's bytes, read now in chunks: never its time or its size taken for
-// "unchanged". False when it cannot be opened or read (a directory, a file gone between the
-// admission and the open).
-bool hash_file(const std::string& native, std::string& hex, u64& bytes) {
-  io::FileHandle file;
-  if (file.open(native) != io::Status::Ok) return false;
+void note_over(Vector<DigestOver>& over, const char* bound, u64 limit, u64 figure) {
+  for (const DigestOver& o : over) {
+    if (o.bound == bound) return;  // the first figure a bound was passed at is the one told
+  }
+  over.push_back(DigestOver{bound, limit, figure});
+}
+
+// What a file's line says when it was not read.
+constexpr const char* k_not_readable = "not readable";
+constexpr const char* k_too_large = "too large";
+constexpr const char* k_over_bound = "over the subject's bound";
+
+// Opens a regular file for the digest and holds it to the bounds by the size it has now: never a
+// FIFO, a device or a directory, which `open_regular` refuses without waiting. False with the
+// file's line saying why it will not be read.
+bool open_file(SubjectPlan::File& f, const DigestBounds& bounds, u64& total, SubjectPlan& plan,
+               io::FileHandle& file) {
+  if (file.open_regular(f.native) != io::Status::Ok) {
+    f.line = k_not_readable;
+    return false;
+  }
+  if (file.size() > bounds.file_bytes) {
+    note_over(plan.over, file_bytes_tunable.name(), bounds.file_bytes, file.size());
+    f.line = k_too_large;
+    file.close();
+    return false;
+  }
+  if (total + file.size() > bounds.subject_bytes) {
+    note_over(plan.over, subject_bytes_tunable.name(), bounds.subject_bytes, total + file.size());
+    f.line = k_over_bound;
+    file.close();
+    return false;
+  }
+  total += file.size();
+  return true;
+}
+
+// The SHA-256 of an open file's bytes, read now in chunks to the size it had at the open: never its
+// time or its size taken for "unchanged".
+void hash_file(SubjectPlan::File& f, const io::FileHandle& file, SubjectPlan& plan) {
   Sha256 h;
   std::string buffer(static_cast<usize>(k_read_chunk), '\0');
   u64 at = 0;
   for (;;) {
     u64 got = 0;
-    if (file.read_at(at, buffer.data(), k_read_chunk, got) != io::Status::Ok) return false;
+    if (file.read_at(at, buffer.data(), k_read_chunk, got) != io::Status::Ok) {
+      plan.bytes_read += at;
+      f.line = k_not_readable;
+      return;
+    }
     if (got == 0) break;
     h.update(std::string_view(buffer.data(), static_cast<usize>(got)));
     at += got;
   }
-  bytes = at;
-  hex = sha256_hex(h.finish());
-  return true;
+  plan.bytes_read += at;
+  f.line = sha256_hex(h.finish());
+  f.read = true;
 }
 
 }  // namespace
 
-void subject_digest(const Context& ctx, const Session& session, const ReviewSubject& subject,
-                    SubjectState& out) {
-  const i64 started = time::monotonic_ns();
-  out = SubjectState{};
+DigestBounds DigestBounds::now() noexcept {
+  DigestBounds b;
+  b.files = static_cast<u64>(files_tunable.get());
+  b.file_bytes = static_cast<u64>(file_bytes_tunable.get());
+  b.subject_bytes = static_cast<u64>(subject_bytes_tunable.get());
+  b.records = static_cast<u64>(records_tunable.get());
+  return b;
+}
+
+void compose_subject(const Context& ctx, const Session& session, const ReviewSubject& subject,
+                     const DigestBounds& bounds, SubjectPlan& plan) {
+  plan = SubjectPlan{};
   const doc::Document& d = session.document();
-  Sha256 h;
+  plan.session = &session;
+  plan.document = &d;
+  plan.revision = d.revision();
+  plan.journal = d.journal().size();
+  plan.undo_position = session.undo_position();
+  plan.layers = d.layer_count();
+  Sha256& h = plan.hash;
   h.update(k_stream_version);
 
   // 2. The layer stack, weakest first.
@@ -134,7 +198,7 @@ void subject_digest(const Context& ctx, const Session& session, const ReviewSubj
     line.push_back(JsonValue(static_cast<u64>(layer.role())));
     add_line(h, line);
   }
-  // 3. The layer it is judged in.
+  // 2b. The layer it is judged in.
   const i32 judged = subject.layer.empty() ? -1 : d.find_layer(subject.layer);
   {
     JsonValue line = JsonValue::array();
@@ -144,17 +208,25 @@ void subject_digest(const Context& ctx, const Session& session, const ReviewSubj
     add_line(h, line);
   }
 
-  // 4. The records and their ancestors, sorted and each once.
+  // 3. The records and their ancestors, each once, counted as they are met: a walk up from a
+  // record stops at the first ancestor already met, whose own ancestors are met with it, so the
+  // work is the distinct records and never the records times their depth; and it stops at the
+  // bound, which a damaged index (a cycle the document refuses anyway) cannot run past either.
   Vector<Id128> ids;
+  HashSet<Id128> met;
   for (const Id128 id : subject.records) {
-    if (!d.exists(id)) out.gone.push_back(id);
-    Id128 at = id;
-    for (u32 n = 0; n < k_ancestors_max && !(at == Id128{}); ++n) {
+    if (!d.exists(id)) plan.gone.push_back(id);
+    for (Id128 at = id; !(at == Id128{}); at = d.parent_of(at)) {
+      if (met.contains(at)) break;
+      if (ids.size() >= bounds.records) {
+        note_over(plan.over, records_tunable.name(), bounds.records, bounds.records + 1);
+        break;
+      }
+      met.insert(Id128(at));
       ids.push_back(at);
-      at = d.parent_of(at);
     }
   }
-  sort_unique(ids);
+  std::sort(ids.begin(), ids.end());
   HashSet<std::string> blobs;
   Vector<std::string> files;
   std::string line_text;
@@ -184,11 +256,11 @@ void subject_digest(const Context& ctx, const Session& session, const ReviewSubj
       add_line(h, line);
     }
   }
-  out.records = static_cast<u32>(ids.size());
+  plan.records = static_cast<u32>(ids.size());
 
-  // 5. Blobs, by name: the name is the content.
+  // 4. Blobs, by name: the name is the content.
   for (const std::string& b : subject.blobs)
-    blobs.insert(b);
+    blobs.insert(std::string(b));
   Vector<std::string> blob_names;
   for (const std::string& b : blobs)
     blob_names.push_back(b);
@@ -200,35 +272,89 @@ void subject_digest(const Context& ctx, const Session& session, const ReviewSubj
     line.push_back(JsonValue(doc::BlobStore::has(ctx.sessions->vfs(), session.dir(), b)));
     add_line(h, line);
   }
-  out.blobs = static_cast<u32>(blob_names.size());
+  plan.blobs = static_cast<u32>(blob_names.size());
 
-  // 6. Files, by spelling, their bytes read now through the roots.
+  // 5. Files, by spelling, admitted through the roots now; their bytes are read with the host
+  // let go. Past the bound on how many, the rest are named and never admitted or read.
   for (const std::string& a : subject.assets)
     files.push_back(a);
   sort_unique(files);
-  for (const std::string& spelled : files) {
+  if (files.size() > bounds.files)
+    note_over(plan.over, files_tunable.name(), bounds.files, files.size());
+  for (u32 i = 0; i < files.size(); ++i) {
+    SubjectPlan::File& f = plan.files.emplace_back();
+    f.spelled = files[i];
+    if (i >= bounds.files) {
+      f.line = k_over_bound;
+      continue;
+    }
     io::Admitted admitted;
     io::Refusal why = io::Refusal::none;
-    std::string hash;
-    u64 bytes = 0;
-    const bool read = ctx.roots != nullptr &&
-                      ctx.roots->admit(spelled, session.dir(), io::Access::read, admitted, why) &&
-                      io::exists(admitted.native) && hash_file(admitted.native, hash, bytes);
+    if (ctx.roots != nullptr &&
+        ctx.roots->admit(f.spelled, session.dir(), io::Access::read, admitted, why))
+      f.native = std::move(admitted.native);
+  }
+}
+
+void read_subject_files(SubjectPlan& plan, const DigestBounds& bounds) {
+  // Every file opened and held to the bounds first, by the sizes they have now, so a subject past
+  // one is known before a byte is read (one handle at a time: the files bound may be raised far
+  // past what a process may hold open); then each that passed opened again, held to the bounds
+  // again by what it is then, and read.
+  u64 total = 0;
+  for (SubjectPlan::File& f : plan.files) {
+    if (!f.line.empty()) continue;  // decided under the lock
+    if (f.native.empty()) {
+      f.line = k_not_readable;
+      continue;
+    }
+    io::FileHandle file;
+    (void)open_file(f, bounds, total, plan, file);
+  }
+  if (!plan.over.empty() && plan.refuse_over) return;  // a raise refuses it unread
+  total = 0;
+  for (SubjectPlan::File& f : plan.files) {
+    if (!f.line.empty()) continue;
+    io::FileHandle file;
+    if (open_file(f, bounds, total, plan, file)) hash_file(f, file, plan);
+  }
+}
+
+bool same_document(const Session* session, const SubjectPlan& plan) noexcept {
+  if (session == nullptr || session != plan.session) return false;
+  const doc::Document& d = session->document();
+  return &d == plan.document && d.revision() == plan.revision &&
+         d.journal().size() == plan.journal && session->undo_position() == plan.undo_position &&
+         d.layer_count() == plan.layers;
+}
+
+void finish_subject(SubjectPlan& plan, SubjectState& out) {
+  out = SubjectState{};
+  Sha256& h = plan.hash;
+  for (const SubjectPlan::File& f : plan.files) {
     JsonValue line = JsonValue::array();
     line.push_back(JsonValue("asset"));
-    line.push_back(JsonValue(spelled));
-    line.push_back(JsonValue(read ? std::string_view(hash) : std::string_view("not readable")));
+    line.push_back(JsonValue(f.spelled));
+    line.push_back(JsonValue(f.line));
     add_line(h, line);
-    if (read) {
-      out.asset_bytes += bytes;
-    } else {
-      out.unreadable.push_back(spelled);
-    }
+    if (!f.read) out.unreadable.push_back(f.spelled);
   }
-  out.assets = static_cast<u32>(files.size());
-
+  // 6. Each bound passed, by its name: a subject digested past one is never equal to one that was
+  // not, so nothing is digested silently weaker.
+  for (const DigestOver& o : plan.over) {
+    JsonValue line = JsonValue::array();
+    line.push_back(JsonValue("over"));
+    line.push_back(JsonValue(std::string_view(o.bound)));
+    line.push_back(JsonValue(o.limit));
+    line.push_back(JsonValue(o.figure));
+    add_line(h, line);
+  }
+  out.gone = plan.gone;
+  out.records = plan.records;
+  out.blobs = plan.blobs;
+  out.assets = static_cast<u32>(plan.files.size());
+  out.asset_bytes = plan.bytes_read;
   out.digest = sha256_hex(h.finish());
-  out.ms = static_cast<f64>(time::monotonic_ns() - started) / 1.0e6;
 }
 
 std::string promotion_digest(std::string_view proposal, std::string_view target,

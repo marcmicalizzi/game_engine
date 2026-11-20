@@ -2627,6 +2627,10 @@ struct SubjectState @version(1) {
   asset_bytes: u64 = 0
   /// Milliseconds the computation took.
   ms: f64 = 0
+  /// How many times it composed the document and read the files: more than 1 when the document or
+  /// the ledger moved while the files were read with the host let go, at most 3 (protocol.md,
+  /// "What it costs").
+  passes: u32 = 0
 }
 
 /// One review item of the ledger.

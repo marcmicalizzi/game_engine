@@ -12,6 +12,7 @@
 #include <domain/protocol/session.h>
 #include <foundation/io/roots.h>
 #include <foundation/io/vfs.h>
+#include <foundation/tunables/tunables.h>
 
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
@@ -26,6 +27,10 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#if !ENGINE_PLATFORM_WINDOWS
+#include <sys/stat.h>  // mkfifo
+#endif
 
 using namespace engine;
 using namespace engine::protocol;
@@ -1054,14 +1059,37 @@ struct DigestWorld {
     (void)h.ok("doc.apply", obj({{"commands", cmds}, {"attribution", who("agent", "director")}}));
   }
   JsonValue raise(Host& h, const char* audience = "Human") const {
-    return h.ok("review.raise",
-                obj({{"kind", JsonValue("validation")},
-                     {"audience", JsonValue(audience)},
-                     {"summary", JsonValue("the crate sits right")},
-                     {"subject", obj({{"records", strings({hex(placement).c_str()})}})},
-                     {"attribution", who("checker", "director")}}));
+    return h.ok("review.raise", raise_params(audience));
+  }
+  // The raise's params: the placement as the subject, and `assets` listed beside it.
+  JsonValue raise_params(const char* audience = "Human", JsonValue assets = JsonValue()) const {
+    JsonValue subject = obj({{"records", strings({hex(placement).c_str()})}});
+    if (!assets.is_null()) subject.set("assets", std::move(assets));
+    return obj({{"kind", JsonValue("validation")},
+                {"audience", JsonValue(audience)},
+                {"summary", JsonValue("the crate sits right")},
+                {"subject", std::move(subject)},
+                {"attribution", who("checker", "director")}});
   }
 };
+
+// A digest's bound lowered for one case and put back after it, whatever the case did
+// (protocol.md, "What it costs"): a "large" subject is made by lowering the bound, never by
+// writing gigabytes.
+struct Bound {
+  tunables::Tunable* knob = nullptr;
+  Bound(const char* name, const char* value) : knob(tunables::find(name)) {
+    REQUIRE_MESSAGE(knob != nullptr, name);
+    REQUIRE(knob->set_from_text(value));
+  }
+  ~Bound() { knob->reset(); }
+  Bound(const Bound&) = delete;
+  Bound& operator=(const Bound&) = delete;
+};
+
+std::string bound_in(const JsonValue& error) {
+  return std::string(at(at(error, "data"), "bound").as_string());
+}
 
 // The subject as an item's opened detail sees it now.
 JsonValue opened_detail(Host& h, const JsonValue& item) {
@@ -1125,6 +1153,262 @@ TEST_CASE("ledger: a raise stamps the subject's digest, and another host's detai
   now = opened_detail(h, at(item, "id"));
   CHECK_FALSE(at(now, "same").as_bool());
   CHECK(at(now, "digest").as_string() != stamp);
+}
+
+// What a digest reads is bounded, by four bounds named as tunables (protocol.md, "What it costs"):
+// a raise past one is refused naming it and the figure, and a detail or a close past one says so
+// in the stream, which differs from the stamp, so a file grown past its bound is "subject moved".
+// Only a regular file is read: a directory and, on Linux, a FIFO under a root are not readable,
+// and the detail over the FIFO answers (a plain open would wait for a writer under the host's
+// lock).
+TEST_CASE("ledger: a subject past a digest's bound is refused at the raise, and said at a detail") {
+  test::TempDir tmp("protocol_ledger_bounds");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  h.open(dir, true);
+  DigestWorld w;
+  w.make(h, dir);
+  JsonValue error;
+
+  {
+    Bound bound("protocol.review.file_bytes", "4");  // the mesh is 8 bytes
+    CHECK(h.fails("review.raise", w.raise_params("Agent"), &error) == codes::k_invalid_argument);
+    CHECK(reason_of(error) == "subject too large");
+    CHECK(bound_in(error) == "protocol.review.file_bytes");
+    CHECK(num(at(at(error, "data"), "limit")) == 4);
+    CHECK(num(at(at(error, "data"), "figure")) == 8);
+  }
+  {
+    Bound bound("protocol.review.subject_bytes", "12");  // 8 and 8 together
+    std::filesystem::copy_file(w.mesh, std::filesystem::path(dir) / "props" / "lid.glb");
+    CHECK(h.fails("review.raise", w.raise_params("Agent", strings({"props/lid.glb"})), &error) ==
+          codes::k_invalid_argument);
+    CHECK(bound_in(error) == "protocol.review.subject_bytes");
+    CHECK(num(at(at(error, "data"), "figure")) == 16);
+  }
+  {
+    Bound bound("protocol.review.subject_files", "1");  // the mesh and one listed
+    CHECK(h.fails("review.raise", w.raise_params("Agent", strings({"props/lid.glb"})), &error) ==
+          codes::k_invalid_argument);
+    CHECK(bound_in(error) == "protocol.review.subject_files");
+    CHECK(num(at(at(error, "data"), "figure")) == 2);
+  }
+  {
+    Bound bound("protocol.review.subject_records", "1");  // the placement and its node
+    CHECK(h.fails("review.raise", w.raise_params("Agent"), &error) == codes::k_invalid_argument);
+    CHECK(bound_in(error) == "protocol.review.subject_records");
+  }
+  CHECK(h.sessions.digest_bytes_read() == 0);  // every refusal above read nothing
+
+  // Raised within the bounds, then the mesh grown past one: the detail says so, and differs.
+  const JsonValue item = at(w.raise(h, "Agent"), "reviews")[0];
+  const std::string stamp(at(item, "raised_digest").as_string());
+  {
+    Bound bound("protocol.review.file_bytes", "4");
+    const JsonValue now = opened_detail(h, at(item, "id"));
+    CHECK(at(now, "digest").as_string() != stamp);
+    CHECK_FALSE(at(now, "same").as_bool());
+    REQUIRE(at(now, "unreadable").size() == 1);
+    CHECK(at(now, "unreadable")[0].as_string() == "props/crate.glb");
+    CHECK(num(at(now, "asset_bytes")) == 0);
+    CHECK(h.fails("review.close",
+                  obj({{"review", at(item, "id")},
+                       {"resolution", JsonValue("Accepted")},
+                       {"digest", JsonValue(stamp)},
+                       {"attribution", who("reviewer")}}),
+                  &error) == codes::k_invalid_argument);
+    CHECK(reason_of(error) == "subject moved");
+  }
+  CHECK(at(opened_detail(h, at(item, "id")), "digest").as_string() == stamp);  // put back
+
+  // A directory and a FIFO are not regular files: not readable, and never opened to wait.
+  std::filesystem::create_directories(std::filesystem::path(dir) / "props" / "set.d");
+  JsonValue listed = strings({"props/set.d"});
+#if !ENGINE_PLATFORM_WINDOWS
+  const std::string fifo = (std::filesystem::path(dir) / "props" / "pipe.glb").string();
+  REQUIRE(::mkfifo(fifo.c_str(), 0600) == 0);
+  listed.push_back(JsonValue("props/pipe.glb"));
+#endif
+  const JsonValue odd = at(h.ok("review.raise", w.raise_params("Agent", listed)), "reviews")[0];
+  const JsonValue detail = opened_detail(h, at(odd, "id"));
+  CHECK(at(detail, "same").as_bool());
+  CHECK(at(detail, "unreadable").size() == listed.size());
+}
+
+// Every refusal that reads no file comes before the digest reads one (protocol.md, "What it
+// costs"): an item already closed, a revision that moved, a role or a raiser the close refuses, a
+// person's close that carries no digest, a session that may not write, and a raise the ledger
+// refuses — each answers with no byte of the subject's assets read.
+TEST_CASE("ledger: a close or a raise refused before its digest reads no asset") {
+  test::TempDir tmp("protocol_ledger_cheap");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  h.roles(k_roles);
+  h.open(dir, true);
+  DigestWorld w;
+  w.make(h, dir);
+  h.stdio();
+  const JsonValue person_item = at(w.raise(h), "reviews")[0];
+  const JsonValue agent_item = at(w.raise(h, "Agent"), "reviews")[0];
+  const u64 raised = h.sessions.digest_bytes_read();
+  CHECK(raised == 16);  // each raise read the 8-byte mesh once
+  JsonValue error;
+  const char* closer = "agent";
+  const auto close = [&](const JsonValue& item, const char* resolution, JsonValue revision,
+                         bool with_digest) {
+    JsonValue params = obj({{"review", at(item, "id")},
+                            {"resolution", JsonValue(resolution)},
+                            {"attribution", who(closer)}});
+    if (!revision.is_null()) params.set("revision", std::move(revision));
+    if (with_digest) params.set("digest", at(item, "raised_digest"));
+    return params;
+  };
+
+  h.bind(6, "agent-key", "agent", "director");  // a role the roles file does not mark human
+  CHECK(h.fails("review.close", close(person_item, "Accepted", JsonValue(), true), &error) ==
+        codes::k_forbidden);
+  CHECK(reason_of(error) == "human review");
+  CHECK(h.fails("review.close", close(agent_item, "Withdrawn", JsonValue(), false), &error) ==
+        codes::k_forbidden);
+  CHECK(reason_of(error) == "review raiser");
+  h.bind(5, "person-at-desk", "person", "reviewer");
+  closer = "person";
+  CHECK(h.fails("review.close", close(person_item, "Accepted", JsonValue(u64{9}), true), &error) ==
+        codes::k_invalid_argument);
+  CHECK(reason_of(error) == "revision moved");
+  CHECK(h.fails("review.close", close(person_item, "Accepted", JsonValue(u64{1}), false), &error) ==
+        codes::k_invalid_argument);
+  CHECK(reason_of(error) == "seen required");
+  CHECK(h.sessions.digest_bytes_read() == raised);
+
+  // Closed, then closed again: the second is refused before any read.
+  (void)h.ok("review.close", close(agent_item, "Accepted", JsonValue(), true));
+  const u64 closed = h.sessions.digest_bytes_read();
+  CHECK(closed == raised + 8);
+  CHECK(h.fails("review.close", close(agent_item, "Accepted", JsonValue(), true), &error) ==
+        codes::k_invalid_argument);
+  h.stdio();
+  JsonValue params = w.raise_params("Agent");
+  params.set("task", JsonValue(u64{12345}));  // no such task
+  CHECK(h.fails("review.raise", std::move(params), &error) == codes::k_not_found);
+  CHECK(h.sessions.digest_bytes_read() == closed);
+
+  // A session that may not write: the same document opened through a read-only root.
+  Host reader;
+  reader.roots = io::Roots{};
+  REQUIRE(reader.roots.add("tests", std::string(io::parent_path(reader.roots_anchor.path())),
+                           false) == io::Status::Ok);
+  reader.open(dir, false);
+  CHECK(reader.fails("review.raise", w.raise_params("Agent")) != 0);
+  CHECK(reader.sessions.digest_bytes_read() == 0);
+}
+
+// The files are read with the host's dispatch lock let go (protocol.md, "What it costs"): a second
+// client's call is answered while a digest's read is held open, and a document edit made then
+// makes the pass compose and read again; an edit at every pass is refused after three.
+TEST_CASE("ledger: a digest lets the host go for its reads, and composes again past an edit") {
+  test::TempDir tmp("protocol_ledger_unlocked");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  h.open(dir, true);
+  DigestWorld w;
+  w.make(h, dir);
+  const JsonValue item = at(w.raise(h, "Agent"), "reviews")[0];
+  const std::string stamp(at(item, "raised_digest").as_string());
+
+  // A second client of the same host: its own dispatcher over the same sessions.
+  Dispatcher other{Context{&h.sessions, nullptr, nullptr, nullptr, &h.policy}};
+  other.context().roots = &h.roots;
+  add_builtin_methods(other);
+  std::mutex dispatch;  // the host's dispatch lock, as the listener holds it for a request
+  struct Seam {
+    std::mutex* dispatch = nullptr;
+    Dispatcher* other = nullptr;
+    std::string session;
+    Id128 placement;
+    u32 edits = 0;     // edits to make, one a pass
+    u32 answered = 0;  // the second client's calls answered while the read was held
+  } seam{&dispatch, &other, h.session, w.placement};
+  h.sessions.set_digest_read_hook_for_test(
+      [](void* context) {
+        auto* s = static_cast<Seam*>(context);
+        std::lock_guard<std::mutex> held(*s->dispatch);  // free: the digest let it go
+        if (s->edits == 0) {
+          // No edit: a read of the session alone, answered.
+          JsonValue req = obj({{"jsonrpc", JsonValue("2.0")},
+                               {"id", JsonValue(1)},
+                               {"method", JsonValue("session.info")},
+                               {"params", obj({{"session", JsonValue(s->session)}})}});
+          if (s->other->dispatch(req).find("result") != nullptr) ++s->answered;
+          return;
+        }
+        --s->edits;
+        JsonValue cmds = JsonValue::array();
+        cmds.push_back(obj({{"kind", JsonValue("SetProperty")},
+                            {"id", JsonValue(hex(s->placement))},
+                            {"name", JsonValue("name")},
+                            {"value", JsonValue("crate, edited mid-read")}}));
+        JsonValue req = obj({{"jsonrpc", JsonValue("2.0")},
+                             {"id", JsonValue(2)},
+                             {"method", JsonValue("doc.apply")},
+                             {"params", obj({{"session", JsonValue(s->session)},
+                                             {"commands", cmds},
+                                             {"attribution", who("agent", "director")}})}});
+        if (s->other->dispatch(req).find("result") != nullptr) ++s->answered;
+      },
+      &seam);
+  const auto detail_under_lock = [&](JsonValue* error) {
+    std::lock_guard<std::mutex> held(dispatch);
+    h.dispatcher.context().dispatch_lock = &dispatch;
+    JsonValue resp =
+        h.call("review.list", obj({{"review", at(item, "id")}, {"digest", JsonValue(true)}}));
+    h.dispatcher.context().dispatch_lock = nullptr;
+    if (error != nullptr && resp.find("error") != nullptr) *error = at(resp, "error");
+    return resp;
+  };
+
+  // Nothing edited: one pass, and the other client was answered while the read was held.
+  JsonValue resp = detail_under_lock(nullptr);
+  CHECK(seam.answered == 1);
+  CHECK(num(at(at(at(resp, "result"), "subject"), "passes")) == 1);
+  CHECK(at(at(at(resp, "result"), "subject"), "digest").as_string() == stamp);
+
+  // One edit during the first read: the pass composes again and answers the edited state.
+  seam.edits = 1;
+  resp = detail_under_lock(nullptr);
+  const JsonValue& subject = at(at(resp, "result"), "subject");
+  CHECK(num(at(subject, "passes")) == 2);
+  h.sessions.set_digest_read_hook_for_test(nullptr, nullptr);
+  CHECK(at(subject, "digest").as_string() ==
+        at(opened_detail(h, at(item, "id")), "digest").as_string());
+  CHECK(at(subject, "digest").as_string() != stamp);
+
+  // An edit at every pass: refused after three, as a raise and a close are.
+  h.sessions.set_digest_read_hook_for_test(
+      [](void* context) {
+        auto* s = static_cast<Seam*>(context);
+        std::lock_guard<std::mutex> held(*s->dispatch);
+        JsonValue cmds = JsonValue::array();
+        cmds.push_back(obj({{"kind", JsonValue("SetProperty")},
+                            {"id", JsonValue(hex(s->placement))},
+                            {"name", JsonValue("name")},
+                            {"value", JsonValue("crate " + std::to_string(++s->edits))}}));
+        JsonValue req = obj({{"jsonrpc", JsonValue("2.0")},
+                             {"id", JsonValue(3)},
+                             {"method", JsonValue("doc.apply")},
+                             {"params", obj({{"session", JsonValue(s->session)},
+                                             {"commands", cmds},
+                                             {"attribution", who("agent", "director")}})}});
+        (void)s->other->dispatch(req);
+      },
+      &seam);
+  seam.edits = 0;
+  JsonValue error;
+  resp = detail_under_lock(&error);
+  REQUIRE(resp.find("error") != nullptr);
+  CHECK(reason_of(error) == "subject changing");
+  CHECK(seam.edits == 3);
+  h.sessions.set_digest_read_hook_for_test(nullptr, nullptr);
 }
 
 // The detail form is one item by id (protocol.md, "What a close is tied to"): a list's ids, order

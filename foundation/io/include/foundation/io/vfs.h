@@ -50,6 +50,7 @@ enum class Status : u8 {
   AlreadyExists,
   IoError,
   InvalidArgument,  // the caller passed inconsistent arguments (nothing was touched)
+  NotRegular,       // a FIFO, a socket, a device: `FileHandle::open_regular` refuses it unread
 };
 const char* status_name(Status status) noexcept;
 
@@ -209,6 +210,14 @@ class FileHandle {
   // Opens for reading. Replaces whatever the handle held. A file system that cannot read
   // unbuffered (a tmpfs, some overlay mounts) refuses `ReadMode::unbuffered` at open.
   Status open(std::string_view native_path, ReadMode mode = ReadMode::buffered);
+  // Opens for reading **only a regular file**, and never in a way that can wait: a directory is
+  // `IsDirectory` and anything else that is not a regular file — a FIFO, a socket, a character or
+  // block device, a pipe — is `NotRegular`, closed again before a byte is read. On Linux the open
+  // is `O_NONBLOCK` (a FIFO with no writer would otherwise block the open itself) and the type is
+  // `fstat`'s; on Windows it is the handle's (`GetFileType`, then the directory attribute). For a
+  // reader of a path someone else named, which must answer whatever is there (protocol.md, "What it
+  // costs"). Buffered; `open`'s answers otherwise.
+  Status open_regular(std::string_view native_path);
   void close() noexcept;
   bool unbuffered() const noexcept { return unbuffered_; }
 #if ENGINE_PLATFORM_WINDOWS

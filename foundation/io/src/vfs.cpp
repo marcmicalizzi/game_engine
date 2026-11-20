@@ -146,6 +146,7 @@ const char* status_name(Status status) noexcept {
     case Status::AlreadyExists: return "already exists";
     case Status::IoError: return "i/o error";
     case Status::InvalidArgument: return "invalid argument";
+    case Status::NotRegular: return "not a regular file";
   }
   return "?";
 }
@@ -668,6 +669,57 @@ Status FileHandle::open(std::string_view native_path, ReadMode mode) {
   size_ = static_cast<u64>(st.st_size);
 #endif
   unbuffered_ = unbuffered;
+  path_.assign(native_path);
+  return Status::Ok;
+}
+
+Status FileHandle::open_regular(std::string_view native_path) {
+  close();
+#if ENGINE_PLATFORM_WINDOWS
+  // `open`'s flags, so `read_at` reads it as any handle. A directory does not open without
+  // FILE_FLAG_BACKUP_SEMANTICS (ACCESS_DENIED), so it is told apart by its attributes; a device or
+  // a pipe opens, and its type says what it is.
+  const fs::path p = to_path(native_path);
+  std::error_code ec;
+  if (fs::is_directory(p, ec)) return Status::IsDirectory;
+  HANDLE h =
+      ::CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    const DWORD err = ::GetLastError();
+    if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) return Status::NotFound;
+    if (err == ERROR_ACCESS_DENIED || err == ERROR_SHARING_VIOLATION)
+      return Status::PermissionDenied;
+    return Status::IoError;
+  }
+  BY_HANDLE_FILE_INFORMATION info{};
+  if (::GetFileType(h) != FILE_TYPE_DISK || ::GetFileInformationByHandle(h, &info) == 0 ||
+      (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+    const bool directory = (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    ::CloseHandle(h);
+    return directory ? Status::IsDirectory : Status::NotRegular;
+  }
+  handle_ = h;
+  size_ = (static_cast<u64>(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
+#else
+  std::string native(native_path);
+  // O_NONBLOCK: a FIFO's open waits for a writer without it. A regular file reads the same either
+  // way, so the flag stays.
+  const int fd = ::open(native.c_str(), O_RDONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC);
+  if (fd < 0) return status_from_errno(errno);
+  struct stat st{};
+  if (::fstat(fd, &st) != 0) {
+    ::close(fd);
+    return Status::IoError;
+  }
+  if (!S_ISREG(st.st_mode)) {
+    ::close(fd);
+    return S_ISDIR(st.st_mode) ? Status::IsDirectory : Status::NotRegular;
+  }
+  handle_ = fd;
+  size_ = static_cast<u64>(st.st_size);
+#endif
+  unbuffered_ = false;
   path_.assign(native_path);
   return Status::Ok;
 }

@@ -249,6 +249,19 @@ RpcError bound_error(std::string_view bound, u64 limit, std::string message) {
 
 // ---- the store --------------------------------------------------------------------------------
 
+// Whether a call that grows the ledger may: false with the bound's refusal once the file holds
+// `k_ledger_bytes_max`. Looked at under the ledger's lock by `update_ledger`, and before it by a
+// raise, so a raise the bound refuses reads none of its subject's files.
+bool ledger_has_room(io::Vfs& vfs, const std::string& path, RpcError& error) {
+  io::FileInfo info;
+  if (vfs.stat(path, info) != io::Status::Ok || info.size < k_ledger_bytes_max) return true;
+  error = bound_error("ledger bytes", k_ledger_bytes_max,
+                      "the ledger holds " + std::to_string(info.size) +
+                          " bytes, past its bound of 8 MiB: close, finish or drop work before "
+                          "adding more (a claim, a status change and a close still answer)");
+  return false;
+}
+
 // The ledger's one read-modify-write: `change(ledger, write, error)` runs on the file as it is on
 // disk now (absent: empty) while this process holds `ledger.json.lock`, and when it sets `write`
 // the result replaces the file before the lock is let go. False with `error` set when the lock,
@@ -294,13 +307,7 @@ bool update_ledger(io::Vfs& vfs, Session& session, bool read_only, bool grows, u
   const bool ok = update_side_file(
       vfs, path, ledger,
       [&](LedgerFile& l, bool& write) {
-        io::FileInfo info;
-        if (grows && vfs.stat(path, info) == io::Status::Ok && info.size >= k_ledger_bytes_max) {
-          error = bound_error("ledger bytes", k_ledger_bytes_max,
-                              "the ledger holds " + std::to_string(info.size) +
-                                  " bytes, past its bound of 8 MiB: close, finish or drop work "
-                                  "before adding more (a claim, a status change and a close "
-                                  "still answer)");
+        if (grows && !ledger_has_room(vfs, path, error)) {
           revision = l.revision;
           return false;
         }
@@ -735,6 +742,84 @@ bool task_list(Context& ctx, const TaskListParams& params, TasksResult& out, Rpc
 
 // ---- review.* ----------------------------------------------------------------------------------
 
+// The subject digest's passes (protocol.md, "What it costs"). Each pass, under the dispatch lock:
+// `first(session, subject, ledger_revision, error)` makes every refusal that reads no file and
+// names the subject, and the document's half is composed; then the files are read with the lock let
+// go (`without_dispatch_lock`), so every other client of the host, and the editor's frame, is
+// answered meanwhile; then, under the lock again, the session is looked up anew and its document
+// compared with what was composed, and `decide(session, state, ledger_revision, moved, error)`
+// makes the call's decision on the values of that same pass — setting `moved` when the ledger's
+// revision is not the one `first` read. A document or a ledger that moved is composed and read
+// again, three passes in all, then refused (`subject changing`).
+constexpr u32 k_digest_passes = 3;
+
+RpcError over_error(const DigestOver& over) {
+  JsonValue data = JsonValue::object();
+  data.set("reason", JsonValue("subject too large"));
+  data.set("bound", JsonValue(std::string_view(over.bound)));
+  data.set("limit", JsonValue(over.limit));
+  data.set("figure", JsonValue(over.figure));
+  return make_error(codes::k_invalid_argument,
+                    std::string("the subject is past ") + over.bound + " (" +
+                        std::to_string(over.limit) + "): it comes to " +
+                        std::to_string(over.figure) +
+                        "; raise one item per part, or ask the host's operator for a larger bound",
+                    std::move(data));
+}
+
+template <class First, class Decide>
+bool digest_passes(Context& ctx, const std::string& session_id, DigestFor use, First&& first,
+                   Decide&& decide, SubjectState& state, Session*& session, RpcError& error) {
+  const DigestBounds bounds = DigestBounds::now();
+  const i64 started = time::monotonic_ns();
+  for (u32 pass = 1;; ++pass) {
+    session = ctx.sessions->require(session_id, error);
+    if (session == nullptr) return false;
+    ReviewSubject subject;
+    u64 revision = 0;
+    if (!first(*session, subject, revision, error)) return false;
+    SubjectPlan plan;
+    compose_subject(ctx, *session, subject, bounds, plan);
+    plan.refuse_over = use == DigestFor::raise;
+    if (use == DigestFor::raise && !plan.over.empty()) {
+      error = over_error(plan.over[0]);
+      return false;
+    }
+    const SessionManager::DigestReadHook hook = ctx.sessions->digest_read_hook();
+    void* const hook_context = ctx.sessions->digest_read_context();
+    without_dispatch_lock(ctx, [&] {
+      if (hook != nullptr) hook(hook_context);
+      read_subject_files(plan, bounds);
+    });
+    ctx.sessions->note_digest_bytes(plan.bytes_read);
+    session = ctx.sessions->require(session_id, error);
+    if (session == nullptr) return false;
+    if (use == DigestFor::raise && !plan.over.empty()) {
+      error = over_error(plan.over[0]);
+      return false;
+    }
+    bool moved = !same_document(session, plan);
+    if (!moved) {
+      finish_subject(plan, state);
+      state.passes = pass;
+      state.ms = static_cast<f64>(time::monotonic_ns() - started) / 1.0e6;
+      const bool ok = decide(*session, state, revision, moved, error);
+      if (!moved) return ok;
+    }
+    if (pass == k_digest_passes) {
+      JsonValue data = JsonValue::object();
+      data.set("reason", JsonValue("subject changing"));
+      data.set("passes", JsonValue(pass));
+      error = make_error(codes::k_invalid_argument,
+                         "what the subject names changed while its files were read, " +
+                             std::to_string(pass) +
+                             " times running: ask again once the document and the ledger settle",
+                         std::move(data));
+      return false;
+    }
+  }
+}
+
 bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& out,
                   RpcError& error) {
   Caller caller;
@@ -746,11 +831,6 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
       !text_ok("subject.checkpoint", params.subject.checkpoint, 0, k_name_max, false, error) ||
       !names_ok("subject.blobs", params.subject.blobs, error))
     return false;
-  const doc::Document& d = s->document();
-  if (!params.subject.layer.empty() && d.find_layer(params.subject.layer) < 0) {
-    error = make_error(codes::k_not_found, "no layer named " + params.subject.layer);
-    return false;
-  }
   if (params.subject.records.size() > k_subject_records_max ||
       params.subject.blobs.size() > k_link_max || params.subject.assets.size() > k_link_max) {
     error = make_error(codes::k_invalid_argument,
@@ -761,49 +841,76 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
   for (const std::string& a : params.subject.assets) {
     if (!text_ok("subject.assets entries", a, 1, k_asset_path_max, false, error)) return false;
   }
-  for (const Id128 id : params.subject.records) {
-    if (d.exists(id)) continue;
-    char hex[Id128::k_hex_length + 1];
-    id.to_hex(hex);
-    error = make_error(codes::k_not_found, std::string("subject record ") +
-                                               std::string(hex, Id128::k_hex_length) +
-                                               " is not live: a review item names what stands");
-    return false;
-  }
   if (!params.report.is_null() && write_json(params.report).size() > k_report_max) {
     error = make_error(codes::k_invalid_argument,
                        "report is at most 64 KiB of JSON: the numbers, never a picture (a blob "
                        "the subject names carries anything larger)");
     return false;
   }
+  io::Vfs& vfs = ctx.sessions->vfs();
+  // The ledger's own refusals of a raise, made in the first read and again in the write.
+  const auto allowed = [&](LedgerFile& ledger, RpcError& e) {
+    u32 open = 0;
+    for (const ReviewInfo& o : ledger.reviews) {
+      if (o.raised_by.actor == caller.who.actor && o.state == ReviewState::Open) ++open;
+    }
+    if (open >= k_open_items_per_actor) {
+      e = bound_error("open items per actor", k_open_items_per_actor,
+                      caller.who.actor +
+                          " has raised 256 review items that are still open: a raiser withdraws "
+                          "its own agent items, and a person's wait for the person");
+      return false;
+    }
+    return params.task == 0 || find_task(ledger, params.task, e) != nullptr;
+  };
+  // Every refusal that reads no file, before the digest reads any (protocol.md, "What it costs"):
+  // the subject's layer and records, the session's gate on writes, and the ledger's bounds.
+  const auto first = [&](Session& session, ReviewSubject& subject, u64& revision, RpcError& e) {
+    const doc::Document& d = session.document();
+    if (!params.subject.layer.empty() && d.find_layer(params.subject.layer) < 0) {
+      e = make_error(codes::k_not_found, "no layer named " + params.subject.layer);
+      return false;
+    }
+    for (const Id128 id : params.subject.records) {
+      if (d.exists(id)) continue;
+      char hex[Id128::k_hex_length + 1];
+      id.to_hex(hex);
+      e = make_error(codes::k_not_found, std::string("subject record ") +
+                                             std::string(hex, Id128::k_hex_length) +
+                                             " is not live: a review item names what stands");
+      return false;
+    }
+    if (!session.may_write_side_files(e) ||
+        !ledger_has_room(vfs, doc::DocumentStore::path_of(session.dir(), k_ledger_file), e))
+      return false;
+    subject = params.subject;
+    return update_ledger(
+        vfs, session, true, false, revision,
+        [&](LedgerFile& ledger, bool& write, RpcError& e2) {
+          write = false;
+          return allowed(ledger, e2);
+        },
+        e);
+  };
   // The subject's digest, stamped by the host from its own document (protocol.md, "What a close is
-  // tied to"). Computed before the ledger's lock is taken: it reads the subject's assets, which may
-  // be large, and the lock is one every other caller of the ledger waits for.
-  SubjectState stamped;
-  subject_digest(ctx, *s, params.subject, stamped);
+  // tied to"), into the write that raises the item.
   const i64 now = time::wall_unix_ms();
   ReviewInfo made;
-  if (!update_ledger(
-          ctx.sessions->vfs(), *s, false, true, out.ledger_revision,
-          [&](LedgerFile& ledger, bool& write, RpcError& e) {
-            write = lapse_claims(ledger, now) > 0;
-            u32 open = 0;
-            for (const ReviewInfo& o : ledger.reviews) {
-              if (o.raised_by.actor == caller.who.actor && o.state == ReviewState::Open) ++open;
-            }
-            if (open >= k_open_items_per_actor) {
-              e = bound_error("open items per actor", k_open_items_per_actor,
-                              caller.who.actor +
-                                  " has raised 256 review items that are still "
-                                  "open: a raiser withdraws its own agent items, "
-                                  "and a person's wait for the person");
-              return false;
-            }
-            TaskInfo* task = nullptr;
-            if (params.task != 0) {
-              task = find_task(ledger, params.task, e);
-              if (task == nullptr) return false;
-            }
+  const auto decide = [&](Session& session, const SubjectState& stamped, u64 revision, bool& moved,
+                          RpcError& e) {
+    const doc::Document& d = session.document();
+    return update_ledger(
+        vfs, session, false, true, out.ledger_revision,
+        [&](LedgerFile& ledger, bool& write, RpcError& e2) {
+          write = false;
+          if (ledger.revision != revision) {
+            moved = true;
+            return false;
+          }
+          write = lapse_claims(ledger, now) > 0;
+          if (!allowed(ledger, e2)) return false;
+          TaskInfo* task = params.task != 0 ? find_task(ledger, params.task, e2) : nullptr;
+          {
             ReviewInfo r;
             r.id = fresh_review_id(ledger);
             r.revision = 1;
@@ -813,7 +920,7 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
             r.subject = params.subject;
             // The version is the host's to say, not the raiser's.
             r.subject.journal_length = static_cast<u32>(d.journal().size());
-            r.subject.undo_position = s->undo_position();
+            r.subject.undo_position = session.undo_position();
             r.raised_digest = stamped.digest;
             r.report = params.report;
             r.task = params.task;
@@ -828,10 +935,14 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
             }
             made = r;
             ledger.reviews.push_back(std::move(r));
-            write = true;
-            return true;
-          },
-          error))
+          }
+          write = true;
+          return true;
+        },
+        e);
+  };
+  SubjectState stamped;
+  if (!digest_passes(ctx, params.session, DigestFor::raise, first, decide, stamped, s, error))
     return false;
   out.now_unix_ms = now;
   out.reviews.push_back(std::move(made));
@@ -855,118 +966,130 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
         make_error(codes::k_invalid_argument, "resolution must be Accepted, Rejected or Withdrawn");
     return false;
   }
-  // The subject's digest now (protocol.md, "What a close is tied to"), read again in full: the
-  // computation that decides reuses nothing. The subject is read first and hashed with no lock
-  // held, since the assets' reads are the cost and every caller of the ledger waits for its lock;
-  // an item's subject never changes after the raise, so the one read is the one the close checks.
-  ReviewSubject subject;
-  u64 read_at = 0;  // the close answers the revision it writes, not this read's
-  if (!update_ledger(
-          ctx.sessions->vfs(), *s, true, false, read_at,
-          [&](LedgerFile& ledger, bool& write, RpcError& e) {
-            write = false;
-            const ReviewInfo* r = find_review(ledger, params.review, e);
-            if (r == nullptr) return false;
-            subject = r->subject;
-            return true;
-          },
-          error))
-    return false;
-  SubjectState seen_now;
-  subject_digest(ctx, *s, subject, seen_now);
+  // The refusals of the item and of the caller, which read no file: made in the first read of the
+  // ledger, before the digest reads a byte, and again in the write (protocol.md, "What it costs").
+  const auto closable = [&](const ReviewInfo& item, RpcError& e) {
+    const ReviewInfo* r = &item;
+    const std::string id = std::to_string(r->id);
+    if (r->state == ReviewState::Closed) {
+      e = make_error(codes::k_invalid_argument, "review item " + id + " was closed " +
+                                                    resolution_name(r->resolution) + " by " +
+                                                    r->closed_by.actor);
+      return false;
+    }
+    if (params.revision != 0 && params.revision != r->revision) {
+      JsonValue data = JsonValue::object();
+      data.set("reason", JsonValue("revision moved"));
+      data.set("review", JsonValue(r->id));
+      data.set("revision", JsonValue(r->revision));
+      e = make_error(codes::k_invalid_argument,
+                     "review item " + id + " is at revision " + std::to_string(r->revision) +
+                         ", not the " + std::to_string(params.revision) +
+                         " this close was decided on: review.list it again",
+                     std::move(data));
+      return false;
+    }
+    const std::string role = role_of(caller);
+    if (r->audience == ReviewAudience::Human) {
+      // A person's to close, and nobody else's: not its raiser's to take back, and not an
+      // agent's whatever methods its role names (AGENTS.md: a check that needs a higher
+      // view policy becomes a human review item, never a configuration edit).
+      // A person is known by `human_via` alone (policy.h): a credential the operator
+      // issued for a role marked human, never a role the call names.
+      if (params.resolution == ReviewResolution::Withdrawn || caller.human_via.empty()) {
+        e = forbidden("review item " + id +
+                          " is for a person: it is closed only on a connection that "
+                          "presented a credential the host's operator issued for a role "
+                          "the roles file marks human, and nobody withdraws it",
+                      "human review", role);
+        return false;
+      }
+    } else if (params.resolution == ReviewResolution::Withdrawn &&
+               r->raised_by.actor != caller.who.actor) {
+      e = forbidden("review item " + id + " is withdrawn by its raiser (" + r->raised_by.actor +
+                        ") alone; a reviewer accepts or rejects it",
+                    "review raiser", role);
+      return false;
+    }
+    // What the closer saw. A person's close carries both halves of it, so a page that
+    // dropped one could not decide past a change; an agent's checks what it sends.
+    if (r->audience == ReviewAudience::Human && (params.revision == 0 || params.digest.empty())) {
+      JsonValue data = JsonValue::object();
+      data.set("reason", JsonValue("seen required"));
+      data.set("review", JsonValue(r->id));
+      e = make_error(codes::k_invalid_argument,
+                     "review item " + id +
+                         " is a person's: its close carries the revision and the subject "
+                         "digest its detail was drawn with (review.list with digest)",
+                     std::move(data));
+      return false;
+    }
+    return true;
+  };
+  io::Vfs& vfs = ctx.sessions->vfs();
+  const auto first = [&](Session& session, ReviewSubject& subject, u64& revision, RpcError& e) {
+    if (!session.may_write_side_files(e)) return false;
+    return update_ledger(
+        vfs, session, true, false, revision,
+        [&](LedgerFile& ledger, bool& write, RpcError& e2) {
+          write = false;
+          const ReviewInfo* r = find_review(ledger, params.review, e2);
+          if (r == nullptr || !closable(*r, e2)) return false;
+          // An item's subject never changes after the raise: the one read is the one checked.
+          subject = r->subject;
+          return true;
+        },
+        e);
+  };
+  // The decision, under the dispatch lock and the ledger's, on the digest of this same pass: the
+  // computation that decides reuses nothing (protocol.md, "What a close is tied to").
   const i64 now = time::wall_unix_ms();
   ReviewInfo changed;
-  if (!update_ledger(
-          ctx.sessions->vfs(), *s, false, false, out.ledger_revision,
-          [&](LedgerFile& ledger, bool& write, RpcError& e) {
-            ReviewInfo* r = find_review(ledger, params.review, e);
-            if (r == nullptr) return false;
-            const std::string id = std::to_string(r->id);
-            if (r->state == ReviewState::Closed) {
-              e = make_error(codes::k_invalid_argument, "review item " + id + " was closed " +
-                                                            resolution_name(r->resolution) +
-                                                            " by " + r->closed_by.actor);
-              return false;
-            }
-            if (params.revision != 0 && params.revision != r->revision) {
-              JsonValue data = JsonValue::object();
-              data.set("reason", JsonValue("revision moved"));
-              data.set("review", JsonValue(r->id));
-              data.set("revision", JsonValue(r->revision));
-              e = make_error(codes::k_invalid_argument,
-                             "review item " + id + " is at revision " +
-                                 std::to_string(r->revision) + ", not the " +
-                                 std::to_string(params.revision) +
-                                 " this close was decided on: review.list it again",
-                             std::move(data));
-              return false;
-            }
-            const std::string role = role_of(caller);
-            if (r->audience == ReviewAudience::Human) {
-              // A person's to close, and nobody else's: not its raiser's to take back, and not an
-              // agent's whatever methods its role names (AGENTS.md: a check that needs a higher
-              // view policy becomes a human review item, never a configuration edit).
-              // A person is known by `human_via` alone (policy.h): a credential the operator
-              // issued for a role marked human, never a role the call names.
-              if (params.resolution == ReviewResolution::Withdrawn || caller.human_via.empty()) {
-                e = forbidden("review item " + id +
-                                  " is for a person: it is closed only on a connection that "
-                                  "presented a credential the host's operator issued for a role "
-                                  "the roles file marks human, and nobody withdraws it",
-                              "human review", role);
-                return false;
-              }
-            } else if (params.resolution == ReviewResolution::Withdrawn &&
-                       r->raised_by.actor != caller.who.actor) {
-              e = forbidden("review item " + id + " is withdrawn by its raiser (" +
-                                r->raised_by.actor + ") alone; a reviewer accepts or rejects it",
-                            "review raiser", role);
-              return false;
-            }
-            // What the closer saw. A person's close carries both halves of it, so a page that
-            // dropped one could not decide past a change; an agent's checks what it sends.
-            if (r->audience == ReviewAudience::Human &&
-                (params.revision == 0 || params.digest.empty())) {
-              JsonValue data = JsonValue::object();
-              data.set("reason", JsonValue("seen required"));
-              data.set("review", JsonValue(r->id));
-              e = make_error(codes::k_invalid_argument,
-                             "review item " + id +
-                                 " is a person's: its close carries the revision and the subject "
-                                 "digest its detail was drawn with (review.list with digest)",
-                             std::move(data));
-              return false;
-            }
-            if (!params.digest.empty() && params.digest != seen_now.digest) {
-              JsonValue data = JsonValue::object();
-              data.set("reason", JsonValue("subject moved"));
-              data.set("review", JsonValue(r->id));
-              data.set("digest", JsonValue(seen_now.digest));
-              data.set("same", JsonValue(seen_now.digest == r->raised_digest));
-              e = make_error(codes::k_invalid_argument,
-                             "what review item " + id +
-                                 " is about changed since its detail was drawn: review.list it "
-                                 "with digest again, and decide on what it is now",
-                             std::move(data));
-              return false;
-            }
-            r->decided_at = seen_now.digest;
-            r->state = ReviewState::Closed;
-            r->resolution = params.resolution;
-            r->closed_by = caller.who;
-            r->closed_by.timestamp_unix_ms = now;
-            r->closed_via = caller.via;
-            r->closed_human_via = caller.human_via;
-            r->closed_unix_ms = now;
-            ++r->revision;
-            note(r->history, r->history_dropped, now, caller, "closed",
-                 std::string(resolution_name(params.resolution)) +
-                     (blank(params.note) ? std::string() : ": " + params.note));
-            changed = *r;
-            write = true;
-            return true;
-          },
-          error))
+  const auto decide = [&](Session& session, const SubjectState& seen_now, u64 revision, bool& moved,
+                          RpcError& e) {
+    return update_ledger(
+        vfs, session, false, false, out.ledger_revision,
+        [&](LedgerFile& ledger, bool& write, RpcError& e2) {
+          write = false;
+          if (ledger.revision != revision) {
+            moved = true;
+            return false;
+          }
+          ReviewInfo* r = find_review(ledger, params.review, e2);
+          if (r == nullptr || !closable(*r, e2)) return false;
+          if (!params.digest.empty() && params.digest != seen_now.digest) {
+            JsonValue data = JsonValue::object();
+            data.set("reason", JsonValue("subject moved"));
+            data.set("review", JsonValue(r->id));
+            data.set("digest", JsonValue(seen_now.digest));
+            data.set("same", JsonValue(seen_now.digest == r->raised_digest));
+            e2 = make_error(codes::k_invalid_argument,
+                            "what review item " + std::to_string(r->id) +
+                                " is about changed since its detail was drawn: review.list it "
+                                "with digest again, and decide on what it is now",
+                            std::move(data));
+            return false;
+          }
+          r->decided_at = seen_now.digest;
+          r->state = ReviewState::Closed;
+          r->resolution = params.resolution;
+          r->closed_by = caller.who;
+          r->closed_by.timestamp_unix_ms = now;
+          r->closed_via = caller.via;
+          r->closed_human_via = caller.human_via;
+          r->closed_unix_ms = now;
+          ++r->revision;
+          note(r->history, r->history_dropped, now, caller, "closed",
+               std::string(resolution_name(params.resolution)) +
+                   (blank(params.note) ? std::string() : ": " + params.note));
+          changed = *r;
+          write = true;
+          return true;
+        },
+        e);
+  };
+  SubjectState seen_now;
+  if (!digest_passes(ctx, params.session, DigestFor::close, first, decide, seen_now, s, error))
     return false;
   out.now_unix_ms = now;
   seen_now.same = seen_now.digest == changed.raised_digest;
@@ -1001,34 +1124,62 @@ bool review_list(Context& ctx, const ReviewListParams& params, ReviewsResult& ou
     return false;
   }
   out.now_unix_ms = time::wall_unix_ms();
-  if (!update_ledger(
-          ctx.sessions->vfs(), *s, true, false, out.ledger_revision,
-          [&](LedgerFile& ledger, bool& write, RpcError& e) {
-            write = false;
-            if (params.review != 0 && find_review(ledger, params.review, e) == nullptr)
-              return false;
-            list_in_order(
-                ledger.reviews, params.order, params.limit, params.brief,
-                [&](const ReviewInfo& r) {
-                  if (params.review != 0 && r.id != params.review) return false;
-                  if (!params.reviews.empty() && !contains(params.reviews, r.id)) return false;
-                  if (params.state && r.state != *params.state) return false;
-                  if (params.audience && r.audience != *params.audience) return false;
-                  if (!params.kind.empty() && r.kind != params.kind) return false;
-                  if (params.task != 0 && r.task != params.task) return false;
-                  return true;
-                },
-                out.reviews, out.more);
-            return true;
-          },
-          error))
-    return false;
-  // The detail's statement, computed after the ledger's lock is let go (the assets' reads are the
-  // cost, and every other caller of the ledger waits for that lock).
-  if (params.digest && !out.reviews.empty()) {
-    subject_digest(ctx, *s, out.reviews[0].subject, out.subject);
-    out.subject.same = out.subject.digest == out.reviews[0].raised_digest;
-  }
+  const auto list = [&](Session& session, u64& revision, RpcError& error_out) {
+    out.reviews.clear();
+    out.more = 0;
+    return update_ledger(
+        ctx.sessions->vfs(), session, true, false, revision,
+        [&](LedgerFile& ledger, bool& write, RpcError& e) {
+          write = false;
+          if (params.review != 0 && find_review(ledger, params.review, e) == nullptr) return false;
+          list_in_order(
+              ledger.reviews, params.order, params.limit, params.brief,
+              [&](const ReviewInfo& r) {
+                if (params.review != 0 && r.id != params.review) return false;
+                if (!params.reviews.empty() && !contains(params.reviews, r.id)) return false;
+                if (params.state && r.state != *params.state) return false;
+                if (params.audience && r.audience != *params.audience) return false;
+                if (!params.kind.empty() && r.kind != params.kind) return false;
+                if (params.task != 0 && r.task != params.task) return false;
+                return true;
+              },
+              out.reviews, out.more);
+          return true;
+        },
+        error_out);
+  };
+  if (!params.digest) return list(*s, out.ledger_revision, error);
+  // The detail's statement, its files read with the host let go and with no lock of the ledger's
+  // held (the assets' reads are the cost, and every other caller of the ledger waits for that
+  // lock); the ledger read again under the dispatch lock says whether the item it answers is the
+  // one the pass composed for.
+  bool hidden = false;  // the item exists and the filters beside `digest` hide it
+  const auto first = [&](Session& session, ReviewSubject& subject, u64& revision, RpcError& e) {
+    if (!list(session, revision, e)) return false;
+    out.ledger_revision = revision;
+    if (out.reviews.empty()) {
+      hidden = true;
+      return false;
+    }
+    subject = out.reviews[0].subject;
+    return true;
+  };
+  const auto decide = [&](Session& session, const SubjectState&, u64 revision, bool& moved,
+                          RpcError& e) {
+    u64 now = 0;
+    const bool ok = update_ledger(
+        ctx.sessions->vfs(), session, true, false, now,
+        [](LedgerFile&, bool& write, RpcError&) {
+          write = false;
+          return true;
+        },
+        e);
+    moved = ok && now != revision;
+    return ok;
+  };
+  if (!digest_passes(ctx, params.session, DigestFor::detail, first, decide, out.subject, s, error))
+    return hidden;
+  out.subject.same = out.subject.digest == out.reviews[0].raised_digest;
   return true;
 }
 

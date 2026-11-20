@@ -606,7 +606,26 @@ class SessionManager {
   // number of "ledger_changed" events published.
   u32 look_at_ledgers(bool all);
 
+  // --- the subject digest (protocol.md, "What it costs"; subject_digest.cpp) --------------------
+  // The bytes of asset files every subject digest of this manager's sessions has read since it was
+  // made, added under the host's lock after each pass's reads: what a case reads to see that a
+  // refusal made before the digest read nothing.
+  u64 digest_bytes_read() const noexcept { return digest_bytes_read_; }
+  void note_digest_bytes(u64 bytes) noexcept { digest_bytes_read_ += bytes; }
+  // A case's seam: called once a pass, with the host's dispatch lock let go, before a digest reads
+  // its files; null for none. What lets a case hold a read open and act meanwhile.
+  using DigestReadHook = void (*)(void* context);
+  void set_digest_read_hook_for_test(DigestReadHook hook, void* context) noexcept {
+    digest_read_hook_ = hook;
+    digest_read_context_ = context;
+  }
+  DigestReadHook digest_read_hook() const noexcept { return digest_read_hook_; }
+  void* digest_read_context() const noexcept { return digest_read_context_; }
+
  private:
+  u64 digest_bytes_read_ = 0;
+  DigestReadHook digest_read_hook_ = nullptr;
+  void* digest_read_context_ = nullptr;
   // What a connection left in a session that closed while it was still connected (protocol.md,
   // "Several clients, one host"): the lease stays in the document's `leases.json` and the
   // transaction's hold here, for the document's next open in this process, since a lease and a
