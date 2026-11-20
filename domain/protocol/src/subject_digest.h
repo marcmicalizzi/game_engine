@@ -6,9 +6,8 @@
 // click. The stream it hashes, in order:
 //
 //   1. a version line;
-//   2. the document's layer stack, weakest first, each layer's name and role (a reorder, an added
-//      or a removed layer changes what composes);
-//   2b. the layer the subject is judged in, by name;
+//   2. the layer the subject is judged in, by name (the stack itself is not: a layer changes the
+//      digest by what it composes for the subject, which step 3 holds, and never by being there);
 //   3. every record the subject names and every `ChildOf` ancestor of one, sorted by id and each
 //      once: its composed line (doc::append_composed_record: type, parent, properties, or a mark
 //      that it is gone or deleted), and when the subject names a layer, the record that layer holds

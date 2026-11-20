@@ -189,16 +189,10 @@ void compose_subject(const Context& ctx, const Session& session, const ReviewSub
   Sha256& h = plan.hash;
   h.update(k_stream_version);
 
-  // 2. The layer stack, weakest first.
-  for (u32 i = 0; i < d.layer_count(); ++i) {
-    const doc::Layer& layer = d.layer(i);
-    JsonValue line = JsonValue::array();
-    line.push_back(JsonValue("layer"));
-    line.push_back(JsonValue(layer.name()));
-    line.push_back(JsonValue(static_cast<u64>(layer.role())));
-    add_line(h, line);
-  }
-  // 2b. The layer it is judged in.
+  // 2. The layer it is judged in. The stack itself is not hashed: what composes for the subject
+  // is in its records' composed lines and the judged layer's own record, and a layer that holds
+  // nothing of the subject (another agent's proposal, opened beside it) is nothing its reviewer
+  // saw, where hashing it refused every honest close each time one opened.
   const i32 judged = subject.layer.empty() ? -1 : d.find_layer(subject.layer);
   {
     JsonValue line = JsonValue::array();

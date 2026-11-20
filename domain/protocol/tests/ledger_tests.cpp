@@ -1528,11 +1528,40 @@ TEST_CASE(
     (void)close(id, seen, &error);
     CHECK(reason_of(error) == "subject moved");
   }
-  SUBCASE("a layer added over the stack") {
+  SUBCASE("a layer added over the stack that holds nothing of the subject") {
+    // Not something its reviewer saw: what composes for the subject is unchanged, so the digest
+    // is equal and the close stands.
     const JsonValue id = raise();
     const Seen seen = look(id);
     agent();
     (void)h.ok("doc.add_layer", obj({{"name", JsonValue("late")}, {"edit", JsonValue(false)}}));
+    CHECK(look(id).digest.as_string() == seen.digest.as_string());
+    const JsonValue closed = close(id, seen, nullptr);
+    CHECK(at(at(closed, "reviews")[0], "state").as_string() == "Closed");
+  }
+  SUBCASE("a stronger layer overriding a property of the subject") {
+    const JsonValue id = raise();
+    const Seen seen = look(id);
+    agent();
+    (void)h.ok("doc.add_layer", obj({{"name", JsonValue("late")}, {"edit", JsonValue(true)}}));
+    w.set(h, w.placement, "name", JsonValue("crate, from the late layer"));
+    (void)close(id, seen, &error);
+    CHECK(reason_of(error) == "subject moved");
+  }
+  SUBCASE("a layer's opinion taken out of the composition") {
+    // No method mutes or reorders a layer; a proposal rejected empties its layer, which is the
+    // stack's composition changing under the subject without its records being edited.
+    agent();
+    (void)h.ok("doc.propose_layer",
+               obj({{"name", JsonValue("p.crate")},
+                    {"target", at(at(h.ok("doc.layers"), "layers")[0], "name")},
+                    {"attribution", who("agent", "director")}}));
+    w.set(h, w.placement, "name", JsonValue("crate, as proposed"));
+    const JsonValue id = raise();
+    const Seen seen = look(id);
+    agent();
+    (void)h.ok("doc.reject", obj({{"proposal", JsonValue("p.crate")},
+                                  {"attribution", who("agent", "director")}}));
     (void)close(id, seen, &error);
     CHECK(reason_of(error) == "subject moved");
   }
