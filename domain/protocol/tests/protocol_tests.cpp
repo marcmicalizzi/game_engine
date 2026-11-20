@@ -1,5 +1,6 @@
 #include <core/json/json.h>
 #include <core/log/log.h>
+#include <domain/doc/checkpoint.h>
 #include <domain/protocol/paths.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
@@ -1159,6 +1160,11 @@ bool client_may_write(Host& h, std::string_view path) {
   RpcError error;
   return admit_client_path(h.dispatcher.context(), "path", path, {}, io::Access::write, a, error);
 }
+// Whether `layer` exists and holds a record for `id`.
+bool in_layer_named(const doc::Document& document, std::string_view layer, Id128 id) {
+  const i32 index = document.find_layer(layer);
+  return index >= 0 && document.layer(static_cast<u32>(index)).find(id) != nullptr;
+}
 }  // namespace
 
 // `out/` itself may be made, the document store does not ask for an empty directory, and every
@@ -1216,8 +1222,10 @@ TEST_CASE("roots: session.open does not make a writable root's own directory a d
 }
 
 // Paths a document's records hold (record_paths.h; protocol.md, "Paths a document's records hold"):
-// a placement's mesh is admitted as the record lands, by each way a record lands. Taken out of
-// `Session::commit_commands` and `Session::step`, every refusal below is a commit.
+// a placement's mesh is admitted as the record lands, by each way protocol.md lists: doc.apply, a
+// redo, a merge, a transaction's stage and commit, a proposal's promotion, an undo, and
+// doc.rollback_to's pre-check. Taken out of `Session::commit_commands`, `check_commands` and
+// `Session::step`, every refusal below is a commit, and each asserts nothing landed.
 TEST_CASE("roots: a path a record holds is admitted as it lands, by every way a record lands") {
   TempDir tmp("protocol_record_paths");
   Host h;
@@ -1313,8 +1321,109 @@ TEST_CASE("roots: a path a record holds is admitted as it lands, by every way a 
     CHECK(error->find("code")->as_int() == codes::k_not_found);
     CHECK(at(at(*error, "data"), "field") == JsonValue("mesh"));
   }
-  h.sessions.set_roots(&h.roots);
-  h.dispatcher.context().roots = &h.roots;
+  CHECK_FALSE(in_layer_named(s->document(), "merged", d));
+
+  const auto use_roots = [&](io::Roots* roots) {
+    h.sessions.set_roots(roots);
+    h.dispatcher.context().roots = roots;
+  };
+  const auto refused_field = [&](const JsonValue& resp) {
+    const JsonValue* error = resp.find("error");
+    REQUIRE(error != nullptr);
+    CHECK(error->find("code")->as_int() == codes::k_not_found);
+    CHECK(at(at(*error, "data"), "field") == JsonValue("mesh"));
+  };
+  const auto in_layer = [&](std::string_view layer, Id128 id) {
+    return in_layer_named(s->document(), layer, id);
+  };
+  const auto placed = [&](Id128 id, std::string mesh) {
+    JsonValue commands = JsonValue::array();
+    commands.push_back(create_command(id, "engine.scene.MeshPlacement"));
+    commands.push_back(set_command(id, "mesh", JsonValue(std::move(mesh))));
+    return commands;
+  };
+
+  // A transaction: refused as a command is staged, and again at the commit when the roots the
+  // staged path was admitted under are gone by then. Nothing lands.
+  use_roots(&h.roots);
+  const Id128 e = Id128::from_parts(0x72, 5);
+  {
+    const JsonValue begun = h.ok(
+        "doc.begin",
+        obj({{"session", session}, {"layer", JsonValue("base")}, {"attribution", attribution()}}));
+    const JsonValue tx = at(begun, "id");
+    refused_mesh(h.call("doc.apply", obj({{"session", session},
+                                          {"commands", placed(e, absolute)},
+                                          {"attribution", attribution()},
+                                          {"transaction", tx}})),
+                 absolute);
+    CHECK(h.call("doc.apply", obj({{"session", session},
+                                   {"commands", placed(e, "assets://e.glb")},
+                                   {"attribution", attribution()},
+                                   {"transaction", tx}}))
+              .find("result") != nullptr);
+    CHECK_FALSE(s->document().exists(e));  // staged, not landed
+    use_roots(&fewer);
+    refused_field(
+        h.call("doc.commit",
+               obj({{"session", session}, {"transaction", tx}, {"attribution", attribution()}})));
+    CHECK_FALSE(s->document().exists(e));
+  }
+
+  // A proposal's promotion replays its layer into the target under the roots of the promotion.
+  use_roots(&h.roots);
+  const Id128 f = Id128::from_parts(0x72, 6);
+  h.ok("doc.propose_layer", obj({{"session", session},
+                                 {"name", JsonValue("p.f")},
+                                 {"target", JsonValue("base")},
+                                 {"edit", JsonValue(false)},
+                                 {"attribution", attribution()}}));
+  CHECK(placement(f, "assets://f.glb", "p.f").find("result") != nullptr);
+  use_roots(&fewer);
+  refused_field(h.call(
+      "doc.promote",
+      obj({{"session", session}, {"proposal", JsonValue("p.f")}, {"attribution", attribution()}})));
+  CHECK_FALSE(in_layer("base", f));
+
+  // An undo that brings a deleted record back brings its path back.
+  use_roots(&h.roots);
+  const Id128 g = Id128::from_parts(0x72, 7);
+  CHECK(placement(g, "assets://g.glb").find("result") != nullptr);
+  {
+    JsonValue commands = JsonValue::array();
+    commands.push_back(obj({{"kind", JsonValue("DeleteObject")}, {"id", JsonValue(hex(g))}}));
+    h.ok("doc.apply",
+         obj({{"session", session}, {"commands", commands}, {"attribution", attribution()}}));
+  }
+  CHECK_FALSE(s->document().exists(g));
+  use_roots(&fewer);
+  refused_field(h.call("doc.undo", obj({{"session", session}})));
+  CHECK_FALSE(s->document().exists(g));
+
+  // doc.rollback_to: refused by its pre-check, before any of its patches lands.
+  std::string git_version, no_git;
+  if (doc::Checkpoints::available(&git_version, &no_git)) {
+    use_roots(&h.roots);
+    const Id128 k = Id128::from_parts(0x72, 8);
+    CHECK(placement(k, "assets://k.glb").find("result") != nullptr);
+    const JsonValue taken = h.ok(
+        "doc.checkpoint",
+        obj({{"session", session}, {"label", JsonValue("k")}, {"attribution", attribution()}}));
+    JsonValue commands = JsonValue::array();
+    commands.push_back(obj({{"kind", JsonValue("DeleteObject")}, {"id", JsonValue(hex(k))}}));
+    h.ok("doc.apply",
+         obj({{"session", session}, {"commands", commands}, {"attribution", attribution()}}));
+    const u32 journal = s->document().journal().size();
+    use_roots(&fewer);
+    refused_field(h.call("doc.rollback_to", obj({{"session", session},
+                                                 {"checkpoint", at(taken, "id")},
+                                                 {"attribution", attribution()}})));
+    CHECK_FALSE(s->document().exists(k));
+    CHECK(s->document().journal().size() == journal);
+  } else {
+    MESSAGE("no git on this machine, so doc.rollback_to's case does not run: " << no_git);
+  }
+  use_roots(&h.roots);
   h.ok("session.close", obj({{"session", session}}));
 }
 
