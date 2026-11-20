@@ -220,6 +220,34 @@ quarter turn in a thick wall, the leaf lies in the reveal beside its hinge jamb 
 own thickness, 5.5 cm, off the clear width**, as a real one does; shut, it closes the opening.
 `leaf_places` (`src/emit.h`) is the one function the mesher and the walk records both ask.
 
+**The leaves reach a host as doors** (roadmap S91). `door_records` asks the same `leaf_places`
+and writes each leaf as the container's section 53 records it ([geometry](geometry.md#doors)):
+shut, with its pivot, the way it swings, its width, height and thickness, the opening, the angle
+the description stands it at, and whether it is a door's or a window's. The turn is undone with
+the same `turn_deg`, so the record is the same bits on every toolchain, and `build_container`
+writes it into every container of the `whole` or the `exterior` scope a description with a leaf
+makes (the interior beside an exterior would declare each twice, and a leaf's own mesh declares
+none). Nothing here keys on who wrote the description: any structure's description that states a
+leaf declares a door, and the collision makes one for each wherever the house is placed
+([scene_collision](scene_collision.md#doors)).
+
+**A leaf is a mesh of its own** (`k_structure_version` 6, S91, 2026-11-18). A leaf turns, so it
+is in none of the house's meshes — `whole`, `exterior` and `interior` leave it out and the frame
+stands empty — and its triangles are the **`leaf` scope**: `Recipe.leaf` names which, in
+`door_records`' order (openings, then hinge first), and the mesh is that leaf alone, shut, in its
+own frame: its hinge's foot at the origin, the free edge along +x, y up, its thickness to the one
+side of z = 0 that `detail::leaf_side` names, chosen so the leaf opens by a positive turn about +y
+(its +x toward -z) when its thickness lies along +z and by a negative one otherwise. That frame is
+the collision's door frame (`scene_collision::door_leaf_pose`), so a host that draws the leaf
+mesh at a door's pose draws it where its box collides. `leaf_recipe(house, k)` is the house's
+recipe in the `leaf` scope with `leaf` k, canonical, and `leaf_path` the name it is handed under
+beside the house's (`<stem>.leaf<k>.structure.json`): two houses of one description share each
+leaf mesh in a tile, as they share the house's. Until 2026-11-18 the leaf was meshed into the
+house standing at `leaf_open`, so its collision proxy held it there as a wall whatever a door did.
+Version 6 re-keys every structure once; a description with no leaf meshes to the same bits as
+before. **Not yet**: no tile hands a leaf mesh beside its house, so a placed house draws its
+frames empty and its doors collide unseen until a host draws them (S91's picture leg).
+
 **Mullions.** `Opening.mullions` (a window's; 0 keeps the glazing bars) stands that many square
 timbers, 4.5 cm a side, **set on the cant** between the sill and the head in the frame's middle,
 evenly spaced: the unglazed window of an early cottage, closed by its shutters. It is how a
@@ -427,8 +455,10 @@ Each is a case in `tests/structures_tests.cpp`:
   mesh it was before those fields, to the bit.
 - A battered, waved, round-cornered shell on a proud plinth is closed: a line from outside to
   inside through a corner meets the outer skin once at every height, and the ledge is there.
-- A leaf is four boards and three ledges of closed timber, shut across its opening or, a quarter
-  turn open, clear of it; the walk records carry it where it stands; a doorway takes none.
+- A leaf is four boards and three ledges of closed timber, in its own mesh (the `leaf` scope),
+  shut along +x from its hinge's foot at the origin, as wide and tall as its section 53 record;
+  the house's meshes are the same triangles with it shut, open or absent; the walk records carry
+  it where it stands; a doorway takes none.
 - The validator refuses by name.
 - A recipe's canonical form reads back to itself.
 - **The conformance corpus** (`content/structures/`, plan 14 §14.1): every committed description

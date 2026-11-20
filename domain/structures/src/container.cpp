@@ -2,6 +2,8 @@
 // and the container"): each surface's triangles clustered as a part and the DAGs merged into one
 // mesh of a material a surface, each its role's set from the host's pack through the tile contract.
 
+#include "emit.h"
+
 #include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
@@ -43,7 +45,61 @@ std::string canonical_json(const structure::Recipe& recipe) {
 
 u64 source_hash(const structure::Recipe& recipe) {
   const std::string text = canonical_json(recipe);
+  // `k_structure_version` 6 (S91): a leaf left the house's mesh for its own, and the container of
+  // a description that hangs one carries section 53, so every entry built before is rebuilt.
   return hash_combine(hash_bytes(text.data(), text.size()), k_structure_version);
+}
+
+std::string leaf_recipe(const structure::Recipe& house, u32 index) {
+  structure::Recipe leaf = house;
+  leaf.scope = structure::MeshScope::leaf;
+  leaf.leaf = index;
+  return canonical_json(leaf);
+}
+
+std::string leaf_path(std::string_view house_path, u32 index) {
+  std::string_view stem = house_path;
+  constexpr std::string_view k_suffix = ".structure.json";
+  if (stem.size() >= k_suffix.size() && stem.substr(stem.size() - k_suffix.size()) == k_suffix)
+    stem.remove_suffix(k_suffix.size());
+  return std::string(stem) + ".leaf" + std::to_string(index) + std::string(k_suffix);
+}
+
+// **The leaves as doors** (structures.md, "Leaves and mullions"; geometry.md, "Doors"; S91): every
+// leaf `leaf_places` hangs, as the container's section 53 records it, so a host places a door where
+// the description put one and never reads it back out of the triangles. The place turns the leaf to
+// the angle the description stands it at; the record keeps it shut and says which way it swings,
+// undoing that turn with the same whole-degree sine and cosine (`turn_deg`), so every toolchain
+// writes the same bytes.
+void door_records(const structure::Description& d, Vector<geometry::ClusterFileDoor>& out) {
+  out.clear();
+  for (u32 i = 0; i < d.openings.size(); ++i) {
+    const structure::Opening& o = d.openings[i];
+    detail::LeafPlace places[2];
+    const u32 leaves = detail::leaf_places(d, o, places);
+    f64 sine = 0.0, cosine = 1.0;
+    detail::turn_deg(o.leaf_open, sine, cosine);
+    for (u32 k = 0; k < leaves; ++k) {
+      const detail::LeafPlace& p = places[k];
+      // At the angle a, u = cos a shut + sin a swing and v = sin a shut - cos a swing.
+      const f64 shut_x = cosine * p.ux + sine * p.vx, shut_z = cosine * p.uz + sine * p.vz;
+      const f64 swing_x = sine * p.ux - cosine * p.vx, swing_z = sine * p.uz - cosine * p.vz;
+      geometry::ClusterFileDoor door;
+      door.pivot = detail::metres(p.px, p.y0, p.pz);
+      door.shut_x = static_cast<f32>(shut_x);
+      door.shut_z = static_cast<f32>(shut_z);
+      door.swing_x = static_cast<f32>(swing_x);
+      door.swing_z = static_cast<f32>(swing_z);
+      door.width_m = static_cast<f32>(p.width * detail::k_m);
+      door.height_m = static_cast<f32>((p.y1 - p.y0) * detail::k_m);
+      door.thickness_m = static_cast<f32>((p.boards + p.ledges) * detail::k_m);
+      door.opening = i;
+      door.open_deg = static_cast<i16>(o.leaf_open);
+      door.flags = static_cast<u16>((p.door ? geometry::k_door_flag_door : 0u) |
+                                    (leaves == 2 ? geometry::k_door_flag_paired : 0u));
+      out.push_back(door);
+    }
+  }
 }
 
 bool build_container(const structure::Recipe& recipe, const assets::MeshGeneratorInputs& inputs,
@@ -51,7 +107,7 @@ bool build_container(const structure::Recipe& recipe, const assets::MeshGenerato
                      geometry::ClusterFileData& out, Report& report, std::string& error) {
   out = {};
   MeshPart parts[k_surfaces];
-  if (!solve(recipe.description, recipe.scope, parts, report, error)) return false;
+  if (!solve(recipe.description, recipe.scope, parts, report, error, recipe.leaf)) return false;
   geometry::ClusterLodOptions options = lod;
   // A floor, a ceiling and a roof's underside are sheets seen from one side only, but a wall's
   // face is not closed either: no cone may cull what the other side of a doorway shows.
@@ -136,6 +192,10 @@ bool build_container(const structure::Recipe& recipe, const assets::MeshGenerato
   for (u32 c = 0; c < out.mesh.lod.size(); ++c)
     if (out.mesh.lod[c].parent_error == geometry::k_lod_terminal_error)
       report.root_triangles += out.mesh.mesh.clusters[c].triangle_count;
+  // The doors go with what stands round them: the whole and the exterior (the interior beside an
+  // exterior would declare each twice), never the leaf's own mesh.
+  if (recipe.scope == structure::MeshScope::whole || recipe.scope == structure::MeshScope::exterior)
+    door_records(recipe.description, out.doors);
   out.source_hash = source_hash(recipe);
   out.build_key = assets::generated_mesh_build_key(out.source_hash, inputs, lod, page_bytes);
   out.generator = "structure";
@@ -162,8 +222,26 @@ bool build_recipe(std::span<const u8> bytes, const assets::MeshGeneratorInputs& 
   return read_file(text_of(bytes), recipe, error) &&
          build_container(recipe, inputs, lod, page_bytes, out, report, error);
 }
-constexpr assets::MeshGeneratorDesc k_mesh_generator{
-    .name = "structure", .source_hash = hash_recipe, .build = build_recipe};
+// The leaves a recipe's mesh leaves out and a host hangs (structures.md, "A leaf is a mesh of its
+// own"): only the whole and the exterior declare them, as their containers' section 53 does.
+bool recipe_leaves(std::span<const u8> bytes, std::string_view path,
+                   Vector<assets::GeneratedLeaf>& out, std::string& error) {
+  out.clear();
+  structure::Recipe recipe;
+  if (!read_file(text_of(bytes), recipe, error)) return false;
+  if (recipe.scope != structure::MeshScope::whole && recipe.scope != structure::MeshScope::exterior)
+    return true;
+  Vector<geometry::ClusterFileDoor> records;
+  door_records(recipe.description, records);
+  out.reserve(records.size());
+  for (u32 i = 0; i < records.size(); ++i)
+    out.push_back(assets::GeneratedLeaf{records[i], leaf_path(path, i), leaf_recipe(recipe, i)});
+  return true;
+}
+constexpr assets::MeshGeneratorDesc k_mesh_generator{.name = "structure",
+                                                     .source_hash = hash_recipe,
+                                                     .build = build_recipe,
+                                                     .leaves = recipe_leaves};
 const assets::MeshGeneratorRegistrar k_mesh_registrar{k_mesh_generator};
 }  // namespace
 

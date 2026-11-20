@@ -201,6 +201,13 @@ void table(ModuleContext* context, const f64* at) {
   ClipInfo info;
   entry("actor_clip_info", api->actor_clip_info(h, actor, &info));
   entry("actor_seek", api->actor_seek(h, actor, 0.0f));
+  // ABI 13's doors (S91), over the whole scene: the test scene declares no building, so the
+  // nearest door within the farthest radius is `NotFound`, and so are the state and the toggle of
+  // the key it left (0, which no door has). A scene with a door answers the three `Ok`.
+  DoorState door;
+  entry("door_nearest", api->door_nearest(h, at, k_door_radius_max_m, &door));
+  entry("door_state", api->door_state(h, door.key, &door));
+  entry("door_toggle", api->door_toggle(h, door.key));
   char line[64];
   std::snprintf(line, sizeof line, "},\"entry_count\":%u", g_entries);
   put(line);

@@ -39,8 +39,11 @@ namespace {
 // than the plot allows (MSVC msvc-debug).
 // And at G219 (2026-11-17; 0x1dbed3833524ec80 before): joists under a ceiled one-storey house's
 // ceiling and tie beams in a cot, a one-hearth two-up two-down's fire in its kitchen, and an inner
-// room for a cross-passage house of five or six on one storey (MSVC msvc-debug).
-constexpr u64 k_descriptions_pin = 0xff3c25d2ee19f79dull;
+// room for a cross-passage house of five or six on one storey (MSVC msvc-debug). And at S91
+// (2026-11-18; 0xff3c25d2ee19f79d before): `k_structure_version` 6 is in every source hash, since a
+// leaf left the house's mesh for its own and a container of a description with one carries section
+// 53; no description changed (MSVC msvc-debug alone until a container has run it).
+constexpr u64 k_descriptions_pin = 0x14ced201bf3fa76aull;
 
 bool near_cm(f32 metres, i32 cm) {
   const f32 d = metres * 100.0f - static_cast<f32>(cm);

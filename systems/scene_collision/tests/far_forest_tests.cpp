@@ -5,6 +5,8 @@
 // never round a walker; binned as a prefix instance (W88) it stopped the walker in open ground,
 // 1.55 m from a birch's trunk and 3 m from a pine's. No device, no generator capability.
 
+#include <core/hash/hash.h>
+#include <core/jobs/job_system.h>
 #include <core/memory/memory.h>
 #include <core/time/time.h>
 #include <domain/geometry/cluster_lod.h>
@@ -18,6 +20,8 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <bit>
+#include <cmath>
 #include <memory>
 #include <string>
 
@@ -240,7 +244,8 @@ struct Rig {
   sim::ObserverSet observers;
   u64 tick = 0;
 
-  explicit Rig(const renderer::SceneData& scene) {
+  explicit Rig(const renderer::SceneData& scene, const Config& config = Config{},
+               jobs::JobSystem* jobs = nullptr) {
     physics::WorldOptions o;
     o.max_bodies = 1024;
     o.max_body_pairs = 4096;
@@ -256,7 +261,8 @@ struct Rig {
     physics::BodyId floor_body;
     REQUIRE(physics.create_body(floor, floor_body) == physics::Status::Ok);
     std::string error;
-    REQUIRE_MESSAGE(collision.create(physics, scene, nullptr, Config{}, &error), error);
+    REQUIRE_MESSAGE(collision.create(physics, scene, nullptr, config, &error, nullptr, jobs),
+                    error);
     world::RingParams ring;
     ring.tile_size = 32.0f;
     ring.ring_count = 1;
@@ -547,4 +553,1020 @@ TEST_CASE("scene_collision: a moved box prop is met by the walker's and a module
   rig.hand({crate_at(20.0f), crate_at(25.0f)});
   rig.hand({});
   CHECK(rig.physics.body_count() == bodies);
+}
+
+// ---- A prop's proxy (scene_collision.md, "A prop's proxy"; a review of P45) ----
+// Until 2026-11-18 a mesh prop's proxy was cut and built on the walker's tick, keyed by the bits of
+// a scale taken back out of its turned matrix — so a new yaw was very likely a new build — and kept
+// for the consumer's life. Now it is keyed by the mesh and the module's scale rounded to a step of
+// the walk's error, built at the load for a declared prop at its own size, on the job system for
+// the rest with the body made at a promised update, and let go when no prop names it.
+
+namespace {
+
+// A boulder: a sphere of `radius` standing on y = 0 round the mesh's origin, `rings` by `segments`,
+// faces outwards (counter-clockwise seen from outside, y up), welded at the poles and the seam.
+void boulder(Vector<Vec3>& positions, Vector<u32>& indices, f32 radius, u32 rings, u32 segments) {
+  positions.push_back(Vec3{0.0f, 2.0f * radius, 0.0f});  // the top
+  for (u32 i = 1; i < rings; ++i) {
+    const f32 theta = k_pi * static_cast<f32>(i) / static_cast<f32>(rings);
+    for (u32 j = 0; j < segments; ++j) {
+      const f32 phi = 2.0f * k_pi * static_cast<f32>(j) / static_cast<f32>(segments);
+      positions.push_back(Vec3{radius * std::sin(theta) * std::cos(phi),
+                               radius + radius * std::cos(theta),
+                               radius * std::sin(theta) * std::sin(phi)});
+    }
+  }
+  positions.push_back(Vec3{0.0f, 0.0f, 0.0f});  // the bottom
+  const u32 bottom = positions.size() - 1;
+  const auto at = [&](u32 i, u32 j) -> u32 {
+    if (i == 0) return 0;
+    if (i == rings) return bottom;
+    return 1 + (i - 1) * segments + (j % segments);
+  };
+  for (u32 i = 0; i < rings; ++i) {
+    for (u32 j = 0; j < segments; ++j) {
+      // Along phi then along theta is outwards (d/dphi x d/dtheta points away from the centre).
+      if (i > 0) {
+        indices.push_back(at(i, j));
+        indices.push_back(at(i, j + 1));
+        indices.push_back(at(i + 1, j));
+      }
+      if (i + 1 < rings) {
+        indices.push_back(at(i, j + 1));
+        indices.push_back(at(i + 1, j + 1));
+        indices.push_back(at(i + 1, j));
+      }
+    }
+  }
+}
+
+// The crate as mesh 0 and a boulder 3 m across as mesh 1, both declared as props: a prop's mesh is
+// one the scene declares (the collision's own copy holds only the meshes a load placed or
+// declared).
+void crate_and_boulder_scene(renderer::SceneData& scene) {
+  Vector<geometry::ClusterLodMesh> lods;
+  std::string error;
+  for (u32 m = 0; m < 2; ++m) {
+    Vector<Vec3> positions;
+    Vector<u32> indices;
+    if (m == 0) {
+      crate(positions, indices);
+    } else {
+      boulder(positions, indices, 1.5f, 48, 96);
+    }
+    geometry::ClusterLodMesh lod;
+    REQUIRE_MESSAGE(
+        geometry::build_cluster_lod(std::span<const Vec3>(positions.data(), positions.size()),
+                                    std::span<const u32>(indices.data(), indices.size()),
+                                    geometry::ClusterLodOptions{}, lod, &error),
+        error);
+    lods.push_back(std::move(lod));
+  }
+  REQUIRE_MESSAGE(geometry::merge_cluster_meshes(
+                      std::span<const geometry::ClusterLodMesh>(lods.data(), lods.size()),
+                      scene.lod, scene.parts, &error),
+                  error);
+  scene.mesh_fit.resize(scene.parts.size(), Mat4::identity());
+  scene.terrain_mesh = ~0u;
+  scene.props.push_back(renderer::SceneProp{"crate", 0});
+  scene.props.push_back(renderer::SceneProp{"boulder", 1});
+}
+
+// **What a prop of a mesh no prop used costs the tick** when it arrives mid-run: `ticks` ticks of
+// 300 crates, 30 of them moved a centimetre a tick, timed one at a time as `prop_tick_cost` does,
+// and at tick 100 a prop of `mesh` at `scale` handed with them. The arrival's tick and the worst of
+// the ticks after it, the update its body was made at (counted from the arrival), and the engine
+// allocations of every tick outside the arrival and the build's promised update.
+struct Arrival {
+  f64 median_us = 0.0;
+  f64 arrival_us = 0.0;
+  f64 worst_after_us = 0.0;
+  u32 body_at = ~0u;
+  u64 steady_allocations = 0;
+  u64 builds = 0;
+  u64 inline_builds = 0;
+  f64 wait_ms = 0.0;
+};
+
+Arrival arrival_cost(const renderer::SceneData& scene, const Config& config, jobs::JobSystem* jobs,
+                     u32 mesh, f32 scale, u32 ticks) {
+  Rig rig(scene, config, jobs);
+  constexpr u32 n = 300;
+  constexpr u32 k = 30;
+  constexpr u32 k_arrive = 100;
+  Vector<PropBody> props;
+  Vector<Vec3> at;
+  for (u32 i = 0; i < n; ++i) {
+    at.push_back(Vec3{-30.0f + 3.0f * static_cast<f32>(i % 20), 0.0f,
+                      8.0f - 2.0f * static_cast<f32>(i / 20)});
+    PropBody p = crate_at(0.0f, i + 1);
+    p.origin = place(at.back());
+    props.push_back(p);
+  }
+  PropBody arriving = crate_at(30.0f, 1000);
+  arriving.mesh = mesh;
+  arriving.scale = scale;
+  props.reserve(n + 1);
+  rig.collision.set_props({props.data(), props.size()});
+  (void)rig.collision.update_props();
+  Vector<PropBody> handed;
+  handed.reserve(n + 1);
+  Vector<f64> us;
+  us.reserve(ticks);
+  physics::CharacterInput still{};
+  constexpr u32 k_warm = 20;
+  Arrival out;
+  const u64 builds = rig.collision.stats().prop_proxy_builds;
+  bool stepped = true;
+  for (u32 t = 0; t < k_warm + ticks; ++t) {
+    const u32 since = t - k_warm - k_arrive;  // wraps before the arrival: never a small number
+    if (t == k_warm + k_arrive) props.push_back(arriving);  // the host's list: not the tick's
+    const u64 a0 = mem::allocations_on_thread();
+    const i64 t0 = time::monotonic_ns();
+    rig.world->update(rig.observers, rig.tick++, true);
+    for (u32 i = 0; i < k; ++i)
+      props[i].origin = place(at[i] + Vec3{0.01f * static_cast<f32>(t % 100), 0.0f, 0.0f});
+    handed.clear();
+    for (const PropBody& p : props)
+      handed.push_back(p);
+    rig.collision.set_props({handed.data(), handed.size()});
+    (void)rig.collision.update_props();
+    stepped = rig.walker.step(still) == physics::Status::Ok && stepped;
+    const i64 t1 = time::monotonic_ns();
+    const u64 a1 = mem::allocations_on_thread();
+    if (t < k_warm) continue;
+    const f64 tick_us = static_cast<f64>(t1 - t0) / 1000.0;
+    us.push_back(tick_us);
+    if (since == 0) out.arrival_us = tick_us;
+    if (since < 0x80000000u && since > 0)
+      out.worst_after_us = std::max(out.worst_after_us, tick_us);
+    if (since < 0x80000000u && out.body_at == ~0u && rig.collision.stats().prop_bodies == n + 1)
+      out.body_at = since;
+    // Steady: before the arrival, and after the promised update and the one after it (the props'
+    // two lists, swapped at each hand-over, each grow once to hold the newcomer).
+    if (since >= 0x80000000u || since > config.prop_build_updates + 1)
+      out.steady_allocations += a1 - a0;
+  }
+  REQUIRE(stepped);
+  out.builds = rig.collision.stats().prop_proxy_builds - builds;
+  out.inline_builds = rig.collision.stats().prop_proxy_inline;
+  out.wait_ms = static_cast<f64>(rig.collision.stats().prop_proxy_wait_ns) / 1e6;
+  std::sort(us.begin(), us.end());
+  out.median_us = us[us.size() / 2];
+  return out;
+}
+
+}  // namespace
+
+// ---- Doors that open (roadmap S91; docs/subsystems/scene_collision.md, "Doors"; ADR-0070) ----
+// A door is a kinematic box on its hinge, made while its tile is held, turned toward its state by
+// integer millidegrees a tick, toggled at a tick, held where its leaf would enter the walker.
+
+namespace {
+
+// A doorway in a wall across z = 20: the wall from x = -5 to 5 with a gap 0.9 m wide at x in
+// [-0.45, 0.45], 0.1 m thick; the door's hinge at x = -0.45 on the wall's south face. Closed, the
+// leaf runs along +x across the gap; open, it has swung 90 degrees to run north (+z), away from a
+// walker coming from the south.
+struct DoorRig {
+  physics::World physics;
+  renderer::SceneData scene;
+  SceneCollision collision;
+  std::unique_ptr<world::World> world;
+  physics::CharacterBody walker;
+  sim::ObserverSet observers;
+  u64 tick = 0;
+
+  // `build`: the scene's own placed pieces stand for the wall (a building that declares its leaf);
+  // none, and the wall is two static boxes the case made.
+  explicit DoorRig(void (*build)(renderer::SceneData&) = nullptr) {
+    physics::WorldOptions o;
+    o.max_bodies = 1024;
+    o.max_body_pairs = 4096;
+    o.max_contact_constraints = 4096;
+    REQUIRE(physics.init(o) == physics::Status::Ok);
+    wall(Vec3{0.0f, -0.5f, 0.0f}, Vec3{200.0f, 0.5f, 200.0f});  // the floor
+    if (build != nullptr) {
+      build(scene);
+    } else {
+      wall(Vec3{-2.725f, 1.0f, 20.05f}, Vec3{2.275f, 1.0f, 0.05f});  // west of the gap
+      wall(Vec3{2.725f, 1.0f, 20.05f}, Vec3{2.275f, 1.0f, 0.05f});   // east of it
+    }
+    scene.terrain_mesh = ~0u;
+    std::string error;
+    REQUIRE_MESSAGE(collision.create(physics, scene, nullptr, Config{}, &error), error);
+    world::RingParams ring;
+    ring.tile_size = 32.0f;
+    ring.ring_count = 1;
+    for (f32& r : ring.radius)
+      r = 0.0f;
+    ring.radius[0] = 1.5f;
+    world = std::make_unique<world::World>(ring);
+    world->add_consumer(collision.consumer());
+    move_ring(place(Vec3{0.0f, 0.0f, 16.0f}));
+    physics::CharacterConfig c;
+    c.step_hz = 240;
+    REQUIRE(walker.create(physics, c, place(Vec3{0.0f, 0.02f, 17.0f})) == physics::Status::Ok);
+  }
+  void wall(Vec3 centre, Vec3 half) {
+    physics::ShapeId shape;
+    REQUIRE(physics.create_box(half, shape) == physics::Status::Ok);
+    physics::BodyDesc body;
+    body.shape = shape;
+    body.transform.position = place(centre);
+    body.motion = physics::MotionType::Static;
+    body.layer = physics::Layer::Static;
+    physics::BodyId id;
+    REQUIRE(physics.create_body(body, id) == physics::Status::Ok);
+  }
+  void move_ring(WorldPos at) {
+    observers.clear();
+    observers.add(at, 1.0f);
+    world->update(observers, tick++, true);
+  }
+  // `seconds` of ticks: the doors stepped before the walker, as a host does.
+  f32 walk(f32 seconds, Vec3 move) {
+    physics::CharacterInput in;
+    in.move = move;
+    for (u32 k = 0; k < static_cast<u32>(seconds * 240.0f); ++k) {
+      (void)collision.step_doors(&walker);
+      REQUIRE(walker.step(in) == physics::Status::Ok);
+    }
+    return relative(walker.state().position, WorldPos::origin()).z;
+  }
+};
+
+DoorBody doorway() {
+  DoorBody d;
+  d.key = 3;
+  d.hinge = place(Vec3{-0.45f, 0.0f, 19.975f});
+  d.closed_mdeg = 0;
+  d.open_mdeg = -90000;  // swings away from the walker coming from the south: toward +z
+  d.half_extents = Vec3{0.45f, 1.0f, 0.025f};
+  return d;
+}
+
+// The doorway's wall as a building's mesh, placed once at the origin, declaring its leaf as the
+// structures capability writes section 53: hung on the wall's south face at x = -0.45, shut along
+// +x across the gap, swinging toward +z, its thickness behind its face to the south (-swing). The
+// leaf itself is in no mesh of the scene: a building's leaf is a mesh of its own.
+geometry::ClusterFileDoor doorway_leaf() {
+  geometry::ClusterFileDoor r;
+  r.pivot = Vec3{-0.45f, 0.0f, 20.0f};
+  r.shut_x = 1.0f, r.shut_z = 0.0f;
+  r.swing_x = 0.0f, r.swing_z = 1.0f;
+  r.width_m = 0.9f;
+  r.height_m = 2.0f;
+  r.thickness_m = 0.05f;
+  r.open_deg = 0;
+  r.flags = geometry::k_door_flag_door;
+  return r;
+}
+void doorway_house(renderer::SceneData& scene) {
+  MeshSource wall;
+  add_box(wall, Vec3{2.275f, 1.0f, 0.05f}, -2.725f, 20.05f);
+  add_box(wall, Vec3{2.275f, 1.0f, 0.05f}, 2.725f, 20.05f);
+  const MeshSource meshes[] = {wall};
+  build_scene(meshes, scene);
+  scene.sources.resize(scene.parts.size());
+  scene.sources[0].doors.push_back(doorway_leaf());
+}
+// The same wall declaring 30 leaves (a village's worth on one tile), or none.
+void wall_leaves(renderer::SceneData& scene, u32 leaves) {
+  MeshSource wall;
+  add_box(wall, Vec3{2.275f, 1.0f, 0.05f}, -2.725f, 20.05f);
+  add_box(wall, Vec3{2.275f, 1.0f, 0.05f}, 2.725f, 20.05f);
+  const MeshSource meshes[] = {wall};
+  build_scene(meshes, scene);
+  scene.sources.resize(scene.parts.size());
+  for (u32 i = 0; i < leaves; ++i) {
+    geometry::ClusterFileDoor r = doorway_leaf();
+    r.pivot = Vec3{-14.5f + static_cast<f32>(i), 0.0f, 24.0f};
+    scene.sources[0].doors.push_back(r);
+  }
+}
+void wall_no_leaves(renderer::SceneData& scene) { wall_leaves(scene, 0); }
+void wall_30_leaves(renderer::SceneData& scene) { wall_leaves(scene, 30); }
+
+}  // namespace
+
+// **A placed piece's declared leaf is a door** (S91; scene_collision.md, "Doors"): the scene's
+// building declares one leaf (section 53) and no door is handed; the collision makes it, keyed by
+// the piece's place and the leaf's index, a wall shut, and it goes with the tile and comes back as
+// it was left, and a restore of the same key wins over the declaration.
+TEST_CASE(
+    "scene_collision: a placed piece's declared leaf is a door, kept while its tile is away") {
+  DoorRig rig(&doorway_house);
+  (void)rig.collision.step_doors(nullptr);
+  CHECK(rig.collision.door_stats().doors == 1);
+  CHECK(rig.collision.door_stats().declared == 1);
+  CHECK(rig.collision.door_stats().bodies == 1);
+  // The scene's instance 0, its first leaf: the key is its place's, not the load's or the tile's.
+  const u64 key = declared_door_key(support_placement(0, k_no_index, 0, 0, 0, 0), 0);
+  CHECK((key >> 63) == 1);
+  DoorBody now;
+  REQUIRE(rig.collision.door(key, now));
+  CHECK(std::fabs(relative(now.hinge, place(Vec3{-0.45f, 0.0f, 20.0f})).x) < 1e-5);
+  CHECK(now.open_mdeg == -90000);  // toward +z: the leaf's +x turned toward +z is a negative angle
+  CHECK(now.angle_mdeg == 0);
+  CHECK(now.face_z == doctest::Approx(-0.025f));
+  // Shut, it stops the walker at its south face (z 19.95) less the radius, as a handed one does.
+  const f32 radius = physics::CharacterConfig{}.radius;
+  const f32 stopped = rig.walk(3.0f, Vec3{0.0f, 0.0f, 1.0f});
+  CHECK(stopped == doctest::Approx(19.95f - radius).epsilon(0.002));
+  // Opened, it lets the walker through.
+  rig.walker.teleport(place(Vec3{0.0f, 0.02f, 17.0f}));
+  REQUIRE(rig.collision.toggle_door(key));
+  (void)rig.walk(1.0f, Vec3{});
+  REQUIRE(rig.collision.door(key, now));
+  CHECK(now.angle_mdeg == -90000);
+  CHECK(rig.walk(3.0f, Vec3{0.0f, 0.0f, 1.0f}) > 21.0f);
+  // Its tile goes: the body goes, the door stays open; toggled shut while away it closes there,
+  // and its tile back, it is made again where it stands, still one door.
+  rig.move_ring(place(Vec3{1000.0f, 0.0f, 1000.0f}));
+  (void)rig.collision.step_doors(nullptr);
+  CHECK(rig.collision.door_stats().bodies == 0);
+  CHECK(rig.collision.door_stats().doors == 1);
+  REQUIRE(rig.collision.toggle_door(key));
+  for (u32 k = 0; k < 120; ++k)
+    (void)rig.collision.step_doors(nullptr);
+  rig.move_ring(place(Vec3{0.0f, 0.0f, 16.0f}));
+  (void)rig.collision.step_doors(nullptr);
+  CHECK(rig.collision.door_stats().bodies == 1);
+  CHECK(rig.collision.door_stats().doors == 1);
+  REQUIRE(rig.collision.door(key, now));
+  CHECK(now.angle_mdeg == -90000 + 121 * 375);
+  // A restore hands it back open: the declaration does not take it over again.
+  now.angle_mdeg = -90000;
+  now.open = true;
+  rig.collision.set_doors({&now, 1});
+  (void)rig.collision.step_doors(nullptr);
+  CHECK(rig.collision.door_stats().doors == 1);
+  DoorBody back;
+  REQUIRE(rig.collision.door(key, back));
+  CHECK(back.angle_mdeg == -90000);
+}
+
+// A declared leaf stands where its piece stands it: the hinge and the turn follow the piece's
+// place and yaw, and the turn opens toward the side the record swings to, either way round.
+TEST_CASE("scene_collision: a declared door turns with its piece and opens toward its swing") {
+  const f32 h = 0.70710678f;
+  const Quat yaw{0.0f, h, 0.0f, h};  // a quarter turn about +y: +x to -z
+  const WorldPos origin = place(Vec3{10.0f, 1.0f, -4.0f});
+  for (const f32 swing : {1.0f, -1.0f}) {
+    geometry::ClusterFileDoor r = doorway_leaf();
+    r.swing_z = swing;
+    const DoorBody d = declared_door(r, origin, yaw, 1.0f, 5);
+    const DVec3 hinge = relative(d.hinge, origin);
+    const Vec3 at = rotate(yaw, r.pivot);
+    CHECK(std::fabs(hinge.x - static_cast<f64>(at.x)) < 1e-5);
+    CHECK(std::fabs(hinge.z - static_cast<f64>(at.z)) < 1e-5);
+    DoorBody shut = d;
+    const Vec3 along = rotate(door_leaf_pose(shut).rotation, Vec3{1.0f, 0.0f, 0.0f});
+    const Vec3 want_shut = rotate(yaw, Vec3{r.shut_x, 0.0f, r.shut_z});
+    CHECK(along.x == doctest::Approx(want_shut.x).epsilon(1e-5));
+    CHECK(along.z == doctest::Approx(want_shut.z).epsilon(1e-5));
+    DoorBody open = d;
+    open.angle_mdeg = d.open_mdeg;
+    const Vec3 opened = rotate(door_leaf_pose(open).rotation, Vec3{1.0f, 0.0f, 0.0f});
+    const Vec3 want_open = rotate(yaw, Vec3{r.swing_x, 0.0f, r.swing_z});
+    CHECK(opened.x == doctest::Approx(want_open.x).epsilon(1e-5));
+    CHECK(opened.z == doctest::Approx(want_open.z).epsilon(1e-5));
+    // Its thickness behind its face, away from the swing.
+    const Vec3 back = rotate(door_leaf_pose(shut).rotation, Vec3{0.0f, 0.0f, d.face_z});
+    const Vec3 want_back = rotate(yaw, Vec3{-r.swing_x, 0.0f, -r.swing_z} * 0.025f);
+    CHECK(back.x == doctest::Approx(want_back.x).epsilon(1e-5));
+    CHECK(back.z == doctest::Approx(want_back.z).epsilon(1e-5));
+  }
+}
+
+// **A door already in the walker** (S91; scene_collision.md, "Doors"): restored half open with the
+// walker standing in its leaf's swing, 0.15 m off the leaf's face on the side it closes toward.
+// Until 2026-11-18 every next angle met the capsule, so it held whichever way it headed; now it
+// moves while each angle reaches less far into the walker, so it opens away from it, and holds
+// toward it.
+TEST_CASE("scene_collision: a door already in the walker moves away from it and holds toward it") {
+  DoorRig rig;
+  DoorBody d = doorway();
+  d.angle_mdeg = -45000;
+  d.open = false;  // heading shut, toward the walker
+  rig.collision.set_doors({&d, 1});
+  // The leaf at -45 degrees runs from the hinge toward (0.707, 0.707); the walker 0.15 m off its
+  // middle toward (0.707, -0.707), the side it closes toward.
+  REQUIRE(rig.walker.teleport(place(Vec3{-0.026f, 0.02f, 20.187f})) == physics::Status::Ok);
+  for (u32 k = 0; k < 240; ++k)
+    (void)rig.collision.step_doors(&rig.walker);
+  DoorBody now;
+  REQUIRE(rig.collision.door(3, now));
+  CHECK(now.angle_mdeg == -45000);  // held: closing would go further into the walker
+  CHECK(rig.collision.door_stats().holds == 240);
+  CHECK(rig.collision.door_stats().clears == 0);
+  REQUIRE(rig.collision.toggle_door(3));
+  for (u32 k = 0; k < 240; ++k)
+    (void)rig.collision.step_doors(&rig.walker);
+  REQUIRE(rig.collision.door(3, now));
+  CHECK(now.angle_mdeg == -90000);  // opened away from it, the whole way
+  CHECK(rig.collision.door_stats().clears > 0);
+}
+
+TEST_CASE(
+    "scene_collision: a mesh prop's proxy is one a mesh and rounded scale, whatever its yaw, and "
+    "goes when no prop names it") {
+  renderer::SceneData scene;
+  crate_scene(scene);
+  Rig rig(scene);
+  // The declared crate's proxy at its own size was built at the load.
+  CHECK(rig.collision.stats().prop_proxies == 1);
+  const u64 built = rig.collision.stats().prop_proxy_builds;
+  CHECK(built == 1);
+  // Where the walker stops at the crate at its own size (a couple of centimetres short of the face
+  // less the capsule's radius: the character's own padding).
+  rig.hand({crate_at(20.0f)});
+  const f32 at_one = rig.walk();
+  // One crate turned to ten yaws at its own size and at 1.1: one build, for 1.1, not twenty.
+  for (const f32 scale : {1.0f, 1.1f}) {
+    for (u32 k = 1; k <= 10; ++k) {
+      PropBody p = crate_at(20.0f);
+      p.rotation = quat_from_axis_angle(Vec3{0.0f, 1.0f, 0.0f}, 0.1f * static_cast<f32>(k));
+      p.scale = scale;
+      rig.hand({p});
+      CHECK(rig.collision.stats().prop_bodies == 1);
+    }
+  }
+  CHECK(rig.collision.stats().prop_proxy_builds == built + 1);
+  CHECK(rig.collision.stats().prop_proxies == 2);
+  // A scale within the step of 1.1 (the walk's 5 cm over twice the crate's reach, about 0.02) is
+  // the same proxy and keeps the body; the step itself is a new one.
+  const u64 made = rig.collision.stats().prop_bodies_created;
+  PropBody nearby = crate_at(20.0f);
+  nearby.scale = 1.103f;
+  rig.hand({nearby});
+  CHECK(rig.collision.stats().prop_bodies_created == made);
+  CHECK(rig.collision.stats().prop_proxy_builds == built + 1);
+  // The rounded scale stands within a quarter of the walk's error: the 1.103 crate's face is 5 cm
+  // farther out than the unit crate's (0.0515 m), and the walker stops that much sooner.
+  CHECK(std::fabs((at_one - rig.walk()) - 0.0515f) < 0.0125f + 0.003f);
+  // Handed none: the scale's proxy goes, the declared one stays.
+  rig.hand({});
+  CHECK(rig.collision.stats().prop_proxies == 1);
+  CHECK(rig.collision.stats().prop_proxies_freed == 1);
+  // Handed again, it is built again: one more build, and the walker is stopped as before.
+  rig.hand({nearby});
+  CHECK(rig.collision.stats().prop_proxy_builds == built + 2);
+  CHECK(rig.collision.stats().prop_bodies == 1);
+}
+
+TEST_CASE(
+    "scene_collision: a prop's proxy is built off the tick, its body made at the update promised") {
+  renderer::SceneData scene;
+  crate_and_boulder_scene(scene);
+  Config config;
+  config.prop_build_updates = 12;
+  jobs::JobSystemConfig workers;
+  workers.performance_workers = 2;
+  workers.pin_threads = false;
+  jobs::JobSystem jobs(workers);
+  const f32 radius = physics::CharacterConfig{}.radius;
+  // With workers and without: the body at the twelfth update after the hand-over either way, so a
+  // replay makes it at the same tick whatever the workers did.
+  for (jobs::JobSystem* with : {&jobs, static_cast<jobs::JobSystem*>(nullptr)}) {
+    CAPTURE(with != nullptr);
+    Rig rig(scene, config, with);
+    const u64 built = rig.collision.stats().prop_proxy_builds;  // the crate's and the boulder's
+    CHECK(built == 2);
+    PropBody rock = crate_at(20.0f, 9);
+    rock.mesh = 1;
+    rock.scale = 1.2f;  // the boulder at a size of its own: nothing was built for it at the load
+    rig.hand({rock});
+    u32 updates = 1;
+    while (rig.collision.stats().prop_bodies == 0 && updates < 40) {
+      (void)rig.collision.update_props();
+      ++updates;
+    }
+    CHECK(updates == 1 + config.prop_build_updates);
+    CHECK(rig.collision.stats().prop_proxy_builds == built + 1);
+    if (with == nullptr) CHECK(rig.collision.stats().prop_proxy_inline == 1);
+    MESSAGE("workers " << (with != nullptr) << ": built on the tick "
+                       << rig.collision.stats().prop_proxy_inline << ", waited for "
+                       << rig.collision.stats().prop_proxy_waits << " ("
+                       << static_cast<f64>(rig.collision.stats().prop_proxy_wait_ns) / 1e6
+                       << " ms)");
+    // The boulder's face, 1.8 m south of its origin at 1.2: the walker stops there, within the
+    // cut's 5 cm and the character's own couple of centimetres.
+    CHECK(std::fabs(rig.walk() - (20.0f - 1.8f - radius)) < 0.08f);
+    // Gone with its prop: the two declared stay.
+    rig.hand({});
+    CHECK(rig.collision.stats().prop_proxies == 2);
+    CHECK(rig.collision.stats().prop_proxies_freed == 1);
+  }
+}
+
+TEST_CASE(
+    "scene_collision: a drop takes every pending prop's proxy now, so it lands on a boulder") {
+  // A drop (engine-view's `Walker::drop`, a teleport too) updates the props and casts straight down
+  // for the highest surface. Until 2026-11-18 that update waited for a new size's proxy like any
+  // other, so a drop onto a boulder of a size never placed met the floor under it and left the
+  // walker inside its shell for twelve ticks. `update_props(true)` takes every pending proxy in
+  // reach: one a job has is brought forward and built or waited for, a new one built on the spot.
+  renderer::SceneData scene;
+  crate_and_boulder_scene(scene);
+  Config config;
+  config.prop_build_updates = k_walk_prop_build_updates;
+  jobs::JobSystemConfig workers;
+  workers.performance_workers = 2;
+  workers.pin_threads = false;
+  jobs::JobSystem jobs(workers);
+  PropBody rock = crate_at(20.0f, 9);
+  rock.mesh = 1;
+  rock.scale = 1.5f;  // the 3 m boulder at 4.5 m: nothing was built for it at the load
+  const f32 top = 2.0f * 1.5f * 1.5f;
+  const auto down_at = [](Rig& rig, f32& y) {
+    physics::RayHit hit;
+    if (!rig.physics.cast_ray(place(Vec3{0.0f, 10.0f, 20.0f}), Vec3{0.0f, -20.0f, 0.0f}, hit))
+      return false;
+    y = static_cast<f32>(relative(hit.position, WorldPos::origin()).y);
+    return true;
+  };
+  for (jobs::JobSystem* with : {&jobs, static_cast<jobs::JobSystem*>(nullptr)}) {
+    CAPTURE(with != nullptr);
+    // Handed on a walking tick: the body waits for its promised update, and a ray down meets the
+    // floor. The drop's update after it takes the same proxy now: the ray meets the boulder's top.
+    {
+      Rig rig(scene, config, with);
+      rig.hand({rock});
+      f32 y = -1.0f;
+      REQUIRE(down_at(rig, y));
+      CHECK(std::fabs(y) < 0.01f);
+      CHECK(rig.collision.stats().prop_bodies == 0);
+      (void)rig.collision.update_props(true);
+      CHECK(rig.collision.stats().prop_bodies == 1);
+      REQUIRE(down_at(rig, y));
+      CHECK(std::fabs(y - top) < 0.08f);  // the cut's 5 cm, and the rounded scale's quarter of it
+      CHECK(rig.collision.stats().prop_proxy_builds == 3);  // the two declared, and this one once
+      // What they keep resident (scene_collision.md, "What props and doors keep resident").
+      MESSAGE("resident: " << rig.collision.stats().prop_proxies << " proxies, "
+                           << rig.collision.stats().prop_proxy_bytes << " bytes");
+      CHECK(rig.collision.stats().prop_proxy_bytes > 0);
+    }
+    // Handed at the drop itself: built on the spot, the body made at this update.
+    {
+      Rig rig(scene, config, with);
+      const Vector<PropBody> list{rock};
+      rig.collision.set_props({list.data(), list.size()});
+      (void)rig.collision.update_props(true);
+      CHECK(rig.collision.stats().prop_bodies == 1);
+      CHECK(rig.collision.stats().prop_proxy_inline == 1);
+      f32 y = -1.0f;
+      REQUIRE(down_at(rig, y));
+      CHECK(std::fabs(y - top) < 0.08f);
+      // A walking update after it changes nothing: the body stays, nothing is built again.
+      (void)rig.collision.update_props();
+      CHECK(rig.collision.stats().prop_bodies == 1);
+      CHECK(rig.collision.stats().prop_proxy_builds == 3);
+    }
+  }
+}
+
+TEST_CASE("scene_collision: a restored walk's first update has the bodies the saved walk had") {
+  // A save holds no proxy state (scene_collision.md, "A prop's proxy"): a walk restored from one
+  // is a fresh consumer handed the same props, and begins with a drop, which takes every proxy in
+  // reach. So from that update it holds what the walk that was saved held after its props' builds
+  // came due: the same bodies, the same proxies resident, a ray down meeting the same top.
+  renderer::SceneData scene;
+  crate_and_boulder_scene(scene);
+  Config config;
+  config.prop_build_updates = k_walk_prop_build_updates;
+  jobs::JobSystemConfig workers;
+  workers.performance_workers = 2;
+  workers.pin_threads = false;
+  jobs::JobSystem jobs(workers);
+  Vector<PropBody> props;
+  for (u32 i = 0; i < 4; ++i) {
+    PropBody p = crate_at(20.0f + 4.0f * static_cast<f32>(i), 10 + i);
+    p.mesh = i % 2;
+    p.scale = 1.0f + 0.2f * static_cast<f32>(i);  // the first at its own size, three of their own
+    props.push_back(p);
+  }
+  const auto tops = [&](Rig& rig, Vector<f32>& out) {
+    out.clear();
+    for (u32 i = 0; i < 4; ++i) {
+      physics::RayHit hit;
+      const f32 z = 20.0f + 4.0f * static_cast<f32>(i);
+      REQUIRE(rig.physics.cast_ray(place(Vec3{0.0f, 10.0f, z}), Vec3{0.0f, -20.0f, 0.0f}, hit));
+      out.push_back(static_cast<f32>(relative(hit.position, WorldPos::origin()).y));
+    }
+  };
+  // The walk that was saved: handed on a walking update, twenty updates on.
+  Rig saved(scene, config, &jobs);
+  saved.collision.set_props({props.data(), props.size()});
+  for (u32 k = 0; k < 20; ++k)
+    (void)saved.collision.update_props();
+  // The restored one: a fresh consumer, the same props, a drop's update.
+  Rig restored(scene, config, &jobs);
+  restored.collision.set_props({props.data(), props.size()});
+  (void)restored.collision.update_props(true);
+  CHECK(saved.collision.stats().prop_bodies == 4);
+  CHECK(restored.collision.stats().prop_bodies == saved.collision.stats().prop_bodies);
+  CHECK(restored.collision.stats().prop_proxies == saved.collision.stats().prop_proxies);
+  Vector<f32> a;
+  Vector<f32> b;
+  tops(saved, a);
+  tops(restored, b);
+  for (u32 i = 0; i < 4; ++i) {
+    CAPTURE(i);
+    CHECK(a[i] > 0.5f);   // a prop's top, not the floor
+    CHECK(a[i] == b[i]);  // the same proxy at the same pose: the same float
+  }
+}
+
+TEST_CASE("scene_collision: a prop's proxy goes with its tile, and comes back with it") {
+  // Until 2026-11-18 a proxy was counted over every prop handed, so one built while its prop was
+  // near stayed resident after the walker left, until the game stopped handing that prop: the
+  // table grew with the ground walked. Now it is counted over the props whose tile is held.
+  renderer::SceneData scene;
+  crate_and_boulder_scene(scene);
+  Rig rig(scene);  // `prop_build_updates` 0: built at the update that wants it
+  PropBody rock = crate_at(20.0f, 9);
+  rock.mesh = 1;
+  rock.scale = 1.2f;
+  rig.hand({rock});
+  CHECK(rig.collision.stats().prop_bodies == 1);
+  CHECK(rig.collision.stats().prop_proxies == 3);  // the two declared, and the boulder at 1.2
+  const u64 builds = rig.collision.stats().prop_proxy_builds;
+  const u64 three = rig.collision.stats().prop_proxy_bytes;
+  // The walker a kilometre away: the tile goes, the body with it, and the proxy no prop in reach
+  // names; the declared two stay. The prop is still handed.
+  rig.move_ring(place(Vec3{1000.0f, 0.0f, 1000.0f}));
+  MESSAGE("resident proxies: the crate and the boulder declared "
+          << rig.collision.stats().prop_proxy_bytes << " bytes; the boulder at 1.2 "
+          << three - rig.collision.stats().prop_proxy_bytes << " more");
+  CHECK(rig.collision.stats().prop_proxy_bytes < three);
+  CHECK(rig.collision.stats().prop_bodies == 0);
+  CHECK(rig.collision.stats().prop_proxies == 2);
+  CHECK(rig.collision.stats().prop_proxies_freed == 1);
+  // Back: built again, and the body made again.
+  rig.move_ring(place(Vec3{0.0f, 0.0f, 16.0f}));
+  CHECK(rig.collision.stats().prop_bodies == 1);
+  CHECK(rig.collision.stats().prop_proxies == 3);
+  CHECK(rig.collision.stats().prop_proxy_builds == builds + 1);
+}
+
+TEST_CASE(
+    "scene_collision: a prop of a new mesh arriving mid-run costs the walker's tick no build") {
+  // The tick's cost round the arrival of a boulder prop among 300 crates of which 30 move (P2's
+  // measurement; scene_collision.md, "A prop's proxy"). At its own size: built at the load. At a
+  // scale of its own: built on the job system, the body twelve updates later; with no job system,
+  // built on the tick at that update. Zero allocations on every tick but the arrival's, the one
+  // after it and the promised update's. The ticks here run back to back, not at 240 Hz, so the
+  // twelve updates give a worker far less time than a walk's 50 ms: a wait here is an upper bound.
+  jobs::JobSystemConfig workers;
+  workers.performance_workers = 2;
+  workers.pin_threads = false;
+  jobs::JobSystem jobs(workers);
+  Config config;
+  config.prop_build_updates = k_walk_prop_build_updates;
+  struct Row {
+    f32 scale;
+    bool with_jobs;
+    const char* name;
+  };
+  const Row rows[] = {{1.0f, true, "at its own size"},
+                      {1.37f, true, "at a scale of its own, on the job system"},
+                      {1.37f, false, "at a scale of its own, no job system"}};
+  renderer::SceneData scene;
+  crate_and_boulder_scene(scene);
+  for (const Row& row : rows) {
+    const Arrival a =
+        arrival_cost(scene, config, row.with_jobs ? &jobs : nullptr, 1, row.scale, 200);
+    MESSAGE("a boulder " << std::string(row.name) << ": tick median " << a.median_us
+                         << " us, the arrival's " << a.arrival_us << ", the worst after "
+                         << a.worst_after_us << "; body at update " << a.body_at << ", builds "
+                         << a.builds << " (on the tick " << a.inline_builds << ", waited "
+                         << a.wait_ms << " ms), steady allocations " << a.steady_allocations);
+    CHECK(a.steady_allocations == 0);
+    const bool built_at_load = row.scale == 1.0f;
+    CHECK(a.builds == (built_at_load ? 0u : 1u));
+    CHECK(a.body_at == (built_at_load ? 0u : config.prop_build_updates));
+  }
+}
+
+// **The door an interact reaches** (S91; scene_collision.md, "Doors"): the nearest one in front of
+// the walker within reach, by its leaf's middle; none behind it or past the reach.
+TEST_CASE("scene_collision: an interact reaches the door in front of the walker, none behind it") {
+  DoorRig rig;
+  DoorBody first = doorway();
+  DoorBody far = doorway();
+  far.key = 4;
+  far.hinge = place(Vec3{-0.45f, 0.0f, 23.0f});
+  const DoorBody doors[2] = {first, far};
+  rig.collision.set_doors({doors, 2});
+  const WorldPos feet = place(Vec3{0.0f, 0.0f, 19.0f});
+  CHECK(rig.collision.door_to_reach(feet, Vec3{0.0f, 0.0f, 1.0f}, 1.5f) == 0u);
+  CHECK(rig.collision.door_to_reach(feet, Vec3{0.0f, 0.0f, -1.0f}, 1.5f) == k_no_index);
+  CHECK(rig.collision.door_to_reach(feet, Vec3{0.0f, 0.0f, 1.0f}, 0.5f) == k_no_index);
+  CHECK(rig.collision.door_to_reach(feet, Vec3{0.0f, 0.0f, 1.0f}, 10.0f) == 0u);  // the nearer
+  CHECK(rig.collision.door_to_reach(place(Vec3{0.0f, 0.0f, 22.0f}), Vec3{0.0f, 0.0f, 1.0f}, 1.5f) ==
+        1u);
+  CHECK(rig.collision.door_nearest(place(Vec3{-0.45f, 0.0f, 22.0f}), 2.0f) == 1u);
+  CHECK(rig.collision.door_nearest(place(Vec3{40.0f, 0.0f, 22.0f}), 2.0f) == k_no_index);
+}
+TEST_CASE("scene_collision: a closed door stops a walker, an open one lets it through") {
+  DoorRig rig;
+  const f32 radius = physics::CharacterConfig{}.radius;
+  const DoorBody d = doorway();
+  rig.collision.set_doors({&d, 1});
+  (void)rig.collision.step_doors(nullptr);
+  CHECK(rig.collision.door_stats().bodies == 1);
+  // Closed: the walker going north stops at the leaf's south face less its radius.
+  const f32 stopped = rig.walk(3.0f, Vec3{0.0f, 0.0f, 1.0f});
+  MESSAGE("at the closed door: z " << stopped);
+  CHECK(stopped == doctest::Approx(19.95f - radius).epsilon(0.002));
+  // Toggled with the walker standing against the leaf: the leaf swings away from it (to +z), so
+  // it is not held; 90 degrees at 375 a tick is 240 ticks, a second.
+  rig.walker.teleport(place(Vec3{0.0f, 0.02f, 17.0f}));
+  REQUIRE(rig.collision.toggle_door(3));
+  (void)rig.walk(1.0f, Vec3{});
+  DoorBody now;
+  REQUIRE(rig.collision.door(3, now));
+  CHECK(now.open);
+  CHECK(now.angle_mdeg == -90000);
+  CHECK(rig.collision.door_stats().moves == 240);
+  // Open: the walker goes through the doorway.
+  CHECK(rig.walk(3.0f, Vec3{0.0f, 0.0f, 1.0f}) > 21.0f);
+}
+
+// A door's turn is a function of its integer angle's bits on every compiler (docs: "Doors"): the
+// half angle's sine and cosine are core/math's deterministic ones. Pinned over a spread of angles,
+// two turns either way at an eighth of a degree; taken on MSVC (msvc-debug, 2026-11-18) and to be
+// confirmed by a Linux container. The C library's `std::sin` and `std::cos`, which the turn used
+// before, differ from these in the last bit at some of the angles, and from each other between
+// MSVC's UCRT and glibc.
+TEST_CASE("scene_collision: a door's turn is the same bits on every compiler") {
+  constexpr u64 k_turn_pin = 0x65366023bb079f78ull;
+  u64 pin = 0x9e3779b97f4a7c15ull;
+  for (i32 mdeg = -720000; mdeg <= 720000; mdeg += 125) {
+    const Quat q = door_rotation(mdeg);
+    const u32 words[4] = {std::bit_cast<u32>(q.x), std::bit_cast<u32>(q.y), std::bit_cast<u32>(q.z),
+                          std::bit_cast<u32>(q.w)};
+    pin = hash_combine(pin, hash_bytes(words, sizeof(words)));
+    CHECK(q.x == 0.0f);
+    CHECK(q.z == 0.0f);
+    CHECK(q.y * q.y + q.w * q.w == doctest::Approx(1.0f).epsilon(1e-6));
+  }
+  MESSAGE("door turn pin: 0x" << std::hex << pin);
+  CHECK(pin == k_turn_pin);
+  // A whole turn is no turn, and a quarter turn is the half angle's exact values.
+  CHECK(door_rotation(0) == Quat::identity());
+  CHECK(door_rotation(360000) == door_rotation(0));
+  CHECK(door_rotation(-270000) == door_rotation(90000));
+  CHECK(door_rotation(90000).y == doctest::Approx(0.70710678f));
+  CHECK(door_rotation(90000).w == doctest::Approx(0.70710678f));
+}
+
+// `set_doors` brings every number a tick adds to into range, so the integer swing cannot overflow,
+// and keeps one door a key: the first given, the later one refused and counted.
+TEST_CASE("scene_collision: doors of one key are refused, and a door's numbers are kept in range") {
+  DoorRig rig;
+  DoorBody first = doorway();
+  DoorBody second = doorway();
+  second.hinge = place(Vec3{5.0f, 0.0f, 20.0f});
+  DoorBody wild = doorway();
+  wild.key = 9;
+  wild.speed_mdeg = 2000000000;
+  wild.open_mdeg = 2000000000;
+  wild.angle_mdeg = -2000000000;
+  DoorBody idle = doorway();
+  idle.key = 11;
+  idle.speed_mdeg = 0;
+  const DoorBody doors[4] = {first, wild, second, idle};
+  rig.collision.set_doors({doors, 4});
+  CHECK(rig.collision.door_stats().doors == 3);
+  CHECK(rig.collision.door_stats().refused == 1);
+  DoorBody now;
+  REQUIRE(rig.collision.door(first.key, now));
+  CHECK(std::fabs(relative(now.hinge, first.hinge).x) < 1e-6);  // the first given of the key
+  REQUIRE(rig.collision.door(9, now));
+  CHECK(now.speed_mdeg == 180000);
+  CHECK(now.open_mdeg == 360000);
+  CHECK(now.angle_mdeg == 0);
+  REQUIRE(rig.collision.door(11, now));
+  CHECK(now.speed_mdeg == k_door_speed_mdeg);
+  // The wild door swings a whole turn in two ticks and stops there, no overflow on the way.
+  REQUIRE(rig.collision.toggle_door(9));
+  (void)rig.collision.step_doors(nullptr);
+  (void)rig.collision.step_doors(nullptr);
+  (void)rig.collision.step_doors(nullptr);
+  REQUIRE(rig.collision.door(9, now));
+  CHECK(now.angle_mdeg == 360000);
+}
+
+TEST_CASE("scene_collision: a door holds its angle where its leaf would enter the walker") {
+  DoorRig rig;
+  const DoorBody d = doorway();
+  rig.collision.set_doors({&d, 1});
+  (void)rig.collision.step_doors(nullptr);
+  // Open it, walk the walker into the doorway and stand it in the leaf's arc, then close it.
+  REQUIRE(rig.collision.toggle_door(3));
+  (void)rig.walk(1.0f, Vec3{});
+  rig.walker.teleport(place(Vec3{0.0f, 0.02f, 20.5f}));  // north of the wall, in the leaf's arc
+  REQUIRE(rig.collision.toggle_door(3));
+  (void)rig.walk(1.5f, Vec3{});
+  DoorBody now;
+  REQUIRE(rig.collision.door(3, now));
+  MESSAGE("held at " << now.angle_mdeg << " mdeg, the walker at z "
+                     << relative(rig.walker.feet(), WorldPos::origin()).z);
+  CHECK_FALSE(now.open);
+  CHECK(now.angle_mdeg < 0);       // it closed only as far as the walker
+  CHECK(now.angle_mdeg > -90000);  // and moved some way
+  CHECK(rig.collision.door_stats().holds > 0);
+  // The walker steps away north: the door finishes closing.
+  rig.walker.teleport(place(Vec3{0.0f, 0.02f, 23.0f}));
+  (void)rig.walk(1.0f, Vec3{});
+  REQUIRE(rig.collision.door(3, now));
+  CHECK(now.angle_mdeg == 0);
+}
+
+TEST_CASE("scene_collision: a fast door is held along its arc, never swung through the walker") {
+  // Until 2026-11-18 the hold tested only the end of a tick's swing, so a door a game gave a
+  // quarter turn a tick went from shut to open through a walker standing in its arc. The walker
+  // here stands north of the wall, 0.6 m from the hinge at 45 degrees into the swing: clear of the
+  // leaf shut (0.42 m off it) and open (0.42 m), in its path between.
+  DoorRig rig;
+  DoorBody d = doorway();
+  d.speed_mdeg = 90000;
+  rig.collision.set_doors({&d, 1});
+  (void)rig.collision.step_doors(nullptr);
+  REQUIRE(rig.walker.teleport(place(Vec3{-0.45f + 0.4243f, 0.02f, 19.975f + 0.4243f})) ==
+          physics::Status::Ok);
+  REQUIRE(rig.collision.toggle_door(d.key));
+  (void)rig.collision.step_doors(&rig.walker);
+  DoorBody now;
+  REQUIRE(rig.collision.door(d.key, now));
+  MESSAGE("a quarter turn a tick, the walker in the arc: the leaf at " << now.angle_mdeg
+                                                                       << " mdeg");
+  // The leaf comes within the radius and the margin (0.35 m) of the walker 6 to 7 degrees in: it
+  // goes the whole degrees short of that and holds there.
+  CHECK(now.angle_mdeg < 0);
+  CHECK(now.angle_mdeg > -10000);
+  CHECK(rig.collision.door_stats().holds == 1);
+  const i32 held = now.angle_mdeg;
+  for (u32 k = 0; k < 10; ++k)
+    (void)rig.collision.step_doors(&rig.walker);
+  REQUIRE(rig.collision.door(d.key, now));
+  CHECK(now.angle_mdeg == held);
+  // With nobody in the arc it opens in a tick.
+  (void)rig.collision.step_doors(nullptr);
+  REQUIRE(rig.collision.door(d.key, now));
+  CHECK(now.angle_mdeg == d.open_mdeg);
+}
+
+TEST_CASE("scene_collision: a door's body goes with its tile, and its swing replays") {
+  // The same toggles at the same ticks reach the same angles; the tile let go takes the body, and
+  // the door's state stays (it is the world's).
+  DoorRig a;
+  DoorRig b;
+  const DoorBody d = doorway();
+  a.collision.set_doors({&d, 1});
+  b.collision.set_doors({&d, 1});
+  for (u32 t = 0; t < 300; ++t) {
+    if (t == 10 || t == 130) {
+      REQUIRE(a.collision.toggle_door(3));
+      REQUIRE(b.collision.toggle_door(3));
+    }
+    (void)a.collision.step_doors(&a.walker);
+    (void)b.collision.step_doors(&b.walker);
+  }
+  DoorBody da;
+  DoorBody db;
+  REQUIRE(a.collision.door(3, da));
+  REQUIRE(b.collision.door(3, db));
+  CHECK(da.angle_mdeg == db.angle_mdeg);
+  CHECK(da.angle_mdeg == 0);  // opened 120 ticks from tick 10, closed again by tick 250
+  a.move_ring(place(Vec3{1000.0f, 0.0f, 1000.0f}));
+  (void)a.collision.step_doors(nullptr);
+  CHECK(a.collision.door_stats().bodies == 0);
+  CHECK(a.collision.door_stats().doors == 1);
+  a.move_ring(place(Vec3{0.0f, 0.0f, 16.0f}));
+  (void)a.collision.step_doors(nullptr);
+  CHECK(a.collision.door_stats().bodies == 1);
+}
+
+// **What a swinging door costs the walker's tick** (scene_collision.md, "Doors"): 30 doors in a row
+// north of a standing walker, 300 static boxes beside them as a held tile's bodies stand for, and
+// the first `k` kept swinging — each toggled the tick it reaches its state — for `ticks` ticks of
+// the ring's update, `step_doors` and the walker's step, timed one at a time after a warm-up, with
+// the engine allocations the tick made on this thread. A swing is a move of a kinematic body, as a
+// prop's move is: the bodies are what they were, so nothing about the broadphase is rebuilt.
+namespace {
+
+struct DoorCost {
+  f64 median_us = 0.0;
+  f64 p95_us = 0.0;
+  u64 allocations = 0;
+  u64 moves = 0;
+};
+
+DoorCost door_tick_cost(u32 k, u32 ticks) {
+  DoorRig rig;
+  for (u32 i = 0; i < 300; ++i)
+    rig.wall(Vec3{-30.0f + 3.0f * static_cast<f32>(i % 20), 0.5f,
+                  -10.0f - 2.0f * static_cast<f32>(i / 20)},
+             Vec3{0.4f, 0.5f, 0.4f});
+  Vector<DoorBody> doors;
+  for (u32 i = 0; i < 30; ++i) {
+    DoorBody d = doorway();
+    d.key = 100 + i;
+    d.hinge = place(Vec3{-30.0f + 2.0f * static_cast<f32>(i), 0.0f, 30.0f});
+    doors.push_back(d);
+  }
+  rig.collision.set_doors({doors.data(), doors.size()});
+  (void)rig.collision.step_doors(nullptr);
+  REQUIRE(rig.collision.door_stats().bodies == 30);
+  physics::CharacterInput still{};
+  Vector<f64> us;
+  us.reserve(ticks);
+  constexpr u32 k_warm = 20;
+  DoorCost out;
+  u64 moves = 0;
+  for (u32 t = 0; t < k_warm + ticks; ++t) {
+    if (t == k_warm) moves = rig.collision.door_stats().moves;
+    const u64 a0 = mem::allocations_on_thread();
+    const i64 t0 = time::monotonic_ns();
+    rig.world->update(rig.observers, rig.tick++, true);
+    for (u32 i = 0; i < k; ++i) {  // a module's toggles: the door that came to rest swings back
+      DoorBody now;
+      if (rig.collision.door(100 + i, now) && now.angle_mdeg == (now.open ? now.open_mdeg : 0))
+        (void)rig.collision.toggle_door(100 + i);
+    }
+    (void)rig.collision.step_doors(&rig.walker);
+    REQUIRE(rig.walker.step(still) == physics::Status::Ok);
+    const i64 t1 = time::monotonic_ns();
+    const u64 a1 = mem::allocations_on_thread();
+    if (t < k_warm) continue;
+    us.push_back(static_cast<f64>(t1 - t0) / 1000.0);
+    out.allocations += a1 - a0;
+  }
+  out.moves = rig.collision.door_stats().moves - moves;
+  std::sort(us.begin(), us.end());
+  out.median_us = us[us.size() / 2];
+  out.p95_us = us[(us.size() * 95) / 100];
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("scene_collision: a swinging door costs the walker's tick a move, not a rebuild") {
+  for (const u32 k : {0u, 1u, 30u}) {
+    const DoorCost c = door_tick_cost(k, 300);
+    MESSAGE("doors swinging " << k << " of 30: tick median " << c.median_us << " us, p95 "
+                              << c.p95_us << "; moves " << c.moves << ", allocations "
+                              << c.allocations << " over 300 ticks");
+    CHECK(c.allocations == 0);
+    CHECK(c.moves == 300u * k);  // a swinging door moves every tick
+  }
+}
+
+// **What a tile's leaves cost its load** (scene_collision.md, "What a door costs"): a wall placed
+// once whose mesh declares 0 or 30 leaves; twenty times its tiles are let go, the doors forgotten
+// (`set_doors` of none, so each return is a first sight), and taken in again, timing the ring's
+// update that makes the tiles' bodies and the `step_doors` that makes the doors; then 300 standing
+// ticks with every door made, which allocate nothing.
+TEST_CASE("scene_collision: a tile's declared leaves cost its first step their doors alone") {
+  for (const u32 leaves : {0u, 30u}) {
+    DoorRig rig(leaves == 0 ? &wall_no_leaves : &wall_30_leaves);
+    Vector<f64> load_us;
+    Vector<f64> doors_us;
+    for (u32 round = 0; round < 20; ++round) {
+      rig.move_ring(place(Vec3{1000.0f, 0.0f, 1000.0f}));
+      (void)rig.collision.step_doors(nullptr);
+      rig.collision.set_doors({});
+      const i64 t0 = time::monotonic_ns();
+      rig.move_ring(place(Vec3{0.0f, 0.0f, 16.0f}));
+      const i64 t1 = time::monotonic_ns();
+      (void)rig.collision.step_doors(nullptr);
+      const i64 t2 = time::monotonic_ns();
+      load_us.push_back(static_cast<f64>(t1 - t0) / 1000.0);
+      doors_us.push_back(static_cast<f64>(t2 - t1) / 1000.0);
+      REQUIRE(rig.collision.door_stats().doors == leaves);
+      REQUIRE(rig.collision.door_stats().bodies == leaves);
+    }
+    std::sort(load_us.begin(), load_us.end());
+    std::sort(doors_us.begin(), doors_us.end());
+    physics::CharacterInput still{};
+    u64 allocations = 0;
+    for (u32 t = 0; t < 300; ++t) {
+      const u64 a0 = mem::allocations_on_thread();
+      rig.world->update(rig.observers, rig.tick++, true);
+      (void)rig.collision.step_doors(&rig.walker);
+      REQUIRE(rig.walker.step(still) == physics::Status::Ok);
+      allocations += mem::allocations_on_thread() - a0;
+    }
+    MESSAGE("tile leaves " << leaves << ": ring update median " << load_us[load_us.size() / 2]
+                           << " us, first step_doors median " << doors_us[doors_us.size() / 2]
+                           << " us; doors " << rig.collision.door_stats().doors << " bytes "
+                           << rig.collision.door_stats().doors * (sizeof(DoorBody) + 16)
+                           << "; standing allocations " << allocations);
+    CHECK(allocations == 0);
+  }
 }

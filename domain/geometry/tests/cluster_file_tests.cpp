@@ -1124,8 +1124,8 @@ TEST_CASE("cluster file: a seat round-trips, and a mesh without one writes no se
 }
 
 // C62 (geometry.md, "Content classes"): section 54 keeps the classes module's record as bytes,
-// written only when there is one, so an unclassified container is the bytes it was; 53 is
-// reserved for another line and nothing here writes it.
+// written only when there is one, so an unclassified container is the bytes it was; 53 is the
+// door leaves' (S91).
 TEST_CASE("cluster file: content classes are section 54, written only when classified") {
   const test::TempDir tmp("engine_cluster_file");
   ClusterFileData data;
@@ -1205,6 +1205,76 @@ TEST_CASE(
   ClusterFileData refused;
   CHECK_FALSE(read_cluster_file_memory(view(bad), refused, &error));
   CHECK(error.find("perches") != std::string::npos);
+}
+
+// S91 (geometry.md, "Doors"): a mesh's leaves on hinges are 48-byte records of section 53, written
+// only when it declares one; a leaf with no size, a swing that is not perpendicular to its shut
+// direction, or an angle past 180 degrees is refused.
+TEST_CASE(
+    "cluster file: doors round-trip, a mesh without one writes no section, a bad one is "
+    "refused") {
+  const test::TempDir tmp("engine_cluster_file");
+  ClusterFileData data;
+  Vector<u32> indices;
+  make_fixture(data, indices);
+  std::string error;
+  REQUIRE_MESSAGE(write_cluster_file(tmp.file("plain.clusters"), data, &error), error);
+  ClusterFileDoor door;
+  door.pivot = Vec3{1.25f, 0.05f, -2.5f};
+  door.shut_x = 0.0f;
+  door.shut_z = 1.0f;
+  door.swing_x = -1.0f;
+  door.swing_z = 0.0f;
+  door.width_m = 0.73f;
+  door.height_m = 1.82f;
+  door.thickness_m = 0.055f;
+  door.opening = 3;
+  door.open_deg = 90;
+  door.flags = k_door_flag_door;
+  data.doors.push_back(door);
+  door.shut_x = 0.6f;
+  door.shut_z = 0.8f;
+  door.swing_x = 0.8f;
+  door.swing_z = -0.6f;
+  door.opening = 5;
+  door.open_deg = 0;
+  door.flags = k_door_flag_paired;
+  data.doors.push_back(door);
+  const std::string path = tmp.file("doors.clusters");
+  REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
+  std::string plain;
+  std::string doored;
+  REQUIRE(io::read_file(tmp.file("plain.clusters"), plain) == io::Status::Ok);
+  REQUIRE(io::read_file(path, doored) == io::Status::Ok);
+  CHECK(doored.size() >= plain.size() + 96);  // the two records, at least
+  ClusterFileData none;
+  REQUIRE_MESSAGE(read_cluster_file_memory(view(plain), none, &error), error);
+  CHECK(none.doors.empty());
+  ClusterFileData read;
+  REQUIRE_MESSAGE(read_cluster_file(path, read, &error), error);
+  REQUIRE(read.doors.size() == 2u);
+  CHECK(read.doors[0].pivot == Vec3{1.25f, 0.05f, -2.5f});
+  CHECK(read.doors[0].swing_x == -1.0f);
+  CHECK(read.doors[0].opening == 3u);
+  CHECK(read.doors[0].open_deg == 90);
+  CHECK(read.doors[0].flags == k_door_flag_door);
+  CHECK(read.doors[1].shut_z == 0.8f);
+  CHECK(read.doors[1].flags == k_door_flag_paired);
+  CHECK(std::string(cluster_section_name(static_cast<u32>(ClusterSection::Doors))) == "doors");
+  data.doors[1].swing_x = 0.6f;  // along its shut direction: not a hinge
+  data.doors[1].swing_z = 0.8f;
+  REQUIRE_MESSAGE(write_cluster_file(tmp.file("bad.clusters"), data, &error), error);
+  std::string bad;
+  REQUIRE(io::read_file(tmp.file("bad.clusters"), bad) == io::Status::Ok);
+  ClusterFileData refused;
+  CHECK_FALSE(read_cluster_file_memory(view(bad), refused, &error));
+  CHECK(error.find("doors") != std::string::npos);
+  data.doors[1].swing_x = 0.8f;
+  data.doors[1].swing_z = -0.6f;
+  data.doors[1].open_deg = 181;
+  REQUIRE_MESSAGE(write_cluster_file(tmp.file("bad-angle.clusters"), data, &error), error);
+  REQUIRE(io::read_file(tmp.file("bad-angle.clusters"), bad) == io::Status::Ok);
+  CHECK_FALSE(read_cluster_file_memory(view(bad), refused, &error));
 }
 
 TEST_CASE("cluster file: the source identity reads back without decoding the mesh") {

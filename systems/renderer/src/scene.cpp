@@ -686,6 +686,7 @@ void adopt_container(geometry::ClusterFileData& container_data, const std::strin
   // What a host seats an instance of it by (G201 stage 2; section 42): none but a tree's.
   out.seat = container_data.seat;
   out.perches = std::move(container_data.perches);  // section 43 (A43): declared perches, if any
+  out.doors = std::move(container_data.doors);      // section 53 (S91): declared leaves, if any
   // Its far form (G198; sections 44 to 48): none but a rigid mesh's whose build baked one.
   out.far_form = std::move(container_data.far_form);
   // A generated tree's motion contract, for the flora stage and the collision (renderer.md, "The
@@ -3240,6 +3241,12 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     for (u32 i = 0; i < file_meshes; ++i)
       out.instances.push_back(SceneInstance{i, Transform3::identity()});
   }
+  // The leaves its meshes hang (S91; scene_collision.md, "What is drawn swings with what
+  // collides"): after every instance the file and its entries placed, so theirs keep their places.
+  if (!hang_scene_leaves(out, error)) {
+    error = path + ": " + error;
+    return false;
+  }
   // The terrain is the last mesh, with one identity instance after everything the file placed,
   // so every index the file used still names what it named.
   if (out.terrain.enabled) {
@@ -3665,6 +3672,16 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   out.medium = resolved.medium;
   out.props = resolved.props;
   out.fires = resolved.fires;
+  // The drawn leaves, by the loaded instances: a leaf whose house or own instance the load did not
+  // keep is left out (S91).
+  out.leaves.clear();
+  for (const SceneLeaf& leaf : resolved.leaves) {
+    SceneLeaf loaded = leaf;
+    loaded.instance = loaded_instance(out, leaf.instance);
+    loaded.house = loaded_instance(out, leaf.house);
+    if (loaded.instance == k_not_loaded || loaded.house == k_not_loaded) continue;
+    out.leaves.push_back(loaded);
+  }
 
   update_scene_bounds(out);
   out.build_ns = time::monotonic_ns() - build_start;

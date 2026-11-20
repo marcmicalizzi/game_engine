@@ -900,47 +900,41 @@ void wall_opening(const Context& ctx, const structure::Opening& o) {
     member(c.s0 - 15.0, c.s1 + 15.0, c.y1 - 1.0, c.y1 + 13.0, back - 1.5,
            back + std::min(12.0, thick - 2.0), 0);
   }
-  // The leaves (structures.md, "Leaves and mullions"): upright boards of unequal widths, every
-  // other one a few millimetres proud so the joints read, on ledges across the face the leaf
-  // opens toward: three to a door, two to a shutter. Each ledge is sunk a centimetre into its
-  // boards.
-  LeafPlace places[2];
-  const u32 leaves = leaf_places(d, o, places);
-  for (u32 l = 0; l < leaves; ++l) {
-    const LeafPlace& p = places[l];
-    Frame3 frame;
-    frame.o[0] = p.px, frame.o[1] = 0.0, frame.o[2] = p.pz;
-    frame.axis[0][0] = p.ux, frame.axis[0][1] = 0.0, frame.axis[0][2] = p.uz;
-    frame.axis[1][0] = 0.0, frame.axis[1][1] = 1.0, frame.axis[1][2] = 0.0;
-    frame.axis[2][0] = p.vx, frame.axis[2][1] = 0.0, frame.axis[2][2] = p.vz;
-    const u32 boards =
-        std::min(8u, std::max(1u, static_cast<u32>(p.width / k_leaf_board_cm + 0.5)));
-    const f64 share[4] = {1.12, 0.92, 1.06, 0.90};
-    f64 total = 0.0;
-    for (u32 b = 0; b < boards; ++b)
-      total += share[b % 4];
-    f64 at = 0.0;
-    for (u32 b = 0; b < boards; ++b) {
-      const f64 wide = p.width * share[b % 4] / total;
-      const f64 stand = b % 2 == 1 ? 0.3 : 0.0;
-      // Each board is cut from its own length of timber: its grain starts somewhere else.
-      const f64 shift = 37.0 * static_cast<f64>(b + 1);
-      Frame3 board = frame;
-      board.o[1] = -shift;
-      box3(timber, board, at, at + wide, p.y0 + shift, p.y1 + shift, p.ledges,
-           p.ledges + p.boards + stand, 1);
-      at += wide;
-    }
-    const f64 tall = p.y1 - p.y0;
-    const u32 ledges = tall > 120.0 ? 3u : 2u;
-    const f64 ledge = p.door ? 15.0 : 9.0;
-    const f64 inset = std::min(20.0, tall * 0.12);
-    for (u32 i = 0; i < ledges; ++i) {
-      const f64 y =
-          p.y0 + inset +
-          (tall - 2.0 * inset - ledge) * static_cast<f64>(i) / static_cast<f64>(ledges - 1);
-      box3(timber, frame, 2.0, p.width - 2.0, y, y + ledge, 0.0, p.ledges + 1.0, 0);
-    }
+  // The leaves are not here: a leaf turns, so it is a mesh of its own (`mesh_leaf`, the `leaf`
+  // scope; structures.md, "A leaf is a mesh of its own"), and the opening's frame stands empty.
+}
+
+// One leaf (structures.md, "Leaves and mullions"): upright boards of unequal widths, every other
+// one a few millimetres proud so the joints read, on ledges across the face the leaf opens toward:
+// three to a door, two to a shutter. Each ledge is sunk a centimetre into its boards. `frame`'s
+// first axis runs from the hinge to the free edge and its third back through the thickness; its
+// origin's height is where the description's y 0 stands in it.
+void emit_leaf(MeshPart& timber, const LeafPlace& p, const Frame3& frame) {
+  const u32 boards = std::min(8u, std::max(1u, static_cast<u32>(p.width / k_leaf_board_cm + 0.5)));
+  const f64 share[4] = {1.12, 0.92, 1.06, 0.90};
+  f64 total = 0.0;
+  for (u32 b = 0; b < boards; ++b)
+    total += share[b % 4];
+  f64 at = 0.0;
+  for (u32 b = 0; b < boards; ++b) {
+    const f64 wide = p.width * share[b % 4] / total;
+    const f64 stand = b % 2 == 1 ? 0.3 : 0.0;
+    // Each board is cut from its own length of timber: its grain starts somewhere else.
+    const f64 shift = 37.0 * static_cast<f64>(b + 1);
+    Frame3 board = frame;
+    board.o[1] = frame.o[1] - shift;
+    box3(timber, board, at, at + wide, p.y0 + shift, p.y1 + shift, p.ledges,
+         p.ledges + p.boards + stand, 1);
+    at += wide;
+  }
+  const f64 tall = p.y1 - p.y0;
+  const u32 ledges = tall > 120.0 ? 3u : 2u;
+  const f64 ledge = p.door ? 15.0 : 9.0;
+  const f64 inset = std::min(20.0, tall * 0.12);
+  for (u32 i = 0; i < ledges; ++i) {
+    const f64 y = p.y0 + inset +
+                  (tall - 2.0 * inset - ledge) * static_cast<f64>(i) / static_cast<f64>(ledges - 1);
+    box3(timber, frame, 2.0, p.width - 2.0, y, y + ledge, 0.0, p.ledges + 1.0, 0);
   }
 }
 
@@ -1256,6 +1250,49 @@ u32 leaf_places(const Description& d, const structure::Opening& o, LeafPlace (&o
     p.door = door;
   }
   return count;
+}
+
+bool leaf_shut(const Description& d, u32 index, LeafPlace& out,
+               const structure::Opening*& opening) noexcept {
+  u32 seen = 0;
+  for (const structure::Opening& o : d.openings) {
+    LeafPlace places[2];
+    const u32 leaves = leaf_places(d, o, places);
+    if (index >= seen + leaves) {
+      seen += leaves;
+      continue;
+    }
+    // The place stands the leaf at the opening's angle; undone with the same whole-degree sine
+    // and cosine, so the shut leaf is the same bits on every toolchain.
+    LeafPlace p = places[index - seen];
+    f64 sine = 0.0, cosine = 1.0;
+    turn_deg(o.leaf_open, sine, cosine);
+    const f64 ux = cosine * p.ux + sine * p.vx, uz = cosine * p.uz + sine * p.vz;
+    const f64 vx = cosine * p.vx - sine * p.ux, vz = cosine * p.vz - sine * p.uz;
+    p.ux = ux, p.uz = uz, p.vx = vx, p.vz = vz;
+    out = p;
+    opening = &o;
+    return true;
+  }
+  return false;
+}
+
+f64 leaf_side(const LeafPlace& shut) noexcept {
+  // The swing is -v; the y of shut x swing is +1 when the leaf turns its +x toward -z.
+  const f64 cross_y = shut.uz * (-shut.vx) - shut.ux * (-shut.vz);
+  return cross_y >= 0.0 ? 1.0 : -1.0;
+}
+
+void mesh_leaf(const Context& ctx) {
+  LeafPlace p;
+  const structure::Opening* opening = nullptr;
+  if (!leaf_shut(*ctx.d, ctx.leaf, p, opening)) return;
+  // The leaf's own frame: its hinge's foot at the origin, +x to the free edge, y up, its thickness
+  // along +z or -z (`leaf_side`), so a host turns it about +y at the hinge to open it.
+  Frame3 frame;
+  frame.o[0] = 0.0, frame.o[1] = -p.y0, frame.o[2] = 0.0;
+  frame.axis[2][0] = 0.0, frame.axis[2][1] = 0.0, frame.axis[2][2] = leaf_side(p);
+  emit_leaf(ctx.part(Surface::timber), p, frame);
 }
 
 void mesh_shell(const Context& ctx) {

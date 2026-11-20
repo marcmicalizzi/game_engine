@@ -11,6 +11,7 @@
 #include <systems/renderer/flora_motion.h>
 #include <systems/renderer/page_source.h>
 #include <systems/renderer/scene.h>
+#include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/terrain.h>
 
 #if ENGINE_VIEW_WALK_PHYSICS
@@ -250,6 +251,20 @@ struct Walker::Impl {
   void* props_context = nullptr;
   u64 props_version = ~u64{0};
   Vector<WalkProp> props_scratch;
+  // **Every pending prop's proxy taken at once** (scene_collision.h `update_props(at_once)`): set
+  // by a drop (a teleport is one) and cleared after the next step's ring, so the drop and the
+  // walk's first tick find every body in reach — a scaled boulder under a drop is stood on, never
+  // fallen into — and a replay, which drops and steps at the same ticks, takes the same proxies
+  // there.
+  bool props_now = false;
+  // The doors (walk.h `set_door_service`, S91): a game's door service, a game's toggles waiting
+  // for the next step (a fixed table, so a tick allocates nothing), and the interacts' counts.
+  DoorAskFn door_ask = nullptr;
+  void* door_context = nullptr;
+  u64 door_toggles[k_walk_door_toggles] = {};
+  u32 door_toggle_count = 0;
+  u64 door_interacts = 0;
+  u64 door_refusals = 0;
   // A ground query's wall time, into `timing` (walk.h, `WalkTiming`).
   struct Query {
     WalkTiming& into;
@@ -404,9 +419,44 @@ struct Walker::Impl {
         consumer.set_props({prop_bodies.data(), prop_bodies.size()});
       }
     }
-    (void)consumer.update_props();
+    (void)consumer.update_props(unlimited || props_now);
   }
   Vector<scene_collision::PropBody> prop_bodies;
+  // **The doors at a step** (walk.h `set_door_service`; scene_collision.md, "Doors"): a game's
+  // toggles in the order it made them, then the walker's interact — the nearest door in front of
+  // it within reach, asked of the game's door service — then every door turned toward its state,
+  // held where its leaf would enter the capsule, before the character moves; all at the tick and
+  // from the tick's own state, so a replay opens the same doors at the same ticks.
+  void step_doors(bool interact, f32 yaw) {
+    for (u32 i = 0; i < door_toggle_count; ++i)
+      (void)consumer.toggle_door(door_toggles[i]);
+    door_toggle_count = 0;
+    if (interact) {
+      f32 s = 0.0f, c = 0.0f;
+      fly_sin_cos(yaw, s, c);
+      const u32 i = consumer.door_to_reach(body.feet(), Vec3{-s, 0.0f, -c}, k_walk_door_reach_m);
+      if (i != scene_collision::k_no_index) {
+        const scene_collision::DoorBody& d = consumer.doors()[i];
+        const bool open = !d.open;
+        if (door_ask != nullptr && !door_ask(door_context, walk_door(d), open)) {
+          ++door_refusals;
+        } else if (consumer.toggle_door(d.key)) {
+          ++door_interacts;
+        }
+      }
+    }
+    doors_moved += consumer.step_doors(&body);
+  }
+  static WalkDoor walk_door(const scene_collision::DoorBody& d) noexcept {
+    WalkDoor out;
+    out.key = d.key;
+    out.hinge = d.hinge;
+    out.open = d.open;
+    out.angle_mdeg = d.angle_mdeg;
+    out.open_mdeg = d.open_mdeg;
+    out.declared = (d.key >> 63) != 0;
+    return out;
+  }
   // **The builds' lead** (T166; scene_collision.md, "Ahead of a running walker"): the walker's or
   // the flying camera's velocity from its place a tick ago, once a tick. It decides only which
   // tiles are built first, never a body.
@@ -427,6 +477,33 @@ struct Walker::Impl {
     last_ahead = at;
     has_last_ahead = true;
     return Vec3{};
+  }
+  // **The drawn leaves** (walk.h `flush_leaves`, S91): each loaded leaf instance with its door's
+  // key and the angle it is drawn at; the doors' moves counted by `step_doors`, and the count the
+  // last flush saw, so a flush after no turn reads nothing. The scratch is sized at the start, so a
+  // flush allocates nothing.
+  struct DrawnLeaf {
+    u64 key = 0;
+    u32 instance = 0;
+    u32 mesh = 0;
+    f32 scale = 1.0f;
+    i32 angle_mdeg = 0;
+  };
+  Vector<DrawnLeaf> leaves;
+  Vector<u32> leaf_indices;
+  Vector<renderer::SceneInstance> leaf_moves;
+  u64 doors_moved = 0;
+  u64 doors_flushed = 0;
+  u64 leaf_writes = 0;
+  void attach_leaves(const renderer::SceneData& data) {
+    leaves.clear();
+    for (const renderer::SceneLeaf& leaf : data.leaves) {
+      // A scene instance's piece is named by its index (`support_placement`).
+      const u64 key = scene_collision::declared_door_key(leaf.house, leaf.leaf);
+      leaves.push_back(DrawnLeaf{key, leaf.instance, leaf.mesh, leaf.scale, leaf.angle_mdeg});
+    }
+    leaf_indices.reserve(leaves.size());
+    leaf_moves.reserve(leaves.size());
   }
 #endif
 
@@ -574,6 +651,9 @@ bool Walker::start(const WalkParams& params, u32 tick_hz, const renderer::SceneD
   config.mesh_error_m = params.mesh_error_m;
   config.ground_error_m = params.ground_error_m;
   config.max_refreshes = params.max_refreshes;
+  // A prop's proxy off the tick (scene_collision.h, `Config::prop_build_updates`): a constant of
+  // the walk, so a replay makes each prop's body at the tick the recording did.
+  config.prop_build_updates = scene_collision::k_walk_prop_build_updates;
   // Built ahead a tile past the ring (`walk.collision.prefetch_tiles`): not in the walk's header,
   // since it changes no body and no step.
   const f32 ahead = scene_collision::prefetch_tunable();
@@ -618,6 +698,7 @@ bool Walker::start(const WalkParams& params, u32 tick_hz, const renderer::SceneD
     w.has_boom_sphere = boom_radius > 0.0f &&
                         w.world.create_sphere(boom_radius, w.boom_sphere) == physics::Status::Ok;
     w.support_scratch.resize(k_max_walk_supports);
+    w.attach_leaves(scene);
     w.physical = true;
     w.collision = "physics";
     w.why.clear();
@@ -685,6 +766,53 @@ f32 Walker::crouch_amount() const noexcept {
 }
 
 WorldPos Walker::feet() const noexcept { return impl_->feet; }
+
+// **The drawn leaves** (walk.h; scene_collision.md, "What is drawn swings with what collides"):
+// read only after a step that moved a door, and then only the leaves whose door's angle is not the
+// one they are drawn at, each at the pose its door's box stands at — so what is drawn swings with
+// what collides, by the same function.
+void Walker::leaf_moves(std::span<const u32>& indices,
+                        std::span<const renderer::SceneInstance>& placements) noexcept {
+  indices = {};
+  placements = {};
+#if ENGINE_VIEW_WALK_PHYSICS
+  Impl& w = *impl_;
+  if (!w.physical || w.doors_moved == w.doors_flushed) return;
+  w.doors_flushed = w.doors_moved;
+  w.leaf_indices.clear();
+  w.leaf_moves.clear();
+  for (Impl::DrawnLeaf& leaf : w.leaves) {
+    scene_collision::DoorBody door;
+    if (!w.consumer.door(leaf.key, door) || door.angle_mdeg == leaf.angle_mdeg) continue;
+    leaf.angle_mdeg = door.angle_mdeg;
+    const scene_collision::DoorLeafPose pose = scene_collision::door_leaf_pose(door);
+    renderer::SceneInstance placed;
+    placed.mesh = leaf.mesh;
+    placed.transform = Transform3{Vec3{}, pose.rotation, Vec3{leaf.scale, leaf.scale, leaf.scale}};
+    placed.origin = pose.origin;
+    w.leaf_indices.push_back(leaf.instance);
+    w.leaf_moves.push_back(placed);
+  }
+  w.leaf_writes += w.leaf_indices.size();
+  indices = std::span<const u32>(w.leaf_indices.data(), w.leaf_indices.size());
+  placements = std::span<const renderer::SceneInstance>(w.leaf_moves.data(), w.leaf_moves.size());
+#endif
+}
+
+bool Walker::flush_leaves(renderer::SceneRenderer& renderer, std::string* error) {
+  std::span<const u32> indices;
+  std::span<const renderer::SceneInstance> placements;
+  leaf_moves(indices, placements);
+  return indices.empty() || renderer.move_instances(indices, placements, error);
+}
+
+u64 Walker::leaf_writes() const noexcept {
+#if ENGINE_VIEW_WALK_PHYSICS
+  return impl_->leaf_writes;
+#else
+  return 0;
+#endif
+}
 
 bool Walker::cast_boom(WorldPos from, Vec3 direction, f32 length, f32& out) const noexcept {
 #if ENGINE_VIEW_WALK_PHYSICS
@@ -794,7 +922,36 @@ bool Walker::supports(WorldPos at, f32 radius, f32 min_size, std::span<WalkSuppo
   }
   return true;
 }
+u32 Walker::door_count() const noexcept { return static_cast<u32>(impl_->consumer.doors().size()); }
+bool Walker::door(u32 index, WalkDoor& out) const noexcept {
+  const std::span<const scene_collision::DoorBody> doors = impl_->consumer.doors();
+  if (index >= doors.size()) return false;
+  out = Impl::walk_door(doors[index]);
+  return true;
+}
+bool Walker::door_by_key(u64 key, WalkDoor& out) const noexcept {
+  scene_collision::DoorBody d;
+  if (!impl_->consumer.door(key, d)) return false;
+  out = Impl::walk_door(d);
+  return true;
+}
+u32 Walker::door_nearest(WorldPos point, f32 radius) const noexcept {
+  const u32 i = impl_->consumer.door_nearest(point, radius);
+  return i == scene_collision::k_no_index ? k_no_walk_index : i;
+}
+bool Walker::request_door_toggle(u64 key) noexcept {
+  Impl& w = *impl_;
+  scene_collision::DoorBody d;
+  if (w.door_toggle_count >= k_walk_door_toggles || !w.consumer.door(key, d)) return false;
+  w.door_toggles[w.door_toggle_count++] = key;
+  return true;
+}
 #else
+u32 Walker::door_count() const noexcept { return 0; }
+bool Walker::door(u32, WalkDoor&) const noexcept { return false; }
+bool Walker::door_by_key(u64, WalkDoor&) const noexcept { return false; }
+u32 Walker::door_nearest(WorldPos, f32) const noexcept { return k_no_walk_index; }
+bool Walker::request_door_toggle(u64) noexcept { return false; }
 bool Walker::cast(WorldPos, Vec3, f32, f32, WalkCast&) const noexcept { return false; }
 bool Walker::supports(WorldPos, f32, f32, std::span<WalkSupport>, WalkSupports&) const noexcept {
   return false;
@@ -881,6 +1038,13 @@ void Walker::set_props(PropsFn props, void* context) noexcept {
   impl_->props_version = ~u64{0};
 }
 
+void Walker::set_door_service(DoorAskFn ask, void* context) noexcept {
+  impl_->door_ask = ask;
+  impl_->door_context = context;
+}
+u64 Walker::door_interacts() const noexcept { return impl_->door_interacts; }
+u64 Walker::door_refusals() const noexcept { return impl_->door_refusals; }
+
 f32 wade_scale(f32 depth) noexcept {
   if (depth <= k_wade_ankle_m) return 1.0f;
   if (depth <= k_wade_waist_m)
@@ -914,7 +1078,9 @@ WorldPos Walker::drop(WorldPos camera) {
   ++w.stats.drops;
 #if ENGINE_VIEW_WALK_PHYSICS
   if (w.physical) {
-    // Every tile round the camera, and its ground as drawn, before anything is looked for.
+    // Every tile round the camera, and its ground as drawn, before anything is looked for; and
+    // every prop's proxy in reach, here and at the walk's first tick (`props_now`).
+    w.props_now = true;
     w.move_ring(camera, true);
     while (w.consumer.refresh(camera, w.params.radius) > 0) {
     }
@@ -986,7 +1152,9 @@ WorldPos Walker::step(const WalkInput& input) {
     // refresh changed under it, never left under it (scene_collision.h, `follow`).
     const i64 ring_start = time::monotonic_ns();
     w.move_ring(before, false);
+    w.props_now = false;  // the walk's first tick took them (`drop`)
     (void)w.consumer.follow(w.body);
+    w.step_doors(input.interact, input.yaw);  // S91: after the ring, before the character moves
     w.timing.ring_ns += time::monotonic_ns() - ring_start;
     // What the step did, from where the sand left it: being carried up a rising dune is not
     // climbing it.

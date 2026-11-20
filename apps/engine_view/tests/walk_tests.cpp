@@ -11,6 +11,7 @@
 #include "../walk.h"
 
 #include <core/json/json_value.h>
+#include <domain/geometry/cluster_lod.h>
 #include <foundation/input/input.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/terrain.h>
@@ -641,3 +642,188 @@ TEST_CASE("walk: wading slows the walker by the declared curve, and the chest's 
   CHECK(zero.stats.hash == none.stats.hash);
   CHECK(none.stats.wading_ticks == 0u);
 }
+
+#if ENGINE_VIEW_WALK_PHYSICS
+namespace {
+
+constexpr u32 k_key_e = 8;  // `interact` (fly_camera.cpp, revision 5)
+
+struct DoorMesh {
+  Vector<Vec3> positions;
+  Vector<u32> indices;
+};
+
+// A box standing on y = y0 round (cx, cz), faces wound outwards.
+void door_box(DoorMesh& m, Vec3 half, f32 cx, f32 cz) {
+  const u32 base = m.positions.size();
+  for (u32 k = 0; k < 8; ++k) {
+    m.positions.push_back(Vec3{cx + ((k & 1) ? half.x : -half.x), (k & 2) ? 2.0f * half.y : 0.0f,
+                               cz + ((k & 4) ? half.z : -half.z)});
+  }
+  const u32 faces[6][4] = {{0, 2, 6, 4}, {1, 5, 7, 3}, {0, 4, 5, 1},
+                           {2, 3, 7, 6}, {0, 1, 3, 2}, {4, 6, 7, 5}};
+  for (const auto& f : faces) {
+    const u32 tri[6] = {f[0], f[1], f[2], f[0], f[2], f[3]};
+    for (const u32 v : tri)
+      m.indices.push_back(base + v);
+  }
+}
+
+// The waves made flat, a wall across z = 20 with a 0.9 m doorway at x = 0 that declares its leaf
+// (section 53: hung at x = -0.45 on the wall's south face, shut across the gap, swinging north),
+// and the leaf drawn as the scene's instance 1 standing shut in the doorway (`SceneData::leaves`),
+// which the collision must leave out: the door's box is what stops the walker.
+renderer::SceneData door_scene() {
+  renderer::SceneData scene = waves_scene();
+  scene.terrain.dune_height = 0.0f;
+  DoorMesh wall;
+  door_box(wall, Vec3{2.275f, 1.0f, 0.05f}, -2.725f, 20.05f);
+  door_box(wall, Vec3{2.275f, 1.0f, 0.05f}, 2.725f, 20.05f);
+  DoorMesh leaf;
+  door_box(leaf, Vec3{0.45f, 1.0f, 0.025f}, 0.0f, 19.975f);
+  Vector<geometry::ClusterLodMesh> lods;
+  std::string error;
+  for (const DoorMesh* m : {&wall, &leaf}) {
+    geometry::ClusterLodMesh lod;
+    REQUIRE_MESSAGE(
+        geometry::build_cluster_lod(std::span<const Vec3>(m->positions.data(), m->positions.size()),
+                                    std::span<const u32>(m->indices.data(), m->indices.size()),
+                                    geometry::ClusterLodOptions{}, lod, &error),
+        error);
+    lods.push_back(std::move(lod));
+  }
+  REQUIRE_MESSAGE(geometry::merge_cluster_meshes(
+                      std::span<const geometry::ClusterLodMesh>(lods.data(), lods.size()),
+                      scene.lod, scene.parts, &error),
+                  error);
+  scene.mesh_fit.resize(scene.parts.size(), Mat4::identity());
+  scene.terrain_mesh = ~0u;
+  u32 first = 0;
+  for (u32 mesh = 0; mesh < 2; ++mesh) {
+    renderer::SceneInstance placed;
+    placed.mesh = mesh;
+    gfx::InstanceDesc desc;
+    REQUIRE(renderer::make_instance(scene, placed, first, desc, &error));
+    first += scene.parts[mesh].cluster_count;
+    scene.instances.push_back(desc);
+  }
+  scene.pair_count = first;
+  scene.sources.resize(scene.parts.size());
+  geometry::ClusterFileDoor r;
+  r.pivot = Vec3{-0.45f, 0.0f, 20.0f};
+  r.shut_x = 1.0f, r.shut_z = 0.0f;
+  r.swing_x = 0.0f, r.swing_z = 1.0f;
+  r.width_m = 0.9f;
+  r.height_m = 2.0f;
+  r.thickness_m = 0.05f;
+  r.flags = geometry::k_door_flag_door;
+  scene.sources[0].doors.push_back(r);
+  scene.leaves.push_back(renderer::SceneLeaf{1, 0, 0, 1, 1.0f, 0});
+  return scene;
+}
+
+bool refuse_doors(void* refused, const view::WalkDoor&, bool) {
+  ++*static_cast<u32*>(refused);
+  return false;
+}
+
+struct DoorWalk {
+  f64 end_z = 0.0;
+  i32 angle_mdeg = 0;
+  u64 interacts = 0, refusals = 0;
+  u32 moving_ticks = 0;  // ticks whose flush wrote the leaf
+  u32 first_moving = 0, last_moving = 0;
+  u32 stray_writes = 0;  // writes of another instance, or more than one a tick
+  Quat last_rotation{};
+  WorldPos last_origin{};
+  WorldPos hinge{};
+  u64 hash = 0;
+};
+
+// Walking north (yaw pi) from z = 16 toward the shut door with W held, E pressed against it at
+// tick 600, through the session and its input log as every other walk here; the leaf's moves read
+// after every tick, as engine-view's frames flush them.
+DoorWalk walk_to_door(bool refuse) {
+  const renderer::SceneData scene = door_scene();
+  view::Walker walker;
+  std::string error;
+  REQUIRE_MESSAGE(walker.start(view::WalkParams{}, 240, scene, &error), error);
+  REQUIRE(std::string(walker.collision()) == "physics");
+  u32 refused = 0;
+  if (refuse) walker.set_door_service(&refuse_doors, &refused);
+  view::SessionHeader header = walk_header();
+  header.start.position = WorldPos{0.0, 3.0, 16.0};
+  header.start.yaw = 3.14159265f;
+  header.start.pitch = 0.0f;
+  header.walking = true;
+  view::FlySession session;
+  session.set_walker(&walker);
+  const input::ActionMap map = view::default_fly_map();
+  REQUIRE_MESSAGE(session.start(map, header, &error), error);
+  const input::RawEvent events[] = {key(10, k_key_w, true), key(600, k_key_e, true),
+                                    key(602, k_key_e, false), key(1400, k_key_w, false)};
+  DoorWalk out;
+  u32 cursor = 0;
+  for (u64 t = 1; t <= 1500; ++t) {
+    cursor = session.run(events, cursor, SimTick{t});
+    std::span<const u32> indices;
+    std::span<const renderer::SceneInstance> placements;
+    walker.leaf_moves(indices, placements);
+    if (indices.empty()) continue;
+    if (indices.size() != 1 || indices[0] != 1 || placements[0].mesh != 1) ++out.stray_writes;
+    if (out.moving_ticks++ == 0) out.first_moving = static_cast<u32>(t);
+    out.last_moving = static_cast<u32>(t);
+    out.last_rotation = placements[0].transform.rotation;
+    out.last_origin = placements[0].origin;
+  }
+  REQUIRE(walker.door_count() == 1);
+  view::WalkDoor door;
+  REQUIRE(walker.door(0, door));
+  out.end_z = walker.feet().z;
+  out.angle_mdeg = door.angle_mdeg;
+  out.hinge = door.hinge;
+  out.interacts = walker.door_interacts();
+  out.refusals = walker.door_refusals();
+  CHECK(refused == out.refusals);
+  out.hash = session.trajectory().hash;
+  return out;
+}
+
+}  // namespace
+
+// **The walker's interact opens the door it faces, and the leaf is drawn as it turns** (S91;
+// scene_collision.md, "What is drawn swings with what collides"; apps.md, "Doors a module answers
+// for"): a walk at the shut door stops at its face; E against it opens it, the leaf's instance is
+// written on each tick the door turns and on no other, standing at the door's pose, and the walker
+// goes through. A game's door service that answers no keeps it shut and writes nothing.
+TEST_CASE(
+    "walk: the interact opens the door in front, its leaf drawn as it turns, and a no holds it") {
+  const DoorWalk open = walk_to_door(false);
+  MESSAGE("opened: the walker ended at z " << open.end_z << ", the leaf written on "
+                                           << open.moving_ticks << " ticks, " << open.first_moving
+                                           << " to " << open.last_moving);
+  CHECK(open.interacts == 1);
+  CHECK(open.refusals == 0);
+  CHECK(open.angle_mdeg == -90000);  // a quarter turn toward +z
+  CHECK(open.end_z > 21.0);          // through the doorway
+  CHECK(open.stray_writes == 0);
+  // 375 millidegrees a tick: 240 ticks from shut to open, every one a write and none after.
+  CHECK(open.moving_ticks == 240);
+  CHECK(open.first_moving >= 600);
+  CHECK(open.last_moving == open.first_moving + 239);
+  // At the end it stands where the door's box does: its hinge, a quarter turn about +y.
+  CHECK(std::fabs(open.last_rotation.y + 0.70710678f) < 1e-5f);
+  CHECK(std::fabs(open.last_rotation.w - 0.70710678f) < 1e-5f);
+  CHECK(length(Vec3{relative(open.last_origin, open.hinge)}) < 1e-6f);
+
+  const DoorWalk held = walk_to_door(true);
+  MESSAGE("refused: the walker ended at z " << held.end_z);
+  CHECK(held.interacts == 0);
+  CHECK(held.refusals == 1);
+  CHECK(held.angle_mdeg == 0);
+  CHECK(held.end_z < 19.8);  // stopped at the shut leaf's face (19.95) less its radius
+  CHECK(held.moving_ticks == 0);
+  // The same walk again is the same walk.
+  CHECK(walk_to_door(false).hash == open.hash);
+}
+#endif

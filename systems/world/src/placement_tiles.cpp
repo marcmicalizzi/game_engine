@@ -588,6 +588,15 @@ bool PlacementTiles::generate(TileCoord tile, u8 ring, u32 entries, bool for_que
     if (placed.things == 0 && placed.instances.empty() && placed.shapes.empty())
       continue;  // nothing on this tile
     const Vector<u32>& meshes = entry.source->meshes;
+    // **The leaves its meshes hang** (S91; scene_collision.md, "What is drawn swings with what
+    // collides"): each a mesh the tile hands and a placement at its declared angle, after the
+    // entry's own, so theirs keep their places. A query's tile hangs none: a leaf is no placement
+    // of its kind.
+    if (!for_query && !renderer::hang_placement_leaves(placed, meshes.size(), nullptr, why)) {
+      ok = false;
+      ENGINE_LOG_WARN(log_world_placements, "a tile's leaves were not hung",
+                      log::field("entry", entry.source->where), log::field("error", why));
+    }
     // **The meshes the tile handed** (scene_gen.md, "A tile's meshes"): listed here, in the order
     // handed, and named in the table of them (`TileMeshes`) by `install`, on the committing thread
     // — which builds one the first time a tile names it and holds it while any tile does. A query's

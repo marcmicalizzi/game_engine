@@ -86,6 +86,7 @@ ENGINE_EXPECT_SIZE(12, 4, geometry::ClusterFileSeat);
 // A perch a mesh declares (section 43, A43): the point, the up direction, the foot's size and a
 // zero word for the next field, laid over the file's bytes.
 ENGINE_EXPECT_SIZE(32, 4, geometry::ClusterFilePerch);
+ENGINE_EXPECT_SIZE(48, 4, geometry::ClusterFileDoor);
 
 // What an imported glTF says beyond the metallic-roughness core (G2), laid over a container's bytes
 // (sections 49 to 52): a vertex's tangent, second UV and colour in three words, parallel to the

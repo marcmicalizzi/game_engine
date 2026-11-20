@@ -8,7 +8,7 @@
 namespace engine::structures {
 
 bool solve(const structure::Description& d, structure::MeshScope scope,
-           MeshPart (&parts)[k_surfaces], Report& report, std::string& error) {
+           MeshPart (&parts)[k_surfaces], Report& report, std::string& error, u32 leaf) {
   for (MeshPart& part : parts)
     part = {};
   report = {};
@@ -16,10 +16,21 @@ bool solve(const structure::Description& d, structure::MeshScope scope,
   detail::Context ctx;
   ctx.d = &d;
   ctx.scope = scope;
+  ctx.leaf = leaf;
   ctx.parts = parts;
-  detail::solve_walls(d, ctx.walls);
-  detail::mesh_shell(ctx);
-  detail::mesh_interior(ctx);
+  if (scope == structure::MeshScope::leaf) {
+    detail::LeafPlace place;
+    const structure::Opening* opening = nullptr;
+    if (!detail::leaf_shut(d, leaf, place, opening)) {
+      error = "the description has no leaf " + std::to_string(leaf);
+      return false;
+    }
+    detail::mesh_leaf(ctx);
+  } else {
+    detail::solve_walls(d, ctx.walls);
+    detail::mesh_shell(ctx);
+    detail::mesh_interior(ctx);
+  }
   for (u32 s = 0; s < k_surfaces; ++s) {
     report.surface_triangles[s] = parts[s].indices.size() / 3;
     report.triangles += report.surface_triangles[s];

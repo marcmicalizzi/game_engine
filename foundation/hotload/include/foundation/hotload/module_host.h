@@ -154,6 +154,13 @@ struct GameServices {
   Result (*actor_lod_bias)(void* user, u32 actor, f32 bias) = nullptr;
   Result (*actor_clip_info)(void* user, u32 actor, ClipInfo& io) = nullptr;
   Result (*actor_seek)(void* user, u32 actor, f32 seconds) = nullptr;
+  // ABI 13 (module_abi.h; S91): the doors. The host checks the pointers and a `DoorState`'s size,
+  // hands the runner its own struct and copies the answer back only as far as the module's; the
+  // values (a finite point, the radius's range) are the runner's to judge. Null, each answers
+  // `Unsupported`.
+  Result (*door_nearest)(void* user, const f64* point, f32 radius_m, DoorState& out) = nullptr;
+  Result (*door_state)(void* user, u64 key, DoorState& out) = nullptr;
+  Result (*door_toggle)(void* user, u64 key) = nullptr;
 };
 
 struct HostConfig {

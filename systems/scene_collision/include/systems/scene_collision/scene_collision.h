@@ -165,7 +165,19 @@ struct Config {
   // CPU beside the backend's shapes, for `held_tile` and `held_piece`. Off, nothing is kept and
   // those report the ground alone. Changes no body.
   bool keep_shapes = false;
+  // **A prop's proxy is built off the tick** (docs: "A prop's proxy"; P45): a mesh prop whose
+  // proxy is not resident gets its body at the `prop_build_updates`-th `update_props` after the
+  // one that first wanted it, the proxy built meanwhile on the job system `create` was handed —
+  // waited for at that update if a worker is still on it, built there if none started it. A count
+  // of updates, never a clock, so a replay makes the body at the same tick whatever the workers
+  // did. 0: built at the update that wants it, on the tick (a host with no job system, the tests).
+  // A declared prop's proxy at scale 1 is built at `create` and needs no wait.
+  u32 prop_build_updates = 0;
 };
+// engine-view's walk (apps/engine_view/walk.cpp): twelve of its 240 Hz ticks, 50 ms. A constant of
+// the walk, like its tick rate, so a recorded walk and its replay make every prop's body at the
+// same tick.
+inline constexpr u32 k_walk_prop_build_updates = 12;
 Config config_from_tunables(f32 tile_size) noexcept;
 // The consumer's ring: one ring of `radius_tunable()` tiles, the world's hysteresis, the budget.
 world::RingParams ring_params_from_tunables(f32 tile_size) noexcept;
@@ -287,6 +299,19 @@ struct Stats {
   // Props `set_props` was handed under a key it had already been handed in the same call, and left
   // out (the first handed of a key is kept).
   u64 prop_duplicates = 0;
+  // **Props' proxies** (docs: "A prop's proxy"): resident now (one a mesh and quantized scale some
+  // held prop names, and every declared prop's at scale 1); built, and let go once no prop named
+  // them, over the consumer's life; and of the builds, those the tick ran itself (`inline`: no
+  // job system, or none had started it by its update) and those it waited for a worker to finish
+  // (`waits`, the waits' total). `prop_proxy_bytes`: what the resident ones hold, each one's
+  // physics shape (the library's own count) and its entry, so a walk can say what props keep.
+  u32 prop_proxies = 0;
+  u64 prop_proxy_bytes = 0;
+  u64 prop_proxy_builds = 0;
+  u64 prop_proxies_freed = 0;
+  u64 prop_proxy_inline = 0;
+  u64 prop_proxy_waits = 0;
+  i64 prop_proxy_wait_ns = 0;
 };
 
 // **What the walker and a module's casts meet** (docs: "What a moving prop costs"): every body the
@@ -311,6 +336,65 @@ struct PropBody {
   renderer::PropCollider collider{};
 };
 
+// **A door** (`SceneCollision::set_doors`, or a placed piece whose mesh declares a leaf; docs:
+// "Doors"; roadmap S91; ADR-0070): a leaf turning about an upright hinge. `hinge` is the hinge
+// line's foot; closed, the leaf runs from it along +x of the frame `base` turns to, turned further
+// `closed_mdeg` millidegrees about +y, `half_extents` its half width along the leaf, half height
+// and half thickness, its middle `face_z` from the hinge line through its thickness (0: centred on
+// it; a declared leaf hangs from its face, so half its thickness to one side). Open is `open_mdeg`
+// from closed, signed: the side it swings to (a negative swing turns the leaf's +x toward +z).
+// Each tick the angle moves toward its state's target by `speed_mdeg`, an integer, so a replay
+// reaches the same angle at the same tick. `key` is the host's name for it, or for a declared
+// leaf a function of its piece's place and the leaf's index (`declared_door_key`).
+inline constexpr i32 k_door_open_mdeg = 90000;
+inline constexpr i32 k_door_speed_mdeg = 375;  // 90 degrees in a second at 240 Hz
+struct DoorBody {
+  u64 key = 0;
+  WorldPos hinge{};
+  Quat base{};
+  i32 closed_mdeg = 0;
+  i32 open_mdeg = k_door_open_mdeg;
+  i32 speed_mdeg = k_door_speed_mdeg;
+  Vec3 half_extents{0.45f, 1.0f, 0.025f};
+  f32 face_z = 0.0f;
+  bool open = false;   // its state: where it is heading
+  i32 angle_mdeg = 0;  // reached, from closed
+};
+struct DoorStats {
+  u32 doors = 0;
+  u32 bodies = 0;
+  u32 declared = 0;  // of `doors`, the ones a placed piece's mesh declared
+  u64 toggles = 0;
+  u64 moves = 0;    // ticks a door's angle changed
+  u64 holds = 0;    // ticks a door held its angle because its leaf would have entered the walker
+  u64 clears = 0;   // ticks a door already in the walker moved away from it (docs: "Doors")
+  u32 refused = 0;  // doors the last `set_doors` refused: a key given before
+};
+// A leaf's turn about +y at `mdeg` millidegrees, a function of the integer's bits on every
+// compiler: core/math's deterministic sine and cosine of the half angle, never the C library's
+// (docs: "Doors"). What a door's body and its hold on the walker both turn by.
+Quat door_rotation(i32 mdeg) noexcept;
+// **Where a door's leaf stands** at its angle now (docs: "Doors"): its hinge's foot and its whole
+// turn (`base`, then `closed_mdeg` plus the angle about +y). The collision's box and a drawn leaf
+// mesh — whose frame is the hinge's foot at the origin with the leaf shut along +x, as the
+// structures capability meshes one — both stand here, so what is drawn swings with what collides.
+struct DoorLeafPose {
+  WorldPos origin{};
+  Quat rotation{};
+};
+DoorLeafPose door_leaf_pose(const DoorBody& door) noexcept;
+// **A door from a declared leaf** (the container's section 53, `geometry::ClusterFileDoor`; docs:
+// "Doors"): the record in its piece's frame (`offset_scale` the piece's uniform scale) placed at
+// `origin` turned by `rotation`, standing at the angle the record declares (open when it is not
+// shut), keyed `key`. The turn from the record's shut and swing directions is made with square
+// roots alone, so it is the same bits on every toolchain.
+DoorBody declared_door(const geometry::ClusterFileDoor& record, WorldPos origin, Quat rotation,
+                       f32 scale, u64 key) noexcept;
+// The key of a placed piece's `leaf`-th declared door: the piece's name (`support_placement`) and
+// the leaf's index, never the order tiles came in. Its top bit is set, which keeps it apart from
+// the keys a host hands below 2^63.
+u64 declared_door_key(u64 placement, u32 leaf) noexcept;
+
 // **What a held tile holds, for a debug draw** (collision_draw.h). Spans are the consumer's and
 // stay valid until its next update.
 inline constexpr u32 k_no_index = 0xFFFFFFFFu;
@@ -330,8 +414,9 @@ struct HeldTile {
 // **What a cast met** (`describe_hit`; docs: "What a module can ask"): the ground of a held tile,
 // or one piece of its placements — a scene mesh's instance (`instance`) or a streamed entry's
 // placement (`entry`; `mesh` its scene mesh, or none for a mesh the tile handed).
-// A game's prop (`set_props`) is `prop`, its `instance` the prop's key and `mesh` its scene mesh.
-enum class HitKind : u8 { none = 0, ground = 1, piece = 2, prop = 3 };
+// A game's prop (`set_props`) is `prop`, its `instance` the prop's key and `mesh` its scene mesh;
+// a door's leaf (`set_doors`) is `door`, its `instance` the door's key.
+enum class HitKind : u8 { none = 0, ground = 1, piece = 2, prop = 3, door = 4 };
 struct HitInfo {
   HitKind kind = HitKind::none;
   u32 mesh = k_no_index;
@@ -510,7 +595,43 @@ class SceneCollision {
   // makes the same bodies with the same ids. Returns the bodies made, let go and moved; 0 at once
   // when nothing changed, and a scene with no props pays one comparison. Allocates nothing once
   // the props were handed.
-  u32 update_props();
+  // **`at_once`: every pending proxy in reach is taken at this update** (docs: "A prop's proxy"): a
+  // mesh prop whose tile is held and whose proxy is not ready has it built here, or waited for if a
+  // worker is on it, and its body made now instead of at its promised update. A host passes it at
+  // the updates that look for every body at once — a drop, a teleport, a walk's first tick
+  // (engine-view's walk.h, "Determinism") — so it is a step of the tick sequence and a replay takes
+  // the same proxies at the same tick.
+  u32 update_props(bool at_once = false);
+  // ---- doors (docs: "Doors"; roadmap S91; ADR-0070) ----
+  // The doors, copied with their states and angles as given (a restore hands them back where they
+  // were, declared ones with them); each a box on the kinematic layer while the tile its hinge
+  // stands in is held. **A placed piece whose mesh declares leaves** (section 53) adds a door a
+  // leaf the first time a held tile holds it, keyed by its place (`declared_door_key`), at the
+  // angle it was declared at, unless a door of that key is already held — so a restore wins, and
+  // a door keeps its state while its tile is away and comes back as it was left.
+  void set_doors(std::span<const DoorBody> doors);
+  // At the tick: the door heads for its other state. False for a key not held.
+  bool toggle_door(u64 key);
+  // **On the tick, after the ring's update and before the walker's step**: a held tile's declared
+  // doors taken in, bodies made and let go with their tiles (in key order), and every door turned
+  // toward its target by its speed — held where the leaf at the next angle would reach into
+  // `walker`'s capsule (null: none), except that one already in it moves when moving takes it
+  // away — its box put there. Returns the doors that moved; nothing to do costs a scan of the
+  // doors.
+  u32 step_doors(const physics::CharacterBody* walker);
+  // A door's state now: its angle and where it is heading, what a host writes back.
+  bool door(u64 key, DoorBody& out) const noexcept;
+  // Every door, in key order (what a host saves, draws a leaf for, or searches for an interact).
+  std::span<const DoorBody> doors() const noexcept { return {doors_.data(), doors_.size()}; }
+  // **The door a walker's interact reaches** (docs: "Doors"): of the doors whose leaf's middle, at
+  // its angle now, is within `reach` metres of `feet` on the ground and less than 2.5 m above or
+  // below them, the nearest whose bearing from the feet is within 60 degrees of `facing` (on the
+  // ground; unit or not) — its index in `doors()`, the smaller key on a tie; `k_no_index` for
+  // none. And the door whose hinge is nearest `point` within `radius` (a module's
+  // `door_nearest`), the same way.
+  u32 door_to_reach(WorldPos feet, Vec3 facing, f32 reach) const noexcept;
+  u32 door_nearest(WorldPos point, f32 radius) const noexcept;
+  const DoorStats& door_stats() const noexcept { return door_stats_; }
   const Stats& stats() const noexcept { return stats_; }
   // **What is held** (docs: "Seeing the collision"): the held tiles, in the consumer's order, and a
   // tile's pieces where `Config::keep_shapes` kept them. False past the count.
@@ -552,6 +673,10 @@ class SceneCollision {
     Vec3 lo{};
     Vec3 hi{};
     Vector<LocalSupport> supports;
+    // **The leaves its mesh declares** (section 53; docs: "Doors"), in the proxy's frame at its
+    // scale: a door each wherever a tile holds the piece. Empty for most.
+    Vector<geometry::ClusterFileDoor> doors;
+    f32 door_scale = 1.0f;
     // A tree (a motion contract of the parts kind) that declares no perch and has no structural
     // table: it offers only its top. Said once, the first time a module asks near it (`told`, the
     // tick's alone: `supports_near` runs on the tick).
@@ -653,6 +778,7 @@ class SceneCollision {
     std::span<const geometry::ClusterFilePerch> perches;
     std::span<const geometry::ClusterFileStructuralPart> structural_parts;
     std::span<const geometry::ClusterFileMotionPart> motion_parts;
+    std::span<const geometry::ClusterFileDoor> doors;
     const std::string* species = nullptr;
     bool has_motion = false;
   };
@@ -671,6 +797,7 @@ class SceneCollision {
     Vector<geometry::ClusterFilePerch> perches;
     Vector<geometry::ClusterFileStructuralPart> structural_parts;
     Vector<geometry::ClusterFileMotionPart> motion_parts;
+    Vector<geometry::ClusterFileDoor> doors;
     std::string species;
     bool has_motion = false;
     u64 bytes = 0;
@@ -792,10 +919,14 @@ class SceneCollision {
   // the next set handed waiting beside them, and the tiles' activations and deactivations at the
   // last update. `kinematic`: a box that has moved, so its body is a kinematic one (docs: "What a
   // moving prop costs"); `pending`: its body is to be made at this update if its tile is held.
+  // A mesh prop's `proxy` is its key in `prop_proxies_` and `quantized` the module's scale its body
+  // is built and placed at (`prop_scale`); both 0 for a box.
   struct HeldProp {
     PropBody prop;
     physics::BodyId body{};
     physics::ShapeId shape{};
+    u64 proxy = 0;
+    f32 quantized = 0.0f;
     bool kinematic = false;
     bool pending = true;
   };
@@ -803,9 +934,61 @@ class SceneCollision {
   Vector<HeldProp> props_next_;
   bool props_handed_ = false;
   u64 props_ring_ = ~u64{0};
-  bool prop_pose(const PropBody& p, physics::BodyTransform& out, Vec3& scale) const;
+  bool prop_pose(const HeldProp& held, physics::BodyTransform& out) const;
   bool make_prop_body(HeldProp& held);
   void drop_prop_body(HeldProp& held) noexcept;
+  // **What a mesh's props share** (docs: "A prop's proxy"), by scene mesh, found once: the mesh's
+  // fit as a turn and a scale (`decompose`), so a prop's proxy scale is its own scale times the
+  // fit's and never a function of its yaw; and the step its scale is rounded to, which moves no
+  // point of the mesh by more than a quarter of `Config::mesh_error_m` (`reach_m`: how far the
+  // fitted mesh reaches from its origin). `ok` false: a mesh with no prop body.
+  struct PropMesh {
+    bool known = false;
+    bool ok = false;
+    Quat rotation{};
+    Vec3 scale{1.0f, 1.0f, 1.0f};
+    f32 reach_m = 0.0f;
+    f32 step = 0.0f;
+  };
+  Vector<PropMesh> prop_meshes_;
+  const PropMesh& prop_mesh(u32 mesh);
+  // The module scale `scale` rounded to the mesh's step, anchored at 1 (so 1 is 1), and the key of
+  // the proxy at it; false for a mesh with no prop body or a scale of no size.
+  bool prop_scale(u32 mesh, f32 scale, f32& quantized, u64& key);
+  u32 last_scale_mesh_ = k_no_index;  // `prop_scale`'s last question and answer
+  f32 last_scale_ = 0.0f;
+  f32 last_quantized_ = 0.0f;
+  u64 last_key_ = 0;
+  // **A prop's proxy, built off the tick** (`Config::prop_build_updates`): by (mesh, quantized
+  // scale), named by `refs` held props whose tile is held, gone with the last unless `declared`. A
+  // job builds it into `proxy`; `state` is claimed by whoever runs it first (the job or the tick at
+  // `due`), and `ran` signalled when the job returned. Defined in the source.
+  struct PropProxy;
+  PropProxy* want_prop_proxy(const HeldProp& held, bool now);
+  bool finish_prop_proxy(PropProxy& entry);
+  void count_prop_proxies() noexcept;
+  void build_proxy(u32 mesh, Vec3 scale, PlacementScratch& scratch, Proxy& out, u32& left_out,
+                   bool& coarsened, u64& bytes) const;
+  FlatMap<u64, std::unique_ptr<PropProxy>> prop_proxies_;
+  Vector<std::unique_ptr<PropProxy>> prop_retired_;  // let go while a job may still touch them
+  Vector<u64> prop_unused_;                          // scratch: the keys no prop names
+  u64 prop_updates_ = 0;                             // `update_props` calls, the deadline's clock
+  u32 props_waiting_ = 0;                            // held props whose proxy is building
+  // The doors (`set_doors` and the pieces' declared leaves, S91), in key order, and beside each its
+  // kinematic box while its tile is held (`door_bodies_[i]` is `doors_[i]`'s).
+  struct HeldDoor {
+    physics::BodyId body{};
+    physics::ShapeId shape{};
+  };
+  Vector<DoorBody> doors_;
+  Vector<HeldDoor> door_bodies_;
+  Vector<DoorBody> doors_found_;  // scratch: a ring change's declared doors not held yet
+  u64 doors_ring_ = ~u64{0};
+  DoorStats door_stats_;
+  void drop_door_body(HeldDoor& held) noexcept;
+  // The held tiles' declared doors not held yet, merged in by key (`step_doors`, on a ring change).
+  void take_declared_doors();
+  u32 find_door(u64 key) const noexcept;
   // Scratch, reused: the tick's placements, and the refresh's order.
   PlacementScratch tick_scratch_;
   Vector<u64> order_;

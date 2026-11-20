@@ -1,0 +1,17 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "S91",
+  "reason": "the drawn leaf: engine-view's walker hands its turned doors' leaves to the renderer between frames beside the game's props (a flush and the walker's pointer in both loops), the walker's leaf moves behind the physics switch, and scene_collision.md's section on what is drawn",
+  "date": "2026-11-19",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "engine_view.main_cpp.lines": 11,
+    "engine_view.run_view.lines": 1,
+    "engine_view.run_offscreen.lines": 1,
+    "engine_view.if_engine_view": 3,
+    "page:docs/subsystems/renderer.md": 913,
+    "page:docs/subsystems/apps.md": 2111,
+    "page:docs/subsystems/geometry.md": 2474,
+    "page:docs/subsystems/scene_collision.md": 29234
+  }
+}

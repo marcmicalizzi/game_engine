@@ -363,6 +363,13 @@ TEST_CASE("engine-view: a module asks the world for casts, supports and the wate
     CAPTURE(ok);
     CHECK(num(entries, ok) == 0.0);
   }
+  // ABI 13's doors (S91): this scene declares no building, so the walker's collision holds no door
+  // and all three answer `NotFound` (1) — the nearest within the farthest radius, then the state
+  // and the toggle of the key that left, which no door has.
+  for (const char* none : {"door_nearest", "door_state", "door_toggle"}) {
+    CAPTURE(none);
+    CHECK(num(entries, none) == 1.0);
+  }
   for (usize k = 0; k < entries->size(); ++k) {
     f64 code = -1.0;
     REQUIRE(entries->as_object().value_at(static_cast<u32>(k)).get_f64(code));

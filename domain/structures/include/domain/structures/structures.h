@@ -48,7 +48,9 @@ namespace engine::structures {
 //    states none of them meshes to the same bits as before).
 // 5: a thatch's courses and cut eave (the same holds), a leaf's boards each with their own
 //    grain, and the example's batter eased to seven eighths.
-inline constexpr u32 k_structure_version = 5;
+// 6: a leaf is a mesh of its own (the `leaf` scope), out of the whole, the exterior and the
+//    interior (a description with no leaf meshes to the same bits as before).
+inline constexpr u32 k_structure_version = 6;
 
 // Determinism stance (ADR-0010): "derived": a mesh is content, never read back into gameplay, and
 // the same bytes from every toolchain all the same (structures.md, "Determinism").
@@ -205,9 +207,12 @@ bool validate(const structure::Description& d, std::string& why);
 bool walk_records(const structure::Description& d, Walk& out, std::string& error);
 
 // The mesh by surface: `parts[static_cast<u32>(structure::Surface::x)]`. `scope` picks the whole
-// building, or what is seen from outside, or the rest (structures.md, "Exterior and interior").
+// building, or what is seen from outside, or the rest (structures.md, "Exterior and interior"),
+// none of which holds a leaf; or the `leaf` scope, leaf `leaf` alone (`door_records`' order),
+// shut, its hinge's foot at the origin and its free edge along +x (structures.md, "A leaf is a
+// mesh of its own"). False for a leaf the description does not have.
 bool solve(const structure::Description& d, structure::MeshScope scope,
-           MeshPart (&parts)[k_surfaces], Report& report, std::string& error);
+           MeshPart (&parts)[k_surfaces], Report& report, std::string& error, u32 leaf = 0);
 
 // ---- the recipe file and the container
 // -----------------------------------------------------------
@@ -217,6 +222,22 @@ bool solve(const structure::Description& d, structure::MeshScope scope,
 bool read_file(std::string_view text, structure::Recipe& out, std::string& error);
 std::string canonical_json(const structure::Recipe& recipe);
 u64 source_hash(const structure::Recipe& recipe);
+
+// The leaves of `d` that turn on a hinge — a door's, a casement's, a shutter's — as the container's
+// section 53 records them (structures.md, "Leaves and mullions"; geometry.md, "Doors"): shut, with
+// the way each
+// swings and the angle the description stands it at, in metres in the building's frame. Every
+// leaf the mesher hangs, in the openings' order and then hinge first; empty for a description
+// with none. `build_container` writes them into every container of the whole or the exterior
+// it builds (the leaf's own mesh records none).
+void door_records(const structure::Description& d, Vector<geometry::ClusterFileDoor>& out);
+
+// **A leaf's own recipe** (structures.md, "A leaf is a mesh of its own"): `house` with the
+// `leaf` scope and leaf `index`, canonical, and the file name a host hands it under
+// (`<stem>.leaf<index>.structure.json` beside the house's own name), so a tile that hangs two
+// houses of one description draws one leaf mesh for both.
+std::string leaf_recipe(const structure::Recipe& house, u32 index);
+std::string leaf_path(std::string_view house_path, u32 index);
 
 // The container the mesh generator `structure` builds: each surface's triangles clustered and the
 // DAGs merged, a material a surface, its set the description's role from the host's pack through

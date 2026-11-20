@@ -521,8 +521,31 @@ TEST_CASE("structures: the recipe's file, its hash and its container") {
   CHECK(report.clusters > 0);
   CHECK(report.root_triangles > 0);
   CHECK(report.root_triangles <= report.triangles);
+  // S91: the cot's door and its windows' shutters reach the container as section 53's records.
+  Vector<geometry::ClusterFileDoor> doors;
+  door_records(recipe.description, doors);
+  CHECK(!doors.empty());
+  CHECK(container.doors.size() == doors.size());
   std::printf("structures: the cot's container is %u clusters, %u triangles at its root\n",
               report.clusters, report.root_triangles);
+  // A leaf's own recipe (structures.md, "A leaf is a mesh of its own") reads back as itself, keys
+  // apart from the house's and from every other leaf's, and builds a container of the leaf alone
+  // that declares no door of its own.
+  const std::string leaf_text = leaf_recipe(recipe, 1);
+  REQUIRE(read_file(leaf_text, back, error));
+  CHECK(back.scope == MeshScope::leaf);
+  CHECK(back.leaf == 1);
+  CHECK(canonical_json(back) == leaf_text);
+  CHECK(source_hash(back) != source_hash(recipe));
+  structure::Recipe first = back;
+  first.leaf = 0;
+  CHECK(source_hash(first) != source_hash(back));
+  geometry::ClusterFileData leaf_container;
+  Report leaf_report;
+  REQUIRE(build_container(back, inputs, lod, 0, leaf_container, leaf_report, error));
+  CHECK(leaf_container.doors.empty());
+  CHECK(leaf_container.materials.size() == 1);  // timber
+  CHECK(leaf_path("village/cot-0011.structure.json", 3) == "village/cot-0011.leaf3.structure.json");
 }
 
 TEST_CASE("structures: a leaf hangs in its frame, shut across the opening or open beside it") {
@@ -537,24 +560,58 @@ TEST_CASE("structures: a leaf hangs in its frame, shut across the opening or ope
   cot.openings[0].leaf = structure::LeafKind::none;
   Solved bare;
   solved(cot, MeshScope::whole, bare);
-  // A door's leaf is four boards and three ledges, every one a closed box of timber.
-  CHECK(triangles(shut, Surface::timber) == triangles(bare, Surface::timber) + 7 * 12);
-  CHECK(open.report.triangles == shut.report.triangles);
-  // Shut, a line through the doorway's middle passes through a board (two faces); through a
-  // ledge's height, the board and the ledge sunk into it; open a quarter turn, nothing.
+  // S91 (structures.md, "A leaf is a mesh of its own"): the leaf turns, so it is in none of the
+  // house's meshes: the house is the same triangles shut, open or with no leaf at all, and a line
+  // through the doorway's middle, shut, passes through nothing.
+  CHECK(triangles(shut, Surface::timber) == triangles(bare, Surface::timber));
+  CHECK(open.report.triangles == bare.report.triangles);
   const structure::Opening& door = cot.openings[0];
   D3 a, b;
   through(cot, door.wall, door.at, 60.0, a, b);
-  CHECK(crossings(shut, a, b) == 2);
+  CHECK(crossings(shut, a, b) == 0);
   CHECK(crossings(open, a, b) == 0);
-  CHECK(crossings(bare, a, b) == 0);
   through(cot, door.wall, door.at, 30.0, a, b);
-  CHECK(crossings(shut, a, b) == 4);
+  CHECK(crossings(shut, a, b) == 0);
+  // Its own mesh, the `leaf` scope: four boards and three ledges, every one a closed box of
+  // timber, shut along +x from its hinge's foot at the origin, as wide and tall as section 53
+  // says, its thickness to the one side of z 0 that `leaf_side` names, whatever angle the
+  // description stands it at.
+  cot = example_cot();
+  std::string error;
+  Vector<geometry::ClusterFileDoor> records;
+  door_records(cot, records);
+  REQUIRE(!records.empty());
+  for (const i32 angle : {90, 0}) {
+    cot.openings[0].leaf_open = angle;
+    Solved own;
+    REQUIRE(solve(cot, MeshScope::leaf, own.parts, own.report, error, 0));
+    CHECK(own.report.triangles == 7 * 12);
+    CHECK(triangles(own, Surface::timber) == 7 * 12);
+    const MeshPart& part = own.parts[static_cast<u32>(Surface::timber)];
+    Vec3 lo = part.positions[0], hi = part.positions[0];
+    for (const Vec3& p : part.positions) {
+      lo = Vec3{std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
+      hi = Vec3{std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
+    }
+    CHECK(lo.x == doctest::Approx(0.0).epsilon(1e-5));
+    CHECK(hi.x == doctest::Approx(records[0].width_m).epsilon(1e-4));
+    CHECK(lo.y == doctest::Approx(0.0).epsilon(1e-5));
+    CHECK(hi.y == doctest::Approx(records[0].height_m).epsilon(1e-4));
+    // The thickness, boards and ledges, plus the proud board's 3 mm, on one side only.
+    const bool positive = lo.z > -1e-5f;
+    CHECK((positive ? hi.z : -lo.z) ==
+          doctest::Approx(records[0].thickness_m + 0.003f).epsilon(1e-3));
+    CHECK((positive ? lo.z : hi.z) == doctest::Approx(0.0).epsilon(1e-5));
+  }
+  cot.openings[0].leaf_open = 90;
+  Solved none;
+  CHECK_FALSE(solve(cot, MeshScope::leaf, none.parts, none.report, error,
+                    static_cast<u32>(records.size())));
+  CHECK(error.find("no leaf") != std::string::npos);
   // The walk records carry each leaf where it stands: shut, the door's lies along the wall
   // inside the wall's thickness; open, it lies square to the wall, into the room.
   cot = example_cot();
   Walk walk;
-  std::string error;
   REQUIRE(walk_records(cot, walk, error));
   REQUIRE(walk.leaves.size() == 5);  // the door's, and a pair of shutters at each window
   const WalkLeaf& leaf = walk.leaves[0];
@@ -565,6 +622,37 @@ TEST_CASE("structures: a leaf hangs in its frame, shut across the opening or ope
   CHECK(leaf.thickness == doctest::Approx(0.055));
   CHECK(leaf.y1 - leaf.y0 == doctest::Approx(1.90 - 0.02 - 0.005 - 0.063).epsilon(1e-3));
   CHECK(walk.openings.size() == cot.openings.size());  // an opening's record is as it was
+  // S91 (geometry.md, "Doors"): the same leaves as the container's door records, shut, with the
+  // way each swings. Turned to its angle about the pivot, a record lies where its walk leaf does.
+  Vector<geometry::ClusterFileDoor> doors;
+  door_records(cot, doors);
+  REQUIRE(doors.size() == walk.leaves.size());
+  for (u32 k = 0; k < doors.size(); ++k) {
+    const geometry::ClusterFileDoor& r = doors[k];
+    const WalkLeaf& w = walk.leaves[k];
+    CHECK(r.opening == w.opening);
+    CHECK(r.open_deg == w.open_deg);
+    CHECK(r.thickness_m == doctest::Approx(w.thickness));
+    CHECK(r.height_m == doctest::Approx(w.y1 - w.y0).epsilon(1e-4));
+    CHECK(r.pivot.y == doctest::Approx(w.y0).epsilon(1e-4));
+    CHECK(r.shut_x * r.swing_x + r.shut_z * r.swing_z == doctest::Approx(0.0).epsilon(1e-6));
+    if (w.open_deg != 0 && w.open_deg != 90) continue;  // the two angles with exact turns
+    const f64 c = w.open_deg == 90 ? 0.0 : 1.0, s = w.open_deg == 90 ? 1.0 : 0.0;
+    const f64 ux = c * static_cast<f64>(r.shut_x) + s * static_cast<f64>(r.swing_x),
+              uz = c * static_cast<f64>(r.shut_z) + s * static_cast<f64>(r.swing_z);
+    const f64 vx = s * static_cast<f64>(r.shut_x) - c * static_cast<f64>(r.swing_x),
+              vz = s * static_cast<f64>(r.shut_z) - c * static_cast<f64>(r.swing_z);
+    const f64 half = static_cast<f64>(r.thickness_m) * 0.5;
+    CHECK(static_cast<f64>(r.pivot.x) + vx * half == doctest::Approx(w.hinge.x).epsilon(1e-4));
+    CHECK(static_cast<f64>(r.pivot.z) + vz * half == doctest::Approx(w.hinge.y).epsilon(1e-4));
+    CHECK(static_cast<f64>(r.pivot.x) + vx * half + ux * static_cast<f64>(r.width_m) ==
+          doctest::Approx(w.tip.x).epsilon(1e-4));
+    CHECK(static_cast<f64>(r.pivot.z) + vz * half + uz * static_cast<f64>(r.width_m) ==
+          doctest::Approx(w.tip.y).epsilon(1e-4));
+  }
+  CHECK((doors[0].flags & geometry::k_door_flag_door) != 0);    // the door
+  CHECK((doors[1].flags & geometry::k_door_flag_door) == 0);    // a shutter
+  CHECK((doors[1].flags & geometry::k_door_flag_paired) != 0);  // one of a pair
   cot.openings[0].leaf_open = 0;
   REQUIRE(walk_records(cot, walk, error));
   CHECK(walk.leaves[0].tip.y == doctest::Approx(walk.leaves[0].hinge.y).epsilon(1e-4));
@@ -576,8 +664,8 @@ TEST_CASE("structures: a leaf hangs in its frame, shut across the opening or ope
   cot.openings[1].leaf = structure::LeafKind::none;
   Solved glazed;
   solved(cot, MeshScope::whole, glazed);
-  // Three mullions and two shutters of two boards and two ledges for one glazing bar.
-  CHECK(triangles(open, Surface::timber) == triangles(glazed, Surface::timber) + (3 + 8 - 1) * 12);
+  // Three mullions for one glazing bar; the shutters are meshes of their own (S91).
+  CHECK(triangles(open, Surface::timber) == triangles(glazed, Surface::timber) + (3 - 1) * 12);
   cot.openings[0].kind = structure::OpeningKind::doorway;
   cot.openings[0].leaf = structure::LeafKind::ledged;
   std::string why;
@@ -607,8 +695,11 @@ TEST_CASE("structures: the same description is the same bytes") {
   // (0x0e7f2753a6e46f1c and 0xbda81d7d48292935 at 4ed45afd.) Re-taken once more at version 5
   // for the example alone: its back window's shutter became a pair, since one leaf that wide
   // stood square into the room. The mesher did not change.
-  CHECK(mesh_hash(a) == 0xd1cbbc4f83052550ull);
-  CHECK(mesh_hash(two) == 0xeb31abde321a4163ull);
+  // (0xd1cbbc4f83052550 and 0xeb31abde321a4163.) Version 6 (S91, 2026-11-18): the leaves left the
+  // house's mesh for their own (the `leaf` scope), so the cot's door and shutters are not in it.
+  // MSVC only until a Linux container reproduces them.
+  CHECK(mesh_hash(a) == 0xdcc9fe2402d12c30ull);
+  CHECK(mesh_hash(two) == 0xfe57be36ae28189bull);
   // A description that states none of what versions 3 and 4 added is the mesh it was at
   // version 2, to the bit: the first cot's pin.
   Description plain = example_cot();

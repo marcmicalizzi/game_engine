@@ -217,16 +217,155 @@ holds it, a ray down onto the box and a sphere at its face before and after it m
 case hands one key twice and holds that the first handed is kept (`Stats::prop_duplicates`) and no
 body is left behind.
 
-**A mesh prop's proxy is built on the tick when its scale is new** (not mended; a row). A body is
-made — and its proxy looked up by `proxy_for`, keyed by the exact float bits of the scale
-`decompose` reads from the turned and fitted matrix — only when a prop is placed, its tile comes
-in, or its shape changes; a miss cuts the proxy and builds its mesh shape inline, on the walker's
-tick, and the entry is kept for the consumer's life. **A module that moves or yaws a mesh prop
-every tick does not hit it**: a pose-only change is a move and asks for no proxy. **One that scales
-a mesh prop every tick does**: each new scale is a new shape, so a body let go and made, a proxy cut
-and built on the tick, a cache entry never freed and a broadphase rebuild, every tick. A prop placed
-at a fresh yaw may miss too, once, at the make, since a turned column's length is 1 within an ulp
-rather than exactly 1. A creature that grows or breathes should be a box.
+### A prop's proxy
+
+(2026-11-18, a review of P45.) **A mesh prop's proxy is one a mesh and rounded scale, built off
+the tick, and let go when no prop names it.** Until then a body's proxy came from `proxy_for`, the
+placements' cache, keyed by the exact float bits of the scale `decompose` read back out of the
+turned and fitted matrix: a miss cut the proxy and built its mesh shape inline on the walker's tick,
+each new module scale (rocks placed at 0.8 to 1.2) was a new build, and every entry was kept for the
+consumer's life. (The review's further worry, that a fresh yaw would miss because a turned column's
+length is 1 only within an ulp, did not hold on the base: ten yaws at two scales made two proxies,
+`msvc-release`. The key is now free of the turn by construction.) Now props have a table of their
+own (`SceneCollision::PropProxy`):
+
+- **The key is what makes two proxies the same**: the scene mesh and the module's scale rounded to
+  a step, and nothing of the turn. The proxy's scale is the module's times the fit's own column
+  lengths (`decompose` of the fit alone), its turn the prop's times the fit's, so the yaw never
+  reaches the key. The step is `mesh_error_m / (2 reach)`, where the reach is how far the fitted
+  mesh can stand from its origin (its 16-bit grid's cube through the fit, an upper bound), rounded
+  to the nearest and anchored at 1, so a prop at its own size is exactly scale 1: the body is built
+  and placed at the rounded scale, which moves no point of it more than a quarter of the walk's
+  error off the drawn mesh, on top of the cut's own error. For the walk's 5 cm a metre crate's step
+  is 0.020, a 3 m boulder's 0.007; props scattered at 0.8 to 1.2 are at most 20 and 60 proxies. A
+  scale within the step keeps the body; a new step is a new shape (a body let go and made).
+- **A declared prop's proxy at its own size is built at the load** (`create`, from
+  `SceneData::props`): the scene names what its game may place, and the first placement of one at
+  scale 1 costs the tick nothing. Those stay resident for the consumer's life.
+- **Any other is built on the job system** `create` was handed, and the prop's body is made at the
+  `Config::prop_build_updates`-th `update_props` after the one that first wanted it (engine-view's
+  walk: `k_walk_prop_build_updates`, 12 ticks, 50 ms at 240 Hz) — taken ready, waited for if a
+  worker is still on it (`Stats::prop_proxy_waits`), built there if none started it
+  (`prop_proxy_inline`). **A count of updates, never a clock**, so the body is made at the same tick
+  in a recording and its replay whatever the workers did, and with no job system at the same tick
+  too (built on it). For those 12 ticks the new prop has no body: the walker can pass through a prop
+  of a mesh and size never placed before for a twentieth of a second after it appears. A host with
+  no job system and the tests' default (`prop_build_updates` 0) build it on the update that wants
+  it, as before.
+- **A drop, a teleport and a walk's first tick take every pending proxy in reach now**
+  (`update_props(true)`): each mesh prop on a held tile whose proxy is not ready has it built at that
+  update, or waited for if a worker has it, and its body made there. Those are the updates that
+  look for every body at once (a drop casts straight down for the highest surface), and before
+  2026-11-18 a drop onto a boulder of a new size met the floor under it and left the walker inside
+  its shell for the twelve ticks. It is a step of the tick sequence, never a clock: engine-view's
+  walker passes it at a drop and at the first step after one (walk.h `set_props`), a replay drops
+  and steps at the same ticks, and so takes the same proxies at the same update. Its cost is the
+  build on that tick, which a drop already pays for the ring's tiles.
+- **A save holds no proxy state, and needs none.** When a body appears depends on the table's
+  history (which keys are resident, which are pending and until which update), and a fresh consumer
+  has none of it. But engine-view writes a game's state only when the session finishes
+  (`--game-state`, game_runner.h `finish`), so no session continues past its save, and a walk
+  restored from one begins, as every walk does, with a drop, which takes every proxy in reach: from
+  that update the resident set is the props in reach and the declared, what a session that had
+  walked there holds too, and every body in reach is made. A replay restores from its recording's
+  header and makes the same drop at the same tick, so it matches the recorded session. What would
+  differ is a session that continued past a save, which nothing makes: there, a prop whose proxy was
+  pending at the save would get its body at the restore's first tick instead of up to
+  `k_walk_prop_build_updates` ticks later. A save taken mid-session would have to carry each pending
+  proxy's remaining updates (roadmap P63).
+- **Let go when no prop in reach names it, so with the tiles**: at an update whose props' set
+  changed, whose ring moved, or at which a prop moved off the held tiles, each proxy is counted over
+  the held props **whose tile is held**, and one none of them names (and not declared) goes, a proxy
+  a job is still building kept aside until the job returned (`Stats::prop_proxies`,
+  `prop_proxy_builds`, `prop_proxies_freed`). So the table is bounded by the props round the
+  walker, not by the ground it walked: until 2026-11-18 it was counted over every prop handed, and
+  a proxy built while its prop was near stayed until the game stopped handing the prop. Coming back
+  builds it again, its body at its promised update, which is the price: a walker going to and fro
+  across a tile's edge rebuilds a new size's proxy each time the ring lets the tile go (the ring's
+  hysteresis bounds how often). A body holds the backend's reference to its shape (`adopt_shape`), so a
+  proxy let go never takes a body's shape with it.
+
+The placements' proxies (`proxy_for`, a tile's pieces) keep their own cache, built on the
+collision's workers ahead of the ring; they are bounded by the scene's meshes and the generators'
+scales, and are not this rule's. What an imported or hand-authored asset gets: the same, by its
+mesh's grid and fit, with nothing declared beyond `engine.scene.Prop`; a scene with no mesh props
+builds nothing at the load and pays nothing on the tick.
+
+Six cases hold it (`tests/far_forest_tests.cpp`, no device). `a mesh prop's proxy is one a mesh
+and rounded scale, whatever its yaw, and goes when no prop names it`: one crate at ten yaws at its
+own size and at 1.1 is one build, for 1.1; 1.103 keeps the body and builds nothing (with the
+rounding and the letting go switched off it fails: three bodies made, three builds, three proxies
+resident after the props went and none let go); the walker stops at the rounded crate's face within
+a quarter of the error; and handed none the 1.1 proxy goes while the declared one stays (0.4 s in
+`msvc-debug`). `a prop's proxy is built off the tick, its body made at the update promised` (1.9 s):
+a declared boulder at 1.2 gets its body at the twelfth update after its hand-over, with workers and
+without. `a drop takes every pending prop's proxy now, so it lands on a boulder` (0.3 s in `msvc-debug`): the boulder at
+1.5 handed on a walking update has no body yet and a ray straight down meets the floor; the drop's
+update after it makes the body, and the ray meets the boulder's top within the cut's error; handed
+at the drop itself it is built there; with workers and without. `a restored walk's first update has
+the bodies the saved walk had` (0.3 s): four props, three at sizes of their own, handed to one consumer and
+updated twenty times, and to a fresh one at a drop's update, give the same bodies, the same proxies
+resident and the same tops to the bit. `a prop's proxy goes with its tile,
+and comes back with it` (0.2 s): a boulder at 1.2 still handed, the ring moved a kilometre away, loses its
+body and its proxy while the declared two stay, and back it is built again. `a prop of a new mesh arriving mid-run costs the walker's tick no build` (0.4 s) measures
+it: 300 crates of which 30 move a centimetre a tick, and at tick 100 a boulder 3 m across (17,958
+triangles; the collision's own copy of it keeps 3,322) handed with them. Microseconds of a tick,
+`msvc-release`, two alternating runs, with the machine at 38 to 66 % CPU and other rows building:
+
+| the boulder | the arrival's tick, before | after | the worst tick after it, before | after | its body, before / after |
+|---|---:|---:|---:|---:|---|
+| at its own size (declared) | 342 / 382 | 87 / 86 | 32 / 32 | 30 / 40 | at once / at once |
+| at 1.37 | 641 / 614 | 41 / 74 | 66 / 35 | 329 / 309 | at once / 12 updates on |
+| at 1.37, no job system | — | 53 / 30 | — | 642 / 698 | — / 12 updates on |
+
+Before, the proxy was cut and built on the arrival's tick: 0.3 ms at the boulder's own size and
+0.6 ms at a new one, both on the tick, with the body made beside it. After, a declared prop at its
+own size costs the arrival's tick its body (the remaining 86 µs: the body made and the broadphase
+rebuilt round 301 bodies); at a new size the arrival's tick hands the build to a worker and the
+tick twelve updates on makes the body, waiting there for the 0.2 ms of the build a worker had not
+finished — the case's ticks run back to back, not at 240 Hz, so its twelve updates give the worker
+about 0.3 ms where a walk's give it 50 ms, and in a walk that wait is nothing. With no job system
+that tick builds it, as the arrival's tick did before. No tick of either case allocated in steady
+state. The ticks that do not change the set (the move-cost case's rows above) were first measured
+from two pairs, one of which put the one-mover rows 3.6 to 4 µs slower after; settled on
+2026-11-18 by five alternating pairs, before (main without this work) and after (with it and the
+doors), the same two `msvc-release` binaries throughout, the machine at 100 % CPU with 5 to 11
+compilers running beside every run. Medians of each run's tick median, µs, and the spread of the
+five:
+
+| props, moving | before | after | after against before, pair by pair |
+|---|---:|---:|---|
+| 30, 1 | 6.6 (6.2–6.7) | 6.4 (5.5–6.6) | one slower, four faster: not shown |
+| 300, 1 | 21.1 (17.3–22.5) | 18.2 (15.3–18.7) | faster in all five, by 2.0 to 5.3 |
+| 300, 30 | 35.7 (33.3–38.7) | 30.8 (29.8–33.9) | faster in all five, by 2.5 to 5.3 |
+| 30 and 300, none moving | 4.2–4.3 | 4.2 | the same |
+
+So there is no constant cost a tick now pays: the one-mover rows' slowdown was not there, and the
+rows whose props move are a few microseconds faster, which keeps its sign in every pair. Where
+that comes from was not taken apart; the moving path now compares a key `set_props` computed once
+(the rounded scale's, with a one-entry cache for a run of props of one mesh and scale) where it
+read the scale back out of the turned matrix for each moved prop.
+
+**What props and doors keep resident** (2026-11-18; a game's memory at its start is a budget). A
+prop's proxy is one a (mesh, rounded scale), never one an instance: its physics shape (the
+library's own count) and its entry, `Stats::prop_proxy_bytes`. Measured in `msvc-debug` on the
+cases' meshes: the 1 m crate and the 3 m boulder, both declared and built at the load, 5,272
+bytes together; the boulder at 1.2, a size of its own, 9,112 more. **Before the first frame** are
+only the declared props' proxies at their own size, one a declared prop, which `create` builds
+from `SceneData::props`; every other is built when a prop in reach first wants it (a drop takes
+them at once) and let go with its tile, so what stays is bounded by the distinct sizes among the
+props round the walker, not by the props placed. A door keeps its `DoorBody` (88 bytes, pinned in
+the size table) and two physics ids (16 bytes) for as long as it is held — a handed one until the
+next `set_doors`, a declared one from the first time a held tile holds its piece for the rest of
+the session — whether or not its tile is held, because its state is the world's; its leaf's
+record in a building's container is 48 bytes (`geometry::ClusterFileDoor`), loaded with the mesh
+and kept again in each proxy of that mesh (one a mesh and rounded scale, not one a placement);
+and while its tile is held, one kinematic box body of the physics library, the same as a box
+prop's. **Nothing of a door exists before the first frame** but the records inside the meshes the
+load reads anyway: a declared door is made at the first step after its tile comes in, so a
+village of 30 leaves keeps 30 × 104 bytes of doors once it has been walked through, and a tile
+with 30 leaves costs its first step the 30 records' walk, 30 bodies and one broadphase rebuild
+([What a door costs](#what-a-door-costs)). A scene with no props and no doors keeps none of it.
 
 `scene_collision: a game's prop stops a walker, by its mesh or its box, while its tile is held`
 (`tests/far_forest_tests.cpp`, beside the far forest's case, whose scene is built the same way; no
@@ -237,6 +376,218 @@ scale the face is a metre out; a declared box 0.25 m deep stops it at the box's 
 twice it is made again once, as a kinematic body, and stops the walker at its new place; `None` and
 a removal let it through; the ring moved a kilometre away lets the body go with the tile, and back
 it is made again; a cast names the prop by its key.
+
+## Doors
+
+(2026-11-18, roadmap S91; [ADR-0070](../adr/0070-a-door-is-a-kinematic-box-held-by-the-walker.md);
+plan [14 §14.4](../plan/14-structures.md#doors-the-first-kinematic-bodies).) **A door is the
+scene's first body that moves**: a box on the kinematic layer the size of its leaf, about an upright
+hinge (`DoorBody`: the hinge's foot, the closed heading and the swing in integer millidegrees, the
+leaf's half sizes, the speed, the state and the angle reached). A host hands its doors with
+`set_doors` and calls `step_doors(&walker)` on every tick after the ring's update and before the
+walker's step; `toggle_door(key)` at a tick sends a door toward its other state; `door(key)` reads
+it back, which is what a saved village keeps. **Made with its tile, let go with it**, in key order,
+as a prop's body ([Props](#props)); its state is the world's and goes on while its tile is away.
+**Its angle moves by an integer a tick** (`k_door_speed_mdeg` = 375, 90 degrees in a second at 240
+Hz) and the box is put at the pose that integer names with `set_body_transform`, never driven by
+`move_kinematic`, because this world is never stepped (ADR-0070 decisions 2 and 3). **The turn is
+the same bits on every compiler** (`door_rotation`): the integer is reduced to a half turn either
+way and the half angle's sine and cosine are core/math's deterministic ones (`det::sin`,
+`det::cos`), never the C library's, which until 2026-11-18 made a walk through a door replay
+differently on MSVC and glibc although the angle was the same; `scene_collision: a door's turn is
+the same bits on every compiler` pins it over two turns at an eighth of a degree. **`set_doors`
+keeps the numbers in range and one door a key**: a speed of 1 to 180 degrees a tick (none the
+default), a swing within a whole turn either way, so the integer swing never overflows; the first
+door given of a key is kept and a later one refused and counted (`DoorStats::refused`), so `door`
+and `toggle_door` answer for one door. **A door whose leaf already stands in the walker** (a
+restore, a drop or a teleport into its arc) moves away from it and holds only toward it: the test
+is how far the leaf reaches into the capsule (`leaf_depth`, the radius and margin less the
+distance, a correctly rounded square root), and from an angle that is in, the leaf goes while each
+next angle reaches less far than the one before and holds the moment one would reach further, then
+tests as below once it is clear (`DoorStats::clears` counts the ticks it moved so). Until
+2026-11-18 the test was a yes or no, and since every angle near one that meets the walker meets it
+too, such a door held whichever way it headed until the walker left (`scene_collision: a door
+already in the walker moves away from it and holds toward it`, 7 ms). A walker standing on the
+hinge line, whom no turn brings nearer or farther, holds the door both ways. **A door that
+would enter the walker holds its angle**: the leaf at the next angle is tested against the capsule
+— both upright, so the test is exact in the leaf's frame — and a door that would come within
+`k_door_hold_margin_m` (5 cm, past the character's contact padding, so a leaf never presses the
+walker into stepping aside for it to creep after) stays where it was that tick and counts a hold (`DoorStats::holds`). **The
+arc is tested, not only its end**: a tick's travel is tried every degree (`k_door_sweep_mdeg`;
+through a degree a leaf's edge 17 m from its hinge moves the walker's 0.3 m radius) and the leaf
+goes as far as the last angle clear of the walker, so a door a game gives a quarter turn a tick is
+held in the walker's path instead of passing through it, which until 2026-11-18 it did; at the
+default speed the travel is one test at its end, as before (`scene_collision: a fast door is held
+along its arc, never swung through the walker`, 6 ms). **Only the walker holds a door**: the walker's
+world is never stepped, so two leaves, or a leaf and a prop, pass through each other, and a walker
+squeezed between a held leaf and a wall is never pushed, so it can always walk out the way it
+came; a leaf that stops at a prop or at another leaf is not built. The walker collides as `Moving`, so
+its sweep meets the kinematic layer: a closed door is a wall, an open one a wall at its angle. A
+cast that meets a leaf is `HitKind::door`, its `instance` the door's key. **What it costs**: a
+scene with no doors pays an empty check a tick; a door costs a transform write on the ticks it
+turns and nothing standing. **A swing is a move** (2026-11-18), as a prop's is ([What a moving
+prop costs](#what-a-moving-prop-costs)): the box is put at its angle and its node in the kinematic
+tree follows it, and the broadphase is rebuilt only at a step that made or let go a door's body.
+Until then every tick a door swung rebuilt it over every body the world holds. `scene_collision: a
+swinging door costs the walker's tick a move, not a rebuild` (0.2 s in `msvc-debug`) stands 30
+doors and 300 static boxes round a standing walker, keeps k of them swinging, and times 300 ticks
+of the ring's update, `step_doors` and the step; it asserts every swinging door moves every tick
+and that no tick allocates. Medians of a tick in microseconds, `msvc-release`, two alternating runs
+with the machine at 73 to 87 % CPU and other rows building, so upper bounds:
+
+| doors swinging | before | after |
+|---:|---:|---:|
+| 0 of 30 | 2.9 / 4.8 | 4.9 / 2.8 |
+| 1 of 30 | 57 / 68 | 5.5 / 3.2 |
+| 30 of 30 | 69 / 80 | 18.7 / 18.7 |
+
+Before, one door swinging cost the tick about 60 µs over 330 bodies, all of it the rebuild, and a
+walk's broadphase also holds every held tile's ground and placements; after, a swinging door costs
+about half a microsecond (30 against 0), the leaf test against the walker and the transform write.
+
+Three cases in `tests/far_forest_tests.cpp` (no device): a closed door across a doorway stops a
+walker at the leaf's face less its radius, toggled it swings open in exactly 240 ticks and the
+walker goes through; a door closing on a walker in its arc holds short of it, counting holds, and
+finishes once the walker steps away; and two worlds given the same toggles at the same ticks reach
+the same angle, the tile let go takes the body and keeps the door, and the body is made again when
+the tile comes back.
+
+**The walker's interact and a module's door service** (ABI 13, 2026-11-18; [apps](apps.md#doors-a-module-answers-for)).
+engine-view's walker calls `step_doors(&body)` on every step after the ring's update and before the
+character moves, and before it its interact: `door_to_reach` finds the nearest door whose leaf's
+middle stands within reach of the feet on the ground (1.5 m, and within 2.5 m up or down) and
+within 60 degrees of the way the walker faces (a comparison of products, no angle), the smaller
+key on a tie; a game module's `game_door` may refuse it, and a module's own `door_toggle` lands at
+the same point of the next step. `scene_collision: an interact reaches the door in front of the
+walker, none behind it` holds the choice.
+
+**Not built of S91**: a turned door's leaf on a streamed tile (below, "What is drawn swings with
+what collides"), the state written back through the document (D37), and a closed door as an area
+navigation opens.
+
+### What a door costs
+
+(2026-11-18, S91's second leg; `msvc-release`, five alternating pairs of the same two binaries —
+before, this leg's parent's scene collision, after, this leg's — with the machine at 100 % CPU,
+12 to 22 compilers of other rows running and 15 to 30 GB of commit free, so every number is an
+upper bound; medians of the five medians in microseconds.) A difference is called real only when
+it holds its sign in all five pairs.
+
+| case | before | after | |
+|---|---:|---:|---|
+| a tick, 0 of 30 doors swinging | 10.9 | 11.3 | not shown (one pair the other way) |
+| a tick, 1 of 30 swinging | 11.5 | 11.7 | not shown (two pairs equal) |
+| a tick, 30 of 30 swinging | 24.9 | 26.2 | real: +0.3 to +1.7 in every pair |
+
+The 30-door row's 1.2 µs, about 40 ns a swinging door, is what a declared door's frame costs every
+test: its turn is the piece's times the door's (`base * door_rotation`, one quaternion product in
+the pose and one in the walker's test), and the test is a depth with a square root rather than a
+yes or no. It buys a door that turns with the building it hangs in and one that can leave a walker
+it is already in. A first version that asked the depth at the angle a door stands at on every tick
+cost 3.2 µs over the same 30 (+1.8 to +7.3 in every pair); it is asked now only when the first
+angle tested is in, which a door swinging clear of the walker never is.
+
+**A tile's load with its leaves** (`scene_collision: a tile's declared leaves cost its first step
+their doors alone`, after only, since the case is new; the same machine): a wall placed once
+whose mesh declares no leaf or 30, its tiles let go and taken again twenty times with the doors
+forgotten between, so each return is a first sight.
+
+| leaves on the tile | ring update (the tile's bodies) | first `step_doors` (the doors) |
+|---:|---:|---:|
+| 0 | 22.9 | 0.1 |
+| 30 | 27.2 | 55.0 |
+
+The ring update is not shown to differ (one pair of five the other way: the 30 records are copied
+into the piece's proxy, nothing else); the first step after the tile came in is the doors' own,
+about 1.8 µs a door — its box shape, its kinematic body and its share of the one broadphase
+rebuild — paid once a tile's arrival, never on a standing tick (300 standing ticks with the 30
+doors made allocate nothing). What stays is the 104 bytes a door ([What props and doors keep
+resident](#a-props-proxy)), and before the first frame nothing.
+
+**A door a building declares** (2026-11-18). The description says everything a door is — an
+opening with a leaf, the jamb it hangs on and the side it opens to — and the way from it to the
+scene is three pieces, none of them a rule of this module's. **(1)** The structure mesh generator
+writes each leaf into its container as section 53 (`geometry::ClusterFileDoor`,
+[geometry](geometry.md#doors)): shut, its pivot, the way it swings, its sizes and the angle the
+description stands it at; the loaded mesh carries it (`renderer::SourceMesh::doors`), a cached
+build and a fresh one alike. **(2)** The leaf is a mesh of its own (the structures' `leaf` scope,
+[structures](structures.md#leaves-and-mullions)), so the house's proxy, cut from the house's mesh,
+no longer holds it standing at the description's angle as a wall whatever the door did; the frame
+is open in the proxy and the door is the only thing in it. **(3)** A proxy keeps its mesh's
+records (`Proxy::doors`, with the scale it was cut at), and **on a ring change `step_doors` takes
+in every held tile's declared doors** (`take_declared_doors`): each record of each piece a door
+(`declared_door`), its hinge the pivot placed by the piece, its turn the piece's turn times the
+shut leaf's heading — made from the record's direction by the half-angle identities, square roots
+alone, never an arc tangent — its swing the side the record opens to (`open_mdeg` ±90°, its
+thickness `face_z` behind its face on the other side), standing at the record's angle and open
+when that is not shut. **Its key is its place** (`declared_door_key`): the piece's name
+(`support_placement` — a scene instance's index, a streamed placement's entry and id, or its tile
+and place among the tile's placements) and the leaf's index, top bit set so it never meets a host's
+key below 2^63; never the order tiles came in. A key already held is not taken again, so **a
+restore wins** (a `set_doors` of the doors a save read back keeps their states, declared or not),
+and **a door outlives its tile**: let go, its body goes and its state stays and goes on turning;
+back, it is made where it stands. The doors found are sorted and merged by key, so the tiles'
+table order and the order they came in reach nothing. Nothing keys on a generator: an imported
+asset whose container declares section 53 gets the same doors, and a mesh that declares none
+costs the ring change one test of an empty list a piece. `scene_collision: a placed piece's
+declared leaf is a door, kept while its tile is away` (0.54 s in `msvc-debug`) stands a wall mesh
+declaring one leaf and hands no door: the door is made, a wall shut and a way through open,
+toggled while its tile is away it closes there and comes back where it was left, still one door,
+and a restore of its key wins; `a declared door turns with its piece and opens toward its swing`
+holds the hinge, the shut and open headings and the thickness's side under a quarter turn, both
+swings.
+
+**What is drawn swings with what collides** (2026-11-18). A leaf is drawn as an instance of its
+own mesh whose transform the tick sets, the props' path: the structures capability meshes each
+leaf alone in the door's own frame (the `leaf` scope: the hinge's foot at the origin, shut along
++x, its thickness on the `face_z` side), so the instance's transform is `door_leaf_pose(door)` —
+the hinge and the door's whole turn, nothing else — and the box the walker meets is the same pose
+moved half the leaf along, up and through. `scene_collision: a building's leaf mesh stands in its
+door's box at every angle` (`tests/structure_walk_tests.cpp`, 4 ms) meshes each of the example
+cot's five leaves, places its door off the origin under a turn of the house, and holds every vertex
+of the leaf moved by the pose inside the box at five angles of its swing (the proud board's 3 mm
+through the thickness allowed).
+
+**The leaf is drawn where its door is** (2026-11-18, S91's third leg). A mesh generator may answer
+`leaves` (`assets::MeshGeneratorDesc::leaves`, `assets::GeneratedLeaf`): for a file's bytes, each
+leaf its mesh leaves out — the record its container's section 53 holds, and the leaf's own mesh as
+a path beside the file's and a recipe (the structures capability answers with `leaf_path` and
+`leaf_recipe`, the whole and the exterior scopes only, as section 53 is written). The renderer
+hangs them, naming no generator: **a scene** (`renderer::hang_scene_leaves`, the last thing
+`read_scene_file` does before the terrain's mesh) gives every instance of such a mesh one instance
+of each leaf's mesh after every other instance, so the instances before keep their places and the
+collision's keys (a scene instance's index) do not move; and **a streamed tile**
+(`renderer::hang_placement_leaves`, in the placements consumer's `generate`, never for a query)
+appends each leaf's mesh to the meshes it hands and a placement of it after its own. Each stands at
+its record's declared angle by the functions the collision's door is made by
+(`renderer::hinge_turn`, `leaf_heading`, `leaf_side`, `leaf_declared_mdeg`; the collision's
+`door_rotation` and `declared_door` call them), so **a house nobody has touched draws what it drew
+when the leaf was in its mesh**: `scene_collision: a house's leaves are drawn where its doors stand,
+shut as it drew them` (`tests/structure_walk_tests.cpp`) hangs the example cot's five leaves turned
+45 degrees and off the origin, as a scene's instance and as a tile's placement, and holds every
+vertex of each drawn leaf within 0.1 mm of the door's box pose and of the leaf the house's mesh held
+— the old mesher's frame rebuilt from the record (its pivot, its run `cos a shut + sin a swing`, its
+thickness `sin a shut - cos a swing`) — and the tile's within 10 µm of the scene's. Two houses of
+one description draw one leaf mesh each leaf (the leaf's path names its recipe). **The collision
+leaves a drawn leaf out** (`SceneData::leaves`): its door's box is what a walker meets, and a leaf's
+instance binned as a static piece would wall the doorway shut whatever the door did.
+
+**On the ticks a door turns, and on no others, its leaf is written** (engine-view's walker,
+`Walker::leaf_moves`, `flush_leaves`): the walker counts the doors `step_doors` moved, and a flush
+after a step that moved none reads nothing; after one that did, each loaded leaf whose door's angle
+is not the one it is drawn at is placed at `door_leaf_pose` and handed between frames in one
+`SceneRenderer::move_instances`, the actors' path, from scratch sized when the walker starts, so a
+standing door allocates nothing and writes nothing to the GPU. `walk: the interact opens the door in
+front, its leaf drawn as it turns, and a no holds it` (apps/engine_view, no device) walks at a
+declared door through the session and its input log, presses E against it, and holds 240 writes of
+the leaf on the 240 ticks it turns and none after, the last at the door's hinge a quarter turn
+round, the walker through; with a game's door service answering no the door stays shut, nothing is
+written and the walker stops at the leaf. A scene with no leaf costs the read one null test a mesh
+and the walker one comparison a flush. **Not built**: a turned door on a **streamed tile** is not
+redrawn — its leaf stands at the declared angle in the tile's block (writing it through
+`renderer::DynamicBlock::changed` is the next step), and a house in a streamed world's authored run
+hangs no leaf (its leaves would outstay it in the prefix); a mesh the scene fits
+(`SceneMeshInfo::fit`) hangs none, since its records are in the unfitted frame.
 
 ## Holes
 
