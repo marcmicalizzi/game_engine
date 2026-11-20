@@ -1,4 +1,4 @@
-# ADR-0080: A traced chain past its budget starts at its floor, not at the budget, and its references start at the floor too
+# ADR-0078: A traced chain past its budget starts at its floor, not at the budget, and its references start at the floor too
 
 - **Status:** Proposed
 - **Date:** 2026-11-20

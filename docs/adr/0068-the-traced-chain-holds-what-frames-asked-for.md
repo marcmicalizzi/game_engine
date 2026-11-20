@@ -1,7 +1,7 @@
 # ADR-0068: The traced chain holds what frames asked for, shares at the cluster, and packs what it keeps
 
 - **Status:** Proposed
-- **Superseded in part:** decision 1's starting point, by [ADR-0080](0080-a-chain-past-its-budget-starts-at-its-floor.md)
+- **Superseded in part:** decision 1's starting point, by [ADR-0078](0078-a-chain-past-its-budget-starts-at-its-floor.md)
 - **Date:** 2026-11-17
 - **Plan references:** docs/plan/04-renderer.md §4.4 (ray tracing: the cluster path, the fallback's fixed levels, the budget manager), docs/plan/13-reference-consumer-games.md ("RT relevance LOD"), [ADR-0025](0025-cluster-acceleration-structures.md) (cluster acceleration structures), [ADR-0063](0063-memory-is-held-under-one-budget-and-by-travel.md) (one budget, a governor over pools)
 - **Docs touched:** [renderer](../subsystems/renderer.md) ("A guess is not a demand", "What a place holds"), [apps](../subsystems/apps.md) (`--memory-report`), [the measurement](../experiments/rt-structures-memory-2026-11-17.md), `docs/roadmap.md` (R81, R62)
@@ -68,7 +68,7 @@ The alternatives on the table, each read in its source:
    with no floor and no memory of it as a peak. A chain that holds its whole union is a guarantee
    (no frame can want more) and keeps the ordinary window. Everything a frame *did* ask for keeps
    R116's rules: the window, the minute's peak, the floor. (Stage 1, built with this ADR.)
-   *Superseded in part by [ADR-0080](0080-a-chain-past-its-budget-starts-at-its-floor.md)
+   *Superseded in part by [ADR-0078](0078-a-chain-past-its-budget-starts-at-its-floor.md)
    (2026-11-20): where the provisional first capacity is made. A chain past its budget starts at
    `renderer.rt.initial_clusters`, not at the budget, and the cache's references at the same floor;
    the window and the give-back above stand.*
