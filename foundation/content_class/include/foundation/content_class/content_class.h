@@ -286,8 +286,8 @@ void encode_classes(const Categories& categories, const ContentClasses& classes,
 // goes (`Categories::learn`), so a host needs no categories file. Empty bytes are `none`
 // everywhere. Refused, with `out` the unreadable class (after whatever was learned) and the
 // materials emptied: bytes that are not the record, a ladder the table holds otherwise for the
-// name, a pair naming a category the record did not list or a level its ladder lacks, and
-// anything after the end.
+// name, a pair naming a category the record did not list or a level its ladder lacks, a category
+// given twice in one scope (the asset's or a material's), and anything after the end.
 bool decode_classes(Categories& categories, std::span<const u8> bytes, ContentClasses& out,
                     std::string& error, Vector<MaterialClass>* materials = nullptr);
 

@@ -108,6 +108,52 @@ TEST_CASE("texture file: content classes are section 6, written only when classi
   CHECK(std::string(texture_section_name(6)) == "content_classes");
 }
 
+// One file, one answer (C69): a section 6 whose elements are not bytes is not the classes
+// module's record, and both readers refuse it. The streamed tail's reader once skipped it and
+// returned the texture with no class, which is `none`, where the whole-file reader refused.
+TEST_CASE("texture file: a classes section of elements that are not bytes is refused by both") {
+  const test::TempDir tmp("texture_classes");
+  TextureData data = make_fixture();
+  for (u8 b : {u8{4}, u8{0}, u8{0}, u8{0}, u8{'e'}, u8{'n'}, u8{'g'}, u8{'i'}})
+    data.content_classes.push_back(b);
+  std::string error;
+  const std::string written = tmp.file("written.tex");
+  REQUIRE_MESSAGE(write_texture_file(written, data, &error), error);
+  std::string file;
+  REQUIRE(io::read_file(written, file) == io::Status::Ok);
+  TextureFileHeader header;
+  std::memcpy(&header, file.data(), sizeof(header));
+  usize classes_at = 0;
+  for (u32 i = 0; i < header.section_count; ++i) {
+    const usize at = sizeof(header) + sizeof(TextureFileSection) * i;
+    TextureFileSection s;
+    std::memcpy(&s, file.data() + at, sizeof(s));
+    if (s.kind == static_cast<u32>(TextureSection::ContentClasses)) classes_at = at;
+  }
+  REQUIRE(classes_at != 0);
+  TextureFileSection classes;
+  std::memcpy(&classes, file.data() + classes_at, sizeof(classes));
+  classes.element_size = 4;  // the same eight bytes, as two four-byte elements
+  classes.element_count = 2;
+  patch(file, classes_at, &classes, sizeof(classes));
+  rehash(file);
+  const std::string path = tmp.file("words.tex");
+  REQUIRE(io::write_file(path, file) == io::Status::Ok);
+
+  TextureData whole;
+  CHECK_FALSE(read_texture_file_memory(view(file), whole, &error));
+  CHECK_MESSAGE(error.find("content classes") != std::string::npos, error);
+  CHECK(whole.content_classes.empty());
+  for (u32 first : {0u, 1u}) {
+    CAPTURE(first);
+    TextureData tail;
+    error.clear();
+    CHECK_FALSE(read_texture_file_levels(path, first, tail, &error));
+    CHECK_MESSAGE(error.find("content classes") != std::string::npos, error);
+    CHECK(tail.levels.empty());
+  }
+}
+
 TEST_CASE("texture variance: optional chain round trips and malformed payloads are refused") {
   const test::TempDir tmp("normal_variance");
   Vector<u8> pixels;

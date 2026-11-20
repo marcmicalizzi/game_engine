@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "C69",
+  "reason": "texture.md says what the load does with a classified image until C64 (it hits an old classless texture rather than missing, as the page had said) and that both texture readers refuse a classes section of elements that are not bytes",
+  "date": "2026-11-19",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/protocol.md": -7,
+    "page:docs/subsystems/texture.md": 1157
+  }
+}
