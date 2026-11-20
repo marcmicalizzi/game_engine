@@ -166,7 +166,7 @@ struct MaskTables {
 };
 static_assert(sizeof(MaskTables) == 32);
 
-// Mirrors CullParams in cluster_cull.slang. 1840 bytes.
+// Mirrors CullParams in cluster_cull.slang. 1856 bytes.
 //
 // **Everything here is in the frame's space** (`eye`, above): the planes come from a
 // view-projection built with the frame's eye at the origin, `camera.xyz` is where this view's eye
@@ -379,9 +379,20 @@ struct CullParams {
   u64 node_items = 0;
   u64 node_list = 0;
   u64 node_guard = 0;
-  u64 pad_nodes = 0;
+  // **A run holds what a frame draws, not the scene's pairs** (W51-5; renderer.md, "The visible
+  // list's runs are sized by the frame"): the entries this run of the visible list has room for. An
+  // append past it is dropped, counted at `run_drops` (a u32 the frame zeroes), and takes nothing:
+  // the run's count stays at the capacity, which every reader of the run is bounded by. 0 is no
+  // bound — a run as long as the pairs, as every caller that sets nothing has had. Written on the
+  // same base as R188's nodes, which had taken the pad words after `fade_turn` first: the batch 71
+  // stack appended them after the nodes, in R188's pad word and a row of their own, so the block is
+  // 1,856 bytes, a whole number of float4 rows, and every field before them keeps its offset.
+  u32 run_capacity = 0;
+  u32 pad_run = 0;
+  u64 run_drops = 0;
+  u64 pad_runs = 0;
 };
-static_assert(sizeof(CullParams) == 1840);
+static_assert(sizeof(CullParams) == 1856);
 static_assert(offsetof(CullParams, sky_facing) == 1752);
 static_assert(offsetof(CullParams, pairs) == 1760);
 static_assert(offsetof(CullParams, items) == 1768);
@@ -392,6 +403,8 @@ static_assert(offsetof(CullParams, nodes) == 1800);
 static_assert(offsetof(CullParams, node_items) == 1808);
 static_assert(offsetof(CullParams, node_list) == 1816);
 static_assert(offsetof(CullParams, node_guard) == 1824);
+static_assert(offsetof(CullParams, run_capacity) == 1832);
+static_assert(offsetof(CullParams, run_drops) == 1840);
 
 // **A node of the cull** (R188 stage 1; renderer.md, "Nodes before instances"): up to
 // `k_cull_node_slots` consecutive instance slots of one block of the layout. Mirrored once, in

@@ -458,10 +458,17 @@ struct ClusterRecordParams {
   // is past the block's rest distance is a cached instance this frame — the pool gave it no block,
   // so it is drawn at its rest pose, the pose the cache's structures are built in — whether or not
   // it is untraced: its drawn entries reference its mesh's slots and the frame builds none of
-  // them. Its casters are the cache's caster form, where its species casts at all. 200 bytes.
+  // them. Its casters are the cache's caster form, where its species casts at all.
   u64 field = 0;
+  // **The visible list's run length** (W51-5; renderer.md, "The visible list's runs are sized by
+  // the frame"): the entries one run holds, which `records_main` reads each view's run and the
+  // caster run by. 0 is `pair_count`, which is what every run held until the runs were sized by the
+  // frame and what a caller that sets nothing keeps; `emit_main`'s pair slots stay by `pair_count`.
+  // 208 bytes.
+  u32 run_length = 0;
+  u32 pad_run = 0;
 };
-static_assert(sizeof(ClusterRecordParams) == 200);
+static_assert(sizeof(ClusterRecordParams) == 208);
 
 // **The resident cluster structure cache's tables** (docs/subsystems/renderer.md, "The resident
 // cluster structure cache"; R101), one device block the records passes read through

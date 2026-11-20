@@ -559,6 +559,18 @@ struct Stats {
   u32 shadow_pairs_per_cascade[gfx::k_max_shadow_cascades] = {};
   u32 visible_min = ~u32{0};
   u32 visible_max = 0;
+  // **The visible list's runs, sized by the frame** (W51-5; renderer.md, "The visible list's runs
+  // are sized by the frame"), one frame late: the fullest run of the frame (any view's, any pass,
+  // any cascade), the entries each run held room for, and the appends that found their run full,
+  // the camera runs' and the cascades' — those pairs were not drawn that frame — with their sum
+  // over the run and the frames that had any. Nonzero drops are the one number that says a growth
+  // came late.
+  u32 run_high = 0;
+  u32 run_capacity = 0;
+  u32 run_drops = 0;
+  u32 cascade_run_drops = 0;
+  u64 run_drops_total = 0;
+  u64 run_drop_frames = 0;
   // The deformed-vertex pool's suballocation, one frame late like the visible counts and read the
   // same way — out of a host-visible copy of a device record, never from inside a frame.
   // `deform_overflow_*` is what the budget refused: those (instance, cluster) pairs drew their
@@ -1425,6 +1437,13 @@ class SceneRenderer {
   // The cluster cache's references (renderer.md, "The resident cluster structure cache"), by the
   // same arithmetic as the capacity.
   RtCapacity rt_reference_policy_;
+  // **The visible list's runs** (W51-5; renderer.md, "The visible list's runs are sized by the
+  // frame"): the same arithmetic over the fullest run each folded frame filled, with its own
+  // headroom and step, and the step that applies it (scene_renderer_runs.cpp). Set at a scene's
+  // first folded frame; the stride is its limit.
+  RtCapacity run_policy_;
+  bool run_policy_set_ = false;
+  void step_runs(i64 now_ns);
   // Resizes the chain to `capacity` when it differs, waiting for the device first. False only when
   // the allocation failed, in which case the chain keeps nothing and the frame must not be drawn.
   // `references` 0 keeps the cache's reference capacity.

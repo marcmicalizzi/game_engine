@@ -84,7 +84,10 @@ namespace {
 constexpr u32 k_view_lights = k_frame_lights;  // the warm and cool point lights (lighting.h)
 // Per view: three indirect blocks of three u32, then the vertex path's indexed draw's cursor
 // and fallback count for each of its two runs (gfx::VertexDrawHeader).
-constexpr u32 k_stat_words = 13;
+constexpr u32 k_stat_words = 15;
+// View 0's words 13 and 14: the frame's appends its runs had no room for, the camera runs' and the
+// cascades' (GpuScene::run_drops_offset; W51-5). Every other view leaves them zero.
+constexpr u32 k_run_drop_word = 13;
 // The deformed-vertex pool's allocation record, copied in behind every view's block: it is one
 // record for the frame, not one per view, because the pool's budget is the frame's.
 constexpr u32 k_alloc_words = sizeof(gfx::DeformAlloc) / sizeof(u32);
@@ -1861,6 +1864,7 @@ void SceneRenderer::destroy() noexcept {
   width_ = height_ = 0;
   submitted_ = 0;
   rt_observed_ = false;
+  run_policy_set_ = false;
   recorded_ = 0;
   collected_ = 0;
   flags_dirty_ = true;
@@ -1886,6 +1890,7 @@ void SceneRenderer::reset_stats() noexcept {
   for (u64& folded : rt_drop_folded_)
     folded = ~u64{0};
   rt_observed_ = false;
+  run_policy_set_ = false;
   sample_gpu_memory();  // a reset must not leave a summary with no memory figure at all
 }
 
@@ -2235,6 +2240,21 @@ void SceneRenderer::fold_visible(u32 slot) {
                       log::field("remedy", "raise renderer::k_vertex_index_budget"));
     }
   }
+  // The fullest run and the drops (W51-5): what the runs' capacity is sized by.
+  u32 high = 0;
+  for (u32 v = 0; v < view_count(); ++v) {
+    const ViewStats& view = stats_.views[v];
+    high =
+        std::max({high, view.visible_hw, view.visible_pass2, view.visible_sw, view.shadow_casters});
+  }
+  for (u32 c = 0; resolved_.csm && c < scene_->shadow_cascades(); ++c)
+    high = std::max(high, stats_.shadow_pairs_per_cascade[c]);
+  stats_.run_high = high;
+  stats_.run_drops = stats[k_run_drop_word];
+  stats_.cascade_run_drops = stats[k_run_drop_word + 1];
+  const u32 dropped = stats_.run_drops + stats_.cascade_run_drops;
+  stats_.run_drops_total += dropped;
+  stats_.run_drop_frames += dropped != 0 ? 1u : 0u;
   const u32 total = stats_.visible_pairs();
   stats_.visible_min = total < stats_.visible_min ? total : stats_.visible_min;
   stats_.visible_max = total > stats_.visible_max ? total : stats_.visible_max;
@@ -2685,6 +2705,7 @@ void SceneRenderer::begin_frame() {
       if (stepped)
         frame_cpu_.resize_ms = static_cast<f64>(time::monotonic_ns() - resize_started) / 1.0e6;
     }
+    step_runs(begin_started);  // the visible list's runs by the frame's fill (W51-5)
   }
   frame_cpu_.begin_ms = static_cast<f64>(time::monotonic_ns() - begin_started) / 1.0e6;
   recording_ = true;
@@ -3250,6 +3271,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // above its count so a tile's instances can arrive without moving a run (GpuScene).
   const u32 pair_count = scene.pair_count();
   const u32 pair_stride = scene.pair_stride();
+  // The entries a run of the visible list holds, which every reader of a run is bounded by and
+  // offsets its runs with: the stride until the frames have sized it (GpuScene::fit_runs, W51-5).
+  const u32 run_length = scene.run_capacity();
   const u32 instance_count = scene.instance_count();
   const u32 cluster_count = scene.cluster_count();
   const u32 leaf_count = scene.leaf_count();
@@ -3917,6 +3941,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull.meshes = scene.meshes.address;
     cull.instance_count = instance_count;
     cull.pair_count = pair_count;
+    // A run holds what the frame's runs were sized for (W51-5); a full run counts its drops.
+    cull.run_capacity = run_length;
+    cull.run_drops = scene.visible.address + scene.run_drops_offset();
     // A pair's instance in one load (W6), under `renderer.cull.pair_table`; 0 searches, as main.
     cull.pairs = cull_table ? scene.pair_table.address : 0;
     cull.terrain = terrain_table;
@@ -4329,7 +4356,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       d.normal_pool = scene.frame_normal_pool_address();
       d.time = deform_time;
       d.amplitude = settings.deform_amplitude;
-      d.max_entries = pair_stride;
+      d.max_entries = run_length;
       d.visible_offset = vf.run_base[run];
       d.terrain = terrain_table;
       d.motion = scene.flora_motion_address();
@@ -4465,6 +4492,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull.meshes = scene.meshes.address;
     cull.instance_count = instance_count;
     cull.pair_count = pair_count;
+    cull.run_capacity = run_length;  // W51-5, as the camera's runs, counted apart
+    cull.run_drops = scene.visible.address + scene.run_drops_offset() + sizeof(u32);
     cull.pairs = cull_table ? scene.pair_table.address : 0;  // W6, as the camera's runs
     cull.terrain = terrain_table;
     cull.streaming = stream_params;
@@ -4517,7 +4546,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     shadow_alloc.slots = scene.deform_slots.address;
     shadow_alloc.alloc = scene.deform_alloc.address;
     shadow_alloc.pool_vertices = scene.deform_pool_vertices();
-    shadow_alloc.pair_count = pair_stride;
+    shadow_alloc.pair_count = run_length;
     shadow_alloc.views = cascades_drawn;
     shadow_alloc.first_entry = scene.cascade_base(0);
     shadow_alloc.reset = 0;
@@ -4536,7 +4565,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     shadow_alloc.eye = params_[slot].address + sizeof(gfx::CullParams) * (views * 2) +
                        gfx::k_cull_params_eye_offset;
     shadow_alloc.blocks = scene.deform_blocks.address;
-    shadow_alloc.groups = gfx::deform_alloc_group_count(cascades_drawn, pair_stride);
+    shadow_alloc.groups = gfx::deform_alloc_group_count(cascades_drawn, run_length);
     shadow_alloc.field = field_block;
   }
 
@@ -4562,12 +4591,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       a.slots = scene.deform_slots.address;
       a.alloc = scene.deform_alloc.address;
       a.pool_vertices = scene.deform_pool_vertices();
-      a.pair_count = pair_stride;
+      a.pair_count = run_length;
       a.views = views;
       a.first_entry = scene.visible_base(0, run);
       a.reset = run == 0 ? 1u : 0u;
       a.blocks = scene.deform_blocks.address;
-      a.groups = gfx::deform_alloc_group_count(views, pair_stride);
+      a.groups = gfx::deform_alloc_group_count(views, run_length);
       a.field = field_block;
     }
   }
@@ -4629,6 +4658,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     record_params.clas_addresses = scene.clas_set.addresses.address;
     record_params.instance_count = instance_count;
     record_params.pair_count = pair_stride;
+    record_params.run_length = run_length;  // its runs; the slots stay by the stride (W51-5)
     // A template is built once, opaque, and an instantiation cannot clear the flag, so a scene with
     // an
     // alpha-tested material builds records (renderer.md, "Alpha-tested geometry"), as one with
@@ -5099,6 +5129,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.write(rg_args[0], gfx::Access::TransferWrite);
           b.write(rg_args[1], gfx::Access::TransferWrite);
           b.write(rg_sw_args, gfx::Access::TransferWrite);
+          b.write(rg_visible, gfx::Access::TransferWrite);  // the runs' drop counts (W51-5)
         }
         if (csm) b.write(rg_shadow_args, gfx::Access::TransferWrite);
         if (!direct) b.write(rg_vis, gfx::Access::TransferWrite);
@@ -5133,6 +5164,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             cb.fill_buffer(scene.sw_args.buffer, at, sizeof(u32), 0);
             cb.fill_buffer(scene.sw_args.buffer, at + sizeof(u32), sizeof(u32) * 2, 1);
           }
+          // The frame's two drop counts behind the list's last entry (GpuScene::run_drops_offset).
+          cb.fill_buffer(scene.visible.buffer, scene.run_drops_offset(), sizeof(u32) * 2, 0);
         }
         // Each cascade's block, in the shape its draw reads: the vertex path's
         // {vertexCount, instanceCount = 0, ...} or the mesh path's {groups = 0, 1, 1}.
@@ -6932,6 +6965,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.read(rg_args[0], gfx::Access::TransferRead);
           b.read(rg_args[1], gfx::Access::TransferRead);
           b.read(rg_sw_args, gfx::Access::TransferRead);
+          b.read(rg_visible, gfx::Access::TransferRead);  // the runs' drop counts (W51-5)
           if (deform_on) b.read(rg_alloc, gfx::Access::TransferRead);
           if (vertex_indexed) b.read(rg_vertex_headers, gfx::Access::TransferRead);
           if (rt_chain) b.read(rt.record_count, gfx::Access::TransferRead);
@@ -6959,6 +6993,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               cb.copy_buffer(scene.vertex_headers.buffer, stat_target->buffer, cursor);
               cb.copy_buffer(scene.vertex_headers.buffer, stat_target->buffer, overflow);
             }
+          }
+          {  // the frame's drop counts, camera runs and cascades, into view 0's last two words
+            const gfx::BufferCopy drops{scene.run_drops_offset(), sizeof(u32) * k_run_drop_word,
+                                        sizeof(u32) * 2};
+            cb.copy_buffer(scene.visible.buffer, stat_target->buffer, drops);
           }
           if (deform_on) {
             const gfx::BufferCopy copy{0, sizeof(u32) * u64{k_stat_words} * views,

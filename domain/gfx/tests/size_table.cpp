@@ -144,7 +144,7 @@ ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterDrawParams);
 // "The resident cluster structure cache", R101); the compact hit entries had taken 160.
 // 200, not 192 (R152): `field`, the frame's field block, by which a field instance wholly past its
 // rest distance references the cache instead of being built (renderer.md, "The far field at rest").
-ENGINE_EXPECT_SIZE(200, 8, gfx::ClusterRecordParams);
+ENGINE_EXPECT_SIZE(208, 8, gfx::ClusterRecordParams);  // W51-5: run_length, a pad word
 // The cache's tables, read through an address (R101). 120, not 112: the args block its passes
 // are dispatched from, so a pass with nothing to do dispatches no thread (R106).
 ENGINE_EXPECT_SIZE(120, 8, gfx::ClusterCacheTables);
@@ -214,7 +214,11 @@ ENGINE_EXPECT_SIZE(32, 8, gfx::ClusterChunkParams);
 // 1808: R188's nodes (renderer.md, "Nodes before instances") — their count in the first of the
 // cross-fade's pad words, then the node table, a run's node items, the measure list and the guard,
 // and a pad word to a whole float4 row; appended, so every field before them keeps its offset.
-ENGINE_EXPECT_SIZE(1840, 8, gfx::CullParams);
+// 1856, not 1840: a run's capacity and its drop counter (W51-5, renderer.md, "The visible list's
+// runs are sized by the frame"), written on a base without R188's nodes and taking the same pad
+// words; the batch 71 stack appended them after the nodes, in R188's pad word and a row of their
+// own (a pad word, the counter's address, a pad to a whole float4 row).
+ENGINE_EXPECT_SIZE(1856, 8, gfx::CullParams);
 // R188's node (renderer.md, "Nodes before instances"): a sphere, its first slot, a packed span,
 // its terrain level and its anchor slot, read a thread a node by the node pass; mirrored in
 // scene.slang. And an entry of the measure list the CPU stages a frame.

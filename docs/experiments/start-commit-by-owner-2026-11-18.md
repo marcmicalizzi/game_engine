@@ -236,6 +236,67 @@ Beside the engine heap: **1.2 GB of the C runtime heaps is not the engine's** (4
 
 **What is left for the residency manager** (W47), on the tip at the top setting standing (exit, MiB): device-local 13,311 — textures 3,150, geometry 2,656, the frame's own 2,272 (twice the orbit's 1,080: standing at this view the visible runs and pair tables grow to it), structures 1,346 (the cache 1,036, static forms 352), tiles 1,218, companions 721, micromaps 369, materials 364 — which Windows charges once more as the driver's backing, all of it in the commit; and on the host the withheld meshes' 2.2 GB, which are the mesh room's. Of the 18.8 GB standing 13.0 is the device's and 5.8 the host's, and every large host owner left has a reader after the upload: what nothing reads again is the C runtime heap's free 0.5 GB, an allocator's matter.
 
+## W51-5: the withheld meshes, and the runs sized by the frame
+
+**How it was flown** (2026-11-19, the evening after W51-4): as W51-4 flew it — the staging standing at W149's one-place path, `--memory-report-floor-mib 2`, sampled from outside every two seconds, one load a lease — against batch 69's main (`b69`, 1f5ff68f) the same evening, with the row's own copy of the derived data (W51-4's read set, linked, and a copy of its pipeline cache), and the walk of R152 (`walk-path.json`, 3,596 frames, about 1.5 km in a minute through the staging's middle rings) at the low setting with `--benchmark` for the arrivals' frame times. **c1** is the row's first commit alone (the withheld meshes); **the tip** is both stages.
+
+**Stage B: a withheld mesh is let go and built again** (world.md, "A withheld mesh is let go and built again"). W51-4 found the host's largest owner standing to be the mesh room's withheld tile meshes: 189 meshes the room refused (52 resident, `renderer.meshes.budget_mib` 256), each keeping its merged streams and its textures read for the admission — about 2.2 GB that nothing drew. The room's refusal now shelves a built mesh: its streams and its texture references go, its counts stay (the tile's pairs are counted from its clusters, and the room is asked with its clusters and materials before it is built again), and it is built again, off the committing thread and out of the derived-data cache, only when the room can take it. **Why that and not never building it**: the counts need a build, and the room frees in an order the world decides a commit at a time. **What the admission costs when it comes**: a second build on a worker, so a mesh that was withheld arrives a few commits later than it would have, drawn as its tile drew meanwhile; the committing thread collects and never reads, so no arrival stalls a frame (the walk's pair, below).
+
+| Top (4K traced, bounce), standing | b69 | c1 (stage B) |
+|---|---:|---:|
+| End of `gpu scene` (`uploaded`): commit / engine heap | 18.0 GB / 3,120 MiB | 16.3 GB / 1,381 MiB |
+| Maximum, and when | 22.7 GB at the first frame | 20.4 GB at the first frame |
+| Ready (first frame): commit / device | 19.7 / 13.4 GB | 17.5 / 14.4 GB |
+| One minute standing | 19.1 GB | 16.8 GB |
+| Exit snapshot: commit / engine heap / C runtime heaps (committed / used) / device-local | 19,278 / 3,707 / 4,891 / 4,368 / 13,311 MiB | **16,912 / 1,516 / 3,385 / 2,161 / 13,311** |
+
+The machine: b69's at 21:12 (free commit 47.6 GB at its start and as low as 4.1 GB during, from other loads; the processors at 68 %), c1's at 21:44 (51.8 GB free, 20.8 at the lowest; 48 %); the session locked. The device's own blocks are the same to the MiB, and the first frame's device transient (16.8 GB against 14.4 at ready, the chain's resize: W51-6's) is in both maxima. Of the 2.37 GB the exit commit fell by, the engine heap's share is 2.19 GB, the rest the C runtime heaps' committed slack that went with them. The room held the same meshes on both sides (top: 52 resident, 99,902 clusters, 189 tiles withheld, their 297 meshes shelved with no host bytes; low: 89, 178,965 and 169), and the low setting's last frames are the same bytes (below).
+
+**The arrivals, on the walk** (low setting, three repeats of 3,596 frames each side; b69 at 22:47 with the processors at 12 %, c1 at 23:13 at 2 %; the room full along the whole walk, 239 changes of what it withholds on b69's side and 491 on c1's — a shelved mesh's tile reads as waiting rather than refused during its second build, so it is said again when it is refused next — with 329 meshes shelved and no host bytes at c1's end):
+
+| Walk, per repeat | b69 | c1 |
+|---|---|---|
+| Frame p99, ms | 15.5 / 11.7 / 10.8 | 10.5 / 9.3 / 8.8 |
+| Longest frame, ms | 183.7 / 50.4 / 46.9 | 103.0 / 26.8 / 97.3 |
+| Frames over 33 ms | 6 / 3 / 3 | 2 / 0 / 1 |
+| The admissions' longest commit (`world.admit_ms`), ms | 0.40 / 3.91 / 3.19 | 0.80 / 0.75 / 0.18 |
+
+No arrival stalls a frame: the admissions' time on the committing thread stayed under a millisecond, and c1's two long frames follow a 101 ms commit of the ground's consumer and a 96 ms world update, neither the room's (b69's longest follows a 182 ms update). What the second build costs is when a withheld mesh arrives, a few commits later, and the frames do not see it.
+
+**Stage C: the visible list's runs are sized by the frame** (renderer.md, "The visible list's runs are sized by the frame"). The device's own bytes standing were 2.3 GB at the top setting and 2.9 at the low one, against 1.1 at the end of `gpu scene`. By owner (the device's block log at exit, symbolized; low setting, W51-4's tip, whose device blocks are b69's to the MiB):
+
+| Buffer | MiB | Indexed by | Sized by, before | Now |
+|---|---:|---|---|---|
+| The visible list (`visible`): 3 runs a view and one a cascade, 8 bytes an entry | 842 | entry | runs × pair stride (15.8 M) | runs × the run capacity |
+| The pool's per-entry slots (`deform_slots`) | 421 | entry | the same | the same as the list |
+| The table sets' pair tables (`pairs`, two sets) | 240 | pair | pair stride | unchanged: the scene's numbering |
+| The cross-fade's tables (`fade`), a view and the cascades | 240 | pair | pair stride | unchanged |
+| The table sets' instance tables (two) | 108 | instance slot | instance capacity | unchanged |
+| The occlusion flags (two) and the pair-to-entry table | 120 + 60 | pair | pair stride | unchanged |
+| The frame's tables' staging and the instance pass's items | 56 + 50 | — | the change, the instances | unchanged |
+
+What a pair indexes is the scene's and stays by the stride: a pair's flag, fade split, entry or place in the table is read by its number from any frame. What an entry indexes is the frame's: a run is filled by one atomic per draw, and the frames standing filled at most 1,100,232 entries a run at the top setting against a stride of 16,777,216. The runs now hold a headroom above the fullest run (half as much again, in steps of 65,536 entries), grown at once on a frame that turns an append away and counted. **The first flight held twice the fullest run**, and at the low setting it never shrank: there the fullest run standing is the farthest cascade's (4,419,461 entries; the camera's own runs hold under half a million), 28 % of the stride, and the arithmetic shrinks only when a window's peak with its headroom leaves more than half unused, so the list stood at the stride (`c2` below). At half again it gives the stride back in one step two seconds in. Standing, no frame of either setting dropped an entry.
+
+| Standing, the same hour | Top: b69 (23:45) | Top: c2 (23:28) | Low: b69 (00:39) | Low: c2, twice (00:12) | Low: the tip (01:34) |
+|---|---:|---:|---:|---:|---:|
+| Maximum (at the first frame) | 22.5 GB | 20.4 GB | 15.8 GB | 13.8 GB | 13.7 GB |
+| One minute standing | 19.1 GB | 16.3 GB | 15.8 GB | 13.7 GB | 13.0 GB |
+| At the run's end | 18.9 GB (+2.9 min) | 16.0 GB (+2.7 min) | 15.6 GB (+5 min) | 13.7 GB (+5 min) | 12.8 GB (+5 min) |
+| Exit snapshot: commit / engine heap / device-local / the frame's own | 19,319 / 3,707 / 13,311 / 2,272 MiB | 16,440 / 1,516 / 12,786 / 1,772 | 15,953 / 3,408 / 10,451 / 2,923 | 13,739 / 1,504 / 10,451 / 2,923 | **13,068 / 1,504 / 9,724 / 2,195** |
+| The run capacity / the fullest run / entries dropped | the stride (16,777,216) | 2,228,224 / 1,100,232 / 0 | the stride (15,757,312) | the stride / 4,419,461 / 0 | 6,684,672 / 4,419,461 / 0 |
+
+`c2` is stage C with the first headroom (twice the fullest run); the tip's half again holds less, so `c2`'s top column is the tip's upper bound (the tip's own top flight was given up for the night's budget). The last frames are the same bytes on every side: at the top b69, c1 and c2 (SHA-256 `6E9CBCD2FACDFE99…`, 33,179,760 raw bytes, none differing), at the low setting b69 (twice), c1, c2 and the tip (`0071CF243EAF4394…`, 8,295,480). The machine at every start 63 to 65 GB of free commit, the processors at 4 to 19 % except b69's second low (91 %), the session locked. **On the walk** the tip's runs went from the walk's stride (5,857,280) to 2,031,616 two seconds in and back to the stride 22 seconds later, with no entry dropped: the reach-ahead over a rising demand (`slope_frames`) met a frame whose fullest run jumped as the cascades' boxes moved, and a growth goes to the larger of that and the peak held; the walk's frames were as c1's (p99 11.0 / 9.5 / 8.7 ms, the admissions at most 0.22 ms). A demand fed run by run, or a slope over a steadier number than the maximum over runs, is the next refinement.
+
+**What a launch commits now** (standing, GB of commit; the stages are this page's):
+
+| | Top: maximum / standing | Low: maximum / standing |
+|---|---:|---:|
+| Stages 1, 4 and A (b69 with W51-4) | 22.7 / 18.8 | 15.6 / 15.3 |
+| Stage B (c1) | 20.4 / 16.5 | 13.7 / 13.6 |
+| Stages B and C (the tip; the top from `c2`) | 20.4 / 16.0 | 13.7 / 12.8 |
+
+What is left at the top setting's maximum is the first frame's device transient, the chain's (W51-6's); standing, of the tip's 16.0 GB at the top about 12.5 is the device's (textures 3.2, geometry 2.7, the frame's own 1.8, structures 1.3, tiles 1.2) and 3.5 the host's, of which the engine heap is 1.5 and the C runtime's committed slack 1.2 — the residency manager's (W47) and an allocator's.
+
 ## Not measured
 
 - The cold load with a cache of its own: a cold load of the whole staging needs a 20-minute lease and 40 GB free (the staging agent's DONE note), and its cook does not ship; its peak is the staging agent's 32.2 GB.

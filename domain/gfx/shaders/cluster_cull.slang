@@ -43,7 +43,7 @@ struct StreamParams {
 static const uint k_caster_volume_planes = 13;
 static const uint k_max_caster_volumes = 5;
 
-// Read through a device address; mirrors gfx::CullParams (1840 bytes).
+// Read through a device address; mirrors gfx::CullParams (1856 bytes).
 struct CullParams {
   float4 planes[6];  // inward-facing, normalized: dot(n, p) + w >= 0 inside
   float4 camera;     // xyz this view's eye in the frame's space, w = znear
@@ -151,7 +151,12 @@ struct CullParams {
   uint64_t node_items;   // offset 1808
   uint64_t node_list;    // offset 1816
   uint64_t node_guard;   // offset 1824
-  uint64_t pad_nodes;    // offset 1832; the block is 1,840 bytes
+  // gfx::CullParams::run_capacity / run_drops (W51-5): the entries this run has room for, 0 no
+  // bound, and the u32 a dropped append is counted at (see `run_takes`).
+  uint run_capacity;     // offset 1832
+  uint pad_run;          // offset 1836
+  uint64_t run_drops;    // offset 1840
+  uint64_t pad_runs;     // offset 1848; the block is 1,856 bytes
 };
 
 // gfx::CullParams::hiz_flags and the debug counters' layout (gfx::k_hidden_*).
@@ -562,6 +567,19 @@ bool beyond_caster_horizon(CullParams* params, float3 center, float radius) {
   return true;
 }
 
+// **A run holds what a frame draws, not the scene's pairs** (W51-5; renderer.md, "The visible
+// list's runs are sized by the frame"): `slot` was handed out by `count`; past the run's capacity
+// the append takes it back and is counted, so the count ends at the capacity whatever order the
+// threads came in — every slot under it is handed out once, and a thread that went over takes back
+// only what it added — and every reader of the run, bounded by the count, reads only what was
+// written. A capacity of 0 is no bound.
+bool run_takes(CullParams* params, Atomic<uint>* count, uint slot) {
+  if (params->run_capacity == 0 || slot < params->run_capacity) return true;
+  count->add(0xffffffffu);
+  if (params->run_drops != 0) ((Atomic<uint>*)params->run_drops)->add(1);
+  return false;
+}
+
 // A hardware survivor's share of its run's indexed draw (gfx::VertexDrawHeader): its triangles are
 // allocated under the cursor, its record says where they start, and vertex_expand.slang is given
 // one workgroup for it. A survivor that does not fit is flagged instead, pulls the indexed draw's
@@ -953,6 +971,7 @@ void cull_instance_pair(CullParams* params, uint pair, uint instance_index, bool
     if (counting) count_hidden(params, k_hidden_casters);
     Atomic<uint>* count = (Atomic<uint>*)params->caster_count;
     const uint slot = count->add(1);
+    if (!run_takes(params, count, slot)) return;
     uint2* casters = (uint2*)params->casters;
     casters[slot] = uint2(instance_index, index);
     return;
@@ -980,12 +999,14 @@ void cull_instance_pair(CullParams* params, uint pair, uint instance_index, bool
   if (software) {
     Atomic<uint>* count = (Atomic<uint>*)params->sw_args;
     const uint slot = count->add(1);
+    if (!run_takes(params, count, slot)) return;
     uint2* visible = (uint2*)params->sw_visible;
     visible[slot] = uint2(instance_index, index);
     entry = params->sw_visible_base + slot;
   } else {
     Atomic<uint>* count = (Atomic<uint>*)(params->draw_args + uint64_t(params->count_index) * 4);
     const uint slot = count->add(1);
+    if (!run_takes(params, count, slot)) return;
     uint2* visible = (uint2*)params->visible;
     visible[slot] = uint2(instance_index, index);
     entry = params->visible_base + slot;
