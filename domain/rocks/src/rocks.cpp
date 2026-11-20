@@ -233,7 +233,12 @@ std::string canonical_rock_json(const RockFile& file) {
 
 u64 rock_source_hash(const RockFile& file) {
   const std::string canonical = canonical_rock_json(file);
-  return hash_combine(hash_bytes(canonical.data(), canonical.size()), k_rocks_version);
+  const u64 h = hash_combine(hash_bytes(canonical.data(), canonical.size()), k_rocks_version);
+  // Only a rock that bakes its own surface holds a baked normal map, so only its key takes the
+  // convention it is baked in (R202): every other rock keeps the key it had.
+  return canonical.find("\"surface_maps\":{") != std::string::npos
+             ? hash_combine(h, k_rock_surface_normal_convention)
+             : h;
 }
 
 u64 rock_build_key(u64 source_hash, const geometry::ClusterLodOptions& lod, u32 page_bytes,

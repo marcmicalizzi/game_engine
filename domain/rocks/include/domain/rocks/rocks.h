@@ -63,6 +63,11 @@ inline constexpr const char* k_determinism = "derived";
 // it with any change that moves a byte of a committed recipe's mesh (the determinism test says
 // when one did).
 inline constexpr u32 k_rocks_version = 11;
+// The convention the opt-in surface bake writes its normal map in, folded into the key of a rock
+// that bakes one (`rock_source_hash`) and of no other. 1: R202, +Y up the image, the engine's one
+// tangent-space convention (docs/experiments/tangent-space-convention.md); before it the bake was
+// +Y down, so an entry from before it is never read as the answer.
+inline constexpr u32 k_rock_surface_normal_convention = 1;
 
 // ---- the budget ladder (rocks.md, "The budget ladder") -----------------------------------------
 //

@@ -169,7 +169,11 @@ cell, with fitting faded out across resolved rounded blends. A move is rejected 
 directional triangle falls below 20% of its original area. Each cell then chooses the safe diagonal
 whose midpoint better follows the radial generating surface; if neither meets the extra 5%
 cell-area margin, it keeps the already-validated original diagonal. The surface baker uses that
-same connectivity, including for fresh-fracture masks. These are offline bounded engineering
+same connectivity, including for fresh-fracture masks. Its normal map is +Y up the image (green
+`+dh/dv` along the chart's v) since R202, the engine's one tangent-space convention
+([tangent-space convention](../experiments/tangent-space-convention.md)); before, it was baked +Y
+down. The convention (`k_rock_surface_normal_convention`) is folded into the key of a rock that
+bakes its surface and no other, so every other rock keeps its key and its bytes. These are offline bounded engineering
 choices, not geological constants; [grounding and studies](../experiments/rock-lithology.md#g98-fracture-rims-and-sampling).
 Temporary adjacency, direction and normal arrays scale with the body's surface, not its volume.
 Solver v8 extends fitting to fully resolved finite chips: their outer minimum with the shell

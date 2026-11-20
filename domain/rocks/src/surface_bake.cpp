@@ -227,8 +227,10 @@ void SurfaceBake::body(u32 part, u32 n, u32 first, const Fabric& fabric, RockTyp
         const f64 dy = (field.at(p + sb * step, footprint).height -
                         field.at(p - sb * step, footprint).height) /
                        (2.0 * step);
-        // Change grain response, not the height of the coating boundary itself.
-        const D3 nn = normalized(D3{-dx * grain_scale, -dy * grain_scale, 1.0});
+        // Change grain response, not the height of the coating boundary itself. The map is +Y up
+        // the image, against the chart's v (R202; docs/experiments/tangent-space-convention.md):
+        // its green is +dh/dv, which the resolve's bitangent -dP/dv turns back into -dh along v.
+        const D3 nn = normalized(D3{-dx * grain_scale, dy * grain_scale, 1.0});
         const u32 pixel = (((chart / columns_) * cell_ + y) * settings_.resolution +
                            (chart % columns_) * cell_ + x) *
                           3u;
