@@ -733,6 +733,43 @@ TEST_CASE("content classes at load: a scene file that gives a key twice is refus
           "fixture_glow");
 }
 
+// **The bytes that are loaded are the bytes that are decided** (C64): the probe of a container's
+// classes section is a saving, so a container replaced or finished between the probe and the
+// load's whole read is decided again by what the read found.
+TEST_CASE("content classes at load: a container is decided by the bytes the load read") {
+  const test::TempDir tmp("renderer_classes_swapped");
+  REQUIRE(tmp.ok());
+  const Grid plain = write_grid(tmp, "x.clusters", 9, "x.png");
+  std::string error;
+  content_class::Categories categories;
+  ContainerProbe probe;
+  const ReadClass probed = read_container_class(plain.path, categories, &probe);
+  CHECK(probe.opened);
+  CHECK(content_class::is_none(probed.classes));
+  // Swapped between the probe and the read: the same name, classified now.
+  (void)write_grid(tmp, "x.clusters", 9, "x.png", glow_record(2));
+  geometry::ClusterFileData loaded;
+  REQUIRE_MESSAGE(geometry::read_cluster_file(plain.path, loaded, &error), error);
+  const ReadClass decided = container_class_as_loaded(
+      probe, probed,
+      std::span<const u8>(loaded.content_classes.data(), loaded.content_classes.size()),
+      categories);
+  REQUIRE(categories.find("fixture_glow") >= 0);
+  CHECK(decided.classes.levels[static_cast<u32>(categories.find("fixture_glow"))] == 2);
+  // One the probe could not open, whole when the load reads it.
+  ContainerProbe missing;
+  const ReadClass absent = read_container_class(tmp.file("later.clusters"), categories, &missing);
+  CHECK_FALSE(missing.opened);
+  const Grid later = write_grid(tmp, "later.clusters", 9, "later.png", glow_record(1));
+  geometry::ClusterFileData finished;
+  REQUIRE_MESSAGE(geometry::read_cluster_file(later.path, finished, &error), error);
+  const ReadClass then = container_class_as_loaded(
+      missing, absent,
+      std::span<const u8>(finished.content_classes.data(), finished.content_classes.size()),
+      categories);
+  CHECK(then.classes.levels[static_cast<u32>(categories.find("fixture_glow"))] == 1);
+}
+
 // The raise is two bytes in what was `SceneInstance`'s padding: the struct without it, laid out the
 // same way, is as large, so an instance that raises nothing pays nothing.
 TEST_CASE("content classes at load: the raise costs an instance no bytes") {

@@ -958,7 +958,8 @@ bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMe
 bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expected_hash,
                       SourceMesh& out, geometry::ClusterLodMesh& lod, geometry::ClusterPages& pages,
                       std::string& error, content_build::ImageIdentities* identities = nullptr,
-                      u64 class_hash = 0, const Vector<u8>* class_record = nullptr) {
+                      u64 class_hash = 0, const Vector<u8>* class_record = nullptr,
+                      Vector<u8>* loaded_classes = nullptr, u8* read_whole = nullptr) {
   auto page_layout = [&](const char* what, u32 page_bytes) {
     lay_out_pages(desc, what, page_bytes, out, lod, pages);
   };
@@ -1112,6 +1113,12 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
     }
   }
   if (from_container) {
+    // A container named outright: the classes section of the bytes read here, which the load's
+    // second pass decides it by when the probe saw other bytes (C64, `container_class_as_loaded`).
+    if (cache_path.empty() && loaded_classes != nullptr && read_whole != nullptr) {
+      *loaded_classes = container_data.content_classes;
+      *read_whole = 1;
+    }
     // A container found in or named beside the cache may have been written before its textures
     // were built (an older engine-view, a cache that lost them, `engine-content build` without
     // `--cache`): the load's texture pass builds whatever of them is missing and trusts the rest.
@@ -3403,6 +3410,8 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
       content_build::ImageIdentities* identities = nullptr;
       u64 class_hash = 0;                        // a classified glTF's, which its cache key holds
       const Vector<u8>* class_record = nullptr;  // and its section 54, if the load builds it
+      Vector<u8>* loaded_classes = nullptr;      // a named container's section 54 as read whole
+      u8* read_whole = nullptr;
       bool ok = false;
       std::string error;
     };
@@ -3423,6 +3432,8 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
       job.identities = &identities;
       job.class_hash = admission.mesh_hash[m];
       job.class_record = admission.record[m].empty() ? nullptr : &admission.record[m];
+      job.loaded_classes = &admission.loaded[m];
+      job.read_whole = &admission.read_whole[m];
       // A mesh nothing under the policy draws is never read (its slot becomes a proxy box below).
       job.ok = admission.load[m] == 0;
       const std::string& path = resolved.meshes[m];
@@ -3445,9 +3456,9 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     const auto run = [](void* data) {
       MeshJob& job = *static_cast<MeshJob*>(data);
       ENGINE_STARTUP_STAGE_DETAIL("mesh", *job.path);
-      job.ok =
-          load_source_mesh(*job.path, *job.desc, job.expected, *job.source, *job.lod, *job.pages,
-                           job.error, job.identities, job.class_hash, job.class_record);
+      job.ok = load_source_mesh(*job.path, *job.desc, job.expected, *job.source, *job.lod,
+                                *job.pages, job.error, job.identities, job.class_hash,
+                                job.class_record, job.loaded_classes, job.read_whole);
     };
     ENGINE_STARTUP_STAGE("meshes");
     profiling::trace_items(resolved.meshes.size());

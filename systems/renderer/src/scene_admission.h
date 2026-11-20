@@ -39,6 +39,12 @@ struct LoadAdmission {
   // it, so it is not built, and the load leaves the ground out whole (`load_scene`).
   Vector<u8> ground;
   bool ground_refused = false;
+  // Per mesh, for a container named outright: what its probe saw, and the classes section its
+  // whole read found (`loaded`, with `read_whole` 1 once the mesh job read it), which the second
+  // pass decides it by when the two differ (`container_class_as_loaded`; C64).
+  Vector<ContainerProbe> probe;
+  Vector<Vector<u8>> loaded;
+  Vector<u8> read_whole;
 };
 
 // Before any mesh is read: the scene's policy, every mesh's own class (its ladders learned into

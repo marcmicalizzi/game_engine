@@ -17,6 +17,7 @@
 #include <domain/geometry/cluster_lod.h>
 #include <foundation/content_class/content_class.h>
 
+#include <span>
 #include <string>
 
 namespace engine::renderer {
@@ -67,11 +68,31 @@ content_class::Decision admit_instance(SceneData& scene, const ReadClass& mesh,
 // branch.
 content_class::Decision admit_ground(SceneData& scene, const ReadClass& ground);
 
+// What the probe of a container saw (`read_container_class`): whether it could open the file, the
+// classes section's bytes it read, and the class of the sidecar beside it.
+struct ContainerProbe {
+  bool opened = false;
+  Vector<u8> section;
+  ReadClass sidecar;
+};
+
 // What a `.clusters` container says it is: its section 54, looked up in the section table and read
 // only when present (a few dozen bytes), its ladders learned into `categories`; joined with a
-// sidecar beside it (`<stem>.provenance.json`) when there is one. A container that cannot be
-// opened reads as `none` here, because its load fails on its own with a sentence of its own.
-ReadClass read_container_class(const std::string& path, content_class::Categories& categories);
+// sidecar beside it (`<stem>.provenance.json`) when there is one. **The probe is a saving, not
+// the decision**: a container it cannot open reads as `none` here, and the load decides it again
+// by the bytes its whole read finds (`container_class_as_loaded`). `probe`, when given, receives
+// what was seen.
+ReadClass read_container_class(const std::string& path, content_class::Categories& categories,
+                               ContainerProbe* probe = nullptr);
+
+// **The bytes that are loaded are the bytes that are decided** (C64): the class of a container as
+// the load's whole read found it. `probed` when the probe opened the file and `loaded` (the read's
+// classes section) is the bytes it saw; otherwise `loaded` decoded (its ladders learned into
+// `categories`, the unreadable class when it is refused) and joined with the probe's sidecar, so a
+// container replaced or finished between the two opens is decided by what was loaded.
+ReadClass container_class_as_loaded(const ContainerProbe& probe, const ReadClass& probed,
+                                    std::span<const u8> loaded,
+                                    content_class::Categories& categories);
 
 // What a provenance sidecar beside `source` declares (`content_class::sidecar_path_of`), read as
 // the content build reads it (`content_build::read_source_classes`, through the module's one

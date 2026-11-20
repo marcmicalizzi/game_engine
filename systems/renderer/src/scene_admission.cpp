@@ -100,18 +100,20 @@ ReadClass read_sidecar_class(const std::string& source, const content_class::Cat
   return out;
 }
 
-ReadClass read_container_class(const std::string& path, content_class::Categories& categories) {
+ReadClass read_container_class(const std::string& path, content_class::Categories& categories,
+                               ContainerProbe* probe) {
   ReadClass out;
   geometry::ClusterFileReader reader;
   std::string error;
   // The header and the section table only: the load reads the container again, whole, when it
-  // reads its geometry, and fails there with its own sentence if it cannot.
+  // reads its geometry, and decides it again there by what that read found (C64).
   if (!reader.open(path, nullptr, &error)) return out;
+  if (probe != nullptr) probe->opened = true;
   const u64 count = reader.element_count(geometry::ClusterSection::ContentClasses);
+  Vector<u8> record;
   if (count != 0) {
     u64 offset = 0;
     u64 bytes = 0;
-    Vector<u8> record;
     bool read = reader.range(geometry::ClusterSection::ContentClasses, 1u, 0, count, offset, bytes);
     if (read) {
       record.resize(static_cast<u32>(bytes));
@@ -129,9 +131,29 @@ ReadClass read_container_class(const std::string& path, content_class::Categorie
                       log::field("error", error));
     }
   }
+  if (probe != nullptr) probe->section = record;
   // A container named outright is joined with a sidecar beside it (content-classes.md, "Two
   // limits, stated").
-  return join(out, read_sidecar_class(path, categories));
+  const ReadClass sidecar = read_sidecar_class(path, categories);
+  if (probe != nullptr) probe->sidecar = sidecar;
+  return join(out, sidecar);
+}
+
+ReadClass container_class_as_loaded(const ContainerProbe& probe, const ReadClass& probed,
+                                    std::span<const u8> loaded,
+                                    content_class::Categories& categories) {
+  if (probe.opened && loaded.size() == probe.section.size() &&
+      std::equal(loaded.begin(), loaded.end(), probe.section.begin()))
+    return probed;
+  ReadClass out;
+  std::string error;
+  if (!content_class::decode_classes(categories, loaded, out.classes, error)) {
+    out.classes = content_class::unreadable(categories);
+    out.unreadable = true;
+  }
+  ENGINE_LOG_WARN(log_renderer, "a container decided again by the bytes the load read",
+                  log::field("probe_opened", probe.opened), log::field("error", error));
+  return join(out, probe.sidecar);
 }
 
 namespace {
@@ -285,6 +307,9 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
   // per-mesh read cost 0.46 ms a mesh in `msvc-debug` before this, measured on such a scene).
   HashMap<u64, u32> first_of_path;
   state.ground.assign(meshes, u8{0});
+  state.probe.resize(meshes);
+  state.loaded.resize(meshes);
+  state.read_whole.assign(meshes, u8{0});
   for (u32 m = 0; m < meshes; ++m) {
     const std::string& path = desc.meshes[m];
     if (path.empty()) {
@@ -308,6 +333,7 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
       state.mesh[m] = state.mesh[*first];
       state.mesh_hash[m] = state.mesh_hash[*first];
       state.record[m] = state.record[*first];
+      state.probe[m] = state.probe[*first];
       continue;
     } else if (first == nullptr) {
       first_of_path.try_emplace(path_hash, m);
@@ -326,7 +352,7 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
       state.mesh_hash[m] = classes.hash;
       state.record[m] = std::move(classes.record);
     } else if (io::extension(path) == ".clusters") {
-      state.mesh[m] = read_container_class(path, out.categories);
+      state.mesh[m] = read_container_class(path, out.categories, &state.probe[m]);
     } else {
       Vector<content_class::MaterialClass> materials;
       state.mesh[m] = read_sidecar_class(path, out.categories, &materials);
@@ -405,6 +431,16 @@ void admission_after_meshes(SceneDesc& desc, SceneData& out, LoadAdmission& stat
                             Vector<geometry::ClusterLodMesh>& dags,
                             Vector<geometry::ClusterPages>& tables) {
   const u32 meshes = state.mesh.size();
+  // 0. A container named outright is decided by the bytes its whole read found, when they are not
+  // the ones its probe saw (C64): replaced or finished between the two opens, it is what was
+  // loaded that decides, and a mesh whose own class now refuses it becomes its box below.
+  for (u32 m = 0; m < meshes && m < state.read_whole.size(); ++m) {
+    if (state.read_whole[m] == 0) continue;
+    state.mesh[m] = container_class_as_loaded(
+        state.probe[m], state.mesh[m],
+        std::span<const u8>(state.loaded[m].data(), state.loaded[m].size()), out.categories);
+    state.classified = state.classified || !content_class::is_none(state.mesh[m].classes);
+  }
   // 1. Every image named by path of a mesh that is read: its sidecar probed, once a distinct file.
   Vector<ReadClass> textures(meshes, ReadClass{});
   state.image_hash.resize(meshes);
