@@ -108,7 +108,17 @@ A row **moved** when the two variants' run medians do not overlap and differ by 
 
 **All 72 rows: `full` is 4.7 % faster as a geometric mean, the two `cmake` takes differing between themselves by 4.4 %; `math` −0.6 %, `anim` +0.3 %, `geometry` −3.7 %, `jobs` +8.5 % (six rows: two moved faster, one slower), `animation` −11.9 %.** T193's findings hold where they were clear (the deque, the animation tick) and its doubtful slower rows (`animation.pool.churn`, `anim.clip.sample.keys/241`, `local_matrices.one`) are not among the rows that moved here; `parallel_for.small/8` and the skinning rows are the ones a quiet take should look at.
 
-**The frame budgets as a pair were not flown**: the GPU lock's line stood six deep all evening, a flight waited about ten minutes for its turn, and twelve of them were not to be had. That and the four `engine_view` parts that gave up waiting are the device's verdicts `full` still owes.
+**The frame budgets, a pair for three runs of the six** (`tools/frame-budget.ps1 -Exe <each tree's engine-view> -WaitQuiet 120`, `cmake` from 20:01 and `full` from 20:50, the GPU lock's line up to six deep, about ten minutes a flight): **no run flown under `full` is over its budget.**
+
+| run | `cmake`: GPU total, CPU (median / p99, ms) | `full` | |
+|---|---|---|---|
+| `erg-walk-1080p-rt` | 0.720 / 1.043, 0.232 / 0.876; pass, quiet | 0.726 / 1.271, 0.225 / 0.640; pass, others' CPU 7 to 11 % | within |
+| `endless-1080p-csm` | 0.975 / 1.626, 0.442 / 0.767; pass, others' CPU 9 to 13 % | 0.988 / 1.813, 0.432 / 0.711; pass, 7 to 13 % | within |
+| `endless-surround3-rt` | 4.287 / 5.646, 0.587 / 0.922; three p99 lines over on a busy machine (inconclusive), session unlocked | 4.094 / 4.974, 0.542 / 0.889; pass, **session locked**, so its other baseline | not a pair: the session state differs |
+| `erg-walk-surround3-rt` | 3.787 / 4.613, 0.339 / 0.997; pass, quiet | not flown | |
+| `overlook-1080p`, `static-1080p-rt` | cannot be flown in this checkout: `content/samples/Lantern` is fetched, not committed, and the row downloads nothing | | |
+
+The CPU's side of a frame is the same or a little less under `full` in each run flown on both (the medians 0.225 against 0.232, 0.432 against 0.442 ms), and the GPU's is the same, as it should be: inlining does not reach it. **What `full` still owes on the device:** the other three budget runs as a pair, flown where the samples are (the gate's tree), and the four `engine_view` parts that gave up waiting.
 
 ## Stacks
 
