@@ -13,6 +13,7 @@
 #include <core/schema/json_reflect.h>
 #include <core/time/time.h>
 #include <domain/doc/document_store.h>
+#include <domain/protocol/paths.h>
 #include <domain/protocol/policy.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
@@ -866,6 +867,13 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
   }
   for (const std::string& a : params.subject.assets) {
     if (!text_ok("subject.assets entries", a, 1, k_asset_path_max, false, error)) return false;
+    // A stored path, as a record's is (T174; protocol.md, "Paths a document's records hold"): the
+    // ledger lies beside the document and every answer carries the subject, so an absolute path
+    // would be this machine's in both. One rule and one answer with the record's.
+    if (io::check_stored_path_form(a) != io::Refusal::none) {
+      error = path_not_found("subject.assets", a, io::Access::read);
+      return false;
+    }
   }
   if (!params.report.is_null() && write_json(params.report).size() > k_report_max) {
     error = make_error(codes::k_invalid_argument,

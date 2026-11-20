@@ -1219,6 +1219,34 @@ TEST_CASE("ledger: a host that cannot see a subject's file says so, and never ca
   CHECK(at(here, "same").as_bool());
 }
 
+// An entry of `subject.assets` is a stored path (protocol.md, "Paths a document's records hold";
+// T174): `<root>://<relative>` or relative to the document, never absolute, refused at the raise as
+// a record's absolute path is, with the same answer. The ledger is beside the document and every
+// answer carries the subject, so an absolute path there would be the machine's, everywhere.
+TEST_CASE("ledger: a subject's listed file is a stored path, never an absolute one") {
+  test::TempDir tmp("protocol_ledger_stored");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  h.open(dir, true);
+  DigestWorld w;
+  w.make(h, dir);
+  const std::string absolute = w.mesh;  // made under the case's own folder, at run time
+  JsonValue error;
+  const i32 code =
+      h.fails("review.raise", w.raise_params("Agent", strings({absolute.c_str()})), &error);
+  CHECK(code != 0);
+  JsonValue record_error;
+  JsonValue cmds = JsonValue::array();
+  cmds.push_back(obj({{"kind", JsonValue("SetProperty")},
+                      {"id", JsonValue(hex(w.placement))},
+                      {"name", JsonValue("mesh")},
+                      {"value", JsonValue(absolute)}}));
+  // The same rule refuses the same path in a record, with the same code.
+  CHECK(h.fails("doc.apply", obj({{"commands", cmds}, {"attribution", who("agent", "director")}}),
+                &record_error) == code);
+  CHECK(at(h.ok("review.list"), "reviews").size() == 0);  // nothing raised, nothing stored
+}
+
 // What a glTF names is part of it (protocol.md, "What a close is tied to"): a `.gltf` the subject
 // names has its external buffers and images read too, each held to the glTF's own directory by
 // the importer's rule (relative, no `..`, not absolute) and counted under the digest's bounds; a

@@ -365,8 +365,10 @@ void compose_subject(const Context& ctx, const Session& session, const ReviewSub
     }
     io::Admitted admitted;
     io::Refusal why = io::Refusal::none;
+    // Admitted as a stored path is (T174): never an absolute one, then through the roots from the
+    // document's directory.
     if (ctx.roots != nullptr &&
-        ctx.roots->admit(f.spelled, session.dir(), io::Access::read, admitted, why)) {
+        io::admit_stored_path(*ctx.roots, f.spelled, session.dir(), admitted, why)) {
       f.native = std::move(admitted.native);
     } else {
       // A root this host does not have, or a place its roots do not admit: never opened, and a
