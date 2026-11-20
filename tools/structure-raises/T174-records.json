@@ -1,11 +1,11 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "T174-records",
-  "reason": "protocol.md gains the section on the paths a document's records hold and the import's grant (T174's review)",
-  "date": "2026-11-18",
+  "reason": "protocol.md gains the section on the paths a document's records hold, the import's grant, and what a client is told about them (T174)",
+  "date": "2026-11-20",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/apps.md": 464,
-    "page:docs/subsystems/protocol.md": 5197
+    "page:docs/subsystems/apps.md": 1655,
+    "page:docs/subsystems/protocol.md": 8121
   }
 }
