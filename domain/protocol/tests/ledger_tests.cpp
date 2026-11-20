@@ -1562,6 +1562,27 @@ TEST_CASE("ledger: the detail form refuses a list's filters beside it") {
   }
 }
 
+// `decided_at` is the digest its closer saw, which the host found equal (protocol.md, "What a close
+// is tied to"): a close that sent none — an agent's, or a withdrawal — records none.
+TEST_CASE("ledger: a close that sent no digest records none it was decided at") {
+  test::TempDir tmp("protocol_ledger_decided");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  h.open(dir, true);
+  DigestWorld w;
+  w.make(h, dir);
+  const JsonValue accepted = at(at(w.raise(h, "Agent"), "reviews")[0], "id");
+  const JsonValue withdrawn = at(at(w.raise(h, "Agent"), "reviews")[0], "id");
+  const JsonValue a = h.review("review.close", obj({{"review", accepted},
+                                                    {"resolution", JsonValue("Accepted")},
+                                                    {"attribution", who("reviewer")}}));
+  CHECK(at(a, "decided_at").as_string().empty());
+  const JsonValue b = h.review("review.close", obj({{"review", withdrawn},
+                                                    {"resolution", JsonValue("Withdrawn")},
+                                                    {"attribution", who("checker")}}));
+  CHECK(at(b, "decided_at").as_string().empty());
+}
+
 // The detail form is one item by id (protocol.md, "What a close is tied to"): a list's ids, order
 // or limit beside `digest` is refused rather than ignored. And a ledger written before digests —
 // at version 2, with no ledger revision, or at version 3, with one — reads, its item carrying no

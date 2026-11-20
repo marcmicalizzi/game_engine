@@ -1106,8 +1106,9 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
                             std::move(data));
             return false;
           }
-          r->decided_at = seen_now.digest;
-
+          // The digest its closer saw, which the host found equal; none when it sent none (an
+          // agent's close, a withdrawal), since nothing was compared.
+          r->decided_at = params.digest.empty() ? std::string() : seen_now.digest;
           r->state = ReviewState::Closed;
           r->resolution = params.resolution;
           r->closed_by = caller.who;
