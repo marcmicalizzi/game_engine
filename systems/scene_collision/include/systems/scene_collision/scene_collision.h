@@ -396,7 +396,8 @@ DoorBody declared_door(const geometry::ClusterFileDoor& record, WorldPos origin,
                        f32 scale, u64 key) noexcept;
 // The key of a placed piece's `leaf`-th declared door: the piece's name (`support_placement`) and
 // the leaf's index, never the order tiles came in. Its top bit is set, which keeps it apart from
-// the keys a host hands below 2^63.
+// the keys a host hands below 2^63 — a rule the host keeps: `set_doors` takes a top-bit key as a
+// declared door handed back (a restore) and cannot tell one a host made up.
 u64 declared_door_key(u64 placement, u32 leaf) noexcept;
 
 // **What a held tile holds, for a debug draw** (collision_draw.h). Spans are the consumer's and

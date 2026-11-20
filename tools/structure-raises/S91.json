@@ -1,17 +1,17 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "S91",
-  "reason": "S91: doors only where their leaves are drawn, a streamed tile's door standing, the walk version 3 and the stricter section 53 reader, each said on its page",
+  "reason": "S91: g_walker cleared with its walker in both loops (a scope guard), a streamed tile's door refused and a ground-follow walker's doors Unsupported, said on their pages",
   "date": "2026-11-20",
   "by": "Marc Micalizzi",
   "deltas": {
-    "engine_view.main_cpp.lines": 11,
-    "engine_view.run_view.lines": 1,
-    "engine_view.run_offscreen.lines": 1,
+    "engine_view.main_cpp.lines": 17,
+    "engine_view.run_view.lines": 2,
+    "engine_view.run_offscreen.lines": 2,
     "engine_view.if_engine_view": 3,
     "page:docs/subsystems/renderer.md": 913,
-    "page:docs/subsystems/apps.md": 3416,
+    "page:docs/subsystems/apps.md": 3655,
     "page:docs/subsystems/geometry.md": 3488,
-    "page:docs/subsystems/scene_collision.md": 33221
+    "page:docs/subsystems/scene_collision.md": 33558
   }
 }

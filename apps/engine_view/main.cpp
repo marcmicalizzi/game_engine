@@ -1378,11 +1378,15 @@ void report_device(const gfx::Device& device, const renderer::ResolvedSettings& 
 
 // **The walker's doors drawn** (walk.h `flush_leaves`; scene_collision.md, "What is drawn swings
 // with what collides"): the session's walker, whose turned doors' leaves go to the renderer between
-// frames, beside the game's props. Null without a walker.
+// frames, beside the game's props. Null without a walker, and again when the run's walker goes
+// (`WalkerScope`, declared just after it, as `GameActorsScope` clears `g_actors`).
 view::Walker* g_walker = nullptr;
 bool flush_walker_leaves(renderer::SceneRenderer& renderer, std::string* error) {
   return g_walker == nullptr || g_walker->flush_leaves(renderer, error);
 }
+struct WalkerScope {
+  ~WalkerScope() { g_walker = nullptr; }
+};
 
 // ---- --game: the session's game module (game_runner.h) ---------------------------------------
 // One per process, like the report: started in `main` before any device (so a module the host
@@ -3064,7 +3068,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
   Wading wading;  // brief-water: the water the walker wades in (S63), outliving it
 #endif
   view::Walker walker;  // a recorded walk's (walk.h): outlives the session, which points at it
-  view::WalkProbe walk_probe;  // the records' `walk` (walk.h)
+  const WalkerScope walker_scope;  // `g_walker` cleared before the walker goes (S91)
+  view::WalkProbe walk_probe;      // the records' `walk` (walk.h)
   view::FlySession session;
 #if ENGINE_VIEW_ANIMATION
   // The scene's characters (animation.h): stepped on the replay's tick, from the session's tick
@@ -5905,7 +5910,8 @@ int run_view(int argc, char** argv) {
   Wading wading;  // brief-water: the water the walker wades in (S63), outliving it
 #endif
   view::Walker walker;         // the walk mode (walk.h): outlives the session, which points at it
-  view::WalkProbe walk_probe;  // the records' `walk` (walk.h)
+  const WalkerScope walker_scope;  // `g_walker` cleared before the walker goes (S91)
+  view::WalkProbe walk_probe;      // the records' `walk` (walk.h)
   scene::FrameWalk walked;
   view::FlySession session;
   view::EdgeEvents edge;               // live: converted this frame, fed at the next tick

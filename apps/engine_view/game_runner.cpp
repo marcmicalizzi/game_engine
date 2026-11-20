@@ -577,6 +577,11 @@ struct GameRunner::Impl {
   // ---- ABI 13: the doors (S91; apps.md, "Doors a module answers for") ----
   // The walker's collision's doors: read through the session's walker, toggled through the session
   // so the toggle lands at the walker's next step, before its interact.
+  // Whether the session's walker has a collision to hold doors: a walker that follows the ground
+  // has none, and the doors' entries answer `Unsupported` there, as module_abi.h says.
+  static bool has_doors(const Impl& self) noexcept {
+    return self.walker != nullptr && std::strcmp(self.walker->collision(), "physics") == 0;
+  }
   static hotload::DoorState door_state_of(const WalkDoor& d) noexcept {
     hotload::DoorState out;
     out.flags = d.declared ? hotload::k_door_declared : 0u;
@@ -596,7 +601,7 @@ struct GameRunner::Impl {
         radius_m > hotload::k_door_radius_max_m) {
       return hotload::Result::InvalidArgument;
     }
-    if (self.walker == nullptr) return hotload::Result::Unsupported;
+    if (!has_doors(self)) return hotload::Result::Unsupported;
     const u32 i = self.walker->door_nearest(WorldPos{point[0], point[1], point[2]}, radius_m);
     WalkDoor d;
     if (i == k_no_walk_index || !self.walker->door(i, d)) return hotload::Result::NotFound;
@@ -605,7 +610,7 @@ struct GameRunner::Impl {
   }
   static hotload::Result door_state(void* user, u64 key, hotload::DoorState& out) {
     Impl& self = *static_cast<Impl*>(user);
-    if (self.walker == nullptr) return hotload::Result::Unsupported;
+    if (!has_doors(self)) return hotload::Result::Unsupported;
     WalkDoor d;
     if (!self.walker->door_by_key(key, d)) return hotload::Result::NotFound;
     out = door_state_of(d);
@@ -613,7 +618,7 @@ struct GameRunner::Impl {
   }
   static hotload::Result door_toggle(void* user, u64 key) {
     Impl& self = *static_cast<Impl*>(user);
-    if (self.session == nullptr || self.walker == nullptr) return hotload::Result::Unsupported;
+    if (self.session == nullptr || !has_doors(self)) return hotload::Result::Unsupported;
     WalkDoor d;
     if (!self.walker->door_by_key(key, d)) return hotload::Result::NotFound;
     // A door that stands (a streamed tile's, drawn at its declared angle) cannot be turned at all.

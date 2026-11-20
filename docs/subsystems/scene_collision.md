@@ -532,7 +532,10 @@ thickness `face_z` behind its face on the other side), standing at the record's 
 when that is not shut. **Its key is its place** (`declared_door_key`): the piece's name
 (`support_placement` — a scene instance's index, a streamed placement's entry and id, or its tile
 and place among the tile's placements) and the leaf's index, top bit set so it never meets a host's
-key below 2^63; never the order tiles came in. A key already held is not taken again, so **a
+key below 2^63; never the order tiles came in. **The top bit is the host's to keep, not checked**:
+`set_doors` takes a key with it as a declared door handed back (a restore of `doors()`), counts it
+declared and lets it win over the declaration, so a host that named its own door with the top bit
+set could hide a building's; it cannot be refused there without refusing every restore. A key already held is not taken again, so **a
 restore wins** (a `set_doors` of the doors a save read back keeps their states, declared or not),
 and **a door outlives its tile**: let go, its body goes and its state stays and goes on turning;
 back, it is made where it stands. The doors found are sorted and merged by key, so the tiles'
