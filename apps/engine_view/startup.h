@@ -57,6 +57,7 @@ class StartupTrace {
   bool reached_[k_startup_milestone_count] = {};
   u32 stable_ = 0;
   i64 stable_since_ = 0;
+  u32 dropped_before_ready_ = 0;  // the trace's drops when `nearby_stable` was reached
   JsonValue block_;
 };
 

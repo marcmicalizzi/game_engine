@@ -22,3 +22,7 @@ endif()
 engine_module_tests(NAME profiling
   SOURCES tests/profile_tests.cpp tests/startup_trace_tests.cpp tests/frame_capture_tests.cpp
           tests/size_table.cpp)
+
+# The startup trace's readers on a streamed session's shape (T210): the summary, the Chrome trace
+# and the acyclic check by size, and the copies of them as they were before T210 beside them.
+engine_module_bench(NAME profiling SOURCES bench/startup_trace_bench.cpp)

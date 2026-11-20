@@ -1,3 +1,6 @@
+#include "startup_summary_reference.h"
+#include "synthetic_session.h"
+
 #include <core/json/json.h>
 #include <core/profiling/startup_trace.h>
 
@@ -8,6 +11,7 @@
 #include <cstring>
 #include <string>
 #include <thread>
+#include <utility>
 
 using namespace engine;
 using namespace engine::profiling;
@@ -316,6 +320,176 @@ TEST_CASE("the chrome trace round-trips a recorded set") {
   CHECK(milestones == 1);
   CHECK(flows == 2);    // one edge: its start and its end
   CHECK(samples >= 4);  // four counter tracks a sample, at least one sample
+}
+
+// ---- the readers are linear in the events (T210)
+// ----------------------------------------------------------------------
+
+namespace {
+
+std::string summary_text(const Vector<TraceEvent>& events, const char* until,
+                         TraceWalkCost* cost = nullptr) {
+  return write_json(startup_summary_json(std::span<const TraceEvent>(events.data(), events.size()),
+                                         synthetic::k_milestones, until, 5, cost),
+                    JsonWriteOptions{.pretty = false});
+}
+
+std::string reference_summary_text(const Vector<TraceEvent>& events, const char* until) {
+  return write_json(
+      reference::startup_summary_json(std::span<const TraceEvent>(events.data(), events.size()),
+                                      synthetic::k_milestones, until, 5),
+      JsonWriteOptions{.pretty = false});
+}
+
+// The three readers against the copies of them as they were before T210, byte for byte.
+void check_same_as_before(const Vector<TraceEvent>& events) {
+  const std::span<const TraceEvent> all(events.data(), events.size());
+  const char* const untils[] = {"nearby_stable", "first_frame", "never named", nullptr};
+  for (const char* until : untils) {
+    CAPTURE(until);
+    CHECK(summary_text(events, until) == reference_summary_text(events, until));
+  }
+  CHECK(chrome_trace_json(all, 42, 3) == reference::chrome_trace_json(all, 42, 3));
+  CHECK(trace_acyclic(all) == reference::trace_acyclic(all));
+}
+
+// A deterministic shuffle: a set read back from elsewhere need not be in id order.
+Vector<TraceEvent> shuffled(const Vector<TraceEvent>& events) {
+  Vector<TraceEvent> out = events;
+  u64 state = 0x9e3779b97f4a7c15ull;
+  for (u32 i = out.size(); i > 1; --i) {
+    state = state * 6364136223846793005ull + 1442695040888963407ull;
+    std::swap(out[i - 1], out[static_cast<u32>((state >> 33) % i)]);
+  }
+  return out;
+}
+
+u64 bit_width(u64 n) {
+  u64 bits = 0;
+  while (n != 0) {
+    ++bits;
+    n >>= 1;
+  }
+  return bits;
+}
+
+}  // namespace
+
+TEST_CASE("the trace's readers say what they said before T210, on a recorded trace") {
+  // A recorded session in small: frames on this thread, each with a world update and its tile
+  // change, a worker on a thread of its own every frame (so the trace has a thread index for each,
+  // as a session that makes threads as it goes does), a wait for the last frame's worker, the
+  // sampler every millisecond, and the ladder's milestones with `nearby_stable` dated back.
+  Recording recording(1u << 14, 1);
+  {
+    ENGINE_STARTUP_STAGE("device");
+    spin_us(100);
+  }
+  {
+    ENGINE_STARTUP_STAGE_DETAIL("load scene", "scene.json");
+    spin_us(200);
+  }
+  trace_milestone("scene_loaded");
+  u32 previous_worker = k_trace_none;
+  i64 stable_since = 0;
+  for (u32 f = 0; f < 160; ++f) {
+    ENGINE_STARTUP_STAGE("frame");
+    {
+      ENGINE_STARTUP_STAGE("world update");
+      ENGINE_STARTUP_STAGE_DETAIL("tile change", "tile 3_4");
+      spin_us(20);
+    }
+    u32 worker = k_trace_none;
+    std::thread field([&] {
+      TraceStage stage("terrain field", "ring 1");
+      worker = stage.id();
+      ENGINE_STARTUP_STAGE("cluster read");
+      trace_items(3);
+      spin_us(30);
+    });
+    field.join();
+    if (previous_worker != k_trace_none) {
+      TraceWait wait("collision waits", previous_worker);
+      spin_us(10);
+    }
+    previous_worker = worker;
+    if (f == 0) trace_milestone("first_frame");
+    if (f == 1) trace_milestone("player_controllable");
+    if (f == 2) trace_milestone("ground_collision_ready");
+    if (f == 70) stable_since = trace_now_ns();
+    if (f == 100) trace_milestone_at("nearby_stable", stable_since, "held 30 frames");
+  }
+  REQUIRE_MESSAGE(sampler_has_run(), "the sampler thread recorded no sample in a minute");
+  trace_stop();
+  Vector<TraceEvent> events;
+  trace_snapshot(events);
+  REQUIRE(events.size() > 900);  // six stages a frame, and the samples
+  CHECK(trace_dropped() == 0);
+  check_same_as_before(events);
+}
+
+TEST_CASE("the trace's readers say what they said before T210, on a streamed session's shape") {
+  // Small enough for the quadratic copies to finish in a debug build: ready at frame 100, and
+  // never ready (every frame then a top-level stage of the summary's).
+  for (const u32 ready : {100u, synthetic::k_never}) {
+    CAPTURE(ready);
+    const Vector<TraceEvent> events = synthetic::streamed_session({3'000, ready});
+    REQUIRE(events.size() > 2'900);
+    check_same_as_before(events);
+  }
+  // Out of id order, as a set read back from elsewhere may be: the copies' lookups scan on every
+  // miss there, so the set is smaller still.
+  check_same_as_before(shuffled(synthetic::streamed_session({600, 20})));
+  // And the shape is a graph the trace could have recorded: every edge points back.
+  const Vector<TraceEvent> shape = synthetic::streamed_session({3'000, 100});
+  CHECK(trace_acyclic(std::span<const TraceEvent>(shape.data(), shape.size())));
+}
+
+TEST_CASE("the trace's readers cost visits in proportion to the events, at 10^5 and 10^6") {
+  // The bound, from the readers' passes (startup_trace.cpp): the summary reads every event once
+  // in each of nine passes and once per milestone in two more ((2M + 9) n), and looks up by id
+  // every parent of every stage (stages x depth) and every edge twice (beneath its top, and as a
+  // top's own), each lookup a binary search of at most bit_width(n) + 1 steps. Before T210 the
+  // summary visited every event once per top-level stage before ready, climbing each one's
+  // parents, and the acyclic check every event per edge: quadratic, and twenty minutes at exit
+  // after a five-minute walk.
+  const u64 milestones = synthetic::k_milestone_count;
+  for (const u32 n : {100'000u, 1'000'000u}) {
+    for (const u32 ready : {100u, synthetic::k_never}) {
+      // The never-ready shape's summary lists every frame; at 10^6 that is a JSON document of
+      // 140,000 stages, which says nothing the 10^5 one does not.
+      if (n == 1'000'000u && ready == synthetic::k_never) continue;
+      CAPTURE(n);
+      CAPTURE(ready);
+      const Vector<TraceEvent> events = synthetic::streamed_session({n, ready});
+      const std::span<const TraceEvent> all(events.data(), events.size());
+      u64 stages = 0, edges = 0;
+      for (const TraceEvent& e : events) {
+        stages += e.kind == TraceKind::stage ? 1u : 0u;
+        edges += e.dep_count;
+      }
+      const u64 size = events.size();
+      const u64 lookup = bit_width(size) + 1;
+      TraceWalkCost summary;
+      (void)summary_text(events, "nearby_stable", &summary);
+      const u64 summary_bound =
+          (2 * milestones + 9) * size + (stages * synthetic::k_max_depth + 2 * edges) * lookup;
+      MESSAGE("summary visits " << summary.visits << " for " << size << " events, "
+                                << static_cast<f64>(summary.visits) / static_cast<f64>(size)
+                                << " an event; bound " << summary_bound);
+      CHECK(summary.visits <= summary_bound);
+      TraceWalkCost acyclic;
+      CHECK(trace_acyclic(all, &acyclic));
+      CHECK(acyclic.visits <= 2 * size + edges * lookup);
+      // The writer's text is a quarter of a kilobyte an event: at 10^6, a quarter of a gigabyte
+      // to say what 10^5 says.
+      if (n == 100'000u) {
+        TraceWalkCost chrome;
+        (void)chrome_trace_json(all, 0, 0, &chrome);
+        CHECK(chrome.visits <= 3 * size + edges * lookup);
+      }
+    }
+  }
 }
 
 // ---- the live progress (W79)

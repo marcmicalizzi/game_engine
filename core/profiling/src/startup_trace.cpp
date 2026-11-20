@@ -482,24 +482,85 @@ void trace_snapshot(Vector<TraceEvent>& out) {
 u32 trace_dropped() noexcept { return state().dropped.load(std::memory_order_relaxed); }
 u32 trace_refused_edges() noexcept { return state().refused.load(std::memory_order_relaxed); }
 
-bool trace_acyclic(std::span<const TraceEvent> events) noexcept {
+namespace {
+
+// **Lookups by id, never a scan** (T210). Each is a binary search over the events in id order: a
+// snapshot is in id order already and is searched where it lies; a set in any other order (one
+// read back from elsewhere) is ordered once, by id and then by position, so a repeated id finds
+// its first event as a scan from the front would. Before T210 a miss fell through to a scan of
+// every event, and the summary looked up every parent of every event once per top-level stage.
+// Every step of a search and of the ordering counts as a visit (`TraceWalkCost`).
+class TraceIndex {
+ public:
+  // A set is at most a trace's capacity, a u32, of events.
+  TraceIndex(std::span<const TraceEvent> events, u64& visits)
+      : events_(events), visits_(visits), size_(static_cast<u32>(events.size())) {
+    bool ordered = true;
+    for (u32 i = 1; i < size_ && ordered; ++i) {
+      ++visits_;
+      ordered = events[i - 1].id <= events[i].id;
+    }
+    if (ordered) return;
+    order_.resize(size_);
+    for (u32 i = 0; i < size_; ++i)
+      order_[i] = i;
+    std::stable_sort(order_.begin(), order_.end(), [this](u32 a, u32 b) {
+      ++visits_;
+      return events_[a].id < events_[b].id;
+    });
+  }
+
+  // The first event with this id, or null.
+  const TraceEvent* find(u32 id) const noexcept {
+    u32 lo = 0, hi = size_;
+    while (lo < hi) {
+      ++visits_;
+      const u32 mid = lo + (hi - lo) / 2;
+      if (at(mid).id < id)
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    ++visits_;
+    return lo < size_ && at(lo).id == id ? &at(lo) : nullptr;
+  }
+
+  // Where an event `find` returned lies in the span.
+  u32 position(const TraceEvent* e) const noexcept { return static_cast<u32>(e - events_.data()); }
+
+ private:
+  const TraceEvent& at(u32 i) const noexcept {
+    return order_.empty() ? events_[i] : events_[order_[i]];
+  }
+
+  std::span<const TraceEvent> events_;
+  u64& visits_;
+  u32 size_ = 0;
+  Vector<u32> order_;  // empty when the events are in id order already
+};
+
+void add_cost(TraceWalkCost* cost, u64 visits) noexcept {
+  if (cost != nullptr) cost->visits += visits;
+}
+
+}  // namespace
+
+bool trace_acyclic(std::span<const TraceEvent> events, TraceWalkCost* cost) noexcept {
   // Every edge must point at an event that exists and has a smaller id; ids are allocated in
   // begin order, so no path can return to where it started.
+  u64 visits = 0;
+  const TraceIndex index(events, visits);
+  bool acyclic = true;
   for (const TraceEvent& e : events) {
-    for (u32 d = 0; d < e.dep_count && d < k_trace_max_deps; ++d) {
+    ++visits;
+    for (u32 d = 0; d < e.dep_count && d < k_trace_max_deps && acyclic; ++d) {
       const u32 on = e.deps[d];
-      if (on >= e.id) return false;
-      bool found = false;
-      for (const TraceEvent& other : events) {
-        if (other.id == on) {
-          found = true;
-          break;
-        }
-      }
-      if (!found) return false;
+      acyclic = on < e.id && index.find(on) != nullptr;
     }
+    if (!acyclic) break;
   }
-  return true;
+  add_cost(cost, visits);
+  return acyclic;
 }
 
 namespace {
@@ -550,27 +611,14 @@ void append_f64(std::string& out, f64 v) {
   out += buf;
 }
 
-const TraceEvent* find_event(std::span<const TraceEvent> events, u32 id) noexcept {
-  // Snapshots are in id order; a binary search, then a scan for anything else.
-  usize lo = 0, hi = events.size();
-  while (lo < hi) {
-    const usize mid = (lo + hi) / 2;
-    if (events[mid].id < id)
-      lo = mid + 1;
-    else
-      hi = mid;
-  }
-  if (lo < events.size() && events[lo].id == id) return &events[lo];
-  for (const TraceEvent& e : events)
-    if (e.id == id) return &e;
-  return nullptr;
-}
-
 constexpr f64 k_mib = 1024.0 * 1024.0;
 
 }  // namespace
 
-std::string chrome_trace_json(std::span<const TraceEvent> events, i64 origin_ns, u32 dropped) {
+std::string chrome_trace_json(std::span<const TraceEvent> events, i64 origin_ns, u32 dropped,
+                              TraceWalkCost* cost) {
+  u64 visits = 0;
+  const TraceIndex index(events, visits);
   std::string out;
   out.reserve(256 + events.size() * 220);
   out += "{\"traceEvents\":[\n";
@@ -580,8 +628,10 @@ std::string chrome_trace_json(std::span<const TraceEvent> events, i64 origin_ns,
     first = false;
   };
   u32 threads = 0;
-  for (const TraceEvent& e : events)
+  for (const TraceEvent& e : events) {
+    ++visits;
     threads = std::max(threads, e.thread + 1);
+  }
   for (u32 t = 0; t < threads; ++t) {
     sep();
     out += "{\"ph\":\"M\",\"name\":\"thread_name\",\"pid\":1,\"tid\":";
@@ -598,6 +648,7 @@ std::string chrome_trace_json(std::span<const TraceEvent> events, i64 origin_ns,
   const TraceEvent* previous_sample = nullptr;
   u64 flow = 0;
   for (const TraceEvent& e : events) {
+    ++visits;
     sep();
     if (e.kind == TraceKind::stage) {
       out += "{\"ph\":\"X\",\"cat\":\"startup\",\"name\":";
@@ -635,7 +686,7 @@ std::string chrome_trace_json(std::span<const TraceEvent> events, i64 origin_ns,
       out += "}}";
       // The edges as flow arrows, from the end of what was waited for to this stage's start.
       for (u32 d = 0; d < e.dep_count; ++d) {
-        const TraceEvent* on = find_event(events, e.deps[d]);
+        const TraceEvent* on = index.find(e.deps[d]);
         if (on == nullptr) continue;
         const i64 from = on->end_ns >= 0 ? std::max(on->begin_ns, on->end_ns - 1) : on->begin_ns;
         out += ",\n{\"ph\":\"s\",\"cat\":\"dependency\",\"name\":\"waits for\",\"id\":";
@@ -718,6 +769,7 @@ std::string chrome_trace_json(std::span<const TraceEvent> events, i64 origin_ns,
   out += ",\"dropped\":";
   append_u64(out, dropped);
   out += "}}\n";
+  add_cost(cost, visits);
   return out;
 }
 
@@ -748,10 +800,11 @@ namespace {
 f64 ms_of(i64 ns) { return static_cast<f64>(ns) / 1.0e6; }
 
 // The last sample at or before `at`, or the first one after it; null with none.
-const TraceSample* sample_at(std::span<const TraceEvent> events, i64 at) noexcept {
+const TraceSample* sample_at(std::span<const TraceEvent> events, i64 at, u64& visits) noexcept {
   const TraceSample* best = nullptr;
   const TraceSample* after = nullptr;
   for (const TraceEvent& e : events) {
+    ++visits;
     if (e.kind != TraceKind::sample && e.kind != TraceKind::milestone) continue;
     if (e.begin_ns <= at)
       best = &e.sample;
@@ -776,7 +829,11 @@ JsonValue process_json(const TraceSample& s) {
 
 JsonValue startup_summary_json(std::span<const TraceEvent> events,
                                std::span<const char* const> milestones, const char* until,
-                               u32 dropped) {
+                               u32 dropped, TraceWalkCost* cost) {
+  // **Linear in the events but for the lookups by id** (T210, profiling.md, "The readers are
+  // linear in the events"): every pass below reads each event once, and the stages beneath each
+  // top-level stage are found by one climb per event, not by a walk of every event per stage.
+  u64 visits = 0;
   JsonValue out = JsonValue::object();
   out.set("format", "engine.startup.v1");
   out.set("origin", "process launch");
@@ -790,6 +847,7 @@ JsonValue startup_summary_json(std::span<const TraceEvent> events,
   for (const char* name : milestones) {
     const TraceEvent* found = nullptr;
     for (const TraceEvent& e : events) {
+      ++visits;
       if (e.kind == TraceKind::milestone && std::strcmp(e.name, name) == 0) {
         found = &e;
         break;
@@ -821,18 +879,65 @@ JsonValue startup_summary_json(std::span<const TraceEvent> events,
   if (main_thread == k_trace_none) main_thread = 0;
   i64 end_ns = until_ns;
   if (end_ns < 0) {
-    for (const TraceEvent& e : events)
+    for (const TraceEvent& e : events) {
+      ++visits;
       end_ns = std::max(end_ns, std::max(e.begin_ns, e.end_ns));
+    }
   }
   out.set("until", until != nullptr ? JsonValue(until) : JsonValue::null());
   out.set("until_reached", until_ns >= 0);
   out.set("until_ms", ms_of(std::max<i64>(end_ns, 0)));
   // ---- the main thread's top-level stages: the serial critical path ------------------------
-  JsonValue stages = JsonValue::array();
-  i64 staged_ns = 0;
-  for (const TraceEvent& e : events) {
+  // The tops, in event order, and each event's place among them (none for the rest).
+  const TraceIndex index(events, visits);
+  const u32 count = static_cast<u32>(events.size());  // at most a trace's capacity
+  Vector<u32> tops;
+  Vector<u32> top_of(count, k_trace_none);
+  for (u32 i = 0; i < count; ++i) {
+    ++visits;
+    const TraceEvent& e = events[i];
     if (e.kind != TraceKind::stage || e.thread != main_thread || e.parent != k_trace_none) continue;
     if (e.begin_ns > end_ns) continue;
+    top_of[i] = tops.size();
+    tops.push_back(i);
+  }
+  // Each stage beneath a top, found by climbing its parent chain once — the same 64 steps at
+  // most, stopping where a parent is not in the set — and kept with that top in event order,
+  // which is the order the walk of every event per top found them in. A top has no parent, so a
+  // chain that reaches one ends there.
+  Vector<u32> beneath_top(count, k_trace_none);
+  Vector<u32> first_beneath(tops.size() + 1, 0u);
+  for (u32 i = 0; i < count; ++i) {
+    ++visits;
+    const TraceEvent& c = events[i];
+    if (c.kind != TraceKind::stage) continue;
+    u32 p = c.parent;
+    u32 top = k_trace_none;
+    for (u32 guard = 0; p != k_trace_none && guard < 64; ++guard) {
+      const TraceEvent* up = index.find(p);
+      if (up == nullptr) break;
+      top = top_of[index.position(up)];
+      if (top != k_trace_none) break;
+      p = up->parent;
+    }
+    if (top == k_trace_none || c.id <= events[tops[top]].id) continue;
+    beneath_top[i] = top;
+    ++first_beneath[top + 1];
+  }
+  for (u32 t = 1; t < first_beneath.size(); ++t)
+    first_beneath[t] += first_beneath[t - 1];
+  Vector<u32> beneath(first_beneath[tops.size()], 0u);
+  {
+    Vector<u32> next(first_beneath);
+    for (u32 i = 0; i < count; ++i) {
+      ++visits;
+      if (beneath_top[i] != k_trace_none) beneath[next[beneath_top[i]]++] = i;
+    }
+  }
+  JsonValue stages = JsonValue::array();
+  i64 staged_ns = 0;
+  for (u32 top = 0; top < tops.size(); ++top) {
+    const TraceEvent& e = events[tops[top]];
     JsonValue s = JsonValue::object();
     s.set("name", e.name);
     if (e.detail[0] != '\0') s.set("detail", std::string_view(e.detail));
@@ -847,24 +952,12 @@ JsonValue startup_summary_json(std::span<const TraceEvent> events,
     // What it nested, longest first (three), and what it waited for anywhere beneath it.
     Vector<const TraceEvent*> children;
     JsonValue waits = JsonValue::array();
-    for (const TraceEvent& c : events) {
-      if (c.kind != TraceKind::stage || c.id <= e.id) continue;
-      // Beneath `e`: walk the parent chain up to it.
-      u32 p = c.parent;
-      bool beneath = false;
-      for (u32 guard = 0; p != k_trace_none && guard < 64; ++guard) {
-        if (p == e.id) {
-          beneath = true;
-          break;
-        }
-        const TraceEvent* up = find_event(events, p);
-        if (up == nullptr) break;
-        p = up->parent;
-      }
-      if (!beneath) continue;
+    for (u32 b = first_beneath[top]; b < first_beneath[top + 1]; ++b) {
+      ++visits;
+      const TraceEvent& c = events[beneath[b]];
       if (c.parent == e.id) children.push_back(&c);
       for (u32 d = 0; d < c.dep_count; ++d) {
-        const TraceEvent* on = find_event(events, c.deps[d]);
+        const TraceEvent* on = index.find(c.deps[d]);
         JsonValue w = JsonValue::object();
         w.set("stage", c.name);
         w.set("ms", ms_of(c.duration_ns()));
@@ -888,7 +981,7 @@ JsonValue startup_summary_json(std::span<const TraceEvent> events,
     if (inner.size() != 0) s.set("longest", std::move(inner));
     JsonValue deps = JsonValue::array();
     for (u32 d = 0; d < e.dep_count; ++d) {
-      const TraceEvent* on = find_event(events, e.deps[d]);
+      const TraceEvent* on = index.find(e.deps[d]);
       if (on != nullptr) deps.push_back(JsonValue(on->name));
     }
     if (deps.size() != 0) s.set("depends", std::move(deps));
@@ -898,35 +991,45 @@ JsonValue startup_summary_json(std::span<const TraceEvent> events,
   out.set("stages", std::move(stages));
   out.set("unstaged_ms", ms_of(std::max<i64>(end_ns - staged_ns, 0)));
   // ---- the other threads ------------------------------------------------------------------
+  // One pass for every thread at once: a thread index is one per OS thread that ever recorded,
+  // so a session that makes threads as it goes has as many of them as it likes.
   u32 threads = 0;
-  for (const TraceEvent& e : events)
+  for (const TraceEvent& e : events) {
+    ++visits;
     threads = std::max(threads, e.thread + 1);
-  JsonValue per_thread = JsonValue::array();
-  for (u32 t = 0; t < threads; ++t) {
+  }
+  struct ThreadTotals {
     i64 busy = 0, cpu = 0, wait = 0;
     u32 count = 0;
-    for (const TraceEvent& e : events) {
-      if (e.kind != TraceKind::stage || e.thread != t || e.begin_ns > end_ns) continue;
-      // Top-level on its thread: its parent is none or on another thread (never, by the rule).
-      if (e.parent != k_trace_none) continue;
-      busy += std::min(e.end_ns >= 0 ? e.end_ns : end_ns, end_ns) - e.begin_ns;
-      cpu += e.cpu_ns;
-      wait += e.wait_ns;
-      ++count;
-    }
-    if (count == 0) continue;
+  };
+  Vector<ThreadTotals> totals(threads, ThreadTotals{});
+  for (const TraceEvent& e : events) {
+    ++visits;
+    if (e.kind != TraceKind::stage || e.begin_ns > end_ns) continue;
+    // Top-level on its thread: its parent is none or on another thread (never, by the rule).
+    if (e.parent != k_trace_none) continue;
+    ThreadTotals& t = totals[e.thread];
+    t.busy += std::min(e.end_ns >= 0 ? e.end_ns : end_ns, end_ns) - e.begin_ns;
+    t.cpu += e.cpu_ns;
+    t.wait += e.wait_ns;
+    ++t.count;
+  }
+  JsonValue per_thread = JsonValue::array();
+  for (u32 t = 0; t < threads; ++t) {
+    const ThreadTotals& total = totals[t];
+    if (total.count == 0) continue;
     JsonValue o = JsonValue::object();
     o.set("thread", t);
-    o.set("stages", count);
-    o.set("busy_ms", ms_of(busy));
-    o.set("cpu_ms", ms_of(cpu));
-    o.set("wait_ms", ms_of(wait));
+    o.set("stages", total.count);
+    o.set("busy_ms", ms_of(total.busy));
+    o.set("cpu_ms", ms_of(total.cpu));
+    o.set("wait_ms", ms_of(total.wait));
     per_thread.push_back(std::move(o));
   }
   out.set("threads", std::move(per_thread));
   // ---- the process, before ready, from the samples ----------------------------------------
-  const TraceSample* first = sample_at(events, 0);
-  const TraceSample* last = sample_at(events, end_ns);
+  const TraceSample* first = sample_at(events, 0, visits);
+  const TraceSample* last = sample_at(events, end_ns, visits);
   JsonValue before = JsonValue::object();
   if (first != nullptr && last != nullptr) {
     before.set("cpu_ms",
@@ -942,6 +1045,7 @@ JsonValue startup_summary_json(std::span<const TraceEvent> events,
   f64 cpu_ms = 0.0, io_ms = 0.0, quiet_ms = 0.0, peak_ws = 0.0, peak_private = 0.0;
   const TraceEvent* previous = nullptr;
   for (const TraceEvent& e : events) {
+    ++visits;
     if (e.kind != TraceKind::sample) continue;
     if (e.begin_ns > end_ns) break;
     peak_ws = std::max(peak_ws, static_cast<f64>(e.sample.working_set_bytes) / k_mib);
@@ -974,6 +1078,7 @@ JsonValue startup_summary_json(std::span<const TraceEvent> events,
   JsonValue at = JsonValue::object();
   for (const char* name : milestones) {
     for (const TraceEvent& e : events) {
+      ++visits;
       if (e.kind == TraceKind::milestone && std::strcmp(e.name, name) == 0) {
         at.set(name, process_json(e.sample));
         break;
@@ -981,6 +1086,7 @@ JsonValue startup_summary_json(std::span<const TraceEvent> events,
     }
   }
   out.set("process_at", std::move(at));
+  add_cost(cost, visits);
   return out;
 }
 
