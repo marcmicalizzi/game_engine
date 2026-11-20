@@ -19,9 +19,11 @@
 #include <foundation/io/vfs.h>
 
 #include <cmath>
+#include <filesystem>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 namespace engine::content_build {
@@ -499,10 +501,31 @@ const content_class::Categories& categories_of(const MeshOptions& options) {
 
 namespace {
 
-// A sidecar's text, or none: a file that is not there declares nothing.
+// Whether there is a sidecar at `sidecar` for the build to read: true and `present` false only
+// when nothing of that name is there at all. The name itself is looked at, a link not followed:
+// `io::exists` follows one and answers false for a link that leads nowhere and for a path whose
+// look fails, and either is a sidecar the build failed to read, never "no sidecar", because what
+// cannot be read is never `none` (ADR-0073; content_build.md, "Content classes"). False, with
+// `why`, when the look itself fails.
+bool sidecar_present(const std::string& sidecar, bool& present, std::string& why) {
+  std::error_code ec;
+  const std::filesystem::path p(
+      std::u8string_view(reinterpret_cast<const char8_t*>(sidecar.data()), sidecar.size()));
+  const std::filesystem::file_status st = std::filesystem::symlink_status(p, ec);
+  present = st.type() != std::filesystem::file_type::not_found;
+  if (!present) return true;  // not found is an answer, whatever `ec` says of it
+  if (ec || st.type() == std::filesystem::file_type::none) {
+    why = "cannot be looked at: " + ec.message();
+    return false;
+  }
+  return true;
+}
+
+// A sidecar's text, or none: nothing of that name declares nothing, and anything else there is
+// read (a link that leads nowhere fails the read, and so the source).
 bool read_sidecar_text(const std::string& sidecar, std::string& text, bool& present,
                        std::string& why) {
-  present = io::exists(sidecar);
+  if (!sidecar_present(sidecar, present, why)) return false;
   if (!present) return true;
   const io::Status status = io::read_file(sidecar, text);
   if (status == io::Status::Ok) return true;
@@ -1353,10 +1376,19 @@ void run_texture_step(std::span<const TextureSource* const> sources, std::span<c
     r.key = texture::texture_cache_key(r.source_hash, task.options);
     // An image named by path is read with its sidecar (C62; texture.md, "Content classes"); an
     // embedded one has none, its class being the container's. A sidecar that cannot be read fails
-    // the texture, and so the command: a class that cannot be read is never `none`.
+    // the texture, and so the command: a class that cannot be read is never `none`, and a sidecar
+    // that is there and leads nowhere is one that cannot be read (`sidecar_present`).
     if (!source.file.empty()) {
       const std::string sidecar = content_class::sidecar_path_of(source.file);
-      if (io::exists(sidecar)) {
+      bool present = false;
+      std::string looked;
+      if (!sidecar_present(sidecar, present, looked)) {
+        r.state = TextureState::Failed;
+        r.path = source.file;
+        r.error = std::string(k_rule_content_class) + ": " + sidecar + " " + looked;
+        continue;
+      }
+      if (present) {
         std::string text;
         std::string why;
         content_class::ContentClasses classes;

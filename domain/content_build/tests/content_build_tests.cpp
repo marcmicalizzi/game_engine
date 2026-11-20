@@ -3,6 +3,7 @@
 // through the command line, byte for byte — so these cases pin what a second host relies on: the
 // build key's two moves, the spellings, a manifest's resolution, the identity skip and `force`,
 // the metrics of a container, and the protocol's option defaults agreeing with the build's.
+#include <core/base/macros.h>
 #include <core/hash/hash.h>
 #include <core/jobs/job_system.h>
 #include <core/json/json.h>
@@ -11,16 +12,27 @@
 #include <domain/content_build/content_build.h>
 #include <domain/content_build/generator_hosts.h>
 #include <domain/geometry/cluster_file.h>
+#include <domain/texture/texture_build.h>
+#include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <schemas/protocol.h>
 #include <string>
+#include <system_error>
 #include <vector>
+
+#if ENGINE_PLATFORM_WINDOWS
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <winioctl.h>
+#endif
 
 using namespace engine;
 
@@ -319,6 +331,77 @@ bool read_bytes(const std::string& path, std::string& out) {
   return io::read_file(path, out) == io::Status::Ok;
 }
 
+std::filesystem::path fs_path(const std::string& p) {
+  return std::filesystem::path(
+      std::u8string_view(reinterpret_cast<const char8_t*>(p.data()), p.size()));
+}
+
+// A symbolic link to `target`, where the process may make one (Windows needs developer mode or
+// elevation for it).
+bool make_file_symlink(const std::string& target, const std::string& link) {
+  std::error_code ec;
+  std::filesystem::create_symlink(fs_path(target), fs_path(link), ec);
+  return !ec;
+}
+
+#if ENGINE_PLATFORM_WINDOWS
+std::wstring wide(const std::string& s) {
+  std::wstring w(static_cast<usize>(MultiByteToWideChar(CP_UTF8, 0, s.data(),
+                                                        static_cast<int>(s.size()), nullptr, 0)),
+                 L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(),
+                      static_cast<int>(w.size()));
+  for (wchar_t& c : w)
+    if (c == L'/') c = L'\\';
+  return w;
+}
+
+// A junction, which any user may make: an empty directory given a mount-point reparse point. Its
+// target need not exist (foundation/io's roots tests make them the same way).
+bool make_junction(const std::string& target, const std::string& link) {
+  if (!CreateDirectoryW(wide(link).c_str(), nullptr)) return false;
+  const HANDLE h = CreateFileW(wide(link).c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                               FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return false;
+  const std::wstring substitute = L"\\??\\" + wide(target);
+  const std::wstring print = wide(target);
+  const usize names = (substitute.size() + 1 + print.size() + 1) * sizeof(wchar_t);
+  std::string buf(8 + 8 + names, '\0');
+  auto put16 = [&](usize at, usize v) {
+    buf[at] = static_cast<char>(v & 0xFF);
+    buf[at + 1] = static_cast<char>((v >> 8) & 0xFF);
+  };
+  const u32 tag = 0xA0000003u;  // IO_REPARSE_TAG_MOUNT_POINT
+  std::memcpy(buf.data(), &tag, 4);
+  put16(4, 8 + names);                                   // ReparseDataLength
+  put16(8, 0);                                           // SubstituteNameOffset
+  put16(10, substitute.size() * sizeof(wchar_t));        // SubstituteNameLength
+  put16(12, (substitute.size() + 1) * sizeof(wchar_t));  // PrintNameOffset
+  put16(14, print.size() * sizeof(wchar_t));             // PrintNameLength
+  std::memcpy(buf.data() + 16, substitute.c_str(), (substitute.size() + 1) * sizeof(wchar_t));
+  std::memcpy(buf.data() + 16 + (substitute.size() + 1) * sizeof(wchar_t), print.c_str(),
+              (print.size() + 1) * sizeof(wchar_t));
+  DWORD returned = 0;
+  const BOOL ok = DeviceIoControl(h, FSCTL_SET_REPARSE_POINT, buf.data(),
+                                  static_cast<DWORD>(buf.size()), nullptr, 0, &returned, nullptr);
+  CloseHandle(h);
+  return ok != FALSE;
+}
+#endif
+
+// The forms of a sidecar that is there and leads nowhere which this system lets a test make,
+// each made at `link` by `make(target, link)` and named for the case's output.
+struct DanglingForm {
+  const char* name;
+  bool (*make)(const std::string& target, const std::string& link);
+};
+const DanglingForm k_dangling_forms[] = {
+    {"a symbolic link to a file that is not there", make_file_symlink},
+#if ENGINE_PLATFORM_WINDOWS
+    {"a junction to a directory that is not there", make_junction},
+#endif
+};
+
 }  // namespace
 
 TEST_CASE("content_build: an unclassified source builds yesterday's bytes under yesterday's key") {
@@ -440,6 +523,55 @@ TEST_CASE("content_build: a sidecar that cannot be read refuses the source and n
   bare.options.categories = nullptr;
   const content_build::MeshTask task = run_entry(bare, ddc);
   CHECK(task.state == content_build::TaskState::Failed);
+}
+
+// A sidecar that is there and cannot be followed is a sidecar the build failed to read, never "no
+// sidecar": `io::exists` follows a link and answers false for one that leads nowhere, which the
+// build once read as `none` (ADR-0073: what cannot be read is never `none`). The mesh's sidecar
+// and an image's, each through every form of such a link the system lets a test make.
+TEST_CASE(
+    "content_build: a sidecar that leads nowhere refuses the source, a mesh's or an image's") {
+  u32 made = 0;
+  for (const DanglingForm& form : k_dangling_forms) {
+    const std::string form_name = form.name;
+    CAPTURE(form_name);
+    const test::TempDir tmp("content_build_classes");
+    REQUIRE(tmp.ok());
+    if (!form.make(tmp.file("gone"), tmp.file("grid.provenance.json"))) {
+      MESSAGE("skipped: this process may not make " << form.name);
+      continue;
+    }
+    ++made;
+    REQUIRE(write_grid(tmp.path(), "grid", 8));
+    content_build::ManifestEntry entry;
+    entry.source = tmp.file("grid.gltf");
+    entry.output = tmp.file("grid.clusters");
+    const content_build::MeshTask task = run_entry(entry, tmp.file("ddc"));
+    CHECK(task.state == content_build::TaskState::Failed);
+    CHECK(std::string(task.error.rule) == content_build::k_rule_content_class);
+    CHECK(task.error.message.find("grid.provenance.json") != std::string::npos);
+    CHECK_FALSE(io::exists(entry.output));
+
+    // An image named by path, its sidecar the same kind of link.
+    const u8 pixels[16] = {200, 40, 40, 255, 40, 200, 40, 255, 40, 40, 200, 255, 9, 9, 9, 255};
+    REQUIRE(image::write_png(tmp.file("tile.png"), 2, 2, 4, pixels) == io::Status::Ok);
+    REQUIRE(form.make(tmp.file("gone_too"), tmp.file("tile.provenance.json")));
+    content_build::TextureSource source;
+    source.file = tmp.file("tile.png");
+    source.options = texture::pack_texture_options(texture::TextureBuildOptions{});
+    const content_build::TextureSource* sources[] = {&source};
+    const u32 mesh_of[] = {0};
+    jobs::JobSystem pool(content_build::job_config(1));
+    Vector<content_build::TextureResult> results;
+    content_build::run_texture_step(sources, mesh_of, tmp.file("ddc"), pool, results, nullptr);
+    REQUIRE(results.size() == 1u);
+    CHECK(results[0].state == content_build::TextureState::Failed);
+    CHECK(results[0].error.find(content_build::k_rule_content_class) == 0u);
+    CHECK(results[0].error.find("tile.provenance.json") != std::string::npos);
+  }
+  // At least the junction on Windows and the symbolic link elsewhere, so the mend is tested on
+  // every system the suite runs on.
+  CHECK(made >= 1u);
 }
 
 TEST_CASE(
