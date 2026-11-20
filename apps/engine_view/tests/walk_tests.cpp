@@ -260,6 +260,19 @@ TEST_CASE("walk: a session header's walk block reads back, and another walk vers
   future.set("walk", std::move(walk));
   CHECK_FALSE(view::session_from_json(future, back, &error));
   CHECK(error.find("walk integration version") != std::string::npos);
+  // So is one recorded before the doors (S91, walk version 3): a mesh prop's body twelve ticks
+  // after it appears, declared doors as kinematic bodies, E opening them. Version 2 walked a
+  // house's leaf as part of its wall and a prop's body at once, and version 1 before it.
+  for (const u64 before_doors : {u64{2}, u64{1}}) {
+    CAPTURE(before_doors);
+    JsonValue past = json;
+    JsonValue old_walk = *past.find("walk");
+    old_walk.set("version", before_doors);
+    past.set("walk", std::move(old_walk));
+    error.clear();
+    CHECK_FALSE(view::session_from_json(past, back, &error));
+    CHECK(error.find("walk integration version") != std::string::npos);
+  }
 
   // The crouch (P54) reads back; a block from before it, which has none, is a walker that cannot
   // crouch; a crouch missing a number is refused.

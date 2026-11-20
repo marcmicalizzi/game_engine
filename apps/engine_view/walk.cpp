@@ -197,8 +197,8 @@ bool walk_params_from_json(const JsonValue& value, WalkParams& out, std::string*
   if (!value.is_object()) return fail("not an object");
   u32 version = 0;
   if (!read_u32(value, "version", version)) return fail("no version");
-  // Version 1's numbers mean what version 2's do; its walk is walked as version 2 (walk.h).
-  if (version != k_walk_version && version != k_walk_version_f32) {
+  // One version: a walk from before the doors is refused (walk.h, `k_walk_version` 3).
+  if (version != k_walk_version) {
     return fail("recorded with walk integration version " + std::to_string(version) +
                 ", and this engine-view walks version " + std::to_string(k_walk_version) +
                 "; a walk from another version would go somewhere else without saying so, so the "

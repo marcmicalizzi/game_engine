@@ -58,11 +58,14 @@ namespace engine::view {
 // the step, the ground-follow's jump — is this number. A session header records it, and a replay
 // under another is refused rather than walked somewhere else.
 //
-// **2** (2026-10-05): the feet are f64 and hashed as doubles. A version 1 block — every walk
-// recorded before, whose numbers mean what they meant — is read and walked as version 2, with the
-// fly camera's version 1 (`k_fly_version_f32`, fly_camera.h).
-inline constexpr u32 k_walk_version = 2;
-inline constexpr u32 k_walk_version_f32 = 1;
+// **2** (2026-10-05): the feet are f64 and hashed as doubles.
+// **3** (2026-11-20, S91): the doors. A mesh prop of a size no prop used gets its body
+// `scene_collision::k_walk_prop_build_updates` ticks after it appears (version 2 made it at once),
+// a building's declared leaves are kinematic bodies made as their tiles come in (new body ids at
+// a ring change), a house's leaf is no longer part of its static proxy, and the interact (E)
+// opens the door in front. A version 2 or 1 walk over props or houses would go somewhere else
+// under these rules, so both are refused, as every other version is.
+inline constexpr u32 k_walk_version = 3;
 
 // The walker's numbers: the session header's `walk` block, read from the `view.walk.*` and
 // `walk.collision.*` tunables when a live session starts, so a replay walks with the recording's.
