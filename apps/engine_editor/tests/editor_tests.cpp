@@ -26,6 +26,7 @@
 #include <domain/protocol/rpc.h>
 #include <foundation/io/vfs.h>
 #include <foundation/net/websocket.h>
+#include <systems/doc_scene/doc_scene.h>
 #include <systems/renderer/capture.h>
 
 #include <doctest/doctest.h>
@@ -2294,6 +2295,51 @@ TEST_CASE("engine-editor: editor.tool, editor.pick_file and editor.import_mesh")
     viewport.destroy();
   }
   device.destroy();
+}
+
+// **The roots are for clients** (apps.md, "engine-editor"; T174): an editor that serves none
+// (`--no-shell` with no `--listen`) reads and writes its operator's own document as engine-view
+// reads one — a placement naming `../shared/rock.glb` is drawn and may be moved — and one that
+// serves clients holds both the session's commits and the viewport's reading to its listener's
+// roots, from the one call `serve_clients` (main.cpp's Host makes it only when it listens, and
+// takes it back as it goes, since the document outlives it).
+TEST_CASE("engine-editor: the document is under the roots only while the editor serves clients") {
+  const test::TempDir tmp("engine_editor_roots_served");
+  editor::EditorDocument document;
+  make_fixture(document, tmp.path());
+  io::Roots roots;
+  REQUIRE(roots.add("doc", tmp.path(), false) == io::Status::Ok);
+  const auto place = [&](u64 n, const char* mesh) {
+    JsonValue properties = JsonValue::object();
+    properties.set("name", JsonValue("rock"));
+    properties.set("mesh", JsonValue(mesh));
+    const doc::Command create = doc::cmd_create(Id128{0x7e, n}, "engine.scene.MeshPlacement",
+                                                Id128{}, std::move(properties));
+    std::string why;
+    return document.apply(std::span<const doc::Command>(&create, 1), "place", why);
+  };
+  const auto drawn = [&](u64 n) {
+    doc_scene::DocumentScene scene;
+    std::string error;
+    REQUIRE_MESSAGE(doc_scene::read_document_scene(document.document(), document.directory(), {},
+                                                   scene, error, document.client_roots()),
+                    error);
+    return scene.instance_of(Id128{0x7e, n}) != ~0u;
+  };
+  // Serving none: the operator's own reading, the path outside the document and all.
+  CHECK(document.client_roots() == nullptr);
+  REQUIRE(place(1, "../shared/rock.glb"));
+  CHECK(drawn(1));
+  // Serving clients: the same record left out of the viewport, and a new one refused as it lands.
+  document.serve_clients(&roots);
+  CHECK(document.client_roots() == &roots);
+  CHECK_FALSE(drawn(1));
+  CHECK_FALSE(place(2, "../shared/other.glb"));
+  // Taken back as the host goes: the operator's own again, and no pointer to roots that are gone.
+  document.serve_clients(nullptr);
+  CHECK(document.client_roots() == nullptr);
+  CHECK(place(3, "../shared/third.glb"));
+  CHECK(drawn(1));
 }
 
 TEST_CASE("engine-editor: the window's rotate gizmo turns a record, and a dropped file imports") {
