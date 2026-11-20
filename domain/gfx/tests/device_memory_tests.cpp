@@ -95,3 +95,39 @@ TEST_CASE("gfx: the device memory report counts what is put on the device and in
   gfx::destroy_buffer(device, host);
   gfx::destroy_buffer(device, local);
 }
+
+// W51-6 (gfx.md, "What the device holds"): the log's events are every make and free in order, a
+// free carrying its make's size and stack, and turning the log on empties them. No device: the
+// log's own entry points, with keys no allocation has.
+TEST_CASE("gfx: the large-buffer log keeps its makes and frees in order") {
+  gfx::set_large_buffer_floor(gfx::k_large_buffer_bytes);
+  gfx::set_large_buffer_log(true);
+  REQUIRE(gfx::large_buffer_log_started_ns() != 0);
+  constexpr u64 k_a = 0x1000, k_b = 0x2000;
+  gfx::detail::note_large_buffer(k_a, 32 * k_mib, false);
+  gfx::detail::note_large_buffer(k_b, 48 * k_mib, true);
+  gfx::detail::forget_large_buffer(k_a);
+  gfx::detail::forget_large_buffer(0x3000);  // never made: no event
+  Vector<gfx::LargeBufferEvent> events;
+  events.resize(8);
+  const u32 kept = gfx::large_buffer_events(events.data(), 8);
+  REQUIRE(kept == 3);
+  CHECK(events[0].made);
+  CHECK(events[0].bytes == 32 * k_mib);
+  CHECK_FALSE(events[0].host_visible);
+  CHECK(events[1].made);
+  CHECK(events[1].host_visible);
+  CHECK_FALSE(events[2].made);
+  CHECK(events[2].bytes == 32 * k_mib);
+  CHECK(events[2].depth == events[0].depth);
+  CHECK(std::memcmp(events[2].stack, events[0].stack, sizeof(void*) * events[0].depth) == 0);
+  CHECK(events[0].ns >= gfx::large_buffer_log_started_ns());
+  CHECK(events[1].ns >= events[0].ns);
+  CHECK(events[2].ns >= events[1].ns);
+  CHECK(gfx::large_buffer_events_dropped() == 0);
+  gfx::detail::forget_large_buffer(k_b);
+  gfx::set_large_buffer_log(true);  // on again: a new log
+  CHECK(gfx::large_buffer_events(events.data(), 8) == 0);
+  gfx::set_large_buffer_log(false);
+  CHECK(gfx::large_buffer_log_started_ns() == 0);
+}

@@ -1,0 +1,12 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W51-6",
+  "reason": "W51-6: the first capacity past the budget and the references at the floor (renderer.md), the large-buffer log's events (gfx.md) and --memory-report's device_buffers.events (apps.md)",
+  "date": "2026-11-19",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 2870,
+    "page:docs/subsystems/apps.md": 545,
+    "page:docs/subsystems/gfx.md": 879
+  }
+}

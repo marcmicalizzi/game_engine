@@ -297,6 +297,44 @@ What a pair indexes is the scene's and stays by the stride: a pair's flag, fade 
 
 What is left at the top setting's maximum is the first frame's device transient, the chain's (W51-6's); standing, of the tip's 16.0 GB at the top about 12.5 is the device's (textures 3.2, geometry 2.7, the frame's own 1.8, structures 1.3, tiles 1.2) and 3.5 the host's, of which the engine heap is 1.5 and the C runtime's committed slack 1.2 — the residency manager's (W47) and an allocator's.
 
+## W51-6: the peak at the first frame
+
+**How it was flown** (2026-11-19, 21:33 to 23:10): W51-4's command and standing path at the top setting (3840 × 2160, `--raster rt --shadows rt`, the bounce, micromaps), 4,000 frames, `--memory-report-floor-mib 2`, `--benchmark` for each frame's traced counts, W51-4's derived-data copy, one lease each and ten minutes clear between; the process sampled from outside every two seconds. The binaries: **b69** (main as merged, 1f5ff68f, copied out), **the rule before** (this row's first commit with `renderer.rt.initial_clusters=16777216`, which starts the chain at the budget and the references at their estimate exactly as b69 does), and the tip. The machine: the session locked, free commit 50.7 to 62.8 GB at each start, the processors 18 to 100 % busy with other rows' builds and device runs.
+
+**What happens between the end of `gpu scene` and the tenth frame, in order** (the rule before, the device's blocks from the large-buffer log's events, seconds from the log's start; every buffer of 2 MiB or more):
+
+| t (s) | what | MiB |
+|---:|---|---:|
+| at `create` (W51-4: 193 s) | the first capacity, **the budget** (330,906 clusters, the estimate 710,947 being past it): six chunks, the records and arrays, a bottom-level set and its scratch, and the references at their estimate | 2,787 + 114 + 157 + 20 |
+| 100.41 | the world's first commit: the frame's working set and its table sets for 387,108 instances (W51-5's ground), and the deformed-vertex pool's slots | + 1,194, + 192 |
+| 100.43 | the chain laid out again, swapped: the top-level structure, the per-instance tables, a bottom-level set and scratch **beside** the old ones | + 127, + 100, + 690, + 183 |
+| 100.45 to 100.57 | the first capacity taken again before any frame (the budget as it reads after the micromaps, 337,597, and the references' new estimate): a **waited** resize, so the six chunks and the bottom-level set just made are freed first | − 2,787, − 690, − 183, − 20 |
+| 100.58 to 100.60 | … and made again: six chunks, a bottom-level set, scratch, references | + 2,844, + 701, + 200, + 21 |
+| 100.60 to 100.64 | the old bottom-level set and scratch the relayout retired, freed: **the only blocks held twice, 272 MiB for 0.2 s** | − 114, − 157 |
+| 100.68 | frame 0: the device at 17.2 GiB, the commit at its maximum, 22.8 GiB | |
+| 110.96 | ten seconds of frames that built 6,306 structures and referenced 50,016: the guess given back, the new one chunk made on the worker beside the old six | + 69, + 81, + 55 |
+| 111.00 to 111.06 | the old chain freed | − 3,765 |
+
+**So the maximum is not a block held twice.** The chain's double holds are a frame's worth (272 MiB at the relayout, 205 at the give-back); the maximum is **the guess**: 3.7 GiB of chain made at a share of the card for frames that wanted 0.2 of it, held from `create` through the rest of the load (it is most of why the end of `gpu scene` stood at 16.3 GiB) and through the first ten seconds of frames, so that the world's first commit (1.4 GiB of the frame's own on the device, 2 to 3 GiB on the host: W51-5's) lands on top of it. And the first capacity, taken again at the world's arrival, freed the whole chain and made it again, chunks and all, for nothing: the same budget, a few thousand clusters more.
+
+**The mend, at its cause** (renderer.md, "A guess past the budget is not made at it"): a scene whose estimate passes the budget starts at `renderer.rt.initial_clusters` (65,536 clusters, one chunk) and grows by what its frames ask, and the cache's references start at the same floor. Then the first capacity taken again at the world's arrival asks for what the chain already holds, and nothing is made again; the first frames record into one chunk; the give-back at ten seconds takes one chunk to its fit. A frame before the first read-back that wanted more than the floor would keep whole instances and count what it dropped; on the staging none did.
+
+**The pair, and the stages between** (GiB of commit unless said; the device is the process's dedicated usage; "ready" is 20 seconds after the first frame, past the give-back):
+
+| Top, standing | b69 (main) | the rule before (tip, `initial_clusters` 2^24) | the chain at the floor | **the tip** (and the references at the floor) |
+|---|---:|---:|---:|---:|
+| Flown at; free commit, processors | 22:08; 50.7 GB, 68 % | 22:35; 62.8 GB, 18 % | 21:33; 55.0 GB, 100 % | 22:59; 63.9 GB, 11 % |
+| End of `gpu scene` (`uploaded`) | 17.97 | 16.45 | 14.07 | **14.11** |
+| **Maximum**, and when | **22.71**, the first frame | 22.80, the first frame | 20.35, the first frame | **19.66**, the first frame |
+| The device at the maximum | 16.79 | 16.84 | 14.47 | **13.92** |
+| The chain at the first frame (MiB: chunks, bottom-level set, scratch, references) | 3,765 | 3,765 | 1,324 | **752** |
+| Ready: commit / device | 19.13 / 13.38 | 19.11 / 13.38 | 19.06 / 13.38 | **19.13 / 13.38** |
+| At the run's end (+4 to +5 min) | 17.53 | 17.50 | 17.48 | **17.50** |
+| The first hundred frames: short of their demand; instances dropped in the run | 0; 0 | 0; 0 | 0; 0 | **0; 0** |
+
+**The maximum falls 3.05 GiB against b69 (22.71 to 19.66) and stands 0.53 above ready, where it stood 3.58 above**; ready and standing do not move, because the guess was given back after ten seconds in every binary. The device at the first frame is 2.87 GiB lower. Every frame of every run built what it wanted (6,306 structures, 50,016 references, from frame 0), so the floor costs this scene nothing; a scene whose first frames want more than 65,536 records two frames short and counts them, which the staging could not show. The end of `gpu scene` is 2.3 GiB lower than the rule before (the guess no longer made at `create`; b69's 1.5 more is W51-4's stage A). What is left at the first frame above ready is the floor itself (one chunk of 552 MiB and its bottom-level set, given back to 206 MiB after ten seconds). The world's first commit, 1.4 GiB of the frame's working set on the device and the mesh room's 2 to 3 GiB on the host, now makes most of what remains between the end of `gpu scene` and the maximum; it is W51-5's.
+**The frame budgets** (`tools/frame-budget.ps1` on the tip's `msvc-release`, 23:47 to 01:11, the session locked, others at 9 to 30 % of the processors). The erg and endless runs' GPU totals do not move: `erg-walk-1080p-rt` 0.692 / 0.736 ms (median / p99) against 0.724 / 1.214, `erg-walk-surround3-rt` 3.773 / 4.161 against 3.771 / 4.127, `endless-1080p-csm` 2.089 / 4.661 against 3.161 / 5.545, `endless-surround3-rt` 4.317 / 5.213 against 4.392 / 5.287; their chains now start at one chunk instead of six, and none of their frames was short. `erg-walk-surround3-rt`'s CPU median read 0.793 and then 0.683 ms against a limit of 0.420, where b69 read 0.356 the same hour; flown again in one lease as tip, the rule before in the tip's binary, b69 and tip, it read 0.765, 0.498, 0.360 and **0.309**: the same binary 0.31 to 0.79 ms from one process to the next, every part of the frame's CPU (begin, passes, record, submit) scaled alike, so the line measures where the process ran on this shared machine and not the chain's first capacity. `overlook-1080p` and `static-1080p-rt` did not run: they read Khronos samples (`content/samples/`) this checkout has not fetched.
+
 ## Not measured
 
 - The cold load with a cache of its own: a cold load of the whole staging needs a 20-minute lease and 40 GB free (the staging agent's DONE note), and its cook does not ship; its peak is the staging agent's 32.2 GB.

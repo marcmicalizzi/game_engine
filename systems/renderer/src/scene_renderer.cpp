@@ -2077,8 +2077,8 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
                                         scene_->rt_frame_estimate(), rt_initial_clusters_tunable());
     const u32 first_references =
         scene_->rt_cache()
-            ? first_rt_capacity(scene_->rt_reference_limit(), scene_->rt_union_clusters(),
-                                scene_->rt_reference_estimate(), rt_initial_clusters_tunable())
+            ? first_rt_references(scene_->rt_reference_limit(), scene_->rt_union_clusters(),
+                                  rt_initial_clusters_tunable())
             : 0u;
     if (first > scene_->rt_capacity() || first_references > scene_->rt_reference_capacity()) {
       const u32 capacity = std::max(first, scene_->rt_capacity());
