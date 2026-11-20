@@ -628,6 +628,29 @@ TEST_CASE("content_build: a manifest names its categories file, and refuses one 
   CHECK_FALSE(content_build::read_manifest(tmp.file("n.json"), {}, entries, error, {}, &other));
 }
 
+// The manifest names the file every entry's sidecar is read against, so it is parsed strictly, as
+// every file the classes module reads is (C69): with `"categories"` given twice the parser's rule
+// (the last one wins) let a text merge or an append choose the table without a word.
+TEST_CASE("content_build: a manifest that gives a key twice is refused, naming it") {
+  const test::TempDir tmp("content_build_classes");
+  REQUIRE(tmp.ok());
+  REQUIRE(write_text(tmp.file("glow.categories.json"), k_glow_categories));
+  REQUIRE(write_text(tmp.file("hum.categories.json"),
+                     R"({"categories":[{"name":"fixture_hum","levels":["none","low"]}]})"));
+  REQUIRE(write_text(tmp.file("m.json"), R"({"categories":"glow.categories.json",
+                                             "categories":"hum.categories.json",
+                                             "meshes":[{"source":"grid.gltf"}]})"));
+  content_class::Categories categories;
+  Vector<content_build::ManifestEntry> entries;
+  std::string error;
+  CHECK_FALSE(
+      content_build::read_manifest(tmp.file("m.json"), {}, entries, error, {}, &categories));
+  CHECK_MESSAGE(error.find("'categories'") != std::string::npos, error);
+  CHECK(entries.empty());
+  CHECK(categories.find("fixture_hum") < 0);  // neither file was read
+  CHECK(categories.find("fixture_glow") < 0);
+}
+
 TEST_CASE("content_build: the protocol's ContentBuildOptions states the build's own defaults") {
   // `content.build` reads its options from this schema type; if a builder default moves and the
   // IDL does not, the protocol and engine-content would build different containers from the

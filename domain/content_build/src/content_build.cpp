@@ -1088,8 +1088,18 @@ bool read_manifest(const std::string& path, const MeshOptions& defaults, Vector<
     error = "cannot read manifest '" + path + "': " + io::status_name(status);
     return false;
   }
+  // Strictly (C69): the manifest names the categories file every entry's sidecar is read against,
+  // and with a key given twice the parser's ordinary rule (the last one wins) would let a text
+  // merge or an append choose that file, or an entry's source, without a word.
+  JsonParseOptions strict;
+  strict.refuse_duplicate_keys = true;
   JsonValue document;
-  const JsonParseResult parsed = parse_json(text, document);
+  const JsonParseResult parsed = parse_json(text, document, strict);
+  if (!parsed.ok && !parsed.duplicate_key.empty()) {
+    error = "manifest '" + path + "' line " + std::to_string(parsed.line) + ": the key '" +
+            parsed.duplicate_key + "' is given twice in one object";
+    return false;
+  }
   if (!parsed.ok) {
     error = "manifest '" + path + "' line " + std::to_string(parsed.line) + " column " +
             std::to_string(parsed.column) + ": " + parsed.message;
