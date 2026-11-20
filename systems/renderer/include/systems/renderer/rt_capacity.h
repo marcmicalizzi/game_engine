@@ -255,6 +255,14 @@ RtBudget resolve_rt_cache_mib(u32 tunable_mib, u64 device_local_bytes) noexcept;
 // dropped, and a frame somebody waits for is drawn complete as ever. `floor` 2^24 is the rule
 // before, the comparison.
 u32 first_rt_capacity(u32 limit, u32 union_clusters, u64 estimate, u32 floor) noexcept;
+// **The references' first capacity is the floor** (W51-6): `floor` clamped to the union and to
+// their limit, whatever their estimate. The estimate is every cached pair in every view, and a
+// reference costs mostly its share of the bottom-level set (334 bytes on the RTX 5090 with
+// micromaps): on the staging the world's arrival took them from the floor to the estimate — a
+// waited resize that made the whole chain again, chunks and all, and a bottom-level set of 650 MiB
+// where the floor's is 279 — for frames that referenced 50,016, given back ten seconds later. A
+// union under the floor is held whole, as before, so every scene the tests draw is unchanged.
+u32 first_rt_references(u32 limit, u32 union_clusters, u32 floor) noexcept;
 
 // **Which bound bound** (renderer.md, "The warning names its bound"; R143). A frame that built less
 // than it wanted met one of four, and until R143 the warning named none of them and printed the

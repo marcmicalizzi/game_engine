@@ -653,6 +653,10 @@ TEST_CASE("rt capacity: the first capacity is the scene's estimate, the budget i
   CHECK(first_rt_capacity(118214, 7284526, 7284526, 1u << 24) == 118214);
   // An estimate past the budget whose union the budget holds whole is not past it.
   CHECK(first_rt_capacity(30000, 30000, 45000, 4096) == 30000);
+  // W51-6: the references start at the floor, whatever their estimate; a union under it whole.
+  CHECK(first_rt_references(803698, 16777216, 65536) == 65536);
+  CHECK(first_rt_references(803698, 20000, 65536) == 20000);
+  CHECK(first_rt_references(40000, 3400000, 65536) == 40000);
   // What the static forms take off the estimate is not allocated: 3.3 M pairs of forms in a union
   // of 3.4 M leave 80,000 a frame can build.
   CHECK(first_rt_capacity(150000, 3400000, 80000, 4096) == 80000);

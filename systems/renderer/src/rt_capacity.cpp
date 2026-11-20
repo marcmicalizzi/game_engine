@@ -281,6 +281,10 @@ u32 first_rt_capacity(u32 limit, u32 union_clusters, u64 estimate, u32 floor) no
   return static_cast<u32>(first > 0 ? first : 1);
 }
 
+u32 first_rt_references(u32 limit, u32 union_clusters, u32 floor) noexcept {
+  return first_rt_capacity(limit, union_clusters, floor, floor);
+}
+
 void RtCapacity::reset(const RtCapacityConfig& config, u32 capacity, f64 now) noexcept {
   config_ = config;
   if (config_.step == 0) config_.step = 1;

@@ -6285,8 +6285,8 @@ bool GpuScene::lay_out_ray_tracing(std::string* error, RelayoutRetired* retired)
                                             rt_frame_estimate(), rt_initial_clusters_tunable());
   u32 first_references = keep_references;
   if (rt_cache() && first_references == 0) {
-    first_references = first_rt_capacity(rt_reference_limit_, rt_union_clusters_,
-                                         rt_reference_estimate(), rt_initial_clusters_tunable());
+    first_references =
+        first_rt_references(rt_reference_limit_, rt_union_clusters_, rt_initial_clusters_tunable());
   }
   if (retired != nullptr) {
     // Swapped (T152): the capacity is the one the scene holds, so the step keeps the frame's set
