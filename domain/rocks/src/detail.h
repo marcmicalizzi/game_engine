@@ -84,8 +84,12 @@ inline f64 lattice_value(u64 seed, i64 i, i64 j, i64 k) {
 }
 inline f64 fade(f64 t) { return t * t * t * (t * (t * 6.0 - 15.0) + 10.0); }
 
-// Value noise in three dimensions, in [0, 1].
-inline f64 noise3(u64 seed, D3 p) {
+// Value noise in three dimensions, in [0, 1]. The point is taken by reference and must stay so:
+// by value it is 24 bytes passed as a copy the caller makes, and MSVC 19.44 and 19.51 at /O2 leave
+// the second of two such copies unwritten when two calls in one expression share the argument and
+// their caller is inlined (docs/experiments/msvc-ob2-avx2-miscompile.md). With a reference there is
+// no copy to lose.
+inline f64 noise3(u64 seed, const D3& p) {
   const f64 fx = std::floor(p.x), fy = std::floor(p.y), fz = std::floor(p.z);
   const i64 i = static_cast<i64>(fx), j = static_cast<i64>(fy), k = static_cast<i64>(fz);
   const f64 tx = fade(p.x - fx), ty = fade(p.y - fy), tz = fade(p.z - fz);
