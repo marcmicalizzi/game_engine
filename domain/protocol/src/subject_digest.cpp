@@ -148,8 +148,10 @@ bool open_file(SubjectPlan::File& f, const DigestBounds& bounds, u64& total, Sub
 }
 
 // The SHA-256 of an open file's bytes, read now in chunks to the size it had at the open: never its
-// time or its size taken for "unchanged".
-void hash_file(SubjectPlan::File& f, const io::FileHandle& file, SubjectPlan& plan) {
+// time or its size taken for "unchanged". `keep`, when given, receives the bytes too (a glTF's
+// JSON, which is held to the file bound like any file).
+void hash_file(SubjectPlan::File& f, const io::FileHandle& file, SubjectPlan& plan,
+               std::string* keep = nullptr) {
   Sha256 h;
   std::string buffer(static_cast<usize>(k_read_chunk), '\0');
   u64 at = 0;
@@ -161,12 +163,83 @@ void hash_file(SubjectPlan::File& f, const io::FileHandle& file, SubjectPlan& pl
       return;
     }
     if (got == 0) break;
-    h.update(std::string_view(buffer.data(), static_cast<usize>(got)));
+    const std::string_view bytes(buffer.data(), static_cast<usize>(got));
+    h.update(bytes);
+    if (keep != nullptr) keep->append(bytes);
     at += got;
   }
   plan.bytes_read += at;
   f.line = sha256_hex(h.finish());
   f.read = true;
+}
+
+bool is_gltf(std::string_view spelled) noexcept {
+  if (spelled.size() < 5) return false;
+  const std::string_view tail = spelled.substr(spelled.size() - 5);
+  for (usize i = 0; i < 5; ++i) {
+    const char c =
+        tail[i] >= 'A' && tail[i] <= 'Z' ? static_cast<char>(tail[i] - 'A' + 'a') : tail[i];
+    if (c != ".gltf"[i]) return false;
+  }
+  return true;
+}
+
+i32 hex_digit(char c) noexcept {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+// A glTF URI as a path under the glTF's own directory, by the importer's rule (domain/assets,
+// `decoded_uri`): percent-decoded, then relative, no `..` component, not absolute, no scheme or
+// drive, no control character. False when it is not one.
+bool uri_path(std::string_view uri, std::string& out) {
+  out.clear();
+  for (usize i = 0; i < uri.size(); ++i) {
+    if (uri[i] == '%' && i + 2 < uri.size() && hex_digit(uri[i + 1]) >= 0 &&
+        hex_digit(uri[i + 2]) >= 0) {
+      out.push_back(static_cast<char>(hex_digit(uri[i + 1]) * 16 + hex_digit(uri[i + 2])));
+      i += 2;
+    } else {
+      out.push_back(uri[i] == '\\' ? '/' : uri[i]);
+    }
+  }
+  if (out.empty() || out.size() > k_file_name_max || out.front() == '/' ||
+      out.find(':') != std::string::npos)
+    return false;
+  for (const char c : out) {
+    const auto u = static_cast<unsigned char>(c);
+    if (u < 0x20 || u == 0x7f) return false;
+  }
+  usize start = 0;
+  while (start <= out.size()) {
+    const usize slash = out.find('/', start);
+    const std::string_view part = std::string_view(out).substr(
+        start, slash == std::string::npos ? out.size() - start : slash - start);
+    if (part == "..") return false;
+    if (slash == std::string::npos) break;
+    start = slash + 1;
+  }
+  return true;
+}
+
+// The external buffers and images a glTF's JSON names, in its order and each once; a `data:` URI
+// is in the file already, and a `.glb` holds its own, so neither names anything.
+void gltf_uris(std::string_view text, Vector<std::string>& out) {
+  JsonValue doc;
+  if (!parse_json(text, doc).ok || !doc.is_object()) return;
+  for (const char* list : {"buffers", "images"}) {
+    const JsonValue* entries = doc.find(list);
+    if (entries == nullptr || !entries->is_array()) continue;
+    for (const JsonValue& entry : entries->as_array()) {
+      const JsonValue* uri = entry.is_object() ? entry.find("uri") : nullptr;
+      if (uri == nullptr || !uri->is_string()) continue;
+      const std::string_view u = uri->as_string();
+      if (u.substr(0, 5) == "data:") continue;
+      if (std::find(out.begin(), out.end(), u) == out.end()) out.push_back(std::string(u));
+    }
+  }
 }
 
 }  // namespace
@@ -317,11 +390,41 @@ void read_subject_files(SubjectPlan& plan, const DigestBounds& bounds) {
   }
   if (!plan.over.empty() && plan.refuse_over) return;  // a raise refuses it unread
   total = 0;
-  for (SubjectPlan::File& f : plan.files) {
-    if (!f.line.empty()) continue;
+  const u32 listed = static_cast<u32>(plan.files.size());
+  for (u32 i = 0; i < listed; ++i) {
+    if (!plan.files[i].line.empty()) continue;
     io::FileHandle file;
-    if (open_file(f, bounds, total, plan, file)) hash_file(f, file, plan);
+    if (!open_file(plan.files[i], bounds, total, plan, file)) continue;
+    std::string gltf;
+    const bool named = is_gltf(plan.files[i].spelled);
+    hash_file(plan.files[i], file, plan, named ? &gltf : nullptr);
+    if (!named || !plan.files[i].read) continue;
+    // What the glTF names is part of it: each file read as the subject's own, under the same
+    // bounds, and named by the glTF and its URI.
+    Vector<std::string> uris;
+    gltf_uris(gltf, uris);
+    const std::string base(io::parent_path(plan.files[i].native));
+    const std::string by = plan.files[i].spelled;
+    for (const std::string& uri : uris) {
+      SubjectPlan::File n;
+      n.spelled = by + "#" + uri;
+      n.named_by = by;
+      n.uri = uri;
+      std::string path;
+      if (plan.files.size() >= bounds.files) {
+        n.line = k_over_bound;
+      } else if (!uri_path(uri, path)) {
+        n.line = k_not_readable;
+      } else {
+        n.native = io::join_path(base, path);
+        io::FileHandle named_file;
+        if (open_file(n, bounds, total, plan, named_file)) hash_file(n, named_file, plan);
+      }
+      plan.files.push_back(std::move(n));
+    }
   }
+  if (plan.files.size() > bounds.files)
+    note_over(plan.over, files_tunable.name(), bounds.files, plan.files.size());
 }
 
 bool same_document(const Session* session, const SubjectPlan& plan) noexcept {
@@ -337,8 +440,14 @@ void finish_subject(SubjectPlan& plan, SubjectState& out) {
   Sha256& h = plan.hash;
   for (const SubjectPlan::File& f : plan.files) {
     JsonValue line = JsonValue::array();
-    line.push_back(JsonValue("asset"));
-    line.push_back(JsonValue(f.spelled));
+    if (f.named_by.empty()) {
+      line.push_back(JsonValue("asset"));
+      line.push_back(JsonValue(f.spelled));
+    } else {
+      line.push_back(JsonValue("named"));
+      line.push_back(JsonValue(f.named_by));
+      line.push_back(JsonValue(f.uri));
+    }
     line.push_back(JsonValue(f.line));
     add_line(h, line);
     if (f.outside) {

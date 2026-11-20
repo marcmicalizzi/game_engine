@@ -1219,6 +1219,68 @@ TEST_CASE("ledger: a host that cannot see a subject's file says so, and never ca
   CHECK(at(here, "same").as_bool());
 }
 
+// What a glTF names is part of it (protocol.md, "What a close is tied to"): a `.gltf` the subject
+// names has its external buffers and images read too, each held to the glTF's own directory by
+// the importer's rule (relative, no `..`, not absolute) and counted under the digest's bounds; a
+// `data:` URI is in the file already. The geometry beside a `.gltf` rewritten is "subject moved".
+TEST_CASE("ledger: the files a glTF subject names are read with it") {
+  test::TempDir tmp("protocol_ledger_gltf");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  h.open(dir, true);
+  DigestWorld w;
+  w.make(h, dir);
+  const std::filesystem::path props = std::filesystem::path(dir) / "props";
+  {
+    std::ofstream(props / "crate.gltf", std::ios::binary)
+        << R"({"asset":{"version":"2.0"},)"
+        << R"("buffers":[{"uri":"crate.bin","byteLength":4},)"
+        << R"({"uri":"data:application/octet-stream;base64,AAAA","byteLength":3}],)"
+        << R"("images":[{"uri":"tex%20a.png"},{"uri":"../up.png"}]})";
+  }
+  {
+    std::ofstream(props / "crate.bin", std::ios::binary) << "abcd";
+  }
+  {
+    std::ofstream(props / "tex a.png", std::ios::binary) << "png1";
+  }
+  {
+    std::ofstream(std::filesystem::path(dir) / "up.png", std::ios::binary) << "up";
+  }
+  w.set(h, w.placement, "mesh", JsonValue("props/crate.gltf"));
+
+  JsonValue error;
+  {
+    Bound bound("protocol.review.subject_files", "3");  // the glTF and the three it names
+    CHECK(h.fails("review.raise", w.raise_params("Agent"), &error) == codes::k_invalid_argument);
+    CHECK(bound_in(error) == "protocol.review.subject_files");
+    CHECK(num(at(at(error, "data"), "figure")) == 4);
+  }
+  const JsonValue raised = h.ok("review.raise", w.raise_params("Agent"));
+  const JsonValue item = at(raised, "reviews")[0];
+  const JsonValue& stamped = at(raised, "subject");
+  CHECK(num(at(stamped, "assets")) == 4);
+  // The glTF's own bytes, and the buffer's and the image's four each.
+  CHECK(num(at(stamped, "asset_bytes")) ==
+        static_cast<i64>(std::filesystem::file_size(props / "crate.gltf")) + 8);
+  REQUIRE(at(stamped, "unreadable").size() == 1);  // the one that climbs out of its directory
+  CHECK(at(stamped, "unreadable")[0].as_string() == "props/crate.gltf#../up.png");
+
+  // The buffer rewritten at the same length, its time put back: the close is refused.
+  const auto when = std::filesystem::last_write_time(props / "crate.bin");
+  {
+    std::ofstream(props / "crate.bin", std::ios::binary | std::ios::trunc) << "dcba";
+  }
+  std::filesystem::last_write_time(props / "crate.bin", when);
+  CHECK(h.fails("review.close",
+                obj({{"review", at(item, "id")},
+                     {"resolution", JsonValue("Accepted")},
+                     {"digest", at(item, "raised_digest")},
+                     {"attribution", who("reviewer")}}),
+                &error) == codes::k_invalid_argument);
+  CHECK(reason_of(error) == "subject moved");
+}
+
 // What a digest reads is bounded, by four bounds named as tunables (protocol.md, "What it costs"):
 // a raise past one is refused naming it and the figure, and a detail or a close past one says so
 // in the stream, which differs from the stamp, so a file grown past its bound is "subject moved".

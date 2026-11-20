@@ -80,6 +80,10 @@ struct SubjectPlan {
     std::string line;    // the hash, or why it was not read; filled by `read_subject_files`
     bool read = false;
     bool outside = false;  // outside this host's roots: never opened, and no digest compares
+    // A file a `.gltf` of the subject names (a buffer, an image): the glTF's spelling and the URI
+    // as the glTF spells it; `spelled` is `<glTF>#<uri>`. Empty for a file the subject names.
+    std::string named_by;
+    std::string uri;
   };
   Vector<File> files;
   Vector<DigestOver> over;
