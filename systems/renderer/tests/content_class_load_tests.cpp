@@ -1284,3 +1284,59 @@ TEST_CASE("content classes at load: a capture holds the box or nothing, on every
     }
   }
 }
+
+// **The ground holds nothing of a refused layer in any channel** (C64; for the device leg): a
+// ground whose one layer image declares a class above the cap, beside a neutral grid. Under
+// `agent-default` every channel is the bytes of the same scene with no ground at all; under a
+// policy that covers it, the ground is drawn.
+TEST_CASE("content classes at load: a capture holds nothing of a refused ground") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(renderer_test::device_options(), &error) ||
+      !device.features().buffer_int64_atomics) {
+    MESSAGE("skipped: no Vulkan device with 64-bit buffer atomics: " << error);
+    return;
+  }
+  const test::TempDir tmp("renderer_classes_ground_capture");
+  REQUIRE(tmp.ok());
+  (void)write_grid(tmp, "a.clusters", 9, "a.png");
+  (void)write_grid(tmp, "glow.clusters", 17, "glow.png", glow_record(1));
+  write_image(tmp.file("ground.png"), 40);
+  REQUIRE(io::write_file(tmp.file("ground.provenance.json"),
+                         R"({"content_classes":{"fixture_glow":"bright"}})") == io::Status::Ok);
+  // The neutral grid in the shot, the dim one that teaches the ladder far out of it.
+  const std::string placed =
+      R"({"format":"engine.scene.v1","meshes":[{"path":"a.clusters"},{"path":"glow.clusters"}],)"
+      R"("instances":[{"mesh":0,"translation":[15,0,0],"rotation":[0,0,0,1]},)"
+      R"({"mesh":1,"translation":[400,0,0],"rotation":[0,0,0,1]}])";
+  const std::string with_ground =
+      placed + R"(,"terrain":{"size":17,"extent":8,)"
+               R"("materials":{"layers":[{"base_color":"ground.png","projection":"Map"}]}}})";
+  REQUIRE(io::write_file(tmp.file("ground.json"), with_ground) == io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("bare.json"), placed + "}") == io::Status::Ok);
+  const auto desc_of = [&](const char* file, const content_class::NamedPolicy& policy) {
+    SceneDesc desc;
+    REQUIRE_MESSAGE(read_scene_file(tmp.file(file), desc, error), error);
+    desc.ddc = tmp.file("ddc");
+    desc.view_policy = policy;
+    return desc;
+  };
+  for (const RasterMode mode : {RasterMode::Hardware, RasterMode::RayTrace}) {
+    INFO("raster mode " << static_cast<u32>(mode));
+    const Shot refused = shoot_scene(device, desc_of("ground.json", agent_default_view_policy()),
+                                     mode, ShadowMode::Cascaded, false);
+    if (!refused.available) {
+      MESSAGE("raster mode " << static_cast<u32>(mode) << " unavailable: " << refused.why);
+      continue;
+    }
+    const Shot bare = shoot_scene(device, desc_of("bare.json", agent_default_view_policy()), mode,
+                                  ShadowMode::Cascaded, false);
+    const Shot covered = shoot_scene(device, desc_of("ground.json", policy_named("glow-wide")),
+                                     mode, ShadowMode::Cascaded, false);
+    CHECK(bytes_of(refused.frame.color) == bytes_of(bare.frame.color));
+    CHECK(bytes_of(refused.frame.ids) == bytes_of(bare.frame.ids));
+    CHECK(bytes_of(refused.frame.depth) == bytes_of(bare.frame.depth));
+    CHECK(bytes_of(refused.frame.normals) == bytes_of(bare.frame.normals));
+    CHECK(bytes_of(covered.frame.ids) != bytes_of(bare.frame.ids));
+  }
+}
