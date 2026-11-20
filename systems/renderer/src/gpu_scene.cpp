@@ -800,6 +800,7 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
   // A scene read whole lays its per-pair buffers out by exactly its pairs, as it always has; one
   // whose instances come and go starts there too and grows when a tail passes it.
   pair_stride_ = pair_count_;
+  run_capacity_ = pair_stride_;
   dynamic_ = data.dynamic;
   resolved_ = resolved;
   // Which rigid forms keep static structures, before the geometry is uploaded: their cut is the
@@ -847,6 +848,7 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
       return false;
     }
     pair_stride_ = pair_count_;
+    run_capacity_ = pair_stride_;
   }
   // Room for the meshes that arrive with their tiles, after the rings' slots: mesh records, an
   // arena of clusters and the vertices and triangles it owns, and no instance or pair — a tile's
@@ -5357,8 +5359,10 @@ bool GpuScene::create_working_set(const ResolvedSettings& resolved, std::string*
   // Every run is `pair_stride_` long: the pair count for a scene read whole, a capacity above it
   // for one whose instances come and go (`set_dynamic_instances`), so a tail that changes length
   // moves no run.
-  const u64 visible_entry_bytes = 2 * sizeof(u32);
-  visible_run_bytes_ = u64{pair_stride_} * visible_entry_bytes;
+  // A run's capacity follows the stride until the frames have sized it (`fit_runs`, W51-5), and
+  // never passes it.
+  if (!runs_fit_ || run_capacity_ == 0 || run_capacity_ > pair_stride_)
+    run_capacity_ = pair_stride_;
   // The visibility id names a pair, not an entry (docs/subsystems/gfx.md, "The tie rule"), so the
   // resolve reads the entry a pair was drawn as out of this: one word per pair per view, written
   // by the cull pass for every pair it draws. A pair is drawn at most once per view per frame, so
@@ -5366,9 +5370,7 @@ bool GpuScene::create_working_set(const ResolvedSettings& resolved, std::string*
   // A shadow cascade's run follows every view's three (`cascade_base`), with an argument block of
   // its own.
   bool ok =
-      gfx::create_buffer(device,
-                         visible_run_bytes_ * (k_visible_runs * view_count_ + cascade_count_),
-                         k_readable, false, visible, error) &&
+      make_run_buffer(false, error) &&
       (cascade_count_ == 0 ||
        gfx::create_buffer(device, u64{gfx::k_draw_args_bytes} * cascade_count_, k_args, false,
                           shadow_args, error)) &&
@@ -5420,8 +5422,7 @@ bool GpuScene::create_working_set(const ResolvedSettings& resolved, std::string*
     const u64 runs = u64{2} * view_count_ + cascade_count_;
     ok = gfx::create_buffer(device, runs * sizeof(gfx::VertexDrawHeader), k_args, false,
                             vertex_headers, error) &&
-         gfx::create_buffer(device, runs * pair_stride_ * sizeof(gfx::VertexDrawRecord), k_address,
-                            false, vertex_records, error) &&
+         make_run_buffer(true, error) &&
          gfx::create_buffer(device, runs * vertex_index_capacity_ * gfx::k_vertex_draw_index_bytes,
                             k_address | gfx::BufferUsage::Index, false, vertex_indices, error);
   }
@@ -6780,7 +6781,8 @@ void GpuScene::destroy() noexcept {
   device_ = nullptr;
   data_ = nullptr;
   cluster_count_ = leaf_count_ = instance_count_ = pair_count_ = material_count_ = 0;
-  pair_stride_ = static_instances_ = static_pairs_ = instance_capacity_ = 0;
+  pair_stride_ = static_instances_ = static_pairs_ = instance_capacity_ = run_capacity_ = 0;
+  runs_fit_ = false;
   dynamic_ = false;
   mesh_material_base_.clear();
   triangles_per_cluster_ = 0;

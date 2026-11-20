@@ -142,7 +142,10 @@ struct CullParams {
   // gfx::CullParams::fade_turn (R158 leg 3): what the cross-fade's splits are turned by on the
   // hash's ring of 65535 before they go into the fade table; 0 writes them as they are.
   uint fade_turn;        // offset 1792
-  uint pad_fade[3];      // offsets 1796 to 1807; the block is 1,808 bytes
+  // gfx::CullParams::run_capacity / run_drops (W51-5): the entries this run has room for, 0 no
+  // bound, and the u32 a dropped append is counted at (see `run_takes`). The block is 1,808 bytes.
+  uint run_capacity;     // offset 1796
+  uint64_t run_drops;    // offset 1800
 };
 
 // gfx::CullParams::hiz_flags and the debug counters' layout (gfx::k_hidden_*).
@@ -553,6 +556,19 @@ bool beyond_caster_horizon(CullParams* params, float3 center, float radius) {
   return true;
 }
 
+// **A run holds what a frame draws, not the scene's pairs** (W51-5; renderer.md, "The visible
+// list's runs are sized by the frame"): `slot` was handed out by `count`; past the run's capacity
+// the append takes it back and is counted, so the count ends at the capacity whatever order the
+// threads came in — every slot under it is handed out once, and a thread that went over takes back
+// only what it added — and every reader of the run, bounded by the count, reads only what was
+// written. A capacity of 0 is no bound.
+bool run_takes(CullParams* params, Atomic<uint>* count, uint slot) {
+  if (params->run_capacity == 0 || slot < params->run_capacity) return true;
+  count->add(0xffffffffu);
+  if (params->run_drops != 0) ((Atomic<uint>*)params->run_drops)->add(1);
+  return false;
+}
+
 // A hardware survivor's share of its run's indexed draw (gfx::VertexDrawHeader): its triangles are
 // allocated under the cursor, its record says where they start, and vertex_expand.slang is given
 // one workgroup for it. A survivor that does not fit is flagged instead, pulls the indexed draw's
@@ -944,6 +960,7 @@ void cull_instance_pair(CullParams* params, uint pair, uint instance_index, bool
     if (counting) count_hidden(params, k_hidden_casters);
     Atomic<uint>* count = (Atomic<uint>*)params->caster_count;
     const uint slot = count->add(1);
+    if (!run_takes(params, count, slot)) return;
     uint2* casters = (uint2*)params->casters;
     casters[slot] = uint2(instance_index, index);
     return;
@@ -971,12 +988,14 @@ void cull_instance_pair(CullParams* params, uint pair, uint instance_index, bool
   if (software) {
     Atomic<uint>* count = (Atomic<uint>*)params->sw_args;
     const uint slot = count->add(1);
+    if (!run_takes(params, count, slot)) return;
     uint2* visible = (uint2*)params->sw_visible;
     visible[slot] = uint2(instance_index, index);
     entry = params->sw_visible_base + slot;
   } else {
     Atomic<uint>* count = (Atomic<uint>*)(params->draw_args + uint64_t(params->count_index) * 4);
     const uint slot = count->add(1);
+    if (!run_takes(params, count, slot)) return;
     uint2* visible = (uint2*)params->visible;
     visible[slot] = uint2(instance_index, index);
     entry = params->visible_base + slot;

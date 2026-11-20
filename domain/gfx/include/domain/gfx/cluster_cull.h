@@ -363,7 +363,14 @@ struct CullParams {
   // opens a 16-byte row of its own after R173's fields, so the block is 1,808 bytes, a whole number
   // of the float4 rows the GPU reads it as.
   u32 fade_turn = 0;
-  u32 pad_fade[3] = {};
+  // **A run holds what a frame draws, not the scene's pairs** (W51-5; renderer.md, "The visible
+  // list's runs are sized by the frame"): the entries this run of the visible list has room for. An
+  // append past it is dropped, counted at `run_drops` (a u32 the frame zeroes), and takes nothing:
+  // the run's count stays at the capacity, which every reader of the run is bounded by. 0 is no
+  // bound — a run as long as the pairs, as every caller that sets nothing has had. They took the
+  // three pad words, so the block stays 1,808 bytes.
+  u32 run_capacity = 0;
+  u64 run_drops = 0;
 };
 static_assert(sizeof(CullParams) == 1808);
 static_assert(offsetof(CullParams, sky_facing) == 1752);
@@ -371,7 +378,8 @@ static_assert(offsetof(CullParams, pairs) == 1760);
 static_assert(offsetof(CullParams, items) == 1768);
 static_assert(offsetof(CullParams, mesh_bounds) == 1784);
 static_assert(offsetof(CullParams, fade_turn) == 1792);
-static_assert(offsetof(CullParams, pad_fade) == 1796);
+static_assert(offsetof(CullParams, run_capacity) == 1796);
+static_assert(offsetof(CullParams, run_drops) == 1800);
 static_assert(offsetof(CullParams, hidden_counts) % 8 == 0);
 
 // CullParams::hiz_flags.

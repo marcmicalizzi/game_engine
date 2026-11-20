@@ -647,8 +647,21 @@ class GpuScene {
   // tracing chain builds the union from. With one view this is `run * pair_count`, the layout the
   // list has always had.
   u32 visible_base(u32 view, u32 run) const noexcept {
-    return (run * view_count_ + view) * pair_stride_;
+    return (run * view_count_ + view) * run_capacity_;
   }
+  // **The runs are sized by the frame, not the scene** (W51-5; renderer.md, "The visible list's
+  // runs are sized by the frame"): the entries each run of the list has room for, which is the
+  // stride until the frames have said what they draw (`fit_runs`), and never more than it. The
+  // per-pair tables (`pair_entries`, `flags`, `fade`, the pair table) stay by the stride.
+  u32 run_capacity() const noexcept { return run_capacity_; }
+  // Where the frame's two drop counts are in `visible`, behind its last entry: the camera runs' and
+  // the cascades' appends that found their run full (`gfx::CullParams::run_drops`).
+  u64 run_drops_offset() const noexcept { return u64{visible_entries()} * 2 * sizeof(u32); }
+  // Lays the list's runs out again for `capacity` entries each (clamped to the stride): the list
+  // and the vertex path's records are made again — the old ones go to `retired`, since the frames
+  // in flight read them — and, with the deformed-vertex pool, the per-entry slots and the
+  // allocator's scratch are made again by the relayout this marks pending.
+  bool fit_runs(u32 capacity, Vector<gfx::BufferResource>* retired, std::string* error);
   // Bytes into `draw_args[pass]` / `sw_args` where this view's indirect block is.
   u64 args_offset(u32 view) const noexcept { return u64{view} * gfx::k_draw_args_bytes; }
   // Bytes into `deform_args` where this (view, run)'s indirect dispatch block is.
@@ -658,13 +671,13 @@ class GpuScene {
   // Entries of the whole visible list, which is what `deform_slots` has one word each of: every
   // view's three runs, then one run per shadow cascade.
   u32 visible_entries() const noexcept {
-    return (k_visible_runs * view_count_ + cascade_count_) * pair_stride_;
+    return (k_visible_runs * view_count_ + cascade_count_) * run_capacity_;
   }
   // Bytes of `deform_blocks`: two words per tile of 256 entries of the largest allocator dispatch,
   // a camera run over every view or the cascades' run over every cascade (R104).
   u64 deform_block_bytes() const noexcept {
     const u32 widest = view_count_ > cascade_count_ ? view_count_ : cascade_count_;
-    const u32 tiles = gfx::deform_alloc_tile_capacity(widest, pair_stride_);
+    const u32 tiles = gfx::deform_alloc_tile_capacity(widest, run_capacity_);
     return u64{tiles > 0 ? tiles : 1u} * 2 * sizeof(u32);
   }
 
@@ -679,7 +692,7 @@ class GpuScene {
   // its own header, records and index array behind the views' two runs.
   u32 shadow_cascades() const noexcept { return cascade_count_; }
   u32 cascade_base(u32 cascade) const noexcept {
-    return (k_visible_runs * view_count_ + cascade) * pair_stride_;
+    return (k_visible_runs * view_count_ + cascade) * run_capacity_;
   }
   u64 shadow_args_offset(u32 cascade) const noexcept {
     return u64{cascade} * gfx::k_draw_args_bytes;
@@ -695,7 +708,7 @@ class GpuScene {
     return (u64{2} * view_count_ + cascade) * sizeof(gfx::VertexDrawHeader);
   }
   u64 shadow_vertex_records_offset(u32 cascade) const noexcept {
-    return (u64{2} * view_count_ + cascade) * pair_stride_ * sizeof(gfx::VertexDrawRecord);
+    return (u64{2} * view_count_ + cascade) * run_capacity_ * sizeof(gfx::VertexDrawRecord);
   }
   u64 shadow_vertex_indices_offset(u32 cascade) const noexcept {
     return (u64{2} * view_count_ + cascade) * vertex_index_capacity_ *
@@ -909,7 +922,7 @@ class GpuScene {
     return (u64{run} * view_count_ + view) * sizeof(gfx::VertexDrawHeader);
   }
   u64 vertex_records_offset(u32 view, u32 run) const noexcept {
-    return (u64{run} * view_count_ + view) * pair_stride_ * sizeof(gfx::VertexDrawRecord);
+    return (u64{run} * view_count_ + view) * run_capacity_ * sizeof(gfx::VertexDrawRecord);
   }
   u64 vertex_indices_offset(u32 view, u32 run) const noexcept {
     return (u64{run} * view_count_ + view) * vertex_index_capacity_ *
@@ -1668,6 +1681,9 @@ class GpuScene {
   bool upload_materials(const ResolvedSettings& resolved, std::string* error);
   bool upload_water_shores(std::string* error);
   bool create_working_set(const ResolvedSettings& resolved, std::string* error);
+  // A buffer laid out by the runs' capacity (gpu_scene_runs.cpp): the visible list with its drop
+  // counts behind it, or with `vertex_path` the vertex path's records.
+  bool make_run_buffer(bool vertex_path, std::string* error);
   bool upload_pair_table(std::string* error);
   // ---- a dynamic scene's tables ----
   // One set of the tables a frame reads: the instance table and the pair table, and the instance
@@ -2131,6 +2147,8 @@ class GpuScene {
   u32 instance_count_ = 0;
   u32 pair_count_ = 0;
   u32 pair_stride_ = 0;
+  u32 run_capacity_ = 0;   // entries a run of the visible list holds (`fit_runs`)
+  bool runs_fit_ = false;  // the frames have sized the runs; until then they follow the stride
   bool dynamic_ = false;
   u32 static_instances_ = 0;
   u32 static_pairs_ = 0;

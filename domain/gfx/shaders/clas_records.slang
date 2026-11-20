@@ -108,7 +108,7 @@ struct BlasRecord {
   uint64_t references;
 };
 
-// Mirrors gfx::ClusterRecordParams (200 bytes: past the 128 every device guarantees, which this
+// Mirrors gfx::ClusterRecordParams (208 bytes: past the 128 every device guarantees, which this
 // pass may take because it runs only where VK_NV_cluster_acceleration_structure does, and every
 // such device has 256).
 struct RecordParams {
@@ -154,6 +154,11 @@ struct RecordParams {
   // **The far field at rest** (field_rest.slang; R152): the frame's FloraFieldFrame, or 0. A field
   // instance wholly past its rest distance is a cached instance this frame (`instance_cached`).
   uint64_t field;
+  // gfx::ClusterRecordParams::run_length (W51-5): the entries one run of the visible list holds,
+  // which `records_main` reads its runs by; 0 is `pair_count`, the run length before the runs were
+  // sized by the frame. The slots `emit` covers stay by `pair_count`. 208 bytes.
+  uint run_length;
+  uint pad_run;
 };
 
 // Mirrors gfx::ClusterCacheTables (120 bytes).
@@ -315,8 +320,11 @@ bool instantiating() { return (g_params.mode & k_instantiate) != 0; }
 // A traced-primary frame: an untraced instance's drawn entries are built (R110).
 bool untraced_drawn() { return (g_params.mode & k_untraced_drawn) != 0; }
 
+// The entries one run of the visible list holds (`RecordParams::run_length`, W51-5).
+uint run_entries_of() { return g_params.run_length != 0 ? g_params.run_length : g_params.pair_count; }
+
 // The first visible index of the caster run: nothing below it is a caster.
-uint caster_base() { return k_caster_run * view_count() * g_params.pair_count; }
+uint caster_base() { return k_caster_run * view_count() * run_entries_of(); }
 
 // The three thirds of `instance_counts`: each instance's drawn entries, its casters, and its dense
 // record base.
@@ -345,17 +353,19 @@ void records_main(uint3 thread_id : SV_DispatchThreadID) {
   // A folded dispatch (gfx::fold_dispatch, T160): two runs of a forest's pairs are half a million
   // workgroups.
   const uint t = folded_thread(thread_id, 64);
-  const uint run_entries = view_count() * g_params.pair_count;
+  const uint run_length = run_entries_of();
+  const uint run_entries = view_count() * run_length;
   const uint runs = g_params.caster_count != 0 ? 2u : 1u;
   if (t >= runs * run_entries) return;
   const bool caster = t >= run_entries;
   const uint within = caster ? t - run_entries : t;
-  const uint view = within / g_params.pair_count;
-  const uint local_index = within - view * g_params.pair_count;
+  const uint view = within / run_length;
+  const uint local_index = within - view * run_length;
   const uint64_t count_word = caster ? g_params.caster_count : g_params.visible_count;
   uint* visible_count = (uint*)(count_word + uint64_t(view) * k_draw_args_bytes);
-  // The run is filled by one atomic over a dispatch of pair_count threads, so that is its bound.
-  if (local_index >= min(*visible_count, g_params.pair_count)) return;
+  // The run's count is its bound, and never past what the run holds (cluster_cull.slang,
+  // `run_takes`).
+  if (local_index >= min(*visible_count, run_length)) return;
   const uint index = caster ? caster_base() + within : within;
   uint2* visible = (uint2*)g_params.visible;
   const uint instance_index = visible[index].x;

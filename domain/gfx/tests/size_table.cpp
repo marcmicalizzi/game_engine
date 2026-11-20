@@ -144,7 +144,7 @@ ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterDrawParams);
 // "The resident cluster structure cache", R101); the compact hit entries had taken 160.
 // 200, not 192 (R152): `field`, the frame's field block, by which a field instance wholly past its
 // rest distance references the cache instead of being built (renderer.md, "The far field at rest").
-ENGINE_EXPECT_SIZE(200, 8, gfx::ClusterRecordParams);
+ENGINE_EXPECT_SIZE(208, 8, gfx::ClusterRecordParams);  // W51-5: run_length, a pad word
 // The cache's tables, read through an address (R101). 120, not 112: the args block its passes
 // are dispatched from, so a pass with nothing to do dispatches no thread (R106).
 ENGINE_EXPECT_SIZE(120, 8, gfx::ClusterCacheTables);

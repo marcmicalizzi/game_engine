@@ -67,17 +67,18 @@ bool GpuScene::relayout(std::string* error, RelayoutRetired* retired) {
     ENGINE_STARTUP_STAGE("relayout trees");
     if (!grow_flora_tail(error, old)) return failed(false);
   }
-  // The pool's per-entry slots are laid out by the stride, and every mesh record names them.
-  // The allocator's tile scratch follows the same stride (R104). Both are written by every frame
-  // before it reads them, so the new ones start empty, as they always did.
-  if (deform_ && deform_blocks.size < deform_block_bytes()) {
+  // The pool's per-entry slots are laid out by the runs, and every mesh record names them. The
+  // allocator's tile scratch follows the same runs (R104). Both are written by every frame before
+  // it reads them, so the new ones start empty, as they always did. Made again when the runs'
+  // capacity moves either way (it_runs, W51-5), so a shrink gives the bytes back.
+  if (deform_ && deform_blocks.size != deform_block_bytes()) {
     retire(deform_blocks, old);
     if (!gfx::create_buffer(*device_, deform_block_bytes(), k_address, false, deform_blocks,
                             error)) {
       return failed(false);
     }
   }
-  if (deform_ && deform_slots.size < u64{visible_entries()} * sizeof(u32)) {
+  if (deform_ && deform_slots.size != u64{visible_entries()} * sizeof(u32)) {
     retire(deform_slots, old);
     if (!gfx::create_buffer(*device_, u64{visible_entries()} * sizeof(u32), k_address, false,
                             deform_slots, error)) {

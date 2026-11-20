@@ -236,6 +236,22 @@ Beside the engine heap: **1.2 GB of the C runtime heaps is not the engine's** (4
 
 **What is left for the residency manager** (W47), on the tip at the top setting standing (exit, MiB): device-local 13,311 — textures 3,150, geometry 2,656, the frame's own 2,272 (twice the orbit's 1,080: standing at this view the visible runs and pair tables grow to it), structures 1,346 (the cache 1,036, static forms 352), tiles 1,218, companions 721, micromaps 369, materials 364 — which Windows charges once more as the driver's backing, all of it in the commit; and on the host the withheld meshes' 2.2 GB, which are the mesh room's. Of the 18.8 GB standing 13.0 is the device's and 5.8 the host's, and every large host owner left has a reader after the upload: what nothing reads again is the C runtime heap's free 0.5 GB, an allocator's matter.
 
+## W51-5: the withheld meshes, and the runs sized by the frame
+
+**How it was flown** (2026-11-19, the evening after W51-4): as W51-4 flew it — the staging standing at W149's one-place path, `--memory-report-floor-mib 2`, sampled from outside every two seconds, one load a lease — against batch 69's main (`b69`, 1f5ff68f) the same evening, with the row's own copy of the derived data (W51-4's read set, linked, and a copy of its pipeline cache), and the walk of R152 (`walk-path.json`, 3,596 frames, about 1.5 km in a minute through the staging's middle rings) at the low setting with `--benchmark` for the arrivals' frame times. **c1** is the row's first commit alone (the withheld meshes); **the tip** is both stages.
+
+**Stage B: a withheld mesh is let go and built again** (world.md, "A withheld mesh is let go and built again"). W51-4 found the host's largest owner standing to be the mesh room's withheld tile meshes: 189 meshes the room refused (52 resident, `renderer.meshes.budget_mib` 256), each keeping its merged streams and its textures read for the admission — about 2.2 GB that nothing drew. The room's refusal now shelves a built mesh: its streams and its texture references go, its counts stay (the tile's pairs are counted from its clusters, and the room is asked with its clusters and materials before it is built again), and it is built again, off the committing thread and out of the derived-data cache, only when the room can take it. **Why that and not never building it**: the counts need a build, and the room frees in an order the world decides a commit at a time. **What the admission costs when it comes**: a second build on a worker, so a mesh that was withheld arrives a few commits later than it would have, drawn as its tile drew meanwhile; the committing thread collects and never reads, so no arrival stalls a frame (the walk's pair, below).
+
+| Top (4K traced, bounce), standing | b69 | c1 (stage B) |
+|---|---:|---:|
+| End of `gpu scene` (`uploaded`): commit / engine heap | 18.0 GB / 3,120 MiB | 16.3 GB / 1,381 MiB |
+| Maximum, and when | 22.7 GB at the first frame | 20.4 GB at the first frame |
+| Ready (first frame): commit / device | 19.7 / 13.4 GB | 17.5 / 14.4 GB |
+| One minute standing | 19.1 GB | 16.8 GB |
+| Exit snapshot: commit / engine heap / C runtime heaps (committed / used) / device-local | 19,278 / 3,707 / 4,891 / 4,368 / 13,311 MiB | **16,912 / 1,516 / 3,385 / 2,161 / 13,311** |
+
+The machine: b69's at 21:12 (free commit 47.6 GB at its start and as low as 4.1 GB during, from other loads; the processors at 68 %), c1's at 21:44 (51.8 GB free, 20.8 at the lowest; 48 %); the session locked. The device's own blocks are the same to the MiB, and the first frame's device transient (16.8 GB against 14.4 at ready, the chain's resize: W51-6's) is in both maxima. Of the 2.37 GB the exit commit fell by, the engine heap's share is 2.19 GB, the rest the C runtime heaps' committed slack that went with them.
+
 ## Not measured
 
 - The cold load with a cache of its own: a cold load of the whole staging needs a 20-minute lease and 40 GB free (the staging agent's DONE note), and its cook does not ship; its peak is the staging agent's 32.2 GB.

@@ -805,6 +805,100 @@ TEST_CASE("dynamic instances: the cull draws the same with instances culled firs
   }
 }
 
+// W51-5 (renderer.md, "The visible list's runs are sized by the frame"). A tiled world drawn with
+// every run as long as its stride, then with runs exactly as long as the fullest run the frames
+// filled, draws the loaded scene's ids, depth and colour both ways, and drops nothing; with runs
+// half that long the frames count the appends they turned away, and with the policy back on the
+// first such frame grows the runs and the picture is the loaded scene's again. With the hardware
+// and the software rasterizers, both occlusion passes and the cascades' runs.
+TEST_CASE("dynamic instances: runs sized by the frame draw the same, and a full run counts drops") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE(gpu.why);
+    return;
+  }
+  struct Restore {
+    ~Restore() { (void)tunables::apply_overrides("renderer.runs.by_frame=true"); }
+  } restore;
+  RenderSettings settings;
+  settings.raster = RasterMode::Auto;  // the hardware and the software rasterizers, split by size
+  settings.shadows = ShadowMode::Cascaded;
+  settings.occlusion = true;
+  const Vector<SceneInstance> head = prefix();
+  const Tile a = make_tile(101, tile_a());
+  const Tile b = make_tile(202, tile_b());
+  const Tile c = make_tile(303, tile_c());
+  const Tile d = make_tile(404, tile_d());
+  Rig dynamic;
+  REQUIRE_MESSAGE(
+      dynamic.build(gpu.device, std::span<const SceneInstance>(head.data(), head.size()), true,
+                    settings, 2),
+      dynamic.error);
+  const Tile* all[] = {&a, &b, &c, &d};
+  Vector<SceneInstance> tail;
+  Vector<DynamicBlock> blocks;
+  tail_of(std::span<const Tile* const>(all, 4), tail, blocks);
+  std::string error;
+  REQUIRE_MESSAGE(dynamic.renderer.set_dynamic_instances(
+                      std::span<const SceneInstance>(tail.data(), tail.size()),
+                      std::span<const DynamicBlock>(blocks.data(), blocks.size()), &error),
+                  error);
+  const Vector<SceneInstance> whole = join({&head, &tail});
+  CapturedFrame expected;
+  REQUIRE_MESSAGE(reference(gpu.device, std::span<const SceneInstance>(whole.data(), whole.size()),
+                            settings, expected, error),
+                  error);
+  // Frames at one eye, the statistics folded, and the picture against the loaded scene's.
+  const auto draw = [&](const char* what, u32 frames) {
+    for (u32 f = 0; f < frames; ++f)
+      REQUIRE_MESSAGE(dynamic.renderer.render_offscreen(frame_at(k_eye), &error), error);
+    CapturedFrame shot;
+    REQUIRE_MESSAGE(dynamic.renderer.capture(frame_at(k_eye), channels(), shot, &error), error);
+    const Difference diff = compare_through_tail(shot, dynamic.scene, expected);
+    const Stats& s = dynamic.renderer.stats();
+    MESSAGE(std::string(what) << ": runs of " << dynamic.scene.run_capacity() << " (stride "
+                 << dynamic.scene.pair_stride() << "), fullest " << s.run_high << ", dropped "
+                 << s.run_drops << " + " << s.cascade_run_drops << "; " << diff.ids << " id, "
+                 << diff.depth << " depth and " << diff.color << " colour differences over "
+                 << shot.covered << " covered");
+    return diff;
+  };
+  REQUIRE(tunables::apply_overrides("renderer.runs.by_frame=false"));
+  Difference diff = draw("runs as long as the stride", 4);
+  CHECK(dynamic.scene.run_capacity() == dynamic.scene.pair_stride());
+  CHECK(diff.ids + diff.depth + diff.color == 0);
+  const u32 fullest = dynamic.renderer.stats().run_high;
+  REQUIRE(fullest > 1);
+  REQUIRE(fullest < dynamic.scene.pair_stride());
+  // Runs exactly as long as the fullest: the same picture, nothing turned away, a shorter list.
+  const u64 long_list = dynamic.scene.visible.size;
+  dynamic.renderer.wait_idle();
+  REQUIRE_MESSAGE(dynamic.scene.fit_runs(fullest, nullptr, &error), error);
+  REQUIRE_MESSAGE(dynamic.scene.relayout(&error, nullptr), error);
+  CHECK(dynamic.scene.run_capacity() == fullest);
+  CHECK(dynamic.scene.visible.size < long_list);
+  diff = draw("runs as long as the fullest run", 4);
+  CHECK(diff.ids + diff.depth + diff.color == 0);
+  CHECK(dynamic.renderer.stats().run_drops == 0);
+  CHECK(dynamic.renderer.stats().cascade_run_drops == 0);
+  // Half that: a run fills, and the frame says how many appends it turned away.
+  dynamic.renderer.wait_idle();
+  REQUIRE_MESSAGE(dynamic.scene.fit_runs(fullest / 2, nullptr, &error), error);
+  REQUIRE_MESSAGE(dynamic.scene.relayout(&error, nullptr), error);
+  (void)draw("runs half the fullest, the policy off", 4);
+  const Stats& short_runs = dynamic.renderer.stats();
+  CHECK(short_runs.run_drops + short_runs.cascade_run_drops > 0);
+  CHECK(short_runs.run_high <= fullest / 2);
+  CHECK(short_runs.run_drop_frames > 0);
+  // The policy on: the first frame read back with drops grows the runs, and the picture is the
+  // loaded scene's again.
+  REQUIRE(tunables::apply_overrides("renderer.runs.by_frame=true"));
+  diff = draw("the policy on again", 6);
+  CHECK(dynamic.scene.run_capacity() > fullest / 2);
+  CHECK(diff.ids + diff.depth + diff.color == 0);
+  CHECK(dynamic.renderer.stats().run_drops + dynamic.renderer.stats().cascade_run_drops == 0);
+}
+
 // T137 (renderer.md, "At the cap the pairs are numbered again"). A world held at its pair cap: the
 // cap is the load's pairs and the largest tail of the steps, to the pair, so every arrival's class
 // slack passes it. Until T137 each such change laid every tile out again and wrote every slot; now
