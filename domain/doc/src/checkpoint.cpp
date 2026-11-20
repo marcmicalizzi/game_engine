@@ -28,12 +28,7 @@ void base_args(const std::string& native, Vector<std::string>& args) {
   args.push_back("--work-tree=" + native);
   for (const char* c : {"core.autocrlf=false", "core.safecrlf=false", "core.fsmonitor=false",
                         "commit.gpgsign=false", "gc.auto=0", "maintenance.auto=false",
-                        "core.quotepath=off", "user.name=engine", "user.email=engine@localhost",
-                        // A rollback checks out a tree another machine may have committed: a
-                        // link entry in it is written as a plain file holding its target, never
-                        // as a link out of the document that the store then writes through
-                        // (T174's review; doc.md, "Checkpoints").
-                        "core.symlinks=false"}) {
+                        "core.quotepath=off", "user.name=engine", "user.email=engine@localhost"}) {
     args.push_back("-c");
     args.push_back(c);
   }
@@ -236,7 +231,10 @@ std::string tar_string(const char* p, usize n) {
   return std::string(p, len);
 }
 
-// The regular files of a tar stream (ustar names, and a pax header's `path` when it has one).
+// The regular files of a tar stream (ustar names, and a pax header's `path` when it has one). Every
+// other entry is skipped, a link entry among them: nothing is checked out over the document, so a
+// link another machine committed in a checkpoint is never followed or made, and a layer file
+// committed as one reads as absent (T174; doc.md, "Checkpoints").
 bool parse_tar(std::string_view tar, Vector<std::pair<std::string, std::string>>& files,
                std::string* error) {
   usize at = 0;
