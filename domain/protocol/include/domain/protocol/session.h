@@ -181,7 +181,11 @@ class Session {
   // --- the ledger's events (protocol.md, "The ledger's events"; ledger.cpp) -------------------
   // Watches the document's directory for writes to `ledger.json` (dir_watch.h) and tells `waker`
   // of each notice; what the file holds now is what the session has seen. Null stops watching.
-  // The session manager starts a watch on every session while it has events to publish.
+  // In this order, so no foreign write falls between: the waker is set, the system's watch is
+  // registered (`DirWatch::start` returns only then, or once it fell back to looking), and then
+  // the file is read for what the session has seen — a write after that read raises a notice, and
+  // one before it is in what was read. The session manager starts a watch on every session while
+  // it has someone to tell (`SessionManager::watches_ledgers`).
   void watch_ledger(LedgerWaker* waker);
   bool watching_ledger() const noexcept { return ledger_watch_ != nullptr; }
   bool ledger_watch_polling() const noexcept;
@@ -617,14 +621,14 @@ class SessionManager {
   io::Vfs* vfs_;
   // Before the sessions, so it outlives every watch that names it.
   LedgerWaker ledger_waker_;
+  bool ledger_waking_ = false;  // a waker is set (`set_ledger_waker`)
+  // Starts or stops every session's watch to match `watches_ledgers`.
+  void sync_ledger_watches();
   Vector<std::unique_ptr<Session>> sessions_;
   u32 next_id_ = 1;
   Subscriptions* events_ = nullptr;
   const io::Roots* roots_ = nullptr;
   // Connections that held a lease in a session closed under them, still connected (ascending),
-  bool ledger_waking_ = false;  // a waker is set (`set_ledger_waker`)
-  // Starts or stops every session's watch to match `watches_ledgers`.
-  void sync_ledger_watches();
   // and those of them that have since ended: a reopen drops the second kind's leases.
   // Bounded by the leases taken, not by the connections served.
   Vector<u64> detached_;

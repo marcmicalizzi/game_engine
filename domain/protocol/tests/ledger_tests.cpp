@@ -4,9 +4,10 @@
 // and two hosts writing one directory's ledger at once without losing a write.
 #include <core/json/json.h>
 #include <domain/protocol/clients.h>
+#include <domain/protocol/dir_watch.h>
 #include <domain/protocol/events.h>
-#include <domain/protocol/policy.h>
 #include <domain/protocol/listener.h>
+#include <domain/protocol/policy.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
 #include <foundation/io/roots.h>
@@ -801,9 +802,9 @@ TEST_CASE("ledger: another host's writes are pushed as ledger_changed, decided b
   Subscriptions subscriptions;
   subscriptions.attach(&pushed);
   h.sessions.set_events(&subscriptions);
-  (void)subscriptions.subscribe(7, "", event_bit(EventKind::Session));
   // A watch is started by a waker, as a listener's looker starts one; this one wakes nobody.
   h.sessions.set_ledger_waker([](void*) {}, nullptr);
+  (void)subscriptions.subscribe(7, "", event_bit(EventKind::Session));
   h.open(dir, true);
   Host b;
   b.open(dir, false);
@@ -1638,3 +1639,65 @@ TEST_CASE("ledger: a host that tells nobody watches nothing") {
   CHECK_FALSE(s->watching_ledger());
 }
 
+namespace {
+
+// The ids of every `ledger_changed` pushed since `from`, each as often as it was named.
+std::multiset<i64> changed_tasks(const std::vector<std::string>& sent, usize from) {
+  std::multiset<i64> out;
+  for (usize i = from; i < sent.size(); ++i) {
+    JsonValue note;
+    REQUIRE(parse_json(sent[i], note).ok);
+    const JsonValue& params = at(note, "params");
+    if (at(params, "change").as_string() != "ledger_changed") continue;
+    const JsonValue& tasks = at(params, "tasks");
+    for (u32 j = 0; j < tasks.size(); ++j)
+      out.insert(num(tasks[j]));
+  }
+  return out;
+}
+
+}  // namespace
+
+// No write falls between the watch's start and what the session has seen: the system's watch is
+// registered before the file is read, so a write the moment the start returns raises a notice
+// (here the watch's thread is made slow to register, which a start that returned first missed).
+TEST_CASE("ledger: a write the moment a watch starts is announced") {
+  test::TempDir tmp("protocol_ledger");
+  const std::string dir = tmp.file("doc");
+  Woken woken;
+  Collect pushed;
+  Subscriptions subscriptions;
+  subscriptions.attach(&pushed);
+  Host b;
+  b.open(dir, true);
+  Host h;
+  watch_ledgers(h, subscriptions, woken);
+  DirWatch::delay_registration_for_test(300);
+  h.open(dir, false);
+  const usize mark = pushed.sent.size();
+  const i64 made = make_task(b, "now");
+  REQUIRE(woken.wait_past(0, 10));
+  CHECK(h.sessions.look_at_ledgers(false) == 1);
+  const std::vector<JsonValue> changes = ledger_changes(pushed, mark);
+  REQUIRE(changes.size() == 1);
+  CHECK(id_set(at(changes[0], "tasks")) == std::set<i64>{made});
+}
+
+// The same over a listener's own looker: the watches start with it, and a write the moment its
+// start returns reaches a subscriber as one `ledger_changed`.
+TEST_CASE("ledger: a listener's looker announces a write made as it starts") {
+  test::TempDir tmp("protocol_ledger");
+  const std::string dir = tmp.file("doc");
+  Listening l;
+  l.h.open(dir, true);
+  Host b;
+  b.open(dir, false);
+  DirWatch::delay_registration_for_test(300);
+  l.start();
+  const i64 made = make_task(b, "now");
+  REQUIRE(l.pushed.wait(
+      [&](const std::vector<std::string>& sent) { return changed_tasks(sent, 0).size() >= 1; },
+      10));
+  CHECK(changed_tasks(l.pushed.copy(), 0) == std::multiset<i64>{made});
+  DirWatch::delay_registration_for_test(0);  // a start that did not take it leaves it for nobody
+}

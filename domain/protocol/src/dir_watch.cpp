@@ -3,6 +3,9 @@
 #include <domain/protocol/dir_watch.h>
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <thread>
 #include <utility>
 
@@ -30,7 +33,11 @@ ENGINE_LOG_CATEGORY_DEFINE(log_watch, "protocol.watch");
 
 // How often a watch with no notice from the system looks (protocol.md, "The ledger's events").
 constexpr u32 k_poll_ms = 1000;
+
+std::atomic<u32> g_delay_registration_ms{0};  // delay_registration_for_test
 }  // namespace
+
+void DirWatch::delay_registration_for_test(u32 ms) noexcept { g_delay_registration_ms.store(ms); }
 
 struct DirWatch::Impl {
   std::string dir;
@@ -39,6 +46,22 @@ struct DirWatch::Impl {
   void* context = nullptr;
   std::atomic<bool> polling{false};
   std::thread thread;
+  // `start` waits for this: the system's watch is registered, or the watch fell back to looking.
+  std::mutex ready_mutex;
+  std::condition_variable ready_cv;
+  bool ready = false;
+  void set_ready() {
+    {
+      std::lock_guard<std::mutex> lock(ready_mutex);
+      if (ready) return;
+      ready = true;
+    }
+    ready_cv.notify_all();
+  }
+  void delay_for_test() {
+    if (const u32 ms = g_delay_registration_ms.exchange(0); ms > 0)
+      std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+  }
 #if ENGINE_PLATFORM_WINDOWS
   HANDLE stop = nullptr;  // a manual-reset event, set to stop
 #else
@@ -50,6 +73,7 @@ struct DirWatch::Impl {
     polling.store(true);
     ENGINE_LOG_WARN(log_watch, "no directory-change notice here: looking once a second instead",
                     log::field("file", std::string_view(name)));
+    set_ready();
   }
   void run();
 };
@@ -89,6 +113,7 @@ bool names(const unsigned char* buffer, DWORD bytes, const std::wstring& name) {
 }  // namespace
 
 void DirWatch::Impl::run() {
+  delay_for_test();
   const std::wstring wdir = widen(dir);
   const std::wstring wname = widen(name);
   HANDLE handle = CreateFileW(
@@ -106,6 +131,9 @@ void DirWatch::Impl::run() {
                                      FILE_NOTIFY_CHANGE_LAST_WRITE,
                                  nullptr, &overlapped, nullptr))
         break;
+      // The first read in flight is the registration: the system keeps what changes from here on
+      // for this handle, between reads too.
+      set_ready();
       HANDLE waits[2] = {stop, overlapped.hEvent};
       const DWORD which = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
       if (which != WAIT_OBJECT_0 + 1) {
@@ -131,7 +159,7 @@ void DirWatch::Impl::run() {
   }
   if (overlapped.hEvent != nullptr) CloseHandle(overlapped.hEvent);
   if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
-  if (stopped) return;
+  if (stopped) return;  // only after the registration: `start` waited for it
   begin_polling();
   while (WaitForSingleObject(stop, k_poll_ms) == WAIT_TIMEOUT)
     tell();
@@ -140,11 +168,13 @@ void DirWatch::Impl::run() {
 #else
 
 void DirWatch::Impl::run() {
+  delay_for_test();
 #if defined(__linux__)
   const int fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
   if (fd >= 0 && inotify_add_watch(fd, dir.c_str(),
                                    IN_CLOSE_WRITE | IN_MOVED_TO | IN_MOVED_FROM | IN_CREATE |
                                        IN_DELETE | IN_MODIFY) >= 0) {
+    set_ready();  // registered: the system queues what changes from here on
     alignas(inotify_event) char buffer[16 * 1024];
     for (;;) {
       pollfd fds[2] = {{stop_pipe[0], POLLIN, 0}, {fd, POLLIN, 0}};
@@ -212,6 +242,12 @@ void DirWatch::start(std::string native_dir, std::string name, Notify notify, vo
 #endif
   Impl* raw = impl.get();
   impl->thread = std::thread([raw] { raw->run(); });
+  // Returns once the system's watch is registered (or the watch fell back to looking), so a
+  // caller that reads the file after this sees every later write raise a notice (A55).
+  {
+    std::unique_lock<std::mutex> lock(raw->ready_mutex);
+    raw->ready_cv.wait(lock, [raw] { return raw->ready; });
+  }
   impl_ = std::move(impl);
 }
 

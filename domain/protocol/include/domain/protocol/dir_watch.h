@@ -35,8 +35,13 @@ class DirWatch {
   ENGINE_NON_COPYABLE(DirWatch);
 
   // Starts watching `native_dir` (not its subdirectories) for a change to the file named `name`
-  // in it (created, written, renamed over, removed). A second start stops the first.
+  // in it (created, written, renamed over, removed). A second start stops the first. Returns only
+  // once the system's watch is registered, or the watch has fallen back to looking (`polling`), so
+  // a caller that reads the file after it misses no later write.
   void start(std::string native_dir, std::string name, Notify notify, void* context);
+  // Tests only: the next start's thread waits `ms` before it registers with the system, which
+  // widens the gap a start that returned before its registration left open.
+  static void delay_registration_for_test(u32 ms) noexcept;
   // Stops and joins the thread; nothing is called after it returns. Idempotent.
   void stop() noexcept;
   bool running() const noexcept;

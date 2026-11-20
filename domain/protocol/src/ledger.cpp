@@ -1086,13 +1086,9 @@ void Session::watch_ledger(LedgerWaker* waker) {
   if (ledger_watch_ != nullptr) return;
   std::string native;
   if (vfs_->resolve(dir_, native, /*for_write=*/false) != io::Status::Ok) return;
-  // What the file holds now is what the session has seen: the watch reports changes from here on.
-  SessionManager::LedgerLook look;
-  look.path = doc::DocumentStore::path_of(dir_, k_ledger_file);
-  look.make_lock = writable();
-  SessionManager::read_ledger_look(*vfs_, look);
-  ledger_seen_ = look.read && !look.same ? std::move(look.now) : LedgerSeen{};
-  ++ledger_seen_moves_;
+  // The waker first, then the system's watch, registered before `start` returns, and only then
+  // what the file holds: a write after the read raises a notice someone is told of, and one before
+  // it is in what was read, so no write falls between the two (A55).
   ledger_waker_ = waker;
   auto watch = std::make_unique<DirWatch>();
   watch->start(
@@ -1103,11 +1099,15 @@ void Session::watch_ledger(LedgerWaker* waker) {
         if (self->ledger_waker_ != nullptr) self->ledger_waker_->notify();
       },
       this);
+  SessionManager::LedgerLook look;
+  look.path = doc::DocumentStore::path_of(dir_, k_ledger_file);
+  look.make_lock = writable();
+  SessionManager::read_ledger_look(*vfs_, look);
+  ledger_seen_ = look.read && !look.same ? std::move(look.now) : LedgerSeen{};
+  ++ledger_seen_moves_;
   ledger_watch_ = std::move(watch);
 }
 
-bool Session::ledger_watch_polling() const noexcept {
-  return ledger_watch_ != nullptr && ledger_watch_->polling();
 void SessionManager::set_ledger_waker(void (*wake)(void* context), void* context) {
   ledger_waker_.set(wake, context);
   ledger_waking_ = wake != nullptr;
@@ -1120,6 +1120,8 @@ void SessionManager::sync_ledger_watches() {
     s->watch_ledger(watch ? &ledger_waker_ : nullptr);
 }
 
+bool Session::ledger_watch_polling() const noexcept {
+  return ledger_watch_ != nullptr && ledger_watch_->polling();
 }
 
 void Session::ledger_written(const LedgerFile& ledger) {
