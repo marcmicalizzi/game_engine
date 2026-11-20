@@ -89,13 +89,15 @@ struct TileMeshStats {
   u32 known = 0;     // entries: named by a held tile, lingering, or still building
   u32 building = 0;  // builds not yet collected
   u32 waiting = 0;   // built, not resident: host memory until admitted
+  u32 shelved = 0;   // built, withheld for room, and let go: built again when the room can take it
   u32 resident = 0;
   u32 lingering = 0;   // resident and named by no held tile
   u32 clusters = 0;    // the resident meshes' clusters, of `TileMeshConfig::clusters`
   u64 bytes = 0;       // those clusters' reserved device bytes
   u64 host_bytes = 0;  // the waiting meshes' streams in host memory
   // Over the run.
-  u64 builds = 0;    // meshes built or found in the cache
+  u64 builds = 0;    // meshes built or found in the cache, the shelved ones' second builds included
+  u64 rebuilds = 0;  // of those, shelved meshes built again because the room could take them
   i64 build_ns = 0;  // on whichever thread built them
   i64 max_build_ns = 0;
   u64 admitted = 0;
@@ -164,6 +166,13 @@ class TileMeshes {
     failed,     // it could not be built, or the sink refused it for another reason
   };
   Admit admit(u32 slot);
+  // **The room withheld this mesh** (world.md, "A withheld mesh is let go and built again"): a
+  // built entry the room refused this commit, or one a nearer tile's refusal kept from being asked,
+  // gives its streams and its textures back and keeps only its counts (the tile's pairs are counted
+  // from them). `admit` builds it again — off the committing thread, from the derived-data cache —
+  // once the room can take it, and says `not_ready` until that build is collected. A mesh still
+  // building, resident or already shelved is left as it is.
+  void withhold(u32 slot);
   // Retires one resident mesh no held tile names, the longest unnamed first. False: there is none.
   bool evict_lingering();
   // After the tail has been handed on (nothing names a mesh this retires): every mesh unnamed for
@@ -175,7 +184,9 @@ class TileMeshes {
  private:
   struct Entry;
   static void run(void* data) noexcept;
+  void start_build(Entry& entry);
   void collect(bool wait);
+  void collect_entry(Entry& entry);
   void retire(u32 slot, bool for_room);
   void drop(u32 slot);
   // The entry's textures into the scene, in order, within the commit's bytes: true when every one

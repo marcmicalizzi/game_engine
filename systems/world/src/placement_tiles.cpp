@@ -1408,6 +1408,10 @@ void PlacementTiles::admit_meshes() {
         continue;
       }
       if (result == TileMeshes::Admit::no_room) {
+        // Withheld, by this refusal or a nearer tile's: the mesh gives its host copy back and is
+        // built again when the room can take it (world.md, "A withheld mesh is let go and built
+        // again").
+        meshes_.withhold(slot);
         refused = true;
         full = true;
       }
@@ -1438,13 +1442,16 @@ void PlacementTiles::admit_meshes() {
   if (newly != 0) {
     // Which bound bound: the room's clusters (the budget), said with what it holds.
     const TileMeshStats& held = meshes_.stats();
-    ENGINE_LOG_WARN(log_world_placements, "the mesh room withholds tiles' meshes",
-                    log::field("withheld", starved), log::field("newly", newly),
-                    log::field("bound", "renderer.meshes.budget_mib"),
-                    log::field("resident_meshes", held.resident),
-                    log::field("resident_clusters", held.clusters),
-                    log::field("room_clusters", meshes_.config().clusters),
-                    log::field("resident_mib", static_cast<f64>(held.bytes) / (1024.0 * 1024.0)));
+    ENGINE_LOG_WARN(
+        log_world_placements, "the mesh room withholds tiles' meshes",
+        log::field("withheld", starved), log::field("newly", newly),
+        log::field("bound", "renderer.meshes.budget_mib"),
+        log::field("resident_meshes", held.resident),
+        log::field("resident_clusters", held.clusters),
+        log::field("room_clusters", meshes_.config().clusters),
+        log::field("resident_mib", static_cast<f64>(held.bytes) / (1024.0 * 1024.0)),
+        log::field("shelved_meshes", held.shelved),
+        log::field("waiting_host_mib", static_cast<f64>(held.host_bytes) / (1024.0 * 1024.0)));
   }
 }
 

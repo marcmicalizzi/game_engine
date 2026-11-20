@@ -21,6 +21,7 @@
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
 #include <chrono>
 #include <string>
 #include <thread>
@@ -328,6 +329,103 @@ TEST_CASE("tile meshes: the room's refusal withholds the farthest tiles, whichev
   }
   CHECK(placements.stats().mesh_yielded > 0);
   CHECK(told.violations == 0);
+}
+
+// W51-5 (world.md, "A withheld mesh is let go and built again"): standing where the room is full,
+// the withheld tiles' meshes hold no host bytes and nothing is built again while the room stays
+// full; when it frees, each is built again — on the job system under budgeted updates, so the
+// committing thread only collects — and the world holds the tail a room that was never full holds.
+TEST_CASE("tile meshes: a withheld mesh is let go, and built again when the room can take it") {
+  test::TempDir tmp{"engine_world_tile_meshes_shelved"};
+  const renderer::SceneData scene = scene_of(tmp, R"({"reach":6,"n":10})");
+  // Each instance as what it is, as the walks case reads a tail.
+  const auto tail_of = [](const Recorder& told) {
+    Vector<std::string> out;
+    for (const renderer::SceneInstance& instance : told.tail) {
+      const Recorder::Held* mesh = told.find(instance.mesh);
+      REQUIRE(mesh != nullptr);
+      out.push_back(mesh->path + " " + std::to_string(instance.origin.x) + " " +
+                    std::to_string(instance.origin.z) + " " +
+                    std::to_string(instance.transform.scale.x));
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+  };
+  // The tail a room that holds every rock draws, standing at (0, 0).
+  Vector<std::string> whole_room;
+  {
+    Recorder told;
+    PlacementTiles placements;
+    PlacementTilesConfig config;
+    config.ring_count = 1;
+    std::string error;
+    REQUIRE_MESSAGE(placements.create(scene, config, &error), error);
+    placements.set_meshes(room(32, 1u << 20, 0), told.sink());
+    placements.set_run_sink(&Recorder::runs, &told);
+    World world(ring(1.5f));
+    add_scene_consumers(world, nullptr, &placements);
+    for (u64 tick = 0; tick < 3; ++tick)
+      step(world, placements, at(0, 0), tick);
+    CHECK(told.held.size() == 9);
+    whole_room = tail_of(told);
+  }
+  REQUIRE(whole_room.size() == 18);
+
+  for (const bool on_jobs : {false, true}) {
+    CAPTURE(on_jobs);
+    jobs::JobSystem pool(jobs::JobSystemConfig{.performance_workers = 2, .pin_threads = false});
+    Recorder told;
+    told.most = 3;  // a room of three rocks, whatever their clusters
+    PlacementTiles placements;
+    PlacementTilesConfig config;
+    config.ring_count = 1;
+    std::string error;
+    REQUIRE_MESSAGE(placements.create(scene, config, &error), error);
+    placements.set_meshes(room(32, 1u << 20, 0), told.sink(), on_jobs ? &pool : nullptr);
+    placements.set_run_sink(&Recorder::runs, &told);
+    World world(ring(1.5f));
+    add_scene_consumers(world, nullptr, &placements);
+    // Whole updates until the room is full and the order has settled.
+    u64 tick = 0;
+    for (; tick < 3; ++tick)
+      step(world, placements, at(0, 0), tick);
+    const TileMeshStats& s = placements.meshes().stats();
+    CHECK(told.held.size() == 3);
+    const u32 withheld = placements.stats().mesh_starved;
+    CHECK(withheld >= 5);
+    // The withheld rocks are known by their counts alone: no host bytes, none waiting.
+    CHECK(s.shelved == withheld);
+    CHECK(s.waiting == 0);
+    CHECK(s.host_bytes == 0);
+    CHECK(s.rebuilds == 0);
+    // Standing with the room full, nothing is built again however many commits pass.
+    const u64 builds = s.builds;
+    for (u32 k = 0; k < 8; ++k)
+      step(world, placements, at(0, 0), tick++, on_jobs ? 4u : 0u);
+    CHECK(s.builds == builds);
+    CHECK(s.rebuilds == 0);
+    CHECK(s.shelved == withheld);
+    // The room grows: every shelved rock is built again and admitted. Whole updates do it in the
+    // commit; budgeted ones on the job system collect the builds over the commits after.
+    told.most = 9;
+    for (u32 tries = 0; tries < 4000 && told.held.size() < 9; ++tries) {
+      step(world, placements, at(0, 0), tick++, on_jobs ? 4u : 0u);
+      if (on_jobs) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    step(world, placements, at(0, 0), tick++, 0);  // a whole one, so the tail is the settled one
+    CHECK(told.held.size() == 9);
+    CHECK(s.rebuilds == withheld);
+    CHECK(s.shelved == 0);
+    CHECK(s.waiting == 0);
+    CHECK(s.host_bytes == 0);
+    CHECK(placements.stats().mesh_waiting == 0);
+    CHECK(s.failures == 0);
+    CHECK(told.violations == 0);
+    const Vector<std::string> settled = tail_of(told);
+    REQUIRE(settled.size() == whole_room.size());
+    for (u32 k = 0; k < settled.size(); ++k)
+      CHECK(settled[k] == whole_room[k]);
+  }
 }
 
 TEST_CASE("tile meshes: two walks to one place hold the same tail") {

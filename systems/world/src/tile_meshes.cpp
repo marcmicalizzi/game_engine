@@ -57,7 +57,8 @@ struct TileMeshes::Entry {
   u32 refs = 0;
   std::atomic<State> state{State::building};
   bool collected = false;            // its build's result has been counted
-  renderer::PlacementMeshData data;  // until admitted
+  bool shelved = false;              // built, withheld for room, `data` let go (`withhold`)
+  renderer::PlacementMeshData data;  // until admitted or shelved
   std::string error;
   i64 build_ns = 0;
   u32 clusters = 0;
@@ -183,17 +184,23 @@ u32 TileMeshes::acquire(const scene_gen::PlacementMesh& mesh, std::string_view d
   entries_[slot] = std::move(entry);
   by_identity_.insert_or_assign(identity, slot);
   ++stats_.known;
+  start_build(*raw);
+  return slot;
+}
+
+void TileMeshes::start_build(Entry& entry) {
   ++stats_.building;
+  entry.collected = false;
+  entry.state.store(State::building, std::memory_order_release);
   if (jobs_ != nullptr) {
     // Off the committing thread (the frame's, in a windowed host): the efficiency pool, where the
     // collision's builds ahead and the page reads run, so a build does not take a performance
     // worker from the frame's own jobs.
-    raw->ran.add(1);
-    jobs_->schedule(jobs::Pool::Efficiency, jobs::Job{&TileMeshes::run, raw, &raw->ran});
+    entry.ran.add(1);
+    jobs_->schedule(jobs::Pool::Efficiency, jobs::Job{&TileMeshes::run, &entry, &entry.ran});
   } else {
-    raw->build();
+    entry.build();
   }
-  return slot;
 }
 
 void TileMeshes::release(u32 slot) noexcept {
@@ -221,23 +228,51 @@ void TileMeshes::collect(bool wait) {
       }
     }
     if (!entry.ran.done()) continue;
-    entry.collected = true;
-    --stats_.building;
-    ++stats_.builds;
-    stats_.build_ns += entry.build_ns;
-    stats_.max_build_ns = std::max(stats_.max_build_ns, entry.build_ns);
-    if (entry.state.load(std::memory_order_acquire) == State::failed) {
-      ++stats_.failures;
-      ENGINE_LOG_WARN(log_world_meshes, "a tile's mesh was not built",
-                      log::field("mesh", entry.mesh.path), log::field("error", entry.error));
-      continue;
-    }
-    entry.clusters = entry.data.lod.mesh.clusters.size();
-    entry.materials = entry.data.source.data.materials.size() + 1u;
-    entry.payload = entry.data.payload_bytes();
-    ++stats_.waiting;
-    stats_.host_bytes += entry.payload;
+    collect_entry(entry);
   }
+}
+
+void TileMeshes::collect_entry(Entry& entry) {
+  entry.collected = true;
+  --stats_.building;
+  ++stats_.builds;
+  stats_.build_ns += entry.build_ns;
+  stats_.max_build_ns = std::max(stats_.max_build_ns, entry.build_ns);
+  if (entry.state.load(std::memory_order_acquire) == State::failed) {
+    ++stats_.failures;
+    ENGINE_LOG_WARN(log_world_meshes, "a tile's mesh was not built",
+                    log::field("mesh", entry.mesh.path), log::field("error", entry.error));
+    return;
+  }
+  // A second build of a shelved mesh is the same bytes (its recipe or file, through the same
+  // content-addressed cache), so these are the counts it was shelved with.
+  entry.clusters = entry.data.lod.mesh.clusters.size();
+  entry.materials = entry.data.source.data.materials.size() + 1u;
+  entry.payload = entry.data.payload_bytes();
+  ++stats_.waiting;
+  stats_.host_bytes += entry.payload;
+}
+
+// **A withheld mesh is let go and built again** (world.md, the section of that name; W51-5): the
+// room's refusal used to keep the built mesh — its merged streams and its textures read for the
+// admission — in host memory for as long as the room stayed full, which standing in the forest
+// staging was 189 meshes and 2.2 GB of commit that nothing drew. What the table keeps of a
+// shelved mesh is its counts: the tile's pairs are counted from its clusters, and the room is
+// asked with its clusters and materials before it is built again.
+void TileMeshes::withhold(u32 slot) {
+  if (slot >= entries_.size() || entries_[slot] == nullptr) return;
+  Entry& entry = *entries_[slot];
+  if (!entry.collected || entry.shelved) return;
+  if (entry.state.load(std::memory_order_acquire) != State::built) return;
+  // One no room could ever take is `admit`'s to fail, with its sentence.
+  if (entry.clusters == 0 || entry.clusters > config_.max_clusters) return;
+  release_textures(entry);  // the scene may let a texture go that only this mesh wanted
+  entry.textures_in = 0;
+  entry.data = renderer::PlacementMeshData{};
+  entry.shelved = true;
+  --stats_.waiting;
+  stats_.host_bytes -= entry.payload;
+  ++stats_.shelved;
 }
 
 void TileMeshes::begin_commit(bool whole) {
@@ -322,6 +357,29 @@ TileMeshes::Admit TileMeshes::admit(u32 slot) {
   const State now = entry.state.load(std::memory_order_acquire);
   if (now == State::resident) return Admit::done;
   if (now == State::failed) return Admit::failed;
+  if (entry.shelved) {
+    // Built again only when the room can take it (its counts are the shelved build's), so a
+    // standing world whose room stays full builds nothing. The build is off the committing thread,
+    // as the first was: the tile draws what it drew until a later commit collects it, which is the
+    // admission's whole cost on that thread — a read of the cache on a worker, never a stall.
+    const bool room = sink_.fits != nullptr
+                          ? sink_.fits(sink_.context, entry.clusters, entry.materials)
+                          : u64{used_clusters_} + entry.clusters <= config_.clusters;
+    if (!room) return Admit::no_room;
+    entry.shelved = false;
+    --stats_.shelved;
+    ++stats_.rebuilds;
+    start_build(entry);
+    if (!whole_) return Admit::not_ready;
+    // A whole commit (a restart, a capture's fill) waits for every build, this one included.
+    if (jobs_ != nullptr) {
+      jobs_->wait(entry.ran);
+    } else {
+      entry.ran.wait_blocking();
+    }
+    collect_entry(entry);
+    if (entry.state.load(std::memory_order_acquire) == State::failed) return Admit::failed;
+  }
   if (entry.clusters != 0 && entry.clusters <= config_.max_clusters && !admit_textures(entry))
     return Admit::deferred;
   // The allowance (a budgeted commit's): a count, and bytes — a mesh larger than all of it goes
@@ -397,8 +455,12 @@ void TileMeshes::drop(u32 slot) {
   Entry& entry = *entries_[slot];
   const State now = entry.state.load(std::memory_order_acquire);
   if (entry.collected && now == State::built) {
-    --stats_.waiting;
-    stats_.host_bytes -= entry.payload;
+    if (entry.shelved) {
+      --stats_.shelved;
+    } else {
+      --stats_.waiting;
+      stats_.host_bytes -= entry.payload;
+    }
   }
   if (!entry.collected) --stats_.building;
   release_textures(entry);  // a mesh let go while it waited for its textures
