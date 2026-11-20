@@ -137,13 +137,17 @@ bool read_graph(const doc::Document& document, const Id128& graph, GraphDesc& ou
 // `stand`; states `stand` (the idle clip at its own rate 1, or the rest pose when `idle` is empty),
 // `walk` and `run` (phase-locked to sync group 1, whose phase is `phase`); and three `any`
 // transitions with a cross-fade of `fade_s` — into `walk` when moving and not fast, into `run` when
-// moving and fast, into `stand` when not moving. The ids are a hash of the clip names and the fade,
-// so the same body builds the same graph and two bodies with different clips two graphs.
+// moving and fast, into `stand` when not moving. The ids are a hash of the clip names and the fade
+// (and the blend, when it is not `CrossFade`), so the same body builds the same graph and two
+// bodies with different clips two graphs. `blend` is the three transitions' blend: `CrossFade`,
+// the walker's as it is played into its player, or `Inertialize` (S35 stage 4), which only a
+// graph-sampled body shows as one (engine-view's `animation.graph.inertialize_walker`).
 struct LocomotionClips {
   std::string_view idle;
   std::string_view walk;
   std::string_view run;
   f32 fade_s = 0.2f;
+  GraphBlend blend = GraphBlend::CrossFade;
 };
 inline constexpr u32 k_locomotion_moving = 0;
 inline constexpr u32 k_locomotion_fast = 1;

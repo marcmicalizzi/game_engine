@@ -89,6 +89,16 @@ tunables::String player_idle_clip{
     "view.player.idle_clip", "idle",
     "The clip the player's body plays while the walker stands, by name, any case (--player); a "
     "name the rig lacks, or 'none', stands the rest pose"};
+// **The walker through its graph, inertialized** (S35 stage 4; apps.md "The procedural gait"):
+// off, the body is player-driven as it was (stage 1: each step played into its player, a 0.2 s
+// cross-fade by slerp), and no hash moves; on, the gait's body is graph-sampled — its player goes,
+// its pose is `locomotion_graph`'s program with `Inertialize` transitions — so its walk-to-stand,
+// stand-to-walk and walk-to-run changes cut to the target and decay the difference (animation.md,
+// "Graphs: inertialization"). Read once, at the body's first walking tick.
+tunables::Bool player_inertialize{
+    "animation.graph.inertialize_walker", false,
+    "view.player.walk_clip=gait: the player's body is graph-sampled and its gait's 0.2 s changes "
+    "are inertialized (off: played into its player as cross-fades, as before)"};
 
 // The library's own name for a file's assets, as animation.cpp's `path_stem` gives it, so a clip
 // named here is the one the animated world's library holds.
@@ -761,6 +771,15 @@ bool PlayerBody::generate(void* user, AnimatedScene& scene, std::string& error) 
 // standing holds the pose where it stopped. A function of the walker's state and the input at the
 // tick, so a replay reproduces it.
 void PlayerBody::tick_gait(const FlySession& session, const input::InputState& input, f64 walked) {
+  // `animation.graph.inertialize_walker` (S35 stage 4), decided once, at the first tick the body
+  // is in the animated world: on, the graph samples the body (`tick_gait_graph`); off, or refused,
+  // everything below, as it was.
+  if (graph_mode_ == 0 && scene_ != nullptr && loaded_ < scene_->entities.size())
+    graph_mode_ = sample_through_graph() ? u8{2} : u8{1};
+  if (graph_mode_ == 2) {
+    tick_gait_graph(session, input, walked);
+    return;
+  }
   const f64 step = walked - walked_;
   walked_ = walked;
   const bool moving = step > 0.0;
@@ -825,6 +844,75 @@ void PlayerBody::tick_gait(const FlySession& session, const input::InputState& i
     return static_cast<f32>(phase_ * static_cast<f64>(scene_->library.clip_data(index).duration));
   };
   (void)scene_->system.set_playhead(entity, time_of(player.clip), time_of(player.fade_clip), 0.0f);
+}
+
+// **The body sampled by its graph** (`animation.graph.inertialize_walker` on; S35 stage 4): the
+// walker's graph with `Inertialize` transitions, compiled for the body's skeleton, and the body's
+// player replaced by it (`drive_by_graph`), so the scheduled control and sample passes pose it and
+// an inertialization shows as one. False — and the body left player-driven, one stderr line
+// saying why — when the tunable is off or the graph is refused.
+bool PlayerBody::sample_through_graph() {
+  if (!player_inertialize.get()) return false;
+  const u32 index = mesh_ < scene_->mesh_skeleton.size() ? scene_->mesh_skeleton[mesh_]
+                                                         : animation::Library::k_not_found;
+  std::string why = "the body's mesh brought no skeleton";
+  if (index < scene_->library.skeleton_count()) {
+    const Id128 skeleton = scene_->library.skeleton(index).id;
+    const animation::GraphDesc graph =
+        animation::locomotion_graph({rig_.idle_clip, rig_.walk_clip, rig_.run_clip, k_gait_fade_s,
+                                     animation::GraphBlend::Inertialize});
+    why.clear();
+    animation::AnimationSystem& system = scene_->system;
+    if (system.add_graph(graph, skeleton, why) &&
+        system.drive_by_graph(scene_->entities[loaded_], graph.id, skeleton))
+      return true;
+    if (why.empty()) why = "the body could not be made graph-driven";
+  }
+  std::fprintf(stderr,
+               "engine-view: animation.graph.inertialize_walker: %s; the body stays "
+               "player-driven\n",
+               why.c_str());
+  return false;
+}
+
+// The gait's tick when the graph samples the body: the same walk, run and stand, the same phase
+// by distance and the same books, written as the graph's three inputs for the world's next step.
+// The phase is the tick's end — advanced before it is written — because the program samples a
+// phase-locked state at the phase it is given, where the player path sets its playheads after the
+// advance; and no playhead is set, there being no player.
+void PlayerBody::tick_gait_graph(const FlySession& session, const input::InputState& input,
+                                 f64 walked) {
+  const f64 step = walked - walked_;
+  walked_ = walked;
+  const bool moving = step > 0.0;
+  if (!fast_found_) {
+    fast_found_ = true;
+    fast_ = input.map() != nullptr ? input.map()->find_action("fast") : input::k_invalid_action;
+  }
+  const bool sprint = moving && fast_ != input::k_invalid_action && input.held(fast_);
+  if (moving) {
+    ++walking_ticks_;
+    if (sprint) ++running_ticks_;
+    const u32 hz = session.header().params.tick_hz;
+    const f64 speed = step * static_cast<f64>(hz > 0 ? hz : 1u);
+    const animation::GaitBand band = sprint ? animation::GaitBand::Run : animation::GaitBand::Walk;
+    const f32 stride = animation::gait_stride_m(band, static_cast<f32>(speed),
+                                                (sprint ? run_cycle_ : walk_cycle_).leg_length_m);
+    if (stride > 0.0f) {
+      const f64 advance = step / static_cast<f64>(stride);
+      cycles_ = cycles_ + advance;
+      phase_ = phase_ + advance;
+      phase_ = phase_ - std::floor(phase_);
+    }
+  }
+  // The state the graph's `any` transitions head for (stand, walk, run): a change after the first
+  // is one the machine takes, as the steps counted it on the player path.
+  const u8 gait = moving ? (sprint ? u8{3} : u8{2}) : u8{1};
+  if (graph_gait_ != 0 && gait != graph_gait_) ++gait_changes_;
+  graph_gait_ = gait;
+  const f32 values[animation::k_locomotion_params] = {moving ? 1.0f : 0.0f, sprint ? 1.0f : 0.0f,
+                                                      static_cast<f32>(phase_)};
+  (void)scene_->system.set_graph_inputs(scene_->entities[loaded_], values, 0u);
 }
 
 // **After the walker's step, before the module's tick and the world's step**: the body at the
@@ -1026,6 +1114,9 @@ JsonValue PlayerBody::summary_json(const GameActors* actors) const {
     gait.set("run", band(run_cycle_));
     gait.set("phase", phase_);
     gait.set("cycles", cycles_);
+    // Only when the graph samples the body (`animation.graph.inertialize_walker`), so a session
+    // with the tunable off writes the summary it wrote.
+    if (graph_mode_ == 2) gait.set("graph_sampled", "inertialize");
     out.set("gait", gait);
   }
   // A flying session is a developer's view: the body stays where the walker last stood.
