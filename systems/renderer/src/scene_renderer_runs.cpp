@@ -24,15 +24,18 @@ namespace {
 
 // **Why these numbers.** A run that fills drops pairs from the picture for the frames until the
 // growth lands (the read-back is two frames late and the frames in flight record against the old
-// capacity), so the headroom is the chain's four times: the capacity is twice the fullest run, and
-// it grows the frame a run passes one and a half times what it was sized for. The step is a
-// 64 KiB-entry multiple, half a megabyte of list a run.
+// capacity), so the headroom is twice the chain's: a run holds half as much again as the fullest
+// run, and grows the frame a run passes a quarter more than it was sized for. Not more: the
+// arithmetic shrinks only when a whole window's peak with its headroom leaves more than half the
+// runs unused, so a headroom of 100 % kept the low setting's runs at the stride standing in the
+// forest staging (the fullest run, the farthest cascade's, was 28 % of it: W51-5's first flight).
+// The step is 65,536 entries, half a megabyte of list a run.
 tunables::Bool runs_by_frame{
     "renderer.runs.by_frame", true,
     "Size the visible list's runs by what the frames draw, a headroom above the fullest run, "
     "rather than by the scene's pairs (W51-5). A streamed world's runs only; false keeps every run "
     "as long as the pair stride"};
-tunables::Int runs_headroom_pct{"renderer.runs.headroom_pct", 100, 25, 1000,
+tunables::Int runs_headroom_pct{"renderer.runs.headroom_pct", 50, 25, 1000,
                                 "Percent above the fullest run of recent frames that a run holds"};
 constexpr u32 k_run_step = 65536;
 constexpr f64 k_run_first_seconds = 2.0;  // the stride is given back after this and a window
