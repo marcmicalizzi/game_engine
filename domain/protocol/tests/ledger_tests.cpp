@@ -1135,24 +1135,88 @@ TEST_CASE("ledger: a raise stamps the subject's digest, and another host's detai
   other.open(dir, false);
   CHECK(at(opened_detail(other, at(item, "id")), "digest").as_string() == stamp);
 
-  // A file the subject lists that the host may not read, or that is not there, digests as not
-  // readable and is never opened.
-  const JsonValue outside = at(
-      h.ok("review.raise",
-           obj({{"kind", JsonValue("validation")},
-                {"summary", JsonValue("and the file beside it")},
-                {"subject", obj({{"records", strings({hex(w.placement).c_str()})},
-                                 {"assets", strings({"nowhere://x.glb", "props/missing.glb"})}})},
-                {"attribution", who("checker", "director")}})),
-      "subject");
-  CHECK(at(outside, "unreadable").size() == 2);
-  CHECK(at(outside, "digest").as_string() != stamp);
+  // A file the subject lists that is not there digests as such; one outside this host's roots is
+  // refused at the raise (an unknown root by its spelling, like a place no root admits), since
+  // whoever asks a person to judge runs where the thing can be seen.
+  const JsonValue missing =
+      at(h.ok("review.raise", w.raise_params("Agent", strings({"props/missing.glb"}))), "subject");
+  REQUIRE(at(missing, "unreadable").size() == 1);
+  CHECK(at(missing, "unreadable")[0].as_string() == "props/missing.glb");
+  CHECK(at(missing, "comparable").as_bool());
+  CHECK(at(missing, "digest").as_string() != stamp);
+  CHECK(h.fails("review.raise", w.raise_params("Agent", strings({"nowhere://x.glb"})), &error) ==
+        codes::k_invalid_argument);
+  CHECK(reason_of(error) == "subject not readable here");
+  CHECK(at(at(error, "data"), "entries")[0].as_string() == "nowhere://x.glb");
 
   // An edit of the subject moves it.
   w.set(h, w.placement, "name", JsonValue("crate, moved"));
   now = opened_detail(h, at(item, "id"));
   CHECK_FALSE(at(now, "same").as_bool());
   CHECK(at(now, "digest").as_string() != stamp);
+}
+
+// A host that cannot see a file says so and never calls it a change (protocol.md, "What a close is
+// tied to"): two hosts over one document compare when both can read every file it names. Host A
+// has a `content` root and the whole test tree; host B neither, only the case's own folder. A file
+// under `content://` (a root B lacks) and one beside the case's folder (a place B's roots do not
+// admit, which exists) are outside B's roots: B's detail cannot compare, B's close is refused for
+// it rather than called "subject moved", and B refuses to raise the same subject.
+TEST_CASE("ledger: a host that cannot see a subject's file says so, and never calls it moved") {
+  test::TempDir tmp("protocol_ledger_roots");
+  test::TempDir beside("protocol_ledger_beside");
+  const std::string dir = tmp.file("doc");
+  const std::string content = tmp.file("content");
+  std::filesystem::create_directories(content);
+  {
+    std::ofstream(std::filesystem::path(content) / "rock.png", std::ios::binary) << "png";
+  }
+  {
+    std::ofstream(std::filesystem::path(beside.path()) / "far.glb", std::ios::binary) << "far";
+  }
+  const std::string far =
+      "../../" + std::filesystem::path(beside.path()).filename().string() + "/far.glb";
+  Host a;
+  REQUIRE(a.roots.add("content", content, false) == io::Status::Ok);
+  a.open(dir, true);
+  DigestWorld w;
+  w.make(a, dir);
+  const JsonValue raised =
+      a.ok("review.raise", w.raise_params("Agent", strings({"content://rock.png", far.c_str()})));
+  const JsonValue item = at(raised, "reviews")[0];
+  const std::string stamp(at(item, "raised_digest").as_string());
+  CHECK(at(at(raised, "subject"), "comparable").as_bool());
+  CHECK(at(at(raised, "subject"), "unreadable").size() == 0);
+
+  Host b;
+  b.roots = io::Roots{};
+  REQUIRE(b.roots.add("tests", tmp.path(), true) == io::Status::Ok);
+  b.open(dir, false);
+  const JsonValue there = opened_detail(b, at(item, "id"));
+  CHECK_FALSE(at(there, "comparable").as_bool());
+  CHECK_FALSE(at(there, "same").as_bool());
+  REQUIRE(at(there, "outside").size() == 2);
+  CHECK(at(there, "outside")[0].as_string() == far);
+  CHECK(at(there, "outside")[1].as_string() == "content://rock.png");
+  CHECK(at(there, "unreadable").size() == 0);  // not "not readable": outside, and said so
+  JsonValue error;
+  CHECK(b.fails("review.close",
+                obj({{"review", at(item, "id")},
+                     {"resolution", JsonValue("Accepted")},
+                     {"digest", JsonValue(stamp)},
+                     {"attribution", who("reviewer")}}),
+                &error) == codes::k_invalid_argument);
+  CHECK(reason_of(error) == "subject not readable here");
+  CHECK(b.fails("review.raise",
+                w.raise_params("Agent", strings({"content://rock.png", far.c_str()})),
+                &error) == codes::k_invalid_argument);
+  CHECK(reason_of(error) == "subject not readable here");
+  CHECK(at(at(error, "data"), "entries").size() == 2);
+
+  // A, which can read both, compares: the same content is the stamp.
+  const JsonValue here = opened_detail(a, at(item, "id"));
+  CHECK(at(here, "comparable").as_bool());
+  CHECK(at(here, "same").as_bool());
 }
 
 // What a digest reads is bounded, by four bounds named as tunables (protocol.md, "What it costs"):

@@ -57,7 +57,7 @@ bool ascii_alnum(char c) noexcept {
 // extension of one to eight letters or digits (`props/crate.glb`, `content://rock.png`): nothing
 // in the schema marks a field as a path (`MeshPlacement.mesh` is a string), so the rule is one any
 // record's value is measured by, never a list of types. A string that passes and names nothing
-// the roots admit digests as not readable, which is a constant for that string and so harmless.
+// digests as missing, which is a constant for that string and so harmless.
 bool names_a_file(std::string_view s) noexcept {
   if (s.empty() || s.size() > k_file_name_max) return false;
   for (const char c : s) {
@@ -113,18 +113,22 @@ void note_over(Vector<DigestOver>& over, const char* bound, u64 limit, u64 figur
   over.push_back(DigestOver{bound, limit, figure});
 }
 
-// What a file's line says when it was not read.
+// What a file's line says when it was not read: admitted and not there, admitted and not read, or
+// outside this host's roots, three things a reader is told apart (protocol.md, "What a close is
+// tied to").
+constexpr const char* k_missing = "missing";
 constexpr const char* k_not_readable = "not readable";
 constexpr const char* k_too_large = "too large";
 constexpr const char* k_over_bound = "over the subject's bound";
+constexpr const char* k_outside = "outside this host's roots";
 
 // Opens a regular file for the digest and holds it to the bounds by the size it has now: never a
 // FIFO, a device or a directory, which `open_regular` refuses without waiting. False with the
 // file's line saying why it will not be read.
 bool open_file(SubjectPlan::File& f, const DigestBounds& bounds, u64& total, SubjectPlan& plan,
                io::FileHandle& file) {
-  if (file.open_regular(f.native) != io::Status::Ok) {
-    f.line = k_not_readable;
+  if (const io::Status s = file.open_regular(f.native); s != io::Status::Ok) {
+    f.line = s == io::Status::NotFound ? k_missing : k_not_readable;
     return false;
   }
   if (file.size() > bounds.file_bytes) {
@@ -285,8 +289,14 @@ void compose_subject(const Context& ctx, const Session& session, const ReviewSub
     io::Admitted admitted;
     io::Refusal why = io::Refusal::none;
     if (ctx.roots != nullptr &&
-        ctx.roots->admit(f.spelled, session.dir(), io::Access::read, admitted, why))
+        ctx.roots->admit(f.spelled, session.dir(), io::Access::read, admitted, why)) {
       f.native = std::move(admitted.native);
+    } else {
+      // A root this host does not have, or a place its roots do not admit: never opened, and a
+      // line of its own, so a digest here is never taken for a change of the file.
+      f.outside = true;
+      f.line = k_outside;
+    }
   }
 }
 
@@ -331,8 +341,13 @@ void finish_subject(SubjectPlan& plan, SubjectState& out) {
     line.push_back(JsonValue(f.spelled));
     line.push_back(JsonValue(f.line));
     add_line(h, line);
-    if (!f.read) out.unreadable.push_back(f.spelled);
+    if (f.outside) {
+      out.outside.push_back(f.spelled);
+    } else if (!f.read) {
+      out.unreadable.push_back(f.spelled);
+    }
   }
+  out.comparable = out.outside.empty();
   // 6. Each bound passed, by its name: a subject digested past one is never equal to one that was
   // not, so nothing is digested silently weaker.
   for (const DigestOver& o : plan.over) {

@@ -16,7 +16,9 @@
 //      whether the store holds it;
 //   5. every file the subject lists and every file those records name (a string property whose
 //      last component has an extension), by its spelling, with the SHA-256 of its bytes read now,
-//      or a mark saying why it was not read;
+//      or a mark saying which of three things it is instead: admitted and not there (`missing`),
+//      admitted and not read (`not readable`, `too large`, `over the subject's bound`), or outside
+//      this host's roots (`outside this host's roots`), which no other host's digest compares with;
 //   6. a line for each bound the subject passed, naming the bound and the figure.
 //
 // **It hashes content and never trusts a file's time or size**: an asset's bytes are read at every
@@ -77,6 +79,7 @@ struct SubjectPlan {
     std::string native;  // empty: the roots did not admit it
     std::string line;    // the hash, or why it was not read; filled by `read_subject_files`
     bool read = false;
+    bool outside = false;  // outside this host's roots: never opened, and no digest compares
   };
   Vector<File> files;
   Vector<DigestOver> over;

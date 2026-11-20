@@ -2602,8 +2602,8 @@ struct ReviewSubject @version(2) @additive(2) {
   /// Blobs it is about (`doc.put_blob`'s names).
   blobs: string[]
   /// Files it is about beyond those its records name, at most 256, each `<root>://<path>` or
-  /// relative to the document: read through the host's roots and hashed by the digest. One the host
-  /// may not read, or that is not there, digests as not readable and is never opened.
+  /// relative to the document: read through the host's roots and hashed by the digest. One that is
+  /// not there digests as missing; one outside the raising host's roots refuses the raise.
   assets: string[] @since(2)
 }
 
@@ -2616,9 +2616,17 @@ struct SubjectState @version(1) {
   same: bool = false
   /// Subject records no longer live.
   gone: id128[]
-  /// Files the subject names that this host may not read or that are not there, as they were
-  /// spelled: digested as such, never opened.
+  /// Files the subject names that this host's roots admit and that it did not read, as they were
+  /// spelled: not there, not a regular file, past a bound, or a read that failed, each digested as
+  /// such.
   unreadable: string[]
+  /// Files the subject names that are outside this host's roots (a root it does not have, or a
+  /// place its roots do not admit), as they were spelled: never opened.
+  outside: string[]
+  /// The digest compares with another host's: every file the subject names is under this host's
+  /// roots. False when `outside` is not empty, and then `same` is false and a close carrying a
+  /// digest is refused (`subject not readable here`), never called "subject moved".
+  comparable: bool = false
   /// What the stream covered: the subject's records with their ancestors each once, the blobs and
   /// the assets they and the subject name, and the bytes of the assets read and hashed.
   records: u32 = 0

@@ -767,6 +767,17 @@ RpcError over_error(const DigestOver& over) {
                     std::move(data));
 }
 
+// A subject naming files outside this host's roots: `entries` by their spelling.
+RpcError not_readable_here_error(const Vector<std::string>& entries, std::string message) {
+  JsonValue data = JsonValue::object();
+  data.set("reason", JsonValue("subject not readable here"));
+  JsonValue list = JsonValue::array();
+  for (const std::string& e : entries)
+    list.push_back(JsonValue(e));
+  data.set("entries", std::move(list));
+  return make_error(codes::k_invalid_argument, std::move(message), std::move(data));
+}
+
 template <class First, class Decide>
 bool digest_passes(Context& ctx, const std::string& session_id, DigestFor use, First&& first,
                    Decide&& decide, SubjectState& state, Session*& session, RpcError& error) {
@@ -784,6 +795,21 @@ bool digest_passes(Context& ctx, const std::string& session_id, DigestFor use, F
     if (use == DigestFor::raise && !plan.over.empty()) {
       error = over_error(plan.over[0]);
       return false;
+    }
+    // Whoever asks a person to judge runs where the thing can be seen: a raise naming a file
+    // outside this host's roots is refused, by the entry's spelling.
+    if (use == DigestFor::raise) {
+      Vector<std::string> outside;
+      for (const SubjectPlan::File& f : plan.files) {
+        if (f.outside) outside.push_back(f.spelled);
+      }
+      if (!outside.empty()) {
+        error = not_readable_here_error(
+            outside, "the subject names " + outside[0] +
+                         ", which is outside this host's roots: raise it on a host whose roots "
+                         "hold every file it names");
+        return false;
+      }
     }
     const SessionManager::DigestReadHook hook = ctx.sessions->digest_read_hook();
     void* const hook_context = ctx.sessions->digest_read_context();
@@ -1057,6 +1083,16 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
           }
           ReviewInfo* r = find_review(ledger, params.review, e2);
           if (r == nullptr || !closable(*r, e2)) return false;
+          // A digest this host cannot compute in full is never compared, so it never reads as a
+          // change (protocol.md, "What a close is tied to").
+          if (!params.digest.empty() && !seen_now.comparable) {
+            e2 = not_readable_here_error(
+                seen_now.outside,
+                "review item " + std::to_string(r->id) + " names " + seen_now.outside[0] +
+                    ", which is outside this host's roots: close it on a host that can read "
+                    "every file it names");
+            return false;
+          }
           if (!params.digest.empty() && params.digest != seen_now.digest) {
             JsonValue data = JsonValue::object();
             data.set("reason", JsonValue("subject moved"));
@@ -1092,7 +1128,7 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
   if (!digest_passes(ctx, params.session, DigestFor::close, first, decide, seen_now, s, error))
     return false;
   out.now_unix_ms = now;
-  seen_now.same = seen_now.digest == changed.raised_digest;
+  seen_now.same = seen_now.comparable && seen_now.digest == changed.raised_digest;
   out.reviews.push_back(std::move(changed));
   out.subject = std::move(seen_now);
   s->publish_ledger("review_closed", 0, params.review, caller.who.actor, caller.connection);
@@ -1179,7 +1215,8 @@ bool review_list(Context& ctx, const ReviewListParams& params, ReviewsResult& ou
   };
   if (!digest_passes(ctx, params.session, DigestFor::detail, first, decide, out.subject, s, error))
     return hidden;
-  out.subject.same = out.subject.digest == out.reviews[0].raised_digest;
+  // A host that cannot see a file cannot say the subject is as it was: it says so (`comparable`).
+  out.subject.same = out.subject.comparable && out.subject.digest == out.reviews[0].raised_digest;
   return true;
 }
 
