@@ -1,0 +1,14 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "G2",
+  "reason": "G2's second leg: the imported vertex stream (an asset's tangents, second UV set and colours) uploaded beside the attributes and named to the resolve and the reference path tracer, and the pages that say what it draws and costs",
+  "date": "2026-11-18",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": 2,
+    "renderer.gpu_scene_cpp.lines": 12,
+    "renderer.gpu_scene_h.lines": 2,
+    "page:docs/subsystems/renderer.md": 911,
+    "page:docs/subsystems/gfx.md": 3465
+  }
+}

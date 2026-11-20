@@ -4144,6 +4144,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     resolve.materials = scene.materials.address;
     resolve.cluster_materials = scene.cluster_materials.address;
     resolve.attributes = scene.attributes.address;
+    resolve.extra = scene.extra.address;
+    resolve.extra_vertices = scene.extra_vertices;
     resolve.width = vf.width;
     resolve.height = vf.height;
     resolve.mode = frame.view_mode == ~u32{0} ? settings.view_mode : frame.view_mode;

@@ -1272,6 +1272,15 @@ struct ResolveParams {
   // the top tier's (white where the air goes in, lit as a layer of bubbly water). Read only by the
   // resolve's water modules. It took the row's pad word, so the block's size is unchanged.
   u32 water_white_tier = 0;
+  // **The imported streams** (roadmap G2; gfx.md, "The author's tangent frame"):
+  // `geometry::VertexExtra[]` parallel to `attributes` — the asset's tangent, second UV set and
+  // colour — or 0 when no mesh of the scene carries one, and the resolve then reads exactly what it
+  // read. A new 16-byte row: the block grew from 592 to 608 bytes.
+  u64 extra = 0;
+  // How many vertices `extra` covers: the scene's own, so a terrain ring's slot vertices past them
+  // read the record's defaults rather than past the buffer.
+  u32 extra_vertices = 0;
+  u32 extra_pad = 0;
 };
 // `ResolveParams::water_open_instance` when the scene has no open water.
 inline constexpr u32 k_no_water_open = 0xffffffffu;
@@ -1283,7 +1292,7 @@ inline f32 water_clock(f64 time_s) noexcept {
   const f64 t = std::fmod(time_s, k_water_period_s);
   return static_cast<f32>(t < 0.0 ? t + k_water_period_s : t);
 }
-static_assert(sizeof(ResolveParams) == 592);
+static_assert(sizeof(ResolveParams) == 608);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 // ---- the sun's masks by region and by distance (renderer.md; R139) -----------------------------

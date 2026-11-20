@@ -122,9 +122,12 @@ struct PathTraceParams {
   i32 terrain_uv_x0_mm = 0;
   i32 terrain_uv_z0_mm = 0;
   f32 terrain_uv_per_mm = 0.0f;
-  u32 terrain_uv_pad = 0;
+  u32 extra_vertices = 0;  // how many vertices `extra` (below) covers; it was the row's pad word
   u64 hit_entries = 0;
-  u64 hit_pad = 0;
+  // The imported streams (roadmap G2; ResolveParams::extra): VertexExtra[] parallel to the
+  // attributes, or 0 for none, so a hit's tangent frame is the author's where the resolve's is. It
+  // took the row's pad word: the block's size is unchanged.
+  u64 extra = 0;
 };
 
 // A linear-space colour into the byte a UNORM target would hold, in double precision so the

@@ -262,6 +262,8 @@ bool ReferenceRenderer::render(const Camera& camera, const ReferenceSettings& se
   params.triangles = scene_->triangles.address;
   params.instances = scene_->instances.address;
   params.attributes = scene_->attributes.address;
+  params.extra = scene_->extra.address;
+  params.extra_vertices = scene_->extra_vertices;
   params.materials = scene_->materials.address;
   params.cluster_materials = scene_->cluster_materials.address;
   // The same rule the resolve follows: a null list means entry i is {0, i}, which is what a

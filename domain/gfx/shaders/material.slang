@@ -162,6 +162,11 @@ struct SceneGeometry {
   // stream as it always has. That is what keeps every picture of a scene with no morph channels
   // byte-identical (gfx.md, "What happens to the shading normal").
   uint64_t normal_pool;
+  // The imported streams (scene.slang, `vertex_extra_word`; roadmap G2): VertexExtra[] parallel to
+  // the attributes for its first `extra_vertices`, or 0 when no mesh of the scene carries one,
+  // which reads what it always read. A vertex past the count (a terrain ring's slot) has none.
+  uint64_t extra;
+  uint extra_vertices;
   // The frame's origin (scene.slang): a triangle is fetched into the frame's space, whose origin is
   // the eye, so nothing here forms an absolute position.
   FrameEye eye;
@@ -199,6 +204,21 @@ float3 decode_normal_oct(uint packed) {
 }
 
 float2 decode_half2(uint packed) { return float2(f16tof32(packed & 0xffffu), f16tof32(packed >> 16)); }
+
+// Inverse of geometry::encode_tangent: the direction octahedrally like a normal, the bitangent's
+// sign (glTF's w) in the first snorm16's lowest bit, and w = 0 for the word zero, "no tangent".
+float4 decode_tangent(uint packed) {
+  if (packed == 0u) return float4(0.0, 0.0, 0.0, 0.0);
+  return float4(decode_normal_oct(packed & ~1u), (packed & 1u) != 0u ? -1.0 : 1.0);
+}
+
+// Word `word` of scene-wide vertex `vertex`'s imported record (0 the tangent, 1 the second UV, 2
+// the colour), or `none` — the record's own "nothing stated" value — where the scene has no
+// stream or the vertex lies past it.
+uint extra_word(SceneGeometry geo, uint vertex, uint word, uint none) {
+  if (geo.extra == 0 || vertex >= geo.extra_vertices) return none;
+  return vertex_extra_word(geo.extra, vertex, word);
+}
 
 // The three vertices of triangle `triangle` of cluster `cluster` under `instance`, in the frame's
 // space, whose origin is the eye (`geo.eye`; scene.slang, `instance_point`): positions come off
@@ -514,11 +534,37 @@ float screen_geometric_alpha2_at(SceneGeometry geo, InstanceDesc instance, Trian
 // scale or rotation carries into it. Returns false when there is no frame to build — no vertex
 // attributes, or a triangle whose UV area is degenerate, seam-collapsed or simply absent — and
 // the caller then leaves the normal alone rather than perturbing it by a frame it invented.
-bool tangent_frame(SceneGeometry geo, TriangleFetch tri, float3 normal, out float3 tangent,
-                   out float3 bitangent) {
+//
+// **The author's frame first** (roadmap G2; docs/subsystems/gfx.md, "The author's tangent frame"):
+// where the scene carries imported streams and all three corners have a tangent, the frame is the
+// asset's — the three tangents interpolated at `b`, through the instance's linear part, made
+// orthogonal to the shading normal, and the bitangent `cross(normal, tangent) * w` exactly as glTF
+// defines it. That is the frame a normal map baked against the asset's tangents (MikkTSpace)
+// expects: smooth across the vertices where the derived one is flat across each triangle, and
+// with the handedness the file states. The normal is the cofactor one (`transform_normal`), so the
+// product needs no sign of its own under a mirroring instance. A corner without a tangent sends the
+// triangle to the derived frame below, as before.
+bool tangent_frame(SceneGeometry geo, InstanceDesc instance, TriangleFetch tri, float3 b,
+                   float3 normal, out float3 tangent, out float3 bitangent) {
   tangent = float3(1.0, 0.0, 0.0);
   bitangent = float3(0.0, 0.0, 1.0);
   if (geo.attributes == 0) return false;
+  if (geo.extra != 0) {
+    const float4 t0 = decode_tangent(extra_word(geo, tri.local[0], 0, 0u));
+    const float4 t1 = decode_tangent(extra_word(geo, tri.local[1], 0, 0u));
+    const float4 t2 = decode_tangent(extra_word(geo, tri.local[2], 0, 0u));
+    if (t0.w != 0.0 && t1.w != 0.0 && t2.w != 0.0) {
+      float3 t = instance_direction(instance, b.x * t0.xyz + b.y * t1.xyz + b.z * t2.xyz);
+      t -= normal * dot(normal, t);
+      const float t_length = length(t);
+      if (t_length >= 1e-12) {
+        tangent = t / t_length;
+        const float w = b.x * t0.w + b.y * t1.w + b.z * t2.w;
+        bitangent = cross(normal, tangent) * (w < 0.0 ? -1.0 : 1.0);
+        return true;
+      }
+    }
+  }
   VertexAttributes* attributes = (VertexAttributes*)geo.attributes;
   float2 uv[3];
   for (uint i = 0; i < 3; ++i)

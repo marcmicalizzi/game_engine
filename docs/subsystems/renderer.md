@@ -1124,6 +1124,8 @@ and nothing is uploaded while the meshes load; that is the residency work's
 loaded to the spawn's neighbourhood.
 ## Materials
 
+**An imported asset's own vertex streams** (roadmap G2, 2026-11-18; [gfx](gfx.md), "The author's tangent frame"; [assets](assets.md#what-g2-reads)). A mesh whose source stated tangents, a second UV set or colours carries `ClusterMesh::extra`, and the scene's merge keeps it parallel to the vertices, so `GpuScene` uploads it once as `extra` (12 bytes a scene vertex, `extra_vertices` of them) beside the attributes, and the resolve and the reference path tracer read the author's tangent frame from it. A scene none of whose meshes carries a stream uploads nothing and draws the bytes it drew; a streamed scene (pages) uploads none yet, and a terrain ring's slot vertices lie past the stream and read "none". `renderer: an imported tangent frame draws the same picture on every raster path` (`imported_streams_tests.cpp`) holds the vertex, mesh and ray paths to one picture on a glTF quad written in the test.
+
 ### Native authored terrain materials
 
 `Terrain.materials` (scene schema version 8, W68) optionally puts authored layers on the native

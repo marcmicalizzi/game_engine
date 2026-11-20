@@ -2885,6 +2885,16 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
     return false;
   }
   if (streamed_) return true;
+  // An imported asset's tangents, second UV set and colours (G2; gfx.md, "The author's tangent
+  // frame"): scene-wide like the skin stream and only when some mesh carries one, so a scene of
+  // meshes without them uploads nothing. A terrain ring's slot vertices lie past it and read none.
+  extra_vertices = static_cast<u32>(lod.mesh.extra.size());
+  if (extra_vertices != 0 &&
+      !gfx::upload_buffer(device, lod.mesh.extra.data(),
+                          u64{extra_vertices} * sizeof(geometry::VertexExtra), k_storage, extra,
+                          error)) {
+    return false;
+  }
   return upload_room(device, lod.mesh.attributes.data(),
                      u64{lod.mesh.attributes.size()} * sizeof(geometry::VertexAttributes),
                      vertex_capacity_ * sizeof(geometry::VertexAttributes), k_storage, attributes,
@@ -6735,6 +6745,8 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, fade);
   gfx::destroy_buffer(device, materials);
   gfx::destroy_buffer(device, skin);
+  gfx::destroy_buffer(device, extra);
+  extra_vertices = 0;
   gfx::destroy_buffer(device, attributes);
   gfx::destroy_buffer(device, lods);
   gfx::destroy_buffer(device, triangles);

@@ -1535,6 +1535,8 @@ class GpuScene {
   gfx::BufferResource lods;               // geometry::ClusterLodDesc[]
   gfx::BufferResource attributes;         // geometry::VertexAttributes[]
   gfx::BufferResource skin;               // geometry::SkinBinding[]: 8 bytes per scene vertex
+  gfx::BufferResource extra;              // geometry::VertexExtra[] (G2): 12 B a scene vertex
+  u32 extra_vertices = 0;                 // how many vertices `extra` covers; 0 without it
   gfx::BufferResource meshes;             // gfx::MeshDesc[], uploaded last
   gfx::BufferResource instances;          // gfx::InstanceDesc[]
   gfx::BufferResource materials;          // gfx::ResolveMaterial[]

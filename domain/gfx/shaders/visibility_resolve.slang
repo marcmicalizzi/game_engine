@@ -73,7 +73,7 @@
 // the visibility buffer. A **Panini** view goes one step further: its region holds a wider
 // rectilinear picture, and `panini_x`/`source_x`/`panini_d` map each output pixel back into it.
 //
-// Read through a device address; mirrors gfx::ResolveParams (496 bytes).
+// Read through a device address; mirrors gfx::ResolveParams (608 bytes).
 struct ResolveParams {
   float4 sky;     // rgb, shown for empty pixels and the hemisphere ambient's upper half
   float4 sun;     // xyz normalized direction towards the light, w intensity
@@ -211,6 +211,11 @@ struct ResolveParams {
   // The white water's tier (gfx::ResolveParams::water_white_tier; W139): 0 the low tier's, 1 the
   // top tier's (water.slang, `water_channel_white_top`).
   uint water_white_tier;
+  // The imported streams (gfx::ResolveParams::extra; roadmap G2): VertexExtra[] parallel to the
+  // attributes for its first `extra_vertices`, or 0 for none. A row of its own.
+  uint64_t extra;
+  uint extra_vertices;
+  uint extra_pad;
 };
 
 // **The resolve's split** (gfx::ResolveStop; renderer.md, "Where the resolve's time goes"; R115).
@@ -409,6 +414,8 @@ SceneGeometry geometry_of(ResolveParams* params) {
   geo.cluster_materials = params->cluster_materials;
   geo.visible = params->visible;
   geo.normal_pool = params->normal_pool;
+  geo.extra = params->extra;
+  geo.extra_vertices = params->extra_vertices;
   geo.eye = params->eye;
   return geo;
 }
@@ -1723,7 +1730,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     float3 tangent;
     float3 bitangent;
     // The triangle the reconstruction kept (R148): until then this block fetched it a second time.
-    if (tangent_frame(geo, tri, s.normal, tangent, bitangent)) {
+    if (tangent_frame(geo, instance, tri, at.b, s.normal, tangent, bitangent)) {
       shading_normal =
           apply_normal_map_grad(material, uv, duv_dx, duv_dy, s.normal, tangent, bitangent);
     }
