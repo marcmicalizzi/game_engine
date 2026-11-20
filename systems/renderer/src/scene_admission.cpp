@@ -456,6 +456,12 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
   return true;
 }
 
+content_class::Outcome admit_made_instance(SceneData& out, const LoadAdmission& state) {
+  if (!state.ground.empty() && state.ground[0] != 0)
+    return admit_ground(out, state.mesh0_own).outcome;
+  return admit_instance(out, state.mesh0_own, ReadClass{}, ReadClass{}).outcome;
+}
+
 void admission_after_meshes(SceneDesc& desc, SceneData& out, LoadAdmission& state,
                             Vector<geometry::ClusterLodMesh>& dags,
                             Vector<geometry::ClusterPages>& tables) {
@@ -518,6 +524,9 @@ void admission_after_meshes(SceneDesc& desc, SceneData& out, LoadAdmission& stat
     }
   }
   state.proxy_of.assign(meshes, ~0u);
+  // Mesh 0's own class, for an instance the load makes of it after a streamed world's tail took
+  // every file instance (`admit_made_instance`).
+  if (meshes > 0) state.mesh0_own = join(state.mesh[0], textures[0]);
   if (!state.classified) return;  // nothing above `none` anywhere: the load is what it was
 
   // 2. Every instance through the door.

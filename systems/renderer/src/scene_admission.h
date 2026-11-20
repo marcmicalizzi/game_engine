@@ -42,6 +42,8 @@ struct LoadAdmission {
   // Per mesh, for a container named outright: what its probe saw, and the classes section its
   // whole read found (`loaded`, with `read_whole` 1 once the mesh job read it), which the second
   // pass decides it by when the two differ (`container_class_as_loaded`; C64).
+  // Mesh 0's own class (its own and its textures'), set by the second pass.
+  ReadClass mesh0_own;
   // Per mesh: 1 when something other than the file's instances places it after the load (C64).
   Vector<u8> placed;
   Vector<ContainerProbe> probe;
@@ -70,5 +72,11 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
 void admission_after_meshes(SceneDesc& desc, SceneData& out, LoadAdmission& state,
                             Vector<geometry::ClusterLodMesh>& dags,
                             Vector<geometry::ClusterPages>& tables);
+
+// **The instance the load makes itself when a streamed world's tail took every file instance**
+// (C64): mesh 0's, with no raise, through the door on mesh 0's own class, so it is decided as
+// every other instance is rather than placed undecided. The scene file's own made-by-load
+// instances (none named, or a grid) are decided by the second pass (`LoadAdmission::mesh0`).
+content_class::Outcome admit_made_instance(SceneData& out, const LoadAdmission& state);
 
 }  // namespace engine::renderer

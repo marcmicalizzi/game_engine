@@ -3664,6 +3664,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
 
   // Instances: the caller's, the grid's, or one identity instance of the one mesh.
   Vector<SceneInstance> instances = std::move(resolved.instances);
+  const bool made_here = resolved.grid_instances > 1 || instances.empty();
   if (resolved.grid_instances > 1) {
     instances.clear();
     Vec3 mesh_center{};
@@ -3676,12 +3677,16 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   }
   // The instances the load made itself are mesh 0's with no raise, decided once by the door (C64):
   // omitted, none is made; proxied, each draws mesh 0's proxy, which is mesh 0's own slot by then.
-  if ((desc.instances.empty() || desc.grid_instances > 1) &&
-      admission.mesh0 != content_class::Outcome::admit) {
+  // Keyed on whether the load made them here: one made because a streamed world's tail took every
+  // file instance goes through the door now (`admit_made_instance`), never placed undecided.
+  const bool file_made = desc.instances.empty() || desc.grid_instances > 1;
+  const content_class::Outcome made_outcome =
+      !made_here ? content_class::Outcome::admit
+                 : (file_made ? admission.mesh0 : admit_made_instance(out, admission));
+  if (made_here && made_outcome != content_class::Outcome::admit) {
     for (SceneInstance& made : instances) {
       made.joints = 0;
-      if (admission.mesh0 == content_class::Outcome::omit)
-        made.content_classes = k_instance_omitted;
+      if (made_outcome == content_class::Outcome::omit) made.content_classes = k_instance_omitted;
     }
   }
   // Each fitted mesh's own transform, from the box of its source's surface: its level 0 clusters'
