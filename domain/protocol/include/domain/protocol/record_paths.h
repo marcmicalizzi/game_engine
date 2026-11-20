@@ -40,13 +40,15 @@ bool holds_stored_paths(std::string_view type) noexcept;
 // empty string is no path (the reader refuses an empty `mesh` on its own).
 void stored_paths(const doc::ResolvedObject& object, Vector<StoredPath>& out);
 
-// The rule at the write: every path the live records `ids` hold in `document` as it is composed
-// now passes `io::admit_stored_path` from `document_dir` against `roots` — or, for a session no
-// host gave roots (the engine's own writers, a test of the document alone), the stored form alone
+// The rule at the write: every path the records `ids` hold in `document` — as it is composed now,
+// and as layer `layer`, the one the commands wrote, holds them, since a stronger layer's value
+// hides that layer's from the composed record but not from its file, its journal or its checkpoint
+// — passes `io::admit_stored_path` from `document_dir` against `roots` — or, for a session no host
+// gave roots (the engine's own writers, a test of the document alone), the stored form alone
 // (`io::check_stored_path_form`). False with `error` the answer every refused path gets
 // (`path_not_found`: 1003, `data.reason` "path", `data.field` the record's field) and
 // `data.object` the record's id; a deleted record and a record of another type pass.
-bool check_stored_paths(const io::Roots* roots, const doc::Document& document,
+bool check_stored_paths(const io::Roots* roots, const doc::Document& document, u32 layer,
                         std::span<const doc::ObjectId> ids, std::string_view document_dir,
                         RpcError& error);
 

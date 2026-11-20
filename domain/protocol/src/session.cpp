@@ -601,17 +601,19 @@ bool Session::commit_commands(std::span<const doc::Command> commands, doc::Attri
     }
   }
   // **The paths the records gain** (record_paths.h; protocol.md, "Paths a document's records
-  // hold"): read off the records as they now stand, so a create, a set, a retype into a placement
-  // and a merge's or a promotion's replayed diff are one check. A refused path is refused as any
-  // path is, and the whole call with it, before anything is journaled or staged.
+  // hold"): read off the records as they now stand, composed and in the layer written, so a
+  // create, a set, a retype into a placement and a merge's or a promotion's replayed diff are one
+  // check. A refused path is refused as any path is, and the whole call with it, before anything
+  // is journaled or staged.
   {
     Vector<doc::ObjectId> ids;
     ids.reserve(static_cast<u32>(commands.size()));
     for (const doc::Command& command : commands)
       ids.push_back(command.id);
     RpcError refused_path;
-    if (!check_stored_paths(roots_, doc_, std::span<const doc::ObjectId>(ids.data(), ids.size()),
-                            dir_, refused_path)) {
+    if (!check_stored_paths(roots_, doc_, layer,
+                            std::span<const doc::ObjectId>(ids.data(), ids.size()), dir_,
+                            refused_path)) {
       tx.rollback();
       doc_.set_edit_layer(edit_layer);
       if (staging != nullptr) staging->accepted->clear();
@@ -717,8 +719,8 @@ bool Session::check_commands(std::span<const doc::Command> commands,
   }
   bool ok = !guarded || guard.finish(error);
   if (ok)
-    ok = check_stored_paths(roots_, doc_, std::span<const doc::ObjectId>(ids.data(), ids.size()),
-                            dir_, error);
+    ok = check_stored_paths(roots_, doc_, layer,
+                            std::span<const doc::ObjectId>(ids.data(), ids.size()), dir_, error);
   tx.rollback();
   doc_.set_edit_layer(edit_layer);
   return ok;
@@ -950,8 +952,8 @@ bool Session::step(bool backwards, u32 steps, const Caller* caller, StepResult& 
     for (const doc::Command& c : patch.forward)
       ids.push_back(c.id);
     if (!guard.finish(error) ||
-        !check_stored_paths(roots_, doc_, std::span<const doc::ObjectId>(ids.data(), ids.size()),
-                            dir_, error)) {
+        !check_stored_paths(roots_, doc_, static_cast<u32>(layer),
+                            std::span<const doc::ObjectId>(ids.data(), ids.size()), dir_, error)) {
       // Put the step back: undo and redo of one patch are each other's inverse.
       (void)(backwards ? doc_.redo(patch) : doc_.undo(patch));
       return finish(false);
