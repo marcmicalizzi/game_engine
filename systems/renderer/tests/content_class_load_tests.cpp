@@ -710,6 +710,29 @@ TEST_CASE("content classes at load: an unreadable class decides the same in eith
   }
 }
 
+// **The scene file is read strictly** (C64): a key given twice anywhere refuses the file, naming
+// the key, so a merge's appended `content_classes` or level cannot lose a raise.
+TEST_CASE("content classes at load: a scene file that gives a key twice is refused, naming it") {
+  const test::TempDir tmp("renderer_classes_twice");
+  REQUIRE(tmp.ok());
+  const Grid a = write_grid(tmp, "a.clusters", 9, "a.png");
+  const auto refused = [&](const std::string& raise, const char* key) {
+    const std::string scene_json = R"({"meshes":[{"path":"a.clusters"}],"instances":[)"
+                                   R"({"mesh":0,"translation":[0,0,0],"rotation":[0,0,0,1],)" +
+                                   raise + "}]}";
+    REQUIRE(io::write_file(tmp.file("scene.json"), scene_json) == io::Status::Ok);
+    SceneDesc desc;
+    std::string error;
+    CHECK_FALSE(read_scene_file(tmp.file("scene.json"), desc, error));
+    CHECK_MESSAGE(error.find(key) != std::string::npos, error);
+  };
+  refused(
+      R"("content_classes":{"levels":{"fixture_glow":"bright"}},"content_classes":{"levels":{}})",
+      "content_classes");
+  refused(R"("content_classes":{"levels":{"fixture_glow":"bright","fixture_glow":"none"}})",
+          "fixture_glow");
+}
+
 // The raise is two bytes in what was `SceneInstance`'s padding: the struct without it, laid out the
 // same way, is as large, so an instance that raises nothing pays nothing.
 TEST_CASE("content classes at load: the raise costs an instance no bytes") {

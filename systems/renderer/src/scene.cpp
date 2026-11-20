@@ -2579,6 +2579,10 @@ bool read_scene_text(std::string_view text, const std::string& path, bool withou
   const schema::TreeField channels{"water_channels", &prepare_water_channels, &without};
   schema::TextReadOptions options;
   options.tree_fields = std::span<const schema::TreeField>(&channels, 1);
+  // **Strictly** (C64; renderer.md, "Content classes at load"): a key given twice anywhere refuses
+  // the file, naming the key, because the parser's ordinary rule (the last one wins) would let a
+  // text merge or an append lose an instance's raise, or anything else the file says.
+  options.parse.refuse_duplicate_keys = true;
   schema::ReadContext ctx;
   JsonParseResult parsed;
   profiling::TraceStage read_stage("schema read");
@@ -2586,6 +2590,8 @@ bool read_scene_text(std::string_view text, const std::string& path, bool withou
   read_stage.end();
   if (!parsed.ok) {
     error = std::string(path) + ":" + std::to_string(parsed.line) + ": " + parsed.message;
+    if (!parsed.duplicate_key.empty())
+      error += " ('" + parsed.duplicate_key + "' is given twice in one object)";
     return false;
   }
   if (!read || !ctx.ok()) {
@@ -2607,7 +2613,9 @@ bool read_scene_props(const std::string& path, Vector<SceneProp>& out, std::stri
   scene::Scene file;
   schema::ReadContext ctx;
   JsonParseResult parsed;
-  const bool read = schema::read_json_text(file, text, ctx, parsed);
+  schema::TextReadOptions strict;  // the same strict grammar as `read_scene_text` (C64)
+  strict.parse.refuse_duplicate_keys = true;
+  const bool read = schema::read_json_text(file, text, ctx, parsed, strict);
   if (!parsed.ok) {
     error = std::string(path) + ":" + std::to_string(parsed.line) + ": " + parsed.message;
     return false;
