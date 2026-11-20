@@ -2070,8 +2070,11 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
   // **The first capacity from what the scene knows** (renderer.md, "The ray tracing chain's
   // memory"): until a frame has said what it builds, a tail that brings more than the chain was
   // sized for at create — a streamed world's first tiles — sizes it again, before any frame wants
-  // it, so the first frame is drawn complete instead of growing over its first frames. Not a growth
-  // when no frame has been submitted, since nothing waited for it.
+  // it, so a scene inside the budget draws its first frame complete instead of growing over its
+  // first frames. One past the budget starts at the floor (`renderer.rt.initial_clusters`, W51-6:
+  // "A guess past the budget is not made at it"), and its first frames in flight may record short
+  // of their demand, counted, until the read-back's growth lands. Not a growth when no frame has
+  // been submitted, since nothing waited for it.
   if (resolved_.rt_chain && !rt_observed_) {
     const u32 first = first_rt_capacity(scene_->rt_capacity_limit(), scene_->rt_union_clusters(),
                                         scene_->rt_frame_estimate(), rt_initial_clusters_tunable());

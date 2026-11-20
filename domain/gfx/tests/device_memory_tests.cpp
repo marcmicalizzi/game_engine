@@ -131,3 +131,31 @@ TEST_CASE("gfx: the large-buffer log keeps its makes and frees in order") {
   gfx::set_large_buffer_log(false);
   CHECK(gfx::large_buffer_log_started_ns() == 0);
 }
+
+// W51-5b: a make past the full table is in no event, so every make the events hold has the free
+// that ends it. Until W51-5b the make was recorded and its free, which the table could not find,
+// was not, and the events' live bytes rose without end past the table's buffers.
+TEST_CASE("gfx: the large-buffer log records no make whose free it cannot record") {
+  gfx::set_large_buffer_floor(gfx::k_large_buffer_bytes);
+  gfx::set_large_buffer_log(true);
+  constexpr u32 k_made = gfx::k_large_buffer_slots + 2;
+  constexpr u64 k_key = 0x100000;
+  for (u32 i = 0; i < k_made; ++i)
+    gfx::detail::note_large_buffer(k_key + i, 4 * k_mib, false);
+  for (u32 i = 0; i < k_made; ++i)
+    gfx::detail::forget_large_buffer(k_key + i);
+  Vector<gfx::LargeBufferEvent> events;
+  events.resize(gfx::k_large_buffer_events);
+  const u32 kept = gfx::large_buffer_events(events.data(), gfx::k_large_buffer_events);
+  i64 live = 0;
+  u32 made = 0;
+  for (u32 i = 0; i < kept; ++i) {
+    live += events[i].made ? static_cast<i64>(events[i].bytes) : -static_cast<i64>(events[i].bytes);
+    made += events[i].made ? 1u : 0u;
+  }
+  CHECK(made == gfx::k_large_buffer_slots);
+  CHECK(kept == 2 * gfx::k_large_buffer_slots);
+  CHECK(live == 0);
+  CHECK(gfx::large_buffer_events_dropped() == 0);
+  gfx::set_large_buffer_log(false);
+}

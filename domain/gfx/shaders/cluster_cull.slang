@@ -976,12 +976,6 @@ void cull_instance_pair(CullParams* params, uint pair, uint instance_index, bool
     casters[slot] = uint2(instance_index, index);
     return;
   }
-  if (counting) count_drawn(params, center, radius, plain_drawn, parent_ratio);
-  if (params->pass != 0) {
-    uint* flags = (uint*)params->flags;
-    flags[pair] = 1;
-  }
-
   // Hardware or software rasterization: by projected size unless the mode forces one path.
   bool software = params->raster.y == 1.0;
   if (params->raster.y == 2.0) {
@@ -1014,6 +1008,14 @@ void cull_instance_pair(CullParams* params, uint pair, uint instance_index, bool
       allocate_vertex_draw(params->vertex_draw, params->vertex_records, slot, instance_index,
                            index, cluster.triangle_count);
     }
+  }
+  // Counted drawn and flagged drawn this frame only once its append was taken (W51-5b): a pair a
+  // full run turned away is not in the picture, so pass 2 asks for it again and the drawn and hidden
+  // counters agree with what was drawn.
+  if (counting) count_drawn(params, center, radius, plain_drawn, parent_ratio);
+  if (params->pass != 0) {
+    uint* flags = (uint*)params->flags;
+    flags[pair] = 1;
   }
   // The slot is whichever the append handed out, so the entry's index is not a function of the
   // frame; the visibility id is the pair, which is, and this is the way back from it to the entry
