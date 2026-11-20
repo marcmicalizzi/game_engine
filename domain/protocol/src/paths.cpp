@@ -6,6 +6,8 @@
 #include <domain/protocol/paths.h>
 #include <domain/protocol/session.h>
 
+#include <algorithm>
+
 namespace engine::protocol {
 
 namespace {
@@ -92,13 +94,84 @@ bool admit_existing_path(Context& ctx, std::string_view field, std::string_view 
   return false;
 }
 
-std::string shown_message(std::string message, std::string_view native, std::string_view spelled) {
-  if (native.empty()) return message;
-  for (usize at = message.find(native); at != std::string::npos;
-       at = message.find(native, at + spelled.size())) {
-    message.replace(at, native.size(), spelled);
+namespace {
+// Two characters of a path the roots would call the same: either separator, and on Windows either
+// case (roots.h, rule 9).
+bool same_path_char(char a, char b) noexcept {
+  if ((a == '/' || a == '\\') && (b == '/' || b == '\\')) return true;
+#if ENGINE_PLATFORM_WINDOWS
+  if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
+  if (b >= 'A' && b <= 'Z') b = static_cast<char>(b - 'A' + 'a');
+#endif
+  return a == b;
+}
+
+usize find_path(std::string_view text, std::string_view path, usize from) noexcept {
+  if (path.empty()) return std::string_view::npos;
+  for (usize at = from; at + path.size() <= text.size(); ++at) {
+    usize i = 0;
+    while (i < path.size() && same_path_char(text[at + i], path[i]))
+      ++i;
+    if (i == path.size()) return at;
+  }
+  return std::string_view::npos;
+}
+
+// Whether `c`, just after a directory's name, ends the path there: a sentence's punctuation or a
+// quote, where a letter or a digit would make it another directory's name.
+bool ends_a_path(char c) noexcept {
+  return c == ' ' || c == '\'' || c == '"' || c == '`' || c == ')' || c == ']' || c == '}' ||
+         c == ',' || c == ';' || c == ':' || c == '\n' || c == '\t';
+}
+
+// Every occurrence of `native` replaced by `spelled`; for a root's `directory`, only where the name
+// ends there or goes on into the root (the separator taken with it).
+void replace_path(std::string& message, std::string_view native, std::string_view spelled,
+                  bool directory) {
+  for (usize at = find_path(message, native, 0); at != std::string_view::npos;
+       at = find_path(message, native, at)) {
+    usize end = at + native.size();
+    if (directory && end < message.size()) {
+      if (message[end] == '/' || message[end] == '\\') {
+        ++end;
+      } else if (!ends_a_path(message[end])) {
+        ++at;
+        continue;
+      }
+    }
+    message.replace(at, end - at, spelled);
+    at += spelled.size();
+  }
+}
+}  // namespace
+
+std::string shown_message(std::string message, std::span<const ShownPath> named,
+                          const io::Roots* roots) {
+  for (const ShownPath& path : named)
+    replace_path(message, path.native, path.spelled, false);
+  if (roots == nullptr) return message;
+  // Longest first, so a root inside another (the document's out/ inside its doc://) is named by
+  // its own name.
+  Vector<const io::Root*> by_length;
+  for (const io::Root& r : roots->roots())
+    by_length.push_back(&r);
+  std::sort(by_length.begin(), by_length.end(), [](const io::Root* a, const io::Root* b) {
+    return a->canonical.size() > b->canonical.size();
+  });
+  for (const io::Root* r : by_length) {
+    std::string_view dir = r->canonical;
+    while (!dir.empty() && (dir.back() == '/' || dir.back() == '\\'))
+      dir.remove_suffix(1);
+    if (dir.empty()) continue;
+    replace_path(message, dir, r->name + "://", true);
   }
   return message;
+}
+
+std::string shown_message(std::string message, std::string_view native, std::string_view spelled) {
+  if (native.empty()) return message;
+  const ShownPath one{std::string(native), std::string(spelled)};
+  return shown_message(std::move(message), std::span<const ShownPath>(&one, 1), nullptr);
 }
 
 bool is_plain_file_name(std::string_view name) noexcept {

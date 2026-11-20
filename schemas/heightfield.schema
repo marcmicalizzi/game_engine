@@ -16,7 +16,8 @@ import "scene.schema"
 struct Heightfield @version(2) @kind(record) {
   name: string
   /// The `engine.terrain.heightfield/1` header (a JSON file beside its raw float32 grid), relative to
-  /// the document's directory (or absolute).
+  /// the document's directory or `<root>://<relative>`, never absolute: refused when written and
+  /// left out when read (docs/subsystems/protocol.md, "Paths a document's records hold").
   source: string
   /// Added to the heightfield's own origin (`origin_mm` in its header; y to every height): x and z
   /// whole millimetres and a whole number of its spacings. Axis-aligned on the world's grid: no turn.

@@ -487,6 +487,7 @@ void fill_scene_info(const RenderHost::Scene& scene, const gfx::Device& device,
   if (scene.document != nullptr) {
     out.session = scene.session;
     out.revision = scene.document->revision;
+    out.left_out = scene.document->left_out;
   }
 }
 
@@ -517,6 +518,24 @@ void publish_scene(protocol::Context& ctx, const protocol::RenderSceneInfo& info
   event.instances = info.instances;
   event.revision = info.revision;
   ctx.events->publish(protocol::EventKind::Scene, session, schema::to_json(event));
+}
+
+// A reader's or a loader's sentence about a session's scene, as a client may read it (paths.h,
+// `shown_message`; protocol.md, "Paths a document's records hold"): each mesh by the record's
+// spelling, the ground by its source's, and every other file under the host's roots by its root.
+std::string shown_scene_message(const protocol::Context& ctx, const doc_scene::DocumentScene& scene,
+                                std::string message) {
+  Vector<protocol::ShownPath> named;
+  for (u32 m = 0; m < scene.mesh_paths.size() && m < scene.desc.meshes.size(); ++m) {
+    if (!scene.desc.meshes[m].empty())
+      named.push_back(protocol::ShownPath{scene.desc.meshes[m], scene.mesh_paths[m]});
+  }
+  if (scene.desc.terrain.tiles.has_value() && !scene.heightfield.source.empty())
+    named.push_back(
+        protocol::ShownPath{scene.desc.terrain.tiles->heightfield, scene.heightfield.source});
+  return protocol::shown_message(std::move(message),
+                                 std::span<const protocol::ShownPath>(named.data(), named.size()),
+                                 ctx.roots);
 }
 
 bool load_session(protocol::Context& ctx, RenderHost& host,
@@ -593,8 +612,12 @@ bool load_session(protocol::Context& ctx, RenderHost& host,
   // walking up from the session, which no root admitted (protocol.md, "Where derived data goes").
   const std::string root = params.ddc.empty() ? protocol::derived_data_root(ctx, session)
                                               : scene_gen::document_derived_root(params.ddc, {});
-  if (!doc_scene::read_document_scene(document, session->dir(), root, *described, message)) {
-    error = protocol::make_error(protocol::codes::k_document_error, std::move(message));
+  // The records' paths under the host's roots (record_paths.h; protocol.md, "Paths a document's
+  // records hold"): a record whose path is refused is left out and counted, never opened.
+  if (!doc_scene::read_document_scene(document, session->dir(), root, *described, message,
+                                      ctx.roots)) {
+    error = protocol::make_error(protocol::codes::k_document_error,
+                                 shown_scene_message(ctx, *described, std::move(message)));
     return false;
   }
   renderer::SceneDesc desc = described->desc;
@@ -606,7 +629,8 @@ bool load_session(protocol::Context& ctx, RenderHost& host,
   desc.page_bytes = params.page_bytes;
   renderer::SceneData data;
   if (!renderer::load_scene(desc, data, message)) {
-    error = protocol::make_error(protocol::codes::k_io_error, std::move(message));
+    error = protocol::make_error(protocol::codes::k_io_error,
+                                 shown_scene_message(ctx, *described, std::move(message)));
     return false;
   }
   renderer::RenderSettings settings;

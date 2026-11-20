@@ -4,9 +4,12 @@
 
 #include <core/json/json.h>
 #include <domain/doc/document.h>
+#include <foundation/io/roots.h>
+#include <foundation/io/vfs.h>
 #include <systems/doc_scene/doc_scene.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <string>
 
@@ -131,12 +134,66 @@ TEST_CASE("doc_scene: a document with no placements draws the stand-in ground an
   CHECK(scene.instance_of(Id128{}) == ~0u);
 }
 
-TEST_CASE("doc_scene: a placement with no mesh is refused, naming the record") {
+// A placement with no mesh, or an empty one, names no file: it is left out and counted as a refused
+// path is (T174), so one such record no longer fails every viewer's load of the whole document.
+TEST_CASE("doc_scene: a placement with no mesh is left out and counted, the rest drawn") {
   doc::Document d;
   d.add_layer("base", doc::LayerRole::Base);
   create(d, id_of(5), doc_scene::k_mesh_placement, R"({"name":"nothing","translation":[0,0,0]})");
+  create(d, id_of(6), doc_scene::k_mesh_placement, R"({"name":"empty","mesh":""})");
+  create(d, id_of(7), doc_scene::k_mesh_placement, R"({"name":"kept","mesh":"props/a.glb"})");
   doc_scene::DocumentScene scene;
   std::string error;
-  CHECK_FALSE(doc_scene::read_document_scene(d, "", {}, scene, error));
-  CHECK(error.find("names no mesh") != std::string::npos);
+  REQUIRE_MESSAGE(doc_scene::read_document_scene(d, "", {}, scene, error), error);
+  CHECK(scene.left_out == 2);
+  REQUIRE(scene.records.size() == 1);
+  CHECK(scene.records[0] == id_of(7));
+  // Alone, the document draws the stand-in ground, as one with no placement does.
+  doc::Document alone;
+  alone.add_layer("base", doc::LayerRole::Base);
+  create(alone, id_of(5), doc_scene::k_mesh_placement, R"({"name":"nothing"})");
+  REQUIRE_MESSAGE(doc_scene::read_document_scene(alone, "", {}, scene, error), error);
+  CHECK(scene.left_out == 1);
+  REQUIRE(scene.records.size() == 1);
+  CHECK(scene.records[0].is_null());
+}
+
+// Paths the records hold, read under a host's roots (doc_scene.h, `read_document_scene`): a
+// placement whose mesh is absolute or under no root, and a ground whose source is, are left out
+// and counted, never opened; the rest is drawn from the native path the roots admitted. Without
+// the admission the two placements would be instances and the ground a terrain (and the load would
+// open the file outside).
+TEST_CASE(
+    "doc_scene: with a host's roots, a record whose path is refused is left out and counted") {
+  const test::TempDir tmp("doc_scene_roots");
+  const std::string doc = tmp.file("work") + "/world";
+  REQUIRE(io::make_directories(doc + "/props") == io::Status::Ok);
+  REQUIRE(io::make_directories(tmp.file("elsewhere")) == io::Status::Ok);
+  io::Roots roots;
+  REQUIRE(roots.add("work", tmp.file("work"), false) == io::Status::Ok);
+  doc::Document d;
+  d.add_layer("base", doc::LayerRole::Base);
+  create(d, id_of(1), doc_scene::k_mesh_placement, R"({"name":"kept","mesh":"props/a.glb"})");
+  const std::string absolute = R"({"name":"absolute","mesh":")" + doc + R"(/props/a.glb"})";
+  create(d, id_of(2), doc_scene::k_mesh_placement, absolute.c_str());
+  create(d, id_of(3), doc_scene::k_mesh_placement,
+         R"({"name":"outside","mesh":"../../elsewhere/b.glb"})");
+  create(d, id_of(4), doc_scene::k_heightfield,
+         R"({"name":"ground","source":"../../elsewhere/ground.json","origin":[0,0,0]})");
+  doc_scene::DocumentScene scene;
+  std::string error;
+  REQUIRE_MESSAGE(doc_scene::read_document_scene(d, doc, {}, scene, error, &roots), error);
+  CHECK(scene.left_out == 3);
+  REQUIRE(scene.records.size() == 1);
+  CHECK(scene.records[0] == id_of(1));
+  REQUIRE(scene.desc.meshes.size() == 1);
+  io::Admitted admitted;
+  io::Refusal why = io::Refusal::none;
+  REQUIRE(roots.admit("work://world/props/a.glb", {}, io::Access::read, admitted, why));
+  CHECK(scene.desc.meshes[0] == admitted.native);
+  CHECK(scene.terrain_record.is_null());
+  CHECK_FALSE(scene.desc.terrain.enabled);
+  // The operator's own reading (no roots) reads them all as written, and fails on the ground's
+  // missing header as it always has.
+  CHECK_FALSE(doc_scene::read_document_scene(d, doc, {}, scene, error));
 }

@@ -907,13 +907,20 @@ struct Host {
   }
   ~Host() {
     listener.stop();
-    if (state.document != nullptr) state.document->set_events(nullptr);
+    if (state.document != nullptr) {
+      state.document->set_events(nullptr);
+      // The document outlives this host and its roots: its sessions and its viewport's reading
+      // let go of them here, so nothing committed after the window closes reads a destroyed
+      // `io::Roots` (T174). The roots are the only member the document is handed.
+      state.document->serve_clients(nullptr);
+    }
   }
   ENGINE_NON_COPYABLE(Host);
 
   // The file roots every client path of the in-process listener is admitted against, as
   // engine-host's (domain/protocol/paths.h, ADR-0071): the editor's document (read) and its out/
-  // (read and write), each --root, and the shell's directory served and never written.
+  // (read and write), each --root, and the shell's directory served and never written. Set only
+  // by an editor that serves clients (`EditorDocument::serve_clients`).
   io::Roots roots;
   bool set_roots(const Vector<std::string>& specs, const std::string& shell_dir,
                  std::string& error) {
@@ -924,6 +931,9 @@ struct Host {
     if (!protocol::configure_host_roots(roots, config, error)) return false;
     (void)roots.protect(config.doc_dir);
     dispatcher.context().roots = &roots;
+    // A path a record gains through the listener is admitted as it lands (record_paths.h), and the
+    // viewport reads the records' paths under the same roots.
+    state.document->serve_clients(&roots);
     return true;
   }
 };
@@ -987,7 +997,10 @@ int run_window(const Options& options, editor::EditorDocument& document) {
   const bool listening = options.shell != Shell::None || !options.listen.empty();
   std::string shell_dir = options.shell_dir;
   if (listening && shell_dir.empty()) shell_dir = platform::executable_directory() + "/../shell";
-  if (!host.set_roots(options.root_specs, listening ? shell_dir : std::string(), error)) {
+  // The roots are for clients: with no shell and no --listen the editor serves none, and its
+  // operator's own document is read and written as engine-view reads one (apps.md,
+  // "engine-editor").
+  if (listening && !host.set_roots(options.root_specs, shell_dir, error)) {
     window::shutdown();
     std::fprintf(stderr, "engine-editor: %s\n", error.c_str());
     return 2;
@@ -1136,6 +1149,9 @@ int run_window(const Options& options, editor::EditorDocument& document) {
       vo.color_format = swapchain.format();
       vo.offscreen = false;
       vo.ddc = options.ddc;
+      // The paths the records hold are clients' when the editor serves some: read under the roots
+      // the session holds them to, or as written when it serves none.
+      vo.roots = document.client_roots();
       if (!viewport.build(device, document.document(), document.directory(), vo, error) ||
           !camera.start(viewport.framing_camera(), viewport.data().radius, error)) {
         std::fprintf(stderr, "engine-editor: %s\n", error.c_str());
@@ -1255,7 +1271,9 @@ int run_window(const Options& options, editor::EditorDocument& document) {
           request.set("id", JsonValue(u64{1}));
           request.set("method", JsonValue("editor.import_mesh"));
           JsonValue params = JsonValue::object();
-          params.set("path", JsonValue(std::string(event.text)));
+          // The person's own drop: a grant, as the dialog's choice is (EditorState::Grant), so a
+          // file outside the roots is imported and no client can name one.
+          params.set("grant", JsonValue(editor::grant_file(host.state, std::string(event.text))));
           request.set("params", std::move(params));
           JsonWriteOptions compact;
           compact.pretty = false;

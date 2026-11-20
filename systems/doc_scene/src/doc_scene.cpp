@@ -33,6 +33,39 @@ std::string resolve_path(const std::string& base_dir, const std::string& path) {
   return last == '/' || last == '\\' ? base_dir + path : base_dir + "/" + path;
 }
 
+// A path a record holds, made the one to open (doc_scene.h, `read_document_scene`): with a host's
+// roots it is admitted (`io::admit_stored_path`) and the native path answered; false, and nothing
+// opened, when it is refused. Without roots it is the operator's own reading, resolved as written.
+bool stored(const io::Roots* roots, const std::string& base_dir, const std::string& path,
+            std::string& out) {
+  if (roots == nullptr) {
+    out = resolve_path(base_dir, path);
+    return true;
+  }
+  io::Admitted admitted;
+  io::Refusal why = io::Refusal::none;
+  if (!io::admit_stored_path(*roots, path, base_dir, admitted, why)) return false;
+  out = std::move(admitted.native);
+  return true;
+}
+
+// A file a header names beside itself (a heightfield's `data`): relative, not absolute, no `..`
+// component, no `<root>://`, by the text rules the roots use (`io::check_stored_path_form`). Held
+// lexically, before anything opens it, because nothing a host's roots admitted says where a file
+// the record's file names may lead (T174).
+bool names_a_file_beside(std::string_view name) {
+  if (name.empty() || name.find("://") != std::string_view::npos) return false;
+  if (io::check_stored_path_form(name) != io::Refusal::none) return false;
+  usize start = 0;
+  while (start <= name.size()) {
+    usize end = name.find_first_of("/\\", start);
+    if (end == std::string_view::npos) end = name.size();
+    if (name.substr(start, end - start) == "..") return false;
+    start = end + 1;
+  }
+  return true;
+}
+
 // The record's composed properties as the schema type. Unknown properties are left alone: the
 // document validates its records against their types (`doc::Document::validate`), and a viewport
 // that refused to draw a record over a property it does not read would hide the record, not the
@@ -132,16 +165,52 @@ i64 header_int(const JsonValue& header, std::string_view key, i64 fallback) {
 // registry — so the set is built into the cache on a miss — and a build without it refuses the
 // record with the registry's sentence. The header is read here for its extent only; the provider
 // checks the rest.
+// `refused` set (and true answered) when a path the record holds is refused by `roots`: the ground
+// is left out, as a placement is, before any of its files is opened.
 bool map_heightfield(Id128 id, const terrain::Heightfield& record, const std::string& base_dir,
-                     std::string_view ddc, DocumentScene& out, std::string& error) {
+                     std::string_view ddc, const io::Roots* roots, DocumentScene& out,
+                     bool& refused, std::string& error) {
+  refused = false;
   const std::string where = "record " + hex_of(id) + " (" + std::string(k_heightfield) + ")";
-  const std::string source = resolve_path(base_dir, record.source);
+  std::string source;
+  if (!stored(roots, base_dir, record.source, source)) {
+    refused = true;
+    return true;
+  }
+  auto materials = record.materials;
+  if (materials.has_value()) {
+    // Every image the layers name, `height` with the four (it was read as written, against the
+    // process's directory, before 2026-11-18).
+    for (auto& layer : materials->layers) {
+      for (auto* path :
+           {&layer.base_color, &layer.normal, &layer.roughness, &layer.mask, &layer.height}) {
+        if (path->empty()) continue;
+        std::string opened;
+        if (!stored(roots, base_dir, *path, opened)) {
+          refused = true;
+          return true;
+        }
+        *path = std::move(opened);
+      }
+    }
+  }
   std::string bytes;
   JsonValue header;
   if (io::read_file(source, bytes) != io::Status::Ok || !parse_json(bytes, header).ok ||
       !header.is_object()) {
-    error = where + ": its source '" + source + "' does not read as a heightfield header";
+    error = where + ": its source '" + record.source + "' does not read as a heightfield header";
     return false;
+  }
+  // **The grid the header names is held to the header's own directory** (T174): under a host's
+  // roots the record's `source` was admitted, but the header's `data` is the header's author's,
+  // and opened as written it would read any file and say whether it exists and how large it is.
+  // Refused, the ground is left out as a refused path leaves it, before the provider opens it.
+  if (roots != nullptr) {
+    const JsonValue* data = header.find("data");
+    if (data != nullptr && (!data->is_string() || !names_a_file_beside(data->as_string()))) {
+      refused = true;
+      return true;
+    }
   }
   const i64 width = header_int(header, "width", 0);
   const i64 height = header_int(header, "height", 0);
@@ -153,7 +222,7 @@ bool map_heightfield(Id128 id, const terrain::Heightfield& record, const std::st
     (void)(*o)[1].get_i64(origin[1]);
   }
   if (width < 2 || height < 2 || spacing < 1) {
-    error = where + ": its source '" + source + "' has no grid of at least 2 x 2 points";
+    error = where + ": its source '" + record.source + "' has no grid of at least 2 x 2 points";
     return false;
   }
   // **The header's sizes are bounded before the extent is computed from them** (T190): the file
@@ -165,10 +234,10 @@ bool map_heightfield(Id128 id, const terrain::Heightfield& record, const std::st
   constexpr i64 k_max_side = 65536;
   constexpr i64 k_max_spacing_mm = 1'000'000;
   if (width > k_max_side || height > k_max_side || spacing > k_max_spacing_mm) {
-    error = where + ": its source '" + source + "' states a grid of " + std::to_string(width) +
-            " x " + std::to_string(height) + " points " + std::to_string(spacing) +
-            " mm apart; at most " + std::to_string(k_max_side) + " points a side, " +
-            std::to_string(k_max_spacing_mm) + " mm apart, are read";
+    error = where + ": its source '" + record.source + "' states a grid of " +
+            std::to_string(width) + " x " + std::to_string(height) + " points " +
+            std::to_string(spacing) + " mm apart; at most " + std::to_string(k_max_side) +
+            " points a side, " + std::to_string(k_max_spacing_mm) + " mm apart, are read";
     return false;
   }
   scene::Terrain entry;
@@ -182,11 +251,8 @@ bool map_heightfield(Id128 id, const terrain::Heightfield& record, const std::st
   // heightfield.
   tiles.ddc = std::string(ddc);
   entry.tiles = std::move(tiles);
-  entry.materials = record.materials;
+  entry.materials = std::move(materials);
   if (entry.materials.has_value()) {
-    for (auto& layer : entry.materials->layers)
-      for (auto* path : {&layer.base_color, &layer.normal, &layer.roughness, &layer.mask})
-        if (!path->empty()) *path = resolve_path(base_dir, *path);
     if (!renderer::validate_terrain_materials(*entry.materials, &error)) {
       error = where + ": " + error;
       return false;
@@ -240,7 +306,8 @@ u32 DocumentScene::instance_of(Id128 id) const noexcept {
 }
 
 bool read_document_scene(const doc::Document& document, const std::string& base_dir,
-                         std::string_view ddc, DocumentScene& out, std::string& error) {
+                         std::string_view ddc, DocumentScene& out, std::string& error,
+                         const io::Roots* roots) {
   out = DocumentScene{};
   out.revision = document.revision();
   // `objects()` is sorted by id, so the instance order — and with it every pair and visibility id
@@ -257,13 +324,25 @@ bool read_document_scene(const doc::Document& document, const std::string& base_
       continue;
     }
     if (document.type_of(id) != k_mesh_placement) continue;
+    // A placement with no mesh, or an empty one, names no file: left out and counted as a refused
+    // path is (T174), rather than failing every viewer's load of the whole document.
+    if (const JsonValue* named = document.property(id, "mesh");
+        named == nullptr || (named->is_string() && named->as_string().empty())) {
+      ++out.left_out;
+      continue;
+    }
     scene::MeshPlacement placement;
     if (!read_placement(document, id, placement, error)) return false;
     u32 mesh = mesh_index(out, placement.mesh);
     if (mesh == ~0u) {
+      std::string opened;
+      if (!stored(roots, base_dir, placement.mesh, opened)) {
+        ++out.left_out;  // never opened, and no instance: the scene is drawn without it
+        continue;
+      }
       mesh = static_cast<u32>(out.mesh_paths.size());
       out.mesh_paths.push_back(placement.mesh);
-      out.desc.meshes.push_back(resolve_path(base_dir, placement.mesh));
+      out.desc.meshes.push_back(std::move(opened));
     }
     out.desc.instances.push_back(instance_of_placement(placement, mesh));
     out.records.push_back(id);
@@ -276,7 +355,9 @@ bool read_document_scene(const doc::Document& document, const std::string& base_
   if (!ground.is_null()) {
     terrain::Heightfield record;
     if (!read_heightfield_record(document, ground, record, error)) return false;
-    if (!map_heightfield(ground, record, base_dir, ddc, out, error)) return false;
+    bool refused = false;
+    if (!map_heightfield(ground, record, base_dir, ddc, roots, out, refused, error)) return false;
+    if (refused) ++out.left_out;  // the ground left out: the scene stands on no terrain
   }
   return true;
 }

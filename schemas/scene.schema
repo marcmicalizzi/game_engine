@@ -457,7 +457,9 @@ struct Instance @version(3) {
 /// type is one instance, and an edit to `translation` moves it in the next frame.
 struct MeshPlacement @version(1) @kind(record) {
   name: string
-  /// A glTF, GLB or .clusters file, relative to the document's directory (or absolute).
+  /// A glTF, GLB or .clusters file, relative to the document's directory or `<root>://<relative>`,
+  /// never absolute: refused when written and left out when read (docs/subsystems/protocol.md,
+  /// "Paths a document's records hold").
   mesh: string
   translation: worldpos @unit(m)
   rotation: quat

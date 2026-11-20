@@ -6,7 +6,11 @@
 #include <core/json/json.h>
 #include <core/json/json_value.h>
 #include <core/math/math.h>
+#include <core/platform/random.h>
+#include <core/time/time.h>
+#include <domain/protocol/paths.h>
 #include <domain/protocol/policy.h>
+#include <foundation/io/vfs.h>
 
 #include <algorithm>
 #include <cmath>
@@ -62,10 +66,49 @@ bool editor_import_mesh(protocol::Context& ctx, const protocol::EditorImportMesh
   // all, in the journal and in the events the commit publishes (ADR-0069).
   protocol::Caller caller;
   if (!protocol::resolve_caller(ctx, nullptr, caller, error)) return false;
+  // The file: a grant the editor's own window made (the person's choice, which may lie outside
+  // the roots), or a path a client names, admitted by the roots as every client path is
+  // (protocol.md, "Where each method is carried"). Before 2026-11-18 any path was read, and its
+  // files copied into the document for every role to read back.
+  const bool by_grant = !p.grant.empty();
+  if (by_grant == !p.path.empty()) {
+    error = protocol::make_error(protocol::codes::k_invalid_params,
+                                 "editor.import_mesh: name exactly one of path and grant");
+    return false;
+  }
+  std::string source;
+  std::string spelled;  // what an error may name: the client's string, or the chosen file's name
+  if (by_grant) {
+    if (!take_grant(state, p.grant, source)) {
+      error = protocol::make_error(
+          protocol::codes::k_not_found,
+          "editor.import_mesh: no grant '" + p.grant + "' (each is one import within ten minutes)");
+      return false;
+    }
+    spelled = std::string(io::file_name(source));
+  } else {
+    io::Admitted admitted;
+    if (!protocol::admit_existing_path(ctx, "path", p.path,
+                                       protocol::client_base(ctx, document.session().id()),
+                                       admitted, error))
+      return false;
+    source = std::move(admitted.native);
+    spelled = p.path;
+  }
   ImportedFiles files;
   std::string why;
-  if (!import_mesh_files(p.path, document.directory(), files, why)) {
-    error = protocol::make_error(protocol::codes::k_invalid_argument, "editor.import_mesh: " + why);
+  if (!import_mesh_files(source, document.directory(), files, why)) {
+    // The one shown form (paths.h): the file as the client spelled it, the files beside it by the
+    // spelling of its directory (by a grant, by their own names: the person's directory never
+    // crosses the protocol), and anything under the editor's roots by its root.
+    const usize slash = spelled.find_last_of("/\\");
+    const protocol::ShownPath named[] = {
+        {source, spelled},
+        {std::string(io::parent_path(source)) + "/",
+         slash == std::string::npos ? std::string() : spelled.substr(0, slash + 1)}};
+    error = protocol::make_error(
+        protocol::codes::k_invalid_argument,
+        "editor.import_mesh: " + protocol::shown_message(std::move(why), named, ctx.roots));
     return false;
   }
   const WorldPos at = p.at.has_value()
@@ -84,8 +127,7 @@ bool editor_import_mesh(protocol::Context& ctx, const protocol::EditorImportMesh
   const doc::Command create =
       doc::cmd_create(id, "engine.scene.MeshPlacement", Id128{}, std::move(properties));
   // The file's own name in the rationale, as the person chose it.
-  const usize slash = p.path.find_last_of("/\\");
-  const std::string file = slash == std::string::npos ? p.path : p.path.substr(slash + 1);
+  const std::string file(io::file_name(source));
   if (!document.apply(std::span<const doc::Command>(&create, 1), caller, "import " + file, why)) {
     remove_imported(document.directory(), files);
     error = protocol::make_error(protocol::codes::k_document_error, "editor.import_mesh: " + why);
@@ -127,9 +169,49 @@ bool editor_pick_file(protocol::Context& ctx, const protocol::EditorPickFilePara
   state.pick_done.wait(held, [&] { return state.pick_answered || state.closing; });
   (void)held.release();
   state.pick_pending = false;
-  if (state.pick_answered && !state.pick_path.empty()) r.path = state.pick_path;
+  // The file's name to show, and a grant to import it by: the chosen file's own path never
+  // crosses the protocol (the shell's page, a browser tab and an agent read the same answer).
+  if (state.pick_answered && !state.pick_path.empty()) {
+    r.path = std::string(io::file_name(state.pick_path));
+    r.grant = grant_file(state, state.pick_path);
+  }
   return true;
 }
+
+}  // namespace
+
+std::string grant_file(EditorState& state, const std::string& path) {
+  constexpr i64 k_grant_ms = 10 * 60 * 1000;
+  const i64 now = time::wall_unix_ms();
+  for (u32 i = state.grants.size(); i > 0; --i) {
+    if (state.grants[i - 1].expires_ms <= now) state.grants.erase_at(i - 1);
+  }
+  u8 bits[16] = {};
+  if (!platform::secure_random(std::span<u8>(bits, sizeof(bits)))) return {};
+  static constexpr char k_hex[] = "0123456789abcdef";
+  EditorState::Grant& g = state.grants.emplace_back();
+  for (const u8 b : bits) {
+    g.id.push_back(k_hex[b >> 4]);
+    g.id.push_back(k_hex[b & 15]);
+  }
+  g.path = path;
+  g.expires_ms = now + k_grant_ms;
+  return g.id;
+}
+
+bool take_grant(EditorState& state, std::string_view id, std::string& path) {
+  const i64 now = time::wall_unix_ms();
+  for (u32 i = 0; i < state.grants.size(); ++i) {
+    if (state.grants[i].id != id) continue;
+    const bool live = state.grants[i].expires_ms > now;
+    if (live) path = state.grants[i].path;
+    state.grants.erase_at(i);
+    return live;
+  }
+  return false;
+}
+
+namespace {
 
 bool editor_layout(protocol::Context& ctx, const protocol::EditorLayoutParams& p,
                    protocol::EditorLayoutResult& r, protocol::RpcError& error) {
@@ -321,18 +403,24 @@ void add_editor_methods(protocol::Dispatcher& d) {
                          &editor_pick_file>(
       "editor.pick_file",
       "engine-editor only: the platform's open-file dialog on the editor's window, answering "
-      "the chosen path or null; null at once in a test or an editor with no window. Reads "
-      "no file and writes none."));
+      "the chosen file's name (`path`) and a `grant` that editor.import_mesh takes in place of "
+      "a path, one import within ten minutes — never the file's directory — or null when the "
+      "person cancels; null at once in a test or an editor with no window. Reads no file and "
+      "writes none."));
   // A write: it changes the document, so roles govern it (protocol.md, "Roles, leases and
   // proposals").
   d.add(protocol::method<protocol::EditorImportMeshParams, protocol::EditorImportMeshResult,
                          &editor_import_mesh>(
       "editor.import_mesh",
-      "engine-editor only: copy a .gltf (with its buffers and images), .glb or .clusters file into "
-      "the document's assets/<stem>/ and create one engine.scene.MeshPlacement naming it, in one "
-      "transaction, at `at` or on the ground under the viewport's centre; the viewport rebuilds "
-      "and selects it. Refused, with nothing written, for a missing file, a format the loader "
-      "refuses, or a copy that would overwrite other bytes."));
+      "engine-editor only: copy a .gltf (with its buffers and images, which must lie in its "
+      "directory or below), .glb or .clusters file into the document's assets/<stem>/ and create "
+      "one engine.scene.MeshPlacement naming it, in one transaction, at `at` or on the ground "
+      "under the viewport's centre; the viewport rebuilds and selects it. Name exactly one of "
+      "`path` (a client's path, admitted by the editor's roots) and `grant` (editor.pick_file's "
+      "or a drop's, for a file the person chose, which may lie outside them). Refused, with "
+      "nothing written, for a path outside the roots or a missing file (one answer for both), a "
+      "spent or unknown grant, a format the loader refuses, or a copy that would overwrite "
+      "other bytes."));
 }
 
 std::string tool_notification(std::string_view tool) {

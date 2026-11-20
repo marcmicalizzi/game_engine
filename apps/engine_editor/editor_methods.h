@@ -122,7 +122,25 @@ struct EditorState {
   Vector<std::string> pick_filter;
   std::string pick_path;  // empty: cancelled
   std::condition_variable pick_done;
+  // **Grants** (protocol.md, "Where each method is carried"): a file the person chose in the
+  // editor's own window — its dialog (`editor.pick_file`) or a drop on the viewport — is the
+  // operator's own choice, so it may lie outside the roots; it is admitted once, for one
+  // `editor.import_mesh` within ten minutes, by an id of 128 random bits the method answers in
+  // place of the path. A path any client names is admitted by the roots as every other is.
+  struct Grant {
+    std::string id;      // 32 lower-case hex digits
+    std::string path;    // the chosen file, native: never answered
+    i64 expires_ms = 0;  // unix ms
+  };
+  Vector<Grant> grants;
 };
+
+// A grant for `path` (EditorState::Grant), lapsed grants dropped first; empty when the system's
+// secure random source does not answer, and then nothing may be imported by grant.
+std::string grant_file(EditorState& state, const std::string& path);
+// Takes the grant `id` back for its one import: true with its path, false when it is unknown or
+// has lapsed.
+bool take_grant(EditorState& state, std::string_view id, std::string& path);
 
 // The notification the editor sends every connection when the gizmo's tool changed.
 std::string tool_notification(std::string_view tool);

@@ -231,7 +231,10 @@ std::string tar_string(const char* p, usize n) {
   return std::string(p, len);
 }
 
-// The regular files of a tar stream (ustar names, and a pax header's `path` when it has one).
+// The regular files of a tar stream (ustar names, and a pax header's `path` when it has one). Every
+// other entry is skipped, a link entry among them: nothing is checked out over the document, so a
+// link another machine committed in a checkpoint is never followed or made, and a layer file
+// committed as one reads as absent (T174; doc.md, "Checkpoints").
 bool parse_tar(std::string_view tar, Vector<std::pair<std::string, std::string>>& files,
                std::string* error) {
   usize at = 0;

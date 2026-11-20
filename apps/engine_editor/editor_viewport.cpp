@@ -18,7 +18,8 @@ bool Viewport::build(const gfx::Device& device, const doc::Document& document,
   // The ground's set under the editor's root (T104, T119): `--ddc`, else the document's own — the
   // repository's `ddc/` above its directory, else its own `ddc/`.
   root_ = scene_gen::document_derived_root(options_.ddc, base_dir);
-  if (!doc_scene::read_document_scene(document, base_dir, root_, scene_, error)) return false;
+  if (!doc_scene::read_document_scene(document, base_dir, root_, scene_, error, options_.roots))
+    return false;
   return load(error);
 }
 
@@ -109,7 +110,8 @@ bool Viewport::sync(const doc::Document& document, bool& rebuilt, std::string& e
     options_.width = width;
     options_.height = height;
     destroy();
-    if (!doc_scene::read_document_scene(document, base_dir_, root_, scene_, error)) return false;
+    if (!doc_scene::read_document_scene(document, base_dir_, root_, scene_, error, options_.roots))
+      return false;
     rebuilt = true;
     return load(error);
   }

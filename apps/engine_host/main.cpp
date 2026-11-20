@@ -544,6 +544,9 @@ int main(int argc, char** argv) {
   }
 
   protocol::SessionManager sessions(vfs);
+  // Before the host's own document opens: a path a record gains is admitted as it lands
+  // (record_paths.h), against the same roots a client's path is.
+  sessions.set_roots(&roots);
   // The host's own methods' state reaches their handlers through Context::app (host_state.h): the
   // renderer's device and scenes, and the sessions' runtime worlds. It must outlive the
   // dispatcher. Nothing is created until a call asks for it, so a host that only edits documents

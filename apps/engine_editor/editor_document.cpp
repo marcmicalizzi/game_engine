@@ -248,6 +248,11 @@ bool EditorDocument::redo(std::string& error) {
   return true;
 }
 
+void EditorDocument::serve_clients(const io::Roots* roots) {
+  client_roots_ = roots;
+  if (sessions_ != nullptr) sessions_->set_roots(roots);
+}
+
 void EditorDocument::select(Id128 id) {
   if (id == selection_) return;
   selection_ = id;

@@ -6,6 +6,7 @@
 #include <core/json/json.h>
 #include <domain/doc/document.h>
 #include <domain/tileset/tileset.h>
+#include <foundation/io/roots.h>
 #include <foundation/io/vfs.h>
 #include <systems/doc_scene/doc_scene.h>
 
@@ -220,6 +221,89 @@ TEST_CASE(
   CHECK(error.find("65537 x 65 points") != std::string::npos);
   set(w.d, id_of(1), "source", R"("terrain/ridge.json")");
   REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), {}, scene, error), error);
+}
+
+namespace {
+// Whether `message` names no path of this machine: no drive letter, no leading separator, and not
+// the scratch directory the document lives in.
+bool names_no_machine_path(const std::string& message, std::string_view dir) {
+  for (usize i = 0; i + 2 < message.size(); ++i) {
+    const char c = message[i];
+    if (((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) && message[i + 1] == ':' &&
+        (message[i + 2] == '/' || message[i + 2] == '\\'))
+      return false;
+  }
+  for (usize i = 0; i < message.size(); ++i) {
+    if ((message[i] == '/' || message[i] == '\\') &&
+        (i == 0 || message[i - 1] == '\'' || message[i - 1] == ' ' || message[i - 1] == '('))
+      return false;
+  }
+  return message.find(io::file_name(dir)) == std::string::npos;
+}
+}  // namespace
+
+// The reader's own sentences under a host's roots name the record's spelling, never the native path
+// the roots admitted (T174): its answer reaches every client of `render.load {session}`, which
+// passes the provider's and the loader's sentences through the one shown form (protocol's
+// `shown_message`) as well.
+TEST_CASE("doc_scene: under a host's roots the reader's refusals name the record's spelling") {
+  World w;
+  io::Roots roots;
+  REQUIRE(roots.add("work", w.tmp.path(), false) == io::Status::Ok);
+  REQUIRE(io::write_file(w.tmp.file("terrain/wide.json"),
+                         hostile_heightfield::header("70000", "1000")) == io::Status::Ok);
+  create(w.d, id_of(1), doc_scene::k_heightfield,
+         R"({"name":"wide","source":"terrain/wide.json"})");
+  doc_scene::DocumentScene scene;
+  std::string error;
+  CHECK_FALSE(doc_scene::read_document_scene(w.d, w.tmp.path(), {}, scene, error, &roots));
+  CHECK(error.find("its source 'terrain/wide.json' states a grid of 70000 x 65") !=
+        std::string::npos);
+  CHECK_MESSAGE(names_no_machine_path(error, w.tmp.path()), error);
+}
+
+// **A header's grid is held to the header's own directory** (T174): the reader admits the record's
+// `source` by the roots, and the header it reads names its grid file in `data`. Absolute, or
+// climbing with `..`, it would be opened wherever it points, and the provider's answer would say
+// whether that file exists and how large it is; refused by the text rules before the provider opens
+// anything, the ground is left out and counted as a refused path is.
+TEST_CASE("doc_scene: under a host's roots a header's grid outside its directory is refused") {
+  World w;
+  const test::TempDir outside("engine_doc_scene_outside");
+  REQUIRE(io::write_file(outside.file("grid.f32"), std::string(64, '\0')) == io::Status::Ok);
+  io::Roots roots;
+  REQUIRE(roots.add("work", w.tmp.path(), false) == io::Status::Ok);
+  const auto header_naming = [](const std::string& data) {
+    std::string text = hostile_heightfield::header("65", "1000");
+    const usize at = text.find("ground.f32");
+    REQUIRE(at != std::string::npos);
+    text.replace(at, std::string_view("ground.f32").size(), data);
+    return text;
+  };
+  REQUIRE(io::write_file(w.tmp.file("terrain/far.json"),
+                         header_naming(io::normalize_path(outside.file("grid.f32")))) ==
+          io::Status::Ok);
+  REQUIRE(io::write_file(w.tmp.file("terrain/up.json"), header_naming("../terrain/ridge.f32")) ==
+          io::Status::Ok);
+  create(w.d, id_of(1), doc_scene::k_heightfield, R"({"name":"far","source":"terrain/far.json"})");
+  for (const char* source : {"terrain/far.json", "terrain/up.json"}) {
+    set(w.d, id_of(1), "source", std::string("\"") + source + "\"");
+    doc_scene::DocumentScene scene;
+    std::string error;
+    REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), {}, scene, error, &roots),
+                    error);
+    CHECK(scene.left_out == 1);
+    CHECK(scene.terrain_record.is_null());
+    CHECK_FALSE(scene.desc.terrain.enabled);
+  }
+  // A plain name beside the header, as write_heightfield writes it, is read.
+  set(w.d, id_of(1), "source", R"("terrain/ridge.json")");
+  doc_scene::DocumentScene scene;
+  std::string error;
+  REQUIRE_MESSAGE(doc_scene::read_document_scene(w.d, w.tmp.path(), {}, scene, error, &roots),
+                  error);
+  CHECK(scene.left_out == 0);
+  CHECK(scene.terrain_record == id_of(1));
 }
 
 // **The host's root, not the heightfield's** (T104, T119; doc_scene.md, "The ground's root"): a

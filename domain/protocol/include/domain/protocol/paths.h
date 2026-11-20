@@ -20,6 +20,7 @@
 #include <foundation/io/roots.h>
 #include <foundation/io/vfs.h>
 
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -46,8 +47,24 @@ bool admit_client_path(Context& ctx, std::string_view field, std::string_view pa
 bool admit_existing_path(Context& ctx, std::string_view field, std::string_view path,
                          std::string_view base, io::Admitted& out, RpcError& error);
 
-// A reader's message with every occurrence of the admitted file's native path replaced by the
-// client's own spelling, so an error names what the client sent and never the host's directory.
+// A native path and what a client is told in its place (`shown_message`): a file and the client's
+// or the record's own spelling of it, or a directory ending in a separator and the spelling of that
+// directory (empty, to leave a file's name alone).
+struct ShownPath {
+  std::string native;
+  std::string spelled;
+};
+
+// **The one shown form** of a sentence a reader, a loader or an importer wrote about the files it
+// opened, before it is answered to a client (T174, the owner's rule: no client is told an absolute
+// path of this machine): every occurrence of each `named` native path replaced by its spelling, in
+// order, so a file goes before its directory; then, with `roots`, every root's directory by its
+// `<root>://` form (`out://later.gltf`), longest first, so a file the roots admitted is named
+// portably wherever the sentence names it. The comparison takes either separator, and on Windows
+// either case, as the roots compare. The host's own log keeps the native path in typed fields.
+std::string shown_message(std::string message, std::span<const ShownPath> named,
+                          const io::Roots* roots);
+// The same for one file, without roots: the client's own spelling for the admitted native path.
 std::string shown_message(std::string message, std::string_view native, std::string_view spelled);
 
 // One plain file name a writer puts in a directory it admitted: no separator, not `.` or `..`,

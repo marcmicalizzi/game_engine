@@ -21,6 +21,7 @@
 #include <domain/doc/document.h>
 #include <domain/protocol/policy.h>
 #include <domain/protocol/session.h>
+#include <foundation/io/roots.h>
 #include <foundation/io/vfs.h>
 
 #include <memory>
@@ -99,6 +100,17 @@ class EditorDocument {
   // The listener's subscriptions, which the selection publishes through; null publishes nothing.
   void set_events(protocol::Subscriptions* events) noexcept { events_ = events; }
 
+  // **Whose roots the document is under** (protocol.md, "Paths a document's records hold";
+  // apps.md, "engine-editor"): the roots are for clients. An editor that serves some — the shell,
+  // `--listen` — gives its listener's roots here, and every record a commit lands and every path
+  // its viewport reads is held to them; one that serves none (`--no-shell` with no `--listen`,
+  // `--offscreen`) never gives any, and its operator's own document is read and written as
+  // engine-view reads one. Null takes them back, before whoever owns them goes. The one place both
+  // the session and the viewport take them from, so the two never disagree.
+  void serve_clients(const io::Roots* roots);
+  // What the viewport reads the records' paths under: the roots `serve_clients` gave, or null.
+  const io::Roots* client_roots() const noexcept { return client_roots_; }
+
   // One transaction through the checked write path, attributed to the editor's caller with
   // `rationale` (a default naming the edit when empty). False, with `error`, when the session
   // refuses it or a command fails (atomic: nothing is committed then).
@@ -128,6 +140,7 @@ class EditorDocument {
   std::string dir_;
   Id128 selection_;
   protocol::Subscriptions* events_ = nullptr;
+  const io::Roots* client_roots_ = nullptr;
 };
 
 }  // namespace engine::editor

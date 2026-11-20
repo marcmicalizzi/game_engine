@@ -26,6 +26,7 @@
 #include <domain/protocol/rpc.h>
 #include <foundation/io/vfs.h>
 #include <foundation/net/websocket.h>
+#include <systems/doc_scene/doc_scene.h>
 #include <systems/renderer/capture.h>
 
 #include <doctest/doctest.h>
@@ -2017,6 +2018,11 @@ TEST_CASE("engine-editor: editor.tool, editor.pick_file and editor.import_mesh")
       protocol::Context{&document.sessions(), nullptr, nullptr, &state, &policy});
   protocol::add_builtin_methods(d);
   editor::add_editor_methods(d);
+  // The editor's roots, as engine-editor's Host::set_roots gives its listener: the document's
+  // directory, which holds the fixture's source files too.
+  io::Roots roots;
+  REQUIRE(roots.add("doc", tmp.path(), false) == io::Status::Ok);
+  d.context().roots = &roots;
   const auto call = [&](const std::string& method, const JsonValue& params) {
     JsonValue request = JsonValue::object();
     request.set("jsonrpc", JsonValue("2.0"));
@@ -2043,6 +2049,24 @@ TEST_CASE("engine-editor: editor.tool, editor.pick_file and editor.import_mesh")
   answer = call("editor.pick_file", pick);
   REQUIRE_MESSAGE(answer.find("result") != nullptr, write_json(answer));
   CHECK(answer.find("result")->find("path")->is_null());
+  // What engine.methods (and engine-mcp's tool text) tells an agent of the two: the name and the
+  // grant, and exactly one of path and grant (T174).
+  {
+    const JsonValue methods = call("engine.methods", JsonValue::object());
+    const JsonValue* list =
+        methods.find("result") != nullptr ? methods.find("result")->find("methods") : nullptr;
+    REQUIRE(list != nullptr);
+    std::string pick_doc, import_doc;
+    for (u32 i = 0; i < list->size(); ++i) {
+      const std::string name((*list)[i].find("name")->as_string());
+      if (name == "editor.pick_file") pick_doc = std::string((*list)[i].find("doc")->as_string());
+      if (name == "editor.import_mesh")
+        import_doc = std::string((*list)[i].find("doc")->as_string());
+    }
+    CHECK(pick_doc.find("grant") != std::string::npos);
+    CHECK(pick_doc.find("chosen path") == std::string::npos);
+    CHECK(import_doc.find("exactly one of `path`") != std::string::npos);
+  }
 
   // A .gltf with its buffer beside it: both copied under assets/<stem>/, one transaction made the
   // record, named for the file, on the ground in front of the camera, and selected it.
@@ -2097,6 +2121,112 @@ TEST_CASE("engine-editor: editor.tool, editor.pick_file and editor.import_mesh")
   CHECK_FALSE(io::exists(tmp.path() + "/assets/broken/broken.glb"));
   CHECK(document.document().journal().size() == before + 2);
 
+  // A path outside every root is refused as any client path is, with nothing copied (before
+  // 2026-11-18 any file the host could read was imported, and every role could read it back from
+  // the document); the same file chosen in the editor's own window is a grant, imported once.
+  {
+    const test::TempDir elsewhere("engine_editor_import_outside");
+    REQUIRE(write_cube_gltf(elsewhere.path(), "barrel"));
+    JsonValue outside = JsonValue::object();
+    outside.set("path", JsonValue(elsewhere.path() + "/barrel.gltf"));
+    answer = call("editor.import_mesh", outside);
+    REQUIRE(answer.find("error") != nullptr);
+    CHECK(answer.find("error")->find("code")->as_int() == protocol::codes::k_not_found);
+    CHECK_FALSE(io::exists(tmp.path() + "/assets/barrel/barrel.gltf"));
+    CHECK(document.document().journal().size() == before + 2);
+    const std::string grant = editor::grant_file(state, elsewhere.path() + "/barrel.gltf");
+    REQUIRE(grant.size() == 32);
+    JsonValue granted = JsonValue::object();
+    granted.set("grant", JsonValue(grant));
+    answer = call("editor.import_mesh", granted);
+    REQUIRE_MESSAGE(answer.find("result") != nullptr, write_json(answer));
+    CHECK(std::string(answer.find("result")->find("mesh")->as_string()) ==
+          "assets/barrel/barrel.gltf");
+    CHECK(document.document().journal().size() == before + 3);
+    // One import a grant: the second is refused, and so are both forms at once.
+    CHECK(call("editor.import_mesh", granted).find("error") != nullptr);
+    granted.set("path", JsonValue(source_dir + "/crate.gltf"));
+    CHECK(call("editor.import_mesh", granted).find("error") != nullptr);
+    CHECK(document.document().journal().size() == before + 3);
+
+    // **No answer names a directory of this machine** (T174): a .gltf whose buffer is missing is
+    // refused naming the client's spelling and the buffer's own name — not the root's directory,
+    // and by grant not the directory of the file the person chose, which never crosses the
+    // protocol.
+    const auto names_no_machine_path = [&](const JsonValue& response) {
+      const JsonValue* error = response.find("error");
+      REQUIRE(error != nullptr);
+      const std::string message(error->find("message")->as_string());
+      INFO(message);
+      for (usize i = 0; i + 2 < message.size(); ++i) {
+        const char c = message[i];
+        const bool letter = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+        CHECK_FALSE(
+            (letter && message[i + 1] == ':' && (message[i + 2] == '/' || message[i + 2] == '\\')));
+      }
+      for (usize i = 0; i < message.size(); ++i) {
+        if (message[i] != '/' && message[i] != '\\') continue;
+        CHECK_FALSE(
+            (i == 0 || message[i - 1] == '\'' || message[i - 1] == ' ' || message[i - 1] == '('));
+      }
+      CHECK(message.find(std::string(io::file_name(tmp.path()))) == std::string::npos);
+      CHECK(message.find(std::string(io::file_name(elsewhere.path()))) == std::string::npos);
+    };
+    // The loader does not open a .gltf's images, so a missing one is found by the copy.
+    const auto with_lost_image = [](const std::string& dir) {
+      REQUIRE(write_cube_gltf(dir, "lost"));
+      std::string text;
+      REQUIRE(io::read_file(dir + "/lost.gltf", text) == io::Status::Ok);
+      JsonValue gltf;
+      REQUIRE(parse_json(text, gltf).ok);
+      JsonValue images = JsonValue::array();
+      JsonValue image = JsonValue::object();
+      image.set("uri", JsonValue("lost.png"));
+      images.push_back(std::move(image));
+      gltf.set("images", std::move(images));
+      REQUIRE(io::write_file(dir + "/lost.gltf", write_json(gltf)) == io::Status::Ok);
+    };
+    with_lost_image(source_dir);
+    JsonValue lost = JsonValue::object();
+    lost.set("path", JsonValue("doc://source/lost.gltf"));
+    answer = call("editor.import_mesh", lost);
+    names_no_machine_path(answer);
+    CHECK(std::string(answer.find("error")->find("message")->as_string()).find("lost.png") !=
+          std::string::npos);
+    with_lost_image(elsewhere.path());
+    JsonValue lost_grant = JsonValue::object();
+    lost_grant.set("grant", JsonValue(editor::grant_file(state, elsewhere.path() + "/lost.gltf")));
+    answer = call("editor.import_mesh", lost_grant);
+    names_no_machine_path(answer);
+    // A missing buffer the loader itself reads is answered without a path (it held before).
+    REQUIRE(write_cube_gltf(source_dir, "gone"));
+    REQUIRE(io::remove_file(source_dir + "/gone.bin") == io::Status::Ok);
+    JsonValue gone = JsonValue::object();
+    gone.set("path", JsonValue("doc://source/gone.gltf"));
+    names_no_machine_path(call("editor.import_mesh", gone));
+    CHECK(document.document().journal().size() == before + 3);
+  }
+
+  // **A .gltf's files are held to its directory before the loader reads any of them** (T174): a
+  // buffer named `../outside.bin` is refused by the lexical rule, and the loader never opens the
+  // file outside, so the answer does not tell whether it is there or how large it is.
+  {
+    REQUIRE(write_cube_gltf(source_dir, "leak"));
+    std::string text;
+    REQUIRE(io::read_file(source_dir + "/leak.gltf", text) == io::Status::Ok);
+    const usize at_uri = text.find("\"leak.bin\"");
+    REQUIRE(at_uri != std::string::npos);
+    text.replace(at_uri, std::string_view("\"leak.bin\"").size(), "\"../outside.bin\"");
+    REQUIRE(io::write_file(source_dir + "/leak.gltf", text) == io::Status::Ok);
+    REQUIRE(io::write_file(tmp.file("outside.bin"), "short") == io::Status::Ok);
+    JsonValue leak = JsonValue::object();
+    leak.set("path", JsonValue(source_dir + "/leak.gltf"));
+    answer = call("editor.import_mesh", leak);
+    REQUIRE(answer.find("error") != nullptr);
+    const std::string message(answer.find("error")->find("message")->as_string());
+    CHECK_MESSAGE(message.find("outside its own directory") != std::string::npos, message);
+    CHECK_FALSE(io::exists(tmp.path() + "/assets/leak/leak.gltf"));
+  }
   // ADR-0069 decision 5: an import a client asks for is that client's in the journal, as every
   // other write of the protocol is, and not the editor's own; a call naming nobody from the page
   // (no client entry) stays the editor's, as above.
@@ -2119,7 +2249,7 @@ TEST_CASE("engine-editor: editor.tool, editor.pick_file and editor.import_mesh")
   CHECK(journal[0].actor == "agent-1");
   CHECK(journal[0].task == "t-agent");
   CHECK(journal[0].role == "director");  // its hello named none: the host's, as on engine-host
-  CHECK(document.document().journal().size() == before + 3);
+  CHECK(document.document().journal().size() == before + 4);
 
   // A sample from content/samples, when tools/fetch-samples.ps1 has fetched it: the viewport
   // rebuilds with one more instance, its pixel picks back to the new record, and undo removes it.
@@ -2183,6 +2313,51 @@ TEST_CASE("engine-editor: editor.tool, editor.pick_file and editor.import_mesh")
     viewport.destroy();
   }
   device.destroy();
+}
+
+// **The roots are for clients** (apps.md, "engine-editor"; T174): an editor that serves none
+// (`--no-shell` with no `--listen`) reads and writes its operator's own document as engine-view
+// reads one — a placement naming `../shared/rock.glb` is drawn and may be moved — and one that
+// serves clients holds both the session's commits and the viewport's reading to its listener's
+// roots, from the one call `serve_clients` (main.cpp's Host makes it only when it listens, and
+// takes it back as it goes, since the document outlives it).
+TEST_CASE("engine-editor: the document is under the roots only while the editor serves clients") {
+  const test::TempDir tmp("engine_editor_roots_served");
+  editor::EditorDocument document;
+  make_fixture(document, tmp.path());
+  io::Roots roots;
+  REQUIRE(roots.add("doc", tmp.path(), false) == io::Status::Ok);
+  const auto place = [&](u64 n, const char* mesh) {
+    JsonValue properties = JsonValue::object();
+    properties.set("name", JsonValue("rock"));
+    properties.set("mesh", JsonValue(mesh));
+    const doc::Command create = doc::cmd_create(Id128{0x7e, n}, "engine.scene.MeshPlacement",
+                                                Id128{}, std::move(properties));
+    std::string why;
+    return document.apply(std::span<const doc::Command>(&create, 1), "place", why);
+  };
+  const auto drawn = [&](u64 n) {
+    doc_scene::DocumentScene scene;
+    std::string error;
+    REQUIRE_MESSAGE(doc_scene::read_document_scene(document.document(), document.directory(), {},
+                                                   scene, error, document.client_roots()),
+                    error);
+    return scene.instance_of(Id128{0x7e, n}) != ~0u;
+  };
+  // Serving none: the operator's own reading, the path outside the document and all.
+  CHECK(document.client_roots() == nullptr);
+  REQUIRE(place(1, "../shared/rock.glb"));
+  CHECK(drawn(1));
+  // Serving clients: the same record left out of the viewport, and a new one refused as it lands.
+  document.serve_clients(&roots);
+  CHECK(document.client_roots() == &roots);
+  CHECK_FALSE(drawn(1));
+  CHECK_FALSE(place(2, "../shared/other.glb"));
+  // Taken back as the host goes: the operator's own again, and no pointer to roots that are gone.
+  document.serve_clients(nullptr);
+  CHECK(document.client_roots() == nullptr);
+  CHECK(place(3, "../shared/third.glb"));
+  CHECK(drawn(1));
 }
 
 TEST_CASE("engine-editor: the window's rotate gizmo turns a record, and a dropped file imports") {
