@@ -1,10 +1,11 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "C64",
-  "reason": "renderer.md gains the section C64's code cites, Content classes at load: the one admission door, where each class is read, what omit and proxy make, what a scene remembers and what an unclassified scene pays, measured; and why the software rasterizer's triangle-box limit takes a near proxy's lid, which the capture case's shot keeps clear of",
+  "reason": "renderer.md gains the section C64's code cites, Content classes at load: the one admission door, where each class is read, what omit and proxy make, what a scene remembers and what an unclassified scene pays, measured; and why the software rasterizer's triangle-box limit takes a near proxy's lid, which the capture case's shot keeps clear of; and with texture.md, that each sidecar is read before either key through the content build's own reader",
   "date": "2026-11-19",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/renderer.md": 7475
+    "page:docs/subsystems/renderer.md": 7908,
+    "page:docs/subsystems/texture.md": 487
   }
 }
