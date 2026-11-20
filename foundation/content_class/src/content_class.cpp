@@ -602,13 +602,16 @@ bool decode_classes(Categories& categories, std::span<const u8> bytes, ContentCl
     if (!categories.learn(name, ladder, index[i], why)) return refuse(why);
     names.push_back(std::move(name));
   }
-  // One scope's pairs: every category must be one the record listed, every level on its ladder.
+  // One scope's pairs: every category must be one the record listed, every level on its ladder,
+  // and no category given twice (C69): `encode_classes` writes each once, and taking the last of
+  // two would let an appended pair lower what the first declared.
   const auto read_pairs = [&](ContentClasses& into, std::string& why) {
     u32 pairs = 0;
     if (!r.count(pairs) || pairs > n) {
       why = "a scope's pair count runs past the categories it lists";
       return false;
     }
+    std::array<bool, k_max_categories> given{};
     for (u32 p = 0; p < pairs; ++p) {
       std::string category;
       std::string level;
@@ -623,6 +626,11 @@ bool decode_classes(Categories& categories, std::span<const u8> bytes, ContentCl
         why = "a pair names '" + category + "', which the record does not list";
         return false;
       }
+      if (given[i]) {
+        why = "category '" + category + "' is given twice in one scope";
+        return false;
+      }
+      given[i] = true;
       const i32 l = categories.level(index[i], level);
       if (l < 0) {
         why = "category '" + category + "': '" + level + "' is not on its recorded ladder";

@@ -1006,6 +1006,88 @@ TEST_CASE(
   }
 }
 
+namespace {
+
+// The record's form written by hand, to say what `encode_classes` never would.
+void put_count(Vector<u8>& out, u32 n) {
+  for (u32 b = 0; b < 4; ++b)
+    out.push_back(static_cast<u8>((n >> (8 * b)) & 0xFFu));
+}
+
+void put_text(Vector<u8>& out, std::string_view text) {
+  put_count(out, static_cast<u32>(text.size()));
+  for (const char ch : text)
+    out.push_back(static_cast<u8>(ch));
+}
+
+// `fixture_glow` and `nudity` listed with their ladders, then `asset`'s pairs and, when
+// `material` is not empty, one material `lamp` with those.
+Vector<u8> record_with_pairs(std::initializer_list<std::pair<const char*, const char*>> asset,
+                             std::initializer_list<std::pair<const char*, const char*>> material) {
+  Vector<u8> out;
+  put_text(out, "engine.content_classes/1");
+  put_count(out, 2);
+  put_text(out, "fixture_glow");
+  put_count(out, 3);
+  for (const char* level : {"none", "dim", "bright"})
+    put_text(out, level);
+  put_text(out, "nudity");
+  put_count(out, 3);
+  for (const char* level : {"none", "partial", "full"})
+    put_text(out, level);
+  const auto put_pairs = [&out](std::initializer_list<std::pair<const char*, const char*>> pairs) {
+    put_count(out, static_cast<u32>(pairs.size()));
+    for (const auto& [category, level] : pairs) {
+      put_text(out, category);
+      put_text(out, level);
+    }
+  };
+  put_pairs(asset);
+  put_count(out, material.size() == 0 ? 0u : 1u);
+  if (material.size() != 0) {
+    put_text(out, "lamp");
+    put_pairs(material);
+  }
+  return out;
+}
+
+}  // namespace
+
+// A pair given twice in one scope is not a record `encode_classes` makes, and taking the last one
+// would let an appended pair lower what the first declared (C69). Refused, as every other record
+// that is not the form is, in the asset's scope and in a material's.
+TEST_CASE("content_class: a section that gives one category twice in a scope is refused") {
+  std::string error;
+  {  // the form itself, with each category once, reads
+    Categories host;
+    ContentClasses out;
+    REQUIRE_MESSAGE(
+        decode_classes(host, view(record_with_pairs({{"fixture_glow", "bright"}}, {})), out, error),
+        error);
+    CHECK(out.levels[static_cast<u32>(host.find("fixture_glow"))] == 2);
+  }
+  {  // the asset's scope: `bright`, then `none` for the same category
+    Categories host;
+    ContentClasses out;
+    CHECK_FALSE(decode_classes(
+        host, view(record_with_pairs({{"fixture_glow", "bright"}, {"fixture_glow", "none"}}, {})),
+        out, error));
+    CHECK_MESSAGE(error.find("fixture_glow") != std::string::npos, error);
+    CHECK(out == unreadable(host));
+  }
+  {  // a material's scope
+    Categories host;
+    ContentClasses out;
+    Vector<MaterialClass> materials;
+    CHECK_FALSE(decode_classes(
+        host, view(record_with_pairs({}, {{"fixture_glow", "bright"}, {"fixture_glow", "none"}})),
+        out, error, &materials));
+    CHECK_MESSAGE(error.find("lamp") != std::string::npos, error);
+    CHECK(out == unreadable(host));
+    CHECK(materials.empty());
+  }
+}
+
 TEST_CASE("content_class: a node built from inputs carries their join, as a whole asset") {
   const Categories built = with_glow();
   Vector<u8> neutral;  // a neutral mesh has no section at all
