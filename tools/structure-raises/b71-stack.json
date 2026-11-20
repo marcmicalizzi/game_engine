@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "b71-stack",
+  "reason": "the batch 71 stack: gfx.md says where W51-5's CullParams fields landed after R188's nodes (hand join), renderer.md links ADR-0078 from W51-6's section",
+  "date": "2026-11-20",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 192,
+    "page:docs/subsystems/gfx.md": 212
+  }
+}
