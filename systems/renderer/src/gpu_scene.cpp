@@ -53,9 +53,6 @@ constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
 constexpr gfx::BufferUsage k_address = k_storage | gfx::BufferUsage::ShaderDeviceAddress;
 constexpr gfx::BufferUsage k_args = k_address | gfx::BufferUsage::Indirect |
                                     gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc;
-// The visible list is read back by a capture, which resolves a visibility id into the instance
-// and cluster it names; that is the only reason it is a transfer source.
-constexpr gfx::BufferUsage k_readable = k_address | gfx::BufferUsage::TransferSrc;
 // The streaming feedback arrays: cleared by the frame's reset pass and copied back to the host
 // one frame slot later, so both directions are transfers.
 constexpr gfx::BufferUsage k_transfer =
