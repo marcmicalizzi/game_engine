@@ -506,6 +506,31 @@ TEST_CASE(
     CHECK(io::exists(texture::texture_cache_path(desc.ddc, again.sources[1].textures[0].key)));
     CHECK(again.load.trusted == 2);
     CHECK(again.load.built == 0);
+    // A level that changes is an entry of its own again, never the classified one before it.
+    REQUIRE(
+        io::write_file(
+            tmp.file("a_color.provenance.json"),
+            R"({"content_classes":{"materials":{"m0":{"levels":{"fixture_glow":"bright"}}}}})") ==
+        io::Status::Ok);
+    REQUIRE(io::write_file(tmp.file("tri.provenance.json"),
+                           R"({"content_classes":{"fixture_glow":"bright"}})") == io::Status::Ok);
+    SceneData brighter;
+    load(brighter);
+    CHECK(brighter.held.levels[static_cast<u32>(brighter.categories.find("fixture_glow"))] == 2);
+    CHECK(std::string(brighter.sources[2].cache) == "miss");
+    CHECK(brighter.sources[2].container != again.sources[2].container);
+    CHECK(brighter.sources[1].textures[0].key != again.sources[1].textures[0].key);
+    CHECK(brighter.sources[1].textures[0].key != plain_key);
+    // And a sidecar taken away returns both to the plain entries the cold load built.
+    std::error_code ec;
+    REQUIRE(std::filesystem::remove(fs_path(tmp.file("a_color.provenance.json")), ec));
+    REQUIRE(std::filesystem::remove(fs_path(tmp.file("tri.provenance.json")), ec));
+    SceneData removed;
+    load(removed);
+    CHECK(removed.sources[1].textures[0].key == plain_key);
+    CHECK(std::string(removed.sources[2].cache) == "hit");
+    CHECK(removed.sources[2].container == warm.sources[2].container);
+    CHECK(removed.load.built == 0);
   }
   u32 made = 0;
   for (const DanglingForm& form : k_dangling_forms) {

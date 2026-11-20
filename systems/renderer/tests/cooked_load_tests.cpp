@@ -7,6 +7,7 @@
 #include <core/hash/hash.h>
 #include <core/platform/process.h>
 #include <domain/assets/mesh_generator.h>
+#include <domain/content_build/content_build.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/materials/materials.h>
 #include <foundation/image/png.h>
@@ -276,6 +277,23 @@ TEST_CASE("cooked load: a classified recipe has a cache entry of its own, carryi
   CHECK(std::string(classified.sources[0].cache) == "miss");  // not the neutral recipe's entry
   REQUIRE_FALSE(classified.sources[0].container.empty());
   CHECK(classified.sources[0].container != plain.sources[0].container);
+  // The content build's key, term for term: the generator's key moved by the class hash its own
+  // reader gives (`classified_build_key`'s rule for a recipe).
+  content_build::MeshOptions options;
+  options.materials = materials::pack_at(tmp.file("pack"));
+  content_build::SourceClasses classes;
+  content_build::Diagnostic why;
+  REQUIRE_MESSAGE(
+      content_build::read_source_classes(tmp.file("a.flora.json"), options, classes, why),
+      why.message);
+  CHECK(classified.sources[0].container ==
+        geometry::cluster_cache_path(
+            tmp.file("ddc"), content_class::classified_key(
+                                 assets::generated_mesh_build_key(
+                                     classified.sources[0].source_hash,
+                                     assets::MeshGeneratorInputs{options.materials, nullptr},
+                                     SceneDesc{}.lod, geometry::ClusterPagesOptions{}.page_bytes),
+                                 classes.hash)));
   geometry::ClusterFileData entry;
   REQUIRE_MESSAGE(geometry::read_cluster_file(classified.sources[0].container, entry, &error),
                   error);
