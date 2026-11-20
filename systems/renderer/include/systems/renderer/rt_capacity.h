@@ -246,9 +246,9 @@ RtBudget resolve_rt_cache_mib(u32 tunable_mib, u64 device_local_bytes) noexcept;
 // capacity grew towards what they wanted. Arithmetic only, so the rule is tested on the CPU.
 // **A scene past the budget starts at `floor`, not at the budget** (W51-6, 2026-11-19; renderer.md,
 // "A guess past the budget is not made at it"): the budget is a share of the card and says nothing
-// of the scene, so starting there was a guess of the card's size — the forest's staging held
-// 337,597 clusters, 3.1 GB of chunks and their bottom-level set, through its load and its first ten
-// seconds of frames for a first frame that built 6,306, and that hold was the load's peak. It
+// of the scene, so starting there was a guess of the card's size — the forest's staging held the
+// budget's 337,597 clusters, 3.7 GiB of chunks, bottom-level set and scratch, from `create` through
+// its first ten seconds of frames for a first frame that built 6,306: the load's peak. It
 // starts at what the budget would have started a scene inside it at, and grows by what its frames
 // ask (a step made on the worker; a frame already short for it waits for the allocation); a frame
 // in flight before the first read-back that wants more keeps whole instances and counts what it
