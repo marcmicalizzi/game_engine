@@ -568,11 +568,14 @@ class SessionManager {
   io::Vfs& vfs() noexcept { return *vfs_; }
 
   // --- the ledger's events (protocol.md, "The ledger's events"; ledger.cpp) -------------------
-  // Who a session's ledger watch wakes on a notice (the listener); null wakes nobody, and the
-  // notices wait for the next look.
-  void set_ledger_waker(void (*wake)(void* context), void* context) noexcept {
-    ledger_waker_.set(wake, context);
-  }
+  // Who a session's ledger watch wakes on a notice: the listener's looker, from the moment it runs
+  // until it stops. **A watch exists only while someone can be told** (`watches_ledgers`, the one
+  // place that says so): a looker to wake and events to publish. So engine-cli's host per call,
+  // `engine-host --stdio` and a console, which start no looker, start no watch thread, make no
+  // read of the ledger at open and pay nothing more per write. Setting a waker starts a watch on
+  // every session (and every one opened later); null stops them all. Called under the host's lock.
+  void set_ledger_waker(void (*wake)(void* context), void* context);
+  bool watches_ledgers() const noexcept { return ledger_waking_ && events_ != nullptr; }
   // One look at the ledgers of the sessions whose watch saw a notice (`all`: every watched
   // session's, whatever its watch saw), in three steps so the file is read with the host's lock let
   // go: `begin_ledger_looks` under the host's lock, `read_ledger_look` with no lock of the host's
@@ -619,6 +622,9 @@ class SessionManager {
   Subscriptions* events_ = nullptr;
   const io::Roots* roots_ = nullptr;
   // Connections that held a lease in a session closed under them, still connected (ascending),
+  bool ledger_waking_ = false;  // a waker is set (`set_ledger_waker`)
+  // Starts or stops every session's watch to match `watches_ledgers`.
+  void sync_ledger_watches();
   // and those of them that have since ended: a reopen drops the second kind's leases.
   // Bounded by the leases taken, not by the connections served.
   Vector<u64> detached_;

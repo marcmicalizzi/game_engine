@@ -1804,7 +1804,7 @@ Session* SessionManager::open(const SessionOpenParams& params, u64 holder, RpcEr
   session->set_events(events_);
   session->set_roots(roots_);
   // A ledger another process writes is pushed only where there is someone to push it to.
-  session->watch_ledger(events_ != nullptr ? &ledger_waker_ : nullptr);
+  session->watch_ledger(watches_ledgers() ? &ledger_waker_ : nullptr);
   session->set_shown_path(std::string(shown));
   session->hold(holder);
   if (guard != nullptr && guard->begin != nullptr) {
@@ -1818,10 +1818,9 @@ Session* SessionManager::open(const SessionOpenParams& params, u64 holder, RpcEr
 
 void SessionManager::set_events(Subscriptions* events) noexcept {
   events_ = events;
-  for (const auto& s : sessions_) {
+  for (const auto& s : sessions_)
     s->set_events(events);
-    s->watch_ledger(events != nullptr ? &ledger_waker_ : nullptr);
-  }
+  sync_ledger_watches();
 }
 
 void SessionManager::set_roots(const io::Roots* roots) noexcept {

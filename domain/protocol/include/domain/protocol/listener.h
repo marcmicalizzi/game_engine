@@ -156,7 +156,8 @@ class Listener final : public net::ServerHandler, public EventTransport {
   // session's watch wakes it, waits `k_ledger_look_ms` for the rest of a burst, and looks at the
   // ledgers with the host's lock let go for the read, so a burst of another process's writes is
   // one look, and four looks a second at most, rather than a read under the lock per write.
-  // Started by `start`, stopped by `stop` (never under the host's lock, which the looker takes).
+  // Started by `start`, stopped by `stop` (never under the host's lock, which the looker takes),
+  // and the sessions' watches with it: a listener never started watches nothing.
   static constexpr i64 k_ledger_look_ms = 250;
   static void wake_looker(void* self);
   void start_looker();

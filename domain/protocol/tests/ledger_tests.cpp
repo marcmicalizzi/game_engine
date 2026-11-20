@@ -6,6 +6,7 @@
 #include <domain/protocol/clients.h>
 #include <domain/protocol/events.h>
 #include <domain/protocol/policy.h>
+#include <domain/protocol/listener.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
 #include <foundation/io/roots.h>
@@ -801,6 +802,8 @@ TEST_CASE("ledger: another host's writes are pushed as ledger_changed, decided b
   subscriptions.attach(&pushed);
   h.sessions.set_events(&subscriptions);
   (void)subscriptions.subscribe(7, "", event_bit(EventKind::Session));
+  // A watch is started by a waker, as a listener's looker starts one; this one wakes nobody.
+  h.sessions.set_ledger_waker([](void*) {}, nullptr);
   h.open(dir, true);
   Host b;
   b.open(dir, false);
@@ -1568,5 +1571,70 @@ TEST_CASE("ledger: a write that failed is not a write") {
   const std::vector<JsonValue> changes = ledger_changes(pushed, mark);
   REQUIRE(changes.size() == 1);
   CHECK(id_set(at(changes[0], "tasks")) == std::set<i64>{kept});
+}
+
+namespace {
+
+// Collects what a listener's looker publishes, on its own thread, for a case to wait on.
+struct WaitCollect final : EventTransport {
+  std::mutex mutex;
+  std::condition_variable cv;
+  std::vector<std::string> sent;
+  Post post(u64, std::string text, u32) override {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      sent.push_back(std::move(text));
+    }
+    cv.notify_all();
+    return Post::Queued;
+  }
+  // Up to `seconds` for `ready(sent)`.
+  template <class F>
+  bool wait(F&& ready, int seconds) {
+    std::unique_lock<std::mutex> lock(mutex);
+    return cv.wait_for(lock, std::chrono::seconds(seconds), [&] { return ready(sent); });
+  }
+  std::vector<std::string> copy() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return sent;
+  }
+};
+
+// A host that listens, as engine-host --listen and the editor do: its looker, its watches, and
+// what it publishes collected in-process rather than sent on a socket. `pushed` before the
+// listener, so the listener's looker stops before what it publishes into goes.
+struct Listening {
+  Host h;
+  std::mutex lock;  // the host's: every call below takes it, as the listener's requests do
+  WaitCollect pushed;
+  Listener listener{h.dispatcher, lock};
+  void start() {
+    std::string error;
+    REQUIRE_MESSAGE(listener.start(0, "", h.session, error), error);
+    std::lock_guard<std::mutex> host(lock);
+    listener.events().attach(&pushed);
+    (void)listener.events().subscribe(7, "", event_bit(EventKind::Session));
+  }
+};
+
+}  // namespace
+
+// A watch exists only while someone can be told: engine-cli's host per call builds a listener it
+// never starts, and its sessions watch nothing — no thread, no read at open, nothing per write.
+TEST_CASE("ledger: a host that tells nobody watches nothing") {
+  test::TempDir tmp("protocol_ledger");
+  Listening l;
+  l.h.open(tmp.file("doc"), true);
+  (void)make_task(l.h, "one");
+  const Session* s = l.h.sessions.find(l.h.session);
+  REQUIRE(s != nullptr);
+  CHECK_FALSE(l.h.sessions.watches_ledgers());
+  CHECK_FALSE(s->watching_ledger());
+  l.start();
+  CHECK(l.h.sessions.watches_ledgers());
+  CHECK(s->watching_ledger());
+  l.listener.stop();
+  CHECK_FALSE(l.h.sessions.watches_ledgers());
+  CHECK_FALSE(s->watching_ledger());
 }
 

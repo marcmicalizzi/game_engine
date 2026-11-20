@@ -226,13 +226,20 @@ void Listener::start_looker() {
     look_wanted_ = false;
   }
   looker_ = std::thread([this] { look_loop(); });
+  // The watches start with the waker, so a notice from the first one wakes a looker that runs: a
+  // notice that comes before the looker first waits is kept in `look_wanted_`, not lost.
+  std::lock_guard<std::mutex> host(*lock_);
   sessions->set_ledger_waker(&Listener::wake_looker, this);
 }
 
 void Listener::stop_looker() {
-  // The waker goes first, so no watch wakes a looker that is gone.
-  if (SessionManager* sessions = dispatcher_->context().sessions; sessions != nullptr)
+  // The waker and the watches go first, so no watch wakes a looker that is gone; a listener that
+  // never started its looker set neither.
+  if (SessionManager* sessions = dispatcher_->context().sessions;
+      sessions != nullptr && looker_.joinable()) {
+    std::lock_guard<std::mutex> host(*lock_);
     sessions->set_ledger_waker(nullptr, nullptr);
+  }
   {
     std::lock_guard<std::mutex> lock(look_mutex_);
     look_stop_ = true;

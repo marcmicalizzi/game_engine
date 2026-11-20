@@ -1108,6 +1108,18 @@ void Session::watch_ledger(LedgerWaker* waker) {
 
 bool Session::ledger_watch_polling() const noexcept {
   return ledger_watch_ != nullptr && ledger_watch_->polling();
+void SessionManager::set_ledger_waker(void (*wake)(void* context), void* context) {
+  ledger_waker_.set(wake, context);
+  ledger_waking_ = wake != nullptr;
+  sync_ledger_watches();
+}
+
+void SessionManager::sync_ledger_watches() {
+  const bool watch = watches_ledgers();
+  for (const auto& s : sessions_)
+    s->watch_ledger(watch ? &ledger_waker_ : nullptr);
+}
+
 }
 
 void Session::ledger_written(const LedgerFile& ledger) {
