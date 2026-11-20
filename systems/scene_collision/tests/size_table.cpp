@@ -11,4 +11,6 @@ ENGINE_EXPECT_SIZE(32, 8, scene_collision::GroundTime);
 // a building's doors keep resident (scene_collision.md, "What props and doors keep resident").
 // 88 since a door may come from a placed piece's declared leaf (S91): a 64-bit key from its place,
 // the piece's turn (`base`) and where the leaf's middle stands through its thickness (`face_z`).
+// Still 88 with `fixed` (2026-11-20), which sits in the padding after `open`. A streamed tile's
+// doors go with their tile, so they are bounded by the ring; a scene's by its leaves.
 ENGINE_EXPECT_SIZE(88, 8, scene_collision::DoorBody);

@@ -362,8 +362,10 @@ from `SceneData::props`; every other is built when a prop in reach first wants i
 them at once) and let go with its tile, so what stays is bounded by the distinct sizes among the
 props round the walker, not by the props placed. A door keeps its `DoorBody` (88 bytes, pinned in
 the size table) and two physics ids (16 bytes) for as long as it is held — a handed one until the
-next `set_doors`, a declared one from the first time a held tile holds its piece for the rest of
-the session — whether or not its tile is held, because its state is the world's; its leaf's
+next `set_doors`, a scene's declared one from the first time a held tile holds its piece for the
+rest of the session — whether or not its tile is held, because its state is the world's, so these
+are bounded by the scene's leaves; a streamed tile's, which stands and has no state of its own,
+only while its tile is held, so these are bounded by the ring (2026-11-20; "Doors"); its leaf's
 record in a building's container is 48 bytes (`geometry::ClusterFileDoor`), loaded with the mesh
 and kept again in each proxy of that mesh (one a mesh and rounded scale, not one a placement);
 and while its tile is held, one kinematic box body of the physics library, the same as a box
@@ -468,8 +470,9 @@ the same point of the next step. `scene_collision: an interact reaches the door 
 walker, none behind it` holds the choice.
 
 **Not built of S91**: a turned door's leaf on a streamed tile (below, "What is drawn swings with
-what collides"), the state written back through the document (D37), and a closed door as an area
-navigation opens.
+what collides": until it is, a streamed tile's door stands, roadmap S117), leaves hung where a
+house is drawn with none (S116), the state written back through the document (D37), and a closed
+door as an area navigation opens.
 
 ### What a door costs
 
@@ -533,7 +536,30 @@ key below 2^63; never the order tiles came in. A key already held is not taken a
 restore wins** (a `set_doors` of the doors a save read back keeps their states, declared or not),
 and **a door outlives its tile**: let go, its body goes and its state stays and goes on turning;
 back, it is made where it stands. The doors found are sorted and merged by key, so the tiles'
-table order and the order they came in reach nothing. Nothing keys on a generator: an imported
+table order and the order they came in reach nothing. **What collides is what is drawn**
+(2026-11-20): a piece's records are doors only where the renderer hung its leaves
+(`PieceRecord::leaves`) — a scene instance the scene hung them on (`SceneData::leaves`' houses),
+or a tile's own mesh whose recipe's generator answers `leaves`
+(`renderer::placement_mesh_hangs_leaves`, the rule `hang_placement_leaves` hangs by). Everywhere
+else the house is drawn with an empty doorway, and the doorway stands open and walkable: **a mesh
+the scene fits** (`SceneMeshInfo::fit`, whose records are in the unfitted frame), **a house in a
+streamed world's authored run**, **a house a streamed generator places as a resident mesh** (the
+tile hangs leaves for its own meshes only), **any `.clusters` file**, built from a recipe or
+imported, whose path names no generator, and **`engine-view --mesh x.structure.json`**, which reads
+no scene and so hangs nothing. Until 2026-11-20 each of these made a door from section 53 alone,
+an invisible box in an empty doorway that stopped the walker and opened with E (`scene_collision: a
+declared leaf the scene hung no instance for makes no door`). Hanging leaves on those paths is
+roadmap S116. **A streamed tile's door stands** (`DoorBody::fixed`, 2026-11-20): its leaf is drawn
+at the declared angle in the tile's block, which nothing turns yet, so its box stays at that angle
+and collides as drawn — a leaf drawn shut still stops the walker, one drawn open leaves the way
+through — `toggle_door` refuses it, the walker's interact passes it by without asking a game, and
+a module's `door_toggle` answers `Unsupported` (its `door_nearest` and `door_state` still find
+it). Having no state of its own, it **goes with its tile** and is made again as declared when the
+tile comes back, so the doors a streamed walk keeps are bounded by the ring; a door that turns (a
+scene's, or a host's) still outlives its tile, its state the world's, bounded by the scene's
+leaves. Until then a toggle swung the box and left the drawn leaf where it was: a gap the picture
+showed shut, or a box across a doorway it showed open (`scene_collision: a streamed house's doors
+stand as drawn, and a toggle turns none`). The turn drawn on a streamed tile is roadmap S117. Nothing keys on a generator: an imported
 asset whose container declares section 53 gets the same doors, and a mesh that declares none
 costs the ring change one test of an empty list a piece. `scene_collision: a placed piece's
 declared leaf is a door, kept while its tile is away` (0.54 s in `msvc-debug`) stands a wall mesh
@@ -564,7 +590,15 @@ hangs them, naming no generator: **a scene** (`renderer::hang_scene_leaves`, the
 of each leaf's mesh after every other instance, so the instances before keep their places and the
 collision's keys (a scene instance's index) do not move; and **a streamed tile**
 (`renderer::hang_placement_leaves`, in the placements consumer's `generate`, never for a query)
-appends each leaf's mesh to the meshes it hands and a placement of it after its own. Each stands at
+appends each leaf's mesh to the meshes it hands and a placement of it after its own. **A hung leaf
+leaves no footprint** for the entries after it (2026-11-20): the whole read hangs its leaves after
+every entry and the query tile hangs none, so until then a drawn tile alone handed a later entry a
+disc round each hinge (about 1.9 m for a door), and a forest after a village stood differently
+round its doors in a streamed tile than in the whole read (`scene_collision: an entry after the
+houses is handed no footprint for their leaves` asks a probe entry after the example cot in the
+drawn tile, the query tile, the collision's tile and the whole read, and holds the same footprints
+and the same open points in all four). A leaf's mesh reaches `sqrt(w² + h² + t²)` about its hinge,
+the box's far corner at any angle, where it said the larger of its width and height. Each stands at
 its record's declared angle by the functions the collision's door is made by
 (`renderer::hinge_turn`, `leaf_heading`, `leaf_side`, `leaf_declared_mdeg`; the collision's
 `door_rotation` and `declared_door` call them), so **a house nobody has touched draws what it drew
@@ -589,11 +623,12 @@ declared door through the session and its input log, presses E against it, and h
 the leaf on the 240 ticks it turns and none after, the last at the door's hinge a quarter turn
 round, the walker through; with a game's door service answering no the door stays shut, nothing is
 written and the walker stops at the leaf. A scene with no leaf costs the read one null test a mesh
-and the walker one comparison a flush. **Not built**: a turned door on a **streamed tile** is not
-redrawn — its leaf stands at the declared angle in the tile's block (writing it through
-`renderer::DynamicBlock::changed` is the next step), and a house in a streamed world's authored run
-hangs no leaf (its leaves would outstay it in the prefix); a mesh the scene fits
-(`SceneMeshInfo::fit`) hangs none, since its records are in the unfitted frame.
+and the walker one comparison a flush. **Not built**: a door on a **streamed tile** does not turn
+— its leaf stands at the declared angle in the tile's block, and so does its door
+(`DoorBody::fixed`, above; writing the turn through `renderer::DynamicBlock::changed` is roadmap
+S117) — and a house in a streamed world's authored run hangs no leaf (its leaves would outstay it
+in the prefix), nor does a mesh the scene fits (`SceneMeshInfo::fit`), since its records are in the
+unfitted frame: neither makes a door (roadmap S116).
 
 ## Holes
 

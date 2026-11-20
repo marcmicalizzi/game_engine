@@ -500,10 +500,15 @@ struct SceneLeaf {
 // appended to `placed.meshes` and, for every placement of it — index `resident + k` names
 // `placed.meshes[k]` — a placement of the leaf where its record stands it, after all the placements
 // that were there, so the ones before keep their places. `hung`, when given, gets one entry a leaf
-// placement (indices into `placed.instances`). False, with `error`, for a recipe its generator
-// refuses.
+// placement (indices into `placed.instances`, its `mesh` the placement's own index, resident
+// meshes counted). A leaf's mesh reaches `sqrt(w*w + h*h + t*t)` about its hinge, its box's far
+// corner at any angle. False, with `error`, for a recipe its generator refuses.
 bool hang_placement_leaves(scene_gen::Placements& placed, u32 resident, Vector<SceneLeaf>* hung,
                            std::string& error);
+// Whether `hang_placement_leaves` hangs leaves for the placements of `mesh`, a tile's own: a
+// recipe whose generator answers `leaves`. A tile's resident mesh hangs none. What the collision
+// keys a streamed piece's doors on, so a door is made only where its leaf is drawn (S91).
+bool placement_mesh_hangs_leaves(const scene_gen::PlacementMesh& mesh) noexcept;
 // **A scene's instances hang their leaves** (what `read_scene_file` does last, before the
 // terrain's mesh): every mesh of `desc` that is a generator's file or a handed recipe whose
 // generator answers `leaves`, read once; each leaf's mesh appended (a recipe handed under the

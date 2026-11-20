@@ -616,6 +616,8 @@ struct GameRunner::Impl {
     if (self.session == nullptr || self.walker == nullptr) return hotload::Result::Unsupported;
     WalkDoor d;
     if (!self.walker->door_by_key(key, d)) return hotload::Result::NotFound;
+    // A door that stands (a streamed tile's, drawn at its declared angle) cannot be turned at all.
+    if (d.fixed) return hotload::Result::Unsupported;
     if (!self.session->request_door_toggle(key)) return hotload::Result::OutOfRange;
     ++self.door_toggles;
     return hotload::Result::Ok;

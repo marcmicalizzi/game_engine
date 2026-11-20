@@ -118,7 +118,8 @@ inline constexpr f32 k_walk_door_reach_m = 1.5f;
 inline constexpr u32 k_walk_door_toggles = 16;
 // A door as the walker's collision holds it (scene_collision.h `DoorBody`), what a game is told:
 // its key, its hinge's foot, whether it heads open, its angle and the angle it opens to
-// (millidegrees from shut, signed), and whether a building declared it.
+// (millidegrees from shut, signed), whether a building declared it, and whether it stands (a
+// streamed tile's, drawn at its declared angle: the interact and a game's toggle turn it not).
 struct WalkDoor {
   u64 key = 0;
   WorldPos hinge{};
@@ -126,6 +127,7 @@ struct WalkDoor {
   i32 angle_mdeg = 0;
   i32 open_mdeg = 0;
   bool declared = false;
+  bool fixed = false;
 };
 
 // **The orbit mode's heading** (apps.md, "Third person"; roadmap P14): the movement keys are read

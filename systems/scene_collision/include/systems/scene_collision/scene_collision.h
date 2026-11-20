@@ -357,7 +357,11 @@ struct DoorBody {
   i32 speed_mdeg = k_door_speed_mdeg;
   Vec3 half_extents{0.45f, 1.0f, 0.025f};
   f32 face_z = 0.0f;
-  bool open = false;   // its state: where it is heading
+  bool open = false;  // its state: where it is heading
+  // **A door that stands** (docs: "Doors"): a streamed tile's declared leaf, drawn at its declared
+  // angle in the tile's block, which nothing turns yet. It collides there and `toggle_door` refuses
+  // it, so what collides is what is drawn; it goes with its tile, having no state of its own.
+  bool fixed = false;
   i32 angle_mdeg = 0;  // reached, from closed
 };
 struct DoorStats {
@@ -610,7 +614,8 @@ class SceneCollision {
   // angle it was declared at, unless a door of that key is already held — so a restore wins, and
   // a door keeps its state while its tile is away and comes back as it was left.
   void set_doors(std::span<const DoorBody> doors);
-  // At the tick: the door heads for its other state. False for a key not held.
+  // At the tick: the door heads for its other state. False for a key not held, and for a door that
+  // stands (`DoorBody::fixed`, a streamed tile's).
   bool toggle_door(u64 key);
   // **On the tick, after the ring's update and before the walker's step**: a held tile's declared
   // doors taken in, bodies made and let go with their tiles (in key order), and every door turned
@@ -697,7 +702,17 @@ class SceneCollision {
     // the entry's placements on its tile (`support_placement`).
     u32 id = 0;
     u32 index = 0;
+    // **Whether the renderer hung its leaves** (docs: "Doors"): what collides is what is drawn, so
+    // a piece's declared leaves are doors only where they are drawn — `k_leaves_turn` for a scene
+    // instance the scene hung them on (`SceneData::leaves`), `k_leaves_stand` for a tile's own mesh
+    // the drawn tile hangs them for (`renderer::placement_mesh_hangs_leaves`), drawn at their
+    // declared angle; none for any other piece, whose doorway stands open.
+    u8 leaves = 0;
   };
+  static constexpr u8 k_leaves_turn = 1;
+  static constexpr u8 k_leaves_stand = 2;
+  // Scene instances whose leaves the scene hung (`SceneData::leaves`' houses), by instance.
+  Vector<u8> hung_houses_;
   // The proxy of a mesh a tile handed, at a scale: resident by reference (`refs`: the held tiles
   // and the builds ahead that name it), gone with the last.
   struct TileProxy {

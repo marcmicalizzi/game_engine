@@ -67,15 +67,18 @@ Quat rest_turn(const geometry::ClusterFileDoor& record) noexcept {
 
 }  // namespace
 
+bool placement_mesh_hangs_leaves(const scene_gen::PlacementMesh& mesh) noexcept {
+  return !mesh.recipe.empty() && leaf_generator(mesh.path) != nullptr;
+}
+
 bool hang_placement_leaves(scene_gen::Placements& placed, u32 resident, Vector<SceneLeaf>* hung,
                            std::string& error) {
   const u32 meshes = placed.meshes.size();
   const u32 placements = placed.instances.size();
   Vector<assets::GeneratedLeaf> leaves;
   for (u32 k = 0; k < meshes; ++k) {
-    if (placed.meshes[k].recipe.empty()) continue;
+    if (!placement_mesh_hangs_leaves(placed.meshes[k])) continue;
     const assets::MeshGeneratorDesc* g = leaf_generator(placed.meshes[k].path);
-    if (g == nullptr) continue;
     // Copied: the appends below may move `placed.meshes`.
     const std::string house_path = placed.meshes[k].path;
     const std::string house_name = placed.meshes[k].name;
@@ -83,7 +86,11 @@ bool hang_placement_leaves(scene_gen::Placements& placed, u32 resident, Vector<S
     if (leaves.empty()) continue;
     const u32 first_leaf = placed.meshes.size();
     for (u32 l = 0; l < leaves.size(); ++l) {
-      const f32 reach = std::max(leaves[l].record.width_m, leaves[l].record.height_m);
+      // Its reach about the hinge, where it is placed: the far corner of the leaf's box, at any
+      // angle of its swing (its width, height and thickness, not the larger of the first two).
+      const geometry::ClusterFileDoor& r = leaves[l].record;
+      const f32 reach = std::sqrt(r.width_m * r.width_m + r.height_m * r.height_m +
+                                  r.thickness_m * r.thickness_m);
       placed.meshes.push_back(scene_gen::PlacementMesh(leaves[l].path,
                                                        house_name + ".leaf" + std::to_string(l), 0,
                                                        std::move(leaves[l].recipe), reach));
@@ -99,8 +106,9 @@ bool hang_placement_leaves(scene_gen::Placements& placed, u32 resident, Vector<S
         leaf.rotation = house.rotation * rest_turn(record);
         leaf.mesh = resident + first_leaf + l;
         leaf.id = 0;  // a leaf is named by its house and its index, never by an id of its own
+        // `mesh` the placement's own index (resident meshes counted), as `leaf.mesh` names it.
         if (hung != nullptr)
-          hung->push_back(SceneLeaf{placed.instances.size(), i, l, first_leaf + l, house.scale.x,
+          hung->push_back(SceneLeaf{placed.instances.size(), i, l, leaf.mesh, house.scale.x,
                                     leaf_declared_mdeg(record)});
         placed.instances.push_back(leaf);
       }

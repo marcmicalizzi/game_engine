@@ -825,7 +825,10 @@ geometry::ClusterFileDoor doorway_leaf() {
   r.flags = geometry::k_door_flag_door;
   return r;
 }
-void doorway_house(renderer::SceneData& scene) {
+// The wall declaring its leaf, and the scene recording that the renderer hung it on instance 0 (the
+// leaf's own instance is not part of these scenes: nothing here draws). What collides is what is
+// drawn, so a declared leaf the scene hung no instance for makes no door (`doorway_house_unhung`).
+void doorway_house_unhung(renderer::SceneData& scene) {
   MeshSource wall;
   add_box(wall, Vec3{2.275f, 1.0f, 0.05f}, -2.725f, 20.05f);
   add_box(wall, Vec3{2.275f, 1.0f, 0.05f}, 2.725f, 20.05f);
@@ -833,6 +836,10 @@ void doorway_house(renderer::SceneData& scene) {
   build_scene(meshes, scene);
   scene.sources.resize(scene.parts.size());
   scene.sources[0].doors.push_back(doorway_leaf());
+}
+void doorway_house(renderer::SceneData& scene) {
+  doorway_house_unhung(scene);
+  scene.leaves.push_back(renderer::SceneLeaf{~0u, 0, 0, 0, 1.0f, 0});
 }
 // The same wall declaring 30 leaves (a village's worth on one tile), or none.
 void wall_leaves(renderer::SceneData& scene, u32 leaves) {
@@ -846,6 +853,7 @@ void wall_leaves(renderer::SceneData& scene, u32 leaves) {
     geometry::ClusterFileDoor r = doorway_leaf();
     r.pivot = Vec3{-14.5f + static_cast<f32>(i), 0.0f, 24.0f};
     scene.sources[0].doors.push_back(r);
+    scene.leaves.push_back(renderer::SceneLeaf{~0u, 0, i, 0, 1.0f, 0});
   }
 }
 void wall_no_leaves(renderer::SceneData& scene) { wall_leaves(scene, 0); }
@@ -908,6 +916,19 @@ TEST_CASE(
   DoorBody back;
   REQUIRE(rig.collision.door(key, back));
   CHECK(back.angle_mdeg == -90000);
+}
+
+// **What collides is what is drawn** (S91; scene_collision.md, "Doors"): the same wall declaring
+// the same leaf, but the scene hung no leaf for it — a mesh the scene fits, a `.clusters` file built
+// from a recipe, `engine-view --mesh` of a description, which draw an empty doorway. Until
+// 2026-11-20 the collision made the door anyway, an invisible box in the doorway that stopped the
+// walker and opened with E; now no door is made and the doorway stands open.
+TEST_CASE("scene_collision: a declared leaf the scene hung no instance for makes no door") {
+  DoorRig rig(&doorway_house_unhung);
+  (void)rig.collision.step_doors(nullptr);
+  CHECK(rig.collision.door_stats().doors == 0);
+  CHECK(rig.collision.door_stats().bodies == 0);
+  CHECK(rig.walk(3.0f, Vec3{0.0f, 0.0f, 1.0f}) > 21.0f);
 }
 
 // A declared leaf stands where its piece stands it: the hinge and the turn follow the piece's

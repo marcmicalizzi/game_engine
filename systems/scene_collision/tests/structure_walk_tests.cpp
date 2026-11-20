@@ -15,12 +15,15 @@
 #include <domain/village/village.h>
 #include <systems/renderer/scene.h>
 #include <systems/scene_collision/scene_collision.h>
+#include <systems/world/placement_tiles.h>
 #include <systems/world/world.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <string>
 
 using namespace engine;
@@ -530,7 +533,7 @@ TEST_CASE(
     CHECK(desc.meshes[at.mesh] == structures::leaf_path("village/cot.structure.json", k));
     CHECK(hung[k].leaf == k);
     const scene_gen::Placement& on_tile = tile.instances[hung[k].instance];
-    CHECK(on_tile.mesh == 2 + hung[k].mesh);
+    CHECK(on_tile.mesh == hung[k].mesh);  // the placement's own index, resident meshes counted
     // The door the collision makes from the same record, at the angle it is declared at.
     const DoorBody door = declared_door(r, origin, turn, 1.0f, k + 1);
     CHECK(door.angle_mdeg == drawn.angle_mdeg);
@@ -562,4 +565,205 @@ TEST_CASE(
     ++checked;
   }
   CHECK(checked == 5);
+}
+
+namespace {
+
+// The example cot as a streamed tile's own mesh, handed by `test-stair-house` at (16, 0.03, 16).
+void hand_cot() {
+  structure::Recipe recipe;
+  recipe.description = structures::example_cot();
+  recipe.scope = structure::MeshScope::whole;
+  g_stair_house = scene_gen::PlacementMesh("village/cot-doors.structure.json", "cot", 0,
+                                           structures::canonical_json(recipe), 6.0f);
+}
+
+renderer::StreamedPlacements test_entry(const char* generator) {
+  renderer::StreamedPlacements entry;
+  entry.generator = generator;
+  REQUIRE(parse_json("{}", entry.params).ok);
+  entry.where = std::string("test.json: ") + generator;
+  entry.tile_meshes = true;
+  return entry;
+}
+
+// **What an entry after the houses is handed** (S91): a generator that places nothing and counts,
+// over tile (0, 0) on a half-metre lattice, the points no footprint in `Context::earlier` covers —
+// the question a forest, a sward or a scatter asks of a candidate — and how many footprints it was
+// handed. Asked by the drawn tile, the query tile, the collision's tile and a whole read alike.
+struct EarlierProbe {
+  bool asked = false;
+  u32 earlier = 0;
+  u32 open = 0;
+};
+EarlierProbe g_probe;
+void probe_count(const scene_gen::Context& context) {
+  g_probe.asked = true;
+  g_probe.earlier = static_cast<u32>(context.earlier.size());
+  g_probe.open = 0;
+  for (i64 z = 250; z < 32000; z += 500) {
+    for (i64 x = 250; x < 32000; x += 500) {
+      bool covered = false;
+      for (const scene_gen::Footprint& f : context.earlier)
+        covered = covered || f.covers_mm(x, z);
+      g_probe.open += covered ? 0u : 1u;
+    }
+  }
+}
+bool probe_expand(void*, const scene_gen::Context& context, scene_gen::Placements&, std::string*) {
+  probe_count(context);
+  return true;
+}
+bool probe_tile(void*, scene_gen::TileCoord t, const scene_gen::Context& context,
+                scene_gen::Placements&, std::string*) {
+  if (t.x == 0 && t.z == 0) probe_count(context);
+  return true;
+}
+constexpr scene_gen::PlacementGeneratorDesc k_earlier_probe{.name = "test-earlier-probe",
+                                                            .open = &stair_house_open,
+                                                            .close = &stair_house_close,
+                                                            .expand = &probe_expand,
+                                                            .meshes = &stair_house_meshes,
+                                                            .tile = &probe_tile,
+                                                            .occupies = &stair_house_occupies};
+
+}  // namespace
+
+// **A streamed house's doors stand as drawn** (S91; scene_collision.md, "Doors"): a streamed tile's
+// leaves are drawn at their declared angles in the tile's block, which nothing turns yet, so its
+// doors collide where the leaves are drawn and an interact or a game's toggle turns none. Until
+// 2026-11-20 a toggle swung the box and left the drawn leaf where it was: a gap the picture showed
+// shut, or a box across a doorway it showed open. They hold no state of their own, so they go with
+// their tile and come back as declared.
+TEST_CASE("scene_collision: a streamed house's doors stand as drawn, and a toggle turns none") {
+  (void)scene_gen::GeneratorRegistry::global().add(k_stair_house);
+  hand_cot();
+  renderer::SceneData scene;
+  scene.streamed.push_back(test_entry("test-stair-house"));
+  scene.tile_meshes = true;
+  scene.mesh_options.cache = false;
+  scene.terrain_mesh = ~0u;
+  scene.world.enabled = true;
+  scene.dynamic = true;
+  physics::World physics;
+  REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+  add_floor(physics);
+  {
+    std::string error;
+    SceneCollision collision;
+    REQUIRE_MESSAGE(collision.create(physics, scene, nullptr, Config{}, &error), error);
+    world::World world(ring());
+    world.add_consumer(collision.consumer());
+    world.update(at(k_house_x, k_house_z), 0, true);
+    (void)collision.step_doors(nullptr);
+    REQUIRE(collision.door_stats().doors == 5);  // the cot's door and its four shutters
+    CHECK(collision.door_stats().bodies == 5);
+    Vector<i32> declared;
+    for (const DoorBody& d : collision.doors()) {
+      declared.push_back(d.angle_mdeg);
+      CHECK_FALSE(collision.toggle_door(d.key));
+    }
+    for (u32 k = 0; k < 480; ++k)
+      (void)collision.step_doors(nullptr);
+    for (u32 i = 0; i < collision.doors().size(); ++i) {
+      CAPTURE(i);
+      CHECK(collision.doors()[i].angle_mdeg == declared[i]);
+    }
+    CHECK(collision.door_stats().toggles == 0);
+    CHECK(collision.door_stats().bodies == 5);  // a leaf drawn shut still stops the walker
+    // The tile goes: its doors with it, and back as declared.
+    world.update(at(1000.0, 1000.0), 1, true);
+    (void)collision.step_doors(nullptr);
+    CHECK(collision.door_stats().doors == 0);
+    world.update(at(k_house_x, k_house_z), 2, true);
+    (void)collision.step_doors(nullptr);
+    CHECK(collision.door_stats().doors == 5);
+    CHECK(collision.door_stats().bodies == 5);
+  }
+  CHECK(physics.built_shape_count() == 0);
+}
+
+// **A leaf is no placement of its kind** (S91; scene_collision.md, "What is drawn swings with what
+// collides"): the entry after the houses is handed the same footprints by the drawn tile, the query
+// tile, the collision's tile and the whole read — the house's disc and none for its leaves. Until
+// 2026-11-20 the drawn tile handed a disc round each of the cot's five hinges (the leaves it hung
+// went through the entry's footprint loop), which no other reader of the tile had.
+TEST_CASE("scene_collision: an entry after the houses is handed no footprint for their leaves") {
+  (void)scene_gen::GeneratorRegistry::global().add(k_stair_house);
+  (void)scene_gen::GeneratorRegistry::global().add(k_earlier_probe);
+  hand_cot();
+  renderer::SceneData scene;
+  scene.streamed.push_back(test_entry("test-stair-house"));
+  scene.streamed.push_back(test_entry("test-earlier-probe"));
+  scene.tile_meshes = true;
+  scene.mesh_options.cache = false;
+  scene.terrain_mesh = ~0u;
+  scene.world.enabled = true;
+  scene.world.tile_size = 32.0f;
+  scene.dynamic = true;
+  std::string error;
+
+  // The drawn tile (0, 0), as a host builds it, and the same tile built for a query.
+  world::PlacementTiles drawn;
+  world::PlacementTilesConfig drawn_config;
+  drawn_config.tile_size = 32.0f;
+  drawn_config.ring_count = 1;
+  REQUIRE_MESSAGE(drawn.create(scene, drawn_config, &error), error);
+  const world::TileConsumer consumer = drawn.consumer();
+  world::TileEvent event;
+  event.tile = {0, 0};
+  event.to = 0;
+  g_probe = EarlierProbe{};
+  (void)consumer.activate(consumer.context, event);
+  consumer.commit(consumer.context);
+  REQUIRE(g_probe.asked);
+  const EarlierProbe on_drawn = g_probe;
+  g_probe = EarlierProbe{};
+  (void)drawn.query_tile(world::TileCoord{0, 0}, ~0u);
+  REQUIRE(g_probe.asked);
+  const EarlierProbe on_query = g_probe;
+
+  // The collision's tile.
+  g_probe = EarlierProbe{};
+  physics::World physics;
+  REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+  {
+    SceneCollision collision;
+    REQUIRE_MESSAGE(collision.create(physics, scene, nullptr, Config{}, &error), error);
+    world::World world(ring());
+    world.add_consumer(collision.consumer());
+    world.update(at(k_house_x, k_house_z), 0, true);
+  }
+  REQUIRE(g_probe.asked);
+  const EarlierProbe on_collision = g_probe;
+
+  // The whole read of the same two entries.
+  const test::TempDir tmp("scene_collision_leaf_footprints");
+  const std::string path = tmp.file("whole.json");
+  {
+    std::ofstream f(path, std::ios::binary);
+    f << R"({"format":"engine.scene.v1","name":"leaf-footprints","placements":[)"
+         R"({"generator":"test-stair-house","params":{}},)"
+         R"({"generator":"test-earlier-probe","params":{}}]})";
+    REQUIRE(f.good());
+  }
+  g_probe = EarlierProbe{};
+  renderer::SceneDesc whole;
+  REQUIRE_MESSAGE(renderer::read_scene_file(path, whole, error), error);
+  REQUIRE(g_probe.asked);
+  const EarlierProbe on_whole = g_probe;
+  CHECK(whole.leaves.size() == 5);  // the whole read hangs them, after the entries
+
+  MESSAGE("footprints handed: drawn " << on_drawn.earlier << ", query " << on_query.earlier
+                                      << ", collision " << on_collision.earlier << ", whole read "
+                                      << on_whole.earlier << "; open points " << on_drawn.open
+                                      << ", " << on_query.open << ", " << on_collision.open << ", "
+                                      << on_whole.open);
+  CHECK(on_drawn.earlier == 1);  // the house's disc
+  CHECK(on_query.earlier == on_drawn.earlier);
+  CHECK(on_collision.earlier == on_drawn.earlier);
+  CHECK(on_whole.earlier == on_drawn.earlier);
+  CHECK(on_query.open == on_drawn.open);
+  CHECK(on_collision.open == on_drawn.open);
+  CHECK(on_whole.open == on_drawn.open);
 }
