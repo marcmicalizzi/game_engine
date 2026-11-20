@@ -1,4 +1,5 @@
 #include <domain/gfx/resources.h>
+#include <systems/renderer/scene_renderer.h>
 
 #include <cull_instances.h>
 
@@ -86,6 +87,7 @@ void CullInstances::fill(gfx::CullParams& params, u32 run) const noexcept {
   params.items = active ? run_items(run) : 0u;
   params.item_args = active ? args.address + u64{run} * 16u : 0u;
   params.mesh_bounds = active ? bounds.address : 0u;
+  nodes.fill(params, run);  // R188 stage 1: zero unless the nodes are on
 }
 
 void CullInstances::import_and_reset(gfx::RenderGraph& graph) {
@@ -104,9 +106,11 @@ void CullInstances::import_and_reset(gfx::RenderGraph& graph) {
           cb.fill_buffer(items.buffer, run_items(r) - items.address, sizeof(u32), 0u);
         }
       });
+  nodes.import_and_reset(graph);  // R188 stage 1
 }
 
 void CullInstances::destroy(const gfx::Device& device) noexcept {
+  nodes.destroy(device);
   gfx::destroy_buffer(device, items);
   gfx::destroy_buffer(device, args);
   gfx::destroy_buffer(device, bounds);
@@ -116,6 +120,11 @@ void CullInstances::destroy(const gfx::Device& device) noexcept {
   bounded_table = 0;
   active = false;
   bounds_due = false;
+}
+
+bool SceneRenderer::cull_node_guard(u32& failures, u32& checked) const noexcept {
+  failures = checked = 0;
+  return cull_instances_ != nullptr && cull_instances_->nodes.read_guard(failures, checked);
 }
 
 }  // namespace engine::renderer

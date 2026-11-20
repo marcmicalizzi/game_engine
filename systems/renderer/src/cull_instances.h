@@ -16,6 +16,7 @@
 #include <domain/gfx/pipeline.h>
 #include <domain/gfx/render_graph.h>
 
+#include <cull_nodes.h>
 #include <string>
 
 namespace engine::renderer {
@@ -39,6 +40,10 @@ struct CullInstances {
   const gfx::ComputePipeline* bounds_pipeline = nullptr;
   const gfx::DeviceCaps* caps = nullptr;
   gfx::GpuTimer* timer = nullptr;
+  // **Nodes before instances** (R188 stage 1, `renderer.cull.nodes`; src/cull_nodes.h): when
+  // active, each instance pass is the node pass, its fold and the instance pass over the surviving
+  // nodes' slots, in the same zone.
+  CullNodes nodes;
 
   void bind(const gfx::ComputePipeline& instances, const gfx::ComputePipeline& fold,
             const gfx::ComputePipeline& mesh_bounds, const gfx::DeviceCaps& device_caps,
@@ -48,6 +53,22 @@ struct CullInstances {
     bounds_pipeline = &mesh_bounds;
     caps = &device_caps;
     timer = &gpu_timer;
+  }
+  void bind_nodes(const gfx::ComputePipeline& node_pass, const gfx::ComputePipeline& node_instances,
+                  const gfx::ComputePipeline& measure, const gfx::ComputePipeline& guard) noexcept {
+    nodes.nodes_pipeline = &node_pass;
+    nodes.instances_pipeline = &node_instances;
+    nodes.measure_pipeline = &measure;
+    nodes.guard_pipeline = &guard;
+  }
+  // After `prepare`: the nodes for this frame, when the instance pass is on and `want` (src/
+  // cull_nodes.h). `bounds_due` is read before the first instance pass clears it.
+  bool prepare_nodes(const gfx::Device& device, gfx::FrameContext& frames, bool want,
+                     const GpuScene& scene, const GpuScene::TableUpdate& tables,
+                     const GpuScene::RecordUpdate& records, u32 frame_slot, bool guard,
+                     std::string* error) {
+    return nodes.prepare(device, frames, want && active, scene, tables, records, frame_slot,
+                         active ? runs : 0u, bounds_due, guard, error);
   }
   // Sizes the buffers for a frame of `run_count` cull runs (a view's two blocks each, then a block
   // per cascade, in the order of the frame's parameter blocks) over `instance_count` instances,
@@ -73,6 +94,11 @@ struct CullInstances {
   void add_instance_pass(gfx::RenderGraph& graph, const char* zone, u64 params, u32 first_run,
                          u32 run_stride, u32 count, u32 instance_count, gfx::RgBuffer hiz,
                          ReadTables& read_tables);
+  // With nodes: the frame's measure and guard if not yet recorded, then the node pass of the same
+  // runs, its fold and the instance pass over the survivors' slots (R188 stage 1).
+  template <class ReadTables>
+  void add_node_passes(gfx::RenderGraph& graph, const char* zone, u64 params, u32 first_run,
+                       u32 run_stride, u32 count, gfx::RgBuffer hiz, ReadTables& read_tables);
   // A cull pass's reads of the items and their dispatch.
   void declare_items(gfx::PassBuilder& b) const {
     if (!active) return;
@@ -116,28 +142,32 @@ void CullInstances::add_instance_pass(gfx::RenderGraph& graph, const char* zone,
           timer->end(cb);
         });
   }
-  graph.add_pass(
-      "cull instances", gfx::PassKind::Compute,
-      [&, hiz](gfx::PassBuilder& b) {
-        read_tables(b);
-        b.read(rg_bounds, gfx::Access::ComputeRead);
-        if (hiz.valid()) b.read(hiz, gfx::Access::ComputeRead);
-        b.write(rg_items, gfx::Access::ComputeReadWrite);
-      },
-      [this, zone, params, first_run, run_stride, count, instance_count](gfx::CommandList cb,
-                                                                         gfx::RenderGraph&) {
-        timer->begin(cb, zone);
-        cb.bind_pipeline(gfx::BindPoint::Compute, instances_pipeline->pipeline);
-        const u64 groups =
-            (u64{instance_count} + gfx::k_cull_workgroup_size - 1) / gfx::k_cull_workgroup_size;
-        for (u32 k = 0; k < count; ++k) {
-          const u64 block = params + sizeof(gfx::CullParams) * (first_run + k * run_stride);
-          cb.push_constants(instances_pipeline->layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
-                            &block);
-          gfx::dispatch_folded(cb, groups, *caps);
-        }
-        timer->end(cb);
-      });
+  if (nodes.active) {
+    add_node_passes(graph, zone, params, first_run, run_stride, count, hiz, read_tables);
+  } else {
+    graph.add_pass(
+        "cull instances", gfx::PassKind::Compute,
+        [&, hiz](gfx::PassBuilder& b) {
+          read_tables(b);
+          b.read(rg_bounds, gfx::Access::ComputeRead);
+          if (hiz.valid()) b.read(hiz, gfx::Access::ComputeRead);
+          b.write(rg_items, gfx::Access::ComputeReadWrite);
+        },
+        [this, zone, params, first_run, run_stride, count, instance_count](gfx::CommandList cb,
+                                                                           gfx::RenderGraph&) {
+          timer->begin(cb, zone);
+          cb.bind_pipeline(gfx::BindPoint::Compute, instances_pipeline->pipeline);
+          const u64 groups =
+              (u64{instance_count} + gfx::k_cull_workgroup_size - 1) / gfx::k_cull_workgroup_size;
+          for (u32 k = 0; k < count; ++k) {
+            const u64 block = params + sizeof(gfx::CullParams) * (first_run + k * run_stride);
+            cb.push_constants(instances_pipeline->layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
+                              &block);
+            gfx::dispatch_folded(cb, groups, *caps);
+          }
+          timer->end(cb);
+        });
+  }
   graph.add_pass(
       "cull items fold", gfx::PassKind::Compute,
       [&](gfx::PassBuilder& b) {
@@ -149,6 +179,110 @@ void CullInstances::add_instance_pass(gfx::RenderGraph& graph, const char* zone,
         record_cull_fold(
             cb, *fold_pipeline, run_items(first_run), args.address + u64{first_run} * 16u,
             static_cast<u32>((u64{capacity} + 1u) * 8u * run_stride), run_stride * 16u, count);
+        timer->end(cb);
+      });
+}
+
+template <class ReadTables>
+void CullInstances::add_node_passes(gfx::RenderGraph& graph, const char* zone, u64 params,
+                                    u32 first_run, u32 run_stride, u32 count, gfx::RgBuffer hiz,
+                                    ReadTables& read_tables) {
+  const u64 first_block = params + sizeof(gfx::CullParams) * first_run;
+  // The frame's measure, after its table copies and its meshes' spheres (both declared reads), and
+  // before any node pass reads the table.
+  if (nodes.measure_due) {
+    nodes.measure_due = false;
+    graph.add_pass(
+        "cull node measure", gfx::PassKind::Compute,
+        [&](gfx::PassBuilder& b) {
+          read_tables(b);
+          b.read(rg_bounds, gfx::Access::ComputeRead);
+          b.read(nodes.rg_list, gfx::Access::ComputeRead);
+          b.write(nodes.rg_table, gfx::Access::ComputeWrite);
+        },
+        [this, zone, first_block](gfx::CommandList cb, gfx::RenderGraph&) {
+          timer->begin(cb, zone);
+          cb.bind_pipeline(gfx::BindPoint::Compute, nodes.measure_pipeline->pipeline);
+          cb.push_constants(nodes.measure_pipeline->layout, gfx::ShaderStage::Compute, 0,
+                            sizeof(u64), &first_block);
+          gfx::dispatch_folded(cb, nodes.list_count, *caps);
+          timer->end(cb);
+        });
+  }
+  // The guard, once a frame, untimed: it is the debug builds' and the tests'.
+  if (nodes.guard_due) {
+    nodes.guard_due = false;
+    graph.add_pass(
+        "cull node guard", gfx::PassKind::Compute,
+        [&](gfx::PassBuilder& b) {
+          read_tables(b);
+          b.read(rg_bounds, gfx::Access::ComputeRead);
+          b.read(nodes.rg_table, gfx::Access::ComputeRead);
+          b.write(nodes.rg_guard, gfx::Access::ComputeReadWrite);
+        },
+        [this, first_block](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Compute, nodes.guard_pipeline->pipeline);
+          cb.push_constants(nodes.guard_pipeline->layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
+                            &first_block);
+          gfx::dispatch_folded(cb, nodes.node_count, *caps);
+        });
+  }
+  graph.add_pass(
+      "cull nodes", gfx::PassKind::Compute,
+      [&, hiz](gfx::PassBuilder& b) {
+        read_tables(b);
+        b.read(nodes.rg_table, gfx::Access::ComputeRead);
+        if (hiz.valid()) b.read(hiz, gfx::Access::ComputeRead);
+        b.write(nodes.rg_items, gfx::Access::ComputeReadWrite);
+      },
+      [this, zone, params, first_run, run_stride, count](gfx::CommandList cb, gfx::RenderGraph&) {
+        timer->begin(cb, zone);
+        cb.bind_pipeline(gfx::BindPoint::Compute, nodes.nodes_pipeline->pipeline);
+        const u64 groups =
+            (u64{nodes.node_count} + gfx::k_cull_workgroup_size - 1) / gfx::k_cull_workgroup_size;
+        for (u32 k = 0; k < count; ++k) {
+          const u64 block = params + sizeof(gfx::CullParams) * (first_run + k * run_stride);
+          cb.push_constants(nodes.nodes_pipeline->layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
+                            &block);
+          gfx::dispatch_folded(cb, groups, *caps);
+        }
+        timer->end(cb);
+      });
+  graph.add_pass(
+      "cull nodes fold", gfx::PassKind::Compute,
+      [&](gfx::PassBuilder& b) {
+        b.read(nodes.rg_items, gfx::Access::ComputeRead);
+        b.write(nodes.rg_args, gfx::Access::ComputeWrite);
+      },
+      [this, zone, first_run, run_stride, count](gfx::CommandList cb, gfx::RenderGraph&) {
+        timer->begin(cb, zone);
+        record_cull_fold(cb, *fold_pipeline, nodes.run_items(first_run),
+                         nodes.args.address + u64{first_run} * 16u,
+                         static_cast<u32>(nodes.run_stride() * run_stride), run_stride * 16u,
+                         count);
+        timer->end(cb);
+      });
+  graph.add_pass(
+      "cull node instances", gfx::PassKind::Compute,
+      [&, hiz](gfx::PassBuilder& b) {
+        read_tables(b);
+        b.read(rg_bounds, gfx::Access::ComputeRead);
+        b.read(nodes.rg_table, gfx::Access::ComputeRead);
+        b.read(nodes.rg_items, gfx::Access::ComputeRead);
+        b.read(nodes.rg_args, gfx::Access::IndirectRead);
+        if (hiz.valid()) b.read(hiz, gfx::Access::ComputeRead);
+        b.write(rg_items, gfx::Access::ComputeReadWrite);
+      },
+      [this, zone, params, first_run, run_stride, count](gfx::CommandList cb, gfx::RenderGraph&) {
+        timer->begin(cb, zone);
+        cb.bind_pipeline(gfx::BindPoint::Compute, nodes.instances_pipeline->pipeline);
+        for (u32 k = 0; k < count; ++k) {
+          const u32 run = first_run + k * run_stride;
+          const u64 block = params + sizeof(gfx::CullParams) * run;
+          cb.push_constants(nodes.instances_pipeline->layout, gfx::ShaderStage::Compute, 0,
+                            sizeof(u64), &block);
+          cb.dispatch_indirect(nodes.args.buffer, u64{run} * 16u);
+        }
         timer->end(cb);
       });
 }

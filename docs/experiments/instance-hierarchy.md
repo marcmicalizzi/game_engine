@@ -1,5 +1,7 @@
 # R188: instances in a hierarchy
 
+*Status 2026-11-19, batch 70: **stage 1 is built**, behind `renderer.cull.nodes` (off), as [nodes before instances](../subsystems/renderer.md#nodes-before-instances) describes; where it departs from the design below is said there and in "Stage 1 as built" at the end. Stages 0, 2 and 3 are not built.*
+
 *2026-11-18, batch 69. A design, nothing built: the row ran while the batch's gate held the machine, so no binary was flown and every number below is read from a record that exists (named where it is used) or computed from one in a scratch script that only computes; a number that needs a run is marked **to measure** with the command that takes it. The research was read on this run, from the sources' own text where it could be had (the list at the end says how far each was read).*
 
 ## The question
@@ -143,3 +145,14 @@ Traced, a surviving rock spends 64 lanes on 51 clusters to draw one or two. That
 - Brian Karis, Rune Stubbe and Graham Wihlidal, "Nanite: A Deep Dive", SIGGRAPH 2021 Advances (advances.realtimerendering.com, the 2021 deck): read as extracted text with its notes; the GPU-driven pipeline, sub-linear scaling, hierarchical LOD selection and culling, two-pass occlusion and the culling dataflow.
 - Unreal Engine 5.4.4's console variables `r.SceneCulling.MinCellSize` and `r.Nanite.UseSceneInstanceHierarchy`, read in a third-party site reproducing their help text and source excerpts; Epic's own documentation of the structure **not read** (none found).
 - NVIDIA `vk_lod_clusters`, `traversal_init.comp.glsl`: as read by R173 ([cull-by-instance](cull-by-instance.md)); not re-read.
+
+## Stage 1 as built
+
+*2026-11-19, batch 70 (b70-R188-1).* Built as staged above, behind `renderer.cull.nodes` (off), with these departures, each because it keeps the GPU scene and the tile layout unaware of nodes or the picture exact with less to keep in step:
+
+- **The CPU says only where a node's slots are.** Its live count, its largest cascade policy, its terrain level and its anchor are measured on the GPU with its sphere (`cull_node_measure_main`), from the same instances the instance pass reads, so no CPU field can disagree with the table. The near-role bit is left to stage 3.
+- **The layout is the renderer's, read from the scene's public surface** (`NodeLayout`): the prefix cut once from its records, the tail compared after each change with `TileLayout::blocks` by first slot and count. A block kept or rewritten with the same count keeps its ids; one moved by T164 or laid out again gets new ones, since its slots moved. No hunk in `gpu_scene.cpp` or `tile_layout.cpp`.
+- **What a set measures is read from what the frame copies into it** (`TableUpdate::copies`, the record upload's instance regions) and the ids the layout changed since that set was last current, rather than node ids listed into each set as the runs are; a carried set, a growth of the node table, the meshes' spheres measured again, and the nodes switched on measure every node.
+- **A tail block's run is not cut by terrain level**: a node whose live instances are on two levels is never culled (`k_cull_node_mixed_terrain`), which keeps it exact; the prefix is cut by level as designed.
+- **Stage 0's zones are not built**, so the node passes are timed inside the cull's zones with the instance pass, as R16's were.
+- **What it measured**: on the grid at 16.74 M pairs the cascades' cull 0.257 to 0.232 ms and the camera's 0.292 to 0.253 (hw with the maps), traced 0.240 to 0.229, every frame the same culled set; on the forest staging's drop 0.093 to 0.080. The estimate for the cascades (most of 0.256 ms) was ten times what the grid gave, because the prefix's nodes on a grid laid out row by row are strips a row long whose spheres pass the frustum far more often than their instances ([nodes before instances](../subsystems/renderer.md#nodes-before-instances) has the numbers). The tunable stays off; stage 2 and the hierarchy below the instance are where the remainder is.

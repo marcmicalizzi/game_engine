@@ -900,6 +900,10 @@ class SceneRenderer {
   // begin_frame, submit_frame into the renderer's own target, and wait. The whole offscreen
   // path in one call, which is what engine-host and the tests use.
   bool render_offscreen(const FrameDesc& frame, std::string* error = nullptr);
+  // **The nodes' guard** (R188 stage 1; renderer.md, "Nodes before instances"): live instances
+  // found outside their node's sphere and instances checked, summed over every frame the guard ran
+  // (`renderer.cull.node_guard`, on in debug builds); false when it never ran. Read after a wait.
+  bool cull_node_guard(u32& failures, u32& checked) const noexcept;
 
   // **The resolve by pixel class** (R151; renderer.md, "The resolve by pixel class"). The classes
   // the last recorded frame's resolve drew, as a mask of `gfx::ResolveClass` bits (0: the one
@@ -1050,6 +1054,12 @@ class SceneRenderer {
     gfx::ComputePipeline cull_instances;
     gfx::ComputePipeline cull_items;
     gfx::ComputePipeline mesh_bounds;
+    // The nodes in front of it (R188 stage 1, src/cull_nodes.h): the node pass, the instance pass
+    // from its survivors, the measure and the guard.
+    gfx::ComputePipeline cull_nodes;
+    gfx::ComputePipeline cull_node_instances;
+    gfx::ComputePipeline cull_node_measure;
+    gfx::ComputePipeline cull_node_guard;
     gfx::ComputePipeline expand;  // vertex_expand.slang: the indexed draw's indices
     gfx::ComputePipeline deform;
     // The static shape stage over one instance's **whole mesh**, not over the cut: a cache the

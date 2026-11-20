@@ -210,8 +210,16 @@ ENGINE_EXPECT_SIZE(32, 8, gfx::ClusterChunkParams);
 // 1776: the instance pass's items, their arguments and the meshes' bounds (R173, renderer.md, "The
 // cull culls instances first"), the first in W6's two pad words. 1808, not 1792: the cross-fade's
 // turn (R158 leg 3, `fade_turn`) in a 16-byte row of its own after R173's fields, three words of
-// padding; R158 had taken a pad word R173 also took, and the stack kept R173's offsets.
-ENGINE_EXPECT_SIZE(1808, 8, gfx::CullParams);
+// padding; R158 had taken a pad word R173 also took, and the stack kept R173's offsets. 1840, not
+// 1808: R188's nodes (renderer.md, "Nodes before instances") — their count in the first of the
+// cross-fade's pad words, then the node table, a run's node items, the measure list and the guard,
+// and a pad word to a whole float4 row; appended, so every field before them keeps its offset.
+ENGINE_EXPECT_SIZE(1840, 8, gfx::CullParams);
+// R188's node (renderer.md, "Nodes before instances"): a sphere, its first slot, a packed span,
+// its terrain level and its anchor slot, read a thread a node by the node pass; mirrored in
+// scene.slang. And an entry of the measure list the CPU stages a frame.
+ENGINE_EXPECT_SIZE(32, 4, gfx::CullNodeDesc);
+ENGINE_EXPECT_SIZE(16, 4, gfx::CullNodeListEntry);
 ENGINE_EXPECT_SIZE(32, 8, gfx::MaskTables);
 // The mask test reads one word of a material by offset (scene.slang,
 // `k_resolve_material_flags_offset`).

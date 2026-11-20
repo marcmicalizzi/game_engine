@@ -43,7 +43,7 @@ struct StreamParams {
 static const uint k_caster_volume_planes = 13;
 static const uint k_max_caster_volumes = 5;
 
-// Read through a device address; mirrors gfx::CullParams (1792 bytes).
+// Read through a device address; mirrors gfx::CullParams (1840 bytes).
 struct CullParams {
   float4 planes[6];  // inward-facing, normalized: dot(n, p) + w >= 0 inside
   float4 camera;     // xyz this view's eye in the frame's space, w = znear
@@ -142,7 +142,16 @@ struct CullParams {
   // gfx::CullParams::fade_turn (R158 leg 3): what the cross-fade's splits are turned by on the
   // hash's ring of 65535 before they go into the fade table; 0 writes them as they are.
   uint fade_turn;        // offset 1792
-  uint pad_fade[3];      // offsets 1796 to 1807; the block is 1,808 bytes
+  // gfx::CullParams::node_count, nodes, node_items, node_list, node_guard (R188 stage 1): the
+  // frame's nodes (scene.slang, CullNodeDesc), a run's surviving node ids behind a count word and a
+  // pad word, the nodes to measure behind a count and three pad words, and the guard's two counts
+  // (cull_nodes_main and its neighbours, below). `nodes` 0: the instance pass over every instance.
+  uint node_count;       // offset 1796
+  uint64_t nodes;        // offset 1800
+  uint64_t node_items;   // offset 1808
+  uint64_t node_list;    // offset 1816
+  uint64_t node_guard;   // offset 1824
+  uint64_t pad_nodes;    // offset 1832; the block is 1,840 bytes
 };
 
 // gfx::CullParams::hiz_flags and the debug counters' layout (gfx::k_hidden_*).
@@ -1096,8 +1105,14 @@ bool instance_may_survive(CullParams* params, uint i) {
 void cull_instances_main(uint3 thread_id : SV_DispatchThreadID) {
   CullParams* params = (CullParams*)g_push.params;
   const uint i = folded_thread(thread_id, 64);
+  append_instance_items(params, i, i < params->instance_count && instance_may_survive(params, i));
+}
+
+// A surviving instance's items, a run of k_cull_item_pairs of its clusters, one atomic a wave. Every
+// lane of the wave calls it.
+void append_instance_items(CullParams* params, uint i, bool survives) {
   uint n = 0;
-  if (i < params->instance_count && instance_may_survive(params, i)) {
+  if (survives) {
     InstanceDesc* instances = (InstanceDesc*)params->instances;
     MeshDesc* meshes = (MeshDesc*)params->meshes;
     const uint clusters = meshes[instances[i].mesh].cluster_count;
@@ -1195,4 +1210,260 @@ void mesh_bounds_main(uint3 group_id : SV_GroupID, uint3 lane3 : SV_GroupThreadI
     bounds[m] = mesh.cluster_count == 0u ? float4(0.0, 0.0, 0.0, -1.0)
                                          : float4(center, g_bound_r[0] * 1.0001);
   }
+}
+
+// ---- nodes before instances (R188 stage 1; renderer.md, "Nodes before instances") -----------------
+//
+// A level above the instance pass, as the design stages it (docs/experiments/instance-hierarchy.md):
+// a **node** is up to 64 consecutive slots of one block of the layout, and its sphere holds every
+// live instance's tested sphere. The sphere is measured here, on the GPU, from the instances the
+// table holds — never handed over by a world — so it is the instance pass's own arithmetic that it
+// holds. In the anchor's cell frame lane i takes `c'_i`, its instance's sphere centre, and
+// `r0_i = bound.w × s × 1.0001 + padding_i + 1e-4` (the instance's own padding, not its terrain
+// level's, which moves with the frame); the node stores `m`, the centre of the box of those spheres,
+// and `R = max_i(|c'_i − m| + r0_i) × (1 + 1e-5) + 1e-4`. The node pass tests `R + |c_m| × 2e-5`
+// round `c_m`, the centre moved into the eye's frame as an instance's translation is
+// (`node_from_eye`), plus the level's padding when the frame has a terrain table. **Why it holds
+// each instance's**: the instance pass tests `r_i = r0_i − 1e-4 + |c_i| × 1e-5 + 1e-4` round `c_i`
+// (`instance_may_survive`; its padding the larger of the instance's and its level's, which the sum
+// of the two bounds). With `|c_i| ≤ |c_m| + |c_i − c_m|` and `|c_i − c_m| + r0_i ≤ R`, the
+// distance-dependent slack `|c_i| × 1e-5` is at most `(|c_m| + R) × 1e-5`, which the factor on `R`
+// and the first 1e-5 of `|c_m|` cover; the second 1e-5 of `|c_m|` covers rounding the node's centre
+// into the eye's frame where the instance's was rounded separately (a few ulps of `|c_m|`), and the
+// last 1e-4 the reduction's own rounding. Each test of the instance pass is monotone in the sphere
+// (above), so a node rejected here holds no instance the instance pass would have kept: the culled
+// set, and every picture, is the instance pass's own. The guard (`cull_node_guard_main`) checks the
+// containment on every frame it runs.
+
+// Where point `p`, stored in the frame of `cell`'s corner, is from the frame's eye: what
+// `instance_from_eye` does for an instance whose translation is `p`.
+float3 node_from_eye(int3 cell, float3 p, FrameEye eye) {
+  return float3(relative_axis(cell.x, p.x, eye.cell.x, eye.local.x, eye.residual.x),
+                relative_axis(cell.y, p.y, eye.cell.y, eye.local.y, eye.residual.y),
+                relative_axis(cell.z, p.z, eye.cell.z, eye.local.z, eye.residual.z));
+}
+
+// The node's sphere in the eye's frame: `center` and the radius it is tested with.
+void node_sphere(CullParams* params, CullNodeDesc node, out float3 center, out float radius) {
+  InstanceDesc* instances = (InstanceDesc*)params->instances;
+  center = node_from_eye(instances[node.anchor].cell, node.sphere.xyz, params->eye);
+  radius = node.sphere.w + length(center) * 2.0e-5;
+  if (node.terrain != 0u && params->terrain != 0) {
+    TerrainLevelDesc* levels = (TerrainLevelDesc*)params->terrain;
+    radius += levels[node.terrain - 1u].padding;
+  }
+}
+
+// Whether any instance of a node can survive this run: the instance pass's tests, in its order, on
+// the node's sphere. A node of mixed terrain levels is never culled.
+bool node_may_survive(CullParams* params, CullNodeDesc node) {
+  if (((node.span >> 8) & 0xffu) == 0u) return false;  // nothing live: holes or a free id
+  if (node.terrain == k_cull_node_mixed_terrain) return true;
+  if (params->cascade != 0) {  // the caster policy, by the node's largest
+    const uint nearest = (node.span >> 16) & 0xffu;
+    if (nearest != 0 && params->cascade >= nearest) return false;
+  }
+  float3 center;
+  float radius;
+  node_sphere(params, node, center, radius);
+  if (params->lod.w > 0.0) {
+    bool outside = false;
+    for (uint p = 0; p < params->plane_count; ++p) {
+      const float4 plane = params->planes[p];
+      if (dot(plane.xyz, center) + plane.w < -radius) {
+        outside = true;
+        break;
+      }
+    }
+    if (outside) {
+      if (params->casters == 0 || params->caster_volume_count == 0 ||
+          !in_caster_volume(params, center, radius)) {
+        return false;
+      }
+    } else if (params->cascade != 0 && params->caster_volume_count != 0 &&
+               !in_caster_volume(params, center, radius)) {
+      return false;
+    }
+  }
+  if (params->hiz != 0 && (params->hiz_flags & k_cull_hiz_lod_only) == 0 &&
+      params->streaming == 0 && params->hidden_counts == 0 && occluded(params, center, radius)) {
+    return false;
+  }
+  return true;
+}
+
+// **The node pass**: one thread a node of the frame's table; a survivor appends its id, one atomic
+// a wave.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cull_nodes_main(uint3 thread_id : SV_DispatchThreadID) {
+  CullParams* params = (CullParams*)g_push.params;
+  const uint n = folded_thread(thread_id, 64);
+  const bool keep =
+      n < params->node_count && node_may_survive(params, ((CullNodeDesc*)params->nodes)[n]);
+  const uint total = WaveActiveCountBits(keep);
+  if (total == 0u) return;
+  const uint before = WavePrefixCountBits(keep);
+  uint base = 0u;
+  if (WaveIsFirstLane()) {
+    Atomic<uint>* count = (Atomic<uint>*)params->node_items;
+    base = count->add(total);
+  }
+  base = WaveReadLaneFirst(base) + before;
+  if (keep) ((uint*)(params->node_items + 8u))[base] = n;
+}
+
+// **The instance pass from node items**: a workgroup a surviving node, a lane a slot, exactly what
+// `cull_instances_main` does for it.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cull_node_instances_main(uint3 group_id : SV_GroupID, uint3 lane : SV_GroupThreadID) {
+  CullParams* params = (CullParams*)g_push.params;
+  const uint k = folded_group(group_id);
+  if (k >= ((uint*)params->node_items)[0]) return;  // the folded dispatch's overhang
+  const uint n = ((uint*)(params->node_items + 8u))[k];
+  const CullNodeDesc node = ((CullNodeDesc*)params->nodes)[n];
+  const uint i = node.first_slot + lane.x;
+  append_instance_items(params, i,
+                        lane.x < (node.span & 0xffu) && i < params->instance_count &&
+                            instance_may_survive(params, i));
+}
+
+// **The measure**: a workgroup a listed node, a lane a slot. The anchor is the first live slot; the
+// sphere is the box of the live instances' spheres in its cell's frame, its centre and the farthest
+// reach (the derivation above); the live count, the largest cascade policy and the terrain level
+// come from the same instances. A node with nothing live is written with a negative radius and a
+// live count of 0, which the node pass rejects first.
+groupshared uint g_node_anchor;
+groupshared uint g_node_live;
+groupshared uint g_node_cascade;
+groupshared uint g_node_every;
+groupshared uint g_node_terrain_lo;
+groupshared uint g_node_terrain_hi;
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cull_node_measure_main(uint3 group_id : SV_GroupID, uint3 lane3 : SV_GroupThreadID) {
+  CullParams* params = (CullParams*)g_push.params;
+  const uint e = folded_group(group_id);
+  if (e >= ((uint*)params->node_list)[0]) return;  // the folded dispatch's overhang
+  const uint4 entry = ((uint4*)(params->node_list + 16u))[e];
+  const uint lane = lane3.x;
+  const uint slot = entry.y + lane;
+  InstanceDesc* instances = (InstanceDesc*)params->instances;
+  MeshDesc* meshes = (MeshDesc*)params->meshes;
+  if (lane == 0u) {
+    g_node_anchor = 0xffffffffu;
+    g_node_live = 0u;
+    g_node_cascade = 0u;
+    g_node_every = 0u;
+    g_node_terrain_lo = 0xffffffffu;
+    g_node_terrain_hi = 0u;
+  }
+  GroupMemoryBarrierWithGroupSync();
+  InstanceDesc instance;
+  bool live = false;
+  if (lane < entry.z && slot < params->instance_count) {
+    instance = instances[slot];
+    live = meshes[instance.mesh].cluster_count != 0u;
+  }
+  if (live) {
+    InterlockedMin(g_node_anchor, lane);
+    InterlockedAdd(g_node_live, 1u);
+    const uint nearest = (instance.flags & k_instance_cascade_mask) >> k_instance_cascade_shift;
+    InterlockedMax(g_node_cascade, nearest);
+    if (nearest == 0u) InterlockedOr(g_node_every, 1u);
+    InterlockedMin(g_node_terrain_lo, instance.terrain);
+    InterlockedMax(g_node_terrain_hi, instance.terrain);
+  }
+  GroupMemoryBarrierWithGroupSync();
+  float3 center = float3(0.0, 0.0, 0.0);
+  float reach = 0.0;
+  const uint anchor = g_node_anchor;
+  if (live) {
+    const int3 cell = instances[entry.y + anchor].cell;
+    const float4 bound = ((float4*)params->mesh_bounds)[instance.mesh];
+    const float3 from_anchor =
+        float3(relative_axis(instance.cell.x, instance.rows[0].w, cell.x, 0.0, 0.0),
+               relative_axis(instance.cell.y, instance.rows[1].w, cell.y, 0.0, 0.0),
+               relative_axis(instance.cell.z, instance.rows[2].w, cell.z, 0.0, 0.0));
+    center = instance_point(instance, from_anchor, bound.xyz);
+    reach = bound.w * instance.scale_max * 1.0001 + instance.bounds_padding * instance.scale_max +
+            1.0e-4;
+  }
+  g_bound_lo[lane] = live ? center - reach : float3(1.0e30, 1.0e30, 1.0e30);
+  g_bound_hi[lane] = live ? center + reach : float3(-1.0e30, -1.0e30, -1.0e30);
+  GroupMemoryBarrierWithGroupSync();
+  for (uint s = 32u; s > 0u; s >>= 1u) {
+    if (lane < s) {
+      g_bound_lo[lane] = min(g_bound_lo[lane], g_bound_lo[lane + s]);
+      g_bound_hi[lane] = max(g_bound_hi[lane], g_bound_hi[lane + s]);
+    }
+    GroupMemoryBarrierWithGroupSync();
+  }
+  const float3 m = 0.5 * (g_bound_lo[0] + g_bound_hi[0]);
+  g_bound_r[lane] = live ? length(center - m) + reach : 0.0;
+  GroupMemoryBarrierWithGroupSync();
+  for (uint s = 32u; s > 0u; s >>= 1u) {
+    if (lane < s) g_bound_r[lane] = max(g_bound_r[lane], g_bound_r[lane + s]);
+    GroupMemoryBarrierWithGroupSync();
+  }
+  if (lane == 0u) {
+    const uint count = g_node_live;
+    CullNodeDesc node;
+    node.first_slot = entry.y;
+    node.anchor = count == 0u ? entry.y : entry.y + anchor;
+    node.sphere = count == 0u ? float4(0.0, 0.0, 0.0, -1.0)
+                              : float4(m, g_bound_r[0] * (1.0 + 1.0e-5) + 1.0e-4);
+    const uint cascade = g_node_every != 0u ? 0u : g_node_cascade;
+    node.span = min(entry.z, k_cull_node_slots) | (count << 8) | (cascade << 16);
+    node.terrain = count == 0u ? 0u
+                   : g_node_terrain_lo == g_node_terrain_hi ? g_node_terrain_lo
+                                                            : k_cull_node_mixed_terrain;
+    ((CullNodeDesc*)params->nodes)[entry.x] = node;
+  }
+}
+
+// **The guard** (debug builds and the GPU tests, `renderer.cull.node_guard`): a workgroup a node of
+// the table, a lane a slot; each live instance's sphere as the instance pass tests it and its
+// node's as the node pass does, in the eye's frame. `node_guard[0]` counts an instance its node
+// does not hold — outside the sphere, under another terrain level, or casting into a cascade its
+// node's policy rejects — and `node_guard[1]` the instances checked. A missed re-measure, the fault
+// class the nodes add, is then a failing count on every frame that has one rather than a lost
+// instance.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cull_node_guard_main(uint3 group_id : SV_GroupID, uint3 lane : SV_GroupThreadID) {
+  CullParams* params = (CullParams*)g_push.params;
+  const uint n = folded_group(group_id);
+  if (n >= params->node_count) return;
+  const CullNodeDesc node = ((CullNodeDesc*)params->nodes)[n];
+  const uint i = node.first_slot + lane.x;
+  if (lane.x >= (node.span & 0xffu) || i >= params->instance_count) return;
+  InstanceDesc* instances = (InstanceDesc*)params->instances;
+  MeshDesc* meshes = (MeshDesc*)params->meshes;
+  const InstanceDesc instance = instances[i];
+  if (meshes[instance.mesh].cluster_count == 0u) return;
+  Atomic<uint>* guard = (Atomic<uint>*)params->node_guard;
+  guard[1].add(1u);
+  bool held = ((node.span >> 8) & 0xffu) != 0u;
+  if (held && node.terrain != k_cull_node_mixed_terrain) {
+    const float4 bound = ((float4*)params->mesh_bounds)[instance.mesh];
+    float padding = instance.bounds_padding * instance.scale_max;
+    if (instance.terrain != 0 && params->terrain != 0) {
+      TerrainLevelDesc* levels = (TerrainLevelDesc*)params->terrain;
+      padding = max(padding, levels[instance.terrain - 1].padding);
+    }
+    const float3 from_eye = instance_from_eye(instance, params->eye);
+    const float3 c = instance_point(instance, from_eye, bound.xyz);
+    const float r = bound.w * instance.scale_max * 1.0001 + padding + length(c) * 1.0e-5 + 1.0e-4;
+    float3 center;
+    float radius;
+    node_sphere(params, node, center, radius);
+    const uint nearest = (instance.flags & k_instance_cascade_mask) >> k_instance_cascade_shift;
+    const uint policy = (node.span >> 16) & 0xffu;
+    held = length(c - center) + r <= radius && instance.terrain == node.terrain &&
+           (policy == 0u || (nearest != 0u && nearest <= policy));
+  }
+  if (!held) guard[0].add(1u);
 }

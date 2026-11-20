@@ -384,6 +384,10 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   gfx::destroy_compute_pipeline(device, cull_instances);
   gfx::destroy_compute_pipeline(device, cull_items);
   gfx::destroy_compute_pipeline(device, mesh_bounds);
+  gfx::destroy_compute_pipeline(device, cull_nodes);
+  gfx::destroy_compute_pipeline(device, cull_node_instances);
+  gfx::destroy_compute_pipeline(device, cull_node_measure);
+  gfx::destroy_compute_pipeline(device, cull_node_guard);
   gfx::destroy_compute_pipeline(device, expand);
   gfx::destroy_compute_pipeline(device, deform);
   gfx::destroy_compute_pipeline(device, deform_cache);
@@ -950,6 +954,8 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   cull_instances_ = new CullInstances;  // R16, R173: its buffers come with the first frame
   cull_instances_->bind(pipelines_.cull_instances, pipelines_.fold, pipelines_.mesh_bounds,
                         device.caps(), timer_);
+  cull_instances_->bind_nodes(pipelines_.cull_nodes, pipelines_.cull_node_instances,
+                              pipelines_.cull_node_measure, pipelines_.cull_node_guard);
   fill_view_layout();
   sample_gpu_memory();
   return true;
@@ -1722,6 +1728,14 @@ bool SceneRenderer::create_pipelines(std::string* error) {
              sizeof(u64), pipelines_.cull_items, error) &&
          gfx::create_compute_pipeline(device, cull->module, "mesh_bounds_main", {}, sizeof(u64),
                                       pipelines_.mesh_bounds, error) &&
+         gfx::create_compute_pipeline(device, cull->module, "cull_nodes_main", {}, sizeof(u64),
+                                      pipelines_.cull_nodes, error) &&
+         gfx::create_compute_pipeline(device, cull->module, "cull_node_instances_main", {},
+                                      sizeof(u64), pipelines_.cull_node_instances, error) &&
+         gfx::create_compute_pipeline(device, cull->module, "cull_node_measure_main", {},
+                                      sizeof(u64), pipelines_.cull_node_measure, error) &&
+         gfx::create_compute_pipeline(device, cull->module, "cull_node_guard_main", {}, sizeof(u64),
+                                      pipelines_.cull_node_guard, error) &&
          gfx::create_compute_pipeline(device, hiz->module, "hiz_build_main", {},
                                       sizeof(gfx::HizParams), pipelines_.hiz, error) &&
          // The one draw's pipeline, unless the renderer is made to draw by class (R151): the same
@@ -3323,7 +3337,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   if (!cull_instances_->prepare(*device_, frames_, cull_instances_tunable() && settings.cull,
                                 views * 2 + cascade_runs, instance_count, pair_count,
                                 scene.meshes.size, scene.meshes.address, !records_.meshes.empty(),
-                                error))  // R16, R173
+                                error) ||  // R16, R173
+      !cull_instances_->prepare_nodes(*device_, frames_, cull_nodes_tunable(), scene, tables_,
+                                      records_, slot, cull_node_guard_tunable(), error))  // R188
     return false;
   ENGINE_ASSERT(!csm || ((!shadows || resolved_.hybrid) && !use_sw && !ray_path && !direct),
                 "cascaded shadow maps are drawn on the hw and vertex paths, beside rays only in "
