@@ -296,6 +296,13 @@ bool read_document_scene(const doc::Document& document, const std::string& base_
       continue;
     }
     if (document.type_of(id) != k_mesh_placement) continue;
+    // A placement with no mesh, or an empty one, names no file: left out and counted as a refused
+    // path is (T174), rather than failing every viewer's load of the whole document.
+    if (const JsonValue* named = document.property(id, "mesh");
+        named == nullptr || (named->is_string() && named->as_string().empty())) {
+      ++out.left_out;
+      continue;
+    }
     scene::MeshPlacement placement;
     if (!read_placement(document, id, placement, error)) return false;
     u32 mesh = mesh_index(out, placement.mesh);

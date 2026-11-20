@@ -134,14 +134,28 @@ TEST_CASE("doc_scene: a document with no placements draws the stand-in ground an
   CHECK(scene.instance_of(Id128{}) == ~0u);
 }
 
-TEST_CASE("doc_scene: a placement with no mesh is refused, naming the record") {
+// A placement with no mesh, or an empty one, names no file: it is left out and counted as a refused
+// path is (T174), so one such record no longer fails every viewer's load of the whole document.
+TEST_CASE("doc_scene: a placement with no mesh is left out and counted, the rest drawn") {
   doc::Document d;
   d.add_layer("base", doc::LayerRole::Base);
   create(d, id_of(5), doc_scene::k_mesh_placement, R"({"name":"nothing","translation":[0,0,0]})");
+  create(d, id_of(6), doc_scene::k_mesh_placement, R"({"name":"empty","mesh":""})");
+  create(d, id_of(7), doc_scene::k_mesh_placement, R"({"name":"kept","mesh":"props/a.glb"})");
   doc_scene::DocumentScene scene;
   std::string error;
-  CHECK_FALSE(doc_scene::read_document_scene(d, "", {}, scene, error));
-  CHECK(error.find("names no mesh") != std::string::npos);
+  REQUIRE_MESSAGE(doc_scene::read_document_scene(d, "", {}, scene, error), error);
+  CHECK(scene.left_out == 2);
+  REQUIRE(scene.records.size() == 1);
+  CHECK(scene.records[0] == id_of(7));
+  // Alone, the document draws the stand-in ground, as one with no placement does.
+  doc::Document alone;
+  alone.add_layer("base", doc::LayerRole::Base);
+  create(alone, id_of(5), doc_scene::k_mesh_placement, R"({"name":"nothing"})");
+  REQUIRE_MESSAGE(doc_scene::read_document_scene(alone, "", {}, scene, error), error);
+  CHECK(scene.left_out == 1);
+  REQUIRE(scene.records.size() == 1);
+  CHECK(scene.records[0].is_null());
 }
 
 // Paths the records hold, read under a host's roots (doc_scene.h, `read_document_scene`): a

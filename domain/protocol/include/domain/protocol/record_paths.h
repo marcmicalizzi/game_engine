@@ -37,7 +37,7 @@ struct StoredPath {
 // another adds it here and to its own admission in the same commit.
 bool holds_stored_paths(std::string_view type) noexcept;
 // Every path `object` holds, in field order; nothing for a deleted record or another type. An
-// empty string is no path (the reader refuses an empty `mesh` on its own).
+// empty string is no path (the reader leaves a placement with an empty `mesh` out and counts it).
 void stored_paths(const doc::ResolvedObject& object, Vector<StoredPath>& out);
 
 // The rule at the write: every path the records `ids` hold in `document` — as it is composed now,
