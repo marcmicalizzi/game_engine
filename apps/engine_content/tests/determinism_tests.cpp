@@ -536,13 +536,13 @@ TEST_CASE("engine-content: city makes the committed plan, fragment and yield on 
 // section 15, so its atlases and identity move (the bake's own comparison on the test oak: 1.32
 // to 1.36 of the leaves' coverage plain, 1.00 to 1.06 kept); the ancient and the pine do not. It
 // was 0xcf85a7f05a6fe432.
-constexpr u64 k_broadleaf_container_golden = 0x932e65e3cef415f8ull;
+constexpr u64 k_broadleaf_container_golden = 0xdac73586f9b5fff7ull;
 // sweep-P1 (2026-11-18, MSVC alone): the ancient tree's levels are baked with the coverage kept
 // and fitted, the broadleaf's rule (G121) now its solver's, with `k_ancient_chain_version` in
 // section 15, so its atlases and identity move (the 100 m tree's own comparison: 1.22 to 1.34 of
 // its leaves' coverage plain, 1.00 to 1.10 kept); the broadleaf and the pine do not. It was
 // 0x5b688161bda21d84.
-constexpr u64 k_ancient_container_golden = 0x84d34a728af9a21aull;
+constexpr u64 k_ancient_container_golden = 0x296290c2811d94b5ull;
 // G120 (2026-11-01, MSVC 14.51): a pine, the conifer solver's chain — one three-plane card group a
 // live branch and the star, coverage-kept and fitted to the needles' coverage — at small tiles so
 // a debug run builds it in seconds. Its section 15 carries `k_conifer_chain_version`.
@@ -550,7 +550,7 @@ constexpr u64 k_ancient_container_golden = 0x84d34a728af9a21aull;
 // `k_conifer_chain_version` is 2, so the pine's container moved (it was 0xcb41f869870c00cd); the
 // broadleaf's and the ancient tree's did not. R164: the needles' optics and `k_flora_version` 13,
 // as above; it was 0xac0cb951cd8d4dc8.
-constexpr u64 k_pine_container_golden = 0x390a578bb83b9091ull;
+constexpr u64 k_pine_container_golden = 0x72455eb7aef307c4ull;
 
 TEST_CASE("engine-content: the allometric crowns build the committed bytes on every toolchain") {
   const test::TempDir tmp("engine_content_flora_determinism");

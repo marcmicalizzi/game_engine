@@ -7,7 +7,9 @@
 #include <schemas/wetland.h>
 
 namespace engine::wetland {
-inline constexpr u32 k_wetland_version = 4;
+// 5: its far cards are baked by flora's `bake_level`, whose normals are now +Y up the image, the
+//    engine's one tangent-space convention (R202; docs/experiments/tangent-space-convention.md).
+inline constexpr u32 k_wetland_version = 5;
 // Dimensions and provenance: docs/experiments/wetland-plants.md.
 // Names, budgets and runtime motion traits live only in geometry's species catalogue.
 struct Profile {

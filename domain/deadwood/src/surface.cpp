@@ -125,7 +125,9 @@ bool bake_surface(const DeadwoodFile& file, u32 role, u32 material, f32 end_span
       colour[at + 1] = byte(sample.g);
       colour[at + 2] = byte(sample.b);
       normal[at] = byte(.5 - dx * scale * .5);
-      normal[at + 1] = byte(.5 - dy * scale * .5);
+      // +Y up the image, against v (R202; docs/experiments/tangent-space-convention.md): the
+      // green is +dh/dv, which the resolve's bitangent -dP/dv turns back into -dh along v.
+      normal[at + 1] = byte(.5 + dy * scale * .5);
       normal[at + 2] = byte(.5 + scale * .5);
       roughness[at] = 255;
       roughness[at + 1] = byte(sample.roughness);

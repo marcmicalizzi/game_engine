@@ -24,22 +24,22 @@ TEST_CASE("wetland: version four section identities") {
   // 0xdb07bcb835b52d2a, 0x1c6c9435daeb1ad0, 0xf9f46fbaba89fa7f, 0xf8a1d946c51ccd3a,
   // 0xa3abaaf35556bc52.
   const u64 pins[][4] = {
-      {0x9981398c5b957149ull, 0x7e2997cc51775284ull, 0x94b7237e535201d4ull,
-       0xfeef2340757f319cull},  // sedge
-      {0xa5ff70b852584b47ull, 0x5868d36a64c48dc9ull, 0x9fd3d655c39d3dd3ull,
-       0xab3fad77bb59dfd6ull},  // tussock
-      {0xb876fd94e8662b1full, 0x962c212790681572ull, 0x4799cde624d1a103ull,
-       0x2173cce0cf469923ull},  // rush
-      {0x9b22d8a32ad44ceeull, 0xfabd4931b7c3ccecull, 0x1181fb0c3e37bb74ull,
-       0x19ccdab8d54ed58aull},  // reed
-      {0x871959f27e897371ull, 0x90c4e550e20bdbf0ull, 0x1245e11c8ec206bcull,
-       0x6e6745dffd34e31bull},  // cattail
-      {0x9dcc9d5949e158bcull, 0xcb644ddd58dbb646ull, 0x72905cffc9f7fceeull,
-       0x9b5ad811b66f2956ull},  // arrowhead
-      {0xbff6a17432e67befull, 0x341d750a135e82cfull, 0xc15736f1805d2878ull,
-       0x20391650fdac1374ull},  // water_lily
-      {0x6d631ad9fd25a110ull, 0x7e912816f57b348eull, 0xc15736f1805d2878ull,
-       0x007935eafa7d1f5eull},  // pond_lily
+      {0x21a8e103f3470865ull, 0x7e2997cc51775284ull, 0x94b7237e535201d4ull,
+       0x7a02579290148cc0ull},  // sedge
+      {0xe10b36b1ce5d11c0ull, 0x5868d36a64c48dc9ull, 0x9fd3d655c39d3dd3ull,
+       0xdb8c5f94ebfcd19full},  // tussock
+      {0x063d9c518bf172bcull, 0x962c212790681572ull, 0x4799cde624d1a103ull,
+       0xa4a43d7bb01c0843ull},  // rush
+      {0xa327762addb4e112ull, 0xfabd4931b7c3ccecull, 0x1181fb0c3e37bb74ull,
+       0x2ea7806da4db3a89ull},  // reed
+      {0x7ff98e2af1e1c7c0ull, 0x90c4e550e20bdbf0ull, 0x1245e11c8ec206bcull,
+       0x7e24fcc7b06d6437ull},  // cattail
+      {0xa4d93dd2b636e620ull, 0xcb644ddd58dbb646ull, 0x72905cffc9f7fceeull,
+       0x368a1c23a5139e94ull},  // arrowhead
+      {0x482754e31b7481dbull, 0x341d750a135e82cfull, 0xc15736f1805d2878ull,
+       0xb1ec81e9d389a0caull},  // water_lily
+      {0x155aac8d67963f4bull, 0x7e912816f57b348eull, 0xc15736f1805d2878ull,
+       0xb2624ff47c0d3d77ull},  // pond_lily
   };
   u32 index = 0;
   for (const auto& p : wetland::profiles()) {

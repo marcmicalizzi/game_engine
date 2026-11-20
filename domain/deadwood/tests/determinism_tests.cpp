@@ -26,7 +26,7 @@ TEST_CASE("deadwood: complete container bytes agree across toolchains") {
   // R164-3 (MSVC first): the optics folded into every flora key, the tree's key the remain's
   // source key carries, move both by that alone; they were 0x2bc69b39495bdb36 and
   // 0xa11d29e8e8356046.
-  const u64 goldens[] = {0x9d4226f3fc23502full, 0x4338150e47113b4dull};
+  const u64 goldens[] = {0xe2e1fe4a15ec05b8ull, 0x6befabef27a83dd0ull};
   for (u32 i = 0; i < 2; ++i) {
     deadwood::DeadwoodFile p;
     p.tree.species = i == 0 ? "oak" : "spruce";

@@ -612,8 +612,9 @@ void sample_data(const image::Image& image, f64 u, f64 v, f64 rgba[4]) {
 
 // A triangle's tangent frame as the material resolve builds it (material.slang, `tangent_frame`):
 // T and B solve the edges against the UV deltas, T made orthogonal to the normal and B to both, B
-// keeping the UV island's handedness. False for a degenerate UV area, where the near surface
-// leaves its normal alone and so does the bake.
+// keeping the UV island's handedness and turned over to -dP/dv as the resolve turns it: a map's +Y
+// is up the image (G2; docs/experiments/tangent-space-convention.md). False for a degenerate UV
+// area, where the near surface leaves its normal alone and so does the bake.
 bool triangle_frame(const D3 p[3], const Vec2 uv[3], D3 normal, D3& tangent, D3& bitangent) {
   const D3 e1 = p[1] - p[0];
   const D3 e2 = p[2] - p[0];
@@ -633,7 +634,7 @@ bool triangle_frame(const D3 p[3], const Vec2 uv[3], D3 normal, D3& tangent, D3&
   b = b - (normal * detail::dot(normal, b) + tangent * detail::dot(tangent, b));
   const f64 b_length = detail::length_of(b);
   if (b_length < 1e-12) return false;
-  bitangent = b * (1.0 / b_length);
+  bitangent = b * (-1.0 / b_length);
   return true;
 }
 
@@ -830,8 +831,10 @@ void bake_level(const assets::MeshData& mesh, const TreeLevels& levels, const Tr
                 const f64 inv = 1.0 / std::sqrt(length_sq);
                 const D3 world = detail::normalized(frame_t * (vx * inv) + frame_b * (vy * inv) +
                                                     frame_n * (vz * inv));
+                // The card's own frame as the resolve derives it: T = +u, and B = -dP/dv = -v,
+                // since the card's v rises with the view's up (`emit_card`).
                 sample.normal[0] = static_cast<f32>(detail::dot(world, u));
-                sample.normal[1] = static_cast<f32>(detail::dot(world, v));
+                sample.normal[1] = static_cast<f32>(-detail::dot(world, v));
                 sample.normal[2] = static_cast<f32>(detail::dot(world, n));
                 sample.has_normal = 1;
               }
@@ -888,7 +891,7 @@ void bake_level(const assets::MeshData& mesh, const TreeLevels& levels, const Tr
             const D3 c3 = from_f32(mesh.positions[mesh.indices[s.triangle + 2]]);
             D3 face = detail::normalized(detail::cross(b - a, c3 - a));
             if (detail::dot(face, n) < 0.0) face = face * -1.0;
-            normal = normal + D3{detail::dot(face, u), detail::dot(face, v), detail::dot(face, n)};
+            normal = normal + D3{detail::dot(face, u), -detail::dot(face, v), detail::dot(face, n)};
           }
         }
         if (covered == 0) continue;

@@ -236,7 +236,7 @@ TEST_CASE("alpine: containers, far cuts and deterministic section hashes") {
   // 0x6d2cd59ee137f344. R164-3 (MSVC first): the optics folded into every flora key
   // (`fold_foliage_optics`) move the identity alone; they were 0xed9f4348ddf83c17,
   // 0xa10a4ee0ce3c80cd and 0x4581e7f9ef32326c.
-  constexpr u64 pins[] = {0x87c54da1bc95e1dfull, 0xa46012fe18acdb2bull, 0xf476b3c8fa844bbeull};
+  constexpr u64 pins[] = {0x5dac21943385e7faull, 0x28cfdb233f5db2f9ull, 0x5e32caa7aad824c0ull};
   u32 profile_index = 0;
   for (const auto& profile : flora::alpine_profiles()) {
     flora::FloraFile file;

@@ -1197,11 +1197,17 @@ with the same bilinear, wrapped filter. *The normal*: the face's geometry normal
 viewer, is the base the map perturbs and not a replacement for it. A triangle's tangent frame is
 built the way the resolve builds the near surface's (`tangent_frame` in `material.slang`,
 `triangle_frame` in `impostor.cpp`: T and B from the edges against the UV deltas, T made orthogonal
-to the face normal and B to both, B keeping the UV island's handedness); the map's vector is read
-as the resolve reads it (x and y from the texel, z rebuilt as BC5 stores it, x and y widened by the
-material's `normal_scale`, renormalized), taken into the world by that frame and then into the
-view's u, v and normal axes, so a leaf standing at an angle to its card bends the card's texel by
-what the same leaf bends the near surface. A texel's normal is still the mean of its covered
+to the face normal and B to both, B keeping the UV island's handedness and `-dP/dv` since R202, so a
+map's +Y is up the image, [one tangent-space convention](../experiments/tangent-space-convention.md));
+the map's vector is read as the resolve reads it (x and y from the texel, z rebuilt as BC5 stores it,
+x and y widened by the material's `normal_scale`, renormalized), taken into the world by that frame
+and then into the card's own frame as the resolve derives it — x along the view's u, y along minus
+its v (the card's v rises with the view's up, so its bitangent is -v), z its normal — so a leaf
+standing at an angle to its card bends the card's texel by what the same leaf bends the near
+surface. Until R202 both frames were the other way up, and the sward's ground under its cards was
+baked +Y up beside cards baked +Y down. The convention is folded into every family's source hash
+(`k_baked_normal_convention`, `flora_source_hash`), and `k_flora_version` went to 14, since half the
+families key on a version of their own and every one bakes cards or impostors. A texel's normal is still the mean of its covered
 samples' vectors, renormalized: it shortens where the samples disagree, the length is lost at the
 bake, and the texture step builds the atlas's R97 variance chain from the bytes like any normal
 map, which is where the lost length comes back as roughness. A triangle with degenerate UVs keeps

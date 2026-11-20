@@ -411,6 +411,10 @@ u64 flora_source_hash(const FloraFile& file) {
   // bumping five versions, moves every key the next time they change without anyone remembering
   // which families carry leaves.
   h = fold_foliage_optics(h);
+  // The tangent-space convention the bakes write their normals in (R202): every family's cards and
+  // impostors are baked by `bake_level`, and half the families key on a version of their own, so
+  // the convention goes into every key rather than into `k_flora_version` alone.
+  h = hash_combine(h, k_baked_normal_convention);
   if (file.regeneration) return hash_combine(h, k_regeneration_version);
   if (alpine_profile(file.species) != nullptr) return hash_combine(h, k_alpine_version);
   if (shrub_profile(file.species) != nullptr) return hash_combine(h, k_shrub_growth_version);

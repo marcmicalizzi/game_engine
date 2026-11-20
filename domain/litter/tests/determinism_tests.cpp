@@ -26,7 +26,7 @@ TEST_CASE("litter: complete containers agree across toolchains") {
   // optics folded into every flora key, the wood's source key carries the tree's, move twig and
   // tangle by their identity alone again (they were eaa6f7b1ad2bd074 / 59ffb2f0b99ab8d4).
   constexpr u64 expected[] = {0x341e406800665f85ull, 0xabfbd865a0676d1dull, 0xdefb0dd9440f730aull,
-                              0xf94b5a4d69cd7d2cull, 0x022f4105b194ef47ull, 0xd71be82816fdebfbull};
+                              0xf94b5a4d69cd7d2cull, 0x242d5998c023c9fbull, 0xd68656611d60b7a4ull};
   for (u32 k = 0; k < 6; ++k) {
     litter::Recipe p;
     p.kind = static_cast<litter::Kind>(k);

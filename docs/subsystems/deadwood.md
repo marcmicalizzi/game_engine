@@ -73,7 +73,10 @@ material roles are longitudinal `wood`, transverse `end_grain` and `bark_fractur
 role wins, with `<species>/wood` as the generic fallback for the two new roles.
 
 Without an authored set, version 2 bakes native sRGB colour, tangent normal and packed roughness
-maps into the container, only for roles used by geometry. `surface_resolution` is 512 by default,
+maps into the container, only for roles used by geometry. The normal map is +Y up the image (green
+`+dh/dv`) since version 4, the engine's one tangent-space convention (R202,
+[tangent-space convention](../experiments/tangent-space-convention.md)); versions 2 and 3 baked it
++Y down, which the resolve read the right way up only while its own frame was turned over too. `surface_resolution` is 512 by default,
 power-of-two 128–1024, or zero for flat debug materials. Source axial UVs orient side fibres;
 solid caps share one centred planar island per fracture, in metres. A shared end-grain texture
 encloses the largest cut, so branch rings retain metre scale. Subpixel rings fade out. Longitudinal

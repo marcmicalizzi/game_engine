@@ -169,8 +169,8 @@ TEST_CASE("impostor chain: the bake is the same bytes every time and on every to
   // to 1.36 of its leaves' coverage plain and 1.00 to 1.06 kept and fitted: "a broadleaf's levels
   // keep its leaves' coverage"); they were 0x6f314c381c5847f1, 0xca1c3ce8b9210d9b,
   // 0x0cb5e52d702765cd, 0x30da20a4f48c3977.
-  constexpr u64 k_golden[4] = {0x611950356c4c1b54ull, 0xf3a43c029429cffdull, 0x5160dbf4319065a2ull,
-                               0xfa3aa31d9c779b90ull};
+  constexpr u64 k_golden[4] = {0x611950356c4c1b54ull, 0x8ee8ce8a762f04c1ull, 0x5160dbf4319065a2ull,
+                               0x274c9d02f3ab14feull};
   for (u32 k = 0; k < 4; ++k)
     CHECK(hashes[k] == k_golden[k]);
 }
@@ -461,10 +461,11 @@ TEST_CASE("impostor bake: a leaf's normal map tilts the baked normal in the card
     centre_texel(tilted.normal, n);
     // Each channel is a byte of 255 (0.004 a step) and the vector went through f32 (1e-7).
     const f64 tolerance = 1.5 / 255.0;
-    // T = dP/du and B = dP/dv: aligned, the map's (x, y) are the card's (u, v); turned, its x is
-    // along the card's v and its y along the card's u.
-    CHECK(n[0] == doctest::Approx((is_turned ? my : mx) * 0.5 + 0.5).epsilon(tolerance));
-    CHECK(n[1] == doctest::Approx((is_turned ? mx : my) * 0.5 + 0.5).epsilon(tolerance));
+    // T = dP/du and B = -dP/dv on the leaf and on the card (R202: a map's +Y is up the image):
+    // aligned, the map's (x, y) are the card's; turned, the map's T is the card's v and its B the
+    // card's -u, so the card reads x = -my and y = -mx.
+    CHECK(n[0] == doctest::Approx((is_turned ? -my : mx) * 0.5 + 0.5).epsilon(tolerance));
+    CHECK(n[1] == doctest::Approx((is_turned ? -mx : my) * 0.5 + 0.5).epsilon(tolerance));
     CHECK(n[2] == doctest::Approx(mz * 0.5 + 0.5).epsilon(tolerance));
     // The tilt is real: with no map the same texel is the flat face (0.5, 0.5, 1).
     flora::BakedAtlas flat;
@@ -867,11 +868,12 @@ TEST_CASE("impostor chain: the conifer profiles and the matured conifer build it
     // The key: the container's is the tree's with the conifers' chain version after the solver's,
     // which no other species takes; the tree's own (the deadwood's) is the one it was.
     const std::string canonical = flora::canonical_flora_json(file);
-    const u64 h =
+    const u64 h = hash_combine(
         hash_combine(flora::fold_foliage_optics(  // R164-3: the optics, in every flora key
                          hash_combine(hash_bytes(canonical.data(), canonical.size()),
                                       hash_bytes(file.species.data(), file.species.size()))),
-                     flora::k_flora_version);
+                     flora::k_baked_normal_convention),  // R202: the bakes' convention, every key
+        flora::k_flora_version);
     CHECK(flora::flora_source_hash(file) == h);
     u64 container = 0;
     REQUIRE(flora::flora_source_hash_with(file, {}, container, error));
@@ -886,11 +888,12 @@ TEST_CASE("impostor chain: the conifer profiles and the matured conifer build it
   flora::FloraFile oak;
   REQUIRE(flora::read_flora_file(R"({"species":"oak"})", oak, error));
   const std::string canonical = flora::canonical_flora_json(oak);
-  const u64 old_oak_hash =
+  const u64 old_oak_hash = hash_combine(
       hash_combine(flora::fold_foliage_optics(  // R164-3: the optics, in every flora key
                        hash_combine(hash_bytes(canonical.data(), canonical.size()),
                                     hash_bytes(oak.species.data(), oak.species.size()))),
-                   flora::k_flora_version);
+                   flora::k_baked_normal_convention),  // R202: the bakes' convention, every key
+      flora::k_flora_version);
   const u64 oak_hash = hash_combine(old_oak_hash, flora::k_branch_taper_version);
   CHECK(flora::flora_source_hash(oak) == oak_hash);
   u64 oak_container = 0;
@@ -1127,8 +1130,8 @@ TEST_CASE("impostor chain: a conifer's bake is the same bytes every time and on 
   // (2026-11-15, MSVC only so far): the sprays the bake draws are folded with leaning normals
   // (`build_bough`), so all four moved; they were 0x618d2ec59d250c70, 0xd2cad8a88487eb1a,
   // 0xea83f89d59e7f64a, 0x952c227072ca6701.
-  constexpr u64 k_golden[4] = {0xb8d183bb935618eeull, 0x6c1c94dfab66cfebull, 0x61a69c87fbfe24e9ull,
-                               0xba3f618364888268ull};
+  constexpr u64 k_golden[4] = {0xb8d183bb935618eeull, 0x7b9d531e5acc8040ull, 0x61a69c87fbfe24e9ull,
+                               0x385eb5ebe7a95194ull};
   for (u32 k = 0; k < 4; ++k)
     CHECK(hashes[k] == k_golden[k]);
 }
