@@ -6,11 +6,13 @@
 //
 //   0. No stream: the frame the resolve derives from each triangle's positions and UVs, a map
 //      leaning the normal along the bitangent.
-//   1. Tangents that state the derived frame (T = dP/du, w so that cross(N, T) * w = +dP/dv on both
-//      quads): **the picture is block 0's**, pixel for pixel, mirrored island included.
+//   1. Tangents whose bitangent is +dP/dv on both quads (T = dP/du, w so that cross(N, T) * w =
+//      +dP/dv), the frame the resolve derived before G2 turned it over: the reference's authored
+//      frame, and a picture apart from block 0's by the normal mirrored about the T-N plane, which
+//      a sun leaning towards +z turns into a brightness.
 //   2. Tangents as a glTF exporter writes them for its top-left UV origin (the bitangent -dP/dv on
-//      both islands): the reference's authored frame, and a picture apart from block 0's by the
-//      normal mirrored about the T-N plane, which a sun leaning towards +z turns into a brightness.
+//      both islands): **the picture is block 0's**, pixel for pixel, mirrored island included,
+//      because the derived frame is glTF's handedness (docs/experiments/tangent-space-convention.md).
 //   3. No stream, a map leaning the normal along the tangent.
 //   4. Tangents that turn across the right quad's corners: the frame interpolated at each pixel's
 //      barycentrics, which no per-triangle frame can give, held to the reference pixel by pixel.
@@ -78,8 +80,8 @@ TEST_CASE("material resolve: the author's tangent frame against the derived one"
   const Vec3 normals[8] = {flat, flat, flat, flat, flat, flat, flat, flat};
   const Vec2 uvs[8] = {Vec2{1.0f, 0.0f}, Vec2{0.0f, 0.0f}, Vec2{0.0f, 1.0f}, Vec2{1.0f, 1.0f},
                        Vec2{0.0f, 0.0f}, Vec2{1.0f, 0.0f}, Vec2{1.0f, 1.0f}, Vec2{0.0f, 1.0f}};
-  // Block 1: the derived frame stated. Left: T = -x, cross(+y, -x) = +z, so w = +1; right: T = +x,
-  // cross(+y, +x) = -z, so w = -1.
+  // Block 1: the bitangent +dP/dv = +z. Left: T = -x, cross(+y, -x) = +z, so w = +1; right:
+  // T = +x, cross(+y, +x) = -z, so w = -1.
   const Vec4 as_derived[8] = {Vec4{-1, 0, 0, 1}, Vec4{-1, 0, 0, 1}, Vec4{-1, 0, 0, 1},
                               Vec4{-1, 0, 0, 1}, Vec4{1, 0, 0, -1}, Vec4{1, 0, 0, -1},
                               Vec4{1, 0, 0, -1}, Vec4{1, 0, 0, -1}};
@@ -418,17 +420,18 @@ TEST_CASE("material resolve: the author's tangent frame against the derived one"
       };
       expect(0, dt, db, lean_b);
       expect(3, dt, db, lean_t);
-      // 1: the derived frame stated is the derived picture.
-      same_worst = std::max(same_worst, apart(pixel(1, x, y), pixel(0, x, y)));
+      // 1: the bitangent +dP/dv, apart from the derived picture by the mirrored lean.
       ref::Dvec3 at;
       ref::Dvec3 ab;
       REQUIRE(authored(as_derived, at, ab));
-      expect(1, at, ab, lean_b);
-      // 2: the exporter's frame, apart from the derived picture by the mirrored lean.
-      REQUIRE(authored(as_exported, at, ab));
       CHECK(ref::dot(ab, db) < -0.99);
+      expect(1, at, ab, lean_b);
+      if (apart(pixel(1, x, y), pixel(0, x, y)) > 8) ++(left ? left_apart : right_apart);
+      // 2: the exporter's frame is the derived one, so its picture is the derived picture.
+      REQUIRE(authored(as_exported, at, ab));
+      CHECK(ref::dot(ab, db) > 0.99);
       expect(2, at, ab, lean_b);
-      if (apart(pixel(2, x, y), pixel(0, x, y)) > 8) ++(left ? left_apart : right_apart);
+      same_worst = std::max(same_worst, apart(pixel(2, x, y), pixel(0, x, y)));
       // 4: the turned tangents, interpolated at the pixel.
       REQUIRE(authored(turned, at, ab));
       expect(4, at, ab, lean_t);
@@ -448,11 +451,10 @@ TEST_CASE("material resolve: the author's tangent frame against the derived one"
   MESSAGE(
       std::string(raster.name())
       << " path, " << inside << " pixels inside a triangle: worst against the reference "
-      << worst[0] << " derived, " << worst[1] << " stated as derived, " << worst[2] << " exported, "
+      << worst[0] << " derived, " << worst[1] << " bitangent +dP/dv, " << worst[2] << " exported, "
       << worst[3] << " derived along T, " << worst[4] << " turned, " << worst[5]
-      << " with a corner of none (tolerance 2); the stated-as-derived picture is the derived one "
-         "to "
-      << same_worst << "; the exported frame is apart on " << left_apart << " mirrored and "
+      << " with a corner of none (tolerance 2); the exported picture is the derived one to "
+      << same_worst << "; the +dP/dv frame is apart on " << left_apart << " mirrored and "
       << right_apart << " unmirrored pixels, the turned one on " << turned_apart);
   CHECK(inside > 4000);
   for (u32 i = 0; i < k_blocks; ++i)

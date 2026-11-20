@@ -18,7 +18,9 @@ without a pack draws what it always drew.
 
 ## A set
 
-`materials::MaterialSet`: the paths of a base colour, a tangent-space normal map (OpenGL, +Y), a
+`materials::MaterialSet`: the paths of a base colour, a tangent-space normal map (OpenGL, +Y: green
+points up the image, and since R202 every frame the engine reads it through, on a mesh, on the
+ground and in a bake, agrees; [tangent-space convention](../experiments/tangent-space-convention.md)), a
 roughness, a metallic and a height image, any empty for none, the set's `tile_m` (0.05 to 20 m) and
 its `normal_scale` (glTF's `normalTexture.scale`, 0 to 4). A recipe's block is a set with paths
 relative to the recipe (`engine.flora.MaterialSet`, `engine.rocks.RockMaterial`, the same fields); a

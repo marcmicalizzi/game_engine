@@ -44,7 +44,9 @@ for every kind:
   `0.2 + 0.25 roughness`.
 - **The images.** Base colour through the texture build's own sRGB tables
   (`texture::linear_to_srgb8`); the normal from the height's wrapped central differences in
-  metres per metre, OpenGL (+Y up the image), so its strength is the surface's real slope and
+  metres per metre, OpenGL (+Y up the image: green points up, the one convention every frame the
+  engine builds agrees with since R202, [tangent-space convention](../experiments/tangent-space-convention.md)),
+  so its strength is the surface's real slope and
   `normal_scale` stays 1; roughness; height over the set's own range (`SetStats::height_min_m`,
   `height_max_m`).
 

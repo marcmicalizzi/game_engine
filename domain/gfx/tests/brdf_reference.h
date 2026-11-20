@@ -234,7 +234,9 @@ inline double spot_attenuation(Dvec3 to_surface, Dvec3 direction, double cos_inn
 
 // The tangent frame of one triangle, from its own positions and UVs: the CPU mirror of
 // `tangent_frame` in visibility_resolve.slang. Solves dp1 = T du1 + B dv1, dp2 = T du2 + B dv2,
-// then Gram-Schmidt orthonormalizes against the shading normal. False when the UV area is
+// then Gram-Schmidt orthonormalizes against the shading normal, and turns the bitangent over:
+// +Y of a normal map is up the image, towards falling v, as glTF 2.0 and every map the engine
+// draws state it (G2; docs/experiments/tangent-space-convention.md). False when the UV area is
 // degenerate, which is when the resolve leaves the normal alone.
 inline bool tangent_frame(const Dvec3* p, const Vec2* uv, Dvec3 normal, Dvec3& tangent,
                           Dvec3& bitangent) {
@@ -256,7 +258,7 @@ inline bool tangent_frame(const Dvec3* p, const Vec2* uv, Dvec3 normal, Dvec3& t
   b = b - (normal * dot(normal, b) + tangent * dot(tangent, b));
   const double b_length = std::sqrt(dot(b, b));
   if (b_length < 1e-12) return false;
-  bitangent = b * (1.0 / b_length);
+  bitangent = b * (-1.0 / b_length);
   return true;
 }
 

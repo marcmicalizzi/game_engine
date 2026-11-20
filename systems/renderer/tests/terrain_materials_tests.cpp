@@ -18,9 +18,13 @@
 #include <bit>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <numbers>
+#include <string>
 #include <tuple>
+#include <vector>
 
 using namespace engine;
 using namespace engine::renderer;
@@ -1273,5 +1277,155 @@ TEST_CASE(
   MESSAGE("beach wet/dry " << ratio << ", plain wet " << plain_wet / beach_wet);
   CHECK(std::abs(ratio - 0.4909 / (1.0 - 0.4744 * 0.7)) < 0.02);
   CHECK(plain_wet / beach_wet < 0.2);
+  device.destroy();
+}
+
+namespace {
+// A 2 m quad of the y = 0.02 plane over x, z in [0, 2], its UVs (x / 2, z / 2) — the ground's own
+// mapping at a 2 m repeat — and one material whose normal map is `normal-<name>.png` beside it;
+// written as `quad-<name>.gltf` and `.bin` in `dir`.
+bool write_mapped_quad(const std::filesystem::path& dir, const std::string& name) {
+  std::vector<u8> bin;
+  auto put = [&](f32 v) {
+    u32 bits = 0;
+    std::memcpy(&bits, &v, 4);
+    for (u32 i = 0; i < 4; ++i)
+      bin.push_back(static_cast<u8>((bits >> (8 * i)) & 0xffu));
+  };
+  for (const f32 v : {0.f, .02f, 0.f, 2.f, .02f, 0.f, 2.f, .02f, 2.f, 0.f, .02f, 2.f})
+    put(v);
+  for (u32 i = 0; i < 4; ++i) {
+    put(0.f);
+    put(1.f);
+    put(0.f);
+  }
+  for (const f32 v : {0.f, 0.f, 1.f, 0.f, 1.f, 1.f, 0.f, 1.f})
+    put(v);
+  for (const u16 i : {u16{0}, u16{3}, u16{2}, u16{0}, u16{2}, u16{1}}) {
+    bin.push_back(static_cast<u8>(i & 0xff));
+    bin.push_back(static_cast<u8>(i >> 8));
+  }
+  {
+    std::ofstream out(dir / ("quad-" + name + ".bin"), std::ios::binary);
+    out.write(reinterpret_cast<const char*>(bin.data()), static_cast<std::streamsize>(bin.size()));
+    if (!out.good()) return false;
+  }
+  const std::string json =
+      "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
+      "\"nodes\":[{\"mesh\":0}],"
+      "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,"
+      "\"TEXCOORD_0\":2},\"indices\":3,\"material\":0}]}],"
+      "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.5,0.5,0.5,1],"
+      "\"metallicFactor\":0,\"roughnessFactor\":0.8},\"normalTexture\":{\"index\":0}}],"
+      "\"textures\":[{\"source\":0}],\"images\":[{\"uri\":\"normal-" + name + ".png\"}],"
+      "\"accessors\":["
+      "{\"bufferView\":0,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\","
+      "\"min\":[0,0.02,0],\"max\":[2,0.02,2]},"
+      "{\"bufferView\":1,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\"},"
+      "{\"bufferView\":2,\"componentType\":5126,\"count\":4,\"type\":\"VEC2\"},"
+      "{\"bufferView\":3,\"componentType\":5123,\"count\":6,\"type\":\"SCALAR\"}],"
+      "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":48},"
+      "{\"buffer\":0,\"byteOffset\":48,\"byteLength\":48},"
+      "{\"buffer\":0,\"byteOffset\":96,\"byteLength\":32},"
+      "{\"buffer\":0,\"byteOffset\":128,\"byteLength\":12}],"
+      "\"buffers\":[{\"uri\":\"quad-" + name + ".bin\",\"byteLength\":140}]}";
+  std::ofstream out(dir / ("quad-" + name + ".gltf"), std::ios::binary);
+  out.write(json.data(), static_cast<std::streamsize>(json.size()));
+  return out.good();
+}
+}  // namespace
+
+// **One normal map lights the same flank on a mesh and on the ground** (R202; gfx.md, "The
+// author's tangent frame"; docs/experiments/tangent-space-convention.md). The ground's layer and a
+// mesh quad lying on it read one constant map leaning the normal 45 degrees towards +Y of the
+// image — up the image, against v, which on both surfaces runs along +z — so a correct reading
+// leans both towards -z: under a low sun from -z the map makes both brighter than the same map
+// with its green turned over. The mesh draws through the frame the resolve derives from its UVs,
+// the ground through its projection's fixed frame; before R202 both read the map the other way up.
+TEST_CASE("renderer: one normal map lights the same flank on a mesh and on the ground") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(renderer_test::device_options(), &error)) {
+    MESSAGE("no device: " << error);
+    return;
+  }
+  const test::TempDir tmp("terrain_mesh_same_relief");
+  write_pixel(tmp.file("colour.png"), 128, 128, 128);
+  f64 mean[2][2] = {};  // [green up, green turned over][the quad, the ground]
+  u32 count[2][2] = {};
+  for (u32 flip = 0; flip < 2; ++flip) {
+    const std::string name = flip == 0 ? "up" : "down";
+    const std::filesystem::path dir = std::filesystem::path(tmp.file("colour.png")).parent_path();
+    const u8 lean[4] = {128, static_cast<u8>(flip == 0 ? 218 : 37), 218, 255};
+    Vector<u8> map;
+    for (u32 i = 0; i < 4 * 4 * 4; ++i)
+      map.push_back(lean[i % 4]);
+    REQUIRE(image::write_png(tmp.file("normal-" + name + ".png"), 4, 4, 4,
+                             {map.data(), map.size()}) == io::Status::Ok);
+    REQUIRE(write_mapped_quad(dir, name));
+    SceneDesc desc;
+    desc.meshes.push_back(tmp.file("quad-" + name + ".gltf"));
+    desc.terrain = ground(tmp.file("colour.png"));
+    desc.terrain.materials->layers[0].normal = tmp.file("normal-" + name + ".png");
+    desc.terrain.materials->layers[0].tile_m = 2.0f;
+    desc.terrain.materials->layers[0].roughness_factor = 0.8f;
+    desc.cache = false;
+    SceneData data;
+    REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+    RenderSettings settings;
+    settings.lights = false;
+    settings.shadows = ShadowMode::Off;
+    settings.sun_azimuth_deg = -90.0f;  // towards -z
+    settings.sun_elevation_deg = 20.0f;
+    ResolvedSettings resolved;
+    resolve_settings(settings, device.features(), &data, resolved);
+    if (check_availability(resolved, device.features()) != RenderAvailability::Ok) {
+      MESSAGE("rendering unavailable on this device");
+      device.destroy();
+      return;
+    }
+    GpuScene scene;
+    REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), error);
+    SceneRenderer renderer;
+    SceneRenderer::Desc rd;
+    rd.width = 160;
+    rd.height = 120;
+    REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), error);
+    FrameDesc frame;
+    frame.camera.position = WorldPos{1, 4, 2};
+    frame.camera.target = WorldPos{1, 0, 1};
+    CapturedFrame shot;
+    REQUIRE_MESSAGE(renderer.render_offscreen(frame, &error), error);
+    CaptureChannels channels;
+    channels.color = true;
+    channels.ids = true;
+    REQUIRE_MESSAGE(renderer.capture(frame, channels, shot, &error), error);
+    // The quad is under the picture's centre; every other covered pixel is the ground.
+    const u32 centre = ((shot.height / 2) * shot.width + shot.width / 2) * k_id_words;
+    for (u32 p = 0; p < shot.width * shot.height; ++p) {
+      const u32 w = p * k_id_words;
+      if (shot.ids[w] == k_no_id) continue;
+      bool quad = true;
+      for (u32 i = 0; i < k_id_words; ++i)
+        quad = quad && shot.ids[w + i] == shot.ids[centre + i];
+      const u32 s = quad ? 0u : 1u;
+      mean[flip][s] += static_cast<f64>(shot.color[p * 4]) + shot.color[p * 4 + 1] +
+                       shot.color[p * 4 + 2];
+      ++count[flip][s];
+    }
+    renderer.destroy();
+    scene.destroy();
+  }
+  for (u32 flip = 0; flip < 2; ++flip)
+    for (u32 s = 0; s < 2; ++s) {
+      REQUIRE(count[flip][s] > 1000);
+      mean[flip][s] /= 3.0 * count[flip][s];
+    }
+  MESSAGE("the map leaning up the image against turned over, under a sun from -z: the quad "
+          << mean[0][0] << " against " << mean[1][0] << ", the ground " << mean[0][1]
+          << " against " << mean[1][1] << " (mean code)");
+  // Up the image is -z on both, which faces the sun: both surfaces brighter with the map as made.
+  CHECK(mean[0][0] > mean[1][0] + 5.0);
+  CHECK(mean[0][1] > mean[1][1] + 5.0);
   device.destroy();
 }

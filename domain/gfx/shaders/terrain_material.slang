@@ -528,7 +528,9 @@ TerrainLayerSample terrain_layer_sample(SceneGeometry geo, ResolveMaterial layer
     r.colour = sample.albedo;
     r.roughness = sample.roughness;
     r.height = sample.metallic;
-    r.bump = terrain_slope(layer, map_uv, map_dx, map_dy, n, float3(1, 0, 0), float3(0, 0, 1),
+    // A map's +Y is up the image, against v (R202; docs/experiments/tangent-space-convention.md):
+    // the bitangent is -dP/dv, so -z for the ground's (x, z) and -y for a side's v = y.
+    r.bump = terrain_slope(layer, map_uv, map_dx, map_dy, n, float3(1, 0, 0), float3(0, 0, -1),
                            filtered);
   } else if ((layer.flags & k_material_terrain_stochastic) != 0) {
     // R96: no fade. The lattice leaves no repeat for distance to reveal, so the far ground keeps
@@ -553,7 +555,7 @@ TerrainLayerSample terrain_layer_sample(SceneGeometry geo, ResolveMaterial layer
       const float2 du = axis == 0 ? dx.zy : (axis == 1 ? dx.xz : dx.xy);
       const float2 dv = axis == 0 ? dy.zy : (axis == 1 ? dy.xz : dy.xy);
       const float3 t = axis == 0 ? float3(0, 0, 1) : float3(1, 0, 0);
-      const float3 b = axis == 1 ? float3(0, 0, 1) : float3(0, 1, 0);
+      const float3 b = axis == 1 ? float3(0, 0, -1) : float3(0, -1, 0);  // -dP/dv (R202)
       const TerrainHex hex = terrain_hex(geo.eye, point, axis, pitch, terrain_layer_rotation(layer));
       float3 colour;
       float roughness, height, loss;
@@ -583,7 +585,7 @@ TerrainLayerSample terrain_layer_sample(SceneGeometry geo, ResolveMaterial layer
       const float2 du = axis == 0 ? dx.zy : (axis == 1 ? dx.xz : dx.xy);
       const float2 dv = axis == 0 ? dy.zy : (axis == 1 ? dy.xz : dy.xy);
       const float3 t = axis == 0 ? float3(0, 0, 1) : float3(1, 0, 0);
-      const float3 b = axis == 1 ? float3(0, 0, 1) : float3(0, 1, 0);
+      const float3 b = axis == 1 ? float3(0, 0, -1) : float3(0, -1, 0);  // -dP/dv (R202)
       const MaterialSample sample = filtered ? sample_material_grad(layer, uv, du, dv)
                                              : sample_material(layer, uv);
       r.colour += axes[axis] * sample.albedo;
