@@ -733,6 +733,45 @@ TEST_CASE("content classes at load: a scene file that gives a key twice is refus
           "fixture_glow");
 }
 
+// **Substitution is the placer's, not the slot's** (C64): an instance refused by its own raise is
+// left out (or gets a box of its own) without touching the slot a prop, a tile or another instance
+// still places; a mesh whose own class is refused is the box for every placer.
+TEST_CASE("content classes at load: a raise refuses its instance, not the mesh others place") {
+  const test::TempDir tmp("renderer_classes_placer");
+  REQUIRE(tmp.ok());
+  const Grid a = write_grid(tmp, "a.clusters", 9, "a.png");
+  const Grid glow = write_grid(tmp, "glow.clusters", 17, "glow.png", glow_record(1));
+  const std::string scene_json =
+      R"({"meshes":[{"path":"a.clusters"},{"path":"glow.clusters"}],"instances":[)"
+      R"({"mesh":0,"translation":[0,0,0],"rotation":[0,0,0,1],)"
+      R"("content_classes":{"levels":{"fixture_glow":"bright"}}},)"
+      R"({"mesh":1,"translation":[30,0,0],"rotation":[0,0,0,1]}]})";
+  REQUIRE(io::write_file(tmp.file("scene.json"), scene_json) == io::Status::Ok);
+  std::string error;
+  SceneDesc desc;
+  REQUIRE_MESSAGE(read_scene_file(tmp.file("scene.json"), desc, error), error);
+  desc.ddc = tmp.file("ddc");
+  // Both meshes are a prop's too: something after the load places each, unraised.
+  desc.props.push_back(SceneProp{"post", 0});
+  desc.props.push_back(SceneProp{"lamp", 1});
+  const u32 box = box_vertices();
+  {
+    SceneData scene;
+    REQUIRE_MESSAGE(load_scene(desc, scene, error), error);
+    CHECK(scene.instances.empty());
+    CHECK(scene.parts[0].cluster_count == a.clusters);  // the post is still the mesh
+    CHECK(scene.parts[1].cluster_count == 1);           // the lamp's own class: a box for all
+    CHECK(scene.lod.mesh.vertices.size() == a.vertices + box);
+  }
+  desc.view_policy = policy_named("glow-proxy");
+  SceneData scene;
+  REQUIRE_MESSAGE(load_scene(desc, scene, error), error);
+  REQUIRE(scene.instances.size() == 2);
+  CHECK(scene.parts[0].cluster_count == a.clusters);
+  CHECK(scene.instances[0].mesh == 2);  // a box of its own, after the scene's meshes
+  CHECK(scene.instances[1].mesh == 1);  // the lamp's slot is its box
+}
+
 namespace {
 
 // A generator of the test's own whose output grows over a host its recipe names (`{"host": ...}`),

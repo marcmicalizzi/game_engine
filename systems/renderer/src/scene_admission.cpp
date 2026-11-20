@@ -416,6 +416,21 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
   }
   for (u32 m = 0; m < meshes; ++m)
     if (named[m] == 0 && drawn(m, 0)) state.load[m] = 1;
+  // **Substitution is the placer's, not the slot's** (C64): a mesh something other than the file's
+  // instances places (a streamed entry's resident mesh, a prop's, a kept authored instance's; what
+  // `open_scene_meshes` marks) is read whenever its own class lets it be drawn, whatever a raised
+  // instance of it decided, so those placers get the mesh, or its box when its own class says so.
+  state.placed.assign(meshes, u8{0});
+  for (const StreamedPlacements& entry : desc.streamed)
+    for (const u32 m : entry.meshes)
+      if (m < meshes) state.placed[m] = 1;
+  for (const SceneProp& prop : desc.props)
+    if (prop.mesh < meshes) state.placed[prop.mesh] = 1;
+  for (const u32 i : desc.authored.keep)
+    if (i < desc.instances.size() && desc.instances[i].mesh < meshes)
+      state.placed[desc.instances[i].mesh] = 1;
+  for (u32 m = 0; m < meshes; ++m)
+    if (state.placed[m] != 0 && drawn(m, 0)) state.load[m] = 1;
   // The ground is built only when the policy admits it: refused, nothing of it is read (C64).
   for (u32 m = 0; m < meshes; ++m) {
     if (state.ground[m] == 0) continue;
@@ -527,10 +542,19 @@ void admission_after_meshes(SceneDesc& desc, SceneData& out, LoadAdmission& stat
     if (d.outcome == content_class::Outcome::admit) ++admitted[m];
   }
 
-  // 3. A mesh nothing admitted draws becomes its proxy box: its geometry, images, container and
-  // motion leave the scene before the texture pass and the merge.
+  // 3. A mesh becomes its proxy box when its own class (its own and its textures', never an
+  // instance's raise) is refused, so every placer, the streamed ones included, places the box; or
+  // when nothing admitted draws it and nothing else places it. Its geometry, images, container and
+  // motion leave the scene before the texture pass and the merge. A mesh whose own class admits it
+  // keeps its slot for the placers, and an instance its raise refused is left out or draws a proxy
+  // mesh of its own (step 4).
   for (u32 m = 0; m < meshes; ++m) {
-    if (admitted[m] != 0) continue;
+    const content_class::Outcome own =
+        content_class::decide(join(state.mesh[m], textures[m]).classes,
+                              out.instantiated_under.policy)
+            .outcome;
+    const bool placed = m < state.placed.size() && state.placed[m] != 0;
+    if (own == content_class::Outcome::admit && (admitted[m] != 0 || placed)) continue;
     Vec3 lo;
     Vec3 hi;
     leaf_bounds(dags[m], lo, hi);  // a mesh that was never read: the unit box, which nothing draws

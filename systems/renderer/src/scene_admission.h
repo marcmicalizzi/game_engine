@@ -42,6 +42,8 @@ struct LoadAdmission {
   // Per mesh, for a container named outright: what its probe saw, and the classes section its
   // whole read found (`loaded`, with `read_whole` 1 once the mesh job read it), which the second
   // pass decides it by when the two differ (`container_class_as_loaded`; C64).
+  // Per mesh: 1 when something other than the file's instances places it after the load (C64).
+  Vector<u8> placed;
   Vector<ContainerProbe> probe;
   Vector<Vector<u8>> loaded;
   Vector<u8> read_whole;
