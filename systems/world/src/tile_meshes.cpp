@@ -65,6 +65,10 @@ struct TileMeshes::Entry {
   u32 materials = 0;
   u64 payload = 0;
   u64 unnamed_since = 0;  // the commit its last reference went at
+  // The last commit `admit` was asked about it, and the last whose `admit` answered `no_room`
+  // (W51-5b: what `withhold` tells a nearer tile's ask from a farther tile's refusal by).
+  u64 asked = 0;
+  u64 refused = 0;
   // Its textures (R147): how many of `data.textures` are in the scene, and the references the
   // table holds on them until the mesh is admitted and holds its own.
   u32 textures_in = 0;
@@ -266,6 +270,24 @@ void TileMeshes::withhold(u32 slot) {
   if (entry.state.load(std::memory_order_acquire) != State::built) return;
   // One no room could ever take is `admit`'s to fail, with its sentence.
   if (entry.clusters == 0 || entry.clusters > config_.max_clusters) return;
+  // **Not one a nearer tile is admitting** (W51-5b): once a commit's first refusal has set the
+  // room full, every later ticket is withheld without asking, and a mesh is often shared — by the
+  // tiles of one group, by a recipe two tiles hand. A farther tile's ticket used to shelve a mesh
+  // a nearer one had asked for in the same commit, or one part-way through its textures, which
+  // let its textures go; the nearer tile's next commit built it again and started its textures
+  // over, and a farther tile shelved it again, so standing with the room full the nearer tile
+  // never filled. A mesh whose own admission answered no room this commit is still let go: the
+  // room cannot take it now, whoever asked.
+  if (entry.refused != commit_) {
+    if (entry.asked == commit_) {
+      ++stats_.kept_asked;
+      return;
+    }
+    if (entry.textures_in != 0 || !entry.held.empty()) {
+      ++stats_.kept_textures;
+      return;
+    }
+  }
   release_textures(entry);  // the scene may let a texture go that only this mesh wanted
   entry.textures_in = 0;
   entry.data = renderer::PlacementMeshData{};
@@ -353,6 +375,7 @@ bool TileMeshes::admit_textures(Entry& entry) {
 TileMeshes::Admit TileMeshes::admit(u32 slot) {
   if (slot >= entries_.size() || entries_[slot] == nullptr) return Admit::failed;
   Entry& entry = *entries_[slot];
+  entry.asked = commit_;
   if (!entry.collected) return Admit::not_ready;
   const State now = entry.state.load(std::memory_order_acquire);
   if (now == State::resident) return Admit::done;
@@ -365,7 +388,10 @@ TileMeshes::Admit TileMeshes::admit(u32 slot) {
     const bool room = sink_.fits != nullptr
                           ? sink_.fits(sink_.context, entry.clusters, entry.materials)
                           : u64{used_clusters_} + entry.clusters <= config_.clusters;
-    if (!room) return Admit::no_room;
+    if (!room) {
+      entry.refused = commit_;
+      return Admit::no_room;
+    }
     entry.shelved = false;
     --stats_.shelved;
     ++stats_.rebuilds;
@@ -411,7 +437,10 @@ TileMeshes::Admit TileMeshes::admit(u32 slot) {
   const bool fits = sink_.fits != nullptr
                         ? sink_.fits(sink_.context, entry.clusters, entry.materials)
                         : u64{used_clusters_} + entry.clusters <= config_.clusters;
-  if (!fits) return Admit::no_room;
+  if (!fits) {
+    entry.refused = commit_;
+    return Admit::no_room;
+  }
   const i64 start = time::monotonic_ns();
   std::string why;
   if (sink_.admit != nullptr && !sink_.admit(sink_.context, scene_mesh(slot), entry.data, &why)) {

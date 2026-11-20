@@ -428,6 +428,186 @@ TEST_CASE("tile meshes: a withheld mesh is let go, and built again when the room
   }
 }
 
+namespace {
+
+// A room that also holds textures as a renderer's scene does (`GpuScene::acquire_texture`): by
+// key, with a count of who holds each — the table while a mesh waits, the mesh once it is in — and
+// a texture nobody holds is gone, so a mesh that lets its references go uploads again.
+struct TexturedRoom : Recorder {
+  struct Texture {
+    u64 key = 0;
+    u32 refs = 0;
+  };
+  struct Mesh {
+    u32 mesh = 0;
+    Vector<u64> keys;
+  };
+  Vector<Texture> textures;
+  Vector<Mesh> meshes;
+  u32 uploads = 0;
+
+  static TexturedRoom* of(void* context) {
+    return static_cast<TexturedRoom*>(static_cast<Recorder*>(context));
+  }
+  Texture* texture_of(u64 key) {
+    for (Texture& t : textures)
+      if (t.key == key) return &t;
+    return nullptr;
+  }
+  void drop_texture(u64 key) {
+    for (u32 k = 0; k < textures.size(); ++k) {
+      if (textures[k].key != key) continue;
+      if (--textures[k].refs == 0) textures.erase(textures.begin() + k);
+      return;
+    }
+    ++violations;
+  }
+  static bool admit_textured(void* context, u32 mesh, const renderer::PlacementMeshData& data,
+                             std::string* error) {
+    TexturedRoom* self = of(context);
+    if (!Recorder::admit(context, mesh, data, error)) return false;
+    Mesh held;
+    held.mesh = mesh;
+    for (const renderer::PlacementTexture& texture : data.textures) {
+      Texture* there = self->texture_of(texture.key);
+      if (there == nullptr) {
+        ++self->violations;  // admitted naming a texture the scene does not hold
+        continue;
+      }
+      ++there->refs;
+      held.keys.push_back(texture.key);
+    }
+    self->meshes.push_back(std::move(held));
+    return true;
+  }
+  static void retire_textured(void* context, u32 mesh) {
+    TexturedRoom* self = of(context);
+    Recorder::retire(context, mesh);
+    for (u32 k = 0; k < self->meshes.size(); ++k) {
+      if (self->meshes[k].mesh != mesh) continue;
+      for (const u64 key : self->meshes[k].keys)
+        self->drop_texture(key);
+      self->meshes.erase(self->meshes.begin() + k);
+      return;
+    }
+  }
+  static TileMeshSink::Texture texture(void* context, const renderer::PlacementTexture& wanted,
+                                       std::string*) {
+    TexturedRoom* self = of(context);
+    if (Texture* there = self->texture_of(wanted.key)) {
+      ++there->refs;
+      return TileMeshSink::Texture::held;
+    }
+    if (wanted.data.levels.empty()) return TileMeshSink::Texture::need_bytes;
+    self->textures.push_back(Texture{wanted.key, 1});
+    ++self->uploads;
+    return TileMeshSink::Texture::held;
+  }
+  static void release(void* context, u64 key) { of(context)->drop_texture(key); }
+  static bool resident(void* context, u64 key) { return of(context)->texture_of(key) != nullptr; }
+  TileMeshSink textured_sink() {
+    return TileMeshSink{static_cast<Recorder*>(this),  &Recorder::fits,
+                        &TexturedRoom::admit_textured, &TexturedRoom::retire_textured,
+                        &TexturedRoom::texture,        &TexturedRoom::release,
+                        &TexturedRoom::resident};
+  }
+};
+
+// Two entries of the fixture's rocks: small textured rocks every 2 x 2 tiles share, dealt among
+// five base colour maps, and one large untextured rock at tile (0, 0) alone.
+renderer::SceneData shared_and_large_scene(const test::TempDir& tmp) {
+  renderer::SceneData scene = scene_of(tmp, R"({"reach":3,"n":8,"share":2,"look":1,"sets":5})");
+  renderer::StreamedPlacements large;
+  large.generator = "test-tile-rocks";
+  REQUIRE(parse_json(R"({"reach":0,"n":96})", large.params).ok);
+  large.where = "placements 1";
+  large.tile_meshes = true;
+  scene.streamed.push_back(std::move(large));
+  return scene;
+}
+
+}  // namespace
+
+// W51-5b, H1 (world.md, "A withheld mesh is let go and built again"): with the room full, a tile
+// nearer than a commit's first refusal fills in a bounded number of commits whatever farther tiles
+// ask for. Tile (-1, 0)'s rock is shared with the tiles of its 2 x 2 group, one of them a corner
+// farther than tile (0, 0), whose large rock the room can never take; the rock's base colour map
+// takes a commit of its own under the allowance. Until this case a farther tile of the group
+// shelved the rock the nearest tile was admitting — its texture let go — in every commit the large
+// rock was refused, so the nearest tile never filled and the rock was built again every other
+// commit.
+TEST_CASE("tile meshes: a farther tile never shelves a mesh a nearer one is admitting") {
+  test::TempDir tmp{"engine_world_tile_meshes_nearer"};
+  const renderer::SceneData scene = shared_and_large_scene(tmp);
+  // The rocks' clusters, from a room that holds everything.
+  u32 large = 0;
+  u32 small = 0;
+  {
+    Recorder told;
+    PlacementTiles placements;
+    PlacementTilesConfig config;
+    config.ring_count = 1;
+    std::string error;
+    REQUIRE_MESSAGE(placements.create(scene, config, &error), error);
+    placements.set_meshes(room(32, 1u << 20, 0), told.sink());
+    placements.set_run_sink(&Recorder::runs, &told);
+    World world(ring(1.5f));
+    add_scene_consumers(world, nullptr, &placements);
+    for (u64 tick = 0; tick < 2; ++tick)
+      step(world, placements, at(0, 0), tick);
+    for (const Recorder::Held& h : told.held) {
+      if (h.clusters > large) {
+        small = std::max(small, large);
+        large = h.clusters;
+      } else {
+        small = std::max(small, h.clusters);
+      }
+    }
+  }
+  REQUIRE(small > 0);
+  const u32 room_clusters = 12 * small;  // every small rock in reach, and not the large one
+  REQUIRE(large > room_clusters);
+
+  TexturedRoom told;
+  told.room = room_clusters;
+  PlacementTiles placements;
+  PlacementTilesConfig config;
+  config.ring_count = 1;
+  std::string error;
+  REQUIRE_MESSAGE(placements.create(scene, config, &error), error);
+  TileMeshConfig meshes = room(32, 1u << 20, 0);
+  meshes.max_clusters = large;  // admissible, so refused for room rather than failed
+  meshes.admissions = 0;
+  meshes.admission_bytes = 1500;  // a 32 x 32 base colour map (1,392 staged bytes) fills a commit
+  placements.set_meshes(meshes, told.textured_sink());
+  placements.set_run_sink(&Recorder::runs, &told);
+  World world(ring(1.5f));
+  add_scene_consumers(world, nullptr, &placements);
+  // Standing where tile (0, 0) is in reach and none of the group of (-1, 0): the large rock is
+  // refused and shelved; the small ones arrive.
+  u64 tick = 0;
+  for (; tick < 16; ++tick)
+    step(world, placements, at(1, 0), tick, 64);
+  const TileMeshStats& s = placements.meshes().stats();
+  REQUIRE(s.shelved >= 1);
+  for (const Recorder::Held& h : told.held)
+    REQUIRE(h.clusters <= small);
+  // One tile to the west: tile (-1, 0) is the nearest, and its rock is new.
+  u32 commits = 0;
+  bool drawn = false;
+  const u64 rebuilds = s.rebuilds;
+  for (; commits < 40 && !drawn; ++commits) {
+    step(world, placements, at(-1, 0), tick++, 64);
+    drawn = !placements.tile_instances(TileCoord{-1, 0}).empty();
+  }
+  MESSAGE("the nearest tile filled after " << commits << " commits (drawn " << drawn
+                                           << "); shelved meshes built again "
+                                           << s.rebuilds - rebuilds << " times");
+  CHECK(drawn);
+  CHECK(commits <= 4);  // its texture, then the mesh, and a commit's slack
+  CHECK(told.violations == 0);
+}
+
 TEST_CASE("tile meshes: two walks to one place hold the same tail") {
   test::TempDir tmp{"engine_world_tile_meshes_walks"};
   const renderer::SceneData scene = scene_of(tmp, R"({"reach":6,"n":10})");

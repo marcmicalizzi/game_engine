@@ -108,6 +108,10 @@ struct TileMeshStats {
   u64 evicted = 0;   // retirements made for room: a lingering mesh, or a farther tile's
   u64 refused = 0;   // admissions the room refused
   u64 deferred = 0;  // admissions a commit's allowance left for the next
+  // Withholds declined (W51-5b): a mesh a nearer tile asked for in the same commit, or one holding
+  // texture progress, kept rather than let go when a farther tile's ticket was kept from asking.
+  u64 kept_asked = 0;
+  u64 kept_textures = 0;
   u64 failures = 0;  // meshes that could not be built
   // Their textures (R147), over the run: the ones a commit uploaded and their staged bytes, the
   // ones a mesh found in the scene already, and the meshes that draw their constants because a
@@ -171,7 +175,10 @@ class TileMeshes {
   // gives its streams and its textures back and keeps only its counts (the tile's pairs are counted
   // from them). `admit` builds it again — off the committing thread, from the derived-data cache —
   // once the room can take it, and says `not_ready` until that build is collected. A mesh still
-  // building, resident or already shelved is left as it is.
+  // building, resident or already shelved is left as it is. **And so is one a nearer tile is still
+  // admitting** (W51-5b): a mesh kept from being asked — not refused by its own admission this
+  // commit — that a nearer ticket asked for this commit, or that holds texture progress, keeps what
+  // it has, so a farther tile sharing it never undoes the nearer tile's arrival.
   void withhold(u32 slot);
   // Retires one resident mesh no held tile names, the longest unnamed first. False: there is none.
   bool evict_lingering();
