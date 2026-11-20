@@ -27,6 +27,22 @@ void spin_us(i64 us) {
   }
 }
 
+// Waits until the sampler thread has recorded a sample, under a minute's deadline. The sampler is
+// an OS thread on its own wait (`TraceOptions::sample_ms`) with no tick a test can drive, so the
+// case waits for the event it reads rather than for a time: a 2 ms spin stood in for it and failed
+// on a saturated machine (batch 70's stack, GCC), where the thread was not scheduled within it.
+bool sampler_has_run(i64 deadline_ns = 60'000'000'000) {
+  const i64 until = trace_now_ns() + deadline_ns;
+  Vector<TraceEvent> events;
+  while (trace_now_ns() < until) {
+    trace_snapshot(events);
+    for (const TraceEvent& e : events)
+      if (e.kind == TraceKind::sample) return true;
+    std::this_thread::yield();
+  }
+  return false;
+}
+
 struct Recording {
   Recording(u32 capacity = k_trace_default_capacity, u32 sample_ms = 0) {
     TraceOptions options;
@@ -213,7 +229,8 @@ TEST_CASE("the chrome trace round-trips a recorded set") {
     worker.join();
     TraceWait wait("collision waits", worker_stage);
     trace_wait(5);
-    spin_us(2000);  // long enough for the sampler to have run
+    spin_us(2000);  // the wait's own duration
+    REQUIRE_MESSAGE(sampler_has_run(), "the sampler thread recorded no sample in a minute");
   }
   trace_milestone("ready");
   trace_stop();
