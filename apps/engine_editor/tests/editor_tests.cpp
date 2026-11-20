@@ -2187,6 +2187,27 @@ TEST_CASE("engine-editor: editor.tool, editor.pick_file and editor.import_mesh")
     names_no_machine_path(call("editor.import_mesh", gone));
     CHECK(document.document().journal().size() == before + 3);
   }
+
+  // **A .gltf's files are held to its directory before the loader reads any of them** (T174): a
+  // buffer named `../outside.bin` is refused by the lexical rule, and the loader never opens the
+  // file outside, so the answer does not tell whether it is there or how large it is.
+  {
+    REQUIRE(write_cube_gltf(source_dir, "leak"));
+    std::string text;
+    REQUIRE(io::read_file(source_dir + "/leak.gltf", text) == io::Status::Ok);
+    const usize at_uri = text.find("\"leak.bin\"");
+    REQUIRE(at_uri != std::string::npos);
+    text.replace(at_uri, std::string_view("\"leak.bin\"").size(), "\"../outside.bin\"");
+    REQUIRE(io::write_file(source_dir + "/leak.gltf", text) == io::Status::Ok);
+    REQUIRE(io::write_file(tmp.file("outside.bin"), "short") == io::Status::Ok);
+    JsonValue leak = JsonValue::object();
+    leak.set("path", JsonValue(source_dir + "/leak.gltf"));
+    answer = call("editor.import_mesh", leak);
+    REQUIRE(answer.find("error") != nullptr);
+    const std::string message(answer.find("error")->find("message")->as_string());
+    CHECK_MESSAGE(message.find("outside its own directory") != std::string::npos, message);
+    CHECK_FALSE(io::exists(tmp.path() + "/assets/leak/leak.gltf"));
+  }
   // ADR-0069 decision 5: an import a client asks for is that client's in the journal, as every
   // other write of the protocol is, and not the editor's own; a call naming nobody from the page
   // (no client entry) stays the editor's, as above.

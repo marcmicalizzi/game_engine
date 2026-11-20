@@ -118,6 +118,12 @@ bool import_mesh_files(const std::string& source, const std::string& doc_dir, Im
     error = "no file at " + source;
     return false;
   }
+  // Every file and where it goes, relative to the source's directory and to rel_dir: a .gltf's own
+  // names held to its directory before the loader opens any of them, so a buffer named outside is
+  // never read and the answer does not say whether it is there (T174).
+  Vector<std::string> files;
+  files.push_back(name);
+  if (ext == "gltf" && !gltf_dependencies(source, files, error)) return false;
   // The loader's own verdict, before anything is copied.
   if (ext == "clusters") {
     geometry::ClusterFileData data;
@@ -137,10 +143,6 @@ bool import_mesh_files(const std::string& source, const std::string& doc_dir, Im
   out.stem = name.substr(0, dot);
   const std::string rel_dir = "assets/" + out.stem;
   out.mesh = rel_dir + "/" + name;
-  // Every file and where it goes, relative to the source's directory and to rel_dir.
-  Vector<std::string> files;
-  files.push_back(name);
-  if (ext == "gltf" && !gltf_dependencies(source, files, error)) return false;
   const std::string from_dir = directory_of(source);
   Vector<std::string> bytes;
   Vector<u8> write;  // 1: a fresh copy, 0: the same bytes already there
