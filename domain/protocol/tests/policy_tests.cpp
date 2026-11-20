@@ -870,11 +870,32 @@ TEST_CASE("proposals: a promotion is refused when what its dry run showed has mo
   (void)take(seen, &error);
   CHECK(at(at(error, "data"), "digest") != seen);
 
-  // The target's value at the conflict moves.
+  // The owner takes an opinion back (its command undone) after the dry run that showed it.
+  const JsonValue with_two = dry_run();
+  host.ok("doc.undo", obj({{"attribution", b}}));
+  (void)take(with_two, &error);
+  CHECK(at(at(error, "data"), "digest") != with_two);
+
+  // The target's value at the conflict moves; the refused promotion changes nothing.
   const JsonValue again = dry_run();
   host.apply(one(set(oid(1), "color", JsonValue(5))), d, "world");
+  const auto journal = [&] { return at(host.ok("session.info"), "journal_length"); };
+  const JsonValue before = journal();
   (void)take(again, &error);
   CHECK(host.layer_property("world", oid(1), "color") == JsonValue(5));  // nothing promoted
+  CHECK(journal() == before);                                            // nothing journaled
+
+  // The conflict goes: the target comes to the proposal's value, and the dry run that showed the
+  // conflict no longer describes the merge.
+  const JsonValue conflicted = dry_run();
+  host.apply(one(set(oid(1), "color", JsonValue(2))), d, "world");
+  CHECK(at(host.ok("doc.promote", obj({{"proposal", JsonValue("p.b")},
+                                       {"dry_run", JsonValue(true)},
+                                       {"attribution", d}})),
+           "conflicts")
+            .size() == 0);
+  (void)take(conflicted, &error);
+  host.apply(one(set(oid(1), "color", JsonValue(5))), d, "world");  // and back, for what follows
 
   // Seen as it is, taken.
   const JsonValue taken = take(dry_run(), nullptr);

@@ -1657,6 +1657,23 @@ TEST_CASE("ledger: the detail form stands alone, and ledgers from before digests
     const JsonValue& now = at(answer, "subject");
     CHECK(at(now, "digest").as_string().size() == 64);
     CHECK_FALSE(at(now, "same").as_bool());
+    // Written back by this host at the current version, and read again: the close is in the file,
+    // the ledger's revision moved past what it was, and the item kept what the old host wrote.
+    const JsonValue closed = h.review("review.close", obj({{"review", JsonValue(u64{7})},
+                                                           {"resolution", JsonValue("Accepted")},
+                                                           {"attribution", who("reviewer")}}));
+    CHECK(at(closed, "state").as_string() == "Closed");
+    std::string text;
+    REQUIRE(h.vfs.read(dir + "/ledger.json", text) == io::Status::Ok);
+    JsonValue written;
+    REQUIRE(parse_json(text, written).ok);
+    CHECK(num(at(written, "revision")) == (*ledger_revision == 0 ? 1 : 6));
+    const JsonValue again =
+        at(h.ok("review.list", obj({{"review", JsonValue(u64{7})}})), "reviews")[0];
+    CHECK(at(again, "state").as_string() == "Closed");
+    CHECK(at(again, "summary").as_string() == "s");
+    CHECK(at(again, "raised_digest").as_string().empty());
+    CHECK(at(again, "decided_at").as_string().empty());
   }
 }
 
