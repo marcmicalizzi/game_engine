@@ -56,12 +56,12 @@ if(TARGET engine::village AND TARGET engine::structures)
   # village requires).
   list(APPEND _collision_tests tests/structure_walk_tests.cpp)
 endif()
-# WALL_CLOCK: scene_collision_tests.cpp holds one tile's activation and one prefetch wait under
-# 120 ms, so the suite runs alone in a CTest run with jobs (docs/ci/what-to-run.md, "Jobs").
-# DEVICE_FILES: the debug draw's three cases open a device; the other 71 s of the suite (gate b66)
+# No WALL_CLOCK since T199: the build-ahead cases count what ran where and at once instead of
+# bounding a fill's time, which three suites at once made the scheduler's (docs/ci/what-to-run.md,
+# "Jobs"). DEVICE_FILES: the debug draw's three cases open a device; the other 71 s of the suite (gate b66)
 # do not, and run as `scene_collision` in the CPU pool, the draw as `scene_collision.gpu` in a GPU
 # chain (roadmap T170, what-to-run.md, "Tests that open no device").
-engine_module_tests(NAME scene_collision WALL_CLOCK SOURCES ${_collision_tests}
+engine_module_tests(NAME scene_collision SOURCES ${_collision_tests}
   DEVICE_FILES collision_draw_tests.cpp)
 if(TARGET engine_scene_collision_tests)
   target_compile_definitions(engine_scene_collision_tests PRIVATE

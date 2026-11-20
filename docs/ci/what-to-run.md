@@ -759,13 +759,13 @@ so a test registered anywhere — by a module, an app, a tool, or a file added s
 - **Tests that assert an upper bound on wall-clock time run alone**: a test registered
   `engine_module_tests(... WALL_CLOCK)` carries the label `wall_clock`, and the finalize gives every
   test with the label `RUN_SERIAL` (T87): `tileset` (one height lookup
-  beside a building window under 50 ms) and `scene_collision` (an activation and a prefetch wait
-  under 120 ms). Every other timing check in the tree was read (again on 2026-11-11: every test
-  file that reads a clock) and is a lower bound (`elapsed >= x`), a synthetic clock (the
-  flythrough's injected 30 ms host turn, a game session's ticks), a ratio, or a figure printed and
-  not held (the cut, channel, ledge, cone and meadow costs); the `bench.*` smoke runs make one
-  iteration and assert nothing about time, so they share cores. A new test that bounds a wall
-  clock says `WALL_CLOCK` where it is registered.
+  beside a building window under 50 ms). Every other timing check in the tree was read (again on
+  2026-11-11: every test file that reads a clock) and is a lower bound (`elapsed >= x`), a
+  synthetic clock (the flythrough's injected 30 ms host turn, a game session's ticks), or a figure
+  printed and not held (the cut, channel, ledge, cone and meadow costs); the `bench.*` smoke runs
+  make one iteration and assert nothing about time, so they share cores. A new test that bounds a
+  wall clock says `WALL_CLOCK` where it is registered, though `RUN_SERIAL` orders one `ctest`, not
+  the gate's three (T199).
 - Scratch space was already per test (`TempDir`, the lint's `test-temp-path`), which is why a test
   can share a run with another at all.
 
