@@ -86,7 +86,7 @@ A built thing records the class of exactly what its cache key covers, and a cach
 
 ### What "decided at instantiation" means
 
-**In the renderer, per instance, when it is admitted, before its mesh's geometry is read.** `SceneDesc` gains `view_policy` (`content_class::ViewPolicy`, a few bytes), and so does `PlacementMeshOptions`, so a mesh built after the load, such as a world tile's, is decided the same way. **An instance is decided on the join of everything it draws with:**
+**In the renderer, per instance, when it is admitted, before its mesh's geometry is read** (as built in C64, one exception: a refusal only an image's class decides reads the mesh first, because the mesh names its images; [renderer](subsystems/renderer.md#content-classes-at-load)). `SceneDesc` gains `view_policy` (`content_class::ViewPolicy`, a few bytes), and so does `PlacementMeshOptions`, so a mesh built after the load, such as a world tile's, is decided the same way. **An instance is decided on the join of everything it draws with:**
 
 - **its mesh's own class**: from the container's section table, which the load reads anyway (one more kind looked up, nothing read when it is absent), or, for a glTF source, from the sidecar the content build reads to compute the key;
 - **the class of every texture its materials sample**: each image's sidecar, read at load beside the image (above), and its `.tex`'s section 6; each pack set's entry;
