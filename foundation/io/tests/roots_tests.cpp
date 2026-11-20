@@ -762,6 +762,9 @@ TEST_CASE("roots: a stored path is portable or refused, then admitted from its d
   CHECK(check_stored_path_form("work://C:/x") == Refusal::absolute_relative);
   CHECK(check_stored_path_form("props/hut.glb") == Refusal::none);
   CHECK(check_stored_path_form("work://world/props/hut.glb") == Refusal::none);
+  // A root's name with nothing after it is the root's directory, not a file a record can name.
+  CHECK(check_stored_path_form("work://") == Refusal::empty);
+  CHECK(check_stored_path_form("doc://") == Refusal::empty);
   // Relative, and out of every root: refused as any client path is.
   CHECK_FALSE(admit_stored_path(roots, "../../elsewhere/secret.glb", doc, out, why));
   CHECK(why == Refusal::outside);

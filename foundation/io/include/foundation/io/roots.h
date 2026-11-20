@@ -189,7 +189,8 @@ class Roots {
 bool admit_stored_path(const Roots& roots, std::string_view path, std::string_view document_dir,
                        Admitted& out, Refusal& why);
 // The form alone, for a writer with no roots (a session no host gave any, the engine's own
-// writers): the text rules of `check_path_text` and not absolute. `Refusal::none` when it passes.
+// writers): the text rules of `check_path_text` and not absolute; `<root>://` with nothing after it
+// is the root's directory, not a file, and is `Refusal::empty`. `Refusal::none` when it passes.
 Refusal check_stored_path_form(std::string_view path) noexcept;
 
 // Whether `path` is `dir` or continues it by whole components, both canonical (case-insensitive,

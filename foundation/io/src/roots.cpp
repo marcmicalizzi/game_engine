@@ -609,7 +609,8 @@ Refusal check_stored_path_form(std::string_view path) noexcept {
   const usize scheme_end = path.find("://");
   if (scheme_end != std::string_view::npos && valid_root_name(path.substr(0, scheme_end))) {
     const std::string_view rest = path.substr(scheme_end + 3);
-    if (rest.empty()) return Refusal::none;
+    // `<root>://` alone is the root's directory, never a file a record names (T174).
+    if (rest.empty()) return Refusal::empty;
     const std::string rel = slashes(rest);
     if (is_absolute_spelling(rel) || (rel.size() >= 2 && rel[1] == ':'))
       return Refusal::absolute_relative;
