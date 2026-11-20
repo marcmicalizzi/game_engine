@@ -240,3 +240,14 @@ A review of the first pass (the design and the built module, read-only) found fi
 | Low: exits the design leaves open | a game module's content and a mesh swapped by any path come through the one admission door (C64); a packaged game runs `agent-default` and a binary built before C64 enforces nothing, both stated as limits; text in records is returned as it is, as the owner decided (question 3); audio stays after these rows | as listed |
 | Low: `render.compare` trusts a chunk that a copy can drop | stated as a limit: the pixels are the caller's own | none |
 | Low: cases the module's tests do not cover | added to its second leg's tests | C61's second leg: "the limits, exactly at them and one past", "decide admits exactly what within holds, levels up to 255", "narrowing a policy with every category at its top"; the policy read before a game's categories in the caps-by-name test |
+
+**A second reading, of the joined tree (C69, 2026-11-19)**, found six edges where the mechanism admits or records less than the author declared, none reachable from a host yet. Four are closed, each by a case that failed before its mend:
+
+| What it found | Closed by | Row and test |
+|---|---|---|
+| A sidecar that is there and leads nowhere (a dangling link or junction, a path whose look fails) read as no sidecar, that is `none` | the build looks at the name without following a link; only nothing there at all is "no sidecar" ([content build](subsystems/content_build.md#content-classes)) | C69: "a sidecar that leads nowhere refuses the source, a mesh's or an image's" |
+| A texture's classes section of elements that are not bytes was refused by one reader and read as `none` by the streamed tail's | one check both readers ask ([texture](subsystems/texture.md#content-classes)) | C69: "a classes section of elements that are not bytes is refused by both" |
+| A classes record giving one category twice in a scope kept the last, so an appended pair could lower the first | refused, the unreadable class left behind | C69: "a section that gives one category twice in a scope is refused" |
+| A manifest giving `"categories"` twice took the second file | the manifest is parsed strictly | C69: "a manifest that gives a key twice is refused, naming it" |
+
+**Two stay open, as a decision**, because a mend of either would change what ADR-0073 decision 1 states. A sidecar's level that the build's ladder lacks reads as that ladder's top, as the ADR says, so a container built against a shorter ladder records the shorter ladder's top by name, and a reader that learns that ladder from it takes it for a level a policy written for the longer ladder admits. And the class of what cannot be read is the top of each ladder the reader knows, as the ADR says, so a policy that caps a category at that reader's top admits that category of it; a reader holds the first ladder it met for a name (`Categories::learn`), and refuses as unreadable data with another.
