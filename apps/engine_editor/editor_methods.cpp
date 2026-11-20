@@ -403,18 +403,24 @@ void add_editor_methods(protocol::Dispatcher& d) {
                          &editor_pick_file>(
       "editor.pick_file",
       "engine-editor only: the platform's open-file dialog on the editor's window, answering "
-      "the chosen path or null; null at once in a test or an editor with no window. Reads "
-      "no file and writes none."));
+      "the chosen file's name (`path`) and a `grant` that editor.import_mesh takes in place of "
+      "a path, one import within ten minutes — never the file's directory — or null when the "
+      "person cancels; null at once in a test or an editor with no window. Reads no file and "
+      "writes none."));
   // A write: it changes the document, so roles govern it (protocol.md, "Roles, leases and
   // proposals").
   d.add(protocol::method<protocol::EditorImportMeshParams, protocol::EditorImportMeshResult,
                          &editor_import_mesh>(
       "editor.import_mesh",
-      "engine-editor only: copy a .gltf (with its buffers and images), .glb or .clusters file into "
-      "the document's assets/<stem>/ and create one engine.scene.MeshPlacement naming it, in one "
-      "transaction, at `at` or on the ground under the viewport's centre; the viewport rebuilds "
-      "and selects it. Refused, with nothing written, for a missing file, a format the loader "
-      "refuses, or a copy that would overwrite other bytes."));
+      "engine-editor only: copy a .gltf (with its buffers and images, which must lie in its "
+      "directory or below), .glb or .clusters file into the document's assets/<stem>/ and create "
+      "one engine.scene.MeshPlacement naming it, in one transaction, at `at` or on the ground "
+      "under the viewport's centre; the viewport rebuilds and selects it. Name exactly one of "
+      "`path` (a client's path, admitted by the editor's roots) and `grant` (editor.pick_file's "
+      "or a drop's, for a file the person chose, which may lie outside them). Refused, with "
+      "nothing written, for a path outside the roots or a missing file (one answer for both), a "
+      "spent or unknown grant, a format the loader refuses, or a copy that would overwrite "
+      "other bytes."));
 }
 
 std::string tool_notification(std::string_view tool) {

@@ -2049,6 +2049,24 @@ TEST_CASE("engine-editor: editor.tool, editor.pick_file and editor.import_mesh")
   answer = call("editor.pick_file", pick);
   REQUIRE_MESSAGE(answer.find("result") != nullptr, write_json(answer));
   CHECK(answer.find("result")->find("path")->is_null());
+  // What engine.methods (and engine-mcp's tool text) tells an agent of the two: the name and the
+  // grant, and exactly one of path and grant (T174).
+  {
+    const JsonValue methods = call("engine.methods", JsonValue::object());
+    const JsonValue* list =
+        methods.find("result") != nullptr ? methods.find("result")->find("methods") : nullptr;
+    REQUIRE(list != nullptr);
+    std::string pick_doc, import_doc;
+    for (u32 i = 0; i < list->size(); ++i) {
+      const std::string name((*list)[i].find("name")->as_string());
+      if (name == "editor.pick_file") pick_doc = std::string((*list)[i].find("doc")->as_string());
+      if (name == "editor.import_mesh")
+        import_doc = std::string((*list)[i].find("doc")->as_string());
+    }
+    CHECK(pick_doc.find("grant") != std::string::npos);
+    CHECK(pick_doc.find("chosen path") == std::string::npos);
+    CHECK(import_doc.find("exactly one of `path`") != std::string::npos);
+  }
 
   // A .gltf with its buffer beside it: both copied under assets/<stem>/, one transaction made the
   // record, named for the file, on the ground in front of the camera, and selected it.
