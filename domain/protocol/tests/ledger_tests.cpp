@@ -32,11 +32,10 @@
 #if ENGINE_PLATFORM_WINDOWS
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+#include <cstring>
 #include <windows.h>
 #include <winioctl.h>  // FSCTL_SET_REPARSE_POINT, for a junction
-
-#include <cstring>
-#undef far  // windows.h's, which the cases use as a name
+#undef far             // windows.h's, which the cases use as a name
 #undef near
 #else
 #include <sys/stat.h>  // mkfifo
@@ -1604,8 +1603,7 @@ TEST_CASE("ledger: a string no host could admit never blocks a raise or a close"
   h.stdio();
   (void)w.raise(h, "Agent");
   JsonValue error;
-  CHECK(h.fails("review.raise",
-                w.raise_params("Agent", strings({"https://example.invalid/a.png"})),
+  CHECK(h.fails("review.raise", w.raise_params("Agent", strings({"https://example.invalid/a.png"})),
                 &error) == codes::k_invalid_argument);
   CHECK(reason_of(error) == "subject not readable here");
 }
@@ -1660,13 +1658,13 @@ TEST_CASE("ledger: an edit outside the subject during a digest's reads keeps the
                                                {"commands", cmds},
                                                {"attribution", who("agent", "director")}})}});
         (void)s->other->dispatch(apply);
-        JsonValue task = obj(
-            {{"jsonrpc", JsonValue("2.0")},
-             {"id", JsonValue(2)},
-             {"method", JsonValue("task.create")},
-             {"params", obj({{"session", JsonValue(s->session)},
-                             {"title", JsonValue("another task " + std::to_string(s->edits))},
-                             {"attribution", who("planner")}})}});
+        JsonValue task =
+            obj({{"jsonrpc", JsonValue("2.0")},
+                 {"id", JsonValue(2)},
+                 {"method", JsonValue("task.create")},
+                 {"params", obj({{"session", JsonValue(s->session)},
+                                 {"title", JsonValue("another task " + std::to_string(s->edits))},
+                                 {"attribution", who("planner")}})}});
         (void)s->other->dispatch(task);
       },
       &seam);
@@ -1728,12 +1726,13 @@ TEST_CASE("ledger: a close that compares nothing decides without reading the sub
         (void)s->other->dispatch(req);
       },
       &seam);
-  const auto close_under_lock = [&](const JsonValue& id, const char* resolution, const char* actor) {
+  const auto close_under_lock = [&](const JsonValue& id, const char* resolution,
+                                    const char* actor) {
     std::lock_guard<std::mutex> held(dispatch);
     h.dispatcher.context().dispatch_lock = &dispatch;
-    JsonValue resp = h.call("review.close", obj({{"review", id},
-                                                 {"resolution", JsonValue(resolution)},
-                                                 {"attribution", who(actor)}}));
+    JsonValue resp = h.call(
+        "review.close",
+        obj({{"review", id}, {"resolution", JsonValue(resolution)}, {"attribution", who(actor)}}));
     h.dispatcher.context().dispatch_lock = nullptr;
     return resp;
   };
@@ -1760,14 +1759,14 @@ TEST_CASE("ledger: an old item's absolute asset is answered by its index, never 
   DigestWorld w;
   w.make(h, dir);
   h.stdio();
-  const JsonValue item = at(h.ok("review.raise", w.raise_params("Human", strings({"props/crate.glb"}))),
-                            "reviews")[0];
+  const JsonValue item =
+      at(h.ok("review.raise", w.raise_params("Human", strings({"props/crate.glb"}))), "reviews")[0];
   {
     // The item as the older host wrote it: the listed file by its absolute path.
     std::string text;
     REQUIRE(h.vfs.read(dir + "/ledger.json", text) == io::Status::Ok);
     const std::string listed = R"("props/crate.glb")";  // only the listed entry: the ledger
-    const usize at_listed = text.find(listed);           // holds no record's properties
+    const usize at_listed = text.find(listed);          // holds no record's properties
     REQUIRE(at_listed != std::string::npos);
     text.replace(at_listed, listed.size(),
                  write_json(JsonValue(w.mesh), JsonWriteOptions{.pretty = false}));

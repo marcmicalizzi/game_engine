@@ -955,8 +955,8 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
   };
   // Every refusal that reads no file, before the digest reads any (protocol.md, "What it costs"):
   // the subject's layer and records, the session's gate on writes, and the ledger's bounds.
-  const auto first = [&](Session& session, ReviewSubject& subject, Vector<std::string>& raised_roots,
-                         u64& revision, RpcError& e) {
+  const auto first = [&](Session& session, ReviewSubject& subject,
+                         Vector<std::string>& raised_roots, u64& revision, RpcError& e) {
     const doc::Document& d = session.document();
     if (!params.subject.layer.empty() && d.find_layer(params.subject.layer) < 0) {
       e = make_error(codes::k_not_found, "no layer named " + params.subject.layer);
@@ -1116,8 +1116,8 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
     return true;
   };
   io::Vfs& vfs = ctx.sessions->vfs();
-  const auto first = [&](Session& session, ReviewSubject& subject, Vector<std::string>& raised_roots,
-                         u64& revision, RpcError& e) {
+  const auto first = [&](Session& session, ReviewSubject& subject,
+                         Vector<std::string>& raised_roots, u64& revision, RpcError& e) {
     if (!session.may_write_side_files(e)) return false;
     u64 ledger_revision = 0;
     return update_ledger(
@@ -1285,8 +1285,8 @@ bool review_list(Context& ctx, const ReviewListParams& params, ReviewsResult& ou
   // lock); the ledger read again under the dispatch lock says whether the item it answers is the
   // one the pass composed for.
   // With no filter beside it the detail answers its item, which `find_review` found.
-  const auto first = [&](Session& session, ReviewSubject& subject, Vector<std::string>& raised_roots,
-                         u64& revision, RpcError& e) {
+  const auto first = [&](Session& session, ReviewSubject& subject,
+                         Vector<std::string>& raised_roots, u64& revision, RpcError& e) {
     if (!list(session, out.ledger_revision, e)) return false;
     subject = out.reviews[0].subject;
     raised_roots = out.reviews[0].raised_roots;

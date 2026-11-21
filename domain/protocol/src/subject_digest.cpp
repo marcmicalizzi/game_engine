@@ -243,10 +243,8 @@ bool refused_by_text(io::Refusal why) noexcept {
     case io::Refusal::no_dos_name:
     case io::Refusal::dangling_link:
     case io::Refusal::outside:
-    case io::Refusal::unknown_root:
-      return false;
-    default:
-      return true;
+    case io::Refusal::unknown_root: return false;
+    default: return true;
   }
 }
 
@@ -474,8 +472,8 @@ void read_subject_files(SubjectPlan& plan, const DigestBounds& bounds) {
     // A glTF past its JSON's own bound is hashed as any file is, and its names are not followed.
     const bool follow = named && file.size() <= bounds.gltf_json;
     if (named && !follow) {
-      plan.unfollowed.push_back(SubjectPlan::Unfollowed{plan.files[i].spelled, gltf_json_tunable.name(),
-                                                        bounds.gltf_json, file.size()});
+      plan.unfollowed.push_back(SubjectPlan::Unfollowed{
+          plan.files[i].spelled, gltf_json_tunable.name(), bounds.gltf_json, file.size()});
     }
     hash_file(plan.files[i], file, plan, follow ? &gltf : nullptr);
     if (!follow || !plan.files[i].read) continue;
@@ -504,8 +502,7 @@ void read_subject_files(SubjectPlan& plan, const DigestBounds& bounds) {
       io::Refusal why = io::Refusal::none;
       if (!io::uri_relative_path(name.uri, path)) {
         n.line = k_refused_uri;
-      } else if (!plan.has_roots ||
-                 !io::admit_stored_path(plan.roots, path, base, admitted, why)) {
+      } else if (!plan.has_roots || !io::admit_stored_path(plan.roots, path, base, admitted, why)) {
         if (plan.has_roots && refused_by_text(why)) {
           n.line = k_refused_uri;
         } else {

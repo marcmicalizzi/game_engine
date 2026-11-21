@@ -1,8 +1,7 @@
 #include <core/base/assert.h>
 #include <core/time/time.h>
-#include <foundation/io/vfs.h>
-
 #include <foundation/io/roots.h>
+#include <foundation/io/vfs.h>
 
 #include <algorithm>
 #include <atomic>
