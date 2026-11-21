@@ -1073,6 +1073,7 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
   instances = sets_[0].instances;
   pair_table = sets_[0].pairs;
   tables_changed_ = true;
+  layout_changed_ = true;
   return true;
 }
 
@@ -1760,8 +1761,10 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
   }
   lap(change.write_ns);
   if (change.layout.compacted) ++compactions_;
-  if (change.slots_written > 0 || change.slots_renumbered > 0 || change.grew)
+  if (change.slots_written > 0 || change.slots_renumbered > 0 || change.grew) {
     tables_changed_ = true;
+    layout_changed_ = true;
+  }
   // The policy counts followed the slots as they were written, and the ones trimmed off the end
   // (`policy_count`, W81): until 2026-10-31 every change counted the whole instance table again,
   // twice when a tree swayed in.
@@ -2017,6 +2020,7 @@ bool GpuScene::fit_tables(TileChange& change, Vector<gfx::BufferResource>* retir
       if (!create_table_set(set, error)) return false;
     }
     tables_changed_ = true;
+    layout_changed_ = true;
   }
   instance_count_ = inst_end;
   pair_count_ = pair_end;
@@ -2059,9 +2063,14 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
   out.pair_copies.clear();
   out.pair_source = gfx::BufferResource{};
   out.set = current_set_;
+  out.layout = false;
   if (!dynamic_ || !tables_changed_ || sets_.empty()) return true;
   ENGINE_STARTUP_STAGE("table set");
   tables_changed_ = false;
+  // A frame whose changes were all records written in place (a move: `mark_instance_written`) still
+  // flips and copies, but every pair names what it named and every deform record is where it was.
+  out.layout = layout_changed_;
+  layout_changed_ = false;
   out.carry_instances = out.carry_pairs = gfx::BufferResource{};
   out.carry_instance_bytes = out.carry_pair_bytes = 0;
   out.retire.clear();
@@ -6579,6 +6588,7 @@ void GpuScene::destroy() noexcept {
   ring_peak_ = ring_overflows_ = ring_overflow_bytes_ = 0;
   current_set_ = 0;
   tables_changed_ = false;
+  layout_changed_ = false;
   layout_.reset(0, 0);
   tail_keys_.clear();
   requests_.clear();

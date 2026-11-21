@@ -7297,8 +7297,12 @@ whose table is not empty. The table holds `k_motion_moved_capacity` (4,096) inst
 past that is not followed (its motion is the camera's) and the renderer says so once. **Not
 followed at all: an instance of a world's tail that moves between frames.** A tail's slots are
 handed over whole (`set_dynamic_instances`) and an instance has no identity across two tails, so
-the pass cannot know where one stood; its vectors are the camera's. That is the common case for a
-streamed world's actors and is R158's to close before it trusts a history under one.
+the pass cannot know where one stood; its vectors are the camera's. A frame that changes a tail's
+layout is one whose vectors the accumulation does not trust, and it holds every pixel's history to
+the point's depth instead ([what holds a trail](#what-a-trail-is-and-what-holds-it), R194). A
+game's actors are not that case: they are loaded instances the host moves, and a move does not
+change the layout (R194; before it, a move in a streamed world's scene dropped every vector to the
+camera's for that frame).
 
 **A deformed vertex's last position: the pool pass writes each vertex twice** (the design's way
 (c)). The deformed-vertex pool is suballocated per frame, so last frame's position of a vertex is
@@ -7487,7 +7491,9 @@ frame at a time (`engine-view --capture-every 1`).
 images and 104 bytes a view a frame slot, beside the inputs' 16 bytes a pixel (their 12 and last
 frame's motion buffer, 4, which only the accumulation asks them to keep: `motion_bytes` counts
 it) and the frame passes' linear image at 8: 133 MB, 133 MB and 66 MB at 3840 × 2160, 332 MB
-together, where the design reckoned about 300.
+together, where the design reckoned about 300. Since R194 the inputs keep 4 bytes a pixel more for
+the accumulation, each point's depth a frame ago (33 MB at 3840 × 2160; `motion_bytes` counts it),
+and a view's block is 152 bytes.
 
 **What it closes on, measured** (R154 leg 2, 2026-11-15, 01:46 to 02:28 local, `msvc-release`,
 RTX 5090; [the design's method](../experiments/temporal-sampling.md#how-it-was-measured) and its
@@ -7566,7 +7572,7 @@ taps, bilinear, so a slow pan softens the picture over the blend's length; a sha
 (Catmull-Rom over sixteen) is the known answer and is not in. The cross-fade's hash does not take
 the phase, so the screen door is not blended (the design's third content fault). An instance of a
 world's tail that moves has the camera's motion only, so its history is looked up in the wrong
-place and the clip is all that bounds its ghost. Water's reactivity mask and a channel's flow are
+place; since R194 a depth test bounds its ghost ([below](#what-a-trail-is-and-what-holds-it)). Water's reactivity mask and a channel's flow are
 not written, so a water pixel's history is its surface's. No lock for a one-pixel feature. The
 shaders' hot reload does not rebuild this pass's pipeline.
 
@@ -7656,6 +7662,85 @@ the median (p99 6.567), this build with the accumulation off 6.023 (6.600), on 7
 which the frame passes (the accumulation and the encode) 0.579 and the motion pass 0.101. Off costs
 nothing; on is 1.25 ms more here, where leg 2 measured 0.46 unlocked: the locked card's clocks are
 in that figure, and the sharper read's sixteen taps are not separated from them.
+
+### What a trail is, and what holds it
+
+Roadmap R194, 2026-11-20. The owner turned the accumulation on in the forest at native 4K: better
+overall, **but every movement left a trail**, animals and the view as they walked. A trail is
+measured, not judged: `tests/trail_tests.cpp` flies a mover across a ground of the other brightness
+for thirty frames with the accumulation on, draws the last frame again fresh (a reset: one sample,
+nothing of the frames before), and takes the mean |accumulated − fresh| luma, in display codes, over
+the pixels the mover left exactly 1, 2, 4 and 8 frames before the last; the floor is the same over
+pixels the mover never touched (a single fresh frame's own aliasing), the contrast the mover's mean
+luma against the rest's. Each case holds every age to the floor plus a twentieth of the contrast.
+256 × 144, rt off, no shadows, two frames in flight; `ENGINE_TRAIL_CAPTURES=<dir>` writes each
+case's last accumulated frame and its fresh one as PNGs.
+
+| codes at age 1, 2, 4, 8 (contrast) | main | this build |
+|---|---|---|
+| a box the host moves 0.25 m a frame, bright on dark, scene read whole | 8.8, 26.9, 2.0, 14.3 (145) | 0.00, 0.02, 0, 0.01 |
+| the same, dark on bright | 3.7, 11.9, 0.8, 4.4 (175) | 0, 0.05, 0.02, 0.01 |
+| the same in a streamed world's scene, bright on dark | **123.6, 109.0, 107.7, 84.6** | 0.00, 0.02, 0, 0.01 |
+| the same, dark on bright | **75.1, 56.9, 51.4, 32.9** | 0, 0.05, 0.02, 0.01 |
+| a tail's box placed again every frame (a game's prop), bright on dark | 121.5, 90.9, 100.5, 66.1 | 0.00, 0.02, 0, 0.01 |
+| the same, dark on bright | 60.8, 40.4, 41.6, 21.9 | 0, 0.05, 0.02, 0.01 |
+| a skinned walker stepping 0.25 m and swinging ±35° a frame, read whole | 68.4, 58.9, 21.2, 16.9 (144) | 0.01, 0, 0, 0 |
+| the same in a streamed world's scene | **127.4, 103.9, 104.3, 84.1** | 0.01, 0, 0, 0 |
+| the camera stepping 4 cm a frame past a dark post at 5 m before a bright wall at 25 m | 25.4, 25.4, 25.5, 10.2 (180) | 0.04, 0.03, 0.07, 0.09 |
+
+Floors 0.2 to 0.65 codes. **Three causes**, in the order they cost:
+
+1. **In a streamed world's scene a move made every vector the camera's.** A move rewrites its
+   record in the table sets, and that marked the scene's tables changed exactly as a tail's new
+   layout does (`GpuScene::mark_instance_written`); the motion pass then read neither last frame's
+   names nor last frame's deform inputs, so a game's actors and every swaying tree had the camera's
+   vectors, every tap matched the pixel's motion, and a still pixel is not clipped: the mover's
+   colour stayed where it had been and faded at the blend's weight. The forest is such a scene, and
+   its actors move every frame. Now the table update says whether the **layout** changed
+   (`GpuScene::TableUpdate::layout`: a tail written, numbered again or grown) or only records in
+   place (a move, a padding, a terrain chunk's corner), and only the first drops last frame's names
+   and inputs (`MotionPass::Frame::tables_changed`).
+2. **The nearest surface's vector carried a mover's colour into what it uncovered.** A pixel takes
+   the motion of the nearest surface in its 3 × 3 (Karis 2014), so the ground just behind a moving
+   post or animal looked itself up where the mover had been and kept that history; in the frames
+   after, its own vector carried it on, and a far, slow surface is not clipped. **A pixel at a
+   moving boundary** (its own surface's vector and the nearest one's differ by more than
+   `motion_match`) is now looked up by its own vector, held to its own instance where the names hold
+   and to its own depth where they do not, and clipped as a moving pixel.
+3. **Nothing held a tap's depth.** A tap past the match counted if its instance was among the
+   3 × 3's, so a mover still beside the pixel let its last place in. The motion pass now writes,
+   beside each vector, the depth the pixel's point had a frame ago in last frame's clip space
+   (`gfx::MotionParams::prev_depth`, `MotionPass::keep_depth`, only when the accumulation asks:
+   4 bytes a pixel, 33 MB at 3840 × 2160), and a tap holds only if last frame's visibility buffer
+   has that depth there, within half a percent and the surface's one-sided slope (`depth_holds` in
+   `accumulate.slang`; the form is SVGF's, Schied et al. 2017, whose reference implementation in
+   Falcor tests a reprojected depth against its screen derivative, read for this row). **A mover's
+   history** (an instance the host has moved) past the match counts only where the pixel still shows
+   that instance: standing on the ground its foot and the ground are one depth, and membership let
+   its colour into the ground beside it, a streak along its path. **A frame whose vectors may be
+   wrong** (the layout changed: a tail's mover has the camera's vectors, a tree its instance's) takes
+   no tap on the match and no pixel on the nearest surface's vector: each is held to its own depth.
+
+**What is kept.** A still camera on a still scene has every vector zero, no boundary and every tap
+matched, so its history test is the one before R194 and its frames are the same bytes ("a still
+view converges as before": the sixteenth frame's FNV-1a is 1718842243237908460 on main's code and
+on this build, on the card and under the Titan Xp's profile). A crown's edge keeps its history wherever its vectors agree,
+as leg 2 measured. **What is given up**: on a frame whose layout changed (a tile arriving, a prop
+moved through the tail), no pixel is dilated and every tap is held to its depth, so a crown's edge
+pixels that alternate leaf and sky take less history for that frame; and a moving boundary's pixel
+no longer averages its neighbour's samples, so a mover's trailing edge is drawn at fewer samples.
+**Not done**: a tail's mover is held by its depth alone on the frames it moves, so one that slides
+along a surface at that surface's depth (a decal, a flat prop) is not told from it; last frame's
+pair table is not kept (a third table set, 134 MB of pairs on the forest), which is what names
+across a changed layout would need. The far forest's hand-off moves instances
+(`SceneRenderer::set_dynamic_instances`, `place_instances`) without the moved table; those frames
+change the layout too, so they fall to the depth test.
+
+**What it costs**: COST_LINE
+
+**Held by** `tests/trail_tests.cpp` (the table above, `msvc-debug`, the RTX 5090 and again under
+`ENGINE_GFX_TEST_DEVICE=titanxp`, whose vertex tier gave the same figures to the hundredth), and
+`accumulation_tests.cpp` and `motion_tests.cpp` unchanged and passing on both.
 
 ## Sampling over time: a reconstruction provider
 

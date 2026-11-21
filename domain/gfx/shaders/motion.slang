@@ -40,7 +40,7 @@ struct MotionParams {
   uint instance_count;
   uint moved_count;
   float2 offset_ndc;
-  uint2 pad;
+  uint64_t prev_depth;  // f32[width * height]: the point's depth in last frame's clip space; 0: none
 };
 
 struct MotionPush {
@@ -173,4 +173,17 @@ void motion_main(uint3 id : SV_DispatchThreadID) {
     packed_motion = f32tof16(motion.x) | (f32tof16(motion.y) << 16);
   }
   ((uint*)p->output)[index] = packed_motion;
+  // **The point's depth a frame ago** (R194): what last frame's visibility buffer holds at the place
+  // the vector names if that place showed this same point, so the accumulation can tell a history
+  // of this surface from one of whatever stood in front of it or behind it there. The sky is 0, as
+  // the buffer holds it.
+  if (p->prev_depth != 0) {
+    float was_depth = -1.0;
+    if (word == 0) {
+      was_depth = 0.0;
+    } else if (prev.w > 0.0) {
+      was_depth = prev.z / prev.w;
+    }
+    ((float*)p->prev_depth)[index] = was_depth;
+  }
 }

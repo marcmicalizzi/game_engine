@@ -47,8 +47,11 @@ class MotionPass {
     u64 deform_table = 0;
     f32 deform_time = 0.0f;
     u64 flora = 0;
-    // The scene's tables changed since the last frame (a streamed world's tail): an instance's
-    // deform record is then not the one last frame's table holds at its index.
+    // The scene's tables changed their layout since the last frame (a streamed world's tail
+    // written, numbered again or grown; `GpuScene::TableUpdate::layout`): an instance's deform
+    // record is then not the one last frame's table holds at its index, and a pair may name another
+    // instance. Not set by a frame whose only change was records written in place (a move), after
+    // which both still hold (R194).
     bool tables_changed = false;
   };
 
@@ -108,6 +111,15 @@ class MotionPass {
   u64 prev_motion_address(u32 view) const noexcept {
     return prev_output_.address + view_offset_[view] * sizeof(u32);
   }
+  // **The depth each pixel's point had a frame ago, for a reader that asks** (R194; the
+  // accumulation's test of a history against what last frame drew where the vector points): an f32
+  // a source pixel beside the motion buffer (`gfx::MotionParams::prev_depth`), written by the same
+  // pass. Without the ask nothing is made and nothing written.
+  bool keep_depth(const gfx::Device& device, const ViewSet& views, std::string* error);
+  const gfx::BufferResource& depth() const noexcept { return depth_; }
+  u64 depth_address(u32 view) const noexcept {
+    return depth_.address + view_offset_[view] * sizeof(f32);
+  }
   // The offsets a cycle holds: `k_sample_phases` unless a reader of the inputs asks for another
   // count (the accumulation's `renderer.reconstruction.phases`).
   void set_phases(u32 phases) noexcept { phases_ = phases > 0 ? phases : 1; }
@@ -145,6 +157,9 @@ class MotionPass {
   gfx::BufferResource prev_vis_;     // last frame's visibility buffer
   gfx::BufferResource prev_output_;  // last frame's motion buffer, only under `keep_motion`
   bool keep_motion_ = false;
+  gfx::BufferResource
+      depth_;  // f32 a source pixel: the point's last depth, only under `keep_depth`
+  bool keep_depth_ = false;
   gfx::BufferResource prev_pool_;
   Vector<gfx::BufferResource> params_;         // per frame slot: MotionParams a view, host-visible
   Vector<gfx::BufferResource> moved_buffers_;  // per frame slot: the moved table, host-visible

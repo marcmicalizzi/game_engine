@@ -150,6 +150,10 @@ struct FramePassContext {
   // resolve: valid only in a renderer with `renderer.reconstruction.inputs`. Read it as
   // `gfx::Access::ComputeRead`.
   gfx::RgBuffer motion;
+  // Beside it, each pixel's point's depth a frame ago (`gfx::MotionParams::prev_depth`, R194):
+  // valid only in a renderer whose accumulation asked for it. Read it as
+  // `gfx::Access::ComputeRead`.
+  gfx::RgBuffer motion_depth;
   // **The scene's tables and geometry this frame writes** (R186 A3): the instance and pair
   // tables of a table set, the rings' and the records' copies, the page pool — each once. A pass
   // whose shader reads the scene through an address (a pair, an instance, a material, a cluster)

@@ -59,12 +59,22 @@ struct AccumulateParams {
   u64 instances = 0;          // gfx::InstanceDesc[]
   f32 reactive_weight = 0.0f;
   u32 filter = 0;  // k_accumulate_filter_*
+  // **Where each pixel's point was in depth a frame ago** (R194; `gfx::MotionParams::prev_depth`):
+  // f32[width * height] for this view, which a history tap's depth in last frame's visibility
+  // buffer is held to. 0: not kept, and no tap is held to a depth.
+  u64 prev_depth = 0;
 };
-static_assert(sizeof(AccumulateParams) == 144, "accumulate.slang's AccumulateParams");
+static_assert(sizeof(AccumulateParams) == 152, "accumulate.slang's AccumulateParams");
 
 inline constexpr u32 k_accumulate_history = 1u;  // there is a frame before this one to read
 inline constexpr u32 k_accumulate_mean = 2u;     // the running mean at the pixel's own place
 inline constexpr u32 k_accumulate_names = 4u;    // last frame's names can be read through `pairs`
+// **Every vector can be trusted to name where its surface was** (R194): the scene's layout did not
+// change under this frame (`MotionPass::tables_changed`), so a deformed instance's second write
+// read last frame's inputs and every mover the host moved is in the moved table. Without it a
+// tap's motion matching the pixel's proves nothing (a tail's mover has the camera's vectors, a
+// swaying tree its instance's), and only names and depths decide.
+inline constexpr u32 k_accumulate_trusted = 8u;
 // How a history is read between its texels (`renderer.reconstruction.history_filter`).
 inline constexpr u32 k_accumulate_filter_bilinear = 0u;
 inline constexpr u32 k_accumulate_filter_catmull_rom = 1u;

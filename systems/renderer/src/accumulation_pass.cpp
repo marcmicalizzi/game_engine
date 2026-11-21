@@ -138,7 +138,8 @@ bool AccumulationPass::record(const FramePassContext& context, std::string* erro
   // Last frame's names are the scene's pairs, read through this frame's table: good unless the
   // scene's tables changed between the two (a streamed world's tail), when a pair may name another
   // instance and the colours alone decide.
-  const bool names = scene_->pair_table.address != 0 && !motion_->tables_changed();
+  const bool trusted = !motion_->tables_changed();
+  const bool names = scene_->pair_table.address != 0 && trusted;
   for (u32 v = 0; v < view_count_; ++v) {
     const FramePassView& view = context.views[v];
     AccumulateParams p{};
@@ -165,6 +166,7 @@ bool AccumulationPass::record(const FramePassContext& context, std::string* erro
     p.ceiling = context.display_ceiling;
     p.filter = options_.filter;
     p.reactive_weight = options_.reactive_weight;
+    p.prev_depth = motion_->depth().buffer.valid() ? motion_->depth_address(v) : 0;
     if (scene_->has_water()) {
       p.materials = scene_->materials.address;
       p.cluster_materials = scene_->cluster_materials.address;
@@ -176,7 +178,8 @@ bool AccumulationPass::record(const FramePassContext& context, std::string* erro
     if (options_.mean) {
       p.flags = k_accumulate_mean | (history ? k_accumulate_history : 0u);
     } else if (history && !resampled) {
-      p.flags = k_accumulate_history | (names ? k_accumulate_names : 0u);
+      p.flags = k_accumulate_history | (names ? k_accumulate_names : 0u) |
+                (trusted ? k_accumulate_trusted : 0u);
     }
     blocks[v] = p;
     view_width_[v] = view.width;
@@ -205,6 +208,7 @@ bool AccumulationPass::record(const FramePassContext& context, std::string* erro
   const gfx::RgImage color = context.color;
   const gfx::RgBuffer visibility = context.visibility;
   const gfx::RgBuffer motion = context.motion;
+  const gfx::RgBuffer motion_depth = context.motion_depth;
   const bool mean = options_.mean;
   graph.add_pass(
       "accumulate", gfx::PassKind::Compute,
@@ -213,6 +217,7 @@ bool AccumulationPass::record(const FramePassContext& context, std::string* erro
         if (!mean) {
           b.read(visibility, gfx::Access::ComputeRead);
           b.read(motion, gfx::Access::ComputeRead);
+          if (motion_depth.valid()) b.read(motion_depth, gfx::Access::ComputeRead);
         }
         if (past.valid()) b.read(past, gfx::Access::ComputeRead);
         if (past_names.valid()) b.read(past_names, gfx::Access::ComputeRead);

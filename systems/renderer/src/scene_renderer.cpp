@@ -1278,6 +1278,7 @@ bool SceneRenderer::create_motion(std::string* error) {
   motion_->set_fade_turn(resolved_.accumulation_fade_turn);
   accumulation_ = new AccumulationPass;
   if (!motion_->keep_motion(*device_, views_, error) ||
+      !motion_->keep_depth(*device_, views_, error) ||
       !accumulation_->create(*device_, *scene_, *motion_, shaders_, width_, height_,
                              desc_.frames_in_flight, options, error) ||
       !add_frame_pass(FramePassStage::Reconstruction, &AccumulationPass::record_thunk,
@@ -4382,7 +4383,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     mf.deform_table = deform_table_address;
     mf.deform_time = deform_time;
     mf.flora = flora_table;
-    mf.tables_changed = write_tables;
+    // Not every table write: a frame whose only change was a move keeps last frame's names and
+    // inputs readable (R194; GpuScene::TableUpdate::layout).
+    mf.tables_changed = write_tables && tables_.layout;
     motion_->prepare(mf, views_, scene);
   }
 
@@ -4798,6 +4801,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   gfx::RgBuffer rg_motion{};
   gfx::RgBuffer rg_prev_pool{};
   if (motion_on) rg_motion = graph.import_buffer("motion", motion_->output());
+  // The points' depths a frame ago, beside the vectors, where the accumulation asked (R194).
+  gfx::RgBuffer rg_motion_depth{};
+  if (motion_on && motion_->depth().buffer.valid())
+    rg_motion_depth = graph.import_buffer("motion depth", motion_->depth());
   if (motion_pool) rg_prev_pool = graph.import_buffer("deform pool before", motion_->prev_pool());
   // The terrain levels' fields: every field buffer this frame's table names, which the pool pass
   // reads, and the ones the host handed over, which this frame copies in from their staging. A
@@ -6500,6 +6507,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             }
             read_scene(b, gfx::Access::ComputeRead, true);
             b.write(rg_motion, gfx::Access::ComputeWrite);
+            if (rg_motion_depth.valid()) b.write(rg_motion_depth, gfx::Access::ComputeWrite);
           },
           [&](gfx::CommandList cb, gfx::RenderGraph&) {
             motion_->record(cb, pipelines.motion, timer, slot);
@@ -6820,6 +6828,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     context.height = height_;
     context.visibility = rg_vis;
     context.motion = rg_motion;
+    context.motion_depth = rg_motion_depth;
     context.scene_tables = scene_tables;  // R186 A3
     context.scene_table_count = scene_table_count;
     context.view_count = views;

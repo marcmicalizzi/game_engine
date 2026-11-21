@@ -373,6 +373,15 @@ inside one tree a wrong leaf's history is a leaf's, green on green and clipped; 
 the history goes. Whether the instance or the pair is the right grain for a crown against another
 crown of the same species is stage 2's measurement.
 
+**Status, 2026-11-20 (R194).** The owner's first walk with the accumulation on found trails behind
+every mover and behind near things as the view walked. The depth test this section set aside comes
+back where it does not fight the crowns: only past the motion match, at a moving boundary, and on a
+frame whose vectors may be wrong, each pixel's point held to the depth it had a frame ago (the
+motion pass writes it), within half a percent and the surface's one-sided slope, as SVGF's
+reprojection holds its depth to the depth's derivative. Under a held view or a pan every tap still
+matches and nothing changes ([renderer](../subsystems/renderer.md#what-a-trail-is-and-what-holds-it)
+has the cases, the causes and the figures).
+
 A camera cut, a teleport and a load are `FrameDesc::history = reset`: the hosts say it, as the
 vendors' interfaces all require (FSR's `reset`, the same in the others).
 
@@ -731,6 +740,15 @@ Read 2026-11-14 unless marked.
   L. Yang, S. Liu, M. Salvi, "A Survey of Temporal Antialiasing Techniques", *Computer Graphics
   Forum* 39(2), 2020. Cited from the published versions as known; not reopened tonight, so a
   detail attributed to them here is to be checked against them when stage 2's design is written.
+- C. Schied, A. Kaplanyan, C. Wyman, A. Patney, C. R. A. Chaitanya, J. Burgess, S. Liu,
+  C. Dachsbacher, A. Lefohn, M. Salvi, "Spatiotemporal Variance-Guided Filtering: Real-Time
+  Reconstruction for Path-Traced Global Illumination", *High Performance Graphics* 2017: the
+  publication page (NVIDIA Research), and its reference implementation's reprojection test,
+  Falcor's `SVGFReproject.ps.slang` (`isReprjValid`: a depth difference over the depth's screen
+  derivative plus 0.01 above 10 is a miss, a normals test beside it, no mesh id), read for R194
+  (2026-11-20). Nehab et al., "Accelerating Real-Time Shading with Reverse Reprojection Caching"
+  (Graphics Hardware 2007), the depth-tested reprojection cache this descends from: not read (the
+  fetch tool could not decode the PDF).
 - Already cited by the pages this builds on: Castaño, "Computing Alpha Mipmaps", 2010; Golus,
   "Anti-aliased Alpha Test", 2017 ([renderer](../subsystems/renderer.md#alpha-tested-geometry),
   [texture](../subsystems/texture.md#alpha-tested-masks)).
