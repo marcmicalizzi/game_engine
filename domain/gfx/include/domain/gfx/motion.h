@@ -92,9 +92,17 @@ struct MotionParams {
   // names was that point or something in front of or behind it. 0: not written (only the
   // accumulation asks, `MotionPass::keep_depth`).
   u64 prev_depth = 0;
+  // **The instance slots this frame's tables wrote since the last frame** (R194 leg 2):
+  // `fresh_count` runs of `uint2 {begin, end}`, sorted, at `fresh`. An instance in one is new to
+  // its slot, so its vector is its own transform's and the camera's, never last frame's deform
+  // inputs' (which held another tree's pose at its record, or none). 0 / 0: none.
+  u64 fresh = 0;
+  u32 fresh_count = 0;
+  u32 fresh_pad = 0;
 };
-static_assert(sizeof(MotionParams) == 416);
+static_assert(sizeof(MotionParams) == 432);
 static_assert(offsetof(MotionParams, prev_depth) == 408);
+static_assert(offsetof(MotionParams, fresh) == 416);
 
 // A half float's value: what a reader of the motion buffer on the CPU decodes a word with.
 inline f32 half_to_float(u16 half) noexcept {

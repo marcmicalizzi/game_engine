@@ -494,6 +494,9 @@ struct ResolvedSettings {
   u32 accumulation_filter = 1;
   f32 accumulation_reactive_weight = 0.25f;
   bool accumulation_fade_turn = false;
+  // `renderer.reconstruction.layout_follow` (R194 leg 2): a layout change holds only the slots it
+  // wrote to their depth; false: the whole frame, as before.
+  bool accumulation_layout_follow = true;
   bool gi_shell_clip = false;   // `renderer.gi.shell_clip`: the eye's rays stop at `gi_shell_m`
   bool gi_shell_first = false;  // `renderer.gi.shell_first`: the directions are the first threads
   u32 gi_preroll = 0;           // `renderer.gi.preroll`: steps before a cold frame's own (stage 5)

@@ -2361,7 +2361,7 @@ struct FrameWorld @version(1) {
 /// drew under.
 ///
 /// Version 22 (R124): `gpu_ms` carries the static shape caches' rebuild, `deform_cache`.
-struct FrameRecord @version(22) {
+struct FrameRecord @version(23) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0; an interactive session's frame, from 0.
@@ -2531,6 +2531,18 @@ struct FrameRecord @version(22) {
   /// number — which a live session's record does not share with the renderer's frame index.
   resolve_stop: u32 = 0 @since(21)
   sun_ray_rule: u32 = 0 @since(21)
+  /// Version 23 (R194 leg 2; docs/subsystems/renderer.md, "What a layout change costs the
+  /// accumulation"): with the accumulation on, this frame's pixels that had a history to read, those
+  /// that took one, those that took one with their own vectors trusted (their instance was not new
+  /// to its slot and the frame's tables could be followed), and those of instances new to their slot;
+  /// the slot runs the frame's tables wrote and whether nothing of last frame's could be followed
+  /// (`history_whole`). Zero without the accumulation.
+  history_pixels: u32 = 0 @since(23)
+  history_taken: u32 = 0 @since(23)
+  history_trusted: u32 = 0 @since(23)
+  history_fresh: u32 = 0 @since(23)
+  history_runs: u32 = 0 @since(23)
+  history_whole: bool = false @since(23)
 }
 
 /// What a flight's frame loop allocated on the frame's thread, over its recorded frames (every

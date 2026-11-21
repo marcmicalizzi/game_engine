@@ -123,7 +123,7 @@ ENGINE_EXPECT_SIZE(96, 4, gfx::InstanceDesc);
 // The frame's origin as the passes read it: a WorldEye in three float4 rows (ADR-0053).
 ENGINE_EXPECT_SIZE(48, 4, gfx::FrameEye);
 // The motion pass's block and its moved table's entry (motion.h; mirrored in motion.slang).
-ENGINE_EXPECT_SIZE(416, 8, gfx::MotionParams);
+ENGINE_EXPECT_SIZE(432, 8, gfx::MotionParams);
 ENGINE_EXPECT_SIZE(64, 4, gfx::MovedInstance);
 
 // Still 128 with world cells (2026-10-05): `eye`, the address of the frame's origin, took the

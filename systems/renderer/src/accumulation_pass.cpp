@@ -1,4 +1,5 @@
 #include <accumulation_pass.h>
+#include <cstring>
 #include <motion_pass.h>
 #include <renderer_log.h>
 #include <shaders/accumulate.spv.h>
@@ -36,6 +37,16 @@ bool AccumulationPass::create(const gfx::Device& device, GpuScene& scene, const 
                             block, error)) {
       return false;
     }
+  }
+  // The census (R194 leg 2): eight words a slot, cleared by the CPU before the slot's frame counts.
+  census_.resize(frames_in_flight);
+  for (gfx::BufferResource& block : census_) {
+    if (!gfx::create_buffer(device, 8 * sizeof(u32),
+                            gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress, true,
+                            block, error)) {
+      return false;
+    }
+    std::memset(block.mapped, 0, 8 * sizeof(u32));
   }
   return create_images(error);
 }
@@ -97,6 +108,8 @@ void AccumulationPass::destroy() noexcept {
   gfx::destroy_compute_pipeline(*device_, pipeline_);
   for (gfx::BufferResource& block : params_)
     gfx::destroy_buffer(*device_, block);
+  for (gfx::BufferResource& block : census_)
+    gfx::destroy_buffer(*device_, block);
   *this = AccumulationPass{};
 }
 
@@ -104,7 +117,22 @@ u64 AccumulationPass::device_bytes() const noexcept {
   u64 bytes = u64{width_} * height_ * 8 * 2;  // two half-float images of four channels
   for (const gfx::BufferResource& block : params_)
     bytes += block.size;
+  for (const gfx::BufferResource& block : census_)
+    bytes += block.size;
   return bytes;
+}
+
+AccumulationPass::Census AccumulationPass::census(u32 slot) const noexcept {
+  Census out;
+  if (slot >= census_.size() || census_[slot].mapped == nullptr) return out;
+  const auto* words = static_cast<const u32*>(census_[slot].mapped);
+  out.pixels = words[0];
+  out.taken = words[1];
+  out.trusted = words[2];
+  out.fresh = words[3];
+  out.runs = words[4];
+  out.whole = words[5] != 0;
+  return out;
 }
 
 bool AccumulationPass::record_thunk(const FramePassContext& context, void* user,
@@ -140,6 +168,14 @@ bool AccumulationPass::record(const FramePassContext& context, std::string* erro
   // instance and the colours alone decide.
   const bool trusted = !motion_->tables_changed();
   const bool names = scene_->pair_table.address != 0 && trusted;
+  // Since R194's second leg a frame whose layout changed says which slots it wrote (`fresh`), and
+  // only their instances lose their names and vectors. The census starts again for this slot, whose
+  // last frame is complete and was read when its statistics were folded.
+  auto* census = static_cast<u32*>(census_[slot].mapped);
+  for (u32 w = 0; w < 8; ++w)
+    census[w] = 0;
+  census[4] = motion_->fresh_count();
+  census[5] = history && !options_.mean && !trusted ? 1u : 0u;
   for (u32 v = 0; v < view_count_; ++v) {
     const FramePassView& view = context.views[v];
     AccumulateParams p{};
@@ -167,6 +203,9 @@ bool AccumulationPass::record(const FramePassContext& context, std::string* erro
     p.filter = options_.filter;
     p.reactive_weight = options_.reactive_weight;
     p.prev_depth = motion_->depth().buffer.valid() ? motion_->depth_address(v) : 0;
+    p.fresh = trusted ? motion_->fresh_address(slot) : 0;
+    p.fresh_count = trusted ? motion_->fresh_count() : 0;
+    p.census = census_[slot].address;
     if (scene_->has_water()) {
       p.materials = scene_->materials.address;
       p.cluster_materials = scene_->cluster_materials.address;
@@ -210,6 +249,7 @@ bool AccumulationPass::record(const FramePassContext& context, std::string* erro
   const gfx::RgBuffer motion = context.motion;
   const gfx::RgBuffer motion_depth = context.motion_depth;
   const bool mean = options_.mean;
+  const gfx::RgBuffer census_buffer = graph.import_buffer("accumulate census", census_[slot]);
   graph.add_pass(
       "accumulate", gfx::PassKind::Compute,
       [&](gfx::PassBuilder& b) {
@@ -225,6 +265,7 @@ bool AccumulationPass::record(const FramePassContext& context, std::string* erro
         // The pair table, the instance, the cluster's material and the material (R186 A3).
         read_scene_tables(context, b, gfx::Access::ComputeRead);
         b.write(out, gfx::Access::ComputeWrite);
+        b.write(census_buffer, gfx::Access::ComputeWrite);  // counted by atomics: read and written
       },
       [this, slot, timer = context.timer, bindless = context.bindless](gfx::CommandList cb,
                                                                        gfx::RenderGraph&) {

@@ -63,8 +63,17 @@ struct AccumulateParams {
   // f32[width * height] for this view, which a history tap's depth in last frame's visibility
   // buffer is held to. 0: not kept, and no tap is held to a depth.
   u64 prev_depth = 0;
+  // **The slots new to their instances this frame** (R194 leg 2; `MotionPass::fresh_address`):
+  // `uint2 {begin, end}` runs, sorted. A pixel of one is held to its depth alone; a tap whose name
+  // this frame's table puts in one names nothing. 0 / 0: none, every name and vector of the frame
+  // stands unless the frame is not `k_accumulate_trusted`.
+  u64 fresh = 0;
+  // u32[8]: this frame's census (`AccumulationPass::Census`), counted by wave; 0: none.
+  u64 census = 0;
+  u32 fresh_count = 0;
+  u32 pad = 0;
 };
-static_assert(sizeof(AccumulateParams) == 152, "accumulate.slang's AccumulateParams");
+static_assert(sizeof(AccumulateParams) == 176, "accumulate.slang's AccumulateParams");
 
 inline constexpr u32 k_accumulate_history = 1u;  // there is a frame before this one to read
 inline constexpr u32 k_accumulate_mean = 2u;     // the running mean at the pixel's own place
@@ -106,6 +115,20 @@ class AccumulationPass {
   // Frames accumulated into the picture the last recorded frame left, that frame included: 1 for a
   // frame with no history.
   u32 accumulated() const noexcept { return count_; }
+  // **What the frame that last used `slot` took from its history** (R194 leg 2; the frame record's
+  // `history_*`): the pixels that had one to read, took one, took one with their own vectors
+  // trusted, and were of an instance new to its slot, as the pass counted them; the fresh runs the
+  // frame read and whether its tables could be followed at all. Read once the slot's frame is
+  // complete (its statistics are folded); the next frame recorded in the slot clears it.
+  struct Census {
+    u32 pixels = 0;
+    u32 taken = 0;
+    u32 trusted = 0;
+    u32 fresh = 0;
+    u32 runs = 0;
+    bool whole = false;
+  };
+  Census census(u32 slot) const noexcept;
   // What it keeps on the device: the two images and the per-slot blocks.
   u64 device_bytes() const noexcept;
 
@@ -124,6 +147,7 @@ class AccumulationPass {
   u32 storage_slots_[2] = {gfx::BindlessSet::k_invalid_slot, gfx::BindlessSet::k_invalid_slot};
   u32 sampled_slots_[2] = {gfx::BindlessSet::k_invalid_slot, gfx::BindlessSet::k_invalid_slot};
   Vector<gfx::BufferResource> params_;  // per frame slot: AccumulateParams a view, host-visible
+  Vector<gfx::BufferResource> census_;  // per frame slot: u32[8], host-visible
   u32 width_ = 0;
   u32 height_ = 0;
   u32 current_ = 0;         // the image the last recorded frame wrote

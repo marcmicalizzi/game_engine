@@ -38,7 +38,7 @@
 
 [[vk::binding(1, 0)]] RWTexture2D<float4> g_storage_images[];
 
-// Mirrors renderer::AccumulateParams (144 bytes).
+// Mirrors renderer::AccumulateParams (176 bytes).
 struct AccumulateParams {
   uint64_t visibility;       // u64[width * height]: this view's region of this frame's buffer
   uint64_t prev_visibility;  // the same region of last frame's
@@ -76,7 +76,34 @@ struct AccumulateParams {
   // f32[width * height]: each pixel's point's depth a frame ago (the motion pass's; R194): 0 the
   // sky, -1 behind last frame's camera. 0 address: not kept, no tap is held to a depth.
   uint64_t prev_depth;
+  // uint2[fresh_count] {begin, end}, sorted (R194 leg 2): the instance slots this frame's tables wrote
+  // since the last frame. A pixel of one is held to its depth alone; a tap whose name this frame's
+  // table puts in one names nothing. Read only where the names are (`k_accumulate_names`).
+  uint64_t fresh;
+  uint64_t census;  // u32[8]: pixels with a history, taken, taken trusted, fresh; 0: none
+  uint fresh_count;
+  uint pad;
 };
+
+// Whether instance is in one of the sorted runs p->fresh holds (motion.slang's `in_fresh_runs`).
+bool fresh_slot(AccumulateParams* p, uint instance) {
+  if (p->fresh_count == 0 || instance >= 0xfffffffdu) return false;
+  uint2* table = (uint2*)p->fresh;
+  uint lo = 0;
+  uint hi = p->fresh_count;
+  while (lo < hi) {
+    const uint mid = (lo + hi) >> 1;
+    const uint2 run = table[mid];
+    if (instance < run.x) {
+      hi = mid;
+    } else if (instance >= run.y) {
+      lo = mid + 1;
+    } else {
+      return true;
+    }
+  }
+  return false;
+}
 
 static const uint k_filter_bilinear = 0u;
 static const uint k_filter_catmull_rom = 1u;
@@ -267,6 +294,11 @@ void accumulate_main(uint3 id : SV_DispatchThreadID) {
     g_storage_images[p->output][at] = exposed(p, result);
     return;
   }
+  // What this pixel took, for the census (R194 leg 2).
+  bool counted_taken = false;
+  bool counted_trusted = false;
+  bool counted_fresh = false;
+  const bool counted_had = (p->flags & k_accumulate_history) != 0;
   if ((p->flags & k_accumulate_history) != 0) {
     // The 3x3 round the pixel: its colours' mean and spread, the nearest surface (reversed-Z, so
     // the largest depth; an empty pixel is the farthest) and the instances it holds.
@@ -279,6 +311,7 @@ void accumulate_main(uint3 id : SV_DispatchThreadID) {
     uint held[9];
     float nearest = -1.0;
     int2 nearest_at = local;
+    int nearest_k = 4;
     for (int k = 0; k < 9; ++k) {
       const int2 n = clamp(local + int2(k % 3 - 1, k / 3 - 1), int2(0, 0), size - 1);
       const float4 c = k == 4 ? colour : shown(p, g_storage_images[p->color][corner + n]);
@@ -293,6 +326,7 @@ void accumulate_main(uint3 id : SV_DispatchThreadID) {
       if (depth > nearest) {
         nearest = depth;
         nearest_at = n;
+        nearest_k = k;
       }
     }
     // **A pixel at a moving boundary reads its own surface's history** (R194). Where the nearest
@@ -318,7 +352,16 @@ void accumulate_main(uint3 id : SV_DispatchThreadID) {
     // a tail that was placed again has the camera's vectors, the same as the ground it crosses, so
     // no boundary shows, and the nearest surface's vector looks the ground at its trailing edge up
     // where the mover was, a column a frame that stays (a comb of the mover's colour behind it).
-    const bool trusted = (p->flags & k_accumulate_trusted) != 0;
+    // **Since R194's second leg a layout change costs what it touched**: a frame whose tables only
+    // wrote some slots (a tile arrived, left, changed) says which (`fresh`), and only a pixel of an
+    // instance new to its slot, or beside one as its nearest surface, takes that frame's distrust;
+    // every other pixel keeps its vector, its dilation and its names.
+    const bool own_fresh = names && fresh_slot(p, held[4]);
+    const bool near_fresh = names && nearest_k != 4 && fresh_slot(p, held[nearest_k]);
+    const bool trusted = (p->flags & k_accumulate_trusted) != 0 &&
+                         (p->fresh_count == 0 || names) && !own_fresh && !near_fresh;
+    counted_trusted = trusted;
+    counted_fresh = own_fresh;
     const bool own_only = boundary || !trusted;
     const int2 source = own_only ? local : nearest_at;
     const uint packed = own_only ? own_packed : near_packed;
@@ -349,17 +392,23 @@ void accumulate_main(uint3 id : SV_DispatchThreadID) {
         // somewhere else in this one: its place is the names' to decide, always.
         const uint moved = ((uint*)p->prev_motion)[tap.y * size.x + tap.x];
         const uint64_t word = before[tap.y * size.x + tap.x];
-        const uint was_held = names ? instance_of(p, word) : (word == 0 ? k_sky : 0u);
+        uint was_held = names ? instance_of(p, word) : (word == 0 ? k_sky : 0u);
+        // A name this frame's table puts in a slot written since is not the one last frame drew.
+        if (names && fresh_slot(p, was_held)) was_held = 0xfffffffdu;
         // What last frame drew there against where this pixel's point was (R194): true when no
         // depths are kept, as before them.
         const bool deep = !depths || depth_holds(asfloat(uint(word >> 32)), expected, slope);
         bool known = false;
         if (own_only) {
           // Its own surface only: by name where the names hold, else by depth.
-          known = names ? was_held == own : deep;
+          known = names && !own_fresh ? was_held == own : deep;
         } else {
           // The match proves nothing on a frame whose vectors may be wrong (`trusted`).
+          // Nor for a tap that showed an instance whose slot was written since, or a pair past this
+          // frame's table (R194 leg 2): a tile that left was as still as the ground it stood on,
+          // and its last colour is not the ground's.
           if (trusted && moved != k_motion_invalid && p->motion_match > 0.0 &&
+              (was_held < 0xfffffffdu || was_held == k_sky) &&
               (p->moved_count == 0 || (names && !ever_moved(p, was_held)))) {
             const float2 apart = float2(f16tof32(moved & 0xffffu), f16tof32(moved >> 16)) - motion;
             known = dot(apart, apart) <= p->motion_match * p->motion_match;
@@ -386,6 +435,7 @@ void accumulate_main(uint3 id : SV_DispatchThreadID) {
         total += w;
       }
       if (total > 1e-3) {
+        counted_taken = true;
         history /= total;
         // All four taps held and the read is the sharper one: the bilinear read softens a picture
         // that moves by fractions of a pixel over the blend's length (a slow pan, a sway).
@@ -419,4 +469,18 @@ void accumulate_main(uint3 id : SV_DispatchThreadID) {
     }
   }
   g_storage_images[p->output][at] = exposed(p, max(result, 0.0));
+  // **The census** (R194 leg 2; the frame record's `history_*`): one add a word a wave.
+  if (p->census != 0) {
+    uint* counts = (uint*)p->census;
+    const uint had = WaveActiveCountBits(counted_had);
+    const uint taken = WaveActiveCountBits(counted_taken);
+    const uint trusted = WaveActiveCountBits(counted_taken && counted_trusted);
+    const uint fresh = WaveActiveCountBits(counted_fresh);
+    if (WaveIsFirstLane()) {
+      if (had != 0) InterlockedAdd(counts[0], had);
+      if (taken != 0) InterlockedAdd(counts[1], taken);
+      if (trusted != 0) InterlockedAdd(counts[2], trusted);
+      if (fresh != 0) InterlockedAdd(counts[3], fresh);
+    }
+  }
 }

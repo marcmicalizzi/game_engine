@@ -7741,13 +7741,14 @@ it is there that the depth test does most of its work, and on each of those fram
 vectors are its instance's (the pool's second write reads this frame's inputs), so its leaves are
 held to their depths and a crown takes less history while the view walks. What would give those
 frames back their trust is per instance and not per frame: which slots a layout wrote, and a deform
-table read through last frame's entries; that is a row of its own.
+table read through last frame's entries; R194's second leg built it
+([what a layout change costs the accumulation](#what-a-layout-change-costs-the-accumulation)).
 **Not done**: a tail's mover is held by its depth alone on the frames it moves, so one that slides
 along a surface at that surface's depth (a decal, a flat prop) is not told from it; last frame's
 pair table is not kept (a third table set, 134 MB of pairs on the forest), which is what names
-across a changed layout would need. The far forest's hand-off moves instances
-(`SceneRenderer::set_dynamic_instances`, `place_instances`) without the moved table; those frames
-change the layout too, so they fall to the depth test.
+across a changed layout would need (the second leg's section below says why the slots a change
+wrote make it unnecessary for the changes a walk makes). The far forest's hand-off moved instances
+without the moved table until the second leg.
 
 **What it costs** (2026-11-20, 22:34 to 23:03, `msvc-release`, RTX 5090, the forest staging at
 3840 × 2160, `--raster rt --shadows rt`, the bounce, micromaps, the accumulation on, the grounded
@@ -7764,6 +7765,86 @@ pair's noise at p99. Off it costs nothing: no buffer is made and no pass recorde
 **Held by** `tests/trail_tests.cpp` (the table above, `msvc-debug`, the RTX 5090 and again under
 `ENGINE_GFX_TEST_DEVICE=titanxp`, whose vertex tier gave the same figures to the hundredth), and
 `accumulation_tests.cpp` and `motion_tests.cpp` unchanged and passing on both.
+
+### What a layout change costs the accumulation
+
+Roadmap R194, second leg, 2026-11-21. The first leg's rule held **every** pixel of a frame whose
+streamed tables changed their layout to its depth, and dropped every deformed instance's last-frame
+inputs, and on the forest staging's walk that was 1,880 frames of 2,401. **Now a layout change
+costs what it touched.**
+
+**What a layout change rewrites, and how the frame knows.** A streamed world's tail is blocks, each
+with its own run of instance slots and a reserved run of pairs
+([instances that come and go](#instances-that-come-and-go)), so a tile that arrives, leaves or
+changes writes its own slots (`SlotWrite`) and nothing else, and every other slot keeps its
+instance, its first pair and with them every pair id it had — and a swaying tree its deform record,
+which is per resident tree and handed between trees only through a written slot
+([streamed trees sway](#streamed-trees-sway)). So the change already knows exactly what it touched:
+`GpuScene::write_slots` notes each written run (`note_fresh`), with the slots past a tail that
+shrank, and the next frame's `prepare_tables` hands them over sorted and merged
+(`GpuScene::TableUpdate::fresh`, a few runs a tile and at most `k_fresh_capacity`, 1,024). The motion
+pass copies them into its frame slot's table (`gfx::MotionParams::fresh`, 432 bytes a view now), and
+the accumulation reads the same (`renderer::AccumulateParams::fresh`, 176 bytes with the census
+below). Then:
+
+- **An instance in a fresh slot is new to it**: its vector is its own transform's and the camera's
+  (the motion pass skips the pool's second write for it, whose record held another tree's pose or
+  none last frame), and its pixels, and any pixel whose nearest surface is one, are held to their
+  depth alone, as the first leg held a whole frame.
+- **A name of last frame's that this frame's pair table puts in a fresh slot names nothing**: the
+  pair belonged to a tile that left, or to another before the slot was written. Such a tap is not
+  among any 3 × 3's instances, and **the match proves nothing for it**: a tile that left was as still
+  as the ground it stood on, so last frame's motion there matches the ground's, and without this the
+  ground it uncovered kept its colour ("a tile that leaves leaves none", which fails without the rule).
+- **Every other pixel keeps all it had**: its vector, the nearest surface's dilation, its names, and
+  a swaying tree's last-frame inputs (`MotionPass::prev_inputs_` stays on).
+- **What still falls to the whole frame** (`TableUpdate::whole`): pairs numbered again (T154's tight
+  layout moves the first pair of slots it did not write, so a pair of last frame's may now be
+  another slot's), a growth of the stride or the instance capacity, a relayout (the deform and pose
+  tables made again), and a change past the table's room. `renderer.reconstruction.layout_follow`
+  (on) set false is the first leg's rule, for a measurement's other side.
+
+**Last frame's pair table is not kept, and need not be.** Keeping it (a third table set, 134 MB of
+pairs on the forest) would name last frame's pixels across any layout; the slots tell the same for
+every change that wrote slots and moved no pair, which is the change a walk makes. A tight layout's
+numbering is a few shift runs over slots (`change_shifts_`), so following it is a map sized by the
+change too: last frame's pair ranges per shift run and their offset, which the accumulation would
+search like the fresh runs. Not built: it is rarer than the frames it would give back
+(STAGING_WHOLE), and it is a row of its own if the census says otherwise. **A tail's prop placed
+again every frame** has no identity across two tails (the same slot may hold another instance of
+its mesh, from another tile), so it is not followed: its slot is fresh and it is held to its depth,
+as the first leg measured ("an instance of the world's tail placed again every frame").
+
+**The far forest's hand-off says what it moved** (`SceneRenderer::set_dynamic_instances`,
+`GpuScene::mark_instances_new`): each far tile's instance jumps between its tile's corner and its
+parking place under the ground, a move the frame was not told of, so its vectors were the camera's
+as if it had stood there, and a name of it from last frame (a stand-in that went to its parking
+place) still named it. Its slot is now one of the frame's fresh runs, as a written slot is: the
+stand-in that comes in where its tile's trees left is held to its depth (where the trees stood at
+its depth it takes their history, a hand-over), and nothing of last frame keeps the one that left.
+Not the moved table (`MotionPass::note_moves`), the first leg's proposal: a jump has no path to
+follow, and that table's membership is for good — it would hold 4,096 instances, and each far
+instance in it would lose the match test at its silhouette against the sky for the rest of the
+session, which is where a distant crown line shimmers.
+
+**The census** (`AccumulationPass::Census`; the frame record's `history_pixels`, `history_taken`,
+`history_trusted`, `history_fresh`, `history_runs`, `history_whole`, `FrameRecord` version 23):
+per frame, counted by wave in the accumulation pass, the pixels with a history to read, those that
+took one, those that took one with their own vectors trusted, and those of instances new to their
+slot. STAGING_TABLE
+
+**Shimmer on a crown** (`trail_tests.cpp`, "a crown shimmers no more for a layout change elsewhere"):
+the young palm with no wind, a camera stepping a millimetre a frame, a tail of one palm behind the
+camera placed again every frame or once; the mean over the crown's edge pixels of luma's standard
+deviation over frames 16 to 47. Each frame drawn fresh: **17.4** codes over 3,712 pixels; accumulated with the tail placed once: **6.50**; with it placed again every frame: **6.50**, the same to the last digit (the frames are the same bytes); with it placed again every frame under the first leg's rule: **25.5**, worse than no accumulation at all, because an edge pixel held to its depth takes its history on the frames its tap shows the leaf and refuses it on those it shows the sky, so the blend jumps between a long history and one frame (`msvc-debug`, the RTX 5090 and the titanxp profile alike).
+
+**What it costs.** COST2_LINE
+
+**Held by** `trail_tests.cpp`: "a layout change elsewhere costs the picture nothing" (the swaying
+palm in a streamed scene under a camera stepping a centimetre a frame, with a tail placed again
+every frame behind it, draws every frame to the byte as with the tail placed once; under the first
+leg's rule 39 of the 40 frames differ, the last 0.83 codes a pixel), the shimmer case above, "a tile that leaves leaves none", and every case
+of the first leg, on the card and under `ENGINE_GFX_TEST_DEVICE=titanxp`.
 
 ## Sampling over time: a reconstruction provider
 

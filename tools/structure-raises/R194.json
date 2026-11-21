@@ -1,13 +1,14 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "R194",
-  "reason": "R194: the trail mend's hunks (a layout flag beside the table update, the motion depth's import and declaration in record_frame) and the renderer page's section on trails",
-  "date": "2026-11-20",
+  "reason": "R194: the trail mend's hunks (a layout flag beside the table update, the motion depth's import and declaration in record_frame) and the renderer page's section on trails. R194 leg 2: the slots a layout change wrote (GpuScene::TableUpdate::fresh, note_fresh, mark_instances_new), the fresh runs and the layout_follow switch handed to the motion pass in record_frame, the far forest's hand-off marking its jumps new, and the renderer page's section on what a layout change costs the accumulation; apps.md's line on FrameRecord version 23",
+  "date": "2026-11-21",
   "by": "Marc Micalizzi",
   "deltas": {
-    "renderer.record_frame.lines": 8,
-    "renderer.gpu_scene_cpp.lines": 10,
-    "renderer.gpu_scene_h.lines": 7,
-    "page:docs/subsystems/renderer.md": 9405
+    "renderer.record_frame.lines": 10,
+    "renderer.gpu_scene_cpp.lines": 58,
+    "renderer.gpu_scene_h.lines": 30,
+    "page:docs/subsystems/renderer.md": 16332,
+    "page:docs/subsystems/apps.md": 572
   }
 }

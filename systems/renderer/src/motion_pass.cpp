@@ -111,12 +111,15 @@ bool MotionPass::create(const gfx::Device& device, const GpuScene& scene, const 
                         u32 frames_in_flight, std::string* error) {
   params_.resize(frames_in_flight);
   moved_buffers_.resize(frames_in_flight);
+  fresh_buffers_.resize(frames_in_flight);
   moved_.reserve(k_motion_moved_capacity);
   for (u32 slot = 0; slot < frames_in_flight; ++slot) {
     if (!gfx::create_buffer(device, sizeof(gfx::MotionParams) * k_max_views, k_address, true,
                             params_[slot], error) ||
         !gfx::create_buffer(device, sizeof(gfx::MovedInstance) * k_motion_moved_capacity, k_address,
-                            true, moved_buffers_[slot], error)) {
+                            true, moved_buffers_[slot], error) ||
+        !gfx::create_buffer(device, u64{GpuScene::TableUpdate::k_fresh_capacity} * 2 * sizeof(u32),
+                            k_address, true, fresh_buffers_[slot], error)) {
       return false;
     }
   }
@@ -166,6 +169,8 @@ void MotionPass::destroy(const gfx::Device& device) noexcept {
   for (gfx::BufferResource& buffer : params_)
     gfx::destroy_buffer(device, buffer);
   for (gfx::BufferResource& buffer : moved_buffers_)
+    gfx::destroy_buffer(device, buffer);
+  for (gfx::BufferResource& buffer : fresh_buffers_)
     gfx::destroy_buffer(device, buffer);
   *this = MotionPass{};
 }
@@ -233,6 +238,18 @@ void MotionPass::prepare(const Frame& frame, const ViewSet& views, const GpuScen
   view_count_ = views.size();
   had_history_ = last_.valid;
   tables_changed_ = frame.tables_changed;
+  // The slots this frame's tables wrote (R194 leg 2), into this slot's copy: what the motion pass
+  // and the accumulation hold to depth, where every other instance keeps last frame's names.
+  fresh_count_ = 0;
+  if (!frame.tables_changed && !frame.fresh.empty() &&
+      frame.fresh.size() <= GpuScene::TableUpdate::k_fresh_capacity) {
+    auto* runs = static_cast<u32*>(fresh_buffers_[frame.slot].mapped);
+    for (const GpuScene::TableUpdate::SlotRun& run : frame.fresh) {
+      runs[2 * fresh_count_] = run.begin;
+      runs[2 * fresh_count_ + 1] = run.end;
+      ++fresh_count_;
+    }
+  }
   ++serial_;
   // This frame writes the buffer the frame before last wrote; last frame's is kept.
   if (keep_motion_) {
@@ -293,6 +310,8 @@ void MotionPass::prepare(const Frame& frame, const ViewSet& views, const GpuScen
     p.offset_ndc_x = 2.0f * view.offset_x / static_cast<f32>(view.source_width);
     p.offset_ndc_y = -2.0f * view.offset_y / static_cast<f32>(view.source_height);
     p.prev_depth = depth_.buffer.valid() ? depth_.address + frame.vis_offset[v] * sizeof(f32) : 0;
+    p.fresh = fresh_address(frame.slot);
+    p.fresh_count = fresh_count_;
     blocks[v] = p;
   }
   // What the pool pass's second write reads: last frame's table, clock and part poses, where they
@@ -347,6 +366,8 @@ u64 MotionPass::device_bytes() const noexcept {
   for (const gfx::BufferResource& buffer : params_)
     bytes += buffer.size;
   for (const gfx::BufferResource& buffer : moved_buffers_)
+    bytes += buffer.size;
+  for (const gfx::BufferResource& buffer : fresh_buffers_)
     bytes += buffer.size;
   return bytes;
 }

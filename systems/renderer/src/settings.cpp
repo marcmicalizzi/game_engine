@@ -692,6 +692,15 @@ tunables::Bool reconstruction_fade_turn{
     "of the cycle's n phases, so a pixel in a fade band is kept in its band's share of the frames "
     "and the two levels blend; false: the screen door is the pixel's alone and is never blended "
     "(renderer.md, Sampling over time: the accumulation; read at load)"};
+// What a streamed world's layout change costs the history (R194 leg 2; renderer.md, "What a layout
+// change costs the accumulation").
+tunables::Bool reconstruction_layout_follow{
+    "renderer.reconstruction.layout_follow", true,
+    "On a frame whose streamed tables wrote some instance slots and no more, hold only those "
+    "slots' instances to their depth and keep every other instance's vectors, names and deform "
+    "inputs; false: every pixel of such a frame is held to its depth, as R194's first leg did (a "
+    "measurement's other side) (renderer.md, What a layout change costs the accumulation; read at "
+    "load)"};
 tunables::Bool gi_shell_clip{
     "renderer.gi.shell_clip", false,
     "The rays the cache traces from the eye stop at renderer.gi.shell_m, the reach of the volume "
@@ -1100,6 +1109,7 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   out.accumulation_reactive_weight = static_cast<f32>(reconstruction_reactive_weight.get());
   out.accumulation_fade_turn =
       out.accumulation != Accumulation::Off && reconstruction_fade_turn.get();
+  out.accumulation_layout_follow = reconstruction_layout_follow.get();
   out.gi_shell_clip = gi_shell_clip.get();
   out.gi_shell_first = gi_shell_first.get();
   out.gi_preroll = static_cast<u32>(gi_preroll.get());

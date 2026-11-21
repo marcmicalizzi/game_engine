@@ -47,12 +47,17 @@ class MotionPass {
     u64 deform_table = 0;
     f32 deform_time = 0.0f;
     u64 flora = 0;
-    // The scene's tables changed their layout since the last frame (a streamed world's tail
-    // written, numbered again or grown; `GpuScene::TableUpdate::layout`): an instance's deform
-    // record is then not the one last frame's table holds at its index, and a pair may name another
-    // instance. Not set by a frame whose only change was records written in place (a move), after
-    // which both still hold (R194).
+    // The scene's tables changed so that nothing of last frame's can be followed (the pairs
+    // numbered again, a growth, a relayout: `GpuScene::TableUpdate::whole`): an instance's deform
+    // record may then not be the one last frame's table holds at its index, and any pair may name
+    // another instance. Not set by a frame whose only change was records written in place (a move),
+    // after which both still hold (R194), nor since R194's second leg by one that wrote slots and
+    // no more, which says which in `fresh`.
     bool tables_changed = false;
+    // The instance slots written since the last frame (`GpuScene::TableUpdate::fresh`), sorted:
+    // their instances are new, every other one keeps its names and its inputs. At most
+    // `GpuScene::TableUpdate::k_fresh_capacity`; more is `tables_changed`.
+    std::span<const GpuScene::TableUpdate::SlotRun> fresh;
   };
 
   bool create(const gfx::Device& device, const GpuScene& scene, const ViewSet& views,
@@ -103,6 +108,12 @@ class MotionPass {
     return prev_vis_.address + view_offset_[view] * sizeof(u64);
   }
   bool tables_changed() const noexcept { return tables_changed_; }
+  // The slots the last prepared frame's tables wrote since the frame before (R194 leg 2), as the
+  // shaders read them: `uint2 {begin, end}` runs at `fresh_address(slot)`, `fresh_count()` of them.
+  u32 fresh_count() const noexcept { return fresh_count_; }
+  u64 fresh_address(u32 slot) const noexcept {
+    return fresh_count_ > 0 ? fresh_buffers_[slot].address : 0;
+  }
   // **Last frame's motion buffer, kept for a reader that asks** (the accumulation: whether the
   // surface a history tap showed was moving as this pixel's is). A second buffer of the motion
   // buffer's size, swapped with it each frame; without the ask there is one, as there always was.
@@ -163,7 +174,9 @@ class MotionPass {
   gfx::BufferResource prev_pool_;
   Vector<gfx::BufferResource> params_;         // per frame slot: MotionParams a view, host-visible
   Vector<gfx::BufferResource> moved_buffers_;  // per frame slot: the moved table, host-visible
-  Vector<gfx::MovedInstance> moved_;           // sorted by instance: last frame's transforms
+  Vector<gfx::BufferResource> fresh_buffers_;  // per frame slot: the fresh runs, host-visible
+  u32 fresh_count_ = 0;
+  Vector<gfx::MovedInstance> moved_;  // sorted by instance: last frame's transforms
   Last last_;
   // What `previous` hands the pool pass this frame.
   u64 prev_deform_table_ = 0;

@@ -1074,7 +1074,26 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
   pair_table = sets_[0].pairs;
   tables_changed_ = true;
   layout_changed_ = true;
+  fresh_slots_.reserve(TableUpdate::k_fresh_capacity);
+  fresh_whole_ = true;
   return true;
+}
+
+void GpuScene::mark_instances_new(std::span<const u32> indices) {
+  if (!dynamic_) return;
+  for (const u32 index : indices)
+    note_fresh(index, index + 1);
+}
+
+// A run of slots a change wrote, for the frame after it (`TableUpdate::fresh`, R194): past the
+// table's room the whole frame is new.
+void GpuScene::note_fresh(u32 begin, u32 end) {
+  if (begin >= end) return;
+  if (fresh_slots_.size() >= TableUpdate::k_fresh_capacity) {
+    fresh_whole_ = true;
+    return;
+  }
+  fresh_slots_.push_back(TableUpdate::SlotRun{begin, end});
 }
 
 bool GpuScene::create_table_set(TableSet& set, std::string* error) {
@@ -1813,6 +1832,7 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
     }
   }
   const u32 had = instance_table_.size();
+  note_fresh(end, had);  // a pair of last frame's in a slot past the end names nothing now (R194)
   instance_table_.resize(end);
   tail_keys_.resize(end);
   // A numbering the CPU's table has not taken yet no longer applies past the end (T154).
@@ -1888,6 +1908,7 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
     if (grown_from_.valid)  // and the set a growth carries over, until a frame has (T167)
       grown_from_.pending.push_back(
           InstanceRange{write.inst_begin, write.inst_begin + write.inst_count});
+    note_fresh(write.inst_begin, write.inst_begin + write.inst_count);  // R194
     written += write.inst_count;
   }
   return true;
@@ -1911,6 +1932,9 @@ void GpuScene::number_first_pairs(u32& renumbered) {
   renumbered = static_cast<u32>(
       shift_slots(std::span<const PairShift>(change_shifts_.data(), change_shifts_.size())));
   if (change_shifts_.empty()) return;
+  // Slots this change did not write name other pairs now: last frame's pairs are not followed
+  // (R194).
+  fresh_whole_ = true;
   const std::span<const PairShift> runs(change_shifts_.data(), change_shifts_.size());
   compose_shifts(cpu_shift_, runs, shift_scratch_);
   for (TableSet& set : sets_) {
@@ -2021,6 +2045,7 @@ bool GpuScene::fit_tables(TileChange& change, Vector<gfx::BufferResource>* retir
     }
     tables_changed_ = true;
     layout_changed_ = true;
+    fresh_whole_ = true;  // R194: `TableUpdate::whole`
   }
   instance_count_ = inst_end;
   pair_count_ = pair_end;
@@ -2064,6 +2089,8 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
   out.pair_source = gfx::BufferResource{};
   out.set = current_set_;
   out.layout = false;
+  out.fresh.clear();
+  out.whole = false;
   if (!dynamic_ || !tables_changed_ || sets_.empty()) return true;
   ENGINE_STARTUP_STAGE("table set");
   tables_changed_ = false;
@@ -2071,6 +2098,25 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
   // flips and copies, but every pair names what it named and every deform record is where it was.
   out.layout = layout_changed_;
   layout_changed_ = false;
+  // **And one whose layout changed says which slots it wrote** (R194 leg 2), sorted and merged, so
+  // the motion pass and the accumulation hold only those to depth: a few runs a tile, never a pass
+  // over the table.
+  out.whole = fresh_whole_;
+  fresh_whole_ = false;
+  if (!out.whole) {
+    std::sort(fresh_slots_.begin(), fresh_slots_.end(),
+              [](const TableUpdate::SlotRun& a, const TableUpdate::SlotRun& b) {
+                return a.begin < b.begin;
+              });
+    for (const TableUpdate::SlotRun& run : fresh_slots_) {
+      if (!out.fresh.empty() && run.begin <= out.fresh.back().end) {
+        if (run.end > out.fresh.back().end) out.fresh.back().end = run.end;
+      } else {
+        out.fresh.push_back(run);
+      }
+    }
+  }
+  fresh_slots_.clear();
   out.carry_instances = out.carry_pairs = gfx::BufferResource{};
   out.carry_instance_bytes = out.carry_pair_bytes = 0;
   out.retire.clear();
@@ -6589,6 +6635,8 @@ void GpuScene::destroy() noexcept {
   current_set_ = 0;
   tables_changed_ = false;
   layout_changed_ = false;
+  fresh_slots_.clear();
+  fresh_whole_ = false;
   layout_.reset(0, 0);
   tail_keys_.clear();
   requests_.clear();

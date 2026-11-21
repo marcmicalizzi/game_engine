@@ -16,7 +16,7 @@ struct MovedInstance {
   float4 rows[3];
 };
 
-// Mirrors gfx::MotionParams (416 bytes).
+// Mirrors gfx::MotionParams (432 bytes).
 struct MotionParams {
   column_major float4x4 reproject;
   column_major float4x4 unproject;
@@ -41,7 +41,30 @@ struct MotionParams {
   uint moved_count;
   float2 offset_ndc;
   uint64_t prev_depth;  // f32[width * height]: the point's depth in last frame's clip space; 0: none
+  uint64_t fresh;       // uint2[fresh_count] {begin, end}: slots written since last frame, sorted
+  uint fresh_count;
+  uint fresh_pad;
 };
+
+// Whether instance slot `instance` is in one of the sorted runs at `runs` (R194 leg 2): a binary
+// search over a few runs a tile changed, only on a frame whose layout changed.
+bool in_fresh_runs(uint64_t runs, uint count, uint instance) {
+  uint2* table = (uint2*)runs;
+  uint lo = 0;
+  uint hi = count;
+  while (lo < hi) {
+    const uint mid = (lo + hi) >> 1;
+    const uint2 run = table[mid];
+    if (instance < run.x) {
+      hi = mid;
+    } else if (instance >= run.y) {
+      lo = mid + 1;
+    } else {
+      return true;
+    }
+  }
+  return false;
+}
 
 struct MotionPush {
   uint64_t params;  // MotionParams*: this view's block
@@ -112,7 +135,10 @@ void motion_main(uint3 id : SV_DispatchThreadID) {
     }
     const InstanceDesc instance = ((InstanceDesc*)p->instances)[entry.x];
     const MeshDesc mesh = ((MeshDesc*)p->meshes)[instance.mesh];
-    const bool deformed = p->prev_pool != 0 && is_deformed(mesh, instance);
+    // A slot written since last frame holds an instance new to it: last frame's inputs at its deform
+    // record are another tree's or nothing, so it moves with its transform alone (R194 leg 2).
+    const bool fresh = p->fresh_count != 0 && in_fresh_runs(p->fresh, p->fresh_count, entry.x);
+    const bool deformed = p->prev_pool != 0 && !fresh && is_deformed(mesh, instance);
     int moved = -1;
     if (p->moved_count != 0) moved = find_moved(p, entry.x);
     if (deformed || moved >= 0) {
