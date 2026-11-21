@@ -186,4 +186,39 @@ void water_wind_frame(std::span<WaterWindBody> bodies, f64 sky_time_s,
 bool scene_flora_wind(const gfx::WindDesc& wind, f64 sky_time_s, Vec2& to, f32& strength,
                       const gfx::WindLive& live = {}) noexcept;
 
+// **The trees' wind's ceiling** (W154-2; renderer.md, "What a storm costs"): the strength, over the
+// 5 m/s mean day, the trees' wind of `scene_flora_wind` may reach over the next seconds, which the
+// padding ladder chooses its rung from: the mean times the three-second gust factor of the scene's
+// roughness (`gfx::wind_gust_factor`: the peak of its turbulence), plus the mean times the factor
+// less one again while a forced gust is on at any level (its whole rise, so the rung is up before
+// the gust is). The live mean is the larger of the trees' lagged one (`lagged`) and the live one,
+// so a key's step up moves the rung before the trees move. False where `scene_flora_wind` is.
+bool scene_flora_wind_ceiling(const gfx::WindDesc& wind, f64 sky_time_s,
+                              const gfx::WindLive& lagged, const gfx::WindLive& live,
+                              f32& ceiling) noexcept;
+
+// **A step of the live mean reaches the trees through their own response** (W154; flora.md, "Motion
+// in a storm"). A key's step moves the live mean by a Beaufort force in one frame, and the sway's
+// lean is quasi-static (a function of the load now), so taken as it is the step is a jump of every
+// tree. A tree is a damped oscillator whose fundamental sway is a fraction of a hertz, so a step of
+// its load reaches its mean lean over about half its period. The trees take the live mean through
+// a critically damped second-order response at `k_flora_wind_lag_hz` (no overshoot, its rate
+// continuous), stepped exactly over the world clock's seconds between frames, once a frame by the
+// frame's wind pass (GpuScene::water_wind_frame, trees or none) and read by the poses; the scene's
+// turbulence and the forced gust (smooth already, W151's rise and decay) pass as they are. Unset,
+// or after a jump of the world clock (backwards or more than `k_flora_wind_lag_snap_s`), it stands
+// at the live mean. Presentation: it enters no hash.
+inline constexpr f64 k_flora_wind_lag_hz = 0.3;
+inline constexpr f64 k_flora_wind_lag_snap_s = 10.0;
+struct FloraWindLag {
+  bool set = false;
+  f64 mean_m_s = 0.0;
+  f64 rate = 0.0;  // m/s per second
+  f64 at_s = 0.0;  // the world time it stands at
+  // Steps to `world_time_s` towards the live mean; returns the live wind with the trees' mean.
+  gfx::WindLive follow(const gfx::WindLive& live, f64 world_time_s) noexcept;
+  // The live wind with the mean it stands at now, without stepping (what the frame's stats say).
+  gfx::WindLive held(const gfx::WindLive& live) const noexcept;
+};
+
 }  // namespace engine::renderer

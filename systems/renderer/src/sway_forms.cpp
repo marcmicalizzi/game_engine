@@ -19,10 +19,10 @@ tunables::Float forms_still_px{
     "from its ring's floor, is under this stands still there (G204; 0: never by its size); read "
     "at the load"};
 tunables::Float forms_still_wind{
-    "renderer.forms.still_wind", -1.0, -1.0, 2.0,
+    "renderer.forms.still_wind", -1.0, -1.0, static_cast<f64>(k_flora_max_wind),
     "The wind's strength, over a record's mean, a swaying mesh's travel is measured under for "
-    "renderer.forms.still_px (below 0: the session's renderer.flora.wind_strength; 2 is every "
-    "wind the sway takes); read at the load"};
+    "renderer.forms.still_px (below 0: the session's renderer.flora.wind_strength; 8.4, 42 m/s, "
+    "is every wind the sway takes); read at the load"};
 
 }  // namespace
 
@@ -47,11 +47,15 @@ SwayMeasure measure_sway(const FloraMesh& mesh, std::span<const Vec3> vertices,
   SwayMeasure out;
   out.field = mesh.field;
   if (!rules.motion) return out;  // nothing is posed: no padding, no reach
-  // The bound is linear in the wind's strength (`flora_bounds_padding`: every part's most turn is
-  // its compliance times the strength), so the rule's wind is a factor on the strongest's.
-  out.padding = flora_bounds_padding(mesh, vertices, motion);
+  // The reach is the sway's bound at the rule's wind. Since W154 the bound follows the storm's law
+  // and the bend's cap, no longer linear in the strength, so it is measured at the rule's wind
+  // rather than scaled. The padding a still form keeps is the calm rung's (W154-2): it is rigid, so
+  // the padding only makes its cut the mesh's at calm, which is main's; a storm's rung pads the
+  // swaying mesh's records, never a still form's.
+  out.padding = flora_padding_at_load(mesh, vertices, motion, k_flora_calm_load);
   const f32 scale = fit_scale > 0.0f ? fit_scale : 1.0f;
-  out.reach_m = out.padding * scale * (rules.wind / k_flora_max_wind);
+  out.reach_m = flora_bounds_padding(mesh, vertices, motion, rules.wind) * scale;
+  out.lean = flora_mean_lean(mesh, vertices, motion);
   return out;
 }
 

@@ -1011,6 +1011,12 @@ struct SceneData {
   // its choice over the form is its choice over the mesh; zero for every other mesh. Added by
   // `make_instance`. Empty: no still form.
   Vector<f32> still_padding;
+  // **A still form leans in a storm** (W154-2; renderer.md, "The far forest leans"): per mesh, a
+  // still form's mean lean under a unit load (`SwayMeasure::lean`), zero for every other mesh, and
+  // the strength over a record's mean its still rule was measured at (`SwayFormRules::wind`): it
+  // leans by the load past that one. Sized as `still_padding`.
+  Vector<f32> still_lean;
+  f32 still_wind = 1.0f;
   // Per loaded instance, the plane under its rim its seat fitted (`SceneInstance::slope`, G201
   // stage 2), four bytes each, kept for the conformed foot; zero for one not seated.
   Vector<scene_gen::GroundSlope> ground_slopes;

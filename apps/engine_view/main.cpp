@@ -1312,6 +1312,8 @@ JsonValue flora_summary(const renderer::GpuScene& scene) {
   out.set("tail_records", JsonValue(static_cast<u64>(f.tail_records)));
   out.set("tail_repurposed", JsonValue(f.tail_repurposed));
   out.set("tail_bytes", JsonValue(f.tail_bytes));
+  out.set("still_slots", JsonValue(static_cast<u64>(f.still_slots)));  // W154-2: the far ring leans
+  out.set("still_writes", JsonValue(f.still_writes));
   // The field kind and the caster policy (renderer.md, "The field kind", "The caster policy").
   out.set("field_meshes", JsonValue(static_cast<u64>(f.field_meshes)));
   out.set("field_instances", JsonValue(static_cast<u64>(f.field_instances)));

@@ -215,19 +215,27 @@ TEST_CASE(
                      {own.structural_parts.data(), own.structural_parts.size()}, own.species,
                      pose));
   const geometry::ClusterMeshPart& part = scene.parts[source];
-  const f32 bound =
-      flora_bounds_padding(pose,
-                           std::span<const Vec3>(scene.lod.mesh.vertices.data() + part.first_vertex,
-                                                 own.motion_vertices.size()),
-                           {own.motion_vertices.data(), own.motion_vertices.size()});
+  // A still form keeps the calm rung's padding (W154-2): main's, whatever wind the session blows.
+  const f32 bound = flora_padding_at_load(
+      pose,
+      std::span<const Vec3>(scene.lod.mesh.vertices.data() + part.first_vertex,
+                            own.motion_vertices.size()),
+      {own.motion_vertices.data(), own.motion_vertices.size()}, k_flora_calm_load);
   CHECK(bound > 0.5f);
   CHECK(scene.still_padding[still] == bound);
   CHECK(scene.still_padding[source] == 0.0f);
   CHECK(scene.still_padding[swaying] == 0.0f);
   // Its largest still scale there is past what a cut serves, so the entry serves a cut's scales.
-  const f32 reach_px = 0.5f * bound * 1000.0f / table.floor_m[3];
+  // The reach is the bound at the rule's wind, a mean day (W154: measured there, not scaled from
+  // the strongest wind's).
+  const f32 reach =
+      flora_bounds_padding(pose,
+                           std::span<const Vec3>(scene.lod.mesh.vertices.data() + part.first_vertex,
+                                                 own.motion_vertices.size()),
+                           {own.motion_vertices.data(), own.motion_vertices.size()}, 1.0f);
+  const f32 reach_px = reach * 1000.0f / table.floor_m[3];
   CHECK(0.225f / reach_px >= 1.5f);
-  CHECK(0.225f / (0.5f * bound * 1000.0f / table.floor_m[2]) < 1.5f);
+  CHECK(0.225f / (reach * 1000.0f / table.floor_m[2]) < 1.5f);
   CHECK(forms.ring[3].max_scale == doctest::Approx(1.5f));
 
   // The read: each ring's form for every placement a cut serves; past that, the mesh itself.

@@ -35,6 +35,7 @@ FloraPoseResult flora_pose_instances(const FloraPoseInputs& in, const FloraPoseF
     const f32 along_length = length(along);
     wind.to = along_length > 0.0f ? along * (1.0f / along_length) : Vec3{1.0f, 0.0f, 0.0f};
     wind.strength = frame.wind_strength;
+    wind.max_load = frame.max_load;
     FloraPush push;
     if (frame.flora != nullptr && frame.flora->walker) {
       const FrameFlora& walker = *frame.flora;

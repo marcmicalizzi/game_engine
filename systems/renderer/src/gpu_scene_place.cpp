@@ -36,19 +36,44 @@ void GpuScene::measure_host_reads(const SceneData& data, const ResolvedSettings&
 // Every swaying mesh's sway bound, measured at the upload from the float positions (T138): a tail
 // tree may first appear long after it, by when a host that uploads once has given them back
 // (`release_uploaded_streams`). `flora_padding_of` only reads the table.
+//
+// **The table holds the calm rung's** (W154-2): main's padding to the bit, at the load the sway was
+// held at before W154; a rung above it is that times the rung's load over it
+// (`flora_rung_padding`), so a step reads no vertex. Measured here too, what the ladder's top is:
+// the strongest load any of the scene's meshes can take, and the steepest law among its trees,
+// which the ceiling's load is taken by.
 void GpuScene::measure_flora_padding() {
   flora_padding_.assign(flora_meshes_.size(), 0.0f);
+  flora_ladder_top_ = k_flora_calm_load;
+  flora_streamline_max_ = 1.0f;
+  flora_hold_max_ = 0.0f;
+  flora_has_field_ = false;
+  flora_field_hold_ = k_flora_max_wind;
   const geometry::ClusterMesh& mesh = data_->lod.mesh;
   for (u32 m = 0; m < flora_meshes_.size() && m < data_->sources.size(); ++m) {
-    if (flora_meshes_[m].part_count() == 0) continue;
+    const FloraMesh& tree = flora_meshes_[m];
+    if (tree.part_count() == 0) continue;
     const SourceMesh& source = data_->sources[m];
-    flora_padding_[m] = flora_bounds_padding(
-        flora_meshes_[m],
+    flora_padding_[m] = flora_padding_at_load(
+        tree,
         std::span<const Vec3>(mesh.vertices.data() + data_->parts[m].first_vertex,
                               source.motion_vertices.size()),
         std::span<const geometry::ClusterFileMotionVertex>(source.motion_vertices.data(),
-                                                           source.motion_vertices.size()));
+                                                           source.motion_vertices.size()),
+        k_flora_calm_load);
+    if (tree.field) {
+      flora_has_field_ = true;
+      flora_field_hold_ = std::min(flora_field_hold_, tree.hold);
+      flora_ladder_top_ = std::max(flora_ladder_top_, flora_field_load(tree.hold, tree.hold));
+    } else {
+      flora_streamline_max_ = std::max(flora_streamline_max_, tree.streamline);
+      flora_hold_max_ = std::max(flora_hold_max_, tree.hold);
+      flora_ladder_top_ =
+          std::max(flora_ladder_top_, flora_storm_load(tree.hold, tree.streamline, tree.hold));
+    }
   }
+  flora_ladder_ = FloraLadder{};
+  ladder_walking_ = false;
 }
 
 namespace {

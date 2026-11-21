@@ -2376,6 +2376,9 @@ bool make_placement_forms(SceneDesc& resolved, Vector<SourceMesh>& sources,
             // The still form's instances keep the mesh's padding (`make_instance`).
             out.still_padding.resize(resolved.meshes.size(), 0.0f);
             out.still_padding[drawn] = sway.padding;
+            out.still_lean.resize(resolved.meshes.size(), 0.0f);  // W154-2: how it leans
+            out.still_lean[drawn] = sway.lean;
+            out.still_wind = sway_rules.wind;
             ++table.stills;
           }
         }
@@ -2424,6 +2427,7 @@ bool make_placement_forms(SceneDesc& resolved, Vector<SourceMesh>& sources,
   chosen.resize(resolved.meshes.size());  // the forms themselves draw as they are
   table.meshes = std::move(chosen);
   if (!out.still_padding.empty()) out.still_padding.resize(resolved.meshes.size(), 0.0f);
+  if (!out.still_lean.empty()) out.still_lean.resize(resolved.meshes.size(), 0.0f);
   ENGINE_LOG_INFO(log_renderer, "placements' ring forms", log::field("meshes", table.subjects),
                   log::field("cuts", table.cuts), log::field("cut_clusters", table.cut_clusters),
                   log::field("offered", table.offered), log::field("rings", rings),

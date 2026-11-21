@@ -3310,6 +3310,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // The wind's moved wave tables (W136; gfx.md, "The water reads the wind"), before the records.
   const std::span<const WaterWindUpload> water_wind =
       scene.water_wind_frame(scene.epoch_s() + frame.sky_time_s, frame.wind, frame.world_time_s);
+  // The trees' padding ladder (W154-2): its records ride this frame's record upload below.
+  scene.flora_padding_frame(frame.flora, scene.epoch_s() + frame.sky_time_s, frame.wind,
+                            frame.world_time_s);
   // A streamed world's tables, before anything reads their addresses: after a change the frame
   // flips `scene.instances` and `scene.pair_table` to the next table set, which no frame in flight
   // reads, and stages that set's changed slots in this slot's staging for the passes below to copy

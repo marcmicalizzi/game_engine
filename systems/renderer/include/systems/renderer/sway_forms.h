@@ -72,6 +72,9 @@ struct SwayMeasure {
   f32 reach_m = 0.0f;
   // The mesh is posed as a field (`FloraMesh::field`), which the far field's rest rule reaches.
   bool field = false;
+  // Its mean lean under a unit load, metres a metre of height (`flora_mean_lean`): what a still
+  // form of it leans by as the wind passes the rule's (W154-2, `SceneData::still_lean`).
+  f32 lean = 0.0f;
 };
 
 // Measures `mesh` (`flora_mesh`'s answer for it): `vertices` and `motion` are its own, parallel

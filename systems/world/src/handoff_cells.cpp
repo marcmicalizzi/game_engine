@@ -84,12 +84,15 @@ f32 PlacementTiles::cull_reach(u32 mesh) {
                              std::span<const geometry::ClusterFileStructuralPart>(
                                  source.structural_parts.data(), source.structural_parts.size()),
                              source.species, tree)) {
-      padding = renderer::flora_bounds_padding(
+      // The calm rung's (W154-2): which cells a viewer is near is main's at calm; a storm's
+      // padding widens the instance's own spheres, not where its cell is handed over.
+      padding = renderer::flora_padding_at_load(
           tree,
           std::span<const Vec3>(scene_->lod.mesh.vertices.data() + part.first_vertex,
                                 source.motion_vertices.size()),
           std::span<const geometry::ClusterFileMotionVertex>(source.motion_vertices.data(),
-                                                             source.motion_vertices.size()));
+                                                             source.motion_vertices.size()),
+          renderer::k_flora_calm_load);
     }
   }
   cull_reach_[mesh] = reach + (padding > 0.0f ? padding : 0.0f);

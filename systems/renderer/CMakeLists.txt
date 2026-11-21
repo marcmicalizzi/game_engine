@@ -130,6 +130,8 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     tests/impostor_view_tests.cpp
                     # Trees move: the flora stage's poses on the CPU, and a palm drawn through it.
                     tests/flora_motion_tests.cpp
+                    # The trees in a storm: the streamlining law, the bend's cap, the lag (W154).
+                    tests/flora_storm_tests.cpp
                     # The trees posed on a pool: every worker count the serial loop's bytes.
                     tests/flora_poser_tests.cpp
                     # The streamed trees' budget: records counted once, the nearest tiles first (R137).

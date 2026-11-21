@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <renderer_log.h>
 
 namespace engine::renderer {
 
@@ -549,6 +550,60 @@ bool scene_flora_wind(const gfx::WindDesc& wind, f64 sky_time_s, Vec2& to, f32& 
   return true;
 }
 
+bool scene_flora_wind_ceiling(const gfx::WindDesc& wind, f64 sky_time_s,
+                              const gfx::WindLive& lagged, const gfx::WindLive& live,
+                              f32& ceiling) noexcept {
+  const f64 g = gfx::wind_gust_factor(wind.roughness_m);
+  f64 mean = 0.0;
+  f64 forced = 0.0;
+  if (live.set) {
+    mean = std::max(live.mean_m_s, lagged.set ? lagged.mean_m_s : 0.0);
+    if (live.gust > 0.0) forced = mean * (g - 1.0);
+  } else {
+    const WindHand hand = wind_hand_tunable();
+    if (hand.set) {
+      mean = hand.speed_m_s;
+    } else {
+      if (wind.kind == gfx::WindKind::none) return false;
+      mean = gfx::wind_at(wind, sky_time_s).speed_m_s;
+    }
+  }
+  ceiling = static_cast<f32>(std::max(mean, 0.0) * (g + (forced > 0.0 ? g - 1.0 : 0.0)) /
+                             k_flora_wind_mean_m_s);
+  return true;
+}
+
+gfx::WindLive FloraWindLag::follow(const gfx::WindLive& live, f64 world_time_s) noexcept {
+  if (!live.set) {
+    set = false;
+    return live;
+  }
+  const f64 dt = world_time_s - at_s;
+  if (!set || !(dt >= 0.0) || dt > k_flora_wind_lag_snap_s) {
+    set = true;
+    mean_m_s = live.mean_m_s;
+    rate = 0.0;
+    at_s = world_time_s;
+    return live;
+  }
+  // x'' = w^2 (T - x) - 2 w x', exactly over dt for the target held: with e = x - T,
+  // x(t) = T + (e0 + (v0 + w e0) t) exp(-w t), v(t) = (v0 - w (v0 + w e0) t) exp(-w t).
+  const f64 w = 2.0 * 3.14159265358979323846 * k_flora_wind_lag_hz;
+  const f64 e0 = mean_m_s - live.mean_m_s;
+  const f64 b = rate + w * e0;
+  const f64 decay = std::exp(-w * dt);
+  mean_m_s = live.mean_m_s + (e0 + b * dt) * decay;
+  rate = (rate - w * b * dt) * decay;
+  at_s = world_time_s;
+  return held(live);
+}
+
+gfx::WindLive FloraWindLag::held(const gfx::WindLive& live) const noexcept {
+  gfx::WindLive out = live;
+  if (live.set && set) out.mean_m_s = mean_m_s > 0.0 ? mean_m_s : 0.0;
+  return out;
+}
+
 }  // namespace engine::renderer
 
 // ---- the GPU scene's half (gpu_scene.h, `water_wind_frame`) -------------------------------------
@@ -567,7 +622,10 @@ std::span<const WaterWindUpload> GpuScene::water_wind_frame(f64 sky_time_s,
   wind_stats_.speed_m_s = gfx::wind_live_speed(live, scene_wind.roughness_m);
   Vec2 trees_to{};
   f32 trees = 0.0f;
-  if (scene_flora_wind(scene_wind, sky_time_s, trees_to, trees, live))
+  // The trees' mean through their lag (W154), stepped here, once a frame and before the trees'
+  // poses (`flora_frame` reads it as it stands), so a scene with no tree steps it too.
+  if (scene_flora_wind(scene_wind, sky_time_s, trees_to, trees,
+                       flora_wind_lag_.follow(live, world_time_s)))
     wind_stats_.trees_m_s = static_cast<f64>(trees) * k_flora_wind_mean_m_s;
   if (scene_wind.kind != gfx::WindKind::none) {
     const gfx::WindSample now = gfx::wind_at(scene_wind, sky_time_s);
@@ -663,6 +721,228 @@ std::span<const WaterWindUpload> GpuScene::water_wind_frame(f64 sky_time_s,
     mark_instance_written(b.instance);
   }
   return {water_wind_uploads_.data(), water_wind_uploads_.size()};
+}
+
+// **The padding follows the wind** (W154-2; flora_motion.h; renderer.md, "What a storm costs").
+// The ceiling is the trees' wind's over the next seconds, as a load by the steepest law among the
+// scene's meshes; the rung is chosen from it with the ladder's hysteresis; a step walks the
+// swaying records, the trees' list and then the grass's, at most the tunable's number a frame. The
+// walk's cost is a record each, on this thread, and nothing it visits is not a swaying instance:
+// a streamed world's other instances are never read. A ground's wind (a terrain's transport) is
+// taken as the last frame drew it, a frame late: the hold covers that frame.
+void GpuScene::flora_padding_frame(const FrameFlora& frame, f64 sky_time_s,
+                                   const gfx::WindLive& live, f64 world_time_s) noexcept {
+  if (flora_instances_.empty() && field_slots_.empty() && !flora_tail_) return;
+  f32 ceiling = 0.0f;
+  if (frame.wind_set) {
+    ceiling = frame.wind_strength;
+  } else if (data_ != nullptr &&
+             scene_flora_wind_ceiling(data_->wind, sky_time_s, flora_wind_lag_.held(live), live,
+                                      ceiling)) {
+  } else if (flora_wind_source_ != nullptr && std::strcmp(flora_wind_source_, "ground") == 0) {
+    ceiling = flora_stats_.wind_strength;
+  } else {
+    ceiling = flora_wind_default().strength;
+  }
+  f32 demand = flora_hold_max_ > 0.0f
+                   ? flora_storm_load(ceiling, flora_streamline_max_, flora_hold_max_)
+                   : 0.0f;
+  if (flora_has_field_) demand = std::max(demand, flora_field_load(ceiling, flora_field_hold_));
+  const u32 was = flora_ladder_.target;
+  const u32 target = flora_rung_choose(flora_ladder_, demand, world_time_s, flora_ladder_top_);
+  if (target != was) {
+    // A step: the walk starts over (a step in a step's walk too), and the hold goes down at once,
+    // up only when the walk is done.
+    ladder_walking_ = true;
+    ladder_tree_at_ = 0;
+    ladder_field_at_ = 0;
+    if (target < flora_ladder_.hold) flora_ladder_.hold = target;
+    ++flora_stats_.padding_steps;
+    ENGINE_LOG_INFO(
+        log_renderer, "the trees' padding steps", log::field("from", was), log::field("to", target),
+        log::field("load", flora_rung_load(target, flora_ladder_top_)),
+        log::field("ceiling", ceiling), log::field("demand", demand),
+        log::field("trees", flora_instances_.size()), log::field("grass", field_slots_.size()));
+  }
+  if (ladder_walking_) {
+    u32 budget = flora_padding_records_tunable();
+    u64 writes = 0;
+    while (budget > 0 && ladder_tree_at_ < flora_instances_.size()) {
+      writes += repad_tree(ladder_tree_at_++) ? 1u : 0u;
+      --budget;
+    }
+    while (budget > 0 && ladder_field_at_ < field_slots_.size()) {
+      writes += repad_field(ladder_field_at_++) ? 1u : 0u;
+      --budget;
+    }
+    flora_stats_.padding_writes += writes;
+    ++flora_stats_.padding_walk_frames;
+    if (ladder_tree_at_ >= flora_instances_.size() && ladder_field_at_ >= field_slots_.size()) {
+      ladder_walking_ = false;
+      flora_ladder_.hold = flora_ladder_.target;
+    }
+  }
+  flora_stats_.padding_rung = flora_ladder_.hold;
+  flora_stats_.padding_load = flora_hold_load();
+  still_lean_frame(frame, sky_time_s, live);
+}
+
+// A swaying record's padding: the caller's, or the sway's at the ladder's target if that is more.
+f32 GpuScene::sway_padding_of(u32 mesh, f32 base) {
+  const f32 padding = flora_padding_of(mesh);
+  return padding > base ? padding : base;
+}
+
+void GpuScene::add_field_slot(u32 slot, u32 mesh, f32 base) {
+  if (field_at_.size() <= slot) field_at_.resize(slot + 1, ~0u);
+  if (field_at_[slot] != ~0u) drop_field_slot(slot);
+  field_at_[slot] = field_slots_.size();
+  field_slots_.push_back(FieldSlot{slot, mesh, base});
+}
+
+void GpuScene::drop_field_slot(u32 slot) noexcept {
+  if (slot >= field_at_.size() || field_at_[slot] == ~0u) return;
+  const u32 at = field_at_[slot];
+  const u32 last = field_slots_.size() - 1;
+  field_at_[slot] = ~0u;
+  if (at != last) {
+    field_slots_[at] = field_slots_[last];
+    field_at_[field_slots_[at].slot] = at;
+  }
+  field_slots_.pop_back();
+  // A step's walk past `at` but not past the one moved into it: written now, or the walk would
+  // leave it at the rung it had (W154-2).
+  if (ladder_walking_ && at < ladder_field_at_ && last >= ladder_field_at_) repad_field(at);
+}
+
+bool GpuScene::repad_tree(u32 at) {
+  const FloraInstance& fi = flora_instances_[at];
+  if (fi.instance >= instance_table_.size()) return false;
+  gfx::InstanceDesc& placed = instance_table_[fi.instance];
+  const f32 want = sway_padding_of(fi.mesh, fi.base_padding);
+  if (placed.bounds_padding == want) return false;
+  placed.bounds_padding = want;
+  mark_instance_written(fi.instance);
+  return true;
+}
+
+bool GpuScene::repad_field(u32 at) {
+  const FieldSlot& field = field_slots_[at];
+  if (field.slot >= instance_table_.size()) return false;
+  gfx::InstanceDesc& placed = instance_table_[field.slot];
+  const f32 want = sway_padding_of(field.mesh, field.base);
+  if (placed.bounds_padding == want) return false;
+  placed.bounds_padding = want;
+  mark_instance_written(field.slot);
+  return true;
+}
+// ---- the far forest leans (W154-2; renderer.md, "The far forest leans")
+// --------------------------
+
+void GpuScene::add_still_slot(u32 slot) {
+  if (still_at_.size() <= slot) still_at_.resize(slot + 1, ~0u);
+  if (still_at_[slot] != ~0u) drop_still_slot(slot);
+  still_at_[slot] = still_slots_.size();
+  still_slots_.push_back(StillSlot{slot, instance_table_[slot].mesh, instance_table_[slot]});
+  if (relean(still_slots_.size() - 1)) ++flora_stats_.still_writes;  // placed as the walk leans
+  flora_stats_.still_slots = still_slots_.size();
+}
+
+void GpuScene::drop_still_slot(u32 slot) noexcept {
+  if (slot >= still_at_.size() || still_at_[slot] == ~0u) return;
+  const u32 at = still_at_[slot];
+  const u32 last = still_slots_.size() - 1;
+  still_at_[slot] = ~0u;
+  if (at != last) {
+    still_slots_[at] = still_slots_[last];
+    still_at_[still_slots_[at].slot] = at;
+  }
+  still_slots_.pop_back();
+  if (still_walking_ && at < still_walk_at_ && last >= still_walk_at_) relean(at);
+  flora_stats_.still_slots = still_slots_.size();
+}
+
+bool GpuScene::relean(u32 at) {
+  const StillSlot& still = still_slots_[at];
+  if (still.slot >= instance_table_.size()) return false;
+  const f32 lean = still.mesh < still_mesh_lean_.size() ? still_mesh_lean_[still.mesh] : 0.0f;
+  const gfx::InstanceDesc want = still_lean_record(still.rest, still_walk_to_ * lean);
+  gfx::InstanceDesc& placed = instance_table_[still.slot];
+  if (std::memcmp(&placed, &want, sizeof(want)) == 0) return false;
+  placed = want;
+  mark_instance_written(still.slot);
+  return true;
+}
+
+// The wind the far forest leans in is the trees' mean, the forced gust in it and no turbulence (a
+// stand's lean is its mean bend: the gusts' few seconds are the sway this does not draw), past the
+// still rule's own wind, by each still mesh's law. A walk starts when that wind has moved by 2 %
+// (or 0.02 of a mean day) or turned by 2 degrees since the last, and writes every still slot,
+// `renderer.flora.padding_records` a frame; nothing at all while the wind is at or under the
+// rule's, so a calm session's records are their rest, to the bit.
+void GpuScene::still_lean_frame(const FrameFlora& frame, f64 sky_time_s,
+                                const gfx::WindLive& live) {
+  if (data_ == nullptr || data_->still_lean.empty() || !flora_tail_) return;
+  f32 strength = 0.0f;
+  const WindHand hand = wind_hand_tunable();
+  if (frame.wind_set) {
+    strength = frame.wind_strength;
+  } else if (live.set) {
+    strength =
+        static_cast<f32>(gfx::wind_live_speed(flora_wind_lag_.held(live), data_->wind.roughness_m) /
+                         k_flora_wind_mean_m_s);
+  } else if (hand.set) {
+    strength = static_cast<f32>(hand.speed_m_s / k_flora_wind_mean_m_s);
+  } else if (data_->wind.kind != gfx::WindKind::none) {
+    strength =
+        static_cast<f32>(gfx::wind_at(data_->wind, sky_time_s).speed_m_s / k_flora_wind_mean_m_s);
+  } else {
+    strength = flora_stats_.wind_strength;  // the ground's or the tunables', as last drawn
+  }
+  Vec2 to = flora_stats_.wind_to;
+  const f32 to_length = length(to);
+  to = to_length > 0.0f ? to * (1.0f / to_length) : Vec2{1.0f, 0.0f};
+  if (!still_walking_) {
+    const f32 moved = std::fabs(strength - still_walk_strength_);
+    const bool turned = to.x * still_walk_to_.x + to.y * still_walk_to_.y < 0.99939f;  // 2 deg
+    const bool leans = strength > data_->still_wind || still_walk_strength_ > data_->still_wind;
+    if (leans && (moved > std::max(0.02f, 0.02f * still_walk_strength_) || turned)) {
+      still_walk_strength_ = strength;
+      still_walk_to_ = to;
+      still_mesh_lean_.resize(data_->still_lean.size(), 0.0f);
+      f32 most = 0.0f;
+      for (u32 m = 0; m < data_->still_lean.size(); ++m) {
+        const f32 k = data_->still_lean[m];
+        if (!(k > 0.0f)) continue;
+        const u32 src = m < data_->form_source.size() ? data_->form_source[m] : m;
+        const FloraMesh* tree = src < flora_meshes_.size() ? &flora_meshes_[src] : nullptr;
+        const f32 b = tree != nullptr ? tree->streamline : 1.0f;
+        const f32 hold = tree != nullptr ? tree->hold : k_flora_max_wind;
+        const f32 past =
+            flora_storm_load(strength, b, hold) - flora_storm_load(data_->still_wind, b, hold);
+        still_mesh_lean_[m] = past > 0.0f ? k * past : 0.0f;
+        most = std::max(most, still_mesh_lean_[m]);
+      }
+      flora_stats_.still_lean = most;
+      still_walking_ = true;
+      still_walk_at_ = 0;
+      ++flora_stats_.still_walks;
+    }
+  }
+  if (!still_walking_) return;
+  u32 budget = flora_padding_records_tunable();
+  while (budget > 0 && still_walk_at_ < still_slots_.size()) {
+    flora_stats_.still_writes += relean(still_walk_at_++) ? 1u : 0u;
+    --budget;
+  }
+  if (still_walk_at_ >= still_slots_.size()) {
+    still_walking_ = false;
+    ENGINE_LOG_INFO(
+        log_renderer, "the still forms lean", log::field("strength", still_walk_strength_),
+        log::field("lean_most", flora_stats_.still_lean), log::field("slots", still_slots_.size()),
+        log::field("writes", flora_stats_.still_writes),
+        log::field("walks", flora_stats_.still_walks));
+  }
 }
 
 }  // namespace engine::renderer

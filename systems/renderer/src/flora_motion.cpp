@@ -13,9 +13,28 @@ tunables::Bool flora_motion{"renderer.flora.motion", true,
                             "Sway the generated trees in the wind and bend them away from the "
                             "walker (renderer.md, \"The flora stage\"); false draws them rigid"};
 tunables::Float flora_wind_strength{
-    "renderer.flora.wind_strength", 1.0, 0.0, 2.0,
+    "renderer.flora.wind_strength", 1.0, 0.0, static_cast<f64>(k_flora_max_wind),
     "The wind's strength over its record's mean for the trees of a scene whose ground says no wind "
-    "(0 calm, 1 a mean day)"};
+    "(0 calm, 1 a mean day of 5 m/s, 8.4 the 42 m/s the sway holds at)"};
+// **The storm the trees are built for** (flora.md, "Motion in a storm"; W154): the strength over
+// the mean day the sway is held at and every swaying instance's spheres are padded for, read when
+// a tree's motion contract is read (a load, a tile). The default is the whole of the law, 42 m/s;
+// the padding it takes is the page's cost, and 2 is main's before W154 (10 m/s) for an operator
+// who wants that padding back and will not see a storm.
+tunables::Float flora_storm_strength{
+    "renderer.flora.storm_strength", static_cast<f64>(k_flora_max_wind), 0.0,
+    static_cast<f64>(k_flora_max_wind),
+    "The wind's strength over the 5 m/s mean day the trees' sway is held at and their bounds are "
+    "padded for (W154; 8.4, 42 m/s, the whole storm; 2, the 10 m/s held before it); read at the "
+    "load"};
+// **A step of the padding ladder** (W154-2; renderer.md, "What a storm costs"): how many swaying
+// instances' records a step rewrites in one frame. A step rewrites every swaying instance's record
+// once; past this many it is spread over frames, the sway held at the lower rung until the last is
+// written. 16,384 records is 1.5 MB of the frame's record upload.
+tunables::Int flora_padding_records{"renderer.flora.padding_records", 16384, 1, 1 << 24,
+                                    "Swaying instances' records a step of the trees' padding "
+                                    "ladder rewrites in one frame (W154-2); "
+                                    "a step past it is spread over frames"};
 tunables::Float flora_wind_deg{"renderer.flora.wind_deg", 0.0, -360.0, 360.0,
                                "Where that wind blows to: degrees in the ground plane from +x "
                                "towards +z"};
@@ -170,6 +189,98 @@ FloraWindDefault flora_wind_default() noexcept {
                           static_cast<f32>(flora_wind_strength.get())};
 }
 
+u32 flora_padding_records_tunable() noexcept {
+  const i64 v = flora_padding_records.get();
+  return v < 1 ? 1u : static_cast<u32>(v);
+}
+
+f32 flora_rung_load(u32 rung, f32 top) noexcept {
+  f32 load = k_flora_calm_load;
+  for (u32 r = 0; r < rung && r + 1 < k_flora_rungs_max; ++r)
+    load *= k_flora_rung_ratio;
+  // The last rung is the top itself: nothing past what the scene's meshes can take.
+  return top > k_flora_calm_load && load > top ? top : load;
+}
+
+u32 flora_rung_count(f32 top) noexcept {
+  u32 n = 1;
+  while (n < k_flora_rungs_max && flora_rung_load(n - 1, top) < top)
+    ++n;
+  return n;
+}
+
+f32 flora_rung_padding(f32 calm, bool field, f32 load) noexcept {
+  if (!(load > k_flora_calm_load)) return calm;
+  const f32 held = field && load > k_flora_field_most_load ? k_flora_field_most_load : load;
+  return calm * (held / k_flora_calm_load) * (1.0f + 1.0e-6f);
+}
+
+u32 flora_rung_choose(FloraLadder& ladder, f32 demand, f64 time_s, f32 top) noexcept {
+  const u32 count = flora_rung_count(top);
+  // The rung that serves the ceiling: the lowest whose load holds it (rung 0 with its slack).
+  u32 want = 0;
+  while (want + 1 < count &&
+         demand > flora_rung_load(want, top) * (want == 0 ? k_flora_calm_slack : 1.0f))
+    ++want;
+  if (want >= ladder.target) {
+    ladder.below_since_s = -1.0;
+    ladder.target = want;
+    return ladder.target;
+  }
+  // Under the target: down one rung once the ceiling has stood under the rung below for the time.
+  if (ladder.below_since_s < 0.0 || time_s < ladder.below_since_s) ladder.below_since_s = time_s;
+  if (time_s - ladder.below_since_s >= k_flora_rung_down_s) {
+    --ladder.target;
+    ladder.below_since_s = ladder.target > want ? time_s : -1.0;
+  }
+  return ladder.target;
+}
+
+f32 flora_storm_hold_tunable() noexcept {
+  const f32 v = static_cast<f32>(flora_storm_strength.get());
+  return v < 0.0f ? 0.0f : (v > k_flora_max_wind ? k_flora_max_wind : v);
+}
+
+f32 flora_storm_load(f32 strength, f32 exponent, f32 hold) noexcept {
+  const f32 most = hold < k_flora_max_wind ? (hold > 0.0f ? hold : 0.0f) : k_flora_max_wind;
+  const f32 s = strength < 0.0f ? 0.0f : (strength > most ? most : strength);
+  if (s <= 1.0f) return s;
+  // s^b as exp(b ln s): one library call either way; the same float on every toolchain is not
+  // promised by either (libm's pow and exp differ in the last bit across C libraries), and the sway
+  // is presentation: nothing of it enters a hash or a container.
+  return std::pow(s, exponent);
+}
+
+f32 flora_streamline_exponent(std::string_view species) noexcept {
+  const auto* info = geometry::flora_species_info(species);
+  if (info == nullptr) return 1.0f;
+  // flora.md, "Motion in a storm": the midpoint of the two readings of the wind tunnels' crowns (a
+  // drag in proportion to mass times U, b = 1; and the frontal area each kind keeps at 20 m/s,
+  // b = 1.20 for hardwoods, 1.64 for conifers), and Alben et al.'s flexible fibre for a blade.
+  if (info->motion == geometry::FloraMotionKind::field) return 4.0f / 3.0f;
+  switch (info->id) {
+    case geometry::FloraSpecies::conifer:
+    case geometry::FloraSpecies::pine:
+    case geometry::FloraSpecies::spruce:
+    case geometry::FloraSpecies::cedar:
+    case geometry::FloraSpecies::juniper:
+    case geometry::FloraSpecies::fir:
+    case geometry::FloraSpecies::hemlock: return 1.32f;
+    default: return 1.1f;
+  }
+}
+
+f32 flora_bend_cap(f32 raw, f32 most) noexcept {
+  const f32 knee = 0.5f * most;
+  if (!(raw > knee)) return raw;
+  const f32 room = most - knee;
+  return knee + room * std::tanh((raw - knee) / room);
+}
+
+f32 flora_field_load(f32 strength, f32 hold) noexcept {
+  return flora_bend_cap(flora_storm_load(strength, 4.0f / 3.0f, hold), k_flora_field_most_load);
+}
+
 FloraStiffness flora_stiffness(std::string_view species) noexcept {
   const auto* info = geometry::flora_species_info(species);
   if (info == nullptr) return FloraStiffness{0, 0, 0, 0};
@@ -204,6 +315,8 @@ bool flora_mesh(std::span<const geometry::ClusterFileMotionPart> parts,
   if (info.motion == geometry::FloraMotionKind::none) return false;  // it never moves
   out.field = info.motion == geometry::FloraMotionKind::field;
   out.field_compliance = stiffness.leaf;
+  out.streamline = flora_streamline_exponent(species);
+  out.hold = flora_storm_hold_tunable();
   const bool structured = structure.size() == parts.size();
   const u32 n = static_cast<u32>(parts.size());
   out.parts.resize(n);
@@ -253,11 +366,14 @@ bool flora_mesh(std::span<const geometry::ClusterFileMotionPart> parts,
 }
 
 void flora_field_frame(Vec2 to, f32 strength, f64 time_s, const WorldEye& eye,
-                       const FrameFlora& frame, gfx::FloraFieldFrame& out) noexcept {
+                       const FrameFlora& frame, gfx::FloraFieldFrame& out, f32 hold,
+                       f32 max_load) noexcept {
   out = gfx::FloraFieldFrame{};
   out.eye = gfx::frame_eye(eye);
-  const f32 s =
-      strength < 0.0f ? 0.0f : (strength > k_flora_max_wind ? k_flora_max_wind : strength);
+  // The blades' load (W154): the strength to a mean day, the fibre's law past it, held short of
+  // laying a blade on the ground, and at the load the frame's padding holds (W154-2).
+  const f32 law = flora_field_load(strength, hold);
+  const f32 s = law > max_load ? max_load : law;
   const f64 tau = 6.28318530717958647692;
   const auto reduce = [tau](f64 phase) {
     const f64 r = std::fmod(phase, tau);
@@ -319,6 +435,7 @@ FloraFieldRest flora_field_rest_of(std::span<const FloraMesh> meshes,
     if (out.count == 0 || records[m] < out.first) out.first = records[m];
     if (out.count == 0 || records[m] > last) last = records[m];
     ++out.count;
+    out.hold = std::fmin(out.hold, meshes[m].hold);
     for (const geometry::ClusterFileMotionPart& part : meshes[m].parts) {
       reach2 = std::fmax(reach2, dot(part.pivot, part.pivot));
       out.blade_max = std::fmax(out.blade_max, part.length);
@@ -327,7 +444,11 @@ FloraFieldRest flora_field_rest_of(std::span<const FloraMesh> meshes,
   out.root_reach = std::sqrt(reach2);
   // The shaders know a field instance by its record's place in one run. The records are made
   // together at load; were they ever not, the rule is off rather than wrong.
-  if (out.count != 0 && last - out.first + 1 != out.count) out = FloraFieldRest{};
+  if (out.count != 0 && last - out.first + 1 != out.count) {
+    const f32 hold = out.hold;  // the fields' padding was built for it, the rule on or off
+    out = FloraFieldRest{};
+    out.hold = hold;
+  }
   return out;
 }
 
@@ -366,10 +487,12 @@ void flora_part_poses(const FloraMesh& mesh, const FloraWind& wind, f64 time_s, 
                       std::span<gfx::FloraPartPose> out) noexcept {
   const u32 n = mesh.part_count();
   if (state.size() < n || out.size() < n) return;
-  const f32 s = wind.strength < 0.0f               ? 0.0f
-                : wind.strength > k_flora_max_wind ? k_flora_max_wind
-                                                   : wind.strength;
+  // The load (W154): the strength to a mean day, the species' streamlining law past it, held at
+  // the load the frame's padding was written for (W154-2).
+  const f32 law = flora_storm_load(wind.strength, mesh.streamline, mesh.hold);
+  const f32 s = law > wind.max_load ? wind.max_load : law;
   const f32 gust = s > 0.0f ? flora_gust(time_s, seed) : 0.0f;
+  const f32 to_len = length(wind.to);
   const f32 lean = s * (0.6f + 0.8f * gust);
   const f32 flutter = s * (0.25f + 0.35f * gust);
   const f32 seed_phase = unit_of(hash32(seed));
@@ -397,7 +520,15 @@ void flora_part_poses(const FloraMesh& mesh, const FloraWind& wind, f64 time_s, 
           const f32 hz = k_flora_flutter_hz / std::sqrt(part.length > 0.25f ? part.length : 0.25f);
           const f32 sway = static_cast<f32>(
               std::sin(time_s * static_cast<f64>(k_tau * hz) + static_cast<f64>(phase)));
-          const f32 angle = mesh.compliance[p] * (lean + flutter * sway);
+          f32 angle = mesh.compliance[p] * (lean + flutter * sway);
+          // Past the floor's knee a part may be near streamed along the wind: held short of
+          // turning past it (`flora_bend_cap`). Under it nothing is computed, so a mean day's
+          // poses are the model's own to the bit.
+          if (angle > 0.5f * k_flora_bend_floor) {
+            const f32 c = to_len > 0.0f ? dot(d, wind.to) / to_len : 0.0f;
+            const f32 phi = std::acos(c < -1.0f ? -1.0f : (c > 1.0f ? 1.0f : c));
+            angle = flora_bend_cap(angle, phi > k_flora_bend_floor ? phi : k_flora_bend_floor);
+          }
           omega = k * (angle / kl);
         }
       }
@@ -480,7 +611,8 @@ void flora_part_poses(const FloraMesh& mesh, const FloraWind& wind, f64 time_s, 
 }
 
 f32 flora_bounds_padding(const FloraMesh& mesh, std::span<const Vec3> vertices,
-                         std::span<const geometry::ClusterFileMotionVertex> motion) noexcept {
+                         std::span<const geometry::ClusterFileMotionVertex> motion,
+                         f32 strength) noexcept {
   // The most any part turns: its lean and flutter at their peaks under the strongest wind. A
   // rotation of a about a pivot moves a point at r from it at most a r, and the bends of a vertex's
   // chain compose, so the sum over the chain bounds the vertex. **The push is not in it**: a pushed
@@ -490,9 +622,102 @@ f32 flora_bounds_padding(const FloraMesh& mesh, std::span<const Vec3> vertices,
   const u32 n = mesh.part_count();
   if (n == 0 || vertices.size() != motion.size()) return 0.0f;
   Vector<f32> most(n, 0.0f);
+  // The load at its peak (the gust at 1: lean 1.4, flutter 0.6), the law's at `strength` (W154).
+  // A tree's part is held by the cap at its widest `most` (pi); a field's blade by its load's cap,
+  // which `flora_field_load` applies before the GPU's linear bend.
+  const f32 load = mesh.field ? flora_field_load(strength, mesh.hold)
+                              : flora_storm_load(strength, mesh.streamline, mesh.hold);
   for (u32 p = 0; p < n; ++p) {
-    most[p] = mesh.compliance[p] * k_flora_max_wind * (0.6f + 0.8f + 0.25f + 0.35f);
+    const f32 raw = mesh.compliance[p] * load * (0.6f + 0.8f + 0.25f + 0.35f);
+    most[p] = mesh.field ? raw : flora_bend_cap(raw, k_pi);
   }
+  f32 worst = 0.0f;
+  for (u32 v = 0; v < vertices.size(); ++v) {
+    u32 p = motion[v].part;
+    if (p >= n) continue;
+    const Vec3 at = vertices[v];
+    f32 bound = most[p] * (static_cast<f32>(motion[v].weight) * (1.0f / 65535.0f)) *
+                length(at - mesh.parts[p].pivot);
+    for (u32 guard = 0; guard < 64 && mesh.parts[p].parent != geometry::k_motion_no_parent;
+         ++guard) {
+      p = mesh.parts[p].parent;
+      bound += most[p] * length(at - mesh.parts[p].pivot);
+    }
+    worst = bound > worst ? bound : worst;
+  }
+  return worst;
+}
+
+f32 flora_mean_lean(const FloraMesh& mesh, std::span<const Vec3> vertices,
+                    std::span<const geometry::ClusterFileMotionVertex> motion) noexcept {
+  const u32 n = mesh.part_count();
+  if (n == 0 || mesh.field || vertices.size() != motion.size()) return 0.0f;
+  f64 num = 0.0;
+  f64 den = 0.0;
+  const Vec3 up{0.0f, 1.0f, 0.0f};
+  for (u32 w = 0; w < 4; ++w) {
+    const f32 a = 1.5707963f * static_cast<f32>(w);
+    const Vec3 to{std::cos(a), 0.0f, std::sin(a)};
+    // Each part's mean turn's rotation vector: about the axis that turns its rest direction
+    // towards the wind (`flora_part_poses`' own), by its compliance at the gust's mean lean.
+    Vector<Vec3> omega(n, Vec3{});
+    for (u32 p = 0; p < n; ++p) {
+      const Vec3 d = mesh.parts[p].direction;
+      Vec3 perp = to - d * dot(d, to);
+      if (dot(perp, perp) < 0.04f) perp = up - d * dot(d, up);
+      const f32 pl = length(perp);
+      if (pl <= 1.0e-4f) continue;
+      const Vec3 k = cross(d, perp * (1.0f / pl));
+      const f32 kl = length(k);
+      if (kl <= 1.0e-4f) continue;
+      omega[p] = k * (mesh.compliance[p] * 1.0f / kl);
+    }
+    for (u32 v = 0; v < vertices.size(); v += 4) {
+      u32 p = motion[v].part;
+      if (p >= n || !(vertices[v].y > 0.0f)) continue;
+      const Vec3 at = vertices[v];
+      f32 along = dot(cross(omega[p], at - mesh.parts[p].pivot), to) *
+                  (static_cast<f32>(motion[v].weight) * (1.0f / 65535.0f));
+      for (u32 guard = 0; guard < 64 && mesh.parts[p].parent != geometry::k_motion_no_parent;
+           ++guard) {
+        p = mesh.parts[p].parent;
+        along += dot(cross(omega[p], at - mesh.parts[p].pivot), to);
+      }
+      num += static_cast<f64>(along) * static_cast<f64>(at.y);
+      den += static_cast<f64>(at.y) * static_cast<f64>(at.y);
+    }
+  }
+  return den > 0.0 && num > 0.0 ? static_cast<f32>(num / den) : 0.0f;
+}
+
+gfx::InstanceDesc still_lean_record(const gfx::InstanceDesc& rest, Vec2 lean) noexcept {
+  if (lean.x == 0.0f && lean.y == 0.0f) return rest;
+  gfx::InstanceDesc out = rest;
+  // rows = (I + lean e_y^T) rows_rest on the 3x3; the translation column (the cell's local) stays.
+  const Vec4& up = rest.rows[1];
+  out.rows[0] = Vec4{rest.rows[0].x + lean.x * up.x, rest.rows[0].y + lean.x * up.y,
+                     rest.rows[0].z + lean.x * up.z, rest.rows[0].w};
+  out.rows[2] = Vec4{rest.rows[2].x + lean.y * up.x, rest.rows[2].y + lean.y * up.y,
+                     rest.rows[2].z + lean.y * up.z, rest.rows[2].w};
+  // ||I + l e_y^T|| = (|l| + sqrt(|l|^2 + 4)) / 2 <= 1 + |l|, and the product's norm is at most the
+  // two norms': the largest axis scale times that bounds every radius.
+  const f32 l = std::sqrt(lean.x * lean.x + lean.y * lean.y);
+  out.scale_max = rest.scale_max * (1.0f + l);
+  out.flags &= ~gfx::k_instance_uniform_scale;
+  return out;
+}
+
+f32 flora_padding_at_load(const FloraMesh& mesh, std::span<const Vec3> vertices,
+                          std::span<const geometry::ClusterFileMotionVertex> motion,
+                          f32 load) noexcept {
+  // `flora_bounds_padding` before W154, with `k_flora_max_wind` (then 2) become `load`: at the
+  // calm load the same operations in the same order, so the same float.
+  const u32 n = mesh.part_count();
+  if (n == 0 || vertices.size() != motion.size()) return 0.0f;
+  const f32 held = mesh.field && load > k_flora_field_most_load ? k_flora_field_most_load : load;
+  Vector<f32> most(n, 0.0f);
+  for (u32 p = 0; p < n; ++p)
+    most[p] = mesh.compliance[p] * held * (0.6f + 0.8f + 0.25f + 0.35f);
   f32 worst = 0.0f;
   for (u32 v = 0; v < vertices.size(); ++v) {
     u32 p = motion[v].part;
