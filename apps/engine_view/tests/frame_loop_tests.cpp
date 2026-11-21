@@ -619,6 +619,17 @@ TEST_CASE("frame loop: a streamed world's swaying trees allocate nothing in thei
   CHECK(rigid.buffers == 0);
   CHECK_MESSAGE(flown.allocations == 0, flown.first << '\n' << flown.allocation_sites);
   CHECK(flown.buffers == 0);
+  // W154-2: in a storm (force 12, the hand wind) the first frame steps the trees' padding ladder to
+  // its top and every tile that comes after is placed at that rung, its still forms leaned; the
+  // second flight's tiles take their records, their grass and their still slots from lists the
+  // first flight grew, and allocate nothing.
+  const Flown storm = fly(tmp, "streamed-trees-storm", tmp.file("trees.json"),
+                          tmp.file("path.json"), {"--tunable", "renderer.wind.speed_m_s=34.8"});
+  if (!storm.ran) return;
+  MESSAGE("second flight at force 12: " << storm.allocations << " allocations, " << storm.buffers
+                                        << " buffers");
+  CHECK_MESSAGE(storm.allocations == 0, storm.first << '\n' << storm.allocation_sites);
+  CHECK(storm.buffers == 0);
 }
 
 // Roadmap W149, with the forest's other inputs: a streamed world's own trees, swaying on the world
