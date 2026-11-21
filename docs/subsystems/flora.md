@@ -1211,8 +1211,13 @@ family that bakes a normal, which is every family whose solver hands back an imp
 regeneration form, the alpine and shrub profiles, every tree species, `broadleaf`, `conifer`,
 `birch`, `ancient` and the sward. The willow, the orchard, the plain shrub, the fern, the tuft, the
 herb, the meadow plant, the roots and the date palm bake none and their keys do not take it, and
-neither does `flora_source_hash`, the shape the deadwood and the litter key by. `k_flora_version`
-went to 14 as well, since half the families that bake key on a version of their own. A texel's
+neither does `flora_source_hash`, the shape the deadwood and the litter key by. Outside flora the
+one other bake through `bake_level` is the wetland's far cards, and `wetland::source_hash` folds
+the same constant in beside `k_wetland_version`; the sward's ground bake in `engine-content`
+writes to a directory it is named and is not cached. So one step of `k_baked_normal_convention`
+rebuilds every cached bake, and a family's or the wetland's version covers its shape alone.
+`k_flora_version` went to 14 as well, since half the families that bake key on a version of their
+own. A texel's
 normal is still the mean of its covered
 samples' vectors, renormalized: it shortens where the samples disagree, the length is lost at the
 bake, and the texture step builds the atlas's R97 variance chain from the bytes like any normal

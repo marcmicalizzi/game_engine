@@ -26,6 +26,9 @@ const Profile* profile(std::string_view name) noexcept;
 bool in_range(const Plant& recipe, std::string& error);
 bool read_file(std::string_view text, Plant& out, std::string& error);
 std::string canonical_json(const Plant& recipe);
+// The recipe's canonical text, `k_wetland_version` and `flora::k_baked_normal_convention`: the far
+// cards are baked by flora's `bake_level`, so a step of the convention rebuilds them as it rebuilds
+// every flora family that bakes (docs/subsystems/flora.md).
 u64 source_hash(const Plant& recipe);
 bool solve(const Plant& recipe, assets::MeshData& mesh, flora::Motion& motion, Report& report,
            std::string& error);

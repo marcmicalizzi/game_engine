@@ -3,6 +3,7 @@
 #include <core/math/deterministic.h>
 #include <core/schema/json_reflect.h>
 #include <domain/flora/companion.h>
+#include <domain/flora/flora.h>
 #include <domain/wetland/wetland.h>
 
 #include <algorithm>
@@ -358,6 +359,7 @@ std::string canonical_json(const Plant& f) {
 }
 u64 source_hash(const Plant& f) {
   const auto text = canonical_json(f);
-  return hash_combine(hash_bytes(text.data(), text.size()), k_wetland_version);
+  return hash_combine(hash_combine(hash_bytes(text.data(), text.size()), k_wetland_version),
+                      flora::k_baked_normal_convention);
 }
 }  // namespace engine::wetland
