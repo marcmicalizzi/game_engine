@@ -36,6 +36,7 @@ endif()
 engine_host_generators(engine_editor _editor_deps)
 set(_editor_camera ${CMAKE_SOURCE_DIR}/apps/engine_view/fly_camera.cpp
                    ${CMAKE_SOURCE_DIR}/apps/engine_view/window_input.cpp
+                   ${CMAKE_SOURCE_DIR}/apps/engine_view/wind_controls.cpp
                    ${CMAKE_SOURCE_DIR}/apps/engine_view/walk.cpp)
 set(_editor_sources editor_document.cpp editor_viewport.cpp editor_ui.cpp editor_input.cpp editor_import.cpp
                     editor_methods.cpp viewport_math.cpp)

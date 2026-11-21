@@ -712,6 +712,30 @@ struct HostCallbacks {
     if (g.door_toggle == nullptr) return Result::Unsupported;
     return g.door_toggle(g.user, key);
   }
+  // ---- ABI 13, its second line: the wind (W151) ----
+  static Result wind_state(void* host, WindState* io) {
+    const GameServices& g = self(host).game_;
+    if (io == nullptr || io->size < sizeof(WindState)) return Result::InvalidArgument;
+    if (g.wind_state == nullptr) return Result::Unsupported;
+    WindState wind;
+    const Result r = g.wind_state(g.user, wind);
+    if (r == Result::Ok) {
+      const u32 size = io->size;
+      std::memcpy(static_cast<void*>(io), &wind, sizeof(WindState));
+      io->size = size;
+    }
+    return r;
+  }
+  static Result wind_set(void* host, f64 mean_m_s, f64 to_deg) {
+    const GameServices& g = self(host).game_;
+    if (g.wind_set == nullptr) return Result::Unsupported;
+    return g.wind_set(g.user, mean_m_s, to_deg);
+  }
+  static Result wind_gust(void* host, u32 held) {
+    const GameServices& g = self(host).game_;
+    if (g.wind_gust == nullptr) return Result::Unsupported;
+    return g.wind_gust(g.user, held);
+  }
   static Result ground_height(void* host, f64 x, f64 z, f64* out_height) {
     const GameServices& g = self(host).game_;
     if (out_height == nullptr) return Result::InvalidArgument;
@@ -814,6 +838,9 @@ ModuleHost::ModuleHost(HostConfig config) : config_(std::move(config)) {
   api_.door_nearest = &HostCallbacks::door_nearest;
   api_.door_state = &HostCallbacks::door_state;
   api_.door_toggle = &HostCallbacks::door_toggle;
+  api_.wind_state = &HostCallbacks::wind_state;
+  api_.wind_set = &HostCallbacks::wind_set;
+  api_.wind_gust = &HostCallbacks::wind_gust;
   context_.api = &api_;
   context_.state = nullptr;
 }

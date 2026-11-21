@@ -89,6 +89,131 @@ TEST_CASE("water wind: the shore's two trains take the sea's energy as it grows"
   CHECK(worst_step < 0.01 * range.max_height_m);
 }
 
+namespace {
+
+// A body as the GPU scene keeps one (W151's cases, no device): the beach's 60 km under its own
+// fixed 8 m/s wind, its load's table drawn on that wind's grid, the table at offset 0 and no
+// surface record.
+WaterWindBody live_body() {
+  WaterWindBody b;
+  b.fetch_m = 60000.0;
+  b.seed = 7;
+  b.load_wind_m_s = 8.0;
+  gfx::WindDesc own;
+  own.kind = gfx::WindKind::fixed;
+  own.speed_m_s = 8.0;
+  const gfx::WaterWaveGrid grid = gfx::water_wind_range(own, b.fetch_m).grid;
+  gfx::water_spectrum_on_grid(gfx::sea_state(own, 0.0, b.fetch_m), grid, b.seed, b.load_waves);
+  b.entry_offset = 0;
+  return b;
+}
+
+// The table a frame wrote for the body, or false when it wrote none.
+bool written(const Vector<WaterWindUpload>& uploads, gfx::WaterWave (&waves)[gfx::k_water_waves]) {
+  for (const WaterWindUpload& up : uploads) {
+    if (up.surface) continue;
+    std::memcpy(waves, up.data, sizeof(waves));
+    return true;
+  }
+  return false;
+}
+
+}  // namespace
+
+// **A live wind's step** (W151; gfx.md, "The live wind"), no device: the beach's body loaded at
+// 8 m/s, then a key steps the mean to a gale (Beaufort 8, 18.9 m/s). The first live frame draws the
+// sea the body drew, on the grid it drew it on — every band's wavenumber and cycles the load's, so
+// no crest moves, and the sea's height the load's — and the sea then grows by the duration law over
+// the world clock's seconds: higher after a minute than at the step, never past the gale's grown
+// sea over the fetch, and within 2 % of it after nine hours. The bands never move on the way. A
+// constant wind's growth does not depend on how the seconds were cut: a body stepped a second at a
+// time and one stepped ten minutes at a time stand at the same height after an hour.
+TEST_CASE("water wind: a live wind's step grows the sea by its law, on the grid it drew") {
+  Vector<WaterWindUpload> uploads;
+  WaterWindBody body[1] = {live_body()};
+  water_wind_frame(body, 0.0, uploads);  // the first frame writes the load's table once
+  water_wind_frame(body, 0.0, uploads);
+  CHECK(uploads.empty());  // and then it stands
+
+  gfx::WindLive live;
+  live.set = true;
+  live.mean_m_s = gfx::beaufort_speed(8);
+  live.to_deg = 0.0;
+  water_wind_frame(body, 0.0, uploads, live, 100.0, 0.0002);
+  gfx::WaterWave waves[gfx::k_water_waves];
+  REQUIRE(written(uploads, waves));
+  for (u32 i = 0; i < gfx::k_water_waves; ++i) {
+    CHECK(waves[i].k == body[0].load_waves[i].k);
+    CHECK(waves[i].cycles == body[0].load_waves[i].cycles);
+  }
+  gfx::WindDesc calm;
+  calm.kind = gfx::WindKind::fixed;
+  calm.speed_m_s = 8.0;
+  const f64 load_h = gfx::sea_state(calm, 0.0, 60000.0).height_m();
+  CHECK(body[0].drawn_sea.height_m() == doctest::Approx(load_h).epsilon(1e-6));
+
+  gfx::WindDesc gale = calm;
+  gale.speed_m_s = live.mean_m_s;
+  const f64 grown = gfx::sea_state(gale, 0.0, 60000.0).height_m();
+  water_wind_frame(body, 0.0, uploads, live, 160.0, 0.0002);
+  const f64 minute = body[0].drawn_sea.height_m();
+  CHECK(minute > load_h);
+  CHECK(minute < grown);
+  f64 last = minute;
+  for (f64 t = 160.0; t <= 9.0 * 3600.0; t += 600.0) {
+    water_wind_frame(body, 0.0, uploads, live, t, 0.0002);
+    if (written(uploads, waves)) {
+      for (u32 i = 0; i < gfx::k_water_waves; ++i)
+        CHECK(waves[i].k == body[0].load_waves[i].k);
+    }
+    CHECK(body[0].drawn_sea.height_m() >= last - 1e-12);
+    CHECK(body[0].drawn_sea.height_m() <= grown * (1.0 + 1e-9));
+    last = body[0].drawn_sea.height_m();
+  }
+  MESSAGE("the 8 m/s sea " << load_h << " m; after a minute of the gale " << minute
+                           << " m; after nine hours " << last << " m; the gale's grown sea "
+                           << grown << " m");
+  CHECK(last == doctest::Approx(grown).epsilon(0.02));
+
+  WaterWindBody fine[1] = {live_body()};
+  WaterWindBody coarse[1] = {live_body()};
+  water_wind_frame(fine, 0.0, uploads);
+  water_wind_frame(coarse, 0.0, uploads);
+  for (u32 s = 0; s <= 3600; ++s)
+    water_wind_frame(fine, 0.0, uploads, live, static_cast<f64>(s), 0.0002);
+  for (u32 s = 0; s <= 3600; s += 600)
+    water_wind_frame(coarse, 0.0, uploads, live, static_cast<f64>(s), 0.0002);
+  CHECK(fine[0].live_sea.sea_height_m ==
+        doctest::Approx(coarse[0].live_sea.sea_height_m).epsilon(1e-9));
+}
+
+// **What the trees take from a live wind** (W151), no device: its mean under the scene's
+// turbulence, so a gale's strength over the mean day is about the gale's over 5 m/s, and a held
+// gust adds the 3 s gust factor's share of the mean on top (1.24 over the sea's roughness), on the
+// same instant of the turbulence.
+TEST_CASE("water wind: the trees take a live wind's mean and its forced gust") {
+  gfx::WindDesc sea;
+  sea.kind = gfx::WindKind::fixed;
+  sea.speed_m_s = 3.0;
+  sea.roughness_m = 0.0002;
+  gfx::WindLive live;
+  live.set = true;
+  live.mean_m_s = 15.0;
+  live.to_deg = 90.0;
+  Vec2 to{};
+  f32 calm = 0.0f;
+  REQUIRE(scene_flora_wind(sea, 1000.0, to, calm, live));
+  CHECK(to.y == doctest::Approx(1.0f).epsilon(1e-6));
+  CHECK(static_cast<f64>(calm) == doctest::Approx(15.0 / k_flora_wind_mean_m_s).epsilon(0.35));
+  live.gust = 1.0;
+  f32 gusting = 0.0f;
+  REQUIRE(scene_flora_wind(sea, 1000.0, to, gusting, live));
+  const f64 g = gfx::wind_gust_factor(0.0002);
+  CHECK(g == doctest::Approx(1.24).epsilon(0.01));
+  CHECK(static_cast<f64>(gusting - calm) ==
+        doctest::Approx(15.0 * (g - 1.0) / k_flora_wind_mean_m_s).epsilon(1e-5));
+}
+
 #if ENGINE_WATER_TESTS_DUNES
 
 namespace {

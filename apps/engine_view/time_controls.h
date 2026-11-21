@@ -102,6 +102,9 @@ struct TitleStatus {
   f64 world_rate = 1.0;
   bool live = true;
   bool captured = false;
+  // The live wind's words after the world's rate (W151; wind_controls.h, `format_wind`), or none
+  // while it is unset.
+  const char* wind = nullptr;
 };
 usize format_status(const TitleStatus& status, char* out, usize size) noexcept;
 

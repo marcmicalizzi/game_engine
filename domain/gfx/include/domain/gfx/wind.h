@@ -313,6 +313,81 @@ inline f64 wind_gust(const WindDesc& w, const WindSample& mean, Vec2 place, f64 
   return std::max(u + sum, 0.0);
 }
 
+// ---- the live wind (W151) ---------------------------------------------------------------------
+//
+// **The wind a session changes while it runs** (gfx.md, "The live wind"; the grounding is
+// docs/experiments/wind.md, "A gust on demand"): a host's keys or a game step the mean wind and
+// force a gust, and every reader takes the frame's `WindLive` in place of the scene's wind. The
+// model here is the arithmetic every host and reader shares: the Beaufort forces the keys step
+// through, the gust a forced gust brings, and the envelope it rises and dies along.
+
+// **The Beaufort scale's speeds**: v = 0.836 B^(3/2) m/s at 10 m (the modern scale's empirical
+// relation; Beer 1997, *Environmental Oceanography*). Force 0 to 12: 0, 0.84, 2.36, 4.34, 6.69,
+// 9.35, 12.3, 15.5, 18.9, 22.6, 26.4, 30.5 and 34.8 m/s, each inside its force's band.
+inline constexpr u32 k_beaufort_max = 12;
+inline f64 beaufort_speed(u32 force) noexcept {
+  const f64 b = static_cast<f64>(force < k_beaufort_max ? force : k_beaufort_max);
+  return 0.836 * b * std::sqrt(b);
+}
+// The force whose speed is nearest `speed_m_s` (0 to 12).
+inline u32 beaufort_force(f64 speed_m_s) noexcept {
+  u32 best = 0;
+  for (u32 f = 1; f <= k_beaufort_max; ++f) {
+    if (std::abs(beaufort_speed(f) - speed_m_s) < std::abs(beaufort_speed(best) - speed_m_s))
+      best = f;
+  }
+  return best;
+}
+
+// **How strong a gust is**: the 3 s peak gust over the 10 min mean, G = 1 - f I ln(tau / T) with
+// tau = 3 s, T = 600 s, I the roughness's turbulence intensity (`wind_turbulence`) and f = 0.5
+// (Ishizaki 1983, as Jeans 2024, *Wind Energ. Sci.* 9, eq. 6, quotes it; the ISO Froya relation's
+// f is 0.41, and Jeans's fit to 1 h means 0.46). 1.24 over the sea (z0 0.0002), 1.46 over
+// grassland (0.03), 1.89 over a forest (0.5); IEC 61400-1:2019 fixes 1.4 at hub height.
+inline constexpr f64 k_wind_gust_tau_s = 3.0;
+inline constexpr f64 k_wind_gust_mean_s = 600.0;
+inline constexpr f64 k_wind_gust_f = 0.5;
+inline f64 wind_gust_factor(f64 z0) noexcept {
+  return 1.0 +
+         k_wind_gust_f * wind_turbulence(z0) * std::log(k_wind_gust_mean_s / k_wind_gust_tau_s);
+}
+
+// **The forced gust's envelope**: IEC 61400-1's coherent gust rises over T = 10 s by a half cosine
+// (the extreme coherent gust with direction change; Hannesdottir, Verelst and Urban 2023, *Wind
+// Energ. Sci.* 8, 231, who also measured coherent gusts at Hovsore rising over about 200 s on
+// average, a Weibull of scale 279 s and shape 1.47: 10 s is the sharp end, which a storm test
+// wants). Held, the gust rises over `k_wind_gust_rise_s` and stays; released, it dies over
+// `k_wind_gust_decay_s` from wherever it stood. The state is a phase in [0, 1] stepped linearly
+// (so a held key's rise does not depend on how the seconds were cut); the level is the phase
+// through Hermite's smoothstep, which is the half cosine's shape within 0.011 and needs no
+// library call, so the level is the same bits on every toolchain.
+inline constexpr f64 k_wind_gust_rise_s = 10.0;
+inline constexpr f64 k_wind_gust_decay_s = 10.0;
+inline f64 wind_gust_phase_step(f64 phase, bool held, f64 dt) noexcept {
+  if (!(dt > 0.0)) return phase;
+  const f64 next = held ? phase + dt / k_wind_gust_rise_s : phase - dt / k_wind_gust_decay_s;
+  return next < 0.0 ? 0.0 : next > 1.0 ? 1.0 : next;
+}
+inline f64 wind_gust_level(f64 phase) noexcept {
+  const f64 p = phase < 0.0 ? 0.0 : phase > 1.0 ? 1.0 : phase;
+  return p * p * (3.0 - 2.0 * p);
+}
+
+// **The frame's live wind**: unset, every reader takes the scene's wind (or the hand tunables'), as
+// it always did; set, the mean wind 10 m up, where it blows to, and the forced gust's level in
+// [0, 1], which brings the wind to `mean (1 + level (G - 1))`.
+struct WindLive {
+  bool set = false;
+  f64 mean_m_s = 0.0;
+  f64 to_deg = 0.0;
+  f64 gust = 0.0;
+};
+// The wind a live state blows now without the turbulence: the mean and the forced gust over it.
+inline f64 wind_live_speed(const WindLive& live, f64 z0) noexcept {
+  if (!live.set || !(live.mean_m_s > 0.0)) return 0.0;
+  return live.mean_m_s * (1.0 + live.gust * (wind_gust_factor(z0) - 1.0));
+}
+
 // ---- the sea ----------------------------------------------------------------------------------
 
 // Under this wind no waves are raised (Kahma and Donelan 1988: the first wavelets at about 1 m/s).

@@ -8,6 +8,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -365,4 +366,54 @@ TEST_CASE("wind: the breaker a swell makes is the surf similarity's") {
   CHECK(breaker_type(gentle) == BreakerType::spilling);
   CHECK(breaker_type(steep) == BreakerType::plunging);
   CHECK(breaker_type(surf_similarity(0.5, 0.5, 14.0)) == BreakerType::surging);
+}
+
+// **The live wind's arithmetic** (W151; gfx.md, "The live wind"; the wind page, "A gust on
+// demand"): the Beaufort speeds the keys step through sit inside their forces' bands (the scale's
+// table: force 8 is 17.2 to 20.7 m/s, 12 at least 32.7), and the nearest force of each is itself;
+// the 3 s gust factor is 1.24 over the sea, 1.46 over grassland and 1.89 over a forest; and a gust
+// held from rest stands at half its level at five seconds and at all of it at ten, holds there, and
+// let go dies to half in five and to nothing in ten, whatever the seconds were cut into.
+TEST_CASE("wind: the live wind's ladder, its gust factor and its gust's envelope") {
+  const f64 low[13] = {0.0, 0.3, 1.6, 3.4, 5.5, 8.0, 10.8, 13.9, 17.2, 20.8, 24.5, 28.5, 32.7};
+  const f64 high[13] = {0.2, 1.5, 3.3, 5.4, 7.9, 10.7, 13.8, 17.1, 20.7, 24.4, 28.4, 32.6, 60.0};
+  for (u32 f = 0; f <= k_beaufort_max; ++f) {
+    CHECK(beaufort_speed(f) >= low[f]);
+    CHECK(beaufort_speed(f) <= high[f]);
+    CHECK(beaufort_force(beaufort_speed(f)) == f);
+  }
+  CHECK(beaufort_speed(8) == doctest::Approx(18.92).epsilon(1e-3));
+  CHECK(wind_gust_factor(0.0002) == doctest::Approx(1.24).epsilon(0.005));
+  CHECK(wind_gust_factor(0.03) == doctest::Approx(1.46).epsilon(0.005));
+  CHECK(wind_gust_factor(0.5) == doctest::Approx(1.885).epsilon(0.005));
+
+  f64 fine = 0.0;
+  f64 coarse = 0.0;
+  for (u32 t = 0; t < 1200; ++t)  // five seconds at 240 ticks a second
+    fine = wind_gust_phase_step(fine, true, 1.0 / 240.0);
+  coarse = wind_gust_phase_step(coarse, true, 5.0);
+  CHECK(wind_gust_level(fine) == doctest::Approx(0.5).epsilon(1e-9));
+  CHECK(fine == doctest::Approx(coarse).epsilon(1e-9));
+  for (u32 t = 0; t < 1200; ++t)
+    fine = wind_gust_phase_step(fine, true, 1.0 / 240.0);
+  CHECK(wind_gust_level(fine) == doctest::Approx(1.0).epsilon(1e-9));
+  fine = wind_gust_phase_step(fine, true, 30.0);  // held: it stands
+  CHECK(wind_gust_level(fine) == 1.0);
+  fine = wind_gust_phase_step(fine, false, 5.0);
+  CHECK(wind_gust_level(fine) == doctest::Approx(0.5).epsilon(1e-9));
+  fine = wind_gust_phase_step(fine, false, 5.0);
+  CHECK(wind_gust_level(fine) == 0.0);
+  // The shape: Hermite's smoothstep, within 0.011 of IEC 61400-1's half cosine.
+  f64 worst = 0.0;
+  for (u32 i = 0; i <= 100; ++i) {
+    const f64 p = static_cast<f64>(i) / 100.0;
+    worst = std::max(worst, std::abs(wind_gust_level(p) - 0.5 * (1.0 - std::cos(k_wind_pi * p))));
+  }
+  CHECK(worst < 0.011);
+  WindLive live;
+  CHECK(wind_live_speed(live, 0.03) == 0.0);  // unset: no live wind
+  live.set = true;
+  live.mean_m_s = 10.0;
+  live.gust = 1.0;
+  CHECK(wind_live_speed(live, 0.03) == doctest::Approx(10.0 * wind_gust_factor(0.03)));
 }

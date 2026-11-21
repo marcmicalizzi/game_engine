@@ -968,7 +968,26 @@ class GpuScene {
   // copies that bring every body that draws a wave table to the sea of sky time `sky_time_s`, made
   // by the frame's "water wind" transfer into `materials` and `water_surfaces()`; empty when
   // nothing moved.
-  std::span<const WaterWindUpload> water_wind_frame(f64 sky_time_s);
+  // **Under a live wind** (W151; gfx.md, "The live wind"): `live` is the frame's, and each body's
+  // own sea is stepped by the world clock's seconds since the last frame (`world_time_s`).
+  std::span<const WaterWindUpload> water_wind_frame(f64 sky_time_s, const gfx::WindLive& live = {},
+                                                    f64 world_time_s = 0.0);
+  // **What the frame's wind was** (W151): the live state the frame named, the wind the trees took
+  // from it (`scene_flora_wind`, in metres a second: their strength times the mean day's 5 m/s; 0
+  // where no wind reaches them) and the first wave-drawing body's sea, as last drawn.
+  struct WindStats {
+    gfx::WindLive live{};
+    f64 speed_m_s = 0.0;     // the live mean and its forced gust (`gfx::wind_live_speed`)
+    f64 trees_m_s = 0.0;     // what the trees' sway was given this frame
+    f64 sea_height_m = 0.0;  // the first body's significant height drawn (0: no body)
+    f64 sea_period_s = 0.0;
+    u32 bodies = 0;  // bodies that draw a wave table
+    // The scene's own mean wind at the frame's sky time (0 with none): what a host's first wind
+    // key steps from.
+    f64 scene_mean_m_s = 0.0;
+    f64 scene_to_deg = 0.0;
+  };
+  const WindStats& wind_stats() const noexcept { return wind_stats_; }
   const gfx::BufferResource& water_surfaces() const noexcept { return water_surfaces_; }
   u32 max_joints() const noexcept { return max_joints_; }
   u32 skinned_instances() const noexcept { return skinned_instances_; }
@@ -1048,7 +1067,8 @@ class GpuScene {
   // `eye` is the frame's origin: the field kind's gust waves are phased at it (renderer.md, "The
   // field kind"), and the region's field block is written every frame a field mesh exists.
   u64 flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f64 world_time_s,
-                  f64 sky_time_s, const WorldEye& eye = WorldEye{}) noexcept;
+                  f64 sky_time_s, const WorldEye& eye = WorldEye{},
+                  const gfx::WindLive& live = {}) noexcept;
   // **The hand-off's clock** (G136; renderer.md, "The hand-off by distance"): the frames
   // `flora_frame` was called for, modulo 2^22 — what an instance's load-in stamp is counted from,
   // by the cull pass (`gfx::CullParams::handoff_tick`) and the pool pass (the field block's
@@ -2243,6 +2263,7 @@ class GpuScene {
   Vector<WaterWindBody> water_wind_;
   bool water_wind_ready_ = false;
   Vector<WaterWindUpload> water_wind_uploads_;
+  WindStats wind_stats_{};
   Vector<gfx::WaterSurface> water_surface_load_;  // the surfaces as the load uploaded them
   // The water reflection's candidate planes (R129; `water_reflect_level`): a level body each, its
   // instance, its square's centre (body-local x, z) and half diagonal, and whether it is the open

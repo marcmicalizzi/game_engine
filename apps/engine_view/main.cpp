@@ -1269,6 +1269,24 @@ bool start_collision_draw(ViewCollisionDraw& out, const gfx::Device& device,
 #endif
 }
 
+// **The frame's wind** (W151; wind_controls.h): the record's `wind` (null while the live wind is
+// unset), and the scene's own wind at the frame as the base the session's first key steps from.
+std::optional<scene::FrameWind> frame_wind(view::FlySession& session,
+                                           const renderer::SceneRenderer& renderer) {
+  const renderer::GpuScene::WindStats& w = renderer.scene().wind_stats();
+  session.wind().set_base(w.scene_mean_m_s, w.scene_to_deg);
+  if (!w.live.set) return std::nullopt;
+  scene::FrameWind out;
+  out.mean_m_s = w.live.mean_m_s;
+  out.to_deg = w.live.to_deg;
+  out.gust = w.live.gust;
+  out.speed_m_s = w.speed_m_s;
+  out.trees_m_s = w.trees_m_s;
+  out.sea_height_m = w.sea_height_m;
+  out.sea_period_s = w.sea_period_s;
+  return out;
+}
+
 // The summary's `flora` block (renderer.md, "Streamed trees sway"): null when no tree sways and no
 // tail can bring one.
 JsonValue flora_summary(const renderer::GpuScene& scene) {
@@ -1945,6 +1963,8 @@ struct PendingFrame {
   std::optional<scene::FrameTerrain> terrain;
   // The walker's ticks of this frame (FrameRecord's `walk`).
   std::optional<scene::FrameWalk> walk;
+  // The live wind the frame drew (FrameRecord's `wind`, W151).
+  std::optional<scene::FrameWind> wind;
   // The host's time between frames, by what it did (FrameRecord's `world`, W82).
   std::optional<scene::FrameWorld> world;
   // Every span of the loop around the frame (FrameRecord's `sections`, R130); `next_start` is set
@@ -1982,6 +2002,7 @@ void take_folded(const renderer::SceneRenderer& renderer, u64& folded,
   record.terrain = p.terrain;
   record.walk = p.walk;
   record.world = p.world;
+  record.wind = p.wind;
   if (p.spans.next_start != 0) {
     renderer::FrameSpans spans = p.spans;
     spans.slot_wait_ms = record.cpu.wait;
@@ -2152,6 +2173,13 @@ view::SessionHeader live_header(const Options& options, const renderer::SceneDat
   h.world_rate = options.world_rate.value_or(1.0);
   h.time_rate = options.time_rate_base;
   h.time_of_day_h = options.time_of_day.value_or(-1.0);
+  // The live wind's start (W151): the base a first key steps from, read now and recorded, and the
+  // scene's roughness its gusts are taken at.
+  const view::WindStart wind = view::wind_start(scene_data.wind);
+  h.has_wind = true;
+  h.wind_mean_m_s = wind.mean_m_s;
+  h.wind_to_deg = wind.to_deg;
+  h.wind_roughness_m = wind.roughness_m;
 #if ENGINE_VIEW_GAME
   // The game module whose calls this walk may depend on (fly_camera.h, the `game` block): a
   // replay of the recording needs the same module, and is refused without it.
@@ -3564,6 +3592,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         }
 #endif
         set_clocks(frame);
+        frame.wind = session.wind().live();               // W151: the keys' and the game's wind
         frame.overlay = game_hud_overlay(view_renderer);  // the game's HUD, when it has one
         animate_frame(frame, 0);                          // the ticks above stepped the world
         const i64 before_submit = time::monotonic_ns();
@@ -3586,6 +3615,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         p.spans.submit_ms = static_cast<f64>(submitted - before_submit) / 1.0e6;
         p.spans.end = submitted;
         p.terrain = renderer::frame_terrain(time_lapse);
+        p.wind = frame_wind(session, view_renderer);
         p.walk.reset();
         if (walker.available()) p.walk = walked;
         // Everything but `begin_frame` and `submit_frame`, from the top of the loop; its parts were
@@ -7014,10 +7044,17 @@ int run_view(int argc, char** argv) {
           const auto control = static_cast<view::ViewControl>(c);
           while (control_seen[c] != session.control_presses(control)) {
             ++control_seen[c];
-            if (step_rate(control)) title_dirty = true;
+            if (view::wind_control(control)) {
+              // W151: the session stepped the wind at the tick; this says where it stands.
+              char said[64];
+              std::fprintf(stderr, "engine-view: %s\n",
+                           view::format_wind(session.wind(), said, sizeof(said)));
+              title_dirty = true;
+            } else if (step_rate(control)) {
+              title_dirty = true;
+            }
           }
-        }
-        // The walk mode's switch, once however many ticks it took: a line on the console and the
+        }  // The walk mode's switch, once however many ticks it took: a line on the console and the
         // title at once.
         if (camera_seen != session.camera_toggles()) {
           camera_seen = session.camera_toggles();
@@ -7105,6 +7142,7 @@ int run_view(int argc, char** argv) {
       }
       frame.sky_time_s = sky_offset + sun.time_s;
       frame.world_time_s = world.time_s;
+      frame.wind = session.wind().live();  // W151: the keys' and the game's wind
       // **Until the ready milestone** (apps.md, "The loading presentation"): what the frames so far
       // say about readiness, the hand-over when the module's milestone (or the walker's first
       // tick) is reached, and the loading overlay over the scene until then — the module's own HUD
@@ -7209,6 +7247,7 @@ int run_view(int argc, char** argv) {
       if (interactive.on || path_in_window) {
         // ---- pacing: what the title says, and what a --benchmark record carries --------------
         const i64 submitted_ns = time::monotonic_ns();
+        const std::optional<scene::FrameWind> wind_now = frame_wind(session, view_renderer);
         const f64 frame_ms = previous_frame_ns != 0
                                  ? static_cast<f64>(frame_start - previous_frame_ns) / 1.0e6
                                  : 0.0;
@@ -7219,6 +7258,7 @@ int run_view(int argc, char** argv) {
           p.submission = submissions;
           p.frame = static_cast<u32>(rendered);
           p.terrain = renderer::frame_terrain(time_lapse);
+          p.wind = wind_now;
           p.walk.reset();
           if (walker.available()) p.walk = walked;
           p.ticks = ticks_this_frame;
@@ -7279,7 +7319,10 @@ int run_view(int argc, char** argv) {
           status.world_rate = world.rate;
           status.live = !interactive.replay;
           status.captured = pointer_captured;
-          char status_text[160];
+          char wind_text[64];  // W151: the live wind beside the day and the world
+          if (session.wind().set_now())
+            status.wind = view::format_wind(session.wind(), wind_text, sizeof(wind_text));
+          char status_text[224];
           (void)view::format_status(status, status_text, sizeof(status_text));
           constexpr const char* k_dash = " \xE2\x80\x94 ";  // U+2014 EM DASH, in UTF-8
           char title[256];

@@ -282,6 +282,7 @@ struct GameRunner::Impl {
   u64 door_toggles = 0;
   u64 door_asks = 0;
   u64 door_refused = 0;
+  u64 wind_sets = 0;  // W151: the module's `wind_set` calls taken
   f32 speed_scale = 1.0f;
   f32 sprint_scale = 1.0f;
   bool sound_said = false;
@@ -618,6 +619,37 @@ struct GameRunner::Impl {
     if (!self.walker->door_by_key(key, d)) return hotload::Result::NotFound;
     if (!self.session->request_door_toggle(key)) return hotload::Result::OutOfRange;
     ++self.door_toggles;
+    return hotload::Result::Ok;
+  }
+  // ---- ABI 13, its second line: the wind (W151; apps.md, "The wind a module reads and sets") ----
+  // The session's live wind (wind_controls.h): read as it stands at this tick, set from this tick.
+  static hotload::Result wind_state(void* user, hotload::WindState& out) {
+    Impl& self = *static_cast<Impl*>(user);
+    if (self.session == nullptr) return hotload::Result::Unsupported;
+    const WindControls& w = self.session->wind();
+    out = hotload::WindState{};
+    out.flags = (w.set_now() ? hotload::k_wind_live : 0u) |
+                (w.gust_held() ? hotload::k_wind_gust_held : 0u);
+    out.mean_m_s = w.mean_m_s();
+    out.to_deg = w.to_deg();
+    out.gust = w.set_now() ? w.gust_level() : 0.0;
+    out.speed_m_s = w.set_now() ? w.speed_m_s() : w.mean_m_s();
+    return hotload::Result::Ok;
+  }
+  static hotload::Result wind_set(void* user, f64 mean_m_s, f64 to_deg) {
+    Impl& self = *static_cast<Impl*>(user);
+    if (!std::isfinite(mean_m_s) || !std::isfinite(to_deg) || mean_m_s < 0.0 ||
+        mean_m_s > hotload::k_wind_set_max_m_s)
+      return hotload::Result::InvalidArgument;
+    if (self.session == nullptr) return hotload::Result::Unsupported;
+    self.session->wind().set(mean_m_s, to_deg);
+    ++self.wind_sets;
+    return hotload::Result::Ok;
+  }
+  static hotload::Result wind_gust(void* user, u32 held) {
+    Impl& self = *static_cast<Impl*>(user);
+    if (self.session == nullptr) return hotload::Result::Unsupported;
+    self.session->wind().set_game_gust(held != 0);
     return hotload::Result::Ok;
   }
   // ---- ABI 4: the HUD's structured elements (GameHud) ----
@@ -1315,6 +1347,9 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
   services.door_nearest = &Impl::door_nearest;
   services.door_state = &Impl::door_state;
   services.door_toggle = &Impl::door_toggle;
+  services.wind_state = &Impl::wind_state;
+  services.wind_set = &Impl::wind_set;
+  services.wind_gust = &Impl::wind_gust;
   host.set_game_services(services);
 
   const auto refuse = [&](const std::string& why) {

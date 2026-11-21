@@ -290,6 +290,12 @@ answer for them — return 0 to keep one shut (a lock, a story beat) — and use
 `door_state` and `door_toggle` for doors of your own; keep a door by its `key`, which names the same
 door in every session over the scene. A module without `game_door` lets every door open.
 
+**The wind** (ABI 13, 2026-11-20; [apps.md, "The wind a module reads and sets"](subsystems/apps.md#the-wind-a-module-reads-and-sets)):
+`wind_state` reads the session's wind — its mean, direction, forced gust and the speed with it —
+and `wind_set` and `wind_gust` change it from the tick you call them on, as the `;`, `'` and G
+keys do; the trees and the water answer it. A storm a game scripts is calls at ticks, so a replay
+with your module has the same wind. The template's HUD shows the wind's speed.
+
 ## The HUD, and how far `nearest_placement` sees
 
 The HUD is a proof-of-concept panel, not the game UI framework

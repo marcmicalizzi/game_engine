@@ -20,6 +20,7 @@ constexpr u32 k_key_c = 6;
 constexpr u32 k_key_d = 7;
 constexpr u32 k_key_e = 8;
 constexpr u32 k_key_f = 9;
+constexpr u32 k_key_g = 10;
 constexpr u32 k_key_m = 16;
 constexpr u32 k_key_q = 20;
 constexpr u32 k_key_s = 22;
@@ -33,6 +34,8 @@ constexpr u32 k_key_minus = 45;
 constexpr u32 k_key_equals = 46;
 constexpr u32 k_key_left_bracket = 47;
 constexpr u32 k_key_right_bracket = 48;
+constexpr u32 k_key_semicolon = 51;
+constexpr u32 k_key_apostrophe = 52;
 constexpr u32 k_key_comma = 54;
 constexpr u32 k_key_period = 55;
 constexpr u32 k_key_lctrl = 224;
@@ -150,6 +153,8 @@ const char* view_control_name(ViewControl control) noexcept {
     case ViewControl::exposure_darker: return "exposure_darker";
     case ViewControl::exposure_brighter: return "exposure_brighter";
     case ViewControl::exposure_hold: return "exposure_hold";
+    case ViewControl::wind_weaker: return "wind_weaker";
+    case ViewControl::wind_stronger: return "wind_stronger";
   }
   return "unknown";
 }
@@ -235,7 +240,7 @@ input::ActionMap default_fly_map(u32 revision) {
   // a zoom's out and in on every keyboard layout that has them side by side, and `0` beside them
   // resets; none of the three was bound.
   const u32 exposure_keys[3] = {k_key_minus, k_key_equals, k_key_0};
-  for (u32 c = k_rate_controls; c < k_view_controls; ++c) {
+  for (u32 c = k_rate_controls; c < k_exposure_controls_end; ++c) {
     const input::ActionId id =
         map.add_action(view_control_name(static_cast<ViewControl>(c)), input::ActionKind::Button);
     map.bind(id, Binding{Source::Key, exposure_keys[c - k_rate_controls]});
@@ -275,6 +280,18 @@ input::ActionMap default_fly_map(u32 revision) {
   map.bind(crouch, Binding{Source::Key, k_key_c});
   map.bind(crouch, Binding{Source::Key, k_key_lctrl});
   map.bind(crouch, Binding{Source::GamepadButton, k_pad_right_stick});
+  if (revision < 8) return map;
+
+  // Revision 8 (2026-11-20): the wind (W151; wind_controls.h), keys only. `;` and `'` sit beside
+  // each other under `[` and `]` (the day's) and were bound to nothing; G — for gust — neither.
+  const input::ActionId weaker =
+      map.add_action(view_control_name(ViewControl::wind_weaker), input::ActionKind::Button);
+  map.bind(weaker, Binding{Source::Key, k_key_semicolon});
+  const input::ActionId stronger =
+      map.add_action(view_control_name(ViewControl::wind_stronger), input::ActionKind::Button);
+  map.bind(stronger, Binding{Source::Key, k_key_apostrophe});
+  const input::ActionId gust = map.add_action("gust", input::ActionKind::Button);
+  map.bind(gust, Binding{Source::Key, k_key_g});
   return map;
 }
 
@@ -335,11 +352,8 @@ bool resolve_fly_actions(const input::ActionMap& map, FlyActions& out, std::stri
   const struct {
     const char* name;
     input::ActionId* slot;
-  } walking[] = {{"walk", &out.walk},
-                 {"jump", &out.jump},
-                 {"camera", &out.camera},
-                 {"crouch", &out.crouch},
-                 {"interact", &out.interact}};
+  } walking[] = {{"walk", &out.walk},     {"jump", &out.jump},         {"camera", &out.camera},
+                 {"crouch", &out.crouch}, {"interact", &out.interact}, {"gust", &out.gust}};
   for (const auto& w : walking) {
     const input::ActionId id = map.find_action(w.name);
     *w.slot = input::k_invalid_action;
@@ -600,6 +614,13 @@ JsonValue session_to_json(const SessionHeader& header) {
     orbit.set("turn_rate_deg_s", JsonValue(header.turn_rate_deg_s));
     out.set("orbit", std::move(orbit));
   }
+  if (header.has_wind) {
+    JsonValue wind = JsonValue::object();
+    wind.set("roughness_m", JsonValue(header.wind_roughness_m));
+    wind.set("mean_m_s", JsonValue(header.wind_mean_m_s));
+    wind.set("to_deg", JsonValue(header.wind_to_deg));
+    out.set("wind", std::move(wind));
+  }
   return out;
 }
 
@@ -716,6 +737,18 @@ bool session_from_json(const JsonValue& value, SessionHeader& out, std::string* 
     }
     h.orbit = true;
   }
+  // The wind block, from 2026-11-20 (W151): the live wind's start. Absent: unset, grassland's z0.
+  if (const JsonValue* wind = value.find("wind"); wind != nullptr) {
+    const JsonValue* z0 = wind->is_object() ? wind->find("roughness_m") : nullptr;
+    const JsonValue* mean = wind->is_object() ? wind->find("mean_m_s") : nullptr;
+    const JsonValue* to = wind->is_object() ? wind->find("to_deg") : nullptr;
+    if (z0 == nullptr || !z0->get_f64(h.wind_roughness_m) || !(h.wind_roughness_m > 0.0) ||
+        mean == nullptr || !mean->get_f64(h.wind_mean_m_s) || to == nullptr ||
+        !to->get_f64(h.wind_to_deg)) {
+      return fail("the wind block does not give its roughness, its mean and its direction");
+    }
+    h.has_wind = true;
+  }
   out = std::move(h);
   return true;
 }
@@ -786,6 +819,7 @@ bool FlySession::start(const input::ActionMap& map, const SessionHeader& header,
   turn_limited_ticks_ = 0;
   teleport_pending_ = false;
   teleports_ = 0;
+  wind_.start(header.wind_roughness_m, header.wind_mean_m_s, header.wind_to_deg);
   // A session that starts walking (`--walk`) stands on the ground under its start camera before
   // its first tick: the camera it starts from is the eye, and the trajectory's seed stays the
   // header's start, so a replay seeds the same chain and drops the walker the same way.
@@ -893,6 +927,19 @@ void FlySession::on_tick(void* user, SimTick tick, const input::InputState& stat
     const input::ActionId id = self.actions_.controls[c];
     if (id != input::k_invalid_action && state.pressed(id)) ++self.control_presses_[c];
   }
+  // **The live wind** (W151; wind_controls.h), at the tick its keys were pressed and held on: the
+  // steps first, then the gust's envelope over the tick, both before the observer so a module
+  // reads this tick's wind. A map before revision 8 binds none of them, and the wind stays unset.
+  const u32 weaker = static_cast<u32>(ViewControl::wind_weaker);
+  const u32 stronger = static_cast<u32>(ViewControl::wind_stronger);
+  if (self.actions_.controls[weaker] != input::k_invalid_action &&
+      state.pressed(self.actions_.controls[weaker]))
+    (void)self.wind_.step(false);
+  if (self.actions_.controls[stronger] != input::k_invalid_action &&
+      state.pressed(self.actions_.controls[stronger]))
+    (void)self.wind_.step(true);
+  self.wind_.tick(1.0 / static_cast<f64>(self.header_.params.tick_hz),
+                  self.actions_.gust != input::k_invalid_action && state.held(self.actions_.gust));
   // The observer — the game runner — sees this tick's camera and mode, and may ask for a teleport
   // or a walk scale (above); the teleport lands now, inside the tick, so the chain below hashes
   // where the tick ended. A session with no observer, or one that asks nothing, is untouched.

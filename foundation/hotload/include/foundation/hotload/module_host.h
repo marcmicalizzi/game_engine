@@ -161,6 +161,12 @@ struct GameServices {
   Result (*door_nearest)(void* user, const f64* point, f32 radius_m, DoorState& out) = nullptr;
   Result (*door_state)(void* user, u64 key, DoorState& out) = nullptr;
   Result (*door_toggle)(void* user, u64 key) = nullptr;
+  // ABI 13, its second line (W151): the wind. The host checks the pointer and a `WindState`'s
+  // size and copies the answer back only as far as the module's; the values (a finite mean in
+  // range) are the runner's to judge. Null, each answers `Unsupported`.
+  Result (*wind_state)(void* user, WindState& out) = nullptr;
+  Result (*wind_set)(void* user, f64 mean_m_s, f64 to_deg) = nullptr;
+  Result (*wind_gust)(void* user, u32 held) = nullptr;
 };
 
 struct HostConfig {
