@@ -41,8 +41,8 @@ bool AccumulationPass::create(const gfx::Device& device, GpuScene& scene, const 
       return false;
     }
   }
-  // The census (R194 leg 2): eight words of header and 64 buckets of four a slot, cleared by the CPU
-  // before the slot's frame counts.
+  // The census (R194 leg 2): eight words of header and 64 buckets of four a slot, cleared by the
+  // CPU before the slot's frame counts.
   census_.resize(frames_in_flight);
   for (gfx::BufferResource& block : census_) {
     if (!gfx::create_buffer(device, k_census_words * sizeof(u32),
@@ -211,7 +211,7 @@ bool AccumulationPass::record(const FramePassContext& context, std::string* erro
     p.prev_depth = motion_->depth().buffer.valid() ? motion_->depth_address(v) : 0;
     p.fresh = trusted ? motion_->fresh_address(slot) : 0;
     p.fresh_count = trusted ? motion_->fresh_count() : 0;
-    p.census = census_[slot].address;
+    p.census = options_.census ? census_[slot].address : 0;
     if (scene_->has_water()) {
       p.materials = scene_->materials.address;
       p.cluster_materials = scene_->cluster_materials.address;

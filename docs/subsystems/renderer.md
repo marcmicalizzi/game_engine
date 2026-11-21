@@ -7829,7 +7829,7 @@ session, which is where a distant crown line shimmers.
 
 **The census** (`AccumulationPass::Census`; the frame record's `history_pixels`, `history_taken`,
 `history_trusted`, `history_fresh`, `history_runs`, `history_whole`, `FrameRecord` version 23):
-per frame, counted by wave in the accumulation pass, the pixels with a history to read, those that
+per frame, counted by wave in the accumulation pass under `renderer.reconstruction.census`, the pixels with a history to read, those that
 took one, those that took one with their own vectors trusted, and those of instances new to their
 slot.
 
@@ -7843,10 +7843,7 @@ against 97.12 % on the 528 frames that wrote none; under the first leg's rule ev
 (a growth and a compaction's numbering). The far forest has 4,754 tiles: more than the moved table
 holds.
 
-**A census is counted where it does not contend.** The first count added each wave's four totals
-to four words, a million adds to the same four addresses at 4K, and the frame passes took 3.93 ms
-at the median where the first leg's took 1.36 (the same walk, flown an hour apart): the adds go to
-one of 64 buckets by workgroup now (`accumulate.slang`), which the CPU sums.
+**The census is a measurement's switch** (`renderer.reconstruction.census`, off). Its block is host-visible, so every add crosses the bus: four words cost the frame passes 3.93 ms at the median where the first leg's took 1.36 (the same walk an hour apart, quiet frames and layout frames alike), and 64 buckets by workgroup 7.08, more lines across the same bus. A device-local block copied out once a frame would make it free; until then it is on only for a flight that wants the numbers above, and the census fields are zero otherwise.
 
 **Shimmer on a crown** (`trail_tests.cpp`, "a crown shimmers no more for a layout change elsewhere"):
 the young palm with no wind, a camera stepping a millimetre a frame, a tail of one palm behind the
@@ -7862,7 +7859,7 @@ name that left would end it, at a read of last frame's 3 × 3; a row of its own.
 case ("the hand-off leaves no trail of a stand-in under the accumulation", `far_forest_tests.cpp`)
 holds the hand-off the same way.
 
-**What it costs.** COST2_LINE
+**What it costs** (2026-11-21, the forest staging's grounded walk as above, census off, `msvc-release`, RTX 5090, the session locked; the first leg's tip flown 02:30 and this one 03:45, between other rows' GPU runs, never beside one): the frame passes 1.359 ms at the median, 1.592 at p95 and 1.749 at p99 on the first leg's build, 1.574, 1.852 and 1.922 on this one; the motion pass 1.088 against 1.087; the frame 19.643 ms at the median and 25.232 at p99 against 19.791 and 25.349. So about 0.2 ms at the median in the accumulation, which now takes the trusted path (the dilation, the match, the sharper read on the pixels whose four taps held) on the 1,870 frames that took the depth path before, and the fresh runs' searches; the motion pass's cost is unchanged. The walk's frame records allocate as the first leg's did (3,247 after frame 200 against 3,257: the streamed world's own).
 
 **Held by** `trail_tests.cpp`: "a layout change elsewhere costs the picture nothing" (the swaying
 palm in a streamed scene under a camera stepping a centimetre a frame, with a tail placed again

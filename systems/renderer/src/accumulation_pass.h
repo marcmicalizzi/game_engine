@@ -99,6 +99,8 @@ class AccumulationPass {
     f32 motion_match = 0.25f;                      // `renderer.reconstruction.motion_match`, pixels
     f32 reactive_weight = 0.25f;                   // `renderer.reconstruction.reactive_weight`
     u32 filter = k_accumulate_filter_catmull_rom;  // `renderer.reconstruction.history_filter`
+    bool census =
+        false;  // `renderer.reconstruction.census`: count what each frame took (R194 leg 2)
   };
 
   bool create(const gfx::Device& device, GpuScene& scene, const MotionPass& motion,

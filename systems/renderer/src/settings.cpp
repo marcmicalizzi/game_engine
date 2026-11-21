@@ -701,6 +701,14 @@ tunables::Bool reconstruction_layout_follow{
     "inputs; false: every pixel of such a frame is held to its depth, as R194's first leg did (a "
     "measurement's other side) (renderer.md, What a layout change costs the accumulation; read at "
     "load)"};
+tunables::Bool reconstruction_census{
+    "renderer.reconstruction.census", false,
+    "Under the accumulation, count per frame the pixels that had a history, took one, took one "
+    "with "
+    "their vectors trusted, and were of an instance new to its slot, into the frame record's "
+    "history_* fields; a measurement's switch, which costs the pass milliseconds at 4K "
+    "(renderer.md, "
+    "What a layout change costs the accumulation; read at load)"};
 tunables::Bool gi_shell_clip{
     "renderer.gi.shell_clip", false,
     "The rays the cache traces from the eye stop at renderer.gi.shell_m, the reach of the volume "
@@ -1110,6 +1118,7 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   out.accumulation_fade_turn =
       out.accumulation != Accumulation::Off && reconstruction_fade_turn.get();
   out.accumulation_layout_follow = reconstruction_layout_follow.get();
+  out.accumulation_census = reconstruction_census.get();
   out.gi_shell_clip = gi_shell_clip.get();
   out.gi_shell_first = gi_shell_first.get();
   out.gi_preroll = static_cast<u32>(gi_preroll.get());

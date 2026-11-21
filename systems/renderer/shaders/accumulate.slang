@@ -277,7 +277,7 @@ bool history_catmull_rom(AccumulateParams* p, int2 corner, int2 size, float2 bas
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void accumulate_main(uint3 id : SV_DispatchThreadID, uint3 gid : SV_GroupID) {
+void accumulate_main(uint3 id : SV_DispatchThreadID) {
   AccumulateParams* p = (AccumulateParams*)g_push.params;
   if (id.x >= p->width || id.y >= p->height) return;
   const int2 local = int2(id.xy);
@@ -469,11 +469,12 @@ void accumulate_main(uint3 id : SV_DispatchThreadID, uint3 gid : SV_GroupID) {
     }
   }
   g_storage_images[p->output][at] = exposed(p, max(result, 0.0));
-  // **The census** (R194 leg 2; the frame record's `history_*`): one add a word a wave, into one of
-  // 64 buckets by workgroup (8 + 4 * bucket words in), which the CPU sums: four words alone took
-  // every wave's adds at 4K and cost the pass 2.5 ms on the forest staging.
+  // **The census** (R194 leg 2; the frame record's `history_*`; `renderer.reconstruction.census`,
+  // off): one add a word a wave. The block is host-visible, so every add crosses the bus: 2.5 ms of
+  // the pass at 4K into four words, 5.7 into 64 buckets by workgroup (the forest staging's walk), so
+  // it is a measurement's switch; the buckets stay for a device-local block (8 + 4 * bucket words in).
   if (p->census != 0) {
-    const uint bucket = (gid.x + gid.y * 7u) & 63u;
+    const uint bucket = 0u;
     uint* counts = (uint*)p->census + 8u + 4u * bucket;
     const uint had = WaveActiveCountBits(counted_had);
     const uint taken = WaveActiveCountBits(counted_taken);

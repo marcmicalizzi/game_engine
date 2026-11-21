@@ -1275,6 +1275,7 @@ bool SceneRenderer::create_motion(std::string* error) {
   options.motion_match = resolved_.accumulation_motion_match;
   options.filter = resolved_.accumulation_filter;
   options.reactive_weight = resolved_.accumulation_reactive_weight;
+  options.census = resolved_.accumulation_census;
   motion_->set_fade_turn(resolved_.accumulation_fade_turn);
   accumulation_ = new AccumulationPass;
   if (!motion_->keep_motion(*device_, views_, error) ||
