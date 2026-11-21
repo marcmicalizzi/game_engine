@@ -126,6 +126,10 @@ void compose_subject(const Context& ctx, const Session& session, const ReviewSub
 void read_subject_files(SubjectPlan& plan, const DigestBounds& bounds);
 // Whether the session's document is the one the plan composed, under the lock again.
 bool same_document(const Session* session, const SubjectPlan& plan) noexcept;
+// Whether `again`, the subject's half composed anew under the lock, is the half `plan`'s reads
+// were made for: the same stream up to the files, and the same files admitted to the same places
+// (protocol.md, "What it costs"). The document may have moved elsewhere meanwhile.
+bool same_subject(const SubjectPlan& plan, const SubjectPlan& again);
 // The two halves joined into `out` (`same` is left to the caller, which knows the stamp).
 void finish_subject(SubjectPlan& plan, SubjectState& out);
 

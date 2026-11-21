@@ -748,10 +748,11 @@ bool task_list(Context& ctx, const TaskListParams& params, TasksResult& out, Rpc
 // names the subject, and the document's half is composed; then the files are read with the lock let
 // go (`without_dispatch_lock`), so every other client of the host, and the editor's frame, is
 // answered meanwhile; then, under the lock again, the session is looked up anew and its document
-// compared with what was composed, and `decide(session, state, ledger_revision, moved, error)`
-// makes the call's decision on the values of that same pass — setting `moved` when the ledger's
-// revision is not the one `first` read. A document or a ledger that moved is composed and read
-// again, three passes in all, then refused (`subject changing`).
+// compared with what was composed — a document that moved is composed again, and the reads stand
+// when the subject's half is the same — and `decide(session, state, revision, moved, error)`
+// makes the call's decision on the values of that same pass, setting `moved` when the item's own
+// revision is not the one `first` read (a raise has none). A subject or an item that moved is
+// composed and read again, three passes in all, then refused (`subject changing`).
 constexpr u32 k_digest_passes = 3;
 
 RpcError over_error(const DigestOver& over) {
@@ -860,7 +861,15 @@ bool digest_passes(Context& ctx, const std::string& session_id, DigestFor use, F
       error = names_not_read_error(plan.unfollowed[0]);
       return false;
     }
+    // A pass is thrown away only when the subject moved: the document moving elsewhere (another
+    // record edited, a write-back) leaves the reads standing when the subject's half composed
+    // again now is the one they were made for.
     bool moved = !same_document(session, plan);
+    if (moved && session == plan.session) {
+      SubjectPlan again;
+      compose_subject(ctx, *session, subject, raised_roots, bounds, again);
+      moved = !same_subject(plan, again);
+    }
     if (!moved) {
       finish_subject(plan, state);
       state.passes = pass;
@@ -967,17 +976,13 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
   // tied to"), into the write that raises the item.
   const i64 now = time::wall_unix_ms();
   ReviewInfo made;
-  const auto decide = [&](Session& session, const SubjectState& stamped, u64 revision, bool& moved,
-                          RpcError& e) {
+  // The ledger's own refusals are made again in this write, on the ledger as it is now; a write
+  // to it about something else since the first read moves nothing the raise rests on.
+  const auto decide = [&](Session& session, const SubjectState& stamped, u64, bool&, RpcError& e) {
     const doc::Document& d = session.document();
     return update_ledger(
         vfs, session, false, true, out.ledger_revision,
         [&](LedgerFile& ledger, bool& write, RpcError& e2) {
-          write = false;
-          if (ledger.revision != revision) {
-            moved = true;
-            return false;
-          }
           write = lapse_claims(ledger, now) > 0;
           if (!allowed(ledger, e2)) return false;
           TaskInfo* task = params.task != 0 ? find_task(ledger, params.task, e2) : nullptr;
@@ -1102,8 +1107,9 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
   const auto first = [&](Session& session, ReviewSubject& subject, Vector<std::string>& raised_roots,
                          u64& revision, RpcError& e) {
     if (!session.may_write_side_files(e)) return false;
+    u64 ledger_revision = 0;
     return update_ledger(
-        vfs, session, true, false, revision,
+        vfs, session, true, false, ledger_revision,
         [&](LedgerFile& ledger, bool& write, RpcError& e2) {
           write = false;
           const ReviewInfo* r = find_review(ledger, params.review, e2);
@@ -1111,6 +1117,9 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
           // An item's subject never changes after the raise: the one read is the one checked.
           subject = r->subject;
           raised_roots = r->raised_roots;
+          // The item's own revision, not the ledger's: a write about another item or a task
+          // moves nothing this close rests on.
+          revision = r->revision;
           return true;
         },
         e);
@@ -1125,12 +1134,13 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
         vfs, session, false, false, out.ledger_revision,
         [&](LedgerFile& ledger, bool& write, RpcError& e2) {
           write = false;
-          if (ledger.revision != revision) {
+          ReviewInfo* r = find_review(ledger, params.review, e2);
+          if (r == nullptr) return false;
+          if (r->revision != revision) {
             moved = true;
             return false;
           }
-          ReviewInfo* r = find_review(ledger, params.review, e2);
-          if (r == nullptr || !closable(*r, e2)) return false;
+          if (!closable(*r, e2)) return false;
           // A digest this host cannot compute in full is never compared, so it never reads as a
           // change (protocol.md, "What a close is tied to").
           if (!params.digest.empty() && !seen_now.comparable) {
@@ -1244,24 +1254,27 @@ bool review_list(Context& ctx, const ReviewListParams& params, ReviewsResult& ou
   // With no filter beside it the detail answers its item, which `find_review` found.
   const auto first = [&](Session& session, ReviewSubject& subject, Vector<std::string>& raised_roots,
                          u64& revision, RpcError& e) {
-    if (!list(session, revision, e)) return false;
-    out.ledger_revision = revision;
+    if (!list(session, out.ledger_revision, e)) return false;
     subject = out.reviews[0].subject;
     raised_roots = out.reviews[0].raised_roots;
+    revision = out.reviews[0].revision;  // the item's own, not the ledger's
     return true;
   };
+  // The item read again: the answer stands while the item is the one the pass composed for,
+  // whatever else the ledger was written about meanwhile.
   const auto decide = [&](Session& session, const SubjectState&, u64 revision, bool& moved,
                           RpcError& e) {
     u64 now = 0;
-    const bool ok = update_ledger(
+    return update_ledger(
         ctx.sessions->vfs(), session, true, false, now,
-        [](LedgerFile&, bool& write, RpcError&) {
+        [&](LedgerFile& ledger, bool& write, RpcError& e2) {
           write = false;
+          const ReviewInfo* r = find_review(ledger, params.review, e2);
+          if (r == nullptr) return false;
+          moved = r->revision != revision;
           return true;
         },
         e);
-    moved = ok && now != revision;
-    return ok;
   };
   if (!digest_passes(ctx, params.session, DigestFor::detail, first, decide, out.subject, s, error))
     return false;

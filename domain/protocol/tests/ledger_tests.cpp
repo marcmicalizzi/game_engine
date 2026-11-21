@@ -1610,6 +1610,83 @@ TEST_CASE("ledger: a string no host could admit never blocks a raise or a close"
   CHECK(reason_of(error) == "subject not readable here");
 }
 
+// A pass is thrown away only when the subject moved (protocol.md, "What it costs"): an edit of a
+// record the subject does not name, and a ledger write about something else, at every pass's
+// reads, leave the close to stand in one pass, and the files are read once.
+TEST_CASE("ledger: an edit outside the subject during a digest's reads keeps the pass") {
+  test::TempDir tmp("protocol_ledger_elsewhere");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  h.open(dir, true);
+  DigestWorld w;
+  w.make(h, dir);
+  const Id128 elsewhere = Id128::from_parts(0x20, 9);
+  {
+    JsonValue cmds = JsonValue::array();
+    cmds.push_back(obj({{"kind", JsonValue("CreateObject")},
+                        {"id", JsonValue(hex(elsewhere))},
+                        {"type", JsonValue("engine.world.Node")},
+                        {"value", obj({{"name", JsonValue("elsewhere")}})}}));
+    (void)h.ok("doc.apply", obj({{"commands", cmds}, {"attribution", who("setup", "director")}}));
+  }
+  const JsonValue item = at(w.raise(h, "Agent"), "reviews")[0];
+  const Reads quiet = reads_of(h, [&] { (void)opened_detail(h, at(item, "id")); });
+
+  Dispatcher other{Context{&h.sessions, nullptr, nullptr, nullptr, &h.policy}};
+  other.context().roots = &h.roots;
+  add_builtin_methods(other);
+  std::mutex dispatch;
+  struct Seam {
+    std::mutex* dispatch = nullptr;
+    Dispatcher* other = nullptr;
+    std::string session;
+    Id128 elsewhere;
+    u32 edits = 0;
+  } seam{&dispatch, &other, h.session, elsewhere};
+  h.sessions.set_digest_read_hook_for_test(
+      [](void* context) {
+        auto* s = static_cast<Seam*>(context);
+        std::lock_guard<std::mutex> held(*s->dispatch);
+        ++s->edits;
+        JsonValue cmds = JsonValue::array();
+        cmds.push_back(obj({{"kind", JsonValue("SetProperty")},
+                            {"id", JsonValue(hex(s->elsewhere))},
+                            {"name", JsonValue("name")},
+                            {"value", JsonValue("elsewhere " + std::to_string(s->edits))}}));
+        JsonValue apply = obj({{"jsonrpc", JsonValue("2.0")},
+                               {"id", JsonValue(1)},
+                               {"method", JsonValue("doc.apply")},
+                               {"params", obj({{"session", JsonValue(s->session)},
+                                               {"commands", cmds},
+                                               {"attribution", who("agent", "director")}})}});
+        (void)s->other->dispatch(apply);
+        JsonValue task = obj(
+            {{"jsonrpc", JsonValue("2.0")},
+             {"id", JsonValue(2)},
+             {"method", JsonValue("task.create")},
+             {"params", obj({{"session", JsonValue(s->session)},
+                             {"title", JsonValue("another task " + std::to_string(s->edits))},
+                             {"attribution", who("planner")}})}});
+        (void)s->other->dispatch(task);
+      },
+      &seam);
+  JsonValue resp;
+  const Reads busy = reads_of(h, [&] {
+    std::lock_guard<std::mutex> held(dispatch);
+    h.dispatcher.context().dispatch_lock = &dispatch;
+    resp = h.call("review.close", obj({{"review", at(item, "id")},
+                                       {"resolution", JsonValue("Accepted")},
+                                       {"digest", at(item, "raised_digest")},
+                                       {"attribution", who("reviewer")}}));
+    h.dispatcher.context().dispatch_lock = nullptr;
+  });
+  h.sessions.set_digest_read_hook_for_test(nullptr, nullptr);
+  REQUIRE_MESSAGE(resp.find("result") != nullptr, write_json(resp));
+  CHECK(num(at(at(at(resp, "result"), "subject"), "passes")) == 1);
+  CHECK(busy.opens == quiet.opens);
+  CHECK(seam.edits == 1);
+}
+
 // What a digest reads is bounded, by four bounds named as tunables (protocol.md, "What it costs"):
 // a raise past one is refused naming it and the figure, and a detail or a close past one says so
 // in the stream, which differs from the stamp, so a file grown past its bound is "subject moved".

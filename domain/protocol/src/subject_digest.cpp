@@ -543,6 +543,23 @@ bool same_document(const Session* session, const SubjectPlan& plan) noexcept {
          d.layer_count() == plan.layers;
 }
 
+bool same_subject(const SubjectPlan& plan, const SubjectPlan& again) {
+  // The stream up to the files covers the records' composed lines and the blobs, and the records
+  // say which strings name files, so equal streams name the same files.
+  Sha256 a = plan.hash;
+  Sha256 b = again.hash;
+  if (sha256_hex(a.finish()) != sha256_hex(b.finish())) return false;
+  if (again.files.size() > plan.files.size() || again.past_files > plan.past_files) return false;
+  for (u32 i = 0; i < again.files.size(); ++i) {
+    const SubjectPlan::File& was = plan.files[i];
+    const SubjectPlan::File& now = again.files[i];
+    if (!was.named_by.empty() || was.spelled != now.spelled || was.native != now.native ||
+        was.outside != now.outside || (!now.line.empty() && now.line != was.line))
+      return false;
+  }
+  return true;
+}
+
 void finish_subject(SubjectPlan& plan, SubjectState& out) {
   out = SubjectState{};
   Sha256& h = plan.hash;
