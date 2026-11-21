@@ -1387,7 +1387,8 @@ TEST_CASE("renderer: a surround's centre view is the single view of one monitor,
 }
 
 // R195 (renderer.md, "Per-view statistics, and what the milliseconds mean"): a pass's views timed
-// as one zone draw what a zone a view draws, to the byte, and every millisecond lands on view 0.
+// as one zone draw what a zone a view draws, to the byte. A capture is not a timed frame, so what
+// the switch does to the milliseconds is the flight's to say (the wide frame's experiment page).
 TEST_CASE("renderer: a surround's views timed as one zone a pass draw the same bytes") {
   Gpu gpu;
   if (!gpu.ok) {
@@ -1421,19 +1422,13 @@ TEST_CASE("renderer: a surround's views timed as one zone a pass draw the same b
   zones->append_value(previous);
 
   CapturedFrame captures[2];
-  f64 view_resolve[2][3] = {};
-  f64 frame_resolve[2] = {};
   for (u32 k = 0; k < 2; ++k) {
     REQUIRE(zones->set_from_text(k == 0 ? "true" : "false"));
     Rig rig;
     REQUIRE_MESSAGE(rig.build(gpu.device, desc, settings, k_monitor * 3, k_monitor), rig.error);
     std::string error;
     REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, captures[k], &error), error);
-    const Stats& stats = rig.renderer.stats();
-    REQUIRE(stats.view_count == 3);
-    for (u32 v = 0; v < 3; ++v)
-      view_resolve[k][v] = stats.views[v].gpu_resolve;
-    frame_resolve[k] = stats.gpu_resolve;
+    REQUIRE(rig.renderer.stats().view_count == 3);
   }
   (void)zones->set_from_text(previous);
 
@@ -1443,13 +1438,6 @@ TEST_CASE("renderer: a surround's views timed as one zone a pass draw the same b
         0);
   CHECK(std::memcmp(captures[0].ids.data(), captures[1].ids.data(),
                     captures[0].ids.size() * sizeof(u32)) == 0);
-  // A zone a view: every view timed its resolve. One zone a pass: view 0 holds the pass, the others
-  // nothing, and the frame's bucket is still a resolve's time.
-  CHECK(view_resolve[0][2] > 0.0);
-  CHECK(view_resolve[1][0] > 0.0);
-  CHECK(view_resolve[1][1] == 0.0);
-  CHECK(view_resolve[1][2] == 0.0);
-  CHECK(frame_resolve[1] > 0.0);
 }
 
 TEST_CASE(
