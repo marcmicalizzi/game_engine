@@ -137,7 +137,9 @@ bool open_file(SubjectPlan::File& f, const DigestBounds& bounds, u64& total, Sub
   // Held to the admitted path after the open: a component swapped for a link since the admission
   // leads elsewhere, and the file is not read (`not readable`).
   if (const io::Status s = file.open_regular_unmoved(f.native); s != io::Status::Ok) {
-    f.line = s == io::Status::NotFound ? k_missing : k_not_readable;
+    // Not there is honest, and compares; anything else is a file this host could not read.
+    f.unread = s != io::Status::NotFound;
+    f.line = f.unread ? k_not_readable : k_missing;
     return false;
   }
   if (file.size() > bounds.file_bytes) {
@@ -169,6 +171,7 @@ void hash_file(SubjectPlan::File& f, const io::FileHandle& file, SubjectPlan& pl
     if (file.read_at(at, buffer.data(), k_read_chunk, got) != io::Status::Ok) {
       plan.bytes_read += at;
       f.line = k_not_readable;
+      f.unread = true;
       return;
     }
     if (got == 0) break;
@@ -485,6 +488,7 @@ void read_subject_files(SubjectPlan& plan, const DigestBounds& bounds) {
     if (!f.line.empty()) continue;  // decided under the lock
     if (f.native.empty()) {
       f.line = k_not_readable;
+      f.unread = true;
       continue;
     }
     io::FileHandle file;
@@ -654,7 +658,7 @@ void finish_subject(SubjectPlan& plan, SubjectState& out) {
     } else if (!f.read) {
       out.unreadable.push_back(f.spelled);
     }
-    if (f.outside || f.unfollowed) out.not_comparable.push_back(f.spelled);
+    if (f.outside || f.unfollowed || f.unread) out.not_comparable.push_back(f.spelled);
   }
   // The files past the bound, one line and one entry with their count.
   if (plan.past_files > 0) {

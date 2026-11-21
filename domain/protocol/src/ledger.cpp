@@ -907,6 +907,21 @@ bool digest_passes(Context& ctx, const std::string& session_id, DigestFor use, F
         error = name_not_followed_error(f.spelled);
         return false;
       }
+      // Nor over a file that is there and could not be read (not a regular file, an open the
+      // system could not confirm, a read that failed): a raise is made where every file the
+      // subject names was read, or is honestly not there.
+      Vector<std::string> unread;
+      for (const SubjectPlan::File& f : plan.files) {
+        if (f.unread) unread.push_back(f.spelled);
+      }
+      if (!unread.empty()) {
+        error = not_readable_here_error(
+            unread, "the subject names " + unread[0] +
+                        ", which this host's roots admit and it could not read (not a regular "
+                        "file, or an open or a read that failed): raise it on a host that can "
+                        "read every file it names");
+        return false;
+      }
     }
     // A pass is thrown away only when the subject moved: the document moving elsewhere (another
     // record edited, a write-back) leaves the reads standing when the subject's half composed

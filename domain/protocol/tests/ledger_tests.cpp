@@ -2080,18 +2080,41 @@ TEST_CASE("ledger: a subject past a digest's bound is refused at the raise, and 
   }
   CHECK(at(opened_detail(h, at(item, "id")), "digest").as_string() == stamp);  // put back
 
-  // A directory and a FIFO are not regular files: not readable, and never opened to wait.
-  std::filesystem::create_directories(std::filesystem::path(dir) / "props" / "set.d");
+  // A directory and a FIFO are not regular files: they exist and cannot be read, so a raise over
+  // one is refused naming them (never opened to wait), and a detail over a file that became one
+  // cannot compare, its close refused for it. A raise is made only where every file is read or
+  // honestly not there.
+  const std::filesystem::path props = std::filesystem::path(dir) / "props";
+  std::filesystem::create_directories(props / "set.d");
   JsonValue listed = strings({"props/set.d"});
 #if !ENGINE_PLATFORM_WINDOWS
-  const std::string fifo = (std::filesystem::path(dir) / "props" / "pipe.glb").string();
+  const std::string fifo = (props / "pipe.glb").string();
   REQUIRE(::mkfifo(fifo.c_str(), 0600) == 0);
   listed.push_back(JsonValue("props/pipe.glb"));
 #endif
-  const JsonValue odd = at(h.ok("review.raise", w.raise_params("Agent", listed)), "reviews")[0];
+  CHECK(h.fails("review.raise", w.raise_params("Agent", listed), &error) ==
+        codes::k_invalid_argument);
+  CHECK(reason_of(error) == "subject not readable here");
+  CHECK(at(at(error, "data"), "entries").size() == listed.size());
+  {
+    std::ofstream(props / "odd.bin", std::ios::binary) << "odd";
+  }
+  const JsonValue odd =
+      at(h.ok("review.raise", w.raise_params("Agent", strings({"props/odd.bin"}))), "reviews")[0];
+  std::filesystem::remove(props / "odd.bin");
+  std::filesystem::create_directories(props / "odd.bin");
   const JsonValue detail = opened_detail(h, at(odd, "id"));
-  CHECK(at(detail, "same").as_bool());
-  CHECK(at(detail, "unreadable").size() == listed.size());
+  CHECK_FALSE(at(detail, "comparable").as_bool());
+  REQUIRE(at(detail, "not_comparable").size() == 1);
+  CHECK(at(detail, "not_comparable")[0].as_string() == "props/odd.bin");
+  CHECK(at(detail, "unreadable").size() == 1);
+  CHECK(h.fails("review.close",
+                obj({{"review", at(odd, "id")},
+                     {"resolution", JsonValue("Accepted")},
+                     {"digest", at(detail, "digest")},
+                     {"attribution", who("reviewer")}}),
+                &error) == codes::k_invalid_argument);
+  CHECK(reason_of(error) == "subject not readable here");
 }
 
 // Every refusal that reads no file comes before the digest reads one (protocol.md, "What it

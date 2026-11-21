@@ -2630,7 +2630,9 @@ struct SubjectState @version(1) {
   comparable: bool = false
   /// What keeps this host from comparing, as answered: every entry of `outside`, every name a glTF
   /// of the subject names that was not followed (its URI's rule, the stored path's text rules or
-  /// the roots refused it; never opened), and every glTF whose names could not be followed.
+  /// the roots refused it; never opened), every glTF whose names could not be followed, and every
+  /// file the roots admit that is there and could not be read (not a regular file, an open the
+  /// system could not confirm, a read that failed).
   not_comparable: string[]
   /// What the stream covered: the subject's records with their ancestors each once, the blobs and
   /// the assets they and the subject name, and the bytes of the assets read and hashed.

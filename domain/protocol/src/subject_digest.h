@@ -94,6 +94,10 @@ struct SubjectPlan {
     // A name a glTF names that the URI's rule, the stored path's text rules or the roots refused:
     // not followed, never opened or sized, and the subject not comparable here.
     bool unfollowed = false;
+    // Admitted, there, and not read: not a regular file, an open the system could not confirm
+    // was of the admitted path, or a read that failed. The subject is not comparable here, and a
+    // raise over it is refused. A file past a byte bound is not this: it has its own answers.
+    bool unread = false;
   };
   Vector<File> files;
   // Files past the files bound, named by the records or a glTF and never collected: one count,
