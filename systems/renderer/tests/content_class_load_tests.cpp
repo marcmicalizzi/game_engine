@@ -1843,3 +1843,68 @@ TEST_CASE("content classes at load: the props read names a key given twice") {
   CHECK_FALSE(read_scene_props(tmp.file("scene.json"), props, error));
   CHECK_MESSAGE(error.find("'format' is given twice") != std::string::npos, error);
 }
+
+namespace {
+
+// A generator whose hash writes `g_swap`'s bytes over its path the first time it is taken: in a
+// load, after the containers listed before its recipe were probed and before any is read whole.
+struct Swap {
+  std::string path;
+  std::string bytes;
+  bool done = false;
+};
+Swap* g_swap = nullptr;
+bool fixture_swap_hash_with(std::span<const u8> bytes, const assets::MeshGeneratorInputs&, u64& out,
+                            std::string& error) {
+  if (g_swap != nullptr && !g_swap->done) {
+    g_swap->done = true;
+    if (io::write_file(g_swap->path, g_swap->bytes) != io::Status::Ok) {
+      error = "the fixture could not write its swap";
+      return false;
+    }
+  }
+  out = hash_bytes(bytes.data(), bytes.size());
+  return true;
+}
+constexpr assets::MeshGeneratorDesc k_fixture_swap{.name = "fixtureswap",
+                                                   .source_hash = fixture_host_hash,
+                                                   .build = fixture_host_build,
+                                                   .source_hash_with = fixture_swap_hash_with};
+
+}  // namespace
+
+// **A container is decided by the bytes the load read, through the load** (C64): the container is
+// probed unclassified, replaced by a classified one while a later recipe's class is read, and read
+// whole after; the load decides it by what the whole read found and leaves its instance out. The
+// recipe's own instance raises a category nobody defines, so it is refused unread.
+TEST_CASE("content classes at load: a container replaced after its probe is decided as read") {
+  need_generator(k_fixture_swap);
+  const test::TempDir tmp("renderer_classes_swapped_load");
+  REQUIRE(tmp.ok());
+  const Grid x = write_grid(tmp, "x.clusters", 9, "x.png");
+  const Grid next = write_grid(tmp, "x_next.clusters", 9, "x.png", glow_record(2));
+  Swap swap{x.path, {}, false};
+  REQUIRE(io::read_file(next.path, swap.bytes) == io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("turn.fixtureswap.json"), "{}") == io::Status::Ok);
+  const std::string scene_json =
+      R"({"meshes":[{"path":"x.clusters"},{"path":"turn.fixtureswap.json"}],"instances":[)"
+      R"({"mesh":0,"translation":[0,0,0],"rotation":[0,0,0,1]},)"
+      R"({"mesh":1,"translation":[30,0,0],"rotation":[0,0,0,1],)"
+      R"("content_classes":{"levels":{"fixture_hum":"loud"}}}]})";
+  REQUIRE(io::write_file(tmp.file("scene.json"), scene_json) == io::Status::Ok);
+  std::string error;
+  SceneDesc desc;
+  REQUIRE_MESSAGE(read_scene_file(tmp.file("scene.json"), desc, error), error);
+  desc.ddc = tmp.file("ddc");
+  g_swap = &swap;
+  SceneData scene;
+  const bool loaded = load_scene(desc, scene, error);
+  g_swap = nullptr;
+  REQUIRE_MESSAGE(loaded, error);
+  CHECK(swap.done);
+  CHECK(scene.instances.empty());
+  CHECK(loaded_instance(scene, 0) == k_not_loaded);
+  REQUIRE(row(scene, "fixture_glow") != nullptr);
+  CHECK(row(scene, "fixture_glow")->omitted == 1);
+  CHECK(scene.load.unreadable_omitted == 1);
+}
