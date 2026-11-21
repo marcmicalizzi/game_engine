@@ -574,8 +574,11 @@ bool read_pack_classes(const materials::Pack& pack, const content_class::Categor
 // **The hosts a recipe's generator names** (C64): its key's hash run against hooks that read no
 // host, each `identify` recorded (resolved beside the recipe, as `GeneratorHosts::resolve` does)
 // and answered with zero, so only the recipe is read. A generator that reaches another mesh names
-// it through this seam, because its key covers the host. False when the recipe cannot be hashed:
-// the build or the load then fails on it with its own sentence.
+// it through this seam, because its key covers the host. A recipe with no generator registered,
+// or one that cannot be read, names none here: the build or the load fails on it with its own
+// sentence. False, with `why`, when the generator exists and the recipe reads but its hash refuses
+// these hooks (one that parses an image it hashes, answered here with no bytes): its hosts are then
+// unknown, and the recipe is refused rather than decided without them (C64).
 struct HostProbe {
   std::string dependant;
   Vector<std::string> hosts;
@@ -601,11 +604,12 @@ bool probe_hash(void*, std::string_view, u64& out, std::string&) {
   return true;
 }
 bool generator_hosts(const std::string& recipe, const materials::Pack* pack,
-                     Vector<std::string>& hosts) {
+                     Vector<std::string>& hosts, std::string& why) {
+  hosts.clear();
   const assets::MeshGeneratorDesc* generator =
       assets::MeshGeneratorRegistry::global().find(assets::mesh_generator_of(recipe));
   std::string text;
-  if (generator == nullptr || io::read_file(recipe, text) != io::Status::Ok) return false;
+  if (generator == nullptr || io::read_file(recipe, text) != io::Status::Ok) return true;
   HostProbe probe{recipe, {}};
   assets::MeshGeneratorHosts hooks;
   hooks.context = &probe;
@@ -614,11 +618,13 @@ bool generator_hosts(const std::string& recipe, const materials::Pack* pack,
   hooks.read_image = probe_image;
   hooks.hash_image = probe_hash;
   u64 hash = 0;
-  std::string why;
   if (!assets::generated_source_hash(
           *generator, std::span<const u8>(reinterpret_cast<const u8*>(text.data()), text.size()),
-          assets::MeshGeneratorInputs{pack, &hooks}, hash, why))
+          assets::MeshGeneratorInputs{pack, &hooks}, hash, why)) {
+    why =
+        recipe + ": its generator's hash refuses the class probe, so its hosts are unknown: " + why;
     return false;
+  }
   hosts = std::move(probe.hosts);
   return true;
 }
@@ -707,24 +713,24 @@ bool read_classes_at(const std::string& source, const MeshOptions& options, Sour
   // joined as a whole asset, so its key and section 54 carry it.
   Vector<std::string> hosts;
   if (!assets::mesh_generator_of(source).empty() &&
-      generator_hosts(source, options.materials, hosts)) {
-    for (const std::string& host : hosts) {
-      // At `GeneratorHosts::identify`'s bound: `depth` is this dependant's, as `depth_` is there,
-      // so a chain that builds and loads is one this read takes, and one it refuses is refused.
-      if (depth >= k_host_depth)
-        return refuse(source + ": a host's host is more than " + std::to_string(k_host_depth) +
-                      " levels deep: a loop of recipes?");
-      SourceClasses inner;
-      Diagnostic inner_error;
-      if (!read_classes_at(host, options, inner, inner_error, depth + 1, learn))
-        return refuse(inner_error.message + "; the host of " + source);
-      out.classes = content_class::join(out.classes, inner.classes);
-      if (io::extension(host) == ".clusters") {
-        content_class::ContentClasses own;
-        if (!host_container_classes(host, categories, learn, own, why))
-          return refuse(why + "; the host of " + source);
-        out.classes = content_class::join(out.classes, own);
-      }
+      !generator_hosts(source, options.materials, hosts, why))
+    return refuse(why + "; the build refuses " + source);
+  for (const std::string& host : hosts) {
+    // At `GeneratorHosts::identify`'s bound: `depth` is this dependant's, as `depth_` is there,
+    // so a chain that builds and loads is one this read takes, and one it refuses is refused.
+    if (depth >= k_host_depth)
+      return refuse(source + ": a host's host is more than " + std::to_string(k_host_depth) +
+                    " levels deep: a loop of recipes?");
+    SourceClasses inner;
+    Diagnostic inner_error;
+    if (!read_classes_at(host, options, inner, inner_error, depth + 1, learn))
+      return refuse(inner_error.message + "; the host of " + source);
+    out.classes = content_class::join(out.classes, inner.classes);
+    if (io::extension(host) == ".clusters") {
+      content_class::ContentClasses own;
+      if (!host_container_classes(host, categories, learn, own, why))
+        return refuse(why + "; the host of " + source);
+      out.classes = content_class::join(out.classes, own);
     }
   }
   out.hash = content_class::class_hash(categories, out.classes, &out.materials);

@@ -1690,3 +1690,60 @@ TEST_CASE("content classes at load: a recipe's host chain reads as deep as it bu
     if (read) CHECK(classes.classes.levels[static_cast<u32>(table.find("fixture_glow"))] == 2);
   }
 }
+
+namespace {
+
+// A generator whose hash reads an image beside its recipe and refuses an empty one, as a generator
+// that parses an image it hashes would; it grows over a host as `fixturehost` does.
+bool fixture_image_hash_with(std::span<const u8> bytes, const assets::MeshGeneratorInputs& inputs,
+                             u64& out, std::string& error) {
+  Vector<u8> image;
+  if (inputs.hosts == nullptr ||
+      !inputs.hosts->read_image(inputs.hosts->context, "skin.png", image, error))
+    return false;
+  if (image.empty()) {
+    error = "an empty image is not one";
+    return false;
+  }
+  return fixture_host_hash_with(bytes, inputs, out, error);
+}
+constexpr assets::MeshGeneratorDesc k_fixture_image{.name = "fixtureimage",
+                                                    .source_hash = fixture_host_hash,
+                                                    .build = fixture_host_build,
+                                                    .source_hash_with = fixture_image_hash_with};
+
+}  // namespace
+
+// **A recipe whose hash refuses the class probe is unreadable** (C64): the probe answers every
+// image with no bytes, so a generator that hashes an image's content can refuse it; its hosts are
+// then unknown, and the recipe is refused rather than decided without them.
+TEST_CASE("content classes at load: a recipe whose hash refuses the probe is unreadable") {
+  need_generator(k_fixture_image);
+  const test::TempDir tmp("renderer_classes_probe_hash");
+  REQUIRE(tmp.ok());
+  write_image(tmp.file("skin.png"), 60);
+  (void)write_grid(tmp, "statue.clusters", 9, "statue.png", glow_record(2));
+  const std::string recipe = tmp.file("moss.fixtureimage.json");
+  REQUIRE(io::write_file(recipe, R"({"host":"statue.clusters"})") == io::Status::Ok);
+  content_class::Categories table;
+  std::string error;
+  REQUIRE_MESSAGE(table.add_json(k_glow_categories, error), error);
+  content_build::MeshOptions options;
+  options.categories = &table;
+  content_build::SourceClasses classes;
+  content_build::Diagnostic diagnostic;
+  CHECK_FALSE(content_build::read_source_classes(recipe, options, classes, diagnostic));
+  CHECK_MESSAGE(diagnostic.message.find("moss.fixtureimage.json") != std::string::npos,
+                diagnostic.message);
+  // Under the hosts' own hooks the image is read and the recipe's hash is taken.
+  std::string text;
+  REQUIRE(io::read_file(recipe, text) == io::Status::Ok);
+  const content_build::GeneratorHosts hosts(recipe, geometry::ClusterLodOptions{},
+                                            geometry::ClusterPagesOptions{}.page_bytes, nullptr);
+  u64 identity = 0;
+  CHECK_MESSAGE(assets::generated_source_hash(
+                    k_fixture_image,
+                    std::span<const u8>(reinterpret_cast<const u8*>(text.data()), text.size()),
+                    hosts.inputs(), identity, error),
+                error);
+}
