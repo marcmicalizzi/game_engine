@@ -1034,12 +1034,13 @@ namespace {
 // A placement under a node, its mesh a file beside the document, for the subject digest's cases
 // (protocol.md, "What a close is tied to"): the placement is the subject, the node its ancestor,
 // and the mesh an asset its record names.
-// A binary glTF (`.glb`) holding `json` as its JSON chunk, padded with spaces to four bytes, and
-// `bin` as its binary chunk when given: the 12-byte header, then each chunk's 8-byte header.
-std::string glb_bytes(std::string_view json, std::string_view bin = {}) {
+// A binary glTF (`.glb`) holding `json` as its JSON chunk, padded with `pad` (spaces, as the format
+// asks; some exporters wrote NUL) to four bytes, and `bin` as its binary chunk when given: the
+// 12-byte header, then each chunk's 8-byte header.
+std::string glb_bytes(std::string_view json, std::string_view bin = {}, char pad = ' ') {
   std::string j(json);
   while (j.size() % 4 != 0)
-    j.push_back(' ');
+    j.push_back(pad);
   std::string b(bin);
   while (b.size() % 4 != 0)
     b.push_back('\0');
@@ -1792,6 +1793,69 @@ TEST_CASE("ledger: a .glb's external files are read with it, and a broken one re
   CHECK(reason_of(error) == "names not read");
   CHECK(bound_in(error) == "protocol.review.gltf_json_bytes");
   CHECK(num(at(at(error, "data"), "figure")) == static_cast<i64>((json.size() + 3) / 4 * 4));
+}
+
+// A `.glb` whose JSON chunk is padded with NUL rather than spaces is read as the importer reads it
+// (its tokenizer stops at the NUL), its names followed; and each header that does not hold — a
+// version other than 2, a length past the file's size, a first chunk not `JSON`, a chunk past the
+// header's length — leaves its names unknown, so a raise over it is refused `names not read`
+// (protocol.md, "What a close is tied to").
+TEST_CASE("ledger: a .glb padded with NUL is followed, and each broken header refuses a raise") {
+  test::TempDir tmp("protocol_ledger_glb_forms");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  h.open(dir, true);
+  DigestWorld w;
+  w.make(h, dir);
+  const std::filesystem::path props = std::filesystem::path(dir) / "props";
+  const std::string json = R"({"asset":{"version":"2.0"},"images":[{"uri":"n.png"}]})";
+  REQUIRE(json.size() % 4 != 0);  // so the chunk is padded
+  {
+    // Not `nul.glb`: Windows takes that name for its null device, whatever its extension.
+    std::ofstream(props / "padded.glb", std::ios::binary) << glb_bytes(json, {}, '\0');
+  }
+  {
+    std::ofstream(props / "n.png", std::ios::binary) << "png";
+  }
+  w.set(h, w.placement, "mesh", JsonValue("props/padded.glb"));
+  const JsonValue raised = h.ok("review.raise", w.raise_params("Agent"));
+  CHECK(num(at(at(raised, "subject"), "assets")) == 2);  // the .glb and the image it names
+  CHECK(at(at(raised, "subject"), "unreadable").size() == 0);
+
+  const std::string good = glb_bytes(json);
+  const auto patched = [&](usize at_byte, std::string_view bytes) {
+    std::string b = good;
+    b.replace(at_byte, bytes.size(), bytes);
+    return b;
+  };
+  const auto le = [](usize v) {
+    std::string out;
+    for (u32 i = 0; i < 4; ++i)
+      out.push_back(static_cast<char>((v >> (8 * i)) & 0xFF));
+    return out;
+  };
+  struct Form {
+    const char* what;
+    std::string bytes;
+  };
+  const Form forms[] = {
+      {"version 1", patched(4, le(1))},
+      {"a length past the file's size", patched(8, le(good.size() + 4))},
+      {"a first chunk not JSON", patched(16, std::string_view("BIN\0", 4))},
+      {"a chunk past the header's length", patched(12, le(good.size() - 20 + 4))},
+  };
+  w.set(h, w.placement, "mesh", JsonValue("props/broken.glb"));
+  for (const Form& form : forms) {
+    const std::string what = form.what;  // its text in a failure's report, not its address
+    CAPTURE(what);
+    {
+      std::ofstream(props / "broken.glb", std::ios::binary | std::ios::trunc) << form.bytes;
+    }
+    JsonValue error;
+    CHECK(h.fails("review.raise", w.raise_params("Agent"), &error) == codes::k_invalid_argument);
+    CHECK(reason_of(error) == "names not read");
+    CHECK(at(at(error, "data"), "entries")[0].as_string() == "props/broken.glb");
+  }
 }
 
 // A string a record holds that no host could admit as a file — a URL, text with a colon, a root no

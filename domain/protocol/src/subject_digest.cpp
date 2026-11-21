@@ -540,6 +540,10 @@ void read_subject_files(SubjectPlan& plan, const DigestBounds& bounds) {
         plan.unfollowed.push_back(SubjectPlan::Unfollowed{plan.files[i].spelled, nullptr, 0, 0});
         continue;
       }
+      // The chunk is padded to four bytes with spaces, which are JSON's own, or by some exporters
+      // with NUL, where the importer's tokenizer stops and the engine's reader would refuse.
+      while (!json.empty() && json.back() == '\0')
+        json.remove_suffix(1);
     }
     // What the glTF names is part of it: each file admitted through the host's roots as a record's
     // own file is, from the glTF's admitted directory (its URI's own rule first), then read under
