@@ -64,6 +64,13 @@ inline constexpr i32 k_min_pier_cm = 15;  // wall left between an opening and it
 inline constexpr u32 k_max_storeys = 4;
 inline constexpr u32 k_max_walls = 256;
 inline constexpr u32 k_max_openings = 256;
+// An opening hangs at most a pair of leaves, and `geometry`'s reader refuses a section 53 of more
+// than `k_door_max_records` (geometry.md, "Doors"), so a ceiling raised past half of it would write
+// a container the reader refuses; the two are held together here, where both are seen
+// (structures.md, "What a description must satisfy").
+static_assert(
+    2 * k_max_openings <= geometry::k_door_max_records,
+    "a description's openings, a pair of leaves each, must fit the reader's door ceiling");
 
 // A door's threshold stands this far above its sill, and is what its reveal's foot is drawn at
 // (millimetres; structures.md, "Openings").
