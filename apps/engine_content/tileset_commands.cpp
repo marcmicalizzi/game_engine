@@ -171,6 +171,7 @@ bool parse_ints(std::string_view text, i64* out, u32 n) {
 int synth_command(int argc, char** argv) {
   if (argc < 3) return usage(k_synth_usage, "");
   const std::string out = argv[2];
+  if (refuse_dash_output("terrain-synth", "output", out)) return usage(k_synth_usage, "");
   tileset::SynthKind kind = tileset::SynthKind::flat;
   bool have_kind = false;
   u32 size = 0;

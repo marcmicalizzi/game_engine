@@ -44,6 +44,10 @@ int village_command(int argc, char** argv) {
     return 2;
   }
   const std::string scene_path = argv[2], out_path = argv[3];
+  if (refuse_dash_output("village", "output", out_path)) {
+    std::fputs(usage, stderr);
+    return 2;
+  }
   std::string ddc, flight_path, describe_dir;
   i64 house = 0;
   bool house_named = false;
@@ -61,6 +65,7 @@ int village_command(int argc, char** argv) {
       flight_path = std::string(value);
     } else if (flag == "--describe") {
       describe_dir = std::string(value);
+      ok = !refuse_dash_output("village", "--describe directory", describe_dir);
     } else if (flag == "--house") {
       const auto r = std::from_chars(value.data(), value.data() + value.size(), house);
       ok = r.ec == std::errc{} && r.ptr == value.data() + value.size() && house >= 0;

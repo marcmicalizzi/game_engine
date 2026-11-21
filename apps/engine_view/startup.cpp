@@ -78,6 +78,7 @@ void StartupTrace::frame(const Readiness& r) noexcept {
   if (stable_ == 0) stable_since_ = profiling::trace_now_ns();
   if (++stable_ == k_stable_frames) {
     reached_[stable] = true;
+    dropped_before_ready_ = profiling::trace_dropped();
     if (on_) {
       (void)profiling::trace_milestone_at("nearby_stable", stable_since_, "held 30 frames");
     } else {
@@ -98,6 +99,12 @@ JsonValue StartupTrace::finish(std::string* error) {
       all, std::span<const char* const>(k_startup_milestones, k_startup_milestone_count),
       "nearby_stable", profiling::trace_dropped());
   block_.set("trace", path_);
+  // The trace records past ready, to its buffer's end (the walk's stages are how a walk's long
+  // frames are attributed), so `dropped_events` counts what a full buffer refused at any time;
+  // this is what it had refused when the load it describes was over (null: never reached).
+  const u32 stable = milestone_index("nearby_stable");
+  block_.set("dropped_before_ready",
+             reached_[stable] ? JsonValue(dropped_before_ready_) : JsonValue::null());
   block_.set("stable_frames", k_stable_frames);
   block_.set("acyclic", profiling::trace_acyclic(all));
   block_.set("refused_edges", profiling::trace_refused_edges());

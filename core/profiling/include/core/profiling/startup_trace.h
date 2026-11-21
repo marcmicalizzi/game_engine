@@ -123,15 +123,28 @@ u32 trace_milestone_at(const char* name, i64 at_ns, std::string_view detail = {}
 
 // What was recorded (any time; a stage another thread has not ended reads as open).
 void trace_snapshot(Vector<TraceEvent>& out);
+// Events refused because the buffer was full, from `trace_start` to now (or to `trace_stop`).
 u32 trace_dropped() noexcept;
 u32 trace_refused_edges() noexcept;
 
+// **What a walk over a set of events cost, counted rather than timed** (T210): every event a pass
+// reads and every step of a lookup by id is one visit. The readers below are linear in the events
+// but for one lookup by id per parent step and per edge (a binary search: n log n at worst), and a
+// case holds them to that by this count at 10^5 and 10^6 events, where a clock would say nothing
+// on a busy machine. Before T210 the summary was quadratic in the events, which a five-minute walk
+// turned into twenty minutes at exit (profiling.md, "The readers are linear in the events").
+struct TraceWalkCost {
+  u64 visits = 0;
+};
+
 // Whether every edge in `events` points at an event that began earlier and exists — the graph
 // `trace_depends` promises is acyclic. A trace read back from elsewhere is checked by the same.
-bool trace_acyclic(std::span<const TraceEvent> events) noexcept;
+// Ids are an event's own and unique, as every snapshot's are; the events may come in any order.
+bool trace_acyclic(std::span<const TraceEvent> events, TraceWalkCost* cost = nullptr) noexcept;
 // The Chrome trace JSON (the "JSON Array/Object Format": complete events, instants, counters,
 // flow arrows for the dependency edges), with every field above in each event's `args`.
-std::string chrome_trace_json(std::span<const TraceEvent> events, i64 origin_ns, u32 dropped = 0);
+std::string chrome_trace_json(std::span<const TraceEvent> events, i64 origin_ns, u32 dropped = 0,
+                              TraceWalkCost* cost = nullptr);
 bool write_chrome_trace(const std::string& path, std::span<const TraceEvent> events, i64 origin_ns,
                         u32 dropped, std::string* error);
 
@@ -145,7 +158,7 @@ bool write_chrome_trace(const std::string& path, std::span<const TraceEvent> eve
 // "before ready" totals stop at.
 JsonValue startup_summary_json(std::span<const TraceEvent> events,
                                std::span<const char* const> milestones, const char* until,
-                               u32 dropped = 0);
+                               u32 dropped = 0, TraceWalkCost* cost = nullptr);
 
 // ---- the live progress (profiling.md, "The trace is live"; roadmap W79) -------------------------
 //

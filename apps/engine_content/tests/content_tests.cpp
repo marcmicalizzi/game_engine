@@ -1434,6 +1434,36 @@ TEST_CASE("engine-content: failures and usage errors have their own exit codes")
   CHECK(content({"--help"}).exit_code == 0);
 }
 
+#if ENGINE_CONTENT_DWELLINGS
+TEST_CASE("engine-content dwelling: --help prints its usage, a dashed output is refused (T210)") {
+  // `dwelling --help` once took `--help` for its output directory and wrote house.structure.json,
+  // house.plan.txt and house.walk.json into a folder of that name where it ran. Every refusal
+  // below is checked before anything is written; the one run that writes, writes into scratch.
+  for (const char* flag : {"--help", "-h"}) {
+    CAPTURE(flag);
+    const Run help = content({"dwelling", flag});
+    CHECK(help.exit_code == 0);
+    CHECK(help.output.find("usage: engine-content dwelling <out-dir>") != std::string::npos);
+    CHECK_FALSE(std::filesystem::exists(flag));
+  }
+  CHECK(content({"dwelling", "-x"}, true).exit_code == 2);
+  CHECK_FALSE(std::filesystem::exists("-x"));
+  CHECK(content({"dwelling", "--nope"}, true).exit_code == 2);
+  CHECK_FALSE(std::filesystem::exists("--nope"));
+  test::TempDir dir("dwelling-dash");
+  const std::string out = dir.file("out");
+  const Run named = content({"dwelling", out, "--name", "--help"}, true);
+  CHECK(named.exit_code == 2);
+  CHECK(named.output.find("begins with a dash") != std::string::npos);
+  CHECK_FALSE(std::filesystem::exists(out + "/--help.structure.json"));
+  // And the ordinary run still writes its three files where it is told.
+  const Run house = content({"dwelling", out});
+  REQUIRE(house.exit_code == 0);
+  for (const char* file : {"house.structure.json", "house.plan.txt", "house.walk.json"})
+    CHECK(std::filesystem::exists(out + "/" + file));
+}
+#endif
+
 // ---- C62: content classes (docs/content-classes.md, "How it travels through derived data") ----
 //
 // Neutral data only: the checker cube, a 4x4 checker PNG made here, and an engine category used as

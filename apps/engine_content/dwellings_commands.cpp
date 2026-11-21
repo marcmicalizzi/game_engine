@@ -25,13 +25,16 @@ namespace engine::content {
 #if ENGINE_CONTENT_DWELLINGS
 namespace {
 
-void usage() {
-  std::fprintf(stderr,
+// On stderr for a refusal, on stdout for `--help`.
+void usage(std::FILE* to = stderr) {
+  std::fprintf(to,
                "usage: engine-content dwelling <out-dir> [--name <name>] [--persons <n>] "
                "[--means <0|1|2>]\n"
                "         [--frontage <cm>] [--depth <cm>] [--seed <n>] "
                "[--scope whole|exterior|interior]\n"
-               "         [--bare timber|furniture|dress|all]...\n");
+               "         [--bare timber|furniture|dress|all]...\n"
+               "  writes <out-dir>/<name>.structure.json, <name>.plan.txt and <name>.walk.json\n"
+               "  (name: house); an out-dir or a name beginning with a dash is refused\n");
 }
 
 // A length with two decimals (a centimetre) or three (a millimetre). Each format is a literal:
@@ -56,11 +59,20 @@ std::string point(double x, double y, double z) {
 
 int dwelling_command(int argc, char** argv) {
 #if ENGINE_CONTENT_DWELLINGS
+  if (argc >= 3 && is_help_flag(argv[2])) {
+    usage(stdout);
+    return 0;
+  }
   if (argc < 3) {
     usage();
     return 2;
   }
+  // `dwelling --help` once wrote `--help/house.*` where it ran (T210).
   const std::string out_dir = argv[2];
+  if (refuse_dash_output("dwelling", "output directory", out_dir)) {
+    usage();
+    return 2;
+  }
   std::string name = "house";
   dwellings::RuralPlot plot{2400, 1500};
   dwellings::Household household;
@@ -76,6 +88,10 @@ int dwelling_command(int argc, char** argv) {
     const char* value = argv[++i];
     if (a == "--name") {
       name = value;
+      if (name.empty() || refuse_dash_output("dwelling", "name", name)) {
+        usage();
+        return 2;
+      }
     } else if (a == "--persons") {
       household.persons = static_cast<u8>(std::strtoul(value, nullptr, 10));
     } else if (a == "--means") {
