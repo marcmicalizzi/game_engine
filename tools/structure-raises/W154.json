@@ -1,15 +1,16 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "W154",
-  "reason": "W154: the storm's grounding on the wind page and flora.md's section, the bounds, cost and live-wind rows of gfx.md and renderer.md, gpu_scene.h's trees' lag; W154-2: the padding ladder that follows the wind and the far forest's lean (their state, lists and hooks in gpu_scene.h/.cpp, the call in record_frame, and their sections in renderer.md and flora.md, with the forest staging's pair) are the change's point",
+  "reason": "W154: the storm's grounding on the wind page and flora.md's section, the bounds, cost and live-wind rows of gfx.md and renderer.md, gpu_scene.h's trees' lag; W154-2: the padding ladder that follows the wind and the far ring's lean (their state, lists and hooks in gpu_scene.h/.cpp, the call in record_frame, the still slots in engine-view's summary, and their sections in renderer.md and flora.md, with the forest staging's pair and what the far edge is) are the change's point",
   "date": "2026-11-21",
   "by": "Marc Micalizzi",
   "deltas": {
     "renderer.record_frame.lines": 3,
     "renderer.gpu_scene_cpp.lines": 37,
     "renderer.gpu_scene_h.lines": 68,
-    "page:docs/subsystems/renderer.md": 12733,
+    "engine_view.main_cpp.lines": 2,
+    "page:docs/subsystems/renderer.md": 13915,
     "page:docs/subsystems/gfx.md": 182,
-    "page:docs/subsystems/flora.md": 5362
+    "page:docs/subsystems/flora.md": 5457
   }
 }

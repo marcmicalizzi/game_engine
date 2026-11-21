@@ -844,7 +844,7 @@ void GpuScene::add_still_slot(u32 slot) {
   if (still_at_[slot] != ~0u) drop_still_slot(slot);
   still_at_[slot] = still_slots_.size();
   still_slots_.push_back(StillSlot{slot, instance_table_[slot].mesh, instance_table_[slot]});
-  relean(still_slots_.size() - 1);  // placed as the walk leans the rest
+  if (relean(still_slots_.size() - 1)) ++flora_stats_.still_writes;  // placed as the walk leans
   flora_stats_.still_slots = still_slots_.size();
 }
 
