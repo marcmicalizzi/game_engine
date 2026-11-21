@@ -549,6 +549,37 @@ bool scene_flora_wind(const gfx::WindDesc& wind, f64 sky_time_s, Vec2& to, f32& 
   return true;
 }
 
+gfx::WindLive FloraWindLag::follow(const gfx::WindLive& live, f64 world_time_s) noexcept {
+  if (!live.set) {
+    set = false;
+    return live;
+  }
+  const f64 dt = world_time_s - at_s;
+  if (!set || !(dt >= 0.0) || dt > k_flora_wind_lag_snap_s) {
+    set = true;
+    mean_m_s = live.mean_m_s;
+    rate = 0.0;
+    at_s = world_time_s;
+    return live;
+  }
+  // x'' = w^2 (T - x) - 2 w x', exactly over dt for the target held: with e = x - T,
+  // x(t) = T + (e0 + (v0 + w e0) t) exp(-w t), v(t) = (v0 - w (v0 + w e0) t) exp(-w t).
+  const f64 w = 2.0 * 3.14159265358979323846 * k_flora_wind_lag_hz;
+  const f64 e0 = mean_m_s - live.mean_m_s;
+  const f64 b = rate + w * e0;
+  const f64 decay = std::exp(-w * dt);
+  mean_m_s = live.mean_m_s + (e0 + b * dt) * decay;
+  rate = (rate - w * b * dt) * decay;
+  at_s = world_time_s;
+  return held(live);
+}
+
+gfx::WindLive FloraWindLag::held(const gfx::WindLive& live) const noexcept {
+  gfx::WindLive out = live;
+  if (live.set && set) out.mean_m_s = mean_m_s > 0.0 ? mean_m_s : 0.0;
+  return out;
+}
+
 }  // namespace engine::renderer
 
 // ---- the GPU scene's half (gpu_scene.h, `water_wind_frame`) -------------------------------------
@@ -567,7 +598,8 @@ std::span<const WaterWindUpload> GpuScene::water_wind_frame(f64 sky_time_s,
   wind_stats_.speed_m_s = gfx::wind_live_speed(live, scene_wind.roughness_m);
   Vec2 trees_to{};
   f32 trees = 0.0f;
-  if (scene_flora_wind(scene_wind, sky_time_s, trees_to, trees, live))
+  // The trees' mean as their lag stands (W154; stepped by `flora_frame`, after this pass).
+  if (scene_flora_wind(scene_wind, sky_time_s, trees_to, trees, flora_wind_lag_.held(live)))
     wind_stats_.trees_m_s = static_cast<f64>(trees) * k_flora_wind_mean_m_s;
   if (scene_wind.kind != gfx::WindKind::none) {
     const gfx::WindSample now = gfx::wind_at(scene_wind, sky_time_s);

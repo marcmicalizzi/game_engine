@@ -8,6 +8,7 @@
 
 #include <doctest/doctest.h>
 
+#include <cmath>
 #include <span>
 
 using namespace engine;
@@ -58,14 +59,29 @@ TEST_CASE("sway forms: a mesh's reach is the cull's bound at the rule's wind") {
   REQUIRE(bound > 0.0f);
   SwayFormRules rules;
   rules.wind = 1.0f;
-  // The bound is the strongest wind's (2); a mean day's is half of it, in metres by the fit.
+  // The padding is the bound at every wind the sway takes (the storm's since W154); the reach is
+  // the same bound measured at the rule's wind, in metres by the fit. To a mean day the bound is
+  // linear in the strength (the load is the strength, and no bend reaches the cap's knee), so a
+  // mean day's is the old strongest wind's (2) half: 0.9 m x the fern's root (its trunk class,
+  // 0.01) x 1 x 2.
+  const auto bound_at = [&](f32 strength) {
+    return flora_bounds_padding(
+        fern.mesh, std::span<const Vec3>(fern.vertices.data(), fern.vertices.size()),
+        std::span<const ClusterFileMotionVertex>(fern.motion.data(), fern.motion.size()), strength);
+  };
   const SwayMeasure mean = measured(fern, 1.0f, rules);
   CHECK(mean.padding == bound);
-  CHECK(mean.reach_m == doctest::Approx(0.5f * bound));
+  CHECK(mean.reach_m == bound_at(1.0f));
+  CHECK(mean.reach_m == doctest::Approx(0.9f * 0.01f * 2.0f));
+  CHECK(bound > bound_at(2.0f));  // a storm pads past the old strongest wind
   CHECK_FALSE(mean.field);
-  CHECK(measured(fern, 3.0f, rules).reach_m == doctest::Approx(1.5f * bound));
+  CHECK(measured(fern, 3.0f, rules).reach_m == doctest::Approx(3.0f * bound_at(1.0f)));
   rules.wind = 0.7f;
-  CHECK(measured(fern, 1.0f, rules).reach_m == doctest::Approx(0.35f * bound));
+  CHECK(measured(fern, 1.0f, rules).reach_m == doctest::Approx(0.7f * bound_at(1.0f)));
+  rules.wind = 6.6f;  // force 12: the law's, not a scale of the mean day's
+  CHECK(measured(fern, 1.0f, rules).reach_m == bound_at(6.6f));
+  CHECK(bound_at(6.6f) ==
+        doctest::Approx(bound_at(1.0f) * std::pow(6.6f, fern.mesh.streamline)).epsilon(1e-5));
   // A session that draws no motion: nothing is posed, so no padding and no reach.
   rules.motion = false;
   const SwayMeasure rigid = measured(fern, 1.0f, rules);

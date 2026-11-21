@@ -12,13 +12,15 @@
 //          `compliance * s * (0.25 + 0.35 g(t)) * sin(2 pi f t + phase)` whose frequency falls as
 //          one over the square root of the part's length (`k_flora_flutter_hz` for a metre: a
 //          longer part sways slower, and since a bend's tip travel is the angle times the length,
-//          farther). `s` is the wind's strength over its record's mean, held to [0,
-//          k_flora_max_wind]; `g(t)` the gust, two incommensurate sines of the clock in [0, 1] with
-//          phases from the instance's seed; `phase` the part's own, from its pivot in the mesh's
-//          frame and the seed — never a world position (ADR-0053). Compliance is the species' per
-//          class of part (trunk, limb, twig, leaf; `flora_stiffness`), times `k_flora_load_bearing`
-//          for a part the structural table flags load-bearing and not full-sway (a load-bearing
-//          part flagged `k_structural_full_sway` keeps its class's compliance: A45).
+//          farther). `s` is the load the wind's strength over its record's mean gives
+//          (`flora_storm_load`: the strength itself to a mean day, its streamlining law past it,
+//          held at k_flora_max_wind), and the angle is held by `flora_bend_cap`; `g(t)` the gust,
+//          two incommensurate sines of the clock in [0, 1] with phases from the instance's seed;
+//          `phase` the part's own, from its pivot in the mesh's frame and the seed — never a world
+//          position (ADR-0053). Compliance is the species' per class of part (trunk, limb, twig,
+//          leaf; `flora_stiffness`), times `k_flora_load_bearing` for a part the structural table
+//          flags load-bearing and not full-sway (a load-bearing part flagged
+//          `k_structural_full_sway` keeps its class's compliance: A45).
 //   push   away from the walker: a part that is not load-bearing (and not the trunk) whose rest
 //          axis comes within the capsule's radius plus the part's own reach (its wood's radius,
 //          or `k_flora_leaf_reach` of its length for a part with no wood or one the table flags
@@ -64,8 +66,44 @@ struct FloraStiffness {
 FloraStiffness flora_stiffness(std::string_view species) noexcept;
 
 inline constexpr f32 k_flora_load_bearing = 0.25f;  // a load-bearing part's share of its class's
-inline constexpr f32 k_flora_max_wind = 2.0f;       // the strength the sway saturates at
-inline constexpr f32 k_flora_flutter_hz = 0.9f;     // a 1 m part's flutter; 1/sqrt(length)
+// **The storm** (flora.md, "Motion in a storm"; docs/experiments/wind.md, "The trees in a storm";
+// roadmap W154). The strength the sway follows its law to and holds past: 8.4 over the 5 m/s mean
+// day is 42 m/s, the wind past which fewer than half the trees of a storm stand (Virot et al. 2016,
+// Phys. Rev. E 93). The engine builds no failure, so past it a tree holds the pose its law gives
+// there. It was 2 (10 m/s) until W154, which a gust over a gale could not pass.
+inline constexpr f32 k_flora_max_wind = 8.4f;
+inline constexpr f32 k_flora_flutter_hz = 0.9f;  // a 1 m part's flutter; 1/sqrt(length)
+// The load a part bends under past the mean day: s for s <= 1 (the model's own lean, the constants
+// set for a mean day) and s^b past it, b = 2 + E, E the crown's Vogel exponent by kind
+// (`flora_streamline_exponent`): drag on a reconfiguring crown grows as U^(2+E), not U^2, and a
+// part's quasi-static bend is its moment over its stiffness, so in proportion to the drag.
+// Continuous at s = 1, so a step of the wind through the mean day moves no part by a jump.
+//
+// `hold` is where the strength is held (`renderer.flora.storm_strength`, `FloraMesh::hold`): the
+// sway follows its law to there, and the bound a swaying instance's spheres are padded by is taken
+// there, so the two always agree whatever the tunable says.
+f32 flora_storm_load(f32 strength, f32 exponent, f32 hold = k_flora_max_wind) noexcept;
+// `renderer.flora.storm_strength`, read at the load: the strength (over the 5 m/s mean day) the
+// sway is held at and the padding is built for, in [0, k_flora_max_wind] (default: all of it,
+// 42 m/s). 2 is main's 10 m/s before W154: its padding, and its hold.
+f32 flora_storm_hold_tunable() noexcept;
+// The drag's exponent b = 2 + E for a species: a broadleaf's crown (and the shrubs, ferns, herbs,
+// vines and palms taken with it) 1.1, a conifer's 1.32, a field's blade 4/3 (the page has the
+// sources and the rule). 1 (the model's linear lean) for a species the catalogue lacks.
+f32 flora_streamline_exponent(std::string_view species) noexcept;
+// **A part bends no further than the wind can carry it** (the elastica's limit): a load that would
+// turn it by `raw` radians turns it by `raw` up to half of `most`, and past that by a curve that
+// approaches `most` (a tanh, continuous with its first derivative at the knee), never past `raw`.
+// `most` is the angle between the part's rest direction and where the wind blows to, the turn that
+// leaves it streamed along the wind, and never under `k_flora_bend_floor`.
+f32 flora_bend_cap(f32 raw, f32 most) noexcept;
+inline constexpr f32 k_flora_bend_floor = 0.785398163f;  // pi / 4: a part near the wind flutters
+// A field's blades are posed by the GPU from one load a frame, so their cap is on the load: a
+// blade of the most compliant field species (the sward's 0.2) turns at most 1.2 rad (laid over,
+// short of the ground) at the gust's and flutter's peak, which is a load of 1.2 / (2 x 0.2) = 3.
+inline constexpr f32 k_flora_field_most_load = 3.0f;
+// The load the frame's field block carries (`FloraFieldFrame::wind.z`) for a strength.
+f32 flora_field_load(f32 strength, f32 hold = k_flora_max_wind) noexcept;
 inline constexpr f32 k_flora_push_max = 0.9f;       // radians, about 52 degrees
 inline constexpr u32 k_flora_push_ease_ticks = 12;  // 0.2 s at the frame index's 60 Hz
 inline constexpr f32 k_flora_push_margin = 0.05f;   // metres past the capsule a pushed part clears
@@ -149,6 +187,8 @@ struct FloraMesh {
   Vector<u32> phase_id;  // per part, the id its phase is taken from: its own, or its source's
   bool field = false;
   f32 field_compliance = 0.0f;
+  f32 streamline = 1.0f;        // the species' drag exponent past the mean day (`flora_storm_load`)
+  f32 hold = k_flora_max_wind;  // the strength it is held at: the tunable's at `flora_mesh`
   u32 part_count() const noexcept { return parts.size(); }
 };
 
@@ -177,8 +217,10 @@ inline constexpr f32 k_flora_field_weights[4] = {0.2f, 0.2f, 0.3f, 0.3f};  // ho
 // mean), the gust waves' phases at the eye reduced in double (the GPU adds the root's offset from
 // the eye), the flutter's phase, and the walker's capsule from the eye when the frame names one.
 // A function of its arguments alone: the field kind has no CPU state.
+// `hold` is the scene's fields' (`FloraFieldRest::hold`), the strength their padding was built for.
 void flora_field_frame(Vec2 to, f32 strength, f64 time_s, const WorldEye& eye,
-                       const FrameFlora& frame, gfx::FloraFieldFrame& out) noexcept;
+                       const FrameFlora& frame, gfx::FloraFieldFrame& out,
+                       f32 hold = k_flora_max_wind) noexcept;
 
 // ---- the far field at rest (renderer.md, "The far field at rest"; gfx/flora_motion.h; R152) ----
 //
@@ -194,6 +236,7 @@ struct FloraFieldRest {
   u32 count = 0;
   f32 root_reach = 0.0f;
   f32 blade_max = 0.0f;
+  f32 hold = k_flora_max_wind;  // the least of the field meshes' `FloraMesh::hold` (W154)
 };
 // The scene's part, from its field meshes' blades: `meshes` are the scene's flora meshes and
 // `records` each one's field record, or ~0 for a mesh with none (`GpuScene::field_deform_`).
@@ -236,9 +279,13 @@ void flora_part_poses(const FloraMesh& mesh, const FloraWind& wind, f64 time_s, 
                       std::span<gfx::FloraPartPose> out) noexcept;
 
 // A bound on how far any vertex of the mesh leaves its rest position under any wind up to
-// `k_flora_max_wind`, mesh units: what the instance's spheres are padded by (renderer.md, "The
-// flora stage", "Bounds"). `vertices` and `motion` are the mesh's own, parallel.
+// `strength` (by default `k_flora_max_wind`, every wind the sway takes), mesh units: what the
+// instance's spheres are padded by (renderer.md, "The flora stage", "Bounds"). `vertices` and
+// `motion` are the mesh's own, parallel. Each part's most turn is its compliance times the load
+// at that strength at the gust's and flutter's peak, held by `flora_bend_cap` with the widest
+// `most` (pi, a part pointing into the wind).
 f32 flora_bounds_padding(const FloraMesh& mesh, std::span<const Vec3> vertices,
-                         std::span<const geometry::ClusterFileMotionVertex> motion) noexcept;
+                         std::span<const geometry::ClusterFileMotionVertex> motion,
+                         f32 strength = k_flora_max_wind) noexcept;
 
 }  // namespace engine::renderer

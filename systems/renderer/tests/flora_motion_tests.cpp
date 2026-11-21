@@ -634,6 +634,73 @@ TEST_CASE("flora motion: a calm palm under traced shadows draws the rigid palm's
   CHECK(same(rest.ids, still.ids));
 }
 
+// **A palm in a storm** (W154; flora.md, "Motion in a storm"). At force 12 (33 m/s, a strength of
+// 6.6) the sway goes far past the 10 m/s it was held at, and the padding the cull adds to the
+// palm's spheres is the storm's: occlusion culling changes no pixel of the storm's picture (the
+// padded spheres hold the bent fronds), the storm is not the 10 m/s picture, and a second run is
+// the same bytes. Under the maps, so both tiers draw it; with traced shadows too where the device
+// traces, which cast from the deformed cut the frame built.
+TEST_CASE("flora motion: a palm at force 12 is culled by spheres that hold it") {
+  const test::TempDir tmp("renderer_flora_storm");
+  REQUIRE(tmp.ok());
+  SceneData data;
+  std::string error;
+  REQUIRE_MESSAGE(load_palm(tmp, data, error), error);
+  REQUIRE(data.sources.size() == 1);
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  FrameFlora gale;
+  gale.wind_set = true;
+  gale.wind_to = Vec2{0.0f, -1.0f};  // towards the camera's left-right plane: the crown streams
+  gale.wind_strength = 2.0f;
+  FrameFlora storm = gale;
+  storm.wind_strength = 6.6f;
+  const bool traces =
+      gpu.device.features().ray_query && gpu.device.features().acceleration_structure;
+  for (const ShadowMode shadows : {ShadowMode::Cascaded, ShadowMode::RayTraced}) {
+    if (shadows == ShadowMode::RayTraced && !traces) {
+      MESSAGE("traced shadows skipped: " << gpu.device.adapter().name << " traces no rays");
+      continue;
+    }
+    CAPTURE(static_cast<int>(shadows));
+    RenderSettings settings;
+    settings.shadows = shadows;
+    RenderSettings open = settings;
+    open.occlusion = false;
+    open.cone = false;
+    Shot ten;
+    Shot a;
+    Shot b;
+    Shot unculled;
+    REQUIRE_MESSAGE(draw(gpu, data, settings, std::span<const FrameFlora>(&gale, 1), ten, error),
+                    error);
+    REQUIRE_MESSAGE(draw(gpu, data, settings, std::span<const FrameFlora>(&storm, 1), a, error),
+                    error);
+    REQUIRE_MESSAGE(draw(gpu, data, settings, std::span<const FrameFlora>(&storm, 1), b, error),
+                    error);
+    REQUIRE_MESSAGE(draw(gpu, data, open, std::span<const FrameFlora>(&storm, 1), unculled, error),
+                    error);
+    u32 covered = 0;
+    u32 culled = 0;
+    for (u32 i = 0; i + 2 < a.ids.size() && i + 2 < unculled.ids.size(); i += 3) {
+      covered += unculled.ids[i] != ~0u ? 1u : 0u;
+      culled += std::memcmp(a.ids.data() + i, unculled.ids.data() + i, 3 * sizeof(u32)) != 0;
+    }
+    const u32 moved = differing(ten.color, a.color);
+    MESSAGE("force 12: " << covered << " pixels of palm, " << culled
+                         << " named differently with occlusion and cones on; " << moved
+                         << " pixels differ from the 10 m/s picture");
+    CHECK(covered > 1000);
+    CHECK(culled == 0);
+    CHECK(moved > 500);
+    CHECK(same(a.color, b.color));
+    CHECK(same(a.ids, b.ids));
+  }
+}
+
 #endif  // ENGINE_RENDERER_TESTS_FLORA
 
 #if ENGINE_RENDERER_TESTS_FLORA

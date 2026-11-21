@@ -3461,7 +3461,8 @@ u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f6
   if (frame.wind_set) {
     to = frame.wind_to;
     strength = frame.wind_strength;
-  } else if (data_ != nullptr && scene_flora_wind(data_->wind, sky_time_s, to, strength, live)) {
+  } else if (data_ != nullptr && scene_flora_wind(data_->wind, sky_time_s, to, strength,
+                                                  flora_wind_lag_.follow(live, world_time_s))) {
     source = "scene";  // W136: the scene's wind (or the hand wind), its gust over a mean day's
   } else {
     const TerrainSampler* ground = ground_ != nullptr ? ground_.get() : flora_ground_.get();
@@ -3497,7 +3498,7 @@ u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f6
   bool field_moving = false;
   if (flora_field_) {
     gfx::FloraFieldFrame block;
-    flora_field_frame(to, strength, world_time_s, eye, frame, block);
+    flora_field_frame(to, strength, world_time_s, eye, frame, block, field_rest_.hold);
     flora_field_rest(field_rest_, frame, block);  // the far field at rest (R152)
     // The hand-off's clock (G136): what the pool pass counts a patch's load-in age from.
     const u32 tick = handoff_tick();

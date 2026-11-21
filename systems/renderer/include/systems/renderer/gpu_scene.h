@@ -2010,6 +2010,7 @@ class GpuScene {
   FloraStats flora_stats_;
   bool flora_moving_ = false;                // any part of any tree off its rest pose this frame
   const char* flora_wind_source_ = nullptr;  // the last frame's: "frame", "ground", "tunables"
+  FloraWindLag flora_wind_lag_{};  // the live mean as the trees take it (W154; scene_wind.h)
   Vector<f32> flora_padding_;                // per mesh, the sway's bound, measured at the upload
   CrownPriorTable crown_priors_;             // T138: measured at `create`, before any release
   bool crown_priors_built_ = false;
