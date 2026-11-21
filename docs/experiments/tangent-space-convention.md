@@ -52,7 +52,7 @@ the file's tangents and flips w under a mirroring node).
 | `engine-content matgen` | +Y up: `ny = (below - above) / 2 texel`, "+Y is up the image"; its roles are written `normal_convention: "opengl"` | `domain/matgen/src/matgen.cpp`, `apps/engine_content/matgen_commands.cpp` |
 | The material pack | +Y up: `materials.cpp` refuses a role whose `normal_convention` is not `"opengl"`, and `content/materials/README.md` says OpenGL (+Y) | read; the pack was not on the machine this was measured on |
 | The sward's ground bake | +Y up ("OpenGL +Y: the image's up is the tangent's y, opposite the rows", `sward.cpp`), blended with cards baked +Y down until R202 | read |
-| Rock and deadwood surface bakes | +Y down until R202, +Y up since | above |
+| Rock and deadwood surface bakes | +Y down until R202, +Y up since: a height of slope 0.5 rising along +v bakes a green of 185, along +u a red of 70 (`rocks: a known slope bakes a green and a red on glTF's side of 128`, `deadwood: a known slope ...`, each baking a height named in place of its field; with the green turned back, both read 70 and fail) | above |
 | Terrain and ground layers | the sets above; drawn through a frame that read them +Y down until R202 | `terrain_material.slang` |
 
 No `.tex` build, sampler or decoder flips a channel (`texture_build.cpp` stores the bytes).

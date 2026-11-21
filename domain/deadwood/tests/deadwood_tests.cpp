@@ -1,3 +1,5 @@
+#include "../src/surface.h"
+
 #include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <domain/assets/gltf.h>
@@ -424,6 +426,44 @@ TEST_CASE("deadwood: native maps and authored material precedence") {
     CHECK_FALSE(deadwood::in_range(p, error));
   }
 }
+// **Which way the bake's red and green point** (R202;
+// docs/experiments/tangent-space-convention.md): the map is +Y up the image, glTF's, so a height
+// rising along +v (down the image's rows) gives a green above 128 and one rising along +u a red
+// below it. A bake turned back to +Y down, the convention before R202, puts the green below 128.
+TEST_CASE("deadwood: a known slope bakes a green and a red on glTF's side of 128") {
+  auto p = recipe();
+  p.surface_resolution = 64;
+  const auto bake = [&](f64 (*height)(f64, f64)) {
+    geometry::ClusterFileData data;
+    data.materials.resize(1);
+    data.material_sampling.resize(1);
+    std::string error;
+    REQUIRE_MESSAGE(deadwood::detail::bake_surface(p, 0, 0, 1.0f, data, error, height), error);
+    image::Image normal;
+    REQUIRE(data.materials[0].normal_image >= 0);
+    REQUIRE(image::decode_image(data.images[static_cast<u32>(data.materials[0].normal_image)].bytes,
+                                normal, 3));
+    return normal;
+  };
+  const auto mean = [](const image::Image& image, u32 channel) {
+    f64 sum = 0;
+    for (u32 i = 0; i < image.width * image.height; ++i)
+      sum += image.pixels[i * 3 + channel];
+    return sum / (image.width * image.height);
+  };
+  // A slope of 0.5: the encoded component is 0.5 / sqrt(1.25), 185 or 70 of 255.
+  const image::Image along_v = bake([](f64, f64 v) { return 0.5 * v; });
+  const image::Image along_u = bake([](f64 u, f64) { return 0.5 * u; });
+  const f64 v_red = mean(along_v, 0), v_green = mean(along_v, 1);
+  const f64 u_red = mean(along_u, 0), u_green = mean(along_u, 1);
+  MESSAGE("height along +v: red " << v_red << ", green " << v_green << "; along +u: red " << u_red
+                                  << ", green " << u_green);
+  CHECK(v_green > 180.0);
+  CHECK(std::fabs(v_red - 127.5) < 2.0);
+  CHECK(u_red < 75.0);
+  CHECK(std::fabs(u_green - 127.5) < 2.0);
+}
+
 TEST_CASE("deadwood: bark partition preserves the solid and hollow surface area") {
   for (f32 hollow : {0.0f, .7f}) {
     auto p = recipe();

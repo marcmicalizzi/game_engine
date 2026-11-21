@@ -13,8 +13,13 @@ class SurfaceBake {
             std::span<const D3> samples, std::span<const f64> fresh, std::span<const u8> diagonals,
             const assets::MeshData& mesh);
   bool finish(assets::MeshData& mesh, f32 normal_scale);
+  // A height in place of the mineral field's (a function of the sample position), so a case can
+  // bake a known slope and hold which way the map's red and green point (R202). Null, the default,
+  // is the field.
+  void use_height(f64 (*height)(D3)) { height_ = height; }
 
  private:
+  f64 (*height_)(D3) = nullptr;
   RockSurfaceMaps settings_;
   u32 columns_ = 0;
   u32 charts_ = 0;
