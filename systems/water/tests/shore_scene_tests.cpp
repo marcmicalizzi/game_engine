@@ -321,7 +321,7 @@ TEST_CASE("water shore: a still body's shore draws no foam, whatever its foam_m"
       water += is_water(a, p, calm[0].water_instance) ? 1u : 0u;
       changed += std::memcmp(&a.color[p * 4], &b.color[p * 4], 3) != 0 ? 1u : 0u;
     }
-    MESSAGE((tier == 0 ? "this GPU" : "the TITAN Xp's absences")
+    MESSAGE(std::string(tier == 0 ? "this GPU" : "the TITAN Xp's absences")
             << ": a metre of foam_m changes " << changed << " pixels; " << water
             << " water pixels");
     CHECK(water > 2000u);
