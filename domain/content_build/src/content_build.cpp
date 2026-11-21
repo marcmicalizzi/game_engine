@@ -623,10 +623,13 @@ bool generator_hosts(const std::string& recipe, const materials::Pack* pack,
   return true;
 }
 
-// A container host's own section 54, against a copy of the build's table: a class naming a
-// category the table does not hold cannot be the dependant's, and is refused.
+// A container host's own section 54. Against a copy of the build's table, a class naming a
+// category the table does not hold cannot be the dependant's, and is refused; with `learn`, the
+// record teaches that table its ladders as a container the caller lists would (whole or not at
+// all), so the host is read at its real level whatever the caller has met before it (C64).
 bool host_container_classes(const std::string& path, const content_class::Categories& categories,
-                            content_class::ContentClasses& out, std::string& why) {
+                            content_class::Categories* learn, content_class::ContentClasses& out,
+                            std::string& why) {
   geometry::ClusterFileReader reader;
   std::string error;
   // A host that cannot be opened here (missing, locked, half written) is unreadable, never `none`:
@@ -649,12 +652,13 @@ bool host_container_classes(const std::string& path, const content_class::Catego
         reader.file().read_at(offset, record.data(), bytes, got) == io::Status::Ok && got == bytes;
   }
   content_class::Categories copy = categories;
+  content_class::Categories& table = learn != nullptr ? *learn : copy;
   if (!read || !content_class::decode_classes(
-                   copy, std::span<const u8>(record.data(), record.size()), out, error)) {
+                   table, std::span<const u8>(record.data(), record.size()), out, error)) {
     why = path + ": its classes section cannot be read: " + error;
     return false;
   }
-  if (copy.size() != categories.size()) {
+  if (learn == nullptr && copy.size() != categories.size()) {
     why = path + ": its classes name a category this build does not know";
     return false;
   }
@@ -662,20 +666,20 @@ bool host_container_classes(const std::string& path, const content_class::Catego
 }
 
 bool read_classes_at(const std::string& source, const MeshOptions& options, SourceClasses& out,
-                     Diagnostic& error, u32 depth);
+                     Diagnostic& error, u32 depth, content_class::Categories* learn);
 
 }  // namespace
 
 bool read_source_classes(const std::string& source, const MeshOptions& options, SourceClasses& out,
-                         Diagnostic& error) {
-  return read_classes_at(source, options, out, error, 0);
+                         Diagnostic& error, content_class::Categories* learn) {
+  return read_classes_at(source, options, out, error, 0, learn);
 }
 
 namespace {
 
 bool read_classes_at(const std::string& source, const MeshOptions& options, SourceClasses& out,
-                     Diagnostic& error, u32 depth) {
-  const content_class::Categories& categories = categories_of(options);
+                     Diagnostic& error, u32 depth, content_class::Categories* learn) {
+  const content_class::Categories& categories = learn != nullptr ? *learn : categories_of(options);
   out = SourceClasses{};
   const auto refuse = [&](std::string message) {
     out.classes = content_class::unreadable(categories);
@@ -710,12 +714,12 @@ bool read_classes_at(const std::string& source, const MeshOptions& options, Sour
                       " levels deep: a loop of recipes?");
       SourceClasses inner;
       Diagnostic inner_error;
-      if (!read_classes_at(host, options, inner, inner_error, depth + 1))
+      if (!read_classes_at(host, options, inner, inner_error, depth + 1, learn))
         return refuse(inner_error.message + "; the host of " + source);
       out.classes = content_class::join(out.classes, inner.classes);
       if (io::extension(host) == ".clusters") {
         content_class::ContentClasses own;
-        if (!host_container_classes(host, categories, own, why))
+        if (!host_container_classes(host, categories, learn, own, why))
           return refuse(why + "; the host of " + source);
         out.classes = content_class::join(out.classes, own);
       }

@@ -1533,3 +1533,116 @@ TEST_CASE("content classes at load: a dangling sidecar beside a ground's paint m
   }
   CHECK(made >= 1u);
 }
+
+namespace {
+
+// A generator of the test's own that grows over its recipe's host as `fixturehost` does and builds
+// `g_cover_mesh`, a grid with no image, so a recipe the door admits is drawn.
+const geometry::ClusterFileData* g_cover_mesh = nullptr;
+bool fixture_cover_build(std::span<const u8> bytes, const assets::MeshGeneratorInputs& inputs,
+                         const geometry::ClusterLodOptions&, u32, geometry::ClusterFileData& out,
+                         std::string& error) {
+  u64 identity = 0;
+  if (!fixture_host_hash_with(bytes, inputs, identity, error)) return false;
+  if (g_cover_mesh == nullptr) {
+    error = "the fixture cover has no mesh to build";
+    return false;
+  }
+  out = *g_cover_mesh;
+  return true;
+}
+constexpr assets::MeshGeneratorDesc k_fixture_cover{.name = "fixturecover",
+                                                    .source_hash = fixture_host_hash,
+                                                    .build = fixture_cover_build,
+                                                    .source_hash_with = fixture_host_hash_with};
+
+// A grid of `side` vertices a side with one material that samples no image.
+geometry::ClusterFileData plain_grid(u32 side) {
+  SceneDesc grid;
+  grid.meshes.push_back("");
+  grid.heightfield_grid = side;
+  grid.cache = false;
+  SceneData made;
+  std::string error;
+  REQUIRE_MESSAGE(load_scene(grid, made, error), error);
+  geometry::ClusterFileData file;
+  file.mesh = std::move(made.lod);
+  file.materials.push_back(geometry::ClusterFileMaterial{});
+  file.cluster_material = Vector<u32>(file.mesh.mesh.clusters.size(), 0u);
+  return file;
+}
+
+content_class::NamedPolicy policy_in(const char* json, const char* name) {
+  content_class::ViewPolicies set;
+  std::string error;
+  REQUIRE_MESSAGE(set.read_json(content_class::Categories(), json, error), error);
+  for (u32 i = 0; i < set.size(); ++i)
+    if (set.at(i).name == name) return set.at(i);
+  FAIL("no such policy");
+  return agent_default_view_policy();
+}
+
+// The game's category capped at `dim` and the engine's violence at `mild`: what tells a host's real
+// level from the top a class that cannot be read is decided at.
+constexpr const char* k_dim_policies =
+    R"({"policies":[{"name":"glow-dim","caps":[)"
+    R"({"category":"fixture_glow","cap":"dim","substitution":"omit"},)"
+    R"({"category":"violence","cap":"mild","substitution":"omit"}]}]})";
+
+}  // namespace
+
+// **A recipe is decided the same in either mesh order, and at its host's real level** (C64): a
+// container host's record teaches the scene's table its ladders as a listed container's does,
+// whole or not at all, so a cover listed before its host, or over a host the scene does not list,
+// reads the host's level rather than meeting a category the table does not know yet.
+TEST_CASE("content classes at load: a recipe over a game-classified host decides in any order") {
+  need_generator(k_fixture_cover);
+  const geometry::ClusterFileData cover = plain_grid(5);
+  g_cover_mesh = &cover;
+  const content_class::NamedPolicy dim = policy_in(k_dim_policies, "glow-dim");
+  std::string error;
+  {
+    const test::TempDir tmp("renderer_classes_host_order");
+    REQUIRE(tmp.ok());
+    const Grid statue = write_grid(tmp, "statue.clusters", 17, "statue.png", glow_record(1));
+    REQUIRE(io::write_file(tmp.file("moss.fixturecover.json"), R"({"host":"statue.clusters"})") ==
+            io::Status::Ok);
+    Grid moss;
+    moss.path = tmp.file("moss.fixturecover.json");
+    for (const bool moss_first : {true, false}) {
+      CAPTURE(moss_first);
+      SceneDesc desc =
+          moss_first ? scene_of(tmp, {&moss, &statue}) : scene_of(tmp, {&statue, &moss});
+      desc.view_policy = dim;
+      SceneData scene;
+      REQUIRE_MESSAGE(load_scene(desc, scene, error), error);
+      CHECK(scene.instances.size() == 2);
+      CHECK(loaded_instance(scene, moss_first ? 0u : 1u) != k_not_loaded);
+      CHECK(scene.load.unreadable_omitted == 0);
+    }
+  }
+  // Over a host the scene does not list: the host's own level, admitted at `dim`, refused above it.
+  for (const u8 level : {u8{1}, u8{2}}) {
+    CAPTURE(static_cast<u32>(level));
+    const test::TempDir tmp("renderer_classes_host_unlisted");
+    REQUIRE(tmp.ok());
+    (void)write_grid(tmp, "statue.clusters", 17, "statue.png", glow_record(level));
+    REQUIRE(io::write_file(tmp.file("moss.fixturecover.json"), R"({"host":"statue.clusters"})") ==
+            io::Status::Ok);
+    Grid moss;
+    moss.path = tmp.file("moss.fixturecover.json");
+    SceneDesc desc = scene_of(tmp, {&moss});
+    desc.view_policy = dim;
+    SceneData scene;
+    REQUIRE_MESSAGE(load_scene(desc, scene, error), error);
+    CHECK(scene.load.unreadable_omitted == 0);
+    if (level == 1) {
+      CHECK(scene.instances.size() == 1);
+    } else {
+      CHECK(scene.instances.empty());
+      REQUIRE(row(scene, "fixture_glow") != nullptr);
+      CHECK(row(scene, "fixture_glow")->omitted == 1);
+    }
+  }
+  g_cover_mesh = nullptr;
+}

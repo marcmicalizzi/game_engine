@@ -368,7 +368,11 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
       options.categories = &out.categories;
       content_build::SourceClasses classes;
       content_build::Diagnostic why;
-      state.mesh[m].unreadable = !content_build::read_source_classes(path, options, classes, why);
+      // A container host's record teaches the scene's table as a listed container's does (C64), so
+      // the recipe reads the host's real level in whatever order the scene lists its meshes, and
+      // whether or not it lists the host at all.
+      state.mesh[m].unreadable =
+          !content_build::read_source_classes(path, options, classes, why, &out.categories);
       state.mesh[m].classes = classes.classes;
       // What its cache key holds and the entry the load builds carries, as the content build's.
       state.mesh_hash[m] = classes.hash;

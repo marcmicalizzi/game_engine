@@ -269,8 +269,14 @@ const content_class::Categories& categories_of(const MeshOptions& options);
 // set's `pack.json` class, since the generator's output is the join of what it baked. False, with
 // `error` (`k_rule_content_class`, naming the sidecar and why) and `out.classes` the unreadable
 // class, when the sidecar cannot be read: the build refuses the source.
+//
+// `learn`, when set, is the table read against in place of `options.categories`, and a container
+// host's section 54 teaches it the ladders it carries as a container the caller lists would (C64;
+// `content_class::decode_classes`, whole or not at all), so a recipe over a host carrying a game's
+// category is read at the host's real level whether or not the caller has met that category yet.
+// Null keeps the table fixed, and a host naming a category it does not hold refuses the source.
 bool read_source_classes(const std::string& source, const MeshOptions& options, SourceClasses& out,
-                         Diagnostic& error);
+                         Diagnostic& error, content_class::Categories* learn = nullptr);
 
 // The key a source's container records and the cache addresses it by: `mesh_build_key`, moved by
 // the class only when there is one (`content_class::classified_key`), so an unclassified source
