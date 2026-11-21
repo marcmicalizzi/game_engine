@@ -778,6 +778,12 @@ void answer_assets(Vector<ReviewInfo>& reviews) {
       if (io::check_stored_path_form(r.subject.assets[i]) != io::Refusal::none)
         r.subject.assets[i] = "assets[" + std::to_string(i) + "]";
     }
+    // A raise records only admitted spellings, which passed the form; a ledger written by hand is
+    // held to the same answer.
+    for (u32 i = 0; i < r.raised_files.size(); ++i) {
+      if (io::check_stored_path_form(r.raised_files[i]) != io::Refusal::none)
+        r.raised_files[i] = "raised_files[" + std::to_string(i) + "]";
+    }
   }
 }
 
@@ -815,9 +821,12 @@ RpcError not_readable_here_error(const Vector<std::string>& entries, std::string
   return make_error(codes::k_invalid_argument, std::move(message), std::move(data));
 }
 
+// `raised_files`, a raise's: the stored spellings its digest read as files, filled before `decide`
+// for the item to record (`ReviewInfo.raised_files`).
 template <class First, class Decide>
 bool digest_passes(Context& ctx, const std::string& session_id, DigestFor use, First&& first,
-                   Decide&& decide, SubjectState& state, Session*& session, RpcError& error) {
+                   Decide&& decide, SubjectState& state, Session*& session, RpcError& error,
+                   Vector<std::string>* raised_files = nullptr) {
   const DigestBounds bounds = DigestBounds::now();
   const i64 started = time::monotonic_ns();
   for (u32 pass = 1;; ++pass) {
@@ -825,10 +834,10 @@ bool digest_passes(Context& ctx, const std::string& session_id, DigestFor use, F
     if (session == nullptr) return false;
     ReviewSubject subject;
     u64 revision = 0;
-    Vector<std::string> raised_roots;
-    if (!first(*session, subject, raised_roots, revision, error)) return false;
+    RaisedFiles raised;
+    if (!first(*session, subject, raised, revision, error)) return false;
     SubjectPlan plan;
-    compose_subject(ctx, *session, subject, raised_roots, bounds, plan);
+    compose_subject(ctx, *session, subject, raised, bounds, plan);
     plan.refuse_over = use == DigestFor::raise;
     if (use == DigestFor::raise && !plan.over.empty()) {
       error = over_error(plan.over[0]);
@@ -879,10 +888,11 @@ bool digest_passes(Context& ctx, const std::string& session_id, DigestFor use, F
     bool moved = !same_document(session, plan);
     if (moved && session == plan.session) {
       SubjectPlan again;
-      compose_subject(ctx, *session, subject, raised_roots, bounds, again);
+      compose_subject(ctx, *session, subject, raised, bounds, again);
       moved = !same_subject(plan, again);
     }
     if (!moved) {
+      if (raised_files != nullptr) raised_spellings(plan, *raised_files);
       finish_subject(plan, state);
       state.passes = pass;
       state.ms = static_cast<f64>(time::monotonic_ns() - started) / 1.0e6;
@@ -955,8 +965,8 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
   };
   // Every refusal that reads no file, before the digest reads any (protocol.md, "What it costs"):
   // the subject's layer and records, the session's gate on writes, and the ledger's bounds.
-  const auto first = [&](Session& session, ReviewSubject& subject,
-                         Vector<std::string>& raised_roots, u64& revision, RpcError& e) {
+  const auto first = [&](Session& session, ReviewSubject& subject, RaisedFiles& raised,
+                         u64& revision, RpcError& e) {
     const doc::Document& d = session.document();
     if (!params.subject.layer.empty() && d.find_layer(params.subject.layer) < 0) {
       e = make_error(codes::k_not_found, "no layer named " + params.subject.layer);
@@ -975,7 +985,8 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
         !ledger_has_room(vfs, doc::DocumentStore::path_of(session.dir(), k_ledger_file), e))
       return false;
     subject = params.subject;
-    raised_roots.clear();  // a raise records them; it reads none
+    raised = RaisedFiles{};
+    raised.raising = true;  // a raise records what it reads as files; it reads no list
     return update_ledger(
         vfs, session, true, false, revision,
         [&](LedgerFile& ledger, bool& write, RpcError& e2) {
@@ -988,6 +999,7 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
   // tied to"), into the write that raises the item.
   const i64 now = time::wall_unix_ms();
   ReviewInfo made;
+  Vector<std::string> raised_files;  // what the deciding pass read as files, for the item
   // The ledger's own refusals are made again in this write, on the ledger as it is now; a write
   // to it about something else since the first read moves nothing the raise rests on.
   const auto decide = [&](Session& session, const SubjectState& stamped, u64, bool&, RpcError& e) {
@@ -1010,7 +1022,7 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
             r.subject.journal_length = static_cast<u32>(d.journal().size());
             r.subject.undo_position = session.undo_position();
             r.raised_digest = stamped.digest;
-            r.raised_roots = stamped.roots;
+            r.raised_files = raised_files;
             r.report = params.report;
             r.task = params.task;
             r.raised_by = caller.who;
@@ -1031,7 +1043,8 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
         e);
   };
   SubjectState stamped;
-  if (!digest_passes(ctx, params.session, DigestFor::raise, first, decide, stamped, s, error))
+  if (!digest_passes(ctx, params.session, DigestFor::raise, first, decide, stamped, s, error,
+                     &raised_files))
     return false;
   out.now_unix_ms = now;
   out.reviews.push_back(std::move(made));
@@ -1116,8 +1129,8 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
     return true;
   };
   io::Vfs& vfs = ctx.sessions->vfs();
-  const auto first = [&](Session& session, ReviewSubject& subject,
-                         Vector<std::string>& raised_roots, u64& revision, RpcError& e) {
+  const auto first = [&](Session& session, ReviewSubject& subject, RaisedFiles& raised,
+                         u64& revision, RpcError& e) {
     if (!session.may_write_side_files(e)) return false;
     u64 ledger_revision = 0;
     return update_ledger(
@@ -1128,7 +1141,8 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
           if (r == nullptr || !closable(*r, e2)) return false;
           // An item's subject never changes after the raise: the one read is the one checked.
           subject = r->subject;
-          raised_roots = r->raised_roots;
+          raised.recorded = !r->raised_digest.empty();
+          raised.spellings = r->raised_files;
           // The item's own revision, not the ledger's: a write about another item or a task
           // moves nothing this close rests on.
           revision = r->revision;
@@ -1205,10 +1219,10 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
     s = ctx.sessions->require(params.session, error);
     if (s == nullptr) return false;
     ReviewSubject subject;
-    Vector<std::string> raised_roots;
+    RaisedFiles raised;
     u64 revision = 0;
     bool moved = false;
-    if (!first(*s, subject, raised_roots, revision, error) ||
+    if (!first(*s, subject, raised, revision, error) ||
         !decide(*s, seen_now, revision, moved, error))
       return false;
   } else if (!digest_passes(ctx, params.session, DigestFor::close, first, decide, seen_now, s,
@@ -1285,11 +1299,12 @@ bool review_list(Context& ctx, const ReviewListParams& params, ReviewsResult& ou
   // lock); the ledger read again under the dispatch lock says whether the item it answers is the
   // one the pass composed for.
   // With no filter beside it the detail answers its item, which `find_review` found.
-  const auto first = [&](Session& session, ReviewSubject& subject,
-                         Vector<std::string>& raised_roots, u64& revision, RpcError& e) {
+  const auto first = [&](Session& session, ReviewSubject& subject, RaisedFiles& raised,
+                         u64& revision, RpcError& e) {
     if (!list(session, out.ledger_revision, e)) return false;
     subject = out.reviews[0].subject;
-    raised_roots = out.reviews[0].raised_roots;
+    raised.recorded = !out.reviews[0].raised_digest.empty();
+    raised.spellings = out.reviews[0].raised_files;
     revision = out.reviews[0].revision;  // the item's own, not the ledger's
     return true;
   };

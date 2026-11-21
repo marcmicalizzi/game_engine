@@ -267,8 +267,7 @@ DigestBounds DigestBounds::now() noexcept {
 }
 
 void compose_subject(const Context& ctx, const Session& session, const ReviewSubject& subject,
-                     const Vector<std::string>& raised_roots, const DigestBounds& bounds,
-                     SubjectPlan& plan) {
+                     const RaisedFiles& raised, const DigestBounds& bounds, SubjectPlan& plan) {
   plan = SubjectPlan{};
   const doc::Document& d = session.document();
   plan.session = &session;
@@ -391,12 +390,6 @@ void compose_subject(const Context& ctx, const Session& session, const ReviewSub
     plan.past_files = kept - bounds.files;
     kept = bounds.files;
   }
-  // The roots the raise admitted files under that this host lacks: with none, this host can
-  // admit whatever the raiser could, so a string it cannot admit no host could.
-  Vector<std::string> lacking;
-  for (const std::string& r : raised_roots) {
-    if (ctx.roots == nullptr || ctx.roots->find(r) == nullptr) lacking.push_back(r);
-  }
   for (u32 i = 0; i < kept; ++i) {
     SubjectPlan::File& f = plan.files.emplace_back();
     f.spelled = files[i];
@@ -407,30 +400,24 @@ void compose_subject(const Context& ctx, const Session& session, const ReviewSub
     if (ctx.roots != nullptr &&
         io::admit_stored_path(*ctx.roots, f.spelled, session.dir(), admitted, why)) {
       f.native = std::move(admitted.native);
-      f.root = std::move(admitted.root);
       continue;
     }
     // Not admitted. Outside — never opened, a line of its own, never taken for a change of the
     // file — when the raiser listed it (an entry of `subject.assets` is held strictly), when this
-    // host has no roots, or when the raiser may have admitted it under a root this host lacks: a
-    // root it names by name, or for any other spelling a place rather than its text. Otherwise
-    // it is a string no host admits (a URL, text with a colon, a root nobody had, a climb out of
-    // every root): one constant line, and the digest stays comparable.
+    // host has no roots, or when the raise read it as a file: its stored spelling is in the list
+    // the item records, whatever names this host's roots have, since a name is portable and its
+    // place is not; and when the item records no list (raised before digests), since then nothing
+    // says it was not. Otherwise, and at the raise itself, it is a string the raise did not read
+    // as a file (a URL, text with a colon, a root nobody had, a climb out of every root, or a
+    // reference set on a record after the raise): one constant line, and the digest stays
+    // comparable.
     const bool listed =
         std::find(subject.assets.begin(), subject.assets.end(), f.spelled) != subject.assets.end();
-    bool here_only = false;
-    if (!lacking.empty()) {
-      const usize scheme_end = f.spelled.find("://");
-      const std::string_view name = scheme_end == std::string::npos
-                                        ? std::string_view()
-                                        : std::string_view(f.spelled).substr(0, scheme_end);
-      if (!name.empty() && io::valid_root_name(name)) {
-        here_only = std::find(lacking.begin(), lacking.end(), name) != lacking.end();
-      } else {
-        here_only = !refused_by_text(why);
-      }
-    }
-    if (listed || ctx.roots == nullptr || here_only) {
+    const bool read_at_raise =
+        !raised.raising &&
+        (!raised.recorded || std::find(raised.spellings.begin(), raised.spellings.end(),
+                                       f.spelled) != raised.spellings.end());
+    if (listed || ctx.roots == nullptr || read_at_raise) {
       f.outside = true;
       f.line = k_outside;
     } else {
@@ -511,7 +498,6 @@ void read_subject_files(SubjectPlan& plan, const DigestBounds& bounds) {
         }
       } else {
         n.native = std::move(admitted.native);
-        n.root = std::move(admitted.root);
       }
       plan.files.push_back(std::move(n));
     }
@@ -547,6 +533,13 @@ void read_subject_files(SubjectPlan& plan, const DigestBounds& bounds) {
       }
     }
     if (!told) note_over(plan.over, files_tunable.name(), bounds.files, figure);
+  }
+}
+
+void raised_spellings(const SubjectPlan& plan, Vector<std::string>& out) {
+  out.clear();
+  for (const SubjectPlan::File& f : plan.files) {
+    if (f.named_by.empty() && !f.native.empty()) out.push_back(f.spelled);
   }
 }
 
@@ -595,9 +588,7 @@ void finish_subject(SubjectPlan& plan, SubjectState& out) {
     } else if (!f.read) {
       out.unreadable.push_back(f.spelled);
     }
-    if (!f.root.empty()) out.roots.push_back(f.root);
   }
-  sort_unique(out.roots);
   // The files past the bound, one line and one entry with their count.
   if (plan.past_files > 0) {
     JsonValue line = JsonValue::array();

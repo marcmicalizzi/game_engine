@@ -91,7 +91,6 @@ struct SubjectPlan {
     // file the subject names.
     std::string named_by;
     std::string uri;
-    std::string root;  // the root it was admitted under, by name
   };
   Vector<File> files;
   // Files past the files bound, named by the records or a glTF and never collected: one count,
@@ -113,15 +112,26 @@ struct SubjectPlan {
   u64 names_collected = 0;  // the names a pass took from its glTFs' JSON, each once
 };
 
+// What an item's raise read as files (protocol.md, "Which strings are files"): the stored
+// spellings of the files its digest admitted, listed and named by its records (never a file a
+// glTF names, which follows from the glTF), as `ReviewInfo.raised_files` records them.
+struct RaisedFiles {
+  bool raising = false;   // the raise itself: nothing is recorded yet, and it records these
+  bool recorded = false;  // the item carries the list: it was raised with a digest
+  Vector<std::string> spellings;
+};
+
 // The document half, under the dispatch lock: the records' and blobs' lines and the files to read,
 // each admitted through the roots now. A relative asset path resolves against the session's
 // document directory, as every path a record names does (protocol.md, "Where a relative path
-// starts"). `raised_roots` are the root names the item's raise admitted files under (empty at a
-// raise): a string a record holds that this host cannot admit is outside only when this host
-// lacks one of them, and otherwise one constant line (protocol.md, "Which strings are files").
+// starts"). A string a record holds that this host cannot admit is outside when the raise read it
+// as a file (`raised`), or when the item records nothing; otherwise, and at the raise itself, it
+// is one constant line (protocol.md, "Which strings are files").
 void compose_subject(const Context& ctx, const Session& session, const ReviewSubject& subject,
-                     const Vector<std::string>& raised_roots, const DigestBounds& bounds,
-                     SubjectPlan& plan);
+                     const RaisedFiles& raised, const DigestBounds& bounds, SubjectPlan& plan);
+// The stored spellings a raise records (`ReviewInfo.raised_files`): every file of the plan the
+// roots admitted that the subject lists or its records name, in the plan's order.
+void raised_spellings(const SubjectPlan& plan, Vector<std::string>& out);
 // The files half, with no lock of the host's held: reads only what the plan holds.
 void read_subject_files(SubjectPlan& plan, const DigestBounds& bounds);
 // Whether the session's document is the one the plan composed, under the lock again.

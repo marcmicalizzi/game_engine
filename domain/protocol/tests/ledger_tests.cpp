@@ -1240,6 +1240,70 @@ TEST_CASE("ledger: a host that cannot see a subject's file says so, and never ca
   CHECK(at(here, "same").as_bool());
 }
 
+// Root names are portable and their places are not (protocol.md, "Which strings are files"): two
+// hosts may both have roots named `tests` and `content` and still not admit the same files. The
+// item records the stored spellings of the files its raise read as files, so a host that cannot
+// admit one of them says it cannot compare and refuses a person's close, whatever names its roots
+// have; and one that lacks a root by name says so too. The document is `w/world`; the file its
+// record names, `../../c/rock.png`, is under A's `content` and under neither of B's roots.
+TEST_CASE("ledger: two hosts with the same root names in different places compare only what both read") {
+  test::TempDir tmp("protocol_ledger_places");
+  const std::filesystem::path scratch(tmp.path());
+  const std::string dir = (scratch / "w" / "world").string();
+  std::filesystem::create_directories(scratch / "c");
+  std::filesystem::create_directories(scratch / "d");
+  {
+    std::ofstream(scratch / "c" / "rock.png", std::ios::binary) << "png";
+  }
+  Host a;
+  a.roles(k_roles);
+  a.roots = io::Roots{};
+  REQUIRE(a.roots.add("tests", (scratch / "w").string(), true) == io::Status::Ok);
+  REQUIRE(a.roots.add("content", (scratch / "c").string(), false) == io::Status::Ok);
+  a.open(dir, true);
+  DigestWorld w;
+  w.make(a, dir);
+  w.set(a, w.placement, "decal", JsonValue("../../c/rock.png"));
+  a.stdio();
+  const JsonValue raised = a.ok("review.raise", w.raise_params("Human"));
+  const JsonValue item = at(raised, "reviews")[0];
+  CHECK(num(at(at(raised, "subject"), "asset_bytes")) == 8 + 3);  // the mesh and the rock, read
+  CHECK(at(opened_detail(a, at(item, "id")), "same").as_bool());
+
+  // B: the same names, `content` somewhere else.
+  Host b;
+  b.roles(k_roles);
+  b.roots = io::Roots{};
+  REQUIRE(b.roots.add("tests", (scratch / "w").string(), true) == io::Status::Ok);
+  REQUIRE(b.roots.add("content", (scratch / "d").string(), false) == io::Status::Ok);
+  b.open(dir, false);
+  b.bind(5, "person-at-desk", "person", "reviewer");
+  const JsonValue there = opened_detail(b, at(item, "id"));
+  CHECK_FALSE(at(there, "comparable").as_bool());
+  CHECK_FALSE(at(there, "same").as_bool());
+  REQUIRE(at(there, "outside").size() == 1);
+  CHECK(at(there, "outside")[0].as_string() == "../../c/rock.png");
+  JsonValue error;
+  CHECK(b.fails("review.close",
+                obj({{"review", at(item, "id")},
+                     {"resolution", JsonValue("Accepted")},
+                     {"revision", at(item, "revision")},
+                     {"digest", at(there, "digest")},
+                     {"attribution", who("person")}}),
+                &error) == codes::k_invalid_argument);
+  CHECK(reason_of(error) == "subject not readable here");
+
+  // C: no `content` root at all, the record's climb to the file beside its root.
+  Host c;
+  c.roots = io::Roots{};
+  REQUIRE(c.roots.add("tests", (scratch / "w").string(), true) == io::Status::Ok);
+  c.open(dir, false);
+  const JsonValue lacking = opened_detail(c, at(item, "id"));
+  CHECK_FALSE(at(lacking, "comparable").as_bool());
+  REQUIRE(at(lacking, "outside").size() == 1);
+  CHECK(at(lacking, "outside")[0].as_string() == "../../c/rock.png");
+}
+
 // An entry of `subject.assets` is a stored path (protocol.md, "Paths a document's records hold";
 // T174): `<root>://<relative>` or relative to the document, never absolute, refused at the raise as
 // a record's absolute path is, with the same answer. The ledger is beside the document and every
@@ -1765,8 +1829,10 @@ TEST_CASE("ledger: an old item's absolute asset is answered by its index, never 
     // The item as the older host wrote it: the listed file by its absolute path.
     std::string text;
     REQUIRE(h.vfs.read(dir + "/ledger.json", text) == io::Status::Ok);
-    const std::string listed = R"("props/crate.glb")";  // only the listed entry: the ledger
-    const usize at_listed = text.find(listed);          // holds no record's properties
+    // Only the listed entry (the ledger holds no record's properties, and the item's
+    // `raised_files` keeps the spelling the raise read).
+    const std::string listed = R"("props/crate.glb")";
+    const usize at_listed = text.find(listed, text.find(R"("assets")"));
     REQUIRE(at_listed != std::string::npos);
     text.replace(at_listed, listed.size(),
                  write_json(JsonValue(w.mesh), JsonWriteOptions{.pretty = false}));
