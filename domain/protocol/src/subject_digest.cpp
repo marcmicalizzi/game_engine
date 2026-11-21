@@ -147,7 +147,9 @@ bool open_file(SubjectPlan::File& f, const DigestBounds& bounds, u64& total, Sub
       f.line = k_no_file;
       return false;
     }
-    f.unread = s != io::Status::NotFound;
+    // A place under a regular file is not there (`NotDirectory`, Linux's ENOTDIR; Windows answers
+    // "path not found"), as the roots' admission takes it.
+    f.unread = s != io::Status::NotFound && s != io::Status::NotDirectory;
     f.line = f.unread ? k_not_readable : k_missing;
     return false;
   }

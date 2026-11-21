@@ -1893,6 +1893,29 @@ TEST_CASE("ledger: a record's string naming a folder digests as no file, and the
   CHECK(reason_of(error) == "subject moved");
 }
 
+// A place under a regular file (`props/crate.glb/x.png`) is honestly not there: `missing`, as the
+// roots' admission already takes it, on every system (Linux answers ENOTDIR, Windows "path not
+// found"), so the raise stands and a detail compares (protocol.md, "What a close is tied to").
+TEST_CASE("ledger: a record's string under a regular file is missing, and the raise stands") {
+  test::TempDir tmp("protocol_ledger_under_file");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  h.open(dir, true);
+  DigestWorld w;
+  w.make(h, dir);
+  w.set(h, w.placement, "decal", JsonValue("props/crate.glb/x.png"));
+  const JsonValue raised = h.ok("review.raise", w.raise_params("Agent"));
+  const JsonValue item = at(raised, "reviews")[0];
+  const JsonValue& stamped = at(raised, "subject");
+  CHECK(at(stamped, "comparable").as_bool());
+  REQUIRE(at(stamped, "unreadable").size() == 1);
+  CHECK(at(stamped, "unreadable")[0].as_string() == "props/crate.glb/x.png");
+  const JsonValue now = opened_detail(h, at(item, "id"));
+  CHECK(at(now, "comparable").as_bool());
+  CHECK(at(now, "same").as_bool());
+  CHECK(at(now, "not_comparable").size() == 0);
+}
+
 // A pass is thrown away only when the subject moved (protocol.md, "What it costs"): an edit of a
 // record the subject does not name, and a ledger write about something else, at every pass's
 // reads, leave the close to stand in one pass, and the files are read once.
