@@ -577,29 +577,36 @@ bool read_pack_classes(const materials::Pack& pack, const content_class::Categor
 // it through this seam, because its key covers the host. A recipe with no generator registered,
 // or one that cannot be read, names none here: the build or the load fails on it with its own
 // sentence. False, with `why`, when the generator exists and the recipe reads but its hash refuses
-// these hooks (one that parses an image it hashes, answered here with no bytes): its hosts are then
-// unknown, and the recipe is refused rather than decided without them (C64).
+// after these hooks answered it (one that parses an image it hashes, answered here with no bytes):
+// the refusal may be the probe's, its hosts are then unknown, and the recipe is refused rather than
+// decided without them (C64). A hash that refuses before asking a hook refuses the recipe itself
+// (a recipe out of its generator's ranges), and the build or the load says so in its own words.
 struct HostProbe {
   std::string dependant;
   Vector<std::string> hosts;
+  u32 answered = 0;  // the hooks' answers the hash was given
 };
 bool probe_identify(void* context, std::string_view path, u64& out, std::string&) {
   auto* probe = static_cast<HostProbe*>(context);
+  ++probe->answered;
   const std::string_view dir = io::parent_path(probe->dependant);
   probe->hosts.push_back(io::is_absolute_path(path) || dir.empty() ? std::string(path)
                                                                    : io::join_path(dir, path));
   out = 0;
   return true;
 }
-bool probe_load(void*, std::string_view, assets::GeneratorHostMesh&, std::string& error) {
+bool probe_load(void* context, std::string_view, assets::GeneratorHostMesh&, std::string& error) {
+  ++static_cast<HostProbe*>(context)->answered;
   error = "the class probe reads no host";
   return false;
 }
-bool probe_image(void*, std::string_view, Vector<u8>& out, std::string&) {
+bool probe_image(void* context, std::string_view, Vector<u8>& out, std::string&) {
+  ++static_cast<HostProbe*>(context)->answered;
   out.clear();
   return true;
 }
-bool probe_hash(void*, std::string_view, u64& out, std::string&) {
+bool probe_hash(void* context, std::string_view, u64& out, std::string&) {
+  ++static_cast<HostProbe*>(context)->answered;
   out = 0;
   return true;
 }
@@ -621,6 +628,7 @@ bool generator_hosts(const std::string& recipe, const materials::Pack* pack,
   if (!assets::generated_source_hash(
           *generator, std::span<const u8>(reinterpret_cast<const u8*>(text.data()), text.size()),
           assets::MeshGeneratorInputs{pack, &hooks}, hash, why)) {
+    if (probe.answered == 0) return true;  // the recipe's own refusal, said where it is read
     why =
         recipe + ": its generator's hash refuses the class probe, so its hosts are unknown: " + why;
     return false;
