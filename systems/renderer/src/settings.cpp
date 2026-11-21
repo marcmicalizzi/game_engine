@@ -433,11 +433,13 @@ tunables::Bool shadow_micromaps{
 // R140: the shadow casters in top-level records of their own (renderer.md, "The casters in
 // instances of their own").
 tunables::Bool rt_caster_instances{
-    "renderer.rt.caster_instances", true,
+    "renderer.rt.caster_instances", false,
     "With shadow casters on, give each instance's casters a bottom-level structure and a "
     "top-level record of their own, under the caster bit alone, so the camera's rays never enter "
     "them and a caster's record is built as a drawn one's, opaque or with the drawn record's "
-    "opacity micromap; the picture's ids are unchanged and the shadows are the micromaps' "
+    "opacity micromap; the picture's ids are unchanged and the shadows are the micromaps'. Off "
+    "by default: at 3840x2160 it gains nothing and costs the top-level build 0.4 ms, the "
+    "bounce's rays up to 2.9 ms and 0.65 GB of chain memory; a session at 11520x2160 opts in "
     "(R140; renderer.md, The casters in instances of their own; read when a scene is made)"};
 tunables::Bool shadow_micromap_2state{
     "renderer.shadow.micromap_2state", true,

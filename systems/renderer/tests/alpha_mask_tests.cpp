@@ -1215,7 +1215,7 @@ TEST_CASE("alpha mask: an off-frustum caster's own record carries the drawn reco
   const auto shot = [&](bool own, bool forced) {
     TunableScope split(
         own ? "renderer.rt.caster_instances=true" : "renderer.rt.caster_instances=false",
-        "renderer.rt.caster_instances=true");
+        "renderer.rt.caster_instances=false");
     TunableScope solid(
         forced ? "renderer.shadow.opaque_rays=true" : "renderer.shadow.opaque_rays=false",
         "renderer.shadow.opaque_rays=false");

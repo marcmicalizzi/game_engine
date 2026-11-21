@@ -171,7 +171,7 @@ struct CasterTunable {
     REQUIRE(tunables::apply_overrides(own ? "renderer.rt.caster_instances=true"
                                           : "renderer.rt.caster_instances=false"));
   }
-  ~CasterTunable() { (void)tunables::apply_overrides("renderer.rt.caster_instances=true"); }
+  ~CasterTunable() { (void)tunables::apply_overrides("renderer.rt.caster_instances=false"); }
   CasterTunable(const CasterTunable&) = delete;
   CasterTunable& operator=(const CasterTunable&) = delete;
 };
@@ -266,11 +266,14 @@ TEST_CASE("renderer: the casters' own records are laid out only where there are 
   ResolvedSettings resolved;
   RenderSettings settings;
   settings.shadows = ShadowMode::RayTraced;
+  resolve_settings(settings, features, nullptr, resolved);
+  CHECK(resolved.casters);
+  CHECK_FALSE(resolved.caster_instances);  // the default: off until it is free at 4K (R140)
   {
     CasterTunable on(true);
     resolve_settings(settings, features, nullptr, resolved);
     CHECK(resolved.casters);
-    CHECK(resolved.caster_instances);  // the default
+    CHECK(resolved.caster_instances);  // a session opts in
     settings.shadow_casters = false;
     resolve_settings(settings, features, nullptr, resolved);
     CHECK_FALSE(resolved.caster_instances);  // no casters, no records for them
