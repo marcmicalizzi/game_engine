@@ -172,8 +172,8 @@ TEST_CASE(
   CHECK(text_at(b, {"interactive", "trajectory", "hash"}) == trajectory);
   CHECK(text_at(c, {"interactive", "trajectory", "hash"}) == trajectory);
   const std::string state = text_at(a, {"interactive", "game", "state"});
-  CHECK(state.find("\"chirps\":2") != std::string::npos);
-  CHECK(state.find("\"chirp_voice\":2") != std::string::npos);
+  CHECK(number_at(a, {"interactive", "game", "state", "chirps"}) == 2.0);
+  CHECK(number_at(a, {"interactive", "game", "state", "chirp_voice"}) == 2.0);
   CHECK(text_at(b, {"interactive", "game", "state"}) == state);
   CHECK(text_at(c, {"interactive", "game", "state"}) == state);
   CHECK(text_at(b, {"interactive", "walk", "hash"}) == text_at(a, {"interactive", "walk", "hash"}));
@@ -192,13 +192,17 @@ TEST_CASE(
     const f64 r = samples[2 * f + 1];
     quarter[f / 12000] += l * l + r * r;
   }
-  MESSAGE("energy by quarter second: " << quarter[0] << ' ' << quarter[1] << ' ' << quarter[2]
-                                       << ' ' << quarter[3] << ' ' << quarter[4] << ' '
-                                       << quarter[5] << ' ' << quarter[6] << ' ' << quarter[7]);
+  MESSAGE("energy by quarter second: " << quarter[0] << " " << quarter[1] << " " << quarter[2]
+                                       << " " << quarter[3] << " " << quarter[4] << ' '
+                                       << quarter[5] << " " << quarter[6] << " " << quarter[7]);
   CHECK(quarter[2] > 1.0);
   CHECK(quarter[6] > 1.0);
-  for (u32 q : {0u, 1u, 3u, 4u, 5u, 7u})
+  // Ticks 120 and 360 are drawn into the 200 frames before 24,000 and 72,000: the chirps start
+  // one block before their quarter and are silent before it, and nothing sounds between them.
+  for (u32 q : {0u, 3u, 4u, 7u})
     CHECK(quarter[q] == 0.0);
+  CHECK(quarter[1] < 0.01 * quarter[2]);
+  CHECK(quarter[5] < 0.01 * quarter[6]);
   // The spring is ahead and a little to no side: the two channels carry the chirp nearly alike.
   f64 left = 0.0;
   f64 right = 0.0;
