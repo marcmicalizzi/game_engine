@@ -579,7 +579,12 @@ stands again as drawn`, `a scene's door restored as standing turns again once it
 the scene hung that record's own leaf (`SceneLeaf::leaf`, kept sorted by house and leaf), so a
 load that kept one leaf's instance and dropped its neighbour's makes the one door; until then any
 leaf hung made a door of every record (`scene_collision: a house's leaf the scene did not hang
-makes no door beside one it did`). **Today a door keys on a generator, short of the engine's
+makes no door beside one it did`). **Nor through a restore** (2026-11-21): at a ring change a held
+door of a declared leaf the scene does not make — its piece hangs no leaves, or its own leaf was
+not hung — is dropped with its body, so a save from a build that made a door of every record,
+handed to `set_doors`, leaves no box in a doorway drawn empty; until then both were kept as
+handed, turning, and E opened them (`scene_collision: a restored door for a leaf the scene did not
+hang is dropped`). **Today a door keys on a generator, short of the engine's
 rule**: a container's section 53 is read and kept whatever wrote it, the structure generator or
 an imported asset's writer, and a proxy carries its records; but it makes a door only where its
 leaf is hung, and a leaf is hung today only where the mesh's path names a generator answering

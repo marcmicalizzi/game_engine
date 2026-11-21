@@ -954,6 +954,47 @@ TEST_CASE(
   CHECK(rig.collision.door_stats().declared == 1);
 }
 
+// **What collides is what is drawn, through a restore too** (S91; scene_collision.md, "Doors"): a
+// save from a build that made a door of every declared record, handed back turning. A door for a
+// leaf the scene did not hang, and one for a piece that hangs none, are dropped once the piece is
+// held. Until 2026-11-21 both were kept as handed, an invisible box in a doorway drawn empty that
+// stopped the walker and opened with E.
+TEST_CASE("scene_collision: a restored door for a leaf the scene did not hang is dropped") {
+  {
+    DoorRig rig(&doorway_house_one_of_two);
+    (void)rig.collision.step_doors(nullptr);
+    const u64 placement = support_placement(0, k_no_index, 0, 0, 0, 0);
+    DoorBody doors[2];
+    REQUIRE(rig.collision.door(declared_door_key(placement, 0), doors[0]));
+    doors[1] = doors[0];
+    doors[1].key = declared_door_key(placement, 1);
+    doors[1].hinge = place(Vec3{3.0f, 0.0f, 24.0f});
+    doors[1].fixed = false;
+    rig.collision.set_doors({doors, 2});
+    (void)rig.collision.step_doors(nullptr);
+    DoorBody now;
+    CHECK(rig.collision.door(declared_door_key(placement, 0), now));
+    CHECK_FALSE(rig.collision.door(declared_door_key(placement, 1), now));
+    CHECK_FALSE(rig.collision.toggle_door(declared_door_key(placement, 1)));
+    CHECK(rig.collision.door_stats().doors == 1);
+    CHECK(rig.collision.door_stats().declared == 1);
+    CHECK(rig.collision.door_stats().bodies == 1);
+  }
+  {
+    DoorRig rig(&doorway_house_unhung);
+    DoorBody d = doorway();
+    d.key = declared_door_key(support_placement(0, k_no_index, 0, 0, 0, 0), 0);
+    rig.collision.set_doors({&d, 1});
+    (void)rig.collision.step_doors(nullptr);
+    DoorBody now;
+    CHECK_FALSE(rig.collision.door(d.key, now));
+    CHECK(rig.collision.door_stats().doors == 0);
+    CHECK(rig.collision.door_stats().declared == 0);
+    CHECK(rig.collision.door_stats().bodies == 0);
+    CHECK(rig.walk(3.0f, Vec3{0.0f, 0.0f, 1.0f}) > 21.0f);
+  }
+}
+
 // **Whether a declared door turns is the scene's, not a restore's** (S91; scene_collision.md,
 // "Doors"): a scene's door handed back as standing turns again once its piece is held. Until
 // 2026-11-20 a restore was trusted for `fixed`, so that door stood for good.

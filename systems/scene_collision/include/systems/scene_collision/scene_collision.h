@@ -1008,11 +1008,13 @@ class SceneCollision {
   Vector<DoorBody> doors_;
   Vector<HeldDoor> door_bodies_;
   Vector<DoorBody> doors_found_;  // scratch: a ring change's declared doors not held yet
+  Vector<u32> doors_unmade_;      // scratch: held doors of declared leaves the scene did not hang
   u64 doors_ring_ = ~u64{0};
   DoorStats door_stats_;
   void drop_door_body(HeldDoor& held) noexcept;
-  // The held tiles' declared doors not held yet, merged in by key (`step_doors`, on a ring change).
-  void take_declared_doors();
+  // The held tiles' declared doors not held yet, merged in by key, and a held door of a leaf the
+  // scene did not hang dropped (`step_doors`, on a ring change); true when that dropped a body.
+  bool take_declared_doors();
   u32 find_door(u64 key) const noexcept;
   // Scratch, reused: the tick's placements, and the refresh's order.
   PlacementScratch tick_scratch_;

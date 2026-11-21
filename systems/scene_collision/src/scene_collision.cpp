@@ -2932,24 +2932,30 @@ bool SceneCollision::leaf_hung(u32 house, u32 leaf) const noexcept {
 // index, taken in when no door of that key is held, and a held one told whether it stands.
 // Collected, sorted and merged by key, so neither the tiles' table order nor the order they came
 // in reaches the doors. Runs on a ring change only.
-void SceneCollision::take_declared_doors() {
+bool SceneCollision::take_declared_doors() {
   doors_found_.clear();
+  doors_unmade_.clear();
   for (u32 t = 0; t < tiles_.size(); ++t) {
     const Tile& tile = tiles_.value_at(t);
     for (const PieceRecord& record : tile.pieces_held) {
       const Proxy* proxy = record.proxy;
-      // **What collides is what is drawn**: a piece whose leaves the renderer hung none of (a mesh
-      // the scene fits, a `.clusters` file, a streamed world's authored run, a tile's resident
-      // mesh) makes no door, and its doorway stands open as it is drawn.
-      if (proxy == nullptr || proxy->doors.empty() || record.leaves == 0) continue;
+      if (proxy == nullptr || proxy->doors.empty()) continue;
       const WorldPos origin = tile_corner(tile.coord) + DVec3{record.offset};
       const u64 placement = support_placement(record.instance, record.entry, record.id,
                                               tile.coord.x, tile.coord.z, record.index);
       const bool stands = record.leaves == k_leaves_stand;
       for (u32 k = 0; k < proxy->doors.size(); ++k) {
-        // A scene's house: a door where its own leaf was hung, not wherever one of its leaves was.
-        if (record.leaves == k_leaves_turn && !leaf_hung(record.instance, k)) continue;
         const u64 key = declared_door_key(placement, k);
+        // **What collides is what is drawn**: a piece whose leaves the renderer hung none of (a
+        // mesh the scene fits, a `.clusters` file, a streamed world's authored run, a tile's
+        // resident mesh) makes no door, and its doorway stands open as it is drawn; nor does a
+        // scene's house where its own leaf was not hung, whichever of its others were. A door of
+        // that key held already (a restore of a save that made one) is dropped with its body.
+        if (record.leaves == 0 ||
+            (record.leaves == k_leaves_turn && !leaf_hung(record.instance, k))) {
+          if (const u32 held = find_door(key); held != k_no_index) doors_unmade_.push_back(held);
+          continue;
+        }
         if (const u32 held = find_door(key); held != k_no_index) {
           // **Whether it stands is the scene's, not a restore's**: a door held already (a restore,
           // or the same door from another tile) takes `fixed` from the piece that declares it. One
@@ -2970,7 +2976,31 @@ void SceneCollision::take_declared_doors() {
       }
     }
   }
-  if (doors_found_.empty()) return;
+  // The unmade doors out, in place and in key order (a piece in several tiles names one twice).
+  bool dropped = false;
+  if (!doors_unmade_.empty()) {
+    std::sort(doors_unmade_.begin(), doors_unmade_.end());
+    u32 kept = 0, u = 0;
+    for (u32 i = 0; i < doors_.size(); ++i) {
+      while (u < doors_unmade_.size() && doors_unmade_[u] < i)
+        ++u;
+      if (u < doors_unmade_.size() && doors_unmade_[u] == i) {
+        if (door_bodies_[i].body) dropped = true;
+        drop_door_body(door_bodies_[i]);
+        --door_stats_.declared;  // a declared leaf's key
+        continue;
+      }
+      if (kept != i) {
+        doors_[kept] = doors_[i];
+        door_bodies_[kept] = door_bodies_[i];
+      }
+      ++kept;
+    }
+    doors_.resize(kept);
+    door_bodies_.resize(kept);
+    door_stats_.doors = doors_.size();
+  }
+  if (doors_found_.empty()) return dropped;
   std::sort(doors_found_.begin(), doors_found_.end(),
             [](const DoorBody& a, const DoorBody& b) { return a.key < b.key; });
   Vector<DoorBody> merged;
@@ -2998,6 +3028,7 @@ void SceneCollision::take_declared_doors() {
   doors_ = std::move(merged);
   door_bodies_ = std::move(bodies);
   door_stats_.doors = doors_.size();
+  return dropped;
 }
 
 u32 SceneCollision::step_doors(const physics::CharacterBody* walker) {
@@ -3005,7 +3036,7 @@ u32 SceneCollision::step_doors(const physics::CharacterBody* walker) {
   bool changed = false;
   if (ring != doors_ring_) {
     doors_ring_ = ring;
-    take_declared_doors();
+    if (take_declared_doors()) changed = true;
     // **A door that stands goes with its tile** (docs: "Doors"): it has no state of its own, so it
     // is made again as declared when the tile comes back, and the doors a walk keeps are bounded
     // by the ring for a streamed world. A door that turns outlives its tile, its state the world's.

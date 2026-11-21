@@ -1,8 +1,8 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "S91",
-  "reason": "S91: the doors' second mend says on the pages that a door keys on a generator today until S116, how a module tells a standing door from a session with none, and section 53's pivot and count bounds",
-  "date": "2026-11-20",
+  "reason": "Doors: a restored door the scene does not hang is dropped, said in Doors (S91)",
+  "date": "2026-11-21",
   "by": "Marc Micalizzi",
   "deltas": {
     "engine_view.main_cpp.lines": 17,
@@ -12,6 +12,6 @@
     "page:docs/subsystems/renderer.md": 913,
     "page:docs/subsystems/apps.md": 4849,
     "page:docs/subsystems/geometry.md": 5472,
-    "page:docs/subsystems/scene_collision.md": 35612
+    "page:docs/subsystems/scene_collision.md": 36081
   }
 }
