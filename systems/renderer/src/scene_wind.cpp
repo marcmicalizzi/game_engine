@@ -518,25 +518,29 @@ void water_wind_frame(std::span<WaterWindBody> bodies, f64 sky_time_s,
 bool scene_flora_wind(const gfx::WindDesc& wind, f64 sky_time_s, Vec2& to, f32& strength,
                       const gfx::WindLive& live) noexcept {
   const WindHand hand = wind_hand_tunable();
-  gfx::WindDesc used = wind;
+  // A held wind is a fixed one at the scene's roughness, made fresh rather than copied from the
+  // scene's (whose track would allocate every frame: the frame loop allocates nothing).
+  gfx::WindDesc held;
+  held.kind = gfx::WindKind::fixed;
+  held.roughness_m = wind.roughness_m;
+  held.to_deg = wind.to_deg;
   if (live.set) {
     // W151: the live mean and direction under the scene's turbulence, and the forced gust over it.
-    used.kind = gfx::WindKind::fixed;
-    used.speed_m_s = live.mean_m_s;
-    used.to_deg = live.to_deg;
-    const gfx::WindSample mean = gfx::wind_at(used, sky_time_s);
-    const f64 forced = gfx::wind_live_speed(live, used.roughness_m) - live.mean_m_s;
+    held.speed_m_s = live.mean_m_s;
+    held.to_deg = live.to_deg;
+    const gfx::WindSample mean = gfx::wind_at(held, sky_time_s);
+    const f64 forced = gfx::wind_live_speed(live, held.roughness_m) - live.mean_m_s;
     to = mean.to;
     strength =
-        static_cast<f32>((gfx::wind_gust(used, mean, Vec2{0.0f, 0.0f}, sky_time_s) + forced) /
+        static_cast<f32>((gfx::wind_gust(held, mean, Vec2{0.0f, 0.0f}, sky_time_s) + forced) /
                          k_flora_wind_mean_m_s);
     return true;
   }
   if (hand.set) {
-    used.kind = gfx::WindKind::fixed;
-    used.speed_m_s = hand.speed_m_s;
-    if (hand.turned) used.to_deg = hand.to_deg;
+    held.speed_m_s = hand.speed_m_s;
+    if (hand.turned) held.to_deg = hand.to_deg;
   }
+  const gfx::WindDesc& used = hand.set ? held : wind;
   if (used.kind == gfx::WindKind::none) return false;
   const gfx::WindSample mean = gfx::wind_at(used, sky_time_s);
   to = mean.to;
