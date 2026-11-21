@@ -993,9 +993,15 @@ i32 floor_tile(f64 metres, i64 tile_mm) noexcept {
 }
 }  // namespace
 
+// A streamed piece with an id carries bit 62, so its name never equals a scene instance's index
+// (below 2^32) nor the hashed third form (bit 63); without it entry 0's piece n was scene instance
+// n, one door key for two doors. An entry has bits 32 to 61, so one at `k_placement_entry_limit` or
+// past it (a scene of a billion entries) takes the third form instead.
 u64 support_placement(u32 instance, u32 entry, u32 id, i32 tile_x, i32 tile_z, u32 index) noexcept {
+  static_assert(k_placement_entry_limit <= u64{1} << 30, "an entry would reach the tag at bit 62");
   if (instance != k_no_index) return instance;
-  if (id != 0) return (u64{entry} << 32) | id;
+  if (id != 0 && entry < k_placement_entry_limit)
+    return k_placement_streamed_tag | (u64{entry} << 32) | id;
   u64 h = hash_combine(k_hash_seed, entry);
   h = hash_combine(h, static_cast<u32>(tile_x));
   h = hash_combine(h, static_cast<u32>(tile_z));

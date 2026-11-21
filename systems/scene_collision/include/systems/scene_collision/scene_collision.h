@@ -455,8 +455,13 @@ struct Support {
 // index; a streamed placement's entry with the name its generator gives it (`Placement::id`, the
 // `authored` entry's place in the file), or, from a generator that names none, its entry, its tile
 // and its place among the entry's placements there — the same whenever and in whatever order its
-// tile comes in, since a generator's tile is a function of the tile. The top bit tells the third
-// form from the second; `what` (an instance or a placement) tells the first from the others.
+// tile comes in, since a generator's tile is a function of the tile. The value alone tells the
+// three apart, since a door's key is made of it (`declared_door_key`): the first is below 2^32,
+// the second carries `k_placement_streamed_tag` (bit 62) over its entry and id, and the third the
+// top bit. An entry at `k_placement_entry_limit` or past it, which would reach the tag, takes the
+// third form.
+inline constexpr u64 k_placement_streamed_tag = u64{1} << 62;
+inline constexpr u32 k_placement_entry_limit = 1u << 30;
 u64 support_placement(u32 instance, u32 entry, u32 id, i32 tile_x, i32 tile_z, u32 index) noexcept;
 struct SupportAnswer {
   u32 count = 0;         // written, nearest first
