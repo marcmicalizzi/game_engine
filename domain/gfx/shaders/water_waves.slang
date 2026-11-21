@@ -562,8 +562,12 @@ WaterHeight water_height(WaterSurface* s, float2 p, WaterField f, float t, float
       if (lp > 1e-3 && lc > 1e-9) along_ray = abs(dot(p, grad_c)) / (lp * lc);
       held = max(mesh.y * along_ray, mesh.x * sqrt(max(1.0 - along_ray * along_ray, 0.0)));
     }
-    const float keep =
-        held > 0.0 ? clamp(k_water_two_pi / local_k / (2.0 * held) - 1.0, 0.0, 1.0) : 1.0;
+    // Held against the shorter of the local wavelength and the crests' spacing the arrival gives
+    // (W152): over a shallow bar or a runnel the eikonal's arrival can crowd the crests closer
+    // than the depth's dispersion says, and a train held only against the latter drew them as
+    // aliased rings and fans finer than a pixel.
+    const float spacing = min(k_water_two_pi / local_k, 1.0 / max(length(grad_c), 1e-6));
+    const float keep = held > 0.0 ? clamp(spacing / (2.0 * held) - 1.0, 0.0, 1.0) : 1.0;
     float d_env = 0.0;
     const float env = water_train_envelope(c, d_env);
     const float shelter = water_shelter(f);
