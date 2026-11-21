@@ -292,6 +292,45 @@ bool read_scene_water(const scene::Scene& file, const std::string& path, const s
   return true;
 }
 
+// **What feeds a body's train** (scene.h; water.md, "What feeds the train"; W153). Until W153 this
+// was the GPU scene's own, and took a body's own `wind_m_s` whenever the wind it was made at was 0:
+// a body following a calm scene wind ran up its shore at the wind its block named for itself.
+WaterSwashNumbers water_swash_numbers(const SceneWater& water) {
+  WaterSwashNumbers n;
+  const scene::WaterBody& body = water.body;
+  // The one wind the reader resolved: the body's own, the ground's or the scene's (0 when calm).
+  n.wind = static_cast<f64>(water.wind_m_s);
+  // The fetch the scene's reader found (S100 stage B): an open body's `fetch_km`, a closed body's
+  // own reach along its wind.
+  n.fetch_m = static_cast<f64>(water.fetch_m);
+  n.slope = gfx::water_mean_shore_slope(
+      water.depth.texels.data(), water.depth.size, static_cast<f64>(water.depth.texel_m),
+      static_cast<f64>(water.depth.depth_max), static_cast<f64>(water.depth.bank_max));
+  n.wave = gfx::swash_wave(n.wind, n.fetch_m);
+  n.direction = water.shading.direction;
+  // **A swell** (S102; water.md, "The swell") is the train that shoals, turns, breaks and runs up,
+  // from its own direction; the wind's wave keeps the surface offshore. W136-3: the body's own or
+  // the sky's at its largest, as the scene's reader set them (`SceneWater::swell_train_*`).
+  if (body.open && water.swell_train_m > 0.0f && water.swell_train_period_s > 0.0f) {
+    if (n.wave.period_s > 0.0) {
+      const f64 omega = 6.283185307179586 / gfx::swash_period(n.wave.period_s);
+      n.wind_k0 = omega * omega / gfx::k_swash_g;
+    } else {
+      n.wind_k0 = 1.0;  // no wind sea to calm: any positive number marks the swell
+    }
+    n.wind_wave = n.wave;
+    n.wave.height_m = static_cast<f64>(water.swell_train_m);
+    n.wave.period_s = std::min(static_cast<f64>(water.swell_train_period_s), 30.0);
+    n.direction = water.swell_train_to;
+  }
+  // Stockdon et al.'s, as it was, under the steep shore's ceiling (S102), which only a long low
+  // wave on a steep shore reaches.
+  n.run_up = std::min(gfx::stockdon_r2(n.wave.height_m, n.wave.period_s, n.slope),
+                      gfx::k_swash_steep_cap * n.wave.height_m);
+  n.tide = body.open ? body.tide_m : 0.0f;
+  return n;
+}
+
 // **Channels** (scene_water.h; docs/subsystems/water.md, "Channels"; roadmap S96).
 namespace {
 

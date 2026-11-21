@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W153",
+  "reason": "W153: the section on what feeds a shore's train (a still body has none; the onset; the calm scene wind), its detail on the new grounding page; the S97 foam line's description cut to two sentences",
+  "date": "2026-11-21",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.gpu_scene_cpp.lines": -52,
+    "page:docs/subsystems/water.md": 2260
+  }
+}
