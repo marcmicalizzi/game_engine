@@ -4,7 +4,7 @@
 namespace engine.walk_poc
 
 /// What the fixture remembers between ticks and runs.
-struct Survivor @version(6) {
+struct Survivor @version(7) {
   /// Thirst, 100 full and 0 the end of the run.
   thirst: f64 = 100
   /// Game seconds survived, a tick's dt at a time, and metres walked.
@@ -74,4 +74,8 @@ struct Survivor @version(6) {
   shape_codes: u64 = 0 @since(6)
   shape_seen_scale: f64 = 0 @since(6)
   shape_seen_channels: u32 = 0 @since(6)
+  /// **The spring's chirp** (S111; README "Sound"): the chirps `sound_play` answered Ok and the
+  /// voice it handed back last — the host's count, the same whether or not anything was heard.
+  chirps: u32 = 0 @since(7)
+  chirp_voice: u32 = 0 @since(7)
 }

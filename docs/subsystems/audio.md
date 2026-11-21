@@ -347,7 +347,7 @@ What they say:
 
 ## Sound for the world: the design (S110)
 
-Roadmap S110 (2026-11-20). **Designed; nothing in this section is built.** The published models and their numbers are [the grounding page](../experiments/world-sound.md); the decisions that would surprise are [ADR-0079](../adr/0079-world-sound-is-synthesised-from-world-state.md) (proposed); the stages are roadmap rows S111 to S114. It takes up the direction note on wind as sound ([05 §5.11](../plan/05-simulation.md#511-integration-notes)) and the audio half of P43.
+Roadmap S110 (2026-11-20). **Designed; stage 1 (S111) is built** (2026-11-21: the scene's `sound` block, the `world_sound` capability's `SoundStage`, engine-view's `--audio` and `--audio-out`, the three calls real; [world_sound](world_sound.md)); **stages 2 to 4 are not.** Where S111 built something smaller than this section says, it is marked "S111:" in place. The published models and their numbers are [the grounding page](../experiments/world-sound.md); the decisions that would surprise are [ADR-0079](../adr/0079-world-sound-is-synthesised-from-world-state.md) (proposed); the stages are roadmap rows S111 to S114. It takes up the direction note on wind as sound ([05 §5.11](../plan/05-simulation.md#511-integration-notes)) and the audio half of P43.
 
 **What exists when this is written.** The mixer above plays clips. No host opens a device for a game: `apps/engine_view` does not link this capability, and its game runner answers `sound_clip` with `Unsupported` and leaves `sound_play` and `sound_stop` null. The scene type the hot-load header's comment names (`engine.scene.Sound`) is not in `schemas/scene.schema`. engine-host carries `audio.devices` and nothing else.
 
@@ -375,7 +375,7 @@ Its parameters are one command of the size a `SetSource` is. The output goes thr
 
 **The wind that drives it is the frame's, the one every reader is given**: the scene's wind, or the live state a host's keys or a game set while the session runs (`gfx::WindLive`, handed to every reader as `FrameDesc::wind`; roadmap W151, built the night this was designed and not on this row's base). The host hands the stage the same value each tick; the stage takes the mean and the forced gust from it and lays the turbulence at each source's place over it with `wind_gust`. A game changes the wind through the wind's own service (`wind_set`, `wind_gust`) and the sound follows; no sound call sets a wind, and the stage holds none of its own.
 
-It links `gfx` for the wind's header (`WindLive`, `wind_at`, `wind_gust`, `sea_state`: the model is not a capability) and **no capability but `audio`**. Trees and water reach it through **source tables a host fills**, a function pointer and a context each, as scene generators and derived steps are tables:
+It links `gfx` for the wind's header (`WindLive`, `wind_at`, `wind_gust`, `sea_state`: the model is not a capability; S111: not yet, since nothing at stage 1 reads a wind) and **no capability but `audio`**. Trees and water reach it through **source tables a host fills**, a function pointer and a context each, as scene generators and derived steps are tables:
 
 | Table | What it visits | Filled from |
 |---|---|---|
@@ -413,7 +413,7 @@ Unchanged. Every world voice is a source with a spatial block and nothing is pan
 
 - **Buses**: a `world` bus under `ambient`, so a game ducks the world with one gain. Levels are computed in dB SPL at the listener and mapped to full scale by one reference (`audio.world.reference_db`); the ears' wind has a gain of its own, since at its physical level it would bury the rest. The limiter stays off: a mix too hot is counted, as ever.
 - **Who opens the device: the host.** engine-view takes `--audio auto|off|null|<device>`. `auto` opens the default device in a session with a window and a walker and is `off` for `--offscreen`, a capture, a benchmark and a flythrough. engine-host opens none (it is a server); engine-editor is a later row.
-- **`null`** runs the stage on the null backend with the host pulling 800 frames a tick, and `--audio-out <file.wav>` keeps them. **That is how a test and an agent listen**: the bytes' hash, and band levels read from the file, never a device. A test never opens a device; the opt-in device test stays the one it is.
+- **`null`** runs the stage on the null backend with the host pulling 800 frames a tick (S111: 48,000 / the session's tick rate, the remainder carried; engine-view ticks 240 times a second, so 200), and `--audio-out <file.wav>` keeps them. **That is how a test and an agent listen**: the bytes' hash, and band levels read from the file, never a device. A test never opens a device; the opt-in device test stays the one it is.
 - A missing device falls back to the null backend with one log line, as `Output` does today.
 
 ### Determinism: sound is presentation
@@ -435,7 +435,7 @@ Unchanged. Every world voice is a source with a spatial block and nothing is pan
 
 ### The game service
 
-A scene gains **one block, `sound`** (`engine.scene.Sound`): `clips`, each a `name`, a `path` or a **`recipe`** (a tone, a chirp, a noise burst the store generates, so a fixture has a sound with no binary in the tree), `gain_db`, `min_m`, `max_m`; and the world's gains by kind. It is one block as `sky` is, not the list the header's comment says, and it is the root's twenty-first field: a recorded raise.
+A scene gains **one block, `sound`** (`engine.scene.Sound`): `clips`, each a `name`, a `path` or a **`recipe`** (a tone, a chirp, a noise burst the store generates, so a fixture has a sound with no binary in the tree), `gain_db`, `min_m`, `max_m`; and the world's gains by kind (S111: not yet; S112 adds them with the world's first sources, additively). It is one block as `sky` is, not the list the header's comment says, and it is the root's twenty-first field: a recorded raise.
 
 - **`sound_clip(name)`**, in `on_load`: the clip's index; `NotFound` refuses the load; `Unsupported` only in a build without the capability or on a scene with no block.
 - **`sound_play(clip, position | k_sound_2d, gain)`**: a one-shot at a world position, in the mixer's frame at the listener's cell as [audio_system](audio_system.md#the-mixers-frame) does it, with the clip's declared distances. A bird's call from its perch is this call.
@@ -452,6 +452,18 @@ Each is a row one agent builds in a night; the rows hold the tests.
 4. **S114, distance, and the budget held on the forest**: the path's terms (air, forest, ground, barrier), the clip voices' filter, shelter for the ears' wind, the voice counts and microseconds measured on the forest staging.
 
 ### The owner's questions
+
+**Answered by the owner on 2026-11-21** (relayed by the coordinator of batch 71; the questions as they were asked follow, unchanged):
+
+1. **Bird calls**: recordings under CC0 or another licence that does not exclude the project — so no non-commercial and no no-derivatives terms. **The game fetches them, not the engine**: the engine commits none and fetches none.
+2. **The output**: **the stereo panner is enough to start.** The owner's desk is a full 7.1 endpoint with an upmixer of its own; a stereo stream into it is fine for now. VBAP and a binaural decoder stay later rows (S40).
+3. **The wind at the ears**: "depends on wind speed, pick some sane value" — S112's to choose and ground.
+4. **Loudness**: **the real range to start**, no compression of it. Nothing in S111 compresses or normalises a level: a clip plays at its file's level times its `gain_db` and the game's gain, and the master's limiter stays off by default.
+5. **Sound on by default**: **yes, in a windowed interactive session** (`--audio auto`, engine-view's default, opens the default device there); offscreen runs, captures and benchmarks stay off. Agents and tests still pass `--audio null` or `off` and never open a device.
+6. **Clip formats**: **whatever is standard in engines.** For a game's clips that is uncompressed WAV — PCM 16 and 24 bit and 32-bit float, mono and stereo, any common rate, resampled to the mix's 48 kHz when the clip is decoded — read by code in the tree (miniaudio's dr_wav; FLAC and MP3 decode too, and a `.clip` the content build wrote). `world_sound`'s tests write each of the four kinds and load them through a scene's block ([world_sound](world_sound.md#testing)). **The next format is Ogg Vorbis**, the usual compressed one in engines; it needs a decoder compiled and tested: stb_vorbis is in miniaudio's fetched checkout ("Not yet" below says why it is not compiled), and a test fixture has to come from somewhere. **The owner has permitted the Vorbis decoder's download for the row that adds it** (2026-11-21); what that row needs: the decoder compiled into `engine_miniaudio` (stb_vorbis, or a vendored libvorbis under a permissive licence, recorded in `third_party/LICENSES.md`), a fixture made without committing a binary (an encoder in the tests, or a file fetched by a script under the same rule as the samples), and a record against malformed input. Nothing is built for it in S111.
+7. **What is next after these four**: not answered tonight.
+
+The questions as S110 asked them:
 
 1. **Bird calls: recorded clips, and under what licence?** Recordings are the realistic answer and the engine commits none (no binary enters the tree); they live in the local folder or a game's repository, and a fetch script like the samples' needs the owner's yes and a source. Wikipedia says every xeno-canto recording is under some Creative Commons licence; which ones, and whether they allow a game, was not read (its terms page refused the fetch). The alternatives: the owner's own recordings, a paid library, or synthesis of the simpler calls as a research row. A generated call (a model's output) is plan 12's question.
 2. **The output**: the default endpoint here is 7.1 and the stereo panner feeds its front pair only. Is that enough for the first three stages, or does a VBAP decoder (part of S40) come before the water? Headphones with a binaural decoder mean Steam Audio, a dependency to download (Apache-2.0, no cost).

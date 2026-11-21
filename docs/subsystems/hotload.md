@@ -56,6 +56,8 @@ Changing anything in the header changes `k_abi_version`, and `tests/size_table.c
 
 **ABI 13, its second line (2026-11-20): the wind** (roadmap W151; [apps](apps.md#the-wind-a-module-reads-and-sets), [gfx](gfx.md#the-live-wind)). Added before 13 shipped to anyone, so the number did not move: `HostApi` grew at its end by three more entries, 448 bytes to 472 — `wind_state` (the session's live wind in a `WindState`, 40 bytes, led by its size and copied back only as far as the module's reaches), `wind_set` (the mean and direction from this tick) and `wind_gust` (a forced gust held or let go). A module built against the doors' 13 reads the first 448 bytes, and its helpers' `ENGINE_HOTLOAD_HAS` keeps it from calling past them.
 
+**ABI 13 unchanged, the sound calls answered (2026-11-21, roadmap S111; [apps](apps.md#sound-a-module-plays)).** ABI 3's `sound_clip`, `sound_play` and `sound_stop` were in the table from the start so that sound would not move the ABI, and it did not: no entry, no struct and no size changed, so no line of the ledger moves. What changed is the answer: in engine-view with the `world_sound` capability they reach the session's sound stage, and `sound_play`'s voice is **the host's count**, `Ok` whether or not anything sounded (ADR-0079 decision 5), as the header's comment has said since ABI 3 ("nothing flows back into the module"). The header's comment names the block `sounds`; the scene's block is `sound`, one object holding `clips` ([world_sound](world_sound.md#the-scenes-sound-block)), and the comment says so now.
+
 | Status | When |
 |---|---|
 | `LoadFailed` | the OS loader refused the file (not an image, a missing dependency); no dialog ever opens (`SetThreadErrorMode`) |

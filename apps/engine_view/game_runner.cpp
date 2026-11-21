@@ -286,6 +286,7 @@ struct GameRunner::Impl {
   f32 speed_scale = 1.0f;
   f32 sprint_scale = 1.0f;
   bool sound_said = false;
+  GameSound sound;  // the session's stage (S111); empty in a build without one
 
   GameHud hud;
   u64 current_tick = 0;  // the tick being run, for the elements it says
@@ -1250,16 +1251,28 @@ struct GameRunner::Impl {
     return hotload::Result::Ok;
   }
 
-  // Sound: not built yet (roadmap P43, the third stage). `Unsupported`, said once.
-  static hotload::Result sound_clip(void* user, std::string_view, u32*, std::string*) {
+  // Sound (roadmap S111): the session's stage answers (`GameSound`). A build without one hears
+  // `Unsupported`, said once.
+  static hotload::Result sound_clip(void* user, std::string_view name, u32* out, std::string*) {
     Impl& self = *static_cast<Impl*>(user);
+    if (self.sound.clip != nullptr) return self.sound.clip(self.sound.user, name, *out);
     if (!self.sound_said) {
       self.sound_said = true;
       std::fprintf(stderr,
-                   "engine-view: game: the module asks for sound, which engine-view does not "
-                   "play yet (roadmap P43); its sound calls hear Unsupported\n");
+                   "engine-view: game: the module asks for sound, which this build does not "
+                   "carry (the world_sound capability); its sound calls hear Unsupported\n");
     }
     return hotload::Result::Unsupported;
+  }
+  static hotload::Result sound_play(void* user, u32 clip, const f64* position, f32 gain, u32* out) {
+    Impl& self = *static_cast<Impl*>(user);
+    if (self.sound.play == nullptr) return hotload::Result::Unsupported;
+    return self.sound.play(self.sound.user, clip, position, gain, *out);
+  }
+  static hotload::Result sound_stop(void* user, u32 voice) {
+    Impl& self = *static_cast<Impl*>(user);
+    if (self.sound.stop == nullptr) return hotload::Result::Unsupported;
+    return self.sound.stop(self.sound.user, voice);
   }
 };
 
@@ -1317,7 +1330,9 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
   services.nearest_prop = &Impl::nearest_prop;
   services.walker_set = &Impl::walker_set;
   services.walker_teleport = &Impl::walker_teleport;
-  services.sound_clip = &Impl::sound_clip;  // sound_play and sound_stop: null, Unsupported
+  services.sound_clip = &Impl::sound_clip;
+  services.sound_play = &Impl::sound_play;
+  services.sound_stop = &Impl::sound_stop;
   services.hud_element = &Impl::hud_element;
   services.hud_remove = &Impl::hud_remove;
   services.graphics_state = &Impl::graphics_state;
@@ -1643,7 +1658,12 @@ void GameRunner::observe(void* user, const FlySession& session, const input::Inp
   const i64 started = time::monotonic_ns();
   self.tick(in);
   g.tick_ns += time::monotonic_ns() - started;
+  // The session's sound, after the module: this tick's plays sound in this tick's block, heard
+  // from the camera. Every tick, held or ended: the sound runs on as the clocks do.
+  if (g.sound.tick != nullptr) g.sound.tick(g.sound.user, in.eye, in.heading, in.pitch);
 }
+
+void GameRunner::set_sound(const GameSound& sound) noexcept { impl_->sound = sound; }
 
 i64 GameRunner::tick_ns() const noexcept { return impl_->tick_ns; }
 
@@ -1839,6 +1859,8 @@ bool GameRunner::finish(std::string* error) {
   Impl& g = *impl_;
   if (!g.host) return true;
   bool ok = true;
+  // The sound's WAV (`--audio-out`) finished first, so a failure to write it is said with the rest.
+  if (g.sound.finish != nullptr && !g.sound.finish(g.sound.user, error)) ok = false;
   if (!g.config.state_file.empty() && g.host->state_type() != nullptr) {
     JsonValue file = JsonValue::object();
     file.set("format", k_state_format);
@@ -1944,6 +1966,8 @@ JsonValue GameRunner::summary_json() const {
   placements.set("world", g.placements != nullptr);
   out.set("placements", std::move(placements));
   out.set("props", g.props.summary_json());
+  // The sound (S111): the stage's mode, clips and counts; null in a build without one.
+  out.set("sound", g.sound.summary != nullptr ? g.sound.summary(g.sound.user) : JsonValue());
   // The actors (ABI 5): every bound actor where it stands, its clip, playhead and pose hash, and
   // its path sampled a quarter-second at a time; and what the module called. Without a bound
   // world, the names the scene declared.

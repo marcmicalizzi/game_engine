@@ -1,0 +1,16 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "S111",
+  "reason": "S111: a game's sound is the change's point: engine-view's --audio and --audio-out (one argument branch shared with --game-state, at MSVC's nesting limit), the stage opened beside the game runner under ENGINE_VIEW_WORLD_SOUND, the Scene root's 21st field (sound), and the pages that say it (apps.md's Sound a module plays, audio.md's owner's answers and S111 notes)",
+  "date": "2026-11-21",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "engine_view.main_cpp.lines": 37,
+    "engine_view.run_view.lines": 27,
+    "schemas.scene_root.fields": 1,
+    "engine_view.main_cpp.if_engine_view": 3,
+    "engine_view.if_engine_view": 6,
+    "page:docs/subsystems/apps.md": 4552,
+    "page:docs/subsystems/audio.md": 3033
+  }
+}

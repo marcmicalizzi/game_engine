@@ -296,6 +296,28 @@ and `wind_set` and `wind_gust` change it from the tick you call them on, as the 
 keys do; the trees and the water answer it. A storm a game scripts is calls at ticks, so a replay
 with your module has the same wind. The template's HUD shows the wind's speed.
 
+**Sound** (2026-11-21, roadmap S111; [apps.md, "Sound a module plays"](subsystems/apps.md#sound-a-module-plays)):
+your scene declares its clips in a `sound` block — a WAV (16 or 24 bit PCM or float, mono or
+stereo, any rate), FLAC or MP3 beside the scene, or a generated `recipe` (a tone, a chirp, a noise
+burst) that needs no file:
+
+```json
+"sound": {"clips": [{"name": "chirp", "recipe": {"kind": "Chirp"}, "min_m": 2, "max_m": 80},
+                    {"name": "door", "path": "sounds/door.wav", "gain_db": -3}]}
+```
+
+`sound_clip(context, "chirp", clip)` in `on_load` finds one by name (`NotFound` refuses the load,
+`Unsupported` is a scene with no block, a plain answer); `sound_play(context, clip, position or
+k_sound_2d, gain, voice)` plays it once at a world position or on the listener, and
+`sound_stop(context, voice)` fades it out. **The voice is the host's count, and `Ok` whether or not
+anything was heard**: the player may have sound off, or no device, and your state must not care,
+so a run replays the same either way. There is no call that asks whether a sound has finished: time
+yourself by ticks. The licences of recordings you ship are yours to keep clear (the owner's rule for
+the engine's own needs: CC0 or one that excludes nobody — no non-commercial, no no-derivatives
+terms). engine-view plays sound on the default device in a window (`--audio auto`), not offscreen;
+`--audio null --audio-out heard.wav` writes what a session played to a file, which is how a test of
+your game listens. The template plays its `chirp` on E when your scene declares one.
+
 ## The HUD, and how far `nearest_placement` sees
 
 The HUD is a proof-of-concept panel, not the game UI framework

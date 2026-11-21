@@ -52,6 +52,10 @@ roadmap P18); nothing here is its design, and its survival meters are its own (r
   resolved (`graphics_state`), and makes one request the host records (`shadows: csm`) and one it
   refuses (`raster: warp`), so a test sees both answers.
 
+## Sound
+
+(2026-11-21, roadmap S111; [apps](../../docs/subsystems/apps.md#sound-a-module-plays).) On a scene whose `sound` block declares a clip `chirp` (a generated recipe needs no file: `{"name": "chirp", "recipe": {"kind": "Chirp"}}`), the spring chirps once a second, at ticks 120, 360, … half a metre over where the can stands, until the can is taken. `chirps` and `chirp_voice` in the state are what `sound_play` answered — the host's count — so a replay heard, muted (`--audio off`) or with no `--audio` reaches the same state. A scene with no block: `Unsupported`, and the fixture plays nothing; a block without `chirp` refuses the load naming it.
+
 ## How it is built
 
 `walk_poc.cpp` is one translation unit; `walk_poc.schema` is its state (`engine.walk_poc.Survivor`:

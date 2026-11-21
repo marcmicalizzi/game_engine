@@ -734,15 +734,15 @@ struct HostApi {
   // reads the effect through `feet` and `moved_m` next tick; `GameTick` gains nothing.
   Result (*walker_set)(void* host, f32 speed_scale, f32 sprint_scale);
   Result (*walker_teleport)(void* host, const f64* position, f32 heading, f32 pitch);
-  // **Sound**: clips the scene file declared as `sounds` (`engine.scene.Sound`), decoded with the
-  // scene. `sound_clip`, in `on_load` only, is a declared clip's index by name, remembered and
-  // refused like `prop_mesh` (`Unsupported`, not remembered, on a scene with none or in a build
-  // without audio). `sound_play` plays it at `position` (world, three f64), or on the listener with
-  // `k_sound_2d`, at `gain`, and hands back a voice; `sound_stop` stops one. The commands are
-  // output: nothing flows back into the module, so a replay is the same replay with or without a
-  // device.
-  // **Answered `Unsupported` by every host until the audio half of P43 lands**; the entries are
-  // here so that landing it does not change the ABI again.
+  // **Sound**: clips the scene file's `sound` block declares (`engine.scene.Sound`'s `clips`),
+  // decoded with the scene. `sound_clip`, in `on_load` only, is a declared clip's index by name,
+  // remembered and refused like `prop_mesh` (`Unsupported`, not remembered, on a scene with none or
+  // in a build without audio). `sound_play` plays it at `position` (world, three f64), or on the
+  // listener with `k_sound_2d`, at `gain` (in [0, 16]), and hands back a voice: the host's count,
+  // `Ok` whether or not anything sounded; `sound_stop` stops one, `Ok` for any voice issued. The
+  // commands are output: nothing flows back into the module, so a replay is the same replay with
+  // or without a device. Answered by engine-view since 2026-11-21 (roadmap S111; docs/subsystems/
+  // apps.md "Sound a module plays") with no change of the ABI.
   Result (*sound_clip)(void* host, const char* name, u64 length, u32* out_clip);
   Result (*sound_play)(void* host, u32 clip, const f64* position, f32 gain, u32* out_voice);
   Result (*sound_stop)(void* host, u32 voice);

@@ -41,6 +41,8 @@ struct Fields {
   FieldRef world_time_s;     // the sky's hour (GameTick.sky_time_s), game seconds: days
   FieldRef actions_pressed;  // the game actions pressed on this tick, as a mask of bits
   u32 interact = 0;          // the bit `game_action` hands out for "interact" (E on the keyboard)
+  bool sound = false;        // the scene declares a clip "chirp" (its `sound` block)
+  u32 chirp = 0;
 } g_fields;
 
 // Called when the module is loaded, and again after every rebuild. Resolve, declare, return 0.
@@ -49,6 +51,11 @@ i32 on_load(ModuleContext* context) {
   resolve(context, k_tick, "sky_time_s", g_fields.world_time_s);  // the sky's hour
   resolve(context, k_tick, "actions_pressed", g_fields.actions_pressed);
   game_action(context, "interact", g_fields.interact);  // interact, use, game_1..game_4 exist
+  // A clip the scene declares in its `sound` block, by name: a generated chirp needs no file,
+  //   "sound": {"clips": [{"name": "chirp", "recipe": {"kind": "Chirp"}}]}
+  // Unsupported on a scene without the block (the SDK's desert has none), and the game plays
+  // nothing; NotFound, a block without "chirp", refuses the load naming it.
+  g_fields.sound = sound_clip(context, "chirp", g_fields.chirp) == Result::Ok;
   return 0;  // a path or an action that did not resolve refuses the load by itself
 }
 
@@ -81,6 +88,11 @@ void game_tick(ModuleContext* context, View tick, f32 /*dt_f32*/) {
   if (action_set(pressed, g_fields.interact)) {
     ++run.interactions;
     log(context, LogLevel::Info, "@@NAME@@: interact");  // a line in the engine's log, not the HUD
+    // The chirp on the listener (`k_sound_2d`; a world position plays it from there). The voice
+    // is the host's count, the same whether or not anything is heard: nothing comes back from
+    // sound, so a run replays the same muted or not.
+    u32 voice = 0;
+    if (g_fields.sound) sound_play(context, g_fields.chirp, k_sound_2d, 1.0f, voice);
   }
 
   // Whole game days since the run began, and how far through the current one we are.

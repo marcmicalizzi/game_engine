@@ -169,6 +169,15 @@ if(TARGET engine::hotload)
      TARGET engine::terrain AND TARGET engine::scatter AND TARGET engine::sky)
     list(APPEND _view_tests tests/world_queries_view_tests.cpp)
   endif()
+  # A game's sound (roadmap S111; apps.md "Sound a module plays"): the scene's `sound` block, the
+  # world_sound capability's stage and `--audio`, hand-made like `--animate`'s switch. Without the
+  # capability the runner has no stage and a module's sound calls answer `Unsupported`. The end to
+  # end case listens through the null backend's WAV, never a device (game_sound_view_tests.cpp).
+  if(TARGET engine::world_sound)
+    list(APPEND _view_deps world_sound)
+    list(APPEND _view_game game_sound.cpp)
+    list(APPEND _view_tests tests/game_sound_view_tests.cpp game_sound.cpp)
+  endif()
 endif()
 if(TARGET engine::animation)
   # The animation-LOD glue is a header beside main.cpp (`anim_lod.h`) rather than a block inside
@@ -271,6 +280,12 @@ if(TARGET engine::water)
   target_compile_definitions(engine_engine_view PRIVATE ENGINE_VIEW_WATER=1)
   if(TARGET engine_engine_view_tests)
     target_compile_definitions(engine_engine_view_tests PRIVATE ENGINE_VIEW_WATER=1)
+  endif()
+endif()
+if(TARGET engine::hotload AND TARGET engine::world_sound)
+  target_compile_definitions(engine_engine_view PRIVATE ENGINE_VIEW_WORLD_SOUND=1)
+  if(TARGET engine_engine_view_tests)
+    target_compile_definitions(engine_engine_view_tests PRIVATE ENGINE_VIEW_WORLD_SOUND=1)
   endif()
 endif()
 if(TARGET engine::hotload)

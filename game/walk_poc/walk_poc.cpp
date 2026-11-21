@@ -88,6 +88,9 @@ struct Fields {
   bool has_font = false;
   u32 font = 0;
   bool no_panel = false;
+  // The spring's chirp (S111), when the scene declares a clip `chirp`.
+  bool sound = false;
+  u32 chirp = 0;
 } g_fields;
 
 #if WALK_POC_TEST == 5 || WALK_POC_TEST == 7 || WALK_POC_TEST == 8 || WALK_POC_TEST == 9
@@ -576,6 +579,10 @@ i32 on_load(ModuleContext* context) {
   f.props = prop_mesh(context, "can", f.can_mesh) == Result::Ok &&
             prop_mesh(context, "marker", f.marker_mesh) == Result::Ok;
 #endif
+  // The spring's chirp (S111): `Unsupported` is a scene with no `sound` block or a build without
+  // sound (the fixture then plays nothing); `NotFound` — a block without `chirp` — refuses the
+  // load by itself, naming it.
+  f.sound = sound_clip(context, "chirp", f.chirp) == Result::Ok;
   f.scale_set = -1.0;
   // The game's font (ABI 6), when its content directory ships one: a plain answer either way.
   f.has_font = hud_font(context, "hud/font.ttf", 56.0f, f.font) == Result::Ok;
@@ -664,6 +671,17 @@ void game_tick(ModuleContext* context, View tick, f32) {
     s.can_placed = true;
     const f64 at[3] = {s.spring.x, s.spring.y, s.spring.z};
     if (prop_place(context, f.can_mesh, at, 0.0f, 1.0f, s.can) != Result::Ok) s.can = 0;
+  }
+  // The spring chirps once a second, half a metre over where the can stands, until the can is
+  // taken (S111). The voice is the host's count, never the mixer's: kept in the state, it shows a
+  // replay heard and one not heard reach the same state.
+  if (f.sound && !s.can_taken && tick_index % 240 == 120) {
+    const f64 at[3] = {s.spring.x, s.spring.y + 0.5, s.spring.z};
+    u32 voice = 0;
+    if (sound_play(context, f.chirp, at, 1.0f, voice) == Result::Ok) {
+      ++s.chirps;
+      s.chirp_voice = voice;
+    }
   }
 #if WALK_POC_TEST == 5 || WALK_POC_TEST == 8
   if (f.has_bar) walk_actor(context, s, tick_index);
