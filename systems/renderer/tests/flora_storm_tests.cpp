@@ -433,3 +433,150 @@ TEST_CASE("flora storm: the padding holds every vertex at force 12 and past it")
   }
 #endif
 }
+
+// ---- the padding follows the wind (W154-2; flora_motion.h; renderer.md, "What a storm costs") --
+
+namespace {
+
+// Main's `flora_bounds_padding` before W154, as it was written: the strength held at 2, linear.
+f32 main_padding(const FloraMesh& mesh, std::span<const Vec3> vertices,
+                 std::span<const ClusterFileMotionVertex> motion) {
+  const u32 n = mesh.part_count();
+  Vector<f32> most(n, 0.0f);
+  constexpr f32 k_main_max_wind = 2.0f;
+  for (u32 p = 0; p < n; ++p)
+    most[p] = mesh.compliance[p] * k_main_max_wind * (0.6f + 0.8f + 0.25f + 0.35f);
+  f32 worst = 0.0f;
+  for (u32 v = 0; v < vertices.size(); ++v) {
+    u32 p = motion[v].part;
+    const Vec3 at = vertices[v];
+    f32 bound = most[p] * (static_cast<f32>(motion[v].weight) * (1.0f / 65535.0f)) *
+                length(at - mesh.parts[p].pivot);
+    for (u32 guard = 0; guard < 64 && mesh.parts[p].parent != geometry::k_motion_no_parent;
+         ++guard) {
+      p = mesh.parts[p].parent;
+      bound += most[p] * length(at - mesh.parts[p].pivot);
+    }
+    worst = bound > worst ? bound : worst;
+  }
+  return worst;
+}
+
+}  // namespace
+
+TEST_CASE("flora storm: the ladder's lowest rung is main's padding, and each rung holds its sway") {
+  const Vector<ClusterFileMotionPart> parts = storm_parts();
+  Vector<Vec3> vertices;
+  Vector<ClusterFileMotionVertex> motion;
+  for (u32 p = 0; p < parts.size(); ++p) {
+    for (u32 i = 0; i <= 10; ++i) {
+      const f32 w = 0.1f * static_cast<f32>(i);
+      vertices.push_back(parts[p].pivot + parts[p].direction * (parts[p].length * w));
+      motion.push_back(
+          ClusterFileMotionVertex{static_cast<u16>(p), static_cast<u16>(w * 65535.0f)});
+    }
+  }
+  const std::span<const Vec3> at{vertices.data(), vertices.size()};
+  const std::span<const ClusterFileMotionVertex> records{motion.data(), motion.size()};
+  for (const char* species : {"oak", "spruce", "date_palm"}) {
+    CAPTURE(std::string(species));
+    const FloraMesh mesh = mesh_of(parts, species);
+    const f32 calm = flora_padding_at_load(mesh, at, records, k_flora_calm_load);
+    // Rung 0 is main's padding to the bit: a calm session's spheres are main's.
+    CHECK(calm == main_padding(mesh, at, records));
+    CHECK(flora_rung_padding(calm, false, k_flora_calm_load) == calm);
+    const f32 top = flora_storm_load(k_flora_max_wind, mesh.streamline);
+    const u32 rungs = flora_rung_count(top);
+    CHECK(rungs >= 5);
+    CHECK(flora_rung_load(rungs - 1, top) == top);
+    Vector<FloraPartState> state(mesh.part_count(), FloraPartState{});
+    Vector<gfx::FloraPartPose> poses(mesh.part_count(), gfx::FloraPartPose{});
+    f32 prev = 0.0f;
+    for (u32 r = 0; r < rungs; ++r) {
+      const f32 load = flora_rung_load(r, top);
+      CHECK(load > prev);
+      prev = load;
+      const f32 padding = flora_rung_padding(calm, false, load);
+      // The bound at the load, measured, sits under the rung's padding.
+      CHECK(flora_padding_at_load(mesh, at, records, load) <= padding);
+      // Every pose the hold allows stays inside it, whatever the wind: the sway is held there.
+      f32 worst = 0.0f;
+      for (u32 d = 0; d < 8; ++d) {
+        const f32 a = 0.785398163f * static_cast<f32>(d);
+        for (const f32 s : {1.0f, 2.0f, 4.0f, 8.4f, 20.0f}) {
+          for (u32 k = 0; k < 12; ++k) {
+            pose(mesh, FloraWind{Vec3{std::cos(a), 0.0f, std::sin(a)}, s, load}, 0.53 * k, state,
+                 poses);
+            for (u32 v = 0; v < vertices.size(); ++v) {
+              Vec3 p;
+              Vec3 n;
+              gfx::flora_bend(poses[motion[v].part], static_cast<f32>(motion[v].weight) / 65535.0f,
+                              vertices[v], Vec3{0.0f, 1.0f, 0.0f}, p, n);
+              worst = std::fmax(worst, length(p - vertices[v]) / padding);
+            }
+          }
+        }
+      }
+      MESSAGE(std::string(species) << " rung " << r << ": load " << load << ", padding " << padding
+                                   << " m, the farthest vertex " << worst << " of it");
+      CHECK(worst <= 1.0f);
+    }
+  }
+  // A field's padding stops at its blade's most load.
+  CHECK(flora_rung_padding(1.0f, true, 10.0f) == doctest::Approx(1.5f).epsilon(1e-5));
+  CHECK(flora_rung_padding(1.0f, false, 10.0f) == doctest::Approx(5.0f).epsilon(1e-5));
+}
+
+TEST_CASE("flora storm: the rung follows the wind's ceiling, up at once and down after a hold") {
+  gfx::WindDesc forest;
+  forest.kind = gfx::WindKind::fixed;
+  forest.roughness_m = 0.5;  // a forest: the gust factor 1.89
+  const auto demand_at = [&](f64 mean_m_s, f64 gust, f32 exponent) {
+    gfx::WindLive live;
+    live.set = true;
+    live.mean_m_s = mean_m_s;
+    live.gust = gust;
+    f32 ceiling = 0.0f;
+    REQUIRE(scene_flora_wind_ceiling(forest, 0.0, live, live, ceiling));
+    return flora_storm_load(ceiling, exponent);
+  };
+  const f32 top = flora_storm_load(k_flora_max_wind, 1.32f);
+  // A mean day over a forest, a conifer's law: its three-second gust is a load past main's 2 and
+  // inside rung 0's slack, so a mean day pays no rung.
+  const f32 mean_day = demand_at(5.0, 0.0, 1.32f);
+  MESSAGE("a mean day's ceiling over a forest, a conifer's load: " << mean_day);
+  CHECK(mean_day > k_flora_calm_load);
+  CHECK(mean_day <= k_flora_calm_load * k_flora_calm_slack);
+  FloraLadder ladder;
+  CHECK(flora_rung_choose(ladder, mean_day, 0.0, top) == 0u);
+  // A gale (force 8, 18.9 m/s) and force 12 (34.8 m/s) step up at once, and a forced gust over the
+  // gale asks for more before it has risen.
+  const f32 gale = demand_at(18.9, 0.0, 1.32f);
+  const u32 gale_rung = flora_rung_choose(ladder, gale, 1.0, top);
+  CHECK(gale_rung >= 2u);
+  CHECK(flora_rung_load(gale_rung, top) >= gale);
+  CHECK(demand_at(18.9, 0.01, 1.32f) > gale);
+  const f32 force12 = demand_at(34.8, 0.0, 1.32f);
+  const u32 storm_rung = flora_rung_choose(ladder, force12, 2.0, top);
+  CHECK(storm_rung > gale_rung);
+  CHECK(storm_rung == flora_rung_count(top) - 1);  // past 42 m/s at a gust: the top
+  // A wind that gusts back to the gale for a moment does not step down; one that stays down
+  // steps down one rung per hold.
+  CHECK(flora_rung_choose(ladder, gale, 3.0, top) == storm_rung);
+  CHECK(flora_rung_choose(ladder, force12, 4.0, top) == storm_rung);
+  CHECK(flora_rung_choose(ladder, gale, 5.0, top) == storm_rung);
+  CHECK(flora_rung_choose(ladder, gale, 7.9, top) == storm_rung);
+  CHECK(flora_rung_choose(ladder, gale, 8.0, top) == storm_rung - 1);
+  u32 rung = storm_rung - 1;
+  f64 t = 8.0;
+  while (rung > gale_rung) {
+    t += k_flora_rung_down_s;
+    rung = flora_rung_choose(ladder, gale, t, top);
+  }
+  CHECK(rung == gale_rung);
+  CHECK(flora_rung_choose(ladder, gale, t + 100.0, top) == gale_rung);  // it holds the gale's
+  // And calm again: down to rung 0, a rung a hold.
+  for (u32 k = 0; k < 16; ++k)
+    t += k_flora_rung_down_s, rung = flora_rung_choose(ladder, 0.0f, t, top);
+  CHECK(rung == 0u);
+}

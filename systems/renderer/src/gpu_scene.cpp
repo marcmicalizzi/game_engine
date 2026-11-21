@@ -1184,7 +1184,61 @@ f32 GpuScene::flora_padding_of(u32 mesh) {
                     : mesh;
   // Measured for every mesh at the upload (`upload_geometry`), so nothing here reads the host's
   // float positions, which a host that uploads once has released by the time a tail tree appears.
-  return m < flora_padding_.size() ? flora_padding_[m] : 0.0f;
+  // The rung is the one the records are written to (W154-2): an instance placed during a step's
+  // walk is placed as the walk will leave it, never under the hold.
+  if (m >= flora_padding_.size()) return 0.0f;
+  return flora_rung_padding(flora_padding_[m], m < flora_meshes_.size() && flora_meshes_[m].field,
+                            flora_rung_load(flora_ladder_.target, flora_ladder_top_));
+}
+
+// A swaying record's padding: the caller's, or the sway's at the ladder's target if that is more.
+f32 GpuScene::sway_padding_of(u32 mesh, f32 base) {
+  const f32 padding = flora_padding_of(mesh);
+  return padding > base ? padding : base;
+}
+
+void GpuScene::add_field_slot(u32 slot, u32 mesh, f32 base) {
+  if (field_at_.size() <= slot) field_at_.resize(slot + 1, ~0u);
+  if (field_at_[slot] != ~0u) drop_field_slot(slot);
+  field_at_[slot] = field_slots_.size();
+  field_slots_.push_back(FieldSlot{slot, mesh, base});
+}
+
+void GpuScene::drop_field_slot(u32 slot) noexcept {
+  if (slot >= field_at_.size() || field_at_[slot] == ~0u) return;
+  const u32 at = field_at_[slot];
+  const u32 last = field_slots_.size() - 1;
+  field_at_[slot] = ~0u;
+  if (at != last) {
+    field_slots_[at] = field_slots_[last];
+    field_at_[field_slots_[at].slot] = at;
+  }
+  field_slots_.pop_back();
+  // A step's walk past `at` but not past the one moved into it: written now, or the walk would
+  // leave it at the rung it had (W154-2).
+  if (ladder_walking_ && at < ladder_field_at_ && last >= ladder_field_at_) repad_field(at);
+}
+
+bool GpuScene::repad_tree(u32 at) {
+  const FloraInstance& fi = flora_instances_[at];
+  if (fi.instance >= instance_table_.size()) return false;
+  gfx::InstanceDesc& placed = instance_table_[fi.instance];
+  const f32 want = sway_padding_of(fi.mesh, fi.base_padding);
+  if (placed.bounds_padding == want) return false;
+  placed.bounds_padding = want;
+  mark_instance_written(fi.instance);
+  return true;
+}
+
+bool GpuScene::repad_field(u32 at) {
+  const FieldSlot& field = field_slots_[at];
+  if (field.slot >= instance_table_.size()) return false;
+  gfx::InstanceDesc& placed = instance_table_[field.slot];
+  const f32 want = sway_padding_of(field.mesh, field.base);
+  if (placed.bounds_padding == want) return false;
+  placed.bounds_padding = want;
+  mark_instance_written(field.slot);
+  return true;
 }
 
 FloraInstance GpuScene::flora_instance(u32 instance, u32 mesh, u32 first_part,
@@ -1233,6 +1287,7 @@ u32 tail_motion_key(const SceneInstance& source) noexcept {
 }  // namespace
 
 void GpuScene::release_tail_tree(u32 slot) noexcept {
+  drop_field_slot(slot);  // a patch of grass the slot held (W154-2's list; it has no record)
   if (slot >= tail_tree_of_slot_.size()) return;
   const u32 t = tail_tree_of_slot_[slot];
   if (t == ~0u) return;
@@ -1240,11 +1295,15 @@ void GpuScene::release_tail_tree(u32 slot) noexcept {
   // Out of the poser's list by the last one taking its place: a pose is a function of the
   // instance alone, so the order the poser runs them in reaches no byte.
   const u32 last = flora_instances_.size() - 1;
+  const u32 at = tree.at;
   if (tree.at != last) {
     flora_instances_[tree.at] = flora_instances_[last];
     tail_trees_[tail_tree_of_slot_[flora_instances_[tree.at].instance]].at = tree.at;
   }
   flora_instances_.pop_back();
+  // A step's walk past `at` but not past the tree moved into it: written now (W154-2).
+  if (ladder_walking_ && at < last && at < ladder_tree_at_ && last >= ladder_tree_at_)
+    repad_tree(at);
   tree.at = ~0u;
   // Free: first in its mesh's list, last in its class's by age.
   tree.released = flora_frames_;
@@ -1293,8 +1352,8 @@ void GpuScene::acquire_tail_tree(u32 slot, const SceneInstance& source) {
     // written again, and nothing the poser runs. A tile of a meadow costs the room nothing.
     gfx::InstanceDesc& placed = instance_table_[slot];
     placed.deform = field_deform_[mesh];
-    const f32 padding = flora_padding_of(mesh);
-    if (padding > placed.bounds_padding) placed.bounds_padding = padding;
+    add_field_slot(slot, mesh, placed.bounds_padding);
+    placed.bounds_padding = sway_padding_of(mesh, placed.bounds_padding);
     flora_stats_.max_padding =
         std::max(flora_stats_.max_padding, placed.bounds_padding * placed.scale_max);
     return;
@@ -1361,12 +1420,13 @@ void GpuScene::acquire_tail_tree(u32 slot, const SceneInstance& source) {
     flora_state_[tree.first_part + p] = FloraPartState{};
   gfx::InstanceDesc& placed = instance_table_[slot];
   placed.deform = tree.deform;
-  const f32 padding = flora_padding_of(mesh);
-  if (padding > placed.bounds_padding) placed.bounds_padding = padding;
+  const f32 base = placed.bounds_padding;
+  placed.bounds_padding = sway_padding_of(mesh, base);
   flora_stats_.max_padding =
       std::max(flora_stats_.max_padding, placed.bounds_padding * placed.scale_max);
   tree.at = flora_instances_.size();
   flora_instances_.push_back(flora_instance(slot, mesh, tree.first_part, tail_motion_key(source)));
+  flora_instances_.back().base_padding = base;
   tail_tree_of_slot_[slot] = t;
   flora_recut_ = true;
 }
@@ -1986,6 +2046,8 @@ bool GpuScene::fit_tables(TileChange& change, Vector<gfx::BufferResource>* retir
     if (flora_tail_) {
       tail_tree_of_slot_.reserve(instance_capacity_);
       flora_instances_.reserve(load_flora_ + instance_capacity_);
+      field_slots_.reserve(field_slots_.size() + instance_capacity_);
+      field_at_.reserve(instance_capacity_);
     }
   }
   // The pool's per-entry slots follow the stride and the chain's tables the stride and the
@@ -2580,6 +2642,8 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
       }
     }
     flora_instances_.clear();
+    field_slots_.clear();
+    field_at_.clear();
     flora_parts_ = 0;
     measure_flora_padding();  // every mesh's sway bound, now (T138; gpu_scene_place.cpp)
     // **A streamed world's trees sway too** (renderer.md, "Streamed trees sway"): when a mesh the
@@ -2717,8 +2781,8 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
       if (flora_level && flora_meshes_[mesh_index].field) {
         // Grass: its mesh's shared record, its spheres padded by the sway's bound as a tree's are.
         gfx::InstanceDesc& placed = instance_table_[i];
-        const f32 padding = flora_padding_of(mesh_index);
-        if (padding > placed.bounds_padding) placed.bounds_padding = padding;
+        add_field_slot(i, mesh_index, placed.bounds_padding);
+        placed.bounds_padding = sway_padding_of(mesh_index, placed.bounds_padding);
         placed.deform = field_deform_[mesh_index];
         whole_mesh_vertices += next - part.first_vertex;
         flora_stats_.max_padding =
@@ -2747,10 +2811,11 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
         desc.first_part = flora_parts_;
         desc.joint_count = tree.part_count();
         gfx::InstanceDesc& placed = instance_table_[i];
-        const f32 padding = flora_padding_of(mesh_index);
-        if (padding > placed.bounds_padding) placed.bounds_padding = padding;
+        const f32 base = placed.bounds_padding;
+        placed.bounds_padding = sway_padding_of(mesh_index, base);
         const u32 key = i < data_->motion_keys.size() ? data_->motion_keys[i] : i;
         flora_instances_.push_back(flora_instance(i, mesh_index, flora_parts_, key));
+        flora_instances_.back().base_padding = base;
         flora_parts_ += tree.part_count();
         flora_stats_.max_padding =
             std::max(flora_stats_.max_padding, placed.bounds_padding * placed.scale_max);
@@ -2814,6 +2879,8 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
       std::fill(std::begin(tail_old_tail_), std::end(tail_old_tail_), ~0u);
       tail_tree_of_slot_.assign(instance_capacity_, ~0u);
       flora_instances_.reserve(load_flora_ + instance_capacity_);
+      field_slots_.reserve(field_slots_.size() + instance_capacity_);
+      field_at_.reserve(instance_capacity_);
     }
     deform_pool_bytes_ = u64{deform_pool_vertices_} * 3 * sizeof(f32);
     constexpr gfx::BufferUsage k_pool_usage = k_address | gfx::BufferUsage::TransferDst |
@@ -3461,8 +3528,8 @@ u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f6
   if (frame.wind_set) {
     to = frame.wind_to;
     strength = frame.wind_strength;
-  } else if (data_ != nullptr && scene_flora_wind(data_->wind, sky_time_s, to, strength,
-                                                  flora_wind_lag_.held(live))) {
+  } else if (data_ != nullptr &&
+             scene_flora_wind(data_->wind, sky_time_s, to, strength, flora_wind_lag_.held(live))) {
     source = "scene";  // W136: the scene's wind (or the hand wind), its gust over a mean day's
   } else {
     const TerrainSampler* ground = ground_ != nullptr ? ground_.get() : flora_ground_.get();
@@ -3498,7 +3565,8 @@ u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f6
   bool field_moving = false;
   if (flora_field_) {
     gfx::FloraFieldFrame block;
-    flora_field_frame(to, strength, world_time_s, eye, frame, block, field_rest_.hold);
+    flora_field_frame(to, strength, world_time_s, eye, frame, block, field_rest_.hold,
+                      flora_hold_load());
     flora_field_rest(field_rest_, frame, block);  // the far field at rest (R152)
     // The hand-off's clock (G136): what the pool pass counts a patch's load-in age from.
     const u32 tick = handoff_tick();
@@ -3518,6 +3586,7 @@ u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f6
   FloraPoseFrame pose_frame;
   pose_frame.wind_to = to;
   pose_frame.wind_strength = strength;
+  pose_frame.max_load = flora_hold_load();  // what every swaying record holds this frame (W154-2)
   pose_frame.time_s = world_time_s;
   pose_frame.frame_index = frame_index;
   pose_frame.flora = &frame;
@@ -6688,6 +6757,8 @@ void GpuScene::destroy() noexcept {
   flora_meshes_.clear();
   flora_bounds_.clear();
   flora_instances_.clear();
+  field_slots_.clear();
+  field_at_.clear();
   flora_state_.clear();
   flora_poser_.reset();
   flora_parts_ = 0;

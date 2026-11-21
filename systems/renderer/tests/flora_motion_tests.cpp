@@ -11,6 +11,7 @@
 #include <domain/geometry/flora_species.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/flora_motion.h>
+#include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/flora_motion.h>
 #include <systems/renderer/gpu_scene.h>
@@ -698,6 +699,173 @@ TEST_CASE("flora motion: a palm at force 12 is culled by spheres that hold it") 
     CHECK(moved > 500);
     CHECK(same(a.color, b.color));
     CHECK(same(a.ids, b.ids));
+  }
+}
+
+// **The padding follows the wind** (W154-2; renderer.md, "What a storm costs"). Three palms, a
+// wind that goes calm, a mean day, a strong breeze past a gale's law (rung 2) and force 12 (rung
+// 4), and the ladder's walk held to one record a frame so each step is spread over three frames
+// with the sway held at the rung below until the last record is written. Every frame's ids with
+// occlusion and cones on are the same as with them off: culling never changes the picture, at a
+// rung or across a step. At calm every record carries main's padding.
+namespace {
+
+struct PaddingRecords {
+  tunables::Tunable* tunable = nullptr;
+  std::string previous;
+  explicit PaddingRecords(const char* value) {
+    tunable = tunables::find("renderer.flora.padding_records");
+    REQUIRE(tunable != nullptr);
+    tunable->append_value(previous);
+    REQUIRE(tunable->set_from_text(value));
+  }
+  ~PaddingRecords() {
+    if (tunable != nullptr) (void)tunable->set_from_text(previous);
+  }
+};
+
+struct Sequence {
+  Vector<Vector<u32>> ids;
+  Vector<GpuScene::FloraStats> stats;
+  Vector<f32> padding;  // the first palm's record, each frame
+};
+
+bool draw_sequence(Gpu& gpu, const SceneData& data, const RenderSettings& settings,
+                   std::span<const FrameFlora> frames, Sequence& out, std::string& error) {
+  ResolvedSettings resolved;
+  resolve_settings(settings, gpu.device.features(), &data, resolved);
+  GpuScene scene;
+  if (!scene.create(gpu.device, data, resolved, &error)) return false;
+  SceneRenderer renderer;
+  SceneRenderer::Desc rd;
+  rd.width = 320;
+  rd.height = 320;
+  if (!renderer.create(gpu.device, scene, resolved, rd, &error)) return false;
+  CaptureChannels channels;
+  channels.ids = true;
+  for (u32 f = 0; f < frames.size(); ++f) {
+    FrameDesc frame;
+    frame.camera.position = WorldPos{2.6, 2.0, 11.0};
+    frame.camera.target = WorldPos{2.6, 2.0, 0.0};
+    frame.frame_index = 60 + f;
+    frame.world_time_s = static_cast<f64>(frame.frame_index) / 60.0;
+    frame.flora = frames[f];
+    CapturedFrame shot;
+    if (!renderer.render_offscreen(frame, &error)) return false;
+    if (!renderer.capture(frame, channels, shot, &error)) return false;
+    out.ids.push_back(std::move(shot.ids));
+    out.stats.push_back(scene.flora_stats());
+    const gfx::InstanceDesc* record = scene.instance_record(0);
+    out.padding.push_back(record != nullptr ? record->bounds_padding : -1.0f);
+  }
+  renderer.destroy();
+  scene.destroy();
+  return true;
+}
+
+}  // namespace
+
+TEST_CASE("flora motion: three palms' padding follows the wind, culled as drawn at every rung") {
+  const test::TempDir tmp("renderer_flora_ladder");
+  REQUIRE(tmp.ok());
+  SceneData data;
+  std::string error;
+  REQUIRE_MESSAGE(load_palm(tmp, data, error), error);
+  REQUIRE(data.sources.size() == 1);
+  REQUIRE(data.instances.size() == 1);
+  // Two more palms along +x (the camera stands before the middle one), each with its own pairs.
+  for (const f32 x : {2.6f, 5.2f}) {
+    gfx::InstanceDesc other = data.instances[0];
+    Mat4 world = Mat4::identity();
+    world.c[3] = Vec4{x, 0.0f, 0.0f, 1.0f};
+    gfx::set_instance_transform(other, world);
+    other.first_pair = data.pair_count;
+    data.pair_count += data.parts[0].cluster_count;
+    data.instances.push_back(other);
+    if (!data.instance_joints.empty()) data.instance_joints.push_back(0u);
+  }
+  update_scene_bounds(data);
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  FloraMesh tree;
+  REQUIRE(flora_mesh(
+      std::span<const geometry::ClusterFileMotionPart>(data.sources[0].motion_parts.data(),
+                                                       data.sources[0].motion_parts.size()),
+      std::span<const geometry::ClusterFileStructuralPart>(data.sources[0].structural_parts.data(),
+                                                           data.sources[0].structural_parts.size()),
+      data.sources[0].species, tree));
+  const f32 calm = flora_padding_at_load(
+      tree, std::span<const Vec3>(data.lod.mesh.vertices.data(), data.lod.mesh.vertices.size()),
+      std::span<const geometry::ClusterFileMotionVertex>(data.sources[0].motion_vertices.data(),
+                                                         data.sources[0].motion_vertices.size()),
+      k_flora_calm_load);
+  const PaddingRecords one("1");
+  Vector<FrameFlora> frames;
+  for (const f32 s : {0.0f, 1.0f, 3.0f, 3.0f, 3.0f, 6.6f, 6.6f, 6.6f}) {
+    FrameFlora f;
+    f.wind_set = true;
+    f.wind_to = Vec2{0.0f, -1.0f};
+    f.wind_strength = s;
+    frames.push_back(f);
+  }
+  const bool traces =
+      gpu.device.features().ray_query && gpu.device.features().acceleration_structure;
+  for (const ShadowMode shadows : {ShadowMode::Cascaded, ShadowMode::RayTraced}) {
+    if (shadows == ShadowMode::RayTraced && !traces) {
+      MESSAGE("traced shadows skipped: " << gpu.device.adapter().name << " traces no rays");
+      continue;
+    }
+    CAPTURE(static_cast<int>(shadows));
+    RenderSettings settings;
+    settings.shadows = shadows;
+    RenderSettings open = settings;
+    open.occlusion = false;
+    open.cone = false;
+    Sequence culled;
+    Sequence unculled;
+    REQUIRE_MESSAGE(
+        draw_sequence(gpu, data, settings,
+                      std::span<const FrameFlora>(frames.data(), frames.size()), culled, error),
+        error);
+    REQUIRE_MESSAGE(
+        draw_sequence(gpu, data, open, std::span<const FrameFlora>(frames.data(), frames.size()),
+                      unculled, error),
+        error);
+    REQUIRE(culled.ids.size() == frames.size());
+    for (u32 f = 0; f < frames.size(); ++f) {
+      CAPTURE(f);
+      u32 covered = 0;
+      u32 differ = 0;
+      const Vector<u32>& a = culled.ids[f];
+      const Vector<u32>& b = unculled.ids[f];
+      for (u32 i = 0; i + 2 < a.size() && i + 2 < b.size(); i += 3) {
+        covered += b[i] != ~0u ? 1u : 0u;
+        differ += std::memcmp(a.data() + i, b.data() + i, 3 * sizeof(u32)) != 0;
+      }
+      const GpuScene::FloraStats& st = culled.stats[f];
+      MESSAGE("frame " << f << " strength " << frames[f].wind_strength << ": rung "
+                       << st.padding_rung << " (load " << st.padding_load << "), padding "
+                       << culled.padding[f] << " m; " << covered << " pixels of palm, " << differ
+                       << " named differently with occlusion and cones on");
+      CHECK(covered > 1000);
+      CHECK(differ == 0);
+    }
+    // At calm and a mean day every record is main's padding; the steps are each spread over the
+    // three records, the hold rising only on the frame the last is written.
+    CHECK(culled.padding[0] == calm);
+    CHECK(culled.padding[1] == calm);
+    CHECK(culled.stats[1].padding_rung == 0u);
+    CHECK(culled.stats[3].padding_rung == 0u);  // the walk is not done: held at main's
+    CHECK(culled.stats[4].padding_rung == 2u);
+    CHECK(culled.stats[6].padding_rung == 2u);
+    CHECK(culled.stats[7].padding_rung == 4u);
+    CHECK(culled.stats[7].padding_steps == 2u);
+    CHECK(culled.stats[7].padding_writes == 6u);
+    CHECK(culled.stats[7].padding_walk_frames == 6u);
+    CHECK(culled.padding[7] > calm * 4.0f);
   }
 }
 

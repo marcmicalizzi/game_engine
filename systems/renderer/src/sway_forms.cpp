@@ -47,10 +47,12 @@ SwayMeasure measure_sway(const FloraMesh& mesh, std::span<const Vec3> vertices,
   SwayMeasure out;
   out.field = mesh.field;
   if (!rules.motion) return out;  // nothing is posed: no padding, no reach
-  // The padding is the bound under every wind the sway takes; the reach the same bound at the
-  // rule's wind. Since W154 the bound follows the storm's law and the bend's cap, no longer linear
-  // in the strength, so it is measured again at the rule's wind rather than scaled.
-  out.padding = flora_bounds_padding(mesh, vertices, motion);
+  // The reach is the sway's bound at the rule's wind. Since W154 the bound follows the storm's law
+  // and the bend's cap, no longer linear in the strength, so it is measured at the rule's wind
+  // rather than scaled. The padding a still form keeps is the calm rung's (W154-2): it is rigid, so
+  // the padding only makes its cut the mesh's at calm, which is main's; a storm's rung pads the
+  // swaying mesh's records, never a still form's.
+  out.padding = flora_padding_at_load(mesh, vertices, motion, k_flora_calm_load);
   const f32 scale = fit_scale > 0.0f ? fit_scale : 1.0f;
   out.reach_m = flora_bounds_padding(mesh, vertices, motion, rules.wind) * scale;
   return out;

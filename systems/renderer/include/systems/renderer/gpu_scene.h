@@ -1049,6 +1049,18 @@ class GpuScene {
   u64 flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f64 world_time_s,
                   f64 sky_time_s, const WorldEye& eye = WorldEye{},
                   const gfx::WindLive& live = {}) noexcept;
+  // **The padding follows the wind** (W154-2; flora_motion.h, "the padding follows the wind"):
+  // once a frame, after `water_wind_frame` and before the tables and records are prepared, chooses
+  // the ladder's rung from the trees' wind's ceiling and rewrites at most
+  // `renderer.flora.padding_records` swaying instances' records towards it, so the records this
+  // frame uploads hold the load `flora_frame` then holds the sway at. Allocates nothing once its
+  // lists have grown to the scene's.
+  void flora_padding_frame(const FrameFlora& frame, f64 sky_time_s, const gfx::WindLive& live,
+                           f64 world_time_s) noexcept;
+  // The load the sway is held at this frame: the rung every swaying record carries.
+  f32 flora_hold_load() const noexcept {
+    return flora_rung_load(flora_ladder_.hold, flora_ladder_top_);
+  }
   // **The hand-off's clock** (G136; renderer.md, "The hand-off by distance"): the frames
   // `flora_frame` was called for, modulo 2^22 — what an instance's load-in stamp is counted from,
   // by the cull pass (`gfx::CullParams::handoff_tick`) and the pool pass (the field block's
@@ -1073,6 +1085,13 @@ class GpuScene {
     u32 tail_records = 0;
     u64 tail_bytes = 0;
     u64 tail_repurposed = 0;  // records another mesh took, their entry rewritten
+    // The padding ladder (W154-2): the rung the records carry and its load, the steps taken, the
+    // records they rewrote, and the frames a step's writes were spread over.
+    u32 padding_rung = 0;
+    f32 padding_load = k_flora_calm_load;
+    u64 padding_steps = 0;
+    u64 padding_writes = 0;
+    u64 padding_walk_frames = 0;
     // The field kind and the caster policy (renderer.md, "The field kind", "The caster policy";
     // R95): the meshes posed as a field and their instances now (loaded and the tail's, every one
     // sharing its mesh's record), and the instances by what their species' policy keeps them out
@@ -2011,8 +2030,31 @@ class GpuScene {
   bool flora_moving_ = false;                // any part of any tree off its rest pose this frame
   const char* flora_wind_source_ = nullptr;  // the last frame's: "frame", "ground", "tunables"
   FloraWindLag flora_wind_lag_{};  // the live mean as the trees take it (W154; scene_wind.h)
-  Vector<f32> flora_padding_;                // per mesh, the sway's bound, measured at the upload
-  CrownPriorTable crown_priors_;             // T138: measured at `create`, before any release
+  // The padding ladder (W154-2): its rungs, what the scene's meshes can take, and the walk a step
+  // makes over the swaying records (the trees in `flora_instances_`, the grass in `field_slots_`).
+  FloraLadder flora_ladder_{};
+  f32 flora_ladder_top_ = k_flora_calm_load;
+  f32 flora_streamline_max_ = 1.0f;
+  f32 flora_hold_max_ = 0.0f;
+  bool flora_has_field_ = false;
+  f32 flora_field_hold_ = k_flora_max_wind;
+  bool ladder_walking_ = false;
+  u32 ladder_tree_at_ = 0;
+  u32 ladder_field_at_ = 0;
+  struct FieldSlot {
+    u32 slot = 0;
+    u32 mesh = 0;
+    f32 base = 0.0f;
+  };
+  Vector<FieldSlot> field_slots_;
+  Vector<u32> field_at_;  // per slot, its place in `field_slots_` (~0: none)
+  f32 sway_padding_of(u32 mesh, f32 base);
+  bool repad_tree(u32 at);
+  bool repad_field(u32 at);
+  void add_field_slot(u32 slot, u32 mesh, f32 base);
+  void drop_field_slot(u32 slot) noexcept;
+  Vector<f32> flora_padding_;     // per mesh, the sway's bound, measured at the upload
+  CrownPriorTable crown_priors_;  // T138: measured at `create`, before any release
   bool crown_priors_built_ = false;
   Vector<u32> sky_facing_;  // T138: `sky_facing_meshes` at `create`
   u32 sky_facing_count_ = 0;

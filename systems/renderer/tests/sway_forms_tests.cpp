@@ -53,17 +53,19 @@ SwayMeasure measured(const Blade& b, f32 fit, const SwayFormRules& rules) {
 TEST_CASE("sway forms: a mesh's reach is the cull's bound at the rule's wind") {
   const Blade fern = blade_of("fern", 0.9f);
   REQUIRE_FALSE(fern.mesh.field);
-  const f32 bound = flora_bounds_padding(
+  // The padding a still form keeps is the calm rung's (W154-2: main's, at the load 2 the sway was
+  // held at before W154); the reach is the sway's bound measured at the rule's wind, in metres by
+  // the fit.
+  const f32 bound = flora_padding_at_load(
       fern.mesh, std::span<const Vec3>(fern.vertices.data(), fern.vertices.size()),
-      std::span<const ClusterFileMotionVertex>(fern.motion.data(), fern.motion.size()));
+      std::span<const ClusterFileMotionVertex>(fern.motion.data(), fern.motion.size()),
+      k_flora_calm_load);
   REQUIRE(bound > 0.0f);
   SwayFormRules rules;
   rules.wind = 1.0f;
-  // The padding is the bound at every wind the sway takes (the storm's since W154); the reach is
-  // the same bound measured at the rule's wind, in metres by the fit. To a mean day the bound is
-  // linear in the strength (the load is the strength, and no bend reaches the cap's knee), so a
-  // mean day's is the old strongest wind's (2) half: 0.9 m x the fern's root (its trunk class,
-  // 0.01) x 1 x 2.
+  // To a mean day the bound is linear in the strength (the load is the strength, and no bend
+  // reaches the cap's knee), so a mean day's is the old strongest wind's (2) half: 0.9 m x the
+  // fern's root (its trunk class, 0.01) x 1 x 2.
   const auto bound_at = [&](f32 strength) {
     return flora_bounds_padding(
         fern.mesh, std::span<const Vec3>(fern.vertices.data(), fern.vertices.size()),
@@ -73,7 +75,7 @@ TEST_CASE("sway forms: a mesh's reach is the cull's bound at the rule's wind") {
   CHECK(mean.padding == bound);
   CHECK(mean.reach_m == bound_at(1.0f));
   CHECK(mean.reach_m == doctest::Approx(0.9f * 0.01f * 2.0f));
-  CHECK(bound > bound_at(2.0f));  // a storm pads past the old strongest wind
+  CHECK(bound == doctest::Approx(2.0f * bound_at(1.0f)));  // main's: the old strongest wind's
   CHECK_FALSE(mean.field);
   CHECK(measured(fern, 3.0f, rules).reach_m == doctest::Approx(3.0f * bound_at(1.0f)));
   rules.wind = 0.7f;

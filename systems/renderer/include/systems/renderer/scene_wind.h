@@ -186,6 +186,17 @@ void water_wind_frame(std::span<WaterWindBody> bodies, f64 sky_time_s,
 bool scene_flora_wind(const gfx::WindDesc& wind, f64 sky_time_s, Vec2& to, f32& strength,
                       const gfx::WindLive& live = {}) noexcept;
 
+// **The trees' wind's ceiling** (W154-2; renderer.md, "What a storm costs"): the strength, over the
+// 5 m/s mean day, the trees' wind of `scene_flora_wind` may reach over the next seconds, which the
+// padding ladder chooses its rung from: the mean times the three-second gust factor of the scene's
+// roughness (`gfx::wind_gust_factor`: the peak of its turbulence), plus the mean times the factor
+// less one again while a forced gust is on at any level (its whole rise, so the rung is up before
+// the gust is). The live mean is the larger of the trees' lagged one (`lagged`) and the live one,
+// so a key's step up moves the rung before the trees move. False where `scene_flora_wind` is.
+bool scene_flora_wind_ceiling(const gfx::WindDesc& wind, f64 sky_time_s,
+                              const gfx::WindLive& lagged, const gfx::WindLive& live,
+                              f32& ceiling) noexcept;
+
 // **A step of the live mean reaches the trees through their own response** (W154; flora.md, "Motion
 // in a storm"). A key's step moves the live mean by a Beaufort force in one frame, and the sway's
 // lean is quasi-static (a function of the load now), so taken as it is the step is a jump of every

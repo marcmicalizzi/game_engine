@@ -51,6 +51,7 @@ struct FloraInstance {
   f32 inverse_scale = 1.0f;
   u64 last_tick = 0;
   bool posed = false;
+  f32 base_padding = 0.0f;  // the caller's padding before the sway's (W154-2: a step keeps it)
 };
 
 // What every instance of a frame shares: the wind in the ground plane (a unit `wind_to`), its
@@ -58,6 +59,7 @@ struct FloraInstance {
 struct FloraPoseFrame {
   Vec2 wind_to{1.0f, 0.0f};
   f32 wind_strength = 0.0f;
+  f32 max_load = 3.0e38f;  // the padding ladder's hold (`FloraWind::max_load`)
   f64 time_s = 0.0;
   u64 frame_index = 0;
   const FrameFlora* flora = nullptr;  // the walker; null is none

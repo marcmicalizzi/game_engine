@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <renderer_log.h>
 
 namespace engine::renderer {
 
@@ -549,6 +550,29 @@ bool scene_flora_wind(const gfx::WindDesc& wind, f64 sky_time_s, Vec2& to, f32& 
   return true;
 }
 
+bool scene_flora_wind_ceiling(const gfx::WindDesc& wind, f64 sky_time_s,
+                              const gfx::WindLive& lagged, const gfx::WindLive& live,
+                              f32& ceiling) noexcept {
+  const f64 g = gfx::wind_gust_factor(wind.roughness_m);
+  f64 mean = 0.0;
+  f64 forced = 0.0;
+  if (live.set) {
+    mean = std::max(live.mean_m_s, lagged.set ? lagged.mean_m_s : 0.0);
+    if (live.gust > 0.0) forced = mean * (g - 1.0);
+  } else {
+    const WindHand hand = wind_hand_tunable();
+    if (hand.set) {
+      mean = hand.speed_m_s;
+    } else {
+      if (wind.kind == gfx::WindKind::none) return false;
+      mean = gfx::wind_at(wind, sky_time_s).speed_m_s;
+    }
+  }
+  ceiling = static_cast<f32>(std::max(mean, 0.0) * (g + (forced > 0.0 ? g - 1.0 : 0.0)) /
+                             k_flora_wind_mean_m_s);
+  return true;
+}
+
 gfx::WindLive FloraWindLag::follow(const gfx::WindLive& live, f64 world_time_s) noexcept {
   if (!live.set) {
     set = false;
@@ -697,6 +721,69 @@ std::span<const WaterWindUpload> GpuScene::water_wind_frame(f64 sky_time_s,
     mark_instance_written(b.instance);
   }
   return {water_wind_uploads_.data(), water_wind_uploads_.size()};
+}
+
+// **The padding follows the wind** (W154-2; flora_motion.h; renderer.md, "What a storm costs").
+// The ceiling is the trees' wind's over the next seconds, as a load by the steepest law among the
+// scene's meshes; the rung is chosen from it with the ladder's hysteresis; a step walks the
+// swaying records, the trees' list and then the grass's, at most the tunable's number a frame. The
+// walk's cost is a record each, on this thread, and nothing it visits is not a swaying instance:
+// a streamed world's other instances are never read. A ground's wind (a terrain's transport) is
+// taken as the last frame drew it, a frame late: the hold covers that frame.
+void GpuScene::flora_padding_frame(const FrameFlora& frame, f64 sky_time_s,
+                                   const gfx::WindLive& live, f64 world_time_s) noexcept {
+  if (flora_instances_.empty() && field_slots_.empty() && !flora_tail_) return;
+  f32 ceiling = 0.0f;
+  if (frame.wind_set) {
+    ceiling = frame.wind_strength;
+  } else if (data_ != nullptr &&
+             scene_flora_wind_ceiling(data_->wind, sky_time_s, flora_wind_lag_.held(live), live,
+                                      ceiling)) {
+  } else if (flora_wind_source_ != nullptr && std::strcmp(flora_wind_source_, "ground") == 0) {
+    ceiling = flora_stats_.wind_strength;
+  } else {
+    ceiling = flora_wind_default().strength;
+  }
+  f32 demand = flora_hold_max_ > 0.0f
+                   ? flora_storm_load(ceiling, flora_streamline_max_, flora_hold_max_)
+                   : 0.0f;
+  if (flora_has_field_) demand = std::max(demand, flora_field_load(ceiling, flora_field_hold_));
+  const u32 was = flora_ladder_.target;
+  const u32 target = flora_rung_choose(flora_ladder_, demand, world_time_s, flora_ladder_top_);
+  if (target != was) {
+    // A step: the walk starts over (a step in a step's walk too), and the hold goes down at once,
+    // up only when the walk is done.
+    ladder_walking_ = true;
+    ladder_tree_at_ = 0;
+    ladder_field_at_ = 0;
+    if (target < flora_ladder_.hold) flora_ladder_.hold = target;
+    ++flora_stats_.padding_steps;
+    ENGINE_LOG_INFO(
+        log_renderer, "the trees' padding steps", log::field("from", was), log::field("to", target),
+        log::field("load", flora_rung_load(target, flora_ladder_top_)),
+        log::field("ceiling", ceiling), log::field("demand", demand),
+        log::field("trees", flora_instances_.size()), log::field("grass", field_slots_.size()));
+  }
+  if (ladder_walking_) {
+    u32 budget = flora_padding_records_tunable();
+    u64 writes = 0;
+    while (budget > 0 && ladder_tree_at_ < flora_instances_.size()) {
+      writes += repad_tree(ladder_tree_at_++) ? 1u : 0u;
+      --budget;
+    }
+    while (budget > 0 && ladder_field_at_ < field_slots_.size()) {
+      writes += repad_field(ladder_field_at_++) ? 1u : 0u;
+      --budget;
+    }
+    flora_stats_.padding_writes += writes;
+    ++flora_stats_.padding_walk_frames;
+    if (ladder_tree_at_ >= flora_instances_.size() && ladder_field_at_ >= field_slots_.size()) {
+      ladder_walking_ = false;
+      flora_ladder_.hold = flora_ladder_.target;
+    }
+  }
+  flora_stats_.padding_rung = flora_ladder_.hold;
+  flora_stats_.padding_load = flora_hold_load();
 }
 
 }  // namespace engine::renderer

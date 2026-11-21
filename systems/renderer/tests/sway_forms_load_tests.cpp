@@ -215,11 +215,12 @@ TEST_CASE(
                      {own.structural_parts.data(), own.structural_parts.size()}, own.species,
                      pose));
   const geometry::ClusterMeshPart& part = scene.parts[source];
-  const f32 bound =
-      flora_bounds_padding(pose,
-                           std::span<const Vec3>(scene.lod.mesh.vertices.data() + part.first_vertex,
-                                                 own.motion_vertices.size()),
-                           {own.motion_vertices.data(), own.motion_vertices.size()});
+  // A still form keeps the calm rung's padding (W154-2): main's, whatever wind the session blows.
+  const f32 bound = flora_padding_at_load(
+      pose,
+      std::span<const Vec3>(scene.lod.mesh.vertices.data() + part.first_vertex,
+                            own.motion_vertices.size()),
+      {own.motion_vertices.data(), own.motion_vertices.size()}, k_flora_calm_load);
   CHECK(bound > 0.5f);
   CHECK(scene.still_padding[still] == bound);
   CHECK(scene.still_padding[source] == 0.0f);

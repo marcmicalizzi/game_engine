@@ -118,6 +118,9 @@ bool flora_motion_tunable() noexcept;
 // form still does.
 bool flora_tail_tunable() noexcept;
 f32 flora_sway_m_tunable() noexcept;
+// `renderer.flora.padding_records` (W154-2): the swaying instances' records a step of the padding
+// ladder rewrites in one frame, at least 1.
+u32 flora_padding_records_tunable() noexcept;
 // `renderer.flora.sward_near_m` and `sward_fade_m` (renderer.md, "The hand-off by distance";
 // G136) as the band an instance with a hand-off role carries (`gfx::pack_handoff_band`):
 // [near - fade / 2, near + fade / 2) metres, the low end clamped at zero.
@@ -149,11 +152,55 @@ struct FrameFlora {
 };
 
 // The wind at an instance, in the instance's mesh frame: where it blows **to** (a unit vector) and
-// its strength over the record's mean (0 is calm, 1 a mean day).
+// its strength over the record's mean (0 is calm, 1 a mean day). `max_load` is the load the
+// frame's padding holds (`flora_padding_ladder`'s hold): the sway's load is never past it, so a
+// tree never leaves the spheres its record carries this frame.
 struct FloraWind {
   Vec3 to{1.0f, 0.0f, 0.0f};
   f32 strength = 0.0f;
+  f32 max_load = 3.0e38f;
 };
+
+// ---- the padding follows the wind (W154-2; renderer.md, "What a storm costs") -----------------
+//
+// **A calm session pays for no storm.** A swaying instance's spheres are padded by a bound on its
+// sway at the load its record says (`flora_rung_padding`), and the load the sway may reach is held
+// at the record's: a **ladder** of loads, the lowest main's own (2: the 10 m/s the sway was held at
+// before W154, with main's padding to the bit), each rung 1.5 times the one below, the top the
+// strongest the scene's meshes can take. The rung is chosen each frame from the wind's ceiling over
+// the next seconds (`flora_rung_choose`): up at once when the ceiling passes the rung, down only
+// after it has stood below the rung beneath for `k_flora_rung_down_s`, so a gusting wind does not
+// rewrite bounds every frame. A step rewrites the records of the scene's swaying instances,
+// `renderer.flora.padding_records` a frame (GpuScene::flora_padding_frame), and the hold follows
+// the records: up only once every record carries the new rung, down at once.
+inline constexpr f32 k_flora_calm_load = 2.0f;  // main's hold, and the ladder's lowest rung
+inline constexpr f32 k_flora_rung_ratio = 1.5f;
+inline constexpr u32 k_flora_rungs_max = 8;
+// Rung 0 serves a ceiling up to this times its load: a mean day's three-second gust over a forest
+// (the gust factor 1.89, 9.5 m/s) is a conifer's load of 2.3, and that peak is held at main's 2
+// rather than the mean day paying a rung (the page has the trade).
+inline constexpr f32 k_flora_calm_slack = 1.2f;
+inline constexpr f64 k_flora_rung_down_s = 3.0;
+// The load of rung `rung` on a ladder whose top is `top` (the last rung is `top` itself).
+f32 flora_rung_load(u32 rung, f32 top) noexcept;
+u32 flora_rung_count(f32 top) noexcept;
+// The padding of a mesh whose calm padding (rung 0, `flora_padding_at_load` at
+// `k_flora_calm_load`) is `calm`, at a rung's `load`: the bound is linear in the load (every
+// part's most turn is its compliance times it), a field's load is held at
+// `k_flora_field_most_load`, and a hair over the product keeps a float's rounding inside it.
+// `load` at or under the calm load answers `calm` itself, to the bit.
+f32 flora_rung_padding(f32 calm, bool field, f32 load) noexcept;
+// The ladder's state: the rung every record carries (`hold`, what the sway is held at), the rung
+// the records are being written to (`target`), and since when the ceiling stood under the rung
+// below the target (negative: it has not).
+struct FloraLadder {
+  u32 hold = 0;
+  u32 target = 0;
+  f64 below_since_s = -1.0;
+};
+// The rung a ceiling `demand` (a load) asks for at `time_s`: up at once, down after
+// `k_flora_rung_down_s` under the rung below. Returns the new target; `hold` is the caller's.
+u32 flora_rung_choose(FloraLadder& ladder, f32 demand, f64 time_s, f32 top) noexcept;
 
 // The walker's capsule in the instance's mesh frame: its feet, its radius and its height, upright
 // along the mesh's +y.
@@ -218,9 +265,10 @@ inline constexpr f32 k_flora_field_weights[4] = {0.2f, 0.2f, 0.3f, 0.3f};  // ho
 // the eye), the flutter's phase, and the walker's capsule from the eye when the frame names one.
 // A function of its arguments alone: the field kind has no CPU state.
 // `hold` is the scene's fields' (`FloraFieldRest::hold`), the strength their padding was built for.
+// `max_load` is the frame's padding hold (`FloraWind::max_load`).
 void flora_field_frame(Vec2 to, f32 strength, f64 time_s, const WorldEye& eye,
                        const FrameFlora& frame, gfx::FloraFieldFrame& out,
-                       f32 hold = k_flora_max_wind) noexcept;
+                       f32 hold = k_flora_max_wind, f32 max_load = 3.0e38f) noexcept;
 
 // ---- the far field at rest (renderer.md, "The far field at rest"; gfx/flora_motion.h; R152) ----
 //
@@ -287,5 +335,12 @@ void flora_part_poses(const FloraMesh& mesh, const FloraWind& wind, f64 time_s, 
 f32 flora_bounds_padding(const FloraMesh& mesh, std::span<const Vec3> vertices,
                          std::span<const geometry::ClusterFileMotionVertex> motion,
                          f32 strength = k_flora_max_wind) noexcept;
+// The same bound at a **load** rather than a strength, with no cap: every part's most turn is its
+// compliance times `load` (a field's held at `k_flora_field_most_load`) at the gust's and
+// flutter's peak, so it is linear in the load and holds every pose whose load is at most `load`.
+// At `k_flora_calm_load` it is main's padding before W154, operation for operation.
+f32 flora_padding_at_load(const FloraMesh& mesh, std::span<const Vec3> vertices,
+                          std::span<const geometry::ClusterFileMotionVertex> motion,
+                          f32 load) noexcept;
 
 }  // namespace engine::renderer
