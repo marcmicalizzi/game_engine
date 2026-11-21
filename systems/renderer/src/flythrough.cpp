@@ -1,6 +1,7 @@
 #include <core/base/assert.h>
 #include <core/json/json.h>
 #include <core/memory/memory.h>
+#include <core/profiling/startup_trace.h>  // thread_cpu_ns: the frame thread's own CPU (W155)
 #include <core/schema/json_reflect.h>
 #include <core/schema/type_info.h>
 #include <core/time/time.h>
@@ -222,6 +223,10 @@ scene::FrameSections frame_sections(const FrameSpans& s) {
   out.other_ms =
       out.wall_ms - (out.host_ms + out.slot_wait_ms + out.begin_ms + out.fold_ms + out.acquire_ms +
                      out.ticks_ms + out.submit_ms + out.after_ms + out.present_ms + out.tail_ms);
+  if (s.thread_cpu_ms >= 0.0) {
+    out.thread_cpu_ms = s.thread_cpu_ms;
+    out.off_cpu_ms = std::max(0.0, out.wall_ms - s.thread_cpu_ms);
+  }
   return out;
 }
 
@@ -331,6 +336,7 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     // returned; the slot's wait and the resize inside `begin_frame` come from the renderer's own
     // record of the frame when it folds, and the tail from the next submission's start.
     i64 start = 0;
+    i64 start_cpu = 0;  // the frame thread's CPU time at `start` (W155)
     i64 end = 0;
     f64 host_ms = 0.0;
     f64 begin_call_ms = 0.0;
@@ -374,6 +380,7 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     } end_capture;
 #endif
     const i64 start = time::monotonic_ns();
+    const i64 start_cpu = profiling::thread_cpu_ns();
     const std::pair<u64, u64> turn = counted();
     // The host's turn, between two frames: a streamed world updates its ring from this camera and
     // hands the renderer its instances (FlightOptions::before_frame). It is in the frame's wall
@@ -420,6 +427,9 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
           const i64 next_start = index + 1 < submissions.size()
                                      ? submissions[static_cast<u32>(index + 1)].start
                                      : start;
+          const i64 next_cpu = index + 1 < submissions.size()
+                                   ? submissions[static_cast<u32>(index + 1)].start_cpu
+                                   : start_cpu;
           FrameSpans spans;
           spans.start = done.start;
           spans.end = done.end;
@@ -430,6 +440,8 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
           spans.resize_ms = record.cpu.resize;
           spans.fold_ms = done.fold_ms;
           spans.submit_ms = done.submit_ms;
+          if (done.start_cpu > 0 && next_cpu > 0)
+            spans.thread_cpu_ms = static_cast<f64>(next_cpu - done.start_cpu) / 1.0e6;
           record.sections = frame_sections(spans);
           // The frame's own interval (FrameRecord version 24, W155): until then the interval
           // before it, so a long frame's parts sat in the record before the one that showed it.
@@ -466,6 +478,7 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     const std::pair<u64, u64> submitted = counted();
     Submission& mine = submissions[submissions.size() - 1];
     mine.start = start;
+    mine.start_cpu = start_cpu;
     mine.end = after_submit_ns;
     mine.host_ms = static_cast<f64>(before_begin - start) / 1.0e6;
     mine.begin_call_ms = static_cast<f64>(after_begin - before_begin) / 1.0e6;

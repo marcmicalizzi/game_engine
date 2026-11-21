@@ -1394,6 +1394,10 @@ TEST_CASE("flythrough: a frame's sections sum to its wall time, and a slow host 
     // The interval is the record's own frame time (version 24, W155; until then the next
     // record's), measured by the same clock.
     CHECK(std::abs(r.frame_ms - s.wall_ms) < 0.01);
+    // Beside the parts (version 2, W155): the thread's own CPU and the rest of the wall time.
+    CHECK(s.thread_cpu_ms >= 0.0);
+    CHECK(s.off_cpu_ms >= 0.0);
+    CHECK(s.off_cpu_ms <= s.wall_ms + 1e-9);
   }
   CHECK(flight.records[5].sections->host_ms >= 30.0);
   CHECK(flight.records[4].sections->host_ms < 30.0);

@@ -1791,6 +1791,10 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
                            u32& written, std::string* error) {
   written = 0;
   const u32 end = layout_.instance_end();
+  // The table's own size first, a stage of its own (W155: a growth frame's slot write said 48 ms
+  // of CPU for 3,904 slots where the first fill wrote 297,268 in 114 ms).
+  std::optional<profiling::TraceStage> resizing;
+  resizing.emplace("tiles slots resize");
   // A tree past the layout's new end gives its record back before its slot goes.
   if (flora_tail_) {
     for (u32 slot = end; slot < instance_table_.size(); ++slot)
@@ -1820,6 +1824,8 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
   // until it is written below, as `policy_counts` would count it.
   for (u32 slot = had; slot < end; ++slot)
     policy_count(instance_table_[slot], true);
+  resizing.reset();
+  ENGINE_STARTUP_STAGE("tiles slots written");
   for (const SlotWrite& write : writes) {
     if (write.inst_count == 0) continue;
     // Written with its number: nothing pending applies to it (T154).

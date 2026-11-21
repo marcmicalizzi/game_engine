@@ -2163,7 +2163,15 @@ struct CpuMs @version(2) {
 /// present — the title, a capture (`after_ms`), the present call (`present_ms`), and the loop's
 /// tail until the next iteration starts (`tail_ms`: a pacer's or the ceiling's wait, the shader
 /// reload's look, a resize of the window).
-struct FrameSections @version(1) {
+///
+/// **Version 2 (W155): beside the parts and not one of them**, the frame's thread's own CPU time
+/// over the same interval (`thread_cpu_ms`, user and kernel, `profiling::thread_cpu_ns`: on
+/// Windows the system's thread times, which advance in clock ticks of about 15.6 ms, so a frame's
+/// figure is good to a tick) and what the wall time has beyond it (`off_cpu_ms`): the thread off
+/// the processor, waiting (the slot, a job, the device) or preempted. A long frame whose largest
+/// part is not a wait and whose `off_cpu_ms` is most of it was the thread descheduled, not the
+/// work. Zero from a loop that does not measure it (a window's, today).
+struct FrameSections @version(2) {
   wall_ms: f64 = 0
   host_ms: f64 = 0
   slot_wait_ms: f64 = 0
@@ -2177,6 +2185,8 @@ struct FrameSections @version(1) {
   present_ms: f64 = 0
   tail_ms: f64 = 0
   other_ms: f64 = 0
+  thread_cpu_ms: f64 = 0 @since(2)
+  off_cpu_ms: f64 = 0 @since(2)
 }
 
 /// A time-lapse's frame (`engine-view --time-rate`): the game time, the surface clock's latency
