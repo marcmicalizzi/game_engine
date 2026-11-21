@@ -370,6 +370,12 @@ TEST_CASE("engine-view: a module asks the world for casts, supports and the wate
     CAPTURE(none);
     CHECK(num(entries, none) == 1.0);
   }
+  // ABI 13's wind (W151): engine-view keeps a live wind, so the read, the set back to the mean it
+  // read and the gust let go all answer `Ok`.
+  for (const char* wind : {"wind_state", "wind_set", "wind_gust"}) {
+    CAPTURE(wind);
+    CHECK(num(entries, wind) == 0.0);
+  }
   for (usize k = 0; k < entries->size(); ++k) {
     f64 code = -1.0;
     REQUIRE(entries->as_object().value_at(static_cast<u32>(k)).get_f64(code));

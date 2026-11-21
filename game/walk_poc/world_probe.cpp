@@ -208,6 +208,12 @@ void table(ModuleContext* context, const f64* at) {
   entry("door_nearest", api->door_nearest(h, at, k_door_radius_max_m, &door));
   entry("door_state", api->door_state(h, door.key, &door));
   entry("door_toggle", api->door_toggle(h, door.key));
+  // ABI 13's wind (W151): the live wind read, its mean set back to the one read with the direction
+  // kept (-1), and a gust let go, so the probe moves nothing a later query reads.
+  WindState wind;
+  entry("wind_state", api->wind_state(h, &wind));
+  entry("wind_set", api->wind_set(h, wind.mean_m_s, -1.0));
+  entry("wind_gust", api->wind_gust(h, 0u));
   char line[64];
   std::snprintf(line, sizeof line, "},\"entry_count\":%u", g_entries);
   put(line);
