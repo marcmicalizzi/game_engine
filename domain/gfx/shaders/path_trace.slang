@@ -92,7 +92,7 @@ struct PathTraceParams {
   int terrain_uv_x0_mm;
   int terrain_uv_z0_mm;
   float terrain_uv_per_mm;
-  uint extra_vertices;  // the count of xtra below (ResolveParams::extra_vertices)
+  uint extra_vertices;  // the count of `extra` below (ResolveParams::extra_vertices)
   uint64_t hit_entries;
   uint64_t extra;  // VertexExtra[] parallel to the attributes (scene.slang); 0: none
 };

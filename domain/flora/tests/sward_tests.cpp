@@ -789,5 +789,5 @@ TEST_CASE("sward ground: the bake is the same bytes, pinned") {
   pin = hash_combine(pin, hash_bytes(gr.height.data(), gr.height.size()));
   pin = hash_combine(pin, hash_bytes(&gr.far_colour, sizeof(gr.far_colour)));
   // Taken on MSVC; the Linux containers reproduce it (GCC and Clang at v3, GCC at v2).
-  CHECK(pin == 11171625829164360392ull);
+  CHECK(pin == 1602608573147903650ull);
 }

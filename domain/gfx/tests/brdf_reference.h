@@ -234,7 +234,9 @@ inline double spot_attenuation(Dvec3 to_surface, Dvec3 direction, double cos_inn
 
 // The tangent frame of one triangle, from its own positions and UVs: the CPU mirror of
 // `tangent_frame` in visibility_resolve.slang. Solves dp1 = T du1 + B dv1, dp2 = T du2 + B dv2,
-// then Gram-Schmidt orthonormalizes against the shading normal. False when the UV area is
+// then Gram-Schmidt orthonormalizes against the shading normal, and turns the bitangent over:
+// +Y of a normal map is up the image, towards falling v, as glTF 2.0 and every map the engine
+// draws state it (G2; docs/experiments/tangent-space-convention.md). False when the UV area is
 // degenerate, which is when the resolve leaves the normal alone.
 inline bool tangent_frame(const Dvec3* p, const Vec2* uv, Dvec3 normal, Dvec3& tangent,
                           Dvec3& bitangent) {
@@ -256,7 +258,7 @@ inline bool tangent_frame(const Dvec3* p, const Vec2* uv, Dvec3 normal, Dvec3& t
   b = b - (normal * dot(normal, b) + tangent * dot(tangent, b));
   const double b_length = std::sqrt(dot(b, b));
   if (b_length < 1e-12) return false;
-  bitangent = b * (1.0 / b_length);
+  bitangent = b * (-1.0 / b_length);
   return true;
 }
 
@@ -264,10 +266,13 @@ inline bool tangent_frame(const Dvec3* p, const Vec2* uv, Dvec3 normal, Dvec3& t
 // material.slang, which the resolve takes where all three corners of a triangle carry an imported
 // tangent. The corner tangents (`xyz` a direction, `w` glTF's handedness) interpolated at the
 // barycentrics `b`, made orthogonal to the shading normal, and the bitangent
-// `cross(normal, tangent) * sign(w)` exactly as glTF 2.0 defines it (3.7.2.1, "TANGENT"). False
-// when the interpolated tangent lies along the normal, where the resolve derives the frame instead.
+// `cross(normal, tangent) * sign(w)` exactly as glTF 2.0 defines it (3.7.2.1, "TANGENT"), times
+// `handedness`, the sign of the instance's determinant: the tangents and the normal are the placed
+// ones, the normal the outward one, and under a mirroring placement their cross product is the
+// placed bitangent turned over (R202; docs/subsystems/gfx.md, "A mirroring instance"). False when
+// the interpolated tangent lies along the normal, where the resolve derives the frame instead.
 inline bool authored_frame(const Vec4* corner_tangents, Dvec3 b, Dvec3 normal, Dvec3& tangent,
-                           Dvec3& bitangent) {
+                           Dvec3& bitangent, double handedness = 1.0) {
   Dvec3 t{};
   double w = 0.0;
   const double weight[3] = {b.x, b.y, b.z};
@@ -279,7 +284,7 @@ inline bool authored_frame(const Vec4* corner_tangents, Dvec3 b, Dvec3 normal, D
   const double t_length = std::sqrt(dot(t, t));
   if (t_length < 1e-12) return false;
   tangent = t * (1.0 / t_length);
-  bitangent = cross(normal, tangent) * (w < 0.0 ? -1.0 : 1.0);
+  bitangent = cross(normal, tangent) * ((w < 0.0 ? -1.0 : 1.0) * handedness);
   return true;
 }
 

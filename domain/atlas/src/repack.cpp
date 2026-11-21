@@ -31,7 +31,9 @@ namespace {
 //    summed them in whatever order std::sort left equal keys — MSVC's library's on Windows,
 //    libstdc++'s on Linux — and the tree stopped contracting floating-point arithmetic
 //    (ADR-0035). The same mesh can chart to different UVs than at 1.
-constexpr u64 k_repack_version = 2;
+// 3: the rebake's tangent frame turns its bitangent over to -dP/dv, the renderer's (G2), so a
+//    converted normal map is different bytes wherever the new UVs turn against the old.
+constexpr u64 k_repack_version = 3;
 
 // xatlas cuts charts with absolute epsilons (a face under FLT_EPSILON of area is refused, two
 // positions within 1e-4 are one in places), which makes its behaviour a function of the units a

@@ -18,9 +18,13 @@
 #include <bit>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <numbers>
+#include <string>
 #include <tuple>
+#include <vector>
 
 using namespace engine;
 using namespace engine::renderer;
@@ -1273,5 +1277,334 @@ TEST_CASE(
   MESSAGE("beach wet/dry " << ratio << ", plain wet " << plain_wet / beach_wet);
   CHECK(std::abs(ratio - 0.4909 / (1.0 - 0.4744 * 0.7)) < 0.02);
   CHECK(plain_wet / beach_wet < 0.2);
+  device.destroy();
+}
+
+namespace {
+// A 2 m quad of the y = 0.02 plane over x, z in [0, 2], its UVs (x / 2, z / 2) — the ground's own
+// mapping at a 2 m repeat — and one material whose normal map is `normal-<name>.png` beside it;
+// written as `quad-<name>.gltf` and `.bin` in `dir`.
+bool write_mapped_quad(const std::filesystem::path& dir, const std::string& name) {
+  std::vector<u8> bin;
+  auto put = [&](f32 v) {
+    u32 bits = 0;
+    std::memcpy(&bits, &v, 4);
+    for (u32 i = 0; i < 4; ++i)
+      bin.push_back(static_cast<u8>((bits >> (8 * i)) & 0xffu));
+  };
+  for (const f32 v : {0.f, .02f, 0.f, 2.f, .02f, 0.f, 2.f, .02f, 2.f, 0.f, .02f, 2.f})
+    put(v);
+  for (u32 i = 0; i < 4; ++i) {
+    put(0.f);
+    put(1.f);
+    put(0.f);
+  }
+  for (const f32 v : {0.f, 0.f, 1.f, 0.f, 1.f, 1.f, 0.f, 1.f})
+    put(v);
+  for (const u16 i : {u16{0}, u16{3}, u16{2}, u16{0}, u16{2}, u16{1}}) {
+    bin.push_back(static_cast<u8>(i & 0xff));
+    bin.push_back(static_cast<u8>(i >> 8));
+  }
+  {
+    std::ofstream out(dir / ("quad-" + name + ".bin"), std::ios::binary);
+    out.write(reinterpret_cast<const char*>(bin.data()), static_cast<std::streamsize>(bin.size()));
+    if (!out.good()) return false;
+  }
+  const std::string json =
+      "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
+      "\"nodes\":[{\"mesh\":0}],"
+      "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,"
+      "\"TEXCOORD_0\":2},\"indices\":3,\"material\":0}]}],"
+      "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.5,0.5,0.5,1],"
+      "\"metallicFactor\":0,\"roughnessFactor\":0.8},\"normalTexture\":{\"index\":0}}],"
+      "\"textures\":[{\"source\":0}],\"images\":[{\"uri\":\"normal-" +
+      name +
+      ".png\"}],"
+      "\"accessors\":["
+      "{\"bufferView\":0,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\","
+      "\"min\":[0,0.02,0],\"max\":[2,0.02,2]},"
+      "{\"bufferView\":1,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\"},"
+      "{\"bufferView\":2,\"componentType\":5126,\"count\":4,\"type\":\"VEC2\"},"
+      "{\"bufferView\":3,\"componentType\":5123,\"count\":6,\"type\":\"SCALAR\"}],"
+      "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":48},"
+      "{\"buffer\":0,\"byteOffset\":48,\"byteLength\":48},"
+      "{\"buffer\":0,\"byteOffset\":96,\"byteLength\":32},"
+      "{\"buffer\":0,\"byteOffset\":128,\"byteLength\":12}],"
+      "\"buffers\":[{\"uri\":\"quad-" +
+      name + ".bin\",\"byteLength\":140}]}";
+  std::ofstream out(dir / ("quad-" + name + ".gltf"), std::ios::binary);
+  out.write(json.data(), static_cast<std::streamsize>(json.size()));
+  return out.good();
+}
+}  // namespace
+
+// **One normal map lights the same flank on a mesh and on the ground** (R202; gfx.md, "The
+// author's tangent frame"; docs/experiments/tangent-space-convention.md). The ground's layer and a
+// mesh quad lying on it read one constant map leaning the normal 45 degrees towards +Y of the
+// image — up the image, against v, which on both surfaces runs along +z — so a correct reading
+// leans both towards -z: under a low sun from -z the map makes both brighter than the same map
+// with its green turned over. The mesh draws through the frame the resolve derives from its UVs,
+// the ground through its projection's fixed frame; before R202 both read the map the other way up.
+TEST_CASE("renderer: one normal map lights the same flank on a mesh and on the ground") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(renderer_test::device_options(), &error)) {
+    MESSAGE("no device: " << error);
+    return;
+  }
+  const test::TempDir tmp("terrain_mesh_same_relief");
+  write_pixel(tmp.file("colour.png"), 128, 128, 128);
+  f64 mean[2][2] = {};  // [green up, green turned over][the quad, the ground]
+  u32 count[2][2] = {};
+  for (u32 flip = 0; flip < 2; ++flip) {
+    const std::string name = flip == 0 ? "up" : "down";
+    const std::filesystem::path dir = std::filesystem::path(tmp.file("colour.png")).parent_path();
+    const u8 lean[4] = {128, static_cast<u8>(flip == 0 ? 218 : 37), 218, 255};
+    Vector<u8> map;
+    for (u32 i = 0; i < 4 * 4 * 4; ++i)
+      map.push_back(lean[i % 4]);
+    REQUIRE(image::write_png(tmp.file("normal-" + name + ".png"), 4, 4, 4,
+                             {map.data(), map.size()}) == io::Status::Ok);
+    REQUIRE(write_mapped_quad(dir, name));
+    SceneDesc desc;
+    desc.meshes.push_back(tmp.file("quad-" + name + ".gltf"));
+    desc.terrain = ground(tmp.file("colour.png"));
+    desc.terrain.materials->layers[0].normal = tmp.file("normal-" + name + ".png");
+    desc.terrain.materials->layers[0].tile_m = 2.0f;
+    desc.terrain.materials->layers[0].roughness_factor = 0.8f;
+    desc.cache = false;
+    SceneData data;
+    REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+    RenderSettings settings;
+    settings.lights = false;
+    settings.shadows = ShadowMode::Off;
+    settings.sun_azimuth_deg = -90.0f;  // towards -z
+    settings.sun_elevation_deg = 20.0f;
+    ResolvedSettings resolved;
+    resolve_settings(settings, device.features(), &data, resolved);
+    if (check_availability(resolved, device.features()) != RenderAvailability::Ok) {
+      MESSAGE("rendering unavailable on this device");
+      device.destroy();
+      return;
+    }
+    GpuScene scene;
+    REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), error);
+    SceneRenderer renderer;
+    SceneRenderer::Desc rd;
+    rd.width = 160;
+    rd.height = 120;
+    REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), error);
+    FrameDesc frame;
+    frame.camera.position = WorldPos{1, 4, 2};
+    frame.camera.target = WorldPos{1, 0, 1};
+    CapturedFrame shot;
+    REQUIRE_MESSAGE(renderer.render_offscreen(frame, &error), error);
+    CaptureChannels channels;
+    channels.color = true;
+    channels.ids = true;
+    REQUIRE_MESSAGE(renderer.capture(frame, channels, shot, &error), error);
+    // The quad is under the picture's centre; every other covered pixel is the ground.
+    const u32 centre = ((shot.height / 2) * shot.width + shot.width / 2) * k_id_words;
+    for (u32 p = 0; p < shot.width * shot.height; ++p) {
+      const u32 w = p * k_id_words;
+      if (shot.ids[w] == k_no_id) continue;
+      bool quad = true;
+      for (u32 i = 0; i < k_id_words; ++i)
+        quad = quad && shot.ids[w + i] == shot.ids[centre + i];
+      const u32 s = quad ? 0u : 1u;
+      mean[flip][s] +=
+          static_cast<f64>(shot.color[p * 4]) + shot.color[p * 4 + 1] + shot.color[p * 4 + 2];
+      ++count[flip][s];
+    }
+    renderer.destroy();
+    scene.destroy();
+  }
+  for (u32 flip = 0; flip < 2; ++flip)
+    for (u32 s = 0; s < 2; ++s) {
+      REQUIRE(count[flip][s] > 1000);
+      mean[flip][s] /= 3.0 * count[flip][s];
+    }
+  MESSAGE("the map leaning up the image against turned over, under a sun from -z: the quad "
+          << mean[0][0] << " against " << mean[1][0] << ", the ground " << mean[0][1] << " against "
+          << mean[1][1] << " (mean code)");
+  // Up the image is -z on both, which faces the sun: both surfaces brighter with the map as made.
+  CHECK(mean[0][0] > mean[1][0] + 5.0);
+  CHECK(mean[0][1] > mean[1][1] + 5.0);
+  device.destroy();
+}
+
+namespace {
+// A test ground with walls facing all four ways: a square mesa 2 m high over |x|, |z| <= 1 m,
+// standing on a flat floor. On the 33-point grid over 16 m (half-metre cells) each wall rises over
+// one cell, 76 degrees, so its texture comes from the side projection of its own plane.
+f32 mesa_height(const void*, f32 x, f32 z) noexcept {
+  return std::fabs(x) <= 1.0f && std::fabs(z) <= 1.0f ? 2.0f : 0.0f;
+}
+constexpr scene_gen::GroundOps k_mesa_ops{.height = &mesa_height};
+bool mesa_make(const scene::Terrain&, const scene_gen::Context&, scene_gen::GroundProvider& out,
+               std::string*) {
+  out = scene_gen::GroundProvider(&k_mesa_ops, nullptr);
+  return true;
+}
+constexpr scene_gen::GroundProviderDesc k_mesa_provider{
+    .name = "mesa_probe", .make = &mesa_make, .flags = 0};
+const scene_gen::Registrar k_mesa_registrar{k_mesa_provider};
+}  // namespace
+
+// **The side projections read the map the same way** (R202;
+// docs/experiments/tangent-space-convention.md, "The known relief"): a wall facing +x takes the
+// projection over (z, y) and one
+// facing +z the projection over (x, y), each with its tangent along +u and its bitangent -dP/dv,
+// which is -y, whichever way the wall faces. One constant map leaning the normal 45 degrees up the
+// image therefore leans every wall's normal down, so under a sun overhead every wall is darker with
+// the map as made than with its green turned over; before R202 the sides' bitangent was +y and
+// every wall was brighter. The tangent is held the same way: a second map leaning along +u leans
+// the ±x walls' normals to +z and the ±z walls' to +x, which a sun from +z and one from +x see, so
+// a tangent turned over on the walls facing -x or -z fails. Each wall's pixels are told by the
+// surface normal, the mean of the two pictures' normals (the two leans cancel). Drawn with the
+// layer's plain sampling and with its stochastic sampling under a turn of up to 60 degrees.
+TEST_CASE("renderer: one normal map lights the ground's four walls through their own projections") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(renderer_test::device_options(), &error)) {
+    MESSAGE("no device: " << error);
+    return;
+  }
+  const test::TempDir tmp("terrain_wall_relief");
+  write_pixel(tmp.file("colour.png"), 128, 128, 128);
+  // Two pairs of constant maps: leaning 45 degrees up the image (green) and turned over, and
+  // leaning 45 degrees along +u (red) and turned over.
+  const char* const map_names[4] = {"normal-up.png", "normal-down.png", "normal-right.png",
+                                    "normal-left.png"};
+  const u8 leans[4][4] = {
+      {128, 218, 218, 255}, {128, 37, 218, 255}, {218, 128, 218, 255}, {37, 128, 218, 255}};
+  for (u32 m = 0; m < 4; ++m) {
+    Vector<u8> map;
+    for (u32 i = 0; i < 4 * 4 * 4; ++i)
+      map.push_back(leans[m][i % 4]);
+    REQUIRE(image::write_png(tmp.file(map_names[m]), 4, 4, 4, {map.data(), map.size()}) ==
+            io::Status::Ok);
+  }
+  const char* const wall_names[4] = {"+x", "-x", "+z", "-z"};
+  for (u32 stochastic = 0; stochastic < 2; ++stochastic) {
+    const auto shoot = [&](u32 map, f32 azimuth_deg, f32 elevation_deg, CapturedFrame& shot) {
+      SceneDesc desc;
+      desc.meshes.push_back("");
+      desc.terrain = ground(tmp.file("colour.png"));
+      desc.terrain.provider = "mesa_probe";
+      desc.terrain.size = 33;
+      scene::TerrainMaterialLayer& layer = desc.terrain.materials->layers[0];
+      layer.normal = tmp.file(map_names[map]);
+      layer.tile_m = 2.0f;
+      layer.roughness_factor = 0.8f;
+      if (stochastic != 0) {
+        layer.sampling = scene::TerrainSampling::Stochastic;
+        layer.rotation_deg = 60;
+      }
+      desc.cache = false;
+      SceneData data;
+      REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+      RenderSettings settings;
+      settings.lights = false;
+      settings.shadows = ShadowMode::Off;
+      settings.sun_azimuth_deg = azimuth_deg;
+      settings.sun_elevation_deg = elevation_deg;
+      ResolvedSettings resolved;
+      resolve_settings(settings, device.features(), &data, resolved);
+      if (check_availability(resolved, device.features()) != RenderAvailability::Ok) return false;
+      GpuScene scene;
+      REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), error);
+      SceneRenderer renderer;
+      SceneRenderer::Desc rd;
+      rd.width = 160;
+      rd.height = 160;
+      REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), error);
+      FrameDesc frame;
+      frame.camera.position = WorldPos{0.01, 6, 0.02};
+      frame.camera.target = WorldPos{0, 0, 0};
+      REQUIRE_MESSAGE(renderer.render_offscreen(frame, &error), error);
+      CaptureChannels channels;
+      channels.color = true;
+      channels.normals = true;
+      REQUIRE_MESSAGE(renderer.capture(frame, channels, shot, &error), error);
+      renderer.destroy();
+      scene.destroy();
+      return true;
+    };
+    // Each wall's pixels are told by the mean of a pair's normals (the two leans cancel); the
+    // result is each wall's mean code in either picture.
+    const auto walls = [&](const CapturedFrame& a, const CapturedFrame& b, f64(&mean)[2][4],
+                           u32(&count)[4]) {
+      REQUIRE(a.normals.size() == b.normals.size());
+      for (u32 p = 0; p < a.width * a.height; ++p) {
+        f64 n[3];
+        for (u32 c = 0; c < 3; ++c)
+          n[c] = (a.normals[p * 3 + c] + b.normals[p * 3 + c]) / 255.0 - 1.0;
+        const f64 len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        if (len < 0.1) continue;
+        const f64 x = n[0] / len;
+        const f64 z = n[2] / len;
+        i32 wall = -1;
+        if (x > 0.8) wall = 0;
+        if (x < -0.8) wall = 1;
+        if (z > 0.8) wall = 2;
+        if (z < -0.8) wall = 3;
+        if (wall < 0) continue;
+        ++count[wall];
+        for (u32 f = 0; f < 2; ++f) {
+          const CapturedFrame& s = f == 0 ? a : b;
+          mean[f][wall] +=
+              (static_cast<f64>(s.color[p * 4]) + s.color[p * 4 + 1] + s.color[p * 4 + 2]) / 3.0;
+        }
+      }
+      for (u32 w = 0; w < 4; ++w) {
+        REQUIRE_MESSAGE(count[w] > 100, std::string(wall_names[w])
+                                            << " wall: " << count[w] << " pixels");
+        mean[0][w] /= count[w];
+        mean[1][w] /= count[w];
+      }
+    };
+    const std::string mode = stochastic != 0 ? "stochastic" : "plain";
+    // The bitangent: under a sun overhead (no wall faces it more than another) the green as made
+    // leans every wall's normal down, -y, and every wall is darker than with it turned over.
+    CapturedFrame up, down;
+    if (!shoot(0, -90.0f, 89.0f, up)) {
+      MESSAGE("rendering unavailable on this device");
+      device.destroy();
+      return;
+    }
+    REQUIRE(shoot(1, -90.0f, 89.0f, down));
+    f64 mean[2][4] = {};  // [as made, turned over][+x, -x, +z, -z]
+    u32 count[4] = {};
+    walls(up, down, mean, count);
+    for (u32 w = 0; w < 4; ++w) {
+      MESSAGE(mode << " sampling, the " << std::string(wall_names[w]) << " wall (" << count[w]
+                   << " pixels): the map as made " << mean[0][w] << ", turned over " << mean[1][w]
+                   << " (mean code)");
+      // Up the image is -y on every wall: the map as made leans it away from the sun overhead.
+      CHECK_MESSAGE(mean[0][w] + 5.0 < mean[1][w], std::string(wall_names[w]) << " wall");
+    }
+    // The tangent: a side projection's u is world z on the walls facing +x and -x and world x on
+    // those facing +z and -z, on both signs, so the red as made leans the ±x walls' normals to +z
+    // and the ±z walls' to +x. Under a sun 45 degrees up from +z (azimuth 90) the ±x walls are
+    // brighter as made than with the red turned over, and under one from +x (azimuth 0) the ±z
+    // walls are; a tangent turned over on the -x or -z wall reads the other way there.
+    for (u32 pair = 0; pair < 2; ++pair) {
+      const f32 azimuth = pair == 0 ? 90.0f : 0.0f;
+      CapturedFrame right, left;
+      REQUIRE(shoot(2, azimuth, 45.0f, right));
+      REQUIRE(shoot(3, azimuth, 45.0f, left));
+      f64 lit[2][4] = {};
+      u32 lit_count[4] = {};
+      walls(right, left, lit, lit_count);
+      for (u32 w = pair == 0 ? 0u : 2u; w < (pair == 0 ? 2u : 4u); ++w) {
+        MESSAGE(mode << " sampling, the " << std::string(wall_names[w]) << " wall (" << lit_count[w]
+                     << " pixels) under a sun from " << (pair == 0 ? "+z" : "+x")
+                     << ": the map leaning along +u " << lit[0][w] << ", turned over " << lit[1][w]
+                     << " (mean code)");
+        CHECK_MESSAGE(lit[0][w] > lit[1][w] + 5.0, std::string(wall_names[w]) << " wall, +u");
+      }
+    }
+  }
   device.destroy();
 }

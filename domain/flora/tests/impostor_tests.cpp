@@ -4,8 +4,11 @@
 
 #include <core/hash/hash.h>
 #include <domain/assets/mesh_generator.h>
+#include <domain/flora/alpine.h>
 #include <domain/flora/flora.h>
 #include <domain/flora/impostor.h>
+#include <domain/flora/regeneration.h>
+#include <domain/flora/shrubs.h>
 #include <domain/flora/trees.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/flora_species.h>
@@ -169,8 +172,8 @@ TEST_CASE("impostor chain: the bake is the same bytes every time and on every to
   // to 1.36 of its leaves' coverage plain and 1.00 to 1.06 kept and fitted: "a broadleaf's levels
   // keep its leaves' coverage"); they were 0x6f314c381c5847f1, 0xca1c3ce8b9210d9b,
   // 0x0cb5e52d702765cd, 0x30da20a4f48c3977.
-  constexpr u64 k_golden[4] = {0x611950356c4c1b54ull, 0xf3a43c029429cffdull, 0x5160dbf4319065a2ull,
-                               0xfa3aa31d9c779b90ull};
+  constexpr u64 k_golden[4] = {0x611950356c4c1b54ull, 0x8ee8ce8a762f04c1ull, 0x5160dbf4319065a2ull,
+                               0x274c9d02f3ab14feull};
   for (u32 k = 0; k < 4; ++k)
     CHECK(hashes[k] == k_golden[k]);
 }
@@ -461,10 +464,11 @@ TEST_CASE("impostor bake: a leaf's normal map tilts the baked normal in the card
     centre_texel(tilted.normal, n);
     // Each channel is a byte of 255 (0.004 a step) and the vector went through f32 (1e-7).
     const f64 tolerance = 1.5 / 255.0;
-    // T = dP/du and B = dP/dv: aligned, the map's (x, y) are the card's (u, v); turned, its x is
-    // along the card's v and its y along the card's u.
-    CHECK(n[0] == doctest::Approx((is_turned ? my : mx) * 0.5 + 0.5).epsilon(tolerance));
-    CHECK(n[1] == doctest::Approx((is_turned ? mx : my) * 0.5 + 0.5).epsilon(tolerance));
+    // T = dP/du and B = -dP/dv on the leaf and on the card (R202: a map's +Y is up the image):
+    // aligned, the map's (x, y) are the card's; turned, the map's T is the card's v and its B the
+    // card's -u, so the card reads x = -my and y = -mx.
+    CHECK(n[0] == doctest::Approx((is_turned ? -my : mx) * 0.5 + 0.5).epsilon(tolerance));
+    CHECK(n[1] == doctest::Approx((is_turned ? -mx : my) * 0.5 + 0.5).epsilon(tolerance));
     CHECK(n[2] == doctest::Approx(mz * 0.5 + 0.5).epsilon(tolerance));
     // The tilt is real: with no map the same texel is the flat face (0.5, 0.5, 1).
     flora::BakedAtlas flat;
@@ -875,11 +879,14 @@ TEST_CASE("impostor chain: the conifer profiles and the matured conifer build it
     CHECK(flora::flora_source_hash(file) == h);
     u64 container = 0;
     REQUIRE(flora::flora_source_hash_with(file, {}, container, error));
-    // And the seat's version after the chain's (G201 stage 2), which every tree takes, and the
-    // structural table's (A45), which the broadleaf and the conifer take.
-    CHECK(container == hash_combine(hash_combine(hash_combine(h, flora::k_conifer_chain_version),
-                                                 flora::k_flora_seat_version),
-                                    flora::k_flora_structure_version));
+    // The bakes' convention first (R202: a family that bakes a normal), then the seat's version
+    // after the chain's (G201 stage 2), which every tree takes, and the structural table's (A45),
+    // which the broadleaf and the conifer take.
+    CHECK(container ==
+          hash_combine(hash_combine(hash_combine(hash_combine(h, flora::k_baked_normal_convention),
+                                                 flora::k_conifer_chain_version),
+                                    flora::k_flora_seat_version),
+                       flora::k_flora_structure_version));
     CHECK(data.source_hash == container);
   }
   // A broadleaf profile carries the G129 shape salt, but never the conifer chain salt.
@@ -898,9 +905,11 @@ TEST_CASE("impostor chain: the conifer profiles and the matured conifer build it
   // The broadleaf solver's chain version (G121) where the conifers take theirs, then the seat's
   // (G201) and the structural table's (A45).
   CHECK(oak_container ==
-        hash_combine(hash_combine(hash_combine(oak_hash, flora::k_broadleaf_chain_version),
-                                  flora::k_flora_seat_version),
-                     flora::k_flora_structure_version));
+        hash_combine(
+            hash_combine(hash_combine(hash_combine(oak_hash, flora::k_baked_normal_convention),
+                                      flora::k_broadleaf_chain_version),
+                         flora::k_flora_seat_version),
+            flora::k_flora_structure_version));
   // Off is the container it was: no level, no atlas.
   flora::FloraFile off;
   REQUIRE(flora::read_flora_file(R"({"species":"pine","tree":{"height_m":8,)"
@@ -911,6 +920,78 @@ TEST_CASE("impostor chain: the conifer profiles and the matured conifer build it
   CHECK(plain.impostors.empty());
   CHECK(plain.images.empty());
   CHECK(plain.materials.size() == 2u);
+}
+
+// R202: the container key takes `k_baked_normal_convention` for the families `bakes_normals` names,
+// a list kept by hand beside `solve_flora`'s dispatch; a family whose solver hands back a chain and
+// is missing from it would cache its normal atlases without the convention. One recipe per branch
+// of the dispatch, each at the smallest parameters a test here already uses or the defaults: a
+// regeneration form, the first alpine and the first shrub profile, a tree species, and every named
+// family. Left out: the legacy-maturity path (`tree.age_years` above zero), which resolves to
+// broadleaf, conifer or a named family's own solver, all of which are here.
+TEST_CASE("flora: bakes_normals answers as the solver's dispatch does") {
+  Vector<flora::FloraFile> files;
+  std::string error;
+  {
+    flora::FloraFile f;
+    f.species = geometry::flora_species_info(flora::regeneration_profiles().front().species).name;
+    f.regeneration.emplace();
+    f.regeneration->height_m = .7f;
+    f.regeneration->leader_loss = .3f;
+    f.regeneration->recovery = .8f;
+    files.push_back(std::move(f));
+  }
+  {
+    flora::FloraFile f;
+    f.species = geometry::flora_species_info(flora::alpine_profiles().front().species).name;
+    files.push_back(std::move(f));
+  }
+  {
+    flora::FloraFile f;
+    f.species = geometry::flora_species_info(flora::shrub_profiles().front().species).name;
+    files.push_back(std::move(f));
+  }
+  {
+    flora::FloraFile f;
+    REQUIRE(flora::read_flora_file(R"({"species":"pine","tree":{"height_m":8,)"
+                                   R"("triangle_budget":20000}})",
+                                   f, error));
+    files.push_back(std::move(f));
+  }
+  {
+    flora::FloraFile f;
+    f.species = flora::k_species_broadleaf;
+    f.broadleaf = small_oak();
+    files.push_back(std::move(f));
+  }
+  {
+    flora::FloraFile f;
+    f.species = flora::k_species_conifer;
+    f.conifer = small_spruce();
+    files.push_back(std::move(f));
+  }
+  for (const char* species :
+       {flora::k_species_birch, flora::k_species_ancient, "sward", flora::k_species_willow,
+        flora::k_species_orchard, flora::k_species_shrub, flora::k_species_fern,
+        flora::k_species_tuft, flora::k_species_herb, flora::k_species_meadow, "roots",
+        flora::k_species_date_palm}) {
+    flora::FloraFile f;
+    f.species = species;
+    files.push_back(std::move(f));
+  }
+  u32 chains = 0;
+  for (const flora::FloraFile& file : files) {
+    assets::MeshData mesh;
+    flora::Motion motion;
+    flora::TreeLevels levels;
+    CAPTURE(file.species);
+    REQUIRE_MESSAGE(flora::solve_flora(file, mesh, motion, nullptr, nullptr, error, &levels),
+                    error);
+    MESSAGE(file.species << ": " << levels.levels.size() << " baked levels");
+    CHECK(flora::bakes_normals(file) == !levels.levels.empty());
+    chains += levels.levels.empty() ? 0 : 1;
+  }
+  CHECK(chains == 9u);  // the first nine recipes: the regeneration form to the sward
 }
 
 TEST_CASE("impostor bake: a conifer's levels draw its needle mass, no less and no more") {
@@ -1127,8 +1208,8 @@ TEST_CASE("impostor chain: a conifer's bake is the same bytes every time and on 
   // (2026-11-15, MSVC only so far): the sprays the bake draws are folded with leaning normals
   // (`build_bough`), so all four moved; they were 0x618d2ec59d250c70, 0xd2cad8a88487eb1a,
   // 0xea83f89d59e7f64a, 0x952c227072ca6701.
-  constexpr u64 k_golden[4] = {0xb8d183bb935618eeull, 0x6c1c94dfab66cfebull, 0x61a69c87fbfe24e9ull,
-                               0xba3f618364888268ull};
+  constexpr u64 k_golden[4] = {0xb8d183bb935618eeull, 0x7b9d531e5acc8040ull, 0x61a69c87fbfe24e9ull,
+                               0x385eb5ebe7a95194ull};
   for (u32 k = 0; k < 4; ++k)
     CHECK(hashes[k] == k_golden[k]);
 }

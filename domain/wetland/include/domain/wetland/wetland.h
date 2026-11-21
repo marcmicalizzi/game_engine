@@ -7,7 +7,9 @@
 #include <schemas/wetland.h>
 
 namespace engine::wetland {
-inline constexpr u32 k_wetland_version = 4;
+// 5: its far cards are baked by flora's `bake_level`, whose normals are now +Y up the image, the
+//    engine's one tangent-space convention (R202; docs/experiments/tangent-space-convention.md).
+inline constexpr u32 k_wetland_version = 5;
 // Dimensions and provenance: docs/experiments/wetland-plants.md.
 // Names, budgets and runtime motion traits live only in geometry's species catalogue.
 struct Profile {
@@ -24,6 +26,9 @@ const Profile* profile(std::string_view name) noexcept;
 bool in_range(const Plant& recipe, std::string& error);
 bool read_file(std::string_view text, Plant& out, std::string& error);
 std::string canonical_json(const Plant& recipe);
+// The recipe's canonical text, `k_wetland_version` and `flora::k_baked_normal_convention`: the far
+// cards are baked by flora's `bake_level`, so a step of the convention rebuilds them as it rebuilds
+// every flora family that bakes (docs/subsystems/flora.md).
 u64 source_hash(const Plant& recipe);
 bool solve(const Plant& recipe, assets::MeshData& mesh, flora::Motion& motion, Report& report,
            std::string& error);

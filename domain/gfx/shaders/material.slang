@@ -529,27 +529,40 @@ float screen_geometric_alpha2_at(SceneGeometry geo, InstanceDesc instance, Trian
 // dp2 = T du2 + B dv2, the two edge deltas and the two UV deltas solve for T and B, which are
 // then Gram-Schmidt orthonormalized against the shading normal so the frame is orthonormal and
 // keeps the UV parameterization's handedness (a mirrored UV island gives a mirrored bitangent,
-// which is what a normal map authored on it expects). The positions are the ones the surface was
-// interpolated from, so the frame is in world space like the normal it perturbs and an instance's
-// scale or rotation carries into it. Returns false when there is no frame to build — no vertex
+// which is what a normal map authored on it expects). **The bitangent is turned over**, -dP/dv:
+// a normal map's +Y is up the image and v runs down it (glTF 2.0's top-left UV origin), which is
+// the convention of every map the engine draws — glTF's, `engine-content matgen`'s and the
+// material pack's — and the frame an exporter writes into a glTF file's TANGENT for an unmirrored
+// island (roadmap G2; docs/experiments/tangent-space-convention.md). The positions are the ones
+// the surface was interpolated from, so the frame is in world space like the normal it perturbs
+// and an instance's scale or rotation carries into it — and a deformed instance's are its pool's,
+// so its frame follows its skin. Returns false when there is no frame to build — no vertex
 // attributes, or a triangle whose UV area is degenerate, seam-collapsed or simply absent — and
 // the caller then leaves the normal alone rather than perturbing it by a frame it invented.
 //
 // **The author's frame first** (roadmap G2; docs/subsystems/gfx.md, "The author's tangent frame"):
-// where the scene carries imported streams and all three corners have a tangent, the frame is the
-// asset's — the three tangents interpolated at `b`, through the instance's linear part, made
-// orthogonal to the shading normal, and the bitangent `cross(normal, tangent) * w` exactly as glTF
-// defines it. That is the frame a normal map baked against the asset's tangents (MikkTSpace)
-// expects: smooth across the vertices where the derived one is flat across each triangle, and
-// with the handedness the file states. The normal is the cofactor one (`transform_normal`), so the
-// product needs no sign of its own under a mirroring instance. A corner without a tangent sends the
-// triangle to the derived frame below, as before.
+// where the scene carries imported streams, the instance is rigid and all three corners have a
+// tangent, the frame is the asset's — the three tangents interpolated at `b`, through the
+// instance's linear part, made orthogonal to the shading normal, and the bitangent
+// `cross(normal, tangent) * w` exactly as glTF defines it. That is the frame a normal map baked
+// against the asset's tangents (MikkTSpace) expects: smooth across the vertices where the derived
+// one is flat across each triangle, and with the handedness the file states. The normal is the
+// outward one (`transform_normal`) and the tangent the asset's moved by the linear part, so under a
+// mirroring instance `cross(normal, tangent)` is the mirror image of the asset's bitangent turned
+// over: the product takes the instance's handedness too (`instance_handedness`; R202,
+// docs/subsystems/gfx.md, "A mirroring instance"). The derived frame below needs none, since its
+// bitangent comes from the positions and only its length is taken against the normal. A corner
+// without a tangent sends the triangle to the derived frame below, and so does a
+// **deformed** instance (`deform` not `k_invalid_deform`): its stream holds rest tangents, which
+// no bone has turned — a 90 degree bend leaves the rest tangent along the new normal — and no
+// deformed tangent is carried, so the frame derived from the deformed positions is the one that
+// follows the surface.
 bool tangent_frame(SceneGeometry geo, InstanceDesc instance, TriangleFetch tri, float3 b,
                    float3 normal, out float3 tangent, out float3 bitangent) {
   tangent = float3(1.0, 0.0, 0.0);
   bitangent = float3(0.0, 0.0, 1.0);
   if (geo.attributes == 0) return false;
-  if (geo.extra != 0) {
+  if (geo.extra != 0 && instance.deform == k_invalid_deform) {
     const float4 t0 = decode_tangent(extra_word(geo, tri.local[0], 0, 0u));
     const float4 t1 = decode_tangent(extra_word(geo, tri.local[1], 0, 0u));
     const float4 t2 = decode_tangent(extra_word(geo, tri.local[2], 0, 0u));
@@ -560,7 +573,7 @@ bool tangent_frame(SceneGeometry geo, InstanceDesc instance, TriangleFetch tri, 
       if (t_length >= 1e-12) {
         tangent = t / t_length;
         const float w = b.x * t0.w + b.y * t1.w + b.z * t2.w;
-        bitangent = cross(normal, tangent) * (w < 0.0 ? -1.0 : 1.0);
+        bitangent = cross(normal, tangent) * ((w < 0.0 ? -1.0 : 1.0) * instance_handedness(instance));
         return true;
       }
     }
@@ -585,7 +598,7 @@ bool tangent_frame(SceneGeometry geo, InstanceDesc instance, TriangleFetch tri, 
   b -= normal * dot(normal, b) + tangent * dot(tangent, b);
   const float b_length = length(b);
   if (b_length < 1e-12) return false;
-  bitangent = b / b_length;
+  bitangent = b * (-1.0 / b_length);
   return true;
 }
 

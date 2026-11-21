@@ -1197,11 +1197,31 @@ with the same bilinear, wrapped filter. *The normal*: the face's geometry normal
 viewer, is the base the map perturbs and not a replacement for it. A triangle's tangent frame is
 built the way the resolve builds the near surface's (`tangent_frame` in `material.slang`,
 `triangle_frame` in `impostor.cpp`: T and B from the edges against the UV deltas, T made orthogonal
-to the face normal and B to both, B keeping the UV island's handedness); the map's vector is read
-as the resolve reads it (x and y from the texel, z rebuilt as BC5 stores it, x and y widened by the
-material's `normal_scale`, renormalized), taken into the world by that frame and then into the
-view's u, v and normal axes, so a leaf standing at an angle to its card bends the card's texel by
-what the same leaf bends the near surface. A texel's normal is still the mean of its covered
+to the face normal and B to both, B keeping the UV island's handedness and `-dP/dv` since R202, so a
+map's +Y is up the image, [one tangent-space convention](../experiments/tangent-space-convention.md));
+the map's vector is read as the resolve reads it (x and y from the texel, z rebuilt as BC5 stores it,
+x and y widened by the material's `normal_scale`, renormalized), taken into the world by that frame
+and then into the card's own frame as the resolve derives it — x along the view's u, y along minus
+its v (the card's v rises with the view's up, so its bitangent is -v), z its normal — so a leaf
+standing at an angle to its card bends the card's texel by what the same leaf bends the near
+surface. Until R202 both frames were the other way up, and the sward's ground under its cards was
+baked +Y up beside cards baked +Y down. The convention (`k_baked_normal_convention`) is what is
+baked, not the tree's shape, so it is folded into the container's key (`container_hash`) of every
+family that bakes a normal, which is every family whose solver hands back an impostor chain: a
+regeneration form, the alpine and shrub profiles, every tree species, `broadleaf`, `conifer`,
+`birch`, `ancient` and the sward. The willow, the orchard, the plain shrub, the fern, the tuft, the
+herb, the meadow plant, the roots and the date palm bake none and their keys do not take it
+(`bakes_normals` in `flora.h` names the families from the species alone, before any solve, and
+`flora: bakes_normals answers as the solver's dispatch does` solves one recipe per branch of
+`solve_flora` and holds its answer to whether the solve handed back a chain), and
+neither does `flora_source_hash`, the shape the deadwood and the litter key by. Outside flora the
+one other bake through `bake_level` is the wetland's far cards, and `wetland::source_hash` folds
+the same constant in beside `k_wetland_version`; the sward's ground bake in `engine-content`
+writes to a directory it is named and is not cached. So one step of `k_baked_normal_convention`
+rebuilds every cached bake, and a family's or the wetland's version covers its shape alone.
+`k_flora_version` went to 14 as well, since half the families that bake key on a version of their
+own. A texel's
+normal is still the mean of its covered
 samples' vectors, renormalized: it shortens where the samples disagree, the length is lost at the
 bake, and the texture step builds the atlas's R97 variance chain from the bytes like any normal
 map, which is where the lost length comes back as roughness. A triangle with degenerate UVs keeps

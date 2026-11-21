@@ -192,6 +192,63 @@ TEST_CASE("rocks: unresolved mineral grains retain resolved surface relief") {
   CHECK(rms(bake(RockType::Granite, 256, 0.6f, 0.0f)) < 0.006);
 }
 
+// **Which way the bake's red and green point** (R202;
+// docs/experiments/tangent-space-convention.md): the map is +Y up the image, glTF's, so a height
+// rising along the chart's +v (down the image's rows) gives a green above 128 and one rising along
+// +u a red below it. Each face is the unit square in z = 0 with u along +x and v along +y, so the
+// slopes are known; a bake turned back to +Y down, the convention before R202, puts the green below
+// 128.
+TEST_CASE("rocks: a known slope bakes a green and a red on glTF's side of 128") {
+  using namespace engine::rocks::detail;
+  const auto bake = [](f64 (*height)(D3)) {
+    RockSurfaceMaps settings;
+    settings.resolution = 256;
+    const auto fabric = make_fabric(RockType::Granite, RockGeology{}, 41);
+    assets::MeshData mesh;
+    mesh.materials.emplace_back();
+    Vector<D3> samples;
+    Vector<f64> fresh;
+    for (u32 face = 0; face < 6; ++face)
+      for (u32 y = 0; y < 2; ++y)
+        for (u32 x = 0; x < 2; ++x) {
+          mesh.positions.push_back(Vec3{static_cast<f32>(x), static_cast<f32>(y), 0});
+          samples.push_back(D3{static_cast<f64>(x), static_cast<f64>(y), 0});
+          fresh.push_back(1.0);
+        }
+    SurfaceBake surface;
+    surface.use_height(height);
+    std::string error;
+    REQUIRE(surface.init(settings, 1, error));
+    const u8 diagonals[6] = {};
+    surface.body(0, 1, 0, fabric, RockType::Granite, samples, fresh, diagonals, mesh);
+    REQUIRE(surface.finish(mesh, 1));
+    return decode(mesh, 2);
+  };
+  // The mean red and green over chart 0's interior, in codes.
+  const auto mean = [](const image::Image& image, u32 channel) {
+    f64 sum = 0;
+    u32 count = 0;
+    const u32 cell = image.width / 3;
+    for (u32 y = 8; y < cell - 8; ++y)
+      for (u32 x = 8; x < cell - 8; ++x) {
+        sum += image.pixels[(y * image.width + x) * 3 + channel];
+        ++count;
+      }
+    return sum / count;
+  };
+  // A slope of 0.5: the encoded component is 0.5 / sqrt(1.25), 185 or 70 of 255.
+  const image::Image along_v = bake([](D3 p) { return 0.5 * p.y; });
+  const image::Image along_u = bake([](D3 p) { return 0.5 * p.x; });
+  const f64 v_red = mean(along_v, 0), v_green = mean(along_v, 1);
+  const f64 u_red = mean(along_u, 0), u_green = mean(along_u, 1);
+  MESSAGE("height along +v: red " << v_red << ", green " << v_green << "; along +u: red " << u_red
+                                  << ", green " << u_green);
+  CHECK(v_green > 180.0);
+  CHECK(std::fabs(v_red - 127.5) < 2.0);
+  CHECK(u_red < 75.0);
+  CHECK(std::fabs(u_green - 127.5) < 2.0);
+}
+
 TEST_CASE(
     "rocks: baked maps reject ambiguous paths, unsupported cliffs and excessive chart counts") {
   auto file = recipe();

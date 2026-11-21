@@ -23,6 +23,7 @@ struct Field {
   D3 base;
   f64 roughness;
   D3 vein_axis;
+  f64 (*height_override)(D3) = nullptr;  // SurfaceBake::use_height's, for a case
 
   Sample at(D3 p, f64 footprint) const {
     const f64 grain = wide(settings.grain_m);
@@ -79,8 +80,10 @@ struct Field {
       relief += weight * wavelength * 0.12 * (2.0 * n - 1.0);
       wavelength *= 0.5;
     }
-    const f64 height = fabric.model.granular * variation *
-                       (relief * (0.35 + 0.65 * fabric.exposure) + grain * 0.16 * grains);
+    const f64 height = height_override != nullptr
+                           ? height_override(p)
+                           : fabric.model.granular * variation *
+                                 (relief * (0.35 + 0.65 * fabric.exposure) + grain * 0.16 * grains);
     return {body * (1.0 - vein) + vein_colour * vein, std::clamp(lerp(r, 0.38, vein), 0.02, 1.0),
             height};
   }
@@ -130,7 +133,8 @@ void SurfaceBake::body(u32 part, u32 n, u32 first, const Fabric& fabric, RockTyp
       type,
       {wide(material.base_color.x), wide(material.base_color.y), wide(material.base_color.z)},
       wide(material.roughness),
-      rng.direction()};
+      rng.direction(),
+      height_};
   const u32 side = n + 1;
   const f64 extent = static_cast<f64>(cell_ - 2u * k_pad - 1u);
   for (u32 f = 0; f < 6; ++f) {
@@ -227,8 +231,10 @@ void SurfaceBake::body(u32 part, u32 n, u32 first, const Fabric& fabric, RockTyp
         const f64 dy = (field.at(p + sb * step, footprint).height -
                         field.at(p - sb * step, footprint).height) /
                        (2.0 * step);
-        // Change grain response, not the height of the coating boundary itself.
-        const D3 nn = normalized(D3{-dx * grain_scale, -dy * grain_scale, 1.0});
+        // Change grain response, not the height of the coating boundary itself. The map is +Y up
+        // the image, against the chart's v (R202; docs/experiments/tangent-space-convention.md):
+        // its green is +dh/dv, which the resolve's bitangent -dP/dv turns back into -dh along v.
+        const D3 nn = normalized(D3{-dx * grain_scale, dy * grain_scale, 1.0});
         const u32 pixel = (((chart / columns_) * cell_ + y) * settings_.resolution +
                            (chart % columns_) * cell_ + x) *
                           3u;

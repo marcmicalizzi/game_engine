@@ -444,6 +444,10 @@ TEST_CASE("gltf G2: the Khronos samples' tangents against the per-triangle frame
     REQUIRE(mesh.tangents.size() == mesh.positions.size());
     REQUIRE(mesh.normals.size() == mesh.positions.size());
     u32 corners = 0, apart = 0, mirrored = 0, unframed = 0;
+    // The corners split by the sign of their triangle's UV area: [the file's bitangent along +dP/dv,
+    // against it][area > 0, area < 0] (R202; docs/experiments/tangent-space-convention.md, "The
+    // author's frame against the derived one").
+    u32 by_area[2][2] = {};
     for (u32 t = 0; t + 2 < mesh.indices.size(); t += 3) {
       const u32 c[3] = {mesh.indices[t], mesh.indices[t + 1], mesh.indices[t + 2]};
       const Vec3 e1 = mesh.positions[c[1]] - mesh.positions[c[0]];
@@ -474,9 +478,14 @@ TEST_CASE("gltf G2: the Khronos samples' tangents against the per-triangle frame
         if (!(length_squared(own) > 1e-20f)) continue;
         own = normalize(own);
         if (dot(own, tangent) < std::cos(10.0f * 3.14159265f / 180.0f)) ++apart;
-        if (dot(cross(n, own) * asset.w, bitangent) < 0.0f) ++mirrored;
+        const bool against = dot(cross(n, own) * asset.w, bitangent) < 0.0f;
+        if (against) ++mirrored;
+        ++by_area[against ? 1 : 0][area > 0.0f ? 0 : 1];
       }
     }
+    MESSAGE(relative << ": the file's bitangent along +dP/dv on " << by_area[0][0]
+                     << " corners of positive UV area and " << by_area[0][1]
+                     << " of negative; against it on " << by_area[1][0] << " and " << by_area[1][1]);
     MESSAGE(relative << ": " << corners << " corners with a tangent; " << apart
                      << " more than 10 degrees from the per-triangle frame ("
                      << (corners ? 100.0 * apart / corners : 0.0) << " %), " << mirrored

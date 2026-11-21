@@ -104,28 +104,31 @@ f32 bark_field(Vec2 uv, u64 seed) {
                           .25 * noise(seed + 97, u * 17, v * 6));
 }
 bool bake_surface(const DeadwoodFile& file, u32 role, u32 material, f32 end_span,
-                  geometry::ClusterFileData& out, std::string& error) {
+                  geometry::ClusterFileData& out, std::string& error, f64 (*height)(f64 u, f64 v)) {
   if (file.surface_resolution == 0) return true;
   const u32 size = file.surface_resolution;
   const f64 step = 1.0 / size;
   const Field field{file, role, static_cast<f64>(end_span)};
+  const auto relief = [&](f64 u, f64 v) {
+    return height != nullptr ? height(u, v) : field.at(u, v).height;
+  };
   Vector<u8> colour(size * size * 3), normal(colour.size()), roughness(colour.size());
   for (u32 y = 0; y < size; ++y) {
     for (u32 x = 0; x < size; ++x) {
       const f64 u = (x + .5) * step, v = (y + .5) * step;
       const auto sample = field.at(u, v);
       const f64 physical_step = step * (role == 1 ? field.span : 1);
-      const f64 dx =
-          (field.at(u + step, v).height - field.at(u - step, v).height) / (2 * physical_step);
-      const f64 dy =
-          (field.at(u, v + step).height - field.at(u, v - step).height) / (2 * physical_step);
+      const f64 dx = (relief(u + step, v) - relief(u - step, v)) / (2 * physical_step);
+      const f64 dy = (relief(u, v + step) - relief(u, v - step)) / (2 * physical_step);
       const f64 scale = 1 / std::sqrt(dx * dx + dy * dy + 1);
       const u32 at = (y * size + x) * 3;
       colour[at] = byte(sample.r);
       colour[at + 1] = byte(sample.g);
       colour[at + 2] = byte(sample.b);
       normal[at] = byte(.5 - dx * scale * .5);
-      normal[at + 1] = byte(.5 - dy * scale * .5);
+      // +Y up the image, against v (R202; docs/experiments/tangent-space-convention.md): the
+      // green is +dh/dv, which the resolve's bitangent -dP/dv turns back into -dh along v.
+      normal[at + 1] = byte(.5 + dy * scale * .5);
       normal[at + 2] = byte(.5 + scale * .5);
       roughness[at] = 255;
       roughness[at + 1] = byte(sample.roughness);

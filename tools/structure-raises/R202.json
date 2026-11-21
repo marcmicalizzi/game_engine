@@ -1,0 +1,13 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R202",
+  "reason": "R202's one tangent-space convention: each page says which way its frame or bake reads a normal map and links the grounding page; gfx.md says what a mirroring instance draws, the mirrored author's frame's sign and a deformed frame's limit without a normal pool (R203), and flora.md which families and which other bakes key the bakes' convention and the case that holds the families to the solver",
+  "date": "2026-11-21",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 745,
+    "page:docs/subsystems/gfx.md": 4049,
+    "page:docs/subsystems/flora.md": 1786,
+    "page:docs/subsystems/rocks.md": 400
+  }
+}

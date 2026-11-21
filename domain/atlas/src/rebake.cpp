@@ -222,8 +222,11 @@ void texel_range(f64 lo, f64 hi, f64 margin, u32 size, u32& first, u32& last) no
 }
 
 // The renderer's frame (material.slang `tangent_frame`): tangent and bitangent from the triangle's
-// position edges and UV deltas, then Gram-Schmidt against `normal`. False where the renderer
-// would not perturb the normal at all.
+// position edges and UV deltas, then Gram-Schmidt against `normal`, and the bitangent turned over
+// to -dP/dv as the renderer turns it: a map's +Y is up the image, glTF's convention and every
+// engine map's (G2; docs/experiments/tangent-space-convention.md). A rebake converts between two
+// UV frames, so it is right only in the convention the renderer reads the result in. False where
+// the renderer would not perturb the normal at all.
 bool tangent_frame(const D3 p[3], const D2 uv[3], D3 normal, D3& tangent, D3& bitangent) noexcept {
   const D3 e1 = p[1] - p[0];
   const D3 e2 = p[2] - p[0];
@@ -241,7 +244,7 @@ bool tangent_frame(const D3 p[3], const D2 uv[3], D3 normal, D3& tangent, D3& bi
   b = b - (normal * dot3(normal, b) + tangent * dot3(tangent, b));
   const f64 b_length = length3(b);
   if (b_length < k_frame_length_epsilon) return false;
-  bitangent = b * (1.0 / b_length);
+  bitangent = b * (-1.0 / b_length);
   return true;
 }
 

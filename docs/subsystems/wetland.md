@@ -43,7 +43,8 @@ An impossible floor is an error naming the required count.
 The cluster builder caps generic simplification at one micrometre, then carries
 the full source cut until one authored six-triangle level: three orthogonal views of the complete stand. Flora's CPU
 baker produces a 256-square colour/alpha atlas and normal atlas, plus roughness
-when supplied by a pack. One-texel borders protect atlas sampling. Transitions
+when supplied by a pack. The normal atlas is +Y up the image since `k_wetland_version` 5, the
+engine's one tangent-space convention (R202, [tangent-space convention](../experiments/tangent-space-convention.md)). One-texel borders protect atlas sampling. Transitions
 carry measured coverage difference floored at half-extent (roughly ten pixels
 at the default foliage threshold), and geometric half-extent plus half-texel
 error; both material DAGs share a transition sphere. Distance forms use the

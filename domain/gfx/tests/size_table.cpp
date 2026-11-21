@@ -311,7 +311,7 @@ ENGINE_EXPECT_SIZE(48, 8, gfx::HizParams);
 // "Indirect light", "Stage 4"), a row of its own that only the sample pass reads. 592, not 576:
 // the crowns' priors — the table's address and the meshes it covers (R69 stage 7; renderer.md,
 // "Indirect light", "Stage 7"), a row of its own. 608, not 592: the imported streams' address
-// (xtra, roadmap G2; gfx.md, "The author's tangent frame"), a row of its own.
+// (`extra`, roadmap G2; gfx.md, "The author's tangent frame"), a row of its own.
 ENGINE_EXPECT_SIZE(608, 8, gfx::ResolveParams);
 // One per mesh of a scene with crowns, mirrored on the GPU (gi_cache.slang, `CrownPrior`): where
 // the mesh's grid of its own shade is, in mesh space and in the table's bytes (crown_prior.h).

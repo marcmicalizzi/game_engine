@@ -73,7 +73,17 @@ namespace engine::flora {
 // 13: foliage optics on every leaf and needle material (R164; flora.md, "Foliage optics"): a
 //    leaf transmits, a needle card's normals are a sphere's; the container's alpha word carries
 //    them, so an entry built at 12 draws its foliage as a sheet lit from the eye's side alone.
-inline constexpr u32 k_flora_version = 13;
+// 14: the impostor bake's tangent frames turn their bitangent over to -dP/dv, the resolve's (R202;
+//    docs/experiments/tangent-space-convention.md): an atlas baked at 13 stores its normals' second
+//    component the other way up, so the renderer would read every card's relief upside down.
+inline constexpr u32 k_flora_version = 14;
+// The convention every baked normal of every family is written in (R202: +Y up the image, a
+// derived bitangent of -dP/dv), folded into the container's key of every family that bakes a
+// normal (those whose solver hands back an impostor chain; `container_hash` in flora.cpp), since
+// half of them key on a version of their own; not into `flora_source_hash`, the tree's shape, so a
+// family that bakes none, the deadwood and the litter do not rebuild when it moves.
+// 1: R202, the first value folded; an entry from before it baked the other way up.
+inline constexpr u32 k_baked_normal_convention = 1;
 // G129: broadleaf/birch shape and baked-LOD invalidation, without rebuilding other architectures.
 inline constexpr u32 k_branch_taper_version = 2;
 
@@ -194,6 +204,12 @@ u64 fold_foliage_optics(u64 h) noexcept;
 // a host that supplies images must successfully read every referenced bake input.
 bool flora_source_hash_with(const FloraFile& file, const assets::MeshGeneratorInputs& inputs,
                             u64& out, std::string& error);
+
+// Whether the file's family bakes a normal atlas — whether `solve_flora` hands it an impostor
+// chain — decided from the family alone, before any solve, so the container key can take
+// `k_baked_normal_convention` for exactly those. A second statement of `solve_flora`'s dispatch;
+// `flora: bakes_normals answers as the solver's dispatch does` holds the two equal.
+bool bakes_normals(const FloraFile& file);
 
 // The build key over that hash: `assets::generated_mesh_build_key` —
 // `cluster_cache_key(source_hash, lod, false, page_bytes)`, no weld, since the solver's vertices

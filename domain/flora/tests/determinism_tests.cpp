@@ -30,9 +30,9 @@ TEST_CASE("regeneration: every cooked section has a cross-compiler pin") {
   // regeneration's own version had kept still under R164; they were 0xe5de1e989da378bc,
   // 0x0ef75fd46e6c0250, 0x239270ac40d4804d, 0x7b06a31baa6ccd75, 0x743d311b29307605,
   // 0x81d5c0396f2ad081, 0x935528d9519c4ed1.
-  constexpr u64 pins[] = {0x4a920da9a3bcfb69ull, 0x79d2275e150ce186ull, 0xc60bf43ea3190b43ull,
-                          0x51e5389230ab4fdbull, 0x374867f7f6dcef4dull, 0x011be444931136c6ull,
-                          0xb725b96b2147c1b4ull};
+  constexpr u64 pins[] = {0xc1f52f4f2e234bc5ull, 0x33056c40e2f7ba62ull, 0x4e547731f35ec386ull,
+                          0xfecfff07cdfe3570ull, 0x3c7f5cbc736bba6eull, 0xb3e1de427758aa47ull,
+                          0x6330aff2017a931full};
   u32 n = 0;
   for (const auto& profile : flora::regeneration_profiles()) {
     flora::FloraFile recipe;

@@ -164,8 +164,9 @@ TEST_CASE("atlas: a rotated, scaled and mirrored layout reads the same texture a
 }
 
 TEST_CASE("atlas: a normal map is converted through object space, and resampling it is wrong") {
-  // A normal tilted 30 degrees towards +u. On this quad the old frame is tangent +x, bitangent -y
-  // (v runs down), so the object-space normal it encodes is (sin 30, 0, cos 30).
+  // A normal tilted 30 degrees towards +u. On this quad the old frame is tangent +x, bitangent +y
+  // (v runs down the image, and +Y of a map is up it), so the object-space normal it encodes is
+  // (sin 30, 0, cos 30).
   const image::Image source = constant_normal_image(32, 0.5f, 0.0f, 0.8660254f);
   const Quad rotated = make_quad(1.0f, [](Vec2 s) { return Vec2{1.0f - s.y, s.x}; });
   const Quad mirrored = make_quad(1.0f, [](Vec2 s) { return Vec2{1.0f - s.x, s.y}; });
