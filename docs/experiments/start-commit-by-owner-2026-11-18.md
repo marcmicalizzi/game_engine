@@ -345,6 +345,18 @@ An independent read of W51-5 and W51-6 (batch 71) found four things on W51-5 a s
 - **A refused lay-out of the runs leaked the old list or left the frame none**, and the pool's slots followed in a relayout that destroyed what the mesh records named before making its replacement (the same section). Mended: `fit_runs` makes every buffer before any old one goes and leaves the scene as it was on a refusal, counted; a test seam (`GpuScene::Fault::runs`) proves each path.
 - Lows: a pair a full run turned away is no longer counted or flagged drawn; the large-buffer log records a make only with its table entry; two stale sentences on the first frame past the budget; two stray control bytes.
 
+**The memory rows together, mended** (2026-11-20, the forest staging standing at W149's one-place path, W51-5's command; `b70\bin-main` is main as merged, 2de3230c, before W51-5 and W51-6; the tip is batch 71's join with W51-5, W51-6 and these mends, a63534141, in `msvc-release`; one load a lease, ten minutes clear between; free commit 54 to 62 GB at each start, the processors at 9 to 10 %, the session unlocked; ready is 20 seconds after the first frame):
+
+| Standing | Top: main (20:30) | Top: the tip (20:07) | Low: main (owed: flying at hand-back) | Low: the tip (owed) |
+|---|---:|---:|---:|---:|
+| Maximum, and when | 22.77 GiB, the first frame | **20.21 GiB**, the first frame | (owed) | (owed) |
+| The device at the maximum | 17,189 MiB | **11,787 MiB** | (owed) | (owed) |
+| Ready / one minute standing | 19.16 / 19.16 GiB | **15.73 / 16.33 GiB** | (owed) | (owed) |
+| The first hundred frames: chain short; run entries dropped | 0; 0 (runs at the stride) | 0; 0 (runs 16.8 M to 1,703,936, fullest 1,100,232) | (owed) | (owed) |
+| The mesh room: resident / tiles withheld / meshes shelved / host bytes waiting | 52 / 189 / — / (kept) | 52 / 189 / 297 / 0 MiB | (owed) | (owed) |
+
+**Together** the two rows take the top setting's maximum from 22.77 to 20.21 GiB (W51-6 alone measured 19.66 and W51-5 alone 20.4, each against 22.7) and the device at that moment from 16.8 to 11.5 GiB; standing a minute, 19.16 to 16.33 GiB (W51-5 alone about 16.0, an upper bound on a busier machine). **What H1's and M1's mends cost of it: nothing measurable standing** — the room held the same 52 meshes and shelved the same 297, with no host bytes waiting (a mesh kept from shelving because a nearer tile asked for it, or for its textures, would show there), and a room that stays full starts no build again, so M1's reservation never binds standing; what M1 changes is a walk's freeing of the room, one build per mesh's worth of room instead of one per shelved mesh. H2's redraws and M2's all-or-nothing lay-out cost no bytes standing: the runs were sized once and never refused.
+
 ## Not measured
 
 - The cold load with a cache of its own: a cold load of the whole staging needs a 20-minute lease and 40 GB free (the staging agent's DONE note), and its cook does not ship; its peak is the staging agent's 32.2 GB.
