@@ -160,7 +160,7 @@ bool open_file(SubjectPlan::File& f, const DigestBounds& bounds, u64& total, Sub
 // time or its size taken for "unchanged". `keep`, when given, receives the bytes too (a glTF's
 // JSON, which is held to the file bound like any file).
 void hash_file(SubjectPlan::File& f, const io::FileHandle& file, SubjectPlan& plan,
-               std::string* keep = nullptr) {
+               std::string* keep = nullptr, u64 keep_max = ~u64{0}) {
   Sha256 h;
   std::string buffer(static_cast<usize>(k_read_chunk), '\0');
   u64 at = 0;
@@ -174,7 +174,10 @@ void hash_file(SubjectPlan::File& f, const io::FileHandle& file, SubjectPlan& pl
     if (got == 0) break;
     const std::string_view bytes(buffer.data(), static_cast<usize>(got));
     h.update(bytes);
-    if (keep != nullptr) keep->append(bytes);
+    if (keep != nullptr && keep->size() < keep_max) {
+      const u64 room = keep_max - keep->size();
+      keep->append(bytes.substr(0, static_cast<usize>(std::min<u64>(room, bytes.size()))));
+    }
     at += got;
   }
   plan.bytes_read += at;
@@ -182,15 +185,55 @@ void hash_file(SubjectPlan::File& f, const io::FileHandle& file, SubjectPlan& pl
   f.read = true;
 }
 
-bool is_gltf(std::string_view spelled) noexcept {
-  if (spelled.size() < 5) return false;
-  const std::string_view tail = spelled.substr(spelled.size() - 5);
-  for (usize i = 0; i < 5; ++i) {
+bool ends_with_lower(std::string_view s, std::string_view suffix) noexcept {
+  if (s.size() < suffix.size()) return false;
+  const std::string_view tail = s.substr(s.size() - suffix.size());
+  for (usize i = 0; i < suffix.size(); ++i) {
     const char c =
         tail[i] >= 'A' && tail[i] <= 'Z' ? static_cast<char>(tail[i] - 'A' + 'a') : tail[i];
-    if (c != ".gltf"[i]) return false;
+    if (c != suffix[i]) return false;
   }
   return true;
+}
+
+// A file whose JSON names other files, by its suffix: a `.gltf` (the whole file is the JSON) or a
+// `.glb` (its first chunk is), the two forms the importer reads alike.
+enum class Container : u8 { none, gltf, glb };
+Container container_of(std::string_view spelled) noexcept {
+  if (ends_with_lower(spelled, ".gltf")) return Container::gltf;
+  if (ends_with_lower(spelled, ".glb")) return Container::glb;
+  return Container::none;
+}
+
+// A `.glb`'s two headers: 12 bytes (`glTF`, the version, the length), then the first chunk's 8 (its
+// length and its type, which is `JSON`).
+constexpr u64 k_glb_headers = 20;
+
+u64 le32(std::string_view b, usize at) noexcept {
+  u64 v = 0;
+  for (usize i = 0; i < 4; ++i)
+    v |= static_cast<u64>(static_cast<unsigned char>(b[at + i])) << (8 * i);
+  return v;
+}
+
+enum class GlbJson : u8 { ok, over, malformed };
+
+// A `.glb`'s JSON chunk out of `prefix`, the file's first bytes (its headers and up to the JSON
+// bound after them): the header held to the file's size (`glTF`, version 2, a length within the
+// file) and the chunk to the header's length (type `JSON`) and to `json_max`. `over` with `chunk`
+// the chunk's length when it is past the bound; `malformed` when a header does not hold.
+GlbJson glb_json(std::string_view prefix, u64 file_size, u64 json_max, std::string_view& json,
+                 u64& chunk) {
+  if (prefix.size() < k_glb_headers || prefix.substr(0, 4) != "glTF" || le32(prefix, 4) != 2)
+    return GlbJson::malformed;
+  const u64 length = le32(prefix, 8);
+  if (length < k_glb_headers || length > file_size) return GlbJson::malformed;
+  chunk = le32(prefix, 12);
+  if (prefix.substr(16, 4) != "JSON" || chunk > length - k_glb_headers) return GlbJson::malformed;
+  if (chunk > json_max) return GlbJson::over;
+  if (prefix.size() < k_glb_headers + chunk) return GlbJson::malformed;  // shorter than it says
+  json = prefix.substr(static_cast<usize>(k_glb_headers), static_cast<usize>(chunk));
+  return GlbJson::ok;
 }
 
 // A file a glTF names: where it names it (`images[3]`, which is how it is answered: the URI's own
@@ -202,9 +245,9 @@ struct GltfName {
 
 // The external buffers and images a glTF's JSON names, in its order and each URI once, up to
 // `room` of them (what is left of the files bound): the rest are counted into `past` as the glTF
-// lists them, never collected. A `data:` URI is in the file already, and a `.glb` holds its own,
-// so neither names anything. False when the engine's JSON reader refuses the text (nested past its
-// depth, say, which the importer may still take): its names are then not known.
+// lists them, never collected. A `data:` URI is in the file already, and names nothing; a `.glb`'s
+// buffer 0, its binary chunk, has no URI. False when the engine's JSON reader refuses the text
+// (nested past its depth, say, which the importer may still take): its names are then not known.
 bool gltf_names(std::string_view text, u64 room, Vector<GltfName>& out, u64& past) {
   JsonValue doc;
   if (!parse_json(text, doc).ok || !doc.is_object()) return false;
@@ -455,15 +498,35 @@ void read_subject_files(SubjectPlan& plan, const DigestBounds& bounds) {
     io::FileHandle file;
     if (!open_file(plan.files[i], bounds, total, plan, file)) continue;
     std::string gltf;
-    const bool named = is_gltf(plan.files[i].spelled);
-    // A glTF past its JSON's own bound is hashed as any file is, and its names are not followed.
-    const bool follow = named && file.size() <= bounds.gltf_json;
-    if (named && !follow) {
+    const Container kind = container_of(plan.files[i].spelled);
+    const u64 size = file.size();
+    // A `.gltf` is its JSON, so one past the JSON's own bound is hashed as any file is and its
+    // names are not followed. A `.glb`'s JSON is its first chunk: its headers and up to the bound
+    // after them are kept as the file is hashed, and the chunk is held to the bound below.
+    const bool follow =
+        kind == Container::glb || (kind == Container::gltf && size <= bounds.gltf_json);
+    if (kind == Container::gltf && !follow) {
       plan.unfollowed.push_back(SubjectPlan::Unfollowed{
-          plan.files[i].spelled, gltf_json_tunable.name(), bounds.gltf_json, file.size()});
+          plan.files[i].spelled, gltf_json_tunable.name(), bounds.gltf_json, size});
     }
-    hash_file(plan.files[i], file, plan, follow ? &gltf : nullptr);
+    const u64 keep_max =
+        kind == Container::glb ? std::min<u64>(size, k_glb_headers + bounds.gltf_json) : size;
+    hash_file(plan.files[i], file, plan, follow ? &gltf : nullptr, keep_max);
     if (!follow || !plan.files[i].read) continue;
+    std::string_view json = gltf;
+    if (kind == Container::glb) {
+      u64 chunk = 0;
+      const GlbJson g = glb_json(gltf, size, bounds.gltf_json, json, chunk);
+      if (g == GlbJson::over) {
+        plan.unfollowed.push_back(SubjectPlan::Unfollowed{
+            plan.files[i].spelled, gltf_json_tunable.name(), bounds.gltf_json, chunk});
+        continue;
+      }
+      if (g == GlbJson::malformed) {
+        plan.unfollowed.push_back(SubjectPlan::Unfollowed{plan.files[i].spelled, nullptr, 0, 0});
+        continue;
+      }
+    }
     // What the glTF names is part of it: each file admitted through the host's roots as a record's
     // own file is, from the glTF's admitted directory (its URI's own rule first), then read under
     // the same bounds, and named by the glTF and where in it. One refused is never opened. Only
@@ -471,8 +534,9 @@ void read_subject_files(SubjectPlan& plan, const DigestBounds& bounds) {
     const u64 room = plan.files.size() >= bounds.files ? 0 : bounds.files - plan.files.size();
     Vector<GltfName> names;
     u64 past = 0;
-    if (!gltf_names(gltf, room, names, past))
+    if (!gltf_names(json, room, names, past))
       plan.unfollowed.push_back(SubjectPlan::Unfollowed{plan.files[i].spelled, nullptr, 0, 0});
+    json = {};
     gltf = std::string();  // the tree is gone with the function; the text goes now
     plan.names_collected += names.size();
     plan.past_files += past;

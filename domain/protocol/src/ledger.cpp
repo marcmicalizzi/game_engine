@@ -795,7 +795,8 @@ RpcError names_not_read_error(const SubjectPlan::Unfollowed& u) {
   JsonValue entries = JsonValue::array();
   entries.push_back(JsonValue(u.gltf));
   data.set("entries", std::move(entries));
-  std::string why = " does not parse as the engine's JSON reader reads it";
+  std::string why =
+      " does not parse as the engine reads it (a .gltf's JSON, or a .glb's headers and JSON chunk)";
   if (u.bound != nullptr) {
     data.set("bound", JsonValue(std::string_view(u.bound)));
     data.set("limit", JsonValue(u.limit));

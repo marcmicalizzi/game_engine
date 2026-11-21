@@ -1034,17 +1034,51 @@ namespace {
 // A placement under a node, its mesh a file beside the document, for the subject digest's cases
 // (protocol.md, "What a close is tied to"): the placement is the subject, the node its ancestor,
 // and the mesh an asset its record names.
+// A binary glTF (`.glb`) holding `json` as its JSON chunk, padded with spaces to four bytes, and
+// `bin` as its binary chunk when given: the 12-byte header, then each chunk's 8-byte header.
+std::string glb_bytes(std::string_view json, std::string_view bin = {}) {
+  std::string j(json);
+  while (j.size() % 4 != 0)
+    j.push_back(' ');
+  std::string b(bin);
+  while (b.size() % 4 != 0)
+    b.push_back('\0');
+  const auto u32_le = [](std::string& out, usize v) {
+    for (u32 i = 0; i < 4; ++i)
+      out.push_back(static_cast<char>((v >> (8 * i)) & 0xFF));
+  };
+  std::string out = "glTF";
+  u32_le(out, 2);
+  u32_le(out, 12 + 8 + j.size() + (b.empty() ? 0 : 8 + b.size()));
+  u32_le(out, j.size());
+  out += "JSON";
+  out += j;
+  if (!b.empty()) {
+    u32_le(out, b.size());
+    out += std::string("BIN\0", 4);
+    out += b;
+  }
+  return out;
+}
+
+// The placement's mesh: a `.glb` naming nothing outside itself, its one word told apart by `tag`
+// (`one`, `two`), so a rewrite keeps the length and the container whole.
+std::string crate_glb(const char* tag) {
+  return glb_bytes(std::string(R"({"asset":{"version":"2.0"},"extras":")") + tag + "\"}");
+}
+
 struct DigestWorld {
   Id128 node = Id128::from_parts(0x20, 1);
   Id128 placement = Id128::from_parts(0x20, 2);
   std::string mesh;  // the asset's native path, for a case to rewrite
+  i64 mesh_bytes = static_cast<i64>(crate_glb("one").size());
 
   void make(Host& h, const std::string& dir) {
     std::filesystem::create_directories(std::filesystem::path(dir) / "props");
     mesh = (std::filesystem::path(dir) / "props" / "crate.glb").string();
     {
       std::ofstream out(mesh, std::ios::binary);
-      out << "glTF one";
+      out << crate_glb("one");
     }
     JsonValue cmds = JsonValue::array();
     cmds.push_back(obj({{"kind", JsonValue("CreateObject")},
@@ -1138,7 +1172,7 @@ TEST_CASE("ledger: a raise stamps the subject's digest, and another host's detai
   CHECK(at(stamped, "digest").as_string() == stamp);
   CHECK(num(at(stamped, "records")) == 2);  // the placement and its node
   CHECK(num(at(stamped, "assets")) == 1);   // the mesh its record names
-  CHECK(num(at(stamped, "asset_bytes")) == 8);
+  CHECK(num(at(stamped, "asset_bytes")) == w.mesh_bytes);
   CHECK(at(stamped, "unreadable").size() == 0);
 
   JsonValue now = opened_detail(h, at(item, "id"));
@@ -1193,10 +1227,10 @@ TEST_CASE("ledger: a host that cannot see a subject's file says so, and never ca
     std::ofstream(std::filesystem::path(content) / "rock.png", std::ios::binary) << "png";
   }
   {
-    std::ofstream(std::filesystem::path(beside.path()) / "far.glb", std::ios::binary) << "far";
+    std::ofstream(std::filesystem::path(beside.path()) / "far.bin", std::ios::binary) << "far";
   }
   const std::string far =
-      "../../" + std::filesystem::path(beside.path()).filename().string() + "/far.glb";
+      "../../" + std::filesystem::path(beside.path()).filename().string() + "/far.bin";
   Host a;
   REQUIRE(a.roots.add("content", content, false) == io::Status::Ok);
   a.open(dir, true);
@@ -1268,7 +1302,7 @@ TEST_CASE(
   a.stdio();
   const JsonValue raised = a.ok("review.raise", w.raise_params("Human"));
   const JsonValue item = at(raised, "reviews")[0];
-  CHECK(num(at(at(raised, "subject"), "asset_bytes")) == 8 + 3);  // the mesh and the rock, read
+  CHECK(num(at(at(raised, "subject"), "asset_bytes")) == w.mesh_bytes + 3);  // the mesh, the rock
   CHECK(at(opened_detail(a, at(item, "id")), "same").as_bool());
 
   // B: the same names, `content` somewhere else.
@@ -1677,6 +1711,72 @@ TEST_CASE("ledger: a glTF whose names cannot be followed says so, and no raise i
         static_cast<i64>(std::filesystem::file_size(props / "crate.gltf")));
 }
 
+// A `.glb` names files too (protocol.md, "What a close is tied to"): its JSON chunk is read, held
+// to the file's size and to the JSON bound, and its buffers' and images' URIs are followed as a
+// `.gltf`'s are; buffer 0, the binary chunk, has none. A header that does not hold refuses a raise
+// (`names not read`), as a chunk past the JSON bound does.
+TEST_CASE("ledger: a .glb's external files are read with it, and a broken one refuses a raise") {
+  test::TempDir tmp("protocol_ledger_glb");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  h.open(dir, true);
+  DigestWorld w;
+  w.make(h, dir);
+  const std::filesystem::path props = std::filesystem::path(dir) / "props";
+  const std::string json =
+      R"({"asset":{"version":"2.0"},"buffers":[{"byteLength":4},{"uri":"ext.bin","byteLength":4}],)"
+      R"("images":[{"uri":"ext.png"}]})";
+  {
+    std::ofstream(props / "ext.glb", std::ios::binary) << glb_bytes(json, "BIN!");
+  }
+  {
+    std::ofstream(props / "ext.bin", std::ios::binary) << "abcd";
+  }
+  {
+    std::ofstream(props / "ext.png", std::ios::binary) << "png";
+  }
+  w.set(h, w.placement, "mesh", JsonValue("props/ext.glb"));
+  const JsonValue raised = h.ok("review.raise", w.raise_params("Agent"));
+  const JsonValue item = at(raised, "reviews")[0];
+  const JsonValue& stamped = at(raised, "subject");
+  CHECK(num(at(stamped, "assets")) == 3);
+  CHECK(num(at(stamped, "asset_bytes")) ==
+        static_cast<i64>(std::filesystem::file_size(props / "ext.glb")) + 4 + 3);
+  CHECK(at(stamped, "unreadable").size() == 0);
+
+  // The external buffer rewritten at the same length, its time put back: the close is refused.
+  const auto when = std::filesystem::last_write_time(props / "ext.bin");
+  {
+    std::ofstream(props / "ext.bin", std::ios::binary | std::ios::trunc) << "dcba";
+  }
+  std::filesystem::last_write_time(props / "ext.bin", when);
+  JsonValue error;
+  CHECK(h.fails("review.close",
+                obj({{"review", at(item, "id")},
+                     {"resolution", JsonValue("Accepted")},
+                     {"digest", at(item, "raised_digest")},
+                     {"attribution", who("reviewer")}}),
+                &error) == codes::k_invalid_argument);
+  CHECK(reason_of(error) == "subject moved");
+
+  // A header that does not hold (eight bytes, no chunk): its names are not known.
+  {
+    std::ofstream(props / "broken.glb", std::ios::binary) << "glTF one";
+  }
+  w.set(h, w.placement, "mesh", JsonValue("props/broken.glb"));
+  CHECK(h.fails("review.raise", w.raise_params("Agent"), &error) == codes::k_invalid_argument);
+  CHECK(reason_of(error) == "names not read");
+  CHECK(at(at(error, "data"), "entries")[0].as_string() == "props/broken.glb");
+
+  // Its JSON chunk past the JSON bound: the same, naming the bound and the chunk's length.
+  w.set(h, w.placement, "mesh", JsonValue("props/ext.glb"));
+  Bound bound("protocol.review.gltf_json_bytes", "16");
+  CHECK(h.fails("review.raise", w.raise_params("Agent"), &error) == codes::k_invalid_argument);
+  CHECK(reason_of(error) == "names not read");
+  CHECK(bound_in(error) == "protocol.review.gltf_json_bytes");
+  CHECK(num(at(at(error, "data"), "figure")) == static_cast<i64>((json.size() + 3) / 4 * 4));
+}
+
 // A string a record holds that no host could admit as a file — a URL, text with a colon, a root no
 // host has, a climb out of every root — digests as one constant line for that string and never
 // makes the digest incomparable (protocol.md, "Which strings are files"), so it blocks neither a
@@ -1916,20 +2016,21 @@ TEST_CASE("ledger: a subject past a digest's bound is refused at the raise, and 
   JsonValue error;
 
   {
-    Bound bound("protocol.review.file_bytes", "4");  // the mesh is 8 bytes
+    Bound bound("protocol.review.file_bytes", "4");  // the mesh is more
     CHECK(h.fails("review.raise", w.raise_params("Agent"), &error) == codes::k_invalid_argument);
     CHECK(reason_of(error) == "subject too large");
     CHECK(bound_in(error) == "protocol.review.file_bytes");
     CHECK(num(at(at(error, "data"), "limit")) == 4);
-    CHECK(num(at(at(error, "data"), "figure")) == 8);
+    CHECK(num(at(at(error, "data"), "figure")) == w.mesh_bytes);
   }
   {
-    Bound bound("protocol.review.subject_bytes", "12");  // 8 and 8 together
+    // The mesh and a copy of it together, past a bound that holds one of them.
+    Bound bound("protocol.review.subject_bytes", std::to_string(2 * w.mesh_bytes - 4).c_str());
     std::filesystem::copy_file(w.mesh, std::filesystem::path(dir) / "props" / "lid.glb");
     CHECK(h.fails("review.raise", w.raise_params("Agent", strings({"props/lid.glb"})), &error) ==
           codes::k_invalid_argument);
     CHECK(bound_in(error) == "protocol.review.subject_bytes");
-    CHECK(num(at(at(error, "data"), "figure")) == 16);
+    CHECK(num(at(at(error, "data"), "figure")) == 2 * w.mesh_bytes);
   }
   {
     Bound bound("protocol.review.subject_files", "1");  // the mesh and one listed
@@ -1996,7 +2097,7 @@ TEST_CASE("ledger: a close or a raise refused before its digest reads no asset")
   const JsonValue person_item = at(w.raise(h), "reviews")[0];
   const JsonValue agent_item = at(w.raise(h, "Agent"), "reviews")[0];
   const u64 raised = h.sessions.digest_bytes_read();
-  CHECK(raised == 16);  // each raise read the 8-byte mesh once
+  CHECK(raised == static_cast<u64>(2 * w.mesh_bytes));  // each raise read the mesh once
   JsonValue error;
   const char* closer = "agent";
   const auto close = [&](const JsonValue& item, const char* resolution, JsonValue revision,
@@ -2029,7 +2130,7 @@ TEST_CASE("ledger: a close or a raise refused before its digest reads no asset")
   // Closed, then closed again: the second is refused before any read.
   (void)h.ok("review.close", close(agent_item, "Accepted", JsonValue(), true));
   const u64 closed = h.sessions.digest_bytes_read();
-  CHECK(closed == raised + 8);
+  CHECK(closed == raised + static_cast<u64>(w.mesh_bytes));
   CHECK(h.fails("review.close", close(agent_item, "Accepted", JsonValue(), true), &error) ==
         codes::k_invalid_argument);
   h.stdio();
@@ -2403,7 +2504,7 @@ TEST_CASE(
     const auto when = std::filesystem::last_write_time(w.mesh);
     {
       std::ofstream out(w.mesh, std::ios::binary | std::ios::trunc);
-      out << "glTF two";  // the same length: neither the size nor the time says it changed
+      out << crate_glb("two");  // the same length: neither the size nor the time says it changed
     }
     std::filesystem::last_write_time(w.mesh, when);
     (void)close(id, seen, &error);
@@ -2482,7 +2583,7 @@ TEST_CASE("ledger: a stamp and a decision are one write and one event, a refused
     REQUIRE(h.vfs.read(dir + "/ledger.json", text) == io::Status::Ok);
     return text;
   };
-  const auto write_mesh = [&](const char* bytes) {
+  const auto write_mesh = [&](const std::string& bytes) {
     const auto when = std::filesystem::last_write_time(w.mesh);
     {
       std::ofstream out(w.mesh, std::ios::binary | std::ios::trunc);
@@ -2517,14 +2618,14 @@ TEST_CASE("ledger: a stamp and a decision are one write and one event, a refused
   JsonValue error;
   CHECK(h.fails("review.close", close(false), &error) == codes::k_invalid_argument);
   CHECK(reason_of(error) == "seen required");
-  write_mesh("glTF two");  // the same length, its time put back
+  write_mesh(crate_glb("two"));  // the same length, its time put back
   CHECK(h.fails("review.close", close(true), &error) == codes::k_invalid_argument);
   CHECK(reason_of(error) == "subject moved");
   CHECK(pushed.sent.size() == mark);
   CHECK(ledger_text() == before);
 
   // Put back, the close is one write carrying `decided_at`, and one event.
-  write_mesh("glTF one");
+  write_mesh(crate_glb("one"));
   const JsonValue closed = h.ok("review.close", close(true));
   CHECK(changes_since(mark) == std::vector<std::string>{"review_closed"});
   CHECK(num(at(closed, "ledger_revision")) == written + 1);
