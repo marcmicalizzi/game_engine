@@ -548,59 +548,6 @@ bool find_built_textures(const SourceMesh& mesh, const SceneTextures& known, boo
   return true;
 }
 
-// **A body's swash numbers** (water.md, "The shore"; S94): a closed body's own wind over the
-// smaller of its fetch and its own longest reach (the map's square's diagonal), an open body's the
-// wind its spectrum took; the wind's wave over the fetch, the map's foreshore slope, Stockdon's
-// run-up, the tide. The shore's record and the body's surface (S100) both take them from here.
-struct WaterSwashNumbers {
-  f64 wind = 0.0;
-  f64 fetch_m = 0.0;
-  f64 slope = 0.0;
-  gfx::SwashWave wave{};
-  f64 run_up = 0.0;
-  f32 tide = 0.0f;
-  // S102: the train's direction over deep water; with a swell, the wind sea's peak wavenumber.
-  Vec2 direction{1.0f, 0.0f};
-  f64 wind_k0 = 0.0;
-  gfx::SwashWave wind_wave{};  // with a swell: the wind's own wave, the second train (second pass)
-};
-WaterSwashNumbers water_swash_numbers(const SceneWater& water) {
-  WaterSwashNumbers n;
-  const scene::WaterBody& body = water.body;
-  n.wind = static_cast<f64>(body.wind_m_s);
-  if ((body.open || water.scene_wind) && water.wind_m_s > 0.0f)
-    n.wind = static_cast<f64>(water.wind_m_s);  // W136: a closed body under the scene's wind too
-  // The fetch the scene's reader found (S100 stage B): an open body's `fetch_km`, a closed body's
-  // own reach along its wind.
-  n.fetch_m = static_cast<f64>(water.fetch_m);
-  n.slope = gfx::water_mean_shore_slope(
-      water.depth.texels.data(), water.depth.size, static_cast<f64>(water.depth.texel_m),
-      static_cast<f64>(water.depth.depth_max), static_cast<f64>(water.depth.bank_max));
-  n.wave = gfx::swash_wave(n.wind, n.fetch_m);
-  n.direction = water.shading.direction;
-  // **A swell** (S102; water.md, "The swell") is the train that shoals, turns, breaks and runs up,
-  // from its own direction; the wind's wave keeps the surface offshore. W136-3: the body's own or
-  // the sky's at its largest, as the scene's reader set them (`SceneWater::swell_train_*`).
-  if (body.open && water.swell_train_m > 0.0f && water.swell_train_period_s > 0.0f) {
-    if (n.wave.period_s > 0.0) {
-      const f64 omega = 6.283185307179586 / gfx::swash_period(n.wave.period_s);
-      n.wind_k0 = omega * omega / gfx::k_swash_g;
-    } else {
-      n.wind_k0 = 1.0;  // no wind sea to calm: any positive number marks the swell
-    }
-    n.wind_wave = n.wave;
-    n.wave.height_m = static_cast<f64>(water.swell_train_m);
-    n.wave.period_s = std::min(static_cast<f64>(water.swell_train_period_s), 30.0);
-    n.direction = water.swell_train_to;
-  }
-  // Stockdon et al.'s, as it was, under the steep shore's ceiling (S102), which only a long low
-  // wave on a steep shore reaches.
-  n.run_up = std::min(gfx::stockdon_r2(n.wave.height_m, n.wave.period_s, n.slope),
-                      gfx::k_swash_steep_cap * n.wave.height_m);
-  n.tide = body.open ? body.tide_m : 0.0f;
-  return n;
-}
-
 // **A body's height function** (S100; water_swash.h, `WaterSurface`; water.md, "The mesh"): the
 // body's waves (an open body's spectrum, else the material's four sines), the wind's peak wave and
 // its run-up, the tide, and the arrival field over the depth map's grid — the depth decoded from
@@ -4934,9 +4881,10 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           gfx::WaterDepthFrame frame;
           if (!upload_water_depth(data_->mesh_info[m].water->depth, frame)) return false;
           gfx::set_water_depth_map(material, optics, frame);
-          // The shore where the level meets the ground, and its foam (water.md, "The shore";
-          // S97): every body with a map, the foam's reach in the same entry.
-          gfx::set_water_shore(material, optics, data_->mesh_info[m].water->body.foam_m);
+          // The shore where the level meets the ground (water.md, "The shore"; S97): every body
+          // with a map. **No foam line on a still shore** (W153): the entry's reach is 0, since a
+          // body with no train (no wind over the onset, no swell, no tide) has nothing that breaks.
+          gfx::set_water_shore(material, optics, 0.0f);
         }
         bool record_entry = false;  // the terrain's record: an entry no cluster names
         if (m == data_->terrain_mesh && data_->terrain.materials.has_value()) {

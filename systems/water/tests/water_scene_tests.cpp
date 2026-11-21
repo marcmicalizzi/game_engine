@@ -422,6 +422,101 @@ TEST_CASE("water: a body follows the sky's wind, and a fixed one draws what its 
   CHECK(error.find("sky.wind.track[1].hour") != std::string::npos);
 }
 
+// **What feeds a body's train** (roadmap W153; water.md, "What feeds the train";
+// docs/experiments/fetch-limited-waves.md): a body's shore train is the wave its wind raises over
+// its own fetch, by the fetch laws, and nothing else for a closed body. A pool 4 m across with no
+// wind has none; under 20 m/s it has the ripples the laws give over its own reach (2026-11-21: 3.6
+// m, 1.7 cm at 0.26 s, running up 1.3 cm on its steep bowl); under light air (1.2 m/s, under force
+// 2's onset) none, its table still drawn; following a calm scene wind none, where until W153 it ran
+// up its shore at the wind its own block named. A lake 500 m across under 7 m/s has the laws' 8 cm;
+// the open sea's numbers are the laws' at its `fetch_km`, as before.
+TEST_CASE("water: a body's shore train is its own fetch's under its wind, and none without one") {
+  const test::TempDir tmp("water_scene_train");
+  // A plain with one smooth bowl: 3 m in radius and a metre deep for the pool, 350 m and 10 m for
+  // the lake and the sea; each body fills its bowl from the middle at its level.
+  constexpr const char* k_small = R"({"size": 129, "extent": 64, "seed": 2, "dune_height": 0,
+      "basins": [{"center": [0, 0], "radius": 3, "depth": 1}]})";
+  constexpr const char* k_large = R"({"size": 129, "extent": 1024, "seed": 2, "dune_height": 0,
+      "basins": [{"center": [0, 0], "radius": 350, "depth": 10}]})";
+  const auto read = [&](const char* name, const char* terrain, const std::string& sky,
+                        const std::string& body) {
+    std::string text = std::string(R"({"format": "engine.scene.v1", "name": "train-test",
+      "terrain": )") + terrain +
+                       ",\n  \"water\": " + body;
+    if (!sky.empty()) text += ",\n  \"sky\": " + sky;
+    text += "\n}\n";
+    const std::string path = tmp.file(name);
+    REQUIRE(write_text(path, text));
+    SceneDesc desc;
+    std::string error;
+    REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
+    REQUIRE(desc.mesh_info.size() >= 1u);
+    REQUIRE(desc.mesh_info[0].water.has_value());
+    return *desc.mesh_info[0].water;
+  };
+  const std::string pool = R"([{"name": "pool", "level_m": -0.4, "wind_follow": false,
+    "shape": {"fill": {"seed": [0, 0, 0], "max_extent_m": 10}}, "direction_deg": 30, )";
+  const SceneWater still = read("still.json", k_small, "", pool + R"("wind_m_s": 0}])");
+  const SceneWater gale = read("gale.json", k_small, "", pool + R"("wind_m_s": 20}])");
+  const SceneWater light = read("light.json", k_small, "", pool + R"("wind_m_s": 1.2}])");
+  const SceneWater calm = read("calm.json", k_small, R"({"wind": {"speed_m_s": 0, "to_deg": 30}})",
+                               R"([{"name": "pool", "level_m": -0.4, "wind_m_s": 6,
+               "shape": {"fill": {"seed": [0, 0, 0], "max_extent_m": 10}}}])");
+  const std::string large = R"([{"level_m": -2, "wind_follow": false, "direction_deg": 30,
+    "shape": {"fill": {"seed": [0, 0, 0], "max_extent_m": 900}}, "wind_m_s": 7, )";
+  const SceneWater lake = read("lake.json", k_large, "", large + R"("name": "lake"}])");
+  const SceneWater sea =
+      read("sea.json", k_large, "", large + R"("name": "sea", "open": true, "fetch_km": 100}])");
+
+  const WaterSwashNumbers n_still = water_swash_numbers(still);
+  CHECK(n_still.wind == 0.0);
+  CHECK(n_still.wave.height_m == 0.0);
+  CHECK(n_still.run_up == 0.0);
+  CHECK(still.waves.empty());  // the authored sines, not a table
+
+  const WaterSwashNumbers n_gale = water_swash_numbers(gale);
+  MESSAGE("a 4 m pool under 20 m/s: fetch " << n_gale.fetch_m << " m, H " << n_gale.wave.height_m
+                                            << " m, T " << n_gale.wave.period_s << " s, run-up "
+                                            << n_gale.run_up << " m");
+  CHECK(n_gale.fetch_m > 1.5);
+  CHECK(n_gale.fetch_m < 6.0);  // its own reach, not the block's 100 km
+  CHECK(n_gale.wave.height_m == gfx::water_sea_height(20.0, n_gale.fetch_m));
+  CHECK(n_gale.wave.period_s ==
+        doctest::Approx(6.283185307179586 / gfx::jonswap_peak(20.0, n_gale.fetch_m)));
+  CHECK(n_gale.wave.height_m > 0.005);  // centimetres, not decimetres
+  CHECK(n_gale.wave.height_m < 0.04);
+  CHECK(n_gale.wave.period_s < 0.5);
+  CHECK(n_gale.run_up > 0.0);
+  CHECK(n_gale.run_up < 0.02);
+
+  const WaterSwashNumbers n_light = water_swash_numbers(light);
+  CHECK(n_light.wave.height_m == 0.0);
+  CHECK(n_light.run_up == 0.0);
+  CHECK(light.waves.size() == gfx::k_water_waves);  // its ripples are still drawn
+
+  const WaterSwashNumbers n_calm = water_swash_numbers(calm);
+  CHECK(calm.scene_wind);
+  CHECK(n_calm.wind == 0.0);
+  CHECK(n_calm.run_up == 0.0);
+
+  const WaterSwashNumbers n_lake = water_swash_numbers(lake);
+  MESSAGE("a 500 m lake under 7 m/s: fetch " << n_lake.fetch_m << " m, H " << n_lake.wave.height_m
+                                             << " m, T " << n_lake.wave.period_s << " s, run-up "
+                                             << n_lake.run_up << " m");
+  CHECK(n_lake.fetch_m > 350.0);
+  CHECK(n_lake.fetch_m < 650.0);
+  CHECK(n_lake.wave.height_m == gfx::water_sea_height(7.0, n_lake.fetch_m));
+  CHECK(n_lake.wave.height_m > 0.05);
+  CHECK(n_lake.wave.height_m < 0.12);
+
+  const WaterSwashNumbers n_sea = water_swash_numbers(sea);
+  const gfx::SwashWave laws = gfx::swash_wave(7.0, 100000.0);
+  CHECK(n_sea.fetch_m == 100000.0);
+  CHECK(n_sea.wave.height_m == laws.height_m);
+  CHECK(n_sea.wave.period_s == laws.period_s);
+  CHECK(n_sea.wave.height_m > 0.5);
+}
+
 TEST_CASE("water: the oasis pool stands in a hollow, its level below the ground round it") {
   const test::TempDir tmp("water_oasis_ground");
   const std::string wet = oasis_copy(tmp, true);

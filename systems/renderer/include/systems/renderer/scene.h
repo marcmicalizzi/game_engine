@@ -24,6 +24,7 @@
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/visibility_resolve.h>
 #include <domain/gfx/water_spectrum.h>
+#include <domain/gfx/water_swash.h>
 #include <domain/gfx/wind.h>
 #include <domain/scene_gen/seat.h>
 #include <domain/texture/texture_file.h>
@@ -208,7 +209,9 @@ struct SceneWater {
   gfx::WaterShading shading;
   SceneWaterDepth depth{};
   // The wind the body's waves were made at, m/s: an open body's is the ground's where the body
-  // follows it, else its own `wind_m_s`; a closed body's is its own `wind_m_s` (S94, S100).
+  // follows it, else its own `wind_m_s`; a closed body's is its own `wind_m_s` (S94, S100); a body
+  // that follows the scene's wind (`scene_wind`) the scene's, and 0 when the scene's is calm (W136,
+  // W153). The one wind the shore's train is raised by (`water_swash_numbers`).
   f32 wind_m_s = 0.0f;
   // The fetch that wind's sea is grown over, metres (S100 stage B; water.md, "The spectrum"): an
   // open body's `fetch_km`; a closed body's the longest reach of its own water along its wind
@@ -258,6 +261,29 @@ struct SceneWater {
   // terrain mesh and uploads them beside the bodies' shores. Empty for a body.
   Vector<gfx::WaterShore> banks;
 };
+
+// **What feeds a body's shore train** (water.md, "What feeds the train"; roadmap W153;
+// docs/experiments/fetch-limited-waves.md): the wind the body's waves were made at
+// (`SceneWater::wind_m_s`: its own, the ground's or the scene's, 0 when that is calm) over the
+// fetch the reader found (an open body's `fetch_km`, a closed body's own reach along its wind), the
+// wave that wind raises there (`gfx::swash_wave`: none under force 2's onset), the map's foreshore
+// slope, Stockdon's run-up and an open body's tide; an open body's swell is its train instead
+// (S102). A closed body is open to nothing larger, so a still, sheltered or windless one has no
+// train at all. The shore's record and the body's surface (S100) both take them from here; a host
+// whose wind changes during a session redraws from the GPU scene's `water_wind_frame`.
+struct WaterSwashNumbers {
+  f64 wind = 0.0;
+  f64 fetch_m = 0.0;
+  f64 slope = 0.0;
+  gfx::SwashWave wave{};
+  f64 run_up = 0.0;
+  f32 tide = 0.0f;
+  // S102: the train's direction over deep water; with a swell, the wind sea's peak wavenumber.
+  Vec2 direction{1.0f, 0.0f};
+  f64 wind_k0 = 0.0;
+  gfx::SwashWave wind_wave{};  // with a swell: the wind's own wave, the second train (second pass)
+};
+WaterSwashNumbers water_swash_numbers(const SceneWater& water);
 
 // What a scene file said about one mesh besides its path: what to call it, which bytes it must
 // be, where it came from, and how to fit it. Parallel to `SceneDesc::meshes`, or empty.

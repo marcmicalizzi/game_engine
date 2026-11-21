@@ -3,8 +3,8 @@
 // modules. The wet band darkens terrain pixels and nothing else, more of them the wider it is and
 // none with it off; with its film off (`renderer.water.wet_film`, S99) no pixel it changes is
 // lighter, and with the film on every lighter pixel is one the film changed, by no more than the
-// film's own reflection of the sky there; the foam line changes the water's pixels and nothing
-// else, and none with it off; the same frame twice is the same bytes.
+// film's own reflection of the sky there; a still body draws no foam whatever its `foam_m` (W153);
+// the same frame twice is the same bytes.
 #include <core/json/json.h>
 #include <core/math/math.h>
 #include <core/math/world.h>
@@ -18,6 +18,7 @@
 #include <systems/renderer/settings.h>
 
 #include <doctest/doctest.h>
+#include <test_device.h>
 #include <test_temp_dir.h>
 
 #include <algorithm>
@@ -275,35 +276,57 @@ TEST_CASE("water shore: the wet band darkens the ground at the waterline, and on
   CHECK(over_bound == 0u);        // by no more than its reflection of the sky
 }
 
-TEST_CASE("water shore: the foam line is on the water, and only on the water") {
+// **A still body has no train, so no foam** (roadmap W153; water.md, "What feeds the train"). Until
+// W153 a body with no wind drew S97's foam line, running up and back with its four sines' phase
+// whatever the wind, and this case held that `foam_m` drew it (over 50 pixels, all on the water):
+// the owner's ponds a few metres across showed it as a white ring jumping in and out at zero wind.
+// Nothing breaks on a still pool, so `foam_m` draws nothing now, on either tier: the frame with a
+// metre of it is the frame with none, byte for byte, and no shore record is written (no swash).
+// Its ripples, the authored sines, still move the reflection, and only on the water.
+TEST_CASE("water shore: a still body's shore draws no foam, whatever its foam_m") {
   if (!gpu_here()) return;
-  const test::TempDir tmp("water_shore_foam");
-  gfx::Device device;
-  std::string error;
-  REQUIRE_MESSAGE(device.create(gfx::DeviceOptions{}, &error), error);
-  Shot calm[1], foam[1];
-  shoot(device, tmp, "calm", 0.0f, 0.0f, 1, calm);
-  shoot(device, tmp, "foam", 0.0f, 1.0f, 1, foam);
-  device.destroy();
-  const CapturedFrame& a = calm[0].frame;
-  const CapturedFrame& b = foam[0].frame;
-  REQUIRE(a.color.size() == b.color.size());
-  CHECK(a.ids == b.ids);
-  const u32 pixels = a.width * a.height;
-  u32 changed = 0, off_water = 0, water = 0;
-  for (u32 p = 0; p < pixels; ++p) {
-    const bool w = is_water(a, p, calm[0].water_instance);
-    water += w ? 1u : 0u;
-    const bool d = a.color[p * 4] != b.color[p * 4] || a.color[p * 4 + 1] != b.color[p * 4 + 1] ||
-                   a.color[p * 4 + 2] != b.color[p * 4 + 2];
-    if (!d) continue;
-    ++changed;
-    if (!w) ++off_water;
+  const gfx::DeviceOptions options = renderer_test::device_options();
+  bool traced = false;
+  {
+    gfx::Device probe;
+    std::string error;
+    REQUIRE_MESSAGE(probe.create(options, &error), error);
+    traced = probe.features().ray_query;
+    probe.destroy();
   }
-  MESSAGE("foam: " << changed << " pixels changed of the water's " << water);
-  CHECK(changed > 50u);
-  CHECK(changed < water / 2);  // a line along the edge, not the whole surface
-  CHECK(off_water == 0u);
+  // On the GPU as it is and, where it has ray queries, as the TITAN Xp (the vertex path, the
+  // cascaded maps, the water modules without the ray), as swash_scene_tests.cpp's cases run.
+  gfx::DeviceOptions titan;
+  for (const char* row :
+       {"VK_EXT_mesh_shader", "VK_KHR_ray_query", "VK_NV_cluster_acceleration_structure",
+        "VK_EXT_memory_decompression", "VK_KHR_fragment_shading_rate"}) {
+    titan.overrides.absent.push_back(row);
+  }
+  for (u32 tier = 0; tier < (traced ? 2u : 1u); ++tier) {
+    const test::TempDir tmp("water_shore_foam");
+    gfx::Device device;
+    std::string error;
+    REQUIRE_MESSAGE(device.create(tier == 0 ? options : titan, &error), error);
+    Shot calm[1], foam[1];
+    shoot(device, tmp, "calm", 0.0f, 0.0f, 1, calm);
+    shoot(device, tmp, "foam", 0.0f, 1.0f, 1, foam);
+    device.destroy();
+    const CapturedFrame& a = calm[0].frame;
+    const CapturedFrame& b = foam[0].frame;
+    REQUIRE(a.color.size() == b.color.size());
+    CHECK(a.ids == b.ids);
+    CHECK(foam[0].shores == 0u);  // no wind, no tide, no band: no record, no swash
+    u32 water = 0, changed = 0;
+    for (u32 p = 0; p < a.width * a.height; ++p) {
+      water += is_water(a, p, calm[0].water_instance) ? 1u : 0u;
+      changed += std::memcmp(&a.color[p * 4], &b.color[p * 4], 3) != 0 ? 1u : 0u;
+    }
+    MESSAGE(std::string(tier == 0 ? "this GPU" : "the TITAN Xp's absences")
+            << ": a metre of foam_m changes " << changed << " pixels; " << water
+            << " water pixels");
+    CHECK(water > 2000u);
+    CHECK(changed == 0u);
+  }
 }
 
 #endif

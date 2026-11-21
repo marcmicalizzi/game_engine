@@ -55,7 +55,19 @@ inline constexpr f64 k_swash_slope_max = 0.5;
 // The wave a wind of `u10` m/s raises over `fetch_m` metres of water (JONSWAP, Hasselmann et al.
 // 1973, the same fetch laws `water_spectrum` takes): the peak period 2 pi / omega_p and the
 // spectral significant height H_m0 = 4 sqrt(m0), m0 the spectrum's variance integrated over
-// [0.3, 6] omega_p. Zero and zero with no wind.
+// [0.3, 6] omega_p. Zero and zero with no wind, and under `k_swash_wind_onset_m_s`.
+//
+// **A train needs a wind that raises waves** (roadmap W153;
+// docs/experiments/fetch-limited-waves.md, "The onset"): under light air, Beaufort force 1 (to 1.5
+// m/s at 10 m, the WMO's "ripples with the appearance of scales ... without foam crests"), the
+// water carries capillary ripples and no gravity wavelets, and nothing runs up a shore; Kahma and
+// Donelan (1988) put the inception of growth on clean water at a friction velocity near 2 cm/s,
+// with the waves becoming readily visible higher, by a margin the water's temperature sets, and the
+// smooth-flow theory they test against at about 1.3 m/s. So a shore's train starts with force 2's
+// wavelets, over 1.5 m/s; below it a body has no swash, whatever the fetch laws, fit to stronger
+// winds, would extrapolate to (at 1.5 m/s: about 2.4 mm over 10 m and 2.4 cm over a kilometre). The
+// table of a body's surface is not cut: its ripples are drawn as they were.
+inline constexpr f64 k_swash_wind_onset_m_s = 1.5;
 struct SwashWave {
   f64 height_m = 0.0;
   f64 period_s = 0.0;
@@ -686,7 +698,7 @@ inline void water_shore_slope_field(const f32* depth, u32 size, f64 texel_m, f32
 
 inline SwashWave swash_wave(f64 u10, f64 fetch_m) noexcept {
   SwashWave w;
-  if (!(u10 > 0.0) || !(fetch_m > 0.0)) return w;
+  if (!(u10 > k_swash_wind_onset_m_s) || !(fetch_m > 0.0)) return w;
   // The spectrum's own height, at the sea's shape (water_spectrum.h, `water_sea_height`: the one
   // height the table, the sea state and the shore take; W136-2).
   const f64 peak = jonswap_peak(u10, fetch_m);
