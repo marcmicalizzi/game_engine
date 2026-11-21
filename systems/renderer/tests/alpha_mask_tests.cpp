@@ -1187,6 +1187,70 @@ TEST_CASE("alpha mask: a forced-solid shadow ray still skips a micromap's transp
   CHECK(with.share() > without.share() * (1.0 - 1.5 * transparent));
 }
 
+// **The casters in instances of their own** (R140; renderer.md, "The casters in instances of their
+// own"). The masked quad seen from below its own height, so the whole of it is outside the frustum
+// and every cluster of it is an off-frustum caster, while its shadow is on the ground in view. With
+// `renderer.rt.caster_instances` the caster's record is built as a drawn one's, with the
+// micromap; without it, non-opaque without one. Under four states the two draw the same bytes —
+// the traversal decides only what the mask decides one way everywhere — and the forced-solid probe
+// shows the micromap is really on the caster: forced solid, a caster without one is the solid
+// quad's shadow, and one with it loses the bake's transparent micro-triangles.
+ShotView off_frustum_caster_view() {
+  ShotView view;
+  view.eye = Vec3{-0.9f, 0.7f, -0.9f};
+  view.target = Vec3{-1.3f, 0.0f, -1.3f};
+  view.mode = static_cast<u32>(gfx::ResolveMode::Shaded);
+  return view;
+}
+
+TEST_CASE("alpha mask: an off-frustum caster's own record carries the drawn record's micromap") {
+  Fixture fx;
+  RenderSettings rays = base_settings(RasterMode::Hardware);
+  rays.shadows = ShadowMode::RayTraced;
+  TunableScope four("renderer.shadow.micromap_2state=false",
+                    "renderer.shadow.micromap_2state=true");
+  TunableScope fine("renderer.rt.micromap_texels=0.01", "renderer.rt.micromap_texels=4");
+  TunableScope cap("renderer.rt.micromap_level=6", "renderer.rt.micromap_level=6");
+  TunableScope set("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=true");
+  const auto shot = [&](bool own, bool forced) {
+    TunableScope split(
+        own ? "renderer.rt.caster_instances=true" : "renderer.rt.caster_instances=false",
+        "renderer.rt.caster_instances=true");
+    TunableScope solid(
+        forced ? "renderer.shadow.opaque_rays=true" : "renderer.shadow.opaque_rays=false",
+        "renderer.shadow.opaque_rays=false");
+    return shoot_micromaps(fx.caster_masked, rays, off_frustum_caster_view());
+  };
+  const MicromapShot own = shot(true, false);
+  if (!own.skip.empty() || !own.baked) {
+    MESSAGE("skipped: " << (own.skip.empty() ? std::string("no micromaps here") : own.skip));
+    return;
+  }
+  const MicromapShot shared = shot(false, false);
+  REQUIRE(shared.skip.empty());
+  const ShadowCount cast = count_shadow(shared.frame);
+  const u32 differ = differing_pixels(own.frame, shared.frame);
+  MESSAGE("off-frustum masked caster: "
+          << cast.shadowed << " of " << cast.ground << " ground pixels shadowed; " << differ
+          << " pixels differ between its own record and a shared one");
+  // The quad is outside the view and still casts onto it: the case can tell.
+  CHECK(cast.shadowed > 100);
+  CHECK(differ == 0);
+  // Forced solid: the caster's micromap is on its own record, so its transparent interior stays
+  // open, by the bake's own transparent share within half of it either way (the probe above).
+  const ShadowCount with = count_shadow(shot(true, true).frame);
+  const ShadowCount without = count_shadow(shot(false, true).frame);
+  const f64 micro = static_cast<f64>(own.stats.micro_opaque + own.stats.micro_transparent +
+                                     own.stats.micro_unknown);
+  REQUIRE(micro > 0.0);
+  const f64 transparent = static_cast<f64>(own.stats.micro_transparent) / micro;
+  MESSAGE("forced solid: " << without.share() << " of the ground shadowed by a caster without a "
+                           << "micromap, " << with.share() << " by its own record with one");
+  REQUIRE(transparent > 0.0);
+  CHECK(with.share() < without.share() * (1.0 - 0.5 * transparent));
+  CHECK(with.share() > without.share() * (1.0 - 1.5 * transparent));
+}
+
 TEST_CASE("alpha mask: a device without opacity micromaps draws what it drew") {
   Fixture fx;
   RenderSettings rays = base_settings(RasterMode::Hardware);

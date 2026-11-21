@@ -509,6 +509,12 @@ struct ResolvedSettings {
   // are traced, the cone test is on, and the records are build records rather than template
   // instantiations (which cannot mark a caster non-opaque) — see `resolve_settings`.
   bool casters = false;
+  // **The casters in structures of their own** (R140; renderer.md, "The casters in instances of
+  // their own"): casters on and `renderer.rt.caster_instances`. The top level holds a second record
+  // per instance slot for its casters, which the camera's rays leave out by its mask, and a
+  // caster's record is built as a drawn one's, the micromap with it. A scene lays it out when it is
+  // made (`GpuScene::rt_caster_records`); a frame uses it where both say so.
+  bool caster_instances = false;
   // Rigid distance forms are drawn at their fixed cut and traced against structures built once
   // (`RenderSettings::rt_static_forms`): the chain, the cull pass's cut, the setting and the
   // `renderer.rt.static_forms` tunable, and build records rather than templates. A scene with no

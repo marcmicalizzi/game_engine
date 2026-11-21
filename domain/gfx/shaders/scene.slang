@@ -480,10 +480,13 @@ static const uint k_instance_shadow_rest = 1u << 5;
 static const uint k_instance_untraced = 1u << 6;
 // gfx::k_ray_mask_* / instance_ray_mask (cluster_cull.h; gfx.md, "The ray mask"): bit 0 of a
 // top-level instance's mask is the caster bit, which every light query traces with alone; the
-// camera's rays trace with every bit. An untraced instance has every bit but the caster bit.
+// camera's rays trace with every bit but the caster bit (`k_ray_mask_camera`, R140), which meets
+// every drawn record and no caster's own record (the caster bit alone). An untraced instance has
+// every bit but the caster bit.
 static const uint k_ray_mask_caster = 1u;
 static const uint k_ray_mask_all = 0xffu;
 static const uint k_ray_mask_drawn_only = 0xfeu;
+static const uint k_ray_mask_camera = 0xfeu;  // gfx::k_ray_mask_camera
 uint instance_ray_mask(uint flags) {
   return (flags & k_instance_untraced) != 0 ? k_ray_mask_drawn_only : k_ray_mask_all;
 }

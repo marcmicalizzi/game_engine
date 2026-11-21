@@ -285,7 +285,7 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
     // would, so an instance the caster policy leaves untraced is lit by the path and never
     // shadows, occludes or reflects into it — as the resolve, whose one light query is the shadow
     // ray, never lets it.
-    const uint ray_mask = bounce == 0 ? k_ray_mask_all : k_ray_mask_caster;
+    const uint ray_mask = bounce == 0 ? k_ray_mask_camera : k_ray_mask_caster;
     RayQuery<RAY_FLAG_NONE> query;
     query.TraceRayInline(g_scenes[NonUniformResourceIndex(params->scene)], flags, ray_mask, ray);
     while (query.Proceed()) {
