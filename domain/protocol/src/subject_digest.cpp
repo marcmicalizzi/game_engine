@@ -1,0 +1,772 @@
+// The subject digest of a review item (subject_digest.h; protocol.md, "What a close is tied to").
+#include "subject_digest.h"
+
+#include <core/hash/sha256.h>
+#include <core/json/json.h>
+#include <core/schema/json_reflect.h>
+#include <domain/doc/blob_store.h>
+#include <domain/doc/document.h>
+#include <foundation/io/roots.h>
+#include <foundation/io/vfs.h>
+#include <foundation/tunables/tunables.h>
+
+#include <algorithm>
+#include <string>
+
+namespace engine::protocol {
+
+namespace {
+
+constexpr std::string_view k_stream_version = "engine.protocol.subject-digest 1\n";
+// How deep a property's value is searched for blob references and file names.
+constexpr u32 k_value_depth_max = 32;
+constexpr usize k_file_name_max = 1024;
+constexpr u64 k_read_chunk = 1u << 20;
+
+// The four bounds (protocol.md, "What it costs"). What one digest reads is the sum of what its
+// subject names, so each is a bound on that sum and none is hidden: a raise past one is refused
+// naming it, and a detail or a close past one says so in the stream.
+tunables::Int files_tunable{"protocol.review.subject_files", 256, 1, 1 << 16,
+                            "Files one review item's subject may name in all, listed and named by "
+                            "its records together"};
+tunables::Int file_bytes_tunable{"protocol.review.file_bytes", i64{256} << 20, 1, i64{1} << 40,
+                                 "Bytes of one file a review item's subject digest reads"};
+tunables::Int subject_bytes_tunable{"protocol.review.subject_bytes", i64{1} << 30, 1, i64{1} << 44,
+                                    "Bytes a review item's subject digest reads of all its files "
+                                    "together"};
+tunables::Int records_tunable{"protocol.review.subject_records", 4096, 1, 1 << 20,
+                              "Records a review item's subject digest composes, the subject's "
+                              "and their ancestors, each once"};
+// A glTF's JSON is parsed whole into a tree to find what it names, with the host let go and once
+// per call, so it has a bound of its own below the file bound: past it, the glTF is hashed and its
+// names are said not to be followed.
+tunables::Int gltf_json_tunable{"protocol.review.gltf_json_bytes", i64{64} << 20, 1, i64{1} << 40,
+                                "Bytes of a .gltf a review item's subject digest parses to follow "
+                                "the buffers and images it names"};
+
+JsonValue hex_of(Id128 id) {
+  char hex[Id128::k_hex_length + 1];
+  id.to_hex(hex);
+  return JsonValue(std::string_view(hex, Id128::k_hex_length));
+}
+
+void add_line(Sha256& h, const JsonValue& line) {
+  h.update(write_json(line, JsonWriteOptions{.pretty = false}));  // one line: the compact form
+  h.update(std::string_view("\n"));
+}
+
+bool ascii_alnum(char c) noexcept {
+  return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+// A string a record holds is taken for a file it names when its last component ends in an
+// extension of one to eight letters or digits (`props/crate.glb`, `content://rock.png`): nothing
+// in the schema marks a field as a path (`MeshPlacement.mesh` is a string), so the rule is one any
+// record's value is measured by, never a list of types. A string that passes and names nothing
+// digests as missing, which is a constant for that string and so harmless.
+bool names_a_file(std::string_view s) noexcept {
+  if (s.empty() || s.size() > k_file_name_max) return false;
+  for (const char c : s) {
+    const auto u = static_cast<unsigned char>(c);
+    if (u < 0x20 || u == 0x7f) return false;
+  }
+  const usize slash = s.find_last_of("/\\");
+  const std::string_view last = slash == std::string_view::npos ? s : s.substr(slash + 1);
+  const usize dot = last.rfind('.');
+  if (dot == std::string_view::npos || dot == 0) return false;
+  const std::string_view extension = last.substr(dot + 1);
+  if (extension.empty() || extension.size() > 8) return false;
+  for (const char c : extension) {
+    if (!ascii_alnum(c)) return false;
+  }
+  return true;
+}
+
+void file_names(const JsonValue& value, Vector<std::string>& out, u32 depth) {
+  if (depth > k_value_depth_max) return;
+  if (value.is_string()) {
+    if (names_a_file(value.as_string())) out.push_back(std::string(value.as_string()));
+  } else if (value.is_array()) {
+    for (const JsonValue& element : value.as_array())
+      file_names(element, out, depth + 1);
+  } else if (value.is_object()) {
+    for (auto [key, element] : value.as_object()) {
+      (void)key;
+      file_names(element, out, depth + 1);
+    }
+  }
+}
+
+void names_in(const JsonValue& value, HashSet<std::string>& blobs, Vector<std::string>& files) {
+  doc::BlobStore::references(value, blobs);
+  file_names(value, files, 0);
+}
+
+template <class T>
+void sort_unique(Vector<T>& v) {
+  std::sort(v.begin(), v.end());
+  Vector<T> unique;
+  for (const T& x : v) {
+    if (unique.empty() || !(unique.back() == x)) unique.push_back(x);
+  }
+  v = std::move(unique);
+}
+
+void note_over(Vector<DigestOver>& over, const char* bound, u64 limit, u64 figure) {
+  for (const DigestOver& o : over) {
+    if (o.bound == bound) return;  // the first figure a bound was passed at is the one told
+  }
+  over.push_back(DigestOver{bound, limit, figure});
+}
+
+// What a file's line says when it was not read: admitted and not there, admitted and not read, or
+// outside this host's roots, three things a reader is told apart (protocol.md, "What a close is
+// tied to").
+constexpr const char* k_missing = "missing";
+constexpr const char* k_not_readable = "not readable";
+constexpr const char* k_too_large = "too large";
+constexpr const char* k_over_bound = "over the subject's bound";
+constexpr const char* k_outside = "outside this host's roots";
+// What a string a record holds says when no host could admit it as a file, or its admitted place
+// holds a folder: the same on every host.
+constexpr const char* k_no_file = "names no file a root admits";
+
+// Opens a regular file for the digest and holds it to the bounds by the size it has now: never a
+// FIFO, a device or a directory, which `open_regular` refuses without waiting. False with the
+// file's line saying why it will not be read.
+bool open_file(SubjectPlan::File& f, const DigestBounds& bounds, u64& total, SubjectPlan& plan,
+               io::FileHandle& file) {
+  ++plan.files_opened;
+  // Held to the admitted path after the open: a component swapped for a link since the admission
+  // leads elsewhere, and the file is not read (`not readable`).
+  if (const io::Status s = file.open_regular_unmoved(f.native); s != io::Status::Ok) {
+    // Not there is honest, and compares. A folder where a record's string leads was never a file:
+    // the string's constant line, the same on a host that does not admit it. Anything else is a
+    // file this host could not read.
+    if (s == io::Status::IsDirectory && f.guessed) {
+      f.line = k_no_file;
+      return false;
+    }
+    // A place under a regular file is not there (`NotDirectory`, Linux's ENOTDIR; Windows answers
+    // "path not found"), as the roots' admission takes it.
+    f.unread = s != io::Status::NotFound && s != io::Status::NotDirectory;
+    f.line = f.unread ? k_not_readable : k_missing;
+    return false;
+  }
+  if (file.size() > bounds.file_bytes) {
+    note_over(plan.over, file_bytes_tunable.name(), bounds.file_bytes, file.size());
+    f.line = k_too_large;
+    file.close();
+    return false;
+  }
+  if (total + file.size() > bounds.subject_bytes) {
+    note_over(plan.over, subject_bytes_tunable.name(), bounds.subject_bytes, total + file.size());
+    f.line = k_over_bound;
+    file.close();
+    return false;
+  }
+  total += file.size();
+  return true;
+}
+
+// The SHA-256 of an open file's bytes, read now in chunks to the size it had at the open: never its
+// time or its size taken for "unchanged". `keep`, when given, receives the bytes too (a glTF's
+// JSON, which is held to the file bound like any file).
+void hash_file(SubjectPlan::File& f, const io::FileHandle& file, SubjectPlan& plan,
+               std::string* keep = nullptr, u64 keep_max = ~u64{0}) {
+  Sha256 h;
+  std::string buffer(static_cast<usize>(k_read_chunk), '\0');
+  u64 at = 0;
+  for (;;) {
+    u64 got = 0;
+    if (file.read_at(at, buffer.data(), k_read_chunk, got) != io::Status::Ok) {
+      plan.bytes_read += at;
+      f.line = k_not_readable;
+      f.unread = true;
+      return;
+    }
+    if (got == 0) break;
+    const std::string_view bytes(buffer.data(), static_cast<usize>(got));
+    h.update(bytes);
+    if (keep != nullptr && keep->size() < keep_max) {
+      const u64 room = keep_max - keep->size();
+      keep->append(bytes.substr(0, static_cast<usize>(std::min<u64>(room, bytes.size()))));
+    }
+    at += got;
+  }
+  plan.bytes_read += at;
+  f.line = sha256_hex(h.finish());
+  f.read = true;
+}
+
+bool ends_with_lower(std::string_view s, std::string_view suffix) noexcept {
+  if (s.size() < suffix.size()) return false;
+  const std::string_view tail = s.substr(s.size() - suffix.size());
+  for (usize i = 0; i < suffix.size(); ++i) {
+    const char c =
+        tail[i] >= 'A' && tail[i] <= 'Z' ? static_cast<char>(tail[i] - 'A' + 'a') : tail[i];
+    if (c != suffix[i]) return false;
+  }
+  return true;
+}
+
+// A file whose JSON names other files, by its suffix: a `.gltf` (the whole file is the JSON) or a
+// `.glb` (its first chunk is), the two forms the importer reads alike.
+enum class Container : u8 { none, gltf, glb };
+Container container_of(std::string_view spelled) noexcept {
+  if (ends_with_lower(spelled, ".gltf")) return Container::gltf;
+  if (ends_with_lower(spelled, ".glb")) return Container::glb;
+  return Container::none;
+}
+
+// A `.glb`'s two headers: 12 bytes (`glTF`, the version, the length), then the first chunk's 8 (its
+// length and its type, which is `JSON`).
+constexpr u64 k_glb_headers = 20;
+
+u64 le32(std::string_view b, usize at) noexcept {
+  u64 v = 0;
+  for (usize i = 0; i < 4; ++i)
+    v |= static_cast<u64>(static_cast<unsigned char>(b[at + i])) << (8 * i);
+  return v;
+}
+
+enum class GlbJson : u8 { ok, over, malformed };
+
+// A `.glb`'s JSON chunk out of `prefix`, the file's first bytes (its headers and up to the JSON
+// bound after them): the header held to the file's size (`glTF`, version 2, a length within the
+// file) and the chunk to the header's length (type `JSON`) and to `json_max`. `over` with `chunk`
+// the chunk's length when it is past the bound; `malformed` when a header does not hold.
+GlbJson glb_json(std::string_view prefix, u64 file_size, u64 json_max, std::string_view& json,
+                 u64& chunk) {
+  if (prefix.size() < k_glb_headers || prefix.substr(0, 4) != "glTF" || le32(prefix, 4) != 2)
+    return GlbJson::malformed;
+  const u64 length = le32(prefix, 8);
+  if (length < k_glb_headers || length > file_size) return GlbJson::malformed;
+  chunk = le32(prefix, 12);
+  if (prefix.substr(16, 4) != "JSON" || chunk > length - k_glb_headers) return GlbJson::malformed;
+  if (chunk > json_max) return GlbJson::over;
+  if (prefix.size() < k_glb_headers + chunk) return GlbJson::malformed;  // shorter than it says
+  json = prefix.substr(static_cast<usize>(k_glb_headers), static_cast<usize>(chunk));
+  return GlbJson::ok;
+}
+
+// A file a glTF names: where it names it (`images[3]`, which is how it is answered: the URI's own
+// text may be any length and spell any place) and the URI.
+struct GltfName {
+  std::string at;
+  std::string uri;
+};
+
+// The external buffers and images a glTF's JSON names, in its order and each URI once, up to
+// `room` of them (what is left of the files bound): the rest are counted into `past` as the glTF
+// lists them, never collected. A `data:` URI is in the file already, and names nothing; a `.glb`'s
+// buffer 0, its binary chunk, has no URI. False when the engine's JSON reader refuses the text
+// (nested past its depth, say, which the importer may still take): its names are then not known.
+bool gltf_names(std::string_view text, u64 room, Vector<GltfName>& out, u64& past) {
+  JsonValue doc;
+  if (!parse_json(text, doc).ok || !doc.is_object()) return false;
+  HashSet<std::string> seen;
+  for (const char* list : {"buffers", "images"}) {
+    const JsonValue* entries = doc.find(list);
+    if (entries == nullptr || !entries->is_array()) continue;
+    u64 index = 0;
+    for (const JsonValue& entry : entries->as_array()) {
+      const u64 at = index++;
+      const JsonValue* uri = entry.is_object() ? entry.find("uri") : nullptr;
+      if (uri == nullptr || !uri->is_string()) continue;
+      const std::string_view u = uri->as_string();
+      if (u.substr(0, 5) == "data:") continue;
+      if (out.size() >= room) {
+        ++past;
+        continue;
+      }
+      std::string text_of(u);
+      if (seen.contains(text_of)) continue;
+      seen.insert(std::string(text_of));
+      out.push_back(
+          GltfName{std::string(list) + "[" + std::to_string(at) + "]", std::move(text_of)});
+    }
+  }
+  return true;
+}
+
+// Whether a refusal is the text's alone, the same on every host (a stored path's form, its
+// characters, a device name), rather than about the place the text leads to on this one.
+bool refused_by_text(io::Refusal why) noexcept {
+  switch (why) {
+    case io::Refusal::no_base:
+    case io::Refusal::above_root:
+    case io::Refusal::cannot_resolve:
+    case io::Refusal::no_dos_name:
+    case io::Refusal::dangling_link:
+    case io::Refusal::outside:
+    case io::Refusal::unknown_root: return false;
+    default: return true;
+  }
+}
+
+// What a file a glTF names says when its URI is not a relative path under the glTF's directory,
+// by the URI's own rule or the stored path's text rules: the same on every host.
+constexpr const char* k_refused_uri = "not a file under the glTF's directory";
+
+}  // namespace
+
+DigestBounds DigestBounds::now() noexcept {
+  DigestBounds b;
+  b.files = static_cast<u64>(files_tunable.get());
+  b.file_bytes = static_cast<u64>(file_bytes_tunable.get());
+  b.subject_bytes = static_cast<u64>(subject_bytes_tunable.get());
+  b.records = static_cast<u64>(records_tunable.get());
+  b.gltf_json = static_cast<u64>(gltf_json_tunable.get());
+  return b;
+}
+
+void compose_subject(const Context& ctx, const Session& session, const ReviewSubject& subject,
+                     const RaisedFiles& raised, const DigestBounds& bounds, SubjectPlan& plan) {
+  plan = SubjectPlan{};
+  const doc::Document& d = session.document();
+  plan.session = &session;
+  plan.document = &d;
+  plan.revision = d.revision();
+  plan.journal = d.journal().size();
+  plan.undo_position = session.undo_position();
+  plan.layers = d.layer_count();
+  // The roots as they are now, for the files a glTF names, which are admitted with the host let
+  // go (the set changes as sessions open and close).
+  if (ctx.roots != nullptr) {
+    plan.roots = ctx.roots->read_copy();
+    plan.has_roots = true;
+  }
+  Sha256& h = plan.hash;
+  h.update(k_stream_version);
+
+  // 2. The layer it is judged in. The stack itself is not hashed: what composes for the subject
+  // is in its records' composed lines and the judged layer's own record, and a layer that holds
+  // nothing of the subject (another agent's proposal, opened beside it) is nothing its reviewer
+  // saw, where hashing it refused every honest close each time one opened.
+  const i32 judged = subject.layer.empty() ? -1 : d.find_layer(subject.layer);
+  {
+    JsonValue line = JsonValue::array();
+    line.push_back(JsonValue("judged in"));
+    line.push_back(JsonValue(subject.layer));
+    line.push_back(JsonValue(judged >= 0));
+    add_line(h, line);
+  }
+
+  // 3. The records and their ancestors, each once, counted as they are met: a walk up from a
+  // record stops at the first ancestor already met, whose own ancestors are met with it, so the
+  // work is the distinct records and never the records times their depth; and it stops at the
+  // bound, which a damaged index (a cycle the document refuses anyway) cannot run past either.
+  Vector<Id128> ids;
+  HashSet<Id128> met;
+  for (const Id128 id : subject.records) {
+    if (!d.exists(id)) plan.gone.push_back(id);
+    for (Id128 at = id; !(at == Id128{}); at = d.parent_of(at)) {
+      if (met.contains(at)) break;
+      if (ids.size() >= bounds.records) {
+        note_over(plan.over, records_tunable.name(), bounds.records, bounds.records + 1);
+        break;
+      }
+      met.insert(Id128(at));
+      ids.push_back(at);
+    }
+  }
+  std::sort(ids.begin(), ids.end());
+  HashSet<std::string> blobs;
+  Vector<std::string> files;
+  std::string line_text;
+  for (const Id128 id : ids) {
+    line_text.clear();
+    doc::append_composed_record(d, id, line_text);
+    h.update(line_text);
+    doc::ResolvedObject resolved;
+    if (d.resolve(id, resolved) && !resolved.deleted) {
+      for (auto [name, value] : resolved.properties) {
+        (void)name;
+        names_in(*value, blobs, files);
+      }
+    }
+    if (judged >= 0) {
+      JsonValue line = JsonValue::array();
+      line.push_back(JsonValue("in layer"));
+      line.push_back(hex_of(id));
+      const doc::ObjectRecord* own = d.layer(static_cast<u32>(judged)).find(id);
+      if (own != nullptr) {
+        // Its properties are searched for names, never its type (`engine.world.Node` passes the
+        // file rule with the extension `Node`).
+        for (const auto& [name, value] : own->properties) {
+          (void)name;
+          names_in(value, blobs, files);
+        }
+        line.push_back(schema::to_json(*own));
+      } else {
+        line.push_back(JsonValue::null());
+      }
+      add_line(h, line);
+    }
+  }
+  plan.records = static_cast<u32>(ids.size());
+
+  // 4. Blobs, by name: the name is the content.
+  for (const std::string& b : subject.blobs)
+    blobs.insert(std::string(b));
+  Vector<std::string> blob_names;
+  for (const std::string& b : blobs)
+    blob_names.push_back(b);
+  sort_unique(blob_names);
+  for (const std::string& b : blob_names) {
+    JsonValue line = JsonValue::array();
+    line.push_back(JsonValue("blob"));
+    line.push_back(JsonValue(b));
+    line.push_back(JsonValue(doc::BlobStore::has(ctx.sessions->vfs(), session.dir(), b)));
+    add_line(h, line);
+  }
+  plan.blobs = static_cast<u32>(blob_names.size());
+
+  // 5. Files, by spelling, admitted through the roots now; their bytes are read with the host
+  // let go. Past the bound on how many, the rest are named and never admitted or read.
+  // An entry an older raise stored absolute (before T174's form was held at the raise) is outside
+  // on every host, and is answered by its index, never its spelling: no answer carries a path of
+  // the machine (protocol.md, "What a close is tied to"). Such ledgers are not mended; only tests
+  // hold one.
+  Vector<std::string> malformed;
+  for (u32 i = 0; i < subject.assets.size(); ++i) {
+    if (io::check_stored_path_form(subject.assets[i]) == io::Refusal::none) {
+      files.push_back(subject.assets[i]);
+    } else {
+      malformed.push_back("assets[" + std::to_string(i) + "]");
+    }
+  }
+  sort_unique(files);
+  // Past the bound the rest are one count, never one file each: not admitted, not answered.
+  u64 kept = files.size();
+  if (kept > bounds.files) {
+    note_over(plan.over, files_tunable.name(), bounds.files, kept);
+    plan.past_files = kept - bounds.files;
+    kept = bounds.files;
+  }
+  for (u32 i = 0; i < kept; ++i) {
+    SubjectPlan::File& f = plan.files.emplace_back();
+    f.spelled = files[i];
+    const bool listed =
+        std::find(subject.assets.begin(), subject.assets.end(), f.spelled) != subject.assets.end();
+    f.guessed = !listed;
+    io::Admitted admitted;
+    io::Refusal why = io::Refusal::none;
+    // Admitted as a stored path is (T174): never an absolute one, then through the roots from the
+    // document's directory.
+    if (ctx.roots != nullptr &&
+        io::admit_stored_path(*ctx.roots, f.spelled, session.dir(), admitted, why)) {
+      f.native = std::move(admitted.native);
+      continue;
+    }
+    // Not admitted. Outside — never opened, a line of its own, never taken for a change of the
+    // file — when the raiser listed it (an entry of `subject.assets` is held strictly), when this
+    // host has no roots, or when the raise read it as a file: its stored spelling is in the list
+    // the item records, whatever names this host's roots have, since a name is portable and its
+    // place is not; and when the item records no list (raised before digests), since then nothing
+    // says it was not. Otherwise, and at the raise itself, it is a string the raise did not read
+    // as a file (a URL, text with a colon, a root nobody had, a climb out of every root, or a
+    // reference set on a record after the raise): one constant line, and the digest stays
+    // comparable.
+    const bool read_at_raise =
+        !raised.raising &&
+        (!raised.recorded || std::find(raised.spellings.begin(), raised.spellings.end(),
+                                       f.spelled) != raised.spellings.end());
+    if (listed || ctx.roots == nullptr || read_at_raise) {
+      f.outside = true;
+      f.line = k_outside;
+    } else {
+      f.line = k_no_file;
+    }
+  }
+  for (std::string& m : malformed) {
+    SubjectPlan::File& f = plan.files.emplace_back();
+    f.spelled = std::move(m);
+    f.outside = true;
+    f.line = k_outside;
+  }
+}
+
+void read_subject_files(SubjectPlan& plan, const DigestBounds& bounds) {
+  // Every file opened and held to the bounds first, by the sizes they have now, so a subject past
+  // one is known before a byte is read (one handle at a time: the files bound may be raised far
+  // past what a process may hold open); then each that passed opened again, held to the bounds
+  // again by what it is then, and read.
+  u64 total = 0;
+  for (SubjectPlan::File& f : plan.files) {
+    if (!f.line.empty()) continue;  // decided under the lock
+    if (f.native.empty()) {
+      f.line = k_not_readable;
+      f.unread = true;
+      continue;
+    }
+    io::FileHandle file;
+    (void)open_file(f, bounds, total, plan, file);
+  }
+  if (!plan.over.empty() && plan.refuse_over) return;  // a raise refuses it unread
+  total = 0;
+  const u32 listed = static_cast<u32>(plan.files.size());
+  for (u32 i = 0; i < listed; ++i) {
+    if (!plan.files[i].line.empty()) continue;
+    io::FileHandle file;
+    if (!open_file(plan.files[i], bounds, total, plan, file)) continue;
+    std::string gltf;
+    const Container kind = container_of(plan.files[i].spelled);
+    const u64 size = file.size();
+    // A `.gltf` is its JSON, so one past the JSON's own bound is hashed as any file is and its
+    // names are not followed. A `.glb`'s JSON is its first chunk: its headers and up to the bound
+    // after them are kept as the file is hashed, and the chunk is held to the bound below.
+    const bool follow =
+        kind == Container::glb || (kind == Container::gltf && size <= bounds.gltf_json);
+    if (kind == Container::gltf && !follow) {
+      plan.unfollowed.push_back(SubjectPlan::Unfollowed{
+          plan.files[i].spelled, gltf_json_tunable.name(), bounds.gltf_json, size});
+    }
+    const u64 keep_max =
+        kind == Container::glb ? std::min<u64>(size, k_glb_headers + bounds.gltf_json) : size;
+    hash_file(plan.files[i], file, plan, follow ? &gltf : nullptr, keep_max);
+    if (!follow || !plan.files[i].read) continue;
+    std::string_view json = gltf;
+    if (kind == Container::glb) {
+      u64 chunk = 0;
+      const GlbJson g = glb_json(gltf, size, bounds.gltf_json, json, chunk);
+      if (g == GlbJson::over) {
+        plan.unfollowed.push_back(SubjectPlan::Unfollowed{
+            plan.files[i].spelled, gltf_json_tunable.name(), bounds.gltf_json, chunk});
+        continue;
+      }
+      if (g == GlbJson::malformed) {
+        plan.unfollowed.push_back(SubjectPlan::Unfollowed{plan.files[i].spelled, nullptr, 0, 0});
+        continue;
+      }
+      // The chunk is padded to four bytes with spaces, which are JSON's own, or by some exporters
+      // with NUL, where the importer's tokenizer stops and the engine's reader would refuse.
+      while (!json.empty() && json.back() == '\0')
+        json.remove_suffix(1);
+    }
+    // What the glTF names is part of it: each file admitted through the host's roots as a record's
+    // own file is, from the glTF's admitted directory (its URI's own rule first), then read under
+    // the same bounds, and named by the glTF and where in it. One refused is never opened. Only
+    // what is left of the files bound is collected; the rest is counted.
+    const u64 room = plan.files.size() >= bounds.files ? 0 : bounds.files - plan.files.size();
+    Vector<GltfName> names;
+    u64 past = 0;
+    if (!gltf_names(json, room, names, past))
+      plan.unfollowed.push_back(SubjectPlan::Unfollowed{plan.files[i].spelled, nullptr, 0, 0});
+    json = {};
+    gltf = std::string();  // the tree is gone with the function; the text goes now
+    plan.names_collected += names.size();
+    plan.past_files += past;
+    const std::string base(io::parent_path(plan.files[i].native));
+    const std::string by = plan.files[i].spelled;
+    const u32 first_named = static_cast<u32>(plan.files.size());
+    for (const GltfName& name : names) {
+      SubjectPlan::File n;
+      n.spelled = by + "#" + name.at;
+      n.named_by = by;
+      n.uri = name.at;
+      std::string path;
+      io::Admitted admitted;
+      io::Refusal why = io::Refusal::none;
+      // A `..` is no way out by itself: the URI's own rule, then the roots from the glTF's
+      // directory, decide. Refused by either, the name is not followed: never opened or sized, a
+      // line saying so (by its text's rule, the same on every host, or outside this host's
+      // roots), the subject not comparable here and a raise over it refused.
+      const bool uri_ok = io::uri_relative_path(name.uri, path);
+      if (!uri_ok || !plan.has_roots ||
+          !io::admit_stored_path(plan.roots, path, base, admitted, why)) {
+        const bool by_text = !uri_ok || (plan.has_roots && refused_by_text(why));
+        n.unfollowed = true;
+        n.outside = !by_text;
+        n.line = by_text ? k_refused_uri : k_outside;
+      } else {
+        n.native = std::move(admitted.native);
+      }
+      plan.files.push_back(std::move(n));
+    }
+    // Bounded as they are read (protocol.md, "What it costs"): only the glTF says what it names,
+    // so it is read first; then a raise past the files bound stops here, and one within it holds
+    // the named files to the byte bounds by their sizes before a byte of them is read, as it does
+    // the subject's own.
+    if (plan.refuse_over) {
+      if (plan.past_files > 0) break;
+      u64 sized = total;
+      for (u32 k = first_named; k < plan.files.size(); ++k) {
+        if (!plan.files[k].line.empty() || plan.files[k].native.empty()) continue;
+        io::FileHandle named_file;
+        (void)open_file(plan.files[k], bounds, sized, plan, named_file);
+      }
+      if (!plan.over.empty()) break;
+    }
+    for (u32 k = first_named; k < plan.files.size(); ++k) {
+      SubjectPlan::File& n = plan.files[k];
+      if (!n.line.empty() || n.native.empty()) continue;
+      io::FileHandle named_file;
+      if (open_file(n, bounds, total, plan, named_file)) hash_file(n, named_file, plan);
+    }
+  }
+  // The files bound's figure is every file named, collected or counted.
+  if (plan.past_files > 0) {
+    const u64 figure = plan.files.size() + plan.past_files;
+    bool told = false;
+    for (DigestOver& o : plan.over) {
+      if (o.bound == files_tunable.name()) {
+        o.figure = figure;
+        told = true;
+      }
+    }
+    if (!told) note_over(plan.over, files_tunable.name(), bounds.files, figure);
+  }
+}
+
+void bounds_not_compared(const SubjectPlan& plan, Vector<DigestOver>& out) {
+  out.clear();
+  for (const DigestOver& o : plan.over) {
+    if (std::string_view(o.bound) != records_tunable.name()) out.push_back(o);
+  }
+  for (const SubjectPlan::Unfollowed& u : plan.unfollowed) {
+    if (u.bound != nullptr) note_over(out, u.bound, u.limit, u.figure);
+  }
+}
+
+void raised_spellings(const SubjectPlan& plan, Vector<std::string>& out) {
+  out.clear();
+  for (const SubjectPlan::File& f : plan.files) {
+    // A record's string whose place holds a folder was not read as a file: a host that does not
+    // admit it answers the same constant line, never `outside`.
+    if (f.named_by.empty() && !f.native.empty() && f.line != k_no_file) out.push_back(f.spelled);
+  }
+}
+
+bool same_document(const Session* session, const SubjectPlan& plan) noexcept {
+  if (session == nullptr || session != plan.session) return false;
+  const doc::Document& d = session->document();
+  return &d == plan.document && d.revision() == plan.revision &&
+         d.journal().size() == plan.journal && session->undo_position() == plan.undo_position &&
+         d.layer_count() == plan.layers;
+}
+
+bool same_subject(const SubjectPlan& plan, const SubjectPlan& again) {
+  // The stream up to the files covers the records' composed lines and the blobs, and the records
+  // say which strings name files, so equal streams name the same files.
+  Sha256 a = plan.hash;
+  Sha256 b = again.hash;
+  if (sha256_hex(a.finish()) != sha256_hex(b.finish())) return false;
+  if (again.files.size() > plan.files.size() || again.past_files > plan.past_files) return false;
+  for (u32 i = 0; i < again.files.size(); ++i) {
+    const SubjectPlan::File& was = plan.files[i];
+    const SubjectPlan::File& now = again.files[i];
+    if (!was.named_by.empty() || was.spelled != now.spelled || was.native != now.native ||
+        was.outside != now.outside || (!now.line.empty() && now.line != was.line))
+      return false;
+  }
+  return true;
+}
+
+void finish_subject(SubjectPlan& plan, SubjectState& out) {
+  out = SubjectState{};
+  Sha256& h = plan.hash;
+  for (const SubjectPlan::File& f : plan.files) {
+    JsonValue line = JsonValue::array();
+    if (f.named_by.empty()) {
+      line.push_back(JsonValue("asset"));
+      line.push_back(JsonValue(f.spelled));
+    } else {
+      line.push_back(JsonValue("named"));
+      line.push_back(JsonValue(f.named_by));
+      line.push_back(JsonValue(f.uri));
+    }
+    line.push_back(JsonValue(f.line));
+    add_line(h, line);
+    if (f.outside) {
+      out.outside.push_back(f.spelled);
+    } else if (!f.read) {
+      out.unreadable.push_back(f.spelled);
+    }
+    // A file past a byte bound was not read either (a container past one followed nothing), so
+    // a detail cannot compare it and a close over it is refused: its bytes could change unseen
+    // between the detail and the close.
+    const bool past_bound = f.line == k_too_large || f.line == k_over_bound;
+    if (f.outside || f.unfollowed || f.unread || past_bound)
+      out.not_comparable.push_back(f.spelled);
+  }
+  // The files past the bound, one line and one entry with their count, never admitted or read.
+  if (plan.past_files > 0) {
+    JsonValue line = JsonValue::array();
+    line.push_back(JsonValue("past the bound"));
+    line.push_back(JsonValue(std::string_view(files_tunable.name())));
+    line.push_back(JsonValue(plan.past_files));
+    add_line(h, line);
+    std::string past = std::to_string(plan.past_files) + " more past " + files_tunable.name();
+    out.unreadable.push_back(past);
+    out.not_comparable.push_back(std::move(past));
+  }
+  // A glTF whose names were not followed, and why.
+  for (const SubjectPlan::Unfollowed& u : plan.unfollowed) {
+    JsonValue line = JsonValue::array();
+    line.push_back(JsonValue("names not followed"));
+    line.push_back(JsonValue(u.gltf));
+    line.push_back(JsonValue(u.bound == nullptr ? std::string_view("does not parse")
+                                                : std::string_view(u.bound)));
+    line.push_back(JsonValue(u.limit));
+    line.push_back(JsonValue(u.figure));
+    add_line(h, line);
+    // Read, but not in full: what it names is unseen, which a reader is told, and this host cannot
+    // compare a subject it could not follow (a raise over it is refused already).
+    out.unreadable.push_back(u.gltf);
+    out.not_comparable.push_back(u.gltf);
+  }
+  out.comparable = out.not_comparable.empty();
+  // 6. Each bound passed, by its name: a subject digested past one is never equal to one that was
+  // not, so nothing is digested silently weaker.
+  for (const DigestOver& o : plan.over) {
+    JsonValue line = JsonValue::array();
+    line.push_back(JsonValue("over"));
+    line.push_back(JsonValue(std::string_view(o.bound)));
+    line.push_back(JsonValue(o.limit));
+    line.push_back(JsonValue(o.figure));
+    add_line(h, line);
+  }
+  out.gone = plan.gone;
+  out.records = plan.records;
+  out.blobs = plan.blobs;
+  out.assets = static_cast<u32>(plan.files.size());
+  out.asset_bytes = plan.bytes_read;
+  out.digest = sha256_hex(h.finish());
+}
+
+std::string promotion_digest(std::string_view proposal, std::string_view target,
+                             const doc::Layer& layer, const Vector<MergeConflictInfo>& conflicts) {
+  Sha256 h;
+  h.update(std::string_view("engine.protocol.promotion-digest 1\n"));
+  {
+    JsonValue line = JsonValue::array();
+    line.push_back(JsonValue("promote"));
+    line.push_back(JsonValue(proposal));
+    line.push_back(JsonValue(target));
+    add_line(h, line);
+  }
+  // The layer's records in id order (a FlatMap is sorted), each as the layer holds it.
+  for (auto [id, record] : layer.records()) {
+    const doc::ObjectRecord& held = record;
+    JsonValue line = JsonValue::array();
+    line.push_back(JsonValue("record"));
+    line.push_back(hex_of(id));
+    line.push_back(schema::to_json(held));
+    add_line(h, line);
+  }
+  // The conflicts in the merge's order, which is a function of the three layers (merge.h).
+  for (const MergeConflictInfo& c : conflicts) {
+    JsonValue line = JsonValue::array();
+    line.push_back(JsonValue("conflict"));
+    line.push_back(hex_of(c.object));
+    line.push_back(JsonValue(c.property));
+    line.push_back(JsonValue(static_cast<u64>(c.kind)));
+    line.push_back(c.ours);
+    add_line(h, line);
+  }
+  return sha256_hex(h.finish());
+}
+
+}  // namespace engine::protocol

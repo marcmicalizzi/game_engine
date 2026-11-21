@@ -565,4 +565,17 @@ Command cmd_restore(ObjectId id, std::optional<ObjectRecord> record);
 // "<layer>/<id hex>" or "<layer>/<id hex>/<property>" for diagnostics.
 std::string describe_path(std::string_view layer, ObjectId id, std::string_view property = {});
 
+// --- the canonical form of a composed record (doc.md, "The canonical form of a composed record")
+
+// Appends one line to `out` that holds everything the composition says about `id` and nothing
+// else: a JSON array, written canonically and ended by a newline, of the id's hex and then
+// `"gone"` (no layer defines it), `"deleted"` and the defining type (a tombstone wins), or
+// `"live"`, the type, the composed parent's hex (zeros for a root) and the composed properties as
+// one object, its keys sorted by the canonical writer. A function of the composition alone: which
+// layer holds a value, the storage form, the journal and the change feed take no part, so two
+// documents that compose the same record — in two processes, or one before an undo and after the
+// redo — write the same bytes, and a hash of the line is a hash of what a reader of the document
+// sees.
+void append_composed_record(const Document& doc, ObjectId id, std::string& out);
+
 }  // namespace engine::doc

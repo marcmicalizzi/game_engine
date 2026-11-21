@@ -2584,24 +2584,73 @@ enum ReviewResolution : u8 {
 }
 
 /// Exactly what a review item asks about: the identity and the version, never a picture.
-struct ReviewSubject @version(1) {
+/// Version 2: `assets`, the files it is about beyond those its records name, which the subject
+/// digest reads (protocol.md, "What a close is tied to").
+struct ReviewSubject @version(2) @additive(2) {
   /// The layer the records are judged in (a proposal layer, a feature layer); empty: the composed
   /// document.
   layer: string
   /// The records, at most 1,024; each must be live when the item is raised.
   records: id128[]
   /// The document's version when raised, stamped by the host, not the caller: the journal's length
-  /// and the undo position (`session.info`).
+  /// and the undo position (`session.info`). Colour for a reader and never what decides: they are
+  /// one process's history, and an undo then a redo puts them back. The digest decides.
   journal_length: u32 = 0
   undo_position: u32 = 0
   /// A checkpoint holding that version, when the raiser took one.
   checkpoint: string
   /// Blobs it is about (`doc.put_blob`'s names).
   blobs: string[]
+  /// Files it is about beyond those its records name, at most 256, each `<root>://<path>` or
+  /// relative to the document: read through the host's roots and hashed by the digest. One that is
+  /// not there digests as missing; one outside the raising host's roots refuses the raise.
+  assets: string[] @since(2)
+}
+
+/// What a review item's subject is now (protocol.md, "What a close is tied to"): answered by
+/// `review.raise` and by `review.list` with `digest` for one item, never for the rows of a list.
+struct SubjectState @version(1) {
+  /// SHA-256 of the subject's canonical stream now, 64 lowercase hex; empty when not asked.
+  digest: string
+  /// It is the item's `raised_digest`: what the item is about is as it was when it was raised.
+  same: bool = false
+  /// Subject records no longer live.
+  gone: id128[]
+  /// Files the subject names that this host's roots admit and that it did not read, as they were
+  /// spelled: not there, not a regular file, past a bound, or a read that failed, each digested as
+  /// such.
+  unreadable: string[]
+  /// Files the subject names that are outside this host's roots (a root it does not have, or a
+  /// place its roots do not admit), as they were spelled: never opened.
+  outside: string[]
+  /// The digest compares with another host's: every file the subject names was read and hashed
+  /// here, or is honestly not there. False when `not_comparable` is not empty, and then `same` is
+  /// false and a close carrying a digest is refused (`subject not readable here`), never called
+  /// "subject moved".
+  comparable: bool = false
+  /// What keeps this host from comparing, as answered: every entry of `outside`, every name a glTF
+  /// of the subject names that was not followed (its URI's rule, the stored path's text rules or
+  /// the roots refused it; never opened), every glTF whose names could not be followed, and every
+  /// file the roots admit that is there and could not be read (not a regular file, an open the
+  /// system could not confirm, a read that failed).
+  not_comparable: string[]
+  /// What the stream covered: the subject's records with their ancestors each once, the blobs and
+  /// the assets they and the subject name, and the bytes of the assets read and hashed.
+  records: u32 = 0
+  blobs: u32 = 0
+  assets: u32 = 0
+  asset_bytes: u64 = 0
+  /// Milliseconds the computation took.
+  ms: f64 = 0
+  /// How many times it composed the document and read the files: more than 1 when the document or
+  /// the ledger moved while the files were read with the host let go, at most 3 (protocol.md,
+  /// "What it costs").
+  passes: u32 = 0
 }
 
 /// One review item of the ledger.
-struct ReviewInfo @version(2) @additive(2) {
+/// Version 3: `raised_digest` and `decided_at`, the subject digests it was raised and decided at.
+struct ReviewInfo @version(3) @additive(2, 3) {
   /// Drawn at random against the ledger's other items, as a task's is.
   id: u64 = 0
   /// What kind of check it is: data, not code. "classified content review" (plan 06 §6.10) is the
@@ -2633,16 +2682,49 @@ struct ReviewInfo @version(2) @additive(2) {
   raised_via: string @since(2)
   closed_via: string @since(2)
   closed_human_via: string @since(2)
+  /// The subject digest the raising host computed from its own document when the item was raised
+  /// (`SubjectState.digest`): content, so a digest another process computes compares with it where
+  /// journal numbers do not. Empty on an item raised before digests.
+  raised_digest: string @since(3)
+  /// The subject digest the close was decided at: the one its closer saw, which the host found
+  /// equal to the subject's digest then. Empty while open.
+  decided_at: string @since(3)
+  /// The stored spellings of the files the raise's digest read as files — admitted by the raising
+  /// host's roots, whether there or not: the subject's listed ones and the ones its records name,
+  /// never one a glTF names (which follows from the glTF) — each `<root>://<relative>` or relative
+  /// to the document as the subject or the record spells it, never absolute, at most the files
+  /// bound of them (protocol.md, "Which strings are files"). A host whose roots do not admit one of
+  /// them cannot compute the raiser's digest: it is `outside` there, whatever names the host's
+  /// roots have, since a root's name is portable and its place is not. On an item with no
+  /// `raised_digest` (raised before digests) nothing is recorded, and every string a host cannot
+  /// admit is `outside`.
+  raised_files: string[] @since(3)
 }
 
 /// `ledger.json` in a document directory: the tasks and review items. Never cached by a host:
 /// every call reads it, changes it and writes it back while it holds `ledger.json.lock`
 /// exclusively, so two hosts on one directory lose nothing to each other. Version 1 counted its ids
 /// (`next_task`, `next_review`); version 2 draws them, and its registered step drops the counters
-/// and gives every item revision 1.
-struct LedgerFile @version(2) @kind(document) {
+/// and gives every item revision 1. Version 3 adds the ledger's own `revision`. Version 4: its items
+/// are `ReviewInfo` 3 and their subjects `ReviewSubject` 2, whose fields are all additions; it adds
+/// no field of its own, so its step is registered (it has nothing to change), not declared additive.
+struct LedgerFile @version(4) @kind(document) @additive(3) {
   tasks: TaskInfo[]
   reviews: ReviewInfo[]
+  /// Moves on every write the ledger takes (a call that changes nothing writes nothing, so it moves
+  /// only when the content does). What a list answers and `ledger_changed` names, so a reader tells
+  /// whether its read is the one an event spoke of. Compared for inequality, never "greater": a
+  /// ledger restored from a copy has a revision that went back (protocol.md, "The ledger's
+  /// events").
+  revision: u64 = 0 @since(3)
+}
+
+/// The order a ledger list answers in (protocol.md, "The ledger's lists"): by each entry's last
+/// change — a task's `updated_unix_ms`, a review item's newest history line — then by id, so two
+/// reads of one ledger list the same entries in the same order. `Newest` is `Oldest` reversed.
+enum LedgerOrder : u8 {
+  Oldest = 0
+  Newest = 1
 }
 
 /// Parameters of `task.create`.
@@ -2686,8 +2768,9 @@ struct TaskUpdateParams @version(1) {
   attribution: engine.doc.Attribution
 }
 
-/// Parameters of `task.list`.
-struct TaskListParams @version(1) {
+/// Parameters of `task.list`. Version 2: `tasks`, `order` and `limit`, so a reader asks for the ids
+/// an event named, or the newest fifty, without reading everything.
+struct TaskListParams @version(2) @additive(2) {
   session: string
   /// One task by id; 0 for every task that passes the filters below.
   task: u64 = 0
@@ -2699,16 +2782,28 @@ struct TaskListParams @version(1) {
   claimant: string
   /// Leave each task's history out (it is the bulk of a long-lived ledger).
   brief: bool = false
+  /// Only these tasks, at most 1,024 ids (what `ledger_changed` and the task events named); an id
+  /// the ledger no longer holds is left out, not refused. Empty for all.
+  tasks: u64[] @since(2)
+  /// The order of the answer: by last change, then by id.
+  order: LedgerOrder = Oldest @since(2)
+  /// At most this many tasks, 1 to 1,024; 0 for every match. `more` says how many matched past it.
+  limit: u32 = 0 @since(2)
 }
 
 /// Result of `task.list`, and of the writes, which answer the task they changed in `tasks[0]`.
-/// Version 2: its tasks are `TaskInfo` 2 (random ids, how each caller was known).
-struct TasksResult @version(2) {
+/// Version 2: its tasks are `TaskInfo` 2 (random ids, how each caller was known). Version 3:
+/// `more` and `ledger_revision`.
+struct TasksResult @version(3) @additive(3) {
   /// The host's clock, which every claim's expiry is judged by.
   now_unix_ms: i64 = 0
   tasks: TaskInfo[]
   /// Claims that had lapsed and were let go by this call.
   lapsed: u32 = 0
+  /// For a list: how many tasks matched past its `limit` and are not in `tasks`.
+  more: u32 = 0 @since(3)
+  /// The ledger's revision this answer was read at, or written as (`LedgerFile.revision`).
+  ledger_revision: u64 = 0 @since(3)
 }
 
 /// Parameters of `review.raise`.
@@ -2726,8 +2821,9 @@ struct ReviewRaiseParams @version(1) {
   attribution: engine.doc.Attribution
 }
 
-/// Parameters of `review.close`.
-struct ReviewCloseParams @version(2) @additive(2) {
+/// Parameters of `review.close`. Version 3: `digest`, the subject digest its closer saw; with
+/// `revision` it is what the page showed (protocol.md, "What a close is tied to").
+struct ReviewCloseParams @version(3) @additive(2, 3) {
   session: string
   review: u64 = 0
   /// Accepted, Rejected, or Withdrawn (its raiser, an agent-audience item only).
@@ -2739,10 +2835,17 @@ struct ReviewCloseParams @version(2) @additive(2) {
   /// `data.reason` "revision moved") when the item has changed since, so a decision is never
   /// recorded against a version its maker did not see.
   revision: u64 = 0 @since(2)
+  /// The subject digest its closer's detail was drawn with (`review.list` with `digest`): refused
+  /// (1004, `data.reason` "subject moved", the digest now in `data.digest`) when the subject's
+  /// digest now differs, so a decision is never recorded against a state its maker did not see.
+  /// Empty checks nothing on an agent's item. A person's item is closed only with both `revision`
+  /// and `digest` (1004, "seen required"): the close a person makes is tied to what they saw.
+  digest: string @since(3)
 }
 
-/// Parameters of `review.list`.
-struct ReviewListParams @version(1) {
+/// Parameters of `review.list`. Version 2: `reviews`, `order` and `limit`, as `task.list`'s.
+/// Version 3: `digest`, one item's opened detail.
+struct ReviewListParams @version(3) @additive(2, 3) {
   session: string
   /// One item by id; 0 for every item that passes the filters below.
   review: u64 = 0
@@ -2753,13 +2856,35 @@ struct ReviewListParams @version(1) {
   /// Only items raised for this task; 0 for all.
   task: u64 = 0
   brief: bool = false
+  /// Only these items, at most 1,024 ids; an id the ledger no longer holds is left out. Empty for
+  /// all.
+  reviews: u64[] @since(2)
+  /// The order of the answer: by last change (the newest history line), then by id.
+  order: LedgerOrder = Oldest @since(2)
+  /// At most this many items, 1 to 1,024; 0 for every match. `more` says how many matched past it.
+  limit: u32 = 0 @since(2)
+  /// Compute the item's subject digest now, into `ReviewsResult.subject`: an item's detail, opened.
+  /// Only with `review`, and with no `reviews`, no `order` but the default and no `limit`, which
+  /// select a list's rows; refused (1004) otherwise, since a list's rows never compute one.
+  digest: bool = false @since(3)
 }
 
 /// Result of `review.list`, and of the writes, which answer the item they changed in `reviews[0]`.
 /// Version 2: its items are `ReviewInfo` 2 (random ids, a revision, how each caller was known).
-struct ReviewsResult @version(2) {
+/// Version 3: `more` and `ledger_revision`, as `TasksResult`'s. Version 4: its items are
+/// `ReviewInfo` 3, and `subject`.
+struct ReviewsResult @version(4) @additive(3, 4) {
   now_unix_ms: i64 = 0
   reviews: ReviewInfo[]
+  /// For a list: how many items matched past its `limit` and are not in `reviews`.
+  more: u32 = 0 @since(3)
+  /// The ledger's revision this answer was read at, or written as.
+  ledger_revision: u64 = 0 @since(3)
+  /// The subject of `reviews[0]` now: from `review.raise` (the stamp), from `review.list` with
+  /// `digest`, and from `review.close` carrying a digest (what the close was decided at). Null
+  /// when nothing was compared — a list's rows, a close that sent no digest (an agent's, a
+  /// withdrawal) — so no answer that compared nothing carries a `comparable` to misread.
+  subject: SubjectState? @since(4)
 }
 
 // ---- describe (plan 06 §6.6; protocol.md, "Describing an object, a tile or a region") ---------
@@ -2997,8 +3122,8 @@ enum PromotePrefer : u8 {
   Base = 3
 }
 
-/// Parameters of `doc.promote`.
-struct PromoteParams @version(1) {
+/// Parameters of `doc.promote`. Version 2: `digest`, what the promoter's dry run showed.
+struct PromoteParams @version(2) @additive(2) {
   session: string
   /// The proposal layer.
   proposal: string
@@ -3007,10 +3132,15 @@ struct PromoteParams @version(1) {
   dry_run: bool = false
   /// The promoter. The journal records the promotion under it, with the proposal's own rationale.
   attribution: engine.doc.Attribution
+  /// The `PromoteResult.digest` of the dry run this promotion was decided on: refused (1004,
+  /// `data.reason` "proposal moved", the digest now in `data.digest`) when the proposal's records
+  /// or the target's values at its conflicts have changed since, so a `prefer` applies to the
+  /// values its promoter saw (protocol.md, "What a promotion is tied to"). Empty checks nothing.
+  digest: string @since(2)
 }
 
-/// Result of `doc.promote`.
-struct PromoteResult @version(1) {
+/// Result of `doc.promote`. Version 2: `digest`.
+struct PromoteResult @version(2) @additive(2) {
   /// Nothing stands in the way: no conflict `prefer` leaves open, and no new validation problem.
   ok: bool = false
   /// The target now holds the proposal's opinions and the proposal is empty.
@@ -3037,6 +3167,10 @@ struct PromoteResult @version(1) {
   merge_ms: f64 = 0
   validate_ms: f64 = 0
   commit_ms: f64 = 0
+  /// SHA-256 of what this merge showed: the proposal's records as it holds them and the target's
+  /// value at each conflict, 64 lowercase hex. A promotion passes its dry run's back in
+  /// `PromoteParams.digest`.
+  digest: string @since(2)
 }
 
 /// Parameters of `doc.reject`: empty an open proposal without merging it.
@@ -3388,11 +3522,15 @@ struct SceneEvent @version(1) {
 }
 
 /// `event.session`: a session opened or closed, or a lease on it was taken or released. (Not
-/// `SessionEvent`, which is one entry of `session.events`' log.)
-struct SessionChangeEvent @version(3) {
+/// `SessionEvent`, which is one entry of `session.events`' log.) Version 4: "ledger_changed" with
+/// the ids it names, and the proposals' changes.
+struct SessionChangeEvent @version(4) @additive(4) {
   session: string
-  /// "opened", "closed", "lease_acquired", "lease_released", "checkpoint", "rollback", and the
-  /// ledger's "task_created", "task_claimed", "task_updated", "review_raised" and "review_closed".
+  /// "opened", "closed", "lease_acquired", "lease_released", "checkpoint", "rollback", the
+  /// ledger's "task_created", "task_claimed", "task_updated", "review_raised" and "review_closed",
+  /// "ledger_changed" (another process's write, or a claim this host's clock let lapse: `tasks`,
+  /// `reviews`, `ledger_revision`; never a call's own change, which its own event names), and a proposal's "proposal_opened", "proposal_reopened",
+  /// "proposal_promoted" and "proposal_rejected" (`layer` the proposal, `actor` who did it).
   change: string
   /// The document's directory.
   path: string
@@ -3410,6 +3548,17 @@ struct SessionChangeEvent @version(3) {
   /// `actor` is then who made the change.
   task: u64 = 0 @since(3)
   review: u64 = 0 @since(3)
+  /// For "ledger_changed": the tasks and review items whose entries differ from what this host last
+  /// saw of the ledger — made, changed, or gone — by id, at most 1,024 of each, with how many there
+  /// were in all. Ids, never content: a reader reads them with `task.list {tasks}` and
+  /// `review.list {reviews}` (protocol.md, "The ledger's events").
+  tasks: u64[] @since(4)
+  tasks_total: u32 = 0 @since(4)
+  reviews: u64[] @since(4)
+  reviews_total: u32 = 0 @since(4)
+  /// For "ledger_changed": the ledger's revision now (`LedgerFile.revision`); compared for
+  /// inequality, never order.
+  ledger_revision: u64 = 0 @since(4)
 }
 
 // ---- clients of one host (roadmap A3; docs/subsystems/protocol.md, "Several clients, one host") -

@@ -67,14 +67,15 @@ std::wstring wide(const std::string& s) {
   return w;
 }
 
-// A junction, which any user may make: an empty directory given a mount-point reparse point.
-bool make_junction(const std::string& target, const std::string& link) {
+// A junction, which any user may make: an empty directory given a mount-point reparse point. The
+// target in UTF-16 as the system takes it, so a case can name one UTF-8 cannot spell.
+bool make_junction_to(const std::wstring& target, const std::string& link) {
   if (!CreateDirectoryW(wide(link).c_str(), nullptr)) return false;
   const HANDLE h = CreateFileW(wide(link).c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
                                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
   if (h == INVALID_HANDLE_VALUE) return false;
-  const std::wstring substitute = L"\\??\\" + wide(target);
-  const std::wstring print = wide(target);
+  const std::wstring substitute = L"\\??\\" + target;
+  const std::wstring print = target;
   const usize names = (substitute.size() + 1 + print.size() + 1) * sizeof(wchar_t);
   std::string buf(8 + 8 + names, '\0');
   auto put16 = [&](usize at, usize v) {
@@ -96,6 +97,10 @@ bool make_junction(const std::string& target, const std::string& link) {
                                   static_cast<DWORD>(buf.size()), nullptr, 0, &returned, nullptr);
   CloseHandle(h);
   return ok != FALSE;
+}
+
+bool make_junction(const std::string& target, const std::string& link) {
+  return make_junction_to(wide(target), link);
 }
 #endif
 
@@ -770,4 +775,180 @@ TEST_CASE("roots: a stored path is portable or refused, then admitted from its d
   CHECK(why == Refusal::outside);
   CHECK_FALSE(admit_stored_path(roots, "props/CON", doc, out, why));
   CHECK(why == Refusal::device);
+}
+
+// Between an admission and the open, a component of the admitted path can be replaced by a link
+// (docs/subsystems/io.md, "Roots"): `FileHandle::open_regular_unmoved` holds the opened handle's
+// final path to the admitted one, so a file the admitted path no longer leads to is never read,
+// where a plain open follows the link.
+TEST_CASE("open_regular_unmoved refuses a file the admitted path no longer leads to") {
+  TempDir tmp("io_roots_unmoved");
+  const std::string root = std::string(tmp.path()) + "/root";
+  const std::string away = std::string(tmp.path()) + "/away";
+  make_dir(root + "/sub");
+  make_dir(away);
+  put(root + "/sub/x.bin", "near");
+  put(away + "/x.bin", "away");
+  const std::string admitted = canon(root + "/sub/x.bin");
+  FileHandle file;
+  REQUIRE(file.open_regular_unmoved(admitted) == Status::Ok);
+  file.close();
+  // The directory swapped for a link to elsewhere, as a racing process could.
+  std::filesystem::remove_all(fs_path(root + "/sub"));
+  struct Unlink {
+    std::string path;
+    ~Unlink() {
+      std::error_code ec;
+      std::filesystem::remove(fs_path(path), ec);
+    }
+  } unlink{root + "/sub"};
+  if (!make_dir_link(away, unlink.path)) {
+    MESSAGE("this system refused to make a directory link; the case is skipped");
+    return;
+  }
+  CHECK(file.open_regular(admitted) == Status::Ok);  // a plain open follows the link
+  file.close();
+  // What a missing file answers, whether something is at the link's end or not: at the admitted
+  // place there is no file, and a client is never told whether one outside the roots exists.
+  CHECK(file.open_regular_unmoved(admitted) == Status::NotFound);
+  CHECK_FALSE(file.valid());
+  std::filesystem::remove(fs_path(away + "/x.bin"));
+  CHECK(file.open_regular_unmoved(admitted) == Status::NotFound);
+}
+
+#if ENGINE_PLATFORM_WINDOWS
+// A name that is not valid UTF-16 — an unpaired surrogate, which NTFS stores as it is given — in
+// the path an opened handle leads to (a junction planted or raced under a root): the handle's path
+// is spelled as the roots spell a canonical one (`WideCharToMultiByte`, which replaces what it
+// cannot convert), so it answers that the admitted path leads elsewhere, and nothing in the open
+// can end the process on such a name.
+TEST_CASE("open_regular_unmoved spells a handle's path as the roots do, whatever its name holds") {
+  TempDir tmp("io_roots_surrogate");
+  const std::string root = std::string(tmp.path()) + "/root";
+  make_dir(root + "/sub");
+  put(root + "/sub/x.bin", "near");
+  const std::string admitted = canon(root + "/sub/x.bin");
+  const std::wstring odd = wide(std::string(tmp.path())) + L"\\odd" + wchar_t(0xD800) + L"name";
+  REQUIRE(CreateDirectoryW(odd.c_str(), nullptr));
+  const HANDLE made = CreateFileW((odd + L"\\x.bin").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                                  FILE_ATTRIBUTE_NORMAL, nullptr);
+  REQUIRE(made != INVALID_HANDLE_VALUE);
+  CloseHandle(made);
+  std::filesystem::remove_all(fs_path(root + "/sub"));
+  // The junction and the odd directory removed by their wide names, before the scratch is.
+  struct Unmake {
+    std::string link;
+    std::wstring odd;
+    ~Unmake() {
+      RemoveDirectoryW(wide(link).c_str());
+      DeleteFileW((odd + L"\\x.bin").c_str());
+      RemoveDirectoryW(odd.c_str());
+    }
+  } unmake{root + "/sub", odd};
+  if (!make_junction_to(odd, unmake.link)) {
+    MESSAGE("this system refused to make a junction; the case is skipped");
+    return;
+  }
+  FileHandle file;
+  CHECK(file.open_regular_unmoved(admitted) == Status::NotFound);
+  CHECK_FALSE(file.valid());
+}
+#endif
+
+// A URI one file names another by (a glTF's buffers and images; docs/subsystems/io.md, "Roots"):
+// decoded once, and refused before any admission when the decoded text has a backslash (a URI has
+// none, and nothing is turned into a separator), a control byte, a colon in its first segment (a
+// scheme or a drive) or a leading '/'. A `..` segment at the front is not a way out by itself:
+// the roots are the door, so a leading climb is taken as it is spelled and the admission from the
+// naming file's directory decides where it leads; a `..` after a named segment is refused, and a
+// `.` segment dropped. Each text below is one a reader of the decoded string alone
+// would take for a path, or a near neighbour of one.
+TEST_CASE("uri_relative_path takes a relative URI and leaves where a climb leads to the roots") {
+  struct Row {
+    const char* uri;
+    bool taken;
+    const char* path;  // what it decodes to, when taken
+  };
+  const Row rows[] = {
+      {"crate.bin", true, "crate.bin"},
+      {"tex%20a.png", true, "tex a.png"},
+      {"sub/x.bin", true, "sub/x.bin"},
+      // A `.` segment is dropped wherever it is, raw or encoded.
+      {"a/./b.bin", true, "a/b.bin"},
+      {"./a.bin", true, "a.bin"},
+      {"%2E/a.bin", true, "a.bin"},
+      {"a/%2e/b.bin", true, "a/b.bin"},
+      {".", false, ""},
+      {"./", false, ""},
+      // An empty segment anywhere is refused, raw or encoded, so what is taken never begins with
+      // a separator once a `.` is dropped; a single trailing separator is kept as spelled.
+      {".//a.bin", false, ""},
+      {"%2E//a.bin", false, ""},
+      {".%2F%2Fa.bin", false, ""},
+      {".//C:/x.bin", false, ""},
+      {".//host/s/x.bin", false, ""},
+      {"a//b.bin", false, ""},
+      {"a%2F%2Fb.bin", false, ""},
+      {"x//", false, ""},
+      {"sub/", true, "sub/"},
+      {"./sub/", true, "sub/"},
+      // What a dropped `.` leaves first is held to the first segment's rule.
+      {"./c:x.bin", false, ""},
+      {"%2E/C:/x.bin", false, ""},
+      // A colon after the first segment is no scheme: the admission's text rules refuse it.
+      {"a/b:c.png", true, "a/b:c.png"},
+      // Decoded once: a doubled encoding is a literal percent sign in a name, never a backslash.
+      {"a%255Cb.png", true, "a%5Cb.png"},
+      {"%255C%255Chost%255Cx.bin", true, "%5C%5Chost%5Cx.bin"},
+      // A backslash, raw or encoded in either case, climbing or naming a share.
+      {"x\\..\\outside.bin", false, ""},
+      {"x\\outside.bin", false, ""},
+      {"x%5C..%5C..%5Coutside.bin", false, ""},
+      {"x%5c..%5c..%5coutside.bin", false, ""},
+      {"x%5Coutside.bin", false, ""},
+      {"%5C%5Chost%5Cs%5Cx.bin", false, ""},
+      {"%5c%5chost%5cs%5cx.bin", false, ""},
+      {"%5Cx.bin", false, ""},
+      // A climb at the front, plain or spelled with encoded slashes or dots: taken, decoded, for
+      // the roots.
+      {"%2E%2E/outside.bin", true, "../outside.bin"},
+      {"%2e%2e%2foutside.bin", true, "../outside.bin"},
+      {"../outside.bin", true, "../outside.bin"},
+      {"../../outside.bin", true, "../../outside.bin"},
+      {"./../x.bin", true, "../x.bin"},
+      {"../textures/x.png", true, "../textures/x.png"},
+      {"..", true, ".."},
+      // A `..` after a named segment: an open resolves `a/..` through whatever `a` is (a link on
+      // Linux), where the admission collapses it by its text, so it is refused, raw or encoded.
+      {"a/../b.bin", false, ""},
+      {"a/../../outside.bin", false, ""},
+      {"../a/../b.bin", false, ""},
+      {"a/..", false, ""},
+      {"a/./../b.bin", false, ""},
+      {"x%2F..%2F..%2Foutside.bin", false, ""},
+      {"a%2F..%2Fb.bin", false, ""},
+      {"a/%2E%2E/b.bin", false, ""},
+      {"a/.%2e/b.bin", false, ""},
+      {"..%2Fa%2F..%2Fb.bin", false, ""},
+      // Absolute, a drive, a scheme.
+      {"/abs.bin", false, ""},
+      {"%2Fabs.bin", false, ""},
+      {"//host/s/x.bin", false, ""},
+      {"C:/x.bin", false, ""},
+      {"C%3A/x.bin", false, ""},
+      {"c:x.bin", false, ""},
+      {"http://h/x.png", false, ""},
+      // Empty, a control byte.
+      {"", false, ""},
+      {"%00.bin", false, ""},
+      {"a%0A.bin", false, ""},
+      {"a%7F.bin", false, ""},
+  };
+  for (const Row& row : rows) {
+    const std::string uri = row.uri;  // its text in a failure's report, not its address
+    CAPTURE(uri);
+    std::string path;
+    CHECK(uri_relative_path(row.uri, path) == row.taken);
+    if (row.taken) CHECK(path == row.path);
+  }
 }

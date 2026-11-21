@@ -726,6 +726,55 @@ TEST_CASE("proposals: an owner's layer, promoted by merge, taken back by two und
   CHECK(host.property(oid(2), "color").is_null());
 }
 
+// A proposal's opening, promotion, reopening and rejection reach a subscriber as `event.session`
+// (protocol.md, "Proposal layers and promotion"), each after `proposals.json` is written, naming
+// the layer and who did it; a dry run publishes nothing.
+TEST_CASE("proposals: opening, promoting, reopening and rejecting are pushed as session events") {
+  struct Collect final : EventTransport {
+    std::vector<std::string> sent;
+    Post post(u64, std::string text, u32) override {
+      sent.push_back(std::move(text));
+      return Post::Queued;
+    }
+  } pushed;
+  Subscriptions subscriptions;
+  subscriptions.attach(&pushed);
+  TempDir tmp("protocol_proposals");
+  Host host;
+  host.sessions.set_events(&subscriptions);
+  (void)subscriptions.subscribe(7, "", event_bit(EventKind::Session));
+  host.make_world(tmp.file("doc"));
+  const auto proposal_changes = [&] {
+    std::vector<std::string> out;
+    for (const std::string& text : pushed.sent) {
+      JsonValue note;
+      REQUIRE(parse_json(text, note).ok);
+      const JsonValue& p = at(note, "params");
+      const std::string change(at(p, "change").as_string());
+      if (change.rfind("proposal_", 0) != 0) continue;
+      out.push_back(change + " " + std::string(at(p, "layer").as_string()) + " " +
+                    std::string(at(p, "actor").as_string()));
+    }
+    return out;
+  };
+  const JsonValue a = who("a"), d = who("d");
+  const JsonValue open =
+      obj({{"name", JsonValue("p.a")}, {"target", JsonValue("world")}, {"attribution", a}});
+  host.ok("doc.propose_layer", open);
+  host.apply(one(set(oid(1), "color", JsonValue(5))), a, "p.a");
+  host.ok("doc.promote",
+          obj({{"proposal", JsonValue("p.a")}, {"dry_run", JsonValue(true)}, {"attribution", d}}));
+  CHECK(proposal_changes() == std::vector<std::string>{"proposal_opened p.a a"});
+  REQUIRE(at(host.ok("doc.promote", obj({{"proposal", JsonValue("p.a")}, {"attribution", d}})),
+             "promoted") == JsonValue(true));
+  host.ok("doc.propose_layer", open);
+  host.apply(one(set(oid(2), "color", JsonValue(6))), a, "p.a");
+  host.ok("doc.reject", obj({{"proposal", JsonValue("p.a")}, {"attribution", a}}));
+  CHECK(proposal_changes() ==
+        std::vector<std::string>{"proposal_opened p.a a", "proposal_promoted p.a d",
+                                 "proposal_reopened p.a a", "proposal_rejected p.a a"});
+}
+
 TEST_CASE("proposals: a conflict refuses the promotion unless prefer settles it") {
   TempDir tmp("protocol_proposals");
   Host host;
@@ -773,6 +822,85 @@ TEST_CASE("proposals: a conflict refuses the promotion unless prefer settles it"
   CHECK(host.property(oid(2), "color") == JsonValue(2));
   // A deletion never silently destroys the other side's edit: the object stays, modified.
   CHECK(host.property(oid(4), "scale") == JsonValue(2.0));
+}
+
+// "Take the proposal's" applies to the values the person saw (protocol.md, "What a promotion is
+// tied to"): a promotion carrying its dry run's digest is refused when the proposal's owner added a
+// command since, or the target's value at a conflict moved, and taken when neither did.
+TEST_CASE("proposals: a promotion is refused when what its dry run showed has moved") {
+  TempDir tmp("protocol_proposals_seen");
+  Host host;
+  host.make_world(tmp.file("doc"));
+  const JsonValue a = who("a"), b = who("b"), d = who("d");
+  for (const char* name : {"p.a", "p.b"}) {
+    host.ok("doc.propose_layer", obj({{"name", JsonValue(name)},
+                                      {"target", JsonValue("world")},
+                                      {"edit", JsonValue(false)},
+                                      {"attribution", name[2] == 'a' ? a : b}}));
+  }
+  host.apply(one(set(oid(1), "color", JsonValue(1))), a, "p.a");
+  host.apply(one(set(oid(1), "color", JsonValue(2))), b, "p.b");
+  REQUIRE(at(host.ok("doc.promote", obj({{"proposal", JsonValue("p.a")}, {"attribution", d}})),
+             "promoted") == JsonValue(true));
+  const auto dry_run = [&] {
+    const JsonValue dry = host.ok(
+        "doc.promote",
+        obj({{"proposal", JsonValue("p.b")}, {"dry_run", JsonValue(true)}, {"attribution", d}}));
+    REQUIRE(at(dry, "conflicts").size() == 1);
+    return at(dry, "digest");
+  };
+  const auto take = [&](const JsonValue& seen, JsonValue* error) {
+    JsonValue params = obj({{"proposal", JsonValue("p.b")},
+                            {"prefer", JsonValue("Proposal")},
+                            {"digest", seen},
+                            {"attribution", d}});
+    if (error == nullptr) return host.ok("doc.promote", std::move(params));
+    CHECK(host.fails("doc.promote", std::move(params), error) == codes::k_invalid_argument);
+    CHECK(at(at(*error, "data"), "reason").as_string() == "proposal moved");
+    return JsonValue();
+  };
+  JsonValue error;
+
+  const JsonValue seen = dry_run();
+  CHECK(seen.as_string().size() == 64);
+  CHECK(dry_run() == seen);  // nothing moved, nothing differs
+
+  // The owner adds a command between the person's dry run and the promotion.
+  host.apply(one(set(oid(2), "color", JsonValue(7))), b, "p.b");
+  (void)take(seen, &error);
+  CHECK(at(at(error, "data"), "digest") != seen);
+
+  // The owner takes an opinion back (its command undone) after the dry run that showed it.
+  const JsonValue with_two = dry_run();
+  host.ok("doc.undo", obj({{"attribution", b}}));
+  (void)take(with_two, &error);
+  CHECK(at(at(error, "data"), "digest") != with_two);
+
+  // The target's value at the conflict moves; the refused promotion changes nothing.
+  const JsonValue again = dry_run();
+  host.apply(one(set(oid(1), "color", JsonValue(5))), d, "world");
+  const auto journal = [&] { return at(host.ok("session.info"), "journal_length"); };
+  const JsonValue before = journal();
+  (void)take(again, &error);
+  CHECK(host.layer_property("world", oid(1), "color") == JsonValue(5));  // nothing promoted
+  CHECK(journal() == before);                                            // nothing journaled
+
+  // The conflict goes: the target comes to the proposal's value, and the dry run that showed the
+  // conflict no longer describes the merge.
+  const JsonValue conflicted = dry_run();
+  host.apply(one(set(oid(1), "color", JsonValue(2))), d, "world");
+  CHECK(at(host.ok("doc.promote", obj({{"proposal", JsonValue("p.b")},
+                                       {"dry_run", JsonValue(true)},
+                                       {"attribution", d}})),
+           "conflicts")
+            .size() == 0);
+  (void)take(conflicted, &error);
+  host.apply(one(set(oid(1), "color", JsonValue(5))), d, "world");  // and back, for what follows
+
+  // Seen as it is, taken.
+  const JsonValue taken = take(dry_run(), nullptr);
+  CHECK(at(taken, "promoted") == JsonValue(true));
+  CHECK(host.property(oid(1), "color") == JsonValue(2));
 }
 
 TEST_CASE("proposals: the base is the record as the proposal first found it") {

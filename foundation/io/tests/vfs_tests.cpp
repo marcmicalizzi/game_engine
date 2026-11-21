@@ -8,6 +8,10 @@
 #include <string>
 #include <utility>
 
+#if !ENGINE_PLATFORM_WINDOWS
+#include <sys/stat.h>  // mkfifo
+#endif
+
 using namespace engine;
 using namespace engine::io;
 
@@ -335,6 +339,38 @@ TEST_CASE("io: a file handle reads byte ranges, short at the end and empty past 
   CHECK(std::string_view(buffer).substr(0, 64) == std::string_view(data).substr(900, 64));
   CHECK(read_file_range(join_path(tmp.path(), "nothing.bin"), 0, buffer.data(), 8, read) ==
         Status::NotFound);
+}
+
+// `open_regular` (protocol.md, "What it costs"): a reader of a path someone else named opens only a
+// regular file and never waits at the open. A FIFO with no writer blocks a plain `open` until one
+// appears, which held a host's dispatch for as long; here it is refused unread, at once.
+TEST_CASE("io: open_regular opens a regular file and refuses anything else without waiting") {
+  TempDir tmp("engine_io");
+  const std::string path = join_path(tmp.path(), "plain.bin");
+  REQUIRE(write_file(path, std::string("twelve bytes")) == Status::Ok);
+  FileHandle file;
+  REQUIRE(file.open_regular(path) == Status::Ok);
+  CHECK(file.size() == 12);
+  std::string buffer(16, '\0');
+  u64 read = 0;
+  CHECK(file.read_at(0, buffer.data(), 16, read) == Status::Ok);
+  CHECK(read == 12);
+  CHECK(buffer.substr(0, 12) == "twelve bytes");
+
+  REQUIRE(make_directories(join_path(tmp.path(), "folder")) == Status::Ok);
+  CHECK(file.open_regular(join_path(tmp.path(), "folder")) == Status::IsDirectory);
+  CHECK_FALSE(file.valid());
+  CHECK(file.open_regular(join_path(tmp.path(), "nothing.bin")) == Status::NotFound);
+#if ENGINE_PLATFORM_WINDOWS
+  // The null device opens with CreateFileW and is a character device, not a file on a disk.
+  CHECK(file.open_regular("NUL") == Status::NotRegular);
+  CHECK_FALSE(file.valid());
+#else
+  const std::string fifo = join_path(tmp.path(), "pipe");
+  REQUIRE(::mkfifo(fifo.c_str(), 0600) == 0);
+  CHECK(file.open_regular(fifo) == Status::NotRegular);  // returns: nobody ever writes to it
+  CHECK_FALSE(file.valid());
+#endif
 }
 
 TEST_CASE("io: many ranges of one file read concurrently on the efficiency pool") {

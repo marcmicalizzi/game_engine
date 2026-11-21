@@ -48,9 +48,11 @@
 #include <foundation/io/roots.h>
 #include <foundation/net/server.h>
 
+#include <condition_variable>
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <thread>
 
 namespace engine::protocol {
 
@@ -149,6 +151,23 @@ class Listener final : public net::ServerHandler, public EventTransport {
   bool spend_ticket(std::string_view ticket, std::string& cookie);
   void serve_static(std::string_view relative, net::HttpResponse& response) const;
   void serve_capture(std::string_view rest, net::HttpResponse& response);
+
+  // The ledger's looker (protocol.md, "The ledger's events"): a thread that sleeps until a
+  // session's watch wakes it, waits `k_ledger_look_ms` for the rest of a burst, and looks at the
+  // ledgers with the host's lock let go for the read, so a burst of another process's writes is
+  // one look, and four looks a second at most, rather than a read under the lock per write.
+  // Started by `start`, stopped by `stop` (never under the host's lock, which the looker takes),
+  // and the sessions' watches with it: a listener never started watches nothing.
+  static constexpr i64 k_ledger_look_ms = 250;
+  static void wake_looker(void* self);
+  void start_looker();
+  void stop_looker();
+  void look_loop();
+  std::thread looker_;
+  std::mutex look_mutex_;
+  std::condition_variable look_cv_;
+  bool look_wanted_ = false;
+  bool look_stop_ = false;
 
   Dispatcher* dispatcher_;
   std::mutex* lock_;

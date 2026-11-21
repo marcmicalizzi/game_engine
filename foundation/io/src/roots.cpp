@@ -2,7 +2,9 @@
 #include <foundation/io/roots.h>
 
 #include <filesystem>
+#include <string>
 #include <system_error>
+#include <utility>
 
 #if ENGINE_PLATFORM_WINDOWS
 // The final-path calls: `std::filesystem::canonical` neither refuses a prefix with no DOS name nor
@@ -635,6 +637,80 @@ bool admit_stored_path(const Roots& roots, std::string_view path, std::string_vi
   why = check_stored_path_form(path);
   if (why != Refusal::none) return false;
   return roots.admit(path, document_dir, Access::read, out, why);
+}
+
+namespace {
+i32 uri_hex_digit(char c) noexcept {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+}  // namespace
+
+bool uri_relative_path(std::string_view uri, std::string& out) {
+  constexpr usize k_uri_path_max = 1024;
+  out.clear();
+  // Decoded once: `%255C` is a percent sign and `5C` in a name, never a backslash.
+  for (usize i = 0; i < uri.size(); ++i) {
+    if (uri[i] == '%' && i + 2 < uri.size() && uri_hex_digit(uri[i + 1]) >= 0 &&
+        uri_hex_digit(uri[i + 2]) >= 0) {
+      out.push_back(static_cast<char>(uri_hex_digit(uri[i + 1]) * 16 + uri_hex_digit(uri[i + 2])));
+      i += 2;
+    } else {
+      out.push_back(uri[i]);
+    }
+    if (out.size() > k_uri_path_max) return false;
+  }
+  if (out.empty() || out.front() == '/') return false;
+  // Every byte of the decoded text, wherever it came from: a URI has no backslash, so one is never
+  // turned into a separator (every path function here takes it for one, and `\\host` for a share).
+  for (const char c : out) {
+    const auto u = static_cast<unsigned char>(c);
+    if (u < 0x20 || u == 0x7f || c == '\\') return false;
+  }
+  // Segment by segment into `kept`: a `.` is dropped wherever it is; a `..` at the front is no way
+  // out by itself (the caller admits the path through the roots from the naming file's directory,
+  // and they decide where a climb leads); a `..` after a named segment is refused, because the
+  // admission collapses `a/..` by its text while an open resolves it through whatever `a` is (a
+  // link, on Linux), so the digest would hash one file and the importer read another.
+  std::string kept;
+  bool named = false;
+  bool first = true;
+  usize start = 0;
+  for (;;) {
+    const usize slash = out.find('/', start);
+    const std::string_view part = std::string_view(out).substr(
+        start, slash == std::string::npos ? out.size() - start : slash - start);
+    // An empty segment anywhere but after a single trailing separator is refused (`a//b`, `.//x`,
+    // `x//`): once a `.` before it is dropped it would be the leading separator refused above.
+    if (part.empty() && slash != std::string::npos) return false;
+    if (part != ".") {
+      if (part == "..") {
+        if (named) return false;
+      } else if (!part.empty()) {
+        named = true;
+      }
+      // A colon in the first segment kept is a scheme or a drive (`http:`, `C:`); a later one the
+      // admission's text rules refuse as a stream.
+      if (first && part.find(':') != std::string_view::npos) return false;
+      if (!first) kept.push_back('/');
+      kept.append(part);
+      first = false;
+    }
+    if (slash == std::string::npos) break;
+    start = slash + 1;
+  }
+  if (kept.empty()) return false;
+  out = std::move(kept);
+  return true;
+}
+
+Roots Roots::read_copy() const {
+  Roots copy;
+  for (const Root& r : roots_)
+    copy.roots_.push_back(r);
+  return copy;
 }
 
 bool Roots::portable(std::string_view native, std::string& out) const {

@@ -50,6 +50,7 @@ enum class Status : u8 {
   AlreadyExists,
   IoError,
   InvalidArgument,  // the caller passed inconsistent arguments (nothing was touched)
+  NotRegular,       // a FIFO, a socket, a device: `FileHandle::open_regular` refuses it unread
 };
 const char* status_name(Status status) noexcept;
 
@@ -209,6 +210,22 @@ class FileHandle {
   // Opens for reading. Replaces whatever the handle held. A file system that cannot read
   // unbuffered (a tmpfs, some overlay mounts) refuses `ReadMode::unbuffered` at open.
   Status open(std::string_view native_path, ReadMode mode = ReadMode::buffered);
+  // Opens for reading **only a regular file**, and never in a way that can wait: a directory is
+  // `IsDirectory` and anything else that is not a regular file — a FIFO, a socket, a character or
+  // block device, a pipe — is `NotRegular`, closed again before a byte is read. On Linux the open
+  // is `O_NONBLOCK` (a FIFO with no writer would otherwise block the open itself) and the type is
+  // `fstat`'s; on Windows it is the handle's (`GetFileType`, then the directory attribute). For a
+  // reader of a path someone else named, which must answer whatever is there (protocol.md, "What it
+  // costs"). Buffered; `open`'s answers otherwise.
+  Status open_regular(std::string_view native_path);
+  // `open_regular` of a path `Roots::admit` answered (canonical, forward slashes), then the opened
+  // handle held to it: what the system says the handle is (`GetFinalPathNameByHandleW` on
+  // Windows, the link under `/proc/self/fd` on Linux) must be that path, or the handle is closed
+  // and `NotFound` answered, what a missing file answers: at the admitted place there is no file,
+  // and the caller is never told whether one exists where a link leads. Between an admission and
+  // the open a component of the path can be replaced by a link to anywhere; a file reached that
+  // way is never read. `InvalidPath` when the system cannot say what the handle is (no `/proc`).
+  Status open_regular_unmoved(std::string_view admitted_path);
   void close() noexcept;
   bool unbuffered() const noexcept { return unbuffered_; }
 #if ENGINE_PLATFORM_WINDOWS

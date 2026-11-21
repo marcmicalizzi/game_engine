@@ -115,13 +115,13 @@ struct Context {
 // Runs `work()` with the request's dispatch lock let go, for a handler whose work reads nothing of
 // the host's state while it runs: everything it needs is copied out of the host first and
 // everything it makes is its own, so other clients' requests and the world's ticks go on beside it
-// (store.query's statement is the one user). The context's per-request fields are cleared before
-// the lock is let go, so the context is as it stands between requests — the stdio loop does not set
-// `connection` and reads 0 there, and would otherwise run as this request's connection — and are
-// put back once it is taken again, before this returns: a later call of the same batch reads
-// `connection` for its caller. With no lock held,
-// `work()` simply runs. Nothing a handler looked up under the lock (a session, a document, a
-// world) may be touched after this returns without looking it up again: it may be gone.
+// (store.query's statement, and a review item's subject digest reading its files). The context's
+// per-request fields are cleared before the lock is let go, so the context is as it stands between
+// requests — the stdio loop does not set `connection` and reads 0 there, and would otherwise run as
+// this request's connection — and are put back once it is taken again, before this returns: a later
+// call of the same batch reads `connection` for its caller. With no lock held, `work()` simply
+// runs. Nothing a handler looked up under the lock (a session, a document, a world) may be touched
+// after this returns without looking it up again: it may be gone.
 template <class Work>
 void without_dispatch_lock(Context& ctx, Work&& work) {
   std::mutex* const lock = ctx.dispatch_lock;

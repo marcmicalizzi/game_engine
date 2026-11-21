@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "A55",
+  "reason": "The ledger's lists (order, limit, ids), its revision, ledger_changed for another process's writes and the proposals' events are documented in the ledger's and the proposals' sections, where a reader of those methods looks; with A55's mends, who is told of a write and when a watch runs",
+  "date": "2026-11-20",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/protocol.md": 13456
+  }
+}

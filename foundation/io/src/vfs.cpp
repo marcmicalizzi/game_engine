@@ -1,5 +1,6 @@
 #include <core/base/assert.h>
 #include <core/time/time.h>
+#include <foundation/io/roots.h>
 #include <foundation/io/vfs.h>
 
 #include <algorithm>
@@ -146,6 +147,7 @@ const char* status_name(Status status) noexcept {
     case Status::AlreadyExists: return "already exists";
     case Status::IoError: return "i/o error";
     case Status::InvalidArgument: return "invalid argument";
+    case Status::NotRegular: return "not a regular file";
   }
   return "?";
 }
@@ -669,6 +671,121 @@ Status FileHandle::open(std::string_view native_path, ReadMode mode) {
 #endif
   unbuffered_ = unbuffered;
   path_.assign(native_path);
+  return Status::Ok;
+}
+
+Status FileHandle::open_regular(std::string_view native_path) {
+  close();
+#if ENGINE_PLATFORM_WINDOWS
+  // `open`'s flags, so `read_at` reads it as any handle. A directory does not open without
+  // FILE_FLAG_BACKUP_SEMANTICS (ACCESS_DENIED), so it is told apart by its attributes; a device or
+  // a pipe opens, and its type says what it is.
+  const fs::path p = to_path(native_path);
+  std::error_code ec;
+  if (fs::is_directory(p, ec)) return Status::IsDirectory;
+  HANDLE h =
+      ::CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    const DWORD err = ::GetLastError();
+    if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) return Status::NotFound;
+    if (err == ERROR_ACCESS_DENIED || err == ERROR_SHARING_VIOLATION)
+      return Status::PermissionDenied;
+    return Status::IoError;
+  }
+  BY_HANDLE_FILE_INFORMATION info{};
+  if (::GetFileType(h) != FILE_TYPE_DISK || ::GetFileInformationByHandle(h, &info) == 0 ||
+      (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+    const bool directory = (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    ::CloseHandle(h);
+    return directory ? Status::IsDirectory : Status::NotRegular;
+  }
+  handle_ = h;
+  size_ = (static_cast<u64>(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
+#else
+  std::string native(native_path);
+  // O_NONBLOCK: a FIFO's open waits for a writer without it. A regular file reads the same either
+  // way, so the flag stays.
+  const int fd = ::open(native.c_str(), O_RDONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC);
+  if (fd < 0) return status_from_errno(errno);
+  struct stat st{};
+  if (::fstat(fd, &st) != 0) {
+    ::close(fd);
+    return Status::IoError;
+  }
+  if (!S_ISREG(st.st_mode)) {
+    ::close(fd);
+    return S_ISDIR(st.st_mode) ? Status::IsDirectory : Status::NotRegular;
+  }
+  handle_ = fd;
+  size_ = static_cast<u64>(st.st_size);
+#endif
+  unbuffered_ = false;
+  path_.assign(native_path);
+  return Status::Ok;
+}
+
+Status FileHandle::open_regular_unmoved(std::string_view admitted_path) {
+  if (const Status s = open_regular(admitted_path); s != Status::Ok) return s;
+  // What the system says the open handle is, spelled as `Roots::admit` spells a canonical path
+  // (forward slashes, no `\\?\` prefix), then compared as `path_is_under` compares, both ways.
+  std::string now;
+  bool known = false;
+#if ENGINE_PLATFORM_WINDOWS
+  std::wstring buf(512, L'\0');
+  DWORD n = ::GetFinalPathNameByHandleW(static_cast<HANDLE>(handle_), buf.data(),
+                                        static_cast<DWORD>(buf.size()),
+                                        FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+  if (n >= buf.size()) {
+    buf.assign(static_cast<usize>(n) + 1, L'\0');
+    n = ::GetFinalPathNameByHandleW(static_cast<HANDLE>(handle_), buf.data(),
+                                    static_cast<DWORD>(buf.size()),
+                                    FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+  }
+  if (n > 0 && n < buf.size()) {
+    // Converted as the roots convert a canonical path (roots.cpp's `from_wide`): no flags, so a
+    // name that is not valid UTF-16 (an unpaired surrogate) takes the replacement character and
+    // never fails the conversion; `fs::path::u8string` throws on one, which with exceptions
+    // disabled ends the process.
+    const int bytes = ::WideCharToMultiByte(CP_UTF8, 0, buf.data(), static_cast<int>(n), nullptr, 0,
+                                            nullptr, nullptr);
+    if (bytes > 0) {
+      now.assign(static_cast<usize>(bytes), '\0');
+      ::WideCharToMultiByte(CP_UTF8, 0, buf.data(), static_cast<int>(n), now.data(), bytes, nullptr,
+                            nullptr);
+    }
+    for (char& c : now) {
+      if (c == '\\') c = '/';
+    }
+    if (now.starts_with("//?/UNC/")) {
+      now = "//" + now.substr(8);
+    } else if (now.starts_with("//?/")) {
+      now = now.substr(4);
+    }
+    known = !now.empty();
+  }
+#else
+  const std::string link = "/proc/self/fd/" + std::to_string(handle_);
+  std::string buf(4096, '\0');
+  const ssize_t n = ::readlink(link.c_str(), buf.data(), buf.size());
+  if (n > 0 && static_cast<usize>(n) < buf.size()) {
+    buf.resize(static_cast<usize>(n));
+    now = std::move(buf);
+    known = true;
+  }
+#endif
+  // Unconfirmed (no `/proc`, a name the system would not give): this host cannot say what it
+  // opened, so it reads nothing (`InvalidPath`). Confirmed elsewhere: what a missing file answers,
+  // since at the admitted place there is no file, and a caller is never told whether one exists
+  // where the link leads (`NotFound`).
+  if (!known) {
+    close();
+    return Status::InvalidPath;
+  }
+  if (!path_is_under(now, admitted_path) || !path_is_under(admitted_path, now)) {
+    close();
+    return Status::NotFound;
+  }
   return Status::Ok;
 }
 

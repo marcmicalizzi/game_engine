@@ -8,6 +8,7 @@
 #include <core/containers/vector.h>
 #include <domain/doc/document.h>
 #include <domain/doc/document_store.h>
+#include <domain/protocol/dir_watch.h>
 #include <domain/protocol/events.h>
 #include <domain/protocol/leases.h>
 #include <domain/protocol/policy.h>
@@ -17,7 +18,9 @@
 #include <foundation/io/roots.h>
 #include <foundation/io/vfs.h>
 
+#include <atomic>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -33,6 +36,41 @@ struct DocumentGuard {
   void* context = nullptr;
   void (*begin)(void* context, std::string_view dir) = nullptr;
   void (*end)(void* context, std::string_view dir) = nullptr;
+};
+
+// What a session has seen of its document's `ledger.json` (protocol.md, "The ledger's events"):
+// the file's revision, size and content hash, and a hash of each task and review item, so that a
+// look after another process's write decides by inequality of the three whether the ledger changed
+// and names the entries that did. The size and hash are of the canonical bytes, what this tree
+// writes; `raw_size` and `raw_hash` are of the bytes last read, so a notice for a file whose bytes
+// are the ones already seen costs a read and a hash and no parse.
+struct LedgerSeen {
+  bool present = false;
+  u64 revision = 0;
+  u64 size = 0;
+  u64 hash = 0;
+  u64 raw_size = 0;
+  u64 raw_hash = 0;
+  struct Entry {
+    u64 id = 0;
+    u64 hash = 0;
+  };
+  Vector<Entry> tasks;  // ascending by id
+  Vector<Entry> reviews;
+};
+
+// Who is told that a session's watch saw a notice: the listener, which then looks at the ledgers
+// (`SessionManager::begin_ledger_looks`). Called on a watch's own thread, so it only signals and
+// never waits on the host's lock; cleared before whoever it names goes away.
+class LedgerWaker {
+ public:
+  void set(void (*wake)(void* context), void* context) noexcept;
+  void notify() noexcept;
+
+ private:
+  std::mutex mutex_;
+  void (*wake_)(void* context) = nullptr;
+  void* context_ = nullptr;
 };
 
 class Session {
@@ -127,9 +165,53 @@ class Session {
   void publish_session(std::string_view change, const LeaseInfo* lease = nullptr,
                        u64 connection = 0, std::string_view reason = {}) const;
   // `event.session` for a change to the document's task ledger (ledger.cpp): "task_created" and
-  // the like, naming the task or the review item (the other 0) and the actor who changed it.
+  // the like, naming the task or the item (the other 0) and the actor who changed it.
+  // `touched_task` is a task the call changed beside the item it names (a raise for a task adds the
+  // item to it): the call's own too, so it is not told again. What else the write carried —
+  // another process's writes, claims this host's clock let lapse — goes first, as
+  // "ledger_changed" (`flush_ledger_written`).
   void publish_ledger(std::string_view change, u64 task, u64 review, std::string_view actor,
-                      u64 connection) const;
+                      u64 connection, u64 touched_task = 0);
+  // `event.session` for a proposal layer (session.cpp): "proposal_opened", "proposal_reopened",
+  // "proposal_promoted" or "proposal_rejected", with the layer and the actor who did it, published
+  // after `proposals.json` is written (a dry run and a refused promotion publish nothing).
+  void publish_proposal(std::string_view change, std::string_view layer, std::string_view actor,
+                        u64 connection) const;
+
+  // --- the ledger's events (protocol.md, "The ledger's events"; ledger.cpp) -------------------
+  // Watches the document's directory for writes to `ledger.json` (dir_watch.h) and tells `waker`
+  // of each notice; what the file holds now is what the session has seen. Null stops watching.
+  // In this order, so no foreign write falls between: the waker is set, the system's watch is
+  // registered (`DirWatch::start` returns only then, or once it fell back to looking), and then
+  // the file is read for what the session has seen — a write after that read raises a notice, and
+  // one before it is in what was read. The session manager starts a watch on every session while
+  // it has someone to tell (`SessionManager::watches_ledgers`).
+  void watch_ledger(LedgerWaker* waker);
+  bool watching_ledger() const noexcept { return ledger_watch_ != nullptr; }
+  bool ledger_watch_polling() const noexcept;
+  // The ledger as this process wrote it (ledger.cpp, `update_ledger`), kept until the call's own
+  // event goes out. A read that writes nothing costs nothing here.
+  void ledger_written(const LedgerFile& ledger);
+  // What the write changed beside the call's own task or item (`own_task`, `own_review`; 0 for
+  // none) — another process's writes since the session last saw the ledger, claims the call let
+  // lapse — published as "ledger_changed", and the write taken as seen, so the notice the write
+  // raises publishes nothing more and no write of this host's swallows another's. `publish_ledger`
+  // calls it before the call's own event; a list that let claims lapse, and a look, call it too.
+  void flush_ledger_written(u64 own_task, u64 own_review);
+  // "ledger_changed": the ids whose entries differ between `from` and `to`, but the two named, and
+  // `to`'s revision. False, and nothing sent, when nobody wants it, or when no other entry differs
+  // and either the revision does not or this host's own write moved it (the bytes changed and the
+  // content did not: a file rewritten by hand with other spacing).
+  bool publish_ledger_changed(const LedgerSeen& from, const LedgerSeen& to, u64 own_task = 0,
+                              u64 own_review = 0) const;
+  // A notice the watch's thread left, taken by a look; and one put back when a look is retried.
+  bool take_ledger_notice() noexcept { return ledger_notice_.exchange(false); }
+  void note_ledger_notice() noexcept { ledger_notice_.store(true); }
+  const LedgerSeen& ledger_seen() const noexcept { return ledger_seen_; }
+  // Moves whenever this process sets what it has seen outside a look (its own reads and writes), so
+  // a look that read the file before one of them is not taken over what came after.
+  u64 ledger_seen_moves() const noexcept { return ledger_seen_moves_; }
+  void set_ledger_seen(LedgerSeen seen) { ledger_seen_ = std::move(seen); }
 
   // --- holders (protocol.md, "Several clients, one host") ------------------------------------
   // Who holds the session open: client connections that opened it, and 0 for the host's own
@@ -380,6 +462,15 @@ class Session {
   // until a save succeeds: nothing in the journal counts as `landed` meanwhile.
   bool unsaved_ = false;
   Vector<u64> holders_;
+  // The ledger's watch (protocol.md, "The ledger's events").
+  LedgerSeen ledger_seen_;
+  LedgerSeen ledger_written_;  // valid while `ledger_has_written_`
+  bool ledger_has_written_ = false;
+  u64 ledger_seen_moves_ = 0;
+  std::atomic<bool> ledger_notice_{false};
+  LedgerWaker* ledger_waker_ = nullptr;
+  // Last, so it is destroyed first: its thread reads `ledger_notice_` and `ledger_waker_`.
+  std::unique_ptr<DirWatch> ledger_watch_;
 };
 
 template <class Change>
@@ -480,7 +571,71 @@ class SessionManager {
   }
   io::Vfs& vfs() noexcept { return *vfs_; }
 
+  // --- the ledger's events (protocol.md, "The ledger's events"; ledger.cpp) -------------------
+  // Who a session's ledger watch wakes on a notice: the listener's looker, from the moment it runs
+  // until it stops. **A watch exists only while someone can be told** (`watches_ledgers`, the one
+  // place that says so): a looker to wake and events to publish. So engine-cli's host per call,
+  // `engine-host --stdio` and a console, which start no looker, start no watch thread, make no
+  // read of the ledger at open and pay nothing more per write. Setting a waker starts a watch on
+  // every session (and every one opened later); null stops them all. Called under the host's lock.
+  void set_ledger_waker(void (*wake)(void* context), void* context);
+  bool watches_ledgers() const noexcept { return ledger_waking_ && events_ != nullptr; }
+  // One look at the ledgers of the sessions whose watch saw a notice (`all`: every watched
+  // session's, whatever its watch saw), in three steps so the file is read with the host's lock let
+  // go: `begin_ledger_looks` under the host's lock, `read_ledger_look` with no lock of the host's
+  // held (it takes the ledger's own lock between processes for the read alone), and
+  // `finish_ledger_looks` under the host's lock again, which publishes "ledger_changed" for each
+  // ledger whose revision, size or content hash is not what its session last saw. `again` is set
+  // when a look raced a write of this process's and was put back for the next.
+  struct LedgerLook {
+    std::string session;
+    std::string path;  // the Vfs path of ledger.json
+    bool make_lock = true;
+    u64 seen_moves = 0;
+    bool seen_present = false;
+    u64 seen_raw_size = 0;
+    u64 seen_raw_hash = 0;
+    bool read = false;  // the read and parse finished
+    bool same = false;  // the file's bytes are the ones last seen
+    LedgerSeen now;
+  };
+  void begin_ledger_looks(bool all, Vector<LedgerLook>& looks);
+  static void read_ledger_look(io::Vfs& vfs, LedgerLook& look);
+  u32 finish_ledger_looks(Vector<LedgerLook>& looks, bool& again);
+  // The three on the caller's thread: for a caller that holds the host's lock, and the tests. The
+  // number of "ledger_changed" events published.
+  u32 look_at_ledgers(bool all);
+
+  // --- the subject digest (protocol.md, "What it costs"; subject_digest.cpp) --------------------
+  // The bytes of asset files every subject digest of this manager's sessions has read since it was
+  // made, added under the host's lock after each pass's reads: what a case reads to see that a
+  // refusal made before the digest read nothing.
+  u64 digest_bytes_read() const noexcept { return digest_bytes_read_; }
+  void note_digest_bytes(u64 bytes) noexcept { digest_bytes_read_ += bytes; }
+  // Beside the bytes, the opens the same reads asked of the system, whatever it answered: what a
+  // case reads to see that a file was never opened at all, which a count of bytes cannot show.
+  u64 digest_files_opened() const noexcept { return digest_files_opened_; }
+  void note_digest_opens(u64 opens) noexcept { digest_files_opened_ += opens; }
+  // And the names its passes took from the glTFs they read: what a case reads to see that the
+  // files bound limits what is collected, not only what is read.
+  u64 digest_names_collected() const noexcept { return digest_names_collected_; }
+  void note_digest_names(u64 names) noexcept { digest_names_collected_ += names; }
+  // A case's seam: called once a pass, with the host's dispatch lock let go, before a digest reads
+  // its files; null for none. What lets a case hold a read open and act meanwhile.
+  using DigestReadHook = void (*)(void* context);
+  void set_digest_read_hook_for_test(DigestReadHook hook, void* context) noexcept {
+    digest_read_hook_ = hook;
+    digest_read_context_ = context;
+  }
+  DigestReadHook digest_read_hook() const noexcept { return digest_read_hook_; }
+  void* digest_read_context() const noexcept { return digest_read_context_; }
+
  private:
+  u64 digest_bytes_read_ = 0;
+  u64 digest_files_opened_ = 0;
+  u64 digest_names_collected_ = 0;
+  DigestReadHook digest_read_hook_ = nullptr;
+  void* digest_read_context_ = nullptr;
   // What a connection left in a session that closed while it was still connected (protocol.md,
   // "Several clients, one host"): the lease stays in the document's `leases.json` and the
   // transaction's hold here, for the document's next open in this process, since a lease and a
@@ -493,6 +648,11 @@ class SessionManager {
   void note_closing(const Session& session);
 
   io::Vfs* vfs_;
+  // Before the sessions, so it outlives every watch that names it.
+  LedgerWaker ledger_waker_;
+  bool ledger_waking_ = false;  // a waker is set (`set_ledger_waker`)
+  // Starts or stops every session's watch to match `watches_ledgers`.
+  void sync_ledger_watches();
   Vector<std::unique_ptr<Session>> sessions_;
   u32 next_id_ = 1;
   Subscriptions* events_ = nullptr;

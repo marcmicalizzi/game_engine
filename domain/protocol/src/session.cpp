@@ -1,3 +1,5 @@
+#include "subject_digest.h"
+
 #include <core/json/json.h>
 #include <core/platform/random.h>
 #include <core/schema/json_reflect.h>
@@ -95,6 +97,15 @@ bool drop_ledger_counters(JsonValue& object, schema::ReadContext&) {
   return true;
 }
 
+// `ledger.json` at version 3 held items without subject digests; version 4's items carry
+// `raised_digest` and `decided_at` and their subjects `assets`, every one an addition with an empty
+// default. LedgerFile itself adds no field at 4 (its 2-to-3 step, the ledger's `revision`, is the
+// generated additive one), so this step is registered rather than declared additive — schemac
+// refuses `@additive` on a version that adds no field — and there is nothing in the JSON for it to
+// change: an item raised before digests reads with an empty stamp, which no digest equals, so its
+// detail says it changed since it was raised.
+bool ledger_items_gain_digests(JsonValue&, schema::ReadContext&) { return true; }
+
 // The mark a host holds on a document while its socket connections may hold leases there: the
 // lock of `leases.<host>` (`leases.<host>.lock`, side_file.h), taken with the first such lease and
 // let go with the session or the process. Another host's open asks it before it drops that host's
@@ -126,6 +137,8 @@ void register_side_file_steps() {
     schema::MigrationRegistry::global().add({"engine.protocol.TransactionsFile", 1, &drop_next_id});
     schema::MigrationRegistry::global().add(
         {"engine.protocol.LedgerFile", 1, &drop_ledger_counters});
+    schema::MigrationRegistry::global().add(
+        {"engine.protocol.LedgerFile", 3, &ledger_items_gain_digests});
     return true;
   }();
   (void)registered;
@@ -777,7 +790,9 @@ void Session::publish_session(std::string_view change, const LeaseInfo* lease, u
 }
 
 void Session::publish_ledger(std::string_view change, u64 task, u64 review, std::string_view actor,
-                             u64 connection) const {
+                             u64 connection, u64 touched_task) {
+  // Every entry the call's own change made is its event's, never "ledger_changed".
+  flush_ledger_written(task != 0 ? task : touched_task, review);
   if (events_ == nullptr || !events_->wanted(EventKind::Session, id_)) return;
   SessionChangeEvent event;
   event.session = id_;
@@ -787,6 +802,19 @@ void Session::publish_ledger(std::string_view change, u64 task, u64 review, std:
   event.actor = std::string(actor);
   event.task = task;
   event.review = review;
+  events_->publish(EventKind::Session, id_, schema::to_json(event));
+}
+
+void Session::publish_proposal(std::string_view change, std::string_view layer,
+                               std::string_view actor, u64 connection) const {
+  if (events_ == nullptr || !events_->wanted(EventKind::Session, id_)) return;
+  SessionChangeEvent event;
+  event.session = id_;
+  event.change = std::string(change);
+  event.path = shown_path_;
+  event.connection = connection;
+  event.actor = std::string(actor);
+  event.layer = std::string(layer);
   events_->publish(EventKind::Session, id_, schema::to_json(event));
 }
 
@@ -1428,7 +1456,9 @@ bool Session::propose_layer(const ProposeLayerParams& params, const Caller& call
       doc_.set_edit_layer(static_cast<u32>(existing));
       if (!persist(error)) return false;
     }
-    return save_proposals(params.name, error);
+    if (!save_proposals(params.name, error)) return false;
+    publish_proposal("proposal_reopened", params.name, caller.who.actor, caller.connection);
+    return true;
   }
 
   std::optional<doc::LayerPartition> partition;
@@ -1445,7 +1475,9 @@ bool Session::propose_layer(const ProposeLayerParams& params, const Caller& call
   info.opened_unix_ms = now;
   proposals_.add(std::move(info));
   (void)vfs_->remove(base_file(params.name));  // a leftover of an earlier layer of that name
-  return save_proposals(params.name, error);
+  if (!save_proposals(params.name, error)) return false;
+  publish_proposal("proposal_opened", params.name, caller.who.actor, caller.connection);
+  return true;
 }
 
 bool Session::clear_layer(u32 layer, doc::Attribution attribution, std::optional<u32>& patch_index,
@@ -1560,6 +1592,24 @@ bool Session::promote(const PromoteParams& params, const Caller& caller, Promote
     info.theirs = c.theirs;
     result.conflicts.push_back(std::move(info));
   }
+  // What this merge shows, and the refusal of a promotion decided on a dry run that showed
+  // something else (protocol.md, "What a promotion is tied to"): checked before validation and
+  // before anything is committed, so a refused promotion changes nothing.
+  result.digest =
+      promotion_digest(entry->info.layer, entry->info.target, proposal, result.conflicts);
+  if (!params.digest.empty() && params.digest != result.digest) {
+    JsonValue data = JsonValue::object();
+    data.set("reason", JsonValue("proposal moved"));
+    data.set("proposal", JsonValue(entry->info.layer));
+    data.set("digest", JsonValue(result.digest));
+    error = make_error(codes::k_invalid_argument,
+                       "proposal " + params.proposal +
+                           " or the target's values at its conflicts changed since the dry run "
+                           "this promotion was decided on: dry-run it again and decide on what it "
+                           "shows now",
+                       std::move(data));
+    return false;
+  }
   const Vector<doc::Command> commands = doc::diff_layers(target, merged.merged);
   {
     doc::ObjectId last;
@@ -1658,6 +1708,7 @@ bool Session::promote(const PromoteParams& params, const Caller& caller, Promote
   if (!save_proposals(params.proposal, error)) return false;
   result.commit_ms = ms_since(started);
   result.promoted = true;
+  publish_proposal("proposal_promoted", params.proposal, caller.who.actor, caller.connection);
   return true;
 }
 
@@ -1698,7 +1749,9 @@ bool Session::reject(const RejectParams& params, const Caller& caller, RpcError&
   entry = proposals_.find(params.proposal);
   ProposalTable::clear_base(*entry);
   (void)vfs_->remove(base_file(params.proposal));
-  return save_proposals(params.proposal, error);
+  if (!save_proposals(params.proposal, error)) return false;
+  publish_proposal("proposal_rejected", params.proposal, caller.who.actor, caller.connection);
+  return true;
 }
 
 // ---- SessionManager --------------------------------------------------------------------------
@@ -1750,6 +1803,8 @@ Session* SessionManager::open(const SessionOpenParams& params, u64 holder, RpcEr
   }
   session->set_events(events_);
   session->set_roots(roots_);
+  // A ledger another process writes is pushed only where there is someone to push it to.
+  session->watch_ledger(watches_ledgers() ? &ledger_waker_ : nullptr);
   session->set_shown_path(std::string(shown));
   session->hold(holder);
   if (guard != nullptr && guard->begin != nullptr) {
@@ -1765,6 +1820,7 @@ void SessionManager::set_events(Subscriptions* events) noexcept {
   events_ = events;
   for (const auto& s : sessions_)
     s->set_events(events);
+  sync_ledger_watches();
 }
 
 void SessionManager::set_roots(const io::Roots* roots) noexcept {

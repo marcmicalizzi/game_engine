@@ -411,3 +411,61 @@ TEST_CASE("doc: validation against the schema registry") {
   CHECK(joined.find("override record for an object no layer defines") != std::string::npos);
   CHECK(joined.find("defined in more than one layer") != std::string::npos);
 }
+
+// The canonical form of a composed record (doc.md, "The canonical form of a composed record"): what
+// the subject digest of a review item hashes, so it must say exactly what the composition says —
+// the same bytes however the composition was reached, and different bytes for any change to it.
+TEST_CASE("doc: a composed record's canonical line is a function of the composition alone") {
+  const ObjectId parent = id_of(40), a = id_of(41);
+  const auto line_of = [](const Document& d, ObjectId id) {
+    std::string out;
+    append_composed_record(d, id, out);
+    return out;
+  };
+
+  // One layer holding everything, against two layers splitting it, properties set in another order.
+  Document one;
+  one.add_layer("base", LayerRole::Base);
+  REQUIRE(one.apply(cmd_create(parent, k_prov), nullptr, nullptr));
+  REQUIRE(one.apply(cmd_create(a, k_prov, parent), nullptr, nullptr));
+  REQUIRE(one.apply(cmd_set(a, "seed", JsonValue(u64{7})), nullptr, nullptr));
+  REQUIRE(one.apply(cmd_set(a, "generator", JsonValue("hand")), nullptr, nullptr));
+  Document two;
+  const u32 base = two.add_layer("base", LayerRole::Base);
+  const u32 feature = two.add_layer("feature", LayerRole::Feature);
+  two.set_edit_layer(base);
+  REQUIRE(two.apply(cmd_create(parent, k_prov), nullptr, nullptr));
+  REQUIRE(two.apply(cmd_create(a, k_prov, parent), nullptr, nullptr));
+  REQUIRE(two.apply(cmd_set(a, "generator", JsonValue("base-gen")), nullptr, nullptr));
+  two.set_edit_layer(feature);
+  REQUIRE(two.apply(cmd_set(a, "generator", JsonValue("hand")), nullptr, nullptr));
+  REQUIRE(two.apply(cmd_set(a, "seed", JsonValue(u64{7})), nullptr, nullptr));
+  const std::string line = line_of(one, a);
+  CHECK(line == line_of(two, a));
+  CHECK(line.back() == '\n');
+  CHECK(line.find("\"live\"") != std::string::npos);
+  CHECK(line.find("\"generator\":\"hand\"") < line.find("\"seed\":7"));  // keys sorted
+
+  // A property's change moves it; an undo puts the bytes back, and the redo the changed ones.
+  {
+    Transaction tx = two.begin(who("agent"));
+    REQUIRE(tx.apply(cmd_set(a, "seed", JsonValue(u64{8}))));
+    REQUIRE(tx.commit());
+  }
+  const std::string changed = line_of(two, a);
+  CHECK(changed != line);
+  REQUIRE(two.undo(two.journal().back()));
+  CHECK(line_of(two, a) == line);
+  REQUIRE(two.redo(two.journal().back()));
+  CHECK(line_of(two, a) == changed);
+
+  // The parent is part of it; a tombstone and an id no layer defines say so.
+  REQUIRE(one.apply(cmd_set_parent(a, ObjectId{}), nullptr, nullptr));
+  CHECK(line_of(one, a) != line);
+  REQUIRE(one.apply(cmd_delete(a), nullptr, nullptr));
+  CHECK(line_of(one, a).find("\"gone\"") != std::string::npos);  // deleted in its defining layer
+  two.set_edit_layer(feature);
+  REQUIRE(two.apply(cmd_delete(a), nullptr, nullptr));
+  CHECK(line_of(two, a).find("\"deleted\"") != std::string::npos);  // a tombstone over it
+  CHECK(line_of(two, id_of(99)).find("\"gone\"") != std::string::npos);
+}
