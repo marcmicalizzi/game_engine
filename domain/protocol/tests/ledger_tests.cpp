@@ -1687,6 +1687,67 @@ TEST_CASE("ledger: an edit outside the subject during a digest's reads keeps the
   CHECK(seam.edits == 1);
 }
 
+// A close that compares nothing — an agent's with no digest, a raiser's withdrawal — decides
+// without the digest's passes (protocol.md, "What it costs"), so a subject edited at every pass
+// never refuses it `subject changing`, and it reads no file.
+TEST_CASE("ledger: a close that compares nothing decides without reading the subject") {
+  test::TempDir tmp("protocol_ledger_no_compare");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  h.open(dir, true);
+  DigestWorld w;
+  w.make(h, dir);
+  const JsonValue accepted = at(at(w.raise(h, "Agent"), "reviews")[0], "id");
+  const JsonValue withdrawn = at(at(w.raise(h, "Agent"), "reviews")[0], "id");
+  Dispatcher other{Context{&h.sessions, nullptr, nullptr, nullptr, &h.policy}};
+  other.context().roots = &h.roots;
+  add_builtin_methods(other);
+  std::mutex dispatch;
+  struct Seam {
+    std::mutex* dispatch = nullptr;
+    Dispatcher* other = nullptr;
+    std::string session;
+    Id128 placement;
+    u32 edits = 0;
+  } seam{&dispatch, &other, h.session, w.placement};
+  h.sessions.set_digest_read_hook_for_test(
+      [](void* context) {
+        auto* s = static_cast<Seam*>(context);
+        std::lock_guard<std::mutex> held(*s->dispatch);
+        JsonValue cmds = JsonValue::array();
+        cmds.push_back(obj({{"kind", JsonValue("SetProperty")},
+                            {"id", JsonValue(hex(s->placement))},
+                            {"name", JsonValue("name")},
+                            {"value", JsonValue("crate " + std::to_string(++s->edits))}}));
+        JsonValue req = obj({{"jsonrpc", JsonValue("2.0")},
+                             {"id", JsonValue(1)},
+                             {"method", JsonValue("doc.apply")},
+                             {"params", obj({{"session", JsonValue(s->session)},
+                                             {"commands", cmds},
+                                             {"attribution", who("agent", "director")}})}});
+        (void)s->other->dispatch(req);
+      },
+      &seam);
+  const auto close_under_lock = [&](const JsonValue& id, const char* resolution, const char* actor) {
+    std::lock_guard<std::mutex> held(dispatch);
+    h.dispatcher.context().dispatch_lock = &dispatch;
+    JsonValue resp = h.call("review.close", obj({{"review", id},
+                                                 {"resolution", JsonValue(resolution)},
+                                                 {"attribution", who(actor)}}));
+    h.dispatcher.context().dispatch_lock = nullptr;
+    return resp;
+  };
+  JsonValue resp;
+  const Reads a = reads_of(h, [&] { resp = close_under_lock(accepted, "Accepted", "reviewer"); });
+  REQUIRE_MESSAGE(resp.find("result") != nullptr, write_json(resp));
+  CHECK(a.opens == 0);
+  const Reads b = reads_of(h, [&] { resp = close_under_lock(withdrawn, "Withdrawn", "checker"); });
+  REQUIRE_MESSAGE(resp.find("result") != nullptr, write_json(resp));
+  CHECK(b.opens == 0);
+  CHECK(seam.edits == 0);
+  h.sessions.set_digest_read_hook_for_test(nullptr, nullptr);
+}
+
 // What a digest reads is bounded, by four bounds named as tunables (protocol.md, "What it costs"):
 // a raise past one is refused naming it and the figure, and a detail or a close past one says so
 // in the stream, which differs from the stamp, so a file grown past its bound is "subject moved".

@@ -1136,7 +1136,8 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
           write = false;
           ReviewInfo* r = find_review(ledger, params.review, e2);
           if (r == nullptr) return false;
-          if (r->revision != revision) {
+          // A close that compares nothing decides on the item as it is now (`closable`).
+          if (!params.digest.empty() && r->revision != revision) {
             moved = true;
             return false;
           }
@@ -1185,8 +1186,23 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
         e);
   };
   SubjectState seen_now;
-  if (!digest_passes(ctx, params.session, DigestFor::close, first, decide, seen_now, s, error))
+  if (params.digest.empty()) {
+    // Nothing to compare (an agent's close that sent no digest, a raiser's withdrawal): decided
+    // without the passes, so it reads no file and is never refused `subject changing`; its answer
+    // states no subject.
+    s = ctx.sessions->require(params.session, error);
+    if (s == nullptr) return false;
+    ReviewSubject subject;
+    Vector<std::string> raised_roots;
+    u64 revision = 0;
+    bool moved = false;
+    if (!first(*s, subject, raised_roots, revision, error) ||
+        !decide(*s, seen_now, revision, moved, error))
+      return false;
+  } else if (!digest_passes(ctx, params.session, DigestFor::close, first, decide, seen_now, s,
+                            error)) {
     return false;
+  }
   out.now_unix_ms = now;
   seen_now.same = seen_now.comparable && seen_now.digest == changed.raised_digest;
   out.reviews.push_back(std::move(changed));
