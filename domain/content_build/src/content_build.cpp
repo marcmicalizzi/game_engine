@@ -629,7 +629,13 @@ bool host_container_classes(const std::string& path, const content_class::Catego
                             content_class::ContentClasses& out, std::string& why) {
   geometry::ClusterFileReader reader;
   std::string error;
-  if (!reader.open(path, nullptr, &error)) return true;  // its own read fails, with its sentence
+  // A host that cannot be opened here (missing, locked, half written) is unreadable, never `none`:
+  // the dependant is built only when the host's own read succeeds, so refusing it loses nothing,
+  // where `none` would build over whatever the finished file's section 54 declares.
+  if (!reader.open(path, nullptr, &error)) {
+    why = path + ": the host cannot be opened for its classes: " + error;
+    return false;
+  }
   const u64 count = reader.element_count(geometry::ClusterSection::ContentClasses);
   if (count == 0) return true;
   u64 offset = 0;

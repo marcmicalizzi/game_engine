@@ -15,8 +15,11 @@
 #include <core/json/json.h>
 #include <domain/assets/gltf.h>
 #include <domain/assets/mesh_generator.h>
+#include <domain/content_build/content_build.h>
+#include <domain/content_build/generator_hosts.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/gfx/device.h>
+#include <domain/scene_gen/scene_gen.h>
 #include <domain/texture/material_textures.h>
 #include <domain/texture/texture_build.h>
 #include <foundation/content_class/content_class.h>
@@ -1402,4 +1405,41 @@ TEST_CASE("content classes at load: a capture holds nothing of a refused ground"
     CHECK(bytes_of(refused.frame.normals) == bytes_of(bare.frame.normals));
     CHECK(bytes_of(covered.frame.ids) != bytes_of(bare.frame.ids));
   }
+}
+
+namespace {
+
+// A fixture generator of this file's, registered once whichever case reaches it first.
+void need_generator(const assets::MeshGeneratorDesc& generator) {
+  if (assets::MeshGeneratorRegistry::global().find(generator.name) == nullptr)
+    REQUIRE(assets::MeshGeneratorRegistry::global().add(generator));
+}
+
+}  // namespace
+
+// **A container host the probe cannot open makes its recipe unreadable** (C64): the host's own read
+// has to succeed for the recipe to be built at all, so refusing it at the probe loses nothing,
+// where reading it as `none` would build over whatever the finished file's section 54 declares.
+TEST_CASE("content classes at load: a recipe over a host missing at the probe is unreadable") {
+  need_generator(k_fixture_host);
+  const test::TempDir tmp("renderer_classes_host_missing");
+  REQUIRE(tmp.ok());
+  const Grid a = write_grid(tmp, "a.clusters", 9, "a.png");
+  REQUIRE(io::write_file(tmp.file("moss.fixturehost.json"), R"({"host":"statue.clusters"})") ==
+          io::Status::Ok);
+  content_build::MeshOptions options;
+  content_build::SourceClasses classes;
+  content_build::Diagnostic why;
+  CHECK_FALSE(
+      content_build::read_source_classes(tmp.file("moss.fixturehost.json"), options, classes, why));
+  CHECK_MESSAGE(why.message.find("statue.clusters") != std::string::npos, why.message);
+  Grid moss;
+  moss.path = tmp.file("moss.fixturehost.json");
+  std::string error;
+  SceneData scene;
+  REQUIRE_MESSAGE(load_scene(scene_of(tmp, {&a, &moss}), scene, error), error);
+  CHECK(scene.instances.size() == 1);
+  CHECK(loaded_instance(scene, 1) == k_not_loaded);
+  CHECK(std::string(scene.sources[1].cache) == "none");  // never generated
+  CHECK(scene.load.unreadable_omitted == 1);
 }
