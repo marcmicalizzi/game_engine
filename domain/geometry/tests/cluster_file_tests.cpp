@@ -1469,6 +1469,68 @@ TEST_CASE("cluster file: a grid that is not finite or has a negative scale is re
   CHECK(reads("good_grid.clusters"));
 }
 
+// S91 (geometry.md, "Doors"; fuzzing-design.md, `.clusters`): a file that declares doors holds its
+// grid within `k_door_max_reach_m` of the mesh's origin on every axis, at both corners, since past
+// 2^17 m a float cannot place a hinge to a centimetre. Until 2026-11-21 a finite huge grid read, so
+// under a scale of 200 (a box of 1.3e7 m) a hinge 10^7 m from its house read. A file with no door
+// is untouched.
+TEST_CASE("cluster file: a grid past a hinge's reach is refused for a file with doors") {
+  const test::TempDir tmp("engine_cluster_file");
+  ClusterFileData data;
+  Vector<u32> indices;
+  make_fixture(data, indices);
+  REQUIRE_FALSE(data.mesh.mesh.quantized.empty());
+  std::string error;
+  const auto reads = [&](const char* name) {
+    const std::string path = tmp.file(name);
+    REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
+    std::string bytes;
+    REQUIRE(io::read_file(path, bytes) == io::Status::Ok);
+    ClusterFileData back;
+    error.clear();
+    const bool ok = read_cluster_file_memory(view(bytes), back, &error);
+    if (!ok) CHECK(error.find("grid") != std::string::npos);
+    return ok;
+  };
+  ClusterFileDoor door;
+  door.shut_x = 1.0f;
+  door.swing_z = 1.0f;
+  door.width_m = 0.9f;
+  door.height_m = 2.0f;
+  door.thickness_m = 0.05f;
+  door.flags = k_door_flag_door;
+  door.pivot = Vec3{1e7f, 0.0f, 0.0f};
+  data.doors.push_back(door);
+  data.mesh.mesh.quant_origin = Vec3{0.0f, 0.0f, 0.0f};
+  data.mesh.mesh.quant_scale = 200.0f;
+  CHECK_FALSE(reads("far_door.clusters"));
+  // Just inside the ceiling, a door on its far side reads; just past it, either corner, it does
+  // not.
+  const f32 inside = 131000.0f / 65535.0f;
+  data.doors[0].pivot = Vec3{130000.0f, 1.0f, 0.0f};
+  data.mesh.mesh.quant_scale = inside;
+  CHECK(reads("reach_inside.clusters"));
+  data.mesh.mesh.quant_scale = 131200.0f / 65535.0f;
+  CHECK_FALSE(reads("reach_far_corner.clusters"));
+  data.doors[0].pivot = Vec3{-130000.0f, 1.0f, 0.0f};
+  data.mesh.mesh.quant_scale = 1.0f;
+  data.mesh.mesh.quant_origin = Vec3{-131100.0f, 0.0f, 0.0f};
+  CHECK_FALSE(reads("reach_near_corner.clusters"));
+  for (u32 axis = 1; axis < 3; ++axis) {
+    CAPTURE(axis);
+    // The pivot on the box, which only the reach refuses.
+    data.doors[0].pivot = axis == 1 ? Vec3{1.0f, -100000.0f, 1.0f} : Vec3{1.0f, 1.0f, -100000.0f};
+    data.mesh.mesh.quant_origin =
+        axis == 1 ? Vec3{0.0f, -131100.0f, 0.0f} : Vec3{0.0f, 0.0f, -131100.0f};
+    CHECK_FALSE(reads("reach_axis.clusters"));
+  }
+  // The same grid with no door reads: the ceiling is a door's, not a mesh's.
+  data.doors.clear();
+  data.mesh.mesh.quant_origin = Vec3{0.0f, 0.0f, 0.0f};
+  data.mesh.mesh.quant_scale = 200.0f;
+  CHECK(reads("far_no_door.clusters"));
+}
+
 TEST_CASE("cluster file: the source identity reads back without decoding the mesh") {
   const test::TempDir tmp("engine_cluster_file");
   ClusterFileData data;

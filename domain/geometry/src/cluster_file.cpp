@@ -955,6 +955,19 @@ bool read_memory(std::span<const u8> bytes, ClusterFileData& out, std::string* e
     const auto on_mesh = [&](f32 v, f32 lo) {
       return v >= lo - k_door_max_size_m && v <= lo + grid_extent + k_door_max_size_m;
     };
+    // And that box within a hinge's reach of the mesh's origin, both corners on every axis
+    // (`k_door_max_reach_m`, 2^17 m): a float's 24 bits cannot place a hinge to a centimetre past
+    // it, and a finite huge grid would otherwise hold a pivot a world away from the house.
+    const auto reached = [&](f32 lo) {
+      const f32 hi = lo + grid_extent;
+      return lo >= -k_door_max_reach_m && lo <= k_door_max_reach_m && hi >= -k_door_max_reach_m &&
+             hi <= k_door_max_reach_m;
+    };
+    if (!reached(grid_lo.x) || !reached(grid_lo.y) || !reached(grid_lo.z)) {
+      return fail(error,
+                  "cluster file section doors is on a position grid reaching past 131072 m from "
+                  "the mesh's origin, where a float cannot place a hinge");
+    }
     for (const ClusterFileDoor& d : result.doors) {
       const f32 shut = d.shut_x * d.shut_x + d.shut_z * d.shut_z;
       const f32 swing = d.swing_x * d.swing_x + d.swing_z * d.swing_z;

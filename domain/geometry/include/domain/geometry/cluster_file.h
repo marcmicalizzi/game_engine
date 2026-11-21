@@ -486,6 +486,11 @@ inline constexpr f32 k_door_max_size_m = 12.0f;
 // building's description may declare, and a host makes a box and a body a record (geometry.md,
 // "Doors").
 inline constexpr u32 k_door_max_records = 512;
+// The farthest a file that declares doors may hold its position grid from the mesh's origin, on
+// any axis, at either corner: 131072 m (2^17). A float has 24 bits and a hinge needs about a
+// centimetre, so past 2^17 m a float cannot place one, and a pivot bounded by a grid any larger
+// could stand a world away from the house that declares it (geometry.md, "Doors").
+inline constexpr f32 k_door_max_reach_m = 131072.0f;
 inline constexpr u16 k_door_flag_paired = 1u << 1;  // one of a pair hung in one opening
 struct ClusterFileDoor {
   Vec3 pivot{};
