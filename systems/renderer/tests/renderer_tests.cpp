@@ -1386,6 +1386,60 @@ TEST_CASE("renderer: a surround's centre view is the single view of one monitor,
   CHECK(stats.views[2].x == k_monitor * 2);
 }
 
+// R195 (renderer.md, "Per-view statistics, and what the milliseconds mean"): a pass's views timed
+// as one zone draw what a zone a view draws, to the byte. A capture is not a timed frame, so what
+// the switch does to the milliseconds is the flight's to say (the wide frame's experiment page).
+TEST_CASE("renderer: a surround's views timed as one zone a pass draw the same bytes") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  const test::TempDir tmp("engine_renderer_surround_zones");
+  const std::filesystem::path dir = tmp.native();
+  const std::string mesh = slashes(dir / "cube.glb");
+  REQUIRE(write_cube_glb(mesh));
+  SceneDesc desc;
+  desc.meshes.push_back(mesh);
+  desc.ddc = slashes(dir / "ddc");
+  for (i32 i = -2; i <= 2; ++i) {
+    SceneInstance instance;
+    instance.transform.position = Vec3{static_cast<f32>(i) * 4.0f, 0.0f, 0.0f};
+    desc.instances.push_back(instance);
+  }
+  constexpr u32 k_monitor = 128;
+  RenderSettings settings;
+  settings.views = ViewLayout::Surround3;
+  FrameDesc frame;
+  frame.camera.position = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, 12.0f});
+  frame.camera.target = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, 0.0f});
+  frame.camera.znear = 0.05f;
+  CaptureChannels channels;
+  channels.ids = true;
+  tunables::Tunable* zones = tunables::find("renderer.timing.view_zones");
+  REQUIRE(zones != nullptr);
+  std::string previous;
+  zones->append_value(previous);
+
+  CapturedFrame captures[2];
+  for (u32 k = 0; k < 2; ++k) {
+    REQUIRE(zones->set_from_text(k == 0 ? "true" : "false"));
+    Rig rig;
+    REQUIRE_MESSAGE(rig.build(gpu.device, desc, settings, k_monitor * 3, k_monitor), rig.error);
+    std::string error;
+    REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, captures[k], &error), error);
+    REQUIRE(rig.renderer.stats().view_count == 3);
+  }
+  (void)zones->set_from_text(previous);
+
+  REQUIRE(captures[0].color.size() == captures[1].color.size());
+  REQUIRE(captures[0].ids.size() == captures[1].ids.size());
+  CHECK(std::memcmp(captures[0].color.data(), captures[1].color.data(), captures[0].color.size()) ==
+        0);
+  CHECK(std::memcmp(captures[0].ids.data(), captures[1].ids.data(),
+                    captures[0].ids.size() * sizeof(u32)) == 0);
+}
+
 TEST_CASE(
     "renderer: each view of a turned surround names what is in front of it, through one TLAS") {
   Gpu gpu;
