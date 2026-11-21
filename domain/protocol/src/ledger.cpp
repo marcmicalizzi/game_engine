@@ -826,14 +826,21 @@ RpcError name_not_followed_error(const std::string& spelled) {
                     std::move(data));
 }
 
-// A subject naming files outside this host's roots: `entries` by their spelling.
-RpcError not_readable_here_error(const Vector<std::string>& entries, std::string message) {
+// A subject naming files outside this host's roots: `entries` by their spelling, and for a bound
+// passed `bound`, `limit` and `figure`, as the raise's refusal gives them.
+RpcError not_readable_here_error(const Vector<std::string>& entries, std::string message,
+                                 const DigestOver* over = nullptr) {
   JsonValue data = JsonValue::object();
   data.set("reason", JsonValue("subject not readable here"));
   JsonValue list = JsonValue::array();
   for (const std::string& e : entries)
     list.push_back(JsonValue(e));
   data.set("entries", std::move(list));
+  if (over != nullptr) {
+    data.set("bound", JsonValue(std::string_view(over->bound)));
+    data.set("limit", JsonValue(over->limit));
+    data.set("figure", JsonValue(over->figure));
+  }
   return make_error(codes::k_invalid_argument, std::move(message), std::move(data));
 }
 
@@ -842,7 +849,8 @@ RpcError not_readable_here_error(const Vector<std::string>& entries, std::string
 template <class First, class Decide>
 bool digest_passes(Context& ctx, const std::string& session_id, DigestFor use, First&& first,
                    Decide&& decide, SubjectState& state, Session*& session, RpcError& error,
-                   Vector<std::string>* raised_files = nullptr) {
+                   Vector<std::string>* raised_files = nullptr,
+                   Vector<DigestOver>* past_bounds = nullptr) {
   const DigestBounds bounds = DigestBounds::now();
   const i64 started = time::monotonic_ns();
   for (u32 pass = 1;; ++pass) {
@@ -934,6 +942,7 @@ bool digest_passes(Context& ctx, const std::string& session_id, DigestFor use, F
     }
     if (!moved) {
       if (raised_files != nullptr) raised_spellings(plan, *raised_files);
+      if (past_bounds != nullptr) bounds_not_compared(plan, *past_bounds);
       finish_subject(plan, state);
       state.passes = pass;
       state.ms = static_cast<f64>(time::monotonic_ns() - started) / 1.0e6;
@@ -1195,6 +1204,7 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
   // computation that decides reuses nothing (protocol.md, "What a close is tied to").
   const i64 now = time::wall_unix_ms();
   ReviewInfo changed;
+  Vector<DigestOver> past_bounds;  // this same pass's, filled before `decide` runs
   const auto decide = [&](Session& session, const SubjectState& seen_now, u64 revision, bool& moved,
                           RpcError& e) {
     return update_ledger(
@@ -1211,6 +1221,18 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
           if (!closable(*r, e2)) return false;
           // A digest this host cannot compute in full is never compared, so it never reads as a
           // change (protocol.md, "What a close is tied to").
+          if (!params.digest.empty() && !seen_now.comparable && !past_bounds.empty()) {
+            // Past a bound, every host with the same bounds answers alike: the remedy is the
+            // tunable, named as the raise's refusal names it.
+            const DigestOver& over = past_bounds[0];
+            e2 = not_readable_here_error(
+                seen_now.not_comparable,
+                "review item " + std::to_string(r->id) + " names a file past " + over.bound + " (" +
+                    std::to_string(over.limit) + "): it comes to " + std::to_string(over.figure) +
+                    "; ask the host's operator for a larger bound, then close it",
+                &over);
+            return false;
+          }
           if (!params.digest.empty() && !seen_now.comparable) {
             e2 = not_readable_here_error(
                 seen_now.not_comparable,
@@ -1267,7 +1289,7 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
         !decide(*s, seen_now, revision, moved, error))
       return false;
   } else if (!digest_passes(ctx, params.session, DigestFor::close, first, decide, seen_now, s,
-                            error)) {
+                            error, nullptr, &past_bounds)) {
     return false;
   }
   out.now_unix_ms = now;

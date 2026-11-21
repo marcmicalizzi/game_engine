@@ -154,6 +154,10 @@ bool same_document(const Session* session, const SubjectPlan& plan) noexcept;
 bool same_subject(const SubjectPlan& plan, const SubjectPlan& again);
 // The two halves joined into `out` (`same` is left to the caller, which knows the stamp).
 void finish_subject(SubjectPlan& plan, SubjectState& out);
+// The bounds a pass passed that left an entry of `not_comparable` unread, by tunable, the first
+// figure each was passed at: a file's byte bounds, the files bound, a glTF's JSON bound; never the
+// records bound, which leaves no entry.
+void bounds_not_compared(const SubjectPlan& plan, Vector<DigestOver>& out);
 
 // What a promotion's merge showed (protocol.md, "What a promotion is tied to"), as 64 lowercase
 // hex: the proposal and its target by name, every record the proposal layer holds as it holds it

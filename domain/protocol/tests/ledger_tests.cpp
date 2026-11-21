@@ -2234,6 +2234,12 @@ TEST_CASE("ledger: a subject past a digest's bound is refused at the raise, and 
                         {"attribution", who("reviewer")}}),
                    &error);
   };
+  // A close refused for a file past a bound names the bound, as the raise's refusal does: the
+  // remedy is the tunable, which every host with the same bounds answers alike.
+  const auto names_bound = [&](const char* tunable) {
+    return bound_in(error) == tunable &&
+           std::string(at(error, "message").as_string()).find(tunable) != std::string::npos;
+  };
   {
     Bound bound("protocol.review.file_bytes", "4");
     const JsonValue now = opened_detail(h, at(item, "id"));
@@ -2247,8 +2253,10 @@ TEST_CASE("ledger: a subject past a digest's bound is refused at the raise, and 
     CHECK(num(at(now, "asset_bytes")) == 0);
     CHECK(close_with(at(item, "id"), JsonValue(stamp)) == codes::k_invalid_argument);
     CHECK(reason_of(error) == "subject not readable here");
+    CHECK(names_bound("protocol.review.file_bytes"));
     CHECK(close_with(at(item, "id"), at(now, "digest")) == codes::k_invalid_argument);
     CHECK(reason_of(error) == "subject not readable here");
+    CHECK(names_bound("protocol.review.file_bytes"));
   }
   CHECK(at(opened_detail(h, at(item, "id")), "digest").as_string() == stamp);  // put back
   {
@@ -2258,6 +2266,7 @@ TEST_CASE("ledger: a subject past a digest's bound is refused at the raise, and 
     CHECK_FALSE(at(now, "comparable").as_bool());
     CHECK(close_with(at(item, "id"), at(now, "digest")) == codes::k_invalid_argument);
     CHECK(reason_of(error) == "subject not readable here");
+    CHECK(names_bound("protocol.review.subject_bytes"));
   }
   {
     // A record naming a second file after the raise, past a files bound of one: the file past it
@@ -2270,6 +2279,7 @@ TEST_CASE("ledger: a subject past a digest's bound is refused at the raise, and 
     CHECK(at(now, "not_comparable")[0].as_string() == "1 more past protocol.review.subject_files");
     CHECK(close_with(at(item, "id"), at(now, "digest")) == codes::k_invalid_argument);
     CHECK(reason_of(error) == "subject not readable here");
+    CHECK(names_bound("protocol.review.subject_files"));
   }
   w.set(h, w.placement, "decal", JsonValue(""));
 

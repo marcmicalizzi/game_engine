@@ -620,6 +620,16 @@ void read_subject_files(SubjectPlan& plan, const DigestBounds& bounds) {
   }
 }
 
+void bounds_not_compared(const SubjectPlan& plan, Vector<DigestOver>& out) {
+  out.clear();
+  for (const DigestOver& o : plan.over) {
+    if (std::string_view(o.bound) != records_tunable.name()) out.push_back(o);
+  }
+  for (const SubjectPlan::Unfollowed& u : plan.unfollowed) {
+    if (u.bound != nullptr) note_over(out, u.bound, u.limit, u.figure);
+  }
+}
+
 void raised_spellings(const SubjectPlan& plan, Vector<std::string>& out) {
   out.clear();
   for (const SubjectPlan::File& f : plan.files) {
