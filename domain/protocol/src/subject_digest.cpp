@@ -443,6 +443,7 @@ void read_subject_files(SubjectPlan& plan, const DigestBounds& bounds) {
     plan.past_files += past;
     const std::string base(io::parent_path(plan.files[i].native));
     const std::string by = plan.files[i].spelled;
+    const u32 first_named = static_cast<u32>(plan.files.size());
     for (const GltfName& name : names) {
       SubjectPlan::File n;
       n.spelled = by + "#" + name.at;
@@ -463,10 +464,28 @@ void read_subject_files(SubjectPlan& plan, const DigestBounds& bounds) {
         }
       } else {
         n.native = std::move(admitted.native);
-        io::FileHandle named_file;
-        if (open_file(n, bounds, total, plan, named_file)) hash_file(n, named_file, plan);
       }
       plan.files.push_back(std::move(n));
+    }
+    // Bounded as they are read (protocol.md, "What it costs"): only the glTF says what it names,
+    // so it is read first; then a raise past the files bound stops here, and one within it holds
+    // the named files to the byte bounds by their sizes before a byte of them is read, as it does
+    // the subject's own.
+    if (plan.refuse_over) {
+      if (plan.past_files > 0) break;
+      u64 sized = total;
+      for (u32 k = first_named; k < plan.files.size(); ++k) {
+        if (!plan.files[k].line.empty() || plan.files[k].native.empty()) continue;
+        io::FileHandle named_file;
+        (void)open_file(plan.files[k], bounds, sized, plan, named_file);
+      }
+      if (!plan.over.empty()) break;
+    }
+    for (u32 k = first_named; k < plan.files.size(); ++k) {
+      SubjectPlan::File& n = plan.files[k];
+      if (!n.line.empty() || n.native.empty()) continue;
+      io::FileHandle named_file;
+      if (open_file(n, bounds, total, plan, named_file)) hash_file(n, named_file, plan);
     }
   }
   // The files bound's figure is every file named, collected or counted.

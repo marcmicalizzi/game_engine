@@ -1302,9 +1302,16 @@ TEST_CASE("ledger: the files a glTF subject names are read with it") {
   JsonValue error;
   {
     Bound bound("protocol.review.subject_files", "3");  // the glTF and the three it names
+    const u64 opens = h.sessions.digest_files_opened();
+    const u64 bytes = h.sessions.digest_bytes_read();
     CHECK(h.fails("review.raise", w.raise_params("Agent"), &error) == codes::k_invalid_argument);
     CHECK(bound_in(error) == "protocol.review.subject_files");
     CHECK(num(at(at(error, "data"), "figure")) == 4);
+    // A glTF's names are bounded as they are read: the glTF alone was read, held to the bounds
+    // by its size and then read, and none of the files it names was opened.
+    CHECK(h.sessions.digest_bytes_read() - bytes ==
+          static_cast<u64>(std::filesystem::file_size(props / "crate.gltf")));
+    CHECK(h.sessions.digest_files_opened() - opens == 2);
   }
   const JsonValue raised = h.ok("review.raise", w.raise_params("Agent"));
   const JsonValue item = at(raised, "reviews")[0];
