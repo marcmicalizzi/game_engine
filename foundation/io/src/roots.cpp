@@ -682,6 +682,9 @@ bool uri_relative_path(std::string_view uri, std::string& out) {
     const usize slash = out.find('/', start);
     const std::string_view part = std::string_view(out).substr(
         start, slash == std::string::npos ? out.size() - start : slash - start);
+    // An empty segment anywhere but after a single trailing separator is refused (`a//b`, `.//x`,
+    // `x//`): once a `.` before it is dropped it would be the leading separator refused above.
+    if (part.empty() && slash != std::string::npos) return false;
     if (part != ".") {
       if (part == "..") {
         if (named) return false;

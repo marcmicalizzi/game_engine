@@ -880,6 +880,18 @@ TEST_CASE("uri_relative_path takes a relative URI and leaves where a climb leads
       {"a/%2e/b.bin", true, "a/b.bin"},
       {".", false, ""},
       {"./", false, ""},
+      // An empty segment anywhere is refused, raw or encoded, so what is taken never begins with
+      // a separator once a `.` is dropped; a single trailing separator is kept as spelled.
+      {".//a.bin", false, ""},
+      {"%2E//a.bin", false, ""},
+      {".%2F%2Fa.bin", false, ""},
+      {".//C:/x.bin", false, ""},
+      {".//host/s/x.bin", false, ""},
+      {"a//b.bin", false, ""},
+      {"a%2F%2Fb.bin", false, ""},
+      {"x//", false, ""},
+      {"sub/", true, "sub/"},
+      {"./sub/", true, "sub/"},
       // What a dropped `.` leaves first is held to the first segment's rule.
       {"./c:x.bin", false, ""},
       {"%2E/C:/x.bin", false, ""},
