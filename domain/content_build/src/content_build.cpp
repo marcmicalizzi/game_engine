@@ -709,7 +709,9 @@ bool read_classes_at(const std::string& source, const MeshOptions& options, Sour
   if (!assets::mesh_generator_of(source).empty() &&
       generator_hosts(source, options.materials, hosts)) {
     for (const std::string& host : hosts) {
-      if (depth + 1 >= k_host_depth)
+      // At `GeneratorHosts::identify`'s bound: `depth` is this dependant's, as `depth_` is there,
+      // so a chain that builds and loads is one this read takes, and one it refuses is refused.
+      if (depth >= k_host_depth)
         return refuse(source + ": a host's host is more than " + std::to_string(k_host_depth) +
                       " levels deep: a loop of recipes?");
       SourceClasses inner;

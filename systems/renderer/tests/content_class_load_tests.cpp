@@ -1646,3 +1646,47 @@ TEST_CASE("content classes at load: a recipe over a game-classified host decides
   }
   g_cover_mesh = nullptr;
 }
+
+// **The class read follows a host chain exactly as deep as the hosts' seam does** (C64):
+// `GeneratorHosts` identifies hosts down to `k_host_depth` levels and refuses a chain one deeper,
+// and the class read takes the same chain, joining its last host's class, and refuses the same one.
+TEST_CASE("content classes at load: a recipe's host chain reads as deep as it builds") {
+  need_generator(k_fixture_host);
+  const test::TempDir tmp("renderer_classes_host_depth");
+  REQUIRE(tmp.ok());
+  (void)write_grid(tmp, "leaf.clusters", 9, "leaf.png", glow_record(2));
+  content_class::Categories table;
+  std::string error;
+  REQUIRE_MESSAGE(table.add_json(k_glow_categories, error), error);
+  content_build::MeshOptions options;
+  options.categories = &table;
+  // `r0` grows over `r1`, and so on; the chain's last recipe grows over the leaf.
+  const auto chain = [&](u32 recipes) {
+    for (u32 i = 0; i < recipes; ++i) {
+      const std::string host = i + 1 < recipes ? "r" + std::to_string(i + 1) + ".fixturehost.json"
+                                               : std::string("leaf.clusters");
+      REQUIRE(io::write_file(tmp.file("r" + std::to_string(i) + ".fixturehost.json"),
+                             R"({"host":")" + host + R"("})") == io::Status::Ok);
+    }
+    return tmp.file("r0.fixturehost.json");
+  };
+  for (const u32 recipes : {content_build::k_host_depth, content_build::k_host_depth + 1}) {
+    CAPTURE(recipes);
+    const std::string top = chain(recipes);
+    std::string text;
+    REQUIRE(io::read_file(top, text) == io::Status::Ok);
+    const content_build::GeneratorHosts hosts(top, geometry::ClusterLodOptions{},
+                                              geometry::ClusterPagesOptions{}.page_bytes, nullptr);
+    u64 identity = 0;
+    std::string why;
+    const bool identified = assets::generated_source_hash(
+        k_fixture_host, std::span<const u8>(reinterpret_cast<const u8*>(text.data()), text.size()),
+        hosts.inputs(), identity, why);
+    CHECK_MESSAGE(identified == (recipes == content_build::k_host_depth), why);
+    content_build::SourceClasses classes;
+    content_build::Diagnostic diagnostic;
+    const bool read = content_build::read_source_classes(top, options, classes, diagnostic);
+    CHECK_MESSAGE(read == identified, diagnostic.message);
+    if (read) CHECK(classes.classes.levels[static_cast<u32>(table.find("fixture_glow"))] == 2);
+  }
+}
