@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W152",
+  "reason": "W152: the sheet's surface, the foam's pattern and the break are new behaviour of the shore; the detail went to shore-mechanics.md and these are the short sections the subsystem page needs",
+  "date": "2026-11-20",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/water.md": 2241
+  }
+}

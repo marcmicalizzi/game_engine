@@ -1206,6 +1206,20 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
           const float sheet = min(0.5 * (front - hh), 0.25 * place.run_up + 0.02);
           depth = max(depth, bank_share * sheet);
         }
+        // **Over the bank the mesh's water is the sheet's own surface** (W152; water.slang,
+        // `water_sheet_surface`): its ripples and its lobe, as the ground's pixels under the same
+        // sheet take them, so the mesh's edge inside the sheet stays one surface.
+        if (water_swash_on(swash) && bank_share > 0.0) {
+          const WaterWhiteSea sheet_sea = water_white_sea(swash);
+          const float strength = water_foam_strength(
+              sheet_sea.height_m * min(place.jitter, 1.0), sheet_sea.period_s, place.slope);
+          const WaterSheetSurface sheet = water_sheet_surface(
+              place, local.xz, hh, front, uprush, t, strength, footprint, 1.0);
+          n = water_sheet_normal(n, sheet.slope, bank_share);
+          w.roughness =
+              lerp(w.roughness, water_sheet_roughness(sheet.smooth, sheet.dropped, w.roughness),
+                   bank_share);
+        }
       } else {
         // The shift fades out over the swash's own depth, so deep water is the depth it was.
         const float band = 1.5 * swash.run_up_m + swash.tide_m + k_water_calm_depth;
@@ -1419,6 +1433,9 @@ WaterWetGround water_ground_wetness_of(ResolveParams* params, ResolveMaterial ma
   g.foam = 0.0;
   g.sheet = 0.0;
   g.body = 0u;
+  g.sheet_slope = float2(0.0, 0.0);
+  g.sheet_smooth = 1.0;
+  g.sheet_dropped = 0.0;
   if (params->water_shore_count == 0 || stop_skips(k_stop_water)) return g;
   WaterShore* shores = (WaterShore*)params->water_shores;
   InstanceDesc* instances = (InstanceDesc*)params->instances;
@@ -1454,6 +1471,9 @@ WaterWetGround water_ground_wetness_of(ResolveParams* params, ResolveMaterial ma
     if (here.sheet > g.sheet) {
       g.sheet = here.sheet;
       g.body = here.body;
+      g.sheet_slope = here.sheet_slope;
+      g.sheet_smooth = here.sheet_smooth;
+      g.sheet_dropped = here.sheet_dropped;
     }
   }
   // The channels' banks (gfx::build_bank_tree): depth first, a node missed skips its subtree by
@@ -1678,6 +1698,10 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   // second pass; water.slang, `water_sheet_over_ground`).
   float wet_sheet = 0.0;
   uint wet_body = 0u;
+  // The sheet's surface (W152; water.slang, `water_sheet_surface`).
+  float2 wet_sheet_slope = float2(0.0, 0.0);
+  float wet_sheet_smooth = 1.0;
+  float wet_sheet_dropped = 0.0;
 #ifdef RESOLVE_WATER
   if ((material.flags & k_material_water) == 0 && !g_count) {
     const WaterWetGround wet = water_ground_wetness(params, material, instance, s.position, tri, at);
@@ -1689,6 +1713,9 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     wet_foam = wet.foam;
     wet_sheet = film_off ? 0.0 : wet.sheet;
     wet_body = wet.body;
+    wet_sheet_slope = wet.sheet_slope;
+    wet_sheet_smooth = wet.sheet_smooth;
+    wet_sheet_dropped = wet.sheet_dropped;
   }
 #endif
 #ifdef MATERIAL_TERRAIN
@@ -2073,7 +2100,9 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
       if ((body.flags & k_material_water_volume) != 0) {
         sheeted = true;
         const float3 level = float3(0.0, 1.0, 0.0);
-        const float3 r = water_reflected(level, surface.view);
+        // The sheet's own surface (W152): its ripples on the level surface, its lobe.
+        const float3 sheet_n = water_sheet_normal(level, wet_sheet_slope, 1.0);
+        const float3 r = water_reflected(sheet_n, surface.view);
         float3 sheet_ambient;
         float3 sheet_reflected;
         if (has_sky) {
@@ -2095,8 +2124,11 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
                 sky_light_at(sky, s.position, params->sun.xyz, sky->sun_illuminance.rgb);
           }
         }
+        WaterParams sheet_w = water_of(body);
+        sheet_w.roughness =
+            water_sheet_roughness(wet_sheet_smooth, wet_sheet_dropped, sheet_w.roughness);
         const float3 sheet = water_sheet_over_ground(
-            water_of(body), water_optics_of(table[wet_body + 1u]), surface.view, surface.normal,
+            sheet_w, water_optics_of(table[wet_body + 1u]), surface.view, sheet_n, surface.normal,
             albedo, params->sun.xyz, sheet_sun, sun_visibility, sheet_ambient, sheet_reflected);
         color = lerp(color, sheet, wet_sheet);
         foam_ambient = lerp(ambient, sheet_ambient, wet_sheet);

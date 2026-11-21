@@ -669,7 +669,10 @@ inline double height(const gfx::WaterSurface& s, const Field& f, double x, doubl
       const double held = std::max(
           mesh_ring * along_ray, mesh_far * std::sqrt(std::max(1.0 - along_ray * along_ray, 0.0)));
       const double local_k = gfx::water_wavenumber(static_cast<double>(s.k0), d);
-      if (held > 0.0) keep = brdf_ref::clamp01(k_two_pi / local_k / (2.0 * held) - 1.0);
+      // W152: held against the shorter of the local wavelength and the arrival's crest spacing.
+      const double period = static_cast<double>(s.period_s);
+      const double spacing = std::min(k_two_pi / local_k, period / std::max(lc, 1e-6 * period));
+      if (held > 0.0) keep = brdf_ref::clamp01(spacing / (2.0 * held) - 1.0);
     }
     train = keep * env * shelter(f) *
             train_shape(first_m * flux, static_cast<double>(s.k0), d, k_two_pi * frac(c), share);

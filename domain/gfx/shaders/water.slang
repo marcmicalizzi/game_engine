@@ -674,6 +674,11 @@ struct WaterWetGround {
   // thin water the body's mesh is (`water_sheet_over_ground`). 0: none.
   float sheet;
   uint body;
+  // The sheet's surface (W152, `water_sheet_surface`): its ripples' slope, how far its film is the
+  // water's own surface, and the ripples' variance its lobe takes (`water_sheet_roughness`).
+  float2 sheet_slope;
+  float sheet_smooth;
+  float sheet_dropped;
 };
 
 // **The swash's sheet over ground is the water the mesh draws** (S102, second pass; water.md, "One
@@ -688,7 +693,10 @@ struct WaterWetGround {
 // ground's own — its wet albedo `albedo`, its shading normal `n_b`, its sun `sun` and the share
 // `sun_visibility` its shadow lets through, a level surface's `ambient`, and the radiance
 // `reflected` along `water_reflected(up, view)`.
-float3 water_sheet_over_ground(WaterParams w, WaterOptics o, float3 view, float3 n_b,
+// Since W152 the surface is the sheet's own (`water_sheet_surface`): `n` its rippled normal, whose
+// mirrored view `reflected` is along, and `w.roughness` its lobe, as the mesh's water over the bank
+// takes them.
+float3 water_sheet_over_ground(WaterParams w, WaterOptics o, float3 view, float3 n, float3 n_b,
                                float3 albedo, float3 sun_dir, float3 sun, float sun_visibility,
                                float3 ambient, float3 reflected) {
   WaterPath none;
@@ -697,8 +705,8 @@ float3 water_sheet_over_ground(WaterParams w, WaterOptics o, float3 view, float3
   none.depth = 0.0;
   const float3 under = water_volume(o, none, n_b, albedo, sun_dir, sun, sun_visibility,
                                     sun_visibility, ambient);
-  return water_radiance_volume(w, float3(0.0, 1.0, 0.0), view, float2(max(w.shore, 1.0), 0.0),
-                               sun_dir, sun * sun_visibility, reflected, under);
+  return water_radiance_volume(w, n, view, float2(max(w.shore, 1.0), 0.0), sun_dir,
+                               sun * sun_visibility, reflected, under);
 }
 
 // ---- the swash (S94; docs/subsystems/water.md, "The shore"; docs/experiments/shore.md, "The
@@ -719,6 +727,9 @@ static const float k_swash_fringe = 0.5;
 // The along-shore scale of the front's raggedness and phase drift: the larger of this and three
 // swash widths (R over the slope).
 static const float k_swash_raggedness_m = 4.0;
+// The share of the place's highest reach over which the sheets' mark thins to none (W152): the
+// tips of the largest sheets, a stated shape, not a fit.
+static const float k_swash_top_share = 0.2;
 
 struct WaterSwashPlace {
   float run_up;  // the place's own R (S102: its stretch of shore's slope gives it)
@@ -829,7 +840,14 @@ float water_swash_tide(WaterShore s, float tide_phase) {
 // floor; and the film's gloss, which drains in seconds.
 float water_swash_wetness(WaterShore s, WaterSwashPlace w, float t, float h, out float film) {
   const float age = water_swash_age(w, t, h);
-  const float mark = exp(-age / max(s.drain_s, 1e-3));
+  // **The top of the swash is wetted thinly** (W152): the sheets that reach the highest are the
+  // group's largest at their tips, millimetres deep and draining into the sand as they climb, so
+  // the band's upper share is wetted less the nearer it is to the place's highest reach; until
+  // W152 every height any sheet reached was marked whole, and the band ended at the reach in a hard
+  // dark edge, with the lower reach of a stretch beside it a dry patch inside the wet zone.
+  const float top = w.run_up * w.jitter;
+  const float mark = exp(-age / max(s.drain_s, 1e-3)) *
+                     smoothstep(0.0, k_swash_top_share * max(top, 1e-3), top - h);
   film = exp(-age / k_swash_film_s);
   float fringe = 0.0;
   if (s.wet_m > 0.0 && h >= 0.0 && h < s.wet_m) fringe = k_swash_fringe * (1.0 - smoothstep(0.0, s.wet_m, h));
@@ -841,6 +859,104 @@ float water_swash_wetness(WaterShore s, WaterSwashPlace w, float t, float h, out
 // colour is the body's shallow tint and not a material's).
 float3 water_wet_darkening(float3 albedo, float wet) {
   return lerp(float3(1.0), wet_ground_darkening(albedo), clamp(wet, 0.0, 1.0));
+}
+
+// ---- the sheet's surface (W152; water.md, "The sheet's surface"; shore-mechanics.md, "The sheet
+// as a film") ------------------------------------------------------------------------------------
+// Until W152 the swash's sheet was a level mirror at the body's roughness on both sides of the
+// mesh's edge, whole up to its front: a run-up drew as a flat glassy slab with a hard straight edge
+// and the hills in it. A swash sheet is a thin turbulent film: a few centimetres deep behind its
+// front and thinning to nothing at it, its surface broken by the bore that launched it and smooth
+// only once the flow calms, and where it is thinner than the sand's grains are high its surface is
+// the grains' and not a mirror. These are the three things this block gives the sheet, as a
+// function of the place and the clock (nothing kept), read alike by the ground's pixels under the
+// sheet (`water_swash_saturation`) and the mesh's water over the bank (`water_pixel`), so the
+// mesh's edge inside the sheet stays one surface.
+//
+// A film thinner than the sand's relief (medium sand, 0.25 to 0.5 mm grains: Wentworth) takes the
+// grains' roughness; one of a few millimetres is the water's own surface.
+static const float k_sheet_rough_film_m = 0.0005;
+static const float k_sheet_smooth_film_m = 0.004;
+// The roughness of sand under a film thinner than its grains: wet sand's gloss, not a mirror.
+static const float k_sheet_sand_roughness = 0.35;
+// The sheet's cover thins to nothing over its last millimetres of depth: at its tip the film is the
+// grains' (a swash tip a few millimetres deep and a sheet of centimetres behind it is the field
+// literature's picture as recalled, not read tonight: shore-mechanics.md, "The sheet as a film").
+static const float k_sheet_edge_m = 0.003;
+// The sheet's rms surface slope: a calm sheet's (the backwash's smooth supercritical flow, a few
+// hundredths) and a bore's front's (a broken, aerated surface, a quarter), the one decaying into
+// the other behind the front over a share of the swash's excursion.
+static const float k_sheet_calm_slope = 0.03;
+static const float k_sheet_bore_slope = 0.25;
+static const float k_sheet_bore_share = 0.35;
+// The ripples' two cells, metres, and their cross-fade's cycle (a divisor of the water's 1,024 s
+// clock, so the clock's wrap is no jump).
+static const float k_sheet_cell_m = 0.30;
+static const float k_sheet_fine_m = 0.09;
+static const float k_sheet_cycle_s = 4.0;
+
+struct WaterSheetSurface {
+  float2 slope;    // the sheet's surface slope (d height / d x, d z), body-local, over its mean
+  float smooth;    // 0: the film is the grains' (sand's roughness), 1: the water's own surface
+  float dropped;   // the ripples' slope variance the footprint could not hold (to the lobe)
+  float cover;     // the share of the place the sheet's water covers: 0 at its front
+};
+
+// The sheet over ground `hh` metres above the swash's level, its front `front` (climbing when
+// `uprush`), a breaker of `strength` (water_foam_strength: 0 for a surge, whose sheet is glassy),
+// `film` the drained film's weight behind the front.
+WaterSheetSurface water_sheet_surface(WaterSwashPlace w, float2 p, float hh, float front,
+                                      bool uprush, float t, float strength, float footprint,
+                                      float film) {
+  WaterSheetSurface o;
+  // Its depth: the pool's rule under the front (half the front's height over the ground, to a
+  // quarter of the run-up and 2 cm), a drained film's millimetre behind it.
+  const float under = clamp(0.5 * (front - hh), 0.0, 0.25 * w.run_up + 0.02);
+  const float d = front > hh ? under : k_sheet_rough_film_m * clamp(film, 0.0, 1.0);
+  o.cover = front > hh ? smoothstep(0.0, k_sheet_edge_m, under) : 1.0;
+  // How broken its surface is: the bore's front while it climbs, decaying behind it over a share
+  // of the swash's excursion (R / beta); the backwash is the calm sheet's.
+  const float x = max(front - hh, 0.0) / max(w.slope, 1e-3);
+  const float reach_m = clamp(k_sheet_bore_share * w.run_up / max(w.slope, 1e-3), 0.3, 3.0);
+  const float bore = uprush && front > hh ? strength * exp(-x / reach_m) : 0.0;
+  const float sigma = k_sheet_calm_slope + (k_sheet_bore_slope - k_sheet_calm_slope) * bore;
+  // The ripples: two octaves of gradient noise, cross-faded along a drift so they boil and are
+  // continuous in the clock; the slope the footprint cannot hold goes to the lobe.
+  const float cycle = t / k_sheet_cycle_s;
+  float2 g = float2(0.0, 0.0);
+  float kept = 0.0;
+  for (uint k = 0; k < 2; ++k) {
+    const float ph = frac(cycle + 0.5 * float(k));
+    const float weight = 1.0 - abs(2.0 * ph - 1.0);
+    const float2 drift = float2(0.6, 0.8) * (ph * 2.0) + float2(13.7 * float(k), 5.3 * float(k));
+    const float keep = footprint > 0.0 ? clamp(k_sheet_cell_m / (2.0 * footprint) - 1.0, 0.0, 1.0)
+                                       : 1.0;
+    const float keep_fine =
+        footprint > 0.0 ? clamp(k_sheet_fine_m / (2.0 * footprint) - 1.0, 0.0, 1.0) : 1.0;
+    const float3 a = water_channel_noise(p / k_sheet_cell_m + drift, 0x5a17u + 7u * k);
+    const float3 b = water_channel_noise(p / k_sheet_fine_m - drift, 0x5a29u + 7u * k);
+    g += weight * (0.8 * keep * a.yz + 0.6 * keep_fine * b.yz);
+    kept += weight * (0.64 * keep * keep + 0.36 * keep_fine * keep_fine);
+  }
+  // The two phases' weights sum to 1 and the gradient's rms is about 1 a unit cell, so the slope's
+  // rms is about sigma where both octaves are held.
+  o.slope = sigma * g;
+  o.dropped = sigma * sigma * max(1.0 - kept, 0.0);
+  o.smooth = smoothstep(k_sheet_rough_film_m, k_sheet_smooth_film_m, d);
+  return o;
+}
+
+// The sheet's lobe over a body of roughness `body`: the grains' under a film thinner than they
+// are high, the water's own over a deeper one, widened by the ripples the pixel could not hold.
+float water_sheet_roughness(float smooth, float dropped, float body) {
+  return water_roughness(lerp(k_sheet_sand_roughness, body, smooth), dropped);
+}
+
+// A normal `n` with the sheet's ripples `slope` added at the share `share` of the place the sheet's
+// band is.
+float3 water_sheet_normal(float3 n, float2 slope, float share) {
+  const float2 g = float2(-n.x, -n.z) / max(n.y, 1e-3) + share * slope;
+  return normalize(float3(-g.x, 1.0, -g.y));
 }
 
 // ---- the foam of a wave that breaks (S100 stage B; docs/experiments/shore.md, "The break and the
@@ -875,34 +991,38 @@ float water_foam_strength(float h, float period_s, float slope) {
          (1.0 - smoothstep(k_water_surging_lo, k_water_surging_hi, xi));
 }
 
-// The foam's pattern for one wave's leavings, in [0, 1], near 0 along the ridges of two octaves of
-// value noise: foam is where the pattern is under the density, so as the density decays the patch
-// is eaten from the open cells inwards and what is left last is the lace along the ridges — a
-// raft of bubbles thinning into streaks, not a sheet fading. `cell` metres; each wave its own.
-float water_foam_lace(float2 p, float cell, uint wave) {
-  const float2 o = float2(float(wave) * 17.31, float(wave) * 5.77);
-  const float a = water_value_noise(p / cell + o);
-  const float b = water_value_noise(p * (3.4 / cell) + o.yx + float2(41.0, 7.0));
-  return 1.0 - (0.6 * (1.0 - abs(2.0 * a - 1.0)) + 0.4 * (1.0 - abs(2.0 * b - 1.0)));
-}
-
-// The share of a pixel that is foam where the pattern is `lace` and the density `density`: whole
-// at a density of 1 and none at 0 whatever the pattern; a pattern finer than the footprint is its
-// mean, so far foam is a grey and not a sparkle. The pattern's values crowd towards its ridges (a
-// third of a patch lies under 0.25), so the threshold rises slowly at first — D (0.45 + 0.55 D^3)
-// — and a density of a quarter is a tenth of the patch, the ridges alone (the first forest
-// captures drew a quarter-dense patch as four tenths cover, in blobs).
-float water_foam_cover(float lace, float density, float footprint, float cell) {
-  const float blur = clamp(footprint / cell - 0.5, 0.0, 1.0);
-  const float soft = 0.05 + 0.5 * blur;
-  const float m = lerp(lace, 0.35, blur);
-  const float d = clamp(density, 0.0, 1.0);
-  const float threshold = d * (0.45 + 0.55 * d * d * d);
-  return smoothstep(m - soft, m + soft, threshold * (1.0 + 2.0 * soft) - soft);
-}
-
 // The lace's cell: 0.6 of the wave's height, 6 to 60 cm, and a finer octave under it.
 float water_foam_cell(float h) { return clamp(0.6 * h, 0.06, 0.6); }
+
+// **The foam's share of a pixel, as a mass of bubbles and not a contour** (W152; water.md, "The
+// foam's pattern"). Until W152 every shore foam was `water_foam_cover` over `water_foam_lace`: the
+// ridges of value noise (where it crosses a half) under a threshold with an edge a twentieth of the
+// pattern wide. Those ridges are the noise's contour lines, closed round every extremum, so a thin
+// patch drew as nested rings — the owner's "fingerprints" — and a dense one as hard-edged cut-outs;
+// the value noise's lattice showed as rectangles at its peaks. Here, as the streams' white since
+// W139 (`water_channel_white_top`'s mass): two octaves of gradient noise, smooth and isotropic, and
+// the foam is where the field stands over a threshold the density sets, with an edge a whole unit
+// of the field wide — a raft that thins to patches and flecks as it decays, no line a viewer can
+// follow round. The threshold runs from over the field's top to under its bottom as the density
+// goes from 0 to 1 (the field is about normal, rms 0.92), so a patch's mean is its density at a
+// half and less at the ends; far away, where the pattern averages, a patch is its density.
+// **What is thin is a veil**: the share is the mass times the layer's opacity, 1 - e^(-3 d), so a
+// decaying lace lets the water through it where the old one was whole white to its last thread.
+float water_foam_mass(float2 p, float cell, uint wave, float density, float footprint) {
+  const float d = clamp(density, 0.0, 1.0);
+  if (!(d > 0.0)) return 0.0;
+  const uint seed = 0x2f6au + 977u * (wave % 4093u);
+  const float keep = footprint > 0.0 ? clamp(cell / (2.0 * footprint) - 1.0, 0.0, 1.0) : 1.0;
+  const float keep_fine =
+      footprint > 0.0 ? clamp(cell / (2.7 * 2.0 * footprint) - 1.0, 0.0, 1.0) : 1.0;
+  const float a = water_channel_noise(p / cell, seed).x;
+  const float b = water_channel_noise(p * (2.7 / cell), seed + 131u).x;
+  const float m = (0.8 * a + 0.45 * keep_fine * b) / k_channel_noise_rms;
+  const float threshold = lerp(2.2, -2.2, d);
+  const float mass = smoothstep(threshold - 0.6, threshold + 0.6, m);
+  const float opacity = 1.0 - exp(-3.0 * d);
+  return lerp(d, mass, keep) * opacity;
+}
 
 // **How much foam a wave of height `h` makes, and how long it lasts.** A breaker's foam is the air
 // it entrains, which goes with the energy it loses: a decimetre wavelet spilling on a lake's shore
@@ -915,7 +1035,7 @@ float water_foam_amount(float h) { return clamp(h / 0.5, 0.0, 1.0); }
 float water_foam_decay(float h) { return k_water_foam_decay_s * clamp(sqrt(max(h, 0.0)), 0.25, 1.0); }
 
 // ---- the beach's white at the top tier (W139; docs/experiments/white-water.md, "Beaches") --------
-// The low tier lays the lace of `water_foam_lace` at a density that is whole from a half-metre
+// The low tier lays the lace of `water_foam_mass` (until W152 `water_foam_lace`) at a density that is whole from a half-metre
 // wave, so any surf drew the bore and its sheet as one flat white sheet (the wind row's gale: the
 // swash flooding the beach white). What a beach shows instead (the reels `foamy-swash`,
 // `swash-coral-sand`, `sunset-lace-shorebreak`, `backwash-foam-spots`, `foam-spots-wet-sand`):
@@ -961,24 +1081,9 @@ static const float k_beach_lace_max = 0.7;
 static const float k_beach_band_per_h = 0.35;
 static const float k_beach_band_min_m = 0.06;
 static const float k_beach_band_max_m = 0.7;
-// Spots on the sand: their cell, metres, and how long they outlast the lace (on the decay).
-static const float k_beach_spot_m = 0.05;
-static const float k_beach_spot_life = 2.5;
-
-// The spots a drained sheet leaves at density `d` (in [0, 1]): the peaks of a fine pattern, fewer
-// and smaller as `d` falls; far away their mean.
-float water_beach_spots(float2 p, float d, float footprint, uint wave) {
-  if (!(d > 0.01)) return 0.0;
-  const float blur = clamp(footprint / k_beach_spot_m - 0.5, 0.0, 1.0);
-  const float2 o = float2(float(wave) * 11.17, float(wave) * 3.91);
-  const float n = water_value_noise(p / k_beach_spot_m + o);
-  const float edge = 1.0 - 0.35 * d;
-  const float spot = smoothstep(edge, edge + 0.04, n);
-  return lerp(spot, 0.12 * d, blur);
-}
 
 // **The foam on the sheet at the top tier** (`water_uprush_foam`'s): as the low tier's, wave by
-// wave, with the band, the capped lace and the spots above.
+// wave, with the band and the capped lace, stranded on the sand as the backwash bares it (W152).
 float water_uprush_foam_top(WaterShore s, WaterSwashPlace w, float2 p, float hh, float t,
                             float footprint) {
   const WaterWhiteSea sea = water_white_sea(s);
@@ -1012,12 +1117,15 @@ float water_uprush_foam_top(WaterShore s, WaterSwashPlace w, float2 p, float hh,
     const uint j = uint(wave + int(k_swash_group) * 64) % k_swash_group;
     const float life = exp(-since * w.period / decay);
     // The front's height now: past it (the backwash has bared the place) the sheet's lace is
-    // stranded on the sand as spots.
+    // stranded on the sand.
     const float front = vv < 1.0 ? z_lo + (a - z_lo) * water_swash_shape(vv) : z_lo;
     if (front < hh) {
-      const float d = amount * (1.0 - 0.6 * (1.0 - r)) *
-                      exp(-since * w.period / (k_beach_spot_life * decay));
-      foam = max(foam, water_beach_spots(p, d, footprint, j));
+      // Bared (W152): the sheet's lace is stranded on the sand as it was on the water — the same
+      // pattern at the same density, decaying as it did — so nothing switches as the backwash
+      // passes. Until W152 the backwash's passing swapped the lace for a field of 5 cm spots of
+      // value noise at a hard threshold, which flashed on and off as squares with every sheet.
+      const float stranded = min(amount * (1.0 - 0.6 * (1.0 - r)), k_beach_lace_max) * life;
+      if (stranded > 0.02) foam = max(foam, water_foam_mass(p, cell, j, stranded, footprint));
       continue;
     }
     // Behind the front: the bore's band, dense and ragged, opening into the lace.
@@ -1030,7 +1138,7 @@ float water_uprush_foam_top(WaterShore s, WaterSwashPlace w, float2 p, float hh,
     const float lace = min(amount * (1.0 - 0.6 * (1.0 - r)), k_beach_lace_max) * life;
     const float density = max(dense, lace);
     if (density > 0.02)
-      foam = max(foam, water_foam_cover(water_foam_lace(p, cell, j), density, footprint, cell));
+      foam = max(foam, water_foam_mass(p, cell, j, density, footprint));
   }
   return strength * foam;
 }
@@ -1038,6 +1146,25 @@ float water_uprush_foam_top(WaterShore s, WaterSwashPlace w, float2 p, float hh,
 // **The foam on the water at the top tier** (`water_bore_foam`'s): the roller on the face as the low
 // tier's, and the foam left behind it capped at the lace's density, so the surf zone is a raft of
 // cells and threads over dark water and not a white sheet.
+
+// **Whether a wave of the group is breaking here, and how hard** (W152; water.md, "The surf"). A
+// wave whose height the flux left it, `ratio` of the limit gamma d at the group's shape `group`
+// (plus the second train's elevation under its crest, `second` times the cosine `cross` of the
+// two's phase), stands at the limit, and that its height with nothing broken, `unbroken`, would
+// be over it, is breaking: inside the surf zone Battjes and Janssen's dissipation holds the wave
+// at the limit and every wave the limit holds is a bore with a roller. Until W152 the foam was
+// whole only from 1.5 of the limit on the height the flux left — which breaking holds at about 1 —
+// so the saturated surf drew almost none, only short dashes where the two trains' crests met: the
+// owner's "nothing is seen to break". A wave the bar broke and the trough lets reform is under the
+// limit there, `ratio` below `k_water_breaking_from`, and makes none until the depth asks again.
+// The onset thickens over a quarter of the limit past it, so a breaking stretch still grows from
+// its ends.
+static const float k_water_breaking_from = 0.85;
+float water_broken(float ratio, float unbroken, float second, float group, float cross) {
+  const float held = ratio * group + second * cross;
+  const float free = unbroken * group + second * cross;
+  return smoothstep(k_water_breaking_from, 1.0, held) * smoothstep(1.0, 1.25, free);
+}
 
 // **The foam on the water** at body-local p, still depth d (the tide's in), clock t. Wave k - j
 // passed here (u + j) periods ago; it had broken by here if its shoaled height had reached the
@@ -1067,6 +1194,8 @@ float water_bore_foam(WaterSurface* s, float2 p, WaterField f, float d, float t,
   const float first = s->train_m > 0.0 ? s->train_m : sea.height_m;
   const float ratio =
       first * shelter * f.kept * water_shoaling(water_wavenumber(s->k0, d), d) / limit;
+  // The same wave had nothing broken it on its way in (W152): over the limit, it is breaking here.
+  const float unbroken = f.kept > 1e-3 ? ratio / f.kept : ratio;
   float second = 0.0;
   float cross_phase = 0.0;
   float cross_step = 0.0;
@@ -1076,7 +1205,7 @@ float water_bore_foam(WaterSurface* s, float2 p, WaterField f, float d, float t,
     cross_phase = frac((f.arrival - f.arrival2) / s->cross_period_s);
     cross_step = sea.period_s / s->cross_period_s;
   }
-  if (!(ratio + second > 0.9)) return 0.0;  // the group's largest wave has not broken here
+  if (!(ratio + second > k_water_breaking_from)) return 0.0;  // the group's largest has not broken
   // At the top tier (W139) the bore's front is ragged along the crest at the lace's scale and the
   // foam it leaves is a lace whose cells stay open (`k_beach_lace_max`), not a sheet.
   const float rag = tier != 0u
@@ -1090,34 +1219,34 @@ float water_bore_foam(WaterSurface* s, float2 p, WaterField f, float d, float t,
   const float amount = water_foam_amount(h);
   const float decay = water_foam_decay(h);
   const uint next = uint(int(k) + 1 + int(k_swash_group) * 64) % k_swash_group;
-  // **How much of its foam a crest makes** where it stands x of the limit: none under 0.9 (it has
-  // not broken) and all of it from `k_water_broke_whole`. The air a breaker entrains goes with
-  // what it loses, and a crest barely over the limit spills a little down its face. Until the
-  // second train this was whole at 1.05, a line; with a crest that is over the limit only on the
-  // stretch where the two trains coincide, a line cut the foam into ruled slabs along the crest
-  // (the second pass's first flight, from 30 m up), where a breaking stretch thickens from its
-  // ends to its middle.
-  const float k_water_broke_whole = 1.5;
+  // How much of its foam a crest makes: `water_broken` (W152; until then a ramp from 0.9 to 1.5 of
+  // the limit on the height breaking had already held at 1).
   // The roller on the face of the wave coming in: a raft where the wave is big, flecks where not.
-  float foam = water_foam_cover(
-      water_foam_lace(p, cell, next),
-      amount *
-          smoothstep(0.9, k_water_broke_whole,
-                     ratio * water_swash_group(next) +
-                         second * cos(k_water_two_pi * frac(cross_phase + float(next) * cross_step))) *
+  float foam = water_foam_mass(
+      p, cell, next,
+      amount * water_broken(ratio, unbroken, second, water_swash_group(next),
+                            cos(k_water_two_pi * frac(cross_phase + float(next) * cross_step))) *
           smoothstep(0.88, 0.97, u),
-      footprint, cell);
+      footprint);
   for (uint back = 0; back < k_water_foam_waves; ++back) {
     const uint j = uint(int(k) - int(back) + int(k_swash_group) * 64) % k_swash_group;
-    const float broke = smoothstep(
-        0.9, k_water_broke_whole,
-        ratio * water_swash_group(j) +
-            second * cos(k_water_two_pi * frac(cross_phase + float(j) * cross_step)));
-    // The bore's own white for the first fifth of a period behind its crest, then the lace.
-    const float cap = lerp(1.0, lace_max, smoothstep(0.0, 0.2, u + float(back)));
+    const float broke =
+        water_broken(ratio, unbroken, second, water_swash_group(j),
+                     cos(k_water_two_pi * frac(cross_phase + float(j) * cross_step)));
+    // The bore's own white for its roller behind the crest, then the lace. **The roller is as long
+    // as the bore is high** (W152): about 1.5 H on the face (Svendsen 1984's roller, its area
+    // about 0.9 H^2 over a face a little steeper than 1:2 — recalled, not read tonight), which at
+    // the bore's speed sqrt(g d) is a few hundredths of a period; until W152 it was a fifth of one,
+    // 2.8 m of whole white behind a metre's bore on the beach scene, drawn now that the saturated
+    // surf breaks as slabs with straight ends.
+    const float roller =
+        clamp(1.5 * min(ratio, 1.0) * k_water_breaking_gamma * d /
+                  (sqrt(k_water_g * d) * sea.period_s),
+              0.02, 0.2);
+    const float cap = lerp(1.0, lace_max, smoothstep(0.0, roller, u + float(back)));
     const float density = min(amount * broke, cap) * exp(-(u + float(back)) * sea.period_s / decay);
     if (density > 0.02)
-      foam = max(foam, water_foam_cover(water_foam_lace(p, cell, j), density, footprint, cell));
+      foam = max(foam, water_foam_mass(p, cell, j, density, footprint));
   }
   return strength * foam;
 }
@@ -1169,7 +1298,7 @@ float water_uprush_foam(WaterShore s, WaterSwashPlace w, float2 p, float hh, flo
     const uint j = uint(wave + int(k_swash_group) * 64) % k_swash_group;
     const float density = amount * (1.0 - 0.6 * (1.0 - r)) * exp(-since * w.period / decay);
     if (density > 0.02)
-      foam = max(foam, water_foam_cover(water_foam_lace(p, cell, j), density, footprint, cell));
+      foam = max(foam, water_foam_mass(p, cell, j, density, footprint));
   }
   return strength * foam;
 }
@@ -1186,6 +1315,9 @@ WaterWetGround water_swash_saturation(WaterShore s, float2 p, float h, float t, 
   g.foam = 0.0;
   g.sheet = 0.0;
   g.body = s.material;
+  g.sheet_slope = float2(0.0, 0.0);
+  g.sheet_smooth = 1.0;
+  g.sheet_dropped = 0.0;
   float front = 0.0;
   bool uprush = false;
   WaterSwashPlace w = {};
@@ -1211,15 +1343,38 @@ WaterWetGround water_swash_saturation(WaterShore s, float2 p, float h, float t, 
     g.film = hh < 0.0 ? 1.0 : 0.0;
     g.s = hh < 0.0 ? 1.0 : (s.wet_m > 0.0 && hh < s.wet_m ? wet_ground_fringe(hh, s.wet_m) : 0.0);
   }
-  // (hh under the front: the ground is under the sheet.)
+  // (hh under the front: the ground is under the sheet.) Since W152 the sheet thins to nothing at
+  // its front (`water_sheet_surface`'s cover), so the ground under its last millimetres is as wet
+  // as the sheet is deep there and no more: each front was a step from the film the sheet before
+  // left to a whole one, drawn as a hard line — and where several sheets stand on the sand, as the
+  // owner's stacked sheets and, round a place the train reaches last, rings.
   if (front > hh && water_swash_on(s)) {
-    g.s = 1.0;
-    g.film = 1.0;
+    const float cover = s.surface != 0
+                            ? smoothstep(0.0, k_sheet_edge_m,
+                                         min(0.5 * (front - hh), 0.25 * w.run_up + 0.02))
+                            : 1.0;
+    g.s = max(g.s, cover);
+    g.film = max(g.film, cover);
   }
   if (water_swash_on(s)) g.foam = water_uprush_foam(s, w, p, hh, t, footprint, tier);
   // A lifted body's sheet, and the film it leaves as it drains, is that body's water (S102, second
-  // pass): the ground under it is drawn as the mesh's thin water is.
-  if (s.surface != 0 && water_swash_on(s)) g.sheet = g.film;
+  // pass): the ground under it is drawn as the mesh's thin water is. Since W152 that water is the
+  // sheet's own surface — thinning to nothing at its front, broken behind a bore, the grains'
+  // where it is thinner than they are — as `water_pixel` draws the mesh's water over the bank.
+  if (s.surface != 0 && water_swash_on(s)) {
+    g.sheet = g.film;
+    if (g.sheet > 0.0) {
+      const WaterWhiteSea sea = water_white_sea(s);
+      const float strength =
+          water_foam_strength(sea.height_m * min(w.jitter, 1.0), sea.period_s, w.slope);
+      const WaterSheetSurface sheet =
+          water_sheet_surface(w, p, hh, front, uprush, t, strength, footprint, g.film);
+
+      g.sheet_slope = sheet.slope;
+      g.sheet_smooth = sheet.smooth;
+      g.sheet_dropped = sheet.dropped;
+    }
+  }
   return g;
 }
 
