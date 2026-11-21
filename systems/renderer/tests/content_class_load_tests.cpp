@@ -1342,6 +1342,29 @@ TEST_CASE("content classes at load: a capture holds the box or nothing, on every
     CHECK(bytes_of(omitted.frame.depth) == bytes_of(alone.frame.depth));
     CHECK(bytes_of(omitted.frame.normals) == bytes_of(alone.frame.normals));
     CHECK(bytes_of(whole.frame.color) != bytes_of(alone.frame.color));
+    // The control is the shadow on the receiver itself: of the pixels the neutral grid covers in
+    // both shots (its instance, 0), some are darker with the classified grid over it, so the
+    // equalities above cannot hold only because the shadow fell outside the frame.
+    u32 receiver = 0;
+    u32 darker = 0;
+    for (u32 p = 0; p < k_shot_width * k_shot_height; ++p) {
+      if (whole.frame.ids[u64{p} * k_id_words] != 0u ||
+          alone.frame.ids[u64{p} * k_id_words] != 0u || whole.frame.depth[p] == 0.0f ||
+          alone.frame.depth[p] == 0.0f)
+        continue;
+      ++receiver;
+      u32 lit = 0;
+      u32 shaded = 0;
+      for (u32 c = 0; c < 3; ++c) {
+        lit += alone.frame.color[u64{p} * 4u + c];
+        shaded += whole.frame.color[u64{p} * 4u + c];
+      }
+      darker += shaded + 24u <= lit ? 1u : 0u;
+    }
+    MESSAGE("shadow mode " << static_cast<u32>(shadows) << ": " << darker << " of " << receiver
+                           << " receiver pixels darker under the caster");
+    CHECK(receiver > 1000u);
+    CHECK(darker > 100u);
     if (!omitted.reference.empty()) {
       CHECK(bytes_of(omitted.reference) == bytes_of(alone.reference));
       CHECK(bytes_of(whole.reference) != bytes_of(alone.reference));
