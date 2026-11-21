@@ -167,6 +167,23 @@ Every frame over 33 ms by its own record:
 - **The world's update is named**: over the 25 updates longer than 5 ms, 91.6 % of their time is in the named parts at the top (the ring, the drawn ground, the placements, the re-standing), and inside the placements their named parts cover the rest to within a millisecond.
 - **The world's own stalls are one frame here**, the growth's slot write at frame 1577; the rest of R195's list did not recur or was the thread off the CPU.
 
+**What was removed: the CPU table's growth on the growth's frame** ([renderer](../subsystems/renderer.md#the-tails-cpu-table-grows-into-room-made-ahead)). Frame 1577 is where the tail passes 468,000 slots, half again of the first fill's 312,000: the GPU's tables grow (T152's swapped relayout, 5 ms here) and so does the CPU's own instance table, by the container's half again — 67 MB made, 45 MB copied, every page faulted in, on the frame thread. `renderer::TableRoom` makes that block ahead, faulted in 1 MiB a frame from three quarters full, and the growth copies into it; the old block is freed a frame later. Nothing drawn can differ: the table's bytes and order are the container's own growth's. The relayout's chain resize, which R195's busier B-4k flight spent 47.7 ms of in the driver, is still made on the frame (T152's row).
+
+**The pair** (the walk, 4K, the owner's settings, `--wait-quiet 150` (which never found the machine quiet), the session locked throughout, alternating base and tip with ten minutes clear between; the base is this row's base, 29dfa76ea, built once and copied out; P2's tip is the room with the old block freed on the growth's frame, P4's the final tip):
+
+| flight | binary | others' CPU (start → end) | median | p95 | p99 | worst | > 33 | > 50 | > 100 | GPU median / p99 | growth frame: update / slot write ms |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|
+| P1 | base | 30 → 26 % | 18.36 | 21.95 | 22.87 | 32.3 | 0 | 0 | 0 | 18.13 / 22.35 | 30.8 / 24.5 |
+| P2 | tip (room) | 50 → 44 % | 18.19 | 21.93 | 22.86 | 29.4 | 0 | 0 | 0 | 17.96 / 22.31 | 27.4 / 20.3 |
+| P3 | base | 100 → 96 % | 18.37 | 23.92 | 48.09 | 93.8 | 58 | 21 | 0 | 17.94 / 22.40 | 35.7 / 29.7 |
+| P4 | tip (final) | 32 → 38 % | 18.12 | 21.87 | 22.80 | 33.7 | 1 | 0 | 0 | 17.81 / 22.23 | 20.2 / 15.2 |
+
+(05:36 to 06:03 for P3 and P4, P1 and P2 from 04:36; each flight 2,370 frames after the first 30.)
+
+- **The world's own frame: about a third off.** The growth frame's world update is 30.8 and 35.7 ms on the base, 27.4 with the room whose old block was freed on the frame, and 20.2 with the final tip; its slot write 24.5 and 29.7 against 20.3 and 15.2. The final tip's trace says where the rest is: the room was taken twice (at 312,464 slots, the first fill's growth, and at 471,128), the table's move into it is 11.4–11.7 ms — the copy of 45 MB into resident pages, element by element — and the resize stage 12.2 ms where P2's, which also freed the old block there, was 16.3.
+- **The walk's distribution is the machine's, not the change's.** Three of the four flights had no frame over 50 ms and their medians, p95s and p99s agree within 0.2 ms; P3, the base flown while the other processes held 96–100 % of the CPU, had 58 frames over 33 ms and 21 over 50, and its record (the base's, version 23) cannot say which were late wakes. The GPU's own medians agree to 0.3 ms on all four. So the pair shows what the change removes — a third of the one frame of the world's own — and nothing it adds; it cannot show a change in the count of long frames, which on this machine tonight is set by who else is running.
+- **What is left of the world's own**, largest first: the table's copy into the room (11.5 ms at 470,000 slots; done ahead it would need the table's changes since the copy tracked, or the table kept as pages a growth can extend in place), the relayout's chain resize (3.5 ms here, 47.7 ms in R195's B-4k with no thread CPU: the driver's allocation, T152's half still on the frame).
+
 ## What this does not cover
 
 - **A quiet machine.** Every flight ran beside other rows' builds and GPU cases; the CPU numbers and the frame thread's waits are upper bounds, and the slot waits past the GPU's frame are not split.

@@ -1,12 +1,13 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "W155",
-  "reason": "W155: the frame record's GPU clock, the world's update by who spent it and the thread's CPU per frame are new sections of the renderer's, apps', gfx' and world's pages, and the tail's slot write gains two startup-trace stages in gpu_scene.cpp",
+  "reason": "W155: the frame record's GPU clock, the world's update by who spent it, the thread's CPU per frame and the tail's CPU table grown into room made ahead are new sections of the renderer's, apps', gfx' and world's pages; gpu_scene.cpp gains the room's take and prepare and the slot write's startup-trace stages, gpu_scene.h the room's members",
   "date": "2026-11-21",
   "by": "Marc Micalizzi",
   "deltas": {
-    "renderer.gpu_scene_cpp.lines": 6,
-    "page:docs/subsystems/renderer.md": 2362,
+    "renderer.gpu_scene_cpp.lines": 25,
+    "renderer.gpu_scene_h.lines": 7,
+    "page:docs/subsystems/renderer.md": 4961,
     "page:docs/subsystems/apps.md": 2348,
     "page:docs/subsystems/gfx.md": 1198,
     "page:docs/subsystems/world.md": 833
