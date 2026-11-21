@@ -448,17 +448,25 @@ bool SceneCollision::create(physics::World& physics, const renderer::SceneData& 
     // **A drawn leaf is its door's box, never a static piece** (S91; docs: "Doors"): its instance
     // stands where the door does, and a door is made from the house's records.
     // And **what collides is what is drawn**: a house's declared leaves are doors only where the
-    // scene hung them (`hung_houses_`, `take_declared_doors`).
+    // scene hung them (`hung_houses_`, `take_declared_doors`), and each only where its own leaf
+    // was hung (`hung_leaves_`): a load that kept one leaf's instance and not its neighbour's makes
+    // the one door.
     Vector<u8> leaf_instance;
     hung_houses_.clear();
+    hung_leaves_.clear();
     if (!scene.leaves.empty()) {
       leaf_instance.resize(scene.instances.size(), u8{0});
       hung_houses_.resize(scene.instances.size(), u8{0});
+      hung_leaves_.reserve(static_cast<u32>(scene.leaves.size()));
     }
     for (const renderer::SceneLeaf& leaf : scene.leaves) {
       if (leaf.instance < leaf_instance.size()) leaf_instance[leaf.instance] = 1;
-      if (leaf.house < hung_houses_.size()) hung_houses_[leaf.house] = 1;
+      if (leaf.house < hung_houses_.size()) {
+        hung_houses_[leaf.house] = 1;
+        hung_leaves_.push_back(hung_leaf(leaf.house, leaf.leaf));
+      }
     }
+    std::sort(hung_leaves_.begin(), hung_leaves_.end());
     for (u32 i = 0; i < scene.instances.size(); ++i) {
       const gfx::InstanceDesc& instance = scene.instances[i];
       if (instance.mesh == scene.terrain_mesh || instance.mesh >= scene.parts.size()) continue;
@@ -2864,6 +2872,9 @@ u32 SceneCollision::door_to_reach(WorldPos feet, Vec3 facing, f32 reach) const n
   u32 best = k_no_index;
   f64 best_d2 = static_cast<f64>(reach) * static_cast<f64>(reach);
   for (u32 i = 0; i < doors_.size(); ++i) {
+    // A door that stands turns for no one, so an interact passes it by for one that turns behind
+    // it (`door_nearest`, a module's question, still finds it).
+    if (doors_[i].fixed) continue;
     const WorldPos middle = door_pose(doors_[i], doors_[i].angle_mdeg).position;
     const DVec3 to = middle - feet;
     if (to.y < -2.5 || to.y > 2.5) continue;
@@ -2912,10 +2923,15 @@ void SceneCollision::drop_door_body(HeldDoor& held) noexcept {
   held.shape = {};
 }
 
+bool SceneCollision::leaf_hung(u32 house, u32 leaf) const noexcept {
+  return std::binary_search(hung_leaves_.begin(), hung_leaves_.end(), hung_leaf(house, leaf));
+}
+
 // **A placed piece's declared leaves become doors** (docs: "Doors"): every held tile's pieces whose
 // proxy carries section 53's records, each record a door keyed by the piece's name and the leaf's
-// index, taken in when no door of that key is held. Collected, sorted and merged by key, so neither
-// the tiles' table order nor the order they came in reaches the doors. Runs on a ring change only.
+// index, taken in when no door of that key is held, and a held one told whether it stands.
+// Collected, sorted and merged by key, so neither the tiles' table order nor the order they came
+// in reaches the doors. Runs on a ring change only.
 void SceneCollision::take_declared_doors() {
   doors_found_.clear();
   for (u32 t = 0; t < tiles_.size(); ++t) {
@@ -2929,12 +2945,28 @@ void SceneCollision::take_declared_doors() {
       const WorldPos origin = tile_corner(tile.coord) + DVec3{record.offset};
       const u64 placement = support_placement(record.instance, record.entry, record.id,
                                               tile.coord.x, tile.coord.z, record.index);
+      const bool stands = record.leaves == k_leaves_stand;
       for (u32 k = 0; k < proxy->doors.size(); ++k) {
+        // A scene's house: a door where its own leaf was hung, not wherever one of its leaves was.
+        if (record.leaves == k_leaves_turn && !leaf_hung(record.instance, k)) continue;
         const u64 key = declared_door_key(placement, k);
-        if (find_door(key) != k_no_index) continue;
+        if (const u32 held = find_door(key); held != k_no_index) {
+          // **Whether it stands is the scene's, not a restore's**: a door held already (a restore,
+          // or the same door from another tile) takes `fixed` from the piece that declares it. One
+          // handed back turning that stands is made again as declared, where its leaf is drawn;
+          // one handed back standing that turns keeps its angle and turns from there.
+          DoorBody& door = doors_[held];
+          if (door.fixed == stands) continue;
+          if (stands) {
+            door = declared_door(proxy->doors[k], origin, record.rotation, proxy->door_scale, key);
+            drop_door_body(door_bodies_[held]);  // made again at its declared pose below
+          }
+          door.fixed = stands;
+          continue;
+        }
         doors_found_.push_back(
             declared_door(proxy->doors[k], origin, record.rotation, proxy->door_scale, key));
-        doors_found_.back().fixed = record.leaves == k_leaves_stand;
+        doors_found_.back().fixed = stands;
       }
     }
   }

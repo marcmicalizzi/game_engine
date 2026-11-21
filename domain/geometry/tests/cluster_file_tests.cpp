@@ -1325,6 +1325,66 @@ TEST_CASE("cluster file: a door whose size is not finite or past the ceiling is 
   CHECK(read.doors.size() == 1u);
 }
 
+// S91 (geometry.md, "Doors"): a host stands a door's hinge at the pivot placed by the mesh's
+// instance, so a pivot far outside the mesh is a door in another tile or past the world's grid;
+// and a host makes a body a record, so the count has a ceiling of its own. A pivot outside the
+// mesh's bounds grown by `k_door_max_size_m` is refused, as is a section of more than
+// `k_door_max_records`; one at the ceiling, and a pivot at the grown bounds' edge, read.
+TEST_CASE("cluster file: a door whose pivot is off its mesh, or one record too many, is refused") {
+  const test::TempDir tmp("engine_cluster_file");
+  ClusterFileData data;
+  Vector<u32> indices;
+  make_fixture(data, indices);
+  ClusterFileDoor door;
+  door.shut_x = 1.0f;
+  door.swing_z = 1.0f;
+  door.width_m = 0.9f;
+  door.height_m = 2.0f;
+  door.thickness_m = 0.05f;
+  door.flags = k_door_flag_door;
+  std::string error;
+  const auto reads = [&](const char* name) {
+    const std::string path = tmp.file(name);
+    REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
+    std::string bytes;
+    REQUIRE(io::read_file(path, bytes) == io::Status::Ok);
+    ClusterFileData back;
+    error.clear();
+    const bool ok = read_cluster_file_memory(view(bytes), back, &error);
+    if (!ok) CHECK(error.find("doors") != std::string::npos);
+    return ok;
+  };
+  const Vec3 far_pivots[] = {Vec3{1e7f, 0.0f, 0.0f}, Vec3{0.0f, -1e7f, 0.0f},
+                             Vec3{0.0f, 0.0f, 1e7f}};
+  for (const Vec3& pivot : far_pivots) {
+    CAPTURE(pivot.x);
+    CAPTURE(pivot.y);
+    CAPTURE(pivot.z);
+    ClusterFileDoor d = door;
+    d.pivot = pivot;
+    data.doors.clear();
+    data.doors.push_back(d);
+    CHECK_FALSE(reads("far.clusters"));
+  }
+  // Just inside the grown bounds, beyond the low side of the grid the reader takes the mesh's.
+  data.doors.clear();
+  REQUIRE(reads("plain.clusters"));
+  ClusterFileData plain;
+  REQUIRE_MESSAGE(read_cluster_file(tmp.file("plain.clusters"), plain, &error), error);
+  const Vec3 lo = plain.mesh.mesh.quant_origin;
+  ClusterFileDoor edge = door;
+  edge.pivot = Vec3{lo.x - (k_door_max_size_m - 0.5f), lo.y, lo.z};
+  data.doors.clear();
+  data.doors.push_back(edge);
+  CHECK(reads("edge.clusters"));
+  data.doors.clear();
+  for (u32 i = 0; i < k_door_max_records; ++i)
+    data.doors.push_back(door);
+  CHECK(reads("ceiling.clusters"));
+  data.doors.push_back(door);
+  CHECK_FALSE(reads("over.clusters"));
+}
+
 TEST_CASE("cluster file: the source identity reads back without decoding the mesh") {
   const test::TempDir tmp("engine_cluster_file");
   ClusterFileData data;

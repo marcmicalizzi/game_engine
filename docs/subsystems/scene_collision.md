@@ -462,12 +462,16 @@ the tile comes back.
 
 **The walker's interact and a module's door service** (ABI 13, 2026-11-18; [apps](apps.md#doors-a-module-answers-for)).
 engine-view's walker calls `step_doors(&body)` on every step after the ring's update and before the
-character moves, and before it its interact: `door_to_reach` finds the nearest door whose leaf's
+character moves, and before it its interact: `door_to_reach` finds the nearest door that turns
+(a door that stands, `DoorBody::fixed`, is passed by) whose leaf's
 middle stands within reach of the feet on the ground (1.5 m, and within 2.5 m up or down) and
 within 60 degrees of the way the walker faces (a comparison of products, no angle), the smaller
 key on a tie; a game module's `game_door` may refuse it, and a module's own `door_toggle` lands at
 the same point of the next step. `scene_collision: an interact reaches the door in front of the
-walker, none behind it` holds the choice.
+walker, none behind it` holds the choice, and `an interact passes a standing door by for a turning
+one behind it` the skip: until 2026-11-20 the interact took a standing door 1.0 m away over a
+turning one at 1.3 m and E did nothing. A module's `door_nearest` still finds the nearest hinge,
+standing or not.
 
 **Not built of S91**: a turned door's leaf on a streamed tile (below, "What is drawn swings with
 what collides": until it is, a streamed tile's door stands, roadmap S117), leaves hung where a
@@ -536,7 +540,8 @@ key below 2^63; never the order tiles came in. **The top bit is the host's to ke
 `set_doors` takes a key with it as a declared door handed back (a restore of `doors()`), counts it
 declared and lets it win over the declaration, so a host that named its own door with the top bit
 set could hide a building's; it cannot be refused there without refusing every restore. A key already held is not taken again, so **a
-restore wins** (a `set_doors` of the doors a save read back keeps their states, declared or not),
+restore wins** (a `set_doors` of the doors a save read back keeps their states, declared or not,
+except whether a declared one stands, below),
 and **a door outlives its tile**: let go, its body goes and its state stays and goes on turning;
 back, it is made where it stands. The doors found are sorted and merged by key, so the tiles'
 table order and the order they came in reach nothing. **What collides is what is drawn**
@@ -562,9 +567,27 @@ tile comes back, so the doors a streamed walk keeps are bounded by the ring; a d
 scene's, or a host's) still outlives its tile, its state the world's, bounded by the scene's
 leaves. Until then a toggle swung the box and left the drawn leaf where it was: a gap the picture
 showed shut, or a box across a doorway it showed open (`scene_collision: a streamed house's doors
-stand as drawn, and a toggle turns none`). The turn drawn on a streamed tile is roadmap S117. Nothing keys on a generator: an imported
-asset whose container declares section 53 gets the same doors, and a mesh that declares none
-costs the ring change one test of an empty list a piece. `scene_collision: a placed piece's
+stand as drawn, and a toggle turns none`). The turn drawn on a streamed tile is roadmap S117.
+**Whether a declared door stands is the scene's, not a restore's** (2026-11-20): at a ring change
+a held declared door takes `fixed` from the held piece that declares it, so one handed back
+turning where its piece stands it is made again as declared (its angle the record's, its body put
+there), and one handed back standing where its piece turns it turns again from the angle it was
+handed; until then a restore was trusted, and a save edited or taken before streamed doors stood
+turned a box its drawn leaf did not follow (`scene_collision: a streamed door restored as turning
+stands again as drawn`, `a scene's door restored as standing turns again once its piece is held`).
+**A door a leaf, not a house** (2026-11-20): a scene's house makes a door of a record only where
+the scene hung that record's own leaf (`SceneLeaf::leaf`, kept sorted by house and leaf), so a
+load that kept one leaf's instance and dropped its neighbour's makes the one door; until then any
+leaf hung made a door of every record (`scene_collision: a house's leaf the scene did not hang
+makes no door beside one it did`). **Today a door keys on a generator, short of the engine's
+rule**: a container's section 53 is read and kept whatever wrote it, the structure generator or
+an imported asset's writer, and a proxy carries its records; but it makes a door only where its
+leaf is hung, and a leaf is hung today only where the mesh's path names a generator answering
+`leaves`. So an imported asset whose container declares section 53 gets no door and an empty
+doorway. The engine's rule is that a feature keys on a property any asset can declare, never on
+what generated it; roadmap S116 closes this, hanging a leaf, and so making a door, from the
+container's own section 53 for any asset on every load path. A mesh that declares no leaf costs
+the ring change one test of an empty list a piece. `scene_collision: a placed piece's
 declared leaf is a door, kept while its tile is away` (0.54 s in `msvc-debug`) stands a wall mesh
 declaring one leaf and hands no door: the door is made, a wall shut and a way through open,
 toggled while its tile is away it closes there and comes back where it was left, still one door,

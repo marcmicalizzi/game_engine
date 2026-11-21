@@ -613,7 +613,9 @@ class SceneCollision {
   // stands in is held. **A placed piece whose mesh declares leaves** (section 53) adds a door a
   // leaf the first time a held tile holds it, keyed by its place (`declared_door_key`), at the
   // angle it was declared at, unless a door of that key is already held — so a restore wins, and
-  // a door keeps its state while its tile is away and comes back as it was left.
+  // a door keeps its state while its tile is away and comes back as it was left. Except in one
+  // thing: whether a held declared door stands (`DoorBody::fixed`) is its piece's, not the
+  // restore's, so one handed back turning where its piece stands it is made again as declared.
   void set_doors(std::span<const DoorBody> doors);
   // At the tick: the door heads for its other state. False for a key not held, and for a door that
   // stands (`DoorBody::fixed`, a streamed tile's).
@@ -629,12 +631,12 @@ class SceneCollision {
   bool door(u64 key, DoorBody& out) const noexcept;
   // Every door, in key order (what a host saves, draws a leaf for, or searches for an interact).
   std::span<const DoorBody> doors() const noexcept { return {doors_.data(), doors_.size()}; }
-  // **The door a walker's interact reaches** (docs: "Doors"): of the doors whose leaf's middle, at
-  // its angle now, is within `reach` metres of `feet` on the ground and less than 2.5 m above or
-  // below them, the nearest whose bearing from the feet is within 60 degrees of `facing` (on the
-  // ground; unit or not) — its index in `doors()`, the smaller key on a tie; `k_no_index` for
-  // none. And the door whose hinge is nearest `point` within `radius` (a module's
-  // `door_nearest`), the same way.
+  // **The door a walker's interact reaches** (docs: "Doors"): of the doors that turn (not
+  // `DoorBody::fixed`) whose leaf's middle, at its angle now, is within `reach` metres of `feet` on
+  // the ground and less than 2.5 m above or below them, the nearest whose bearing from the feet is
+  // within 60 degrees of `facing` (on the ground; unit or not) — its index in `doors()`, the
+  // smaller key on a tie; `k_no_index` for none. And the door whose hinge is nearest `point`
+  // within `radius` (a module's `door_nearest`), the same way, a door that stands included.
   u32 door_to_reach(WorldPos feet, Vec3 facing, f32 reach) const noexcept;
   u32 door_nearest(WorldPos point, f32 radius) const noexcept;
   const DoorStats& door_stats() const noexcept { return door_stats_; }
@@ -712,8 +714,15 @@ class SceneCollision {
   };
   static constexpr u8 k_leaves_turn = 1;
   static constexpr u8 k_leaves_stand = 2;
-  // Scene instances whose leaves the scene hung (`SceneData::leaves`' houses), by instance.
+  // Scene instances whose leaves the scene hung (`SceneData::leaves`' houses), by instance; and
+  // each leaf it hung, the house's instance and the leaf's index (`hung_leaf`), sorted, so a
+  // house's record is a door only where its own leaf was hung.
   Vector<u8> hung_houses_;
+  Vector<u64> hung_leaves_;
+  static constexpr u64 hung_leaf(u32 house, u32 leaf) noexcept {
+    return (u64{house} << 32) | u64{leaf};
+  }
+  bool leaf_hung(u32 house, u32 leaf) const noexcept;
   // The proxy of a mesh a tile handed, at a scale: resident by reference (`refs`: the held tiles
   // and the builds ahead that name it), gone with the last.
   struct TileProxy {

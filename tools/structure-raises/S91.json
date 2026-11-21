@@ -1,7 +1,7 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "S91",
-  "reason": "S91: g_walker cleared with its walker in both loops (a scope guard), a streamed tile's door refused and a ground-follow walker's doors Unsupported, said on their pages",
+  "reason": "S91: the doors' second mend says on the pages that a door keys on a generator today until S116, how a module tells a standing door from a session with none, and section 53's pivot and count bounds",
   "date": "2026-11-20",
   "by": "Marc Micalizzi",
   "deltas": {
@@ -10,8 +10,8 @@
     "engine_view.run_offscreen.lines": 2,
     "engine_view.if_engine_view": 3,
     "page:docs/subsystems/renderer.md": 913,
-    "page:docs/subsystems/apps.md": 3655,
-    "page:docs/subsystems/geometry.md": 3488,
-    "page:docs/subsystems/scene_collision.md": 33558
+    "page:docs/subsystems/apps.md": 4849,
+    "page:docs/subsystems/geometry.md": 5472,
+    "page:docs/subsystems/scene_collision.md": 35612
   }
 }

@@ -683,6 +683,60 @@ TEST_CASE("scene_collision: a streamed house's doors stand as drawn, and a toggl
   CHECK(physics.built_shape_count() == 0);
 }
 
+// **Whether a declared door turns is the scene's, not a restore's** (S91; scene_collision.md,
+// "Doors"): the streamed cot's doors handed back as turning and half open, as a save from before
+// they stood would hand them. Until 2026-11-20 a restore was trusted for `fixed`, so a toggle swung
+// each box and left its drawn leaf where it was; now the held tile's piece says they stand, and
+// they stand at their declared angles.
+TEST_CASE("scene_collision: a streamed door restored as turning stands again as drawn") {
+  (void)scene_gen::GeneratorRegistry::global().add(k_stair_house);
+  hand_cot();
+  renderer::SceneData scene;
+  scene.streamed.push_back(test_entry("test-stair-house"));
+  scene.tile_meshes = true;
+  scene.mesh_options.cache = false;
+  scene.terrain_mesh = ~0u;
+  scene.world.enabled = true;
+  scene.dynamic = true;
+  physics::World physics;
+  REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+  add_floor(physics);
+  {
+    std::string error;
+    SceneCollision collision;
+    REQUIRE_MESSAGE(collision.create(physics, scene, nullptr, Config{}, &error), error);
+    world::World world(ring());
+    world.add_consumer(collision.consumer());
+    world.update(at(k_house_x, k_house_z), 0, true);
+    (void)collision.step_doors(nullptr);
+    REQUIRE(collision.door_stats().doors == 5);
+    Vector<DoorBody> saved;
+    Vector<i32> declared;
+    for (const DoorBody& d : collision.doors()) {
+      declared.push_back(d.angle_mdeg);
+      DoorBody turned = d;
+      turned.fixed = false;
+      turned.open = true;
+      turned.angle_mdeg = d.open_mdeg / 2;
+      saved.push_back(turned);
+    }
+    collision.set_doors({saved.data(), saved.size()});
+    (void)collision.step_doors(nullptr);
+    REQUIRE(collision.door_stats().doors == 5);
+    CHECK(collision.door_stats().declared == 5);
+    for (u32 i = 0; i < collision.doors().size(); ++i) {
+      CAPTURE(i);
+      const DoorBody& d = collision.doors()[i];
+      CHECK(d.fixed);
+      CHECK(d.angle_mdeg == declared[i]);
+      CHECK_FALSE(collision.toggle_door(d.key));
+    }
+    CHECK(collision.door_stats().toggles == 0);
+    CHECK(collision.door_stats().bodies == 5);
+  }
+  CHECK(physics.built_shape_count() == 0);
+}
+
 // **A leaf is no placement of its kind** (S91; scene_collision.md, "What is drawn swings with what
 // collides"): the entry after the houses is handed the same footprints by the drawn tile, the query
 // tile, the collision's tile and the whole read — the house's disc and none for its leaves. Until

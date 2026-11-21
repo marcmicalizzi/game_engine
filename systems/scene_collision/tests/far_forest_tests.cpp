@@ -858,6 +858,14 @@ void wall_leaves(renderer::SceneData& scene, u32 leaves) {
 }
 void wall_no_leaves(renderer::SceneData& scene) { wall_leaves(scene, 0); }
 void wall_30_leaves(renderer::SceneData& scene) { wall_leaves(scene, 30); }
+// The doorway's house declaring a second leaf beside its first, the scene having hung the first
+// alone (a load that kept one leaf's instance and not the other's).
+void doorway_house_one_of_two(renderer::SceneData& scene) {
+  doorway_house(scene);
+  geometry::ClusterFileDoor second = doorway_leaf();
+  second.pivot = Vec3{3.0f, 0.0f, 24.0f};
+  scene.sources[0].doors.push_back(second);
+}
 
 }  // namespace
 
@@ -919,8 +927,8 @@ TEST_CASE(
 }
 
 // **What collides is what is drawn** (S91; scene_collision.md, "Doors"): the same wall declaring
-// the same leaf, but the scene hung no leaf for it — a mesh the scene fits, a `.clusters` file built
-// from a recipe, `engine-view --mesh` of a description, which draw an empty doorway. Until
+// the same leaf, but the scene hung no leaf for it — a mesh the scene fits, a `.clusters` file
+// built from a recipe, `engine-view --mesh` of a description, which draw an empty doorway. Until
 // 2026-11-20 the collision made the door anyway, an invisible box in the doorway that stopped the
 // walker and opened with E; now no door is made and the doorway stands open.
 TEST_CASE("scene_collision: a declared leaf the scene hung no instance for makes no door") {
@@ -929,6 +937,41 @@ TEST_CASE("scene_collision: a declared leaf the scene hung no instance for makes
   CHECK(rig.collision.door_stats().doors == 0);
   CHECK(rig.collision.door_stats().bodies == 0);
   CHECK(rig.walk(3.0f, Vec3{0.0f, 0.0f, 1.0f}) > 21.0f);
+}
+
+// **A door a leaf, not a house** (S91; scene_collision.md, "Doors"): a house declaring two leaves
+// of which the scene hung one. Until 2026-11-20 a house any of whose leaves was hung made a door of
+// every record, so the leaf not drawn had an invisible box in its doorway; now it makes none.
+TEST_CASE(
+    "scene_collision: a house's leaf the scene did not hang makes no door beside one it did") {
+  DoorRig rig(&doorway_house_one_of_two);
+  (void)rig.collision.step_doors(nullptr);
+  const u64 placement = support_placement(0, k_no_index, 0, 0, 0, 0);
+  DoorBody now;
+  CHECK(rig.collision.door(declared_door_key(placement, 0), now));
+  CHECK_FALSE(rig.collision.door(declared_door_key(placement, 1), now));
+  CHECK(rig.collision.door_stats().doors == 1);
+  CHECK(rig.collision.door_stats().declared == 1);
+}
+
+// **Whether a declared door turns is the scene's, not a restore's** (S91; scene_collision.md,
+// "Doors"): a scene's door handed back as standing turns again once its piece is held. Until
+// 2026-11-20 a restore was trusted for `fixed`, so that door stood for good.
+TEST_CASE(
+    "scene_collision: a scene's door restored as standing turns again once its piece is held") {
+  DoorRig rig(&doorway_house);
+  (void)rig.collision.step_doors(nullptr);
+  const u64 key = declared_door_key(support_placement(0, k_no_index, 0, 0, 0, 0), 0);
+  DoorBody now;
+  REQUIRE(rig.collision.door(key, now));
+  CHECK_FALSE(now.fixed);
+  now.fixed = true;
+  rig.collision.set_doors({&now, 1});
+  (void)rig.collision.step_doors(nullptr);
+  REQUIRE(rig.collision.door(key, now));
+  CHECK_FALSE(now.fixed);
+  CHECK(rig.collision.toggle_door(key));
+  CHECK(rig.collision.door_stats().doors == 1);
 }
 
 // A declared leaf stands where its piece stands it: the hinge and the turn follow the piece's
@@ -1351,6 +1394,32 @@ TEST_CASE("scene_collision: an interact reaches the door in front of the walker,
         1u);
   CHECK(rig.collision.door_nearest(place(Vec3{-0.45f, 0.0f, 22.0f}), 2.0f) == 1u);
   CHECK(rig.collision.door_nearest(place(Vec3{40.0f, 0.0f, 22.0f}), 2.0f) == k_no_index);
+}
+
+// **An interact reaches a door that turns** (S91; scene_collision.md, "Doors"): a door that stands
+// (a streamed tile's) 1.0 m in front of the walker and one that turns 1.3 m in front, both in
+// reach. Until 2026-11-20 the interact took the nearer, which turns for no one, so E did nothing;
+// now it passes the standing one by and the turning one toggles. A module's `door_nearest` still
+// finds the nearer hinge whatever it does.
+TEST_CASE("scene_collision: an interact passes a standing door by for a turning one behind it") {
+  DoorRig rig;
+  DoorBody standing = doorway();
+  standing.hinge = place(Vec3{-0.45f, 0.0f, 20.0f});
+  standing.fixed = true;
+  DoorBody turning = doorway();
+  turning.key = 4;
+  turning.hinge = place(Vec3{-0.45f, 0.0f, 20.3f});
+  const DoorBody doors[2] = {standing, turning};
+  rig.collision.set_doors({doors, 2});
+  const WorldPos feet = place(Vec3{0.0f, 0.0f, 19.0f});
+  const u32 reached = rig.collision.door_to_reach(feet, Vec3{0.0f, 0.0f, 1.0f}, 1.5f);
+  REQUIRE(reached != k_no_index);
+  CHECK(rig.collision.doors()[reached].key == 4u);
+  CHECK(rig.collision.toggle_door(rig.collision.doors()[reached].key));
+  CHECK_FALSE(rig.collision.toggle_door(3));
+  CHECK(rig.collision.door_nearest(place(Vec3{-0.45f, 0.0f, 19.5f}), 2.0f) == 0u);
+  // The standing one alone in reach: none.
+  CHECK(rig.collision.door_to_reach(feet, Vec3{0.0f, 0.0f, 1.0f}, 1.2f) == k_no_index);
 }
 TEST_CASE("scene_collision: a closed door stops a walker, an open one lets it through") {
   DoorRig rig;
