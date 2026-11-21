@@ -1,8 +1,8 @@
 // Content classes decided when a scene is loaded (C64; renderer.md, "Content classes at load";
 // docs/content-classes.md, "What decided at instantiation means"). CPU only, no device.
 //
-// The last case opens a device (the merge's GPU run, or a run by its name); every other one is CPU
-// only.
+// The capture cases open a device (the merge's GPU run, or a run by their names) and skip without
+// one; every other case is CPU only.
 //
 // Every fixture is neutral data of the test's own: a heightfield grid written as a container, a
 // 32 x 32 stripe image, and a made-up game category `fixture_glow` (`none`, `dim`, `bright`). The
