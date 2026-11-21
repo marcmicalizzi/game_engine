@@ -2380,7 +2380,10 @@ struct FrameWind @version(1) {
 /// Version 22 (R124): `gpu_ms` carries the static shape caches' rebuild, `deform_cache`.
 ///
 /// Version 23 (W151): `wind`, the live wind the frame drew (`FrameWind`), null while it is unset.
-struct FrameRecord @version(23) {
+///
+/// Version 24 (R194 leg 2): `history_pixels`, `history_taken`, `history_trusted`, `history_fresh`,
+/// `history_runs`, `history_whole`, what the accumulation could follow.
+struct FrameRecord @version(24) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0; an interactive session's frame, from 0.
@@ -2553,6 +2556,18 @@ struct FrameRecord @version(23) {
   /// Version 23 (W151): the live wind the frame drew and what its readers took from it; null while
   /// the live wind is unset (every frame of a session that never touched it).
   wind: FrameWind? = null @since(23)
+  /// Version 24 (R194 leg 2; docs/subsystems/renderer.md, "What a layout change costs the
+  /// accumulation"): with the accumulation on, this frame's pixels that had a history to read, those
+  /// that took one, those that took one with their own vectors trusted (their instance was not new
+  /// to its slot and the frame's tables could be followed), and those of instances new to their slot;
+  /// the slot runs the frame's tables wrote and whether nothing of last frame's could be followed
+  /// (`history_whole`). Zero without the accumulation.
+  history_pixels: u32 = 0 @since(24)
+  history_taken: u32 = 0 @since(24)
+  history_trusted: u32 = 0 @since(24)
+  history_fresh: u32 = 0 @since(24)
+  history_runs: u32 = 0 @since(24)
+  history_whole: bool = false @since(24)
 }
 
 /// What a flight's frame loop allocated on the frame's thread, over its recorded frames (every

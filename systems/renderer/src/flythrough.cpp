@@ -176,6 +176,12 @@ scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, 
   out.table_slots = stats.table_slots;
   out.table_pairs = stats.table_pairs;
   out.hole_pairs = stats.hole_pairs;
+  out.history_pixels = stats.history_pixels;
+  out.history_taken = stats.history_taken;
+  out.history_trusted = stats.history_trusted;
+  out.history_fresh = stats.history_fresh;
+  out.history_runs = stats.history_runs;
+  out.history_whole = stats.history_whole;
   out.cpu.wait = stats.cpu.wait_ms;
   out.cpu.begin = stats.cpu.begin_ms;
   out.cpu.tables = stats.cpu.tables_ms;

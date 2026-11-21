@@ -419,6 +419,11 @@ class GpuScene {
   // of another mesh, or a translation off the world grid.
   bool place_instances(std::span<const u32> indices, std::span<const SceneInstance> placements,
                        std::string* error = nullptr);
+  // **Instances new where they stand** (R194 leg 2): placed by a jump that has no path, such as the
+  // far forest's hand-off between a tile's corner and its parking place. The next frame's table
+  // update names them with the slots a change wrote (`TableUpdate::fresh`), so the motion pass and
+  // the accumulation treat them as new for that frame. Nothing is written.
+  void mark_instances_new(std::span<const u32> indices);
   // An instance's `gfx::InstanceDesc::flags` as the CPU's table holds them (0 past the table): what
   // a move must keep but for the uniform-scale bit (the tests).
   u32 instance_flags(u32 index) const noexcept {
@@ -478,6 +483,20 @@ class GpuScene {
     // and every deform record is at its index. What the motion pass and the accumulation ask before
     // they read last frame's names and inputs through this frame's tables.
     bool layout = false;
+    // **What a layout change touched** (R194 leg 2): the instance slots written since the last
+    // frame flipped (a tile's slots, a hole's, the slots past a tail that shrank), sorted and
+    // merged; a pair of last frame's that this frame's table puts in one of them is not the one it
+    // was, and every other slot keeps its instance, its pairs and its deform record. `whole` when
+    // that is not so (the pairs numbered again, a growth or a relayout: last frame's pairs or
+    // deform inputs are not this frame's anywhere) or the runs passed `k_fresh_capacity`, which the
+    // motion pass's per-slot table holds.
+    static constexpr u32 k_fresh_capacity = 1024;
+    struct SlotRun {
+      u32 begin = 0;
+      u32 end = 0;
+    };
+    Vector<SlotRun> fresh;
+    bool whole = false;
     u32 set = 0;
     gfx::BufferResource staging;     // the instances, then the expansion list (the scene owns it)
     u64 list_address = 0;            // the expansion list's device address
@@ -2199,6 +2218,10 @@ class GpuScene {
   u32 current_set_ = 0;                   // the set the last frame read
   bool tables_changed_ = false;           // a change since the last frame flipped
   bool layout_changed_ = false;           // of them, one that was not a record changed in place
+  // The slots those changes wrote, and whether one followed nothing (`TableUpdate::fresh`, R194).
+  Vector<TableUpdate::SlotRun> fresh_slots_;
+  bool fresh_whole_ = false;
+  void note_fresh(u32 begin, u32 end);
   Vector<gfx::BufferResource> table_staging_;  // per frame slot: host visible, kept
   // **A set made again is carried over on the GPU** (T167; renderer.md, "Instances that come and
   // go"): what the frame that flips to a new set copies it from — the set the last frame read, or

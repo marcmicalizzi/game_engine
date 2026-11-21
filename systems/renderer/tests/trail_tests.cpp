@@ -649,6 +649,47 @@ TEST_CASE("trails: an instance of the world's tail placed again every frame leav
   }
 }
 
+// **A tile that leaves** (R194 leg 2): a tail's box stands still under a still camera, then the
+// tail lets it go (a tile leaving the rings; where a far forest's stand-in or the ground comes in
+// its place). The ground it uncovers was as still as the box: last frame's motion there matches,
+// and only the names say the surface is gone, through the slot the change wrote. Held at the age it
+// left, 1 and 8 frames before the last.
+TEST_CASE("trails: a tile that leaves leaves none") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  ScopedTunable mode("renderer.reconstruction.accumulation", "on");
+  for (const u32 age : {1u, 8u}) {
+    CAPTURE(age);
+    const SceneInstance ground = placed(k_dark_sheet, Vec3{}, Vec3{12.0f, 1.0f, 12.0f});
+    Rig rig;
+    REQUIRE_MESSAGE(rig.build(gpu.device, std::span<const SceneInstance>(&ground, 1), true),
+                    rig.error);
+    const u32 leaves = k_frames - age;  // the first frame without it
+    const Trail t = fly(
+        rig,
+        [&](u32 k, FrameDesc& frame) {
+          frame = frame_at(k_eye, k_target);
+          if (k != 0 && k != leaves) return true;
+          const SceneInstance box =
+              placed(k_bright_box, Vec3{0.5f, 1.0f, 0.0f}, Vec3{1.5f, 1.0f, 1.5f});
+          return rig.renderer.set_dynamic_instances(
+              std::span<const SceneInstance>(&box, k == 0 ? 1u : 0u), &rig.error);
+        },
+        [](u32 id) { return id != 0u && id != k_no_id; });
+    const std::string what = "a tile's box that left " + std::to_string(age) + " frames ago";
+    report(what.c_str(), t);
+    REQUIRE_MESSAGE(t.ok, t.error);
+    const u32 i = age == 1 ? 0u : 3u;
+    CHECK(t.pixels[i] > 100);
+    // The fresh frame holds no box, so the contrast is the moved box's case's for this pair of
+    // meshes (145 codes): a kept history leaves 0.9^age of it.
+    CHECK(t.age[i] <= t.floor + 145.0 / 20.0);
+  }
+}
+
 // A walker: a skinned actor the host steps along 25 cm a frame while its upper half swings back and
 // forth through 35 degrees either way, in a scene read whole and in a streamed world's (where,
 // before R194, its every move marked the tables changed, and with them the bones' last frame
@@ -741,6 +782,225 @@ TEST_CASE("trails: a swaying tree leaves none against the sky") {
     CAPTURE(k_ages[i]);
     if (t.pixels[i] > 10) CHECK(t.age[i] <= t.floor + t.contrast / 20.0);
   }
+}
+
+// ---- what a layout change costs (R194 leg 2) ---------------------------------------------------
+//
+// The young palm in a streamed world's scene (the load's prefix), and a tail of one palm behind the
+// camera that the host places again on every frame, or once: a tile arriving and leaving where it
+// is not seen. Every frame of the first kind changes the tables' layout. On R194's first leg such a
+// frame held every pixel to its depth, and dropped the swaying tree's last-frame inputs, so the
+// crown in view took less history; now it holds only the slots the change wrote.
+
+struct PalmFlight {
+  Vector<Vector<u8>> color;  // every frame's picture
+  Vector<Vector<u32>> ids;   // and its first id word a pixel
+  std::string error;
+  bool ok = false;
+};
+
+bool palm_rig(const test::TempDir& tmp, const gfx::Device& device, Rig& rig) {
+  const std::string path = tmp.file("young.flora.json");
+  {
+    std::ofstream f(path, std::ios::binary);
+    f << R"({"species":"date_palm","palm":{"seed":4,"height_m":3.5,"frond_count":10,)"
+         R"("leaflet_count":12,"dead_skirt_fronds":3,"triangle_budget":9000}})";
+  }
+  SceneDesc desc;
+  desc.meshes.push_back(path);
+  desc.ddc = tmp.file("ddc");
+  desc.cache = true;
+  if (!load_scene(desc, rig.data, rig.error)) return false;
+  rig.data.dynamic = true;
+  return rig.finish(device);
+}
+
+// `frames` frames with the camera stepping `step` metres a frame sideways past the crown, the wind
+// at `wind`; `every` places the tail again on every frame (else on the first alone); `fresh` draws
+// every frame from a reset (one sample: the picture the accumulation is there to settle).
+PalmFlight fly_palm(Rig& rig, u32 frames, f32 step, f32 wind, bool every, bool fresh) {
+  PalmFlight out;
+  CaptureChannels channels;
+  channels.ids = true;
+  CapturedFrame shot;
+  FrameFlora flora;
+  flora.wind_set = true;
+  flora.wind_to = Vec2{-1.0f, 0.0f};
+  flora.wind_strength = wind;
+  for (u32 k = 0; k < frames; ++k) {
+    if (k == 0 || every) {
+      // Behind the camera (which looks down -z from z = 6), at one of two places.
+      SceneInstance tree;
+      tree.mesh = 0;
+      tree.transform.position = Vec3{-30.0f + 4.0f * static_cast<f32>(k % 2), 0.0f, 40.0f};
+      if (!rig.renderer.set_dynamic_instances(std::span<const SceneInstance>(&tree, 1),
+                                              &rig.error)) {
+        out.error = rig.error;
+        return out;
+      }
+    }
+    FrameDesc frame;
+    const f64 x = -0.2 + static_cast<f64>(step) * k;
+    frame.camera.position = WorldPos{x, 2.6, 6.0};
+    frame.camera.target = WorldPos{x, 2.6, 0.0};
+    frame.frame_index = 60 + k;
+    frame.world_time_s = 2.0 + 0.2 * static_cast<f64>(k);
+    frame.flora = flora;
+    frame.history_reset = k == 0 || fresh;
+    if (!rig.renderer.capture(frame, channels, shot, &rig.error)) {
+      out.error = rig.error;
+      return out;
+    }
+    out.color.push_back(shot.color);
+    Vector<u32> ids(k_pixels);
+    for (u32 p = 0; p < k_pixels; ++p)
+      ids[p] = shot.ids[p * k_id_words];
+    out.ids.push_back(std::move(ids));
+  }
+  out.ok = true;
+  return out;
+}
+
+// **Shimmer**: the mean over the crown's edge pixels (their 3x3 in the fresh flight's last frame
+// holds the palm and something else) of luma's standard deviation over frames `from` to the end,
+// in display codes. The crown is still (no wind) and the camera all but still, so what varies is
+// the offsets' aliasing, which a history settles and a refused one shows.
+f64 shimmer(const PalmFlight& flight, const PalmFlight& fresh, u32 from, u32& pixels) {
+  const Vector<u32>& ids = fresh.ids.back();
+  f64 sum = 0.0;
+  pixels = 0;
+  for (u32 p = 0; p < k_pixels; ++p) {
+    const u32 x = p % k_width;
+    const u32 y = p / k_width;
+    bool palm = false;
+    bool other = false;
+    for (u32 n = 0; n < 9; ++n) {
+      const i32 nx = static_cast<i32>(x) + static_cast<i32>(n % 3) - 1;
+      const i32 ny = static_cast<i32>(y) + static_cast<i32>(n / 3) - 1;
+      if (nx < 0 || ny < 0 || nx >= static_cast<i32>(k_width) || ny >= static_cast<i32>(k_height))
+        continue;
+      const u32 id = ids[static_cast<u32>(ny) * k_width + static_cast<u32>(nx)];
+      palm = palm || id == 0u;
+      other = other || id != 0u;
+    }
+    if (!palm || !other) continue;
+    f64 s = 0.0;
+    f64 s2 = 0.0;
+    const u32 n = static_cast<u32>(flight.color.size()) - from;
+    for (u32 k = from; k < flight.color.size(); ++k) {
+      const f64 l = luma(flight.color[k], p);
+      s += l;
+      s2 += l * l;
+    }
+    const f64 mean = s / n;
+    sum += std::sqrt(std::max(s2 / n - mean * mean, 0.0));
+    ++pixels;
+  }
+  return pixels > 0 ? sum / pixels : 0.0;
+}
+
+u32 frames_apart(const PalmFlight& a, const PalmFlight& b) {
+  u32 apart = 0;
+  for (u32 k = 0; k < a.color.size() && k < b.color.size(); ++k)
+    apart += std::memcmp(a.color[k].data(), b.color[k].data(), a.color[k].size()) != 0 ? 1u : 0u;
+  return apart;
+}
+
+f64 mean_apart(const Vector<u8>& a, const Vector<u8>& b) {
+  f64 sum = 0.0;
+  for (u32 p = 0; p < k_pixels; ++p)
+    sum += std::abs(luma(a, p) - luma(b, p));
+  return sum / k_pixels;
+}
+
+TEST_CASE("trails: a layout change elsewhere costs the picture nothing") {
+  const test::TempDir tmp("renderer_trail_layout");
+  REQUIRE(tmp.ok());
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  ScopedTunable mode("renderer.reconstruction.accumulation", "on");
+  constexpr u32 k_flight = 40;
+  // A swaying crown under a camera stepping 1 cm a frame: its vectors are the pool's second
+  // write's, which reads last frame's poses, and its edges keep their dilation and their names.
+  PalmFlight once;
+  PalmFlight every;
+  PalmFlight leg1;
+  {
+    Rig rig;
+    REQUIRE_MESSAGE(palm_rig(tmp, gpu.device, rig), rig.error);
+    REQUIRE(rig.resolved.deform_pass);
+    once = fly_palm(rig, k_flight, 0.01f, 1.5f, false, false);
+    REQUIRE_MESSAGE(once.ok, once.error);
+  }
+  {
+    Rig rig;
+    REQUIRE_MESSAGE(palm_rig(tmp, gpu.device, rig), rig.error);
+    every = fly_palm(rig, k_flight, 0.01f, 1.5f, true, false);
+    REQUIRE_MESSAGE(every.ok, every.error);
+  }
+  {
+    ScopedTunable follow("renderer.reconstruction.layout_follow", "false");
+    Rig rig;
+    REQUIRE_MESSAGE(palm_rig(tmp, gpu.device, rig), rig.error);
+    leg1 = fly_palm(rig, k_flight, 0.01f, 1.5f, true, false);
+    REQUIRE_MESSAGE(leg1.ok, leg1.error);
+  }
+  const u32 apart = frames_apart(once, every);
+  const u32 apart_leg1 = frames_apart(once, leg1);
+  const f64 codes_leg1 = mean_apart(once.color.back(), leg1.color.back());
+  MESSAGE("a swaying crown, the tail placed again every frame behind the camera: "
+          << apart << " of " << k_flight << " frames differ from the tail placed once ("
+          << apart_leg1 << " with every pixel held to its depth, as R194's first leg did, its last "
+          << "frame " << codes_leg1 << " codes a pixel apart)");
+  // Not a byte of the picture moves for a change the picture does not show...
+  CHECK(apart == 0u);
+  // ...where the first leg's rule moved it: the case can fail.
+  CHECK(apart_leg1 > k_flight / 2);
+}
+
+TEST_CASE("trails: a crown shimmers no more for a layout change elsewhere") {
+  const test::TempDir tmp("renderer_trail_shimmer");
+  REQUIRE(tmp.ok());
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  ScopedTunable mode("renderer.reconstruction.accumulation", "on");
+  constexpr u32 k_flight = 48;
+  constexpr u32 k_settled = 16;
+  // A still crown (no wind) and a camera stepping a millimetre a frame: walking, all but still.
+  const auto flight = [&](bool every, bool fresh, bool follow) {
+    ScopedTunable rule("renderer.reconstruction.layout_follow", follow ? "true" : "false");
+    Rig rig;
+    REQUIRE_MESSAGE(palm_rig(tmp, gpu.device, rig), rig.error);
+    PalmFlight f = fly_palm(rig, k_flight, 0.001f, 0.0f, every, fresh);
+    REQUIRE_MESSAGE(f.ok, f.error);
+    return f;
+  };
+  const PalmFlight raw = flight(false, true, true);
+  const PalmFlight quiet = flight(false, false, true);
+  const PalmFlight changing = flight(true, false, true);
+  const PalmFlight leg1 = flight(true, false, false);
+  u32 pixels = 0;
+  const f64 s_raw = shimmer(raw, raw, k_settled, pixels);
+  const f64 s_quiet = shimmer(quiet, raw, k_settled, pixels);
+  const f64 s_changing = shimmer(changing, raw, k_settled, pixels);
+  const f64 s_leg1 = shimmer(leg1, raw, k_settled, pixels);
+  MESSAGE("crown edge shimmer over "
+          << pixels << " px, luma sd over frames " << k_settled << " to " << k_flight - 1
+          << ": each frame fresh " << s_raw << ", accumulated with no layout change " << s_quiet
+          << ", with one every frame " << s_changing
+          << ", with one every frame under the first leg's rule " << s_leg1);
+  REQUIRE(pixels > 100);
+  // The accumulation settles the crown's edge, and a layout change it does not touch leaves it so.
+  CHECK(s_quiet < 0.5 * s_raw);
+  CHECK(s_changing == s_quiet);
+  // The first leg's rule gave some of it back: the measure can tell.
+  CHECK(s_leg1 > s_quiet);
 }
 #endif
 

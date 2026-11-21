@@ -579,7 +579,7 @@ Until then the decision rests on the structural argument above, which is the str
 rasterizer writes a velocity**: a pixel holds `depth << 32 | pair << 8 | triangle` and nothing
 else, the ray path has no fragment stage to add an output to, and the resolve by pixel class would
 otherwise write one from sixteen modules. So motion is one compute pass over the finished
-visibility buffer, one thread a pixel, behind one address (`gfx::MotionParams`, 416 bytes a view,
+visibility buffer, one thread a pixel, behind one address (`gfx::MotionParams`, 432 bytes a view,
 mirrored once in the shader and pinned in the size table with `gfx::MovedInstance`, 64 bytes).
 
 **What it writes**: a `u32` a pixel, two half floats, x in the low half: the pixels the pixel's

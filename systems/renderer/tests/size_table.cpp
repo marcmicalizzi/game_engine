@@ -20,4 +20,4 @@ ENGINE_EXPECT_SIZE(64, 8, renderer::AlphaCoverageParams);
 ENGINE_EXPECT_SIZE(20, 4, renderer::OverlayVertex);
 ENGINE_EXPECT_SIZE(32, 4, renderer::ExposureState);
 ENGINE_EXPECT_SIZE(96, 8, renderer::ExposureParams);
-ENGINE_EXPECT_SIZE(152, 8, renderer::AccumulateParams);
+ENGINE_EXPECT_SIZE(176, 8, renderer::AccumulateParams);

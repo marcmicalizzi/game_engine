@@ -1278,6 +1278,7 @@ bool SceneRenderer::create_motion(std::string* error) {
   options.motion_match = resolved_.accumulation_motion_match;
   options.filter = resolved_.accumulation_filter;
   options.reactive_weight = resolved_.accumulation_reactive_weight;
+  options.census = resolved_.accumulation_census;
   motion_->set_fade_turn(resolved_.accumulation_fade_turn);
   accumulation_ = new AccumulationPass;
   if (!motion_->keep_motion(*device_, views_, error) ||
@@ -2006,6 +2007,11 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
         scene_->place_instances(far_forest_.indices(), far_forest_.placements(), &why);
     stats_.tiles.place_ns += static_cast<f64>(time::monotonic_ns() - place_started);
     if (placed) {
+      // Each moved far instance jumped between its tile's corner and its parking place under the
+      // ground: new where it now stands, as a written slot's instance is (R194 leg 2), so the frame
+      // after holds it to its depth and a name of it from last frame to nothing. Not the moved
+      // table: a jump has no path to follow, and that table's membership is for good.
+      scene_->mark_instances_new(far_forest_.indices());
       far_forest_.commit();
     } else {
       ENGINE_LOG_WARN(log_renderer, "far forest hand-off refused", log::field("error", why));
@@ -2473,6 +2479,16 @@ void SceneRenderer::collect_slot(u32 slot) {
   }
   // The words the frame's resolve drew under (T70), from its own index as `record_frame` took
   // them: the tunables are measurement switches set before a run, never moved inside one.
+  // What the frame's accumulation took from its history (R194 leg 2; the record's `history_*`).
+  if (accumulation_ != nullptr) {
+    const AccumulationPass::Census census = accumulation_->census(slot);
+    last.history_pixels = census.pixels;
+    last.history_taken = census.taken;
+    last.history_trusted = census.trusted;
+    last.history_fresh = census.fresh;
+    last.history_runs = census.runs;
+    last.history_whole = census.whole;
+  }
   last.resolve_stop = resolve_stop_tunable(last.frame);
   last.sun_ray_rule = shadow_ray_rule(last.frame, resolved_.shadow_opaque_coverage).index;
   last.rt_cache_evicted = static_cast<u32>(stats_.rt.cache_evictions - rt_evictions_folded_);
@@ -4442,7 +4458,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     mf.flora = flora_table;
     // Not every table write: a frame whose only change was a move keeps last frame's names and
     // inputs readable (R194; GpuScene::TableUpdate::layout).
-    mf.tables_changed = write_tables && tables_.layout;
+    mf.tables_changed =
+        write_tables && tables_.layout && (tables_.whole || !resolved_.accumulation_layout_follow);
+    if (write_tables && !tables_.whole) mf.fresh = tables_.fresh;  // R194 leg 2
     motion_->prepare(mf, views_, scene);
   }
 

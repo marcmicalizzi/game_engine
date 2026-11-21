@@ -41,6 +41,8 @@ bool GpuScene::rt_relayout_fits() const noexcept {
 bool GpuScene::relayout(std::string* error, RelayoutRetired* retired) {
   if (!relayout_pending_) return true;
   ENGINE_STARTUP_STAGE("relayout");  // stages: a flight's growth frames named by their work (T167)
+  // Last frame's deform and pose tables may be the ones this replaces (R194: `TableUpdate::whole`).
+  fresh_whole_ = true;
   const bool chain = ray_tracing_ && (rt_layout_outgrown() || rt_relayout_failed_);
   if (retired != nullptr) {
     retired->must_wait = chain && !rt_relayout_fits();

@@ -261,6 +261,14 @@ struct FrameStats {
   // frame as set), from the frame's own index, so an analysis reads them instead of deriving them.
   u32 resolve_stop = 0;
   u32 sun_ray_rule = 0;
+  // What the accumulation took from its history this frame (R194 leg 2; `AccumulationPass::Census`,
+  // the record's `history_*`): zero without it.
+  u32 history_pixels = 0;
+  u32 history_taken = 0;
+  u32 history_trusted = 0;
+  u32 history_fresh = 0;
+  u32 history_runs = 0;
+  bool history_whole = false;
   // Every pass bucket, `gpu_<name>`, from the pass list above (T85). A frame past its capacity
   // without "ranges drop" takes the one-thread rule inside "ranges".
   ENGINE_RENDERER_PASS_BUCKETS(ENGINE_RENDERER_PASS_FIELD)
