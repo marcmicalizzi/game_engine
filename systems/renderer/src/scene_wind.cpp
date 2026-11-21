@@ -935,7 +935,14 @@ void GpuScene::still_lean_frame(const FrameFlora& frame, f64 sky_time_s,
     flora_stats_.still_writes += relean(still_walk_at_++) ? 1u : 0u;
     --budget;
   }
-  if (still_walk_at_ >= still_slots_.size()) still_walking_ = false;
+  if (still_walk_at_ >= still_slots_.size()) {
+    still_walking_ = false;
+    ENGINE_LOG_INFO(
+        log_renderer, "the still forms lean", log::field("strength", still_walk_strength_),
+        log::field("lean_most", flora_stats_.still_lean), log::field("slots", still_slots_.size()),
+        log::field("writes", flora_stats_.still_writes),
+        log::field("walks", flora_stats_.still_walks));
+  }
 }
 
 }  // namespace engine::renderer
