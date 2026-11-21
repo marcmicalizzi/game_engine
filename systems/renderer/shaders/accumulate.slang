@@ -80,7 +80,7 @@ struct AccumulateParams {
   // since the last frame. A pixel of one is held to its depth alone; a tap whose name this frame's
   // table puts in one names nothing. Read only where the names are (`k_accumulate_names`).
   uint64_t fresh;
-  uint64_t census;  // u32[8]: pixels with a history, taken, taken trusted, fresh; 0: none
+  uint64_t census;  // u32[8 + 4 * 64]: a header, then 64 buckets of four counts; 0: none
   uint fresh_count;
   uint pad;
 };
@@ -277,7 +277,7 @@ bool history_catmull_rom(AccumulateParams* p, int2 corner, int2 size, float2 bas
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void accumulate_main(uint3 id : SV_DispatchThreadID) {
+void accumulate_main(uint3 id : SV_DispatchThreadID, uint3 gid : SV_GroupID) {
   AccumulateParams* p = (AccumulateParams*)g_push.params;
   if (id.x >= p->width || id.y >= p->height) return;
   const int2 local = int2(id.xy);
@@ -469,9 +469,12 @@ void accumulate_main(uint3 id : SV_DispatchThreadID) {
     }
   }
   g_storage_images[p->output][at] = exposed(p, max(result, 0.0));
-  // **The census** (R194 leg 2; the frame record's `history_*`): one add a word a wave.
+  // **The census** (R194 leg 2; the frame record's `history_*`): one add a word a wave, into one of
+  // 64 buckets by workgroup (8 + 4 * bucket words in), which the CPU sums: four words alone took
+  // every wave's adds at 4K and cost the pass 2.5 ms on the forest staging.
   if (p->census != 0) {
-    uint* counts = (uint*)p->census;
+    const uint bucket = (gid.x + gid.y * 7u) & 63u;
+    uint* counts = (uint*)p->census + 8u + 4u * bucket;
     const uint had = WaveActiveCountBits(counted_had);
     const uint taken = WaveActiveCountBits(counted_taken);
     const uint trusted = WaveActiveCountBits(counted_taken && counted_trusted);

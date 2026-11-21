@@ -9,6 +9,9 @@ namespace engine::renderer {
 namespace {
 
 constexpr u32 k_workgroup = 8;  // accumulate.slang's
+// The census's words (accumulate.slang): a header of eight, then 64 buckets of four counters.
+constexpr u32 k_census_buckets = 64;
+constexpr u32 k_census_words = 8 + 4 * k_census_buckets;
 
 }  // namespace
 
@@ -38,15 +41,16 @@ bool AccumulationPass::create(const gfx::Device& device, GpuScene& scene, const 
       return false;
     }
   }
-  // The census (R194 leg 2): eight words a slot, cleared by the CPU before the slot's frame counts.
+  // The census (R194 leg 2): eight words of header and 64 buckets of four a slot, cleared by the CPU
+  // before the slot's frame counts.
   census_.resize(frames_in_flight);
   for (gfx::BufferResource& block : census_) {
-    if (!gfx::create_buffer(device, 8 * sizeof(u32),
+    if (!gfx::create_buffer(device, k_census_words * sizeof(u32),
                             gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress, true,
                             block, error)) {
       return false;
     }
-    std::memset(block.mapped, 0, 8 * sizeof(u32));
+    std::memset(block.mapped, 0, k_census_words * sizeof(u32));
   }
   return create_images(error);
 }
@@ -126,10 +130,13 @@ AccumulationPass::Census AccumulationPass::census(u32 slot) const noexcept {
   Census out;
   if (slot >= census_.size() || census_[slot].mapped == nullptr) return out;
   const auto* words = static_cast<const u32*>(census_[slot].mapped);
-  out.pixels = words[0];
-  out.taken = words[1];
-  out.trusted = words[2];
-  out.fresh = words[3];
+  for (u32 b = 0; b < k_census_buckets; ++b) {
+    const u32* bucket = words + 8 + 4 * b;
+    out.pixels += bucket[0];
+    out.taken += bucket[1];
+    out.trusted += bucket[2];
+    out.fresh += bucket[3];
+  }
   out.runs = words[4];
   out.whole = words[5] != 0;
   return out;
@@ -172,8 +179,7 @@ bool AccumulationPass::record(const FramePassContext& context, std::string* erro
   // only their instances lose their names and vectors. The census starts again for this slot, whose
   // last frame is complete and was read when its statistics were folded.
   auto* census = static_cast<u32*>(census_[slot].mapped);
-  for (u32 w = 0; w < 8; ++w)
-    census[w] = 0;
+  std::memset(census, 0, k_census_words * sizeof(u32));
   census[4] = motion_->fresh_count();
   census[5] = history && !options_.mean && !trusted ? 1u : 0u;
   for (u32 v = 0; v < view_count_; ++v) {

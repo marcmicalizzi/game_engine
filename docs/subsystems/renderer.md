@@ -7810,7 +7810,7 @@ every change that wrote slots and moved no pair, which is the change a walk make
 numbering is a few shift runs over slots (`change_shifts_`), so following it is a map sized by the
 change too: last frame's pair ranges per shift run and their offset, which the accumulation would
 search like the fresh runs. Not built: it is rarer than the frames it would give back
-(STAGING_WHOLE), and it is a row of its own if the census says otherwise. **A tail's prop placed
+(2 frames of the staging's walk of 2,401, a growth and a compaction's, against 1,870 that wrote slots), and it is a row of its own if the census says otherwise. **A tail's prop placed
 again every frame** has no identity across two tails (the same slot may hold another instance of
 its mesh, from another tile), so it is not followed: its slot is fresh and it is held to its depth,
 as the first leg measured ("an instance of the world's tail placed again every frame").
@@ -7831,12 +7831,36 @@ session, which is where a distant crown line shimmers.
 `history_trusted`, `history_fresh`, `history_runs`, `history_whole`, `FrameRecord` version 23):
 per frame, counted by wave in the accumulation pass, the pixels with a history to read, those that
 took one, those that took one with their own vectors trusted, and those of instances new to their
-slot. STAGING_TABLE
+slot.
+
+On the forest staging's grounded walk (2,401 frames at 3840 × 2160, `--raster rt --shadows rt`,
+the bounce, micromaps, 2026-11-21 02:04 to 02:07, `msvc-release`): the tables wrote slots on
+1,870 frames (a median of 2 runs, at most 8), and on those frames **a median of 97.07 % of the
+pixels took a history with their vectors trusted** (5 % of frames under 93.0 %, the least 60.4 %),
+against 97.12 % on the 528 frames that wrote none; under the first leg's rule every one of the
+1,870 frames trusted no pixel at all. The pixels of instances new to their slots were a median of
+0 % of a frame and at most 2.1 % (a tile arriving near the eye). Two frames fell to the whole frame
+(a growth and a compaction's numbering). The far forest has 4,754 tiles: more than the moved table
+holds.
+
+**A census is counted where it does not contend.** The first count added each wave's four totals
+to four words, a million adds to the same four addresses at 4K, and the frame passes took 3.93 ms
+at the median where the first leg's took 1.36 (the same walk, flown an hour apart): the adds go to
+one of 64 buckets by workgroup now (`accumulate.slang`), which the CPU sums.
 
 **Shimmer on a crown** (`trail_tests.cpp`, "a crown shimmers no more for a layout change elsewhere"):
 the young palm with no wind, a camera stepping a millimetre a frame, a tail of one palm behind the
 camera placed again every frame or once; the mean over the crown's edge pixels of luma's standard
 deviation over frames 16 to 47. Each frame drawn fresh: **17.4** codes over 3,712 pixels; accumulated with the tail placed once: **6.50**; with it placed again every frame: **6.50**, the same to the last digit (the frames are the same bytes); with it placed again every frame under the first leg's rule: **25.5**, worse than no accumulation at all, because an edge pixel held to its depth takes its history on the frames its tap shows the leaf and refuses it on those it shows the sky, so the blend jumps between a long history and one frame (`msvc-debug`, the RTX 5090 and the titanxp profile alike).
+
+**Not done.** A tile that leaves leaves a faint outline where its antialiased edge was: an edge
+pixel whose last frame showed the ground keeps a history that holds some of the tile's colour from
+the frames before, and a still pixel is not clipped (the case's figures: the 744 pixels the box
+covered are at the floor, 0.007 codes, and 41 pixels of its edge are 94.8 codes from the fresh
+frame a frame later), as on main and on the first leg. Clipping every pixel whose last 3 × 3 held a
+name that left would end it, at a read of last frame's 3 × 3; a row of its own. The far forest's
+case ("the hand-off leaves no trail of a stand-in under the accumulation", `far_forest_tests.cpp`)
+holds the hand-off the same way.
 
 **What it costs.** COST2_LINE
 

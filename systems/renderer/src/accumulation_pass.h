@@ -68,7 +68,8 @@ struct AccumulateParams {
   // this frame's table puts in one names nothing. 0 / 0: none, every name and vector of the frame
   // stands unless the frame is not `k_accumulate_trusted`.
   u64 fresh = 0;
-  // u32[8]: this frame's census (`AccumulationPass::Census`), counted by wave; 0: none.
+  // u32[8 + 4 * 64]: this frame's census (`AccumulationPass::Census`): a header, then 64 buckets of
+  // four counters added by wave; 0: none.
   u64 census = 0;
   u32 fresh_count = 0;
   u32 pad = 0;
