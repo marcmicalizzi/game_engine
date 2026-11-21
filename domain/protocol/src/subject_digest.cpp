@@ -676,8 +676,10 @@ void finish_subject(SubjectPlan& plan, SubjectState& out) {
     line.push_back(JsonValue(u.limit));
     line.push_back(JsonValue(u.figure));
     add_line(h, line);
-    // Read, but not in full: what it names is unseen, which a reader is told.
+    // Read, but not in full: what it names is unseen, which a reader is told, and this host cannot
+    // compare a subject it could not follow (a raise over it is refused already).
     out.unreadable.push_back(u.gltf);
+    out.not_comparable.push_back(u.gltf);
   }
   out.comparable = out.not_comparable.empty();
   // 6. Each bound passed, by its name: a subject digested past one is never equal to one that was

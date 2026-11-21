@@ -1690,7 +1690,20 @@ TEST_CASE("ledger: a glTF whose names cannot be followed says so, and no raise i
   const JsonValue now = opened_detail(h, item);
   REQUIRE(at(now, "unreadable").size() == 1);
   CHECK(at(now, "unreadable")[0].as_string() == "props/deep.gltf");
+  // After a raise, the same: what it names is unseen here, so the detail cannot compare, and a
+  // close carrying even this detail's own digest is refused for it, never accepted over the
+  // buffer it never read.
+  CHECK_FALSE(at(now, "comparable").as_bool());
+  REQUIRE(at(now, "not_comparable").size() == 1);
+  CHECK(at(now, "not_comparable")[0].as_string() == "props/deep.gltf");
   JsonValue error;
+  CHECK(h.fails("review.close",
+                obj({{"review", item},
+                     {"resolution", JsonValue("Accepted")},
+                     {"digest", at(now, "digest")},
+                     {"attribution", who("reviewer")}}),
+                &error) == codes::k_invalid_argument);
+  CHECK(reason_of(error) == "subject not readable here");
   CHECK(h.fails("review.raise", w.raise_params("Agent"), &error) == codes::k_invalid_argument);
   CHECK(reason_of(error) == "names not read");
   CHECK(at(at(error, "data"), "entries")[0].as_string() == "props/deep.gltf");
