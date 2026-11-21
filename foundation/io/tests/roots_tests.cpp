@@ -803,8 +803,12 @@ TEST_CASE("open_regular_unmoved refuses a file the admitted path no longer leads
   }
   CHECK(file.open_regular(admitted) == Status::Ok);  // a plain open follows the link
   file.close();
-  CHECK(file.open_regular_unmoved(admitted) == Status::InvalidPath);
+  // What a missing file answers, whether something is at the link's end or not: at the admitted
+  // place there is no file, and a client is never told whether one outside the roots exists.
+  CHECK(file.open_regular_unmoved(admitted) == Status::NotFound);
   CHECK_FALSE(file.valid());
+  std::filesystem::remove(fs_path(away + "/x.bin"));
+  CHECK(file.open_regular_unmoved(admitted) == Status::NotFound);
 }
 
 // A URI one file names another by (a glTF's buffers and images; docs/subsystems/io.md, "Roots"):

@@ -764,9 +764,17 @@ Status FileHandle::open_regular_unmoved(std::string_view admitted_path) {
     known = true;
   }
 #endif
-  if (!known || !path_is_under(now, admitted_path) || !path_is_under(admitted_path, now)) {
+  // Unconfirmed (no `/proc`, a name the system would not give): this host cannot say what it
+  // opened, so it reads nothing (`InvalidPath`). Confirmed elsewhere: what a missing file answers,
+  // since at the admitted place there is no file, and a caller is never told whether one exists
+  // where the link leads (`NotFound`).
+  if (!known) {
     close();
     return Status::InvalidPath;
+  }
+  if (!path_is_under(now, admitted_path) || !path_is_under(admitted_path, now)) {
+    close();
+    return Status::NotFound;
   }
   return Status::Ok;
 }

@@ -221,8 +221,10 @@ class FileHandle {
   // `open_regular` of a path `Roots::admit` answered (canonical, forward slashes), then the opened
   // handle held to it: what the system says the handle is (`GetFinalPathNameByHandleW` on
   // Windows, the link under `/proc/self/fd` on Linux) must be that path, or the handle is closed
-  // and `InvalidPath` answered. Between an admission and the open a component of the path can be
-  // replaced by a link to anywhere; a file reached that way is never read.
+  // and `NotFound` answered, what a missing file answers: at the admitted place there is no file,
+  // and the caller is never told whether one exists where a link leads. Between an admission and
+  // the open a component of the path can be replaced by a link to anywhere; a file reached that
+  // way is never read. `InvalidPath` when the system cannot say what the handle is (no `/proc`).
   Status open_regular_unmoved(std::string_view admitted_path);
   void close() noexcept;
   bool unbuffered() const noexcept { return unbuffered_; }
