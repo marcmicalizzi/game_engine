@@ -147,7 +147,13 @@ that moved are in the roadmap's R202 row and its commits.
 
 ## Not done
 
-A deformed instance's own tangent (R203): a skinned or morphed instance draws the derived frame from
-its deformed positions, which follows the skin and agrees with the author's to the facet, but no
-deformed tangent is carried. The imported stream in the mesh room and the paged path (R204): a tile's
+A deformed instance's own tangent (R203): a skinned or morphed instance draws the derived frame,
+whose tangent and bitangent come from this frame's deformed positions, and no deformed tangent is
+carried. The normal that frame is made orthogonal to is the deformed one only in a scene that has a
+normal pool (morph channels, terrain levels or flora); in any other scene, a skinned glTF alone for
+one, the deform pass writes no normals and the frame is made orthogonal to the rest normal, so on a
+bent joint it leans or fails and the map goes off there. R203 is where that is mended. The case
+`material resolve: a deformed instance's tangent frame follows its deformed surface` (1 code of 255
+bent and twisted 90 degrees) hands the resolve a normal pool of its own, so it covers the scenes
+that have one and not the skinned-only scene. The imported stream in the mesh room and the paged path (R204): a tile's
 mesh and a streamed scene draw the derived frame, which agrees with the author's to the facet.
