@@ -2881,8 +2881,10 @@ struct ReviewsResult @version(4) @additive(3, 4) {
   /// The ledger's revision this answer was read at, or written as.
   ledger_revision: u64 = 0 @since(3)
   /// The subject of `reviews[0]` now: from `review.raise` (the stamp), from `review.list` with
-  /// `digest`, and from `review.close` (what the close was decided at). Empty otherwise.
-  subject: SubjectState @since(4)
+  /// `digest`, and from `review.close` carrying a digest (what the close was decided at). Null
+  /// when nothing was compared — a list's rows, a close that sent no digest (an agent's, a
+  /// withdrawal) — so no answer that compared nothing carries a `comparable` to misread.
+  subject: SubjectState? @since(4)
 }
 
 // ---- describe (plan 06 §6.6; protocol.md, "Describing an object, a tile or a region") ---------

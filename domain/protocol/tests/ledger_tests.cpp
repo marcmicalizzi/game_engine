@@ -1182,7 +1182,11 @@ TEST_CASE("ledger: a raise stamps the subject's digest, and another host's detai
   JsonValue error;
   CHECK(h.fails("review.list", obj({{"digest", JsonValue(true)}}), &error) ==
         codes::k_invalid_argument);
-  CHECK(at(at(h.ok("review.list"), "subject"), "digest").as_string().empty());
+  {
+    const JsonValue rows = h.ok("review.list");
+    const JsonValue* subject = rows.find("subject");
+    CHECK((subject == nullptr || subject->is_null()));  // nothing compared, nothing stated
+  }
 
   // Another host on the same directory loads the same files and computes the same digest: journal
   // numbers are one process's history, content is not.
@@ -1955,12 +1959,20 @@ TEST_CASE("ledger: a close that compares nothing decides without reading the sub
     return resp;
   };
   JsonValue resp;
+  // Its answer carries no subject statement at all, so nothing in it reads as "could not
+  // compare" (a statement's `comparable` false): nothing was compared.
+  const auto states_no_subject = [](const JsonValue& result) {
+    const JsonValue* subject = result.find("subject");
+    return subject == nullptr || subject->is_null();
+  };
   const Reads a = reads_of(h, [&] { resp = close_under_lock(accepted, "Accepted", "reviewer"); });
   REQUIRE_MESSAGE(resp.find("result") != nullptr, write_json(resp));
   CHECK(a.opens == 0);
+  CHECK(states_no_subject(at(resp, "result")));
   const Reads b = reads_of(h, [&] { resp = close_under_lock(withdrawn, "Withdrawn", "checker"); });
   REQUIRE_MESSAGE(resp.find("result") != nullptr, write_json(resp));
   CHECK(b.opens == 0);
+  CHECK(states_no_subject(at(resp, "result")));
   CHECK(seam.edits == 0);
   h.sessions.set_digest_read_hook_for_test(nullptr, nullptr);
 }

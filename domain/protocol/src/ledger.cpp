@@ -1089,8 +1089,8 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
     return false;
   out.now_unix_ms = now;
   out.reviews.push_back(std::move(made));
+  stamped.same = true;
   out.subject = std::move(stamped);
-  out.subject.same = true;
   // The item and the task it was raised for are both this call's change, told by its one event.
   s->publish_ledger("review_raised", 0, out.reviews[0].id, caller.who.actor, caller.connection,
                     params.task);
@@ -1274,7 +1274,9 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
   seen_now.same = seen_now.comparable && seen_now.digest == changed.raised_digest;
   out.reviews.push_back(std::move(changed));
   answer_assets(out.reviews);
-  out.subject = std::move(seen_now);
+  // A close that compared nothing states no subject (protocol.md, "The close carries what the
+  // page showed").
+  if (!params.digest.empty()) out.subject = std::move(seen_now);
   s->publish_ledger("review_closed", 0, params.review, caller.who.actor, caller.connection);
   return true;
 }
@@ -1365,10 +1367,12 @@ bool review_list(Context& ctx, const ReviewListParams& params, ReviewsResult& ou
         },
         e);
   };
-  if (!digest_passes(ctx, params.session, DigestFor::detail, first, decide, out.subject, s, error))
+  SubjectState stated;
+  if (!digest_passes(ctx, params.session, DigestFor::detail, first, decide, stated, s, error))
     return false;
   // A host that cannot see a file cannot say the subject is as it was: it says so (`comparable`).
-  out.subject.same = out.subject.comparable && out.subject.digest == out.reviews[0].raised_digest;
+  stated.same = stated.comparable && stated.digest == out.reviews[0].raised_digest;
+  out.subject = std::move(stated);
   answer_assets(out.reviews);
   return true;
 }
