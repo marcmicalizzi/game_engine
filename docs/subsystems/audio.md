@@ -345,6 +345,136 @@ What they say:
 
 **Eviction costs the audio thread nothing**, because it asks nothing of it: the holds are counted where plays are pushed and events drained. Measured the same day with the streaming build's executable and eviction's back to back (others at 1.7–9.1% of the CPU, the GPU lock free): `audio.mix.3d` at 1 to 256 voices, `_51`, `_limited` and `_limiter_idle` within 0.1% of each other (`_turning` and `_distinct` moved within their own run-to-run spread, 8–11% and 1–3% that day), and `audio_system.tick` — the tick that plays, stops and drains, now retaining and releasing — at 30.7 and 174.9 µs moving, 25.1 and 168.0 µs still, for 1,000 and 10,000 emitters, inside the ranges [audio_system](audio_system.md) measured before it (30.5–32.0 and 170–193, 24.3–27.2 and 162–180).
 
+## Sound for the world: the design (S110)
+
+Roadmap S110 (2026-11-20). **Designed; stage 1 (S111) is built** (2026-11-21: the scene's `sound` block, the `world_sound` capability's `SoundStage`, engine-view's `--audio` and `--audio-out`, the three calls real; [world_sound](world_sound.md)); **stages 2 to 4 are not.** Where S111 built something smaller than this section says, it is marked "S111:" in place. The published models and their numbers are [the grounding page](../experiments/world-sound.md); the decisions that would surprise are [ADR-0079](../adr/0079-world-sound-is-synthesised-from-world-state.md) (proposed); the stages are roadmap rows S111 to S114. It takes up the direction note on wind as sound ([05 §5.11](../plan/05-simulation.md#511-integration-notes)) and the audio half of P43.
+
+**What exists when this is written.** The mixer above plays clips. No host opens a device for a game: `apps/engine_view` does not link this capability, and its game runner answers `sound_clip` with `Unsupported` and leaves `sound_play` and `sound_stop` null. The scene type the hot-load header's comment names (`engine.scene.Sound`) is not in `schemas/scene.schema`. engine-host carries `audio.devices` and nothing else.
+
+### Two kinds of source
+
+- **Synthesised from the world's state**: the wind at the listener's ears, the wind in the crowns, a stream's stretches, a fall, a stretch of surf, a lake's lap. Each is continuous, is everywhere, and is a function of state the picture already reads (the scene's wind and its gusts, the trees standing near, the flow solve, the sea), so a recording would loop and would disagree with what is seen: the gust that bends a crown must be the gust heard, and a wave must sound when it breaks. The grounding gives each a level in closed form and a spectrum's shape.
+- **Clips**: whatever is discrete and has an identity a game owns: a bird's call, a door, a voice, music. A game declares them with its scene and plays them through the game service.
+
+The engine ships no recorded ambience, and none of its scenes uses a clip where a synthesised source exists.
+
+### The shaped-noise voice
+
+One new kind of voice in this module's mixer, used by nothing until a command asks for it (a voice's kind is tested once a voice a block, as its stream flag is):
+
+- a seeded integer generator, white, with no call into the C library;
+- **a fixed bank of eight octave band-pass filters, 63 Hz to 8 kHz**, their coefficients literals in the source, and **one movable band** (a conifer's needle tone, whose centre follows the wind) whose coefficients the controlling thread computes with this module's fixed polynomials and sends;
+- nine gains as the voice's parameters, moved by a fixed-time ramp of their own (`audio.field_ramp_ms`, 50: three ticks, since a field is re-described every tick and a 10 ms ramp would stair-step it);
+- from S113, up to four damped resonators a voice struck by impulses a command schedules: a trickle's separate bubbles.
+
+Its parameters are one command of the size a `SetSource` is. The output goes through the same source model and decode stage as a clip's, so it is an object with a position like any other. The determinism claim above holds for it for the same reasons (integer state, `+ − × ÷` in `f32`, literal coefficients) and its bytes are pinned beside the session's. **Why a voice kind and not band-limited noise clips played by the existing voices**: a source with a spectrum would then be eight voices, and the 27 sources below 216 of a pool of 64.
+
+### The capability: `systems/world_sound`
+
+`ENGINE_WITH_WORLD_SOUND`, `engine_capability_requires(world_sound audio)`, off in the minimal build. It owns a **`SoundStage`**: the clip store, the mixer, the output or the null backend, the listener, a game's clips and voices, and the fields that turn the world into shaped-noise voices. A host has one object to create, hand a listener and tick; the rendering rule's counterpart holds, **sound code lives in the module, not in an app**.
+
+**The wind that drives it is the frame's, the one every reader is given**: the scene's wind, or the live state a host's keys or a game set while the session runs (`gfx::WindLive`, handed to every reader as `FrameDesc::wind`; roadmap W151, built the night this was designed and not on this row's base). The host hands the stage the same value each tick; the stage takes the mean and the forced gust from it and lays the turbulence at each source's place over it with `wind_gust`. A game changes the wind through the wind's own service (`wind_set`, `wind_gust`) and the sound follows; no sound call sets a wind, and the stage holds none of its own.
+
+It links `gfx` for the wind's header (`WindLive`, `wind_at`, `wind_gust`, `sea_state`: the model is not a capability; S111: not yet, since nothing at stage 1 reads a wind) and **no capability but `audio`**. Trees and water reach it through **source tables a host fills**, a function pointer and a context each, as scene generators and derived steps are tables:
+
+| Table | What it visits | Filled from |
+|---|---|---|
+| `CanopySource` | crowns in a box: position, height, **leaf area**, **class** (blade, needle with its width, bare) | the scene's instances and the active placement tiles |
+| `FlowSource` | a stream's stretches: two ends, discharge, drop, wet width, regime; falls with their height and what they land on | the solved channel description and the plunge records |
+| `SurfSource` | stretches of shore: position, the power dissipated in breaking, the surf similarity, the train's phase | each body's sea state, flux field and arrival field |
+
+**The engine stays general purpose.** A crown's leaf area is measured from any mesh, as the area of its two-sided foliage parts; its class is a property a mesh entry declares (`blade` when it says nothing), which the flora recipes fill and an imported tree may write by hand. Nothing keys on which generator made a tree. A scene with no trees, no water and no wind sounds nothing and costs nothing; with a wind alone it is the ears' two voices.
+
+### How many sound at once
+
+| Source | Voices | Chosen by |
+|---|---|---|
+| the ears' wind | 2 | always, above 0.5 m/s of relative wind |
+| crowns | 6 | level at the listener |
+| stream stretches | 4 | level; placed at the nearest point of the line, spread by the angle it subtends |
+| falls | 4 | level |
+| surf stretches | 3 | level |
+| **beds** | 8, one a 45° sector of azimuth | everything else |
+| | **27** of `audio.voices` (64) | each count a tunable under `audio.world.*` |
+
+**Far sources merge by power.** Sources that are not coherent add in power band by band, so everything not chosen as a voice of its own, of every kind, is summed into its sector's bed: eight band powers, placed at the power-weighted direction with a spread. A source enters or leaves the chosen set across a 3 dB band of hysteresis, and as its own voice ramps up its share leaves the bed, so the power heard does not step. A tile past `audio.world.near_m` (96) contributes one aggregate made when it activates (leaf area by class at its centroid); nearer tiles are walked by instance. Nothing past `audio.world.reach_m` (2000) is summed. **That is the capability's LOD policy**: voices by level at the listener, beds by sector, aggregates by tile.
+
+The chosen voices are re-described every tick (a gust is tick-fast); the choice and the beds at `audio.world.refresh_hz` (8) on the job system's Efficiency pool, taken at the next tick from fixed arrays, so the frame loop allocates nothing. World voices are loops at priorities under a game's default, individual voices lowest, then beds, then the ears' wind: a game's one-shot takes a crown before it takes a bed.
+
+### Distance
+
+A world voice uses the `None` distance model and carries its path in its band gains: spreading (a line near, a point far), **air absorption by band** at a humidity (`audio.world.humidity`, 70; the sky's when it has one), **Hoover's forest term** over the length of path under canopy, **ISO 9613-2's ground term** from the two heights and the ground's kind (soft by default; it takes as much from a ground-level stream's middle bands at 200 m as the air takes from its top), and its **barrier term** for ground between the source and the listener, from a few samples of the height field, 20 dB a band at most. A distant fall is then a rumble for the reason a real one is. The forms were read as an engineering tool's help reproduces them and the absorption table from a page that doubts it, so each is pinned from the standard before it is a constant; refraction is left out and the grounding page says so. A clip voice keeps the distance laws above; S114 adds a one-pole low-pass by distance through `SpatialParams`, the seam Steam Audio's terms arrive by later (S40).
+
+### Spatialization's place
+
+Unchanged. Every world voice is a source with a spatial block and nothing is panned before the decode stage, so the world gains heights and surrounds the day VBAP or a binaural decoder lands and `world_sound` never learns the layout. Until then the stereo panner feeds the front pair, on a 7.1 endpoint too. The ears' wind is the one exception and by its nature: it is made at the head, so it is two 2D voices, hard left and right, each with its own seed, their levels set by the head's yaw against the wind.
+
+### The mix, the device, and what a test does
+
+- **Buses**: a `world` bus under `ambient`, so a game ducks the world with one gain. Levels are computed in dB SPL at the listener and mapped to full scale by one reference (`audio.world.reference_db`); the ears' wind has a gain of its own, since at its physical level it would bury the rest. The limiter stays off: a mix too hot is counted, as ever.
+- **Who opens the device: the host.** engine-view takes `--audio auto|off|null|<device>`. `auto` opens the default device in a session with a window and a walker and is `off` for `--offscreen`, a capture, a benchmark and a flythrough. engine-host opens none (it is a server); engine-editor is a later row.
+- **`null`** runs the stage on the null backend with the host pulling 800 frames a tick (S111: 48,000 / the session's tick rate, the remainder carried; engine-view ticks 240 times a second, so 200), and `--audio-out <file.wav>` keeps them. **That is how a test and an agent listen**: the bytes' hash, and band levels read from the file, never a device. A test never opens a device; the opt-in device test stays the one it is.
+- A missing device falls back to the null backend with one log line, as `Output` does today.
+
+### Determinism: sound is presentation
+
+`derived`, as this module is. **World state**: the wind (a closed form of the sky's clock), the placements, the flow solve, the sea, the walker's pose. **Presentation**: the fields, the voices, the seeds, the device. None of it is hashed, saved or replayed, and nothing flows back.
+
+**Nothing a game module can observe depends on audio.** When a one-shot ends is a fact about when a sound card asked for a block, so a free voice is too: `sound_play` therefore answers `Ok` with **a handle the host counts**, never the mixer's slot, whether or not a voice sounded; `sound_stop` answers `Ok` for any handle issued; there is no call that asks whether a voice is sounding, how loud anything is, or what device there is. With `--audio off` the stage is mute and answers the same, so a session recorded with sound replays without it to the same state. Seeds are functions of a source's identity, so a null render of a scripted session is the same bytes on every run and toolchain. What an NPC hears is the simulation's (S55), not this.
+
+### The budget
+
+| | Budget | Basis |
+|---|---|---|
+| The audio thread at the defaults | 200 µs a 10 ms block, 2 % of one core | 64 clip voices measure 70 µs; 27 shaped-noise voices are estimated at 80 µs and **measured by S112's bench row** |
+| `SoundStage::tick` on the frame's thread | 50 µs | the gust at 15 places, 27 commands at most |
+| A refresh, off the frame's thread | 1 ms, eight a second | tile aggregates and a few thousand near instances |
+| Memory, clips aside | 1 MB | voice state, the fields' fixed arrays |
+| Clips | a game's `audio.clip_budget_mb`; engine-view's default for a game 64 | launch memory is a budget; a clip over the threshold streams |
+| Unused | no mixer, no thread, no allocation | no `sound` block and `--audio off` |
+
+### The game service
+
+A scene gains **one block, `sound`** (`engine.scene.Sound`): `clips`, each a `name`, a `path` or a **`recipe`** (a tone, a chirp, a noise burst the store generates, so a fixture has a sound with no binary in the tree), `gain_db`, `min_m`, `max_m`; and the world's gains by kind (S111: not yet; S112 adds them with the world's first sources, additively). It is one block as `sky` is, not the list the header's comment says, and it is the root's twenty-first field: a recorded raise.
+
+- **`sound_clip(name)`**, in `on_load`: the clip's index; `NotFound` refuses the load; `Unsupported` only in a build without the capability or on a scene with no block.
+- **`sound_play(clip, position | k_sound_2d, gain)`**: a one-shot at a world position, in the mixer's frame at the listener's cell as [audio_system](audio_system.md#the-mixers-frame) does it, with the clip's declared distances. A bird's call from its perch is this call.
+- **`sound_stop(voice)`**: the stop's 10 ms fade.
+- **Added by a later row, at the ABI number free when it is built** (the live wind's service takes 13 on its branch): `sound_play_ex` and `sound_set` with a size-led `SoundParams` (loop, pitch, distances, priority, a position that moves), `sound_gain(bus, db)`, and `sound_clip_info` (a clip's length, a fact of the content, for a game that times itself by ticks).
+
+### Stages
+
+Each is a row one agent builds in a night; the rows hold the tests.
+
+1. **S111, a game's clips are heard**: the `sound` block, the stage, engine-view's `--audio`, the three calls. The owner hears a fixture's chirp from a prop in the forest, turning with their head.
+2. **S112, the wind in the trees and at the ears**: the shaped-noise voice, the canopy table, crowns, beds, the ears' wind. The owner hears the wind rise with the gusts they see, hiss among conifers, and move from ear to ear as they turn; the live wind's keys change it at once, and a forced gust is heard to rise and die along its envelope.
+3. **S113, running water and the surf**: the flow and surf tables, the resonators. A brook, a fall's roar, waves that sound as they break.
+4. **S114, distance, and the budget held on the forest**: the path's terms (air, forest, ground, barrier), the clip voices' filter, shelter for the ears' wind, the voice counts and microseconds measured on the forest staging.
+
+### The owner's questions
+
+**Answered by the owner on 2026-11-21** (relayed by the coordinator of batch 71; the questions as they were asked follow, unchanged):
+
+1. **Bird calls**: recordings under CC0 or another licence that does not exclude the project — so no non-commercial and no no-derivatives terms. **The game fetches them, not the engine**: the engine commits none and fetches none.
+2. **The output**: **the stereo panner is enough to start.** The owner's desk is a full 7.1 endpoint with an upmixer of its own; a stereo stream into it is fine for now. VBAP and a binaural decoder stay later rows (S40).
+3. **The wind at the ears**: "depends on wind speed, pick some sane value" — S112's to choose and ground.
+4. **Loudness**: **the real range to start**, no compression of it. Nothing in S111 compresses or normalises a level: a clip plays at its file's level times its `gain_db` and the game's gain, and the master's limiter stays off by default.
+5. **Sound on by default**: **yes, in a windowed interactive session** (`--audio auto`, engine-view's default, opens the default device there); offscreen runs, captures and benchmarks stay off. Agents and tests still pass `--audio null` or `off` and never open a device.
+6. **Clip formats**: **whatever is standard in engines.** For a game's clips that is uncompressed WAV — PCM 16 and 24 bit and 32-bit float, mono and stereo, any common rate, resampled to the mix's 48 kHz when the clip is decoded — read by code in the tree (miniaudio's dr_wav; FLAC and MP3 decode too, and a `.clip` the content build wrote). `world_sound`'s tests write each of the four kinds and load them through a scene's block ([world_sound](world_sound.md#testing)). **The next format is Ogg Vorbis**, the usual compressed one in engines; it needs a decoder compiled and tested: stb_vorbis is in miniaudio's fetched checkout ("Not yet" below says why it is not compiled), and a test fixture has to come from somewhere. **The owner has permitted the Vorbis decoder's download for the row that adds it** (2026-11-21); what that row needs: the decoder compiled into `engine_miniaudio` (stb_vorbis, or a vendored libvorbis under a permissive licence, recorded in `third_party/LICENSES.md`), a fixture made without committing a binary (an encoder in the tests, or a file fetched by a script under the same rule as the samples), and a record against malformed input. Nothing is built for it in S111.
+7. **What is next after these four**: not answered tonight.
+
+The questions as S110 asked them:
+
+1. **Bird calls: recorded clips, and under what licence?** Recordings are the realistic answer and the engine commits none (no binary enters the tree); they live in the local folder or a game's repository, and a fetch script like the samples' needs the owner's yes and a source. Wikipedia says every xeno-canto recording is under some Creative Commons licence; which ones, and whether they allow a game, was not read (its terms page refused the fetch). The alternatives: the owner's own recordings, a paid library, or synthesis of the simpler calls as a research row. A generated call (a model's output) is plan 12's question.
+2. **The output**: the default endpoint here is 7.1 and the stereo panner feeds its front pair only. Is that enough for the first three stages, or does a VBAP decoder (part of S40) come before the water? Headphones with a binaural decoder mean Steam Audio, a dependency to download (Apache-2.0, no cost).
+3. **How loud is the wind at the ears?** Physically it is 85 dB at 4.5 m/s and climbs faster than everything else. A default is a matter of taste; the design leaves a gain.
+4. **Loudness**: a crown in a 5 m/s wind and a 2 m surf are some 30 dB apart by the grounding's numbers, and a calm forest is quieter still. Keep the real range, or compress it?
+5. **Is engine-view's sound on by default** in the owner's own sessions and the installed build, on the default device?
+6. **Clip formats**: WAV, FLAC and MP3 decode today; Vorbis and Opus do not (S41). Enough for a pack of calls?
+7. **What is next after these four**: rain, a fire's crackle (scenes have `fires`), footsteps by ground material, rooms and caves (reverberation, S41), the direction note's wind-exposure map and Aeolian emitters (wires, gaps, ridges; S42's remainder)?
+
+Nothing in S111 to S114 costs money or needs a download.
+
 ## Not yet
 
 In the order the direction note puts them, the decode stage's later implementations and the calibration that feeds them — each with the seam it plugs into:

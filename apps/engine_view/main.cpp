@@ -32,6 +32,9 @@
 #include "game_hud.h"
 #include "game_runner.h"
 #endif
+#if ENGINE_VIEW_WORLD_SOUND
+#include "game_sound.h"
+#endif
 #include "time_controls.h"
 #include "window_input.h"
 #include "world_view.h"  // empty without the world capability (ENGINE_VIEW_WORLD)
@@ -556,6 +559,10 @@ constexpr const char* k_usage =
     "                   interactive.player. Needs a session over a scene\n"
     "  --game-state <f> --game: restore the module's state from <f> at start when it exists, and\n"
     "                   save it there at exit, so a run can be left and resumed\n"
+    "  --audio auto|off|null|<device>  --game: how its sound is heard: the default device in a\n"
+    "                   window (auto, the default; off offscreen), mute, the null backend, or a\n"
+    "                   device by name. What the module hears is the same in every mode\n"
+    "  --audio-out <f.wav>  --audio null: keep the render as a 32-bit float WAV\n"
     "  --on-end panel|quit  --game, in a live window: when the module ends the run, stay on a\n"
     "                   result panel (Enter or Esc quit, R starts a new run; the default for\n"
     "                   somebody at the window) or end the session as a replay does (the\n"
@@ -814,6 +821,9 @@ struct Options {
   // `--game`: a game module run from the session (game_runner.h); `--game-state`: its state file.
   std::string game;
   std::string game_state;
+  // `--audio`, `--audio-out`: how a game's sound is heard (game_sound.h; roadmap S111).
+  std::string audio = "auto";
+  std::string audio_out;
   // `--player <rig.glb>`: the player's body, a load-time actor stood on the walker (player.h).
   std::string player;
   // `--on-end panel|quit` (brief P44): what a live window does when the module calls `end_run` —
@@ -5037,8 +5047,12 @@ int run_view(int argc, char** argv) {
       options.interactive = true;  // a game is played from the session, live or replayed
     } else if (a == "--player") {  // P52: the player's body (player.h)
       if (!next_value(argc, argv, i, a, options.player)) return k_exit_usage;
-    } else if (a == "--game-state") {
-      if (!next_value(argc, argv, i, a, options.game_state)) return k_exit_usage;
+    } else if (a == "--game-state" || a == "--audio" || a == "--audio-out") {
+      // One branch for the three: this chain is at MSVC's limit of nested blocks (C1061).
+      std::string& named = a == "--game-state" ? options.game_state
+                           : a == "--audio"    ? options.audio
+                                               : options.audio_out;
+      if (!next_value(argc, argv, i, a, named)) return k_exit_usage;
     } else if (a == "--on-end") {  // brief P44: the run's end, seen
       if (!next_value(argc, argv, i, a, options.on_end)) return k_exit_usage;
       if (options.on_end != "panel" && options.on_end != "quit") {
@@ -5332,6 +5346,11 @@ int run_view(int argc, char** argv) {
   }
   if (!options.game_state.empty() && options.game.empty()) {
     std::fprintf(stderr, "engine-view: --game-state is a --game module's state; name the module\n");
+    return k_exit_usage;
+  }
+  if (!options.audio_out.empty() && options.audio != "null") {
+    std::fprintf(stderr,
+                 "engine-view: --audio-out keeps the null backend's render; pass --audio null\n");
     return k_exit_usage;
   }
 #if !ENGINE_VIEW_GAME
@@ -5659,6 +5678,9 @@ int run_view(int argc, char** argv) {
   // --game: the module loaded before any window or device, so one the host refuses — no entry
   // point, another ABI, an action no map has, a state file of another type — is refused at once.
   view::GameRunner game;
+#if ENGINE_VIEW_WORLD_SOUND
+  view::GameSoundHost game_sound;  // its hooks are the runner's; declared after it, gone before it
+#endif
   if (!options.game.empty()) {
     view::GameRunner::Config config;
     config.module = options.game;
@@ -5712,6 +5734,21 @@ int run_view(int argc, char** argv) {
       game.declare_actors(actors);
 #endif
     }
+#if ENGINE_VIEW_WORLD_SOUND
+    // The game's sound (game_sound.h; S111): `--audio` resolved, the scene's `sound` block read
+    // (the command line's scene, or a replay's header's) and the stage opened, before `on_load`.
+    world_sound::AudioMode audio_mode = world_sound::AudioMode::Off;
+    std::string audio_device;
+    if (!view::resolve_audio(
+            options.audio,
+            !options.offscreen && options.capture.empty() && options.benchmark.empty(), audio_mode,
+            audio_device, &game_error) ||
+        !game_sound.open(audio_mode, audio_device, options.audio_out, config.scene,
+                         interactive.header.params.tick_hz, game, &game_error)) {
+      log::remove_sink(&stderr_sink);
+      return fail("audio", game_error);
+    }
+#endif
     if (!game.start(config, interactive.map, interactive.header.params.tick_hz, &game_error)) {
       log::remove_sink(&stderr_sink);
       return fail("game", game_error);

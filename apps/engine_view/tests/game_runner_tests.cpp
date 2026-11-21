@@ -6,6 +6,9 @@
 // the same module from engine-view's session.
 
 #include "../game_runner.h"
+#if ENGINE_VIEW_WORLD_SOUND
+#include "../game_sound.h"
+#endif
 
 #include <core/json/json.h>
 #include <core/platform/process.h>
@@ -131,6 +134,50 @@ TEST_CASE("game runner: the fixture ticks, drains thirst while walking and says 
   CHECK(summary.find("actions")->size() == 2);  // interact and use
   MESSAGE(
       "after a second: " << write_json(summary.find("hud") ? *summary.find("hud") : JsonValue()));
+}
+
+TEST_CASE(
+    "game runner: with no sound stage the calls are Unsupported, with a mute one they count") {
+  // S111 (apps.md "Sound a module plays"): a runner given no stage — a build without world_sound —
+  // answers the fixture's `sound_clip` Unsupported and it plays nothing; given a stage over a scene
+  // that declares `chirp`, even a mute one, its spring chirps at ticks 120 and 360 and the voices
+  // it keeps are the stage's count.
+  if (in_bundle()) return;
+  const test::TempDir tmp("game_runner_sound");
+  const input::ActionMap map = view::default_fly_map();
+  std::string error;
+  {
+    view::GameRunner runner;
+    REQUIRE_MESSAGE(
+        runner.start(config_for(place(tmp, WALK_POC_PATH, "walk_poc"), tmp), map, 240, &error),
+        error);
+    u64 tick = 0;
+    walk(runner, tick, 480);
+    CHECK(state_number(runner, "chirps") == 0.0);
+    const JsonValue summary = runner.summary_json();
+    REQUIRE(summary.find("sound") != nullptr);
+    CHECK(summary.find("sound")->is_null());
+    CHECK(runner.finish(&error));
+  }
+#if ENGINE_VIEW_WORLD_SOUND
+  const std::string scene = tmp.file("sound.json");
+  write_text(scene, R"({"format":"engine.scene.v1","name":"s",
+      "sound":{"clips":[{"name":"chirp","recipe":{"kind":"Chirp"}}]}})");
+  view::GameRunner runner;
+  view::GameSoundHost sound;
+  REQUIRE_MESSAGE(sound.open(world_sound::AudioMode::Off, "", "", scene, 240, runner, &error),
+                  error);
+  REQUIRE_MESSAGE(
+      runner.start(config_for(place(tmp, WALK_POC_PATH, "walk_poc_2"), tmp), map, 240, &error),
+      error);
+  u64 tick = 0;
+  walk(runner, tick, 480);
+  CHECK(state_number(runner, "chirps") == 2.0);
+  CHECK(state_number(runner, "chirp_voice") == 2.0);
+  CHECK(sound.stage().stats().plays == 2);
+  CHECK(sound.stage().stats().voices_started == 0);  // mute: counted, never sent
+  CHECK(runner.finish(&error));
+#endif
 }
 
 TEST_CASE(

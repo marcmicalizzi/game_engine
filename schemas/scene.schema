@@ -1868,10 +1868,64 @@ struct Formation @version(2) {
   fault_offset_m: f64 = 0 @unit(m) @since(2)
 }
 
+/// What a generated clip is (`SoundRecipe`; docs/subsystems/world_sound.md, "Recipes").
+enum SoundRecipeKind : u8 {
+  /// A sine at `frequency_hz`.
+  Tone = 0
+  /// A sine swept linearly in frequency from `frequency_hz` to `end_hz`: a bird's simplest note.
+  Chirp = 1
+  /// White noise, seeded.
+  Noise = 2
+}
+
+/// **A clip the stage generates** instead of reading a file (roadmap S111), so a fixture or a
+/// template has a sound with no binary in the tree: integer phase, a fixed polynomial sine and an
+/// integer noise generator, no call into the C library, so the same recipe is the same samples on
+/// every toolchain. Mono, at the mix rate.
+struct SoundRecipe @version(1) {
+  kind: SoundRecipeKind = Chirp
+  /// The start frequency (a tone's only one), and a chirp's end: 20 Hz to 20 kHz.
+  frequency_hz: f32 = 2500
+  end_hz: f32 = 4500
+  /// The length, 1 ms to 10 s, and the linear rise and fall inside it.
+  duration_s: f32 = 0.18 @unit(s)
+  attack_s: f32 = 0.01 @unit(s)
+  release_s: f32 = 0.06 @unit(s)
+  /// The peak level, dB of full scale, -60 to 0.
+  level_db: f32 = -6
+  /// The noise's seed.
+  seed: u32 = 1
+}
+
+/// **A clip a game plays** (roadmap S111; docs/subsystems/world_sound.md): named, read from a file
+/// beside the scene (WAV, FLAC, MP3 or a built `.clip`) or generated from a recipe. A module finds it
+/// by `name` in its `on_load` (`sound_clip`).
+struct SoundClip @version(1) {
+  /// The name a module asks for. Unique among the block's clips.
+  name: string
+  /// A file relative to the scene file; empty when `recipe` makes the clip.
+  path: string
+  recipe: SoundRecipe?
+  /// The clip's own gain, dB, -60 to 24, under the game's per-play gain.
+  gain_db: f32 = 0
+  /// Full level inside `min_m` from the listener, silent at `max_m` (the mixer's tapered inverse
+  /// distance law, audio.md "Sources are objects").
+  min_m: f32 = 1 @unit(m)
+  max_m: f32 = 60 @unit(m)
+}
+
+/// **A scene's sound** (`engine.scene.Sound`; roadmap S111, the design in audio.md "Sound for the
+/// world"): the clips a game may play. One block, as `sky` is. Read only by a host that carries the
+/// `world_sound` capability; a build without it reads the scene the same and a module hears
+/// `Unsupported`.
+struct Sound @version(1) {
+  clips: SoundClip[]
+}
+
 /// A scene: meshes, placements of them, and an optional terrain. Version 5 added `placements`,
 /// version 6 `sky`, version 7 `props`, version 8 `water` and `medium`, version 9 `fires`, version 10
-/// `formation`, version 11 `water_channels`.
-struct Scene @version(11) {
+/// `formation`, version 11 `water_channels`, version 12 `sound`.
+struct Scene @version(12) {
   /// "engine.scene.v1". Empty is accepted, for the files written before the field existed.
   format: string
   name: string
@@ -1926,6 +1980,9 @@ struct Scene @version(11) {
   /// rapids and falls. A build without the capability refuses a scene that has any, with a
   /// sentence. Empty: no channels, and the scene reads and draws exactly as it did.
   water_channels: WaterChannel[] @since(11)
+  /// The clips a game plays (`Sound`; roadmap S111). Null: none, and a module's sound calls hear
+  /// `Unsupported`; the picture never reads it.
+  sound: Sound? @since(12)
 }
 
 /// Where the owner's replacements for a scene's placeholders are: a local file, never committed.

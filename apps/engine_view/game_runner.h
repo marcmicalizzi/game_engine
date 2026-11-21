@@ -190,6 +190,22 @@ using PlacementStats = void (*)(void* user, u64& generated_tiles, f64& generate_
 // is near. The fixture looks 400 m for its HUD line.
 inline constexpr f64 k_max_placement_query_m = 512.0;
 
+// **The sound a module plays** (roadmap S111; apps.md "Sound a module plays"): whoever hosts audio
+// for the session (main.cpp's `world_sound::SoundStage`, in a build with the capability) answers
+// the three calls, and is ticked once a session tick after the module with the camera as the
+// listener. Unset (a build without the capability), the three calls answer `Unsupported`. The
+// stage counts the handles itself, so what a module hears does not depend on whether anything is
+// heard (ADR-0079 decision 5).
+struct GameSound {
+  void* user = nullptr;
+  hotload::Result (*clip)(void* user, std::string_view name, u32& out) = nullptr;
+  hotload::Result (*play)(void* user, u32 clip, const f64* position, f32 gain, u32& out) = nullptr;
+  hotload::Result (*stop)(void* user, u32 voice) = nullptr;
+  void (*tick)(void* user, const WorldPos& eye, f32 heading, f32 pitch) = nullptr;
+  JsonValue (*summary)(const void* user) = nullptr;          // the game block's `sound`
+  bool (*finish)(void* user, std::string* error) = nullptr;  // at `GameRunner::finish`
+};
+
 class GameRunner {
  public:
   GameRunner();
@@ -325,6 +341,8 @@ class GameRunner {
   void set_walker(const Walker* walker) noexcept;
   using WaterQueryFn = bool (*)(const void* user, f64 x, f64 z, hotload::WaterSample& out) noexcept;
   void set_water(WaterQueryFn query, const void* user) noexcept;
+  // The session's sound (`GameSound`): set before `start`, since `on_load` names its clips.
+  void set_sound(const GameSound& sound) noexcept;
   // The loaded module's name and build (the host's generation), for a recording's header.
   const std::string& module_name() const noexcept;
   u32 build() const noexcept;
