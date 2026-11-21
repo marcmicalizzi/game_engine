@@ -82,6 +82,15 @@ class ViewWorld {
   struct Counters {
     world::PlacementTilesStats placements;
     renderer::TileStats tiles;
+    // The update by who spent it (W155, `FrameWorld` version 2): the ring's updates, the drawn
+    // ground's and the placements' calls through the world, the placements' last commit outside
+    // it (`end_update`), and the moving ground's re-standing; the run's sums, nanoseconds.
+    i64 ring_ns = 0;
+    i64 drawn_ns = 0;
+    i64 placements_ns = 0;
+    i64 placement_events_ns = 0;
+    i64 end_update_ns = 0;
+    i64 restand_ns = 0;
   };
   Counters counters() const noexcept;
   void add_parts(const Counters& then, scene::FrameWorld& out) const noexcept;
@@ -157,6 +166,12 @@ class ViewWorld {
   renderer::TileStats tiles_before_;
   f64 last_update_ms_ = 0.0;
   bool whole_builds_ = false;  // the handover pass: every tile built in its event (W82)
+  // The world's consumer indices (~0: not registered) and the update's own sums (W155).
+  u16 drawn_consumer_ = 0xffff;
+  u16 placements_consumer_ = 0xffff;
+  i64 ring_ns_ = 0;
+  i64 end_update_ns_ = 0;
+  i64 restand_ns_ = 0;
 };
 
 }  // namespace engine::view

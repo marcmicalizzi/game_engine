@@ -401,6 +401,13 @@ TEST_CASE(
     CHECK(num(w, "compare_ms") + num(w, "layout_ms") + num(w, "write_ms") + num(w, "after_ms") +
               num(w, "fires_ms") + num(w, "far_ms") + num(w, "relayout_ms") <=
           num(w, "handover_ms") + 0.01);
+    // Version 2 (W155): the update by who spent it, disjoint, and the placements' calls by part.
+    CHECK(num(w, "ring_ms") + num(w, "drawn_ms") + num(w, "placements_ms") + num(w, "restand_ms") <=
+          num(w, "update_ms") + 0.01);
+    CHECK(num(w, "events_ms") + num(w, "due_ms") + num(w, "meshes_ms") + num(w, "cells_ms") +
+              num(w, "admit_ms") + num(w, "commit_ms") + num(w, "handover_ms") <=
+          num(w, "placements_ms") + 0.01);
+    if (num(w, "update_ms") > 0.0) CHECK(num(w, "placements_ms") > 0.0);
     const u64 tiles = static_cast<u64>(num(w, "tiles_built"));
     built += tiles;
     pending_seen = std::max(pending_seen, static_cast<u64>(num(w, "pending")));
@@ -412,12 +419,12 @@ TEST_CASE(
   std::sort(frames.begin(), frames.end(),
             [](const Frame& a, const Frame& b) { return a.frame < b.frame; });
   // The turn before frame f and its renderer's milliseconds lie inside the wall time from f's
-  // start to f + 1's.
+  // start to f + 1's, which is f's own `frame_ms` (FrameRecord version 24, W155).
   for (usize i = 0; i + 1 < frames.size(); ++i) {
     CAPTURE(frames[i].frame);
     // The first frame's update is the restart's complete fill, which the budget does not bound.
     if (frames[i + 1].frame != 0) most = frames[i + 1].tiles > most ? frames[i + 1].tiles : most;
-    CHECK(frames[i + 1].frame_ms + 0.001 >= frames[i].total + frames[i].cpu_ms);
+    CHECK(frames[i].frame_ms + 0.001 >= frames[i].total + frames[i].cpu_ms);
   }
   MESSAGE("flight: " << built << " tiles built, at most " << most << " in a frame; hand-over "
                      << handover << " ms");

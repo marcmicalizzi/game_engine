@@ -1391,12 +1391,46 @@ TEST_CASE("flythrough: a frame's sections sum to its wall time, and a slow host 
     CHECK(std::abs(sum - s.wall_ms) < 0.01);  // the parts partition the frame
     CHECK(std::abs(s.other_ms) < 0.01);
     CHECK(s.resize_ms <= s.begin_ms + 1e-9);
-    // The interval is the next record's frame time, measured by the same clock.
-    if (i + 1 < flight.records.size())
-      CHECK(std::abs(flight.records[i + 1].frame_ms - s.wall_ms) < 0.01);
+    // The interval is the record's own frame time (version 24, W155; until then the next
+    // record's), measured by the same clock.
+    CHECK(std::abs(r.frame_ms - s.wall_ms) < 0.01);
   }
   CHECK(flight.records[5].sections->host_ms >= 30.0);
   CHECK(flight.records[4].sections->host_ms < 30.0);
+  CHECK(flight.records[5].frame_ms >= 30.0);  // the sleep is the frame's own, not the next one's
+  // **The frame on the GPU's own clock** (W155): every frame's two marks came back; the span holds
+  // every zone, so it is never under their sum; and where the clock is calibrated the frame's slot
+  // wait is split into three parts that sum to it. Counted, not timed.
+  u32 spans = 0;
+  u32 split = 0;
+  u32 calibrated = 0;
+  for (const scene::FrameRecord& r : flight.records) {
+    CAPTURE(r.frame);
+    if (!r.gpu_frame.has_value()) continue;
+    const scene::FrameGpu& g = *r.gpu_frame;
+    ++spans;
+    REQUIRE(r.gpu_ms.has_value());
+    CHECK(g.span_ms + 1e-3 >= r.gpu_ms->total);
+    CHECK(g.untimed_ms >= 0.0);
+    CHECK(std::abs(g.untimed_ms - std::max(0.0, g.span_ms - r.gpu_ms->total)) < 1e-9);
+    if (g.calibrated) {
+      ++calibrated;
+      CHECK(g.queued_ms >= 0.0);
+      CHECK(g.elsewhere_ms >= 0.0);
+      CHECK(g.elsewhere_ms <= g.queued_ms + 1e-9);
+    }
+    if (g.wait_split) {
+      ++split;
+      CHECK(g.wait_gpu_ms >= 0.0);
+      CHECK(g.wait_before_ms >= -1e-9);
+      CHECK(g.wait_late_ms >= 0.0);
+      CHECK(std::abs(g.wait_gpu_ms + g.wait_before_ms + g.wait_late_ms - r.cpu.wait) < 1e-6);
+    }
+  }
+  MESSAGE("gpu_frame: " << spans << " spans, " << calibrated << " calibrated, " << split
+                        << " waits split, of " << flight.records.size());
+  CHECK(spans == flight.records.size());
+  CHECK(split == calibrated);
 }
 
 TEST_CASE("flythrough: occlusion culling changes no pixel on the path, and culls what is hidden") {
@@ -1681,6 +1715,30 @@ TEST_CASE("flythrough: a slow frame is named by the span that took it") {
   CHECK(slowest_span(written).span == "host.update.handover.write");
   CHECK(slowest_span(staged).span == "submit.tables");
   CHECK(slowest_span(spread).span == "host");
+  // `FrameWorld` version 2 (W155): the update by who spent it, then the placements' parts; and a
+  // slot wait by what the GPU was doing, from `FrameGpu`'s split.
+  scene::FrameRecord meshes = record(400, 70.0, 66.0, 2.0);
+  meshes.world->update_ms = 65.0;
+  meshes.world->ring_ms = 0.2;
+  meshes.world->placements_ms = 64.0;
+  meshes.world->meshes_ms = 50.0;
+  meshes.world->due_ms = 10.0;
+  meshes.world->tiles_ms = 9.0;
+  CHECK(slowest_span(meshes).span == "host.update.placements.meshes");
+  meshes.world->drawn_ms = 40.0;
+  meshes.world->placements_ms = 24.0;
+  CHECK(slowest_span(meshes).span == "host.update.drawn");
+  scene::FrameRecord late = record(401, 60.0, 0.5, 2.0);
+  late.sections->slot_wait_ms = 55.0;
+  scene::FrameGpu gpu;
+  gpu.wait_split = true;
+  gpu.wait_gpu_ms = 12.0;
+  gpu.wait_before_ms = 40.0;
+  gpu.wait_late_ms = 3.0;
+  late.gpu_frame = gpu;
+  CHECK(slowest_span(late).span == "slot_wait.before");
+  late.gpu_frame->wait_split = false;
+  CHECK(slowest_span(late).span == "slot_wait");
 
   scene::FlythroughSummary summary;
   summarize_slow(std::span<const scene::FrameRecord>(records.data(), records.size()),

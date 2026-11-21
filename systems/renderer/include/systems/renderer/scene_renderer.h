@@ -135,6 +135,30 @@ struct FrameCpu {
   // device (R130). Zero on a frame with no step. `render_offscreen`'s regrowth of a short frame
   // happens between its two attempts, outside any frame's `begin_frame`, and is not counted here.
   f64 resize_ms = 0.0;
+  // **`wait_ms` by what the GPU was doing** (W155; renderer.md, "What a slot wait was"), from the
+  // awaited frame's two marks on the host's clock (`gfx::GpuTimer::frame_span`): the part of the
+  // wait the GPU spent inside that frame (`wait_gpu_ms`), the part before it had started it — the
+  // card on something else, or work of ours outside any frame (`wait_before_ms`) — and the part
+  // after its last command, until this thread woke (`wait_late_ms`). They sum to `wait_ms`.
+  // `wait_split` is false (and the three zero) where the device cannot calibrate its clock or the
+  // awaited frame carried no marks.
+  bool wait_split = false;
+  f64 wait_gpu_ms = 0.0;
+  f64 wait_before_ms = 0.0;
+  f64 wait_late_ms = 0.0;
+};
+
+// **The frame on the GPU's own clock** (W155; renderer.md, "What a slot wait was"): its first
+// command to its last (`span_ms`, any device), and with a calibrated clock (`calibrated`) when its
+// first command ran after the frame was handed to the queue (`queued_ms`), and of that the part
+// the GPU had finished our frame before it and still did not start this one (`elsewhere_ms`:
+// another process on the card, or work of ours submitted outside the frame).
+struct FrameGpu {
+  bool valid = false;
+  bool calibrated = false;
+  f64 span_ms = 0.0;
+  f64 queued_ms = 0.0;
+  f64 elsewhere_ms = 0.0;
 };
 
 // The world-space cache's counts for a frame (`FrameStats::gi`; R69 stage 2).
@@ -323,6 +347,8 @@ struct FrameStats {
   Reconstruction reconstruction;
   // Where the frame thread's time went while this frame was begun, recorded and submitted.
   FrameCpu cpu;
+  // The frame on the GPU's own clock (W155).
+  FrameGpu gpu;
 
   u32 visible_pairs() const noexcept { return visible_hw + visible_pass2 + visible_sw; }
 };
@@ -1382,6 +1408,8 @@ class SceneRenderer {
   bool rt_cache_recording_ = false;  // the frame being recorded records them
   Vector<u64> slot_terrain_bytes_;   // per frame slot: the terrain field bytes that frame uploaded
   Vector<FrameCpu> slot_cpu_;        // per frame slot: where that frame's CPU time went
+  Vector<i64> slot_submit_ns_;       // per frame slot: when its commands went to the queue (W155)
+  i64 gpu_last_ns_ = 0;              // the last folded frame's last mark, host clock (W155)
   Vector<f32> slot_visibility_;      // per frame slot: what its frame passes reported
   FrameCpu frame_cpu_;               // the frame being begun and recorded's, until submit_frame
   GpuScene::TableUpdate tables_;     // the frame being recorded's table update; its copies are kept

@@ -1591,15 +1591,21 @@ void PlacementTiles::commit(void* context) {
   ENGINE_STARTUP_STAGE("placements commit");
   auto* self = static_cast<PlacementTiles*>(context);
   self->committed_ = true;
+  const i64 due_start = time::monotonic_ns();
   self->build_due();
   // The tiles' meshes, between the builds that name them and the tail that draws them: a whole
   // update waits for every build and admits everything the room has; a budgeted one takes what
   // has finished, within its allowance.
+  const i64 meshes_start = time::monotonic_ns();
+  self->stats_.due_ns += meshes_start - due_start;
   self->meshes_.begin_commit(self->build_budget_ == 0);
   self->admit_meshes();
+  self->stats_.meshes_ns += time::monotonic_ns() - meshes_start;
   self->commit_tail();
   // After the tail is handed on, so nothing the renderer draws names a mesh this lets go.
+  const i64 end_start = time::monotonic_ns();
   self->meshes_.end_commit();
+  self->stats_.meshes_ns += time::monotonic_ns() - end_start;
 }
 
 u32 PlacementTiles::end_update() {
@@ -1611,7 +1617,9 @@ u32 PlacementTiles::end_update() {
                           meshes.lingering != 0;
   // Or a hand-off cell the band reached or left (G205): the eyes moved, and no tile's event says
   // so.
+  const i64 cells_start = time::monotonic_ns();
   const bool cells = !committed_ && refresh_cells();
+  stats_.cells_ns += time::monotonic_ns() - cells_start;
   if (committed_ || (stats_.pending == 0 && !meshes_due && !cells)) return 0;
   const u64 before = stats_.tiles_built;
   commit(this);
@@ -1623,8 +1631,10 @@ void PlacementTiles::commit_tail() {
   // Every active tile's instances, in tile order: the map is sorted by key, so a scene streamed to
   // a set of tiles has one tail — one numbering of its pairs — whatever order the tiles came in.
   // The hand-off cells the band reaches now (G205), before the budget is decided over them.
+  const i64 cells_start = time::monotonic_ns();
   self->refresh_cells();
   const i64 admit_start = time::monotonic_ns();
+  self->stats_.cells_ns += admit_start - cells_start;
   self->admit();
   const i64 tail_start = time::monotonic_ns();
   self->stats_.admit_ns += tail_start - admit_start;

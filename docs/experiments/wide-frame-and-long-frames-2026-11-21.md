@@ -122,6 +122,16 @@ The two over 100 ms are the hand-over at 1579 and a beginning at 201 (93.8 ms in
 
 **What tonight's memory rows change here** (not on this base): they take 5.4 GB off the first frame's device peak at 4K; the wide frame's 17.8 GB would be about 12.4 GB, inside a 16 GB card, before item 5.
 
+## W155: the walk's own long frames
+
+Roadmap W155, the same night. Section 2's table left two classes it could not split: the 26 slot waits two to five times the GPU's timed frame, and four world updates whose parts named under 40 % of them. This section is the record made able to tell, the walk flown again with it, and what was removed.
+
+**What the record says now** (`FrameRecord` version 24; [renderer](../subsystems/renderer.md#what-a-slot-wait-was), [apps](../subsystems/apps.md#flythroughs), "The frame record's GPU clock"):
+
+- `gpu_frame`: the frame's first command to its last on the GPU's clock (`span_ms`), what of it no zone names (`untimed_ms`), how long after its submission the GPU began it (`queued_ms`) and, of that, how long after the GPU had finished our frame before it (`elsewhere_ms`); and the frame's own slot wait split by the frame it waited for — the GPU inside that frame (`wait_gpu_ms`), not yet started on it (`wait_before_ms`), after it until the thread woke (`wait_late_ms`). The marks are two timestamps a frame; the host's clock comes from `VK_KHR_calibrated_timestamps`, one call every half second.
+- `world` version 2: `update_ms` by who spent it — the ring, the drawn ground's calls, the placements' calls (events and commits) and the re-standing — and the placements' calls by part (events, due tiles, meshes, hand-off cells, admission, tail, hand-over).
+- `frame_ms` is the frame's own interval, `sections.wall_ms`; until version 23 it was the one before.
+
 ## What this does not cover
 
 - **A quiet machine.** Every flight ran beside other rows' builds and GPU cases; the CPU numbers and the frame thread's waits are upper bounds, and the slot waits past the GPU's frame are not split.

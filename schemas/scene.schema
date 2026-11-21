@@ -2303,7 +2303,19 @@ struct FrameWalk @version(2) {
 /// is no longer a count of compactions), what follows the tables (`after_ms`), the props'
 /// fires (`fires_ms`), the far forest's hand-off (`far_ms`, of which `place_ms` is
 /// `GpuScene::place_instances`), and a relayout's wait for the device (`relayout_ms`).
-struct FrameWorld @version(1) {
+///
+/// **Version 2 (W155): `update_ms` by who spent it**, disjoint, so a long update says which: the
+/// ring's own update (`ring_ms`), the drawn ground's calls (`drawn_ms`: its tiles handed to the
+/// renderer's tile set, `renderer::TerrainTileSet::change_tiles`), the placements' calls
+/// (`placements_ms`: their events and commits, an update's last commit included), and the moving
+/// ground's re-standing (`restand_ms`); what they leave of `update_ms` is the update's own
+/// bookkeeping. Inside `placements_ms`, disjoint too: the ring's events on them (`events_ms`,
+/// activations, ring changes, deactivations), the due tiles taken from the last job and the next
+/// job started, or built here without a job system (`due_ms`), the tiles' meshes admitted and let go
+/// (`meshes_ms`), the hand-off cells refreshed (`cells_ms`), and the version 1 parts `admit_ms`,
+/// `commit_ms` and `handover_ms`. `tiles_ms` lies inside `due_ms` and `events_ms`, where tiles are
+/// built and collected, and is not added again.
+struct FrameWorld @version(2) {
   total_ms: f64 = 0
   update_ms: f64 = 0
   ground_ms: f64 = 0
@@ -2331,6 +2343,37 @@ struct FrameWorld @version(1) {
   far_ms: f64 = 0
   place_ms: f64 = 0
   relayout_ms: f64 = 0
+  ring_ms: f64 = 0 @since(2)
+  drawn_ms: f64 = 0 @since(2)
+  placements_ms: f64 = 0 @since(2)
+  restand_ms: f64 = 0 @since(2)
+  events_ms: f64 = 0 @since(2)
+  due_ms: f64 = 0 @since(2)
+  meshes_ms: f64 = 0 @since(2)
+  cells_ms: f64 = 0 @since(2)
+}
+
+/// **The frame on the GPU's own clock** (W155; docs/subsystems/renderer.md, "What a slot wait
+/// was"): beside the zones' sum in `gpu_ms`, the frame's first command to its last as the GPU ran
+/// them (`span_ms`, from `gfx::GpuTimer`'s two marks, never a CPU clock), and what of it no zone
+/// names (`untimed_ms`, the span less `gpu_ms.total`). With a device that calibrates its clock
+/// against the host's (`calibrated`): how long after its submission the GPU began the frame
+/// (`queued_ms`), and of that what came after the GPU had finished the frame before it
+/// (`elsewhere_ms`: the card on another process's work, or ours submitted outside the frame). And
+/// the frame's own wait for its slot (`cpu.wait`, `sections.slot_wait_ms`) split by the frame it
+/// waited for (`wait_split`): the GPU inside that frame (`wait_gpu_ms`), before it had started it
+/// (`wait_before_ms`), and after its last command until the frame's thread woke (`wait_late_ms`),
+/// which sum to the wait. So a slow GPU, a card busy elsewhere and a late wake are three rows.
+struct FrameGpu @version(1) {
+  span_ms: f64 = 0
+  untimed_ms: f64 = 0
+  calibrated: bool = false
+  queued_ms: f64 = 0
+  elsewhere_ms: f64 = 0
+  wait_split: bool = false
+  wait_gpu_ms: f64 = 0
+  wait_before_ms: f64 = 0
+  wait_late_ms: f64 = 0
 }
 
 /// The live wind of one frame (W151; docs/subsystems/gfx.md, "The live wind"): its mean 10 m up,
@@ -2380,7 +2423,12 @@ struct FrameWind @version(1) {
 /// Version 22 (R124): `gpu_ms` carries the static shape caches' rebuild, `deform_cache`.
 ///
 /// Version 23 (W151): `wind`, the live wind the frame drew (`FrameWind`), null while it is unset.
-struct FrameRecord @version(23) {
+///
+/// Version 24 (W155): `frame_ms` is the frame's own interval, from its start to the next frame's
+/// (`sections.wall_ms`), where until 23 it was the interval before it — the previous frame's —
+/// so a long frame's parts were in the record before the one that showed it; `gpu_frame`, the
+/// frame on the GPU's own clock (`FrameGpu`); `world` at version 2.
+struct FrameRecord @version(24) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0; an interactive session's frame, from 0.
@@ -2391,8 +2439,11 @@ struct FrameRecord @version(23) {
   /// submission returning, less the waits for a free frame slot and a swapchain image — input, the
   /// camera's ticks, and recording the frame.
   cpu_ms: f64 = 0 @since(4)
-  /// Wall milliseconds from the previous frame's start to this one's: the frame time a player
-  /// sees, and what the window title's p99 is over. With vsync it is the display's cadence.
+  /// Wall milliseconds from this frame's start to the next one's: the frame time a player sees,
+  /// and what the window title's p99 is over. With vsync it is the display's cadence. **Since
+  /// version 24 it is the frame's own** (`sections.wall_ms` where the record has sections); until
+  /// 23 it was the interval before the frame, the previous frame's. Zero for a frame no other
+  /// followed.
   frame_ms: f64 = 0 @since(4)
   /// The fixed camera ticks this frame consumed (engine-view --interactive): 0 when the frame
   /// came faster than a tick, several after a slow one. Zero on a flythrough.
@@ -2553,6 +2604,9 @@ struct FrameRecord @version(23) {
   /// Version 23 (W151): the live wind the frame drew and what its readers took from it; null while
   /// the live wind is unset (every frame of a session that never touched it).
   wind: FrameWind? = null @since(23)
+  /// Version 24 (W155): the frame on the GPU's own clock (see `FrameGpu`); null where the frame's
+  /// marks did not come back.
+  gpu_frame: FrameGpu? = null @since(24)
 }
 
 /// What a flight's frame loop allocated on the frame's thread, over its recorded frames (every
