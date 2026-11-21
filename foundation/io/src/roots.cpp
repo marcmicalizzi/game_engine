@@ -2,7 +2,9 @@
 #include <foundation/io/roots.h>
 
 #include <filesystem>
+#include <string>
 #include <system_error>
+#include <utility>
 
 #if ENGINE_PLATFORM_WINDOWS
 // The final-path calls: `std::filesystem::canonical` neither refuses a prefix with no DOS name nor
@@ -667,19 +669,37 @@ bool uri_relative_path(std::string_view uri, std::string& out) {
     const auto u = static_cast<unsigned char>(c);
     if (u < 0x20 || u == 0x7f || c == '\\') return false;
   }
+  // Segment by segment into `kept`: a `.` is dropped wherever it is; a `..` at the front is no way
+  // out by itself (the caller admits the path through the roots from the naming file's directory,
+  // and they decide where a climb leads); a `..` after a named segment is refused, because the
+  // admission collapses `a/..` by its text while an open resolves it through whatever `a` is (a
+  // link, on Linux), so the digest would hash one file and the importer read another.
+  std::string kept;
+  bool named = false;
+  bool first = true;
   usize start = 0;
-  for (bool first = true;; first = false) {
+  for (;;) {
     const usize slash = out.find('/', start);
     const std::string_view part = std::string_view(out).substr(
         start, slash == std::string::npos ? out.size() - start : slash - start);
-    // A `..` is no way out by itself: the caller admits the path through the roots from the naming
-    // file's directory, and they decide where a climb leads.
-    // A colon in the first segment is a scheme or a drive (`http:`, `C:`); a later one the
-    // admission's text rules refuse as a stream.
-    if (first && part.find(':') != std::string_view::npos) return false;
+    if (part != ".") {
+      if (part == "..") {
+        if (named) return false;
+      } else if (!part.empty()) {
+        named = true;
+      }
+      // A colon in the first segment kept is a scheme or a drive (`http:`, `C:`); a later one the
+      // admission's text rules refuse as a stream.
+      if (first && part.find(':') != std::string_view::npos) return false;
+      if (!first) kept.push_back('/');
+      kept.append(part);
+      first = false;
+    }
     if (slash == std::string::npos) break;
     start = slash + 1;
   }
+  if (kept.empty()) return false;
+  out = std::move(kept);
   return true;
 }
 

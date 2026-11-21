@@ -858,9 +858,10 @@ TEST_CASE("open_regular_unmoved spells a handle's path as the roots do, whatever
 // A URI one file names another by (a glTF's buffers and images; docs/subsystems/io.md, "Roots"):
 // decoded once, and refused before any admission when the decoded text has a backslash (a URI has
 // none, and nothing is turned into a separator), a control byte, a colon in its first segment (a
-// scheme or a drive) or a leading '/'. A `..` segment is not a way out by itself: the roots are
-// the door, so a climb is taken as it is spelled and the admission from the naming file's
-// directory decides where it leads. Each text below is one a reader of the decoded string alone
+// scheme or a drive) or a leading '/'. A `..` segment at the front is not a way out by itself:
+// the roots are the door, so a leading climb is taken as it is spelled and the admission from the
+// naming file's directory decides where it leads; a `..` after a named segment is refused, and a
+// `.` segment dropped. Each text below is one a reader of the decoded string alone
 // would take for a path, or a near neighbour of one.
 TEST_CASE("uri_relative_path takes a relative URI and leaves where a climb leads to the roots") {
   struct Row {
@@ -872,7 +873,16 @@ TEST_CASE("uri_relative_path takes a relative URI and leaves where a climb leads
       {"crate.bin", true, "crate.bin"},
       {"tex%20a.png", true, "tex a.png"},
       {"sub/x.bin", true, "sub/x.bin"},
-      {"a/./b.bin", true, "a/./b.bin"},
+      // A `.` segment is dropped wherever it is, raw or encoded.
+      {"a/./b.bin", true, "a/b.bin"},
+      {"./a.bin", true, "a.bin"},
+      {"%2E/a.bin", true, "a.bin"},
+      {"a/%2e/b.bin", true, "a/b.bin"},
+      {".", false, ""},
+      {"./", false, ""},
+      // What a dropped `.` leaves first is held to the first segment's rule.
+      {"./c:x.bin", false, ""},
+      {"%2E/C:/x.bin", false, ""},
       // A colon after the first segment is no scheme: the admission's text rules refuse it.
       {"a/b:c.png", true, "a/b:c.png"},
       // Decoded once: a doubled encoding is a literal percent sign in a name, never a backslash.
@@ -887,14 +897,27 @@ TEST_CASE("uri_relative_path takes a relative URI and leaves where a climb leads
       {"%5C%5Chost%5Cs%5Cx.bin", false, ""},
       {"%5c%5chost%5cs%5cx.bin", false, ""},
       {"%5Cx.bin", false, ""},
-      // A climb, plain or spelled with encoded slashes or dots: taken, decoded, for the roots.
-      {"x%2F..%2F..%2Foutside.bin", true, "x/../../outside.bin"},
+      // A climb at the front, plain or spelled with encoded slashes or dots: taken, decoded, for
+      // the roots.
       {"%2E%2E/outside.bin", true, "../outside.bin"},
       {"%2e%2e%2foutside.bin", true, "../outside.bin"},
       {"../outside.bin", true, "../outside.bin"},
-      {"a/../../outside.bin", true, "a/../../outside.bin"},
+      {"../../outside.bin", true, "../../outside.bin"},
+      {"./../x.bin", true, "../x.bin"},
       {"../textures/x.png", true, "../textures/x.png"},
       {"..", true, ".."},
+      // A `..` after a named segment: an open resolves `a/..` through whatever `a` is (a link on
+      // Linux), where the admission collapses it by its text, so it is refused, raw or encoded.
+      {"a/../b.bin", false, ""},
+      {"a/../../outside.bin", false, ""},
+      {"../a/../b.bin", false, ""},
+      {"a/..", false, ""},
+      {"a/./../b.bin", false, ""},
+      {"x%2F..%2F..%2Foutside.bin", false, ""},
+      {"a%2F..%2Fb.bin", false, ""},
+      {"a/%2E%2E/b.bin", false, ""},
+      {"a/.%2e/b.bin", false, ""},
+      {"..%2Fa%2F..%2Fb.bin", false, ""},
       // Absolute, a drive, a scheme.
       {"/abs.bin", false, ""},
       {"%2Fabs.bin", false, ""},
@@ -910,7 +933,8 @@ TEST_CASE("uri_relative_path takes a relative URI and leaves where a climb leads
       {"a%7F.bin", false, ""},
   };
   for (const Row& row : rows) {
-    CAPTURE(row.uri);
+    const std::string uri = row.uri;  // its text in a failure's report, not its address
+    CAPTURE(uri);
     std::string path;
     CHECK(uri_relative_path(row.uri, path) == row.taken);
     if (row.taken) CHECK(path == row.path);

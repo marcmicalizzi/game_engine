@@ -203,7 +203,9 @@ Refusal check_stored_path_form(std::string_view path) noexcept;
 // relative to the naming file's directory, percent-decoded once into `out`. False when it is not
 // one: after the decoding, a backslash (a URI has none, and nothing is turned into a separator), a
 // control byte, a colon in the first segment (a scheme or a drive), a leading '/', empty, or over
-// 1,024 bytes. A `..` segment is kept as spelled: the roots are the door, not the text. A caller
+// 1,024 bytes. A `.` segment is dropped. A `..` segment at the front is kept as spelled: the roots
+// are the door, not the text; one after a named segment (`a/../b`, `../a/../b`, `a/..`) is refused,
+// since an open resolves `a/..` through whatever `a` is and the admission by its text. A caller
 // then admits `out` through `admit_stored_path` from that directory, so the URI gets every rule a
 // stored path gets after its own, the root check that decides where a climb leads among them.
 bool uri_relative_path(std::string_view uri, std::string& out);
