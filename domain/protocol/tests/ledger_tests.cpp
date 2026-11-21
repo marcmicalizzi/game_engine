@@ -2134,26 +2134,57 @@ TEST_CASE("ledger: a subject past a digest's bound is refused at the raise, and 
   }
   CHECK(h.sessions.digest_bytes_read() == 0);  // every refusal above read nothing
 
-  // Raised within the bounds, then the mesh grown past one: the detail says so, and differs.
+  // Raised within the bounds, then the mesh grown past one: the detail says so and differs, and a
+  // file past a bound was not read, so the subject is not comparable here: a close is refused for
+  // it, with the stamp or with that detail's own digest, whatever the file became between the two.
   const JsonValue item = at(w.raise(h, "Agent"), "reviews")[0];
   const std::string stamp(at(item, "raised_digest").as_string());
+  const auto close_with = [&](const JsonValue& id, const JsonValue& digest) {
+    return h.fails("review.close",
+                   obj({{"review", id},
+                        {"resolution", JsonValue("Accepted")},
+                        {"digest", digest},
+                        {"attribution", who("reviewer")}}),
+                   &error);
+  };
   {
     Bound bound("protocol.review.file_bytes", "4");
     const JsonValue now = opened_detail(h, at(item, "id"));
     CHECK(at(now, "digest").as_string() != stamp);
     CHECK_FALSE(at(now, "same").as_bool());
+    CHECK_FALSE(at(now, "comparable").as_bool());
+    REQUIRE(at(now, "not_comparable").size() == 1);
+    CHECK(at(now, "not_comparable")[0].as_string() == "props/crate.glb");
     REQUIRE(at(now, "unreadable").size() == 1);
     CHECK(at(now, "unreadable")[0].as_string() == "props/crate.glb");
     CHECK(num(at(now, "asset_bytes")) == 0);
-    CHECK(h.fails("review.close",
-                  obj({{"review", at(item, "id")},
-                       {"resolution", JsonValue("Accepted")},
-                       {"digest", JsonValue(stamp)},
-                       {"attribution", who("reviewer")}}),
-                  &error) == codes::k_invalid_argument);
-    CHECK(reason_of(error) == "subject moved");
+    CHECK(close_with(at(item, "id"), JsonValue(stamp)) == codes::k_invalid_argument);
+    CHECK(reason_of(error) == "subject not readable here");
+    CHECK(close_with(at(item, "id"), at(now, "digest")) == codes::k_invalid_argument);
+    CHECK(reason_of(error) == "subject not readable here");
   }
   CHECK(at(opened_detail(h, at(item, "id")), "digest").as_string() == stamp);  // put back
+  {
+    // Past the subject's bound, the same.
+    Bound bound("protocol.review.subject_bytes", "4");
+    const JsonValue now = opened_detail(h, at(item, "id"));
+    CHECK_FALSE(at(now, "comparable").as_bool());
+    CHECK(close_with(at(item, "id"), at(now, "digest")) == codes::k_invalid_argument);
+    CHECK(reason_of(error) == "subject not readable here");
+  }
+  {
+    // A record naming a second file after the raise, past a files bound of one: the file past it
+    // was never admitted or read, and is one entry with the count.
+    w.set(h, w.placement, "decal", JsonValue("props/lid.glb"));
+    Bound bound("protocol.review.subject_files", "1");
+    const JsonValue now = opened_detail(h, at(item, "id"));
+    CHECK_FALSE(at(now, "comparable").as_bool());
+    REQUIRE(at(now, "not_comparable").size() == 1);
+    CHECK(at(now, "not_comparable")[0].as_string() == "1 more past protocol.review.subject_files");
+    CHECK(close_with(at(item, "id"), at(now, "digest")) == codes::k_invalid_argument);
+    CHECK(reason_of(error) == "subject not readable here");
+  }
+  w.set(h, w.placement, "decal", JsonValue(""));
 
   // A directory and a FIFO are not regular files: they exist and cannot be read, so a raise over
   // one is refused naming them (never opened to wait), and a detail over a file that became one

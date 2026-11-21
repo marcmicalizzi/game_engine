@@ -96,7 +96,8 @@ struct SubjectPlan {
     bool unfollowed = false;
     // Admitted, there, and not read: not a regular file, an open the system could not confirm
     // was of the admitted path, or a read that failed. The subject is not comparable here, and a
-    // raise over it is refused. A file past a byte bound is not this: it has its own answers.
+    // raise over it is refused. A file past a byte bound is not this (a raise refuses it by the
+    // bound), though it too was not read and keeps a detail from comparing.
     bool unread = false;
     // A string a record holds that the guess took for a file and the subject does not list: a
     // folder at its admitted place was never a file, and digests as the string's constant line,

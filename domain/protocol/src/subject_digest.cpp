@@ -668,17 +668,23 @@ void finish_subject(SubjectPlan& plan, SubjectState& out) {
     } else if (!f.read) {
       out.unreadable.push_back(f.spelled);
     }
-    if (f.outside || f.unfollowed || f.unread) out.not_comparable.push_back(f.spelled);
+    // A file past a byte bound was not read either (a container past one followed nothing), so
+    // a detail cannot compare it and a close over it is refused: its bytes could change unseen
+    // between the detail and the close.
+    const bool past_bound = f.line == k_too_large || f.line == k_over_bound;
+    if (f.outside || f.unfollowed || f.unread || past_bound)
+      out.not_comparable.push_back(f.spelled);
   }
-  // The files past the bound, one line and one entry with their count.
+  // The files past the bound, one line and one entry with their count, never admitted or read.
   if (plan.past_files > 0) {
     JsonValue line = JsonValue::array();
     line.push_back(JsonValue("past the bound"));
     line.push_back(JsonValue(std::string_view(files_tunable.name())));
     line.push_back(JsonValue(plan.past_files));
     add_line(h, line);
-    out.unreadable.push_back(std::to_string(plan.past_files) + " more past " +
-                             files_tunable.name());
+    std::string past = std::to_string(plan.past_files) + " more past " + files_tunable.name();
+    out.unreadable.push_back(past);
+    out.not_comparable.push_back(std::move(past));
   }
   // A glTF whose names were not followed, and why.
   for (const SubjectPlan::Unfollowed& u : plan.unfollowed) {
