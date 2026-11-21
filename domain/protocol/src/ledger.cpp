@@ -810,6 +810,21 @@ RpcError names_not_read_error(const SubjectPlan::Unfollowed& u) {
                     std::move(data));
 }
 
+// A glTF of the subject naming a file by a URI that its rule or this host's roots refused: the
+// name by its index in the glTF (`<glTF>#images[3]`), never the URI's text.
+RpcError name_not_followed_error(const std::string& spelled) {
+  JsonValue data = JsonValue::object();
+  data.set("reason", JsonValue("names not read"));
+  JsonValue entries = JsonValue::array();
+  entries.push_back(JsonValue(spelled));
+  data.set("entries", std::move(entries));
+  return make_error(codes::k_invalid_argument,
+                    "the subject names " + spelled +
+                        ", by a URI this host's roots do not admit from its glTF's directory, so "
+                        "it could not be read: a raise is stamped over what its digest saw",
+                    std::move(data));
+}
+
 // A subject naming files outside this host's roots: `entries` by their spelling.
 RpcError not_readable_here_error(const Vector<std::string>& entries, std::string message) {
   JsonValue data = JsonValue::object();
@@ -850,7 +865,8 @@ bool digest_passes(Context& ctx, const std::string& session_id, DigestFor use, F
       if (use != DigestFor::raise) return false;
       Vector<std::string> outside;
       for (const SubjectPlan::File& f : plan.files) {
-        if (f.outside) outside.push_back(f.spelled);
+        // A glTF's name is refused below, by `names not read`: it was never followed.
+        if (f.outside && f.named_by.empty()) outside.push_back(f.spelled);
       }
       if (outside.empty()) return false;
       error = not_readable_here_error(
@@ -881,6 +897,15 @@ bool digest_passes(Context& ctx, const std::string& session_id, DigestFor use, F
     if (use == DigestFor::raise && !plan.unfollowed.empty()) {
       error = names_not_read_error(plan.unfollowed[0]);
       return false;
+    }
+    // Nor over a name a glTF of it names that the URI's rule or the roots refused: a `..` is no
+    // way out, the roots are the door, and a name they keep shut was never read.
+    if (use == DigestFor::raise) {
+      for (const SubjectPlan::File& f : plan.files) {
+        if (!f.unfollowed) continue;
+        error = name_not_followed_error(f.spelled);
+        return false;
+      }
     }
     // A pass is thrown away only when the subject moved: the document moving elsewhere (another
     // record edited, a write-back) leaves the reads standing when the subject's half composed
@@ -1172,10 +1197,10 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
           // change (protocol.md, "What a close is tied to").
           if (!params.digest.empty() && !seen_now.comparable) {
             e2 = not_readable_here_error(
-                seen_now.outside,
-                "review item " + std::to_string(r->id) + " names " + seen_now.outside[0] +
-                    ", which is outside this host's roots: close it on a host that can read "
-                    "every file it names");
+                seen_now.not_comparable,
+                "review item " + std::to_string(r->id) + " names " + seen_now.not_comparable[0] +
+                    ", which this host could not read: close it on a host that can read every "
+                    "file it names");
             return false;
           }
           if (!params.digest.empty() && params.digest != seen_now.digest) {

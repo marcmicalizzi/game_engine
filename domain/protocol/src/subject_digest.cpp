@@ -487,15 +487,17 @@ void read_subject_files(SubjectPlan& plan, const DigestBounds& bounds) {
       std::string path;
       io::Admitted admitted;
       io::Refusal why = io::Refusal::none;
-      if (!io::uri_relative_path(name.uri, path)) {
-        n.line = k_refused_uri;
-      } else if (!plan.has_roots || !io::admit_stored_path(plan.roots, path, base, admitted, why)) {
-        if (plan.has_roots && refused_by_text(why)) {
-          n.line = k_refused_uri;
-        } else {
-          n.outside = true;
-          n.line = k_outside;
-        }
+      // A `..` is no way out by itself: the URI's own rule, then the roots from the glTF's
+      // directory, decide. Refused by either, the name is not followed: never opened or sized, a
+      // line saying so (by its text's rule, the same on every host, or outside this host's
+      // roots), the subject not comparable here and a raise over it refused.
+      const bool uri_ok = io::uri_relative_path(name.uri, path);
+      if (!uri_ok || !plan.has_roots ||
+          !io::admit_stored_path(plan.roots, path, base, admitted, why)) {
+        const bool by_text = !uri_ok || (plan.has_roots && refused_by_text(why));
+        n.unfollowed = true;
+        n.outside = !by_text;
+        n.line = by_text ? k_refused_uri : k_outside;
       } else {
         n.native = std::move(admitted.native);
       }
@@ -588,6 +590,7 @@ void finish_subject(SubjectPlan& plan, SubjectState& out) {
     } else if (!f.read) {
       out.unreadable.push_back(f.spelled);
     }
+    if (f.outside || f.unfollowed) out.not_comparable.push_back(f.spelled);
   }
   // The files past the bound, one line and one entry with their count.
   if (plan.past_files > 0) {
@@ -612,7 +615,7 @@ void finish_subject(SubjectPlan& plan, SubjectState& out) {
     // Read, but not in full: what it names is unseen, which a reader is told.
     out.unreadable.push_back(u.gltf);
   }
-  out.comparable = out.outside.empty();
+  out.comparable = out.not_comparable.empty();
   // 6. Each bound passed, by its name: a subject digested past one is never equal to one that was
   // not, so nothing is digested silently weaker.
   for (const DigestOver& o : plan.over) {

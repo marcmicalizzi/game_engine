@@ -672,7 +672,8 @@ bool uri_relative_path(std::string_view uri, std::string& out) {
     const usize slash = out.find('/', start);
     const std::string_view part = std::string_view(out).substr(
         start, slash == std::string::npos ? out.size() - start : slash - start);
-    if (part == "..") return false;
+    // A `..` is no way out by itself: the caller admits the path through the roots from the naming
+    // file's directory, and they decide where a climb leads.
     // A colon in the first segment is a scheme or a drive (`http:`, `C:`); a later one the
     // admission's text rules refuse as a stream.
     if (first && part.find(':') != std::string_view::npos) return false;

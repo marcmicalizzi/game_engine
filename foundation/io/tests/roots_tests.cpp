@@ -810,10 +810,11 @@ TEST_CASE("open_regular_unmoved refuses a file the admitted path no longer leads
 // A URI one file names another by (a glTF's buffers and images; docs/subsystems/io.md, "Roots"):
 // decoded once, and refused before any admission when the decoded text has a backslash (a URI has
 // none, and nothing is turned into a separator), a control byte, a colon in its first segment (a
-// scheme or a drive), a leading '/' or a `..` segment. Each text below is one a reader of the
-// decoded string alone would take for a path under the naming file's directory, or a near
-// neighbour of one.
-TEST_CASE("uri_relative_path takes a relative URI and refuses every way out of its directory") {
+// scheme or a drive) or a leading '/'. A `..` segment is not a way out by itself: the roots are
+// the door, so a climb is taken as it is spelled and the admission from the naming file's
+// directory decides where it leads. Each text below is one a reader of the decoded string alone
+// would take for a path, or a near neighbour of one.
+TEST_CASE("uri_relative_path takes a relative URI and leaves where a climb leads to the roots") {
   struct Row {
     const char* uri;
     bool taken;
@@ -838,13 +839,14 @@ TEST_CASE("uri_relative_path takes a relative URI and refuses every way out of i
       {"%5C%5Chost%5Cs%5Cx.bin", false, ""},
       {"%5c%5chost%5cs%5cx.bin", false, ""},
       {"%5Cx.bin", false, ""},
-      // A climb spelled with encoded slashes or dots.
-      {"x%2F..%2F..%2Foutside.bin", false, ""},
-      {"%2E%2E/outside.bin", false, ""},
-      {"%2e%2e%2foutside.bin", false, ""},
-      {"../outside.bin", false, ""},
-      {"a/../../outside.bin", false, ""},
-      {"..", false, ""},
+      // A climb, plain or spelled with encoded slashes or dots: taken, decoded, for the roots.
+      {"x%2F..%2F..%2Foutside.bin", true, "x/../../outside.bin"},
+      {"%2E%2E/outside.bin", true, "../outside.bin"},
+      {"%2e%2e%2foutside.bin", true, "../outside.bin"},
+      {"../outside.bin", true, "../outside.bin"},
+      {"a/../../outside.bin", true, "a/../../outside.bin"},
+      {"../textures/x.png", true, "../textures/x.png"},
+      {"..", true, ".."},
       // Absolute, a drive, a scheme.
       {"/abs.bin", false, ""},
       {"%2Fabs.bin", false, ""},

@@ -91,6 +91,9 @@ struct SubjectPlan {
     // file the subject names.
     std::string named_by;
     std::string uri;
+    // A name a glTF names that the URI's rule, the stored path's text rules or the roots refused:
+    // not followed, never opened or sized, and the subject not comparable here.
+    bool unfollowed = false;
   };
   Vector<File> files;
   // Files past the files bound, named by the records or a glTF and never collected: one count,

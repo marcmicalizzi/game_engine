@@ -1246,7 +1246,8 @@ TEST_CASE("ledger: a host that cannot see a subject's file says so, and never ca
 // admit one of them says it cannot compare and refuses a person's close, whatever names its roots
 // have; and one that lacks a root by name says so too. The document is `w/world`; the file its
 // record names, `../../c/rock.png`, is under A's `content` and under neither of B's roots.
-TEST_CASE("ledger: two hosts with the same root names in different places compare only what both read") {
+TEST_CASE(
+    "ledger: two hosts with the same root names in different places compare only what both read") {
   test::TempDir tmp("protocol_ledger_places");
   const std::filesystem::path scratch(tmp.path());
   const std::string dir = (scratch / "w" / "world").string();
@@ -1333,9 +1334,10 @@ TEST_CASE("ledger: a subject's listed file is a stored path, never an absolute o
 }
 
 // What a glTF names is part of it (protocol.md, "What a close is tied to"): a `.gltf` the subject
-// names has its external buffers and images read too, each held to the glTF's own directory by
-// the importer's rule (relative, no `..`, not absolute) and counted under the digest's bounds; a
-// `data:` URI is in the file already. The geometry beside a `.gltf` rewritten is "subject moved".
+// names has its external buffers and images read too, each a relative URI admitted by the host's
+// roots from the glTF's directory (a `..` included, as the importer reads it) and counted under the
+// digest's bounds; a `data:` URI is in the file already. The geometry beside a `.gltf` rewritten,
+// or the image above its directory, is "subject moved".
 TEST_CASE("ledger: the files a glTF subject names are read with it") {
   test::TempDir tmp("protocol_ledger_gltf");
   const std::string dir = tmp.file("doc");
@@ -1380,22 +1382,36 @@ TEST_CASE("ledger: the files a glTF subject names are read with it") {
   const JsonValue item = at(raised, "reviews")[0];
   const JsonValue& stamped = at(raised, "subject");
   CHECK(num(at(stamped, "assets")) == 4);
-  // The glTF's own bytes, and the buffer's and the image's four each.
+  // The glTF's own bytes, the buffer's and the image's four each, and the two of the image above
+  // the glTF's directory: a `..` is no way out, the roots are the door, and they admit it.
   CHECK(num(at(stamped, "asset_bytes")) ==
-        static_cast<i64>(std::filesystem::file_size(props / "crate.gltf")) + 8);
-  REQUIRE(at(stamped, "unreadable").size() == 1);  // the one that climbs out of its directory
-  CHECK(at(stamped, "unreadable")[0].as_string() == "props/crate.gltf#images[1]");
+        static_cast<i64>(std::filesystem::file_size(props / "crate.gltf")) + 10);
+  CHECK(at(stamped, "unreadable").size() == 0);
 
-  // The buffer rewritten at the same length, its time put back: the close is refused.
-  const auto when = std::filesystem::last_write_time(props / "crate.bin");
-  {
-    std::ofstream(props / "crate.bin", std::ios::binary | std::ios::trunc) << "dcba";
-  }
-  std::filesystem::last_write_time(props / "crate.bin", when);
+  // Each rewritten at the same length, its time put back: the close is refused. The image above
+  // the glTF's directory first, then the buffer, each against an item of its own.
+  const auto rewrite = [](const std::filesystem::path& file, const char* bytes) {
+    const auto when = std::filesystem::last_write_time(file);
+    {
+      std::ofstream(file, std::ios::binary | std::ios::trunc) << bytes;
+    }
+    std::filesystem::last_write_time(file, when);
+  };
+  const JsonValue second = at(h.ok("review.raise", w.raise_params("Agent")), "reviews")[0];
+  rewrite(std::filesystem::path(dir) / "up.png", "pu");
   CHECK(h.fails("review.close",
                 obj({{"review", at(item, "id")},
                      {"resolution", JsonValue("Accepted")},
                      {"digest", at(item, "raised_digest")},
+                     {"attribution", who("reviewer")}}),
+                &error) == codes::k_invalid_argument);
+  CHECK(reason_of(error) == "subject moved");
+  rewrite(std::filesystem::path(dir) / "up.png", "up");
+  rewrite(props / "crate.bin", "dcba");
+  CHECK(h.fails("review.close",
+                obj({{"review", at(second, "id")},
+                     {"resolution", JsonValue("Accepted")},
+                     {"digest", at(second, "raised_digest")},
                      {"attribution", who("reviewer")}}),
                 &error) == codes::k_invalid_argument);
   CHECK(reason_of(error) == "subject moved");
@@ -1458,12 +1474,13 @@ bool make_dir_link(const std::string& target, const std::string& link) {
 }  // namespace
 
 // Every file a glTF names passes the host's roots as a record's own file does (protocol.md, "What a
-// close is tied to"; T174): its URI's own rule first (decoded once; a backslash, a scheme, a drive,
-// an absolute form or a `..` refuses it), then `io::admit_stored_path` from the glTF's admitted
-// directory, links resolved and held to the roots. Refused, it is a line saying so and never
-// opened or sized: the detail's opens and bytes are what the glTF and its readable buffer cost,
-// and nothing about the place it named. Answered by its index in the glTF, never by its text. The
-// root is a folder of the case's own scratch, and `outside.bin` lies in the scratch above it.
+// close is tied to"; T174): its URI's own rule first (decoded once; a backslash, a scheme, a drive
+// or an absolute form refuses it, and a `..` is left to the roots), then `io::admit_stored_path`
+// from the glTF's admitted directory, links resolved and held to the roots. Refused, it is not
+// followed: a line saying so, never opened or sized — the detail's opens and bytes are what the
+// glTF and its readable buffer cost, and nothing about the place it named — the detail not
+// comparable, and a raise over it refused. Answered by its index in the glTF, never by its text.
+// The root is a folder of the case's own scratch, and `outside.bin` lies in the scratch above it.
 TEST_CASE("ledger: a glTF's named file passes the host's roots, and one refused is never opened") {
   test::TempDir tmp("protocol_ledger_gltf_roots");
   const std::filesystem::path scratch(tmp.path());
@@ -1501,7 +1518,28 @@ TEST_CASE("ledger: a glTF's named file passes the host's roots, and one refused 
   CHECK(base.bytes == plain + 4);
   CHECK(at(now, "unreadable").size() == 0);
 
-  // The climb: `\` decoded from `%5C`, four levels up to the file above the root.
+  JsonValue error;
+  // A plain `..` climb, three levels up from `props` to the file above the root: the URI's rule
+  // leaves the climb to the roots, which refuse it, so it is never opened or sized; the detail
+  // cannot compare, and a raise over it is refused naming it by its index.
+  const u64 above = write_gltf(R"({"uri":"../../../outside.bin"})");
+  const Reads up = reads_of(h, [&] { now = opened_detail(h, item); });
+  CHECK(up.opens == base.opens);
+  CHECK(up.bytes == base.bytes - plain + above);
+  REQUIRE(at(now, "outside").size() == 1);
+  CHECK(at(now, "outside")[0].as_string() == "props/crate.gltf#images[0]");
+  CHECK_FALSE(at(now, "comparable").as_bool());
+  const Reads refused = reads_of(h, [&] {
+    CHECK(h.fails("review.raise", w.raise_params("Agent"), &error) == codes::k_invalid_argument);
+  });
+  // A raise sizes the glTF's buffer before it reads it, one open more than the detail's; the
+  // refused name, never.
+  CHECK(refused.opens == up.opens + 1);
+  CHECK(reason_of(error) == "names not read");
+  CHECK(at(at(error, "data"), "entries")[0].as_string() == "props/crate.gltf#images[0]");
+
+  // The climb: `\` decoded from `%5C`, four levels up to the file above the root, refused by the
+  // URI's own text: not followed either, and the same.
   const u64 climbing = write_gltf(R"({"uri":"x%5C..%5C..%5C..%5C..%5Coutside.bin"})");
   const Reads climb = reads_of(h, [&] { now = opened_detail(h, item); });
   CHECK(climb.opens == base.opens);
@@ -1510,12 +1548,14 @@ TEST_CASE("ledger: a glTF's named file passes the host's roots, and one refused 
   REQUIRE(at(now, "unreadable").size() == 1);
   CHECK(at(now, "unreadable")[0].as_string() == "props/crate.gltf#images[0]");
   CHECK(at(now, "outside").size() == 0);
-  CHECK(at(now, "comparable").as_bool());
-  // A raise over it answers no figure for the file it never sized: the glTF and the buffer fill
-  // the subject's bytes exactly, and the raise stands.
+  CHECK_FALSE(at(now, "comparable").as_bool());
+  // A raise over it is refused for the name it never followed, and answers no figure for the file
+  // it never sized: the glTF and the buffer fill the subject's bytes exactly.
   {
     Bound bound("protocol.review.subject_bytes", std::to_string(climbing + 4).c_str());
-    (void)w.raise(h, "Agent");
+    CHECK(h.fails("review.raise", w.raise_params("Agent"), &error) == codes::k_invalid_argument);
+    CHECK(reason_of(error) == "names not read");
+    CHECK(at(error, "data").find("figure") == nullptr);
   }
 
   // A share's name, `\\host\share\x.bin` encoded: refused by the URI's own rule, so nothing is
@@ -1525,6 +1565,7 @@ TEST_CASE("ledger: a glTF's named file passes the host's roots, and one refused 
   CHECK(share.opens == base.opens);
   REQUIRE(at(now, "unreadable").size() == 1);
   CHECK(at(now, "unreadable")[0].as_string() == "props/crate.gltf#images[0]");
+  CHECK_FALSE(at(now, "comparable").as_bool());
 
   // A link under the root to a directory outside it: resolved, and outside the roots.
   // The link alone is removed, before the scratch is, whatever the case did.

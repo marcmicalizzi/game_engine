@@ -202,9 +202,10 @@ Refusal check_stored_path_form(std::string_view path) noexcept;
 // **A URI one file names another by** (a glTF's `buffers[].uri` and `images[].uri`) as a path
 // relative to the naming file's directory, percent-decoded once into `out`. False when it is not
 // one: after the decoding, a backslash (a URI has none, and nothing is turned into a separator), a
-// control byte, a colon in the first segment (a scheme or a drive), a leading '/', a `..`
-// segment, empty, or over 1,024 bytes. A caller then admits `out` through `admit_stored_path` from
-// that directory, so the URI gets every rule a stored path gets after its own.
+// control byte, a colon in the first segment (a scheme or a drive), a leading '/', empty, or over
+// 1,024 bytes. A `..` segment is kept as spelled: the roots are the door, not the text. A caller
+// then admits `out` through `admit_stored_path` from that directory, so the URI gets every rule a
+// stored path gets after its own, the root check that decides where a climb leads among them.
 bool uri_relative_path(std::string_view uri, std::string& out);
 
 // Whether `path` is `dir` or continues it by whole components, both canonical (case-insensitive,

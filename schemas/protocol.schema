@@ -2623,10 +2623,15 @@ struct SubjectState @version(1) {
   /// Files the subject names that are outside this host's roots (a root it does not have, or a
   /// place its roots do not admit), as they were spelled: never opened.
   outside: string[]
-  /// The digest compares with another host's: every file the subject names is under this host's
-  /// roots. False when `outside` is not empty, and then `same` is false and a close carrying a
-  /// digest is refused (`subject not readable here`), never called "subject moved".
+  /// The digest compares with another host's: every file the subject names was read and hashed
+  /// here, or is honestly not there. False when `not_comparable` is not empty, and then `same` is
+  /// false and a close carrying a digest is refused (`subject not readable here`), never called
+  /// "subject moved".
   comparable: bool = false
+  /// What keeps this host from comparing, as answered: every entry of `outside`, and every name a
+  /// glTF of the subject names that was not followed (its URI's rule, the stored path's text rules
+  /// or the roots refused it; never opened).
+  not_comparable: string[]
   /// What the stream covered: the subject's records with their ancestors each once, the blobs and
   /// the assets they and the subject name, and the bytes of the assets read and hashed.
   records: u32 = 0
