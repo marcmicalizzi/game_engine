@@ -267,12 +267,16 @@ bool seated_species(const FloraFile& file) {
 // profiles, every tree species, `broadleaf`, `conifer`, `birch`, `ancient` and the sward. The
 // willow, the orchard, the plain shrub, the fern, the tuft, the herb, the meadow plant, the roots
 // and the date palm solve no chain and bake no normal.
+}  // namespace
+
 bool bakes_normals(const FloraFile& file) {
   const std::string& s = file.species;
   return file.regeneration || alpine_profile(s) != nullptr || shrub_profile(s) != nullptr ||
          detail::is_tree_species(s) || s == k_species_broadleaf || s == k_species_conifer ||
          s == k_species_birch || s == k_species_ancient || s == "sward";
 }
+
+namespace {
 
 u64 container_hash(const FloraFile& file) {
   u64 h = flora_source_hash(file);

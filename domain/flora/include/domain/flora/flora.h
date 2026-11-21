@@ -205,6 +205,12 @@ u64 fold_foliage_optics(u64 h) noexcept;
 bool flora_source_hash_with(const FloraFile& file, const assets::MeshGeneratorInputs& inputs,
                             u64& out, std::string& error);
 
+// Whether the file's family bakes a normal atlas — whether `solve_flora` hands it an impostor
+// chain — decided from the family alone, before any solve, so the container key can take
+// `k_baked_normal_convention` for exactly those. A second statement of `solve_flora`'s dispatch;
+// `flora: bakes_normals answers as the solver's dispatch does` holds the two equal.
+bool bakes_normals(const FloraFile& file);
+
 // The build key over that hash: `assets::generated_mesh_build_key` —
 // `cluster_cache_key(source_hash, lod, false, page_bytes)`, no weld, since the solver's vertices
 // are shared exactly where they are meant to be, with the material pack's key when one with roles

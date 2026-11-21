@@ -4,8 +4,11 @@
 
 #include <core/hash/hash.h>
 #include <domain/assets/mesh_generator.h>
+#include <domain/flora/alpine.h>
 #include <domain/flora/flora.h>
 #include <domain/flora/impostor.h>
+#include <domain/flora/regeneration.h>
+#include <domain/flora/shrubs.h>
 #include <domain/flora/trees.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/flora_species.h>
@@ -902,11 +905,11 @@ TEST_CASE("impostor chain: the conifer profiles and the matured conifer build it
   // The broadleaf solver's chain version (G121) where the conifers take theirs, then the seat's
   // (G201) and the structural table's (A45).
   CHECK(oak_container ==
-        hash_combine(hash_combine(hash_combine(hash_combine(oak_hash,
-                                                            flora::k_baked_normal_convention),
-                                               flora::k_broadleaf_chain_version),
-                                  flora::k_flora_seat_version),
-                     flora::k_flora_structure_version));
+        hash_combine(
+            hash_combine(hash_combine(hash_combine(oak_hash, flora::k_baked_normal_convention),
+                                      flora::k_broadleaf_chain_version),
+                         flora::k_flora_seat_version),
+            flora::k_flora_structure_version));
   // Off is the container it was: no level, no atlas.
   flora::FloraFile off;
   REQUIRE(flora::read_flora_file(R"({"species":"pine","tree":{"height_m":8,)"
@@ -917,6 +920,78 @@ TEST_CASE("impostor chain: the conifer profiles and the matured conifer build it
   CHECK(plain.impostors.empty());
   CHECK(plain.images.empty());
   CHECK(plain.materials.size() == 2u);
+}
+
+// R202: the container key takes `k_baked_normal_convention` for the families `bakes_normals` names,
+// a list kept by hand beside `solve_flora`'s dispatch; a family whose solver hands back a chain and
+// is missing from it would cache its normal atlases without the convention. One recipe per branch
+// of the dispatch, each at the smallest parameters a test here already uses or the defaults: a
+// regeneration form, the first alpine and the first shrub profile, a tree species, and every named
+// family. Left out: the legacy-maturity path (`tree.age_years` above zero), which resolves to
+// broadleaf, conifer or a named family's own solver, all of which are here.
+TEST_CASE("flora: bakes_normals answers as the solver's dispatch does") {
+  Vector<flora::FloraFile> files;
+  std::string error;
+  {
+    flora::FloraFile f;
+    f.species = geometry::flora_species_info(flora::regeneration_profiles().front().species).name;
+    f.regeneration.emplace();
+    f.regeneration->height_m = .7f;
+    f.regeneration->leader_loss = .3f;
+    f.regeneration->recovery = .8f;
+    files.push_back(std::move(f));
+  }
+  {
+    flora::FloraFile f;
+    f.species = geometry::flora_species_info(flora::alpine_profiles().front().species).name;
+    files.push_back(std::move(f));
+  }
+  {
+    flora::FloraFile f;
+    f.species = geometry::flora_species_info(flora::shrub_profiles().front().species).name;
+    files.push_back(std::move(f));
+  }
+  {
+    flora::FloraFile f;
+    REQUIRE(flora::read_flora_file(R"({"species":"pine","tree":{"height_m":8,)"
+                                   R"("triangle_budget":20000}})",
+                                   f, error));
+    files.push_back(std::move(f));
+  }
+  {
+    flora::FloraFile f;
+    f.species = flora::k_species_broadleaf;
+    f.broadleaf = small_oak();
+    files.push_back(std::move(f));
+  }
+  {
+    flora::FloraFile f;
+    f.species = flora::k_species_conifer;
+    f.conifer = small_spruce();
+    files.push_back(std::move(f));
+  }
+  for (const char* species :
+       {flora::k_species_birch, flora::k_species_ancient, "sward", flora::k_species_willow,
+        flora::k_species_orchard, flora::k_species_shrub, flora::k_species_fern,
+        flora::k_species_tuft, flora::k_species_herb, flora::k_species_meadow, "roots",
+        flora::k_species_date_palm}) {
+    flora::FloraFile f;
+    f.species = species;
+    files.push_back(std::move(f));
+  }
+  u32 chains = 0;
+  for (const flora::FloraFile& file : files) {
+    assets::MeshData mesh;
+    flora::Motion motion;
+    flora::TreeLevels levels;
+    CAPTURE(file.species);
+    REQUIRE_MESSAGE(flora::solve_flora(file, mesh, motion, nullptr, nullptr, error, &levels),
+                    error);
+    MESSAGE(file.species << ": " << levels.levels.size() << " baked levels");
+    CHECK(flora::bakes_normals(file) == !levels.levels.empty());
+    chains += levels.levels.empty() ? 0 : 1;
+  }
+  CHECK(chains == 9u);  // the first nine recipes: the regeneration form to the sward
 }
 
 TEST_CASE("impostor bake: a conifer's levels draw its needle mass, no less and no more") {

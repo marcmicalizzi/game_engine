@@ -1210,7 +1210,10 @@ baked, not the tree's shape, so it is folded into the container's key (`containe
 family that bakes a normal, which is every family whose solver hands back an impostor chain: a
 regeneration form, the alpine and shrub profiles, every tree species, `broadleaf`, `conifer`,
 `birch`, `ancient` and the sward. The willow, the orchard, the plain shrub, the fern, the tuft, the
-herb, the meadow plant, the roots and the date palm bake none and their keys do not take it, and
+herb, the meadow plant, the roots and the date palm bake none and their keys do not take it
+(`bakes_normals` in `flora.h` names the families from the species alone, before any solve, and
+`flora: bakes_normals answers as the solver's dispatch does` solves one recipe per branch of
+`solve_flora` and holds its answer to whether the solve handed back a chain), and
 neither does `flora_source_hash`, the shape the deadwood and the litter key by. Outside flora the
 one other bake through `bake_level` is the wetland's far cards, and `wetland::source_hash` folds
 the same constant in beside `k_wetland_version`; the sward's ground bake in `engine-content`
