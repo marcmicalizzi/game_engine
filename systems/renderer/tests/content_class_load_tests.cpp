@@ -1797,3 +1797,36 @@ TEST_CASE(
   CHECK(recorded.levels[static_cast<u32>(table.find("violence"))] == 2);
   CHECK(scene.held.levels[static_cast<u32>(scene.categories.find("fixture_glow"))] == 2);
 }
+
+// **The instance a load makes after a streamed tail goes through the door** (C64): a streamed world
+// whose tail takes every file instance leaves the load to make one instance of mesh 0, decided by
+// mesh 0's own class as any instance the load makes, so a refused mesh 0 is left out and counted.
+TEST_CASE("content classes at load: the mesh-0 instance made after a streamed tail is decided") {
+  if (scene_gen::GeneratorRegistry::global().find_placement("authored") == nullptr) {
+    MESSAGE("no authored generator in this build");
+    return;
+  }
+  const test::TempDir tmp("renderer_classes_tail");
+  REQUIRE(tmp.ok());
+  const Grid glow = write_grid(tmp, "glow.clusters", 17, "glow.png", glow_record(1));
+  const Grid a = write_grid(tmp, "a.clusters", 9, "a.png");
+  const std::string scene_json =
+      R"({"format":"engine.scene.v1","meshes":[{"path":"glow.clusters"},{"path":"a.clusters"}],)"
+      R"("instances":[{"mesh":1,"translation":[3,0,4],"rotation":[0,0,0,1]},)"
+      R"({"mesh":1,"translation":[9,0,2],"rotation":[0,0,0,1]},)"
+      R"({"mesh":1,"translation":[-6,0,5],"rotation":[0,0,0,1]}],)"
+      R"("world":{"tile_size":32,"rings":[{"radius":1.5},{"radius":4},{"radius":9}]}})";
+  REQUIRE(io::write_file(tmp.file("scene.json"), scene_json) == io::Status::Ok);
+  std::string error;
+  SceneDesc desc;
+  REQUIRE_MESSAGE(read_scene_file(tmp.file("scene.json"), desc, error), error);
+  desc.ddc = tmp.file("ddc");
+  REQUIRE_FALSE(desc.stream);
+  SceneData scene;
+  REQUIRE_MESSAGE(load_scene(desc, scene, error), error);
+  CHECK(scene.authored.streamed == 3);
+  CHECK(std::none_of(scene.instances.begin(), scene.instances.end(),
+                     [](const auto& instance) { return instance.mesh == 0; }));
+  REQUIRE(row(scene, "fixture_glow") != nullptr);
+  CHECK(row(scene, "fixture_glow")->omitted == 1);
+}
