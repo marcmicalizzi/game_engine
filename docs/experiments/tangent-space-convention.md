@@ -119,7 +119,23 @@ triangle where the derived one is the chord's. Measured, RTX 5090:
   are where the two runs' cuts or their silhouettes differ and where the file's own tangents disagree
   with the derived frame: the first leg measured its bitangent opposite the old derived frame on 77 %
   of its corners, so on the other 23 % the file states the handedness R202 replaced, and its own
-  frame and the derived one now differ there. That is the file's, not a frame's.
+  frame and the derived one now differ there.
+- **Split by the sign of the triangle's UV area** (the same measurement, `gltf G2: the Khronos
+  samples' tangents against the per-triangle frame` in `domain/assets/tests/import_extras_tests.cpp`,
+  2026-11-20; the UVs as the file has them, v down): of SciFiHelmet's 70,074 corners, the 16,012
+  whose stated bitangent is along +dP/dv (the 23 %) are **15,929 on triangles of positive UV area
+  and 83 on negative**; the 54,062 whose bitangent is along -dP/dv are 31 and 54,031. The stated
+  tangent is within 10 degrees of dP/du on every corner. So the file's bitangent follows the sign of
+  the UV area almost exactly as `cross(N, T)` with one handedness would: its `w` does not turn over
+  on the islands whose UVs run the other way (most likely mirrored islands an exporter did not
+  flip), where MikkTSpace run on the same UVs would.
+- What is established: the engine reads a file's own tangents as glTF 2.0 requires (the bitangent
+  `cross(N, T) * w`, 3.7.2.1), as a reference viewer does; the derived frame follows the UVs on
+  every island; and where a file's `w` contradicts its own UVs, as on those 23 % of SciFiHelmet's
+  corners, the two routes (the whole load with the stream, and `--stream` or a tile, which derive)
+  draw that island's relief along v the opposite way. What is not: which of the two the artist's
+  bake meant, which is the file's matter and was not measured here; a normal map baked against
+  MikkTSpace frames would be drawn right by the derived route there and turned over by the file's.
 
 ## What it moved
 
