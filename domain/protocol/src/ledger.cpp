@@ -768,6 +768,29 @@ RpcError over_error(const DigestOver& over) {
                     std::move(data));
 }
 
+// A subject naming a glTF whose names were not followed: by its stored spelling, and for the JSON
+// bound the bound and the glTF's size.
+RpcError names_not_read_error(const SubjectPlan::Unfollowed& u) {
+  JsonValue data = JsonValue::object();
+  data.set("reason", JsonValue("names not read"));
+  JsonValue entries = JsonValue::array();
+  entries.push_back(JsonValue(u.gltf));
+  data.set("entries", std::move(entries));
+  std::string why = " does not parse as the engine's JSON reader reads it";
+  if (u.bound != nullptr) {
+    data.set("bound", JsonValue(std::string_view(u.bound)));
+    data.set("limit", JsonValue(u.limit));
+    data.set("figure", JsonValue(u.figure));
+    why = std::string(" is past ") + u.bound + " (" + std::to_string(u.limit) + "): it comes to " +
+          std::to_string(u.figure);
+  }
+  return make_error(codes::k_invalid_argument,
+                    "the subject names " + u.gltf + ", which" + why +
+                        ", so the files it names could not be read: a raise is stamped over "
+                        "what its digest saw",
+                    std::move(data));
+}
+
 // A subject naming files outside this host's roots: `entries` by their spelling.
 RpcError not_readable_here_error(const Vector<std::string>& entries, std::string message) {
   JsonValue data = JsonValue::object();
@@ -830,6 +853,12 @@ bool digest_passes(Context& ctx, const std::string& session_id, DigestFor use, F
       return false;
     }
     if (outside_refused()) return false;
+    // Nor over a glTF whose names its digest could not follow: the item would be stamped over
+    // geometry the digest never saw.
+    if (use == DigestFor::raise && !plan.unfollowed.empty()) {
+      error = names_not_read_error(plan.unfollowed[0]);
+      return false;
+    }
     bool moved = !same_document(session, plan);
     if (!moved) {
       finish_subject(plan, state);

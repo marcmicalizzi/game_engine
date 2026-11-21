@@ -201,10 +201,11 @@ struct GltfName {
 // The external buffers and images a glTF's JSON names, in its order and each URI once, up to
 // `room` of them (what is left of the files bound): the rest are counted into `past` as the glTF
 // lists them, never collected. A `data:` URI is in the file already, and a `.glb` holds its own,
-// so neither names anything.
-void gltf_names(std::string_view text, u64 room, Vector<GltfName>& out, u64& past) {
+// so neither names anything. False when the engine's JSON reader refuses the text (nested past its
+// depth, say, which the importer may still take): its names are then not known.
+bool gltf_names(std::string_view text, u64 room, Vector<GltfName>& out, u64& past) {
   JsonValue doc;
-  if (!parse_json(text, doc).ok || !doc.is_object()) return;
+  if (!parse_json(text, doc).ok || !doc.is_object()) return false;
   HashSet<std::string> seen;
   for (const char* list : {"buffers", "images"}) {
     const JsonValue* entries = doc.find(list);
@@ -227,6 +228,7 @@ void gltf_names(std::string_view text, u64 room, Vector<GltfName>& out, u64& pas
           GltfName{std::string(list) + "[" + std::to_string(at) + "]", std::move(text_of)});
     }
   }
+  return true;
 }
 
 // Whether a refusal is the text's alone, the same on every host (a stored path's form, its
@@ -434,7 +436,8 @@ void read_subject_files(SubjectPlan& plan, const DigestBounds& bounds) {
     const u64 room = plan.files.size() >= bounds.files ? 0 : bounds.files - plan.files.size();
     Vector<GltfName> names;
     u64 past = 0;
-    gltf_names(gltf, room, names, past);
+    if (!gltf_names(gltf, room, names, past))
+      plan.unfollowed.push_back(SubjectPlan::Unfollowed{plan.files[i].spelled, nullptr, 0, 0});
     gltf = std::string();  // the tree is gone with the function; the text goes now
     plan.names_collected += names.size();
     plan.past_files += past;
@@ -529,6 +532,8 @@ void finish_subject(SubjectPlan& plan, SubjectState& out) {
     line.push_back(JsonValue(u.limit));
     line.push_back(JsonValue(u.figure));
     add_line(h, line);
+    // Read, but not in full: what it names is unseen, which a reader is told.
+    out.unreadable.push_back(u.gltf);
   }
   out.comparable = out.outside.empty();
   // 6. Each bound passed, by its name: a subject digested past one is never equal to one that was

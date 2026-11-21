@@ -1520,6 +1520,52 @@ TEST_CASE("ledger: past the files bound a digest collects and answers a handful 
   CHECK(at(now, "unreadable")[3].as_string() == "100007 more past protocol.review.subject_files");
 }
 
+// A glTF whose names cannot be followed says so (protocol.md, "What a close is tied to"): one the
+// engine's JSON reader refuses (nested past its depth, which the importer may still take), or one
+// past `protocol.review.gltf_json_bytes`, is hashed and listed as not followed, and a raise over it
+// is refused naming it, so no item is stamped over geometry its digest never saw.
+TEST_CASE("ledger: a glTF whose names cannot be followed says so, and no raise is made over it") {
+  test::TempDir tmp("protocol_ledger_deep");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  h.open(dir, true);
+  DigestWorld w;
+  w.make(h, dir);
+  const JsonValue item = at(at(w.raise(h, "Agent"), "reviews")[0], "id");
+  const std::filesystem::path props = std::filesystem::path(dir) / "props";
+  {
+    std::ofstream(props / "crate.bin", std::ios::binary) << "abcd";
+  }
+  {
+    std::ofstream out(props / "deep.gltf", std::ios::binary);
+    out << R"({"asset":{"version":"2.0"},"buffers":[{"uri":"crate.bin","byteLength":4}],)"
+        << R"("extras":)" << std::string(300, '[') << std::string(300, ']') << "}";
+  }
+  w.set(h, w.placement, "mesh", JsonValue("props/deep.gltf"));
+  const JsonValue now = opened_detail(h, item);
+  REQUIRE(at(now, "unreadable").size() == 1);
+  CHECK(at(now, "unreadable")[0].as_string() == "props/deep.gltf");
+  JsonValue error;
+  CHECK(h.fails("review.raise", w.raise_params("Agent"), &error) == codes::k_invalid_argument);
+  CHECK(reason_of(error) == "names not read");
+  CHECK(at(at(error, "data"), "entries")[0].as_string() == "props/deep.gltf");
+
+  // One past the JSON bound: the same, naming the bound and the figure.
+  {
+    std::ofstream(props / "crate.gltf", std::ios::binary)
+        << R"({"asset":{"version":"2.0"},"buffers":[{"uri":"crate.bin","byteLength":4}]})";
+  }
+  w.set(h, w.placement, "mesh", JsonValue("props/crate.gltf"));
+  (void)w.raise(h, "Agent");  // within the bound, it raises
+  Bound bound("protocol.review.gltf_json_bytes", "16");
+  CHECK(h.fails("review.raise", w.raise_params("Agent"), &error) == codes::k_invalid_argument);
+  CHECK(reason_of(error) == "names not read");
+  CHECK(bound_in(error) == "protocol.review.gltf_json_bytes");
+  CHECK(num(at(at(error, "data"), "limit")) == 16);
+  CHECK(num(at(at(error, "data"), "figure")) ==
+        static_cast<i64>(std::filesystem::file_size(props / "crate.gltf")));
+}
+
 // What a digest reads is bounded, by four bounds named as tunables (protocol.md, "What it costs"):
 // a raise past one is refused naming it and the figure, and a detail or a close past one says so
 // in the stream, which differs from the stamp, so a file grown past its bound is "subject moved".
