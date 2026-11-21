@@ -34,6 +34,7 @@
 #include <core/hash/sha256.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
+#include <foundation/io/roots.h>
 
 #include <string>
 #include <string_view>
@@ -74,14 +75,19 @@ struct SubjectPlan {
   u32 records = 0;
   u32 blobs = 0;
   Vector<Id128> gone;
+  // The host's roots when the plan was composed, for admitting the files a glTF names with the
+  // host let go (`io::Roots::read_copy`); `has_roots` false when the host has none.
+  io::Roots roots;
+  bool has_roots = false;
   struct File {
     std::string spelled;
     std::string native;  // empty: the roots did not admit it
     std::string line;    // the hash, or why it was not read; filled by `read_subject_files`
     bool read = false;
     bool outside = false;  // outside this host's roots: never opened, and no digest compares
-    // A file a `.gltf` of the subject names (a buffer, an image): the glTF's spelling and the URI
-    // as the glTF spells it; `spelled` is `<glTF>#<uri>`. Empty for a file the subject names.
+    // A file a `.gltf` of the subject names (a buffer, an image): the glTF's spelling and where in
+    // it (`images[3]`), never the URI's own text; `spelled` is `<glTF>#images[3]`. Empty for a
+    // file the subject names.
     std::string named_by;
     std::string uri;
   };
@@ -89,6 +95,8 @@ struct SubjectPlan {
   Vector<DigestOver> over;
   bool refuse_over = false;  // a raise's: a bound passed stops the reads before the first byte
   u64 bytes_read = 0;
+  u64 files_opened = 0;     // every open a pass asked of the system, whatever it answered
+  u64 names_collected = 0;  // the names a pass took from its glTFs' JSON, each once
 };
 
 // The document half, under the dispatch lock: the records' and blobs' lines and the files to read,

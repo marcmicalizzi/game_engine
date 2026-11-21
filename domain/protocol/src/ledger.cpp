@@ -798,20 +798,22 @@ bool digest_passes(Context& ctx, const std::string& session_id, DigestFor use, F
       return false;
     }
     // Whoever asks a person to judge runs where the thing can be seen: a raise naming a file
-    // outside this host's roots is refused, by the entry's spelling.
-    if (use == DigestFor::raise) {
+    // outside this host's roots is refused, by the entry's spelling; before the reads for a file
+    // the subject names, after them for one a glTF of it names.
+    const auto outside_refused = [&] {
+      if (use != DigestFor::raise) return false;
       Vector<std::string> outside;
       for (const SubjectPlan::File& f : plan.files) {
         if (f.outside) outside.push_back(f.spelled);
       }
-      if (!outside.empty()) {
-        error = not_readable_here_error(
-            outside, "the subject names " + outside[0] +
-                         ", which is outside this host's roots: raise it on a host whose roots "
-                         "hold every file it names");
-        return false;
-      }
-    }
+      if (outside.empty()) return false;
+      error = not_readable_here_error(
+          outside, "the subject names " + outside[0] +
+                       ", which is outside this host's roots: raise it on a host whose roots "
+                       "hold every file it names");
+      return true;
+    };
+    if (outside_refused()) return false;
     const SessionManager::DigestReadHook hook = ctx.sessions->digest_read_hook();
     void* const hook_context = ctx.sessions->digest_read_context();
     without_dispatch_lock(ctx, [&] {
@@ -819,12 +821,15 @@ bool digest_passes(Context& ctx, const std::string& session_id, DigestFor use, F
       read_subject_files(plan, bounds);
     });
     ctx.sessions->note_digest_bytes(plan.bytes_read);
+    ctx.sessions->note_digest_opens(plan.files_opened);
+    ctx.sessions->note_digest_names(plan.names_collected);
     session = ctx.sessions->require(session_id, error);
     if (session == nullptr) return false;
     if (use == DigestFor::raise && !plan.over.empty()) {
       error = over_error(plan.over[0]);
       return false;
     }
+    if (outside_refused()) return false;
     bool moved = !same_document(session, plan);
     if (!moved) {
       finish_subject(plan, state);

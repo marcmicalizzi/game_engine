@@ -22,13 +22,23 @@
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <mutex>
 #include <set>
 #include <string>
 #include <thread>
 #include <vector>
 
-#if !ENGINE_PLATFORM_WINDOWS
+#if ENGINE_PLATFORM_WINDOWS
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <winioctl.h>  // FSCTL_SET_REPARSE_POINT, for a junction
+
+#include <cstring>
+#undef far  // windows.h's, which the cases use as a name
+#undef near
+#else
 #include <sys/stat.h>  // mkfifo
 #endif
 
@@ -1096,6 +1106,18 @@ JsonValue opened_detail(Host& h, const JsonValue& item) {
   return at(h.ok("review.list", obj({{"review", item}, {"digest", JsonValue(true)}})), "subject");
 }
 
+// What one call of the digest opened and read, from the session manager's two counters.
+struct Reads {
+  u64 opens = 0;
+  u64 bytes = 0;
+};
+Reads reads_of(Host& h, const std::function<void()>& call) {
+  const u64 opens = h.sessions.digest_files_opened();
+  const u64 bytes = h.sessions.digest_bytes_read();
+  call();
+  return Reads{h.sessions.digest_files_opened() - opens, h.sessions.digest_bytes_read() - bytes};
+}
+
 }  // namespace
 
 // The subject digest, stamped at the raise and computed again when a detail is opened
@@ -1292,7 +1314,7 @@ TEST_CASE("ledger: the files a glTF subject names are read with it") {
   CHECK(num(at(stamped, "asset_bytes")) ==
         static_cast<i64>(std::filesystem::file_size(props / "crate.gltf")) + 8);
   REQUIRE(at(stamped, "unreadable").size() == 1);  // the one that climbs out of its directory
-  CHECK(at(stamped, "unreadable")[0].as_string() == "props/crate.gltf#../up.png");
+  CHECK(at(stamped, "unreadable")[0].as_string() == "props/crate.gltf#images[1]");
 
   // The buffer rewritten at the same length, its time put back: the close is refused.
   const auto when = std::filesystem::last_write_time(props / "crate.bin");
@@ -1307,6 +1329,153 @@ TEST_CASE("ledger: the files a glTF subject names are read with it") {
                      {"attribution", who("reviewer")}}),
                 &error) == codes::k_invalid_argument);
   CHECK(reason_of(error) == "subject moved");
+}
+
+namespace {
+
+// A directory link of whichever kind this system lets a test make, as foundation/io's roots cases
+// make one: a junction on Windows (any user may make one), a symbolic link on Linux. False when the
+// system refuses, and the case says so and goes without it.
+#if ENGINE_PLATFORM_WINDOWS
+std::wstring wide(const std::string& s) {
+  std::wstring w(static_cast<usize>(MultiByteToWideChar(CP_UTF8, 0, s.data(),
+                                                        static_cast<int>(s.size()), nullptr, 0)),
+                 L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(),
+                      static_cast<int>(w.size()));
+  for (wchar_t& c : w)
+    if (c == L'/') c = L'\\';
+  return w;
+}
+#endif
+
+bool make_dir_link(const std::string& target, const std::string& link) {
+#if ENGINE_PLATFORM_WINDOWS
+  if (!CreateDirectoryW(wide(link).c_str(), nullptr)) return false;
+  const HANDLE h = CreateFileW(wide(link).c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                               FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return false;
+  const std::wstring substitute = L"\\??\\" + wide(target);
+  const std::wstring print = wide(target);
+  const usize names = (substitute.size() + 1 + print.size() + 1) * sizeof(wchar_t);
+  std::string buf(8 + 8 + names, '\0');
+  auto put16 = [&](usize at, usize v) {
+    buf[at] = static_cast<char>(v & 0xFF);
+    buf[at + 1] = static_cast<char>((v >> 8) & 0xFF);
+  };
+  const u32 tag = 0xA0000003u;  // IO_REPARSE_TAG_MOUNT_POINT
+  std::memcpy(buf.data(), &tag, 4);
+  put16(4, 8 + names);                                   // ReparseDataLength
+  put16(8, 0);                                           // SubstituteNameOffset
+  put16(10, substitute.size() * sizeof(wchar_t));        // SubstituteNameLength
+  put16(12, (substitute.size() + 1) * sizeof(wchar_t));  // PrintNameOffset
+  put16(14, print.size() * sizeof(wchar_t));             // PrintNameLength
+  std::memcpy(buf.data() + 16, substitute.c_str(), (substitute.size() + 1) * sizeof(wchar_t));
+  std::memcpy(buf.data() + 16 + (substitute.size() + 1) * sizeof(wchar_t), print.c_str(),
+              (print.size() + 1) * sizeof(wchar_t));
+  DWORD returned = 0;
+  const BOOL ok = DeviceIoControl(h, FSCTL_SET_REPARSE_POINT, buf.data(),
+                                  static_cast<DWORD>(buf.size()), nullptr, 0, &returned, nullptr);
+  CloseHandle(h);
+  return ok != FALSE;
+#else
+  std::error_code ec;
+  std::filesystem::create_directory_symlink(target, link, ec);
+  return !ec;
+#endif
+}
+
+}  // namespace
+
+// Every file a glTF names passes the host's roots as a record's own file does (protocol.md, "What a
+// close is tied to"; T174): its URI's own rule first (decoded once; a backslash, a scheme, a drive,
+// an absolute form or a `..` refuses it), then `io::admit_stored_path` from the glTF's admitted
+// directory, links resolved and held to the roots. Refused, it is a line saying so and never
+// opened or sized: the detail's opens and bytes are what the glTF and its readable buffer cost,
+// and nothing about the place it named. Answered by its index in the glTF, never by its text. The
+// root is a folder of the case's own scratch, and `outside.bin` lies in the scratch above it.
+TEST_CASE("ledger: a glTF's named file passes the host's roots, and one refused is never opened") {
+  test::TempDir tmp("protocol_ledger_gltf_roots");
+  const std::filesystem::path scratch(tmp.path());
+  const std::string root = (scratch / "root").string();
+  const std::string dir = (scratch / "root" / "doc").string();
+  std::filesystem::create_directories(scratch / "root");
+  std::filesystem::create_directories(scratch / "far");
+  {
+    std::ofstream(scratch / "outside.bin", std::ios::binary) << "secret!";
+  }
+  {
+    std::ofstream(scratch / "far" / "x.bin", std::ios::binary) << "far away";
+  }
+  Host h;
+  h.roots = io::Roots{};
+  REQUIRE(h.roots.add("tests", root, true) == io::Status::Ok);
+  h.open(dir, true);
+  DigestWorld w;
+  w.make(h, dir);
+  const std::filesystem::path props = std::filesystem::path(dir) / "props";
+  const auto write_gltf = [&](const char* images) {
+    std::ofstream(props / "crate.gltf", std::ios::binary | std::ios::trunc)
+        << R"({"asset":{"version":"2.0"},"buffers":[{"uri":"crate.bin","byteLength":4}],)"
+        << R"("images":[)" << images << "]}";
+    return static_cast<u64>(std::filesystem::file_size(props / "crate.gltf"));
+  };
+  {
+    std::ofstream(props / "crate.bin", std::ios::binary) << "abcd";
+  }
+  const u64 plain = write_gltf("");
+  w.set(h, w.placement, "mesh", JsonValue("props/crate.gltf"));
+  const JsonValue item = at(at(w.raise(h, "Agent"), "reviews")[0], "id");
+  JsonValue now;
+  const Reads base = reads_of(h, [&] { now = opened_detail(h, item); });
+  CHECK(base.bytes == plain + 4);
+  CHECK(at(now, "unreadable").size() == 0);
+
+  // The climb: `\` decoded from `%5C`, four levels up to the file above the root.
+  const u64 climbing = write_gltf(R"({"uri":"x%5C..%5C..%5C..%5C..%5Coutside.bin"})");
+  const Reads climb = reads_of(h, [&] { now = opened_detail(h, item); });
+  CHECK(climb.opens == base.opens);
+  CHECK(climb.bytes == base.bytes - plain + climbing);
+  CHECK(num(at(now, "asset_bytes")) == static_cast<i64>(climbing + 4));
+  REQUIRE(at(now, "unreadable").size() == 1);
+  CHECK(at(now, "unreadable")[0].as_string() == "props/crate.gltf#images[0]");
+  CHECK(at(now, "outside").size() == 0);
+  CHECK(at(now, "comparable").as_bool());
+  // A raise over it answers no figure for the file it never sized: the glTF and the buffer fill
+  // the subject's bytes exactly, and the raise stands.
+  {
+    Bound bound("protocol.review.subject_bytes", std::to_string(climbing + 4).c_str());
+    (void)w.raise(h, "Agent");
+  }
+
+  // A share's name, `\\host\share\x.bin` encoded: refused by the URI's own rule, so nothing is
+  // asked of the network; the opens are the glTF's and its buffer's alone.
+  (void)write_gltf(R"({"uri":"%5C%5Cnohost.invalid%5Cs%5Cx.bin"})");
+  const Reads share = reads_of(h, [&] { now = opened_detail(h, item); });
+  CHECK(share.opens == base.opens);
+  REQUIRE(at(now, "unreadable").size() == 1);
+  CHECK(at(now, "unreadable")[0].as_string() == "props/crate.gltf#images[0]");
+
+  // A link under the root to a directory outside it: resolved, and outside the roots.
+  // The link alone is removed, before the scratch is, whatever the case did.
+  struct Unlink {
+    std::string path;
+    ~Unlink() {
+      std::error_code ec;
+      std::filesystem::remove(path, ec);
+    }
+  } unlink{(props / "sub").string()};
+  if (!make_dir_link((scratch / "far").string(), unlink.path)) {
+    MESSAGE("this system refused to make a directory link; the link's part is skipped");
+  } else {
+    (void)write_gltf(R"({"uri":"sub/x.bin"})");
+    const Reads linked = reads_of(h, [&] { now = opened_detail(h, item); });
+    CHECK(linked.opens == base.opens);
+    REQUIRE(at(now, "outside").size() == 1);
+    CHECK(at(now, "outside")[0].as_string() == "props/crate.gltf#images[0]");
+    CHECK_FALSE(at(now, "comparable").as_bool());
+  }
+  CHECK(std::filesystem::exists(scratch / "far" / "x.bin"));
 }
 
 // What a digest reads is bounded, by four bounds named as tunables (protocol.md, "What it costs"):

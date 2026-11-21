@@ -612,6 +612,14 @@ class SessionManager {
   // refusal made before the digest read nothing.
   u64 digest_bytes_read() const noexcept { return digest_bytes_read_; }
   void note_digest_bytes(u64 bytes) noexcept { digest_bytes_read_ += bytes; }
+  // Beside the bytes, the opens the same reads asked of the system, whatever it answered: what a
+  // case reads to see that a file was never opened at all, which a count of bytes cannot show.
+  u64 digest_files_opened() const noexcept { return digest_files_opened_; }
+  void note_digest_opens(u64 opens) noexcept { digest_files_opened_ += opens; }
+  // And the names its passes took from the glTFs they read: what a case reads to see that the
+  // files bound limits what is collected, not only what is read.
+  u64 digest_names_collected() const noexcept { return digest_names_collected_; }
+  void note_digest_names(u64 names) noexcept { digest_names_collected_ += names; }
   // A case's seam: called once a pass, with the host's dispatch lock let go, before a digest reads
   // its files; null for none. What lets a case hold a read open and act meanwhile.
   using DigestReadHook = void (*)(void* context);
@@ -624,6 +632,8 @@ class SessionManager {
 
  private:
   u64 digest_bytes_read_ = 0;
+  u64 digest_files_opened_ = 0;
+  u64 digest_names_collected_ = 0;
   DigestReadHook digest_read_hook_ = nullptr;
   void* digest_read_context_ = nullptr;
   // What a connection left in a session that closed while it was still connected (protocol.md,

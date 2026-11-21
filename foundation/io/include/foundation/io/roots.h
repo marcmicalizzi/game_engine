@@ -149,6 +149,12 @@ class Roots {
   Status protect(std::string_view document_dir);
   void release(std::string_view document_dir);
 
+  // The roots alone, without the served directories and the open documents: everything `admit`
+  // reads for `Access::read`, copied, for a caller that admits for reading where it cannot hold
+  // this set still (the subject digest's reads, made with the host's lock let go, while a session
+  // opening adds a document's `out/`).
+  Roots read_copy() const;
+
   const Vector<Root>& roots() const noexcept { return roots_; }
   const Vector<std::string>& served() const noexcept { return served_; }
   const Vector<std::string>& protected_documents() const noexcept { return documents_; }
@@ -192,6 +198,14 @@ bool admit_stored_path(const Roots& roots, std::string_view path, std::string_vi
 // writers): the text rules of `check_path_text` and not absolute; `<root>://` with nothing after it
 // is the root's directory, not a file, and is `Refusal::empty`. `Refusal::none` when it passes.
 Refusal check_stored_path_form(std::string_view path) noexcept;
+
+// **A URI one file names another by** (a glTF's `buffers[].uri` and `images[].uri`) as a path
+// relative to the naming file's directory, percent-decoded once into `out`. False when it is not
+// one: after the decoding, a backslash (a URI has none, and nothing is turned into a separator), a
+// control byte, a colon in the first segment (a scheme or a drive), a leading '/', a `..`
+// segment, empty, or over 1,024 bytes. A caller then admits `out` through `admit_stored_path` from
+// that directory, so the URI gets every rule a stored path gets after its own.
+bool uri_relative_path(std::string_view uri, std::string& out);
 
 // Whether `path` is `dir` or continues it by whole components, both canonical (case-insensitive,
 // ordinal, on Windows; bytes on Linux).

@@ -771,3 +771,63 @@ TEST_CASE("roots: a stored path is portable or refused, then admitted from its d
   CHECK_FALSE(admit_stored_path(roots, "props/CON", doc, out, why));
   CHECK(why == Refusal::device);
 }
+
+// A URI one file names another by (a glTF's buffers and images; docs/subsystems/io.md, "Roots"):
+// decoded once, and refused before any admission when the decoded text has a backslash (a URI has
+// none, and nothing is turned into a separator), a control byte, a colon in its first segment (a
+// scheme or a drive), a leading '/' or a `..` segment. Each text below is one a reader of the
+// decoded string alone would take for a path under the naming file's directory, or a near
+// neighbour of one.
+TEST_CASE("uri_relative_path takes a relative URI and refuses every way out of its directory") {
+  struct Row {
+    const char* uri;
+    bool taken;
+    const char* path;  // what it decodes to, when taken
+  };
+  const Row rows[] = {
+      {"crate.bin", true, "crate.bin"},
+      {"tex%20a.png", true, "tex a.png"},
+      {"sub/x.bin", true, "sub/x.bin"},
+      {"a/./b.bin", true, "a/./b.bin"},
+      // A colon after the first segment is no scheme: the admission's text rules refuse it.
+      {"a/b:c.png", true, "a/b:c.png"},
+      // Decoded once: a doubled encoding is a literal percent sign in a name, never a backslash.
+      {"a%255Cb.png", true, "a%5Cb.png"},
+      {"%255C%255Chost%255Cx.bin", true, "%5C%5Chost%5Cx.bin"},
+      // A backslash, raw or encoded in either case, climbing or naming a share.
+      {"x\\..\\outside.bin", false, ""},
+      {"x\\outside.bin", false, ""},
+      {"x%5C..%5C..%5Coutside.bin", false, ""},
+      {"x%5c..%5c..%5coutside.bin", false, ""},
+      {"x%5Coutside.bin", false, ""},
+      {"%5C%5Chost%5Cs%5Cx.bin", false, ""},
+      {"%5c%5chost%5cs%5cx.bin", false, ""},
+      {"%5Cx.bin", false, ""},
+      // A climb spelled with encoded slashes or dots.
+      {"x%2F..%2F..%2Foutside.bin", false, ""},
+      {"%2E%2E/outside.bin", false, ""},
+      {"%2e%2e%2foutside.bin", false, ""},
+      {"../outside.bin", false, ""},
+      {"a/../../outside.bin", false, ""},
+      {"..", false, ""},
+      // Absolute, a drive, a scheme.
+      {"/abs.bin", false, ""},
+      {"%2Fabs.bin", false, ""},
+      {"//host/s/x.bin", false, ""},
+      {"C:/x.bin", false, ""},
+      {"C%3A/x.bin", false, ""},
+      {"c:x.bin", false, ""},
+      {"http://h/x.png", false, ""},
+      // Empty, a control byte.
+      {"", false, ""},
+      {"%00.bin", false, ""},
+      {"a%0A.bin", false, ""},
+      {"a%7F.bin", false, ""},
+  };
+  for (const Row& row : rows) {
+    CAPTURE(row.uri);
+    std::string path;
+    CHECK(uri_relative_path(row.uri, path) == row.taken);
+    if (row.taken) CHECK(path == row.path);
+  }
+}

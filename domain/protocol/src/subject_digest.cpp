@@ -127,6 +127,7 @@ constexpr const char* k_outside = "outside this host's roots";
 // file's line saying why it will not be read.
 bool open_file(SubjectPlan::File& f, const DigestBounds& bounds, u64& total, SubjectPlan& plan,
                io::FileHandle& file) {
+  ++plan.files_opened;
   if (const io::Status s = file.open_regular(f.native); s != io::Status::Ok) {
     f.line = s == io::Status::NotFound ? k_missing : k_not_readable;
     return false;
@@ -184,63 +185,57 @@ bool is_gltf(std::string_view spelled) noexcept {
   return true;
 }
 
-i32 hex_digit(char c) noexcept {
-  if (c >= '0' && c <= '9') return c - '0';
-  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-  return -1;
-}
+// A file a glTF names: where it names it (`images[3]`, which is how it is answered: the URI's own
+// text may be any length and spell any place) and the URI.
+struct GltfName {
+  std::string at;
+  std::string uri;
+};
 
-// A glTF URI as a path under the glTF's own directory, by the importer's rule (domain/assets,
-// `decoded_uri`): percent-decoded, then relative, no `..` component, not absolute, no scheme or
-// drive, no control character. False when it is not one.
-bool uri_path(std::string_view uri, std::string& out) {
-  out.clear();
-  for (usize i = 0; i < uri.size(); ++i) {
-    if (uri[i] == '%' && i + 2 < uri.size() && hex_digit(uri[i + 1]) >= 0 &&
-        hex_digit(uri[i + 2]) >= 0) {
-      out.push_back(static_cast<char>(hex_digit(uri[i + 1]) * 16 + hex_digit(uri[i + 2])));
-      i += 2;
-    } else {
-      out.push_back(uri[i] == '\\' ? '/' : uri[i]);
-    }
-  }
-  if (out.empty() || out.size() > k_file_name_max || out.front() == '/' ||
-      out.find(':') != std::string::npos)
-    return false;
-  for (const char c : out) {
-    const auto u = static_cast<unsigned char>(c);
-    if (u < 0x20 || u == 0x7f) return false;
-  }
-  usize start = 0;
-  while (start <= out.size()) {
-    const usize slash = out.find('/', start);
-    const std::string_view part = std::string_view(out).substr(
-        start, slash == std::string::npos ? out.size() - start : slash - start);
-    if (part == "..") return false;
-    if (slash == std::string::npos) break;
-    start = slash + 1;
-  }
-  return true;
-}
-
-// The external buffers and images a glTF's JSON names, in its order and each once; a `data:` URI
-// is in the file already, and a `.glb` holds its own, so neither names anything.
-void gltf_uris(std::string_view text, Vector<std::string>& out) {
+// The external buffers and images a glTF's JSON names, in its order and each URI once; a `data:`
+// URI is in the file already, and a `.glb` holds its own, so neither names anything.
+void gltf_names(std::string_view text, Vector<GltfName>& out) {
   JsonValue doc;
   if (!parse_json(text, doc).ok || !doc.is_object()) return;
   for (const char* list : {"buffers", "images"}) {
     const JsonValue* entries = doc.find(list);
     if (entries == nullptr || !entries->is_array()) continue;
+    u64 index = 0;
     for (const JsonValue& entry : entries->as_array()) {
+      const u64 at = index++;
       const JsonValue* uri = entry.is_object() ? entry.find("uri") : nullptr;
       if (uri == nullptr || !uri->is_string()) continue;
       const std::string_view u = uri->as_string();
       if (u.substr(0, 5) == "data:") continue;
-      if (std::find(out.begin(), out.end(), u) == out.end()) out.push_back(std::string(u));
+      bool seen = false;
+      for (const GltfName& n : out)
+        seen = seen || n.uri == u;
+      if (!seen)
+        out.push_back(GltfName{std::string(list) + "[" + std::to_string(at) + "]", std::string(u)});
     }
   }
 }
+
+// Whether a refusal is the text's alone, the same on every host (a stored path's form, its
+// characters, a device name), rather than about the place the text leads to on this one.
+bool refused_by_text(io::Refusal why) noexcept {
+  switch (why) {
+    case io::Refusal::no_base:
+    case io::Refusal::above_root:
+    case io::Refusal::cannot_resolve:
+    case io::Refusal::no_dos_name:
+    case io::Refusal::dangling_link:
+    case io::Refusal::outside:
+    case io::Refusal::unknown_root:
+      return false;
+    default:
+      return true;
+  }
+}
+
+// What a file a glTF names says when its URI is not a relative path under the glTF's directory,
+// by the URI's own rule or the stored path's text rules: the same on every host.
+constexpr const char* k_refused_uri = "not a file under the glTF's directory";
 
 }  // namespace
 
@@ -263,6 +258,12 @@ void compose_subject(const Context& ctx, const Session& session, const ReviewSub
   plan.journal = d.journal().size();
   plan.undo_position = session.undo_position();
   plan.layers = d.layer_count();
+  // The roots as they are now, for the files a glTF names, which are admitted with the host let
+  // go (the set changes as sessions open and close).
+  if (ctx.roots != nullptr) {
+    plan.roots = ctx.roots->read_copy();
+    plan.has_roots = true;
+  }
   Sha256& h = plan.hash;
   h.update(k_stream_version);
 
@@ -405,24 +406,36 @@ void read_subject_files(SubjectPlan& plan, const DigestBounds& bounds) {
     const bool named = is_gltf(plan.files[i].spelled);
     hash_file(plan.files[i], file, plan, named ? &gltf : nullptr);
     if (!named || !plan.files[i].read) continue;
-    // What the glTF names is part of it: each file read as the subject's own, under the same
-    // bounds, and named by the glTF and its URI.
-    Vector<std::string> uris;
-    gltf_uris(gltf, uris);
+    // What the glTF names is part of it: each file admitted through the host's roots as a record's
+    // own file is, from the glTF's admitted directory (its URI's own rule first), then read under
+    // the same bounds, and named by the glTF and where in it. One refused is never opened.
+    Vector<GltfName> names;
+    gltf_names(gltf, names);
+    plan.names_collected += names.size();
     const std::string base(io::parent_path(plan.files[i].native));
     const std::string by = plan.files[i].spelled;
-    for (const std::string& uri : uris) {
+    for (const GltfName& name : names) {
       SubjectPlan::File n;
-      n.spelled = by + "#" + uri;
+      n.spelled = by + "#" + name.at;
       n.named_by = by;
-      n.uri = uri;
+      n.uri = name.at;
       std::string path;
+      io::Admitted admitted;
+      io::Refusal why = io::Refusal::none;
       if (plan.files.size() >= bounds.files) {
         n.line = k_over_bound;
-      } else if (!uri_path(uri, path)) {
-        n.line = k_not_readable;
+      } else if (!io::uri_relative_path(name.uri, path)) {
+        n.line = k_refused_uri;
+      } else if (!plan.has_roots ||
+                 !io::admit_stored_path(plan.roots, path, base, admitted, why)) {
+        if (plan.has_roots && refused_by_text(why)) {
+          n.line = k_refused_uri;
+        } else {
+          n.outside = true;
+          n.line = k_outside;
+        }
       } else {
-        n.native = io::join_path(base, path);
+        n.native = std::move(admitted.native);
         io::FileHandle named_file;
         if (open_file(n, bounds, total, plan, named_file)) hash_file(n, named_file, plan);
       }
