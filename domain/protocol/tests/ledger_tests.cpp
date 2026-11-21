@@ -1830,6 +1830,69 @@ TEST_CASE("ledger: a string no host could admit never blocks a raise or a close"
   CHECK(reason_of(error) == "subject not readable here");
 }
 
+// A record's string the guess takes for a file and whose admitted place holds a folder
+// (`renders/v1.2`) was never a file: it digests as the string's constant line, the one a host that
+// does not admit it writes, so the raise stands, a detail compares, and two hosts agree on it
+// (protocol.md, "Which strings are files"). A record-named file that became a folder after its
+// raise is that line too, which is not the file's hash: the close is `subject moved`.
+TEST_CASE("ledger: a record's string naming a folder digests as no file, and the raise stands") {
+  test::TempDir tmp("protocol_ledger_folder");
+  const std::filesystem::path scratch(tmp.path());
+  const std::string dir = (scratch / "doc").string();
+  std::filesystem::create_directories(scratch / "c" / "shots" / "v1.3");
+  Host a;
+  a.roots = io::Roots{};
+  REQUIRE(a.roots.add("tests", scratch.string(), true) == io::Status::Ok);
+  REQUIRE(a.roots.add("content", (scratch / "c").string(), false) == io::Status::Ok);
+  a.open(dir, true);
+  DigestWorld w;
+  w.make(a, dir);
+  std::filesystem::create_directories(scratch / "doc" / "renders" / "v1.2");
+  w.set(a, w.placement, "renders", strings({"renders/v1.2", "content://shots/v1.3"}));
+  const JsonValue raised = a.ok("review.raise", w.raise_params("Agent"));
+  const JsonValue item = at(raised, "reviews")[0];
+  const std::string stamp(at(item, "raised_digest").as_string());
+  CHECK(at(at(raised, "subject"), "comparable").as_bool());
+  CHECK(at(at(raised, "subject"), "not_comparable").size() == 0);
+  // Only the mesh was read as a file, so only it is recorded.
+  REQUIRE(at(item, "raised_files").size() == 1);
+  CHECK(at(item, "raised_files")[0].as_string() == "props/crate.glb");
+  const JsonValue here = opened_detail(a, at(item, "id"));
+  CHECK(at(here, "comparable").as_bool());
+  CHECK(at(here, "same").as_bool());
+
+  // A second host with no `content` root: the string it does not admit is the same line.
+  Host b;
+  b.roots = io::Roots{};
+  REQUIRE(b.roots.add("tests", scratch.string(), true) == io::Status::Ok);
+  b.open(dir, false);
+  const JsonValue there = opened_detail(b, at(item, "id"));
+  CHECK(at(there, "comparable").as_bool());
+  CHECK(at(there, "digest").as_string() == stamp);
+
+  const JsonValue closed = a.review("review.close", obj({{"review", at(item, "id")},
+                                                         {"resolution", JsonValue("Accepted")},
+                                                         {"digest", at(here, "digest")},
+                                                         {"attribution", who("reviewer")}}));
+  CHECK(at(closed, "state").as_string() == "Closed");
+
+  // The mesh, read as a file at the raise, made a folder: the line differs from its hash.
+  const JsonValue again = at(a.ok("review.raise", w.raise_params("Agent")), "reviews")[0];
+  std::filesystem::remove(w.mesh);
+  std::filesystem::create_directories(w.mesh);
+  const JsonValue moved = opened_detail(a, at(again, "id"));
+  CHECK(at(moved, "comparable").as_bool());
+  CHECK_FALSE(at(moved, "same").as_bool());
+  JsonValue error;
+  CHECK(a.fails("review.close",
+                obj({{"review", at(again, "id")},
+                     {"resolution", JsonValue("Accepted")},
+                     {"digest", at(again, "raised_digest")},
+                     {"attribution", who("reviewer")}}),
+                &error) == codes::k_invalid_argument);
+  CHECK(reason_of(error) == "subject moved");
+}
+
 // A pass is thrown away only when the subject moved (protocol.md, "What it costs"): an edit of a
 // record the subject does not name, and a ledger write about something else, at every pass's
 // reads, leave the close to stand in one pass, and the files are read once.

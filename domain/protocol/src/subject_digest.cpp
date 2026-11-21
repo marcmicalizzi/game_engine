@@ -127,6 +127,9 @@ constexpr const char* k_not_readable = "not readable";
 constexpr const char* k_too_large = "too large";
 constexpr const char* k_over_bound = "over the subject's bound";
 constexpr const char* k_outside = "outside this host's roots";
+// What a string a record holds says when no host could admit it as a file, or its admitted place
+// holds a folder: the same on every host.
+constexpr const char* k_no_file = "names no file a root admits";
 
 // Opens a regular file for the digest and holds it to the bounds by the size it has now: never a
 // FIFO, a device or a directory, which `open_regular` refuses without waiting. False with the
@@ -137,7 +140,13 @@ bool open_file(SubjectPlan::File& f, const DigestBounds& bounds, u64& total, Sub
   // Held to the admitted path after the open: a component swapped for a link since the admission
   // leads elsewhere, and the file is not read (`not readable`).
   if (const io::Status s = file.open_regular_unmoved(f.native); s != io::Status::Ok) {
-    // Not there is honest, and compares; anything else is a file this host could not read.
+    // Not there is honest, and compares. A folder where a record's string leads was never a file:
+    // the string's constant line, the same on a host that does not admit it. Anything else is a
+    // file this host could not read.
+    if (s == io::Status::IsDirectory && f.guessed) {
+      f.line = k_no_file;
+      return false;
+    }
     f.unread = s != io::Status::NotFound;
     f.line = f.unread ? k_not_readable : k_missing;
     return false;
@@ -297,8 +306,6 @@ bool refused_by_text(io::Refusal why) noexcept {
 // What a file a glTF names says when its URI is not a relative path under the glTF's directory,
 // by the URI's own rule or the stored path's text rules: the same on every host.
 constexpr const char* k_refused_uri = "not a file under the glTF's directory";
-// What a string a record holds says when no host could admit it as a file: the same on every host.
-constexpr const char* k_no_file = "names no file a root admits";
 
 }  // namespace
 
@@ -439,6 +446,9 @@ void compose_subject(const Context& ctx, const Session& session, const ReviewSub
   for (u32 i = 0; i < kept; ++i) {
     SubjectPlan::File& f = plan.files.emplace_back();
     f.spelled = files[i];
+    const bool listed =
+        std::find(subject.assets.begin(), subject.assets.end(), f.spelled) != subject.assets.end();
+    f.guessed = !listed;
     io::Admitted admitted;
     io::Refusal why = io::Refusal::none;
     // Admitted as a stored path is (T174): never an absolute one, then through the roots from the
@@ -457,8 +467,6 @@ void compose_subject(const Context& ctx, const Session& session, const ReviewSub
     // as a file (a URL, text with a colon, a root nobody had, a climb out of every root, or a
     // reference set on a record after the raise): one constant line, and the digest stays
     // comparable.
-    const bool listed =
-        std::find(subject.assets.begin(), subject.assets.end(), f.spelled) != subject.assets.end();
     const bool read_at_raise =
         !raised.raising &&
         (!raised.recorded || std::find(raised.spellings.begin(), raised.spellings.end(),
@@ -609,7 +617,9 @@ void read_subject_files(SubjectPlan& plan, const DigestBounds& bounds) {
 void raised_spellings(const SubjectPlan& plan, Vector<std::string>& out) {
   out.clear();
   for (const SubjectPlan::File& f : plan.files) {
-    if (f.named_by.empty() && !f.native.empty()) out.push_back(f.spelled);
+    // A record's string whose place holds a folder was not read as a file: a host that does not
+    // admit it answers the same constant line, never `outside`.
+    if (f.named_by.empty() && !f.native.empty() && f.line != k_no_file) out.push_back(f.spelled);
   }
 }
 

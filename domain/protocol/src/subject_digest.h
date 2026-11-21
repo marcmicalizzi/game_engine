@@ -98,6 +98,10 @@ struct SubjectPlan {
     // was of the admitted path, or a read that failed. The subject is not comparable here, and a
     // raise over it is refused. A file past a byte bound is not this: it has its own answers.
     bool unread = false;
+    // A string a record holds that the guess took for a file and the subject does not list: a
+    // folder at its admitted place was never a file, and digests as the string's constant line,
+    // the one a host that does not admit it writes (protocol.md, "Which strings are files").
+    bool guessed = false;
   };
   Vector<File> files;
   // Files past the files bound, named by the records or a glTF and never collected: one count,
