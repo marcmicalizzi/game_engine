@@ -6579,7 +6579,7 @@ int run_view(int argc, char** argv) {
     // and again when the window is resized or moved to another display, never per frame.
     set_hud_display_scale(window.display_scale());
     bool title_dirty = true;
-    char shown_title[256] = "";
+    char shown_title[320] = "";  // the title as last set: the size of `title` below
     sun.start(options.sun_rate.value_or(renderer::sun_rate_tunable()));
     world.start(options.world_rate.value_or(1.0));
     // The dunes ride the world clock: their motion runs at `--time-rate` times the world's rate,
