@@ -1,10 +1,10 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "A56",
-  "reason": "protocol.md gains what a review item's close and a promotion are tied to (roadmap A56): the subject digest, what it covers and leaves out, its four bounds, its reads with the host let go, a file outside the roots, the files a glTF names, a listed file's stored form, where a hash may be reused, the cost not yet measured, the detail form, and the cases",
-  "date": "2026-11-20",
+  "reason": "protocol.md gains what a review item's close and a promotion are tied to (roadmap A56): the subject digest, what it covers and leaves out, its bounds and what they collect, its reads with the host let go and when a pass is kept, a file outside the roots and a string no host admits, the files a glTF names and the door they pass, a listed file's stored form and an older absolute one, where a hash may be reused, the cost not yet measured, the detail form, and the cases",
+  "date": "2026-11-21",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/protocol.md": 22148
+    "page:docs/subsystems/protocol.md": 29669
   }
 }
