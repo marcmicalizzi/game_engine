@@ -371,8 +371,18 @@ void compose_subject(const Context& ctx, const Session& session, const ReviewSub
 
   // 5. Files, by spelling, admitted through the roots now; their bytes are read with the host
   // let go. Past the bound on how many, the rest are named and never admitted or read.
-  for (const std::string& a : subject.assets)
-    files.push_back(a);
+  // An entry an older raise stored absolute (before T174's form was held at the raise) is outside
+  // on every host, and is answered by its index, never its spelling: no answer carries a path of
+  // the machine (protocol.md, "What a close is tied to"). Such ledgers are not mended; only tests
+  // hold one.
+  Vector<std::string> malformed;
+  for (u32 i = 0; i < subject.assets.size(); ++i) {
+    if (io::check_stored_path_form(subject.assets[i]) == io::Refusal::none) {
+      files.push_back(subject.assets[i]);
+    } else {
+      malformed.push_back("assets[" + std::to_string(i) + "]");
+    }
+  }
   sort_unique(files);
   // Past the bound the rest are one count, never one file each: not admitted, not answered.
   u64 kept = files.size();
@@ -426,6 +436,12 @@ void compose_subject(const Context& ctx, const Session& session, const ReviewSub
     } else {
       f.line = k_no_file;
     }
+  }
+  for (std::string& m : malformed) {
+    SubjectPlan::File& f = plan.files.emplace_back();
+    f.spelled = std::move(m);
+    f.outside = true;
+    f.line = k_outside;
   }
 }
 

@@ -1748,6 +1748,52 @@ TEST_CASE("ledger: a close that compares nothing decides without reading the sub
   h.sessions.set_digest_read_hook_for_test(nullptr, nullptr);
 }
 
+// An item an older host raised over an absolute path (`subject.assets` before T174's form was held
+// at the raise) is not mended, since only tests hold one; but no answer echoes the path: such an
+// entry is answered by its index (protocol.md, "What a close is tied to").
+TEST_CASE("ledger: an old item's absolute asset is answered by its index, never its spelling") {
+  test::TempDir tmp("protocol_ledger_absolute");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  h.roles(k_roles);
+  h.open(dir, true);
+  DigestWorld w;
+  w.make(h, dir);
+  h.stdio();
+  const JsonValue item = at(h.ok("review.raise", w.raise_params("Human", strings({"props/crate.glb"}))),
+                            "reviews")[0];
+  {
+    // The item as the older host wrote it: the listed file by its absolute path.
+    std::string text;
+    REQUIRE(h.vfs.read(dir + "/ledger.json", text) == io::Status::Ok);
+    const std::string listed = R"("props/crate.glb")";  // only the listed entry: the ledger
+    const usize at_listed = text.find(listed);           // holds no record's properties
+    REQUIRE(at_listed != std::string::npos);
+    text.replace(at_listed, listed.size(),
+                 write_json(JsonValue(w.mesh), JsonWriteOptions{.pretty = false}));
+    std::ofstream(dir + "/ledger.json", std::ios::binary | std::ios::trunc) << text;
+  }
+  const std::string name = std::filesystem::path(tmp.path()).filename().string();
+  h.bind(5, "person-at-desk", "person", "reviewer");
+  const JsonValue answer =
+      h.ok("review.list", obj({{"review", at(item, "id")}, {"digest", JsonValue(true)}}));
+  CHECK(write_json(answer).find(name) == std::string::npos);
+  REQUIRE(at(at(answer, "subject"), "outside").size() == 1);
+  CHECK(at(at(answer, "subject"), "outside")[0].as_string() == "assets[0]");
+  CHECK(at(at(at(answer, "reviews")[0], "subject"), "assets")[0].as_string() == "assets[0]");
+  JsonValue error;
+  CHECK(h.fails("review.close",
+                obj({{"review", at(item, "id")},
+                     {"resolution", JsonValue("Accepted")},
+                     {"revision", at(item, "revision")},
+                     {"digest", at(at(answer, "subject"), "digest")},
+                     {"attribution", who("person")}}),
+                &error) == codes::k_invalid_argument);
+  CHECK(reason_of(error) == "subject not readable here");
+  CHECK(write_json(error).find(name) == std::string::npos);
+  CHECK(write_json(h.ok("review.list")).find(name) == std::string::npos);
+}
+
 // What a digest reads is bounded, by four bounds named as tunables (protocol.md, "What it costs"):
 // a raise past one is refused naming it and the figure, and a detail or a close past one says so
 // in the stream, which differs from the stamp, so a file grown past its bound is "subject moved".

@@ -769,6 +769,18 @@ RpcError over_error(const DigestOver& over) {
                     std::move(data));
 }
 
+// An item's `subject.assets` as answered: an entry an older raise stored absolute (before T174's
+// form was held at the raise) by its index, never its spelling, so no answer carries a path of the
+// machine (protocol.md, "What a close is tied to"). The ledger keeps what it holds.
+void answer_assets(Vector<ReviewInfo>& reviews) {
+  for (ReviewInfo& r : reviews) {
+    for (u32 i = 0; i < r.subject.assets.size(); ++i) {
+      if (io::check_stored_path_form(r.subject.assets[i]) != io::Refusal::none)
+        r.subject.assets[i] = "assets[" + std::to_string(i) + "]";
+    }
+  }
+}
+
 // A subject naming a glTF whose names were not followed: by its stored spelling, and for the JSON
 // bound the bound and the glTF's size.
 RpcError names_not_read_error(const SubjectPlan::Unfollowed& u) {
@@ -1206,6 +1218,7 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
   out.now_unix_ms = now;
   seen_now.same = seen_now.comparable && seen_now.digest == changed.raised_digest;
   out.reviews.push_back(std::move(changed));
+  answer_assets(out.reviews);
   out.subject = std::move(seen_now);
   s->publish_ledger("review_closed", 0, params.review, caller.who.actor, caller.connection);
   return true;
@@ -1262,7 +1275,11 @@ bool review_list(Context& ctx, const ReviewListParams& params, ReviewsResult& ou
         },
         error_out);
   };
-  if (!params.digest) return list(*s, out.ledger_revision, error);
+  if (!params.digest) {
+    if (!list(*s, out.ledger_revision, error)) return false;
+    answer_assets(out.reviews);
+    return true;
+  }
   // The detail's statement, its files read with the host let go and with no lock of the ledger's
   // held (the assets' reads are the cost, and every other caller of the ledger waits for that
   // lock); the ledger read again under the dispatch lock says whether the item it answers is the
@@ -1296,6 +1313,7 @@ bool review_list(Context& ctx, const ReviewListParams& params, ReviewsResult& ou
     return false;
   // A host that cannot see a file cannot say the subject is as it was: it says so (`comparable`).
   out.subject.same = out.subject.comparable && out.subject.digest == out.reviews[0].raised_digest;
+  answer_assets(out.reviews);
   return true;
 }
 
