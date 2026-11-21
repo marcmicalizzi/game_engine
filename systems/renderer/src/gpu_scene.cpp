@@ -1786,6 +1786,12 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
   return true;
 }
 
+void GpuScene::prepare_table_room(usize budget_bytes) {
+  if (!dynamic_ || budget_bytes == 0) return;
+  (void)table_room_.prepare(instance_table_, budget_bytes);
+  (void)keys_room_.prepare(tail_keys_, budget_bytes);
+}
+
 bool GpuScene::write_slots(std::span<const SceneInstance> tail,
                            std::span<const DynamicBlock> blocks, std::span<const SlotWrite> writes,
                            u32& written, std::string* error) {
@@ -1816,6 +1822,9 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
     }
   }
   const u32 had = instance_table_.size();
+  // Past the capacity, into the room made ahead when there is one (W155; table_room.h).
+  (void)table_room_.take(instance_table_, end);
+  (void)keys_room_.take(tail_keys_, end);
   instance_table_.resize(end);
   tail_keys_.resize(end);
   // A numbering the CPU's table has not taken yet no longer applies past the end (T154).

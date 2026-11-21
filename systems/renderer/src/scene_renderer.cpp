@@ -113,6 +113,13 @@ tunables::Bool timer_view_zones{
     "renderer.timing.view_zones", true,
     "Time each view of a multi-view frame (a surround) in a GPU timer zone of its own; off, a "
     "multi-view pass is one zone, the first view's, and nothing between its views can order them"};
+// **The tail's CPU table grows into room made ahead** (W155; renderer.md, "The tail's CPU table
+// grows into room made ahead"): bytes of the next growth's block faulted in a frame, between frames,
+// once the table is three quarters full. 0 grows it as the container always did, on the frame.
+tunables::Int table_room_kib{
+    "renderer.tiles.table_room_kib", 1024, 0, 1 << 20,
+    "KiB a frame of the streamed tail's next CPU table block faulted in ahead of its growth, so the "
+    "hand-over that passes the table's capacity copies into resident pages; 0 grows it on the frame"};
 // The graph's lifetimes as a report (R4 stage 2; gfx.md, "Render graph v0"): every resource of a
 // frame's graph with the first and the last pass that declares it, what a transient heap would be
 // packed from. Logged once each time the tunable is turned on, so a flight is not a log a frame.
@@ -2686,6 +2693,9 @@ void SceneRenderer::begin_frame() {
   const i64 begin_started = time::monotonic_ns();
   frame_cpu_ = FrameCpu{};
   frame_cpu_.wait_ms = static_cast<f64>(begin_started - wait_started) / 1.0e6;
+  // Between frames: a little of the tail's next CPU table block, ahead of its growth (W155).
+  if (scene_ != nullptr && scene_->dynamic())
+    scene_->prepare_table_room(static_cast<usize>(table_room_kib.get()) * 1024u);
   commands_ = frames_.begin_frame();
   // The slot's last frame has completed: the chain's buffers retired while it was recorded go to
   // the worker (R128), as the slot's deferred frees did in `begin_frame` above.
