@@ -34,6 +34,7 @@
 #include <domain/geometry/cluster.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/device.h>
+#include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/scene.h>
@@ -155,6 +156,130 @@ TEST_CASE("renderer: the ray path traces the casters' shadows and not the caster
   CHECK(kept.casters > 0);
   CHECK(lost.differ > 0);
   CHECK(fixed.differ == 0);
+}
+
+// **The casters in instances of their own** (R140; renderer.md, "The casters in instances of their
+// own"): with `renderer.rt.caster_instances` a caster is built into a structure of its own under a
+// top-level record the camera's rays leave out, opaque where its material is; without it, into its
+// instance's structure, non-opaque. Every caster of the fixture, cone-culled (the default camera)
+// and outside the frustum (a camera turned away from the casters, `off_view`), deformed by the
+// pool or rigid, on both raster paths that trace shadows and on the ray path, shaded and in the
+// shadow view: the same bytes and the same ids both ways, the same casters counted.
+namespace {
+struct CasterTunable {
+  explicit CasterTunable(bool own) {
+    REQUIRE(tunables::apply_overrides(own ? "renderer.rt.caster_instances=true"
+                                          : "renderer.rt.caster_instances=false"));
+  }
+  ~CasterTunable() { (void)tunables::apply_overrides("renderer.rt.caster_instances=true"); }
+  CasterTunable(const CasterTunable&) = delete;
+  CasterTunable& operator=(const CasterTunable&) = delete;
+};
+
+Shot render_caster_records(const gfx::Device& device, Caster caster, ShotOptions options,
+                           bool own) {
+  CasterTunable scope(own);
+  return render(device, caster, options);
+}
+
+u32 color_differences(const Shot& a, const Shot& b) {
+  REQUIRE(a.frame.color.size() == b.frame.color.size());
+  u32 differ = 0;
+  const u32 bytes = static_cast<u32>(a.frame.color.size());
+  for (u32 p = 0; p + 4 <= bytes; p += 4)
+    differ += std::memcmp(&a.frame.color[p], &b.frame.color[p], 4) != 0 ? 1u : 0u;
+  return differ;
+}
+}  // namespace
+
+TEST_CASE(
+    "renderer: casters in records of their own draw the bytes casters in their instance's did") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  struct Case {
+    const char* name;
+    RasterMode raster;
+    u32 view_mode;
+    bool off_frustum;
+    bool deform;
+  };
+  const u32 shadow_view = static_cast<u32>(gfx::ResolveMode::Shadow);
+  const u32 shaded_view = static_cast<u32>(gfx::ResolveMode::Shaded);
+  const Case cases[] = {
+      {"hw, shadow view", RasterMode::Hardware, shadow_view, false, false},
+      {"hw, shaded", RasterMode::Hardware, shaded_view, false, false},
+      {"vertex, shadow view", RasterMode::Vertex, shadow_view, false, false},
+      {"rt, shaded", RasterMode::RayTrace, shaded_view, false, false},
+      {"hw, off the frustum", RasterMode::Hardware, shadow_view, true, false},
+      {"hw, off the frustum, deformed", RasterMode::Hardware, shadow_view, true, true},
+      {"rt, off the frustum", RasterMode::RayTrace, shaded_view, true, false},
+  };
+  u32 compared = 0;
+  for (const Case& c : cases) {
+    if (c.raster == RasterMode::Hardware && !gpu.device.features().mesh_shader) {
+      MESSAGE(c.name << ": no mesh shaders here");
+      continue;
+    }
+    for (const Caster caster : k_casters) {
+      ShotOptions options;
+      options.raster = c.raster;
+      options.view_mode = c.view_mode;
+      options.deform = c.deform;
+      if (c.off_frustum) {
+        // shadow_map_tests.cpp's off-frustum camera: low over the ground, looking down beside the
+        // caster, which is outside the frustum and casts into it.
+        options.eye = Vec3{-0.85f, 0.6f, 0.0f};
+        options.target = Vec3{-0.85f, 0.0f, 0.05f};
+      }
+      const Shot own = render_caster_records(gpu.device, caster, options, true);
+      if (!own.available) {
+        MESSAGE(c.name << ": unavailable here: " << own.why);
+        break;
+      }
+      const Shot shared = render_caster_records(gpu.device, caster, options, false);
+      REQUIRE(shared.available);
+      const u32 ids = id_differences(own, shared);
+      const u32 colors = color_differences(own, shared);
+      MESSAGE(c.name << " " << caster_name(caster) << ": " << own.casters << " casters; " << ids
+                     << " id words and " << colors << " pixels differ");
+      CHECK(own.casters == shared.casters);
+      CHECK(own.visible == shared.visible);
+      CHECK(ids == 0);
+      CHECK(colors == 0);
+      if (own.casters > 0) ++compared;
+    }
+  }
+  // Somewhere the frames had casters to put in records of their own, or the case said nothing.
+  if (gpu.device.features().ray_query) CHECK(compared > 0);
+}
+
+TEST_CASE("renderer: the casters' own records are laid out only where there are casters") {
+  gfx::DeviceFeatures features;
+  features.mesh_shader = true;
+  features.buffer_int64_atomics = true;
+  features.acceleration_structure = true;
+  features.cluster_acceleration_structure = true;
+  features.ray_query = true;
+  ResolvedSettings resolved;
+  RenderSettings settings;
+  settings.shadows = ShadowMode::RayTraced;
+  {
+    CasterTunable on(true);
+    resolve_settings(settings, features, nullptr, resolved);
+    CHECK(resolved.casters);
+    CHECK(resolved.caster_instances);  // the default
+    settings.shadow_casters = false;
+    resolve_settings(settings, features, nullptr, resolved);
+    CHECK_FALSE(resolved.caster_instances);  // no casters, no records for them
+    settings.shadow_casters = true;
+  }
+  CasterTunable off(false);
+  resolve_settings(settings, features, nullptr, resolved);
+  CHECK(resolved.casters);
+  CHECK_FALSE(resolved.caster_instances);  // the tunable turns it back
 }
 
 TEST_CASE("renderer: the casters are on only where they mean something") {

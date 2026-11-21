@@ -126,7 +126,7 @@ struct RecordParams {
   uint64_t caster_count;     // uint: view 0's caster count word, or 0 for no caster run
   uint64_t records;          // ClusterRecord[] or InstantiateRecord[] out, `capacity` long
   uint64_t record_count;     // uint[4] out: built, wanted, instances dropped, casters dropped
-  uint64_t blas_records;     // BlasRecord[instance_count] out
+  uint64_t blas_records;     // BlasRecord[instance_count] out; twice that with k_caster_instances
   uint64_t clas_addresses;   // uint64_t[]: where the CLAS build writes each address
   uint instance_count;
   uint pair_count;  // the scene's; one run's count cannot exceed it
@@ -158,7 +158,9 @@ struct RecordParams {
   // which `records_main` reads its runs by; 0 is `pair_count`, the run length before the runs were
   // sized by the frame. The slots `emit` covers stay by `pair_count`. 208 bytes.
   uint run_length;
-  uint pad_run;
+  // gfx::ClusterRecordParams::caster_offset (R140): instance i's casters' bottom-level record is
+  // `blas_records[caster_offset + i]`, read only with `k_caster_instances`.
+  uint caster_offset;
 };
 
 // Mirrors gfx::ClusterCacheTables (120 bytes).
@@ -310,8 +312,13 @@ static const uint k_caster_run = 2;        // gfx::k_caster_run: the casters' ru
 static const uint k_instantiate = 0x10000;  // gfx::k_cluster_records_instantiate
 static const uint k_untraced_drawn = 0x40000;  // gfx::k_cluster_records_untraced_drawn
 static const uint k_drawn_first = 0x80000;     // gfx::k_cluster_records_drawn_first
+static const uint k_caster_instances = 0x100000;  // gfx::k_cluster_records_caster_instances
 
 uint view_count() { return g_params.mode & 0xffff; }
+// **The casters in structures of their own** (R140; renderer.md, "The casters in instances of
+// their own"): an instance's drawn run and its casters' run are two bottom-level records, i and
+// `instance_count + i`, and a caster's record is built as a drawn one's.
+bool caster_instances() { return (g_params.mode & k_caster_instances) != 0; }
 // **Past the capacity, every drawn structure before any caster** (R143; renderer.md, "What a frame
 // past its capacity keeps"): the kind is the keep key's top bit, so every instance's drawn clusters
 // are spent before any caster, where the structures are the picture.
@@ -478,6 +485,25 @@ uint2 group_exclusive(uint t, uint2 value) {
   return g_ranges_scan[t] - value;
 }
 
+// Instance i's bottom-level record over its run of `d` drawn and then `c` caster references from
+// `references`: one record, or with the casters in structures of their own (R140) two — the drawn
+// run as record i, the casters' as record `caster_offset + i` — cut where the drawn ones end.
+void write_blas(BlasRecord* blas, uint i, uint d, uint c, uint64_t references) {
+  BlasRecord record;
+  record.stride = 8;
+  record.references = references;
+  if (!caster_instances()) {
+    record.count = d + c;
+    blas[i] = record;
+    return;
+  }
+  record.count = d;
+  blas[i] = record;
+  record.count = c;
+  record.references = references + uint64_t(d) * 8;
+  blas[g_params.caster_offset + i] = record;
+}
+
 // Takes `n` from the left of the kind the instance is: what the capacity rule spends.
 bool take(inout uint left_built, inout uint left_cached, bool cached, uint n) {
   if (cached) {
@@ -609,19 +635,15 @@ void ranges<let kCache : int>(uint group, uint t) {
         drawn[i] = d;
         casters[i] = c;
       }
-      BlasRecord record;
-      record.count = d + c;
-      record.stride = 8;
       if (cached) {
         first[i] = cached_total;
-        record.references = cached_references + uint64_t(cached_total) * 8;
-        cached_total += record.count;
+        write_blas(blas, i, d, c, cached_references + uint64_t(cached_total) * 8);
+        cached_total += d + c;
       } else {
         first[i] = total;
-        record.references = g_params.clas_addresses + uint64_t(total) * 8;
-        total += record.count;
+        write_blas(blas, i, d, c, g_params.clas_addresses + uint64_t(total) * 8);
+        total += d + c;
       }
-      blas[i] = record;
     }
     if (group == 0 && t == 0) {
       record_count[0] = wanted;
@@ -1000,19 +1022,15 @@ void ranges_kept<let kCache : int>(uint group, uint t) {
     c &= k_count_mask;
     drawn[i] = d;
     casters[i] = c;
-    BlasRecord record;
-    record.count = d + c;
-    record.stride = 8;
     if (cached) {
       first[i] = cached_total;
-      record.references = cached_references + uint64_t(cached_total) * 8;
-      cached_total += record.count;
+      write_blas(blas, i, d, c, cached_references + uint64_t(cached_total) * 8);
+      cached_total += d + c;
     } else {
       first[i] = total;
-      record.references = g_params.clas_addresses + uint64_t(total) * 8;
-      total += record.count;
+      write_blas(blas, i, d, c, g_params.clas_addresses + uint64_t(total) * 8);
+      total += d + c;
     }
-    blas[i] = record;
   }
   if (group == 0 && t == 0) {
     uint* record_count = (uint*)g_params.record_count;
@@ -1104,7 +1122,11 @@ void emit_cached(uint dense, uint cluster_id, MeshDesc mesh, InstanceDesc instan
   MaskTables masks = no_mask_tables();
   masks.materials = g_params.mask_materials;
   masks.cluster_materials = g_params.mask_cluster_materials;
-  const bool caster = g_params.caster_count != 0 && visible_index >= caster_base();
+  // A caster in a structure of its own (R140) is built as a drawn entry is, so it keys the drawn
+  // forms and may share a drawn entry's slot: only a caster that shares its instance's structure
+  // takes the caster form.
+  const bool caster =
+      g_params.caster_count != 0 && visible_index >= caster_base() && !caster_instances();
   const bool masked = pair_masked(masks, instance, cluster_id);
   // The three forms a cluster's structure can take differ in their flags and their name, and the
   // structure carries both: the drawn opaque one, the drawn alpha-tested one (non-opaque, so the
@@ -1235,7 +1257,12 @@ void emit<let kCache : int>(uint slot) {
   MaskTables masks = no_mask_tables();
   masks.materials = g_params.mask_materials;
   masks.cluster_materials = g_params.mask_cluster_materials;
-  const bool not_caster = g_params.caster_count == 0 || visible_index < caster_base();
+  // **A caster in a structure of its own** (R140; renderer.md, "The casters in instances of their
+  // own") is built as a drawn entry is — opaque where its material is, the micromap where it is
+  // masked — since no camera ray enters its top-level record; the shadow rays' traversal then
+  // decides it as it decides a drawn card.
+  const bool not_caster =
+      g_params.caster_count == 0 || visible_index < caster_base() || caster_instances();
   const bool masked = pair_masked(masks, instance, cluster_id);
   const bool opaque = not_caster && !masked;
   record.geometry = (geometry_index & 0xffffff) | ((opaque ? k_geometry_opaque : 0u) << 29);

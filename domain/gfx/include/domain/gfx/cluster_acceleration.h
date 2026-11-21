@@ -466,7 +466,10 @@ struct ClusterRecordParams {
   // frame and what a caller that sets nothing keeps; `emit_main`'s pair slots stay by `pair_count`.
   // 208 bytes.
   u32 run_length = 0;
-  u32 pad_run = 0;
+  // **The casters' bottom-level records' place** (R140; `k_cluster_records_caster_instances`):
+  // instance i's casters' record is `blas_records[caster_offset + i]`, the scene's instance slots
+  // past the drawn ones, so that it never lands on a slot not yet live. Read only with the bit.
+  u32 caster_offset = 0;
 };
 static_assert(sizeof(ClusterRecordParams) == 208);
 
@@ -598,7 +601,17 @@ struct TlasReferenceParams {
   u64 addresses = 0;  // u64[count], or with `blas_slots` u64 per compacted record
   u64 records = 0;    // top-level instance records, k_instance_record_bytes each
   u32 count = 0;
-  u32 pad = 0;
+  // **The casters' own records** (R140; renderer.md, "The casters in instances of their own"):
+  // with the ranges cutting each instance's bottom-level record in two
+  // (`k_cluster_records_caster_instances`), the first casters' record — the scene's instance slots,
+  // at least `count`, and `ClusterRecordParams::caster_offset`. Record `caster_records + i` of the
+  // bottom-level records, places and top-level records is then instance i's casters: a copy of
+  // record i's transform, custom index and flags with the casters' structure and the mask
+  // `instance_ray_mask(flags) & k_ray_mask_caster` (0 where record i's is 0). Both passes cover
+  // `caster_records + count` threads, a record between `count` and `caster_records` (a slot not
+  // live) written inactive, and the top-level build is over as many records. Zero: one record an
+  // instance, as before.
+  u32 caster_records = 0;
   u64 instances = 0;         // InstanceDesc[count], the scene's, in record order
   FrameEye eye;              // the frame's origin
   u64 static_addresses = 0;  // u64 per mesh: its static structure, or 0; 0 for no static forms
@@ -628,6 +641,14 @@ inline constexpr u32 k_cluster_records_untraced_drawn = 1u << 18;
 // a far tree does. Where they are the picture (a traced-primary frame), a dropped drawn instance is
 // a hole in it and a dropped caster a shadow's far side. The renderer sets it with the ray path.
 inline constexpr u32 k_cluster_records_drawn_first = 1u << 19;
+// ClusterRecordParams::mode: **the casters in structures of their own** (R140; renderer.md, "The
+// casters in instances of their own"). The ranges write an instance's drawn run as bottom-level
+// record i and its casters' run as record `caster_offset + i` (`blas_records` is then twice the
+// slots long), and the emit pass builds a caster's record as a drawn one's — opaque where its
+// material is, with the drawn record's micromap where it is masked — since the camera's rays never
+// enter a caster's top-level record (`k_ray_mask_camera`). Without it a caster shares its
+// instance's structure, non-opaque and without a micromap, as before.
+inline constexpr u32 k_cluster_records_caster_instances = 1u << 20;
 // The ranges' scan (clas_records.slang, `ranges_count_main` and `ranges_main`, and past the
 // capacity `keep_cut_main`, `keep_ties_main`, `keep_fine_main`, `ranges_kept_count_main` and
 // `ranges_kept_main`): a block of 1,024 instances to a group of 256 threads, four contiguous
@@ -666,10 +687,12 @@ constexpr u64 cluster_instance_count_words(u32 instance_count) noexcept {
 inline constexpr u32 k_cluster_record_count_blas = 12;
 inline constexpr u32 k_cluster_record_count_words = 13;
 constexpr u32 cluster_records_mode(u32 views, bool instantiate, bool untraced_drawn = false,
-                                   bool drawn_first = false) noexcept {
+                                   bool drawn_first = false,
+                                   bool caster_instances = false) noexcept {
   return (views & 0xffffu) | (instantiate ? k_cluster_records_instantiate : 0u) |
          (untraced_drawn ? k_cluster_records_untraced_drawn : 0u) |
-         (drawn_first ? k_cluster_records_drawn_first : 0u);
+         (drawn_first ? k_cluster_records_drawn_first : 0u) |
+         (caster_instances ? k_cluster_records_caster_instances : 0u);
 }
 
 // Every instance's cluster bottom-level structure, built by **one** command into one buffer

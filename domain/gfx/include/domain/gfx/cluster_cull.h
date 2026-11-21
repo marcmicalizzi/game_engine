@@ -881,6 +881,10 @@ inline constexpr u32 k_instance_untraced = 1u << 6;
 inline constexpr u32 k_ray_mask_caster = 1u;
 inline constexpr u32 k_ray_mask_all = 0xffu;
 inline constexpr u32 k_ray_mask_drawn_only = k_ray_mask_all & ~k_ray_mask_caster;
+// **The camera's rays' mask** (R140; renderer.md, "The casters in instances of their own"): every
+// bit but the caster bit. It meets every record the camera met with 0xff — 0xff and an untraced
+// 0xfe — and never a caster's own record, whose mask is the caster bit alone.
+inline constexpr u32 k_ray_mask_camera = k_ray_mask_drawn_only;
 constexpr u32 instance_ray_mask(u32 flags) noexcept {
   return (flags & k_instance_untraced) != 0 ? k_ray_mask_drawn_only : k_ray_mask_all;
 }

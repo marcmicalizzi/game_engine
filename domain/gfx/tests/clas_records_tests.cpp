@@ -1342,3 +1342,118 @@ TEST_CASE("tlas references: a record's mask is its instance's ray mask, and a ho
     gfx::destroy_buffer(device, *b);
   device.destroy();
 }
+
+TEST_CASE("tlas references: a caster's own record is its instance's with the caster bit alone") {
+  // **The casters in instances of their own** (R140; renderer.md, "The casters in instances of
+  // their own"). With `caster_records` the pass covers the drawn records, then the slots not live
+  // up to `caster_records`, then a caster record per instance at `caster_records + i`: the drawn
+  // record's transform, custom index and flags, its own structure's address, and the mask
+  // `instance_ray_mask(flags) & k_ray_mask_caster` — 0 for a hole and for an untraced instance, so
+  // no light's ray meets it either — while a slot not live gets a zero reference (inactive). The
+  // camera's mask meets every drawn record and no caster record.
+  gfx::Device device;
+  std::string error;
+  if (!gfx_test::open_device(device)) return;
+  static_assert((gfx::k_ray_mask_camera & gfx::instance_ray_mask(0u)) != 0);
+  static_assert((gfx::k_ray_mask_camera & gfx::instance_ray_mask(gfx::k_instance_untraced)) != 0);
+  static_assert((gfx::k_ray_mask_camera & gfx::k_ray_mask_caster) == 0);
+  constexpr u32 k_count = 256;
+  constexpr u32 k_slots = 300;  // the casters' half starts past every slot
+  constexpr u32 k_total = k_slots + k_count;
+  constexpr u32 k_words = static_cast<u32>(gfx::k_instance_record_bytes / 4);
+  Vector<gfx::InstanceDesc> instances(k_count);
+  Vector<u32> records(u64{k_total} * k_words, u32{0xcdcdcdcdu});
+  Vector<u64> addresses(k_total, u64{0});
+  const auto hole = [](u32 i) { return i % 7 == 3; };
+  for (u32 i = 0; i < k_count; ++i) {
+    instances[i].flags = i;
+    instances[i].mesh = 0;
+    instances[i].rows[0] = Vec4{1.0f, 0.0f, 0.0f, 0.0f};
+    instances[i].rows[1] = Vec4{0.0f, 1.0f, 0.0f, 0.0f};
+    instances[i].rows[2] = Vec4{0.0f, 0.0f, 1.0f + static_cast<f32>(i), 0.0f};
+    records[u64{i} * k_words + 12] = ((i * 977u) & 0xffffffu) | (hole(i) ? 0u : 0xffu << 24);
+    records[u64{i} * k_words + 13] = (i * 31u) & 0xffffffu;  // the SBT offset and flags word
+  }
+  for (u32 i = 0; i < k_total; ++i)
+    addresses[i] = 0x10000u + u64{i} * 0x100u;
+  constexpr gfx::BufferUsage k_address =
+      gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress;
+  gfx::BufferResource instance_buffer, record_buffer, address_buffer;
+  REQUIRE(gfx::upload_buffer(device, instances.data(), instances.size() * sizeof(gfx::InstanceDesc),
+                             k_address, instance_buffer, &error));
+  REQUIRE(gfx::create_buffer(device, records.size() * sizeof(u32), k_address, true, record_buffer,
+                             &error));
+  std::memcpy(record_buffer.mapped, records.data(), records.size() * sizeof(u32));
+  REQUIRE(gfx::upload_buffer(device, addresses.data(), addresses.size() * sizeof(u64), k_address,
+                             address_buffer, &error));
+  const gfx::ShaderModuleHandle module = gfx::create_shader_module(
+      device, shaders::k_tlas_references_spirv, shaders::k_tlas_references_spirv_size, &error);
+  REQUIRE(module.valid());
+  gfx::ComputePipeline pass;
+  REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, module, "tlas_references_main", {},
+                                               sizeof(gfx::TlasReferenceParams), pass, &error),
+                  error);
+  gfx::TlasReferenceParams params{};
+  params.addresses = address_buffer.address;
+  params.records = record_buffer.address;
+  params.count = k_count;
+  params.caster_records = k_slots;
+  params.instances = instance_buffer.address;
+  REQUIRE(gfx::submit_immediate(
+      device,
+      [&](gfx::CommandList cb) {
+        cb.bind_pipeline(gfx::BindPoint::Compute, pass.pipeline);
+        cb.push_constants(pass.layout, gfx::ShaderStage::Compute, 0, sizeof(params), &params);
+        cb.dispatch(
+            (k_total + gfx::k_tlas_references_workgroup - 1) / gfx::k_tlas_references_workgroup, 1,
+            1);
+      },
+      &error));
+  const auto* out = static_cast<const u32*>(record_buffer.mapped);
+  const auto reference_of = [&](u32 r) {
+    u64 reference = 0;
+    std::memcpy(&reference, out + u64{r} * k_words + 14, sizeof(reference));
+    return reference;
+  };
+  u32 wrong_drawn = 0;
+  u32 wrong_idle = 0;
+  u32 wrong_mask = 0;
+  u32 wrong_copy = 0;
+  u32 wrong_reference = 0;
+  u32 casters_met_by_lights = 0;
+  u32 casters_met_by_camera = 0;
+  for (u32 i = 0; i < k_count; ++i) {
+    const u32 drawn_mask = out[u64{i} * k_words + 12] >> 24;
+    wrong_drawn += drawn_mask != (hole(i) ? 0u : gfx::instance_ray_mask(i)) ? 1u : 0u;
+    wrong_drawn += reference_of(i) != addresses[i] ? 1u : 0u;
+    const u32 c = k_slots + i;
+    const u32 word = out[u64{c} * k_words + 12];
+    const u32 expected = hole(i) ? 0u : (gfx::instance_ray_mask(i) & gfx::k_ray_mask_caster);
+    wrong_mask += (word >> 24) != expected ? 1u : 0u;
+    wrong_copy += (word & 0xffffffu) != ((i * 977u) & 0xffffffu) ? 1u : 0u;
+    wrong_copy += out[u64{c} * k_words + 13] != ((i * 31u) & 0xffffffu) ? 1u : 0u;
+    for (u32 w = 0; w < 12; ++w)
+      wrong_copy += out[u64{c} * k_words + w] != out[u64{i} * k_words + w] ? 1u : 0u;
+    wrong_reference += reference_of(c) != addresses[c] ? 1u : 0u;
+    casters_met_by_lights += ((word >> 24) & gfx::k_ray_mask_caster) != 0 ? 1u : 0u;
+    casters_met_by_camera += ((word >> 24) & gfx::k_ray_mask_camera) != 0 ? 1u : 0u;
+  }
+  for (u32 r = k_count; r < k_slots; ++r)
+    wrong_idle += reference_of(r) != 0 ? 1u : 0u;
+  MESSAGE(k_count << " instances, " << casters_met_by_lights
+                  << " caster records a light meets: " << wrong_drawn << " drawn, " << wrong_idle
+                  << " idle, " << wrong_mask << " caster masks, " << wrong_copy
+                  << " copied words and " << wrong_reference << " caster references differ");
+  CHECK(casters_met_by_lights > 0);
+  CHECK(casters_met_by_camera == 0);
+  CHECK(wrong_drawn == 0);
+  CHECK(wrong_idle == 0);
+  CHECK(wrong_mask == 0);
+  CHECK(wrong_copy == 0);
+  CHECK(wrong_reference == 0);
+  gfx::destroy_compute_pipeline(device, pass);
+  gfx::destroy_shader_module(device, module);
+  for (gfx::BufferResource* b : {&instance_buffer, &record_buffer, &address_buffer})
+    gfx::destroy_buffer(device, *b);
+  device.destroy();
+}

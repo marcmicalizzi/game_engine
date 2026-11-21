@@ -774,6 +774,8 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
   // A traced-primary scene builds its untraced instances' drawn entries (R110), so they count in
   // what a frame can want (`rt_frame_estimate`).
   rt_untraced_drawn_ = resolved.rt_chain && resolved.ray_path;
+  // The casters' own top-level records (R140): the layout's length, so decided here.
+  rt_caster_records_ = resolved.rt_chain && resolved.caster_instances;
   // A scene deforms when the settings say every instance does, or when any instance is skinned.
   // The two are independent: `--deform wave` on a scene with a skinned character deforms the
   // rigid instances procedurally and skins the skinned one, because a `DeformDesc` names one kind
@@ -2188,7 +2190,10 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
   const bool records_new = rt_records_all_ && ray_tracing_ && rt_instances.buffer.valid();
   if (records_new && rt_records_from_.buffer.valid()) {
     out.carry_records = rt_records_from_;
-    out.carry_record_bytes = std::min(rt_records_from_.size, rt_instances.size);
+    // The drawn half alone (R140): the casters' half, past every slot, is written whole by every
+    // frame, and the old one carried over its slots would land on the new layout's drawn records.
+    out.carry_record_bytes =
+        std::min(rt_records_from_.size, rt_instances.size) / rt_record_halves();
     out.retire.push_back(rt_records_from_);
     rt_records_from_ = gfx::BufferResource{};
     rt_records_all_ = false;
@@ -6125,46 +6130,50 @@ bool GpuScene::lay_out_ray_tracing(std::string* error, RelayoutRetired* retired)
   tlas_records.reserve(uploaded);
   for (u32 i = 0; i < uploaded; ++i)
     tlas_records.push_back(tlas_record(i));
-  Vector<u8> tlas_bytes(u64{uploaded} * gfx::k_instance_record_bytes, u8{0});
+  // **The casters' own records** (R140; renderer.md, "The casters in instances of their own"): a
+  // second half after the drawn one, zero here (inactive), which every frame's `tlas_references`
+  // dispatch writes whole from the drawn half. Each per-slot list below is as long.
+  const u32 halves = rt_record_halves();
+  const u32 record_slots = rt_instance_slots_ * halves;
+  Vector<u8> tlas_bytes(u64{uploaded} * halves * gfx::k_instance_record_bytes, u8{0});
   gfx::write_instances(std::span<const gfx::TlasInstance>(tlas_records.data(), tlas_records.size()),
                        tlas_bytes.data());
-  bool ok =
-      gfx::create_buffer(device, u64{rt_union_clusters_} * sizeof(u32), k_address, false, slots,
-                         error) &&
-      // Three words an instance: its drawn clusters, its casters, then its dense record base;
-      // then the ranges' scratch, four words a block of 1,024 and eight, and the keep keys,
-      // two words an instance (R106, R174; `gfx::cluster_instance_count_words`).
-      gfx::create_buffer(device,
-                         gfx::cluster_instance_count_words(rt_instance_slots_) * sizeof(u32),
-                         k_address | gfx::BufferUsage::TransferDst | gfx::BufferUsage::Indirect,
-                         false, instance_counts, error) &&
-      // The keep block (R174; renderer.md, "Past the capacity, by size on screen"): 1 MiB of
-      // histograms and the cut words, written and cleared by every frame's reset pass. Its
-      // size is the scene's never, so a swapped relayout keeps it (one set is shared by the
-      // frames in flight); making it again leaked the old one until engine-view's exit.
-      (rt_keep_tables.buffer.valid() ||
-       gfx::create_buffer(device, k_rt_keep_bytes, k_address | gfx::BufferUsage::TransferDst, false,
-                          rt_keep_tables, error)) &&
-      // A dynamic scene's set is built over every slot of the capacity, so the records past
-      // the frame's instances are cleared to empty structures every frame.
-      // A transfer source too, so a test can read the drop rule's result back (R128).
-      gfx::create_buffer(
-          device, gfx::k_cluster_blas_record_bytes * rt_instance_slots_,
-          k_record_usage | gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc, false,
-          blas_records, error) &&
-      // The records of the instances that reference anything, which the bottom-level build
-      // reads, and every instance's place among them (R143, `blas_compact_main`): 20 bytes a
-      // slot, so that the build costs the instances a frame draws and not the slots.
-      gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * rt_instance_slots_,
-                         k_record_usage, false, blas_dense, error) &&
-      gfx::create_buffer(device, sizeof(u32) * u64{rt_instance_slots_}, k_address, false,
-                         blas_slots, error) &&
-      gfx::create_tlas(device, rt_instance_slots_, gfx::k_build_fast_trace, tlas, error) &&
-      (retired == nullptr
-           ? gfx::upload_buffer(device, tlas_bytes.data(), tlas_bytes.size(), k_tlas_usage,
-                                rt_instances, error)
-           : gfx::create_buffer(device, u64{rt_instance_slots_} * gfx::k_instance_record_bytes,
-                                k_tlas_usage, false, rt_instances, error));
+  bool ok = gfx::create_buffer(device, u64{rt_union_clusters_} * sizeof(u32), k_address, false,
+                               slots, error) &&
+            // Three words an instance: its drawn clusters, its casters, then its dense record base;
+            // then the ranges' scratch, four words a block of 1,024 and eight, and the keep keys,
+            // two words an instance (R106, R174; `gfx::cluster_instance_count_words`).
+            gfx::create_buffer(
+                device, gfx::cluster_instance_count_words(rt_instance_slots_) * sizeof(u32),
+                k_address | gfx::BufferUsage::TransferDst | gfx::BufferUsage::Indirect, false,
+                instance_counts, error) &&
+            // The keep block (R174; renderer.md, "Past the capacity, by size on screen"): 1 MiB of
+            // histograms and the cut words, written and cleared by every frame's reset pass. Its
+            // size is the scene's never, so a swapped relayout keeps it (one set is shared by the
+            // frames in flight); making it again leaked the old one until engine-view's exit.
+            (rt_keep_tables.buffer.valid() ||
+             gfx::create_buffer(device, k_rt_keep_bytes, k_address | gfx::BufferUsage::TransferDst,
+                                false, rt_keep_tables, error)) &&
+            // A dynamic scene's set is built over every slot of the capacity, so the records past
+            // the frame's instances are cleared to empty structures every frame.
+            // A transfer source too, so a test can read the drop rule's result back (R128).
+            gfx::create_buffer(
+                device, gfx::k_cluster_blas_record_bytes * record_slots,
+                k_record_usage | gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc,
+                false, blas_records, error) &&
+            // The records of the instances that reference anything, which the bottom-level build
+            // reads, and every instance's place among them (R143, `blas_compact_main`): 20 bytes a
+            // slot, so that the build costs the instances a frame draws and not the slots.
+            gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * record_slots,
+                               k_record_usage, false, blas_dense, error) &&
+            gfx::create_buffer(device, sizeof(u32) * u64{record_slots}, k_address, false,
+                               blas_slots, error) &&
+            gfx::create_tlas(device, record_slots, gfx::k_build_fast_trace, tlas, error) &&
+            (retired == nullptr
+                 ? gfx::upload_buffer(device, tlas_bytes.data(), tlas_bytes.size(), k_tlas_usage,
+                                      rt_instances, error)
+                 : gfx::create_buffer(device, u64{record_slots} * gfx::k_instance_record_bytes,
+                                      k_tlas_usage, false, rt_instances, error));
   if (ok) {
     tlas_slot_ = bindless_.add_acceleration_structure(tlas.handle);
     if (tlas_slot_ == gfx::BindlessSet::k_invalid_slot) {
@@ -6817,7 +6826,7 @@ void GpuScene::destroy() noexcept {
   rt_limits_ = gfx::ClusterSetLimits{};
   vertex_index_capacity_ = 0;
   tlas_slot_ = gfx::BindlessSet::k_invalid_slot;
-  ray_tracing_ = deform_ = skinned_ = streamed_ = rt_untraced_drawn_ = false;
+  ray_tracing_ = deform_ = skinned_ = streamed_ = rt_untraced_drawn_ = rt_caster_records_ = false;
   flora_field_ = flora_tail_parts_ = false;
   field_deform_.clear();
   field_rest_ = FloraFieldRest{};

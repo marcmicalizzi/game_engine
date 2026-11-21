@@ -3386,6 +3386,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // The shadow casters live in the software rasterizer's run and are counted in its argument
   // block, which a frame that traces shadows never fills (gfx::k_caster_run).
   const bool casters = resolved_.casters;
+  // The casters in top-level records of their own (R140), where the scene laid them out.
+  const bool caster_instances = casters && resolved_.caster_instances && scene.rt_caster_records();
+  // The top-level records a frame builds and the threads its two record passes take: the frame's
+  // instances, or with the casters' own records the scene's slots and then a caster record each.
+  const u32 tlas_record_count =
+      caster_instances ? scene.rt_instance_slots() + instance_count : instance_count;
+  ENGINE_ASSERT(!caster_instances || scene.rt_instance_slots() >= instance_count,
+                "the casters' half starts past every instance slot");
   ENGINE_ASSERT(!casters || (!use_sw && !occlusion && rt_chain),
                 "the caster run is the software run of a frame with neither a software pass nor "
                 "occlusion culling");
@@ -4727,8 +4735,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // **Past the capacity a traced picture keeps its drawn structures before any caster** (R143;
     // renderer.md, "What a frame past its capacity keeps"): there a dropped drawn instance is a
     // hole in the picture, and a dropped caster the far side of a shadow.
-    record_params.mode = gfx::cluster_records_mode(
-        views, settings.rt_templates && !scene.has_masked(), untraced_drawn, ray_path);
+    // **The casters in structures of their own** (R140; renderer.md, "The casters in instances of
+    // their own"): the ranges cut each instance's record where its drawn run ends, the casters'
+    // half after every slot, and a caster is built as a drawn entry.
+    record_params.mode =
+        gfx::cluster_records_mode(views, settings.rt_templates && !scene.has_masked(),
+                                  untraced_drawn, ray_path, caster_instances);
+    record_params.caster_offset = caster_instances ? scene.rt_instance_slots() : 0u;
+    tlas_references.caster_records = record_params.caster_offset;
     // What the frame's structures hold room for: the records pass keeps no more, dropping whole
     // instances past it (gfx::ClusterRecordParams). The top-level instance records — one per scene
     // instance, the world transform and the instance as the custom index, shared by every view —
@@ -6436,7 +6450,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.blas_compact.pipeline);
             cb.push_constants(pipelines.blas_compact.layout, gfx::ShaderStage::Compute, 0,
                               sizeof(gfx::TlasReferenceParams), &tlas_references);
-            cb.dispatch((instance_count + gfx::k_tlas_references_workgroup - 1) /
+            cb.dispatch((tlas_record_count + gfx::k_tlas_references_workgroup - 1) /
                             gfx::k_tlas_references_workgroup,
                         1, 1);
           });
@@ -6485,7 +6499,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.tlas_references.pipeline);
             cb.push_constants(pipelines.tlas_references.layout, gfx::ShaderStage::Compute, 0,
                               sizeof(gfx::TlasReferenceParams), &tlas_references);
-            cb.dispatch((instance_count + gfx::k_tlas_references_workgroup - 1) /
+            cb.dispatch((tlas_record_count + gfx::k_tlas_references_workgroup - 1) /
                             gfx::k_tlas_references_workgroup,
                         1, 1);
           });
@@ -6499,7 +6513,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           },
           [&](gfx::CommandList cb, gfx::RenderGraph&) {
             timer.begin(cb, "tlas");
-            gfx::build_tlas(cb, scene.tlas, scene.rt_instances.address, instance_count,
+            gfx::build_tlas(cb, scene.tlas, scene.rt_instances.address, tlas_record_count,
                             gfx::k_build_fast_trace, scene.rt_scratch);
             timer.end(cb);
           });

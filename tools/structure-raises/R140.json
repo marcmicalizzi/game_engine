@@ -1,0 +1,14 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R140",
+  "reason": "R140: the casters' own top-level records (the frame's record count, the scene's per-slot halves, the caster-records flag) and the design section and its results on the renderer and gfx pages",
+  "date": "2026-11-21",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": 14,
+    "renderer.gpu_scene_cpp.lines": 9,
+    "renderer.gpu_scene_h.lines": 8,
+    "page:docs/subsystems/renderer.md": 7307,
+    "page:docs/subsystems/gfx.md": 1267
+  }
+}

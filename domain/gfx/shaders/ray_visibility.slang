@@ -132,16 +132,19 @@ void trace_main(uint3 id : SV_DispatchThreadID) {
   // masked pair is committed where its mask keeps the hit (`candidate_keeps`). A frame without
   // masks takes the culled query it always took.
   //
-  // These are the camera's rays, so they trace with every bit of the top-level mask
-  // (`k_ray_mask_all`; gfx.md, "The ray mask"): an instance the caster policy keeps from every
-  // light's ray is still the picture's (R110).
+  // These are the camera's rays, so they trace with every bit of the top-level mask but the caster
+  // bit (`k_ray_mask_camera`; gfx.md, "The ray mask"): an instance the caster policy keeps from
+  // every light's ray is still the picture's (R110), and a caster's own record, which carries the
+  // caster bit alone, is never entered (R140; renderer.md, "The casters in instances of their
+  // own"). With casters in records of their own the `caster` tests below never fire; they stay
+  // for a frame whose casters share their instance's structure.
   const bool masked_frame = params->masks.materials != 0;
   bool hit = false;
   float t = 0.0;
   uint key = 0;
   if (!masked_frame) {
     RayQuery<RAY_FLAG_CULL_NON_OPAQUE> query;
-    query.TraceRayInline(g_scenes[params->scene], RAY_FLAG_CULL_NON_OPAQUE, k_ray_mask_all, ray);
+    query.TraceRayInline(g_scenes[params->scene], RAY_FLAG_CULL_NON_OPAQUE, k_ray_mask_camera, ray);
     while (query.Proceed()) {
     }
     if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
@@ -155,7 +158,7 @@ void trace_main(uint3 id : SV_DispatchThreadID) {
     }
   } else {
     RayQuery<RAY_FLAG_NONE> query;
-    query.TraceRayInline(g_scenes[params->scene], RAY_FLAG_NONE, k_ray_mask_all, ray);
+    query.TraceRayInline(g_scenes[params->scene], RAY_FLAG_NONE, k_ray_mask_camera, ray);
     while (query.Proceed()) {
       if (query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
       bool caster = false;
@@ -192,7 +195,7 @@ void trace_main(uint3 id : SV_DispatchThreadID) {
     tie.TMin = t * 0.999999;
     tie.TMax = t * 1.000001;
     RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> scan;
-    scan.TraceRayInline(g_scenes[params->scene], RAY_FLAG_FORCE_NON_OPAQUE, k_ray_mask_all, tie);
+    scan.TraceRayInline(g_scenes[params->scene], RAY_FLAG_FORCE_NON_OPAQUE, k_ray_mask_camera, tie);
     while (scan.Proceed()) {
       if (scan.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
       if (scan.CandidateTriangleRayT() != t) continue;

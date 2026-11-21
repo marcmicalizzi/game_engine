@@ -430,6 +430,15 @@ tunables::Bool shadow_micromaps{
     "answer at level 6 the v25 walk's GPU frame went 41.3 to 34.2 ms at 11520x2160, for 715 MB "
     "resident and a bake of about 5 s at load; false is the old picture and cost. Not with the "
     "opaque shadow proxy on (R120; renderer.md, Opacity micromaps; read at load)"};
+// R140: the shadow casters in top-level records of their own (renderer.md, "The casters in
+// instances of their own").
+tunables::Bool rt_caster_instances{
+    "renderer.rt.caster_instances", true,
+    "With shadow casters on, give each instance's casters a bottom-level structure and a "
+    "top-level record of their own, under the caster bit alone, so the camera's rays never enter "
+    "them and a caster's record is built as a drawn one's, opaque or with the drawn record's "
+    "opacity micromap; the picture's ids are unchanged and the shadows are the micromaps' "
+    "(R140; renderer.md, The casters in instances of their own; read when a scene is made)"};
 tunables::Bool shadow_micromap_2state{
     "renderer.shadow.micromap_2state", true,
     "With opacity micromaps on, the shadow rays read them two-state "
@@ -1321,6 +1330,9 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
                       log::field("device_limit", index_limit));
     }
   }
+  // **The casters in structures of their own** (R140; renderer.md, "The casters in instances of
+  // their own"): only where there are casters to put there.
+  out.caster_instances = out.casters && rt_caster_instances.get();
   // **Static structures for rigid forms** (renderer.md, "Static structures for rigid forms"). A
   // streamed world's ring-1-and-beyond forms are rigid and, drawn at their frontier, a fixed cut:
   // their structures are built once and referenced per instance, and the frame builds the rest.

@@ -25,7 +25,9 @@ struct TlasReferenceParams {
   uint64_t addresses;  // uint64_t[count]: ClusterBlasSet::addresses, what the build wrote
   uint64_t records;    // VkAccelerationStructureInstanceKHR[count], 64 bytes each
   uint count;
-  uint pad;
+  // Nonzero: the casters have records of their own, `count + i` for instance i (R140; renderer.md,
+  // "The casters in instances of their own"), and both passes cover `2 * count`.
+  uint caster_records;
   uint64_t instances;  // InstanceDesc[count]: the scene's, in record order
   FrameEye eye;        // the frame's origin
   // uint64_t per mesh: the static structure of a rigid distance form, built once (renderer.md,
@@ -60,13 +62,25 @@ static const uint k_blas_none = 0xffffffffu;  // gfx::k_cluster_blas_none
 // `blas_slots`. The places follow the atomic, so the order of the structures in the build's buffer
 // is not a function of the frame; the picture cannot tell, since a hit is named by its top-level
 // record, which stays the instance's, and the ray path settles a tied distance by the pair.
+// The bottom-level records and top-level records this frame has: one an instance, or with the
+// casters' own records (R140) the casters' after the scene's slots, `caster_records + i`, and the
+// records between the frame's instances and the slots (slots not live) inactive.
+uint record_total() {
+  return g_params.caster_records != 0 ? g_params.caster_records + g_params.count : g_params.count;
+}
+bool record_idle(uint i) { return i >= g_params.count && i < g_params.caster_records; }
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void blas_compact_main(uint3 thread_id : SV_DispatchThreadID) {
   const uint i = thread_id.x;
-  if (i >= g_params.count) return;
+  if (i >= record_total()) return;
   BlasRecord* records = (BlasRecord*)g_params.blas_records;
   uint* slots = (uint*)g_params.blas_slots;
+  if (record_idle(i)) {
+    slots[i] = k_blas_none;
+    return;
+  }
   const BlasRecord record = records[i];
   if (record.count == 0) {
     slots[i] = k_blas_none;
@@ -89,10 +103,48 @@ static const uint k_record_mask_word = 12;  // the 32-bit word holding the custo
 [numthreads(64, 1, 1)]
 void tlas_references_main(uint3 thread_id : SV_DispatchThreadID) {
   const uint i = thread_id.x;
-  if (i >= g_params.count) return;
+  if (i >= record_total()) return;
   uint64_t* addresses = (uint64_t*)g_params.addresses;
   uint64_t* records = (uint64_t*)g_params.records;
   InstanceDesc* instances = (InstanceDesc*)g_params.instances;
+  if (record_idle(i)) {
+    // A slot not live, inside the top-level build only because the casters' half starts past
+    // every slot: a zero reference is an inactive instance whatever its other words hold.
+    records[uint64_t(i) * k_record_words + (k_record_words - 1)] = 0;
+    return;
+  }
+  if (i >= g_params.count) {
+    // **A caster's own record** (R140; renderer.md, "The casters in instances of their own"): the
+    // drawn record's transform, custom index and flags, the casters' structure, and the caster bit
+    // alone — never met by a camera ray (`k_ray_mask_camera`), met by every light's — or 0 where the
+    // drawn record is a hole or its instance is untraced. Word 12's custom index never changes and
+    // its mask's being zero is the CPU's, so reading it beside the drawn thread's write of the mask
+    // reads the same index and the same zeroness either way.
+    const uint j = i - g_params.caster_records;
+    const InstanceDesc owner = instances[j];
+    uint64_t caster_reference = 0;
+    if (g_params.blas_slots != 0) {
+      const uint place = ((uint*)g_params.blas_slots)[i];
+      if (place != k_blas_none) caster_reference = addresses[place];
+    } else {
+      caster_reference = addresses[i];
+    }
+    records[uint64_t(i) * k_record_words + (k_record_words - 1)] = caster_reference;
+    uint* drawn_words = (uint*)(g_params.records + uint64_t(j) * k_record_floats * 4);
+    uint* caster_words = (uint*)(g_params.records + uint64_t(i) * k_record_floats * 4);
+    const uint drawn_index_mask = drawn_words[k_record_mask_word];
+    const uint caster_mask = (drawn_index_mask >> 24) != 0u
+                                 ? (instance_ray_mask(owner.flags) & k_ray_mask_caster)
+                                 : 0u;
+    caster_words[k_record_mask_word] = (drawn_index_mask & 0xffffffu) | (caster_mask << 24);
+    caster_words[k_record_mask_word + 1] = drawn_words[k_record_mask_word + 1];
+    const float3 owner_from_eye = instance_from_eye(owner, g_params.eye);
+    float4* caster_rows = (float4*)(g_params.records + uint64_t(i) * k_record_floats * 4);
+    caster_rows[0] = float4(owner.rows[0].xyz, owner_from_eye.x);
+    caster_rows[1] = float4(owner.rows[1].xyz, owner_from_eye.y);
+    caster_rows[2] = float4(owner.rows[2].xyz, owner_from_eye.z);
+    return;
+  }
   const InstanceDesc instance = instances[i];
   // A rigid form's structure was built once, at load: this frame's build left the instance's own
   // empty (clas_records.slang leaves its entries out), and its mesh's static one stands in.

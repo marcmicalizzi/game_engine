@@ -757,6 +757,11 @@ class GpuScene {
   // the scene-sized part, and the templates' storage. What a summary reports as the chain's cost.
   u64 rt_bytes() const noexcept { return rt_bytes_; }
   u32 rt_capacity() const noexcept { return rt_capacity_; }
+  // **The casters' own records** (R140; renderer.md, "The casters in instances of their own"): the
+  // top-level records, the bottom-level records, their dense list and places are laid out twice
+  // per instance slot, the casters' half after the drawn, and a frame with casters uses them.
+  bool rt_caster_records() const noexcept { return rt_caster_records_; }
+  u32 rt_record_halves() const noexcept { return rt_caster_records_ ? 2u : 1u; }
   u32 rt_capacity_limit() const noexcept { return rt_capacity_limit_; }
   // The budget `rt_capacity_limit()` was made from, in MiB, and where it came from: the setting,
   // the tunable or the device's rule (`resolve_rt_budget`; renderer.md, "The budget follows the
@@ -2362,6 +2367,9 @@ class GpuScene {
   u64 static_pairs_live_ = 0;
   u64 untraced_pairs_live_ = 0;
   bool rt_untraced_drawn_ = false;  // the ray path builds untraced instances' drawn entries (R110)
+  // The casters' own records (R140; `ResolvedSettings::caster_instances`): the per-slot halves of
+  // the chain's top level and bottom-level record lists are two, the casters' after the drawn.
+  bool rt_caster_records_ = false;
   gfx::ClusterSet static_clas_;
   gfx::ClusterBlasSet static_blas_;
   // The resident cluster structure cache (`rt_cache()`): per mesh its first cluster's key / 3 or

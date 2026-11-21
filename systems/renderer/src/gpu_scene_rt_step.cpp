@@ -90,8 +90,10 @@ bool GpuScene::rt_step_inputs(u32 capacity, u32 references, bool beyond_budget, 
   // cache's, never both, so its most is the larger of the two capacities.
   // And at most one structure per reference: the build is over the instances that reference
   // anything (R143, `blas_compact_main`), never over every slot.
-  out.blas_structures = static_cast<u32>(
-      std::max<u64>(1, std::min<u64>(rt_instance_slots_, u64{capacity} + references)));
+  // With the casters' own structures (R140) an instance may have two, still each of one reference
+  // at least.
+  out.blas_structures = static_cast<u32>(std::max<u64>(
+      1, std::min<u64>(u64{rt_instance_slots_} * rt_record_halves(), u64{capacity} + references)));
   out.blas_per_instance = std::min(rt_max_per_instance_, std::max(capacity, references));
   // The cache's misses build in the same chain, one pass before the frame's own (the graph orders
   // the two), so they share the scratch with the top-level build.
