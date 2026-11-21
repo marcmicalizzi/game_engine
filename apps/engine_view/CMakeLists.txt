@@ -50,6 +50,9 @@ set(_view_tests tests/test_device_tests.cpp
                 tests/game_view_tests.cpp tests/startup_trace_view_tests.cpp
                 tests/loading_view_tests.cpp tests/static_world_view_tests.cpp
                 ${_view_interactive})
+# The startup trace's feed (startup.h, `StartupTrace::feed`): the window loop's per-frame decision,
+# which no test can run in a window, driven with no GPU in tests/startup_feed_tests.cpp (T211).
+list(APPEND _view_tests tests/startup_feed_tests.cpp startup.cpp)
 if(TARGET engine::tileset)
   # A scene naming a built tile set drawn offscreen, the set written by engine-content beside it;
   # and a provider no build has refused with a sentence that lists `tiles` (tileset.md).

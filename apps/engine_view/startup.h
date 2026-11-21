@@ -47,6 +47,21 @@ class StartupTrace {
   void milestone(const char* name) noexcept;
   void frame(const Readiness& readiness) noexcept;
   bool reached(const char* name) const noexcept;
+  // **A loop feeds the readiness until the last milestone, not until its own ready rung** (T211):
+  // true while the trace records (or the live progress follows) and `nearby_stable` is not yet
+  // reached. A window under `--game` is ready at `player_controllable`, on the frame its ground
+  // has collision; the thirty stable frames come after, so a loop that stopped at its rung never
+  // reached the last milestone, and every windowed report carried it null.
+  bool wants_frames() const noexcept;
+  // One frame's feed, the one both of engine-view's loops make: `read()` builds the frame's
+  // readiness and is called only while `wants_frames()`, so a loop past the last milestone (or
+  // with neither the trace nor the progress on) reads nothing. True when it fed.
+  template <class Read>
+  bool feed(Read&& read) noexcept {
+    if (!wants_frames()) return false;
+    frame(read());
+    return true;
+  }
   // Stops the trace, writes the file, and returns the summary block (null when off).
   JsonValue finish(std::string* error);
 
