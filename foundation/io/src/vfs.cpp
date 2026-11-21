@@ -743,7 +743,17 @@ Status FileHandle::open_regular_unmoved(std::string_view admitted_path) {
                                     FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
   }
   if (n > 0 && n < buf.size()) {
-    now = from_path(fs::path(std::wstring_view(buf.data(), static_cast<usize>(n))));
+    // Converted as the roots convert a canonical path (roots.cpp's `from_wide`): no flags, so a
+    // name that is not valid UTF-16 (an unpaired surrogate) takes the replacement character and
+    // never fails the conversion; `fs::path::u8string` throws on one, which with exceptions
+    // disabled ends the process.
+    const int bytes = ::WideCharToMultiByte(CP_UTF8, 0, buf.data(), static_cast<int>(n), nullptr, 0,
+                                            nullptr, nullptr);
+    if (bytes > 0) {
+      now.assign(static_cast<usize>(bytes), '\0');
+      ::WideCharToMultiByte(CP_UTF8, 0, buf.data(), static_cast<int>(n), now.data(), bytes, nullptr,
+                            nullptr);
+    }
     for (char& c : now) {
       if (c == '\\') c = '/';
     }
@@ -752,7 +762,7 @@ Status FileHandle::open_regular_unmoved(std::string_view admitted_path) {
     } else if (now.starts_with("//?/")) {
       now = now.substr(4);
     }
-    known = true;
+    known = !now.empty();
   }
 #else
   const std::string link = "/proc/self/fd/" + std::to_string(handle_);

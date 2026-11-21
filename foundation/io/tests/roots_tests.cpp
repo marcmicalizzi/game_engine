@@ -67,14 +67,15 @@ std::wstring wide(const std::string& s) {
   return w;
 }
 
-// A junction, which any user may make: an empty directory given a mount-point reparse point.
-bool make_junction(const std::string& target, const std::string& link) {
+// A junction, which any user may make: an empty directory given a mount-point reparse point. The
+// target in UTF-16 as the system takes it, so a case can name one UTF-8 cannot spell.
+bool make_junction_to(const std::wstring& target, const std::string& link) {
   if (!CreateDirectoryW(wide(link).c_str(), nullptr)) return false;
   const HANDLE h = CreateFileW(wide(link).c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
                                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
   if (h == INVALID_HANDLE_VALUE) return false;
-  const std::wstring substitute = L"\\??\\" + wide(target);
-  const std::wstring print = wide(target);
+  const std::wstring substitute = L"\\??\\" + target;
+  const std::wstring print = target;
   const usize names = (substitute.size() + 1 + print.size() + 1) * sizeof(wchar_t);
   std::string buf(8 + 8 + names, '\0');
   auto put16 = [&](usize at, usize v) {
@@ -96,6 +97,10 @@ bool make_junction(const std::string& target, const std::string& link) {
                                   static_cast<DWORD>(buf.size()), nullptr, 0, &returned, nullptr);
   CloseHandle(h);
   return ok != FALSE;
+}
+
+bool make_junction(const std::string& target, const std::string& link) {
+  return make_junction_to(wide(target), link);
 }
 #endif
 
@@ -810,6 +815,45 @@ TEST_CASE("open_regular_unmoved refuses a file the admitted path no longer leads
   std::filesystem::remove(fs_path(away + "/x.bin"));
   CHECK(file.open_regular_unmoved(admitted) == Status::NotFound);
 }
+
+#if ENGINE_PLATFORM_WINDOWS
+// A name that is not valid UTF-16 — an unpaired surrogate, which NTFS stores as it is given — in
+// the path an opened handle leads to (a junction planted or raced under a root): the handle's path
+// is spelled as the roots spell a canonical one (`WideCharToMultiByte`, which replaces what it
+// cannot convert), so it answers that the admitted path leads elsewhere, and nothing in the open
+// can end the process on such a name.
+TEST_CASE("open_regular_unmoved spells a handle's path as the roots do, whatever its name holds") {
+  TempDir tmp("io_roots_surrogate");
+  const std::string root = std::string(tmp.path()) + "/root";
+  make_dir(root + "/sub");
+  put(root + "/sub/x.bin", "near");
+  const std::string admitted = canon(root + "/sub/x.bin");
+  const std::wstring odd = wide(std::string(tmp.path())) + L"\\odd" + wchar_t(0xD800) + L"name";
+  REQUIRE(CreateDirectoryW(odd.c_str(), nullptr));
+  const HANDLE made = CreateFileW((odd + L"\\x.bin").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                                  FILE_ATTRIBUTE_NORMAL, nullptr);
+  REQUIRE(made != INVALID_HANDLE_VALUE);
+  CloseHandle(made);
+  std::filesystem::remove_all(fs_path(root + "/sub"));
+  // The junction and the odd directory removed by their wide names, before the scratch is.
+  struct Unmake {
+    std::string link;
+    std::wstring odd;
+    ~Unmake() {
+      RemoveDirectoryW(wide(link).c_str());
+      DeleteFileW((odd + L"\\x.bin").c_str());
+      RemoveDirectoryW(odd.c_str());
+    }
+  } unmake{root + "/sub", odd};
+  if (!make_junction_to(odd, unmake.link)) {
+    MESSAGE("this system refused to make a junction; the case is skipped");
+    return;
+  }
+  FileHandle file;
+  CHECK(file.open_regular_unmoved(admitted) == Status::NotFound);
+  CHECK_FALSE(file.valid());
+}
+#endif
 
 // A URI one file names another by (a glTF's buffers and images; docs/subsystems/io.md, "Roots"):
 // decoded once, and refused before any admission when the decoded text has a backslash (a URI has
