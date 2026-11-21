@@ -7857,7 +7857,9 @@ covered are at the floor, 0.007 codes, and 41 pixels of its edge are 94.8 codes 
 frame a frame later), as on main and on the first leg. Clipping every pixel whose last 3 × 3 held a
 name that left would end it, at a read of last frame's 3 × 3; a row of its own. The far forest's
 case ("the hand-off leaves no trail of a stand-in under the accumulation", `far_forest_tests.cpp`)
-holds the hand-off the same way.
+is written and skipped: at its view only 13 pixels of a stand-in's ground are left, all beside the
+near tiles' new trees, and its measure there is their edges at another phase (48.8 codes against
+37.7 for a kept history), not a trail; it wants the trail cases' exclusion of the mover's 3 × 3.
 
 **What it costs** (2026-11-21, the forest staging's grounded walk as above, census off, `msvc-release`, RTX 5090, the session locked; the first leg's tip flown 02:30 and this one 03:45, between other rows' GPU runs, never beside one): the frame passes 1.359 ms at the median, 1.592 at p95 and 1.749 at p99 on the first leg's build, 1.574, 1.852 and 1.922 on this one; the motion pass 1.088 against 1.087; the frame 19.643 ms at the median and 25.232 at p99 against 19.791 and 25.349. So about 0.2 ms at the median in the accumulation, which now takes the trusted path (the dilation, the match, the sharper read on the pixels whose four taps held) on the 1,870 frames that took the depth path before, and the fresh runs' searches; the motion pass's cost is unchanged. The walk's frame records allocate as the first leg's did (3,247 after frame 200 against 3,257: the streamed world's own).
 
