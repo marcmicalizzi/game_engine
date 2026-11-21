@@ -49,26 +49,85 @@ bool GpuScene::fit_runs(u32 capacity, Vector<gfx::BufferResource>* retired, std:
   if (capacity == 0) capacity = 1;
   runs_fit_ = true;
   if (capacity == run_capacity_) return true;
+  // **All or nothing** (W51-5b; renderer.md, "The visible list's runs are sized by the frame"):
+  // every buffer the runs size is made at the new capacity while the old ones stand, and only then
+  // are the old ones let go. Until W51-5b the old list went first, so a make that failed left the
+  // frame a list it had already retired (leaked: the caller returned before freeing it) and a
+  // fallback whose own failure left it none, and the pool's slots followed in a relayout whose
+  // waited form destroyed the slots every mesh record named before making their replacement.
+  // Made beside the old, the peak is what a swapped growth always held: the old ones live on in
+  // `retired` until the frames in flight that read them have completed.
   const u32 before = run_capacity_;
+  const u64 before_run_bytes = visible_run_bytes_;
   const bool indexed = vertex_records.buffer.valid();
-  retire(visible, retired);
-  retire(vertex_records, retired);
+  gfx::BufferResource old_visible = visible;
+  gfx::BufferResource old_records = vertex_records;
+  visible = gfx::BufferResource{};
+  vertex_records = gfx::BufferResource{};
   run_capacity_ = capacity;
-  if (!make_run_buffer(false, error) || (indexed && !make_run_buffer(true, error))) {
-    // Nothing to draw with at the new capacity: back to the old one, which a frame could draw
-    // with (its buffers are retired, so they are made again).
-    retire(visible, nullptr);
-    retire(vertex_records, nullptr);
+  bool ok = make_run_buffer(false, error);
+  if (ok && take_fault(fail_runs_)) {
+    if (error != nullptr) *error = "the visible list's runs could not be made (a test's fault)";
+    ok = false;
+  }
+  ok = ok && (!indexed || make_run_buffer(true, error));
+  // The pool's per-entry slots, one word an entry of the whole list, and the allocator's tile
+  // scratch (R104) follow the runs. Both are written by every frame before it reads them, so the
+  // new ones start empty, as they always did.
+  gfx::BufferResource new_blocks;
+  gfx::BufferResource new_slots;
+  if (ok && deform_) {
+    ok = gfx::create_buffer(*device_, deform_block_bytes(), k_address, false, new_blocks, error) &&
+         gfx::create_buffer(*device_, u64{visible_entries()} * sizeof(u32), k_address, false,
+                            new_slots, error);
+  }
+  // A caller that waited for the device rewrites the mesh records whole, into a buffer of their
+  // own beside the old; a swapped one has the next frame write them in place through its copies.
+  Vector<gfx::MeshDesc> descs;
+  gfx::BufferResource new_meshes;
+  if (ok && deform_ && retired == nullptr) {
+    descs = mesh_descs_;
+    for (gfx::MeshDesc& desc : descs)
+      desc.deform_slots = new_slots.address;
+    ok = gfx::upload_buffer(*device_, descs.data(), descs.size() * sizeof(gfx::MeshDesc), k_storage,
+                            new_meshes, error);
+  }
+  if (!ok) {
+    // Nothing a frame has seen: destroyed at once, and the scene is as it was.
+    gfx::destroy_buffer(*device_, visible);
+    gfx::destroy_buffer(*device_, vertex_records);
+    gfx::destroy_buffer(*device_, new_blocks);
+    gfx::destroy_buffer(*device_, new_slots);
+    gfx::destroy_buffer(*device_, new_meshes);
+    visible = old_visible;
+    vertex_records = old_records;
     run_capacity_ = before;
-    std::string ignored;
-    (void)make_run_buffer(false, &ignored);
-    if (indexed) (void)make_run_buffer(true, &ignored);
+    visible_run_bytes_ = before_run_bytes;
     return false;
   }
-  // The pool's per-entry slots and the allocator's scratch follow the runs, and every mesh record
-  // names the slots: the relayout makes them again before the next frame, swapped in beside the
-  // frames in flight as a growth of the stride is (`relayout`).
-  if (deform_) relayout_pending_ = true;
+  retire(old_visible, retired);
+  retire(old_records, retired);
+  if (deform_) {
+    retire(deform_blocks, retired);
+    retire(deform_slots, retired);
+    deform_blocks = new_blocks;
+    deform_slots = new_slots;
+    for (gfx::MeshDesc& desc : mesh_descs_)
+      desc.deform_slots = deform_slots.address;
+    for (RingSlots& ring : ring_slots_) {
+      for (TerrainSlot& slot : ring.slots)
+        slot.desc.deform_slots = deform_slots.address;
+    }
+    if (retired == nullptr) {
+      gfx::destroy_buffer(*device_, meshes);
+      meshes = new_meshes;
+    } else {
+      // The frames in flight read the old records, which name the old slots, retired above and
+      // freed only once those frames have completed.
+      for (u32 m = 0; m < mesh_descs_.size(); ++m)
+        pending_mesh_writes_.push_back(m);
+    }
+  }
   return true;
 }
 

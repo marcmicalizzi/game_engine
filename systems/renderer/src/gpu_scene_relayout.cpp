@@ -70,7 +70,9 @@ bool GpuScene::relayout(std::string* error, RelayoutRetired* retired) {
   // The pool's per-entry slots are laid out by the runs, and every mesh record names them. The
   // allocator's tile scratch follows the same runs (R104). Both are written by every frame before
   // it reads them, so the new ones start empty, as they always did. Made again when the runs'
-  // capacity moves either way (it_runs, W51-5), so a shrink gives the bytes back.
+  // capacity moves either way — by `fit_runs` itself since W51-5b, which makes them beside the old
+  // ones with the list and swaps them in only when every make has succeeded — so here it is the
+  // stride's growth that moves them.
   if (deform_ && deform_blocks.size != deform_block_bytes()) {
     retire(deform_blocks, old);
     if (!gfx::create_buffer(*device_, deform_block_bytes(), k_address, false, deform_blocks,

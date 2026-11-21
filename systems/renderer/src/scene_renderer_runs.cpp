@@ -76,46 +76,39 @@ void SceneRenderer::step_runs(i64 now_ns) {
       dropped != 0 ? run_policy_.grow_to(wanted, now) : run_policy_.observe(wanted, now);
   const u32 held = scene.run_capacity();
   if (next == held) return;
+  (void)resize_runs(next, now);
+}
+
+// The runs laid out at `capacity`, swapped in beside the frames in flight: everything they size —
+// the list, the vertex path's records, the pool's per-entry slots and the allocator's scratch — is
+// made before anything old goes, and a refusal leaves the scene as it was (`GpuScene::fit_runs`),
+// so the frame records at the runs it had and the next growth is asked again. Counted and said;
+// a blocking frame that dropped calls it too (`render_offscreen`), the policy or none.
+bool SceneRenderer::resize_runs(u32 capacity, f64 now) {
+  GpuScene& scene = *scene_;
+  const u32 held = scene.run_capacity();
   std::string error;
   Vector<gfx::BufferResource> retired;
-  if (!scene.fit_runs(next, &retired, &error)) {
+  if (!scene.fit_runs(capacity, &retired, &error)) {
+    ++stats_.run_refusals;
     ENGINE_LOG_WARN(log_renderer, "the visible list's runs could not be laid out again",
-                    log::field("capacity", next), log::field("held", held),
-                    log::field("error", error));
-    run_policy_.resized(held, now);
-    return;
+                    log::field("capacity", capacity), log::field("held", held),
+                    log::field("refusals", stats_.run_refusals), log::field("error", error));
+    if (run_policy_set_) run_policy_.resized(held, now);
+    return false;
   }
   for (const gfx::BufferResource& buffer : retired)
     frames_.defer_destroy(buffer);
-  // The pool's per-entry slots and the allocator's scratch follow the runs: made again now, before
-  // this frame records, swapped in beside the frames in flight (GpuScene::relayout).
-  if (scene.relayout_pending()) {
-    relayout_retired_.clear();
-    const bool swapped = scene.relayout(&error, &relayout_retired_);
-    for (const gfx::BufferResource& buffer : relayout_retired_.buffers)
-      frames_.defer_destroy(buffer);
-    for (u32 i = 0; i < relayout_retired_.chain.count; ++i)
-      retire_rt_buffer(relayout_retired_.chain.buffers[i]);
-    if (relayout_retired_.tlas.handle.valid()) {
-      retired_tlas_.push_back(
-          RetiredTlas{relayout_retired_.tlas, relayout_retired_.tlas_slot, frames_.frame_index()});
-    }
-    relayout_retired_.clear();
-    if (!swapped || scene.relayout_pending()) {
-      frames_.wait_idle();
-      if (!scene.relayout(&error, nullptr)) {
-        ENGINE_LOG_ERROR(log_renderer, "the visible list's runs' pool slots could not be made",
-                         log::field("capacity", next), log::field("error", error));
-      }
-    }
-  }
-  run_policy_.resized(scene.run_capacity(), now);
+  const u32 dropped = stats_.run_drops + stats_.cascade_run_drops;
+  const u32 limit = scene.pair_stride();
+  if (run_policy_set_) run_policy_.resized(scene.run_capacity(), now);
   stats_.run_capacity = scene.run_capacity();
   ENGINE_LOG_INFO(log_renderer, "the visible list's runs were sized by the frame",
                   log::field("capacity", scene.run_capacity()), log::field("held", held),
                   log::field("fullest_run", stats_.run_high), log::field("dropped", dropped),
                   log::field("stride", limit),
                   log::field("list_mib", static_cast<f64>(scene.visible.size) / (1024.0 * 1024.0)));
+  return true;
 }
 
 }  // namespace engine::renderer

@@ -564,13 +564,18 @@ struct Stats {
   // any cascade), the entries each run held room for, and the appends that found their run full,
   // the camera runs' and the cascades' — those pairs were not drawn that frame — with their sum
   // over the run and the frames that had any. Nonzero drops are the one number that says a growth
-  // came late.
+  // came late. A frame somebody waits for never returns with drops (`render_offscreen` grows the
+  // runs and draws again: `run_redraws`, its first attempt's drops still counted in the totals);
+  // a frame drawn in flight may, for the frames a growth takes to land. `run_refusals`: lay-outs
+  // the device refused, each said once in the log, the frame drawn at the runs it had (W51-5b).
   u32 run_high = 0;
   u32 run_capacity = 0;
   u32 run_drops = 0;
   u32 cascade_run_drops = 0;
   u64 run_drops_total = 0;
   u64 run_drop_frames = 0;
+  u64 run_redraws = 0;
+  u64 run_refusals = 0;
   // The deformed-vertex pool's suballocation, one frame late like the visible counts and read the
   // same way — out of a host-visible copy of a device record, never from inside a frame.
   // `deform_overflow_*` is what the budget refused: those (instance, cluster) pairs drew their
@@ -1444,6 +1449,7 @@ class SceneRenderer {
   RtCapacity run_policy_;
   bool run_policy_set_ = false;
   void step_runs(i64 now_ns);
+  bool resize_runs(u32 capacity, f64 now);  // false: refused, the runs as they were (counted)
   // Resizes the chain to `capacity` when it differs, waiting for the device first. False only when
   // the allocation failed, in which case the chain keeps nothing and the frame must not be drawn.
   // `references` 0 keeps the cache's reference capacity.

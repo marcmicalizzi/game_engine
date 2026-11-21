@@ -312,10 +312,14 @@ class GpuScene {
   bool relayout(std::string* error = nullptr, RelayoutRetired* retired = nullptr);
   // **A test's seam** (T163): the next `count` makes of the chain's step (`resize_ray_tracing`,
   // whoever calls it) or of the trees' tables' growth (`grow_flora_tail`) fail as a device out of
-  // memory would, so the paths that release and retry a failure have cases. Never set by a host.
-  enum class Fault : u8 { rt_step, flora_tables };
+  // memory would, so the paths that release and retry a failure have cases. `runs`: the next
+  // `count` lay-outs of the visible list's runs (`fit_runs`) fail after their first make, so a
+  // refusal's clean-up is exercised with something made (W51-5b). Never set by a host.
+  enum class Fault : u8 { rt_step, flora_tables, runs };
   void fail_next(Fault where, u32 count = 1) noexcept {
-    (where == Fault::rt_step ? fail_rt_steps_ : fail_flora_) = count;
+    (where == Fault::rt_step ? fail_rt_steps_
+     : where == Fault::runs  ? fail_runs_
+                             : fail_flora_) = count;
   }
   // The top-level record a slot's instance is traced by, as the load writes it and a tail's change
   // copies it: the instance's transform at the world's origin (the frame overwrites it from the
@@ -657,10 +661,13 @@ class GpuScene {
   // Where the frame's two drop counts are in `visible`, behind its last entry: the camera runs' and
   // the cascades' appends that found their run full (`gfx::CullParams::run_drops`).
   u64 run_drops_offset() const noexcept { return u64{visible_entries()} * 2 * sizeof(u32); }
-  // Lays the list's runs out again for `capacity` entries each (clamped to the stride): the list
-  // and the vertex path's records are made again — the old ones go to `retired`, since the frames
-  // in flight read them — and, with the deformed-vertex pool, the per-entry slots and the
-  // allocator's scratch are made again by the relayout this marks pending.
+  // Lays the list's runs out again for `capacity` entries each (clamped to the stride): the list,
+  // the vertex path's records and, with the deformed-vertex pool, its per-entry slots and the
+  // allocator's scratch are made again, every one before any old one goes — the old ones to
+  // `retired`, since the frames in flight read them, or destroyed at once without it (a caller
+  // that waited for the device) — and every mesh record is pointed at the new slots. **All or
+  // nothing** (W51-5b): a make that fails destroys what was made and leaves the scene exactly as
+  // it was, runs, buffers and records, and returns false with the sentence.
   bool fit_runs(u32 capacity, Vector<gfx::BufferResource>* retired, std::string* error);
   // Bytes into `draw_args[pass]` / `sw_args` where this view's indirect block is.
   u64 args_offset(u32 view) const noexcept { return u64{view} * gfx::k_draw_args_bytes; }
@@ -2188,6 +2195,7 @@ class GpuScene {
   bool rt_relayout_failed_ = false;  // a swapped chain lay-out failed part way: redo it whole
   u32 fail_rt_steps_ = 0;            // `fail_next`: the test's faults still to come
   u32 fail_flora_ = 0;
+  u32 fail_runs_ = 0;
   static bool take_fault(u32& left) noexcept { return left != 0 && (--left, true); }
   // A dynamic scene's terrain levels' slots' pairs, `{instance, cluster}` from `ring_pair_begin_`
   // to the prefix's end: device-local, written once, copied into a set written whole.

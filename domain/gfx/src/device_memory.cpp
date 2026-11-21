@@ -125,12 +125,16 @@ void note_large_buffer(u64 key, u64 bytes, bool host_visible) noexcept {
   entry.depth = static_cast<u16>(depth > 0 ? depth : 0);
 #endif
   lock();
+  // The make's event only with its entry (W51-5b): a free is recorded only for a buffer the table
+  // finds, so a make recorded past a full table had no free to match and the events' live bytes
+  // rose without end once more than the table's buffers were live. A buffer past it is counted
+  // (`dropped`) and is in neither.
   if (g_count < k_large_buffer_slots) {
     g_buffers[g_count++] = entry;
+    push_event(entry, true);
   } else {
     g_dropped.fetch_add(1, std::memory_order_relaxed);
   }
-  push_event(entry, true);
   unlock();
 }
 

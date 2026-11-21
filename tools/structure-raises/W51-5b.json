@@ -1,0 +1,12 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W51-5b",
+  "reason": "W51-5b: fit_runs all-or-nothing (its contract and the test fault seam) in gpu_scene.h; the review's four findings and their rules on renderer.md and world.md",
+  "date": "2026-11-20",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.gpu_scene_h.lines": 8,
+    "page:docs/subsystems/renderer.md": 2275,
+    "page:docs/subsystems/world.md": 2349
+  }
+}

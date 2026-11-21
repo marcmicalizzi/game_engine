@@ -65,6 +65,14 @@ struct TileMeshes::Entry {
   u32 materials = 0;
   u64 payload = 0;
   u64 unnamed_since = 0;  // the commit its last reference went at
+  // The last commit `admit` was asked about it, and the last whose `admit` answered `no_room`
+  // (W51-5b: what `withhold` tells a nearer tile's ask from a farther tile's refusal by).
+  u64 asked = 0;
+  u64 refused = 0;
+  // Built again for room the table holds for it until it is in or let go: what it was asked with.
+  bool reserved = false;
+  u32 reserved_clusters = 0;
+  u32 reserved_materials = 0;
   // Its textures (R147): how many of `data.textures` are in the scene, and the references the
   // table holds on them until the mesh is admitted and holds its own.
   u32 textures_in = 0;
@@ -113,6 +121,8 @@ void TileMeshes::create(const renderer::PlacementMeshOptions& options, const Til
   texture_refusing_ = false;
   jobs_ = jobs;
   used_clusters_ = 0;
+  reserved_clusters_ = 0;
+  reserved_materials_ = 0;
   whole_ = true;
   commit_admissions_ = 0;
   commit_bytes_ = 0;
@@ -239,6 +249,7 @@ void TileMeshes::collect_entry(Entry& entry) {
   stats_.build_ns += entry.build_ns;
   stats_.max_build_ns = std::max(stats_.max_build_ns, entry.build_ns);
   if (entry.state.load(std::memory_order_acquire) == State::failed) {
+    reserve(entry, false);
     ++stats_.failures;
     ENGINE_LOG_WARN(log_world_meshes, "a tile's mesh was not built",
                     log::field("mesh", entry.mesh.path), log::field("error", entry.error));
@@ -266,7 +277,26 @@ void TileMeshes::withhold(u32 slot) {
   if (entry.state.load(std::memory_order_acquire) != State::built) return;
   // One no room could ever take is `admit`'s to fail, with its sentence.
   if (entry.clusters == 0 || entry.clusters > config_.max_clusters) return;
+  // **Not one a nearer tile is admitting** (W51-5b): once a commit's first refusal has set the
+  // room full, every later ticket is withheld without asking, and a mesh is often shared — by the
+  // tiles of one group, by a recipe two tiles hand. A farther tile's ticket used to shelve a mesh
+  // a nearer one had asked for in the same commit, or one part-way through its textures, which
+  // let its textures go; the nearer tile's next commit built it again and started its textures
+  // over, and a farther tile shelved it again, so standing with the room full the nearer tile
+  // never filled. A mesh whose own admission answered no room this commit is still let go: the
+  // room cannot take it now, whoever asked.
+  if (entry.refused != commit_) {
+    if (entry.asked == commit_) {
+      ++stats_.kept_asked;
+      return;
+    }
+    if (entry.textures_in != 0 || !entry.held.empty()) {
+      ++stats_.kept_textures;
+      return;
+    }
+  }
   release_textures(entry);  // the scene may let a texture go that only this mesh wanted
+  reserve(entry, false);
   entry.textures_in = 0;
   entry.data = renderer::PlacementMeshData{};
   entry.shelved = true;
@@ -282,6 +312,36 @@ void TileMeshes::begin_commit(bool whole) {
   commit_admissions_ = 0;
   commit_bytes_ = 0;
   collect(whole);
+}
+
+// The room asked for `entry` and every other reservation, less its own: a shelved mesh built again
+// holds what it was asked for until it is in or let go, and every admission is asked against what
+// is left (W51-5b).
+bool TileMeshes::room_for(const Entry& entry) const {
+  const u64 clusters = reserved_clusters_ - entry.reserved_clusters + entry.clusters;
+  const u64 materials = reserved_materials_ - entry.reserved_materials + entry.materials;
+  if (sink_.fits != nullptr) {
+    // The sink counts in u32; a sum past it is past every room.
+    if (clusters > ~u32{0} || materials > ~u32{0}) return false;
+    return sink_.fits(sink_.context, static_cast<u32>(clusters), static_cast<u32>(materials));
+  }
+  return u64{used_clusters_} + clusters <= config_.clusters;
+}
+
+void TileMeshes::reserve(Entry& entry, bool on) noexcept {
+  if (entry.reserved == on) return;
+  entry.reserved = on;
+  if (on) {
+    entry.reserved_clusters = entry.clusters;
+    entry.reserved_materials = entry.materials;
+    reserved_clusters_ += entry.clusters;
+    reserved_materials_ += entry.materials;
+  } else {
+    reserved_clusters_ -= entry.reserved_clusters;
+    reserved_materials_ -= entry.reserved_materials;
+    entry.reserved_clusters = 0;
+    entry.reserved_materials = 0;
+  }
 }
 
 void TileMeshes::release_textures(Entry& entry) {
@@ -353,6 +413,7 @@ bool TileMeshes::admit_textures(Entry& entry) {
 TileMeshes::Admit TileMeshes::admit(u32 slot) {
   if (slot >= entries_.size() || entries_[slot] == nullptr) return Admit::failed;
   Entry& entry = *entries_[slot];
+  entry.asked = commit_;
   if (!entry.collected) return Admit::not_ready;
   const State now = entry.state.load(std::memory_order_acquire);
   if (now == State::resident) return Admit::done;
@@ -362,13 +423,18 @@ TileMeshes::Admit TileMeshes::admit(u32 slot) {
     // standing world whose room stays full builds nothing. The build is off the committing thread,
     // as the first was: the tile draws what it drew until a later commit collects it, which is the
     // admission's whole cost on that thread — a read of the cache on a worker, never a stall.
-    const bool room = sink_.fits != nullptr
-                          ? sink_.fits(sink_.context, entry.clusters, entry.materials)
-                          : u64{used_clusters_} + entry.clusters <= config_.clusters;
-    if (!room) return Admit::no_room;
+    // **The room it was asked for is reserved** (W51-5b) until the mesh is in or let go, so room
+    // for one mesh starts one build: every shelved mesh used to be asked against the same free
+    // room, and all that fitted alone were built again in one commit, the rest shelved again a
+    // commit or two later — the host commit W51-5 gave back, taken again for builds wasted.
+    if (!room_for(entry)) {
+      entry.refused = commit_;
+      return Admit::no_room;
+    }
     entry.shelved = false;
     --stats_.shelved;
     ++stats_.rebuilds;
+    reserve(entry, true);
     start_build(entry);
     if (!whole_) return Admit::not_ready;
     // A whole commit (a restart, a capture's fill) waits for every build, this one included.
@@ -396,6 +462,7 @@ TileMeshes::Admit TileMeshes::admit(u32 slot) {
   }
   if (entry.clusters == 0 || entry.clusters > config_.max_clusters) {
     // Never admissible, whatever is let go: said once, as a failure.
+    reserve(entry, false);
     entry.state.store(State::failed, std::memory_order_release);
     entry.error = entry.mesh.path + ": " + std::to_string(entry.clusters) +
                   " clusters, and a mesh that arrives with a tile may have at most " +
@@ -408,12 +475,13 @@ TileMeshes::Admit TileMeshes::admit(u32 slot) {
                     log::field("mesh", entry.mesh.path), log::field("error", entry.error));
     return Admit::failed;
   }
-  const bool fits = sink_.fits != nullptr
-                        ? sink_.fits(sink_.context, entry.clusters, entry.materials)
-                        : u64{used_clusters_} + entry.clusters <= config_.clusters;
-  if (!fits) return Admit::no_room;
+  if (!room_for(entry)) {
+    entry.refused = commit_;
+    return Admit::no_room;
+  }
   const i64 start = time::monotonic_ns();
   std::string why;
+  reserve(entry, false);  // in, or failed: either way it holds no room of the table's
   if (sink_.admit != nullptr && !sink_.admit(sink_.context, scene_mesh(slot), entry.data, &why)) {
     entry.state.store(State::failed, std::memory_order_release);
     entry.error = why;
@@ -463,6 +531,7 @@ void TileMeshes::drop(u32 slot) {
     }
   }
   if (!entry.collected) --stats_.building;
+  reserve(entry, false);
   release_textures(entry);  // a mesh let go while it waited for its textures
   by_identity_.erase(entry.identity);
   entries_[slot].reset();
