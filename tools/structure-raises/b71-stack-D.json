@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "b71-stack-D",
+  "reason": "batch 71 stack leg D: renderer.md's paragraph on why renderer.rt.caster_instances is off by default (R140's mend at the join)",
+  "date": "2026-11-21",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 888
+  }
+}
