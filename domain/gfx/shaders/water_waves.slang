@@ -666,12 +666,34 @@ float water_surface_tide(WaterSurface* s, float tide_phase) {
 // tenth of the reach either way over about half the swash's width (the run-up over the slope, 0.5
 // to 6 m) and half that again at a quarter of the scale, standing where they are from wave to wave
 // as a beach's cusps do — so the front is scalloped and its lip ragged, never a ruled line.
-float water_reach_variation(WaterSurface* s, float2 p, bool lobes) {
+//
+// **The lobes vary along the shore and not across it** (W152-2; water.md, "The sheet's surface"):
+// they are read at the place's own point of the waterline, `p` moved down the ground's slope by
+// its height over the level over that slope (`water_lobe_point`), so a lobe is a scallop of every
+// sheet's reach line together. Read at `p` itself, as they were, the lobes' noise had closed level
+// lines wherever the ground is near flat — a dome of the dunes in the swash — and every sheet of
+// the group drew its own reach, its own wet and filmed band, round each of them: nested rings in
+// the sheets, the owner's fingerprints, standing still from wave to wave.
+float2 water_lobe_point(WaterSurface* s, WaterField f, float2 p, out float sure) {
+  const float g = length(f.depth_grad);
+  const float lobe = clamp(0.6 * s->run_up_m / max(s->slope, 1e-3), 0.5, 6.0);
+  // Down the slope to the waterline, no further than the swash's excursion and a lobe; where the
+  // ground is flatter than a tenth of the shore's slope there is no way down it, and the lobes fade
+  // out (`sure`): the reach there is the along-shore variation's alone, whose scale is two
+  // wavelengths.
+  const float reach = s->run_up_m / max(s->slope, 1e-3) + lobe;
+  sure = smoothstep(0.05 * s->slope, 0.1 * s->slope, g);
+  const float run = clamp(-f.depth / max(g, 1e-6), -reach, reach) * sure;
+  return g > 1e-6 ? p + f.depth_grad / g * run : p;
+}
+
+float water_reach_variation(WaterSurface* s, float2 p, bool lobes, float2 q = float2(0.0, 0.0),
+                            float sure = 1.0) {
   float v = 0.85 + 0.3 * water_value_noise(p / max(s->along_m, 1e-3) + float2(17.3, 5.1));
   if (lobes) {
     const float lobe = clamp(0.6 * s->run_up_m / max(s->slope, 1e-3), 0.5, 6.0);
-    v *= 1.0 + 0.2 * (water_value_noise(p / lobe + float2(3.1, 9.7)) - 0.5) +
-         0.1 * (water_value_noise(p * (3.7 / lobe) + float2(11.9, 2.3)) - 0.5);
+    v *= 1.0 + sure * (0.2 * (water_value_noise(q / lobe + float2(3.1, 9.7)) - 0.5) +
+                       0.1 * (water_value_noise(q * (3.7 / lobe) + float2(11.9, 2.3)) - 0.5));
   }
   return v;
 }

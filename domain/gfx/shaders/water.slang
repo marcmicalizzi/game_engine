@@ -777,7 +777,9 @@ WaterSwashPlace water_swash_place(WaterShore s, float2 p) {
     const float ca = f.arrival / s.period_s;
     const float group = float(k_swash_group);
     w.phase = -(ca - group * floor(ca / group));
-    w.jitter = water_reach_variation(surface, p, true) * water_shelter(f);
+    float sure = 0.0;
+    const float2 q = water_lobe_point(surface, f, p, sure);
+    w.jitter = water_reach_variation(surface, p, true, q, sure) * water_shelter(f);
     // The place's own stretch of shore (S102): its slope, and the run-up that slope and the
     // height the flux left it give, over the setup its surf raises (second pass).
     w.run_up = water_place_run_up(surface, f);
