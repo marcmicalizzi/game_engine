@@ -598,8 +598,10 @@ std::span<const WaterWindUpload> GpuScene::water_wind_frame(f64 sky_time_s,
   wind_stats_.speed_m_s = gfx::wind_live_speed(live, scene_wind.roughness_m);
   Vec2 trees_to{};
   f32 trees = 0.0f;
-  // The trees' mean as their lag stands (W154; stepped by `flora_frame`, after this pass).
-  if (scene_flora_wind(scene_wind, sky_time_s, trees_to, trees, flora_wind_lag_.held(live)))
+  // The trees' mean through their lag (W154), stepped here, once a frame and before the trees'
+  // poses (`flora_frame` reads it as it stands), so a scene with no tree steps it too.
+  if (scene_flora_wind(scene_wind, sky_time_s, trees_to, trees,
+                       flora_wind_lag_.follow(live, world_time_s)))
     wind_stats_.trees_m_s = static_cast<f64>(trees) * k_flora_wind_mean_m_s;
   if (scene_wind.kind != gfx::WindKind::none) {
     const gfx::WindSample now = gfx::wind_at(scene_wind, sky_time_s);

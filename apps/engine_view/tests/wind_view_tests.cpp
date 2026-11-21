@@ -168,7 +168,8 @@ TEST_CASE("engine-view: a replayed storm steps the live wind and its readers, fr
   REQUIRE(plain.size() == gusty.size());
   const f64 gale = gfx::beaufort_speed(8);
   const f64 g = gfx::wind_gust_factor(0.03);
-  // The trees' mean each frame's stats said: the lag after the frames before it.
+  // The trees' mean each frame's stats said: the lag stepped to that frame's time (the frame's wind
+  // pass steps it and says it).
   std::vector<f64> trees_mean(gusty.size(), 0.0);
   {
     renderer::FloraWindLag lag;
@@ -176,8 +177,7 @@ TEST_CASE("engine-view: a replayed storm steps the live wind and its readers, fr
       gfx::WindLive live;
       live.set = gusty[i].set;
       live.mean_m_s = gusty[i].mean;
-      trees_mean[i] = lag.held(live).mean_m_s;
-      (void)lag.follow(live, static_cast<f64>(gusty[i].tick) / k_hz);
+      trees_mean[i] = lag.follow(live, static_cast<f64>(gusty[i].tick) / k_hz).mean_m_s;
     }
   }
   u32 unset = 0;
@@ -203,9 +203,8 @@ TEST_CASE("engine-view: a replayed storm steps the live wind and its readers, fr
     worst_gust = std::max(worst_gust, std::abs(f.gust - gfx::wind_gust_level(phase)));
     CHECK(p.gust == 0.0);
     CHECK(f.speed == doctest::Approx(f.mean * (1.0 + f.gust * (g - 1.0))));
-    // The trees take the live mean through their lag (W154, renderer::FloraWindLag), which the
-    // frame's stats read before the frame steps it: the forced gust over the trees' mean as the
-    // frames before left it, replayed here from the records' live means and times.
+    // The trees take the live mean through their lag (W154, renderer::FloraWindLag): the forced gust
+    // over the trees' mean, replayed here from the records' live means and times.
     worst_trees = std::max(
         worst_trees, std::abs(f.trees - (p.trees + trees_mean[i] * f.gust * (g - 1.0))));
     CHECK(f.sea > 0.0);

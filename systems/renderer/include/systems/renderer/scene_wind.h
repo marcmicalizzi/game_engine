@@ -192,7 +192,8 @@ bool scene_flora_wind(const gfx::WindDesc& wind, f64 sky_time_s, Vec2& to, f32& 
 // tree. A tree is a damped oscillator whose fundamental sway is a fraction of a hertz, so a step of
 // its load reaches its mean lean over about half its period. The trees take the live mean through
 // a critically damped second-order response at `k_flora_wind_lag_hz` (no overshoot, its rate
-// continuous), stepped exactly over the world clock's seconds between frames; the scene's
+// continuous), stepped exactly over the world clock's seconds between frames, once a frame by the
+// frame's wind pass (GpuScene::water_wind_frame, trees or none) and read by the poses; the scene's
 // turbulence and the forced gust (smooth already, W151's rise and decay) pass as they are. Unset,
 // or after a jump of the world clock (backwards or more than `k_flora_wind_lag_snap_s`), it stands
 // at the live mean. Presentation: it enters no hash.
