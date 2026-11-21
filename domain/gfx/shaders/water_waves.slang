@@ -430,18 +430,41 @@ float water_shoaling(float k, float d) {
 // breaking height where two trains come ashore together — its deep-water height over the two's
 // sum, so the crest the two make where they coincide is the one that stands gamma d — and 1 for a
 // train alone.
+// **The crest leans forward as it shoals** (W152-2; water.md, "The crest's lean"; gfx::water_train_lean,
+// whose double this mirrors): the phase is warped, theta + beta cos(theta), so the front face (the
+// half before the crest arrives) is steeper than the back by (1 + beta) / (1 - beta) — the sawtooth
+// a wave becomes in the shallows. beta is the asymmetry Ruessink, Ramaekers and van Rijn (2012)
+// fit to the Ursell number, As = B sin(psi) (beta = -As, the warp's own asymmetry within a fifth
+// at the sharpest crest), held under 0.8 so the warp stays one to one.
+float water_train_lean(float height, float k, float d) {
+  const float kd = k * max(d, 1e-3);
+  const float ur = 0.375 * height * k / max(kd * kd * kd, 1e-9);
+  if (!(ur > 1e-4)) return 0.0;
+  const float b = 0.857 / (1.0 + exp((-0.471 - log10(ur)) / 0.297));
+  const float psi = 0.5 * 3.14159265358979 * (tanh(0.815 / pow(ur, 0.672)) - 1.0);
+  return clamp(-b * sin(psi), 0.0, 0.8);
+}
+
 float water_train_shape(float h0, float k0, float d, float theta, float share, out float dtheta) {
   dtheta = 0.0;
   if (!(d > 0.0) || !(h0 > 0.0)) return 0.0;
-  const float shoaled = h0 * water_shoaling(water_wavenumber(k0, d), d);
+  const float k = water_wavenumber(k0, d);
+  const float shoaled = h0 * water_shoaling(k, d);
   const float limit = k_water_breaking_gamma * d * share;
   const float height = min(shoaled, limit);
   const float b = clamp(shoaled / limit, 0.0, 1.0);
   const float m = 1.0 + 2.0 * b;
-  const float base = max(0.5 + 0.5 * cos(theta), 0.0);
+  const float lean = water_train_lean(height, k, d);
+  const float warped = theta + lean * cos(theta);
+  const float base = max(0.5 + 0.5 * cos(warped), 0.0);
   const float s = pow(base, m);
-  dtheta = height * m * (base > 0.0 ? s / base : 0.0) * (-0.5 * sin(theta));
-  return height * (s - 1.0 / sqrt(3.14159265358979 * (m + 0.25)));
+  dtheta = height * m * (base > 0.0 ? s / base : 0.0) * (-0.5 * sin(warped)) *
+           (1.0 - lean * sin(theta));
+  // The warp lowers the shape's mean by about 0.14 (m - 1) beta^2 of it (measured over the
+  // shapes the warp makes; under a percent of the height off).
+  const float mean =
+      (1.0 - 0.14 * (m - 1.0) * lean * lean) / sqrt(3.14159265358979 * (m + 0.25));
+  return height * (s - mean);
 }
 
 // The train's cycles at the clock t (seconds in [0, 1024)) and arrival tau: (t - tau) / T, each

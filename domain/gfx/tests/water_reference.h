@@ -564,13 +564,18 @@ inline Field field_at(const gfx::WaterSurface& s, const float* field, double x, 
 // `share` (S102's second pass): the train's share of the breaking height beside a second train.
 inline double train_shape(double h0, double k0, double d, double theta, double share = 1.0) {
   if (!(d > 0.0) || !(h0 > 0.0)) return 0.0;
-  const double shoaled = h0 * gfx::water_shoaling(gfx::water_wavenumber(k0, d), d);
+  const double k = gfx::water_wavenumber(k0, d);
+  const double shoaled = h0 * gfx::water_shoaling(k, d);
   const double limit = gfx::k_water_breaking_gamma * d * share;
   const double height = std::min(shoaled, limit);
   const double b = std::clamp(shoaled / limit, 0.0, 1.0);
   const double m = 1.0 + 2.0 * b;
-  const double base = std::max(0.5 + 0.5 * std::cos(theta), 0.0);
-  return height * (std::pow(base, m) - 1.0 / std::sqrt(3.14159265358979323846 * (m + 0.25)));
+  // W152-2: the crest's forward lean (water_waves.slang, `water_train_lean`).
+  const double lean = gfx::water_train_lean(height, k, d);
+  const double base = std::max(0.5 + 0.5 * std::cos(theta + lean * std::cos(theta)), 0.0);
+  const double mean =
+      (1.0 - 0.14 * (m - 1.0) * lean * lean) / std::sqrt(3.14159265358979323846 * (m + 0.25));
+  return height * (std::pow(base, m) - mean);
 }
 
 inline double train_cycles(const gfx::WaterSurface& s, double t, double arrival) {

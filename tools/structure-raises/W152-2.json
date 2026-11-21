@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W152-2",
+  "reason": "W152-2: the front heals, the crest's lean, the breaker's face and the planed bed are new behaviour of the shore; the proof and the grounding went to shore-mechanics.md and these are the short sections the subsystem page needs",
+  "date": "2026-11-21",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/water.md": 5152
+  }
+}

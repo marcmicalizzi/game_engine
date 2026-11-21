@@ -367,6 +367,23 @@ inline f64 water_shoaling(f64 k, f64 d) noexcept {
   return std::sqrt(0.5 / (n * std::tanh(kd)));
 }
 
+// **The crest's forward lean** (W152-2; water.md, "The crest's lean"): the warp beta of the train's
+// phase, theta + beta cos(theta), for a wave `height_m` high at wavenumber k and depth d — the
+// asymmetry Ruessink, Ramaekers and van Rijn (2012, Coastal Engineering 65) fit to the Ursell
+// number Ur = 3/8 H k / (k d)^3: B = 0.857 / (1 + exp((-0.471 - log10 Ur) / 0.297)), psi = -90 deg
+// + 90 deg tanh(0.815 / Ur^0.672), As = B sin(psi), and beta = -As (the warp's own asymmetry is
+// -beta for a cosine and within a fifth of it at the sharpest crest the train draws), under 0.8.
+// The constants are the paper's as Wikipedia's "Wave nonlinearity" gives them (the paper itself
+// not read); the logarithm's base 10 is recalled. water_waves.slang's `water_train_lean`.
+inline f64 water_train_lean(f64 height_m, f64 k, f64 d) noexcept {
+  const f64 kd = k * std::max(d, 1e-3);
+  const f64 ur = 0.375 * height_m * k / std::max(kd * kd * kd, 1e-9);
+  if (!(ur > 1e-4)) return 0.0;
+  const f64 b = 0.857 / (1.0 + std::exp((-0.471 - std::log10(ur)) / 0.297));
+  const f64 psi = 0.5 * 3.14159265358979323846 * (std::tanh(0.815 / std::pow(ur, 0.672)) - 1.0);
+  return std::clamp(-b * std::sin(psi), 0.0, 0.8);
+}
+
 // The wave's height at depth d: shoaled until it breaks, then the saturated bore gamma d. 0 on the
 // bank.
 inline f64 water_wave_height(f64 h0, f64 k0, f64 d) noexcept {
