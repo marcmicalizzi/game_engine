@@ -1,0 +1,13 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R194",
+  "reason": "R194: the trail mend's hunks (a layout flag beside the table update, the motion depth's import and declaration in record_frame) and the renderer page's section on trails",
+  "date": "2026-11-20",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": 8,
+    "renderer.gpu_scene_cpp.lines": 10,
+    "renderer.gpu_scene_h.lines": 7,
+    "page:docs/subsystems/renderer.md": 9405
+  }
+}

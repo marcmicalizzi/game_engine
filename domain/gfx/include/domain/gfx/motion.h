@@ -27,6 +27,7 @@
 #include <core/math/math.h>
 #include <domain/gfx/cluster_cull.h>
 
+#include <cstddef>
 #include <cstring>
 
 namespace engine::gfx {
@@ -84,9 +85,16 @@ struct MotionParams {
   // sample `(jx, jy)` pixels from the pixel's centre, x right and y down. Zero with no offset.
   f32 offset_ndc_x = 0.0f;
   f32 offset_ndc_y = 0.0f;
-  u32 pad[2] = {};
+  // **Where the point's depth was** (R194): f32[width * height], this view's region of a buffer the
+  // pass fills beside the vectors with the depth the pixel's point had in last frame's clip space
+  // (reversed-Z, as the visibility buffer holds it; 0 for the sky, -1 where the point was behind
+  // last frame's camera), so a reader can ask whether what last frame drew at the place the vector
+  // names was that point or something in front of or behind it. 0: not written (only the
+  // accumulation asks, `MotionPass::keep_depth`).
+  u64 prev_depth = 0;
 };
 static_assert(sizeof(MotionParams) == 416);
+static_assert(offsetof(MotionParams, prev_depth) == 408);
 
 // A half float's value: what a reader of the motion buffer on the CPU decodes a word with.
 inline f32 half_to_float(u16 half) noexcept {

@@ -73,6 +73,9 @@ struct AccumulateParams {
   uint64_t instances;          // gfx::InstanceDesc[] (96 bytes, material_base at 64)
   float reactive_weight;
   uint filter;  // k_filter_*: how a history is read between its texels
+  // f32[width * height]: each pixel's point's depth a frame ago (the motion pass's; R194): 0 the
+  // sky, -1 behind last frame's camera. 0 address: not kept, no tap is held to a depth.
+  uint64_t prev_depth;
 };
 
 static const uint k_filter_bilinear = 0u;
@@ -101,6 +104,42 @@ bool ever_moved(AccumulateParams* p, uint instance) {
 static const uint k_accumulate_history = 1u;  // there is a frame before this one to read
 static const uint k_accumulate_mean = 2u;     // the running mean at the pixel's own place
 static const uint k_accumulate_names = 4u;    // last frame's names can be read through `pairs`
+static const uint k_accumulate_trusted = 8u;  // every vector names where its surface was (R194)
+
+// The pixel's depth slope (reversed-Z a pixel, x and y): in each axis the smaller of the two
+// one-sided differences to a covered neighbour, so a silhouette on one side does not count as the
+// surface's own slope (a step is a step on one side only). 0 where no neighbour is covered.
+float depth_slope(uint64_t* now, int2 at, int2 size, float depth) {
+  float slope = 0.0;
+  for (int axis = 0; axis < 2; ++axis) {
+    float least = 3.4e38;
+    for (int side = -1; side <= 1; side += 2) {
+      const int2 n = at + (axis == 0 ? int2(side, 0) : int2(0, side));
+      if (n.x < 0 || n.y < 0 || n.x >= size.x || n.y >= size.y) continue;
+      const float d = asfloat(uint(now[n.y * size.x + n.x] >> 32));
+      if (d > 0.0) least = min(least, abs(d - depth));
+    }
+    if (least < 3.4e38) slope += least;
+  }
+  return slope;
+}
+
+// **Whether what last frame drew at a tap was the pixel's point** (R194): its depth there against
+// the depth the motion pass says the point had (`expected`), within half a percent (the cut and
+// the grid between two frames; at 2 % the ground under a box standing 20 cm off it at 16 m passed
+// for the box's underside, a streak along its foot) and the surface's own slope over the tap's
+// distance from the point's exact place, which is under a pixel in each axis, so the slopes' sum
+// bounds it on a plane (`depth_slope`; twice that let the same streak through at 256 x 144, where a
+// pixel's slope is fifteen times a 4K one's). The sky is only ever the sky; a point that was behind the camera
+// matches nothing. Reversed-Z is a reciprocal distance, so a relative difference of depths is one
+// of distances. The form is SVGF's (Schied et al. 2017; its reference implementation in Falcor's
+// `SVGFReproject`, read for R194, rejects a history whose depth differs by more than ten times the
+// depth's screen derivative, beside a test of normals); the derivative here is one-sided.
+bool depth_holds(float was, float expected, float slope) {
+  if (expected < 0.0) return false;
+  if (expected == 0.0 || was == 0.0) return expected == was;
+  return abs(was - expected) <= 0.005 * expected + slope;
+}
 
 static const uint k_motion_invalid = 0x7c007c00u;  // gfx::k_motion_invalid
 static const uint k_sky = 0xffffffffu;             // the instance of a pixel that holds nothing
@@ -256,7 +295,39 @@ void accumulate_main(uint3 id : SV_DispatchThreadID) {
         nearest_at = n;
       }
     }
-    const uint packed = ((uint*)p->motion)[nearest_at.y * size.x + nearest_at.x];
+    // **A pixel at a moving boundary reads its own surface's history** (R194). Where the nearest
+    // surface in the 3x3 moves otherwise than the pixel's own (by more than the match: a near post
+    // passing over a far wall, an animal over the ground), the nearest surface's vector would look
+    // the pixel up where that surface was, and its history there is the other surface's: kept, it
+    // is carried on by the pixel's own vector in every frame after, unclipped where the pixel's
+    // own surface hardly moves (the far wall), and that is a trail. Such a pixel is looked up by its
+    // own vector, held to its own name and depth, and clipped as a moving one.
+    const uint own_packed = ((uint*)p->motion)[local.y * size.x + local.x];
+    const uint near_packed = ((uint*)p->motion)[nearest_at.y * size.x + nearest_at.x];
+    bool boundary = false;
+    if (any(nearest_at != local)) {
+      if (own_packed != k_motion_invalid && near_packed != k_motion_invalid &&
+          own_packed != near_packed) {
+        const float2 apart =
+            float2(f16tof32(own_packed & 0xffffu), f16tof32(own_packed >> 16)) -
+            float2(f16tof32(near_packed & 0xffffu), f16tof32(near_packed >> 16));
+        boundary = dot(apart, apart) > p->motion_match * p->motion_match;
+      }
+    }
+    // **And so does every pixel of a frame whose vectors may be wrong** (not `trusted`): a mover of
+    // a tail that was placed again has the camera's vectors, the same as the ground it crosses, so
+    // no boundary shows, and the nearest surface's vector looks the ground at its trailing edge up
+    // where the mover was, a column a frame that stays (a comb of the mover's colour behind it).
+    const bool trusted = (p->flags & k_accumulate_trusted) != 0;
+    const bool own_only = boundary || !trusted;
+    const int2 source = own_only ? local : nearest_at;
+    const uint packed = own_only ? own_packed : near_packed;
+    const uint64_t source_word = now[source.y * size.x + source.x];
+    const float source_depth = asfloat(uint(source_word >> 32));
+    const bool depths = p->prev_depth != 0;
+    const float expected = depths ? ((float*)p->prev_depth)[source.y * size.x + source.x] : 0.0;
+    const float slope = depths ? depth_slope(now, source, size, source_depth) : 0.0;
+    const uint own = held[4];
     if (packed != k_motion_invalid) {
       const float2 motion = float2(f16tof32(packed & 0xffffu), f16tof32(packed >> 16));
       // Where the pixel's centre was, in last frame's picture; its four neighbours there.
@@ -279,15 +350,33 @@ void accumulate_main(uint3 id : SV_DispatchThreadID) {
         const uint moved = ((uint*)p->prev_motion)[tap.y * size.x + tap.x];
         const uint64_t word = before[tap.y * size.x + tap.x];
         const uint was_held = names ? instance_of(p, word) : (word == 0 ? k_sky : 0u);
+        // What last frame drew there against where this pixel's point was (R194): true when no
+        // depths are kept, as before them.
+        const bool deep = !depths || depth_holds(asfloat(uint(word >> 32)), expected, slope);
         bool known = false;
-        if (moved != k_motion_invalid && p->motion_match > 0.0 &&
-            (p->moved_count == 0 || (names && !ever_moved(p, was_held)))) {
-          const float2 apart = float2(f16tof32(moved & 0xffffu), f16tof32(moved >> 16)) - motion;
-          known = dot(apart, apart) <= p->motion_match * p->motion_match;
-        }
-        if (!known) {
-          for (int j = 0; j < 9; ++j)
-            known = known || held[j] == was_held;
+        if (own_only) {
+          // Its own surface only: by name where the names hold, else by depth.
+          known = names ? was_held == own : deep;
+        } else {
+          // The match proves nothing on a frame whose vectors may be wrong (`trusted`).
+          if (trusted && moved != k_motion_invalid && p->motion_match > 0.0 &&
+              (p->moved_count == 0 || (names && !ever_moved(p, was_held)))) {
+            const float2 apart = float2(f16tof32(moved & 0xffffu), f16tof32(moved >> 16)) - motion;
+            known = dot(apart, apart) <= p->motion_match * p->motion_match;
+          }
+          // Past the match a tap's surface must be among the 3x3's and at the point's depth:
+          // membership alone kept what a mover still beside the pixel left there (R194).
+          if (!known && deep) {
+            if (names && p->moved_count != 0 && ever_moved(p, was_held)) {
+              // A mover's history only where the pixel still shows it: where it stands on the
+              // ground its foot and the ground are at one depth, and membership let its last
+              // place's colour into the ground beside it, a streak along its path.
+              known = was_held == own;
+            } else {
+              for (int j = 0; j < 9; ++j)
+                known = known || held[j] == was_held;
+            }
+          }
         }
         if (!known) continue;
         const float4 h = g_storage_images[p->history][corner + tap];
@@ -310,9 +399,10 @@ void accumulate_main(uint3 id : SV_DispatchThreadID) {
         // the nine samples of this frame happened to miss back out of the picture. A reactive
         // surface is clipped as a moving one is, whatever it did, and weighs the new frame more.
         const bool shifting = reactive(p, now[local.y * size.x + local.x]);
-        const float gamma =
-            shifting || dot(motion, motion) > p->motion_match * p->motion_match ? p->clip_moving
-                                                                                 : p->clip_still;
+        const float gamma = shifting || boundary ||
+                                    dot(motion, motion) > p->motion_match * p->motion_match
+                                ? p->clip_moving
+                                : p->clip_still;
         const float weight = shifting ? max(p->weight, p->reactive_weight) : p->weight;
         if (gamma > 0.0) {
           const float3 mean = sum / 9.0;

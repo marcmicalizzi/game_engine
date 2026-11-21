@@ -137,7 +137,16 @@ bool MotionPass::resize(const gfx::Device& device, const ViewSet& views, std::st
   const u64 pixels = views.source_pixels();
   return gfx::create_buffer(device, pixels * sizeof(u32), k_screen, false, output_, error) &&
          gfx::create_buffer(device, pixels * sizeof(u64), k_screen, false, prev_vis_, error) &&
-         (!keep_motion_ || keep_motion(device, views, error));
+         (!keep_motion_ || keep_motion(device, views, error)) &&
+         (!keep_depth_ || keep_depth(device, views, error));
+}
+
+bool MotionPass::keep_depth(const gfx::Device& device, const ViewSet& views, std::string* error) {
+  keep_depth_ = true;
+  gfx::destroy_buffer(device, depth_);
+  depth_ = gfx::BufferResource{};
+  return gfx::create_buffer(device, views.source_pixels() * sizeof(f32), k_screen, false, depth_,
+                            error);
 }
 
 bool MotionPass::keep_motion(const gfx::Device& device, const ViewSet& views, std::string* error) {
@@ -152,6 +161,7 @@ void MotionPass::destroy(const gfx::Device& device) noexcept {
   gfx::destroy_buffer(device, output_);
   gfx::destroy_buffer(device, prev_vis_);
   gfx::destroy_buffer(device, prev_output_);
+  gfx::destroy_buffer(device, depth_);
   gfx::destroy_buffer(device, prev_pool_);
   for (gfx::BufferResource& buffer : params_)
     gfx::destroy_buffer(device, buffer);
@@ -282,6 +292,7 @@ void MotionPass::prepare(const Frame& frame, const ViewSet& views, const GpuScen
     p.moved_count = moved;
     p.offset_ndc_x = 2.0f * view.offset_x / static_cast<f32>(view.source_width);
     p.offset_ndc_y = -2.0f * view.offset_y / static_cast<f32>(view.source_height);
+    p.prev_depth = depth_.buffer.valid() ? depth_.address + frame.vis_offset[v] * sizeof(f32) : 0;
     blocks[v] = p;
   }
   // What the pool pass's second write reads: last frame's table, clock and part poses, where they
@@ -332,7 +343,7 @@ void MotionPass::record(gfx::CommandList cb, const gfx::ComputePipeline& pipelin
 }
 
 u64 MotionPass::device_bytes() const noexcept {
-  u64 bytes = output_.size + prev_vis_.size + prev_output_.size + prev_pool_.size;
+  u64 bytes = output_.size + prev_vis_.size + prev_output_.size + depth_.size + prev_pool_.size;
   for (const gfx::BufferResource& buffer : params_)
     bytes += buffer.size;
   for (const gfx::BufferResource& buffer : moved_buffers_)

@@ -472,6 +472,12 @@ class GpuScene {
   // caller has been through `begin_frame`).
   struct TableUpdate {
     bool write = false;
+    // **Whether what a slot or a pair names changed** (R194): a tail written, numbered again or
+    // grown, against a frame whose only writes are records changed in place (a move, a padding, a
+    // terrain chunk's corner), after which every pair still names the instance and cluster it named
+    // and every deform record is at its index. What the motion pass and the accumulation ask before
+    // they read last frame's names and inputs through this frame's tables.
+    bool layout = false;
     u32 set = 0;
     gfx::BufferResource staging;     // the instances, then the expansion list (the scene owns it)
     u64 list_address = 0;            // the expansion list's device address
@@ -2192,6 +2198,7 @@ class GpuScene {
   Vector<TableSet> sets_;                 // the table sets; `instances`/`pair_table` alias one
   u32 current_set_ = 0;                   // the set the last frame read
   bool tables_changed_ = false;           // a change since the last frame flipped
+  bool layout_changed_ = false;           // of them, one that was not a record changed in place
   Vector<gfx::BufferResource> table_staging_;  // per frame slot: host visible, kept
   // **A set made again is carried over on the GPU** (T167; renderer.md, "Instances that come and
   // go"): what the frame that flips to a new set copies it from — the set the last frame read, or
