@@ -597,6 +597,12 @@ inline void water_surface_field(const WaterFieldDesc& d, const WaterCross& cross
   water_heal_field(incident.data(), depth.data(), d.size, d.texel_m, k0, heal_floor, false);
   water_heal_field(kept.data(), depth.data(), d.size, d.texel_m, k0, heal_floor, false);
   water_heal_field(setup.data(), depth.data(), d.size, d.texel_m, k0, heal_floor, false);
+  // The foreshore slope of a place's stretch of shore is its nearest waterline texel's, cells with
+  // steps between them like the bank's arrival was: where the slope crosses the surging limit the
+  // foam's strength (`water_foam_strength`) stepped with it, a breaking stretch ending in a straight
+  // cut along a cell's edge (the forest staging's sea, 3.5 m texels). A stretch's slope varies at
+  // the scale its wave does, so it is healed the same way.
+  water_heal_field(shore_slope.data(), depth.data(), d.size, d.texel_m, k0, heal_floor, false);
   field.resize(k_water_field_channels * count);
   for (u32 i = 0; i < count; ++i) {
     f32* texel = field.data() + k_water_field_channels * i;
