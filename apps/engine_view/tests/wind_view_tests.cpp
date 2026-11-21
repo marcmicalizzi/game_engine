@@ -128,8 +128,12 @@ std::vector<Frame> storm(const test::TempDir& tmp, const std::string& scene, boo
   while (std::getline(in, line)) {
     JsonValue r;
     if (line.empty() || !parse_json(line, r).ok || !r.is_object()) continue;
+    // The session's frames only: a record whose time is not one of its ticks (the drain's, past
+    // the last frame) is not a frame the storm was drawn in.
+    const f64 time = number(r.find("time"));
+    if (!(time >= 0.0) || time * k_hz > static_cast<f64>(k_ticks) + 0.5) continue;
     Frame f;
-    f.tick = static_cast<u64>(number(r.find("time")) * k_hz + 0.5);
+    f.tick = static_cast<u64>(time * k_hz + 0.5);
     const JsonValue* w = r.find("wind");
     if (w != nullptr && w->is_object()) {
       f.set = true;
