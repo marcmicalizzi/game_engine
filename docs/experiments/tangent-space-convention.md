@@ -101,7 +101,14 @@ map as made leans every wall's normal down and under a sun overhead every wall i
 the green turned over: 68.5 to 68.9 against 98.0 to 99.6 mean code with the layer's plain sampling,
 68.7 to 70.9 against 91.1 to 94.1 with its stochastic sampling under a turn of up to 60 degrees
 (RTX 5090, 460 to 969 pixels a wall); before R202 the sides' bitangent was +y and every wall would
-have read the other way. **Not held by a case**: the mapped layer (`terrain_material.slang`, read at
+have read the other way. The same case holds the sides' tangent, +u, which is world +z on the walls
+facing +x and -x and world +x on those facing +z and -z: a second map leaning 45 degrees along +u
+leans the ±x walls to +z and the ±z walls to +x, and under a sun 45 degrees up from +z (for the ±x
+walls) and from +x (for the ±z walls) every wall is brighter than with the red turned over: 89.5 to
+91.8 against 64.8 to 65.9 plain, 87.7 to 91.6 against 69.4 to 70.4 stochastic. With the tangent
+turned over on the walls facing -x and -z (a local edit of the shader, restored) those two read the
+other way, 65.9 against 89.4 and 90.1 plain and 72.2 against 78.2, 75.5 against 79.0 stochastic,
+and the case fails on them alone. **Not held by a case**: the mapped layer (`terrain_material.slang`, read at
 `map_uv`, the point's (x, z)), whose frame by reading is the floor's: tangent +x, bitangent -z.
 
 ## The author's frame against the derived one

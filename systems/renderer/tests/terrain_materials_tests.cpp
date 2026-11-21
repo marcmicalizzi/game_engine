@@ -1317,7 +1317,9 @@ bool write_mapped_quad(const std::filesystem::path& dir, const std::string& name
       "\"TEXCOORD_0\":2},\"indices\":3,\"material\":0}]}],"
       "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.5,0.5,0.5,1],"
       "\"metallicFactor\":0,\"roughnessFactor\":0.8},\"normalTexture\":{\"index\":0}}],"
-      "\"textures\":[{\"source\":0}],\"images\":[{\"uri\":\"normal-" + name + ".png\"}],"
+      "\"textures\":[{\"source\":0}],\"images\":[{\"uri\":\"normal-" +
+      name +
+      ".png\"}],"
       "\"accessors\":["
       "{\"bufferView\":0,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\","
       "\"min\":[0,0.02,0],\"max\":[2,0.02,2]},"
@@ -1328,7 +1330,8 @@ bool write_mapped_quad(const std::filesystem::path& dir, const std::string& name
       "{\"buffer\":0,\"byteOffset\":48,\"byteLength\":48},"
       "{\"buffer\":0,\"byteOffset\":96,\"byteLength\":32},"
       "{\"buffer\":0,\"byteOffset\":128,\"byteLength\":12}],"
-      "\"buffers\":[{\"uri\":\"quad-" + name + ".bin\",\"byteLength\":140}]}";
+      "\"buffers\":[{\"uri\":\"quad-" +
+      name + ".bin\",\"byteLength\":140}]}";
   std::ofstream out(dir / ("quad-" + name + ".gltf"), std::ios::binary);
   out.write(json.data(), static_cast<std::streamsize>(json.size()));
   return out.good();
@@ -1409,8 +1412,8 @@ TEST_CASE("renderer: one normal map lights the same flank on a mesh and on the g
       for (u32 i = 0; i < k_id_words; ++i)
         quad = quad && shot.ids[w + i] == shot.ids[centre + i];
       const u32 s = quad ? 0u : 1u;
-      mean[flip][s] += static_cast<f64>(shot.color[p * 4]) + shot.color[p * 4 + 1] +
-                       shot.color[p * 4 + 2];
+      mean[flip][s] +=
+          static_cast<f64>(shot.color[p * 4]) + shot.color[p * 4 + 1] + shot.color[p * 4 + 2];
       ++count[flip][s];
     }
     renderer.destroy();
@@ -1422,8 +1425,8 @@ TEST_CASE("renderer: one normal map lights the same flank on a mesh and on the g
       mean[flip][s] /= 3.0 * count[flip][s];
     }
   MESSAGE("the map leaning up the image against turned over, under a sun from -z: the quad "
-          << mean[0][0] << " against " << mean[1][0] << ", the ground " << mean[0][1]
-          << " against " << mean[1][1] << " (mean code)");
+          << mean[0][0] << " against " << mean[1][0] << ", the ground " << mean[0][1] << " against "
+          << mean[1][1] << " (mean code)");
   // Up the image is -z on both, which faces the sun: both surfaces brighter with the map as made.
   CHECK(mean[0][0] > mean[1][0] + 5.0);
   CHECK(mean[0][1] > mean[1][1] + 5.0);
@@ -1455,9 +1458,11 @@ const scene_gen::Registrar k_mesa_registrar{k_mesa_provider};
 // which is -y, whichever way the wall faces. One constant map leaning the normal 45 degrees up the
 // image therefore leans every wall's normal down, so under a sun overhead every wall is darker with
 // the map as made than with its green turned over; before R202 the sides' bitangent was +y and
-// every wall was brighter. Each wall's pixels are told by the surface normal, the mean of the two
-// pictures' normals (the two leans cancel). Drawn with the layer's plain sampling and with its
-// stochastic sampling under a turn of up to 60 degrees.
+// every wall was brighter. The tangent is held the same way: a second map leaning along +u leans
+// the ±x walls' normals to +z and the ±z walls' to +x, which a sun from +z and one from +x see, so
+// a tangent turned over on the walls facing -x or -z fails. Each wall's pixels are told by the
+// surface normal, the mean of the two pictures' normals (the two leans cancel). Drawn with the
+// layer's plain sampling and with its stochastic sampling under a turn of up to 60 degrees.
 TEST_CASE("renderer: one normal map lights the ground's four walls through their own projections") {
   gfx::Device device;
   std::string error;
@@ -1467,25 +1472,29 @@ TEST_CASE("renderer: one normal map lights the ground's four walls through their
   }
   const test::TempDir tmp("terrain_wall_relief");
   write_pixel(tmp.file("colour.png"), 128, 128, 128);
-  for (u32 flip = 0; flip < 2; ++flip) {
-    const u8 lean[4] = {128, static_cast<u8>(flip == 0 ? 218 : 37), 218, 255};
+  // Two pairs of constant maps: leaning 45 degrees up the image (green) and turned over, and
+  // leaning 45 degrees along +u (red) and turned over.
+  const char* const map_names[4] = {"normal-up.png", "normal-down.png", "normal-right.png",
+                                    "normal-left.png"};
+  const u8 leans[4][4] = {
+      {128, 218, 218, 255}, {128, 37, 218, 255}, {218, 128, 218, 255}, {37, 128, 218, 255}};
+  for (u32 m = 0; m < 4; ++m) {
     Vector<u8> map;
     for (u32 i = 0; i < 4 * 4 * 4; ++i)
-      map.push_back(lean[i % 4]);
-    REQUIRE(image::write_png(tmp.file(flip == 0 ? "normal-up.png" : "normal-down.png"), 4, 4, 4,
-                             {map.data(), map.size()}) == io::Status::Ok);
+      map.push_back(leans[m][i % 4]);
+    REQUIRE(image::write_png(tmp.file(map_names[m]), 4, 4, 4, {map.data(), map.size()}) ==
+            io::Status::Ok);
   }
   const char* const wall_names[4] = {"+x", "-x", "+z", "-z"};
   for (u32 stochastic = 0; stochastic < 2; ++stochastic) {
-    CapturedFrame shots[2];
-    for (u32 flip = 0; flip < 2; ++flip) {
+    const auto shoot = [&](u32 map, f32 azimuth_deg, f32 elevation_deg, CapturedFrame& shot) {
       SceneDesc desc;
       desc.meshes.push_back("");
       desc.terrain = ground(tmp.file("colour.png"));
       desc.terrain.provider = "mesa_probe";
       desc.terrain.size = 33;
       scene::TerrainMaterialLayer& layer = desc.terrain.materials->layers[0];
-      layer.normal = tmp.file(flip == 0 ? "normal-up.png" : "normal-down.png");
+      layer.normal = tmp.file(map_names[map]);
       layer.tile_m = 2.0f;
       layer.roughness_factor = 0.8f;
       if (stochastic != 0) {
@@ -1498,15 +1507,11 @@ TEST_CASE("renderer: one normal map lights the ground's four walls through their
       RenderSettings settings;
       settings.lights = false;
       settings.shadows = ShadowMode::Off;
-      settings.sun_azimuth_deg = -90.0f;
-      settings.sun_elevation_deg = 89.0f;  // overhead: no wall faces it more than another
+      settings.sun_azimuth_deg = azimuth_deg;
+      settings.sun_elevation_deg = elevation_deg;
       ResolvedSettings resolved;
       resolve_settings(settings, device.features(), &data, resolved);
-      if (check_availability(resolved, device.features()) != RenderAvailability::Ok) {
-        MESSAGE("rendering unavailable on this device");
-        device.destroy();
-        return;
-      }
+      if (check_availability(resolved, device.features()) != RenderAvailability::Ok) return false;
       GpuScene scene;
       REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), error);
       SceneRenderer renderer;
@@ -1521,46 +1526,84 @@ TEST_CASE("renderer: one normal map lights the ground's four walls through their
       CaptureChannels channels;
       channels.color = true;
       channels.normals = true;
-      REQUIRE_MESSAGE(renderer.capture(frame, channels, shots[flip], &error), error);
+      REQUIRE_MESSAGE(renderer.capture(frame, channels, shot, &error), error);
       renderer.destroy();
       scene.destroy();
-    }
-    f64 mean[2][4] = {};  // [green up, turned over][+x, -x, +z, -z]
-    u32 count[4] = {};
-    const CapturedFrame& a = shots[0];
-    const CapturedFrame& b = shots[1];
-    REQUIRE(a.normals.size() == b.normals.size());
-    for (u32 p = 0; p < a.width * a.height; ++p) {
-      f64 n[3];
-      for (u32 c = 0; c < 3; ++c)
-        n[c] = (a.normals[p * 3 + c] + b.normals[p * 3 + c]) / 255.0 - 1.0;
-      const f64 len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-      if (len < 0.1) continue;
-      const f64 x = n[0] / len;
-      const f64 z = n[2] / len;
-      i32 wall = -1;
-      if (x > 0.8) wall = 0;
-      if (x < -0.8) wall = 1;
-      if (z > 0.8) wall = 2;
-      if (z < -0.8) wall = 3;
-      if (wall < 0) continue;
-      ++count[wall];
-      for (u32 f = 0; f < 2; ++f) {
-        const CapturedFrame& s = f == 0 ? a : b;
-        mean[f][wall] +=
-            (static_cast<f64>(s.color[p * 4]) + s.color[p * 4 + 1] + s.color[p * 4 + 2]) / 3.0;
+      return true;
+    };
+    // Each wall's pixels are told by the mean of a pair's normals (the two leans cancel); the
+    // result is each wall's mean code in either picture.
+    const auto walls = [&](const CapturedFrame& a, const CapturedFrame& b, f64(&mean)[2][4],
+                           u32(&count)[4]) {
+      REQUIRE(a.normals.size() == b.normals.size());
+      for (u32 p = 0; p < a.width * a.height; ++p) {
+        f64 n[3];
+        for (u32 c = 0; c < 3; ++c)
+          n[c] = (a.normals[p * 3 + c] + b.normals[p * 3 + c]) / 255.0 - 1.0;
+        const f64 len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        if (len < 0.1) continue;
+        const f64 x = n[0] / len;
+        const f64 z = n[2] / len;
+        i32 wall = -1;
+        if (x > 0.8) wall = 0;
+        if (x < -0.8) wall = 1;
+        if (z > 0.8) wall = 2;
+        if (z < -0.8) wall = 3;
+        if (wall < 0) continue;
+        ++count[wall];
+        for (u32 f = 0; f < 2; ++f) {
+          const CapturedFrame& s = f == 0 ? a : b;
+          mean[f][wall] +=
+              (static_cast<f64>(s.color[p * 4]) + s.color[p * 4 + 1] + s.color[p * 4 + 2]) / 3.0;
+        }
       }
+      for (u32 w = 0; w < 4; ++w) {
+        REQUIRE_MESSAGE(count[w] > 100, std::string(wall_names[w])
+                                            << " wall: " << count[w] << " pixels");
+        mean[0][w] /= count[w];
+        mean[1][w] /= count[w];
+      }
+    };
+    const std::string mode = stochastic != 0 ? "stochastic" : "plain";
+    // The bitangent: under a sun overhead (no wall faces it more than another) the green as made
+    // leans every wall's normal down, -y, and every wall is darker than with it turned over.
+    CapturedFrame up, down;
+    if (!shoot(0, -90.0f, 89.0f, up)) {
+      MESSAGE("rendering unavailable on this device");
+      device.destroy();
+      return;
     }
+    REQUIRE(shoot(1, -90.0f, 89.0f, down));
+    f64 mean[2][4] = {};  // [as made, turned over][+x, -x, +z, -z]
+    u32 count[4] = {};
+    walls(up, down, mean, count);
     for (u32 w = 0; w < 4; ++w) {
-      REQUIRE_MESSAGE(count[w] > 100, std::string(wall_names[w])
-                                          << " wall: " << count[w] << " pixels");
-      const f64 up = mean[0][w] / count[w];
-      const f64 down = mean[1][w] / count[w];
-      MESSAGE(std::string(stochastic != 0 ? "stochastic" : "plain")
-              << " sampling, the " << std::string(wall_names[w]) << " wall (" << count[w]
-              << " pixels): the map as made " << up << ", turned over " << down << " (mean code)");
+      MESSAGE(mode << " sampling, the " << std::string(wall_names[w]) << " wall (" << count[w]
+                   << " pixels): the map as made " << mean[0][w] << ", turned over " << mean[1][w]
+                   << " (mean code)");
       // Up the image is -y on every wall: the map as made leans it away from the sun overhead.
-      CHECK_MESSAGE(up + 5.0 < down, std::string(wall_names[w]) << " wall");
+      CHECK_MESSAGE(mean[0][w] + 5.0 < mean[1][w], std::string(wall_names[w]) << " wall");
+    }
+    // The tangent: a side projection's u is world z on the walls facing +x and -x and world x on
+    // those facing +z and -z, on both signs, so the red as made leans the ±x walls' normals to +z
+    // and the ±z walls' to +x. Under a sun 45 degrees up from +z (azimuth 90) the ±x walls are
+    // brighter as made than with the red turned over, and under one from +x (azimuth 0) the ±z
+    // walls are; a tangent turned over on the -x or -z wall reads the other way there.
+    for (u32 pair = 0; pair < 2; ++pair) {
+      const f32 azimuth = pair == 0 ? 90.0f : 0.0f;
+      CapturedFrame right, left;
+      REQUIRE(shoot(2, azimuth, 45.0f, right));
+      REQUIRE(shoot(3, azimuth, 45.0f, left));
+      f64 lit[2][4] = {};
+      u32 lit_count[4] = {};
+      walls(right, left, lit, lit_count);
+      for (u32 w = pair == 0 ? 0u : 2u; w < (pair == 0 ? 2u : 4u); ++w) {
+        MESSAGE(mode << " sampling, the " << std::string(wall_names[w]) << " wall (" << lit_count[w]
+                     << " pixels) under a sun from " << (pair == 0 ? "+z" : "+x")
+                     << ": the map leaning along +u " << lit[0][w] << ", turned over " << lit[1][w]
+                     << " (mean code)");
+        CHECK_MESSAGE(lit[0][w] > lit[1][w] + 5.0, std::string(wall_names[w]) << " wall, +u");
+      }
     }
   }
   device.destroy();
