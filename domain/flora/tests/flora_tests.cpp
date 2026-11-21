@@ -624,7 +624,10 @@ TEST_CASE(
   // was 0xc295159d4e6b8392. R164/version 13: the fronds' foliage optics in their alpha word and the
   // key, nothing of the mesh (both zeroed give it back); version 12's last was 0x8344de13ac0e1b47.
   // R164-3: the optics folded into every flora key move the key alone; it was 0x7cfed0871826a7ef.
-  constexpr u64 k_golden = 0xdf628e869a92507cull;
+  // R202: the palm bakes no normal, so the bakes' convention left its key (it was
+  // 0xdf628e869a92507c with the convention in the shape key; `k_flora_version` 14 still moves it
+  // from 13's).
+  constexpr u64 k_golden = 0xbb65f153e0a248f0ull;
   CHECK_MESSAGE(hash == k_golden, "the default palm's container hashes to " << hex);
 
   // The canonical form is the parameters, defaults filled in, whatever the file spelled.
@@ -747,7 +750,8 @@ TEST_CASE("flora: the motion table round-trips through the container, appended t
   // in the source hash the container records (the seat itself is cleared above with the contract);
   // version 12's was 0x54f0151776cdaeee. R164/version 13: the fronds' foliage optics and the key;
   // it was 0xd9a0852ec6e82a2e. R164-3: the optics folded into the key; it was 0x46037b61b73a04d2.
-  constexpr u64 k_rigid_golden = 0x9d0a7df633b2d3fbull;
+  // R202: the convention left the palm's key, as above; it was 0x9d0a7df633b2d3fb.
+  constexpr u64 k_rigid_golden = 0xabc3b7b7c24d1242ull;
   const u64 rigid_hash = geometry::cluster_file_hash(rigid);
   char hex[32];
   std::snprintf(hex, sizeof(hex), "0x%016llxull", static_cast<unsigned long long>(rigid_hash));

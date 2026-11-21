@@ -868,32 +868,33 @@ TEST_CASE("impostor chain: the conifer profiles and the matured conifer build it
     // The key: the container's is the tree's with the conifers' chain version after the solver's,
     // which no other species takes; the tree's own (the deadwood's) is the one it was.
     const std::string canonical = flora::canonical_flora_json(file);
-    const u64 h = hash_combine(
+    const u64 h =
         hash_combine(flora::fold_foliage_optics(  // R164-3: the optics, in every flora key
                          hash_combine(hash_bytes(canonical.data(), canonical.size()),
                                       hash_bytes(file.species.data(), file.species.size()))),
-                     flora::k_baked_normal_convention),  // R202: the bakes' convention, every key
-        flora::k_flora_version);
+                     flora::k_flora_version);
     CHECK(flora::flora_source_hash(file) == h);
     u64 container = 0;
     REQUIRE(flora::flora_source_hash_with(file, {}, container, error));
-    // And the seat's version after the chain's (G201 stage 2), which every tree takes, and the
-    // structural table's (A45), which the broadleaf and the conifer take.
-    CHECK(container == hash_combine(hash_combine(hash_combine(h, flora::k_conifer_chain_version),
-                                                 flora::k_flora_seat_version),
-                                    flora::k_flora_structure_version));
+    // The bakes' convention first (R202: a family that bakes a normal), then the seat's version
+    // after the chain's (G201 stage 2), which every tree takes, and the structural table's (A45),
+    // which the broadleaf and the conifer take.
+    CHECK(container ==
+          hash_combine(hash_combine(hash_combine(hash_combine(h, flora::k_baked_normal_convention),
+                                                 flora::k_conifer_chain_version),
+                                    flora::k_flora_seat_version),
+                       flora::k_flora_structure_version));
     CHECK(data.source_hash == container);
   }
   // A broadleaf profile carries the G129 shape salt, but never the conifer chain salt.
   flora::FloraFile oak;
   REQUIRE(flora::read_flora_file(R"({"species":"oak"})", oak, error));
   const std::string canonical = flora::canonical_flora_json(oak);
-  const u64 old_oak_hash = hash_combine(
+  const u64 old_oak_hash =
       hash_combine(flora::fold_foliage_optics(  // R164-3: the optics, in every flora key
                        hash_combine(hash_bytes(canonical.data(), canonical.size()),
                                     hash_bytes(oak.species.data(), oak.species.size()))),
-                   flora::k_baked_normal_convention),  // R202: the bakes' convention, every key
-      flora::k_flora_version);
+                   flora::k_flora_version);
   const u64 oak_hash = hash_combine(old_oak_hash, flora::k_branch_taper_version);
   CHECK(flora::flora_source_hash(oak) == oak_hash);
   u64 oak_container = 0;
@@ -901,7 +902,9 @@ TEST_CASE("impostor chain: the conifer profiles and the matured conifer build it
   // The broadleaf solver's chain version (G121) where the conifers take theirs, then the seat's
   // (G201) and the structural table's (A45).
   CHECK(oak_container ==
-        hash_combine(hash_combine(hash_combine(oak_hash, flora::k_broadleaf_chain_version),
+        hash_combine(hash_combine(hash_combine(hash_combine(oak_hash,
+                                                            flora::k_baked_normal_convention),
+                                               flora::k_broadleaf_chain_version),
                                   flora::k_flora_seat_version),
                      flora::k_flora_structure_version));
   // Off is the container it was: no level, no atlas.

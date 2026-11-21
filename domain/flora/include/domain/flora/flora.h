@@ -78,8 +78,10 @@ namespace engine::flora {
 //    component the other way up, so the renderer would read every card's relief upside down.
 inline constexpr u32 k_flora_version = 14;
 // The convention every baked normal of every family is written in (R202: +Y up the image, a
-// derived bitangent of -dP/dv), folded into every family's source hash (`flora_source_hash`),
-// since the species families that key on a version of their own bake cards and impostors too.
+// derived bitangent of -dP/dv), folded into the container's key of every family that bakes a
+// normal (those whose solver hands back an impostor chain; `container_hash` in flora.cpp), since
+// half of them key on a version of their own; not into `flora_source_hash`, the tree's shape, so a
+// family that bakes none, the deadwood and the litter do not rebuild when it moves.
 // 1: R202, the first value folded; an entry from before it baked the other way up.
 inline constexpr u32 k_baked_normal_convention = 1;
 // G129: broadleaf/birch shape and baked-LOD invalidation, without rebuilding other architectures.

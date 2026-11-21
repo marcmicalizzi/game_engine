@@ -262,8 +262,26 @@ bool seated_species(const FloraFile& file) {
           s == k_species_ancient || detail::is_tree_species(s));
 }
 
+// The families whose solver hands back an impostor chain (`solve_flora`'s `levels`), whose cards
+// and impostors `bake_chain` bakes a normal atlas for: a regeneration form, the alpine and shrub
+// profiles, every tree species, `broadleaf`, `conifer`, `birch`, `ancient` and the sward. The
+// willow, the orchard, the plain shrub, the fern, the tuft, the herb, the meadow plant, the roots
+// and the date palm solve no chain and bake no normal.
+bool bakes_normals(const FloraFile& file) {
+  const std::string& s = file.species;
+  return file.regeneration || alpine_profile(s) != nullptr || shrub_profile(s) != nullptr ||
+         detail::is_tree_species(s) || s == k_species_broadleaf || s == k_species_conifer ||
+         s == k_species_birch || s == k_species_ancient || s == "sward";
+}
+
 u64 container_hash(const FloraFile& file) {
   u64 h = flora_source_hash(file);
+  // The tangent-space convention the bakes write their normals in (R202): a property of what is
+  // baked, not of the tree's shape, so here and only for a family that bakes one. Half of those key
+  // on a version of their own, so the convention is folded rather than left to `k_flora_version`;
+  // a family that bakes no normal, and the deadwood and litter keyed by `flora_source_hash`, do not
+  // move when it does.
+  if (bakes_normals(file)) h = hash_combine(h, k_baked_normal_convention);
   if (!file.regeneration && builds_conifer(file.species))
     h = hash_combine(h, k_conifer_chain_version);
   // The broadleaf solver's chain (G121) the same way: `broadleaf` and the deciduous profiles.
@@ -411,10 +429,6 @@ u64 flora_source_hash(const FloraFile& file) {
   // bumping five versions, moves every key the next time they change without anyone remembering
   // which families carry leaves.
   h = fold_foliage_optics(h);
-  // The tangent-space convention the bakes write their normals in (R202): every family's cards and
-  // impostors are baked by `bake_level`, and half the families key on a version of their own, so
-  // the convention goes into every key rather than into `k_flora_version` alone.
-  h = hash_combine(h, k_baked_normal_convention);
   if (file.regeneration) return hash_combine(h, k_regeneration_version);
   if (alpine_profile(file.species) != nullptr) return hash_combine(h, k_alpine_version);
   if (shrub_profile(file.species) != nullptr) return hash_combine(h, k_shrub_growth_version);

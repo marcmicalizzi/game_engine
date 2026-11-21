@@ -1205,9 +1205,15 @@ and then into the card's own frame as the resolve derives it — x along the vie
 its v (the card's v rises with the view's up, so its bitangent is -v), z its normal — so a leaf
 standing at an angle to its card bends the card's texel by what the same leaf bends the near
 surface. Until R202 both frames were the other way up, and the sward's ground under its cards was
-baked +Y up beside cards baked +Y down. The convention is folded into every family's source hash
-(`k_baked_normal_convention`, `flora_source_hash`), and `k_flora_version` went to 14, since half the
-families key on a version of their own and every one bakes cards or impostors. A texel's normal is still the mean of its covered
+baked +Y up beside cards baked +Y down. The convention (`k_baked_normal_convention`) is what is
+baked, not the tree's shape, so it is folded into the container's key (`container_hash`) of every
+family that bakes a normal, which is every family whose solver hands back an impostor chain: a
+regeneration form, the alpine and shrub profiles, every tree species, `broadleaf`, `conifer`,
+`birch`, `ancient` and the sward. The willow, the orchard, the plain shrub, the fern, the tuft, the
+herb, the meadow plant, the roots and the date palm bake none and their keys do not take it, and
+neither does `flora_source_hash`, the shape the deadwood and the litter key by. `k_flora_version`
+went to 14 as well, since half the families that bake key on a version of their own. A texel's
+normal is still the mean of its covered
 samples' vectors, renormalized: it shortens where the samples disagree, the length is lost at the
 bake, and the texture step builds the atlas's R97 variance chain from the bytes like any normal
 map, which is where the lost length comes back as roughness. A triangle with degenerate UVs keeps

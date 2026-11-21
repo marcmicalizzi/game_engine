@@ -110,7 +110,6 @@ TEST_CASE("flora taper: keys invalidate affected shapes and keep unrelated tree 
     u64 old = flora::fold_foliage_optics(hash_combine(
         hash_bytes(canonical.data(), canonical.size()),
         hash_bytes(file.species.data(), file.species.size())));  // R164-3: the optics, every key
-    old = hash_combine(old, flora::k_baked_normal_convention);  // R202: the bakes' convention
     old = hash_combine(old, flora::k_flora_version);
     const bool changed = file.species == "maple" || file.species == "oak" ||
                          file.species == "birch" || file.species == "broadleaf";
