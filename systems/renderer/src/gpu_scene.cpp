@@ -1800,7 +1800,9 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
   // The table's own size first, a stage of its own (W155: a growth frame's slot write said 48 ms
   // of CPU for 3,904 slots where the first fill wrote 297,268 in 114 ms).
   std::optional<profiling::TraceStage> resizing;
+  std::optional<profiling::TraceStage> part;  // and its three parts, each a stage
   resizing.emplace("tiles slots resize");
+  part.emplace("slots trees released");
   // A tree past the layout's new end gives its record back before its slot goes.
   if (flora_tail_) {
     for (u32 slot = end; slot < instance_table_.size(); ++slot)
@@ -1822,9 +1824,16 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
     }
   }
   const u32 had = instance_table_.size();
+  part.reset();
+  part.emplace("slots table moved");
   // Past the capacity, into the room made ahead when there is one (W155; table_room.h).
-  (void)table_room_.take(instance_table_, end);
+  if (table_room_.take(instance_table_, end)) {
+    ENGINE_LOG_INFO(log_renderer, "the tail's table grew into room made ahead",
+                    log::field("slots", end), log::field("capacity", instance_table_.capacity()));
+  }
   (void)keys_room_.take(tail_keys_, end);
+  part.reset();
+  part.emplace("slots table sized");
   instance_table_.resize(end);
   tail_keys_.resize(end);
   // A numbering the CPU's table has not taken yet no longer applies past the end (T154).
@@ -1833,6 +1842,7 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
   // until it is written below, as `policy_counts` would count it.
   for (u32 slot = had; slot < end; ++slot)
     policy_count(instance_table_[slot], true);
+  part.reset();
   resizing.reset();
   ENGINE_STARTUP_STAGE("tiles slots written");
   for (const SlotWrite& write : writes) {

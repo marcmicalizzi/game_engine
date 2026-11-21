@@ -75,6 +75,10 @@ TEST_CASE("table room: the growth past capacity takes the room made ahead and al
   CHECK(table.capacity() == want);
   CHECK(same(table, k_capacity));
   CHECK(room.taken() == 1);
+  // The old block is held until the next frame's `prepare`, which frees it and does nothing else.
+  CHECK(room.held_bytes() == k_capacity * sizeof(Slot));
+  CHECK_FALSE(room.ready());
+  CHECK(room.prepare(table, k_budget) == 0);
   CHECK(room.held_bytes() == 0);
   // Without the room, the same growth allocates on the frame, as the container always did.
   Vector<Slot> plain = filled(k_capacity);

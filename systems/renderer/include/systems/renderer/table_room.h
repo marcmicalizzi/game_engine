@@ -30,6 +30,12 @@ class TableRoom {
   // container's own half again) and fault in `budget_bytes` more of it. Returns the bytes touched.
   usize prepare(const Vector<T>& table, usize budget_bytes) {
     using size_type = typename Vector<T>::size_type;
+    // The block a growth left behind goes on the frame after it, not on the growth's own.
+    if (old_pending_) {
+      Vector<T>().swap(room_);
+      old_pending_ = false;
+      return 0;
+    }
     const u64 capacity = table.capacity();
     if (capacity == 0 || u64{table.size()} * 4 < capacity * 3) return 0;
     const u64 want = std::min<u64>(capacity + capacity / 2, table.max_size());
@@ -47,25 +53,30 @@ class TableRoom {
   }
 
   // Before `table` is sized to `end`: when that passes its capacity and the room holds it, the
-  // table moves into the room (a copy into resident pages, no allocation) and the old block goes.
+  // table moves into the room (a copy into resident pages, no allocation); the old block is freed
+  // by the next `prepare`, so the growth's frame pays neither the allocation nor the free.
   // False when it did not, and the caller's resize grows the table as it always did.
   bool take(Vector<T>& table, usize end) {
-    if (end <= table.capacity() || room_.capacity() < end) return false;
+    if (old_pending_ || end <= table.capacity() || room_.capacity() < end) return false;
     room_.clear();
     room_.append(std::span<const T>(table.data(), table.size()));
     table.swap(room_);
-    Vector<T>().swap(room_);
+    room_.clear();
+    old_pending_ = true;  // released by the next `prepare`, a frame later
     ++taken_;
     return true;
   }
 
   usize held_bytes() const noexcept { return usize{room_.capacity()} * sizeof(T); }
-  bool ready() const noexcept { return room_.capacity() != 0 && room_.size() == room_.capacity(); }
+  bool ready() const noexcept {
+    return !old_pending_ && room_.capacity() != 0 && room_.size() == room_.capacity();
+  }
   u64 taken() const noexcept { return taken_; }
 
  private:
   Vector<T> room_;
   u64 taken_ = 0;
+  bool old_pending_ = false;
 };
 
 }  // namespace engine::renderer
