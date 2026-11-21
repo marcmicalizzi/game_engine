@@ -94,6 +94,10 @@ head: a steep roof's overhang drops fast, and the first cot's 45 cm eave at fift
 1.56 m over a 1.9 m door); roofs over a non-empty rectangle with a pitch of 50 to 4000 permille; a
 hearth that leaves its stack a back and two cheeks; a straight stair
 of 2 to 40 risers with a storey above it; a well only in an outline of axis-aligned edges.
+A description declares at most `k_max_openings` (256) openings, and each hangs at most a pair of
+leaves, so `structures.h` asserts at compile time that twice the ceiling fits the container
+reader's `geometry::k_door_max_records` (512, [geometry](geometry.md), section 53): raising one
+without the other stops the build instead of writing a house the reader refuses (S91, 2026-11-21).
 The walker's rules of plan 14 §14.4 (riser, going, headroom, a doorway's width) are **not** held
 here yet: they are S89's validators, over the walk records.
 

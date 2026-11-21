@@ -591,7 +591,9 @@ bool PlacementTiles::generate(TileCoord tile, u8 ring, u32 entries, bool for_que
     // **The leaves its meshes hang** (S91; scene_collision.md, "What is drawn swings with what
     // collides"): each a mesh the tile hands and a placement at its declared angle, after the
     // entry's own, so theirs keep their places. A query's tile hangs none: a leaf is no placement
-    // of its kind.
+    // of its kind, and so it leaves no footprint for the entries after it either (`own`, below), as
+    // the whole read, which hangs its leaves after every entry, gives them none.
+    const u32 own = placed.instances.size();
     if (!for_query && !renderer::hang_placement_leaves(placed, meshes.size(), nullptr, why)) {
       ok = false;
       ENGINE_LOG_WARN(log_world_placements, "a tile's leaves were not hung",
@@ -607,7 +609,8 @@ bool PlacementTiles::generate(TileCoord tile, u8 ring, u32 entries, bool for_que
       for (u32 k = 0; k < placed.meshes.size(); ++k)
         out.meshes.push_back(MeshRef{e, k});
     }
-    for (const scene_gen::Placement& p : placed.instances) {
+    for (u32 n = 0; n < placed.instances.size(); ++n) {
+      const scene_gen::Placement& p = placed.instances[n];
       // One list: the entry's resident meshes, then this tile's own.
       u32 scene_mesh = ~0u;
       f32 reach = 0.0f;
@@ -667,8 +670,8 @@ bool PlacementTiles::generate(TileCoord tile, u8 ring, u32 entries, bool for_que
       // Its footprint for the entries after it, whether or not the room takes its mesh or its ring
       // draws it: what a tile is never depends on what is resident (T131; until then a placement
       // whose mesh the table refused left no footprint, so a later entry stood where it would have
-      // been), nor on its form (G197).
-      if (e + 1 < entries_.size()) {
+      // been), nor on its form (G197). A hung leaf leaves none (`own`, above).
+      if (e + 1 < entries_.size() && n < own) {
         const f32 scale = std::max(std::fabs(p.scale.x), std::fabs(p.scale.z));
         earlier.push_back(scene_gen::Footprint{scene_gen::nearest_mm(p.position.x),
                                                scene_gen::nearest_mm(p.position.z),

@@ -197,8 +197,8 @@ bool walk_params_from_json(const JsonValue& value, WalkParams& out, std::string*
   if (!value.is_object()) return fail("not an object");
   u32 version = 0;
   if (!read_u32(value, "version", version)) return fail("no version");
-  // Version 1's numbers mean what version 2's do; its walk is walked as version 2 (walk.h).
-  if (version != k_walk_version && version != k_walk_version_f32) {
+  // One version: a walk from before the doors is refused (walk.h, `k_walk_version` 3).
+  if (version != k_walk_version) {
     return fail("recorded with walk integration version " + std::to_string(version) +
                 ", and this engine-view walks version " + std::to_string(k_walk_version) +
                 "; a walk from another version would go somewhere else without saying so, so the "
@@ -435,7 +435,8 @@ struct Walker::Impl {
       f32 s = 0.0f, c = 0.0f;
       fly_sin_cos(yaw, s, c);
       const u32 i = consumer.door_to_reach(body.feet(), Vec3{-s, 0.0f, -c}, k_walk_door_reach_m);
-      if (i != scene_collision::k_no_index) {
+      // A door that stands (a streamed tile's) is reached and turned by no one: nobody is asked.
+      if (i != scene_collision::k_no_index && !consumer.doors()[i].fixed) {
         const scene_collision::DoorBody& d = consumer.doors()[i];
         const bool open = !d.open;
         if (door_ask != nullptr && !door_ask(door_context, walk_door(d), open)) {
@@ -455,6 +456,7 @@ struct Walker::Impl {
     out.angle_mdeg = d.angle_mdeg;
     out.open_mdeg = d.open_mdeg;
     out.declared = (d.key >> 63) != 0;
+    out.fixed = d.fixed;
     return out;
   }
   // **The builds' lead** (T166; scene_collision.md, "Ahead of a running walker"): the walker's or

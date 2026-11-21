@@ -21,9 +21,11 @@
 
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <memory>
 #include <string>
+#include <thread>
 
 using namespace engine;
 using namespace engine::scene_collision;
@@ -823,7 +825,10 @@ geometry::ClusterFileDoor doorway_leaf() {
   r.flags = geometry::k_door_flag_door;
   return r;
 }
-void doorway_house(renderer::SceneData& scene) {
+// The wall declaring its leaf, and the scene recording that the renderer hung it on instance 0 (the
+// leaf's own instance is not part of these scenes: nothing here draws). What collides is what is
+// drawn, so a declared leaf the scene hung no instance for makes no door (`doorway_house_unhung`).
+void doorway_house_unhung(renderer::SceneData& scene) {
   MeshSource wall;
   add_box(wall, Vec3{2.275f, 1.0f, 0.05f}, -2.725f, 20.05f);
   add_box(wall, Vec3{2.275f, 1.0f, 0.05f}, 2.725f, 20.05f);
@@ -831,6 +836,10 @@ void doorway_house(renderer::SceneData& scene) {
   build_scene(meshes, scene);
   scene.sources.resize(scene.parts.size());
   scene.sources[0].doors.push_back(doorway_leaf());
+}
+void doorway_house(renderer::SceneData& scene) {
+  doorway_house_unhung(scene);
+  scene.leaves.push_back(renderer::SceneLeaf{~0u, 0, 0, 0, 1.0f, 0});
 }
 // The same wall declaring 30 leaves (a village's worth on one tile), or none.
 void wall_leaves(renderer::SceneData& scene, u32 leaves) {
@@ -844,10 +853,19 @@ void wall_leaves(renderer::SceneData& scene, u32 leaves) {
     geometry::ClusterFileDoor r = doorway_leaf();
     r.pivot = Vec3{-14.5f + static_cast<f32>(i), 0.0f, 24.0f};
     scene.sources[0].doors.push_back(r);
+    scene.leaves.push_back(renderer::SceneLeaf{~0u, 0, i, 0, 1.0f, 0});
   }
 }
 void wall_no_leaves(renderer::SceneData& scene) { wall_leaves(scene, 0); }
 void wall_30_leaves(renderer::SceneData& scene) { wall_leaves(scene, 30); }
+// The doorway's house declaring a second leaf beside its first, the scene having hung the first
+// alone (a load that kept one leaf's instance and not the other's).
+void doorway_house_one_of_two(renderer::SceneData& scene) {
+  doorway_house(scene);
+  geometry::ClusterFileDoor second = doorway_leaf();
+  second.pivot = Vec3{3.0f, 0.0f, 24.0f};
+  scene.sources[0].doors.push_back(second);
+}
 
 }  // namespace
 
@@ -906,6 +924,95 @@ TEST_CASE(
   DoorBody back;
   REQUIRE(rig.collision.door(key, back));
   CHECK(back.angle_mdeg == -90000);
+}
+
+// **What collides is what is drawn** (S91; scene_collision.md, "Doors"): the same wall declaring
+// the same leaf, but the scene hung no leaf for it — a mesh the scene fits, a `.clusters` file
+// built from a recipe, `engine-view --mesh` of a description, which draw an empty doorway. Until
+// 2026-11-20 the collision made the door anyway, an invisible box in the doorway that stopped the
+// walker and opened with E; now no door is made and the doorway stands open.
+TEST_CASE("scene_collision: a declared leaf the scene hung no instance for makes no door") {
+  DoorRig rig(&doorway_house_unhung);
+  (void)rig.collision.step_doors(nullptr);
+  CHECK(rig.collision.door_stats().doors == 0);
+  CHECK(rig.collision.door_stats().bodies == 0);
+  CHECK(rig.walk(3.0f, Vec3{0.0f, 0.0f, 1.0f}) > 21.0f);
+}
+
+// **A door a leaf, not a house** (S91; scene_collision.md, "Doors"): a house declaring two leaves
+// of which the scene hung one. Until 2026-11-20 a house any of whose leaves was hung made a door of
+// every record, so the leaf not drawn had an invisible box in its doorway; now it makes none.
+TEST_CASE(
+    "scene_collision: a house's leaf the scene did not hang makes no door beside one it did") {
+  DoorRig rig(&doorway_house_one_of_two);
+  (void)rig.collision.step_doors(nullptr);
+  const u64 placement = support_placement(0, k_no_index, 0, 0, 0, 0);
+  DoorBody now;
+  CHECK(rig.collision.door(declared_door_key(placement, 0), now));
+  CHECK_FALSE(rig.collision.door(declared_door_key(placement, 1), now));
+  CHECK(rig.collision.door_stats().doors == 1);
+  CHECK(rig.collision.door_stats().declared == 1);
+}
+
+// **What collides is what is drawn, through a restore too** (S91; scene_collision.md, "Doors"): a
+// save from a build that made a door of every declared record, handed back turning. A door for a
+// leaf the scene did not hang, and one for a piece that hangs none, are dropped once the piece is
+// held. Until 2026-11-21 both were kept as handed, an invisible box in a doorway drawn empty that
+// stopped the walker and opened with E.
+TEST_CASE("scene_collision: a restored door for a leaf the scene did not hang is dropped") {
+  {
+    DoorRig rig(&doorway_house_one_of_two);
+    (void)rig.collision.step_doors(nullptr);
+    const u64 placement = support_placement(0, k_no_index, 0, 0, 0, 0);
+    DoorBody doors[2];
+    REQUIRE(rig.collision.door(declared_door_key(placement, 0), doors[0]));
+    doors[1] = doors[0];
+    doors[1].key = declared_door_key(placement, 1);
+    doors[1].hinge = place(Vec3{3.0f, 0.0f, 24.0f});
+    doors[1].fixed = false;
+    rig.collision.set_doors({doors, 2});
+    (void)rig.collision.step_doors(nullptr);
+    DoorBody now;
+    CHECK(rig.collision.door(declared_door_key(placement, 0), now));
+    CHECK_FALSE(rig.collision.door(declared_door_key(placement, 1), now));
+    CHECK_FALSE(rig.collision.toggle_door(declared_door_key(placement, 1)));
+    CHECK(rig.collision.door_stats().doors == 1);
+    CHECK(rig.collision.door_stats().declared == 1);
+    CHECK(rig.collision.door_stats().bodies == 1);
+  }
+  {
+    DoorRig rig(&doorway_house_unhung);
+    DoorBody d = doorway();
+    d.key = declared_door_key(support_placement(0, k_no_index, 0, 0, 0, 0), 0);
+    rig.collision.set_doors({&d, 1});
+    (void)rig.collision.step_doors(nullptr);
+    DoorBody now;
+    CHECK_FALSE(rig.collision.door(d.key, now));
+    CHECK(rig.collision.door_stats().doors == 0);
+    CHECK(rig.collision.door_stats().declared == 0);
+    CHECK(rig.collision.door_stats().bodies == 0);
+    CHECK(rig.walk(3.0f, Vec3{0.0f, 0.0f, 1.0f}) > 21.0f);
+  }
+}
+
+// **Whether a declared door turns is the scene's, not a restore's** (S91; scene_collision.md,
+// "Doors"): a scene's door handed back as standing turns again once its piece is held. Until
+// 2026-11-20 a restore was trusted for `fixed`, so that door stood for good.
+TEST_CASE(
+    "scene_collision: a scene's door restored as standing turns again once its piece is held") {
+  DoorRig rig(&doorway_house);
+  (void)rig.collision.step_doors(nullptr);
+  const u64 key = declared_door_key(support_placement(0, k_no_index, 0, 0, 0, 0), 0);
+  DoorBody now;
+  REQUIRE(rig.collision.door(key, now));
+  CHECK_FALSE(now.fixed);
+  now.fixed = true;
+  rig.collision.set_doors({&now, 1});
+  (void)rig.collision.step_doors(nullptr);
+  REQUIRE(rig.collision.door(key, now));
+  CHECK_FALSE(now.fixed);
+  CHECK(rig.collision.toggle_door(key));
+  CHECK(rig.collision.door_stats().doors == 1);
 }
 
 // A declared leaf stands where its piece stands it: the hinge and the turn follow the piece's
@@ -1060,6 +1167,64 @@ TEST_CASE(
     CHECK(rig.collision.stats().prop_proxies == 2);
     CHECK(rig.collision.stats().prop_proxies_freed == 1);
   }
+}
+
+TEST_CASE("scene_collision: a proxy a worker finished early still gets its body at its update") {
+  // Until 2026-11-20 `finish_prop_proxy` asked for the update only while the proxy was not built,
+  // so one a worker had finished got its body at the next update, wherever the worker was: a walk
+  // at 240 Hz gave the worker 50 ms to build it in about two, the body came at update 2 or 3, and
+  // every body made after it took another id in a replay (S91). Here the worker is given all the
+  // time it needs before the first update after the hand-over; the body still comes at the
+  // promised update, and the next body's id is the one a run with no workers gives it.
+  renderer::SceneData scene;
+  crate_and_boulder_scene(scene);
+  Config config;
+  config.prop_build_updates = k_walk_prop_build_updates;
+  jobs::JobSystemConfig workers;
+  workers.performance_workers = 2;
+  workers.pin_threads = false;
+  jobs::JobSystem jobs(workers);
+  const auto body_at = [](Rig& rig, f32 z) {
+    physics::RayHit hit;
+    if (!rig.physics.cast_ray(place(Vec3{0.0f, 10.0f, z}), Vec3{0.0f, -20.0f, 0.0f}, hit))
+      return physics::BodyId{};
+    return static_cast<f32>(relative(hit.position, WorldPos::origin()).y) > 0.5f
+               ? hit.body
+               : physics::BodyId{};
+  };
+  physics::BodyId next[2];
+  u32 run = 0;
+  for (jobs::JobSystem* with : {&jobs, static_cast<jobs::JobSystem*>(nullptr)}) {
+    CAPTURE(with != nullptr);
+    Rig rig(scene, config, with);
+    const u64 built = rig.collision.stats().prop_proxy_builds;
+    PropBody rock = crate_at(20.0f, 9);
+    rock.mesh = 1;
+    rock.scale = 1.2f;
+    rig.hand({rock});
+    if (with != nullptr) {
+      // The worker done: a quarter of a second for a build of about two milliseconds. On a machine
+      // too busy to run it in that time the case asks less, never wrongly.
+      std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+    u32 updates = 1;
+    while (rig.collision.stats().prop_bodies == 0 && updates < 40) {
+      (void)rig.collision.update_props();
+      ++updates;
+      // Counted at the update its body is made, not when the worker finished.
+      if (rig.collision.stats().prop_bodies == 0)
+        CHECK(rig.collision.stats().prop_proxy_builds == built);
+    }
+    CHECK(updates == 1 + config.prop_build_updates);
+    CHECK(rig.collision.stats().prop_proxy_builds == built + 1);
+    CHECK(body_at(rig, 20.0f));
+    // The next body made, a crate handed beside it: its id is the same in both runs.
+    rig.hand({rock, crate_at(30.0f, 11)});
+    next[run] = body_at(rig, 30.0f);
+    CHECK(next[run]);
+    ++run;
+  }
+  CHECK(next[0] == next[1]);
 }
 
 TEST_CASE(
@@ -1270,6 +1435,32 @@ TEST_CASE("scene_collision: an interact reaches the door in front of the walker,
         1u);
   CHECK(rig.collision.door_nearest(place(Vec3{-0.45f, 0.0f, 22.0f}), 2.0f) == 1u);
   CHECK(rig.collision.door_nearest(place(Vec3{40.0f, 0.0f, 22.0f}), 2.0f) == k_no_index);
+}
+
+// **An interact reaches a door that turns** (S91; scene_collision.md, "Doors"): a door that stands
+// (a streamed tile's) 1.0 m in front of the walker and one that turns 1.3 m in front, both in
+// reach. Until 2026-11-20 the interact took the nearer, which turns for no one, so E did nothing;
+// now it passes the standing one by and the turning one toggles. A module's `door_nearest` still
+// finds the nearer hinge whatever it does.
+TEST_CASE("scene_collision: an interact passes a standing door by for a turning one behind it") {
+  DoorRig rig;
+  DoorBody standing = doorway();
+  standing.hinge = place(Vec3{-0.45f, 0.0f, 20.0f});
+  standing.fixed = true;
+  DoorBody turning = doorway();
+  turning.key = 4;
+  turning.hinge = place(Vec3{-0.45f, 0.0f, 20.3f});
+  const DoorBody doors[2] = {standing, turning};
+  rig.collision.set_doors({doors, 2});
+  const WorldPos feet = place(Vec3{0.0f, 0.0f, 19.0f});
+  const u32 reached = rig.collision.door_to_reach(feet, Vec3{0.0f, 0.0f, 1.0f}, 1.5f);
+  REQUIRE(reached != k_no_index);
+  CHECK(rig.collision.doors()[reached].key == 4u);
+  CHECK(rig.collision.toggle_door(rig.collision.doors()[reached].key));
+  CHECK_FALSE(rig.collision.toggle_door(3));
+  CHECK(rig.collision.door_nearest(place(Vec3{-0.45f, 0.0f, 19.5f}), 2.0f) == 0u);
+  // The standing one alone in reach: none.
+  CHECK(rig.collision.door_to_reach(feet, Vec3{0.0f, 0.0f, 1.0f}, 1.2f) == k_no_index);
 }
 TEST_CASE("scene_collision: a closed door stops a walker, an open one lets it through") {
   DoorRig rig;

@@ -777,6 +777,23 @@ bool read_memory(std::span<const u8> bytes, ClusterFileData& out, std::string* e
   } else {
     quantize_positions(result.mesh.mesh);
   }
+  // The grid, the file's own or the one made from its vertices, held to a box of floats (S91): an
+  // origin and a scale finite, the scale not negative, and the far corner, 65535 steps on, finite.
+  // Every writer's grid is (`quantize_positions` takes the vertices' box, a scale of 1 when it is
+  // flat), and the doors below bound a pivot by this box, which an infinite scale would make hold
+  // every finite point.
+  {
+    const Vec3 o = result.mesh.mesh.quant_origin;
+    const f32 s = result.mesh.mesh.quant_scale;
+    const f32 extent = 65535.0f * s;
+    if (!std::isfinite(o.x) || !std::isfinite(o.y) || !std::isfinite(o.z) || !std::isfinite(s) ||
+        !(s >= 0.0f) || !std::isfinite(o.x + extent) || !std::isfinite(o.y + extent) ||
+        !std::isfinite(o.z + extent)) {
+      return fail(error,
+                  "cluster file's position grid has an origin or a scale that is not finite, a "
+                  "negative scale, or a far corner past the float range");
+    }
+  }
 
   // The skin bindings, and the palette width they index. A file with neither section, or one
   // with an empty stream, is an unskinned mesh; the two travel together, so a stream with no
@@ -914,25 +931,58 @@ bool read_memory(std::span<const u8> bytes, ClusterFileData& out, std::string* e
       return fail(error, "cluster file section cameras is not 80-byte records");
     copy_section(bytes, *cameras, result.cameras);
   }
-  // The leaves on hinges (S91): positive sizes, unit and perpendicular directions, an angle from
-  // 0 to 180 and a finite pivot, or the file is refused — a host turns a box by these.
+  // The leaves on hinges (S91): sizes positive and at most `k_door_max_size_m` (a comparison NaN
+  // and infinity fail), unit and perpendicular directions, an angle from 0 to 180 and a finite
+  // pivot, or the file is refused — a host builds a box from these and turns it. And the pivot on
+  // the mesh: within the box of the mesh's 16-bit grid (`quant_origin` and 65535 steps of
+  // `quant_scale` each way, which holds every vertex, read here for a paged file as for a whole
+  // one, and held finite above) grown by `k_door_max_size_m`, so a host never stands a hinge a
+  // world away from the house that declares it; and at most `k_door_max_records` of them, a host
+  // making a body each.
   if (const ClusterFileSection* doors = found[static_cast<u32>(ClusterSection::Doors)];
       doors != nullptr && doors->element_count != 0) {
     if (doors->element_size != sizeof(ClusterFileDoor))
       return fail(error, "cluster file section doors is not 48-byte records");
+    if (doors->element_count > k_door_max_records) {
+      return fail(error, "cluster file section doors holds " +
+                             std::to_string(doors->element_count) + " leaves, more than " +
+                             std::to_string(k_door_max_records));
+    }
     copy_section(bytes, *doors, result.doors);
+    const auto sized = [](f32 v) { return v > 0.0f && v <= k_door_max_size_m; };
+    const Vec3 grid_lo = result.mesh.mesh.quant_origin;
+    const f32 grid_extent = 65535.0f * result.mesh.mesh.quant_scale;
+    const auto on_mesh = [&](f32 v, f32 lo) {
+      return v >= lo - k_door_max_size_m && v <= lo + grid_extent + k_door_max_size_m;
+    };
+    // And that box within a hinge's reach of the mesh's origin, both corners on every axis
+    // (`k_door_max_reach_m`, 2^17 m): a float's 24 bits cannot place a hinge to a centimetre past
+    // it, and a finite huge grid would otherwise hold a pivot a world away from the house.
+    const auto reached = [&](f32 lo) {
+      const f32 hi = lo + grid_extent;
+      return lo >= -k_door_max_reach_m && lo <= k_door_max_reach_m && hi >= -k_door_max_reach_m &&
+             hi <= k_door_max_reach_m;
+    };
+    if (!reached(grid_lo.x) || !reached(grid_lo.y) || !reached(grid_lo.z)) {
+      return fail(error,
+                  "cluster file section doors is on a position grid reaching past 131072 m from "
+                  "the mesh's origin, where a float cannot place a hinge");
+    }
     for (const ClusterFileDoor& d : result.doors) {
       const f32 shut = d.shut_x * d.shut_x + d.shut_z * d.shut_z;
       const f32 swing = d.swing_x * d.swing_x + d.swing_z * d.swing_z;
       const f32 dot = d.shut_x * d.swing_x + d.shut_z * d.swing_z;
-      if (!(d.width_m > 0.0f) || !(d.height_m > 0.0f) || !(d.thickness_m > 0.0f) ||
+      if (!sized(d.width_m) || !sized(d.height_m) || !sized(d.thickness_m) ||
           !(shut > 0.998f && shut < 1.002f) || !(swing > 0.998f && swing < 1.002f) ||
           !(dot > -1e-3f && dot < 1e-3f) || d.open_deg < 0 || d.open_deg > 180 ||
-          !std::isfinite(d.pivot.x) || !std::isfinite(d.pivot.y) || !std::isfinite(d.pivot.z)) {
+          !std::isfinite(d.pivot.x) || !std::isfinite(d.pivot.y) || !std::isfinite(d.pivot.z) ||
+          !on_mesh(d.pivot.x, grid_lo.x) || !on_mesh(d.pivot.y, grid_lo.y) ||
+          !on_mesh(d.pivot.z, grid_lo.z)) {
         return fail(error,
-                    "cluster file section doors has a leaf with no size, directions that are "
-                    "not unit and perpendicular, an angle out of 0 to 180, or a pivot that is "
-                    "not finite");
+                    "cluster file section doors has a leaf with a size that is not positive, "
+                    "finite and at most 12 m, directions that are not unit and perpendicular, an "
+                    "angle out of 0 to 180, or a pivot that is not finite or lies more than 12 m "
+                    "outside the mesh's bounds");
       }
     }
   }

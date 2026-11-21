@@ -248,7 +248,13 @@ own (`SceneCollision::PropProxy`):
   worker is still on it (`Stats::prop_proxy_waits`), built there if none started it
   (`prop_proxy_inline`). **A count of updates, never a clock**, so the body is made at the same tick
   in a recording and its replay whatever the workers did, and with no job system at the same tick
-  too (built on it). For those 12 ticks the new prop has no body: the walker can pass through a prop
+  too (built on it). **A proxy a worker finished early still waits for its update** (2026-11-20):
+  the update is asked first, built or not, so neither the body nor the ids of the bodies made after
+  it move with the worker's speed; until then a finished proxy skipped the question and its body
+  came at the next update, at 240 Hz the second or third (`scene_collision: a proxy a worker
+  finished early still gets its body at its update` gives the worker a quarter of a second before
+  the first update and holds the body to the twelfth and the next body's id to the one a run with no
+  workers gives it). For those 12 ticks the new prop has no body: the walker can pass through a prop
   of a mesh and size never placed before for a twentieth of a second after it appears. A host with
   no job system and the tests' default (`prop_build_updates` 0) build it on the update that wants
   it, as before.
@@ -356,8 +362,10 @@ from `SceneData::props`; every other is built when a prop in reach first wants i
 them at once) and let go with its tile, so what stays is bounded by the distinct sizes among the
 props round the walker, not by the props placed. A door keeps its `DoorBody` (88 bytes, pinned in
 the size table) and two physics ids (16 bytes) for as long as it is held — a handed one until the
-next `set_doors`, a declared one from the first time a held tile holds its piece for the rest of
-the session — whether or not its tile is held, because its state is the world's; its leaf's
+next `set_doors`, a scene's declared one from the first time a held tile holds its piece for the
+rest of the session — whether or not its tile is held, because its state is the world's, so these
+are bounded by the scene's leaves; a streamed tile's, which stands and has no state of its own,
+only while its tile is held, so these are bounded by the ring (2026-11-20; "Doors"); its leaf's
 record in a building's container is 48 bytes (`geometry::ClusterFileDoor`), loaded with the mesh
 and kept again in each proxy of that mesh (one a mesh and rounded scale, not one a placement);
 and while its tile is held, one kinematic box body of the physics library, the same as a box
@@ -454,16 +462,21 @@ the tile comes back.
 
 **The walker's interact and a module's door service** (ABI 13, 2026-11-18; [apps](apps.md#doors-a-module-answers-for)).
 engine-view's walker calls `step_doors(&body)` on every step after the ring's update and before the
-character moves, and before it its interact: `door_to_reach` finds the nearest door whose leaf's
+character moves, and before it its interact: `door_to_reach` finds the nearest door that turns
+(a door that stands, `DoorBody::fixed`, is passed by) whose leaf's
 middle stands within reach of the feet on the ground (1.5 m, and within 2.5 m up or down) and
 within 60 degrees of the way the walker faces (a comparison of products, no angle), the smaller
 key on a tie; a game module's `game_door` may refuse it, and a module's own `door_toggle` lands at
 the same point of the next step. `scene_collision: an interact reaches the door in front of the
-walker, none behind it` holds the choice.
+walker, none behind it` holds the choice, and `an interact passes a standing door by for a turning
+one behind it` the skip: until 2026-11-20 the interact took a standing door 1.0 m away over a
+turning one at 1.3 m and E did nothing. A module's `door_nearest` still finds the nearest hinge,
+standing or not.
 
 **Not built of S91**: a turned door's leaf on a streamed tile (below, "What is drawn swings with
-what collides"), the state written back through the document (D37), and a closed door as an area
-navigation opens.
+what collides": until it is, a streamed tile's door stands, roadmap S117), leaves hung where a
+house is drawn with none (S116), the state written back through the document (D37), and a closed
+door as an area navigation opens.
 
 ### What a door costs
 
@@ -523,13 +536,73 @@ thickness `face_z` behind its face on the other side), standing at the record's 
 when that is not shut. **Its key is its place** (`declared_door_key`): the piece's name
 (`support_placement` — a scene instance's index, a streamed placement's entry and id, or its tile
 and place among the tile's placements) and the leaf's index, top bit set so it never meets a host's
-key below 2^63; never the order tiles came in. A key already held is not taken again, so **a
-restore wins** (a `set_doors` of the doors a save read back keeps their states, declared or not),
+key below 2^63; never the order tiles came in. **A scene's piece and a streamed piece are never one
+name** (2026-11-21): the value alone tells the three forms apart — an index below 2^32, an entry
+and id under bit 62 (`k_placement_streamed_tag`), a hash under bit 63 — because the key is made of
+the value and nothing else. Until then a streamed piece with an id was `entry << 32 | id`, so entry
+0's piece n was scene instance n, and the streamed cot beside a scene's hung house at instance 1 took
+the house's door by key: a ring change made it again as the cot declares it, shut and standing
+(`scene_collision: a streamed piece never takes the door of the scene's instance`). An entry at
+`k_placement_entry_limit` (2^30) or past it would reach the tag, so it takes the hashed form.
+Nothing engine-view saves holds a key, and `k_walk_version` stays 3: only a streamed piece's name
+moved, and its doors stand, so a module that kept one of their keys (`DoorState::key`) lost no
+state, only a name to ask by again. **The top bit is the host's to keep, not checked**:
+`set_doors` takes a key with it as a declared door handed back (a restore of `doors()`), counts it
+declared and lets it win over the declaration, so a host that named its own door with the top bit
+set could hide a building's; it cannot be refused there without refusing every restore. A key already held is not taken again, so **a
+restore wins** (a `set_doors` of the doors a save read back keeps their states, declared or not,
+except whether a declared one stands, below),
 and **a door outlives its tile**: let go, its body goes and its state stays and goes on turning;
 back, it is made where it stands. The doors found are sorted and merged by key, so the tiles'
-table order and the order they came in reach nothing. Nothing keys on a generator: an imported
-asset whose container declares section 53 gets the same doors, and a mesh that declares none
-costs the ring change one test of an empty list a piece. `scene_collision: a placed piece's
+table order and the order they came in reach nothing. **What collides is what is drawn**
+(2026-11-20): a piece's records are doors only where the renderer hung its leaves
+(`PieceRecord::leaves`) — a scene instance the scene hung them on (`SceneData::leaves`' houses),
+or a tile's own mesh whose recipe's generator answers `leaves`
+(`renderer::placement_mesh_hangs_leaves`, the rule `hang_placement_leaves` hangs by). Everywhere
+else the house is drawn with an empty doorway, and the doorway stands open and walkable: **a mesh
+the scene fits** (`SceneMeshInfo::fit`, whose records are in the unfitted frame), **a house in a
+streamed world's authored run**, **a house a streamed generator places as a resident mesh** (the
+tile hangs leaves for its own meshes only), **any `.clusters` file**, built from a recipe or
+imported, whose path names no generator, and **`engine-view --mesh x.structure.json`**, which reads
+no scene and so hangs nothing. Until 2026-11-20 each of these made a door from section 53 alone,
+an invisible box in an empty doorway that stopped the walker and opened with E (`scene_collision: a
+declared leaf the scene hung no instance for makes no door`). Hanging leaves on those paths is
+roadmap S116. **A streamed tile's door stands** (`DoorBody::fixed`, 2026-11-20): its leaf is drawn
+at the declared angle in the tile's block, which nothing turns yet, so its box stays at that angle
+and collides as drawn — a leaf drawn shut still stops the walker, one drawn open leaves the way
+through — `toggle_door` refuses it, the walker's interact passes it by without asking a game, and
+a module's `door_toggle` answers `Unsupported` (its `door_nearest` and `door_state` still find
+it). Having no state of its own, it **goes with its tile** and is made again as declared when the
+tile comes back, so the doors a streamed walk keeps are bounded by the ring; a door that turns (a
+scene's, or a host's) still outlives its tile, its state the world's, bounded by the scene's
+leaves. Until then a toggle swung the box and left the drawn leaf where it was: a gap the picture
+showed shut, or a box across a doorway it showed open (`scene_collision: a streamed house's doors
+stand as drawn, and a toggle turns none`). The turn drawn on a streamed tile is roadmap S117.
+**Whether a declared door stands is the scene's, not a restore's** (2026-11-20): at a ring change
+a held declared door takes `fixed` from the held piece that declares it, so one handed back
+turning where its piece stands it is made again as declared (its angle the record's, its body put
+there), and one handed back standing where its piece turns it turns again from the angle it was
+handed; until then a restore was trusted, and a save edited or taken before streamed doors stood
+turned a box its drawn leaf did not follow (`scene_collision: a streamed door restored as turning
+stands again as drawn`, `a scene's door restored as standing turns again once its piece is held`).
+**A door a leaf, not a house** (2026-11-20): a scene's house makes a door of a record only where
+the scene hung that record's own leaf (`SceneLeaf::leaf`, kept sorted by house and leaf), so a
+load that kept one leaf's instance and dropped its neighbour's makes the one door; until then any
+leaf hung made a door of every record (`scene_collision: a house's leaf the scene did not hang
+makes no door beside one it did`). **Nor through a restore** (2026-11-21): at a ring change a held
+door of a declared leaf the scene does not make — its piece hangs no leaves, or its own leaf was
+not hung — is dropped with its body, so a save from a build that made a door of every record,
+handed to `set_doors`, leaves no box in a doorway drawn empty; until then both were kept as
+handed, turning, and E opened them (`scene_collision: a restored door for a leaf the scene did not
+hang is dropped`). **Today a door keys on a generator, short of the engine's
+rule**: a container's section 53 is read and kept whatever wrote it, the structure generator or
+an imported asset's writer, and a proxy carries its records; but it makes a door only where its
+leaf is hung, and a leaf is hung today only where the mesh's path names a generator answering
+`leaves`. So an imported asset whose container declares section 53 gets no door and an empty
+doorway. The engine's rule is that a feature keys on a property any asset can declare, never on
+what generated it; roadmap S116 closes this, hanging a leaf, and so making a door, from the
+container's own section 53 for any asset on every load path. A mesh that declares no leaf costs
+the ring change one test of an empty list a piece. `scene_collision: a placed piece's
 declared leaf is a door, kept while its tile is away` (0.54 s in `msvc-debug`) stands a wall mesh
 declaring one leaf and hands no door: the door is made, a wall shut and a way through open,
 toggled while its tile is away it closes there and comes back where it was left, still one door,
@@ -558,7 +631,15 @@ hangs them, naming no generator: **a scene** (`renderer::hang_scene_leaves`, the
 of each leaf's mesh after every other instance, so the instances before keep their places and the
 collision's keys (a scene instance's index) do not move; and **a streamed tile**
 (`renderer::hang_placement_leaves`, in the placements consumer's `generate`, never for a query)
-appends each leaf's mesh to the meshes it hands and a placement of it after its own. Each stands at
+appends each leaf's mesh to the meshes it hands and a placement of it after its own. **A hung leaf
+leaves no footprint** for the entries after it (2026-11-20): the whole read hangs its leaves after
+every entry and the query tile hangs none, so until then a drawn tile alone handed a later entry a
+disc round each hinge (about 1.9 m for a door), and a forest after a village stood differently
+round its doors in a streamed tile than in the whole read (`scene_collision: an entry after the
+houses is handed no footprint for their leaves` asks a probe entry after the example cot in the
+drawn tile, the query tile, the collision's tile and the whole read, and holds the same footprints
+and the same open points in all four). A leaf's mesh reaches `sqrt(w² + h² + t²)` about its hinge,
+the box's far corner at any angle, where it said the larger of its width and height. Each stands at
 its record's declared angle by the functions the collision's door is made by
 (`renderer::hinge_turn`, `leaf_heading`, `leaf_side`, `leaf_declared_mdeg`; the collision's
 `door_rotation` and `declared_door` call them), so **a house nobody has touched draws what it drew
@@ -583,11 +664,12 @@ declared door through the session and its input log, presses E against it, and h
 the leaf on the 240 ticks it turns and none after, the last at the door's hinge a quarter turn
 round, the walker through; with a game's door service answering no the door stays shut, nothing is
 written and the walker stops at the leaf. A scene with no leaf costs the read one null test a mesh
-and the walker one comparison a flush. **Not built**: a turned door on a **streamed tile** is not
-redrawn — its leaf stands at the declared angle in the tile's block (writing it through
-`renderer::DynamicBlock::changed` is the next step), and a house in a streamed world's authored run
-hangs no leaf (its leaves would outstay it in the prefix); a mesh the scene fits
-(`SceneMeshInfo::fit`) hangs none, since its records are in the unfitted frame.
+and the walker one comparison a flush. **Not built**: a door on a **streamed tile** does not turn
+— its leaf stands at the declared angle in the tile's block, and so does its door
+(`DoorBody::fixed`, above; writing the turn through `renderer::DynamicBlock::changed` is roadmap
+S117) — and a house in a streamed world's authored run hangs no leaf (its leaves would outstay it
+in the prefix), nor does a mesh the scene fits (`SceneMeshInfo::fit`), since its records are in the
+unfitted frame: neither makes a door (roadmap S116).
 
 ## Holes
 
@@ -662,7 +744,7 @@ Each is a test in `tests/scene_collision_tests.cpp` (no device, no generator cap
 2. **The parts of its structural table** (a generated tree's section 37 with the motion parts of 35): every part with a radius whose axis, turned into the world, lies within 60° of level — so the trunk and the risers are left out — at the point of the axis nearest the asker, moved onto the axis's top by the radius there (the world's up less its share along the axis), the diameter the size and the part's id the `part`. Load-bearing or not: the table's flag is for what may hang from a part, and a bird perches on a branch a walker could not stand on. Where the tip is thinner than `min_size`, the point is moved toward the base to where it is not.
 3. **The top of its proxy's bounds**: a ray straight down the bounds' top centre from a quarter metre above, onto this piece itself (the tile's compound body and this child, or no support), kept where the surface there is within 40° of level (the walker's slope limit, `WalkParams::max_slope_deg`), the smaller horizontal width the size.
 
-**Which way a limb runs, and which piece it is** (A45, hotload ABI 12). A limb's support carries `along`, the part's axis turned into the world, unit, from its base toward its tip, so a bird can sit along the branch or across it; a perch and a top carry zero (any way round). Every support carries `placement`, the piece's name among every piece of the world (`support_placement`): a scene instance's index; a streamed placement's entry with the name its generator gives it (`Placement::id`, the `authored` entry's place in the scene file); else its entry, its tile and its place among the entry's placements on that tile, hashed, with the top bit set — the same whenever and in whatever order the tile comes in, because a generator's tile is a function of the tile. Until then a streamed placement's support named only its entry, so every tree of one entry gave one name to its limbs of the same part and every rock of it one name to its top, and a module's reservation book took one bird on any of them for all of them. Each piece record keeps the two `u32`s that name it (`PieceRecord::id`, `index`), 56 bytes a piece where it was 48.
+**Which way a limb runs, and which piece it is** (A45, hotload ABI 12). A limb's support carries `along`, the part's axis turned into the world, unit, from its base toward its tip, so a bird can sit along the branch or across it; a perch and a top carry zero (any way round). Every support carries `placement`, the piece's name among every piece of the world (`support_placement`): a scene instance's index; a streamed placement's entry with the name its generator gives it (`Placement::id`, the `authored` entry's place in the scene file), bit 62 set so it is never a scene instance's index (["Doors"](#doors)); else its entry, its tile and its place among the entry's placements on that tile, hashed, with the top bit set — the same whenever and in whatever order the tile comes in, because a generator's tile is a function of the tile. Until then a streamed placement's support named only its entry, so every tree of one entry gave one name to its limbs of the same part and every rock of it one name to its top, and a module's reservation book took one bird on any of them for all of them. Each piece record keeps the two `u32`s that name it (`PieceRecord::id`, `index`), 56 bytes a piece where it was 48.
 
 **A tree with neither** — a mesh whose motion contract is of the parts kind but which declares no perch and carries no structural table — offers a module its top alone, and the consumer says so once, the first time a module asks near it (`"a tree with no structural table and no perch offers a module its top alone"`, with its mesh, entry and instance). Every tree the flora solvers build carries the table since A45 (the broadleaf and the conifer were the two that did not; [flora](flora.md#the-structural-table)); a palm still has none and gets its top. **An imported tree** (a glTF or a bought container) has no motion contract at all: it gets the perches its file declares (a node named `perch…` or carrying `extras.perch.size_m`, [assets](assets.md#perches)) and, without them, the top of its bounds — the way to give a bought tree its branches is to declare them.
 

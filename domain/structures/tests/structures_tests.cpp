@@ -6,11 +6,13 @@
 // recipe's file, the container, and the bytes pinned.
 
 #include <core/hash/hash.h>
+#include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/structures/structures.h>
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
+#include <test_temp_dir.h>
 
 #include <cmath>
 #include <cstdio>
@@ -526,6 +528,16 @@ TEST_CASE("structures: the recipe's file, its hash and its container") {
   door_records(recipe.description, doors);
   CHECK(!doors.empty());
   CHECK(container.doors.size() == doors.size());
+  {
+    // Written and read back: the reader's bounds on section 53 (a pivot within the mesh's bounds
+    // grown by a leaf's ceiling, at most `k_door_max_records`) refuse nothing this writer writes.
+    const test::TempDir tmp("engine_structures");
+    const std::string path = tmp.file("cot.clusters");
+    REQUIRE_MESSAGE(geometry::write_cluster_file(path, container, &error), error);
+    geometry::ClusterFileData reread;
+    REQUIRE_MESSAGE(geometry::read_cluster_file(path, reread, &error), error);
+    CHECK(reread.doors.size() == doors.size());
+  }
   std::printf("structures: the cot's container is %u clusters, %u triangles at its root\n",
               report.clusters, report.root_triangles);
   // A leaf's own recipe (structures.md, "A leaf is a mesh of its own") reads back as itself, keys

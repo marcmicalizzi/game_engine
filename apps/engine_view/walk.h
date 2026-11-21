@@ -58,11 +58,14 @@ namespace engine::view {
 // the step, the ground-follow's jump — is this number. A session header records it, and a replay
 // under another is refused rather than walked somewhere else.
 //
-// **2** (2026-10-05): the feet are f64 and hashed as doubles. A version 1 block — every walk
-// recorded before, whose numbers mean what they meant — is read and walked as version 2, with the
-// fly camera's version 1 (`k_fly_version_f32`, fly_camera.h).
-inline constexpr u32 k_walk_version = 2;
-inline constexpr u32 k_walk_version_f32 = 1;
+// **2** (2026-10-05): the feet are f64 and hashed as doubles.
+// **3** (2026-11-20, S91): the doors. A mesh prop of a size no prop used gets its body
+// `scene_collision::k_walk_prop_build_updates` ticks after it appears (version 2 made it at once),
+// a building's declared leaves are kinematic bodies made as their tiles come in (new body ids at
+// a ring change), a house's leaf is no longer part of its static proxy, and the interact (E)
+// opens the door in front. A version 2 or 1 walk over props or houses would go somewhere else
+// under these rules, so both are refused, as every other version is.
+inline constexpr u32 k_walk_version = 3;
 
 // The walker's numbers: the session header's `walk` block, read from the `view.walk.*` and
 // `walk.collision.*` tunables when a live session starts, so a replay walks with the recording's.
@@ -115,7 +118,8 @@ inline constexpr f32 k_walk_door_reach_m = 1.5f;
 inline constexpr u32 k_walk_door_toggles = 16;
 // A door as the walker's collision holds it (scene_collision.h `DoorBody`), what a game is told:
 // its key, its hinge's foot, whether it heads open, its angle and the angle it opens to
-// (millidegrees from shut, signed), and whether a building declared it.
+// (millidegrees from shut, signed), whether a building declared it, and whether it stands (a
+// streamed tile's, drawn at its declared angle: the interact and a game's toggle turn it not).
 struct WalkDoor {
   u64 key = 0;
   WorldPos hinge{};
@@ -123,6 +127,7 @@ struct WalkDoor {
   i32 angle_mdeg = 0;
   i32 open_mdeg = 0;
   bool declared = false;
+  bool fixed = false;
 };
 
 // **The orbit mode's heading** (apps.md, "Third person"; roadmap P14): the movement keys are read

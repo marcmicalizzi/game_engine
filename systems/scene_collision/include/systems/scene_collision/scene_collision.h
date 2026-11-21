@@ -357,7 +357,11 @@ struct DoorBody {
   i32 speed_mdeg = k_door_speed_mdeg;
   Vec3 half_extents{0.45f, 1.0f, 0.025f};
   f32 face_z = 0.0f;
-  bool open = false;   // its state: where it is heading
+  bool open = false;  // its state: where it is heading
+  // **A door that stands** (docs: "Doors"): a streamed tile's declared leaf, drawn at its declared
+  // angle in the tile's block, which nothing turns yet. It collides there and `toggle_door` refuses
+  // it, so what collides is what is drawn; it goes with its tile, having no state of its own.
+  bool fixed = false;
   i32 angle_mdeg = 0;  // reached, from closed
 };
 struct DoorStats {
@@ -392,7 +396,8 @@ DoorBody declared_door(const geometry::ClusterFileDoor& record, WorldPos origin,
                        f32 scale, u64 key) noexcept;
 // The key of a placed piece's `leaf`-th declared door: the piece's name (`support_placement`) and
 // the leaf's index, never the order tiles came in. Its top bit is set, which keeps it apart from
-// the keys a host hands below 2^63.
+// the keys a host hands below 2^63 — a rule the host keeps: `set_doors` takes a top-bit key as a
+// declared door handed back (a restore) and cannot tell one a host made up.
 u64 declared_door_key(u64 placement, u32 leaf) noexcept;
 
 // **What a held tile holds, for a debug draw** (collision_draw.h). Spans are the consumer's and
@@ -450,8 +455,13 @@ struct Support {
 // index; a streamed placement's entry with the name its generator gives it (`Placement::id`, the
 // `authored` entry's place in the file), or, from a generator that names none, its entry, its tile
 // and its place among the entry's placements there — the same whenever and in whatever order its
-// tile comes in, since a generator's tile is a function of the tile. The top bit tells the third
-// form from the second; `what` (an instance or a placement) tells the first from the others.
+// tile comes in, since a generator's tile is a function of the tile. The value alone tells the
+// three apart, since a door's key is made of it (`declared_door_key`): the first is below 2^32,
+// the second carries `k_placement_streamed_tag` (bit 62) over its entry and id, and the third the
+// top bit. An entry at `k_placement_entry_limit` or past it, which would reach the tag, takes the
+// third form.
+inline constexpr u64 k_placement_streamed_tag = u64{1} << 62;
+inline constexpr u32 k_placement_entry_limit = 1u << 30;
 u64 support_placement(u32 instance, u32 entry, u32 id, i32 tile_x, i32 tile_z, u32 index) noexcept;
 struct SupportAnswer {
   u32 count = 0;         // written, nearest first
@@ -608,9 +618,12 @@ class SceneCollision {
   // stands in is held. **A placed piece whose mesh declares leaves** (section 53) adds a door a
   // leaf the first time a held tile holds it, keyed by its place (`declared_door_key`), at the
   // angle it was declared at, unless a door of that key is already held — so a restore wins, and
-  // a door keeps its state while its tile is away and comes back as it was left.
+  // a door keeps its state while its tile is away and comes back as it was left. Except in one
+  // thing: whether a held declared door stands (`DoorBody::fixed`) is its piece's, not the
+  // restore's, so one handed back turning where its piece stands it is made again as declared.
   void set_doors(std::span<const DoorBody> doors);
-  // At the tick: the door heads for its other state. False for a key not held.
+  // At the tick: the door heads for its other state. False for a key not held, and for a door that
+  // stands (`DoorBody::fixed`, a streamed tile's).
   bool toggle_door(u64 key);
   // **On the tick, after the ring's update and before the walker's step**: a held tile's declared
   // doors taken in, bodies made and let go with their tiles (in key order), and every door turned
@@ -623,12 +636,12 @@ class SceneCollision {
   bool door(u64 key, DoorBody& out) const noexcept;
   // Every door, in key order (what a host saves, draws a leaf for, or searches for an interact).
   std::span<const DoorBody> doors() const noexcept { return {doors_.data(), doors_.size()}; }
-  // **The door a walker's interact reaches** (docs: "Doors"): of the doors whose leaf's middle, at
-  // its angle now, is within `reach` metres of `feet` on the ground and less than 2.5 m above or
-  // below them, the nearest whose bearing from the feet is within 60 degrees of `facing` (on the
-  // ground; unit or not) — its index in `doors()`, the smaller key on a tie; `k_no_index` for
-  // none. And the door whose hinge is nearest `point` within `radius` (a module's
-  // `door_nearest`), the same way.
+  // **The door a walker's interact reaches** (docs: "Doors"): of the doors that turn (not
+  // `DoorBody::fixed`) whose leaf's middle, at its angle now, is within `reach` metres of `feet` on
+  // the ground and less than 2.5 m above or below them, the nearest whose bearing from the feet is
+  // within 60 degrees of `facing` (on the ground; unit or not) — its index in `doors()`, the
+  // smaller key on a tie; `k_no_index` for none. And the door whose hinge is nearest `point`
+  // within `radius` (a module's `door_nearest`), the same way, a door that stands included.
   u32 door_to_reach(WorldPos feet, Vec3 facing, f32 reach) const noexcept;
   u32 door_nearest(WorldPos point, f32 radius) const noexcept;
   const DoorStats& door_stats() const noexcept { return door_stats_; }
@@ -697,7 +710,24 @@ class SceneCollision {
     // the entry's placements on its tile (`support_placement`).
     u32 id = 0;
     u32 index = 0;
+    // **Whether the renderer hung its leaves** (docs: "Doors"): what collides is what is drawn, so
+    // a piece's declared leaves are doors only where they are drawn — `k_leaves_turn` for a scene
+    // instance the scene hung them on (`SceneData::leaves`), `k_leaves_stand` for a tile's own mesh
+    // the drawn tile hangs them for (`renderer::placement_mesh_hangs_leaves`), drawn at their
+    // declared angle; none for any other piece, whose doorway stands open.
+    u8 leaves = 0;
   };
+  static constexpr u8 k_leaves_turn = 1;
+  static constexpr u8 k_leaves_stand = 2;
+  // Scene instances whose leaves the scene hung (`SceneData::leaves`' houses), by instance; and
+  // each leaf it hung, the house's instance and the leaf's index (`hung_leaf`), sorted, so a
+  // house's record is a door only where its own leaf was hung.
+  Vector<u8> hung_houses_;
+  Vector<u64> hung_leaves_;
+  static constexpr u64 hung_leaf(u32 house, u32 leaf) noexcept {
+    return (u64{house} << 32) | u64{leaf};
+  }
+  bool leaf_hung(u32 house, u32 leaf) const noexcept;
   // The proxy of a mesh a tile handed, at a scale: resident by reference (`refs`: the held tiles
   // and the builds ahead that name it), gone with the last.
   struct TileProxy {
@@ -983,11 +1013,13 @@ class SceneCollision {
   Vector<DoorBody> doors_;
   Vector<HeldDoor> door_bodies_;
   Vector<DoorBody> doors_found_;  // scratch: a ring change's declared doors not held yet
+  Vector<u32> doors_unmade_;      // scratch: held doors of declared leaves the scene did not hang
   u64 doors_ring_ = ~u64{0};
   DoorStats door_stats_;
   void drop_door_body(HeldDoor& held) noexcept;
-  // The held tiles' declared doors not held yet, merged in by key (`step_doors`, on a ring change).
-  void take_declared_doors();
+  // The held tiles' declared doors not held yet, merged in by key, and a held door of a leaf the
+  // scene did not hang dropped (`step_doors`, on a ring change); true when that dropped a body.
+  bool take_declared_doors();
   u32 find_door(u64 key) const noexcept;
   // Scratch, reused: the tick's placements, and the refresh's order.
   PlacementScratch tick_scratch_;
