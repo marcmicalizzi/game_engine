@@ -698,7 +698,7 @@ struct GroundShading {
 // nothing, and no normal (the view draws none).
 GroundShading ground_detail_shade(uint64_t block, float3 eye, float3 from_eye, float3 normal,
                                   float3 dpdx, float3 dpdy, float mask, float3 albedo,
-                                  float roughness, bool full) {
+                                  float roughness, bool full, float planed = 0.0) {
   const GroundDetail d = ((GroundDetail*)block)[0];
   GroundShading out;
   out.normal = normal;
@@ -723,6 +723,9 @@ GroundShading ground_detail_shade(uint64_t block, float3 eye, float3 from_eye, f
     float weight = mask * slope * out.exposure;
     // A storm flattens them (motion): taken from the weight, since a flat bed is smooth.
     if ((d.flags & k_ground_motion) != 0u) weight *= d.ripple_live;
+    // The swash planes the bed it runs over (W152-2; water.slang, `WaterWetGround::planed`): 0
+    // from a caller with no water.
+    weight *= 1.0 - clamp(planed, 0.0, 1.0);
     // The ripples' direction and spread here: the wind's and the scene's, unless the ground steers
     // them or a patch changes their defects.
     float2 w = d.wind.xy;

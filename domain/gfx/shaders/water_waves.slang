@@ -247,7 +247,7 @@ float water_swash_front_at(float run_up, float jitter, float slope, float period
 // ---- the body's surface record (gfx::WaterSurface, water_swash.h) --------------------------------
 static const float k_water_breaking_gamma = 0.78;  // gfx::k_water_breaking_gamma (McCowan 1894)
 static const float k_water_bank_park = 0.05;       // gfx::k_water_bank_park_m
-static const float k_water_mesh_inside = 0.85;     // gfx::k_water_mesh_inside
+static const float k_water_mesh_inside = 0.8;      // gfx::k_water_mesh_inside
 static const uint k_water_surface_spectrum = 1u;   // gfx::k_water_surface_spectrum
 static const uint k_water_surface_open = 2u;       // gfx::k_water_surface_open
 static const float k_water_train_deep_kd = 1.0;    // gfx::k_water_train_deep_kd
@@ -430,18 +430,41 @@ float water_shoaling(float k, float d) {
 // breaking height where two trains come ashore together — its deep-water height over the two's
 // sum, so the crest the two make where they coincide is the one that stands gamma d — and 1 for a
 // train alone.
+// **The crest leans forward as it shoals** (W152-2; water.md, "The crest's lean"; gfx::water_train_lean,
+// whose double this mirrors): the phase is warped, theta + beta cos(theta), so the front face (the
+// half before the crest arrives) is steeper than the back by (1 + beta) / (1 - beta) — the sawtooth
+// a wave becomes in the shallows. beta is the asymmetry Ruessink, Ramaekers and van Rijn (2012)
+// fit to the Ursell number, As = B sin(psi) (beta = -As, the warp's own asymmetry within a fifth
+// at the sharpest crest), held under 0.8 so the warp stays one to one.
+float water_train_lean(float height, float k, float d) {
+  const float kd = k * max(d, 1e-3);
+  const float ur = 0.375 * height * k / max(kd * kd * kd, 1e-9);
+  if (!(ur > 1e-4)) return 0.0;
+  const float b = 0.857 / (1.0 + exp((-0.471 - log10(ur)) / 0.297));
+  const float psi = 0.5 * 3.14159265358979 * (tanh(0.815 / pow(ur, 0.672)) - 1.0);
+  return clamp(-b * sin(psi), 0.0, 0.8);
+}
+
 float water_train_shape(float h0, float k0, float d, float theta, float share, out float dtheta) {
   dtheta = 0.0;
   if (!(d > 0.0) || !(h0 > 0.0)) return 0.0;
-  const float shoaled = h0 * water_shoaling(water_wavenumber(k0, d), d);
+  const float k = water_wavenumber(k0, d);
+  const float shoaled = h0 * water_shoaling(k, d);
   const float limit = k_water_breaking_gamma * d * share;
   const float height = min(shoaled, limit);
   const float b = clamp(shoaled / limit, 0.0, 1.0);
   const float m = 1.0 + 2.0 * b;
-  const float base = max(0.5 + 0.5 * cos(theta), 0.0);
+  const float lean = water_train_lean(height, k, d);
+  const float warped = theta + lean * cos(theta);
+  const float base = max(0.5 + 0.5 * cos(warped), 0.0);
   const float s = pow(base, m);
-  dtheta = height * m * (base > 0.0 ? s / base : 0.0) * (-0.5 * sin(theta));
-  return height * (s - 1.0 / sqrt(3.14159265358979 * (m + 0.25)));
+  dtheta = height * m * (base > 0.0 ? s / base : 0.0) * (-0.5 * sin(warped)) *
+           (1.0 - lean * sin(theta));
+  // The warp lowers the shape's mean by about 0.14 (m - 1) beta^2 of it (measured over the
+  // shapes the warp makes; under a percent of the height off).
+  const float mean =
+      (1.0 - 0.14 * (m - 1.0) * lean * lean) / sqrt(3.14159265358979 * (m + 0.25));
+  return height * (s - mean);
 }
 
 // The train's cycles at the clock t (seconds in [0, 1024)) and arrival tau: (t - tau) / T, each
@@ -643,12 +666,34 @@ float water_surface_tide(WaterSurface* s, float tide_phase) {
 // tenth of the reach either way over about half the swash's width (the run-up over the slope, 0.5
 // to 6 m) and half that again at a quarter of the scale, standing where they are from wave to wave
 // as a beach's cusps do — so the front is scalloped and its lip ragged, never a ruled line.
-float water_reach_variation(WaterSurface* s, float2 p, bool lobes) {
+//
+// **The lobes vary along the shore and not across it** (W152-2; water.md, "The sheet's surface"):
+// they are read at the place's own point of the waterline, `p` moved down the ground's slope by
+// its height over the level over that slope (`water_lobe_point`), so a lobe is a scallop of every
+// sheet's reach line together. Read at `p` itself, as they were, the lobes' noise had closed level
+// lines wherever the ground is near flat — a dome of the dunes in the swash — and every sheet of
+// the group drew its own reach, its own wet and filmed band, round each of them: nested rings in
+// the sheets, the owner's fingerprints, standing still from wave to wave.
+float2 water_lobe_point(WaterSurface* s, WaterField f, float2 p, out float sure) {
+  const float g = length(f.depth_grad);
+  const float lobe = clamp(0.6 * s->run_up_m / max(s->slope, 1e-3), 0.5, 6.0);
+  // Down the slope to the waterline, no further than the swash's excursion and a lobe; where the
+  // ground is flatter than a tenth of the shore's slope there is no way down it, and the lobes fade
+  // out (`sure`): the reach there is the along-shore variation's alone, whose scale is two
+  // wavelengths.
+  const float reach = s->run_up_m / max(s->slope, 1e-3) + lobe;
+  sure = smoothstep(0.05 * s->slope, 0.1 * s->slope, g);
+  const float run = clamp(-f.depth / max(g, 1e-6), -reach, reach) * sure;
+  return g > 1e-6 ? p + f.depth_grad / g * run : p;
+}
+
+float water_reach_variation(WaterSurface* s, float2 p, bool lobes, float2 q = float2(0.0, 0.0),
+                            float sure = 1.0) {
   float v = 0.85 + 0.3 * water_value_noise(p / max(s->along_m, 1e-3) + float2(17.3, 5.1));
   if (lobes) {
     const float lobe = clamp(0.6 * s->run_up_m / max(s->slope, 1e-3), 0.5, 6.0);
-    v *= 1.0 + 0.2 * (water_value_noise(p / lobe + float2(3.1, 9.7)) - 0.5) +
-         0.1 * (water_value_noise(p * (3.7 / lobe) + float2(11.9, 2.3)) - 0.5);
+    v *= 1.0 + sure * (0.2 * (water_value_noise(q / lobe + float2(3.1, 9.7)) - 0.5) +
+                       0.1 * (water_value_noise(q * (3.7 / lobe) + float2(11.9, 2.3)) - 0.5));
   }
   return v;
 }
@@ -664,9 +709,9 @@ float water_surface_front(WaterSurface* s, float2 p, WaterField f, float t, out 
   // has the lobes a vertex cannot carry, a tenth and a twentieth either way, and where the mesh's
   // smooth front stood past a pixel's lobed one the water pixels between were bared — the bed drawn
   // through the water's branch, which is not the ground's own picture — in a strip with the mesh's
-  // straight edges, up to 1.4 m wide on a 1:30 beach. Held 0.85 of the way, the mesh's edge is
-  // under the sheet everywhere and what lies between it and the front is the ground's own pixels,
-  // filmed. It showed once the sheets overlapped and their edge stood still to be looked at.
+  // straight edges, up to 1.4 m wide on a 1:30 beach. Held 0.8 of the way (W152-3: at 0.85, the
+  // lobes' least, there was no margin), the mesh's edge is under the sheet everywhere and what lies
+  // between it and the front is the ground's own pixels, filmed. It showed once the sheets overlapped and their edge stood still to be looked at.
   return water_swash_front_at(water_place_run_up(s, f),
                               water_reach_variation(s, p, false) * water_shelter(f) *
                                   k_water_mesh_inside,

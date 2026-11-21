@@ -1443,6 +1443,7 @@ WaterWetGround water_ground_wetness_of(ResolveParams* params, ResolveMaterial ma
   g.sheet_slope = float2(0.0, 0.0);
   g.sheet_smooth = 1.0;
   g.sheet_dropped = 0.0;
+  g.planed = 0.0;
   if (params->water_shore_count == 0 || stop_skips(k_stop_water)) return g;
   WaterShore* shores = (WaterShore*)params->water_shores;
   InstanceDesc* instances = (InstanceDesc*)params->instances;
@@ -1475,6 +1476,7 @@ WaterWetGround water_ground_wetness_of(ResolveParams* params, ResolveMaterial ma
     g.s = max(g.s, here.s);
     g.film = max(g.film, here.film);
     g.foam = max(g.foam, here.foam);
+    g.planed = max(g.planed, here.planed);
     if (here.sheet > g.sheet) {
       g.sheet = here.sheet;
       g.body = here.body;
@@ -1709,6 +1711,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   float2 wet_sheet_slope = float2(0.0, 0.0);
   float wet_sheet_smooth = 1.0;
   float wet_sheet_dropped = 0.0;
+  float wet_planed = 0.0;  // the bed the swash planes (W152-2): the wind's ripples drawn by 1 - it
 #ifdef RESOLVE_WATER
   if ((material.flags & k_material_water) == 0 && !g_count) {
     const WaterWetGround wet = water_ground_wetness(params, material, instance, s.position, tri, at);
@@ -1723,6 +1726,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     wet_sheet_slope = wet.sheet_slope;
     wet_sheet_smooth = wet.sheet_smooth;
     wet_sheet_dropped = wet.sheet_dropped;
+    wet_planed = wet.planed;
   }
 #endif
 #ifdef MATERIAL_TERRAIN
@@ -1789,7 +1793,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     const GroundShading ground =
         ground_detail_shade(params->ground_detail, params->camera.xyz, from_eye, shading_normal,
                             dp_dx, dp_dy, sampled.detail_mask, albedo, roughness,
-                            params->mode == 9);
+                            params->mode == 9, wet_planed);
     // The detail view (ResolveMode::GroundDetail): data, not colour — the ripples' height over
     // their amplitude and the grain's coarse octave, each a function of (x, z) alone and mapped
     // from [-1, 1], and the share of the ripples this pixel draws (sand, slope and footprint).

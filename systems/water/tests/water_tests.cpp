@@ -226,6 +226,152 @@ TEST_CASE("water: the train arrives in sequence along a straight shore") {
                                       << " s");
 }
 
+// W152-2 (docs/subsystems/water.md, "The front heals"): ray theory's arrival draws an inlet's late
+// water and a dry knoll's wake as steps of whole periods between neighbouring texels, which the
+// spline reads as crests crowded into a texel (the rings and fans); healed at half the wavelength,
+// no neighbouring texels differ by a quarter period, and a straight shore's crests stay straight.
+TEST_CASE("water: the healed front holds no step a quarter period between texels") {
+  const u32 n = 241;
+  const f64 texel = 0.25;
+  const f64 period = gfx::swash_period(4.0);
+  const f64 omega = 2.0 * 3.14159265358979323846 / period;
+  const f64 k0 = omega * omega / gfx::k_swash_g;
+  const f64 breaking = 0.6 / gfx::k_water_breaking_gamma;  // a 0.6 m wave's break depth
+  // The planar beach 1:20 with the shore at x = 40 m; then the same with an inlet 0.75 m wide cut
+  // 10 m into the bank at z = 30 m (water the train reaches last, round its mouth) and a dry knoll
+  // 2 m across standing in the shallows at (36, 15).
+  Vector<f32> plain(n * n);
+  Vector<f32> shaped(n * n);
+  for (u32 j = 0; j < n; ++j) {
+    for (u32 i = 0; i < n; ++i) {
+      const f64 x = texel * static_cast<f64>(i);
+      const f64 z = texel * static_cast<f64>(j);
+      const f64 d = (40.0 - x) / 20.0;
+      plain[j * n + i] = static_cast<f32>(d);
+      f64 s = d;
+      if (std::fabs(z - 30.0) < 0.375 && x >= 40.0 && x < 50.0) s = 0.1;
+      if (std::hypot(x - 36.0, z - 15.0) < 1.0) s = -0.2;
+      shaped[j * n + i] = static_cast<f32>(s);
+    }
+  }
+  const auto steps = [&](const Vector<f32>& depth, const Vector<f32>& tau) {
+    // Neighbouring texels whose arrivals differ by a quarter period or more, in the water and on
+    // the bank within 6 m of the shore (the swash's band).
+    u32 count = 0;
+    for (u32 j = 0; j + 1 < n; ++j) {
+      for (u32 i = 0; i + 1 < n; ++i) {
+        const u32 at = j * n + i;
+        if (static_cast<f64>(depth[at]) < -0.3) continue;
+        const f64 dx = std::fabs(static_cast<f64>(tau[at + 1] - tau[at]));
+        const f64 dz = std::fabs(static_cast<f64>(tau[at + n] - tau[at]));
+        if (std::max(dx, dz) >= 0.25 * period) ++count;
+      }
+    }
+    return count;
+  };
+  Vector<f32> raw(n * n);
+  gfx::water_arrival_field(shaped.data(), n, texel, period, raw.data());
+  Vector<f32> healed = raw;
+  gfx::water_heal_field(healed.data(), shaped.data(), n, texel, k0, breaking, true);
+  const u32 raw_steps = steps(shaped, raw);
+  const u32 healed_steps = steps(shaped, healed);
+  CHECK(raw_steps > 0u);  // the case can fail: ray theory's steps are there to heal
+  CHECK(healed_steps == 0u);
+  // A straight shore's crests stay straight: along the shore, the same arrival.
+  Vector<f32> straight(n * n);
+  gfx::water_arrival_field(plain.data(), n, texel, period, straight.data());
+  gfx::water_heal_field(straight.data(), plain.data(), n, texel, k0, breaking, true);
+  f64 along_worst = 0.0;
+  for (u32 j = 0; j + 1 < n; ++j)
+    for (u32 i = 0; i < n; ++i)
+      along_worst =
+          std::max(along_worst,
+                   std::fabs(static_cast<f64>(straight[(j + 1) * n + i] - straight[j * n + i])));
+  CHECK(along_worst < 1e-4);
+  // The same healing twice, to the bit.
+  Vector<f32> again = raw;
+  gfx::water_heal_field(again.data(), shaped.data(), n, texel, k0, breaking, true);
+  CHECK(std::memcmp(healed.data(), again.data(), u64{n} * n * sizeof(f32)) == 0);
+  MESSAGE("steps of a quarter period: ray theory " << raw_steps << ", healed " << healed_steps
+                                                   << "; along a straight shore " << along_worst
+                                                   << " s");
+}
+
+// W152-3 (docs/subsystems/water.md, "The front heals"): a map whose edge is bank. The healing
+// reflects the arrival at a map's edge oddly so that a plane wave stays a plane wave; until W152-3
+// it reflected the water-weighted product, which is 0 on the bank, so the mirrored texels carried
+// minus the water's arrivals and the swash's band near a bank edge averaged towards 0 s (the
+// band basin of swash_scene_tests.cpp, every edge of its map bank: its swash phases 4 s early on
+// average and scrambled). The same planar beach, its bank running 20 m and then 4 m to the map's
+// edge: the swash's band heals to the same arrival on both, as the water near it is the same (the
+// world past a bank edge is bank: no water stands up again beyond it).
+TEST_CASE("water: the healed front at a map's edge of bank is the water's") {
+  const f64 texel = 0.25;
+  const f64 period = gfx::swash_period(4.0);
+  const f64 omega = 2.0 * 3.14159265358979323846 / period;
+  const f64 k0 = omega * omega / gfx::k_swash_g;
+  const f64 breaking = 0.6 / gfx::k_water_breaking_gamma;
+  const auto heal_beach = [&](u32 n, Vector<f32>& depth, Vector<f32>& tau) {
+    depth.resize(n * n);
+    tau.resize(n * n);
+    for (u32 j = 0; j < n; ++j)
+      for (u32 i = 0; i < n; ++i)
+        depth[j * n + i] = static_cast<f32>((40.0 - texel * static_cast<f64>(i)) / 20.0);
+    gfx::water_arrival_field(depth.data(), n, texel, period, tau.data());
+    gfx::water_heal_field(tau.data(), depth.data(), n, texel, k0, breaking, true);
+  };
+  const u32 wide = 241;    // 60 m: the bank 20 m deep
+  const u32 narrow = 177;  // 44 m: the bank 4 m deep, its edge in the swash's reach
+  Vector<f32> depth_wide, tau_wide, depth_narrow, tau_narrow;
+  heal_beach(wide, depth_wide, tau_wide);
+  heal_beach(narrow, depth_narrow, tau_narrow);
+  // The bank (the swash's band, to the narrow map's edge) along the middle half of the shore, and
+  // the water's earliest arrival.
+  f64 worst = 0.0, earliest = 1e30, band_earliest = 1e30;
+  for (u32 j = narrow / 4; j < 3 * narrow / 4; ++j) {
+    for (u32 i = 0; i < narrow; ++i) {
+      const f64 t = static_cast<f64>(tau_narrow[j * narrow + i]);
+      if (depth_narrow[j * narrow + i] > 0.0f) {
+        earliest = std::min(earliest, t);
+        continue;
+      }
+      band_earliest = std::min(band_earliest, t);
+      worst = std::max(worst, std::fabs(t - static_cast<f64>(tau_wide[j * wide + i])));
+    }
+  }
+  MESSAGE("a bank edge 4 m up the beach: the swash's arrival differs from a 20 m bank's by at most "
+          << worst << " s of a " << period << " s period; the band's earliest " << band_earliest
+          << " s, the water's " << earliest << " s");
+  CHECK(band_earliest >= earliest);  // nothing on the bank comes before the water brings it
+  CHECK(worst < 0.05 * period);      // the same crest, within a twentieth of a period
+}
+
+// W152-2 (docs/subsystems/water.md, "The crest's lean"): the train leans forward as it shoals —
+// none in deep water, more the shallower, a sawtooth in the surf.
+TEST_CASE("water: the crest leans forward as the wave shoals") {
+  const f64 period = 8.0;
+  const f64 omega = 2.0 * 3.14159265358979323846 / period;
+  const f64 k0 = omega * omega / gfx::k_swash_g;
+  const f64 h0 = 1.0;
+  f64 last = -1.0;
+  bool monotone = true;
+  f64 deep = 0.0, surf = 0.0;
+  for (f64 d = 40.0; d >= 0.3; d *= 0.9) {
+    const f64 k = gfx::water_wavenumber(k0, d);
+    const f64 h = std::min(h0 * gfx::water_shoaling(k, d), gfx::k_water_breaking_gamma * d);
+    const f64 lean = gfx::water_train_lean(h, k, d);
+    if (lean + 1e-9 < last) monotone = false;
+    last = lean;
+    if (d > 35.0) deep = lean;
+    surf = lean;
+  }
+  CHECK(monotone);
+  CHECK(deep < 0.02);
+  CHECK(surf > 0.4);  // Ruessink et al.'s asymmetry at Ur of order 10: a sawtooth
+  CHECK(surf <= 0.8);
+  MESSAGE("lean: " << deep << " at 40 m, " << surf << " at 0.3 m");
+}
+
 // S102 (docs/experiments/shore-mechanics.md, "A wave has a direction"): a train that comes from
 // somewhere is turned by the depth as Snell's law says.
 TEST_CASE("water: a train that comes in at an angle turns to the beach by Snell's law") {

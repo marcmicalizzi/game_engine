@@ -275,8 +275,14 @@ inline constexpr f64 k_water_bank_park_m = 0.05;
 // The mesh's sheet reaches this share of the smooth front's reach (S102): a pixel's own reach has
 // lobes of a tenth and a twentieth either way that a vertex cannot carry, and the mesh's edge has
 // to lie under every pixel's sheet, or the water pixels past a pixel's front are bared in strips
-// with the mesh's straight edges (water_waves.slang, `water_surface_front`).
-inline constexpr f64 k_water_mesh_inside = 0.85;
+// with the mesh's straight edges (water_waves.slang, `water_surface_front`). **Under, not at, the
+// lobes' least** (W152-3): at 0.85, their least, the margin was nothing where the lobes are at
+// their least, and a triangle between a covered vertex and a parked one crosses the ground where
+// the line between the two does, not where the front is; since W152-2 reads the lobes at the
+// waterline, a lobe's least holds across the whole swash and the test bay's far bank showed water
+// bared behind the sheet (swash_scene_tests.cpp's one-surface case: 7 pairs over its bound,
+// 123 codes). A twentieth of the reach is the margin.
+inline constexpr f64 k_water_mesh_inside = 0.8;
 // `WaterSurface::flags`.
 inline constexpr u32 k_water_surface_spectrum = 1u;  // the waves are the sixteen below
 inline constexpr u32 k_water_surface_open = 2u;      // open: the lift fades in from the outline
@@ -377,6 +383,23 @@ inline f64 water_shoaling(f64 k, f64 d) noexcept {
   const f64 kd = k * std::max(d, 1e-3);
   const f64 n = 2.0 * kd > 30.0 ? 0.5 : 0.5 * (1.0 + 2.0 * kd / std::sinh(2.0 * kd));
   return std::sqrt(0.5 / (n * std::tanh(kd)));
+}
+
+// **The crest's forward lean** (W152-2; water.md, "The crest's lean"): the warp beta of the train's
+// phase, theta + beta cos(theta), for a wave `height_m` high at wavenumber k and depth d — the
+// asymmetry Ruessink, Ramaekers and van Rijn (2012, Coastal Engineering 65) fit to the Ursell
+// number Ur = 3/8 H k / (k d)^3: B = 0.857 / (1 + exp((-0.471 - log10 Ur) / 0.297)), psi = -90 deg
+// + 90 deg tanh(0.815 / Ur^0.672), As = B sin(psi), and beta = -As (the warp's own asymmetry is
+// -beta for a cosine and within a fifth of it at the sharpest crest the train draws), under 0.8.
+// The constants are the paper's as Wikipedia's "Wave nonlinearity" gives them (the paper itself
+// not read); the logarithm's base 10 is recalled. water_waves.slang's `water_train_lean`.
+inline f64 water_train_lean(f64 height_m, f64 k, f64 d) noexcept {
+  const f64 kd = k * std::max(d, 1e-3);
+  const f64 ur = 0.375 * height_m * k / std::max(kd * kd * kd, 1e-9);
+  if (!(ur > 1e-4)) return 0.0;
+  const f64 b = 0.857 / (1.0 + std::exp((-0.471 - std::log10(ur)) / 0.297));
+  const f64 psi = 0.5 * 3.14159265358979323846 * (std::tanh(0.815 / std::pow(ur, 0.672)) - 1.0);
+  return std::clamp(-b * std::sin(psi), 0.0, 0.8);
 }
 
 // The wave's height at depth d: shoaled until it breaks, then the saturated bore gamma d. 0 on the

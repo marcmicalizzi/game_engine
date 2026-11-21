@@ -388,6 +388,222 @@ inline WaterCross water_cross_of_swell(f64 swell_m, f64 swell_period_s, f64 wind
   return c;
 }
 
+// ---- the healed front (W152-2; water.md, "The front heals"; the grounding, docs/experiments/
+// shore-mechanics.md, "The front heals at a wavelength")
+// ----------------------------------------------------------------------------------------------
+//
+// The arrival field is a first-arrival eikonal: ray theory, which draws every kink where two paths'
+// fronts meet, every corner of the waterline's texels and every closed front round a place reached
+// last as sharply as the grid can, and the bank, which takes its nearest waterline texel's arrival,
+// as cells with steps between them of whole periods. A real front is smooth at the scale of its
+// wavelength because diffraction fills what ray theory leaves sharp: a front's wrinkle of
+// half-width L heals once the wave has run x > pi L^2 / lambda past it (Nolet and Dahlen 2000,
+// "wave front healing"), so after a path of a wavelength nothing narrower than about lambda / 2 is
+// left; SWAN's refraction-diffraction smooths its fields over 0.2 to 0.4 of a wavelength for the
+// same reason (Holthuijsen, Herman and Booij 2003). Read at a texel and through a spline, a step of
+// several periods between two of the bank's cells, or a kink, is several crests crowded into a
+// texel: the rings in the swash's sheets and the fans of fine lines behind the bores.
+//
+// So the field is **healed**: every channel the front carries — the arrival, the second train's,
+// and the flux's `incident`, `kept` and `setup` — is averaged over the water round each texel with
+// a Gaussian of `k_water_heal_share` of the local wavelength, the wavelength never that of water
+// shallower than the depth the group's largest wave breaks in (its front ashore is the bore's,
+// shaped at the break line). The bank takes the same average of the water near it (a normalized
+// average, over the water only, coarser where no water is near), so its arrival is continuous with
+// the waterline's and steps of whole periods are gone. A plane wave is left as it was (the average
+// of a linear field is itself, and the map's edges reflect it oddly). Levels a power of two apart,
+// each three box passes of running sums, blended by the texel's own scale: linear in the texels
+// times the levels. Deterministic: a fixed order in double.
+inline constexpr f64 k_water_heal_share = 0.5;
+// A level whose average saw less than this share of water takes the coarser level's value.
+inline constexpr f64 k_water_heal_full = 0.25;
+
+namespace detail {
+// How a line of the map is padded past one of its ends (W152-3): by what the world past the edge is
+// taken to be.
+enum class WaterHealPad : u8 {
+  nothing,  // the line crosses the shore and ends on the bank: the bank goes on, no water past it
+  water,    // the line ends in water: the water goes on (the arrival linearly)
+  mirror,   // the line is bank throughout: the bank goes on as it is along the edge
+};
+
+// Three box passes of radius r — a Gaussian — along a line of n texels at `stride`, of a weighted
+// field `w` (the water's mass times its value) and its mass `m` together, padded past each end as
+// `first` and `last` say. Past water the mass reflects evenly and the weighted field evenly too, or
+// with `odd` (an arrival) as the mirrored mass times the value reflected oddly about the end's value
+// w / m, which keeps a plane wave's arrival linear; a bank line's padding is its mirror; past a
+// shore line's bank end the line runs on 3r texels of nothing, so what the passes spread past the
+// edge comes back as it would over the bank that is there. Until W152-3 the weighted product
+// itself was reflected oddly about its end, which on a bank edge (`w` 0) mirrored minus the water's
+// arrivals — the band basin of swash_scene_tests.cpp, every edge of its map bank, healed its swash
+// to 4 s early on average and scrambled it within a metre, and the test bay's 30 s swell, healed
+// over half its map, came ashore 20 s early at its ends — and a mirror of the mass at such an edge
+// would have stood the water up again past it, on ground that is bank.
+inline void water_heal_line(f64* w, f64* m, u32 n, u32 stride, u32 r, bool odd, WaterHealPad first,
+                            WaterHealPad last, Vector<f64>& lw, Vector<f64>& lm, Vector<f64>& sw,
+                            Vector<f64>& sm) {
+  if (r == 0 || n < 2) return;
+  // The line, run on past a bank end by the three passes' reach.
+  const u32 head = first == WaterHealPad::nothing ? 3 * r : 0;
+  const u32 tail = last == WaterHealPad::nothing ? 3 * r : 0;
+  const u32 len = head + n + tail;
+  r = std::min(r, len - 1);
+  lw.assign(len, 0.0);
+  lm.assign(len, 0.0);
+  for (u32 i = 0; i < n; ++i) {
+    lw[head + i] = w[static_cast<u64>(i) * stride];
+    lm[head + i] = m[static_cast<u64>(i) * stride];
+  }
+  sw.resize(len + 2 * r + 1);
+  sm.resize(len + 2 * r + 1);
+  for (u32 pass = 0; pass < 3; ++pass) {
+    // Past a run-on end, nothing; past water, its mirror (the arrival's value oddly); past a bank
+    // line's end, its mirror.
+    const bool reflect_first = first != WaterHealPad::nothing;
+    const bool reflect_last = last != WaterHealPad::nothing;
+    const bool odd_first = odd && first == WaterHealPad::water && lm[0] > 1e-9;
+    const bool odd_last = odd && last == WaterHealPad::water && lm[len - 1] > 1e-9;
+    const f64 v_first = odd_first ? lw[0] / lm[0] : 0.0;
+    const f64 v_last = odd_last ? lw[len - 1] / lm[len - 1] : 0.0;
+    for (u32 i = 0; i < r; ++i) {
+      const u32 h = std::min(r - i, len - 1);
+      const u32 t = len >= 2 + i ? len - 2 - i : 0;
+      sm[i + 1] = reflect_first ? lm[h] : 0.0;
+      sm[len + r + i + 1] = reflect_last ? lm[t] : 0.0;
+      sw[i + 1] = !reflect_first ? 0.0 : odd_first ? 2.0 * v_first * lm[h] - lw[h] : lw[h];
+      sw[len + r + i + 1] = !reflect_last ? 0.0 : odd_last ? 2.0 * v_last * lm[t] - lw[t] : lw[t];
+    }
+    for (u32 i = 0; i < len; ++i) {
+      sw[r + i + 1] = lw[i];
+      sm[r + i + 1] = lm[i];
+    }
+    // Running sums in place: s[k] = sum of the padded values before k.
+    sw[0] = 0.0;
+    sm[0] = 0.0;
+    for (u32 k = 1; k < len + 2 * r + 1; ++k) {
+      sw[k] += sw[k - 1];
+      sm[k] += sm[k - 1];
+    }
+    const f64 width = static_cast<f64>(2 * r + 1);
+    for (u32 i = 0; i < len; ++i) {
+      lw[i] = (sw[i + 2 * r + 1] - sw[i]) / width;
+      lm[i] = (sm[i + 2 * r + 1] - sm[i]) / width;
+    }
+  }
+  for (u32 i = 0; i < n; ++i) {
+    w[static_cast<u64>(i) * stride] = lw[head + i];
+    m[static_cast<u64>(i) * stride] = lm[head + i];
+  }
+}
+// How each row's and column's two ends are padded, from the map's own depth: 4 * size entries,
+// rows' first and last ends, then columns'.
+inline void water_heal_pads(const f32* depth, u32 size, Vector<WaterHealPad>& pads) {
+  pads.resize(4 * static_cast<u64>(size));
+  const auto pad = [](bool end_water, bool any_water) {
+    return end_water ? WaterHealPad::water
+                     : (any_water ? WaterHealPad::nothing : WaterHealPad::mirror);
+  };
+  for (u32 j = 0; j < size; ++j) {
+    bool any = false;
+    for (u32 i = 0; i < size && !any; ++i)
+      any = depth[static_cast<u64>(j) * size + i] > 0.0f;
+    pads[2 * j] = pad(depth[static_cast<u64>(j) * size] > 0.0f, any);
+    pads[2 * j + 1] = pad(depth[static_cast<u64>(j) * size + size - 1] > 0.0f, any);
+  }
+  for (u32 i = 0; i < size; ++i) {
+    bool any = false;
+    for (u32 j = 0; j < size && !any; ++j)
+      any = depth[static_cast<u64>(j) * size + i] > 0.0f;
+    pads[2 * size + 2 * i] = pad(depth[i] > 0.0f, any);
+    pads[2 * size + 2 * i + 1] = pad(depth[static_cast<u64>(size - 1) * size + i] > 0.0f, any);
+  }
+}
+
+// A Gaussian of `sigma` texels over a size * size weighted field and its mass: along every row, then
+// along every column, each line padded as `pads` says.
+inline void water_heal_blur(Vector<f64>& weighted, Vector<f64>& mass,
+                            const Vector<WaterHealPad>& pads, u32 size, f64 sigma, bool odd,
+                            Vector<f64>& scratch) {
+  const u32 r = static_cast<u32>(std::lround((std::sqrt(4.0 * sigma * sigma + 1.0) - 1.0) / 2.0));
+  Vector<f64> lw, lm, sm;
+  for (u32 j = 0; j < size; ++j) {
+    const u64 row = static_cast<u64>(j) * size;
+    water_heal_line(weighted.data() + row, mass.data() + row, size, 1, r, odd, pads[2 * j],
+                    pads[2 * j + 1], lw, lm, scratch, sm);
+  }
+  for (u32 i = 0; i < size; ++i) {
+    water_heal_line(weighted.data() + i, mass.data() + i, size, size, r, odd,
+                    pads[2 * size + 2 * i], pads[2 * size + 2 * i + 1], lw, lm, scratch, sm);
+  }
+}}  // namespace detail
+
+// **Heals one field** in place (`values`, size * size, rows along +z) over the water of `depth`:
+// each texel its normalized Gaussian average over the water at k_water_heal_share of the
+// wavelength of the train (deep-water wavenumber `k0`) at its depth, never shallower than
+// `floor_m`; `linear` reflects the map's edges oddly (an arrival), else evenly (a ratio, a level).
+// Returns nothing for a map under 3 a side or no water.
+inline void water_heal_field(f32* values, const f32* depth, u32 size, f64 texel_m, f64 k0,
+                             f64 floor_m, bool linear) {
+  if (size < 3 || !(texel_m > 0.0) || !(k0 > 0.0)) return;
+  const u32 count = size * size;
+  Vector<f64> scale(count);  // the texel's level position: < 1 between itself and a texel
+  f64 widest = 0.0;
+  bool any = false;
+  for (u32 i = 0; i < count; ++i) {
+    const f64 d = std::max({static_cast<f64>(depth[i]), floor_m, k_water_celerity_floor_m});
+    const f64 sigma =
+        k_water_heal_share * 2.0 * 3.14159265358979323846 / water_wavenumber(k0, d) / texel_m;
+    widest = std::max(widest, sigma);
+    scale[i] = sigma < 1.0 ? sigma : 1.0 + std::log2(sigma);
+    any = any || depth[i] > 0.0f;
+  }
+  if (!any) return;
+  // The levels: 0 the texel itself, l >= 1 a Gaussian of 2^(l-1) texels, to the widest asked.
+  u32 levels = 1;
+  while (levels < 12 && std::ldexp(1.0, static_cast<i32>(levels) - 1) < widest)
+    ++levels;
+  Vector<f64> scratch;
+  Vector<detail::WaterHealPad> pads;
+  detail::water_heal_pads(depth, size, pads);
+  Vector<f64> weighted(count);
+  Vector<f64> mass(count);
+  Vector<f64> coarse(count);  // the composite of the levels above the one in hand
+  Vector<f64> fine(count);
+  Vector<f64> out(count);
+  for (u32 i = 0; i < count; ++i)
+    out[i] = static_cast<f64>(values[i]);
+  for (u32 level = levels; level-- > 0;) {
+    // This level's average over the water and how much water it saw.
+    for (u32 i = 0; i < count; ++i) {
+      mass[i] = depth[i] > 0.0f ? 1.0 : 0.0;
+      weighted[i] = mass[i] * static_cast<f64>(values[i]);
+    }
+    if (level > 0) {
+      const f64 sigma = std::ldexp(1.0, static_cast<i32>(level) - 1);
+      detail::water_heal_blur(weighted, mass, pads, size, sigma, linear, scratch);
+    }
+    for (u32 i = 0; i < count; ++i) {
+      const f64 v = mass[i] > 1e-9 ? weighted[i] / mass[i] : 0.0;
+      const f64 a = std::clamp(mass[i] / k_water_heal_full, 0.0, 1.0);
+      fine[i] = level + 1 == levels ? (mass[i] > 1e-9 ? v : static_cast<f64>(values[i]))
+                                    : a * v + (1.0 - a) * coarse[i];
+    }
+    // A texel whose scale lies between this level and the next takes the blend of the two.
+    for (u32 i = 0; i < count; ++i) {
+      const f64 x = std::min(scale[i], static_cast<f64>(levels - 1));
+      if (level + 1 == levels) {
+        if (x >= static_cast<f64>(level)) out[i] = fine[i];
+      } else if (x >= static_cast<f64>(level) && x < static_cast<f64>(level + 1)) {
+        const f64 w = x - static_cast<f64>(level);
+        out[i] = fine[i] * (1.0 - w) + coarse[i] * w;
+      }
+    }
+    std::swap(coarse, fine);
+  }
+  for (u32 i = 0; i < count; ++i)
+    values[i] = static_cast<f32>(out[i]);
+}
+
 // **A body's field, whole** (`WaterSurface::field`; `k_water_field_channels` floats a texel): the
 // depth decoded from the map's 16 bits as the GPU's image is, the first train's arrival, the grown
 // share of a closed body's fetch, each texel's own stretch of shore's slope, and the second pass's
@@ -415,6 +631,12 @@ inline void water_surface_field(const WaterFieldDesc& d, const WaterCross& cross
     depth[i] = static_cast<f32>(static_cast<f64>(d.texels[i]) / 65535.0 * range - d.bank_max);
   Vector<f32> arrival(count);
   water_arrival_field(depth.data(), d.size, d.texel_m, d.period_s, arrival.data(), 3, d.direction);
+  // The front heals at its wavelength (W152-2), never that of water shallower than the group's
+  // largest wave breaks in; the flux is taken along the healed rays and healed the same way.
+  const f64 two_pi = 2.0 * 3.14159265358979323846;
+  const f64 k0 = d.period_s > 0.0 ? (two_pi / d.period_s) * (two_pi / d.period_s) / k_swash_g : 0.0;
+  const f64 heal_floor = cross.height_m / k_water_breaking_gamma;
+  water_heal_field(arrival.data(), depth.data(), d.size, d.texel_m, k0, heal_floor, true);
   Vector<f32> shore_slope(count);
   water_shore_slope_field(depth.data(), d.size, d.texel_m, shore_slope.data());
   // The share of the body's fetch the wind has blown over at each texel (a closed body's lee): the
@@ -439,6 +661,8 @@ inline void water_surface_field(const WaterFieldDesc& d, const WaterCross& cross
     water_arrival_field(depth.data(), d.size, d.texel_m, cross.period_s, second.data(), 3,
                         cross.direction);
     const f64 omega = 2.0 * 3.14159265358979323846 / cross.period_s;
+    water_heal_field(second.data(), depth.data(), d.size, d.texel_m, omega * omega / k_swash_g,
+                     heal_floor, true);
     out.cross_m = static_cast<f32>(cross.cross_m);
     out.cross_period_s = static_cast<f32>(cross.period_s);
     out.cross_k0 = static_cast<f32>(omega * omega / k_swash_g);
@@ -448,6 +672,18 @@ inline void water_surface_field(const WaterFieldDesc& d, const WaterCross& cross
   Vector<f32> setup(count);
   water_flux_field(depth.data(), arrival.data(), d.size, d.texel_m, d.period_s, cross.height_m,
                    incident.data(), kept.data(), setup.data());
+  // The flux's ray tubes end in straight cuts along the rays (a breaking stretch's ends, a lee's
+  // edge sharper than the scheme's own diffusion leaves it): energy spreads across rays at the same
+  // scale the front heals over (W152-2), so the three are healed with the arrival.
+  water_heal_field(incident.data(), depth.data(), d.size, d.texel_m, k0, heal_floor, false);
+  water_heal_field(kept.data(), depth.data(), d.size, d.texel_m, k0, heal_floor, false);
+  water_heal_field(setup.data(), depth.data(), d.size, d.texel_m, k0, heal_floor, false);
+  // The foreshore slope of a place's stretch of shore is its nearest waterline texel's, cells with
+  // steps between them like the bank's arrival was: where the slope crosses the surging limit the
+  // foam's strength (`water_foam_strength`) stepped with it, a breaking stretch ending in a
+  // straight cut along a cell's edge (the forest staging's sea, 3.5 m texels). A stretch's slope
+  // varies at the scale its wave does, so it is healed the same way.
+  water_heal_field(shore_slope.data(), depth.data(), d.size, d.texel_m, k0, heal_floor, false);
   field.resize(k_water_field_channels * count);
   for (u32 i = 0; i < count; ++i) {
     f32* texel = field.data() + k_water_field_channels * i;
