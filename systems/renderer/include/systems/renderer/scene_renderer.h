@@ -729,6 +729,11 @@ struct FrameDesc {
   // What sways the trees this frame: the wind, when the host names one, and the walker's capsule
   // (flora_motion.h, `FrameFlora`; renderer.md, "The flora stage").
   FrameFlora flora{};
+  // **The live wind** (W151; gfx.md, "The live wind"): unset, every reader takes the scene's wind
+  // or the hand tunables', as before; set — a host's wind keys, a game's `wind_set` — the trees'
+  // sway, the grass and every wave-drawing body take this mean, direction and forced gust instead
+  // (`FrameFlora::wind_set` still wins for the trees).
+  gfx::WindLive wind{};
   // **The frame has no frame before it** (renderer.md, "Sampling over time: the inputs"): a camera
   // cut, a teleport, a load. Its motion is measured from itself and the sub-pixel phase starts
   // again. The host says it, as every reconstruction method requires; nothing reads it in a

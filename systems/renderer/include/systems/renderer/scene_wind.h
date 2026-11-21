@@ -108,6 +108,19 @@ struct WaterWindBody {
   u32 instance = ~0u;
   f32 load_padding = 0.0f;
   f32 padding = 0.0f;
+  // **The live wind** (W151; gfx.md, "The live wind"): the frames this body was taken through, the
+  // sea it last drew and the grid it drew it on (what a live wind starts from, so no wave jumps
+  // when a key first moves it), and under a live wind its own sea, stepped by the world clock's
+  // seconds
+  // (`gfx::sea_step`), the grid it is drawn on for the session, and what was last written.
+  u64 frames = 0;
+  gfx::SeaState drawn_sea{};
+  gfx::WaterWaveGrid drawn_grid{};
+  bool live = false;
+  gfx::SeaState live_sea{};
+  gfx::WaterWaveGrid live_grid{};
+  f64 live_world_s = 0.0;
+  f64 live_key[5]{-1.0, -1.0, -1.0, -1.0, -1.0};
 };
 
 // How far a lifted body's vertices can leave its rest mesh (mesh space, metres): the bank's highest
@@ -152,11 +165,25 @@ inline constexpr f64 k_water_wind_quantum_s = 10.0;
 // For sky time `sky_time_s`, the copies that bring each body to the table and surface it draws now
 // (appended to `uploads`, which is cleared first); a body already there adds none.
 // Each body draws its own `sea` (the scene's wind and swell as it takes them; W136-3).
+//
+// **Under a live wind** (`live.set`; W151, gfx.md "The live wind") every body draws a sea of its
+// own that follows the live wind by the sea's own growth law (`gfx::sea_step`, the equivalent-
+// duration method the scene's varying wind is stepped by) over the world clock's seconds since the
+// last frame (`world_time_s`): it starts from the sea the body drew the frame before, on the grid
+// it drew it on, so a key's step moves no wave's phase and pops no height; a session whose live
+// wind is set from its first frame (the hand tunable at launch) starts from that wind's fully
+// grown sea, the picture the hand wind always drew. `z0` is the scene's roughness, which sets how
+// much a forced gust adds (`gfx::wind_gust_factor`).
 void water_wind_frame(std::span<WaterWindBody> bodies, f64 sky_time_s,
-                      Vector<WaterWindUpload>& uploads);
+                      Vector<WaterWindUpload>& uploads, const gfx::WindLive& live = {},
+                      f64 world_time_s = 0.0, f64 z0 = 0.03);
 
 // The trees' wind from the scene's (`GpuScene::flora_frame`): where it blows to and its gust at
-// the origin over `k_flora_wind_mean_m_s`. False when the scene has none.
-bool scene_flora_wind(const gfx::WindDesc& wind, f64 sky_time_s, Vec2& to, f32& strength) noexcept;
+// the origin over `k_flora_wind_mean_m_s`. False when the scene has none. A live wind (W151) wins
+// over the scene's and the hand tunable's: its mean and direction with the scene's turbulence, and
+// the forced gust's speed over the mean added (`gfx::wind_live_speed`); the trees answer it at once
+// through their own sway, since a part's lean is a function of the strength now.
+bool scene_flora_wind(const gfx::WindDesc& wind, f64 sky_time_s, Vec2& to, f32& strength,
+                      const gfx::WindLive& live = {}) noexcept;
 
 }  // namespace engine::renderer

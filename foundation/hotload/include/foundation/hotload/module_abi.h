@@ -137,6 +137,12 @@ namespace engine::hotload {
 // still decides for a module with state (one built against 12 before the growth is refused by
 // size); 13 is the first number given since that growth, so every module built against 13 carries
 // the grown `TypeInfo`.
+//
+// 13, its second line (2026-11-20, before 13 shipped to anyone): **the wind** (roadmap W151;
+// apps.md, "The wind a module reads and sets"). `HostApi` gained three more entries at its end:
+// `wind_state` (the session's live wind now, in a `WindState` led by its size), `wind_set` (its
+// mean and direction from this tick) and `wind_gust` (a forced gust held or let go). A module of
+// the doors' 13 reads the first 448 bytes and asks for none of them.
 inline constexpr u32 k_abi_version = 13;
 // The oldest module ABI a host of this header loads (4, above, says why 3 and not 4).
 inline constexpr u32 k_abi_oldest = 3;
@@ -613,6 +619,26 @@ struct DoorRequest {
   DoorState door{};
 };
 
+// **The session's wind** (ABI 13, its second line; W151; apps.md, "The wind a module reads and
+// sets"): the mean wind 10 m up (m/s, the ten-minute mean the Beaufort scale is written in), where
+// it blows to (degrees in the ground plane from +x towards +z), the forced gust's level in [0, 1]
+// and the wind with it (`speed_m_s`: the mean times 1 + level (G - 1), G the scene's 3 s gust
+// factor), and `flags`: `k_wind_live` while the live wind is in force (a key or a module moved
+// it; without it the numbers are the scene's own wind the readers draw), `k_wind_gust_held` while a
+// gust is held by the key or a module. Led by its size; the host writes it as far as the module's
+// `size` reaches.
+inline constexpr u32 k_wind_live = 1u << 0;
+inline constexpr u32 k_wind_gust_held = 1u << 1;
+inline constexpr f64 k_wind_set_max_m_s = 60.0;  // `wind_set`'s strongest mean
+struct WindState {
+  u32 size = sizeof(WindState);
+  u32 flags = 0;
+  f64 mean_m_s = 0.0;
+  f64 to_deg = 0.0;
+  f64 gust = 0.0;
+  f64 speed_m_s = 0.0;
+};
+
 // The engine as a module sees it. Every function takes the table's `host` first. The table and
 // everything it points at outlive every call into the module; the module may keep the pointer.
 struct HostApi {
@@ -904,6 +930,21 @@ struct HostApi {
   // **Door `key` heads for its other state** at this tick — a game's own door: a lever, a script —
   // without `game_door` being asked. `NotFound` for a key no door has.
   Result (*door_toggle)(void* host, u64 key);
+
+  // ---- ABI 13, its second line: the wind (roadmap W151; apps.md, "The wind a module reads and
+  // sets") ----
+  // **The session's wind now**, into the caller's struct up to its size. `InvalidArgument` for a
+  // struct smaller than ABI 13's, `Unsupported` where the session has no live wind (no host keeps
+  // one).
+  Result (*wind_state)(void* host, WindState* io);
+  // **The mean wind from this tick**: `mean_m_s` in [0, k_wind_set_max_m_s], and where it blows to,
+  // degrees (below 0 keeps the direction). The live wind is in force from then; the keys step it
+  // from where the module left it. `InvalidArgument` for a mean outside the range or a non-finite
+  // number.
+  Result (*wind_set)(void* host, f64 mean_m_s, f64 to_deg);
+  // **A forced gust held** (`held` nonzero) **or let go**: held, it rises over the gust's rise time
+  // and stands for as long as it is held, beside the gust key; let go, it dies away.
+  Result (*wind_gust)(void* host, u32 held);
 };
 
 // Whether the host's table reaches the entry at `offset` (`offsetof(HostApi, hud_element)`): a
@@ -1275,6 +1316,26 @@ inline Result actor_clip_info(const ModuleContext* context, u32 actor, u32 index
 inline Result actor_seek(const ModuleContext* context, u32 actor, f32 seconds) noexcept {
   if (!ENGINE_HOTLOAD_HAS(context->api, actor_seek)) return Result::Unsupported;
   return context->api->actor_seek(context->api->host, actor, seconds);
+}
+
+// ---- the session's wind (ABI 13, its second line; W151) ----
+// Each answers `Unsupported` on a host whose table ends before the entry (the doors' 13 or older).
+
+// `state` is reset first, so its size is this header's.
+inline Result wind_state(const ModuleContext* context, WindState& state) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, wind_state)) return Result::Unsupported;
+  state = WindState{};
+  return context->api->wind_state(context->api->host, &state);
+}
+
+inline Result wind_set(const ModuleContext* context, f64 mean_m_s, f64 to_deg = -1.0) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, wind_set)) return Result::Unsupported;
+  return context->api->wind_set(context->api->host, mean_m_s, to_deg);
+}
+
+inline Result wind_gust(const ModuleContext* context, bool held) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, wind_gust)) return Result::Unsupported;
+  return context->api->wind_gust(context->api->host, held ? 1u : 0u);
 }
 
 // ---- the HUD's images and fonts (ABI 6) ----

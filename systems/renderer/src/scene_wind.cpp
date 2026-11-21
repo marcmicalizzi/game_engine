@@ -216,14 +216,202 @@ bool water_train_heights(const gfx::SeaState& state, f64 period_1, f64 period_2,
   return true;
 }
 
+namespace {
+
+// A fixed wind at `speed_m_s` towards `to_deg`, as the hand wind draws it.
+gfx::WindDesc fixed_wind(f64 speed_m_s, f64 to_deg) {
+  gfx::WindDesc w;
+  w.kind = gfx::WindKind::fixed;
+  w.speed_m_s = speed_m_s;
+  w.to_deg = to_deg;
+  return w;
+}
+
+f64 body_to_deg(Vec2 direction) noexcept {
+  return std::atan2(static_cast<f64>(direction.y), static_cast<f64>(direction.x)) *
+         (180.0 / gfx::k_wind_pi);
+}
+
+// The sea and grid the body drew last (W151): what a live wind starts from. A body still on its
+// load's table drew its own fixed wind's sea on that wind's grid (`water_spectrum_on_grid` on it is
+// the load's table to the bit).
+void body_drawn(const WaterWindBody& b, gfx::SeaState& sea, gfx::WaterWaveGrid& grid) {
+  if (b.key_kind != 0) {
+    sea = b.drawn_sea;
+    grid = b.drawn_grid;
+    return;
+  }
+  const gfx::WindDesc own = fixed_wind(b.load_wind_m_s, body_to_deg(b.direction));
+  sea = gfx::sea_state(own, 0.0, b.fetch_m);
+  grid = b.grid.valid() ? b.grid : gfx::water_wind_range(own, b.fetch_m).grid;
+}
+
+// Whether a drawn state moved by more than a part in a thousand (or a direction by about a
+// twentieth of a degree): the live sea is redrawn only then.
+bool live_moved(const f64 (&was)[5], const f64 (&now)[5]) noexcept {
+  for (u32 i = 0; i < 5; ++i) {
+    const f64 scale = std::max(std::abs(was[i]), 1e-3);
+    if (std::abs(now[i] - was[i]) > 1e-3 * scale) return true;
+  }
+  return false;
+}
+
+// **The shore's trains follow the sea** (W136-2; gfx.md, "The shore's train follows the sea"),
+// unless the body's own swell is the train. Each train keeps the period and the arrival field it
+// was built with, so no crest jumps: a varying wind's two span its seas and take the state's energy
+// by its density at their frequencies, so the surf's period moves from the second's to the first's
+// as the sea grows; any other body's two keep the load's split, scaled to the sea now. The run-up
+// and the reach take the period the weights give. **A swell's train** (W136-3; gfx.md, "A swell a
+// scene names"): where the first train is a swell (the sky's, or the body's own under a hand
+// swell), it carries the arriving swell now and the second the wind's sea and its leftover swell,
+// each at the period it was built with; the run-up and the reach take the two together at the
+// period their energies give. `kind` is the key's: 2 the body's own varying sea, 3 a live wind's.
+void water_surface_follow(const WaterWindBody& b, const gfx::SeaState& state, u32 kind,
+                          bool swell_here, gfx::WaterSurface& surface) {
+  if (b.surface_offset == ~u64{0}) return;
+  const gfx::WaterSurface& load = b.load_surface;
+  const bool swell_train = b.sky_swell || (b.swell && swell_here);
+  if (swell_train) {
+    const f64 hs = state.groundswell_height_m;
+    const f64 hw = std::sqrt(state.sea_height_m * state.sea_height_m +
+                             state.swell_height_m * state.swell_height_m);
+    const f64 h = std::sqrt(hs * hs + hw * hw);
+    const f64 p1 = static_cast<f64>(load.period_s);
+    const f64 p2 = load.cross_period_s > 0.0f ? static_cast<f64>(load.cross_period_s) : p1;
+    const f64 period = h > 0.0 ? (hs * hs * p1 + hw * hw * p2) / (h * h) : p1;
+    surface.height_m = static_cast<f32>(h);
+    if (load.train_m > 0.0f) surface.train_m = static_cast<f32>(hs);
+    if (load.cross_period_s > 0.0f) surface.cross_m = static_cast<f32>(hw);
+    surface.run_up_m = static_cast<f32>(
+        std::min(gfx::stockdon_r2(h, period, b.slope), gfx::k_swash_steep_cap * h));
+    surface.reach_scale = static_cast<f32>(gfx::swash_reach_scale(h, period));
+    surface.reach_cap = static_cast<f32>(gfx::swash_reach_cap(h, b.bank_max));
+  } else if (!b.swell) {
+    const f64 h = state.height_m();
+    f64 h1 = h;
+    f64 h2 = 0.0;
+    f64 period = b.period_s;
+    const bool two = load.cross_m > 0.0f && load.cross_period_s > 0.0f;
+    if (!(two && b.scene_wind && kind == 2 &&
+          water_train_heights(state, static_cast<f64>(load.period_s),
+                              static_cast<f64>(load.cross_period_s), h1, h2, period))) {
+      const f64 load_h = static_cast<f64>(load.height_m);
+      const f64 scale = load_h > 0.0 ? h / load_h : 0.0;
+      h1 = static_cast<f64>(load.train_m > 0.0f ? load.train_m : load.height_m) * scale;
+      h2 = static_cast<f64>(load.cross_m) * scale;
+      period = b.period_s;
+    }
+    surface.height_m = static_cast<f32>(h);
+    if (load.train_m > 0.0f) surface.train_m = static_cast<f32>(h1);
+    if (two) surface.cross_m = static_cast<f32>(h2);
+    surface.run_up_m = static_cast<f32>(
+        std::min(gfx::stockdon_r2(h, period, b.slope), gfx::k_swash_steep_cap * h));
+    surface.reach_scale = static_cast<f32>(gfx::swash_reach_scale(h, period));
+    surface.reach_cap = static_cast<f32>(gfx::swash_reach_cap(h, b.bank_max));
+  }
+}
+
+// The table and the surface into the frame's copies, and the lift's bound the sea now needs.
+void water_wind_write(WaterWindBody& b, const gfx::WaterWave (&waves)[gfx::k_water_waves],
+                      gfx::WaterSurface& surface, Vector<WaterWindUpload>& uploads) {
+  for (u32 i = 0; i < gfx::k_water_waves; ++i)
+    surface.waves[i] = waves[i];
+  if (b.surface_offset != ~u64{0})
+    b.padding = water_lift_padding(surface, waves, static_cast<f32>(b.bank_max));
+  if (b.entry_offset != ~u64{0}) {
+    WaterWindUpload up;
+    up.surface = false;
+    up.offset = b.entry_offset;
+    up.bytes = static_cast<u32>(sizeof(waves));
+    std::memcpy(up.data, waves, sizeof(waves));
+    uploads.push_back(up);
+  }
+  if (b.surface_offset != ~u64{0}) {
+    WaterWindUpload up;
+    up.surface = true;
+    up.offset = b.surface_offset;
+    up.bytes = static_cast<u32>(sizeof(gfx::WaterSurface));
+    std::memcpy(up.data, &surface, sizeof(surface));
+    uploads.push_back(up);
+  }
+}
+
+}  // namespace
+
 void water_wind_frame(std::span<WaterWindBody> bodies, f64 sky_time_s,
-                      Vector<WaterWindUpload>& uploads) {
+                      Vector<WaterWindUpload>& uploads, const gfx::WindLive& live, f64 world_time_s,
+                      f64 z0) {
   uploads.clear();
   if (bodies.empty()) return;
   const WindHand hand = wind_hand_tunable();
   const SwellHand hand_swell = swell_hand_tunable();
   const f64 quantum = std::floor(sky_time_s / k_water_wind_quantum_s) * k_water_wind_quantum_s;
+  // The live wind's speed over the water now (the forced gust over its mean) and where it blows.
+  const gfx::WindSample live_wind{gfx::wind_live_speed(live, z0), gfx::wind_unit(live.to_deg)};
   for (WaterWindBody& b : bodies) {
+    const u64 frame = b.frames++;
+    if (!live.set && b.live) {
+      b.live = false;  // the live wind cleared: the body's own sea is written again
+      b.key_kind = ~0u;
+    }
+    if (live.set) {
+      // **The live wind** (W151): the body's own sea, stepped by the sea's growth law over the
+      // world's seconds, from the sea it drew last on the grid it drew it on.
+      if (!b.live) {
+        b.live = true;
+        if (frame == 0) {
+          // Set from the first frame (the hand tunable at launch): that wind's grown sea at once,
+          // on the grid the hand wind draws it on.
+          const gfx::WindDesc w = fixed_wind(live_wind.speed_m_s, live.to_deg);
+          b.live_sea = gfx::sea_state(w, 0.0, b.fetch_m);
+          b.live_grid = gfx::water_wind_range(w, b.fetch_m).grid;
+          if (!b.live_grid.valid()) b.live_grid = b.grid;
+        } else {
+          body_drawn(b, b.live_sea, b.live_grid);
+        }
+        b.live_world_s = world_time_s;
+        for (f64& k : b.live_key)
+          k = -1.0;
+      }
+      const f64 dt = std::max(world_time_s - b.live_world_s, 0.0);
+      b.live_world_s = world_time_s;
+      gfx::sea_step(b.live_sea, live_wind, dt, b.fetch_m);
+      gfx::SeaState state = b.live_sea;
+      state.groundswell_height_m = 0.0;
+      if (hand_swell.set && b.open) {
+        gfx::WindDesc swell_of;
+        swell_of.swell.kind =
+            hand_swell.height_m > 0.0 ? gfx::SwellKind::fixed : gfx::SwellKind::none;
+        swell_of.swell.height_m = hand_swell.height_m;
+        swell_of.swell.period_s = hand_swell.period_s;
+        swell_of.swell.to_deg = hand_swell.turned ? hand_swell.to_deg : body_to_deg(b.train_to);
+        gfx::sea_add_groundswell(state, swell_of, quantum);
+      } else {
+        gfx::sea_add_groundswell(state, b.sea, quantum);
+      }
+      const f64 now[5]{state.sea_height_m, state.sea_period_s, state.swell_height_m,
+                       state.groundswell_height_m, static_cast<f64>(state.sea_to.x)};
+      if (b.key_kind == 3 && !live_moved(b.live_key, now)) continue;
+      for (u32 i = 0; i < 5; ++i)
+        b.live_key[i] = now[i];
+      b.key_kind = 3;
+      b.drawn_sea = state;
+      b.drawn_grid = b.live_grid;
+      gfx::WaterWave waves[gfx::k_water_waves];
+      gfx::WaterSurface surface = b.load_surface;
+      if (b.live_grid.valid()) {
+        gfx::water_spectrum_on_grid(state, b.live_grid, b.seed, waves);
+      } else {
+        std::memcpy(waves, b.load_waves, sizeof(waves));
+        for (gfx::WaterWave& w : waves) {
+          w.amplitude = 0.0f;
+          w.steepness = 0.0f;
+        }
+      }
+      water_surface_follow(b, state, 3, false, surface);
+      water_wind_write(b, waves, surface, uploads);
+      continue;
+    }
     // What the body draws now, and the key that says so: 0 the load's table, 1 a hand wind or
     // swell (W136-3: the swell on open bodies only), 2 the body's own sea (`sea`) at the quantum.
     const bool swell_here = hand_swell.set && b.open;
@@ -318,84 +506,32 @@ void water_wind_frame(std::span<WaterWindBody> bodies, f64 sky_time_s,
           w.steepness = 0.0f;
         }
       }
-      // **The shore's trains follow the sea** (W136-2; gfx.md, "The shore's train follows the
-      // sea"), unless the body's own swell is the train. Each train keeps the period and the
-      // arrival field it was built with, so no crest jumps: a varying wind's two span its seas and
-      // take the state's energy by its density at their frequencies, so the surf's period moves
-      // from the second's to the first's as the sea grows; any other body's two keep the load's
-      // split, scaled to the sea now. The run-up and the reach take the period the weights give.
-      // **A swell's train** (W136-3; gfx.md, "A swell a scene names"): where the first train is a
-      // swell (the sky's, or the body's own under a hand swell), it carries the arriving swell now
-      // and the second the wind's sea and its leftover swell, each at the period it was built
-      // with; the run-up and the reach take the two together at the period their energies give.
-      const bool swell_train = b.sky_swell || (b.swell && swell_here);
-      if (swell_train && b.surface_offset != ~u64{0}) {
-        const gfx::WaterSurface& load = b.load_surface;
-        const f64 hs = state.groundswell_height_m;
-        const f64 hw = std::sqrt(state.sea_height_m * state.sea_height_m +
-                                 state.swell_height_m * state.swell_height_m);
-        const f64 h = std::sqrt(hs * hs + hw * hw);
-        const f64 p1 = static_cast<f64>(load.period_s);
-        const f64 p2 = load.cross_period_s > 0.0f ? static_cast<f64>(load.cross_period_s) : p1;
-        const f64 period = h > 0.0 ? (hs * hs * p1 + hw * hw * p2) / (h * h) : p1;
-        surface.height_m = static_cast<f32>(h);
-        if (load.train_m > 0.0f) surface.train_m = static_cast<f32>(hs);
-        if (load.cross_period_s > 0.0f) surface.cross_m = static_cast<f32>(hw);
-        surface.run_up_m = static_cast<f32>(
-            std::min(gfx::stockdon_r2(h, period, b.slope), gfx::k_swash_steep_cap * h));
-        surface.reach_scale = static_cast<f32>(gfx::swash_reach_scale(h, period));
-        surface.reach_cap = static_cast<f32>(gfx::swash_reach_cap(h, b.bank_max));
-      } else if (!b.swell && b.surface_offset != ~u64{0}) {
-        const gfx::WaterSurface& load = b.load_surface;
-        const f64 h = state.height_m();
-        f64 h1 = h;
-        f64 h2 = 0.0;
-        f64 period = b.period_s;
-        const bool two = load.cross_m > 0.0f && load.cross_period_s > 0.0f;
-        if (!(two && b.scene_wind && kind == 2 &&
-              water_train_heights(state, static_cast<f64>(load.period_s),
-                                  static_cast<f64>(load.cross_period_s), h1, h2, period))) {
-          const f64 load_h = static_cast<f64>(load.height_m);
-          const f64 scale = load_h > 0.0 ? h / load_h : 0.0;
-          h1 = static_cast<f64>(load.train_m > 0.0f ? load.train_m : load.height_m) * scale;
-          h2 = static_cast<f64>(load.cross_m) * scale;
-          period = b.period_s;
-        }
-        surface.height_m = static_cast<f32>(h);
-        if (load.train_m > 0.0f) surface.train_m = static_cast<f32>(h1);
-        if (two) surface.cross_m = static_cast<f32>(h2);
-        surface.run_up_m = static_cast<f32>(
-            std::min(gfx::stockdon_r2(h, period, b.slope), gfx::k_swash_steep_cap * h));
-        surface.reach_scale = static_cast<f32>(gfx::swash_reach_scale(h, period));
-        surface.reach_cap = static_cast<f32>(gfx::swash_reach_cap(h, b.bank_max));
-      }
+      // The shore's trains (`water_surface_follow`), and what a live wind starts from.
+      water_surface_follow(b, state, kind, swell_here, surface);
+      b.drawn_sea = state;
+      b.drawn_grid = grid;
     }
-    for (u32 i = 0; i < gfx::k_water_waves; ++i)
-      surface.waves[i] = waves[i];
-    if (b.surface_offset != ~u64{0})
-      b.padding = water_lift_padding(surface, waves, static_cast<f32>(b.bank_max));
-    if (b.entry_offset != ~u64{0}) {
-      WaterWindUpload up;
-      up.surface = false;
-      up.offset = b.entry_offset;
-      up.bytes = static_cast<u32>(sizeof(waves));
-      std::memcpy(up.data, waves, sizeof(waves));
-      uploads.push_back(up);
-    }
-    if (b.surface_offset != ~u64{0}) {
-      WaterWindUpload up;
-      up.surface = true;
-      up.offset = b.surface_offset;
-      up.bytes = static_cast<u32>(sizeof(gfx::WaterSurface));
-      std::memcpy(up.data, &surface, sizeof(surface));
-      uploads.push_back(up);
-    }
+    water_wind_write(b, waves, surface, uploads);
   }
 }
 
-bool scene_flora_wind(const gfx::WindDesc& wind, f64 sky_time_s, Vec2& to, f32& strength) noexcept {
+bool scene_flora_wind(const gfx::WindDesc& wind, f64 sky_time_s, Vec2& to, f32& strength,
+                      const gfx::WindLive& live) noexcept {
   const WindHand hand = wind_hand_tunable();
   gfx::WindDesc used = wind;
+  if (live.set) {
+    // W151: the live mean and direction under the scene's turbulence, and the forced gust over it.
+    used.kind = gfx::WindKind::fixed;
+    used.speed_m_s = live.mean_m_s;
+    used.to_deg = live.to_deg;
+    const gfx::WindSample mean = gfx::wind_at(used, sky_time_s);
+    const f64 forced = gfx::wind_live_speed(live, used.roughness_m) - live.mean_m_s;
+    to = mean.to;
+    strength =
+        static_cast<f32>((gfx::wind_gust(used, mean, Vec2{0.0f, 0.0f}, sky_time_s) + forced) /
+                         k_flora_wind_mean_m_s);
+    return true;
+  }
   if (hand.set) {
     used.kind = gfx::WindKind::fixed;
     used.speed_m_s = hand.speed_m_s;
@@ -415,8 +551,28 @@ bool scene_flora_wind(const gfx::WindDesc& wind, f64 sky_time_s, Vec2& to, f32& 
 
 namespace engine::renderer {
 
-std::span<const WaterWindUpload> GpuScene::water_wind_frame(f64 sky_time_s) {
+std::span<const WaterWindUpload> GpuScene::water_wind_frame(f64 sky_time_s,
+                                                            const gfx::WindLive& live,
+                                                            f64 world_time_s) {
   water_wind_uploads_.clear();
+  // What the frame's wind was (W151): the live state, the trees' share and, below, the sea.
+  static const gfx::WindDesc k_no_wind{};
+  const gfx::WindDesc& scene_wind = data_ != nullptr ? data_->wind : k_no_wind;
+  wind_stats_ = WindStats{};
+  wind_stats_.live = live;
+  wind_stats_.speed_m_s = gfx::wind_live_speed(live, scene_wind.roughness_m);
+  Vec2 trees_to{};
+  f32 trees = 0.0f;
+  if (scene_flora_wind(scene_wind, sky_time_s, trees_to, trees, live))
+    wind_stats_.trees_m_s = static_cast<f64>(trees) * k_flora_wind_mean_m_s;
+  if (scene_wind.kind != gfx::WindKind::none) {
+    const gfx::WindSample now = gfx::wind_at(scene_wind, sky_time_s);
+    wind_stats_.scene_mean_m_s = now.speed_m_s;
+    wind_stats_.scene_to_deg = body_to_deg(now.to);
+  }
+  const WindHand hand = wind_hand_tunable();  // what the readers draw while no live wind is set
+  if (hand.set) wind_stats_.scene_mean_m_s = hand.speed_m_s;
+  if (hand.set && hand.turned) wind_stats_.scene_to_deg = hand.to_deg;
   if (!water_wind_ready_) {
     // Once, after the load: every body that draws a wave table, where its table and its surface
     // are, and what the load wrote into them.
@@ -483,7 +639,14 @@ std::span<const WaterWindUpload> GpuScene::water_wind_frame(f64 sky_time_s) {
   }
   if (water_wind_.empty() || data_ == nullptr) return {};
   renderer::water_wind_frame(std::span<WaterWindBody>(water_wind_.data(), water_wind_.size()),
-                             sky_time_s, water_wind_uploads_);
+                             sky_time_s, water_wind_uploads_, live, world_time_s,
+                             scene_wind.roughness_m);
+  wind_stats_.bodies = water_wind_.size();
+  const WaterWindBody& first = water_wind_[0];
+  wind_stats_.sea_height_m = first.key_kind == 0 ? static_cast<f64>(first.load_surface.height_m)
+                                                 : first.drawn_sea.height_m();
+  wind_stats_.sea_period_s = first.key_kind == 0 ? static_cast<f64>(first.load_surface.period_s)
+                                                 : first.drawn_sea.sea_period_s;
   // The lift's bound: never under the load's (the largest sea a varying wind raises), raised for a
   // higher sea than it — a hand gale on a body loaded calm — and back when that sea goes. The
   // record rides this frame's record upload, which runs after this (scene_renderer.cpp), so the

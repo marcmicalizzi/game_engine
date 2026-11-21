@@ -2331,6 +2331,21 @@ struct FrameWorld @version(1) {
   relayout_ms: f64 = 0
 }
 
+/// The live wind of one frame (W151; docs/subsystems/gfx.md, "The live wind"): its mean 10 m up,
+/// where it blows to (degrees from +x towards +z), the forced gust's level in [0, 1] and the wind
+/// with it (`gfx::wind_live_speed`); the wind the trees' sway was given (their strength over the
+/// mean day, in m/s: the scene's turbulence included); and the first wave-drawing body's sea as
+/// the frame drew it (significant height and peak period; 0 with no such body).
+struct FrameWind @version(1) {
+  mean_m_s: f64 = 0 @unit("m/s")
+  to_deg: f64 = 0
+  gust: f64 = 0
+  speed_m_s: f64 = 0 @unit("m/s")
+  trees_m_s: f64 = 0 @unit("m/s")
+  sea_height_m: f64 = 0 @unit(m)
+  sea_period_s: f64 = 0 @unit(s)
+}
+
 /// One frame of a flythrough benchmark, or of an interactive session measured with
 /// `engine-view --interactive --benchmark`. One line of the `.jsonl` a run writes.
 ///
@@ -2361,7 +2376,9 @@ struct FrameWorld @version(1) {
 /// drew under.
 ///
 /// Version 22 (R124): `gpu_ms` carries the static shape caches' rebuild, `deform_cache`.
-struct FrameRecord @version(22) {
+///
+/// Version 23 (W151): `wind`, the live wind the frame drew (`FrameWind`), null while it is unset.
+struct FrameRecord @version(23) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0; an interactive session's frame, from 0.
@@ -2531,6 +2548,9 @@ struct FrameRecord @version(22) {
   /// number — which a live session's record does not share with the renderer's frame index.
   resolve_stop: u32 = 0 @since(21)
   sun_ray_rule: u32 = 0 @since(21)
+  /// Version 23 (W151): the live wind the frame drew and what its readers took from it; null while
+  /// the live wind is unset (every frame of a session that never touched it).
+  wind: FrameWind? = null @since(23)
 }
 
 /// What a flight's frame loop allocated on the frame's thread, over its recorded frames (every

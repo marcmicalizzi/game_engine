@@ -124,6 +124,11 @@ usize format_status(const TitleStatus& status, char* out, usize size) noexcept {
     return 0;
   }
   usize used = static_cast<usize>(n) < size ? static_cast<usize>(n) : size - 1;
+  if (status.wind != nullptr && status.wind[0] != '\0' && used + 1 < size) {
+    const int w = std::snprintf(out + used, size - used, "%s%s", k_dot, status.wind);
+    if (w > 0)
+      used += static_cast<usize>(w) < size - used ? static_cast<usize>(w) : size - used - 1;
+  }
   if (status.live && used + 1 < size) {
     const int m = std::snprintf(out + used, size - used, "%s%s", k_dot,
                                 status.captured ? "mouse captured (Esc frees it)"

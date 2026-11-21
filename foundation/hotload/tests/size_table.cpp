@@ -24,8 +24,12 @@ ENGINE_EXPECT_SIZE(48, 8, hotload::Value);
 // actor's animation detail and its clips — the tier bias, the clips' names and durations and the
 // seek — three more after ABI 10's (424 = 400 + 3 × 8); one against 10 reads the first 400. ABI 13
 // the doors — the nearest, one by its key and a toggle — three more (448 = 424 + 3 × 8); one
-// against 11 or 12 reads the first 424.
-ENGINE_EXPECT_SIZE(448, 8, hotload::HostApi);
+// against 11 or 12 reads the first 424. ABI 13's second line (W151, before 13 shipped) the wind —
+// its state, a set and a gust — three more (472 = 448 + 3 × 8); a module of the doors' 13 reads
+// the first 448.
+ENGINE_EXPECT_SIZE(472, 8, hotload::HostApi);
+// The wind: two words and four f64 (the mean, the direction, the gust's level and the speed) (40).
+ENGINE_EXPECT_SIZE(40, 8, hotload::WindState);
 // ABI 13's structs, each led by its size. A door: two words, its u64 key, the f64 hinge, four
 // words (heading open, the angle, the angle it opens to, a reserved word) (56). The interact's
 // question: two words and the door (64).

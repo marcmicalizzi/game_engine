@@ -46,6 +46,7 @@
 // `CameraPath` look along.
 
 #include "walk.h"
+#include "wind_controls.h"
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
@@ -130,13 +131,22 @@ enum class ViewControl : u8 {
   dunes_faster,
   exposure_darker,
   exposure_brighter,
-  exposure_hold
+  exposure_hold,
+  // Revision 8 (W151; wind_controls.h): the mean wind a Beaufort force down and up.
+  wind_weaker,
+  wind_stronger
 };
-inline constexpr u32 k_view_controls = 7;
+inline constexpr u32 k_view_controls = 9;
 // The time-lapse's four, the ones revision 2 of the map binds.
 inline constexpr u32 k_rate_controls = 4;
+// The exposure's three follow them, revision 4's: controls [4, 7).
+inline constexpr u32 k_exposure_controls_end = 7;
+inline constexpr bool wind_control(ViewControl control) noexcept {
+  return control == ViewControl::wind_weaker || control == ViewControl::wind_stronger;
+}
 // "sun_slower", "sun_faster", "dunes_slower", "dunes_faster", "exposure_darker",
-// "exposure_brighter", "exposure_hold": the actions' names in a map.
+// "exposure_brighter", "exposure_hold", "wind_weaker", "wind_stronger": the actions' names in a
+// map.
 const char* view_control_name(ViewControl control) noexcept;
 
 // The actions the camera reads, by id in one map. The map is data (`default_fly_map`, a file under
@@ -155,10 +165,12 @@ struct FlyActions {
   input::ActionId capture = input::k_invalid_action;
   input::ActionId marker = input::k_invalid_action;  // Button: remember this tick's camera
   // Buttons, by `ViewControl`; `k_invalid_action` where the map has none.
-  input::ActionId controls[k_view_controls] = {input::k_invalid_action, input::k_invalid_action,
-                                               input::k_invalid_action, input::k_invalid_action,
-                                               input::k_invalid_action, input::k_invalid_action,
-                                               input::k_invalid_action};
+  input::ActionId controls[k_view_controls] = {
+      input::k_invalid_action, input::k_invalid_action, input::k_invalid_action,
+      input::k_invalid_action, input::k_invalid_action, input::k_invalid_action,
+      input::k_invalid_action, input::k_invalid_action, input::k_invalid_action};
+  // Button, the eighth revision's (W151): held, a forced gust rises and stands (wind_controls.h).
+  input::ActionId gust = input::k_invalid_action;
   // Buttons, the walk mode's (walk.h); `k_invalid_action` where the map has none, and then the
   // session only flies. `walk` switches between flying and walking; `jump` jumps while walking.
   input::ActionId walk = input::k_invalid_action;
@@ -183,13 +195,15 @@ struct FlyActions {
 // pad's West), `use` (Q) and `game_1`..`game_4` (1 to 4) (2026-10-16), which the camera itself
 // never reads; 6 appends `camera` (V, the pad's East), first person or third person while walking
 // (2026-11-02, P53); 7 appends `crouch` (C and Left Ctrl, the pad's right stick click), held to
-// crouch while walking (2026-11-17, P54). A revision appends and never reorders, and a log names
+// crouch while walking (2026-11-17, P54); 8 appends the wind's three, `wind_weaker` (`;`),
+// `wind_stronger` (`'`) and `gust` (G, held) (2026-11-20, W151). A revision appends and never
+// reorders, and a log names
 // the hash of the map it was recorded against, so a log recorded against an earlier revision is
 // replayed with that revision (`default_fly_map_for`) rather than refused as a rebind: under it
 // every key means what it meant when the session was flown, and a key a later revision binds — a
 // `.` pressed before it meant anything, an F pressed before it walked — does nothing, as it did
 // then.
-inline constexpr u32 k_fly_map_revision = 7;
+inline constexpr u32 k_fly_map_revision = 8;
 // The bindings engine-view ships (content/input-maps/engine-view.json is the latest revision, byte
 // for byte, and a test holds the two together): WASD to move, E/Space up and Q/Ctrl down, pointer
 // motion to look while the window holds the pointer, Shift fast, Alt slow, Escape to give back the
@@ -197,11 +211,13 @@ inline constexpr u32 k_fly_map_revision = 7;
 // slower and faster and `,` `.` the dunes', F to walk or fly and Space to jump while walking, `-`
 // `=` a sky's exposure darker and brighter and `0` to hold it, E to interact and Q to use while
 // walking, 1 to 4 a game's own four, V first person or third person while walking and C or Ctrl
-// held to crouch while walking; and on a gamepad the left stick to move, the triggers up and down,
+// held to crouch while walking, `;` and `'` the wind a Beaufort force down and up and G held for a
+// gust; and on a gamepad the left stick to move, the triggers up and down,
 // the right stick to turn, the stick clicks fast and slow (the right one crouching while walking),
 // Back as Escape, North to mark, South to jump, West to interact and East to switch the camera.
 // `revision` 1 is the map without the four time-lapse keys, 2 the map without the walk mode's, 3
-// without the exposure's, 4 without the game actions, 5 without `camera`, 6 without `crouch`.
+// without the exposure's, 4 without the game actions, 5 without `camera`, 6 without `crouch`, 7
+// without the wind's.
 input::ActionMap default_fly_map(u32 revision = k_fly_map_revision);
 // The shipped map, of whichever revision hashes to `hash`, into `out`: false when none does (a
 // player's own map, which only `--input-map` can supply).
@@ -359,6 +375,16 @@ struct SessionHeader {
   // always was and a header without the block reads as `follow`.
   bool orbit = false;
   f32 turn_rate_deg_s = 180.0f;
+  // **The wind the session started with** (W151, 2026-11-20; wind_controls.h), written as the
+  // header's `wind` block when `has_wind` (every live session since): the scene's roughness the
+  // gusts are taken at, and the base its first wind key stepped from (`wind_start`: the hand
+  // tunable's mean, or a fixed scene wind's). A replay starts its wind from here, not from the
+  // tunables it is run under, and its keys and its module's calls move it at the ticks the
+  // recording did. A header without the block starts calm at grassland's roughness.
+  bool has_wind = false;
+  f64 wind_mean_m_s = 0.0;
+  f64 wind_to_deg = 0.0;
+  f64 wind_roughness_m = 0.03;
 };
 
 JsonValue session_to_json(const SessionHeader& header);
@@ -534,6 +560,11 @@ class FlySession {
     return walker_ != nullptr && walker_->request_door_toggle(key);
   }
   u32 teleports() const noexcept { return teleports_; }
+  // **The live wind** (W151; wind_controls.h): started from the header's `wind` block, stepped on
+  // every tick by the wind keys' presses and the gust key held — before the tick observer, so a
+  // module reads this tick's wind and its `wind_set` lands on this tick. Nothing of it is hashed.
+  const WindControls& wind() const noexcept { return wind_; }
+  WindControls& wind() noexcept { return wind_; }
 
  private:
   static void on_tick(void* user, SimTick tick, const input::InputState& state);
@@ -562,6 +593,7 @@ class FlySession {
   f32 teleport_heading_ = 0.0f;
   f32 teleport_pitch_ = 0.0f;
   u32 teleports_ = 0;
+  WindControls wind_;
 };
 
 }  // namespace engine::view

@@ -735,6 +735,76 @@ TEST_CASE("hotload: ABI 12's supports reach a module only as far as its records"
 }
 
 TEST_CASE(
+    "hotload: ABI 13's wind entries forward, answer Unsupported without services or through the "
+    "doors' table, and a WindState comes back up to the module's size") {
+  ModuleHost host;
+  const HostApi* api = host.context()->api;
+  CHECK(ENGINE_HOTLOAD_HAS(api, wind_gust));
+  // The doors' 13 ends at door_toggle: a module's helpers do not call past it.
+  HostApi doors = *api;
+  doors.size = static_cast<u32>(offsetof(HostApi, door_toggle) + sizeof(void (*)()));
+  CHECK_FALSE(ENGINE_HOTLOAD_HAS(&doors, wind_state));
+  ModuleContext old_host{&doors, nullptr};
+  WindState wind;
+  CHECK(wind_state(&old_host, wind) == Result::Unsupported);
+  CHECK(wind_set(&old_host, 10.0) == Result::Unsupported);
+  CHECK(wind_gust(&old_host, true) == Result::Unsupported);
+  // No services: Unsupported, after the host's checks on the struct.
+  ModuleContext context{api, nullptr};
+  CHECK(wind_state(&context, wind) == Result::Unsupported);
+  CHECK(wind_set(&context, 10.0) == Result::Unsupported);
+  CHECK(api->wind_state(api->host, nullptr) == Result::InvalidArgument);
+  WindState small;
+  small.size = 16;
+  CHECK(api->wind_state(api->host, &small) == Result::InvalidArgument);
+
+  struct Seen {
+    f64 mean = -1.0;
+    f64 to = -2.0;
+    u32 held = 7;
+  } seen;
+  GameServices services;
+  services.user = &seen;
+  services.wind_state = [](void*, WindState& out) {
+    out.flags = k_wind_live | k_wind_gust_held;
+    out.mean_m_s = 18.9;
+    out.to_deg = 90.0;
+    out.gust = 0.5;
+    out.speed_m_s = 23.0;
+    return Result::Ok;
+  };
+  services.wind_set = [](void* user, f64 mean, f64 to) {
+    static_cast<Seen*>(user)->mean = mean;
+    static_cast<Seen*>(user)->to = to;
+    return Result::Ok;
+  };
+  services.wind_gust = [](void* user, u32 held) {
+    static_cast<Seen*>(user)->held = held;
+    return Result::Ok;
+  };
+  host.set_game_services(services);
+  CHECK(wind_set(&context, 12.5) == Result::Ok);
+  CHECK(seen.mean == 12.5);
+  CHECK(seen.to == -1.0);  // the helper's default keeps the direction
+  CHECK(wind_gust(&context, true) == Result::Ok);
+  CHECK(seen.held == 1u);
+  REQUIRE(wind_state(&context, wind) == Result::Ok);
+  CHECK(wind.size == sizeof(WindState));
+  CHECK(wind.flags == (k_wind_live | k_wind_gust_held));
+  CHECK(wind.speed_m_s == 23.0);
+  // A later ABI's larger struct gets this one's fields and keeps its own size and tail.
+  struct Bigger {
+    WindState wind;
+    u64 tail = 0xABABABABABABABABull;
+  } bigger;
+  bigger.wind.size = sizeof(Bigger);
+  REQUIRE(api->wind_state(api->host, &bigger.wind) == Result::Ok);
+  CHECK(bigger.wind.size == sizeof(Bigger));
+  CHECK(bigger.wind.mean_m_s == 18.9);
+  CHECK(bigger.tail == 0xABABABABABABABABull);
+}
+
+TEST_CASE(
     "hotload: ABI 11's actor animation entries forward, answer Unsupported without services or "
     "through a table that ends before them, and a ClipInfo comes back up to the module's size") {
   ModuleHost host;

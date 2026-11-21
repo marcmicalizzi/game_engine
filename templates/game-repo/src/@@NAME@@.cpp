@@ -96,6 +96,15 @@ void game_tick(ModuleContext* context, View tick, f32 /*dt_f32*/) {
   hud_meter(context, "days", days < k_days_to_survive ? days : k_days_to_survive,
             k_days_to_survive);
 
+  // The session's wind (ABI 13; `wind_set` and `wind_gust` change it, as the `;`, `'` and G keys
+  // do): its speed now, the forced gust included. A host without a live wind answers Unsupported.
+  WindState wind;
+  if (wind_state(context, wind) == Result::Ok) {
+    std::snprintf(line, sizeof(line), "wind %.1f m/s%s", wind.speed_m_s,
+                  (wind.flags & k_wind_gust_held) != 0 ? ", gusting" : "");
+    hud_text(context, 1, line);
+  }
+
   // Ending the run: one JSON object as the result. The host draws this tick's frame, ends the
   // session, and puts the object in the report's `game.result`; game_tick is not called again.
   if (days >= k_days_to_survive) {

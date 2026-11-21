@@ -3441,7 +3441,7 @@ u32 GpuScene::block_stamp(const DynamicBlock& block) {
 }
 
 u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f64 world_time_s,
-                          f64 sky_time_s, const WorldEye& eye) noexcept {
+                          f64 sky_time_s, const WorldEye& eye, const gfx::WindLive& live) noexcept {
   ++flora_frames_;  // what a given-back record's age is counted in
   // Where the eye stands, for the next commit's nearest-first admission past the tail's budget.
   set_tail_eye(to_world(eye));
@@ -3461,7 +3461,7 @@ u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f6
   if (frame.wind_set) {
     to = frame.wind_to;
     strength = frame.wind_strength;
-  } else if (data_ != nullptr && scene_flora_wind(data_->wind, sky_time_s, to, strength)) {
+  } else if (data_ != nullptr && scene_flora_wind(data_->wind, sky_time_s, to, strength, live)) {
     source = "scene";  // W136: the scene's wind (or the hand wind), its gust over a mean day's
   } else {
     const TerrainSampler* ground = ground_ != nullptr ? ground_.get() : flora_ground_.get();

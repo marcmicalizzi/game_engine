@@ -204,9 +204,12 @@ TEST_CASE("fly camera: the default map is the committed file, and every action i
   // read after those (revision 5), which the camera never resolves; and `camera`, first person or
   // third person, last (revision 6, P53), which a revision 5 session does not have and whose V
   // then presses nothing; and `crouch` after it (revision 7, P54), which a revision 6 session does
-  // not have, so its C and Ctrl crouch nothing.
-  CHECK(map.action_count() == 25);
-  CHECK(map.find_action("crouch") == map.action_count() - 1);
+  // not have, so its C and Ctrl crouch nothing; and the wind's three after it (revision 8, W151:
+  // `wind_weaker`, `wind_stronger`, `gust`), which a revision 7 session does not have.
+  CHECK(map.action_count() == 28);
+  CHECK(map.find_action("gust") == map.action_count() - 1);
+  CHECK(view::default_fly_map(7).action_count() == 25);
+  CHECK(view::default_fly_map(7).find_action("crouch") == 24);
   CHECK(actions.crouch != input::k_invalid_action);
   CHECK(view::default_fly_map(6).action_count() == 24);
   view::FlyActions sixth;
@@ -217,7 +220,7 @@ TEST_CASE("fly camera: the default map is the committed file, and every action i
   CHECK(view::default_fly_map_for(view::default_fly_map(6).hash(), sixth_found));
   CHECK(sixth_found.action_count() == 24);
   CHECK(view::default_fly_map(5).action_count() == 23);
-  CHECK(map.find_action("camera") == map.action_count() - 2);
+  CHECK(map.find_action("camera") == 23);
   CHECK(view::default_fly_map(5).find_action("camera") == input::k_invalid_action);
   CHECK(actions.camera != input::k_invalid_action);
   view::FlyActions fifth;

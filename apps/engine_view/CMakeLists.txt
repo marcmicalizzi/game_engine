@@ -32,7 +32,7 @@ endif()
 # the committed session fixture is checked with no GPU and no window (tests/fly_tests.cpp), which
 # is the half of the replay test that runs on every machine CI has. The walk mode (walk.cpp) is the
 # camera's too, and walks on the scene's ground provider in every configuration.
-set(_view_interactive fly_camera.cpp window_input.cpp time_controls.cpp walk.cpp)
+set(_view_interactive fly_camera.cpp window_input.cpp time_controls.cpp wind_controls.cpp walk.cpp)
 if(TARGET engine::scene_collision)
   # The walker's collision (walk.h, docs/subsystems/scene_collision.md): a `physics::CharacterBody`
   # on the static bodies the scene-collision capability keeps round it. Both capabilities are
@@ -45,7 +45,8 @@ endif()
 # with no GPU in tests/test_device_tests.cpp.
 set(_view_tests tests/test_device_tests.cpp
                 tests/view_tests.cpp tests/mesh_view_tests.cpp tests/fly_tests.cpp
-                tests/interactive_tests.cpp tests/time_controls_tests.cpp tests/walk_tests.cpp
+                tests/interactive_tests.cpp tests/time_controls_tests.cpp
+                tests/wind_controls_tests.cpp tests/walk_tests.cpp
                 tests/walk_view_tests.cpp tests/far_tests.cpp tests/frame_loop_tests.cpp
                 tests/game_view_tests.cpp tests/startup_trace_view_tests.cpp
                 tests/loading_view_tests.cpp tests/static_world_view_tests.cpp
@@ -78,6 +79,11 @@ if(TARGET engine::ruins)
   # A --game module's `nearest_placement` answered from the scene, whatever the ring holds (roadmap
   # P44; tests/game_placements_tests.cpp): compiled with the ruins, which the proof streams.
   list(APPEND _view_tests tests/game_placements_tests.cpp)
+endif()
+if(TARGET engine::water AND TARGET engine::terrain)
+  # The wind's keys replayed offscreen over an open basin, a record a frame (W151; apps.md, "The
+  # wind on three keys"): the basin's ground and its water need both.
+  list(APPEND _view_tests tests/wind_view_tests.cpp)
 endif()
 if(TARGET engine::water AND TARGET engine::terrain AND TARGET engine::scatter AND TARGET engine::sky)
   # A walk into the committed oasis pool (docs/subsystems/water.md, "Wading"): slowed by the depth,

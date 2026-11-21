@@ -400,6 +400,39 @@
       ],
       "kind": "button",
       "name": "crouch"
+    },
+    {
+      "bindings": [
+        {
+          "code": 51,
+          "scale": 1.0,
+          "source": "key"
+        }
+      ],
+      "kind": "button",
+      "name": "wind_weaker"
+    },
+    {
+      "bindings": [
+        {
+          "code": 52,
+          "scale": 1.0,
+          "source": "key"
+        }
+      ],
+      "kind": "button",
+      "name": "wind_stronger"
+    },
+    {
+      "bindings": [
+        {
+          "code": 10,
+          "scale": 1.0,
+          "source": "key"
+        }
+      ],
+      "kind": "button",
+      "name": "gust"
     }
   ],
   "version": 1
