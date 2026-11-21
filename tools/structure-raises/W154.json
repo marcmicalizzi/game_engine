@@ -1,7 +1,7 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "W154",
-  "reason": "W154: the storm's grounding on the wind page and flora.md's section, the bounds, cost and live-wind rows of gfx.md and renderer.md, and gpu_scene.h's one member (the trees' lag of the live mean) are the change's point",
+  "reason": "W154: the storm's grounding on the wind page and flora.md's section (with the far ring's still forms in a live storm), the bounds, cost and live-wind rows of gfx.md and renderer.md, and gpu_scene.h's one member (the trees' lag of the live mean) are the change's point",
   "date": "2026-11-21",
   "by": "Marc Micalizzi",
   "deltas": {
@@ -9,6 +9,6 @@
     "renderer.gpu_scene_h.lines": 1,
     "page:docs/subsystems/renderer.md": 2537,
     "page:docs/subsystems/gfx.md": 182,
-    "page:docs/subsystems/flora.md": 4321
+    "page:docs/subsystems/flora.md": 4779
   }
 }
