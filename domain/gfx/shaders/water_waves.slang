@@ -247,7 +247,7 @@ float water_swash_front_at(float run_up, float jitter, float slope, float period
 // ---- the body's surface record (gfx::WaterSurface, water_swash.h) --------------------------------
 static const float k_water_breaking_gamma = 0.78;  // gfx::k_water_breaking_gamma (McCowan 1894)
 static const float k_water_bank_park = 0.05;       // gfx::k_water_bank_park_m
-static const float k_water_mesh_inside = 0.85;     // gfx::k_water_mesh_inside
+static const float k_water_mesh_inside = 0.8;      // gfx::k_water_mesh_inside
 static const uint k_water_surface_spectrum = 1u;   // gfx::k_water_surface_spectrum
 static const uint k_water_surface_open = 2u;       // gfx::k_water_surface_open
 static const float k_water_train_deep_kd = 1.0;    // gfx::k_water_train_deep_kd
@@ -709,9 +709,9 @@ float water_surface_front(WaterSurface* s, float2 p, WaterField f, float t, out 
   // has the lobes a vertex cannot carry, a tenth and a twentieth either way, and where the mesh's
   // smooth front stood past a pixel's lobed one the water pixels between were bared — the bed drawn
   // through the water's branch, which is not the ground's own picture — in a strip with the mesh's
-  // straight edges, up to 1.4 m wide on a 1:30 beach. Held 0.85 of the way, the mesh's edge is
-  // under the sheet everywhere and what lies between it and the front is the ground's own pixels,
-  // filmed. It showed once the sheets overlapped and their edge stood still to be looked at.
+  // straight edges, up to 1.4 m wide on a 1:30 beach. Held 0.8 of the way (W152-3: at 0.85, the
+  // lobes' least, there was no margin), the mesh's edge is under the sheet everywhere and what lies
+  // between it and the front is the ground's own pixels, filmed. It showed once the sheets overlapped and their edge stood still to be looked at.
   return water_swash_front_at(water_place_run_up(s, f),
                               water_reach_variation(s, p, false) * water_shelter(f) *
                                   k_water_mesh_inside,

@@ -263,8 +263,14 @@ inline constexpr f64 k_water_bank_park_m = 0.05;
 // The mesh's sheet reaches this share of the smooth front's reach (S102): a pixel's own reach has
 // lobes of a tenth and a twentieth either way that a vertex cannot carry, and the mesh's edge has
 // to lie under every pixel's sheet, or the water pixels past a pixel's front are bared in strips
-// with the mesh's straight edges (water_waves.slang, `water_surface_front`).
-inline constexpr f64 k_water_mesh_inside = 0.85;
+// with the mesh's straight edges (water_waves.slang, `water_surface_front`). **Under, not at, the
+// lobes' least** (W152-3): at 0.85, their least, the margin was nothing where the lobes are at
+// their least, and a triangle between a covered vertex and a parked one crosses the ground where
+// the line between the two does, not where the front is; since W152-2 reads the lobes at the
+// waterline, a lobe's least holds across the whole swash and the test bay's far bank showed water
+// bared behind the sheet (swash_scene_tests.cpp's one-surface case: 7 pairs over its bound,
+// 123 codes). A twentieth of the reach is the margin.
+inline constexpr f64 k_water_mesh_inside = 0.8;
 // `WaterSurface::flags`.
 inline constexpr u32 k_water_surface_spectrum = 1u;  // the waves are the sixteen below
 inline constexpr u32 k_water_surface_open = 2u;      // open: the lift fades in from the outline
