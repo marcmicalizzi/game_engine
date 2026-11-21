@@ -1573,6 +1573,43 @@ TEST_CASE("ledger: a glTF whose names cannot be followed says so, and no raise i
         static_cast<i64>(std::filesystem::file_size(props / "crate.gltf")));
 }
 
+// A string a record holds that no host could admit as a file — a URL, text with a colon, a root no
+// host has, a climb out of every root — digests as one constant line for that string and never
+// makes the digest incomparable (protocol.md, "Which strings are files"), so it blocks neither a
+// raise nor a person's close; an entry the raiser listed in `subject.assets` stays strict.
+TEST_CASE("ledger: a string no host could admit never blocks a raise or a close") {
+  test::TempDir tmp("protocol_ledger_not_files");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  h.roles(k_roles);
+  h.open(dir, true);
+  DigestWorld w;
+  w.make(h, dir);
+  h.stdio();
+  const JsonValue item = at(w.raise(h), "reviews")[0];  // a person's
+  w.set(h, w.placement, "source",
+        strings({"https://example.invalid/crate.png", "fixed: see ruins.png", "x://a.png",
+                 "../../../climb.png"}));
+  h.bind(5, "person-at-desk", "person", "reviewer");
+  const JsonValue now = opened_detail(h, at(item, "id"));
+  CHECK(at(now, "comparable").as_bool());
+  CHECK(at(now, "outside").size() == 0);
+  const JsonValue closed = h.review("review.close", obj({{"review", at(item, "id")},
+                                                         {"resolution", JsonValue("Accepted")},
+                                                         {"revision", at(item, "revision")},
+                                                         {"digest", at(now, "digest")},
+                                                         {"attribution", who("person")}}));
+  CHECK(at(closed, "state").as_string() == "Closed");
+  // The same strings there before a raise: it stands.
+  h.stdio();
+  (void)w.raise(h, "Agent");
+  JsonValue error;
+  CHECK(h.fails("review.raise",
+                w.raise_params("Agent", strings({"https://example.invalid/a.png"})),
+                &error) == codes::k_invalid_argument);
+  CHECK(reason_of(error) == "subject not readable here");
+}
+
 // What a digest reads is bounded, by four bounds named as tunables (protocol.md, "What it costs"):
 // a raise past one is refused naming it and the figure, and a detail or a close past one says so
 // in the stream, which differs from the stamp, so a file grown past its bound is "subject moved".

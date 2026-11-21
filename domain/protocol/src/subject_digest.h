@@ -91,6 +91,7 @@ struct SubjectPlan {
     // file the subject names.
     std::string named_by;
     std::string uri;
+    std::string root;  // the root it was admitted under, by name
   };
   Vector<File> files;
   // Files past the files bound, named by the records or a glTF and never collected: one count,
@@ -115,9 +116,12 @@ struct SubjectPlan {
 // The document half, under the dispatch lock: the records' and blobs' lines and the files to read,
 // each admitted through the roots now. A relative asset path resolves against the session's
 // document directory, as every path a record names does (protocol.md, "Where a relative path
-// starts").
+// starts"). `raised_roots` are the root names the item's raise admitted files under (empty at a
+// raise): a string a record holds that this host cannot admit is outside only when this host
+// lacks one of them, and otherwise one constant line (protocol.md, "Which strings are files").
 void compose_subject(const Context& ctx, const Session& session, const ReviewSubject& subject,
-                     const DigestBounds& bounds, SubjectPlan& plan);
+                     const Vector<std::string>& raised_roots, const DigestBounds& bounds,
+                     SubjectPlan& plan);
 // The files half, with no lock of the host's held: reads only what the plan holds.
 void read_subject_files(SubjectPlan& plan, const DigestBounds& bounds);
 // Whether the session's document is the one the plan composed, under the lock again.

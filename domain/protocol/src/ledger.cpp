@@ -812,9 +812,10 @@ bool digest_passes(Context& ctx, const std::string& session_id, DigestFor use, F
     if (session == nullptr) return false;
     ReviewSubject subject;
     u64 revision = 0;
-    if (!first(*session, subject, revision, error)) return false;
+    Vector<std::string> raised_roots;
+    if (!first(*session, subject, raised_roots, revision, error)) return false;
     SubjectPlan plan;
-    compose_subject(ctx, *session, subject, bounds, plan);
+    compose_subject(ctx, *session, subject, raised_roots, bounds, plan);
     plan.refuse_over = use == DigestFor::raise;
     if (use == DigestFor::raise && !plan.over.empty()) {
       error = over_error(plan.over[0]);
@@ -933,7 +934,8 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
   };
   // Every refusal that reads no file, before the digest reads any (protocol.md, "What it costs"):
   // the subject's layer and records, the session's gate on writes, and the ledger's bounds.
-  const auto first = [&](Session& session, ReviewSubject& subject, u64& revision, RpcError& e) {
+  const auto first = [&](Session& session, ReviewSubject& subject, Vector<std::string>& raised_roots,
+                         u64& revision, RpcError& e) {
     const doc::Document& d = session.document();
     if (!params.subject.layer.empty() && d.find_layer(params.subject.layer) < 0) {
       e = make_error(codes::k_not_found, "no layer named " + params.subject.layer);
@@ -952,6 +954,7 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
         !ledger_has_room(vfs, doc::DocumentStore::path_of(session.dir(), k_ledger_file), e))
       return false;
     subject = params.subject;
+    raised_roots.clear();  // a raise records them; it reads none
     return update_ledger(
         vfs, session, true, false, revision,
         [&](LedgerFile& ledger, bool& write, RpcError& e2) {
@@ -990,6 +993,7 @@ bool review_raise(Context& ctx, const ReviewRaiseParams& params, ReviewsResult& 
             r.subject.journal_length = static_cast<u32>(d.journal().size());
             r.subject.undo_position = session.undo_position();
             r.raised_digest = stamped.digest;
+            r.raised_roots = stamped.roots;
             r.report = params.report;
             r.task = params.task;
             r.raised_by = caller.who;
@@ -1095,7 +1099,8 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
     return true;
   };
   io::Vfs& vfs = ctx.sessions->vfs();
-  const auto first = [&](Session& session, ReviewSubject& subject, u64& revision, RpcError& e) {
+  const auto first = [&](Session& session, ReviewSubject& subject, Vector<std::string>& raised_roots,
+                         u64& revision, RpcError& e) {
     if (!session.may_write_side_files(e)) return false;
     return update_ledger(
         vfs, session, true, false, revision,
@@ -1105,6 +1110,7 @@ bool review_close(Context& ctx, const ReviewCloseParams& params, ReviewsResult& 
           if (r == nullptr || !closable(*r, e2)) return false;
           // An item's subject never changes after the raise: the one read is the one checked.
           subject = r->subject;
+          raised_roots = r->raised_roots;
           return true;
         },
         e);
@@ -1236,10 +1242,12 @@ bool review_list(Context& ctx, const ReviewListParams& params, ReviewsResult& ou
   // lock); the ledger read again under the dispatch lock says whether the item it answers is the
   // one the pass composed for.
   // With no filter beside it the detail answers its item, which `find_review` found.
-  const auto first = [&](Session& session, ReviewSubject& subject, u64& revision, RpcError& e) {
+  const auto first = [&](Session& session, ReviewSubject& subject, Vector<std::string>& raised_roots,
+                         u64& revision, RpcError& e) {
     if (!list(session, revision, e)) return false;
     out.ledger_revision = revision;
     subject = out.reviews[0].subject;
+    raised_roots = out.reviews[0].raised_roots;
     return true;
   };
   const auto decide = [&](Session& session, const SubjectState&, u64 revision, bool& moved,

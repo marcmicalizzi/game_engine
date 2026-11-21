@@ -2633,6 +2633,9 @@ struct SubjectState @version(1) {
   blobs: u32 = 0
   assets: u32 = 0
   asset_bytes: u64 = 0
+  /// The names of the roots the files it read were admitted under, sorted, each once: names only,
+  /// never a place. A raise records them on the item (`ReviewInfo.raised_roots`).
+  roots: string[]
   /// Milliseconds the computation took.
   ms: f64 = 0
   /// How many times it composed the document and read the files: more than 1 when the document or
@@ -2682,6 +2685,12 @@ struct ReviewInfo @version(3) @additive(2, 3) {
   /// The subject digest the close was decided at: the one its closer saw, which the host found
   /// equal to the subject's digest then. Empty while open.
   decided_at: string @since(3)
+  /// The names of the roots the raising host admitted the subject's files under
+  /// (`SubjectState.roots` at the raise): names only, never a place. A host that lacks one of them
+  /// cannot compute the raiser's digest, so a string a record holds that it cannot admit is
+  /// `outside` there rather than a constant line. Empty on an item raised before it: every such
+  /// string is then a constant line on every host, and only `subject.assets` is held strictly.
+  raised_roots: string[] @since(3)
 }
 
 /// `ledger.json` in a document directory: the tasks and review items. Never cached by a host:
