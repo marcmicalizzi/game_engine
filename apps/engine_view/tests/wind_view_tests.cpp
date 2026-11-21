@@ -13,6 +13,9 @@
 #include <domain/gfx/wind.h>
 #include <foundation/input/input_log.h>
 #include <foundation/io/vfs.h>
+#if defined(WALK_POC_WIND_PATH)
+#include <foundation/hotload/module_abi.h>
+#endif
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
@@ -211,3 +214,141 @@ TEST_CASE("engine-view: a replayed storm steps the live wind and its readers, fr
   CHECK(end.sea > gusty[unset].sea);
   CHECK(end.sea > plain.back().sea);
 }
+
+#if defined(WALK_POC_WIND_PATH)
+
+namespace {
+
+bool summary_of(const Run& run, JsonValue& out) {
+  usize end = run.output.size();
+  while (end > 0) {
+    usize begin = run.output.find_last_of('\n', end - 1);
+    begin = begin == std::string::npos ? 0 : begin + 1;
+    const std::string line = run.output.substr(begin, end - begin);
+    if (!line.empty() && line[0] == '{' && parse_json(line, out).ok && out.is_object()) return true;
+    if (begin == 0) break;
+    end = begin - 1;
+  }
+  return false;
+}
+
+f64 field(const JsonValue* v, const char* key) {
+  return number(v != nullptr ? v->find(key) : nullptr);
+}
+
+}  // namespace
+
+// **A game module drives the wind** (ABI 13's `wind_state`, `wind_set`, `wind_gust`; apps.md, "The
+// wind a module reads and sets"), end to end: walk_poc_wind (game/walk_poc/wind_probe.cpp) reads
+// the scene's wind as the session starts, has two out-of-range sets refused, sets 20 m/s to 90
+// degrees, holds a gust three seconds and lets it go, reading the state at each step and ending the
+// run with every answer. Nobody presses a key, so the frames' records are the module's wind alone:
+// held against its answers, the mean the module set from the frame it set it, the gust rising while
+// held and dying after.
+TEST_CASE("engine-view: a game module reads, sets and gusts the live wind, frame by frame") {
+  const test::TempDir tmp("engine_view_wind_game");
+  const std::string scene = basin_scene(tmp);
+  input::InputLog keys;
+  keys.set_map(view::default_fly_map());
+  view::SessionHeader header;
+  header.params.tick_hz = k_hz;
+  header.ticks = k_ticks;
+  header.scene = scene;
+  header.start.position = WorldPos{0.0, 6.0, 24.0};
+  header.start.pitch = -0.3f;
+  header.has_wind = true;
+  header.wind_mean_m_s = 3.0;
+  header.wind_to_deg = 30.0;
+  keys.set_session(view::session_to_json(header));
+  const std::string log = tmp.file("module.jsonl");
+  REQUIRE(keys.save(log) == io::Status::Ok);
+  const std::string records = tmp.file("module-records.jsonl");
+  const Run run = run_view({"--replay-input", log, "--scene", scene, "--offscreen", "--width",
+                            "320", "--height", "200", "--ddc", tmp.file("ddc"), "--benchmark",
+                            records, "--game", WALK_POC_WIND_PATH});
+  if (run.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << run.output.substr(0, 300));
+    return;
+  }
+  REQUIRE_MESSAGE(run.exit_code == 0, run.output.substr(0, 3000));
+  JsonValue summary;
+  REQUIRE_MESSAGE(summary_of(run, summary), run.output.substr(0, 3000));
+  const JsonValue* interactive = summary.find("interactive");
+  REQUIRE(interactive != nullptr);
+  const JsonValue* game = interactive->find("game");
+  REQUIRE(game != nullptr);
+  const JsonValue* result = game->find("result");
+  const bool has_result = result != nullptr && result->is_object();
+  REQUIRE_MESSAGE(has_result, write_json(*game));
+  MESSAGE("the module's answers: " << write_json(*result));
+
+  constexpr f64 k_ok = 0.0;
+  const f64 invalid = static_cast<f64>(hotload::Result::InvalidArgument);
+  const f64 live = static_cast<f64>(hotload::k_wind_live);
+  const f64 held_flags = static_cast<f64>(hotload::k_wind_live | hotload::k_wind_gust_held);
+  // As the session starts: the scene's 3 m/s, not live, no gust.
+  const JsonValue* start = result->find("start");
+  CHECK(field(start, "result") == k_ok);
+  CHECK(field(start, "flags") == 0.0);
+  CHECK(field(start, "mean_m_s") == doctest::Approx(3.0));
+  CHECK(field(start, "gust") == 0.0);
+  // The host's bounds, then the set, read back the next tick.
+  CHECK(field(result, "set_negative") == invalid);
+  CHECK(field(result, "set_past_max") == invalid);
+  CHECK(field(result, "set") == k_ok);
+  const JsonValue* after_set = result->find("after_set");
+  CHECK(field(after_set, "result") == k_ok);
+  CHECK(field(after_set, "flags") == live);
+  CHECK(field(after_set, "mean_m_s") == 20.0);
+  CHECK(field(after_set, "to_deg") == 90.0);
+  CHECK(field(after_set, "gust") == 0.0);
+  CHECK(field(after_set, "speed_m_s") == doctest::Approx(20.0));
+  // The gust: rising while held, the wind with it above the mean; dying once let go.
+  CHECK(field(result, "gust_on") == k_ok);
+  CHECK(field(result, "gust_off") == k_ok);
+  const JsonValue* held = result->find("held");
+  const JsonValue* released = result->find("released");
+  const JsonValue* after = result->find("after");
+  CHECK(field(held, "flags") == held_flags);
+  CHECK(field(released, "flags") == held_flags);
+  CHECK(field(after, "flags") == live);
+  const f64 g1 = field(held, "gust"), g3 = field(released, "gust"), g4 = field(after, "gust");
+  CHECK(g1 > 0.0);
+  CHECK(g3 > g1);
+  CHECK(g3 < 1.0);
+  CHECK(g4 > 0.0);
+  CHECK(g4 < g3);
+  CHECK(field(released, "speed_m_s") > field(held, "speed_m_s"));
+  CHECK(field(held, "speed_m_s") > 20.0);
+  CHECK(field(after, "mean_m_s") == 20.0);
+
+  // The frames: every record the live wind is in is the module's 20 m/s, its gust no higher than
+  // the module read at its release, and some frame draws the gust the module held.
+  std::ifstream in(records);
+  REQUIRE(in.good());
+  std::string line;
+  u32 frames = 0, set_frames = 0, gust_frames = 0;
+  f64 top_gust = 0.0;
+  while (std::getline(in, line)) {
+    JsonValue r;
+    if (line.empty() || !parse_json(line, r).ok || !r.is_object()) continue;
+    const f64 time = number(r.find("time"));
+    if (!(time >= 0.0) || time * k_hz > static_cast<f64>(k_ticks) + 0.5) continue;
+    ++frames;
+    const JsonValue* w = r.find("wind");
+    if (w == nullptr || !w->is_object()) continue;
+    ++set_frames;
+    CHECK(number(w->find("mean_m_s")) == 20.0);
+    const f64 gust = number(w->find("gust"));
+    CHECK(gust <= g3 + 1e-12);
+    if (gust > 0.0) ++gust_frames;
+    top_gust = std::max(top_gust, gust);
+  }
+  MESSAGE(frames << " records, " << set_frames << " with the live wind, " << gust_frames
+                 << " gusting, the largest gust " << top_gust);
+  CHECK(set_frames >= 1);
+  CHECK(gust_frames >= 1);
+  CHECK(top_gust >= g1);
+}
+
+#endif  // WALK_POC_WIND_PATH

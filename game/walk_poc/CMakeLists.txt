@@ -72,7 +72,12 @@ if(TARGET engine_game_walk_poc AND TARGET engine_engine_view_tests)
   # of its own source, stateless, that asks the casts, the supports and the water in the case's own
   # scene and ends the run with every answer.
   engine_game_module(NAME walk_poc_world OUTPUT_DIRECTORY "${_tests}" SOURCES world_probe.cpp)
+  # And walk_poc_wind for ABI 13's wind (roadmap W151; apps.md "The wind a module reads and sets"):
+  # stateless, it reads, sets, gusts and lets go of the session's wind on fixed ticks and ends the
+  # run with every answer, held against the frames' records (apps/engine_view/tests/wind_view_tests.cpp).
+  engine_game_module(NAME walk_poc_wind OUTPUT_DIRECTORY "${_tests}" SOURCES wind_probe.cpp)
   add_dependencies(engine_engine_view_tests engine_game_walk_poc_world)
+  add_dependencies(engine_engine_view_tests engine_game_walk_poc_wind)
   add_dependencies(engine_engine_view_tests engine_game_walk_poc_level engine_game_walk_poc_shape)
   add_dependencies(engine_engine_view_tests engine_game_walk_poc engine_game_walk_poc_bad_action
                    engine_game_walk_poc_failing engine_game_walk_poc_no_props
@@ -92,6 +97,7 @@ if(TARGET engine_game_walk_poc AND TARGET engine_engine_view_tests)
     WALK_POC_LEVEL_PATH="$<TARGET_FILE:engine_game_walk_poc_level>"
     WALK_POC_SHAPE_PATH="$<TARGET_FILE:engine_game_walk_poc_shape>"
     WALK_POC_WORLD_PATH="$<TARGET_FILE:engine_game_walk_poc_world>"
+    WALK_POC_WIND_PATH="$<TARGET_FILE:engine_game_walk_poc_wind>"
     WALK_POC_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
   # The hot-reload case compiles a second build of the fixture, a field added, into its own
   # scratch directory with the exported command, as foundation/hotload's tests do.
