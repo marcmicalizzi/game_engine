@@ -131,6 +131,41 @@ Roadmap W155, the same night. Section 2's table left two classes it could not sp
 - `gpu_frame`: the frame's first command to its last on the GPU's clock (`span_ms`), what of it no zone names (`untimed_ms`), how long after its submission the GPU began it (`queued_ms`) and, of that, how long after the GPU had finished our frame before it (`elsewhere_ms`); and the frame's own slot wait split by the frame it waited for — the GPU inside that frame (`wait_gpu_ms`), not yet started on it (`wait_before_ms`), after it until the thread woke (`wait_late_ms`). The marks are two timestamps a frame; the host's clock comes from `VK_KHR_calibrated_timestamps`, one call every half second.
 - `world` version 2: `update_ms` by who spent it — the ring, the drawn ground's calls, the placements' calls (events and commits) and the re-standing — and the placements' calls by part (events, due tiles, meshes, hand-off cells, admission, tail, hand-over).
 - `frame_ms` is the frame's own interval, `sections.wall_ms`; until version 23 it was the one before.
+- `sections` version 2: the frame thread's own CPU time over the frame (`thread_cpu_ms`) and the wall time beyond it (`off_cpu_ms`), so a long recording or update that held little of the CPU says it was the thread descheduled. On Windows the figure is the system's thread times, good to a 15.6 ms clock tick; the startup trace's stages carry the same per stage (`cpu_ns`), which is how R195's flights are read again below.
+
+**R195's "world's own" stalls, read again by their thread CPU.** R195's flights kept their startup traces, whose stages carry the frame thread's CPU. Of B-4k's walk (from 311 s into its trace), the stages on the frame thread over 25 ms that are not inside another:
+
+| stage | thread on the CPU | stages | their ms | thread CPU ms |
+|---|---|---:|---:|---:|
+| placements commit | under half the stage | 14 | 653.7 | 93.8 |
+| world update | under half | 9 | 332.4 | 0.0 |
+| table set | under half | 1 | 40.8 | 0.0 |
+| world update | half or more | 1 | 43.0 | 46.9 |
+| placements commit | half or more | 1 | 25.2 | 15.6 |
+
+**Two of 26 were the world's work; 24 were the frame thread off the processor** on a machine whose other processes held 79 to 100 % of it — the four "updates their parts do not name" and the 73 ms tail commit (frame 197) among them, each with no CPU time to its name. What is the world's: the hand-over near frame 1,579, whose slot write held 46.9 ms of CPU for 3,904 slots (where the first fill wrote 297,268 in 114 ms) and whose relayout's chain resize was 47.7 ms in the driver with none, and one update of 43 ms.
+
+**The walk again with the new record** (T1, this row's tip before the mend below; 04:00, session locked, the machine shared with five rows' builds and GPU cases and this row's own driverless test run beside the load and the walk; 2,370 frames):
+
+| | median | p95 | p99 | worst | over 33 | over 50 | over 100 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| T1, frame ms (own interval) | 18.15 | 22.24 | 28.39 | 94.8 | 16 | 6 | 0 |
+
+Every frame over 33 ms by its own record:
+
+| cause (the record's own words) | frames | wall ms | the longest (frame: wall, the part) |
+|---|---:|---:|---|
+| slot wait, late: the GPU had finished the awaited frame and the thread woke 19–76 ms after | 5 | 273.0 | 2163: 94.8 (late 76.0), 2176: 54.0 (34.0), 2178: 43.5 (24.3), 1868: 42.5 (19.4) |
+| slot wait, the GPU inside the awaited frame (spans 18–22 ms, nothing untimed) | 4 | 151.7 | 2197: 47.3, 2124: 35.8, 1872: 35.0, 936: 33.6 |
+| the frame's beginning outside its wait | 3 | 157.7 | 2122: 56.3, 2174: 51.6, 2120: 49.8 |
+| a placements commit, the thread off the CPU (trace: 51.8 ms, CPU 0) | 1 | 65.2 | 2161 |
+| the graph's compile, with 13.5 ms of the GPU elsewhere before the frame | 1 | 62.6 | 1267 |
+| a pass's recording | 1 | 49.0 | 932 |
+| **the world's own: the hand-over's slot write** (3,744 slots, write 30.8 ms, relayout 5.0; trace CPU 46.9 of 37.4 ms) | 1 | 39.8 | 1577 |
+
+- **The slot waits are three things and the record now says which**: five late wakes (the GPU's frame was done; the thread was not running), four the GPU's own frame (whose span carries 0.2 ms no zone names — the zones cover the frame), and no frame whose GPU was held elsewhere for long; `elsewhere_ms` reached 13.5–14.6 ms on two frames only.
+- **The world's update is named**: over the 25 updates longer than 5 ms, 91.6 % of their time is in the named parts at the top (the ring, the drawn ground, the placements, the re-standing), and inside the placements their named parts cover the rest to within a millisecond.
+- **The world's own stalls are one frame here**, the growth's slot write at frame 1577; the rest of R195's list did not recur or was the thread off the CPU.
 
 ## What this does not cover
 
