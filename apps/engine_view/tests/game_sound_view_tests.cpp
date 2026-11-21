@@ -188,8 +188,8 @@ TEST_CASE(
   // (frame 24,000) and 360 (frame 72,000), and each rings 0.18 s.
   f64 quarter[8] = {};
   for (usize f = 0; f < 96000; ++f) {
-    const f64 l = samples[2 * f];
-    const f64 r = samples[2 * f + 1];
+    const f64 l = static_cast<f64>(samples[2 * f]);
+    const f64 r = static_cast<f64>(samples[2 * f + 1]);
     quarter[f / 12000] += l * l + r * r;
   }
   MESSAGE("energy by quarter second: " << quarter[0] << " " << quarter[1] << " " << quarter[2]
@@ -207,8 +207,8 @@ TEST_CASE(
   f64 left = 0.0;
   f64 right = 0.0;
   for (usize f = 24000; f < 36000; ++f) {
-    left += static_cast<f64>(samples[2 * f]) * samples[2 * f];
-    right += static_cast<f64>(samples[2 * f + 1]) * samples[2 * f + 1];
+    left += static_cast<f64>(samples[2 * f]) * static_cast<f64>(samples[2 * f]);
+    right += static_cast<f64>(samples[2 * f + 1]) * static_cast<f64>(samples[2 * f + 1]);
   }
   CHECK(left / right == doctest::Approx(1.0).epsilon(0.05));
 }

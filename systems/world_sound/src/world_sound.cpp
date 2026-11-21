@@ -31,7 +31,10 @@ constexpr u32 k_handle_slots = 256;
 // The WAV is written a second at a time, from a buffer made at `open`.
 constexpr u32 k_wav_buffer_frames = k_sample_rate;
 
-bool finite(f64 v) noexcept { return std::isfinite(v); }
+template <class T>
+bool finite(T v) noexcept {
+  return std::isfinite(v);
+}
 
 std::string join(const std::string& dir, const std::string& path) {
   if (path.empty()) return path;
@@ -158,9 +161,11 @@ bool render_recipe(const scene::SoundRecipe& recipe, Vector<f32>& out, std::stri
   const u32 frames = static_cast<u32>(static_cast<f64>(recipe.duration_s) * k_sample_rate + 0.5);
   const u32 attack = static_cast<u32>(static_cast<f64>(recipe.attack_s) * k_sample_rate + 0.5);
   const u32 release = static_cast<u32>(static_cast<f64>(recipe.release_s) * k_sample_rate + 0.5);
-  const f32 level = static_cast<f32>(gain_from_db(recipe.level_db));
-  const i64 s0 = phase_step(recipe.frequency_hz);
-  const i64 s1 = recipe.kind == scene::SoundRecipeKind::Chirp ? phase_step(recipe.end_hz) : s0;
+  const f32 level = static_cast<f32>(gain_from_db(static_cast<f64>(recipe.level_db)));
+  const i64 s0 = phase_step(static_cast<f64>(recipe.frequency_hz));
+  const i64 s1 = recipe.kind == scene::SoundRecipeKind::Chirp
+                     ? phase_step(static_cast<f64>(recipe.end_hz))
+                     : s0;
   const i64 span = frames > 1 ? static_cast<i64>(frames - 1) : 1;
   out.resize(frames);
   u32 phase = 0;
@@ -354,7 +359,7 @@ bool SoundStage::open(const StageConfig& config, const scene::Sound* block, std:
     Impl::Clip clip;
     clip.name = c.name;
     clip.source = c.recipe.has_value() ? std::string("recipe") : join(config.base_dir, c.path);
-    clip.gain = static_cast<f32>(gain_from_db(c.gain_db));
+    clip.gain = static_cast<f32>(gain_from_db(static_cast<f64>(c.gain_db)));
     clip.min_m = c.min_m;
     clip.max_m = c.max_m;
     s.clips.push_back(std::move(clip));

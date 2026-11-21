@@ -25,16 +25,16 @@ world_sound::SoundStage& stage_of(void* user) {
   return *static_cast<world_sound::SoundStage*>(user);
 }
 
-hotload::Result clip(void* user, std::string_view name, u32& out) {
+hotload::Result on_clip(void* user, std::string_view name, u32& out) {
   return result_of(stage_of(user).clip(name, out));
 }
-hotload::Result play(void* user, u32 clip, const f64* position, f32 gain, u32& out) {
+hotload::Result on_play(void* user, u32 clip, const f64* position, f32 gain, u32& out) {
   if (position == nullptr) return result_of(stage_of(user).play(clip, nullptr, gain, out));
   const WorldPos at{position[0], position[1], position[2]};
   return result_of(stage_of(user).play(clip, &at, gain, out));
 }
-hotload::Result stop(void* user, u32 voice) { return result_of(stage_of(user).stop(voice)); }
-void tick(void* user, const WorldPos& eye, f32 heading, f32 pitch) {
+hotload::Result on_stop(void* user, u32 voice) { return result_of(stage_of(user).stop(voice)); }
+void on_tick(void* user, const WorldPos& eye, f32 heading, f32 pitch) {
   world_sound::SoundStage& stage = stage_of(user);
   Vec3 forward;
   Vec3 up;
@@ -42,10 +42,10 @@ void tick(void* user, const WorldPos& eye, f32 heading, f32 pitch) {
   stage.set_listener(eye, forward, up);
   stage.tick();
 }
-JsonValue summary(const void* user) {
+JsonValue on_summary(const void* user) {
   return static_cast<const world_sound::SoundStage*>(user)->summary_json();
 }
-bool finish(void* user, std::string* error) { return stage_of(user).close(error); }
+bool on_finish(void* user, std::string* error) { return stage_of(user).close(error); }
 
 }  // namespace
 
@@ -93,12 +93,12 @@ bool GameSoundHost::open(world_sound::AudioMode mode, const std::string& device,
   if (!stage_.open(config, present ? &block : nullptr, error)) return false;
   GameSound hooks;
   hooks.user = &stage_;
-  hooks.clip = &clip;
-  hooks.play = &play;
-  hooks.stop = &stop;
-  hooks.tick = &tick;
-  hooks.summary = &summary;
-  hooks.finish = &finish;
+  hooks.clip = &on_clip;
+  hooks.play = &on_play;
+  hooks.stop = &on_stop;
+  hooks.tick = &on_tick;
+  hooks.summary = &on_summary;
+  hooks.finish = &on_finish;
   game.set_sound(hooks);
   if (present) {
     std::fprintf(stderr, "engine-view: sound: %u clip%s, audio %s\n",

@@ -82,12 +82,16 @@ End to end, engine-view's `game_sound_view_tests.cpp` ([apps](apps.md#sound-a-mo
 
 Benchmarks: `tools/dev.ps1 bench -Preset msvc-release -Filter 'world_sound.*'`. One iteration of `world_sound.tick_voices/N` is one host tick at 60 a second under the null backend: the controlling thread's updates and the audio thread's 800-frame block with N clip voices of a 440 Hz tone sounding, which is what a game's clips cost a session. The numbers and the machine's state they were taken in are in the table below; S110's budget for the audio thread is 200 µs a 10 ms block with every world voice of S112 to S114 sounding, which this row does not yet measure (S112's bench row does).
 
-| N | µs a tick (800 frames) | machine |
-|---|---|---|
-| 0 | | |
-| 8 | | |
-| 32 | | |
-| 64 | | |
+Measured 2026-11-21 on the i9-10980XE (`msvc-release`), **not quiet**: the harness's `machine_state` recorded other processes at 65 to 74 % of the CPU and the GPU at 100 % under another row's lock, the session locked; so these are upper bounds, not costs.
+
+| N voices | median µs a tick (800 frames) | min µs | the same per 10 ms block (480 frames), from the median |
+|---|---|---|---|
+| 0 | 3.8 | 3.5 | 2.3 |
+| 8 | 22.8 | 20.8 | 13.7 |
+| 32 | 68.0 | 66.0 | 40.8 |
+| 64 | 164.1 | 124.6 | 98.5 |
+
+Against the mixer's own row (64 clip voices, 70 µs a 10 ms block, [audio](audio.md#performance-notes)), the stage's 64 at 98 µs a block from the median (75 from the minimum) carries the load the machine was under; the stage adds its update and a hash of the block to the mixer's work, and nothing per voice. Inside S110's 200 µs a block either way. A quiet run (`--require-quiet`) is owed.
 
 ## Capability contract (ADR-0027)
 

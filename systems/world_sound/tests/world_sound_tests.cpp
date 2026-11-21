@@ -52,8 +52,8 @@ struct Energy {
 void add_energy(const SoundStage& stage, Energy& e) {
   const f32* b = stage.last_block();
   for (u32 i = 0; i < stage.last_block_frames(); ++i) {
-    e.left += static_cast<f64>(b[2 * i]) * b[2 * i];
-    e.right += static_cast<f64>(b[2 * i + 1]) * b[2 * i + 1];
+    e.left += static_cast<f64>(b[2 * i]) * static_cast<f64>(b[2 * i]);
+    e.right += static_cast<f64>(b[2 * i + 1]) * static_cast<f64>(b[2 * i + 1]);
   }
 }
 
@@ -362,7 +362,7 @@ TEST_CASE("world_sound: --audio-out's WAV holds every frame the null backend pul
   u64 differ = 0;
   for (usize i = 0; i < heard.size(); i += 2) {
     differ += heard[i] != heard[i + 1] ? 1u : 0u;
-    energy += static_cast<f64>(heard[i]) * heard[i];
+    energy += static_cast<f64>(heard[i]) * static_cast<f64>(heard[i]);
   }
   CHECK(differ == 0);
   CHECK(energy > 100.0);
