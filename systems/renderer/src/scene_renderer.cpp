@@ -103,6 +103,16 @@ tunables::Bool graph_serialize{
     "renderer.graph.serialize", false,
     "Record a full barrier before every render graph pass, so nothing runs beside anything: a "
     "picture that differs with it on has a dependency no pass declared (R186's guard check 3)"};
+// **A zone a view, or one a pass** (R195; renderer.md, "Per-view statistics, and what the
+// milliseconds mean"): every zone's two timestamps are written at ALL_COMMANDS, which was taken to
+// hold a pass's views apart on the queue. Off, a pass with more than one view times them as one
+// zone, the first view's, so nothing between them can; the frame's buckets keep their meaning and
+// `Stats::views` carries the pass's time on view 0. Measured at 11520 x 2160 it changed nothing
+// that shows, so it stays on, the comparison for another card or driver.
+tunables::Bool timer_view_zones{
+    "renderer.timing.view_zones", true,
+    "Time each view of a multi-view frame (a surround) in a GPU timer zone of its own; off, a "
+    "multi-view pass is one zone, the first view's, and nothing between its views can order them"};
 // The graph's lifetimes as a report (R4 stage 2; gfx.md, "Render graph v0"): every resource of a
 // frame's graph with the first and the last pass that declares it, what a transient heap would be
 // packed from. Logged once each time the tunable is turned on, so a flight is not a log a frame.
@@ -185,6 +195,19 @@ constexpr const char* k_zone_names[k_zone_kinds][k_max_views] = {
      "resolve.7"},
     {"deform", "deform.1", "deform.2", "deform.3", "deform.4", "deform.5", "deform.6", "deform.7"},
     {"trace", "trace.1", "trace.2", "trace.3", "trace.4", "trace.5", "trace.6", "trace.7"},
+};
+// A pass's view loop opens and closes its zones through this (`renderer.timing.view_zones`,
+// above): one zone a view, or one for the pass under the first view's name.
+struct ViewZones {
+  gfx::GpuTimer& timer;
+  bool per_view = true;
+  u32 views = 1;
+  void begin(gfx::CommandList cb, u32 kind, u32 v) const {
+    if (per_view || v == 0) timer.begin(cb, k_zone_names[kind][v]);
+  }
+  void end(gfx::CommandList cb, u32 v) const {
+    if (per_view || v + 1 == views) timer.end(cb);
+  }
 };
 
 // The viewport a pass draws one view through, with the renderer's y flip (clip space is y-up like
@@ -4746,6 +4769,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
 
   gfx::RenderGraph& graph = *graph_;
   gfx::GpuTimer& timer = timer_;
+  const ViewZones zones{timer, views == 1 || timer_view_zones.get(), views};  // R195
   Pipelines& pipelines = pipelines_;
   Targets& targets = targets_;
   gfx::BindlessSet& bindless = scene.bindless();
@@ -5559,14 +5583,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           const gfx::ComputePipeline& cull = items ? pipelines.cull_items : pipelines.cull;
           cb.bind_pipeline(gfx::BindPoint::Compute, cull.pipeline);
           for (u32 v = 0; v < views; ++v) {
-            timer.begin(cb, k_zone_names[k_zone_cull][v]);
+            zones.begin(cb, k_zone_cull, v);
             cb.push_constants(cull.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
                               &view_frames[v].block_address[block]);
             if (items)
               cull_instances_->dispatch_items(cb, v * 2 + block);
             else
               gfx::dispatch_folded(cb, gfx::cull_group_count(pair_count), device_->caps());
-            timer.end(cb);
+            zones.end(cb, v);
           }
         });
   };
@@ -5698,11 +5722,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         [&, run](gfx::CommandList cb, gfx::RenderGraph&) {
           cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.deform.pipeline);
           for (u32 v = 0; v < views; ++v) {
-            timer.begin(cb, k_zone_names[k_zone_deform][v]);
+            zones.begin(cb, k_zone_deform, v);
             cb.push_constants(pipelines.deform.layout, gfx::ShaderStage::Compute, 0,
                               sizeof(gfx::DeformParams), &deform_params[v][run]);
             cb.dispatch_indirect(scene.deform_args.buffer, scene.deform_args_offset(v, run));
-            timer.end(cb);
+            zones.end(cb, v);
           }
           // **Each vertex twice** (motion_pass.h; renderer.md, "Sampling over time: the inputs"):
           // the same blocks of the second pool, from last frame's inputs, for the motion pass.
@@ -5738,12 +5762,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         [&, run](gfx::CommandList cb, gfx::RenderGraph&) {
           cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.expand.pipeline);
           for (u32 v = 0; v < views; ++v) {
-            timer.begin(cb, k_zone_names[k_zone_hw][v]);
+            zones.begin(cb, k_zone_hw, v);
             cb.push_constants(pipelines.expand.layout, gfx::ShaderStage::Compute, 0,
                               sizeof(gfx::VertexExpandParams), &expand_params[v][run]);
             cb.dispatch_indirect(scene.vertex_headers.buffer, scene.vertex_header_offset(v, run) +
                                                                   gfx::k_vertex_draw_expand_offset);
-            timer.end(cb);
+            zones.end(cb, v);
           }
         });
   };
@@ -5790,7 +5814,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             cb.bind_pipeline(gfx::BindPoint::Graphics, main_pipeline);
             bindless.bind(cb, gfx::BindPoint::Graphics);
             for (u32 v = 0; v < views; ++v) {
-              timer.begin(cb, k_zone_names[k_zone_hw][v]);  // both draws are the view's hw time
+              zones.begin(cb, k_zone_hw, v);  // both draws are the view's hw time
               set_view_viewport(cb, 0, 0, view_frames[v].width, view_frames[v].height);
               cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0,
                                 sizeof(gfx::ClusterDrawParams), &draws[v][run]);
@@ -5822,7 +5846,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               } else {
                 cb.draw_mesh_tasks(leaf_count, 1, 1);
               }
-              timer.end(cb);
+              zones.end(cb, v);
             }
           }
         });
@@ -6141,11 +6165,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           [&](gfx::CommandList cb, gfx::RenderGraph&) {
             cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.software.pipeline);
             for (u32 v = 0; v < views; ++v) {
-              timer.begin(cb, k_zone_names[k_zone_sw][v]);
+              zones.begin(cb, k_zone_sw, v);
               cb.push_constants(pipelines.software.layout, gfx::ShaderStage::Compute, 0,
                                 sizeof(gfx::ClusterDrawParams), &draws[v][2]);
               cb.dispatch_indirect(scene.sw_args.buffer, view_frames[v].args_offset + sizeof(u32));
-              timer.end(cb);
+              zones.end(cb, v);
             }
           });
     }
@@ -6498,12 +6522,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.trace.pipeline);
             bindless.bind(cb, gfx::BindPoint::Compute);
             for (u32 v = 0; v < views; ++v) {
-              timer.begin(cb, k_zone_names[k_zone_trace][v]);
+              zones.begin(cb, k_zone_trace, v);
               cb.push_constants(pipelines.trace.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
                                 &view_frames[v].ray_address);
               cb.dispatch(gfx::ray_visibility_group_count(view_frames[v].width),
                           gfx::ray_visibility_group_count(view_frames[v].height), 1);
-              timer.end(cb);
+              zones.end(cb, v);
             }
           });
     }
@@ -6813,7 +6837,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           }
           bindless.bind(cb, gfx::BindPoint::Graphics);
           for (u32 v = 0; v < views; ++v) {
-            timer.begin(cb, k_zone_names[k_zone_resolve][v]);
+            zones.begin(cb, k_zone_resolve, v);
             const View& view = views_[v];
             set_view_viewport(cb, view.rect.x, view.rect.y, view.rect.width, view.rect.height);
             cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(u64),
@@ -6824,7 +6848,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             } else {
               cb.draw(3, 1, 0, 0);
             }
-            timer.end(cb);
+            zones.end(cb, v);
           }
         });
   }
