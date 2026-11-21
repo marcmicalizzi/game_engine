@@ -1,7 +1,7 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "S91",
-  "reason": "Doors: a restored door the scene does not hang is dropped, said in Doors (S91)",
+  "reason": "Doors: the position grid a pivot is bounded by is held first, and the pivot case at the bound (S91)",
   "date": "2026-11-21",
   "by": "Marc Micalizzi",
   "deltas": {
@@ -11,7 +11,7 @@
     "engine_view.if_engine_view": 3,
     "page:docs/subsystems/renderer.md": 913,
     "page:docs/subsystems/apps.md": 4849,
-    "page:docs/subsystems/geometry.md": 5472,
+    "page:docs/subsystems/geometry.md": 6231,
     "page:docs/subsystems/scene_collision.md": 36081
   }
 }

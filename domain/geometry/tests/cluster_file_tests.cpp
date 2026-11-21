@@ -1377,12 +1377,96 @@ TEST_CASE("cluster file: a door whose pivot is off its mesh, or one record too m
   data.doors.clear();
   data.doors.push_back(edge);
   CHECK(reads("edge.clusters"));
+  // At the grown box's faces on every axis, both sides: half a metre outside refused, half a metre
+  // inside read, so a bound looser than the grid's (10^6 m), or one missing its margin on the far
+  // side, fails here.
+  const f32 extent = 65535.0f * plain.mesh.mesh.quant_scale;
+  for (u32 axis = 0; axis < 3; ++axis) {
+    const f32 low = axis == 0 ? lo.x : axis == 1 ? lo.y : lo.z;
+    const f32 tries[][2] = {{low - (k_door_max_size_m + 0.5f), 0.0f},
+                            {low + extent + (k_door_max_size_m + 0.5f), 0.0f},
+                            {low - (k_door_max_size_m - 0.5f), 1.0f},
+                            {low + extent + (k_door_max_size_m - 0.5f), 1.0f}};
+    for (const auto& t : tries) {
+      CAPTURE(axis);
+      CAPTURE(t[0]);
+      ClusterFileDoor d = door;
+      d.pivot = lo;
+      (axis == 0 ? d.pivot.x : axis == 1 ? d.pivot.y : d.pivot.z) = t[0];
+      data.doors.clear();
+      data.doors.push_back(d);
+      CHECK(reads("face.clusters") == (t[1] != 0.0f));
+    }
+  }
   data.doors.clear();
   for (u32 i = 0; i < k_door_max_records; ++i)
     data.doors.push_back(door);
   CHECK(reads("ceiling.clusters"));
   data.doors.push_back(door);
   CHECK_FALSE(reads("over.clusters"));
+}
+
+// S91 (geometry.md, "Doors"; fuzzing-design.md, `.clusters`): a door's pivot is bounded by the
+// mesh's grid box, which is built from the file's own `quant_origin` and `quant_scale`, so the grid
+// is held first, door or none: an origin or a scale that is not finite, a negative scale, or a box
+// whose far corner is past the float range is refused for the file. Until 2026-11-21 nothing held
+// it, and under an infinite scale a hinge 10^7 m from its house read.
+TEST_CASE("cluster file: a grid that is not finite or has a negative scale is refused") {
+  const test::TempDir tmp("engine_cluster_file");
+  ClusterFileData data;
+  Vector<u32> indices;
+  make_fixture(data, indices);
+  REQUIRE_FALSE(data.mesh.mesh.quantized.empty());
+  const Vec3 origin = data.mesh.mesh.quant_origin;
+  const f32 scale = data.mesh.mesh.quant_scale;
+  const f32 inf = std::numeric_limits<f32>::infinity();
+  const f32 nan = std::numeric_limits<f32>::quiet_NaN();
+  std::string error;
+  const auto reads = [&](const char* name) {
+    const std::string path = tmp.file(name);
+    REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
+    std::string bytes;
+    REQUIRE(io::read_file(path, bytes) == io::Status::Ok);
+    ClusterFileData back;
+    error.clear();
+    const bool ok = read_cluster_file_memory(view(bytes), back, &error);
+    if (!ok) CHECK(error.find("grid") != std::string::npos);
+    return ok;
+  };
+  ClusterFileDoor door;
+  door.shut_x = 1.0f;
+  door.swing_z = 1.0f;
+  door.width_m = 0.9f;
+  door.height_m = 2.0f;
+  door.thickness_m = 0.05f;
+  door.flags = k_door_flag_door;
+  door.pivot = Vec3{1e7f, 0.0f, 0.0f};
+  data.mesh.mesh.quant_scale = inf;
+  data.doors.push_back(door);
+  CHECK_FALSE(reads("far_door.clusters"));
+  data.doors.clear();
+  struct Grid {
+    Vec3 origin;
+    f32 scale;
+  };
+  const Grid bad[] = {
+      {origin, inf},
+      {origin, -scale},
+      {origin, nan},
+      {origin, 1e35f},  // 65535 steps of it are past the float range
+      {Vec3{inf, origin.y, origin.z}, scale},
+      {Vec3{origin.x, nan, origin.z}, scale},
+      {Vec3{origin.x, origin.y, -inf}, scale},
+  };
+  for (u32 i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i) {
+    CAPTURE(i);
+    data.mesh.mesh.quant_origin = bad[i].origin;
+    data.mesh.mesh.quant_scale = bad[i].scale;
+    CHECK_FALSE(reads("bad_grid.clusters"));
+  }
+  data.mesh.mesh.quant_origin = origin;
+  data.mesh.mesh.quant_scale = scale;
+  CHECK(reads("good_grid.clusters"));
 }
 
 TEST_CASE("cluster file: the source identity reads back without decoding the mesh") {

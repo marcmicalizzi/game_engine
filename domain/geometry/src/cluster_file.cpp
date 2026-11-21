@@ -777,6 +777,23 @@ bool read_memory(std::span<const u8> bytes, ClusterFileData& out, std::string* e
   } else {
     quantize_positions(result.mesh.mesh);
   }
+  // The grid, the file's own or the one made from its vertices, held to a box of floats (S91): an
+  // origin and a scale finite, the scale not negative, and the far corner, 65535 steps on, finite.
+  // Every writer's grid is (`quantize_positions` takes the vertices' box, a scale of 1 when it is
+  // flat), and the doors below bound a pivot by this box, which an infinite scale would make hold
+  // every finite point.
+  {
+    const Vec3 o = result.mesh.mesh.quant_origin;
+    const f32 s = result.mesh.mesh.quant_scale;
+    const f32 extent = 65535.0f * s;
+    if (!std::isfinite(o.x) || !std::isfinite(o.y) || !std::isfinite(o.z) || !std::isfinite(s) ||
+        !(s >= 0.0f) || !std::isfinite(o.x + extent) || !std::isfinite(o.y + extent) ||
+        !std::isfinite(o.z + extent)) {
+      return fail(error,
+                  "cluster file's position grid has an origin or a scale that is not finite, a "
+                  "negative scale, or a far corner past the float range");
+    }
+  }
 
   // The skin bindings, and the palette width they index. A file with neither section, or one
   // with an empty stream, is an unskinned mesh; the two travel together, so a stream with no
@@ -919,8 +936,9 @@ bool read_memory(std::span<const u8> bytes, ClusterFileData& out, std::string* e
   // pivot, or the file is refused — a host builds a box from these and turns it. And the pivot on
   // the mesh: within the box of the mesh's 16-bit grid (`quant_origin` and 65535 steps of
   // `quant_scale` each way, which holds every vertex, read here for a paged file as for a whole
-  // one) grown by `k_door_max_size_m`, so a host never stands a hinge a world away from the house
-  // that declares it; and at most `k_door_max_records` of them, a host making a body each.
+  // one, and held finite above) grown by `k_door_max_size_m`, so a host never stands a hinge a
+  // world away from the house that declares it; and at most `k_door_max_records` of them, a host
+  // making a body each.
   if (const ClusterFileSection* doors = found[static_cast<u32>(ClusterSection::Doors)];
       doors != nullptr && doors->element_count != 0) {
     if (doors->element_size != sizeof(ClusterFileDoor))
