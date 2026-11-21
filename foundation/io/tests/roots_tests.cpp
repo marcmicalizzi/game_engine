@@ -772,6 +772,41 @@ TEST_CASE("roots: a stored path is portable or refused, then admitted from its d
   CHECK(why == Refusal::device);
 }
 
+// Between an admission and the open, a component of the admitted path can be replaced by a link
+// (docs/subsystems/io.md, "Roots"): `FileHandle::open_regular_unmoved` holds the opened handle's
+// final path to the admitted one, so a file the admitted path no longer leads to is never read,
+// where a plain open follows the link.
+TEST_CASE("open_regular_unmoved refuses a file the admitted path no longer leads to") {
+  TempDir tmp("io_roots_unmoved");
+  const std::string root = std::string(tmp.path()) + "/root";
+  const std::string away = std::string(tmp.path()) + "/away";
+  make_dir(root + "/sub");
+  make_dir(away);
+  put(root + "/sub/x.bin", "near");
+  put(away + "/x.bin", "away");
+  const std::string admitted = canon(root + "/sub/x.bin");
+  FileHandle file;
+  REQUIRE(file.open_regular_unmoved(admitted) == Status::Ok);
+  file.close();
+  // The directory swapped for a link to elsewhere, as a racing process could.
+  std::filesystem::remove_all(fs_path(root + "/sub"));
+  struct Unlink {
+    std::string path;
+    ~Unlink() {
+      std::error_code ec;
+      std::filesystem::remove(fs_path(path), ec);
+    }
+  } unlink{root + "/sub"};
+  if (!make_dir_link(away, unlink.path)) {
+    MESSAGE("this system refused to make a directory link; the case is skipped");
+    return;
+  }
+  CHECK(file.open_regular(admitted) == Status::Ok);  // a plain open follows the link
+  file.close();
+  CHECK(file.open_regular_unmoved(admitted) == Status::InvalidPath);
+  CHECK_FALSE(file.valid());
+}
+
 // A URI one file names another by (a glTF's buffers and images; docs/subsystems/io.md, "Roots"):
 // decoded once, and refused before any admission when the decoded text has a backslash (a URI has
 // none, and nothing is turned into a separator), a control byte, a colon in its first segment (a

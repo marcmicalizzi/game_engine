@@ -2,6 +2,8 @@
 #include <core/time/time.h>
 #include <foundation/io/vfs.h>
 
+#include <foundation/io/roots.h>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -721,6 +723,52 @@ Status FileHandle::open_regular(std::string_view native_path) {
 #endif
   unbuffered_ = false;
   path_.assign(native_path);
+  return Status::Ok;
+}
+
+Status FileHandle::open_regular_unmoved(std::string_view admitted_path) {
+  if (const Status s = open_regular(admitted_path); s != Status::Ok) return s;
+  // What the system says the open handle is, spelled as `Roots::admit` spells a canonical path
+  // (forward slashes, no `\\?\` prefix), then compared as `path_is_under` compares, both ways.
+  std::string now;
+  bool known = false;
+#if ENGINE_PLATFORM_WINDOWS
+  std::wstring buf(512, L'\0');
+  DWORD n = ::GetFinalPathNameByHandleW(static_cast<HANDLE>(handle_), buf.data(),
+                                        static_cast<DWORD>(buf.size()),
+                                        FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+  if (n >= buf.size()) {
+    buf.assign(static_cast<usize>(n) + 1, L'\0');
+    n = ::GetFinalPathNameByHandleW(static_cast<HANDLE>(handle_), buf.data(),
+                                    static_cast<DWORD>(buf.size()),
+                                    FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+  }
+  if (n > 0 && n < buf.size()) {
+    now = from_path(fs::path(std::wstring_view(buf.data(), static_cast<usize>(n))));
+    for (char& c : now) {
+      if (c == '\\') c = '/';
+    }
+    if (now.starts_with("//?/UNC/")) {
+      now = "//" + now.substr(8);
+    } else if (now.starts_with("//?/")) {
+      now = now.substr(4);
+    }
+    known = true;
+  }
+#else
+  const std::string link = "/proc/self/fd/" + std::to_string(handle_);
+  std::string buf(4096, '\0');
+  const ssize_t n = ::readlink(link.c_str(), buf.data(), buf.size());
+  if (n > 0 && static_cast<usize>(n) < buf.size()) {
+    buf.resize(static_cast<usize>(n));
+    now = std::move(buf);
+    known = true;
+  }
+#endif
+  if (!known || !path_is_under(now, admitted_path) || !path_is_under(admitted_path, now)) {
+    close();
+    return Status::InvalidPath;
+  }
   return Status::Ok;
 }
 

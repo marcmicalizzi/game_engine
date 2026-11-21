@@ -134,7 +134,9 @@ constexpr const char* k_outside = "outside this host's roots";
 bool open_file(SubjectPlan::File& f, const DigestBounds& bounds, u64& total, SubjectPlan& plan,
                io::FileHandle& file) {
   ++plan.files_opened;
-  if (const io::Status s = file.open_regular(f.native); s != io::Status::Ok) {
+  // Held to the admitted path after the open: a component swapped for a link since the admission
+  // leads elsewhere, and the file is not read (`not readable`).
+  if (const io::Status s = file.open_regular_unmoved(f.native); s != io::Status::Ok) {
     f.line = s == io::Status::NotFound ? k_missing : k_not_readable;
     return false;
   }
