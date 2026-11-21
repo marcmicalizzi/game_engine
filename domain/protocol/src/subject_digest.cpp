@@ -37,6 +37,12 @@ tunables::Int subject_bytes_tunable{"protocol.review.subject_bytes", i64{1} << 3
 tunables::Int records_tunable{"protocol.review.subject_records", 4096, 1, 1 << 20,
                               "Records a review item's subject digest composes, the subject's "
                               "and their ancestors, each once"};
+// A glTF's JSON is parsed whole into a tree to find what it names, with the host let go and once
+// per call, so it has a bound of its own below the file bound: past it, the glTF is hashed and its
+// names are said not to be followed.
+tunables::Int gltf_json_tunable{"protocol.review.gltf_json_bytes", i64{64} << 20, 1, i64{1} << 40,
+                                "Bytes of a .gltf a review item's subject digest parses to follow "
+                                "the buffers and images it names"};
 
 JsonValue hex_of(Id128 id) {
   char hex[Id128::k_hex_length + 1];
@@ -192,11 +198,14 @@ struct GltfName {
   std::string uri;
 };
 
-// The external buffers and images a glTF's JSON names, in its order and each URI once; a `data:`
-// URI is in the file already, and a `.glb` holds its own, so neither names anything.
-void gltf_names(std::string_view text, Vector<GltfName>& out) {
+// The external buffers and images a glTF's JSON names, in its order and each URI once, up to
+// `room` of them (what is left of the files bound): the rest are counted into `past` as the glTF
+// lists them, never collected. A `data:` URI is in the file already, and a `.glb` holds its own,
+// so neither names anything.
+void gltf_names(std::string_view text, u64 room, Vector<GltfName>& out, u64& past) {
   JsonValue doc;
   if (!parse_json(text, doc).ok || !doc.is_object()) return;
+  HashSet<std::string> seen;
   for (const char* list : {"buffers", "images"}) {
     const JsonValue* entries = doc.find(list);
     if (entries == nullptr || !entries->is_array()) continue;
@@ -207,11 +216,15 @@ void gltf_names(std::string_view text, Vector<GltfName>& out) {
       if (uri == nullptr || !uri->is_string()) continue;
       const std::string_view u = uri->as_string();
       if (u.substr(0, 5) == "data:") continue;
-      bool seen = false;
-      for (const GltfName& n : out)
-        seen = seen || n.uri == u;
-      if (!seen)
-        out.push_back(GltfName{std::string(list) + "[" + std::to_string(at) + "]", std::string(u)});
+      if (out.size() >= room) {
+        ++past;
+        continue;
+      }
+      std::string text_of(u);
+      if (seen.contains(text_of)) continue;
+      seen.insert(std::string(text_of));
+      out.push_back(
+          GltfName{std::string(list) + "[" + std::to_string(at) + "]", std::move(text_of)});
     }
   }
 }
@@ -245,6 +258,7 @@ DigestBounds DigestBounds::now() noexcept {
   b.file_bytes = static_cast<u64>(file_bytes_tunable.get());
   b.subject_bytes = static_cast<u64>(subject_bytes_tunable.get());
   b.records = static_cast<u64>(records_tunable.get());
+  b.gltf_json = static_cast<u64>(gltf_json_tunable.get());
   return b;
 }
 
@@ -355,15 +369,16 @@ void compose_subject(const Context& ctx, const Session& session, const ReviewSub
   for (const std::string& a : subject.assets)
     files.push_back(a);
   sort_unique(files);
-  if (files.size() > bounds.files)
-    note_over(plan.over, files_tunable.name(), bounds.files, files.size());
-  for (u32 i = 0; i < files.size(); ++i) {
+  // Past the bound the rest are one count, never one file each: not admitted, not answered.
+  u64 kept = files.size();
+  if (kept > bounds.files) {
+    note_over(plan.over, files_tunable.name(), bounds.files, kept);
+    plan.past_files = kept - bounds.files;
+    kept = bounds.files;
+  }
+  for (u32 i = 0; i < kept; ++i) {
     SubjectPlan::File& f = plan.files.emplace_back();
     f.spelled = files[i];
-    if (i >= bounds.files) {
-      f.line = k_over_bound;
-      continue;
-    }
     io::Admitted admitted;
     io::Refusal why = io::Refusal::none;
     // Admitted as a stored path is (T174): never an absolute one, then through the roots from the
@@ -404,14 +419,25 @@ void read_subject_files(SubjectPlan& plan, const DigestBounds& bounds) {
     if (!open_file(plan.files[i], bounds, total, plan, file)) continue;
     std::string gltf;
     const bool named = is_gltf(plan.files[i].spelled);
-    hash_file(plan.files[i], file, plan, named ? &gltf : nullptr);
-    if (!named || !plan.files[i].read) continue;
+    // A glTF past its JSON's own bound is hashed as any file is, and its names are not followed.
+    const bool follow = named && file.size() <= bounds.gltf_json;
+    if (named && !follow) {
+      plan.unfollowed.push_back(SubjectPlan::Unfollowed{plan.files[i].spelled, gltf_json_tunable.name(),
+                                                        bounds.gltf_json, file.size()});
+    }
+    hash_file(plan.files[i], file, plan, follow ? &gltf : nullptr);
+    if (!follow || !plan.files[i].read) continue;
     // What the glTF names is part of it: each file admitted through the host's roots as a record's
     // own file is, from the glTF's admitted directory (its URI's own rule first), then read under
-    // the same bounds, and named by the glTF and where in it. One refused is never opened.
+    // the same bounds, and named by the glTF and where in it. One refused is never opened. Only
+    // what is left of the files bound is collected; the rest is counted.
+    const u64 room = plan.files.size() >= bounds.files ? 0 : bounds.files - plan.files.size();
     Vector<GltfName> names;
-    gltf_names(gltf, names);
+    u64 past = 0;
+    gltf_names(gltf, room, names, past);
+    gltf = std::string();  // the tree is gone with the function; the text goes now
     plan.names_collected += names.size();
+    plan.past_files += past;
     const std::string base(io::parent_path(plan.files[i].native));
     const std::string by = plan.files[i].spelled;
     for (const GltfName& name : names) {
@@ -422,9 +448,7 @@ void read_subject_files(SubjectPlan& plan, const DigestBounds& bounds) {
       std::string path;
       io::Admitted admitted;
       io::Refusal why = io::Refusal::none;
-      if (plan.files.size() >= bounds.files) {
-        n.line = k_over_bound;
-      } else if (!io::uri_relative_path(name.uri, path)) {
+      if (!io::uri_relative_path(name.uri, path)) {
         n.line = k_refused_uri;
       } else if (!plan.has_roots ||
                  !io::admit_stored_path(plan.roots, path, base, admitted, why)) {
@@ -442,8 +466,18 @@ void read_subject_files(SubjectPlan& plan, const DigestBounds& bounds) {
       plan.files.push_back(std::move(n));
     }
   }
-  if (plan.files.size() > bounds.files)
-    note_over(plan.over, files_tunable.name(), bounds.files, plan.files.size());
+  // The files bound's figure is every file named, collected or counted.
+  if (plan.past_files > 0) {
+    const u64 figure = plan.files.size() + plan.past_files;
+    bool told = false;
+    for (DigestOver& o : plan.over) {
+      if (o.bound == files_tunable.name()) {
+        o.figure = figure;
+        told = true;
+      }
+    }
+    if (!told) note_over(plan.over, files_tunable.name(), bounds.files, figure);
+  }
 }
 
 bool same_document(const Session* session, const SubjectPlan& plan) noexcept {
@@ -474,6 +508,27 @@ void finish_subject(SubjectPlan& plan, SubjectState& out) {
     } else if (!f.read) {
       out.unreadable.push_back(f.spelled);
     }
+  }
+  // The files past the bound, one line and one entry with their count.
+  if (plan.past_files > 0) {
+    JsonValue line = JsonValue::array();
+    line.push_back(JsonValue("past the bound"));
+    line.push_back(JsonValue(std::string_view(files_tunable.name())));
+    line.push_back(JsonValue(plan.past_files));
+    add_line(h, line);
+    out.unreadable.push_back(std::to_string(plan.past_files) + " more past " +
+                             files_tunable.name());
+  }
+  // A glTF whose names were not followed, and why.
+  for (const SubjectPlan::Unfollowed& u : plan.unfollowed) {
+    JsonValue line = JsonValue::array();
+    line.push_back(JsonValue("names not followed"));
+    line.push_back(JsonValue(u.gltf));
+    line.push_back(JsonValue(u.bound == nullptr ? std::string_view("does not parse")
+                                                : std::string_view(u.bound)));
+    line.push_back(JsonValue(u.limit));
+    line.push_back(JsonValue(u.figure));
+    add_line(h, line);
   }
   out.comparable = out.outside.empty();
   // 6. Each bound passed, by its name: a subject digested past one is never equal to one that was

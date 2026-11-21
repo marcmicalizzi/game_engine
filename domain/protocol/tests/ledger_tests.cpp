@@ -1478,6 +1478,48 @@ TEST_CASE("ledger: a glTF's named file passes the host's roots, and one refused 
   CHECK(std::filesystem::exists(scratch / "far" / "x.bin"));
 }
 
+// The files bound limits what a digest collects and answers, not only what it reads (protocol.md,
+// "What it costs"): a glTF's names are taken up to what is left of the bound, each once, and what
+// is past it is one entry with its count, whether a glTF or the records named it.
+TEST_CASE("ledger: past the files bound a digest collects and answers a handful of names") {
+  test::TempDir tmp("protocol_ledger_many");
+  const std::string dir = tmp.file("doc");
+  Host h;
+  h.open(dir, true);
+  DigestWorld w;
+  w.make(h, dir);
+  const JsonValue item = at(at(w.raise(h, "Agent"), "reviews")[0], "id");
+  const std::filesystem::path props = std::filesystem::path(dir) / "props";
+  {
+    std::ofstream out(props / "many.gltf", std::ios::binary);
+    out << R"({"asset":{"version":"2.0"},"images":[)";
+    for (u32 i = 0; i < 100000; ++i)
+      out << (i == 0 ? "" : ",") << R"({"uri":"t)" << i << R"(.png"})";
+    out << "]}";
+  }
+  w.set(h, w.placement, "mesh", JsonValue("props/many.gltf"));
+  Bound bound("protocol.review.subject_files", "4");
+  u64 names = h.sessions.digest_names_collected();
+  JsonValue now = opened_detail(h, item);
+  CHECK(h.sessions.digest_names_collected() - names == 3);  // the room the glTF left, and no more
+  REQUIRE(at(now, "unreadable").size() == 4);
+  CHECK(at(now, "unreadable")[0].as_string() == "props/many.gltf#images[0]");
+  CHECK(at(now, "unreadable")[3].as_string() == "99997 more past protocol.review.subject_files");
+  CHECK(num(at(now, "assets")) == 4);
+
+  // Record-named strings past the bound: one entry too, and the glTF's names, with no room left,
+  // are counted and never collected.
+  JsonValue decals = JsonValue::array();
+  for (u32 i = 0; i < 10; ++i)
+    decals.push_back(JsonValue("r" + std::to_string(i) + ".png"));
+  w.set(h, w.placement, "decals", std::move(decals));
+  names = h.sessions.digest_names_collected();
+  now = opened_detail(h, item);
+  CHECK(h.sessions.digest_names_collected() == names);
+  REQUIRE(at(now, "unreadable").size() == 4);  // r0 to r2, and the one past the bound
+  CHECK(at(now, "unreadable")[3].as_string() == "100007 more past protocol.review.subject_files");
+}
+
 // What a digest reads is bounded, by four bounds named as tunables (protocol.md, "What it costs"):
 // a raise past one is refused naming it and the figure, and a detail or a close past one says so
 // in the stream, which differs from the stamp, so a file grown past its bound is "subject moved".

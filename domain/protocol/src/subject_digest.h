@@ -52,6 +52,7 @@ struct DigestBounds {
   u64 file_bytes = 0;     // one file's bytes
   u64 subject_bytes = 0;  // every file's bytes together
   u64 records = 0;        // records and their ancestors composed, each once
+  u64 gltf_json = 0;      // a .gltf's bytes parsed to follow its names
   static DigestBounds now() noexcept;
 };
 
@@ -92,6 +93,18 @@ struct SubjectPlan {
     std::string uri;
   };
   Vector<File> files;
+  // Files past the files bound, named by the records or a glTF and never collected: one count,
+  // answered as one entry, never one a name.
+  u64 past_files = 0;
+  // A glTF whose names were not followed: past `gltf_json` (the bound's name, its limit and the
+  // glTF's size), or (`bound` null) refused by the engine's JSON reader.
+  struct Unfollowed {
+    std::string gltf;
+    const char* bound = nullptr;
+    u64 limit = 0;
+    u64 figure = 0;
+  };
+  Vector<Unfollowed> unfollowed;
   Vector<DigestOver> over;
   bool refuse_over = false;  // a raise's: a bound passed stops the reads before the first byte
   u64 bytes_read = 0;
