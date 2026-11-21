@@ -10,14 +10,18 @@ that write a normal in one.
 
 From the glTF 2.0 specification (registry.khronos.org, `glTF-2.0.html`), read for this page:
 
-- §3.8, texture data: "The origin of the texture coordinates (0, 0) corresponds to the upper left
+- §3.8.3, "Images": "The origin of the texture coordinates (0, 0) corresponds to the upper left
   corner of a texture image." So v runs **down** the image.
 - §3.7.2.1, meshes: `TANGENT` is "XYZW vertex tangents where the XYZ portion is normalized, and the
   W component is a sign value (-1 or +1) indicating handedness of the tangent basis"; the bitangent
   MUST be `cross(normal.xyz, tangent.xyz) * tangent.w`; without tangents a client SHOULD compute
   them "using default MikkTSpace algorithms".
 - §5.19.5, `material.normalTexture`: the normal vectors use the convention +X right and +Y up, +Z
-  towards the viewer. (This one from memory: the fetch of the page stopped before it.)
+  towards the viewer. **Still unverified**: the fetch of the specification's page stopped before
+  it, and the schema (`specification/2.0/schema/material.schema.json` in the KhronosGroup/glTF
+  repository, read 2026-11-20) describes `normalTexture` only as "The tangent-space normal
+  texture binding object.", which states no convention. What the engine relies on is held instead
+  by what every family's maps were measured to be (below) and by the Khronos samples' own tangents.
 
 Together: +Y up the image is towards **falling** v, so for an island laid upright (unmirrored) the
 bitangent is -dP/dv. MikkTSpace's bitangent follows +v of the coordinates it is handed; glTF
@@ -88,7 +92,17 @@ the reference. So what is said above of the frames holds for a mirroring instanc
 On the ground: `renderer: one normal map lights the same flank on a mesh and on the ground`
 (`systems/renderer/tests/terrain_materials_tests.cpp`) lays one constant map, leaning 45 degrees up
 the image, on the ground's layer and on a mesh quad lying on it with the ground's own mapping, under
-a low sun from -z, and holds both brighter than with the map's green turned over.
+a low sun from -z, and holds both brighter than with the map's green turned over (142 against 100
+mean code on each). That is the floor's projection, over (x, z), on its +y face. The side
+projections are held by `renderer: one normal map lights the ground's four walls through their own
+projections`: a test ground with a square mesa 2 m high whose four walls (76 degrees, facing +x,
+-x, +z and -z) take the projections over (z, y) and (x, y), each with its bitangent -y, so the same
+map as made leans every wall's normal down and under a sun overhead every wall is darker than with
+the green turned over: 68.5 to 68.9 against 98.0 to 99.6 mean code with the layer's plain sampling,
+68.7 to 70.9 against 91.1 to 94.1 with its stochastic sampling under a turn of up to 60 degrees
+(RTX 5090, 460 to 969 pixels a wall); before R202 the sides' bitangent was +y and every wall would
+have read the other way. **Not held by a case**: the mapped layer (`terrain_material.slang`, read at
+`map_uv`, the point's (x, z)), whose frame by reading is the floor's: tangent +x, bitangent -z.
 
 ## The author's frame against the derived one
 
