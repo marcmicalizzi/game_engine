@@ -1747,3 +1747,53 @@ TEST_CASE("content classes at load: a recipe whose hash refuses the probe is unr
                     hosts.inputs(), identity, error),
                 error);
 }
+
+namespace {
+
+// Every engine category at its top and the game's too: a policy that admits the class a source that
+// cannot be read is decided at.
+constexpr const char* k_top_policies =
+    R"({"policies":[{"name":"every-top","caps":[)"
+    R"({"category":"nudity","cap":"full","substitution":"omit"},)"
+    R"({"category":"sexual","cap":"explicit","substitution":"omit"},)"
+    R"({"category":"violence","cap":"graphic","substitution":"omit"},)"
+    R"({"category":"fixture_glow","cap":"bright","substitution":"omit"}]}]})";
+
+}  // namespace
+
+// **An entry records the class its source was decided on** (C64): a glTF whose sidecar names a
+// category a container later in the scene teaches cannot be read when it is met, and is decided at
+// the top of every category the scene knows at the decision; admitted, its key and the section 54
+// of the entry the load writes are taken from that class, so the entry names the game's category.
+TEST_CASE(
+    "content classes at load: an unreadable glTF's entry records the class it was decided on") {
+  const test::TempDir tmp("renderer_classes_unreadable_record");
+  REQUIRE(tmp.ok());
+  REQUIRE(io::write_file(tmp.file("tri.gltf"), k_triangle_gltf) == io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("tri.provenance.json"),
+                         R"({"content_classes":{"fixture_glow":"bright"}})") == io::Status::Ok);
+  const Grid glow = write_grid(tmp, "glow.clusters", 17, "glow.png", glow_record(1));
+  Grid tri;
+  tri.path = tmp.file("tri.gltf");
+  SceneDesc desc = scene_of(tmp, {&tri, &glow});
+  desc.view_policy = policy_in(k_top_policies, "every-top");
+  std::string error;
+  SceneData scene;
+  REQUIRE_MESSAGE(load_scene(desc, scene, error), error);
+  CHECK(scene.instances.size() == 2);
+  REQUIRE_FALSE(scene.sources[0].container.empty());
+  geometry::ClusterFileData entry;
+  REQUIRE_MESSAGE(geometry::read_cluster_file(scene.sources[0].container, entry, &error), error);
+  REQUIRE_FALSE(entry.content_classes.empty());
+  content_class::Categories table;
+  content_class::ContentClasses recorded;
+  REQUIRE_MESSAGE(
+      content_class::decode_classes(
+          table, std::span<const u8>(entry.content_classes.data(), entry.content_classes.size()),
+          recorded, error),
+      error);
+  REQUIRE(table.find("fixture_glow") >= 0);
+  CHECK(recorded.levels[static_cast<u32>(table.find("fixture_glow"))] == 2);
+  CHECK(recorded.levels[static_cast<u32>(table.find("violence"))] == 2);
+  CHECK(scene.held.levels[static_cast<u32>(scene.categories.find("fixture_glow"))] == 2);
+}

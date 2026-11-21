@@ -396,9 +396,18 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
   // **What could not be read is decided with what the scene knows at the decision** (C64): the
   // read keeps the fact (`ReadClass::unreadable`), and its levels are made here, from every
   // category the scene knows now, so a ladder a container later in the scene taught is in it and
-  // the outcome does not depend on the order of the meshes.
-  for (ReadClass& read : state.mesh)
-    if (read.unreadable) read.classes = content_class::unreadable(out.categories);
+  // the outcome does not depend on the order of the meshes. What the load builds for one (a
+  // ground's, a glTF's or a recipe's entry: its key's class term and its section 54) is taken
+  // from the class made here, so an entry admitted records every category its decision used; a
+  // container named outright builds nothing.
+  for (u32 m = 0; m < meshes; ++m) {
+    ReadClass& read = state.mesh[m];
+    if (!read.unreadable) continue;
+    read.classes = content_class::unreadable(out.categories);
+    if (state.ground[m] == 0 && io::extension(desc.meshes[m]) == ".clusters") continue;
+    state.mesh_hash[m] = content_class::class_hash(out.categories, read.classes);
+    content_class::encode_classes(out.categories, read.classes, nullptr, state.record[m]);
+  }
   // Every ladder the containers carry is in the table now: the policy's game caps resolve against
   // it, and the scene's table is made under what they resolve to.
   const content_class::ViewPolicy policy =
