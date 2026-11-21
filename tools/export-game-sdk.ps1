@@ -272,7 +272,7 @@ $session['scene'] = [ordered]@{ scene = ''; mesh = ''; procedural = ''; grid = 0
 $session['start'] = [ordered]@{ position = @(0.0, 300.0, 0.0); yaw = 0.0; pitch = -0.2 }
 $session['ticks'] = 480
 $session['walk'] = [ordered]@{
-  version = 2; height = 1.8; radius = 0.3; eye_height = 1.65; speed = 1.5; sprint = 5.0
+  version = 3; height = 1.8; radius = 0.3; eye_height = 1.65; speed = 1.5; sprint = 5.0
   max_slope_deg = 40.0; step_height = 0.35; gravity = 9.81; jump_speed = 4.0
   collision = [ordered]@{ spacing_m = 1.0; radius_tiles = 1.5; max_tiles = 2; mesh_error_m = 0.05; ground_error_m = 0.05; max_refreshes = 2 }
   start_walking = $true
