@@ -274,7 +274,8 @@ geometry::ClusterPages proxy_pages(const SceneDesc& desc, geometry::ClusterLodMe
 }
 
 // The ground's class (C64): the join of what the sidecars beside its heightfield source (a tile
-// set's manifest or heightfield header) and beside every image its layers name declare, each read
+// set's manifest or heightfield header), beside every image its layers name and beside every
+// image its masks are painted from declare, each read
 // as the content build reads one, so a sidecar there that cannot be read refuses the ground.
 ReadClass ground_class(const TerrainDesc& terrain, const content_class::Categories& categories) {
   ReadClass out;
@@ -290,6 +291,13 @@ ReadClass ground_class(const TerrainDesc& terrain, const content_class::Categori
       for (const std::string* image :
            {&layer.base_color, &layer.normal, &layer.roughness, &layer.mask, &layer.height})
         beside(*image);
+  }
+  // And the weight maps its mask level is composited from, which are read, cooked and drawn as
+  // the layers' placement.
+  if (terrain.masks.has_value()) {
+    for (const scene::TerrainMaskPaint& paint : terrain.masks->paint)
+      beside(paint.image);
+    if (terrain.masks->index.has_value()) beside(terrain.masks->index->image);
   }
   return out;
 }

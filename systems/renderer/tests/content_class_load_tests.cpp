@@ -1443,3 +1443,93 @@ TEST_CASE("content classes at load: a recipe over a host missing at the probe is
   CHECK(std::string(scene.sources[1].cache) == "none");  // never generated
   CHECK(scene.load.unreadable_omitted == 1);
 }
+
+namespace {
+
+// `ground_scene`'s ground, with `glow.clusters` teaching the ladder, given a mask level painted
+// from `mark.png` beside the file and its palette held to four layers a tile, as masks require. The
+// tile set the scene read asks masks for is not the load's: it takes the description as given.
+SceneDesc painted_ground(const test::TempDir& tmp) {
+  write_image(tmp.file("ground.png"), 40);
+  write_image(tmp.file("mark.png"), 90);
+  REQUIRE(io::write_file(tmp.file("scene.json"), ground_scene(true)) == io::Status::Ok);
+  SceneDesc desc;
+  std::string error;
+  REQUIRE_MESSAGE(read_scene_file(tmp.file("scene.json"), desc, error), error);
+  desc.ddc = tmp.file("ddc");
+  REQUIRE(desc.terrain.materials.has_value());
+  desc.terrain.materials->layer_budget = 4;
+  scene::TerrainMasks masks;
+  scene::TerrainMaskPaint paint;
+  paint.image = tmp.file("mark.png");
+  masks.paint.push_back(paint);
+  desc.terrain.masks = masks;
+  return desc;
+}
+
+}  // namespace
+
+// **A ground's mask images are its inputs too** (C64): the paint maps and the index map the mask
+// level is composited from are read for their sidecars through the same reader as the layers'
+// images, so a paint map above the cap leaves the ground out, a policy that covers it draws the
+// ground from an entry carrying the class, and nothing beside a map keeps the ground's key.
+TEST_CASE("content classes at load: a ground's painted mask above the cap leaves it out") {
+  const test::TempDir tmp("renderer_classes_ground_mask");
+  REQUIRE(tmp.ok());
+  const Grid glow = write_grid(tmp, "glow.clusters", 17, "glow.png", glow_record(1));
+  SceneDesc desc = painted_ground(tmp);
+  const std::string classless = geometry::cluster_cache_path(desc.ddc, classless_ground_key(desc));
+  std::string error;
+  {
+    SceneData plain;
+    REQUIRE_MESSAGE(load_scene(desc, plain, error), error);
+    CHECK(plain.load.grounds_omitted == 0);
+    REQUIRE(plain.terrain_mesh < plain.sources.size());
+    CHECK(plain.sources[plain.terrain_mesh].container == classless);
+  }
+  REQUIRE(io::write_file(tmp.file("mark.provenance.json"),
+                         R"({"content_classes":{"fixture_glow":"bright"}})") == io::Status::Ok);
+  SceneData refused;
+  REQUIRE_MESSAGE(load_scene(desc, refused, error), error);
+  CHECK(refused.load.grounds_omitted == 1);
+  CHECK(refused.terrain_mesh == ~0u);
+  CHECK_FALSE(refused.terrain.enabled);
+  CHECK(refused.instances.empty());  // the dim container is refused too under `agent-default`
+  desc.view_policy = policy_named("glow-wide");
+  SceneData wide;
+  REQUIRE_MESSAGE(load_scene(desc, wide, error), error);
+  CHECK(wide.load.grounds_omitted == 0);
+  REQUIRE(wide.terrain_mesh < wide.sources.size());
+  const SourceMesh& ground = wide.sources[wide.terrain_mesh];
+  REQUIRE_FALSE(ground.container.empty());
+  CHECK(ground.container != classless);
+  geometry::ClusterFileData entry;
+  REQUIRE_MESSAGE(geometry::read_cluster_file(ground.container, entry, &error), error);
+  CHECK_FALSE(entry.content_classes.empty());
+  CHECK(wide.held.levels[static_cast<u32>(wide.categories.find("fixture_glow"))] == 2);
+}
+
+// A sidecar beside a paint map that leads nowhere refuses the ground, as one beside a layer's image
+// does.
+TEST_CASE("content classes at load: a dangling sidecar beside a ground's paint map refuses it") {
+  u32 made = 0;
+  for (const DanglingForm& form : k_dangling_forms) {
+    const std::string form_name = form.name;
+    CAPTURE(form_name);
+    const test::TempDir tmp("renderer_classes_mask_nowhere");
+    REQUIRE(tmp.ok());
+    const Grid glow = write_grid(tmp, "glow.clusters", 17, "glow.png", glow_record(1));
+    const SceneDesc desc = painted_ground(tmp);
+    if (!form.make(tmp.file("gone"), tmp.file("mark.provenance.json"))) {
+      MESSAGE("skipped: this process may not make " << form.name);
+      continue;
+    }
+    ++made;
+    std::string error;
+    SceneData scene;
+    REQUIRE_MESSAGE(load_scene(desc, scene, error), error);
+    CHECK(scene.load.grounds_omitted == 1);
+    CHECK(scene.terrain_mesh == ~0u);
+  }
+  CHECK(made >= 1u);
+}
