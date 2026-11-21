@@ -764,16 +764,32 @@ uint instance_of_pair(InstanceDesc* instances, uint instance_count, uint pair) {
   return lo;
 }
 
-// A direction in the instance's frame, for normals. The cofactor matrix of the upper-left 3x3
-// (its columns are the cross products of the linear part's columns) is the adjugate transpose,
-// which is the inverse transpose scaled by the determinant: the same direction for any positive
-// scale and the correctly flipped one for a mirror, so normalizing afterwards makes the division
-// unnecessary and the uniform-scale case needs no special path.
+// The sign of the instance's determinant: -1 for a placement that mirrors (an odd number of
+// negative scales), +1 otherwise. A select on a value of the instance, not a branch.
+float instance_handedness(InstanceDesc instance) {
+  const float3 c0 = float3(instance.rows[0].x, instance.rows[1].x, instance.rows[2].x);
+  const float3 c1 = float3(instance.rows[0].y, instance.rows[1].y, instance.rows[2].y);
+  const float3 c2 = float3(instance.rows[0].z, instance.rows[1].z, instance.rows[2].z);
+  return dot(c0, cross(c1, c2)) < 0.0 ? -1.0 : 1.0;
+}
+
+// A direction in the instance's frame, for normals: the **outward** one. The cofactor matrix of
+// the upper-left 3x3 (its columns are the cross products of the linear part's columns) is the
+// adjugate transpose, the inverse transpose scaled by the determinant, so normalizing afterwards
+// makes the division unnecessary and the uniform-scale case needs no special path; but under a
+// mirror the determinant is negative and the cofactor normal points **into** the surface (for
+// scale (-1, 1, 1) it maps +x to +x). It is turned by the determinant's sign, which the first cross
+// product already holds, so a mirroring instance's normal is the mirror image of the asset's. The
+// resolve's turn towards the geometric normal hid the inward one on a plain surface and turned a
+// normal-mapped one's relief over on both axes (R202; docs/subsystems/gfx.md, "A mirroring
+// instance").
 float3 transform_normal(InstanceDesc instance, float3 n) {
   const float3 c0 = float3(instance.rows[0].x, instance.rows[1].x, instance.rows[2].x);
   const float3 c1 = float3(instance.rows[0].y, instance.rows[1].y, instance.rows[2].y);
   const float3 c2 = float3(instance.rows[0].z, instance.rows[1].z, instance.rows[2].z);
-  return normalize(cross(c1, c2) * n.x + cross(c2, c0) * n.y + cross(c0, c1) * n.z);
+  const float3 x12 = cross(c1, c2);
+  const float3 cofactor = x12 * n.x + cross(c2, c0) * n.y + cross(c0, c1) * n.z;
+  return normalize(dot(c0, x12) < 0.0 ? -cofactor : cofactor);
 }
 
 #endif  // ENGINE_SCENE_SLANG

@@ -6,8 +6,9 @@
 //   - **A bump lights the flank its height says.** A Gaussian bump's normal map generated in each
 //     green convention — +Y up the image (glTF 2.0, OpenGL, `engine-content matgen`, the material
 //     pack) and +Y down it (DirectX) — on two quads, one of them mirrored in u, under a low sun
-//     from +z, through the derived frame and through the frame an exporter writes. The flank that
-//     faces the sun is the brighter one exactly where the convention and the frame agree.
+//     from +z, through the derived frame and through the frame an exporter writes, placed once as
+//     they are and once by a mirroring instance, scale (-1, 1, 1). The flank that faces the sun is
+//     the brighter one exactly where the convention and the frame agree.
 //   - **A deformed instance's frame follows its deformed surface.** The author's tangent is a rest
 //     tangent, so an instance whose `deform` is not `k_invalid_deform` takes the frame derived from
 //     the deformed positions: at rest it draws what the rigid instance draws, turned 90 degrees
@@ -189,7 +190,8 @@ struct Rig {
               region.bufferOffset = u64{k_size} * k_size * 4 * i;
               region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
               region.imageExtent = {k_size, k_size, 1};
-              vkCmdCopyImageToBuffer(gfx::vk::native(cb), gfx::vk::native(g.image(targets[i]).image),
+              vkCmdCopyImageToBuffer(gfx::vk::native(cb),
+                                     gfx::vk::native(g.image(targets[i]).image),
                                      gfx::vk::native(g.image_layout(targets[i])),
                                      gfx::vk::native(host.buffer), 1, &region);
             }
@@ -237,7 +239,8 @@ struct MeshBuffers {
 
 MeshBuffers upload_mesh(Rig& rig, const geometry::ClusterMesh& mesh) {
   MeshBuffers m;
-  m.clusters = rig.upload(mesh.clusters.data(), mesh.clusters.size() * sizeof(geometry::ClusterDesc));
+  m.clusters =
+      rig.upload(mesh.clusters.data(), mesh.clusters.size() * sizeof(geometry::ClusterDesc));
   m.triangles = rig.upload(mesh.triangles.data(), mesh.triangles.size() * sizeof(u32));
   m.attributes = rig.upload(mesh.attributes.data(),
                             mesh.attributes.size() * sizeof(geometry::VertexAttributes));
@@ -248,10 +251,11 @@ MeshBuffers upload_mesh(Rig& rig, const geometry::ClusterMesh& mesh) {
   return m;
 }
 
-// The MeshDesc and InstanceDesc of the mesh's one identity instance, rigid unless `pool` (the
-// deformed positions, f32 x 3 per vertex) is named.
-void place(Rig& rig, const geometry::ClusterMesh& mesh, const MeshBuffers& m, u64 pool,
-           u64 slots, u64& mesh_desc, u64& instance_desc) {
+// The MeshDesc and InstanceDesc of the mesh's one instance at the origin, placed by `linear`
+// (identity unless named), rigid unless `pool` (the deformed positions, f32 x 3 per vertex) is
+// named.
+void place(Rig& rig, const geometry::ClusterMesh& mesh, const MeshBuffers& m, u64 pool, u64 slots,
+           u64& mesh_desc, u64& instance_desc, const Mat4& linear = Mat4::identity()) {
   gfx::MeshDesc desc{};
   desc.quant = Vec4{mesh.quant_origin, mesh.quant_scale};
   desc.first_cluster = 0;
@@ -260,7 +264,7 @@ void place(Rig& rig, const geometry::ClusterMesh& mesh, const MeshBuffers& m, u6
   desc.deform_pool = pool;
   desc.deform_slots = slots;
   gfx::InstanceDesc instance{};
-  gfx::set_instance_placement(instance, Mat4::identity(), WorldPos::origin());
+  gfx::set_instance_placement(instance, linear, WorldPos::origin());
   if (pool != 0) instance.deform = 0;
   mesh_desc = rig.upload(&desc, sizeof(desc));
   instance_desc = rig.upload(&instance, sizeof(instance));
@@ -302,7 +306,8 @@ TEST_CASE("material resolve: a bump lights the flank its normal map's convention
   if (!rig.open()) return;
   std::string error;
 
-  // The two quads of authored_tangent_tests.cpp: y = 0, the left one mirrored in u, v rising with z.
+  // The two quads of authored_tangent_tests.cpp: y = 0, the left one mirrored in u, v rising with
+  // z.
   const Vec3 positions[8] = {Vec3{-5.0f, 0.0f, -5.0f}, Vec3{0.0f, 0.0f, -5.0f},
                              Vec3{0.0f, 0.0f, 5.0f},   Vec3{-5.0f, 0.0f, 5.0f},
                              Vec3{0.0f, 0.0f, -5.0f},  Vec3{5.0f, 0.0f, -5.0f},
@@ -367,140 +372,162 @@ TEST_CASE("material resolve: a bump lights the flank its normal map's convention
   const u32 material_index[2] = {0, 1};
 
   const MeshBuffers m = upload_mesh(rig, mesh);
-  u64 mesh_desc = 0;
-  u64 instance_desc = 0;
-  place(rig, mesh, m, 0, 0, mesh_desc, instance_desc);
   const u64 material_table = rig.upload(materials, sizeof(materials));
   const u64 cluster_materials = rig.upload(material_index, sizeof(material_index));
 
-  const Vec3 eye{0.0f, 10.0f, 0.0f};
-  const Vec3 target{};
-  const Vec3 up{0.0f, 0.0f, -1.0f};
-  const Mat4 view_proj = perspective_reversed_z(k_fov_y, 1.0f, 0.1f) * look_at(eye, target, up);
-  gfx::ClusterDrawParams draw{};
-  draw.view_proj = view_proj;
-  draw.clusters = m.clusters;
-  draw.mesh = mesh_desc;
-  draw.instances = instance_desc;
-  draw.triangles = m.triangles;
+  // **A mirroring instance** (R202; docs/subsystems/gfx.md, "A mirroring instance"): the same quads
+  // placed by scale (-1, 1, 1), which swaps them across x and leaves the bumps' flanks along z
+  // where they were, so the sunward flank is the same one. Until the outward normal, the cofactor
+  // normal pointed into the surface there and the last turn towards the geometric normal lit the
+  // other.
+  for (u32 mirror = 0; mirror < 2; ++mirror) {
+    const f64 sx = mirror != 0 ? -1.0 : 1.0;
+    u64 mesh_desc = 0;
+    u64 instance_desc = 0;
+    place(rig, mesh, m, 0, 0, mesh_desc, instance_desc,
+          mirror != 0 ? scaling(Vec3{-1.0f, 1.0f, 1.0f}) : Mat4::identity());
 
-  // The sun low over +z, in the y-z plane so that only the bitangent's sign shows.
-  const Vec4 sky{0.2f, 0.3f, 0.4f, 1.0f};
-  const Vec3 sun = normalize(Vec3{0.0f, 0.6f, 1.0f});
-  gfx::ResolveParams base{};
-  base.sky = sky;
-  base.sun = Vec4{sun, 1.0f};
-  base.camera = Vec4{eye, 0.0f};
-  base.view_proj = view_proj;
-  base.clusters = m.clusters;
-  base.mesh = mesh_desc;
-  base.instances = instance_desc;
-  base.triangles = m.triangles;
-  base.materials = material_table;
-  base.attributes = m.attributes;
-  base.mode = static_cast<u32>(gfx::ResolveMode::Shaded);
-  // Blocks: (frame, convention) = (derived, +Y up), (exported, +Y up), (derived, +Y down),
-  // (exported, +Y down).
-  constexpr u32 k_blocks = 4;
-  const bool block_stream[k_blocks] = {false, true, false, true};
-  const u32 block_map[k_blocks] = {0, 0, 1, 1};
-  gfx::ResolveParams blocks[k_blocks];
-  for (u32 i = 0; i < k_blocks; ++i) {
-    blocks[i] = base;
-    blocks[i].cluster_materials = cluster_materials + block_map[i] * sizeof(u32);
-    if (block_stream[i]) {
-      blocks[i].extra = m.extra;
-      blocks[i].extra_vertices = m.vertices;
+    const Vec3 eye{0.0f, 10.0f, 0.0f};
+    const Vec3 target{};
+    const Vec3 up{0.0f, 0.0f, -1.0f};
+    const Mat4 view_proj = perspective_reversed_z(k_fov_y, 1.0f, 0.1f) * look_at(eye, target, up);
+    gfx::ClusterDrawParams draw{};
+    draw.view_proj = view_proj;
+    draw.clusters = m.clusters;
+    draw.mesh = mesh_desc;
+    draw.instances = instance_desc;
+    draw.triangles = m.triangles;
+
+    // The sun low over +z, in the y-z plane so that only the bitangent's sign shows.
+    const Vec4 sky{0.2f, 0.3f, 0.4f, 1.0f};
+    const Vec3 sun = normalize(Vec3{0.0f, 0.6f, 1.0f});
+    gfx::ResolveParams base{};
+    base.sky = sky;
+    base.sun = Vec4{sun, 1.0f};
+    base.camera = Vec4{eye, 0.0f};
+    base.view_proj = view_proj;
+    base.clusters = m.clusters;
+    base.mesh = mesh_desc;
+    base.instances = instance_desc;
+    base.triangles = m.triangles;
+    base.materials = material_table;
+    base.attributes = m.attributes;
+    base.mode = static_cast<u32>(gfx::ResolveMode::Shaded);
+    // Blocks: (frame, convention) = (derived, +Y up), (exported, +Y up), (derived, +Y down),
+    // (exported, +Y down).
+    constexpr u32 k_blocks = 4;
+    const bool block_stream[k_blocks] = {false, true, false, true};
+    const u32 block_map[k_blocks] = {0, 0, 1, 1};
+    gfx::ResolveParams blocks[k_blocks];
+    for (u32 i = 0; i < k_blocks; ++i) {
+      blocks[i] = base;
+      blocks[i].cluster_materials = cluster_materials + block_map[i] * sizeof(u32);
+      if (block_stream[i]) {
+        blocks[i].extra = m.extra;
+        blocks[i].extra_vertices = m.vertices;
+      }
     }
-  }
-  Vector<u8> pictures;
-  rig.run(draw, blocks, k_blocks, pictures);
-  auto pixel = [&](u32 image, u32 x, u32 y) {
-    return pictures.data() + (u64{k_size} * k_size * image + y * k_size + x) * 4;
-  };
+    Vector<u8> pictures;
+    rig.run(draw, blocks, k_blocks, pictures);
+    auto pixel = [&](u32 image, u32 x, u32 y) {
+      return pictures.data() + (u64{k_size} * k_size * image + y * k_size + x) * 4;
+    };
 
-  // The reference's two frames, each constant over a quad: the derived one from a triangle's
-  // corners and UVs, the authored one from the exporter's tangents.
-  ref::Dvec3 frame_t[2][2];  // [quad: 0 left, 1 right][0 derived, 1 authored]
-  ref::Dvec3 frame_b[2][2];
-  for (u32 q = 0; q < 2; ++q) {
-    const u32 c[3] = {q * 4, q * 4 + 2, q * 4 + 1};
-    const ref::Dvec3 p[3] = {ref::dvec3(positions[c[0]]), ref::dvec3(positions[c[1]]),
-                             ref::dvec3(positions[c[2]])};
-    const Vec2 tri_uv[3] = {uvs[c[0]], uvs[c[1]], uvs[c[2]]};
-    REQUIRE(ref::tangent_frame(p, tri_uv, ref::dvec3(flat), frame_t[q][0], frame_b[q][0]));
-    const Vec4 corner_t[3] = {exported[c[0]], exported[c[1]], exported[c[2]]};
-    REQUIRE(ref::authored_frame(corner_t, ref::Dvec3{1.0 / 3, 1.0 / 3, 1.0 / 3}, ref::dvec3(flat),
-                                frame_t[q][1], frame_b[q][1]));
-  }
+    // The reference's two frames, each constant over a quad: the derived one from a triangle's
+    // corners and UVs, the authored one from the exporter's tangents, both as placed: positions and
+    // tangents through the instance, the outward normal (+y either way) and its handedness.
+    ref::Dvec3 frame_t[2][2];  // [quad: 0 the mesh's left, 1 its right][0 derived, 1 authored]
+    ref::Dvec3 frame_b[2][2];
+    for (u32 q = 0; q < 2; ++q) {
+      const u32 c[3] = {q * 4, q * 4 + 2, q * 4 + 1};
+      ref::Dvec3 p[3];
+      Vec4 corner_t[3];
+      for (u32 k = 0; k < 3; ++k) {
+        p[k] = ref::dvec3(positions[c[k]]);
+        p[k].x *= sx;
+        corner_t[k] = exported[c[k]];
+        corner_t[k].x *= static_cast<f32>(sx);
+      }
+      const Vec2 tri_uv[3] = {uvs[c[0]], uvs[c[1]], uvs[c[2]]};
+      REQUIRE(ref::tangent_frame(p, tri_uv, ref::dvec3(flat), frame_t[q][0], frame_b[q][0]));
+      REQUIRE(ref::authored_frame(corner_t, ref::Dvec3{1.0 / 3, 1.0 / 3, 1.0 / 3}, ref::dvec3(flat),
+                                  frame_t[q][1], frame_b[q][1], sx));
+    }
 
-  int worst[k_blocks] = {};
-  u32 held = 0;
-  double flank_sum[k_blocks][2][2] = {};  // [block][quad][0 the +z flank, 1 the -z flank]
-  u32 flank_count[2][2] = {};
-  for (u32 y = 0; y < k_size; ++y) {
-    for (u32 x = 0; x < k_size; ++x) {
-      const ref::Dvec3 p =
-          ref::pixel_on_plane(ref::dvec3(eye), ref::dvec3(target), ref::dvec3(up),
-                              static_cast<double>(k_fov_y), 1.0, k_size, k_size, x, y, 0.0);
-      const u32 q = p.x < 0.0 ? 0u : 1u;
-      if (std::abs(p.x) < 0.3 || std::abs(p.x) > 4.7 || std::abs(p.z) > 4.7) continue;
-      const double cx = q == 0 ? -2.5 : 2.5;
-      if (std::abs(p.x - cx) < 0.5 && std::abs(p.z) > 0.6 && std::abs(p.z) < 2.0) {
-        const u32 side = p.z > 0.0 ? 0u : 1u;
-        ++flank_count[q][side];
+    int worst[k_blocks] = {};
+    u32 held = 0;
+    double flank_sum[k_blocks][2][2] = {};  // [block][quad][0 the +z flank, 1 the -z flank]
+    u32 flank_count[2][2] = {};
+    for (u32 y = 0; y < k_size; ++y) {
+      for (u32 x = 0; x < k_size; ++x) {
+        const ref::Dvec3 p =
+            ref::pixel_on_plane(ref::dvec3(eye), ref::dvec3(target), ref::dvec3(up),
+                                static_cast<double>(k_fov_y), 1.0, k_size, k_size, x, y, 0.0);
+        const double mx = p.x * sx;  // the point's x in the mesh
+        const u32 q = mx < 0.0 ? 0u : 1u;
+        if (std::abs(p.x) < 0.3 || std::abs(p.x) > 4.7 || std::abs(p.z) > 4.7) continue;
+        const double cx = q == 0 ? -2.5 : 2.5;
+        if (std::abs(mx - cx) < 0.5 && std::abs(p.z) > 0.6 && std::abs(p.z) < 2.0) {
+          const u32 side = p.z > 0.0 ? 0u : 1u;
+          ++flank_count[q][side];
+          for (u32 i = 0; i < k_blocks; ++i) {
+            const u8* c = pixel(i, x, y);
+            flank_sum[i][q][side] += static_cast<double>(c[0]) + c[1] + c[2];
+          }
+        }
+        // The reference where a pixel is well inside one texel of the nearest-sampled map.
+        const double u = q == 0 ? -mx / 5.0 : mx / 5.0;
+        const double v = (p.z + 5.0) / 10.0;
+        const double tu = u * k_n;
+        const double tv = v * k_n;
+        const double fu = tu - std::floor(tu);
+        const double fv = tv - std::floor(tv);
+        if (fu < 0.12 || fu > 0.88 || fv < 0.12 || fv > 0.88) continue;
+        const u32 texel = static_cast<u32>(tv) * k_n + static_cast<u32>(tu);
+        ++held;
         for (u32 i = 0; i < k_blocks; ++i) {
-          const u8* c = pixel(i, x, y);
-          flank_sum[i][q][side] += static_cast<double>(c[0]) + c[1] + c[2];
+          const u8* t = (block_map[i] == 0 ? up_map : down_map).data() + texel * 4;
+          const u32 f = block_stream[i] ? 1u : 0u;
+          const ref::Dvec3 n =
+              ref::map_normal(ref::dvec3(flat), frame_t[q][f], frame_b[q][f], t, 1.0);
+          const int d = channel_apart(pixel(i, x, y), shade_at(n, p, ref::dvec3(eye), albedo,
+                                                               k_roughness, sun, sky, base.ground));
+          worst[i] = std::max(worst[i], d);
         }
       }
-      // The reference where a pixel is well inside one texel of the nearest-sampled map.
-      const double u = q == 0 ? -p.x / 5.0 : p.x / 5.0;
-      const double v = (p.z + 5.0) / 10.0;
-      const double tu = u * k_n;
-      const double tv = v * k_n;
-      const double fu = tu - std::floor(tu);
-      const double fv = tv - std::floor(tv);
-      if (fu < 0.12 || fu > 0.88 || fv < 0.12 || fv > 0.88) continue;
-      const u32 texel = static_cast<u32>(tv) * k_n + static_cast<u32>(tu);
-      ++held;
-      for (u32 i = 0; i < k_blocks; ++i) {
-        const u8* t = (block_map[i] == 0 ? up_map : down_map).data() + texel * 4;
-        const u32 f = block_stream[i] ? 1u : 0u;
-        const ref::Dvec3 n = ref::map_normal(ref::dvec3(flat), frame_t[q][f], frame_b[q][f], t, 1.0);
-        const int d = channel_apart(pixel(i, x, y),
-                                    shade_at(n, p, ref::dvec3(eye), albedo, k_roughness, sun, sky,
-                                             base.ground));
-        worst[i] = std::max(worst[i], d);
+    }
+    const std::string names[k_blocks] = {"derived frame, +Y-up map", "exported frame, +Y-up map",
+                                         "derived frame, +Y-down map",
+                                         "exported frame, +Y-down map"};
+    const std::string path =
+        std::string(rig.raster.name()) + (mirror != 0 ? " path, a mirroring instance" : " path");
+    CHECK(held > 3000);
+    for (u32 q = 0; q < 2; ++q)
+      for (u32 side = 0; side < 2; ++side)
+        CHECK(flank_count[q][side] > 40);
+    for (u32 i = 0; i < k_blocks; ++i) {
+      bool lit_right[2];
+      for (u32 q = 0; q < 2; ++q) {
+        const double plus = flank_sum[i][q][0] / flank_count[q][0];
+        const double minus = flank_sum[i][q][1] / flank_count[q][1];
+        lit_right[q] = plus > minus;
+        MESSAGE(path << ", " << names[i] << ", " << std::string(q == 0 ? "mirrored" : "unmirrored")
+                     << " quad: the sunward flank " << plus / 3.0 << ", the other " << minus / 3.0
+                     << " (mean code): "
+                     << std::string(plus > minus ? "the right flank lit" : "the wrong flank lit"));
       }
+      // A +Y-up map is read the right way up by both frames, on both islands; a +Y-down one the
+      // wrong way up, which is what glTF's convention says of it.
+      const bool expect_right = block_map[i] == 0;
+      CHECK_MESSAGE(lit_right[0] == expect_right,
+                    path << ", " << names[i] << " on the mirrored quad");
+      CHECK_MESSAGE(lit_right[1] == expect_right,
+                    path << ", " << names[i] << " on the unmirrored quad");
+      MESSAGE(path << ", " << names[i] << ": worst " << worst[i]
+                   << " of 255 from the reference over " << held << " pixels");
+      CHECK_MESSAGE(worst[i] <= 2,
+                    path << ", " << names[i] << " is " << worst[i] << " from the reference");
     }
-  }
-  const std::string names[k_blocks] = {"derived frame, +Y-up map", "exported frame, +Y-up map",
-                                       "derived frame, +Y-down map", "exported frame, +Y-down map"};
-  const std::string path = rig.raster.name();
-  CHECK(held > 3000);
-  for (u32 q = 0; q < 2; ++q)
-    for (u32 side = 0; side < 2; ++side)
-      CHECK(flank_count[q][side] > 40);
-  for (u32 i = 0; i < k_blocks; ++i) {
-    bool lit_right[2];
-    for (u32 q = 0; q < 2; ++q) {
-      const double plus = flank_sum[i][q][0] / flank_count[q][0];
-      const double minus = flank_sum[i][q][1] / flank_count[q][1];
-      lit_right[q] = plus > minus;
-      MESSAGE(path << " path, " << names[i] << ", "
-                   << std::string(q == 0 ? "mirrored" : "unmirrored") << " quad: the sunward flank "
-                   << plus / 3.0 << ", the other " << minus / 3.0 << " (mean code): "
-                   << std::string(plus > minus ? "the right flank lit" : "the wrong flank lit"));
-    }
-    // A +Y-up map is read the right way up by both frames, on both islands; a +Y-down one the
-    // wrong way up, which is what glTF's convention says of it.
-    const bool expect_right = block_map[i] == 0;
-    CHECK_MESSAGE(lit_right[0] == expect_right, names[i] << " on the mirrored quad");
-    CHECK_MESSAGE(lit_right[1] == expect_right, names[i] << " on the unmirrored quad");
-    MESSAGE(names[i] << ": worst " << worst[i] << " of 255 from the reference over " << held
-                     << " pixels");
-    CHECK_MESSAGE(worst[i] <= 2, names[i] << " is " << worst[i] << " from the reference");
   }
 }
 
@@ -523,8 +550,7 @@ TEST_CASE("material resolve: a deformed instance's tangent frame follows its def
   const Vec3 flat{0.0f, 1.0f, 0.0f};
   const Vec3 normals[4] = {flat, flat, flat, flat};
   const Vec2 uvs[4] = {Vec2{0.0f, 0.0f}, Vec2{1.0f, 0.0f}, Vec2{1.0f, 1.0f}, Vec2{0.0f, 1.0f}};
-  const Vec4 exported[4] = {Vec4{1, 0, 0, 1}, Vec4{1, 0, 0, 1}, Vec4{1, 0, 0, 1},
-                            Vec4{1, 0, 0, 1}};
+  const Vec4 exported[4] = {Vec4{1, 0, 0, 1}, Vec4{1, 0, 0, 1}, Vec4{1, 0, 0, 1}, Vec4{1, 0, 0, 1}};
   geometry::AttributeSource source;
   source.normals = normals;
   source.uvs = uvs;
@@ -649,9 +675,9 @@ TEST_CASE("material resolve: a deformed instance's tangent frame follows its def
     }
     for (u32 y = 0; y < k_size; ++y) {
       for (u32 x = 0; x < k_size; ++x) {
-        const ref::Dvec3 dir = ref::pixel_direction(
-            ref::dvec3(eye), ref::dvec3(target), ref::dvec3(up), static_cast<double>(k_fov_y), 1.0,
-            k_size, k_size, x + 0.5, y + 0.5);
+        const ref::Dvec3 dir = ref::pixel_direction(ref::dvec3(eye), ref::dvec3(target),
+                                                    ref::dvec3(up), static_cast<double>(k_fov_y),
+                                                    1.0, k_size, k_size, x + 0.5, y + 0.5);
         // Where the ray meets the quad's plane: the hit's own barycentrics, unclamped, since the
         // quad's other triangle lies in the same plane under the same frame.
         const ref::TriangleHit hit = ref::pixel_on_triangle(ref::dvec3(eye), dir, corner);
@@ -664,9 +690,9 @@ TEST_CASE("material resolve: a deformed instance's tangent frame follows its def
         if (rest.x < 0.3f || rest.x > 4.7f || std::abs(rest.z) > 4.7f) continue;
         ++held[k];
         const u8* got = pictures[k].data() + (y * k_size + x) * 4;
-        worst[k] = std::max(worst[k],
-                            channel_apart(got, shade_at(mapped, point, ref::dvec3(eye),
-                                                        albedo, k_roughness, sun, sky, block.ground)));
+        worst[k] =
+            std::max(worst[k], channel_apart(got, shade_at(mapped, point, ref::dvec3(eye), albedo,
+                                                           k_roughness, sun, sky, block.ground)));
       }
     }
   }
@@ -679,9 +705,9 @@ TEST_CASE("material resolve: a deformed instance's tangent frame follows its def
   }
   for (u32 k = 0; k < 4; ++k) {
     const std::string pose = poses[k].name;
-    MESSAGE(std::string(rig.raster.name()) << " path, " << pose << ": worst " << worst[k]
-                                           << " of 255 from the reference over " << held[k]
-                                           << " pixels");
+    MESSAGE(std::string(rig.raster.name())
+            << " path, " << pose << ": worst " << worst[k] << " of 255 from the reference over "
+            << held[k] << " pixels");
     CHECK(held[k] > 4000);
     CHECK_MESSAGE(worst[k] <= 2, pose << " is " << worst[k] << " from the reference");
   }

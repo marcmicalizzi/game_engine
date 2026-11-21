@@ -266,10 +266,13 @@ inline bool tangent_frame(const Dvec3* p, const Vec2* uv, Dvec3 normal, Dvec3& t
 // material.slang, which the resolve takes where all three corners of a triangle carry an imported
 // tangent. The corner tangents (`xyz` a direction, `w` glTF's handedness) interpolated at the
 // barycentrics `b`, made orthogonal to the shading normal, and the bitangent
-// `cross(normal, tangent) * sign(w)` exactly as glTF 2.0 defines it (3.7.2.1, "TANGENT"). False
-// when the interpolated tangent lies along the normal, where the resolve derives the frame instead.
+// `cross(normal, tangent) * sign(w)` exactly as glTF 2.0 defines it (3.7.2.1, "TANGENT"), times
+// `handedness`, the sign of the instance's determinant: the tangents and the normal are the placed
+// ones, the normal the outward one, and under a mirroring placement their cross product is the
+// placed bitangent turned over (R202; docs/subsystems/gfx.md, "A mirroring instance"). False when
+// the interpolated tangent lies along the normal, where the resolve derives the frame instead.
 inline bool authored_frame(const Vec4* corner_tangents, Dvec3 b, Dvec3 normal, Dvec3& tangent,
-                           Dvec3& bitangent) {
+                           Dvec3& bitangent, double handedness = 1.0) {
   Dvec3 t{};
   double w = 0.0;
   const double weight[3] = {b.x, b.y, b.z};
@@ -281,7 +284,7 @@ inline bool authored_frame(const Vec4* corner_tangents, Dvec3 b, Dvec3 normal, D
   const double t_length = std::sqrt(dot(t, t));
   if (t_length < 1e-12) return false;
   tangent = t * (1.0 / t_length);
-  bitangent = cross(normal, tangent) * (w < 0.0 ? -1.0 : 1.0);
+  bitangent = cross(normal, tangent) * ((w < 0.0 ? -1.0 : 1.0) * handedness);
   return true;
 }
 

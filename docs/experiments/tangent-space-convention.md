@@ -73,6 +73,18 @@ pixel inside one texel is also held to the double-precision reference (`brdf_ref
 | derived, +Y down | the right flank | the wrong flank, as glTF says of such a map |
 | exported, +Y down | the wrong flank | the wrong flank |
 
+**A mirroring instance** (an instance whose linear part has a negative determinant, such as scale
+(-1, 1, 1)) drew every normal map's relief turned over on both axes until the second mend of R202,
+2026-11-20: the shading normal was the cofactor normal, which under a mirror points into the
+surface, and the resolve's turn towards the geometric normal then negated both slopes. It was
+otherwise drawn rightly on every rasterizer and the ray path (measured on the translation suite's
+cubes mirrored in x: the same colour and depth as unmirrored, on all seven paths;
+[gfx](../subsystems/gfx.md), "A mirroring instance"). The same case draws its two quads a second
+time placed by scale (-1, 1, 1): before, the wrong flank on both quads and through both frames (78
+against 139, 72 codes from the reference); since `transform_normal` returns the outward normal and
+the author's bitangent takes the instance's handedness, the right one, 139 against 79, 1 code from
+the reference. So what is said above of the frames holds for a mirroring instance too.
+
 On the ground: `renderer: one normal map lights the same flank on a mesh and on the ground`
 (`systems/renderer/tests/terrain_materials_tests.cpp`) lays one constant map, leaning 45 degrees up
 the image, on the ground's layer and on a mesh quad lying on it with the ground's own mapping, under
