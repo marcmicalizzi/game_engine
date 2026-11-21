@@ -883,10 +883,10 @@ static const float k_sheet_sand_roughness = 0.35;
 // grains' (a swash tip a few millimetres deep and a sheet of centimetres behind it is the field
 // literature's picture as recalled, not read tonight: shore-mechanics.md, "The sheet as a film").
 static const float k_sheet_edge_m = 0.003;
-// The sheet's rms surface slope: a calm sheet's (the backwash's smooth supercritical flow, a few
-// hundredths) and a bore's front's (a broken, aerated surface, a quarter), the one decaying into
-// the other behind the front over a share of the swash's excursion.
-static const float k_sheet_calm_slope = 0.03;
+// The sheet's rms surface slope: a calm sheet's (the backwash's smooth supercritical flow, glassy
+// to the eye: a hundredth and a half) and a bore's front's (a broken, aerated surface, a quarter),
+// the one decaying into the other behind the front over a share of the swash's excursion.
+static const float k_sheet_calm_slope = 0.015;
 static const float k_sheet_bore_slope = 0.25;
 static const float k_sheet_bore_share = 0.35;
 // The ripples' two cells, metres, and their cross-fade's cycle (a divisor of the water's 1,024 s
