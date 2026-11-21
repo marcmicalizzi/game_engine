@@ -1,11 +1,11 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "S110",
-  "reason": "the design of sound for the world lands on the audio page as the row's brief asks (15 KB: sources, the voice, the capability, LOD, device, determinism, budget, game service, stages, the owner's questions), and its status note in plan 05 5.11",
-  "date": "2026-11-20",
+  "reason": "the design of sound for the world lands on the audio page as the row's brief asks (sources, the voice, the capability and the wind that drives it, LOD, distance, device, determinism, budget, game service, stages, the owner's questions), and its status note in plan 05 5.11",
+  "date": "2026-11-21",
   "by": "b71-S110",
   "deltas": {
     "page:docs/plan/05-simulation.md": 695,
-    "page:docs/subsystems/audio.md": 9299
+    "page:docs/subsystems/audio.md": 10389
   }
 }

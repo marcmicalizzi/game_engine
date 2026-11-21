@@ -45,7 +45,7 @@ So a conifer's sound is a band of tones whose centre **rises in pitch with the g
 
 **Grass.** Boersma's measurements in open grassland (1997, *J. Acoust. Soc. Am.* 101 **[N]**) were not reached, and no number for a sward is on this page. The design gives blades the broadleaf's law at the wind of their height, which is low, and says it is unsourced.
 
-**What a synthesis needs and costs.** From the world: the wind's speed at each crown at this instant (`gfx::wind_at` and `wind_gust`, the functions the sway already calls, so the gust that bends a crown is the gust that is heard), each nearby tree's **leaf area** and **class** (blade, needle, bare; the needle's width), and where it stands. It needs no simulation: the level is a closed form of the wind and the area, the spectrum a class's fixed shape whose needle band slides with U. It costs a shaped-noise voice a source and one evaluation of the gust a source a tick; the source's model is good to 8.5 m/s and extrapolated above.
+**What a synthesis needs and costs.** From the world: the wind's speed at each crown at this instant, which is **the frame's wind as every other reader has it**: the scene's (`gfx::wind_at`) or, where a session has set one, the live state a host's keys or a game steps (`gfx::WindLive`, roadmap W151: a mean, a direction and a forced gust's level, which brings the wind to mean × (1 + level (G − 1)), G the gust factor of the ground's roughness), with the turbulence at the crown's place over it (`wind_gust`), so the gust that bends a crown is the gust that is heard. Computed here from the 30 log U above: a forced gust held to its full level raises a crown by 4.9 dB over grassland (G = 1.46, W151's `wind_gust_factor`) and 8.3 dB over a forest's roughness (G = 1.89), and the ears' wind by 6.6 and 11 dB at 12 dB a doubling. It needs also each nearby tree's **leaf area** and **class** (blade, needle, bare; the needle's width), and where it stands. It needs no simulation: the level is a closed form of the wind and the area, the spectrum a class's fixed shape whose needle band slides with U. It costs a shaped-noise voice a source and one evaluation of the gust a source a tick; the source's model is good to 8.5 m/s and extrapolated above.
 
 ## Wind at the listener
 
@@ -104,9 +104,22 @@ Computed here at 70 %: over 200 m the 8 kHz band loses 15 dB and 1 kHz one; over
 
 **Forest.** Hoover's formula as Bies and Hansen give it: **A = 0.01 · r · f^(1/3) dB** for r metres through forest at f Hz (Arup's Strutt help, "Dense foliage excess attenuation", citing *Engineering Noise Control* p. 227 **[F]**). Computed here: 0.05 dB/m at 125 Hz, 0.1 at 1 kHz, 0.2 at 8 kHz, so 100 m of forest is 10 dB at 1 kHz. ISO 9613-2's table A.1 is the other method; the page shows it as an image and it is **[N]**, as are Aylor 1972 and Price, Attenborough and Heap 1988.
 
-**Terrain in the way.** A ridge between a fall and the listener is a barrier: the loss grows with the detour the sound makes over its top measured in wavelengths, so high bands are cut and low ones bend round. **Maekawa's curve (1968), the usual formula, was not read on any page reached: [N]**; the page that names it gives no formula. The design leaves the term's constants unpinned until it is.
+**Terrain in the way.** A ridge between a fall and the listener is a barrier: the loss grows with the detour δ the sound makes over its top, counted in wavelengths as the Fresnel number N = 2δ / λ, so high bands are cut and low ones bend round. Two forms, both as Arup's Strutt help gives them ("Barrier attenuation" **[F]**; Maekawa 1968 and ISO 9613-2 themselves **[N]**):
 
-**Left out, and said so.** The ground effect (a soft ground's dip in the low mid bands for a path that grazes it: Embleton, Piercy and Daigle 1983, Attenborough 1988, all **[N]**), and refraction by wind and temperature gradients (upward refraction "reduces sound levels near the ground", the Wikibooks page **[F]**; the shadow upwind of a source is the audible case). Both change levels by more than a just-noticeable step in real air, and both need a model of the air's profile the engine does not have.
+- Maekawa's shadow zone: **20 log₁₀(√(2πN) / tanh √(2πN)) + 5 dB**;
+- ISO 9613-2 (1996): **D_z = 10 log₁₀(3 + (C₂ / λ) C₃ δ K_met)**, C₂ = 20, C₃ = 1 for one edge, K_met = exp(−(1/2000) √(d_ss d_sr d / 2δ)) the correction for a downwind path's curvature, and **no more than 20 dB a band over one edge, 25 over two**.
+
+Computed here from the ISO form with K_met at 1: a detour of 0.1 m takes 6 dB at 125 Hz, 9.5 at 1 kHz and 17 at 8 kHz; a detour of 1 m takes 10, 18 and the cap.
+
+**The ground.** A path that grazes soft ground loses its low mid bands to the interference of the direct sound with its reflection. ISO 9613-2's engineering form, as the same help gives it ("Ground attenuation" **[F]**; the standard **[N]**; for ground that is roughly flat), sums a source region, a receiver region and a middle, each by octave band from the height h above the ground and a ground factor G (0 hard, 1 porous): −1.5 dB at 63 Hz, −1.5 + G·a′(h), b′(h), c′(h), d′(h) at 125 Hz to 1 kHz, and −1.5 (1 − G) above, with for a path of length d
+
+- b′(h) = 1.5 + 8.6 e^(−0.09 h²) (1 − e^(−d/50)) at 250 Hz,
+- c′(h) = 1.5 + 14.0 e^(−0.46 h²) (1 − e^(−d/50)) at 500 Hz,
+- d′(h) = 1.5 + 5.0 e^(−0.9 h²) (1 − e^(−d/50)) at 1 kHz
+
+(a′ is on the page; the middle region's bands above 125 Hz were not in the text read). Computed here over porous ground at 200 m: the region of **a listener's ears at 1.7 m** takes 1.3 dB at 125 Hz, 6.5 at 250, 3.6 at 500 and 0.4 at 1 kHz; the region of **a source on the ground**, which a stream is, 0.8, 8.4, 13.7 and 4.9. So over a meadow a stream 200 m off has lost about as much at 500 Hz to the ground as at 8 kHz to the air: the ground's term is not a refinement at these distances. It is closed forms, and it is in the design's distance stage.
+
+**Left out, and said so.** Refraction by wind and temperature gradients (upward refraction "reduces sound levels near the ground", the Wikibooks page **[F]**; the shadow upwind of a source is the audible case; ISO's forms above assume a downwind path). It changes levels by more than a just-noticeable step in real air and needs a model of the air's profile the engine does not have. Embleton, Piercy and Daigle 1983 and Attenborough 1988, the ground's own literature, are **[N]**.
 
 ## What a real-time synthesis needs, in one table
 
@@ -118,7 +131,7 @@ Computed here at 70 %: over 200 m the 8 kHz band loses 15 dB and 1 kHz one; over
 | A fall | discharge, height, what it lands on | the stretch's law at its height; low end by flow | one voice |
 | A stretch of surf | dissipation, surf similarity, the train's phase | 10 log of the dissipated power; peak 1 kHz falling to 250–400 Hz over 1 m | one voice |
 | Everything far | the same, summed | powers add band by band | a share of a bed |
-| The path | distance, humidity, forest crossed, ground between | spreading, air, Hoover, a barrier term | a few multiplies a band |
+| The path | distance, humidity, forest crossed, the ground's kind and the two heights, ground in the way | spreading, air, Hoover, ISO 9613-2's ground and barrier terms | a few closed forms a band, at the refresh's rate |
 
 **Cost, as an estimate and not a measurement.** A clip voice costs 1.1 µs a 10 ms block today ([audio](../subsystems/audio.md#performance-notes)). A shaped-noise voice is a generator and eight band filters a frame; with the eight bands in one vector register that is of the order of 3 µs a block, so the design's 27 such voices would be about 80 µs a block, under 1 % of one core. **That figure is arithmetic; the row that builds the voice measures it with a bench row before any budget is called met.** Memory is filter state, a few hundred bytes a voice.
 
@@ -129,4 +142,5 @@ Computed here at 70 %: over 200 m the 8 kHz band loses 15 dB and 1 kHz one; over
 - The distance of Bolin and Åbom's levels.
 - A leaf's or a needle's own dimensions from an acoustic source: the engine's flora recipes hold their own, grounded on [their page](tree-leaf-sizing.md).
 - Fégeant's and Bolin's constants (the radiation constant by species, the wind coefficient). The 30 log U and the 45 dB at 5 m/s are excerpts.
+- The standards' own texts. ISO 9613-2's ground and barrier forms were read as Arup's help reproduces them, its foliage table and ISO 9613-1's absorption table not at all (the absorption numbers above are a page that doubts its own table); Maekawa's chart for the lit side of a barrier is a figure nobody reproduces as a formula.
 - The licences of xeno-canto's recordings beyond Wikipedia's sentence that all are published under one of the Creative Commons licences ("Xeno-canto" **[F]**); its own terms page refused the fetch.

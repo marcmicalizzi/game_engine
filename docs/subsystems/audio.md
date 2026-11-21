@@ -373,7 +373,9 @@ Its parameters are one command of the size a `SetSource` is. The output goes thr
 
 `ENGINE_WITH_WORLD_SOUND`, `engine_capability_requires(world_sound audio)`, off in the minimal build. It owns a **`SoundStage`**: the clip store, the mixer, the output or the null backend, the listener, a game's clips and voices, and the fields that turn the world into shaped-noise voices. A host has one object to create, hand a listener and tick; the rendering rule's counterpart holds, **sound code lives in the module, not in an app**.
 
-It links `gfx` for the wind's header (`wind_at`, `wind_gust`, `sea_state`: the model is not a capability) and **no capability but `audio`**. Trees and water reach it through **source tables a host fills**, a function pointer and a context each, as scene generators and derived steps are tables:
+**The wind that drives it is the frame's, the one every reader is given**: the scene's wind, or the live state a host's keys or a game set while the session runs (`gfx::WindLive`, handed to every reader as `FrameDesc::wind`; roadmap W151, built the night this was designed and not on this row's base). The host hands the stage the same value each tick; the stage takes the mean and the forced gust from it and lays the turbulence at each source's place over it with `wind_gust`. A game changes the wind through the wind's own service (`wind_set`, `wind_gust`) and the sound follows; no sound call sets a wind, and the stage holds none of its own.
+
+It links `gfx` for the wind's header (`WindLive`, `wind_at`, `wind_gust`, `sea_state`: the model is not a capability) and **no capability but `audio`**. Trees and water reach it through **source tables a host fills**, a function pointer and a context each, as scene generators and derived steps are tables:
 
 | Table | What it visits | Filled from |
 |---|---|---|
@@ -401,7 +403,7 @@ The chosen voices are re-described every tick (a gust is tick-fast); the choice 
 
 ### Distance
 
-A world voice uses the `None` distance model and carries its path in its band gains: spreading (a line near, a point far), **air absorption by band** at a humidity (`audio.world.humidity`, 70; the sky's when it has one), **Hoover's forest term** over the length of path under canopy, and a **barrier term** for ground between the source and the listener, from a few samples of the height field. A distant fall is then a rumble for the reason a real one is. The barrier's formula and the absorption table are pinned from their sources, which the grounding page marks unread; the ground effect and refraction are left out and the page says so. A clip voice keeps the distance laws above; S114 adds a one-pole low-pass by distance through `SpatialParams`, the seam Steam Audio's terms arrive by later (S40).
+A world voice uses the `None` distance model and carries its path in its band gains: spreading (a line near, a point far), **air absorption by band** at a humidity (`audio.world.humidity`, 70; the sky's when it has one), **Hoover's forest term** over the length of path under canopy, **ISO 9613-2's ground term** from the two heights and the ground's kind (soft by default; it takes as much from a ground-level stream's middle bands at 200 m as the air takes from its top), and its **barrier term** for ground between the source and the listener, from a few samples of the height field, 20 dB a band at most. A distant fall is then a rumble for the reason a real one is. The forms were read as an engineering tool's help reproduces them and the absorption table from a page that doubts it, so each is pinned from the standard before it is a constant; refraction is left out and the grounding page says so. A clip voice keeps the distance laws above; S114 adds a one-pole low-pass by distance through `SpatialParams`, the seam Steam Audio's terms arrive by later (S40).
 
 ### Spatialization's place
 
@@ -438,16 +440,16 @@ A scene gains **one block, `sound`** (`engine.scene.Sound`): `clips`, each a `na
 - **`sound_clip(name)`**, in `on_load`: the clip's index; `NotFound` refuses the load; `Unsupported` only in a build without the capability or on a scene with no block.
 - **`sound_play(clip, position | k_sound_2d, gain)`**: a one-shot at a world position, in the mixer's frame at the listener's cell as [audio_system](audio_system.md#the-mixers-frame) does it, with the clip's declared distances. A bird's call from its perch is this call.
 - **`sound_stop(voice)`**: the stop's 10 ms fade.
-- **Added by a later row, at the next ABI number**: `sound_play_ex` and `sound_set` with a size-led `SoundParams` (loop, pitch, distances, priority, a position that moves), `sound_gain(bus, db)`, and `sound_clip_info` (a clip's length, a fact of the content, for a game that times itself by ticks).
+- **Added by a later row, at the ABI number free when it is built** (the live wind's service takes 13 on its branch): `sound_play_ex` and `sound_set` with a size-led `SoundParams` (loop, pitch, distances, priority, a position that moves), `sound_gain(bus, db)`, and `sound_clip_info` (a clip's length, a fact of the content, for a game that times itself by ticks).
 
 ### Stages
 
 Each is a row one agent builds in a night; the rows hold the tests.
 
 1. **S111, a game's clips are heard**: the `sound` block, the stage, engine-view's `--audio`, the three calls. The owner hears a fixture's chirp from a prop in the forest, turning with their head.
-2. **S112, the wind in the trees and at the ears**: the shaped-noise voice, the canopy table, crowns, beds, the ears' wind. The owner hears the wind rise with the gusts they see, hiss among conifers, and move from ear to ear as they turn; the hand wind changes it at once.
+2. **S112, the wind in the trees and at the ears**: the shaped-noise voice, the canopy table, crowns, beds, the ears' wind. The owner hears the wind rise with the gusts they see, hiss among conifers, and move from ear to ear as they turn; the live wind's keys change it at once, and a forced gust is heard to rise and die along its envelope.
 3. **S113, running water and the surf**: the flow and surf tables, the resonators. A brook, a fall's roar, waves that sound as they break.
-4. **S114, distance, and the budget held on the forest**: the path's terms, the clip voices' filter, shelter for the ears' wind, the voice counts and microseconds measured on the forest staging.
+4. **S114, distance, and the budget held on the forest**: the path's terms (air, forest, ground, barrier), the clip voices' filter, shelter for the ears' wind, the voice counts and microseconds measured on the forest staging.
 
 ### The owner's questions
 
