@@ -854,14 +854,18 @@ TEST_CASE("flora motion: three palms' padding follows the wind, culled as drawn 
       CHECK(differ == 0);
     }
     // At calm and a mean day every record is main's padding; the steps are each spread over the
-    // three records, the hold rising only on the frame the last is written.
+    // three records, the hold rising only on the frame the last is written. A frame and its
+    // capture are two recorded frames here, so each step's walk ends on the frame after its first:
+    // on that first frame the first palm's record is the new rung's while the hold is the old.
     CHECK(culled.padding[0] == calm);
     CHECK(culled.padding[1] == calm);
     CHECK(culled.stats[1].padding_rung == 0u);
-    CHECK(culled.stats[3].padding_rung == 0u);  // the walk is not done: held at main's
-    CHECK(culled.stats[4].padding_rung == 2u);
-    CHECK(culled.stats[6].padding_rung == 2u);
-    CHECK(culled.stats[7].padding_rung == 4u);
+    CHECK(culled.stats[2].padding_rung == 0u);  // the walk is not done: held at main's
+    CHECK(culled.padding[2] > calm);
+    CHECK(culled.stats[3].padding_rung == 2u);
+    CHECK(culled.stats[5].padding_rung == 2u);  // held at rung 2 while rung 4's walk runs
+    CHECK(culled.padding[5] > culled.padding[4]);
+    CHECK(culled.stats[6].padding_rung == 4u);
     CHECK(culled.stats[7].padding_steps == 2u);
     CHECK(culled.stats[7].padding_writes == 6u);
     CHECK(culled.stats[7].padding_walk_frames == 6u);
