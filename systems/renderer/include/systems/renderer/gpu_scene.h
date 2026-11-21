@@ -1092,6 +1092,12 @@ class GpuScene {
     u64 padding_steps = 0;
     u64 padding_writes = 0;
     u64 padding_walk_frames = 0;
+    // The far forest's lean (W154-2): the still forms' slots, the records the lean rewrote, the
+    // walks it took, and the lean of the walk's wind on the leaning-most still mesh (m per m).
+    u32 still_slots = 0;
+    u64 still_writes = 0;
+    u64 still_walks = 0;
+    f32 still_lean = 0.0f;
     // The field kind and the caster policy (renderer.md, "The field kind", "The caster policy";
     // R95): the meshes posed as a field and their instances now (loaded and the tail's, every one
     // sharing its mesh's record), and the instances by what their species' policy keeps them out
@@ -2053,6 +2059,25 @@ class GpuScene {
   bool repad_field(u32 at);
   void add_field_slot(u32 slot, u32 mesh, f32 base);
   void drop_field_slot(u32 slot) noexcept;
+  // The far forest leans (W154-2; flora_motion.h, `still_lean_record`): every tail slot that holds
+  // a still form, with its record at rest; the lean each still mesh takes at the walk's wind; and a
+  // walk that writes them when that wind has moved by more than a step.
+  struct StillSlot {
+    u32 slot = 0;
+    u32 mesh = 0;
+    gfx::InstanceDesc rest{};
+  };
+  Vector<StillSlot> still_slots_;
+  Vector<u32> still_at_;         // per slot, its place in `still_slots_` (~0: none)
+  Vector<f32> still_mesh_lean_;  // per mesh, metres a metre of height at the walk's wind
+  f32 still_walk_strength_ = 0.0f;
+  Vec2 still_walk_to_{1.0f, 0.0f};
+  bool still_walking_ = false;
+  u32 still_walk_at_ = 0;
+  void add_still_slot(u32 slot);
+  void drop_still_slot(u32 slot) noexcept;
+  bool relean(u32 at);
+  void still_lean_frame(const FrameFlora& frame, f64 sky_time_s, const gfx::WindLive& live);
   Vector<f32> flora_padding_;     // per mesh, the sway's bound, measured at the upload
   CrownPriorTable crown_priors_;  // T138: measured at `create`, before any release
   bool crown_priors_built_ = false;

@@ -648,6 +648,65 @@ f32 flora_bounds_padding(const FloraMesh& mesh, std::span<const Vec3> vertices,
   return worst;
 }
 
+f32 flora_mean_lean(const FloraMesh& mesh, std::span<const Vec3> vertices,
+                    std::span<const geometry::ClusterFileMotionVertex> motion) noexcept {
+  const u32 n = mesh.part_count();
+  if (n == 0 || mesh.field || vertices.size() != motion.size()) return 0.0f;
+  f64 num = 0.0;
+  f64 den = 0.0;
+  const Vec3 up{0.0f, 1.0f, 0.0f};
+  for (u32 w = 0; w < 4; ++w) {
+    const f32 a = 1.5707963f * static_cast<f32>(w);
+    const Vec3 to{std::cos(a), 0.0f, std::sin(a)};
+    // Each part's mean turn's rotation vector: about the axis that turns its rest direction
+    // towards the wind (`flora_part_poses`' own), by its compliance at the gust's mean lean.
+    Vector<Vec3> omega(n, Vec3{});
+    for (u32 p = 0; p < n; ++p) {
+      const Vec3 d = mesh.parts[p].direction;
+      Vec3 perp = to - d * dot(d, to);
+      if (dot(perp, perp) < 0.04f) perp = up - d * dot(d, up);
+      const f32 pl = length(perp);
+      if (pl <= 1.0e-4f) continue;
+      const Vec3 k = cross(d, perp * (1.0f / pl));
+      const f32 kl = length(k);
+      if (kl <= 1.0e-4f) continue;
+      omega[p] = k * (mesh.compliance[p] * 1.0f / kl);
+    }
+    for (u32 v = 0; v < vertices.size(); v += 4) {
+      u32 p = motion[v].part;
+      if (p >= n || !(vertices[v].y > 0.0f)) continue;
+      const Vec3 at = vertices[v];
+      f32 along = dot(cross(omega[p], at - mesh.parts[p].pivot), to) *
+                  (static_cast<f32>(motion[v].weight) * (1.0f / 65535.0f));
+      for (u32 guard = 0; guard < 64 && mesh.parts[p].parent != geometry::k_motion_no_parent;
+           ++guard) {
+        p = mesh.parts[p].parent;
+        along += dot(cross(omega[p], at - mesh.parts[p].pivot), to);
+      }
+      num += static_cast<f64>(along) * static_cast<f64>(at.y);
+      den += static_cast<f64>(at.y) * static_cast<f64>(at.y);
+    }
+  }
+  return den > 0.0 && num > 0.0 ? static_cast<f32>(num / den) : 0.0f;
+}
+
+gfx::InstanceDesc still_lean_record(const gfx::InstanceDesc& rest, Vec2 lean) noexcept {
+  if (lean.x == 0.0f && lean.y == 0.0f) return rest;
+  gfx::InstanceDesc out = rest;
+  // rows = (I + lean e_y^T) rows_rest on the 3x3; the translation column (the cell's local) stays.
+  const Vec4& up = rest.rows[1];
+  out.rows[0] = Vec4{rest.rows[0].x + lean.x * up.x, rest.rows[0].y + lean.x * up.y,
+                     rest.rows[0].z + lean.x * up.z, rest.rows[0].w};
+  out.rows[2] = Vec4{rest.rows[2].x + lean.y * up.x, rest.rows[2].y + lean.y * up.y,
+                     rest.rows[2].z + lean.y * up.z, rest.rows[2].w};
+  // ||I + l e_y^T|| = (|l| + sqrt(|l|^2 + 4)) / 2 <= 1 + |l|, and the product's norm is at most the
+  // two norms': the largest axis scale times that bounds every radius.
+  const f32 l = std::sqrt(lean.x * lean.x + lean.y * lean.y);
+  out.scale_max = rest.scale_max * (1.0f + l);
+  out.flags &= ~gfx::k_instance_uniform_scale;
+  return out;
+}
+
 f32 flora_padding_at_load(const FloraMesh& mesh, std::span<const Vec3> vertices,
                           std::span<const geometry::ClusterFileMotionVertex> motion,
                           f32 load) noexcept {

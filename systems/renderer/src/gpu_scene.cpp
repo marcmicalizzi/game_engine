@@ -1191,56 +1191,6 @@ f32 GpuScene::flora_padding_of(u32 mesh) {
                             flora_rung_load(flora_ladder_.target, flora_ladder_top_));
 }
 
-// A swaying record's padding: the caller's, or the sway's at the ladder's target if that is more.
-f32 GpuScene::sway_padding_of(u32 mesh, f32 base) {
-  const f32 padding = flora_padding_of(mesh);
-  return padding > base ? padding : base;
-}
-
-void GpuScene::add_field_slot(u32 slot, u32 mesh, f32 base) {
-  if (field_at_.size() <= slot) field_at_.resize(slot + 1, ~0u);
-  if (field_at_[slot] != ~0u) drop_field_slot(slot);
-  field_at_[slot] = field_slots_.size();
-  field_slots_.push_back(FieldSlot{slot, mesh, base});
-}
-
-void GpuScene::drop_field_slot(u32 slot) noexcept {
-  if (slot >= field_at_.size() || field_at_[slot] == ~0u) return;
-  const u32 at = field_at_[slot];
-  const u32 last = field_slots_.size() - 1;
-  field_at_[slot] = ~0u;
-  if (at != last) {
-    field_slots_[at] = field_slots_[last];
-    field_at_[field_slots_[at].slot] = at;
-  }
-  field_slots_.pop_back();
-  // A step's walk past `at` but not past the one moved into it: written now, or the walk would
-  // leave it at the rung it had (W154-2).
-  if (ladder_walking_ && at < ladder_field_at_ && last >= ladder_field_at_) repad_field(at);
-}
-
-bool GpuScene::repad_tree(u32 at) {
-  const FloraInstance& fi = flora_instances_[at];
-  if (fi.instance >= instance_table_.size()) return false;
-  gfx::InstanceDesc& placed = instance_table_[fi.instance];
-  const f32 want = sway_padding_of(fi.mesh, fi.base_padding);
-  if (placed.bounds_padding == want) return false;
-  placed.bounds_padding = want;
-  mark_instance_written(fi.instance);
-  return true;
-}
-
-bool GpuScene::repad_field(u32 at) {
-  const FieldSlot& field = field_slots_[at];
-  if (field.slot >= instance_table_.size()) return false;
-  gfx::InstanceDesc& placed = instance_table_[field.slot];
-  const f32 want = sway_padding_of(field.mesh, field.base);
-  if (placed.bounds_padding == want) return false;
-  placed.bounds_padding = want;
-  mark_instance_written(field.slot);
-  return true;
-}
-
 FloraInstance GpuScene::flora_instance(u32 instance, u32 mesh, u32 first_part,
                                        u32 key) const noexcept {
   const gfx::InstanceDesc& placed = instance_table_[instance];
@@ -1288,6 +1238,7 @@ u32 tail_motion_key(const SceneInstance& source) noexcept {
 
 void GpuScene::release_tail_tree(u32 slot) noexcept {
   drop_field_slot(slot);  // a patch of grass the slot held (W154-2's list; it has no record)
+  drop_still_slot(slot);  // a still form the far forest's lean wrote
   if (slot >= tail_tree_of_slot_.size()) return;
   const u32 t = tail_tree_of_slot_[slot];
   if (t == ~0u) return;
@@ -1929,6 +1880,10 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
         tail_keys_[slot] = key_of(source);
         first_pair += part_of(source.mesh).cluster_count;
         if (flora_tail_ && tail_sways(source.mesh)) acquire_tail_tree(slot, source);
+        // A still form leans with the wind past its rule's (W154-2), from its record as written.
+        if (flora_tail_ && source.mesh < data_->still_lean.size() &&
+            data_->still_lean[source.mesh] > 0.0f)
+          add_still_slot(slot);
       } else {
         // Past the live instances: a null instance at the pairs' end, so a pair of the slack lands
         // on it and the slots stay sorted by `first_pair`.
@@ -2048,6 +2003,8 @@ bool GpuScene::fit_tables(TileChange& change, Vector<gfx::BufferResource>* retir
       flora_instances_.reserve(load_flora_ + instance_capacity_);
       field_slots_.reserve(field_slots_.size() + instance_capacity_);
       field_at_.reserve(instance_capacity_);
+      still_slots_.reserve(instance_capacity_);
+      still_at_.reserve(instance_capacity_);
     }
   }
   // The pool's per-entry slots follow the stride and the chain's tables the stride and the
@@ -2644,6 +2601,10 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
     flora_instances_.clear();
     field_slots_.clear();
     field_at_.clear();
+    still_slots_.clear();
+    still_at_.clear();
+    still_walking_ = false;
+    still_walk_strength_ = 0.0f;
     flora_parts_ = 0;
     measure_flora_padding();  // every mesh's sway bound, now (T138; gpu_scene_place.cpp)
     // **A streamed world's trees sway too** (renderer.md, "Streamed trees sway"): when a mesh the
@@ -2881,6 +2842,8 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
       flora_instances_.reserve(load_flora_ + instance_capacity_);
       field_slots_.reserve(field_slots_.size() + instance_capacity_);
       field_at_.reserve(instance_capacity_);
+      still_slots_.reserve(instance_capacity_);
+      still_at_.reserve(instance_capacity_);
     }
     deform_pool_bytes_ = u64{deform_pool_vertices_} * 3 * sizeof(f32);
     constexpr gfx::BufferUsage k_pool_usage = k_address | gfx::BufferUsage::TransferDst |
@@ -6759,6 +6722,8 @@ void GpuScene::destroy() noexcept {
   flora_instances_.clear();
   field_slots_.clear();
   field_at_.clear();
+  still_slots_.clear();
+  still_at_.clear();
   flora_state_.clear();
   flora_poser_.reset();
   flora_parts_ = 0;

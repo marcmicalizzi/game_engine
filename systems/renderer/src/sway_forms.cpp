@@ -55,6 +55,7 @@ SwayMeasure measure_sway(const FloraMesh& mesh, std::span<const Vec3> vertices,
   out.padding = flora_padding_at_load(mesh, vertices, motion, k_flora_calm_load);
   const f32 scale = fit_scale > 0.0f ? fit_scale : 1.0f;
   out.reach_m = flora_bounds_padding(mesh, vertices, motion, rules.wind) * scale;
+  out.lean = flora_mean_lean(mesh, vertices, motion);
   return out;
 }
 

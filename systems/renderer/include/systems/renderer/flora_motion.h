@@ -45,6 +45,7 @@
 #include <core/math/world.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/flora_species.h>
+#include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/flora_motion.h>
 
 #include <span>
@@ -335,6 +336,19 @@ void flora_part_poses(const FloraMesh& mesh, const FloraWind& wind, f64 time_s, 
 f32 flora_bounds_padding(const FloraMesh& mesh, std::span<const Vec3> vertices,
                          std::span<const geometry::ClusterFileMotionVertex> motion,
                          f32 strength = k_flora_max_wind) noexcept;
+// **The far forest leans** (W154-2; renderer.md, "The far forest leans"): a mesh's mean lean under
+// a unit load as one shear, `dx = lean * y` along where the wind blows, fit by least squares over
+// its vertices above its origin: each part's mean turn (its compliance times the lean at the gust's
+// mean, 1.0) carried to the vertex as the padding carries its most turn, small angles, along the
+// wind, averaged over four winds in the mesh's frame. What a still form leans by when the wind
+// passes the still rule's.
+f32 flora_mean_lean(const FloraMesh& mesh, std::span<const Vec3> vertices,
+                    std::span<const geometry::ClusterFileMotionVertex> motion) noexcept;
+// A still form's record leaned by `lean` (x and z: metres a metre of height, where the wind blows
+// to) from its record at rest: its 3x4 sheared about its origin, `x += lean.x y`, `z += lean.y y`,
+// its scale bound widened by the shear's norm (at most 1 + |lean|) and its uniform-scale flag
+// cleared, so the cull's spheres hold the leaned form; `lean` zero gives `rest` back, to the bit.
+gfx::InstanceDesc still_lean_record(const gfx::InstanceDesc& rest, Vec2 lean) noexcept;
 // The same bound at a **load** rather than a strength, with no cap: every part's most turn is its
 // compliance times `load` (a field's held at `k_flora_field_most_load`) at the gust's and
 // flutter's peak, so it is linear in the load and holds every pose whose load is at most `load`.

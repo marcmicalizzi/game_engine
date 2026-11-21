@@ -17,6 +17,7 @@
 #include <doctest/doctest.h>
 
 #include <cmath>
+#include <cstring>
 #include <span>
 #include <string>
 
@@ -579,4 +580,84 @@ TEST_CASE("flora storm: the rung follows the wind's ceiling, up at once and down
   for (u32 k = 0; k < 16; ++k)
     t += k_flora_rung_down_s, rung = flora_rung_choose(ladder, 0.0f, t, top);
   CHECK(rung == 0u);
+}
+
+TEST_CASE("flora storm: a still form's lean is its mesh's mean lean, and its spheres hold it") {
+  const Vector<ClusterFileMotionPart> parts = storm_parts();
+  Vector<Vec3> vertices;
+  Vector<ClusterFileMotionVertex> motion;
+  for (u32 p = 0; p < parts.size(); ++p) {
+    for (u32 i = 0; i <= 10; ++i) {
+      const f32 w = 0.1f * static_cast<f32>(i);
+      vertices.push_back(parts[p].pivot + parts[p].direction * (parts[p].length * w));
+      motion.push_back(
+          ClusterFileMotionVertex{static_cast<u16>(p), static_cast<u16>(w * 65535.0f)});
+    }
+  }
+  for (const char* species : {"oak", "spruce", "date_palm"}) {
+    CAPTURE(std::string(species));
+    const FloraMesh mesh = mesh_of(parts, species);
+    const f32 lean =
+        flora_mean_lean(mesh, {vertices.data(), vertices.size()}, {motion.data(), motion.size()});
+    // The posed mean: the vertices' displacement along a wind from -x over twenty seconds at a
+    // unit load, fit the same way (every fourth vertex above the origin, dx = lean y).
+    Vector<FloraPartState> state(mesh.part_count(), FloraPartState{});
+    Vector<gfx::FloraPartPose> poses(mesh.part_count(), gfx::FloraPartPose{});
+    f64 num = 0.0;
+    f64 den = 0.0;
+    for (u32 k = 0; k < 600; ++k) {
+      pose(mesh, FloraWind{Vec3{1.0f, 0.0f, 0.0f}, 1.0f}, static_cast<f64>(k) / 30.0, state, poses);
+      for (u32 v = 0; v < vertices.size(); v += 4) {
+        if (!(vertices[v].y > 0.0f)) continue;
+        Vec3 p;
+        Vec3 n;
+        gfx::flora_bend(poses[motion[v].part], static_cast<f32>(motion[v].weight) / 65535.0f,
+                        vertices[v], Vec3{0.0f, 1.0f, 0.0f}, p, n);
+        num += static_cast<f64>(p.x - vertices[v].x) * static_cast<f64>(vertices[v].y);
+        den += static_cast<f64>(vertices[v].y) * static_cast<f64>(vertices[v].y);
+      }
+    }
+    const f64 posed = num / den;
+    MESSAGE(std::string(species) << ": a still form leans " << lean
+                                 << " m a metre at a unit load; the posed mean " << posed);
+    CHECK(lean > 0.0f);
+    CHECK(static_cast<f64>(lean) == doctest::Approx(posed).epsilon(0.35));
+  }
+  // The record: no lean is the rest, to the bit; a lean shears about the origin, and every point
+  // of a sphere the rest record carries lies inside the sphere the leaned record's cull tests.
+  gfx::InstanceDesc rest{};
+  Mat4 world = Mat4::identity();
+  world.c[0] = Vec4{0.0f, 0.0f, -1.3f, 0.0f};  // turned a quarter and scaled 1.3
+  world.c[1] = Vec4{0.0f, 1.3f, 0.0f, 0.0f};
+  world.c[2] = Vec4{1.3f, 0.0f, 0.0f, 0.0f};
+  world.c[3] = Vec4{7.0f, 2.0f, 9.0f, 1.0f};
+  gfx::set_instance_transform(rest, world);
+  rest.scale_max = 1.3f;
+  const gfx::InstanceDesc unleaned = still_lean_record(rest, Vec2{0.0f, 0.0f});
+  CHECK(std::memcmp(&rest, &unleaned, sizeof(rest)) == 0);
+  const Vec2 lean{0.21f, -0.08f};
+  const gfx::InstanceDesc leaned = still_lean_record(rest, lean);
+  CHECK((leaned.flags & gfx::k_instance_uniform_scale) == 0u);
+  const auto apply = [](const gfx::InstanceDesc& d, Vec3 p) {
+    return Vec3{dot(d.rows[0].xyz(), p) + d.rows[0].w, dot(d.rows[1].xyz(), p) + d.rows[1].w,
+                dot(d.rows[2].xyz(), p) + d.rows[2].w};
+  };
+  const Vec3 top{0.0f, 10.0f, 0.0f};
+  const Vec3 rest_top = apply(rest, top);
+  const Vec3 lean_top = apply(leaned, top);
+  CHECK(lean_top.x - rest_top.x == doctest::Approx(lean.x * 13.0f));
+  CHECK(lean_top.z - rest_top.z == doctest::Approx(lean.y * 13.0f));
+  CHECK(lean_top.y == doctest::Approx(rest_top.y));
+  CHECK(apply(leaned, Vec3{}).x == apply(rest, Vec3{}).x);  // the base stays
+  const Vec3 centre{0.4f, 6.0f, -0.7f};
+  const f32 radius = 2.5f;
+  f32 worst = 0.0f;
+  for (u32 i = 0; i < 64; ++i) {
+    const f32 a = 0.37f * static_cast<f32>(i);
+    const f32 b = 0.11f * static_cast<f32>(i);
+    const Vec3 dir{std::cos(a) * std::cos(b), std::sin(b), std::sin(a) * std::cos(b)};
+    const Vec3 at = apply(leaned, centre + normalize(dir) * radius);
+    worst = std::fmax(worst, length(at - apply(leaned, centre)) / (radius * leaned.scale_max));
+  }
+  CHECK(worst <= 1.0f);
 }
