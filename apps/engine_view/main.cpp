@@ -7325,7 +7325,7 @@ int run_view(int argc, char** argv) {
           char status_text[224];
           (void)view::format_status(status, status_text, sizeof(status_text));
           constexpr const char* k_dash = " \xE2\x80\x94 ";  // U+2014 EM DASH, in UTF-8
-          char title[256];
+          char title[512];  // the status's 224 and the frame's numbers: GCC's -Wformat-truncation
           const f32 p99 = pacing.percentile(frame_start, 1'000'000'000, 0.99);
           if (interactive.replay) {
             std::snprintf(title, sizeof(title),
