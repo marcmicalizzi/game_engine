@@ -419,43 +419,123 @@ inline constexpr f64 k_water_heal_share = 0.5;
 inline constexpr f64 k_water_heal_full = 0.25;
 
 namespace detail {
-// One box pass of radius r along a line of n values at `stride`, reflected at both ends (oddly:
-// about the end value, which keeps a linear run; or evenly), through `scratch` (n + 2r).
-inline void water_heal_box(f64* line, u32 n, u32 stride, u32 r, bool odd, Vector<f64>& scratch) {
+// How a line of the map is padded past one of its ends (W152-3): by what the world past the edge is
+// taken to be.
+enum class WaterHealPad : u8 {
+  nothing,  // the line crosses the shore and ends on the bank: the bank goes on, no water past it
+  water,    // the line ends in water: the water goes on (the arrival linearly)
+  mirror,   // the line is bank throughout: the bank goes on as it is along the edge
+};
+
+// Three box passes of radius r — a Gaussian — along a line of n texels at `stride`, of a weighted
+// field `w` (the water's mass times its value) and its mass `m` together, padded past each end as
+// `first` and `last` say. Past water the mass reflects evenly and the weighted field evenly too, or
+// with `odd` (an arrival) as the mirrored mass times the value reflected oddly about the end's value
+// w / m, which keeps a plane wave's arrival linear; a bank line's padding is its mirror; past a
+// shore line's bank end the line runs on 3r texels of nothing, so what the passes spread past the
+// edge comes back as it would over the bank that is there. Until W152-3 the weighted product
+// itself was reflected oddly about its end, which on a bank edge (`w` 0) mirrored minus the water's
+// arrivals — the band basin of swash_scene_tests.cpp, every edge of its map bank, healed its swash
+// to 4 s early on average and scrambled it within a metre, and the test bay's 30 s swell, healed
+// over half its map, came ashore 20 s early at its ends — and a mirror of the mass at such an edge
+// would have stood the water up again past it, on ground that is bank.
+inline void water_heal_line(f64* w, f64* m, u32 n, u32 stride, u32 r, bool odd, WaterHealPad first,
+                            WaterHealPad last, Vector<f64>& lw, Vector<f64>& lm, Vector<f64>& sw,
+                            Vector<f64>& sm) {
   if (r == 0 || n < 2) return;
-  r = std::min(r, n - 1);
-  scratch.resize(n + 2 * r + 1);
-  const f64 first = line[0];
-  const f64 last = line[static_cast<u64>(n - 1) * stride];
-  for (u32 i = 0; i < r; ++i) {
-    const f64 head = line[static_cast<u64>(r - i) * stride];
-    const f64 tail = line[static_cast<u64>(n - 2 - i) * stride];
-    scratch[i + 1] = odd ? 2.0 * first - head : head;
-    scratch[n + r + i + 1] = odd ? 2.0 * last - tail : tail;
+  // The line, run on past a bank end by the three passes' reach.
+  const u32 head = first == WaterHealPad::nothing ? 3 * r : 0;
+  const u32 tail = last == WaterHealPad::nothing ? 3 * r : 0;
+  const u32 len = head + n + tail;
+  r = std::min(r, len - 1);
+  lw.assign(len, 0.0);
+  lm.assign(len, 0.0);
+  for (u32 i = 0; i < n; ++i) {
+    lw[head + i] = w[static_cast<u64>(i) * stride];
+    lm[head + i] = m[static_cast<u64>(i) * stride];
   }
-  for (u32 i = 0; i < n; ++i)
-    scratch[r + i + 1] = line[static_cast<u64>(i) * stride];
-  // Running sums in place: scratch[k] = sum of the padded values before k.
-  scratch[0] = 0.0;
-  for (u32 k = 1; k < n + 2 * r + 1; ++k)
-    scratch[k] += scratch[k - 1];
-  const f64 width = static_cast<f64>(2 * r + 1);
-  for (u32 i = 0; i < n; ++i)
-    line[static_cast<u64>(i) * stride] = (scratch[i + 2 * r + 1] - scratch[i]) / width;
+  sw.resize(len + 2 * r + 1);
+  sm.resize(len + 2 * r + 1);
+  for (u32 pass = 0; pass < 3; ++pass) {
+    // Past a run-on end, nothing; past water, its mirror (the arrival's value oddly); past a bank
+    // line's end, its mirror.
+    const bool reflect_first = first != WaterHealPad::nothing;
+    const bool reflect_last = last != WaterHealPad::nothing;
+    const bool odd_first = odd && first == WaterHealPad::water && lm[0] > 1e-9;
+    const bool odd_last = odd && last == WaterHealPad::water && lm[len - 1] > 1e-9;
+    const f64 v_first = odd_first ? lw[0] / lm[0] : 0.0;
+    const f64 v_last = odd_last ? lw[len - 1] / lm[len - 1] : 0.0;
+    for (u32 i = 0; i < r; ++i) {
+      const u32 h = std::min(r - i, len - 1);
+      const u32 t = len >= 2 + i ? len - 2 - i : 0;
+      sm[i + 1] = reflect_first ? lm[h] : 0.0;
+      sm[len + r + i + 1] = reflect_last ? lm[t] : 0.0;
+      sw[i + 1] = !reflect_first ? 0.0 : odd_first ? 2.0 * v_first * lm[h] - lw[h] : lw[h];
+      sw[len + r + i + 1] = !reflect_last ? 0.0 : odd_last ? 2.0 * v_last * lm[t] - lw[t] : lw[t];
+    }
+    for (u32 i = 0; i < len; ++i) {
+      sw[r + i + 1] = lw[i];
+      sm[r + i + 1] = lm[i];
+    }
+    // Running sums in place: s[k] = sum of the padded values before k.
+    sw[0] = 0.0;
+    sm[0] = 0.0;
+    for (u32 k = 1; k < len + 2 * r + 1; ++k) {
+      sw[k] += sw[k - 1];
+      sm[k] += sm[k - 1];
+    }
+    const f64 width = static_cast<f64>(2 * r + 1);
+    for (u32 i = 0; i < len; ++i) {
+      lw[i] = (sw[i + 2 * r + 1] - sw[i]) / width;
+      lm[i] = (sm[i + 2 * r + 1] - sm[i]) / width;
+    }
+  }
+  for (u32 i = 0; i < n; ++i) {
+    w[static_cast<u64>(i) * stride] = lw[head + i];
+    m[static_cast<u64>(i) * stride] = lm[head + i];
+  }
+}
+// How each row's and column's two ends are padded, from the map's own depth: 4 * size entries,
+// rows' first and last ends, then columns'.
+inline void water_heal_pads(const f32* depth, u32 size, Vector<WaterHealPad>& pads) {
+  pads.resize(4 * static_cast<u64>(size));
+  const auto pad = [](bool end_water, bool any_water) {
+    return end_water ? WaterHealPad::water
+                     : (any_water ? WaterHealPad::nothing : WaterHealPad::mirror);
+  };
+  for (u32 j = 0; j < size; ++j) {
+    bool any = false;
+    for (u32 i = 0; i < size && !any; ++i)
+      any = depth[static_cast<u64>(j) * size + i] > 0.0f;
+    pads[2 * j] = pad(depth[static_cast<u64>(j) * size] > 0.0f, any);
+    pads[2 * j + 1] = pad(depth[static_cast<u64>(j) * size + size - 1] > 0.0f, any);
+  }
+  for (u32 i = 0; i < size; ++i) {
+    bool any = false;
+    for (u32 j = 0; j < size && !any; ++j)
+      any = depth[static_cast<u64>(j) * size + i] > 0.0f;
+    pads[2 * size + 2 * i] = pad(depth[i] > 0.0f, any);
+    pads[2 * size + 2 * i + 1] = pad(depth[static_cast<u64>(size - 1) * size + i] > 0.0f, any);
+  }
 }
 
-// A Gaussian of `sigma` texels over a size * size field, as three box passes along each axis.
-inline void water_heal_blur(Vector<f64>& field, u32 size, f64 sigma, bool odd,
+// A Gaussian of `sigma` texels over a size * size weighted field and its mass: along every row, then
+// along every column, each line padded as `pads` says.
+inline void water_heal_blur(Vector<f64>& weighted, Vector<f64>& mass,
+                            const Vector<WaterHealPad>& pads, u32 size, f64 sigma, bool odd,
                             Vector<f64>& scratch) {
   const u32 r = static_cast<u32>(std::lround((std::sqrt(4.0 * sigma * sigma + 1.0) - 1.0) / 2.0));
-  for (u32 pass = 0; pass < 3; ++pass) {
-    for (u32 j = 0; j < size; ++j)
-      water_heal_box(field.data() + static_cast<u64>(j) * size, size, 1, r, odd, scratch);
-    for (u32 i = 0; i < size; ++i)
-      water_heal_box(field.data() + i, size, size, r, odd, scratch);
+  Vector<f64> lw, lm, sm;
+  for (u32 j = 0; j < size; ++j) {
+    const u64 row = static_cast<u64>(j) * size;
+    water_heal_line(weighted.data() + row, mass.data() + row, size, 1, r, odd, pads[2 * j],
+                    pads[2 * j + 1], lw, lm, scratch, sm);
   }
-}
-}  // namespace detail
+  for (u32 i = 0; i < size; ++i) {
+    water_heal_line(weighted.data() + i, mass.data() + i, size, size, r, odd,
+                    pads[2 * size + 2 * i], pads[2 * size + 2 * i + 1], lw, lm, scratch, sm);
+  }
+}}  // namespace detail
 
 // **Heals one field** in place (`values`, size * size, rows along +z) over the water of `depth`:
 // each texel its normalized Gaussian average over the water at k_water_heal_share of the
@@ -483,6 +563,8 @@ inline void water_heal_field(f32* values, const f32* depth, u32 size, f64 texel_
   while (levels < 12 && std::ldexp(1.0, static_cast<i32>(levels) - 1) < widest)
     ++levels;
   Vector<f64> scratch;
+  Vector<detail::WaterHealPad> pads;
+  detail::water_heal_pads(depth, size, pads);
   Vector<f64> weighted(count);
   Vector<f64> mass(count);
   Vector<f64> coarse(count);  // the composite of the levels above the one in hand
@@ -498,8 +580,7 @@ inline void water_heal_field(f32* values, const f32* depth, u32 size, f64 texel_
     }
     if (level > 0) {
       const f64 sigma = std::ldexp(1.0, static_cast<i32>(level) - 1);
-      detail::water_heal_blur(weighted, size, sigma, linear, scratch);
-      detail::water_heal_blur(mass, size, sigma, false, scratch);
+      detail::water_heal_blur(weighted, mass, pads, size, sigma, linear, scratch);
     }
     for (u32 i = 0; i < count; ++i) {
       const f64 v = mass[i] > 1e-9 ? weighted[i] / mass[i] : 0.0;
@@ -599,9 +680,9 @@ inline void water_surface_field(const WaterFieldDesc& d, const WaterCross& cross
   water_heal_field(setup.data(), depth.data(), d.size, d.texel_m, k0, heal_floor, false);
   // The foreshore slope of a place's stretch of shore is its nearest waterline texel's, cells with
   // steps between them like the bank's arrival was: where the slope crosses the surging limit the
-  // foam's strength (`water_foam_strength`) stepped with it, a breaking stretch ending in a straight
-  // cut along a cell's edge (the forest staging's sea, 3.5 m texels). A stretch's slope varies at
-  // the scale its wave does, so it is healed the same way.
+  // foam's strength (`water_foam_strength`) stepped with it, a breaking stretch ending in a
+  // straight cut along a cell's edge (the forest staging's sea, 3.5 m texels). A stretch's slope
+  // varies at the scale its wave does, so it is healed the same way.
   water_heal_field(shore_slope.data(), depth.data(), d.size, d.texel_m, k0, heal_floor, false);
   field.resize(k_water_field_channels * count);
   for (u32 i = 0; i < count; ++i) {

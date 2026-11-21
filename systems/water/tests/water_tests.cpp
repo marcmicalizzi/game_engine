@@ -297,6 +297,55 @@ TEST_CASE("water: the healed front holds no step a quarter period between texels
                                                    << " s");
 }
 
+// W152-3 (docs/subsystems/water.md, "The front heals"): a map whose edge is bank. The healing
+// reflects the arrival at a map's edge oddly so that a plane wave stays a plane wave; until W152-3
+// it reflected the water-weighted product, which is 0 on the bank, so the mirrored texels carried
+// minus the water's arrivals and the swash's band near a bank edge averaged towards 0 s (the
+// band basin of swash_scene_tests.cpp, every edge of its map bank: its swash phases 4 s early on
+// average and scrambled). The same planar beach, its bank running 20 m and then 4 m to the map's
+// edge: the swash's band heals to the same arrival on both, as the water near it is the same (the
+// world past a bank edge is bank: no water stands up again beyond it).
+TEST_CASE("water: the healed front at a map's edge of bank is the water's") {
+  const f64 texel = 0.25;
+  const f64 period = gfx::swash_period(4.0);
+  const f64 omega = 2.0 * 3.14159265358979323846 / period;
+  const f64 k0 = omega * omega / gfx::k_swash_g;
+  const f64 breaking = 0.6 / gfx::k_water_breaking_gamma;
+  const auto heal_beach = [&](u32 n, Vector<f32>& depth, Vector<f32>& tau) {
+    depth.resize(n * n);
+    tau.resize(n * n);
+    for (u32 j = 0; j < n; ++j)
+      for (u32 i = 0; i < n; ++i)
+        depth[j * n + i] = static_cast<f32>((40.0 - texel * static_cast<f64>(i)) / 20.0);
+    gfx::water_arrival_field(depth.data(), n, texel, period, tau.data());
+    gfx::water_heal_field(tau.data(), depth.data(), n, texel, k0, breaking, true);
+  };
+  const u32 wide = 241;    // 60 m: the bank 20 m deep
+  const u32 narrow = 177;  // 44 m: the bank 4 m deep, its edge in the swash's reach
+  Vector<f32> depth_wide, tau_wide, depth_narrow, tau_narrow;
+  heal_beach(wide, depth_wide, tau_wide);
+  heal_beach(narrow, depth_narrow, tau_narrow);
+  // The bank (the swash's band, to the narrow map's edge) along the middle half of the shore, and
+  // the water's earliest arrival.
+  f64 worst = 0.0, earliest = 1e30, band_earliest = 1e30;
+  for (u32 j = narrow / 4; j < 3 * narrow / 4; ++j) {
+    for (u32 i = 0; i < narrow; ++i) {
+      const f64 t = static_cast<f64>(tau_narrow[j * narrow + i]);
+      if (depth_narrow[j * narrow + i] > 0.0f) {
+        earliest = std::min(earliest, t);
+        continue;
+      }
+      band_earliest = std::min(band_earliest, t);
+      worst = std::max(worst, std::fabs(t - static_cast<f64>(tau_wide[j * wide + i])));
+    }
+  }
+  MESSAGE("a bank edge 4 m up the beach: the swash's arrival differs from a 20 m bank's by at most "
+          << worst << " s of a " << period << " s period; the band's earliest " << band_earliest
+          << " s, the water's " << earliest << " s");
+  CHECK(band_earliest >= earliest);  // nothing on the bank comes before the water brings it
+  CHECK(worst < 0.05 * period);      // the same crest, within a twentieth of a period
+}
+
 // W152-2 (docs/subsystems/water.md, "The crest's lean"): the train leans forward as it shoals —
 // none in deep water, more the shallower, a sawtooth in the surf.
 TEST_CASE("water: the crest leans forward as the wave shoals") {
