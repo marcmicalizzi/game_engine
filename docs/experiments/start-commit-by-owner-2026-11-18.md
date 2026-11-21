@@ -347,15 +347,17 @@ An independent read of W51-5 and W51-6 (batch 71) found four things on W51-5 a s
 
 **The memory rows together, mended** (2026-11-20, the forest staging standing at W149's one-place path, W51-5's command; `b70\bin-main` is main as merged, 2de3230c, before W51-5 and W51-6; the tip is batch 71's join with W51-5, W51-6 and these mends, a63534141, in `msvc-release`; one load a lease, ten minutes clear between; free commit 54 to 62 GB at each start, the processors at 9 to 10 %, the session unlocked; ready is 20 seconds after the first frame):
 
-| Standing | Top: main (20:30) | Top: the tip (20:07) | Low: main (owed: flying at hand-back) | Low: the tip (owed) |
+| Standing | Top: main (20:30) | Top: the tip (20:07) | Low: main (20:47) | Low: the tip (21:26) |
 |---|---:|---:|---:|---:|
-| Maximum, and when | 22.77 GiB, the first frame | **20.21 GiB**, the first frame | (owed) | (owed) |
-| The device at the maximum | 17,189 MiB | **11,787 MiB** | (owed) | (owed) |
-| Ready / one minute standing | 19.16 / 19.16 GiB | **15.73 / 16.33 GiB** | (owed) | (owed) |
-| The first hundred frames: chain short; run entries dropped | 0; 0 (runs at the stride) | 0; 0 (runs 16.8 M to 1,703,936, fullest 1,100,232) | (owed) | (owed) |
-| The mesh room: resident / tiles withheld / meshes shelved / host bytes waiting | 52 / 189 / — / (kept) | 52 / 189 / 297 / 0 MiB | (owed) | (owed) |
+| Maximum, and when | 22.77 GiB, the first frame | **20.21 GiB**, the first frame | 15.95 GiB, the first frame | **13.73 GiB**, the first frame (13.85 GiB for one 3 s sample at 508 s) |
+| The device at the maximum | 17,189 MiB | **11,787 MiB** | 10,615 MiB | **10,575 MiB** |
+| Ready / one minute standing | 19.16 / 19.16 GiB | **15.73 / 16.33 GiB** | 15.90 / 15.90 GiB | **13.08 / 13.10 GiB** |
+| The first hundred frames: chain short; run entries dropped | 0; 0 (runs at the stride) | 0; 0 (runs 16.8 M to 1,703,936, fullest 1,100,232) | 0; 0 (runs at the stride) | 0; 0 (runs 15.8 M to 6,684,672, fullest 4,419,461) |
+| The mesh room: resident / tiles withheld / meshes shelved / host bytes waiting | 52 / 189 / — / (kept) | 52 / 189 / 297 / 0 MiB | 89 / 169 / — / (kept) | 89 / 169 / 260 / 0 MiB |
 
 **Together** the two rows take the top setting's maximum from 22.77 to 20.21 GiB (W51-6 alone measured 19.66 and W51-5 alone 20.4, each against 22.7) and the device at that moment from 16.8 to 11.5 GiB; standing a minute, 19.16 to 16.33 GiB (W51-5 alone about 16.0, an upper bound on a busier machine). **What H1's and M1's mends cost of it: nothing measurable standing** — the room held the same 52 meshes and shelved the same 297, with no host bytes waiting (a mesh kept from shelving because a nearer tile asked for it, or for its textures, would show there), and a room that stays full starts no build again, so M1's reservation never binds standing; what M1 changes is a walk's freeing of the room, one build per mesh's worth of room instead of one per shelved mesh. H2's redraws and M2's all-or-nothing lay-out cost no bytes standing: the runs were sized once and never refused.
+
+**At the low setting** (1080p, `--shadows csm`, no bounce; flown after the top pair, the same night, ten minutes clear between): the tip takes the maximum from 15.95 to 13.73 GiB and a standing minute from 15.90 to 13.10 GiB, with the device at the maximum unchanged (10.37 against 10.33 GiB: this setting builds no ray-tracing chain, so W51-6's capacity does not reach it, and what is gone is W51-5's working buffers and withheld tiles). The machine was not the same for the two: main started at 6 % of the processors with no other `engine-view`, the tip at 71 % with two others running, so its upload took 37 s longer and its first frame came at 234 s against 118 s; both columns are upper bounds and the tip's the more loaded. The tip's one 3 s sample at 14.18 GiB, 274 s after its first frame, is past the standing minute and fell back at the next sample. Read from `<scratch>\b71\W51-5b\loads\{main,tip}-low\` with the row's `summarize.ps1`, the first frame taken from the log's first sizing of the runs where the log carries no "first frame" line.
 
 ## Not measured
 
