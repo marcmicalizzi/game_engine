@@ -7670,7 +7670,9 @@ overall, **but every movement left a trail**, animals and the view as they walke
 measured, not judged: `tests/trail_tests.cpp` flies a mover across a ground of the other brightness
 for thirty frames with the accumulation on, draws the last frame again fresh (a reset: one sample,
 nothing of the frames before), and takes the mean |accumulated − fresh| luma, in display codes, over
-the pixels the mover left exactly 1, 2, 4 and 8 frames before the last; the floor is the same over
+the pixels the mover left exactly 1, 2, 4 and 8 frames before the last and whose 3 × 3 does not show
+it now (that is its edge's antialiasing, which the fresh frame lacks: a palm's leaflets left 7
+codes of 91 there with no trail in the picture); the floor is the same over
 pixels the mover never touched (a single fresh frame's own aliasing), the contrast the mover's mean
 luma against the rest's. Each case holds every age to the floor plus a twentieth of the contrast.
 256 × 144, rt off, no shadows, two frames in flight; `ENGINE_TRAIL_CAPTURES=<dir>` writes each
@@ -7688,7 +7690,11 @@ case's last accumulated frame and its fresh one as PNGs.
 | the same in a streamed world's scene | **127.4, 103.9, 104.3, 84.1** | 0.01, 0, 0, 0 |
 | the camera stepping 4 cm a frame past a dark post at 5 m before a bright wall at 25 m | 25.4, 25.4, 25.5, 10.2 (180) | 0.04, 0.03, 0.07, 0.09 |
 
-Floors 0.2 to 0.65 codes. **Three causes**, in the order they cost:
+Floors 0.2 to 0.65 codes. The table was taken before the case left out the pixels beside the
+mover's present place (both columns the same measure); as committed, with them left out, this build
+gives 0 to 0.06 codes in every row, and **a swaying palm** against the sky (a wind of 1.5, a fifth
+of a second a frame, a scene read whole) 2.3, 1.2, 3.0 and 0.1 codes of 91, under the case's bound
+of 4.6 (main's not flown on that measure). **Three causes**, in the order they cost:
 
 1. **In a streamed world's scene a move made every vector the camera's.** A move rewrites its
    record in the table sets, and that marked the scene's tables changed exactly as a tail's new
@@ -7729,6 +7735,13 @@ as leg 2 measured. **What is given up**: on a frame whose layout changed (a tile
 moved through the tail), no pixel is dilated and every tap is held to its depth, so a crown's edge
 pixels that alternate leaf and sky take less history for that frame; and a moving boundary's pixel
 no longer averages its neighbour's samples, so a mover's trailing edge is drawn at fewer samples.
+**Such frames are most of a walk through a streamed world**: on the forest staging's grounded walk
+(2,401 frames at 4.5 m/s) the tables were written on 1,880 frames, tiles arriving and leaving, so
+it is there that the depth test does most of its work, and on each of those frames a swaying tree's
+vectors are its instance's (the pool's second write reads this frame's inputs), so its leaves are
+held to their depths and a crown takes less history while the view walks. What would give those
+frames back their trust is per instance and not per frame: which slots a layout wrote, and a deform
+table read through last frame's entries; that is a row of its own.
 **Not done**: a tail's mover is held by its depth alone on the frames it moves, so one that slides
 along a surface at that surface's depth (a decal, a flat prop) is not told from it; last frame's
 pair table is not kept (a third table set, 134 MB of pairs on the forest), which is what names
@@ -7736,7 +7749,17 @@ across a changed layout would need. The far forest's hand-off moves instances
 (`SceneRenderer::set_dynamic_instances`, `place_instances`) without the moved table; those frames
 change the layout too, so they fall to the depth test.
 
-**What it costs**: COST_LINE
+**What it costs** (2026-11-20, 22:34 to 23:03, `msvc-release`, RTX 5090, the forest staging at
+3840 × 2160, `--raster rt --shadows rt`, the bounce, micromaps, the accumulation on, the grounded
+walk `walk-grounded.json`, 2,401 frames, one repeat, both flights deterministic; the Windows session
+locked for both and the card's clocks at 2.9 GHz at each end, so the pair is comparable and neither
+side is an unlocked figure; others held 24 % of the CPU on main's flight and 7 to 12 % on this
+build's): the frame passes (the accumulation and the encode) 1.267 ms at the median, 1.586 at p95
+and 1.969 at p99 on main's copied-out build (2de3230c), 1.362, 1.602 and 1.827 on this one; the
+motion pass with the pool's second write 1.016, 2.283 and 2.395 against 1.066, 2.316 and 2.435 (the
+depth's write); the frame 19.390 ms at the median and 24.884 at p99 against 19.538 and 24.950. So
+about 0.1 ms at the median in the accumulation and 0.05 in the motion pass, and nothing past the
+pair's noise at p99. Off it costs nothing: no buffer is made and no pass recorded.
 
 **Held by** `tests/trail_tests.cpp` (the table above, `msvc-debug`, the RTX 5090 and again under
 `ENGINE_GFX_TEST_DEVICE=titanxp`, whose vertex tier gave the same figures to the hundredth), and

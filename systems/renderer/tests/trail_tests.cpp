@@ -4,7 +4,8 @@
 // **What a trail is held to.** A mover crosses a ground of another colour for thirty frames with
 // the accumulation on, and at the end the same frame is drawn fresh (a reset: one sample, nothing
 // of the frames before). The pixels the mover left exactly `a` frames ago (its ids named it at the
-// frame `a` before the last and at none after) are where a trail lies; the trail at age `a` is the
+// frame `a` before the last and at none after, and no pixel of their 3x3 shows it now, which would
+// be its edge's antialiasing) are where a trail lies; the trail at age `a` is the
 // mean of |accumulated - fresh| luma over them, in display codes, and it is held against what the
 // same comparison gives on pixels the mover never touched (the floor: the offset's own aliasing,
 // which a single fresh frame has and the accumulated one has averaged away) and against the
@@ -37,10 +38,12 @@
 #include <systems/renderer/view_set.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <string>
 
 using namespace engine;
@@ -360,9 +363,24 @@ Trail fly(Rig& rig, Setup setup, IsMover is_mover) {
       rest_sum += luma(fresh.color, p);
       ++rest_n;
     }
+    // A pixel beside where the mover is now holds some of it in a picture averaged over offsets,
+    // and that is the edge's antialiasing, not a trail: a thin frond's left pixels are mostly such
+    // (the palm: 7 codes at age 1 of what is the coverage of its leaflets). Only pixels whose 3x3
+    // in the fresh frame holds none of the mover are a trail's.
+    bool beside = false;
+    const u32 x = p % k_width;
+    const u32 y = p / k_width;
+    for (u32 n = 0; n < 9 && !beside; ++n) {
+      const i32 nx = static_cast<i32>(x) + static_cast<i32>(n % 3) - 1;
+      const i32 ny = static_cast<i32>(y) + static_cast<i32>(n / 3) - 1;
+      if (nx < 0 || ny < 0 || nx >= static_cast<i32>(k_width) || ny >= static_cast<i32>(k_height))
+        continue;
+      beside =
+          is_mover(fresh.ids[(static_cast<u32>(ny) * k_width + static_cast<u32>(nx)) * k_id_words]);
+    }
     for (u32 i = 0; i < 4; ++i) {
       const u32 a = k_ages[i];
-      if (masks[last - a][p] == 0 || is_mover(fresh.ids[p * k_id_words])) continue;
+      if (masks[last - a][p] == 0 || beside) continue;
       bool after = false;
       for (u32 k = last - a + 1; k <= last; ++k)
         after = after || masks[k][p] != 0;
@@ -398,8 +416,12 @@ void report(const char* what, const Trail& t) {
 // for the frames its 3x3 kept the mover: the edge it left).
 void hold(const Trail& t) {
   REQUIRE_MESSAGE(t.ok, t.error);
+  // A mover slower than a pixel and a half a frame leaves no pixel at age 1 outside its edge's 3x3.
+  u32 counted = 0;
   for (u32 i = 0; i < 4; ++i)
-    CHECK(t.pixels[i] > 10);
+    counted += t.pixels[i];
+  CHECK(counted > 40);
+  CHECK(t.pixels[3] > 10);
   CHECK(t.contrast > 40.0);
   for (u32 i = 0; i < 4; ++i) {
     CAPTURE(k_ages[i]);
@@ -668,6 +690,59 @@ TEST_CASE("trails: a skinned walker leaves none") {
     hold(t);
   }
 }
+
+#if ENGINE_RENDERER_TESTS_FLORA
+// A swaying tree: a young palm in a wind of 1.5 under a held camera, its clock a fifth of a second
+// a frame, against the sky. Its fronds' pixels move by the flora stage's poses (the pool's second
+// write); what they uncover is sky, which must not keep them.
+TEST_CASE("trails: a swaying tree leaves none against the sky") {
+  const test::TempDir tmp("renderer_trail_palm");
+  REQUIRE(tmp.ok());
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  ScopedTunable mode("renderer.reconstruction.accumulation", "on");
+  const std::string path = tmp.file("young.flora.json");
+  {
+    std::ofstream f(path, std::ios::binary);
+    f << R"({"species":"date_palm","palm":{"seed":4,"height_m":3.5,"frond_count":10,)"
+         R"("leaflet_count":12,"dead_skirt_fronds":3,"triangle_budget":9000}})";
+  }
+  SceneDesc desc;
+  desc.meshes.push_back(path);
+  desc.ddc = tmp.file("ddc");
+  desc.cache = true;
+  Rig rig;
+  REQUIRE_MESSAGE(load_scene(desc, rig.data, rig.error), rig.error);
+  REQUIRE_MESSAGE(rig.finish(gpu.device), rig.error);
+  FrameFlora wind;
+  wind.wind_set = true;
+  wind.wind_to = Vec2{-1.0f, 0.0f};
+  wind.wind_strength = 1.5f;
+  const Trail t = fly(
+      rig,
+      [&](u32 k, FrameDesc& frame) {
+        frame.camera.position = WorldPos{0.0, 2.6, 6.0};
+        frame.camera.target = WorldPos{0.0, 2.6, 0.0};
+        frame.frame_index = 60 + k;
+        frame.world_time_s = 2.0 + 0.2 * static_cast<f64>(k);
+        frame.flora = wind;
+        return true;
+      },
+      [](u32 id) { return id == 0u; });
+  report("a swaying palm", t);
+  REQUIRE_MESSAGE(t.ok, t.error);
+  // The fronds swing back and forth, so what they left at an age is not all sky for long: held at
+  // the ages the fixture leaves enough pixels at, and to the same bound.
+  CHECK(t.contrast > 20.0);
+  for (u32 i = 0; i < 4; ++i) {
+    CAPTURE(k_ages[i]);
+    if (t.pixels[i] > 10) CHECK(t.age[i] <= t.floor + t.contrast / 20.0);
+  }
+}
+#endif
 
 // **A still camera on a still scene converges as it did** (R194's converse): with nothing moving
 // every vector is zero, no pixel is at a moving boundary, every tap matches, and the history test
