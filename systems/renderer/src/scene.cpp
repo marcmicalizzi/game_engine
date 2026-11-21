@@ -2625,6 +2625,8 @@ bool read_scene_props(const std::string& path, Vector<SceneProp>& out, std::stri
   const bool read = schema::read_json_text(file, text, ctx, parsed, strict);
   if (!parsed.ok) {
     error = std::string(path) + ":" + std::to_string(parsed.line) + ": " + parsed.message;
+    if (!parsed.duplicate_key.empty())
+      error += " ('" + parsed.duplicate_key + "' is given twice in one object)";
     return false;
   }
   if (!read || !ctx.ok()) {

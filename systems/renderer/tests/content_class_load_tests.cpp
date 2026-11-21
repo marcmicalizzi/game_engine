@@ -1830,3 +1830,16 @@ TEST_CASE("content classes at load: the mesh-0 instance made after a streamed ta
   REQUIRE(row(scene, "fixture_glow") != nullptr);
   CHECK(row(scene, "fixture_glow")->omitted == 1);
 }
+
+// **The props read refuses a key given twice, naming it** (C64), as the scene read does.
+TEST_CASE("content classes at load: the props read names a key given twice") {
+  const test::TempDir tmp("renderer_classes_props_twice");
+  REQUIRE(tmp.ok());
+  REQUIRE(io::write_file(tmp.file("scene.json"),
+                         R"({"format":"engine.scene.v1","format":"engine.scene.v1"})") ==
+          io::Status::Ok);
+  Vector<SceneProp> props;
+  std::string error;
+  CHECK_FALSE(read_scene_props(tmp.file("scene.json"), props, error));
+  CHECK_MESSAGE(error.find("'format' is given twice") != std::string::npos, error);
+}
