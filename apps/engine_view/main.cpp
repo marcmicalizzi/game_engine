@@ -3564,7 +3564,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         view_renderer.begin_frame();
         const i64 begun = time::monotonic_ns();
         take_folded(view_renderer, folded, pending, records);
-        startup.frame(readiness());
+        startup.feed(readiness);  // until the last milestone (startup.h, T211)
         const i64 ready = time::monotonic_ns();
         const u64 before_tick = session.tick().value;
         const u64 to = before_tick + ticks_per_frame < end ? before_tick + ticks_per_frame : end;
@@ -7143,11 +7143,8 @@ int run_view(int argc, char** argv) {
       frame.sky_time_s = sky_offset + sun.time_s;
       frame.world_time_s = world.time_s;
       frame.wind = session.wind().live();  // W151: the keys' and the game's wind
-      // **Until the ready milestone** (apps.md, "The loading presentation"): what the frames so far
-      // say about readiness, the hand-over when the module's milestone (or the walker's first
-      // tick) is reached, and the loading overlay over the scene until then — the module's own HUD
-      // when it draws its loading screen, the default line and bar otherwise.
-      if (!load_ready) {
+      // What the frames say about readiness, fed past the ready rung to the last milestone (T211).
+      startup.feed([&]() {
         view::Readiness r;
         r.frame_done = rendered > 0;
         r.controllable = !walker.available() || walker.stats().ticks > 0;
@@ -7162,11 +7159,14 @@ int run_view(int argc, char** argv) {
 #endif
         r.pages_settled = view_renderer.stats().stream.pending == 0 &&
                           view_renderer.stats().stream.loads_in_flight == 0;
-        const auto ground_now = renderer::frame_terrain(time_lapse);
-        r.ground_settled = !ground_now.has_value() ||
-                           (ground_now->chunks_built == 0 && ground_now->layout_lag_m == 0.0);
-        startup.frame(r);
-        memory_first_due = r.frame_done && view::memory_report().on();  // taken between frames
+        const auto g = renderer::frame_terrain(time_lapse);
+        r.ground_settled = !g.has_value() || (g->chunks_built == 0 && g->layout_lag_m == 0.0);
+        return r;
+      });
+      // **Until the ready rung** (apps.md, "The loading presentation"): the hand-over and the
+      // overlay, the module's HUD when it draws its loading screen or the default line and bar.
+      if (!load_ready) {
+        memory_first_due = rendered > 0 && view::memory_report().on();  // taken between frames
         if (load_controllable_ns == 0 && startup.reached("player_controllable"))
           load_controllable_ns = time::monotonic_ns();
         if (startup.reached(view::k_startup_milestones[load_ready_rung])) {

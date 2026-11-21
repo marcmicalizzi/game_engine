@@ -62,6 +62,10 @@ bool StartupTrace::reached(const char* name) const noexcept {
   return i < k_startup_milestone_count && reached_[i];
 }
 
+bool StartupTrace::wants_frames() const noexcept {
+  return (on_ || profiling::progress_enabled()) && !reached_[k_startup_milestone_count - 1];
+}
+
 void StartupTrace::frame(const Readiness& r) noexcept {
   if (!on_ && !profiling::progress_enabled()) return;
   if (r.frame_done) milestone("first_frame");
