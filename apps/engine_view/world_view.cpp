@@ -83,7 +83,7 @@ bool ViewWorld::create(const renderer::SceneData& data, renderer::SceneRenderer&
   // order"), then what stands on it.
   if (tiles != nullptr) {
     drawn_.create(*tiles);
-    world_.add_consumer(drawn_.consumer());
+    drawn_consumer_ = world_.add_consumer(drawn_.consumer());
   }
   // The scene's streamed placement entries, whatever generators they name: the reader has already
   // refused a name this executable does not carry, and the consumer finds each by it again.
@@ -108,6 +108,7 @@ bool ViewWorld::create(const renderer::SceneData& data, renderer::SceneRenderer&
     placements_.set_build_jobs(&*mesh_jobs_);
     world::connect_scene_meshes(placements_, renderer,
                                 renderer.scene().mesh_room().slots != 0 ? &*mesh_jobs_ : nullptr);
+    placements_consumer_ = static_cast<u16>(world_.consumer_count());
     world::add_scene_consumers(world_, nullptr, &placements_);
     // Each scene mesh's kind for `nearest_placement`: the generator of the streamed entry whose
     // resident meshes it is (`StreamedPlacements::meshes`), by the generator's registered name.
@@ -279,6 +280,19 @@ ViewWorld::Counters ViewWorld::counters() const noexcept {
   Counters c;
   c.placements = placements_.stats();
   if (renderer_ != nullptr) c.tiles = renderer_->stats().tiles;
+  const auto calls = [](const world::ConsumerStats& s) {
+    return s.activate_ns + s.change_ns + s.deactivate_ns + s.commit_ns;
+  };
+  if (drawn_consumer_ < world_.consumer_count())
+    c.drawn_ns = calls(world_.consumer_stats(drawn_consumer_));
+  if (placements_consumer_ < world_.consumer_count()) {
+    const world::ConsumerStats& s = world_.consumer_stats(placements_consumer_);
+    c.placements_ns = calls(s);
+    c.placement_events_ns = s.activate_ns + s.change_ns + s.deactivate_ns;
+  }
+  c.ring_ns = ring_ns_;
+  c.end_update_ns = end_update_ns_;
+  c.restand_ns = restand_ns_;
   return c;
 }
 
@@ -307,6 +321,17 @@ void ViewWorld::add_parts(const Counters& then, scene::FrameWorld& out) const no
   out.far_ms += ms(t.far_ns - t0.far_ns);
   out.place_ms += ms(t.place_ns - t0.place_ns);
   out.relayout_ms += ms(t.relayout_ns - t0.relayout_ns);
+  // Version 2 (W155): the update by who spent it, and the placements' calls by part.
+  const Counters now = counters();
+  out.ring_ms += ms(static_cast<f64>(now.ring_ns - then.ring_ns));
+  out.drawn_ms += ms(static_cast<f64>(now.drawn_ns - then.drawn_ns));
+  out.placements_ms += ms(static_cast<f64>((now.placements_ns - then.placements_ns) +
+                                           (now.end_update_ns - then.end_update_ns)));
+  out.restand_ms += ms(static_cast<f64>(now.restand_ns - then.restand_ns));
+  out.events_ms += ms(static_cast<f64>(now.placement_events_ns - then.placement_events_ns));
+  out.due_ms += ms(static_cast<f64>(p.due_ns - p0.due_ns));
+  out.meshes_ms += ms(static_cast<f64>(p.meshes_ns - p0.meshes_ns));
+  out.cells_ms += ms(static_cast<f64>(p.cells_ns - p0.cells_ns));
 }
 
 bool ViewWorld::update(const renderer::Camera& camera, u64 tick, Mode mode, u32 repeat, u32 frame,
@@ -335,14 +360,19 @@ bool ViewWorld::update(const renderer::Camera& camera, u64 tick, Mode mode, u32 
     tiles_before_ = renderer_->stats().tiles;
   }
   world_.update(observers_, tick, mode != Mode::Budgeted);
+  ring_ns_ += world_.last().ring_ns;  // the frame record's `world.ring_ms` (W155)
   // The due tiles a burst left, on an update whose events did not touch the placements.
+  const i64 end_started = time::monotonic_ns();
   if (!data_->streamed.empty()) (void)placements_.end_update();
+  const i64 restand_started = time::monotonic_ns();
+  end_update_ns_ += restand_started - end_started;
   // **A moving ground** (scatter.md, "A moving ground"): the sand the renderer draws stands at its
   // surface time, and the placements standing on it follow, a few tiles an update, nearest first
   // (`world::PlacementTiles::restand`). Nothing when the ground does not move.
   if (!data_->streamed.empty() && data_->terrain.enabled) {
     (void)placements_.restand(renderer_->scene().ground_time_s(), k_restand_tiles);
   }
+  restand_ns_ += time::monotonic_ns() - restand_started;
   // A consumer that could not take a tile says so in its own log line and counts it; the frame
   // draws what the scene has, so nothing here fails the run. `error` is for the hook's contract.
   (void)error;

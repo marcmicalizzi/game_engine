@@ -2003,7 +2003,6 @@ void take_folded(const renderer::SceneRenderer& renderer, u64& folded,
   if (p.submission != stats.last.submission) return;
   scene::FrameRecord record = renderer::frame_record(stats.last, 0, p.frame, p.time);
   record.cpu_ms = p.cpu_ms;
-  record.frame_ms = p.frame_ms;
   record.ticks = p.ticks;
   record.wait_ms = p.wait_ms;
   record.acquire_ms = p.acquire_ms;
@@ -2024,6 +2023,7 @@ void take_folded(const renderer::SceneRenderer& renderer, u64& folded,
     spans.slot_wait_ms = record.cpu.wait;
     spans.resize_ms = record.cpu.resize;
     record.sections = renderer::frame_sections(spans);
+    record.frame_ms = record.sections->wall_ms;  // its own interval (version 25, W155)
   }
   records.push_back(std::move(record));
   if (present_ids != nullptr) present_ids->push_back(p.present_id);
@@ -6786,7 +6786,7 @@ int run_view(int argc, char** argv) {
         }
       }
       const i64 frame_start = time::monotonic_ns();
-      // `--report`'s frame times: start to start, as `FrameRecord::frame_ms` is (no-op unasked).
+      // `--report`'s frame times: the last frame's own, start to start (no-op unasked).
       if (last_frame_start_ns != 0)
         g_report.frames.add(static_cast<f64>(frame_start - last_frame_start_ns) / 1.0e6);
 #if ENGINE_VIEW_GAME

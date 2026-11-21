@@ -1763,11 +1763,23 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
   return true;
 }
 
+void GpuScene::prepare_table_room(usize budget_bytes) {
+  if (!dynamic_ || budget_bytes == 0) return;
+  (void)table_room_.prepare(instance_table_, budget_bytes);
+  (void)keys_room_.prepare(tail_keys_, budget_bytes);
+}
+
 bool GpuScene::write_slots(std::span<const SceneInstance> tail,
                            std::span<const DynamicBlock> blocks, std::span<const SlotWrite> writes,
                            u32& written, std::string* error) {
   written = 0;
   const u32 end = layout_.instance_end();
+  // The table's own size first, a stage of its own (W155: a growth frame's slot write said 48 ms
+  // of CPU for 3,904 slots where the first fill wrote 297,268 in 114 ms).
+  std::optional<profiling::TraceStage> resizing;
+  std::optional<profiling::TraceStage> part;  // and its three parts, each a stage
+  resizing.emplace("tiles slots resize");
+  part.emplace("slots trees released");
   // A tree past the layout's new end gives its record back before its slot goes.
   if (flora_tail_) {
     for (u32 slot = end; slot < instance_table_.size(); ++slot)
@@ -1790,6 +1802,16 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
   }
   const u32 had = instance_table_.size();
   note_fresh(end, had);  // a pair of last frame's in a slot past the end names nothing now (R194)
+  part.reset();
+  part.emplace("slots table moved");
+  // Past the capacity, into the room made ahead when there is one (W155; table_room.h).
+  if (table_room_.take(instance_table_, end)) {
+    ENGINE_LOG_INFO(log_renderer, "the tail's table grew into room made ahead",
+                    log::field("slots", end), log::field("capacity", instance_table_.capacity()));
+  }
+  (void)keys_room_.take(tail_keys_, end);
+  part.reset();
+  part.emplace("slots table sized");
   instance_table_.resize(end);
   tail_keys_.resize(end);
   // A numbering the CPU's table has not taken yet no longer applies past the end (T154).
@@ -1798,6 +1820,9 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
   // until it is written below, as `policy_counts` would count it.
   for (u32 slot = had; slot < end; ++slot)
     policy_count(instance_table_[slot], true);
+  part.reset();
+  resizing.reset();
+  ENGINE_STARTUP_STAGE("tiles slots written");
   for (const SlotWrite& write : writes) {
     if (write.inst_count == 0) continue;
     // Written with its number: nothing pending applies to it (T154).

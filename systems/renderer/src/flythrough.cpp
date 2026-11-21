@@ -1,6 +1,7 @@
 #include <core/base/assert.h>
 #include <core/json/json.h>
 #include <core/memory/memory.h>
+#include <core/profiling/startup_trace.h>  // thread_cpu_ns: the frame thread's own CPU (W155)
 #include <core/schema/json_reflect.h>
 #include <core/schema/type_info.h>
 #include <core/time/time.h>
@@ -193,6 +194,20 @@ scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, 
   out.cpu.slowest_pass = stats.cpu.slowest_pass != nullptr ? stats.cpu.slowest_pass : "";
   out.cpu.slowest_pass_ms = stats.cpu.slowest_pass_ms;
   out.cpu.resize = stats.cpu.resize_ms;
+  // The frame on the GPU's own clock and its wait by what the GPU was doing (W155).
+  if (stats.gpu.valid) {
+    scene::FrameGpu gpu;
+    gpu.span_ms = stats.gpu.span_ms;
+    gpu.untimed_ms = std::max(0.0, stats.gpu.span_ms - stats.gpu_total);
+    gpu.calibrated = stats.gpu.calibrated;
+    gpu.queued_ms = stats.gpu.queued_ms;
+    gpu.elsewhere_ms = stats.gpu.elsewhere_ms;
+    gpu.wait_split = stats.cpu.wait_split;
+    gpu.wait_gpu_ms = stats.cpu.wait_gpu_ms;
+    gpu.wait_before_ms = stats.cpu.wait_before_ms;
+    gpu.wait_late_ms = stats.cpu.wait_late_ms;
+    out.gpu_frame = gpu;
+  }
   return out;
 }
 
@@ -214,6 +229,10 @@ scene::FrameSections frame_sections(const FrameSpans& s) {
   out.other_ms =
       out.wall_ms - (out.host_ms + out.slot_wait_ms + out.begin_ms + out.fold_ms + out.acquire_ms +
                      out.ticks_ms + out.submit_ms + out.after_ms + out.present_ms + out.tail_ms);
+  if (s.thread_cpu_ms >= 0.0) {
+    out.thread_cpu_ms = s.thread_cpu_ms;
+    out.off_cpu_ms = std::max(0.0, out.wall_ms - s.thread_cpu_ms);
+  }
   return out;
 }
 
@@ -315,7 +334,6 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     u32 frame = 0;
     bool recorded = false;
     f64 cpu_ms = 0.0;
-    f64 frame_ms = 0.0;
     u64 allocations = 0;
     u64 buffers = 0;
     scene::FrameWorld world{};  // with `measure_world`: the host's turn before it (W82)
@@ -324,6 +342,7 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     // returned; the slot's wait and the resize inside `begin_frame` come from the renderer's own
     // record of the frame when it folds, and the tail from the next submission's start.
     i64 start = 0;
+    i64 start_cpu = 0;  // the frame thread's CPU time at `start` (W155)
     i64 end = 0;
     f64 host_ms = 0.0;
     f64 begin_call_ms = 0.0;
@@ -347,7 +366,6 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
   out.records.reserve(frames * repeats);
   renderer.reset_stats();
   u64 folded = renderer.stats().folded;
-  i64 previous_start = 0;
   // The frame loop's allocations on this thread (AGENTS.md, "No allocations in the frame loop in
   // steady state"): the host's turn, `begin_frame` and `submit_frame`, and not this loop's own
   // bookkeeping between them — the submissions list, which a warm-up by wall time can grow past its
@@ -368,6 +386,7 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     } end_capture;
 #endif
     const i64 start = time::monotonic_ns();
+    const i64 start_cpu = profiling::thread_cpu_ns();
     const std::pair<u64, u64> turn = counted();
     // The host's turn, between two frames: a streamed world updates its ring from this camera and
     // hands the renderer its instances (FlightOptions::before_frame). It is in the frame's wall
@@ -405,7 +424,6 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
               frame_record(stats.last, done.repeat, done.frame,
                            camera_path_frame_time(path, done.frame, frames));
           record.cpu_ms = done.cpu_ms;
-          record.frame_ms = done.frame_ms;
           record.allocations = static_cast<u32>(std::min<u64>(done.allocations, ~0u));
           record.buffers = static_cast<u32>(std::min<u64>(done.buffers, ~0u));
           if (options.measure_world) record.world = done.world;
@@ -415,6 +433,9 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
           const i64 next_start = index + 1 < submissions.size()
                                      ? submissions[static_cast<u32>(index + 1)].start
                                      : start;
+          const i64 next_cpu = index + 1 < submissions.size()
+                                   ? submissions[static_cast<u32>(index + 1)].start_cpu
+                                   : start_cpu;
           FrameSpans spans;
           spans.start = done.start;
           spans.end = done.end;
@@ -425,7 +446,12 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
           spans.resize_ms = record.cpu.resize;
           spans.fold_ms = done.fold_ms;
           spans.submit_ms = done.submit_ms;
+          if (done.start_cpu > 0 && next_cpu > 0)
+            spans.thread_cpu_ms = static_cast<f64>(next_cpu - done.start_cpu) / 1.0e6;
           record.sections = frame_sections(spans);
+          // The frame's own interval (FrameRecord version 25, W155): until then the interval
+          // before it, so a long frame's parts sat in the record before the one that showed it.
+          record.frame_ms = record.sections->wall_ms;
           out.records.push_back(std::move(record));
         }
       }
@@ -458,6 +484,7 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     const std::pair<u64, u64> submitted = counted();
     Submission& mine = submissions[submissions.size() - 1];
     mine.start = start;
+    mine.start_cpu = start_cpu;
     mine.end = after_submit_ns;
     mine.host_ms = static_cast<f64>(before_begin - start) / 1.0e6;
     mine.begin_call_ms = static_cast<f64>(after_begin - before_begin) / 1.0e6;
@@ -466,8 +493,6 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     mine.allocations = (begun.first - turn.first) + (submitted.first - before_submit.first);
     mine.buffers = (begun.second - turn.second) + (submitted.second - before_submit.second);
     mine.cpu_ms = static_cast<f64>(time::monotonic_ns() - ready) / 1.0e6;
-    mine.frame_ms = previous_start != 0 ? static_cast<f64>(start - previous_start) / 1.0e6 : 0.0;
-    previous_start = start;
 #if ENGINE_DEBUG
     if (recorded && mine.allocations != 0) {
       std::fprintf(stderr, "frame allocation sites repeat=%u frame=%u allocations=%llu\n", repeat,
@@ -790,11 +815,25 @@ scene::SlowFrame slowest_span(const scene::FrameRecord& r) {
                          {"input", w.input_ms}};
     if (down(host)) {
       if (std::strcmp(at.name, "update") == 0) {
+        // `FrameWorld` version 2 (W155): the update by who spent it, then the placements' calls
+        // by part; a version 1 record names the placements' and the renderer's parts at once.
+        const bool by_caller = w.placements_ms > 0.0 || w.ring_ms > 0.0 || w.drawn_ms > 0.0;
+        const Part callers[] = {{"ring", w.ring_ms},
+                                {"drawn", w.drawn_ms},
+                                {"placements", w.placements_ms},
+                                {"restand", w.restand_ms}};
+        const Part placements[] = {{"events", w.events_ms},   {"due", w.due_ms},
+                                   {"meshes", w.meshes_ms},   {"cells", w.cells_ms},
+                                   {"admit", w.admit_ms},     {"commit", w.commit_ms},
+                                   {"handover", w.handover_ms}};
         const Part update[] = {{"tiles", w.tiles_ms},
                                {"admit", w.admit_ms},
                                {"commit", w.commit_ms},
                                {"handover", w.handover_ms}};
-        if (down(update) && std::strcmp(at.name, "handover") == 0) {
+        const bool stepped =
+            by_caller ? down(callers) && std::strcmp(at.name, "placements") == 0 && down(placements)
+                      : down(update);
+        if (stepped && std::strcmp(at.name, "handover") == 0) {
           const Part handover[] = {{"compare", w.compare_ms},  {"layout", w.layout_ms},
                                    {"write", w.write_ms},      {"after", w.after_ms},
                                    {"fires", w.fires_ms},      {"far", w.far_ms},
@@ -811,6 +850,13 @@ scene::SlowFrame slowest_span(const scene::FrameRecord& r) {
                            {"passes", r.cpu.passes}, {"compile", r.cpu.compile},
                            {"record", r.cpu.record}, {"submit", r.cpu.submit}};
     (void)down(submit);
+  } else if (span == "slot_wait" && r.gpu_frame.has_value() && r.gpu_frame->wait_split) {
+    // The wait by what the GPU was doing (W155): inside the awaited frame, before it had started
+    // it, or after it, until this thread woke.
+    const scene::FrameGpu& g = *r.gpu_frame;
+    const Part wait[] = {
+        {"gpu", g.wait_gpu_ms}, {"before", g.wait_before_ms}, {"late", g.wait_late_ms}};
+    (void)down(wait);
   }
   out.span = std::move(span);
   out.span_ms = at.ms;

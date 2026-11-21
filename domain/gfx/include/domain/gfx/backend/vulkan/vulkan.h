@@ -64,6 +64,10 @@ struct Handles {
   bool present_id2 = false;
   bool present_wait2 = false;
   bool present_timing = false;
+  // VK_KHR_calibrated_timestamps, wherever the device offers it and presenting or not (W155): the
+  // frame timer maps its first and last timestamps onto the host's clock with it, so a frame's
+  // record can tell a slow GPU from a card busy elsewhere and a late wake (gpu_timer.h).
+  bool calibrated_timestamps = false;
   // HDR output (E39): the instance lists colour spaces past sRGB non-linear
   // (VK_EXT_swapchain_colorspace), and the device can hand a swapchain HDR10 metadata
   // (VK_EXT_hdr_metadata). Each only where offered; without them a surface offers sRGB alone.

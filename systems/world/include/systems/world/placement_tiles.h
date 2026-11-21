@@ -160,6 +160,13 @@ struct PlacementTilesStats {
   // and the tail written out of the drawn tiles.
   i64 admit_ns = 0;
   i64 tail_ns = 0;
+  // The rest of a commit, by call (W155; engine-view's frame record, `FrameWorld` version 2): the
+  // due tiles — the last job's collected and the next started, or built here without jobs
+  // (`due_ns`, which `tiles_ns` partly lies inside) — the tiles' meshes admitted and let go
+  // (`meshes_ns`), and the hand-off cells refreshed, a commit's and an update's (`cells_ns`).
+  i64 due_ns = 0;
+  i64 meshes_ns = 0;
+  i64 cells_ns = 0;
   // Tiles built again for a moving ground (`restand`), and their wall time.
   u64 restood = 0;
   i64 restand_ns = 0;

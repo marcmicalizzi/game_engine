@@ -122,6 +122,68 @@ The two over 100 ms are the hand-over at 1579 and a beginning at 201 (93.8 ms in
 
 **What tonight's memory rows change here** (not on this base): they take 5.4 GB off the first frame's device peak at 4K; the wide frame's 17.8 GB would be about 12.4 GB, inside a 16 GB card, before item 5.
 
+## W155: the walk's own long frames
+
+Roadmap W155, the same night. Section 2's table left two classes it could not split: the 26 slot waits two to five times the GPU's timed frame, and four world updates whose parts named under 40 % of them. This section is the record made able to tell, the walk flown again with it, and what was removed.
+
+**What the record says now** (`FrameRecord` version 25; [renderer](../subsystems/renderer.md#what-a-slot-wait-was), [apps](../subsystems/apps.md#flythroughs), "The frame record's GPU clock"):
+
+- `gpu_frame`: the frame's first command to its last on the GPU's clock (`span_ms`), what of it no zone names (`untimed_ms`), how long after its submission the GPU began it (`queued_ms`) and, of that, how long after the GPU had finished our frame before it (`elsewhere_ms`); and the frame's own slot wait split by the frame it waited for — the GPU inside that frame (`wait_gpu_ms`), not yet started on it (`wait_before_ms`), after it until the thread woke (`wait_late_ms`). The marks are two timestamps a frame; the host's clock comes from `VK_KHR_calibrated_timestamps`, one call every half second.
+- `world` version 2: `update_ms` by who spent it — the ring, the drawn ground's calls, the placements' calls (events and commits) and the re-standing — and the placements' calls by part (events, due tiles, meshes, hand-off cells, admission, tail, hand-over).
+- `frame_ms` is the frame's own interval, `sections.wall_ms`; until version 24 it was the one before.
+- `sections` version 2: the frame thread's own CPU time over the frame (`thread_cpu_ms`) and the wall time beyond it (`off_cpu_ms`), so a long recording or update that held little of the CPU says it was the thread descheduled. On Windows the figure is the system's thread times, good to a 15.6 ms clock tick; the startup trace's stages carry the same per stage (`cpu_ns`), which is how R195's flights are read again below.
+
+**R195's "world's own" stalls, read again by their thread CPU.** R195's flights kept their startup traces, whose stages carry the frame thread's CPU. Of B-4k's walk (from 311 s into its trace), the stages on the frame thread over 25 ms that are not inside another:
+
+| stage | thread on the CPU | stages | their ms | thread CPU ms |
+|---|---|---:|---:|---:|
+| placements commit | under half the stage | 14 | 653.7 | 93.8 |
+| world update | under half | 9 | 332.4 | 0.0 |
+| table set | under half | 1 | 40.8 | 0.0 |
+| world update | half or more | 1 | 43.0 | 46.9 |
+| placements commit | half or more | 1 | 25.2 | 15.6 |
+
+**Two of 26 were the world's work; 24 were the frame thread off the processor** on a machine whose other processes held 79 to 100 % of it — the four "updates their parts do not name" and the 73 ms tail commit (frame 197) among them, each with no CPU time to its name. What is the world's: the hand-over near frame 1,579, whose slot write held 46.9 ms of CPU for 3,904 slots (where the first fill wrote 297,268 in 114 ms) and whose relayout's chain resize was 47.7 ms in the driver with none, and one update of 43 ms.
+
+**The walk again with the new record** (T1, this row's tip before the mend below; 04:00, session locked, the machine shared with five rows' builds and GPU cases and this row's own driverless test run beside the load and the walk; 2,370 frames):
+
+| | median | p95 | p99 | worst | over 33 | over 50 | over 100 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| T1, frame ms (own interval) | 18.15 | 22.24 | 28.39 | 94.8 | 16 | 6 | 0 |
+
+Every frame over 33 ms by its own record:
+
+| cause (the record's own words) | frames | wall ms | the longest (frame: wall, the part) |
+|---|---:|---:|---|
+| slot wait, late: the GPU had finished the awaited frame and the thread woke 19–76 ms after | 5 | 273.0 | 2163: 94.8 (late 76.0), 2176: 54.0 (34.0), 2178: 43.5 (24.3), 1868: 42.5 (19.4) |
+| slot wait, the GPU inside the awaited frame (spans 18–22 ms, nothing untimed) | 4 | 151.7 | 2197: 47.3, 2124: 35.8, 1872: 35.0, 936: 33.6 |
+| the frame's beginning outside its wait | 3 | 157.7 | 2122: 56.3, 2174: 51.6, 2120: 49.8 |
+| a placements commit, the thread off the CPU (trace: 51.8 ms, CPU 0) | 1 | 65.2 | 2161 |
+| the graph's compile, with 13.5 ms of the GPU elsewhere before the frame | 1 | 62.6 | 1267 |
+| a pass's recording | 1 | 49.0 | 932 |
+| **the world's own: the hand-over's slot write** (3,744 slots, write 30.8 ms, relayout 5.0; trace CPU 46.9 of 37.4 ms) | 1 | 39.8 | 1577 |
+
+- **The slot waits are three things and the record now says which**: five late wakes (the GPU's frame was done; the thread was not running), four the GPU's own frame (whose span carries 0.2 ms no zone names — the zones cover the frame), and no frame whose GPU was held elsewhere for long; `elsewhere_ms` reached 13.5–14.6 ms on two frames only.
+- **The world's update is named**: over the 25 updates longer than 5 ms, 91.6 % of their time is in the named parts at the top (the ring, the drawn ground, the placements, the re-standing), and inside the placements their named parts cover the rest to within a millisecond.
+- **The world's own stalls are one frame here**, the growth's slot write at frame 1577; the rest of R195's list did not recur or was the thread off the CPU.
+
+**What was removed: the CPU table's growth on the growth's frame** ([renderer](../subsystems/renderer.md#the-tails-cpu-table-grows-into-room-made-ahead)). Frame 1577 is where the tail passes 468,000 slots, half again of the first fill's 312,000: the GPU's tables grow (T152's swapped relayout, 5 ms here) and so does the CPU's own instance table, by the container's half again — 67 MB made, 45 MB copied, every page faulted in, on the frame thread. `renderer::TableRoom` makes that block ahead, faulted in 1 MiB a frame from three quarters full, and the growth copies into it; the old block is freed a frame later. Nothing drawn can differ: the table's bytes and order are the container's own growth's. The relayout's chain resize, which R195's busier B-4k flight spent 47.7 ms of in the driver, is still made on the frame (T152's row).
+
+**The pair** (the walk, 4K, the owner's settings, `--wait-quiet 150` (which never found the machine quiet), the session locked throughout, alternating base and tip with ten minutes clear between; the base is this row's base, 29dfa76ea, built once and copied out; P2's tip is the room with the old block freed on the growth's frame, P4's the final tip):
+
+| flight | binary | others' CPU (start → end) | median | p95 | p99 | worst | > 33 | > 50 | > 100 | GPU median / p99 | growth frame: update / slot write ms |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|
+| P1 | base | 30 → 26 % | 18.36 | 21.95 | 22.87 | 32.3 | 0 | 0 | 0 | 18.13 / 22.35 | 30.8 / 24.5 |
+| P2 | tip (room) | 50 → 44 % | 18.19 | 21.93 | 22.86 | 29.4 | 0 | 0 | 0 | 17.96 / 22.31 | 27.4 / 20.3 |
+| P3 | base | 100 → 96 % | 18.37 | 23.92 | 48.09 | 93.8 | 58 | 21 | 0 | 17.94 / 22.40 | 35.7 / 29.7 |
+| P4 | tip (final) | 32 → 38 % | 18.12 | 21.87 | 22.80 | 33.7 | 1 | 0 | 0 | 17.81 / 22.23 | 20.2 / 15.2 |
+
+(05:36 to 06:03 for P3 and P4, P1 and P2 from 04:36; each flight 2,370 frames after the first 30.)
+
+- **The world's own frame: about a third off.** The growth frame's world update is 30.8 and 35.7 ms on the base, 27.4 with the room whose old block was freed on the frame, and 20.2 with the final tip; its slot write 24.5 and 29.7 against 20.3 and 15.2. The final tip's trace says where the rest is: the room was taken twice (at 312,464 slots, the first fill's growth, and at 471,128), the table's move into it is 11.4–11.7 ms — the copy of 45 MB into resident pages, element by element — and the resize stage 12.2 ms where P2's, which also freed the old block there, was 16.3.
+- **The walk's distribution is the machine's, not the change's.** Three of the four flights had no frame over 50 ms and their medians, p95s and p99s agree within 0.2 ms; P3, the base flown while the other processes held 96–100 % of the CPU, had 58 frames over 33 ms and 21 over 50, and its record (the base's, version 23) cannot say which were late wakes. The GPU's own medians agree to 0.3 ms on all four. So the pair shows what the change removes — a third of the one frame of the world's own — and nothing it adds; it cannot show a change in the count of long frames, which on this machine tonight is set by who else is running.
+- **What is left of the world's own**, largest first: the table's copy into the room (11.5 ms at 470,000 slots; done ahead it would need the table's changes since the copy tracked, or the table kept as pages a growth can extend in place), the relayout's chain resize (3.5 ms here, 47.7 ms in R195's B-4k with no thread CPU: the driver's allocation, T152's half still on the frame).
+
 ## What this does not cover
 
 - **A quiet machine.** Every flight ran beside other rows' builds and GPU cases; the CPU numbers and the frame thread's waits are upper bounds, and the slot waits past the GPU's frame are not split.

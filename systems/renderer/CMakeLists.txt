@@ -61,6 +61,7 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     tests/hostile_scene_tests.cpp
                     tests/atlas_lod_tests.cpp tests/vertex_id_tests.cpp
                     tests/shadow_caster_tests.cpp tests/flythrough_tests.cpp
+                    tests/table_room_tests.cpp
                     tests/visibility_tie_tests.cpp tests/rt_capacity_tests.cpp
                     tests/world_translation_tests.cpp tests/hdr_output_tests.cpp
                     # R154: sampling over time's inputs (the offset, the motion pass, off is exact).

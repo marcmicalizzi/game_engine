@@ -552,6 +552,11 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
   h.present_id2 = ext_present_id2;
   h.present_wait2 = ext_present_wait2;
   h.present_timing = ext_present_timing;
+  // The host's clock against the device's for the frame timer (W155; gpu_timer.h, "The frame's own
+  // span"): not a row of the requirements table either, since nothing drawn depends on it, and a
+  // device without it times its frames as before. Present timing enabled it already when it is on.
+  h.calibrated_timestamps =
+      ext_present_timing || device_extensions.enable_if_available("VK_KHR_calibrated_timestamps");
   // HDR10's static metadata (E39): the mastering display and the content's light levels an HDR
   // swapchain hands the display (Swapchain::set_hdr_metadata). A presentation extra like the three
   // above — no feature struct, nothing drawn depends on it — enabled with presentation where the

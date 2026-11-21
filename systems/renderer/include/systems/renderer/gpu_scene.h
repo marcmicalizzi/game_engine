@@ -48,6 +48,7 @@
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_wind.h>
 #include <systems/renderer/settings.h>
+#include <systems/renderer/table_room.h>
 #include <systems/renderer/terrain_levels.h>
 #include <systems/renderer/terrain_rings.h>
 #include <systems/renderer/texture_bound.h>
@@ -309,6 +310,10 @@ class GpuScene {
     }
   };
   bool relayout_pending() const noexcept { return relayout_pending_; }
+  // The tail's CPU table grows into room made ahead (W155; table_room.h): between frames, up to
+  // `budget_bytes` of its next block faulted in; and the growths that took such room.
+  void prepare_table_room(usize budget_bytes);
+  u64 table_rooms_taken() const noexcept { return table_room_.taken(); }
   bool relayout(std::string* error = nullptr, RelayoutRetired* retired = nullptr);
   // **A test's seam** (T163): the next `count` makes of the chain's step (`resize_ray_tracing`,
   // whoever calls it) or of the trees' tables' growth (`grow_flora_tail`) fail as a device out of
@@ -2280,6 +2285,8 @@ class GpuScene {
   u32 null_mesh_ = 0;                     // the mesh a hole's null instance names: no clusters
   TileLayout layout_;                     // where the tail's blocks are
   Vector<InstanceKey> tail_keys_;         // per instance slot: what a live tail slot was made from
+  TableRoom<gfx::InstanceDesc> table_room_;  // their next growths' blocks, made ahead (W155)
+  TableRoom<InstanceKey> keys_room_;
   Vector<TileLayout::Request> requests_;  // a change's scratch
   Vector<SlotWrite> writes_;              // and the layout's answer
   Vector<TableSet> sets_;                 // the table sets; `instances`/`pair_table` alias one

@@ -113,6 +113,13 @@ tunables::Bool timer_view_zones{
     "renderer.timing.view_zones", true,
     "Time each view of a multi-view frame (a surround) in a GPU timer zone of its own; off, a "
     "multi-view pass is one zone, the first view's, and nothing between its views can order them"};
+// **The tail's CPU table grows into room made ahead** (W155; renderer.md, "The tail's CPU table
+// grows into room made ahead"): bytes of the next growth's block faulted in a frame, between frames,
+// once the table is three quarters full. 0 grows it as the container always did, on the frame.
+tunables::Int table_room_kib{
+    "renderer.tiles.table_room_kib", 1024, 0, 1 << 20,
+    "KiB a frame of the streamed tail's next CPU table block faulted in ahead of its growth, so the "
+    "hand-over that passes the table's capacity copies into resident pages; 0 grows it on the frame"};
 // The graph's lifetimes as a report (R4 stage 2; gfx.md, "Render graph v0"): every resource of a
 // frame's graph with the first and the last pass that declares it, what a transient heap would be
 // packed from. Logged once each time the tunable is turned on, so a flight is not a log a frame.
@@ -763,6 +770,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   slot_water_.assign(desc.frames_in_flight, SlotWater{});
   slot_terrain_bytes_.assign(desc.frames_in_flight, 0);
   slot_cpu_.assign(desc.frames_in_flight, FrameCpu{});
+  slot_submit_ns_.assign(desc.frames_in_flight, i64{0});
   slot_visibility_.assign(desc.frames_in_flight, -1.0f);
   constexpr gfx::BufferUsage k_address =
       gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress;
@@ -2588,6 +2596,20 @@ void SceneRenderer::collect_slot(u32 slot) {
   last.reconstruction = reconstruction();
   last.terrain_upload_bytes = slot < slot_terrain_bytes_.size() ? slot_terrain_bytes_[slot] : 0;
   last.cpu = slot < slot_cpu_.size() ? slot_cpu_[slot] : FrameCpu{};
+  // The frame on the GPU's own clock (W155): its marks, and with a calibrated clock where they fell
+  // against its submission and the frame before it.
+  if (const gfx::GpuTimer::FrameSpan& span = timer_.frame_span(); span.valid) {
+    last.gpu.valid = true;
+    last.gpu.span_ms = span.span_ms;
+    const i64 submitted = slot < slot_submit_ns_.size() ? slot_submit_ns_[slot] : 0;
+    if (span.first_ns != 0 && submitted != 0) {
+      last.gpu.calibrated = true;
+      last.gpu.queued_ms = std::max(0.0, static_cast<f64>(span.first_ns - submitted) / 1.0e6);
+      const i64 free_from = std::max(submitted, gpu_last_ns_);
+      last.gpu.elsewhere_ms = std::max(0.0, static_cast<f64>(span.first_ns - free_from) / 1.0e6);
+    }
+    gpu_last_ns_ = span.last_ns;
+  }
   last.visibility_m = slot < slot_visibility_.size() ? slot_visibility_[slot] : -1.0f;
   stats_.terrain_upload_bytes += last.terrain_upload_bytes;
   if (!timer_.results().empty()) {
@@ -2687,12 +2709,31 @@ void SceneRenderer::begin_frame() {
   const i64 begin_started = time::monotonic_ns();
   frame_cpu_ = FrameCpu{};
   frame_cpu_.wait_ms = static_cast<f64>(begin_started - wait_started) / 1.0e6;
+  // Between frames: a little of the tail's next CPU table block, ahead of its growth (W155).
+  if (scene_ != nullptr && scene_->dynamic())
+    scene_->prepare_table_room(static_cast<usize>(table_room_kib.get()) * 1024u);
   commands_ = frames_.begin_frame();
   // The slot's last frame has completed: the chain's buffers retired while it was recorded go to
   // the worker (R128), as the slot's deferred frees did in `begin_frame` above.
   release_rt_retired(frames_.slot());
   free_retired_tlas(false);
   timer_.begin_frame(commands_, frames_.slot());
+  // **The wait by what the GPU was doing** (W155; renderer.md, "What a slot wait was"): the frame
+  // waited for is the one whose marks the timer just read, so its first and last commands on the
+  // host's clock split this frame's wait into the GPU inside it, before it started, and after it.
+  if (const gfx::GpuTimer::FrameSpan& awaited = timer_.frame_span();
+      awaited.valid && awaited.last_ns != 0) {
+    const i64 lo = std::max(wait_started, awaited.first_ns);
+    const i64 hi = std::min(begin_started, awaited.last_ns);
+    const i64 inside = hi > lo ? hi - lo : 0;
+    const i64 late = begin_started - std::max(wait_started, awaited.last_ns);
+    const i64 wait = begin_started - wait_started;
+    const i64 late_clamped = std::clamp<i64>(late, 0, wait - inside);
+    frame_cpu_.wait_split = true;
+    frame_cpu_.wait_gpu_ms = static_cast<f64>(inside) / 1.0e6;
+    frame_cpu_.wait_late_ms = static_cast<f64>(late_clamped) / 1.0e6;
+    frame_cpu_.wait_before_ms = static_cast<f64>(wait - inside - late_clamped) / 1.0e6;
+  }
   // The frame that last used this slot has completed: its statistics are readable.
   if (submitted_ >= frames_.frames_in_flight()) {
     collect_slot(frames_.slot());
@@ -3067,6 +3108,10 @@ u64 SceneRenderer::submit_frame(const FrameDesc& frame, std::string* error) {
     log_graph_lifetimes();
   }
   u64 value = 0;
+  // The frame's last mark, after its last command (W155), and when it is handed to the queue: no
+  // command of it can run before that.
+  timer_.end_frame(commands_);
+  if (slot < slot_submit_ns_.size()) slot_submit_ns_[slot] = time::monotonic_ns();
   if (frame.wait.valid() || frame.signal.valid()) {
     gfx::FrameContext::PresentSync sync;
     sync.wait = frame.wait;
