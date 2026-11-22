@@ -8,7 +8,9 @@
 // the load spends is the class read, its `content classes` stage, and the boxes the omitted meshes
 // become. Every fixture is neutral data of the test's own.
 #include <core/base/types.h>
+#include <core/hash/hash.h>
 #include <core/profiling/startup_trace.h>
+#include <domain/assets/mesh_generator.h>
 #include <domain/geometry/cluster_file.h>
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
@@ -64,6 +66,23 @@ std::string palm_recipe(u32 seed) {
          R"("triangle_budget":6000}})";
 }
 
+// A generator of the test's own with no host-aware hash, as deadwood's and the rocks' are: its
+// hash never sees a host's hooks, so its recipes can name no host and the class read reads none of
+// them (C72). It is never built here: every instance of its recipes is left out.
+bool plain_hash(std::span<const u8> bytes, u64& out, std::string&) {
+  out = hash_bytes(bytes.data(), bytes.size());
+  return true;
+}
+bool plain_build(std::span<const u8>, const assets::MeshGeneratorInputs&,
+                 const geometry::ClusterLodOptions&, u32, geometry::ClusterFileData&,
+                 std::string& error) {
+  error = "the cost case builds no plain recipe";
+  return false;
+}
+constexpr assets::MeshGeneratorDesc k_plain_generator{
+    .name = "costplain", .source_hash = plain_hash, .build = plain_build};
+const assets::MeshGeneratorRegistrar k_plain_registrar{k_plain_generator};
+
 // One small grid as a container, at `path`.
 void write_grid(const std::string& path) {
   SceneDesc grid;
@@ -82,6 +101,7 @@ void write_grid(const std::string& path) {
 
 struct Shape {
   u32 recipes = 0;
+  u32 plain = 0;  // recipes of `costplain`, whose hash takes no host
   u32 containers = 0;
   u32 gltfs = 0;
   u32 directories = 1;
@@ -134,6 +154,9 @@ SceneDesc cost_scene(const test::TempDir& tmp, const Shape& shape) {
   };
   for (u32 i = 0; i < shape.recipes; ++i)
     add("tree" + std::to_string(i) + ".flora.json", palm_recipe(100 + i), false);
+  for (u32 i = 0; i < shape.plain; ++i)
+    add("log" + std::to_string(i) + ".costplain.json", R"({"seed":)" + std::to_string(i) + "}",
+        false);
   for (u32 i = 0; i < shape.containers; ++i)
     add("rock" + std::to_string(i) + ".clusters", {}, true);
   for (u32 i = 0; i < shape.gltfs; ++i)
@@ -187,6 +210,7 @@ TEST_CASE("content classes at load: the class read's cost on a forest's shape") 
 #endif
     Shape shape;
     shape.recipes = 400 * k_scale;
+    shape.plain = 80 * k_scale;
     shape.containers = 40 * k_scale;
     shape.gltfs = 40 * k_scale;
     shape.directories = 8;
@@ -199,16 +223,18 @@ TEST_CASE("content classes at load: the class read's cost on a forest's shape") 
     report(sidecar_every == 0 ? "no sidecar anywhere" : "a sidecar beside every 97th source", scene,
            ms, cpu_ms);
     const SceneLoadReport& load = scene.load;
-    CHECK(load.class_paths == 1 + shape.recipes + shape.containers + shape.gltfs);
+    CHECK(load.class_paths == 1 + shape.recipes + shape.plain + shape.containers + shape.gltfs);
+    // A recipe whose generator has no host-aware hash is never read or probed for its hosts: the
+    // answer, none, is known without it (C72).
     CHECK(load.class_reads[ClassRead::recipe_file].asked == shape.recipes);
     CHECK(load.class_reads[ClassRead::recipe_file].found == shape.recipes);
     // The pack's sets read once a load, not once a recipe (C72): every set once.
     CHECK(load.class_reads[ClassRead::pack_sets].asked == shape.sets);
-    // Each recipe probed once, on whichever thread.
+    // Each recipe that can name a host probed once, on whichever thread.
     CHECK(load.class_reads[ClassRead::host_probe].asked == shape.recipes);
     CHECK(load.class_reads[ClassRead::container_section].asked == 1 + shape.containers);
     CHECK(load.class_reads[ClassRead::container_section].found == 1 + shape.containers);
-    CHECK(load.unreadable_omitted == shape.recipes + shape.containers + shape.gltfs);
+    CHECK(load.unreadable_omitted == shape.recipes + shape.plain + shape.containers + shape.gltfs);
     CHECK(scene.instances.size() == 1);
     const u32 sidecars = sidecar_every == 0 ? 0u : (desc.meshes.size() - 2u) / sidecar_every + 1u;
     const u32 found = load.class_reads[ClassRead::recipe_sidecar].found +

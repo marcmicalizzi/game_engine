@@ -646,7 +646,10 @@ bool generator_hosts(const std::string& recipe, const materials::Pack* pack,
   hosts.clear();
   const assets::MeshGeneratorDesc* generator =
       assets::MeshGeneratorRegistry::global().find(assets::mesh_generator_of(recipe));
-  if (generator == nullptr) return true;
+  // A generator with no host-aware hash never sees the hooks (`generated_source_hash` hands its
+  // bytes to `source_hash` alone), so its recipes name no host: the answer the probe would give
+  // after reading and hashing the file, known without either (C72).
+  if (generator == nullptr || generator->source_hash_with == nullptr) return true;
   std::string read;
   if (handed == nullptr) {
     const i64 read_ns = time::monotonic_ns();
