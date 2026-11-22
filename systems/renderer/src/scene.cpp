@@ -1,4 +1,5 @@
 #include "far_forest_build.h"
+#include "scene_admission.h"
 #include "scene_far.h"
 #include "scene_flora.h"
 #include "scene_ground_plan.h"
@@ -177,7 +178,17 @@ struct TextureRef {
   u32 options = 0;
   u64 source_hash = 0;
   u64 key = 0;
+  // The image's class hash (C64; its sidecar's, by name), which its key holds when it is not zero
+  // (`content_class::classified_key`, C62's rule): zero for every image that declares nothing.
+  u64 class_hash = 0;
 };
+
+// The key a reference's `.tex` is found by: its bytes and options, moved by its class only when it
+// has one, so an unclassified image keeps the key and the entry it had.
+u64 reference_key(u64 source_hash, const texture::TextureBuildOptions& options, u64 class_hash) {
+  return content_class::classified_key(texture::texture_cache_key(source_hash, options),
+                                       class_hash);
+}
 
 struct FileWork {
   std::string path;
@@ -271,7 +282,9 @@ void run_jobs(jobs::JobSystem* pool, Vector<T>& items, void (*fn)(void*)) {
 // and probes on the calling thread and makes a pool only when something has to be built.
 void prepare_scene_textures(const SceneDesc& desc, Vector<SourceMesh>& sources,
                             content_build::ImageIdentities& identities, jobs::JobSystem* pool,
-                            SceneLoadReport& report) {
+                            SceneLoadReport& report,
+                            const Vector<Vector<u64>>* image_hash = nullptr,
+                            const content_class::Categories* categories = nullptr) {
   if (!desc.cache || desc.ddc.empty()) return;
   const i64 start_ns = time::monotonic_ns();
   ENGINE_STARTUP_STAGE("cache textures");
@@ -300,6 +313,8 @@ void prepare_scene_textures(const SceneDesc& desc, Vector<SourceMesh>& sources,
         // ever being built (R97's terrain normal variance). The record is updated below, in memory.
         ref.key = texture::texture_cache_key(ref.source_hash, options);
       } else if (!image.uri.empty()) {
+        if (image_hash != nullptr && m < image_hash->size() && i < (*image_hash)[m].size())
+          ref.class_hash = (*image_hash)[m][i];
         std::string path = io::normalize_path(
             mesh.image_dir.empty() ? image.uri : io::join_path(mesh.image_dir, image.uri));
         const u64 path_hash = hash_bytes(path.data(), path.size());
@@ -333,7 +348,7 @@ void prepare_scene_textures(const SceneDesc& desc, Vector<SourceMesh>& sources,
     texture::TextureBuildOptions options;
     (void)texture::unpack_texture_options(ref.options, options);
     ref.source_hash = file.hash;
-    ref.key = texture::texture_cache_key(file.hash, options);
+    ref.key = reference_key(file.hash, options, ref.class_hash);
   }
   // 1b. **The caps** (G14; texture.md, "Sized by the asset"): every reference to one texture — the
   // same bytes at the same options, so the same key — takes the largest need of the meshes that
@@ -369,7 +384,7 @@ void prepare_scene_textures(const SceneDesc& desc, Vector<SourceMesh>& sources,
       (void)texture::unpack_texture_options(ref.options, options);
       options.needed_side = need[group_of_ref[r]];
       ref.options = texture::pack_texture_options(options);
-      ref.key = texture::texture_cache_key(ref.source_hash, options);
+      ref.key = reference_key(ref.source_hash, options, ref.class_hash);
       ++report.capped;
     }
   }
@@ -436,12 +451,18 @@ void prepare_scene_textures(const SceneDesc& desc, Vector<SourceMesh>& sources,
           if (other.file != ref.file) continue;
           (void)texture::unpack_texture_options(other.options, options);
           other.source_hash = hash;
-          other.key = texture::texture_cache_key(hash, options);
+          other.key = reference_key(hash, options, other.class_hash);
         }
       }
-      source.bytes.assign(reinterpret_cast<const u8*>(bytes.data()),
-                          reinterpret_cast<const u8*>(bytes.data()) + bytes.size());
-      source.source_hash = hash;
+      if (ref.class_hash != 0) {
+        // A classified image is built from its file, so the step reads its sidecar beside it and
+        // writes the class into the texture's section 6 under the key the class moved (C62).
+        source.file = files[ref.file].path;
+      } else {
+        source.bytes.assign(reinterpret_cast<const u8*>(bytes.data()),
+                            reinterpret_cast<const u8*>(bytes.data()) + bytes.size());
+        source.source_hash = hash;
+      }
     }
     build.push_back(std::move(source));
     build_key.push_back(k);
@@ -468,7 +489,7 @@ void prepare_scene_textures(const SceneDesc& desc, Vector<SourceMesh>& sources,
     content_build::run_texture_step(
         std::span<const content_build::TextureSource* const>(pointers.data(), pointers.size()),
         std::span<const u32>(mesh_of.data(), mesh_of.size()), desc.ddc,
-        pool != nullptr ? *pool : *own, results);
+        pool != nullptr ? *pool : *own, results, categories);
     for (const content_build::TextureResult& result : results) {
       switch (result.state) {
         case content_build::TextureState::Built: ++report.built; break;
@@ -535,8 +556,10 @@ bool write_cluster_cache(const std::string& path, const std::string& source,
                          const Vector<u32>& part_of_cluster, geometry::ClusterLodMesh& lod,
                          geometry::ClusterPages& pages,
                          Vector<geometry::ClusterFileTexture>& textures, u64 source_hash,
-                         u64 build_key) {
+                         u64 build_key, const Vector<u8>* classes = nullptr) {
   geometry::ClusterFileData data;
+  // Section 54 (C62): the source's own class, as engine-content build writes it; none when null.
+  if (classes != nullptr) data.content_classes = *classes;
   data.mesh = std::move(lod);
   // Section 39: an alpha-tested import's coverage errors, which the build left on the mesh in the
   // clusters' final order (`ClusterLodMesh::coverage`) and the caller keeps a copy of.
@@ -762,8 +785,13 @@ void adopt_container(geometry::ClusterFileData& container_data, const std::strin
 // materials: the terrain is a mesh like any other from here on, which is what lets it share a
 // scene with glTF meshes (the classic heightfield's height-banded palette is the GPU scene's own
 // and only exists when the heightfield is the whole scene).
+//
+// `class_hash` and `class_record` are the ground's class (C64; renderer.md, "Content classes at
+// load"): its key moves by the hash only when it is not zero, so a ground with no sidecar beside
+// any of its inputs keeps the key it had, and the entry it builds carries the record as section 54.
 bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMesh& lod,
-                  geometry::ClusterPages& pages, std::string& error) {
+                  geometry::ClusterPages& pages, std::string& error, u64 class_hash = 0,
+                  const Vector<u8>* class_record = nullptr) {
   // A palette with a wind-sand layer draws the detail over that layer's share (R99, renderer.md
   // "Sand and snow"); any other palette and the detail stay alternatives.
   if (desc.terrain.materials.has_value() && desc.terrain.has_detail &&
@@ -786,8 +814,10 @@ bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMe
   std::string cache_path;
   u64 key = 0;
   if (desc.cache) {
-    key = geometry::cluster_cache_key(hash, lod_options, false,
-                                      geometry::ClusterPagesOptions{}.page_bytes);
+    key = content_class::classified_key(
+        geometry::cluster_cache_key(hash, lod_options, false,
+                                    geometry::ClusterPagesOptions{}.page_bytes),
+        class_hash);
     cache_path = geometry::cluster_cache_path(desc.ddc, key);
     out.cache = "miss";
     if (io::exists(cache_path)) {
@@ -910,7 +940,7 @@ bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMe
                   log::field("sloppy_folded", lod.fold_guard.sloppy_folded));
   if (!cache_path.empty() &&
       write_cluster_cache(cache_path, "", out.data, out.part_material, out.part_of_cluster, lod,
-                          built, out.textures, hash, key)) {
+                          built, out.textures, hash, key, class_record)) {
     out.container = cache_path;
   }
   if (desc.stream) pages = std::move(built);
@@ -927,14 +957,17 @@ bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMe
 // textures are not this function's — the load's pass builds or trusts them after every mesh is in.
 bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expected_hash,
                       SourceMesh& out, geometry::ClusterLodMesh& lod, geometry::ClusterPages& pages,
-                      std::string& error, content_build::ImageIdentities* identities = nullptr) {
+                      std::string& error, content_build::ImageIdentities* identities = nullptr,
+                      u64 class_hash = 0, const Vector<u8>* class_record = nullptr,
+                      Vector<u8>* loaded_classes = nullptr, u8* read_whole = nullptr) {
   auto page_layout = [&](const char* what, u32 page_bytes) {
     lay_out_pages(desc, what, page_bytes, out, lod, pages);
   };
   // Built textures live in the same derived-data root as built meshes, and a load that reads no
   // cache reads neither (texture.md, "In the renderer").
   out.texture_ddc = desc.cache ? desc.ddc : std::string();
-  if (path.empty() && desc.terrain.enabled) return load_terrain(desc, out, lod, pages, error);
+  if (path.empty() && desc.terrain.enabled)
+    return load_terrain(desc, out, lod, pages, error, class_hash, class_record);
   if (path.empty() && desc.procedural == Procedural::shredded_atlas) {
     // The atlas stress fixture, built here rather than committed as a file so that the scene
     // corpus can guard the LOD seam defect on a fresh clone and without a third-party model
@@ -1013,7 +1046,7 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
     geometry::ClusterFileData generated;
     std::string where;
     if (!load_generated_mesh(path, desc, expected_hash, generated, where, out.cache,
-                             out.source_hash, error, identities)) {
+                             out.source_hash, error, identities, class_hash, class_record)) {
       return false;
     }
     // The images its parts sample — a recipe's sets, a material pack's — are the load's texture
@@ -1051,6 +1084,9 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
       // (`geometry::imported_lod_options`), and the key says so.
       cache_key = geometry::cluster_cache_key(source_hash, geometry::imported_lod_options(desc.lod),
                                               true, geometry::ClusterPagesOptions{}.page_bytes);
+      // A classified source's entry is its own (C62's rule, C64 at the load): the class by name,
+      // only when there is one, so an unclassified glTF keeps the key it had.
+      cache_key = content_class::classified_key(cache_key, class_hash);
       cache_path = geometry::cluster_cache_path(desc.ddc, cache_key);
       out.cache = "miss";
       if (io::exists(cache_path)) container = cache_path;
@@ -1077,6 +1113,12 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
     }
   }
   if (from_container) {
+    // A container named outright: the classes section of the bytes read here, which the load's
+    // second pass decides it by when the probe saw other bytes (C64, `container_class_as_loaded`).
+    if (cache_path.empty() && loaded_classes != nullptr && read_whole != nullptr) {
+      *loaded_classes = container_data.content_classes;
+      *read_whole = 1;
+    }
     // A container found in or named beside the cache may have been written before its textures
     // were built (an older engine-view, a cache that lost them, `engine-content build` without
     // `--cache`): the load's texture pass builds whatever of them is missing and trusts the rest.
@@ -1184,7 +1226,7 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
   // `build-all` takes the entry as current.
   if (!cache_path.empty()) {
     if (write_cluster_cache(cache_path, path, out.data, out.part_material, out.part_of_cluster, lod,
-                            built, out.textures, source_hash, cache_key)) {
+                            built, out.textures, source_hash, cache_key, class_record)) {
       // The entry this load just wrote holds the same bytes in the same order this mesh is now in,
       // so a streamed run may read its pages back out of it rather than out of host memory.
       out.container = cache_path;
@@ -2544,6 +2586,10 @@ bool read_scene_text(std::string_view text, const std::string& path, bool withou
   const schema::TreeField channels{"water_channels", &prepare_water_channels, &without};
   schema::TextReadOptions options;
   options.tree_fields = std::span<const schema::TreeField>(&channels, 1);
+  // **Strictly** (C64; renderer.md, "Content classes at load"): a key given twice anywhere refuses
+  // the file, naming the key, because the parser's ordinary rule (the last one wins) would let a
+  // text merge or an append lose an instance's raise, or anything else the file says.
+  options.parse.refuse_duplicate_keys = true;
   schema::ReadContext ctx;
   JsonParseResult parsed;
   profiling::TraceStage read_stage("schema read");
@@ -2551,6 +2597,8 @@ bool read_scene_text(std::string_view text, const std::string& path, bool withou
   read_stage.end();
   if (!parsed.ok) {
     error = std::string(path) + ":" + std::to_string(parsed.line) + ": " + parsed.message;
+    if (!parsed.duplicate_key.empty())
+      error += " ('" + parsed.duplicate_key + "' is given twice in one object)";
     return false;
   }
   if (!read || !ctx.ok()) {
@@ -2572,9 +2620,13 @@ bool read_scene_props(const std::string& path, Vector<SceneProp>& out, std::stri
   scene::Scene file;
   schema::ReadContext ctx;
   JsonParseResult parsed;
-  const bool read = schema::read_json_text(file, text, ctx, parsed);
+  schema::TextReadOptions strict;  // the same strict grammar as `read_scene_text` (C64)
+  strict.parse.refuse_duplicate_keys = true;
+  const bool read = schema::read_json_text(file, text, ctx, parsed, strict);
   if (!parsed.ok) {
     error = std::string(path) + ":" + std::to_string(parsed.line) + ": " + parsed.message;
+    if (!parsed.duplicate_key.empty())
+      error += " ('" + parsed.duplicate_key + "' is given twice in one object)";
     return false;
   }
   if (!read || !ctx.ok()) {
@@ -3136,6 +3188,16 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       }
       instance.animation.lod_bias = bias;
     }
+    // A raise (Instance version 4; C64): kept by name and read at the load, once the scene's
+    // containers have taught it their categories' ladders.
+    if (entry.content_classes.has_value()) {
+      if (out.raises.size() >= k_max_raises) {
+        error = path + ": more than " + std::to_string(k_max_raises) + " instances raise a class";
+        return false;
+      }
+      out.raises.push_back(*entry.content_classes);
+      instance.content_classes = static_cast<u16>(out.raises.size());
+    }
     out.instances.push_back(instance);
   }
   // Scatters, expanded here from their seeds, so the renderer sees plain instances and two
@@ -3328,6 +3390,19 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     error = "SceneDesc::mesh_info must be empty or parallel to meshes";
     return false;
   }
+  // **Content classes, before any geometry is read** (C64; renderer.md, "Content classes at
+  // load"): each mesh's own class, the scene's policy and table, and which meshes are read at all.
+  LoadAdmission admission;
+  if (!admission_before_meshes(resolved, out, admission, error)) return false;
+  if (admission.ground_refused) {
+    // **A ground the policy refuses is left out whole** (C64): not built, so nothing of it is in
+    // a cache entry, a texture or the picture, and no ring, tile or world tile draws its shape.
+    // Instances are still seated on the ground the file described (`desc`): the world is not an
+    // output (content-classes.md, "In the world").
+    resolved.terrain.enabled = false;
+    resolved.world.ground = false;
+    resolved.terrain_tiles = false;
+  }
   out.sources.resize(resolved.meshes.size());
   Vector<geometry::ClusterLodMesh> dags(resolved.meshes.size());
   Vector<geometry::ClusterPages> tables(resolved.meshes.size());
@@ -3357,6 +3432,10 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
       geometry::ClusterLodMesh* lod = nullptr;
       geometry::ClusterPages* pages = nullptr;
       content_build::ImageIdentities* identities = nullptr;
+      u64 class_hash = 0;                        // a classified glTF's, which its cache key holds
+      const Vector<u8>* class_record = nullptr;  // and its section 54, if the load builds it
+      Vector<u8>* loaded_classes = nullptr;      // a named container's section 54 as read whole
+      u8* read_whole = nullptr;
       bool ok = false;
       std::string error;
     };
@@ -3375,6 +3454,12 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
       job.lod = &dags[m];
       job.pages = &tables[m];
       job.identities = &identities;
+      job.class_hash = admission.mesh_hash[m];
+      job.class_record = admission.record[m].empty() ? nullptr : &admission.record[m];
+      job.loaded_classes = &admission.loaded[m];
+      job.read_whole = &admission.read_whole[m];
+      // A mesh nothing under the policy draws is never read (its slot becomes a proxy box below).
+      job.ok = admission.load[m] == 0;
       const std::string& path = resolved.meshes[m];
       if (path.empty()) continue;
       const u64 path_hash = hash_bytes(path.data(), path.size());
@@ -3396,7 +3481,8 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
       MeshJob& job = *static_cast<MeshJob*>(data);
       ENGINE_STARTUP_STAGE_DETAIL("mesh", *job.path);
       job.ok = load_source_mesh(*job.path, *job.desc, job.expected, *job.source, *job.lod,
-                                *job.pages, job.error, job.identities);
+                                *job.pages, job.error, job.identities, job.class_hash,
+                                job.class_record, job.loaded_classes, job.read_whole);
     };
     ENGINE_STARTUP_STAGE("meshes");
     profiling::trace_items(resolved.meshes.size());
@@ -3405,7 +3491,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
       // the pool's queues hold.
       Vector<MeshJob*> list;
       for (u32 m = 0; m < mesh_jobs.size(); ++m)
-        if (wave[m] == w) list.push_back(&mesh_jobs[m]);
+        if (wave[m] == w && admission.load[m] != 0) list.push_back(&mesh_jobs[m]);
       run_jobs<MeshJob>(*pool, std::span<MeshJob* const>(list.data(), list.size()), run);
     }
     for (u32 m = 0; m < mesh_jobs.size(); ++m) {
@@ -3417,13 +3503,18 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     }
   }
   out.load.meshes_ms = static_cast<f64>(time::monotonic_ns() - meshes_start_ns) / 1.0e6;
+  // **Every instance through the one door** (C64), before a texture is read or a mesh merged: a
+  // mesh nothing admitted draws leaves as its proxy box, its images with it. Free when nothing in
+  // the scene is classified.
+  admission_after_meshes(resolved, out, admission, dags, tables);
   // Every mesh's textures at once: one identity per distinct image, a built one trusted from its
   // header, the rest built on the same pool (`prepare_scene_textures`). Before the authored forms
   // below copy the records, so a form carries its mesh's keys. The caps a scene's density asks of
   // them first (G14), while the meshes' own levels are still at hand to be measured.
   cap_scene_textures(resolved, {dags.data(), dags.size()}, out.sources);
   bound_scene_textures(resolved, {dags.data(), dags.size()}, out.sources);  // R172
-  prepare_scene_textures(resolved, out.sources, identities, &*pool, out.load);
+  prepare_scene_textures(resolved, out.sources, identities, &*pool, out.load, &admission.image_hash,
+                         &out.categories);
   // The ground the hemisphere ambient's lower half carries: the mean of what the terrain draws
   // (R185; `terrain_ground_albedo`), or the neutral grey without one (renderer.md, "The ground's
   // albedo is a scene value"). Once, here, from what the scene already holds — **before the release
@@ -3597,6 +3688,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
 
   // Instances: the caller's, the grid's, or one identity instance of the one mesh.
   Vector<SceneInstance> instances = std::move(resolved.instances);
+  const bool made_here = resolved.grid_instances > 1 || instances.empty();
   if (resolved.grid_instances > 1) {
     instances.clear();
     Vec3 mesh_center{};
@@ -3606,6 +3698,20 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     make_instance_grid(resolved.grid_instances, mesh_radius, resolved.grid_joints, 0.0f, instances);
   } else if (instances.empty()) {
     instances.push_back(SceneInstance{0, Transform3::identity()});
+  }
+  // The instances the load made itself are mesh 0's with no raise, decided once by the door (C64):
+  // omitted, none is made; proxied, each draws mesh 0's proxy, which is mesh 0's own slot by then.
+  // Keyed on whether the load made them here: one made because a streamed world's tail took every
+  // file instance goes through the door now (`admit_made_instance`), never placed undecided.
+  const bool file_made = desc.instances.empty() || desc.grid_instances > 1;
+  const content_class::Outcome made_outcome =
+      !made_here ? content_class::Outcome::admit
+                 : (file_made ? admission.mesh0 : admit_made_instance(out, admission));
+  if (made_here && made_outcome != content_class::Outcome::admit) {
+    for (SceneInstance& made : instances) {
+      made.joints = 0;
+      if (made_outcome == content_class::Outcome::omit) made.content_classes = k_instance_omitted;
+    }
   }
   // Each fitted mesh's own transform, from the box of its source's surface: its level 0 clusters'
   // vertices (`fit_parts` has why not every level's). It is read here, while the merged float
@@ -3632,7 +3738,21 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   const u32 handoff_band = sward_handoff_band_tunable();  // read once for the load (G136)
   ENGINE_STARTUP_STAGE("instances");
   profiling::trace_items(instances.size());
-  for (const SceneInstance& source : instances) {
+  // An omitted instance is left out of the table (C64): nothing of it, not its place, reaches the
+  // scene. `kept_of` maps a prefix index to its loaded one when something was left out.
+  Vector<u32> kept_of;
+  for (u32 j = 0; j < instances.size(); ++j) {
+    const SceneInstance& source = instances[j];
+    if (source.content_classes == k_instance_omitted) {
+      if (kept_of.empty()) {
+        kept_of.reserve(instances.size());
+        for (u32 k = 0; k < j; ++k)
+          kept_of.push_back(k);
+      }
+      kept_of.push_back(k_not_loaded);
+      continue;
+    }
+    if (!kept_of.empty()) kept_of.push_back(out.instances.size());
     if (source.mesh >= out.parts.size()) {
       error = "an instance names mesh " + std::to_string(source.mesh) + ", which the scene has no";
       return false;
@@ -3666,11 +3786,24 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     out.instance_joints.push_back(joints);
     // The key a swaying instance's seed is hashed from: its place here unless the source named
     // the place a whole read gives it (renderer.md, "Streamed trees sway").
-    out.motion_keys.push_back(source.motion_key != k_motion_key_load ? source.motion_key
-                                                                     : out.motion_keys.size());
+    // Its place among the prefix (`j`), not among the kept, so an omission elsewhere moves no other
+    // instance's sway; the two are the same number when nothing was left out.
+    out.motion_keys.push_back(source.motion_key != k_motion_key_load ? source.motion_key : j);
     out.ground_slopes.push_back(source.slope);  // the seat's plane (G201 stage 2)
     out.skinned_instances += joints > 0 ? 1u : 0u;
     out.instances.push_back(instance);
+  }
+  // The whole read's index follows the omissions (renderer.md, "The whole read's index"): a read
+  // index whose instance was left out is not loaded, and every kept one's loaded index is its
+  // place among the kept. A scene read whole gets the map only when something was left out.
+  if (!kept_of.empty()) {
+    if (out.loaded_of_read.empty()) {
+      out.loaded_of_read = std::move(kept_of);
+    } else {
+      for (u32& loaded : out.loaded_of_read)
+        if (loaded != k_not_loaded)
+          loaded = loaded < kept_of.size() ? kept_of[loaded] : k_not_loaded;
+    }
   }
   out.pair_count = pair_count;
   out.max_joints = resolved.max_joints;
@@ -3679,6 +3812,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   // What a tile's mesh is built with after the load: the load's own options (R142).
   out.mesh_options =
       PlacementMeshOptions{resolved.lod, resolved.ddc, resolved.cache, resolved.materials};
+  out.mesh_options.view_policy = out.instantiated_under;  // a tile's mesh is decided the same (C67)
   out.world = resolved.world;
   // Moved, not copied (W150): the authored entry's parameters are a tree of every instance it
   // streams (about 465,000 in the forest staging), and the copy and then the original's free at

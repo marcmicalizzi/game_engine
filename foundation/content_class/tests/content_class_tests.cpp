@@ -1088,6 +1088,28 @@ TEST_CASE("content_class: a section that gives one category twice in a scope is 
   }
 }
 
+// Learning a record's ladders is all or nothing (C64): a record refused after it listed its
+// categories leaves the host's table as it was, so a ladder it carried decides nothing later.
+TEST_CASE("content_class: a section that is refused teaches the host nothing") {
+  std::string error;
+  Categories host;
+  ContentClasses out;
+  CHECK_FALSE(decode_classes(
+      host, view(record_with_pairs({{"fixture_glow", "bright"}, {"fixture_glow", "none"}}, {})),
+      out, error));
+  CHECK(host.find("fixture_glow") < 0);
+  CHECK(out == unreadable(Categories()));
+  // So a record met next with another ladder for the name reads as what it says.
+  Categories other;
+  u32 index = 0;
+  REQUIRE(other.learn("fixture_glow", ladder_of({"none", "bright"}), index, error));
+  Vector<u8> bytes;
+  encode_classes(other, classes_of(static_cast<u8>(index), 1), nullptr, bytes);
+  REQUIRE_MESSAGE(decode_classes(host, view(bytes), out, error), error);
+  REQUIRE(host.find("fixture_glow") >= 0);
+  CHECK(out.levels[static_cast<u32>(host.find("fixture_glow"))] == 1);
+}
+
 TEST_CASE("content_class: a node built from inputs carries their join, as a whole asset") {
   const Categories built = with_glow();
   Vector<u8> neutral;  // a neutral mesh has no section at all

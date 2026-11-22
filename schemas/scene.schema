@@ -14,6 +14,8 @@
 // them), so the move is an export, not a redesign.
 namespace engine.scene
 
+import "provenance.schema"
+
 /// How a mesh is scaled and placed in its own space before any instance transform applies. A
 /// fitted mesh occupies the same volume whichever file stands in for it, which is what lets a
 /// substitute and the owner's landmark share one set of placements.
@@ -457,7 +459,11 @@ struct Scatter @version(2) {
 /// Version 3 (ADR-0053): `translation` is a `worldpos`, three f64, where version 2 read a float32
 /// that put a mesh 420 km out on a 3.1 cm grid. The JSON is the same numbers, so a version 2 scene
 /// places every instance where it did (each at its number as written, no longer rounded to a float).
-struct Instance @version(3) {
+///
+/// Version 4 (C64, ADR-0073 decision 2): `content_classes` raises the class of the mesh this
+/// instance places, never lowers it: the load decides the instance on the join of the two
+/// (docs/subsystems/renderer.md, "Content classes at load").
+struct Instance @version(4) {
   /// Index into the scene's `meshes`.
   mesh: u32 = 0
   name: string
@@ -473,6 +479,10 @@ struct Instance @version(3) {
   /// What the ruin assembler said about this piece, when it placed it: carried for the host and
   /// never read by the renderer.
   ruin: RuinTag? @since(2)
+  /// What this placement adds to its mesh's class, by category and level name (the provenance
+  /// sidecar's schema form). A category the scene's data has not given a ladder reads as every
+  /// category's top, so it fails closed.
+  content_classes: engine.content.ContentClasses? @since(4)
 }
 
 /// One placed mesh as a **document record**: the `Instance` a layer holds, which this file's header

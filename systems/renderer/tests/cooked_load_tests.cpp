@@ -6,6 +6,9 @@
 // same tables at one worker as at every one.
 #include <core/hash/hash.h>
 #include <core/platform/process.h>
+#include <domain/assets/mesh_generator.h>
+#include <domain/content_build/content_build.h>
+#include <domain/geometry/cluster_file.h>
 #include <domain/materials/materials.h>
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
@@ -244,6 +247,60 @@ TEST_CASE("cooked load: the meshes load on the job system into the tables one wo
   CHECK_FALSE(load_scene(scene_of(tmp, {"a.flora.json", "bad1.flora.json", "bad2.flora.json"}),
                          refused, error));
   CHECK(error.find("frond_count") != std::string::npos);
+}
+
+// C64: a generated mesh whose recipe's sidecar declares a class is built into an entry of its own,
+// the content build's key for it (the class by name), carrying section 54; the same recipe with no
+// sidecar keeps the key it had. `violence: mild` is a name only, within `agent-default`'s cap.
+TEST_CASE("cooked load: a classified recipe has a cache entry of its own, carrying its class") {
+  const test::TempDir tmp("renderer_cooked_classified");
+  REQUIRE(tmp.ok());
+  make_pack(tmp);
+  REQUIRE(write_text(tmp.file("a.flora.json"), palm_recipe(9)));
+  std::string error;
+  SceneData plain;
+  REQUIRE_MESSAGE(load_scene(scene_of(tmp, {"a.flora.json"}), plain, error), error);
+  // With no sidecar the recipe's entry is the generator's own key, no class term in it (C64).
+  const std::string plain_entry = geometry::cluster_cache_path(
+      tmp.file("ddc"),
+      assets::generated_mesh_build_key(
+          plain.sources[0].source_hash,
+          assets::MeshGeneratorInputs{materials::pack_at(tmp.file("pack")), nullptr},
+          SceneDesc{}.lod, geometry::ClusterPagesOptions{}.page_bytes));
+  CHECK(plain.sources[0].container == plain_entry);
+  CHECK(io::exists(plain_entry));
+  REQUIRE(write_text(tmp.file("a.flora.provenance.json"),
+                     R"({"content_classes":{"violence":"mild"}})"));
+  SceneData classified;
+  REQUIRE_MESSAGE(load_scene(scene_of(tmp, {"a.flora.json"}), classified, error), error);
+  CHECK(classified.instances.size() == 1);                    // within the cap: admitted
+  CHECK(std::string(classified.sources[0].cache) == "miss");  // not the neutral recipe's entry
+  REQUIRE_FALSE(classified.sources[0].container.empty());
+  CHECK(classified.sources[0].container != plain.sources[0].container);
+  // The content build's key, term for term: the generator's key moved by the class hash its own
+  // reader gives (`classified_build_key`'s rule for a recipe).
+  content_build::MeshOptions options;
+  options.materials = materials::pack_at(tmp.file("pack"));
+  content_build::SourceClasses classes;
+  content_build::Diagnostic why;
+  REQUIRE_MESSAGE(
+      content_build::read_source_classes(tmp.file("a.flora.json"), options, classes, why),
+      why.message);
+  CHECK(classified.sources[0].container ==
+        geometry::cluster_cache_path(
+            tmp.file("ddc"), content_class::classified_key(
+                                 assets::generated_mesh_build_key(
+                                     classified.sources[0].source_hash,
+                                     assets::MeshGeneratorInputs{options.materials, nullptr},
+                                     SceneDesc{}.lod, geometry::ClusterPagesOptions{}.page_bytes),
+                                 classes.hash)));
+  geometry::ClusterFileData entry;
+  REQUIRE_MESSAGE(geometry::read_cluster_file(classified.sources[0].container, entry, &error),
+                  error);
+  CHECK_FALSE(entry.content_classes.empty());
+  SceneData again;
+  REQUIRE_MESSAGE(load_scene(scene_of(tmp, {"a.flora.json"}), again, error), error);
+  CHECK(std::string(again.sources[0].cache) == "hit");
 }
 
 #endif  // ENGINE_RENDERER_TESTS_FLORA

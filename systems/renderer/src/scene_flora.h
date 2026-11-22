@@ -19,6 +19,10 @@ namespace engine::renderer {
 // `load_generated_mesh` reads.
 bool is_generated_mesh(const std::string& path);
 
+// The recipe `desc` hands for `path` (`SceneDesc::recipes`, R142), matched as the path or by its
+// end, or null when the scene hands none and the recipe is a file.
+const MeshRecipe* handed_recipe(const SceneDesc& desc, const std::string& path);
+
 // Builds or finds the container for a generated mesh: the cache entry its source hash and the
 // scene's LOD options address when the scene reads the cache, built by the generator and written
 // there on a miss; built in memory when it does not. `container` is where the bytes are on disk,
@@ -30,6 +34,7 @@ bool is_generated_mesh(const std::string& path);
 bool load_generated_mesh(const std::string& path, const SceneDesc& desc, u64 expected_hash,
                          geometry::ClusterFileData& data, std::string& container,
                          const char*& cache, u64& source_hash, std::string& error,
-                         content_build::ImageIdentities* identities = nullptr);
+                         content_build::ImageIdentities* identities = nullptr, u64 class_hash = 0,
+                         const Vector<u8>* class_record = nullptr);
 
 }  // namespace engine::renderer

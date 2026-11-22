@@ -571,10 +571,236 @@ bool read_pack_classes(const materials::Pack& pack, const content_class::Categor
   return true;
 }
 
+// **The hosts a recipe's generator names** (C64): its key's hash run against hooks that read no
+// host, each `identify` and each `load` recorded (resolved beside the recipe, as
+// `GeneratorHosts::resolve` does), `identify` answered with zero and `load` refused, so only the
+// recipe is read. A generator that reaches another mesh names
+// it through this seam, because its key covers the host. A recipe with no generator registered,
+// or a file that cannot be read, names none here: the build or the load reads the same file and
+// fails on it with its own sentence. A recipe a scene hands as bytes (`handed`, no file needed) is
+// probed from those bytes, the ones the load builds it from. False, with `why`, when the generator
+// exists and the recipe reads but its hash refuses after these hooks answered it (one that parses
+// an image it hashes, answered here with no bytes): the refusal may be the probe's, its hosts are
+// then unknown, and the recipe is refused rather than decided without them (C64). A hash that
+// refuses before asking a hook refuses the recipe itself (a recipe out of its generator's ranges),
+// and the build or the load says so in its own words.
+struct HostProbe {
+  std::string dependant;
+  Vector<std::string> hosts;
+  u32 answered = 0;  // the hooks' answers the hash was given
+};
+// A host the hash asked for, resolved beside the recipe as `GeneratorHosts::resolve` does.
+void probe_records(HostProbe& probe, std::string_view path) {
+  ++probe.answered;
+  const std::string_view dir = io::parent_path(probe.dependant);
+  probe.hosts.push_back(io::is_absolute_path(path) || dir.empty() ? std::string(path)
+                                                                  : io::join_path(dir, path));
+}
+bool probe_identify(void* context, std::string_view path, u64& out, std::string&) {
+  probe_records(*static_cast<HostProbe*>(context), path);
+  out = 0;
+  return true;
+}
+// Recorded as `identify` records one, whether or not the hash goes on without the answer: a hash
+// that asks for a host is over it, and its recipe is decided with it (C64).
+bool probe_load(void* context, std::string_view path, assets::GeneratorHostMesh&,
+                std::string& error) {
+  probe_records(*static_cast<HostProbe*>(context), path);
+  error = "the class probe reads no host";
+  return false;
+}
+bool probe_image(void* context, std::string_view, Vector<u8>& out, std::string&) {
+  ++static_cast<HostProbe*>(context)->answered;
+  out.clear();
+  return true;
+}
+bool probe_hash(void* context, std::string_view, u64& out, std::string&) {
+  ++static_cast<HostProbe*>(context)->answered;
+  out = 0;
+  return true;
+}
+bool generator_hosts(const std::string& recipe, const materials::Pack* pack,
+                     Vector<std::string>& hosts, std::string& why,
+                     const std::string* handed = nullptr) {
+  hosts.clear();
+  const assets::MeshGeneratorDesc* generator =
+      assets::MeshGeneratorRegistry::global().find(assets::mesh_generator_of(recipe));
+  if (generator == nullptr) return true;
+  std::string read;
+  if (handed == nullptr && io::read_file(recipe, read) != io::Status::Ok) return true;
+  const std::string& text = handed != nullptr ? *handed : read;
+  HostProbe probe{recipe, {}};
+  assets::MeshGeneratorHosts hooks;
+  hooks.context = &probe;
+  hooks.identify = probe_identify;
+  hooks.load = probe_load;
+  hooks.read_image = probe_image;
+  hooks.hash_image = probe_hash;
+  u64 hash = 0;
+  if (!assets::generated_source_hash(
+          *generator, std::span<const u8>(reinterpret_cast<const u8*>(text.data()), text.size()),
+          assets::MeshGeneratorInputs{pack, &hooks}, hash, why)) {
+    if (probe.answered == 0) return true;  // the recipe's own refusal, said where it is read
+    why =
+        recipe + ": its generator's hash refuses the class probe, so its hosts are unknown: " + why;
+    return false;
+  }
+  hosts = std::move(probe.hosts);
+  return true;
+}
+
+// A container host's own section 54, its bytes (empty when it has none). False, with `why`, when it
+// cannot be opened or read: a host that cannot be opened here (missing, locked, half written) is
+// unreadable, never `none`, since the dependant is built only when the host's own read succeeds, so
+// refusing it loses nothing, where `none` would build over whatever the finished file's section 54
+// declares.
+bool read_host_record(const std::string& path, Vector<u8>& record, std::string& why) {
+  record.clear();
+  geometry::ClusterFileReader reader;
+  std::string error;
+  if (!reader.open(path, nullptr, &error)) {
+    why = path + ": the host cannot be opened for its classes: " + error;
+    return false;
+  }
+  const u64 count = reader.element_count(geometry::ClusterSection::ContentClasses);
+  if (count == 0) return true;
+  u64 offset = 0;
+  u64 bytes = 0;
+  bool read = reader.range(geometry::ClusterSection::ContentClasses, 1u, 0, count, offset, bytes);
+  if (read) {
+    record.resize(static_cast<u32>(bytes));
+    u64 got = 0;
+    read =
+        reader.file().read_at(offset, record.data(), bytes, got) == io::Status::Ok && got == bytes;
+  }
+  if (!read) {
+    record.clear();
+    why = path + ": its classes section cannot be read";
+    return false;
+  }
+  return true;
+}
+
+// What a teaching round kept for `path` (`index` a path's hash to its entry), or null.
+template <typename T>
+const T* kept_at(const HashMap<u64, u32>& index, const Vector<std::string>& paths,
+                 const Vector<T>& entries, const std::string& path) {
+  const u32* at = index.find_value(hash_bytes(path.data(), path.size()));
+  return at != nullptr && paths[*at] == path ? &entries[*at] : nullptr;
+}
+
+// Kept under `path` unless a path of the same hash already is (that one is then read again).
+template <typename T>
+void keep_at(HashMap<u64, u32>& index, Vector<std::string>& paths, Vector<T>& entries,
+             const std::string& path, const T& entry) {
+  if (!index.try_emplace(hash_bytes(path.data(), path.size()), static_cast<u32>(entries.size()))
+           .second)
+    return;
+  paths.push_back(path);
+  entries.push_back(entry);
+}
+
+// A recipe's hosts, from what the teaching round kept when it probed it, else probed here.
+bool recipe_hosts(const std::string& recipe, const materials::Pack* pack, const HostReads* reads,
+                  Vector<std::string>& hosts, std::string& why) {
+  const HostReads::Probe* probe =
+      reads == nullptr ? nullptr
+                       : kept_at(reads->probe_of, reads->probe_paths, reads->probes, recipe);
+  if (probe == nullptr) return generator_hosts(recipe, pack, hosts, why);
+  hosts = probe->hosts;
+  why = probe->why;
+  return probe->ok;
+}
+
+// A container host's section 54, from what the teaching round kept, else read here.
+bool host_record(const std::string& path, const HostReads* reads, Vector<u8>& record,
+                 std::string& why) {
+  const HostReads::Record* kept_record =
+      reads == nullptr ? nullptr
+                       : kept_at(reads->record_of, reads->record_paths, reads->records, path);
+  if (kept_record == nullptr) return read_host_record(path, record, why);
+  record = kept_record->bytes;
+  why = kept_record->why;
+  return kept_record->ok;
+}
+
+// A container host's class, its section 54 decoded against a copy of the build's table: a category
+// the table does not hold, or holds under another ladder, cannot be the dependant's, and is
+// refused.
+bool host_container_classes(const std::string& path, const content_class::Categories& categories,
+                            const HostReads* reads, content_class::ContentClasses& out,
+                            std::string& why) {
+  Vector<u8> record;
+  if (!host_record(path, reads, record, why)) return false;
+  if (record.empty()) return true;
+  content_class::Categories copy = categories;
+  std::string error;
+  if (!content_class::decode_classes(copy, std::span<const u8>(record.data(), record.size()), out,
+                                     error)) {
+    why = path + ": its classes section cannot be read: " + error;
+    return false;
+  }
+  if (copy.size() != categories.size()) {
+    why = path + ": its classes name a category this build does not know";
+    return false;
+  }
+  return true;
+}
+
+// The teaching round's walk: `read_classes_at`'s hosts in its order, each container host's record
+// learned, and what was read kept for that read.
+bool learn_hosts_at(const std::string& source, const MeshOptions& options,
+                    content_class::Categories& learn, HostReads& reads, u32 depth,
+                    const std::string* handed) {
+  if (assets::mesh_generator_of(source).empty()) return true;
+  if (kept_at(reads.probe_of, reads.probe_paths, reads.probes, source) == nullptr) {
+    HostReads::Probe probe;
+    probe.ok = generator_hosts(source, options.materials, probe.hosts, probe.why, handed);
+    keep_at(reads.probe_of, reads.probe_paths, reads.probes, source, probe);
+  }
+  Vector<std::string> hosts;
+  std::string why;
+  if (!recipe_hosts(source, options.materials, &reads, hosts, why)) return false;
+  for (const std::string& host : hosts) {
+    if (depth >= k_host_depth || !learn_hosts_at(host, options, learn, reads, depth + 1, nullptr))
+      return false;
+    if (io::extension(host) != ".clusters") continue;
+    if (kept_at(reads.record_of, reads.record_paths, reads.records, host) == nullptr) {
+      HostReads::Record record;
+      record.ok = read_host_record(host, record.bytes, record.why);
+      keep_at(reads.record_of, reads.record_paths, reads.records, host, record);
+    }
+    Vector<u8> record;
+    if (!host_record(host, &reads, record, why)) return false;
+    content_class::ContentClasses taught;
+    if (!record.empty() &&
+        !content_class::decode_classes(learn, std::span<const u8>(record.data(), record.size()),
+                                       taught, why))
+      return false;
+  }
+  return true;
+}
+
+bool read_classes_at(const std::string& source, const MeshOptions& options, SourceClasses& out,
+                     Diagnostic& error, u32 depth, const HostReads* reads);
+
 }  // namespace
 
 bool read_source_classes(const std::string& source, const MeshOptions& options, SourceClasses& out,
-                         Diagnostic& error) {
+                         Diagnostic& error, const HostReads* reads) {
+  return read_classes_at(source, options, out, error, 0, reads);
+}
+
+bool learn_source_hosts(const std::string& source, const MeshOptions& options,
+                        content_class::Categories& learn, HostReads& reads,
+                        const std::string* handed) {
+  return learn_hosts_at(source, options, learn, reads, 0, handed);
+}
+
+namespace {
+
+bool read_classes_at(const std::string& source, const MeshOptions& options, SourceClasses& out,
+                     Diagnostic& error, u32 depth, const HostReads* reads) {
   const content_class::Categories& categories = categories_of(options);
   out = SourceClasses{};
   const auto refuse = [&](std::string message) {
@@ -598,10 +824,37 @@ bool read_source_classes(const std::string& source, const MeshOptions& options, 
   if (!assets::mesh_generator_of(source).empty() && options.materials != nullptr &&
       !read_pack_classes(*options.materials, categories, out.classes, why))
     return refuse(why + "; the build refuses " + source);
+  // **And of every mesh it reads** (C64): each host its generator names, by the host's own class
+  // (its sidecar; a recipe's, recursively; a container's section 54 too), read before the host is,
+  // joined as a whole asset, so its key and section 54 carry it.
+  Vector<std::string> hosts;
+  if (!assets::mesh_generator_of(source).empty() &&
+      !recipe_hosts(source, options.materials, reads, hosts, why))
+    return refuse(why + "; the build refuses " + source);
+  for (const std::string& host : hosts) {
+    // At `GeneratorHosts::identify`'s bound: `depth` is this dependant's, as `depth_` is there,
+    // so a chain that builds and loads is one this read takes, and one it refuses is refused.
+    if (depth >= k_host_depth)
+      return refuse(source + ": a host's host is more than " + std::to_string(k_host_depth) +
+                    " levels deep: a loop of recipes?");
+    SourceClasses inner;
+    Diagnostic inner_error;
+    if (!read_classes_at(host, options, inner, inner_error, depth + 1, reads))
+      return refuse(inner_error.message + "; the host of " + source);
+    out.classes = content_class::join(out.classes, inner.classes);
+    if (io::extension(host) == ".clusters") {
+      content_class::ContentClasses own;
+      if (!host_container_classes(host, categories, reads, own, why))
+        return refuse(why + "; the host of " + source);
+      out.classes = content_class::join(out.classes, own);
+    }
+  }
   out.hash = content_class::class_hash(categories, out.classes, &out.materials);
   content_class::encode_classes(categories, out.classes, &out.materials, out.record);
   return true;
 }
+
+}  // namespace
 
 u64 classified_build_key(const std::string& path, u64 source_hash, const MeshOptions& options,
                          const SourceClasses& classes) noexcept {

@@ -28,6 +28,8 @@
 #include <domain/gfx/wind.h>
 #include <domain/scene_gen/seat.h>
 #include <domain/texture/texture_file.h>
+#include <foundation/content_class/content_class.h>
+#include <systems/renderer/admission.h>
 #include <systems/renderer/far_forest.h>
 #include <systems/renderer/fire.h>
 #include <systems/renderer/ring_forms.h>
@@ -35,6 +37,7 @@
 
 #include <memory>
 #include <optional>
+#include <schemas/provenance.h>
 #include <span>
 #include <string>
 #include <string_view>
@@ -112,6 +115,12 @@ struct SceneInstance {
   // load and the world's placements seat by its mesh's seat (`SourceMesh::seat`); false for
   // everything placed at a height of its own, which is never moved.
   bool grounded = false;
+  // **Its raise** (C64; renderer.md, "Content classes at load"): 0 for none, else `n` for
+  // `SceneDesc::raises[n - 1]`, the class a scene file's instance gives on top of its mesh's
+  // (`Instance.content_classes`, version 4), which the load joins into the instance's decision. Two
+  // bytes in what was the struct's padding, so an instance that raises nothing costs no more.
+  // `k_instance_omitted` is the load's own mark between its decision and the instance table.
+  u16 content_classes = 0;
   // The plane under its rim the seat fitted (`scene_gen::GroundSlope`, four bytes), kept for the
   // conformed foot (stage 3); zero for an instance that was not seated.
   scene_gen::GroundSlope slope{};
@@ -687,6 +696,15 @@ struct SceneDesc {
   // The file's `lamps` (`engine.scene.Lamp`, fire.h's `read_lamp`), at their world positions, at
   // most `k_max_lamps`. Empty: none.
   Vector<FireDesc> lamps;
+  // ---- content classes (C64; renderer.md, "Content classes at load") ---------------------------
+  // **The policy the scene is made under** (ADR-0073 decision 5): every instance is decided on it
+  // when it is admitted (`admit_instance`), before its mesh's geometry is read. `agent-default`
+  // unless the caller names another; a host names the one its starter chose (C65).
+  content_class::NamedPolicy view_policy = agent_default_view_policy();
+  // The raises the file's instances give (`Instance.content_classes`), as the file gave them, by
+  // name: `SceneInstance::content_classes` numbers them from 1. Read at the load, after the scene's
+  // containers have taught it their categories' ladders. Empty for a scene that raises nothing.
+  Vector<content::ContentClasses> raises;
 };
 
 // What `read_scene_file` may be told besides the path.
@@ -917,6 +935,20 @@ struct SceneLoadReport {
   // (`jobs::JobSystemStats::inline_runs`): zero, because the load hands the pool one runner per
   // thread and never one job per mesh (renderer.md, "What the load reads"; T73).
   u64 inline_jobs = 0;
+  // **What the policy substituted** (C64; renderer.md, "Content classes at load"): instances, per
+  // category that decided it, by name, and apart from them the ones decided on a class that could
+  // not be read (a sidecar that is not the reader's, a section that contradicts a ladder met
+  // earlier). Empty and zero for a scene with nothing classified.
+  Vector<SubstitutedCount> substituted;
+  u32 unreadable_omitted = 0;
+  u32 unreadable_proxied = 0;
+  // The scene's grounds the policy refused (the terrain's heightfield and layer images; never a
+  // box: a ground refused is left out whole), counted apart from the instances above.
+  u32 grounds_omitted = 0;
+  // Image sidecars probed for a class (one existence check per distinct image named by path of a
+  // mesh some instance would draw), and of those the ones that declared one.
+  u32 image_sidecars_probed = 0;
+  u32 image_sidecars_found = 0;
 };
 
 // **What a mesh built after the load is built with** (R142; renderer.md, "Meshes that come and
@@ -939,6 +971,9 @@ struct PlacementMeshOptions {
   // and the admission is read again by the admitter (`read_placement_texture`). Null reads all.
   bool (*texture_resident)(void* context, u64 key) = nullptr;
   void* texture_context = nullptr;
+  // **The policy the scene was loaded under** (C64), carried so that a mesh admitted after the load
+  // is decided as the load's own were (`admit_instance`; the live re-decision, C67, is its caller).
+  content_class::NamedPolicy view_policy = agent_default_view_policy();
 };
 
 // **A mesh's leaves** (S112; world_sound.md, "The wind in the trees and at the ears (S112)"):
@@ -1089,6 +1124,20 @@ struct SceneData {
   // `FireSet`.
   Vector<FireDesc> fires;
   Vector<FireDesc> lamps;
+  // ---- what the scene was made under (C64; docs/content-classes.md, "What decided at
+  // instantiation means") -----------------------------------------------------------------------
+  // The policy it was loaded with (`SceneDesc::view_policy`), its game caps resolved against
+  // `categories` when the load had learned every ladder its containers carry.
+  content_class::NamedPolicy instantiated_under = agent_default_view_policy();
+  // The categories its classes are indexed by: the engine's three and every game category the
+  // scene's data brought, with its ladder (`Categories::learn`).
+  content_class::Categories categories;
+  // **Every distinct class it decided, with the outcome** (`content_class::DecisionTable`):
+  // append-only, its length its generation, one entry (`none`, admitted) for a scene with nothing
+  // classified. What a capture checks a caller's policy against (C66).
+  content_class::DecisionTable decisions{content_class::agent_default()};
+  // The join of every class it admitted: what a result says the scene holds.
+  content_class::ContentClasses held;
 
   u32 cluster_count() const noexcept { return lod.mesh.clusters.size(); }
   u32 leaf_count() const noexcept {

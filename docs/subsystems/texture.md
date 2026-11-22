@@ -332,16 +332,21 @@ which this module keeps opaque (`TextureData::content_classes`). A streamed tail
   nothing from them, and its key holds nothing about who samples it. An image a container embeds has
   no sidecar of its own: its class is the source's, in the container's section 54
   ([geometry](geometry.md#content-classes)), and its texture carries none. The instance's decision
-  joins the two at load (C64). **Until C64 a load reads no sidecar and takes the unclassified
-  key**: section 32's records (`material_textures.cpp`) and the renderer's references
-  (`systems/renderer/src/scene.cpp`, `gpu_scene.cpp`) key an image by `texture_cache_key` alone.
-  So a classified image whose `.tex` was built before its sidecar existed **hits that old
-  classless `.tex`** and draws it, its class unread; one with no texture under that key misses and
-  is decoded, as any image with no built texture is, while the classified texture the content
-  build made (or the cold cache's fill, `run_texture_step`, which does read the sidecar) sits
-  under a key that load never asks for. A glTF the renderer loads is the same: its cluster cache
-  key (`cluster_cache_key` in `scene.cpp`) holds no class, so a mesh built before its sidecar
-  existed hits its classless container. **C64 reads the sidecar before it takes either key.**
+  joins the two at load (C64). **A scene's load reads each sidecar before it takes either key**
+  ([renderer](renderer.md#content-classes-at-load)): every image named by path of a mesh it reads,
+  and every glTF it loads, through the content build's own reader (`read_source_classes`), so a
+  sidecar means one thing to both and a key moves by the same class hash, materials included. An
+  image whose `.tex` was built before its sidecar existed is asked for under the key its class
+  moved, misses, and is built from its file by `run_texture_step`, which reads the sidecar again
+  and writes section 6 under that same key; a glTF's cluster cache key is moved the same way, so a
+  mesh built before its sidecar existed misses its classless container. Nothing of that name
+  beside the source is `none` and keeps the key and the entry it had; a sidecar there that cannot
+  be read, a link or junction that leads nowhere included, is the unreadable class and never
+  `none`, as `sidecar_present` reads it in the build. Test "content classes at load: a sidecar that
+  comes after the cache decides, not the old entry". **Not done**: section 32's records
+  (`material_textures.cpp`) still hold the unclassified key, which the load replaces, and a mesh
+  admitted after the load (a tile's, a placement's form, through `load_placement_textures`) keys
+  its images by `texture_cache_key` alone until it comes through the door (C67).
 - **One file, one answer** (C69): a section 6 whose elements are not bytes is not the classes
   module's record, and both readers refuse it through one check (`classes_section` in
   `texture_file.cpp`): the whole-file reader and the streamed tail's (`read_texture_file_levels`),

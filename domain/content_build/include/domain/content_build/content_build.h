@@ -24,6 +24,7 @@
 // never completion order, and a manifest's results are kept per entry and read in manifest order.
 
 #include <core/base/types.h>
+#include <core/containers/hash_map.h>
 #include <core/containers/vector.h>
 #include <core/jobs/job_system.h>
 #include <core/json/json_value.h>
@@ -269,8 +270,49 @@ const content_class::Categories& categories_of(const MeshOptions& options);
 // set's `pack.json` class, since the generator's output is the join of what it baked. False, with
 // `error` (`k_rule_content_class`, naming the sidecar and why) and `out.classes` the unreadable
 // class, when the sidecar cannot be read: the build refuses the source.
+//
+// The table is fixed here: a container host naming a category it does not hold, or one it holds
+// under another ladder, refuses the source. A caller that keeps a table of its own teaches it first
+// (`learn_source_hosts`); `reads`, when given, is what that teaching read, so nothing it read is
+// read again here.
+struct HostReads;
 bool read_source_classes(const std::string& source, const MeshOptions& options, SourceClasses& out,
-                         Diagnostic& error);
+                         Diagnostic& error, const HostReads* reads = nullptr);
+
+// **What a teaching round read, kept for the class read after it** (C64): each recipe's hosts as
+// its generator's probe named them and each container host's section 54, by path. A path it does
+// not hold (one met only after a refusal stopped the round) is read where it is asked for.
+struct HostReads {
+  struct Probe {
+    bool ok = false;
+    std::string why;
+    Vector<std::string> hosts;
+  };
+  struct Record {
+    bool ok = false;  // opened, and its section 54 (empty when it has none) read whole
+    std::string why;
+    Vector<u8> bytes;
+  };
+  HashMap<u64, u32> probe_of;  // a recipe's path's hash: its index in `probes`
+  Vector<std::string> probe_paths;
+  Vector<Probe> probes;
+  HashMap<u64, u32> record_of;  // a container host's path's hash: its index in `records`
+  Vector<std::string> record_paths;
+  Vector<Record> records;
+};
+
+// **A teaching round** (C64): every container host `source`'s generator names, the whole chain to
+// `k_host_depth`, in the order `read_source_classes` meets them, its section 54 learned into
+// `learn` by `content_class::decode_classes`, whole or not at all, as a container a caller lists
+// is. No sidecar and no pack is read, so a caller that teaches every source first reads every class
+// against a finished table. False at the first host that cannot be probed, opened or learned (one
+// whose ladder differs from one `learn` holds already): the class read refuses `source` there, by
+// the same reads. A source no generator makes teaches nothing. `reads` keeps what was read.
+// `handed`, when set, is the recipe's bytes as a caller holds them in place of a file (a scene's
+// handed recipe): its hosts are named from those bytes, and a class read given `reads` takes them.
+bool learn_source_hosts(const std::string& source, const MeshOptions& options,
+                        content_class::Categories& learn, HostReads& reads,
+                        const std::string* handed = nullptr);
 
 // The key a source's container records and the cache addresses it by: `mesh_build_key`, moved by
 // the class only when there is one (`content_class::classified_key`), so an unclassified source

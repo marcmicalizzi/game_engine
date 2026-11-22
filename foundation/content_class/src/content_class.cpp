@@ -565,11 +565,15 @@ void encode_classes(const Categories& categories, const ContentClasses& classes,
   put_bytes(out, form);
 }
 
-bool decode_classes(Categories& categories, std::span<const u8> bytes, ContentClasses& out,
+bool decode_classes(Categories& host, std::span<const u8> bytes, ContentClasses& out,
                     std::string& error, Vector<MaterialClass>* materials) {
+  // **All or nothing for the host's table** (C64): the record's ladders are learned into a copy,
+  // which replaces the host's only when the whole record reads, so a record refused after it
+  // listed its categories leaves the table as it was and its ladders decide nothing later.
+  Categories categories = host;
   const auto refuse = [&](const std::string& why) {
     error = "classes section: " + why;
-    out = unreadable(categories);
+    out = unreadable(host);  // the host's table, which the refused record left as it was
     if (materials) materials->clear();
     return false;
   };
@@ -655,6 +659,7 @@ bool decode_classes(Categories& categories, std::span<const u8> bytes, ContentCl
     per_material.push_back(std::move(material));
   }
   if (!r.done()) return refuse("bytes follow the record");
+  host = std::move(categories);
   out = classes;
   if (materials) *materials = std::move(per_material);
   return true;
