@@ -387,6 +387,19 @@ crest's height now varies along it (short-crested: `water_crest_height`), so a b
 starts at a point and ends where the crest is lower, thinning there, where it ended on the straight
 line the two trains' crests meet on. Both in [water.md](../subsystems/water.md#the-foams-pattern).
 
+**W157-2 (2026-11-22): the sheet on the sand is wet sand with foam on it, not a pale plate.** Seen
+from 24 m, W157's 15 cm lace was under a pixel and its mean cover, high and the same over the whole
+sheet, drew the band between the still waterline and the run-up's front as one milky tone; the
+surf's lace and the sheet's met on the still waterline as a ruled seam; and one octave drew holes of
+one size. The numbers chosen: the foam a front laid covers (t1 / t)^(2/3) of what it did as the
+sheet stretches (Ritter's dam break, whose velocity gradient is 2 / (3 t), carried to a slope by
+Shen and Meyer 1963, as Peregrine and Williams 2001 use it: recalled, not read), from a collapse
+`k_swash_spread_t0` = 0.03 of a period; lines of foam 9 to 27 cm wide, broken by a 3 m field, on the zero line of a 1.5 m field
+drawn out along the run, the density a quarter between and 1.75 times on them; the lace's cell 0.1 m + 1.5 times the
+depth, to the raft's 0.6 H; three octaves a factor of two apart, the finer at 0.35; the surf's and
+the sheet's foams cross-faded over 1.5 m of slope either side of the line — all the engine's
+choices, from the reels' shapes, none from a measured foam cover or cell size. Built in
+[water.md](../subsystems/water.md#the-foams-pattern).
 ### Whitecaps, streaks and spindrift: what the stacked leg fills in
 
 They read the wind, which is the wind row's (`b67-W136`): nothing of them is built here. On the

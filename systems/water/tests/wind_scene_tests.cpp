@@ -781,4 +781,204 @@ TEST_CASE("water wind: the shore's foam is a lace drawn up the slope, and the su
   }
   device.destroy();
 }
+namespace {
+
+// W157-2: the still waterline in a calm frame: for each column, the first row from the top (the
+// sea, the views below looking seaward) whose pixel is not the calm body's under one that is; -1
+// for a column with none.
+Vector<i32> waterline_rows(const CapturedFrame& calm, u32 water) {
+  Vector<i32> rows;
+  rows.resize(calm.width);
+  for (u32 x = 0; x < calm.width; ++x) {
+    rows[x] = -1;
+    for (u32 y = 1; y < calm.height; ++y) {
+      const u32 above = calm.ids[((y - 1) * calm.width + x) * k_id_words];
+      const u32 here = calm.ids[(y * calm.width + x) * k_id_words];
+      if (above == water && here != water && here != k_no_id) {
+        rows[x] = i32(y);
+        break;
+      }
+    }
+  }
+  return rows;
+}
+
+// A band of rows a set distance from each column's waterline (`from` to `to`, rows, negative
+// seaward): its pixels' mean luma, and its foam mask's share, runs along the rows (along the
+// shore) and the holes between them.
+struct Band {
+  u64 pixels = 0, luma = 0, foam = 0, runs = 0, run_length = 0, holes = 0, hole_length = 0;
+  u64 hole_squares = 0, luma_squares = 0, chroma = 0;
+  void add(const CapturedFrame& f, const FoamMask* m, const Vector<i32>& rows, i32 from, i32 to) {
+    for (u32 x = 0; x < f.width; ++x) {
+      if (rows[x] < 0) continue;
+      for (i32 y = rows[x] + from; y < rows[x] + to; ++y) {
+        if (y < 0 || y >= i32(f.height)) continue;
+        const u32 p = u32(y) * f.width + x;
+        ++pixels;
+        luma += u64(luma_at(f, p));
+        luma_squares += u64(luma_at(f, p)) * u64(luma_at(f, p));
+        const u8* c = &f.color[p * 4];
+        chroma += u64(std::max({c[0], c[1], c[2]}) - std::min({c[0], c[1], c[2]}));
+        if (!m) continue;
+        const i32 ix = i32(x);
+        if (m->at(ix, y)) {
+          ++foam;
+          if (!m->at(ix - 1, y)) {
+            ++runs;
+            for (i32 k = ix; m->at(k, y); ++k)
+              ++run_length;
+          }
+        } else if (m->at(ix - 1, y)) {  // a hole begins: its length to the next thread on the row
+          i32 k = ix;
+          while (k < i32(f.width) && !m->at(k, y))
+            ++k;
+          if (k < i32(f.width)) {
+            const u64 n = u64(k - ix);
+            ++holes;
+            hole_length += n;
+            hole_squares += n * n;
+          }
+        }
+      }
+    }
+  }
+  f64 mean_luma() const { return pixels ? f64(luma) / f64(pixels) : 0.0; }
+  // How far its pixels are from grey: a milky plate is paler and greyer than the sand it lies on.
+  f64 mean_chroma() const { return pixels ? f64(chroma) / f64(pixels) : 0.0; }
+  f64 luma_spread() const {
+    if (pixels < 2) return 0.0;
+    const f64 m = mean_luma();
+    return std::sqrt(std::max(f64(luma_squares) / f64(pixels) - m * m, 0.0));
+  }
+  f64 share() const { return pixels ? f64(foam) / f64(pixels) : 0.0; }
+  f64 mean_run() const { return runs ? f64(run_length) / f64(runs) : 0.0; }
+  f64 mean_hole() const { return holes ? f64(hole_length) / f64(holes) : 0.0; }
+  // The holes' spread: their lengths' standard deviation over their mean.
+  f64 hole_spread() const {
+    if (holes < 2) return 0.0;
+    const f64 m = mean_hole();
+    return std::sqrt(std::max(f64(hole_squares) / f64(holes) - m * m, 0.0)) / m;
+  }
+};
+
+// The foam a frame draws by its colour alone: near white (its least channel within a fifth of its
+// most) and bright. Over the water the calm frame's sky can be brighter than the sea's foam.
+FoamMask white_mask(const CapturedFrame& f) {
+  FoamMask m;
+  m.width = f.width;
+  m.height = f.height;
+  m.on.resize(m.width * m.height);
+  for (u32 p = 0; p < m.width * m.height; ++p) {
+    const u8* c = &f.color[p * 4];
+    const int hi = std::max({int{c[0]}, int{c[1]}, int{c[2]}});
+    const int lo = std::min({int{c[0]}, int{c[1]}, int{c[2]}});
+    m.on[p] = f.ids[p * k_id_words] != k_no_id && hi > 170 && lo * 5 >= hi * 4 ? 1 : 0;
+  }
+  return m;
+}
+
+i32 median_row(const Vector<i32>& rows) {
+  Vector<i32> v;
+  for (i32 r : rows)
+    if (r >= 0) v.push_back(r);
+  if (v.empty()) return -1;
+  std::sort(v.begin(), v.end());
+  return v[v.size() / 2];
+}
+
+}  // namespace
+
+TEST_CASE("water wind: the swash's sheet is wet sand with a lace on it, and no seam at the line") {
+  // W157-2 (water.md, "The swash's lace"): the lace beach under a calm and under its 8 m/s sea,
+  // six frames half a second apart, from the flight's height (24 m) and from 7 m over the still
+  // waterline, looking seaward. The still waterline is the calm frame's, column by column. From
+  // 24 m: the sheet's band (3 to 40 rows landward of the line) against the calm frame's dry sand
+  // there and the surf's band seaward, by luma and by chroma (a milky plate is paler and greyer
+  // than the sand under it). From 7 m: the foam by its colour (near white and bright), its runs
+  // along the rows and the holes between them, either side of the line and in 24 bands of 12 rows
+  // across it. Measured on the RTX 5090 (2026-11-22, W157's shaders, then W157-2's, within the
+  // hour): the sheet's chroma 49.1 and 55.4 against the dry sand's 63.1 (0.78 and 0.88 of it);
+  // the holes' lengths' deviation over their mean, seaward of the line, 0.86 and 3.26 — one size
+  // of hole, then holes of many; the largest step in the threads' length from one band to the
+  // next, 1.23 and 1.40. (This beach's sand is pale, so its sheet never reads lighter than the dry
+  // sand, and its sea's setup puts the old seam off the 7 m view: the forest's flight carries those
+  // two, the W157-2 log's captures; the counts here keep them from coming back.)
+  const test::TempDir tmp("water_wind_sheet");
+  gfx::Device device;
+  if (!open_device(device)) return;
+  {
+    Shot calm;
+    Shot sea;
+    LoadAs big;
+    big.width = 960;
+    big.height = 600;
+    LoadAs still = big;
+    still.still = true;
+    load(device, tmp, "calm", lace_beach(0.0f), calm, still);
+    load(device, tmp, "sea", lace_beach(8.0f), sea, big);
+    Band sheet, surf, dry, near_sea, near_land;
+    // The lace across the still waterline from 7 m, in bands of 12 rows from 144 seaward to 144
+    // landward: a seam is a step in its threads' length from one band to the next.
+    constexpr i32 k_seam_bins = 24, k_seam_bin = 12, k_seam_from = -144;
+    Band seam[k_seam_bins];
+    for (u32 s = 0; s < 6; ++s) {
+      const f64 t = 10.0 + 0.5 * static_cast<f64>(s);
+      const WorldPos air_eye{-60.0, 24.0, 0.0};
+      const WorldPos air_at{-27.0, -1.0, 0.0};
+      const CapturedFrame air_sea = draw_at(sea, t, air_eye, air_at);
+      const CapturedFrame air_calm = draw_at(calm, t, air_eye, air_at);
+      const Vector<i32> air_rows = waterline_rows(air_calm, calm.water_instance);
+      sheet.add(air_sea, nullptr, air_rows, 3, 40);
+      surf.add(air_sea, nullptr, air_rows, -40, -3);
+      dry.add(air_calm, nullptr, air_rows, 3, 40);
+      const WorldPos low_eye{-27.5, 6.0, 0.0};
+      const WorldPos low_at{-25.5, -1.0, 0.01};
+      const CapturedFrame low_sea = draw_at(sea, t, low_eye, low_at);
+      const CapturedFrame low_calm = draw_at(calm, t, low_eye, low_at);
+      const Vector<i32> low_rows = waterline_rows(low_calm, calm.water_instance);
+      const FoamMask mask = white_mask(low_sea);
+      if (s == 0)
+        MESSAGE("the waterline's median row: " << median_row(air_rows) << " from 24 m, "
+                                               << median_row(low_rows) << " from 7 m");
+      near_sea.add(low_sea, &mask, low_rows, -40, -4);
+      near_land.add(low_sea, &mask, low_rows, 4, 40);
+      for (i32 b = 0; b < k_seam_bins; ++b)
+        seam[b].add(low_sea, &mask, low_rows, k_seam_from + b * k_seam_bin,
+                    k_seam_from + (b + 1) * k_seam_bin);
+    }
+    MESSAGE("from 24 m: the sheet's band "
+            << sheet.mean_luma() << " +- " << sheet.luma_spread() << " (dry " << dry.mean_luma()
+            << "), the surf's " << surf.mean_luma() << " +- " << surf.luma_spread() << "; "
+            << sheet.pixels << " and " << surf.pixels << " pixels");
+    MESSAGE("from 7 m, seaward of the line and landward: foam "
+            << near_sea.share() << " and " << near_land.share() << ", runs " << near_sea.mean_run()
+            << " and " << near_land.mean_run() << ", holes " << near_sea.mean_hole() << " and "
+            << near_land.mean_hole() << " spread " << near_sea.hole_spread() << " and "
+            << near_land.hole_spread() << "; " << near_sea.pixels << " and " << near_land.pixels
+            << " pixels");
+    f64 step = 0.0;
+    for (i32 b = 1; b < k_seam_bins; ++b) {
+      const f64 lo = std::min(seam[b - 1].mean_run(), seam[b].mean_run());
+      const f64 hi = std::max(seam[b - 1].mean_run(), seam[b].mean_run());
+      if (seam[b - 1].runs > 200 && seam[b].runs > 200 && lo > 0.0) step = std::max(step, hi / lo);
+    }
+    MESSAGE("the sheet's band's chroma "
+            << sheet.mean_chroma() << " (dry " << dry.mean_chroma()
+            << "); the largest step in the threads' length across the line " << step);
+    CHECK(sheet.pixels > 10000u);
+    CHECK(near_land.pixels > 10000u);
+    // The sheet seen from the air is wet sand with foam on it: darker than the dry beach, and no
+    // greyer than four fifths of its colour.
+    CHECK(sheet.mean_luma() < dry.mean_luma());
+    CHECK(sheet.mean_chroma() > 0.8 * dry.mean_chroma());
+    // Its lace's holes are of many sizes (the band seaward of the line, where the surf's lace and
+    // the sheet's meet; landward the sheet's foam is sparse lines whose holes the band's width
+    // cuts).
+    CHECK(near_sea.hole_spread() > 1.2);
+    // No band of the lace across the still waterline steps to threads half again as long.
+    CHECK(step < 1.5);
+  }
+  device.destroy();
+}
 #endif
