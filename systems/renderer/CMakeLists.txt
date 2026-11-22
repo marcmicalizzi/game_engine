@@ -69,7 +69,7 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     # R194: the trail a mover leaves under the accumulation, by kind of motion.
                     tests/trail_tests.cpp
                     tests/shadow_map_tests.cpp tests/texture_tests.cpp tests/imported_streams_tests.cpp
-                    tests/dynamic_instances_tests.cpp tests/fire_tests.cpp
+                    tests/dynamic_instances_tests.cpp tests/fire_tests.cpp tests/lamp_tests.cpp
                     tests/tile_layout_tests.cpp tests/node_layout_tests.cpp tests/alpha_mask_tests.cpp
                     tests/sun_arc_tests.cpp
                     # The sun's masks by region and by distance (R139).

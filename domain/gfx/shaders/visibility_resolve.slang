@@ -2067,9 +2067,12 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
         if (weigh && max(lit.r, max(lit.g, lit.b)) <= rest) {
           v = sun_visibility;
         } else {
+          // The ray stops short of the light by the bias and by its emitter's radius
+          // (`spot.z`: a lamp's globe, R86), so the glass round a light never shadows it.
           v = shadow_visibility(params, k_shadow_lights, i + 1u, s.position,
                                 foliage ? ray_side(s.geometric, light_dir) : s.geometric,
-                                ray_bias, light_dir, light_distance - ray_bias);
+                                ray_bias, light_dir,
+                                light_distance - ray_bias - lights[i].spot.z);
         }
         if (v <= 0.0) continue;
       }

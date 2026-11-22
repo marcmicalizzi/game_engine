@@ -650,6 +650,10 @@ struct Stats {
   // light of the array (`k_max_fire_lights` at most, nearest the eye).
   u32 fires = 0;
   u32 fire_lights = 0;
+  // Its lamps (fire.h, R86): how many it lit (every one, `k_max_lamps` at most), and how many
+  // placed props' lamps the tail last handed over found no room past `k_max_lamps`.
+  u32 lamp_lights = 0;
+  u32 lamps_refused = 0;
   f64 cpu_ns = 0.0;  // wall time inside submit_frame, summed
   // Sampled by sample_gpu_memory(), not by a frame: it is a driver query and the frame path
   // stays free of them.
@@ -1343,6 +1347,7 @@ class SceneRenderer {
   // are drawn, moved with every tail handed over (`set_dynamic_instances`).
   FarForestHandOff far_forest_;
   Vector<FrameFire> frame_fires_;
+  Vector<FrameFire> frame_lamps_;  // the frame's lamps (R86), never handed to the medium
   // The scene's sky: its provider, tables and pipelines (sky.h), the last frame's state and block.
   SkyPass sky_;
   OverlayPass overlay_;

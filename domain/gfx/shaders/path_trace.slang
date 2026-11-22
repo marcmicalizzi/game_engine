@@ -239,7 +239,7 @@ float3 next_event(PathTraceParams* params, BrdfSurface surface, float3 position,
       continue;
     }
     if (occluded(params, foliage ? position + ray_side(front, light_dir) * bias : shadow_origin,
-                 light_dir, light_distance - bias)) {
+                 light_dir, light_distance - bias - lights[i].spot.z)) {
       continue;
     }
     if (has_sky && lights[i].direction_type.w >= 1.5) {

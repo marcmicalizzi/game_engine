@@ -594,6 +594,8 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   far_forest_.reset(&scene.data().far_forest);
   frame_fires_.clear();
   frame_fires_.reserve(k_max_fires);
+  frame_lamps_.clear();
+  frame_lamps_.reserve(k_max_lamps);
   resolved_ = resolved;
   desc_ = desc;
   width_ = desc.width;
@@ -2027,6 +2029,10 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
   blocks = scene_->admitted_blocks(blocks);
   const i64 fires_started = time::monotonic_ns();
   fires_.place(tail, blocks);
+  if (fires_.lamps_refused() > 0) {  // past the frame's room, said (fire.h, k_max_lamps; R86)
+    ENGINE_LOG_WARN(log_renderer, "placed lamps past the frame's room are not lit",
+                    log::field("refused", fires_.lamps_refused()), log::field("room", k_max_lamps));
+  }
   const i64 far_started = time::monotonic_ns();
   stats_.tiles.fires_ns += static_cast<f64>(far_started - fires_started);
   // **The far forest's hand-off** (renderer.md, "The far forest"): every world tile the tail now
@@ -3734,6 +3740,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   fires_.burn(frame.world_time_s, sky_on ? 1.0f / gfx::k_sky_sun_lux : 1.0f, frame_fires_);
   stats_.fires = static_cast<u32>(frame_fires_.size());
   stats_.fire_lights = add_fire_lights(frame_fires_, frame.camera.position, lighting);
+  // **The lamps** (R86, renderer.md "Lamps"): steady, every one behind the fires.
+  fires_.burn_lamps(sky_on ? 1.0f / gfx::k_sky_sun_lux : 1.0f, frame_lamps_);
+  stats_.lamp_lights = add_lamp_lights(frame_lamps_, frame.camera.position, lighting);
+  stats_.lamps_refused = fires_.lamps_refused();
   std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * views, lighting.lights,
               sizeof(lighting.lights));
 

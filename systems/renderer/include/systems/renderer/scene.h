@@ -396,6 +396,9 @@ struct SceneProp {
   // The prop's `fire` (fire.h): every placed instance of it carries this fire, its position from
   // the instance's origin. Absent: none.
   std::optional<FireDesc> fire{};
+  // The prop's `lamp` (fire.h, `read_lamp`): every placed instance of it carries this steady
+  // lamp, its position from the instance's origin. Absent: none.
+  std::optional<FireDesc> lamp{};
   PropCollider collider{};
 };
 
@@ -670,6 +673,9 @@ struct SceneDesc {
   Vector<SceneProp> props;
   // The file's `fires` (`engine.scene.Fire`, fire.h), at their world positions. Empty: none.
   Vector<FireDesc> fires;
+  // The file's `lamps` (`engine.scene.Lamp`, fire.h's `read_lamp`), at their world positions, at
+  // most `k_max_lamps`. Empty: none.
+  Vector<FireDesc> lamps;
 };
 
 // What `read_scene_file` may be told besides the path.
@@ -1043,8 +1049,10 @@ struct SceneData {
   // (a leaf is its door's box, never a static piece). A leaf whose house or own instance the load
   // did not keep is not here. Empty for a scene with none.
   Vector<SceneLeaf> leaves;
-  // Carried from the `SceneDesc`: the scene's own fires (fire.h), lit by the renderer's `FireSet`.
+  // Carried from the `SceneDesc`: the scene's own fires and lamps (fire.h), lit by the renderer's
+  // `FireSet`.
   Vector<FireDesc> fires;
+  Vector<FireDesc> lamps;
 
   u32 cluster_count() const noexcept { return lod.mesh.clusters.size(); }
   u32 leaf_count() const noexcept {

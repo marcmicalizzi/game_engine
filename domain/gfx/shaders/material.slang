@@ -142,7 +142,8 @@ struct ResolveLight {
   float4 color_intensity;  // rgb linear color, w radiant intensity scale
   float4 direction_type;   // xyz spot direction (towards the lit surface), w 0 point, 1 spot,
                            // 2 directional (position_radius.xyz then points towards the light)
-  float4 spot;             // x cos inner, y cos outer, zw unused
+  float4 spot;             // x cos inner, y cos outer, z the emitter's radius (shadow rays
+                           // stop that far short of the light: a lamp's globe, R86), w unused
 };
 
 // The addresses of the scene both integrators read a hit through. One struct instead of eight
