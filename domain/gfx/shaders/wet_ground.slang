@@ -71,8 +71,8 @@ float3 wet_ground_albedo(float3 albedo, float s, float porosity) {
 }
 
 #ifdef RESOLVE_WATER
-// **Under a surface the water's tier transmits through** (W161; water.md, "What the factor counts,
-// and where"): Lekner and Dorf's (1 - r_e) is the light let in through the layer's top and its
+// **Under a surface the water's tier transmits through** (W161; water.md, "Translucent by
+// volume"): Lekner and Dorf's (1 - r_e) is the light let in through the layer's top and its
 // (1 - r_i) what leaves through it, and the volume tier has that top itself, with Fresnel's
 // (1 - F) at the real angles both ways. So the bed under it takes the factor without the top's two
 // transmissions, a (1 - r_i) / ((1 - r_e)(1 - r_i a)) = a / (n^2 (1 - r_i a)), which keeps the n^2

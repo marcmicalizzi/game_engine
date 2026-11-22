@@ -825,7 +825,7 @@ float3 water_pixel_volume(ResolveParams* params, SceneGeometry geo, InstanceDesc
                           float bared_s = 0.0) {
   // `bared_s` (S99): a pixel the swash's backwash or the falling tide has bared is the ground's own
   // material at its saturation (wet_ground.slang), not a fixed sand's; 0 for every other pixel.
-  // **The water's top is counted once** (W161; water.md, "What the factor counts, and where"):
+  // **The water's top is counted once** (W161; water.md, "Translucent by volume"):
   // where the pixel has depth the bed lies under the surface this tier transmits through by
   // Fresnel, in (`water_volume`) and out (`water_radiance_volume`), so it takes Lekner and Dorf's
   // factor without the top's two transmissions (`wet_ground_albedo_under`). A pixel with no depth
@@ -1005,7 +1005,7 @@ float3 water_white_water(ResolveParams* params, Surface s, float3 plane, float r
 // first compile is the longest wait of a cold load (water.md, "What a first load waits for").
 struct WaterChannelPixel {
   float3 normal;
-  float3 plane;      // the surface's own plane, facing out of the water; a nappe's is its vertices'
+  float3 plane;      // the surface's own plane, facing out of the water: its vertices' normals
   float roughness;
   float depth;
   bool has_map;
@@ -1075,11 +1075,14 @@ WaterChannelPixel water_channel_pixel(ResolveParams* params, SceneGeometry geo, 
   } else if (!has_map) {
     depth = hydraulic;
   }
-  // The surface's own plane, facing out of the water whichever side the eye is on. A nappe is a
-  // curve the lattice draws in a few flat cells: it is shaded by its vertices' normals, which are
-  // the parabola's own, so its facets do not show.
-  float3 plane = dot(s.geometric, s.normal) < 0.0 ? -s.geometric : s.geometric;
-  if (nappe > 0.0) plane = normalize(s.normal);
+  // The surface's own plane, facing out of the water whichever side the eye is on: **its
+  // vertices' normals, interpolated, for a reach as for a nappe** (W161; water.md, "What a vertex
+  // carries"). A nappe's are the parabola's own and a reach's the solved level's (channel.cpp: the
+  // level's fall along the heading, times the carry), so the sheet is one smooth field and no
+  // lattice triangle is lit whole in the sun's glint, as each was by its own plane until W161. The
+  // geometric normal is made to face the side `s.normal` faces, so the interpolated one already
+  // faces out; every ray offset stays on `s.geometric`.
+  const float3 plane = normalize(s.normal);
   const WaterChannelSurface c =
       water_channel_surface(f, local, plane, s.uv.x, params->water_time_s, footprint, depth,
                             hydraulic, nappe, w.roughness, section_froude, solved_slope,

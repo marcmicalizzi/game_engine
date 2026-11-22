@@ -412,10 +412,11 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
     // ground has porosity 0.5, a whole share) — the channel's, the windless bodies' and the bed
     // of no ground, the shallow colour, alike. `dry_worst` is the same pixels against the bed drawn
     // dry: a resolve that kept a windless body's or a channel's bed dry meets the dry reference and
-    // misses the wet one. **The water's top is counted once** (W161; water.md, "What the factor
-    // counts, and where"): the tier transmits through its surface by Fresnel itself, so the bed
-    // takes the factor without the top's two transmissions, `albedo_under`; a resolve that applied
-    // the whole factor under the tier draws the bed 1 / (1 - r_e)^2 = 1.147 times too dark.
+    // misses the wet one. **The water's top is counted once** (W161; water.md, "Translucent by
+    // volume", what the factor counts): the tier transmits through its surface by Fresnel itself,
+    // so the bed takes the factor without the top's two transmissions, `albedo_under`; a resolve
+    // that applied the whole factor under the tier draws the bed 1 / (1 - r_e)^2 = 1.147 times too
+    // dark.
     int dry_worst = 0;
     // And against the bed under the whole factor, the top counted twice (reported; held over the
     // volume blocks together below).
@@ -576,6 +577,351 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
   for (gfx::BufferResource* b :
        {&host_color, &params, &vis, &attributes[0], &attributes[1], &attributes[2], &attributes[3],
         &cluster_materials, &materials, &triangles, &clusters}) {
+    gfx::destroy_buffer(device, *b);
+  }
+  frames.destroy();
+  device.destroy();
+}
+
+// **A reach is shaded by its vertices' normals** (W161; water.md, "What a vertex carries"): a bent
+// pair, two triangles of a channel's still reach meeting along the quad's diagonal at a dihedral
+// of 6 alpha — 3.4 degrees at roughness 0.1, alpha = 0.01 rad, nine times the GGX lobe's half width
+// at half maximum, alpha sqrt(sqrt(2) - 1) = 0.64 alpha — the two shared vertices carrying the
+// averaged normal (up) and each outer vertex its own face's. The sun stands so that, the eye
+// overhead, the half vector at the edge leans 1.5 alpha towards face A: a face drawn by its own
+// plane is 1.5 alpha off it on one side of the edge and 4.5 alpha on the other, where D is 43
+// times smaller, while the interpolated field is continuous across the edge and meets the half
+// vector halfway across face A. The eye stands 600 m off with a field of 1 degree, so the view
+// turns the half vector by 0.014 alpha a strip and a face drawn by its plane is one value. The
+// still channel's surface is its plane at the body's roughness (block 13 of the case above), so
+// the reference takes the interpolated normal as the plane. Two assertions: the block within 2 of
+// 255 of it; and the step in linear luminance across the shared edge — the mean of the pixels
+// within two of it on one side against the other's — no larger than the largest change between
+// two neighbouring two-pixel strips inside either face: a facet's step is a lobe's jump between
+// two near-uniform faces, a smooth field's is its own gradient at the edge, a sixth of its
+// steepest.
+TEST_CASE("material resolve: a channel's reach is shaded by its vertices' normals") {
+  gfx::Device device;
+  std::string error;
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer})) return;
+
+  constexpr double k_alpha = 0.01;          // brdf_alpha(0.1)
+  constexpr double k_tilt = 3.0 * k_alpha;  // each face off the averaged normal
+  constexpr double k_lean = 1.5 * k_alpha;  // the half vector at the edge, towards face A
+  constexpr double k_sun = 0.05;            // the sun's irradiance: the lobe's peak 0.8, unclipped
+  constexpr double k_depth = 0.5;
+  // Across the edge, towards face A's outer vertex (5, -5); the outer vertices 7.07 m off the edge.
+  const ref::Dvec3 across = ref::normalize(ref::Dvec3{1.0, 0.0, -1.0});
+  const double rise = 5.0 * std::sqrt(2.0) * std::tan(k_tilt);
+  const f32 lift = static_cast<f32>(rise);
+  const Vec3 positions[4] = {Vec3{-5.0f, 0.0f, -5.0f}, Vec3{5.0f, lift, -5.0f},
+                             Vec3{5.0f, 0.0f, 5.0f}, Vec3{-5.0f, lift, 5.0f}};
+  const u32 indices[6] = {0, 2, 1, 0, 3, 2};  // face A holds vertex 1, face B vertex 3
+  const auto face_normal = [&](u32 a, u32 b, u32 c) {
+    const ref::Dvec3 n =
+        ref::normalize(ref::cross(ref::dvec3(positions[b]) - ref::dvec3(positions[a]),
+                                  ref::dvec3(positions[c]) - ref::dvec3(positions[a])));
+    return n.y < 0.0 ? -n : n;
+  };
+  const ref::Dvec3 n_a = face_normal(0, 2, 1);
+  const ref::Dvec3 n_b = face_normal(0, 3, 2);
+  const auto vec3_of = [](ref::Dvec3 v) {
+    return Vec3{static_cast<f32>(v.x), static_cast<f32>(v.y), static_cast<f32>(v.z)};
+  };
+  const Vec3 up{0.0f, 1.0f, 0.0f};
+  const Vec3 normals[4] = {up, vec3_of(n_a), up, vec3_of(n_b)};
+  const Vec2 uvs[4] = {Vec2{1.0f, 0.5f}, Vec2{1.0f, 0.5f}, Vec2{1.0f, 0.5f}, Vec2{1.0f, 0.5f}};
+  geometry::ClusterMesh mesh;
+  {
+    geometry::AttributeSource source;
+    source.normals = normals;
+    source.uvs = uvs;
+    REQUIRE(geometry::build_clusters(positions, indices, geometry::ClusterBuildOptions{}, mesh,
+                                     &error, source));
+  }
+  REQUIRE(mesh.clusters.size() == 1);
+
+  // A channel's still water at roughness 0.1 over the case above's sand.
+  gfx::WaterShading still;
+  still.shallow = Vec3{0.30f, 0.55f, 0.50f};
+  still.deep = Vec3{0.02f, 0.06f, 0.08f};
+  still.roughness = 0.1f;
+  still.depth_fade_m = 2.0f;
+  still.shore_m = 1.0f;
+  still.seed = 9;
+  gfx::WaterOptics clear;
+  clear.turbidity = 0.3f;
+  clear.ground = 2;
+  gfx::ResolveMaterial material_table[3];
+  gfx::set_water_material(material_table[0], still);
+  material_table[0].flags |= gfx::k_material_water_channel;
+  gfx::set_water_optics(material_table[0], material_table[1], clear);
+  material_table[2].albedo = Vec4{0.55f, 0.45f, 0.32f, 0.9f};
+  const u32 material_index[1] = {0};
+
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
+  gfx::BufferResource clusters;
+  gfx::BufferResource triangles;
+  gfx::BufferResource attributes;
+  gfx::BufferResource materials;
+  gfx::BufferResource cluster_materials;
+  gfx_test::SingleInstance scene;
+  REQUIRE(gfx::upload_buffer(device, mesh.clusters.data(), sizeof(geometry::ClusterDesc), k_storage,
+                             clusters, &error));
+  REQUIRE(scene.create(device, mesh, 1, &error));
+  REQUIRE(gfx::upload_buffer(device, mesh.triangles.data(), mesh.triangles.size() * sizeof(u32),
+                             k_storage, triangles, &error));
+  REQUIRE(gfx::upload_buffer(device, mesh.attributes.data(),
+                             mesh.attributes.size() * sizeof(geometry::VertexAttributes), k_storage,
+                             attributes, &error));
+  REQUIRE(gfx::upload_buffer(device, material_table, sizeof(material_table), k_storage, materials,
+                             &error));
+  REQUIRE(gfx::upload_buffer(device, material_index, sizeof(material_index), k_storage,
+                             cluster_materials, &error));
+
+  const Vec3 eye{0.0f, 600.0f, 0.0f};
+  const Vec3 target{};
+  const Vec3 view_up{0.0f, 0.0f, -1.0f};
+  const f32 fov_y = radians(1.0f);
+  const Mat4 view_proj = perspective_reversed_z(fov_y, 1.0f, 0.1f) * look_at(eye, target, view_up);
+  gfx::BufferResource vis;
+  gfx::BufferResource params;
+  gfx::BufferResource host_color;
+  REQUIRE(gfx::create_buffer(
+      device, u64{k_size} * k_size * sizeof(u64),
+      k_storage | gfx::BufferUsage::ShaderDeviceAddress | gfx::BufferUsage::TransferDst, false, vis,
+      &error));
+  REQUIRE(gfx::create_buffer(device, sizeof(gfx::ResolveParams),
+                             k_storage | gfx::BufferUsage::ShaderDeviceAddress, true, params,
+                             &error));
+  REQUIRE(gfx::create_buffer(device, u64{k_size} * k_size * 4, gfx::BufferUsage::TransferDst, true,
+                             host_color, &error));
+  gfx::FrameContext frames;
+  REQUIRE(frames.create(device, 2, &error));
+  gfx::BindlessSet bindless;
+  REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
+  gfx::ShaderModuleHandle resolve_module =
+      gfx::create_shader_module(device, shaders::k_visibility_resolve_water_spirv,
+                                shaders::k_visibility_resolve_water_spirv_size, &error);
+  REQUIRE(resolve_module.valid());
+  gfx_test::ClusterRaster raster;
+  REQUIRE_MESSAGE(raster.create(device, bindless.pipeline_layout(),
+                                geometry::ClusterBuildOptions{}.max_triangles, &error),
+                  error);
+  gfx::GraphicsPipelineDesc resolve_desc;
+  resolve_desc.vertex = resolve_module;
+  resolve_desc.vertex_entry = "vs_fullscreen";
+  resolve_desc.fragment = resolve_module;
+  resolve_desc.fragment_entry = "fs_resolve";
+  resolve_desc.layout = bindless.pipeline_layout();
+  resolve_desc.color_format = gfx::Format::R8G8B8A8Unorm;
+  gfx::PipelineHandle resolve_pipeline = {};
+  REQUIRE_MESSAGE(gfx::create_graphics_pipeline(device, resolve_desc, resolve_pipeline, &error),
+                  error);
+
+  gfx::ClusterDrawParams draw{};
+  draw.view_proj = view_proj;
+  draw.clusters = clusters.address;
+  draw.mesh = scene.meshes.address;
+  draw.instances = scene.instances.address;
+  draw.triangles = triangles.address;
+  draw.visibility = vis.address;
+  draw.extent = gfx::draw_extent(k_size, k_size);
+
+  // The sun: the half vector of it and the eye overhead leans k_lean from up towards face A's
+  // normal, which leans from up away from `across`.
+  const ref::Dvec3 up_d{0.0, 1.0, 0.0};
+  const ref::Dvec3 sun_ref =
+      ref::normalize(up_d * std::cos(2.0 * k_lean) - across * std::sin(2.0 * k_lean));
+  auto* block = static_cast<gfx::ResolveParams*>(params.mapped);
+  *block = gfx::ResolveParams{};
+  block->sky = Vec4{0.0f, 0.0f, 0.0f, 1.0f};
+  block->sun = Vec4{vec3_of(sun_ref), static_cast<f32>(k_sun)};
+  block->camera = Vec4{eye, 0.0f};
+  block->view_proj = view_proj;
+  block->visibility = vis.address;
+  block->clusters = clusters.address;
+  block->mesh = scene.meshes.address;
+  block->instances = scene.instances.address;
+  block->triangles = triangles.address;
+  block->materials = materials.address;
+  block->cluster_materials = cluster_materials.address;
+  block->attributes = attributes.address;
+  block->width = k_size;
+  block->height = k_size;
+  const u64 block_address = params.address;
+
+  gfx::RenderGraph graph(device);
+  const gfx::RgBuffer rg_vis = graph.import_buffer("vis", vis);
+  const gfx::RgBuffer rg_host = graph.import_buffer("host", host_color);
+  const gfx::RgImage target_image = graph.create_image(
+      "resolved", {k_size, k_size, gfx::Format::R8G8B8A8Unorm,
+                   gfx::ImageUsage::ColorAttachment | gfx::ImageUsage::TransferSrc});
+  graph.add_pass(
+      "clear", gfx::PassKind::Transfer,
+      [&](gfx::PassBuilder& b) { b.write(rg_vis, gfx::Access::TransferWrite); },
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        cb.fill_buffer(vis.buffer, 0, gfx::k_whole_size, 0);
+      });
+  graph.add_pass(
+      "visibility", gfx::PassKind::Raster,
+      [&](gfx::PassBuilder& b) {
+        b.render_area(k_size, k_size);
+        b.write(rg_vis, gfx::Access::FragmentReadWrite);
+      },
+      [&](gfx::CommandList cb, gfx::RenderGraph&) { raster.draw(cb, bindless, draw, 1); });
+  graph.add_pass(
+      "resolve", gfx::PassKind::Raster,
+      [&](gfx::PassBuilder& b) {
+        gfx::ClearColor clear_color{};
+        b.color_attachment(target_image, gfx::LoadOp::Clear, clear_color);
+        b.read(rg_vis, gfx::Access::FragmentRead);
+      },
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        cb.bind_pipeline(gfx::BindPoint::Graphics, resolve_pipeline);
+        bindless.bind(cb, gfx::BindPoint::Graphics);
+        cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(u64),
+                          &block_address);
+        cb.draw(3, 1, 0, 0);
+      });
+  graph.add_pass(
+      "readback", gfx::PassKind::Transfer,
+      [&](gfx::PassBuilder& b) {
+        b.read(target_image, gfx::Access::TransferRead);
+        b.write(rg_host, gfx::Access::TransferWrite);
+      },
+      [&](gfx::CommandList cb, gfx::RenderGraph& g) {
+        VkBufferImageCopy region{};
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageExtent = {k_size, k_size, 1};
+        vkCmdCopyImageToBuffer(gfx::vk::native(cb), gfx::vk::native(g.image(target_image).image),
+                               gfx::vk::native(g.image_layout(target_image)),
+                               gfx::vk::native(host_color.buffer), 1, &region);
+      });
+  REQUIRE_MESSAGE(graph.compile(&error), error);
+  gfx::CommandList commands = frames.begin_frame();
+  graph.execute(commands);
+  REQUIRE(frames.wait(frames.end_frame()));
+
+  // The reference, a pixel at a time: the view ray meets one of the two faces; the plane is the
+  // interpolated normal there, and the still channel's surface is that plane.
+  const wref::Params w = wref::params_of(material_table[0]);
+  const wref::Optics o = wref::optics_of(material_table[1]);
+  const ref::Dvec3 sand = ref::dvec3(material_table[2].albedo);
+  namespace wet = gfx::wet_reference;
+  const ref::Dvec3 bed{wet::albedo_under(sand.x, 1.0, 0.5), wet::albedo_under(sand.y, 1.0, 0.5),
+                       wet::albedo_under(sand.z, 1.0, 0.5)};
+  const ref::Dvec3 eye_d = ref::dvec3(eye);
+  const u32 faces[2][3] = {{0, 2, 1}, {0, 3, 2}};
+  // Two-pixel strips by the distance from the edge, on face A's side (0) and face B's (1).
+  constexpr u32 k_strips = 48;
+  const double footprint = 2.0 * static_cast<double>(eye.y) *
+                           std::tan(0.5 * static_cast<double>(fov_y)) / static_cast<double>(k_size);
+  const double strip_m = 2.0 * footprint;
+  double sum[2][k_strips] = {};
+  double sum_ref[2][k_strips] = {};
+  u32 count[2][k_strips] = {};
+  const auto linear_luminance = [](const u8* c) {
+    const auto lin = [](u8 v) { return std::pow(static_cast<double>(v) / 255.0, 2.2); };
+    return 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]);
+  };
+  int worst = 0;
+  u32 compared = 0;
+  for (u32 y = 0; y < k_size; ++y) {
+    for (u32 x = 0; x < k_size; ++x) {
+      const ref::Dvec3 dir = ref::pixel_direction(
+          eye_d, ref::dvec3(target), ref::dvec3(view_up), static_cast<double>(fov_y), 1.0, k_size,
+          k_size, static_cast<double>(x) + 0.5, static_cast<double>(y) + 0.5);
+      bool hit = false;
+      ref::Dvec3 p{};
+      ref::Dvec3 n_s{};
+      for (u32 f = 0; f < 2 && !hit; ++f) {
+        const ref::Dvec3 p0 = ref::dvec3(positions[faces[f][0]]);
+        const ref::Dvec3 e1 = ref::dvec3(positions[faces[f][1]]) - p0;
+        const ref::Dvec3 e2 = ref::dvec3(positions[faces[f][2]]) - p0;
+        const ref::Dvec3 q = ref::cross(dir, e2);
+        const double det = ref::dot(e1, q);
+        if (std::abs(det) < 1e-12) continue;
+        const ref::Dvec3 s0 = eye_d - p0;
+        const double b1 = ref::dot(s0, q) / det;
+        const ref::Dvec3 r1 = ref::cross(s0, e1);
+        const double b2 = ref::dot(dir, r1) / det;
+        if (b1 < 0.0 || b2 < 0.0 || b1 + b2 > 1.0) continue;
+        const double t = ref::dot(e2, r1) / det;
+        hit = true;
+        p = eye_d + dir * t;
+        n_s = ref::normalize(ref::dvec3(normals[faces[f][0]]) * (1.0 - b1 - b2) +
+                             ref::dvec3(normals[faces[f][1]]) * b1 +
+                             ref::dvec3(normals[faces[f][2]]) * b2);
+      }
+      // Clear of the quad's outline by 0.3 m, so no pixel is part water and part nothing.
+      if (!hit || std::abs(p.x) > 4.7 || std::abs(p.z) > 4.7) continue;
+      const ref::Dvec3 v = ref::normalize(eye_d - p);
+      const wref::Path path = wref::path(n_s, v, k_depth, 0.0, 0.0);
+      const ref::Dvec3 under =
+          wref::volume(o, path, up_d, bed, sun_ref, ref::splat(k_sun), 1.0, 1.0, ref::splat(0.0));
+      const ref::Dvec3 linear = wref::radiance_volume(w, n_s, v, w.shore, sun_ref,
+                                                      ref::splat(k_sun), ref::splat(0.0), under);
+      const u8 expect[3] = {ref::display(linear.x), ref::display(linear.y), ref::display(linear.z)};
+      const u8* got = static_cast<const u8*>(host_color.mapped) + (u64{y} * k_size + x) * 4;
+      for (u32 c = 0; c < 3; ++c)
+        worst = std::max(worst, std::abs(int{got[c]} - int{expect[c]}));
+      ++compared;
+      const double d = ref::dot(p, across);
+      // A pixel whose centre lies on the edge itself is on neither side: the rasterizer gives it
+      // to one face by its tie rule, which the side of a rounded `d` does not know.
+      if (std::abs(d) < 0.25 * footprint) continue;
+      const u32 side = d > 0.0 ? 0u : 1u;
+      const double strip = std::floor(std::abs(d) / strip_m);
+      if (strip >= static_cast<double>(k_strips)) continue;
+      const u32 k = static_cast<u32>(strip);
+      sum[side][k] += linear_luminance(got);
+      sum_ref[side][k] += linear_luminance(expect);
+      ++count[side][k];
+    }
+  }
+  REQUIRE(count[0][0] >= 50);
+  REQUIRE(count[1][0] >= 50);
+  // The step across the edge and the largest change between neighbouring strips inside a face.
+  const auto mean = [&](const double (&s)[2][k_strips], u32 side, u32 k) {
+    return s[side][k] / static_cast<double>(count[side][k]);
+  };
+  const auto measure = [&](const double (&s)[2][k_strips], double& edge_step, double& inside) {
+    edge_step = std::abs(mean(s, 0, 0) - mean(s, 1, 0));
+    inside = 0.0;
+    for (u32 side = 0; side < 2; ++side) {
+      for (u32 k = 0; k + 1 < k_strips; ++k) {
+        if (count[side][k] < 16 || count[side][k + 1] < 16) continue;
+        inside = std::max(inside, std::abs(mean(s, side, k) - mean(s, side, k + 1)));
+      }
+    }
+  };
+  double step = 0.0;
+  double interior = 0.0;
+  measure(sum, step, interior);
+  double step_ref = 0.0;
+  double interior_ref = 0.0;
+  measure(sum_ref, step_ref, interior_ref);
+  MESSAGE("the bent pair: worst " << worst << " of 255 against the reference over " << compared
+                                  << " pixels; the step across the edge " << step
+                                  << " against the largest change inside a face " << interior
+                                  << " (the reference's: " << step_ref << " and " << interior_ref
+                                  << "), " << count[0][0] << " and " << count[1][0]
+                                  << " pixels in the edge's strips (" << std::string(raster.name())
+                                  << " path)");
+  CHECK(compared > 10000);
+  CHECK(worst <= 2);
+  CHECK(step <= interior);
+
+  graph.reset();
+  gfx::destroy_pipeline(device, resolve_pipeline);
+  raster.destroy(device);
+  gfx::destroy_shader_module(device, resolve_module);
+  bindless.destroy();
+  scene.destroy(device);
+  for (gfx::BufferResource* b : {&host_color, &params, &vis, &attributes, &cluster_materials,
+                                 &materials, &triangles, &clusters}) {
     gfx::destroy_buffer(device, *b);
   }
   frames.destroy();

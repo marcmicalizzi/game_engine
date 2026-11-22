@@ -2303,8 +2303,9 @@ struct WaterChannelSurface {
 
 // The channel's surface at the body-local point `p` (metres from its instance), its phase `tau`,
 // the clock `time`, the pixel's `footprint` (metres), the `depth` under it (the depth map's; the
-// hydraulic depth where there is no map), the section's `hydraulic` depth (UV.y), the triangle's
-// geometric normal `geometric` (unit, facing out of the water) and its flow `f`. `nappe` > 0: the
+// hydraulic depth where there is no map), the section's `hydraulic` depth (UV.y), the surface's
+// plane `geometric` (unit, facing out of the water: its vertices' normals interpolated, a reach's
+// as a nappe's since W161) and its flow `f`. `nappe` > 0: the
 // triangle is a fall's, and that is the sheet's thickness, metres. Off a nappe (W139):
 // `section_froude` the section's Froude number and `solved_slope` the solved level's fall along
 // the flow, both interpolated from the vertices, so the white's every input is one smooth field
