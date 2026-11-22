@@ -1565,8 +1565,8 @@ namespace {
 // `g_cover_mesh`, a grid with no image, so a recipe the door admits is drawn.
 const geometry::ClusterFileData* g_cover_mesh = nullptr;
 bool fixture_cover_build(std::span<const u8> bytes, const assets::MeshGeneratorInputs& inputs,
-                         const geometry::ClusterLodOptions&, u32, geometry::ClusterFileData& out,
-                         std::string& error) {
+                         const geometry::ClusterLodOptions& lod, u32 page_bytes,
+                         geometry::ClusterFileData& out, std::string& error) {
   u64 identity = 0;
   if (!fixture_host_hash_with(bytes, inputs, identity, error)) return false;
   if (g_cover_mesh == nullptr) {
@@ -1574,6 +1574,10 @@ bool fixture_cover_build(std::span<const u8> bytes, const assets::MeshGeneratorI
     return false;
   }
   out = *g_cover_mesh;
+  // The identity a real cover records (cover.cpp), so a reload finds the entry it wrote.
+  out.source_hash = identity;
+  out.build_key = assets::generated_mesh_build_key(
+      identity, assets::MeshGeneratorInputs{inputs.materials}, lod, page_bytes);
   return true;
 }
 constexpr assets::MeshGeneratorDesc k_fixture_cover{.name = "fixturecover",
@@ -1634,6 +1638,9 @@ TEST_CASE("content classes at load: a recipe over a game-classified host decides
             io::Status::Ok);
     Grid moss;
     moss.path = tmp.file("moss.fixturecover.json");
+    // The cover's entry is classified (its host's class), and the second order hits the one the
+    // first wrote, under the same key.
+    std::string entry;
     for (const bool moss_first : {true, false}) {
       CAPTURE(moss_first);
       SceneDesc desc =
@@ -1644,6 +1651,16 @@ TEST_CASE("content classes at load: a recipe over a game-classified host decides
       CHECK(scene.instances.size() == 2);
       CHECK(loaded_instance(scene, moss_first ? 0u : 1u) != k_not_loaded);
       CHECK(scene.load.unreadable_omitted == 0);
+      const SourceMesh& made = scene.sources[moss_first ? 0u : 1u];
+      REQUIRE_FALSE(made.container.empty());
+      CHECK(std::string(made.cache) == std::string(moss_first ? "miss" : "hit"));
+      if (moss_first) {
+        entry = made.container;
+        geometry::ClusterFileData file;
+        REQUIRE_MESSAGE(geometry::read_cluster_file(entry, file, &error), error);
+        CHECK_FALSE(file.content_classes.empty());
+      }
+      CHECK(made.container == entry);
     }
   }
   // Over a host the scene does not list: the host's own level, admitted at `dim`, refused above it.
