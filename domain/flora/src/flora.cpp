@@ -1014,6 +1014,10 @@ constexpr assets::MeshGeneratorDesc k_flora_generator{
     .source_hash = generator_source_hash,
     .build = generator_build,
     .source_hash_with = generator_source_hash_with,
+    // A flora recipe names no host: its hash and its build take the pack's sets and their images
+    // (`read_image`, `hash_image`) and never ask for a mesh to grow over, so the class read at a
+    // load reads none of a forest's thousands of trees (C72).
+    .names_hosts = false,
 };
 const assets::MeshGeneratorRegistrar k_flora_registrar{k_flora_generator};
 

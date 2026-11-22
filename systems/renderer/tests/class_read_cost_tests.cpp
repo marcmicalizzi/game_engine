@@ -66,6 +66,8 @@ std::string palm_recipe(u32 seed) {
          R"("triangle_budget":6000}})";
 }
 
+// The palms are flora's, whose registration declares that its recipes name no host (C72).
+//
 // A generator of the test's own with no host-aware hash, as deadwood's and the rocks' are: its
 // hash never sees a host's hooks, so its recipes can name no host and the class read reads none of
 // them (C72). It is never built here: every instance of its recipes is left out.
@@ -82,6 +84,19 @@ bool plain_build(std::span<const u8>, const assets::MeshGeneratorInputs&,
 constexpr assets::MeshGeneratorDesc k_plain_generator{
     .name = "costplain", .source_hash = plain_hash, .build = plain_build};
 const assets::MeshGeneratorRegistrar k_plain_registrar{k_plain_generator};
+
+// One with a host-aware hash that has not said its recipes name none, as a cover's or a vine's:
+// each of its recipes is read and probed once. This one asks the hooks for nothing.
+bool hosting_hash_with(std::span<const u8> bytes, const assets::MeshGeneratorInputs&, u64& out,
+                       std::string&) {
+  out = hash_bytes(bytes.data(), bytes.size());
+  return true;
+}
+constexpr assets::MeshGeneratorDesc k_hosting_generator{.name = "costhosting",
+                                                        .source_hash = plain_hash,
+                                                        .build = plain_build,
+                                                        .source_hash_with = hosting_hash_with};
+const assets::MeshGeneratorRegistrar k_hosting_registrar{k_hosting_generator};
 
 // One small grid as a container, at `path`.
 void write_grid(const std::string& path) {
@@ -100,8 +115,9 @@ void write_grid(const std::string& path) {
 }
 
 struct Shape {
-  u32 recipes = 0;
-  u32 plain = 0;  // recipes of `costplain`, whose hash takes no host
+  u32 recipes = 0;  // palms: flora's, which declares that its recipes name no host
+  u32 plain = 0;    // recipes of `costplain`, whose hash takes no host
+  u32 hosting = 0;  // recipes of `costhosting`, whose recipes can name one
   u32 containers = 0;
   u32 gltfs = 0;
   u32 directories = 1;
@@ -157,6 +173,9 @@ SceneDesc cost_scene(const test::TempDir& tmp, const Shape& shape) {
   for (u32 i = 0; i < shape.plain; ++i)
     add("log" + std::to_string(i) + ".costplain.json", R"({"seed":)" + std::to_string(i) + "}",
         false);
+  for (u32 i = 0; i < shape.hosting; ++i)
+    add("vine" + std::to_string(i) + ".costhosting.json", R"({"seed":)" + std::to_string(i) + "}",
+        false);
   for (u32 i = 0; i < shape.containers; ++i)
     add("rock" + std::to_string(i) + ".clusters", {}, true);
   for (u32 i = 0; i < shape.gltfs; ++i)
@@ -211,6 +230,7 @@ TEST_CASE("content classes at load: the class read's cost on a forest's shape") 
     Shape shape;
     shape.recipes = 400 * k_scale;
     shape.plain = 80 * k_scale;
+    shape.hosting = 20 * k_scale;
     shape.containers = 40 * k_scale;
     shape.gltfs = 40 * k_scale;
     shape.directories = 8;
@@ -223,18 +243,20 @@ TEST_CASE("content classes at load: the class read's cost on a forest's shape") 
     report(sidecar_every == 0 ? "no sidecar anywhere" : "a sidecar beside every 97th source", scene,
            ms, cpu_ms);
     const SceneLoadReport& load = scene.load;
-    CHECK(load.class_paths == 1 + shape.recipes + shape.plain + shape.containers + shape.gltfs);
-    // A recipe whose generator has no host-aware hash is never read or probed for its hosts: the
-    // answer, none, is known without it (C72).
-    CHECK(load.class_reads[ClassRead::recipe_file].asked == shape.recipes);
-    CHECK(load.class_reads[ClassRead::recipe_file].found == shape.recipes);
+    const u32 recipes = shape.recipes + shape.plain + shape.hosting;
+    CHECK(load.class_paths == 1 + recipes + shape.containers + shape.gltfs);
+    // A recipe whose generator cannot name a host — one with no host-aware hash, or one that
+    // declares its recipes name none, as flora does — is never read or probed for its hosts: the
+    // answer, none, is known without it (C72). One that can is read once.
+    CHECK(load.class_reads[ClassRead::recipe_file].asked == shape.hosting);
+    CHECK(load.class_reads[ClassRead::recipe_file].found == shape.hosting);
     // The pack's sets read once a load, not once a recipe (C72): every set once.
     CHECK(load.class_reads[ClassRead::pack_sets].asked == shape.sets);
     // Each recipe that can name a host probed once, on whichever thread.
-    CHECK(load.class_reads[ClassRead::host_probe].asked == shape.recipes);
+    CHECK(load.class_reads[ClassRead::host_probe].asked == shape.hosting);
     CHECK(load.class_reads[ClassRead::container_section].asked == 1 + shape.containers);
     CHECK(load.class_reads[ClassRead::container_section].found == 1 + shape.containers);
-    CHECK(load.unreadable_omitted == shape.recipes + shape.plain + shape.containers + shape.gltfs);
+    CHECK(load.unreadable_omitted == recipes + shape.containers + shape.gltfs);
     CHECK(scene.instances.size() == 1);
     const u32 sidecars = sidecar_every == 0 ? 0u : (desc.meshes.size() - 2u) / sidecar_every + 1u;
     const u32 found = load.class_reads[ClassRead::recipe_sidecar].found +

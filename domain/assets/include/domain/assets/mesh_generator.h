@@ -147,7 +147,22 @@ struct MeshGeneratorDesc {
   // a generator whose meshes hang none.
   bool (*leaves)(std::span<const u8> bytes, std::string_view path, Vector<GeneratedLeaf>& out,
                  std::string& error) = nullptr;
+  // **Whether a file of this generator can name a container host**: a mesh its hash or its build
+  // asks `MeshGeneratorHosts::identify` or `load` for (C72; renderer.md, "Content classes at
+  // load"). A generator with a host-aware hash that never asks for one — flora's, which takes the
+  // pack's images and nothing else — says `false`, and the class read at a load then reads none of
+  // its recipes, since the answer, no host, is known without them. The default is `true`: nothing
+  // is skipped unless its generator says so. A generator with no `source_hash_with` names none
+  // whatever this says (`generator_names_hosts`). Checked where it matters, never trusted: a host
+  // that hashes or builds such a recipe refuses it when it asks for a host anyway
+  // (`content_build::GeneratorHosts`), so no mesh is built over a host whose class was not read.
+  bool names_hosts = true;
 };
+
+// Whether a file of `desc`'s can name a container host: a host-aware hash, not declared hostless.
+constexpr bool generator_names_hosts(const MeshGeneratorDesc& desc) noexcept {
+  return desc.source_hash_with != nullptr && desc.names_hosts;
+}
 
 // The source hash a host keys a generated mesh by: `desc.source_hash_with` with the inputs where
 // the generator has it, `desc.source_hash` otherwise.

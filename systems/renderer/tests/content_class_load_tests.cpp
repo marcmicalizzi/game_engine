@@ -2230,6 +2230,83 @@ TEST_CASE("content classes at load: a recipe whose hash refuses the probe is unr
 
 namespace {
 
+// A generator that declares its recipes name no host and asks for one anyway: `fixturehost`'s
+// hash under a registration that says otherwise.
+constexpr assets::MeshGeneratorDesc k_fixture_lie{.name = "fixturelie",
+                                                  .source_hash = fixture_host_hash,
+                                                  .build = fixture_host_build,
+                                                  .source_hash_with = fixture_host_hash_with,
+                                                  .names_hosts = false};
+
+}  // namespace
+
+// **A generator's "names no host" is checked, never trusted** (C72): the class read reads no recipe
+// of a generator that declares it, so one that asks for a host anyway is refused where its recipe
+// is hashed for its build — the content build's hash and the load's mesh stage — with a sentence
+// naming the generator and the recipe, and is never built over a host whose class was not read.
+TEST_CASE("content classes at load: a generator that names no host and asks for one is refused") {
+  need_generator(k_fixture_lie);
+  const test::TempDir tmp("renderer_classes_host_lie");
+  REQUIRE(tmp.ok());
+  const Grid a = write_grid(tmp, "a.clusters", 9, "a.png");
+  (void)write_grid(tmp, "statue.clusters", 9, "statue.png", glow_record(2));
+  const std::string recipe = tmp.file("ivy.fixturelie.json");
+  REQUIRE(io::write_file(recipe, R"({"host":"statue.clusters"})") == io::Status::Ok);
+  const auto names_the_lie = [&](const std::string& message) {
+    CHECK_MESSAGE(
+        message.find("\"fixturelie\" declares that its recipes name no host") != std::string::npos,
+        message);
+    CHECK_MESSAGE(message.find("ivy.fixturelie.json") != std::string::npos, message);
+    CHECK_MESSAGE(message.find("statue.clusters") != std::string::npos, message);
+  };
+  // The class read does not read it: no hosts, so not the statue's class, and nothing refused.
+  content_build::MeshOptions options;
+  content_build::SourceClasses classes;
+  content_build::Diagnostic diagnostic;
+  CHECK_MESSAGE(content_build::read_source_classes(recipe, options, classes, diagnostic),
+                diagnostic.message);
+  // The content build's hash refuses it.
+  u64 hash = 0;
+  std::string message;
+  CHECK_FALSE(content_build::source_hash_of(recipe, hash, &message));
+  names_the_lie(message);
+  // The load's mesh stage refuses it.
+  Grid ivy;
+  ivy.path = recipe;
+  std::string error;
+  SceneData scene;
+  CHECK_FALSE(load_scene(scene_of(tmp, {&a, &ivy}), scene, error));
+  names_the_lie(error);
+}
+
+// **A recipe that cannot be read names no host at the class read, and fails where it is read**
+// (C64, kept by C72): for a generator that can name a host, whose recipe the class read reads, and
+// for flora, which declares that its recipes name none and whose recipe it does not read.
+TEST_CASE("content classes at load: a missing recipe names no host and fails where it is read") {
+  need_generator(k_fixture_host);
+  const test::TempDir tmp("renderer_classes_missing_recipe");
+  REQUIRE(tmp.ok());
+  const Grid a = write_grid(tmp, "a.clusters", 9, "a.png");
+  for (const char* name : {"gone.fixturehost.json", "gone.flora.json"}) {
+    CAPTURE(name);
+    const std::string recipe = tmp.file(name);
+    content_build::MeshOptions options;
+    content_build::SourceClasses classes;
+    content_build::Diagnostic diagnostic;
+    CHECK_MESSAGE(content_build::read_source_classes(recipe, options, classes, diagnostic),
+                  diagnostic.message);
+    Grid gone;
+    gone.path = recipe;
+    std::string error;
+    SceneData scene;
+    CHECK_FALSE(load_scene(scene_of(tmp, {&a, &gone}), scene, error));
+    CHECK_MESSAGE(error.find("cannot read") != std::string::npos, error);
+    CHECK_MESSAGE(error.find(name) != std::string::npos, error);
+  }
+}
+
+namespace {
+
 // Every engine category at its top and the game's too: a policy that admits the class a source that
 // cannot be read is decided at.
 constexpr const char* k_top_policies =

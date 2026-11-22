@@ -646,10 +646,12 @@ bool generator_hosts(const std::string& recipe, const materials::Pack* pack,
   hosts.clear();
   const assets::MeshGeneratorDesc* generator =
       assets::MeshGeneratorRegistry::global().find(assets::mesh_generator_of(recipe));
-  // A generator with no host-aware hash never sees the hooks (`generated_source_hash` hands its
-  // bytes to `source_hash` alone), so its recipes name no host: the answer the probe would give
-  // after reading and hashing the file, known without either (C72).
-  if (generator == nullptr || generator->source_hash_with == nullptr) return true;
+  // A generator whose recipes cannot name a host is answered before any read (C72): one with no
+  // host-aware hash never sees the hooks (`generated_source_hash` hands its bytes to `source_hash`
+  // alone), the answer the probe gave after reading and hashing the file; one that declared it
+  // names none (`MeshGeneratorDesc::names_hosts`) is held to that where its recipe is hashed for
+  // its build, which refuses it if it asks (`GeneratorHosts::identify`).
+  if (generator == nullptr || !assets::generator_names_hosts(*generator)) return true;
   std::string read;
   if (handed == nullptr) {
     const i64 read_ns = time::monotonic_ns();
@@ -937,8 +939,13 @@ void probe_recipes_ahead(std::span<const RecipeAsk> asks, const MeshOptions& opt
                          HostReads& reads, jobs::JobSystem* pool) {
   // What this call has queued or kept, by `ahead_key`: nothing is probed twice.
   HashMap<u64, u32> seen;
+  // A recipe whose generator cannot name a host gets no job: `generator_hosts` answers it unread.
+  const assets::MeshGeneratorRegistry& registry = assets::MeshGeneratorRegistry::global();
   const auto wanted = [&](const std::string& path, bool handed) {
-    if (assets::mesh_generator_of(path).empty()) return false;
+    const std::string_view name = assets::mesh_generator_of(path);
+    if (name.empty()) return false;
+    const assets::MeshGeneratorDesc* generator = registry.find(name);
+    if (generator == nullptr || !assets::generator_names_hosts(*generator)) return false;
     const u64 key = ahead_key(path, handed);
     if (ahead_at(&reads, path, handed) != nullptr) return false;
     return seen.try_emplace(key, 0u).second;

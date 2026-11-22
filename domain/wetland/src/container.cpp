@@ -304,10 +304,13 @@ bool build_recipe(std::span<const u8> bytes, const assets::MeshGeneratorInputs& 
   return read_file(text_of(bytes), p, error) &&
          build_container(p, in, lod, page, out, report, error);
 }
+// A wetland plant names no host: `identity` and the bake ask only for its pack sets' images, never
+// for a mesh to grow over (C72).
 const assets::MeshGeneratorDesc k_generator{.name = "wetland",
                                             .source_hash = hash_recipe,
                                             .build = build_recipe,
-                                            .source_hash_with = hash_with};
+                                            .source_hash_with = hash_with,
+                                            .names_hosts = false};
 const assets::MeshGeneratorRegistrar k_registrar{k_generator};
 }  // namespace
 }  // namespace engine::wetland
