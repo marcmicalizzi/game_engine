@@ -489,11 +489,15 @@ void PlacementTiles::tile_own(Vector<TileOwn>& out) const {
   out.clear();
   for (u32 i = 0; i < tiles_.size(); ++i) {
     const TileBlock& block = tiles_.value_at(i);
-    if (block.withheld) continue;
+    if (block.withheld || block.fresh) continue;
     const std::span<const renderer::SceneInstance> drawn = block.drawn();
     const Handoff& set = block.waiting ? block.held_handoff : block.handoff;
+    // A tile that draws nothing of its own is not listed, as no other reader lists one; and `own`
+    // is never a subtraction that can wrap. T214 (the owner's walk, 2026-11-22): a tile the mesh
+    // room yielded (`yield_farthest`) drew nothing and kept its last build's hand-off count, and
+    // `0 - count` listed it with four billion instances, which the world's sound walked.
+    if (drawn.size() <= set.count) continue;
     const u32 own = static_cast<u32>(drawn.size()) - set.count;
-    if (own == 0) continue;
     out.push_back(TileOwn{tiles_.key_at(i), drawn.data(), own, block.version});
   }
 }
@@ -1351,6 +1355,12 @@ bool PlacementTiles::yield_farthest(const Rank& wanting) {
   block.held_tags.clear();
   block.buildings = 0;
   block.held_buildings = 0;
+  // Its near placements' cells go with them, as `recycle` lets them go (T214): a tile that draws
+  // nothing hands no cell (`make_runs` skips it either way), and cells kept past the yield went on
+  // reserving and counting pairs in `admit` for instances it no longer held, were staged as what
+  // it draws while its next build waited, and made every reader's `drawn - count` wrap.
+  block.handoff.clear();
+  block.held_handoff.clear();
   block.waiting = false;
   block.starved = false;
   block.admitted = false;

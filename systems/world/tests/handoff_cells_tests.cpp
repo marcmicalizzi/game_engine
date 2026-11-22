@@ -2,12 +2,17 @@
 // band"): the placements consumer hands a tile's near-role placements on by cells, and only the
 // cells the hand-off's band can reach from an eye. A placement generator of this test's own that
 // places every patch as a near form and a far form, and the procedural grid's DAG as its mesh: no
-// capability, so it runs in every configuration with the world.
+// capability, so it runs in every configuration with the world. The last case adds the tile rocks
+// of tests/support/tile_mesh_fixture.h, so the mesh room yields tiles that hold near placements
+// (T214).
+#include <core/json/json.h>
 #include <core/math/world.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <systems/renderer/scene.h>
 #include <systems/world/placement_tiles.h>
+#include <systems/world/scene_consumers.h>
+#include <systems/world/world.h>
 
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
@@ -15,6 +20,7 @@
 #include <cmath>
 #include <fstream>
 #include <string>
+#include <tile_mesh_fixture.h>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -463,4 +469,136 @@ TEST_CASE("handoff cells: with no eye named every cell is handed, and with no ba
   for (u32 i = 0; i < held.size(); ++i)
     CHECK(held[i].handoff == (i % 2u == 0 ? scene_gen::k_handoff_near : scene_gen::k_handoff_far));
   CHECK(plain.stats().handoff_cells == 0u);
+}
+
+namespace {
+
+// A room of three meshes, whatever their clusters, for the tile rocks.
+struct ThreeRocks {
+  u32 held = 0;
+  static bool fits(void* context, u32, u32) { return static_cast<ThreeRocks*>(context)->held < 3; }
+  static bool admit(void* context, u32, const renderer::PlacementMeshData&, std::string*) {
+    ++static_cast<ThreeRocks*>(context)->held;
+    return true;
+  }
+  static void retire(void* context, u32) { --static_cast<ThreeRocks*>(context)->held; }
+};
+
+}  // namespace
+
+// T214 (the owner's walk, 2026-11-22: an access violation in engine-view's world sound): a tile the
+// mesh room yields (`yield_farthest`) draws nothing, and it held near placements in cells. Until
+// the mend its hand-off state outlived the yield, and `tile_own` listed the tile with
+// `0 - handoff.count` instances — about four billion — which the sound's table walked off the end
+// of mapped memory. Every step of a walk holds `tile_own` to its contract, and the stats and the
+// tail to the runs.
+TEST_CASE("handoff cells: a tile the mesh room yields lists nothing of its own and holds no cell") {
+  const test::TempDir tmp("world_handoff_yield");
+  REQUIRE(tmp.ok());
+  renderer::SceneData scene;
+  make_scene(tmp, scene);
+  // Beside the patches (near placements of a resident mesh on every tile), tiles that hand their
+  // own rock: so a tile names a mesh in the room, and the room's refusal yields drawn tiles.
+  test::register_tile_rocks();
+  renderer::StreamedPlacements rocks;
+  rocks.generator = "test-tile-rocks";
+  REQUIRE(parse_json(R"({"reach":6,"n":10})", rocks.params).ok);
+  rocks.where = "placements 1";
+  rocks.tile_meshes = true;
+  scene.streamed.push_back(std::move(rocks));
+  scene.tile_meshes = true;
+  scene.dynamic = true;
+  scene.mesh_options.ddc = tmp.file("ddc");
+  scene.mesh_options.cache = true;
+
+  std::string error;
+  PlacementTilesConfig config = cells_config();
+  config.ring_count = 1;
+  PlacementTiles placements;
+  REQUIRE_MESSAGE(placements.create(scene, config, &error), error);
+  ThreeRocks room;
+  TileMeshConfig meshes;
+  meshes.first_mesh = static_cast<u32>(scene.parts.size());
+  meshes.slots = 32;
+  meshes.clusters = 1u << 20;
+  meshes.max_clusters = 4096;
+  meshes.cluster_bytes = 3000;
+  meshes.linger = 0;
+  placements.set_meshes(meshes, TileMeshSink{&room, &ThreeRocks::fits, &ThreeRocks::admit,
+                                             &ThreeRocks::retire, nullptr, nullptr, nullptr});
+  placements.set_run_sink(&take_runs, nullptr);
+  RingParams ring;
+  ring.ring_count = 1;
+  ring.radius[0] = 1.5f;  // nine tiles round the observer, room for three tiles' rocks
+  ring.max_activations = 0;
+  ring.max_deactivations = 0;
+  World world(ring);
+  add_scene_consumers(world, nullptr, &placements);
+
+  // The tiles drawing near placements before a step, by key.
+  std::unordered_set<u64> drew_near;
+  u32 near_yields = 0;  // tiles that drew near placements, are still in the ring, and draw nothing
+  u64 tick = 0;
+  for (const f64 x : {0.0, 1.0, 2.0, 3.0, 2.0, 1.0, 0.0}) {
+    for (u32 repeat = 0; repeat < 3; ++repeat) {
+      const u64 yielded = placements.stats().mesh_yielded;
+      sim::ObserverSet observers;
+      observers.add(WorldPos{(x + 0.5) * 32.0, 0.0, 16.0}, 1.0f);
+      placements.begin_update(0);
+      world.update(observers, tick++);
+      (void)placements.end_update();
+
+      // `tile_own`: each tile listed draws something of its own, `count` of what it draws, none of
+      // them a near placement its cells hold.
+      Vector<PlacementTiles::TileOwn> own;
+      placements.tile_own(own);
+      for (const PlacementTiles::TileOwn& t : own) {
+        const std::span<const renderer::SceneInstance> drawn =
+            placements.tile_instances(tile_of_key(t.key));
+        INFO("tile key " << t.key << " at x " << x);
+        REQUIRE(t.count <= drawn.size());
+        REQUIRE(t.count != 0u);
+        REQUIRE(t.instances != nullptr);
+        CHECK(t.instances == drawn.data());
+        CHECK(t.version != 0u);
+        for (u32 i = 0; i < t.count; ++i)
+          CHECK(t.instances[i].handoff != scene_gen::k_handoff_near);
+      }
+      // The stats count what the runs hand, and the tail is what they hand: a yielded tile's cells
+      // are neither (it reserved and counted pairs for cells it no longer drew, and the tail of a
+      // commit with no run sink walked `0 - count` of its instances).
+      u32 handed = 0;
+      for (const PlacementTiles::TileRange& run : placements.runs())
+        handed += run.count;
+      REQUIRE(placements.stats().instances == handed);
+      CHECK(placements.tail().size() == handed);
+
+      // Which yields took a tile that drew near placements.
+      if (placements.stats().mesh_yielded != yielded) {
+        for (const u64 key : drew_near) {
+          const TileCoord t = tile_of_key(key);
+          const f64 dx = static_cast<f64>(t.x) - x;
+          const f64 dz = static_cast<f64>(t.z);
+          if (dx * dx + dz * dz > 1.5 * 1.5) continue;  // let go by the ring, not yielded
+          near_yields += placements.tile_instances(t).empty() ? 1u : 0u;
+        }
+      }
+      drew_near.clear();
+      for (i32 z = -2; z <= 2; ++z) {
+        for (i32 tx = -2; tx <= 6; ++tx) {
+          for (const renderer::SceneInstance& instance :
+               placements.tile_instances(TileCoord{tx, z})) {
+            if (instance.handoff != scene_gen::k_handoff_near) continue;
+            drew_near.insert(tile_key(TileCoord{tx, z}));
+            break;
+          }
+        }
+      }
+    }
+  }
+  CHECK(placements.stats().mesh_yielded > 0u);
+  CHECK(near_yields > 0u);
+  MESSAGE("a walk at a room of three rocks: " << placements.stats().mesh_yielded << " yields, "
+                                              << near_yields
+                                              << " of them tiles that drew near placements");
 }
