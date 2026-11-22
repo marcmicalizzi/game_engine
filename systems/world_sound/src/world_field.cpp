@@ -47,9 +47,9 @@ tunables::Float world_floor_db{"audio.world.floor_db", 10.0, -20.0, 60.0,
 // -12 is where its peaks reach full scale and a hard clip would begin; under it nothing changes.
 tunables::Float world_ceiling_db{"audio.world.ceiling_db", -12.0, -40.0, 0.0,
                                  "RMS dBFS the world's voices summed are held at, and only there"};
-tunables::Int world_near_crowns_tunable{"audio.world.near_crowns", 4096, 0, 1 << 20,
+tunables::Int world_near_crowns_tunable{"audio.world.near_crowns", 1024, 0, 1 << 20,
                                         "Crowns a canopy table sends one by one a refresh"};
-tunables::Int world_walk_tunable{"audio.world.walk_instances", 16384, 0, 1 << 24,
+tunables::Int world_walk_tunable{"audio.world.walk_instances", 4096, 0, 1 << 24,
                                  "Placements a canopy table walks a refresh for changed tiles"};
 
 // ---- the laws (docs/experiments/world-sound.md) -------------------------------------------------
@@ -263,7 +263,17 @@ void WorldField::refresh(const WorldPos& listener) noexcept {
   f64 z0 = 0.03;
   (void)wind10_at(listener.x, listener.z, to, z0);
   // Each crown's power at the listener per (U10 / 5)^3: what choosing and merging rank by. A crown
-  // is heard at its edge when the listener is inside it (`Crown::extent_m`).
+  // is heard at its edge when the listener is inside it (`Crown::extent_m`). The class's power and
+  // the log law's denominator are the refresh's, not a crown's (S112-2: three thousand crowns a
+  // refresh on the forest staging, and a `pow` and two `log`s each were most of its cost).
+  const f64 class_power[3] = {pow10(k_crown_db[0]), pow10(k_crown_db[1]), pow10(k_crown_db[2])};
+  const f64 law_z =
+      z0 > 1e-5 ? (z0 < gfx::k_wind_height_m / 4.0 ? z0 : gfx::k_wind_height_m / 4.0) : 1e-5;
+  const f64 law_inv = 1.0 / std::log(gfx::k_wind_height_m / law_z);
+  const auto law = [law_z, law_inv](f64 h) noexcept {  // `loglaw(h, z0)` by its reciprocal
+    const f64 hh = h > 2.0 * law_z ? h : 2.0 * law_z;
+    return std::log(hh / law_z) * law_inv;
+  };
   for (const Crown& c : crowns_) {
     const u32 k = static_cast<u32>(c.kind) < 3 ? static_cast<u32>(c.kind) : 0u;
     const f64 dx = c.at.x - listener.x;
@@ -278,9 +288,8 @@ void WorldField::refresh(const WorldPos& listener) noexcept {
         static_cast<f64>(c.extent_m) > k_crown_min_m ? static_cast<f64>(c.extent_m) : k_crown_min_m;
     r = r > least ? r : least;
     const f64 h = static_cast<f64>(c.height_m);
-    const f64 lw = loglaw(h > 1.0 ? h : 1.0, z0);
-    crown_static_.push_back(pow10(k_crown_db[k]) *
-                            (static_cast<f64>(c.leaf_area_m2) / k_crown_area_m2) *
+    const f64 lw = law(h > 1.0 ? h : 1.0);
+    crown_static_.push_back(class_power[k] * (static_cast<f64>(c.leaf_area_m2) / k_crown_area_m2) *
                             (k_crown_ref_m / r) * (k_crown_ref_m / r) * lw * lw * lw);
   }
   // The crowns of their own: the loudest, a chosen one kept across 3 dB of hysteresis. A merged
@@ -365,7 +374,7 @@ void WorldField::refresh(const WorldPos& listener) noexcept {
       const f64 needle_m = static_cast<f64>(c.needle_mm > 0.05f ? c.needle_mm : 0.05f) * 1e-3;
       const f64 h = static_cast<f64>(c.height_m);
       b.needle_weight_d += w / needle_m;
-      b.needle_loglaw += w * loglaw(h > 1.0 ? h : 1.0, z0);
+      b.needle_loglaw += w * law(h > 1.0 ? h : 1.0);
     }
     b.px += w * c.at.x;
     b.pz += w * c.at.z;

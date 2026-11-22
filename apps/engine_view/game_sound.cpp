@@ -482,7 +482,20 @@ void GameSoundHost::visit(void* user, const WorldPos& centre, f64 reach_m,
   h.counters_.last_walked = 0;
   const f64 near_m = world_sound::world_near_m();
   u32 allowance = world_sound::world_walk_instances();
+  const i64 started = time::monotonic_ns();
   h.refresh_tiles(allowance);
+  const i64 walked = time::monotonic_ns() - started;
+  h.counters_.walk_ns += walked;
+  h.counters_.walk_ns_max = walked > h.counters_.walk_ns_max ? walked : h.counters_.walk_ns_max;
+  struct Timed {
+    Counters& c;
+    i64 started;
+    ~Timed() {
+      const i64 ns = time::monotonic_ns() - started;
+      c.visit_ns += ns;
+      c.visit_ns_max = ns > c.visit_ns_max ? ns : c.visit_ns_max;
+    }
+  } timed{h.counters_, started};
   // Every group: past the reach nothing, far its merged crowns, near kept for the pass below.
   h.near_.clear();
   const f64 coarse_m = 4.0 * near_m;
@@ -638,17 +651,22 @@ void print_solo_summary() {
       stderr, "engine-view: sound summary %s\n",
       write_json(g_host->stage().summary_json(), JsonWriteOptions{.pretty = false}).c_str());
   const GameSoundHost::Counters& c = g_host->counters();
-  std::fprintf(stderr,
-               "engine-view: sound table: %llu refreshes, %llu tile placements walked in %llu "
-               "tiles (%llu carried), %llu crowns, %llu merged and %llu by cell sent, %u tiles "
-               "held\n",
-               static_cast<unsigned long long>(c.refreshes),
-               static_cast<unsigned long long>(c.instances_walked),
-               static_cast<unsigned long long>(c.tiles_walked),
-               static_cast<unsigned long long>(c.tiles_carried),
-               static_cast<unsigned long long>(c.crowns_sent),
-               static_cast<unsigned long long>(c.merged_sent),
-               static_cast<unsigned long long>(c.coarse_sent), c.tile_groups);
+  std::fprintf(
+      stderr,
+      "engine-view: sound table: %llu refreshes, %llu tile placements walked in %llu "
+      "tiles (%llu carried), %llu crowns, %llu merged and %llu by cell sent, %u tiles "
+      "held; walk %.3f ms a refresh (most %.3f), visit %.3f (most %.3f)\n",
+      static_cast<unsigned long long>(c.refreshes),
+      static_cast<unsigned long long>(c.instances_walked),
+      static_cast<unsigned long long>(c.tiles_walked),
+      static_cast<unsigned long long>(c.tiles_carried),
+      static_cast<unsigned long long>(c.crowns_sent),
+      static_cast<unsigned long long>(c.merged_sent),
+      static_cast<unsigned long long>(c.coarse_sent), c.tile_groups,
+      c.refreshes != 0 ? static_cast<f64>(c.walk_ns) / 1e6 / static_cast<f64>(c.refreshes) : 0.0,
+      static_cast<f64>(c.walk_ns_max) / 1e6,
+      c.refreshes != 0 ? static_cast<f64>(c.visit_ns) / 1e6 / static_cast<f64>(c.refreshes) : 0.0,
+      static_cast<f64>(c.visit_ns_max) / 1e6);
 }
 
 }  // namespace engine::view

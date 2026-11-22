@@ -442,10 +442,10 @@ Unchanged. Every world voice is a source with a spatial block and nothing is pan
 |---|---|---|
 | The audio thread at the defaults | 200 µs a 10 ms block, 2 % of one core | 64 clip voices measure 70 µs; 27 shaped-noise voices were estimated at 80 µs and **measure 109 µs** (S112's `audio.mix.noise/27`, a busy machine: "Performance notes") |
 | `SoundStage::tick` on the frame's thread | 50 µs | the gust at 15 places, 27 commands at most |
-| A refresh, off the frame's thread | 1 ms, eight a second | tile aggregates and a few thousand near instances |
+| A refresh, off the frame's thread | 1 ms, eight a second | tile aggregates and a few thousand near instances; **at S112-2 still on the frame's thread, held to it by its allowance** (`audio.world.walk_instances`, `near_crowns`, the far field by 512 m cell: [world_sound](world_sound.md#the-wind-in-the-trees-and-at-the-ears-s112), "What a refresh costs"), and no frame's `sound_ms` over 1 ms but for the `--audio-out` WAV's once-a-second flush, the listening tool's own |
 | Memory, clips aside | 1 MB | voice state, the fields' fixed arrays |
 | Clips | a game's `audio.clip_budget_mb`; engine-view's default for a game 64 | launch memory is a budget; a clip over the threshold streams |
-| Unused | no mixer, no thread, no allocation | no `sound` block and `--audio off` |
+| Unused | no mixer, no thread, no allocation, no leaves measured | `--audio off` (engine-view's default offscreen); a stage that hears the world builds its mixer with or without a `sound` block |
 
 ### The game service
 

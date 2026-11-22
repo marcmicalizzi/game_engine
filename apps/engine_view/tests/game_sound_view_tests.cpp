@@ -373,7 +373,7 @@ TEST_CASE(
     }
     REQUIRE_MESSAGE(run.exit_code == 0, run.output);
     REQUIRE_MESSAGE(sound_summary_of(run, leg.summary), run.output);
-    MESSAGE(leg.name << ": " << text_at(leg.summary, {"world"}));
+    MESSAGE(std::string(leg.name) << ": " << text_at(leg.summary, {"world"}));
   }
   CHECK(number_at(legs[0].summary, {"world", "crowns_seen"}) == 2.0);
   CHECK(number_at(legs[0].summary, {"world", "crown_voices"}) == 2.0);

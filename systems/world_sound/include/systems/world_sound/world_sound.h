@@ -146,8 +146,8 @@ struct WorldWind {
 /// listener and sends farther ones merged, one crown a class a group (the capability's LOD).
 f64 world_near_m() noexcept;
 /// **The canopy table's allowance a refresh** (S112-2; world_sound.md, "What a refresh costs"):
-/// `audio.world.near_crowns` (4,096), the crowns a table sends one by one, nearest group first,
-/// before it sends the rest of its near groups merged; and `audio.world.walk_instances` (16,384),
+/// `audio.world.near_crowns` (1,024), the crowns a table sends one by one, nearest group first,
+/// before it sends the rest of its near groups merged; and `audio.world.walk_instances` (4,096),
 /// the placements it walks to make a changed tile's crowns again, the rest carried to the next.
 u32 world_near_crowns() noexcept;
 u32 world_walk_instances() noexcept;

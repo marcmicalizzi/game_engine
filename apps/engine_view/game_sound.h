@@ -118,7 +118,9 @@ class GameSoundHost {
     u64 merged_sent = 0;       // merged groups' crowns sent
     u64 coarse_sent = 0;       // far groups summed by 512 m cell, sent
     u32 last_walked = 0;       // the last refresh's tile placements walked
-    u32 tile_groups = 0;       // tiles held now
+    // Wall time: the tiles' walk and the whole visit, summed and the most one refresh took.
+    i64 walk_ns = 0, walk_ns_max = 0, visit_ns = 0, visit_ns_max = 0;
+    u32 tile_groups = 0;  // tiles held now
   };
   const Counters& counters() const noexcept { return counters_; }
 
