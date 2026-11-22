@@ -3427,9 +3427,9 @@ void GpuScene::put_deform_record(u32 index, const gfx::DeformDesc& desc) noexcep
   if (index >= deform_capacity_) return;
   if (deform_table.mapped != nullptr)
     static_cast<gfx::DeformDesc*>(deform_table.mapped)[index] = desc;
-  // A scene whose table has per-frame copies for its water (S100) and no skin to rewrite them every
-  // frame keeps them in step here, so a tree the tail brings in sways in every slot.
-  if (!skinned_ && deform_frames.mapped != nullptr) {
+  // Every per-frame copy takes it too, a skinned scene's included (T213): the motion pool reads last
+  // frame's copy, which a skinned frame's rewrite of its own never reached (renderer.md).
+  if (deform_frames.mapped != nullptr) {
     for (u32 slot = 0; slot < k_joint_slots; ++slot)
       deform_frame(slot)[index] = desc;
   }

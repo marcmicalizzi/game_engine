@@ -6149,6 +6149,21 @@ that leaves one tile and a tree of its mesh that arrives in another share a reco
 the layout wrote them in — and the tail's budget counts a commit's records once, exactly, against a
 ceiling that follows the device ([below](#a-commit-past-the-tails-budget-withholds-its-farthest-tiles)).
 
+**Every copy of the table holds every record, a skinned scene's too** (T213, 2026-11-22). A record
+made or repurposed between frames is written into the table and into all `k_joint_slots` per-frame
+copies (`GpuScene::put_deform_record`). Until T213 a skinned scene's copies were left out, because each
+skinned frame rewrites its own copy whole from the table before its pool pass; but the accumulation's
+motion pool writes each block a second time from **last frame's** copy
+([what a layout change costs the accumulation](#what-a-layout-change-costs-the-accumulation),
+`MotionPass::previous`), which on a frame that wrote only some slots is trusted. A record new since
+then was, in that copy, whatever the buffer held when it was made, and a repurposed one was another
+mesh's: the pool read a part run, a vertex base or a surface address of nobody's, through a device
+address. On 2026-11-21 the owner's forest, skinned by its player and 416 animals, lost the device
+(an SM exception, nvlddmkm 13) on the flight that brought in more trees than had been resident; the
+staging flown offscreen is not skinned, kept every copy, and never faulted. `tail budget: a skinned
+scene's every copy of the deform table holds the tail's trees` counts the records a copy misses (its
+trees times three copies before, none after).
+
 **The phase is the instance's, never its tile's arrival.** A sway's seed is `key * 0x9e3779b9 +
 0x632be5ab`, the hash the load always used with the instance's index as the key. A streamed read
 gives every instance the key the whole read gives it (`SceneInstance::motion_key`): `stream_authored`

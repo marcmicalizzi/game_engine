@@ -7,6 +7,7 @@
 // past the whole budget is still refused, with a sentence, and the scene takes the next commit.
 #include "test_device.h"
 
+#include <domain/geometry/cluster.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/resources.h>
 #include <systems/renderer/flora_motion.h>
@@ -431,6 +432,71 @@ TEST_CASE("tail budget: a commit past it admits the nearest tiles and withholds 
     CHECK(scene.flora_stats().tail_records == rig.reserve);
     scene.destroy();
   }
+}
+
+// T213 (renderer.md, "Streamed trees sway"): every per-frame copy of the deform table holds every
+// record the table holds, a skinned scene's too. A skinned frame rewrites its own copy whole, so
+// until T213 a tail tree's record went into the table alone; the motion pool's second write reads
+// last frame's copy (`MotionPass::previous`), which then held, at a record the tail had just made,
+// whatever the buffer held when it was made — and the owner's forest, skinned by its player and its
+// animals, lost the device on the flight that brought in more trees than had ever been resident.
+TEST_CASE("tail budget: a skinned scene's every copy of the deform table holds the tail's trees") {
+  const test::TempDir tmp("renderer_tail_budget_skinned_copies");
+  REQUIRE(tmp.ok());
+  Rig rig(tmp);
+  if (!rig.ok) {
+    MESSAGE("skipped: " << rig.why);
+    return;
+  }
+  // The palm skinned as well, one joint for every vertex, and its loaded instance naming it: what
+  // makes the scene keep copies that each frame rewrites whole.
+  const u32 joints[4] = {0, 0, 0, 0};
+  const f32 weights[4] = {1.0f, 0.0f, 0.0f, 0.0f};
+  const geometry::SkinBinding binding = geometry::make_skin_binding(joints, weights);
+  rig.data.lod.mesh.skin.resize(rig.data.lod.mesh.vertices.size());
+  for (geometry::SkinBinding& b : rig.data.lod.mesh.skin)
+    b = binding;
+  if (rig.data.instances.empty()) {
+    SceneInstance standing;
+    standing.mesh = 0;
+    gfx::InstanceDesc desc;
+    std::string why;
+    REQUIRE_MESSAGE(make_instance(rig.data, standing, rig.data.pair_count, desc, &why), why);
+    rig.data.pair_count += rig.data.parts[0].cluster_count;
+    rig.data.instances.push_back(desc);
+  }
+  rig.data.instance_joints.resize(rig.data.instances.size(), 0u);
+  rig.data.instance_joints[0] = 1;
+  rig.data.skinned_instances = 1;
+  rig.data.max_joints = 1;
+  REQUIRE(rig.data.skinned());
+  RenderSettings settings;
+  settings.shadows = ShadowMode::Cascaded;
+  resolve_settings(settings, rig.device.features(), &rig.data, rig.resolved);
+  std::string error;
+  GpuScene scene;
+  REQUIRE_MESSAGE(scene.create(rig.device, rig.data, rig.resolved, &error), error);
+  REQUIRE(scene.skinned());
+  REQUIRE(scene.has_frame_table());
+  REQUIRE(scene.flora_tail());
+  const u32 before = scene.deform_count();
+  // Records past every other, inside the first room: written at once, no relayout between.
+  const u32 n = rig.reserve / 2;
+  GpuScene::TileChange change;
+  const Tile tile[] = {{1, 0.0, n, 0}};
+  REQUIRE_MESSAGE(commit(scene, tile, change, error), error);
+  REQUIRE(scene.deform_count() == before + n);
+  // The records of the tail's trees that some copy does not hold, over every copy.
+  u32 missed = 0;
+  const std::span<const gfx::DeformDesc> table = scene.deform_descs();
+  for (u32 slot = 0; slot < k_joint_slots; ++slot) {
+    const gfx::DeformDesc* copy = scene.deform_frame(slot);
+    for (u32 d = before; d < scene.deform_count(); ++d)
+      missed += std::memcmp(&copy[d], &table[d], sizeof(gfx::DeformDesc)) != 0 ? 1u : 0u;
+  }
+  MESSAGE(n << " trees' records in " << k_joint_slots << " copies: " << missed << " missed");
+  CHECK(missed == 0);  // before T213: n * k_joint_slots
+  scene.destroy();
 }
 
 #endif
