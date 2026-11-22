@@ -1274,12 +1274,13 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
   float3 color = float3(0.0);
   if (white < 1.0) {
     if ((material.flags & k_material_water_volume) != 0) {
-      // **The ground under a lifted body's water is wet** (S102, second pass; water.md, "One
-      // sheet"): the bottom's material takes the saturation of sand under water, as the ground
-      // beside the sheet takes it under its film — Lekner and Dorf's darkening is that of a surface
-      // under a layer of water, whatever the layer's depth. Until this pass only a bared pixel's
-      // bottom was wet, and the sheet's sand was drawn dry beside the wet sand it lies on.
-      const float bottom_s = swash.surface != 0 && depth > 0.0 ? 1.0 : max(bared_wet, 0.0);
+      // **A bed under any water is wet** (W161; water.md, "Translucent by volume"): wherever the
+      // pixel has depth the bottom's material takes saturation 1 — Lekner and Dorf's darkening is
+      // that of a surface under a layer of water, whatever the layer's depth — for a channel, a
+      // windless body and a lifted body alike. S102's second pass wetted a lifted body's alone, so
+      // a stream's bed was drawn as dry ground between banks drawn damp. A pixel with no depth is
+      // the bared bottom at the swash's saturation, or dry.
+      const float bottom_s = depth > 0.0 ? 1.0 : max(bared_wet, 0.0);
       color = water_pixel_volume(params, geo, instance, index, slope, dp_dx, dp_dy, s, local, n,
                                  view, w, ray_bias, depth, has_map, map, edge, foam, bottom_s);
     } else {
