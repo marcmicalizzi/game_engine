@@ -17,6 +17,7 @@
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -236,6 +237,88 @@ TEST_CASE(
     right += static_cast<f64>(samples[2 * f + 1]) * static_cast<f64>(samples[2 * f + 1]);
   }
   CHECK(left / right == doctest::Approx(1.0).epsilon(0.05));
+}
+
+namespace {
+
+// S112: two small oaks of the flora's own (leaves two-sided and translucent, no image), a scene
+// wind of `speed` m/s, and no `sound` block: the world's sound alone.
+std::string grove_scene(const test::TempDir& tmp, const char* name, f64 speed) {
+  REQUIRE(io::write_file(tmp.file("oak.flora.json"),
+                         R"({"species":"broadleaf","broadleaf":{"seed":7,"height_m":8.0,)"
+                         R"("trunk_radius_m":0.25,"triangle_budget":12000}})") == io::Status::Ok);
+  const std::string scene = tmp.file(name);
+  const std::string text =
+      std::string(R"({"format":"engine.scene.v1","name":"grove",)") +
+      R"("terrain":{"size":65,"extent":64,"seed":3,"dune_height":0.2,"dune_wavelength":30},)" +
+      R"("sky":{"latitude_deg":45,"day_of_year":170,"wind":{"speed_m_s":)" + std::to_string(speed) +
+      R"(,"to_deg":90}},"meshes":[{"name":"oak","path":"oak.flora.json"}],"instances":[)" +
+      R"({"ground":true,"translation":[4,0,-6],"mesh":0},)" +
+      R"({"ground":true,"translation":[-7,0,-14],"yaw_deg":80,"mesh":0}]})";
+  REQUIRE(io::write_file(scene, text) == io::Status::Ok);
+  return scene;
+}
+
+f64 wav_power(const std::string& path) {
+  std::string bytes;
+  REQUIRE(io::read_file(path, bytes) == io::Status::Ok);
+  REQUIRE(bytes.size() > 44u);
+  std::vector<f32> samples((bytes.size() - 44) / 4);
+  std::memcpy(samples.data(), bytes.data() + 44, samples.size() * sizeof(f32));
+  f64 sum = 0.0;
+  for (const f32 x : samples)
+    sum += static_cast<f64>(x) * static_cast<f64>(x);
+  return sum / static_cast<f64>(samples.size());
+}
+
+}  // namespace
+
+TEST_CASE("engine-view: the wind in a grove is heard in the null render, and calm is silent") {
+  const test::TempDir tmp("engine_view_grove_sound");
+  const std::string module = fixture(tmp, WALK_POC_PATH);
+  struct Leg {
+    const char* name;
+    f64 speed;
+    std::string wav;
+    JsonValue summary;
+  };
+  Leg legs[3] = {{"calm.json", 0.0, tmp.file("calm.wav"), {}},
+                 {"light.json", 3.0, tmp.file("light.wav"), {}},
+                 {"strong.json", 9.0, tmp.file("strong.wav"), {}}};
+  for (Leg& leg : legs) {
+    const std::string scene = grove_scene(tmp, leg.name, leg.speed);
+    const std::string session = walk_session(tmp, scene);
+    const Run run = run_view({"--replay-input", session, "--scene", scene, "--offscreen", "--width",
+                              "320", "--height", "180", "--game", module, "--ddc",
+                              tmp.file("ddc"), "--audio", "null", "--audio-out", leg.wav});
+    if (run.exit_code == 3) {
+      MESSAGE("engine-view unavailable here: " << run.output);
+      return;
+    }
+    REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+    REQUIRE_MESSAGE(summary_of(run, leg.summary), run.output);
+    MESSAGE(std::string(leg.name) << ": "
+                                  << text_at(leg.summary, {"interactive", "game", "sound", "world"}));
+  }
+  // The scene's two oaks are the canopy table's crowns in every leg.
+  for (const Leg& leg : legs)
+    CHECK(number_at(leg.summary, {"interactive", "game", "sound", "world", "crowns_seen"}) == 2.0);
+  // Calm: no world voice was ever started, and the render is silent.
+  CHECK(number_at(legs[0].summary, {"interactive", "game", "sound", "world", "plays"}) == 0.0);
+  CHECK(wav_power(legs[0].wav) == 0.0);
+  // In a wind: both crowns and the two ears sound, and the strong wind is the louder.
+  for (u32 i = 1; i < 3; ++i) {
+    CHECK(number_at(legs[i].summary, {"interactive", "game", "sound", "world", "crown_voices"}) ==
+          2.0);
+    CHECK(number_at(legs[i].summary, {"interactive", "game", "sound", "world", "ear_voices"}) ==
+          2.0);
+  }
+  const f64 light = wav_power(legs[1].wav);
+  const f64 strong = wav_power(legs[2].wav);
+  MESSAGE("light " << 10.0 * std::log10(light) << " dBFS, strong " << 10.0 * std::log10(strong)
+                   << " dBFS");
+  CHECK(light > 0.0);
+  CHECK(10.0 * std::log10(strong / light) > 12.0);  // 30 log 3 for the trees, 40 log 3 the ears
 }
 
 TEST_CASE("engine-view: --audio-out needs the null backend") {

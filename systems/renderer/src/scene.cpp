@@ -3688,6 +3688,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   }
 
   update_scene_bounds(out);
+  measure_mesh_leaves(out, out.mesh_leaves);  // what a host's sound hears a crown by (S112)
   out.build_ns = time::monotonic_ns() - build_start;
   // What the load cost and what it made: an offscreen run has no other line that says it, and a
   // scene of hundreds of thousands of ruin blocks spends its time here, in the instance table.

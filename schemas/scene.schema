@@ -2382,7 +2382,11 @@ struct FrameWalk @version(2) {
 /// (`meshes_ms`), the hand-off cells refreshed (`cells_ms`), and the version 1 parts `admit_ms`,
 /// `commit_ms` and `handover_ms`. `tiles_ms` lies inside `due_ms` and `events_ms`, where tiles are
 /// built and collected, and is not added again.
-struct FrameWorld @version(2) {
+///
+/// **Version 3 (S112): `sound_ms`**, the session's sound on the frame's thread — the world's
+/// voices described from the tick's wind, the canopy table's refresh, the stage's tick — inside
+/// `ticks_ms` beside `game_ms`, apart from it, and not added to the sum again.
+struct FrameWorld @version(3) {
   total_ms: f64 = 0
   update_ms: f64 = 0
   ground_ms: f64 = 0
@@ -2418,6 +2422,7 @@ struct FrameWorld @version(2) {
   due_ms: f64 = 0 @since(2)
   meshes_ms: f64 = 0 @since(2)
   cells_ms: f64 = 0 @since(2)
+  sound_ms: f64 = 0 @since(3)
 }
 
 /// **The frame on the GPU's own clock** (W155; docs/subsystems/renderer.md, "What a slot wait

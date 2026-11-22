@@ -1435,6 +1435,7 @@ void attach_game(view::FlySession& session, f64 sun_offset_s, f64 sun_rate, f64 
   session.set_tick_observer(&view::GameRunner::observe, g_game);
   g_game->set_session(&session);  // the walker's services act on this session (fly_camera.h)
   g_game->set_clock(sun_offset_s, sun_rate, renderer::scene_epoch_s(scene), world_rate);
+  g_game->attach_sound(scene);  // the crowns the session's sound hears (S112)
   if (g_game->props().declared()) walker.set_props(&view::GameProps::walk_props, &g_game->props());
   walker.set_door_service(&view::GameRunner::walk_door_ask, g_game);  // props P45, doors S91
   // `ground_height` (ABI 5) is the walker's own ground: none without a terrain.
@@ -1867,6 +1868,7 @@ void game_release() {
 bool game_held() { return g_game != nullptr && g_game->held(); }
 u64 game_first_tick() { return g_game != nullptr ? g_game->first_tick() : 0; }
 i64 game_tick_ns() { return g_game != nullptr ? g_game->tick_ns() : 0; }  // FrameWorld::game_ms
+i64 game_sound_ns() { return g_game != nullptr ? g_game->sound_ns() : 0; }  // ...::sound_ms
 #else
 f32 g_hud_display_scale = 1.0f;  // the loading overlay's, set by the windowed loop
 void append_player(renderer::SceneDesc&) {}
@@ -1882,6 +1884,7 @@ void game_release() {}
 bool game_held() { return false; }
 u64 game_first_tick() { return 0; }
 i64 game_tick_ns() { return 0; }
+i64 game_sound_ns() { return 0; }
 void game_loading_call(bool) {}
 void note_game_graphics(const gfx::Device&, const renderer::ResolvedSettings&, u32, u32) {}
 void poll_game() {}
@@ -1917,6 +1920,7 @@ void attach_world_to_game([[maybe_unused]] view::ViewWorld& world) {
     }
   };
   g_game->set_placements(&Query::nearest, &world, &Query::stats);
+  g_game->attach_sound_tiles(&world.placements());  // the drawn tiles' crowns, heard (S112)
   // The game's props ride the world's hand-over as a block after the tiles' (game_props.h).
   world.set_extra_block(&g_game->props().tail(), view::k_game_block_key);
 #endif
@@ -3589,10 +3593,11 @@ int run_offscreen(Options& options, Interactive& interactive) {
         poll_game();  // a rebuilt game module, between this frame's ticks and the last's
         walk_probe.begin(time_lapse.recentre_stage());
         const i64 ticks_started = time::monotonic_ns();
-        const i64 game_before = game_tick_ns();
+        const i64 game_before = game_tick_ns(), sound_before = game_sound_ns();
         cursor = session.run(interactive.log.events(), cursor, SimTick{to});
         world_parts.ticks_ms = static_cast<f64>(time::monotonic_ns() - ticks_started) / 1.0e6;
         world_parts.game_ms = static_cast<f64>(game_tick_ns() - game_before) / 1.0e6;
+        world_parts.sound_ms = static_cast<f64>(game_sound_ns() - sound_before) / 1.0e6;
         const scene::FrameWalk walked = walk_probe.end();
         renderer::FrameDesc frame;
         // The session's camera, or with a body worn the eye at its face (P58; player.h).
@@ -7037,7 +7042,7 @@ int run_view(int argc, char** argv) {
         poll_game();  // a rebuilt game module, between the last frame's ticks and this one's
         walk_probe.begin(time_lapse.recentre_stage());
         const i64 ticks_started = time::monotonic_ns();
-        const i64 game_before = game_tick_ns();
+        const i64 game_before = game_tick_ns(), sound_before = game_sound_ns();
         if (interactive.replay) {
           replay_cursor = session.run(interactive.log.events(), replay_cursor, SimTick{to});
         } else {
@@ -7081,6 +7086,7 @@ int run_view(int argc, char** argv) {
         }
         world_parts.ticks_ms = static_cast<f64>(time::monotonic_ns() - ticks_started) / 1.0e6;
         world_parts.game_ms = static_cast<f64>(game_tick_ns() - game_before) / 1.0e6;
+        world_parts.sound_ms = static_cast<f64>(game_sound_ns() - sound_before) / 1.0e6;
         ticks_this_frame = static_cast<u32>(session.tick().value - before);
         // The time-lapse keys at the ticks they were pressed on — live, and in a replay in the
         // window, which presses them where its recording did (an offscreen replay never reaches

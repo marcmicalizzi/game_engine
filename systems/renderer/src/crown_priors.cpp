@@ -334,4 +334,59 @@ bool upload_crown_priors(const gfx::Device& device, const CrownPriorTable& table
   return true;
 }
 
+// A mesh's leaves for its sound (scene.h `MeshLeaves`; S112): the leaves `build_crown_priors` takes
+// (level 0, an alpha-tested material), their cards' one-sided area and their height. No mask is
+// decoded and no grid built: one pass over the triangles, so every load can afford it.
+void measure_mesh_leaves(const SceneData& data, Vector<MeshLeaves>& out) {
+  const geometry::ClusterMesh& mesh = data.lod.mesh;
+  const u32 meshes = static_cast<u32>(data.parts.size());
+  out.clear();
+  out.resize(meshes);
+  if (meshes == 0 || mesh.vertices.empty() || data.sources.size() != data.parts.size()) return;
+  for (u32 m = 0; m < meshes; ++m) {
+    const geometry::ClusterMeshPart& part = data.parts[m];
+    const SourceMesh& source = data.sources[m];
+    f64 area = 0.0;
+    f32 lo = 1e30f;
+    f32 hi = -1e30f;
+    for (u32 i = 0; i < part.cluster_count; ++i) {
+      const u32 c = part.first_cluster + i;
+      if (c >= mesh.clusters.size() || c >= data.lod.lod.size() || data.lod.lod[c].level != 0)
+        continue;
+      if (i >= source.part_of_cluster.size()) continue;
+      const u32 part_index = source.part_of_cluster[i];
+      if (part_index >= source.part_material.size()) continue;
+      const i32 material = source.part_material[part_index];
+      if (material < 0 || static_cast<u32>(material) >= source.data.materials.size()) continue;
+      // Foliage: an alpha-tested card (a bought tree's, or a generated one's with an image), or a
+      // two-sided material that lets light through (the flora's own leaves without an image).
+      const assets::Material& leaf = source.data.materials[static_cast<u32>(material)];
+      if (leaf.alpha_mode != assets::k_alpha_mask && !(leaf.double_sided && leaf.transmission > 0.0f))
+        continue;
+      const geometry::ClusterDesc& cluster = mesh.clusters[c];
+      if (static_cast<usize>(cluster.triangle_offset) + cluster.triangle_count >
+              mesh.triangles.size() ||
+          static_cast<usize>(cluster.vertex_offset) + cluster.vertex_count > mesh.vertices.size())
+        continue;
+      for (u32 t = 0; t < cluster.triangle_count; ++t) {
+        const u32 packed = mesh.triangles[cluster.triangle_offset + t];
+        Vec3 p[3];
+        for (u32 k = 0; k < 3; ++k) {
+          const u32 local = (packed >> (8 * k)) & 0xffu;
+          p[k] = mesh.vertices[cluster.vertex_offset + (local < cluster.vertex_count ? local : 0)];
+          lo = p[k].y < lo ? p[k].y : lo;
+          hi = p[k].y > hi ? p[k].y : hi;
+        }
+        area += 0.5 * static_cast<f64>(length(cross(p[1] - p[0], p[2] - p[0])));
+      }
+    }
+    if (area > 0.0) out[m] = MeshLeaves{static_cast<f32>(area), lo, hi};
+  }
+  // A distance form is a cut of its source's clusters: it sounds as its source's leaves.
+  for (u32 m = 0; m < meshes && m < data.form_source.size(); ++m) {
+    const u32 s = data.form_source[m];
+    if (s != m && s < meshes) out[m] = out[s];
+  }
+}
+
 }  // namespace engine::renderer

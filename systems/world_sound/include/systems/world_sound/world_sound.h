@@ -135,6 +135,10 @@ struct WorldWind {
   f64 sky_time_s = 0.0;
 };
 
+/// `audio.world.near_m` (96): a canopy table walks its crowns one by one within this of the
+/// listener and sends farther ones merged, one crown a class a group (the capability's LOD).
+f64 world_near_m() noexcept;
+
 /// What one world voice was last told: its kind, its level at the listener in dB SPL over its
 /// bands, each band's level, the movable band's centre (0: none) and the wind it was made from.
 enum class WorldVoiceKind : u8 { None = 0, Crown, Bed, EarLeft, EarRight };

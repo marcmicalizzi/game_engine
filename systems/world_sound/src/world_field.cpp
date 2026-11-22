@@ -23,6 +23,8 @@ tunables::Int world_max_crowns{"audio.world.max_crowns", 8192, 0, 1 << 20,
                                "Crowns a refresh takes from the canopy table; the rest counted"};
 tunables::Float world_reach_m{"audio.world.reach_m", 2000.0, 10.0, 20000.0,
                               "Nothing farther than this from the listener is summed"};
+tunables::Float near_m_tunable{"audio.world.near_m", 96.0, 0.0, 2000.0,
+                             "Crowns nearer than this are sent one by one; farther, merged"};
 tunables::Int world_refresh_hz{"audio.world.refresh_hz", 8, 1, 240,
                                "How often the canopy table is walked and the voices chosen"};
 // **One loudness scale** (S112): the cinema's reference, -20 dBFS RMS reproduced at 85 dB SPL
@@ -105,6 +107,8 @@ u64 key_of(const WorldPos& p) noexcept {
 }
 
 }  // namespace
+
+f64 world_near_m() noexcept { return near_m_tunable.get(); }
 
 FieldConfig field_config_from_tunables() noexcept {
   FieldConfig c;
@@ -398,6 +402,10 @@ void WorldField::tick(const WorldPos& listener, const Vec3& forward, const World
                     static_cast<f32>((listener.y - last_listener_.y) / dt),
                     static_cast<f32>((listener.z - last_listener_.z) / dt)};
   }
+  // A step faster than a running person or a cyclist is a teleport, a replay's cut or a camera
+  // flown by hand, not a head moving through air: it adds no wind.
+  constexpr f32 k_max_head_m_s = 15.0f;
+  if (length(velocity) > k_max_head_m_s) velocity = Vec3{};
   last_listener_ = listener;
   has_listener_ = true;
   if (ticks_ % refresh_every_ == 0) refresh(listener);
@@ -527,7 +535,9 @@ void WorldField::tick(const WorldPos& listener, const Vec3& forward, const World
       Voice& v = voices_[crowns + beds + e];
       v.info.wind_m_s = static_cast<f32>(rel);
       f64 bands[9] = {};
-      if (rel > calm && sum > 0.0) {
+      // Heard only in a wind: in still air a walker's own motion is not heard as wind at this
+      // stage (a calm world is silent), though in a wind it adds to the wind the head meets.
+      if (u > calm && rel > calm && sum > 0.0) {
         // The downwind ear is the louder (Seidman and others: loudest at the downwind ear with
         // the head side-on); the right ear's outward axis is +right.
         const f64 outward = e == 0 ? -side : side;

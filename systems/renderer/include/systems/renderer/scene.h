@@ -920,6 +920,18 @@ struct PlacementMeshOptions {
   void* texture_context = nullptr;
 };
 
+// **A mesh's leaves** (S112; world_sound.md, "The canopy a host hands the stage"): the one-sided
+// area of its finest level's foliage — its clusters whose material is alpha-tested (the test
+// `build_crown_priors` takes leaves by) or two-sided and translucent (a flora's leaves with no
+// image) — and how high they stand in mesh space. A card's area, not
+// its mask's: the masks are not decoded for it, so a card's cut-outs count as leaf. Any mesh may
+// have it, whatever made it; a distance form takes its source's.
+struct MeshLeaves {
+  f32 area_m2 = 0.0f;
+  f32 low_m = 0.0f;
+  f32 high_m = 0.0f;
+};
+
 // A loaded scene: everything the GPU upload reads, and everything a summary reports.
 struct SceneData {
   SceneLoadReport load;
@@ -1032,6 +1044,9 @@ struct SceneData {
   // Carried from the `SceneDesc`: the scene's wind (gfx.md, "The wind a scene names"; W136), kind
   // none without one.
   gfx::WindDesc wind{};
+  // **Each mesh's leaves, measured at the load** (S112; `measure_mesh_leaves`), what a host's sound
+  // hears a crown by; empty entries for meshes with none. Kept through the release of the floats.
+  Vector<MeshLeaves> mesh_leaves;
   // Carried from the `SceneDesc`: the medium a frame pass draws (frame_pass.h;
   // systems/volumetrics), uninterpreted. Null: no medium.
   JsonValue medium;
@@ -1066,6 +1081,11 @@ struct SceneData {
 // Loads every mesh of `desc`, merges them into one set of buffers, expands the instances, and
 // computes the bounds. `error` says which mesh failed and why.
 bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error);
+
+// `SceneData::mesh_leaves` from the merged meshes' float positions (crown_priors.cpp): one pass
+// over the finest level's alpha-tested triangles. `load_scene` calls it last; nothing when the
+// floats are gone.
+void measure_mesh_leaves(const SceneData& data, Vector<MeshLeaves>& out);
 
 // **Between the whole read's instances and the loaded ones** (`SceneData::loaded_of_read`). A
 // streamed world keeps a prefix of the scene's instances and hands the rest to the tail, so a
