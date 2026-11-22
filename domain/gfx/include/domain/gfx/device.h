@@ -20,6 +20,7 @@
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <domain/gfx/adapter.h>
+#include <domain/gfx/device_lost.h>
 #include <domain/gfx/pipeline_cache.h>
 #include <domain/gfx/requirements.h>
 
@@ -153,6 +154,19 @@ class Device {
   // nothing to write or the write landed.
   const PipelineCacheReport& pipeline_cache() const noexcept;
   bool save_pipeline_cache() noexcept;
+
+  // **A lost device** (device_lost.h, roadmap T212). The host's handler, called once with the
+  // loss and the device's fault on the first `VK_ERROR_DEVICE_LOST` gfx meets; it must not return.
+  // `report_lost` is gfx's own (the frame context, the swapchain, immediate submissions), public
+  // for the backend set and its tests: the first call reads the fault once, logs it and calls the
+  // handler, and aborts if the handler returns. With no handler set it returns, and its caller
+  // fails as it did before T212 (the frame's wait and submission abort, an immediate submission,
+  // an acquire and a present return their error). A call while another thread is in the handler
+  // waits for the process to end. `lost` says whether a loss has been reported.
+  void set_lost_handler(DeviceLostHandler handler, void* context) noexcept;
+  void report_lost(DeviceLostAt at, u64 value, u64 last_submitted, u64 last_completed,
+                   bool simulated = false) const noexcept;
+  bool lost() const noexcept;
 
   // The backend's handles, for gfx internals, its tests, and a module that presents; declared
   // here and defined only in the backend set, so nothing else can read them.

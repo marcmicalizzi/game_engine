@@ -21,10 +21,14 @@
 // millisecond of resolution for a figure a tester reads to the millisecond, and the worst frame
 // is kept exactly.
 
+#include "long_frames.h"
+
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <core/json/json_value.h>
 
+#include <schemas/scene.h>
+#include <span>
 #include <string>
 
 namespace engine::view {
@@ -73,6 +77,8 @@ struct RunReport {
   u32 width = 0;
   u32 height = 0;
   FrameTimes frames;
+  // The long frames by cause (version 3, T212), enabled with `frames`.
+  LongFrames long_frames;
   // The walk (walk.h), when the session had a walker.
   bool have_walk = false;
   f64 walk_distance_m = 0.0;
@@ -80,12 +86,16 @@ struct RunReport {
   u32 walk_drops = 0;
   // The game's block (game_runner.h), or null.
   JsonValue game;
+  // A lost device's block (session_records.h, T212), or null: where it was lost, the frame values,
+  // what was recorded, and the device's fault.
+  JsonValue device_lost;
 };
 
 // The OS as one line ("Windows 10.0.26200", "Linux 6.8.0-45-generic"), read from the system, not
 // from what the binary was built for.
 std::string os_version();
-// The report as JSON (format `engine.view.report`, version 1).
+// The report as JSON (format `engine.view.report`, version 3: version 1, `device_lost` since 2,
+// `long_frames` since 3).
 JsonValue report_json(const RunReport& report);
 // Writes `report_json` to `report.path`, pretty, best effort: false with `error` when it cannot.
 bool write_report(const RunReport& report, std::string* error);

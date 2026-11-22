@@ -552,6 +552,8 @@ PresentStatus Swapchain::acquire(SemaphoreHandle signal, u32& image_index, u64 t
                                            vk::native(signal), VK_NULL_HANDLE, &image_index);
   if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) return PresentStatus::Ok;
   if (r == VK_ERROR_OUT_OF_DATE_KHR) return PresentStatus::OutOfDate;
+  // The host's turn (device_lost.h, T212); with no handler this returns and the error stands.
+  if (r == VK_ERROR_DEVICE_LOST) device_->report_lost(DeviceLostAt::acquire, 0, 0, 0);
   last_error_ = result_name(r);
   return PresentStatus::Error;
 }
@@ -605,6 +607,7 @@ PresentStatus Swapchain::present(u32 image_index, SemaphoreHandle wait) {
   if (r == VK_SUCCESS) return PresentStatus::Ok;
   if (r == VK_SUBOPTIMAL_KHR) ++suboptimal_;
   if (r == VK_SUBOPTIMAL_KHR || r == VK_ERROR_OUT_OF_DATE_KHR) return PresentStatus::OutOfDate;
+  if (r == VK_ERROR_DEVICE_LOST) device_->report_lost(DeviceLostAt::present, 0, 0, 0);
   last_error_ = result_name(r);
   return PresentStatus::Error;
 }

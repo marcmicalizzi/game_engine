@@ -2227,8 +2227,14 @@ struct CpuMs @version(2) {
 /// figure is good to a tick) and what the wall time has beyond it (`off_cpu_ms`): the thread off
 /// the processor, waiting (the slot, a job, the device) or preempted. A long frame whose largest
 /// part is not a wait and whose `off_cpu_ms` is most of it was the thread descheduled, not the
-/// work. Zero from a loop that does not measure it (a window's, today).
-struct FrameSections @version(2) {
+/// work. Zero from a loop that does not measure it (a window's until version 3).
+///
+/// Version 3 (T212): every loop measures the thread's CPU — the window's and the replayed
+/// session's through the one function both call at a frame's start (`frame_started`, engine-view)
+/// — and `pace_ms` names the part of `tail_ms` a window's present path held before the next frame
+/// started: the display pacer's wait for an earlier present and the frame-rate ceiling's yield.
+/// Zero offscreen, and in a window with neither.
+struct FrameSections @version(3) {
   wall_ms: f64 = 0
   host_ms: f64 = 0
   slot_wait_ms: f64 = 0
@@ -2244,6 +2250,7 @@ struct FrameSections @version(2) {
   other_ms: f64 = 0
   thread_cpu_ms: f64 = 0 @since(2)
   off_cpu_ms: f64 = 0 @since(2)
+  pace_ms: f64 = 0 @since(3)
 }
 
 /// A time-lapse's frame (`engine-view --time-rate`): the game time, the surface clock's latency
@@ -2498,7 +2505,10 @@ struct FrameWind @version(1) {
 /// (`sections.wall_ms`), where until 24 it was the interval before it — the previous frame's —
 /// so a long frame's parts were in the record before the one that showed it; `gpu_frame`, the
 /// frame on the GPU's own clock (`FrameGpu`); `world` at version 2.
-struct FrameRecord @version(25) {
+///
+/// Version 26 (T212): `sections` at version 3 — a window's records carry the frame thread's CPU
+/// and off-CPU time as a flight's do, and the present path's pacing inside the tail (`pace_ms`).
+struct FrameRecord @version(26) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0; an interactive session's frame, from 0.

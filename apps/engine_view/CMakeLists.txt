@@ -54,6 +54,12 @@ set(_view_tests tests/test_device_tests.cpp
 # The startup trace's feed (startup.h, `StartupTrace::feed`): the window loop's per-frame decision,
 # which no test can run in a window, driven with no GPU in tests/startup_feed_tests.cpp (T211).
 list(APPEND _view_tests tests/startup_feed_tests.cpp startup.cpp)
+# A lost device's turn (session_records.h, T212): the synthetic fly session replayed offscreen with
+# the test seam making a frame wait answer "lost"; its records, report, trace and exit code.
+list(APPEND _view_tests tests/device_lost_view_tests.cpp)
+# What both frame loops record of a frame and the report's long frames by cause (frame_records.h,
+# long_frames.h, T212): the window loop's calls driven with no device and no window.
+list(APPEND _view_tests tests/frame_records_tests.cpp frame_records.cpp long_frames.cpp)
 if(TARGET engine::tileset)
   # A scene naming a built tile set drawn offscreen, the set written by engine-content beside it;
   # and a provider no build has refused with a sentence that lists `tiles` (tileset.md).
@@ -195,7 +201,7 @@ if(TARGET engine::animation)
 endif()
 
 engine_app(NAME engine_view OUTPUT engine-view
-  SOURCES main.cpp report.cpp startup.cpp loading.cpp memory_report.cpp
+  SOURCES main.cpp report.cpp session_records.cpp frame_records.cpp long_frames.cpp startup.cpp loading.cpp memory_report.cpp
           ${_view_interactive} ${_view_world}
           ${_view_game}
           ${_view_animation}

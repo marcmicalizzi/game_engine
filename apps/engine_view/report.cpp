@@ -17,7 +17,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <string>
+#include <string_view>
 
 namespace engine::view {
 
@@ -90,7 +93,7 @@ std::string os_version() {
 JsonValue report_json(const RunReport& report) {
   JsonValue out = JsonValue::object();
   out.set("format", "engine.view.report");
-  out.set("version", static_cast<u32>(1));
+  out.set("version", static_cast<u32>(3));
 
   JsonValue exit = JsonValue::object();
   exit.set("code", static_cast<i64>(report.exit_code));
@@ -120,6 +123,7 @@ JsonValue report_json(const RunReport& report) {
   frames.set("width", report.width);
   frames.set("height", report.height);
   out.set("frames", std::move(frames));
+  out.set("long_frames", report.long_frames.json());  // version 3 (T212)
 
   JsonValue walk = JsonValue::object();
   walk.set("walked", report.have_walk);
@@ -129,6 +133,7 @@ JsonValue report_json(const RunReport& report) {
   out.set("walk", std::move(walk));
 
   out.set("game", report.game);
+  out.set("device_lost", report.device_lost);  // version 2 (T212): null unless the device was lost
 
   // The summary as the run printed it: parsed, so a field the summary gains reaches the report
   // with no change here; null for a run that ended before it had one.
@@ -142,7 +147,9 @@ JsonValue report_json(const RunReport& report) {
 bool write_report(const RunReport& report, std::string* error) {
   if (report.path.empty()) return true;
   const std::string text = write_json(report_json(report), JsonWriteOptions{.pretty = true}) + "\n";
-  const io::Status status = io::write_file(report.path, text);
+  // Whole or not at all: a run cut short (a lost device's watchdog) leaves the last whole report
+  // or a `.tmp` beside it, never a short file under the name a tester sends back (T212).
+  const io::Status status = io::write_file_atomic(report.path, text);
   if (status != io::Status::Ok) {
     if (error != nullptr)
       *error = "cannot write " + report.path + ": " + std::string(io::status_name(status));

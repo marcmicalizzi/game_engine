@@ -16,6 +16,7 @@
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
+#include <test_environment.h>
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
@@ -100,6 +101,56 @@ TEST_CASE("engine-view: --report holds the summary, the machine and the frames o
   // The summary is the line the run printed, parsed: the same frames.
   CHECK(number_at(r, {"summary", "frames"}) == 8.0);
   MESSAGE("report: " << write_json(r, JsonWriteOptions{.pretty = false}).substr(0, 600));
+}
+
+// T212's review, H1: a window session that loses its device leaves an input log `--replay-input`
+// takes. A window on the test's desktop flies the committed synthetic session by injection and
+// records itself, the test seam making the wait for timeline value 120 answer "lost"; its exit is
+// 76, its report says `device_lost`, and its recording passes the replay's checks (the session
+// block, the map's hash) and replays offscreen. Written for the gate: no agent opens a window.
+TEST_CASE("engine-view: a window that loses its device leaves a log a replay takes") {
+  const std::string inject = test::data_path(
+      std::string(ENGINE_SOURCE_DIR "/") + "content/input-logs/sessions/fly-synthetic.jsonl",
+      "content/input-logs/sessions/fly-synthetic.jsonl");
+  if (!test::path_exists(inject)) {
+    MESSAGE("the session fixture is not in this bundle");
+    return;
+  }
+  const test::TempDir tmp("engine_view_lost_window");
+  const std::string recorded = tmp.file("recorded.jsonl");
+  const std::string report = tmp.file("report.json");
+  Run live;
+  {
+    const test::ScopedEnv lose("ENGINE_GFX_TEST_LOSE_DEVICE", "120");
+    live =
+        run_view({"--interactive", "--inject-input", inject, "--record-input", recorded, "--report",
+                  report, "--grid", "33", "--width", "160", "--height", "96", "--no-vsync"});
+  }
+  if (live.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << live.output);
+    return;
+  }
+  REQUIRE_MESSAGE(live.exit_code == platform::k_exit_device_lost, live.output);
+  JsonValue r;
+  REQUIRE_MESSAGE(read_json_file(report, r), live.output);
+  CHECK(text_at(r, {"exit", "reason"}) == "device_lost");
+  CHECK(at(r, {"device_lost"}) != nullptr);
+  // The replay's own checks (main.cpp's `prepare_interactive`): the session block and the map.
+  input::InputLog log;
+  std::string error;
+  REQUIRE_MESSAGE(log.load(recorded, &error) == io::Status::Ok, error);
+  view::SessionHeader header;
+  REQUIRE_MESSAGE(view::session_from_json(log.session(), header, &error), error);
+  CHECK(header.ticks > 0);
+  input::ActionMap map;
+  REQUIRE(view::default_fly_map_for(log.map_hash(), map));
+  const input::InputState probe(map);
+  REQUIRE_MESSAGE(log.check_map(probe, &error), error);
+  // And the replay itself.
+  const Run replay = run_view({"--replay-input", recorded, "--offscreen", "--grid", "33", "--width",
+                               "160", "--height", "96"});
+  CHECK_MESSAGE(replay.exit_code == 0, replay.output);
+  MESSAGE("lost after " << header.ticks << " ticks; " << log.events().size() << " events");
 }
 
 TEST_CASE("engine-view: --report is written when the run fails, with the failure") {

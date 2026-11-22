@@ -102,6 +102,9 @@ class FrameContext {
   u32 slot_ = 0;
   u64 frame_index_ = 0;
   bool recording_ = false;
+  // The test seam's frame value (device_lost.h, `test_lose_device_at`), 0 when off: the first
+  // slot wait for this value or later answers "lost". Read once, at `create`.
+  u64 lose_at_ = 0;
 };
 
 }  // namespace engine::gfx

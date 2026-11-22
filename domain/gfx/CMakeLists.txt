@@ -47,7 +47,7 @@ engine_shaders(NAME gfx SOURCES shaders/cluster_mesh.slang shaders/cluster_cull.
 engine_module(NAME gfx LAYER domain
   DEPS base containers memory hash json log math platform schemas io gpu_lock time jobs tunables
   SOURCES src/adapter.cpp src/device.cpp src/device_memory.cpp src/device_caps.cpp
-          src/requirements.cpp src/test_profile.cpp src/vma.cpp
+          src/requirements.cpp src/test_profile.cpp src/device_lost.cpp src/vma.cpp
           src/frame.cpp src/render_graph.cpp src/commands.cpp src/rhi_vulkan.cpp
           src/bindless.cpp src/swapchain.cpp src/capture.cpp src/shader_library.cpp src/pipeline_cache.cpp
           src/pipeline_batch.cpp
@@ -105,7 +105,9 @@ engine_module_tests(NAME gfx PARTS 2 CONFIG_INVARIANT
           tests/sky_balance_tests.cpp
           # The keep rule of a frame past the ray tracing chain's capacity (rt_keep.h, R174); no
           # device.
-          tests/rt_keep_tests.cpp)
+          tests/rt_keep_tests.cpp
+          # A lost device's names and its test seam's reading (device_lost.h, T212); no device.
+          tests/device_lost_tests.cpp)
 
 # Shaders used by the RHI's own tests: the first .slang through the toolchain.
 engine_shaders(NAME gfx_tests
