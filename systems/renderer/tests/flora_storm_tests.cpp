@@ -661,3 +661,88 @@ TEST_CASE("flora storm: a still form's lean is its mesh's mean lean, and its sph
   }
   CHECK(worst <= 1.0f);
 }
+
+// W158 (renderer.md, "The far forest leans"): a tree drawn rigid — an authored tree's ring form, a
+// far tile's share — leans by its mesh's mean lean times the whole load from calm, by the same law
+// the swaying tree's parts are loaded by, so where the two meet the rigid one stands where the
+// swaying one stands on the mean. Held at force 6 (12.3 m/s) and force 12 (34.8 m/s) against the
+// full model's posed mean over twenty seconds; and a far tile's record shears about its pivot.
+TEST_CASE("flora storm: a rigid form leans as its swaying tree does on the mean, force 6 and 12") {
+  const Vector<ClusterFileMotionPart> parts = storm_parts();
+  Vector<Vec3> vertices;
+  Vector<ClusterFileMotionVertex> motion;
+  for (u32 p = 0; p < parts.size(); ++p) {
+    for (u32 i = 0; i <= 10; ++i) {
+      const f32 w = 0.1f * static_cast<f32>(i);
+      vertices.push_back(parts[p].pivot + parts[p].direction * (parts[p].length * w));
+      motion.push_back(
+          ClusterFileMotionVertex{static_cast<u16>(p), static_cast<u16>(w * 65535.0f)});
+    }
+  }
+  u32 agree = 0;
+  u32 asked = 0;
+  for (const char* species : {"oak", "spruce", "date_palm"}) {
+    const FloraMesh mesh = mesh_of(parts, species);
+    const f32 k =
+        flora_mean_lean(mesh, {vertices.data(), vertices.size()}, {motion.data(), motion.size()});
+    f32 curve[k_flora_lean_curve_points];
+    flora_lean_curve(mesh, {vertices.data(), vertices.size()}, {motion.data(), motion.size()},
+                     curve);
+    CHECK(curve[0] ==
+          doctest::Approx(k * flora_lean_curve_strength(0)).epsilon(0.15));  // small angles
+    for (const f32 speed : {12.3f, 34.8f}) {
+      CAPTURE(std::string(species));
+      CAPTURE(speed);
+      const f32 strength = static_cast<f32>(speed / k_flora_wind_mean_m_s);
+      const f32 load = flora_storm_load(strength, mesh.streamline, mesh.hold);
+      const f32 linear = k * load;                             // W154-2's small-angle lean
+      const f32 rigid = flora_lean_on_curve(curve, strength);  // the walk's, as posed at load
+      Vector<FloraPartState> state(mesh.part_count(), FloraPartState{});
+      Vector<gfx::FloraPartPose> poses(mesh.part_count(), gfx::FloraPartPose{});
+      f64 num = 0.0;
+      f64 den = 0.0;
+      for (u32 f = 0; f < 600; ++f) {
+        pose(mesh, FloraWind{Vec3{1.0f, 0.0f, 0.0f}, strength}, static_cast<f64>(f) / 30.0, state,
+             poses);
+        for (u32 v = 0; v < vertices.size(); v += 4) {
+          if (!(vertices[v].y > 0.0f)) continue;
+          Vec3 p;
+          Vec3 n;
+          gfx::flora_bend(poses[motion[v].part], static_cast<f32>(motion[v].weight) / 65535.0f,
+                          vertices[v], Vec3{0.0f, 1.0f, 0.0f}, p, n);
+          num += static_cast<f64>(p.x - vertices[v].x) * static_cast<f64>(vertices[v].y);
+          den += static_cast<f64>(vertices[v].y) * static_cast<f64>(vertices[v].y);
+        }
+      }
+      const f64 posed = num / den;
+      MESSAGE(std::string(species) << " at " << speed << " m/s: the rigid form leans " << rigid
+                                   << " m a metre (small-angle " << linear
+                                   << "), the swaying tree's posed mean " << posed);
+      ++asked;
+      agree += std::fabs(static_cast<f64>(rigid) - posed) <= 0.1 * std::fabs(posed) ? 1u : 0u;
+    }
+  }
+  CHECK(agree == asked);
+  // The far tile's record: a shear about its pivot, so a point at the pivot's height stays, one a
+  // metre over it moves by the lean, and no lean is the rest to the bit.
+  gfx::InstanceDesc rest{};
+  Mat4 corner = Mat4::identity();
+  corner.c[3] = Vec4{12.0f, 0.0f, 40.0f, 1.0f};
+  gfx::set_instance_transform(rest, corner);
+  rest.scale_max = 1.0f;
+  const gfx::InstanceDesc unleaned = far_lean_record(rest, Vec2{0.0f, 0.0f}, 230.0f);
+  CHECK(std::memcmp(&rest, &unleaned, sizeof(rest)) == 0);
+  const Vec2 lean{0.07f, 0.02f};
+  const gfx::InstanceDesc leaned = far_lean_record(rest, lean, 230.0f);
+  const auto apply = [](const gfx::InstanceDesc& d, Vec3 p) {
+    return Vec3{dot(d.rows[0].xyz(), p) + d.rows[0].w, dot(d.rows[1].xyz(), p) + d.rows[1].w,
+                dot(d.rows[2].xyz(), p) + d.rows[2].w};
+  };
+  const Vec3 foot = apply(leaned, Vec3{3.0f, 230.0f, -5.0f});
+  CHECK(foot.x == doctest::Approx(15.0f));
+  CHECK(foot.z == doctest::Approx(35.0f));
+  const Vec3 crown = apply(leaned, Vec3{3.0f, 250.0f, -5.0f});
+  CHECK(crown.x - foot.x == doctest::Approx(lean.x * 20.0f));
+  CHECK(crown.z - foot.z == doctest::Approx(lean.y * 20.0f));
+  CHECK(crown.y == doctest::Approx(250.0f));
+}

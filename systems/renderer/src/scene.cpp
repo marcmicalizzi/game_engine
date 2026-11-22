@@ -1973,6 +1973,56 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
                                                              source.motion_vertices.size()));
     }
   }
+  // **Each swaying mesh's mean lean under a unit load** (W158; renderer.md, "The far forest
+  // leans"), m per m, by the measure a placements' still form takes (lora_mean_lean): what its
+  // rigid ring forms (below) and the far tiles its trees merge into lean by in a storm, so a tree
+  // drawn rigid leans as the swaying tree beside it does on the mean. Only in a session that poses
+  // a tail: with no sway there is no lean to agree with.
+  Vector<f32> lean_k;
+  if (flora_motion_tunable() && flora_tail_tunable()) {
+    lean_k.assign(meshes, 0.0f);
+    struct LeanJob {
+      const SourceMesh* source = nullptr;
+      const geometry::ClusterMesh* mesh = nullptr;
+      f32* k = nullptr;
+      f32 curve_out[k_flora_lean_curve_points] = {};
+    };
+    Vector<LeanJob> lean_jobs;
+    for (u32 m = 0; m < meshes; ++m) {
+      const SourceMesh& source = sources[m];
+      if (!(scale_max[m] > 0.0f) || !source.has_motion() ||
+          source.motion_vertices.size() != dags[m].mesh.vertices.size()) {
+        continue;
+      }
+      lean_jobs.push_back(LeanJob{&source, &dags[m].mesh, &lean_k[m]});
+    }
+    // A posed curve is a few hundred poses of the tree: one job a mesh on the load's pool.
+    run_jobs(pool, lean_jobs, [](void* p) {
+      LeanJob& job = *static_cast<LeanJob*>(p);
+      const SourceMesh& source = *job.source;
+      FloraMesh tree;
+      if (!flora_mesh(std::span<const geometry::ClusterFileMotionPart>(source.motion_parts.data(),
+                                                                       source.motion_parts.size()),
+                      std::span<const geometry::ClusterFileStructuralPart>(
+                          source.structural_parts.data(), source.structural_parts.size()),
+                      source.species, tree)) {
+        return;
+      }
+      const std::span<const Vec3> at(job.mesh->vertices.data(), job.mesh->vertices.size());
+      const std::span<const geometry::ClusterFileMotionVertex> moves(source.motion_vertices.data(),
+                                                                     source.motion_vertices.size());
+      *job.k = flora_mean_lean(tree, at, moves);
+      if (*job.k > 0.0f) flora_lean_curve(tree, at, moves, job.curve_out);
+    });
+    for (const LeanJob& job : lean_jobs) {
+      const u32 m = static_cast<u32>(job.k - lean_k.data());
+      if (!(*job.k > 0.0f)) continue;
+      // And as posed, by strength: what the walk reads.
+      out.lean_curve.resize(meshes * k_flora_lean_curve_points, 0.0f);
+      for (u32 i = 0; i < k_flora_lean_curve_points; ++i)
+        out.lean_curve[m * k_flora_lean_curve_points + i] = job.curve_out[i];
+    }
+  }
   sway_stage.end();
   profiling::TraceStage rings_stage("authored rings");
   scene::AuthoredSet set;
@@ -2052,6 +2102,14 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
           dags.push_back(std::move(form));
           out.form_source.push_back(m);
           out.form_rigid.push_back(sways ? 0 : 1);
+          // A rigid form of a swaying tree leans with it from calm (W158): no still rule chose it,
+          // so it takes the swaying tree's whole mean lean, as still_from 0 says.
+          if (!sways && m < lean_k.size() && lean_k[m] > 0.0f) {
+            out.still_lean.resize(resolved.meshes.size(), 0.0f);
+            out.still_from.resize(resolved.meshes.size(), 0.0f);
+            out.still_lean[drawn] = lean_k[m];
+            ++stats.leaning_forms;
+          }
           ++stats.forms;
           stats.form_clusters += kept;
         }
@@ -2145,6 +2203,7 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
                           scene, out.far_forest, error)) {
       return false;
     }
+    out.far_forest.mesh_lean = std::move(lean_k);  // W158: the far tiles lean by their trees'
   }
   resolved.instances = std::move(kept_instances);
   StreamedPlacements entry;
@@ -2165,6 +2224,7 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
                   log::field("kept_deformed", stats.kept_deformed),
                   log::field("kept_reach", stats.kept_reach), log::field("forms", stats.forms),
                   log::field("form_clusters", stats.form_clusters),
+                  log::field("leaning_forms", stats.leaning_forms),
                   log::field("form_parts_before", stats.form_parts_before),
                   log::field("form_parts_after", stats.form_parts_after),
                   log::field("whole_pairs", stats.whole_pairs),

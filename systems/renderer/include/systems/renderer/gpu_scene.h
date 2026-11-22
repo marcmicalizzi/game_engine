@@ -1154,6 +1154,8 @@ class GpuScene {
     u64 still_writes = 0;
     u64 still_walks = 0;
     f32 still_lean = 0.0f;
+    u32 far_tiles = 0;  // W158: the far tiles that lean, and the records their lean wrote
+    u64 far_writes = 0;
     // The field kind and the caster policy (renderer.md, "The field kind", "The caster policy";
     // R95): the meshes posed as a field and their instances now (loaded and the tail's, every one
     // sharing its mesh's record), and the instances by what their species' policy keeps them out
@@ -2134,6 +2136,19 @@ class GpuScene {
   Vec2 still_walk_to_{1.0f, 0.0f};
   bool still_walking_ = false;
   u32 still_walk_at_ = 0;
+  // And the far forest's tiles (W158): each one's instance, tile and record as last placed, the
+  // lean each source mesh takes at the walk's wind, and the walk's place among them.
+  struct FarLean {
+    u32 instance = 0;
+    u32 tile = 0;
+    gfx::InstanceDesc rest{};
+  };
+  Vector<FarLean> far_lean_;   // by instance, as the tiles are
+  Vector<f32> far_mesh_lean_;  // per source mesh
+  u32 still_walk_far_ = 0;
+  f32 still_gate_ = -1.0f;  // the least strength any mesh leans past; below 0: not yet known
+  bool relean_far(u32 at);
+  void place_far_lean(std::span<const u32> indices);
   void add_still_slot(u32 slot);
   void drop_still_slot(u32 slot) noexcept;
   bool relean(u32 at);

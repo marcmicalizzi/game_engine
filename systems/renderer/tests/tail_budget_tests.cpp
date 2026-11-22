@@ -594,4 +594,165 @@ TEST_CASE("tail budget: a still form's lean keeps the first pair its slot was nu
   scene.destroy();
 }
 
+// W158 (renderer.md, "The far forest leans"): an authored tree's rigid ring form leans from calm
+// (`SceneData::still_from` 0), not past a still rule's wind, so at half a mean day — under the
+// placements' rule wind of 0.7 — it already leans by its mesh's mean lean times the load, as the
+// swaying tree beside it does on the mean; and calm again puts every record back at its rest.
+TEST_CASE("tail budget: an authored tree's rigid form leans from calm") {
+  const test::TempDir tmp("renderer_tail_budget_authored_lean");
+  REQUIRE(tmp.ok());
+  Rig rig(tmp);
+  if (!rig.ok) {
+    MESSAGE("skipped: " << rig.why);
+    return;
+  }
+  rig.data.still_lean.assign(rig.data.parts.size(), 0.0f);
+  rig.data.still_lean[0] = 0.05f;
+  rig.data.still_from.assign(rig.data.parts.size(), 0.0f);
+  rig.data.still_wind = 0.7f;
+  std::string error;
+  GpuScene scene;
+  REQUIRE_MESSAGE(scene.create(rig.device, rig.data, rig.resolved, &error), error);
+  REQUIRE(scene.flora_tail());
+  GpuScene::TileChange change;
+  const Tile two[] = {{1, 0.0, 3, 0}, {2, 1000.0, 3, 0}};
+  REQUIRE_MESSAGE(commit(scene, two, change, error), error);
+  REQUIRE(scene.flora_stats().still_slots == 6);
+  Vector<gfx::InstanceDesc> rest;
+  for (const TileBlock& block : scene.tile_layout().blocks())
+    for (u32 k = 0; k < block.instances; ++k)
+      rest.push_back(*scene.instance_record(block.inst_begin + k));
+  u32 frame = 0;
+  const auto blow = [&](f32 strength) {
+    FrameFlora wind;
+    wind.wind_set = true;
+    wind.wind_strength = strength;
+    for (u32 f = 0; f < 4; ++f) {
+      scene.flora_padding_frame(wind, 0.0, gfx::WindLive{}, 0.0);
+      GpuScene::TableUpdate update;
+      REQUIRE_MESSAGE(scene.prepare_tables(frame++ % 2, update, &error), error);
+    }
+  };
+  blow(0.0f);
+  CHECK(scene.flora_stats().still_walks == 0);  // calm: no walk, nothing written
+  CHECK(scene.flora_stats().still_writes == 0);
+  blow(0.5f);
+  CHECK(scene.flora_stats().still_walks == 1);
+  CHECK(scene.flora_stats().still_lean == doctest::Approx(0.05f * 0.5f));  // the law's load at 0.5
+  const u64 leaned = scene.flora_stats().still_writes;
+  CHECK(leaned == 6);
+  blow(0.0f);
+  u32 back = 0;
+  u32 i = 0;
+  for (const TileBlock& block : scene.tile_layout().blocks())
+    for (u32 k = 0; k < block.instances; ++k, ++i) {
+      const gfx::InstanceDesc& now = *scene.instance_record(block.inst_begin + k);
+      back += std::memcmp(now.rows, rest[i].rows, sizeof(now.rows)) == 0 &&
+                      now.scale_max == rest[i].scale_max && now.flags == rest[i].flags
+                  ? 1u
+                  : 0u;
+    }
+  MESSAGE("leaned " << leaned << " of 6 slots at half a mean day; " << back
+                    << " of 6 back at their rest in the calm");
+  CHECK(back == 6);
+  CHECK_MESSAGE(scene.validate_tables(&error), error);
+  scene.destroy();
+}
+
+// W158: a far tile leans about its trees' mean foot by their shares of each mesh's lean, from
+// calm; a tile placed again by the hand-off (parked, here) keeps what was placed and stands leaned
+// at once; calm puts its 3x3 back. The fixture's tile is the load's palm, its "foot" 1.5 m up.
+TEST_CASE(
+    "tail budget: a far tile leans about its trees' foot and stays leaned when placed again") {
+  const test::TempDir tmp("renderer_tail_budget_far_lean");
+  REQUIRE(tmp.ok());
+  Rig rig(tmp);
+  if (!rig.ok) {
+    MESSAGE("skipped: " << rig.why);
+    return;
+  }
+  REQUIRE_FALSE(rig.data.instances.empty());
+  FarForestTile tile;
+  tile.key = far_tile_key(0, 0);
+  tile.mesh = rig.data.instances[0].mesh;
+  tile.instance = 0;
+  tile.trees = 1;
+  tile.foot_y = 1.5f;
+  tile.mix_count = 1;
+  rig.data.far_forest.tiles.push_back(tile);
+  rig.data.far_forest.mix.push_back(FarTileMix{0, 1.0f});
+  rig.data.far_forest.mesh_lean.assign(rig.data.parts.size(), 0.0f);
+  rig.data.far_forest.mesh_lean[0] = 0.05f;
+  rig.data.far_forest.tile_size = 64.0f;
+  std::string error;
+  GpuScene scene;
+  REQUIRE_MESSAGE(scene.create(rig.device, rig.data, rig.resolved, &error), error);
+  REQUIRE(scene.flora_tail());
+  const gfx::InstanceDesc rest = *scene.instance_record(0);
+  u32 frame = 0;
+  const auto blow = [&](f32 strength) {
+    FrameFlora wind;
+    wind.wind_set = true;
+    wind.wind_strength = strength;
+    for (u32 f = 0; f < 4; ++f) {
+      scene.flora_padding_frame(wind, 0.0, gfx::WindLive{}, 0.0);
+      GpuScene::TableUpdate update;
+      REQUIRE_MESSAGE(scene.prepare_tables(frame++ % 2, update, &error), error);
+    }
+  };
+  blow(0.0f);
+  CHECK(scene.flora_stats().far_writes == 0);
+  CHECK(std::memcmp(scene.instance_record(0), &rest, sizeof(rest)) == 0);
+  // Force 12: 34.8 m/s, by the palm's own law.
+  FloraMesh tree;
+  REQUIRE(flora_mesh(
+      std::span<const geometry::ClusterFileMotionPart>(rig.data.sources[0].motion_parts.data(),
+                                                       rig.data.sources[0].motion_parts.size()),
+      std::span<const geometry::ClusterFileStructuralPart>(
+          rig.data.sources[0].structural_parts.data(), rig.data.sources[0].structural_parts.size()),
+      rig.data.sources[0].species, tree));
+  const f32 strength = static_cast<f32>(34.8 / k_flora_wind_mean_m_s);
+  const f32 want = 0.05f * flora_storm_load(strength, tree.streamline, tree.hold);
+  blow(strength);
+  CHECK(scene.flora_stats().far_tiles == 1);
+  CHECK(scene.flora_stats().far_writes == 1);
+  const auto lean_of = [&](const gfx::InstanceDesc& now, const gfx::InstanceDesc& from) {
+    const f32 dx = (now.rows[0].y - from.rows[0].y) / from.rows[1].y;
+    const f32 dz = (now.rows[2].y - from.rows[2].y) / from.rows[1].y;
+    return Vec2{dx, dz};
+  };
+  const gfx::InstanceDesc storm = *scene.instance_record(0);
+  const Vec2 lean = lean_of(storm, rest);
+  CHECK(std::sqrt(lean.x * lean.x + lean.y * lean.y) == doctest::Approx(want).epsilon(1e-4));
+  // About the foot: the translation moves back by the lean of the foot's height.
+  CHECK(storm.rows[0].w - rest.rows[0].w ==
+        doctest::Approx(-lean.x * rest.rows[1].y * 1.5f).epsilon(1e-3));
+  CHECK(storm.rows[2].w - rest.rows[2].w ==
+        doctest::Approx(-lean.y * rest.rows[1].y * 1.5f).epsilon(1e-3));
+  CHECK((storm.flags & gfx::k_instance_uniform_scale) == 0u);
+  // Parked by the hand-off in the storm: leaned at once against its parked record.
+  SceneInstance parked;
+  parked.mesh = tile.mesh;
+  parked.origin = WorldPos{0.0, k_far_park_depth_m, 0.0};
+  const u32 index = 0;
+  REQUIRE_MESSAGE(scene.place_instances(std::span<const u32>(&index, 1),
+                                        std::span<const SceneInstance>(&parked, 1), &error),
+                  error);
+  const gfx::InstanceDesc moved = *scene.instance_record(0);
+  CHECK(scene.flora_stats().far_writes == 2);
+  CHECK(moved.rows[0].y == storm.rows[0].y);
+  CHECK(moved.rows[2].y == storm.rows[2].y);
+  blow(0.0f);  // calm: the 3x3 back at its rest
+  const gfx::InstanceDesc calm = *scene.instance_record(0);
+  MESSAGE("lean " << std::sqrt(lean.x * lean.x + lean.y * lean.y) << " m a metre at force 12 (want "
+                  << want << "); " << scene.flora_stats().far_writes << " far writes");
+  CHECK(calm.rows[0].y == rest.rows[0].y);
+  CHECK(calm.rows[2].y == rest.rows[2].y);
+  CHECK(calm.scale_max == rest.scale_max);
+  CHECK((calm.flags & gfx::k_instance_uniform_scale) ==
+        (rest.flags & gfx::k_instance_uniform_scale));
+  CHECK_MESSAGE(scene.validate_tables(&error), error);
+  scene.destroy();
+}
+
 #endif
