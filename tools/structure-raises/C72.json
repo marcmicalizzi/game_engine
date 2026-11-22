@@ -1,10 +1,10 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "C72",
-  "reason": "C72: the content classes stage and its log line by kind (how the walk got each recipe's hosts among them), the forest's measured table before and after, and what the class read reads once, in parallel, serially and not at all (a recipe whose generator cannot name a host, and why that declaration is checked), in Content classes at load",
+  "reason": "C72: the content classes stage and its log line by kind (how the walk got each recipe's hosts among them), a forest's measured table before, after and after its mends, and what the class read reads once, in parallel, serially and not at all (a recipe whose generator cannot name a host, and why that declaration is checked), in Content classes at load",
   "date": "2026-11-22",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/renderer.md": 7080
+    "page:docs/subsystems/renderer.md": 7799
   }
 }
