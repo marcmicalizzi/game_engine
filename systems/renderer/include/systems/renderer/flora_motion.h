@@ -361,6 +361,7 @@ gfx::InstanceDesc far_lean_record(const gfx::InstanceDesc& rest, Vec2 lean, f32 
 // `flora_lean_on_curve` reads it at a strength (linear under the first point). What a rigid form of
 // a swaying tree, and a far tile's share of one, leans by.
 inline constexpr u32 k_flora_lean_curve_points = 8;
+inline constexpr f32 k_flora_lean_most = 0.6f;  // the most a curve point leans: 31 degrees, 17 % stretch
 f32 flora_lean_curve_strength(u32 point) noexcept;
 void flora_lean_curve(const FloraMesh& mesh, std::span<const Vec3> vertices,
                       std::span<const geometry::ClusterFileMotionVertex> motion,

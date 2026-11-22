@@ -763,7 +763,11 @@ void flora_lean_curve(const FloraMesh& mesh, std::span<const Vec3> vertices,
         }
       }
     }
-    out[point] = den > 0.0 && num > 0.0 ? static_cast<f32>(num / den) : 0.0f;
+    // Held at `k_flora_lean_most`: a shrub or a fern whose fronds stream flat fits a shear past 1
+    // (1.7 on the forest staging at force 12), and a shear that far stretches the form by
+    // sqrt(1 + l^2) and slides its crown past its own height — a bend no rigid form can show.
+    const f32 fit = den > 0.0 && num > 0.0 ? static_cast<f32>(num / den) : 0.0f;
+    out[point] = fit < k_flora_lean_most ? fit : k_flora_lean_most;
   }
 }
 
