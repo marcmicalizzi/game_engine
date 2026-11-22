@@ -224,6 +224,16 @@ void tile_lean_mix(const TileJob& job, std::span<const FarForestInstance> instan
   }
   tile.mix_count = mix.size() - tile.mix_begin;
   tile.foot_y = sum > 0.0 ? static_cast<f32>(foot / sum) : 0.0f;
+  // The feet's spread about that pivot by the same weights (W158-2): what a lean slides them by.
+  f64 spread = 0.0;
+  for (u32 k = 0; k < job.trees.size() && sum > 0.0; ++k) {
+    const FarForestInstance& instance = instances[job.trees[k]];
+    const f64 w = static_cast<f64>(job.heights[k]) * static_cast<f64>(job.heights[k]);
+    const f64 off = instance.origin.y + static_cast<f64>(instance.transform.position.y) -
+                    static_cast<f64>(tile.foot_y);
+    spread += w * off * off;
+  }
+  tile.foot_spread = sum > 0.0 ? static_cast<f32>(std::sqrt(spread / sum)) : 0.0f;
   for (u32 at = tile.mix_begin; at < mix.size(); ++at)
     mix[at].weight = sum > 0.0 ? static_cast<f32>(static_cast<f64>(mix[at].weight) / sum) : 0.0f;
 }

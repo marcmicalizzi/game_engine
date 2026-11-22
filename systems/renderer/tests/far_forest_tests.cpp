@@ -210,6 +210,8 @@ TEST_CASE(
     CHECK(one.instances[tile.instance].mesh == tile.mesh);
     CHECK(one.instances[tile.instance].cell.x == static_cast<i32>(std::floor(tile.x * 0.5)));
     CHECK(one.sources[tile.mesh].species.empty());  // no species: rigid, the trees' casting
+    CHECK(tile.foot_spread >= 0.0f);                // W158-2: the feet's spread, measured
+    CHECK(tile.foot_spread < 64.0f);
     const geometry::ClusterMeshPart& part = one.parts[tile.mesh];
     clusters += part.cluster_count;
     bool cross = false;

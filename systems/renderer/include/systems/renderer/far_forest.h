@@ -42,6 +42,10 @@ struct FarForestTile {
   // height, metres, each weighted by its height squared (the shear's least-squares pivot), and its
   // run of `FarForestData::mix`. Measured at the load from the placements, never cached.
   f32 foot_y = 0.0f;
+  // The feet's spread about `foot_y` by the same weights, metres (the weighted root mean square of
+  // each foot's height off it, W158-2): a tree whose foot is d off the pivot slides lean x d, so a
+  // walk holds the tile's lean at `k_far_lean_slide_m` over it. Zero on flat ground.
+  f32 foot_spread = 0.0f;
   u32 mix_begin = 0;
   u32 mix_count = 0;
 };

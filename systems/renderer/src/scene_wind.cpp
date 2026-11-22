@@ -894,24 +894,80 @@ bool GpuScene::relean(u32 at) {
 // stand's lean is its mean bend: the gusts' few seconds are the sway this does not draw), past the
 // still rule's own wind, by each still mesh's law. A walk starts when that wind has moved by 2 %
 // (or 0.02 of a mean day) or turned by 2 degrees since the last, and writes every still slot,
-// `renderer.flora.padding_records` a frame; nothing at all while the wind is at or under the
-// rule's, so a calm session's records are their rest, to the bit.
+// `renderer.flora.padding_records` a frame; nothing at all while no lean passes the dead band
+// (`k_flora_lean_dead`, W158-2), so a calm or light-air session's records are their rest, to the
+// bit.
 void GpuScene::still_lean_frame(const FrameFlora& frame, f64 sky_time_s,
                                 const gfx::WindLive& live) {
   if (data_ == nullptr || !flora_tail_) return;
   const FarForestData& far = data_->far_forest;
   if (data_->still_lean.empty() && far.mesh_lean.empty()) return;
+  // A mesh's law by its source's tree: its streamlining exponent and the load it is held at.
+  const auto law = [&](u32 src, f32 at) {
+    const FloraMesh* tree = src < flora_meshes_.size() ? &flora_meshes_[src] : nullptr;
+    const f32 b = tree != nullptr ? tree->streamline : 1.0f;
+    const f32 hold = tree != nullptr ? tree->hold : k_flora_max_wind;
+    return flora_storm_load(at, b, hold);
+  };
+  // A from-calm mean lean at a strength: the posed mean the load measured for the mesh
+  // (SceneData::lean_curve), or small-angle where it measured none.
+  const auto held = [&](u32 src, f32 k, f32 at_strength) {
+    const u32 at = src * k_flora_lean_curve_points;
+    if (at + k_flora_lean_curve_points > data_->lean_curve.size()) return k * law(src, at_strength);
+    return flora_lean_on_curve(
+        std::span<const f32>(data_->lean_curve.data() + at, k_flora_lean_curve_points),
+        at_strength);
+  };
+  // Held where a rigid form can show it (W158), and none under the dead band (W158-2).
+  const auto banded = [](f32 lean) {
+    return lean < k_flora_lean_dead ? 0.0f : std::min(lean, k_flora_lean_most);
+  };
+  // A still mesh's lean at a strength: past its rule's wind by the law, or from calm as posed.
+  const auto still_at = [&](u32 m, f32 at_strength) {
+    const f32 k = data_->still_lean[m];
+    if (!(k > 0.0f)) return 0.0f;
+    const u32 src = m < data_->form_source.size() ? data_->form_source[m] : m;
+    const f32 from = m < data_->still_from.size() ? data_->still_from[m] : data_->still_wind;
+    const f32 past = law(src, at_strength) - law(src, from);
+    return banded(!(past > 0.0f) ? 0.0f : from > 0.0f ? k * past : held(src, k, at_strength));
+  };
+  // A far tile's source mesh's whole mean lean, from calm, as an authored tree's rigid form takes
+  // it.
+  const auto far_at = [&](u32 m, f32 at_strength) {
+    const f32 k = far.mesh_lean[m];
+    return k > 0.0f ? banded(held(m, k, at_strength)) : 0.0f;
+  };
   if (still_gate_ < 0.0f) {
-    // The least strength anything leans past (W158): a placements' still form's rule wind, an
-    // authored form's or a far tile's calm. Once: the scene's data does not change.
+    // **The gate** (W158-2): the least strength at which any lean passes the dead band, so a wind
+    // that never reaches it starts no walk. Once: the scene's data does not change. Each mesh's
+    // first crossing is found on a geometric ladder of strengths, then halved down to the float;
+    // the gate is the strength just under it, whose lean is none.
     still_gate_ = 1.0e30f;
-    for (u32 m = 0; m < data_->still_lean.size(); ++m) {
-      if (!(data_->still_lean[m] > 0.0f)) continue;
-      const f32 from = m < data_->still_from.size() ? data_->still_from[m] : data_->still_wind;
-      still_gate_ = std::min(still_gate_, from);
-    }
-    for (const f32 k : far.mesh_lean)
-      if (k > 0.0f && !far.tiles.empty()) still_gate_ = 0.0f;
+    const auto first_past = [&](auto&& lean_at) {
+      f32 below = 0.0f;
+      for (f32 s = 0.01f; s < 1.25f * k_flora_max_wind; s *= 1.25f) {
+        if (lean_at(s) > 0.0f) {
+          f32 above = s;
+          for (u32 i = 0; i < 40; ++i) {
+            const f32 mid = 0.5f * (below + above);
+            if (lean_at(mid) > 0.0f)
+              above = mid;
+            else
+              below = mid;
+          }
+          return below;
+        }
+        below = s;
+      }
+      return 1.0e30f;
+    };
+    for (u32 m = 0; m < data_->still_lean.size(); ++m)
+      if (data_->still_lean[m] > 0.0f)
+        still_gate_ = std::min(still_gate_, first_past([&](f32 s) { return still_at(m, s); }));
+    if (!far.tiles.empty())
+      for (u32 m = 0; m < far.mesh_lean.size(); ++m)
+        if (far.mesh_lean[m] > 0.0f)
+          still_gate_ = std::min(still_gate_, first_past([&](f32 s) { return far_at(m, s); }));
   }
   f32 strength = 0.0f;
   const WindHand hand = wind_hand_tunable();
@@ -935,49 +991,25 @@ void GpuScene::still_lean_frame(const FrameFlora& frame, f64 sky_time_s,
   if (!still_walking_) {
     const f32 moved = std::fabs(strength - still_walk_strength_);
     const bool turned = to.x * still_walk_to_.x + to.y * still_walk_to_.y < 0.99939f;  // 2 deg
-    const bool leans = strength > still_gate_ || still_walk_strength_ > still_gate_;
-    if (leans && (moved > std::max(0.02f, 0.02f * still_walk_strength_) || turned)) {
+    const bool over = strength > still_gate_;
+    const bool was_over = still_walk_strength_ > still_gate_;
+    // Crossing the gate either way always walks (W158-2): a wind easing back under it in steps of
+    // under 0.02 puts every record back at its rest, bit included.
+    if ((over || was_over) &&
+        (over != was_over || moved > std::max(0.02f, 0.02f * still_walk_strength_) || turned)) {
       still_walk_strength_ = strength;
       still_walk_to_ = to;
-      // A mesh's law by its source's tree: its streamlining exponent and the load it is held at.
-      const auto law = [&](u32 src, f32 at) {
-        const FloraMesh* tree = src < flora_meshes_.size() ? &flora_meshes_[src] : nullptr;
-        const f32 b = tree != nullptr ? tree->streamline : 1.0f;
-        const f32 hold = tree != nullptr ? tree->hold : k_flora_max_wind;
-        return flora_storm_load(at, b, hold);
-      };
-      // A from-calm mean lean at a strength: the posed mean the load measured for the mesh
-      // (SceneData::lean_curve), or small-angle where it measured none.
-      const auto held = [&](u32 src, f32 k, f32 at_strength) {
-        const u32 at = src * k_flora_lean_curve_points;
-        if (at + k_flora_lean_curve_points > data_->lean_curve.size())
-          return k * law(src, at_strength);
-        return flora_lean_on_curve(
-            std::span<const f32>(data_->lean_curve.data() + at, k_flora_lean_curve_points),
-            at_strength);
-      };
       still_mesh_lean_.resize(data_->still_lean.size(), 0.0f);
       f32 most = 0.0f;
       for (u32 m = 0; m < data_->still_lean.size(); ++m) {
-        const f32 k = data_->still_lean[m];
-        if (!(k > 0.0f)) continue;
-        const u32 src = m < data_->form_source.size() ? data_->form_source[m] : m;
-        const f32 from = m < data_->still_from.size() ? data_->still_from[m] : data_->still_wind;
-        const f32 past = law(src, strength) - law(src, from);
-        still_mesh_lean_[m] = !(past > 0.0f) ? 0.0f
-                              : from > 0.0f  ? k * past
-                                             : held(src, k, strength);  // from calm: as posed
-        // Held where a rigid form can show it, a placements' still form's linear lean too (W158).
-        still_mesh_lean_[m] = std::min(still_mesh_lean_[m], k_flora_lean_most);
+        still_mesh_lean_[m] = still_at(m, strength);
         most = std::max(most, still_mesh_lean_[m]);
       }
       // **The far tiles** (W158): each source mesh's whole mean lean, from calm, as an authored
       // tree's rigid form takes it; a tile leans by its trees' shares of them (`relean_far`).
       far_mesh_lean_.resize(far.mesh_lean.size(), 0.0f);
-      for (u32 m = 0; m < far.mesh_lean.size(); ++m) {
-        const f32 k = far.mesh_lean[m];
-        far_mesh_lean_[m] = k > 0.0f ? std::min(held(m, k, strength), k_flora_lean_most) : 0.0f;
-      }
+      for (u32 m = 0; m < far.mesh_lean.size(); ++m)
+        far_mesh_lean_[m] = far_at(m, strength);
       if (far_lean_.empty() && !far.mesh_lean.empty()) {
         // Kept from the first walk on: the records as the hand-off last placed them, none leaned.
         far_lean_.reserve(far.tiles.size());
@@ -1031,6 +1063,10 @@ bool GpuScene::relean_far(u32 at) {
     const FarTileMix& share = far.mix[k];
     if (share.mesh < far_mesh_lean_.size()) lean += share.weight * far_mesh_lean_[share.mesh];
   }
+  // Held so no foot slides past `k_far_lean_slide_m` off its ground on a slope (W158-2), and none
+  // under the dead band: a flat tile's spread is 0 and holds nothing.
+  if (tile.foot_spread > 0.0f) lean = std::min(lean, k_far_lean_slide_m / tile.foot_spread);
+  if (lean < k_flora_lean_dead) lean = 0.0f;
   const gfx::InstanceDesc leaned = far_lean_record(entry.rest, still_walk_to_ * lean, tile.foot_y);
   gfx::InstanceDesc& placed = instance_table_[entry.instance];
   const u32 uniform = gfx::k_instance_uniform_scale;
