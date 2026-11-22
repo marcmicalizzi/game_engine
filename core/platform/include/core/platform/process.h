@@ -18,6 +18,11 @@ namespace engine::platform {
 // the GPU (foundation/gpu_lock/device_hold.h): sysexits' EX_TEMPFAIL, "try again later", and no
 // other exit of this tree uses it. CTest reports a test that ends with it as skipped.
 inline constexpr i32 k_exit_gpu_lock_gave_up = 75;
+// The exit code of a host that lost its graphics device and wrote what it had first (roadmap
+// T212; domain/gfx/device_lost.h, docs/subsystems/apps.md "When the device is lost"): next to
+// 75 and used by nothing else, so a script can tell a lost device from an abort (3) and from a
+// failure (1). It is not a skip: CTest reports it as a failure.
+inline constexpr i32 k_exit_device_lost = 76;
 
 class Process {
  public:

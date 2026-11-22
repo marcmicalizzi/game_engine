@@ -1,5 +1,6 @@
 #include <core/base/macros.h>
 #include <core/log/log.h>
+#include <domain/gfx/device_lost.h>
 #include <domain/gfx/test_profile.h>
 
 #include <cstdlib>
@@ -112,6 +113,33 @@ const DeviceOverrides& test_device_overrides() {
     return DeviceOverrides{};
   }();
   return overrides;
+}
+
+// The lost-device seam (device_lost.h, T212) under the same rule as a profile: a test's variable
+// does nothing outside a live test's main.
+u64 test_lose_device_at() {
+  static const u64 at = [] {
+    const std::string text = read_environment(k_test_lose_device_env);
+    if (text.empty()) return u64{0};
+    const std::string run = read_environment(k_test_run_env);
+    std::error_code temp_error;
+    const std::filesystem::path temp = std::filesystem::temp_directory_path(temp_error);
+    const std::string root = temp_error ? std::string() : (temp / "engine-tests").string();
+    std::error_code run_error;
+    const bool exists = !run.empty() && std::filesystem::is_directory(run, run_error);
+    if (judge_test_profile(text, run, root, exists) != TestProfile::honoured) {
+      ENGINE_LOG_WARN(log_test_profile,
+                      "the lost-device seam is set and ignored: it is honoured only under a live "
+                      "test's main",
+                      log::field("value", text));
+      return u64{0};
+    }
+    const u64 value = parse_lose_device_at(text);
+    ENGINE_LOG_INFO(log_test_profile, "the device will answer lost at a frame wait (test seam)",
+                    log::field("frame_value", value));
+    return value;
+  }();
+  return at;
 }
 
 }  // namespace engine::gfx

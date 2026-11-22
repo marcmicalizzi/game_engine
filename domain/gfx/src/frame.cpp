@@ -76,6 +76,7 @@ bool FrameContext::create(const Device& device, u32 frames_in_flight, std::strin
     slot.acquire = vk::wrap(acquire);
   }
   device_ = &device;
+  lose_at_ = test_lose_device_at();
   ENGINE_LOG_DEBUG(log_frame, "frame context created",
                    log::field("frames_in_flight", frames_in_flight));
   return true;
@@ -104,8 +105,24 @@ void FrameContext::destroy() noexcept {
 
 void FrameContext::recycle(Slot& slot) {
   if (slot.submitted_value != 0) {
-    const bool done = wait(slot.submitted_value);
-    ENGINE_VERIFY(done, "FrameContext: waiting for a submitted frame failed (device lost?)");
+    const VkSemaphore timeline = vk::native(timeline_);
+    VkSemaphoreWaitInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+    info.semaphoreCount = 1;
+    info.pSemaphores = &timeline;
+    info.pValues = &slot.submitted_value;
+    // The test seam answers "lost" before the device is asked (device_lost.h).
+    const bool simulated = lose_at_ != 0 && slot.submitted_value >= lose_at_;
+    const VkResult r = simulated ? VK_ERROR_DEVICE_LOST
+                                 : vkWaitSemaphores(device_->handles().device, &info, ~u64{0});
+    if (r == VK_ERROR_DEVICE_LOST) {
+      // The host's turn (T212): its handler writes what it has and ends the process. With none
+      // set this returns, and the abort below is the one there always was.
+      device_->report_lost(DeviceLostAt::frame_wait, slot.submitted_value, frame_index_,
+                           simulated ? 0 : completed(), simulated);
+    }
+    ENGINE_VERIFY(r == VK_SUCCESS,
+                  "FrameContext: waiting for a submitted frame failed (device lost?)");
   }
   for (BufferResource& b : slot.buffers)
     destroy_buffer(*device_, b);
@@ -166,6 +183,8 @@ u64 FrameContext::end_frame(const PresentSync& sync) {
   submit.signalSemaphoreInfoCount = signal_count;
   submit.pSignalSemaphoreInfos = signals;
   const VkResult r = vkQueueSubmit2(device_->handles().graphics_queue, 1, &submit, VK_NULL_HANDLE);
+  if (r == VK_ERROR_DEVICE_LOST)
+    device_->report_lost(DeviceLostAt::frame_submit, value, frame_index_, completed());
   ENGINE_VERIFY(r == VK_SUCCESS, "FrameContext::end_frame: vkQueueSubmit2 failed");
   slot.submitted_value = value;
   ++frame_index_;

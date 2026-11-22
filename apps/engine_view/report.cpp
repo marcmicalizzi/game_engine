@@ -90,7 +90,7 @@ std::string os_version() {
 JsonValue report_json(const RunReport& report) {
   JsonValue out = JsonValue::object();
   out.set("format", "engine.view.report");
-  out.set("version", static_cast<u32>(1));
+  out.set("version", static_cast<u32>(2));
 
   JsonValue exit = JsonValue::object();
   exit.set("code", static_cast<i64>(report.exit_code));
@@ -129,6 +129,7 @@ JsonValue report_json(const RunReport& report) {
   out.set("walk", std::move(walk));
 
   out.set("game", report.game);
+  out.set("device_lost", report.device_lost);  // version 2 (T212): null unless the device was lost
 
   // The summary as the run printed it: parsed, so a field the summary gains reaches the report
   // with no change here; null for a run that ended before it had one.

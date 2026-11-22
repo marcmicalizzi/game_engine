@@ -73,6 +73,11 @@ struct Handles {
   // (VK_EXT_hdr_metadata). Each only where offered; without them a surface offers sRGB alone.
   bool swapchain_colorspace = false;
   bool hdr_metadata = false;
+  // VK_EXT_device_fault (T212; device_lost.h): enabled wherever offered, presenting or not, so the
+  // first device loss can say what faulted; `device_fault_vendor_binary` when the device also
+  // offers the vendor's binary crash dump. Nothing drawn depends on either.
+  bool device_fault = false;
+  bool device_fault_vendor_binary = false;
 };
 
 const char* result_name(VkResult result) noexcept;

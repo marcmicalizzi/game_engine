@@ -16,11 +16,15 @@
 #include <foundation/gpu_lock/device_hold.h>
 #include <foundation/io/vfs.h>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <thread>
 
 namespace engine::gfx {
 
@@ -219,6 +223,10 @@ struct Device::Impl {
   u64 cache_bytes = 0;
   // Every pipeline creation's time and the open batch (pipeline_batch.h); `handles.pipelines`.
   std::unique_ptr<detail::PipelineRecorder> pipelines;
+  // The host's turn on a lost device (device_lost.h, T212), and whether a loss was reported.
+  DeviceLostHandler lost_handler = nullptr;
+  void* lost_context = nullptr;
+  std::atomic<bool> lost{false};
 };
 
 Device::~Device() { destroy(); }
@@ -311,6 +319,148 @@ bool Device::save_pipeline_cache() noexcept {
 void Device::wait_idle() noexcept {
   if (impl_ != nullptr && impl_->handles.device != VK_NULL_HANDLE)
     vkDeviceWaitIdle(impl_->handles.device);
+}
+
+// ---- a lost device (device_lost.h, T212) ------------------------------------------------------
+
+namespace {
+
+ENGINE_LOG_CATEGORY_DEFINE(log_lost, "gfx.device_lost");
+
+std::string hex_of(u64 value) {
+  char text[24];
+  std::snprintf(text, sizeof(text), "0x%016llx", static_cast<unsigned long long>(value));
+  return text;
+}
+
+#if defined(VK_EXT_device_fault)
+FaultAddressKind fault_kind_of(VkDeviceFaultAddressTypeEXT type) noexcept {
+  switch (type) {
+    case VK_DEVICE_FAULT_ADDRESS_TYPE_NONE_EXT: return FaultAddressKind::none;
+    case VK_DEVICE_FAULT_ADDRESS_TYPE_READ_INVALID_EXT: return FaultAddressKind::read_invalid;
+    case VK_DEVICE_FAULT_ADDRESS_TYPE_WRITE_INVALID_EXT: return FaultAddressKind::write_invalid;
+    case VK_DEVICE_FAULT_ADDRESS_TYPE_EXECUTE_INVALID_EXT: return FaultAddressKind::execute_invalid;
+    case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_UNKNOWN_EXT:
+      return FaultAddressKind::instruction_pointer_unknown;
+    case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_INVALID_EXT:
+      return FaultAddressKind::instruction_pointer_invalid;
+    case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_FAULT_EXT:
+      return FaultAddressKind::instruction_pointer_fault;
+    default: return FaultAddressKind::other;
+  }
+}
+#endif
+
+// The device's account of the fault, read once: the counts, then the records into storage of
+// their size. Every allocation is here, on the loss, never on a frame.
+DeviceFault read_fault(const Handles& h) {
+  DeviceFault out;
+#if defined(VK_EXT_device_fault)
+  if (!h.device_fault || vkGetDeviceFaultInfoEXT == nullptr) {
+    out.unavailable = "no VK_EXT_device_fault on this device";
+    return out;
+  }
+  VkDeviceFaultCountsEXT counts{};
+  counts.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT;
+  if (const VkResult r = vkGetDeviceFaultInfoEXT(h.device, &counts, nullptr);
+      r != VK_SUCCESS && r != VK_INCOMPLETE) {
+    out.unavailable = std::string("vkGetDeviceFaultInfoEXT(counts): ") + result_name(r);
+    return out;
+  }
+  if (!h.device_fault_vendor_binary) counts.vendorBinarySize = 0;
+  Vector<VkDeviceFaultAddressInfoEXT> addresses;
+  Vector<VkDeviceFaultVendorInfoEXT> vendors;
+  addresses.resize(counts.addressInfoCount);
+  vendors.resize(counts.vendorInfoCount);
+  out.vendor_binary.resize(static_cast<u32>(counts.vendorBinarySize));
+  VkDeviceFaultInfoEXT info{};
+  info.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT;
+  info.pAddressInfos = addresses.empty() ? nullptr : addresses.data();
+  info.pVendorInfos = vendors.empty() ? nullptr : vendors.data();
+  info.pVendorBinaryData = out.vendor_binary.empty() ? nullptr : out.vendor_binary.data();
+  if (const VkResult r = vkGetDeviceFaultInfoEXT(h.device, &counts, &info);
+      r != VK_SUCCESS && r != VK_INCOMPLETE) {
+    out.vendor_binary.clear();
+    out.unavailable = std::string("vkGetDeviceFaultInfoEXT: ") + result_name(r);
+    return out;
+  }
+  out.read = true;
+  out.description = info.description;
+  // The second call may have written fewer than the first counted (VK_INCOMPLETE's meaning).
+  for (u32 i = 0; i < counts.addressInfoCount && i < addresses.size(); ++i) {
+    out.addresses.push_back(FaultAddress{fault_kind_of(addresses[i].addressType),
+                                         addresses[i].reportedAddress,
+                                         addresses[i].addressPrecision});
+  }
+  for (u32 i = 0; i < counts.vendorInfoCount && i < vendors.size(); ++i) {
+    out.vendors.push_back(FaultVendorRecord{vendors[i].description, vendors[i].vendorFaultCode,
+                                            vendors[i].vendorFaultData});
+  }
+  out.vendor_binary.resize(
+      static_cast<u32>(std::min<u64>(counts.vendorBinarySize, out.vendor_binary.size())));
+#else
+  (void)h;
+  out.unavailable = "this build's Vulkan headers have no VK_EXT_device_fault";
+#endif
+  return out;
+}
+
+}  // namespace
+
+void Device::set_lost_handler(DeviceLostHandler handler, void* context) noexcept {
+  if (impl_ == nullptr) return;
+  impl_->lost_handler = handler;
+  impl_->lost_context = context;
+}
+
+bool Device::lost() const noexcept {
+  return impl_ != nullptr && impl_->lost.load(std::memory_order_acquire);
+}
+
+void Device::report_lost(DeviceLostAt at, u64 value, u64 last_submitted, u64 last_completed,
+                         bool simulated) const noexcept {
+  if (impl_ == nullptr) return;
+  if (impl_->lost.exchange(true, std::memory_order_acq_rel)) {
+    // Another thread reported it first. With a handler it is ending the process (and bounding
+    // itself); wait for that rather than run a second handler or race it to the exit.
+    if (impl_->lost_handler != nullptr) {
+      for (;;)
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+    return;
+  }
+  DeviceLost lost;
+  lost.at = at;
+  lost.value = value;
+  lost.last_submitted = last_submitted;
+  lost.last_completed = last_completed;
+  lost.simulated = simulated;
+  if (simulated) {
+    lost.fault.unavailable = "a simulated loss (the test seam): the device has no fault to read";
+  } else {
+    lost.fault = read_fault(impl_->handles);
+  }
+  const DeviceFault& f = lost.fault;
+  ENGINE_LOG_ERROR(log_lost, "the device was lost", log::field("at", device_lost_at_name(at)),
+                   log::field("value", value), log::field("last_submitted", last_submitted),
+                   log::field("last_completed", last_completed), log::field("simulated", simulated),
+                   log::field("fault_read", f.read),
+                   log::field("description", f.read ? f.description : f.unavailable),
+                   log::field("addresses", static_cast<u64>(f.addresses.size())),
+                   log::field("vendor_records", static_cast<u64>(f.vendors.size())),
+                   log::field("vendor_binary_bytes", static_cast<u64>(f.vendor_binary.size())));
+  for (const FaultAddress& a : f.addresses) {
+    ENGINE_LOG_ERROR(log_lost, "fault address", log::field("kind", fault_address_kind_name(a.kind)),
+                     log::field("address", hex_of(a.address)),
+                     log::field("precision", a.precision));
+  }
+  for (const FaultVendorRecord& v : f.vendors) {
+    ENGINE_LOG_ERROR(log_lost, "fault vendor record", log::field("description", v.description),
+                     log::field("code", hex_of(v.code)), log::field("data", hex_of(v.data)));
+  }
+  if (impl_->lost_handler == nullptr) return;
+  impl_->lost_handler(impl_->lost_context, lost);
+  ENGINE_VERIFY(false, "Device::report_lost: the host's lost-device handler returned");
 }
 
 bool Device::create(const DeviceOptions& options, std::string* error) {
@@ -563,6 +713,25 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
   // driver offers it, and a device without it presents an HDR chain with no metadata.
   h.hdr_metadata =
       impl->features.presentation && device_extensions.enable_if_available("VK_EXT_hdr_metadata");
+  // The device's account of a fault (T212; device_lost.h): read once, on the first device loss.
+  // Not a row of the requirements table — nothing drawn depends on it, and a device without it
+  // reports a loss with no fault — so like the presentation extras it is queried here, its one
+  // feature struct alone, and enabled wherever the driver offers it.
+#if defined(VK_EXT_device_fault)
+  VkPhysicalDeviceFaultFeaturesEXT fault{};
+  fault.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT;
+  if (device_extensions.has("VK_EXT_device_fault")) {
+    VkPhysicalDeviceFeatures2 query{};
+    query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    query.pNext = &fault;
+    vkGetPhysicalDeviceFeatures2(h.physical, &query);
+    fault.pNext = nullptr;
+    h.device_fault = fault.deviceFault == VK_TRUE &&
+                     device_extensions.enable_if_available("VK_EXT_device_fault");
+    h.device_fault_vendor_binary = h.device_fault && fault.deviceFaultVendorBinary == VK_TRUE;
+    fault.deviceFaultVendorBinary = h.device_fault_vendor_binary ? VK_TRUE : VK_FALSE;
+  }
+#endif
   const bool ext_mesh = enable_ext("VK_EXT_mesh_shader", caps_.mesh_shader);
   const bool ext_deferred =
       enable_ext("VK_KHR_deferred_host_operations", caps_.deferred_host_operations);
@@ -750,6 +919,9 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
   if (ext_present_id2) link(reinterpret_cast<VkBaseOutStructure*>(&present_id2));
   if (ext_present_wait2) link(reinterpret_cast<VkBaseOutStructure*>(&present_wait2));
   if (ext_present_timing) link(reinterpret_cast<VkBaseOutStructure*>(&present_timing));
+#if defined(VK_EXT_device_fault)
+  if (h.device_fault) link(reinterpret_cast<VkBaseOutStructure*>(&fault));
+#endif
   *tail = nullptr;
 
   VkDeviceCreateInfo device_info{};
@@ -1011,6 +1183,8 @@ bool submit_immediate(const Device& device, RecordFn record, void* context, std:
   if (r == VK_SUCCESS) r = vkWaitForFences(h.device, 1, &fence, VK_TRUE, UINT64_MAX);
   vkDestroyFence(h.device, fence, nullptr);
   vkFreeCommandBuffers(h.device, h.immediate_pool, 1, &commands);
+  // The host's turn (device_lost.h); with no handler this returns and the error below stands.
+  if (r == VK_ERROR_DEVICE_LOST) device.report_lost(DeviceLostAt::immediate, 0, 0, 0);
   if (r != VK_SUCCESS) {
     set_error(error, "submit_immediate", r);
     return false;

@@ -1484,13 +1484,14 @@ Each snapshot holds:
 
 | Block | What |
 |---|---|
-| `format`, `version` | `engine.view.report`, 1 |
-| `exit` | `code` (the process's), `reason` — `frames` (`--frames` ran out), `session` (a replay's or an injected session's last tick), `path` (a windowed camera path's end), `escape`, `closed` (the window), `end_run` and `game_error` (a `--game` module ended it), `error`, or `done` — and `error`, the first failure's line (`<stage>: <why>`, the words stderr got) |
+| `format`, `version` | `engine.view.report`, 2 (version 2, T212: `device_lost`) |
+| `exit` | `code` (the process's), `reason` — `frames` (`--frames` ran out), `session` (a replay's or an injected session's last tick), `path` (a windowed camera path's end), `escape`, `closed` (the window), `end_run` and `game_error` (a `--game` module ended it), `device_lost` ([below](#when-the-device-is-lost)), `error`, or `done` — and `error`, the first failure's line (`<stage>: <why>`, the words stderr got) |
 | `machine` | `adapter`, `driver` (name and version), `vulkan`, `tier` (the device's verdict: `raster`, `rt`, `rt-cluster`), `raster` and `shadows` (what the session drew with), `device` (false when none was made), `os` (the running kernel's version, not the one built for), `cpu` (its brand string), `cpu_baseline` (the binary's: `x86-64-v3` or `x86-64-v2`), and `build` (`commit`, `dirty`) |
 | `frames` | `count`, `median_ms`, `p95_ms`, `p99_ms`, `worst_ms`, `resolution_ms`, `width`, `height`: frame start to frame start in a window, `FrameRecord::frame_ms` offscreen (each frame's own interval since record version 25) |
 | `walk` | `walked`, `distance_m`, `seconds`, `drops` — the walker's own stats, for a session that walked |
 | `game` | a `--game` module's block (the summary's `game`), or null; with `hud_elements`, every HUD element's last state and the screen bounds the last frame drew it at ([The HUD, provisional](#the-hud-provisional)) |
 | `summary` | the summary line the run printed, parsed; null for a run that ended before it had one |
+| `device_lost` | null, or the lost device's block ([below](#when-the-device-is-lost)) |
 
 **Why it embeds the summary rather than describing the run again.** The summary is the one writer of what a run measured, and a field it gains should reach a tester's report without anyone remembering a second schema; the report adds only what a summary does not say — the driver and the OS, the spread of a live session's frames when nobody asked for `--benchmark`, and a run that never got as far as a summary. **The frame times cost nothing a frame**: they go into a fixed histogram of 0.1 ms bins to a second (40 KB, allocated when `--report` is parsed), so an hour's session keeps no list, and a percentile is its bin's upper edge (never past the worst frame, which is kept exactly). A real report, from the test below on the RTX 5090 with the machine compiling beside it (the summary cut short):
 
@@ -1504,6 +1505,24 @@ Each snapshot holds:
 ```
 
 **Testing** (`tests/game_view_tests.cpp`): a windowed run of eight frames on the test's desktop writes a report whose exit is `frames`, whose machine block names the adapter, driver, tier, raster mode, OS and baseline, whose frames count seven intervals in order (median ≤ p99, worst ≥ p95) and whose summary is the printed line's eight frames; and an offscreen run of a scene that does not exist exits non-zero and still writes one, its `exit.error` naming the `scene` stage and its summary null.
+
+## When the device is lost
+
+**A session that loses its graphics device writes what it has, then exits 76** (`session_records.h`, `session_records.cpp`; roadmap T212; [gfx](gfx.md#when-the-device-is-lost)). Every device engine-view makes carries `view::on_device_lost` as its handler, and each frame loop names what it holds as it starts (`view::lost_records()`: its frame records and `--benchmark`, a window's input recording and `--record-input`). On the first `VK_ERROR_DEVICE_LOST` — a frame's slot wait or submission, an immediate submission, an acquire or a present — gfx reads the device's fault once and calls it, and it writes, each only when the session asked for it:
+
+1. the input log (`--record-input`, a window's), the recording to the last event;
+2. the frame records (`--benchmark`) to the last frame whose numbers folded, then a last line `{"device_lost": {...}}` in place of the summary, which a reader tells from a summary by that key;
+3. the startup trace (`--startup-trace`), as far as the run got;
+4. the vendor's binary crash dump, when the device gave one, to `<report>.fault.bin` (beside the records when there is no report);
+5. the report (`--report`), its exit `code` 76 and `reason` `device_lost`, its `error` `device: lost at <where>`, and its `device_lost` block.
+
+The block: `at` (`frame_wait`, `frame_submit`, `immediate`, `acquire`, `present`), `simulated`, the frame timeline's `frame_value` (the value waited for or submitted), `last_submitted` and `last_completed`, `frames_recorded` and `last_recorded_frame` (the session's frame index of the newest record), and `fault`: `read`, `unavailable` (why not, when not), `description`, `addresses` (`kind`, `address` in hex, `precision` in bytes), `vendors` (`description`, `code`, `data`), `vendor_binary_bytes` and `vendor_binary` (the dump's path or empty).
+
+**The exit code is `platform::k_exit_device_lost`, 76** ([platform](platform.md)): beside the GPU lock's 75 and used by nothing else, so a script, a launcher or the owner's lab can tell a lost device from an abort (3), a failure (1) and a usage error (2). **No path can hang**: before writing anything the handler starts a watchdog that ends the process with 76 after 30 seconds (`k_lost_write_seconds`) however far the writes got, and says so on stderr; nothing it writes touches the device. No dialog: a line on stderr (`engine-view: the device was lost (<where>); writing what the session has, 30 s at most, then exiting 76`) and the code.
+
+**What it does not cover.** An offscreen camera-path flight (`--camera-path --benchmark`) keeps its records inside the flight (`renderer::fly_camera_path`) until it returns, so a loss mid-flight writes the report and the trace and an empty records file; the replayed and injected sessions and every window keep theirs in the loop and write them all. A loss in `engine-host`, `engine-editor` and the tests is reported to the log and fails as it always did (they set no handler).
+
+**Testing** (`tests/device_lost_view_tests.cpp`, a device, both tiers): the committed synthetic fly session replayed offscreen at 96×64 with `--benchmark`, `--report` and `--startup-trace`, and the test seam (`ENGINE_GFX_TEST_LOSE_DEVICE=40`) making the frame wait for timeline value 40 answer "lost". The run exits 76 and names the loss on stderr; its records file holds between 36 and 39 frame records and then the loss's line, whose `frames_recorded` is that count and `last_recorded_frame` the last record's frame, `at` `frame_wait`, `frame_value` 40, `simulated` true, no fault read; the report's exit is 76 and `device_lost`, its block is the records' line byte for byte, and its frame count is the records'; the trace parses.
 
 ## package-game: a zip somebody else double-clicks
 

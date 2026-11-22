@@ -1,0 +1,14 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T212",
+  "reason": "T212: a lost device is reported and engine-view writes its records - each loop registers the handler and names what it holds (two lines a loop); gfx.md and apps.md gain the section 'When the device is lost'",
+  "date": "2026-11-21",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "engine_view.main_cpp.lines": -7,
+    "engine_view.run_view.lines": 3,
+    "engine_view.run_offscreen.lines": 2,
+    "page:docs/subsystems/apps.md": 3876,
+    "page:docs/subsystems/gfx.md": 3270
+  }
+}

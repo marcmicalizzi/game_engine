@@ -80,12 +80,15 @@ struct RunReport {
   u32 walk_drops = 0;
   // The game's block (game_runner.h), or null.
   JsonValue game;
+  // A lost device's block (session_records.h, T212), or null: where it was lost, the frame values,
+  // what was recorded, and the device's fault.
+  JsonValue device_lost;
 };
 
 // The OS as one line ("Windows 10.0.26200", "Linux 6.8.0-45-generic"), read from the system, not
 // from what the binary was built for.
 std::string os_version();
-// The report as JSON (format `engine.view.report`, version 1).
+// The report as JSON (format `engine.view.report`, version 2: version 1 and `device_lost`).
 JsonValue report_json(const RunReport& report);
 // Writes `report_json` to `report.path`, pretty, best effort: false with `error` when it cannot.
 bool write_report(const RunReport& report, std::string* error);

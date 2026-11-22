@@ -27,6 +27,7 @@
 #include "memory_report.h"
 #include "pacing.h"
 #include "report.h"
+#include "session_records.h"
 #include "startup.h"
 #if ENGINE_VIEW_GAME
 #include "game_hud.h"
@@ -2546,19 +2547,6 @@ void describe_run(const renderer::SceneData& scene_data, const Options& options,
   summary.output = output_summary(view, resolved, options, nullptr);
 }
 
-// The `.jsonl` a benchmark writes: one record per line, then the summary line.
-io::Status write_benchmark(const std::string& path, std::span<const scene::FrameRecord> records,
-                           const std::string& summary_line) {
-  std::string text;
-  for (const scene::FrameRecord& record : records) {
-    write_json(schema::to_json(record), text, JsonWriteOptions{.pretty = false});
-    text.push_back('\n');
-  }
-  text += summary_line;
-  text.push_back('\n');
-  return io::write_file(path, text);
-}
-
 // `--present`'s names onto Vulkan's; "" (none asked for) is MAX_ENUM, which leaves the choice to
 // `SwapchainDesc::vsync`.
 VkPresentModeKHR vk_present_mode(const std::string& name) {
@@ -3059,6 +3047,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
     ENGINE_STARTUP_STAGE("device");
     if (!device.create(device_options, &error)) return unavailable("no Vulkan device", error);
   }
+  device.set_lost_handler(view::on_device_lost, &g_report);  // T212 (session_records.h)
   startup.milestone("device");
 
   int exit_code = 0;
@@ -3085,6 +3074,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
   bool have_path = false;
   u32 frames = 0;
   Vector<scene::FrameRecord> records;
+  view::lost_records() = {&records, options.benchmark, nullptr, {}, true};  // T212
   scene::FlythroughSummary summary;
   summary.format = "engine.flythrough.v1";
   // The moving ground (renderer::MovingGround, request.h): the dune field's time-lapse when
@@ -4210,7 +4200,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
     summary.memory = view::memory_report().block();
     summary_line = write_json(schema::to_json(summary), JsonWriteOptions{.pretty = false});
     if (!options.benchmark.empty()) {
-      const io::Status status = write_benchmark(
+      const io::Status status = view::write_benchmark(
           options.benchmark, std::span<const scene::FrameRecord>(records.data(), records.size()),
           summary_line);
       if (status != io::Status::Ok) {
@@ -5856,6 +5846,7 @@ int run_view(int argc, char** argv) {
     window::shutdown();
     return unavailable("no Vulkan device", error);
   }
+  device.set_lost_handler(view::on_device_lost, &g_report);  // T212 (session_records.h)
   if (!device.features().presentation) {
     const std::string why = std::string(device.adapter().name) + " cannot present";
     device.destroy();
@@ -5978,7 +5969,7 @@ int run_view(int argc, char** argv) {
 #if ENGINE_VIEW_WATER
   Wading wading;  // brief-water: the water the walker wades in (S63), outliving it
 #endif
-  view::Walker walker;         // the walk mode (walk.h): outlives the session, which points at it
+  view::Walker walker;  // the walk mode (walk.h): outlives the session, which points at it
   const WalkerScope walker_scope;  // `g_walker` cleared before the walker goes (S91)
   view::WalkProbe walk_probe;      // the records' `walk` (walk.h)
   scene::FrameWalk walked;
@@ -5987,6 +5978,8 @@ int run_view(int argc, char** argv) {
   input::InputLog recording;           // --record-input
   view::FramePacing pacing;            // the title's last-frame and p99 numbers
   Vector<scene::FrameRecord> records;  // --benchmark
+  // What a lost device's turn writes (T212, session_records.h): the records and the recording.
+  view::lost_records() = {&records, options.benchmark, &recording, options.record_input, false};
   std::string interactive_text = "null";
   // An injected run never takes the real pointer: it happens on somebody's desktop, and its
   // capture is only the edge's decision about which motion is looking. It starts as a window with
@@ -7581,7 +7574,7 @@ int run_view(int argc, char** argv) {
           fullscreen_toggles);
       summary.output = output_summary(view_renderer, resolved, options, &swapchain,
                                       window_capture_levels, hdr_metadata_set);
-      const io::Status status = write_benchmark(
+      const io::Status status = view::write_benchmark(
           options.benchmark, std::span<const scene::FrameRecord>(records.data(), records.size()),
           write_json(schema::to_json(summary), JsonWriteOptions{.pretty = false}));
       if (status != io::Status::Ok) {
