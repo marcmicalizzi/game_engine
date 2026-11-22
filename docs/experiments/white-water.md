@@ -376,6 +376,17 @@ picture of its own (today's `water_foam_strength` already turns a surging wave's
 lace's cells stretched by the sheet's spreading, and several sheets' fronts overlapping as separate
 scallops.
 
+**W157 (2026-11-21): the lace is a lace, drawn out along the run-up, and a crest breaks from its
+highest point.** W152's islands (`water_foam_mass`) at the wave's cell drew the swash as a
+camouflage mottle of one size from the bore to the berm (the forest's need 168): the shore's foam
+is now `water_lace`, the zero line of a gradient noise smoothed along the run-up (the surf's along
+the waves' way), beaded threads round open cells of 15 cm on the sheet and of the wave's raft cell
+behind a bore, patchy over three cells, closing to white at the bore's front, carried up the slope
+and back with the sheet — the "cells stretched by the sheet's spreading" above, built. And a
+crest's height now varies along it (short-crested: `water_crest_height`), so a breaking stretch
+starts at a point and ends where the crest is lower, thinning there, where it ended on the straight
+line the two trains' crests meet on. Both in [water.md](../subsystems/water.md#the-foams-pattern).
+
 ### Whitecaps, streaks and spindrift: what the stacked leg fills in
 
 They read the wind, which is the wind row's (`b67-W136`): nothing of them is built here. On the
