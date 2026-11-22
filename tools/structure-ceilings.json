@@ -16,7 +16,7 @@
       "file": "systems/renderer/src/scene_renderer.cpp",
       "function": "SceneRenderer::record_frame",
       "why": "every pass and every feature flag of a frame",
-      "ceiling": 3922
+      "ceiling": 3926
     },
     {
       "id": "renderer.record_frame.add_pass",
@@ -32,21 +32,21 @@
       "measure": "file-lines",
       "file": "systems/renderer/src/gpu_scene.cpp",
       "why": "every feature's GPU state",
-      "ceiling": 6993
+      "ceiling": 6999
     },
     {
       "id": "renderer.gpu_scene_h.lines",
       "measure": "file-lines",
       "file": "systems/renderer/include/systems/renderer/gpu_scene.h",
       "why": "every feature's GPU state",
-      "ceiling": 2517
+      "ceiling": 2537
     },
     {
       "id": "engine_view.main_cpp.lines",
       "measure": "file-lines",
       "file": "apps/engine_view/main.cpp",
       "why": "every play feature and every flag",
-      "ceiling": 7763
+      "ceiling": 7821
     },
     {
       "id": "engine_view.run_view.lines",
@@ -54,7 +54,7 @@
       "file": "apps/engine_view/main.cpp",
       "function": "run_view",
       "why": "the windowed loop",
-      "ceiling": 3256
+      "ceiling": 3322
     },
     {
       "id": "engine_view.run_offscreen.lines",
@@ -62,7 +62,7 @@
       "file": "apps/engine_view/main.cpp",
       "function": "run_offscreen",
       "why": "the offscreen loop",
-      "ceiling": 1208
+      "ceiling": 1214
     },
     {
       "id": "gfx.resolve_modules",
@@ -77,7 +77,7 @@
       "file": "schemas/scene.schema",
       "struct": "Scene",
       "why": "every world feature's data",
-      "ceiling": 21
+      "ceiling": 22
     },
     {
       "id": "engine_view.main_cpp.if_engine_view",
@@ -93,7 +93,7 @@
       "path": "apps/engine_view",
       "macro_prefix": "ENGINE_VIEW_",
       "why": "the same, in every source file of the app and its tests",
-      "ceiling": 158
+      "ceiling": 161
     },
     {
       "id": "engine_host.ops_methods.if_engine_host",
@@ -107,19 +107,19 @@
       "id": "page:docs/subsystems/renderer.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/renderer.md",
-      "ceiling": 1464733
+      "ceiling": 1510194
     },
     {
       "id": "page:docs/subsystems/apps.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/apps.md",
-      "ceiling": 755563
+      "ceiling": 774849
     },
     {
       "id": "page:docs/subsystems/gfx.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/gfx.md",
-      "ceiling": 397290
+      "ceiling": 401186
     },
     {
       "id": "page:docs/subsystems/geometry.md",
@@ -149,7 +149,7 @@
       "id": "page:docs/subsystems/water.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/water.md",
-      "ceiling": 276704
+      "ceiling": 290434
     },
     {
       "id": "page:docs/subsystems/protocol.md",
@@ -173,7 +173,7 @@
       "id": "page:docs/subsystems/world.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/world.md",
-      "ceiling": 166343
+      "ceiling": 166548
     },
     {
       "id": "page:AGENTS.md",
@@ -221,7 +221,7 @@
       "id": "page:docs/subsystems/texture.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/texture.md",
-      "ceiling": 120435
+      "ceiling": 120922
     },
     {
       "id": "page:docs/ci/what-to-run.md",
@@ -245,7 +245,7 @@
       "id": "page:docs/subsystems/audio.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/audio.md",
-      "ceiling": 113422
+      "ceiling": 119330
     }
   ],
   "rebaselines": [
@@ -4090,6 +4090,242 @@
           "id": "page:docs/subsystems/audio.md",
           "old": 100000,
           "new": 113422
+        }
+      ]
+    },
+    {
+      "date": "2026-11-22",
+      "by": "Marc Micalizzi",
+      "reason": "",
+      "commit": "9f2b42e81",
+      "folded": [
+        {
+          "name": "b72-mend-C",
+          "reason": "the gate's mend C: a module-less run's two sound lines printed ahead of the JSON summary in both loops (one call each in run_view and run_offscreen), and apps.md's sentence saying the summary stays a run's last line and why",
+          "date": "2026-11-22",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "engine_view.main_cpp.lines": 2,
+            "engine_view.run_view.lines": 1,
+            "engine_view.run_offscreen.lines": 1,
+            "page:docs/subsystems/apps.md": 412
+          }
+        },
+        {
+          "name": "b72-stack",
+          "reason": "batch 72's join: mend A's case and mend B's sentence on renderer.md and apps.md, and Scene 13's two additions named on renderer.md",
+          "date": "2026-11-22",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 700,
+            "page:docs/subsystems/apps.md": 281
+          }
+        },
+        {
+          "name": "C64",
+          "reason": "renderer.md gains the section C64's code cites, Content classes at load: the one admission door, where each class is read (the ground's with its mask images, and a generated mesh's hosts', a container host's record read whole, refused when a host cannot be opened or the probe's hash refuses), every ladder learned before any class is read, in two rounds of teachers (listed containers, then every recipe's container hosts) so the outcome and every key are the same under every order of the mesh list, what the scene read reads of a refused ground before the decision, the strict scene and props reads, the probe's re-decision by the bytes loaded, which placer a substitution belongs to and what it counts, the box's page table, the implicit instance's door, what omit and proxy make, an unreadable source's entry recording its decided class, what a scene remembers and what an unclassified scene pays, its probes listed, measured and held to the plain keys; why the software rasterizer's triangle-box limit takes a near proxy's lid; and with texture.md, that each sidecar is read before either key through the content build's own reader; and the capture case's shadow control, its caster placed towards the stand-in sun from a receiver the eye sees beside it; and that a listed container the probe cannot open is decided, and teaches its ladder, at its whole read",
+          "date": "2026-11-21",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 19226,
+            "page:docs/subsystems/texture.md": 487
+          }
+        },
+        {
+          "name": "R86-2",
+          "reason": "R86-2: renderer.md's Lamps says what the campfire's 31 pixels were (the derived data, not the branch), how two binaries are compared, and every maker of a ResolveLight with its spot.z",
+          "date": "2026-11-22",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 968
+          }
+        },
+        {
+          "name": "R86",
+          "reason": "R86: steady lamps. record_frame burns the frame's lamps and appends every one to the light array beside the fires (4 lines); the scene root gains lamps, the block the row is; renderer.md gains its Lamps section (the globe's radius, the cost per lamp at 4K) and apps.md the prop's lamp",
+          "date": "2026-11-21",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 4,
+            "schemas.scene_root.fields": 1,
+            "page:docs/subsystems/renderer.md": 8654,
+            "page:docs/subsystems/apps.md": 302
+          }
+        },
+        {
+          "name": "S112",
+          "reason": "S112 the wind in the trees and at the ears, and S112-2 its review mended: engine-view's two loops time the session's sound into FrameWorld.sound_ms; main.cpp opens the world's sound with no module (open_solo_sound) and hands it the scene, the tiles and a flight's frames through game_sound.h's seams, with their stubs where the capability is out; the canopy table's world guard in game_sound.cpp; the pages' sections (audio.md the voice, its bench, its fresh ramp and the budget held; apps.md the world heard with and without a module; renderer.md the leaves measured only when heard; world.md tile_own; world_sound.md what a refresh costs, the declared class, the ceiling and the staging's walk); and S112-3 the second review mended: main.cpp builds the --audio auto run (view::AudioRun: window, session, module, ends by itself, ticked, scene, ENGINE_AUDIO_AUTO) once for the module-less and the module's resolve, and prints a module-less run's sound summary from the scope that ends it, windowed too; apps.md's table of who auto plays to and the cases; audio.md's No test opens the speakers",
+          "date": "2026-11-22",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "engine_view.main_cpp.lines": 78,
+            "engine_view.run_view.lines": 45,
+            "engine_view.run_offscreen.lines": 5,
+            "engine_view.if_engine_view": 3,
+            "page:docs/subsystems/renderer.md": 1340,
+            "page:docs/subsystems/apps.md": 5721,
+            "page:docs/subsystems/world.md": 205,
+            "page:docs/subsystems/audio.md": 5908
+          }
+        },
+        {
+          "name": "T212",
+          "reason": "T212's second leg: the lost device's input log stamped by the loop's own function (run_view), the scope that clears the named records (run_offscreen), and the pages' account of the write order, the atomic writes, the tick rule and the windowed case (apps.md, gfx.md)",
+          "date": "2026-11-22",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "engine_view.main_cpp.lines": -24,
+            "engine_view.run_view.lines": 18,
+            "page:docs/subsystems/apps.md": 11656,
+            "page:docs/subsystems/gfx.md": 3896
+          }
+        },
+        {
+          "name": "T213",
+          "reason": "T213: a skinned scene's per-frame deform copies take every tail record; the device-lost cause and its case are written where the streamed trees' records are described",
+          "date": "2026-11-21",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 1314
+          }
+        },
+        {
+          "name": "W156-2",
+          "reason": "W156-2: submit_frame measures a frame drawn at a tail's first bound (GpuScene::runs_unmeasured), engine-view's window summary gains a runs block, and renderer.md and apps.md say both",
+          "date": "2026-11-22",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.gpu_scene_h.lines": 2,
+            "engine_view.main_cpp.lines": 2,
+            "engine_view.run_view.lines": 2,
+            "page:docs/subsystems/renderer.md": 2200,
+            "page:docs/subsystems/apps.md": 914
+          }
+        },
+        {
+          "name": "W156",
+          "reason": "W156: a tail's runs start at a first bound (renderer.runs.first_entries): GpuScene::set_first_runs and its member, and renderer.md's paragraph on why the bound and what it costs",
+          "date": "2026-11-22",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.gpu_scene_h.lines": 3,
+            "page:docs/subsystems/renderer.md": 2191
+          }
+        },
+        {
+          "name": "W157-2",
+          "reason": "W157-2: the sheet on the sand is not a pale plate (the coordinator's three faults on the forest's sea: the plate, the seam at the still waterline, one size of hole), with its grounding, case, cost and what the forest shows",
+          "date": "2026-11-22",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/water.md": 5305
+          }
+        },
+        {
+          "name": "W157",
+          "reason": "W157: the shore's foam as a lace drawn up the slope, and where a crest breaks along its length (two faults the owner saw on the forest's sea), with their grounding, case and cost",
+          "date": "2026-11-22",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/water.md": 8425
+          }
+        },
+        {
+          "name": "W158",
+          "reason": "W158: the far forest leans on a live wind. gpu_scene.h: the far tiles' lean list, the walk's place in it, the gate and two functions (FloraStats far_tiles/far_writes); gpu_scene.cpp: place_instances re-leans a far tile placed again, and the lean state's resets; renderer.md: why nothing leaned on the staging, the rigid forms' and far tiles' lean, the posed curve and its hold, its load cost, the cases; W158-2: the dead band and its gate, the far tile's hold by its feet's spread, the review's known LOWs",
+          "date": "2026-11-22",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.gpu_scene_cpp.lines": 6,
+            "renderer.gpu_scene_h.lines": 15,
+            "page:docs/subsystems/renderer.md": 7699
+          }
+        },
+        {
+          "name": "W159",
+          "reason": "W159: the still lean's write-back rule and its case on the far forest's page (renderer.md +1,169 bytes)",
+          "date": "2026-11-22",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 1169
+          }
+        }
+      ],
+      "changes": [
+        {
+          "id": "renderer.record_frame.lines",
+          "old": 3922,
+          "new": 3926
+        },
+        {
+          "id": "renderer.gpu_scene_cpp.lines",
+          "old": 6993,
+          "new": 6999
+        },
+        {
+          "id": "renderer.gpu_scene_h.lines",
+          "old": 2517,
+          "new": 2537
+        },
+        {
+          "id": "engine_view.main_cpp.lines",
+          "old": 7763,
+          "new": 7821
+        },
+        {
+          "id": "engine_view.run_view.lines",
+          "old": 3256,
+          "new": 3322
+        },
+        {
+          "id": "engine_view.run_offscreen.lines",
+          "old": 1208,
+          "new": 1214
+        },
+        {
+          "id": "schemas.scene_root.fields",
+          "old": 21,
+          "new": 22
+        },
+        {
+          "id": "engine_view.if_engine_view",
+          "old": 158,
+          "new": 161
+        },
+        {
+          "id": "page:docs/subsystems/renderer.md",
+          "old": 1464733,
+          "new": 1510194
+        },
+        {
+          "id": "page:docs/subsystems/apps.md",
+          "old": 755563,
+          "new": 774849
+        },
+        {
+          "id": "page:docs/subsystems/gfx.md",
+          "old": 397290,
+          "new": 401186
+        },
+        {
+          "id": "page:docs/subsystems/water.md",
+          "old": 276704,
+          "new": 290434
+        },
+        {
+          "id": "page:docs/subsystems/world.md",
+          "old": 166343,
+          "new": 166548
+        },
+        {
+          "id": "page:docs/subsystems/texture.md",
+          "old": 120435,
+          "new": 120922
+        },
+        {
+          "id": "page:docs/subsystems/audio.md",
+          "old": 113422,
+          "new": 119330
         }
       ]
     }
