@@ -499,4 +499,99 @@ TEST_CASE("tail budget: a skinned scene's every copy of the deform table holds t
   scene.destroy();
 }
 
+namespace {
+
+// The slots of the tail's blocks whose first pair, as the CPU's table numbers it, is not their
+// block's prefix sum: what the cull's binary search and `pair_expand` read.
+u32 off_their_pairs(const GpuScene& scene, const SceneData& data) {
+  u32 off = 0;
+  for (const TileBlock& block : scene.tile_layout().blocks()) {
+    u32 pair = block.pair_begin;
+    for (u32 k = 0; k < block.instances; ++k) {
+      const u32 slot = block.inst_begin + k;
+      off += scene.table_first_pair(slot) != pair ? 1u : 0u;
+      pair += data.parts[scene.instance_record(slot)->mesh].cluster_count;
+    }
+  }
+  return off;
+}
+
+}  // namespace
+
+// W159 (renderer.md, "The far forest leans"): the still lean writes back only what it changes. A
+// tile arriving at the pair cap numbers the blocks behind it again; the first walk after that
+// settles the new numbers, and until W159 the second wrote each slot's kept rest record back
+// whole, its old first pair with it, so the table was no longer the blocks' prefix sum. The
+// fixture's palm sways in the tail and stands still too, so the write-back also undid the padding
+// the wind's ladder had stepped it to (a real still form has no sway, and so no ladder).
+TEST_CASE("tail budget: a still form's lean keeps the first pair its slot was numbered to") {
+  const test::TempDir tmp("renderer_tail_budget_still_lean");
+  REQUIRE(tmp.ok());
+  Rig rig(tmp);
+  if (!rig.ok) {
+    MESSAGE("skipped: " << rig.why);
+    return;
+  }
+  // The palm leans as a still form past the rule's wind (0.7 of a mean day, as the forms' default).
+  rig.data.still_lean.assign(rig.data.parts.size(), 0.0f);
+  rig.data.still_lean[0] = 0.05f;
+  rig.data.still_wind = 0.7f;
+  std::string error;
+  GpuScene scene;
+  REQUIRE_MESSAGE(scene.create(rig.device, rig.data, rig.resolved, &error), error);
+  REQUIRE(scene.flora_tail());
+  GpuScene::TileChange change;
+  const Tile two[] = {{1, 0.0, 3, 0}, {2, 1000.0, 3, 0}};
+  REQUIRE_MESSAGE(commit(scene, two, change, error), error);
+  // At the cap, the seven palms' pairs packed: a third tile's slack passes it, so the pairs are
+  // numbered again, tight, and the second block's slots move down by the first's slack without
+  // being written.
+  scene.set_pair_limit(scene.static_pair_count() + 7 * rig.data.parts[0].cluster_count);
+  const Tile three[] = {{1, 0.0, 3, 0}, {2, 1000.0, 3, 0}, {3, 2000.0, 1, 0}};
+  REQUIRE_MESSAGE(commit(scene, three, change, error), error);
+  REQUIRE(change.layout.tight);
+  REQUIRE(change.slots_renumbered > 0);
+  REQUIRE(scene.flora_stats().still_slots == 7);
+  CHECK(off_their_pairs(scene, rig.data) == 0);
+  // The padding each still slot was kept with, in the calm.
+  Vector<f32> rest_padding;
+  for (const TileBlock& block : scene.tile_layout().blocks())
+    for (u32 k = 0; k < block.instances; ++k)
+      rest_padding.push_back(scene.instance_record(block.inst_begin + k)->bounds_padding);
+  u32 frame = 0;
+  const auto blow = [&](f32 strength) {
+    FrameFlora wind;
+    wind.wind_set = true;
+    wind.wind_strength = strength;
+    for (u32 f = 0; f < 4; ++f) {
+      scene.flora_padding_frame(wind, 0.0, gfx::WindLive{}, 0.0);
+      GpuScene::TableUpdate update;
+      REQUIRE_MESSAGE(scene.prepare_tables(frame++ % 2, update, &error), error);
+    }
+  };
+  const u64 walks = scene.flora_stats().still_walks;
+  blow(1.5f);  // the first walk: its copies settle the new numbers
+  const u32 first = off_their_pairs(scene, rig.data);
+  blow(2.5f);  // the second
+  REQUIRE(scene.flora_stats().still_walks == walks + 2);
+  CHECK(scene.flora_stats().still_lean > 0.0f);
+  const u32 second = off_their_pairs(scene, rig.data);
+  u32 unpadded = 0;
+  u32 i = 0;
+  for (const TileBlock& block : scene.tile_layout().blocks())
+    for (u32 k = 0; k < block.instances; ++k, ++i)
+      unpadded +=
+          scene.instance_record(block.inst_begin + k)->bounds_padding == rest_padding[i] ? 1u : 0u;
+  MESSAGE("numbered again " << change.slots_renumbered << " slots; off their pairs after the walks "
+                            << first << " and " << second << " of 7; " << unpadded
+                            << " of 7 back at the calm padding after "
+                            << scene.flora_stats().padding_steps << " ladder steps");
+  CHECK(first == 0);
+  CHECK(second == 0);  // before W159: the second block's 3
+  REQUIRE(scene.flora_stats().padding_steps > 0);
+  CHECK(unpadded == 0);  // before W159: 7
+  CHECK_MESSAGE(scene.validate_tables(&error), error);
+  scene.destroy();
+}
+
 #endif

@@ -439,6 +439,7 @@ class GpuScene {
   const gfx::InstanceDesc* instance_record(u32 index) const noexcept {
     return index < instance_table_.size() ? &instance_table_[index] : nullptr;
   }
+  u32 table_first_pair(u32 slot) const noexcept;  // its first pair, through what is pending (T154)
   u64 compactions() const noexcept { return compactions_; }
   // Where instance slot `slot` came from in the tail last handed over; ~0 for the load's own, a
   // hole and past the end. What a test compares a streamed scene's ids with a loaded one's through,
@@ -1808,7 +1809,6 @@ class GpuScene {
   Vector<PairShift> shift_scratch_;
   Vector<PairShift> expand_runs_;
   void settle_first_pairs(u32 begin, u32 end);
-  u32 table_first_pair(u32 slot) const noexcept;
   // What a live tail slot was made from, to tell a block that came back unchanged.
   struct InstanceKey {
     u32 mesh = 0;

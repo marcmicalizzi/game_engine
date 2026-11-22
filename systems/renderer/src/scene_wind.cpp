@@ -866,10 +866,22 @@ bool GpuScene::relean(u32 at) {
   const StillSlot& still = still_slots_[at];
   if (still.slot >= instance_table_.size()) return false;
   const f32 lean = still.mesh < still_mesh_lean_.size() ? still_mesh_lean_[still.mesh] : 0.0f;
-  const gfx::InstanceDesc want = still_lean_record(still.rest, still_walk_to_ * lean);
+  const gfx::InstanceDesc leaned = still_lean_record(still.rest, still_walk_to_ * lean);
+  // **Only what the lean changes is written** (W159): the 3x3, the largest axis scale and the
+  // uniform-scale bit. Every other field has writers of its own after the slot was kept — the
+  // pairs numbered again at the cap (`settle_first_pairs`) above all — and the rest record holds
+  // them as they were then: until W159 the whole record went back, so the walk after one that had
+  // settled a renumbering wrote the old first pair over the new one, and the table was no longer
+  // sorted by the number the cull's search reads.
   gfx::InstanceDesc& placed = instance_table_[still.slot];
-  if (std::memcmp(&placed, &want, sizeof(want)) == 0) return false;
-  placed = want;
+  const u32 uniform = gfx::k_instance_uniform_scale;
+  const u32 want_flags = (placed.flags & ~uniform) | (leaned.flags & uniform);
+  if (std::memcmp(placed.rows, leaned.rows, sizeof(placed.rows)) == 0 &&
+      placed.scale_max == leaned.scale_max && placed.flags == want_flags)
+    return false;
+  std::memcpy(placed.rows, leaned.rows, sizeof(placed.rows));
+  placed.scale_max = leaned.scale_max;
+  placed.flags = want_flags;
   mark_instance_written(still.slot);
   return true;
 }
