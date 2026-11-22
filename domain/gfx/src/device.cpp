@@ -987,7 +987,10 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
                   log::field("ray_query", impl->features.ray_query),
                   log::field("cluster_as", impl->features.cluster_acceleration_structure),
                   log::field("descriptor_buffer", impl->features.descriptor_buffer),
-                  log::field("validation", impl->features.validation));
+                  log::field("validation", impl->features.validation),
+                  // Whether a loss will say what faulted (device_lost.h, T212).
+                  log::field("device_fault", h.device_fault),
+                  log::field("device_fault_vendor_binary", h.device_fault_vendor_binary));
   return true;
 }
 
