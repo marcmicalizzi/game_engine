@@ -66,6 +66,7 @@ u32 tunable_command_queue() noexcept;      // audio.command_queue, default 1024
 u64 tunable_clip_budget_bytes() noexcept;  // audio.clip_budget_mb, default 256 MB
 u32 tunable_period_frames() noexcept;      // audio.period_frames, default 480 (10 ms)
 u32 tunable_ramp_frames() noexcept;        // audio.ramp_ms, default 10 ms: 480 frames
+u32 tunable_field_ramp_frames() noexcept;  // audio.field_ramp_ms, default 50 ms: 2,400 frames
 bool tunable_limiter() noexcept;           // audio.limiter, default off
 // audio.limiter.threshold_db, default -1 dBFS, as a linear ceiling (through the C library's pow).
 f32 tunable_limiter_ceiling() noexcept;

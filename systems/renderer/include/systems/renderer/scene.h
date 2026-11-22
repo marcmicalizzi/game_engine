@@ -297,6 +297,12 @@ struct SceneMeshInfo {
   // texture.md "Sized by the asset"): 0 takes the scene's (`SceneDesc::texel_density`), a negative
   // value caps none of its textures whatever the scene says.
   f32 texel_density = 0.0f;
+  // **What its foliage sounds as, declared** (schema `Mesh.sound`; S112): `k_sound_undeclared`
+  // when the file says nothing (a generated tree's species decides, else it is silent), otherwise
+  // `scene::SoundCanopy`'s value; the needles' width in millimetres, 0 for the default.
+  static constexpr u8 k_sound_undeclared = 0xff;
+  u8 sound_canopy = k_sound_undeclared;
+  f32 sound_needle_mm = 0.0f;
   // A water body's (`SceneWater`): set for a mesh the scene's `water` block made, and only then.
   std::optional<SceneWater> water{};
 };
@@ -606,6 +612,11 @@ struct SceneDesc {
   // one per performance CPU, as `engine-content --jobs 0`. The result does not depend on it — a
   // test loads a scene at 1 and at 0 and requires the same tables.
   u32 load_jobs = 0;
+  // **Measure each mesh's leaves for the world's sound** (`SceneData::mesh_leaves`, S112): only a
+  // host that hears the world sets it (engine-view with `world_sound` and `--audio` not `off`), so
+  // a load nobody listens to pays nothing for it. It must be asked here: the floats it reads are
+  // let go inside `GpuScene::create`.
+  bool measure_leaves = false;
   // **The texels a metre the closest view of this scene's meshes resolves** (G14; texture.md,
   // "Sized by the asset"): a mesh whose built textures hold more than that at its largest instance
   // is given textures whose top levels are left out, and draws the same pixels wherever a sampler
@@ -872,6 +883,10 @@ struct SceneLoadReport {
   u32 lowered = 0;
   f64 lowered_max_m = 0.0;
   f64 seat_ms = 0.0;
+  // The leaves measured for the world's sound (`measure_mesh_leaves`, S112): the wall milliseconds
+  // and the meshes found with leaves; 0 and 0 for a load nothing listens to.
+  f64 leaves_ms = 0.0;
+  u32 leaf_meshes = 0;
   // The texture pass: images the meshes' materials sample (`references`), the distinct built
   // textures they name (`textures`), of those the ones whose `.tex` was trusted from its header
   // and the ones built now, and the ones neither (the image could not be read or built; drawn
@@ -924,6 +939,24 @@ struct PlacementMeshOptions {
   // and the admission is read again by the admitter (`read_placement_texture`). Null reads all.
   bool (*texture_resident)(void* context, u64 key) = nullptr;
   void* texture_context = nullptr;
+};
+
+// **A mesh's leaves** (S112; world_sound.md, "The wind in the trees and at the ears (S112)"):
+// the one-sided area of its finest level's foliage — its clusters whose material is alpha-tested
+// (the test `build_crown_priors` takes leaves by) or two-sided and translucent (a flora's leaves
+// with no image) — and how high they stand in mesh space. A card's area, not its mask's: the masks
+// are not decoded for it, so a card's cut-outs count as leaf. Any mesh may have it, whatever made
+// it; a distance form takes its source's. **Where they are, too** (S112-2): the leaves' centroid by
+// area in mesh space and the farthest leaf's horizontal distance from it, so a stand flattened into
+// one mesh (a glTF's whole scene is one) is a source the size of the stand at its middle and not a
+// point at the mesh's origin.
+struct MeshLeaves {
+  f32 area_m2 = 0.0f;
+  f32 low_m = 0.0f;
+  f32 high_m = 0.0f;
+  f32 centre_x = 0.0f;  // mesh space, metres
+  f32 centre_z = 0.0f;
+  f32 extent_m = 0.0f;  // the farthest leaf vertex from the centre, horizontally
 };
 
 // A loaded scene: everything the GPU upload reads, and everything a summary reports.
@@ -1038,6 +1071,9 @@ struct SceneData {
   // Carried from the `SceneDesc`: the scene's wind (gfx.md, "The wind a scene names"; W136), kind
   // none without one.
   gfx::WindDesc wind{};
+  // **Each mesh's leaves, measured at the load** (S112; `measure_mesh_leaves`), what a host's sound
+  // hears a crown by; empty entries for meshes with none. Kept through the release of the floats.
+  Vector<MeshLeaves> mesh_leaves;
   // Carried from the `SceneDesc`: the medium a frame pass draws (frame_pass.h;
   // systems/volumetrics), uninterpreted. Null: no medium.
   JsonValue medium;
@@ -1074,6 +1110,13 @@ struct SceneData {
 // Loads every mesh of `desc`, merges them into one set of buffers, expands the instances, and
 // computes the bounds. `error` says which mesh failed and why.
 bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error);
+
+// `SceneData::mesh_leaves` from the merged meshes' float positions (crown_priors.cpp): one pass
+// over the finest level's alpha-tested triangles, a mesh a job on `pool` (null: in order on this
+// thread; the result is the same). `load_scene` calls it last, and only when the desc asks for it
+// (`SceneDesc::measure_leaves`); nothing when the floats are gone.
+void measure_mesh_leaves(const SceneData& data, Vector<MeshLeaves>& out,
+                         jobs::JobSystem* pool = nullptr);
 
 // **Between the whole read's instances and the loaded ones** (`SceneData::loaded_of_read`). A
 // streamed world keeps a prefix of the scene's instances and hands the rest to the tail, so a

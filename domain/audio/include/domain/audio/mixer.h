@@ -64,6 +64,7 @@
 #include <domain/audio/decoder.h>
 #include <domain/audio/format.h>
 #include <domain/audio/limiter.h>
+#include <domain/audio/noise_voice.h>
 #include <domain/audio/spatial.h>
 #include <domain/audio/spsc_queue.h>
 #include <domain/audio/stream.h>
@@ -140,6 +141,21 @@ struct MixerConfig {
   u32 streams = 0;
   u32 stream_ring_frames = 0;
   u32 stream_fill_frames = 0;
+  // Frames a shaped-noise voice's band gains take to reach a `set_noise`'s (noise_voice.h). 0 reads
+  // `audio.field_ramp_ms` (50 ms: three ticks at 60 a second, since a world field is described
+  // again every tick and a 10 ms ramp would stair-step it).
+  u32 field_ramp_frames = 0;
+};
+
+// A shaped-noise voice's start (noise_voice.h): it loops until stopped, and is a source like a
+// clip's, with a gain, a bus, a priority and a spatial block.
+struct NoisePlayParams {
+  NoiseParams noise;
+  f32 gain = 1.0f;  // linear, >= 0, over the bands' own gains
+  f32 pan = 0.0f;   // 2D sources: -1 left .. +1 right
+  u8 bus = k_bus_ambient;
+  u8 priority = 64;
+  SourceSpatial source;
 };
 
 struct PlayParams {
@@ -180,6 +196,8 @@ struct ControlStats {
   u64 stream_plays = 0;      // of `plays`, the voices that play a stream
   u64 stream_fills = 0;      // fills scheduled (or run inline, with no job system)
   u64 stream_underruns = 0;  // streamed voices that ran dry at least once, each logged once
+  u64 noise_plays = 0;       // of `plays`, shaped-noise voices (S112)
+  u64 noise_sets = 0;        // `set_noise` commands sent
 };
 
 // What the audio thread did, as of the last block it finished. Read with `Mixer::stats()` from any
@@ -265,6 +283,17 @@ class Mixer {
   bool set_source(VoiceHandle voice, const SourceSpatial& source) noexcept;
   bool set_listener(const Listener& listener) noexcept;
   bool set_bus_gain(u8 bus, f32 gain) noexcept;
+  // **A shaped-noise voice** (noise_voice.h; S112): a Play of the noise kind and its first
+  // `SetNoise`, pushed together so the audio thread applies both before the voice's first block,
+  // which starts at its full description. It takes a slot by the voice policy as a looping play
+  // does. Null when refused (a parameter not finite or negative, an unknown bus, the pool, the
+  // ring).
+  VoiceHandle play_noise(const NoisePlayParams& params) noexcept;
+  // The voice's seed is kept; its gains ramp to these over `field_ramp_frames()` and its movable
+  // band takes these coefficients at once. False for a voice that is not live or a value that is
+  // not finite.
+  bool set_noise(VoiceHandle voice, const NoiseParams& params) noexcept;
+  u32 field_ramp_frames() const noexcept { return field_ramp_frames_; }
 
   // Drains the ended-voice events, freeing their slots and releasing their clips, and re-sends any
   // stop the ring refused earlier; releases a stolen voice's clip once the audio thread has applied
@@ -342,6 +371,7 @@ class Mixer {
   const LayoutInfo* layout_;
   const Decoder* decoder_;
   u32 ramp_frames_;
+  u32 field_ramp_frames_;
 
   // ---- controlling thread
   Vector<VoiceSlot> slots_;
@@ -380,6 +410,7 @@ class Mixer {
   alignas(64) Vector<VoiceState> voices_;
   Vector<StreamRing*> voice_ring_;  // a streamed voice's ring, by slot
   Vector<SourceSpatial> sources_;
+  Vector<NoiseState> noise_;   // a shaped-noise voice's state, by slot (noise_voice.h)
   Vector<f32> decoder_state_;  // voices x decoder_->state_floats
   Vector<f32> scratch_;        // one voice's signal for one block: k_max_block_frames x 2
   Vector<u8> bus_parent_;

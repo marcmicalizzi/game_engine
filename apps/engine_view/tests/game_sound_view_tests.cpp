@@ -17,6 +17,7 @@
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -25,6 +26,28 @@
 using namespace engine;
 
 #if ENGINE_VIEW_GAME && ENGINE_VIEW_WORLD_SOUND && defined(WALK_POC_PATH)
+#include "../game_sound.h"
+
+// The forest's need 169 (S112): the owner's launcher always passes `--benchmark` to get frame
+// records, and `auto` read that as "nobody hears this", so their window was silent. `auto` is keyed
+// on the window alone: main.cpp hands `resolve_audio` `!offscreen` and nothing else.
+TEST_CASE("engine-view: --audio auto is the device in a window, whatever the session records") {
+  world_sound::AudioMode mode = world_sound::AudioMode::Null;
+  std::string device = "stale";
+  REQUIRE(view::resolve_audio("auto", true, mode, device, nullptr));
+  CHECK(mode == world_sound::AudioMode::Device);
+  CHECK(device.empty());  // the default device
+  REQUIRE(view::resolve_audio("auto", false, mode, device, nullptr));
+  CHECK(mode == world_sound::AudioMode::Off);  // offscreen: silent
+  REQUIRE(view::resolve_audio("null", true, mode, device, nullptr));
+  CHECK(mode == world_sound::AudioMode::Null);
+  REQUIRE(view::resolve_audio("Speakers (Realtek)", false, mode, device, nullptr));
+  CHECK(mode == world_sound::AudioMode::Device);
+  CHECK(device == "Speakers (Realtek)");
+  std::string error;
+  CHECK_FALSE(view::resolve_audio("", true, mode, device, &error));
+  CHECK(error.find("--audio") != std::string::npos);
+}
 
 namespace {
 
@@ -213,6 +236,152 @@ TEST_CASE(
   CHECK(left / right == doctest::Approx(1.0).epsilon(0.05));
 }
 
+namespace {
+
+// S112: two small oaks of the flora's own (leaves two-sided and translucent, no image), a scene
+// wind of `speed` m/s, and no `sound` block: the world's sound alone.
+std::string grove_scene(const test::TempDir& tmp, const char* name, f64 speed) {
+  REQUIRE(io::write_file(tmp.file("oak.flora.json"),
+                         R"({"species":"broadleaf","broadleaf":{"seed":7,"height_m":8.0,)"
+                         R"("trunk_radius_m":0.25,"triangle_budget":12000}})") == io::Status::Ok);
+  const std::string scene = tmp.file(name);
+  const std::string text =
+      std::string(R"({"format":"engine.scene.v1","name":"grove",)") +
+      R"("terrain":{"size":65,"extent":64,"seed":3,"dune_height":0.2,"dune_wavelength":30},)" +
+      R"("sky":{"latitude_deg":45,"day_of_year":170,"wind":{"speed_m_s":)" + std::to_string(speed) +
+      R"(,"to_deg":90}},"meshes":[{"name":"oak","path":"oak.flora.json"}],"instances":[)" +
+      R"({"ground":true,"translation":[4,0,-6],"mesh":0},)" +
+      R"({"ground":true,"translation":[-7,0,-14],"yaw_deg":80,"mesh":0}]})";
+  REQUIRE(io::write_file(scene, text) == io::Status::Ok);
+  return scene;
+}
+
+f64 wav_power(const std::string& path) {
+  std::string bytes;
+  REQUIRE(io::read_file(path, bytes) == io::Status::Ok);
+  REQUIRE(bytes.size() > 44u);
+  std::vector<f32> samples((bytes.size() - 44) / 4);
+  std::memcpy(samples.data(), bytes.data() + 44, samples.size() * sizeof(f32));
+  f64 sum = 0.0;
+  for (const f32 x : samples)
+    sum += static_cast<f64>(x) * static_cast<f64>(x);
+  return sum / static_cast<f64>(samples.size());
+}
+
+}  // namespace
+
+TEST_CASE("engine-view: the wind in a grove is heard in the null render, and calm is silent") {
+  const test::TempDir tmp("engine_view_grove_sound");
+  const std::string module = fixture(tmp, WALK_POC_PATH);
+  struct Leg {
+    const char* name;
+    f64 speed;
+    std::string wav;
+    JsonValue summary;
+  };
+  Leg legs[3] = {{"calm.json", 0.0, tmp.file("calm.wav"), {}},
+                 {"light.json", 3.0, tmp.file("light.wav"), {}},
+                 {"strong.json", 9.0, tmp.file("strong.wav"), {}}};
+  for (Leg& leg : legs) {
+    const std::string scene = grove_scene(tmp, leg.name, leg.speed);
+    const std::string session = walk_session(tmp, scene);
+    const Run run = run_view({"--replay-input", session, "--scene", scene, "--offscreen", "--width",
+                              "320", "--height", "180", "--game", module, "--ddc", tmp.file("ddc"),
+                              "--audio", "null", "--audio-out", leg.wav});
+    if (run.exit_code == 3) {
+      MESSAGE("engine-view unavailable here: " << run.output);
+      return;
+    }
+    REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+    REQUIRE_MESSAGE(summary_of(run, leg.summary), run.output);
+    MESSAGE(
+        std::string(leg.name) << ": "
+                              << text_at(leg.summary, {"interactive", "game", "sound", "world"}));
+  }
+  // The scene's two oaks are the canopy table's crowns in every leg.
+  for (const Leg& leg : legs)
+    CHECK(number_at(leg.summary, {"interactive", "game", "sound", "world", "crowns_seen"}) == 2.0);
+  // Calm: no world voice was ever started, and the render is silent.
+  CHECK(number_at(legs[0].summary, {"interactive", "game", "sound", "world", "plays"}) == 0.0);
+  CHECK(wav_power(legs[0].wav) == 0.0);
+  // In a wind: both crowns and the two ears sound, and the strong wind is the louder.
+  for (u32 i = 1; i < 3; ++i) {
+    CHECK(number_at(legs[i].summary, {"interactive", "game", "sound", "world", "crown_voices"}) ==
+          2.0);
+    CHECK(number_at(legs[i].summary, {"interactive", "game", "sound", "world", "ear_voices"}) ==
+          2.0);
+  }
+  const f64 light = wav_power(legs[1].wav);
+  const f64 strong = wav_power(legs[2].wav);
+  MESSAGE("light " << 10.0 * std::log10(light) << " dBFS, strong " << 10.0 * std::log10(strong)
+                   << " dBFS");
+  CHECK(light > 0.0);
+  CHECK(10.0 * std::log10(strong / light) > 12.0);  // 30 log 3 for the trees, 40 log 3 the ears
+}
+
+namespace {
+
+// A module-less run's sound summary: its own stderr line (main.cpp, S112-2).
+bool sound_summary_of(const Run& run, JsonValue& out) {
+  const std::string tag = "engine-view: sound summary ";
+  const usize at = run.output.find(tag);
+  if (at == std::string::npos) return false;
+  const usize end = run.output.find('\n', at);
+  return parse_json(
+             run.output.substr(at + tag.size(), end == std::string::npos ? std::string::npos
+                                                                         : end - at - tag.size()),
+             out)
+             .ok &&
+         out.is_object();
+}
+
+}  // namespace
+
+// S112-2 (the review's item 4): the host's hooks no longer need a module, so a scene played with no
+// `--game` hears its world; and a mesh that declares itself `None` is not heard, whatever its
+// leaves (the review's M6: the class is the asset's own word, never a name).
+TEST_CASE(
+    "engine-view: a scene with no game module hears its grove, and a mesh declared None "
+    "is silent") {
+  const test::TempDir tmp("engine_view_solo_sound");
+  struct Leg {
+    const char* name;
+    bool declared_none;
+    std::string wav;
+    JsonValue summary;
+  };
+  Leg legs[2] = {{"heard.json", false, tmp.file("heard.wav"), {}},
+                 {"none.json", true, tmp.file("none.wav"), {}}};
+  for (Leg& leg : legs) {
+    std::string scene = grove_scene(tmp, leg.name, 9.0);
+    if (leg.declared_none) {
+      std::string text;
+      REQUIRE(io::read_file(scene, text) == io::Status::Ok);
+      const std::string from = R"("path":"oak.flora.json"})";
+      const usize at = text.find(from);
+      REQUIRE(at != std::string::npos);
+      text.replace(at, from.size(), R"("path":"oak.flora.json","sound":{"canopy":"None"}})");
+      REQUIRE(io::write_file(scene, text) == io::Status::Ok);
+    }
+    const std::string session = walk_session(tmp, scene);
+    const Run run = run_view({"--replay-input", session, "--scene", scene, "--offscreen", "--width",
+                              "320", "--height", "180", "--ddc", tmp.file("ddc"), "--audio", "null",
+                              "--audio-out", leg.wav});
+    if (run.exit_code == 3) {
+      MESSAGE("engine-view unavailable here: " << run.output);
+      return;
+    }
+    REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+    REQUIRE_MESSAGE(sound_summary_of(run, leg.summary), run.output);
+    MESSAGE(std::string(leg.name) << ": " << text_at(leg.summary, {"world"}));
+  }
+  CHECK(number_at(legs[0].summary, {"world", "crowns_seen"}) == 2.0);
+  CHECK(number_at(legs[0].summary, {"world", "crown_voices"}) == 2.0);
+  CHECK(wav_power(legs[0].wav) > 0.0);
+  CHECK(number_at(legs[1].summary, {"world", "crowns_seen"}) == 0.0);  // declared None
+  CHECK(number_at(legs[1].summary, {"world", "ear_voices"}) == 2.0);   // the wind at the ears
+}
+
 TEST_CASE("engine-view: --audio-out needs the null backend") {
   const Run run = run_view({"--audio", "off", "--audio-out", "x.wav", "--offscreen"});
   CHECK(run.exit_code == 2);
@@ -220,3 +389,147 @@ TEST_CASE("engine-view: --audio-out needs the null backend") {
 }
 
 #endif  // ENGINE_VIEW_GAME && ENGINE_VIEW_WORLD_SOUND && WALK_POC_PATH
+
+#if ENGINE_VIEW_GAME && ENGINE_VIEW_WORLD_SOUND
+#include "../game_sound.h"
+
+#include <core/memory/memory.h>
+#include <foundation/tunables/tunables.h>
+#include <systems/renderer/scene.h>
+
+namespace {
+
+// Drawn tiles of the case's own: `count` placements each, every other one a tree (mesh 0) and the
+// rest a mesh with no class (a decal's alpha cards, mesh 1), across the tile's 64 m.
+struct Tiles {
+  std::vector<u64> keys;
+  std::vector<u64> versions;
+  std::vector<std::vector<renderer::SceneInstance>> placed;
+  void add(u64 key, f64 x0, u32 count) {
+    keys.push_back(key);
+    versions.push_back(1);
+    std::vector<renderer::SceneInstance> p(count);
+    for (u32 i = 0; i < count; ++i) {
+      p[i].mesh = i % 2;
+      p[i].origin = WorldPos{x0 + 0.6 * i, 0.0, 0.3 * (i % 7)};
+    }
+    placed.push_back(std::move(p));
+  }
+  static void list(const void* user, Vector<view::SoundTile>& out) {
+    const Tiles& t = *static_cast<const Tiles*>(user);
+    out.clear();
+    for (usize i = 0; i < t.keys.size(); ++i)
+      out.push_back(view::SoundTile{t.keys[i], t.placed[i].data(),
+                                    static_cast<u32>(t.placed[i].size()), t.versions[i]});
+  }
+};
+
+struct Count {
+  u64 crowns = 0;
+  u64 merged = 0;
+  static void emit(void* user, const world_sound::Crown& c) noexcept {
+    Count& n = *static_cast<Count*>(user);
+    n.crowns += c.merged ? 0u : 1u;
+    n.merged += c.merged ? 1u : 0u;
+  }
+};
+
+}  // namespace
+
+// **H1 of S112's review**: a refresh rebuilt the tiles' whole tail and walked every hand-off tile's
+// placements at 8 Hz on the frame's thread. Now it lists the tiles by key, walks a tile's
+// placements only when its version moves, within an allowance a refresh, and allocates nothing in
+// a steady state: held by counts, never by a clock.
+TEST_CASE("engine-view: a sound refresh walks what changed and nothing else") {
+  renderer::SceneData scene;
+  scene.mesh_leaves.push_back(renderer::MeshLeaves{60.0f, 2.0f, 10.0f, 0.0f, 0.0f, 3.0f});
+  scene.mesh_leaves.push_back(renderer::MeshLeaves{5.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f});
+  scene.sources.resize(2);
+  scene.sources[0].species = "oak";  // a generated tree's container names it; mesh 1 says nothing
+  scene.mesh_info.resize(2);
+  view::GameSoundHost host;
+  host.attach_scene(scene);
+  Tiles tiles;
+  tiles.add(10, 0.0, 100);
+  tiles.add(20, 64.0, 100);
+  tiles.add(30, 128.0, 100);
+  host.attach_tile_list(&Tiles::list, &tiles);
+  const WorldPos centre{10.0, 1.7, 0.0};
+  const auto refresh = [&]() {
+    Count n;
+    view::GameSoundHost::visit(&host, centre, 2000.0, world_sound::CrownSink{&n, &Count::emit});
+    return n;
+  };
+  // The first refresh walks every tile once; mesh 1 has no class and is never a crown.
+  Count first = refresh();
+  CHECK(host.counters().instances_walked == 300u);
+  CHECK(host.counters().tiles_walked == 3u);
+  CHECK(first.crowns + first.merged > 0u);
+  CHECK(first.crowns <= 150u);
+  // An unchanged world walks nothing, and allocates nothing.
+  (void)refresh();
+  const u64 allocations = mem::allocations_on_thread();
+  for (u32 i = 0; i < 8; ++i)
+    (void)refresh();
+  CHECK(mem::allocations_on_thread() == allocations);
+  CHECK(host.counters().last_walked == 0u);
+  CHECK(host.counters().instances_walked == 300u);
+  // One tile's change walks that tile's placements and no other.
+  ++tiles.versions[1];
+  (void)refresh();
+  CHECK(host.counters().last_walked == 100u);
+  CHECK(host.counters().instances_walked == 400u);
+  // A tile let go and another drawn: only the new one is walked.
+  tiles.keys[2] = 40;
+  tiles.versions[2] = 7;
+  (void)refresh();
+  CHECK(host.counters().last_walked == 100u);
+  CHECK(host.counters().tile_groups == 3u);
+  // The allowance: every tile changed at once, 100 placements a refresh, the rest carried.
+  tunables::Tunable* walk = tunables::find("audio.world.walk_instances");
+  REQUIRE(walk != nullptr);
+  REQUIRE(walk->set_from_text("100"));
+  for (u64& v : tiles.versions)
+    ++v;
+  const u64 carried = host.counters().tiles_carried;
+  (void)refresh();
+  CHECK(host.counters().last_walked == 100u);
+  CHECK(host.counters().tiles_carried == carried + 2u);
+  (void)refresh();
+  (void)refresh();
+  CHECK(host.counters().instances_walked == 800u);
+  (void)refresh();
+  CHECK(host.counters().last_walked == 0u);  // all made again
+  walk->reset();
+  // Nearest first (M1): with room for one tile's crowns, the listener's own tile is the one sent
+  // one by one and the rest merged.
+  tunables::Tunable* near = tunables::find("audio.world.near_crowns");
+  REQUIRE(near != nullptr);
+  REQUIRE(near->set_from_text("50"));
+  const Count tight = refresh();
+  CHECK(tight.crowns == 50u);
+  CHECK(tight.merged >= 1u);
+  near->reset();
+}
+
+TEST_CASE("engine-view: a crown's class is the mesh's own word, then its species, else silence") {
+  world_sound::CanopyClass kind = world_sound::CanopyClass::Bare;
+  f32 needle = 0.0f;
+  constexpr u8 k_none = renderer::SceneMeshInfo::k_sound_undeclared;
+  CHECK(view::canopy_class_of(k_none, 0.0f, "pine", kind, needle));
+  CHECK(kind == world_sound::CanopyClass::Needle);
+  CHECK(needle == 1.7f);
+  CHECK(view::canopy_class_of(k_none, 0.0f, "oak", kind, needle));
+  CHECK(kind == world_sound::CanopyClass::Blade);
+  CHECK_FALSE(view::canopy_class_of(k_none, 0.0f, "", kind, needle));       // a fence, a decal
+  CHECK_FALSE(view::canopy_class_of(k_none, 0.0f, "sward", kind, needle));  // the ground's cover
+  // Declared: wins over the species, its width taken.
+  CHECK(view::canopy_class_of(1, 2.5f, "oak", kind, needle));
+  CHECK(kind == world_sound::CanopyClass::Needle);
+  CHECK(needle == 2.5f);
+  CHECK(view::canopy_class_of(2, 0.0f, "", kind, needle));
+  CHECK(kind == world_sound::CanopyClass::Bare);
+  CHECK_FALSE(view::canopy_class_of(3, 0.0f, "pine", kind, needle));  // None
+}
+
+#endif  // ENGINE_VIEW_GAME && ENGINE_VIEW_WORLD_SOUND

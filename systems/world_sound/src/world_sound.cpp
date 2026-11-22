@@ -1,5 +1,7 @@
 // The sound stage a host creates for a game (world_sound.h; docs/subsystems/world_sound.md).
 
+#include "world_field.h"
+
 #include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/log/log.h>
@@ -327,6 +329,10 @@ struct SoundStage::Impl {
 
   // A source in the mixer's frame: its world position less the frame's corner.
   void place(Handle& h) noexcept { h.source.position = relative(h.at, frame); }
+
+  // The world's sound (S112): open when the config asks for it and the stage sounds.
+  WorldField field;
+  bool frame_moved = false;  // since the last tick: the world's voices are placed again
 };
 
 SoundStage::SoundStage() : impl_(std::make_unique<Impl>()) {}
@@ -348,7 +354,11 @@ bool SoundStage::open(const StageConfig& config, const scene::Sound* block, std:
   if (s.config.tick_hz == 0) s.config.tick_hz = 240;
   s.open = true;
   s.has_block = block != nullptr;
-  if (block == nullptr) return true;
+  // With no block and the world off there is nothing to hear; with the world on (S112) the mixer
+  // is built for the wind's voices, and a module's calls still answer `Unsupported`.
+  if (block == nullptr && !config.world) return true;
+  static const scene::Sound k_no_block{};
+  if (block == nullptr) block = &k_no_block;
   s.clips.reserve(block->clips.size());
   for (const scene::SoundClip& c : block->clips) {
     std::string why;
@@ -431,6 +441,11 @@ bool SoundStage::open(const StageConfig& config, const scene::Sound* block, std:
   if (!s.output->fallback_reason().empty()) {
     ENGINE_LOG_WARN(log_world_sound, "no audio device, the null backend instead",
                     log::field("why", std::string_view(s.output->fallback_reason())));
+  }
+  if (config.world) {
+    FieldConfig field = field_config_from_tunables();
+    field.turbulence = config.turbulence;
+    s.field.open(s.mixer.get(), s.config.tick_hz, field);
   }
   const u32 ch = s.mixer->channels();
   s.block_frames = 0;
@@ -535,6 +550,7 @@ void SoundStage::set_listener(const WorldPos& at, const Vec3& forward, const Vec
     // The frame moves only when the listener crosses into another cell; every voice still
     // sounding in 3D is placed again in it, one command each.
     s.frame = corner;
+    s.frame_moved = true;
     ++s.stats.frame_moves;
     for (Impl::Handle& h : s.handles) {
       if (h.handle == 0 || h.two_d || h.voice.is_null() || !s.mixer->is_live(h.voice)) continue;
@@ -555,6 +571,11 @@ void SoundStage::tick() noexcept {
   Impl& s = *impl_;
   ++s.stats.ticks;
   if (s.mixer == nullptr || !s.open || s.stopped) return;
+  // The world's voices, described from this tick's wind before the mixer takes its commands.
+  if (s.field.is_open() && s.has_listener) {
+    s.field.tick(s.listener, s.forward, s.frame, s.frame_moved);
+    s.frame_moved = false;
+  }
   s.mixer->update();
   s.output->update();
   // A device lost mid-session that could not be opened again: the output fell back to the null
@@ -625,6 +646,16 @@ bool SoundStage::close(std::string* error) {
   return ok;
 }
 
+void SoundStage::set_canopy(const CanopySource& canopy) noexcept {
+  impl_->field.set_canopy(canopy);
+}
+void SoundStage::set_wind(const WorldWind& wind) noexcept { impl_->field.set_wind(wind); }
+const WorldStats& SoundStage::world_stats() const noexcept { return impl_->field.stats(); }
+u32 SoundStage::world_voice_count() const noexcept { return impl_->field.voice_count(); }
+WorldVoiceInfo SoundStage::world_voice(u32 index) const noexcept {
+  return impl_->field.voice(index);
+}
+
 const StageStats& SoundStage::stats() const noexcept { return impl_->stats; }
 const f32* SoundStage::last_block() const noexcept { return impl_->block.data(); }
 u32 SoundStage::last_block_frames() const noexcept { return impl_->block_frames; }
@@ -669,6 +700,23 @@ JsonValue SoundStage::summary_json() const {
     out.set("commands", JsonValue(m.commands));
     out.set("clipped_samples", JsonValue(m.clipped_samples));
     out.set("voices_peak", JsonValue(static_cast<u64>(m.voices_peak)));
+  }
+  if (s.field.is_open()) {
+    const WorldStats& w = s.field.stats();
+    JsonValue world = JsonValue::object();
+    world.set("refreshes", JsonValue(w.refreshes));
+    world.set("crowns_seen", JsonValue(w.crowns_seen));
+    world.set("crowns_dropped", JsonValue(w.crowns_dropped));
+    world.set("commands", JsonValue(w.commands));
+    world.set("plays", JsonValue(w.plays));
+    world.set("stops", JsonValue(w.stops));
+    world.set("crown_voices", JsonValue(static_cast<u64>(w.crown_voices)));
+    world.set("bed_voices", JsonValue(static_cast<u64>(w.bed_voices)));
+    world.set("ear_voices", JsonValue(static_cast<u64>(w.ear_voices)));
+    world.set("held_db", JsonValue(static_cast<f64>(w.held_db)));
+    world.set("held_ticks", JsonValue(w.held_ticks));
+    world.set("place_retries", JsonValue(w.place_retries));
+    out.set("world", std::move(world));
   }
   out.set("stopped", JsonValue(s.stopped));
   if (s.stopped) {

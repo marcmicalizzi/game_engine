@@ -43,6 +43,10 @@
 #include <string>
 #include <string_view>
 
+namespace engine::renderer {
+struct SceneData;
+}  // namespace engine::renderer
+
 namespace engine::view {
 
 class Walker;
@@ -202,6 +206,13 @@ struct GameSound {
   hotload::Result (*play)(void* user, u32 clip, const f64* position, f32 gain, u32& out) = nullptr;
   hotload::Result (*stop)(void* user, u32 voice) = nullptr;
   void (*tick)(void* user, const WorldPos& eye, f32 heading, f32 pitch) = nullptr;
+  // **The world's sound** (S112): the frame's wind as every reader has it — the session's live
+  // state and the sky's clock — handed before `tick`; the loaded scene's crowns once the session
+  // is attached (`attach_sound`), and a streamed world's placements when there is one (an opaque
+  // `world::PlacementTiles*`, `attach_sound_tiles`).
+  void (*wind)(void* user, const gfx::WindLive& live, f64 sky_time_s) = nullptr;
+  void (*scene)(void* user, const renderer::SceneData& scene) = nullptr;
+  void (*tiles)(void* user, void* placements) = nullptr;
   JsonValue (*summary)(const void* user) = nullptr;          // the game block's `sound`
   bool (*finish)(void* user, std::string* error) = nullptr;  // at `GameRunner::finish`
 };
@@ -343,6 +354,13 @@ class GameRunner {
   void set_water(WaterQueryFn query, const void* user) noexcept;
   // The session's sound (`GameSound`): set before `start`, since `on_load` names its clips.
   void set_sound(const GameSound& sound) noexcept;
+  // The world the sound hears (S112): the loaded scene, and a streamed world's placements (an
+  // opaque `world::PlacementTiles*`). Nothing without a sound that takes them.
+  void attach_sound(const renderer::SceneData& scene) noexcept;
+  void attach_sound_tiles(void* placements) noexcept;
+  // The wall time the session's sound has taken on the frame's thread so far, nanoseconds: its
+  // world described and its stage ticked (`FrameWorld::sound_ms`), apart from the module's.
+  i64 sound_ns() const noexcept;
   // The loaded module's name and build (the host's generation), for a recording's header.
   const std::string& module_name() const noexcept;
   u32 build() const noexcept;

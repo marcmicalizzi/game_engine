@@ -329,6 +329,8 @@ Mixer::Mixer(ClipStore& clips, const MixerConfig& config)
       layout_(&layout_info(config.layout)),
       decoder_(config.decoder != nullptr ? config.decoder : &k_stereo_panner),
       ramp_frames_(ramp_for(config)),
+      field_ramp_frames_(config.field_ramp_frames != 0 ? config.field_ramp_frames
+                                                       : tunable_field_ramp_frames()),
       commands_(commands_for(config)),
       // Twice the pool: `play()` drains this ring before it starts a voice, so between two drains
       // at most one voice starts, each voice ends at most once, and the ring can never hold more
@@ -352,6 +354,7 @@ Mixer::Mixer(ClipStore& clips, const MixerConfig& config)
   voices_.resize_exact(voices);
   voice_ring_.resize_exact(voices, nullptr);
   sources_.resize_exact(voices);
+  noise_.resize_exact(voices);
 
   // The streams: records now, rings the first time each one plays. A ring shorter than a few
   // frames could not hold a frame and its right tap beside the spare slot, and the fill-ahead
@@ -649,6 +652,111 @@ VoiceHandle Mixer::play(const PlayParams& params) noexcept {
   return VoiceHandle{index, generation};
 }
 
+namespace {
+
+bool valid_noise(const NoiseParams& p) noexcept {
+  for (const f32 g : p.gain) {
+    if (!finite(g) || g < 0.0f) return false;
+  }
+  return finite(p.tone.c) && finite(p.tone.a1) && finite(p.tone.a2);
+}
+
+NoisePayload pack_noise(const NoiseParams& p) noexcept {
+  NoisePayload out{};
+  out.seed = p.seed;
+  for (u32 k = 0; k < k_noise_lanes; ++k)
+    out.gain[k] = p.gain[k];
+  out.tone[0] = p.tone.c;
+  out.tone[1] = p.tone.a1;
+  out.tone[2] = p.tone.a2;
+  return out;
+}
+
+}  // namespace
+
+VoiceHandle Mixer::play_noise(const NoisePlayParams& params) noexcept {
+  update();
+  SourceSpatial source;
+  if (!valid_voice(params.gain, 1.0f, params.pan) || params.bus >= bus_count() ||
+      !valid_noise(params.noise) || !sanitize(params.source, source)) {
+    ++control_.refused_params;
+    return VoiceHandle{};
+  }
+  // Two commands: the ring must hold both, or neither is sent.
+  if (commands_.capacity() - commands_.size_approx() < 2u) {
+    ++control_.queue_full;
+    return VoiceHandle{};
+  }
+  bool stole = false;
+  const u32 index = choose_slot(params.priority, true, stole);
+  if (index == ClipHandle::k_invalid) {
+    ++control_.refused_pool;
+    return VoiceHandle{};
+  }
+  VoiceSlot& slot = slots_[index];
+  u32 generation = slot.generation + 1u;
+  if (generation == 0) generation = 1;
+
+  Command c;
+  c.kind = CommandKind::Play;
+  c.channels = 1;
+  c.bus = params.bus;
+  c.flags = static_cast<u8>(k_voice_loop | k_voice_noise);
+  c.slot = index;
+  c.generation = generation;
+  c.start_frame = 0;
+  PlayPayload& p = c.payload.play;
+  p.samples = nullptr;
+  p.frames = 1;
+  p.gain = params.gain;
+  p.pitch = 1.0f;
+  p.pan = clamp(params.pan, -1.0f, 1.0f);
+  p.source = pack(source);
+  p.stream = k_no_stream;
+  if (!push(c)) return VoiceHandle{};
+  Command n;
+  n.kind = CommandKind::SetNoise;
+  n.slot = index;
+  n.generation = generation;
+  n.payload.noise = pack_noise(params.noise);
+  push(n);  // room was checked above: the controlling thread is the ring's one producer
+
+  // A stolen voice's clip or stream is released as a play's is (above).
+  if (stole && slot_stream_[index] != k_no_stream)
+    streams_[slot_stream_[index]].retire_after = pushed_;
+  if (stole && slot_clip_[index] != ClipHandle::k_invalid) {
+    const u32 capacity = static_cast<u32>(stolen_.size());
+    const u32 at = (stolen_head_ + stolen_count_) % capacity;
+    stolen_[at] = Stolen{pushed_, slot_clip_[index]};
+    ++stolen_count_;
+  }
+  slot_stream_[index] = k_no_stream;
+  slot_clip_[index] = ClipHandle::k_invalid;
+
+  if (slot.state == k_free) ++live_;
+  slot.generation = generation;
+  slot.state = k_playing;
+  slot.priority = params.priority;
+  slot.sequence = ++sequence_;
+  slot.stop_pending = 0;
+  ++control_.plays;
+  ++control_.noise_plays;
+  if (stole) ++control_.steals;
+  return VoiceHandle{index, generation};
+}
+
+bool Mixer::set_noise(VoiceHandle voice, const NoiseParams& params) noexcept {
+  if (!is_live(voice) || !valid_noise(params)) return false;
+  Command c;
+  c.kind = CommandKind::SetNoise;
+  c.slot = voice.slot;
+  c.generation = voice.generation;
+  c.payload.noise = pack_noise(params);
+  if (!push(c)) return false;
+  ++control_.noise_sets;
+  return true;
+}
+
 bool Mixer::is_live(VoiceHandle voice) const noexcept {
   if (voice.is_null() || voice.slot >= slots_.size()) return false;
   const VoiceSlot& slot = slots_[voice.slot];
@@ -900,6 +1008,42 @@ void Mixer::apply(const Command& c) noexcept {
       }
       v.state = k_playing;
       sources_[c.slot] = unpack(p.source);
+      if ((c.flags & k_voice_noise) != 0) {
+        // A new noise voice: still filters, the fixed bands' coefficients, every gain zero until
+        // its SetNoise (pushed with it, so applied before its first block).
+        NoiseState& n = noise_[c.slot];
+        n = NoiseState{};
+        for (u32 k = 0; k < k_noise_bands; ++k) {
+          n.c[k] = k_noise_band_table[k].c;
+          n.a1[k] = k_noise_band_table[k].a1;
+          n.a2[k] = k_noise_band_table[k].a2;
+        }
+      }
+      return;
+    }
+    case CommandKind::SetNoise: {
+      const VoiceState& v = voices_[c.slot];
+      if (v.state == k_free || v.generation != c.generation || (v.flags & k_voice_noise) == 0) {
+        ++audio_stats_.stale_commands;
+        return;
+      }
+      const NoisePayload& p = c.payload.noise;
+      NoiseState& n = noise_[c.slot];
+      const bool fresh = (v.flags & k_voice_fresh) != 0;
+      if (fresh) n.rng = noise_seed(p.seed);
+      n.c[k_noise_tone] = p.tone[0];
+      n.a1[k_noise_tone] = p.tone[1];
+      n.a2[k_noise_tone] = p.tone[2];
+      // Every description ramps to its gains over the field's ramp from wherever they stand, and
+      // a voice that has not sounded stands at nothing (S112-2): noise has no authored attack to
+      // keep, as a clip's has, and a step from silence to broadband noise is a click.
+      const f32 inv = 1.0f / static_cast<f32>(field_ramp_frames_);
+      for (u32 k = 0; k < k_noise_lanes; ++k) {
+        n.target[k] = p.gain[k];
+        if (fresh) n.gain[k] = 0.0f;
+        n.step[k] = (p.gain[k] - n.gain[k]) * inv;
+      }
+      n.ramp = field_ramp_frames_;
       return;
     }
     case CommandKind::Stop: {
@@ -926,8 +1070,8 @@ void Mixer::apply(const Command& c) noexcept {
       v.step = pitch_step(c.payload.params.pitch);
       v.bus = c.bus;
       // Only the loop bit changes: fresh is the audio thread's, and a voice's stream is its Play's.
-      v.flags =
-          static_cast<u8>((v.flags & (k_voice_fresh | k_voice_stream)) | (c.flags & k_voice_loop));
+      v.flags = static_cast<u8>((v.flags & (k_voice_fresh | k_voice_stream | k_voice_noise)) |
+                                (c.flags & k_voice_loop));
       return;
     }
     case CommandKind::SetSource: {
@@ -1012,7 +1156,10 @@ void Mixer::mix_block(f32* out, u32 frames) noexcept {
     // 1. The voice loop: the clip at the voice's pitch, before any gain — from the clip itself, or
     //    from the voice's stream (stream.h), which reads the same way.
     bool ended = false;
-    if ((v.flags & k_voice_stream) == 0) {
+    if ((v.flags & k_voice_noise) != 0) {
+      // A shaped-noise voice (noise_voice.h): its generator and bands, mono, and it never ends.
+      render_noise(noise_[s], signal, frames);
+    } else if ((v.flags & k_voice_stream) == 0) {
       ended = v.channels == 1 ? read_voice<1>(v, signal, frames) : read_voice<2>(v, signal, frames);
     } else {
       StreamRing& ring = *voice_ring_[s];

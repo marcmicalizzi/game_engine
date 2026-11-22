@@ -36,6 +36,22 @@
 #endif
 #if ENGINE_VIEW_WORLD_SOUND
 #include "game_sound.h"
+#else
+namespace engine::renderer {
+struct FlightStep;
+struct SceneData;
+}  // namespace engine::renderer
+namespace engine::view {  // the session's sound's seams with the capability out (game_sound.h)
+class FlySession;
+inline bool sound_hears_world() noexcept { return false; }
+inline i64 solo_sound_ns() noexcept { return 0; }
+inline void attach_solo_scene(const renderer::SceneData&) {}
+inline void attach_solo_session(FlySession&, f64, f64) noexcept {}
+inline void attach_solo_tiles(void*) noexcept {}
+inline void set_solo_flight_clock(f64, f64) noexcept {}
+inline void solo_flight_frame(const renderer::FlightStep&) noexcept {}
+inline void print_solo_summary() {}
+}  // namespace engine::view
 #endif
 #include "time_controls.h"
 #include "window_input.h"
@@ -562,8 +578,8 @@ constexpr const char* k_usage =
     "  --game-state <f> --game: restore the module's state from <f> at start when it exists, and\n"
     "                   save it there at exit, so a run can be left and resumed\n"
     "  --audio auto|off|null|<device>  --game: how its sound is heard: the default device in a\n"
-    "                   window (auto, the default; off offscreen), mute, the null backend, or a\n"
-    "                   device by name. What the module hears is the same in every mode\n"
+    "                   window whatever it records (auto, the default; off offscreen), mute, the\n"
+    "                   null backend, or a device by name. The module hears the same in each\n"
     "  --audio-out <f.wav>  --audio null: keep the render as a 32-bit float WAV\n"
     "  --on-end panel|quit  --game, in a live window: when the module ends the run, stay on a\n"
     "                   result panel (Enter or Esc quit, R starts a new run; the default for\n"
@@ -1430,13 +1446,17 @@ view::GameRunner* g_game = nullptr;
 
 // Hooks the game onto a session about to start: the observer that ticks it after the walker, and
 // the clocks as the session runs them (the sky's offset, the day's rate, the scene's epoch, the
-// world's rate).
+// world's rate). With no module, the world's sound alone is the observer (S112-2).
 void attach_game(view::FlySession& session, f64 sun_offset_s, f64 sun_rate, f64 world_rate,
                  const renderer::SceneData& scene, view::Walker& walker) {
-  if (g_game == nullptr) return;
+  if (g_game == nullptr) {
+    view::attach_solo_session(session, sun_offset_s, sun_rate);  // the world heard (S112-2)
+    return;
+  }
   session.set_tick_observer(&view::GameRunner::observe, g_game);
   g_game->set_session(&session);  // the walker's services act on this session (fly_camera.h)
   g_game->set_clock(sun_offset_s, sun_rate, renderer::scene_epoch_s(scene), world_rate);
+  g_game->attach_sound(scene);  // the crowns the session's sound hears (S112)
   if (g_game->props().declared()) walker.set_props(&view::GameProps::walk_props, &g_game->props());
   walker.set_door_service(&view::GameRunner::walk_door_ask, g_game);  // props P45, doors S91
   // `ground_height` (ABI 5) is the walker's own ground: none without a terrain.
@@ -1869,6 +1889,9 @@ void game_release() {
 bool game_held() { return g_game != nullptr && g_game->held(); }
 u64 game_first_tick() { return g_game != nullptr ? g_game->first_tick() : 0; }
 i64 game_tick_ns() { return g_game != nullptr ? g_game->tick_ns() : 0; }  // FrameWorld::game_ms
+i64 game_sound_ns() {  // FrameWorld::sound_ms: the runner's, or a module-less host's own
+  return g_game != nullptr ? g_game->sound_ns() : view::solo_sound_ns();
+}
 #else
 f32 g_hud_display_scale = 1.0f;  // the loading overlay's, set by the windowed loop
 void append_player(renderer::SceneDesc&) {}
@@ -1884,6 +1907,7 @@ void game_release() {}
 bool game_held() { return false; }
 u64 game_first_tick() { return 0; }
 i64 game_tick_ns() { return 0; }
+i64 game_sound_ns() { return 0; }
 void game_loading_call(bool) {}
 void note_game_graphics(const gfx::Device&, const renderer::ResolvedSettings&, u32, u32) {}
 void poll_game() {}
@@ -1907,7 +1931,10 @@ bool hand_over_game_props(World*, renderer::SceneRenderer& renderer, std::string
 // hears `NotFound` and the fixture drinks at its spring.
 void attach_world_to_game([[maybe_unused]] view::ViewWorld& world) {
 #if ENGINE_VIEW_GAME
-  if (g_game == nullptr) return;
+  if (g_game == nullptr) {
+    view::attach_solo_tiles(&world.placements());  // no module: the world's sound hears them
+    return;
+  }
   struct Query {
     static bool nearest(void* user, std::string_view kind, const WorldPos& from, f64 radius,
                         WorldPos& out, f64& distance) {
@@ -1919,6 +1946,7 @@ void attach_world_to_game([[maybe_unused]] view::ViewWorld& world) {
     }
   };
   g_game->set_placements(&Query::nearest, &world, &Query::stats);
+  g_game->attach_sound_tiles(&world.placements());  // the drawn tiles' crowns, heard (S112)
   // The game's props ride the world's hand-over as a block after the tiles' (game_props.h).
   world.set_extra_block(&g_game->props().tail(), view::k_game_block_key);
 #endif
@@ -3164,6 +3192,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
     }
 #endif
     keep_game_actors(desc);
+    desc.measure_leaves = view::sound_hears_world();  // the leaves only when heard (S112-2)
     {
       ENGINE_STARTUP_STAGE("load scene");
       if (!renderer::load_scene(desc, scene_data, error)) {
@@ -3172,6 +3201,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       }
     }
     startup.milestone("scene_loaded");
+    view::attach_solo_scene(scene_data);  // a module-less session hears its crowns (S112-2)
     profiling::TraceStage attach_stage("attach");
     look_overrides(options, scene_data);  // `--sky-disc-scale`
     if (!attach_game_scene(scene_data, error)) {
@@ -3547,10 +3577,11 @@ int run_offscreen(Options& options, Interactive& interactive) {
         poll_game();  // a rebuilt game module, between this frame's ticks and the last's
         walk_probe.begin(time_lapse.recentre_stage());
         const i64 ticks_started = time::monotonic_ns();
-        const i64 game_before = game_tick_ns();
+        const i64 game_before = game_tick_ns(), sound_before = game_sound_ns();
         cursor = session.run(interactive.log.events(), cursor, SimTick{to});
         world_parts.ticks_ms = static_cast<f64>(time::monotonic_ns() - ticks_started) / 1.0e6;
         world_parts.game_ms = static_cast<f64>(game_tick_ns() - game_before) / 1.0e6;
+        world_parts.sound_ms = static_cast<f64>(game_sound_ns() - sound_before) / 1.0e6;
         const scene::FrameWalk walked = walk_probe.end();
         renderer::FrameDesc frame;
         // The session's camera, or with a body worn the eye at its face (P58; player.h).
@@ -3680,6 +3711,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       Vector<std::optional<scene::FrameTerrain>> terrain_of;
       if (time_lapse.active()) terrain_of.resize(static_cast<usize>(frames) * repeats);
       WorldHook world_hook{&world_before, options.warmup == 0, &time_lapse, &terrain_of, frames};
+      view::set_solo_flight_clock(flight_options.sky_start_s, flight_options.sun_rate);
       flight_options.before_frame = [](void* context, const renderer::FlightStep& step,
                                        std::string*) {
         const auto* hook = static_cast<const WorldHook*>(context);
@@ -3688,6 +3720,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         const bool ok =
             (*hook->before)(step.camera, first_step ? WorldStep::restart : WorldStep::budgeted,
                             step.repeat, step.frame, step.recorded, step.world);
+        view::solo_flight_frame(step);  // the world heard with no module, a tick a frame
         const u32 at = step.repeat * hook->frames + step.frame;
         if (step.recorded && at < hook->terrain->size()) {
           // The record's time-lapse state is the benchmark's, not the frame loop's.
@@ -5646,6 +5679,26 @@ int run_view(int argc, char** argv) {
   view::GameRunner game;
 #if ENGINE_VIEW_WORLD_SOUND
   view::GameSoundHost game_sound;  // its hooks are the runner's; declared after it, gone before it
+  const struct SoundScope {
+    ~SoundScope() { view::set_session_sound(nullptr, false); }
+  } sound_scope;
+  // **A scene with no module hears its world** (S112-2): the same host, ticked by the session as
+  // its observer or by a flight's frames (a sixtieth of a second each), with nothing to play
+  // clips. `Off` (the default offscreen) opens nothing and measures no leaves.
+  if (options.game.empty()) {
+    std::string sound_error;
+    const bool flight = !options.camera_path.empty() && !interactive.on;  // a tick a frame
+    if (!view::open_solo_sound(
+            game_sound, options.audio, !options.offscreen, options.audio_out,
+            !options.scene.empty() ? options.scene
+            : interactive.replay   ? std::string(interactive.header.scene)
+                                   : std::string(),
+            flight ? static_cast<u32>(view::k_frame_index_hz) : interactive.header.params.tick_hz,
+            &sound_error)) {
+      log::remove_sink(&stderr_sink);
+      return fail("audio", sound_error);
+    }
+  }
 #endif
   if (!options.game.empty()) {
     view::GameRunner::Config config;
@@ -5705,15 +5758,17 @@ int run_view(int argc, char** argv) {
     // (the command line's scene, or a replay's header's) and the stage opened, before `on_load`.
     world_sound::AudioMode audio_mode = world_sound::AudioMode::Off;
     std::string audio_device;
-    if (!view::resolve_audio(
-            options.audio,
-            !options.offscreen && options.capture.empty() && options.benchmark.empty(), audio_mode,
-            audio_device, &game_error) ||
+    // `auto` is keyed on the window alone (S112): the owner's launcher records frames with
+    // `--benchmark` in the window they sit at, and that session is heard.
+    if (!view::resolve_audio(options.audio, !options.offscreen, audio_mode, audio_device,
+                             &game_error) ||
         !game_sound.open(audio_mode, audio_device, options.audio_out, config.scene,
-                         interactive.header.params.tick_hz, game, &game_error)) {
+                         interactive.header.params.tick_hz, &game_error)) {
       log::remove_sink(&stderr_sink);
       return fail("audio", game_error);
     }
+    game.set_sound(game_sound.hooks());
+    view::set_session_sound(&game_sound, false);  // the leaves measured when heard (M7)
 #endif
     if (!game.start(config, interactive.map, interactive.header.params.tick_hz, &game_error)) {
       log::remove_sink(&stderr_sink);
@@ -5769,6 +5824,7 @@ int run_view(int argc, char** argv) {
   if (options.reference != 0) return run_reference(options);
   if (options.offscreen) {
     const int code = run_offscreen(options, interactive);
+    view::print_solo_summary();  // a module-less session's sound (S112-2)
     log::remove_sink(&stderr_sink);
     return code;
   }
@@ -6144,6 +6200,7 @@ int run_view(int argc, char** argv) {
 #endif
 
       keep_game_actors(desc);  // the declared actors stay in the prefix (W78)
+      desc.measure_leaves = view::sound_hears_world();  // the leaves only when heard (S112-2)
       profiling::TraceStage load_stage("load scene");
       if (!renderer::load_scene(desc, scene_data, error)) {
         exit_code = fail("mesh", error);
@@ -6151,6 +6208,7 @@ int run_view(int argc, char** argv) {
       }
       load_stage.end();
       startup.milestone("scene_loaded");
+      view::attach_solo_scene(scene_data);  // a module-less session hears its crowns (S112-2)
       profiling::TraceStage attach_stage("attach");
       look_overrides(options, scene_data);  // `--sky-disc-scale`
       if (!attach_game_scene(scene_data, error)) {
@@ -7009,7 +7067,7 @@ int run_view(int argc, char** argv) {
         poll_game();  // a rebuilt game module, between the last frame's ticks and this one's
         walk_probe.begin(time_lapse.recentre_stage());
         const i64 ticks_started = time::monotonic_ns();
-        const i64 game_before = game_tick_ns();
+        const i64 game_before = game_tick_ns(), sound_before = game_sound_ns();
         if (interactive.replay) {
           replay_cursor = session.run(interactive.log.events(), replay_cursor, SimTick{to});
         } else {
@@ -7053,6 +7111,7 @@ int run_view(int argc, char** argv) {
         }
         world_parts.ticks_ms = static_cast<f64>(time::monotonic_ns() - ticks_started) / 1.0e6;
         world_parts.game_ms = static_cast<f64>(game_tick_ns() - game_before) / 1.0e6;
+        world_parts.sound_ms = static_cast<f64>(game_sound_ns() - sound_before) / 1.0e6;
         ticks_this_frame = static_cast<u32>(session.tick().value - before);
         // The time-lapse keys at the ticks they were pressed on — live, and in a replay in the
         // window, which presses them where its recording did (an offscreen replay never reaches

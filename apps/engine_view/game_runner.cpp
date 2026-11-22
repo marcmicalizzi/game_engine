@@ -210,7 +210,8 @@ struct GameRunner::Impl {
   bool held = false;
   u64 hold_until = 0;
   u64 held_ticks = 0;
-  i64 tick_ns = 0;  // the module's ticks' wall time (`GameRunner::tick_ns`)
+  i64 tick_ns = 0;   // the module's ticks' wall time (`GameRunner::tick_ns`)
+  i64 sound_ns = 0;  // the session's sound's (`GameRunner::sound_ns`, S112)
   u64 first_tick = 0;
   bool ticked = false;
   u64 loading_calls = 0;
@@ -1666,11 +1667,22 @@ void GameRunner::observe(void* user, const FlySession& session, const input::Inp
   self.tick(in);
   g.tick_ns += time::monotonic_ns() - started;
   // The session's sound, after the module: this tick's plays sound in this tick's block, heard
-  // from the camera. Every tick, held or ended: the sound runs on as the clocks do.
+  // from the camera, and the world's voices described from this tick's wind (S112). Every tick,
+  // held or ended: the sound runs on as the clocks do.
+  const i64 sound_started = time::monotonic_ns();
+  if (g.sound.wind != nullptr) g.sound.wind(g.sound.user, session.wind().live(), self.sun_time_s());
   if (g.sound.tick != nullptr) g.sound.tick(g.sound.user, in.eye, in.heading, in.pitch);
+  g.sound_ns += time::monotonic_ns() - sound_started;
 }
 
 void GameRunner::set_sound(const GameSound& sound) noexcept { impl_->sound = sound; }
+void GameRunner::attach_sound(const renderer::SceneData& scene) noexcept {
+  if (impl_->sound.scene != nullptr) impl_->sound.scene(impl_->sound.user, scene);
+}
+void GameRunner::attach_sound_tiles(void* placements) noexcept {
+  if (impl_->sound.tiles != nullptr) impl_->sound.tiles(impl_->sound.user, placements);
+}
+i64 GameRunner::sound_ns() const noexcept { return impl_->sound_ns; }
 
 i64 GameRunner::tick_ns() const noexcept { return impl_->tick_ns; }
 

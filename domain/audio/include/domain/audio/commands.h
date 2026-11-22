@@ -44,6 +44,7 @@ enum class CommandKind : u8 {
   SetSource,    // the whole spatial block of a live voice
   SetListener,  // where the listener is; applies to every 3D source
   SetBusGain,   // one bus's gain; `bus` names it
+  SetNoise,     // a shaped-noise voice's seed, nine gains and movable band (noise_voice.h)
 };
 
 // Voice flags, in `Command::flags` and in the audio thread's voice.
@@ -51,6 +52,9 @@ inline constexpr u8 k_voice_loop = 1u << 0;
 // The voice plays a stream (stream.h): `samples` is its ring and `frames` the ring's length, and
 // `PlayPayload::stream` names the stream. Set by a Play only; a SetParams never changes it.
 inline constexpr u8 k_voice_stream = 1u << 1;
+// The voice is shaped noise (noise_voice.h), not a clip: `samples` is null, the signal is the
+// voice's generator and bands, and a `SetNoise` describes it. Set by a Play only (S112).
+inline constexpr u8 k_voice_noise = 1u << 2;
 // `PlayPayload::stream` of a voice that plays a stored clip.
 inline constexpr u32 k_no_stream = 0xFFFF'FFFFu;
 
@@ -98,12 +102,20 @@ struct BusPayload {
   f32 gain;
 };
 
+// `NoiseParams`, flattened (52 bytes): the seed, nine gains, the movable band's coefficients.
+struct NoisePayload {
+  u32 seed;
+  f32 gain[9];
+  f32 tone[3];  // c, a1, a2
+};
+
 union CommandPayload {
   PlayPayload play;
   ParamsPayload params;
   SourcePayload source;
   ListenerPayload listener;
   BusPayload bus;
+  NoisePayload noise;
 };
 
 struct alignas(64) Command {

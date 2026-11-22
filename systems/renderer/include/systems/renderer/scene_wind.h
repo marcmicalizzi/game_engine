@@ -185,6 +185,11 @@ void water_wind_frame(std::span<WaterWindBody> bodies, f64 sky_time_s,
 // through their own sway, since a part's lean is a function of the strength now.
 bool scene_flora_wind(const gfx::WindDesc& wind, f64 sky_time_s, Vec2& to, f32& strength,
                       const gfx::WindLive& live = {}) noexcept;
+// **The wind the sway uses when no live wind is set** (S112-2, so the sound reads it as the trees
+// do): the hand tunable's (`renderer.flora.wind_*`) written into `held` — a fixed wind at the
+// scene's roughness, no track, so nothing allocates — and returned, or the scene's own when the
+// tunable is not set. `scene_flora_wind`'s own choice, shared.
+const gfx::WindDesc& scene_wind_in_use(const gfx::WindDesc& wind, gfx::WindDesc& held) noexcept;
 
 // **The trees' wind's ceiling** (W154-2; renderer.md, "What a storm costs"): the strength, over the
 // 5 m/s mean day, the trees' wind of `scene_flora_wind` may reach over the next seconds, which the

@@ -314,6 +314,17 @@ class PlacementTiles {
   // hand-off cells' after it. A tile with a cell handed names no instances and no version (they
   // are not one array): a caller reads them from the tail.
   void tile_ranges(Vector<TileRange>& out) const;
+  // **Every drawn tile's own placements by key** (S112-2, the world's sound): its run without its
+  // hand-off cells' near ones (G205), whether or not a cell is handed, and the version of what it
+  // draws, in key order. What a reader that keeps its own table by tile reads, so it never asks
+  // for the tail (T131) and walks a tile again only when its version moves.
+  struct TileOwn {
+    u64 key = 0;
+    const renderer::SceneInstance* instances = nullptr;
+    u32 count = 0;
+    u64 version = 0;
+  };
+  void tile_own(Vector<TileOwn>& out) const;
   // Whether `key` is one a hand-off cell's run is handed under: the first column of tiles
   // (x = -2^31), which the consumer holds no tile of while the cells are on.
   static bool cell_key_reserved(u64 key) noexcept;

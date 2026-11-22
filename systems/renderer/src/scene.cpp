@@ -2707,6 +2707,14 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       info.fit.ground = mesh.fit->ground;
     }
     info.texel_density = mesh.texel_density;  // G14
+    if (mesh.sound.has_value()) {             // S112: the mesh's own word on its sound
+      if (!(mesh.sound->needle_mm >= 0.0f && mesh.sound->needle_mm <= 50.0f)) {
+        error = where + ": sound.needle_mm must be in [0, 50]";
+        return false;
+      }
+      info.sound_canopy = static_cast<u8>(mesh.sound->canopy);
+      info.sound_needle_mm = mesh.sound->needle_mm;
+    }
     std::string resolved =
         io::is_absolute_path(mesh.path) || dir.empty() ? mesh.path : io::join_path(dir, mesh.path);
     if (!mesh.overlay.empty()) {
@@ -3703,6 +3711,19 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   }
 
   update_scene_bounds(out);
+  // What a host's sound hears a crown by (S112), only for a host that listens, on the load's pool.
+  if (desc.measure_leaves) {
+    ENGINE_STARTUP_STAGE("mesh leaves");
+    const i64 leaves_start = time::monotonic_ns();
+    measure_mesh_leaves(out, out.mesh_leaves, &*pool);
+    out.load.leaves_ms = static_cast<f64>(time::monotonic_ns() - leaves_start) / 1.0e6;
+    for (const MeshLeaves& l : out.mesh_leaves)
+      out.load.leaf_meshes += l.area_m2 > 0.0f ? 1u : 0u;
+    ENGINE_LOG_INFO(log_renderer, "mesh leaves measured", log::field("ms", out.load.leaves_ms),
+                    log::field("meshes", out.load.leaf_meshes));
+  } else {
+    out.mesh_leaves.clear();
+  }
   out.build_ns = time::monotonic_ns() - build_start;
   // What the load cost and what it made: an offscreen run has no other line that says it, and a
   // scene of hundreds of thousands of ruin blocks spends its time here, in the instance table.

@@ -52,6 +52,12 @@ tunables::Int period_frames{"audio.period_frames", 480, 32, 16384,
 tunables::Float ramp_ms{"audio.ramp_ms", 10.0, 1.0, 100.0,
                         "Time a gain or pan change takes to reach its target, and a stop to fade"};
 
+// A shaped-noise voice's band gains (noise_voice.h; S112): a world field is described again every
+// tick, so its ramp spans three ticks at 60 a second and a level that moves a little each tick is
+// a slope, not a stair.
+tunables::Float field_ramp_ms{"audio.field_ramp_ms", 50.0, 1.0, 1000.0,
+                              "Time a shaped-noise voice's band gains take to reach new values"};
+
 // The master's look-ahead limiter (limiter.h). Off: the page's policy is that a mix too hot for its
 // headroom is said so by `MixerStats::clipped_samples`, not hidden, and the limiter's look-ahead
 // delays every sound by 5 ms. A game whose content cannot leave headroom turns it on.
@@ -126,6 +132,10 @@ u32 tunable_period_frames() noexcept { return static_cast<u32>(period_frames.get
 u32 tunable_ramp_frames() noexcept {
   // Whole frames at the mix rate, rounded; at least one, which is a step.
   const f64 frames = ramp_ms.get() * static_cast<f64>(k_sample_rate) / 1000.0 + 0.5;
+  return frames < 1.0 ? 1u : static_cast<u32>(frames);
+}
+u32 tunable_field_ramp_frames() noexcept {
+  const f64 frames = field_ramp_ms.get() * static_cast<f64>(k_sample_rate) / 1000.0 + 0.5;
   return frames < 1.0 ? 1u : static_cast<u32>(frames);
 }
 bool tunable_limiter() noexcept { return limiter.get(); }

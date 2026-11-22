@@ -165,8 +165,8 @@ TEST_CASE(
       "sound":{"clips":[{"name":"chirp","recipe":{"kind":"Chirp"}}]}})");
   view::GameRunner runner;
   view::GameSoundHost sound;
-  REQUIRE_MESSAGE(sound.open(world_sound::AudioMode::Off, "", "", scene, 240, runner, &error),
-                  error);
+  REQUIRE_MESSAGE(sound.open(world_sound::AudioMode::Off, "", "", scene, 240, &error), error);
+  runner.set_sound(sound.hooks());
   REQUIRE_MESSAGE(
       runner.start(config_for(place(tmp, WALK_POC_PATH, "walk_poc_2"), tmp), map, 240, &error),
       error);

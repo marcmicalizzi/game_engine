@@ -21,6 +21,8 @@
 //                      the first with a clip of its own for every voice — 64 clips, 12 MB, where
 //                      the rows above share one clip that stays in L2: what memory costs a voice,
 //                      apart from its arithmetic
+//   audio.mix.noise    shaped-noise voices (noise_voice.h; S112) positioned around the listener,
+//                      every lane sounding and a ramp in flight: what a world voice costs
 //   audio.mix.stream   the first with every voice streamed: the callback reading each voice's ring
 //                      instead of its clip. The fills run between blocks with the clock stopped,
 //                      so the row is the audio thread's cost alone, beside `audio.mix.3d`'s
@@ -151,6 +153,53 @@ ENGINE_BENCH_ARGS(mix_3d_limited, "audio.mix.3d_limited", 64) {
 ENGINE_BENCH_ARGS(mix_3d_distinct, "audio.mix.3d_distinct", 64) {
   run(state, Kind::Distinct, ChannelLayout::Stereo);
 }
+
+namespace {
+
+// `audio.mix.noise`: N shaped-noise voices (noise_voice.h; S112) positioned around the listener,
+// every band and the movable band sounding, every voice's gains ramping (a `set_noise` a voice
+// every fifth block, as a world field is described again each tick): the generator, nine biquads,
+// the source model and the panner — what the design's 27 world voices cost the audio thread.
+void run_noise(bench::State& state) {
+  const u32 voices = static_cast<u32>(state.arg());
+  ClipStore clips;
+  MixerConfig config;
+  config.voices = voices;
+  config.limiter = LimiterMode::Off;
+  Mixer mixer(clips, config);
+  Vector<VoiceHandle> handles;
+  NoisePlayParams p;
+  for (u32 k = 0; k < k_noise_lanes; ++k)
+    p.noise.gain[k] = 0.01f;
+  p.noise.tone = noise_band(1500.0f, 6.0f);
+  p.source.distance_model = DistanceModel::None;
+  for (u32 v = 0; v < voices; ++v) {
+    p.noise.seed = 100u + v;
+    p.source.position =
+        Vec3{static_cast<f32>(v % 11u) - 5.0f, 0.0f, -1.0f - static_cast<f32>(v % 7u)};
+    handles.push_back(mixer.play_noise(p));
+  }
+  Vector<f32> out;
+  out.resize_exact(480u * mixer.channels());
+  mixer.render(out.data(), 480);
+  u32 block = 0;
+  while (state.keep_running()) {
+    if (++block % 5u == 0u) {
+      NoiseParams n = p.noise;
+      n.gain[block % k_noise_lanes] = 0.02f;
+      for (const VoiceHandle h : handles)
+        mixer.set_noise(h, n);
+    }
+    mixer.render(out.data(), 480);
+    mixer.update();
+    bench::keep(out[0]);
+  }
+  state.set_items(voices);
+}
+
+}  // namespace
+
+ENGINE_BENCH_ARGS(mix_noise, "audio.mix.noise", 1, 27, 64) { run_noise(state); }
 
 namespace {
 

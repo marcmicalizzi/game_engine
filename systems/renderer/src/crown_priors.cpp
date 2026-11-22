@@ -1,4 +1,5 @@
 #include <core/hash/hash.h>
+#include <core/jobs/job_system.h>
 #include <core/time/time.h>
 #include <domain/assets/gltf.h>
 #include <domain/geometry/cluster.h>
@@ -7,6 +8,8 @@
 #include <foundation/io/vfs.h>
 #include <systems/renderer/crown_priors.h>
 
+#include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <renderer_log.h>
@@ -332,6 +335,150 @@ bool upload_crown_priors(const gfx::Device& device, const CrownPriorTable& table
                   log::field("min_up", static_cast<f64>(table.min_up)),
                   log::field("bytes", static_cast<u64>(table.bytes.size())));
   return true;
+}
+
+// A mesh's leaves for its sound (scene.h `MeshLeaves`; S112): the leaves `build_crown_priors` takes
+// (level 0, an alpha-tested material), their cards' one-sided area, their height, and where they
+// stand (S112-2: the centroid by area and the farthest leaf from it). No mask is decoded and no
+// grid built: one pass over the triangles, a mesh a job, each landing in its own slot.
+namespace {
+
+struct LeafJob {
+  const SceneData* data = nullptr;
+  u32 mesh = 0;
+  MeshLeaves* out = nullptr;
+};
+
+void measure_one(void* item) {
+  const LeafJob& job = *static_cast<const LeafJob*>(item);
+  const SceneData& data = *job.data;
+  const geometry::ClusterMesh& mesh = data.lod.mesh;
+  const geometry::ClusterMeshPart& part = data.parts[job.mesh];
+  const SourceMesh& source = data.sources[job.mesh];
+  f64 area = 0.0;
+  f64 cx = 0.0;
+  f64 cz = 0.0;
+  f32 lo = 1e30f;
+  f32 hi = -1e30f;
+  // Two walks of the same clusters: the area and its centroid, then the extent from it.
+  const auto leaf_cluster = [&](u32 i, const geometry::ClusterDesc*& out) {
+    const u32 c = part.first_cluster + i;
+    if (c >= mesh.clusters.size() || c >= data.lod.lod.size() || data.lod.lod[c].level != 0)
+      return false;
+    if (i >= source.part_of_cluster.size()) return false;
+    const u32 part_index = source.part_of_cluster[i];
+    if (part_index >= source.part_material.size()) return false;
+    const i32 material = source.part_material[part_index];
+    if (material < 0 || static_cast<u32>(material) >= source.data.materials.size()) return false;
+    // Foliage: an alpha-tested card (a bought tree's, or a generated one's with an image), or a
+    // two-sided material that lets light through (the flora's own leaves without an image).
+    const assets::Material& leaf = source.data.materials[static_cast<u32>(material)];
+    if (leaf.alpha_mode != assets::k_alpha_mask && !(leaf.double_sided && leaf.transmission > 0.0f))
+      return false;
+    const geometry::ClusterDesc& cluster = mesh.clusters[c];
+    if (static_cast<usize>(cluster.triangle_offset) + cluster.triangle_count >
+            mesh.triangles.size() ||
+        static_cast<usize>(cluster.vertex_offset) + cluster.vertex_count > mesh.vertices.size())
+      return false;
+    out = &cluster;
+    return true;
+  };
+  const auto corner = [&](const geometry::ClusterDesc& cluster, u32 t, u32 k) {
+    const u32 packed = mesh.triangles[cluster.triangle_offset + t];
+    const u32 local = (packed >> (8 * k)) & 0xffu;
+    return mesh.vertices[cluster.vertex_offset + (local < cluster.vertex_count ? local : 0)];
+  };
+  for (u32 i = 0; i < part.cluster_count; ++i) {
+    const geometry::ClusterDesc* cluster = nullptr;
+    if (!leaf_cluster(i, cluster)) continue;
+    for (u32 t = 0; t < cluster->triangle_count; ++t) {
+      Vec3 p[3];
+      for (u32 k = 0; k < 3; ++k) {
+        p[k] = corner(*cluster, t, k);
+        lo = p[k].y < lo ? p[k].y : lo;
+        hi = p[k].y > hi ? p[k].y : hi;
+      }
+      const f64 a = 0.5 * static_cast<f64>(length(cross(p[1] - p[0], p[2] - p[0])));
+      area += a;
+      cx += a * (static_cast<f64>(p[0].x) + static_cast<f64>(p[1].x) + static_cast<f64>(p[2].x)) /
+            3.0;
+      cz += a * (static_cast<f64>(p[0].z) + static_cast<f64>(p[1].z) + static_cast<f64>(p[2].z)) /
+            3.0;
+    }
+  }
+  if (!(area > 0.0)) return;
+  cx /= area;
+  cz /= area;
+  f64 extent = 0.0;
+  for (u32 i = 0; i < part.cluster_count; ++i) {
+    const geometry::ClusterDesc* cluster = nullptr;
+    if (!leaf_cluster(i, cluster)) continue;
+    for (u32 v = 0; v < cluster->vertex_count; ++v) {
+      const Vec3 p = mesh.vertices[cluster->vertex_offset + v];
+      const f64 dx = static_cast<f64>(p.x) - cx;
+      const f64 dz = static_cast<f64>(p.z) - cz;
+      const f64 d2 = dx * dx + dz * dz;
+      extent = d2 > extent ? d2 : extent;
+    }
+  }
+  *job.out = MeshLeaves{static_cast<f32>(area),
+                        lo,
+                        hi,
+                        static_cast<f32>(cx),
+                        static_cast<f32>(cz),
+                        static_cast<f32>(std::sqrt(extent))};
+}
+
+}  // namespace
+
+void measure_mesh_leaves(const SceneData& data, Vector<MeshLeaves>& out, jobs::JobSystem* pool) {
+  const geometry::ClusterMesh& mesh = data.lod.mesh;
+  const u32 meshes = static_cast<u32>(data.parts.size());
+  out.clear();
+  out.resize(meshes);
+  if (meshes == 0 || mesh.vertices.empty() || data.sources.size() != data.parts.size()) return;
+  // A distance form is a cut of its source's clusters: it sounds as its source's leaves, and is
+  // not walked.
+  Vector<LeafJob> list;
+  list.reserve(meshes);
+  for (u32 m = 0; m < meshes; ++m) {
+    const u32 s = m < data.form_source.size() ? data.form_source[m] : m;
+    if (s != m && s < meshes) continue;
+    list.push_back(LeafJob{&data, m, &out[m]});
+  }
+  if (pool == nullptr || list.size() < 2) {
+    for (LeafJob& job : list)
+      measure_one(&job);
+  } else {
+    // One runner a thread, each taking the next mesh by an atomic index (scene.cpp `run_jobs`'s
+    // shape, T73): never a job a mesh, which would overflow a queue at a forest's mesh count.
+    struct Shared {
+      LeafJob* jobs = nullptr;
+      u32 count = 0;
+      std::atomic<u32> next{0};
+    } shared;
+    shared.jobs = list.data();
+    shared.count = static_cast<u32>(list.size());
+    const auto runner = [](void* context) {
+      Shared& s = *static_cast<Shared*>(context);
+      for (u32 i = s.next.fetch_add(1, std::memory_order_relaxed); i < s.count;
+           i = s.next.fetch_add(1, std::memory_order_relaxed))
+        measure_one(&s.jobs[i]);
+    };
+    const u32 runners = std::min<u32>(shared.count, pool->total_worker_count() + 1);
+    Vector<jobs::Job> runs;
+    runs.reserve(runners);
+    jobs::Counter counter;
+    for (u32 r = 0; r < runners; ++r)
+      runs.push_back(jobs::Job{runner, &shared, &counter});
+    pool->schedule(jobs::Pool::Performance, std::span<const jobs::Job>(runs.data(), runs.size()),
+                   counter);
+    pool->wait(counter);
+  }
+  for (u32 m = 0; m < meshes && m < data.form_source.size(); ++m) {
+    const u32 s = data.form_source[m];
+    if (s != m && s < meshes) out[m] = out[s];
+  }
 }
 
 }  // namespace engine::renderer
