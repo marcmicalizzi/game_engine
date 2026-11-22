@@ -610,6 +610,10 @@ struct Stats {
   u64 run_drop_frames = 0;
   u64 run_redraws = 0;
   u64 run_refusals = 0;
+  // Frames `submit_frame` waited for because they were drawn at runs no frame had sized (W156-2):
+  // a tail's first bound, measured once, its redraws in `run_redraws`. A frame drawn in flight
+  // hands back drops only past that point, so `run_drop_frames` above `run_redraws` says one did.
+  u64 run_measured = 0;
   // The deformed-vertex pool's suballocation, one frame late like the visible counts and read the
   // same way — out of a host-visible copy of a device record, never from inside a frame.
   // `deform_overflow_*` is what the budget refused: those (instance, cluster) pairs drew their
@@ -939,7 +943,11 @@ class SceneRenderer {
   gfx::SemaphoreHandle acquire_semaphore() const noexcept { return frames_.acquire_semaphore(); }
   // Records and submits the frame begun by begin_frame(). Returns the timeline value it will
   // signal, or 0 when the frame could not be recorded (`error` says why, and nothing was
-  // submitted beyond an empty command buffer).
+  // submitted beyond an empty command buffer). **A frame drawn at runs of the visible list no frame
+  // has sized yet** (a tail's first bound, W156-2) is waited for, and drawn again with the runs
+  // grown while a run filled, before it is handed back; a presented one's `signal` is then raised
+  // by an empty submission behind it, so no frame with a dropped entry reaches a window or a
+  // caller.
   u64 submit_frame(const FrameDesc& frame, std::string* error = nullptr);
   // Submits the frame begun by begin_frame() with nothing in it, for a caller whose swapchain
   // could not hand over an image. The slot's semaphores have to be consumed either way.
@@ -1455,6 +1463,7 @@ class SceneRenderer {
   u64 rt_evictions_folded_ = 0;  // the evictions the last folded frame's record took off the sum
   bool rt_micromaps_ = false;    // the last recorded frame's records named the micromaps (R120)
   Vector<u64> rt_cache_folded_;  // per frame slot: the submission whose cache words were summed
+  Vector<u64> run_drop_folded_;  // ... and whose run drops were (W156-2)
   Vector<u64> rt_drop_folded_;   // per frame slot: the submission whose drop words were summed
   Vector<u8> slot_counted_;      // per frame slot: its frame counts in the drop sums
   bool count_frames_ = true;
@@ -1490,6 +1499,12 @@ class SceneRenderer {
   RtCapacity run_policy_;
   bool run_policy_set_ = false;
   void step_runs(i64 now_ns);
+  u32 first_runs() const noexcept;  // the runs' first bound for the scene (W156), 0 for the stride
+  u64 submit_recorded(const FrameDesc& frame, std::string* error);  // one frame, as submitted
+  // A tail laid the runs out at the first bound, and no frame drawn since has been measured: set by
+  // the arrival, not read off the scene, since a `begin_frame` may fit the runs from a frame drawn
+  // before it (W156-2).
+  bool runs_measure_ = false;
   bool resize_runs(u32 capacity, f64 now);  // false: refused, the runs as they were (counted)
   // Resizes the chain to `capacity` when it differs, waiting for the device first. False only when
   // the allocation failed, in which case the chain keeps nothing and the frame must not be drawn.

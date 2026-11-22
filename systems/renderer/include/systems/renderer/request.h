@@ -204,6 +204,8 @@ struct SunDayState {
 // the `sky` block of what drew the frame (`Stats::sky`).
 JsonValue sun_summary(const RenderSettings& settings, const SunDayState& day);
 JsonValue sun_summary(const RenderSettings& settings, const SunDayState& day, const Stats& stats);
+// The `runs` block: the visible list's runs and every frame's drops from them (W156-2).
+JsonValue runs_summary(const Stats& stats);
 // The `time_lapse` block: the rate and its rules, the clock, every level's state and, with rings
 // or tiles, the `rings` block. Null JSON without a motion.
 JsonValue time_lapse_summary(const TerrainMotion& lapse, const Stats& stats, const GpuScene& scene);

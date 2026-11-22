@@ -688,6 +688,10 @@ class GpuScene {
   // stride until the frames have said what they draw (`fit_runs`), and never more than it. The
   // per-pair tables (`pair_entries`, `flags`, `fade`, the pair table) stay by the stride.
   u32 run_capacity() const noexcept { return run_capacity_; }
+  // The runs' bound before the frames size them, 0 the stride (W156; the renderer's, which grows).
+  void set_first_runs(u32 entries) noexcept { first_runs_ = entries; }
+  // Laid out shorter than the stride before any frame sized them: the first bound (W156-2).
+  bool runs_unmeasured() const noexcept { return !runs_fit_ && run_capacity_ < pair_stride_; }
   // Where the frame's two drop counts are in `visible`, behind its last entry: the camera runs' and
   // the cascades' appends that found their run full (`gfx::CullParams::run_drops`).
   u64 run_drops_offset() const noexcept { return u64{visible_entries()} * 2 * sizeof(u32); }
@@ -2281,6 +2285,7 @@ class GpuScene {
   u32 pair_stride_ = 0;
   u32 run_capacity_ = 0;   // entries a run of the visible list holds (`fit_runs`)
   bool runs_fit_ = false;  // the frames have sized the runs; until then they follow the stride
+  u32 first_runs_ = 0;     // ... up to this many entries a run, when not 0 (`set_first_runs`)
   bool dynamic_ = false;
   u32 static_instances_ = 0;
   u32 static_pairs_ = 0;

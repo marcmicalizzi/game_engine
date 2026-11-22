@@ -5433,9 +5433,9 @@ bool GpuScene::create_working_set(const ResolvedSettings& resolved, std::string*
   // for one whose instances come and go (`set_dynamic_instances`), so a tail that changes length
   // moves no run.
   // A run's capacity follows the stride until the frames have sized it (`fit_runs`, W51-5), and
-  // never passes it.
+  // never passes it — nor the renderer's first bound (`set_first_runs`, W156) on the way there.
   if (!runs_fit_ || run_capacity_ == 0 || run_capacity_ > pair_stride_)
-    run_capacity_ = pair_stride_;
+    run_capacity_ = first_runs_ != 0 ? std::min(pair_stride_, first_runs_) : pair_stride_;
   // The visibility id names a pair, not an entry (docs/subsystems/gfx.md, "The tie rule"), so the
   // resolve reads the entry a pair was drawn as out of this: one word per pair per view, written
   // by the cull pass for every pair it draws. A pair is drawn at most once per view per frame, so

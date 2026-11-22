@@ -7599,6 +7599,7 @@ int run_view(int argc, char** argv) {
   // The chain's bytes move with its capacity, so the figure is the run's last, not the load's.
   if (stats.rt.bytes > 0) rt_bytes = stats.rt.bytes;
   const std::string rt_text = write_json(rt_summary(stats.rt), JsonWriteOptions{.pretty = false});
+  const std::string runs_text = write_json(renderer::runs_summary(stats), {.pretty = false});
   const std::string pairs_text =
       write_json(scene.pair_summary(), JsonWriteOptions{.pretty = false});
   const std::string shadow_fit_text = shadow_fit_json(resolved, view_renderer);
@@ -7673,7 +7674,7 @@ int run_view(int argc, char** argv) {
         "\"textures\":{\"built\":%u,\"decoded\":%u,\"distinct\":%u,\"shared\":%u,\"bytes\":%llu,"
         "\"bytes_saved\":%llu,\"sharing\":%s,\"normal_variance\":%u,\"normal_variance_bytes\":%llu}"
         ","
-        "\"rt\":%s,\"pair_breakdown\":%s,\"views\":%s,\"streaming\":%s,"
+        "\"rt\":%s,\"runs\":%s,\"pair_breakdown\":%s,\"views\":%s,\"streaming\":%s,"
         "\"host_memory\":{\"bytes\":%llu,\"peak_bytes\":%llu},"
         "\"gpu_memory\":{\"budget_mib\":%llu,\"used_mib\":%llu,"
         "\"device_local_total_mib\":%llu},\"machine_state\":%s,"
@@ -7715,8 +7716,9 @@ int run_view(int argc, char** argv) {
         static_cast<unsigned long long>(texture_bytes),
         static_cast<unsigned long long>(texture_bytes_saved),
         resolved.settings.share_textures ? "true" : "false", normal_variance_textures,
-        static_cast<unsigned long long>(normal_variance_bytes), rt_text.c_str(), pairs_text.c_str(),
-        views_text.c_str(), streaming_text.c_str(), static_cast<unsigned long long>(host_memory),
+        static_cast<unsigned long long>(normal_variance_bytes), rt_text.c_str(), runs_text.c_str(),
+        pairs_text.c_str(), views_text.c_str(), streaming_text.c_str(),
+        static_cast<unsigned long long>(host_memory),
         static_cast<unsigned long long>(host_memory_peak),
         static_cast<unsigned long long>(stats.gpu_memory.budget_mib),
         static_cast<unsigned long long>(stats.gpu_memory.used_mib),
