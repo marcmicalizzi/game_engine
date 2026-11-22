@@ -1162,9 +1162,18 @@ struct Shot {
   std::string why;
 };
 
-// The scene in the shot (`k_shot_eye`), every channel captured, under `shadows`. `overhead` lifts
-// the second mesh 6 m over the first, so that it would shadow it; `reference` also renders the
-// reference integrator's picture where the device can.
+// Where `overhead` puts the second mesh: on the line from the first one's centre towards the sun,
+// 30 m along it. A scene that names no sky is lit by the stand-in sun alone (`settings.lights` is
+// off), whose direction is (0.4, 0.8, 0.45) (lighting.h, `k_default_sun_*`), so the caster's
+// shadow falls on the receiver itself; and 24 m up and 13.5 m along +z, the caster stands in the
+// shot over the receiver's +z edge alone (from about 9 m of its 10), so the eye looking down from
+// 70 m sees the receiver beside it. 6 m straight over it, the caster hid all but a rim of 23
+// pixels of it.
+const WorldPos k_caster_origin{12.0, 24.0, 13.5};
+
+// The scene in the shot (`k_shot_eye`), every channel captured, under `shadows`. `overhead` puts
+// the second mesh at `k_caster_origin`, where it would shadow the first; `reference` also renders
+// the reference integrator's picture where the device can.
 Shot shoot(const gfx::Device& device, const test::TempDir& tmp,
            std::initializer_list<const Grid*> meshes, const content_class::NamedPolicy& policy,
            RasterMode raster, ShadowMode shadows = ShadowMode::Cascaded, bool overhead = false,
@@ -1223,7 +1232,7 @@ Shot shoot(const gfx::Device& device, const test::TempDir& tmp,
            std::initializer_list<const Grid*> meshes, const content_class::NamedPolicy& policy,
            RasterMode raster, ShadowMode shadows, bool overhead, bool reference) {
   SceneDesc desc = scene_of(tmp, meshes);
-  if (overhead && desc.instances.size() > 1) desc.instances[1].origin = WorldPos{0.0, 6.0, 0.0};
+  if (overhead && desc.instances.size() > 1) desc.instances[1].origin = k_caster_origin;
   desc.view_policy = policy;
   return shoot_scene(device, desc, raster, shadows, reference);
 }
@@ -1325,8 +1334,9 @@ TEST_CASE("content classes at load: a capture holds the box or nothing, on every
       CHECK(box <= hardware_box + k_shot_width);
     }
   }
-  // **Nor its shadow**: the classified grid 6 m over the other, so that drawn it would shadow it,
-  // under the maps and under traced shadows, and through the reference integrator: omitted, every
+  // **Nor its shadow**: the classified grid towards the sun from the other (`k_caster_origin`), so
+  // that drawn it would shadow it where the eye sees it, under the maps and under traced shadows,
+  // and through the reference integrator (asked in the traced mode alone): omitted, every
   // channel is the bytes of the scene that never had it; covered, it is there and casts.
   for (const ShadowMode shadows : {ShadowMode::Cascaded, ShadowMode::RayTraced}) {
     const RasterMode mode = RasterMode::Hardware;
@@ -1345,8 +1355,10 @@ TEST_CASE("content classes at load: a capture holds the box or nothing, on every
     CHECK(bytes_of(omitted.frame.normals) == bytes_of(alone.frame.normals));
     CHECK(bytes_of(whole.frame.color) != bytes_of(alone.frame.color));
     // The control is the shadow on the receiver itself: of the pixels the neutral grid covers in
-    // both shots (its instance, 0), some are darker with the classified grid over it, so the
-    // equalities above cannot hold only because the shadow fell outside the frame.
+    // both shots (its instance, 0: the receiver the eye sees beside the caster), most are darker
+    // with the classified grid drawn, so the equalities above cannot hold only because no shadow
+    // could be seen. Measured on an RTX 5090: 1,174 such pixels in both modes, 1,099 of them darker
+    // under the maps and 1,110 under traced shadows; each threshold is under half the weaker.
     u32 receiver = 0;
     u32 darker = 0;
     for (u32 p = 0; p < k_shot_width * k_shot_height; ++p) {
@@ -1365,12 +1377,12 @@ TEST_CASE("content classes at load: a capture holds the box or nothing, on every
     }
     MESSAGE("shadow mode " << static_cast<u32>(shadows) << ": " << darker << " of " << receiver
                            << " receiver pixels darker under the caster");
-    CHECK(receiver > 1000u);
-    CHECK(darker > 100u);
+    CHECK(receiver > 550u);
+    CHECK(darker > 500u);
     if (!omitted.reference.empty()) {
       CHECK(bytes_of(omitted.reference) == bytes_of(alone.reference));
       CHECK(bytes_of(whole.reference) != bytes_of(alone.reference));
-    } else {
+    } else if (reference) {
       MESSAGE("the reference integrator is unavailable on this device");
     }
   }
