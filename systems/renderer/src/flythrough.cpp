@@ -823,9 +823,9 @@ scene::SlowFrame slowest_span(const scene::FrameRecord& r) {
                                 {"drawn", w.drawn_ms},
                                 {"placements", w.placements_ms},
                                 {"restand", w.restand_ms}};
-        const Part placements[] = {{"events", w.events_ms},    {"due", w.due_ms},
-                                   {"meshes", w.meshes_ms},    {"cells", w.cells_ms},
-                                   {"admit", w.admit_ms},      {"commit", w.commit_ms},
+        const Part placements[] = {{"events", w.events_ms},   {"due", w.due_ms},
+                                   {"meshes", w.meshes_ms},   {"cells", w.cells_ms},
+                                   {"admit", w.admit_ms},     {"commit", w.commit_ms},
                                    {"handover", w.handover_ms}};
         const Part update[] = {{"tiles", w.tiles_ms},
                                {"admit", w.admit_ms},
