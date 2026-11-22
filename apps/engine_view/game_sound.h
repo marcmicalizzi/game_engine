@@ -116,6 +116,7 @@ class GameSoundHost {
     u64 tiles_carried = 0;     // changed tiles left for a later refresh by the allowance
     u64 crowns_sent = 0;       // crowns sent one by one
     u64 merged_sent = 0;       // merged groups' crowns sent
+    u64 coarse_sent = 0;       // far groups summed by 512 m cell, sent
     u32 last_walked = 0;       // the last refresh's tile placements walked
     u32 tile_groups = 0;       // tiles held now
   };
@@ -158,10 +159,21 @@ class GameSoundHost {
   Vector<Fitted> mesh_fitted_;
   Vector<world_sound::Crown> crowns_;  // the loaded instances with leaves, by cell
   Vector<Group> cells_;
-  Vector<TileGroup> tile_groups_;  // by key, ascending
-  Vector<TileGroup> tile_next_;    // the re-keying's scratch
-  Vector<SoundTile> tiles_now_;    // the list's scratch
-  Vector<Near> near_;              // a refresh's near groups, nearest first
+  Vector<TileGroup> tile_groups_;                    // by key, ascending
+  Vector<TileGroup> tile_next_;                      // the re-keying's scratch
+  Vector<Vector<world_sound::Crown>> spare_crowns_;  // let-go tiles' room, for the next drawn
+  Vector<SoundTile> tiles_now_;                      // the list's scratch
+  Vector<Near> near_;                                // a refresh's near groups, nearest first
+  // **The far field by cell** (S112-2): past four times `audio.world.near_m` a group is summed
+  // into a 512 m cell of a 9 x 9 grid round the listener's (the reach's 2 km inside it), one
+  // crown a class a cell, so a refresh sends a few hundred far crowns however many tiles are
+  // drawn. Fixed: nothing allocates.
+  static constexpr f64 k_coarse_m = 512.0;
+  static constexpr u32 k_coarse_span = 9;
+  struct Coarse {
+    f64 area[3] = {}, x[3] = {}, y[3] = {}, z[3] = {}, height[3] = {}, needle[3] = {};
+  };
+  Coarse coarse_[k_coarse_span * k_coarse_span];
   Counters counters_;
   // Without a module: the session's clock and the listener's last place.
   f64 sky_start_s_ = 0.0;

@@ -427,15 +427,24 @@ void GameSoundHost::refresh_tiles(u32& allowance) {
     tile_next_.clear();
     u32 r = 0;
     for (const SoundTile& t : tiles_now_) {
+      // A tile no longer drawn leaves its crowns' room for the next one drawn, so a walk that
+      // trades tiles allocates nothing once the room has grown.
       while (r < tile_groups_.size() && tile_groups_[r].g.key < t.key)
-        ++r;  // no longer drawn: let go with `tile_next_`'s clear below
+        spare_crowns_.push_back(std::move(tile_groups_[r++].crowns));
       if (r < tile_groups_.size() && tile_groups_[r].g.key == t.key) {
         tile_next_.push_back(std::move(tile_groups_[r++]));
       } else {
         tile_next_.push_back(TileGroup{});
         tile_next_.back().g.key = t.key;
+        if (!spare_crowns_.empty()) {
+          tile_next_.back().crowns = std::move(spare_crowns_.back());
+          tile_next_.back().crowns.clear();
+          spare_crowns_.pop_back();
+        }
       }
     }
+    while (r < tile_groups_.size())
+      spare_crowns_.push_back(std::move(tile_groups_[r++].crowns));
     tile_groups_.swap(tile_next_);
     tile_next_.clear();
   }
@@ -476,6 +485,11 @@ void GameSoundHost::visit(void* user, const WorldPos& centre, f64 reach_m,
   h.refresh_tiles(allowance);
   // Every group: past the reach nothing, far its merged crowns, near kept for the pass below.
   h.near_.clear();
+  const f64 coarse_m = 4.0 * near_m;
+  const i64 lx = static_cast<i64>(std::floor(centre.x / k_coarse_m));
+  const i64 lz = static_cast<i64>(std::floor(centre.z / k_coarse_m));
+  for (Coarse& bin : h.coarse_)
+    bin = Coarse{};
   const auto consider = [&](const Group& g, const world_sound::Crown* crowns) {
     if (g.count == 0 && !(g.merged[0].leaf_area_m2 > 0.0f || g.merged[1].leaf_area_m2 > 0.0f ||
                           g.merged[2].leaf_area_m2 > 0.0f))
@@ -484,6 +498,28 @@ void GameSoundHost::visit(void* user, const WorldPos& centre, f64 reach_m,
     if (d - g.radius > reach_m) return;
     if (d - g.radius <= near_m) {
       h.near_.push_back(Near{d, g.key, &g, crowns});
+      return;
+    }
+    if (d - g.radius > coarse_m) {
+      // Past four times the near distance a group is summed into its 512 m cell round the
+      // listener's (`k_coarse_m`): a few hundred crowns a refresh, not a crown or three a tile.
+      const i64 cx = static_cast<i64>(std::floor(g.x / k_coarse_m)) - lx;
+      const i64 cz = static_cast<i64>(std::floor(g.z / k_coarse_m)) - lz;
+      const i64 r = static_cast<i64>(k_coarse_span / 2);
+      const u32 at = static_cast<u32>((std::clamp(cx, -r, r) + r) * k_coarse_span +
+                                      (std::clamp(cz, -r, r) + r));
+      Coarse& bin = h.coarse_[at];
+      for (u32 k = 0; k < 3; ++k) {
+        const world_sound::Crown& m = g.merged[k];
+        const f64 a = static_cast<f64>(m.leaf_area_m2);
+        if (!(a > 0.0)) continue;
+        bin.area[k] += a;
+        bin.x[k] += a * m.at.x;
+        bin.y[k] += a * m.at.y;
+        bin.z[k] += a * m.at.z;
+        bin.height[k] += a * static_cast<f64>(m.height_m);
+        bin.needle[k] += a * static_cast<f64>(m.needle_mm);
+      }
       return;
     }
     for (const world_sound::Crown& m : g.merged) {
@@ -500,6 +536,21 @@ void GameSoundHost::visit(void* user, const WorldPos& centre, f64 reach_m,
   }
   // The near groups nearest first, one by one while the allowance lasts and merged after it (M1:
   // the tree over the listener is never the one an order left out).
+  for (const Coarse& bin : h.coarse_) {
+    for (u32 k = 0; k < 3; ++k) {
+      if (!(bin.area[k] > 0.0)) continue;
+      world_sound::Crown m;
+      m.at = WorldPos{bin.x[k] / bin.area[k], bin.y[k] / bin.area[k], bin.z[k] / bin.area[k]};
+      m.height_m = static_cast<f32>(bin.height[k] / bin.area[k]);
+      m.leaf_area_m2 = static_cast<f32>(bin.area[k]);
+      m.kind = static_cast<world_sound::CanopyClass>(k);
+      m.needle_mm = static_cast<f32>(bin.needle[k] / bin.area[k]);
+      m.extent_m = static_cast<f32>(0.5 * k_coarse_m);
+      m.merged = true;
+      sink.emit(sink.user, m);
+      ++h.counters_.coarse_sent;
+    }
+  }
   std::sort(h.near_.begin(), h.near_.end(),
             [](const Near& a, const Near& b) { return a.d != b.d ? a.d < b.d : a.key < b.key; });
   u32 room = world_sound::world_near_crowns();
@@ -589,13 +640,15 @@ void print_solo_summary() {
   const GameSoundHost::Counters& c = g_host->counters();
   std::fprintf(stderr,
                "engine-view: sound table: %llu refreshes, %llu tile placements walked in %llu "
-               "tiles (%llu carried), %llu crowns and %llu merged sent, %u tiles held\n",
+               "tiles (%llu carried), %llu crowns, %llu merged and %llu by cell sent, %u tiles "
+               "held\n",
                static_cast<unsigned long long>(c.refreshes),
                static_cast<unsigned long long>(c.instances_walked),
                static_cast<unsigned long long>(c.tiles_walked),
                static_cast<unsigned long long>(c.tiles_carried),
                static_cast<unsigned long long>(c.crowns_sent),
-               static_cast<unsigned long long>(c.merged_sent), c.tile_groups);
+               static_cast<unsigned long long>(c.merged_sent),
+               static_cast<unsigned long long>(c.coarse_sent), c.tile_groups);
 }
 
 }  // namespace engine::view
