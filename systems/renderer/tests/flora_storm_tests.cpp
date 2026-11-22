@@ -693,7 +693,7 @@ TEST_CASE("flora storm: a rigid form leans as its swaying tree does on the mean,
     for (const f32 speed : {12.3f, 34.8f}) {
       CAPTURE(std::string(species));
       CAPTURE(speed);
-      const f32 strength = static_cast<f32>(speed / k_flora_wind_mean_m_s);
+      const f32 strength = static_cast<f32>(static_cast<f64>(speed) / k_flora_wind_mean_m_s);
       const f32 load = flora_storm_load(strength, mesh.streamline, mesh.hold);
       const f32 linear = k * load;                             // W154-2's small-angle lean
       const f32 rigid = flora_lean_on_curve(curve, strength);  // the walk's, as posed at load

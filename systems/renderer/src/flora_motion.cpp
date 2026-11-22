@@ -735,10 +735,13 @@ void flora_lean_curve(const FloraMesh& mesh, std::span<const Vec3> vertices,
   if (n == 0 || mesh.field || vertices.size() != motion.size()) return;
   // **The posed mean** (W158): the mesh posed by `flora_part_poses` — the law, the gust, the
   // flutter, the parts' hold and their chain composed as the GPU composes it (`gfx::flora_bend`) —
-  // at 24 moments 0.41 s apart (no multiple of a flutter's period) under a wind along +x and one
+  // at 12 moments 0.83 s apart (no multiple of a flutter's period) under a wind along +x and one
   // along +z, and each vertex's displacement along the wind fit as one shear over its height, as
-  // `flora_mean_lean` fits its small-angle model: every eighth vertex above the origin.
-  constexpr u32 k_moments = 24;
+  // `flora_mean_lean` fits its small-angle model, over at most about 1,024 vertices evenly taken:
+  // a forest's trees are measured at every load, and every eighth vertex at 24 moments cost the
+  // forest staging's load 16 s.
+  constexpr u32 k_moments = 12;
+  const u32 stride = static_cast<u32>(vertices.size() / 1024 + 1);
   Vector<FloraPartState> state(n, FloraPartState{});
   Vector<gfx::FloraPartPose> poses(n, gfx::FloraPartPose{});
   const u32 points = static_cast<u32>(std::min<usize>(out.size(), k_flora_lean_curve_points));
@@ -750,8 +753,8 @@ void flora_lean_curve(const FloraMesh& mesh, std::span<const Vec3> vertices,
     for (u32 w = 0; w < 2; ++w) {
       wind.to = w == 0 ? Vec3{1.0f, 0.0f, 0.0f} : Vec3{0.0f, 0.0f, 1.0f};
       for (u32 m = 0; m < k_moments; ++m) {
-        flora_part_poses(mesh, wind, 0.41 * static_cast<f64>(m), 0u, FloraPush{}, 0u, state, poses);
-        for (u32 v = 0; v < vertices.size(); v += 8) {
+        flora_part_poses(mesh, wind, 0.83 * static_cast<f64>(m), 0u, FloraPush{}, 0u, state, poses);
+        for (u32 v = 0; v < vertices.size(); v += stride) {
           const u32 p = motion[v].part;
           if (p >= n || !(vertices[v].y > 0.0f)) continue;
           Vec3 at;
