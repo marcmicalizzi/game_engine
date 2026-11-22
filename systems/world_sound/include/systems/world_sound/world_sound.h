@@ -175,7 +175,7 @@ struct WorldStats {
   u32 crown_voices = 0;  // sounding now
   u32 bed_voices = 0;
   u32 ear_voices = 0;
-  // **The world's ceiling** (S112-2; world_sound.md, "Nothing hard-clips"): the dB the world's
+  // **The world's ceiling** (S112-2; world_sound.md, "The world's hold"): the dB the world's
   // voices were held under their laws at the last tick (0: not acting), and the ticks it acted on.
   f32 held_db = 0.0f;
   u64 held_ticks = 0;

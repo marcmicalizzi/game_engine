@@ -87,6 +87,12 @@ void take_part_in_the_gpu_lock() {
 // set, never inherited: a developer's shell does not decide what a test reads.
 void read_no_default_materials() { set_environment(engine::test::k_default_materials_env, "0"); }
 
+// No test plays through the machine's speakers (S112-3; docs/subsystems/audio.md, "No test opens
+// the speakers"): every engine-view a case starts inherits this, and its `--audio auto` answers
+// the null backend however it was started — a window, `--interactive`, a game module. Always set,
+// never inherited, like the pack's switch.
+void open_no_audio_device() { set_environment(engine::test::k_audio_auto_env, "null"); }
+
 // A test's label against its devices (roadmap T170; foundation/gpu_lock/device_hold.h). The
 // configure gives a test labelled `gpu` ENGINE_TEST_DEVICES=report; here it becomes a file in a
 // scratch directory of this run's own, which `gfx::Device::create` in this process or any process
@@ -135,6 +141,7 @@ int main(int argc, char** argv) {
   engine::platform::require_cpu_baseline();
   take_part_in_the_gpu_lock();
   read_no_default_materials();
+  open_no_audio_device();
   TestRun run;
   run.begin();
   DeviceReport devices;

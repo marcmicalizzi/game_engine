@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <schemas/scene.h>
 
@@ -86,7 +87,21 @@ f64 distance_xz(f64 x, f64 z, const WorldPos& p) noexcept {
 
 }  // namespace
 
-bool resolve_audio(std::string_view flag, bool windowed, world_sound::AudioMode& mode,
+std::string audio_auto_env() {
+#if defined(_MSC_VER)
+  char* value = nullptr;
+  size_t size = 0;
+  if (_dupenv_s(&value, &size, k_audio_auto_env) != 0 || value == nullptr) return {};
+  std::string out(value);
+  std::free(value);
+  return out;
+#else
+  const char* value = std::getenv(k_audio_auto_env);
+  return value != nullptr ? std::string(value) : std::string{};
+#endif
+}
+
+bool resolve_audio(std::string_view flag, const AudioRun& run, world_sound::AudioMode& mode,
                    std::string& device, std::string* error) {
   device.clear();
   if (flag.empty()) {
@@ -94,7 +109,16 @@ bool resolve_audio(std::string_view flag, bool windowed, world_sound::AudioMode&
     return false;
   }
   if (flag == "auto") {
-    mode = windowed ? world_sound::AudioMode::Device : world_sound::AudioMode::Off;
+    // The speakers only for somebody at the window (N1 of S112's second review): nothing that
+    // ends by itself — a test's `--frames`, an agent's capture — and nothing nothing ticks.
+    const bool attended = run.windowed && (run.interactive || run.module || !run.ends_by_itself);
+    if (!attended || !run.ticked || !run.scene) {
+      mode = world_sound::AudioMode::Off;
+    } else if (!run.auto_env.empty()) {
+      mode = run.auto_env == "off" ? world_sound::AudioMode::Off : world_sound::AudioMode::Null;
+    } else {
+      mode = world_sound::AudioMode::Device;
+    }
   } else if (flag == "off") {
     mode = world_sound::AudioMode::Off;
   } else if (flag == "null") {
@@ -196,9 +220,8 @@ void GameSoundHost::tick_at(const WorldPos& eye, const Vec3& forward, const gfx:
 
 bool canopy_class_of(u8 declared, f32 declared_needle_mm, std::string_view species,
                      world_sound::CanopyClass& out, f32& needle_mm) noexcept {
-  using geometry::FloraSpecies;
   // The needles' width as the material generator draws a spray (matgen.schema's
-  // `Spray.needle_width_um`: 1,200 um by default, its Scots pine 1,700).
+  // `Spray.needle_width_um`: 1,200 um by default), where neither the mesh nor its species says.
   needle_mm = 1.2f;
   if (declared != renderer::SceneMeshInfo::k_sound_undeclared) {
     if (declared_needle_mm > 0.0f) needle_mm = declared_needle_mm;
@@ -210,30 +233,19 @@ bool canopy_class_of(u8 declared, f32 declared_needle_mm, std::string_view speci
     }
     return false;
   }
+  // The species' own declaration (S112-3, N3: flora_species.h `FloraSpeciesInfo::canopy`), never
+  // its name: a species that declares no crown is silent, and so is a new one until it says.
   const geometry::FloraSpeciesInfo* info = geometry::flora_species_info(species);
   if (info == nullptr) return false;  // a mesh that says nothing is silent
-  switch (info->id) {
-    case FloraSpecies::pine:
-      needle_mm = 1.7f;
+  switch (info->canopy) {
+    case geometry::FloraCanopy::blade: out = world_sound::CanopyClass::Blade; return true;
+    case geometry::FloraCanopy::needle:
+      if (info->needle_um != 0) needle_mm = static_cast<f32>(info->needle_um) * 0.001f;
       out = world_sound::CanopyClass::Needle;
       return true;
-    case FloraSpecies::conifer:
-    case FloraSpecies::spruce:
-    case FloraSpecies::cedar:
-    case FloraSpecies::juniper:
-    case FloraSpecies::fir:
-    case FloraSpecies::hemlock: out = world_sound::CanopyClass::Needle; return true;
-    // The ground's cover is not a crown: its rustle is not this stage's law.
-    case FloraSpecies::sward:
-    case FloraSpecies::cover:
-    case FloraSpecies::tuft:
-    case FloraSpecies::herb:
-    case FloraSpecies::fern:
-    case FloraSpecies::ivy:
-    case FloraSpecies::roots:
-    case FloraSpecies::litter: return false;
-    default: out = world_sound::CanopyClass::Blade; return true;
+    case geometry::FloraCanopy::none: return false;
   }
+  return false;
 }
 
 const gfx::WindDesc* GameSoundHost::scene_wind() noexcept {
@@ -405,8 +417,10 @@ bool GameSoundHost::tile_crown(const renderer::SceneInstance& s,
 // **A refresh costs what changed** (S112-2, H1): the drawn tiles are listed by key (no tail,
 // T131), matched to the groups held in one pass of two sorted runs, and only a tile whose version
 // moved has its placements walked, within `allowance` placements a refresh (the rest carried, the
-// first changed tile always taken so a tile larger than the allowance is still made).
-void GameSoundHost::refresh_tiles(u32& allowance) {
+// first changed tile always taken so a tile larger than the allowance is still made). **Nearest
+// the listener first** (S112-3, N2): after a load or a cut the ring fills from the listener's own
+// trees outward, not in key order.
+void GameSoundHost::refresh_tiles(const WorldPos& listener, u32& allowance) {
   if (tile_list_ == nullptr) {
     tile_groups_.clear();
     counters_.tile_groups = 0;
@@ -449,11 +463,31 @@ void GameSoundHost::refresh_tiles(u32& allowance) {
     tile_next_.clear();
   }
   counters_.tile_groups = static_cast<u32>(tile_groups_.size());
-  bool took = false;
+  // The changed tiles alone, by their distance: a made tile's leaves' centroid, a new one's first
+  // placement (within a tile of its leaves). Sorted are only these, at most the tiles held, in a
+  // scratch that keeps its room; a steady world collects none and sorts nothing.
+  changed_.clear();
   for (u32 i = 0; i < tiles_now_.size(); ++i) {
     const SoundTile& t = tiles_now_[i];
-    TileGroup& tg = tile_groups_[i];
+    const TileGroup& tg = tile_groups_[i];
     if (tg.made && tg.g.version == t.version) continue;
+    f64 d = 0.0;
+    if (tg.made) {
+      d = distance_xz(tg.g.x, tg.g.z, listener);
+    } else if (t.count > 0) {
+      d = distance_xz(t.instances[0].origin.x, t.instances[0].origin.z, listener);
+    }
+    changed_.push_back(Changed{d, t.key, i});
+  }
+  if (changed_.size() > 1) {
+    std::sort(changed_.begin(), changed_.end(), [](const Changed& a, const Changed& b) {
+      return a.d != b.d ? a.d < b.d : a.key < b.key;
+    });
+  }
+  bool took = false;
+  for (const Changed& next : changed_) {
+    const SoundTile& t = tiles_now_[next.index];
+    TileGroup& tg = tile_groups_[next.index];
     if (t.count > allowance && took) {
       ++counters_.tiles_carried;
       continue;
@@ -483,7 +517,7 @@ void GameSoundHost::visit(void* user, const WorldPos& centre, f64 reach_m,
   const f64 near_m = world_sound::world_near_m();
   u32 allowance = world_sound::world_walk_instances();
   const i64 started = time::monotonic_ns();
-  h.refresh_tiles(allowance);
+  h.refresh_tiles(centre, allowance);
   const i64 walked = time::monotonic_ns() - started;
   h.counters_.walk_ns += walked;
   h.counters_.walk_ns_max = walked > h.counters_.walk_ns_max ? walked : h.counters_.walk_ns_max;
@@ -602,12 +636,12 @@ void set_session_sound(GameSoundHost* host, bool solo) noexcept {
   g_host = host;
   g_solo = host != nullptr && solo;
 }
-bool open_solo_sound(GameSoundHost& host, std::string_view audio, bool windowed,
+bool open_solo_sound(GameSoundHost& host, std::string_view audio, const AudioRun& run,
                      const std::string& wav_out, const std::string& scene, u32 tick_hz,
                      std::string* error) {
   world_sound::AudioMode mode = world_sound::AudioMode::Off;
   std::string device;
-  if (!resolve_audio(audio, windowed, mode, device, error)) return false;
+  if (!resolve_audio(audio, run, mode, device, error)) return false;
   if (mode == world_sound::AudioMode::Off) return true;  // nothing opened, no leaves measured
   if (!host.open(mode, device, wav_out, scene, tick_hz, error)) return false;
   set_session_sound(&host, true);
