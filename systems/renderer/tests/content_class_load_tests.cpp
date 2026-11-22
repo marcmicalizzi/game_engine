@@ -1941,6 +1941,42 @@ TEST_CASE("content classes at load: a host a recipe's hash loads decides the rec
   g_cover_mesh = nullptr;
 }
 
+// **A recipe handed as bytes is probed from them** (C64): a recipe a scene hands in memory
+// (`SceneDesc::recipes`, no file of its name) names its hosts from the bytes it is built from, so
+// one over a classified host is decided at the host's level, and left out when that level is above
+// the cap.
+TEST_CASE("content classes at load: a handed recipe is decided with the hosts its bytes name") {
+  need_generator(k_fixture_cover);
+  const geometry::ClusterFileData cover = plain_grid(5);
+  g_cover_mesh = &cover;
+  std::string error;
+  for (const u8 level : {u8{1}, u8{2}}) {
+    CAPTURE(static_cast<u32>(level));
+    const test::TempDir tmp("renderer_classes_handed");
+    REQUIRE(tmp.ok());
+    (void)write_grid(tmp, "statue.clusters", 17, "statue.png", glow_record(level));
+    Grid moss;
+    moss.path = tmp.file("moss.fixturecover.json");
+    REQUIRE_FALSE(io::exists(moss.path));
+    SceneDesc desc = scene_of(tmp, {&moss});
+    desc.recipes.push_back(MeshRecipe{moss.path, R"({"host":"statue.clusters"})"});
+    desc.view_policy = policy_in(k_dim_policies, "glow-dim");
+    SceneData scene;
+    REQUIRE_MESSAGE(load_scene(desc, scene, error), error);
+    CHECK(scene.load.unreadable_omitted == 0);
+    if (level == 1) {
+      CHECK(scene.instances.size() == 1);
+      CHECK(std::string(scene.sources[0].cache) == "miss");  // built from the handed bytes
+    } else {
+      CHECK(scene.instances.empty());
+      CHECK(std::string(scene.sources[0].cache) == "none");  // never generated
+      REQUIRE(row(scene, "fixture_glow") != nullptr);
+      CHECK(row(scene, "fixture_glow")->omitted == 1);
+    }
+  }
+  g_cover_mesh = nullptr;
+}
+
 // **The outcome does not depend on the order of the meshes** (C64): a listed classified container,
 // a cover over it with its own sidecar, a cover over a host the scene does not list carrying a
 // second category, a glTF whose sidecar names both and a ground whose sidecar names the second,

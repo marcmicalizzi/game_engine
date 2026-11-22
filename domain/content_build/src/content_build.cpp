@@ -576,12 +576,14 @@ bool read_pack_classes(const materials::Pack& pack, const content_class::Categor
 // `GeneratorHosts::resolve` does), `identify` answered with zero and `load` refused, so only the
 // recipe is read. A generator that reaches another mesh names
 // it through this seam, because its key covers the host. A recipe with no generator registered,
-// or one that cannot be read, names none here: the build or the load fails on it with its own
-// sentence. False, with `why`, when the generator exists and the recipe reads but its hash refuses
-// after these hooks answered it (one that parses an image it hashes, answered here with no bytes):
-// the refusal may be the probe's, its hosts are then unknown, and the recipe is refused rather than
-// decided without them (C64). A hash that refuses before asking a hook refuses the recipe itself
-// (a recipe out of its generator's ranges), and the build or the load says so in its own words.
+// or a file that cannot be read, names none here: the build or the load reads the same file and
+// fails on it with its own sentence. A recipe a scene hands as bytes (`handed`, no file needed) is
+// probed from those bytes, the ones the load builds it from. False, with `why`, when the generator
+// exists and the recipe reads but its hash refuses after these hooks answered it (one that parses
+// an image it hashes, answered here with no bytes): the refusal may be the probe's, its hosts are
+// then unknown, and the recipe is refused rather than decided without them (C64). A hash that
+// refuses before asking a hook refuses the recipe itself (a recipe out of its generator's ranges),
+// and the build or the load says so in its own words.
 struct HostProbe {
   std::string dependant;
   Vector<std::string> hosts;
@@ -618,12 +620,15 @@ bool probe_hash(void* context, std::string_view, u64& out, std::string&) {
   return true;
 }
 bool generator_hosts(const std::string& recipe, const materials::Pack* pack,
-                     Vector<std::string>& hosts, std::string& why) {
+                     Vector<std::string>& hosts, std::string& why,
+                     const std::string* handed = nullptr) {
   hosts.clear();
   const assets::MeshGeneratorDesc* generator =
       assets::MeshGeneratorRegistry::global().find(assets::mesh_generator_of(recipe));
-  std::string text;
-  if (generator == nullptr || io::read_file(recipe, text) != io::Status::Ok) return true;
+  if (generator == nullptr) return true;
+  std::string read;
+  if (handed == nullptr && io::read_file(recipe, read) != io::Status::Ok) return true;
+  const std::string& text = handed != nullptr ? *handed : read;
   HostProbe probe{recipe, {}};
   assets::MeshGeneratorHosts hooks;
   hooks.context = &probe;
@@ -745,18 +750,19 @@ bool host_container_classes(const std::string& path, const content_class::Catego
 // The teaching round's walk: `read_classes_at`'s hosts in its order, each container host's record
 // learned, and what was read kept for that read.
 bool learn_hosts_at(const std::string& source, const MeshOptions& options,
-                    content_class::Categories& learn, HostReads& reads, u32 depth) {
+                    content_class::Categories& learn, HostReads& reads, u32 depth,
+                    const std::string* handed) {
   if (assets::mesh_generator_of(source).empty()) return true;
   if (kept_at(reads.probe_of, reads.probe_paths, reads.probes, source) == nullptr) {
     HostReads::Probe probe;
-    probe.ok = generator_hosts(source, options.materials, probe.hosts, probe.why);
+    probe.ok = generator_hosts(source, options.materials, probe.hosts, probe.why, handed);
     keep_at(reads.probe_of, reads.probe_paths, reads.probes, source, probe);
   }
   Vector<std::string> hosts;
   std::string why;
   if (!recipe_hosts(source, options.materials, &reads, hosts, why)) return false;
   for (const std::string& host : hosts) {
-    if (depth >= k_host_depth || !learn_hosts_at(host, options, learn, reads, depth + 1))
+    if (depth >= k_host_depth || !learn_hosts_at(host, options, learn, reads, depth + 1, nullptr))
       return false;
     if (io::extension(host) != ".clusters") continue;
     if (kept_at(reads.record_of, reads.record_paths, reads.records, host) == nullptr) {
@@ -786,8 +792,9 @@ bool read_source_classes(const std::string& source, const MeshOptions& options, 
 }
 
 bool learn_source_hosts(const std::string& source, const MeshOptions& options,
-                        content_class::Categories& learn, HostReads& reads) {
-  return learn_hosts_at(source, options, learn, reads, 0);
+                        content_class::Categories& learn, HostReads& reads,
+                        const std::string* handed) {
+  return learn_hosts_at(source, options, learn, reads, 0, handed);
 }
 
 namespace {

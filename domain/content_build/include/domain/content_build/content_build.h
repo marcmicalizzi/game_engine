@@ -308,8 +308,11 @@ struct HostReads {
 // against a finished table. False at the first host that cannot be probed, opened or learned (one
 // whose ladder differs from one `learn` holds already): the class read refuses `source` there, by
 // the same reads. A source no generator makes teaches nothing. `reads` keeps what was read.
+// `handed`, when set, is the recipe's bytes as a caller holds them in place of a file (a scene's
+// handed recipe): its hosts are named from those bytes, and a class read given `reads` takes them.
 bool learn_source_hosts(const std::string& source, const MeshOptions& options,
-                        content_class::Categories& learn, HostReads& reads);
+                        content_class::Categories& learn, HostReads& reads,
+                        const std::string* handed = nullptr);
 
 // The key a source's container records and the cache addresses it by: `mesh_build_key`, moved by
 // the class only when there is one (`content_class::classified_key`), so an unclassified source

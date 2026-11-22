@@ -24,6 +24,20 @@ namespace engine::renderer {
 
 bool is_generated_mesh(const std::string& path) { return !assets::mesh_generator_of(path).empty(); }
 
+const MeshRecipe* handed_recipe(const SceneDesc& desc, const std::string& path) {
+  // The path may have been resolved against the scene's directory since the generator named it,
+  // so it matches by its end.
+  for (const MeshRecipe& recipe : desc.recipes) {
+    const bool tail =
+        path.size() > recipe.path.size() &&
+        path.compare(path.size() - recipe.path.size(), recipe.path.size(), recipe.path) == 0 &&
+        (path[path.size() - recipe.path.size() - 1] == '/' ||
+         path[path.size() - recipe.path.size() - 1] == '\\');
+    if (path == recipe.path || tail) return &recipe;
+  }
+  return nullptr;
+}
+
 bool load_generated_mesh(const std::string& path, const SceneDesc& desc, u64 expected_hash,
                          geometry::ClusterFileData& data, std::string& container,
                          const char*& cache, u64& source_hash, std::string& error,
@@ -39,21 +53,9 @@ bool load_generated_mesh(const std::string& path, const SceneDesc& desc, u64 exp
     return false;
   }
   // **A recipe handed, not written** (R142; scene_gen.md, "A tile's meshes"): the bytes a placement
-  // generator gave for this path are the file, and nothing is read. The path may have been resolved
-  // against the scene's directory since the generator named it, so it matches by its end.
+  // generator gave for this path are the file, and nothing is read.
   std::string text;
-  const MeshRecipe* handed = nullptr;
-  for (const MeshRecipe& recipe : desc.recipes) {
-    const bool tail =
-        path.size() > recipe.path.size() &&
-        path.compare(path.size() - recipe.path.size(), recipe.path.size(), recipe.path) == 0 &&
-        (path[path.size() - recipe.path.size() - 1] == '/' ||
-         path[path.size() - recipe.path.size() - 1] == '\\');
-    if (path == recipe.path || tail) {
-      handed = &recipe;
-      break;
-    }
-  }
+  const MeshRecipe* handed = handed_recipe(desc, path);
   if (handed != nullptr) {
     text = handed->bytes;
   } else {

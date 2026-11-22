@@ -393,9 +393,12 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
   content_build::HostReads host_reads;
   for (u32 m = 0; m < meshes; ++m) {
     const std::string& path = desc.meshes[m];
-    // A refusal here is the class read's below, by the same reads, which says why.
-    if (first[m] == m && !path.empty() && is_generated_mesh(path))
-      (void)content_build::learn_source_hosts(path, recipe_options, out.categories, host_reads);
+    // A refusal here is the class read's below, by the same reads, which says why. A recipe the
+    // scene hands as bytes is probed from them, the bytes the load builds it from.
+    if (first[m] != m || path.empty() || !is_generated_mesh(path)) continue;
+    const MeshRecipe* handed = handed_recipe(desc, path);
+    (void)content_build::learn_source_hosts(path, recipe_options, out.categories, host_reads,
+                                            handed != nullptr ? &handed->bytes : nullptr);
   }
   // Then the classes, in mesh order, against the finished table: every sidecar, pack and ground.
   for (u32 m = 0; m < meshes; ++m) {
