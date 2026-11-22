@@ -140,3 +140,26 @@ TEST_CASE("gfx: the wet ground's model is monotone and bounded") {
   CHECK(wr::film(0.8, 0.0) == 0.0);
   CHECK(wr::film(1.0, 0.0) == 1.0);
 }
+
+// The reference against its source (W161): the shader and its mirror share one expression, so a
+// wrong constant would pass the comparison above. The whole factor at saturation 1 and full
+// porosity, wet over dry, holds the table the grounding page computes from Lekner and Dorf's r_e
+// and n (docs/experiments/sand-and-snow-substrates-2026-11-02.md, its table of wet over dry by dry
+// albedo) to the table's three decimals, and Angstrom's dry sand of 0.182 wets to the 0.098 the
+// page quotes against his measured 0.091. The table's last column, 0.696 at 0.62, is the
+// formula's 0.69549 rounded up, so it is left out rather than held to a looser bound.
+TEST_CASE("gfx: the wet ground's reference reproduces Lekner and Dorf's factors") {
+  constexpr f64 k_table_half_digit = 0.0005;
+  struct Row {
+    f64 dry;
+    f64 factor;
+  };
+  const Row table[] = {{0.0, 0.491}, {0.182, 0.537}, {0.30, 0.572}, {0.42, 0.613}, {0.55, 0.664}};
+  for (const Row& row : table) {
+    const f64 factor = row.dry > 0.0 ? wr::albedo(row.dry, 1.0, 1.0) / row.dry : wr::darkening(0.0);
+    MESSAGE("dry " << row.dry << ": wet over dry " << factor << " (the table's " << row.factor
+                   << ")");
+    CHECK(std::abs(factor - row.factor) <= k_table_half_digit);
+  }
+  CHECK(std::abs(wr::albedo(0.182, 1.0, 1.0) - 0.098) <= k_table_half_digit);
+}

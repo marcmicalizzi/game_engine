@@ -851,18 +851,6 @@ MaterialSample terrain_wet(MaterialSample sampled, float s, float film, float po
   return sampled;
 }
 
-#ifdef RESOLVE_WATER
-// The same under a surface the water's volume tier transmits through (W161; wet_ground.slang,
-// `wet_ground_albedo_under`): the factor without the top's two transmissions, which the tier
-// applies itself.
-MaterialSample terrain_wet_under(MaterialSample sampled, float s, float film, float porosity) {
-  if (!(s > 0.0)) return sampled;
-  sampled.albedo = wet_ground_albedo_under(sampled.albedo, s, porosity);
-  sampled.roughness = wet_ground_roughness(sampled.roughness, s, film);
-  return sampled;
-}
-#endif
-
 // **A steep face takes the projections of its own plane** (W138; terrain.md, "A steep face is
 // textured in its own plane"). The projections' shares come from the shading normal, which on the
 // ground's lattice is a central difference over two cells: on a cut's face one cell wide it leans
@@ -890,13 +878,7 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
                                       float3 dp_dx, float3 dp_dy, float distance_m, bool filtered,
                                       out float3 shading_normal, bool variance_enabled = true,
                                       float shore_s = 0.0, float shore_film = 0.0,
-                                      float3 geometric = float3(0.0)
-#ifdef RESOLVE_WATER
-                                      // W161: the ground is a bed under the volume tier's surface,
-                                      // so `shore_s` wets it by `terrain_wet_under`.
-                                      , bool under_tier = false
-#endif
-                                      ) {
+                                      float3 geometric = float3(0.0)) {
   // The substrate's porosity under the pixel, by the layers' blend (0.5, the schema's default,
   // where no layer says).
   float shore_porosity = 0.5;
@@ -1142,9 +1124,6 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
   result.emissive = float3(0.0);
   result.detail_mask = detail;
   shading_normal = normalize(n + slope);
-#ifdef RESOLVE_WATER
-  if (under_tier) return terrain_wet_under(result, shore_s, shore_film, shore_porosity);
-#endif
   return terrain_wet(result, shore_s, shore_film, shore_porosity);
 }
 

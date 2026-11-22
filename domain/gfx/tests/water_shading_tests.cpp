@@ -398,7 +398,6 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
   const Vec2* uv_of[4] = {open_uv, shore_uv, slope_uv, channel_uv};
 
   int worst_all = 0;
-  int whole_worst_all = 0;
   int differs_with_time = 0;
   int differs_with_volume = 0;
   for (u32 b = 0; b < k_blocks; ++b) {
@@ -412,15 +411,10 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
     // ground has porosity 0.5, a whole share) — the channel's, the windless bodies' and the bed
     // of no ground, the shallow colour, alike. `dry_worst` is the same pixels against the bed drawn
     // dry: a resolve that kept a windless body's or a channel's bed dry meets the dry reference and
-    // misses the wet one. **The water's top is counted once** (W161; water.md, "Translucent by
-    // volume", what the factor counts): the tier transmits through its surface by Fresnel itself,
-    // so the bed takes the factor without the top's two transmissions, `albedo_under`; a resolve
-    // that applied the whole factor under the tier draws the bed 1 / (1 - r_e)^2 = 1.147 times too
-    // dark.
+    // misses the wet one. The factor is the whole one, the resolve's: under the tier it counts the
+    // water's top a second time, which W164 is to mend in every place at once (water.md,
+    // "Translucent by volume").
     int dry_worst = 0;
-    // And against the bed under the whole factor, the top counted twice (reported; held over the
-    // volume blocks together below).
-    int whole_worst = 0;
     const Vec2 uv = uv_of[block_of[b].attributes][0];
     const double slope = static_cast<double>(slope_of[block_of[b].attributes]);
     const i32 map = map_of_material[block_of[b].material];
@@ -470,7 +464,6 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
         const ref::Dvec3 v = ref::normalize(ref::dvec3(eye) - p);
         ref::Dvec3 linear;
         ref::Dvec3 linear_dry;
-        ref::Dvec3 linear_whole;
         if (volume) {
           // No shadow is asked for, so the sun reaches the surface and the bottom whole; the
           // ground is the plain material's colour, or the shallow colour with none.
@@ -482,9 +475,8 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
                                      ? w.shallow
                                      : ref::dvec3(material_table[optics.sampler].albedo);
           namespace wet = gfx::wet_reference;
-          const ref::Dvec3 albedo{wet::albedo_under(dry.x, 1.0, 0.5),
-                                  wet::albedo_under(dry.y, 1.0, 0.5),
-                                  wet::albedo_under(dry.z, 1.0, 0.5)};
+          const ref::Dvec3 albedo{wet::albedo(dry.x, 1.0, 0.5), wet::albedo(dry.y, 1.0, 0.5),
+                                  wet::albedo(dry.z, 1.0, 0.5)};
           const wref::Optics o = wref::optics_of(optics);
           const ref::Dvec3 under =
               wref::volume(o, path, n_b, albedo, sun_ref, ref::splat(1.0), 1.0, 1.0, ambient);
@@ -494,29 +486,19 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
               wref::volume(o, path, n_b, dry, sun_ref, ref::splat(1.0), 1.0, 1.0, ambient);
           linear_dry = wref::radiance_volume(w, n, v, from_edge, sun_ref, ref::splat(1.0), sky_ref,
                                              under_dry);
-          const ref::Dvec3 whole{wet::albedo(dry.x, 1.0, 0.5), wet::albedo(dry.y, 1.0, 0.5),
-                                 wet::albedo(dry.z, 1.0, 0.5)};
-          const ref::Dvec3 under_whole =
-              wref::volume(o, path, n_b, whole, sun_ref, ref::splat(1.0), 1.0, 1.0, ambient);
-          linear_whole = wref::radiance_volume(w, n, v, from_edge, sun_ref, ref::splat(1.0),
-                                               sky_ref, under_whole);
         } else {
           linear =
               wref::radiance(w, n, v, from_edge, depth, sun_ref, ref::splat(1.0), ambient, sky_ref);
           linear_dry = linear;
-          linear_whole = linear;
         }
         const u8* got = pixel(b, x, y);
         const u8 expect[3] = {ref::display(linear.x), ref::display(linear.y),
                               ref::display(linear.z)};
         const u8 expect_dry[3] = {ref::display(linear_dry.x), ref::display(linear_dry.y),
                                   ref::display(linear_dry.z)};
-        const u8 expect_whole[3] = {ref::display(linear_whole.x), ref::display(linear_whole.y),
-                                    ref::display(linear_whole.z)};
         for (u32 c = 0; c < 3; ++c) {
           worst = std::max(worst, std::abs(int{got[c]} - int{expect[c]}));
           dry_worst = std::max(dry_worst, std::abs(int{got[c]} - int{expect_dry[c]}));
-          whole_worst = std::max(whole_worst, std::abs(int{got[c]} - int{expect_whole[c]}));
         }
         if (b == 1) {
           const u8* at_zero = pixel(0, x, y);
@@ -532,18 +514,14 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
     }
     MESSAGE("water block " << b << std::string(channel ? " (a channel)" : "") << ": worst " << worst
                            << " of 255 against the reference, " << dry_worst
-                           << " against the bed drawn dry, " << whole_worst
-                           << " against the top counted twice (" << std::string(raster.name())
+                           << " against the bed drawn dry (" << std::string(raster.name())
                            << " path)");
     CHECK(worst <= 2);
     // The bed drawn dry is a picture of its own: more than the tolerance off every volume block.
     if (volume) CHECK(dry_worst > 2);
-    if (volume) whole_worst_all = std::max(whole_worst_all, whole_worst);
     worst_all = std::max(worst_all, worst);
   }
   MESSAGE("water branch against its reference: worst " << worst_all << " of 255");
-  // The top counted twice is a picture of its own too, somewhere among the volume blocks.
-  CHECK(whole_worst_all > 2);
   // The clock moves the waves: the same pixels 37.25 s on are not the same picture.
   CHECK(differs_with_time > 100);
   CHECK(differs_with_volume > 100);
@@ -810,8 +788,8 @@ TEST_CASE("material resolve: a channel's reach is shaded by its vertices' normal
   const wref::Optics o = wref::optics_of(material_table[1]);
   const ref::Dvec3 sand = ref::dvec3(material_table[2].albedo);
   namespace wet = gfx::wet_reference;
-  const ref::Dvec3 bed{wet::albedo_under(sand.x, 1.0, 0.5), wet::albedo_under(sand.y, 1.0, 0.5),
-                       wet::albedo_under(sand.z, 1.0, 0.5)};
+  const ref::Dvec3 bed{wet::albedo(sand.x, 1.0, 0.5), wet::albedo(sand.y, 1.0, 0.5),
+                       wet::albedo(sand.z, 1.0, 0.5)};
   const ref::Dvec3 eye_d = ref::dvec3(eye);
   const u32 faces[2][3] = {{0, 2, 1}, {0, 3, 2}};
   // Two-pixel strips by the distance from the edge, on face A's side (0) and face B's (1).

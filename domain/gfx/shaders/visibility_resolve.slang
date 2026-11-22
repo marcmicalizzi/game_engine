@@ -825,15 +825,6 @@ float3 water_pixel_volume(ResolveParams* params, SceneGeometry geo, InstanceDesc
                           float bared_s = 0.0) {
   // `bared_s` (S99): a pixel the swash's backwash or the falling tide has bared is the ground's own
   // material at its saturation (wet_ground.slang), not a fixed sand's; 0 for every other pixel.
-  // **The water's top is counted once** (W161; water.md, "Translucent by volume"):
-  // where the pixel has depth the bed lies under the surface this tier transmits through by
-  // Fresnel, in (`water_volume`) and out (`water_radiance_volume`), so it takes Lekner and Dorf's
-  // factor without the top's two transmissions (`wet_ground_albedo_under`). A pixel with no depth
-  // (the bared bottom) has no surface over it: its edge is 0 (`water_shore_distance`), so
-  // `water_radiance_volume` passes it out with no (1 - F) and no reflection, and it keeps the whole
-  // factor, as the wet ground beside it does (the way in's (1 - F) in `water_volume` still applies
-  // there, as it did before W161).
-  const bool under_top = depth > 0.0;
   ResolveMaterial* materials = (ResolveMaterial*)geo.materials;
   const WaterOptics o = water_optics_of(materials[index + 1]);
   WaterPath path;
@@ -859,19 +850,15 @@ float3 water_pixel_volume(ResolveParams* params, SceneGeometry geo, InstanceDesc
       const MaterialSample sampled = sample_terrain_material(
           geo, materials[o.ground], uv, dp_dx.xz * o.ground_uv_per_m,
           dp_dy.xz * o.ground_uv_per_m, point, n_b, dp_dx, dp_dy,
-          length(point - params->camera.xyz), true, bottom_normal, true, bared_s, 0.0,
-          float3(0.0), under_top);
+          length(point - params->camera.xyz), true, bottom_normal, true, bared_s, 0.0);
       albedo = sampled.albedo;
       n_b = bottom_normal;
       layered = true;
     }
 #endif
-    if (!layered && bared_s > 0.0)
-      albedo = under_top ? wet_ground_albedo_under(albedo, bared_s, 0.5)
-                         : wet_ground_albedo(albedo, bared_s, 0.5);
+    if (!layered && bared_s > 0.0) albedo = wet_ground_albedo(albedo, bared_s, 0.5);
   } else if (bared_s > 0.0) {
-    albedo = under_top ? wet_ground_albedo_under(albedo, bared_s, 0.5)
-                       : wet_ground_albedo(albedo, bared_s, 0.5);
+    albedo = wet_ground_albedo(albedo, bared_s, 0.5);
   }
   SkyParams* sky = (SkyParams*)params->sky_params;
   const bool has_sky = params->sky_params != 0;
