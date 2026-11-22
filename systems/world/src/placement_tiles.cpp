@@ -485,6 +485,19 @@ void PlacementTiles::tile_ranges(Vector<TileRange>& out) const {
   }
 }
 
+void PlacementTiles::tile_own(Vector<TileOwn>& out) const {
+  out.clear();
+  for (u32 i = 0; i < tiles_.size(); ++i) {
+    const TileBlock& block = tiles_.value_at(i);
+    if (block.withheld) continue;
+    const std::span<const renderer::SceneInstance> drawn = block.drawn();
+    const Handoff& set = block.waiting ? block.held_handoff : block.handoff;
+    const u32 own = static_cast<u32>(drawn.size()) - set.count;
+    if (own == 0) continue;
+    out.push_back(TileOwn{tiles_.key_at(i), drawn.data(), own, block.version});
+  }
+}
+
 // The drawn tiles' instances and tags in tile order: what a commit hands an instance sink, and
 // what `tail()` answers after a commit that handed a run sink the tiles instead (W81).
 void PlacementTiles::write_tail() const {

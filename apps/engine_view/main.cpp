@@ -34,6 +34,22 @@
 #endif
 #if ENGINE_VIEW_WORLD_SOUND
 #include "game_sound.h"
+#else
+namespace engine::renderer {
+struct FlightStep;
+struct SceneData;
+}  // namespace engine::renderer
+namespace engine::view {  // the session's sound's seams with the capability out (game_sound.h)
+class FlySession;
+inline bool sound_hears_world() noexcept { return false; }
+inline i64 solo_sound_ns() noexcept { return 0; }
+inline void attach_solo_scene(const renderer::SceneData&) {}
+inline void attach_solo_session(FlySession&, f64, f64) noexcept {}
+inline void attach_solo_tiles(void*) noexcept {}
+inline void set_solo_flight_clock(f64, f64) noexcept {}
+inline void solo_flight_frame(const renderer::FlightStep&) noexcept {}
+inline void print_solo_summary() {}
+}  // namespace engine::view
 #endif
 #include "time_controls.h"
 #include "window_input.h"
@@ -1428,10 +1444,13 @@ view::GameRunner* g_game = nullptr;
 
 // Hooks the game onto a session about to start: the observer that ticks it after the walker, and
 // the clocks as the session runs them (the sky's offset, the day's rate, the scene's epoch, the
-// world's rate).
+// world's rate). With no module, the world's sound alone is the observer (S112-2).
 void attach_game(view::FlySession& session, f64 sun_offset_s, f64 sun_rate, f64 world_rate,
                  const renderer::SceneData& scene, view::Walker& walker) {
-  if (g_game == nullptr) return;
+  if (g_game == nullptr) {
+    view::attach_solo_session(session, sun_offset_s, sun_rate);  // the world heard (S112-2)
+    return;
+  }
   session.set_tick_observer(&view::GameRunner::observe, g_game);
   g_game->set_session(&session);  // the walker's services act on this session (fly_camera.h)
   g_game->set_clock(sun_offset_s, sun_rate, renderer::scene_epoch_s(scene), world_rate);
@@ -1867,8 +1886,10 @@ void game_release() {
 }
 bool game_held() { return g_game != nullptr && g_game->held(); }
 u64 game_first_tick() { return g_game != nullptr ? g_game->first_tick() : 0; }
-i64 game_tick_ns() { return g_game != nullptr ? g_game->tick_ns() : 0; }    // FrameWorld::game_ms
-i64 game_sound_ns() { return g_game != nullptr ? g_game->sound_ns() : 0; }  // ...::sound_ms
+i64 game_tick_ns() { return g_game != nullptr ? g_game->tick_ns() : 0; }  // FrameWorld::game_ms
+i64 game_sound_ns() {  // FrameWorld::sound_ms: the runner's, or a module-less host's own
+  return g_game != nullptr ? g_game->sound_ns() : view::solo_sound_ns();
+}
 #else
 f32 g_hud_display_scale = 1.0f;  // the loading overlay's, set by the windowed loop
 void append_player(renderer::SceneDesc&) {}
@@ -1908,7 +1929,10 @@ bool hand_over_game_props(World*, renderer::SceneRenderer& renderer, std::string
 // hears `NotFound` and the fixture drinks at its spring.
 void attach_world_to_game([[maybe_unused]] view::ViewWorld& world) {
 #if ENGINE_VIEW_GAME
-  if (g_game == nullptr) return;
+  if (g_game == nullptr) {
+    view::attach_solo_tiles(&world.placements());  // no module: the world's sound hears them
+    return;
+  }
   struct Query {
     static bool nearest(void* user, std::string_view kind, const WorldPos& from, f64 radius,
                         WorldPos& out, f64& distance) {
@@ -3206,6 +3230,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
     }
 #endif
     keep_game_actors(desc);
+    desc.measure_leaves = view::sound_hears_world();  // the leaves only when heard (S112-2)
     {
       ENGINE_STARTUP_STAGE("load scene");
       if (!renderer::load_scene(desc, scene_data, error)) {
@@ -3214,6 +3239,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       }
     }
     startup.milestone("scene_loaded");
+    view::attach_solo_scene(scene_data);  // a module-less session hears its crowns (S112-2)
     profiling::TraceStage attach_stage("attach");
     look_overrides(options, scene_data);  // `--sky-disc-scale`
     if (!attach_game_scene(scene_data, error)) {
@@ -3729,6 +3755,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       Vector<std::optional<scene::FrameTerrain>> terrain_of;
       if (time_lapse.active()) terrain_of.resize(static_cast<usize>(frames) * repeats);
       WorldHook world_hook{&world_before, options.warmup == 0, &time_lapse, &terrain_of, frames};
+      view::set_solo_flight_clock(flight_options.sky_start_s, flight_options.sun_rate);
       flight_options.before_frame = [](void* context, const renderer::FlightStep& step,
                                        std::string*) {
         const auto* hook = static_cast<const WorldHook*>(context);
@@ -3737,6 +3764,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         const bool ok =
             (*hook->before)(step.camera, first_step ? WorldStep::restart : WorldStep::budgeted,
                             step.repeat, step.frame, step.recorded, step.world);
+        view::solo_flight_frame(step);  // the world heard with no module, a tick a frame
         const u32 at = step.repeat * hook->frames + step.frame;
         if (step.recorded && at < hook->terrain->size()) {
           // The record's time-lapse state is the benchmark's, not the frame loop's.
@@ -5692,6 +5720,26 @@ int run_view(int argc, char** argv) {
   view::GameRunner game;
 #if ENGINE_VIEW_WORLD_SOUND
   view::GameSoundHost game_sound;  // its hooks are the runner's; declared after it, gone before it
+  const struct SoundScope {
+    ~SoundScope() { view::set_session_sound(nullptr, false); }
+  } sound_scope;
+  // **A scene with no module hears its world** (S112-2): the same host, ticked by the session as
+  // its observer or by a flight's frames (a sixtieth of a second each), with nothing to play
+  // clips. `Off` (the default offscreen) opens nothing and measures no leaves.
+  if (options.game.empty()) {
+    std::string sound_error;
+    const bool flight = !options.camera_path.empty() && !interactive.on;  // a tick a frame
+    if (!view::open_solo_sound(
+            game_sound, options.audio, !options.offscreen, options.audio_out,
+            !options.scene.empty() ? options.scene
+            : interactive.replay   ? std::string(interactive.header.scene)
+                                   : std::string(),
+            flight ? static_cast<u32>(view::k_frame_index_hz) : interactive.header.params.tick_hz,
+            &sound_error)) {
+      log::remove_sink(&stderr_sink);
+      return fail("audio", sound_error);
+    }
+  }
 #endif
   if (!options.game.empty()) {
     view::GameRunner::Config config;
@@ -5756,10 +5804,12 @@ int run_view(int argc, char** argv) {
     if (!view::resolve_audio(options.audio, !options.offscreen, audio_mode, audio_device,
                              &game_error) ||
         !game_sound.open(audio_mode, audio_device, options.audio_out, config.scene,
-                         interactive.header.params.tick_hz, game, &game_error)) {
+                         interactive.header.params.tick_hz, &game_error)) {
       log::remove_sink(&stderr_sink);
       return fail("audio", game_error);
     }
+    game.set_sound(game_sound.hooks());
+    view::set_session_sound(&game_sound, false);  // the leaves measured when heard (M7)
 #endif
     if (!game.start(config, interactive.map, interactive.header.params.tick_hz, &game_error)) {
       log::remove_sink(&stderr_sink);
@@ -5815,6 +5865,7 @@ int run_view(int argc, char** argv) {
   if (options.reference != 0) return run_reference(options);
   if (options.offscreen) {
     const int code = run_offscreen(options, interactive);
+    view::print_solo_summary();  // a module-less session's sound (S112-2)
     log::remove_sink(&stderr_sink);
     return code;
   }
@@ -6183,6 +6234,7 @@ int run_view(int argc, char** argv) {
 #endif
 
       keep_game_actors(desc);  // the declared actors stay in the prefix (W78)
+      desc.measure_leaves = view::sound_hears_world();  // the leaves only when heard (S112-2)
       profiling::TraceStage load_stage("load scene");
       if (!renderer::load_scene(desc, scene_data, error)) {
         exit_code = fail("mesh", error);
@@ -6190,6 +6242,7 @@ int run_view(int argc, char** argv) {
       }
       load_stage.end();
       startup.milestone("scene_loaded");
+      view::attach_solo_scene(scene_data);  // a module-less session hears its crowns (S112-2)
       profiling::TraceStage attach_stage("attach");
       look_overrides(options, scene_data);  // `--sky-disc-scale`
       if (!attach_game_scene(scene_data, error)) {

@@ -516,9 +516,18 @@ void water_wind_frame(std::span<WaterWindBody> bodies, f64 sky_time_s,
   }
 }
 
+const gfx::WindDesc& scene_wind_in_use(const gfx::WindDesc& wind, gfx::WindDesc& held) noexcept {
+  const WindHand hand = wind_hand_tunable();
+  if (!hand.set) return wind;
+  held.kind = gfx::WindKind::fixed;
+  held.roughness_m = wind.roughness_m;
+  held.speed_m_s = hand.speed_m_s;
+  held.to_deg = hand.turned ? hand.to_deg : wind.to_deg;
+  return held;
+}
+
 bool scene_flora_wind(const gfx::WindDesc& wind, f64 sky_time_s, Vec2& to, f32& strength,
                       const gfx::WindLive& live) noexcept {
-  const WindHand hand = wind_hand_tunable();
   // A held wind is a fixed one at the scene's roughness, made fresh rather than copied from the
   // scene's (whose track would allocate every frame: the frame loop allocates nothing).
   gfx::WindDesc held;
@@ -537,11 +546,7 @@ bool scene_flora_wind(const gfx::WindDesc& wind, f64 sky_time_s, Vec2& to, f32& 
                          k_flora_wind_mean_m_s);
     return true;
   }
-  if (hand.set) {
-    held.speed_m_s = hand.speed_m_s;
-    if (hand.turned) held.to_deg = hand.to_deg;
-  }
-  const gfx::WindDesc& used = hand.set ? held : wind;
+  const gfx::WindDesc& used = scene_wind_in_use(wind, held);
   if (used.kind == gfx::WindKind::none) return false;
   const gfx::WindSample mean = gfx::wind_at(used, sky_time_s);
   to = mean.to;

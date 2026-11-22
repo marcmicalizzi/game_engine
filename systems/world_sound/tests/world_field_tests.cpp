@@ -383,3 +383,92 @@ TEST_CASE("world sound: the null render, read by band, is louder and brighter wi
   CHECK(tilt_strong > tilt_light + 2.0);
   ears->reset();
 }
+
+namespace {
+
+// The grove sent far first: the order a canopy table may well have (S112's review, M1).
+struct Reversed {
+  std::vector<Crown> crowns;
+  static void visit(void* user, const WorldPos&, f64, const CrownSink& sink) {
+    const std::vector<Crown>& c = static_cast<Reversed*>(user)->crowns;
+    for (usize i = c.size(); i-- > 0;)
+      sink.emit(sink.user, c[i]);
+  }
+};
+
+}  // namespace
+
+TEST_CASE(
+    "world sound: a full canopy table keeps the nearest crowns, whatever order they come in") {
+  tunables::Tunable* max_crowns = tunables::find("audio.world.max_crowns");
+  REQUIRE(max_crowns != nullptr);
+  REQUIRE(max_crowns->set_from_text("8"));
+  f64 loudest[2] = {};
+  for (u32 order = 0; order < 2; ++order) {
+    Session s(8.0, false);
+    Reversed reversed{s.trees.crowns};
+    if (order == 1) s.stage.set_canopy(CanopySource{&reversed, &Reversed::visit});
+    s.tick(30);
+    const WorldStats& w = s.stage.world_stats();
+    CHECK(w.crowns_seen == 8u);
+    CHECK(w.crowns_dropped == s.trees.crowns.size() - 8u);
+    loudest[order] = static_cast<f64>(s.first(WorldVoiceKind::Crown).level_db);
+  }
+  // Sent nearest last, the crown overhead is still kept and still the loudest voice.
+  CHECK(loudest[1] == doctest::Approx(loudest[0]).epsilon(1e-9));
+  max_crowns->reset();
+}
+
+TEST_CASE(
+    "world sound: a merged group is the beds', and a crown the listener stands in is heard "
+    "at its edge") {
+  for (const bool merged : {false, true}) {
+    Session s(8.0, false);
+    s.trees.crowns.clear();
+    Crown c{WorldPos{k_far + 1.0, 0.0, k_far}, 1.7f, 400.0f, CanopyClass::Blade, 1.2f};
+    c.merged = merged;
+    s.trees.crowns.push_back(c);
+    s.tick(10);
+    CHECK(s.stage.world_stats().crown_voices == (merged ? 0u : 1u));
+    CHECK(s.stage.world_stats().bed_voices == (merged ? 1u : 0u));
+  }
+  // The same crown all round the listener with an extent of 50 m against none: heard as at 50 m
+  // rather than at the 2 m least, 20 log 25 = 27.96 dB under.
+  f64 level[2] = {};
+  for (u32 i = 0; i < 2; ++i) {
+    Session s(8.0, false);
+    s.trees.crowns.clear();
+    Crown c{WorldPos{k_far, 0.0, k_far}, 1.7f, 400.0f, CanopyClass::Blade, 1.2f};
+    c.extent_m = i == 0 ? 0.0f : 50.0f;
+    s.trees.crowns.push_back(c);
+    s.tick(10);
+    level[i] = static_cast<f64>(s.first(WorldVoiceKind::Crown).level_db);
+  }
+  CHECK(level[0] - level[1] == doctest::Approx(20.0 * std::log10(25.0)).epsilon(1e-4));
+}
+
+TEST_CASE("world sound: the world is held at its ceiling, counted, and under it is not touched") {
+  // The case's grove is sparse: at 45 m/s it sums to about -13 dBFS, just under the default -12,
+  // so the ceiling is brought down to -20 for the gale and left there for the breeze.
+  tunables::Tunable* ceiling = tunables::find("audio.world.ceiling_db");
+  REQUIRE(ceiling != nullptr);
+  REQUIRE(ceiling->set_from_text("-20"));
+  Session gale(45.0, false);
+  gale.tick(60);
+  const WorldStats& g = gale.stage.world_stats();
+  CHECK(g.held_ticks > 0u);
+  CHECK(g.held_db < 0.0f);
+  f64 total = 0.0;
+  for (u32 i = 0; i < gale.stage.world_voice_count(); ++i) {
+    const WorldVoiceInfo v = gale.stage.world_voice(i);
+    if (v.level_db > -999.0f) total += std::pow(10.0, static_cast<f64>(v.level_db) / 10.0);
+  }
+  MESSAGE("gale: held " << g.held_db << " dB, the world at " << 10.0 * std::log10(total)
+                        << " dB SPL on the 105 dB scale");
+  CHECK(10.0 * std::log10(total) <= 105.0 - 20.0 + 0.01);
+  Session breeze(8.0, false);
+  breeze.tick(60);
+  CHECK(breeze.stage.world_stats().held_ticks == 0u);
+  CHECK(breeze.stage.world_stats().held_db == 0.0f);
+  ceiling->reset();
+}

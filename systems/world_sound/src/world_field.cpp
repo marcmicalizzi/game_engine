@@ -7,6 +7,7 @@
 #include <core/hash/hash.h>
 #include <foundation/tunables/tunables.h>
 
+#include <algorithm>
 #include <cmath>
 
 namespace engine::world_sound {
@@ -41,6 +42,15 @@ tunables::Float world_calm_m_s{"audio.world.calm_m_s", 0.5, 0.0, 10.0,
                                "Wind under which a world voice is silent and held by nothing"};
 tunables::Float world_floor_db{"audio.world.floor_db", 10.0, -20.0, 60.0,
                                "dB SPL at the listener under which a world voice is not held"};
+// **Nothing hard-clips** (S112-2): the world's voices summed are held at this RMS, dBFS, and only
+// there. The world is Gaussian-like noise whose peaks run about 12 dB over its RMS (4 sigma), so
+// -12 is where its peaks reach full scale and a hard clip would begin; under it nothing changes.
+tunables::Float world_ceiling_db{"audio.world.ceiling_db", -12.0, -40.0, 0.0,
+                                 "RMS dBFS the world's voices summed are held at, and only there"};
+tunables::Int world_near_crowns_tunable{"audio.world.near_crowns", 4096, 0, 1 << 20,
+                                        "Crowns a canopy table sends one by one a refresh"};
+tunables::Int world_walk_tunable{"audio.world.walk_instances", 16384, 0, 1 << 24,
+                                 "Placements a canopy table walks a refresh for changed tiles"};
 
 // ---- the laws (docs/experiments/world-sound.md) -------------------------------------------------
 
@@ -95,9 +105,13 @@ constexpr f64 k_pi = 3.14159265358979323846;
 
 f64 pow10(f64 db) noexcept { return std::pow(10.0, db / 10.0); }
 
-// The wind at height `h` from the wind 10 m up, by the neutral log law over roughness `z0`.
+// The wind at height `h` from the wind 10 m up, by the neutral log law over roughness `z0`. The
+// roughness is held under a quarter of the reference height (L4 of S112's review): at 5 m and over
+// the law is zero, negative or infinite there, and no surface is that rough (a city centre's is
+// 1 to 2 m).
 f64 loglaw(f64 h, f64 z0) noexcept {
-  const f64 z = z0 > 1e-5 ? z0 : 1e-5;
+  constexpr f64 k_z0_max = gfx::k_wind_height_m / 4.0;
+  const f64 z = z0 > 1e-5 ? (z0 < k_z0_max ? z0 : k_z0_max) : 1e-5;
   const f64 hh = h > 2.0 * z ? h : 2.0 * z;
   return std::log(hh / z) / std::log(gfx::k_wind_height_m / z);
 }
@@ -110,6 +124,8 @@ u64 key_of(const WorldPos& p) noexcept {
 }  // namespace
 
 f64 world_near_m() noexcept { return near_m_tunable.get(); }
+u32 world_near_crowns() noexcept { return static_cast<u32>(world_near_crowns_tunable.get()); }
+u32 world_walk_instances() noexcept { return static_cast<u32>(world_walk_tunable.get()); }
 
 FieldConfig field_config_from_tunables() noexcept {
   FieldConfig c;
@@ -124,6 +140,7 @@ FieldConfig field_config_from_tunables() noexcept {
   c.ears_slope_db = world_ears_slope_db.get();
   c.calm_m_s = world_calm_m_s.get();
   c.floor_db = world_floor_db.get();
+  c.ceiling_db = world_ceiling_db.get();
   return c;
 }
 
@@ -136,6 +153,8 @@ void WorldField::open(audio::Mixer* mixer, u32 tick_hz, const FieldConfig& confi
   crowns_.reserve(config_.max_crowns);
   crown_static_.reserve(config_.max_crowns);
   crown_key_.reserve(config_.max_crowns);
+  crown_dist_.reserve(config_.max_crowns);
+  far_heap_.reserve(config_.max_crowns);
   chosen_.resize(config_.crowns, 0);
   beds_.resize(config_.beds);
   voices_.resize(config_.crowns + config_.beds + 2u);
@@ -180,22 +199,61 @@ f64 WorldField::wind10_at(f64 x, f64 z, Vec2& to, f64& z0) const noexcept {
   return config_.turbulence ? gfx::wind_gust(*wind_.scene, mean, place, t) : mean.speed_m_s;
 }
 
+void WorldField::take(const Crown& c) noexcept {
+  if (!(c.leaf_area_m2 > 0.0f)) return;
+  const f64 dx = c.at.x - taking_at_.x;
+  const f64 dz = c.at.z - taking_at_.z;
+  const f64 d = std::sqrt(dx * dx + dz * dz);
+  const u64 key = key_of(c.at);
+  if (crowns_.size() < config_.max_crowns) {
+    crowns_.push_back(c);
+    crown_dist_.push_back(d);
+    crown_key_.push_back(key);
+    return;
+  }
+  ++stats_.crowns_dropped;
+  if (config_.max_crowns == 0) return;
+  // Full: the farthest kept goes if this one is nearer, by a total order (distance, then place,
+  // then area and class), so which crowns are kept does not depend on the heap's implementation.
+  const auto farther = [this](u32 a, u32 b) noexcept {
+    if (crown_dist_[a] != crown_dist_[b]) return crown_dist_[a] < crown_dist_[b];
+    if (crown_key_[a] != crown_key_[b]) return crown_key_[a] < crown_key_[b];
+    if (crowns_[a].leaf_area_m2 != crowns_[b].leaf_area_m2)
+      return crowns_[a].leaf_area_m2 < crowns_[b].leaf_area_m2;
+    return static_cast<u32>(crowns_[a].kind) < static_cast<u32>(crowns_[b].kind);
+  };
+  if (far_heap_.empty()) {
+    for (u32 i = 0; i < crowns_.size(); ++i)
+      far_heap_.push_back(i);
+    std::make_heap(far_heap_.begin(), far_heap_.end(), farther);
+  }
+  const u32 top = far_heap_.front();
+  const bool nearer = d < crown_dist_[top] ||
+                      (d == crown_dist_[top] &&
+                       (key < crown_key_[top] ||
+                        (key == crown_key_[top] && c.leaf_area_m2 < crowns_[top].leaf_area_m2)));
+  if (!nearer) return;
+  std::pop_heap(far_heap_.begin(), far_heap_.end(), farther);
+  crowns_[top] = c;
+  crown_dist_[top] = d;
+  crown_key_[top] = key;
+  std::push_heap(far_heap_.begin(), far_heap_.end(), farther);
+}
+
 void WorldField::refresh(const WorldPos& listener) noexcept {
   ++stats_.refreshes;
   crowns_.clear();
   crown_static_.clear();
+  crown_key_.clear();
+  crown_dist_.clear();
+  far_heap_.clear();
+  taking_at_ = listener;
   stats_.crowns_dropped = 0;
   if (canopy_.visit != nullptr) {
     struct Sink {
       WorldField* self;
       static void emit(void* user, const Crown& c) noexcept {
-        WorldField& f = *static_cast<Sink*>(user)->self;
-        if (!(c.leaf_area_m2 > 0.0f)) return;
-        if (f.crowns_.size() >= f.config_.max_crowns) {
-          ++f.stats_.crowns_dropped;
-          return;
-        }
-        f.crowns_.push_back(c);
+        static_cast<Sink*>(user)->self->take(c);
       }
     } sink{this};
     canopy_.visit(canopy_.user, listener, config_.reach_m, CrownSink{&sink, &Sink::emit});
@@ -204,7 +262,8 @@ void WorldField::refresh(const WorldPos& listener) noexcept {
   Vec2 to;
   f64 z0 = 0.03;
   (void)wind10_at(listener.x, listener.z, to, z0);
-  // Each crown's power at the listener per (U10 / 5)^3: what choosing and merging rank by.
+  // Each crown's power at the listener per (U10 / 5)^3: what choosing and merging rank by. A crown
+  // is heard at its edge when the listener is inside it (`Crown::extent_m`).
   for (const Crown& c : crowns_) {
     const u32 k = static_cast<u32>(c.kind) < 3 ? static_cast<u32>(c.kind) : 0u;
     const f64 dx = c.at.x - listener.x;
@@ -215,18 +274,18 @@ void WorldField::refresh(const WorldPos& listener) noexcept {
       crown_static_.push_back(0.0);
       continue;
     }
-    r = r > k_crown_min_m ? r : k_crown_min_m;
+    const f64 least =
+        static_cast<f64>(c.extent_m) > k_crown_min_m ? static_cast<f64>(c.extent_m) : k_crown_min_m;
+    r = r > least ? r : least;
     const f64 h = static_cast<f64>(c.height_m);
     const f64 lw = loglaw(h > 1.0 ? h : 1.0, z0);
     crown_static_.push_back(pow10(k_crown_db[k]) *
                             (static_cast<f64>(c.leaf_area_m2) / k_crown_area_m2) *
                             (k_crown_ref_m / r) * (k_crown_ref_m / r) * lw * lw * lw);
   }
-  // The crowns of their own: the loudest, a chosen one kept across 3 dB of hysteresis.
+  // The crowns of their own: the loudest, a chosen one kept across 3 dB of hysteresis. A merged
+  // group is never one of them (L6): it is the beds'.
   const u32 n = static_cast<u32>(crowns_.size());
-  crown_key_.clear();
-  for (const Crown& c : crowns_)
-    crown_key_.push_back(key_of(c.at));
   Vector<u64>& chosen = chosen_;
   u64 next[32] = {};
   u32 picked[32] = {};
@@ -236,7 +295,7 @@ void WorldField::refresh(const WorldPos& listener) noexcept {
     u32 best_i = ~0u;
     for (u32 i = 0; i < n; ++i) {
       f64 s = crown_static_[i];
-      if (!(s > 0.0)) continue;
+      if (!(s > 0.0) || crowns_[i].merged) continue;
       const u64 key = crown_key_[i];
       bool taken = false;
       for (u32 j = 0; j < slot; ++j)
@@ -289,7 +348,7 @@ void WorldField::refresh(const WorldPos& listener) noexcept {
     const Crown& c = crowns_[i];
     const u64 key = crown_key_[i];
     bool own = false;
-    for (u32 j = 0; j < want; ++j)
+    for (u32 j = 0; j < want && !c.merged; ++j)
       own = own || next[j] == key;
     if (own) continue;
     const f64 dx = c.at.x - listener.x;
@@ -315,6 +374,23 @@ void WorldField::refresh(const WorldPos& listener) noexcept {
       b.dx += w * dx / d;
       b.dz += w * dz / d;
     }
+  }
+}
+
+void WorldField::place(Voice& v, const WorldPos& frame) noexcept {
+  if (v.voice.is_null() || !mixer_->is_live(v.voice)) {
+    v.needs_place = false;
+    return;
+  }
+  audio::SourceSpatial s;
+  s.distance_model = audio::DistanceModel::None;
+  s.spread = v.spread;
+  s.position = relative(v.at, frame);
+  ++stats_.commands;
+  if (mixer_->set_source(v.voice, s)) {
+    v.needs_place = false;
+  } else {
+    ++stats_.place_retries;  // the ring was full: placed again next tick (L3)
   }
 }
 
@@ -375,6 +451,7 @@ void WorldField::describe(Voice& v, const f64 (&band_power)[9], f64 tone_hz, f64
     v.sent_tone_hz = static_cast<f32>(tone_hz);
     v.has_sent = !v.voice.is_null();
     v.info.sounding = !v.voice.is_null();
+    v.needs_place = false;  // started where it stands
     return;
   }
   bool changed = !v.has_sent;
@@ -429,15 +506,21 @@ void WorldField::tick(const WorldPos& listener, const Vec3& forward, const World
     const f64 h = height > 1.0 ? height : 1.0;
     const f64 u = u10 * loglaw(h, z0);
     v.info.wind_m_s = static_cast<f32>(u);
-    f64 bands[9] = {};
-    f64 tone_hz = 0.0;
+    f64(&bands)[9] = v.bands;
+    f64& tone_hz = v.tone_hz;
+    for (f64& b : bands)
+      b = 0.0;
+    tone_hz = 0.0;
     if (u > calm) {
       const u32 k = static_cast<u32>(c->kind) < 3 ? static_cast<u32>(c->kind) : 0u;
       const f64 dx = c->at.x - listener.x;
       const f64 dy = c->at.y + height - listener.y;
       const f64 dz = c->at.z - listener.z;
       f64 r = std::sqrt(dx * dx + dy * dy + dz * dz);
-      r = r > k_crown_min_m ? r : k_crown_min_m;
+      const f64 least = static_cast<f64>(c->extent_m) > k_crown_min_m
+                            ? static_cast<f64>(c->extent_m)
+                            : k_crown_min_m;
+      r = r > least ? r : least;
       const f64 q = u / k_crown_wind_m_s;
       const f64 power = pow10(k_crown_db[k]) *
                         (static_cast<f64>(c->leaf_area_m2) / k_crown_area_m2) *
@@ -453,22 +536,18 @@ void WorldField::tick(const WorldPos& listener, const Vec3& forward, const World
       }
     }
     v.at = WorldPos{c->at.x, c->at.y + height, c->at.z};
-    describe(v, bands, tone_hz, 0.0, false, 0.0f, v.key, k_crown_priority, frame);
-    if (frame_moved && !v.voice.is_null()) {
-      audio::SourceSpatial s;
-      s.distance_model = audio::DistanceModel::None;
-      s.position = relative(v.at, frame);
-      mixer_->set_source(v.voice, s);
-      ++stats_.commands;
-    }
+    v.needs_place = v.needs_place || frame_moved;
   }
   // ---- the beds
   const u32 beds = static_cast<u32>(beds_.size());
   for (u32 s = 0; s < beds; ++s) {
     Voice& v = voices_[crowns + s];
     const Bed& b = beds_[s];
-    f64 bands[9] = {};
-    f64 tone_hz = 0.0;
+    f64(&bands)[9] = v.bands;
+    f64& tone_hz = v.tone_hz;
+    for (f64& x : bands)
+      x = 0.0;
+    tone_hz = 0.0;
     if (b.total > 0.0) {
       Vec2 to;
       f64 z0 = 0.03;
@@ -500,16 +579,8 @@ void WorldField::tick(const WorldPos& listener, const Vec3& forward, const World
       const f64 mz = at.z - v.at.z;
       const bool moved = mx * mx + mz * mz > 1.0;
       v.at = at;
-      if ((moved || frame_moved) && !v.voice.is_null() && mixer_->is_live(v.voice)) {
-        audio::SourceSpatial src;
-        src.distance_model = audio::DistanceModel::None;
-        src.spread = v.spread;
-        src.position = relative(v.at, frame);
-        mixer_->set_source(v.voice, src);
-        ++stats_.commands;
-      }
+      v.needs_place = v.needs_place || moved || frame_moved;
     }
-    describe(v, bands, tone_hz, 0.0, false, 0.0f, 0xbedull + s, k_bed_priority, frame);
   }
   // ---- the ears: the wind relative to the head, two 2D voices hard left and right
   {
@@ -540,7 +611,10 @@ void WorldField::tick(const WorldPos& listener, const Vec3& forward, const World
     for (u32 e = 0; e < 2; ++e) {
       Voice& v = voices_[crowns + beds + e];
       v.info.wind_m_s = static_cast<f32>(rel);
-      f64 bands[9] = {};
+      f64(&bands)[9] = v.bands;
+      for (f64& x : bands)
+        x = 0.0;
+      v.tone_hz = 0.0;
       // Heard only in a wind: in still air a walker's own motion is not heard as wind at this
       // stage (a calm world is silent), though in a wind it adds to the wind the head meets.
       if (u > calm && rel > calm && sum > 0.0) {
@@ -553,9 +627,47 @@ void WorldField::tick(const WorldPos& listener, const Vec3& forward, const World
         for (u32 b = 0; b < 8; ++b)
           bands[b] = power * shape[b] / sum;
       }
-      describe(v, bands, 0.0, 0.0, true, e == 0 ? -1.0f : 1.0f, 0xea5ull + e, k_ears_priority,
-               frame);
     }
+  }
+  // ---- the world's ceiling (S112-2; world_sound.md, "Nothing hard-clips"): the voices' powers
+  // summed, in full scale's units; over the ceiling every one is held by the same factor, so the
+  // balance and the spectrum stay and only the whole is held. Under it nothing changes.
+  f64 total = 0.0;
+  for (Voice& v : voices_) {
+    if (v.kind == WorldVoiceKind::Crown && v.key == 0) {
+      for (f64& p : v.bands)
+        p = 0.0;
+      continue;
+    }
+    for (const f64 p : v.bands)
+      total += p;
+  }
+  const f64 full_scale = std::pow(10.0, config_.reference_db / 10.0);
+  const f64 ceiling = full_scale * std::pow(10.0, config_.ceiling_db / 10.0);
+  stats_.held_db = 0.0f;
+  if (total > ceiling) {
+    const f64 factor = ceiling / total;
+    for (Voice& v : voices_)
+      for (f64& p : v.bands)
+        p *= factor;
+    stats_.held_db = static_cast<f32>(10.0 * std::log10(factor));
+    ++stats_.held_ticks;
+  }
+  for (u32 i = 0; i < voices_.size(); ++i) {
+    Voice& v = voices_[i];
+    if (v.kind == WorldVoiceKind::Crown) {
+      if (v.key == 0) continue;
+      describe(v, v.bands, v.tone_hz, 0.0, false, 0.0f, v.key, k_crown_priority, frame);
+    } else if (v.kind == WorldVoiceKind::Bed) {
+      describe(v, v.bands, v.tone_hz, 0.0, false, 0.0f, 0xbedull + (i - crowns), k_bed_priority,
+               frame);
+    } else {
+      const bool left = v.kind == WorldVoiceKind::EarLeft;
+      describe(v, v.bands, 0.0, 0.0, true, left ? -1.0f : 1.0f, left ? 0xea5ull : 0xea6ull,
+               k_ears_priority, frame);
+      continue;
+    }
+    if (v.needs_place) place(v, frame);
   }
   u32 crown_n = 0;
   u32 bed_n = 0;

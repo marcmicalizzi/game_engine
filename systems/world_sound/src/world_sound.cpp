@@ -713,6 +713,9 @@ JsonValue SoundStage::summary_json() const {
     world.set("crown_voices", JsonValue(static_cast<u64>(w.crown_voices)));
     world.set("bed_voices", JsonValue(static_cast<u64>(w.bed_voices)));
     world.set("ear_voices", JsonValue(static_cast<u64>(w.ear_voices)));
+    world.set("held_db", JsonValue(static_cast<f64>(w.held_db)));
+    world.set("held_ticks", JsonValue(w.held_ticks));
+    world.set("place_retries", JsonValue(w.place_retries));
     out.set("world", std::move(world));
   }
   out.set("stopped", JsonValue(s.stopped));

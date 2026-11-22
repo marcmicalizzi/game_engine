@@ -1,16 +1,17 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "S112",
-  "reason": "S112 the wind in the trees and at the ears: engine-view's two loops each time the session's sound into FrameWorld.sound_ms (one line each), main.cpp hands the runner the scene and the tiles (two lines) and the helper's two branches; the canopy table's two ENGINE_VIEW_WORLD guards in game_sound.cpp; the pages' new sections (audio.md the voice and its bench, apps.md the world heard, renderer.md the mesh leaves)",
-  "date": "2026-11-21",
+  "reason": "S112 the wind in the trees and at the ears, and S112-2 its review mended: engine-view's two loops time the session's sound into FrameWorld.sound_ms; main.cpp opens the world's sound with no module (open_solo_sound), hands it the scene, the tiles and a flight's frames through game_sound.h's seams, with their stubs where the capability is out; the canopy table's world guards in game_sound.cpp; the pages' sections (audio.md the voice, its bench and its fresh ramp; apps.md the world heard with and without a module; renderer.md the mesh leaves measured only when heard; world.md tile_own; world_sound's what a refresh costs, the declared class and the ceiling)",
+  "date": "2026-11-22",
   "by": "Marc Micalizzi",
   "deltas": {
-    "engine_view.main_cpp.lines": 6,
-    "engine_view.run_view.lines": 1,
-    "engine_view.run_offscreen.lines": 1,
-    "engine_view.if_engine_view": 2,
-    "page:docs/subsystems/renderer.md": 881,
-    "page:docs/subsystems/apps.md": 2376,
-    "page:docs/subsystems/audio.md": 3854
+    "engine_view.main_cpp.lines": 59,
+    "engine_view.run_view.lines": 26,
+    "engine_view.run_offscreen.lines": 5,
+    "engine_view.if_engine_view": 3,
+    "page:docs/subsystems/renderer.md": 1340,
+    "page:docs/subsystems/apps.md": 4037,
+    "page:docs/subsystems/world.md": 205,
+    "page:docs/subsystems/audio.md": 4042
   }
 }

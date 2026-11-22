@@ -25,7 +25,7 @@
 //   [x] tunables          none of its own at S111; the mixer's `audio.*` size it
 //   [x] LOD policy        the pool is the budget (audio.md "The voice policy"); S112's beds next
 //   [x] determinism       k_determinism below
-//   [x] zero cost unused  no `sound` block or `Off`: no store, no mixer, no thread
+//   [x] zero cost unused  `Off`: no store, no mixer, no thread (a world on builds its mixer)
 //   [x] docs, tests, size table
 //   [x] bench             bench/world_sound_bench.cpp
 //
@@ -103,12 +103,19 @@ enum class CanopyClass : u8 { Blade = 0, Needle = 1, Bare = 2 };
 /// One crown, or a far tile's crowns merged into one at their centroid: where its foliage stands
 /// (the foot of the tree), how high its foliage's middle is above it, its one-sided leaf area and
 /// its class. A host measures the area from the mesh's foliage parts and declares the class.
+/// **A crown has a size** (S112-2): `extent_m`, the horizontal distance from `at` to its farthest
+/// leaf, so a listener inside a stand (a whole wood flattened into one glTF mesh, or a far group
+/// merged) hears it as all round, at its level at its edge, and not as a point source at its middle
+/// (`k_crown_min_m` is the least). `merged`: a group's crowns summed, sent to the beds only, never
+/// chosen as a voice of its own.
 struct Crown {
   WorldPos at{};
   f32 height_m = 0.0f;  // the foliage's middle above `at`
   f32 leaf_area_m2 = 0.0f;
   CanopyClass kind = CanopyClass::Blade;
   f32 needle_mm = 1.2f;  // Needle: the needles' width
+  f32 extent_m = 0.0f;
+  bool merged = false;
 };
 
 /// Where a canopy table's visit sends each crown.
@@ -138,6 +145,12 @@ struct WorldWind {
 /// `audio.world.near_m` (96): a canopy table walks its crowns one by one within this of the
 /// listener and sends farther ones merged, one crown a class a group (the capability's LOD).
 f64 world_near_m() noexcept;
+/// **The canopy table's allowance a refresh** (S112-2; world_sound.md, "What a refresh costs"):
+/// `audio.world.near_crowns` (4,096), the crowns a table sends one by one, nearest group first,
+/// before it sends the rest of its near groups merged; and `audio.world.walk_instances` (16,384),
+/// the placements it walks to make a changed tile's crowns again, the rest carried to the next.
+u32 world_near_crowns() noexcept;
+u32 world_walk_instances() noexcept;
 
 /// What one world voice was last told: its kind, its level at the listener in dB SPL over its
 /// bands, each band's level, the movable band's centre (0: none) and the wind it was made from.
@@ -162,7 +175,11 @@ struct WorldStats {
   u32 crown_voices = 0;  // sounding now
   u32 bed_voices = 0;
   u32 ear_voices = 0;
-  u32 reserved = 0;
+  // **The world's ceiling** (S112-2; world_sound.md, "Nothing hard-clips"): the dB the world's
+  // voices were held under their laws at the last tick (0: not acting), and the ticks it acted on.
+  f32 held_db = 0.0f;
+  u64 held_ticks = 0;
+  u64 place_retries = 0;  // a voice placed again after the ring refused its move
 };
 
 /// What the stage did, counted where it did it.

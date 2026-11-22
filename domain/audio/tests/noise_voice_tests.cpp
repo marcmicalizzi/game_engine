@@ -199,7 +199,40 @@ TEST_CASE("noise voice: a scripted session is the same bytes however the frames 
   const u64 hash =
       hash_mix(ChannelLayout::Stereo, std::span<const f32>(whole.data(), whole.size()));
   MESSAGE("noise session hash: " << hash);
-  CHECK(hash == 0x4a2e2b356bc6e533ull);  // pinned on MSVC 2026-11-21; GCC and Clang reproduce it
+  // Pinned on MSVC 2026-11-22 (S112-2: a fresh voice ramps up from nothing, so the session's first
+  // ticks moved; it was 0x4a2e2b356bc6e533); GCC and Clang must reproduce it.
+  CHECK(hash == 0x39115f278d92b677ull);
+}
+
+// M2 of S112's review: a fresh noise voice took its gains at once, a step from silence to
+// broadband noise at every start (a click). It ramps from nothing over the field's ramp now.
+TEST_CASE("noise voice: a fresh voice ramps up from nothing, with no step at its start") {
+  ClipStore clips;
+  MixerConfig config;
+  config.voices = 4;
+  Mixer mixer(clips, config);
+  NoisePlayParams p;
+  p.noise.seed = 9;
+  for (u32 k = 0; k < k_noise_bands; ++k)
+    p.noise.gain[k] = 0.1f;
+  p.source.flags = k_source_2d;
+  REQUIRE(!mixer.play_noise(p).is_null());
+  std::vector<f32> out(9600 * 2);
+  mixer.render(out.data(), 9600);
+  const auto power = [&](u32 from, u32 to) {
+    f64 s = 0.0;
+    for (u32 f = from; f < to; ++f)
+      s += static_cast<f64>(out[2 * f]) * static_cast<f64>(out[2 * f]) +
+           static_cast<f64>(out[2 * f + 1]) * static_cast<f64>(out[2 * f + 1]);
+    return s / static_cast<f64>(to - from);
+  };
+  // The first 24 frames (0.5 ms) carry well under a hundredth of the settled power, and the level
+  // rises through the ramp rather than standing at its end from the first frame.
+  const f64 settled = power(4800, 9600);
+  REQUIRE(settled > 0.0);
+  CHECK(power(0, 24) < 0.01 * settled);
+  CHECK(power(0, 120) < power(120, 480));
+  CHECK(power(4800, 9600) == doctest::Approx(settled));
 }
 
 TEST_CASE("noise voice: in the mixer a 2D voice's power is its gain times its band's") {

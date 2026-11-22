@@ -25,6 +25,7 @@ struct FieldConfig {
   f64 ears_slope_db = 26.0;
   f64 calm_m_s = 0.5;
   f64 floor_db = 10.0;
+  f64 ceiling_db = -12.0;
   bool turbulence = true;
 };
 FieldConfig field_config_from_tunables() noexcept;
@@ -64,7 +65,11 @@ class WorldField {
     f32 sent_tone_hz = 0.0f;
     audio::NoiseParams sent{};
     bool has_sent = false;
+    bool needs_place = false;  // a move the ring refused: placed again on the next tick (L3)
     WorldVoiceInfo info;
+    // This tick's description before the world's ceiling (`tick`'s two passes).
+    f64 bands[9] = {};
+    f64 tone_hz = 0.0;
   };
   // A bed's share of the crowns, gathered at a refresh: the power each class gives at the listener
   // per (U10 / 5)^3, the needles' tone, and where its power comes from.
@@ -77,6 +82,11 @@ class WorldField {
   };
 
   void refresh(const WorldPos& listener) noexcept;
+  // A crown sent by the canopy table: kept while there is room, then only in place of a farther
+  // one (M1 of S112's review), so the table's order never loses the tree over the listener.
+  void take(const Crown& c) noexcept;
+  // Placed in `frame` again (a moved frame, a moved bed, or a move the ring refused).
+  void place(Voice& v, const WorldPos& frame) noexcept;
   void describe(Voice& v, const f64 (&band_power)[9], f64 tone_hz, f64 tone_power, bool two_d,
                 f32 pan, u64 seed, u8 priority, const WorldPos& frame) noexcept;
   void silence(Voice& v) noexcept;
@@ -91,6 +101,9 @@ class WorldField {
   Vector<Crown> crowns_;      // the last refresh's crowns
   Vector<f64> crown_static_;  // each one's power at the listener per (U10 / 5)^3, from the refresh
   Vector<u64> crown_key_;     // each one's identity, its place hashed
+  Vector<f64> crown_dist_;    // each one's distance from the listener, as `take` ranks it
+  Vector<u32> far_heap_;      // once full: the kept crowns as a heap, the farthest on top
+  WorldPos taking_at_{};      // the listener a refresh's `take` measures from
   Vector<Voice> voices_;      // crowns, then beds, then the two ears
   Vector<Bed> beds_;
   Vector<u64> chosen_;  // the crowns chosen as voices of their own, by key

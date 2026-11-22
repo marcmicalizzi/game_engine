@@ -27,10 +27,33 @@ struct Fit @version(1) {
   ground: bool = true
 }
 
+/// **What a mesh's foliage is, for its sound** (S112; docs/subsystems/world_sound.md, "A crown's
+/// class is declared"): leaves struck together, needles shedding vortices, twigs alone, or nothing
+/// heard at all (a fence, a grating, a decal, hair cards: alpha-tested and not leaf).
+enum SoundCanopy : u8 {
+  /// A broadleaf's rustle.
+  Blade = 0
+  /// A conifer's: a band of Aeolian tones at 0.2 U / d over a rustle.
+  Needle = 1
+  /// A leafless crown: low, under 1 kHz.
+  Bare = 2
+  /// Not heard, whatever its materials.
+  None = 3
+}
+
+/// A mesh's own word on its sound (S112): read when present, before the species a generated
+/// tree's container names; a mesh with neither is silent.
+struct MeshSound @version(1) {
+  canopy: SoundCanopy = Blade
+  /// Needle: the needles' width in millimetres. 0: the material generator's 1.2.
+  needle_mm: f32 = 0 @unit(mm)
+}
+
 /// One mesh a scene draws.
 ///
 /// Version 2: `texel_density` (roadmap G14; docs/subsystems/texture.md, "Sized by the asset").
-struct Mesh @version(2) {
+/// Version 3: `sound` (roadmap S112).
+struct Mesh @version(3) @additive(3) {
   /// What the README, the overlay and a run's summary call it.
   name: string
   /// A glTF, GLB or .clusters file, relative to the scene file.
@@ -53,6 +76,8 @@ struct Mesh @version(2) {
   /// and nothing in a scene with no instances. This one caps the mesh even then, read at its
   /// largest instance's scale and never under 1.
   texel_density: f32 = 0 @since(2)
+  /// What its foliage sounds as (S112). Absent: a generated tree's species, else silent.
+  sound: MeshSound? @since(3)
 }
 
 /// A skinned instance's clip, carried for the host and never read by the renderer.
@@ -1924,8 +1949,9 @@ struct Sound @version(1) {
 
 /// A scene: meshes, placements of them, and an optional terrain. Version 5 added `placements`,
 /// version 6 `sky`, version 7 `props`, version 8 `water` and `medium`, version 9 `fires`, version 10
-/// `formation`, version 11 `water_channels`, version 12 `sound`.
-struct Scene @version(12) {
+/// `formation`, version 11 `water_channels`, version 12 `sound`, version 13 a mesh's `sound` (S112,
+/// `Mesh` version 3).
+struct Scene @version(13) {
   /// "engine.scene.v1". Empty is accepted, for the files written before the field existed.
   format: string
   name: string

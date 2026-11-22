@@ -1034,19 +1034,16 @@ void Mixer::apply(const Command& c) noexcept {
       n.c[k_noise_tone] = p.tone[0];
       n.a1[k_noise_tone] = p.tone[1];
       n.a2[k_noise_tone] = p.tone[2];
-      // A voice that has not sounded starts at its description; one that has ramps to it over the
-      // field's ramp, from wherever its gains stand.
+      // Every description ramps to its gains over the field's ramp from wherever they stand, and
+      // a voice that has not sounded stands at nothing (S112-2): noise has no authored attack to
+      // keep, as a clip's has, and a step from silence to broadband noise is a click.
       const f32 inv = 1.0f / static_cast<f32>(field_ramp_frames_);
       for (u32 k = 0; k < k_noise_lanes; ++k) {
         n.target[k] = p.gain[k];
-        if (fresh) {
-          n.gain[k] = p.gain[k];
-          n.step[k] = 0.0f;
-        } else {
-          n.step[k] = (p.gain[k] - n.gain[k]) * inv;
-        }
+        if (fresh) n.gain[k] = 0.0f;
+        n.step[k] = (p.gain[k] - n.gain[k]) * inv;
       }
-      n.ramp = fresh ? 0u : field_ramp_frames_;
+      n.ramp = field_ramp_frames_;
       return;
     }
     case CommandKind::Stop: {
