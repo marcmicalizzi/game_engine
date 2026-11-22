@@ -16,6 +16,7 @@
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/scene_renderer.h>
 
+#include <algorithm>
 #include <renderer_log.h>
 #include <string>
 
@@ -62,6 +63,52 @@ constexpr f64 k_run_first_seconds = 2.0;  // the stride is given back after this
 u32 SceneRenderer::first_runs() const noexcept {
   if (!resolved_.settings.cull || !runs_by_frame.get()) return 0;
   return static_cast<u32>(runs_first_entries.get());
+}
+
+// **A frame drawn at the first bound is measured before it is handed back** (W156-2; renderer.md,
+// "A tail's arrival lays the runs out at a first bound"). Every run shares one capacity and a full
+// run turns pairs away in the atomic append's order, so a frame drawn in flight at a bound no frame
+// has sized could reach a window with clusters or casters missing. While the runs are unmeasured
+// the frame is drawn without its present's signal and waited for; a run that filled grows the runs
+// as `render_offscreen` grows them (the policy's growth, then the stride) and the frame is drawn
+// again, the acquired image waited on once; the runs then count as the frames' (`fit_runs`) and an
+// empty submission behind the frame raises the present's semaphore. Once a scene load, on every
+// host's path; its cost is the wait and the redraws.
+u64 SceneRenderer::submit_frame(const FrameDesc& frame, std::string* error) {
+  if (scene_ == nullptr || !runs_measure_) return submit_recorded(frame, error);
+  ++stats_.run_measured;
+  FrameDesc held = frame;
+  held.signal = gfx::SemaphoreHandle{};
+  u64 value = 0;
+  for (u32 attempt = 0;; ++attempt) {
+    value = submit_recorded(held, error);
+    if (value == 0) return 0;
+    if (!frames_.wait(value)) {
+      if (error != nullptr) *error = "the GPU did not finish the frame";
+      return 0;
+    }
+    collect_visible();
+    held.wait = gfx::SemaphoreHandle{};  // the image was acquired for the first attempt
+    const u32 dropped = stats_.run_drops + stats_.cascade_run_drops;
+    if (dropped == 0 || attempt == 2 || scene_->run_capacity() >= scene_->pair_stride()) break;
+    const f64 now = static_cast<f64>(time::monotonic_ns()) / 1.0e9;
+    const u32 wanted = stats_.run_high + dropped;
+    u32 runs = scene_->pair_stride();
+    if (attempt == 0) runs = run_policy_set_ ? run_policy_.grow_to(wanted, now) : wanted;
+    ++stats_.run_redraws;
+    if (!resize_runs(std::max(runs, wanted), now)) break;  // refused: the frame stands, counted
+    begin_frame();
+  }
+  runs_measure_ = false;
+  if (scene_->runs_unmeasured()) (void)scene_->fit_runs(scene_->run_capacity(), nullptr, nullptr);
+  if (frame.signal.valid()) {
+    begin_frame();
+    gfx::FrameContext::PresentSync sync;
+    sync.signal = frame.signal;
+    (void)frames_.end_frame(sync);
+    recording_ = false;
+  }
+  return value;
 }
 
 void SceneRenderer::step_runs(i64 now_ns) {

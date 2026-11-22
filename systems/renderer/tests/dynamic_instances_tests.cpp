@@ -951,6 +951,19 @@ TEST_CASE("dynamic instances: runs sized by the frame draw the same, and a full 
   CHECK(dynamic.renderer.stats().run_drops + dynamic.renderer.stats().cascade_run_drops == 0);
 }
 
+// A tunable as it was before the case, put back whatever the case set it to (W156-2).
+struct KeptTunable {
+  tunables::Tunable* tunable = nullptr;
+  std::string previous;
+  explicit KeptTunable(const char* name) : tunable(tunables::find(name)) {
+    REQUIRE_MESSAGE(tunable != nullptr, name);
+    tunable->append_value(previous);
+  }
+  ~KeptTunable() {
+    if (tunable != nullptr) (void)tunable->set_from_text(previous);
+  }
+};
+
 // W156 (renderer.md, "The visible list's runs are sized by the frame"): a tail's arrival, before
 // any frame has sized the runs, lays them out at the first bound when the stride is longer — until
 // W156 at the stride, every run as long as every pair the tail could name — and the frames that
@@ -961,9 +974,7 @@ TEST_CASE("dynamic instances: a tail's arrival lays the runs out at the first bo
     MESSAGE(gpu.why);
     return;
   }
-  struct Restore {
-    ~Restore() { (void)tunables::apply_overrides("renderer.runs.first_entries=4194304"); }
-  } restore;
+  const KeptTunable restore("renderer.runs.first_entries");
   RenderSettings settings;
   settings.raster = RasterMode::Auto;
   settings.shadows = ShadowMode::Cascaded;
@@ -1038,6 +1049,83 @@ TEST_CASE("dynamic instances: a tail's arrival lays the runs out at the first bo
   CHECK(bounded.redraws > 0);      // and each such frame somebody waited for was drawn again
   CHECK(bounded.dropped == 0);
   CHECK(bounded.diff.ids + bounded.diff.depth + bounded.diff.color == 0);
+}
+
+// W156-2 (renderer.md, "A tail's arrival lays the runs out at a first bound"): the path a window
+// takes — `begin_frame` and `submit_frame`, nobody waiting — hands back no frame with a dropped
+// entry while the runs are at the first bound. With a bound of one entry the first frame after the
+// arrival fills every run; `submit_frame` waits for it, grows the runs and draws it again before it
+// returns, once, and the frames after it are drawn in flight at the grown runs. Each returned
+// frame's drops are read after it (waited here only to read them; the renderer did not know).
+TEST_CASE("dynamic instances: a frame drawn in flight at the first bound hands back no drop") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE(gpu.why);
+    return;
+  }
+  const KeptTunable restore("renderer.runs.first_entries");
+  RenderSettings settings;
+  settings.raster = RasterMode::Auto;
+  settings.shadows = ShadowMode::Cascaded;
+  settings.occlusion = true;
+  const Vector<SceneInstance> head = prefix();
+  const Tile a = make_tile(101, tile_a());
+  const Tile b = make_tile(202, tile_b());
+  const Tile c = make_tile(303, tile_c());
+  const Tile d = make_tile(404, tile_d());
+  const Tile* all[] = {&a, &b, &c, &d};
+  Vector<SceneInstance> tail;
+  Vector<DynamicBlock> blocks;
+  tail_of(std::span<const Tile* const>(all, 4), tail, blocks);
+  const Vector<SceneInstance> whole = join({&head, &tail});
+  std::string error;
+  CapturedFrame expected;
+  REQUIRE_MESSAGE(reference(gpu.device, std::span<const SceneInstance>(whole.data(), whole.size()),
+                            settings, expected, error),
+                  error);
+  REQUIRE(tunables::apply_overrides("renderer.runs.first_entries=1"));
+  Rig dynamic;
+  REQUIRE_MESSAGE(
+      dynamic.build(gpu.device, std::span<const SceneInstance>(head.data(), head.size()), true,
+                    settings, 2),
+      dynamic.error);
+  // The arrival before any frame, as the world's first commit lands before a window's first frames
+  // have come back round: past them, at this scene's size, the policy's first step (65,536 entries)
+  // is already the whole stride, which no frame can overfill.
+  REQUIRE_MESSAGE(dynamic.renderer.set_dynamic_instances(
+                      std::span<const SceneInstance>(tail.data(), tail.size()),
+                      std::span<const DynamicBlock>(blocks.data(), blocks.size()), &error),
+                  error);
+  REQUIRE(dynamic.scene.run_capacity() == 1);  // the arrival laid the runs out at the bound
+  CHECK(dynamic.scene.runs_unmeasured());
+  const Stats& s = dynamic.renderer.stats();
+  const u64 measured_before = s.run_measured;
+  u32 returned_drops = 0;
+  for (u32 f = 0; f < 6; ++f) {
+    dynamic.renderer.begin_frame();
+    const u64 value = dynamic.renderer.submit_frame(frame_at(k_eye), &error);
+    REQUIRE_MESSAGE(value != 0, error);
+    REQUIRE(dynamic.renderer.wait(value));
+    dynamic.renderer.collect_visible();
+    returned_drops += s.run_drops + s.cascade_run_drops;
+  }
+  MESSAGE("runs of " << dynamic.scene.run_capacity() << " after the frames (stride "
+                     << dynamic.scene.pair_stride() << "), fullest " << s.run_high << "; "
+                     << s.run_measured - measured_before << " measured, " << s.run_redraws
+                     << " redraws, " << s.run_drop_frames << " drawn frames dropped "
+                     << s.run_drops_total << " entries; " << returned_drops
+                     << " dropped in frames handed back");
+  CHECK(returned_drops == 0);                    // W156-2: no frame handed back dropped
+  CHECK(s.run_measured - measured_before == 1);  // measured once, at the arrival
+  CHECK(!dynamic.scene.runs_unmeasured());       // and the runs are the frames' from there
+  CHECK(s.run_drop_frames > 0);                  // the first attempt did drop, and was counted
+  CHECK(s.run_redraws > 0);                      // and was drawn again
+  CHECK(s.run_drop_frames == s.run_redraws);     // each dropping attempt once, and each redrawn
+  CHECK(dynamic.scene.run_capacity() > 1);
+  CapturedFrame shot;
+  REQUIRE_MESSAGE(dynamic.renderer.capture(frame_at(k_eye), channels(), shot, &error), error);
+  const Difference diff = compare_through_tail(shot, dynamic.scene, expected);
+  CHECK(diff.ids + diff.depth + diff.color == 0);
 }
 
 // T137 (renderer.md, "At the cap the pairs are numbered again"). A world held at its pair cap: the
@@ -2114,8 +2202,9 @@ TEST_CASE("dynamic instances: a refused lay-out of the runs leaves the scene as 
     CapturedFrame shot;
     REQUIRE_MESSAGE(dynamic.renderer.capture(posed(), channels(), shot, &error), error);
     const Difference d = compare(shot, expected);
-    MESSAGE(std::string(what) << ": runs of " << dynamic.scene.run_capacity() << ", " << d.ids << " id, "
-                 << d.depth << " depth and " << d.color << " colour differences");
+    MESSAGE(std::string(what) << ": runs of " << dynamic.scene.run_capacity() << ", " << d.ids
+                              << " id, " << d.depth << " depth and " << d.color
+                              << " colour differences");
     return d.ids + d.depth + d.color;
   };
   CHECK(same("the tail") == 0);

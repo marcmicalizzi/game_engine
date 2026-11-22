@@ -690,6 +690,8 @@ class GpuScene {
   u32 run_capacity() const noexcept { return run_capacity_; }
   // The runs' bound before the frames size them, 0 the stride (W156; the renderer's, which grows).
   void set_first_runs(u32 entries) noexcept { first_runs_ = entries; }
+  // Laid out shorter than the stride before any frame sized them: the first bound (W156-2).
+  bool runs_unmeasured() const noexcept { return !runs_fit_ && run_capacity_ < pair_stride_; }
   // Where the frame's two drop counts are in `visible`, behind its last entry: the camera runs' and
   // the cascades' appends that found their run full (`gfx::CullParams::run_drops`).
   u64 run_drops_offset() const noexcept { return u64{visible_entries()} * 2 * sizeof(u32); }

@@ -294,6 +294,24 @@ JsonValue sun_summary(const RenderSettings& settings, const SunDayState& day) {
   return out;
 }
 
+// The `runs` block (W156-2; renderer.md, "The visible list's runs are sized by the frame"): the
+// entries a run holds now and the fullest run of the last frame, the last frame's drops, and over
+// the run every drawn frame's drops, the frames that had any, the redraws that took such a frame
+// back, the frames measured at a first bound, and the lay-outs the device refused.
+JsonValue runs_summary(const Stats& stats) {
+  JsonValue out = JsonValue::object();
+  out.set("capacity", stats.run_capacity);
+  out.set("fullest_last", stats.run_high);
+  out.set("drops_last", stats.run_drops);
+  out.set("cascade_drops_last", stats.cascade_run_drops);
+  out.set("drops_total", stats.run_drops_total);
+  out.set("drop_frames", stats.run_drop_frames);
+  out.set("redraws", stats.run_redraws);
+  out.set("measured", stats.run_measured);
+  out.set("refusals", stats.run_refusals);
+  return out;
+}
+
 // The same block with a scene's sky (renderer.md, "The sky"): the stand-in's arc is not what drew
 // the frame, so a `sky` block beside it says what did — the game time the sky stood at, the day of
 // the year and the local hour, the sun and the moon (azimuth from +x towards +z and elevation,

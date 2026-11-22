@@ -2014,6 +2014,7 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
     retired_.clear();
     return false;
   }
+  runs_measure_ = runs_measure_ || scene_->runs_unmeasured();  // W156-2: `submit_frame` measures
   // What the change outgrew may still be read by a frame in flight: it goes when that frame's slot
   // comes round, which is the one wait there is, and nothing waits for it.
   for (const gfx::BufferResource& buffer : retired_)
@@ -2295,8 +2296,14 @@ void SceneRenderer::fold_visible(u32 slot) {
   stats_.run_drops = stats[k_run_drop_word];
   stats_.cascade_run_drops = stats[k_run_drop_word + 1];
   const u32 dropped = stats_.run_drops + stats_.cascade_run_drops;
-  stats_.run_drops_total += dropped;
-  stats_.run_drop_frames += dropped != 0 ? 1u : 0u;
+  // Each submitted frame once, as the chain's sums (G133): a waited frame is folded when it finishes
+  // and again when its slot comes round, which counted a redrawn attempt twice (W156-2).
+  const u64 drop_submission = slot < slot_submission_.size() ? slot_submission_[slot] : 0;
+  if (run_drop_folded_.size() <= slot) run_drop_folded_.resize(slot + 1, ~u64{0});
+  const bool drops_fresh = run_drop_folded_[slot] != drop_submission;
+  run_drop_folded_[slot] = drop_submission;
+  stats_.run_drops_total += drops_fresh ? dropped : 0u;
+  stats_.run_drop_frames += drops_fresh && dropped != 0 ? 1u : 0u;
   const u32 total = stats_.visible_pairs();
   stats_.visible_min = total < stats_.visible_min ? total : stats_.visible_min;
   stats_.visible_max = total > stats_.visible_max ? total : stats_.visible_max;
@@ -3084,7 +3091,9 @@ void SceneRenderer::note_rt_bytes() noexcept {
   chain.static_pairs = scene_->static_pairs();
 }
 
-u64 SceneRenderer::submit_frame(const FrameDesc& frame, std::string* error) {
+// `submit_frame`'s one recorded frame (W156-2: `submit_frame` itself, in scene_renderer_runs.cpp,
+// measures a frame drawn at runs no frame has sized yet before it hands one back).
+u64 SceneRenderer::submit_recorded(const FrameDesc& frame, std::string* error) {
   ENGINE_ASSERT(recording_, "SceneRenderer::submit_frame: begin_frame was not called");
   const i64 started = time::monotonic_ns();
   const u32 slot = frames_.slot();
