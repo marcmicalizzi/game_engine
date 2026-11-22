@@ -873,13 +873,17 @@ bool GpuScene::relean(u32 at) {
   // them as they were then: until W159 the whole record went back, so the walk after one that had
   // settled a renumbering wrote the old first pair over the new one, and the table was no longer
   // sorted by the number the cull's search reads.
+  // The rows' 3x3 only: their w is the translation, which a later writer may have moved.
   gfx::InstanceDesc& placed = instance_table_[still.slot];
   const u32 uniform = gfx::k_instance_uniform_scale;
   const u32 want_flags = (placed.flags & ~uniform) | (leaned.flags & uniform);
-  if (std::memcmp(placed.rows, leaned.rows, sizeof(placed.rows)) == 0 &&
-      placed.scale_max == leaned.scale_max && placed.flags == want_flags)
-    return false;
-  std::memcpy(placed.rows, leaned.rows, sizeof(placed.rows));
+  bool same = placed.scale_max == leaned.scale_max && placed.flags == want_flags;
+  for (u32 r = 0; r < 3 && same; ++r)
+    same = placed.rows[r].x == leaned.rows[r].x && placed.rows[r].y == leaned.rows[r].y &&
+           placed.rows[r].z == leaned.rows[r].z;
+  if (same) return false;
+  for (u32 r = 0; r < 3; ++r)
+    placed.rows[r] = Vec4{leaned.rows[r].x, leaned.rows[r].y, leaned.rows[r].z, placed.rows[r].w};
   placed.scale_max = leaned.scale_max;
   placed.flags = want_flags;
   mark_instance_written(still.slot);
