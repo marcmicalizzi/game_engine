@@ -26,6 +26,7 @@
 #include <domain/gfx/commands.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/dispatch.h>
+#include <domain/gfx/frame.h>
 #include <domain/gfx/pipeline.h>
 #include <domain/gfx/resources.h>
 #include <domain/gfx/shader_library.h>
@@ -1126,6 +1127,86 @@ TEST_CASE("dynamic instances: a frame drawn in flight at the first bound hands b
   REQUIRE_MESSAGE(dynamic.renderer.capture(frame_at(k_eye), channels(), shot, &error), error);
   const Difference diff = compare_through_tail(shot, dynamic.scene, expected);
   CHECK(diff.ids + diff.depth + diff.color == 0);
+}
+
+// W156-2's signal branch (renderer.md, "No frame drawn at the first bound reaches a window with an
+// entry dropped"): a presented frame names its present's semaphore as `FrameDesc::signal`, and
+// `submit_frame` raises it exactly once on both of its paths — on the measured one by an empty
+// submission behind the frame it waited for and drew again, on the other with the frame itself. A
+// frame that then names the same semaphore as `FrameDesc::wait` completes only if it was raised (a
+// binary semaphore waited on with no signal pending never completes: the case's timeout is the
+// failure), and the one semaphore serves both pairs only if each raise was consumed by its wait.
+// The semaphore is a public one: the acquire semaphore of a frame context the case makes and never
+// submits through, as a window's swapchain acquire would be.
+TEST_CASE("dynamic instances: a frame measured at the first bound raises its signal once") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE(gpu.why);
+    return;
+  }
+  const KeptTunable restore("renderer.runs.first_entries");
+  RenderSettings settings;
+  settings.raster = RasterMode::Auto;
+  settings.shadows = ShadowMode::Cascaded;
+  settings.occlusion = true;
+  const Vector<SceneInstance> head = prefix();
+  const Tile a = make_tile(101, tile_a());
+  const Tile b = make_tile(202, tile_b());
+  const Tile c = make_tile(303, tile_c());
+  const Tile d = make_tile(404, tile_d());
+  const Tile* all[] = {&a, &b, &c, &d};
+  Vector<SceneInstance> tail;
+  Vector<DynamicBlock> blocks;
+  tail_of(std::span<const Tile* const>(all, 4), tail, blocks);
+  std::string error;
+  gfx::FrameContext present;  // outlives both rigs: its semaphore is theirs to signal and wait on
+  REQUIRE_MESSAGE(present.create(gpu.device, 1, &error), error);
+  const gfx::SemaphoreHandle semaphore = present.acquire_semaphore();
+  REQUIRE(semaphore.valid());
+  // One pair: the frame after the arrival signals, the next waits. Returns how many frames the pair
+  // measured (the stats' `run_measured`).
+  const auto signal_then_wait = [&](Rig& rig) -> u64 {
+    REQUIRE_MESSAGE(rig.renderer.set_dynamic_instances(
+                        std::span<const SceneInstance>(tail.data(), tail.size()),
+                        std::span<const DynamicBlock>(blocks.data(), blocks.size()), &error),
+                    error);
+    const u64 measured_before = rig.renderer.stats().run_measured;
+    FrameDesc signalled = frame_at(k_eye);
+    signalled.signal = semaphore;
+    rig.renderer.begin_frame();
+    const u64 first = rig.renderer.submit_frame(signalled, &error);
+    REQUIRE_MESSAGE(first != 0, error);
+    FrameDesc waiting = frame_at(k_eye);
+    waiting.wait = semaphore;
+    rig.renderer.begin_frame();
+    const u64 second = rig.renderer.submit_frame(waiting, &error);
+    REQUIRE_MESSAGE(second != 0, error);
+    CHECK(second > first);
+    CHECK(rig.renderer.wait(second));  // the wait was met: the first frame raised the semaphore
+    return rig.renderer.stats().run_measured - measured_before;
+  };
+  // The bound at its default: past this scene's stride, so the arrival's runs are the stride's and
+  // the frame is not measured; the frame itself carries the signal.
+  {
+    Rig rig;
+    REQUIRE_MESSAGE(rig.build(gpu.device, std::span<const SceneInstance>(head.data(), head.size()),
+                              true, settings, 2),
+                    rig.error);
+    CHECK(signal_then_wait(rig) == 0);
+    CHECK(!rig.scene.runs_unmeasured());
+  }
+  // One entry a run: the first frame fills every run, is waited for and drawn again, and the empty
+  // submission behind it raises the semaphore.
+  REQUIRE(tunables::apply_overrides("renderer.runs.first_entries=1"));
+  {
+    Rig rig;
+    REQUIRE_MESSAGE(rig.build(gpu.device, std::span<const SceneInstance>(head.data(), head.size()),
+                              true, settings, 2),
+                    rig.error);
+    CHECK(signal_then_wait(rig) == 1);
+    CHECK(rig.renderer.stats().run_redraws > 0);  // the measured path, not a frame that fit
+    CHECK(!rig.scene.runs_unmeasured());
+  }
 }
 
 // T137 (renderer.md, "At the cap the pairs are numbered again"). A world held at its pair cap: the
