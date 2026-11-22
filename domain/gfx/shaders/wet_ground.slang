@@ -70,6 +70,26 @@ float3 wet_ground_albedo(float3 albedo, float s, float porosity) {
   return albedo * lerp(float3(1.0), wet_ground_darkening(albedo), weight);
 }
 
+#ifdef RESOLVE_WATER
+// **Under a surface the water's tier transmits through** (W161; water.md, "What the factor counts,
+// and where"): Lekner and Dorf's (1 - r_e) is the light let in through the layer's top and its
+// (1 - r_i) what leaves through it, and the volume tier has that top itself, with Fresnel's
+// (1 - F) at the real angles both ways. So the bed under it takes the factor without the top's two
+// transmissions, a (1 - r_i) / ((1 - r_e)(1 - r_i a)) = a / (n^2 (1 - r_i a)), which keeps the n^2
+// law and the bounces under the top, weighted as the factor is, so s = 0 is the dry bed to the bit.
+// The water modules alone: every other module is the bytes it was.
+static const float k_wet_under = 0.562781;  // (1 - r_i) / (1 - r_e) = 1 / n^2
+
+float3 wet_ground_darkening_under(float3 albedo) {
+  return min(k_wet_under / (1.0 - k_wet_internal * clamp(albedo, 0.0, 1.0)), float3(1.0));
+}
+
+float3 wet_ground_albedo_under(float3 albedo, float s, float porosity) {
+  const float weight = saturate(s) * saturate(porosity / k_wet_porosity_full);
+  return albedo * lerp(float3(1.0), wet_ground_darkening_under(albedo), weight);
+}
+#endif
+
 // The capillary fringe above a still waterline (shore.md, "Wet ground"): the saturation `h` metres
 // above the water over a fringe of `fringe_m` — 1 at and below the waterline, falling over the
 // fringe by a smoothstep (a stand-in for van Genuchten's retention curve, whose shape it shares:

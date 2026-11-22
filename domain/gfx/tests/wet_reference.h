@@ -35,6 +35,17 @@ inline double albedo(double a, double s, double porosity) {
   const double weight = saturate(s) * saturate(porosity / k_porosity_full);
   return a * lerp(1.0, darkening(a), weight);
 }
+// **Under a surface the water's tier transmits through** (W161): the factor without its top's two
+// transmissions, (1 - r_e) in and (1 - r_i) out, which the tier applies itself by Fresnel at the
+// real angles: a (1 - r_i) / ((1 - r_e)(1 - r_i a)) = a / (n^2 (1 - r_i a)), never above a.
+inline double under() { return (1.0 - internal()) / (1.0 - k_external); }
+inline double darkening_under(double a) {
+  return std::min(under() / (1.0 - internal() * saturate(a)), 1.0);
+}
+inline double albedo_under(double a, double s, double porosity) {
+  const double weight = saturate(s) * saturate(porosity / k_porosity_full);
+  return a * lerp(1.0, darkening_under(a), weight);
+}
 inline double film(double s, double f) {
   if (f < 0.0) return 0.0;  // no film at all: the resolve's k_shadow_wet_film_off
   const double standing = saturate((s - k_film_from) / (1.0 - k_film_from));
