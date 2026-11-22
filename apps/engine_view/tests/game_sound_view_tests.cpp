@@ -24,6 +24,31 @@
 
 using namespace engine;
 
+#if ENGINE_VIEW_WORLD_SOUND
+#include "../game_sound.h"
+
+// The forest's need 169 (S112): the owner's launcher always passes `--benchmark` to get frame
+// records, and `auto` read that as "nobody hears this", so their window was silent. `auto` is keyed
+// on the window alone: main.cpp hands `resolve_audio` `!offscreen` and nothing else.
+TEST_CASE("engine-view: --audio auto is the device in a window, whatever the session records") {
+  world_sound::AudioMode mode = world_sound::AudioMode::Null;
+  std::string device = "stale";
+  REQUIRE(view::resolve_audio("auto", true, mode, device, nullptr));
+  CHECK(mode == world_sound::AudioMode::Device);
+  CHECK(device.empty());  // the default device
+  REQUIRE(view::resolve_audio("auto", false, mode, device, nullptr));
+  CHECK(mode == world_sound::AudioMode::Off);  // offscreen: silent
+  REQUIRE(view::resolve_audio("null", true, mode, device, nullptr));
+  CHECK(mode == world_sound::AudioMode::Null);
+  REQUIRE(view::resolve_audio("Speakers (Realtek)", false, mode, device, nullptr));
+  CHECK(mode == world_sound::AudioMode::Device);
+  CHECK(device == "Speakers (Realtek)");
+  std::string error;
+  CHECK_FALSE(view::resolve_audio("", true, mode, device, &error));
+  CHECK(error.find("--audio") != std::string::npos);
+}
+#endif
+
 #if ENGINE_VIEW_GAME && ENGINE_VIEW_WORLD_SOUND && defined(WALK_POC_PATH)
 
 namespace {

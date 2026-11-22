@@ -49,7 +49,7 @@ bool on_finish(void* user, std::string* error) { return stage_of(user).close(err
 
 }  // namespace
 
-bool resolve_audio(std::string_view flag, bool heard_by_a_person, world_sound::AudioMode& mode,
+bool resolve_audio(std::string_view flag, bool windowed, world_sound::AudioMode& mode,
                    std::string& device, std::string* error) {
   device.clear();
   if (flag.empty()) {
@@ -57,7 +57,7 @@ bool resolve_audio(std::string_view flag, bool heard_by_a_person, world_sound::A
     return false;
   }
   if (flag == "auto") {
-    mode = heard_by_a_person ? world_sound::AudioMode::Device : world_sound::AudioMode::Off;
+    mode = windowed ? world_sound::AudioMode::Device : world_sound::AudioMode::Off;
   } else if (flag == "off") {
     mode = world_sound::AudioMode::Off;
   } else if (flag == "null") {

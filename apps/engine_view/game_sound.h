@@ -17,10 +17,11 @@
 
 namespace engine::view {
 
-// `--audio auto|off|null|<device>`: `auto` is the default device for a session a person sits at
-// (a window) and `off` for everything else (`--offscreen`, a capture, a benchmark); any other word
-// is a device's name. False with `error` for an empty name.
-bool resolve_audio(std::string_view flag, bool heard_by_a_person, world_sound::AudioMode& mode,
+// `--audio auto|off|null|<device>`: `auto` is the default device for a session with a window,
+// whatever else it does (a `--benchmark` or a `--capture` in a window is a person's session: the
+// owner's launcher always records frames), and `off` offscreen; any other word is a device's name.
+// False with `error` for an empty name.
+bool resolve_audio(std::string_view flag, bool windowed, world_sound::AudioMode& mode,
                    std::string& device, std::string* error);
 
 // The listener's two axes from the camera's heading and pitch (fly_camera.h: heading 0 looks along

@@ -560,8 +560,8 @@ constexpr const char* k_usage =
     "  --game-state <f> --game: restore the module's state from <f> at start when it exists, and\n"
     "                   save it there at exit, so a run can be left and resumed\n"
     "  --audio auto|off|null|<device>  --game: how its sound is heard: the default device in a\n"
-    "                   window (auto, the default; off offscreen), mute, the null backend, or a\n"
-    "                   device by name. What the module hears is the same in every mode\n"
+    "                   window whatever it records (auto, the default; off offscreen), mute, the\n"
+    "                   null backend, or a device by name. The module hears the same in each\n"
     "  --audio-out <f.wav>  --audio null: keep the render as a 32-bit float WAV\n"
     "  --on-end panel|quit  --game, in a live window: when the module ends the run, stay on a\n"
     "                   result panel (Enter or Esc quit, R starts a new run; the default for\n"
@@ -5746,10 +5746,10 @@ int run_view(int argc, char** argv) {
     // (the command line's scene, or a replay's header's) and the stage opened, before `on_load`.
     world_sound::AudioMode audio_mode = world_sound::AudioMode::Off;
     std::string audio_device;
-    if (!view::resolve_audio(
-            options.audio,
-            !options.offscreen && options.capture.empty() && options.benchmark.empty(), audio_mode,
-            audio_device, &game_error) ||
+    // `auto` is keyed on the window alone (S112): the owner's launcher records frames with
+    // `--benchmark` in the window they sit at, and that session is heard.
+    if (!view::resolve_audio(options.audio, !options.offscreen, audio_mode, audio_device,
+                             &game_error) ||
         !game_sound.open(audio_mode, audio_device, options.audio_out, config.scene,
                          interactive.header.params.tick_hz, game, &game_error)) {
       log::remove_sink(&stderr_sink);
