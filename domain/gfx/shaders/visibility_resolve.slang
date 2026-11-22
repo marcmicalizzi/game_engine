@@ -1240,13 +1240,8 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
       if (swash.surface != 0 && depth > 0.0) edge = max(edge, w.shore);
       // The foam of the waves that broke (S100 stage B; water.slang): over water the bores' — born
       // at each wave's break line, decaying behind it — and over the bank the sheet's.
-      if (hh < 0.0 && swash.surface != 0) {
-        WaterSurface* surface = (WaterSurface*)swash.surface;
-        foam = water_bore_foam(surface, local.xz, water_field_at(surface, local.xz), -hh, t,
-                               footprint, params->water_white_tier);
-      } else {
-        foam = water_uprush_foam(swash, place, local.xz, hh, t, footprint, params->water_white_tier);
-      }
+      // W157-2: the two cross-faded over the still waterline (water.slang, `water_shore_foam`).
+      foam = water_shore_foam(swash, place, local.xz, hh, t, footprint, params->water_white_tier);
       if (!(depth > 0.0)) {
         float film;
         bared_wet = water_swash_on(swash) ? water_swash_wetness(swash, place, t, hh, film) : 1.0;

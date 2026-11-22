@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W157-2",
+  "reason": "W157-2: the sheet on the sand is not a pale plate (the coordinator's three faults on the forest's sea: the plate, the seam at the still waterline, one size of hole), with its grounding, case, cost and what the forest shows",
+  "date": "2026-11-22",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/water.md": 5305
+  }
+}
