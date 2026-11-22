@@ -102,7 +102,8 @@ struct Session {
     f64 p = 0.0;
     for (u32 i = 0; i < stage.world_voice_count(); ++i) {
       const WorldVoiceInfo v = stage.world_voice(i);
-      if (v.kind == kind && v.level_db > -999.0f) p += std::pow(10.0, v.level_db / 10.0);
+      if (v.kind == kind && v.level_db > -999.0f)
+        p += std::pow(10.0, static_cast<f64>(v.level_db) / 10.0);
     }
     return p > 0.0 ? 10.0 * std::log10(p) : -1000.0;
   }
@@ -224,9 +225,11 @@ TEST_CASE("world sound: a needle crown's movable band sits at 0.2 U / d, a blade
     if (v.kind != WorldVoiceKind::Crown || !v.sounding) continue;
     if (v.tone_hz > 0.0f) {
       // Needles of 1 mm (the overhead crown) or 1.2 mm (the near ring): f = 0.2 U / d.
-      const f64 f1 = 0.2 * v.wind_m_s / 0.001;
-      const f64 f12 = 0.2 * v.wind_m_s / 0.0012;
-      CHECK((std::fabs(v.tone_hz - f1) < 1e-3 * f1 || std::fabs(v.tone_hz - f12) < 1e-3 * f12));
+      const f64 wind = static_cast<f64>(v.wind_m_s);
+      const f64 tone = static_cast<f64>(v.tone_hz);
+      const f64 f1 = 0.2 * wind / 0.001;
+      const f64 f12 = 0.2 * wind / 0.0012;
+      CHECK((std::fabs(tone - f1) < 1e-3 * f1 || std::fabs(tone - f12) < 1e-3 * f12));
       CHECK(v.band_db[audio::k_noise_tone] > -100.0f);
       seen_needle = true;
     } else {

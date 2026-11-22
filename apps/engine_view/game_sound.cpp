@@ -184,10 +184,10 @@ void GameSoundHost::merge(Group& g, std::span<const world_sound::Crown> crowns) 
   f64 height[3] = {}, needle[3] = {}, y[3] = {};
   for (const world_sound::Crown& c : crowns) {
     const u32 k = static_cast<u32>(c.kind) < 3 ? static_cast<u32>(c.kind) : 0u;
-    const f64 a = c.leaf_area_m2;
+    const f64 a = static_cast<f64>(c.leaf_area_m2);
     area[k] += a;
-    height[k] += a * c.height_m;
-    needle[k] += a * c.needle_mm;
+    height[k] += a * static_cast<f64>(c.height_m);
+    needle[k] += a * static_cast<f64>(c.needle_mm);
     y[k] += a * c.at.y;
     x += a * c.at.x;
     z += a * c.at.z;
@@ -246,9 +246,10 @@ void GameSoundHost::attach_scene(const renderer::SceneData& scene) {
   crowns_.clear();
   for (const gfx::InstanceDesc& in : scene.instances) {
     if (in.mesh >= meshes || !(scene.mesh_leaves[in.mesh].area_m2 > 0.0f)) continue;
-    const WorldPos at{static_cast<f64>(in.cell.x) * k_world_cell_m + in.rows[0].w,
-                      static_cast<f64>(in.cell.y) * k_world_cell_m + in.rows[1].w,
-                      static_cast<f64>(in.cell.z) * k_world_cell_m + in.rows[2].w};
+    const WorldPos at{
+        static_cast<f64>(in.cell.x) * k_world_cell_m + static_cast<f64>(in.rows[0].w),
+        static_cast<f64>(in.cell.y) * k_world_cell_m + static_cast<f64>(in.rows[1].w),
+        static_cast<f64>(in.cell.z) * k_world_cell_m + static_cast<f64>(in.rows[2].w)};
     crowns_.push_back(crown_of(in.mesh, at, in.scale_max));
   }
   std::sort(crowns_.begin(), crowns_.end(),
@@ -336,8 +337,9 @@ void GameSoundHost::visit(void* user, const WorldPos& centre, f64 reach_m,
       if (s.mesh >= meshes || !(h.scene_->mesh_leaves[s.mesh].area_m2 > 0.0f)) continue;
       const Vec3 sc = s.transform.scale;
       const f32 scale = std::max(sc.x, std::max(sc.y, sc.z));
-      const WorldPos at{s.origin.x + s.transform.position.x, s.origin.y + s.transform.position.y,
-                        s.origin.z + s.transform.position.z};
+      const WorldPos at{s.origin.x + static_cast<f64>(s.transform.position.x),
+                        s.origin.y + static_cast<f64>(s.transform.position.y),
+                        s.origin.z + static_cast<f64>(s.transform.position.z)};
       h.tile_scratch_.push_back(h.crown_of(s.mesh, at, scale));
     }
     if (stale) {

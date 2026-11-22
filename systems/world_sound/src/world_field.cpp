@@ -208,7 +208,7 @@ void WorldField::refresh(const WorldPos& listener) noexcept {
   for (const Crown& c : crowns_) {
     const u32 k = static_cast<u32>(c.kind) < 3 ? static_cast<u32>(c.kind) : 0u;
     const f64 dx = c.at.x - listener.x;
-    const f64 dy = c.at.y + c.height_m - listener.y;
+    const f64 dy = c.at.y + static_cast<f64>(c.height_m) - listener.y;
     const f64 dz = c.at.z - listener.z;
     f64 r = std::sqrt(dx * dx + dy * dy + dz * dz);
     if (r > config_.reach_m) {
@@ -216,8 +216,10 @@ void WorldField::refresh(const WorldPos& listener) noexcept {
       continue;
     }
     r = r > k_crown_min_m ? r : k_crown_min_m;
-    const f64 lw = loglaw(static_cast<f64>(c.height_m) > 1.0 ? c.height_m : 1.0, z0);
-    crown_static_.push_back(pow10(k_crown_db[k]) * (c.leaf_area_m2 / k_crown_area_m2) *
+    const f64 h = static_cast<f64>(c.height_m);
+    const f64 lw = loglaw(h > 1.0 ? h : 1.0, z0);
+    crown_static_.push_back(pow10(k_crown_db[k]) *
+                            (static_cast<f64>(c.leaf_area_m2) / k_crown_area_m2) *
                             (k_crown_ref_m / r) * (k_crown_ref_m / r) * lw * lw * lw);
   }
   // The crowns of their own: the loudest, a chosen one kept across 3 dB of hysteresis.
@@ -301,9 +303,10 @@ void WorldField::refresh(const WorldPos& listener) noexcept {
     const u32 k = static_cast<u32>(c.kind) < 3 ? static_cast<u32>(c.kind) : 0u;
     b.weight[k] += w;
     if (k == static_cast<u32>(CanopyClass::Needle)) {
-      const f64 needle_m = (c.needle_mm > 0.05f ? c.needle_mm : 0.05f) * 1e-3;
+      const f64 needle_m = static_cast<f64>(c.needle_mm > 0.05f ? c.needle_mm : 0.05f) * 1e-3;
+      const f64 h = static_cast<f64>(c.height_m);
       b.needle_weight_d += w / needle_m;
-      b.needle_loglaw += w * loglaw(static_cast<f64>(c.height_m) > 1.0 ? c.height_m : 1.0, z0);
+      b.needle_loglaw += w * loglaw(h > 1.0 ? h : 1.0, z0);
     }
     b.px += w * c.at.x;
     b.pz += w * c.at.z;
@@ -376,8 +379,8 @@ void WorldField::describe(Voice& v, const f64 (&band_power)[9], f64 tone_hz, f64
   }
   bool changed = !v.has_sent;
   for (u32 k = 0; k < 9 && !changed; ++k) {
-    const f64 a = p.gain[k];
-    const f64 b = v.sent.gain[k];
+    const f64 a = static_cast<f64>(p.gain[k]);
+    const f64 b = static_cast<f64>(v.sent.gain[k]);
     const f64 m = a > b ? a : b;
     changed = std::fabs(a - b) > k_resend * m;
   }
@@ -422,7 +425,8 @@ void WorldField::tick(const WorldPos& listener, const Vec3& forward, const World
     Vec2 to;
     f64 z0 = 0.03;
     const f64 u10 = wind10_at(c->at.x, c->at.z, to, z0);
-    const f64 h = static_cast<f64>(c->height_m) > 1.0 ? c->height_m : 1.0;
+    const f64 height = static_cast<f64>(c->height_m);
+    const f64 h = height > 1.0 ? height : 1.0;
     const f64 u = u10 * loglaw(h, z0);
     v.info.wind_m_s = static_cast<f32>(u);
     f64 bands[9] = {};
@@ -430,24 +434,25 @@ void WorldField::tick(const WorldPos& listener, const Vec3& forward, const World
     if (u > calm) {
       const u32 k = static_cast<u32>(c->kind) < 3 ? static_cast<u32>(c->kind) : 0u;
       const f64 dx = c->at.x - listener.x;
-      const f64 dy = c->at.y + c->height_m - listener.y;
+      const f64 dy = c->at.y + height - listener.y;
       const f64 dz = c->at.z - listener.z;
       f64 r = std::sqrt(dx * dx + dy * dy + dz * dz);
       r = r > k_crown_min_m ? r : k_crown_min_m;
       const f64 q = u / k_crown_wind_m_s;
-      const f64 power = pow10(k_crown_db[k]) * (c->leaf_area_m2 / k_crown_area_m2) *
+      const f64 power = pow10(k_crown_db[k]) *
+                        (static_cast<f64>(c->leaf_area_m2) / k_crown_area_m2) *
                         (k_crown_ref_m / r) * (k_crown_ref_m / r) * q * q * q;
       const bool needle = c->kind == CanopyClass::Needle;
       const f64 broadband = needle ? power * (1.0 - k_needle_share) : power;
       for (u32 b = 0; b < 8; ++b)
         bands[b] = broadband * shape_[k][b];
       if (needle) {
-        const f64 d = (c->needle_mm > 0.05f ? c->needle_mm : 0.05f) * 1e-3;
+        const f64 d = static_cast<f64>(c->needle_mm > 0.05f ? c->needle_mm : 0.05f) * 1e-3;
         tone_hz = k_strouhal * u / d;
         bands[audio::k_noise_tone] = power * k_needle_share;
       }
     }
-    v.at = WorldPos{c->at.x, c->at.y + c->height_m, c->at.z};
+    v.at = WorldPos{c->at.x, c->at.y + height, c->at.z};
     describe(v, bands, tone_hz, 0.0, false, 0.0f, v.key, k_crown_priority, frame);
     if (frame_moved && !v.voice.is_null()) {
       audio::SourceSpatial s;

@@ -219,8 +219,8 @@ TEST_CASE("noise voice: in the mixer a 2D voice's power is its gain times its ba
   // The panner's centre is constant power: left^2 + right^2 is the voice's signal^2.
   f64 sum = 0.0;
   for (usize f = 4800; f < 96000; ++f)
-    sum += static_cast<f64>(out[2 * f]) * out[2 * f] +
-           static_cast<f64>(out[2 * f + 1]) * out[2 * f + 1];
+    sum += static_cast<f64>(out[2 * f]) * static_cast<f64>(out[2 * f]) +
+           static_cast<f64>(out[2 * f + 1]) * static_cast<f64>(out[2 * f + 1]);
   CHECK(std::sqrt(sum / 91200.0) == doctest::Approx(0.1).epsilon(0.05));
   // Refusals: a gain that is not a number, a negative band.
   NoisePlayParams bad = p;
