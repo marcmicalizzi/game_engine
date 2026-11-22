@@ -14,6 +14,7 @@
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
+#include <test_environment.h>
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
@@ -28,25 +29,70 @@ using namespace engine;
 #if ENGINE_VIEW_GAME && ENGINE_VIEW_WORLD_SOUND && defined(WALK_POC_PATH)
 #include "../game_sound.h"
 
-// The forest's need 169 (S112): the owner's launcher always passes `--benchmark` to get frame
-// records, and `auto` read that as "nobody hears this", so their window was silent. `auto` is keyed
-// on the window alone: main.cpp hands `resolve_audio` `!offscreen` and nothing else.
-TEST_CASE("engine-view: --audio auto is the device in a window, whatever the session records") {
-  world_sound::AudioMode mode = world_sound::AudioMode::Null;
-  std::string device = "stale";
-  REQUIRE(view::resolve_audio("auto", true, mode, device, nullptr));
-  CHECK(mode == world_sound::AudioMode::Device);
-  CHECK(device.empty());  // the default device
-  REQUIRE(view::resolve_audio("auto", false, mode, device, nullptr));
-  CHECK(mode == world_sound::AudioMode::Off);  // offscreen: silent
-  REQUIRE(view::resolve_audio("null", true, mode, device, nullptr));
-  CHECK(mode == world_sound::AudioMode::Null);
-  REQUIRE(view::resolve_audio("Speakers (Realtek)", false, mode, device, nullptr));
-  CHECK(mode == world_sound::AudioMode::Device);
-  CHECK(device == "Speakers (Realtek)");
+// **Who `--audio auto` plays to** (S112-3, N1 of S112's second review; apps.md, "Sound a module
+// plays"): the speakers only for a windowed run somebody attends — `--interactive`, a game module
+// (the owner's launcher passes `--benchmark` beside one, the forest's need 169), or a run until its
+// window is closed — and never under a test or a bench, whatever the flags. The table, with no
+// window: every row the one function main.cpp asks.
+TEST_CASE("engine-view: --audio auto is the device only for somebody at the window, never a test") {
+  using world_sound::AudioMode;
+  struct Row {
+    const char* flag;
+    bool windowed, interactive, module, ends, ticked, scene;
+    const char* env;
+    AudioMode want;
+  };
+  const Row rows[] = {
+      // auto, unset: the attended window is the device; everything else is off.
+      {"auto", true, true, false, false, true, true, "", AudioMode::Device},  // live session
+      {"auto", true, true, false, true, true, true, "", AudioMode::Device},   // ... with --frames
+      {"auto", true, false, true, true, true, true, "", AudioMode::Device},   // module, --benchmark
+      {"auto", true, false, false, false, true, true, "", AudioMode::Device},  // until closed
+      {"auto", true, false, false, true, true, true, "", AudioMode::Off},      // --frames N
+      {"auto", true, false, false, false, false, true, "", AudioMode::Off},    // nothing ticks
+      {"auto", true, true, false, false, true, false, "", AudioMode::Off},     // no scene
+      {"auto", false, false, false, true, true, true, "", AudioMode::Off},     // offscreen
+      {"auto", false, true, true, false, true, true, "", AudioMode::Off},      // offscreen replay
+      // auto under a test or a bench: never the device.
+      {"auto", true, true, false, false, true, true, "null", AudioMode::Null},
+      {"auto", true, false, true, true, true, true, "null", AudioMode::Null},
+      {"auto", true, true, false, false, true, true, "off", AudioMode::Off},
+      {"auto", true, true, false, false, true, true, "1", AudioMode::Null},  // any other word
+      {"auto", false, false, false, true, true, true, "null", AudioMode::Off},
+      // Explicit words are themselves, whatever the run and the variable.
+      {"off", true, true, true, false, true, true, "", AudioMode::Off},
+      {"null", false, false, false, true, false, false, "", AudioMode::Null},
+      {"null", true, true, false, false, true, true, "null", AudioMode::Null},
+      {"Speakers (Realtek)", false, false, false, true, false, false, "null", AudioMode::Device},
+  };
+  for (const Row& r : rows) {
+    view::AudioRun run;
+    run.windowed = r.windowed;
+    run.interactive = r.interactive;
+    run.module = r.module;
+    run.ends_by_itself = r.ends;
+    run.ticked = r.ticked;
+    run.scene = r.scene;
+    run.auto_env = r.env;
+    AudioMode mode = AudioMode::Device;
+    std::string device = "stale";
+    REQUIRE(view::resolve_audio(r.flag, run, mode, device, nullptr));
+    CAPTURE(r.flag);
+    CAPTURE(r.env);
+    CAPTURE(&r - rows);
+    CHECK(mode == r.want);
+    CHECK(device == (mode == AudioMode::Device && std::string_view(r.flag) != "auto"
+                         ? std::string(r.flag)
+                         : std::string()));
+  }
   std::string error;
-  CHECK_FALSE(view::resolve_audio("", true, mode, device, &error));
+  AudioMode mode = AudioMode::Off;
+  std::string device;
+  CHECK_FALSE(view::resolve_audio("", view::AudioRun{}, mode, device, &error));
   CHECK(error.find("--audio") != std::string::npos);
+  // The variable is the test main's, in this process and every one it starts (test_main.cpp).
+  CHECK(std::string_view(view::k_audio_auto_env) == test::k_audio_auto_env);
+  CHECK(view::audio_auto_env() == "null");
 }
 
 namespace {
@@ -382,6 +428,28 @@ TEST_CASE(
   CHECK(number_at(legs[1].summary, {"world", "ear_voices"}) == 2.0);   // the wind at the ears
 }
 
+// N1 end to end (S112-3): a live window under the test main, `--interactive` and no `--audio` —
+// the run that would have played through the machine's speakers — is the null backend, because
+// the test main set `ENGINE_AUDIO_AUTO` and engine-view inherited it. The one windowed case here.
+TEST_CASE("engine-view: a live window under a test hears its world on the null backend") {
+  const test::TempDir tmp("engine_view_window_no_device");
+  const std::string scene = grove_scene(tmp, "grove.json", 9.0);
+  const std::string inject = walk_session(tmp, scene);
+  const Run run = run_view({"--interactive", "--walk", "--start", "0,3,10", "0,-8.6",
+                            "--inject-input", inject, "--scene", scene, "--width", "160",
+                            "--height", "96", "--no-vsync", "--ddc", tmp.file("ddc")});
+  if (run.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << run.output);
+    return;
+  }
+  REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+  JsonValue sound;
+  REQUIRE_MESSAGE(sound_summary_of(run, sound), run.output);
+  CHECK(text_at(sound, {"mode"}) == "\"null\"");
+  CHECK(text_at(sound, {"backend"}) == "\"null\"");
+  CHECK(number_at(sound, {"world", "ear_voices"}) == 2.0);  // the world modelled all the same
+}
+
 TEST_CASE("engine-view: --audio-out needs the null backend") {
   const Run run = run_view({"--audio", "off", "--audio-out", "x.wav", "--offscreen"});
   CHECK(run.exit_code == 2);
@@ -394,6 +462,7 @@ TEST_CASE("engine-view: --audio-out needs the null backend") {
 #include "../game_sound.h"
 
 #include <core/memory/memory.h>
+#include <domain/geometry/flora_species.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/scene.h>
 
@@ -512,6 +581,57 @@ TEST_CASE("engine-view: a sound refresh walks what changed and nothing else") {
   near->reset();
 }
 
+// **N2 of S112's second review**: changed tiles are walked nearest the listener first, not in key
+// order, so after a load or a cut the listener's own trees are made first. A far tile with the
+// smaller key and a near one arrive in one refresh with room for one: the near one is walked (its
+// crowns sent one by one), the far one carried and silent until the next refresh walks it.
+TEST_CASE("engine-view: a sound refresh walks the changed tile nearest the listener first") {
+  renderer::SceneData scene;
+  scene.mesh_leaves.push_back(renderer::MeshLeaves{60.0f, 2.0f, 10.0f, 0.0f, 0.0f, 3.0f});
+  scene.mesh_leaves.push_back(renderer::MeshLeaves{5.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f});
+  scene.sources.resize(2);
+  scene.sources[0].species = "oak";
+  scene.mesh_info.resize(2);
+  view::GameSoundHost host;
+  host.attach_scene(scene);
+  Tiles tiles;
+  tiles.add(10, 1500.0, 100);  // far, and first by key
+  tiles.add(20, 0.0, 100);     // under the listener
+  host.attach_tile_list(&Tiles::list, &tiles);
+  tunables::Tunable* walk = tunables::find("audio.world.walk_instances");
+  REQUIRE(walk != nullptr);
+  REQUIRE(walk->set_from_text("100"));
+  const WorldPos centre{10.0, 1.7, 0.0};
+  Count n;
+  view::GameSoundHost::visit(&host, centre, 2000.0, world_sound::CrownSink{&n, &Count::emit});
+  CHECK(host.counters().tiles_walked == 1u);
+  CHECK(host.counters().tiles_carried == 1u);
+  CHECK(host.counters().last_walked == 100u);
+  CHECK(n.crowns > 0u);   // the near tile's crowns, one by one: it was the one walked
+  CHECK(n.merged == 0u);  // the far one not yet made, so nothing of it is heard
+  Count next;
+  view::GameSoundHost::visit(&host, centre, 2000.0, world_sound::CrownSink{&next, &Count::emit});
+  CHECK(host.counters().tiles_walked == 2u);
+  CHECK(next.merged > 0u);  // now the far tile, by its merged crowns
+  // Both changed again, the far tile's trees gone: the near one is walked first again, so the far
+  // one keeps its last crowns this refresh (a walk of it would have left it nothing to send).
+  ++tiles.versions[0];
+  ++tiles.versions[1];
+  for (renderer::SceneInstance& s : tiles.placed[0])
+    s.mesh = 1;
+  const u64 walked = host.counters().instances_walked;
+  Count again;
+  view::GameSoundHost::visit(&host, centre, 2000.0, world_sound::CrownSink{&again, &Count::emit});
+  CHECK(host.counters().instances_walked == walked + 100u);
+  CHECK(host.counters().tiles_carried == 2u);
+  CHECK(again.crowns > 0u);
+  CHECK(again.merged > 0u);
+  Count last;
+  view::GameSoundHost::visit(&host, centre, 2000.0, world_sound::CrownSink{&last, &Count::emit});
+  CHECK(last.merged == 0u);  // the far tile walked at last: no tree left in it
+  walk->reset();
+}
+
 TEST_CASE("engine-view: a crown's class is the mesh's own word, then its species, else silence") {
   world_sound::CanopyClass kind = world_sound::CanopyClass::Bare;
   f32 needle = 0.0f;
@@ -523,6 +643,21 @@ TEST_CASE("engine-view: a crown's class is the mesh's own word, then its species
   CHECK(kind == world_sound::CanopyClass::Blade);
   CHECK_FALSE(view::canopy_class_of(k_none, 0.0f, "", kind, needle));       // a fence, a decal
   CHECK_FALSE(view::canopy_class_of(k_none, 0.0f, "sward", kind, needle));  // the ground's cover
+  // S112-3, N3: the species' own declaration (flora_species.h `canopy`), never a name in the app;
+  // the grasses, the water plants, the alpine mats and the low shrubs declare no crown.
+  for (const char* ground : {"meadow", "sedge", "reed", "water_lily", "silene_acaulis", "bearberry",
+                             "big_sagebrush", "fern", "ivy"})
+    CHECK_FALSE_MESSAGE(view::canopy_class_of(k_none, 0.0f, ground, kind, needle), ground);
+  CHECK(view::canopy_class_of(k_none, 0.0f, "spruce", kind, needle));
+  CHECK(kind == world_sound::CanopyClass::Needle);
+  CHECK(needle == 1.2f);
+  CHECK(view::canopy_class_of(k_none, 0.0f, "beech", kind, needle));
+  CHECK(kind == world_sound::CanopyClass::Blade);
+  for (const geometry::FloraSpeciesInfo& info : geometry::k_flora_species) {
+    // A species that moves as a field or not at all (grass, mats, litter) is never a crown.
+    if (info.motion != geometry::FloraMotionKind::parts)
+      CHECK_MESSAGE(info.canopy == geometry::FloraCanopy::none, info.name);
+  }
   // Declared: wins over the species, its width taken.
   CHECK(view::canopy_class_of(1, 2.5f, "oak", kind, needle));
   CHECK(kind == world_sound::CanopyClass::Needle);

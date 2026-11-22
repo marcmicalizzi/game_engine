@@ -5679,20 +5679,40 @@ int run_view(int argc, char** argv) {
   view::GameRunner game;
 #if ENGINE_VIEW_WORLD_SOUND
   view::GameSoundHost game_sound;  // its hooks are the runner's; declared after it, gone before it
-  const struct SoundScope {
-    ~SoundScope() { view::set_session_sound(nullptr, false); }
+  const struct SoundScope {        // a module-less run's summary, windowed or offscreen (S112-3)
+    ~SoundScope() {
+      view::print_solo_summary();
+      view::set_session_sound(nullptr, false);
+    }
   } sound_scope;
   // **A scene with no module hears its world** (S112-2): the same host, ticked by the session as
   // its observer or by a flight's frames (a sixtieth of a second each), with nothing to play
   // clips. `Off` (the default offscreen) opens nothing and measures no leaves.
+  const std::string audio_auto = view::audio_auto_env();  // set under a test or a bench (N1)
+  const auto audio_run = [&](bool module, bool ticked, bool has_scene) {
+    view::AudioRun run;
+    run.windowed = !options.offscreen;
+    run.interactive = interactive.on;
+    run.module = module;
+    run.ends_by_itself = options.frames != 0 || !options.benchmark.empty() ||
+                         !options.camera_path.empty() || !options.inject_input.empty() ||
+                         interactive.replay;
+    run.ticked = ticked;
+    run.scene = has_scene;
+    run.auto_env = audio_auto;
+    return run;
+  };
   if (options.game.empty()) {
     std::string sound_error;
     const bool flight = !options.camera_path.empty() && !interactive.on;  // a tick a frame
+    const std::string solo_scene = !options.scene.empty() ? options.scene
+                                   : interactive.replay   ? std::string(interactive.header.scene)
+                                                          : std::string();
+    // Ticked by a session (the window's only ticks), or offscreen by a flight's frames.
+    const bool ticked = interactive.on || (options.offscreen && flight);
     if (!view::open_solo_sound(
-            game_sound, options.audio, !options.offscreen, options.audio_out,
-            !options.scene.empty() ? options.scene
-            : interactive.replay   ? std::string(interactive.header.scene)
-                                   : std::string(),
+            game_sound, options.audio, audio_run(false, ticked, !solo_scene.empty()),
+            options.audio_out, solo_scene,
             flight ? static_cast<u32>(view::k_frame_index_hz) : interactive.header.params.tick_hz,
             &sound_error)) {
       log::remove_sink(&stderr_sink);
@@ -5758,10 +5778,10 @@ int run_view(int argc, char** argv) {
     // (the command line's scene, or a replay's header's) and the stage opened, before `on_load`.
     world_sound::AudioMode audio_mode = world_sound::AudioMode::Off;
     std::string audio_device;
-    // `auto` is keyed on the window alone (S112): the owner's launcher records frames with
-    // `--benchmark` in the window they sit at, and that session is heard.
-    if (!view::resolve_audio(options.audio, !options.offscreen, audio_mode, audio_device,
-                             &game_error) ||
+    // A module's window is attended (S112-3, N1): the owner's launcher records frames with
+    // `--benchmark` in the window they sit at, and that session is heard; under a test it is not.
+    if (!view::resolve_audio(options.audio, audio_run(true, true, !config.scene.empty()),
+                             audio_mode, audio_device, &game_error) ||
         !game_sound.open(audio_mode, audio_device, options.audio_out, config.scene,
                          interactive.header.params.tick_hz, &game_error)) {
       log::remove_sink(&stderr_sink);
@@ -5824,7 +5844,6 @@ int run_view(int argc, char** argv) {
   if (options.reference != 0) return run_reference(options);
   if (options.offscreen) {
     const int code = run_offscreen(options, interactive);
-    view::print_solo_summary();  // a module-less session's sound (S112-2)
     log::remove_sink(&stderr_sink);
     return code;
   }

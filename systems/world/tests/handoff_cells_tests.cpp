@@ -308,6 +308,27 @@ TEST_CASE(
     covered += range.count;
   }
   CHECK(covered == handed.size());
+  // `tile_own` (S112-3, the second review's L-a; world_sound's canopy table reads it): each tile's
+  // own placements and the version they were handed under, the hand-off's near forms left out —
+  // exactly the tile's own run, and never a version of 0.
+  Vector<PlacementTiles::TileOwn> own;
+  cells.tile_own(own);
+  CHECK(own.size() == 9u);
+  for (const PlacementTiles::TileOwn& t : own) {
+    const PlacementTiles::TileRange* match = nullptr;
+    for (const PlacementTiles::TileRange& run : runs)
+      match = run.key == t.key ? &run : match;
+    REQUIRE(match != nullptr);
+    CHECK_FALSE(PlacementTiles::cell_key_reserved(t.key));
+    CHECK(t.count == match->count);
+    CHECK(t.version == match->version);
+    CHECK(t.version != 0u);
+    REQUIRE(t.instances != nullptr);
+    for (u32 i = 0; i < t.count; ++i) {
+      CHECK(t.instances[i].handoff != scene_gen::k_handoff_near);
+      CHECK(place_key(t.instances[i]) == place_key(match->instances[i]));
+    }
+  }
 }
 
 TEST_CASE(

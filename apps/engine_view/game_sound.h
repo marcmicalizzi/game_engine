@@ -26,11 +26,31 @@ struct FlightStep;
 
 namespace engine::view {
 
-// `--audio auto|off|null|<device>`: `auto` is the default device for a session with a window,
-// whatever else it does (a `--benchmark` or a `--capture` in a window is a person's session: the
-// owner's launcher always records frames), and `off` offscreen; any other word is a device's name.
+// **What a run is, for `--audio auto`** (S112-3, N1; apps.md, "Sound a module plays"): plain
+// inputs, so the rule is held by a case with no window. main.cpp fills it from its flags.
+struct AudioRun {
+  bool windowed = false;     // not `--offscreen`
+  bool interactive = false;  // `--interactive`: a session at the window (live, injected, replayed)
+  bool module = false;       // `--game`
+  bool ends_by_itself = false;  // `--frames N`, a capture, a `--benchmark`, a path that ends
+  bool ticked = true;           // a session, a flight or a module ticks the stage
+  bool scene = true;            // there is a scene to hear
+  std::string_view auto_env;    // `$ENGINE_AUDIO_AUTO` (`k_audio_auto_env`), empty when unset
+};
+// Set by every test main and bench main in its own process (tests/support), so every engine
+// binary a case starts inherits it: while it is set `auto` never opens a device — `off` keeps the
+// stage closed, any other value is the null backend (the world modelled and summarised, nothing
+// played). Spelled again in tests/support/test_environment.h.
+inline constexpr const char* k_audio_auto_env = "ENGINE_AUDIO_AUTO";
+std::string audio_auto_env();  // the variable's value in this process, empty when unset
+
+// `--audio auto|off|null|<device>`. `auto` is the default device **only for a windowed run that
+// somebody attends**: `--interactive`, a game module, or one that runs until its window is closed;
+// a run that ends by itself and every offscreen run is `off`, and so is a run with no scene or that
+// nothing ticks. Under a test or a bench (`auto_env` set) it is never the device. `off` and `null`
+// are themselves; any other word is a device's name, the one way a test reaches the speakers.
 // False with `error` for an empty name.
-bool resolve_audio(std::string_view flag, bool windowed, world_sound::AudioMode& mode,
+bool resolve_audio(std::string_view flag, const AudioRun& run, world_sound::AudioMode& mode,
                    std::string& device, std::string* error);
 
 // The listener's two axes from the camera's heading and pitch (fly_camera.h: heading 0 looks along
@@ -40,10 +60,10 @@ void listener_axes(f32 heading, f32 pitch, Vec3& forward, Vec3& up) noexcept;
 // **A crown's class is declared, never read from a name** (S112-2; world_sound.md, "A crown's
 // class is declared"): the scene's own word on the mesh (`Mesh.sound`, `declared` the
 // `scene::SoundCanopy` value or `renderer::SceneMeshInfo::k_sound_undeclared`) when it said one;
-// else the species a generated tree's container records (the conifers' needles at the width the
-// material generator draws them, a broadleaf's blades; the ground's cover — sward, cover, tuft,
-// herb, fern, ivy, roots, litter — is not a crown); else nothing. False: the mesh is silent, so a
-// fence, a grating or a decal is never measured as leaf.
+// else what the species a generated tree's container records declares of itself
+// (`geometry::FloraSpeciesInfo::canopy` and `needle_um`, S112-3: this file holds no species'
+// names); else nothing. False: the mesh is silent, so a fence, a grating, a decal or a species
+// that declares no crown is never measured as leaf.
 bool canopy_class_of(u8 declared, f32 declared_needle_mm, std::string_view species,
                      world_sound::CanopyClass& out, f32& needle_mm) noexcept;
 
@@ -145,7 +165,7 @@ class GameSoundHost {
     f32 scale = 1.0f;
   };
   bool tile_crown(const renderer::SceneInstance& s, world_sound::Crown& out) const noexcept;
-  void refresh_tiles(u32& allowance);
+  void refresh_tiles(const WorldPos& listener, u32& allowance);
   static void merge(Group& g, std::span<const world_sound::Crown> crowns) noexcept;
   void tick_listener(const WorldPos& eye, const Vec3& forward, const Vec3& up) noexcept;
 
@@ -165,7 +185,14 @@ class GameSoundHost {
   Vector<TileGroup> tile_next_;                      // the re-keying's scratch
   Vector<Vector<world_sound::Crown>> spare_crowns_;  // let-go tiles' room, for the next drawn
   Vector<SoundTile> tiles_now_;                      // the list's scratch
-  Vector<Near> near_;                                // a refresh's near groups, nearest first
+  // A refresh's changed tiles, nearest the listener first (S112-3, N2): what is walked first.
+  struct Changed {
+    f64 d = 0.0;
+    u64 key = 0;
+    u32 index = 0;
+  };
+  Vector<Changed> changed_;
+  Vector<Near> near_;  // a refresh's near groups, nearest first
   // **The far field by cell** (S112-2): past four times `audio.world.near_m` a group is summed
   // into a 512 m cell of a 9 x 9 grid round the listener's (the reach's 2 km inside it), one
   // crown a class a cell, so a refresh sends a few hundred far crowns however many tiles are
@@ -191,7 +218,7 @@ class GameSoundHost {
 void set_session_sound(GameSoundHost* host, bool solo) noexcept;
 // Opens `host` for a session with no module and makes it the session's: `--audio` resolved as a
 // module's is, and nothing opened for `off`. False with `error` as `resolve_audio` and `open`.
-bool open_solo_sound(GameSoundHost& host, std::string_view audio, bool windowed,
+bool open_solo_sound(GameSoundHost& host, std::string_view audio, const AudioRun& run,
                      const std::string& wav_out, const std::string& scene, u32 tick_hz,
                      std::string* error);
 bool sound_hears_world() noexcept;  // the load measures leaves (`SceneDesc::measure_leaves`, M7)

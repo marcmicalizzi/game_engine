@@ -638,7 +638,7 @@ void WorldField::tick(const WorldPos& listener, const Vec3& forward, const World
       }
     }
   }
-  // ---- the world's ceiling (S112-2; world_sound.md, "Nothing hard-clips"): the voices' powers
+  // ---- the world's ceiling (S112-2; world_sound.md, "The world's hold"): the voices' powers
   // summed, in full scale's units; over the ceiling every one is held by the same factor, so the
   // balance and the spectrum stay and only the whole is held. Under it nothing changes.
   f64 total = 0.0;

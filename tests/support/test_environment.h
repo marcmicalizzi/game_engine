@@ -32,6 +32,13 @@ namespace engine::test {
 // pack in it — holds `ScopedEnv(k_default_materials_env, "1")` for its case.
 inline constexpr const char* k_default_materials_env = "ENGINE_DEFAULT_MATERIALS";
 
+// The switch the test main and the bench main set to `null` for every test, bench and child
+// process, so engine-view's `--audio auto` never opens a real audio device under one (S112-3;
+// `view::k_audio_auto_env`, spelled here for the same reason; docs/subsystems/audio.md, "No test
+// opens the speakers"). An explicit `--audio <device>` is then the only way a case reaches them,
+// and only the opt-in device test (`ENGINE_AUDIO_DEVICE_TEST=1`) may pass one.
+inline constexpr const char* k_audio_auto_env = "ENGINE_AUDIO_AUTO";
+
 // Sets `name` to `value` (empty removes it) and restores what it was.
 class ScopedEnv {
  public:

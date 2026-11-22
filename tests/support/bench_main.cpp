@@ -12,5 +12,10 @@ int main(int argc, char** argv) {
   // find it"). Held for the whole run.
   [[maybe_unused]] const engine::test::ScopedEnv no_default_materials(
       engine::test::k_default_materials_env, "0");
+  // Nor opens the speakers: `--audio auto` in any engine-view it starts is the null backend
+  // (test_main.cpp, `open_no_audio_device`; docs/subsystems/audio.md, "No test opens the
+  // speakers").
+  [[maybe_unused]] const engine::test::ScopedEnv no_audio_device(engine::test::k_audio_auto_env,
+                                                                 "null");
   return engine::bench::run_main(argc, argv);
 }
