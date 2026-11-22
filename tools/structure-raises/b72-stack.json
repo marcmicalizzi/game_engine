@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "b72-stack",
+  "reason": "batch 72's join: mend A's case and mend B's sentence on renderer.md and apps.md, and Scene 13's two additions named on renderer.md",
+  "date": "2026-11-22",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 700,
+    "page:docs/subsystems/apps.md": 281
+  }
+}
