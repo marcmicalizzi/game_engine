@@ -951,6 +951,95 @@ TEST_CASE("dynamic instances: runs sized by the frame draw the same, and a full 
   CHECK(dynamic.renderer.stats().run_drops + dynamic.renderer.stats().cascade_run_drops == 0);
 }
 
+// W156 (renderer.md, "The visible list's runs are sized by the frame"): a tail's arrival, before
+// any frame has sized the runs, lays them out at the first bound when the stride is longer — until
+// W156 at the stride, every run as long as every pair the tail could name — and the frames that
+// fill the bound grow the runs and draw the loaded scene. With the bound at 0 the stride is kept.
+TEST_CASE("dynamic instances: a tail's arrival lays the runs out at the first bound") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE(gpu.why);
+    return;
+  }
+  struct Restore {
+    ~Restore() { (void)tunables::apply_overrides("renderer.runs.first_entries=4194304"); }
+  } restore;
+  RenderSettings settings;
+  settings.raster = RasterMode::Auto;
+  settings.shadows = ShadowMode::Cascaded;
+  settings.occlusion = true;
+  const Vector<SceneInstance> head = prefix();
+  const Tile a = make_tile(101, tile_a());
+  const Tile b = make_tile(202, tile_b());
+  const Tile c = make_tile(303, tile_c());
+  const Tile d = make_tile(404, tile_d());
+  const Tile* all[] = {&a, &b, &c, &d};
+  Vector<SceneInstance> tail;
+  Vector<DynamicBlock> blocks;
+  tail_of(std::span<const Tile* const>(all, 4), tail, blocks);
+  const Vector<SceneInstance> whole = join({&head, &tail});
+  std::string error;
+  CapturedFrame expected;
+  REQUIRE_MESSAGE(reference(gpu.device, std::span<const SceneInstance>(whole.data(), whole.size()),
+                            settings, expected, error),
+                  error);
+  struct Arrival {
+    u32 stride = 0;
+    u32 capacity = 0;  // the runs as the arrival laid them out, before any frame
+    u64 list_bytes = 0;
+    u32 grown = 0;  // the runs after the frames
+    u64 redraws = 0;
+    u32 dropped = 0;  // in the frame returned
+    Difference diff;
+  };
+  const auto arrive = [&](u32 first) {
+    REQUIRE(tunables::apply_overrides("renderer.runs.first_entries=" + std::to_string(first)));
+    Rig dynamic;
+    REQUIRE_MESSAGE(
+        dynamic.build(gpu.device, std::span<const SceneInstance>(head.data(), head.size()), true,
+                      settings, 2),
+        dynamic.error);
+    REQUIRE_MESSAGE(dynamic.renderer.set_dynamic_instances(
+                        std::span<const SceneInstance>(tail.data(), tail.size()),
+                        std::span<const DynamicBlock>(blocks.data(), blocks.size()), &error),
+                    error);
+    Arrival out;
+    out.stride = dynamic.scene.pair_stride();
+    out.capacity = dynamic.scene.run_capacity();
+    out.list_bytes = dynamic.scene.visible.size;
+    for (u32 f = 0; f < 4; ++f)
+      REQUIRE_MESSAGE(dynamic.renderer.render_offscreen(frame_at(k_eye), &error), error);
+    CapturedFrame shot;
+    REQUIRE_MESSAGE(dynamic.renderer.capture(frame_at(k_eye), channels(), shot, &error), error);
+    out.diff = compare_through_tail(shot, dynamic.scene, expected);
+    const Stats& s = dynamic.renderer.stats();
+    out.grown = dynamic.scene.run_capacity();
+    out.redraws = s.run_redraws;
+    out.dropped = s.run_drops + s.cascade_run_drops;
+    MESSAGE("first bound " << first << ": stride " << out.stride << ", runs of " << out.capacity
+                           << " at the arrival (" << out.list_bytes << " bytes of list), "
+                           << out.grown << " after the frames, fullest " << s.run_high << ", "
+                           << out.redraws << " redraws; " << out.diff.ids << " id, "
+                           << out.diff.depth << " depth and " << out.diff.color
+                           << " colour differences");
+    return out;
+  };
+  // One entry a run: whatever these frames draw fills it.
+  constexpr u32 k_first = 1;
+  const Arrival stride = arrive(0);
+  CHECK(stride.capacity == stride.stride);  // the bound off: the arrival's runs at the stride
+  CHECK(stride.diff.ids + stride.diff.depth + stride.diff.color == 0);
+  REQUIRE(stride.stride > k_first);
+  const Arrival bounded = arrive(k_first);
+  CHECK(bounded.capacity == k_first);  // W156: at the bound; before it, at the stride
+  // The list is its runs' entries and the two drop counts behind them (8 bytes).
+  CHECK(bounded.list_bytes - 8 == (stride.list_bytes - 8) / stride.stride * k_first);
+  CHECK(bounded.grown > k_first);  // the frames that filled it grew it
+  CHECK(bounded.redraws > 0);      // and each such frame somebody waited for was drawn again
+  CHECK(bounded.dropped == 0);
+  CHECK(bounded.diff.ids + bounded.diff.depth + bounded.diff.color == 0);
+}
+
 // T137 (renderer.md, "At the cap the pairs are numbered again"). A world held at its pair cap: the
 // cap is the load's pairs and the largest tail of the steps, to the pair, so every arrival's class
 // slack passes it. Until T137 each such change laid every tile out again and wrote every slot; now

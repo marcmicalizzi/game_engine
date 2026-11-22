@@ -1490,6 +1490,7 @@ class SceneRenderer {
   RtCapacity run_policy_;
   bool run_policy_set_ = false;
   void step_runs(i64 now_ns);
+  u32 first_runs() const noexcept;  // the runs' first bound for the scene (W156), 0 for the stride
   bool resize_runs(u32 capacity, f64 now);  // false: refused, the runs as they were (counted)
   // Resizes the chain to `capacity` when it differs, waiting for the device first. False only when
   // the allocation failed, in which case the chain keeps nothing and the frame must not be drawn.

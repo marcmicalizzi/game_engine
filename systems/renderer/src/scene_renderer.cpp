@@ -2007,6 +2007,7 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
   const i64 started = time::monotonic_ns();
   GpuScene::TileChange change;
   retired_.clear();
+  scene_->set_first_runs(first_runs());  // W156: a tail's runs start at a bound, not its stride
   if (!scene_->set_dynamic_instances(tail, blocks, change, &retired_, error, compact)) {
     for (const gfx::BufferResource& buffer : retired_)
       frames_.defer_destroy(buffer);

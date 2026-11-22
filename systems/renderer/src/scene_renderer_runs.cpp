@@ -6,8 +6,9 @@
 // numbers: a frame's demand is its fullest run, a run that filled says how many appends it turned
 // away, and the capacity is kept a headroom above the demand, grown the frame a demand eats into
 // half of it and shrunk only after a window of frames and seconds. The first capacity is the stride
-// — every run as long as the scene's pairs, which no frame can overfill — and it is a guess the
-// first frames answer, so a world standing where it loaded gives the rest back within seconds.
+// — every run as long as the scene's pairs, which no frame can overfill — up to a first bound
+// (W156, below), and it is a guess the first frames answer, so a world standing where it loaded
+// gives the rest back within seconds.
 
 #include <core/log/log.h>
 #include <core/time/time.h>
@@ -37,10 +38,31 @@ tunables::Bool runs_by_frame{
     "as long as the pair stride"};
 tunables::Int runs_headroom_pct{"renderer.runs.headroom_pct", 50, 25, 1000,
                                 "Percent above the fullest run of recent frames that a run holds"};
+// **The first bound** (W156; renderer.md, "The visible list's runs are sized by the frame"): a
+// tail's arrival lays the runs out at the stride only up to this many entries, so a world's first
+// frames do not hold a list for every pair the tail could ever name (the forest staging at 4K:
+// 16,777,216 entries a run for frames whose fullest held 1,100,232; at 1080p with cascades
+// 15,757,312 for 4,419,461). A frame that fills it grows the runs as any filled run does, and a
+// frame somebody waits for is drawn again (`render_offscreen`). 0 lays them out at the stride.
+// **Why 4,194,304** (32 MiB of list a run): at least twice the fullest camera run the staging's 4K
+// frames fill, so the guess is given back to the fit after its first window (`RtCapacity`'s half
+// rule); a larger bound that the fit passes half of is kept, as 8,388,608 would be at 1080p with
+// cascades (a fit of 6,684,672), which would stand 137 MiB above the stride's fit. There the
+// farthest cascade's first frame fills the bound (4,419,461) and grows to that same fit.
+tunables::Int runs_first_entries{
+    "renderer.runs.first_entries", 4'194'304, 0, 1 << 30,
+    "The most entries a run of the visible list is laid out with when a streamed tail arrives, "
+    "before the frames have said what they draw (W156); 0 follows the pair stride"};
 constexpr u32 k_run_step = 65536;
 constexpr f64 k_run_first_seconds = 2.0;  // the stride is given back after this and a window
 
 }  // namespace
+
+// A bound only where the frames grow the runs: the cull on and the policy on (`step_runs`).
+u32 SceneRenderer::first_runs() const noexcept {
+  if (!resolved_.settings.cull || !runs_by_frame.get()) return 0;
+  return static_cast<u32>(runs_first_entries.get());
+}
 
 void SceneRenderer::step_runs(i64 now_ns) {
   GpuScene& scene = *scene_;

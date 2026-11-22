@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W156",
+  "reason": "W156: a tail's runs start at a first bound (renderer.runs.first_entries): GpuScene::set_first_runs and its member, and renderer.md's paragraph on why the bound and what it costs",
+  "date": "2026-11-22",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.gpu_scene_h.lines": 3,
+    "page:docs/subsystems/renderer.md": 2191
+  }
+}
