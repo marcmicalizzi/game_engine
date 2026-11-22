@@ -85,10 +85,27 @@ const char* LongFrames::cause_name(Cause cause) noexcept {
   return "other";
 }
 
-LongFrames::Frame LongFrames::classify(const scene::FrameRecord& r) noexcept {
+LongFrames::Input LongFrames::input_of(const scene::FrameRecord& r) noexcept {
+  Input in;
+  in.frame = r.frame;
+  in.frame_ms = r.frame_ms;
+  in.sections = r.sections.has_value() ? &*r.sections : nullptr;
+  in.world = r.world.has_value() ? &*r.world : nullptr;
+  if (r.gpu_frame.has_value() && r.gpu_frame->wait_split) {
+    in.wait_split = true;
+    in.wait_gpu_ms = r.gpu_frame->wait_gpu_ms;
+    in.wait_before_ms = r.gpu_frame->wait_before_ms;
+    in.wait_late_ms = r.gpu_frame->wait_late_ms;
+  }
+  in.slowest_pass = r.cpu.slowest_pass;
+  in.slowest_pass_ms = r.cpu.slowest_pass_ms;
+  return in;
+}
+
+LongFrames::Frame LongFrames::classify(const Input& r) noexcept {
   Frame f;
   f.frame = r.frame;
-  if (!r.sections.has_value()) {
+  if (r.sections == nullptr) {
     // A record with no sections (`render.benchmark`'s) names nothing: its interval and "other".
     f.wall_ms = r.frame_ms;
     f.other_ms = r.frame_ms;
@@ -99,15 +116,18 @@ LongFrames::Frame LongFrames::classify(const scene::FrameRecord& r) noexcept {
   const scene::FrameSections& s = *r.sections;
   f.wall_ms = s.wall_ms;
   f.slot_wait_ms = s.slot_wait_ms;
-  f.module_ms = r.world.has_value() ? r.world->game_ms : 0.0;
+  f.module_ms = r.world != nullptr ? r.world->game_ms : 0.0;
   // The host's turn, the fold and the ticks are the world's (FrameWorld::total_ms covers them in
   // both loops); with no `world` block they are the host's turn alone.
-  f.world_ms = r.world.has_value() ? std::max(0.0, r.world->total_ms - f.module_ms)
-                                   : s.host_ms + s.fold_ms + s.ticks_ms;
+  f.world_ms = r.world != nullptr ? std::max(0.0, r.world->total_ms - f.module_ms)
+                                  : s.host_ms + s.fold_ms + s.ticks_ms;
   f.present_ms = s.acquire_ms + s.present_ms + s.pace_ms;
   f.recording_ms = s.begin_ms + s.submit_ms + s.after_ms;
   f.other_ms = std::max(0.0, s.tail_ms - s.pace_ms) + std::max(0.0, s.other_ms);
-  if (s.thread_cpu_ms > 0.0 || s.off_cpu_ms > 0.0) {
+  // The thread's CPU, when the record measured it. A frame shorter than two of the thread clock's
+  // ticks whose CPU reads zero was charged no tick yet, which says nothing.
+  const bool charged = s.thread_cpu_ms > 0.0 || s.wall_ms >= 2.0 * k_thread_cpu_tick_ms;
+  if ((s.thread_cpu_ms > 0.0 || s.off_cpu_ms > 0.0) && charged) {
     f.thread_cpu_ms = s.thread_cpu_ms;
     f.off_cpu_ms = s.off_cpu_ms;
   }
@@ -117,14 +137,13 @@ LongFrames::Frame LongFrames::classify(const scene::FrameRecord& r) noexcept {
   const Part top = largest(parts);
   const std::string_view name(top.name);
   if (name == "slot_wait") {
-    if (r.gpu_frame.has_value() && r.gpu_frame->wait_split) {
-      const scene::FrameGpu& g = *r.gpu_frame;
-      f.wait_gpu_ms = g.wait_gpu_ms;
-      f.wait_before_ms = g.wait_before_ms;
-      f.wait_late_ms = g.wait_late_ms;
-      const Part split[] = {{"wait_gpu", g.wait_gpu_ms},
-                            {"wait_before", g.wait_before_ms},
-                            {"wait_late", g.wait_late_ms}};
+    if (r.wait_split) {
+      f.wait_gpu_ms = r.wait_gpu_ms;
+      f.wait_before_ms = r.wait_before_ms;
+      f.wait_late_ms = r.wait_late_ms;
+      const Part split[] = {{"wait_gpu", r.wait_gpu_ms},
+                            {"wait_before", r.wait_before_ms},
+                            {"wait_late", r.wait_late_ms}};
       const Part which = largest(split);
       const std::string_view w(which.name);
       f.cause = w == "wait_gpu" ? gpu : w == "wait_before" ? gpu_elsewhere : late_wake;
@@ -145,7 +164,7 @@ LongFrames::Frame LongFrames::classify(const scene::FrameRecord& r) noexcept {
   }
   if (name == "world") {
     f.cause = world;
-    if (r.world.has_value()) {
+    if (r.world != nullptr) {
       world_part(*r.world, f);
     } else {
       set_part(f, "host", f.world_ms);
@@ -155,10 +174,11 @@ LongFrames::Frame LongFrames::classify(const scene::FrameRecord& r) noexcept {
     set_part(f, "game", f.module_ms);
   } else if (name == "recording") {
     f.cause = recording;
-    if (!r.cpu.slowest_pass.empty() && r.cpu.slowest_pass_ms >= 0.5 * top.ms) {
+    if (!r.slowest_pass.empty() && r.slowest_pass_ms >= 0.5 * top.ms) {
       char text[40];
-      std::snprintf(text, sizeof(text), "pass:%s", r.cpu.slowest_pass.c_str());
-      set_part(f, text, r.cpu.slowest_pass_ms);
+      std::snprintf(text, sizeof(text), "pass:%.*s", static_cast<int>(r.slowest_pass.size()),
+                    r.slowest_pass.data());
+      set_part(f, text, r.slowest_pass_ms);
     } else {
       const Part rec[] = {{"begin", s.begin_ms}, {"submit", s.submit_ms}, {"after", s.after_ms}};
       const Part which = largest(rec);
@@ -169,18 +189,20 @@ LongFrames::Frame LongFrames::classify(const scene::FrameRecord& r) noexcept {
     set_part(f, "other", top.ms);
   }
   // The thread off the processor for most of that part: its waits for a slot and for the present
-  // path are its own and are taken out first.
+  // path are its own and are taken out first, and so is the one tick the thread clock may not have
+  // charged yet (`k_thread_cpu_tick_ms`).
   if (f.thread_cpu_ms >= 0.0) {
-    const f64 off_beyond_waits = s.off_cpu_ms - (f.slot_wait_ms + f.present_ms);
+    const f64 off_beyond_waits =
+        s.off_cpu_ms - (f.slot_wait_ms + f.present_ms) - k_thread_cpu_tick_ms;
     if (off_beyond_waits >= 0.5 * top.ms) f.cause = descheduled;
   }
   return f;
 }
 
-void LongFrames::add(const scene::FrameRecord& record) noexcept {
+void LongFrames::add(const Input& record) noexcept {
   if (!enabled_) return;
   ++frames_;
-  const f64 wall = record.sections.has_value() ? record.sections->wall_ms : record.frame_ms;
+  const f64 wall = record.sections != nullptr ? record.sections->wall_ms : record.frame_ms;
   if (wall <= k_limit_ms[0]) return;
   const Frame f = classify(record);
   for (u32 l = 0; l < k_limits; ++l)

@@ -1972,12 +1972,16 @@ void take_folded(const renderer::SceneRenderer& renderer, u64& folded,
   folded = stats.folded;
   const PendingFrame& p = pending[stats.last.submission % k_pending_frames];
   if (p.submission != stats.last.submission) return;
+  // A window classifies each frame as it folds (`--report`'s long frames, T212) and keeps a record
+  // only for `--benchmark`: an hour's session keeps ten frames and counts, never a list, and with
+  // no record kept it builds none, since a record's strings and terrain levels allocate.
+  if (!keep) {
+    if (classify != nullptr) view::classify_folded(stats.last, p, *classify);
+    return;
+  }
   scene::FrameRecord record = renderer::frame_record(stats.last, 0, p.frame, p.time);
   view::fill_record(p, record);  // the loop's own numbers and its sections (frame_records.h)
-  // A window classifies each record as it folds (`--report`'s long frames, T212) and keeps it only
-  // for `--benchmark`: an hour's session keeps ten frames and counts, never a list.
   if (classify != nullptr) classify->add(record);
-  if (!keep) return;
   records.push_back(std::move(record));
   if (present_ids != nullptr) present_ids->push_back(p.present_id);
 }
@@ -2586,17 +2590,29 @@ scene::FlythroughPresentation presentation_summary(const Options& options,
   return out;
 }
 
-// Saves a live session's recording: its events, the map's hash, and the session header with the
-// number of ticks it ran, so a replay runs exactly those.
-bool save_recording(const Options& options, const Interactive& it, const view::FlySession& session,
-                    input::InputLog& recording, std::string& error) {
-  view::SessionHeader header = session.header();
-  header.ticks = session.tick().value;
+// What a live session's recording is stamped with before it is saved, at its normal end and on
+// a lost device's turn alike (view::LostRecords::finish_recording, T212): the map's hash and the
+// session header with the number of ticks it ran, so a replay runs exactly those.
+struct RecordingStamp {
+  const Interactive* it = nullptr;
+  const view::FlySession* session = nullptr;
+};
+void stamp_recording(void* context, input::InputLog& recording) {
+  const RecordingStamp& s = *static_cast<const RecordingStamp*>(context);
+  view::SessionHeader header = s.session->header();
+  header.ticks = s.session->tick().value;
   // A module held past the walker's first tick (ABI 7, `game_ready_milestone`): the tick it was
   // released at, which a replay holds it to instead of its own milestones (fly_camera.h).
   if (game_ready_milestone() > 5 && !game_held()) header.game_release_tick = game_first_tick();
-  recording.set_map(it.map);
+  recording.set_map(s.it->map);
   recording.set_session(view::session_to_json(header));
+}
+
+// Saves a live session's recording: its events, stamped (`stamp_recording`).
+bool save_recording(const Options& options, const Interactive& it, const view::FlySession& session,
+                    input::InputLog& recording, std::string& error) {
+  RecordingStamp stamp{&it, &session};
+  stamp_recording(&stamp, recording);
   const io::Status status = recording.save(options.record_input);
   if (status != io::Status::Ok) {
     error = "cannot write " + options.record_input + ": " + io::status_name(status);
@@ -2676,6 +2692,8 @@ int run_reference(Options& options) {
   const gfx::DeviceOptions device_options = device_options_of(options);
   gfx::Device device;
   if (!device.create(device_options, &error)) return unavailable("no Vulkan device", error);
+  // T212: a loss here writes the report (and the trace); `--reference` keeps no records.
+  device.set_lost_handler(view::on_device_lost, &g_report);
 
   int exit_code = 0;
   renderer::SceneData scene_data;
@@ -3026,7 +3044,9 @@ int run_offscreen(Options& options, Interactive& interactive) {
   bool have_path = false;
   u32 frames = 0;
   Vector<scene::FrameRecord> records;
-  view::lost_records() = {&records, options.benchmark, nullptr, {}, true};  // T212
+  view::lost_records() = {&records, options.benchmark, nullptr, {},
+                          nullptr,  nullptr,           true};  // T212
+  const view::LostRecordsScope lost_scope;                     // cleared before `records` goes
   scene::FlythroughSummary summary;
   summary.format = "engine.flythrough.v1";
   // The moving ground (renderer::MovingGround, request.h): the dune field's time-lapse when
@@ -5927,8 +5947,12 @@ int run_view(int argc, char** argv) {
   input::InputLog recording;           // --record-input
   view::FramePacing pacing;            // the title's last-frame and p99 numbers
   Vector<scene::FrameRecord> records;  // --benchmark
-  // What a lost device's turn writes (T212, session_records.h): the records and the recording.
-  view::lost_records() = {&records, options.benchmark, &recording, options.record_input, false};
+  // What a lost device's turn writes (T212, session_records.h): the records and the recording,
+  // stamped as `save_recording` stamps it; cleared before these locals go.
+  RecordingStamp lost_stamp{&interactive, &session};
+  view::lost_records() = {&records,        options.benchmark, &recording, options.record_input,
+                          stamp_recording, &lost_stamp,       false};
+  const view::LostRecordsScope lost_scope;
   std::string interactive_text = "null";
   // An injected run never takes the real pointer: it happens on somebody's desktop, and its
   // capture is only the edge's decision about which motion is looking. It starts as a window with
@@ -7250,7 +7274,8 @@ int run_view(int argc, char** argv) {
           PendingFrame& p = pending[submissions % k_pending_frames];
           p.submission = submissions;
           p.frame = static_cast<u32>(rendered);
-          p.terrain = renderer::frame_terrain(time_lapse);
+          // Only a kept record carries the time-lapse; its levels allocate (T212, `--report`).
+          if (keep_records) p.terrain = renderer::frame_terrain(time_lapse);
           p.wind = wind_now;
           p.walk.reset();
           if (walker.available()) p.walk = walked;

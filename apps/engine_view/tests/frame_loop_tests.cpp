@@ -241,11 +241,19 @@ TEST_CASE("frame loop: the desert overlook allocates nothing in its second fligh
   const test::TempDir tmp("engine_view_frame_loop_overlook");
   const std::string file = overlook_scene(tmp);
   if (file.empty()) return;
+  // With `--report` (T212's review, M2): its long frames are classified at the end of an offscreen
+  // run, and nothing of it may reach the frame (the window's per-frame classifier is held to zero
+  // by frame_records_tests.cpp's count, since no window's record counts its allocations).
+  const std::string report = tmp.file("report.json");
   const Flown flown =
-      fly(tmp, "desert-overlook", file, committed_dir("desert-overlook") + "/camera-path.json", {});
+      fly(tmp, "desert-overlook", file, committed_dir("desert-overlook") + "/camera-path.json",
+          {"--report", report});
   if (!flown.ran) return;
   CHECK_MESSAGE(flown.allocations == 0, flown.first << '\n' << flown.allocation_sites);
   CHECK(flown.buffers == 0);
+  std::string text;
+  CHECK(io::read_file(report, text) == io::Status::Ok);
+  CHECK(text.find("\"long_frames\"") != std::string::npos);
 }
 
 // Roadmap R158 (renderer.md, "Sampling over time: the accumulation"): with the engine's own

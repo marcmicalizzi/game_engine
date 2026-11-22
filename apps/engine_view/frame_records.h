@@ -17,6 +17,7 @@
 // window loop does, with no device, and the owner's next walk is the proof of the window itself.
 
 #include "fly_camera.h"
+#include "long_frames.h"
 
 #include <core/base/types.h>
 #include <systems/renderer/flythrough.h>
@@ -78,5 +79,17 @@ i64 frame_started(PendingFrame (&pending)[k_pending_frames], u64 submissions, i6
 // ticks, waits, pose, terrain, walk, world and wind, and — once the next frame has started — its
 // sections with the thread's CPU, whose `wall_ms` is the record's `frame_ms` (version 25).
 void fill_record(const PendingFrame& pending, scene::FrameRecord& record);
+
+// A folded frame's sections, which `fill_record` gives its record: none until the next frame has
+// started. `slot_wait_ms` and `resize_ms` are the renderer's (`FrameStats::cpu`).
+std::optional<scene::FrameSections> pending_sections(const PendingFrame& pending, f64 slot_wait_ms,
+                                                     f64 resize_ms);
+
+// **A folded frame classified with no record** (`--report` without `--benchmark`): what
+// `fill_record` and `renderer::frame_record` would give `LongFrames` — the sections, the world,
+// the slot wait's split and the slowest pass — read from the renderer's stats and the loop's entry
+// in place, so a window that keeps no records allocates nothing a frame for its long frames.
+void classify_folded(const renderer::FrameStats& stats, const PendingFrame& pending,
+                     LongFrames& into);
 
 }  // namespace engine::view

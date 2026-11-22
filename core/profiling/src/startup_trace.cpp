@@ -776,19 +776,31 @@ std::string chrome_trace_json(std::span<const TraceEvent> events, i64 origin_ns,
 bool write_chrome_trace(const std::string& path, std::span<const TraceEvent> events, i64 origin_ns,
                         u32 dropped, std::string* error) {
   const std::string text = chrome_trace_json(events, origin_ns, dropped);
+  // Whole or not at all (roadmap T212: a lost device's writes run under a watchdog that may cut
+  // them short): a sibling temporary file, renamed over the path once it is closed, as
+  // foundation/io's `write_file_atomic` does a layer up.
+  const std::string temp = path + ".tmp";
   std::FILE* f = nullptr;
 #if defined(_WIN32)
-  if (fopen_s(&f, path.c_str(), "wb") != 0) f = nullptr;
+  if (fopen_s(&f, temp.c_str(), "wb") != 0) f = nullptr;
 #else
-  f = std::fopen(path.c_str(), "wb");
+  f = std::fopen(temp.c_str(), "wb");
 #endif
   if (f == nullptr) {
-    if (error != nullptr) *error = "cannot open " + path + " for writing";
+    if (error != nullptr) *error = "cannot open " + temp + " for writing";
     return false;
   }
   const bool ok = std::fwrite(text.data(), 1, text.size(), f) == text.size();
   const bool closed = std::fclose(f) == 0;
-  if (!(ok && closed)) {
+#if defined(_WIN32)
+  const bool renamed = ok && closed &&
+                       MoveFileExA(temp.c_str(), path.c_str(),
+                                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+  const bool renamed = ok && closed && std::rename(temp.c_str(), path.c_str()) == 0;
+#endif
+  if (!renamed) {
+    (void)std::remove(temp.c_str());
     if (error != nullptr) *error = "cannot write " + path;
     return false;
   }

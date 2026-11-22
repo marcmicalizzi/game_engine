@@ -147,7 +147,9 @@ JsonValue report_json(const RunReport& report) {
 bool write_report(const RunReport& report, std::string* error) {
   if (report.path.empty()) return true;
   const std::string text = write_json(report_json(report), JsonWriteOptions{.pretty = true}) + "\n";
-  const io::Status status = io::write_file(report.path, text);
+  // Whole or not at all: a run cut short (a lost device's watchdog) leaves the last whole report
+  // or a `.tmp` beside it, never a short file under the name a tester sends back (T212).
+  const io::Status status = io::write_file_atomic(report.path, text);
   if (status != io::Status::Ok) {
     if (error != nullptr)
       *error = "cannot write " + report.path + ": " + std::string(io::status_name(status));

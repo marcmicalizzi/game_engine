@@ -7,10 +7,16 @@
 
 #include "../frame_records.h"
 #include "../long_frames.h"
+#include "../session_records.h"
 
+#include <core/json/json.h>
+#include <core/memory/memory.h>
 #include <core/time/time.h>
+#include <foundation/input/input_log.h>
+#include <systems/renderer/scene_renderer.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <algorithm>
 #include <string_view>
@@ -216,4 +222,166 @@ TEST_CASE("engine-view: a long frame is given the part that held it, one record 
   REQUIRE(json.find("over_100") != nullptr);
   REQUIRE(json.find("longest") != nullptr);
   CHECK(json.find("longest")->size() == 10);
+}
+
+// T212's review, M1: the thread clock's tick. The experiments page's rows (docs/experiments/
+// wide-frame-and-long-frames-2026-11-21.md): a placements commit of 25.2 ms with 15.6 ms of thread
+// CPU is the world's work ("half or more"), however a 36 ms frame round it is cut; frame 2161's
+// 51.8 ms commit with no CPU at all in a 65.2 ms frame is the thread off the processor; and a frame
+// shorter than two ticks whose CPU reads zero was charged no tick, so it is not called off it.
+TEST_CASE("engine-view: a long frame's thread CPU is read to the thread clock's tick") {
+  auto commit_frame = [](u32 frame, f64 wall, f64 commit, f64 thread_cpu, f64 waits) {
+    scene::FrameRecord r = with_sections(frame, wall);
+    r.sections->slot_wait_ms = waits;
+    r.sections->host_ms = commit + 2.8;
+    r.sections->thread_cpu_ms = thread_cpu;
+    r.sections->off_cpu_ms = wall - thread_cpu;
+    scene::FrameWorld w;
+    w.total_ms = commit + 2.8;
+    w.update_ms = commit + 1.0;
+    w.placements_ms = commit + 0.5;
+    w.commit_ms = commit;
+    r.world = w;
+    return r;
+  };
+  // The page's "half or more" commit, in the review's 36 ms frame with 3 ms of waits.
+  const LongFrames::Frame own = LongFrames::classify(commit_frame(1, 36.0, 25.2, 15.6, 3.0));
+  CHECK(std::string_view(own.part) == "update.placements.commit");
+  if (LongFrames::k_thread_cpu_tick_ms > 0.0) {
+    CHECK_MESSAGE(own.cause == LongFrames::world, LongFrames::cause_name(own.cause));
+  }
+  // Frame 2161: 65.2 ms, the commit 51.8 ms, no thread CPU.
+  const LongFrames::Frame off = LongFrames::classify(commit_frame(2161, 65.2, 51.8, 0.0, 0.0));
+  CHECK_MESSAGE(off.cause == LongFrames::descheduled, LongFrames::cause_name(off.cause));
+  // Shorter than two ticks with no CPU charged: unmeasured, never "off the processor".
+  if (LongFrames::k_thread_cpu_tick_ms > 0.0) {
+    const LongFrames::Frame short_one = LongFrames::classify(
+        commit_frame(3, 2.0 * LongFrames::k_thread_cpu_tick_ms - 1.0, 25.0, 0.0, 0.0));
+    CHECK(short_one.cause == LongFrames::world);
+    CHECK(short_one.thread_cpu_ms < 0.0);
+  }
+}
+
+// T212's review, M2: a window with `--report` alone classifies each folded frame from the
+// renderer's stats and its own entry (`classify_folded`) — the same table the record path gives,
+// and no allocation, where building the record allocates (a pass name past the string's small
+// buffer, and the time-lapse's levels).
+TEST_CASE(
+    "engine-view: a window's long frames without records match the records' and allocate nothing") {
+  static const char k_pass[] = "a pass whose name runs past the small-string buffer";
+  renderer::FrameStats stats;
+  stats.cpu.wait_ms = 40.0;
+  stats.cpu.slowest_pass = k_pass;
+  stats.cpu.slowest_pass_ms = 9.0;
+  stats.gpu.valid = true;
+  stats.cpu.wait_split = true;
+  stats.cpu.wait_gpu_ms = 6.0;
+  stats.cpu.wait_late_ms = 34.0;
+  view::PendingFrame p;
+  p.submission = 7;
+  p.frame = 7;
+  p.spans.start = 1'000'000;
+  p.spans.end = 1'000'000 + 50'000'000;
+  p.spans.next_start = 1'000'000 + 60'000'000;  // 60 ms: a long frame
+  p.spans.submit_ms = 12.0;
+  p.start_cpu = 1;
+  p.next_cpu = 1 + 30'000'000;
+  scene::FrameWorld w;
+  w.total_ms = 5.0;
+  p.world = w;
+  // The time-lapse as a kept record carries it: its levels are what the counter sees allocate.
+  scene::FrameTerrain terrain;
+  terrain.levels.resize(3);
+  p.terrain = terrain;
+  // The record path, as `take_folded` keeps a record.
+  LongFrames kept;
+  kept.enable();
+  const u64 record_before = mem::allocations_on_thread();
+  for (u32 i = 0; i < 100; ++i) {
+    scene::FrameRecord record = renderer::frame_record(stats, 0, p.frame, 0.0);
+    view::fill_record(p, record);
+    kept.add(record);
+  }
+  const u64 record_allocations = mem::allocations_on_thread() - record_before;
+  // The window's path with no record.
+  LongFrames folded;
+  folded.enable();
+  const u64 before = mem::allocations_on_thread();
+  for (u32 i = 0; i < 100; ++i)
+    view::classify_folded(stats, p, folded);
+  const u64 allocations = mem::allocations_on_thread() - before;
+  MESSAGE("100 frames: the record path allocated " << record_allocations << ", the window's "
+                                                   << allocations);
+  CHECK(record_allocations > 0);  // the counter sees what the record path costs
+  CHECK(allocations == 0);
+  CHECK(folded.frames() == 100);
+  CHECK(folded.over(1) == 100);
+  CHECK(write_json(folded.json()) == write_json(kept.json()));
+  REQUIRE(!folded.longest().empty());
+  CHECK(std::string_view(folded.longest()[0].part) == std::string_view(kept.longest()[0].part));
+}
+
+// T212's review, H1: the input log a lost device's turn writes is one `--replay-input` takes. A
+// recording saved through the lost path with the loop's stamp passes the replay's own two checks
+// (the session block, `view::session_from_json`; the map's hash, `InputLog::check_map`); the same
+// recording saved with no stamp, as the first leg's handler saved it, fails both.
+TEST_CASE("engine-view: a lost session's input log carries what a replay checks") {
+  const test::TempDir tmp("engine_view_lost_recording");
+  struct Stamp {
+    u64 ticks = 24;
+    u32 calls = 0;
+  } stamp;
+  auto events = [](input::InputLog& log) {
+    for (u32 t = 0; t < 24; ++t)
+      log.record(input::RawEvent{SimTick{t}, input::Source::Key, 26, 1.0f, 0});
+  };
+  u32 accepted = 0, refused = 0;
+  auto replayable = [&](const std::string& path) {
+    input::InputLog log;
+    std::string error;
+    REQUIRE_MESSAGE(log.load(path, &error) == io::Status::Ok, error);
+    view::SessionHeader header;
+    const bool session = view::session_from_json(log.session(), header, &error);
+    input::ActionMap map;
+    const bool known = view::default_fly_map_for(log.map_hash(), map);
+    bool mapped = false;
+    if (known) {
+      const input::InputState probe(map);  // holds the map by address: a named one
+      mapped = log.check_map(probe, &error);
+    }
+    if (!(session && mapped)) MESSAGE(path << ": " << error);
+    (session && mapped ? accepted : refused) += 1;
+    return session && mapped && header.ticks == stamp.ticks && log.events().size() == 24;
+  };
+  input::InputLog recording;
+  events(recording);
+  view::LostRecords held;
+  held.recording = &recording;
+  held.record_input = tmp.file("lost.jsonl");
+  // The test's stand-in for main.cpp's `stamp_recording`: the map and the session block.
+  held.finish_recording = [](void* context, input::InputLog& log) {
+    Stamp& s = *static_cast<Stamp*>(context);
+    ++s.calls;
+    view::SessionHeader header;
+    header.ticks = s.ticks;
+    log.set_map(view::default_fly_map());
+    log.set_session(view::session_to_json(header));
+  };
+  held.finish_context = &stamp;
+  REQUIRE(view::save_lost_recording(held) == io::Status::Ok);
+  CHECK(stamp.calls == 1);
+  CHECK(replayable(held.record_input));
+  // The first leg's handler: saved as it was held.
+  input::InputLog unstamped;
+  events(unstamped);
+  view::LostRecords bare;
+  bare.recording = &unstamped;
+  bare.record_input = tmp.file("bare.jsonl");
+  REQUIRE(view::save_lost_recording(bare) == io::Status::Ok);
+  CHECK_FALSE(replayable(bare.record_input));
+  CHECK(accepted == 1);
+  CHECK(refused == 1);
+  // No recording asked for: nothing written, Ok.
+  const view::LostRecords none;
+  CHECK(view::save_lost_recording(none) == io::Status::Ok);
 }
