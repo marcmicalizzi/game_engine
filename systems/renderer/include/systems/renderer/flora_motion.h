@@ -361,7 +361,18 @@ gfx::InstanceDesc far_lean_record(const gfx::InstanceDesc& rest, Vec2 lean, f32 
 // `flora_lean_on_curve` reads it at a strength (linear under the first point). What a rigid form of
 // a swaying tree, and a far tile's share of one, leans by.
 inline constexpr u32 k_flora_lean_curve_points = 8;
-inline constexpr f32 k_flora_lean_most = 0.6f;  // the most a curve point leans: 31 degrees, 17 % stretch
+// The most a curve point leans: 31 degrees, 17 % stretch.
+inline constexpr f32 k_flora_lean_most = 0.6f;
+// **The dead band** (W158-2; renderer.md, "The far forest leans"): a lean, a still form's or a far
+// tile's sum, under this is exactly none, so its record keeps its rest rows, scale bound and
+// uniform-scale bit and is not written, and a wind that never brings any lean past it starts no
+// walk. Chosen by the nearest a rigid form is drawn (the second ring, from about 48 m, at the
+// default `renderer.flora.sway_m` 0): 0.001 m a metre moves a 20 m crown 2 cm, under the 2.1 cm a
+// pixel spans there at 3840 x 2160 and 55 degrees.
+inline constexpr f32 k_flora_lean_dead = 0.001f;
+// The most a far tile's lean may slide a tree whose foot is off the tile's pivot (W158-2): a
+// tile's lean is held at this over its feet's spread (`FarForestTile::foot_spread`), metres.
+inline constexpr f32 k_far_lean_slide_m = 0.5f;
 f32 flora_lean_curve_strength(u32 point) noexcept;
 void flora_lean_curve(const FloraMesh& mesh, std::span<const Vec3> vertices,
                       std::span<const geometry::ClusterFileMotionVertex> motion,

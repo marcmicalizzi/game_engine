@@ -633,27 +633,50 @@ TEST_CASE("tail budget: an authored tree's rigid form leans from calm") {
       REQUIRE_MESSAGE(scene.prepare_tables(frame++ % 2, update, &error), error);
     }
   };
+  const auto at_rest = [&] {
+    u32 back = 0;
+    u32 i = 0;
+    for (const TileBlock& block : scene.tile_layout().blocks())
+      for (u32 k = 0; k < block.instances; ++k, ++i) {
+        const gfx::InstanceDesc& now = *scene.instance_record(block.inst_begin + k);
+        back += std::memcmp(now.rows, rest[i].rows, sizeof(now.rows)) == 0 &&
+                        now.scale_max == rest[i].scale_max && now.flags == rest[i].flags
+                    ? 1u
+                    : 0u;
+      }
+    return back;
+  };
   blow(0.0f);
   CHECK(scene.flora_stats().still_walks == 0);  // calm: no walk, nothing written
   CHECK(scene.flora_stats().still_writes == 0);
-  blow(0.5f);
+  // **The dead band** (W158-2): the fixture's 0.05 a unit of load leans 0.05 s, so the band's
+  // 0.001 is passed at s = 0.02 (0.1 m/s). Under it no walk starts and every record is its rest.
+  const f32 under = 0.6f * k_flora_lean_dead / 0.05f;  // 0.012: 0.0006 m a metre
+  const f32 over = 1.5f * k_flora_lean_dead / 0.05f;   // 0.03: 0.0015 m a metre
+  blow(under);
+  CHECK(scene.flora_stats().still_walks == 0);
+  CHECK(scene.flora_stats().still_writes == 0);
+  CHECK(at_rest() == 6);
+  blow(over);  // just over: the forms lean, the bit cleared
   CHECK(scene.flora_stats().still_walks == 1);
+  CHECK(scene.flora_stats().still_lean == doctest::Approx(0.05f * over));
+  const u64 just_over = scene.flora_stats().still_writes;
+  CHECK(just_over == 6);
+  blow(under);  // back under in a step of 0.018 (under the 0.02 that starts a walk): the rest
+  CHECK(scene.flora_stats().still_walks == 2);
+  const u32 back_under = at_rest();
+  CHECK(back_under == 6);
+  blow(0.5f);
+  CHECK(scene.flora_stats().still_walks == 3);
   CHECK(scene.flora_stats().still_lean == doctest::Approx(0.05f * 0.5f));  // the law's load at 0.5
-  const u64 leaned = scene.flora_stats().still_writes;
+  const u64 leaned = scene.flora_stats().still_writes - 2 * just_over;
   CHECK(leaned == 6);
   blow(0.0f);
-  u32 back = 0;
-  u32 i = 0;
-  for (const TileBlock& block : scene.tile_layout().blocks())
-    for (u32 k = 0; k < block.instances; ++k, ++i) {
-      const gfx::InstanceDesc& now = *scene.instance_record(block.inst_begin + k);
-      back += std::memcmp(now.rows, rest[i].rows, sizeof(now.rows)) == 0 &&
-                      now.scale_max == rest[i].scale_max && now.flags == rest[i].flags
-                  ? 1u
-                  : 0u;
-    }
-  MESSAGE("leaned " << leaned << " of 6 slots at half a mean day; " << back
-                    << " of 6 back at their rest in the calm");
+  const u32 back = at_rest();
+  MESSAGE("under the band at " << under << ": no walk; just over at " << over << ": " << just_over
+                               << " of 6 leaned; back under: " << back_under
+                               << " of 6 at rest; leaned " << leaned << " of 6 at half a mean day; "
+                               << back << " of 6 back at their rest in the calm");
   CHECK(back == 6);
   CHECK_MESSAGE(scene.validate_tables(&error), error);
   scene.destroy();
@@ -751,6 +774,82 @@ TEST_CASE(
   CHECK(calm.scale_max == rest.scale_max);
   CHECK((calm.flags & gfx::k_instance_uniform_scale) ==
         (rest.flags & gfx::k_instance_uniform_scale));
+  CHECK_MESSAGE(scene.validate_tables(&error), error);
+  scene.destroy();
+}
+
+// W158-2: a far tile on a hillside, its trees' feet spanning 20 m (two of one height, 10 m either
+// side of the pivot: a spread of 10 m), leans at force 12 no more than slides a foot half a metre,
+// where the flat tile above leans by the palm's law; under the dead band it is its rest.
+TEST_CASE("tail budget: a far tile on a slope leans no more than its feet allow") {
+  const test::TempDir tmp("renderer_tail_budget_far_slope");
+  REQUIRE(tmp.ok());
+  Rig rig(tmp);
+  if (!rig.ok) {
+    MESSAGE("skipped: " << rig.why);
+    return;
+  }
+  REQUIRE_FALSE(rig.data.instances.empty());
+  FarForestTile tile;
+  tile.key = far_tile_key(0, 0);
+  tile.mesh = rig.data.instances[0].mesh;
+  tile.instance = 0;
+  tile.trees = 2;
+  tile.foot_y = 1.5f;
+  tile.foot_spread = 10.0f;
+  tile.mix_count = 1;
+  rig.data.far_forest.tiles.push_back(tile);
+  rig.data.far_forest.mix.push_back(FarTileMix{0, 1.0f});
+  rig.data.far_forest.mesh_lean.assign(rig.data.parts.size(), 0.0f);
+  rig.data.far_forest.mesh_lean[0] = 0.05f;
+  rig.data.far_forest.tile_size = 64.0f;
+  std::string error;
+  GpuScene scene;
+  REQUIRE_MESSAGE(scene.create(rig.device, rig.data, rig.resolved, &error), error);
+  REQUIRE(scene.flora_tail());
+  const gfx::InstanceDesc rest = *scene.instance_record(0);
+  u32 frame = 0;
+  const auto blow = [&](f32 strength) {
+    FrameFlora wind;
+    wind.wind_set = true;
+    wind.wind_strength = strength;
+    for (u32 f = 0; f < 4; ++f) {
+      scene.flora_padding_frame(wind, 0.0, gfx::WindLive{}, 0.0);
+      GpuScene::TableUpdate update;
+      REQUIRE_MESSAGE(scene.prepare_tables(frame++ % 2, update, &error), error);
+    }
+  };
+  blow(0.5f * k_flora_lean_dead / 0.05f);  // under the band: no walk, the rest to the bit
+  CHECK(scene.flora_stats().still_walks == 0);
+  CHECK(scene.flora_stats().far_writes == 0);
+  CHECK(std::memcmp(scene.instance_record(0), &rest, sizeof(rest)) == 0);
+  FloraMesh tree;
+  REQUIRE(flora_mesh(
+      std::span<const geometry::ClusterFileMotionPart>(rig.data.sources[0].motion_parts.data(),
+                                                       rig.data.sources[0].motion_parts.size()),
+      std::span<const geometry::ClusterFileStructuralPart>(
+          rig.data.sources[0].structural_parts.data(), rig.data.sources[0].structural_parts.size()),
+      rig.data.sources[0].species, tree));
+  const f32 strength = static_cast<f32>(34.8 / k_flora_wind_mean_m_s);
+  const f32 flat =
+      std::min(0.05f * flora_storm_load(strength, tree.streamline, tree.hold), k_flora_lean_most);
+  const f32 cap = k_far_lean_slide_m / tile.foot_spread;  // 0.05
+  REQUIRE(flat > cap);  // the hold binds: the flat tile leans more
+  blow(strength);
+  CHECK(scene.flora_stats().far_writes == 1);
+  const gfx::InstanceDesc storm = *scene.instance_record(0);
+  const f32 dx = (storm.rows[0].y - rest.rows[0].y) / rest.rows[1].y;
+  const f32 dz = (storm.rows[2].y - rest.rows[2].y) / rest.rows[1].y;
+  const f32 lean = std::sqrt(dx * dx + dz * dz);
+  MESSAGE("force 12: a flat tile leans " << flat << " m a metre; on a 10 m spread " << lean
+                                         << " (cap " << cap << "), a foot 10 m off slides "
+                                         << lean * tile.foot_spread << " m");
+  CHECK(lean == doctest::Approx(cap).epsilon(1e-4));
+  CHECK(lean * tile.foot_spread <= k_far_lean_slide_m * 1.0001f);
+  CHECK((storm.flags & gfx::k_instance_uniform_scale) == 0u);
+  blow(0.0f);
+  CHECK(std::memcmp(scene.instance_record(0)->rows, rest.rows, sizeof(rest.rows)) == 0);
+  CHECK(scene.instance_record(0)->flags == rest.flags);
   CHECK_MESSAGE(scene.validate_tables(&error), error);
   scene.destroy();
 }
