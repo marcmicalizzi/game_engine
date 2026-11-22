@@ -396,7 +396,8 @@ void lamp_on_the_floor(ShadowMode shadows, const char* name) {
   FireDesc lamp;
   lamp.lamp = true;
   lamp.name = "globe";
-  lamp.position = WorldPos{k_lamp_at.x, k_lamp_at.y, k_lamp_at.z};
+  lamp.position = WorldPos{static_cast<f64>(k_lamp_at.x), static_cast<f64>(k_lamp_at.y),
+                           static_cast<f64>(k_lamp_at.z)};
   lamp.intensity = 4.0f;  // the stand-in's units: its sun is 1
   lamp.color = Vec3{1.25f, 0.95f, 0.7f};
   lamp.color = lamp.color * (1.0f / luminance(lamp.color));
@@ -405,8 +406,10 @@ void lamp_on_the_floor(ShadowMode shadows, const char* name) {
   const Vec3 target{1.5f, 0.0f, 0.0f};
   const f32 fov_y = 60.0f * k_pi / 180.0f;
   FrameDesc frame;
-  frame.camera.position = WorldPos{eye.x, eye.y, eye.z};
-  frame.camera.target = WorldPos{target.x, target.y, target.z};
+  frame.camera.position =
+      WorldPos{static_cast<f64>(eye.x), static_cast<f64>(eye.y), static_cast<f64>(eye.z)};
+  frame.camera.target =
+      WorldPos{static_cast<f64>(target.x), static_cast<f64>(target.y), static_cast<f64>(target.z)};
   frame.camera.fov_y = fov_y;
   frame.camera.znear = 0.05f;
 
@@ -511,7 +514,7 @@ void lamp_on_the_floor(ShadowMode shadows, const char* name) {
       surface.position = p;
       surface.normal = brdf_ref::Dvec3{0.0, 1.0, 0.0};
       surface.view = brdf_ref::normalize(e - p);
-      surface.albedo = brdf_ref::splat(k_albedo);
+      surface.albedo = brdf_ref::splat(static_cast<f64>(k_albedo));
       surface.roughness = 1.0;
       const brdf_ref::Dvec3 to_light = lamp_at - p;
       const f64 d2 = brdf_ref::dot(to_light, to_light);
