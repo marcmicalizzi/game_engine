@@ -572,8 +572,9 @@ bool read_pack_classes(const materials::Pack& pack, const content_class::Categor
 }
 
 // **The hosts a recipe's generator names** (C64): its key's hash run against hooks that read no
-// host, each `identify` recorded (resolved beside the recipe, as `GeneratorHosts::resolve` does)
-// and answered with zero, so only the recipe is read. A generator that reaches another mesh names
+// host, each `identify` and each `load` recorded (resolved beside the recipe, as
+// `GeneratorHosts::resolve` does), `identify` answered with zero and `load` refused, so only the
+// recipe is read. A generator that reaches another mesh names
 // it through this seam, because its key covers the host. A recipe with no generator registered,
 // or one that cannot be read, names none here: the build or the load fails on it with its own
 // sentence. False, with `why`, when the generator exists and the recipe reads but its hash refuses
@@ -586,17 +587,23 @@ struct HostProbe {
   Vector<std::string> hosts;
   u32 answered = 0;  // the hooks' answers the hash was given
 };
+// A host the hash asked for, resolved beside the recipe as `GeneratorHosts::resolve` does.
+void probe_records(HostProbe& probe, std::string_view path) {
+  ++probe.answered;
+  const std::string_view dir = io::parent_path(probe.dependant);
+  probe.hosts.push_back(io::is_absolute_path(path) || dir.empty() ? std::string(path)
+                                                                  : io::join_path(dir, path));
+}
 bool probe_identify(void* context, std::string_view path, u64& out, std::string&) {
-  auto* probe = static_cast<HostProbe*>(context);
-  ++probe->answered;
-  const std::string_view dir = io::parent_path(probe->dependant);
-  probe->hosts.push_back(io::is_absolute_path(path) || dir.empty() ? std::string(path)
-                                                                   : io::join_path(dir, path));
+  probe_records(*static_cast<HostProbe*>(context), path);
   out = 0;
   return true;
 }
-bool probe_load(void* context, std::string_view, assets::GeneratorHostMesh&, std::string& error) {
-  ++static_cast<HostProbe*>(context)->answered;
+// Recorded as `identify` records one, whether or not the hash goes on without the answer: a hash
+// that asks for a host is over it, and its recipe is decided with it (C64).
+bool probe_load(void* context, std::string_view path, assets::GeneratorHostMesh&,
+                std::string& error) {
+  probe_records(*static_cast<HostProbe*>(context), path);
   error = "the class probe reads no host";
   return false;
 }

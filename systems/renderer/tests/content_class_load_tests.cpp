@@ -1865,6 +1865,82 @@ TEST_CASE("content classes at load: a listed container's ladder stands over an u
   g_cover_mesh = nullptr;
 }
 
+namespace {
+
+// A generator of the test's own whose key hash reaches its host through `load` rather than
+// `identify`, and goes on without it when that fails: no generator in the tree does, and the seam
+// allows it. It builds `g_cover_mesh`, as the fixture cover does.
+bool fixture_loader_hash_with(std::span<const u8> bytes, const assets::MeshGeneratorInputs& inputs,
+                              u64& out, std::string& error) {
+  JsonValue recipe;
+  const std::string_view text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+  const JsonValue* host = parse_json(text, recipe).ok ? recipe.find("host") : nullptr;
+  if (host == nullptr || !host->is_string()) {
+    error = "a fixture recipe names its host";
+    return false;
+  }
+  out = hash_bytes(bytes.data(), bytes.size());
+  assets::GeneratorHostMesh mesh;
+  std::string ignored;
+  if (inputs.hosts != nullptr &&
+      inputs.hosts->load(inputs.hosts->context, host->as_string(), mesh, ignored))
+    out = hash_combine(out, 1u);
+  return true;
+}
+bool fixture_loader_build(std::span<const u8> bytes, const assets::MeshGeneratorInputs& inputs,
+                          const geometry::ClusterLodOptions& lod, u32 page_bytes,
+                          geometry::ClusterFileData& out, std::string& error) {
+  u64 identity = 0;
+  if (!fixture_loader_hash_with(bytes, inputs, identity, error)) return false;
+  if (g_cover_mesh == nullptr) {
+    error = "the fixture loader has no mesh to build";
+    return false;
+  }
+  out = *g_cover_mesh;
+  out.source_hash = identity;
+  out.build_key = assets::generated_mesh_build_key(
+      identity, assets::MeshGeneratorInputs{inputs.materials}, lod, page_bytes);
+  return true;
+}
+constexpr assets::MeshGeneratorDesc k_fixture_loader{.name = "fixtureloader",
+                                                     .source_hash = fixture_host_hash,
+                                                     .build = fixture_loader_build,
+                                                     .source_hash_with = fixture_loader_hash_with};
+
+}  // namespace
+
+// **A host asked through `load` is a host** (C64): the class probe records the path a generator's
+// hash asks `load` for as it records one asked through `identify`, whether or not the hash used
+// the answer, so a recipe over it is decided with that host: at the host's level when the host
+// reads, and unreadable when it does not.
+TEST_CASE("content classes at load: a host a recipe's hash loads decides the recipe") {
+  need_generator(k_fixture_loader);
+  const geometry::ClusterFileData cover = plain_grid(5);
+  g_cover_mesh = &cover;
+  std::string error;
+  for (const u8 level : {u8{0}, u8{1}, u8{2}}) {
+    CAPTURE(static_cast<u32>(level));  // 0: the host is missing
+    const test::TempDir tmp("renderer_classes_host_loaded");
+    REQUIRE(tmp.ok());
+    if (level != 0) (void)write_grid(tmp, "statue.clusters", 17, "statue.png", glow_record(level));
+    REQUIRE(io::write_file(tmp.file("moss.fixtureloader.json"), R"({"host":"statue.clusters"})") ==
+            io::Status::Ok);
+    Grid moss;
+    moss.path = tmp.file("moss.fixtureloader.json");
+    SceneDesc desc = scene_of(tmp, {&moss});
+    desc.view_policy = policy_in(k_dim_policies, "glow-dim");
+    SceneData scene;
+    REQUIRE_MESSAGE(load_scene(desc, scene, error), error);
+    CHECK(scene.instances.size() == (level == 1 ? 1u : 0u));
+    CHECK(scene.load.unreadable_omitted == (level == 0 ? 1u : 0u));
+    if (level == 2) {
+      REQUIRE(row(scene, "fixture_glow") != nullptr);
+      CHECK(row(scene, "fixture_glow")->omitted == 1);
+    }
+  }
+  g_cover_mesh = nullptr;
+}
+
 // **The outcome does not depend on the order of the meshes** (C64): a listed classified container,
 // a cover over it with its own sidecar, a cover over a host the scene does not list carrying a
 // second category, a glTF whose sidecar names both and a ground whose sidecar names the second,
