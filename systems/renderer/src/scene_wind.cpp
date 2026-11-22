@@ -967,6 +967,8 @@ void GpuScene::still_lean_frame(const FrameFlora& frame, f64 sky_time_s,
         still_mesh_lean_[m] = !(past > 0.0f) ? 0.0f
                               : from > 0.0f  ? k * past
                                              : held(src, k, strength);  // from calm: as posed
+        // Held where a rigid form can show it, a placements' still form's linear lean too (W158).
+        still_mesh_lean_[m] = std::min(still_mesh_lean_[m], k_flora_lean_most);
         most = std::max(most, still_mesh_lean_[m]);
       }
       // **The far tiles** (W158): each source mesh's whole mean lean, from calm, as an authored
@@ -974,7 +976,7 @@ void GpuScene::still_lean_frame(const FrameFlora& frame, f64 sky_time_s,
       far_mesh_lean_.resize(far.mesh_lean.size(), 0.0f);
       for (u32 m = 0; m < far.mesh_lean.size(); ++m) {
         const f32 k = far.mesh_lean[m];
-        far_mesh_lean_[m] = k > 0.0f ? held(m, k, strength) : 0.0f;
+        far_mesh_lean_[m] = k > 0.0f ? std::min(held(m, k, strength), k_flora_lean_most) : 0.0f;
       }
       if (far_lean_.empty() && !far.mesh_lean.empty()) {
         // Kept from the first walk on: the records as the hand-off last placed them, none leaned.
