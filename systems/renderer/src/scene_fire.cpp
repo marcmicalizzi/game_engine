@@ -77,7 +77,9 @@ bool read_lamp(const scene::Lamp& in, FireDesc& out, std::string* error) {
     return fail("color is not three numbers in [0, 1000]");
   if (!in_range(in.intensity, 0.0f, 1.0e7f)) return fail("intensity is not in [0, 1e7]");
   if (!in_range(in.reach_m, 0.0f, k_fire_max_reach_m)) return fail("reach_m is not in [0, 400]");
+  if (!in_range(in.radius_m, 0.0f, 5.0f)) return fail("radius_m is not in [0, 5]");
   out = FireDesc{};
+  out.radius_m = in.radius_m;  // the globe's: where a shadow ray stops short of the light
   out.name = in.name;
   out.position = in.position;
   out.intensity = in.intensity;
@@ -189,23 +191,6 @@ FrameFire burn_fire(const FireDesc& desc, const WorldPos& base, f32 scale, f64 t
   FrameFire out;
   const f32 s = std::isfinite(scale) && scale > 0.0f ? scale : 1.0f;
   out.base = base;
-  if (desc.lamp) {
-    // A lamp: its own colour and intensity, steady, at the reach it names or the fire's rule; a
-    // prop's scale scales it as a fire's does (the intensity by the square).
-    out.base_intensity = desc.intensity * s * s;
-    out.reach_m = desc.reach_m > 0.0f ? std::min(desc.reach_m * s, k_fire_max_reach_m)
-                                      : fire_light_reach(out.base_intensity);
-    out.base_intensity *= units;
-    out.intensity = out.base_intensity;
-    out.color = desc.color;
-    out.flame_color = desc.color;
-    out.radius_m = 0.0f;
-    out.height_m = 0.0f;
-    out.smoke_density = 0.0f;
-    out.flicker = 0.0f;
-    out.seed = desc.seed;
-    return out;
-  }
   out.radius_m = desc.radius_m * s;
   out.height_m = desc.height_m * s;
   out.base_intensity = desc.intensity * s * s;
@@ -222,6 +207,27 @@ FrameFire burn_fire(const FireDesc& desc, const WorldPos& base, f32 scale, f64 t
   out.smoke_rise_m_s = desc.smoke_rise_m_s;
   out.smoke_spread = desc.smoke_spread;
   out.flicker = desc.flicker;
+  out.seed = desc.seed;
+  return out;
+}
+
+FrameFire burn_lamp(const FireDesc& desc, const WorldPos& base, f32 scale, f32 units) noexcept {
+  FrameFire out;
+  const f32 s = std::isfinite(scale) && scale > 0.0f ? scale : 1.0f;
+  out.base = base;
+  // A lamp: its own colour and intensity, steady, at the reach it names or the fire's rule; a
+  // prop's scale scales it as a fire's does (the intensity by the square).
+  out.base_intensity = desc.intensity * s * s;
+  out.reach_m = desc.reach_m > 0.0f ? std::min(desc.reach_m * s, k_fire_max_reach_m)
+                                    : fire_light_reach(out.base_intensity);
+  out.base_intensity *= units;
+  out.intensity = out.base_intensity;
+  out.color = desc.color;
+  out.flame_color = desc.color;
+  out.radius_m = desc.radius_m * s;  // the globe's, where its shadow rays stop
+  out.height_m = 0.0f;
+  out.smoke_density = 0.0f;
+  out.flicker = 0.0f;
   out.seed = desc.seed;
   return out;
 }
@@ -272,6 +278,7 @@ u32 add_lamp_lights(std::span<const FrameFire> lamps, const WorldPos& eye,
     light.position_radius = Vec4{relative(l.base, eye), l.reach_m};
     light.color_intensity = Vec4{l.color, l.intensity};
     light.direction_type = Vec4{0.0f, 0.0f, 0.0f, gfx::k_light_point};
+    light.spot = Vec4{0.0f, 0.0f, l.radius_m, 0.0f};  // the globe: shadow rays stop at its glass
     ++added;
   }
   return added;
@@ -383,9 +390,9 @@ void FireSet::burn(f64 time_s, f32 units, Vector<FrameFire>& out) const {
 void FireSet::burn_lamps(f32 units, Vector<FrameFire>& out) const {
   out.clear();
   for (const FireDesc& lamp : fixed_lamps_)
-    out.push_back(burn_fire(lamp, lamp.position, 1.0f, 0.0, units));
+    out.push_back(burn_lamp(lamp, lamp.position, 1.0f, units));
   for (const Placed& p : placed_lamps_)
-    out.push_back(burn_fire(prop_lamps_[p.desc], p.base, p.scale, 0.0, units));
+    out.push_back(burn_lamp(prop_lamps_[p.desc], p.base, p.scale, units));
 }
 
 }  // namespace engine::renderer

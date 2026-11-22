@@ -20,7 +20,7 @@
 // **A lamp** (`engine.scene.Lamp`, roadmap R86; renderer.md, "Lamps") is a fire's light and nothing
 // else: a point light of a colour, an intensity and a reach, with no flame, no smoke and no
 // flicker, read into a `FireDesc` whose `lamp` is set, kept and placed by the same `FireSet` (a
-// scene's `lamps`, a prop's `lamp`), burnt by `burn_fire` at its own steady light into a list of
+// scene's `lamps`, a prop's `lamp`), burnt by `burn_lamp` at its own steady light into a list of
 // its own that the medium is never handed, and lit by `add_lamp_lights`: every lamp of the frame,
 // up to `k_max_lamps`, behind the fires. Its globe is the mesh's emissive material, not the
 // renderer's.
@@ -61,7 +61,8 @@ struct FireDesc {
   f32 flicker = 0.5f;
   u32 seed = 1;
   // **A lamp** (`read_lamp`): no flame, no smoke, no flicker; its light is `color` (linear Rec. 709
-  // of luminance 1) at `intensity`, ending at `reach_m` (0: `fire_light_reach` of the intensity).
+  // of luminance 1) at `intensity`, ending at `reach_m` (0: `fire_light_reach` of the intensity),
+  // and `radius_m` is its globe's, where a traced shadow ray stops short of the light.
   bool lamp = false;
   Vec3 color{1.0f, 1.0f, 1.0f};
   f32 reach_m = 0.0f;
@@ -139,6 +140,12 @@ f32 fire_light_reach(f32 intensity) noexcept;
 // sun units, 128,000 lux each), 1 for the stand-in; the reach is the block's, worked out in
 // candela.
 FrameFire burn_fire(const FireDesc& desc, const WorldPos& base, f32 scale, f64 time_s,
+                    f32 units = 1.0f) noexcept;
+// One lamp (`FireDesc::lamp`): steady at any clock, its colour and intensity the block's (the
+// intensity by the square of `scale`), its reach its own or `fire_light_reach`, its `radius_m` the
+// globe's; no flame and no smoke. Its own function, so a fire's light is computed by the code it
+// was.
+FrameFire burn_lamp(const FireDesc& desc, const WorldPos& base, f32 scale,
                     f32 units = 1.0f) noexcept;
 
 // **The light array's fires**: up to `k_max_fire_lights` of `fires` — nearest the eye first, ties

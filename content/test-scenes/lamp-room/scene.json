@@ -21,14 +21,14 @@
     {"mesh": 2, "name": "blue globe", "translation": [2.6, 1.9, 1.5]}
   ],
   "lamps": [
-    {"name": "over the table", "position": [0.4, 2.2, -0.6], "color": [1.0, 0.82, 0.58], "intensity": 40},
-    {"name": "on the wall", "position": [2.6, 1.9, 1.5], "color": [0.45, 0.7, 1.0], "intensity": 25}
+    {"name": "over the table", "position": [0.4, 2.2, -0.6], "color": [1.0, 0.82, 0.58], "intensity": 40, "radius_m": 0.1},
+    {"name": "on the wall", "position": [2.6, 1.9, 1.5], "color": [0.45, 0.7, 1.0], "intensity": 25, "radius_m": 0.1}
   ],
   "props": [
     {
       "name": "lantern",
       "mesh": "globe-warm.gltf",
-      "lamp": {"name": "lantern", "position": [0, 0, 0], "color": [1.0, 0.82, 0.58], "intensity": 40}
+      "lamp": {"name": "lantern", "position": [0, 0, 0], "color": [1.0, 0.82, 0.58], "intensity": 40, "radius_m": 0.1}
     }
   ]
 }

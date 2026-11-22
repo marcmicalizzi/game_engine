@@ -116,27 +116,27 @@ TEST_CASE("lamp: a lamp burns steady at its colour, intensity and reach") {
   lamp.intensity = 40.0f;
   lamp.color = Vec3{1.2f, 0.95f, 0.7f};
   const WorldPos at{5.0, 2.0, -1.0};
-  const FrameFire a = burn_fire(lamp, at, 1.0f, 0.0);
-  const FrameFire b = burn_fire(lamp, at, 1.0f, 94687200.25);
+  const FrameFire a = burn_lamp(lamp, at, 1.0f);
+  const FrameFire b = burn_lamp(lamp, at, 1.0f);
   // No flicker: any clock is the same light, and the light is the block's.
   CHECK(a.intensity == 40.0f);
   CHECK(b.intensity == a.intensity);
   CHECK(b.color == a.color);
   CHECK(a.color == lamp.color);
   CHECK(a.base == at);
-  // No flame and no smoke for the medium to draw.
-  CHECK(a.radius_m == 0.0f);
+  // No flame and no smoke for the medium to draw; its radius is the globe's.
+  CHECK(a.radius_m == lamp.radius_m);
   CHECK(a.height_m == 0.0f);
   CHECK(a.smoke_density == 0.0f);
   // The reach: the fire's rule when it names none, its own when it does, scaled with a prop.
   CHECK(a.reach_m == fire_light_reach(40.0f));
   lamp.reach_m = 6.0f;
-  CHECK(burn_fire(lamp, at, 1.0f, 0.0).reach_m == 6.0f);
-  const FrameFire big = burn_fire(lamp, at, 2.0f, 0.0);
+  CHECK(burn_lamp(lamp, at, 1.0f).reach_m == 6.0f);
+  const FrameFire big = burn_lamp(lamp, at, 2.0f);
   CHECK(big.reach_m == 12.0f);
   CHECK(big.intensity == 160.0f);
   // With a sky, sun units: the reach is the candela's either way.
-  const FrameFire sky = burn_fire(lamp, at, 1.0f, 0.0, 1.0f / 128000.0f);
+  const FrameFire sky = burn_lamp(lamp, at, 1.0f, 1.0f / 128000.0f);
   CHECK(sky.reach_m == 6.0f);
   CHECK(sky.intensity * 128000.0f == doctest::Approx(40.0).epsilon(1e-6));
 }
@@ -257,59 +257,94 @@ void put_u32(std::string& bytes, u32 v) {
   bytes.append(b, 4);
 }
 
+// The globe: a closed cube 0.2 m across round the lamp's centre, faces outward. It stands in the
+// lamp's every shadow ray unless the ray stops at the globe's radius (`FireDesc::radius_m`).
+constexpr f32 k_globe_half = 0.1f;
+constexpr f32 k_globe_radius = 0.18f;  // past the cube's corners, 0.173 m out
+const Vec3 k_lamp_at{0.0f, 1.5f, 0.0f};
+
+struct Quad {
+  Vec3 centre, u, v, normal;  // half-axes; counter-clockwise seen from `normal`
+};
+
 bool write_room(const test::TempDir& dir, std::string& gltf_path) {
-  // Eight vertices: the floor's four, then the slab's, each a square seen counter-clockwise from
-  // above (a normal of +y).
-  const Vec3 v[8] = {{-6.0f, 0.0f, -6.0f},
-                     {6.0f, 0.0f, -6.0f},
-                     {6.0f, 0.0f, 6.0f},
-                     {-6.0f, 0.0f, 6.0f},
-                     {k_slab_x0, k_slab_y, -k_slab_z},
-                     {k_slab_x1, k_slab_y, -k_slab_z},
-                     {k_slab_x1, k_slab_y, k_slab_z},
-                     {k_slab_x0, k_slab_y, k_slab_z}};
+  // The floor and the slab, each facing up, then the globe's six faces.
+  Vector<Quad> quads;
+  quads.push_back({Vec3{0.0f, 0.0f, 0.0f}, Vec3{6.0f, 0.0f, 0.0f}, Vec3{0.0f, 0.0f, 6.0f},
+                   Vec3{0.0f, 1.0f, 0.0f}});
+  quads.push_back({Vec3{0.5f * (k_slab_x0 + k_slab_x1), k_slab_y, 0.0f},
+                   Vec3{0.5f * (k_slab_x1 - k_slab_x0), 0.0f, 0.0f}, Vec3{0.0f, 0.0f, k_slab_z},
+                   Vec3{0.0f, 1.0f, 0.0f}});
+  for (u32 axis = 0; axis < 3; ++axis) {
+    for (const f32 sign : {-1.0f, 1.0f}) {
+      Vec3 n{}, u{}, v{};
+      (&n.x)[axis] = sign;
+      (&u.x)[(axis + 1) % 3] = k_globe_half;
+      (&v.x)[(axis + 2) % 3] = k_globe_half;
+      quads.push_back({k_lamp_at + n * k_globe_half, u, v, n});
+    }
+  }
+  const u32 vertices = static_cast<u32>(quads.size()) * 4;
+  const u32 indices = static_cast<u32>(quads.size()) * 6;
   std::string bytes;
-  for (const Vec3& p : v) {
-    put_f32(bytes, p.x);
-    put_f32(bytes, p.y);
-    put_f32(bytes, p.z);
+  for (const Quad& q : quads) {
+    const bool flip = dot(cross(q.u, q.v), q.normal) < 0.0f;
+    const Vec3 u = flip ? q.v : q.u;
+    const Vec3 v = flip ? q.u : q.v;
+    const Vec3 corners[4] = {q.centre - u - v, q.centre + u - v, q.centre + u + v,
+                             q.centre - u + v};
+    for (const Vec3& p : corners) {
+      put_f32(bytes, p.x);
+      put_f32(bytes, p.y);
+      put_f32(bytes, p.z);
+    }
   }
-  for (u32 i = 0; i < 8; ++i) {
+  for (const Quad& q : quads) {
+    for (u32 i = 0; i < 4; ++i) {
+      put_f32(bytes, q.normal.x);
+      put_f32(bytes, q.normal.y);
+      put_f32(bytes, q.normal.z);
+    }
+  }
+  for (u32 i = 0; i < vertices; ++i) {
     put_f32(bytes, 0.0f);
-    put_f32(bytes, 1.0f);
     put_f32(bytes, 0.0f);
   }
-  for (u32 i = 0; i < 8; ++i) {
-    put_f32(bytes, 0.0f);
-    put_f32(bytes, 0.0f);
+  for (u32 q = 0; q < quads.size(); ++q) {
+    const u32 b = q * 4;
+    for (const u32 i : {b, b + 1, b + 2, b, b + 2, b + 3})
+      put_u32(bytes, i);
   }
-  const u32 idx[12] = {0, 3, 2, 0, 2, 1, 4, 7, 6, 4, 6, 5};
-  for (u32 i : idx)
-    put_u32(bytes, i);
   const std::string bin = dir.file("room.bin");
   if (io::write_file(bin, bytes) != io::Status::Ok) return false;
-  const std::string json = R"({
-  "asset": {"version": "2.0"},
-  "scene": 0, "scenes": [{"nodes": [0]}],
+  const u32 vec3_bytes = vertices * 12;
+  const u32 uv_bytes = vertices * 8;
+  const auto n = [](u32 v) { return std::to_string(v); };
+  const std::string json =
+      R"({"asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}],
   "nodes": [{"mesh": 0, "name": "room"}],
   "meshes": [{"name": "room", "primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1,
     "TEXCOORD_0": 2}, "indices": 3, "material": 0}]}],
   "materials": [{"name": "grey", "pbrMetallicRoughness": {"baseColorFactor": [0.5, 0.5, 0.5, 1],
     "metallicFactor": 0, "roughnessFactor": 1}}],
-  "buffers": [{"byteLength": 336, "uri": "room.bin"}],
-  "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 96},
-                  {"buffer": 0, "byteOffset": 96, "byteLength": 96},
-                  {"buffer": 0, "byteOffset": 192, "byteLength": 64},
-                  {"buffer": 0, "byteOffset": 256, "byteLength": 48}],
+  "buffers": [{"byteLength": )" +
+      n(static_cast<u32>(bytes.size())) + R"(, "uri": "room.bin"}],
+  "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": )" +
+      n(vec3_bytes) + R"(}, {"buffer": 0, "byteOffset": )" + n(vec3_bytes) + R"(, "byteLength": )" +
+      n(vec3_bytes) + R"(}, {"buffer": 0, "byteOffset": )" + n(2 * vec3_bytes) +
+      R"(, "byteLength": )" + n(uv_bytes) + R"(}, {"buffer": 0, "byteOffset": )" +
+      n(2 * vec3_bytes + uv_bytes) + R"(, "byteLength": )" + n(indices * 4) + R"(}],
   "accessors": [
-    {"bufferView": 0, "componentType": 5126, "count": 8, "type": "VEC3",
-     "min": [-6, 0, -6], "max": [6, 0.75, 6]},
-    {"bufferView": 1, "componentType": 5126, "count": 8, "type": "VEC3"},
-    {"bufferView": 2, "componentType": 5126, "count": 8, "type": "VEC2"},
-    {"bufferView": 3, "componentType": 5125, "count": 12, "type": "SCALAR"}]
-})";
+    {"bufferView": 0, "componentType": 5126, "count": )" +
+      n(vertices) + R"(, "type": "VEC3", "min": [-6, 0, -6], "max": [6, 1.6, 6]},
+    {"bufferView": 1, "componentType": 5126, "count": )" +
+      n(vertices) + R"(, "type": "VEC3"},
+    {"bufferView": 2, "componentType": 5126, "count": )" +
+      n(vertices) + R"(, "type": "VEC2"},
+    {"bufferView": 3, "componentType": 5125, "count": )" +
+      n(indices) + R"(, "type": "SCALAR"}]})";
   gltf_path = dir.file("room.gltf");
-  return bytes.size() == 336 && io::write_file(gltf_path, json) == io::Status::Ok;
+  return io::write_file(gltf_path, json) == io::Status::Ok;
 }
 
 struct LampRig {
@@ -361,10 +396,11 @@ void lamp_on_the_floor(ShadowMode shadows, const char* name) {
   FireDesc lamp;
   lamp.lamp = true;
   lamp.name = "globe";
-  lamp.position = WorldPos{0.0, 1.5, 0.0};
+  lamp.position = WorldPos{k_lamp_at.x, k_lamp_at.y, k_lamp_at.z};
   lamp.intensity = 4.0f;  // the stand-in's units: its sun is 1
   lamp.color = Vec3{1.25f, 0.95f, 0.7f};
   lamp.color = lamp.color * (1.0f / luminance(lamp.color));
+  lamp.radius_m = k_globe_radius;  // the cube round it is its globe
   const Vec3 eye{1.5f, 7.0f, 3.0f};
   const Vec3 target{1.5f, 0.0f, 0.0f};
   const f32 fov_y = 60.0f * k_pi / 180.0f;
@@ -377,7 +413,7 @@ void lamp_on_the_floor(ShadowMode shadows, const char* name) {
   LampRig lit;
   if (!lit.build(device, room, shadows, &lamp)) {
     REQUIRE_MESSAGE(lit.error == "unavailable", lit.error);
-    MESSAGE("skipped: " << name << " is not available here");
+    MESSAGE("skipped: " << std::string(name) << " is not available here");
     return;
   }
   LampRig dark;
@@ -401,6 +437,27 @@ void lamp_on_the_floor(ShadowMode shadows, const char* name) {
   REQUIRE(a.light.size() == size_t{k_width} * k_height * 3);
   REQUIRE(b.light.size() == a.light.size());
   CHECK(c.light == b.light);
+  // The same lamp with no radius under traced shadows: its globe stands in every shadow ray, and
+  // the floor is as dark as with no lamp. Under the maps, which shadow no lamp, it is the lamp.
+  FireDesc bare = lamp;
+  bare.radius_m = 0.0f;
+  LampRig enclosed;
+  REQUIRE_MESSAGE(enclosed.build(device, room, shadows, &bare), enclosed.error);
+  CapturedFrame g;
+  REQUIRE_MESSAGE(enclosed.renderer.capture(frame, channels, g, &enclosed.error), enclosed.error);
+  if (traced) {
+    // Dark but for what R115's faint-light rule adds untested (renderer.md, "A light too faint to
+    // test"): at most 2^-12 of a pixel's other light, which a half's rounding may double.
+    f64 most = 0.0;
+    for (u32 i = 0; i < g.light.size(); ++i) {
+      const f64 rest = static_cast<f64>(b.light[i]);
+      most = std::max(most, std::fabs(static_cast<f64>(g.light[i]) - rest) / (rest + 1e-4));
+    }
+    MESSAGE("a globe with no radius moved the floor by at most " << most << " of its light");
+    CHECK(most <= 1.0 / 512.0);
+  } else {
+    CHECK(g.light == a.light);
+  }
 
   // Each pixel's ray onto the floor, as look_at and the projection lay it out (row 0 the top).
   const Vec3 f = normalize(target - eye);
@@ -408,16 +465,30 @@ void lamp_on_the_floor(ShadowMode shadows, const char* name) {
   const Vec3 u = cross(s, f);
   const f64 t = std::tan(0.5 * static_cast<f64>(fov_y));
   const f64 aspect = static_cast<f64>(k_width) / k_height;
-  const brdf_ref::Dvec3 lamp_at{0.0, 1.5, 0.0};
+  const brdf_ref::Dvec3 lamp_at = brdf_ref::dvec3(k_lamp_at);
   u32 checked = 0, shadowed = 0, outside = 0;
   f64 worst = 0.0;
-  for (u32 py = 2; py < k_height; py += 5) {
-    for (u32 px = 2; px < k_width; px += 5) {
+  for (u32 py = 2; py < k_height; py += 3) {
+    for (u32 px = 2; px < k_width; px += 3) {
       const f64 xn = (2.0 * (px + 0.5) / k_width - 1.0) * t * aspect;
       const f64 yn = (1.0 - 2.0 * (py + 0.5) / k_height) * t;
       const brdf_ref::Dvec3 d = brdf_ref::normalize(brdf_ref::dvec3(f) + brdf_ref::dvec3(s) * xn +
                                                     brdf_ref::dvec3(u) * yn);
       const brdf_ref::Dvec3 e = brdf_ref::dvec3(eye);
+      // The globe seen from above, and a margin about it: not the floor (the ray's slab test
+      // against its box grown by 5 cm).
+      {
+        f64 t0 = 0.0, t1 = 1e30;
+        const f64 lo[3] = {lamp_at.x - 0.15, lamp_at.y - 0.15, lamp_at.z - 0.15};
+        const f64 hi[3] = {lamp_at.x + 0.15, lamp_at.y + 0.15, lamp_at.z + 0.15};
+        const f64 o[3] = {e.x, e.y, e.z}, dd[3] = {d.x, d.y, d.z};
+        for (u32 k = 0; k < 3; ++k) {
+          const f64 a0 = (lo[k] - o[k]) / dd[k], a1 = (hi[k] - o[k]) / dd[k];
+          t0 = std::max(t0, std::min(a0, a1));
+          t1 = std::min(t1, std::max(a0, a1));
+        }
+        if (t0 <= t1) continue;
+      }
       // The slab seen from above, and a margin about it: not the floor.
       const f64 ts = (static_cast<f64>(k_slab_y) - e.y) / d.y;
       const f64 sx = e.x + d.x * ts, sz = e.z + d.z * ts;
@@ -462,11 +533,11 @@ void lamp_on_the_floor(ShadowMode shadows, const char* name) {
       (in_shadow ? shadowed : outside) += 1;
     }
   }
-  MESSAGE(name << ": " << checked << " floor pixels held to the reference (" << shadowed
-               << " in the slab's shadow from the lamp, " << outside << " outside it), worst at "
-               << worst << " of the allowance");
-  CHECK(checked > 400);
-  CHECK(shadowed > 10);
+  MESSAGE(std::string(name) << ": " << checked << " floor pixels held to the reference ("
+                            << shadowed << " in the slab's shadow from the lamp, " << outside
+                            << " outside it), worst at " << worst << " of the allowance");
+  CHECK(checked > 1000);
+  CHECK(shadowed > 30);
   // The same frame again is the same bytes: a lamp is steady.
   CapturedFrame again;
   REQUIRE_MESSAGE(lit.renderer.capture(frame, channels, again, &lit.error), lit.error);

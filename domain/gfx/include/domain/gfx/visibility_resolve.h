@@ -904,7 +904,9 @@ struct ResolveLight {
   Vec4 position_radius{};  // xyz world position, w radius of influence
   Vec4 color_intensity{};  // rgb linear color, w radiant intensity scale
   Vec4 direction_type{};   // xyz spot direction (towards the lit surface), w k_light_point/_spot
-  Vec4 spot{};             // x cos inner angle, y cos outer angle, zw unused
+  // x cos inner angle, y cos outer angle, z the emitter's radius: a shadow ray stops that far
+  // short of the light, so the glass round a lamp does not shadow it (R86); w unused.
+  Vec4 spot{};
 };
 static_assert(sizeof(ResolveLight) == 64);
 

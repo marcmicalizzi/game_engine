@@ -1469,6 +1469,9 @@ struct Lamp @version(1) {
   /// Where the light ends, metres: the windowed inverse square falls to nothing there. 0 (the
   /// default) is a fire's rule, where it has fallen to 0.05 lux; at most 400.
   reach_m: f32 = 0 @unit(m)
+  /// The globe's radius, metres, [0, 5]: a traced shadow ray stops this far short of the light's
+  /// centre, so the glass the lamp stands in does not shadow its own light. 0: at the centre.
+  radius_m: f32 = 0 @unit(m)
 }
 
 /// How a placed prop stops a walker (roadmap P45; docs/subsystems/apps.md, "Props: the objects a
