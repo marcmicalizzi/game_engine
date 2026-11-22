@@ -202,7 +202,10 @@ TEST_CASE("content classes at load: the class read's cost on a forest's shape") 
     CHECK(load.class_paths == 1 + shape.recipes + shape.containers + shape.gltfs);
     CHECK(load.class_reads[ClassRead::recipe_file].asked == shape.recipes);
     CHECK(load.class_reads[ClassRead::recipe_file].found == shape.recipes);
-    CHECK(load.class_reads[ClassRead::pack_sets].asked >= shape.sets);  // the pack was read
+    // The pack's sets read once a load, not once a recipe (C72): every set once.
+    CHECK(load.class_reads[ClassRead::pack_sets].asked == shape.sets);
+    // Each recipe probed once, on whichever thread.
+    CHECK(load.class_reads[ClassRead::host_probe].asked == shape.recipes);
     CHECK(load.class_reads[ClassRead::container_section].asked == 1 + shape.containers);
     CHECK(load.class_reads[ClassRead::container_section].found == 1 + shape.containers);
     CHECK(load.unreadable_omitted == shape.recipes + shape.containers + shape.gltfs);

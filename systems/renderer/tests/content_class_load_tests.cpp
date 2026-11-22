@@ -2063,6 +2063,70 @@ TEST_CASE("content classes at load: every order of a scene's meshes decides it a
   g_cover_mesh = nullptr;
 }
 
+// **One thread and many decide alike** (C72): the class read's file reads and host probes run on
+// the load's pool, and what they decide does not depend on how many threads ran them. The
+// permutation case's scene and comparison, in two orders, at one job, two and the machine's.
+TEST_CASE("content classes at load: one thread and many decide a scene alike") {
+  need_generator(k_fixture_cover);
+  const geometry::ClusterFileData cover = plain_grid(5);
+  g_cover_mesh = &cover;
+  const test::TempDir tmp("renderer_classes_threads");
+  REQUIRE(tmp.ok());
+  const Grid lamp = write_grid(tmp, "lamp.clusters", 17, "lamp.png", glow_record(1));
+  (void)write_grid(tmp, "bell.clusters", 13, "bell.png",
+                   record_of(k_hum_categories, "fixture_hum", 1));
+  REQUIRE(io::write_file(tmp.file("moss.fixturecover.json"), R"({"host":"lamp.clusters"})") ==
+          io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("moss.fixturecover.provenance.json"),
+                         R"({"content_classes":{"fixture_glow":"bright"}})") == io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("vine.fixturecover.json"), R"({"host":"bell.clusters"})") ==
+          io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("tri.gltf"), k_triangle_gltf) == io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("tri.provenance.json"),
+                         R"({"content_classes":{"fixture_glow":"dim","fixture_hum":"low"}})") ==
+          io::Status::Ok);
+  write_image(tmp.file("ground.png"), 40);
+  REQUIRE(io::write_file(tmp.file("ground.provenance.json"),
+                         R"({"content_classes":{"fixture_hum":"low"}})") == io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("scene.json"), ground_scene(false)) == io::Status::Ok);
+  std::string error;
+  SceneDesc ground;
+  REQUIRE_MESSAGE(read_scene_file(tmp.file("scene.json"), ground, error), error);
+  Grid moss;
+  moss.path = tmp.file("moss.fixturecover.json");
+  Grid vine;
+  vine.path = tmp.file("vine.fixturecover.json");
+  Grid tri;
+  tri.path = tmp.file("tri.gltf");
+  const Grid field{};
+  const Grid* const forward[5] = {&lamp, &moss, &vine, &tri, &field};
+  const Grid* const backward[5] = {&field, &tri, &vine, &moss, &lamp};
+  for (const char* name : {"two-wide", "hum-off"}) {
+    const std::string policy_name = name;
+    CAPTURE(policy_name);
+    for (const Grid* const* order : {forward, backward}) {
+      std::string first;
+      for (const u32 jobs : {1u, 2u, 0u}) {
+        CAPTURE(jobs);
+        SceneDesc desc = scene_in(tmp, order, 5);
+        desc.terrain = ground.terrain;
+        desc.view_policy = policy_in(k_two_policies, name);
+        desc.load_jobs = jobs;
+        SceneData scene;
+        REQUIRE_MESSAGE(load_scene(desc, scene, error), error);
+        // Under `hum-off` the lamp is admitted and the rest refused; wide, all five admitted.
+        CHECK(scene.instances.size() == (policy_name == "two-wide" ? 5u : 1u));
+        // Each distinct recipe's file read once, wherever it ran (the two covers).
+        CHECK(scene.load.class_reads[content_build::ClassRead::recipe_file].asked == 2u);
+        const std::string outcome = outcome_of(desc, scene);
+        if (jobs == 1u) first = outcome;
+        CHECK(outcome == first);
+      }
+    }
+  }
+  g_cover_mesh = nullptr;
+}
+
 // **The class read follows a host chain exactly as deep as the hosts' seam does** (C64):
 // `GeneratorHosts` identifies hosts down to `k_host_depth` levels and refuses a chain one deeper,
 // and the class read takes the same chain, joining its last host's class, and refuses the same one.

@@ -18,6 +18,8 @@
 #include <foundation/image/decode.h>
 #include <foundation/io/vfs.h>
 
+#include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <filesystem>
 #include <span>
@@ -748,15 +750,41 @@ void keep_at(HashMap<u64, u32>& index, Vector<std::string>& paths, Vector<T>& en
   entries.push_back(entry);
 }
 
+// The key a probe made ahead is kept under: its path's hash, moved when its bytes were handed.
+u64 ahead_key(const std::string& path, bool handed) noexcept {
+  const u64 h = hash_bytes(path.data(), path.size());
+  return handed ? hash_combine(h, 0x68616e646564ull) : h;
+}
+
+// The probe `probe_recipes_ahead` made of `path` (from its handed bytes or from its file), or null.
+const HostReads::Ahead* ahead_at(const HostReads* reads, const std::string& path, bool handed) {
+  if (reads == nullptr || reads->ahead.empty()) return nullptr;
+  const u32* at = reads->ahead_of.find_value(ahead_key(path, handed));
+  if (at == nullptr) return nullptr;
+  const HostReads::Ahead& a = reads->ahead[*at];
+  return a.path == path && a.handed == handed ? &a : nullptr;
+}
+
+// `generator_hosts`, answered from a probe made ahead when there is one (C72): the same function
+// of the same bytes, computed earlier and in parallel.
+bool probed_hosts(const std::string& recipe, const materials::Pack* pack, const HostReads* reads,
+                  Vector<std::string>& hosts, std::string& why, const std::string* handed) {
+  if (const HostReads::Ahead* a = ahead_at(reads, recipe, handed != nullptr)) {
+    hosts = a->hosts;
+    why = a->why;
+    return a->ok;
+  }
+  return generator_hosts(recipe, pack, hosts, why, handed,
+                         reads != nullptr ? reads->counts : nullptr);
+}
+
 // A recipe's hosts, from what the teaching round kept when it probed it, else probed here.
 bool recipe_hosts(const std::string& recipe, const materials::Pack* pack, const HostReads* reads,
                   Vector<std::string>& hosts, std::string& why) {
   const HostReads::Probe* probe =
       reads == nullptr ? nullptr
                        : kept_at(reads->probe_of, reads->probe_paths, reads->probes, recipe);
-  if (probe == nullptr)
-    return generator_hosts(recipe, pack, hosts, why, nullptr,
-                           reads != nullptr ? reads->counts : nullptr);
+  if (probe == nullptr) return probed_hosts(recipe, pack, reads, hosts, why, nullptr);
   hosts = probe->hosts;
   why = probe->why;
   return probe->ok;
@@ -806,8 +834,7 @@ bool learn_hosts_at(const std::string& source, const MeshOptions& options,
   if (assets::mesh_generator_of(source).empty()) return true;
   if (kept_at(reads.probe_of, reads.probe_paths, reads.probes, source) == nullptr) {
     HostReads::Probe probe;
-    probe.ok =
-        generator_hosts(source, options.materials, probe.hosts, probe.why, handed, reads.counts);
+    probe.ok = probed_hosts(source, options.materials, &reads, probe.hosts, probe.why, handed);
     keep_at(reads.probe_of, reads.probe_paths, reads.probes, source, probe);
   }
   Vector<std::string> hosts;
@@ -851,6 +878,123 @@ bool learn_source_hosts(const std::string& source, const MeshOptions& options,
 
 namespace {
 
+// One probe made ahead, in its own slot: what `generator_hosts` answers for its bytes, and what
+// reading them cost, counted apart so no two threads write one count.
+struct AheadJob {
+  std::string path;
+  const std::string* handed = nullptr;
+  const materials::Pack* pack = nullptr;
+  HostReads::Ahead out;
+  ClassReads counts;
+};
+
+void run_ahead(void* data) {
+  AheadJob& job = *static_cast<AheadJob*>(data);
+  job.out.path = job.path;
+  job.out.handed = job.handed != nullptr;
+  job.out.ok =
+      generator_hosts(job.path, job.pack, job.out.hosts, job.out.why, job.handed, &job.counts);
+}
+
+// Every job of `jobs` on `pool`, one runner a thread taking the next by an atomic index (never a
+// job an item: a forest's recipes outnumber a queue, renderer.md "What the load reads"); with no
+// pool, each in order on the calling thread.
+void run_ahead_jobs(jobs::JobSystem* pool, Vector<AheadJob>& items) {
+  if (items.empty()) return;
+  if (pool == nullptr) {
+    for (AheadJob& job : items)
+      run_ahead(&job);
+    return;
+  }
+  struct Shared {
+    Vector<AheadJob>* items = nullptr;
+    std::atomic<u32> next{0};
+  } shared;
+  shared.items = &items;
+  const auto runner = [](void* data) {
+    Shared& s = *static_cast<Shared*>(data);
+    for (u32 i = s.next.fetch_add(1, std::memory_order_relaxed); i < s.items->size();
+         i = s.next.fetch_add(1, std::memory_order_relaxed))
+      run_ahead(&(*s.items)[i]);
+  };
+  const u32 runners = std::min<u32>(static_cast<u32>(items.size()), pool->total_worker_count() + 1);
+  Vector<jobs::Job> list;
+  list.reserve(runners);
+  jobs::Counter counter;
+  for (u32 r = 0; r < runners; ++r)
+    list.push_back(jobs::Job{runner, &shared, &counter});
+  pool->schedule(jobs::Pool::Performance, std::span<const jobs::Job>(list.data(), list.size()),
+                 counter);
+  pool->wait(counter);
+}
+
+}  // namespace
+
+void probe_recipes_ahead(std::span<const RecipeAsk> asks, const MeshOptions& options,
+                         HostReads& reads, jobs::JobSystem* pool) {
+  // What this call has queued or kept, by `ahead_key`: nothing is probed twice.
+  HashMap<u64, u32> seen;
+  const auto wanted = [&](const std::string& path, bool handed) {
+    if (assets::mesh_generator_of(path).empty()) return false;
+    const u64 key = ahead_key(path, handed);
+    if (ahead_at(&reads, path, handed) != nullptr) return false;
+    return seen.try_emplace(key, 0u).second;
+  };
+  Vector<AheadJob> wave;
+  for (const RecipeAsk& ask : asks) {
+    if (ask.path == nullptr || !wanted(*ask.path, ask.handed != nullptr)) continue;
+    AheadJob job;
+    job.path = *ask.path;
+    job.handed = ask.handed;
+    job.pack = options.materials;
+    wave.push_back(std::move(job));
+  }
+  // The hosts the probes name, wave by wave, as deep as the teaching round walks.
+  for (u32 depth = 0; !wave.empty() && depth <= k_host_depth; ++depth) {
+    run_ahead_jobs(pool, wave);
+    Vector<AheadJob> next;
+    for (AheadJob& job : wave) {
+      if (reads.counts != nullptr) {
+        for (u32 k = 0; k < k_class_read_kinds; ++k) {
+          ClassReadCount& to = reads.counts->kinds[k];
+          const ClassReadCount& from = job.counts.kinds[k];
+          to.asked += from.asked;
+          to.found += from.found;
+          to.bytes += from.bytes;
+          to.ns += from.ns;
+        }
+      }
+      for (const std::string& host : job.out.hosts) {
+        if (!wanted(host, false)) continue;
+        AheadJob inner;
+        inner.path = host;
+        inner.pack = options.materials;
+        next.push_back(std::move(inner));
+      }
+      // Kept under its key unless another path holds it (that one is then probed where asked).
+      const u64 key = ahead_key(job.out.path, job.out.handed);
+      if (reads.ahead_of.try_emplace(key, static_cast<u32>(reads.ahead.size())).second)
+        reads.ahead.push_back(std::move(job.out));
+    }
+    wave = std::move(next);
+  }
+}
+
+void keep_pack_classes(const MeshOptions& options, HostReads& reads) {
+  reads.pack_kept = false;
+  reads.pack = HostReads::PackClasses{};
+  if (options.materials == nullptr) return;
+  const content_class::Categories& categories = categories_of(options);
+  reads.pack.pack = options.materials;
+  reads.pack.categories = &categories;
+  reads.pack.category_count = static_cast<u32>(categories.size());
+  reads.pack.ok = read_pack_classes(*options.materials, categories, reads.pack.classes,
+                                    reads.pack.why, reads.counts);
+  reads.pack_kept = true;
+}
+
+namespace {
+
 bool read_classes_at(const std::string& source, const MeshOptions& options, SourceClasses& out,
                      Diagnostic& error, u32 depth, const HostReads* reads) {
   const content_class::Categories& categories = categories_of(options);
@@ -883,9 +1027,20 @@ bool read_classes_at(const std::string& source, const MeshOptions& options, Sour
       !content_class::read_sidecar_classes(categories, text, out.classes, why, &out.materials))
     return refuse(sidecar + ": " + why + "; the build refuses " + source);
   // A generator's output is the join of the sets it baked, which its key covers through the pack.
-  if (generated && options.materials != nullptr &&
-      !read_pack_classes(*options.materials, categories, out.classes, why, counts))
+  // Read once a load when the caller kept them (C72): the same sets against the same table.
+  const HostReads::PackClasses* kept_pack = reads != nullptr && reads->pack_kept &&
+                                                    reads->pack.pack == options.materials &&
+                                                    reads->pack.categories == &categories &&
+                                                    reads->pack.category_count == categories.size()
+                                                ? &reads->pack
+                                                : nullptr;
+  if (generated && kept_pack != nullptr) {
+    if (!kept_pack->ok) return refuse(kept_pack->why + "; the build refuses " + source);
+    out.classes = content_class::join(out.classes, kept_pack->classes);
+  } else if (generated && options.materials != nullptr &&
+             !read_pack_classes(*options.materials, categories, out.classes, why, counts)) {
     return refuse(why + "; the build refuses " + source);
+  }
   // **And of every mesh it reads** (C64): each host its generator names, by the host's own class
   // (its sidecar; a recipe's, recursively; a container's section 54 too), read before the host is,
   // joined as a whole asset, so its key and section 54 carry it.

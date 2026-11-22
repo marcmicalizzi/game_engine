@@ -1,10 +1,10 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "C72",
-  "reason": "C72: the content classes stage, its log line by kind of read and the measured cost on a forest's shape, in Content classes at load",
+  "reason": "C72: the content classes stage and its log line by kind, the forest's measured table, and what the class read reads once, in parallel and serially, in Content classes at load",
   "date": "2026-11-22",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/renderer.md": 2243
+    "page:docs/subsystems/renderer.md": 4957
   }
 }

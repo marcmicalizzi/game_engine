@@ -428,7 +428,7 @@ SourceMesh proxy_source(const geometry::ClusterLodMesh& box) {
 }  // namespace
 
 bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmission& state,
-                             std::string& error) {
+                             std::string& error, jobs::JobSystem* pool) {
   // **A stage of its own** (C72; profiling.md, "The trace is live"), its items the distinct paths
   // read, so a trace names the class read's time.
   ENGINE_STARTUP_STAGE("content classes");
@@ -491,6 +491,23 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
   }
   content_build::HostReads host_reads;
   host_reads.counts = &state.reads;
+  // **The reads leave the serial loop** (C72): every distinct recipe's file (or its handed bytes)
+  // read and its generator's hash run under the probe's hooks on the load's pool, each into its own
+  // slot, and the hosts they name in waves; the round below then walks in listed order exactly as
+  // before, taking each answer from those slots, so what it learns and refuses is the same at any
+  // thread count. On the forest's scene this was 63 of the pass's 67 s, one recipe after another.
+  {
+    Vector<content_build::RecipeAsk> asks;
+    for (u32 m = 0; m < meshes; ++m) {
+      const std::string& path = desc.meshes[m];
+      if (first[m] != m || path.empty() || !is_generated_mesh(path)) continue;
+      const MeshRecipe* handed = handed_recipe(desc, path);
+      asks.push_back(content_build::RecipeAsk{&path, handed != nullptr ? &handed->bytes : nullptr});
+    }
+    content_build::probe_recipes_ahead(
+        std::span<const content_build::RecipeAsk>(asks.data(), asks.size()), recipe_options,
+        host_reads, pool);
+  }
   for (u32 m = 0; m < meshes; ++m) {
     const std::string& path = desc.meshes[m];
     // A refusal here is the class read's below, by the same reads, which says why. A recipe the
@@ -500,6 +517,8 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
     (void)content_build::learn_source_hosts(path, recipe_options, out.categories, host_reads,
                                             handed != nullptr ? &handed->bytes : nullptr);
   }
+  // The table is finished: the pack's sets are read against it once, not once a recipe (C72).
+  content_build::keep_pack_classes(recipe_options, host_reads);
   // Then the classes, in mesh order, against the finished table: every sidecar, pack and ground.
   for (u32 m = 0; m < meshes; ++m) {
     const std::string& path = desc.meshes[m];
