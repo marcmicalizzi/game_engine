@@ -787,6 +787,21 @@ void foliage_raw_ambient_pair(ResolveParams* params, SkyParams* sky, bool has_sk
 #include "water_reflect.slang"
 #include "water_refract.slang"  // S86: what is under the water
 #endif
+// **What the scene lets through reaches under the water** (W161; water.md, "Translucent by
+// volume"): every ambient term the water takes — the bed's light and the volume's scattered light
+// coming down through the surface, the foam's, the white's — is the hemisphere `harmonics` scaled
+// by the world-space cache's cells round the **surface point**, through the same `scene_ambient`
+// the opaque ground beside it reads (renderer.md, "Indirect light: the world-space cache"). The
+// surface point and not the bed's: the bed's light came in through the surface, so what the
+// scene's structures let through is what reaches the surface, and the cells are filled from the
+// frame's own pixels, among which the bed, behind the surface, is not. Where the frame reads no
+// cache it returns `harmonics` to the bit, so the picture is the bytes it was.
+float3 water_scene_ambient(ResolveParams* params, Surface s, float3 normal, float3 harmonics) {
+  return scene_ambient(params->gi_cells, params->gi_flags, params->gi_count,
+                       params->gi_cell_scale, params->eye, s.position,
+                       length(s.position - params->camera.xyz), normal, harmonics);
+}
+
 // **The volume tier** (`k_material_water_volume`; water.slang, "the volume tier"): what is under
 // the surface, seen through it. The refracted view is marched against the body's depth map, the
 // ground as a height field (`water_path_map`; water.md, "The depth map"), so it lands on the
@@ -878,6 +893,7 @@ float3 water_pixel_volume(ResolveParams* params, SceneGeometry geo, InstanceDesc
     ambient = ambient_radiance(params->sky.rgb, ground, s.normal);
     reflected = params->sky.rgb;
   }
+  ambient = water_scene_ambient(params, s, s.normal, ambient);  // W161
 #ifdef RESOLVE_RAY_SHADOWS
   reflected = water_reflection(params, s, r, ray_bias, reflected);  // R129: the scene, or the sky
 #endif
@@ -921,6 +937,7 @@ float3 water_pixel_low(ResolveParams* params, Surface s, float3 n, float3 view, 
     ambient = ambient_radiance(params->sky.rgb, ground, s.normal);
     reflected = params->sky.rgb;
   }
+  ambient = water_scene_ambient(params, s, s.normal, ambient);  // W161
 #ifdef RESOLVE_RAY_SHADOWS
   reflected = water_reflection(params, s, r, ray_bias, reflected);  // R129: the scene, or the sky
 #endif
@@ -957,6 +974,7 @@ float3 water_white_water(ResolveParams* params, Surface s, float3 plane, float r
     const float3 ground = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
     ambient = ambient_radiance(params->sky.rgb, ground, plane);
   }
+  ambient = water_scene_ambient(params, s, plane, ambient);  // W161
   return (0.8 * shade) * (sun / k_brdf_pi + ambient);
 }
 
@@ -2123,6 +2141,9 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
           sheet_ambient = ambient_radiance(params->sky.rgb, below, level);
           sheet_reflected = params->sky.rgb;
         }
+        // The level surface's ambient as the water's own takes it (W161, `water_scene_ambient`):
+        // the sheet is that body's water at no depth, so it is the same term by the same rule.
+        sheet_ambient = water_scene_ambient(params, s, level, sheet_ambient);
 #ifdef RESOLVE_RAY_SHADOWS
         sheet_reflected = water_reflection(params, s, r, ray_bias, sheet_reflected);
 #endif
