@@ -623,6 +623,7 @@ namespace {
 
 GameSoundHost* g_host = nullptr;
 bool g_solo = false;
+bool g_solo_summarised = false;  // print_solo_summary's lines are a run's once
 f64 g_flight_sky_start_s = 0.0;
 f64 g_flight_sun_rate = 0.0;
 
@@ -678,7 +679,8 @@ void solo_flight_frame(const renderer::FlightStep& step) noexcept {
   step.world->ticks_ms += ms;
 }
 void print_solo_summary() {
-  if (!g_solo || g_host == nullptr) return;
+  if (!g_solo || g_host == nullptr || g_solo_summarised) return;
+  g_solo_summarised = true;
   std::string error;
   (void)g_host->stage().close(&error);
   std::fprintf(

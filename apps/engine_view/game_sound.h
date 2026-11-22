@@ -230,7 +230,10 @@ void attach_solo_tiles(void* placements) noexcept;  // a world::PlacementTiles*
 // frame's camera, the time added to its record's `world.sound_ms` and `ticks_ms`.
 void set_solo_flight_clock(f64 sky_start_s, f64 sun_rate) noexcept;
 void solo_flight_frame(const renderer::FlightStep& step) noexcept;
-// A module-less run's summary, which has no game block to sit in: two lines on stderr.
+// A module-less run's summary, which has no game block to sit in: two lines on stderr, once a
+// run. **Before the JSON summary, never after it**: a run's last line is its summary, and every
+// reader of a run takes it from there, so both loops call this ahead of that line; main's scope
+// calls it again for a run that ends with no summary, and that call prints nothing twice.
 void print_solo_summary();
 
 }  // namespace engine::view

@@ -381,6 +381,18 @@ bool sound_summary_of(const Run& run, JsonValue& out) {
          out.is_object();
 }
 
+// **A run's last line is its JSON summary**, the sound's two stderr lines before it: thirty test
+// files and every script that reads a run take the summary from the last line, and batch 72's gate
+// was red on a destructor that printed these two after it.
+bool summary_is_last_line(const Run& run) {
+  if (run.output.size() < 2) return false;
+  const usize start = run.output.find_last_of('\n', run.output.size() - 2);
+  const std::string last = run.output.substr(start == std::string::npos ? 0 : start + 1);
+  JsonValue value;
+  return parse_json(last, value).ok && value.is_object() && value.find("frames") != nullptr &&
+         run.output.find("engine-view: sound table:") < (start == std::string::npos ? 0 : start);
+}
+
 }  // namespace
 
 // S112-2 (the review's item 4): the host's hooks no longer need a module, so a scene played with no
@@ -419,6 +431,7 @@ TEST_CASE(
     }
     REQUIRE_MESSAGE(run.exit_code == 0, run.output);
     REQUIRE_MESSAGE(sound_summary_of(run, leg.summary), run.output);
+    CHECK_MESSAGE(summary_is_last_line(run), run.output);
     MESSAGE(std::string(leg.name) << ": " << text_at(leg.summary, {"world"}));
   }
   CHECK(number_at(legs[0].summary, {"world", "crowns_seen"}) == 2.0);
@@ -445,6 +458,7 @@ TEST_CASE("engine-view: a live window under a test hears its world on the null b
   REQUIRE_MESSAGE(run.exit_code == 0, run.output);
   JsonValue sound;
   REQUIRE_MESSAGE(sound_summary_of(run, sound), run.output);
+  CHECK_MESSAGE(summary_is_last_line(run), run.output);
   CHECK(text_at(sound, {"mode"}) == "\"null\"");
   CHECK(text_at(sound, {"backend"}) == "\"null\"");
   CHECK(number_at(sound, {"world", "ear_voices"}) == 2.0);  // the world modelled all the same

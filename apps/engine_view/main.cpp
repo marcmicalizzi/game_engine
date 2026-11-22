@@ -4244,6 +4244,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       (void)bench::warn_if_busy(bench::worst_of(machine_start, machine_end),
                                 bench::QuietThresholds{}, stderr);
     }
+    view::print_solo_summary();  // a module-less run's sound lines: stderr's, so before the summary
     std::printf("%s\n", summary_line.c_str());
     std::fflush(stdout);
   }
@@ -5679,7 +5680,7 @@ int run_view(int argc, char** argv) {
   view::GameRunner game;
 #if ENGINE_VIEW_WORLD_SOUND
   view::GameSoundHost game_sound;  // its hooks are the runner's; declared after it, gone before it
-  const struct SoundScope {        // a module-less run's summary, windowed or offscreen (S112-3)
+  const struct SoundScope {  // a module-less run that ends with no summary line (game_sound.h)
     ~SoundScope() {
       view::print_solo_summary();
       view::set_session_sound(nullptr, false);
@@ -7808,6 +7809,7 @@ int run_view(int argc, char** argv) {
         measured.close, captured ? "true" : "false", interactive_text.c_str(),
         time_lapse_text.c_str(), sun_text.c_str(), output_text.c_str(), medium_text.c_str(),
         flora_text.c_str(), loading_text.c_str(), startup_text.c_str(), memory_text.c_str());
+    view::print_solo_summary();  // stderr's lines first: the summary is the run's last line
     std::fputs(summary_text.c_str(), stdout);
     g_report.summary_line = summary_text.substr(0, summary_text.find_last_not_of('\n') + 1);
     std::fflush(stdout);
