@@ -7,3 +7,9 @@
 using namespace engine;
 
 ENGINE_EXPECT_SIZE(88, 8, world_sound::StageStats);
+// S112: a crown as the canopy table sends it, walked every refresh (up to audio.world.max_crowns,
+// 8,192: 320 KB), its world place, height, leaf area, class and needle width.
+ENGINE_EXPECT_SIZE(40, 8, world_sound::Crown);
+// What a world voice was last told, one a voice (6 + 8 + 2 by default), read by tests and hosts.
+ENGINE_EXPECT_SIZE(52, 4, world_sound::WorldVoiceInfo);
+ENGINE_EXPECT_SIZE(64, 8, world_sound::WorldStats);

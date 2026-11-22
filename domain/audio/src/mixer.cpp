@@ -677,7 +677,7 @@ NoisePayload pack_noise(const NoiseParams& p) noexcept {
 VoiceHandle Mixer::play_noise(const NoisePlayParams& params) noexcept {
   update();
   SourceSpatial source;
-  if (!valid_voice(params.gain, 1.0f, 0.0f) || params.bus >= bus_count() ||
+  if (!valid_voice(params.gain, 1.0f, params.pan) || params.bus >= bus_count() ||
       !valid_noise(params.noise) || !sanitize(params.source, source)) {
     ++control_.refused_params;
     return VoiceHandle{};
@@ -710,7 +710,7 @@ VoiceHandle Mixer::play_noise(const NoisePlayParams& params) noexcept {
   p.frames = 1;
   p.gain = params.gain;
   p.pitch = 1.0f;
-  p.pan = 0.0f;
+  p.pan = clamp(params.pan, -1.0f, 1.0f);
   p.source = pack(source);
   p.stream = k_no_stream;
   if (!push(c)) return VoiceHandle{};

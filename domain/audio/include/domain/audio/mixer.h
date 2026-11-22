@@ -152,6 +152,7 @@ struct MixerConfig {
 struct NoisePlayParams {
   NoiseParams noise;
   f32 gain = 1.0f;  // linear, >= 0, over the bands' own gains
+  f32 pan = 0.0f;   // 2D sources: -1 left .. +1 right
   u8 bus = k_bus_ambient;
   u8 priority = 64;
   SourceSpatial source;
