@@ -254,6 +254,10 @@ TEST_CASE("content classes at load: the class read's cost on a forest's shape") 
     CHECK(load.class_reads[ClassRead::pack_sets].asked == shape.sets);
     // Each recipe that can name a host probed once, on whichever thread.
     CHECK(load.class_reads[ClassRead::host_probe].asked == shape.hosting);
+    // Every answer the walk took came from a probe made ahead, on the load's pool, and the walk
+    // made none of its own: the parallel road taken, not bypassed (C72).
+    CHECK(load.class_reads[ClassRead::ahead_answer].asked == shape.hosting);
+    CHECK(load.class_reads[ClassRead::walk_probe].asked == 0);
     CHECK(load.class_reads[ClassRead::container_section].asked == 1 + shape.containers);
     CHECK(load.class_reads[ClassRead::container_section].found == 1 + shape.containers);
     CHECK(load.unreadable_omitted == recipes + shape.containers + shape.gltfs);

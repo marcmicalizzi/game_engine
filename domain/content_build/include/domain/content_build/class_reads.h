@@ -21,14 +21,20 @@ enum class ClassRead : u8 {
   host_record,        // a container host's open and section 54
   gltf_sidecar,       // the sidecar beside a glTF (or any other source by path)
   ground_inputs,      // the sidecars beside the ground's heightfield source, layers and masks
+  // How the walk got a recipe's hosts, apart from what reading them cost (the probe's own read and
+  // hash are `recipe_file` and `host_probe`, wherever they ran), so a load that probed ahead can
+  // say it used the slots:
+  ahead_answer,  // taken from a probe `probe_recipes_ahead` made (CPU, no file)
+  walk_probe,  // probed in the walk itself, with no slot to take: none, once the load probed ahead
 };
-inline constexpr u32 k_class_read_kinds = 9;
+inline constexpr u32 k_class_read_kinds = 11;
 
 // The kind's name as the log line and the pages spell it.
 inline const char* class_read_name(ClassRead kind) noexcept {
   constexpr const char* k_names[k_class_read_kinds] = {
-      "container_section", "container_sidecar", "recipe_file",  "recipe_sidecar", "pack_sets",
-      "host_probe",        "host_record",       "gltf_sidecar", "ground_inputs"};
+      "container_section", "container_sidecar", "recipe_file", "recipe_sidecar",
+      "pack_sets",         "host_probe",        "host_record", "gltf_sidecar",
+      "ground_inputs",     "ahead_answer",      "walk_probe"};
   const u32 i = static_cast<u32>(kind);
   return i < k_class_read_kinds ? k_names[i] : "unknown";
 }

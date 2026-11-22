@@ -640,6 +640,15 @@ bool probe_hash(void* context, std::string_view, u64& out, std::string&) {
   out = 0;
   return true;
 }
+// Whether `path` is a recipe whose generator this build carries and can name a host
+// (`assets::generator_names_hosts`): the only recipes the class read reads for their hosts (C72).
+bool can_name_hosts(std::string_view path) {
+  const std::string_view name = assets::mesh_generator_of(path);
+  if (name.empty()) return false;
+  const assets::MeshGeneratorDesc* generator = assets::MeshGeneratorRegistry::global().find(name);
+  return generator != nullptr && assets::generator_names_hosts(*generator);
+}
+
 bool generator_hosts(const std::string& recipe, const materials::Pack* pack,
                      Vector<std::string>& hosts, std::string& why,
                      const std::string* handed = nullptr, ClassReads* counts = nullptr) {
@@ -772,15 +781,23 @@ const HostReads::Ahead* ahead_at(const HostReads* reads, const std::string& path
 
 // `generator_hosts`, answered from a probe made ahead when there is one (C72): the same function
 // of the same bytes, computed earlier and in parallel.
+// Counted apart (`ahead_answer`, `walk_probe`), so a load that probed ahead can hold that the walk
+// made no probe of its own: the ahead road taken, not bypassed.
 bool probed_hosts(const std::string& recipe, const materials::Pack* pack, const HostReads* reads,
                   Vector<std::string>& hosts, std::string& why, const std::string* handed) {
+  ClassReads* const counts = reads != nullptr ? reads->counts : nullptr;
   if (const HostReads::Ahead* a = ahead_at(reads, recipe, handed != nullptr)) {
     hosts = a->hosts;
     why = a->why;
+    if (counts != nullptr) counts->add(ClassRead::ahead_answer, !hosts.empty(), 0, 0);
     return a->ok;
   }
-  return generator_hosts(recipe, pack, hosts, why, handed,
-                         reads != nullptr ? reads->counts : nullptr);
+  if (!can_name_hosts(recipe)) return generator_hosts(recipe, pack, hosts, why, handed, counts);
+  const i64 start = time::monotonic_ns();
+  const bool ok = generator_hosts(recipe, pack, hosts, why, handed, counts);
+  if (counts != nullptr)
+    counts->add(ClassRead::walk_probe, !hosts.empty(), 0, time::monotonic_ns() - start);
+  return ok;
 }
 
 // A recipe's hosts, from what the teaching round kept when it probed it, else probed here.
@@ -940,12 +957,8 @@ void probe_recipes_ahead(std::span<const RecipeAsk> asks, const MeshOptions& opt
   // What this call has queued or kept, by `ahead_key`: nothing is probed twice.
   HashMap<u64, u32> seen;
   // A recipe whose generator cannot name a host gets no job: `generator_hosts` answers it unread.
-  const assets::MeshGeneratorRegistry& registry = assets::MeshGeneratorRegistry::global();
   const auto wanted = [&](const std::string& path, bool handed) {
-    const std::string_view name = assets::mesh_generator_of(path);
-    if (name.empty()) return false;
-    const assets::MeshGeneratorDesc* generator = registry.find(name);
-    if (generator == nullptr || !assets::generator_names_hosts(*generator)) return false;
+    if (!can_name_hosts(path)) return false;
     const u64 key = ahead_key(path, handed);
     if (ahead_at(&reads, path, handed) != nullptr) return false;
     return seen.try_emplace(key, 0u).second;

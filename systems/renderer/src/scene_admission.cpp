@@ -392,13 +392,19 @@ void log_class_reads(const SceneLoadReport& load) {
   constexpr u32 k_fields = 2 + k_per_kind * content_build::k_class_read_kinds;
   // The keys outlive the emit: string literals, `<kind>.<what>`.
 #define ENGINE_CLASS_READ_KEYS(kind) kind ".asked", kind ".found", kind ".bytes", kind ".ms"
-  constexpr const char* k_keys[k_per_kind * content_build::k_class_read_kinds] = {
+  // Unsized, so a kind added without its keys fails the assertion below instead of leaving null
+  // keys at the end of a sized array.
+  constexpr const char* k_keys[] = {
       ENGINE_CLASS_READ_KEYS("container_section"), ENGINE_CLASS_READ_KEYS("container_sidecar"),
       ENGINE_CLASS_READ_KEYS("recipe_file"),       ENGINE_CLASS_READ_KEYS("recipe_sidecar"),
       ENGINE_CLASS_READ_KEYS("pack_sets"),         ENGINE_CLASS_READ_KEYS("host_probe"),
       ENGINE_CLASS_READ_KEYS("host_record"),       ENGINE_CLASS_READ_KEYS("gltf_sidecar"),
-      ENGINE_CLASS_READ_KEYS("ground_inputs")};
+      ENGINE_CLASS_READ_KEYS("ground_inputs"),     ENGINE_CLASS_READ_KEYS("ahead_answer"),
+      ENGINE_CLASS_READ_KEYS("walk_probe")};
 #undef ENGINE_CLASS_READ_KEYS
+  static_assert(
+      sizeof(k_keys) / sizeof(k_keys[0]) == k_per_kind * content_build::k_class_read_kinds,
+      "every kind of class read has its four keys");
   log::Field fields[k_fields];
   fields[0] = log::field("paths", load.class_paths);
   fields[1] = log::field("ms", load.classes_ms);

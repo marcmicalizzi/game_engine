@@ -2063,11 +2063,38 @@ TEST_CASE("content classes at load: every order of a scene's meshes decides it a
   g_cover_mesh = nullptr;
 }
 
+namespace {
+
+// A generator whose hash reads an image beside its recipe and refuses an empty one, as a generator
+// that parses an image it hashes would; it grows over a host as `fixturehost` does.
+bool fixture_image_hash_with(std::span<const u8> bytes, const assets::MeshGeneratorInputs& inputs,
+                             u64& out, std::string& error) {
+  Vector<u8> image;
+  if (inputs.hosts == nullptr ||
+      !inputs.hosts->read_image(inputs.hosts->context, "skin.png", image, error))
+    return false;
+  if (image.empty()) {
+    error = "an empty image is not one";
+    return false;
+  }
+  return fixture_host_hash_with(bytes, inputs, out, error);
+}
+constexpr assets::MeshGeneratorDesc k_fixture_image{.name = "fixtureimage",
+                                                    .source_hash = fixture_host_hash,
+                                                    .build = fixture_host_build,
+                                                    .source_hash_with = fixture_image_hash_with};
+
+}  // namespace
+
 // **One thread and many decide alike** (C72): the class read's file reads and host probes run on
 // the load's pool, and what they decide does not depend on how many threads ran them. The
-// permutation case's scene and comparison, in two orders, at one job, two and the machine's.
+// permutation case's scene and comparison, in two orders, at one job, two and the machine's; with
+// a chain of two recipes over a container, so the probes' second wave is not empty, and a recipe
+// whose hash refuses the probe, so a slot carries a refusal.
 TEST_CASE("content classes at load: one thread and many decide a scene alike") {
   need_generator(k_fixture_cover);
+  need_generator(k_fixture_host);
+  need_generator(k_fixture_image);
   const geometry::ClusterFileData cover = plain_grid(5);
   g_cover_mesh = &cover;
   const test::TempDir tmp("renderer_classes_threads");
@@ -2088,6 +2115,20 @@ TEST_CASE("content classes at load: one thread and many decide a scene alike") {
   write_image(tmp.file("ground.png"), 40);
   REQUIRE(io::write_file(tmp.file("ground.provenance.json"),
                          R"({"content_classes":{"fixture_hum":"low"}})") == io::Status::Ok);
+  // The chain, as the chain case's: `r0` grows over `r1`, which grows over a container whose
+  // sidecar names an engine category neither policy names, so the chain is left out under both
+  // (a category a policy does not name is capped at `none`) and never built.
+  (void)write_grid(tmp, "leaf.clusters", 9, "leaf.png");
+  REQUIRE(io::write_file(tmp.file("leaf.provenance.json"),
+                         R"({"content_classes":{"violence":"graphic"}})") == io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("r0.fixturehost.json"), R"({"host":"r1.fixturehost.json"})") ==
+          io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("r1.fixturehost.json"), R"({"host":"leaf.clusters"})") ==
+          io::Status::Ok);
+  // The probe-refusal case's recipe: its hash refuses the probe's empty image, so it is unreadable.
+  write_image(tmp.file("skin.png"), 60);
+  REQUIRE(io::write_file(tmp.file("skin.fixtureimage.json"), R"({"host":"lamp.clusters"})") ==
+          io::Status::Ok);
   REQUIRE(io::write_file(tmp.file("scene.json"), ground_scene(false)) == io::Status::Ok);
   std::string error;
   SceneDesc ground;
@@ -2099,8 +2140,12 @@ TEST_CASE("content classes at load: one thread and many decide a scene alike") {
   Grid tri;
   tri.path = tmp.file("tri.gltf");
   const Grid field{};
-  const Grid* const forward[5] = {&lamp, &moss, &vine, &tri, &field};
-  const Grid* const backward[5] = {&field, &tri, &vine, &moss, &lamp};
+  Grid chain;
+  chain.path = tmp.file("r0.fixturehost.json");
+  Grid refused;
+  refused.path = tmp.file("skin.fixtureimage.json");
+  const Grid* const forward[7] = {&lamp, &moss, &vine, &tri, &field, &chain, &refused};
+  const Grid* const backward[7] = {&refused, &chain, &field, &tri, &vine, &moss, &lamp};
   for (const char* name : {"two-wide", "hum-off"}) {
     const std::string policy_name = name;
     CAPTURE(policy_name);
@@ -2108,16 +2153,23 @@ TEST_CASE("content classes at load: one thread and many decide a scene alike") {
       std::string first;
       for (const u32 jobs : {1u, 2u, 0u}) {
         CAPTURE(jobs);
-        SceneDesc desc = scene_in(tmp, order, 5);
+        SceneDesc desc = scene_in(tmp, order, 7);
         desc.terrain = ground.terrain;
         desc.view_policy = policy_in(k_two_policies, name);
         desc.load_jobs = jobs;
         SceneData scene;
         REQUIRE_MESSAGE(load_scene(desc, scene, error), error);
-        // Under `hum-off` the lamp is admitted and the rest refused; wide, all five admitted.
+        // Under `hum-off` the lamp is admitted and the rest refused; wide, all five admitted, and
+        // the chain and the refused recipe left out under both.
         CHECK(scene.instances.size() == (policy_name == "two-wide" ? 5u : 1u));
-        // Each distinct recipe's file read once, wherever it ran (the two covers).
-        CHECK(scene.load.class_reads[content_build::ClassRead::recipe_file].asked == 2u);
+        // Each distinct recipe's file read once, wherever it ran: the two covers, the chain's two
+        // and the refused one.
+        CHECK(scene.load.class_reads[content_build::ClassRead::recipe_file].asked == 5u);
+        // Each answer taken from its slot, none probed in the walk (C72), and the refusal a slot
+        // carried counted as a class that cannot be read.
+        CHECK(scene.load.class_reads[content_build::ClassRead::ahead_answer].asked == 5u);
+        CHECK(scene.load.class_reads[content_build::ClassRead::walk_probe].asked == 0u);
+        CHECK(scene.load.unreadable_omitted >= 1u);
         const std::string outcome = outcome_of(desc, scene);
         if (jobs == 1u) first = outcome;
         CHECK(outcome == first);
@@ -2170,29 +2222,6 @@ TEST_CASE("content classes at load: a recipe's host chain reads as deep as it bu
     if (read) CHECK(classes.classes.levels[static_cast<u32>(table.find("fixture_glow"))] == 2);
   }
 }
-
-namespace {
-
-// A generator whose hash reads an image beside its recipe and refuses an empty one, as a generator
-// that parses an image it hashes would; it grows over a host as `fixturehost` does.
-bool fixture_image_hash_with(std::span<const u8> bytes, const assets::MeshGeneratorInputs& inputs,
-                             u64& out, std::string& error) {
-  Vector<u8> image;
-  if (inputs.hosts == nullptr ||
-      !inputs.hosts->read_image(inputs.hosts->context, "skin.png", image, error))
-    return false;
-  if (image.empty()) {
-    error = "an empty image is not one";
-    return false;
-  }
-  return fixture_host_hash_with(bytes, inputs, out, error);
-}
-constexpr assets::MeshGeneratorDesc k_fixture_image{.name = "fixtureimage",
-                                                    .source_hash = fixture_host_hash,
-                                                    .build = fixture_host_build,
-                                                    .source_hash_with = fixture_image_hash_with};
-
-}  // namespace
 
 // **A recipe whose hash refuses the class probe is unreadable** (C64): the probe answers every
 // image with no bytes, so a generator that hashes an image's content can refuse it; its hosts are
