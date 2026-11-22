@@ -637,18 +637,15 @@ bool generator_hosts(const std::string& recipe, const materials::Pack* pack,
   return true;
 }
 
-// A container host's own section 54. Against a copy of the build's table, a class naming a
-// category the table does not hold cannot be the dependant's, and is refused; with `learn`, the
-// record teaches that table its ladders as a container the caller lists would (whole or not at
-// all), so the host is read at its real level whatever the caller has met before it (C64).
-bool host_container_classes(const std::string& path, const content_class::Categories& categories,
-                            content_class::Categories* learn, content_class::ContentClasses& out,
-                            std::string& why) {
+// A container host's own section 54, its bytes (empty when it has none). False, with `why`, when it
+// cannot be opened or read: a host that cannot be opened here (missing, locked, half written) is
+// unreadable, never `none`, since the dependant is built only when the host's own read succeeds, so
+// refusing it loses nothing, where `none` would build over whatever the finished file's section 54
+// declares.
+bool read_host_record(const std::string& path, Vector<u8>& record, std::string& why) {
+  record.clear();
   geometry::ClusterFileReader reader;
   std::string error;
-  // A host that cannot be opened here (missing, locked, half written) is unreadable, never `none`:
-  // the dependant is built only when the host's own read succeeds, so refusing it loses nothing,
-  // where `none` would build over whatever the finished file's section 54 declares.
   if (!reader.open(path, nullptr, &error)) {
     why = path + ": the host cannot be opened for its classes: " + error;
     return false;
@@ -657,7 +654,6 @@ bool host_container_classes(const std::string& path, const content_class::Catego
   if (count == 0) return true;
   u64 offset = 0;
   u64 bytes = 0;
-  Vector<u8> record;
   bool read = reader.range(geometry::ClusterSection::ContentClasses, 1u, 0, count, offset, bytes);
   if (read) {
     record.resize(static_cast<u32>(bytes));
@@ -665,35 +661,133 @@ bool host_container_classes(const std::string& path, const content_class::Catego
     read =
         reader.file().read_at(offset, record.data(), bytes, got) == io::Status::Ok && got == bytes;
   }
+  if (!read) {
+    record.clear();
+    why = path + ": its classes section cannot be read";
+    return false;
+  }
+  return true;
+}
+
+// What a teaching round kept for `path` (`index` a path's hash to its entry), or null.
+template <typename T>
+const T* kept_at(const HashMap<u64, u32>& index, const Vector<std::string>& paths,
+                 const Vector<T>& entries, const std::string& path) {
+  const u32* at = index.find_value(hash_bytes(path.data(), path.size()));
+  return at != nullptr && paths[*at] == path ? &entries[*at] : nullptr;
+}
+
+// Kept under `path` unless a path of the same hash already is (that one is then read again).
+template <typename T>
+void keep_at(HashMap<u64, u32>& index, Vector<std::string>& paths, Vector<T>& entries,
+             const std::string& path, const T& entry) {
+  if (!index.try_emplace(hash_bytes(path.data(), path.size()), static_cast<u32>(entries.size()))
+           .second)
+    return;
+  paths.push_back(path);
+  entries.push_back(entry);
+}
+
+// A recipe's hosts, from what the teaching round kept when it probed it, else probed here.
+bool recipe_hosts(const std::string& recipe, const materials::Pack* pack, const HostReads* reads,
+                  Vector<std::string>& hosts, std::string& why) {
+  const HostReads::Probe* probe =
+      reads == nullptr ? nullptr
+                       : kept_at(reads->probe_of, reads->probe_paths, reads->probes, recipe);
+  if (probe == nullptr) return generator_hosts(recipe, pack, hosts, why);
+  hosts = probe->hosts;
+  why = probe->why;
+  return probe->ok;
+}
+
+// A container host's section 54, from what the teaching round kept, else read here.
+bool host_record(const std::string& path, const HostReads* reads, Vector<u8>& record,
+                 std::string& why) {
+  const HostReads::Record* kept_record =
+      reads == nullptr ? nullptr
+                       : kept_at(reads->record_of, reads->record_paths, reads->records, path);
+  if (kept_record == nullptr) return read_host_record(path, record, why);
+  record = kept_record->bytes;
+  why = kept_record->why;
+  return kept_record->ok;
+}
+
+// A container host's class, its section 54 decoded against a copy of the build's table: a category
+// the table does not hold, or holds under another ladder, cannot be the dependant's, and is
+// refused.
+bool host_container_classes(const std::string& path, const content_class::Categories& categories,
+                            const HostReads* reads, content_class::ContentClasses& out,
+                            std::string& why) {
+  Vector<u8> record;
+  if (!host_record(path, reads, record, why)) return false;
+  if (record.empty()) return true;
   content_class::Categories copy = categories;
-  content_class::Categories& table = learn != nullptr ? *learn : copy;
-  if (!read || !content_class::decode_classes(
-                   table, std::span<const u8>(record.data(), record.size()), out, error)) {
+  std::string error;
+  if (!content_class::decode_classes(copy, std::span<const u8>(record.data(), record.size()), out,
+                                     error)) {
     why = path + ": its classes section cannot be read: " + error;
     return false;
   }
-  if (learn == nullptr && copy.size() != categories.size()) {
+  if (copy.size() != categories.size()) {
     why = path + ": its classes name a category this build does not know";
     return false;
   }
   return true;
 }
 
+// The teaching round's walk: `read_classes_at`'s hosts in its order, each container host's record
+// learned, and what was read kept for that read.
+bool learn_hosts_at(const std::string& source, const MeshOptions& options,
+                    content_class::Categories& learn, HostReads& reads, u32 depth) {
+  if (assets::mesh_generator_of(source).empty()) return true;
+  if (kept_at(reads.probe_of, reads.probe_paths, reads.probes, source) == nullptr) {
+    HostReads::Probe probe;
+    probe.ok = generator_hosts(source, options.materials, probe.hosts, probe.why);
+    keep_at(reads.probe_of, reads.probe_paths, reads.probes, source, probe);
+  }
+  Vector<std::string> hosts;
+  std::string why;
+  if (!recipe_hosts(source, options.materials, &reads, hosts, why)) return false;
+  for (const std::string& host : hosts) {
+    if (depth >= k_host_depth || !learn_hosts_at(host, options, learn, reads, depth + 1))
+      return false;
+    if (io::extension(host) != ".clusters") continue;
+    if (kept_at(reads.record_of, reads.record_paths, reads.records, host) == nullptr) {
+      HostReads::Record record;
+      record.ok = read_host_record(host, record.bytes, record.why);
+      keep_at(reads.record_of, reads.record_paths, reads.records, host, record);
+    }
+    Vector<u8> record;
+    if (!host_record(host, &reads, record, why)) return false;
+    content_class::ContentClasses taught;
+    if (!record.empty() &&
+        !content_class::decode_classes(learn, std::span<const u8>(record.data(), record.size()),
+                                       taught, why))
+      return false;
+  }
+  return true;
+}
+
 bool read_classes_at(const std::string& source, const MeshOptions& options, SourceClasses& out,
-                     Diagnostic& error, u32 depth, content_class::Categories* learn);
+                     Diagnostic& error, u32 depth, const HostReads* reads);
 
 }  // namespace
 
 bool read_source_classes(const std::string& source, const MeshOptions& options, SourceClasses& out,
-                         Diagnostic& error, content_class::Categories* learn) {
-  return read_classes_at(source, options, out, error, 0, learn);
+                         Diagnostic& error, const HostReads* reads) {
+  return read_classes_at(source, options, out, error, 0, reads);
+}
+
+bool learn_source_hosts(const std::string& source, const MeshOptions& options,
+                        content_class::Categories& learn, HostReads& reads) {
+  return learn_hosts_at(source, options, learn, reads, 0);
 }
 
 namespace {
 
 bool read_classes_at(const std::string& source, const MeshOptions& options, SourceClasses& out,
-                     Diagnostic& error, u32 depth, content_class::Categories* learn) {
-  const content_class::Categories& categories = learn != nullptr ? *learn : categories_of(options);
+                     Diagnostic& error, u32 depth, const HostReads* reads) {
+  const content_class::Categories& categories = categories_of(options);
   out = SourceClasses{};
   const auto refuse = [&](std::string message) {
     out.classes = content_class::unreadable(categories);
@@ -721,7 +815,7 @@ bool read_classes_at(const std::string& source, const MeshOptions& options, Sour
   // joined as a whole asset, so its key and section 54 carry it.
   Vector<std::string> hosts;
   if (!assets::mesh_generator_of(source).empty() &&
-      !generator_hosts(source, options.materials, hosts, why))
+      !recipe_hosts(source, options.materials, reads, hosts, why))
     return refuse(why + "; the build refuses " + source);
   for (const std::string& host : hosts) {
     // At `GeneratorHosts::identify`'s bound: `depth` is this dependant's, as `depth_` is there,
@@ -731,12 +825,12 @@ bool read_classes_at(const std::string& source, const MeshOptions& options, Sour
                     " levels deep: a loop of recipes?");
     SourceClasses inner;
     Diagnostic inner_error;
-    if (!read_classes_at(host, options, inner, inner_error, depth + 1, learn))
+    if (!read_classes_at(host, options, inner, inner_error, depth + 1, reads))
       return refuse(inner_error.message + "; the host of " + source);
     out.classes = content_class::join(out.classes, inner.classes);
     if (io::extension(host) == ".clusters") {
       content_class::ContentClasses own;
-      if (!host_container_classes(host, categories, learn, own, why))
+      if (!host_container_classes(host, categories, reads, own, why))
         return refuse(why + "; the host of " + source);
       out.classes = content_class::join(out.classes, own);
     }

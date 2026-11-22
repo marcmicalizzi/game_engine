@@ -100,8 +100,12 @@ ReadClass read_sidecar_class(const std::string& source, const content_class::Cat
   return out;
 }
 
-ReadClass read_container_class(const std::string& path, content_class::Categories& categories,
-                               ContainerProbe* probe) {
+namespace {
+
+// A container's section 54 alone, its ladders learned into `categories`: the first round of the
+// load's teachers (C64), read before any sidecar is.
+ReadClass container_section(const std::string& path, content_class::Categories& categories,
+                            ContainerProbe* probe) {
   ReadClass out;
   geometry::ClusterFileReader reader;
   std::string error;
@@ -132,11 +136,29 @@ ReadClass read_container_class(const std::string& path, content_class::Categorie
     }
   }
   if (probe != nullptr) probe->section = record;
-  // A container named outright is joined with a sidecar beside it (content-classes.md, "Two
-  // limits, stated").
+  return out;
+}
+
+// A container named outright is joined with a sidecar beside it (content-classes.md, "Two limits,
+// stated").
+ReadClass with_container_sidecar(const std::string& path, const ReadClass& section,
+                                 const content_class::Categories& categories,
+                                 ContainerProbe* probe) {
   const ReadClass sidecar = read_sidecar_class(path, categories);
   if (probe != nullptr) probe->sidecar = sidecar;
-  return join(out, sidecar);
+  return join(section, sidecar);
+}
+
+}  // namespace
+
+ReadClass read_container_class(const std::string& path, content_class::Categories& categories,
+                               ContainerProbe* probe) {
+  ContainerProbe local;
+  ContainerProbe& seen = probe != nullptr ? *probe : local;
+  const ReadClass section = container_section(path, categories, &seen);
+  // One the probe cannot open is `none` here, sidecar unread, and decided again by its whole read
+  // (`container_class_as_loaded`).
+  return seen.opened ? with_container_sidecar(path, section, categories, &seen) : section;
 }
 
 ReadClass container_class_as_loaded(const ContainerProbe& probe, const ReadClass& probed,
@@ -327,11 +349,55 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
   const materials::Pack* pack = materials::pack_at(desc.materials);
   // One read a distinct path: a scene naming one container ten thousand times opens it once (the
   // per-mesh read cost 0.46 ms a mesh in `msvc-debug` before this, measured on such a scene).
-  HashMap<u64, u32> first_of_path;
+  // `first[m]` is the first mesh of `m`'s path, `m` itself for the first and for the ground.
+  Vector<u32> first(meshes, 0u);
+  {
+    HashMap<u64, u32> first_of_path;
+    for (u32 m = 0; m < meshes; ++m) {
+      const std::string& path = desc.meshes[m];
+      first[m] = m;
+      if (path.empty()) continue;
+      const u64 path_hash = hash_bytes(path.data(), path.size());
+      if (const u32* at = first_of_path.find_value(path_hash); at == nullptr)
+        first_of_path.try_emplace(path_hash, m);
+      else if (desc.meshes[*at] == path)
+        first[m] = *at;
+    }
+  }
   state.ground.assign(meshes, u8{0});
   state.probe.resize(meshes);
   state.loaded.resize(meshes);
   state.read_whole.assign(meshes, u8{0});
+  // **Every ladder is learned before any class is read** (C64), so what a scene admits, leaves out
+  // and counts, and every key, are the same in whichever order it lists its meshes, wherever no two
+  // teachers disagree. Round one: every container the scene lists, in the order listed, teaches
+  // the table from its own section 54 (decided by it; its sidecar is read with the classes below).
+  // Round two: every recipe's container hosts, the whole chain, in the order the recipes are
+  // listed, through the same `decode_classes`, whole or not at all, so a host the scene does not
+  // list teaches only a category no listed container taught, and one whose ladder differs from
+  // one learned is refused as a second listed container is, its recipe unreadable. What round two
+  // reads is kept, and the class read below takes it from there, opening and hashing nothing
+  // twice.
+  const content_build::MeshOptions recipe_options = [&] {
+    content_build::MeshOptions options;
+    options.materials = pack;
+    options.categories = &out.categories;
+    return options;
+  }();
+  for (u32 m = 0; m < meshes; ++m) {
+    const std::string& path = desc.meshes[m];
+    if (first[m] == m && !path.empty() && !is_generated_mesh(path) &&
+        io::extension(path) == ".clusters")
+      state.mesh[m] = container_section(path, out.categories, &state.probe[m]);
+  }
+  content_build::HostReads host_reads;
+  for (u32 m = 0; m < meshes; ++m) {
+    const std::string& path = desc.meshes[m];
+    // A refusal here is the class read's below, by the same reads, which says why.
+    if (first[m] == m && !path.empty() && is_generated_mesh(path))
+      (void)content_build::learn_source_hosts(path, recipe_options, out.categories, host_reads);
+  }
+  // Then the classes, in mesh order, against the finished table: every sidecar, pack and ground.
   for (u32 m = 0; m < meshes; ++m) {
     const std::string& path = desc.meshes[m];
     if (path.empty()) {
@@ -349,36 +415,30 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
       }
       continue;
     }
-    const u64 path_hash = hash_bytes(path.data(), path.size());
-    if (const u32* first = first_of_path.find_value(path_hash);
-        first != nullptr && desc.meshes[*first] == path) {
-      state.mesh[m] = state.mesh[*first];
-      state.mesh_hash[m] = state.mesh_hash[*first];
-      state.record[m] = state.record[*first];
-      state.probe[m] = state.probe[*first];
+    if (first[m] != m) {
+      state.mesh[m] = state.mesh[first[m]];
+      state.mesh_hash[m] = state.mesh_hash[first[m]];
+      state.record[m] = state.record[first[m]];
+      state.probe[m] = state.probe[first[m]];
       continue;
-    } else if (first == nullptr) {
-      first_of_path.try_emplace(path_hash, m);
     }
     if (is_generated_mesh(path)) {
-      // A generator's output is the join of what it baked: its recipe's sidecar and every set of
-      // the pack it falls back to (content_build.h, `read_source_classes`).
-      content_build::MeshOptions options;
-      options.materials = pack;
-      options.categories = &out.categories;
+      // A generator's output is the join of what it baked: its recipe's sidecar, every set of the
+      // pack it falls back to and its hosts' classes (content_build.h, `read_source_classes`), each
+      // host's record taken from what round two read.
       content_build::SourceClasses classes;
       content_build::Diagnostic why;
-      // A container host's record teaches the scene's table as a listed container's does (C64), so
-      // the recipe reads the host's real level in whatever order the scene lists its meshes, and
-      // whether or not it lists the host at all.
       state.mesh[m].unreadable =
-          !content_build::read_source_classes(path, options, classes, why, &out.categories);
+          !content_build::read_source_classes(path, recipe_options, classes, why, &host_reads);
       state.mesh[m].classes = classes.classes;
       // What its cache key holds and the entry the load builds carries, as the content build's.
       state.mesh_hash[m] = classes.hash;
       state.record[m] = std::move(classes.record);
     } else if (io::extension(path) == ".clusters") {
-      state.mesh[m] = read_container_class(path, out.categories, &state.probe[m]);
+      // Its section 54 was read in round one; one the probe could not open stays `none` here.
+      if (state.probe[m].opened)
+        state.mesh[m] =
+            with_container_sidecar(path, state.mesh[m], out.categories, &state.probe[m]);
     } else {
       Vector<content_class::MaterialClass> materials;
       state.mesh[m] = read_sidecar_class(path, out.categories, &materials);
@@ -395,8 +455,8 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
   }
   // **What could not be read is decided with what the scene knows at the decision** (C64): the
   // read keeps the fact (`ReadClass::unreadable`), and its levels are made here, from every
-  // category the scene knows now, so a ladder a container later in the scene taught is in it and
-  // the outcome does not depend on the order of the meshes. What the load builds for one (a
+  // category the scene knows now, so a ladder taught after a container round one refused is in it
+  // and the outcome does not depend on the order of the meshes. What the load builds for one (a
   // ground's, a glTF's or a recipe's entry: its key's class term and its section 54) is taken
   // from the class made here, so an entry admitted records every category its decision used; a
   // container named outright builds nothing.

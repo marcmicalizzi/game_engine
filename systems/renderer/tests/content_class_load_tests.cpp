@@ -756,16 +756,17 @@ TEST_CASE("content classes at load: a ground keeps its key with no sidecar, and 
 }
 
 // **An unreadable class is decided with what the scene knows at the decision** (C64): a glTF whose
-// sidecar names a category a container later in the scene teaches is unreadable when it is read,
-// and the class it decides on is made at the decision, when the scene knows that category too. So
-// the order of the meshes does not change the outcome, under a policy that caps every engine
-// category at its top and the game's at `none`.
+// sidecar names a category nobody defines is unreadable, and the class it decides on is made at the
+// decision, when the scene knows the category a container in it teaches too, before or after the
+// glTF. So the order of the meshes does not change the outcome, under a policy that caps every
+// engine category at its top and the game's at `none`.
 TEST_CASE("content classes at load: an unreadable class decides the same in either mesh order") {
   const test::TempDir tmp("renderer_classes_order");
   REQUIRE(tmp.ok());
   REQUIRE(io::write_file(tmp.file("tri.gltf"), k_triangle_gltf) == io::Status::Ok);
   REQUIRE(io::write_file(tmp.file("tri.provenance.json"),
-                         R"({"content_classes":{"fixture_glow":"bright"}})") == io::Status::Ok);
+                         R"({"content_classes":{"fixture_glow":"bright","fixture_nobody":"x"}})") ==
+          io::Status::Ok);
   const Grid glow = write_grid(tmp, "glow.clusters", 17, "glow.png", glow_record(1));
   Grid tri;
   tri.path = tmp.file("tri.gltf");
@@ -778,6 +779,7 @@ TEST_CASE("content classes at load: an unreadable class decides the same in eith
     REQUIRE_MESSAGE(load_scene(desc, scene, error), error);
     CHECK(loaded_instance(scene, tri_first ? 0u : 1u) == k_not_loaded);
     CHECK(scene.instances.empty());
+    CHECK(scene.load.unreadable_omitted == 1);
   }
 }
 
@@ -1670,6 +1672,256 @@ TEST_CASE("content classes at load: a recipe over a game-classified host decides
   g_cover_mesh = nullptr;
 }
 
+namespace {
+
+// Section 54 for the made-up category `name` at `level` of the ladder `categories` gives it.
+Vector<u8> record_of(const char* categories, const char* name, u8 level) {
+  content_class::Categories table;
+  std::string error;
+  REQUIRE_MESSAGE(table.add_json(categories, error), error);
+  content_class::ContentClasses classes;
+  classes.levels[static_cast<u32>(table.find(name))] = level;
+  Vector<u8> record;
+  content_class::encode_classes(table, classes, nullptr, record);
+  REQUIRE_FALSE(record.empty());
+  return record;
+}
+
+// A second made-up category, and two policies over both: everything admitted, or the glow held to
+// `dim` and the hum to `none`.
+constexpr const char* k_hum_categories =
+    R"({"categories":[{"name":"fixture_hum","levels":["none","low","loud"]}]})";
+constexpr const char* k_two_policies =
+    R"({"policies":[)"
+    R"({"name":"two-wide","caps":[{"category":"fixture_glow","cap":"bright","substitution":"omit"},)"
+    R"({"category":"fixture_hum","cap":"loud","substitution":"omit"}]},)"
+    R"({"name":"hum-off","caps":[{"category":"fixture_glow","cap":"dim","substitution":"omit"},)"
+    R"({"category":"fixture_hum","cap":"none","substitution":"omit"}]}]})";
+
+// `scene_of` over `count` meshes in the order given.
+SceneDesc scene_in(const test::TempDir& tmp, const Grid* const* meshes, u32 count) {
+  SceneDesc desc;
+  desc.ddc = tmp.file("ddc");
+  desc.cache = true;
+  for (u32 m = 0; m < count; ++m) {
+    SceneInstance instance{m, Transform3::identity()};
+    instance.origin = WorldPos{30.0 * m, 0.0, 0.0};
+    desc.instances.push_back(instance);
+    desc.meshes.push_back(meshes[m]->path);
+  }
+  return desc;
+}
+
+// What a load decided, as text that does not depend on the order of the scene's meshes: each
+// instance's mesh (by path, the ground by name), whether it was loaded and the container its bytes
+// came from, whose name is its key; the counts by row; the unreadable and the grounds left out.
+std::string outcome_of(const SceneDesc& desc, const SceneData& scene) {
+  Vector<std::string> lines;
+  for (u32 i = 0; i < desc.instances.size(); ++i) {
+    const u32 m = desc.instances[i].mesh;
+    const bool loaded = loaded_instance(scene, i) != k_not_loaded;
+    lines.push_back((desc.meshes[m].empty() ? std::string("(ground)") : desc.meshes[m]) +
+                    (loaded ? " loaded from " : " left out, ") +
+                    (m < scene.sources.size() ? scene.sources[m].container : std::string()));
+  }
+  for (const SubstitutedCount& r : scene.load.substituted)
+    lines.push_back("row " + r.category + ": " + std::to_string(r.omitted) + " omitted, " +
+                    std::to_string(r.proxied) + " proxied");
+  std::sort(lines.begin(), lines.end());
+  std::string out = "unreadable " + std::to_string(scene.load.unreadable_omitted) + " omitted, " +
+                    std::to_string(scene.load.unreadable_proxied) + " proxied; grounds " +
+                    std::to_string(scene.load.grounds_omitted) + " omitted\n";
+  for (const std::string& line : lines)
+    out += line + "\n";
+  return out;
+}
+
+}  // namespace
+
+// **Every ladder is learned before any class is read** (C64): a cover's own sidecar naming the
+// category its host teaches, above the host's level, reads at its level whether the cover is listed
+// before its host, after it, or alone: admitted under a cap at that level, and refused under one
+// below it by the category's row, never as a class that could not be read.
+TEST_CASE("content classes at load: a cover's own sidecar reads before its host, after, alone") {
+  need_generator(k_fixture_cover);
+  const geometry::ClusterFileData cover = plain_grid(5);
+  g_cover_mesh = &cover;
+  const test::TempDir tmp("renderer_classes_cover_sidecar");
+  REQUIRE(tmp.ok());
+  const Grid statue = write_grid(tmp, "statue.clusters", 17, "statue.png", glow_record(1));
+  REQUIRE(io::write_file(tmp.file("moss.fixturecover.json"), R"({"host":"statue.clusters"})") ==
+          io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("moss.fixturecover.provenance.json"),
+                         R"({"content_classes":{"fixture_glow":"bright"}})") == io::Status::Ok);
+  Grid moss;
+  moss.path = tmp.file("moss.fixturecover.json");
+  std::string error;
+  for (const char* name : {"glow-wide", "glow-dim"}) {
+    const std::string policy_name = name;
+    CAPTURE(policy_name);
+    const bool admits = policy_name == "glow-wide";
+    for (const u32 form : {0u, 1u, 2u}) {
+      CAPTURE(form);  // 0: the cover first, 1: its host first, 2: the cover alone
+      SceneDesc desc = form == 0   ? scene_of(tmp, {&moss, &statue})
+                       : form == 1 ? scene_of(tmp, {&statue, &moss})
+                                   : scene_of(tmp, {&moss});
+      desc.view_policy = admits ? policy_named(name) : policy_in(k_dim_policies, name);
+      SceneData scene;
+      REQUIRE_MESSAGE(load_scene(desc, scene, error), error);
+      CHECK(scene.load.unreadable_omitted == 0);
+      CHECK((loaded_instance(scene, form == 1 ? 1u : 0u) != k_not_loaded) == admits);
+      // The dim statue is admitted under both.
+      CHECK(scene.instances.size() == desc.meshes.size() - (admits ? 0u : 1u));
+      if (!admits) {
+        REQUIRE(row(scene, "fixture_glow") != nullptr);
+        CHECK(row(scene, "fixture_glow")->omitted == 1);
+      }
+    }
+  }
+  g_cover_mesh = nullptr;
+}
+
+// **A host the scene does not list teaches in the second round** (C64), before any class is read,
+// so a glTF whose sidecar names the category only that host carries reads at its level in either
+// order: both are admitted under a cap at that level.
+TEST_CASE("content classes at load: an unlisted host's ladder reaches a glTF in either order") {
+  need_generator(k_fixture_cover);
+  const geometry::ClusterFileData cover = plain_grid(5);
+  g_cover_mesh = &cover;
+  const test::TempDir tmp("renderer_classes_unlisted_teacher");
+  REQUIRE(tmp.ok());
+  (void)write_grid(tmp, "statue.clusters", 17, "statue.png", glow_record(1));
+  REQUIRE(io::write_file(tmp.file("moss.fixturecover.json"), R"({"host":"statue.clusters"})") ==
+          io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("tri.gltf"), k_triangle_gltf) == io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("tri.provenance.json"),
+                         R"({"content_classes":{"fixture_glow":"dim"}})") == io::Status::Ok);
+  Grid moss;
+  moss.path = tmp.file("moss.fixturecover.json");
+  Grid tri;
+  tri.path = tmp.file("tri.gltf");
+  std::string error;
+  for (const bool cover_first : {true, false}) {
+    CAPTURE(cover_first);
+    SceneDesc desc = cover_first ? scene_of(tmp, {&moss, &tri}) : scene_of(tmp, {&tri, &moss});
+    desc.view_policy = policy_in(k_dim_policies, "glow-dim");
+    SceneData scene;
+    REQUIRE_MESSAGE(load_scene(desc, scene, error), error);
+    CHECK(scene.load.unreadable_omitted == 0);
+    CHECK(scene.instances.size() == 2);
+    CHECK(loaded_instance(scene, cover_first ? 1u : 0u) != k_not_loaded);
+  }
+  g_cover_mesh = nullptr;
+}
+
+// **A listed container out-ranks a host the scene does not list** (C64): the unlisted host teaches
+// in the second round, so whichever order the scene lists the two, the listed container's ladder
+// stands, the listed container is read at its level, and the host whose ladder differs is refused
+// as a second listed container's would be, which leaves its recipe unreadable.
+TEST_CASE("content classes at load: a listed container's ladder stands over an unlisted host's") {
+  need_generator(k_fixture_cover);
+  const geometry::ClusterFileData cover = plain_grid(5);
+  g_cover_mesh = &cover;
+  const test::TempDir tmp("renderer_classes_listed_ranks");
+  REQUIRE(tmp.ok());
+  const Grid lamp = write_grid(tmp, "lamp.clusters", 17, "lamp.png", glow_record(1));
+  (void)write_grid(
+      tmp, "odd.clusters", 13, "odd.png",
+      glow_record(1, R"({"categories":[{"name":"fixture_glow","levels":["none","bright"]}]})"));
+  REQUIRE(io::write_file(tmp.file("vine.fixturecover.json"), R"({"host":"odd.clusters"})") ==
+          io::Status::Ok);
+  Grid vine;
+  vine.path = tmp.file("vine.fixturecover.json");
+  std::string error;
+  for (const bool lamp_first : {true, false}) {
+    CAPTURE(lamp_first);
+    SceneDesc desc = lamp_first ? scene_of(tmp, {&lamp, &vine}) : scene_of(tmp, {&vine, &lamp});
+    desc.view_policy = policy_in(k_dim_policies, "glow-dim");
+    SceneData scene;
+    REQUIRE_MESSAGE(load_scene(desc, scene, error), error);
+    CHECK(loaded_instance(scene, lamp_first ? 0u : 1u) != k_not_loaded);
+    CHECK(loaded_instance(scene, lamp_first ? 1u : 0u) == k_not_loaded);
+    CHECK(scene.instances.size() == 1);
+    CHECK(scene.load.unreadable_omitted == 1);
+    CHECK(std::string(scene.sources[lamp_first ? 1u : 0u].cache) == "none");  // never generated
+  }
+  g_cover_mesh = nullptr;
+}
+
+// **The outcome does not depend on the order of the meshes** (C64): a listed classified container,
+// a cover over it with its own sidecar, a cover over a host the scene does not list carrying a
+// second category, a glTF whose sidecar names both and a ground whose sidecar names the second,
+// loaded in every one of the 120 orders of the mesh list under two policies, decide the same
+// instances, the same counts by row and the same unreadable count, and draw each asset from the
+// same entry, whose name is its key.
+TEST_CASE("content classes at load: every order of a scene's meshes decides it alike") {
+  need_generator(k_fixture_cover);
+  const geometry::ClusterFileData cover = plain_grid(5);
+  g_cover_mesh = &cover;
+  const test::TempDir tmp("renderer_classes_every_order");
+  REQUIRE(tmp.ok());
+  const Grid lamp = write_grid(tmp, "lamp.clusters", 17, "lamp.png", glow_record(1));
+  (void)write_grid(tmp, "bell.clusters", 13, "bell.png",
+                   record_of(k_hum_categories, "fixture_hum", 1));
+  REQUIRE(io::write_file(tmp.file("moss.fixturecover.json"), R"({"host":"lamp.clusters"})") ==
+          io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("moss.fixturecover.provenance.json"),
+                         R"({"content_classes":{"fixture_glow":"bright"}})") == io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("vine.fixturecover.json"), R"({"host":"bell.clusters"})") ==
+          io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("tri.gltf"), k_triangle_gltf) == io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("tri.provenance.json"),
+                         R"({"content_classes":{"fixture_glow":"dim","fixture_hum":"low"}})") ==
+          io::Status::Ok);
+  write_image(tmp.file("ground.png"), 40);
+  REQUIRE(io::write_file(tmp.file("ground.provenance.json"),
+                         R"({"content_classes":{"fixture_hum":"low"}})") == io::Status::Ok);
+  REQUIRE(io::write_file(tmp.file("scene.json"), ground_scene(false)) == io::Status::Ok);
+  std::string error;
+  SceneDesc ground;
+  REQUIRE_MESSAGE(read_scene_file(tmp.file("scene.json"), ground, error), error);
+  Grid moss;
+  moss.path = tmp.file("moss.fixturecover.json");
+  Grid vine;
+  vine.path = tmp.file("vine.fixturecover.json");
+  Grid tri;
+  tri.path = tmp.file("tri.gltf");
+  const Grid field{};  // the ground: the empty path
+  const Grid* const all[5] = {&lamp, &moss, &vine, &tri, &field};
+  for (const char* name : {"two-wide", "hum-off"}) {
+    const std::string policy_name = name;
+    CAPTURE(policy_name);
+    const bool wide = policy_name == "two-wide";
+    u32 at[5] = {0, 1, 2, 3, 4};
+    std::string first;
+    u32 orders = 0;
+    do {
+      const Grid* order[5];
+      std::string listed;
+      for (u32 i = 0; i < 5; ++i) {
+        order[i] = all[at[i]];
+        listed += std::to_string(at[i]);
+      }
+      CAPTURE(listed);
+      SceneDesc desc = scene_in(tmp, order, 5);
+      desc.terrain = ground.terrain;
+      desc.view_policy = policy_in(k_two_policies, name);
+      SceneData scene;
+      REQUIRE_MESSAGE(load_scene(desc, scene, error), error);
+      CHECK(scene.load.unreadable_omitted == 0);
+      CHECK(scene.load.grounds_omitted == (wide ? 0u : 1u));
+      // Wide, all five; with the glow at `dim` and the hum at `none`, the lamp alone.
+      CHECK(scene.instances.size() == (wide ? 5u : 1u));
+      const std::string outcome = outcome_of(desc, scene);
+      if (orders == 0) first = outcome;
+      CHECK(outcome == first);
+      ++orders;
+    } while (std::next_permutation(at, at + 5));
+    CHECK(orders == 120u);
+  }
+  g_cover_mesh = nullptr;
+}
+
 // **The class read follows a host chain exactly as deep as the hosts' seam does** (C64):
 // `GeneratorHosts` identifies hosts down to `k_host_depth` levels and refuses a chain one deeper,
 // and the class read takes the same chain, joining its last host's class, and refuses the same one.
@@ -1785,16 +2037,19 @@ constexpr const char* k_top_policies =
 }  // namespace
 
 // **An entry records the class its source was decided on** (C64): a glTF whose sidecar names a
-// category a container later in the scene teaches cannot be read when it is met, and is decided at
-// the top of every category the scene knows at the decision; admitted, its key and the section 54
-// of the entry the load writes are taken from that class, so the entry names the game's category.
+// category no data in the scene defines cannot be read, and is decided at the top of every category
+// the scene knows at the decision, the game's one a container later in the scene teaches included;
+// admitted, its key and the section 54 of the entry the load writes are taken from that class, so
+// the entry names the game's category. (Until every ladder was learned before any class was read,
+// a sidecar naming only the container's category was unreadable here too.)
 TEST_CASE(
     "content classes at load: an unreadable glTF's entry records the class it was decided on") {
   const test::TempDir tmp("renderer_classes_unreadable_record");
   REQUIRE(tmp.ok());
   REQUIRE(io::write_file(tmp.file("tri.gltf"), k_triangle_gltf) == io::Status::Ok);
   REQUIRE(io::write_file(tmp.file("tri.provenance.json"),
-                         R"({"content_classes":{"fixture_glow":"bright"}})") == io::Status::Ok);
+                         R"({"content_classes":{"fixture_glow":"bright","fixture_nobody":"x"}})") ==
+          io::Status::Ok);
   const Grid glow = write_grid(tmp, "glow.clusters", 17, "glow.png", glow_record(1));
   Grid tri;
   tri.path = tmp.file("tri.gltf");
