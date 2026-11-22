@@ -23,6 +23,7 @@
 // that cannot trace), which tests treat as a skip. A device without mesh shaders is not one of
 // them: it draws through the vertex-shader baseline tier.
 #include "fly_camera.h"
+#include "frame_records.h"
 #include "loading.h"
 #include "memory_report.h"
 #include "pacing.h"
@@ -1954,78 +1955,29 @@ struct Interactive {
   u64 inject_end = 0;          // the tick the injected session ended at
 };
 
-// The per-frame line an interactive `--benchmark` keeps until the frame's GPU numbers fold in
-// (`Stats::last`), a slot's worth of frames later. A ring, because a session is open-ended: the
-// records themselves are the only thing that grows.
-struct PendingFrame {
-  u64 submission = ~u64{0};
-  u32 frame = 0;
-  u32 ticks = 0;
-  f64 time = 0.0;
-  f64 cpu_ms = 0.0;
-  f64 frame_ms = 0.0;
-  // A windowed frame's waits (FrameRecord's `wait_ms`, `acquire_ms`, `present_ms`, `pace_ms`),
-  // and the id its present carried, which is how its display time finds it later.
-  f64 wait_ms = 0.0;
-  f64 acquire_ms = 0.0;
-  f64 present_ms = 0.0;
-  f64 pace_ms = 0.0;
-  u32 pace_depth = 0;
-  f64 submit_ms = 0.0;
-  u64 present_id = 0;
-  // The camera the frame drew and the simulated time it stands for (FrameRecord's `pose_*`).
-  view::FlyState pose;
-  f64 pose_time = 0.0;
-  // The time-lapse as the frame drew it (FrameRecord's `terrain`).
-  std::optional<scene::FrameTerrain> terrain;
-  // The walker's ticks of this frame (FrameRecord's `walk`).
-  std::optional<scene::FrameWalk> walk;
-  // The live wind the frame drew (FrameRecord's `wind`, W151).
-  std::optional<scene::FrameWind> wind;
-  // The host's time between frames, by what it did (FrameRecord's `world`, W82).
-  std::optional<scene::FrameWorld> world;
-  // Every span of the loop around the frame (FrameRecord's `sections`, R130); `next_start` is set
-  // when the next iteration starts, and the slot's wait and the resize come from the renderer's
-  // record of the frame when it folds.
-  renderer::FrameSpans spans;
-};
-constexpr u32 k_pending_frames = 8;  // more than the most frames in flight (3) + 1
+// The pending frames and the frame's start both loops share (frame_records.h, T212).
+using view::frame_started;
+using view::k_pending_frames;
+using view::PendingFrame;
 
 // Moves a folded frame's numbers into a record, if the fold is of a frame this loop submitted.
 // `present_ids`, when given, gets the frame's present id beside its record, for the display times
 // that come back after it (`fill_display_times`).
 void take_folded(const renderer::SceneRenderer& renderer, u64& folded,
                  const PendingFrame (&pending)[k_pending_frames],
-                 Vector<scene::FrameRecord>& records, Vector<u64>* present_ids = nullptr) {
+                 Vector<scene::FrameRecord>& records, Vector<u64>* present_ids = nullptr,
+                 view::LongFrames* classify = nullptr, bool keep = true) {
   const renderer::Stats& stats = renderer.stats();
   if (stats.folded == folded) return;
   folded = stats.folded;
   const PendingFrame& p = pending[stats.last.submission % k_pending_frames];
   if (p.submission != stats.last.submission) return;
   scene::FrameRecord record = renderer::frame_record(stats.last, 0, p.frame, p.time);
-  record.cpu_ms = p.cpu_ms;
-  record.ticks = p.ticks;
-  record.wait_ms = p.wait_ms;
-  record.acquire_ms = p.acquire_ms;
-  record.present_ms = p.present_ms;
-  record.pace_ms = p.pace_ms;
-  record.pace_depth = p.pace_depth;
-  record.submit_ms = p.submit_ms;
-  record.pose_position = p.pose.position;  // a worldpos since FrameRecord version 9
-  record.pose_yaw = p.pose.yaw;
-  record.pose_pitch = p.pose.pitch;
-  record.pose_time = p.pose_time;
-  record.terrain = p.terrain;
-  record.walk = p.walk;
-  record.world = p.world;
-  record.wind = p.wind;
-  if (p.spans.next_start != 0) {
-    renderer::FrameSpans spans = p.spans;
-    spans.slot_wait_ms = record.cpu.wait;
-    spans.resize_ms = record.cpu.resize;
-    record.sections = renderer::frame_sections(spans);
-    record.frame_ms = record.sections->wall_ms;  // its own interval (version 25, W155)
-  }
+  view::fill_record(p, record);  // the loop's own numbers and its sections (frame_records.h)
+  // A window classifies each record as it folds (`--report`'s long frames, T212) and keeps it only
+  // for `--benchmark`: an hour's session keeps ten frames and counts, never a list.
+  if (classify != nullptr) classify->add(record);
+  if (!keep) return;
   records.push_back(std::move(record));
   if (present_ids != nullptr) present_ids->push_back(p.present_id);
 }
@@ -3539,11 +3491,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
           }
         }
         const i64 start = time::monotonic_ns();
-        // The last frame's interval ends here (FrameRecord's `sections`, R130).
-        if (submissions > 0) {
-          PendingFrame& before = pending[(submissions - 1) % k_pending_frames];
-          if (before.submission == submissions - 1) before.spans.next_start = start;
-        }
+        const i64 start_cpu = frame_started(pending, submissions, start);  // the last one ends
         ENGINE_STARTUP_STAGE("frame");
         profiling::trace_items(f);
         // The record's `world` (W82): this loop's time outside `begin_frame` and `submit_frame`.
@@ -3615,6 +3563,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
         // fold and the readiness, the ticks and the frame's setup, the submission.
         p.spans = renderer::FrameSpans{};
         p.spans.start = start;
+        p.start_cpu = start_cpu;
+        p.next_cpu = 0;
         p.spans.host_ms = static_cast<f64>(begin_started - start) / 1.0e6;
         p.spans.begin_call_ms = static_cast<f64>(begun - begin_started) / 1.0e6;
         p.spans.fold_ms = static_cast<f64>(ready - begun) / 1.0e6;
@@ -3665,11 +3615,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       // The last frames' numbers fold in when their slots come around again; bring those around
       // with nothing drawn in them, rather than drawing frames nobody asked for. The last frame's
       // interval ends where they start.
-      if (submissions > 0) {
-        PendingFrame& final_frame = pending[(submissions - 1) % k_pending_frames];
-        if (final_frame.submission == submissions - 1)
-          final_frame.spans.next_start = time::monotonic_ns();
-      }
+      (void)frame_started(pending, submissions, time::monotonic_ns());
       for (u32 d = 0; d < k_frames_in_flight; ++d) {
         view_renderer.begin_frame();
         take_folded(view_renderer, folded, pending, records);
@@ -4210,8 +4156,10 @@ int run_offscreen(Options& options, Interactive& interactive) {
     }
   }
   // `--report`: the frames as the records have them, the walk, and the summary as printed.
-  for (const scene::FrameRecord& r : records)
+  for (const scene::FrameRecord& r : records) {
     g_report.frames.add(r.frame_ms);
+    g_report.long_frames.add(r);  // a no-op unless --report (T212)
+  }
   if (interactive.on) report_walk(session);
   g_report.summary_line = summary_line;
   if (g_report.reason.empty() && exit_code == 0)
@@ -5019,6 +4967,7 @@ int run_view(int argc, char** argv) {
     } else if (a == "--report") {
       if (!next_value(argc, argv, i, a, g_report.path)) return k_exit_usage;
       g_report.frames.enable();
+      g_report.long_frames.enable();  // T212: the report's long frames by cause
     } else if (a == "--startup-trace") {
       if (!next_value(argc, argv, i, a, options.startup_trace)) return k_exit_usage;
     } else if (a == "--memory-report") {
@@ -6667,14 +6616,17 @@ int run_view(int argc, char** argv) {
     // frame at the wall time since its first, so a slow frame skips path frames instead of slowing
     // the camera, and what the ground's tiles do in it is what a player's clock gets.
     const bool path_in_window = options.windowed && !interactive.on && !window_path.keys.empty();
-    const bool window_records = !options.benchmark.empty() && (interactive.on || path_in_window);
+    const bool keep_records = !options.benchmark.empty() && (interactive.on || path_in_window);
+    // `--report` folds the records too, for its long frames, and keeps none (T212).
+    const bool window_records =
+        keep_records || (g_report.long_frames.enabled() && (interactive.on || path_in_window));
     if (path_in_window && !options.benchmark.empty()) records.reserve(1u << 15);
     i64 path_started_ns = 0;
-    const bool timed_display = window_records && swapchain.present_timing();
+    const bool timed_display = keep_records && swapchain.present_timing();
     view::DisplayTimes display;
     Vector<u64> record_present_ids;
     if (timed_display) display.reserve(1u << 16);
-    if (window_records) record_present_ids.reserve(1u << 15);
+    if (keep_records) record_present_ids.reserve(1u << 15);
     // `--pace auto` (the default) paces a FIFO-family chain — the modes that show every frame at
     // the display's rate — and leaves mailbox and immediate, which were asked for to run
     // unthrottled, as they are; `display` paces whatever the mode.
@@ -6770,9 +6722,10 @@ int run_view(int argc, char** argv) {
           before.spans.end += before.spans.end != 0 ? paused : 0;
         }
       }
+      const i64 before_ceiling = time::monotonic_ns();
       if (ceiling_period_ns > 0 && !pace_display && last_frame_start_ns != 0) {
         const i64 due = last_frame_start_ns + ceiling_period_ns;
-        if (time::monotonic_ns() < due) {
+        if (before_ceiling < due) {
           ++ceiling_waits;
           while (time::monotonic_ns() < due)
             std::this_thread::yield();
@@ -6787,12 +6740,13 @@ int run_view(int argc, char** argv) {
         g_game->note_render_frame(static_cast<f64>(frame_start - last_frame_start_ns) / 1.0e6);
 #endif
       last_frame_start_ns = frame_start;
-      // The last frame's interval ends here (FrameRecord's `sections`, R130): its tail — a pacer's
-      // or the ceiling's wait above — is the time from its present to this start.
-      if (window_records && submissions > 0) {
-        PendingFrame& before = pending[(submissions - 1) % k_pending_frames];
-        if (before.submission == submissions - 1) before.spans.next_start = frame_start;
-      }
+      // The last frame's interval ends here (FrameRecord's `sections`): its tail is the time from
+      // its present to this start, and the pacer's and the ceiling's waits above are its `pace_ms`.
+      const i64 start_cpu =
+          window_records
+              ? frame_started(pending, submissions, frame_start,
+                              static_cast<f64>(paced_ns + frame_start - before_ceiling) / 1.0e6)
+              : 0;
       // --inject-input: the log's keys and motion go onto the window's own queue as their ticks
       // come due, and come back out of poll() below like anything the platform delivered.
       const std::span<const input::RawEvent> injected = interactive.injected.events();
@@ -6975,7 +6929,8 @@ int run_view(int argc, char** argv) {
       view_renderer.begin_frame();
       const i64 slot_free = time::monotonic_ns();
       if (window_records) {
-        take_folded(view_renderer, folded, pending, records, &record_present_ids);
+        take_folded(view_renderer, folded, pending, records, &record_present_ids,
+                    &g_report.long_frames, keep_records);
       }
       u32 image_index = 0;
       const i64 before_acquire = time::monotonic_ns();
@@ -7326,6 +7281,8 @@ int run_view(int argc, char** argv) {
           // The loop's spans, in its order (renderer::FrameSpans); the present's below.
           p.spans = renderer::FrameSpans{};
           p.spans.start = frame_start;
+          p.start_cpu = start_cpu;
+          p.next_cpu = 0;
           p.spans.host_ms = static_cast<f64>(before_waits - frame_start) / 1.0e6;
           p.spans.begin_call_ms = static_cast<f64>(slot_free - before_waits) / 1.0e6;
           p.spans.fold_ms = static_cast<f64>(before_acquire - slot_free) / 1.0e6;
@@ -7473,7 +7430,8 @@ int run_view(int argc, char** argv) {
       // records too.
       for (u32 d = 0; d < options.frames_in_flight; ++d) {
         view_renderer.begin_frame();
-        take_folded(view_renderer, folded, pending, records, &record_present_ids);
+        take_folded(view_renderer, folded, pending, records, &record_present_ids,
+                    &g_report.long_frames, keep_records);
         view_renderer.abort_frame();
       }
     }
@@ -7529,7 +7487,7 @@ int run_view(int argc, char** argv) {
     // One record per frame the window presented (the GPU's passes, the CPU's milliseconds, the
     // frame time, the ticks it consumed, visible pairs, streaming), then the same summary line a
     // flythrough ends with, so tools/flythrough.ps1's readers read a session without a new case.
-    if (window_records && exit_code == 0) {
+    if (keep_records && exit_code == 0) {
       scene::FlythroughSummary summary;
       summary.format = "engine.flythrough.v1";
       describe_run(scene_data, options,

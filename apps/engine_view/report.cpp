@@ -17,7 +17,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <string>
+#include <string_view>
 
 namespace engine::view {
 
@@ -90,7 +93,7 @@ std::string os_version() {
 JsonValue report_json(const RunReport& report) {
   JsonValue out = JsonValue::object();
   out.set("format", "engine.view.report");
-  out.set("version", static_cast<u32>(2));
+  out.set("version", static_cast<u32>(3));
 
   JsonValue exit = JsonValue::object();
   exit.set("code", static_cast<i64>(report.exit_code));
@@ -120,6 +123,7 @@ JsonValue report_json(const RunReport& report) {
   frames.set("width", report.width);
   frames.set("height", report.height);
   out.set("frames", std::move(frames));
+  out.set("long_frames", report.long_frames.json());  // version 3 (T212)
 
   JsonValue walk = JsonValue::object();
   walk.set("walked", report.have_walk);

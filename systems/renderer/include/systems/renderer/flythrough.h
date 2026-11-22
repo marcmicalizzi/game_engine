@@ -84,6 +84,9 @@ struct FrameSpans {
   // The frame's thread's own CPU time from `start` to `next_start` (W155;
   // `profiling::thread_cpu_ns`), negative when the loop did not measure it.
   f64 thread_cpu_ms = -1.0;
+  // Of the tail, what a window's present path held before the next frame started: the pacer's
+  // wait and the frame-rate ceiling's yield (T212; `FrameSections::pace_ms`). Zero offscreen.
+  f64 pace_ms = 0.0;
 };
 scene::FrameSections frame_sections(const FrameSpans& spans);
 // The run's ray tracing chain into the summary's `rt` block, all but the per-frame percentiles

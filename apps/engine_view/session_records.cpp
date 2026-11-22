@@ -137,8 +137,10 @@ void on_device_lost(void* context, const gfx::DeviceLost& lost) {
   (void)startup_trace().finish(nullptr);
   if (report != nullptr && !report->path.empty()) {
     if (held.report_frames_from_records) {
-      for (const scene::FrameRecord& r : records)
+      for (const scene::FrameRecord& r : records) {
         report->frames.add(r.frame_ms);
+        report->long_frames.add(r);
+      }
     }
     report->exit_code = platform::k_exit_device_lost;
     report->reason = "device_lost";
