@@ -104,9 +104,10 @@ LightingOptions lighting_options(const RenderSettings& settings, f64 sun_time_s 
 // The stand-in's two point lights beside the sun.
 inline constexpr u32 k_stand_in_lights = 2;
 // The light array's room: the stand-in's two point lights (or a sky's moon), then the fires nearest
-// the eye (fire.h, `add_fire_lights`). A frame with no fire fills what it always filled, and the
-// resolve reads `light_count` of them, so the room alone changes no picture.
-inline constexpr u32 k_frame_lights = k_stand_in_lights + k_max_fire_lights;
+// the eye (fire.h, `add_fire_lights`), then every lamp (`add_lamp_lights`, R86). A frame with no
+// fire and no lamp fills what it always filled, and the resolve reads `light_count` of them, so
+// the room alone changes no picture.
+inline constexpr u32 k_frame_lights = k_stand_in_lights + k_max_fire_lights + k_max_lamps;
 
 // The sky, in one place, because **three** things have to be the same number. It is the resolve
 // pass's clear value and `gfx::ResolveParams::sky`, which `sky_is_clear` ties together — the

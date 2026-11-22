@@ -1,0 +1,13 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R86",
+  "reason": "R86: steady lamps. record_frame burns the frame's lamps and appends every one to the light array beside the fires (4 lines); the scene root gains lamps, the block the row is; renderer.md gains its Lamps section and apps.md the prop's lamp",
+  "date": "2026-11-21",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": 4,
+    "schemas.scene_root.fields": 1,
+    "page:docs/subsystems/renderer.md": 5146,
+    "page:docs/subsystems/apps.md": 302
+  }
+}

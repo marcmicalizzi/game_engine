@@ -2644,6 +2644,8 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   // The fires (`engine.scene.Fire`, fire.h): lights the renderer burns, and flames the medium
   // draws.
   if (!read_scene_fires(file, path, out, error)) return false;
+  // The lamps (`engine.scene.Lamp`, R86): steady lights placed and lit as the fires' are.
+  if (!read_scene_lamps(file, path, out, error)) return false;
 
   // The overlay: a map from content hash to a local file, read before the meshes so that a mesh
   // it names is loaded from there and checked against the hash the scene gave for it.
@@ -2770,6 +2772,15 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
         return false;
       }
       out.props.back().fire = std::move(fire);
+    }
+    if (prop.lamp.has_value()) {  // fire.h: every placed instance carries it (R86)
+      FireDesc lamp;
+      std::string why;
+      if (!read_lamp(*prop.lamp, lamp, &why)) {
+        error = where + " (\"" + prop.name + "\"): lamp: " + why;
+        return false;
+      }
+      out.props.back().lamp = std::move(lamp);
     }
     if (prop.collision.has_value()) {  // its body (P45; absent: its mesh)
       const scene::PropCollision& c = *prop.collision;
@@ -3025,6 +3036,9 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   // A grounded fire stands where a grounded instance would (fire.h).
   for (u32 i = 0; i < file.fires.size() && i < out.fires.size(); ++i) {
     if (file.fires[i].ground) out.fires[i].position.y += ground_at_world(file.fires[i].position);
+  }
+  for (u32 i = 0; i < file.lamps.size() && i < out.lamps.size(); ++i) {
+    if (file.lamps[i].ground) out.lamps[i].position.y += ground_at_world(file.lamps[i].position);
   }
 
   // The file's own instances and its scatters', the run a streamed world may hand to the
@@ -3676,6 +3690,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   out.medium = resolved.medium;
   out.props = resolved.props;
   out.fires = resolved.fires;
+  out.lamps = resolved.lamps;
   // The drawn leaves, by the loaded instances: a leaf whose house or own instance the load did not
   // keep is left out (S91).
   out.leaves.clear();

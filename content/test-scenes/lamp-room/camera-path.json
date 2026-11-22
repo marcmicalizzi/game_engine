@@ -1,0 +1,15 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "lamp-room held",
+  "description": "Held in the room's corner by the door, looking across the table at the cupboard and the blue lamp: nothing moves, so a benchmark along it measures the lamps' cost alone.",
+  "fps": 60,
+  "interpolation": "Smooth",
+  "znear": 0.05,
+  "keys": [
+    {"time": 0, "fov_deg": 75, "position": [-2.6, 1.6, 2.2], "target": [0.6, 0.9, -0.8]},
+    {"time": 4, "fov_deg": 75, "position": [-2.6, 1.6, 2.2], "target": [0.6, 0.9, -0.8]}
+  ],
+  "markers": [
+    {"frame": 120, "name": "held"}
+  ]
+}

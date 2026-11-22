@@ -1445,6 +1445,32 @@ struct Fire @version(1) {
   seed: u32 = 1
 }
 
+/// **A steady lamp** (roadmap R86; renderer.md, "Lamps"; plan 14 §14.3, "Globe lanterns"): a point
+/// light of a colour, an intensity and a reach in the frame's lights, placed and lit as a fire's
+/// light is but with no flame, no smoke and no flicker. Its globe is a mesh's: the lantern's
+/// material gives it off through its emissive slot (renderer.md says how to match the two). On a
+/// scene's `lamps` its `position` is the light's centre in the world; on a prop's `lamp` it is
+/// measured from the prop's origin, turned and scaled with the prop, so a game lights a lamp by
+/// placing the prop.
+struct Lamp @version(1) {
+  name: string
+  /// The light's centre (the globe's).
+  position: worldpos @unit(m)
+  /// On a scene's `lamps`: `position.y` is metres above the terrain's surface at (x, z) rather than
+  /// absolute. Not read on a prop's, which stands where the prop does.
+  ground: bool = false
+  /// The light's colour, linear Rec. 709, each channel [0, 1000]: only its chromaticity is read,
+  /// since it is taken to a luminance of 1 and `intensity` says how bright. Absent (all zero):
+  /// white.
+  color: vec3
+  /// The light's luminous intensity, as a fire's is: candela with a sky (whose light is in lux),
+  /// the stand-in's units without one (its sun is 1). A globe lantern is a few tens of candela.
+  intensity: f32 = 40
+  /// Where the light ends, metres: the windowed inverse square falls to nothing there. 0 (the
+  /// default) is a fire's rule, where it has fallen to 0.05 lux; at most 400.
+  reach_m: f32 = 0 @unit(m)
+}
+
 /// How a placed prop stops a walker (roadmap P45; docs/subsystems/apps.md, "Props: the objects a
 /// game places").
 enum PropCollisionShape : u8 {
@@ -1472,7 +1498,7 @@ struct PropCollision @version(1) {
 /// (engine-view `--game`; docs/subsystems/apps.md "The game contract") can place, move and remove
 /// instances of it between frames without the renderer ever loading a mesh mid-run: the meshes stay,
 /// only instances change. A module names a prop by `name` in its `on_load` (`prop_mesh`).
-struct Prop @version(3) {
+struct Prop @version(4) {
   /// The name a module asks for. Unique among the scene's props.
   name: string
   /// A glTF, GLB or .clusters file, relative to the scene file.
@@ -1485,6 +1511,9 @@ struct Prop @version(3) {
   fire: Fire? @since(2)
   /// How a placed instance stops a walker: absent, by its own mesh (P45).
   collision: PropCollision? @since(3)
+  /// A steady lamp every placed instance of the prop carries (`Lamp`, its position from the prop's
+  /// origin): a lantern prop lights where a game places it. Absent: none.
+  lamp: Lamp? @since(4)
 }
 
 /// A water body's circle: its centre's x and z (its y is not read; the surface is at the body's
@@ -1924,8 +1953,8 @@ struct Sound @version(1) {
 
 /// A scene: meshes, placements of them, and an optional terrain. Version 5 added `placements`,
 /// version 6 `sky`, version 7 `props`, version 8 `water` and `medium`, version 9 `fires`, version 10
-/// `formation`, version 11 `water_channels`, version 12 `sound`.
-struct Scene @version(12) {
+/// `formation`, version 11 `water_channels`, version 12 `sound`, version 13 `lamps`.
+struct Scene @version(13) {
   /// "engine.scene.v1". Empty is accepted, for the files written before the field existed.
   format: string
   name: string
@@ -1983,6 +2012,10 @@ struct Scene @version(12) {
   /// The clips a game plays (`Sound`; roadmap S111). Null: none, and a module's sound calls hear
   /// `Unsupported`; the picture never reads it.
   sound: Sound? @since(12)
+  /// Steady lamps standing in the world (`Lamp`; roadmap R86): each a point light in the frame's
+  /// lights, at most 64 with the placed props' (a file naming more is refused with the count).
+  /// Empty: none, and the scene reads and draws exactly as it did.
+  lamps: Lamp[] @since(13)
 }
 
 /// Where the owner's replacements for a scene's placeholders are: a local file, never committed.

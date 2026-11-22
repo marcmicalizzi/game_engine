@@ -1,6 +1,7 @@
 // Fires (fire.h; docs/subsystems/renderer.md, "Fires"; roadmap R85): the scene file's block read
 // and checked, a fire burnt at a clock, the nearest of a frame's fires into its light array, and
-// the set of fires a renderer keeps — the scene's own and its placed props'.
+// the set of fires a renderer keeps — the scene's own and its placed props'. Lamps (R86,
+// renderer.md "Lamps") are fires' lights with no flame: read, kept, placed and lit here too.
 
 #include <core/math/deterministic.h>
 #include <domain/gfx/visibility_resolve.h>
@@ -60,6 +61,56 @@ bool read_fire(const scene::Fire& in, FireDesc& out, std::string* error) {
   out.smoke_spread = in.smoke.spread;
   out.flicker = in.flicker;
   out.seed = in.seed;
+  return true;
+}
+
+bool read_lamp(const scene::Lamp& in, FireDesc& out, std::string* error) {
+  const auto fail = [&](const char* what) {
+    if (error != nullptr) *error = what;
+    return false;
+  };
+  if (!world_cell_valid(in.position) || !std::isfinite(in.position.x) ||
+      !std::isfinite(in.position.y) || !std::isfinite(in.position.z))
+    return fail("position is not a position in the world");
+  if (!in_range(in.color.x, 0.0f, 1000.0f) || !in_range(in.color.y, 0.0f, 1000.0f) ||
+      !in_range(in.color.z, 0.0f, 1000.0f))
+    return fail("color is not three numbers in [0, 1000]");
+  if (!in_range(in.intensity, 0.0f, 1.0e7f)) return fail("intensity is not in [0, 1e7]");
+  if (!in_range(in.reach_m, 0.0f, k_fire_max_reach_m)) return fail("reach_m is not in [0, 400]");
+  out = FireDesc{};
+  out.name = in.name;
+  out.position = in.position;
+  out.intensity = in.intensity;
+  out.smoke_density = 0.0f;
+  out.flicker = 0.0f;
+  out.lamp = true;
+  out.reach_m = in.reach_m;
+  // Its chromaticity at a luminance of 1, as a fire's blackbody is, so `intensity` is candela.
+  const f64 luminance = 0.2126 * in.color.x + 0.7152 * in.color.y + 0.0722 * in.color.z;
+  out.color = luminance > 0.0 ? Vec3{static_cast<f32>(in.color.x / luminance),
+                                     static_cast<f32>(in.color.y / luminance),
+                                     static_cast<f32>(in.color.z / luminance)}
+                              : Vec3{1.0f, 1.0f, 1.0f};
+  return true;
+}
+
+bool read_scene_lamps(const scene::Scene& file, const std::string& path, SceneDesc& out,
+                      std::string& error) {
+  out.lamps.clear();
+  if (file.lamps.size() > k_max_lamps) {
+    error = path + ": lamps: " + std::to_string(file.lamps.size()) + " lamps, more than the " +
+            std::to_string(k_max_lamps) + " a frame lights";
+    return false;
+  }
+  for (u32 i = 0; i < file.lamps.size(); ++i) {
+    FireDesc lamp;
+    std::string why;
+    if (!read_lamp(file.lamps[i], lamp, &why)) {
+      error = path + ": lamps " + std::to_string(i) + " (\"" + file.lamps[i].name + "\"): " + why;
+      return false;
+    }
+    out.lamps.push_back(std::move(lamp));
+  }
   return true;
 }
 
@@ -138,6 +189,23 @@ FrameFire burn_fire(const FireDesc& desc, const WorldPos& base, f32 scale, f64 t
   FrameFire out;
   const f32 s = std::isfinite(scale) && scale > 0.0f ? scale : 1.0f;
   out.base = base;
+  if (desc.lamp) {
+    // A lamp: its own colour and intensity, steady, at the reach it names or the fire's rule; a
+    // prop's scale scales it as a fire's does (the intensity by the square).
+    out.base_intensity = desc.intensity * s * s;
+    out.reach_m = desc.reach_m > 0.0f ? std::min(desc.reach_m * s, k_fire_max_reach_m)
+                                      : fire_light_reach(out.base_intensity);
+    out.base_intensity *= units;
+    out.intensity = out.base_intensity;
+    out.color = desc.color;
+    out.flame_color = desc.color;
+    out.radius_m = 0.0f;
+    out.height_m = 0.0f;
+    out.smoke_density = 0.0f;
+    out.flicker = 0.0f;
+    out.seed = desc.seed;
+    return out;
+  }
   out.radius_m = desc.radius_m * s;
   out.height_m = desc.height_m * s;
   out.base_intensity = desc.intensity * s * s;
@@ -192,27 +260,64 @@ u32 add_fire_lights(std::span<const FrameFire> fires, const WorldPos& eye,
   return added;
 }
 
+u32 add_lamp_lights(std::span<const FrameFire> lamps, const WorldPos& eye,
+                    FrameLighting& out) noexcept {
+  u32 added = 0;
+  const u32 n = std::min(static_cast<u32>(lamps.size()), k_max_lamps);
+  for (u32 i = 0; i < n && out.light_count < k_frame_lights; ++i) {
+    const FrameFire& l = lamps[i];
+    if (!(l.intensity > 0.0f)) continue;
+    gfx::ResolveLight& light = out.lights[out.light_count++];
+    light = gfx::ResolveLight{};
+    light.position_radius = Vec4{relative(l.base, eye), l.reach_m};
+    light.color_intensity = Vec4{l.color, l.intensity};
+    light.direction_type = Vec4{0.0f, 0.0f, 0.0f, gfx::k_light_point};
+    ++added;
+  }
+  return added;
+}
+
 void FireSet::reset(const SceneData& scene) {
   fixed_.clear();
   prop_fires_.clear();
   mesh_fire_.clear();
   placed_.clear();
   placed_.reserve(k_max_fires);
+  fixed_lamps_.clear();
+  prop_lamps_.clear();
+  mesh_lamp_.clear();
+  placed_lamps_.clear();
+  placed_lamps_.reserve(k_max_lamps);
+  lamps_refused_ = 0;
   for (const FireDesc& fire : scene.fires) {
     if (fixed_.size() >= k_max_fires) break;
     fixed_.push_back(fire);
   }
+  // The file's lamps were refused past k_max_lamps when it was read (read_scene_lamps).
+  for (const FireDesc& lamp : scene.lamps) {
+    if (fixed_lamps_.size() >= k_max_lamps) break;
+    fixed_lamps_.push_back(lamp);
+  }
   mesh_fire_.resize(scene.parts.size(), 0u);
+  mesh_lamp_.resize(scene.parts.size(), 0u);
   for (const SceneProp& prop : scene.props) {
-    if (!prop.fire.has_value() || prop.mesh >= mesh_fire_.size()) continue;
-    prop_fires_.push_back(*prop.fire);
-    mesh_fire_[prop.mesh] = static_cast<u32>(prop_fires_.size());
+    if (prop.mesh >= mesh_fire_.size()) continue;
+    if (prop.fire.has_value()) {
+      prop_fires_.push_back(*prop.fire);
+      mesh_fire_[prop.mesh] = static_cast<u32>(prop_fires_.size());
+    }
+    if (prop.lamp.has_value()) {
+      prop_lamps_.push_back(*prop.lamp);
+      mesh_lamp_[prop.mesh] = static_cast<u32>(prop_lamps_.size());
+    }
   }
 }
 
 void FireSet::place(std::span<const SceneInstance> tail) noexcept {
   placed_.clear();
-  if (prop_fires_.empty()) return;
+  placed_lamps_.clear();
+  lamps_refused_ = 0;
+  if (prop_fires_.empty() && prop_lamps_.empty()) return;
   add(tail);
 }
 
@@ -221,7 +326,9 @@ void FireSet::place(std::span<const SceneInstance> tail) noexcept {
 void FireSet::place(std::span<const SceneInstance> tail,
                     std::span<const DynamicBlock> blocks) noexcept {
   placed_.clear();
-  if (prop_fires_.empty()) return;
+  placed_lamps_.clear();
+  lamps_refused_ = 0;
+  if (prop_fires_.empty() && prop_lamps_.empty()) return;
   if (blocks.empty()) {
     add(tail);
     return;
@@ -232,22 +339,36 @@ void FireSet::place(std::span<const SceneInstance> tail,
   }
 }
 
+void FireSet::place_at(const SceneInstance& instance, const FireDesc& desc, u32 index,
+                       Vector<Placed>& out) noexcept {
+  const Transform3& t = instance.transform;
+  const Vec3 offset{static_cast<f32>(desc.position.x) * t.scale.x,
+                    static_cast<f32>(desc.position.y) * t.scale.y,
+                    static_cast<f32>(desc.position.z) * t.scale.z};
+  const Vec3 turned = rotate(t.rotation, offset) + t.position;
+  Placed p;
+  p.desc = index;
+  p.base = instance.origin + DVec3{turned};
+  p.scale = std::max(t.scale.x, std::max(t.scale.y, t.scale.z));
+  out.push_back(p);
+}
+
 void FireSet::add(std::span<const SceneInstance> tail) noexcept {
   for (const SceneInstance& instance : tail) {
-    if (fixed_.size() + placed_.size() >= k_max_fires) break;
-    if (instance.mesh >= mesh_fire_.size() || mesh_fire_[instance.mesh] == 0) continue;
-    const u32 index = mesh_fire_[instance.mesh] - 1;
-    const FireDesc& fire = prop_fires_[index];
-    const Transform3& t = instance.transform;
-    const Vec3 offset{static_cast<f32>(fire.position.x) * t.scale.x,
-                      static_cast<f32>(fire.position.y) * t.scale.y,
-                      static_cast<f32>(fire.position.z) * t.scale.z};
-    const Vec3 turned = rotate(t.rotation, offset) + t.position;
-    Placed p;
-    p.desc = index;
-    p.base = instance.origin + DVec3{turned};
-    p.scale = std::max(t.scale.x, std::max(t.scale.y, t.scale.z));
-    placed_.push_back(p);
+    if (instance.mesh >= mesh_fire_.size()) continue;
+    if (mesh_fire_[instance.mesh] != 0 && fixed_.size() + placed_.size() < k_max_fires) {
+      const u32 index = mesh_fire_[instance.mesh] - 1;
+      place_at(instance, prop_fires_[index], index, placed_);
+    }
+    if (mesh_lamp_[instance.mesh] != 0) {
+      // Past the frame's room a lamp is counted, never dropped unsaid (fire.h, k_max_lamps).
+      if (fixed_lamps_.size() + placed_lamps_.size() >= k_max_lamps) {
+        ++lamps_refused_;
+        continue;
+      }
+      const u32 index = mesh_lamp_[instance.mesh] - 1;
+      place_at(instance, prop_lamps_[index], index, placed_lamps_);
+    }
   }
 }
 
@@ -257,6 +378,14 @@ void FireSet::burn(f64 time_s, f32 units, Vector<FrameFire>& out) const {
     out.push_back(burn_fire(fire, fire.position, 1.0f, time_s, units));
   for (const Placed& p : placed_)
     out.push_back(burn_fire(prop_fires_[p.desc], p.base, p.scale, time_s, units));
+}
+
+void FireSet::burn_lamps(f32 units, Vector<FrameFire>& out) const {
+  out.clear();
+  for (const FireDesc& lamp : fixed_lamps_)
+    out.push_back(burn_fire(lamp, lamp.position, 1.0f, 0.0, units));
+  for (const Placed& p : placed_lamps_)
+    out.push_back(burn_fire(prop_lamps_[p.desc], p.base, p.scale, 0.0, units));
 }
 
 }  // namespace engine::renderer

@@ -16,6 +16,14 @@
 // A placed prop's fire comes and goes with the prop: the renderer finds the instances of a mesh
 // whose prop declares a fire in the scene's dynamic tail each time the tail changes
 // (`FireSet::place`), so a game lights a fire by placing the prop and needs no call of its own.
+//
+// **A lamp** (`engine.scene.Lamp`, roadmap R86; renderer.md, "Lamps") is a fire's light and nothing
+// else: a point light of a colour, an intensity and a reach, with no flame, no smoke and no
+// flicker, read into a `FireDesc` whose `lamp` is set, kept and placed by the same `FireSet` (a
+// scene's `lamps`, a prop's `lamp`), burnt by `burn_fire` at its own steady light into a list of
+// its own that the medium is never handed, and lit by `add_lamp_lights`: every lamp of the frame,
+// up to `k_max_lamps`, behind the fires. Its globe is the mesh's emissive material, not the
+// renderer's.
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
@@ -28,7 +36,8 @@
 
 namespace engine::scene {
 struct Fire;
-}
+struct Lamp;
+}  // namespace engine::scene
 
 namespace engine::renderer {
 
@@ -51,11 +60,20 @@ struct FireDesc {
   f32 smoke_spread = 0.25f;
   f32 flicker = 0.5f;
   u32 seed = 1;
+  // **A lamp** (`read_lamp`): no flame, no smoke, no flicker; its light is `color` (linear Rec. 709
+  // of luminance 1) at `intensity`, ending at `reach_m` (0: `fire_light_reach` of the intensity).
+  bool lamp = false;
+  Vec3 color{1.0f, 1.0f, 1.0f};
+  f32 reach_m = 0.0f;
 };
 
 // The block's numbers checked: false with a sentence naming the field for a size, an intensity, a
 // temperature or a share out of range, or a position no cell can hold.
 bool read_fire(const scene::Fire& in, FireDesc& out, std::string* error);
+// A lamp's block checked the same way (a colour channel outside [0, 1000], an intensity outside
+// [0, 1e7], a reach outside [0, 400]) into a `FireDesc` with `lamp` set: its colour taken to a
+// luminance of 1 (all zero: white), its flicker and smoke 0.
+bool read_lamp(const scene::Lamp& in, FireDesc& out, std::string* error);
 
 // **One fire of one frame**: where it stands in the world and how its light burns at the frame's
 // clock. The medium reads it (frame_pass.h); the light array is filled from it.
@@ -84,6 +102,13 @@ struct FrameFire {
 inline constexpr u32 k_max_fires = 64;
 // The light array's room for them (lighting.h's `k_frame_lights`), nearest the eye first.
 inline constexpr u32 k_max_fire_lights = 4;
+// **A frame's lamps**, the scene's and its placed props' together, and the light array's room for
+// them: every one is lit (`add_lamp_lights`). A scene file naming more is refused with the count;
+// a tail placing more keeps the first `k_max_lamps` in its order and counts the rest
+// (`FireSet::lamps_refused`, `Stats::lamps_refused`), never dropping one unsaid. The resolve walks
+// every light of the array at every pixel (a lamp past its reach costs a distance test), which is
+// what the next row, lights by reach (R87), changes.
+inline constexpr u32 k_max_lamps = 64;
 // Where the light stands: this share of the flame's height above its base.
 inline constexpr f32 k_fire_light_height = 0.45f;
 // The light's reach: where its inverse square has fallen to this illuminance (lux with a sky), so a
@@ -121,6 +146,11 @@ FrameFire burn_fire(const FireDesc& desc, const WorldPos& base, f32 scale, f64 t
 // (measured from `eye` in f64), while the array has room. Returns how many it added.
 u32 add_fire_lights(std::span<const FrameFire> fires, const WorldPos& eye,
                     FrameLighting& out) noexcept;
+// **The light array's lamps**: every one of `lamps` (burnt by `burn_fire`, at most `k_max_lamps`)
+// in their order, as point lights at their centres appended after the lights `out` has, while the
+// array has room. Returns how many it added.
+u32 add_lamp_lights(std::span<const FrameFire> lamps, const WorldPos& eye,
+                    FrameLighting& out) noexcept;
 
 // **The fires a scene's renderer keeps** (scene_fire.cpp): the scene's own, and those of the props
 // placed in its dynamic tail, found again each time the tail changes. Reserved once, so a frame
@@ -138,8 +168,15 @@ class FireSet {
   // This frame's fires at the world's clock, in the frame's light units (`burn_fire`), into `out`
   // (cleared first).
   void burn(f64 time_s, f32 units, Vector<FrameFire>& out) const;
+  // This frame's lamps, the same way, into `out` (cleared first): the scene's, then the placed.
+  void burn_lamps(f32 units, Vector<FrameFire>& out) const;
   u32 count() const noexcept { return static_cast<u32>(fixed_.size() + placed_.size()); }
   bool empty() const noexcept { return fixed_.empty() && placed_.empty(); }
+  u32 lamp_count() const noexcept {
+    return static_cast<u32>(fixed_lamps_.size() + placed_lamps_.size());
+  }
+  // The placed props' lamps the last `place` found no room for, past `k_max_lamps`.
+  u32 lamps_refused() const noexcept { return lamps_refused_; }
 
  private:
   struct Placed {
@@ -151,7 +188,14 @@ class FireSet {
   Vector<FireDesc> prop_fires_;  // one per prop that declares one
   Vector<u32> mesh_fire_;        // per scene mesh: its prop's fire + 1, or 0
   Vector<Placed> placed_;
+  Vector<FireDesc> fixed_lamps_;  // the scene's own lamps
+  Vector<FireDesc> prop_lamps_;   // one per prop that declares one
+  Vector<u32> mesh_lamp_;         // per scene mesh: its prop's lamp + 1, or 0
+  Vector<Placed> placed_lamps_;
+  u32 lamps_refused_ = 0;
   void add(std::span<const SceneInstance> instances) noexcept;
+  static void place_at(const SceneInstance& instance, const FireDesc& desc, u32 index,
+                       Vector<Placed>& out) noexcept;
 };
 
 }  // namespace engine::renderer
