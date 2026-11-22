@@ -173,7 +173,7 @@
       "id": "page:docs/subsystems/world.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/world.md",
-      "ceiling": 166548
+      "ceiling": 166984
     },
     {
       "id": "page:AGENTS.md",
@@ -4326,6 +4326,30 @@
           "id": "page:docs/subsystems/audio.md",
           "old": 113422,
           "new": 119330
+        }
+      ]
+    },
+    {
+      "date": "2026-11-22",
+      "by": "Marc Micalizzi",
+      "reason": "",
+      "commit": "5801d60f1",
+      "folded": [
+        {
+          "name": "b72-mend-D",
+          "reason": "T214: world.md says a yielded tile draws nothing and is listed by no reader, and why (the crash of 2026-11-22)",
+          "date": "2026-11-22",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/world.md": 436
+          }
+        }
+      ],
+      "changes": [
+        {
+          "id": "page:docs/subsystems/world.md",
+          "old": 166548,
+          "new": 166984
         }
       ]
     }
