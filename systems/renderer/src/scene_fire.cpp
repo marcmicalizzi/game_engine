@@ -88,11 +88,14 @@ bool read_lamp(const scene::Lamp& in, FireDesc& out, std::string* error) {
   out.lamp = true;
   out.reach_m = in.reach_m;
   // Its chromaticity at a luminance of 1, as a fire's blackbody is, so `intensity` is candela.
-  const f64 luminance = 0.2126 * in.color.x + 0.7152 * in.color.y + 0.0722 * in.color.z;
-  out.color = luminance > 0.0 ? Vec3{static_cast<f32>(in.color.x / luminance),
-                                     static_cast<f32>(in.color.y / luminance),
-                                     static_cast<f32>(in.color.z / luminance)}
-                              : Vec3{1.0f, 1.0f, 1.0f};
+  const f64 r = static_cast<f64>(in.color.x);
+  const f64 g = static_cast<f64>(in.color.y);
+  const f64 b = static_cast<f64>(in.color.z);
+  const f64 luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  out.color = luminance > 0.0
+                  ? Vec3{static_cast<f32>(r / luminance), static_cast<f32>(g / luminance),
+                         static_cast<f32>(b / luminance)}
+                  : Vec3{1.0f, 1.0f, 1.0f};
   return true;
 }
 

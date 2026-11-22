@@ -492,17 +492,21 @@ void lamp_on_the_floor(ShadowMode shadows, const char* name) {
       // The slab seen from above, and a margin about it: not the floor.
       const f64 ts = (static_cast<f64>(k_slab_y) - e.y) / d.y;
       const f64 sx = e.x + d.x * ts, sz = e.z + d.z * ts;
-      if (sx > k_slab_x0 - 0.15 && sx < k_slab_x1 + 0.15 && std::fabs(sz) < k_slab_z + 0.15)
+      if (sx > static_cast<f64>(k_slab_x0) - 0.15 && sx < static_cast<f64>(k_slab_x1) + 0.15 &&
+          std::fabs(sz) < static_cast<f64>(k_slab_z) + 0.15)
         continue;
       const f64 tf = -e.y / d.y;
       const brdf_ref::Dvec3 p{e.x + d.x * tf, 0.0, e.z + d.z * tf};
       if (std::fabs(p.x) > 5.5 || std::fabs(p.z) > 5.5) continue;
       // The slab's shadow from the lamp: the floor points whose midpoint with the lamp is over it.
-      const f64 mx = 0.5 * (p.x + lamp_at.x), mz = 0.5 * (p.z + lamp_at.z);
-      const f64 edge = std::min(std::min(std::fabs(mx - k_slab_x0), std::fabs(mx - k_slab_x1)),
-                                std::fabs(std::fabs(mz) - k_slab_z));
+      const f64 x0 = static_cast<f64>(k_slab_x0), x1 = static_cast<f64>(k_slab_x1);
+      const f64 z1 = static_cast<f64>(k_slab_z);
+      const f64 mx = 0.5 * (p.x + static_cast<f64>(lamp_at.x));
+      const f64 mz = 0.5 * (p.z + static_cast<f64>(lamp_at.z));
+      const f64 edge = std::min(std::min(std::fabs(mx - x0), std::fabs(mx - x1)),
+                                std::fabs(std::fabs(mz) - z1));
       if (edge < 0.08) continue;  // the pixel's footprint may straddle the shadow's edge
-      const bool in_shadow = mx > k_slab_x0 && mx < k_slab_x1 && std::fabs(mz) < k_slab_z;
+      const bool in_shadow = mx > x0 && mx < x1 && std::fabs(mz) < z1;
       brdf_ref::Surface surface;
       surface.position = p;
       surface.normal = brdf_ref::Dvec3{0.0, 1.0, 0.0};
