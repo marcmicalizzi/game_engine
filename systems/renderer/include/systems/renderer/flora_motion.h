@@ -349,7 +349,27 @@ f32 flora_mean_lean(const FloraMesh& mesh, std::span<const Vec3> vertices,
 // its scale bound widened by the shear's norm (at most 1 + |lean|) and its uniform-scale flag
 // cleared, so the cull's spheres hold the leaned form; `lean` zero gives `rest` back, to the bit.
 gfx::InstanceDesc still_lean_record(const gfx::InstanceDesc& rest, Vec2 lean) noexcept;
-// The same bound at a **load** rather than a strength, with no cap: every part's most turn is its
+// The same shear about the point `pivot_y` up the mesh's own y from its origin, not the origin
+// (W158): a far tile, whose one record holds trees standing at many heights over a corner at height
+// zero, leans about its trees' mean foot, so its translation takes `-lean (R (0, pivot_y, 0)).y`.
+gfx::InstanceDesc far_lean_record(const gfx::InstanceDesc& rest, Vec2 lean, f32 pivot_y) noexcept;
+// **The mean lean by strength, as the tree is posed** (W158): `flora_mean_lean` is small-angle and
+// linear in the load, and the swaying tree's own mean, its chain of turns composed and its parts
+// held near streamed, grows slower: 8 % under it at force 6, a fifth to a quarter at force 12. The
+// curve is that posed mean (`flora_part_poses`, `gfx::flora_bend`, fit as one shear over the
+// height) at `k_flora_lean_curve_points` strengths (`flora_lean_curve_strength`), and
+// `flora_lean_on_curve` reads it at a strength (linear under the first point). What a rigid form of
+// a swaying tree, and a far tile's share of one, leans by.
+inline constexpr u32 k_flora_lean_curve_points = 8;
+inline constexpr f32 k_flora_lean_most = 0.6f;  // the most a curve point leans: 31 degrees, 17 % stretch
+f32 flora_lean_curve_strength(u32 point) noexcept;
+void flora_lean_curve(const FloraMesh& mesh, std::span<const Vec3> vertices,
+                      std::span<const geometry::ClusterFileMotionVertex> motion,
+                      std::span<f32> out) noexcept;
+f32 flora_lean_on_curve(
+    std::span<const f32> curve,
+    f32 strength) noexcept;  // The same bound at a **load** rather than a strength, with no cap:
+                             // every part's most turn is its
 // compliance times `load` (a field's held at `k_flora_field_most_load`) at the gust's and
 // flutter's peak, so it is linear in the load and holds every pose whose load is at most `load`.
 // At `k_flora_calm_load` it is main's padding before W154, operation for operation.

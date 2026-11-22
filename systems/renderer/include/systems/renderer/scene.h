@@ -484,6 +484,7 @@ struct AuthoredStats {
   u32 kept_paged = 0;
   u32 forms = 0;          // distance-form meshes made
   u32 form_clusters = 0;  // their clusters, all rings
+  u32 leaning_forms = 0;  // rigid forms of a swaying tree, which lean in a storm (W158)
   // Their motion parts before and after the pruning to the parts their vertices use (R95).
   u64 form_parts_before = 0;
   u64 form_parts_after = 0;
@@ -1091,6 +1092,15 @@ struct SceneData {
   // leans by the load past that one. Sized as `still_padding`.
   Vector<f32> still_lean;
   f32 still_wind = 1.0f;
+  // Per mesh, the strength its lean is counted from where it is not `still_wind` (W158): 0 for an
+  // authored tree's rigid ring form, which no still rule chose and which leans by the swaying
+  // tree's whole mean lean, so the two agree at the hand-over. Empty, or past its end:
+  // `still_wind`.
+  Vector<f32> still_from;
+  // Per source mesh, its mean lean at each of k_flora_lean_curve_points loads, its parts held as
+  // the pose holds them (lora_lean_curve): what a from-calm form and a far tile lean by. Empty:
+  // none.
+  Vector<f32> lean_curve;
   // Per loaded instance, the plane under its rim its seat fitted (`SceneInstance::slope`, G201
   // stage 2), four bytes each, kept for the conformed foot; zero for one not seated.
   Vector<scene_gen::GroundSlope> ground_slopes;

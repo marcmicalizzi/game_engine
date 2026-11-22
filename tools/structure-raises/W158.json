@@ -1,0 +1,12 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W158",
+  "reason": "W158: the far forest leans on a live wind. gpu_scene.h: the far tiles' lean list, the walk's place in it, the gate and two functions (FloraStats far_tiles/far_writes); gpu_scene.cpp: place_instances re-leans a far tile placed again, and the lean state's resets; renderer.md: why nothing leaned on the staging, the rigid forms' and far tiles' lean, the posed curve and its hold, its load cost, the cases",
+  "date": "2026-11-22",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.gpu_scene_cpp.lines": 6,
+    "renderer.gpu_scene_h.lines": 15,
+    "page:docs/subsystems/renderer.md": 4077
+  }
+}

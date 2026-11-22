@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W159",
+  "reason": "W159: the still lean's write-back rule and its case on the far forest's page (renderer.md +1,169 bytes)",
+  "date": "2026-11-22",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 1169
+  }
+}

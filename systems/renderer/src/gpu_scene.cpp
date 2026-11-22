@@ -2634,6 +2634,9 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
     field_at_.clear();
     still_slots_.clear();
     still_at_.clear();
+    far_lean_.clear();  // W158
+    still_walk_far_ = 0;
+    still_gate_ = -1.0f;
     still_walking_ = false;
     still_walk_strength_ = 0.0f;
     flora_parts_ = 0;
@@ -3427,9 +3430,9 @@ void GpuScene::put_deform_record(u32 index, const gfx::DeformDesc& desc) noexcep
   if (index >= deform_capacity_) return;
   if (deform_table.mapped != nullptr)
     static_cast<gfx::DeformDesc*>(deform_table.mapped)[index] = desc;
-  // A scene whose table has per-frame copies for its water (S100) and no skin to rewrite them every
-  // frame keeps them in step here, so a tree the tail brings in sways in every slot.
-  if (!skinned_ && deform_frames.mapped != nullptr) {
+  // Every per-frame copy takes it too, a skinned scene's included (T213): the motion pool reads last
+  // frame's copy, which a skinned frame's rewrite of its own never reached (renderer.md).
+  if (deform_frames.mapped != nullptr) {
     for (u32 slot = 0; slot < k_joint_slots; ++slot)
       deform_frame(slot)[index] = desc;
   }
@@ -6772,6 +6775,8 @@ void GpuScene::destroy() noexcept {
   field_at_.clear();
   still_slots_.clear();
   still_at_.clear();
+  far_lean_ = Vector<FarLean>();  // W158
+  still_gate_ = -1.0f;
   flora_state_.clear();
   flora_poser_.reset();
   flora_parts_ = 0;
@@ -6958,6 +6963,7 @@ bool GpuScene::place_instances(std::span<const u32> indices,
   // chain's transforms from the frame's instance table.
   for (const u32 index : indices)
     mark_instance_written(index);
+  place_far_lean(indices);  // a far tile placed again stands leaned by the last walk (W158)
   return true;
 }
 

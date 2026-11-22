@@ -871,10 +871,26 @@ bool GpuScene::relean(u32 at) {
   const StillSlot& still = still_slots_[at];
   if (still.slot >= instance_table_.size()) return false;
   const f32 lean = still.mesh < still_mesh_lean_.size() ? still_mesh_lean_[still.mesh] : 0.0f;
-  const gfx::InstanceDesc want = still_lean_record(still.rest, still_walk_to_ * lean);
+  const gfx::InstanceDesc leaned = still_lean_record(still.rest, still_walk_to_ * lean);
+  // **Only what the lean changes is written** (W159): the 3x3, the largest axis scale and the
+  // uniform-scale bit. Every other field has writers of its own after the slot was kept — the
+  // pairs numbered again at the cap (`settle_first_pairs`) above all — and the rest record holds
+  // them as they were then: until W159 the whole record went back, so the walk after one that had
+  // settled a renumbering wrote the old first pair over the new one, and the table was no longer
+  // sorted by the number the cull's search reads.
+  // The rows' 3x3 only: their w is the translation, which a later writer may have moved.
   gfx::InstanceDesc& placed = instance_table_[still.slot];
-  if (std::memcmp(&placed, &want, sizeof(want)) == 0) return false;
-  placed = want;
+  const u32 uniform = gfx::k_instance_uniform_scale;
+  const u32 want_flags = (placed.flags & ~uniform) | (leaned.flags & uniform);
+  bool same = placed.scale_max == leaned.scale_max && placed.flags == want_flags;
+  for (u32 r = 0; r < 3 && same; ++r)
+    same = placed.rows[r].x == leaned.rows[r].x && placed.rows[r].y == leaned.rows[r].y &&
+           placed.rows[r].z == leaned.rows[r].z;
+  if (same) return false;
+  for (u32 r = 0; r < 3; ++r)
+    placed.rows[r] = Vec4{leaned.rows[r].x, leaned.rows[r].y, leaned.rows[r].z, placed.rows[r].w};
+  placed.scale_max = leaned.scale_max;
+  placed.flags = want_flags;
   mark_instance_written(still.slot);
   return true;
 }
@@ -887,7 +903,21 @@ bool GpuScene::relean(u32 at) {
 // rule's, so a calm session's records are their rest, to the bit.
 void GpuScene::still_lean_frame(const FrameFlora& frame, f64 sky_time_s,
                                 const gfx::WindLive& live) {
-  if (data_ == nullptr || data_->still_lean.empty() || !flora_tail_) return;
+  if (data_ == nullptr || !flora_tail_) return;
+  const FarForestData& far = data_->far_forest;
+  if (data_->still_lean.empty() && far.mesh_lean.empty()) return;
+  if (still_gate_ < 0.0f) {
+    // The least strength anything leans past (W158): a placements' still form's rule wind, an
+    // authored form's or a far tile's calm. Once: the scene's data does not change.
+    still_gate_ = 1.0e30f;
+    for (u32 m = 0; m < data_->still_lean.size(); ++m) {
+      if (!(data_->still_lean[m] > 0.0f)) continue;
+      const f32 from = m < data_->still_from.size() ? data_->still_from[m] : data_->still_wind;
+      still_gate_ = std::min(still_gate_, from);
+    }
+    for (const f32 k : far.mesh_lean)
+      if (k > 0.0f && !far.tiles.empty()) still_gate_ = 0.0f;
+  }
   f32 strength = 0.0f;
   const WindHand hand = wind_hand_tunable();
   if (frame.wind_set) {
@@ -910,43 +940,132 @@ void GpuScene::still_lean_frame(const FrameFlora& frame, f64 sky_time_s,
   if (!still_walking_) {
     const f32 moved = std::fabs(strength - still_walk_strength_);
     const bool turned = to.x * still_walk_to_.x + to.y * still_walk_to_.y < 0.99939f;  // 2 deg
-    const bool leans = strength > data_->still_wind || still_walk_strength_ > data_->still_wind;
+    const bool leans = strength > still_gate_ || still_walk_strength_ > still_gate_;
     if (leans && (moved > std::max(0.02f, 0.02f * still_walk_strength_) || turned)) {
       still_walk_strength_ = strength;
       still_walk_to_ = to;
+      // A mesh's law by its source's tree: its streamlining exponent and the load it is held at.
+      const auto law = [&](u32 src, f32 at) {
+        const FloraMesh* tree = src < flora_meshes_.size() ? &flora_meshes_[src] : nullptr;
+        const f32 b = tree != nullptr ? tree->streamline : 1.0f;
+        const f32 hold = tree != nullptr ? tree->hold : k_flora_max_wind;
+        return flora_storm_load(at, b, hold);
+      };
+      // A from-calm mean lean at a strength: the posed mean the load measured for the mesh
+      // (SceneData::lean_curve), or small-angle where it measured none.
+      const auto held = [&](u32 src, f32 k, f32 at_strength) {
+        const u32 at = src * k_flora_lean_curve_points;
+        if (at + k_flora_lean_curve_points > data_->lean_curve.size())
+          return k * law(src, at_strength);
+        return flora_lean_on_curve(
+            std::span<const f32>(data_->lean_curve.data() + at, k_flora_lean_curve_points),
+            at_strength);
+      };
       still_mesh_lean_.resize(data_->still_lean.size(), 0.0f);
       f32 most = 0.0f;
       for (u32 m = 0; m < data_->still_lean.size(); ++m) {
         const f32 k = data_->still_lean[m];
         if (!(k > 0.0f)) continue;
         const u32 src = m < data_->form_source.size() ? data_->form_source[m] : m;
-        const FloraMesh* tree = src < flora_meshes_.size() ? &flora_meshes_[src] : nullptr;
-        const f32 b = tree != nullptr ? tree->streamline : 1.0f;
-        const f32 hold = tree != nullptr ? tree->hold : k_flora_max_wind;
-        const f32 past =
-            flora_storm_load(strength, b, hold) - flora_storm_load(data_->still_wind, b, hold);
-        still_mesh_lean_[m] = past > 0.0f ? k * past : 0.0f;
+        const f32 from = m < data_->still_from.size() ? data_->still_from[m] : data_->still_wind;
+        const f32 past = law(src, strength) - law(src, from);
+        still_mesh_lean_[m] = !(past > 0.0f) ? 0.0f
+                              : from > 0.0f  ? k * past
+                                             : held(src, k, strength);  // from calm: as posed
+        // Held where a rigid form can show it, a placements' still form's linear lean too (W158).
+        still_mesh_lean_[m] = std::min(still_mesh_lean_[m], k_flora_lean_most);
         most = std::max(most, still_mesh_lean_[m]);
+      }
+      // **The far tiles** (W158): each source mesh's whole mean lean, from calm, as an authored
+      // tree's rigid form takes it; a tile leans by its trees' shares of them (`relean_far`).
+      far_mesh_lean_.resize(far.mesh_lean.size(), 0.0f);
+      for (u32 m = 0; m < far.mesh_lean.size(); ++m) {
+        const f32 k = far.mesh_lean[m];
+        far_mesh_lean_[m] = k > 0.0f ? std::min(held(m, k, strength), k_flora_lean_most) : 0.0f;
+      }
+      if (far_lean_.empty() && !far.mesh_lean.empty()) {
+        // Kept from the first walk on: the records as the hand-off last placed them, none leaned.
+        far_lean_.reserve(far.tiles.size());
+        for (u32 t = 0; t < far.tiles.size(); ++t) {
+          const u32 instance = far.tiles[t].instance;
+          if (instance < instance_table_.size())
+            far_lean_.push_back(FarLean{instance, t, instance_table_[instance]});
+        }
+        flora_stats_.far_tiles = far_lean_.size();
       }
       flora_stats_.still_lean = most;
       still_walking_ = true;
       still_walk_at_ = 0;
+      still_walk_far_ = 0;
       ++flora_stats_.still_walks;
     }
   }
   if (!still_walking_) return;
+  // One budget a frame over both lists, the tail's still slots first
+  // (`renderer.flora.padding_records`).
   u32 budget = flora_padding_records_tunable();
   while (budget > 0 && still_walk_at_ < still_slots_.size()) {
     flora_stats_.still_writes += relean(still_walk_at_++) ? 1u : 0u;
     --budget;
   }
-  if (still_walk_at_ >= still_slots_.size()) {
+  while (budget > 0 && still_walk_far_ < far_lean_.size()) {
+    flora_stats_.far_writes += relean_far(still_walk_far_++) ? 1u : 0u;
+    --budget;
+  }
+  if (still_walk_at_ >= still_slots_.size() && still_walk_far_ >= far_lean_.size()) {
     still_walking_ = false;
     ENGINE_LOG_INFO(
         log_renderer, "the still forms lean", log::field("strength", still_walk_strength_),
         log::field("lean_most", flora_stats_.still_lean), log::field("slots", still_slots_.size()),
-        log::field("writes", flora_stats_.still_writes),
+        log::field("writes", flora_stats_.still_writes), log::field("far_tiles", far_lean_.size()),
+        log::field("far_writes", flora_stats_.far_writes),
         log::field("walks", flora_stats_.still_walks));
+  }
+}
+
+// A far tile leaned by its trees' shares at the walk's wind about its mean foot (W158), from the
+// record the hand-off last placed: as `relean`, only the 3x3, the translation the pivot moves, the
+// scale bound and the uniform-scale bit, against that record's own translation.
+bool GpuScene::relean_far(u32 at) {
+  const FarLean& entry = far_lean_[at];
+  const FarForestData& far = data_->far_forest;
+  if (entry.instance >= instance_table_.size() || entry.tile >= far.tiles.size()) return false;
+  const FarForestTile& tile = far.tiles[entry.tile];
+  f32 lean = 0.0f;
+  for (u32 k = tile.mix_begin; k < tile.mix_begin + tile.mix_count && k < far.mix.size(); ++k) {
+    const FarTileMix& share = far.mix[k];
+    if (share.mesh < far_mesh_lean_.size()) lean += share.weight * far_mesh_lean_[share.mesh];
+  }
+  const gfx::InstanceDesc leaned = far_lean_record(entry.rest, still_walk_to_ * lean, tile.foot_y);
+  gfx::InstanceDesc& placed = instance_table_[entry.instance];
+  const u32 uniform = gfx::k_instance_uniform_scale;
+  const u32 want_flags = (placed.flags & ~uniform) | (leaned.flags & uniform);
+  if (std::memcmp(placed.rows, leaned.rows, sizeof(placed.rows)) == 0 &&
+      placed.scale_max == leaned.scale_max && placed.flags == want_flags)
+    return false;
+  std::memcpy(placed.rows, leaned.rows, sizeof(placed.rows));
+  placed.scale_max = leaned.scale_max;
+  placed.flags = want_flags;
+  mark_instance_written(entry.instance);
+  return true;
+}
+
+// The hand-off placed these instances again (`place_instances`): a far tile among them keeps what
+// was placed as its rest and is leaned at once by the last walk's wind, so a tile unparked in a
+// storm stands leaned in the frame it appears.
+void GpuScene::place_far_lean(std::span<const u32> indices) {
+  for (const u32 index : indices) {
+    u32 lo = 0, hi = far_lean_.size();
+    while (lo < hi) {
+      const u32 mid = lo + (hi - lo) / 2;
+      if (far_lean_[mid].instance < index)
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    if (lo >= far_lean_.size() || far_lean_[lo].instance != index) continue;
+    far_lean_[lo].rest = instance_table_[index];
+    flora_stats_.far_writes += relean_far(lo) ? 1u : 0u;
   }
 }
 

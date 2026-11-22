@@ -707,6 +707,87 @@ gfx::InstanceDesc still_lean_record(const gfx::InstanceDesc& rest, Vec2 lean) no
   return out;
 }
 
+gfx::InstanceDesc far_lean_record(const gfx::InstanceDesc& rest, Vec2 lean, f32 pivot_y) noexcept {
+  if (lean.x == 0.0f && lean.y == 0.0f) return rest;
+  gfx::InstanceDesc out = still_lean_record(rest, lean);
+  // p' = p + lean (p - pivot).y: the 3x3 as about the origin, and the origin moved by the lean of
+  // its height under the pivot, which is the pivot's height over it, (R (0, pivot_y, 0)).y.
+  const f32 below = rest.rows[1].y * pivot_y;
+  out.rows[0].w = rest.rows[0].w - lean.x * below;
+  out.rows[2].w = rest.rows[2].w - lean.y * below;
+  return out;
+}
+
+f32 flora_lean_curve_strength(u32 point) noexcept {
+  // 0.5 to 0.5 * 1.5^7 = 8.5: a mean day's half to past the law's top (k_flora_max_wind, 42 m/s).
+  f32 s = 0.5f;
+  for (u32 i = 0; i < point; ++i)
+    s *= 1.5f;
+  return s;
+}
+
+void flora_lean_curve(const FloraMesh& mesh, std::span<const Vec3> vertices,
+                      std::span<const geometry::ClusterFileMotionVertex> motion,
+                      std::span<f32> out) noexcept {
+  for (f32& v : out)
+    v = 0.0f;
+  const u32 n = mesh.part_count();
+  if (n == 0 || mesh.field || vertices.size() != motion.size()) return;
+  // **The posed mean** (W158): the mesh posed by `flora_part_poses` — the law, the gust, the
+  // flutter, the parts' hold and their chain composed as the GPU composes it (`gfx::flora_bend`) —
+  // at 12 moments 0.83 s apart (no multiple of a flutter's period) under a wind along +x and one
+  // along +z, and each vertex's displacement along the wind fit as one shear over its height, as
+  // `flora_mean_lean` fits its small-angle model, over at most about 1,024 vertices evenly taken:
+  // a forest's trees are measured at every load, and every eighth vertex at 24 moments cost the
+  // forest staging's load 16 s.
+  constexpr u32 k_moments = 12;
+  const u32 stride = static_cast<u32>(vertices.size() / 1024 + 1);
+  Vector<FloraPartState> state(n, FloraPartState{});
+  Vector<gfx::FloraPartPose> poses(n, gfx::FloraPartPose{});
+  const u32 points = static_cast<u32>(std::min<usize>(out.size(), k_flora_lean_curve_points));
+  for (u32 point = 0; point < points; ++point) {
+    FloraWind wind;
+    wind.strength = flora_lean_curve_strength(point);
+    f64 num = 0.0;
+    f64 den = 0.0;
+    for (u32 w = 0; w < 2; ++w) {
+      wind.to = w == 0 ? Vec3{1.0f, 0.0f, 0.0f} : Vec3{0.0f, 0.0f, 1.0f};
+      for (u32 m = 0; m < k_moments; ++m) {
+        flora_part_poses(mesh, wind, 0.83 * static_cast<f64>(m), 0u, FloraPush{}, 0u, state, poses);
+        for (u32 v = 0; v < vertices.size(); v += stride) {
+          const u32 p = motion[v].part;
+          if (p >= n || !(vertices[v].y > 0.0f)) continue;
+          Vec3 at;
+          Vec3 normal;
+          gfx::flora_bend(poses[p], static_cast<f32>(motion[v].weight) * (1.0f / 65535.0f),
+                          vertices[v], Vec3{0.0f, 1.0f, 0.0f}, at, normal);
+          num += static_cast<f64>(dot(at - vertices[v], wind.to)) * static_cast<f64>(vertices[v].y);
+          den += static_cast<f64>(vertices[v].y) * static_cast<f64>(vertices[v].y);
+        }
+      }
+    }
+    // Held at `k_flora_lean_most`: a shrub or a fern whose fronds stream flat fits a shear past 1
+    // (1.7 on the forest staging at force 12), and a shear that far stretches the form by
+    // sqrt(1 + l^2) and slides its crown past its own height — a bend no rigid form can show.
+    const f32 fit = den > 0.0 && num > 0.0 ? static_cast<f32>(num / den) : 0.0f;
+    out[point] = fit < k_flora_lean_most ? fit : k_flora_lean_most;
+  }
+}
+
+f32 flora_lean_on_curve(std::span<const f32> curve, f32 strength) noexcept {
+  if (curve.empty() || !(strength > 0.0f)) return 0.0f;
+  const f32 first = flora_lean_curve_strength(0);
+  if (strength <= first)
+    return curve[0] * (strength / first);  // the law is linear under a mean day
+  f32 lo = first;
+  for (u32 i = 1; i < curve.size(); ++i) {
+    const f32 hi = lo * 1.5f;
+    if (strength <= hi)
+      return curve[i - 1] + (curve[i] - curve[i - 1]) * ((strength - lo) / (hi - lo));
+    lo = hi;
+  }
+  return curve.back();  // past the last point: the law is held there
+}
 f32 flora_padding_at_load(const FloraMesh& mesh, std::span<const Vec3> vertices,
                           std::span<const geometry::ClusterFileMotionVertex> motion,
                           f32 load) noexcept {

@@ -38,6 +38,18 @@ struct FarForestTile {
   u32 trees = 0;      // instances merged into it
   u32 triangles = 0;  // its finest level's triangles
   WorldPos corner{};  // where it stands when drawn: the tile's corner at height zero
+  // How it leans in a storm (W158; renderer.md, "The far forest leans"): its trees' mean foot
+  // height, metres, each weighted by its height squared (the shear's least-squares pivot), and its
+  // run of `FarForestData::mix`. Measured at the load from the placements, never cached.
+  f32 foot_y = 0.0f;
+  u32 mix_begin = 0;
+  u32 mix_count = 0;
+};
+
+// One source mesh's share of a far tile's lean: its trees' height squared over the tile's.
+struct FarTileMix {
+  u32 mesh = 0;  // the source scene mesh
+  f32 weight = 0.0f;
 };
 
 // What the load reports about the far forest (engine-view's summary, the tests).
@@ -57,6 +69,10 @@ struct FarForestStats {
 
 struct FarForestData {
   Vector<FarForestTile> tiles;  // sorted by key
+  Vector<FarTileMix> mix;       // the tiles' runs, in tile order (W158)
+  // Per source scene mesh, its mean lean under a unit load (`flora_mean_lean`, m per m): 0 for a
+  // mesh that does not sway, and empty when the session poses no tail (W158).
+  Vector<f32> mesh_lean;
   f32 tile_size = 0.0f;
   FarForestStats stats;
   bool empty() const noexcept { return tiles.empty(); }

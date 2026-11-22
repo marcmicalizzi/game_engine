@@ -180,7 +180,8 @@ struct TileJob {
   i32 x = 0;
   i32 z = 0;
   WorldPos corner{};
-  Vector<u32> trees;  // instance indices, in the scene's order
+  Vector<u32> trees;    // instance indices, in the scene's order
+  Vector<f32> heights;  // each one's height, metres (W158)
   const FarForestInstance* instances = nullptr;
   const FarForestFit* fits = nullptr;
   const FarForm* forms = nullptr;
@@ -198,6 +199,33 @@ struct TileJob {
 
 u64 part_id(u32 mesh, i32 material) noexcept {
   return (u64{mesh} << 32) | static_cast<u32>(material + 1);
+}
+
+// **How a far tile leans** (W158; renderer.md, "The far forest leans"): one shear holds every tree
+// of the tile, so its pivot is the trees' foot height that leaves the least error, the mean
+// weighted by each tree's height squared (a tree's vertices count in a least-squares shear by their
+// height squared), and its lean is the trees' own by the same weights, a share per source mesh.
+// Taken from the placements, which every load has whether its tiles were cached or built.
+void tile_lean_mix(const TileJob& job, std::span<const FarForestInstance> instances,
+                   Vector<FarTileMix>& mix, FarForestTile& tile) {
+  tile.mix_begin = mix.size();
+  f64 sum = 0.0;
+  f64 foot = 0.0;
+  for (u32 k = 0; k < job.trees.size(); ++k) {
+    const FarForestInstance& instance = instances[job.trees[k]];
+    const f64 w = static_cast<f64>(job.heights[k]) * static_cast<f64>(job.heights[k]);
+    sum += w;
+    foot += w * (instance.origin.y + static_cast<f64>(instance.transform.position.y));
+    u32 at = tile.mix_begin;
+    while (at < mix.size() && mix[at].mesh != instance.mesh)
+      ++at;
+    if (at == mix.size()) mix.push_back(FarTileMix{instance.mesh, 0.0f});
+    mix[at].weight += static_cast<f32>(w);
+  }
+  tile.mix_count = mix.size() - tile.mix_begin;
+  tile.foot_y = sum > 0.0 ? static_cast<f32>(foot / sum) : 0.0f;
+  for (u32 at = tile.mix_begin; at < mix.size(); ++at)
+    mix[at].weight = sum > 0.0 ? static_cast<f32>(static_cast<f64>(mix[at].weight) / sum) : 0.0f;
 }
 
 // The linear part an instance's points go through (its rotation and scale after the mesh's fit)
@@ -605,6 +633,7 @@ bool build_far_forest(std::span<const FarForestInstance> instances,
   struct Taken {
     u64 key = 0;
     u32 instance = 0;
+    f32 height = 0.0f;  // metres, as placed (W158: the tile's lean weighs its trees by it)
   };
   Vector<Taken> taken;
   for (u32 i = 0; i < instances.size(); ++i) {
@@ -643,7 +672,7 @@ bool build_far_forest(std::span<const FarForestInstance> instances,
     const f64 tile = static_cast<f64>(options.tile_size);
     const i32 tx = static_cast<i32>(std::floor(x / tile));
     const i32 tz = static_cast<i32>(std::floor(z / tile));
-    taken.push_back(Taken{far_tile_key(tx, tz), i});
+    taken.push_back(Taken{far_tile_key(tx, tz), i, height});
   }
   if (taken.empty()) return true;
   // By tile, in the scene's order within one: a tile's mesh is a function of its trees in order.
@@ -661,8 +690,10 @@ bool build_far_forest(std::span<const FarForestInstance> instances,
     job.fits = fits.data();
     job.forms = forms.data();
     job.options = &options;
-    for (; i < taken.size() && taken[i].key == key; ++i)
+    for (; i < taken.size() && taken[i].key == key; ++i) {
       job.trees.push_back(taken[i].instance);
+      job.heights.push_back(taken[i].height);
+    }
     jobs.push_back(std::move(job));
   }
   if (options.pool != nullptr && jobs.size() > 1) {
@@ -696,6 +727,7 @@ bool build_far_forest(std::span<const FarForestInstance> instances,
     tile.trees = job.trees.size();
     tile.triangles = job.triangles;
     tile.corner = job.corner;
+    tile_lean_mix(job, instances, out.mix, tile);
     SourceMesh source;
     make_source(job, std::span<const SourceMesh>(scene.sources.data(), scene.sources.size()),
                 source);
