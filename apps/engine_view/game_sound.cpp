@@ -28,9 +28,7 @@ hotload::Result result_of(world_sound::Answer a) noexcept {
   return hotload::Result::Unsupported;
 }
 
-world_sound::SoundStage& stage_of(void* user) {
-  return static_cast<GameSoundHost*>(user)->stage();
-}
+world_sound::SoundStage& stage_of(void* user) { return static_cast<GameSoundHost*>(user)->stage(); }
 
 void on_wind(void* user, const gfx::WindLive& live, f64 sky_time_s) {
   GameSoundHost& host = *static_cast<GameSoundHost*>(user);
@@ -217,7 +215,8 @@ void GameSoundHost::merge(Group& g, std::span<const world_sound::Crown> crowns) 
 void GameSoundHost::emit_group(const Group& g, std::span<const world_sound::Crown> crowns,
                                const WorldPos& centre, f64 reach_m, f64 near_m,
                                const world_sound::CrownSink& sink) noexcept {
-  const f64 d = std::sqrt((g.x - centre.x) * (g.x - centre.x) + (g.z - centre.z) * (g.z - centre.z));
+  const f64 d =
+      std::sqrt((g.x - centre.x) * (g.x - centre.x) + (g.z - centre.z) * (g.z - centre.z));
   if (d - g.radius > reach_m) return;
   if (d - g.radius <= near_m) {
     for (const world_sound::Crown& c : crowns)
@@ -252,9 +251,10 @@ void GameSoundHost::attach_scene(const renderer::SceneData& scene) {
                       static_cast<f64>(in.cell.z) * k_world_cell_m + in.rows[2].w};
     crowns_.push_back(crown_of(in.mesh, at, in.scale_max));
   }
-  std::sort(crowns_.begin(), crowns_.end(), [](const world_sound::Crown& a, const world_sound::Crown& b) {
-    return cell_key(a.at) < cell_key(b.at);
-  });
+  std::sort(crowns_.begin(), crowns_.end(),
+            [](const world_sound::Crown& a, const world_sound::Crown& b) {
+              return cell_key(a.at) < cell_key(b.at);
+            });
   cells_.clear();
   for (u32 i = 0; i < crowns_.size();) {
     const u64 key = cell_key(crowns_[i].at);
@@ -304,10 +304,10 @@ void GameSoundHost::visit(void* user, const WorldPos& centre, f64 reach_m,
   const std::span<const renderer::SceneInstance> tail = tiles.tail();
   const u32 meshes = static_cast<u32>(h.scene_->mesh_leaves.size());
   for (const world::PlacementTiles::TileRange& r : ranges) {
-    const renderer::SceneInstance* in =
-        r.instances != nullptr ? r.instances
-        : static_cast<usize>(r.first) + r.count <= tail.size() ? tail.data() + r.first
-                                                              : nullptr;
+    const renderer::SceneInstance* in = r.instances != nullptr ? r.instances
+                                        : static_cast<usize>(r.first) + r.count <= tail.size()
+                                            ? tail.data() + r.first
+                                            : nullptr;
     if (in == nullptr || r.count == 0) continue;
     Group* g = nullptr;
     for (Group& x : h.tile_groups_) {
@@ -324,8 +324,8 @@ void GameSoundHost::visit(void* user, const WorldPos& centre, f64 reach_m,
     }
     const bool stale = r.version == 0 || g->version != r.version;
     h.tile_scratch_.clear();
-    const f64 d = std::sqrt((g->x - centre.x) * (g->x - centre.x) +
-                            (g->z - centre.z) * (g->z - centre.z));
+    const f64 d =
+        std::sqrt((g->x - centre.x) * (g->x - centre.x) + (g->z - centre.z) * (g->z - centre.z));
     const bool near = stale || d - g->radius <= near_m;
     if (!near) {
       emit_group(*g, {}, centre, reach_m, near_m, sink);
@@ -341,10 +341,12 @@ void GameSoundHost::visit(void* user, const WorldPos& centre, f64 reach_m,
       h.tile_scratch_.push_back(h.crown_of(s.mesh, at, scale));
     }
     if (stale) {
-      merge(*g, std::span<const world_sound::Crown>(h.tile_scratch_.data(), h.tile_scratch_.size()));
+      merge(*g,
+            std::span<const world_sound::Crown>(h.tile_scratch_.data(), h.tile_scratch_.size()));
       g->version = r.version;
     }
-    emit_group(*g, std::span<const world_sound::Crown>(h.tile_scratch_.data(), h.tile_scratch_.size()),
+    emit_group(*g,
+               std::span<const world_sound::Crown>(h.tile_scratch_.data(), h.tile_scratch_.size()),
                centre, reach_m, near_m, sink);
   }
 #endif

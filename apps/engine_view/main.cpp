@@ -1867,7 +1867,7 @@ void game_release() {
 }
 bool game_held() { return g_game != nullptr && g_game->held(); }
 u64 game_first_tick() { return g_game != nullptr ? g_game->first_tick() : 0; }
-i64 game_tick_ns() { return g_game != nullptr ? g_game->tick_ns() : 0; }  // FrameWorld::game_ms
+i64 game_tick_ns() { return g_game != nullptr ? g_game->tick_ns() : 0; }    // FrameWorld::game_ms
 i64 game_sound_ns() { return g_game != nullptr ? g_game->sound_ns() : 0; }  // ...::sound_ms
 #else
 f32 g_hud_display_scale = 1.0f;  // the loading overlay's, set by the windowed loop
@@ -5983,7 +5983,7 @@ int run_view(int argc, char** argv) {
 #if ENGINE_VIEW_WATER
   Wading wading;  // brief-water: the water the walker wades in (S63), outliving it
 #endif
-  view::Walker walker;         // the walk mode (walk.h): outlives the session, which points at it
+  view::Walker walker;  // the walk mode (walk.h): outlives the session, which points at it
   const WalkerScope walker_scope;  // `g_walker` cleared before the walker goes (S91)
   view::WalkProbe walk_probe;      // the records' `walk` (walk.h)
   scene::FrameWalk walked;

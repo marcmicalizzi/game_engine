@@ -1,6 +1,6 @@
 # world_sound (systems)
 
-**Purpose.** The sound stage a host creates for a game (roadmap S111, the first stage of [audio](audio.md#sound-for-the-world-the-design-s110)'s design; [ADR-0079](../adr/0079-world-sound-is-synthesised-from-world-state.md), proposed). One object, `world_sound::SoundStage`, owns the clip store, the mixer, the output (a device or the null backend), the listener, the clips a scene's `sound` block declares and the voices a game module starts; a host creates it, hands it a listener and ticks it. Sound code lives here and not in an app, as rendering code lives in [renderer](renderer.md). engine-view is the one host so far ([apps](apps.md#sound-a-module-plays)): `--audio` chooses the mode and a module's `sound_clip`, `sound_play` and `sound_stop` reach the stage. **What this stage is not yet**: the world's synthesised sources — the wind in the trees and at the ears (S112), running water and the surf (S113), the path's terms (S114) — are the design's later stages, and nothing of them is built; at S111 the stage plays a game's clips and nothing else.
+**Purpose.** The sound stage a host creates for a game (roadmap S111, the first stage of [audio](audio.md#sound-for-the-world-the-design-s110)'s design; [ADR-0079](../adr/0079-world-sound-is-synthesised-from-world-state.md), proposed). One object, `world_sound::SoundStage`, owns the clip store, the mixer, the output (a device or the null backend), the listener, the clips a scene's `sound` block declares and the voices a game module starts; a host creates it, hands it a listener and ticks it. Sound code lives here and not in an app, as rendering code lives in [renderer](renderer.md). engine-view is the one host so far ([apps](apps.md#sound-a-module-plays)): `--audio` chooses the mode and a module's `sound_clip`, `sound_play` and `sound_stop` reach the stage. **Since S112 it also hears the world's wind** — in the crowns a host's canopy table names and at the listener's ears ("The wind in the trees and at the ears", below). **What this stage is not yet**: running water and the surf (S113) and the path's terms (S114) are the design's later stages, and nothing of them is built.
 
 **Why this shape.** The design's reasons hold ([audio](audio.md#the-capability-systemsworld_sound)): one object a host creates, so engine-view, engine-host and the editor can each host sound without each wiring a store, a mixer and an output; a capability of its own requiring only `audio`, so the minimal build proves nothing depends on it. Three things were settled while building it:
 
@@ -48,6 +48,32 @@ The engine's rule for every binary holds here: no failing device crashes the pro
 
 **The device is opened the conservative way**, as `domain/audio`'s output already does: shared mode (miniaudio's default; the engine never asks for exclusive), 32-bit float handed to the platform's shared mix, which converts to the endpoint's own format, a callback the device's thread calls (miniaudio's model; no push), and a period of `audio.period_frames` (480 frames, 10 ms). Nothing of it was changed for S111.
 
+## The wind in the trees and at the ears (S112)
+
+Roadmap S112, the design's stage 2 ([audio](audio.md#stages)); the grounding and every source's mark are [the grounding page](../experiments/world-sound.md), whose section "Read again by S112" says what was read again when each number below was pinned. **The world is on in a stage opened with `StageConfig::world`** (engine-view sets it unless `--audio off`), whether or not the scene has a `sound` block — a module's calls still answer `Unsupported` without one — and it is made of the mixer's shaped-noise voices ([audio](audio.md#the-shaped-noise-voice)): `src/world_field.cpp`, internal to the module.
+
+**What drives it: the frame's wind as every reader has it.** A host hands the stage a `WorldWind` before each tick: the scene's `gfx::WindDesc` (or none), W151's live state (`gfx::WindLive`: the mean, the direction and the forced gust) and the sky's clock. The stage takes the arguments the trees' sway takes (`renderer::scene_flora_wind`): under a live wind, the live mean and direction at the scene's roughness with `gfx::wind_gust`'s turbulence over it and the forced gust, `mean (G − 1) level`, added; otherwise the scene's own wind and its gust. It asks the gust **at each source's own place** (the sway asks it at the origin, the same function), then carries the wind from 10 m to the crown's foliage height by the neutral log law over the roughness. So a key that steps the wind, a game's `wind_set` and a forced gust are heard on the tick they are drawn, and the gust that bends a crown is the gust heard. The stage holds no wind of its own. The trees' sway takes the live *mean* through a lag (W154: a tree's lean is a damped oscillator's); the sound does not, since the air moves at once and the leaves' noise is the flow's, not the lean's — the gust and the turbulence are not lagged on either side, so a gust's front reaches both on the same tick.
+
+**What a host hands it: the canopy table** (`CanopySource`, a function pointer and a context): every crown within a reach of the listener, as a `Crown` — the foot's world place, the foliage's middle height above it, the one-sided leaf area, and a class (`Blade` for leaves struck together, the default; `Needle` with its needles' width; `Bare` for twigs). The table is walked at `audio.world.refresh_hz` (8), into an array of `audio.world.max_crowns` (8,192; past it a crown is counted in `crowns_dropped`, never allocated). engine-view's table is in `apps/engine_view/game_sound.cpp` ([apps](apps.md#sound-a-module-plays)).
+
+**The voices** (`audio.world.*`, every count a tunable):
+
+| Voice | How many | Level at the listener, dB SPL |
+|---|---|---|
+| a crown of its own | `crowns`, 6: the loudest at a refresh, a chosen one kept across 3 dB of hysteresis, a 3D source at its foliage | `L_class + 30 log₁₀(U / 5) + 10 log₁₀(A / 100) − 20 log₁₀(r / 10)`, r at least 2 m; L 50 dB for blade and needle, 45 for bare |
+| a bed | `beds`, 8: a 45° sector of azimuth round the listener, everything not chosen summed by power band by band, placed 20 m out toward its power-weighted direction with a spread by how little that agrees | the same law, summed, at the gust at the bed's power-weighted place |
+| the ears | 2, 2D, hard left and right, each its own seed | `84.9 + 40 log₁₀(U_rel / 4.5) + audio.world.ears_db ± audio.world.ears_side_db · side` |
+
+U is the wind at the crown (or for the ears at 1.7 m, less the head's own velocity, `U_rel`); A the leaf area in m²; r the distance. **The laws**: a crown's level climbs 30 log U, 9 dB a doubling (Fégeant's law as Bolin's thesis gives it), and is linear in its leaf area (Bolin's source term); a point's spreading. **The anchors are excerpts, not a model's constants**: Fégeant's and Bolin's radiation constants were not reached tonight either, so 50 dB is "trees near a house, 51 to 55 dB(A) at 40 ft" read as a crown of 100 m² of leaf at 10 m in 5 m/s, and the bare tree's 45 dB is "an average of 45 dB at 5 m/s" with its distance taken as 10 m. **The spectrum** is each class's fixed octave shape (in leaf strongest below 4 kHz and broadband, bare below 1 kHz: the two sentences the excerpts give, the shapes a choice that keeps to them); a needle crown gives half its power to the voice's movable band at **f = 0.2 U / d** (the Aeolian tone, St 0.2; Q 3 for a crown's spread of needle widths and speeds), so a conifer's hiss climbs an octave a doubling of the wind; a blade crown has no movable band. **The ears**: the pressure goes as the square of the speed, 12 dB a doubling (Korhonen 2021), from 84.9 dB at 4.5 m/s (Seidman and others 2017, a cyclist's ear); flat below a corner of 300 Hz at 4.5 m/s that moves with the speed and falling `audio.world.ears_slope_db` (26) an octave above it; the downwind ear the louder (Seidman: loudest at the downwind ear side-on), by `ears_side_db` (4 dB, a choice) each way. **Their gain, `audio.world.ears_db`, is −30 dB** (the owner's "depends on wind speed, pick some sane value"): at its physical level the head's wind would be 85 dB in a moderate breeze, 30 dB over a crown overhead, which is what a microphone with no screen records and not what a listener attends to; 30 dB under puts it level with a near crown at about 5 m/s and lets it overtake the trees above, since it still climbs 12 dB a doubling to their 9. The ears are heard only where the air moves: a walker in still air hears no wind of their own making at this stage, and a step faster than 15 m/s (a teleport, a replay's cut, a camera flown by hand) adds none.
+
+**One loudness scale: `audio.world.reference_db` is 105.** A band's level in dB SPL becomes a gain as `10^((L − 105) / 20)`, an RMS of 1.0 in full scale (the voice's bands are unit RMS) being 105 dB SPL. That is the cinema's reference, −20 dBFS RMS reproduced at 85 dB SPL (SMPTE RP 200's calibration, the scale the forest's bird-call clips are mastered to), with dBFS RMS taken against an RMS of 1.0 as the mixer's samples are: so a game's clip played at its file's level and the world's sounds sit on one scale, and a crown at 50 dB SPL is −55 dBFS. Nothing compresses the range (the owner's answer 4). A level under `audio.world.floor_db` (10 dB SPL) holds no voice.
+
+**Calm holds nothing**: under `audio.world.calm_m_s` (0.5 m/s) at its place a source is silent, and a source that falls silent is stopped, so a calm world sends no command and holds no voice. **An unchanged world sends nothing**: a voice's description is sent again only when a lane's gain moves by more than 1 % (0.09 dB) or the movable band's centre by more than 0.5 %, and the beds are placed again only when the listener moves a metre. The voices ramp to each description over `audio.field_ramp_ms` (50). World voices play on the `ambient` bus at priorities under a game's default (crowns 40, beds 50, ears 60), so a game's one-shot takes a crown before a bed; the design's `world` bus under `ambient` is not added (the default tree is the mixer's).
+
+**The LOD policy**: voices by level at the listener, beds by sector, and a host's table merges far crowns — engine-view's walks each crown within `audio.world.near_m` (96) of the listener and sends a farther group (a 128 m cell of the loaded instances, a placement tile) as one crown a class at its leaves' centroid, the tile's made again only when its version moves. Nothing past `audio.world.reach_m` (2000) is summed.
+
+**Determinism**: presentation, as the stage is: the field reads world state and writes none; its gains go through the C library's `pow` and `log10` and the gust's `sin` and `exp`, so a world render is the same bytes run after run on one toolchain and **is not pinned across toolchains** (the voice's own bytes are: [audio](audio.md#the-shaped-noise-voice)).
+
 ## Invariants
 
 - What `clip`, `play` and `stop` answer, and every handle, is the same in `Off`, `Null` and `Device` (the scripted session's answers compared, and the end-to-end replay's module state).
@@ -56,10 +82,11 @@ The engine's rule for every binary holds here: no failing device crashes the pro
 - The tick allocates nothing in steady state: plays, stops, listener moves, cell crossings, the null render and the WAV's buffer (`mem::allocations_on_thread` over 2,400 ticks).
 - The null render of a scripted session is the same bytes run after run, and pinned.
 - No case opens an audio device; every one judges by the null backend's samples (ADR-0079 decision 6).
+- The world's voices never pass `audio.world.crowns`, `audio.world.beds` and two; a calm world holds none and sends nothing; an unchanged world sends nothing; 2,400 ticks of wind in a grove allocate nothing.
 
-**Public API.** `include/systems/world_sound/world_sound.h`: `k_determinism`, `AudioMode`/`audio_mode_name`, `Answer`, `StageConfig`, `StageStats`, `render_recipe`, `gain_from_db`, `read_scene_sound`, `SoundStage`.
+**Public API.** `include/systems/world_sound/world_sound.h`: `k_determinism`, `AudioMode`/`audio_mode_name`, `Answer`, `StageConfig` (`world`, `turbulence`), `StageStats`, `render_recipe`, `gain_from_db`, `read_scene_sound`, `SoundStage` (`set_canopy`, `set_wind`, `world_stats`, `world_voice`); and S112's `CanopyClass`, `Crown`, `CrownSink`, `CanopySource`, `WorldWind`, `WorldVoiceKind`/`WorldVoiceInfo`, `WorldStats`, `world_near_m`.
 
-**Depends on.** `base`, `containers`, `math`, `hash`, `ids`, `log`, `io`, `json`, `schema`, `tunables`, `audio`, `audio_schemas`, `schemas` (for `engine.scene.Sound`). Not `gfx`: the design links it for the wind's header, which S112 is the first stage to read.
+**Depends on.** `base`, `containers`, `math`, `hash`, `ids`, `log`, `io`, `json`, `schema`, `tunables`, `audio`, `audio_schemas`, `schemas` (for `engine.scene.Sound`), and since S112 `gfx` for the wind's header alone (`domain/gfx/wind.h`: the model is not a capability; nothing of the device is used).
 
 ## Testing
 
@@ -75,6 +102,18 @@ The engine's rule for every binary holds here: no failing device crashes the pro
 - **Formats**: WAVs written by the case — PCM 16 bit mono at 48 kHz, 24 bit stereo at 44.1 kHz, float mono at 22.05 kHz, 16 bit stereo at 96 kHz — loaded by path from beside the scene, each half a second at the mix rate and each heard; a file that is not there refuses the stage naming the clip.
 - **Failure**: the output refused at open, and its write failing at tick 100: the scripted session's answers the same as a healthy stage's, `stopped` with its reason in the summary, nothing pulled or started after the failure.
 - **The WAV**: 75 ticks at 60 a second (1.25 s, past the WAV's one-second buffer) written, sized, and decoded back bit for bit.
+
+The world's wind (`tests/world_field_tests.cpp`, S112), a grove of the case's own (a crown overhead, five near, forty far) round a listener 10,000 km out:
+
+- **The laws**, with the turbulence held out (`StageConfig::turbulence` false, so the gust's sines do not move the level): the beds and the crowns 9.03 dB louder a doubling of a fixed wind and the ears 12.04, each to 0.1 %; the downwind ear 8 dB over the other side-on, the other way after a half turn.
+- **A live wind** set between two ticks moves the crowns' level on the next (12 m/s for 4: more than 10 dB, the turbulence on).
+- **A forced gust** held to its full level raises the beds by 30 log G — 4.90 dB over grassland, G = 1.456 — rising monotonically along `wind_gust_level`'s envelope (at its half-way phase within 0.2 % of 30 log (1 + level (G − 1))) and falling back to the mean's level the same way.
+- **A gust's front** raises a crown's level and its wind on the tick the forced gust's level first moves, with the sky's clock held so nothing else does.
+- **A needle crown's movable band** sits at 0.2 U / d of its own wind to 0.1 %; a blade crown's lane is empty.
+- **Nothing when nothing moves**: with the sky's clock held, 120 ticks after the first send no command; a calm grove (no wind) sends none and holds no voice while its crowns are still seen; a wind dropped to calm stops every voice.
+- **The counts**: with `audio.world.crowns` 2 and `beds` 3, two crowns, at most three beds and the ears.
+- **Allocation**: 2,400 ticks allocate nothing.
+- **Listening, by band**: three seconds of the null render's WAV at 3 and at 9 m/s with the ears turned down to the tunable's floor: 14.3 dB louder give or take the turbulence (12 to 17), the 2 kHz band 2 dB or more nearer the 500 Hz band (the needles' tone climbing past it; 3.3 dB measured), the calm render all zeros, and the light render the same bytes twice.
 
 End to end, engine-view's `game_sound_view_tests.cpp` ([apps](apps.md#sound-a-module-plays)).
 
@@ -93,9 +132,23 @@ Measured 2026-11-21 on the i9-10980XE (`msvc-release`), **not quiet**: the harne
 
 Against the mixer's own row (64 clip voices, 70 µs a 10 ms block, [audio](audio.md#performance-notes)), the stage's 64 at 98 µs a block from the median (75 from the minimum) carries the load the machine was under; the stage adds its update and a hash of the block to the mixer's work, and nothing per voice. Inside S110's 200 µs a block either way. A quiet run (`--require-quiet`) is owed.
 
+### The world's wind (2026-11-21, S112)
+
+`world_sound.world_tick/N`: one host tick at 60 a second of a grove of N crowns on a 7 m grid round a walking listener in 6 m/s — the wind described at every world voice, the canopy table walked every 7.5 ticks (`audio.world.refresh_hz` 8), and the null backend's 800-frame block of the sixteen voices that sound. `msvc-release`, **not quiet** (others at 69 % of the CPU, the session locked):
+
+| N crowns | median µs a tick | min |
+|---|---|---|
+| 100 | 142.8 | 115.2 |
+| 1,000 | 128.3 | 125.3 |
+| 8,000 | 265.2 | 262.5 |
+
+The block of sixteen noise voices is about 95 µs of each (`audio.mix.noise`'s 3.5 µs a voice for 800 frames), so the controlling thread's share at a few hundred crowns is some 35 µs a tick, inside S110's 50; at 8,000 a refresh is about 1 ms (S110's budget for one), paid on the frame's thread every 7.5 ticks rather than on the Efficiency pool.
+
+**A grove of the tree's, in engine-view** (400 flora oaks and firs, a 6 m/s scene wind, a 6 s fly at 4 m/s, 1280 × 720 offscreen, `msvc-release`, the session locked, others at 70 to 85 % of the CPU, under this row's GPU lease; two runs of each): the frame record's `world.sound_ms` has a median of **0.0013 and 0.0015 ms a frame with `--audio off`** — the runner's hooks and nothing else — and **0.22 and 0.21 ms with `--audio null`** (p99 1.26 and 0.35), which includes the null backend's render of the frame's four ticks: with a device that mix is the audio thread's, not the frame's. The frames' `cpu_ms` medians were 1.45 and 1.51 ms off against 2.01 and 1.86 null. The grove sounded six crowns, six beds and the ears from 400 crowns seen, 910 commands in 1,440 ticks. The forest's budget is S114's: the staging was not flown.
+
 ## Capability contract (ADR-0027)
 
-This is a capability: it was added without editing `core/`, `foundation/`, the render graph, the scheduler, or another capability, and it can be removed from the build the same way. Outside its directory it touched only registration points and hosts: the scene schema's block, engine-view's glue (`game_sound.cpp`, the runner's hooks) and the fixture.
+This is a capability: it was added without editing `core/`, `foundation/`, the render graph, the scheduler, or another capability, and it can be removed from the build the same way. Outside its directory it touched only registration points and hosts: the scene schema's block, engine-view's glue (`game_sound.cpp`, the runner's hooks) and the fixture. S112 added two things beside it, each the owning module's own: the shaped-noise voice is `domain/audio`'s (the mixer's voice kind, as the design places it, used by nothing until a command asks), and a mesh's leaves (`SceneData::mesh_leaves`) are the renderer's measure of its scene, which any host may read; the frame record's `FrameWorld::sound_ms` is engine-view's.
 
 | Registration point | This capability | Status |
 |---|---|---|
@@ -105,8 +158,8 @@ This is a capability: it was added without editing `core/`, `foundation/`, the r
 | Render-graph passes | none | sound draws nothing |
 | Content-build derived step | none here; a clip's `.clip` is `audio`'s | not needed |
 | Protocol methods | none | not needed yet (engine-host opens no device) |
-| Tunables | none of its own; the mixer's `audio.*` size it | S112 adds `audio.world.*` |
-| LOD policy | the mixer's pool is the budget, its voice policy chooses ([audio](audio.md#the-voice-policy)) | S112 adds the beds |
+| Tunables | `audio.world.*` (S112): `crowns`, `beds`, `max_crowns`, `near_m`, `reach_m`, `refresh_hz`, `reference_db`, `ears_db`, `ears_side_db`, `ears_slope_db`, `calm_m_s`, `floor_db`; the mixer's `audio.*` size the rest | done |
+| LOD policy | voices by level at the listener, beds by sector, far crowns merged by group in the host's table; the mixer's pool is the budget ([audio](audio.md#the-voice-policy)) | done (S112) |
 | Determinism | `world_sound::k_determinism` = `derived` | sound is presentation (ADR-0079 decision 4) |
 | Zero cost when unused | no `sound` block or `Off`: no store, mixer, thread or output | done |
 | Tests and size table | `tests/world_sound_tests.cpp`, `tests/size_table.cpp` (`StageStats`, 88) | done |

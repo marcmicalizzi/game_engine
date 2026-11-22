@@ -135,6 +135,20 @@ Computed here from the ISO form with K_met at 1: a detour of 0.1 m takes 6 dB at
 
 **Cost, as an estimate and not a measurement.** A clip voice costs 1.1 µs a 10 ms block today ([audio](../subsystems/audio.md#performance-notes)). A shaped-noise voice is a generator and eight band filters a frame; with the eight bands in one vector register that is of the order of 3 µs a block, so the design's 27 such voices would be about 80 µs a block, under 1 % of one core. **That figure is arithmetic; the row that builds the voice measures it with a bench row before any budget is called met.** Memory is filter state, a few hundred bytes a voice.
 
+## Read again by S112
+
+Roadmap S112 (2026-11-21) pinned the wind's numbers in code ([world_sound](../subsystems/world_sound.md#the-wind-in-the-trees-and-at-the-ears-s112)) and tried each source again, through the fetch and search tools only, before it did:
+
+| Number pinned | Source, as read tonight | Mark |
+|---|---|---|
+| 30 log U for a crown (9 dB a doubling) | Bolin 2009's record again (Ingenta): coniferous, deciduous and leafless trees, wind to 8.5 m/s, better below 1 kHz; no constant in the record. Fégeant's coefficients: a search found none, only that his model was "validated for cases of non-turbulent flow" (FORCE Technology's masking report, through its search excerpt) | [A], [S] |
+| a crown's anchor, 50 dB at 10 m, 100 m² of leaf, 5 m/s; bare 45 dB | the excerpts above, unchanged; and a search excerpt of an IOA paper on deciduous trees ("about 1.5 dB(A) for every 1 m/s" between 1 and 6 m/s, 79 dB(A) at 7 m/s at its own distance), and of a Groningen fit of a natural area's ambient level, L = 22.6 log v + 22.7: both shallower than 30 log U near the trees' usual winds, neither giving a distance or a leaf area, so neither replaces the anchor | [S] |
+| 0.2 U / d, a needle's tone | Wikipedia's "Aeolian sound" as S110 read it; not fetched again | [F] (S110) |
+| 84.9 dB at 4.5 m/s and 12 dB a doubling at the ears; a corner near 300 Hz; the downwind ear louder | Korhonen 2021 at PubMed Central refused tonight's fetch (it asks for cookies); its record and Thieme's abstract read again (wind noise to 116 dB SPL at 12 m/s behind the ear); the rest stands as S110 read it | [A] tonight, [F] (S110) |
+| 1.46, grassland's gust factor, and the forced gust's 4.9 dB | W151's own `gfx::wind_gust_factor` (Ishizaki's relation): computed, 1.456 and 30 log 1.456 = 4.90 dB | computed |
+
+Two fetches failed in a way worth knowing: the Swedish environmental agency's report on wind turbine sound in hilly terrain and an IOA proceedings paper on the natural ambient sound came back as PDF streams the tool could not read (the first) or a 404 (the second). **The anchors stay excerpts**: the row that next finds Fégeant's or Bolin's text in a readable form replaces 50 and 45 dB with the species' radiation constants, and the class shapes with their spectra.
+
 ## What was not found
 
 - Any number for the sound of grass in wind.

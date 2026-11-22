@@ -361,7 +361,8 @@ void measure_mesh_leaves(const SceneData& data, Vector<MeshLeaves>& out) {
       // Foliage: an alpha-tested card (a bought tree's, or a generated one's with an image), or a
       // two-sided material that lets light through (the flora's own leaves without an image).
       const assets::Material& leaf = source.data.materials[static_cast<u32>(material)];
-      if (leaf.alpha_mode != assets::k_alpha_mask && !(leaf.double_sided && leaf.transmission > 0.0f))
+      if (leaf.alpha_mode != assets::k_alpha_mask &&
+          !(leaf.double_sided && leaf.transmission > 0.0f))
         continue;
       const geometry::ClusterDesc& cluster = mesh.clusters[c];
       if (static_cast<usize>(cluster.triangle_offset) + cluster.triangle_count >

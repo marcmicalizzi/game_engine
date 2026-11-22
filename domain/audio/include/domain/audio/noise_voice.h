@@ -10,16 +10,17 @@
 // **Why a voice kind and not band-limited clips**: a source with a spectrum would be eight clip
 // voices, and the design's 27 world sources 216 voices of a pool of 64.
 //
-// **The bands.** Each is the audio cookbook's band-pass with a constant 0 dB peak (Bristow-Johnson),
-// b0 (1 - z^-2) / (1 + a1 z^-1 + a2 z^-2) with b0 = alpha / (1 + alpha), a1 = -2 cos w / (1 + alpha),
-// a2 = (1 - alpha) / (1 + alpha), alpha = sin w / (2 Q), at Q = sqrt 2 (an octave between the -3 dB
-// points). Such a filter passes white noise of variance s^2 at s^2 b0 (its squared impulse response
-// sums to b0 exactly: computed for every band here, and held by a case), so each band's numerator is
-// scaled to c = sqrt(3 b0): the generator's noise is uniform on [-1, 1), variance 1/3, and every
-// band's output then has an RMS of one. **A band's gain is its RMS in full-scale units**, which is
-// what the world's levels in dB SPL map onto (`audio.world.reference_db`). Neighbouring bands'
-// skirts overlap, so a spectrum of eight gains is the bands' powers to within their overlap; a
-// level that moves every band by one factor moves the voice's by exactly that factor.
+// **The bands.** Each is the audio cookbook's band-pass with a constant 0 dB peak
+// (Bristow-Johnson), b0 (1 - z^-2) / (1 + a1 z^-1 + a2 z^-2) with b0 = alpha / (1 + alpha), a1 = -2
+// cos w / (1 + alpha), a2 = (1 - alpha) / (1 + alpha), alpha = sin w / (2 Q), at Q = sqrt 2 (an
+// octave between the -3 dB points). Such a filter passes white noise of variance s^2 at s^2 b0 (its
+// squared impulse response sums to b0 exactly: computed for every band here, and held by a case),
+// so each band's numerator is scaled to c = sqrt(3 b0): the generator's noise is uniform on [-1,
+// 1), variance 1/3, and every band's output then has an RMS of one. **A band's gain is its RMS in
+// full-scale units**, which is what the world's levels in dB SPL map onto
+// (`audio.world.reference_db`). Neighbouring bands' skirts overlap, so a spectrum of eight gains is
+// the bands' powers to within their overlap; a level that moves every band by one factor moves the
+// voice's by exactly that factor.
 //
 // **Determinism.** The generator is xorshift32 (Marsaglia 2003), the samples its words over 2^31,
 // the fixed bands' coefficients the literals below (rounded to f32 once, here), and the movable
@@ -36,7 +37,7 @@ inline constexpr u32 k_noise_lanes = 9;  // and the movable band, lane 8
 inline constexpr u32 k_noise_tone = 8;
 
 // The fixed bands' centres, Hz: 62.5 x 2^k, the octave bands ISO 266 calls 63 Hz to 8 kHz.
-inline constexpr f32 k_noise_band_hz[k_noise_bands] = {62.5f,  125.0f,  250.0f,  500.0f,
+inline constexpr f32 k_noise_band_hz[k_noise_bands] = {62.5f,   125.0f,  250.0f,  500.0f,
                                                        1000.0f, 2000.0f, 4000.0f, 8000.0f};
 // The band-pass's Q: an octave wide (2^(1/2) / (2 - 1)).
 inline constexpr f32 k_noise_band_q = 1.41421356f;

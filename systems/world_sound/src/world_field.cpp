@@ -24,7 +24,7 @@ tunables::Int world_max_crowns{"audio.world.max_crowns", 8192, 0, 1 << 20,
 tunables::Float world_reach_m{"audio.world.reach_m", 2000.0, 10.0, 20000.0,
                               "Nothing farther than this from the listener is summed"};
 tunables::Float near_m_tunable{"audio.world.near_m", 96.0, 0.0, 2000.0,
-                             "Crowns nearer than this are sent one by one; farther, merged"};
+                               "Crowns nearer than this are sent one by one; farther, merged"};
 tunables::Int world_refresh_hz{"audio.world.refresh_hz", 8, 1, 240,
                                "How often the canopy table is walked and the voices chosen"};
 // **One loudness scale** (S112): the cinema's reference, -20 dBFS RMS reproduced at 85 dB SPL
@@ -60,7 +60,8 @@ constexpr f64 k_crown_wind_m_s = 5.0;
 constexpr f64 k_crown_min_m = 2.0;  // nearer than this a crown is all round the listener
 // The needles' Aeolian tone: f = St U / d with St 0.2 (Raichel, through "Aeolian sound" [F]), a
 // band whose Q stands for a crown's spread of needle widths and speeds (a choice), carrying half a
-// needle crown's power ("conifers put more energy at particular frequencies" [S]; the share a choice).
+// needle crown's power ("conifers put more energy at particular frequencies" [S]; the share a
+// choice).
 constexpr f64 k_strouhal = 0.2;
 constexpr f32 k_needle_q = 3.0f;
 constexpr f64 k_needle_share = 0.5;
@@ -139,7 +140,7 @@ void WorldField::open(audio::Mixer* mixer, u32 tick_hz, const FieldConfig& confi
   beds_.resize(config_.beds);
   voices_.resize(config_.crowns + config_.beds + 2u);
   for (u32 i = 0; i < voices_.size(); ++i) {
-    voices_[i].kind = i < config_.crowns                 ? WorldVoiceKind::Crown
+    voices_[i].kind = i < config_.crowns                  ? WorldVoiceKind::Crown
                       : i < config_.crowns + config_.beds ? WorldVoiceKind::Bed
                       : i + 1u == voices_.size()          ? WorldVoiceKind::EarRight
                                                           : WorldVoiceKind::EarLeft;

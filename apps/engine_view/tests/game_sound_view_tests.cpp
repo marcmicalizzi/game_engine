@@ -25,7 +25,7 @@
 
 using namespace engine;
 
-#if ENGINE_VIEW_WORLD_SOUND
+#if ENGINE_VIEW_GAME && ENGINE_VIEW_WORLD_SOUND && defined(WALK_POC_PATH)
 #include "../game_sound.h"
 
 // The forest's need 169 (S112): the owner's launcher always passes `--benchmark` to get frame
@@ -48,9 +48,6 @@ TEST_CASE("engine-view: --audio auto is the device in a window, whatever the ses
   CHECK_FALSE(view::resolve_audio("", true, mode, device, &error));
   CHECK(error.find("--audio") != std::string::npos);
 }
-#endif
-
-#if ENGINE_VIEW_GAME && ENGINE_VIEW_WORLD_SOUND && defined(WALK_POC_PATH)
 
 namespace {
 
@@ -289,16 +286,17 @@ TEST_CASE("engine-view: the wind in a grove is heard in the null render, and cal
     const std::string scene = grove_scene(tmp, leg.name, leg.speed);
     const std::string session = walk_session(tmp, scene);
     const Run run = run_view({"--replay-input", session, "--scene", scene, "--offscreen", "--width",
-                              "320", "--height", "180", "--game", module, "--ddc",
-                              tmp.file("ddc"), "--audio", "null", "--audio-out", leg.wav});
+                              "320", "--height", "180", "--game", module, "--ddc", tmp.file("ddc"),
+                              "--audio", "null", "--audio-out", leg.wav});
     if (run.exit_code == 3) {
       MESSAGE("engine-view unavailable here: " << run.output);
       return;
     }
     REQUIRE_MESSAGE(run.exit_code == 0, run.output);
     REQUIRE_MESSAGE(summary_of(run, leg.summary), run.output);
-    MESSAGE(std::string(leg.name) << ": "
-                                  << text_at(leg.summary, {"interactive", "game", "sound", "world"}));
+    MESSAGE(
+        std::string(leg.name) << ": "
+                              << text_at(leg.summary, {"interactive", "game", "sound", "world"}));
   }
   // The scene's two oaks are the canopy table's crowns in every leg.
   for (const Leg& leg : legs)

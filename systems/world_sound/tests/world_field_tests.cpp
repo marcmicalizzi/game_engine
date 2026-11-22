@@ -50,9 +50,8 @@ Grove grove(CanopyClass near_kind = CanopyClass::Blade) {
   for (u32 i = 0; i < 40; ++i) {
     const f64 a = 0.157 * i;
     const f64 r = 80.0 + 3.0 * i;
-    g.crowns.push_back(Crown{WorldPos{k_far + r * std::cos(a), 0.0, k_far + r * std::sin(a)},
-                             12.0f, 300.0f, i % 3 == 0 ? CanopyClass::Bare : CanopyClass::Needle,
-                             1.0f});
+    g.crowns.push_back(Crown{WorldPos{k_far + r * std::cos(a), 0.0, k_far + r * std::sin(a)}, 12.0f,
+                             300.0f, i % 3 == 0 ? CanopyClass::Bare : CanopyClass::Needle, 1.0f});
   }
   return g;
 }
@@ -65,7 +64,8 @@ struct Session {
   WorldPos ears{k_far, 1.7, k_far};
   Vec3 forward{0.0f, 0.0f, -1.0f};
 
-  Session(f64 speed, bool turbulence, const std::string& wav = {}, CanopyClass kind = CanopyClass::Blade)
+  Session(f64 speed, bool turbulence, const std::string& wav = {},
+          CanopyClass kind = CanopyClass::Blade)
       : trees(grove(kind)) {
     StageConfig config;
     config.mode = AudioMode::Null;
@@ -121,7 +121,8 @@ TEST_CASE("world sound: a bed rises 9 dB and the ears 12 dB a doubling of a fixe
   CHECK(fast.total_db(WorldVoiceKind::Crown) - slow.total_db(WorldVoiceKind::Crown) ==
         doctest::Approx(9.031).epsilon(0.001));
   // The ears, the pressure as the square of the speed: 40 log 2 = 12.04 dB (Korhonen).
-  CHECK(fast.first(WorldVoiceKind::EarLeft).level_db - slow.first(WorldVoiceKind::EarLeft).level_db ==
+  CHECK(fast.first(WorldVoiceKind::EarLeft).level_db -
+            slow.first(WorldVoiceKind::EarLeft).level_db ==
         doctest::Approx(12.041).epsilon(0.001));
   // The beds are sounding, the counts inside their tunables.
   const WorldStats& w = fast.stage.world_stats();
@@ -139,7 +140,7 @@ TEST_CASE("world sound: the downwind ear is the louder, and turning the head tur
   const f32 left = s.first(WorldVoiceKind::EarLeft).level_db;
   const f32 right = s.first(WorldVoiceKind::EarRight).level_db;
   CHECK(right - left == doctest::Approx(8.0).epsilon(0.01));  // 2 x audio.world.ears_side_db
-  s.forward = Vec3{-1.0f, 0.0f, 0.0f};  // a half turn
+  s.forward = Vec3{-1.0f, 0.0f, 0.0f};                        // a half turn
   s.tick(3);
   CHECK(s.first(WorldVoiceKind::EarLeft).level_db - s.first(WorldVoiceKind::EarRight).level_db ==
         doctest::Approx(8.0).epsilon(0.01));
@@ -157,7 +158,8 @@ TEST_CASE("world sound: a live wind set between two ticks moves the level on the
   CHECK(after - before > 10.0f);  // 30 log 3 = 14.3 dB, less the turbulence's few dB either way
 }
 
-TEST_CASE("world sound: a forced gust raises a bed by 30 log G along its envelope and lets it fall") {
+TEST_CASE(
+    "world sound: a forced gust raises a bed by 30 log G along its envelope and lets it fall") {
   Session s(0.0, false);
   s.frame.live.set = true;
   s.frame.live.mean_m_s = 6.0;

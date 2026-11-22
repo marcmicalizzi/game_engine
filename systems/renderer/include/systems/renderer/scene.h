@@ -920,12 +920,12 @@ struct PlacementMeshOptions {
   void* texture_context = nullptr;
 };
 
-// **A mesh's leaves** (S112; world_sound.md, "The canopy a host hands the stage"): the one-sided
-// area of its finest level's foliage — its clusters whose material is alpha-tested (the test
-// `build_crown_priors` takes leaves by) or two-sided and translucent (a flora's leaves with no
-// image) — and how high they stand in mesh space. A card's area, not
-// its mask's: the masks are not decoded for it, so a card's cut-outs count as leaf. Any mesh may
-// have it, whatever made it; a distance form takes its source's.
+// **A mesh's leaves** (S112; world_sound.md, "The wind in the trees and at the ears (S112)"):
+// the one-sided area of its finest level's foliage — its clusters whose material is alpha-tested
+// (the test `build_crown_priors` takes leaves by) or two-sided and translucent (a flora's leaves
+// with no image) — and how high they stand in mesh space. A card's area, not its mask's: the masks
+// are not decoded for it, so a card's cut-outs count as leaf. Any mesh may have it, whatever made
+// it; a distance form takes its source's.
 struct MeshLeaves {
   f32 area_m2 = 0.0f;
   f32 low_m = 0.0f;

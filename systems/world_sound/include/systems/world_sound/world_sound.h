@@ -105,10 +105,10 @@ enum class CanopyClass : u8 { Blade = 0, Needle = 1, Bare = 2 };
 /// its class. A host measures the area from the mesh's foliage parts and declares the class.
 struct Crown {
   WorldPos at{};
-  f32 height_m = 0.0f;     // the foliage's middle above `at`
+  f32 height_m = 0.0f;  // the foliage's middle above `at`
   f32 leaf_area_m2 = 0.0f;
   CanopyClass kind = CanopyClass::Blade;
-  f32 needle_mm = 1.2f;    // Needle: the needles' width
+  f32 needle_mm = 1.2f;  // Needle: the needles' width
 };
 
 /// Where a canopy table's visit sends each crown.
@@ -159,7 +159,7 @@ struct WorldStats {
   u64 commands = 0;        // world voices' plays, sets and stops sent
   u64 plays = 0;
   u64 stops = 0;
-  u32 crown_voices = 0;    // sounding now
+  u32 crown_voices = 0;  // sounding now
   u32 bed_voices = 0;
   u32 ear_voices = 0;
   u32 reserved = 0;

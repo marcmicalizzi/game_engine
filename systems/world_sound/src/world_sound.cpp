@@ -1,5 +1,7 @@
 // The sound stage a host creates for a game (world_sound.h; docs/subsystems/world_sound.md).
 
+#include "world_field.h"
+
 #include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/log/log.h>
@@ -8,8 +10,6 @@
 #include <domain/audio/audio.h>
 #include <foundation/io/vfs.h>
 #include <systems/world_sound/world_sound.h>
-
-#include "world_field.h"
 
 #include <cmath>
 #include <cstdio>
@@ -646,7 +646,9 @@ bool SoundStage::close(std::string* error) {
   return ok;
 }
 
-void SoundStage::set_canopy(const CanopySource& canopy) noexcept { impl_->field.set_canopy(canopy); }
+void SoundStage::set_canopy(const CanopySource& canopy) noexcept {
+  impl_->field.set_canopy(canopy);
+}
 void SoundStage::set_wind(const WorldWind& wind) noexcept { impl_->field.set_wind(wind); }
 const WorldStats& SoundStage::world_stats() const noexcept { return impl_->field.stats(); }
 u32 SoundStage::world_voice_count() const noexcept { return impl_->field.voice_count(); }

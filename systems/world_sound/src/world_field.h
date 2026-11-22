@@ -57,9 +57,9 @@ class WorldField {
   struct Voice {
     WorldVoiceKind kind = WorldVoiceKind::None;
     audio::VoiceHandle voice;
-    u64 key = 0;          // a crown's identity (its place, hashed); a bed's sector; an ear's side
-    WorldPos at{};        // where it sounds (a bed: a point the listener's direction gives)
-    Crown crown{};        // a crown voice's crown, as the last refresh sent it
+    u64 key = 0;    // a crown's identity (its place, hashed); a bed's sector; an ear's side
+    WorldPos at{};  // where it sounds (a bed: a point the listener's direction gives)
+    Crown crown{};  // a crown voice's crown, as the last refresh sent it
     f32 spread = 0.0f;
     f32 sent_tone_hz = 0.0f;
     audio::NoiseParams sent{};
@@ -70,15 +70,15 @@ class WorldField {
   // per (U10 / 5)^3, the needles' tone, and where its power comes from.
   struct Bed {
     f64 weight[3] = {};
-    f64 needle_weight_d = 0.0;  // the needle class's weight x 1 / d, for its mean
-    f64 needle_loglaw = 0.0;    // the needle class's weight x its crowns' log law
+    f64 needle_weight_d = 0.0;            // the needle class's weight x 1 / d, for its mean
+    f64 needle_loglaw = 0.0;              // the needle class's weight x its crowns' log law
     f64 px = 0.0, pz = 0.0, total = 0.0;  // power-weighted place, for the gust
     f64 dx = 0.0, dz = 0.0;               // power-weighted unit directions from the listener
   };
 
   void refresh(const WorldPos& listener) noexcept;
-  void describe(Voice& v, const f64 (&band_power)[9], f64 tone_hz, f64 tone_power,
-                bool two_d, f32 pan, u64 seed, u8 priority, const WorldPos& frame) noexcept;
+  void describe(Voice& v, const f64 (&band_power)[9], f64 tone_hz, f64 tone_power, bool two_d,
+                f32 pan, u64 seed, u8 priority, const WorldPos& frame) noexcept;
   void silence(Voice& v) noexcept;
 
   audio::Mixer* mixer_ = nullptr;
@@ -93,11 +93,11 @@ class WorldField {
   Vector<u64> crown_key_;     // each one's identity, its place hashed
   Vector<Voice> voices_;      // crowns, then beds, then the two ears
   Vector<Bed> beds_;
-  Vector<u64> chosen_;        // the crowns chosen as voices of their own, by key
+  Vector<u64> chosen_;  // the crowns chosen as voices of their own, by key
   WorldPos last_listener_{};
   bool has_listener_ = false;
   WorldStats stats_{};
-  f64 shape_[3][8] = {};      // each class's band shape, powers summing to one
+  f64 shape_[3][8] = {};  // each class's band shape, powers summing to one
 };
 
 }  // namespace engine::world_sound

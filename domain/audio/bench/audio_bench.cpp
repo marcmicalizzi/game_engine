@@ -175,7 +175,8 @@ void run_noise(bench::State& state) {
   p.source.distance_model = DistanceModel::None;
   for (u32 v = 0; v < voices; ++v) {
     p.noise.seed = 100u + v;
-    p.source.position = Vec3{static_cast<f32>(v % 11u) - 5.0f, 0.0f, -1.0f - static_cast<f32>(v % 7u)};
+    p.source.position =
+        Vec3{static_cast<f32>(v % 11u) - 5.0f, 0.0f, -1.0f - static_cast<f32>(v % 7u)};
     handles.push_back(mixer.play_noise(p));
   }
   Vector<f32> out;

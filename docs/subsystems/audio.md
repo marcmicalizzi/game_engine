@@ -345,9 +345,21 @@ What they say:
 
 **Eviction costs the audio thread nothing**, because it asks nothing of it: the holds are counted where plays are pushed and events drained. Measured the same day with the streaming build's executable and eviction's back to back (others at 1.7–9.1% of the CPU, the GPU lock free): `audio.mix.3d` at 1 to 256 voices, `_51`, `_limited` and `_limiter_idle` within 0.1% of each other (`_turning` and `_distinct` moved within their own run-to-run spread, 8–11% and 1–3% that day), and `audio_system.tick` — the tick that plays, stops and drains, now retaining and releasing — at 30.7 and 174.9 µs moving, 25.1 and 168.0 µs still, for 1,000 and 10,000 emitters, inside the ranges [audio_system](audio_system.md) measured before it (30.5–32.0 and 170–193, 24.3–27.2 and 162–180).
 
+### The shaped-noise voice (2026-11-21, S112)
+
+`audio.mix.noise/N`: N shaped-noise voices positioned round the listener, every lane sounding and a ramp in flight (a `set_noise` a voice every fifth block), one 10 ms block (480 frames) an iteration. Measured in `msvc-release` on the i9-10980XE, **not quiet** (others at 48 % of the CPU, the session locked; upper bounds):
+
+| N | median µs a block | min | per voice |
+|---|---|---|---|
+| 1 | 5.08 | 4.66 | 5.1 |
+| 27 | 109.3 | 91.7 | 4.0 |
+| 64 | 221.3 | 210.0 | 3.5 |
+
+**The design's 27 world voices are 109 µs a block, inside the audio thread's 200 µs** (S110's estimate was 80); beside them `audio.mix.3d/64`, 64 clip voices, measured 75 µs the same hour. The first loop was scalar — nine biquads a frame with their state in the voice's record — and measured 11.4, 272.5 and 605.7 µs (others at 64 %): 10 µs a voice, three times the estimate. The bands are now two SSE registers of four lanes beside a scalar movable band, the state in registers for the block, the lanes' sum a fixed tree (`noise_voice.cpp`), which is 2.5 times faster and the same arithmetic on every toolchain and at either CPU baseline; the session's pin was taken again for it. What is left is the recursion: each frame's output waits on the last frame's state, about twelve cycles a frame.
+
 ## Sound for the world: the design (S110)
 
-Roadmap S110 (2026-11-20). **Designed; stage 1 (S111) is built** (2026-11-21: the scene's `sound` block, the `world_sound` capability's `SoundStage`, engine-view's `--audio` and `--audio-out`, the three calls real; [world_sound](world_sound.md)); **stages 2 to 4 are not.** Where S111 built something smaller than this section says, it is marked "S111:" in place. The published models and their numbers are [the grounding page](../experiments/world-sound.md); the decisions that would surprise are [ADR-0079](../adr/0079-world-sound-is-synthesised-from-world-state.md) (proposed); the stages are roadmap rows S111 to S114. It takes up the direction note on wind as sound ([05 §5.11](../plan/05-simulation.md#511-integration-notes)) and the audio half of P43.
+Roadmap S110 (2026-11-20). **Designed; stages 1 (S111) and 2 (S112, the wind) are built** (2026-11-21: the scene's `sound` block, the `world_sound` capability's `SoundStage`, engine-view's `--audio` and `--audio-out`, the three calls real; [world_sound](world_sound.md)), and S112's wind (2026-11-21); **stages 3 and 4 are not.** Where S111 or S112 built something smaller than this section says, it is marked so in place. The published models and their numbers are [the grounding page](../experiments/world-sound.md); the decisions that would surprise are [ADR-0079](../adr/0079-world-sound-is-synthesised-from-world-state.md) (proposed); the stages are roadmap rows S111 to S114. It takes up the direction note on wind as sound ([05 §5.11](../plan/05-simulation.md#511-integration-notes)) and the audio half of P43.
 
 **What exists when this is written.** The mixer above plays clips. No host opens a device for a game: `apps/engine_view` does not link this capability, and its game runner answers `sound_clip` with `Unsupported` and leaves `sound_play` and `sound_stop` null. The scene type the hot-load header's comment names (`engine.scene.Sound`) is not in `schemas/scene.schema`. engine-host carries `audio.devices` and nothing else.
 
@@ -369,13 +381,15 @@ One new kind of voice in this module's mixer, used by nothing until a command as
 
 Its parameters are one command of the size a `SetSource` is. The output goes through the same source model and decode stage as a clip's, so it is an object with a position like any other. The determinism claim above holds for it for the same reasons (integer state, `+ − × ÷` in `f32`, literal coefficients) and its bytes are pinned beside the session's. **Why a voice kind and not band-limited noise clips played by the existing voices**: a source with a spectrum would then be eight voices, and the 27 sources below 216 of a pool of 64.
 
+**Built (S112; `noise_voice.h`).** The generator is xorshift32, its words over 2³¹ uniform on [−1, 1). Each band is the audio cookbook's band-pass with a constant 0 dB peak at Q √2 (an octave between its −3 dB points), centres 62.5 × 2^k Hz; such a filter passes white noise of variance s² at s² b0 exactly (its squared impulse response sums to b0, held by a case), so each band's numerator is scaled to `c = √(3 b0)` and **every band passes the generator's noise at an RMS of one: a band's gain is its RMS in full scale**, which is what a level in dB SPL maps onto (`audio.world.reference_db`, [world_sound](world_sound.md#the-wind-in-the-trees-and-at-the-ears-s112)). Neighbouring bands' skirts overlap, so eight gains are the bands' powers to within that overlap; moving every gain by one factor moves the voice's level by exactly it. The fixed bands' three coefficients are f32 literals computed once in double; the movable band's (`noise_band`, held to 40 Hz – 12 kHz) are computed on the controlling thread with `sin_quarter` and a correctly rounded square root. `Mixer::play_noise` pushes the Play (flag `k_voice_noise`, no samples) and its first `SetNoise` together, both or neither, so the audio thread applies them before the voice's first block, which starts at its full description; `set_noise` ramps the nine gains over `audio.field_ramp_ms` (50 ms: a world field is described again every tick, and a 10 ms ramp would stair-step it) and moves the movable band at once. A noise voice loops until stopped and is stolen as a loop is. Its state (`NoiseState`, 320 bytes, a parallel array of the pool: 20 KB at 64 voices) is sized at construction; nothing on the audio thread allocates. The scripted session's bytes (three voices, a ramp, a band moved, a stop, rendered in even and in uneven calls to the same bytes) are pinned on MSVC as `0x4a2e2b356bc6e533`; GCC and Clang must reproduce it. Its cost is `audio.mix.noise` below ("Performance notes").
+
 ### The capability: `systems/world_sound`
 
 `ENGINE_WITH_WORLD_SOUND`, `engine_capability_requires(world_sound audio)`, off in the minimal build. It owns a **`SoundStage`**: the clip store, the mixer, the output or the null backend, the listener, a game's clips and voices, and the fields that turn the world into shaped-noise voices. A host has one object to create, hand a listener and tick; the rendering rule's counterpart holds, **sound code lives in the module, not in an app**.
 
 **The wind that drives it is the frame's, the one every reader is given**: the scene's wind, or the live state a host's keys or a game set while the session runs (`gfx::WindLive`, handed to every reader as `FrameDesc::wind`; roadmap W151, built the night this was designed and not on this row's base). The host hands the stage the same value each tick; the stage takes the mean and the forced gust from it and lays the turbulence at each source's place over it with `wind_gust`. A game changes the wind through the wind's own service (`wind_set`, `wind_gust`) and the sound follows; no sound call sets a wind, and the stage holds none of its own.
 
-It links `gfx` for the wind's header (`WindLive`, `wind_at`, `wind_gust`, `sea_state`: the model is not a capability; S111: not yet, since nothing at stage 1 reads a wind) and **no capability but `audio`**. Trees and water reach it through **source tables a host fills**, a function pointer and a context each, as scene generators and derived steps are tables:
+It links `gfx` for the wind's header (`WindLive`, `wind_at`, `wind_gust`, `sea_state`: the model is not a capability; linked since S112, the first stage to read a wind) and **no capability but `audio`**. Trees and water reach it through **source tables a host fills**, a function pointer and a context each, as scene generators and derived steps are tables:
 
 | Table | What it visits | Filled from |
 |---|---|---|
@@ -426,7 +440,7 @@ Unchanged. Every world voice is a source with a spatial block and nothing is pan
 
 | | Budget | Basis |
 |---|---|---|
-| The audio thread at the defaults | 200 µs a 10 ms block, 2 % of one core | 64 clip voices measure 70 µs; 27 shaped-noise voices are estimated at 80 µs and **measured by S112's bench row** |
+| The audio thread at the defaults | 200 µs a 10 ms block, 2 % of one core | 64 clip voices measure 70 µs; 27 shaped-noise voices were estimated at 80 µs and **measure 109 µs** (S112's `audio.mix.noise/27`, a busy machine: "Performance notes") |
 | `SoundStage::tick` on the frame's thread | 50 µs | the gust at 15 places, 27 commands at most |
 | A refresh, off the frame's thread | 1 ms, eight a second | tile aggregates and a few thousand near instances |
 | Memory, clips aside | 1 MB | voice state, the fields' fixed arrays |
@@ -447,7 +461,7 @@ A scene gains **one block, `sound`** (`engine.scene.Sound`): `clips`, each a `na
 Each is a row one agent builds in a night; the rows hold the tests.
 
 1. **S111, a game's clips are heard**: the `sound` block, the stage, engine-view's `--audio`, the three calls. The owner hears a fixture's chirp from a prop in the forest, turning with their head.
-2. **S112, the wind in the trees and at the ears**: the shaped-noise voice, the canopy table, crowns, beds, the ears' wind. The owner hears the wind rise with the gusts they see, hiss among conifers, and move from ear to ear as they turn; the live wind's keys change it at once, and a forced gust is heard to rise and die along its envelope.
+2. **S112, the wind in the trees and at the ears**: the shaped-noise voice, the canopy table, crowns, beds, the ears' wind. The owner hears the wind rise with the gusts they see, hiss among conifers, and move from ear to ear as they turn; the live wind's keys change it at once, and a forced gust is heard to rise and die along its envelope. **Built 2026-11-21** ([world_sound](world_sound.md#the-wind-in-the-trees-and-at-the-ears-s112)): the voice here, the field in the stage, engine-view's table over the loaded instances and the drawn tiles; the design's `world` bus and its world gains in the scene's block are not built (world voices are on `ambient`), and the refresh runs on the frame's thread, not the Efficiency pool.
 3. **S113, running water and the surf**: the flow and surf tables, the resonators. A brook, a fall's roar, waves that sound as they break.
 4. **S114, distance, and the budget held on the forest**: the path's terms (air, forest, ground, barrier), the clip voices' filter, shelter for the ears' wind, the voice counts and microseconds measured on the forest staging.
 
