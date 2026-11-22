@@ -537,10 +537,27 @@ bool read_sidecar_text(const std::string& sidecar, std::string& text, bool& pres
 // its `content_classes` the set's class. The pack's file is parsed strictly, so a key given twice
 // in a role is refused here as in a sidecar.
 bool read_pack_classes(const materials::Pack& pack, const content_class::Categories& categories,
-                       content_class::ContentClasses& out, std::string& why) {
+                       content_class::ContentClasses& out, std::string& why,
+                       ClassReads* counts = nullptr) {
+  const i64 start_ns = time::monotonic_ns();
   const std::string path = io::join_path(pack.dir, "pack.json");
   std::string text;
   const io::Status status = io::read_file(path, text);
+  // Counted per set, every set a read of its class; the file's bytes once (C72).
+  u32 sets = 0;
+  u32 classified = 0;
+  const auto count = [&] {
+    if (counts == nullptr) return;
+    ClassReadCount& c = (*counts)[ClassRead::pack_sets];
+    c.asked += sets;
+    c.found += classified;
+    c.bytes += text.size();
+    c.ns += time::monotonic_ns() - start_ns;
+  };
+  struct Counted {
+    const decltype(count)& f;
+    ~Counted() { f(); }
+  } counted{count};
   if (status != io::Status::Ok) {
     why = path + " cannot be read: " + std::string(io::status_name(status));
     return false;
@@ -559,7 +576,9 @@ bool read_pack_classes(const materials::Pack& pack, const content_class::Categor
   const JsonValue::Object& entries = roles->as_object();
   for (u32 r = 0; r < entries.size(); ++r) {
     const JsonValue& role = entries.value_at(r);
+    ++sets;
     if (!role.is_object() || !role.contains("content_classes")) continue;
+    ++classified;
     content_class::ContentClasses one;
     std::string error;
     if (!content_class::read_sidecar_classes(categories, write_json(role), one, error)) {
@@ -621,14 +640,30 @@ bool probe_hash(void* context, std::string_view, u64& out, std::string&) {
 }
 bool generator_hosts(const std::string& recipe, const materials::Pack* pack,
                      Vector<std::string>& hosts, std::string& why,
-                     const std::string* handed = nullptr) {
+                     const std::string* handed = nullptr, ClassReads* counts = nullptr) {
   hosts.clear();
   const assets::MeshGeneratorDesc* generator =
       assets::MeshGeneratorRegistry::global().find(assets::mesh_generator_of(recipe));
   if (generator == nullptr) return true;
   std::string read;
-  if (handed == nullptr && io::read_file(recipe, read) != io::Status::Ok) return true;
+  if (handed == nullptr) {
+    const i64 read_ns = time::monotonic_ns();
+    const bool found = io::read_file(recipe, read) == io::Status::Ok;
+    if (counts != nullptr)
+      counts->add(ClassRead::recipe_file, found, read.size(), time::monotonic_ns() - read_ns);
+    if (!found) return true;
+  }
   const std::string& text = handed != nullptr ? *handed : read;
+  const i64 probe_ns = time::monotonic_ns();
+  struct Counted {
+    ClassReads* counts;
+    i64 start;
+    const Vector<std::string>& hosts;
+    ~Counted() {
+      if (counts != nullptr)
+        counts->add(ClassRead::host_probe, !hosts.empty(), 0, time::monotonic_ns() - start);
+    }
+  } counted{counts, probe_ns, hosts};
   HostProbe probe{recipe, {}};
   assets::MeshGeneratorHosts hooks;
   hooks.context = &probe;
@@ -654,11 +689,24 @@ bool generator_hosts(const std::string& recipe, const materials::Pack* pack,
 // unreadable, never `none`, since the dependant is built only when the host's own read succeeds, so
 // refusing it loses nothing, where `none` would build over whatever the finished file's section 54
 // declares.
-bool read_host_record(const std::string& path, Vector<u8>& record, std::string& why) {
+bool read_host_record(const std::string& path, Vector<u8>& record, std::string& why,
+                      ClassReads* counts = nullptr) {
   record.clear();
+  bool opened = false;
+  struct Counted {
+    ClassReads* counts;
+    i64 start;
+    const bool& opened;
+    const Vector<u8>& record;
+    ~Counted() {
+      if (counts != nullptr)
+        counts->add(ClassRead::host_record, opened, record.size(), time::monotonic_ns() - start);
+    }
+  } counted{counts, time::monotonic_ns(), opened, record};
   geometry::ClusterFileReader reader;
   std::string error;
-  if (!reader.open(path, nullptr, &error)) {
+  opened = reader.open(path, nullptr, &error);
+  if (!opened) {
     why = path + ": the host cannot be opened for its classes: " + error;
     return false;
   }
@@ -706,7 +754,9 @@ bool recipe_hosts(const std::string& recipe, const materials::Pack* pack, const 
   const HostReads::Probe* probe =
       reads == nullptr ? nullptr
                        : kept_at(reads->probe_of, reads->probe_paths, reads->probes, recipe);
-  if (probe == nullptr) return generator_hosts(recipe, pack, hosts, why);
+  if (probe == nullptr)
+    return generator_hosts(recipe, pack, hosts, why, nullptr,
+                           reads != nullptr ? reads->counts : nullptr);
   hosts = probe->hosts;
   why = probe->why;
   return probe->ok;
@@ -718,7 +768,8 @@ bool host_record(const std::string& path, const HostReads* reads, Vector<u8>& re
   const HostReads::Record* kept_record =
       reads == nullptr ? nullptr
                        : kept_at(reads->record_of, reads->record_paths, reads->records, path);
-  if (kept_record == nullptr) return read_host_record(path, record, why);
+  if (kept_record == nullptr)
+    return read_host_record(path, record, why, reads != nullptr ? reads->counts : nullptr);
   record = kept_record->bytes;
   why = kept_record->why;
   return kept_record->ok;
@@ -755,7 +806,8 @@ bool learn_hosts_at(const std::string& source, const MeshOptions& options,
   if (assets::mesh_generator_of(source).empty()) return true;
   if (kept_at(reads.probe_of, reads.probe_paths, reads.probes, source) == nullptr) {
     HostReads::Probe probe;
-    probe.ok = generator_hosts(source, options.materials, probe.hosts, probe.why, handed);
+    probe.ok =
+        generator_hosts(source, options.materials, probe.hosts, probe.why, handed, reads.counts);
     keep_at(reads.probe_of, reads.probe_paths, reads.probes, source, probe);
   }
   Vector<std::string> hosts;
@@ -767,7 +819,7 @@ bool learn_hosts_at(const std::string& source, const MeshOptions& options,
     if (io::extension(host) != ".clusters") continue;
     if (kept_at(reads.record_of, reads.record_paths, reads.records, host) == nullptr) {
       HostReads::Record record;
-      record.ok = read_host_record(host, record.bytes, record.why);
+      record.ok = read_host_record(host, record.bytes, record.why, reads.counts);
       keep_at(reads.record_of, reads.record_paths, reads.records, host, record);
     }
     Vector<u8> record;
@@ -812,24 +864,33 @@ bool read_classes_at(const std::string& source, const MeshOptions& options, Sour
     error.message = std::move(message);
     return false;
   };
+  ClassReads* const counts = reads != nullptr ? reads->counts : nullptr;
+  const bool generated = !assets::mesh_generator_of(source).empty();
   const std::string sidecar = content_class::sidecar_path_of(source);
   std::string text;
   bool present = false;
   std::string why;
-  if (!read_sidecar_text(sidecar, text, present, why)) return refuse(sidecar + " " + why);
+  const i64 sidecar_ns = time::monotonic_ns();
+  const bool looked = read_sidecar_text(sidecar, text, present, why);
+  if (counts != nullptr) {
+    const ClassRead kind = generated                              ? ClassRead::recipe_sidecar
+                           : io::extension(source) == ".clusters" ? ClassRead::container_sidecar
+                                                                  : ClassRead::gltf_sidecar;
+    counts->add(kind, present, text.size(), time::monotonic_ns() - sidecar_ns);
+  }
+  if (!looked) return refuse(sidecar + " " + why);
   if (present &&
       !content_class::read_sidecar_classes(categories, text, out.classes, why, &out.materials))
     return refuse(sidecar + ": " + why + "; the build refuses " + source);
   // A generator's output is the join of the sets it baked, which its key covers through the pack.
-  if (!assets::mesh_generator_of(source).empty() && options.materials != nullptr &&
-      !read_pack_classes(*options.materials, categories, out.classes, why))
+  if (generated && options.materials != nullptr &&
+      !read_pack_classes(*options.materials, categories, out.classes, why, counts))
     return refuse(why + "; the build refuses " + source);
   // **And of every mesh it reads** (C64): each host its generator names, by the host's own class
   // (its sidecar; a recipe's, recursively; a container's section 54 too), read before the host is,
   // joined as a whole asset, so its key and section 54 carry it.
   Vector<std::string> hosts;
-  if (!assets::mesh_generator_of(source).empty() &&
-      !recipe_hosts(source, options.materials, reads, hosts, why))
+  if (generated && !recipe_hosts(source, options.materials, reads, hosts, why))
     return refuse(why + "; the build refuses " + source);
   for (const std::string& host : hosts) {
     // At `GeneratorHosts::identify`'s bound: `depth` is this dependant's, as `depth_` is there,

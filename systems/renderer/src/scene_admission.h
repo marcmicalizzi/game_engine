@@ -6,6 +6,7 @@
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
+#include <domain/content_build/class_reads.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/geometry/cluster_pages.h>
 #include <foundation/content_class/content_class.h>
@@ -49,6 +50,9 @@ struct LoadAdmission {
   Vector<ContainerProbe> probe;
   Vector<Vector<u8>> loaded;
   Vector<u8> read_whole;
+  // What the first pass read, by kind (C72): counted here, copied into the load's report and
+  // logged once at the end of the pass.
+  content_build::ClassReads reads;
 };
 
 // Before any mesh is read: the scene's policy, every mesh's own class (its ladders learned into

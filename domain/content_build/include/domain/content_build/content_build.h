@@ -29,6 +29,7 @@
 #include <core/jobs/job_system.h>
 #include <core/json/json_value.h>
 #include <domain/atlas/repack.h>
+#include <domain/content_build/class_reads.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/geometry/cluster_pages.h>
@@ -299,6 +300,9 @@ struct HostReads {
   HashMap<u64, u32> record_of;  // a container host's path's hash: its index in `records`
   Vector<std::string> record_paths;
   Vector<Record> records;
+  // Where the reads made through this are counted by kind (C72; `class_reads.h`), or null. Written
+  // through a const `HostReads` too: the class read counts what it reads.
+  ClassReads* counts = nullptr;
 };
 
 // **A teaching round** (C64): every container host `source`'s generator names, the whole chain to

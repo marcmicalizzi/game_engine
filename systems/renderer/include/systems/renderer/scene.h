@@ -18,6 +18,7 @@
 #include <core/json/json_value.h>
 #include <core/math/math.h>
 #include <domain/assets/gltf.h>
+#include <domain/content_build/class_reads.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/geometry/cluster_pages.h>
@@ -950,6 +951,13 @@ struct SceneLoadReport {
   // mesh some instance would draw), and of those the ones that declared one.
   u32 image_sidecars_probed = 0;
   u32 image_sidecars_found = 0;
+  // **The class read before the meshes, by kind of read** (C72; renderer.md, "Content classes at
+  // load"): the distinct paths it decided, its wall milliseconds (the `content classes` stage), and
+  // for each kind how many reads were asked for, found a file, the bytes and the time; what its log
+  // line prints.
+  u32 class_paths = 0;
+  f64 classes_ms = 0.0;
+  content_build::ClassReads class_reads;
 };
 
 // **What a mesh built after the load is built with** (R142; renderer.md, "Meshes that come and
