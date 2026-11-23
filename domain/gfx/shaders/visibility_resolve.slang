@@ -787,6 +787,50 @@ void foliage_raw_ambient_pair(ResolveParams* params, SkyParams* sky, bool has_sk
 #include "water_reflect.slang"
 #include "water_refract.slang"  // S86: what is under the water
 #endif
+// **The light at a water surface, asked once for either tier** (R205; water.md, "What a first load
+// waits for"): the sun at the surface unshadowed and its shadow there, the ambient of a level
+// surface, and the sky (or, in the traced modules, the scene) along the view reflected off `n`. The
+// two tiers asked the same questions with the same arguments, each its own copy, so every place
+// that shaded water held two reflection rays, each with the shading of what it meets — the shore's
+// wet band, the ground's material, a shadow ray, the cache — written out in full. The low tier's
+// sun is `sun * sun_surface` where the surface is lit, as it was.
+struct WaterSurfaceLight {
+  float3 sun;         // unshadowed, zero where the surface faces away from the sun
+  float sun_surface;  // the shadow query at the surface, zero where it was not asked
+  float3 ambient;
+  float3 reflected;
+};
+
+WaterSurfaceLight water_surface_light(ResolveParams* params, Surface s, float3 n, float3 view,
+                                      float ray_bias) {
+  SkyParams* sky = (SkyParams*)params->sky_params;
+  const bool has_sky = params->sky_params != 0;
+  WaterSurfaceLight light;
+  light.sun = float3(0.0);
+  light.sun_surface = 0.0;
+  if (dot(s.normal, params->sun.xyz) > 0.0) {
+    light.sun = float3(params->sun.w);
+    if (has_sky) {
+      light.sun = sky_light_at(sky, s.position, params->sun.xyz, sky->sun_illuminance.rgb);
+    }
+    light.sun_surface = shadow_visibility(params, k_shadow_sun, 0u, s.position, s.geometric,
+                                          ray_bias, params->sun.xyz, 1e30);
+  }
+  const float3 r = water_reflected(n, view);
+  if (has_sky) {
+    light.ambient = sky_ambient((SkyFrame*)sky->frame, s.normal);
+    light.reflected = sky_environment(sky, (SkyFrame*)sky->frame, r);
+  } else {
+    const float3 ground = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
+    light.ambient = ambient_radiance(params->sky.rgb, ground, s.normal);
+    light.reflected = params->sky.rgb;
+  }
+#ifdef RESOLVE_RAY_SHADOWS
+  light.reflected = water_reflection(params, s, r, ray_bias, light.reflected);  // R129
+#endif
+  return light;
+}
+
 // **The volume tier** (`k_material_water_volume`; water.slang, "the volume tier"): what is under
 // the surface, seen through it. The refracted view is marched against the body's depth map, the
 // ground as a height field (`water_path_map`; water.md, "The depth map"), so it lands on the
@@ -807,7 +851,7 @@ float3 water_pixel_volume(ResolveParams* params, SceneGeometry geo, InstanceDesc
                           uint index, float2 slope, float3 dp_dx, float3 dp_dy, Surface s,
                           float3 local, float3 n, float3 view, WaterParams w, float ray_bias,
                           float depth, bool has_map, WaterDepthMap map, float edge, float foam,
-                          float bared_s = 0.0) {
+                          float bared_s, WaterSurfaceLight light) {
   // `bared_s` (S99): a pixel the swash's backwash or the falling tide has bared is the ground's own
   // material at its saturation (wet_ground.slang), not a fixed sand's; 0 for every other pixel.
   ResolveMaterial* materials = (ResolveMaterial*)geo.materials;
@@ -845,16 +889,12 @@ float3 water_pixel_volume(ResolveParams* params, SceneGeometry geo, InstanceDesc
   } else if (bared_s > 0.0) {
     albedo = wet_ground_albedo(albedo, bared_s, 0.5);
   }
-  SkyParams* sky = (SkyParams*)params->sky_params;
-  const bool has_sky = params->sky_params != 0;
-  float3 sun = float3(0.0);
-  float sun_surface = 0.0;
+  // The surface's own light is the caller's (`water_surface_light`); the bottom's shadow is this
+  // tier's alone.
+  const float3 sun = light.sun;
+  const float sun_surface = light.sun_surface;
   float sun_bottom = 0.0;
   if (dot(s.normal, params->sun.xyz) > 0.0) {
-    sun = float3(params->sun.w);
-    if (has_sky) sun = sky_light_at(sky, s.position, params->sun.xyz, sky->sun_illuminance.rgb);
-    sun_surface = shadow_visibility(params, k_shadow_sun, 0u, s.position, s.geometric, ray_bias,
-                                    params->sun.xyz, 1e30);
     float cos_l;
     const float3 l = water_sun_under(params->sun.xyz, cos_l);
     const float3 exit = bottom + l * (path.depth / cos_l);
@@ -867,20 +907,8 @@ float3 water_pixel_volume(ResolveParams* params, SceneGeometry geo, InstanceDesc
     // shadow the shore's last centimetres in a dashed line along the mesh's edge.
     sun_bottom = lerp(sun_surface, sun_bottom, clamp(path.depth / k_water_calm_depth, 0.0, 1.0));
   }
-  float3 ambient;
-  float3 reflected;
-  const float3 r = water_reflected(n, view);
-  if (has_sky) {
-    ambient = sky_ambient((SkyFrame*)sky->frame, s.normal);
-    reflected = sky_environment(sky, (SkyFrame*)sky->frame, r);
-  } else {
-    const float3 ground = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
-    ambient = ambient_radiance(params->sky.rgb, ground, s.normal);
-    reflected = params->sky.rgb;
-  }
-#ifdef RESOLVE_RAY_SHADOWS
-  reflected = water_reflection(params, s, r, ray_bias, reflected);  // R129: the scene, or the sky
-#endif
+  const float3 ambient = light.ambient;
+  const float3 reflected = light.reflected;
   float3 under = water_volume(o, path, n_b, albedo, params->sun.xyz, sun, sun_surface,
                               sun_bottom, ambient);
 #ifdef RESOLVE_RAY_SHADOWS
@@ -897,37 +925,60 @@ float3 water_pixel_volume(ResolveParams* params, SceneGeometry geo, InstanceDesc
 // ambient of a level surface and the sky along the reflected view, over the bottom's colour faded
 // by `depth`, the shore by `edge`.
 float3 water_pixel_low(ResolveParams* params, Surface s, float3 n, float3 view, WaterParams w,
-                       float ray_bias, float depth, float edge, float foam) {
-  SkyParams* sky = (SkyParams*)params->sky_params;
-  const bool has_sky = params->sky_params != 0;
+                       float depth, float edge, float foam, WaterSurfaceLight light) {
+  // The surface's light is the caller's (`water_surface_light`): the sun through its shadow.
   float3 sun = float3(0.0);
-  if (dot(s.normal, params->sun.xyz) > 0.0) {
-    const float lit = shadow_visibility(params, k_shadow_sun, 0u, s.position, s.geometric,
-                                        ray_bias, params->sun.xyz, 1e30);
-    if (lit > 0.0) {
-      sun = float3(params->sun.w);
-      if (has_sky) sun = sky_light_at(sky, s.position, params->sun.xyz, sky->sun_illuminance.rgb);
-      sun *= lit;
-    }
-  }
-  float3 ambient;
-  float3 reflected;
-  const float3 r = water_reflected(n, view);
-  if (has_sky) {
-    ambient = sky_ambient((SkyFrame*)sky->frame, s.normal);
-    reflected = sky_environment(sky, (SkyFrame*)sky->frame, r);
-  } else {
-    const float3 ground = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
-    ambient = ambient_radiance(params->sky.rgb, ground, s.normal);
-    reflected = params->sky.rgb;
-  }
-#ifdef RESOLVE_RAY_SHADOWS
-  reflected = water_reflection(params, s, r, ray_bias, reflected);  // R129: the scene, or the sky
-#endif
+  if (light.sun_surface > 0.0) sun = light.sun * light.sun_surface;
+  const float3 ambient = light.ambient;
+  const float3 reflected = light.reflected;
   const float3 radiance =
       water_radiance(w, n, view, float2(edge, depth), params->sun.xyz, sun, ambient, reflected);
   return water_foam_over(radiance, foam, sun, params->sun.xyz, ambient);
 }
+
+// **Every water of a pixel is shaded at one place** (R205; water.md, "What a first load waits
+// for"). A body's pixel (`water_pixel`) and the open sea's plane (`open_water_pixel`, which three
+// places of the resolve ask: a surface in front of the sea and the two empty returns) each called
+// a tier, and a compiler that inlines every call wrote the volume tier out four times over — the
+// ground's layered material under the water, the refraction's trace, two shadow queries and the
+// reflection's ray with the shading of what it meets in each — which made the traced water
+// modules the largest pipelines the engine compiles, minutes of a driver's time on a cold cache.
+// So a pixel that is water says what it would shade (`WaterTier`, kept in the invocation's
+// globals) and returns; `fs_resolve` shades it once, after everything else, by `water_tier_finish`:
+// the tier, the white water laid over it, the bared ground's darkening, the air between it and the
+// eye, the exposure and the output encode, in the order each path took them. Nothing is computed
+// differently: what moved is where the one call is written.
+struct WaterTier {
+  InstanceDesc instance;
+  uint index;            // the water material's place in the table (its optics follow it)
+  bool volume;           // k_material_water_volume: the volume tier, else the low one
+  float2 slope;
+  float3 dp_dx;
+  float3 dp_dy;
+  Surface s;
+  float3 local;
+  float3 n;
+  float3 view;
+  WaterParams w;
+  float ray_bias;
+  float depth;
+  bool has_map;
+  WaterDepthMap map;
+  float edge;
+  float foam;
+  float bared_s;         // the volume tier's bottom saturation
+  bool tier;             // false where the pixel is all white water and asks the tier nothing
+  float white;           // the white water's share, and its colour, laid over the tier
+  float3 white_colour;
+  bool darken;           // the low tier's bared pixel: the shallow tint darkened as wet
+  float3 darkening;
+  bool air;              // the air between the eye and the surface, then the exposure
+  float3 air_dir;        // unit, from the eye
+  float air_m;           // metres to the surface; the air is taken only past zero
+  uint2 noise_pixel;
+};
+static bool g_water_pending = false;
+static WaterTier g_water;
 
 // How far past its terminator the top tier's white is lit (W139; a wrap of the cosine, a choice).
 static const float k_water_white_wrap = 0.35;
@@ -1080,9 +1131,12 @@ WaterChannelPixel water_channel_pixel(ResolveParams* params, SceneGeometry geo, 
   return o;
 }
 
-float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instance,
-                   uint visible_index, uint cluster, uint triangle, float2 source, Surface s,
-                   float3 from_eye, ResolveMaterial material, float ray_bias) {
+// What a body's or a channel's pixel shades, said in `g_water` for `water_tier_finish` (R205, above);
+// `air` is whether the resolve's tail would take the air between the eye and it.
+void water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instance,
+                 uint visible_index, uint cluster, uint triangle, float2 source, Surface s,
+                 float3 from_eye, ResolveMaterial material, float ray_bias, uint2 noise_pixel,
+                 bool air) {
   WaterParams w = water_of(material);
   const TriangleFetch tri = fetch_triangle(geo, instance, visible_index, cluster, triangle);
   float3 dp_dx;
@@ -1270,30 +1324,48 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
   // **One call shades every water** (S108): a body's and a channel's surface go through the same
   // tier, and the white water — a channel's foam, a body's plunge — is laid over the result as a
   // white diffuse surface lit by the sun and the sky. A pixel that is all white water asks the
-  // tier nothing.
-  float3 color = float3(0.0);
-  if (white < 1.0) {
-    if ((material.flags & k_material_water_volume) != 0) {
-      // **The ground under a lifted body's water is wet** (S102, second pass; water.md, "One
-      // sheet"): the bottom's material takes the saturation of sand under water, as the ground
-      // beside the sheet takes it under its film — Lekner and Dorf's darkening is that of a surface
-      // under a layer of water, whatever the layer's depth. Until this pass only a bared pixel's
-      // bottom was wet, and the sheet's sand was drawn dry beside the wet sand it lies on.
-      const float bottom_s = swash.surface != 0 && depth > 0.0 ? 1.0 : max(bared_wet, 0.0);
-      color = water_pixel_volume(params, geo, instance, index, slope, dp_dx, dp_dy, s, local, n,
-                                 view, w, ray_bias, depth, has_map, map, edge, foam, bottom_s);
-    } else {
-      color = water_pixel_low(params, s, n, view, w, ray_bias, depth, edge, foam);
-    }
-  }
+  // tier nothing. The tier's call is `water_tier_finish`'s (R205), the one place every water of
+  // the resolve is shaded.
+  WaterTier t;
+  t.instance = instance;
+  t.index = index;
+  t.volume = (material.flags & k_material_water_volume) != 0;
+  t.slope = slope;
+  t.dp_dx = dp_dx;
+  t.dp_dy = dp_dy;
+  t.s = s;
+  t.local = local;
+  t.n = n;
+  t.view = view;
+  t.w = w;
+  t.ray_bias = ray_bias;
+  t.depth = depth;
+  t.has_map = has_map;
+  t.map = map;
+  t.edge = edge;
+  t.foam = foam;
+  // **The ground under a lifted body's water is wet** (S102, second pass; water.md, "One sheet"):
+  // the bottom's material takes the saturation of sand under water, as the ground beside the sheet
+  // takes it under its film — Lekner and Dorf's darkening is that of a surface under a layer of
+  // water, whatever the layer's depth. Until this pass only a bared pixel's bottom was wet, and the
+  // sheet's sand was drawn dry beside the wet sand it lies on.
+  t.bared_s = swash.surface != 0 && depth > 0.0 ? 1.0 : max(bared_wet, 0.0);
+  t.tier = white < 1.0;
+  t.white = white;
+  t.white_colour = float3(0.0);
   if (white > 0.0)
-    color = lerp(color, water_white_water(params, s, white_plane, ray_bias, white_shade, white_wrap),
-                 white);
+    t.white_colour = water_white_water(params, s, white_plane, ray_bias, white_shade, white_wrap);
   // The low tier draws the bottom as the body's shallow tint, so a bared pixel is that tint's
   // Lekner and Dorf darkening (S99: no longer a fixed sand's 0.35).
-  if ((material.flags & k_material_water_volume) == 0 && bared_wet >= 0.0)
-    color *= water_wet_darkening(w.shallow, bared_wet);
-  return color;
+  t.darken = !t.volume && bared_wet >= 0.0;
+  t.darkening = t.darken ? water_wet_darkening(w.shallow, bared_wet) : float3(1.0);
+  const float distance = length(from_eye);
+  t.air = air;
+  t.air_dir = distance > 0.0 ? from_eye / distance : float3(0.0);
+  t.air_m = distance;
+  t.noise_pixel = noise_pixel;
+  g_water = t;
+  g_water_pending = true;
 }
 
 // **The open sea past its body's outline** (docs/subsystems/water.md, "To the horizon"; roadmap
@@ -1390,26 +1462,70 @@ bool open_water_pixel(ResolveParams* params, float2 source, uint2 noise_pixel, b
   s.normal = float3(0.0, 1.0, 0.0);
   s.geometric = float3(0.0, 1.0, 0.0);
   s.uv = float2(edge, depth);
-  const float ray_bias = ray_offset(geo, instance, params->shadow_bias, params->shadow_bias_steps);
-  float3 radiance;
-  if ((material.flags & k_material_water_volume) != 0) {
-    radiance = water_pixel_volume(params, geo, instance, index, float2(0.0, 0.0), dp_dx, dp_dy, s,
-                                  local, n, view, w, ray_bias, depth, in_map, map, edge, 0.0);
-  } else {
-    radiance = water_pixel_low(params, s, n, view, w, ray_bias, depth, edge, 0.0);
+  // The plane's tier, then the air between the eye and the plane, the exposure and the output
+  // encode, as every surface: `water_tier_finish`'s, the one place every water is shaded (R205).
+  WaterTier sea;
+  sea.instance = instance;
+  sea.index = index;
+  sea.volume = (material.flags & k_material_water_volume) != 0;
+  sea.slope = float2(0.0, 0.0);
+  sea.dp_dx = dp_dx;
+  sea.dp_dy = dp_dy;
+  sea.s = s;
+  sea.local = local;
+  sea.n = n;
+  sea.view = view;
+  sea.w = w;
+  sea.ray_bias = ray_offset(geo, instance, params->shadow_bias, params->shadow_bias_steps);
+  sea.depth = depth;
+  sea.has_map = in_map;
+  sea.map = map;
+  sea.edge = edge;
+  sea.foam = 0.0;
+  sea.bared_s = 0.0;
+  sea.tier = true;
+  sea.white = 0.0;
+  sea.white_colour = float3(0.0);
+  sea.darken = false;
+  sea.darkening = float3(1.0);
+  sea.air = params->sky_params != 0;
+  sea.air_dir = ray;
+  sea.air_m = t;
+  sea.noise_pixel = noise_pixel;
+  g_water = sea;
+  g_water_pending = true;
+  return true;
+}
+
+// The one place every water of the resolve is shaded (R205, `WaterTier` above): what `g_water`
+// says, through the tier its material names, to the target's code values.
+float4 water_tier_finish(ResolveParams* params) {
+  const WaterTier t = g_water;
+  const SceneGeometry geo = geometry_of(params);
+  float3 color = float3(0.0);
+  if (t.tier) {
+    const WaterSurfaceLight light = water_surface_light(params, t.s, t.n, t.view, t.ray_bias);
+    if (t.volume) {
+      color = water_pixel_volume(params, geo, t.instance, t.index, t.slope, t.dp_dx, t.dp_dy, t.s,
+                                 t.local, t.n, t.view, t.w, t.ray_bias, t.depth, t.has_map, t.map,
+                                 t.edge, t.foam, t.bared_s, light);
+    } else {
+      color = water_pixel_low(params, t.s, t.n, t.view, t.w, t.depth, t.edge, t.foam, light);
+    }
   }
-  // The air between the eye and the plane, the exposure and the output encode, as every surface.
+  if (t.white > 0.0) color = lerp(color, t.white_colour, t.white);
+  if (t.darken) color *= t.darkening;
   float knee = 1.0;
-  if (params->sky_params != 0) {
+  if (t.air) {
     SkyParams* sky = (SkyParams*)params->sky_params;
     float3 inscatter = float3(0.0);
     float transmittance = 1.0;
-    sky_aerial(sky, ray, t, inscatter, transmittance);
-    radiance = (radiance * transmittance + inscatter) * sky_exposure((SkyFrame*)sky->frame);
+    if (t.air_m > 0.0) sky_aerial(sky, t.air_dir, t.air_m, inscatter, transmittance);
+    color = color * transmittance + inscatter;
+    color = color * sky_exposure((SkyFrame*)sky->frame);
     knee = sky->shoulder;
   }
-  color = float4(display_output(radiance, knee, noise_pixel, display_target(params)), 1.0);
-  return true;
+  return float4(display_output(color, knee, t.noise_pixel, display_target(params)), 1.0);
 }
 
 // **The wet ground's saturation at a pixel** (S99; water.md, "The swash" and "Channels"): what the
@@ -1534,8 +1650,9 @@ float4 empty_pixel(ResolveParams* params, float2 source, uint2 noise_pixel) {
 #ifndef RESOLVE_HALF_PASS
 #include "resolve_class.slang"
 
-[shader("fragment")]
-float4 fs_resolve(FullscreenOut in) : SV_Target {
+// The resolve of one pixel, but the water: a pixel that is water, or the open sea in front of
+// one, says what it would shade (`g_water`) and returns, and `fs_resolve` below shades it (R205).
+float4 resolve_pixel(FullscreenOut in) {
   ResolveParams* params = (ResolveParams*)g_push.params;
   // **A draw of one pixel class** (R151; resolve_class.slang; renderer.md, "The resolve by pixel
   // class"). Under `renderer.resolve.classes` the pass draws this triangle once per class, at the
@@ -1894,8 +2011,10 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
 #ifdef RESOLVE_WATER
   if (g_count && (material.flags & k_material_water) != 0) return float4(0.0, 0.0, 64.0 / 255.0, 1.0);
   if ((material.flags & k_material_water) != 0 && !stop_skips(k_stop_water)) {
-    color = water_pixel(params, geo, instance, visible_index, entry.y, id & 0xff, source, s,
-                        from_eye, material, ray_bias);
+    // Shaded once, by `fs_resolve`'s `water_tier_finish`, with the tail below (R205).
+    water_pixel(params, geo, instance, visible_index, entry.y, id & 0xff, source, s, from_eye,
+                material, ray_bias, noise_pixel, has_sky && !stop_skips(k_stop_sky));
+    return float4(0.0, 0.0, 0.0, 1.0);
   } else
 #endif
   {
@@ -2101,30 +2220,36 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     // is whole under the front and drains with the film behind it. So the mesh's edge inside the
     // sheet is no edge: either side of it is the same function of the same place. The low tier's
     // water has no volume to match, and keeps the film below.
-    bool sheeted = false;
+    ResolveMaterial* table = (ResolveMaterial*)geo.materials;
+    const bool sheeted =
+        wet_sheet > 0.0 && (table[wet_body].flags & k_material_water_volume) != 0;
+    // **One reflection for the sheet or the film** (R205): the two never both draw, so the one ray
+    // is asked along the sheet's mirrored view or the film's, and each takes it where it took its
+    // own. Two calls were two copies of the ray and of the shading of what it meets.
+    const float3 level = float3(0.0, 1.0, 0.0);
+    // The sheet's own surface (W152): its ripples on the level surface, its lobe.
+    const float3 sheet_n = water_sheet_normal(level, wet_sheet_slope, 1.0);
+    float3 wet_reflected = params->sky.rgb;
+    if (sheeted || film_w > 0.0) {
+      const float3 r = sheeted ? water_reflected(sheet_n, surface.view)
+                               : reflect(-surface.view, surface.normal);
+      if (has_sky) wet_reflected = sky_environment(sky, (SkyFrame*)sky->frame, r);
+#ifdef RESOLVE_RAY_SHADOWS
+      wet_reflected = water_reflection(params, s, r, ray_bias, wet_reflected);
+#endif
+    }
     float3 foam_ambient = ambient;
-    if (wet_sheet > 0.0) {
-      ResolveMaterial* table = (ResolveMaterial*)geo.materials;
+    if (sheeted) {
       const ResolveMaterial body = table[wet_body];
-      if ((body.flags & k_material_water_volume) != 0) {
-        sheeted = true;
-        const float3 level = float3(0.0, 1.0, 0.0);
-        // The sheet's own surface (W152): its ripples on the level surface, its lobe.
-        const float3 sheet_n = water_sheet_normal(level, wet_sheet_slope, 1.0);
-        const float3 r = water_reflected(sheet_n, surface.view);
+      {
         float3 sheet_ambient;
-        float3 sheet_reflected;
         if (has_sky) {
           sheet_ambient = sky_ambient((SkyFrame*)sky->frame, level);
-          sheet_reflected = sky_environment(sky, (SkyFrame*)sky->frame, r);
         } else {
           const float3 below = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
           sheet_ambient = ambient_radiance(params->sky.rgb, below, level);
-          sheet_reflected = params->sky.rgb;
         }
-#ifdef RESOLVE_RAY_SHADOWS
-        sheet_reflected = water_reflection(params, s, r, ray_bias, sheet_reflected);
-#endif
+        const float3 sheet_reflected = wet_reflected;
         float3 sheet_sun = float3(0.0);
         if (params->sun.y > 0.0 && dot(surface.normal, params->sun.xyz) > 0.0) {
           sheet_sun = float3(params->sun.w);
@@ -2144,12 +2269,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
       }
     }
     if (!sheeted && film_w > 0.0) {
-      const float3 r = reflect(-surface.view, surface.normal);
-      float3 reflected = params->sky.rgb;
-      if (has_sky) reflected = sky_environment(sky, (SkyFrame*)sky->frame, r);
-#ifdef RESOLVE_RAY_SHADOWS
-      reflected = water_reflection(params, s, r, ray_bias, reflected);
-#endif
+      const float3 reflected = wet_reflected;  // the film's mirrored view (above)
       const float film_spec =
           brdf_env_specular(float3(k_wet_film_f0), surface.roughness, n_dot_v).x;
       const float3 lobe_spec =
@@ -2188,5 +2308,18 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   float knee = 1.0;
   if (air) knee = sky->shoulder;  // never a read through the null block
   return float4(display_output(color, knee, noise_pixel, display_target(params)), 1.0);
+}
+
+[shader("fragment")]
+float4 fs_resolve(FullscreenOut in) : SV_Target {
+#ifdef RESOLVE_WATER
+  g_water_pending = false;
+#endif
+  const float4 color = resolve_pixel(in);
+#ifdef RESOLVE_WATER
+  // Every water the pixel holds, shaded at its one place (R205; `WaterTier`).
+  if (g_water_pending) return water_tier_finish((ResolveParams*)g_push.params);
+#endif
+  return color;
 }
 #endif
