@@ -2316,7 +2316,13 @@ TEST_CASE("content classes at load: a missing recipe names no host and fails whe
   const test::TempDir tmp("renderer_classes_missing_recipe");
   REQUIRE(tmp.ok());
   const Grid a = write_grid(tmp, "a.clusters", 9, "a.png");
-  for (const char* name : {"gone.fixturehost.json", "gone.flora.json"}) {
+  struct Missing {
+    const char* name;
+    u32 recipe_reads;  // the class read's reads of the recipe's own file: none for flora's
+  };
+  for (const Missing missing :
+       {Missing{"gone.fixturehost.json", 1}, Missing{"gone.flora.json", 0}}) {
+    const char* name = missing.name;
     CAPTURE(name);
     const std::string recipe = tmp.file(name);
     content_build::MeshOptions options;
@@ -2324,6 +2330,10 @@ TEST_CASE("content classes at load: a missing recipe names no host and fails whe
     content_build::Diagnostic diagnostic;
     CHECK_MESSAGE(content_build::read_source_classes(recipe, options, classes, diagnostic),
                   diagnostic.message);
+    // No host named, so nothing joined: the recipe's class is `none`, keyed and recorded as such.
+    CHECK(content_class::is_none(classes.classes));
+    CHECK(classes.hash == 0);
+    CHECK(classes.record.empty());
     Grid gone;
     gone.path = recipe;
     std::string error;
@@ -2331,6 +2341,19 @@ TEST_CASE("content classes at load: a missing recipe names no host and fails whe
     CHECK_FALSE(load_scene(scene_of(tmp, {&a, &gone}), scene, error));
     CHECK_MESSAGE(error.find("cannot read") != std::string::npos, error);
     CHECK_MESSAGE(error.find(name) != std::string::npos, error);
+    // It fails where the recipe is read for its mesh, with that read's own sentence.
+    const std::string sentence =
+        "cannot read " + recipe + ": " + io::status_name(io::Status::NotFound);
+    CHECK_MESSAGE(error.find(sentence) != std::string::npos, error);
+    // The class read before it: the recipe's file read once for a generator that can name a host,
+    // found nowhere, and never for flora's, which names none; no host named, so no host's record
+    // opened, no probe made in the walk.
+    using content_build::ClassRead;
+    const content_build::ClassReads& reads = scene.load.class_reads;
+    CHECK(reads[ClassRead::recipe_file].asked == missing.recipe_reads);
+    CHECK(reads[ClassRead::recipe_file].found == 0);
+    CHECK(reads[ClassRead::host_record].asked == 0);
+    CHECK(reads[ClassRead::walk_probe].asked == 0);
   }
 }
 

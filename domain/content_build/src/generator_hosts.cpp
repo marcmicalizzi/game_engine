@@ -92,8 +92,10 @@ std::string GeneratorHosts::resolve(std::string_view path) const {
 
 bool GeneratorHosts::identify(std::string_view path, u64& out, std::string& error) const {
   // A generator that declared its recipes name no host is not read at the class read, so a host
-  // it asks for anyway had no class read: refused here, where the recipe is hashed and built, as a
-  // class that cannot be read is, never built over (C72; `MeshGeneratorDesc::names_hosts`).
+  // it asks for anyway had no class read: refused here, where the recipe is hashed and built, and
+  // never built over (C72; `MeshGeneratorDesc::names_hosts`). The content build refuses it as it
+  // refuses a class that cannot be read; the scene load fails whole on it, as on a recipe it
+  // cannot build, where a class that cannot be read leaves out only its own mesh. Both fail closed.
   if (const std::string_view own = assets::mesh_generator_of(dependant_); !own.empty()) {
     const assets::MeshGeneratorDesc* generator = assets::MeshGeneratorRegistry::global().find(own);
     if (generator != nullptr && !assets::generator_names_hosts(*generator)) {

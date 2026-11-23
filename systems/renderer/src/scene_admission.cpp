@@ -379,6 +379,23 @@ ReadClass ground_class(const TerrainDesc& terrain, const content_class::Categori
   return out;
 }
 
+// True when every key is `<name>.<what>` for its kind's name, `per_kind` keys a kind in the enum's
+// order, so two kinds' keys swapped do not compile rather than mislabel the log line.
+template <u32 N>
+constexpr bool class_read_keys_name_kinds(const char* const (&keys)[N], u32 per_kind) {
+  for (u32 k = 0; (k + 1) * per_kind <= N; ++k) {
+    const char* name = content_build::class_read_name(static_cast<content_build::ClassRead>(k));
+    for (u32 j = 0; j < per_kind; ++j) {
+      const char* key = keys[k * per_kind + j];
+      u32 i = 0;
+      for (; name[i] != '\0'; ++i)
+        if (key[i] != name[i]) return false;
+      if (key[i] != '.') return false;
+    }
+  }
+  return true;
+}
+
 // **The class read's measurement** (C72): one line, typed fields, for each kind of read how many
 // were asked for, found a file, the bytes and the milliseconds, beside the distinct paths and the
 // stage's own milliseconds.
@@ -393,8 +410,8 @@ void log_class_reads(const SceneLoadReport& load) {
   // The keys outlive the emit: string literals, `<kind>.<what>`.
 #define ENGINE_CLASS_READ_KEYS(kind) kind ".asked", kind ".found", kind ".bytes", kind ".ms"
   // Unsized, so a kind added without its keys fails the assertion below instead of leaving null
-  // keys at the end of a sized array.
-  constexpr const char* k_keys[] = {
+  // keys at the end of a sized array; static, so the second assertion can read it.
+  static constexpr const char* k_keys[] = {
       ENGINE_CLASS_READ_KEYS("container_section"), ENGINE_CLASS_READ_KEYS("container_sidecar"),
       ENGINE_CLASS_READ_KEYS("recipe_file"),       ENGINE_CLASS_READ_KEYS("recipe_sidecar"),
       ENGINE_CLASS_READ_KEYS("pack_sets"),         ENGINE_CLASS_READ_KEYS("host_probe"),
@@ -405,6 +422,8 @@ void log_class_reads(const SceneLoadReport& load) {
   static_assert(
       sizeof(k_keys) / sizeof(k_keys[0]) == k_per_kind * content_build::k_class_read_kinds,
       "every kind of class read has its four keys");
+  static_assert(class_read_keys_name_kinds(k_keys, k_per_kind),
+                "every kind's keys spell its name, in the enum's order");
   log::Field fields[k_fields];
   fields[0] = log::field("paths", load.class_paths);
   fields[1] = log::field("ms", load.classes_ms);

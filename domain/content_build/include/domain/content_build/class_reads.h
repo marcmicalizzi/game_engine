@@ -26,17 +26,25 @@ enum class ClassRead : u8 {
   // say it used the slots:
   ahead_answer,  // taken from a probe `probe_recipes_ahead` made (CPU, no file)
   walk_probe,  // probed in the walk itself, with no slot to take: none, once the load probed ahead
+  // Not a kind: how many there are. A new kind goes above it, so the count is the enum's own and
+  // every array sized by it grows with the kind.
+  count,
 };
-inline constexpr u32 k_class_read_kinds = 11;
+inline constexpr u32 k_class_read_kinds = static_cast<u32>(ClassRead::count);
+
+// The kinds' names as the log line and the pages spell them, in the enum's order. Unsized, so a
+// kind added without its name fails the assertion below instead of leaving a null at the end.
+inline constexpr const char* k_class_read_names[] = {
+    "container_section", "container_sidecar", "recipe_file", "recipe_sidecar",
+    "pack_sets",         "host_probe",        "host_record", "gltf_sidecar",
+    "ground_inputs",     "ahead_answer",      "walk_probe"};
+static_assert(sizeof(k_class_read_names) / sizeof(k_class_read_names[0]) == k_class_read_kinds,
+              "every kind of class read has its name");
 
 // The kind's name as the log line and the pages spell it.
-inline const char* class_read_name(ClassRead kind) noexcept {
-  constexpr const char* k_names[k_class_read_kinds] = {
-      "container_section", "container_sidecar", "recipe_file", "recipe_sidecar",
-      "pack_sets",         "host_probe",        "host_record", "gltf_sidecar",
-      "ground_inputs",     "ahead_answer",      "walk_probe"};
+constexpr const char* class_read_name(ClassRead kind) noexcept {
   const u32 i = static_cast<u32>(kind);
-  return i < k_class_read_kinds ? k_names[i] : "unknown";
+  return i < k_class_read_kinds ? k_class_read_names[i] : "unknown";
 }
 
 struct ClassReadCount {
