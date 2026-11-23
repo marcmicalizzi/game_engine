@@ -602,3 +602,28 @@ TEST_CASE("handoff cells: a tile the mesh room yields lists nothing of its own a
                                               << near_yields
                                               << " of them tiles that drew near placements");
 }
+
+// T215: a tile's own run has one accessor, `PlacementTiles::own_run`, which every reader of it asks
+// (`tile_own`, `tile_ranges`, `write_tail`, `make_runs`, the stats, the pair count) where each took
+// `drawn - count` itself and `write_tail` did so unguarded. Its three empty answers, and the run
+// itself, without a world: a fresh tile, a withheld one, one holding only cells (and one drawing
+// fewer than its cells say, the yielded tile T214 met, which must never wrap), and a tile whose own
+// run leads its cells.
+TEST_CASE(
+    "handoff cells: a tile's own run is empty when it is fresh, withheld or holds only cells") {
+  renderer::SceneInstance drawn[5];
+  for (u32 i = 0; i < 5; ++i)
+    drawn[i].mesh = i;
+  const std::span<const renderer::SceneInstance> all(drawn, 5);
+  CHECK(PlacementTiles::own_run(all, 2, true, false).empty());            // fresh
+  CHECK(PlacementTiles::own_run(all, 2, false, true).empty());            // withheld
+  CHECK(PlacementTiles::own_run(all, 5, false, false).empty());           // only cells
+  CHECK(PlacementTiles::own_run(all.first(3), 5, false, false).empty());  // fewer than its cells
+  CHECK(PlacementTiles::own_run({}, 2, false, false).empty());            // nothing, its cells kept
+  const std::span<const renderer::SceneInstance> own =
+      PlacementTiles::own_run(all, 2, false, false);
+  REQUIRE(own.size() == 3);
+  CHECK(own.data() == drawn);
+  CHECK(own.back().mesh == 2);
+  CHECK(PlacementTiles::own_run(all, 0, false, false).size() == 5);
+}

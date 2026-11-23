@@ -391,9 +391,11 @@ void PlacementTiles::stage(TileBlock& block) {
 // hold (G205), which are counted cell by cell and only while a cell is handed on.
 u32 PlacementTiles::count_pairs(const TileBlock& block) const noexcept {
   u64 pairs = 0;
-  const u32 own = static_cast<u32>(block.instances.size()) - block.handoff.count;
-  for (u32 i = 0; i < own; ++i) {
-    const renderer::SceneInstance& instance = block.instances[i];
+  // The build's own run, not what it draws (T215: `own_run`).
+  const std::span<const renderer::SceneInstance> own = own_run(
+      std::span<const renderer::SceneInstance>(block.instances.data(), block.instances.size()),
+      block.handoff.count, false, false);
+  for (const renderer::SceneInstance& instance : own) {
     if (instance.mesh < scene_->parts.size()) {
       pairs += scene_->parts[instance.mesh].cluster_count;
     } else {
@@ -463,8 +465,8 @@ void PlacementTiles::tile_ranges(Vector<TileRange>& out) const {
     if (drawn.empty()) continue;  // a new tile whose first build still waits draws nothing
     // Its own run and its hand-off cells that are handed on (G205): one range over both. With a
     // cell handed they are not one array, so the range names no instances and no version.
-    const Handoff& set = block.waiting ? block.held_handoff : block.handoff;
-    const u32 own = static_cast<u32>(drawn.size()) - set.count;
+    const Handoff& set = block.drawn_handoff();
+    const u32 own = static_cast<u32>(block.own().size());
     const u32 count = own + set.in_instances;
     if (count == 0) continue;
     if (set.in_instances != 0) {
@@ -489,16 +491,14 @@ void PlacementTiles::tile_own(Vector<TileOwn>& out) const {
   out.clear();
   for (u32 i = 0; i < tiles_.size(); ++i) {
     const TileBlock& block = tiles_.value_at(i);
-    if (block.withheld || block.fresh) continue;
-    const std::span<const renderer::SceneInstance> drawn = block.drawn();
-    const Handoff& set = block.waiting ? block.held_handoff : block.handoff;
-    // A tile that draws nothing of its own is not listed, as no other reader lists one; and `own`
-    // is never a subtraction that can wrap. T214 (the owner's walk, 2026-11-22): a tile the mesh
-    // room yielded (`yield_farthest`) drew nothing and kept its last build's hand-off count, and
-    // `0 - count` listed it with four billion instances, which the world's sound walked.
-    if (drawn.size() <= set.count) continue;
-    const u32 own = static_cast<u32>(drawn.size()) - set.count;
-    out.push_back(TileOwn{tiles_.key_at(i), drawn.data(), own, block.version});
+    // A tile that draws nothing of its own is not listed, as no other reader lists one. T214 (the
+    // owner's walk, 2026-11-22): a tile the mesh room yielded (`yield_farthest`) drew nothing and
+    // kept its last build's hand-off count, and `0 - count` listed it with four billion instances,
+    // which the world's sound walked; the run comes from `own_run` now, which never wraps (T215).
+    const std::span<const renderer::SceneInstance> own = block.own();
+    if (own.empty()) continue;
+    out.push_back(
+        TileOwn{tiles_.key_at(i), own.data(), static_cast<u32>(own.size()), block.version});
   }
 }
 
@@ -513,12 +513,14 @@ void PlacementTiles::write_tail() const {
     // The tile's own run, then its hand-off cells that are handed on (G205), as the runs go.
     const std::span<const renderer::SceneInstance> drawn = block.drawn();
     const Vector<u8>& tags = block.waiting ? block.held_tags : block.tags;
-    const Handoff& set = block.waiting ? block.held_handoff : block.handoff;
-    const u32 own = static_cast<u32>(drawn.size()) - set.count;
+    const Handoff& set = block.drawn_handoff();
+    const u32 own = static_cast<u32>(block.own().size());
     for (u32 k = 0; k < own; ++k) {
       tail_.push_back(drawn[k]);
       tail_tags_.push_back(tags[k]);
     }
+    // Its cells follow its own run; a tile drawing fewer than its cells hold hands none (T215).
+    if (block.fresh || drawn.size() < set.count) continue;
     for (const NearCell& cell : set.cells) {
       if (!cell.in) continue;
       for (u32 k = own + cell.first; k < own + cell.first + cell.count; ++k) {
@@ -1361,6 +1363,11 @@ bool PlacementTiles::yield_farthest(const Rank& wanting) {
   // it draws while its next build waited, and made every reader's `drawn - count` wrap.
   block.handoff.clear();
   block.held_handoff.clear();
+  // And what its instances were picked from (T215), as `recycle` lets it go: no reader takes it
+  // after a yield today — the tile is due, so a ring change leaves `reform` to its next build, and
+  // every build replaces it — but `sources` is parallel to the instances just cleared, and a forms
+  // walk over a yielded tile would have read the last build's placements as this one's.
+  block.forms.clear();
   block.waiting = false;
   block.starved = false;
   block.admitted = false;
@@ -1683,8 +1690,8 @@ void PlacementTiles::commit_tail() {
     }
     // What it draws: its last build, or what it held while that build waits for its meshes.
     // (Of its near placements, the cells handed on: G205.)
-    const Handoff& set = block.waiting ? block.held_handoff : block.handoff;
-    const u32 drawn = static_cast<u32>(block.drawn().size()) - set.count + set.in_instances;
+    const Handoff& set = block.drawn_handoff();
+    const u32 drawn = static_cast<u32>(block.own().size()) + set.in_instances;
     ++stats.ring_tiles[ring];
     stats.ring_instances[ring] += drawn;
     stats.ring_pairs[ring] += block.pairs + set.in_pairs;

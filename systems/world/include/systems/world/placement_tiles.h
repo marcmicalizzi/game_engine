@@ -325,6 +325,18 @@ class PlacementTiles {
     u64 version = 0;
   };
   void tile_own(Vector<TileOwn>& out) const;
+  // **A tile's own run** (T215): what it draws (`drawn`, its build or what it held while that
+  // waits) less the near placements its hand-off cells hold (`cell_instances`, G205), which follow
+  // the run. Empty when the tile is fresh (never built since it activated, or yielded its meshes),
+  // withheld, or holds only cells — and never a subtraction past zero, which is how a yielded tile
+  // that kept its cells listed four billion instances (T214). The one place `drawn - count` is
+  // taken: every reader of a tile's own run asks it.
+  static std::span<const renderer::SceneInstance> own_run(
+      std::span<const renderer::SceneInstance> drawn, u32 cell_instances, bool fresh,
+      bool withheld) noexcept {
+    if (fresh || withheld || drawn.size() <= cell_instances) return {};
+    return drawn.first(drawn.size() - cell_instances);
+  }
   // Whether `key` is one a hand-off cell's run is handed under: the first column of tiles
   // (x = -2^31), which the consumer holds no tile of while the cells are on.
   static bool cell_key_reserved(u64 key) noexcept;
@@ -509,6 +521,11 @@ class PlacementTiles {
                      : std::span<const renderer::SceneInstance>(instances.data(), instances.size());
     }
     u32 drawn_buildings() const noexcept { return waiting ? held_buildings : buildings; }
+    // The cells of what it draws, and its own run of it (`own_run`, T215).
+    const Handoff& drawn_handoff() const noexcept { return waiting ? held_handoff : handoff; }
+    std::span<const renderer::SceneInstance> own() const noexcept {
+      return own_run(drawn(), drawn_handoff().count, fresh, withheld);
+    }
   };
   // The tile's meshes (`set_meshes`), and a commit's pass over the tiles that wait for them.
   TileMeshes meshes_;
