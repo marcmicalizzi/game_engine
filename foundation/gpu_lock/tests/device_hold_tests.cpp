@@ -26,6 +26,7 @@
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -667,11 +668,26 @@ void start_probe(platform::Process& p, const std::vector<std::string>& args) {
 
 usize line_size(const std::string& lock) { return gpu_lock::read_line(lock, now_s()).size(); }
 
-void replace_file(const std::string& path, const std::string& text) {
+// The file replaced as every writer of a lock replaces it (`detail::replace_atomically`): written
+// beside it, renamed over it, and the rename tried again for up to a second (20 tries 50 ms apart).
+// On Windows a rename over a file fails for the moment another process has the target or the new
+// file open — here the probes, which read the lock four times a second each (`--look 50` beside
+// the line's own reads), or the system's scanner on a file just written — and a busy machine
+// stretches that moment (T215: `device_hold_tests.cpp(674)` failed once in a gate, 675 s into the
+// suite, and passed alone). The lock's own writers have always retried for it; until T215 this one
+// tried once. A file held open past the second still fails the case, as it would fail a writer.
+// Returns the tries it took.
+int replace_file(const std::string& path, const std::string& text) {
   write_file(path + ".next", text);
   std::error_code ec;
-  std::filesystem::rename(std::filesystem::path(path + ".next"), std::filesystem::path(path), ec);
-  REQUIRE_MESSAGE(!ec, ec.message());
+  for (int attempt = 0; attempt < 20; ++attempt) {
+    ec.clear();
+    std::filesystem::rename(std::filesystem::path(path + ".next"), std::filesystem::path(path), ec);
+    if (!ec) return attempt + 1;
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  REQUIRE_MESSAGE(!ec, "the rename over the lock still failed after a second: " << ec.message());
+  return 20;
 }
 
 i64 elapsed_ms(i64 since_ns) { return (time::monotonic_ns() - since_ns) / 1'000'000; }
@@ -839,6 +855,33 @@ TEST_CASE("the line: a late short job is not starved by holders that keep asking
   CHECK(holds_before < 45);  // or the case showed nothing: it must arrive while they still loop
 }
 
+// T215: the case below replaces the lock under two probes that read it four times a second, and on
+// a busy machine its one rename met a reader (`device_hold_tests.cpp(674)`). Here a reader holds
+// the lock open for a fifth of a second, as a slow probe's read or the scanner would, while the
+// file is replaced: the replace waits it out, as the lock's own writers do, and the new bytes are
+// the lock's. (On Windows the first tries fail while the reader has it; elsewhere a rename never
+// waits for a reader.)
+TEST_CASE("the line: a lock replaced under a reader that holds it open is replaced") {
+  test::TempDir dir("gpu_line_replace_read");
+  const std::string path = dir.file("gpu.lock");
+  write_file(path, "old");
+  std::atomic<bool> open{false};
+  std::thread reader([&] {
+    std::ifstream in(path, std::ios::binary);
+    open.store(true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  });
+  while (!open.load())
+    std::this_thread::yield();
+  const int tries = replace_file(path, "new");
+  reader.join();
+  MESSAGE("the replace took " << tries << " tries");
+  CHECK(read_file(path) == "new");
+#if defined(_WIN32)
+  CHECK(tries > 1);  // the reader was in its way: the case shows what it is for
+#endif
+}
+
 TEST_CASE("the line: a holder without a ticket is waited for, and takes nothing from the order") {
   if (!have_probe()) return;
   const Isolated isolated;
@@ -863,7 +906,7 @@ TEST_CASE("the line: a holder without a ticket is waited for, and takes nothing 
   // the line sees one more holder, waits for it, and loses neither its order nor a file.
   const std::string barged =
       lock_json("claude-engine", k_other_pid, now_s() + 600, host, "an older test");
-  replace_file(path, barged);
+  (void)replace_file(path, barged);
   std::this_thread::sleep_for(std::chrono::milliseconds(1500));
   CHECK(reports(report).empty());
   CHECK(read_file(path) == barged);
