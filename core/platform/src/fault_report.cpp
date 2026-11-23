@@ -31,6 +31,7 @@
 #include <core/platform/crash.h>
 
 #include <atomic>
+#include <cstdlib>
 #include <exception>
 #include <string_view>
 
