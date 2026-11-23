@@ -1,4 +1,5 @@
 #include <core/base/assert.h>
+#include <core/base/assert_failure.h>
 
 #include <atomic>
 #include <cstdio>
@@ -55,13 +56,29 @@ bool debugger_present() noexcept {
 
 namespace {
 std::atomic<AssertHook> g_assert_hook{nullptr};
+AssertFailure g_failure;
+std::atomic<bool> g_failed{false};
 }  // namespace
 
 void set_assert_hook(AssertHook hook) noexcept {
   g_assert_hook.store(hook, std::memory_order_release);
 }
 
+const AssertFailure* failed_assertion() noexcept {
+  return g_failed.load(std::memory_order_acquire) ? &g_failure : nullptr;
+}
+
 void assert_fail(const char* expression, const char* message, const char* file, int line) noexcept {
+  // The first failure is the one the fault line names (T216); a second thread failing meanwhile
+  // leaves it as it was.
+  static std::atomic<bool> claimed{false};
+  if (!claimed.exchange(true, std::memory_order_acq_rel)) {
+    g_failure.expression = expression != nullptr ? expression : "";
+    g_failure.message = message != nullptr ? message : "";
+    g_failure.file = file != nullptr ? file : "";
+    g_failure.line = line;
+    g_failed.store(true, std::memory_order_release);
+  }
   if (const AssertHook hook = g_assert_hook.exchange(nullptr, std::memory_order_acq_rel)) {
     // Cleared before the call so a failure inside the hook cannot recurse.
     hook(expression, message, file, line);

@@ -1,11 +1,14 @@
 #include <core/containers/vector.h>
 #include <core/json/json.h>
+#include <core/memory/memory.h>
 #include <foundation/input/input_log.h>
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <fstream>
+#include <iterator>
 #include <string>
 
 using namespace engine;
@@ -154,7 +157,8 @@ TEST_CASE("input log: saved as JSON lines and loaded back unchanged") {
   u64 number = 0;
   REQUIRE(header.find("version") != nullptr);
   REQUIRE(header.find("version")->get_u64(number));
-  CHECK(number == k_log_version);
+  // A log saved whole is version 1 still; 2 is a journal's (T216), which this reader also takes.
+  CHECK(number == k_saved_log_version);
   REQUIRE(header.find("map") != nullptr);
   REQUIRE(header.find("map")->get_u64(number));
   CHECK(number == map.hash());
@@ -540,5 +544,136 @@ TEST_CASE("input log hostile: a value past f32 and a span past the bound are ref
         io::Status::Ok);
   CHECK_MESSAGE(
       load("at.jsonl", hostile_input_log::span(k_max_log_tick_span), error) == io::Status::Ok,
+      error);
+}
+
+// ---- the journal (T216; docs/subsystems/input.md, "A journal")
+// -----------------------------------
+
+TEST_CASE(
+    "input log journal: written as it goes, it loads at every append and replays to through") {
+  const TempDir tmp("engine_input_log_journal");
+  const ActionMap map = make_map();
+  const Vector<RawEvent> events = scripted_events();
+  const std::string path = tmp.file("journal.jsonl");
+  JsonValue session = JsonValue::object();
+  session.set("ticks", u64{0});
+
+  // The live run, as above, with an append every three ticks of what was recorded since.
+  InputState live(map);
+  Vector<u64> expected;
+  InputLogJournal journal;
+  REQUIRE(journal.open(path, map.hash(), session) == io::Status::Ok);
+  u32 cursor = 0;
+  u32 appended = 0;
+  for (u64 t = 0; t <= 11; ++t) {
+    live.begin_tick(SimTick{t});
+    while (cursor < events.size() && events[cursor].tick.value == t)
+      live.feed(events[cursor++]);
+    live.end_tick();
+    expected.push_back(live.state_hash());
+    if (t % 3 != 2) continue;
+    // The engine allocator is not asked for anything by an append (the frame loop's rule).
+    const mem::Stats before = mem::total_stats();
+    REQUIRE(journal.append(std::span<const RawEvent>(events.data() + appended, cursor - appended),
+                           SimTick{t}) == io::Status::Ok);
+    CHECK(mem::total_stats().allocation_count == before.allocation_count);
+    appended = cursor;
+
+    // **What a process that died here would leave**: a log that loads, with every event recorded
+    // so far and the tick reached, and that replays to that tick as the live run went.
+    // The bytes on disk now, read past the journal's open handle (a stream shares the file, where
+    // `io::read_file` asks for it alone) and loaded from a copy, as a replay after the process
+    // ended would load the file itself.
+    std::ifstream in(path, std::ios::binary);
+    const std::string on_disk((std::istreambuf_iterator<char>(in)),
+                              std::istreambuf_iterator<char>());
+    in.close();
+    const std::string snapshot = tmp.file("snapshot.jsonl");
+    REQUIRE(io::write_file(snapshot, on_disk) == io::Status::Ok);
+    InputLog crashed;
+    std::string error;
+    REQUIRE_MESSAGE(crashed.load(snapshot, &error) == io::Status::Ok, error);
+    CHECK(crashed.size() == cursor);
+    REQUIRE(crashed.has_through());
+    CHECK(crashed.through().value == t);
+    CHECK(crashed.map_hash() == map.hash());
+    REQUIRE(crashed.session().is_object());
+    InputState replayed(map);
+    Recorder recorder;
+    REQUIRE_MESSAGE(
+        crashed.replay(replayed, SimTick{0}, crashed.through(), {&collect, &recorder}, &error),
+        error);
+    REQUIRE(recorder.digests.size() == t + 1);
+    for (u32 i = 0; i <= t; ++i)
+      CHECK_MESSAGE(recorder.digests[i] == expected[i], "tick " << i);
+  }
+  CHECK(journal.appends() == 4);
+  CHECK(journal.events_written() == events.size());
+  CHECK(journal.through().value == 11);
+
+  // The session's normal end: closed, then saved whole over it — the version-1 bytes a log has
+  // always had, and no through line.
+  journal.close();
+  InputLog whole;
+  whole.set_map(map);
+  for (const RawEvent& e : events)
+    whole.record(e);
+  REQUIRE(whole.save(path) == io::Status::Ok);
+  std::string text;
+  REQUIRE(io::read_file(path, text) == io::Status::Ok);
+  CHECK(text.find("\"version\":1") != std::string::npos);
+  CHECK(text.find("through") == std::string::npos);
+  InputLog reloaded;
+  REQUIRE(reloaded.load(path) == io::Status::Ok);
+  CHECK_FALSE(reloaded.has_through());
+}
+
+TEST_CASE("input log journal: a value comes back as the same float") {
+  const TempDir tmp("engine_input_log_journal_values");
+  const ActionMap map = make_map();
+  const std::string path = tmp.file("values.jsonl");
+  const f32 values[] = {0.1f, -0.3333333f, 12.5f, 1.0e-7f, 3.0e38f, -1.0f, 0.0f, 0.70710677f};
+  Vector<RawEvent> events;
+  for (u32 i = 0; i < 8; ++i)
+    events.push_back(RawEvent{SimTick{i}, Source::GamepadAxis, k_pad_left_x, values[i], 1});
+  InputLogJournal journal;
+  REQUIRE(journal.open(path, map.hash(), JsonValue()) == io::Status::Ok);
+  REQUIRE(journal.append(std::span<const RawEvent>(events.data(), events.size()), SimTick{8}) ==
+          io::Status::Ok);
+  journal.close();
+  InputLog log;
+  std::string error;
+  REQUIRE_MESSAGE(log.load(path, &error) == io::Status::Ok, error);
+  REQUIRE(log.size() == 8);
+  for (u32 i = 0; i < 8; ++i)
+    CHECK_MESSAGE(log.events()[i].value == values[i], "value " << i);
+}
+
+TEST_CASE("input log journal: a through line is a journal's alone, and never goes back") {
+  const TempDir tmp("engine_input_log_journal_bad");
+  const auto load = [&](const char* name, const std::string& text, std::string& error) {
+    const std::string path = tmp.file(name);
+    REQUIRE(io::write_file(path, text) == io::Status::Ok);
+    InputLog log;
+    return log.load(path, &error);
+  };
+  const std::string v1 = R"({"columns":[],"map":1,"type":"engine.input.log","version":1})"
+                         "\n";
+  const std::string v2 = R"({"columns":[],"map":1,"type":"engine.input.log","version":2})"
+                         "\n";
+  const std::string v3 = R"({"columns":[],"map":1,"type":"engine.input.log","version":3})"
+                         "\n";
+  std::string error;
+  CHECK(load("v1.jsonl", v1 + "{\"through\":4}\n", error) == io::Status::IoError);
+  CHECK(load("back.jsonl", v2 + "{\"through\":4}\n{\"through\":3}\n", error) ==
+        io::Status::IoError);
+  CHECK(error.find("goes back") != std::string::npos);
+  CHECK(load("before.jsonl", v2 + "[5,\"key\",26,1.0,0]\n{\"through\":4}\n", error) ==
+        io::Status::IoError);
+  CHECK(load("extra.jsonl", v2 + "{\"through\":4,\"x\":1}\n", error) == io::Status::IoError);
+  CHECK(load("v3.jsonl", v3, error) == io::Status::IoError);
+  CHECK_MESSAGE(
+      load("ok.jsonl", v2 + "[1,\"key\",26,1.0,0]\n{\"through\":4}\n", error) == io::Status::Ok,
       error);
 }

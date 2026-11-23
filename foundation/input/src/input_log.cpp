@@ -2,10 +2,16 @@
 #include <core/json/json.h>
 #include <foundation/input/input_log.h>
 
+#include <cstdio>
+#include <filesystem>
 #include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
+
+#if defined(_WIN32)
+#include <share.h>
+#endif
 
 namespace engine::input {
 
@@ -80,6 +86,8 @@ void InputLog::forget() noexcept {
   events_.clear();
   map_hash_ = 0;
   session_ = JsonValue();
+  through_ = SimTick{0};
+  has_through_ = false;
 }
 
 SimTick InputLog::first_tick() const noexcept {
@@ -90,11 +98,13 @@ SimTick InputLog::last_tick() const noexcept {
   return events_.empty() ? SimTick{0} : events_.back().tick;
 }
 
-io::Status InputLog::save(std::string_view native_path) const {
+namespace {
+
+JsonValue header_json(u64 map_hash, const JsonValue& session, u32 version) {
   JsonValue header = JsonValue::object();
   header.set("type", k_log_type);
-  header.set("version", static_cast<u64>(k_log_version));
-  header.set("map", map_hash_);
+  header.set("version", static_cast<u64>(version));
+  header.set("map", map_hash);
   JsonValue::Array columns;
   columns.push_back(JsonValue("tick"));
   columns.push_back(JsonValue("source"));
@@ -103,10 +113,15 @@ io::Status InputLog::save(std::string_view native_path) const {
   columns.push_back(JsonValue("device"));
   header.set("columns", JsonValue(std::move(columns)));
   // Only when there is one, so a log recorded without a session is the bytes it always was.
-  if (!session_.is_null()) header.set("session", session_);
+  if (!session.is_null()) header.set("session", session);
+  return header;
+}
 
+}  // namespace
+
+io::Status InputLog::save(std::string_view native_path) const {
   const JsonWriteOptions compact{.pretty = false};
-  std::string text = write_json(header, compact);
+  std::string text = write_json(header_json(map_hash_, session_, k_saved_log_version), compact);
   text.push_back('\n');
   for (const RawEvent& event : events_) {
     text += write_json(event_to_json(event), compact);
@@ -119,6 +134,9 @@ io::Status InputLog::load(std::string_view native_path, std::string* error) {
   clear();
   map_hash_ = 0;
   session_ = JsonValue();
+  through_ = SimTick{0};
+  has_through_ = false;
+  u64 version = 0;
   std::string text;
   const io::Status status = io::read_file(native_path, text);
   if (status != io::Status::Ok) {
@@ -155,7 +173,6 @@ io::Status InputLog::load(std::string_view native_path, std::string* error) {
         forget();
         return io::Status::IoError;
       }
-      u64 version = 0;
       const JsonValue* version_value = value.find("version");
       if (version_value == nullptr || !version_value->get_u64(version) || version > k_log_version) {
         if (error != nullptr) {
@@ -180,6 +197,26 @@ io::Status InputLog::load(std::string_view native_path, std::string* error) {
         session_ = *session;
       }
       have_header = true;
+      continue;
+    }
+    // A journal's through line (version 2, T216): the tick its recorder had reached. Never
+    // backwards, and never before an event already read.
+    if (value.is_object()) {
+      const JsonValue* through = value.find("through");
+      u64 tick = 0;
+      if (version < 2 || through == nullptr || value.size() != 1 || !through->get_u64(tick)) {
+        if (error != nullptr) *error = "input log: an event line is an array of five values";
+        forget();
+        return io::Status::IoError;
+      }
+      if ((has_through_ && tick < through_.value) ||
+          (!events_.empty() && tick < events_.back().tick.value)) {
+        if (error != nullptr) *error = "input log: a through line goes back in time";
+        forget();
+        return io::Status::IoError;
+      }
+      through_ = SimTick{tick};
+      has_through_ = true;
       continue;
     }
     RawEvent event;
@@ -254,6 +291,70 @@ bool InputLog::replay(InputState& state, SimTick from, SimTick to, const ReplayO
   if (!check_map(state, error)) return false;
   (void)feed_ticks(state, events(), 0, from, to, options);
   return true;
+}
+
+// ---- the journal (T216)
+// --------------------------------------------------------------------------
+
+InputLogJournal::~InputLogJournal() { close(); }
+
+io::Status InputLogJournal::open(std::string_view native_path, u64 map_hash,
+                                 const JsonValue& session) {
+  close();
+  events_written_ = 0;
+  appends_ = 0;
+  through_ = SimTick{0};
+  failed_ = false;
+  const std::filesystem::path path(
+      std::u8string_view(reinterpret_cast<const char8_t*>(native_path.data()), native_path.size()));
+  std::FILE* f = nullptr;
+#if defined(_WIN32)
+  // Shared for reading, so a tool that tails the journal while the session runs can.
+  f = ::_wfsopen(path.c_str(), L"wb", _SH_DENYWR);
+#else
+  f = std::fopen(path.c_str(), "wb");
+#endif
+  if (f == nullptr) return io::Status::IoError;
+  file_ = f;
+  std::string text = write_json(header_json(map_hash, session, k_log_version), {.pretty = false});
+  text.push_back('\n');
+  if (std::fwrite(text.data(), 1, text.size(), f) != text.size() || std::fflush(f) != 0) {
+    close();
+    return io::Status::IoError;
+  }
+  return io::Status::Ok;
+}
+
+io::Status InputLogJournal::append(std::span<const RawEvent> events, SimTick through) noexcept {
+  std::FILE* f = static_cast<std::FILE*>(file_);
+  if (f == nullptr || failed_) return io::Status::IoError;
+  bool ok = true;
+  char line[128];
+  for (const RawEvent& e : events) {
+    // The same fields `save` writes; a float's value with nine significant digits, which is what
+    // gives the same float back (the loader parses a double and narrows it, as it always has).
+    const int n = std::snprintf(line, sizeof(line), "[%llu,\"%s\",%u,%.9g,%u]\n",
+                                static_cast<unsigned long long>(e.tick.value),
+                                source_name(e.source), e.code, static_cast<f64>(e.value), e.device);
+    ok = ok && n > 0 && std::fwrite(line, 1, static_cast<usize>(n), f) == static_cast<usize>(n);
+  }
+  const int n = std::snprintf(line, sizeof(line), "{\"through\":%llu}\n",
+                              static_cast<unsigned long long>(through.value));
+  ok = ok && n > 0 && std::fwrite(line, 1, static_cast<usize>(n), f) == static_cast<usize>(n);
+  ok = std::fflush(f) == 0 && ok;
+  if (!ok) {
+    failed_ = true;  // a short write leaves a line cut; nothing after it would load
+    return io::Status::IoError;
+  }
+  events_written_ += events.size();
+  ++appends_;
+  through_ = through;
+  return io::Status::Ok;
+}
+
+void InputLogJournal::close() noexcept {
+  if (file_ != nullptr) (void)std::fclose(static_cast<std::FILE*>(file_));
+  file_ = nullptr;
 }
 
 }  // namespace engine::input

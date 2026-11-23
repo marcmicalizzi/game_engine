@@ -57,9 +57,15 @@ list(APPEND _view_tests tests/startup_feed_tests.cpp startup.cpp)
 # A lost device's turn (session_records.h, T212): the synthetic fly session replayed offscreen with
 # the test seam making a frame wait answer "lost"; its records, report, trace and exit code.
 list(APPEND _view_tests tests/device_lost_view_tests.cpp)
+# A fault's turn (session_records.h, T216): the same session replayed offscreen with the test seam
+# making a frame fault, by a real access violation in the child; its records, report, crash file,
+# trace and exit code.
+list(APPEND _view_tests tests/crash_view_tests.cpp)
 # What both frame loops record of a frame and the report's long frames by cause (frame_records.h,
-# long_frames.h, T212): the window loop's calls driven with no device and no window.
-list(APPEND _view_tests tests/frame_records_tests.cpp frame_records.cpp long_frames.cpp)
+# long_frames.h, T212), and the recording's journal, the seam's parse and the crash block (T216):
+# the window loop's calls driven with no device and no window.
+list(APPEND _view_tests tests/frame_records_tests.cpp frame_records.cpp long_frames.cpp
+            crash_records.cpp)
 if(TARGET engine::tileset)
   # A scene naming a built tile set drawn offscreen, the set written by engine-content beside it;
   # and a provider no build has refused with a sentence that lists `tiles` (tileset.md).
@@ -201,7 +207,7 @@ if(TARGET engine::animation)
 endif()
 
 engine_app(NAME engine_view OUTPUT engine-view
-  SOURCES main.cpp report.cpp session_records.cpp frame_records.cpp long_frames.cpp startup.cpp loading.cpp memory_report.cpp
+  SOURCES main.cpp report.cpp session_records.cpp crash_records.cpp frame_records.cpp long_frames.cpp startup.cpp loading.cpp memory_report.cpp
           ${_view_interactive} ${_view_world}
           ${_view_game}
           ${_view_animation}
