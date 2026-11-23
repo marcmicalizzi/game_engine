@@ -873,6 +873,132 @@ TEST_CASE("flora motion: three palms' padding follows the wind, culled as drawn 
   }
 }
 
+// **A storm's padding culls; the cut is the calm one** (R206; renderer.md, "What a gale builds").
+// Three palms whole in view, calm and then force 12 (the ladder's rung 4, its records padded four
+// to five times): the records' padding rises, the palms sway, and the cut — the visible pairs, and
+// under traced shadows the cluster structures the chain builds for them — is the calm frame's to
+// the pair. Before R206 the LOD spheres took the whole rung's padding and force 12 drew and built a
+// finer cut of the same palms.
+namespace {
+
+struct TunableValue {
+  tunables::Tunable* tunable = nullptr;
+  std::string previous;
+  TunableValue(const char* name, const char* value) {
+    tunable = tunables::find(name);
+    REQUIRE(tunable != nullptr);
+    tunable->append_value(previous);
+    REQUIRE(tunable->set_from_text(value));
+  }
+  ~TunableValue() {
+    if (tunable != nullptr) (void)tunable->set_from_text(previous);
+  }
+};
+
+}  // namespace
+
+TEST_CASE("flora motion: three palms at force 12 draw and build the calm cut") {
+  const test::TempDir tmp("renderer_flora_storm_cut");
+  REQUIRE(tmp.ok());
+  SceneData data;
+  std::string error;
+  REQUIRE_MESSAGE(load_palm(tmp, data, error), error);
+  REQUIRE(data.instances.size() == 1);
+  for (const f32 x : {2.6f, 5.2f}) {
+    gfx::InstanceDesc other = data.instances[0];
+    Mat4 world = Mat4::identity();
+    world.c[3] = Vec4{x, 0.0f, 0.0f, 1.0f};
+    gfx::set_instance_transform(other, world);
+    other.first_pair = data.pair_count;
+    data.pair_count += data.parts[0].cluster_count;
+    data.instances.push_back(other);
+    if (!data.instance_joints.empty()) data.instance_joints.push_back(0u);
+  }
+  update_scene_bounds(data);
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  const bool traces =
+      gpu.device.features().ray_query && gpu.device.features().acceleration_structure;
+  RenderSettings settings;
+  settings.shadows = traces ? ShadowMode::RayTraced : ShadowMode::Cascaded;
+  settings.occlusion = false;  // the cut alone: no history of the Hi-Z between the two winds
+  struct Seen {
+    u32 visible = 0;
+    u32 wanted = 0;
+    f32 padding = 0.0f;
+    Vector<u32> ids;
+  };
+  // `renderer.flora.calm_cut` false is the cut W154-2 left (the whole rung's padding on the LOD
+  // spheres): the "before" this case fails, counted beside the "after".
+  for (const char* calm_cut : {"false", "true"}) {
+    const std::string cut_name = calm_cut;
+    CAPTURE(cut_name);
+    const TunableValue cut("renderer.flora.calm_cut", calm_cut);
+    ResolvedSettings resolved;
+    resolve_settings(settings, gpu.device.features(), &data, resolved);
+    GpuScene scene;
+    REQUIRE_MESSAGE(scene.create(gpu.device, data, resolved, &error), error);
+    SceneRenderer renderer;
+    SceneRenderer::Desc rd;
+    rd.width = 320;
+    rd.height = 320;
+    REQUIRE_MESSAGE(renderer.create(gpu.device, scene, resolved, rd, &error), error);
+    Vector<Seen> seen;
+    CaptureChannels channels;
+    channels.ids = true;
+    const f32 winds[] = {0.0f, 0.0f, 6.6f, 6.6f, 6.6f};
+    for (u32 f = 0; f < 5; ++f) {
+      FrameDesc frame;
+      // Far enough back that every cluster of the three palms is inside the frustum, swung or
+      // not (the frustum test, which keeps the whole padding, then adds no pair to the storm's
+      // cut), and near enough that the palms' cut is finer than their coarsest: at 40 m it is
+      // four clusters a palm in either wind, and a padding of 9 m moves nothing.
+      frame.camera.position = WorldPos{2.6, 3.0, 16.0};
+      frame.camera.target = WorldPos{2.6, 3.0, 0.0};
+      frame.frame_index = 60 + f;
+      frame.world_time_s = static_cast<f64>(frame.frame_index) / 60.0;
+      frame.flora.wind_set = true;
+      frame.flora.wind_to = Vec2{0.0f, -1.0f};
+      frame.flora.wind_strength = winds[f];
+      CapturedFrame shot;
+      REQUIRE_MESSAGE(renderer.render_offscreen(frame, &error), error);
+      REQUIRE_MESSAGE(renderer.capture(frame, channels, shot, &error), error);
+      Seen s;
+      s.visible = renderer.stats().visible_pairs();
+      s.wanted = renderer.stats().rt.wanted;
+      const gfx::InstanceDesc* record = scene.instance_record(0);
+      s.padding = record != nullptr ? record->bounds_padding : -1.0f;
+      s.ids = std::move(shot.ids);
+      seen.push_back(std::move(s));
+    }
+    renderer.destroy();
+    scene.destroy();
+    const Seen& calm = seen[1];
+    const Seen& storm = seen[4];
+    u32 moved = 0;
+    for (u32 i = 0; i < calm.ids.size() && i < storm.ids.size(); ++i)
+      moved += calm.ids[i] != storm.ids[i] ? 1u : 0u;
+    MESSAGE("calm_cut " << cut_name << ": calm " << calm.visible << " visible pairs, "
+                        << calm.wanted << " structures, padding " << calm.padding << " m; force 12 "
+                        << storm.visible << " visible pairs, " << storm.wanted
+                        << " structures, padding " << storm.padding << " m; " << moved
+                        << " id words moved");
+    CHECK(storm.padding > calm.padding * 4.0f);  // the records took the storm's rung
+    CHECK(moved > 100);                          // and the palms sway in it
+    CHECK(calm.visible > 0);
+    if (std::strcmp(calm_cut, "true") == 0) {
+      CHECK(storm.visible == calm.visible);            // the cut is the calm one
+      if (traces) CHECK(storm.wanted == calm.wanted);  // and so are the chain's structures for it
+    } else {
+      CHECK(storm.visible > calm.visible);  // W154-2's: the rung's padding made the cut finer
+      if (traces) CHECK(storm.wanted > calm.wanted);
+    }
+  }
+}
+
 #endif  // ENGINE_RENDERER_TESTS_FLORA
 
 #if ENGINE_RENDERER_TESTS_FLORA

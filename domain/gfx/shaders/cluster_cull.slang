@@ -156,7 +156,9 @@ struct CullParams {
   uint run_capacity;     // offset 1832
   uint pad_run;          // offset 1836
   uint64_t run_drops;    // offset 1840
-  uint64_t pad_runs;     // offset 1848; the block is 1,856 bytes
+  // gfx::CullParams::sway_lod (R206): a float per mesh, the most padding a deformed instance of it
+  // takes on its LOD spheres; 0 for none (the LOD spheres take the whole padding, as before).
+  uint64_t sway_lod;     // offset 1848; the block is 1,856 bytes
 };
 
 // gfx::CullParams::hiz_flags and the debug counters' layout (gfx::k_hidden_*).
@@ -806,10 +808,24 @@ void cull_instance_pair(CullParams* params, uint pair, uint instance_index, bool
     const ClusterLodDesc lod = lods[index];
     // The coverage word (geometry::pack_lod_coverage), +inf in both halves for none.
     const uint cover = params->coverage != 0 ? ((uint*)params->coverage)[index] : 0x7C007C00u;
+    // **A storm's padding is the culling's, not the cut's** (R206; renderer.md, "What a gale
+    // builds"): a swaying instance's record holds the ladder's rung (W154-2), up to 7.6 times the
+    // calm one in a gale, which every test above needs and which made the cut as fine as if every
+    // tip were swung at the camera: at 20 m/s the forest's cut took 16 times the structures of a
+    // light wind. The LOD spheres take at most the calm rung's padding (`sway_lod[mesh]`, the
+    // larger of the mesh's calm sway bound and any caller's padding of its instances), so the cut
+    // is the calm one in any wind and a step of the ladder moves no LOD. Still one constant per
+    // instance on every LOD sphere, so the cut stays crack-free; `min` is exact, so at the calm
+    // rung (and with no table: every frame whose ladder stands at it) the spheres are main's to the
+    // bit.
+    float lod_padding = padding;
+    if (params->sway_lod != 0 && instance.deform != k_invalid_deform) {
+      lod_padding = min(padding, ((float*)params->sway_lod)[instance.mesh] * instance.scale_max);
+    }
     const float4 own_sphere = float4(instance_point(instance, from_eye, lod.own.xyz),
-                                     lod.own.w * instance.scale_max + padding);
+                                     lod.own.w * instance.scale_max + lod_padding);
     const float4 parent_sphere = float4(instance_point(instance, from_eye, lod.parent.xyz),
-                                        lod.parent.w * instance.scale_max + padding);
+                                        lod.parent.w * instance.scale_max + lod_padding);
     const float own_error = lod.own_error * instance.scale_max;
     const float parent_error = lod.parent_error * instance.scale_max;
     const float own = projected_error(own_sphere, own_error, params->camera.xyz, params->camera.w,

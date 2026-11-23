@@ -803,6 +803,7 @@ void GpuScene::add_field_slot(u32 slot, u32 mesh, f32 base) {
   if (field_at_[slot] != ~0u) drop_field_slot(slot);
   field_at_[slot] = field_slots_.size();
   field_slots_.push_back(FieldSlot{slot, mesh, base});
+  note_sway_base(mesh, base);
 }
 
 void GpuScene::drop_field_slot(u32 slot) noexcept {
