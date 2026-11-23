@@ -69,6 +69,11 @@ function Read-CTestLog {
       gave-up     the output says "gave up waiting for the GPU lock" and carries no doctest summary
       failed      the footer says Failed
       incomplete  no footer (the run was cut off inside the record)
+    The footer has two spellings. A test CTest judges by its exit code ends "Test Passed." or
+    "Test Failed."; one it judges by a regular expression (PASS_REGULAR_EXPRESSION, which the hosts'
+    generators tests carry) ends "Test Pass Reason:" or "Test Fail Reason:" with the reason on the
+    next line, and never the first form. Batch 73's first gate read the four generators tests of
+    three suites as cut off for knowing only the first.
     NoCase is a doctest summary of zero test cases; Summary says whether a doctest summary is there.
   #>
   param([Parameter(Mandatory)][string]$Path)
@@ -80,8 +85,8 @@ function Read-CTestLog {
     $summary = $blk -match '\[doctest\] test cases:'
     $gaveUp = $blk -match 'gave up waiting for the GPU lock'
     $noCase = $blk -match '\[doctest\] test cases:\s+0 \|'
-    $status = if ($blk -match '(?m)^Test Failed\.') { 'failed' }
-              elseif ($blk -match '(?m)^Test Passed\.') { if ($gaveUp -and -not $summary) { 'gave-up' } else { 'passed' } }
+    $status = if ($blk -match '(?m)^Test (Failed\.|Fail Reason:)') { 'failed' }
+              elseif ($blk -match '(?m)^Test (Passed\.|Pass Reason:)') { if ($gaveUp -and -not $summary) { 'gave-up' } else { 'passed' } }
               else { 'incomplete' }
     $records.Add([pscustomobject]@{ Name = $name; Status = $status; GaveUp = $gaveUp; Summary = $summary; NoCase = $noCase; Log = $Path })
   }

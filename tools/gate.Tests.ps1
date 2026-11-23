@@ -88,8 +88,8 @@ function Format-CTestLog([string[]]$records) {
     [void]$out.AppendLine('Output:')
     [void]$out.AppendLine('----------------------------------------------------------')
     switch ($status) {
-      'passed'     { [void]$out.AppendLine('[doctest] test cases:    2 |    2 passed | 0 failed | 0 skipped') }
-      'failed'     { [void]$out.AppendLine('[doctest] test cases:    2 |    1 passed | 1 failed | 0 skipped') }
+      { $_ -in 'passed', 'regex-passed' } { [void]$out.AppendLine('[doctest] test cases:    2 |    2 passed | 0 failed | 0 skipped') }
+      { $_ -in 'failed', 'regex-failed' } { [void]$out.AppendLine('[doctest] test cases:    2 |    1 passed | 1 failed | 0 skipped') }
       'nocase'     { [void]$out.AppendLine('[doctest] test cases:    0 |    0 passed | 0 failed | 4 skipped') }
       'gaveup'     { [void]$out.AppendLine('gpu-lock: gave up waiting for the GPU lock after 1800 s (exit 75)') }
       'plain'      { [void]$out.AppendLine('stand-in: 3 checks passed') }
@@ -99,7 +99,14 @@ function Format-CTestLog([string[]]$records) {
     [void]$out.AppendLine('<end of output>')
     [void]$out.AppendLine('Test time =   1.00 sec')
     [void]$out.AppendLine('----------------------------------------------------------')
-    [void]$out.AppendLine($(if ($status -eq 'failed') { 'Test Failed.' } else { 'Test Passed.' }))
+    # A test judged by a regular expression (PASS_REGULAR_EXPRESSION) has a footer of its own: the
+    # reason on two lines, and neither "Test Passed." nor "Test Failed.".
+    switch ($status) {
+      'failed'       { [void]$out.AppendLine('Test Failed.') }
+      'regex-passed' { [void]$out.AppendLine('Test Pass Reason:'); [void]$out.AppendLine('Required regular expression found. Regex=[test cases: +[0-9]+ \| +([2-9]|[1-9][0-9]+) passed \| +0 failed]') }
+      'regex-failed' { [void]$out.AppendLine('Test Fail Reason:'); [void]$out.AppendLine('Required regular expression not found. Regex=[test cases: +[0-9]+ \| +([2-9]|[1-9][0-9]+) passed \| +0 failed]') }
+      default        { [void]$out.AppendLine('Test Passed.') }
+    }
     [void]$out.AppendLine("`"$name`" end time: Nov 22 14:27 Eastern Standard Time")
     [void]$out.AppendLine('----------------------------------------------------------')
   }
@@ -267,6 +274,14 @@ try {
   $recs = Read-CTestLog -Path $logA
   Test-That 'a kept log reads record by record, and a skipped test''s "Test Passed." footer reads as gave-up' {
     ($recs | ForEach-Object { "$($_.Name)=$($_.Status)" }) -join ',' -eq 't.pass=passed,t.fail=failed,t.gave=gave-up,t.none=passed,t.plain=passed,t.cut=incomplete'
+  }
+  $logRegex = Join-Path $fx 'regex.log'
+  Write-Text $logRegex (Format-CTestLog @('g.pass:regex-passed', 'g.fail:regex-failed', 'g.cut:incomplete'))
+  Test-That 'a test judged by a regular expression reads by its reason footer, passed or failed, and is not cut off' {
+    $state = Get-SuiteState -Logs @($logRegex)
+    $read = Read-CTestLog -Path $logRegex   # the function returns its array whole: name it, then pipe
+    (($read | ForEach-Object { "$($_.Name)=$($_.Status)" }) -join ',') -eq 'g.pass=passed,g.fail=failed,g.cut=incomplete' -and
+      ($state.Failed -join ',') -eq 'g.fail' -and ($state.Incomplete -join ',') -eq 'g.cut'
   }
   Test-That 'the three records of no case by design, and no others' {
     (Test-NoCaseByDesign 'engine_cli.npc_replay' 'msvc-minimal') -and (Test-NoCaseByDesign 'engine_cli.npc_replay' 'msvc-no-ecs') -and

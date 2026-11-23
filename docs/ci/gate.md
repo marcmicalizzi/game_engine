@@ -104,6 +104,11 @@ repository whose `tools/` are stand-ins:
 - **CTest's footer is not a verdict for a skipped test**: CTest writes "Test Passed." for a test its
   console calls ***Skipped (2026-11-21). A record that says "gave up waiting for the GPU lock" and
   carries no doctest summary reads as gave-up whatever its footer says.
+- **The footer has two spellings**: a test judged by its exit code ends "Test Passed." or "Test
+  Failed.", and one judged by a regular expression (`PASS_REGULAR_EXPRESSION`: the four hosts'
+  `.generators` tests) ends "Test Pass Reason:" or "Test Fail Reason:" with the reason on the next
+  line, and never the first form. The read knows both. Batch 73's first gate knew one, and called
+  those four tests cut off in three suites that had passed them (2026-11-23).
 - **A leg that left no verdict fails the summary**: a suite that kept no CTest log, a Linux leg that
   did not finish its verdict file (one that died part-way never writes `done`; a half-written file
   reads as none) or reported other than three containers (`Read-LegVerdict`). A container is green
