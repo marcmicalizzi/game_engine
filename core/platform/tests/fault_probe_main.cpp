@@ -26,6 +26,7 @@
 //   hook-verify        `verify`, the same hook
 //   hook-fault         `write`, and the hook writes through a bad pointer too
 //   hook-hang          `write`, and the hook never returns (a 500 ms deadline)
+//   hook-worker        `worker`: the fault on "fault-worker" while main waits to join it
 //
 // It calls `require_cpu_baseline()` first, as every main does, which is what links the
 // translation unit whose pre-main initializer installs the handlers. Every address and divisor
@@ -140,8 +141,11 @@ enum class HookDoes { returns, faults, hangs };
 HookDoes g_hook_does = HookDoes::returns;
 
 void probe_hook(void*, const platform::CrashInfo& info) {
-  std::fprintf(stderr, "probe hook: what=%s at=%s stack=%u expression=%s crash_file=%s\n",
-               info.what, info.at, info.stack_count, info.expression, info.crash_file);
+  std::fprintf(stderr,
+               "probe hook: what=%s at=%s stack=%u expression=%s crash_file=%s main=%d "
+               "thread=%s\n",
+               info.what, info.at, info.stack_count, info.expression, info.crash_file,
+               info.main_thread ? 1 : 0, info.thread_name);
   std::fflush(stderr);
   if (g_hook_does == HookDoes::faults) fault_write();
   if (g_hook_does == HookDoes::hangs) {
@@ -179,6 +183,14 @@ int main(int argc, char** argv) {
                  filed ? "set" : "not set");
     std::fflush(stderr);
     if (is("hook-verify")) fault_verify();
+    if (is("hook-worker")) {
+      std::thread worker([] {
+        (void)platform::set_current_thread_name("fault-worker");
+        fault_write();
+        g_sink = 1;
+      });
+      worker.join();
+    }
     fault_write();
   }
   if (is("read")) fault_read();

@@ -310,7 +310,10 @@ TEST_CASE("fault report: a failed verify is named to the hook and in the crash f
   const Outcome out = run_probe("hook-verify", crash);
   INFO("the probe printed: " << out.output);
 #if ENGINE_FAULT_UNDER_SANITIZER
+  // As the `hook` case: refused, no engine line, and the probe still dies (T216's review, L4).
+  CHECK(out.output.find("probe: hook not set") != std::string::npos);
   CHECK(fatal_lines(out.output).empty());
+  CHECK((out.code != 0 || out.died_of != 0));
 #else
   const std::vector<std::string> lines = fatal_lines(out.output);
   REQUIRE(lines.size() == 1);
@@ -329,7 +332,10 @@ TEST_CASE("fault report: a second fault inside the hook ends the process at once
   const Outcome out = run_probe("hook-fault", tmp.file("crash.json"));
   INFO("the probe printed: " << out.output);
 #if ENGINE_FAULT_UNDER_SANITIZER
+  // As the `hook` case: refused, no engine line, and the probe still dies (T216's review, L4).
+  CHECK(out.output.find("probe: hook not set") != std::string::npos);
   CHECK(fatal_lines(out.output).empty());
+  CHECK((out.code != 0 || out.died_of != 0));
 #else
   // Two lines begin "engine: fatal: ": the fault's, whole, and the hook's second fault's.
   const std::vector<std::string> lines = fatal_lines(out.output);
@@ -342,12 +348,40 @@ TEST_CASE("fault report: a second fault inside the hook ends the process at once
 #endif
 }
 
+// T216's review, L5 (the platform half): a fault on a worker thread with a hook armed. The hook is
+// told the thread is not main and which it is, which is what a host decides by (engine-view's
+// `frame_side_still`), and the process still ends 77 with one line, main waiting to join.
+TEST_CASE("fault report: a worker thread's fault reaches the hook named as that thread") {
+  const test::TempDir tmp("fault_report_hook_worker");
+  const std::string crash = tmp.file("crash.json");
+  const Outcome out = run_probe("hook-worker", crash);
+  INFO("the probe printed: " << out.output);
+#if ENGINE_FAULT_UNDER_SANITIZER
+  CHECK(out.output.find("probe: hook not set") != std::string::npos);
+  CHECK(fatal_lines(out.output).empty());
+  CHECK((out.code != 0 || out.died_of != 0));
+#else
+  const std::vector<std::string> lines = fatal_lines(out.output);
+  REQUIRE(lines.size() == 1);
+  CHECK(lines[0].find("(main)") == std::string::npos);
+  CHECK(count_of(out.output, "probe hook: ") == 1);
+  CHECK(out.output.find("main=0 thread=fault-worker") != std::string::npos);
+  check_crashed_exit(out);
+  const std::string text = read_text(crash);
+  INFO("the crash file: " << text);
+  CHECK(text.find("\"main_thread\":false") != std::string::npos);
+#endif
+}
+
 TEST_CASE("fault report: a hook past its deadline is left, and the process exits 77") {
   const test::TempDir tmp("fault_report_hook_hang");
   const Outcome out = run_probe("hook-hang", tmp.file("crash.json"));
   INFO("the probe printed: " << out.output);
 #if ENGINE_FAULT_UNDER_SANITIZER
+  // As the `hook` case: refused, no engine line, and the probe still dies (T216's review, L4).
+  CHECK(out.output.find("probe: hook not set") != std::string::npos);
   CHECK(fatal_lines(out.output).empty());
+  CHECK((out.code != 0 || out.died_of != 0));
 #else
   // The hook started and never returned; the deadline (500 ms) ended the process. The count is
   // the check, not the time it took.
