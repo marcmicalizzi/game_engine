@@ -232,6 +232,34 @@ void omm_bake_main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
   uint* codes = (uint*)g_params.codes;
   uint2* writers = (uint2*)g_params.writers;
 
+  if (mode == 3u) {
+    // The key pass (R207; opacity_micromap.h, `micromap_geometry_digest`): one thread an item, its
+    // cluster's triangles' UV words — what the bake reads of the geometry — hashed in order under
+    // two seeds and mixed with the item's index, then added into two 64-bit sums. Integers only,
+    // and a sum does not care which thread adds first, so any device gives the same two words.
+    uint2* items = (uint2*)g_params.items;
+    ClusterDesc* clusters = (ClusterDesc*)g_params.clusters;
+    const ClusterDesc cluster = clusters[items[i].x];
+    uint* packed_triangles = (uint*)g_params.triangles;
+    VertexAttributes* attributes = (VertexAttributes*)g_params.attributes;
+    uint a = mix32(0x2f6b1d35u, i);
+    uint b = mix32(0x71c3a9e5u, i ^ 0x5bd1e995u);
+    for (uint t = 0u; t < cluster.triangle_count; ++t) {
+      const uint packed = packed_triangles[cluster.triangle_offset + t];
+      for (uint c = 0u; c < 3u; ++c) {
+        const uint word = attributes[cluster.vertex_offset + ((packed >> (8u * c)) & 0xffu)].uv_half2;
+        a = mix32(a, word);
+        b = mix32(b, word ^ 0xa5a5a5a5u);
+      }
+    }
+    a = finish32(a ^ (cluster.triangle_count * 3u));
+    b = finish32(b ^ i);
+    Atomic<uint64_t>* sums = (Atomic<uint64_t>*)g_params.counters;
+    sums[0].add((uint64_t(a) << 32) | uint64_t(b));
+    sums[1].add((uint64_t(b) << 32) | uint64_t(finish32(a ^ b)));
+    return;
+  }
+
   if (mode == 2u) {
     // Verify: a triangle whose index names an entry another triangle writes must be that
     // triangle's material and UVs word for word, or the host gives it an entry of its own.

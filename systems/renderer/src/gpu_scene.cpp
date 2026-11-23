@@ -4575,6 +4575,9 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     frame.bank_max = depth.bank_max;
     return true;
   };
+  // R207: the content of every bindless slot a file's texture went into, for the micromaps' key;
+  // a slot it does not name (the ripple below, a water depth map) keys nothing.
+  HashMap<u32, u64> slot_identity;
   if (data_->heightfield) {
     // A procedural ripple texture, linear-sampled through the bindless set.
     constexpr u32 k_texture_size = 256;
@@ -4784,6 +4787,9 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
         }
         made.slot = image_slot[index];
         made.bytes = uploaded.bytes;
+        // R207: what is in the slot, for the micromaps' key (its content, form and first level).
+        slot_identity.insert(made.slot, hash_combine(hash_combine(made.content, made.form),
+                                                     bounded ? u64{bound_first} + 1u : 0u));
         // A bounded texture's record names its whole chain, which the feedback measures levels of.
         load_texture_records_.push_back(TextureRecord{
             made.slot, uploaded.format, bounded ? built[index].data.width : uploaded.width,
@@ -5224,9 +5230,10 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   // count, for `bake_micromaps`. Only a scene read whole, for the proxy's reason.
   micromap_list_.clear();
   micromap_triangles_.clear();
-  micromap_level_ = resolved.micromap_level;
-  micromap_budget_ = resolved.micromap_budget_bytes;
-  micromap_texels_ = resolved.micromap_texels;
+  micromap_key_ = MicromapKeyState{};
+  micromap_key_.level = resolved.micromap_level;
+  micromap_key_.budget_bytes = resolved.micromap_budget_bytes;
+  micromap_key_.texels = resolved.micromap_texels;
   if (resolved.shadow_micromaps && ray_tracing_ && has_masked_ && !streamed_) {
     for (u32 m = 0; m < data_->parts.size(); ++m) {
       const geometry::ClusterMeshPart& part = data_->parts[m];
@@ -5242,6 +5249,17 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
         }
       }
     }
+  }
+  {  // R207: what keys the stored bake (micromap_cache.h)
+    Vector<u32> sampler_slots;
+    Vector<u32> sampler_keys;
+    for (const MaterialSampler& made : material_samplers_) {
+      sampler_slots.push_back(made.slot);
+      sampler_keys.push_back(made.key);
+    }
+    micromap_key_materials(micromap_key_, micromap_list_, material_table, slot_identity,
+                           sampler_slots, sampler_keys,
+                           data_->mesh_options.cache ? data_->mesh_options.ddc : std::string());
   }
   // A rigid form's frontier, drawn at every distance (upload_geometry): its coverage errors follow
   // the geometric ones — the frontier's parent half and every other cluster's own half read +inf,
@@ -5352,72 +5370,8 @@ bool GpuScene::bake_shadow_coverage(gfx::ShaderLibrary& shaders, std::string* er
   return true;
 }
 
-// **The opacity micromaps' bake** (gfx/opacity_micromap.h; renderer.md, "Opacity micromaps";
-// R120): once, over the alpha-tested clusters `upload_materials` listed, blocking as every upload
-// of a scene's creation is. Then the rigid forms' static structures, built at create before the
-// shaders existed, are built again naming the micromaps, before any frame references them.
-bool GpuScene::bake_micromaps(gfx::ShaderLibrary& shaders, std::string* error) {
-  if (micromaps_.address != 0 || micromap_list_.empty()) return true;
-  ENGINE_STARTUP_STAGE("opacity micromaps");
-  const gfx::Device& device = *device_;
-  gfx::MicromapBakeInput in;
-  in.clusters = clusters.address;
-  in.triangles = triangles.address;
-  in.attributes = attributes.address;
-  in.materials = materials.address;
-  in.items = std::span<const u32>(micromap_list_.data(), micromap_list_.size());
-  in.triangle_counts = std::span<const u32>(micromap_triangles_.data(), micromap_triangles_.size());
-  in.cluster_count = cluster_count_;
-  u32 limit_2 = 0;
-  u32 limit_4 = 0;
-  gfx::opacity_micromap_limits(device, limit_2, limit_4);
-  in.max_level = std::min(micromap_level_, limit_4);
-  in.budget_bytes = micromap_budget_;
-  in.target_texels = micromap_texels_;
-  if (!gfx::bake_opacity_micromaps(device, shaders, bindless_, in, micromaps_, error)) {
-    return false;
-  }
-  micromap_list_ = Vector<u32>{};
-  micromap_triangles_ = Vector<u32>{};
-  const gfx::MicromapStats& s = micromaps_.stats;
-  u32 entries = 0;
-  // Per level, `level:triangles wanting it`, `level:triangles/stored entries`, and
-  // `level:unknown/micro-triangles` (R120 stage 3's histogram), as text for the log line.
-  std::string wanted;
-  std::string stored;
-  std::string unknown;
-  for (u32 l = 0; l <= gfx::k_micromap_max_level; ++l) {
-    entries += s.entries_per_level[l];
-    if (s.wanted_per_level[l] != 0)
-      wanted += std::to_string(l) + ":" + std::to_string(s.wanted_per_level[l]) + " ";
-    if (s.entries_per_level[l] != 0)
-      stored += std::to_string(l) + ":" + std::to_string(s.entries_per_level[l]) + "/" +
-                std::to_string(s.unique_per_level[l]) + " ";
-    if (s.micro_per_level[l] != 0)
-      unknown += std::to_string(l) + ":" + std::to_string(s.unknown_per_level[l]) + "/" +
-                 std::to_string(s.micro_per_level[l]) + " ";
-  }
-  ENGINE_LOG_INFO(
-      log_renderer, "opacity micromaps baked", log::field("triangles", s.triangles),
-      log::field("with_data", entries), log::field("unique_entries", s.unique_entries),
-      log::field("dedup_mismatches", s.dedup_mismatches),
-      log::field("fully_opaque", s.special_opaque),
-      log::field("fully_transparent", s.special_transparent),
-      log::field("fully_unknown", s.special_unknown), log::field("micro_unknown", s.micro_unknown),
-      log::field("micro_unknown_filter", s.micro_unknown_filter),
-      log::field("micro_known", s.micro_opaque + s.micro_transparent),
-      log::field("level_cap", s.level_cap), log::field("levels_dropped", s.levels_dropped),
-      log::field("wanted", std::string_view{wanted}),
-      log::field("stored", std::string_view{stored}),
-      log::field("unknown", std::string_view{unknown}), log::field("data_bytes", s.data_bytes),
-      log::field("resident_bytes", micromap_bytes()), log::field("bake_ms", s.bake_ms));
-  if (micromaps_.address != 0 && static_build_ && static_clusters_ > 0) {
-    gfx::destroy_cluster_set(device, static_clas_);
-    gfx::destroy_cluster_blas_set(device, static_blas_);
-    if (!build_static_forms(error)) return false;
-  }
-  return true;
-}
+// The opacity micromaps' bake, and its read back from the derived-data root (R120, R207):
+// gpu_scene_micromaps.cpp.
 
 bool GpuScene::create_working_set(const ResolvedSettings& resolved, std::string* error) {
   ENGINE_STARTUP_STAGE("working set");

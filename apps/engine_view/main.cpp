@@ -4189,7 +4189,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       summary.quiet =
           bench::is_quiet(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{});
     }
-    summary.load = load_summary(scene_data.load, device);
+    summary.load = view::with_micromaps(load_summary(scene_data.load, device), scene);  // R207
     if (startup.on()) {
       std::string why;
       summary.startup = startup.finish(&why);

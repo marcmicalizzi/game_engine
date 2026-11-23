@@ -507,4 +507,24 @@ MemoryReport& memory_report() {
   return report;
 }
 
+JsonValue with_micromaps(JsonValue load, const renderer::GpuScene& scene) {
+  const renderer::MicromapCacheReport& r = scene.micromap_cache();
+  char key[24];
+  std::snprintf(key, sizeof(key), "%016llx", static_cast<unsigned long long>(r.key));
+  JsonValue out = JsonValue::object();
+  out.set("baked", JsonValue(r.baked));
+  out.set("read", JsonValue(r.read));
+  out.set("stored", JsonValue(r.stored));
+  out.set("key", JsonValue(r.key != 0 ? std::string(key) : std::string()));
+  out.set("path", JsonValue(r.path));
+  out.set("file_bytes", JsonValue(r.file_bytes));
+  out.set("ms", JsonValue(r.ms));
+  out.set("key_ms", JsonValue(r.key_ms));
+  out.set("resident_bytes", JsonValue(scene.micromap_bytes()));
+  out.set("unkeyed", JsonValue(r.unkeyed));
+  out.set("refused", JsonValue(r.refused));
+  if (load.is_object()) load.set("micromaps", std::move(out));
+  return load;
+}
+
 }  // namespace engine::view
