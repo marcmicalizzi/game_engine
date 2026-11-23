@@ -179,7 +179,7 @@
       "id": "page:AGENTS.md",
       "measure": "page-bytes",
       "file": "AGENTS.md",
-      "ceiling": 75901
+      "ceiling": 76491
     },
     {
       "id": "page:docs/subsystems/rocks.md",
@@ -4486,6 +4486,20 @@
           "id": "page:docs/subsystems/audio.md",
           "old": 119330,
           "new": 119182
+        }
+      ]
+    },
+    {
+      "date": "2026-11-23",
+      "by": "Marc Micalizzi",
+      "reason": "AGENTS.md names the two gate scripts and ddc/micromaps",
+      "commit": "5c1f375ef",
+      "folded": [],
+      "changes": [
+        {
+          "id": "page:AGENTS.md",
+          "old": 75901,
+          "new": 76491
         }
       ]
     }
