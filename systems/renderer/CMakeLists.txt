@@ -104,6 +104,9 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     # C64: content classes decided at the load, on the CPU, over neutral fixtures
                     # of the test's own (a made-up category on a grid and a box).
                     tests/content_class_load_tests.cpp
+                    # C72: what the class read at the load reads, counted by kind, on a scene of
+                    # many recipes over a pack; no device.
+                    tests/class_read_cost_tests.cpp
                     # The types the renderer mirrors on the GPU itself (ADR-0019); no device.
                     tests/size_table.cpp
                     # The reader through the registry with generators of the test's own, in every

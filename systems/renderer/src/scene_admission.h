@@ -6,6 +6,8 @@
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
+#include <core/jobs/job_system.h>
+#include <domain/content_build/class_reads.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/geometry/cluster_pages.h>
 #include <foundation/content_class/content_class.h>
@@ -49,6 +51,9 @@ struct LoadAdmission {
   Vector<ContainerProbe> probe;
   Vector<Vector<u8>> loaded;
   Vector<u8> read_whole;
+  // What the first pass read, by kind (C72): counted here, copied into the load's report and
+  // logged once at the end of the pass.
+  content_build::ClassReads reads;
 };
 
 // Before any mesh is read: the scene's policy, every mesh's own class (its ladders learned into
@@ -57,9 +62,11 @@ struct LoadAdmission {
 // raises read, and which meshes are read at all: one an instance would draw under the policy
 // (admitted or proxied), or one no instance names (a prop, a generator's resident mesh) whose own
 // class admits; the ground only when the policy admits it. False, with `error`, for an instance
-// naming a raise the scene has not.
+// naming a raise the scene has not. `pool` (the load's, null: the calling thread alone) is where
+// the recipes' files are read and probed ahead of the teaching round (C72); nothing that decides
+// runs on it.
 bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmission& state,
-                             std::string& error);
+                             std::string& error, jobs::JobSystem* pool = nullptr);
 
 // After the meshes are read and before their textures: every image named by path probed for its
 // sidecar, then every instance decided through the door on the join of its mesh's class, its

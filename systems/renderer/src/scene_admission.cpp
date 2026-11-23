@@ -6,6 +6,8 @@
 
 #include <core/containers/hash_map.h>
 #include <core/hash/hash.h>
+#include <core/profiling/startup_trace.h>  // stages only: timing, never logic
+#include <core/time/time.h>
 #include <domain/content_build/content_build.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/materials/materials.h>
@@ -16,6 +18,7 @@
 #include <algorithm>
 #include <renderer_log.h>
 #include <schemas/provenance.h>
+#include <span>
 #include <string>
 #include <utility>
 
@@ -76,8 +79,28 @@ content_class::Decision admit_ground(SceneData& scene, const ReadClass& ground) 
   return decision;
 }
 
+namespace {
+
+ReadClass read_sidecar_class_counted(const std::string& source,
+                                     const content_class::Categories& categories,
+                                     Vector<content_class::MaterialClass>* materials,
+                                     const content_build::HostReads* reads);
+
+}  // namespace
+
 ReadClass read_sidecar_class(const std::string& source, const content_class::Categories& categories,
                              Vector<content_class::MaterialClass>* materials) {
+  return read_sidecar_class_counted(source, categories, materials, nullptr);
+}
+
+namespace {
+
+// `read_sidecar_class`, its read counted through `reads` (C72); `reads` holds no recipe of
+// `source`'s path, since `source` names no generator, so nothing else of it is consulted.
+ReadClass read_sidecar_class_counted(const std::string& source,
+                                     const content_class::Categories& categories,
+                                     Vector<content_class::MaterialClass>* materials,
+                                     const content_build::HostReads* reads) {
   // Through the content build's own reader, so the load and the build agree on what a sidecar says
   // and on the key it moves: nothing of that name is `none`, and anything else there that cannot
   // be read (a link or a junction that leads nowhere, a look that fails, text the classes module
@@ -89,7 +112,7 @@ ReadClass read_sidecar_class(const std::string& source, const content_class::Cat
   content_build::SourceClasses read;
   content_build::Diagnostic why;
   ReadClass out;
-  out.unreadable = !content_build::read_source_classes(source, options, read, why);
+  out.unreadable = !content_build::read_source_classes(source, options, read, why, reads);
   out.classes = read.classes;  // the unreadable class on a refusal: the reader wrote it
   if (materials != nullptr) *materials = std::move(read.materials);
   if (out.unreadable) {
@@ -100,21 +123,33 @@ ReadClass read_sidecar_class(const std::string& source, const content_class::Cat
   return out;
 }
 
-namespace {
-
 // A container's section 54 alone, its ladders learned into `categories`: the first round of the
-// load's teachers (C64), read before any sidecar is.
+// load's teachers (C64), read before any sidecar is. Counted in `counts` when given (C72).
 ReadClass container_section(const std::string& path, content_class::Categories& categories,
-                            ContainerProbe* probe) {
+                            ContainerProbe* probe, content_build::ClassReads* counts = nullptr) {
   ReadClass out;
+  const i64 start_ns = time::monotonic_ns();
+  bool opened = false;
+  Vector<u8> record;
+  struct Counted {
+    content_build::ClassReads* counts;
+    i64 start;
+    const bool& opened;
+    const Vector<u8>& record;
+    ~Counted() {
+      if (counts != nullptr)
+        counts->add(content_build::ClassRead::container_section, opened, record.size(),
+                    time::monotonic_ns() - start);
+    }
+  } counted{counts, start_ns, opened, record};
   geometry::ClusterFileReader reader;
   std::string error;
   // The header and the section table only: the load reads the container again, whole, when it
   // reads its geometry, and decides it again there by what that read found (C64).
   if (!reader.open(path, nullptr, &error)) return out;
+  opened = true;
   if (probe != nullptr) probe->opened = true;
   const u64 count = reader.element_count(geometry::ClusterSection::ContentClasses);
-  Vector<u8> record;
   if (count != 0) {
     u64 offset = 0;
     u64 bytes = 0;
@@ -142,9 +177,9 @@ ReadClass container_section(const std::string& path, content_class::Categories& 
 // A container named outright is joined with a sidecar beside it (content-classes.md, "Two limits,
 // stated").
 ReadClass with_container_sidecar(const std::string& path, const ReadClass& section,
-                                 const content_class::Categories& categories,
-                                 ContainerProbe* probe) {
-  const ReadClass sidecar = read_sidecar_class(path, categories);
+                                 const content_class::Categories& categories, ContainerProbe* probe,
+                                 const content_build::HostReads* reads = nullptr) {
+  const ReadClass sidecar = read_sidecar_class_counted(path, categories, nullptr, reads);
   if (probe != nullptr) probe->sidecar = sidecar;
   return join(section, sidecar);
 }
@@ -299,11 +334,31 @@ geometry::ClusterPages proxy_pages(const SceneDesc& desc, geometry::ClusterLodMe
 // set's manifest or heightfield header), beside every image its layers name and beside every
 // image its masks are painted from declare, each read
 // as the content build reads one, so a sidecar there that cannot be read refuses the ground.
-ReadClass ground_class(const TerrainDesc& terrain, const content_class::Categories& categories) {
+ReadClass ground_class(const TerrainDesc& terrain, const content_class::Categories& categories,
+                       content_build::ClassReads* counts) {
   ReadClass out;
+  // Its sidecars counted apart, as the ground's inputs (C72).
+  content_build::ClassReads own;
+  content_build::HostReads reads;
+  reads.counts = &own;
   const auto beside = [&](const std::string& input) {
-    if (!input.empty()) out = join(out, read_sidecar_class(input, categories));
+    if (!input.empty())
+      out = join(out, read_sidecar_class_counted(input, categories, nullptr, &reads));
   };
+  struct Counted {
+    content_build::ClassReads* counts;
+    const content_build::ClassReads& own;
+    ~Counted() {
+      if (counts == nullptr) return;
+      content_build::ClassReadCount& ground = (*counts)[content_build::ClassRead::ground_inputs];
+      for (const content_build::ClassReadCount& c : own.kinds) {
+        ground.asked += c.asked;
+        ground.found += c.found;
+        ground.bytes += c.bytes;
+        ground.ns += c.ns;
+      }
+    }
+  } counted{counts, own};
   if (terrain.tiles.has_value()) {
     beside(terrain.tiles->manifest);
     beside(terrain.tiles->heightfield);
@@ -324,6 +379,67 @@ ReadClass ground_class(const TerrainDesc& terrain, const content_class::Categori
   return out;
 }
 
+// True when every key is `<name>.<what>` for its kind's name, `per_kind` keys a kind in the enum's
+// order, so two kinds' keys swapped do not compile rather than mislabel the log line.
+template <u32 N>
+constexpr bool class_read_keys_name_kinds(const char* const (&keys)[N], u32 per_kind) {
+  for (u32 k = 0; (k + 1) * per_kind <= N; ++k) {
+    const char* name = content_build::class_read_name(static_cast<content_build::ClassRead>(k));
+    for (u32 j = 0; j < per_kind; ++j) {
+      const char* key = keys[k * per_kind + j];
+      u32 i = 0;
+      for (; name[i] != '\0'; ++i)
+        if (key[i] != name[i]) return false;
+      if (key[i] != '.') return false;
+    }
+  }
+  return true;
+}
+
+// **The class read's measurement** (C72): one line, typed fields, for each kind of read how many
+// were asked for, found a file, the bytes and the milliseconds, beside the distinct paths and the
+// stage's own milliseconds.
+void log_class_reads(const SceneLoadReport& load) {
+  constexpr log::Level k_level = log::Level::Info;
+  if (!log_renderer.enabled(k_level)) return;
+  // A procedural scene with no ground reads nothing, and says nothing.
+  if (load.class_paths == 0 && load.class_reads[content_build::ClassRead::ground_inputs].asked == 0)
+    return;
+  constexpr u32 k_per_kind = 4;
+  constexpr u32 k_fields = 2 + k_per_kind * content_build::k_class_read_kinds;
+  // The keys outlive the emit: string literals, `<kind>.<what>`.
+#define ENGINE_CLASS_READ_KEYS(kind) kind ".asked", kind ".found", kind ".bytes", kind ".ms"
+  // Unsized, so a kind added without its keys fails the assertion below instead of leaving null
+  // keys at the end of a sized array; static, so the second assertion can read it.
+  static constexpr const char* k_keys[] = {
+      ENGINE_CLASS_READ_KEYS("container_section"), ENGINE_CLASS_READ_KEYS("container_sidecar"),
+      ENGINE_CLASS_READ_KEYS("recipe_file"),       ENGINE_CLASS_READ_KEYS("recipe_sidecar"),
+      ENGINE_CLASS_READ_KEYS("pack_sets"),         ENGINE_CLASS_READ_KEYS("host_probe"),
+      ENGINE_CLASS_READ_KEYS("host_record"),       ENGINE_CLASS_READ_KEYS("gltf_sidecar"),
+      ENGINE_CLASS_READ_KEYS("ground_inputs"),     ENGINE_CLASS_READ_KEYS("ahead_answer"),
+      ENGINE_CLASS_READ_KEYS("walk_probe")};
+#undef ENGINE_CLASS_READ_KEYS
+  static_assert(
+      sizeof(k_keys) / sizeof(k_keys[0]) == k_per_kind * content_build::k_class_read_kinds,
+      "every kind of class read has its four keys");
+  static_assert(class_read_keys_name_kinds(k_keys, k_per_kind),
+                "every kind's keys spell its name, in the enum's order");
+  log::Field fields[k_fields];
+  fields[0] = log::field("paths", load.class_paths);
+  fields[1] = log::field("ms", load.classes_ms);
+  for (u32 k = 0; k < content_build::k_class_read_kinds; ++k) {
+    const content_build::ClassReadCount& c = load.class_reads.kinds[k];
+    fields[2 + k * k_per_kind + 0] = log::field(k_keys[k * k_per_kind + 0], c.asked);
+    fields[2 + k * k_per_kind + 1] = log::field(k_keys[k * k_per_kind + 1], c.found);
+    fields[2 + k * k_per_kind + 2] = log::field(k_keys[k * k_per_kind + 2], c.bytes);
+    fields[2 + k * k_per_kind + 3] =
+        log::field(k_keys[k * k_per_kind + 3], static_cast<f64>(c.ns) / 1.0e6);
+  }
+  // `ENGINE_LOG_INFO` takes its fields as arguments; these are an array, so the emit is direct.
+  log::emit(log_renderer, k_level, __FILE__, static_cast<u32>(__LINE__), "content classes read",
+            std::span<const log::Field>(fields, k_fields));
+}
+
 // The source a proxy box stands in with: one material, every cluster its one part, no image, no
 // container to page from, no motion, no seat, no far form.
 SourceMesh proxy_source(const geometry::ClusterLodMesh& box) {
@@ -337,7 +453,12 @@ SourceMesh proxy_source(const geometry::ClusterLodMesh& box) {
 }  // namespace
 
 bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmission& state,
-                             std::string& error) {
+                             std::string& error, jobs::JobSystem* pool) {
+  // **A stage of its own** (C72; profiling.md, "The trace is live"), its items the distinct paths
+  // read, so a trace names the class read's time.
+  ENGINE_STARTUP_STAGE("content classes");
+  const i64 start_ns = time::monotonic_ns();
+  state.reads = content_build::ClassReads{};
   out.instantiated_under = desc.view_policy;
   out.categories = content_class::Categories();
   out.held = content_class::ContentClasses{};
@@ -351,6 +472,7 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
   // per-mesh read cost 0.46 ms a mesh in `msvc-debug` before this, measured on such a scene).
   // `first[m]` is the first mesh of `m`'s path, `m` itself for the first and for the ground.
   Vector<u32> first(meshes, 0u);
+  u32 distinct = 0;
   {
     HashMap<u64, u32> first_of_path;
     for (u32 m = 0; m < meshes; ++m) {
@@ -362,8 +484,10 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
         first_of_path.try_emplace(path_hash, m);
       else if (desc.meshes[*at] == path)
         first[m] = *at;
+      if (first[m] == m) ++distinct;
     }
   }
+  profiling::trace_items(distinct);
   state.ground.assign(meshes, u8{0});
   state.probe.resize(meshes);
   state.loaded.resize(meshes);
@@ -388,9 +512,27 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
     const std::string& path = desc.meshes[m];
     if (first[m] == m && !path.empty() && !is_generated_mesh(path) &&
         io::extension(path) == ".clusters")
-      state.mesh[m] = container_section(path, out.categories, &state.probe[m]);
+      state.mesh[m] = container_section(path, out.categories, &state.probe[m], &state.reads);
   }
   content_build::HostReads host_reads;
+  host_reads.counts = &state.reads;
+  // **The reads leave the serial loop** (C72): every distinct recipe's file (or its handed bytes)
+  // read and its generator's hash run under the probe's hooks on the load's pool, each into its own
+  // slot, and the hosts they name in waves; the round below then walks in listed order exactly as
+  // before, taking each answer from those slots, so what it learns and refuses is the same at any
+  // thread count. On the forest's scene this was 63 of the pass's 67 s, one recipe after another.
+  {
+    Vector<content_build::RecipeAsk> asks;
+    for (u32 m = 0; m < meshes; ++m) {
+      const std::string& path = desc.meshes[m];
+      if (first[m] != m || path.empty() || !is_generated_mesh(path)) continue;
+      const MeshRecipe* handed = handed_recipe(desc, path);
+      asks.push_back(content_build::RecipeAsk{&path, handed != nullptr ? &handed->bytes : nullptr});
+    }
+    content_build::probe_recipes_ahead(
+        std::span<const content_build::RecipeAsk>(asks.data(), asks.size()), recipe_options,
+        host_reads, pool);
+  }
   for (u32 m = 0; m < meshes; ++m) {
     const std::string& path = desc.meshes[m];
     // A refusal here is the class read's below, by the same reads, which says why. A recipe the
@@ -400,6 +542,8 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
     (void)content_build::learn_source_hosts(path, recipe_options, out.categories, host_reads,
                                             handed != nullptr ? &handed->bytes : nullptr);
   }
+  // The table is finished: the pack's sets are read against it once, not once a recipe (C72).
+  content_build::keep_pack_classes(recipe_options, host_reads);
   // Then the classes, in mesh order, against the finished table: every sidecar, pack and ground.
   for (u32 m = 0; m < meshes; ++m) {
     const std::string& path = desc.meshes[m];
@@ -409,7 +553,7 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
       // them is; its cache key and the entry the load builds hold that class, as a mesh's do.
       if (!desc.terrain.enabled) continue;
       state.ground[m] = 1;
-      state.mesh[m] = ground_class(desc.terrain, out.categories);
+      state.mesh[m] = ground_class(desc.terrain, out.categories, &state.reads);
       if (!content_class::is_none(state.mesh[m].classes)) {
         state.mesh_hash[m] = content_class::class_hash(out.categories, state.mesh[m].classes);
         content_class::encode_classes(out.categories, state.mesh[m].classes, nullptr,
@@ -440,11 +584,11 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
     } else if (io::extension(path) == ".clusters") {
       // Its section 54 was read in round one; one the probe could not open stays `none` here.
       if (state.probe[m].opened)
-        state.mesh[m] =
-            with_container_sidecar(path, state.mesh[m], out.categories, &state.probe[m]);
+        state.mesh[m] = with_container_sidecar(path, state.mesh[m], out.categories, &state.probe[m],
+                                               &host_reads);
     } else {
       Vector<content_class::MaterialClass> materials;
-      state.mesh[m] = read_sidecar_class(path, out.categories, &materials);
+      state.mesh[m] = read_sidecar_class_counted(path, out.categories, &materials, &host_reads);
       // What a classified glTF's cache entry is keyed by, and holds (C62's rule): the class by
       // name, only when there is one, so an unclassified source keeps its key.
       if (!content_class::is_none(state.mesh[m].classes)) {
@@ -487,6 +631,11 @@ bool admission_before_meshes(const SceneDesc& desc, SceneData& out, LoadAdmissio
         !content_class::read_classes(out.categories, desc.raises[r], state.raises[r].classes, why);
     state.classified = state.classified || !content_class::is_none(state.raises[r].classes);
   }
+  // Every read the class read made is in: the measurement, once (C72).
+  out.load.class_paths = distinct;
+  out.load.class_reads = state.reads;
+  out.load.classes_ms = static_cast<f64>(time::monotonic_ns() - start_ns) / 1.0e6;
+  log_class_reads(out.load);
   // Which meshes are read: one an instance would draw (admitted or proxied: a proxy needs the
   // mesh's bounds), or one no instance names whose own class admits it.
   Vector<u8> named(meshes, u8{0});

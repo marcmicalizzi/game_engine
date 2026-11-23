@@ -3452,8 +3452,12 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   }
   // **Content classes, before any geometry is read** (C64; renderer.md, "Content classes at
   // load"): each mesh's own class, the scene's policy and table, and which meshes are read at all.
+  // One pool for the whole load, made first: the class read's file reads run on it (C72), then
+  // the mesh jobs, then the texture pass's.
+  std::optional<jobs::JobSystem> pool;
+  pool.emplace(content_build::job_config(resolved.load_jobs));
   LoadAdmission admission;
-  if (!admission_before_meshes(resolved, out, admission, error)) return false;
+  if (!admission_before_meshes(resolved, out, admission, error, &*pool)) return false;
   if (admission.ground_refused) {
     // **A ground the policy refuses is left out whole** (C64): not built, so nothing of it is in
     // a cache entry, a texture or the picture, and no ring, tile or world tile draws its shape.
@@ -3472,10 +3476,8 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   // finished first, and the first failure reported is the lowest mesh index's, as the serial loop
   // reported it. A path a later mesh repeats loads in a second wave, after the first has written
   // the entry it shares, so it is a cache hit as it was serially rather than a second build of the
-  // same entry. One pool for the whole load: these jobs, then the texture pass's.
+  // same entry.
   const i64 meshes_start_ns = time::monotonic_ns();
-  std::optional<jobs::JobSystem> pool;
-  pool.emplace(content_build::job_config(resolved.load_jobs));
   out.load.meshes = resolved.meshes.size();
   out.load.threads = pool->total_worker_count() + 1;
   out.load.instances_floating = resolved.instances_floating;

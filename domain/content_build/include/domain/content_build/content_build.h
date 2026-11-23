@@ -29,6 +29,7 @@
 #include <core/jobs/job_system.h>
 #include <core/json/json_value.h>
 #include <domain/atlas/repack.h>
+#include <domain/content_build/class_reads.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/geometry/cluster_pages.h>
@@ -299,7 +300,57 @@ struct HostReads {
   HashMap<u64, u32> record_of;  // a container host's path's hash: its index in `records`
   Vector<std::string> record_paths;
   Vector<Record> records;
+  // Where the reads made through this are counted by kind (C72; `class_reads.h`), or null. Written
+  // through a const `HostReads` too: the class read counts what it reads.
+  ClassReads* counts = nullptr;
+  // **Probes made ahead** (C72; `probe_recipes_ahead`): a recipe's file read and its generator's
+  // hash run under the probe's hooks, by its path and by whether its bytes were handed, so the
+  // teaching round takes the answer it would have computed at that moment instead of computing it
+  // there. Only the reads move: which probe the round keeps, and in what order, is the round's.
+  struct Ahead {
+    std::string path;
+    bool handed = false;
+    bool ok = false;
+    std::string why;
+    Vector<std::string> hosts;
+  };
+  HashMap<u64, u32> ahead_of;  // the path's hash, moved by `handed`: its index in `ahead`
+  Vector<Ahead> ahead;
+  // **The pack's sets' classes, read once a load** (C72; `keep_pack_classes`): what every recipe
+  // over `pack` joins, read against a table of `category_count` categories that no longer grows.
+  struct PackClasses {
+    const materials::Pack* pack = nullptr;
+    const content_class::Categories* categories = nullptr;
+    u32 category_count = 0;
+    bool ok = false;
+    std::string why;
+    content_class::ContentClasses classes;
+  };
+  bool pack_kept = false;
+  PackClasses pack;
 };
+
+// What `probe_recipes_ahead` is asked for: a recipe's path, and its bytes when a caller hands them.
+struct RecipeAsk {
+  const std::string* path = nullptr;
+  const std::string* handed = nullptr;
+};
+
+// **The teaching round's reads, made ahead and in parallel** (C72): every recipe of `asks` that a
+// generator makes has its file read (or its handed bytes taken) and its generator's hash run under
+// the class probe's hooks on `pool` (null: on the calling thread), each into its own slot of
+// `reads.ahead`, and then, in waves, every recipe host those probes name that is not probed yet,
+// to `k_host_depth`. Nothing is learned and nothing is kept for the round: `learn_source_hosts`
+// then walks exactly as it would have, taking each answer from here, so what it learns, refuses
+// and keeps does not depend on the thread count. Counted into `reads.counts` after the waves.
+void probe_recipes_ahead(std::span<const RecipeAsk> asks, const MeshOptions& options,
+                         HostReads& reads, jobs::JobSystem* pool);
+
+// **The pack's sets' classes, once** (C72): `options.materials`'s sets read against
+// `categories_of(options)` and kept in `reads.pack`, so a class read given `reads` joins them
+// without reading `pack.json` again. Call it after the teaching rounds, when the table no longer
+// grows; a read whose pack or table differs from the kept one reads its own.
+void keep_pack_classes(const MeshOptions& options, HostReads& reads);
 
 // **A teaching round** (C64): every container host `source`'s generator names, the whole chain to
 // `k_host_depth`, in the order `read_source_classes` meets them, its section 54 learned into
