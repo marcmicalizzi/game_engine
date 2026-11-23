@@ -39,6 +39,7 @@
 #include <foundation/input/input.h>
 #include <foundation/io/vfs.h>
 
+#include <atomic>
 #include <span>
 #include <string>
 #include <string_view>
@@ -49,8 +50,15 @@ namespace engine::input {
 // Bumped when the line format changes. A log from a newer version is refused. Version 2 (T216) is
 // a journal's (`InputLogJournal`): version 1's lines and `{"through":<tick>}` lines between them.
 // `save` still writes version 1, so a log saved whole is the bytes it always was.
+//
+// **What a bump owes the save** (T216's review, L3): `k_log_version` is what the loader reads and
+// `k_saved_log_version` what `save` writes (the save corpus pins the second). A change to the
+// lines `save` writes bumps `k_saved_log_version` too, with a migration row in the save table; a
+// change to the journal's lines alone (through lines and what follows them) bumps this one only.
 inline constexpr u32 k_log_version = 2;
 inline constexpr u32 k_saved_log_version = 1;
+static_assert(k_saved_log_version <= k_log_version,
+              "input log: a save may not write a version the loader refuses");
 inline constexpr const char* k_log_type = "engine.input.log";
 
 // The most ticks from a loaded log's first event to its last (T190): seven days at the 240 Hz a
@@ -116,6 +124,21 @@ class InputLog {
   SimTick through() const noexcept { return through_; }
   bool has_through() const noexcept { return has_through_; }
 
+  // **A journal's torn tail** (T216's review, M1; input.md, "A journal"). A process that ends in
+  // the middle of an append leaves a last line cut, or events with no through line after them. A
+  // version-2 log loads to its last whole through line and drops the rest: the unterminated or
+  // unparsable last line and every event after that through line, which the session had not yet
+  // vouched for. What was dropped is here, and the load logs it once by name (`input.log`, "input
+  // log: a journal's torn tail was dropped", with the path and these fields). A version-1 log is
+  // a whole save and stays strict: a cut line refuses it.
+  struct DroppedTail {
+    bool dropped = false;
+    SimTick through{0};  // the last whole through tick (zero with none), where a replay stops
+    u64 events = 0;      // whole events after it, dropped
+    u64 bytes = 0;       // the bytes after that line, dropped
+  };
+  const DroppedTail& dropped_tail() const noexcept { return dropped_; }
+
   io::Status save(std::string_view native_path) const;
   // Replaces the log's contents. On failure the log is left empty and `error` says why.
   io::Status load(std::string_view native_path, std::string* error = nullptr);
@@ -136,6 +159,7 @@ class InputLog {
   JsonValue session_;
   SimTick through_{0};
   bool has_through_ = false;
+  DroppedTail dropped_;
 };
 
 // **A recording that reaches the disk as it is made** (roadmap T216; docs/subsystems/input.md,
@@ -170,6 +194,12 @@ class InputLogJournal {
   // Writes `events` (in tick order, ticks not before the last append's) and a through line.
   io::Status append(std::span<const RawEvent> events, SimTick through) noexcept;
   void close() noexcept;
+  // **Taken by a session's end** (T216's review, H1): closes the journal for good. `open` refuses
+  // from then on, so a recorder that steps once more cannot reopen the path — an open truncates —
+  // over the whole log the session's end is writing there, or over the journal it left standing.
+  // Set before the close, and read by the recorder (`taken`) before it opens or appends.
+  void take() noexcept;
+  bool taken() const noexcept { return taken_.load(std::memory_order_acquire); }
   bool is_open() const noexcept { return file_ != nullptr; }
   // What has been written: events and through lines, and the last tick a through line named.
   u64 events_written() const noexcept { return events_written_; }
@@ -182,6 +212,7 @@ class InputLogJournal {
   u64 appends_ = 0;
   SimTick through_{0};
   bool failed_ = false;
+  std::atomic<bool> taken_{false};
 };
 
 }  // namespace engine::input
