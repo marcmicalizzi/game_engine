@@ -9,6 +9,7 @@
 #include <core/schema/json_text.h>
 #include <domain/audio/audio.h>
 #include <foundation/io/vfs.h>
+#include <systems/world_sound/path.h>
 #include <systems/world_sound/world_sound.h>
 
 #include <cmath>
@@ -411,6 +412,15 @@ bool SoundStage::open(const StageConfig& config, const scene::Sound* block, std:
   audio::MixerConfig mixer_config;
   mixer_config.voices = config.voices;
   mixer_config.layout = audio::ChannelLayout::Stereo;
+  // A game's clips lose their top with distance as the world's voices do (S114; world_sound.md,
+  // "Distance"): the mixer's one-pole by distance, at the air the world is heard in.
+  {
+    const FieldConfig air = field_config_from_tunables();
+    if (air.path) {
+      mixer_config.air_db_per_m_8k =
+          static_cast<f32>(air_absorption_db_per_m(8000.0, air.temperature_c, air.humidity_pct));
+    }
+  }
   audio::OutputConfig output_config;
   output_config.backend = audio::OutputBackend::Null;
   if (config.mode == AudioMode::Device) {
@@ -649,6 +659,10 @@ bool SoundStage::close(std::string* error) {
 void SoundStage::set_canopy(const CanopySource& canopy) noexcept {
   impl_->field.set_canopy(canopy);
 }
+
+void SoundStage::set_shelter(const ShelterSource& shelter) noexcept {
+  impl_->field.set_shelter(shelter);
+}
 void SoundStage::set_wind(const WorldWind& wind) noexcept { impl_->field.set_wind(wind); }
 const WorldStats& SoundStage::world_stats() const noexcept { return impl_->field.stats(); }
 u32 SoundStage::world_voice_count() const noexcept { return impl_->field.voice_count(); }
@@ -716,6 +730,7 @@ JsonValue SoundStage::summary_json() const {
     world.set("held_db", JsonValue(static_cast<f64>(w.held_db)));
     world.set("held_ticks", JsonValue(w.held_ticks));
     world.set("place_retries", JsonValue(w.place_retries));
+    world.set("shelter", JsonValue(static_cast<f64>(w.shelter)));
     out.set("world", std::move(world));
   }
   out.set("stopped", JsonValue(s.stopped));

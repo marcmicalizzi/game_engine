@@ -681,4 +681,35 @@ TEST_CASE("engine-view: a crown's class is the mesh's own word, then its species
   CHECK_FALSE(view::canopy_class_of(3, 0.0f, "pine", kind, needle));  // None
 }
 
+namespace {
+
+// A case's own world for the ears' shelter (S114): open ground at y = 0, a wall 3 m high and 40 m
+// long across the x axis at z 4.8 to 5.2, and a trunk's proxy 10 m high and 0.3 m round at
+// (0, 10). A downward cast meets the highest of them under its origin.
+bool shelter_world(const void*, WorldPos origin, f32 length, view::WalkCast& out) {
+  out = view::WalkCast{};
+  f64 top = 0.0;
+  if (origin.z >= 4.8 && origin.z <= 5.2 && std::fabs(origin.x) <= 20.0) top = 3.0;
+  if (std::hypot(origin.x, origin.z - 10.0) <= 0.3) top = 10.0;
+  if (origin.y - top > static_cast<f64>(length)) return true;
+  out.hit = true;
+  out.position = WorldPos{origin.x, top, origin.z};
+  return true;
+}
+
+}  // namespace
+
+TEST_CASE("engine-view: the ears' shelter is a wall across the wind, never one trunk") {
+  // The wind along z, across it x: three casts a pace apart across the wind each meet the wall,
+  // and only the middle one meets the trunk.
+  CHECK(view::shelter_height_at(&shelter_world, nullptr, 0.0, 0.0, 5.0, 1.0f, 0.0f) == 3.0f);
+  CHECK(view::shelter_height_at(&shelter_world, nullptr, 0.0, 0.0, 10.0, 1.0f, 0.0f) == 0.0f);
+  CHECK(view::shelter_height_at(&shelter_world, nullptr, 0.0, 0.0, 20.0, 1.0f, 0.0f) == 0.0f);
+  // Measured from the feet: standing 1 m up a bank, the wall is 2 m over them.
+  CHECK(view::shelter_height_at(&shelter_world, nullptr, 1.0, 0.0, 5.0, 1.0f, 0.0f) == 2.0f);
+  // With the wind along x the casts run along z, off the wall's 0.4 m: no shelter.
+  CHECK(view::shelter_height_at(&shelter_world, nullptr, 0.0, 0.0, 5.0, 0.0f, 1.0f) == 0.0f);
+  CHECK(view::shelter_height_at(nullptr, nullptr, 0.0, 0.0, 5.0, 1.0f, 0.0f) == 0.0f);
+}
+
 #endif  // ENGINE_VIEW_GAME && ENGINE_VIEW_WORLD_SOUND

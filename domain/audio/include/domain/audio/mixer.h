@@ -145,7 +145,19 @@ struct MixerConfig {
   // `audio.field_ramp_ms` (50 ms: three ticks at 60 a second, since a world field is described
   // again every tick and a 10 ms ramp would stair-step it).
   u32 field_ramp_frames = 0;
+  // **The air's low-pass by distance on clip voices** (S114; world_sound.md, "Distance"): the air's
+  // absorption at 8 kHz in dB a metre (ISO 9613-1 at the host's air: 0.0776 at 20 degC and 70 %).
+  // A 3D voice whose distance model is not `None` passes a one-pole low-pass whose loss at 8 kHz
+  // is the air's over its distance (`air_lowpass_coefficient`). 0, the default, filters nothing and
+  // leaves every byte as it was.
+  f32 air_db_per_m_8k = 0.0f;
 };
+
+// The one-pole's coefficient `a` of y += a (x - y) for a voice `distance_m` away in air taking
+// `air_db_per_m_8k`: the corner whose loss at 8 kHz, 10 log10(1 + (8000 / fc)^2), is the air's
+// there, a = 1 - e^(-2 pi fc / 48000). 1 (nothing taken) at no loss. `+ - * /`, a correctly
+// rounded square root and ldexp only, so it is the same bits on every toolchain.
+f32 air_lowpass_coefficient(f32 distance_m, f32 air_db_per_m_8k) noexcept;
 
 // A shaped-noise voice's start (noise_voice.h): it loops until stopped, and is a source like a
 // clip's, with a gain, a bus, a priority and a spatial block.
@@ -412,7 +424,9 @@ class Mixer {
   Vector<SourceSpatial> sources_;
   Vector<NoiseState> noise_;   // a shaped-noise voice's state, by slot (noise_voice.h)
   Vector<f32> decoder_state_;  // voices x decoder_->state_floats
-  Vector<f32> scratch_;        // one voice's signal for one block: k_max_block_frames x 2
+  Vector<f32> air_state_;      // the air's low-pass, two channels a voice (S114)
+  f32 air_db_per_m_8k_ = 0.0f;
+  Vector<f32> scratch_;  // one voice's signal for one block: k_max_block_frames x 2
   Vector<u8> bus_parent_;
   Vector<f32> bus_gain_;
   Vector<f32> bus_effective_;

@@ -324,6 +324,38 @@ u64 hash_mix(ChannelLayout layout, std::span<const f32> samples) noexcept {
 
 // ---- construction -------------------------------------------------------------------------------
 
+namespace {
+
+// 2^x by an integer power of two (ldexp, exact) times e^(r ln 2) for the fraction r in [0, 1) by
+// fifteen terms of its series (the last under 1e-14): no `exp` or `pow` from the C library, whose
+// last bits MSVC and glibc may disagree about (audio.md, "Determinism").
+f64 exp2_series(f64 x) noexcept {
+  if (!(x > -1000.0)) return 0.0;
+  if (x > 1000.0) x = 1000.0;
+  const f64 n = std::floor(x);
+  const f64 y = (x - n) * 0.69314718055994530942;
+  f64 term = 1.0;
+  f64 sum = 1.0;
+  for (u32 k = 1; k <= 15; ++k) {
+    term = term * y / static_cast<f64>(k);
+    sum += term;
+  }
+  return std::ldexp(sum, static_cast<int>(n));
+}
+
+}  // namespace
+
+f32 air_lowpass_coefficient(f32 distance_m, f32 air_db_per_m_8k) noexcept {
+  const f64 loss = static_cast<f64>(distance_m) * static_cast<f64>(air_db_per_m_8k);
+  if (!(loss > 1e-6)) return 1.0f;
+  // 10^(loss / 10) - 1 = (8000 / fc)^2: the one-pole's loss at 8 kHz is the air's.
+  const f64 ratio = exp2_series(loss * 0.33219280948873623479) - 1.0;  // log2(10) / 10
+  const f64 fc = 8000.0 / std::sqrt(ratio);
+  const f64 w = 2.0 * 3.14159265358979323846 * fc / static_cast<f64>(k_sample_rate);
+  const f64 a = 1.0 - exp2_series(-w * 1.44269504088896340736);  // e^-w as 2^(-w log2 e)
+  return static_cast<f32>(a < 1.0 ? a : 1.0);
+}
+
 Mixer::Mixer(ClipStore& clips, const MixerConfig& config)
     : clips_(&clips),
       layout_(&layout_info(config.layout)),
@@ -369,6 +401,8 @@ Mixer::Mixer(ClipStore& clips, const MixerConfig& config)
   if (stream_count_ != 0) streams_ = std::make_unique<Stream[]>(stream_count_);
   decoder_state_.resize_exact(voices * decoder_->state_floats, 0.0f);
   scratch_.resize_exact(k_max_block_frames * 2u, 0.0f);
+  air_db_per_m_8k_ = config.air_db_per_m_8k > 0.0f ? config.air_db_per_m_8k : 0.0f;
+  if (air_db_per_m_8k_ > 0.0f) air_state_.resize_exact(voices * 2u, 0.0f);
 
   std::span<const BusDesc> buses = config.buses.empty() ? default_buses() : config.buses;
   bool well_formed = buses.size() <= 255u && buses[0].parent == k_no_parent;
@@ -1192,6 +1226,28 @@ void Mixer::mix_block(f32* out, u32 frames) noexcept {
     if (!two_d) {
       in.spatial = spatialize(source, listener_);
       in.gain *= in.spatial.attenuation;
+      // The air's low-pass by distance (S114): a clip voice's, not a world voice's (those carry
+      // their path in their bands and use the `None` model).
+      if (air_db_per_m_8k_ > 0.0f && source.distance_model != DistanceModel::None &&
+          (v.flags & k_voice_noise) == 0) {
+        const Vec3 offset = source.position - listener_.position;
+        const f32 a = air_lowpass_coefficient(std::sqrt(dot(offset, offset)), air_db_per_m_8k_);
+        f32* state = air_state_.data() + static_cast<usize>(s) * 2u;
+        if (in.fresh) {
+          state[0] = 0.0f;
+          state[1] = 0.0f;
+        }
+        const u32 ch = v.channels == 2 ? 2u : 1u;
+        for (u32 c = 0; c < ch; ++c) {
+          f32 y = state[c];
+          for (u32 f = 0; f < frames; ++f) {
+            f32& x = signal[static_cast<usize>(f) * ch + c];
+            y = y + a * (x - y);
+            x = y;
+          }
+          state[c] = y;
+        }
+      }
     }
 
     // 3. The decode stage: the one place that knows the layout (decoder.h, the second seam).
