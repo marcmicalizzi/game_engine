@@ -426,6 +426,11 @@ class Walker {
   // without physics, before `start`). Read only, like `cast_boom`: a session and its replay walk
   // the same whether a module asks or not.
   bool cast(WorldPos origin, Vec3 direction, f32 length, f32 radius, WalkCast& out) const noexcept;
+  // **The collision's ground at (x, z)** (S114, the ears' shelter): the height of the heightfield
+  // the casts meet as `WalkCast::what` 1 (`SceneCollision::ground_height`), false where no tile the
+  // collision holds covers the point, over a hole, and with no collision world. Read only, like
+  // `cast`; unlike `ground_height` it asks no provider and counts no query.
+  bool collision_ground(f64 x, f64 z, f64& out) const noexcept;
   // **The supports within `radius` of `at`** over the tiles the collision holds
   // (scene_collision.h, `supports_near`), at most `out.size()` of them and at most
   // `k_max_walk_supports`, nearest first. False where `cast` is.

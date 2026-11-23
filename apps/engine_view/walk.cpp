@@ -896,6 +896,15 @@ bool Walker::cast(WorldPos origin, Vec3 direction, f32 length, f32 radius,
   return true;
 }
 
+bool Walker::collision_ground(f64 x, f64 z, f64& out) const noexcept {
+  const Impl& w = *impl_;
+  if (!w.physical) return false;
+  f32 height = 0.0f;
+  if (!w.consumer.ground_height(WorldPos{x, 0.0, z}, height)) return false;
+  out = static_cast<f64>(height);
+  return true;
+}
+
 bool Walker::supports(WorldPos at, f32 radius, f32 min_size, std::span<WalkSupport> out,
                       WalkSupports& answer) const noexcept {
   const Impl& w = *impl_;
@@ -955,6 +964,7 @@ bool Walker::door_by_key(u64, WalkDoor&) const noexcept { return false; }
 u32 Walker::door_nearest(WorldPos, f32) const noexcept { return k_no_walk_index; }
 bool Walker::request_door_toggle(u64) noexcept { return false; }
 bool Walker::cast(WorldPos, Vec3, f32, f32, WalkCast&) const noexcept { return false; }
+bool Walker::collision_ground(f64, f64, f64&) const noexcept { return false; }
 bool Walker::supports(WorldPos, f32, f32, std::span<WalkSupport>, WalkSupports&) const noexcept {
   return false;
 }
