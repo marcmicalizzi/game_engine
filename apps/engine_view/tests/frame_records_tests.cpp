@@ -19,6 +19,7 @@
 #include <test_temp_dir.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string_view>
@@ -479,6 +480,72 @@ TEST_CASE("engine-view: the recording's journal is on disk every half second and
   REQUIRE(whole.load(held.record_input) == io::Status::Ok);
   CHECK_FALSE(whole.has_through());
   CHECK(whole.size() == recording.size());
+}
+
+// T216's review, H1: the fault's turn takes the journal and saves the whole log over it; a frame
+// side that steps the journal once more after that (a fault off the frame's thread before the
+// mend, or a lost device met on a load's job thread) reopened the path with truncation and left
+// half a second of input. Now it writes nothing, and the file is no shorter and loads whole.
+TEST_CASE("engine-view: a journal the fault's turn took is never reopened or truncated") {
+  const test::TempDir tmp("engine_view_journal_taken");
+  input::InputLog recording;
+  view::RecordingJournal journal;
+  view::LostRecords held;
+  held.recording = &recording;
+  held.record_input = tmp.file("walk.jsonl");
+  held.finish_recording = [](void*, input::InputLog& log) {
+    view::SessionHeader header;
+    log.set_map(view::default_fly_map());
+    log.set_session(view::session_to_json(header));
+  };
+  held.journal = &journal.file;
+  u32 appends = 0;
+  for (u64 tick = 4; tick <= 600; tick += 4) {
+    recording.record(input::RawEvent{SimTick{tick}, input::Source::MouseAxis, 0, 0.25f, 0});
+    if (view::journal_step(journal, recording, held, tick, 0)) ++appends;
+  }
+  REQUIRE(appends == 4);
+  // The fault's turn, on the frame side: taken, and the whole log saved over it.
+  REQUIRE(view::save_lost_recording(held) == io::Status::Ok);
+  const auto saved_bytes = std::filesystem::file_size(held.record_input);
+  const u32 saved_events = recording.size();
+  // The frame side steps on: past the half second, and with a mark.
+  for (u64 tick = 604; tick <= 840; tick += 4) {
+    recording.record(input::RawEvent{SimTick{tick}, input::Source::MouseAxis, 0, 0.25f, 0});
+    CHECK_FALSE(view::journal_step(journal, recording, held, tick, tick == 700 ? 1 : 0));
+  }
+  CHECK_FALSE(journal.file.is_open());
+  CHECK(std::filesystem::file_size(held.record_input) >= saved_bytes);
+  input::InputLog left;
+  std::string error;
+  REQUIRE_MESSAGE(left.load(held.record_input, &error) == io::Status::Ok, error);
+  CHECK(left.size() == saved_events);
+  CHECK(left.last_tick().value == 600);
+}
+
+// T216's review, H1: the hook knows the frame's thread by the id `loop_at` stores, and a fault on
+// any other thread neither reads nor writes what that thread grows.
+TEST_CASE("engine-view: a fault off the frame's thread leaves the records and the marks alone") {
+  view::LoopState& s = view::loop_state();
+  const u64 before = s.frame_thread.load();
+  platform::CrashInfo info;
+  info.thread_id = platform::current_thread_id();
+  s.frame_thread.store(0);
+  CHECK(view::frame_side_still(info));  // before the first frame nothing grows them
+  view::loop_at(5, 20);
+  CHECK(s.frame_thread.load() == platform::current_thread_id());
+  CHECK(view::frame_side_still(info));
+  info.thread_id = platform::current_thread_id() + 1;
+  CHECK_FALSE(view::frame_side_still(info));
+  const JsonValue block = view::crashed_json(info, {}, nullptr, false);
+  CHECK(block.find("frame_thread")->as_bool() == false);
+  CHECK(block.find("frames_recorded")->is_null());
+  CHECK(block.find("last_recorded_frame")->is_null());
+  CHECK(block.find("marks")->is_null());
+  u64 frame = 0;
+  REQUIRE(block.find("frame")->get_u64(frame));
+  CHECK(frame == 5);
+  s.frame_thread.store(before);
 }
 
 TEST_CASE(

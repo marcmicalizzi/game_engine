@@ -107,14 +107,20 @@ std::span<const scene::FrameRecord> held_records(const LostRecords& held) {
 // under `key`; `before_input` (the vendor's dump, which the report names); the input log stamped as
 // the loop's normal end stamps it, so a replay takes it (T212's H1); the records with the block as
 // their last line; the startup trace.
+//
+// `frame_side` false (a fault off the frame's thread, `frame_side_still`): the report alone — its
+// frame times are fixed bins the frame thread adds to without allocating — and the trace; the
+// input log, the records and the records' frames are another thread's and are not touched.
 void write_session_end(RunReport* report, const char* reason, i32 exit_code,
                        const std::string& error_line, const char* key, const JsonValue& block,
-                       void (*before_input)(const void*), const void* before_context) {
+                       void (*before_input)(const void*), const void* before_context,
+                       bool frame_side = true) {
   const LostRecords& held = lost_records();
-  const std::span<const scene::FrameRecord> records = held_records(held);
+  const std::span<const scene::FrameRecord> records =
+      frame_side ? held_records(held) : std::span<const scene::FrameRecord>();
   // 1. The report: small, and the file a tester sends back (T212's review, M3).
   if (report != nullptr && !report->path.empty()) {
-    if (held.report_frames_from_records) {
+    if (frame_side && held.report_frames_from_records) {
       for (const scene::FrameRecord& r : records) {
         report->frames.add(r.frame_ms);
         report->long_frames.add(r);
@@ -137,10 +143,10 @@ void write_session_end(RunReport* report, const char* reason, i32 exit_code,
   // 2. Whatever the report names that is written after it.
   if (before_input != nullptr) before_input(before_context);
   // 3. The input log.
-  if (save_lost_recording(held) != io::Status::Ok)
+  if (frame_side && save_lost_recording(held) != io::Status::Ok)
     std::fprintf(stderr, "engine-view: cannot write %s\n", held.record_input.c_str());
   // 4. The records, the largest, with the block as their last line.
-  if (!held.benchmark.empty()) {
+  if (frame_side && !held.benchmark.empty()) {
     JsonValue last = JsonValue::object();
     last.set(key, block);
     if (write_benchmark(held.benchmark, records,
@@ -208,10 +214,20 @@ void on_crash(void* context, const platform::CrashInfo& info) {
   std::fflush(stderr);
   log::flush();
   RunReport* report = static_cast<RunReport*>(context);
+  // A fault off the frame's thread leaves that thread running: its records, recording, journal and
+  // marks are not this hook's to read or write (T216's review, H1; session_records.h).
+  const bool frame_side = frame_side_still(info);
+  if (!frame_side) {
+    std::fprintf(stderr,
+                 "engine-view: the fault is off the frame's thread; the input journal and the "
+                 "frame records stay as they stand on disk\n");
+  }
   const LostRecords& held = lost_records();
-  const JsonValue block = crashed_json(info, held_records(held), held.marks);
+  const JsonValue block = frame_side ? crashed_json(info, held_records(held), held.marks)
+                                     : crashed_json(info, {}, nullptr, false);
   write_session_end(report, "crashed", platform::k_exit_crashed,
-                    std::string("crashed: ") + info.what, "crashed", block, nullptr, nullptr);
+                    std::string("crashed: ") + info.what, "crashed", block, nullptr, nullptr,
+                    frame_side);
   // Returns: the platform ends the process with platform::k_exit_crashed.
 }
 

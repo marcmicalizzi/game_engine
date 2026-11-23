@@ -109,6 +109,7 @@ void loop_at(u64 frame, u64 tick) noexcept {
   s.frame.store(frame, std::memory_order_relaxed);
   s.tick.store(tick, std::memory_order_relaxed);
   s.doing.store("frame", std::memory_order_relaxed);
+  s.frame_thread.store(platform::current_thread_id(), std::memory_order_relaxed);
   const TestFaultAt fault = test_fault();
   if (fault.kind == TestFault::none || fault.frame != frame) return;
   std::fprintf(stderr, "engine-view: the test seam faults at frame %llu\n",
@@ -120,7 +121,7 @@ void loop_at(u64 frame, u64 tick) noexcept {
 
 bool journal_step(RecordingJournal& j, input::InputLog& recording, const LostRecords& held,
                   u64 tick, u64 marks) {
-  if (held.record_input.empty() || j.failed) return false;
+  if (held.record_input.empty() || j.failed || j.file.taken()) return false;
   const i64 start = time::monotonic_ns();
   if (!j.file.is_open()) {
     // The header as the normal end would stamp it now (the map, the session block); its `ticks` is
@@ -174,10 +175,18 @@ std::string journal_summary(const RecordingJournal& j) {
   return line;
 }
 
+bool frame_side_still(const platform::CrashInfo& info) noexcept {
+  const u64 frame_thread = loop_state().frame_thread.load(std::memory_order_relaxed);
+  return frame_thread == 0 || frame_thread == info.thread_id;
+}
+
 JsonValue crashed_json(const platform::CrashInfo& info, std::span<const scene::FrameRecord> records,
-                       const Vector<FlyMarker>* marks) {
+                       const Vector<FlyMarker>* marks, bool frame_side) {
   const LoopState& s = loop_state();
   JsonValue out = JsonValue::object();
+  // Whether the fault held the frame's thread still: false, and the records, the marks and the
+  // input log were left as they stood on disk (frame_side_still).
+  out.set("frame_thread", frame_side);
   const u64 frame = s.frame.load(std::memory_order_relaxed);
   out.set("frame", frame == ~u64{0} ? JsonValue() : JsonValue(frame));
   out.set("tick", s.tick.load(std::memory_order_relaxed));
@@ -212,6 +221,13 @@ JsonValue crashed_json(const platform::CrashInfo& info, std::span<const scene::F
   }
   out.set("crash_file", std::string(info.crash_file));
   out.set("line", std::string(info.line_text));
+  if (!frame_side) {
+    // Grown by a thread that is still running: not read (the journal holds the marks' ticks).
+    out.set("frames_recorded", JsonValue());
+    out.set("last_recorded_frame", JsonValue());
+    out.set("marks", JsonValue());
+    return out;
+  }
   out.set("frames_recorded", static_cast<u64>(records.size()));
   out.set("last_recorded_frame",
           records.empty() ? JsonValue() : JsonValue(records[records.size() - 1].frame));

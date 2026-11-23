@@ -110,4 +110,10 @@ bool set_crash_hook(CrashHook hook, void* context, u32 deadline_ms) noexcept;
 // past 1023 bytes is refused (false).
 bool set_crash_file(std::string_view path) noexcept;
 
+// The calling thread's id as a `CrashInfo::thread_id` names it (the OS's: GetCurrentThreadId,
+// gettid), so a host can record which thread is which and tell, in its hook, whether the fault
+// stopped one it owns (T216's review, H1: engine-view's frame thread). Never zero for a live
+// thread; zero on a platform with neither.
+u64 current_thread_id() noexcept;
+
 }  // namespace engine::platform

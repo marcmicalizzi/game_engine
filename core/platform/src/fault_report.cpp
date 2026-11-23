@@ -1129,4 +1129,14 @@ bool set_crash_file(std::string_view path) noexcept {
   return detail::set_crash_path(path);
 }
 
+u64 current_thread_id() noexcept {
+#if ENGINE_PLATFORM_WINDOWS
+  return static_cast<u64>(::GetCurrentThreadId());
+#elif ENGINE_PLATFORM_LINUX
+  return static_cast<u64>(::syscall(SYS_gettid));
+#else
+  return 0;
+#endif
+}
+
 }  // namespace engine::platform
