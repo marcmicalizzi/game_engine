@@ -43,7 +43,8 @@ i32 run_view(const std::vector<std::string>& args, std::string& output) {
                                 output);
 }
 
-usize count_of(const std::string& text, std::string_view what) {
+// [[maybe_unused]]: a sanitizer build reads no line (Clang's -Wunused-function, linux-clang-asan).
+[[maybe_unused]] usize count_of(const std::string& text, std::string_view what) {
   usize n = 0;
   for (usize at = text.find(what); at != std::string::npos; at = text.find(what, at + 1))
     ++n;

@@ -239,7 +239,9 @@ TEST_CASE("fault report: every fatal fault prints one line and exits as document
 
 namespace {
 
-usize count_of(const std::string& text, std::string_view what) {
+// [[maybe_unused]]: a sanitizer build checks the other half and reads none of these (Clang's
+// -Wunused-function, linux-clang-asan).
+[[maybe_unused]] usize count_of(const std::string& text, std::string_view what) {
   usize n = 0;
   for (usize at = text.find(what); at != std::string::npos; at = text.find(what, at + 1))
     ++n;
@@ -248,12 +250,12 @@ usize count_of(const std::string& text, std::string_view what) {
 
 // The probe's exit with a hook registered: the crashed code, on both platforms (the hook ends the
 // process with `_exit` on Linux, not the signal).
-void check_crashed_exit(const Outcome& out) {
+[[maybe_unused]] void check_crashed_exit(const Outcome& out) {
   CHECK(out.code == platform::k_exit_crashed);
   CHECK(out.died_of == 0);
 }
 
-std::string read_text(const std::string& path) {
+[[maybe_unused]] std::string read_text(const std::string& path) {
   std::ifstream in(path, std::ios::binary);
   return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
