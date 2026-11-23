@@ -106,6 +106,8 @@ struct MicromapCacheReport {
   u64 file_bytes = 0;
   f64 ms = 0.0;
   f64 key_ms = 0.0;
+  u64 materials = 0;     // the key's material and geometry digests, for a log that asks why two
+  u64 geometry[2] = {};  // loads keyed apart
   std::string path;
   std::string unkeyed;
   std::string refused;

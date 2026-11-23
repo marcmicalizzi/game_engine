@@ -81,6 +81,9 @@ bool GpuScene::bake_micromaps(gfx::ShaderLibrary& shaders, std::string* error) {
       key.items = in.items;
       key.triangle_counts = in.triangle_counts;
       key.materials = micromap_key_.materials;
+      report.materials = key.materials;
+      report.geometry[0] = key.geometry[0];
+      report.geometry[1] = key.geometry[1];
       report.key = micromap_cache_key(key);
       report.path = micromap_cache_path(root, report.key);
     }
@@ -159,8 +162,9 @@ bool GpuScene::bake_micromaps(gfx::ShaderLibrary& shaders, std::string* error) {
       log::field("unknown", std::string_view{unknown}), log::field("data_bytes", s.data_bytes),
       log::field("resident_bytes", micromap_bytes()), log::field("bake_ms", s.bake_ms),
       log::field("stage_ms", report.ms), log::field("key_ms", report.key_ms),
-      log::field("key", report.key), log::field("file_bytes", report.file_bytes),
-      log::field("written", report.stored),
+      log::field("key", report.key), log::field("key_materials", report.materials),
+      log::field("key_geometry", report.geometry[0] ^ report.geometry[1]),
+      log::field("file_bytes", report.file_bytes), log::field("written", report.stored),
       log::field("unkeyed", std::string_view{report.unkeyed}));
   if (micromaps_.address != 0 && static_build_ && static_clusters_ > 0) {
     gfx::destroy_cluster_set(device, static_clas_);

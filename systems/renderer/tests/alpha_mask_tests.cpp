@@ -1173,15 +1173,29 @@ TEST_CASE(
   u32 index = 0;
   for (const Case& c : cases) {
     const std::string ddc = root.path() + "/ddc" + std::to_string(index++);
-    const MicromapShot first = shoot_micromaps(c.mesh, c.settings, c.view, false, ddc);
-    if (!first.skip.empty()) {
-      MESSAGE(c.name << " skipped: " << first.skip);
+    // An empty root's first load builds the mesh and its textures into it, and on this fixture
+    // (a glTF naming its image by path) that load's masked material keys apart from every later
+    // load's — the materials digest moves, the geometry's does not, and the picture is the same
+    // bytes — so it bakes and stores an entry no later load asks for (renderer.md, "The bake is
+    // read back"). The bake the read is held to is therefore the first one a later load keys
+    // alike: the empty root's own when it keyed alike, else the next load's.
+    const MicromapShot prime = shoot_micromaps(c.mesh, c.settings, c.view, false, ddc);
+    if (!prime.skip.empty()) {
+      MESSAGE(c.name << " skipped: " << prime.skip);
       continue;
     }
-    if (!first.baked) {
+    if (!prime.baked) {
       MESSAGE(c.name << ": no micromaps on this device; nothing to read back");
       continue;
     }
+    const MicromapShot next = shoot_micromaps(c.mesh, c.settings, c.view, false, ddc);
+    MESSAGE(c.name << ": the empty root's load keyed " << prime.cache.key << " (materials "
+                   << prime.cache.materials << "), the next " << next.cache.key << " (materials "
+                   << next.cache.materials << "), geometry " << prime.cache.geometry[0] << " and "
+                   << next.cache.geometry[0]);
+    CHECK(prime.cache.geometry[0] == next.cache.geometry[0]);
+    CHECK(prime.cache.geometry[1] == next.cache.geometry[1]);
+    const MicromapShot& first = next.cache.read == 1 ? prime : next;
     CHECK(first.cache.baked == 1);
     CHECK(first.cache.read == 0);
     CHECK(first.cache.key != 0);
@@ -1224,6 +1238,10 @@ TEST_CASE("alpha mask: a stored micromap bake is refused for another key, versio
   auto shoot = [&] {
     return shoot_micromaps(fx.caster_masked, rays, micromap_shadow_view(), false, ddc);
   };
+  {  // the root made whole first (the case above says why)
+    TunableScope off("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=true");
+    (void)shoot();
+  }
   MicromapShot first;
   {
     TunableScope fine("renderer.rt.micromap_texels=0.01", "renderer.rt.micromap_texels=4");
@@ -1275,7 +1293,8 @@ TEST_CASE("alpha mask: a stored micromap bake is refused for another key, versio
       out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
     }
     const MicromapShot again = shoot();
-    INFO(spoil.name << ": refused '" << again.cache.refused << "'");
+    INFO(spoil.name << ": refused '" << again.cache.refused << "', key " << again.cache.key
+                    << " against " << first.cache.key);
     CHECK(again.cache.read == 0);
     CHECK(again.cache.baked == 1);
     CHECK(again.cache.refused.find(spoil.refused) != std::string::npos);
