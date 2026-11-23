@@ -44,7 +44,9 @@ engine_module(NAME renderer LAYER systems
           src/water_refract.cpp
           src/scene_ground_plan.cpp src/sway_forms.cpp src/source_images.cpp
           src/resolve_classes.cpp src/temporal_change.cpp src/texture_feedback.cpp
-          src/exposure_pass.cpp)
+          src/exposure_pass.cpp
+          # R207: the micromaps' bake keyed, stored and read back (micromap_cache.h).
+          src/gpu_scene_micromaps.cpp src/micromap_cache.cpp)
 # The renderer's own shader: the output encode after the frame passes (frame_pass.h,
 # shaders/frame_encode.slang), which includes domain/gfx's display.slang by its path; the texture
 # feedback (R172), which includes material.slang the same way; the eye's adaptation (R168), which
@@ -71,6 +73,8 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     tests/shadow_map_tests.cpp tests/texture_tests.cpp tests/imported_streams_tests.cpp
                     tests/dynamic_instances_tests.cpp tests/fire_tests.cpp tests/lamp_tests.cpp
                     tests/tile_layout_tests.cpp tests/node_layout_tests.cpp tests/alpha_mask_tests.cpp
+                    # R207: the micromaps' stored bake's key and bytes on the CPU; no device.
+                    tests/micromap_cache_tests.cpp
                     tests/sun_arc_tests.cpp
                     # The sun's masks by region and by distance (R139).
                     tests/sun_region_tests.cpp

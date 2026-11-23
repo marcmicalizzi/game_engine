@@ -41,6 +41,7 @@
 #include <systems/renderer/crown_priors.h>
 #include <systems/renderer/flora_motion.h>
 #include <systems/renderer/flora_poser.h>
+#include <systems/renderer/micromap_cache.h>
 #include <systems/renderer/pair_account.h>
 #include <systems/renderer/place_bytes.h>
 #include <systems/renderer/rt_capacity.h>
@@ -649,6 +650,7 @@ class GpuScene {
   }
   const gfx::MicromapStats& micromap_stats() const noexcept { return micromaps_.stats; }
   u64 micromap_bytes() const noexcept { return micromaps_.resident_bytes(); }
+  const MicromapCacheReport& micromap_cache() const noexcept { return micromap_key_.report; }
   // **What the renderer reads from the host's float positions, measured at the upload** (T138;
   // renderer.md, "The scene's host copy after the upload"), so that a host may give the positions
   // and the triangles back once `create` returns and every renderer made over the scene after that
@@ -2447,10 +2449,8 @@ class GpuScene {
   // triangle count, kept from `upload_materials` until `bake_micromaps` (R120).
   Vector<u32> micromap_list_;
   Vector<u32> micromap_triangles_;
-  u32 micromap_level_ = 0;
-  u64 micromap_budget_ = 0;
-  f32 micromap_texels_ = 0.0f;
   gfx::OpacityMicromapSet micromaps_;
+  MicromapKeyState micromap_key_;  // R207: what keys the stored bake, and what the load did
   u32 shadow_coverage_clusters_ = 0;
   bool has_coverage_ = false;  // a mesh carries coverage errors
   u32 triangles_per_cluster_ = 0;

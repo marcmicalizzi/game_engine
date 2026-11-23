@@ -145,6 +145,73 @@ bool opacity_micromap_limits(const Device& device, u32& max_2state_level,
   return true;
 }
 
+bool micromap_device_identity(const Device& device, u8 out[28]) noexcept {
+  std::memset(out, 0, 28);
+  if (device.handles().physical == VK_NULL_HANDLE) return false;
+  VkPhysicalDeviceProperties props{};
+  vkGetPhysicalDeviceProperties(device.handles().physical, &props);
+  const u32 words[3] = {props.vendorID, props.deviceID, props.driverVersion};
+  std::memcpy(out, words, sizeof(words));
+  std::memcpy(out + sizeof(words), props.pipelineCacheUUID, 16);
+  return true;
+}
+
+bool micromap_geometry_digest(const Device& device, ShaderLibrary& shaders,
+                              const BindlessSet& bindless, const MicromapBakeInput& in, u64 out[2],
+                              std::string* error) {
+  out[0] = 0;
+  out[1] = 0;
+  if (!device.features().opacity_micromap) {
+    set_message(error, "micromap_geometry_digest: the device has no VK_EXT_opacity_micromap");
+    return false;
+  }
+  const u32 item_count = static_cast<u32>(in.items.size() / 2);
+  if (item_count == 0) return true;
+  const gfx::Shader* shader = shaders.get("opacity_micromap_bake", error);
+  if (shader == nullptr) return false;
+  const DescriptorSetLayoutHandle set_layout = bindless.layout();
+  const std::span<const DescriptorSetLayoutHandle> layouts(&set_layout, 1);
+  ComputePipeline pipeline;
+  if (!create_compute_pipeline(device, shader->module, "omm_bake_main", layouts,
+                               sizeof(MicromapBakeParams), pipeline, error)) {
+    return false;
+  }
+  constexpr BufferUsage k_storage = BufferUsage::Storage | BufferUsage::ShaderDeviceAddress;
+  BufferResource items;
+  BufferResource sums;
+  bool ok = upload_buffer(device, in.items.data(), u64{item_count} * 2 * sizeof(u32), k_storage,
+                          items, error) &&
+            create_buffer(device, 2 * sizeof(u64), k_storage, true, sums, error);
+  if (ok) {
+    std::memset(sums.mapped, 0, 2 * sizeof(u64));
+    MicromapBakeParams params;
+    params.clusters = in.clusters;
+    params.triangles = in.triangles;
+    params.attributes = in.attributes;
+    params.items = items.address;
+    params.counters = sums.address;
+    params.count = item_count;
+    params.mode = 3u;
+    const u32 groups = (item_count + k_micromap_bake_workgroup - 1) / k_micromap_bake_workgroup;
+    const u32 groups_x = groups < k_micromap_bake_row ? groups : k_micromap_bake_row;
+    const u32 groups_y = (groups + k_micromap_bake_row - 1) / k_micromap_bake_row;
+    ok = submit_immediate(
+        device,
+        [&](CommandList cb) {
+          cb.bind_pipeline(BindPoint::Compute, pipeline.pipeline);
+          bindless.bind(cb, BindPoint::Compute);
+          cb.push_constants(pipeline.layout, ShaderStage::Compute, 0, sizeof(params), &params);
+          cb.dispatch(groups_x, groups_y, 1);
+        },
+        error);
+    if (ok) std::memcpy(out, sums.mapped, 2 * sizeof(u64));
+  }
+  destroy_buffer(device, items);
+  destroy_buffer(device, sums);
+  destroy_compute_pipeline(device, pipeline);
+  return ok;
+}
+
 void destroy_opacity_micromaps(const Device& device, OpacityMicromapSet& set) noexcept {
   if (set.handle.valid()) {
     vkDestroyMicromapEXT(device.handles().device, vk::native(set.handle), nullptr);
@@ -287,6 +354,12 @@ bool build_opacity_micromap(const Device& device, std::span<const u32> data,
 bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
                             const BindlessSet& bindless, const MicromapBakeInput& in,
                             OpacityMicromapSet& out, std::string* error) {
+  return bake_opacity_micromaps(device, shaders, bindless, in, MicromapSink{}, out, error);
+}
+
+bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
+                            const BindlessSet& bindless, const MicromapBakeInput& in,
+                            const MicromapSink& sink, OpacityMicromapSet& out, std::string* error) {
   destroy_opacity_micromaps(device, out);
   u32 limit_2 = 0;
   u32 limit_4 = 0;
@@ -545,6 +618,13 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
     }
     cleanup();
     out.stats.bake_ms = static_cast<f64>(time::monotonic_ns() - start) / 1e6;
+    if (sink.take != nullptr) {
+      MicromapSections sections;
+      sections.cluster_first = out.cluster_first_host;
+      sections.indices = std::span<const i32>(index_host.data(), index_host.size());
+      sections.stats = &out.stats;
+      sink.take(sink.context, sections);
+    }
     return true;
   }
 
@@ -554,8 +634,10 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
                       writers, error)) ||
       !upload_buffer(device, entry_host.data(), u64{entry_host.size()} * sizeof(u32), k_input,
                      entries, error) ||
+      // Host-visible only when a sink will read the states back (R207): the data pass then writes
+      // them where the host can copy them out, and the build reads them from there.
       !create_buffer(device, align_up(std::max<u64>(data_bytes, 4), 4) + k_input_alignment, k_input,
-                     false, data, error)) {
+                     sink.take != nullptr, data, error)) {
     return fail();
   }
   writer_host = Vector<u32>{};
@@ -605,10 +687,132 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
   tables.indices = out.indices.address;
   tables.cluster_first = out.cluster_first.address;
   if (!upload_buffer(device, &tables, sizeof(tables), k_storage, out.tables, error)) return fail();
-  cleanup();
   stats.storage_bytes = out.storage.size;
   stats.bake_ms = static_cast<f64>(time::monotonic_ns() - start) / 1e6;
   out.stats = stats;
+  if (sink.take != nullptr) {
+    // The sections as a stored bake holds them, before the data buffer goes with `cleanup`.
+    MicromapSections sections;
+    sections.cluster_first = out.cluster_first_host;
+    sections.indices = std::span<const i32>(index_host.data(), index_host.size());
+    sections.triangles = std::span<const MicromapTriangle>(
+        reinterpret_cast<const MicromapTriangle*>(entry_host.data()), entry_count);
+    sections.data =
+        std::span<const u32>(reinterpret_cast<const u32*>(static_cast<const u8*>(data.mapped) +
+                                                          (data_address - data.address)),
+                             static_cast<usize>(data_bytes / sizeof(u32)));
+    sections.stats = &out.stats;
+    sink.take(sink.context, sections);
+  }
+  cleanup();
+  return true;
+}
+
+bool restore_opacity_micromaps(const Device& device, const MicromapRestore& in,
+                               OpacityMicromapSet& out, std::string* error) {
+  destroy_opacity_micromaps(device, out);
+  if (!device.features().opacity_micromap) {
+    set_message(error, "restore_opacity_micromaps: the device has no VK_EXT_opacity_micromap");
+    return false;
+  }
+  if (in.fill == nullptr || in.triangle_count == 0 || in.data_bytes % sizeof(u32) != 0) {
+    set_message(error, "restore_opacity_micromaps: nothing to restore");
+    return false;
+  }
+  constexpr BufferUsage k_storage = BufferUsage::Storage | BufferUsage::ShaderDeviceAddress;
+  auto fail = [&](const char* why) {
+    if (why != nullptr) set_message(error, std::string("restore_opacity_micromaps: ") + why);
+    destroy_opacity_micromaps(device, out);
+    return false;
+  };
+  // The per-cluster table: kept on the host too, for the records a CPU writes.
+  out.cluster_first_host.resize(std::max<u32>(in.cluster_count, 1u), k_micromap_none);
+  if (in.cluster_count != 0 &&
+      !in.fill(in.context, MicromapSection::cluster_first, out.cluster_first_host.data(),
+               u64{in.cluster_count} * sizeof(u32))) {
+    return fail("the per-cluster table did not read");
+  }
+  if (!upload_buffer(device, out.cluster_first_host.data(),
+                     u64{out.cluster_first_host.size()} * sizeof(u32), k_storage, out.cluster_first,
+                     error)) {
+    return fail(nullptr);
+  }
+  // The indices, read straight into the staging the copy reads from: one host copy, not two.
+  {
+    const u64 bytes = u64{in.triangle_count} * sizeof(i32);
+    BufferResource staging;
+    if (!create_buffer(device, bytes, BufferUsage::TransferSrc, true, staging, error)) {
+      return fail(nullptr);
+    }
+    bool ok = in.fill(in.context, MicromapSection::indices, staging.mapped, bytes);
+    ok = ok && create_buffer(device, bytes, k_storage | BufferUsage::TransferDst, false,
+                             out.indices, error);
+    ok = ok &&
+         submit_immediate(
+             device,
+             [&](CommandList commands) {
+               commands.copy_buffer(staging.buffer, out.indices.buffer, BufferCopy{0, 0, bytes});
+             },
+             error);
+    destroy_buffer(device, staging);
+    if (!ok)
+      return fail(error != nullptr && !error->empty() ? nullptr : "the indices did not read");
+  }
+  MicromapTables tables;
+  tables.indices = out.indices.address;
+  tables.cluster_first = out.cluster_first.address;
+  if (in.entry_count != 0) {
+    // The states and the triangle records into the build's own input, as the bake's build reads
+    // them, then the build.
+    constexpr BufferUsage k_input = BufferUsage::Storage | BufferUsage::ShaderDeviceAddress |
+                                    BufferUsage::MicromapBuildInput |
+                                    BufferUsage::AccelerationBuildInput;
+    const u64 data_bytes = std::max<u64>(in.data_bytes, 4);
+    const u64 triangle_bytes = u64{in.entry_count} * sizeof(MicromapTriangle);
+    BufferResource input;
+    if (!create_buffer(
+            device,
+            k_input_alignment * 2 + align_up(data_bytes, k_input_alignment) + triangle_bytes,
+            k_input, true, input, error)) {
+      return fail(nullptr);
+    }
+    const u64 data_address = align_up(input.address, k_input_alignment);
+    const u64 triangle_array = data_address + align_up(data_bytes, k_input_alignment);
+    auto* bytes = static_cast<u8*>(input.mapped);
+    MicromapTriangle* records =
+        reinterpret_cast<MicromapTriangle*>(bytes + (triangle_array - input.address));
+    bool ok =
+        in.fill(in.context, MicromapSection::triangles, records, triangle_bytes) &&
+        (in.data_bytes == 0 || in.fill(in.context, MicromapSection::data,
+                                       bytes + (data_address - input.address), in.data_bytes));
+    // The usage counts per level are the stored entries', which the records say again: a record
+    // past the format's levels or past the states is refused here, before the driver reads it.
+    u32 per_level[k_micromap_max_level + 1] = {};
+    for (u32 e = 0; ok && e < in.entry_count; ++e) {
+      const MicromapTriangle& t = records[e];
+      if (t.level > k_micromap_max_level || t.format != k_micromap_format_4state ||
+          u64{t.data_offset} + micromap_entry_bytes(t.level) > in.data_bytes) {
+        ok = false;
+        break;
+      }
+      ++per_level[t.level];
+    }
+    for (u32 l = 0; ok && l <= k_micromap_max_level; ++l)
+      ok = per_level[l] == in.stats.unique_per_level[l];
+    if (!ok) {
+      destroy_buffer(device, input);
+      return fail("the stored triangle records did not read, or disagree with its counts");
+    }
+    const bool built = build_micromap(device, per_level, data_address, triangle_array, out, error);
+    destroy_buffer(device, input);
+    if (!built) return fail(nullptr);
+    tables.array = out.address;
+  }
+  if (!upload_buffer(device, &tables, sizeof(tables), k_storage, out.tables, error)) {
+    return fail(nullptr);
+  }
+  out.stats = in.stats;
+  out.stats.storage_bytes = out.storage.size;
   return true;
 }
 

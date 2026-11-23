@@ -154,6 +154,15 @@ struct MicromapStats {
   f64 bake_ms = 0.0;       // the whole bake, on the CPU's clock, uploads and waits included
 };
 
+// One entry of a micromap's triangle array (VkMicromapTriangleEXT, 8 bytes): where its states
+// start in the data, its level, and its format (`k_micromap_format_4state`).
+struct MicromapTriangle {
+  u32 data_offset = 0;
+  u16 level = 0;
+  u16 format = static_cast<u16>(k_micromap_format_4state);
+};
+static_assert(sizeof(MicromapTriangle) == k_micromap_triangle_bytes);
+
 // `ClusterRecordParams::omm` points at this block (24 bytes), which clas_records.slang reads:
 // the micromap's address, the scene's index buffer, and per cluster its first index (or ~0).
 struct MicromapTables {
@@ -194,14 +203,74 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
                             OpacityMicromapSet& out, std::string* error = nullptr);
 void destroy_opacity_micromaps(const Device& device, OpacityMicromapSet& set) noexcept;
 
-// One entry of a micromap's triangle array (VkMicromapTriangleEXT, 8 bytes): where its states
-// start in the data, its level, and its format (`k_micromap_format_4state`).
-struct MicromapTriangle {
-  u32 data_offset = 0;
-  u16 level = 0;
-  u16 format = static_cast<u16>(k_micromap_format_4state);
+// ---- the bake as a derived node (roadmap R207; renderer.md, "The bake is read back") ----------
+//
+// **Why a cached bake is keyed by the device.** The bake's bytes are not the same on every card:
+// its corners and UV boxes are float arithmetic a driver may contract into fused multiply-adds,
+// the box's divide is not correctly rounded in Vulkan, the unknown sub-state is a bilinear sample
+// at the device's own sub-texel precision (and the shadow rays read that sub-state under the
+// two-state answer, so it is picture, not padding), and the cap is the device's subdivision limit.
+// So a stored bake is one device's answer: its key names the device as the driver states it
+// (`micromap_device_identity`, the pipeline cache's identity), the bake shader's bytes, and what
+// the bake read — and within one device the bake is a pure function of those (one thread writes
+// each word, the host's sort and dedup are deterministic).
+
+// The physical device as the pipeline cache names it: vendor, device, driver version and
+// `pipelineCacheUUID`. False without a device.
+bool micromap_device_identity(const Device& device, u8 out[28]) noexcept;
+
+// **What the bake reads of the geometry, digested on the device** (the key pass, mode 3 of
+// opacity_micromap_bake.slang): every masked cluster's triangles, each triangle's three
+// `uv_half2` words — the only geometry the bake reads, through its packed indices — hashed in the
+// cluster's order and mixed with the item's place in `in.items`, two 64-bit lanes summed with
+// atomics, so the answer is integer arithmetic only and the same on any device and any schedule.
+// `in.items`, the triangle counts and the materials are the host's to key. False with `out` zero
+// when the device has no micromaps or a dispatch fails.
+bool micromap_geometry_digest(const Device& device, ShaderLibrary& shaders,
+                              const BindlessSet& bindless, const MicromapBakeInput& in, u64 out[2],
+                              std::string* error = nullptr);
+
+// The sections a bake leaves, in the order a stored bake holds them: per cluster of the scene its
+// first index or `k_micromap_none`, per masked triangle its index (special or an entry), per
+// stored entry its triangle record, and the states. `level_cap` is the cap the bake used.
+struct MicromapSections {
+  std::span<const u32> cluster_first;
+  std::span<const i32> indices;
+  std::span<const MicromapTriangle> triangles;
+  std::span<const u32> data;  // the states, `stats.data_bytes / 4` words
+  const MicromapStats* stats = nullptr;
 };
-static_assert(sizeof(MicromapTriangle) == k_micromap_triangle_bytes);
+// Handed the sections before the bake frees its buffers (the states are read from a host-visible
+// copy only when a sink is given). A function and a context, called once; its answer is the
+// sink's own (the bake has succeeded either way).
+struct MicromapSink {
+  void (*take)(void* context, const MicromapSections& sections) = nullptr;
+  void* context = nullptr;
+};
+bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
+                            const BindlessSet& bindless, const MicromapBakeInput& in,
+                            const MicromapSink& sink, OpacityMicromapSet& out,
+                            std::string* error = nullptr);
+
+// **A stored bake made resident again**, with no dispatch: the per-cluster table (also kept on the
+// host), the indices and the tables uploaded, and the micromap built from its states and triangle
+// records. Each section is written by `fill` straight into the memory it is uploaded from (no host
+// copy of the states or the indices is held beside the upload's), in the order of
+// `MicromapSection`; `fill` answers false for a short or torn read, and the restore then fails
+// with nothing kept. `stats` is the stored bake's, given back as the set's.
+enum class MicromapSection : u8 { cluster_first, indices, triangles, data };
+struct MicromapRestore {
+  u32 cluster_count = 0;
+  u32 triangle_count = 0;
+  u32 entry_count = 0;
+  u64 data_bytes = 0;
+  MicromapStats stats;
+  bool (*fill)(void* context, MicromapSection section, void* dst, u64 bytes) = nullptr;
+  void* context = nullptr;
+};
+bool restore_opacity_micromaps(const Device& device, const MicromapRestore& in,
+                               OpacityMicromapSet& out, std::string* error = nullptr);
+
 // Builds a micromap from states written on the host (`data`, two bits a micro-triangle, least
 // significant first) and its triangle array, blocking: the same build the bake ends with, for a
 // test or a tool that knows its states. Sets `out.handle`, `out.storage`, `out.address` and
@@ -213,8 +282,9 @@ bool build_opacity_micromap(const Device& device, std::span<const u32> data,
 // The bake shader's push block (opacity_micromap_bake.slang mirrors it, 120 bytes). `mode` 0
 // classifies — each triangle's level, the level the texel target wanted, the states its
 // micro-triangles took, into `codes`, and its dedup key into `keys`; 2 verifies that every
-// triangle sharing an entry is its writer's material and UVs word for word; and 1 writes each
-// entry's states, one thread an entry, at the offset its triangle-array entry names.
+// triangle sharing an entry is its writer's material and UVs word for word; 1 writes each
+// entry's states, one thread an entry, at the offset its triangle-array entry names; and 3, the
+// key pass, one thread an item, adds its triangles' UV words' two hashes into `counters[0..1]`.
 struct MicromapBakeParams {
   u64 clusters = 0;
   u64 triangles = 0;

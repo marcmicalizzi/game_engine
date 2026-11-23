@@ -979,6 +979,7 @@ struct MicromapShot {
   std::string skip;
   gfx::MicromapStats stats;
   bool baked = false;
+  MicromapCacheReport cache;  // R207: baked or read back, with a derived-data root
 };
 
 struct TunableScope {
@@ -992,7 +993,7 @@ struct TunableScope {
 };
 
 MicromapShot shoot_micromaps(const std::string& mesh, RenderSettings settings, ShotView view,
-                             bool without_extension = false) {
+                             bool without_extension = false, const std::string& ddc = {}) {
   MicromapShot out;
   gfx::Device device;
   std::string error;
@@ -1012,7 +1013,8 @@ MicromapShot shoot_micromaps(const std::string& mesh, RenderSettings settings, S
   SceneRenderer renderer;
   SceneDesc desc;
   desc.meshes.push_back(mesh);
-  desc.cache = false;
+  desc.cache = !ddc.empty();  // R207: a root of the test's own, where the bake is stored
+  desc.ddc = ddc;
   settings.view_mode = view.mode;
   REQUIRE_MESSAGE(load_scene(desc, data, error), "scene: " << error);
   ResolvedSettings resolved;
@@ -1029,6 +1031,7 @@ MicromapShot shoot_micromaps(const std::string& mesh, RenderSettings settings, S
   REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), "renderer: " << error);
   out.baked = scene.micromap_tables_address() != 0;
   out.stats = scene.micromap_stats();
+  out.cache = scene.micromap_cache();
   FrameDesc frame;
   frame.camera.position = absolute(WorldPos::origin(), view.eye);
   frame.camera.target = absolute(WorldPos::origin(), view.target);
@@ -1137,6 +1140,172 @@ TEST_CASE("alpha mask: opacity micromaps leave the shadow rays' and the ray path
                    << differ << " pixels differ");
     CHECK(differ == 0);
   }
+}
+
+// **The bake is read back** (R207; renderer.md, "The bake is read back"; micromap_cache.h). With a
+// derived-data root the first load bakes and stores its sections under a key that names the device
+// and everything the bake read; the second finds them and builds the micromap with no bake. The
+// two draw the same bytes, colour and ids, under the shadow rays' two-state answer (the default,
+// which reads the unknown sub-state) and on the ray path.
+TEST_CASE(
+    "alpha mask: a second load reads the micromaps the first baked, and draws the same bytes") {
+  Fixture fx;
+  test::TempDir root{"omm_read"};
+  RenderSettings rays = base_settings(RasterMode::Hardware);
+  rays.shadows = ShadowMode::RayTraced;
+  RenderSettings traced = base_settings(RasterMode::RayTrace);
+  traced.shadows = ShadowMode::RayTraced;
+  ShotView traced_view;
+  traced_view.mode = static_cast<u32>(gfx::ResolveMode::Shaded);
+  struct Case {
+    const char* name;
+    std::string mesh;
+    RenderSettings settings;
+    ShotView view;
+  };
+  const Case cases[] = {
+      {"shadow rays", fx.caster_masked, rays, micromap_shadow_view()},
+      {"ray path", fx.masked, traced, traced_view},
+  };
+  TunableScope on("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=true");
+  TunableScope fine("renderer.rt.micromap_texels=0.01", "renderer.rt.micromap_texels=4");
+  TunableScope cap("renderer.rt.micromap_level=6", "renderer.rt.micromap_level=6");
+  u32 index = 0;
+  for (const Case& c : cases) {
+    const std::string ddc = root.path() + "/ddc" + std::to_string(index++);
+    // An empty root's first load builds the mesh and its textures into it, and on this fixture
+    // (a glTF naming its image by path) that load's masked material keys apart from every later
+    // load's — the materials digest moves, the geometry's does not, and the picture is the same
+    // bytes — so it bakes and stores an entry no later load asks for (renderer.md, "The bake is
+    // read back"). The bake the read is held to is therefore the first one a later load keys
+    // alike: the empty root's own when it keyed alike, else the next load's.
+    const MicromapShot prime = shoot_micromaps(c.mesh, c.settings, c.view, false, ddc);
+    if (!prime.skip.empty()) {
+      MESSAGE(c.name << " skipped: " << prime.skip);
+      continue;
+    }
+    if (!prime.baked) {
+      MESSAGE(c.name << ": no micromaps on this device; nothing to read back");
+      continue;
+    }
+    const MicromapShot next = shoot_micromaps(c.mesh, c.settings, c.view, false, ddc);
+    MESSAGE(c.name << ": the empty root's load keyed " << prime.cache.key << " (materials "
+                   << prime.cache.materials << "), the next " << next.cache.key << " (materials "
+                   << next.cache.materials << "), geometry " << prime.cache.geometry[0] << " and "
+                   << next.cache.geometry[0]);
+    CHECK(prime.cache.geometry[0] == next.cache.geometry[0]);
+    CHECK(prime.cache.geometry[1] == next.cache.geometry[1]);
+    const MicromapShot& first = next.cache.read == 1 ? prime : next;
+    CHECK(first.cache.baked == 1);
+    CHECK(first.cache.read == 0);
+    CHECK(first.cache.key != 0);
+    CHECK(first.cache.unkeyed.empty());
+    CHECK(first.cache.stored);
+    CHECK(std::filesystem::exists(first.cache.path));
+    const MicromapShot second = shoot_micromaps(c.mesh, c.settings, c.view, false, ddc);
+    REQUIRE(second.skip.empty());
+    CHECK(second.cache.baked == 0);
+    CHECK(second.cache.read == 1);
+    CHECK(second.cache.key == first.cache.key);
+    CHECK(second.cache.refused.empty());
+    CHECK(second.baked);
+    // The bake's measures come back with it, and the micromap is the same size.
+    CHECK(second.stats.triangles == first.stats.triangles);
+    CHECK(second.stats.unique_entries == first.stats.unique_entries);
+    CHECK(second.stats.data_bytes == first.stats.data_bytes);
+    CHECK(second.stats.micro_unknown == first.stats.micro_unknown);
+    CHECK(second.stats.level_cap == first.stats.level_cap);
+    CHECK(second.stats.storage_bytes == first.stats.storage_bytes);
+    const u32 differ = differing_pixels(first.frame, second.frame);
+    MESSAGE(c.name << ": baked " << first.cache.ms << " ms, read " << second.cache.ms << " ms, "
+                   << first.cache.file_bytes << " bytes stored; " << differ << " pixels differ");
+    CHECK(differ == 0);
+  }
+}
+
+// **A stored bake is never trusted without its key** (R207): a key the bake read differently (here
+// the texel target) is another file; a file at the key's path that holds another key's bake, a
+// version this build does not write, a short file or a changed byte is refused by name and baked
+// again, and the picture is the bake's.
+TEST_CASE("alpha mask: a stored micromap bake is refused for another key, version or byte") {
+  Fixture fx;
+  test::TempDir root{"omm_stale"};
+  RenderSettings rays = base_settings(RasterMode::Hardware);
+  rays.shadows = ShadowMode::RayTraced;
+  TunableScope on("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=true");
+  TunableScope cap("renderer.rt.micromap_level=6", "renderer.rt.micromap_level=6");
+  const std::string ddc = root.path() + "/ddc";
+  auto shoot = [&] {
+    return shoot_micromaps(fx.caster_masked, rays, micromap_shadow_view(), false, ddc);
+  };
+  {  // the root made whole first (the case above says why)
+    TunableScope off("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=true");
+    (void)shoot();
+  }
+  MicromapShot first;
+  {
+    TunableScope fine("renderer.rt.micromap_texels=0.01", "renderer.rt.micromap_texels=4");
+    first = shoot();
+  }
+  if (!first.skip.empty() || !first.baked) {
+    MESSAGE("skipped: " << (first.skip.empty() ? std::string("no micromaps here") : first.skip));
+    return;
+  }
+  REQUIRE(first.cache.stored);
+  const std::filesystem::path stored(first.cache.path);
+  // Another texel target is another key: baked, and stored beside the first.
+  MicromapShot other;
+  {
+    TunableScope coarse("renderer.rt.micromap_texels=0.02", "renderer.rt.micromap_texels=4");
+    other = shoot();
+  }
+  CHECK(other.cache.baked == 1);
+  CHECK(other.cache.read == 0);
+  CHECK(other.cache.key != first.cache.key);
+  REQUIRE(other.cache.stored);
+  TunableScope fine("renderer.rt.micromap_texels=0.01", "renderer.rt.micromap_texels=4");
+  struct Spoil {
+    const char* name;
+    const char* refused;  // a word the refusal names
+  };
+  const Spoil spoils[] = {{"another key's bake", "another key"},
+                          {"another version", "version"},
+                          {"a short file", "length"},
+                          {"a changed state", "content hash"}};
+  for (const Spoil& spoil : spoils) {
+    // The first key's file as the last bake stored it, spoiled.
+    std::ifstream in(stored, std::ios::binary);
+    std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    REQUIRE(bytes.size() > 64);
+    if (std::string_view(spoil.name) == "another key's bake") {
+      std::ifstream theirs(std::filesystem::path(other.cache.path), std::ios::binary);
+      bytes.assign((std::istreambuf_iterator<char>(theirs)), std::istreambuf_iterator<char>());
+    } else if (std::string_view(spoil.name) == "another version") {
+      bytes[4] = static_cast<char>(bytes[4] + 1);
+    } else if (std::string_view(spoil.name) == "a short file") {
+      bytes.resize(bytes.size() - 4);
+    } else {
+      bytes[bytes.size() - 1] = static_cast<char>(bytes[bytes.size() - 1] ^ 0x01);
+    }
+    {
+      std::ofstream out(stored, std::ios::binary | std::ios::trunc);
+      out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    }
+    const MicromapShot again = shoot();
+    INFO(spoil.name << ": refused '" << again.cache.refused << "', key " << again.cache.key
+                    << " against " << first.cache.key);
+    CHECK(again.cache.read == 0);
+    CHECK(again.cache.baked == 1);
+    CHECK(again.cache.refused.find(spoil.refused) != std::string::npos);
+    CHECK(differing_pixels(first.frame, again.frame) == 0);
+    // The bake it fell back to is stored over the spoiled file.
+    REQUIRE(again.cache.stored);
+  }
+  // And the last of those is read by the next load.
+  const MicromapShot after = shoot();
+  CHECK(after.cache.read == 1);
+  CHECK(differing_pixels(first.frame, after.frame) == 0);
 }
 
 // The micromaps are really in the structures: `renderer.shadow.opaque_rays` forces every caster

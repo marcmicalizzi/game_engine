@@ -62,4 +62,10 @@ class MemoryReport {
 // The one report engine-view has: enabled by the flag, read by the summary and `--report`.
 MemoryReport& memory_report();
 
+// The load summary with its `micromaps` block (R207; renderer.md, "The bake is read back"):
+// whether the scene's opacity micromaps were baked or read from the derived-data root, `{ "baked",
+// "read", "stored", "key", "path", "file_bytes", "ms", "key_ms", "resident_bytes", "unkeyed",
+// "refused" }`, all zero and empty for a scene that has none.
+JsonValue with_micromaps(JsonValue load, const renderer::GpuScene& scene);
+
 }  // namespace engine::view
