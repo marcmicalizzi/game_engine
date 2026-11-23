@@ -235,7 +235,8 @@ void collect_versions(const SaveInputs& inputs, const SaveManifest& manifest,
     add_type<SaveTile>(out);
     if (manifest.ring->player.has_value()) {
       add_type<SavePlayer>(out);
-      add_version(out, k_input_log_format, input::k_log_version);
+      // The version `InputLog::save` writes (1); a journal's 2 is never in a save (T216).
+      add_version(out, k_input_log_format, input::k_saved_log_version);
     }
   }
   // The document's own files, and every record type it holds: a record type newer than a build's
@@ -383,7 +384,7 @@ bool current_version(std::string_view name, u32& out) {
     return true;
   }
   if (name == k_input_log_format) {
-    out = input::k_log_version;
+    out = input::k_saved_log_version;  // what a save holds, not the journal's version (T216)
     return true;
   }
   // A save written before a type was renamed names it by the name it had then (`@alias`).

@@ -6,6 +6,7 @@
 
 #include <core/base/assert.h>
 #include <core/json/json.h>
+#include <core/profiling/startup_trace.h>
 #include <core/time/time.h>
 #include <domain/gfx/test_profile.h>
 
@@ -181,6 +182,12 @@ JsonValue crashed_json(const platform::CrashInfo& info, std::span<const scene::F
   out.set("frame", frame == ~u64{0} ? JsonValue() : JsonValue(frame));
   out.set("tick", s.tick.load(std::memory_order_relaxed));
   out.set("doing", std::string(s.doing.load(std::memory_order_relaxed)));
+  // The load's stage running then, or the last one begun (startup_trace.h's progress record): what
+  // a fault before the first frame was in the middle of.
+  profiling::LoadProgress progress;
+  profiling::progress_read(progress);
+  out.set("load_stage", std::string(progress.stage));
+  out.set("load_detail", std::string(progress.detail));
   out.set("what", std::string(info.what));
   out.set("code", hex_of(info.code));
   out.set("address", hex_of(info.address));
