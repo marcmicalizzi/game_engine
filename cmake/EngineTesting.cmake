@@ -315,13 +315,28 @@ if(ENGINE_PWSH)
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   set_tests_properties(tools.slot PROPERTIES LABELS "tools")
 
-  # The merge gate and the step after it (T217) over a throwaway repository whose tools/ are
-  # stand-ins: no build, test, container or device, and no push but to a bare repository beside it.
+  # The merge gate and the step after it (T217): tools.gate is the module's functions and the
+  # refusals that start one process (seconds), in every configuration; tools.gate_scenarios runs the
+  # real scripts over a throwaway repository whose tools/ are stand-ins (two minutes: no build, test,
+  # container or device, and no push but to a bare repository beside it). The scripts are the same
+  # in every configuration, so the scenarios are registered once, in msvc-debug (docs/ci/gate.md),
+  # after every module has declared its switch (ENGINE_WITH_ECS is not defined yet here).
   add_test(NAME tools.gate
     COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
-            -File "${CMAKE_SOURCE_DIR}/tools/gate.Tests.ps1"
+            -File "${CMAKE_SOURCE_DIR}/tools/gate.Tests.ps1" -Part unit
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   set_tests_properties(tools.gate PROPERTIES LABELS "tools")
+  function(_engine_register_gate_scenarios)
+    if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" AND CMAKE_BUILD_TYPE STREQUAL "Debug"
+       AND NOT ENGINE_MINIMAL AND ENGINE_WITH_ECS AND NOT ENGINE_ASAN)
+      add_test(NAME tools.gate_scenarios
+        COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
+                -File "${CMAKE_SOURCE_DIR}/tools/gate.Tests.ps1" -Part scenarios
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+      set_tests_properties(tools.gate_scenarios PROPERTIES LABELS "tools")
+    endif()
+  endfunction()
+  cmake_language(DEFER CALL _engine_register_gate_scenarios)
 
   # The disk-write reporter's arithmetic (T185) over canned counter samples: no counter is read.
   add_test(NAME tools.disk_writes
