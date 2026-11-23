@@ -1142,6 +1142,61 @@ TEST_CASE("alpha mask: opacity micromaps leave the shadow rays' and the ray path
   }
 }
 
+// **A miss draws what a hit draws** (R207-M1; renderer.md, "The bake is read back"). A
+// container keeps a material's alpha cutoff as a unorm16 and its foliage optics in fifteenths, so a
+// glTF's 0.5 reads back 0.50000763: the load that built the container drew, and keyed the opacity
+// micromaps' bake, with the import's floats, and every later load with the container's. The miss
+// path now takes the container's words (`assets::round_trip_alpha_word`), and the two loads' five
+// constants are the same bits. Before that mend the masked quad's material counted one word apart
+// (`import_apart` below is that count, taken from the import itself). No device.
+TEST_CASE("alpha mask: the load that builds the container shades with the words a hit reads") {
+  Fixture fx;
+  SceneDesc desc;
+  desc.ddc = fx.tmp.path() + "/ddc_words";
+  desc.cache = true;
+  desc.meshes.push_back(fx.masked);
+  desc.instances.push_back(SceneInstance{0, Transform3::identity()});
+  std::string error;
+  SceneData miss;
+  REQUIRE_MESSAGE(load_scene(desc, miss, error), error);
+  SceneData hit;
+  REQUIRE_MESSAGE(load_scene(desc, hit, error), error);
+  REQUIRE(miss.sources.size() == 1);
+  REQUIRE(hit.sources.size() == 1);
+  CHECK(std::string(miss.sources[0].cache) == "miss");
+  CHECK(std::string(hit.sources[0].cache) == "hit");
+  assets::MeshData import;
+  REQUIRE_MESSAGE(assets::load_gltf(fx.masked, import, &error), error);
+  const auto& a = miss.sources[0].data.materials;
+  const auto& b = hit.sources[0].data.materials;
+  REQUIRE(a.size() == b.size());
+  REQUIRE(import.materials.size() == b.size());
+  auto bits = [](f32 v) {
+    u32 out = 0;
+    std::memcpy(&out, &v, sizeof(out));
+    return out;
+  };
+  auto apart = [&](const assets::Material& x, const assets::Material& y) {
+    return x.alpha_mode != y.alpha_mode || x.double_sided != y.double_sided ||
+           bits(x.alpha_cutoff) != bits(y.alpha_cutoff) ||
+           bits(x.transmission) != bits(y.transmission) ||
+           bits(x.normal_spread) != bits(y.normal_spread);
+  };
+  u32 masked = 0;
+  u32 miss_apart = 0;
+  u32 import_apart = 0;
+  for (u32 i = 0; i < b.size(); ++i) {
+    masked += b[i].alpha_mode == assets::k_alpha_mask ? 1u : 0u;
+    miss_apart += apart(a[i], b[i]) ? 1u : 0u;
+    import_apart += apart(import.materials[i], b[i]) ? 1u : 0u;
+  }
+  MESSAGE(masked << " masked material(s); the import " << import_apart
+                 << " apart from the hit's words, the miss " << miss_apart);
+  CHECK(masked == 1);
+  CHECK(import_apart == 1);  // the word is what moved: 0.5 is not a unorm16
+  CHECK(miss_apart == 0);
+}
+
 // **The bake is read back** (R207; renderer.md, "The bake is read back"; micromap_cache.h). With a
 // derived-data root the first load bakes and stores its sections under a key that names the device
 // and everything the bake read; the second finds them and builds the micromap with no bake. The
@@ -1173,29 +1228,18 @@ TEST_CASE(
   u32 index = 0;
   for (const Case& c : cases) {
     const std::string ddc = root.path() + "/ddc" + std::to_string(index++);
-    // An empty root's first load builds the mesh and its textures into it, and on this fixture
-    // (a glTF naming its image by path) that load's masked material keys apart from every later
-    // load's — the materials digest moves, the geometry's does not, and the picture is the same
-    // bytes — so it bakes and stores an entry no later load asks for (renderer.md, "The bake is
-    // read back"). The bake the read is held to is therefore the first one a later load keys
-    // alike: the empty root's own when it keyed alike, else the next load's.
-    const MicromapShot prime = shoot_micromaps(c.mesh, c.settings, c.view, false, ddc);
-    if (!prime.skip.empty()) {
-      MESSAGE(c.name << " skipped: " << prime.skip);
+    // An empty root's first load builds the mesh, its textures and the bake into it; the second
+    // reads all three. The two key alike because the load that built the container shades with
+    // the container's own alpha words (R207-M1; the case below holds the words).
+    const MicromapShot first = shoot_micromaps(c.mesh, c.settings, c.view, false, ddc);
+    if (!first.skip.empty()) {
+      MESSAGE(c.name << " skipped: " << first.skip);
       continue;
     }
-    if (!prime.baked) {
+    if (!first.baked) {
       MESSAGE(c.name << ": no micromaps on this device; nothing to read back");
       continue;
     }
-    const MicromapShot next = shoot_micromaps(c.mesh, c.settings, c.view, false, ddc);
-    MESSAGE(c.name << ": the empty root's load keyed " << prime.cache.key << " (materials "
-                   << prime.cache.materials << "), the next " << next.cache.key << " (materials "
-                   << next.cache.materials << "), geometry " << prime.cache.geometry[0] << " and "
-                   << next.cache.geometry[0]);
-    CHECK(prime.cache.geometry[0] == next.cache.geometry[0]);
-    CHECK(prime.cache.geometry[1] == next.cache.geometry[1]);
-    const MicromapShot& first = next.cache.read == 1 ? prime : next;
     CHECK(first.cache.baked == 1);
     CHECK(first.cache.read == 0);
     CHECK(first.cache.key != 0);
@@ -1204,6 +1248,12 @@ TEST_CASE(
     CHECK(std::filesystem::exists(first.cache.path));
     const MicromapShot second = shoot_micromaps(c.mesh, c.settings, c.view, false, ddc);
     REQUIRE(second.skip.empty());
+    MESSAGE(c.name << ": the empty root's load keyed " << first.cache.key << " (materials "
+                   << first.cache.materials << "), the next " << second.cache.key
+                   << " (materials " << second.cache.materials << ")");
+    CHECK(second.cache.materials == first.cache.materials);
+    CHECK(second.cache.geometry[0] == first.cache.geometry[0]);
+    CHECK(second.cache.geometry[1] == first.cache.geometry[1]);
     CHECK(second.cache.baked == 0);
     CHECK(second.cache.read == 1);
     CHECK(second.cache.key == first.cache.key);
@@ -1238,10 +1288,6 @@ TEST_CASE("alpha mask: a stored micromap bake is refused for another key, versio
   auto shoot = [&] {
     return shoot_micromaps(fx.caster_masked, rays, micromap_shadow_view(), false, ddc);
   };
-  {  // the root made whole first (the case above says why)
-    TunableScope off("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=true");
-    (void)shoot();
-  }
   MicromapShot first;
   {
     TunableScope fine("renderer.rt.micromap_texels=0.01", "renderer.rt.micromap_texels=4");

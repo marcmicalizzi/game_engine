@@ -680,11 +680,7 @@ void adopt_container(geometry::ClusterFileData& container_data, const std::strin
     material.emissive_image = geometry::decode_optional_image(source.emissive_image);
     material.emissive = source.emissive;
     material.normal_scale = source.normal_scale;
-    material.alpha_mode = geometry::alpha_word_mode(source.alpha);
-    material.double_sided = geometry::alpha_word_double_sided(source.alpha);
-    material.alpha_cutoff = geometry::alpha_word_cutoff(source.alpha);
-    material.transmission = geometry::alpha_word_transmit(source.alpha);  // R164, foliage optics
-    material.normal_spread = geometry::alpha_word_spread(source.alpha);
+    assets::set_alpha_word(material, source.alpha);  // R164's foliage optics with it (R207-M1)
     out.data.materials.push_back(std::move(material));
     out.part_material.push_back(static_cast<i32>(out.part_material.size()));
     // How it places its texels (R131): stochastic or plain, which the upload reads.
@@ -1233,6 +1229,9 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
     }
   }
   if (desc.stream) pages = std::move(built);
+  // A miss draws what a hit draws (R207-M1): the materials take the container's alpha words, which
+  // a later load reads back, after the build and the write have read the import's own floats.
+  for (assets::Material& material : out.data.materials) assets::round_trip_alpha_word(material);
   return true;
 }
 
