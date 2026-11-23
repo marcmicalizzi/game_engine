@@ -138,15 +138,68 @@ function Get-RerunPlan {
 function Test-RunExplained {
   <#
   .SYNOPSIS
-    Whether one `tools/dev.ps1 test` run's exit code is what its own kept logs say: 0 or 75 is (a 75's
-    give-ups are judged by the suite's state), anything else only when a log of that run holds a
-    failed or cut-off record. A run that exited 1 having kept nothing, or 8 over all-passed records,
-    is a fault even when a later rerun passed: the code and the log disagree.
+    Whether one `tools/dev.ps1 test` run's exit code is what its own kept logs say: 0 is; 75 only when
+    a log of that run holds a record that gave up waiting for the card (its give-ups are then judged
+    by the suite's state); anything else only when a log of that run holds a failed or cut-off record.
+    A run that exited 1 having kept nothing, 8 over all-passed records, or 75 over records none of
+    which gave up, is a fault even when a later rerun passed: the code and the log disagree. dev.ps1
+    exits 75 for any "(Skipped)" line, and a skipped record whose give-up line is missing reads as
+    passed (Read-CTestLog), so a 75 taken on trust would be a test that never ran read as a pass
+    (T217-M3).
   #>
   param([int]$Exit, [string[]]$Logs = @())
-  if ($Exit -in 0, 75) { return $true }
+  if ($Exit -eq 0) { return $true }
   $own = Get-SuiteState -Logs $Logs
+  if ($Exit -eq 75) { return [bool]@($own.GaveUp).Count }
   [bool](@($own.Failed).Count + @($own.Incomplete).Count)
+}
+
+function Read-LegVerdict {
+  <#
+  .SYNOPSIS
+    The gate's reading of the Linux leg's verdict file at the end: no verdict when the file is
+    missing, unreadable, not finished (`done`: a leg that died part-way never writes it), or names
+    other than -Expected containers; otherwise a line per container and the red ones by name.
+  #>
+  param([Parameter(Mandatory)][string]$Path, [int]$Expected = 3)
+  $v = $null
+  if (Test-Path -LiteralPath $Path) { try { $v = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch { $v = $null } }
+  $lines = New-Object System.Collections.Generic.List[string]
+  $reds = New-Object System.Collections.Generic.List[string]
+  $none = $null
+  $done = $v -and $v.PSObject.Properties['done'] -and $v.done -and $v.PSObject.Properties['presets']
+  if (-not $done) { $none = 'the linux leg did not finish its verdict file' }
+  else {
+    $presets = @($v.presets.PSObject.Properties)
+    foreach ($p in $presets) {
+      $lines.Add("LINUX $($p.Name) exit $($p.Value.exit): $($p.Value.line)")
+      if (-not $p.Value.ok) { $reds.Add("linux $($p.Name)") }
+    }
+    if ($presets.Count -ne $Expected) { $none = "the linux leg reported $($presets.Count) containers, not $Expected" }
+  }
+  [pscustomobject]@{ Verdict = $v; Lines = $lines.ToArray(); Red = $reds.ToArray(); NoVerdict = $none }
+}
+
+function Get-WorktreeDirt {
+  <#
+  .SYNOPSIS
+    What makes a worktree other than the commit at its HEAD: every line of `git status --porcelain`
+    (tracked changes and unmerged paths, and with -TrackedOnly not given, untracked files git does
+    not ignore) and an unfinished merge, cherry-pick or revert. A gate's verdict names a commit, so
+    its tree must be exactly that commit (T217-H1). A git that fails is a fault, never a clean tree.
+  #>
+  param([Parameter(Mandatory)][string]$Root, [switch]$TrackedOnly)
+  $mode = if ($TrackedOnly) { 'no' } else { 'normal' }
+  $st = @(& git -C $Root status --porcelain "--untracked-files=$mode" 2>$null)
+  if ($LASTEXITCODE -ne 0) { throw "git status failed in $Root (exit $LASTEXITCODE)" }
+  $dirt = @($st | ForEach-Object { "$_" } | Where-Object { $_ })
+  foreach ($ref in 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD') {
+    $null = & git -C $Root rev-parse -q --verify $ref 2>$null
+    if ($LASTEXITCODE -eq 0) { $dirt += "$ref exists: an unfinished operation" }
+  }
+  # Unrolled, one line an object: callers collect it with @(), and `, $dirt` would reach them as
+  # one element holding the list.
+  $dirt
 }
 
 function Get-IntegrityFindings {
@@ -216,10 +269,14 @@ function Get-TreeLitter {
 }
 
 function Get-TreeEntries {
-  # The root's own entries, and every untracked path git reports (not the ignored ones).
+  # The root's own entries, and every untracked path git reports (not the ignored ones). A git that
+  # fails throws: an empty list from a failed status would blind the litter check (T217-L7; a
+  # module's functions run under the session's $ErrorActionPreference, not gate.ps1's Stop).
   param([Parameter(Mandatory)][string]$Root)
   $names = @(Get-ChildItem -LiteralPath $Root -Force | ForEach-Object { $_.Name })
-  $untracked = @(& git -C $Root status --porcelain --untracked-files=all 2>$null | Where-Object { $_ -like '?? *' } | ForEach-Object { $_.Substring(3).Trim('"') })
+  $st = @(& git -C $Root status --porcelain --untracked-files=all 2>$null)
+  if ($LASTEXITCODE -ne 0) { throw "Get-TreeEntries: git status failed in $Root (exit $LASTEXITCODE); the litter check cannot see the tree" }
+  $untracked = @($st | Where-Object { $_ -like '?? *' } | ForEach-Object { $_.Substring(3).Trim('"') })
   , @(@($names) + @($untracked) | Sort-Object -Unique)
 }
 
@@ -254,4 +311,4 @@ function Start-GateProcess {
 
 Export-ModuleMember -Function Get-GateFilters, Get-WeakerCardFilter, ConvertTo-CommandLine, Read-CTestLog,
   Test-NoCaseByDesign, Get-SuiteState, Get-RerunPlan, Test-RunExplained, Get-IntegrityFindings, Read-ContainerVerdict,
-  Get-TreeLitter, Get-TreeEntries, Start-GateProcess
+  Read-LegVerdict, Get-WorktreeDirt, Get-TreeLitter, Get-TreeEntries, Start-GateProcess
