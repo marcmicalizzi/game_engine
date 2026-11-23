@@ -6,7 +6,6 @@
   "by": "Marc Micalizzi",
   "deltas": {
     "page:docs/subsystems/renderer.md": 523,
-    "page:docs/subsystems/water.md": 8200,
-    "page:docs/subsystems/audio.md": -148
+    "page:docs/subsystems/water.md": 8200
   }
 }
