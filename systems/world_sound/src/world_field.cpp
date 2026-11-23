@@ -469,11 +469,13 @@ void WorldField::refresh(const WorldPos& listener) noexcept {
   // distances, and the wind in its lee as a windbreak's: the deepest lee any of them gives.
   shelter_share_ = 1.0;
   if (shelter_.height_at != nullptr) {
-    const f64 tl = std::sqrt(static_cast<f64>(to.x) * to.x + static_cast<f64>(to.y) * to.y);
+    const f64 tx = static_cast<f64>(to.x);
+    const f64 tz = static_cast<f64>(to.y);
+    const f64 tl = std::sqrt(tx * tx + tz * tz);
     if (tl > 1e-6) {
       for (const f64 d : k_shelter_probe_m) {
-        const f64 x = listener.x - d * static_cast<f64>(to.x) / tl;
-        const f64 z = listener.z - d * static_cast<f64>(to.y) / tl;
+        const f64 x = listener.x - d * tx / tl;
+        const f64 z = listener.z - d * tz / tl;
         const f64 h = static_cast<f64>(shelter_.height_at(shelter_.user, x, z));
         if (!(h > k_shelter_least_m)) continue;
         const f64 share = lee_share(d / h);
