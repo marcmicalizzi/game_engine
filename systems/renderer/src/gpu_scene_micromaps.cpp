@@ -91,7 +91,9 @@ bool GpuScene::bake_micromaps(gfx::ShaderLibrary& shaders, std::string* error) {
   report.key_ms = static_cast<f64>(time::monotonic_ns() - start) / 1e6;
 
   if (report.key != 0) {
-    const MicromapFileRead found = read_micromap_file(device, report.path, report.key, micromaps_);
+    const MicromapSceneShape shape{in.cluster_count, in.items, in.triangle_counts};
+    const MicromapFileRead found =
+        read_micromap_file(device, report.path, report.key, shape, micromaps_);
     report.file_bytes = found.file_bytes;
     if (found.used) {
       report.read = 1;

@@ -38,7 +38,8 @@ namespace engine::renderer {
 
 // Bumped when an entry made before would be wrong: the file's layout, what the key covers, or the
 // bake's rule (the shader's bytes are in the key already, so a change to the shader alone does not
-// need it).
+// need it). The bake's host-side rules — `gfx::bake_opacity_micromaps`' sort, dedup, budget level
+// drop, special indices and per-cluster layout — are **not** in the key: a change there bumps this.
 inline constexpr u32 k_micromap_cache_version = 1;
 inline constexpr u32 k_micromap_file_magic = 0x4d4d4f45u;  // "EOMM", little-endian
 
@@ -133,11 +134,28 @@ void micromap_key_materials(MicromapKeyState& state, std::span<const u32> list,
                             const HashMap<u32, u64>& slots, std::span<const u32> sampler_slots,
                             std::span<const u32> sampler_keys, std::string_view root);
 
+// The scene a stored bake is read for, as the bake would read it (`gfx::MicromapBakeInput`'s
+// `cluster_count`, `items` and `triangle_counts`).
+struct MicromapSceneShape {
+  u32 cluster_count = 0;
+  std::span<const u32> items;  // {cluster, material} per masked cluster
+  std::span<const u32> triangle_counts;
+};
 // Opens `path`, checks it is a stored bake for `key`, and restores the micromap from it
 // (gfx::restore_opacity_micromaps), each section read straight into the memory it is uploaded
 // from through a 4 MiB bounce buffer that the content hash is taken over on the way. `out` is
 // untouched unless it is used.
+//
+// **The file bounds nothing; the scene does** (R207-M2): before anything is allocated, every
+// section's size is held to the file's length (and their sum to u64), the cluster count to the
+// scene's, the masked triangles to the scene's total and the stored entries to at most that; and
+// before the restore uploads them, the per-cluster table is held word for word to the layout the
+// scene's bake makes (`gfx::micromap_cluster_first`) and every index to a special index or an
+// entry the file stores (`gfx::micromap_index_valid`), read once through the bounce buffer — the
+// GPU reads both unchecked. Each refusal is named; the content hash is no bound, only a check
+// against damage, and it is taken last.
 MicromapFileRead read_micromap_file(const gfx::Device& device, const std::string& path, u64 key,
+                                    const MicromapSceneShape& scene,
                                     gfx::OpacityMicromapSet& out);
 
 }  // namespace engine::renderer

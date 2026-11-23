@@ -198,6 +198,12 @@ bool opacity_micromap_limits(const Device& device, u32& max_2state_level,
 // the budget, the special indices, the data pass, and `vkBuildMicromapsEXT`. Every buffer but the
 // set's is freed before it returns. False with nothing allocated when the device has no
 // micromaps, and with `out` empty (and true) when there is nothing to bake.
+//
+// **A change to what the bake writes bumps `renderer::k_micromap_cache_version`**
+// (systems/renderer/micromap_cache.h; renderer.md, "The bake is read back"): the shader's SPIR-V is
+// in the stored bake's key, but the host's rules here — the sort, the dedup, the budget's level
+// drop, the special indices, the per-cluster table's layout — are not, so a stored bake made by
+// the old rules would otherwise be read as the new one's.
 bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
                             const BindlessSet& bindless, const MicromapBakeInput& in,
                             OpacityMicromapSet& out, std::string* error = nullptr);
@@ -268,8 +274,24 @@ struct MicromapRestore {
   bool (*fill)(void* context, MicromapSection section, void* dst, u64 bytes) = nullptr;
   void* context = nullptr;
 };
+// The restore refuses a per-cluster first index that is neither `k_micromap_none` nor below
+// `triangle_count` before it uploads the table; the indices it uploads as `fill` wrote them, so a
+// caller reading them from anywhere it does not trust checks them first (`micromap_index_valid`;
+// the renderer's stored-bake reader does, before the restore allocates anything).
 bool restore_opacity_micromaps(const Device& device, const MicromapRestore& in,
                                OpacityMicromapSet& out, std::string* error = nullptr);
+
+// **The per-cluster table a bake of `items` lays out** (the bake's own rule, the one function both
+// it and a stored bake's reader call): per cluster of the scene its first index into the masked
+// triangles' indices, the items' triangle counts summed in the items' order, or `k_micromap_none`.
+void micromap_cluster_first(u32 cluster_count, std::span<const u32> items,
+                            std::span<const u32> triangle_counts, Vector<u32>& out);
+// An index a stored bake may hold: one of the four special indices, or an entry below
+// `entry_count`.
+inline bool micromap_index_valid(i32 index, u32 entry_count) noexcept {
+  return index < 0 ? index >= k_micromap_fully_unknown_opaque
+                   : static_cast<u32>(index) < entry_count;
+}
 
 // Builds a micromap from states written on the host (`data`, two bits a micro-triangle, least
 // significant first) and its triangle array, blocking: the same build the bake ends with, for a

@@ -13,6 +13,7 @@
 
 #include <cstdio>
 #include <fstream>
+#include <initializer_list>
 #include <iterator>
 #include <string>
 
@@ -51,6 +52,10 @@ struct SectionsFixture {
                                         {4, 2, static_cast<u16>(gfx::k_micromap_format_4state)}};
   u32 data[3] = {0x000000e4u, 0x5a5a5a5au, 0xa5a5ffffu};
   gfx::MicromapStats stats;
+  // The scene those sections are a bake of: clusters 0 and 2 masked, two triangles each.
+  u32 items[4] = {0, 5, 2, 5};
+  u32 counts[2] = {2, 2};
+  MicromapSceneShape shape() const { return MicromapSceneShape{3, items, counts}; }
   gfx::MicromapSections sections() {
     stats.triangles = 4;
     stats.entries_per_level[1] = 2;
@@ -202,7 +207,7 @@ TEST_CASE("micromap cache: a file is refused by its header for another key, vers
       out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
     }
     gfx::OpacityMicromapSet set;
-    const MicromapFileRead read = read_micromap_file(none, path, asked, set);
+    const MicromapFileRead read = read_micromap_file(none, path, asked, fx.shape(), set);
     CHECK(read.found);
     CHECK_FALSE(read.used);
     CHECK(set.address == 0);
@@ -221,7 +226,127 @@ TEST_CASE("micromap cache: a file is refused by its header for another key, vers
   CHECK(refusal(spoiled, key).find("prefix") != std::string::npos);
   gfx::OpacityMicromapSet set;
   const MicromapFileRead missing =
-      read_micromap_file(none, micromap_cache_path(dir.path(), key + 7), key + 7, set);
+      read_micromap_file(none, micromap_cache_path(dir.path(), key + 7), key + 7, fx.shape(), set);
   CHECK_FALSE(missing.found);
   CHECK(missing.refused.empty());
+}
+
+namespace {
+
+// The content hash a writer would put on `bytes` as they stand (the header after its prefix, then
+// each section chained in order; the data section is whatever follows the triangle records), so a
+// lie written into a header carries a correct hash and the hash is never what refuses it.
+void rehash(std::string& bytes) {
+  auto u32_at = [&](usize at) {
+    u32 v = 0;
+    for (u32 i = 0; i < 4; ++i)
+      v |= u32{static_cast<u8>(bytes[at + i])} << (8 * i);
+    return v;
+  };
+  const usize header_bytes = u32_at(24);
+  u64 h = hash_bytes(bytes.data() + 28, header_bytes - 28);
+  const usize sizes[3] = {usize{u32_at(28)} * 4, usize{u32_at(32)} * 4,
+                          usize{u32_at(36)} * sizeof(gfx::MicromapTriangle)};
+  usize at = header_bytes;
+  for (const usize size : sizes) {
+    if (size != 0) h = hash_bytes(bytes.data() + at, size, h);
+    at += size;
+  }
+  if (at < bytes.size()) h = hash_bytes(bytes.data() + at, bytes.size() - at, h);
+  for (u32 i = 0; i < 8; ++i)
+    bytes[16 + i] = static_cast<char>((h >> (8 * i)) & 0xffu);
+}
+
+}  // namespace
+
+// **The scene bounds the file** (R207-M2; micromap_cache.h, `read_micromap_file`): each lie below
+// is the only one in its file and the file's content hash is correct, so the hash is not what
+// refuses it; every refusal comes before the restore allocates or uploads anything, so none needs
+// a device. Before the mend each of these files but the oversized states reached the restore (here
+// it refuses for the never-created device; on a card it uploaded the tables the GPU reads
+// unchecked: a first index of 3 reads the indices one past their end).
+TEST_CASE("micromap cache: a file is refused by the scene's counts and tables before any upload") {
+  test::TempDir dir{"omm_bounds"};
+  const u64 key = 0x5678;
+  const std::string path = micromap_cache_path(dir.path(), key);
+  const gfx::Device none;  // never created: every refusal must come before any device call
+  auto read = [&](const SectionsFixture& fx, const MicromapSceneShape& shape) {
+    gfx::OpacityMicromapSet set;
+    const MicromapFileRead r = read_micromap_file(none, path, key, shape, set);
+    CHECK(r.found);
+    CHECK_FALSE(r.used);
+    CHECK(set.address == 0);
+    (void)fx;
+    return r.refused;
+  };
+  auto write = [&](SectionsFixture& fx) {
+    std::string error;
+    REQUIRE_MESSAGE(write_micromap_file(path, key, fx.sections(), &error), error);
+    std::ifstream in(path, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  };
+  auto overwrite = [&](const std::string& bytes) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+  };
+  // The true file for the true scene passes every bound and reaches the restore.
+  SectionsFixture good;
+  const std::string bytes = write(good);
+  {
+    std::string again = bytes;
+    rehash(again);
+    REQUIRE(again == bytes);  // the test's hash is the writer's
+  }
+  const std::string passed = read(good, good.shape());
+  MESSAGE("the true file: " << passed);
+  CHECK(passed.find("the restore refused it") != std::string::npos);
+  // Another scene: one more cluster, or one more masked triangle.
+  {
+    MicromapSceneShape shape = good.shape();
+    shape.cluster_count = 4;
+    CHECK(read(good, shape).find("cluster count is not the scene's") != std::string::npos);
+    u32 counts[2] = {2, 3};
+    shape = good.shape();
+    shape.triangle_counts = counts;
+    CHECK(read(good, shape).find("masked triangles are not the scene's") != std::string::npos);
+  }
+  // A states section larger than the file.
+  {
+    std::string lie = bytes;
+    const u64 huge = u64{bytes.size()} + 4;
+    for (u32 i = 0; i < 8; ++i)
+      lie[40 + i] = static_cast<char>((huge >> (8 * i)) & 0xffu);
+    rehash(lie);
+    overwrite(lie);
+    CHECK(read(good, good.shape()).find("states name more bytes") != std::string::npos);
+  }
+  // More stored entries than the scene has masked triangles.
+  {
+    SectionsFixture fx;
+    gfx::MicromapTriangle five[5] = {fx.triangles[0], fx.triangles[1], fx.triangles[1],
+                                     fx.triangles[1], fx.triangles[1]};
+    gfx::MicromapSections s = fx.sections();
+    s.triangles = five;
+    std::string error;
+    REQUIRE_MESSAGE(write_micromap_file(path, key, s, &error), error);
+    CHECK(read(fx, fx.shape()).find("more entries than") != std::string::npos);
+  }
+  // A per-cluster table in range but not the scene's layout, and one past the indices.
+  for (const u32 first : {3u, 9u}) {
+    SectionsFixture fx;
+    fx.cluster_first[2] = first;
+    (void)write(fx);
+    const std::string why = read(fx, fx.shape());
+    MESSAGE("first index " << first << ": " << why);
+    CHECK(why.find("per-cluster table is not the scene's (cluster 2)") != std::string::npos);
+  }
+  // An index past the stored entries, and one below the special indices.
+  for (const i32 index : {2, -5}) {
+    SectionsFixture fx;
+    fx.indices[2] = index;
+    (void)write(fx);
+    const std::string why = read(fx, fx.shape());
+    MESSAGE("index " << index << ": " << why);
+    CHECK(why.find("an index names no stored entry (triangle 2") != std::string::npos);
+  }
 }
