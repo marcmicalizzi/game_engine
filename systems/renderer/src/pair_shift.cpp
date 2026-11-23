@@ -113,4 +113,11 @@ u64 shift_slots(std::span<const PairShift> runs) noexcept {
   return slots;
 }
 
+u32 shift_run_bound(u32 slots) noexcept { return slots; }
+
+void reserve_shift_runs(Vector<PairShift>& runs, u32 slots) {
+  const u32 bound = shift_run_bound(slots);
+  if (runs.capacity() < bound) runs.reserve(bound);
+}
+
 }  // namespace engine::renderer

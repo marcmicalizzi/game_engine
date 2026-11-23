@@ -1815,6 +1815,9 @@ class GpuScene {
   Vector<PairShift> shift_scratch_;
   Vector<PairShift> expand_runs_;
   void settle_first_pairs(u32 begin, u32 end);
+  // Every list of runs above, each set's and the carry's, given room for the tail's slots where its
+  // capacity is set (T215, `shift_run_bound`), so no frame grows one.
+  void reserve_shift_lists();
   // What a live tail slot was made from, to tell a block that came back unchanged.
   struct InstanceKey {
     u32 mesh = 0;

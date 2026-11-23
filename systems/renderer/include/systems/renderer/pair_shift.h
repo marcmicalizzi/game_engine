@@ -56,4 +56,20 @@ const PairShift* find_shift(std::span<const PairShift> runs, u32 slot) noexcept;
 // The slots `runs` cover.
 u64 shift_slots(std::span<const PairShift> runs) noexcept;
 
+// **The most runs a list over a tail of `slots` slots can hold** (T215): every list here — a
+// change's, a table set's composed ones, the CPU's, the expansion's, the scratch — is sorted,
+// disjoint and of runs a slot or longer inside the tail, so it never holds more runs than the tail
+// has slots. Nothing smaller is honest: a change's runs are one a block or free run, but a
+// composition keeps the edges of every layout it composed, and the CPU's list is cut wherever a set
+// copies a slot it settles (`GpuScene::settle_first_pairs`), which a slot marked alone (a sway, a
+// still form's lean) does anywhere in a block. How many runs a list reaches between those bounds
+// follows how the tile commits bunch, which is timing, so a list grown to what it held last time
+// grows again in some later frame (engine_view's frame loop, frame 68 of the streamed trees' second
+// flight). So every list is reserved to this bound where the tail's slot capacity is set, and
+// grows again only with it.
+u32 shift_run_bound(u32 slots) noexcept;
+
+// `runs` given room for `shift_run_bound(slots)` runs, when it has less.
+void reserve_shift_runs(Vector<PairShift>& runs, u32 slots);
+
 }  // namespace engine::renderer
