@@ -974,7 +974,8 @@ bool VisibleCensus::count(const SceneData& data, const GpuScene& scene, const St
     if ((counted_ + 1) % 120 == 0) log_motion();
   }
   if (census_mesh_frame.get() == static_cast<i64>(counted_)) {
-    // The drawn run again (the staging buffer holds the casters now): entries per instance, then
+    // The drawn run again (the staging buffer holds the casters now, or the drawn run when the
+    // motion was counted above; copied either way): entries per instance, then
     // per (rank, mesh) the instances seen, their entries and the most one drew. Cold: one frame.
     if (!copy_runs(scene, stats, false, entry_count, error)) return false;
     u32 instance_end = 0;
@@ -1086,6 +1087,23 @@ void VisibleCensus::count_motion(const GpuScene& scene, const u32* entries, u64 
       ++motion_[2 * k_motion_bins * k_motion_bins + d];
     }
   }
+}
+
+bool VisibleCensus::pairs(const GpuScene& scene, const Stats& stats, Vector<u64>& out,
+                          std::string* error) {
+  out.clear();
+  if (device_ == nullptr || !staging_.buffer.valid() || scene.visible.size > staging_.size) {
+    if (error != nullptr) *error = "the census was not created for this visible list";
+    return false;
+  }
+  u64 entry_count = 0;
+  if (!copy_runs(scene, stats, false, entry_count, error)) return false;
+  const auto* entries = static_cast<const u32*>(staging_.mapped);
+  out.resize(static_cast<u32>(entry_count));
+  for (u64 e = 0; e < entry_count; ++e)
+    out[static_cast<u32>(e)] = u64{entries[e * 2 + 0]} << 32 | entries[e * 2 + 1];
+  std::sort(out.begin(), out.end());
+  return true;
 }
 
 void VisibleCensus::log_motion() const {

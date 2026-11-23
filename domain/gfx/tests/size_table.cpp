@@ -217,7 +217,9 @@ ENGINE_EXPECT_SIZE(32, 8, gfx::ClusterChunkParams);
 // 1856, not 1840: a run's capacity and its drop counter (W51-5, renderer.md, "The visible list's
 // runs are sized by the frame"), written on a base without R188's nodes and taking the same pad
 // words; the batch 71 stack appended them after the nodes, in R188's pad word and a row of their
-// own (a pad word, the counter's address, a pad to a whole float4 row).
+// own (a pad word, the counter's address, a pad to a whole float4 row). Still 1856: R206's LOD caps
+// took the last pad word for their table's address (`sway_lod`) and the pad word after
+// `run_capacity` for the table's count (`sway_lod_count`, R206-H1), so no pad word is left.
 ENGINE_EXPECT_SIZE(1856, 8, gfx::CullParams);
 // R188's node (renderer.md, "Nodes before instances"): a sphere, its first slot, a packed span,
 // its terrain level and its anchor slot, read a thread a node by the node pass; mirrored in

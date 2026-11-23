@@ -388,14 +388,18 @@ struct CullParams {
   // stack appended them after the nodes, in R188's pad word and a row of their own, so the block is
   // 1,856 bytes, a whole number of float4 rows, and every field before them keeps its offset.
   u32 run_capacity = 0;
-  u32 pad_run = 0;
+  // The floats `sway_lod` holds (R206-H1): the cull reads `sway_lod[mesh]` only for a mesh under
+  // it, and a deformed instance of any mesh past it — a terrain ring's slot, a tile of the mesh
+  // room — keeps its whole padding, so no instance can index past the table. In the pad word after
+  // `run_capacity`, so the block's size and every other offset are unchanged.
+  u32 sway_lod_count = 0;
   u64 run_drops = 0;
   // **A storm's padding is the culling's, not the cut's** (R206; renderer.md, "What a gale
   // builds"): a float per mesh, the most padding (mesh-space metres) a deformed instance of it
   // takes on its LOD spheres — a swaying mesh's calm sway bound, or more where a caller padded one
-  // of its instances more, and +inf for every other mesh — while every other test takes the whole
-  // `InstanceDesc::bounds_padding`. 0 is none, the LOD spheres taking the whole padding as before;
-  // it took the block's last pad word, so the size is unchanged.
+  // of its instances more, and +inf for every other mesh under `sway_lod_count` — while every other
+  // test takes the whole `InstanceDesc::bounds_padding`. 0 is none, the LOD spheres taking the
+  // whole padding as before; it took the block's last pad word, so the size is unchanged.
   u64 sway_lod = 0;
 };
 static_assert(sizeof(CullParams) == 1856);
@@ -410,6 +414,7 @@ static_assert(offsetof(CullParams, node_items) == 1808);
 static_assert(offsetof(CullParams, node_list) == 1816);
 static_assert(offsetof(CullParams, node_guard) == 1824);
 static_assert(offsetof(CullParams, run_capacity) == 1832);
+static_assert(offsetof(CullParams, sway_lod_count) == 1836);
 static_assert(offsetof(CullParams, run_drops) == 1840);
 static_assert(offsetof(CullParams, sway_lod) == 1848);
 

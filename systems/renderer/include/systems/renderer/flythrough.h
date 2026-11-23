@@ -258,6 +258,11 @@ class VisibleCensus {
   std::span<const u64> motion() const noexcept {
     return std::span<const u64>(motion_, (2 * k_motion_bins + 1) * k_motion_bins);
   }
+  // **The cut itself** (R206-L1): every view's drawn runs of the frame `stats` describes, each
+  // entry as `instance << 32 | cluster`, sorted — what a test compares two frames' cuts by, to the
+  // pair rather than by their counts. Blocking, as `count`.
+  bool pairs(const GpuScene& scene, const Stats& stats, Vector<u64>& out,
+             std::string* error = nullptr);
 
  private:
   bool copy_runs(const GpuScene& scene, const Stats& stats, bool casters, u64& entries,

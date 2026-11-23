@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 
 namespace engine::renderer {
 namespace {
@@ -30,7 +31,19 @@ tunables::Bool calm_cut{
 // Made with the pose table, at the load (never in a frame): a region a slot, a float a mesh.
 bool GpuScene::make_sway_caps(std::string* error) {
   gfx::destroy_buffer(*device_, sway_caps_);
-  sway_cap_count_ = static_cast<u32>(data_->parts.size()) + 1u;  // and the holes' null mesh
+  // **Every mesh that can sway, and no more** (R206-H1). A scene names meshes past its parts — a
+  // terrain ring's slots (`parts + slot parts + s`), the mesh room's tiles — and those are deformed
+  // too, but none sways: a tree's record, a field's slot and a tail tree each need the mesh under
+  // `flora_meshes_`, which is sized to the parts at the load. The table covers the parts (and the
+  // holes' null mesh), `flora_meshes_` and any mesh a caller's padding was noted for, so a swaying
+  // mesh is under the count by construction; the cull reads nothing past the count
+  // (`CullParams::sway_lod_count`), and a mesh there keeps its whole padding. Sizing it to every
+  // index a scene can name was not chosen: the rings' and the mesh room's indices change with a
+  // relayout and with streaming, which would remake the table in a frame, for meshes it caps none
+  // of.
+  sway_cap_count_ = std::max({static_cast<u32>(data_->parts.size()) + 1u,
+                              static_cast<u32>(flora_meshes_.size()),
+                              static_cast<u32>(sway_base_max_.size())});
   if (sway_base_max_.size() < sway_cap_count_) sway_base_max_.resize(sway_cap_count_, 0.0f);
   const u64 bytes = u64{k_joint_slots} * sway_cap_count_ * sizeof(f32);
   if (!gfx::create_buffer(*device_, bytes,
@@ -50,8 +63,11 @@ bool GpuScene::make_sway_caps(std::string* error) {
 // only leaves that mesh's cut finer.
 void GpuScene::note_sway_base(u32 mesh, f32 base) noexcept {
   if (mesh >= sway_base_max_.size()) {
-    // Only before the table is made (a load's trees are placed first); never in a frame, since the
-    // table is sized for every mesh of the scene.
+    // Only before the table is made (a load's trees are placed first, and the table then covers
+    // their meshes); never in a frame, since a tail tree's mesh is under `flora_meshes_`, which the
+    // table covers. A mesh noted past a made table would go uncapped (its whole padding: a finer
+    // cut, never a wrong one), so a debug build says so.
+    ENGINE_ASSERT(sway_caps_.mapped == nullptr, "a swaying mesh past the LOD caps' table");
     sway_base_max_.resize(mesh + 1, 0.0f);
   }
   if (base > sway_base_max_[mesh]) {
@@ -88,6 +104,16 @@ void GpuScene::write_sway_caps(u32 slot) noexcept {
   for (u32 m = 0; m < sway_cap_count_; ++m)
     caps[m] = sway_cap_of(m);
   sway_cap_written_[slot] = sway_cap_version_;
+}
+
+// cluster_cull.slang's read, on the CPU: `sway_lod != 0 && mesh < sway_lod_count`, then the
+// region's float; anything else is no cap.
+f32 GpuScene::sway_lod_cap(u32 slot, u32 mesh) const noexcept {
+  if (sway_lod_address(slot) == 0 || slot >= k_joint_slots || mesh >= sway_lod_count())
+    return std::numeric_limits<f32>::infinity();
+  const f32* caps = reinterpret_cast<const f32*>(static_cast<const u8*>(sway_caps_.mapped) +
+                                                 u64{slot} * sway_cap_count_ * sizeof(f32));
+  return caps[mesh];
 }
 
 }  // namespace engine::renderer
