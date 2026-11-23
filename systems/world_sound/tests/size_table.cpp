@@ -12,4 +12,4 @@ ENGINE_EXPECT_SIZE(88, 8, world_sound::StageStats);
 ENGINE_EXPECT_SIZE(48, 8, world_sound::Crown);  // S112-2: merged, extent_m
 // What a world voice was last told, one a voice (6 + 8 + 2 by default), read by tests and hosts.
 ENGINE_EXPECT_SIZE(52, 4, world_sound::WorldVoiceInfo);
-ENGINE_EXPECT_SIZE(80, 8, world_sound::WorldStats);  // S112-2: the ceiling, retries
+ENGINE_EXPECT_SIZE(88, 8, world_sound::WorldStats);  // S112-2: the ceiling, retries; S114: shelter

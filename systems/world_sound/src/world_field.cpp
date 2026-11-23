@@ -132,6 +132,22 @@ constexpr f64 k_bed_ring_m[2] = {32.0, 128.0};
 
 f64 pow10(f64 db) noexcept { return std::pow(10.0, db / 10.0); }
 
+// **The lee of what stands upwind** (S114; world-sound.md, "Read again by S114"): the wind's share
+// of the open wind at `x_over_h` heights downwind of an obstacle. A windbreak's reductions are
+// measurable to 30 H downwind (the University of Nebraska's "How Windbreaks Work" [F]), and 20 H
+// downwind the wind may still be 80 % of the upwind (a review's sentence through a search [S]);
+// the 0.3 held to 5 H in the near lee of a solid obstacle, a wall or a house, is a choice that no
+// source read tonight gave. Linear between.
+f64 lee_share(f64 x_over_h) noexcept {
+  if (x_over_h <= 5.0) return 0.3;
+  if (x_over_h <= 20.0) return 0.3 + 0.5 * (x_over_h - 5.0) / 15.0;
+  if (x_over_h <= 30.0) return 0.8 + 0.2 * (x_over_h - 20.0) / 10.0;
+  return 1.0;
+}
+// Where the lee is asked: upwind of the listener, metres; and what is too low to shelter a head.
+constexpr f64 k_shelter_probe_m[6] = {1.5, 3.0, 6.0, 12.0, 24.0, 48.0};
+constexpr f64 k_shelter_least_m = 0.5;
+
 // A band power through the path at `f_hz`, from the path's eight bands, interpolated in octaves:
 // the needles' tone between two of the fixed bands.
 f64 at_tone(const f64 (&per_band)[8], f64 f_hz) noexcept {
@@ -449,6 +465,23 @@ void WorldField::refresh(const WorldPos& listener) noexcept {
   Vec2 to;
   f64 z0 = 0.03;
   (void)wind10_at(listener.x, listener.z, to, z0);
+  // **Shelter for the ears** (S114): what stands upwind, asked of the host's table at a few
+  // distances, and the wind in its lee as a windbreak's: the deepest lee any of them gives.
+  shelter_share_ = 1.0;
+  if (shelter_.height_at != nullptr) {
+    const f64 tl = std::sqrt(static_cast<f64>(to.x) * to.x + static_cast<f64>(to.y) * to.y);
+    if (tl > 1e-6) {
+      for (const f64 d : k_shelter_probe_m) {
+        const f64 x = listener.x - d * static_cast<f64>(to.x) / tl;
+        const f64 z = listener.z - d * static_cast<f64>(to.y) / tl;
+        const f64 h = static_cast<f64>(shelter_.height_at(shelter_.user, x, z));
+        if (!(h > k_shelter_least_m)) continue;
+        const f64 share = lee_share(d / h);
+        shelter_share_ = share < shelter_share_ ? share : shelter_share_;
+      }
+    }
+  }
+  stats_.shelter = static_cast<f32>(shelter_share_);
   // Each crown's power at the listener per (U10 / 5)^3: what choosing and merging rank by. A crown
   // is heard at its edge when the listener is inside it (`Crown::extent_m`). The class's power and
   // the log law's denominator are the stage's and the refresh's, not a crown's (S112-2: three
@@ -823,7 +856,7 @@ void WorldField::tick(const WorldPos& listener, const Vec3& forward, const World
     Vec2 to{1.0f, 0.0f};
     f64 z0 = 0.03;
     const f64 u10 = wind10_at(listener.x, listener.z, to, z0);
-    const f64 u = u10 * loglaw(k_ears_height_m, z0);
+    const f64 u = u10 * loglaw(k_ears_height_m, z0) * shelter_share_;
     const f64 wx = u * static_cast<f64>(to.x) - static_cast<f64>(velocity.x);
     const f64 wy = -static_cast<f64>(velocity.y);
     const f64 wz = u * static_cast<f64>(to.y) - static_cast<f64>(velocity.z);

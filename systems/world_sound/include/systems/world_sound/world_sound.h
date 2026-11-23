@@ -136,6 +136,16 @@ struct CanopySource {
 /// where a session set one (the mean, the direction and the forced gust), and the sky's clock the
 /// turbulence is read at. The stage takes the arguments the trees' sway takes
 /// (`renderer::scene_flora_wind`) and asks the gust at each source's own place.
+/// **What shelters the listener's ears** (S114; world_sound.md, "Distance"): a host's table of what
+/// stands round the listener, a function pointer and a context as the canopy is. `height_at` is
+/// the height above the listener's ground of whatever stands at (x, z) — a wall's top, a roof, a
+/// rock — and 0 where the air is open; the stage asks it at a few places upwind of the listener at
+/// each refresh and lowers the wind at the ears as a windbreak lowers the wind in its lee.
+struct ShelterSource {
+  void* user = nullptr;
+  f32 (*height_at)(void* user, f64 x, f64 z) noexcept = nullptr;
+};
+
 struct WorldWind {
   const gfx::WindDesc* scene = nullptr;
   gfx::WindLive live{};
@@ -180,6 +190,9 @@ struct WorldStats {
   f32 held_db = 0.0f;
   u64 held_ticks = 0;
   u64 place_retries = 0;  // a voice placed again after the ring refused its move
+  // **Shelter** (S114): the share of the open wind the ears' wind had at the last refresh, 1 in the
+  // open (or with no shelter table), from what stands upwind (`ShelterSource`).
+  f32 shelter = 1.0f;
 };
 
 /// What the stage did, counted where it did it.
@@ -250,6 +263,7 @@ class SoundStage {
   /// The world's sound (S112): the host's canopy table, kept until replaced, and the frame's wind,
   /// handed before every `tick`. Neither does anything with the world off.
   void set_canopy(const CanopySource& canopy) noexcept;
+  void set_shelter(const ShelterSource& shelter) noexcept;
   void set_wind(const WorldWind& wind) noexcept;
   const WorldStats& world_stats() const noexcept;
   /// The world's voices as last described (tests: the levels the laws are held to). `count` is

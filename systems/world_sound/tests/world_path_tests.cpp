@@ -415,3 +415,48 @@ TEST_CASE("world path: a game's clip loses its top with distance, as the air tak
   const Tunable path("audio.world.path", "false");
   CHECK(std::fabs(clip_tilt(200.0, tmp.file("far-off.wav")) - near) < 0.3);
 }
+
+namespace {
+
+// A wall 2 m high and 40 m long across the wind, `at_m` along the wind from the listener (negative
+// is upwind), and the open air everywhere else.
+struct Wall {
+  f64 at_m = 0.0;
+  static f32 height_at(void* user, f64 x, f64 z) noexcept {
+    const Wall& w = *static_cast<Wall*>(user);
+    (void)x;
+    // The case's wind blows toward +z: along the wind is z.
+    const f64 along = z - k_far;
+    return std::fabs(along - w.at_m) < 0.5 && std::fabs(x - k_far) < 20.0 ? 2.0f : 0.0f;
+  }
+};
+
+f64 ears_db(const Wall* wall) {
+  Wood none;
+  Listening s(none, 8.0, false);
+  s.wind.roughness_m = 0.03;
+  if (wall != nullptr)
+    s.stage.set_shelter(ShelterSource{const_cast<Wall*>(wall), &Wall::height_at});
+  s.tick(10);
+  return 10.0 * std::log10(s.power(WorldVoiceKind::EarLeft) + s.power(WorldVoiceKind::EarRight));
+}
+
+}  // namespace
+
+TEST_CASE("world path: behind a wall the ears' wind drops by the lee's share") {
+  // Open air, then a wall 2 m high 3 m upwind (1.5 heights: the near lee, 0.3 of the open wind),
+  // then the same wall 3 m downwind (no lee at the listener) and 50 m upwind (past 24 heights:
+  // the probes at 48 m find it, 0.88 of the wind).
+  const f64 open = ears_db(nullptr);
+  const Wall near{-3.0};
+  const Wall behind{3.0};
+  const Wall far{-48.0};
+  const f64 lee = ears_db(&near);
+  MESSAGE("ears: open " << open << " dB SPL, in the lee " << lee << ", 48 m upwind "
+                        << ears_db(&far));
+  // The ears' level goes as 40 log of the wind at the head: 40 log 0.3 = -20.9 dB.
+  CHECK(lee - open == doctest::Approx(40.0 * std::log10(0.3)).epsilon(1e-3));
+  CHECK(ears_db(&behind) == doctest::Approx(open).epsilon(1e-9));
+  CHECK(ears_db(&far) - open ==
+        doctest::Approx(40.0 * std::log10(0.8 + 0.2 * 4.0 / 10.0)).epsilon(1e-3));
+}

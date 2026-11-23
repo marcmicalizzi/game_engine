@@ -44,6 +44,7 @@ class WorldField {
   void open(audio::Mixer* mixer, u32 tick_hz, const FieldConfig& config);
   bool is_open() const noexcept { return mixer_ != nullptr; }
   void set_canopy(const CanopySource& canopy) noexcept { canopy_ = canopy; }
+  void set_shelter(const ShelterSource& shelter) noexcept { shelter_ = shelter; }
   void set_wind(const WorldWind& wind) noexcept { wind_ = wind; }
   // One tick: a refresh when it is due, then every voice described. `frame` is the mixer's frame
   // (the corner of the listener's cell); `frame_moved` places every world voice again in it.
@@ -134,6 +135,8 @@ class WorldField {
   u64 ticks_ = 0;
   u32 refresh_every_ = 30;
   CanopySource canopy_{};
+  ShelterSource shelter_{};
+  f64 shelter_share_ = 1.0;  // the ears' share of the open wind, from the last refresh
   WorldWind wind_{};
   Vector<Crown> crowns_;      // the last refresh's crowns
   Vector<f64> crown_static_;  // each one's power at the listener per (U10 / 5)^3, from the refresh
