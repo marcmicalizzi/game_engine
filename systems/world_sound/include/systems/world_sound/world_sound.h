@@ -138,12 +138,14 @@ struct CanopySource {
 /// (`renderer::scene_flora_wind`) and asks the gust at each source's own place.
 /// **What shelters the listener's ears** (S114; world_sound.md, "Distance"): a host's table of what
 /// stands round the listener, a function pointer and a context as the canopy is. `height_at` is
-/// the height above the listener's ground of whatever stands at (x, z) — a wall's top, a roof, a
-/// rock — and 0 where the air is open; the stage asks it at a few places upwind of the listener at
-/// each refresh and lowers the wind at the ears as a windbreak lowers the wind in its lee.
+/// the height above the listener's ground of whatever stands across the wind at (x, z) — a wall's
+/// top, a roof, a rock — and 0 where the air is open; `across_x`, `across_z` is the unit direction
+/// across the wind there, so a host can tell a wall, which stands along it, from a trunk, which
+/// does not. The stage asks it at a few places upwind of the listener at each refresh and lowers
+/// the wind at the ears as a windbreak lowers the wind in its lee.
 struct ShelterSource {
   void* user = nullptr;
-  f32 (*height_at)(void* user, f64 x, f64 z) noexcept = nullptr;
+  f32 (*height_at)(void* user, f64 x, f64 z, f32 across_x, f32 across_z) noexcept = nullptr;
 };
 
 struct WorldWind {

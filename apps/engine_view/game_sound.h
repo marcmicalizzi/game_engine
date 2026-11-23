@@ -10,6 +10,7 @@
 // without it the runner has no hooks and the calls answer `Unsupported`.
 
 #include "game_runner.h"
+#include "walk.h"
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
@@ -77,6 +78,20 @@ struct SoundTile {
 };
 using SoundTileList = void (*)(const void* user, Vector<SoundTile>& out);
 
+// **What shelters the walker's ears** (S114; world_sound.md, "Distance"): the stage's
+// `ShelterSource` over the walker's collision. `cast` is a downward ray from `origin` for `length`
+// metres against what the walker stands among (`Walker::cast` in a session; a case's own world in
+// its test). The height over `feet_y` of what stands at (x, z) is the **least** of three casts a
+// pace apart across the wind (`k_shelter_across_m` either side): a wall or a house stands under all
+// three and a trunk's proxy under one at most, so a stand of trees is not taken for a wall and the
+// ears' wind does not drop 21 dB at one step and come back at the next. 0 where any cast meets
+// nothing or meets only what is under the feet.
+using ShelterCast = bool (*)(const void* user, WorldPos origin, f32 length, WalkCast& out);
+inline constexpr f32 k_shelter_across_m = 1.5f;
+inline constexpr f32 k_shelter_cast_above_m = 20.0f;  // from this far over the feet, 40 m down
+f32 shelter_height_at(ShelterCast cast, const void* user, f64 feet_y, f64 x, f64 z, f32 across_x,
+                      f32 across_z) noexcept;
+
 class GameSoundHost {
  public:
   // Reads `scene`'s `sound` block (none: every clip call answers `Unsupported`) and opens the stage
@@ -104,6 +119,11 @@ class GameSoundHost {
   // The wall time this host's own ticks took (`observe`, `tick_at`), nanoseconds: a frame's
   // `sound_ms` without a module (with one, the runner's `sound_ns`).
   i64 sound_ns() const noexcept { return sound_ns_; }
+  // **The walker the ears stand behind** (S114): a session's (`FlySession::walker`, a module's
+  // through the runner's `GameSound::walker`), whose collision the stage's shelter casts into;
+  // null (a flight, a fly session, a build with no collision) shelters nothing.
+  void set_walker(const Walker* walker) noexcept;
+  void note_eye(f64 eye_y) noexcept { eye_y_ = eye_y; }
 
   // **The canopy table** (S112; world_sound.h `CanopySource`): the loaded scene's instances whose
   // mesh has leaves and a class (`SceneData::mesh_leaves`, `canopy_class_of`), and a streamed
@@ -209,6 +229,10 @@ class GameSoundHost {
   f64 sun_rate_ = 0.0;
   u32 tick_hz_ = 240;
   i64 sound_ns_ = 0;
+  // The shelter's walker and the last eye's height (S114).
+  const Walker* walker_ = nullptr;
+  f64 eye_y_ = 0.0;
+  static f32 shelter(void* user, f64 x, f64 z, f32 across_x, f32 across_z) noexcept;
 };
 
 // **The session's sound as engine-view's loops reach it** (S112-2): the one host a process has,

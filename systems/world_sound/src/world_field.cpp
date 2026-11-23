@@ -476,7 +476,8 @@ void WorldField::refresh(const WorldPos& listener) noexcept {
       for (const f64 d : k_shelter_probe_m) {
         const f64 x = listener.x - d * tx / tl;
         const f64 z = listener.z - d * tz / tl;
-        const f64 h = static_cast<f64>(shelter_.height_at(shelter_.user, x, z));
+        const f64 h = static_cast<f64>(shelter_.height_at(
+            shelter_.user, x, z, static_cast<f32>(-tz / tl), static_cast<f32>(tx / tl)));
         if (!(h > k_shelter_least_m)) continue;
         const f64 share = lee_share(d / h);
         shelter_share_ = share < shelter_share_ ? share : shelter_share_;

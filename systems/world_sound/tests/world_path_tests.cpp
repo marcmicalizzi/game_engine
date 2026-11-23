@@ -422,9 +422,11 @@ namespace {
 // is upwind), and the open air everywhere else.
 struct Wall {
   f64 at_m = 0.0;
-  static f32 height_at(void* user, f64 x, f64 z) noexcept {
+  static f32 height_at(void* user, f64 x, f64 z, f32 across_x, f32 across_z) noexcept {
     const Wall& w = *static_cast<Wall*>(user);
-    (void)x;
+    // Across the wind (toward +z) is along x.
+    CHECK(std::fabs(std::fabs(across_x) - 1.0f) < 1e-5f);
+    CHECK(std::fabs(across_z) < 1e-5f);
     // The case's wind blows toward +z: along the wind is z.
     const f64 along = z - k_far;
     return std::fabs(along - w.at_m) < 0.5 && std::fabs(x - k_far) < 20.0 ? 2.0f : 0.0f;
