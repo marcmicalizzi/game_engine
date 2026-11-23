@@ -1194,6 +1194,14 @@ class GpuScene {
     u64 posed_frames = 0;
   };
   const FloraStats& flora_stats() const noexcept { return flora_stats_; }
+  // Per slot, a swaying tree's farthest tip's move since the last frame (x, m) and its crown's
+  // distance (y): the census's, `renderer.rt.census_motion` (R206, flora_census.cpp); empty
+  // otherwise.
+  std::span<const Vec2> flora_motion() const noexcept { return {motion_.data(), motion_.size()}; }
+  // This slot's LOD caps (`gfx::CullParams::sway_lod`; R206, sway_lod.cpp), 0 at the calm rung.
+  u64 sway_lod_address(u32 slot) const noexcept {
+    return sway_lod_on_ ? sway_caps_.address + u64{slot} * sway_cap_count_ * sizeof(f32) : 0;
+  }
   // **The normal pool this frame reads** — `normal_pool_address()`, except in a scene whose pool
   // normals are the trees' alone on a frame where no part of any tree moves: then 0, and the
   // resolve shades every tree from the attribute stream's rest normals with the rigid path's own
@@ -1866,6 +1874,11 @@ class GpuScene {
   void measure_flora_padding();  // gpu_scene_place.cpp, with `measure_host_reads` (T138)
   void measure_host_reads(const SceneData& data, const ResolvedSettings& resolved);
   FloraInstance flora_instance(u32 instance, u32 mesh, u32 first_part, u32 key) const noexcept;
+  void measure_motion(u32 slot, const WorldEye& eye);  // flora_census.cpp (R206): fills `motion_`
+  bool make_sway_caps(std::string* error);             // sway_lod.cpp (R206), the LOD caps
+  void note_sway_base(u32 mesh, f32 base) noexcept;
+  f32 sway_cap_of(u32 mesh) const noexcept;
+  void write_sway_caps(u32 slot) noexcept;
   void release_tail_tree(u32 slot) noexcept;
   void acquire_tail_tree(u32 slot, const SceneInstance& source);
   // `retired` as `relayout`'s: the old tables go there rather than being destroyed.
@@ -2099,6 +2112,13 @@ class GpuScene {
   gfx::BufferResource flora_poses_;   // k_joint_slots regions of gfx::FloraPartPose[flora_parts_]
   std::unique_ptr<TerrainSampler> flora_ground_;
   FloraStats flora_stats_;
+  Vector<Vec2> motion_;  // `flora_motion()`: the census's, and only while it measures (R206)
+  gfx::BufferResource sway_caps_;  // the LOD caps (R206): k_joint_slots regions of a float a mesh
+  Vector<f32> sway_base_max_;      // per mesh: the largest caller's padding of a swaying instance
+  u32 sway_cap_count_ = 0;
+  u64 sway_cap_version_ = 1;
+  u64 sway_cap_written_[k_joint_slots] = {};  // each region's version of the table
+  bool sway_lod_on_ = false;  // this frame's: the ladder stands above its calm rung or walks
   bool flora_moving_ = false;                // any part of any tree off its rest pose this frame
   const char* flora_wind_source_ = nullptr;  // the last frame's: "frame", "ground", "tunables"
   FloraWindLag flora_wind_lag_{};  // the live mean as the trees take it (W154; scene_wind.h)

@@ -390,7 +390,13 @@ struct CullParams {
   u32 run_capacity = 0;
   u32 pad_run = 0;
   u64 run_drops = 0;
-  u64 pad_runs = 0;
+  // **A storm's padding is the culling's, not the cut's** (R206; renderer.md, "What a gale
+  // builds"): a float per mesh, the most padding (mesh-space metres) a deformed instance of it
+  // takes on its LOD spheres — a swaying mesh's calm sway bound, or more where a caller padded one
+  // of its instances more, and +inf for every other mesh — while every other test takes the whole
+  // `InstanceDesc::bounds_padding`. 0 is none, the LOD spheres taking the whole padding as before;
+  // it took the block's last pad word, so the size is unchanged.
+  u64 sway_lod = 0;
 };
 static_assert(sizeof(CullParams) == 1856);
 static_assert(offsetof(CullParams, sky_facing) == 1752);
@@ -405,6 +411,7 @@ static_assert(offsetof(CullParams, node_list) == 1816);
 static_assert(offsetof(CullParams, node_guard) == 1824);
 static_assert(offsetof(CullParams, run_capacity) == 1832);
 static_assert(offsetof(CullParams, run_drops) == 1840);
+static_assert(offsetof(CullParams, sway_lod) == 1848);
 
 // **A node of the cull** (R188 stage 1; renderer.md, "Nodes before instances"): up to
 // `k_cull_node_slots` consecutive instance slots of one block of the layout. Mirrored once, in

@@ -966,6 +966,13 @@ bool VisibleCensus::count(const SceneData& data, const GpuScene& scene, const St
   if (!copy_runs(scene, stats, true, caster_count, error)) return false;
   for (u64 e = 0; e < caster_count; ++e)
     tally(entries[e * 2 + 0], 1);
+  // The trees' motion (R206): the casters now, the drawn run below (the staging holds one at once).
+  if (!scene.flora_motion().empty()) {
+    count_motion(scene, entries, caster_count, 1);
+    if (!copy_runs(scene, stats, false, entry_count, error)) return false;
+    count_motion(scene, entries, entry_count, 0);
+    if ((counted_ + 1) % 120 == 0) log_motion();
+  }
   if (census_mesh_frame.get() == static_cast<i64>(counted_)) {
     // The drawn run again (the staging buffer holds the casters now): entries per instance, then
     // per (rank, mesh) the instances seen, their entries and the most one drew. Cold: one frame.
@@ -1050,6 +1057,50 @@ bool VisibleCensus::count(const SceneData& data, const GpuScene& scene, const St
         log::field("c_own_r4", own[1][4]), log::field("c_own_r5", own[1][5]));
   }
   return true;
+}
+
+// The swaying trees' entries by the crown's distance and the tips' motion a frame (flythrough.h;
+// R206). A pixel is 2 tan(27.5 degrees) / 2160 radians, 4.82e-4: the owner's 3840 x 2160 at 55.
+void VisibleCensus::count_motion(const GpuScene& scene, const u32* entries, u64 count, u32 caster) {
+  static constexpr f32 k_distance_m[k_motion_bins - 1] = {10, 20, 40, 80, 160, 320, 640};
+  static constexpr f32 k_px[k_motion_bins - 1] = {0.25f, 0.5f, 1, 2, 4, 8, 16};
+  static constexpr f32 k_pixel_rad = 4.8199e-4f;
+  const std::span<const Vec2> motion = scene.flora_motion();
+  if (caster == 0 && trees_seen_.size() < motion.size())
+    trees_seen_.resize(static_cast<u32>(motion.size()), 0u);
+  const auto bin = [](const f32* edges, f32 v) {
+    u32 b = 0;
+    while (b < k_motion_bins - 1 && !(v < edges[b]))
+      ++b;
+    return b;
+  };
+  for (u64 e = 0; e < count; ++e) {
+    const u32 instance = entries[e * 2 + 0];
+    if (instance >= motion.size() || !(motion[instance].y > 0.0f)) continue;  // not a swaying tree
+    if (scene.rt_instance_kind(instance) != 0) continue;  // built from the pool this frame
+    const u32 d = bin(k_distance_m, motion[instance].y);
+    const u32 px = bin(k_px, motion[instance].x / motion[instance].y / k_pixel_rad);
+    ++motion_[(caster * k_motion_bins + d) * k_motion_bins + px];
+    if (caster == 0 && trees_seen_[instance] != counted_ + 1) {
+      trees_seen_[instance] = counted_ + 1;
+      ++motion_[2 * k_motion_bins * k_motion_bins + d];
+    }
+  }
+}
+
+void VisibleCensus::log_motion() const {
+  for (u32 c = 0; c < 2; ++c) {
+    for (u32 d = 0; d < k_motion_bins; ++d) {
+      const u64* row = motion_ + (c * k_motion_bins + d) * k_motion_bins;
+      ENGINE_LOG_INFO(
+          log_renderer, "census motion", log::field("frames", counted_ + 1),
+          log::field("caster", c), log::field("distance_bin", d),
+          log::field("trees", c == 0 ? motion_[2 * k_motion_bins * k_motion_bins + d] : 0),
+          log::field("px0", row[0]), log::field("px1", row[1]), log::field("px2", row[2]),
+          log::field("px3", row[3]), log::field("px4", row[4]), log::field("px5", row[5]),
+          log::field("px6", row[6]), log::field("px7", row[7]));
+    }
+  }
 }
 
 // Every view's drawn runs — or, with `casters`, its shadow casters' — into the staging buffer, each

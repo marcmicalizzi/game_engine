@@ -1,0 +1,13 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R206",
+  "reason": "R206: a storm's padding culls and the cut stays the calm one - the LOD caps' table (sway_lod.cpp) is made with the pose table, written in flora_frame, handed to the camera's and the cascades' culls, and noted where swaying instances are placed; the census of the trees' motion hooks the posing; renderer.md gains 'What a gale builds'",
+  "date": "2026-11-23",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": 2,
+    "renderer.gpu_scene_cpp.lines": 7,
+    "renderer.gpu_scene_h.lines": 20,
+    "page:docs/subsystems/renderer.md": 5194
+  }
+}

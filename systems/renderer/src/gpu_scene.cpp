@@ -1346,6 +1346,7 @@ void GpuScene::acquire_tail_tree(u32 slot, const SceneInstance& source) {
   tree.at = flora_instances_.size();
   flora_instances_.push_back(flora_instance(slot, mesh, tree.first_part, tail_motion_key(source)));
   flora_instances_.back().base_padding = base;
+  note_sway_base(mesh, base);
   tail_tree_of_slot_[slot] = t;
   flora_recut_ = true;
 }
@@ -2811,6 +2812,7 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
         const u32 key = i < data_->motion_keys.size() ? data_->motion_keys[i] : i;
         flora_instances_.push_back(flora_instance(i, mesh_index, flora_parts_, key));
         flora_instances_.back().base_padding = base;
+        note_sway_base(mesh_index, base);
         flora_parts_ += tree.part_count();
         flora_stats_.max_padding =
             std::max(flora_stats_.max_padding, placed.bounds_padding * placed.scale_max);
@@ -3272,7 +3274,7 @@ bool GpuScene::create_flora(std::string* error) {
   if (!gfx::upload_buffer(device, stream.data(),
                           u64{stream.size()} * sizeof(geometry::ClusterFileMotionVertex), k_address,
                           flora_motion_, error) ||
-      !make_flora_poses(error)) {
+      !make_flora_poses(error) || !make_sway_caps(error)) {
     return false;
   }
   flora_state_.clear();
@@ -3522,8 +3524,10 @@ u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f6
   if ((flora_instances_.empty() && !flora_field_) || flora_poses_.mapped == nullptr ||
       slot >= k_joint_slots) {
     flora_moving_ = false;  // a tail whose trees have all left: nothing sways, nothing is written
+    sway_lod_on_ = false;
     return 0;
   }
+  write_sway_caps(slot);  // the LOD caps (R206), before any pass of this frame reads them
   u8* region = static_cast<u8*>(flora_poses_.mapped) + u64{slot} * flora_region_bytes();
   const u64 poses_address =
       flora_poses_.address + u64{slot} * flora_region_bytes() + gfx::k_flora_field_frame_bytes;
@@ -3613,6 +3617,7 @@ u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f6
   ++flora_stats_.posed_frames;
   flora_stats_.pushed_parts = posed.pushed_parts;
   flora_moving_ = posed.moving || field_moving;
+  measure_motion(slot, eye);  // the census's (R206): nothing unless it measures
   return poses_address;
 }
 // ---- terrain levels (renderer.md, "The dunes in time-lapse")
@@ -6767,6 +6772,8 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, deform_normals);
   gfx::destroy_buffer(device, flora_motion_);
   gfx::destroy_buffer(device, flora_poses_);
+  gfx::destroy_buffer(device, sway_caps_);
+  sway_lod_on_ = false;
   gfx::destroy_buffer(device, flora_field_parts_);
   flora_meshes_.clear();
   flora_bounds_.clear();

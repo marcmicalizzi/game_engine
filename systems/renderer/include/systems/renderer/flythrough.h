@@ -247,13 +247,28 @@ class VisibleCensus {
   std::span<const u32> chain() const noexcept {
     return std::span<const u32>(chain_, 2 * k_chain_ranks * k_chain_kinds);
   }
+  // **The swaying trees' motion** (R206; `renderer.rt.census_motion`, `GpuScene::flora_motion`):
+  // every frame's deforming entries of a swaying tree, drawn and caster, summed over the counted
+  // frames by the crown's distance (`k_motion_distance_m`, metres: under 10, 10 to 20, ... 640 and
+  // on) and by how far the tree's farthest tip moved since the last frame in pixels at 3840 x 2160
+  // and 55 degrees (`k_motion_px`: under a quarter, ... 16 and on), and the trees with an entry by
+  // distance. `motion()[((caster * k_motion_bins) + distance) * k_motion_bins + px]`, then the
+  // trees at `2 * k_motion_bins * k_motion_bins + distance`; logged every 120th counted frame.
+  static constexpr u32 k_motion_bins = 8;
+  std::span<const u64> motion() const noexcept {
+    return std::span<const u64>(motion_, (2 * k_motion_bins + 1) * k_motion_bins);
+  }
 
  private:
   bool copy_runs(const GpuScene& scene, const Stats& stats, bool casters, u64& entries,
                  std::string* error);
+  void count_motion(const GpuScene& scene, const u32* entries, u64 count, u32 caster);
+  void log_motion() const;
   const gfx::Device* device_ = nullptr;
   gfx::BufferResource staging_;
   u32 chain_[2 * k_chain_ranks * k_chain_kinds] = {};
+  u64 motion_[(2 * k_motion_bins + 1) * k_motion_bins] = {};
+  Vector<u32> trees_seen_;  // per instance slot, the frame it was last counted in, for the trees
   u32 counted_ = 0;  // frames counted, for the log's line
 };
 
