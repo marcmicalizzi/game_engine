@@ -2113,6 +2113,7 @@ class GpuScene {
   std::unique_ptr<TerrainSampler> flora_ground_;
   FloraStats flora_stats_;
   Vector<Vec2> motion_;  // `flora_motion()`: the census's, and only while it measures (R206)
+  Vector<u64> motion_last_;  // per slot, the tick and first part it was last measured at
   gfx::BufferResource sway_caps_;  // the LOD caps (R206): k_joint_slots regions of a float a mesh
   Vector<f32> sway_base_max_;      // per mesh: the largest caller's padding of a swaying instance
   u32 sway_cap_count_ = 0;

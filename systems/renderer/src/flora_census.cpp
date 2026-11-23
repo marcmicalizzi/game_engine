@@ -37,6 +37,9 @@ void GpuScene::measure_motion(u32 slot, const WorldEye& eye) {
   }
   if (flora_poses_.mapped == nullptr || k_joint_slots < 2 || slot >= k_joint_slots) return;
   motion_.assign(instance_table_.size(), Vec2{0.0f, 0.0f});
+  // A tree is measured only where the slot held the same tree, posed, the frame before: a tree a
+  // tile has just brought (or a record handed on to another) would read another's last pose.
+  if (motion_last_.size() < instance_table_.size()) motion_last_.resize(instance_table_.size(), 0);
   const u32 before = (slot + k_joint_slots - 1) % k_joint_slots;
   const u8* base = static_cast<const u8*>(flora_poses_.mapped) + gfx::k_flora_field_frame_bytes;
   const auto* now =
@@ -45,6 +48,10 @@ void GpuScene::measure_motion(u32 slot, const WorldEye& eye) {
       reinterpret_cast<const gfx::FloraPartPose*>(base + u64{before} * flora_region_bytes());
   for (const FloraInstance& tree : flora_instances_) {
     if (tree.instance >= instance_table_.size() || tree.mesh >= flora_meshes_.size()) continue;
+    const u64 key = (tree.last_tick << 32) | tree.first_part;
+    const bool held = motion_last_[tree.instance] == key - (u64{1} << 32);
+    motion_last_[tree.instance] = key;
+    if (!held) continue;
     const FloraMesh& mesh = flora_meshes_[tree.mesh];
     f32 most = 0.0f;
     for (u32 p = 0; p < mesh.part_count(); ++p) {
