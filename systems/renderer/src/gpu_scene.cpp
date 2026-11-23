@@ -4787,9 +4787,12 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
         }
         made.slot = image_slot[index];
         made.bytes = uploaded.bytes;
-        // R207: what is in the slot, for the micromaps' key (its content, form and first level).
-        slot_identity.insert(made.slot, hash_combine(hash_combine(made.content, made.form),
-                                                     bounded ? u64{bound_first} + 1u : 0u));
+        // R207: what is in the slot, for the micromaps' key: its content, its form, the level it
+        // was uploaded from and the extent the bake's lookups see as level 0.
+        slot_identity.insert(
+            made.slot, hash_combine(hash_combine(hash_combine(made.content, made.form),
+                                                 bounded ? u64{bound_first} + 1u : 0u),
+                                    u64{uploaded.width} | (u64{uploaded.height} << 32)));
         // A bounded texture's record names its whole chain, which the feedback measures levels of.
         load_texture_records_.push_back(TextureRecord{
             made.slot, uploaded.format, bounded ? built[index].data.width : uploaded.width,
