@@ -345,6 +345,11 @@ bool PlacementTiles::redraws(TileCoord tile, u8 from, u8 to) const noexcept {
   return false;
 }
 
+const PlacementTiles::Handoff& PlacementTiles::no_cells() noexcept {
+  static const Handoff none;
+  return none;
+}
+
 std::span<const renderer::SceneInstance> PlacementTiles::tile_instances(
     TileCoord tile) const noexcept {
   const TileBlock* block = tiles_.find_value(tile_key(tile));
@@ -464,8 +469,9 @@ void PlacementTiles::tile_ranges(Vector<TileRange>& out) const {
     const std::span<const renderer::SceneInstance> drawn = block.drawn();
     if (drawn.empty()) continue;  // a new tile whose first build still waits draws nothing
     // Its own run and its hand-off cells that are handed on (G205): one range over both. With a
-    // cell handed they are not one array, so the range names no instances and no version.
-    const Handoff& set = block.drawn_handoff();
+    // cell handed they are not one array, so the range names no instances and no version. The
+    // cells only as a reader may hand them (`TileBlock::cells`, T215-M1).
+    const Handoff& set = block.cells();
     const u32 own = static_cast<u32>(block.own().size());
     const u32 count = own + set.in_instances;
     if (count == 0) continue;
@@ -513,14 +519,13 @@ void PlacementTiles::write_tail() const {
     // The tile's own run, then its hand-off cells that are handed on (G205), as the runs go.
     const std::span<const renderer::SceneInstance> drawn = block.drawn();
     const Vector<u8>& tags = block.waiting ? block.held_tags : block.tags;
-    const Handoff& set = block.drawn_handoff();
+    // Its cells follow its own run; a tile drawing fewer than its cells hold hands none (T215).
+    const Handoff& set = block.cells();
     const u32 own = static_cast<u32>(block.own().size());
     for (u32 k = 0; k < own; ++k) {
       tail_.push_back(drawn[k]);
       tail_tags_.push_back(tags[k]);
     }
-    // Its cells follow its own run; a tile drawing fewer than its cells hold hands none (T215).
-    if (block.fresh || drawn.size() < set.count) continue;
     for (const NearCell& cell : set.cells) {
       if (!cell.in) continue;
       for (u32 k = own + cell.first; k < own + cell.first + cell.count; ++k) {
@@ -1690,7 +1695,7 @@ void PlacementTiles::commit_tail() {
     }
     // What it draws: its last build, or what it held while that build waits for its meshes.
     // (Of its near placements, the cells handed on: G205.)
-    const Handoff& set = block.drawn_handoff();
+    const Handoff& set = block.cells();
     const u32 drawn = static_cast<u32>(block.own().size()) + set.in_instances;
     ++stats.ring_tiles[ring];
     stats.ring_instances[ring] += drawn;
@@ -1717,9 +1722,9 @@ void PlacementTiles::commit_tail() {
     self->tail_stale_ = true;
     for (u32 i = 0; i < self->tiles_.size(); ++i) {
       TileBlock& block = self->tiles_.value_at(i);
-      // Its own run was handed: it draws something besides the near placements its cells hold.
-      const Handoff& set = block.waiting ? block.held_handoff : block.handoff;
-      const bool shown = !block.withheld && block.drawn().size() > set.count;
+      // Its own run was handed: exactly when `make_runs` handed one, which asks `own()` (T215-M2;
+      // the test this took itself ignored `fresh`, so `handed` could name a version never handed).
+      const bool shown = !block.own().empty();
       block.handed = shown ? block.version : 0;
       block.reform_handed = shown && block.reformed_from != 0;
       if (!shown) {

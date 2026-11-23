@@ -337,6 +337,17 @@ class PlacementTiles {
     if (fresh || withheld || drawn.size() <= cell_instances) return {};
     return drawn.first(drawn.size() - cell_instances);
   }
+  // **Whether a tile's hand-off cells may be handed** (T215-M1): its cells follow its own run in
+  // what it draws, so they are handed only when that holds every instance they name — never when
+  // the tile is fresh or withheld, or draws fewer instances than its cells hold, where a cell's
+  // run would name the wrong instances or run past the end. The states `own_run` is empty in, but
+  // one: a tile that holds only cells (`drawn == cell_instances`) hands them. `TileBlock::cells`
+  // asks it, and every reader that hands a cell (`make_runs`, `tile_ranges`, `write_tail`, the
+  // stats) takes the cells from there.
+  static bool cells_drawable(std::size_t drawn, u32 cell_instances, bool fresh,
+                             bool withheld) noexcept {
+    return !fresh && !withheld && drawn >= cell_instances;
+  }
   // Whether `key` is one a hand-off cell's run is handed under: the first column of tiles
   // (x = -2^31), which the consumer holds no tile of while the cells are on.
   static bool cell_key_reserved(u64 key) noexcept;
@@ -526,7 +537,16 @@ class PlacementTiles {
     std::span<const renderer::SceneInstance> own() const noexcept {
       return own_run(drawn(), drawn_handoff().count, fresh, withheld);
     }
+    // Its cells as a reader may hand them: `drawn_handoff()`, or none (`cells_drawable`, T215-M1).
+    const Handoff& cells() const noexcept {
+      return cells_drawable(drawn().size(), drawn_handoff().count, fresh, withheld)
+                 ? drawn_handoff()
+                 : no_cells();
+    }
   };
+  static const Handoff& no_cells() noexcept;  // no cell, none in: what `TileBlock::cells` answers
+  // The tests' view of a tile block (T215): they put one in a state the world does not reach.
+  friend struct PlacementTilesTestPeek;
   // The tile's meshes (`set_meshes`), and a commit's pass over the tiles that wait for them.
   TileMeshes meshes_;
   Vector<u32> handed_;  // build's scratch: the slot of each mesh the entry's tile call handed

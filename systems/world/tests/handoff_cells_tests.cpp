@@ -627,3 +627,137 @@ TEST_CASE(
   CHECK(own.back().mesh == 2);
   CHECK(PlacementTiles::own_run(all, 0, false, false).size() == 5);
 }
+
+// The tests' view of a tile block (`placement_tiles.h`'s friend): a block put by hand in a state
+// the world does not reach, and the readers and the commit run over it.
+namespace engine::world {
+struct PlacementTilesTestPeek {
+  static u32 tiles(const PlacementTiles& t) { return static_cast<u32>(t.tiles_.size()); }
+  static auto& block(PlacementTiles& t, u32 i) { return t.tiles_.value_at(i); }
+  static u64 key(const PlacementTiles& t, u32 i) { return t.tiles_.key_at(i); }
+  static void make_runs(const PlacementTiles& t, Vector<PlacementTiles::TileRange>& out) {
+    t.make_runs(out);
+  }
+  static void stale_tail(const PlacementTiles& t) { t.tail_stale_ = true; }
+  static void commit_tail(PlacementTiles& t) { t.commit_tail(); }
+};
+}  // namespace engine::world
+
+// T215-M1 and M2 (the independent read): `write_tail` refused the cells of a fresh tile and of one
+// drawing fewer instances than its cells hold, but `make_runs` and `tile_ranges` still handed them
+// — with `own()` empty, at `drawn.data() + cell.first`: the wrong instances, and past the end of
+// what the tile draws. One accessor (`TileBlock::cells`) is every reader's now. A tile of the first
+// case's nine, its cells in, is made fresh (and not withheld, which `admit` would make it) and then
+// made to draw fewer instances than its cells hold; no reader hands one of its cells, the commit's
+// stats agree with its tail, and its own run is not marked handed. Every check is a count: no
+// instance a range names is read.
+TEST_CASE(
+    "handoff cells: no reader hands a cell of a fresh tile or one drawing fewer than they hold") {
+  const test::TempDir tmp("world_handoff_cells_state");
+  REQUIRE(tmp.ok());
+  renderer::SceneData scene;
+  make_scene(tmp, scene);
+  std::string error;
+  PlacementTiles cells;
+  REQUIRE_MESSAGE(cells.create(scene, cells_config(), &error), error);
+  cells.set_run_sink(&take_runs, nullptr);
+  const WorldPos eye{16.0, 1.7, 16.0};
+  cells.set_handoff_eyes(std::span<const WorldPos>(&eye, 1));
+  const TileConsumer consumer = cells.consumer();
+  cells.begin_update(0);
+  for (i32 z = -1; z <= 1; ++z)
+    for (i32 x = -1; x <= 1; ++x)
+      REQUIRE(consumer.activate(consumer.context, arrival(x, z)));
+  consumer.commit(consumer.context);
+  cells.end_update();
+  cells.begin_update(0);
+  cells.end_update();
+
+  // The tile with the most of its near placements handed on.
+  u32 pick = ~0u;
+  u32 most = 0;
+  for (u32 i = 0; i < PlacementTilesTestPeek::tiles(cells); ++i) {
+    const auto& block = PlacementTilesTestPeek::block(cells, i);
+    if (block.withheld || block.waiting || block.handoff.in_instances <= most) continue;
+    most = block.handoff.in_instances;
+    pick = i;
+  }
+  REQUIRE(pick != ~0u);
+  const u64 key = PlacementTilesTestPeek::key(cells, pick);
+  auto& block = PlacementTilesTestPeek::block(cells, pick);
+  REQUIRE(block.handoff.count > 0u);
+  REQUIRE(block.instances.size() > block.handoff.count);
+  // What a reader hands of the tile: runs and ranges under its key or naming it, the instances
+  // they cover, and the tail's length against the runs'.
+  struct Handed {
+    u32 cell_runs = 0;
+    u32 cell_instances = 0;
+    u32 own_instances = 0;
+  };
+  const auto of_runs = [key](std::span<const PlacementTiles::TileRange> runs) {
+    Handed h;
+    for (const PlacementTiles::TileRange& run : runs) {
+      if (run.part_of == key) {
+        ++h.cell_runs;
+        h.cell_instances += run.count;
+      } else if (run.key == key) {
+        h.own_instances += run.count;
+      }
+    }
+    return h;
+  };
+  Vector<PlacementTiles::TileRange> runs;
+  Vector<PlacementTiles::TileRange> ranges;
+
+  // Fresh, not withheld: nothing of it is handed by any reader.
+  block.fresh = true;
+  PlacementTilesTestPeek::make_runs(cells, runs);
+  const Handed fresh_runs = of_runs({runs.data(), runs.size()});
+  cells.tile_ranges(ranges);
+  const Handed fresh_ranges = of_runs({ranges.data(), ranges.size()});
+  PlacementTilesTestPeek::stale_tail(cells);
+  u32 fresh_tail = static_cast<u32>(cells.tail().size());
+  u32 others = 0;  // what the runs hand of every other tile
+  for (const PlacementTiles::TileRange& run : runs)
+    others += run.key != key && run.part_of != key ? run.count : 0u;
+  CHECK(fresh_runs.cell_runs == 0u);
+  CHECK(fresh_runs.cell_instances == 0u);
+  CHECK(fresh_runs.own_instances == 0u);
+  CHECK(fresh_ranges.own_instances == 0u);
+  CHECK(fresh_tail == others);
+  block.fresh = false;
+
+  // Drawing one fewer instance than its cells hold (what T214's yielded tile was before its
+  // cells were cleared with its instances): its own run is empty and none of its cells is handed.
+  const u32 keep = block.handoff.count - 1u;
+  while (block.instances.size() > keep) {
+    block.instances.pop_back();
+    block.tags.pop_back();
+  }
+  PlacementTilesTestPeek::make_runs(cells, runs);
+  const Handed short_runs = of_runs({runs.data(), runs.size()});
+  cells.tile_ranges(ranges);
+  const Handed short_ranges = of_runs({ranges.data(), ranges.size()});
+  CHECK(short_runs.cell_runs == 0u);
+  CHECK(short_runs.cell_instances == 0u);
+  CHECK(short_runs.own_instances == 0u);
+  CHECK(short_ranges.own_instances == 0u);
+  // And through a commit: the runs it hands, its stats and the tail agree, and the tile's own run
+  // is not marked handed (T215-M2: `handed` follows `own()`).
+  PlacementTilesTestPeek::commit_tail(cells);
+  const Handed committed = of_runs(cells.runs());
+  u32 run_total = 0;
+  for (const PlacementTiles::TileRange& run : cells.runs())
+    run_total += run.count;
+  CHECK(committed.cell_runs == 0u);
+  CHECK(committed.own_instances == 0u);
+  CHECK(cells.stats().instances == run_total);
+  CHECK(cells.tail().size() == run_total);
+  CHECK(PlacementTilesTestPeek::block(cells, pick).handed == 0u);
+  MESSAGE("a tile with " << most << " near placements handed in cells; fresh: "
+                         << fresh_runs.cell_runs << " cell runs, " << fresh_ranges.own_instances
+                         << " in its range; drawing " << keep << ": " << short_runs.cell_runs
+                         << " cell runs, " << short_ranges.own_instances << " in its range; "
+                         << "committed " << committed.cell_runs << " cell runs, stats "
+                         << cells.stats().instances << " against " << run_total);
+}
