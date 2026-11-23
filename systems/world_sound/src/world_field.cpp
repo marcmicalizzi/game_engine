@@ -218,6 +218,8 @@ void WorldField::open(audio::Mixer* mixer, u32 tick_hz, const FieldConfig& confi
   for (u32 k = 0; k < 3; ++k)
     class_power_[k] = pow10(k_crown_db[k]);
   for (u32 b = 0; b < 8; ++b)
+    foliage_db_m_[b] = foliage_db(static_cast<f64>(audio::k_noise_band_hz[b]), 1.0);
+  for (u32 b = 0; b < 8; ++b)
     air_db_m_[b] = config_.path
                        ? air_absorption_db_per_m(static_cast<f64>(audio::k_noise_band_hz[b]),
                                                  config_.temperature_c, config_.humidity_pct)
@@ -298,16 +300,24 @@ void WorldField::point_power(const Crown& c, f64 dx, f64 dy, f64 dz, f64 least, 
   // the ears' over the distance along the ground. A crown the listener stands in is heard at its
   // edge
   // (`extent_m`) and its path is the short one it really has.
-  const f64 ground_m = std::sqrt(dx * dx + dz * dz);
-  const f64 under = config_.path ? canopy_path_m(dx, dz) : 0.0;
-  for (u32 b = 0; b < 8; ++b) {
-    f64 a = 0.0;
-    if (config_.path) {
-      const f64 f = static_cast<f64>(audio::k_noise_band_hz[b]);
-      a = air_db_m_[b] * r3 + foliage_db(f, under) +
-          ground_db(b, static_cast<f64>(c.height_m), k_ears_height_m, ground_m, config_.ground_g);
+  if (!config_.path) {
+    for (u32 b = 0; b < 8; ++b) {
+      path[b] = 1.0;
+      band[b] = broadband * shape_[k][b];
     }
-    path[b] = a != 0.0 ? std::pow(10.0, -a / 10.0) : 1.0;
+    return;
+  }
+  // Each term in dB, then one exponential a band (S114's cost: the bands' shared exponentials
+  // once, the forest's f^(1/3) once at `open`).
+  const f64 ground_m = std::sqrt(dx * dx + dz * dz);
+  const f64 under = canopy_path_m(dx, dz);
+  f64 ground[8];
+  ground_bands_db(static_cast<f64>(c.height_m), k_ears_height_m, ground_m, config_.ground_g,
+                  ground);
+  constexpr f64 k_db_to_ln = -0.23025850929940456840;  // -ln(10) / 10
+  for (u32 b = 0; b < 8; ++b) {
+    const f64 a = air_db_m_[b] * r3 + foliage_db_m_[b] * under + ground[b];
+    path[b] = std::exp(a * k_db_to_ln);
     band[b] = broadband * shape_[k][b] * path[b];
   }
 }

@@ -147,9 +147,10 @@ class WorldField {
   WorldPos last_listener_{};
   bool has_listener_ = false;
   WorldStats stats_{};
-  f64 shape_[3][8] = {};     // each class's band shape, powers summing to one
-  f64 class_power_[3] = {};  // each class's anchor as a power
-  f64 air_db_m_[8] = {};     // the air's absorption a metre at each band's centre (S114)
+  f64 shape_[3][8] = {};      // each class's band shape, powers summing to one
+  f64 class_power_[3] = {};   // each class's anchor as a power
+  f64 air_db_m_[8] = {};      // the air's absorption a metre at each band's centre (S114)
+  f64 foliage_db_m_[8] = {};  // Hoover's term a metre under canopy at each band's centre
   f64 cover_[k_cover_sectors][k_cover_rings] = {};  // leaf area, then the cover's share
   f64 cover_run_[k_cover_sectors][k_cover_rings + 1] =
       {};  // metres under canopy to each ring's start

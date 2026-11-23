@@ -3,6 +3,7 @@
 // ticks a second: the controlling thread's update and the audio thread's block of 800 frames (16.7
 // ms of sound) with N clip voices sounding, which is what a game's clips cost a session.
 #include <foundation/bench/bench.h>
+#include <foundation/tunables/tunables.h>
 #include <systems/world_sound/world_sound.h>
 
 #include <cmath>
@@ -72,7 +73,11 @@ struct Grove {
 // at each crown's and bed's place, the ears), a refresh of the canopy table every 7.5 ticks at 60
 // a second (`audio.world.refresh_hz` 8), and the audio thread's 800-frame block of 16 shaped-noise
 // voices: what a session's world sound costs the frame's thread and the audio thread together.
-ENGINE_BENCH_ARGS(world_sound_world_tick, "world_sound.world_tick", 100, 1000, 8000) {
+// Since S114 every crown's path is taken at a refresh (path.h).
+void world_tick(bench::State& state, bool path) {
+  // S114: the path's terms on (the default) or the spreading alone, S112's world, for the pair.
+  tunables::Tunable* terms = tunables::find("audio.world.path");
+  if (terms != nullptr) terms->set_from_text(path ? "true" : "false");
   const u32 n = static_cast<u32>(state.arg());
   Grove grove;
   const u32 side = 1 + static_cast<u32>(std::sqrt(static_cast<f64>(n)));
@@ -110,4 +115,15 @@ ENGINE_BENCH_ARGS(world_sound_world_tick, "world_sound.world_tick", 100, 1000, 8
     bench::keep(stage.last_block()[0]);
   }
   state.set_items(1);
+  if (terms != nullptr) terms->reset();
+}
+
+ENGINE_BENCH_ARGS(world_sound_world_tick, "world_sound.world_tick", 100, 1000, 8000) {
+  world_tick(state, true);
+}
+
+// The same with the path's terms off: what S114's air, forest and ground cost a refresh.
+ENGINE_BENCH_ARGS(world_sound_world_tick_spreading, "world_sound.world_tick_spreading", 100, 1000,
+                  8000) {
+  world_tick(state, false);
 }

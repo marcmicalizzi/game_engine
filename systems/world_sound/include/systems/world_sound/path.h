@@ -34,6 +34,10 @@ f64 foliage_db(f64 f_hz, f64 r_m) noexcept;
 /// `ground_m` projected onto the ground. G is 0 for hard ground, 1 for porous (a forest floor,
 /// grass, farmland).
 f64 ground_db(u32 band, f64 source_h_m, f64 receiver_h_m, f64 ground_m, f64 g) noexcept;
+/// The same for all eight bands at once (a refresh's form: the exponentials each band shares are
+/// taken once).
+void ground_bands_db(f64 source_h_m, f64 receiver_h_m, f64 ground_m, f64 g,
+                     f64 (&out)[k_path_bands]) noexcept;
 
 /// **A barrier's term**, dB, of a band at `f_hz` for a detour `delta_m` over one edge: ISO 9613-2's
 /// D_z = 10 log10(3 + (C2 / lambda) C3 delta K_met) with C2 = 20, C3 = 1 and K_met = 1 (the help's
