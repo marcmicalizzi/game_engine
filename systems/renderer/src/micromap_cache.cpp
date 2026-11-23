@@ -493,6 +493,10 @@ MicromapFileRead read_micromap_file(const gfx::Device& device, const std::string
     result.refused = tables;
     return result;
   }
+  if (!device.valid()) {  // every bound held; a caller with no device gets no restore
+    result.refused = "every bound holds, and there is no device to restore it on";
+    return result;
+  }
   reader.hash = hash_bytes(header.data(), header.size());
   reader.cursor = header_bytes;
   restore.fill = &SectionReader::fill;

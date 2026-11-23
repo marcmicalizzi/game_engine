@@ -262,9 +262,9 @@ void rehash(std::string& bytes) {
 // **The scene bounds the file** (R207-M2; micromap_cache.h, `read_micromap_file`): each lie below
 // is the only one in its file and the file's content hash is correct, so the hash is not what
 // refuses it; every refusal comes before the restore allocates or uploads anything, so none needs
-// a device. Before the mend each of these files but the oversized states reached the restore (here
-// it refuses for the never-created device; on a card it uploaded the tables the GPU reads
-// unchecked: a first index of 3 reads the indices one past their end).
+// a device. Before the mend each of these files but the oversized states reached the restore (with
+// this never-created device, `Device::features`' assert; on a card, the upload of the tables the
+// GPU reads unchecked: a first index of 3 reads the indices one past their end).
 TEST_CASE("micromap cache: a file is refused by the scene's counts and tables before any upload") {
   test::TempDir dir{"omm_bounds"};
   const u64 key = 0x5678;
@@ -299,7 +299,7 @@ TEST_CASE("micromap cache: a file is refused by the scene's counts and tables be
   }
   const std::string passed = read(good, good.shape());
   MESSAGE("the true file: " << passed);
-  CHECK(passed.find("the restore refused it") != std::string::npos);
+  CHECK(passed.find("every bound holds") != std::string::npos);
   // Another scene: one more cluster, or one more masked triangle.
   {
     MicromapSceneShape shape = good.shape();
