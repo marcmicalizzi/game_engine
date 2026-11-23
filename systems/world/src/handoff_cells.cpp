@@ -349,8 +349,10 @@ void PlacementTiles::make_runs(Vector<TileRange>& out) const {
     if (block.withheld) continue;
     const std::span<const renderer::SceneInstance> drawn = block.drawn();
     if (drawn.empty()) continue;  // a new tile whose first build still waits draws nothing
-    const Handoff& set = block.drawn_handoff();
-    const u32 base = static_cast<u32>(block.own().size());  // T215: never past zero
+    // Its own run, never past zero, and its cells only as a reader may hand them: none of a fresh
+    // tile or of one drawing fewer instances than they hold (`TileBlock::cells`, T215-M1).
+    const Handoff& set = block.cells();
+    const u32 base = static_cast<u32>(block.own().size());
     if (base != 0) {
       TileRange range{tiles_.key_at(i), first, base, block.ring, drawn.data(), block.version};
       if (block.reformed_from != 0) {  // its forms changed in place since the last hand-over (G202)
