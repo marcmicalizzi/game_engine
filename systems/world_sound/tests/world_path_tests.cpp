@@ -1,0 +1,324 @@
+// Distance, and the far wood's level (roadmap S114; docs/subsystems/world_sound.md, "Distance";
+// the sources: docs/experiments/world-sound.md, "Read again by S114"): the path's terms against the
+// standards' own figures, and the world's voices by kind on a wood of the case's own, through the
+// stage's descriptions. No case opens a device.
+
+#include <foundation/tunables/tunables.h>
+#include <systems/world_sound/path.h>
+#include <systems/world_sound/world_sound.h>
+
+#include <doctest/doctest.h>
+
+#include <algorithm>
+#include <cmath>
+#include <string>
+#include <vector>
+
+using namespace engine;
+using namespace engine::world_sound;
+
+TEST_CASE("world path: the air's absorption is ISO 9613-1's table at its mid-band frequencies") {
+  // ISO 9613-1's exact mid-band frequencies, 1000 x 10^(0.3 k), and its table at 20 degC, dB a km.
+  const f64 f[8] = {63.0957, 125.893, 251.189, 501.187, 1000.0, 1995.26, 3981.07, 7943.28};
+  const f64 at70[8] = {0.090, 0.339, 1.13, 2.80, 4.98, 9.02, 22.9, 76.6};
+  const f64 at10[8] = {0.370, 0.775, 1.58, 4.25, 14.1, 45.3, 109.0, 175.0};
+  const f64 at90[8] = {0.071, 0.272, 0.966, 2.71, 5.30, 9.06, 20.2, 62.6};
+  for (u32 b = 0; b < 8; ++b) {
+    CHECK(air_absorption_db_per_m(f[b], 20.0, 70.0) * 1000.0 ==
+          doctest::Approx(at70[b]).epsilon(0.01));
+    CHECK(air_absorption_db_per_m(f[b], 20.0, 10.0) * 1000.0 ==
+          doctest::Approx(at10[b]).epsilon(0.01));
+    CHECK(air_absorption_db_per_m(f[b], 20.0, 90.0) * 1000.0 ==
+          doctest::Approx(at90[b]).epsilon(0.01));
+  }
+  // The row's figures: at 200 m and 70 %, of the order of 15 dB at 8 kHz and one at 1 kHz.
+  CHECK(air_absorption_db_per_m(8000.0, 20.0, 70.0) * 200.0 == doctest::Approx(15.5).epsilon(0.02));
+  CHECK(air_absorption_db_per_m(1000.0, 20.0, 70.0) * 200.0 == doctest::Approx(1.0).epsilon(0.01));
+}
+
+TEST_CASE("world path: Hoover's forest term, the ground's and a barrier's, at the row's figures") {
+  // A = 0.01 r f^(1/3): 100 m of forest is 10 dB at 1 kHz and 20 at 8 kHz.
+  CHECK(foliage_db(1000.0, 100.0) == doctest::Approx(10.0).epsilon(1e-9));
+  CHECK(foliage_db(8000.0, 100.0) == doctest::Approx(20.0).epsilon(1e-9));
+  CHECK(foliage_db(1000.0, 0.0) == 0.0);
+  // The ground at 200 m: a source on soft ground loses 13.7 dB at 500 Hz in its own region (the
+  // row's "of the order of 14"), and over rock gains the region's 1.5 dB. The region alone is the
+  // difference against a source high enough that its region and the middle's take nothing.
+  const f64 soft = ground_db(3, 0.0, 1.7, 200.0, 1.0) - ground_db(3, 10.0, 1.7, 200.0, 1.0);
+  CHECK(soft ==
+        doctest::Approx(-1.5 + 1.5 + 14.0 * (1.0 - std::exp(-4.0)) + 1.5 - 1.5).epsilon(1e-9));
+  CHECK(soft == doctest::Approx(13.74).epsilon(0.001));
+  // Over rock every region is -1.5: the source's region a gain of 1.5 dB at every band.
+  for (u32 b = 1; b < 8; ++b) {
+    const f64 hard_middle = -3.0 * (1.0 - 30.0 * (0.0 + 1.7) / 200.0);
+    CHECK(ground_db(b, 0.0, 1.7, 200.0, 0.0) ==
+          doctest::Approx(-1.5 - 1.5 + hard_middle).epsilon(1e-9));
+  }
+  // Porous ground takes nothing above 1 kHz and the middle's 63 Hz band still gains.
+  CHECK(ground_db(6, 0.0, 1.7, 200.0, 1.0) == doctest::Approx(0.0).epsilon(1e-12));
+  // A ridge takes the high bands first: a detour of 0.1 m, 5.7 dB at 125 Hz (S110 rounded it to
+  // 6), 9.5 at 1 kHz, 17 at 8.
+  CHECK(barrier_db(125.0, 0.1) == doctest::Approx(5.72).epsilon(0.01));
+  CHECK(barrier_db(1000.0, 0.1) == doctest::Approx(9.5).epsilon(0.02));
+  CHECK(barrier_db(8000.0, 0.1) == doctest::Approx(17.0).epsilon(0.02));
+  CHECK(barrier_db(8000.0, 1.0) == 20.0);  // one edge holds at 20
+  CHECK(barrier_db(1000.0, 0.0) == 0.0);   // in sight: no barrier
+}
+
+namespace {
+
+constexpr f64 k_far = 1.0e7;
+
+// **A wood of the case's own**: crowns on an 8 m grid (a 6 m crown at the closed canopy's leaf area
+// index, 224 m2 of leaf on 64 m2 of ground) out to `near` from the listener, alternately blade and
+// needle, and past it the wood merged by 128 m cell as a host's table sends it, out to 2 km: far
+// groups in every sector; nothing past `cut`.
+struct Wood {
+  std::vector<Crown> crowns;
+  static void visit(void* user, const WorldPos& centre, f64 reach_m, const CrownSink& sink) {
+    for (const Crown& c : static_cast<Wood*>(user)->crowns) {
+      const f64 dx = c.at.x - centre.x;
+      const f64 dz = c.at.z - centre.z;
+      if (dx * dx + dz * dz <= reach_m * reach_m) sink.emit(sink.user, c);
+    }
+  }
+  CanopySource source() { return CanopySource{this, &Wood::visit}; }
+};
+
+Wood wood(f64 near = 384.0, f64 cut = 1.0e9) {
+  Wood w;
+  const i32 n = static_cast<i32>(near / 8.0);
+  for (i32 i = -n; i <= n; ++i) {
+    for (i32 j = -n; j <= n; ++j) {
+      const f64 x = 8.0 * i + 4.0;
+      const f64 z = 8.0 * j + 4.0;
+      if (x * x + z * z > near * near || x * x + z * z > cut * cut) continue;
+      Crown c{WorldPos{k_far + x, 0.0, k_far + z}, 10.0f, 224.0f,
+              ((i + j) & 1) != 0 ? CanopyClass::Needle : CanopyClass::Blade, 1.2f};
+      c.extent_m = 3.0f;
+      w.crowns.push_back(c);
+    }
+  }
+  for (i32 i = -16; i < 16; ++i) {
+    for (i32 j = -16; j < 16; ++j) {
+      const f64 x = 128.0 * i + 64.0;
+      const f64 z = 128.0 * j + 64.0;
+      const f64 d = std::sqrt(x * x + z * z);
+      if (d <= near + 64.0 || d > 2000.0 || d > cut) continue;
+      Crown c{WorldPos{k_far + x, 0.0, k_far + z}, 10.0f, 128.0f * 128.0f * 3.5f,
+              CanopyClass::Blade, 1.2f};
+      c.extent_m = 90.5f;
+      c.merged = true;
+      w.crowns.push_back(c);
+    }
+  }
+  return w;
+}
+
+struct Listening {
+  SoundStage stage;
+  gfx::WindDesc wind;
+  WorldWind frame;
+  Wood trees;
+  WorldPos ears{k_far, 1.7, k_far};
+  Vec3 forward{0.0f, 0.0f, -1.0f};
+
+  Listening(Wood w, f64 speed, bool turbulence) : trees(std::move(w)) {
+    StageConfig config;
+    config.mode = AudioMode::Null;
+    config.world = true;
+    config.turbulence = turbulence;
+    config.tick_hz = 60;
+    REQUIRE(stage.open(config, nullptr, nullptr));
+    wind.kind = gfx::WindKind::fixed;
+    wind.speed_m_s = speed;
+    wind.to_deg = 90.0;
+    wind.roughness_m = 0.5;  // a forest's
+    frame.scene = &wind;
+    frame.sky_time_s = 1000.0;
+    stage.set_canopy(trees.source());
+  }
+  // `n` ticks of audio, the sky's clock stepped `sky_dt` a tick (a long wind in few ticks).
+  void tick(u32 n, f64 sky_dt = 1.0 / 60.0) {
+    for (u32 i = 0; i < n; ++i) {
+      stage.set_listener(ears, forward, Vec3{0.0f, 1.0f, 0.0f});
+      stage.set_wind(frame);
+      stage.tick();
+      frame.sky_time_s += sky_dt;
+    }
+  }
+  f64 power(WorldVoiceKind kind, u32 band = 99) const {
+    f64 p = 0.0;
+    for (u32 i = 0; i < stage.world_voice_count(); ++i) {
+      const WorldVoiceInfo v = stage.world_voice(i);
+      // A voice never described holds no level (its bands' zero is not 0 dB SPL).
+      if (v.kind != kind || !(v.level_db > -999.0f)) continue;
+      if (band == 99) {
+        p += std::pow(10.0, static_cast<f64>(v.level_db) / 10.0);
+      } else if (v.band_db[band] > -999.0f) {
+        p += std::pow(10.0, static_cast<f64>(v.band_db[band]) / 10.0);
+      }
+    }
+    return p;
+  }
+  f64 db(WorldVoiceKind kind, u32 band = 99) const {
+    const f64 p = power(kind, band);
+    return p > 0.0 ? 10.0 * std::log10(p) : -1000.0;
+  }
+};
+
+struct Tunable {
+  tunables::Tunable* t;
+  Tunable(const char* name, const char* value) : t(tunables::find(name)) {
+    REQUIRE(t != nullptr);
+    REQUIRE(t->set_from_text(value));
+  }
+  ~Tunable() { t->reset(); }
+};
+
+f64 percentile(std::vector<f64> v, f64 p) {
+  std::sort(v.begin(), v.end());
+  const f64 at = p * static_cast<f64>(v.size() - 1u);
+  const usize i = static_cast<usize>(at);
+  const f64 t = at - static_cast<f64>(i);
+  return i + 1u < v.size() ? v[i] * (1.0 - t) + v[i + 1u] * t : v[i];
+}
+
+}  // namespace
+
+TEST_CASE("world path: the far wood is not a waterfall: its power and its top taken by the path") {
+  // The forest's need 171 in small: inside a uniform wood at 3 m/s, S112's beds (spreading alone)
+  // summed the whole wood out to 2 km and stood about 10 dB over the six nearest crowns with their
+  // top octave kept. The path's terms take the far wood's power and its top first; the stand round
+  // the listener, which is many crowns, still sounds over the six nearest.
+  f64 over[2] = {};
+  f64 tilt_bed[2] = {};
+  f64 far_adds[2] = {};
+  for (u32 on = 0; on < 2; ++on) {
+    const Tunable path("audio.world.path", on == 0 ? "false" : "true");
+    const Tunable ears("audio.world.ears_db", "-80");
+    Listening s(wood(), 3.0, false);
+    Listening near(wood(384.0, 128.0), 3.0, false);
+    s.tick(10);
+    near.tick(10);
+    over[on] = s.db(WorldVoiceKind::Bed) - s.db(WorldVoiceKind::Crown);
+    tilt_bed[on] = s.db(WorldVoiceKind::Bed, 7) - s.db(WorldVoiceKind::Bed, 4);
+    far_adds[on] = s.db(WorldVoiceKind::Bed) - near.db(WorldVoiceKind::Bed);
+    MESSAGE(std::string(on != 0 ? "path: " : "spreading alone: ")
+            << "beds " << s.db(WorldVoiceKind::Bed) << " dB, crowns " << s.db(WorldVoiceKind::Crown)
+            << " dB SPL; the wood past 128 m adds " << far_adds[on]
+            << " dB; 8 kHz over 1 kHz: beds " << tilt_bed[on] << ", crowns "
+            << s.db(WorldVoiceKind::Crown, 7) - s.db(WorldVoiceKind::Crown, 4));
+    CHECK(s.stage.world_stats().crown_voices == 6u);
+  }
+  // Spreading alone, the fault as the owner heard it: the beds about 10 dB over the crowns, and the
+  // wood past 128 m a good share of them.
+  CHECK(over[0] > 8.0);
+  CHECK(far_adds[0] > 2.0);
+  // With the path, the far wood is all but gone from the beds and the beds are 6 dB nearer the
+  // crowns ...
+  CHECK(far_adds[1] < 0.5);
+  CHECK(over[1] < over[0] - 6.0);
+  // ... and darker: their top octave falls against their 1 kHz.
+  CHECK(tilt_bed[1] < tilt_bed[0] - 2.5);
+}
+
+TEST_CASE("world path: a crown's bands at 200 m are down by the path's terms and nothing else") {
+  // One crown 200 m off over a bare plain (no cover but its own bin's): each band's level with the
+  // path against without it differs by the air over the 3D path, the forest over its share of the
+  // path under canopy and the ground's term, as path.h gives them.
+  Wood w;
+  Crown c{WorldPos{k_far + 200.0, 0.0, k_far}, 10.0f, 300.0f, CanopyClass::Blade, 1.2f};
+  w.crowns.push_back(c);
+  f64 level[2][8] = {};
+  for (u32 on = 0; on < 2; ++on) {
+    const Tunable path("audio.world.path", on == 0 ? "false" : "true");
+    const Tunable ears("audio.world.ears_db", "-80");
+    Listening s(w, 5.0, false);
+    s.tick(10);
+    for (u32 b = 0; b < 8; ++b)
+      level[on][b] = s.db(WorldVoiceKind::Crown, b);
+  }
+  const f64 r3 = std::sqrt(200.0 * 200.0 + (10.0 - 1.7) * (10.0 - 1.7));
+  // The crown's own bin (sector 4 of 16, the ring 192 to 256 m) is 300 m2 of leaf on 2,749 m2 of
+  // ground, 3.1 % of a closed canopy: 8 m of the path's 64 in that ring is under it.
+  const f64 bin = 3.14159265358979323846 * (256.0 * 256.0 - 192.0 * 192.0) / 16.0;
+  const f64 under = (200.0 - 192.0) * (300.0 / bin) / 3.5;
+  for (u32 b = 0; b < 8; ++b) {
+    const f64 f = 62.5 * std::pow(2.0, static_cast<f64>(b));
+    const f64 expect = air_absorption_db_per_m(f, 20.0, 70.0) * r3 + foliage_db(f, under) +
+                       ground_db(b, 10.0, 1.7, 200.0, 1.0);
+    CHECK(level[0][b] - level[1][b] == doctest::Approx(expect).epsilon(1e-3));
+  }
+  // The row's figures at 200 m: of the order of 15 dB at 8 kHz, about one at 1 kHz.
+  CHECK(level[0][7] - level[1][7] > 15.0);
+  CHECK(level[0][4] - level[1][4] < 2.0);
+}
+
+TEST_CASE("world path: a group's power is kept across its promotion from the beds to its crowns") {
+  // A host's table sends a group far away as one merged crown at its leaves' centroid with its
+  // radius as its extent, and near as its crowns one by one (engine-view's 128 m cells, promoted
+  // when the group's near edge comes within `audio.world.near_m`). At that distance the world's
+  // power must not step: the beds' merged crown against the same crowns sent one by one.
+  const Tunable crowns("audio.world.crowns", "0");  // everything in the beds, both ways
+  const Tunable ears("audio.world.ears_db", "-80");
+  Wood one;
+  Wood merged;
+  f64 x = 0.0, z = 0.0, area = 0.0;
+  f64 radius = 0.0;
+  const f64 cx = 96.0 + 64.0;  // the group's centre: its near edge at near_m
+  for (i32 i = -8; i < 8; ++i) {
+    for (i32 j = -8; j < 8; ++j) {
+      Crown c{WorldPos{k_far + cx + 8.0 * i + 4.0, 0.0, k_far + 8.0 * j + 4.0}, 10.0f, 224.0f,
+              CanopyClass::Blade, 1.2f};
+      c.extent_m = 3.0f;
+      one.crowns.push_back(c);
+      x += 224.0 * c.at.x;
+      z += 224.0 * c.at.z;
+      area += 224.0;
+    }
+  }
+  for (const Crown& c : one.crowns) {
+    const f64 r = std::hypot(c.at.x - x / area, c.at.z - z / area) + 3.0;
+    radius = r > radius ? r : radius;
+  }
+  Crown m{WorldPos{x / area, 0.0, z / area}, 10.0f, static_cast<f32>(area), CanopyClass::Blade,
+          1.2f};
+  m.extent_m = static_cast<f32>(radius);
+  m.merged = true;
+  merged.crowns.push_back(m);
+  f64 level[2] = {};
+  for (u32 k = 0; k < 2; ++k) {
+    Listening s(k == 0 ? one : merged, 5.0, false);
+    s.tick(10);
+    level[k] = s.db(WorldVoiceKind::Bed);
+  }
+  MESSAGE("one by one " << level[0] << " dB, merged " << level[1] << " dB SPL");
+  CHECK(std::fabs(level[1] - level[0]) < 1.0);
+}
+
+TEST_CASE("world path: a far wood swells as the wind crosses it, less than one crown does") {
+  // Ten minutes of a 3 m/s wind over the forest's roughness in 600 ticks: each crown of its own and
+  // the beds summed, by their levels' 5th to 95th percentile spread.
+  const Tunable ears("audio.world.ears_db", "-80");
+  Listening s(wood(), 3.0, true);
+  s.tick(30);
+  std::vector<f64> bed;
+  std::vector<f64> crown;
+  for (u32 i = 0; i < 600; ++i) {
+    s.tick(1, 1.0);
+    bed.push_back(s.db(WorldVoiceKind::Bed));
+    crown.push_back(s.db(WorldVoiceKind::Crown));
+  }
+  const f64 bed_spread = percentile(bed, 0.95) - percentile(bed, 0.05);
+  const f64 crown_spread = percentile(crown, 0.95) - percentile(crown, 0.05);
+  MESSAGE("5-95 % spread: beds " << bed_spread << " dB, crowns " << crown_spread << " dB");
+  // The grounded figure (world-sound.md, "Read again by S114"): the natural ambient level's
+  // standard deviation of 2.0 to 2.4 dB(A) Boersma and Etienne report, a 5th to 95th percentile
+  // spread of 6.6 to 7.9 dB were it Gaussian; held here with a decibel either side, since their
+  // quantity is the ambient's over intervals and not a bed's over a run. And a wide sector averages
+  // its gusts, so the beds move less than the crowns of their own do.
+  CHECK(bed_spread > 5.6);
+  CHECK(bed_spread < 8.9);
+  CHECK(bed_spread < crown_spread);
+}

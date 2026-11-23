@@ -112,8 +112,15 @@ struct Session {
 }  // namespace
 
 TEST_CASE("world sound: a bed rises 9 dB and the ears 12 dB a doubling of a fixed wind") {
+  // The source laws alone (S114): the path's terms take the needles' tone by its frequency, which a
+  // doubling of the wind moves an octave, so with the path the needle crowns rise a little more or
+  // less than 30 log 2 (9.07 and 9.19 dB measured); the path is held by its own cases.
+  tunables::Tunable* path = tunables::find("audio.world.path");
+  REQUIRE(path != nullptr);
+  REQUIRE(path->set_from_text("false"));
   Session slow(4.0, false);
   Session fast(8.0, false);
+  path->reset();
   slow.tick(10);
   fast.tick(10);
   // The crowns, the beds and a crown of their own: 30 log 2 = 9.03 dB (Fegeant, through Bolin).
@@ -161,7 +168,12 @@ TEST_CASE("world sound: a live wind set between two ticks moves the level on the
 
 TEST_CASE(
     "world sound: a forced gust raises a bed by 30 log G along its envelope and lets it fall") {
+  // The source law alone, as above (S114): the gust moves the needles' tone through the path.
+  tunables::Tunable* path = tunables::find("audio.world.path");
+  REQUIRE(path != nullptr);
+  REQUIRE(path->set_from_text("false"));
   Session s(0.0, false);
+  path->reset();
   s.frame.live.set = true;
   s.frame.live.mean_m_s = 6.0;
   s.frame.live.to_deg = 90.0;
