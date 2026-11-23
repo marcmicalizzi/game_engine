@@ -8,6 +8,7 @@
 // a block does not use landing on nothing. `apply_writes` below does what `GpuScene::write_slots`
 // does to a table of (key, index, first_pair) and the randomized case checks it after every change.
 #include <core/containers/vector.h>
+#include <core/memory/memory.h>
 #include <systems/renderer/tile_layout.h>
 
 #include <doctest/doctest.h>
@@ -836,4 +837,149 @@ TEST_CASE("tile layout: a random world keeps the table sorted and every tile whe
   CHECK(tights > 0);
   CHECK(compactions == 0);
   CHECK(layout.instance_end() <= 3 + 2 * peak_slots + k_compact_min_free_slots);
+}
+
+namespace {
+
+// What `shift_lists_drive` saw.
+struct ShiftDrive {
+  u64 allocations = 0;     // in the second flight's changes that did not grow the capacity
+  u32 growths = 0;         // changes past the slot capacity, where the lists are reserved again
+  u32 first_peak = 0;      // the CPU's list's most runs in the first flight
+  u32 second_peak = 0;     // and in the second
+  u32 pieces_peak = 0;     // the layout's blocks and free runs at most
+  u32 numberings[2] = {};  // changes that numbered the pairs again, by flight
+};
+
+// `GpuScene`'s lists of runs (T154) through two flights of a streamed world of small tiles held to
+// a pair cap, so nearly every change numbers the pairs again: a change's runs with the slots it
+// wrote taken out, composed into the CPU's list and two table sets' (one taken by each frame in
+// turn), the CPU's list cut where a change wrote and past the table's end, as `write_slots` and
+// `number_first_pairs` do. In the second flight a few slots a change are also settled alone, as a
+// set's copy settles a slot a sway or a still form's lean marked (`settle_first_pairs`), which cuts
+// the CPU's list inside its blocks. `reserved`: every list given `reserve_shift_runs`' room for the
+// tail's slot capacity whenever that capacity is set, as `GpuScene::reserve_shift_lists` does.
+ShiftDrive shift_lists_drive(bool reserved) {
+  std::mt19937 rng(20261123);
+  TileLayout layout;
+  constexpr u32 k_static = 3;
+  layout.reset(k_static, 500);
+  constexpr u32 k_tiles = 160;
+  bool present[k_tiles] = {};
+  u32 kind[k_tiles] = {};
+  for (u32 k = 0; k < k_tiles; ++k) {  // the world at its cap from the start
+    present[k] = rng() % 2 == 0;
+    kind[k] = rng() % 3;
+  }
+  const u32 kinds[3][2] = {{1, 9}, {2, 14}, {3, 30}};  // instances, pairs each
+  constexpr u32 k_cap = 500 + 3000;
+  Vector<SlotWrite> writes;
+  TileLayoutChange change;
+  std::string error;
+  Vector<PairShift> shifts;
+  Vector<PairShift> cpu;
+  Vector<PairShift> sets[2];
+  Vector<PairShift> scratch;
+  u32 capacity = 0;  // `GpuScene::instance_capacity_`
+  ShiftDrive out;
+  for (u32 flight = 0; flight < 2; ++flight) {
+    for (u32 step = 0; step < 400; ++step) {
+      // A small commit: a tile or two come or go, now and then one changes its kind.
+      for (u32 n = 0; n < 2; ++n) {
+        const u32 k = rng() % k_tiles;
+        present[k] = !present[k];
+        if (rng() % 8 == 0) kind[k] = rng() % 3;
+      }
+      Vector<Request> requests;
+      u32 first = 0;
+      u64 total = 500;
+      for (u32 k = 0; k < k_tiles; ++k) {
+        if (!present[k]) continue;
+        const u32 instances = kinds[kind[k]][0];
+        const u32 pairs = instances * kinds[kind[k]][1];
+        if (total + pairs > k_cap) continue;  // withheld at the cap
+        total += pairs;
+        const TileBlock* held = layout.find(k + 1);
+        const bool same = held != nullptr && held->instances == instances && held->pairs == pairs;
+        requests.push_back(tile(k + 1, first, instances, pairs, same));
+        first += instances;
+      }
+      REQUIRE_MESSAGE(layout.apply(std::span<const Request>(requests.data(), requests.size()), 25,
+                                   false, k_cap, writes, change, &error, &shifts),
+                      error);
+      out.pieces_peak = std::max(out.pieces_peak, layout.block_count() + layout.free_count());
+      // The capacity in pages, half as much again, as `GpuScene::fit_tables` grows it.
+      const u32 end = layout.instance_end();
+      bool grew = false;
+      if (end > capacity) {
+        capacity = (end + end / 2 + 1023) / 1024 * 1024;
+        grew = true;
+        ++out.growths;
+        if (reserved) {
+          for (Vector<PairShift>* runs : {&shifts, &cpu, &sets[0], &sets[1], &scratch})
+            reserve_shift_runs(*runs, capacity - k_static);
+        }
+      }
+      const u64 before = mem::allocations_on_thread();
+      remove_shift_range(cpu, end, ~u32{0}, scratch);
+      for (const SlotWrite& write : writes) {
+        if (write.inst_count == 0) continue;
+        remove_shift_range(cpu, write.inst_begin, write.inst_begin + write.inst_count, scratch);
+        remove_shift_range(shifts, write.inst_begin, write.inst_begin + write.inst_count, scratch);
+      }
+      if (change.tight) ++out.numberings[flight];
+      if (change.tight && !shifts.empty()) {
+        const std::span<const PairShift> runs(shifts.data(), shifts.size());
+        compose_shifts(cpu, runs, scratch);
+        compose_shifts(sets[0], runs, scratch);
+        compose_shifts(sets[1], runs, scratch);
+      }
+      if (flight == 1) {
+        for (u32 n = 0; n < 6 && end > k_static; ++n) {
+          const u32 slot = k_static + rng() % (end - k_static);
+          remove_shift_range(cpu, slot, slot + 1, scratch);
+        }
+      }
+      sets[step % 2].clear();  // the frame flipped to it and took its runs
+      const u64 made = mem::allocations_on_thread() - before;
+      if (flight == 1 && !grew) out.allocations += made;
+      const u32 bound = shift_run_bound(capacity - k_static);
+      REQUIRE(cpu.size() <= bound);
+      REQUIRE(sets[0].size() <= bound);
+      REQUIRE(sets[1].size() <= bound);
+      u32& peak = flight == 0 ? out.first_peak : out.second_peak;
+      peak = std::max(peak, u32{cpu.size()});
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
+// T215: the lists of runs that number the pairs again (T154) grew in a steady frame — engine_view's
+// frame loop met 2 allocations of 448 bytes at frame 68 of the streamed trees' second flight, one
+// in `push_shift`'s scratch and one in `compose_shifts`' copy back — because how many runs a list
+// holds follows how the tile commits bunch and which slots a set settles, which is timing, and
+// nothing reserved them. Reserved to the tail's slots where its capacity is set, the same drive
+// allocates nothing; unreserved, it allocates whenever the second flight cuts the CPU's list past
+// what the first left it room for, which the drive does every time, not by luck.
+TEST_CASE("pair shifts: lists reserved to the tail's slots allocate nothing in a second flight") {
+  const ShiftDrive bare = shift_lists_drive(false);
+  const ShiftDrive held = shift_lists_drive(true);
+  MESSAGE("unreserved: " << bare.allocations << " allocations in the second flight; reserved: "
+                         << held.allocations << "; the CPU's list at most " << bare.first_peak
+                         << " runs in the first flight and " << bare.second_peak
+                         << " in the second, the layout at most " << bare.pieces_peak
+                         << " blocks and free runs, " << held.growths << " capacity growths, "
+                         << bare.numberings[0] << " and " << bare.numberings[1] << " numberings");
+  // The drive does what it is for: the second flight cuts the CPU's list past the first's runs,
+  // and past one run a block or free run, which is why no bound smaller than the slots holds.
+  CHECK(bare.numberings[0] > 0);
+  CHECK(bare.first_peak > 0);
+  CHECK(bare.second_peak > bare.first_peak);
+  CHECK(bare.second_peak > bare.pieces_peak);
+  CHECK(bare.allocations > 0);
+  CHECK(held.allocations == 0);
+  // The same changes either way: the reservation changes no run.
+  CHECK(held.second_peak == bare.second_peak);
 }

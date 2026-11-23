@@ -1024,6 +1024,7 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
   layout_changed_ = true;
   fresh_slots_.reserve(TableUpdate::k_fresh_capacity);
   fresh_whole_ = true;
+  reserve_shift_lists();
   return true;
 }
 
@@ -1947,6 +1948,16 @@ void GpuScene::settle_first_pairs(u32 begin, u32 end) {
   if (any) remove_shift_range(cpu_shift_, begin, end, shift_scratch_);
 }
 
+void GpuScene::reserve_shift_lists() {
+  const u32 tail =
+      instance_capacity_ > static_instances_ ? instance_capacity_ - static_instances_ : 0u;
+  for (Vector<PairShift>* runs :
+       {&change_shifts_, &cpu_shift_, &shift_scratch_, &expand_runs_, &grown_from_.shift})
+    reserve_shift_runs(*runs, tail);
+  for (TableSet& set : sets_)
+    reserve_shift_runs(set.shift, tail);
+}
+
 u32 GpuScene::table_first_pair(u32 slot) const noexcept {
   const u32 held = instance_table_[slot].first_pair;
   const PairShift* run =
@@ -2037,7 +2048,8 @@ bool GpuScene::fit_tables(TileChange& change, Vector<gfx::BufferResource>* retir
     }
     tables_changed_ = true;
     layout_changed_ = true;
-    fresh_whole_ = true;  // R194: `TableUpdate::whole`
+    fresh_whole_ = true;    // R194: `TableUpdate::whole`
+    reserve_shift_lists();  // the capacity grew, or the sets are new (T215)
   }
   instance_count_ = inst_end;
   pair_count_ = pair_end;
@@ -2059,6 +2071,7 @@ bool GpuScene::reserve_table_sets(u32 frames_in_flight, std::string* error) {
   if (table_staging_.size() < frames_in_flight) table_staging_.resize(frames_in_flight);
   // A set added now has never been read, so it is written whole whenever a frame first flips to
   // it, like every set of a new scene.
+  reserve_shift_lists();
   return true;
 }
 
