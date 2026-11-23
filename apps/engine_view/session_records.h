@@ -37,16 +37,32 @@
 // A loop names its records with `LostRecordsScope` beside them, which clears `lost_records()`
 // before they go, so a loss met while the loop's locals are destroyed (a destructor's immediate
 // submission, a last present) finds nothing named and writes the report alone.
+//
+// **A fault in the process** (roadmap T216; apps.md, "When the process faults") takes the same
+// turn through core/platform's crash hook (crash.h): `install_crash_records` registers `on_crash`
+// and a crash file beside the report, and the hook writes what `on_device_lost` writes — the report
+// with exit reason `crashed` and a `crashed` block (the frame, the tick, what the loop was doing,
+// the fault and its stack, the marks), the input log stamped as a normal end stamps it, the frame
+// records with a last `{"crashed": ...}` line in place of the summary, and the startup trace — then
+// returns, and the platform ends the process with `platform::k_exit_crashed` (77). Bounded by the
+// platform: `k_crash_write_ms`, and a second fault inside the hook ends the process at once.
+// **Heroics in a broken process are a bonus, not the plan**: a fault on the frame thread may hold
+// the heap's lock, and then the hook never gets past its first allocation; so what the owner
+// cannot afford to lose — the input, and the marks inside it — reaches the disk as it is made, by
+// the recording's journal (`RecordingJournal`, below), and survives a hook that never finishes.
 
+#include "fly_camera.h"
 #include "report.h"
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <core/json/json_value.h>
+#include <core/platform/crash.h>
 #include <domain/gfx/device_lost.h>
 #include <foundation/input/input_log.h>
 #include <foundation/io/vfs.h>
 
+#include <atomic>
 #include <schemas/scene.h>
 #include <span>
 #include <string>
@@ -71,6 +87,10 @@ struct LostRecords {
   // The report's frame times come from the records at the end of an offscreen run; a window adds
   // them as it goes. True when the handler should add the records' frames to the report.
   bool report_frames_from_records = false;
+  // The session's marks (M; `FlySession::trajectory().markers`), for a crash's block (T216).
+  const Vector<FlyMarker>* marks = nullptr;
+  // The recording's journal (T216), closed before the recording is saved whole over it.
+  input::InputLogJournal* journal = nullptr;
 };
 LostRecords& lost_records();
 
@@ -88,8 +108,82 @@ struct LostRecordsScope {
 inline io::Status save_lost_recording(const LostRecords& held) {
   if (held.recording == nullptr || held.record_input.empty()) return io::Status::Ok;
   if (held.finish_recording != nullptr) held.finish_recording(held.finish_context, *held.recording);
+  // The journal holds the file open; the whole log replaces it (T216). If this save fails, the
+  // journal is left as it was: whole to its last append, and replayable to its through tick.
+  if (held.journal != nullptr) held.journal->close();
   return held.recording->save(held.record_input);
 }
+
+// ---- T216: the recording's journal, and the loop's place --------------------------------------
+
+// **A live session's input on disk as it goes** (apps.md, "When the process faults"): the
+// recording's journal at `--record-input`'s path (input_log.h, `InputLogJournal`), appended every
+// `every_ticks` of the session — half a second at its 240 Hz — and at once on the tick a mark is
+// made, so a mark is on disk the moment the owner presses M. A session's normal end closes it and
+// saves the log whole over it, so a finished session's file is the bytes it always was.
+struct RecordingJournal {
+  input::InputLogJournal file;
+  u32 written = 0;  // the recording's events already appended
+  u64 last_tick = 0;
+  u64 every_ticks = 120;
+  u64 marks_seen = 0;
+  bool failed = false;
+  // What it cost, on the frame thread (`summary_line`).
+  u64 appends = 0;
+  i64 append_ns = 0;
+  i64 worst_append_ns = 0;
+};
+
+// Opens the journal at the first call (stamping the recording as the loop's normal end would, for
+// its header), then appends the recording's new events and the tick reached when `every_ticks`
+// have passed since the last append or `marks` grew. Allocates nothing after the open. True when
+// it wrote. Nothing without a recording path; a journal that cannot be written says so once and
+// stops, and the session goes on.
+bool journal_step(RecordingJournal& journal, input::InputLog& recording, const LostRecords& held,
+                  u64 tick, u64 marks);
+// The journal's line for stderr at a session's end: appends, mean and worst microseconds.
+std::string journal_summary(const RecordingJournal& journal);
+
+// **Where the loop is**, for a crash's block: the frame, the tick, and what it was doing (a static
+// string). Relaxed atomics, a few stores a frame.
+struct LoopState {
+  std::atomic<u64> frame{~u64{0}};
+  std::atomic<u64> tick{0};
+  std::atomic<const char*> doing{"starting"};
+};
+LoopState& loop_state();
+inline void loop_doing(const char* what) noexcept {
+  loop_state().doing.store(what, std::memory_order_relaxed);
+}
+// A frame begins: its index and the session's tick, and the test seam's fault when it names this
+// frame (`ENGINE_VIEW_TEST_FAULT`, below).
+void loop_at(u64 frame, u64 tick) noexcept;
+
+// **The test seam** (T216): `ENGINE_VIEW_TEST_FAULT=<frame>[:<kind>]` makes the frame loop fault at
+// that frame — `access` (the default) a write through a bad pointer, `verify` a failed
+// ENGINE_VERIFY — honoured only under a live test's main, by the rule the device profile and the
+// lost-device seam keep (domain/gfx/test_profile.h): a player's run cannot fault by a variable
+// left in a shell. Read once.
+inline constexpr const char* k_test_fault_env = "ENGINE_VIEW_TEST_FAULT";
+enum class TestFault : u8 { none, access, verify };
+struct TestFaultAt {
+  u64 frame = 0;
+  TestFault kind = TestFault::none;
+};
+// The parse alone, for the case: "40" and "40:access" a write, "40:verify" a verify, anything else
+// none.
+TestFaultAt parse_test_fault(std::string_view text) noexcept;
+
+// The report's and the records' `crashed` block: where the loop was, the fault, its stack, the
+// crash file, the marks, and what was recorded.
+JsonValue crashed_json(const platform::CrashInfo& info, std::span<const scene::FrameRecord> records,
+                       const Vector<FlyMarker>* marks);
+
+// Registers `on_crash` (context: the run's `RunReport`) and the crash file — `<report>.crash.json`,
+// or `<benchmark>.crash.json` with no report, none with neither. Once, after the options are read.
+inline constexpr u32 k_crash_write_ms = 30'000;
+void install_crash_records(RunReport* report, const std::string& benchmark);
+void on_crash(void* context, const platform::CrashInfo& info);
 
 // The report's and the records' `device_lost` block: where, the frame values, the frames recorded
 // and the last one's index, and the fault with its records (addresses in hex).

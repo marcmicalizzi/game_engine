@@ -3296,7 +3296,9 @@ struct FlythroughSlow @version(1) {
 ///
 /// Version 21 (ADR-0064): `reconstruction`, what sampled the run's frames over time; `gpu_ms` is
 /// null and the distribution is under `reconstructed` when the run was not a native measurement.
-struct FlythroughSummary @version(21) {
+///
+/// Version 22 (T216): `runs`, the visible list's runs, in an offscreen run's summary as well.
+struct FlythroughSummary @version(22) {
   /// "engine.flythrough.v1".
   format: string
   scene: string
@@ -3426,4 +3428,7 @@ struct FlythroughSummary @version(21) {
   /// the run's distribution when that was anything but native frames with no provider.
   reconstruction: Reconstruction @since(21)
   reconstructed: ReconstructedPercentiles? = null @since(21)
+  /// Version 22 (T216): the visible list's runs and every frame's drops from them
+  /// (`renderer::runs_summary`, W156-2), which only a window's summary line carried until now.
+  runs: json @since(22)
 }

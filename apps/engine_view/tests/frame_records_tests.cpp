@@ -19,6 +19,8 @@
 #include <test_temp_dir.h>
 
 #include <algorithm>
+#include <fstream>
+#include <iterator>
 #include <string_view>
 
 using namespace engine;
@@ -384,4 +386,150 @@ TEST_CASE("engine-view: a lost session's input log carries what a replay checks"
   // No recording asked for: nothing written, Ok.
   const view::LostRecords none;
   CHECK(view::save_lost_recording(none) == io::Status::Ok);
+}
+
+// ---- T216: what a fault's turn and the journal share (session_records.h)
+// -------------------------
+
+TEST_CASE("engine-view: the fault seam's parse") {
+  using view::TestFault;
+  CHECK(view::parse_test_fault("40").kind == TestFault::access);
+  CHECK(view::parse_test_fault("40").frame == 40);
+  CHECK(view::parse_test_fault("7:access").kind == TestFault::access);
+  CHECK(view::parse_test_fault("7:verify").kind == TestFault::verify);
+  CHECK(view::parse_test_fault("7:verify").frame == 7);
+  CHECK(view::parse_test_fault("").kind == TestFault::none);
+  CHECK(view::parse_test_fault("x").kind == TestFault::none);
+  CHECK(view::parse_test_fault("7:melt").kind == TestFault::none);
+  CHECK(view::parse_test_fault("7x").kind == TestFault::none);
+}
+
+// The window loop's journal, driven as the loop drives it — four ticks a frame, a step after each
+// frame's ticks — with no window: an append every 120 ticks and one on the tick of each mark, none
+// of them asking the engine allocator for anything, and what is on disk after each loads and runs
+// to the tick it names. The open's own stamp allocates once, at the first step.
+TEST_CASE("engine-view: the recording's journal is on disk every half second and at each mark") {
+  const test::TempDir tmp("engine_view_journal");
+  struct Stamp {
+    u64 ticks = 0;
+  } stamp;
+  input::InputLog recording;
+  view::LostRecords held;
+  held.recording = &recording;
+  held.record_input = tmp.file("walk.jsonl");
+  held.finish_recording = [](void* context, input::InputLog& log) {
+    view::SessionHeader header;
+    header.ticks = static_cast<Stamp*>(context)->ticks;
+    log.set_map(view::default_fly_map());
+    log.set_session(view::session_to_json(header));
+  };
+  held.finish_context = &stamp;
+  view::RecordingJournal journal;
+  constexpr u64 k_ticks = 1200;  // five seconds at 240 Hz
+  constexpr u64 k_marks[] = {250, 251, 777};
+  u64 marks = 0;
+  u64 step_allocations = 0;
+  u32 wrote = 0;
+  for (u64 tick = 4; tick <= k_ticks; tick += 4) {
+    // A frame's ticks: a key down and up every 40 ticks, a mouse motion every frame.
+    for (u64 t = tick - 3; t <= tick; ++t) {
+      if (t % 40 == 0) recording.record(input::RawEvent{SimTick{t}, input::Source::Key, 26, 1, 0});
+      if (t % 40 == 20) recording.record(input::RawEvent{SimTick{t}, input::Source::Key, 26, 0, 0});
+      for (const u64 m : k_marks) {
+        if (m == t) {
+          ++marks;
+          recording.record(input::RawEvent{SimTick{t}, input::Source::Key, 16, 1, 0});  // M
+        }
+      }
+    }
+    recording.record(input::RawEvent{SimTick{tick}, input::Source::MouseAxis, 0, 0.25f, 0});
+    stamp.ticks = tick;
+    const u64 before = mem::allocations_on_thread();
+    const bool appended = view::journal_step(journal, recording, held, tick, marks);
+    if (tick > 4) step_allocations += mem::allocations_on_thread() - before;
+    if (!appended) continue;
+    ++wrote;
+    // What a process that died now would leave: everything recorded, and the tick reached.
+    std::ifstream in(held.record_input, std::ios::binary);
+    const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    const std::string copy = tmp.file("copy.jsonl");
+    REQUIRE(io::write_file(copy, bytes) == io::Status::Ok);
+    input::InputLog crashed;
+    std::string error;
+    REQUIRE_MESSAGE(crashed.load(copy, &error) == io::Status::Ok, error);
+    CHECK(crashed.size() == recording.size());
+    REQUIRE(crashed.has_through());
+    CHECK(crashed.through().value == tick);
+    view::SessionHeader header;
+    CHECK(view::session_from_json(crashed.session(), header, &error));
+  }
+  // Ten half-seconds (the first frame opens it and starts the clock, no append), and the marks:
+  // 250 and 251 fall in the frame ending at 252, one append; 777 in the one ending at 780.
+  CHECK(journal.appends == wrote);
+  CHECK(wrote == 9 + 2);
+  CHECK(journal.marks_seen == 3);
+  CHECK(step_allocations == 0);
+  CHECK(journal.file.through().value == 1140);
+  MESSAGE(view::journal_summary(journal));
+  // The normal end closes it, and the whole log replaces it.
+  journal.file.close();
+  REQUIRE(view::save_lost_recording(held) == io::Status::Ok);
+  input::InputLog whole;
+  REQUIRE(whole.load(held.record_input) == io::Status::Ok);
+  CHECK_FALSE(whole.has_through());
+  CHECK(whole.size() == recording.size());
+}
+
+TEST_CASE(
+    "engine-view: a fault's block names the loop's place, the fault, its stack and the marks") {
+  platform::CrashInfo info;
+  info.what = "access violation";
+  info.code = 0xC0000005u;
+  info.address = 0x10;
+  info.access = "writing";
+  info.at = "engine-view.exe+0x25b7";
+  info.stack[0] = "engine-view.exe+0x21fa";
+  info.stack[1] = "KERNEL32.DLL+0x2cd87";
+  info.stack_count = 2;
+  info.thread_id = 42;
+  info.main_thread = true;
+  info.crash_file = "report.json.crash.json";
+  info.line_text = "engine: fatal: access violation writing 0x10 at engine-view.exe+0x25b7";
+  Vector<view::FlyMarker> marks;
+  marks.push_back(view::FlyMarker{250, {}, false});
+  marks.push_back(view::FlyMarker{777, {}, false});
+  Vector<scene::FrameRecord> records(3);
+  records[2].frame = 27;
+  view::loop_doing("frame");
+  view::loop_state().frame.store(30);
+  view::loop_state().tick.store(120);
+  const JsonValue block = view::crashed_json(
+      info, std::span<const scene::FrameRecord>(records.data(), records.size()), &marks);
+  u64 value = 0;
+  REQUIRE(block.find("frame")->get_u64(value));
+  CHECK(value == 30);
+  REQUIRE(block.find("tick")->get_u64(value));
+  CHECK(value == 120);
+  CHECK(block.find("doing")->as_string() == "frame");
+  CHECK(block.find("code")->as_string() == "0x00000000c0000005");
+  CHECK(block.find("address")->as_string() == "0x0000000000000010");
+  CHECK(block.find("stack")->size() == 2);
+  CHECK(block.find("assertion")->is_null());
+  REQUIRE(block.find("frames_recorded")->get_u64(value));
+  CHECK(value == 3);
+  REQUIRE(block.find("last_recorded_frame")->get_u64(value));
+  CHECK(value == 27);
+  REQUIRE(block.find("marks")->size() == 2);
+  REQUIRE((*block.find("marks"))[1].get_u64(value));
+  CHECK(value == 777);
+  // A failed verify names itself.
+  info.expression = "g_never != 0";
+  info.file = "crash_records.cpp";
+  info.line = 9;
+  const JsonValue verify = view::crashed_json(info, {}, nullptr);
+  REQUIRE(verify.find("assertion")->is_object());
+  CHECK(verify.find("assertion")->find("expression")->as_string() == "g_never != 0");
+  CHECK(verify.find("marks")->size() == 0);
+  CHECK(verify.find("last_recorded_frame")->is_null());
 }

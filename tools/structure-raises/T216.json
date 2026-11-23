@@ -1,0 +1,13 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T216",
+  "reason": "T216: a fault's turn and the recording's journal: each frame loop says where it is for a crash's block and the test seam (loop_at), the window loop appends its recording to the journal after each frame's ticks and names the journal and the marks for the hook, closes it before the whole log is saved, and the report and an offscreen summary carry the runs block; apps.md gains the section 'When the process faults'",
+  "date": "2026-11-23",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "engine_view.main_cpp.lines": 16,
+    "engine_view.run_view.lines": 11,
+    "engine_view.run_offscreen.lines": 2,
+    "page:docs/subsystems/apps.md": 7591
+  }
+}

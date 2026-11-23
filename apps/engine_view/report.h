@@ -89,13 +89,18 @@ struct RunReport {
   // A lost device's block (session_records.h, T212), or null: where it was lost, the frame values,
   // what was recorded, and the device's fault.
   JsonValue device_lost;
+  // A fault's block (session_records.h, T216), or null: where the loop was, the fault and its
+  // stack, the crash file, the marks.
+  JsonValue crashed;
+  // The visible list's runs (`renderer::runs_summary`, W156-2), or null before a renderer ran.
+  JsonValue runs;
 };
 
 // The OS as one line ("Windows 10.0.26200", "Linux 6.8.0-45-generic"), read from the system, not
 // from what the binary was built for.
 std::string os_version();
-// The report as JSON (format `engine.view.report`, version 3: version 1, `device_lost` since 2,
-// `long_frames` since 3).
+// The report as JSON (format `engine.view.report`, version 4: version 1, `device_lost` since 2,
+// `long_frames` since 3, `crashed` and `runs` since 4).
 JsonValue report_json(const RunReport& report);
 // Writes `report_json` to `report.path`, pretty, best effort: false with `error` when it cannot.
 bool write_report(const RunReport& report, std::string* error);

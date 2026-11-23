@@ -2054,6 +2054,9 @@ int prepare_interactive(Options& options, Interactive& it) {
     if (!view::session_from_json(it.log.session(), it.header, &error)) {
       return fail("replay", options.replay_input + ": " + error);
     }
+    // A journal a session left when it died (T216) runs to the tick it last reached.
+    if (it.log.has_through() && it.log.through().value > it.header.ticks)
+      it.header.ticks = it.log.through().value;
     if (!view::trajectory_comparable(it.header)) {
       std::fprintf(stderr,
                    "engine-view: %s was recorded with fly camera integration version %u (float32 "
@@ -3072,9 +3075,9 @@ int run_offscreen(Options& options, Interactive& interactive) {
   bool have_path = false;
   u32 frames = 0;
   Vector<scene::FrameRecord> records;
-  view::lost_records() = {&records, options.benchmark, nullptr, {},
-                          nullptr,  nullptr,           true};  // T212
-  const view::LostRecordsScope lost_scope;                     // cleared before `records` goes
+  view::lost_records() = {&records, options.benchmark, nullptr, {}, nullptr, nullptr,
+                          true,     nullptr,           nullptr};  // T212, T216
+  const view::LostRecordsScope lost_scope;                        // cleared before `records` goes
   scene::FlythroughSummary summary;
   summary.format = "engine.flythrough.v1";
   // The moving ground (renderer::MovingGround, request.h): the dune field's time-lapse when
@@ -3542,6 +3545,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         }
         const i64 start = time::monotonic_ns();
         const i64 start_cpu = frame_started(pending, submissions, start);  // the last one ends
+        view::loop_at(f, session.tick().value);  // T216: where a fault finds the loop
         ENGINE_STARTUP_STAGE("frame");
         profiling::trace_items(f);
         // The record's `world` (W82): this loop's time outside `begin_frame` and `submit_frame`.
@@ -4190,6 +4194,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
           bench::is_quiet(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{});
     }
     summary.load = load_summary(scene_data.load, device);
+    summary.runs = g_report.runs = renderer::runs_summary(view_renderer.stats());  // T216
     if (startup.on()) {
       std::string why;
       summary.startup = startup.finish(&why);
@@ -5291,6 +5296,7 @@ int run_view(int argc, char** argv) {
   // ---- the interactive camera's flags ----------------------------------------------------------
   // A live session is somebody at a window; a replay is a file. Everything below follows from
   // which one this is, which is why `--benchmark` and `--marker-captures` are resolved here.
+  view::install_crash_records(&g_report, options.benchmark);  // T216 (session_records.h)
   const bool live = options.interactive && options.replay_input.empty();
   if (options.interactive &&
       (options.animate || options.morph_animate || options.reference != 0 ||
@@ -6026,8 +6032,11 @@ int run_view(int argc, char** argv) {
   // What a lost device's turn writes (T212, session_records.h): the records and the recording,
   // stamped as `save_recording` stamps it; cleared before these locals go.
   RecordingStamp lost_stamp{&interactive, &session};
-  view::lost_records() = {&records,        options.benchmark, &recording, options.record_input,
-                          stamp_recording, &lost_stamp,       false};
+  view::RecordingJournal journal;  // T216: the recording on disk as it goes (session_records.h)
+  view::lost_records() = {
+      &records,        options.benchmark, &recording, options.record_input,
+      stamp_recording, &lost_stamp,       false,      &session.trajectory().markers,
+      &journal.file};
   const view::LostRecordsScope lost_scope;
   std::string interactive_text = "null";
   // An injected run never takes the real pointer: it happens on somebody's desktop, and its
@@ -6849,6 +6858,7 @@ int run_view(int argc, char** argv) {
               ? frame_started(pending, submissions, frame_start,
                               static_cast<f64>(paced_ns + frame_start - before_ceiling) / 1.0e6)
               : 0;
+      view::loop_at(rendered, session.tick().value);  // T216: where a fault finds the loop
       // --inject-input: the log's keys and motion go onto the window's own queue as their ticks
       // come due, and come back out of poll() below like anything the platform delivered.
       const std::span<const input::RawEvent> injected = interactive.injected.events();
@@ -7105,6 +7115,9 @@ int run_view(int argc, char** argv) {
             }
             edge.clear();
           }
+          // T216: on disk every half second, and on the tick a mark is made.
+          view::journal_step(journal, recording, view::lost_records(), session.tick().value,
+                             session.trajectory().markers.size());
           walked = walk_probe.end();
           while (capture_seen != session.capture_presses()) {
             ++capture_seen;
@@ -7545,6 +7558,8 @@ int run_view(int argc, char** argv) {
     if (interactive.on && exit_code == 0) {
       interactive_text = write_json(interactive_summary(interactive, session, options),
                                     JsonWriteOptions{.pretty = false});
+      journal.file.close();  // T216: the whole log replaces the journal, and says what it cost
+      if (journal.appends > 0) std::fprintf(stderr, "%s\n", view::journal_summary(journal).c_str());
       if (!options.record_input.empty() &&
           !save_recording(options, interactive, session, recording, error)) {
         exit_code = fail("record-input", error);
@@ -7678,7 +7693,8 @@ int run_view(int argc, char** argv) {
   // The chain's bytes move with its capacity, so the figure is the run's last, not the load's.
   if (stats.rt.bytes > 0) rt_bytes = stats.rt.bytes;
   const std::string rt_text = write_json(rt_summary(stats.rt), JsonWriteOptions{.pretty = false});
-  const std::string runs_text = write_json(renderer::runs_summary(stats), {.pretty = false});
+  g_report.runs = renderer::runs_summary(stats);  // T216: the report carries the runs too
+  const std::string runs_text = write_json(g_report.runs, {.pretty = false});
   const std::string pairs_text =
       write_json(scene.pair_summary(), JsonWriteOptions{.pretty = false});
   const std::string shadow_fit_text = shadow_fit_json(resolved, view_renderer);
