@@ -4495,6 +4495,7 @@ int main(int argc, char** argv) {
     else
       std::fprintf(stderr, "engine-view: the report is in %s\n", g_report.path.c_str());
   }
+  (void)engine::platform::set_crash_hook(nullptr, nullptr, 0);  // T216 L1: exit faults die at once
   return code;
 }
 

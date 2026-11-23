@@ -7,8 +7,10 @@
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <string>
 
 using namespace engine;
@@ -676,4 +678,177 @@ TEST_CASE("input log journal: a through line is a journal's alone, and never goe
   CHECK_MESSAGE(
       load("ok.jsonl", v2 + "[1,\"key\",26,1.0,0]\n{\"through\":4}\n", error) == io::Status::Ok,
       error);
+}
+
+// T216's review, M1: a process that ends in the middle of an append leaves a cut last line or
+// events with no through line after them. The journal loads to its last whole through line and
+// drops the rest by name; before the mend every cut but those at a through line's end was
+// refused whole, and a cut after an event's newline replayed events the session had not vouched
+// for.
+TEST_CASE("input log journal: a torn tail loads to the last whole through tick and never past") {
+  const TempDir tmp("engine_input_log_journal_torn");
+  const ActionMap map = make_map();
+  const Vector<RawEvent> events = scripted_events();
+  const std::string path = tmp.file("journal.jsonl");
+
+  // The live run's digests, and a journal appended every three ticks; after each append the
+  // file's length, the through tick it ends on and the events it holds.
+  struct Whole {
+    usize bytes;
+    u64 through;
+    u32 events;
+  };
+  Vector<Whole> wholes;
+  Vector<u64> expected;
+  InputState live(map);
+  InputLogJournal journal;
+  REQUIRE(journal.open(path, map.hash(), JsonValue()) == io::Status::Ok);
+  wholes.push_back(Whole{static_cast<usize>(std::filesystem::file_size(path)), 0, 0});
+  u32 cursor = 0;
+  u32 appended = 0;
+  for (u64 t = 0; t <= 11; ++t) {
+    live.begin_tick(SimTick{t});
+    while (cursor < events.size() && events[cursor].tick.value == t)
+      live.feed(events[cursor++]);
+    live.end_tick();
+    expected.push_back(live.state_hash());
+    if (t % 3 != 2) continue;
+    REQUIRE(journal.append(std::span<const RawEvent>(events.data() + appended, cursor - appended),
+                           SimTick{t}) == io::Status::Ok);
+    appended = cursor;
+    wholes.push_back(Whole{static_cast<usize>(std::filesystem::file_size(path)), t, cursor});
+  }
+  journal.close();
+  std::string text;
+  REQUIRE(io::read_file(path, text) == io::Status::Ok);
+  REQUIRE(text.size() == wholes.back().bytes);
+
+  // Every cut from the header's end to the file's end: mid-event, mid-number, mid-through line,
+  // after an event's newline, at a through line's end.
+  const std::string cut_path = tmp.file("cut.jsonl");
+  u32 cuts = 0;
+  u32 dropped_cuts = 0;
+  for (usize at = wholes[0].bytes; at <= text.size(); ++at) {
+    REQUIRE(io::write_file(cut_path, std::string_view(text.data(), at)) == io::Status::Ok);
+    // The last whole through line at or before the cut.
+    const Whole* last = &wholes[0];
+    for (const Whole& w : wholes)
+      if (w.bytes <= at) last = &w;
+    InputLog log;
+    std::string error;
+    REQUIRE_MESSAGE(log.load(cut_path, &error) == io::Status::Ok, "cut at " << at << ": " << error);
+    ++cuts;
+    CHECK_MESSAGE(log.size() == last->events, "cut at " << at);
+    CHECK_MESSAGE(log.through().value == last->through, "cut at " << at);
+    CHECK_MESSAGE(log.has_through() == (last->through != 0), "cut at " << at);
+    const bool torn = at != last->bytes;
+    CHECK_MESSAGE(log.dropped_tail().dropped == torn, "cut at " << at);
+    if (torn) {
+      ++dropped_cuts;
+      CHECK(log.dropped_tail().through.value == last->through);
+      CHECK(log.dropped_tail().bytes == at - last->bytes);
+    }
+    // Never past the through tick: every event kept is at or before it.
+    if (!log.empty()) CHECK(log.last_tick().value <= last->through);
+    // The replay to the through tick is the live run's, tick by tick.
+    InputState replayed(map);
+    Recorder recorder;
+    REQUIRE(log.replay(replayed, SimTick{0}, log.through(), {&collect, &recorder}, &error));
+    REQUIRE(recorder.digests.size() == log.through().value + 1);
+    for (u32 i = 0; i <= log.through().value; ++i)
+      CHECK_MESSAGE(recorder.digests[i] == expected[i], "cut at " << at << ", tick " << i);
+  }
+  CHECK(cuts == text.size() - wholes[0].bytes + 1);
+  CHECK(dropped_cuts == cuts - (wholes.size()));
+
+  // A cut whose last whole line is an event: the event is dropped, counted, and named.
+  const usize first_event_end = text.find('\n', wholes[0].bytes) + 1;
+  REQUIRE(io::write_file(cut_path, std::string_view(text.data(), first_event_end)) ==
+          io::Status::Ok);
+  InputLog one;
+  REQUIRE(one.load(cut_path) == io::Status::Ok);
+  CHECK(one.empty());
+  CHECK(one.dropped_tail().dropped);
+  CHECK(one.dropped_tail().events == 1);
+
+  // What is not a tear is refused as before: a line that does not parse with whole lines after
+  // it, and a version-1 log (a whole save) cut mid-line.
+  const std::string head = text.substr(0, wholes[0].bytes);
+  REQUIRE(io::write_file(cut_path, head + "[1,\"key\"\n{\"through\":4}\n") == io::Status::Ok);
+  InputLog broken;
+  std::string error;
+  CHECK(broken.load(cut_path, &error) == io::Status::IoError);
+  CHECK(broken.empty());
+  InputLog whole;
+  whole.set_map(map);
+  for (const RawEvent& e : events)
+    whole.record(e);
+  REQUIRE(whole.save(cut_path) == io::Status::Ok);
+  std::string saved;
+  REQUIRE(io::read_file(cut_path, saved) == io::Status::Ok);
+  REQUIRE(io::write_file(cut_path, saved.substr(0, saved.size() - 4)) == io::Status::Ok);
+  InputLog v1;
+  CHECK(v1.load(cut_path, &error) == io::Status::IoError);
+  CHECK(v1.empty());
+}
+
+// T216's review, L6: a NaN or an infinity was written as `nan`/`inf` text the loader refuses,
+// which made the whole journal unloadable. Both writers spell a value alike, finite.
+TEST_CASE("input log journal: a non-finite value is written finite, as save writes it") {
+  const TempDir tmp("engine_input_log_journal_nonfinite");
+  const ActionMap map = make_map();
+  const f32 inf = std::numeric_limits<f32>::infinity();
+  const f32 values[] = {std::numeric_limits<f32>::quiet_NaN(), inf, -inf, 0.25f};
+  const f32 back[] = {0.0f, std::numeric_limits<f32>::max(), -std::numeric_limits<f32>::max(),
+                      0.25f};
+  Vector<RawEvent> events;
+  InputLog whole;
+  whole.set_map(map);
+  for (u32 i = 0; i < 4; ++i) {
+    events.push_back(RawEvent{SimTick{i}, Source::GamepadAxis, k_pad_left_x, values[i], 1});
+    whole.record(events.back());
+  }
+  const std::string path = tmp.file("journal.jsonl");
+  InputLogJournal journal;
+  REQUIRE(journal.open(path, map.hash(), JsonValue()) == io::Status::Ok);
+  REQUIRE(journal.append(std::span<const RawEvent>(events.data(), events.size()), SimTick{4}) ==
+          io::Status::Ok);
+  journal.close();
+  const std::string saved_path = tmp.file("saved.jsonl");
+  REQUIRE(whole.save(saved_path) == io::Status::Ok);
+  std::string journal_text;
+  std::string saved_text;
+  REQUIRE(io::read_file(path, journal_text) == io::Status::Ok);
+  REQUIRE(io::read_file(saved_path, saved_text) == io::Status::Ok);
+  // The event lines are the same bytes in both files (the headers differ by version).
+  CHECK(journal_text.substr(journal_text.find('\n') + 1,
+                            saved_text.size() - saved_text.find('\n') - 1) ==
+        saved_text.substr(saved_text.find('\n') + 1));
+  for (const std::string& p : {path, saved_path}) {
+    InputLog log;
+    std::string error;
+    REQUIRE_MESSAGE(log.load(p, &error) == io::Status::Ok, p << ": " << error);
+    REQUIRE(log.size() == 4);
+    for (u32 i = 0; i < 4; ++i)
+      CHECK_MESSAGE(log.events()[i].value == back[i], p << ", value " << i);
+  }
+}
+
+// T216's review, H1: a journal a session's end has taken opens nothing again (an open truncates).
+TEST_CASE("input log journal: a taken journal never reopens the path") {
+  const TempDir tmp("engine_input_log_journal_taken");
+  const ActionMap map = make_map();
+  const std::string path = tmp.file("journal.jsonl");
+  const Vector<RawEvent> events = scripted_events();
+  InputLogJournal journal;
+  REQUIRE(journal.open(path, map.hash(), JsonValue()) == io::Status::Ok);
+  REQUIRE(journal.append(std::span<const RawEvent>(events.data(), events.size()), SimTick{9}) ==
+          io::Status::Ok);
+  const auto size = std::filesystem::file_size(path);
+  journal.take();
+  CHECK(journal.taken());
+  CHECK_FALSE(journal.is_open());
+  CHECK(journal.open(path, map.hash(), JsonValue()) == io::Status::IoError);
+  CHECK(journal.append({}, SimTick{10}) == io::Status::IoError);
+  CHECK(std::filesystem::file_size(path) == size);
 }

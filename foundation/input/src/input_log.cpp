@@ -1,8 +1,12 @@
 #include <core/base/assert.h>
 #include <core/json/json.h>
+#include <core/json/json_format.h>
+#include <core/log/log.h>
 #include <foundation/input/input_log.h>
 
+#include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <limits>
 #include <string>
@@ -15,7 +19,21 @@
 
 namespace engine::input {
 
+ENGINE_LOG_CATEGORY_DEFINE(log_input, "input.log");
+
 namespace {
+
+// **The value a line carries** (T216's review, L6): a finite float as it is; a NaN as 0, and an
+// infinity as the largest float of its sign — the loader refuses `null` and anything past a
+// float's range, so a non-finite value written as it is would make the whole log unloadable. The
+// save and the journal both write it through this, so the two spell every value alike.
+f64 line_value(f32 value) noexcept {
+  if (std::isnan(value)) return 0.0;
+  if (std::isinf(value))
+    return static_cast<f64>(value > 0.0f ? std::numeric_limits<f32>::max()
+                                         : -std::numeric_limits<f32>::max());
+  return static_cast<f64>(value);
+}
 
 // One event per line as [tick, source, code, value, device]: the tick sorts first, and an
 // array costs a fifth of what the same fields cost as an object in a log of a million events.
@@ -24,7 +42,7 @@ JsonValue event_to_json(const RawEvent& event) {
   row.push_back(JsonValue(event.tick.value));
   row.push_back(JsonValue(source_name(event.source)));
   row.push_back(JsonValue(static_cast<u64>(event.code)));
-  row.push_back(JsonValue(static_cast<f64>(event.value)));
+  row.push_back(JsonValue(line_value(event.value)));
   row.push_back(JsonValue(static_cast<u64>(event.device)));
   return JsonValue(std::move(row));
 }
@@ -88,6 +106,7 @@ void InputLog::forget() noexcept {
   session_ = JsonValue();
   through_ = SimTick{0};
   has_through_ = false;
+  dropped_ = DroppedTail{};
 }
 
 SimTick InputLog::first_tick() const noexcept {
@@ -136,6 +155,7 @@ io::Status InputLog::load(std::string_view native_path, std::string* error) {
   session_ = JsonValue();
   through_ = SimTick{0};
   has_through_ = false;
+  dropped_ = DroppedTail{};
   u64 version = 0;
   std::string text;
   const io::Status status = io::read_file(native_path, text);
@@ -149,17 +169,38 @@ io::Status InputLog::load(std::string_view native_path, std::string* error) {
 
   bool have_header = false;
   usize begin = 0;
+  // A journal's (version 2) last whole through line: the events read by then and the byte after
+  // it. Everything past it is a tail the session had not vouched for (T216's review, M1).
+  u32 kept_events = 0;
+  usize kept_bytes = 0;
+  bool torn = false;
   while (begin <= text.size()) {
     usize end = text.find('\n', begin);
-    if (end == std::string::npos) end = text.size();
+    const bool terminated = end != std::string::npos;
+    if (!terminated) end = text.size();
     std::string_view line(text.data() + begin, end - begin);
     begin = end + 1;
     while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
       line.remove_suffix(1);
     if (line.empty()) continue;
+    // A journal writes every line whole with its newline, so an unterminated last line is one a
+    // process ended in the middle of: never parsed, so a number cut short is never read as a
+    // smaller one.
+    const bool journal = have_header && version >= 2;
+    if (journal && !terminated) {
+      torn = true;
+      break;
+    }
 
     JsonValue value;
     if (const JsonParseResult parsed = parse_json(line, value); !parsed.ok) {
+      // A journal's last line that does not parse, with nothing after it, is the same cut.
+      // Anything else that does not parse is a broken file, refused as it always was.
+      if (journal &&
+          (begin >= text.size() || text.find_first_not_of(" \r\n", begin) == std::string::npos)) {
+        torn = true;
+        break;
+      }
       if (error != nullptr) *error = std::string("input log: ") + parsed.message;
       forget();
       return io::Status::IoError;
@@ -197,6 +238,7 @@ io::Status InputLog::load(std::string_view native_path, std::string* error) {
         session_ = *session;
       }
       have_header = true;
+      kept_bytes = begin < text.size() ? begin : text.size();
       continue;
     }
     // A journal's through line (version 2, T216): the tick its recorder had reached. Never
@@ -217,6 +259,8 @@ io::Status InputLog::load(std::string_view native_path, std::string* error) {
       }
       through_ = SimTick{tick};
       has_through_ = true;
+      kept_events = events_.size();
+      kept_bytes = begin < text.size() ? begin : text.size();
       continue;
     }
     RawEvent event;
@@ -248,6 +292,20 @@ io::Status InputLog::load(std::string_view native_path, std::string* error) {
   if (!have_header) {
     if (error != nullptr) *error = "input log: the file is empty";
     return io::Status::IoError;
+  }
+  // A journal stops at its last whole through line: a cut line and the events after that line are
+  // dropped, said by name, and never replayed (T216's review, M1). A whole save (version 1) has
+  // no through lines and keeps every event.
+  if (version >= 2 && (torn || events_.size() > kept_events)) {
+    dropped_.dropped = true;
+    dropped_.through = through_;
+    dropped_.events = events_.size() - kept_events;
+    dropped_.bytes = text.size() - kept_bytes;
+    events_.resize(kept_events);
+    ENGINE_LOG_WARN(log_input, "input log: a journal's torn tail was dropped",
+                    log::field("path", native_path), log::field("through", dropped_.through.value),
+                    log::field("dropped_events", dropped_.events),
+                    log::field("dropped_bytes", dropped_.bytes));
   }
   return io::Status::Ok;
 }
@@ -300,6 +358,8 @@ InputLogJournal::~InputLogJournal() { close(); }
 
 io::Status InputLogJournal::open(std::string_view native_path, u64 map_hash,
                                  const JsonValue& session) {
+  // A journal taken by a session's end opens nothing again: an open truncates (T216's review, H1).
+  if (taken_.load(std::memory_order_acquire)) return io::Status::IoError;
   close();
   events_written_ = 0;
   appends_ = 0;
@@ -330,13 +390,38 @@ io::Status InputLogJournal::append(std::span<const RawEvent> events, SimTick thr
   if (f == nullptr || failed_) return io::Status::IoError;
   bool ok = true;
   char line[128];
+  // A stack buffer as the canonical writer's sink (json_format.h).
+  struct LineSink {
+    char* at;
+    usize left;
+    bool fits = true;
+    void append(const char* p, usize n) noexcept {
+      if (n > left) {
+        fits = false;
+        return;
+      }
+      std::memcpy(at, p, n);
+      at += n;
+      left -= n;
+    }
+    void put(char c) noexcept { append(&c, 1); }
+  };
   for (const RawEvent& e : events) {
-    // The same fields `save` writes; a float's value with nine significant digits, which is what
-    // gives the same float back (the loader parses a double and narrows it, as it always has).
-    const int n = std::snprintf(line, sizeof(line), "[%llu,\"%s\",%u,%.9g,%u]\n",
-                                static_cast<unsigned long long>(e.tick.value),
-                                source_name(e.source), e.code, static_cast<f64>(e.value), e.device);
-    ok = ok && n > 0 && std::fwrite(line, 1, static_cast<usize>(n), f) == static_cast<usize>(n);
+    // The bytes `save` writes for the same event (T216's review, L6): integers by printf, which
+    // no locale changes, and the value by the canonical writer's own spelling (shortest
+    // round-trip, `std::to_chars`, never the C locale's decimal separator), through `line_value`.
+    const int head =
+        std::snprintf(line, sizeof(line), "[%llu,\"%s\",%u,",
+                      static_cast<unsigned long long>(e.tick.value), source_name(e.source), e.code);
+    ok = ok && head > 0 && static_cast<usize>(head) < sizeof(line);
+    if (!ok) break;
+    LineSink sink{line + head, sizeof(line) - static_cast<usize>(head)};
+    (void)json_format::number(sink, line_value(e.value));
+    char tail[16];
+    const int tail_n = std::snprintf(tail, sizeof(tail), ",%u]\n", e.device);
+    if (tail_n > 0) sink.append(tail, static_cast<usize>(tail_n));
+    const usize n = sizeof(line) - sink.left;
+    ok = sink.fits && tail_n > 0 && std::fwrite(line, 1, n, f) == n;
   }
   const int n = std::snprintf(line, sizeof(line), "{\"through\":%llu}\n",
                               static_cast<unsigned long long>(through.value));
@@ -355,6 +440,11 @@ io::Status InputLogJournal::append(std::span<const RawEvent> events, SimTick thr
 void InputLogJournal::close() noexcept {
   if (file_ != nullptr) (void)std::fclose(static_cast<std::FILE*>(file_));
   file_ = nullptr;
+}
+
+void InputLogJournal::take() noexcept {
+  taken_.store(true, std::memory_order_release);
+  close();
 }
 
 }  // namespace engine::input

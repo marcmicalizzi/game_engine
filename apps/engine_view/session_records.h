@@ -108,9 +108,11 @@ struct LostRecordsScope {
 inline io::Status save_lost_recording(const LostRecords& held) {
   if (held.recording == nullptr || held.record_input.empty()) return io::Status::Ok;
   if (held.finish_recording != nullptr) held.finish_recording(held.finish_context, *held.recording);
-  // The journal holds the file open; the whole log replaces it (T216). If this save fails, the
-  // journal is left as it was: whole to its last append, and replayable to its through tick.
-  if (held.journal != nullptr) held.journal->close();
+  // The journal holds the file open; the whole log replaces it (T216). Taken, not just closed: a
+  // frame that steps the journal once more after this never reopens the path, which would
+  // truncate it (T216's review, H1). If this save fails, the journal is left as it was: whole to
+  // its last append, and replayable to its through tick.
+  if (held.journal != nullptr) held.journal->take();
   return held.recording->save(held.record_input);
 }
 
@@ -138,20 +140,31 @@ struct RecordingJournal {
 // its header), then appends the recording's new events and the tick reached when `every_ticks`
 // have passed since the last append or `marks` grew. Allocates nothing after the open. True when
 // it wrote. Nothing without a recording path; a journal that cannot be written says so once and
-// stops, and the session goes on.
+// stops, and the session goes on; nothing once a session's end has taken it
+// (`InputLogJournal::take`), so it never reopens — and truncates — the path after that.
 bool journal_step(RecordingJournal& journal, input::InputLog& recording, const LostRecords& held,
                   u64 tick, u64 marks);
 // The journal's line for stderr at a session's end: appends, mean and worst microseconds.
 std::string journal_summary(const RecordingJournal& journal);
 
 // **Where the loop is**, for a crash's block: the frame, the tick, and what it was doing (a static
-// string). Relaxed atomics, a few stores a frame.
+// string), and **the frame's thread** (T216's review, H1): the OS's id of the thread that runs the
+// frame loop (`platform::current_thread_id`, the id a `CrashInfo` names a thread by), stored by
+// `loop_at` at every frame, zero before the first. Relaxed atomics, a few stores a frame.
 struct LoopState {
   std::atomic<u64> frame{~u64{0}};
   std::atomic<u64> tick{0};
   std::atomic<const char*> doing{"starting"};
+  std::atomic<u64> frame_thread{0};
 };
 LoopState& loop_state();
+// **Whose are the session's records when a fault comes** (T216's review, H1). The records, the
+// recording, its journal and the marks are grown by the frame's thread alone. A fault on that
+// thread, or before any frame began, holds them still, and the hook may read and write them. A
+// fault on any other thread (a job, the streamer, the sound) leaves the frame thread running, still
+// growing them, and the hook touches none of them: the journal stays as the durable input record,
+// whole through its last append, and the frame records stay what is already on disk.
+bool frame_side_still(const platform::CrashInfo& info) noexcept;
 inline void loop_doing(const char* what) noexcept {
   loop_state().doing.store(what, std::memory_order_relaxed);
 }
@@ -175,9 +188,11 @@ struct TestFaultAt {
 TestFaultAt parse_test_fault(std::string_view text) noexcept;
 
 // The report's and the records' `crashed` block: where the loop was, the fault, its stack, the
-// crash file, the marks, and what was recorded.
+// crash file, the marks, and what was recorded. `frame_side`: false for a fault off the frame's
+// thread (`frame_side_still`), when the records and the marks are not read and their fields are
+// null.
 JsonValue crashed_json(const platform::CrashInfo& info, std::span<const scene::FrameRecord> records,
-                       const Vector<FlyMarker>* marks);
+                       const Vector<FlyMarker>* marks, bool frame_side = true);
 
 // Registers `on_crash` (context: the run's `RunReport`) and the crash file — `<report>.crash.json`,
 // or `<benchmark>.crash.json` with no report, none with neither. Once, after the options are read.
