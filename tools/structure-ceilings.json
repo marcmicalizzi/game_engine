@@ -16,7 +16,7 @@
       "file": "systems/renderer/src/scene_renderer.cpp",
       "function": "SceneRenderer::record_frame",
       "why": "every pass and every feature flag of a frame",
-      "ceiling": 3926
+      "ceiling": 3928
     },
     {
       "id": "renderer.record_frame.add_pass",
@@ -32,21 +32,21 @@
       "measure": "file-lines",
       "file": "systems/renderer/src/gpu_scene.cpp",
       "why": "every feature's GPU state",
-      "ceiling": 6999
+      "ceiling": 6976
     },
     {
       "id": "renderer.gpu_scene_h.lines",
       "measure": "file-lines",
       "file": "systems/renderer/include/systems/renderer/gpu_scene.h",
       "why": "every feature's GPU state",
-      "ceiling": 2537
+      "ceiling": 2579
     },
     {
       "id": "engine_view.main_cpp.lines",
       "measure": "file-lines",
       "file": "apps/engine_view/main.cpp",
       "why": "every play feature and every flag",
-      "ceiling": 7821
+      "ceiling": 7838
     },
     {
       "id": "engine_view.run_view.lines",
@@ -54,7 +54,7 @@
       "file": "apps/engine_view/main.cpp",
       "function": "run_view",
       "why": "the windowed loop",
-      "ceiling": 3322
+      "ceiling": 3333
     },
     {
       "id": "engine_view.run_offscreen.lines",
@@ -62,7 +62,7 @@
       "file": "apps/engine_view/main.cpp",
       "function": "run_offscreen",
       "why": "the offscreen loop",
-      "ceiling": 1214
+      "ceiling": 1216
     },
     {
       "id": "gfx.resolve_modules",
@@ -107,19 +107,19 @@
       "id": "page:docs/subsystems/renderer.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/renderer.md",
-      "ceiling": 1510194
+      "ceiling": 1540536
     },
     {
       "id": "page:docs/subsystems/apps.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/apps.md",
-      "ceiling": 774849
+      "ceiling": 786103
     },
     {
       "id": "page:docs/subsystems/gfx.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/gfx.md",
-      "ceiling": 401186
+      "ceiling": 401418
     },
     {
       "id": "page:docs/subsystems/geometry.md",
@@ -173,7 +173,7 @@
       "id": "page:docs/subsystems/world.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/world.md",
-      "ceiling": 166984
+      "ceiling": 169110
     },
     {
       "id": "page:AGENTS.md",
@@ -227,7 +227,7 @@
       "id": "page:docs/ci/what-to-run.md",
       "measure": "page-bytes",
       "file": "docs/ci/what-to-run.md",
-      "ceiling": 121908
+      "ceiling": 122705
     },
     {
       "id": "page:docs/subsystems/animation.md",
@@ -245,7 +245,7 @@
       "id": "page:docs/subsystems/audio.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/audio.md",
-      "ceiling": 119330
+      "ceiling": 119182
     }
   ],
   "rebaselines": [
@@ -4350,6 +4350,142 @@
           "id": "page:docs/subsystems/world.md",
           "old": 166548,
           "new": 166984
+        }
+      ]
+    },
+    {
+      "date": "2026-11-23",
+      "by": "Marc Micalizzi",
+      "reason": "",
+      "commit": "0f91fd9d7",
+      "folded": [
+        {
+          "name": "C72",
+          "reason": "C72: the content classes stage and its log line by kind (how the walk got each recipe's hosts among them), a forest's measured table before, after and after its mends, and what the class read reads once, in parallel, serially and not at all (a recipe whose generator cannot name a host, why that declaration is checked, how the load fails on a generator that breaks it, and the image hooks the check does not see, roadmap C70), in Content classes at load",
+          "date": "2026-11-23",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 8109
+          }
+        },
+        {
+          "name": "R206",
+          "reason": "R206-H1: the LOD caps' count, the one setter that writes both cull words and the CPU mirror of the cull's read; the page's sentence on a mesh past the table, the table's sizing and the cases",
+          "date": "2026-11-23",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 2,
+            "renderer.gpu_scene_cpp.lines": 7,
+            "renderer.gpu_scene_h.lines": 39,
+            "page:docs/subsystems/renderer.md": 8623
+          }
+        },
+        {
+          "name": "R207",
+          "reason": "R207 and its mend after the independent read: renderer.md's 'The bake is read back' (the alpha word's round trip on a miss, the scene's bounds on a read, the version-bump rule, the masked flags), gfx.md's line on the pipeline cache's identity keying it, apps.md's load.micromaps block and the summary version it arrives in",
+          "date": "2026-11-23",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.gpu_scene_cpp.lines": -43,
+            "page:docs/subsystems/renderer.md": 10940,
+            "page:docs/subsystems/apps.md": 631,
+            "page:docs/subsystems/gfx.md": 232
+          }
+        },
+        {
+          "name": "T215",
+          "reason": "the pair-shift lists reserved where the tail's capacity is set (reserve_shift_lists and its three calls) and renderer.md's account of the bound; world.md's account of a tile's own run and its one accessor; the mend after the independent read: the cells' accessor (TileBlock::cells) beside the own run, and the pair-shift case's words corrected to say it drives a model of GpuScene's lists",
+          "date": "2026-11-23",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.gpu_scene_cpp.lines": 13,
+            "renderer.gpu_scene_h.lines": 3,
+            "page:docs/subsystems/renderer.md": 2670,
+            "page:docs/subsystems/world.md": 2126
+          }
+        },
+        {
+          "name": "T216",
+          "reason": "T216: a fault's turn and the recording's journal: each frame loop says where it is for a crash's block and the test seam (loop_at), the window loop appends its recording to the journal after each frame's ticks and names the journal and the marks for the hook, closes it before the whole log is saved, and the report and an offscreen summary carry the runs block; apps.md gains the section 'When the process faults'; and its review's mend: the hook cleared after main writes the report (L1), and apps.md says which thread's fault writes which records (H1), the torn tail, the per-thread terminate",
+          "date": "2026-11-23",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "engine_view.main_cpp.lines": 17,
+            "engine_view.run_view.lines": 11,
+            "engine_view.run_offscreen.lines": 2,
+            "page:docs/subsystems/apps.md": 10623
+          }
+        },
+        {
+          "name": "T217",
+          "reason": "T217: the gate script's section (its two commands and a pointer to docs/ci/gate.md, where the rest of it lives) and the wall clock's note that its settlements moved there",
+          "date": "2026-11-23",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/ci/what-to-run.md": 797
+          }
+        }
+      ],
+      "changes": [
+        {
+          "id": "renderer.record_frame.lines",
+          "old": 3926,
+          "new": 3928
+        },
+        {
+          "id": "renderer.gpu_scene_cpp.lines",
+          "old": 6999,
+          "new": 6976
+        },
+        {
+          "id": "renderer.gpu_scene_h.lines",
+          "old": 2537,
+          "new": 2579
+        },
+        {
+          "id": "engine_view.main_cpp.lines",
+          "old": 7821,
+          "new": 7838
+        },
+        {
+          "id": "engine_view.run_view.lines",
+          "old": 3322,
+          "new": 3333
+        },
+        {
+          "id": "engine_view.run_offscreen.lines",
+          "old": 1214,
+          "new": 1216
+        },
+        {
+          "id": "page:docs/subsystems/renderer.md",
+          "old": 1510194,
+          "new": 1540536
+        },
+        {
+          "id": "page:docs/subsystems/apps.md",
+          "old": 774849,
+          "new": 786103
+        },
+        {
+          "id": "page:docs/subsystems/gfx.md",
+          "old": 401186,
+          "new": 401418
+        },
+        {
+          "id": "page:docs/subsystems/world.md",
+          "old": 166984,
+          "new": 169110
+        },
+        {
+          "id": "page:docs/ci/what-to-run.md",
+          "old": 121908,
+          "new": 122705
+        },
+        {
+          "id": "page:docs/subsystems/audio.md",
+          "old": 119330,
+          "new": 119182
         }
       ]
     }
