@@ -8,6 +8,6 @@
     "renderer.record_frame.lines": 2,
     "renderer.gpu_scene_cpp.lines": 7,
     "renderer.gpu_scene_h.lines": 34,
-    "page:docs/subsystems/renderer.md": 8607
+    "page:docs/subsystems/renderer.md": 8623
   }
 }
