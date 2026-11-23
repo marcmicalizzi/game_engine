@@ -68,7 +68,7 @@ Vector<f32> noise(u32 frames, u32 channels, u64 seed) {
   return out;
 }
 
-enum class Kind { Positioned, Flat, Turning, LimiterIdle, Limited, Distinct };
+enum class Kind { Positioned, Flat, Turning, LimiterIdle, Limited, Distinct, Air };
 
 void run(bench::State& state, Kind kind, ChannelLayout layout) {
   const u32 voices = static_cast<u32>(state.arg());
@@ -78,6 +78,9 @@ void run(bench::State& state, Kind kind, ChannelLayout layout) {
   config.layout = layout;
   const bool limiter = kind == Kind::LimiterIdle || kind == Kind::Limited;
   config.limiter = limiter ? LimiterMode::On : LimiterMode::Off;
+  // S114: the air's low-pass by distance on every positioned voice (0.0776 dB a metre at 8 kHz,
+  // 20 degC and 70 %), its coefficient taken a voice a block.
+  if (kind == Kind::Air) config.air_db_per_m_8k = 0.0776f;
   Mixer mixer(clips, config);
   if (limiter) mixer.set_bus_gain(k_bus_master, kind == Kind::Limited ? 4.0f : 0.25f);
   const u8 channels = kind == Kind::Flat ? 2 : 1;
@@ -128,6 +131,10 @@ void run(bench::State& state, Kind kind, ChannelLayout layout) {
 
 ENGINE_BENCH_ARGS(mix_3d, "audio.mix.3d", 1, 16, 64, 256) {
   run(state, Kind::Positioned, ChannelLayout::Stereo);
+}
+
+ENGINE_BENCH_ARGS(mix_3d_air, "audio.mix.3d_air", 1, 16, 64, 256) {
+  run(state, Kind::Air, ChannelLayout::Stereo);
 }
 
 ENGINE_BENCH_ARGS(mix_2d, "audio.mix.2d", 1, 16, 64, 256) {

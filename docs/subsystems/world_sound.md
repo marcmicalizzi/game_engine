@@ -220,6 +220,8 @@ The path is taken once a crown a refresh, in dB, then one exponential a band: th
 | 1,000 | 181.4 | 154.9 | about 0.2 ms |
 | 8,000 | 557.7 | 341.8 | about 1.6 ms |
 
+**The clips' low-pass** costs the audio thread a recursion a sample: `audio.mix.3d_air/N` against `audio.mix.3d/N` (the same voices with the air off), 179 against 70 µs a block at 64 clip voices and 45.6 against 18.5 at 16 (the same run, others at 16 % of the CPU, the GPU lock held by another row), about 1.7 µs a clip voice a block more — a game's dozen bird calls some 20 µs inside the 200 the audio thread is given; the world's voices pay none (they carry their path in their bands).
+
 About 0.19 µs a crown a refresh: on the forest staging, whose refreshes send about 1,100 crowns, some 0.2 ms more a refresh frame, inside the 1 ms a refresh is given; a table that sent 8,000 would pass it, which `audio.world.near_crowns` and the far field's cells keep a host's table from doing. The first try took each term per band with its own `pow` and `exp` and cost 1.4 ms a tick at 8,000. The merged crowns' seven points cost seven crowns each; a refresh sends a few hundred.
 
 ## Capability contract (ADR-0027)
