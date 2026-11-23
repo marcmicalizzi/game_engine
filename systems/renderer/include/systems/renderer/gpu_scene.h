@@ -1202,6 +1202,19 @@ class GpuScene {
   u64 sway_lod_address(u32 slot) const noexcept {
     return sway_lod_on_ ? sway_caps_.address + u64{slot} * sway_cap_count_ * sizeof(f32) : 0;
   }
+  // The floats that region holds (`gfx::CullParams::sway_lod_count`, R206-H1): every mesh that can
+  // sway is under it; the cull reads no cap for a mesh past it, which keeps its whole padding.
+  u32 sway_lod_count() const noexcept { return sway_cap_count_; }
+  // Both words a cull block takes, the table's address and its count, written together so no
+  // caller hands the cull one without the other.
+  void set_sway_lod(u32 slot, gfx::CullParams& cull) const noexcept {
+    cull.sway_lod = sway_lod_address(slot);
+    cull.sway_lod_count = cull.sway_lod != 0 ? sway_cap_count_ : 0u;
+  }
+  // The CPU's mirror of the cull's read (cluster_cull.slang, R206-H1): the cap this slot's frame
+  // puts on a deformed instance of `mesh`'s LOD padding, in mesh-space metres — +inf (no cap: the
+  // whole padding) when the table is off this frame or the mesh is past it. For the tests.
+  f32 sway_lod_cap(u32 slot, u32 mesh) const noexcept;
   // **The normal pool this frame reads** — `normal_pool_address()`, except in a scene whose pool
   // normals are the trees' alone on a frame where no part of any tree moves: then 0, and the
   // resolve shades every tree from the attribute stream's rest normals with the rigid path's own

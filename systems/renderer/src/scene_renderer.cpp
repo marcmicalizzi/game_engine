@@ -4088,7 +4088,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // A run holds what the frame's runs were sized for (W51-5); a full run counts its drops.
     cull.run_capacity = run_length;
     cull.run_drops = scene.visible.address + scene.run_drops_offset();
-    cull.sway_lod = scene.sway_lod_address(slot);  // the cut is the calm one in a gale (R206)
+    scene.set_sway_lod(slot, cull);  // the cut is the calm one in a gale (R206)
     // A pair's instance in one load (W6), under `renderer.cull.pair_table`; 0 searches, as main.
     cull.pairs = cull_table ? scene.pair_table.address : 0;
     cull.terrain = terrain_table;
@@ -4643,7 +4643,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull.pair_count = pair_count;
     cull.run_capacity = run_length;  // W51-5, as the camera's runs, counted apart
     cull.run_drops = scene.visible.address + scene.run_drops_offset() + sizeof(u32);
-    cull.sway_lod = scene.sway_lod_address(slot);  // the camera's cut, so the camera's caps (R206)
+    scene.set_sway_lod(slot, cull);  // the camera's cut, so the camera's caps (R206)
     cull.pairs = cull_table ? scene.pair_table.address : 0;  // W6, as the camera's runs
     cull.terrain = terrain_table;
     cull.streaming = stream_params;

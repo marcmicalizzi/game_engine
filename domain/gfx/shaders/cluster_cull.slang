@@ -154,7 +154,7 @@ struct CullParams {
   // gfx::CullParams::run_capacity / run_drops (W51-5): the entries this run has room for, 0 no
   // bound, and the u32 a dropped append is counted at (see `run_takes`).
   uint run_capacity;     // offset 1832
-  uint pad_run;          // offset 1836
+  uint sway_lod_count;   // offset 1836: the floats `sway_lod` holds (R206-H1)
   uint64_t run_drops;    // offset 1840
   // gfx::CullParams::sway_lod (R206): a float per mesh, the most padding a deformed instance of it
   // takes on its LOD spheres; 0 for none (the LOD spheres take the whole padding, as before).
@@ -817,9 +817,12 @@ void cull_instance_pair(CullParams* params, uint pair, uint instance_index, bool
     // is the calm one in any wind and a step of the ladder moves no LOD. Still one constant per
     // instance on every LOD sphere, so the cut stays crack-free; `min` is exact, so at the calm
     // rung (and with no table: every frame whose ladder stands at it) the spheres are main's to the
-    // bit.
+    // bit. Only a mesh under `sway_lod_count` is read (R206-H1): a deformed instance of a mesh past
+    // the table (a terrain ring's slot, a tile of the mesh room) keeps its whole padding, so no
+    // instance can index past it, whatever mesh indices a scene names.
     float lod_padding = padding;
-    if (params->sway_lod != 0 && instance.deform != k_invalid_deform) {
+    if (params->sway_lod != 0 && instance.deform != k_invalid_deform &&
+        instance.mesh < params->sway_lod_count) {
       lod_padding = min(padding, ((float*)params->sway_lod)[instance.mesh] * instance.scale_max);
     }
     const float4 own_sphere = float4(instance_point(instance, from_eye, lod.own.xyz),

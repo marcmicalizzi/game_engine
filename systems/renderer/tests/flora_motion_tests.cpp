@@ -8,12 +8,19 @@
 
 #include <domain/flora/flora.h>
 #endif
+#if ENGINE_RENDERER_TESTS_FLORA_TERRAIN
+#include <core/jobs/job_system.h>
+#include <systems/renderer/terrain.h>
+#include <systems/renderer/terrain_rings.h>
+#include <systems/renderer/terrain_time.h>
+#endif
 #include <domain/geometry/flora_species.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/flora_motion.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/flora_motion.h>
+#include <systems/renderer/flythrough.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
@@ -875,10 +882,12 @@ TEST_CASE("flora motion: three palms' padding follows the wind, culled as drawn 
 
 // **A storm's padding culls; the cut is the calm one** (R206; renderer.md, "What a gale builds").
 // Three palms whole in view, calm and then force 12 (the ladder's rung 4, its records padded four
-// to five times): the records' padding rises, the palms sway, and the cut — the visible pairs, and
-// under traced shadows the cluster structures the chain builds for them — is the calm frame's to
-// the pair. Before R206 the LOD spheres took the whole rung's padding and force 12 drew and built a
-// finer cut of the same palms.
+// to five times): the records' padding rises, the palms sway, and the cut — the visible pairs, read
+// back and compared as sorted sets (R206-L1), and under traced shadows the count of cluster
+// structures the chain builds for them — is the calm frame's to the pair. The calm frames are the
+// same ids word for word and the same pairs with the switch either way (R206-L2): a calm session
+// hands the cull no table. Before R206 the LOD spheres took the whole rung's padding and force 12
+// drew and built a finer cut of the same palms.
 namespace {
 
 struct TunableValue {
@@ -930,7 +939,9 @@ TEST_CASE("flora motion: three palms at force 12 draw and build the calm cut") {
     u32 wanted = 0;
     f32 padding = 0.0f;
     Vector<u32> ids;
+    Vector<u64> pairs;  // the drawn runs, `instance << 32 | cluster`, sorted
   };
+  Seen calm_of[2];  // the calm frame with the switch off and on, for R206-L2
   // `renderer.flora.calm_cut` false is the cut W154-2 left (the whole rung's padding on the LOD
   // spheres): the "before" this case fails, counted beside the "after".
   for (const char* calm_cut : {"false", "true"}) {
@@ -946,6 +957,8 @@ TEST_CASE("flora motion: three palms at force 12 draw and build the calm cut") {
     rd.width = 320;
     rd.height = 320;
     REQUIRE_MESSAGE(renderer.create(gpu.device, scene, resolved, rd, &error), error);
+    VisibleCensus census;
+    REQUIRE_MESSAGE(census.create(gpu.device, scene, &error), error);
     Vector<Seen> seen;
     CaptureChannels channels;
     channels.ids = true;
@@ -964,9 +977,10 @@ TEST_CASE("flora motion: three palms at force 12 draw and build the calm cut") {
       frame.flora.wind_to = Vec2{0.0f, -1.0f};
       frame.flora.wind_strength = winds[f];
       CapturedFrame shot;
-      REQUIRE_MESSAGE(renderer.render_offscreen(frame, &error), error);
-      REQUIRE_MESSAGE(renderer.capture(frame, channels, shot, &error), error);
       Seen s;
+      REQUIRE_MESSAGE(renderer.render_offscreen(frame, &error), error);
+      REQUIRE_MESSAGE(census.pairs(scene, renderer.stats(), s.pairs, &error), error);
+      REQUIRE_MESSAGE(renderer.capture(frame, channels, shot, &error), error);
       s.visible = renderer.stats().visible_pairs();
       s.wanted = renderer.stats().rt.wanted;
       const gfx::InstanceDesc* record = scene.instance_record(0);
@@ -974,10 +988,12 @@ TEST_CASE("flora motion: three palms at force 12 draw and build the calm cut") {
       s.ids = std::move(shot.ids);
       seen.push_back(std::move(s));
     }
+    census.destroy();
     renderer.destroy();
     scene.destroy();
     const Seen& calm = seen[1];
     const Seen& storm = seen[4];
+    calm_of[std::strcmp(calm_cut, "true") == 0 ? 1 : 0] = calm;
     u32 moved = 0;
     for (u32 i = 0; i < calm.ids.size() && i < storm.ids.size(); ++i)
       moved += calm.ids[i] != storm.ids[i] ? 1u : 0u;
@@ -989,15 +1005,185 @@ TEST_CASE("flora motion: three palms at force 12 draw and build the calm cut") {
     CHECK(storm.padding > calm.padding * 4.0f);  // the records took the storm's rung
     CHECK(moved > 100);                          // and the palms sway in it
     CHECK(calm.visible > 0);
+    CHECK(calm.pairs.size() == calm.visible);  // the read-back is the whole cut
     if (std::strcmp(calm_cut, "true") == 0) {
       CHECK(storm.visible == calm.visible);            // the cut is the calm one
+      CHECK(same(storm.pairs, calm.pairs));            // to the pair
       if (traces) CHECK(storm.wanted == calm.wanted);  // and so are the chain's structures for it
     } else {
       CHECK(storm.visible > calm.visible);  // W154-2's: the rung's padding made the cut finer
+      CHECK_FALSE(same(storm.pairs, calm.pairs));
       if (traces) CHECK(storm.wanted > calm.wanted);
     }
   }
+  // A calm session's cut is unchanged to the bit by the switch (R206-L2).
+  CHECK(same(calm_of[0].pairs, calm_of[1].pairs));
+  CHECK(same(calm_of[0].ids, calm_of[1].ids));
+  CHECK(calm_of[0].visible == calm_of[1].visible);
 }
+
+#if ENGINE_RENDERER_TESTS_FLORA_TERRAIN
+// **No instance reads a cap past the table** (R206-H1; renderer.md, "What a gale builds"). A palm
+// on the dunes with the terrain rings on: every ring slot is a mesh of its own, numbered past the
+// scene's parts (`parts + slot parts + s`), and a deformed instance — a terrain level — so the
+// cull's `sway_lod[mesh]` was read for each ring chunk from past its slot's region of the table,
+// and for the last region past the buffer. At force 12 (the ladder above its calm rung, the table
+// on) the cull now reads no cap for a mesh past `sway_lod_count`: on the CPU's mirror of its read
+// every terrain level's padding is untouched, and on the device the rings' cut — the visible pairs
+// of every ring chunk, sorted — is the one the table-free cull (`calm_cut` false) draws.
+TEST_CASE("flora motion: a gale's LOD caps leave the terrain rings' padding whole") {
+  const test::TempDir tmp("renderer_flora_storm_rings");
+  REQUIRE(tmp.ok());
+  const std::string palm = tmp.file("young.flora.json");
+  {
+    std::ofstream f(palm, std::ios::binary);
+    f << k_palm;
+  }
+  SceneDesc desc;
+  desc.meshes.push_back(palm);
+  desc.meshes.push_back("");  // the terrain's own mesh
+  desc.ddc = tmp.file("ddc");
+  desc.cache = true;
+  desc.terrain.enabled = true;
+  desc.terrain.size = 129;
+  desc.terrain.extent = 64.0f;
+  desc.terrain.seed = 5;
+  desc.terrain.dune_height = 2.0f;
+  desc.terrain.dune_wavelength = 20.0f;
+  desc.terrain.generator = TerrainGenerator::dunes;
+  desc.terrain.time_s = 94'608'000.0;
+  SceneData data;
+  std::string error;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  // A desc places its first mesh; the terrain's identity instance goes last, as a scene file's does
+  // (its materials are the GPU scene's to give it).
+  REQUIRE(data.terrain_mesh < data.parts.size());
+  REQUIRE(data.instances.size() == 1);
+  {
+    gfx::InstanceDesc ground = data.instances[0];
+    ground.mesh = data.terrain_mesh;
+    gfx::set_instance_transform(ground, Mat4::identity());
+    ground.bounds_padding = 0.0f;
+    ground.first_pair = data.pair_count;
+    data.pair_count += data.parts[data.terrain_mesh].cluster_count;
+    data.instances.push_back(ground);
+    if (!data.instance_joints.empty()) data.instance_joints.push_back(0u);
+  }
+  update_scene_bounds(data);
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  RenderSettings settings;
+  settings.shadows = ShadowMode::Off;
+  settings.occlusion = false;  // the cut alone
+  settings.terrain_rings = true;
+  ResolvedSettings resolved;
+  resolve_settings(settings, gpu.device.features(), &data, resolved);
+  if (check_availability(resolved, gpu.device.features()) != RenderAvailability::Ok) {
+    MESSAGE("skipped: the rings are not available on this device");
+    return;
+  }
+  REQUIRE(resolved.terrain_rings);
+  REQUIRE(resolved.terrain_levels);
+  // Rings that fit inside the scene's 64 m grid, as the rings' own cases set them.
+  const TunableValue inner_half("terrain.rings.inner_half_m", "6");
+  const TunableValue inner_spacing("terrain.rings.inner_spacing_cm", "25");
+  const TunableValue middle_half("terrain.rings.middle_half_m", "20");
+  const TunableValue middle_spacing("terrain.rings.middle_spacing_cm", "50");
+  jobs::JobSystem pool(jobs::JobSystemConfig{.performance_workers = 2, .pin_threads = false});
+  const u32 parts = data.parts.size();
+  Vector<u64> ring_cut[2];
+  u32 palm_cut[2] = {};
+  for (const char* calm_cut : {"false", "true"}) {
+    const std::string cut_name = calm_cut;
+    CAPTURE(cut_name);
+    const bool on = std::strcmp(calm_cut, "true") == 0;
+    const TunableValue cut("renderer.flora.calm_cut", calm_cut);
+    TerrainRingSet rings;
+    REQUIRE_MESSAGE(rings.build(data.terrain, WorldPos::origin(), &pool, &error), error);
+    GpuScene scene;
+    REQUIRE_MESSAGE(scene.create(gpu.device, data, resolved, &error, &rings), error);
+    SceneRenderer renderer;
+    SceneRenderer::Desc rd;
+    rd.width = 256;
+    rd.height = 256;
+    REQUIRE_MESSAGE(renderer.create(gpu.device, scene, resolved, rd, &error), error);
+    VisibleCensus census;
+    REQUIRE_MESSAGE(census.create(gpu.device, scene, &error), error);
+    TerrainMotion motion;
+    TimeLapseConfig still;
+    still.rate = 0.0;
+    still.wait = true;
+    REQUIRE_MESSAGE(motion.start(scene, &rings, still, &pool, &error), error);
+    Vector<u64> pairs;
+    const f32 winds[] = {0.0f, 6.6f, 6.6f, 6.6f};
+    for (u32 f = 0; f < 4; ++f) {
+      FrameDesc frame;
+      // Over the palm, looking down across the inner ring and out to the middle one.
+      frame.camera.position = WorldPos{0.0, 9.0, 14.0};
+      frame.camera.target = WorldPos{0.0, 0.0, -4.0};
+      frame.frame_index = 60 + f;
+      frame.world_time_s = static_cast<f64>(frame.frame_index) / 60.0;
+      frame.flora.wind_set = true;
+      frame.flora.wind_to = Vec2{0.0f, -1.0f};
+      frame.flora.wind_strength = winds[f];
+      motion.frame(1.0 / 60.0, frame.camera.position);
+      REQUIRE_MESSAGE(renderer.render_offscreen(frame, &error), error);
+    }
+    REQUIRE_MESSAGE(census.pairs(scene, renderer.stats(), pairs, &error), error);
+    // The ground the mend stands on, counted on the CPU: the deformed instances of a mesh past the
+    // table, every one a ring slot, each of which the cull read before the mend from outside its
+    // region of `k_joint_slots` regions of `sway_lod_count` floats.
+    u32 levels = 0;
+    u32 past = 0;
+    u32 untouched = 0;
+    f32 most_padding = 0.0f;
+    for (u32 i = 0; i < scene.instance_count(); ++i) {
+      const gfx::InstanceDesc* record = scene.instance_record(i);
+      // A ring slot, or the scene's own grid (a terrain level of a mesh under the table).
+      if (record == nullptr || record->deform == gfx::k_invalid_deform ||
+          (record->mesh < parts && record->mesh != data.terrain_mesh))
+        continue;
+      ++levels;
+      past += record->mesh >= scene.sway_lod_count() ? 1u : 0u;
+      most_padding = std::max(most_padding, record->bounds_padding);
+      // The cull's read for this mesh in every slot's region is no cap at all — +inf past the table,
+      // its "none" (3e38) under it — whatever padding the level holds (0 here: a still field).
+      bool whole = true;
+      for (u32 slot = 0; slot < k_joint_slots; ++slot) {
+        const f32 cap = scene.sway_lod_cap(slot, record->mesh);
+        whole = whole && cap >= 3.0e38f && !(cap * record->scale_max < record->bounds_padding);
+      }
+      untouched += whole ? 1u : 0u;
+    }
+    const gfx::InstanceDesc* tree = scene.instance_record(0);
+    const bool table = scene.sway_lod_address(0) != 0;
+    for (const u64 p : pairs) {
+      const gfx::InstanceDesc* record = scene.instance_record(static_cast<u32>(p >> 32));
+      if (record != nullptr && record->mesh >= parts) ring_cut[on ? 1 : 0].push_back(p);
+      if (record != nullptr && record->mesh < parts) ++palm_cut[on ? 1 : 0];
+    }
+    MESSAGE("calm_cut " << cut_name << ": " << levels << " terrain levels, " << past
+                        << " of them past the table's " << scene.sway_lod_count()
+                        << " floats a region; padding up to " << most_padding << " m; "
+                        << ring_cut[on ? 1 : 0].size() << " ring pairs and " << palm_cut[on ? 1 : 0]
+                        << " palm pairs in the cut; the palm's padding "
+                        << (tree != nullptr ? tree->bounds_padding : -1.0f) << " m");
+    CHECK(levels > 0);
+    CHECK(past > 0);  // the mend's ground: before it, every one of these read past its region
+    CHECK(table == on);  // force 12 stood the ladder above calm: the table is handed to the cull
+    CHECK(untouched == levels);  // and no ring slot takes a cap from it
+    census.destroy();
+    motion.finish();
+    renderer.destroy();
+    scene.destroy();
+  }
+  CHECK(!ring_cut[0].empty());
+  CHECK(same(ring_cut[0], ring_cut[1]));  // the rings' cut with the table is the table-free cull's
+}
+#endif  // ENGINE_RENDERER_TESTS_FLORA_TERRAIN
 
 #endif  // ENGINE_RENDERER_TESTS_FLORA
 
