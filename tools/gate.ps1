@@ -33,11 +33,16 @@
 
   Verdicts are read from what a leg kept, never from a console line: a suite's from the CTest logs
   `tools/dev.ps1` keeps per pass (copied into -Logs), a container's from its whole transcript. The
-  summary fails when any leg that ran left no verdict. Exit 0 green, 1 red, 2 refused.
+  summary fails when any leg that ran left no verdict. Exit 0 green, 1 red, 2 refused: an unknown
+  -Skip name, a -Root that is not a git worktree, a -Logs inside it, or a -Root that is not clean at
+  its HEAD (a tracked change, an untracked file git does not ignore, an unfinished merge), since the
+  verdict names that commit. A tracked change or a moved HEAD during the run is red. The last
+  `<Batch>-gate.verdict.json` in -Logs is set aside first, so no older green outlives a failed run.
 
   What it never does: push, merge, install, copy binaries out (tools/after-gate.ps1 does those, after
   the verdict is read), take or wait on the GPU lock itself (every test takes it, ADR-0049), kill a
-  process, or write inside -Root other than through the tree's own tools: -Logs must be outside it.
+  process, or write inside -Root other than through the tree's own tools and the one copy of
+  -SamplesFrom into the git-ignored content/samples: -Logs must be outside it.
 #>
 [CmdletBinding(DefaultParameterSetName = 'gate')]
 param(
@@ -93,11 +98,30 @@ $unknown = @($Skip | Where-Object { $_ -notin 'linux', 'listeners', 'budgets', '
 if ($unknown) { Write-Host "gate: -Skip takes linux, listeners, budgets, weaker-card; not $($unknown -join ', ')"; exit 2 }
 if (-not (Test-Path -LiteralPath (Join-Path $Root '.git'))) { Write-Host "gate: $Root is not a git worktree"; exit 2 }
 $Root = (Resolve-Path -LiteralPath $Root).Path
-New-Item -ItemType Directory -Force -Path $Logs | Out-Null
-$Logs = (Resolve-Path -LiteralPath $Logs).Path
+# -Logs is checked before it is made, so a refused run has made nothing inside the gate worktree (T217-L1).
+$Logs = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Logs)
 $sep = [IO.Path]::DirectorySeparatorChar
 if (($Logs.TrimEnd($sep) + $sep).StartsWith($Root.TrimEnd($sep) + $sep, [StringComparison]::OrdinalIgnoreCase)) {
   Write-Host "gate: -Logs ($Logs) is inside the gate worktree; a gate writes nothing there of its own"; exit 2
+}
+New-Item -ItemType Directory -Force -Path $Logs | Out-Null
+$Logs = (Resolve-Path -LiteralPath $Logs).Path
+# The last verdict of this batch name is set aside before anything else can fail, so a run that is
+# refused or stops part-way never leaves an older green where after-gate.ps1 would read it (T217-L2).
+$verdictPath = Join-Path $Logs "$Batch-gate.verdict.json"
+if (Test-Path -LiteralPath $verdictPath) {
+  $aside = Join-Path $Logs ("$Batch-gate.verdict.previous-{0}.json" -f (Get-Date).ToString('yyyyMMdd-HHmmss-fff'))
+  Move-Item -LiteralPath $verdictPath -Destination $aside
+  Write-Host "gate: the last verdict of $Batch is set aside as $aside"
+}
+# The verdict names the commit at HEAD, so the tree must be that commit and nothing else: no tracked
+# change, no untracked file git does not ignore, no unfinished merge (T217-H1). The primary checkout
+# stood in that state on the morning of batch 73 (two unmerged pages and a stray directory).
+try { $dirtAtStart = @(Get-WorktreeDirt -Root $Root) } catch { Write-Host "gate: $($_.Exception.Message); refused"; exit 2 }
+if ($dirtAtStart) {
+  Write-Host "gate: $Root is not clean at its HEAD, so a verdict could not name what it tested; refused:"
+  $dirtAtStart | Select-Object -First 20 | ForEach-Object { Write-Host "  $_" }
+  exit 2
 }
 # Git for Windows' Unix tools on PATH for the tests that need them (tools.docs_gate: dirname, mktemp),
 # found beside git rather than named (docs/ci/what-to-run.md, "Windows shell-test environment").
@@ -112,24 +136,31 @@ $entriesBefore = Get-TreeEntries -Root $Root
 $dev = Join-Path $Root 'tools/dev.ps1'
 $started = Get-Date
 $result = [ordered]@{ batch = $Batch; tip = $tip; reach = $Reach; skip = @($Skip); started = $started.ToString('s'); green = $false
-                      steps = [ordered]@{}; suites = [ordered]@{}; no_verdict = @(); litter = @() }
+                      steps = [ordered]@{}; suites = [ordered]@{}; no_verdict = @(); litter = @(); tree_changed = @()
+                      retried_builds = @(); memory_wait_timeouts = @() }
 $red = New-Object System.Collections.Generic.List[string]
 $keptLogs = New-Object System.Collections.Generic.List[object]   # @{ Preset; Path } in the order written
-"gate $Batch over $(& git -C $Root log --oneline -1); untracked at start: $(@(& git -C $Root status --porcelain --untracked-files=normal).Count); $(Stamp)"
+"gate $Batch over $(& git -C $Root log --oneline -1); the tree is clean at its HEAD; $(Stamp)"
 if ($Reach) { "follow-up: wave one runs ^($Reach)`$" }
 if ($Skip) { "skipped by the caller: $($Skip -join ', ')" }
 
-function Wait-Memory([double]$commit, [double]$physical) {
-  # Commit to spare and physical memory free, in GB, at most -MemoryWaitMinutes; a timeout proceeds and
-  # says so (a build that fails for memory is retried anyway). Write-Host, because a string on the
-  # pipeline of a function whose result is tested is swallowed by the test (the first gate's lesson).
+function Wait-Memory([double]$commit, [double]$physical, [string]$what) {
+  # Commit to spare and physical memory free, in GB, at most -MemoryWaitMinutes; a timeout proceeds,
+  # says so and is kept in the verdict (a build that fails for memory is retried anyway). Write-Host,
+  # because a string on the pipeline of a function whose result is tested is swallowed by the test
+  # (the first gate's lesson).
   if (-not $IsWindows) { return }
   $deadline = (Get-Date).AddMinutes($MemoryWaitMinutes)
   while ($true) {
     $o = Get-CimInstance Win32_OperatingSystem
     $spare = $o.FreeVirtualMemory / 1MB; $free = $o.FreePhysicalMemory / 1MB
     if ($spare -ge $commit -and $free -ge $physical) { return }
-    if ((Get-Date) -ge $deadline) { Write-Host ("MEMORY-WAIT TIMED OUT (commit to spare {0:N1} GB, physical free {1:N1} GB); proceeding" -f $spare, $free); return }
+    if ((Get-Date) -ge $deadline) {
+      $line = "MEMORY-WAIT TIMED OUT before $what (commit to spare {0:N1} GB, physical free {1:N1} GB); proceeding" -f $spare, $free
+      Write-Host $line
+      $script:result.memory_wait_timeouts += $line
+      return
+    }
     Start-Sleep -Seconds 30
   }
 }
@@ -200,7 +231,7 @@ function Invoke-Wave([string[]]$presets, [hashtable]$filters, [string]$label, [h
     if ($state.Failed) { $why += "failed: $($state.Failed -join ', ')" }
     if ($state.GaveUp) { $why += "gave up on the card twice: $($state.GaveUp -join ', ')" }
     if ($state.Incomplete) { $why += "cut off: $($state.Incomplete -join ', ')" }
-    if ($unexplained) { $why += "dev.ps1 exited $($unexplained -join ',') where its own logs hold no failed record" }
+    if ($unexplained) { $why += "dev.ps1 exited $($unexplained -join ',') where its own logs hold no record that explains it" }
     $suite.ok = ($why.Count -eq 0)
     $script:result.suites[$preset] = $suite
     if ($suite.ok) { "SUITE $preset OK ($($state.Tests.Count) tests$(if ($suite.reruns) { '; ' + ($suite.reruns -join '; ') }))" }
@@ -221,19 +252,19 @@ function Invoke-Step([string]$name, [string]$script, [string[]]$arguments) {
 # 1. The legs beside everything: Linux (waited for at the end) and the server (never waited for).
 $legs = @{}
 if ('linux' -notin $Skip) {
-  $spec = Join-Path $Logs "$Batch-linux.spec.json"
-  Write-Json $spec @{ Root = $Root; Logs = $Logs; Batch = $Batch; Verdict = (Join-Path $Logs "$Batch-linux.verdict.json")
-                      Presets = @('linux-gcc-release', 'linux-clang-debug', 'linux-clang-minimal') }
+  $legSpec = Join-Path $Logs "$Batch-linux.spec.json"
+  Write-Json $legSpec @{ Root = $Root; Logs = $Logs; Batch = $Batch; Verdict = (Join-Path $Logs "$Batch-linux.verdict.json")
+                         Presets = @('linux-gcc-release', 'linux-clang-debug', 'linux-clang-minimal') }
   Remove-Item -LiteralPath (Join-Path $Logs "$Batch-linux.verdict.json") -ErrorAction SilentlyContinue
-  $legs.linux = Start-GateProcess -Script $PSCommandPath -Arguments @('-Leg', 'linux', '-Spec', $spec) -Log (Join-Path $Logs "$Batch-linux.log") -WorkingDirectory $Root -NoWait
+  $legs.linux = Start-GateProcess -Script $PSCommandPath -Arguments @('-Leg', 'linux', '-Spec', $legSpec) -Log (Join-Path $Logs "$Batch-linux.log") -WorkingDirectory $Root -NoWait
   "linux leg started ($($legs.linux.Id))"
 }
 $serverVerdict = Join-Path $Logs "$Batch-server.verdict.json"
 if ($Server) {
-  $spec = Join-Path $Logs "$Batch-server.spec.json"
-  Write-Json $spec @{ Root = $Root; Logs = $Logs; Batch = $Batch; Verdict = $serverVerdict; Host = $Server; Fetch = (Join-Path $Logs "$Batch-server-fetch") }
+  $legSpec = Join-Path $Logs "$Batch-server.spec.json"
+  Write-Json $legSpec @{ Root = $Root; Logs = $Logs; Batch = $Batch; Verdict = $serverVerdict; Host = $Server; Fetch = (Join-Path $Logs "$Batch-server-fetch") }
   Remove-Item -LiteralPath $serverVerdict -ErrorAction SilentlyContinue
-  $sp = Start-GateProcess -Script $PSCommandPath -Arguments @('-Leg', 'server', '-Spec', $spec) -Log (Join-Path $Logs "$Batch-server.log") -WorkingDirectory $Root -Detached
+  $sp = Start-GateProcess -Script $PSCommandPath -Arguments @('-Leg', 'server', '-Spec', $legSpec) -Log (Join-Path $Logs "$Batch-server.log") -WorkingDirectory $Root -Detached
   "server leg started detached ($($sp.Id)); its verdict: $serverVerdict"
 }
 
@@ -243,29 +274,45 @@ Invoke-Step 'lint' $dev @('lint')
 $checksOk = ($result.steps.docs -eq 0) -and ($result.steps.lint -eq 0)
 $builds = [ordered]@{}
 foreach ($preset in 'msvc-debug', 'msvc-minimal', 'msvc-no-ecs', 'msvc-release') {
+  # Every attempt and its log is kept in the verdict, and a build that passed on a retry is named
+  # there: still green, never folded into a plain pass (T217-M2).
   $log = Join-Path $Logs "$Batch-build-$preset.log"
+  $record = [ordered]@{ ok = $false; configure = $null; attempts = @(); passed_on_retry = $false }
   $ok = $true
   if (-not (Test-Path -LiteralPath (Join-Path $Root "build/$preset/build.ninja"))) {
-    Wait-Memory 10 4
-    $ok = (Start-GateProcess -Script $dev -Arguments @('configure', '-Preset', $preset) -Log (Join-Path $Logs "$Batch-configure-$preset.log") -WorkingDirectory $Root) -eq 0
+    Wait-Memory 10 4 "configure $preset"
+    $configureLog = Join-Path $Logs "$Batch-configure-$preset.log"
+    $configureExit = Start-GateProcess -Script $dev -Arguments @('configure', '-Preset', $preset) -Log $configureLog -WorkingDirectory $Root
+    $record.configure = [ordered]@{ exit = $configureExit; log = $configureLog }
+    $ok = $configureExit -eq 0
+    if (-not $ok) { "CONFIGURE $preset exit $configureExit ($configureLog)" }
   }
-  $built = $false
+  $attempts = New-Object System.Collections.Generic.List[object]
   if ($ok) {
     foreach ($attempt in 1..3) {
-      Wait-Memory 10 4
-      if ((Start-GateProcess -Script $dev -Arguments @('build', '-Preset', $preset) -Log "$log.$attempt" -WorkingDirectory $Root) -eq 0) { $built = $true; break }
-      "BUILD $preset attempt $attempt failed $(Stamp)"
+      Wait-Memory 10 4 "build $preset attempt $attempt"
+      $attemptLog = "$log.$attempt"
+      $buildExit = Start-GateProcess -Script $dev -Arguments @('build', '-Preset', $preset) -Log $attemptLog -WorkingDirectory $Root
+      $attempts.Add([ordered]@{ attempt = $attempt; exit = $buildExit; log = $attemptLog })
+      if ($buildExit -eq 0) { $record.ok = $true; break }
+      "BUILD $preset attempt $attempt failed (exit $buildExit; $attemptLog) $(Stamp)"
     }
   }
-  $builds[$preset] = $built
-  if ($built) { "BUILD $preset OK $(Stamp)" } else { "BUILD $preset FAILED"; $red.Add("build $preset") }
+  $record.attempts = $attempts.ToArray()
+  $record.passed_on_retry = $record.ok -and $attempts.Count -gt 1
+  $builds[$preset] = $record
+  if ($record.passed_on_retry) {
+    "BUILD $preset OK on attempt $($attempts.Count), after $($attempts.Count - 1) failed: a pass on a retry, named in the verdict $(Stamp)"
+    $result.retried_builds += $preset
+  } elseif ($record.ok) { "BUILD $preset OK $(Stamp)" }
+  else { "BUILD $preset FAILED after $($attempts.Count) attempt(s)"; $red.Add("build $preset") }
 }
 $result.steps.builds = $builds
 
 # 4. and 5. The suites in two waves, each with its second looks.
 $filters = @{}
 (Get-GateFilters -Reach $Reach).GetEnumerator() | ForEach-Object { $filters[$_.Key] = $_.Value }
-$buildsOk = -not @($builds.Values | Where-Object { -not $_ })
+$buildsOk = -not @($builds.Values | Where-Object { -not $_.ok })
 if ($checksOk -and $buildsOk) {
   Invoke-Wave @('msvc-debug', 'msvc-minimal', 'msvc-no-ecs') $filters 'WAVE 1'
   Invoke-Wave @('msvc-release') $filters 'WAVE 2'
@@ -276,9 +323,14 @@ $suitesGreen = $checksOk -and $buildsOk -and $result.suites.Count -eq 4 -and -no
 if ($suitesGreen) {
   if ('listeners' -notin $Skip) { Invoke-Step 'listeners' (Join-Path $Root 'tools/ci/check-no-listeners.ps1') @('-Preset', 'msvc-release') }
   if ('budgets' -notin $Skip) {
-    if ($SamplesFrom -and -not (Test-Path -LiteralPath (Join-Path $Root 'content/samples/Lantern/Lantern.glb'))) {
-      Copy-Item -LiteralPath $SamplesFrom -Destination (Join-Path $Root 'content/samples') -Recurse -Force
-      "copied content/samples from $SamplesFrom"
+    # The one write the gate makes inside -Root itself: the budgets' sample models into the
+    # git-ignored content/samples, the folder's entries copied into it whether or not it exists
+    # yet (T217-L3: copying the folder made content/samples/<leaf> when content/samples existed).
+    $samplesDir = Join-Path $Root 'content/samples'
+    if ($SamplesFrom -and -not (Test-Path -LiteralPath (Join-Path $samplesDir 'Lantern/Lantern.glb'))) {
+      New-Item -ItemType Directory -Force -Path $samplesDir | Out-Null
+      Get-ChildItem -LiteralPath $SamplesFrom -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $samplesDir -Recurse -Force }
+      "copied the entries of $SamplesFrom into content/samples"
     }
     Invoke-Step 'budgets' (Join-Path $Root 'tools/frame-budget.ps1') @('-Preset', 'msvc-release', '-WaitQuiet', '120')
   }
@@ -294,14 +346,11 @@ if ($suitesGreen) {
 if ($legs.linux) {
   "waiting for the linux leg $(Stamp)"
   $legs.linux.WaitForExit()
-  $lv = Join-Path $Logs "$Batch-linux.verdict.json"
-  $v = if (Test-Path -LiteralPath $lv) { Get-Content -LiteralPath $lv -Raw | ConvertFrom-Json } else { $null }
-  $result.linux = $v
-  if (-not $v -or -not $v.done) { 'NO VERDICT: the linux leg did not finish its verdict file'; $result.no_verdict += 'linux' }
-  else {
-    foreach ($p in $v.presets.PSObject.Properties) { "LINUX $($p.Name) exit $($p.Value.exit): $($p.Value.line)"; if (-not $p.Value.ok) { $red.Add("linux $($p.Name)") } }
-    if (@($v.presets.PSObject.Properties).Count -ne 3) { 'NO VERDICT: the linux leg reported fewer than three containers'; $result.no_verdict += 'linux' }
-  }
+  $lr = Read-LegVerdict -Path (Join-Path $Logs "$Batch-linux.verdict.json") -Expected 3
+  $result.linux = $lr.Verdict
+  $lr.Lines
+  foreach ($n in $lr.Red) { $red.Add($n) }
+  if ($lr.NoVerdict) { "NO VERDICT: $($lr.NoVerdict)"; $result.no_verdict += 'linux' }
 }
 '---- integrity'
 $integrity = Get-IntegrityFindings -Logs $keptLogs.ToArray()
@@ -309,9 +358,20 @@ $integrity.Lines
 "integrity: $($integrity.Records) test records read, $($integrity.Faults) faults"
 $result.integrity = @{ records = $integrity.Records; faults = $integrity.Faults; lines = @($integrity.Lines) }
 if ($integrity.Faults -gt 0) { $red.Add('integrity') }
-$litter = Get-TreeLitter -Root $Root -Before $entriesBefore
+try {
+  $litter = Get-TreeLitter -Root $Root -Before $entriesBefore   # already one list: @() here would nest it
+  # A tracked file changed, a merge begun or HEAD moved while the gate ran: the verdict would name a
+  # commit whose tree it did not test (T217-H1; the litter check sees only new untracked entries).
+  $changed = @(Get-WorktreeDirt -Root $Root -TrackedOnly)
+  $headNow = (& git -C $Root rev-parse HEAD).Trim()
+  if ($headNow -ne $tip) { $changed += "HEAD moved from $tip to $headNow" }
+} catch {
+  $litter = @(); $changed = @("the tree could not be read at the end: $($_.Exception.Message)")
+}
 $result.litter = @($litter)
 if ($litter) { "LITTER in the gate worktree: $($litter -join ', ')"; $red.Add('litter') }
+$result.tree_changed = @($changed)
+if ($changed) { "TREE CHANGED during the gate: $($changed -join '; ')"; $red.Add('tree changed') }
 if ($Server) {
   $sv = if (Test-Path -LiteralPath $serverVerdict) { Get-Content -LiteralPath $serverVerdict -Raw | ConvertFrom-Json } else { $null }
   $result.server = if ($sv -and $sv.done) { $sv } else { "running; its verdict will be $serverVerdict" }
@@ -322,7 +382,7 @@ foreach ($n in $result.no_verdict) { $red.Add("no verdict: $n") }
 $result.red = @($red | Sort-Object -Unique)
 $result.green = ($red.Count -eq 0)
 $result.ended = (Get-Date).ToString('s')
-Write-Json (Join-Path $Logs "$Batch-gate.verdict.json") $result
+Write-Json $verdictPath $result
 if ($result.green) { "GATE $Batch exit 0 $(Stamp): green at $tip"; exit 0 }
 "GATE $Batch exit 1 $(Stamp): $($result.red -join '; ')"
 exit 1

@@ -14,9 +14,48 @@ pwsh tools/gate.ps1 -Root <gate worktree> -Batch b73b -Logs <dir> -Reach '<regex
 pwsh tools/after-gate.ps1 -Gate <gate worktree> -Main <primary checkout> -Verdict <dir>/b73-gate.verdict.json -CopyTo <dir> [-Push]
 ```
 
-`-Logs` must be outside the gate worktree (the script refuses one inside it, exit 2). Every step is a
-process of its own with its whole output in `-Logs`, and the gate starts nothing through `cmd` or a
-Unix shell. In order:
+## Flags and exit codes
+
+| `tools/gate.ps1` | |
+|---|---|
+| `-Root <dir>` | the gate worktree; required. It must be **clean at its HEAD**: no tracked change, no untracked file git does not ignore, no unfinished merge, cherry-pick or revert. The verdict names that commit, so a tree that is anything else is refused |
+| `-Batch <name>` | names every log and the verdict, `<Logs>/<Batch>-gate.verdict.json`; required |
+| `-Logs <dir>` | where everything is kept; required, and outside `-Root` (checked before the directory is made) |
+| `-Reach <regex>` | a follow-up: wave one runs `^(<regex>)$`; release keeps the apps' set |
+| `-Skip <names>` | any of `linux`, `listeners`, `budgets`, `weaker-card`, comma-separated or as a list; any other name is refused |
+| `-Server <ssh alias>` | starts the GPU server leg, detached |
+| `-Jobs <n>` | each suite's `tools/dev.ps1 test -Jobs` (default 3) |
+| `-WeakerCard <profile>` | the weaker card's `ENGINE_GFX_TEST_DEVICE` (default `titanxp`) |
+| `-MemoryWaitMinutes <n>` | the longest wait for memory before a configure or a build attempt (default 15); a timeout proceeds and is kept in the verdict (`memory_wait_timeouts`) |
+| `-SamplesFrom <dir>` | when `content/samples/Lantern/Lantern.glb` is missing, the entries of `<dir>` are copied into `<Root>/content/samples` (git-ignored) before the budgets: **the one write the gate itself makes inside `-Root`** |
+
+Exit **0** green; **1** red (the summary names every reason); **2** refused, before anything runs:
+an unknown `-Skip` name, a `-Root` that is not a git worktree or is not clean at its HEAD (the
+refusal lists what is in the way), a `-Logs` inside `-Root`. A run that is refused or stops
+part-way leaves no verdict of that batch name: the last `<Batch>-gate.verdict.json` in `-Logs` is
+renamed `<Batch>-gate.verdict.previous-<stamp>.json` before anything else can fail, so no older
+green outlives it where `tools/after-gate.ps1` would read it.
+
+| `tools/after-gate.ps1` | |
+|---|---|
+| `-Gate <dir>` | the gate worktree; required. Clean at its HEAD (as above), and its HEAD the verdict's commit |
+| `-Main <dir>` | the primary checkout; required, on `main`, and an ancestor of the gated tip (or already holding it, a second run) |
+| `-Verdict <file>` | the gate's `<batch>-gate.verdict.json`; required, and green |
+| `-CopyTo <dir>` | where `build/<Preset>/bin` is copied whole; required. A directory this script wrote before (it holds `.after-gate-copy`) is cleared first; one that holds anything else, or overlaps the gate worktree or main, is refused as a failed step, and nothing in it is touched |
+| `-Install <dir>` | default `<local folder>/bin-interactive` |
+| `-Sdk <dir>` | default `<local folder>/sdk/<short sha>` |
+| `-Preset <name>` | default `msvc-release` |
+| `-Trailer <line>` | appended to the fold's commit message |
+| `-Push` | pushes main, and only when every step before it did what it says |
+
+Exit **0** every step did what it says; **1** one did not (each named, and `-Push` not taken);
+**2** refused, nothing done: no verdict file, a red verdict, a gate worktree that is not clean or
+not at the verdict's commit, a main not on `main`, a main the gated tip does not descend from.
+
+## What it runs
+
+Every step is a process of its own with its whole output in `-Logs`, and the gate starts nothing
+through `cmd` or a Unix shell. In order:
 
 1. **The Linux leg and the server leg start first.** The Linux leg runs the three containers
    (`linux-gcc-release`, `linux-clang-debug`, `linux-clang-minimal`) one after another, beside
@@ -26,6 +65,9 @@ Unix shell. In order:
 2. **The documentation check and the lint**, then **the four Windows builds** (configured when a
    preset has no build tree; three attempts each, each after the short wait for memory described in
    [how long things take](what-to-run.md#how-long-things-take)). A failed check or build runs no suite.
+   **Every attempt is in the verdict** with its exit code and its log (`steps.builds.<preset>`), and
+   a build that passed on a retry is named (`passed_on_retry`, `retried_builds`, and its console
+   line): still green, never folded into a plain pass.
 3. **The suites in two waves**, each through the tree's own `tools/dev.ps1 test -Jobs 3`, the two
    off-configurations with `-SkipInvariantGpu` ([the gate's wall clock](what-to-run.md#the-gates-wall-clock-t77)):
    `msvc-debug`, `msvc-minimal` and `msvc-no-ecs` together, then `msvc-release`'s end-to-end set
@@ -38,51 +80,99 @@ Unix shell. In order:
    again: a failure is a verdict. Each second look is named in the suite's line and the verdict file.
 5. **Only when every suite is green**: the listener check, the frame budgets, and the weaker card's
    leg (the renderer's parts, `water` and `engine_cli.gpu` as a Titan Xp, T162). `-Skip` leaves any
-   of them, or the Linux leg, out by name, and the summary says what was skipped.
-6. **The integrity read, the litter check, the summary**, and `<batch>-gate.verdict.json`: green,
-   the tip it judged, each leg's verdict, every second look, every fault.
+   of them, or the Linux leg, out by name, and the summary says what was skipped. Each that fails
+   is red by its name (`listeners`, `budgets`, `weaker card msvc-debug`).
+6. **The integrity read, the litter check, the tree check, the summary**, and
+   `<batch>-gate.verdict.json`: green, the tip it judged, each leg's verdict, every build attempt,
+   every second look, every fault.
 
-**Verdicts that cannot lie**, each held by a case of `tools/gate.Tests.ps1` (CTest `tools.gate`),
-which runs the real script over a throwaway repository whose `tools/` are stand-ins:
+## Verdicts that cannot lie
+
+Each rule is held by a case of `tools/gate.Tests.ps1`, which runs the real script over a throwaway
+repository whose `tools/` are stand-ins:
 
 - **A suite's verdict is read from the CTest logs it kept**, never from a console. `tools/dev.ps1`
   keeps each pass's `LastTest.log` under a name of its own (`tools/lib/CTestLogs.psm1`); the gate
   copies the ones a run added into `-Logs` and reads them record by record (`tools/lib/Gate.psm1`).
   A console that said "100% tests passed" over a failed record is red, and so is a run whose exit
-  code its own logs do not explain (an 8 over passed records, a 1 with no log). b71's weaker-card
-  leg read "NO VERDICT" beside a green run because a `*>` in the gate's own process caught
-  `dev.ps1`'s one line and none of CTest's.
+  code its own logs do not explain: an 8 or a 1 over passed records, a 1 with no log, and **a 75
+  whose logs hold no record that gave up waiting for the card** (`dev.ps1` exits 75 for any skipped
+  test, and a skipped record whose give-up line is missing reads as passed below, so a 75 taken on
+  trust would be a test that never ran read as a pass). b71's weaker-card leg read "NO VERDICT"
+  beside a green run because a `*>` in the gate's own process caught `dev.ps1`'s one line and none
+  of CTest's.
 - **CTest's footer is not a verdict for a skipped test**: CTest writes "Test Passed." for a test its
   console calls ***Skipped (2026-11-21). A record that says "gave up waiting for the GPU lock" and
   carries no doctest summary reads as gave-up whatever its footer says.
 - **A leg that left no verdict fails the summary**: a suite that kept no CTest log, a Linux leg that
-  did not finish its verdict file or reported fewer than three containers. A container is green only
-  on exit 0 with CTest's own "0 tests failed out of N", N above none, in its transcript.
+  did not finish its verdict file (one that died part-way never writes `done`; a half-written file
+  reads as none) or reported other than three containers (`Read-LegVerdict`). A container is green
+  only on exit 0 with CTest's own "0 tests failed out of N", N above none, in its transcript.
 - **The integrity read**, over every kept log in the order written: a record that gave up with no
   summary needs a later record of the same test in the same preset with a verdict of its own; a
   `[doctest] test cases: 0` record is a fault except the three that are so by design
   (`engine_cli.npc_replay` in `msvc-minimal` and `msvc-no-ecs`, `engine_view.frame_loop` in
   `msvc-minimal`); a record cut off before its footer is a fault.
+- **The verdict's commit is the tree it tested.** The gate refuses a `-Root` that is not clean at
+  its HEAD, and at the end a tracked file changed, a merge begun or HEAD moved during the run is
+  red (`tree changed`); `tools/after-gate.ps1` refuses a gate worktree that is not clean or not at
+  the verdict's commit. Before this, a tracked change or an unfinished merge in the gate worktree
+  was invisible to both scripts and "green at `<tip>`" could name a commit whose tree it did not
+  test; the primary checkout stood in exactly that state (two unmerged pages) on the morning of
+  batch 73.
 - **The gate worktree gains nothing**: its root's entries and its untracked files are listed before
   and after, and anything new other than `build/` and `ddc/` is named as LITTER and fails the gate.
+  A `git status` that fails is a fault (the tree could not be read), never an empty list.
   Batch 72's gate left a file named `$null` at the gate worktree's root once. No line of that
   batch's scripts writes one (every `2>$null` in them, and in `tools/`, is PowerShell's own, in a
   PowerShell process); their logs say the worktree was clean at 14:24 on 2026-11-22, so it came
   after: from a step running with the worktree as its directory (the after-step's SDK export ran
-  there, and every `tools.*` test runs with the source root as its working directory) or from a
-  command typed in another shell (`>$null` in `cmd`, or `>\$null` in bash, makes exactly that
-  file). Now it is caught, by name, on the gate that makes it.
+  there then, and every `tools.*` test runs with the source root as its working directory) or from
+  a command typed in another shell (`>$null` in `cmd`, or `>\$null` in bash, makes exactly that
+  file). Now it is caught, by name, on the gate that makes it, and the SDK export runs elsewhere
+  (below).
 
-**After the gate** (`tools/after-gate.ps1`): it refuses (exit 2) unless the verdict file says green
-and names the commit the gate worktree is at, and main can fast-forward to it. Then main is
-fast-forwarded (never a merge commit), the release binaries are copied out whole (the next batch's
-"main" side of a pair), installed into the local folder's `bin-interactive` (a file in use by a
-running session is reported as NOT INSTALLED and left; nothing is forced and no process is
-stopped; each installed file is compared with its source by hash), the SDK is exported from the gate
-worktree, and the structure raises are folded on main with `tools/structure-check.ps1 -Rebaseline`
-and committed. **It pushes only with `-Push`.**
+## After the gate
+
+`tools/after-gate.ps1` refuses (exit 2) as the table says. Then main is fast-forwarded (never a
+merge commit), the release binaries are copied out whole (the next batch's "main" side of a pair,
+into a `-CopyTo` that holds this copy and nothing older), installed into the local folder's
+`bin-interactive` (a file in use by a running session is reported as NOT INSTALLED and left;
+nothing is forced and no process is stopped; each installed file is compared with its source by
+hash), the SDK is exported from the gate worktree **with `<verdict's folder>/<batch>-sdk-export.cwd`
+as its working directory**, never the gate worktree (whatever a relative write of it leaves is
+named there and joins no gate's baseline), and the structure raises are folded on main with
+`tools/structure-check.ps1 -Rebaseline` and committed. **It pushes only with `-Push`, and only when
+every step before it did what it says.**
+
+## The two CTest tests
+
+`tools/gate.Tests.ps1 -Part unit` is CTest `tools.gate`, in every configuration: the module's
+functions over fixture logs and verdict files, and the refusal that starts one process (2.4 s on
+the run that mended it). `-Part scenarios` is `tools.gate_scenarios`, registered in `msvc-debug`
+only (`cmake/EngineTesting.cmake`): the scripts are the same in every configuration, and the
+scenarios are the time — seven gate runs over the stand-in repository (each a few dozen pwsh
+processes), five refusals and nine after-gate runs: 127 s and 202 s on two runs of 2026-11-23,
+the machine shared with other rows' builds both times. With neither, the file runs both. The wave case proves
+side by side with a barrier, not a clock: each wave-one stand-in ends only once all three have
+started (a deadline of 60 s, logged as `barrier-timeout` if it passes), so a loaded machine slows it
+and cannot fail it.
+
+## Known limits
+
+- **A follow-up whose reach exists only where a capability is on** gives the off-configuration
+  suites no records, so they read "no verdict" and the gate cannot be green; `-Skip` takes no suite.
+  Fail-safe (never a false green): gate such a follow-up with a reach that every configuration has,
+  or read the two suites' "no verdict" lines against the reach by hand.
+- **No leg has a deadline**: a hung step (a suite, a container, the Linux leg) hangs the gate, which
+  then never writes a verdict. Fail-safe (never a false green); a gate that has not ended in twice
+  [how long things take](what-to-run.md#how-long-things-take)'s figure is looked at by hand.
+- **A test whose own output holds a line that begins `N/M Testing: `** (a tool test printing a CTest
+  log) splits its record when the gate reads it: the real record loses its footer and reads as cut
+  off. Fail-safe (a false red).
 
 **What the scripts deliberately do not do**: take or wait on the GPU lock (every test takes it,
 ADR-0049); stop a process, theirs included; reset, stack or cherry-pick the gate worktree (the
 coordinator's, before the gate); decide a merge; retry a failed test; read a pass from a console;
-write inside the gate worktree other than through the tree's own tools; push without being told to.
+write inside the gate worktree other than through the tree's own tools and the `-SamplesFrom` copy;
+push without being told to.
