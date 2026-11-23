@@ -15,18 +15,33 @@
 //   pure-virtual       a pure virtual function called during construction (Windows)
 //   invalid-parameter  fclose(nullptr), which the C runtime validates (Windows)
 //   bus                a read of a shared map past the end of its file (Linux)
+//   terminate          std::terminate()
+//   verify             a failed ENGINE_VERIFY
+//
+// and, with a host's turn registered (crash.h, roadmap T216; the crash file at `<crash-file>`):
+//
+//   engine_platform_fault_probe <hook-kind> <crash-file>
+//
+//   hook               `write`, the hook prints one line and returns
+//   hook-verify        `verify`, the same hook
+//   hook-fault         `write`, and the hook writes through a bad pointer too
+//   hook-hang          `write`, and the hook never returns (a 500 ms deadline)
 //
 // It calls `require_cpu_baseline()` first, as every main does, which is what links the
 // translation unit whose pre-main initializer installs the handlers. Every address and divisor
 // comes through a volatile, so no compiler can see the fault coming and fold it away or refuse it.
+#include <core/base/assert.h>
 #include <core/base/macros.h>
 #include <core/base/types.h>
 #include <core/platform/cpu_baseline.h>
+#include <core/platform/crash.h>
 #include <core/platform/thread.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <thread>
 
 #if defined(_WIN32)
@@ -118,6 +133,23 @@ ENGINE_NO_INLINE void fault_bus() {
 }
 #endif
 
+ENGINE_NO_INLINE void fault_verify() { ENGINE_VERIFY(g_zero != 0, "the probe's own verify"); }
+
+// The host's turn: one line naming what it was handed, then what its kind asks.
+enum class HookDoes { returns, faults, hangs };
+HookDoes g_hook_does = HookDoes::returns;
+
+void probe_hook(void*, const platform::CrashInfo& info) {
+  std::fprintf(stderr, "probe hook: what=%s at=%s stack=%u expression=%s crash_file=%s\n",
+               info.what, info.at, info.stack_count, info.expression, info.crash_file);
+  std::fflush(stderr);
+  if (g_hook_does == HookDoes::faults) fault_write();
+  if (g_hook_does == HookDoes::hangs) {
+    for (;;)
+      std::this_thread::sleep_for(std::chrono::seconds(1));
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -127,13 +159,28 @@ int main(int argc, char** argv) {
   rlimit no_core{0, 0};
   (void)::setrlimit(RLIMIT_CORE, &no_core);
 #endif
-  if (argc != 2) {
-    std::fprintf(stderr, "usage: engine_platform_fault_probe <kind>\n");
+  if (argc != 2 && argc != 3) {
+    std::fprintf(stderr, "usage: engine_platform_fault_probe <kind> [<crash-file>]\n");
     return 2;
   }
   const char* kind = argv[1];
   const auto is = [kind](const char* name) { return std::strcmp(kind, name) == 0; };
   if (is("none")) return 0;
+  if (is("terminate")) std::terminate();
+  if (is("verify")) fault_verify();
+  if (std::strncmp(kind, "hook", 4) == 0) {
+    if (argc != 3) return 2;
+    g_hook_does = is("hook-fault")  ? HookDoes::faults
+                  : is("hook-hang") ? HookDoes::hangs
+                                    : HookDoes::returns;
+    const bool hooked = platform::set_crash_hook(probe_hook, nullptr, 500);
+    const bool filed = platform::set_crash_file(argv[2]);
+    std::fprintf(stderr, "probe: hook %s, crash file %s\n", hooked ? "set" : "not set",
+                 filed ? "set" : "not set");
+    std::fflush(stderr);
+    if (is("hook-verify")) fault_verify();
+    fault_write();
+  }
   if (is("read")) fault_read();
   if (is("write")) fault_write();
   if (is("execute")) fault_execute();

@@ -1,5 +1,5 @@
 // Every fatal fault prints one line (fault_report.h; docs/subsystems/platform.md, "Every fatal
-// fault prints one line").
+// fault prints one line"), and a host that registered for it gets its turn after (crash.h, T216).
 //
 // Before this, `quiet_error_dialogs()` switched the system's fault box off and installed nothing in
 // its place, so an access violation ended the process with its exception code and not a byte of
@@ -17,12 +17,22 @@
 // process has loaded) and glibc's `backtrace` on Linux, called once at installation so that its
 // one library load happens there and never in a handler. No symbol library is loaded: an address
 // is printed as module plus offset, which is what a symbol tool takes afterwards.
+//
+// **The host's turn** (T216) keeps to the same rule on the faulting thread: the crash file is
+// built in a static buffer and written with `CreateFileW`/`open`, and the hook runs on a thread
+// made when it was registered, woken by an event (`SetEvent`) or a semaphore (`sem_post`, which a
+// signal handler may call), while the faulting thread waits on a clock for it to finish or for its
+// deadline. The hook itself may do what it likes; nothing here depends on it returning.
 #include "fault_report.h"
 
+#include <core/base/assert_failure.h>
 #include <core/base/macros.h>
 #include <core/base/types.h>
+#include <core/platform/crash.h>
 
 #include <atomic>
+#include <exception>
+#include <string_view>
 
 #if ENGINE_PLATFORM_WINDOWS
 #define WIN32_LEAN_AND_MEAN
@@ -33,27 +43,31 @@
 #elif ENGINE_PLATFORM_LINUX
 #include <execinfo.h>
 #include <fcntl.h>
+#include <pthread.h>
+#include <semaphore.h>
 #include <signal.h>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
+#include <time.h>
 #include <ucontext.h>
 #include <unistd.h>
 #endif
 
 // A sanitizer's runtime reports faults itself, with more than this can; it keeps them
-// (ENGINE_FAULT_UNDER_SANITIZER, fault_report.h).
+// (ENGINE_FAULT_UNDER_SANITIZER, crash.h).
 
-namespace engine::platform::detail {
+namespace engine::platform {
+
+namespace detail {
 
 namespace {
 
-// The most return addresses the line carries after the faulting instruction.
-constexpr u32 k_stack_frames = 16;
+constexpr u32 k_stack_frames = k_crash_stack_frames;
 
-// A line in a buffer that is never allocated, long enough for the description and the stack; a
-// line that would run past it is cut, never overrun.
-struct Line {
-  char text[1536];
+// Text in a buffer that is never allocated; text that would run past it is cut, never overrun.
+template <u32 N>
+struct Text {
+  char text[N];
   u32 size = 0;
 
   void put(char c) noexcept {
@@ -89,10 +103,158 @@ struct Line {
     while (n > 0)
       put(digits[--n]);
   }
+  // Ends a piece with a NUL and returns where it began: `CrashInfo`'s strings are pieces of one.
+  const char* end_piece(u32 begin) noexcept {
+    if (begin >= sizeof(text)) return "";
+    if (size >= sizeof(text)) size = sizeof(text) - 1;
+    text[size++] = '\0';
+    return text + begin;
+  }
+  // A JSON string's body: quotes, backslashes and control characters escaped.
+  void json(const char* s) noexcept {
+    for (; *s != '\0'; ++s) {
+      const unsigned char c = static_cast<unsigned char>(*s);
+      if (c == '"' || c == '\\') {
+        put('\\');
+        put(static_cast<char>(c));
+      } else if (c < 0x20) {
+        put("\\u00");
+        put("0123456789abcdef"[c >> 4]);
+        put("0123456789abcdef"[c & 15u]);
+      } else {
+        put(static_cast<char>(c));
+      }
+    }
+  }
 };
 
+using Line = Text<1536>;
 Line g_line;
+Text<3072> g_full;    // everything the line wrote, for the crash file and the hook
+Text<4096> g_pieces;  // the CrashInfo's strings, NUL-separated
+Text<8192> g_file_text;
+CrashInfo g_info;
+u64 g_pcs[k_stack_frames];
+u32 g_pc_count = 0;
 std::atomic<bool> g_installed{false};
+// abort() came from std::terminate (`on_terminate`), so the line names it.
+std::atomic<bool> g_terminating{false};
+
+// ---- the host's turn (crash.h) ----
+std::atomic<CrashHook> g_hook{nullptr};
+std::atomic<void*> g_hook_context{nullptr};
+std::atomic<u32> g_deadline_ms{0};
+std::atomic<bool> g_hook_thread_made{false};
+std::atomic<u64> g_hook_thread_id{0};
+// 0 nothing yet, 1 the hook is running, 2 it returned.
+std::atomic<u32> g_hook_state{0};
+char g_crash_path[1024];
+std::atomic<bool> g_have_crash_path{false};
+Text<256> g_second;  // the one line a second fault inside the hook writes
+
+bool hook_armed() noexcept {
+  return g_hook.load(std::memory_order_acquire) != nullptr &&
+         g_hook_thread_made.load(std::memory_order_acquire);
+}
+
+const char* piece_of(const char* s) noexcept {
+  const u32 begin = g_pieces.size;
+  g_pieces.put(s);
+  return g_pieces.end_piece(begin);
+}
+
+// The crash file's body (format `engine.crash`, version 1): the CrashInfo as JSON.
+void build_crash_file(u64 exit_code) noexcept {
+  auto& f = g_file_text;
+  f.size = 0;
+  const CrashInfo& i = g_info;
+  f.put("{\"format\":\"engine.crash\",\"version\":1,\"what\":\"");
+  f.json(i.what);
+  f.put("\",\"code\":\"");
+  f.hex(i.code);
+  f.put("\",\"address\":\"");
+  f.hex(i.address);
+  f.put("\",\"access\":\"");
+  f.json(i.access);
+  f.put("\",\"at\":\"");
+  f.json(i.at);
+  f.put("\",\"stack\":[");
+  for (u32 s = 0; s < i.stack_count; ++s) {
+    if (s > 0) f.put(',');
+    f.put('"');
+    f.json(i.stack[s]);
+    f.put('"');
+  }
+  f.put("],\"thread\":");
+  f.dec(i.thread_id);
+  f.put(",\"thread_name\":\"");
+  f.json(i.thread_name);
+  f.put("\",\"main_thread\":");
+  f.put(i.main_thread ? "true" : "false");
+  f.put(",\"assertion\":");
+  if (i.expression[0] != '\0' || i.file[0] != '\0') {
+    f.put("{\"expression\":\"");
+    f.json(i.expression);
+    f.put("\",\"message\":\"");
+    f.json(i.message);
+    f.put("\",\"file\":\"");
+    f.json(i.file);
+    f.put("\",\"line\":");
+    f.dec(static_cast<u64>(i.line < 0 ? 0 : i.line));
+    f.put('}');
+  } else {
+    f.put("null");
+  }
+  f.put(",\"exit_code\":");
+  f.dec(exit_code);
+  f.put(",\"hook\":");
+  f.put(hook_armed() ? "true" : "false");
+  f.put(",\"line\":\"");
+  f.json(i.line_text);
+  f.put("\"}\n");
+}
+
+// Fills the info's pieces that every platform shares: the line as written, the assertion.
+void finish_info() noexcept {
+  // Without the newline a debug runtime's abort message needs before it, and without its own.
+  g_info.line_text = g_full.end_piece(g_full.size > 0 && g_full.text[0] == '\n' ? 1 : 0);
+  if (g_full.size >= 2 && g_full.text[g_full.size - 2] == '\n') g_full.text[g_full.size - 2] = '\0';
+  if (const AssertFailure* a = failed_assertion()) {
+    g_info.expression = a->expression;
+    g_info.message = a->message;
+    g_info.file = a->file;
+    g_info.line = a->line;
+  }
+  g_info.crash_file = g_have_crash_path.load(std::memory_order_acquire) ? g_crash_path : "";
+}
+
+// abort()'s name in the line: an assertion that failed or std::terminate, when either is why.
+const char* abort_name() noexcept {
+  if (failed_assertion() != nullptr) return "assertion failed";
+  if (g_terminating.load(std::memory_order_acquire)) return "std::terminate()";
+  return "abort()";
+}
+
+void put_assertion(Line& line) noexcept {
+  const AssertFailure* a = failed_assertion();
+  if (a == nullptr) return;
+  line.put(": ");
+  line.put(a->expression);
+  if (a->message[0] != '\0') {
+    line.put(" (");
+    line.put(a->message);
+    line.put(')');
+  }
+  line.put(" at ");
+  line.put(a->file);
+  line.put(':');
+  line.dec(static_cast<u64>(a->line < 0 ? 0 : a->line));
+}
+
+[[noreturn]] void on_terminate() noexcept {
+  g_terminating.store(true, std::memory_order_release);
+  std::abort();
+}
 
 }  // namespace
 
@@ -115,36 +277,51 @@ DWORD g_code = 0;               // what it will exit with, for a second fault on
 DWORD g_main_thread = 0;
 LPTOP_LEVEL_EXCEPTION_FILTER g_previous = nullptr;
 wchar_t g_path[MAX_PATH];
+wchar_t g_crash_wpath[1024];
 CONTEXT g_walk;
+HANDLE g_hook_event = nullptr;
 
-void write_line() noexcept {
+void write_text(const char* text, u32 size) noexcept {
   const HANDLE err = ::GetStdHandle(STD_ERROR_HANDLE);
   if (err != nullptr && err != INVALID_HANDLE_VALUE) {
     DWORD written = 0;
-    (void)::WriteFile(err, g_line.text, g_line.size, &written, nullptr);
+    (void)::WriteFile(err, text, size, &written, nullptr);
   }
+}
+
+void write_line() noexcept {
+  write_text(g_line.text, g_line.size);
+  for (u32 i = 0; i < g_line.size; ++i)
+    g_full.put(g_line.text[i]);
   g_line.size = 0;
 }
 
 // `module+0xoffset`, the offset from the image's base (its RVA), which is what a debugger's
 // `ln module+0x...` and `llvm-symbolizer --obj=<module> --relative-address 0x...` take with the
 // module's PDB beside it. A bare address when no image holds it.
-void put_address(u64 pc) noexcept {
+template <class T>
+void put_address(T& out, u64 pc) noexcept {
   void* base = nullptr;
   (void)::RtlPcToFileHeader(reinterpret_cast<void*>(pc), &base);
   if (base == nullptr) {
-    g_line.hex(pc);
+    out.hex(pc);
     return;
   }
   const DWORD n = ::GetModuleFileNameW(static_cast<HMODULE>(base), g_path, MAX_PATH);
   DWORD start = 0;
   for (DWORD i = 0; i < n; ++i)
     if (g_path[i] == L'\\' || g_path[i] == L'/') start = i + 1;
-  if (start >= n) g_line.put('?');
+  if (start >= n) out.put('?');
   for (DWORD i = start; i < n; ++i)
-    g_line.put(g_path[i] >= 32 && g_path[i] < 127 ? static_cast<char>(g_path[i]) : '?');
-  g_line.put('+');
-  g_line.hex(pc - reinterpret_cast<u64>(base));
+    out.put(g_path[i] >= 32 && g_path[i] < 127 ? static_cast<char>(g_path[i]) : '?');
+  out.put('+');
+  out.hex(pc - reinterpret_cast<u64>(base));
+}
+
+const char* address_piece(u64 pc) noexcept {
+  const u32 begin = g_pieces.size;
+  put_address(g_pieces, pc);
+  return g_pieces.end_piece(begin);
 }
 
 void put_thread() noexcept {
@@ -158,10 +335,18 @@ void put_thread() noexcept {
     g_line.put('"');
   }
   if (self == g_main_thread) g_line.put(" (main)");
+  g_info.thread_id = self;
+  g_info.thread_name = piece_of(name);
+  g_info.main_thread = self == g_main_thread;
 }
 
 void put_exit(DWORD code) noexcept {
   g_line.put("; exit code ");
+  if (hook_armed()) {
+    g_line.dec(static_cast<u64>(k_exit_crashed));
+    g_line.put(" after the host's turn");
+    return;
+  }
   if (code < 0x10000u) {
     g_line.dec(code);
   } else {
@@ -175,6 +360,7 @@ void put_exit(DWORD code) noexcept {
 // process. `skip` frames are walked and not printed.
 void put_stack(const CONTEXT& start, u32 skip) noexcept {
   g_line.put("; stack:");
+  g_pc_count = 0;
 #if defined(_M_X64)
   ULONG_PTR low = 0;
   ULONG_PTR high = 0;
@@ -185,7 +371,8 @@ void put_stack(const CONTEXT& start, u32 skip) noexcept {
   for (u32 frame = 0; frame < k_stack_frames + skip && c.Rip != 0; ++frame) {
     if (frame >= skip) {
       g_line.put(' ');
-      put_address(c.Rip);
+      put_address(g_line, c.Rip);
+      g_pcs[g_pc_count++] = c.Rip;
       ++printed;
     }
     DWORD64 image = 0;
@@ -219,25 +406,73 @@ u64 stack_room() noexcept {
                           reinterpret_cast<uintptr_t>(tib->StackLimit));
 }
 
+// A fault on the hook's own thread while it runs: one short line, and the process ends now with
+// the crashed code — the first line is already out.
+[[noreturn]] void second_fault_in_hook(DWORD code) noexcept {
+  g_second.size = 0;
+  g_second.put("engine: fatal: a second fault (");
+  g_second.hex8(code);
+  g_second.put(") inside the host's crash hook; exit code ");
+  g_second.dec(static_cast<u64>(k_exit_crashed));
+  g_second.put('\n');
+  write_text(g_second.text, g_second.size);
+  ::TerminateProcess(::GetCurrentProcess(), static_cast<UINT>(k_exit_crashed));
+  for (;;)
+    ::Sleep(INFINITE);
+}
+
 // Claims the line for this thread. A second thread that faults meanwhile waits for the first to
-// end the process; a fault inside the handler itself ends it at once with the first code.
+// end the process; a fault inside the handler itself ends it at once with the first code, and one
+// inside the host's hook with the crashed code.
 void claim(DWORD code) noexcept {
   const DWORD self = ::GetCurrentThreadId();
+  if (self == g_hook_thread_id.load(std::memory_order_acquire) &&
+      g_hook_state.load(std::memory_order_acquire) == 1)
+    second_fault_in_hook(code);
   DWORD expected = 0;
   if (!g_owner.compare_exchange_strong(expected, self)) {
     if (expected == self) ::TerminateProcess(::GetCurrentProcess(), g_code);
     for (;;)
       ::Sleep(INFINITE);
   }
-  g_code = code;
+  g_code = hook_armed() ? static_cast<DWORD>(k_exit_crashed) : code;
+}
+
+void write_crash_file(u64 exit_code) noexcept {
+  if (!g_have_crash_path.load(std::memory_order_acquire)) return;
+  build_crash_file(exit_code);
+  const HANDLE file = ::CreateFileW(g_crash_wpath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                                    FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return;
+  DWORD written = 0;
+  (void)::WriteFile(file, g_file_text.text, g_file_text.size, &written, nullptr);
+  (void)::CloseHandle(file);
+}
+
+// The host's turn, bounded by its deadline; returns when it is over either way.
+void run_hook() noexcept {
+  if (!hook_armed() || g_hook_event == nullptr) return;
+  g_hook_state.store(1, std::memory_order_release);
+  (void)::SetEvent(g_hook_event);
+  const ULONGLONG start = ::GetTickCount64();
+  const ULONGLONG deadline = g_deadline_ms.load(std::memory_order_acquire);
+  while (g_hook_state.load(std::memory_order_acquire) != 2 && ::GetTickCount64() - start < deadline)
+    ::Sleep(5);
 }
 
 [[noreturn]] void finish(DWORD code) noexcept {
   g_line.put('\n');
   write_line();
+  for (u32 s = 0; s < g_pc_count; ++s)
+    g_info.stack[s] = address_piece(g_pcs[s]);
+  g_info.stack_count = g_pc_count;
+  finish_info();
+  const DWORD exit_code = hook_armed() ? static_cast<DWORD>(k_exit_crashed) : code;
+  write_crash_file(exit_code);
+  run_hook();
   // TerminateProcess, not ExitProcess: nothing that runs at exit — atexit handlers, DLL detach,
   // static destructors — gets a turn in a process whose state is broken.
-  ::TerminateProcess(::GetCurrentProcess(), code);
+  ::TerminateProcess(::GetCurrentProcess(), exit_code);
   for (;;)
     ::Sleep(INFINITE);
 }
@@ -276,20 +511,30 @@ LONG WINAPI fault_filter(EXCEPTION_POINTERS* info) {
   if (code == k_cpp_exception && g_previous != nullptr) return g_previous(info);
   claim(code);
   g_line.put("engine: fatal: ");
+  g_info.code = code;
   if (const char* name = exception_name(code)) {
     g_line.put(name);
+    g_info.what = name;
   } else {
-    g_line.put("exception ");
-    g_line.hex8(code);
+    const u32 begin = g_pieces.size;
+    g_pieces.put("exception ");
+    g_pieces.hex8(code);
+    g_info.what = g_pieces.end_piece(begin);
+    g_line.put(g_info.what);
   }
   if ((code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR) &&
       record.NumberParameters >= 2) {
     const ULONG_PTR kind = record.ExceptionInformation[0];
-    g_line.put(kind == 1 ? " writing " : (kind == 8 ? " executing " : " reading "));
+    g_info.access = kind == 1 ? "writing" : (kind == 8 ? "executing" : "reading");
+    g_info.address = record.ExceptionInformation[1];
+    g_line.put(' ');
+    g_line.put(g_info.access);
+    g_line.put(' ');
     g_line.hex(record.ExceptionInformation[1]);
   }
   g_line.put(" at ");
-  put_address(reinterpret_cast<u64>(record.ExceptionAddress));
+  put_address(g_line, reinterpret_cast<u64>(record.ExceptionAddress));
+  g_info.at = address_piece(reinterpret_cast<u64>(record.ExceptionAddress));
   put_thread();
   put_exit(code);
   // The description goes out before the stack is walked: a walk that faults on a broken stack
@@ -306,11 +551,15 @@ LONG WINAPI fault_filter(EXCEPTION_POINTERS* info) {
 // Failures that are not exceptions: abort(), a pure virtual call, an invalid argument to the C
 // runtime. There is no faulting instruction; the stack from the runtime's call down says where.
 [[noreturn]] ENGINE_NO_INLINE void report_call(const char* lead, const char* what,
-                                               const wchar_t* detail, DWORD exit_code) noexcept {
+                                               const wchar_t* detail, DWORD exit_code,
+                                               bool assertion) noexcept {
   claim(exit_code);
   g_line.put(lead);
   g_line.put("engine: fatal: ");
   g_line.put(what);
+  g_info.what = what;
+  g_info.code = exit_code;
+  if (assertion) put_assertion(g_line);
   if (detail != nullptr && detail[0] != L'\0') {
     g_line.put(" in ");
     for (const wchar_t* p = detail; *p != L'\0'; ++p)
@@ -334,10 +583,13 @@ constexpr const char* k_after_abort_message = "\n";
 constexpr const char* k_after_abort_message = "";
 #endif
 
-void __cdecl on_abort(int) { report_call(k_after_abort_message, "abort()", nullptr, k_abort_exit); }
+void __cdecl on_abort(int) {
+  report_call(k_after_abort_message, abort_name(), nullptr, k_abort_exit,
+              failed_assertion() != nullptr);
+}
 
 void __cdecl on_pure_call() {
-  report_call("", "pure virtual function call", nullptr, k_abort_exit);
+  report_call("", "pure virtual function call", nullptr, k_abort_exit, false);
 }
 
 // The debug runtime names the function the bad argument went to (and has already reported the
@@ -345,7 +597,51 @@ void __cdecl on_pure_call() {
 // passes nothing at all.
 void __cdecl on_invalid_parameter(const wchar_t*, const wchar_t* function, const wchar_t*,
                                   unsigned int, uintptr_t) {
-  report_call("", "invalid parameter passed to the C runtime", function, k_invalid_parameter_exit);
+  report_call("", "invalid parameter passed to the C runtime", function, k_invalid_parameter_exit,
+              false);
+}
+
+DWORD WINAPI hook_thread(void*) {
+  g_hook_thread_id.store(::GetCurrentThreadId(), std::memory_order_release);
+  for (;;) {
+    (void)::WaitForSingleObject(g_hook_event, INFINITE);
+    if (g_hook_state.load(std::memory_order_acquire) != 1) continue;
+    if (const CrashHook hook = g_hook.load(std::memory_order_acquire))
+      hook(g_hook_context.load(std::memory_order_acquire), g_info);
+    g_hook_state.store(2, std::memory_order_release);
+    for (;;)
+      ::Sleep(INFINITE);  // the faulting thread ends the process
+  }
+}
+
+bool make_hook_thread() noexcept {
+  if (g_hook_thread_made.load(std::memory_order_acquire)) return true;
+  g_hook_event = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
+  if (g_hook_event == nullptr) return false;
+  // A megabyte, as the main thread has: a host's hook writes JSON and files.
+  const HANDLE thread = ::CreateThread(nullptr, 1u << 20, hook_thread, nullptr, 0, nullptr);
+  if (thread == nullptr) return false;
+  (void)::SetThreadDescription(thread, L"crash-hook");
+  (void)::CloseHandle(thread);
+  while (g_hook_thread_id.load(std::memory_order_acquire) == 0)
+    ::Sleep(0);
+  g_hook_thread_made.store(true, std::memory_order_release);
+  return true;
+}
+
+bool set_crash_path(std::string_view path) noexcept {
+  if (path.size() >= sizeof(g_crash_path)) return false;
+  g_have_crash_path.store(false, std::memory_order_release);
+  if (path.empty()) return true;
+  const int n = ::MultiByteToWideChar(CP_UTF8, 0, path.data(), static_cast<int>(path.size()),
+                                      g_crash_wpath, static_cast<int>(1023));
+  if (n <= 0) return false;
+  g_crash_wpath[n] = L'\0';
+  for (usize i = 0; i < path.size(); ++i)
+    g_crash_path[i] = path[i];
+  g_crash_path[path.size()] = '\0';
+  g_have_crash_path.store(true, std::memory_order_release);
+  return true;
 }
 
 }  // namespace
@@ -362,6 +658,7 @@ void install_fault_report() noexcept {
   (void)std::signal(SIGABRT, on_abort);
   (void)::_set_purecall_handler(on_pure_call);
   (void)::_set_invalid_parameter_handler(on_invalid_parameter);
+  (void)std::set_terminate(on_terminate);
 }
 
 #elif ENGINE_PLATFORM_LINUX
@@ -380,16 +677,23 @@ char g_maps[4096];
 char g_maps_line[1024];
 char g_path[512];
 char g_base_path[512];
+sem_t g_hook_go;
 
 pid_t thread_id() noexcept { return static_cast<pid_t>(::syscall(SYS_gettid)); }
 
-void write_line() noexcept {
+void write_text(const char* text, u32 size) noexcept {
   u32 done = 0;
-  while (done < g_line.size) {
-    const ssize_t n = ::write(STDERR_FILENO, g_line.text + done, g_line.size - done);
+  while (done < size) {
+    const ssize_t n = ::write(STDERR_FILENO, text + done, size - done);
     if (n <= 0) break;
     done += static_cast<u32>(n);
   }
+}
+
+void write_line() noexcept {
+  write_text(g_line.text, g_line.size);
+  for (u32 i = 0; i < g_line.size; ++i)
+    g_full.put(g_line.text[i]);
   g_line.size = 0;
 }
 
@@ -481,18 +785,25 @@ bool find_image(u64 pc, u64& base) noexcept {
 }
 
 // `module+0xoffset`, or a bare address where no file is mapped.
-void put_address(u64 pc) noexcept {
+template <class T>
+void put_address(T& out, u64 pc) noexcept {
   u64 base = 0;
   if (!find_image(pc, base)) {
-    g_line.hex(pc);
+    out.hex(pc);
     return;
   }
   const char* name = g_path;
   for (const char* p = g_path; *p != '\0'; ++p)
     if (*p == '/') name = p + 1;
-  g_line.put(name);
-  g_line.put('+');
-  g_line.hex(pc - base);
+  out.put(name);
+  out.put('+');
+  out.hex(pc - base);
+}
+
+const char* address_piece(u64 pc) noexcept {
+  const u32 begin = g_pieces.size;
+  put_address(g_pieces, pc);
+  return g_pieces.end_piece(begin);
 }
 
 const char* signal_name(int sig) noexcept {
@@ -507,7 +818,7 @@ const char* signal_name(int sig) noexcept {
 }
 
 const char* code_name(int sig, int code) noexcept {
-  if (code <= 0) return sig == SIGABRT ? "abort()" : "sent by a process";
+  if (code <= 0) return sig == SIGABRT ? abort_name() : "sent by a process";
   switch (sig) {
     case SIGSEGV:
       return code == SEGV_MAPERR   ? "address not mapped"
@@ -545,11 +856,58 @@ void default_action(int sig) noexcept {
   (void)::raise(sig);
 }
 
+[[noreturn]] void second_fault_in_hook(int sig) noexcept {
+  g_second.size = 0;
+  g_second.put("engine: fatal: a second fault (signal ");
+  g_second.dec(static_cast<u64>(sig));
+  g_second.put(") inside the host's crash hook; exit code ");
+  g_second.dec(static_cast<u64>(k_exit_crashed));
+  g_second.put('\n');
+  write_text(g_second.text, g_second.size);
+  ::_exit(k_exit_crashed);
+}
+
+void write_crash_file(u64 exit_code) noexcept {
+  if (!g_have_crash_path.load(std::memory_order_acquire)) return;
+  build_crash_file(exit_code);
+  const int fd = ::open(g_crash_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+  if (fd < 0) return;
+  u32 done = 0;
+  while (done < g_file_text.size) {
+    const ssize_t n = ::write(fd, g_file_text.text + done, g_file_text.size - done);
+    if (n <= 0) break;
+    done += static_cast<u32>(n);
+  }
+  ::close(fd);
+}
+
+i64 monotonic_ms() noexcept {
+  timespec t{};
+  (void)::clock_gettime(CLOCK_MONOTONIC, &t);
+  return static_cast<i64>(t.tv_sec) * 1000 + t.tv_nsec / 1000000;
+}
+
+void run_hook() noexcept {
+  if (!hook_armed()) return;
+  g_hook_state.store(1, std::memory_order_release);
+  (void)::sem_post(&g_hook_go);
+  const i64 start = monotonic_ms();
+  const i64 deadline = static_cast<i64>(g_deadline_ms.load(std::memory_order_acquire));
+  while (g_hook_state.load(std::memory_order_acquire) != 2 && monotonic_ms() - start < deadline) {
+    timespec nap{0, 5'000'000};
+    (void)::nanosleep(&nap, nullptr);
+  }
+}
+
 void on_signal(int sig, siginfo_t* info, void* context) {
   const pid_t self = thread_id();
+  if (static_cast<u64>(self) == g_hook_thread_id.load(std::memory_order_acquire) &&
+      g_hook_state.load(std::memory_order_acquire) == 1)
+    second_fault_in_hook(sig);
   pid_t expected = 0;
   if (!g_owner.compare_exchange_strong(expected, self)) {
     if (expected == self) {  // a fault inside the handler: the default action, now
+      if (hook_armed()) ::_exit(k_exit_crashed);
       default_action(sig);
       return;
     }
@@ -576,16 +934,30 @@ void on_signal(int sig, siginfo_t* info, void* context) {
   // SEGV_MAPERR or SEGV_ACCERR, and what was touched is the guard below the stack.
   const bool overflow =
       sig == SIGSEGV && from_hardware && address + 65536 > sp && address < sp + 65536;
-  g_line.put(overflow ? "stack overflow" : code_name(sig, info->si_code));
+  const char* what = overflow ? "stack overflow" : code_name(sig, info->si_code);
+  g_line.put(what);
+  {
+    const u32 begin = g_pieces.size;
+    g_pieces.put(signal_name(sig));
+    g_pieces.put(", ");
+    g_pieces.put(what);
+    g_info.what = g_pieces.end_piece(begin);
+  }
+  g_info.code = static_cast<u64>(sig);
+  if (sig == SIGABRT && !from_hardware && failed_assertion() != nullptr) put_assertion(g_line);
   if ((sig == SIGSEGV || sig == SIGBUS) && from_hardware) {
     // The page fault's error code (x86-64): bit 1 a write, bit 4 an instruction fetch.
-    g_line.put((error & 16u) != 0 ? " executing "
-                                  : ((error & 2u) != 0 ? " writing " : " reading "));
+    g_info.access = (error & 16u) != 0 ? "executing" : ((error & 2u) != 0 ? "writing" : "reading");
+    g_info.address = address;
+    g_line.put(' ');
+    g_line.put(g_info.access);
+    g_line.put(' ');
     g_line.hex(address);
   }
   if (pc != 0) {
     g_line.put(" at ");
-    put_address(pc);
+    put_address(g_line, pc);
+    if (from_hardware) g_info.at = address_piece(pc);
   }
   g_line.put(" in thread ");
   g_line.dec(static_cast<u64>(self));
@@ -596,9 +968,18 @@ void on_signal(int sig, siginfo_t* info, void* context) {
     g_line.put('"');
   }
   if (self == ::getpid()) g_line.put(" (main)");
+  g_info.thread_id = static_cast<u64>(self);
+  g_info.thread_name = piece_of(name);
+  g_info.main_thread = self == ::getpid();
   g_line.put("; signal ");
   g_line.dec(static_cast<u64>(sig));
-  g_line.put(", re-raised");
+  if (hook_armed()) {
+    g_line.put(", exit code ");
+    g_line.dec(static_cast<u64>(k_exit_crashed));
+    g_line.put(" after the host's turn");
+  } else {
+    g_line.put(", re-raised");
+  }
   write_line();
   // The stack, by glibc's unwinder through the signal frame. Its first frames are this handler and
   // the kernel's trampoline; the faulting pc is the one after them, and the list starts past it.
@@ -612,22 +993,81 @@ void on_signal(int sig, siginfo_t* info, void* context) {
     }
   }
   g_line.put("; stack:");
-  u32 printed = 0;
+  g_pc_count = 0;
   // A jump into memory that is not code leaves the unwinder nothing to read at the pc, so it stops
   // there; the call that went there left its return address where the stack pointer points.
   if (from >= count && sig == SIGSEGV && from_hardware && (error & 16u) != 0 && sp != 0) {
+    const u64 back = *reinterpret_cast<const u64*>(sp);
     g_line.put(' ');
-    put_address(*reinterpret_cast<const u64*>(sp));
-    ++printed;
+    put_address(g_line, back);
+    g_pcs[g_pc_count++] = back;
   }
-  for (int i = from; i < count && printed < k_stack_frames; ++i, ++printed) {
+  for (int i = from; i < count && g_pc_count < k_stack_frames; ++i) {
     g_line.put(' ');
-    put_address(reinterpret_cast<u64>(frames[i]));
+    put_address(g_line, reinterpret_cast<u64>(frames[i]));
+    g_pcs[g_pc_count++] = reinterpret_cast<u64>(frames[i]);
   }
-  if (printed == 0) g_line.put(" (none)");
+  if (g_pc_count == 0) g_line.put(" (none)");
   g_line.put('\n');
   write_line();
+  for (u32 s = 0; s < g_pc_count; ++s)
+    g_info.stack[s] = address_piece(g_pcs[s]);
+  g_info.stack_count = g_pc_count;
+  finish_info();
+  if (hook_armed()) {
+    write_crash_file(static_cast<u64>(k_exit_crashed));
+    run_hook();
+    ::_exit(k_exit_crashed);
+  }
+  // A crash file still says what the parent's wait will: the signal (128 + it, as a shell does).
+  write_crash_file(128u + static_cast<u64>(sig));
   default_action(sig);
+}
+
+void* hook_thread(void*) {
+  g_hook_thread_id.store(static_cast<u64>(thread_id()), std::memory_order_release);
+  (void)::prctl(PR_SET_NAME, "crash-hook", 0, 0, 0);
+  for (;;) {
+    while (::sem_wait(&g_hook_go) != 0) {
+    }
+    if (g_hook_state.load(std::memory_order_acquire) != 1) continue;
+    if (const CrashHook hook = g_hook.load(std::memory_order_acquire))
+      hook(g_hook_context.load(std::memory_order_acquire), g_info);
+    g_hook_state.store(2, std::memory_order_release);
+    for (;;)
+      ::pause();  // the faulting thread ends the process
+  }
+  return nullptr;
+}
+
+bool make_hook_thread() noexcept {
+  if (g_hook_thread_made.load(std::memory_order_acquire)) return true;
+  if (::sem_init(&g_hook_go, 0, 0) != 0) return false;
+  pthread_attr_t attr;
+  if (::pthread_attr_init(&attr) != 0) return false;
+  (void)::pthread_attr_setstacksize(&attr, 1u << 20);
+  (void)::pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+  // Its signal mask is the caller's: a fault signal blocked on it would be delivered with its
+  // default action by the kernel, past the handler that ends a second fault with the crashed code.
+  pthread_t thread{};
+  const int rc = ::pthread_create(&thread, &attr, hook_thread, nullptr);
+  (void)::pthread_attr_destroy(&attr);
+  if (rc != 0) return false;
+  while (g_hook_thread_id.load(std::memory_order_acquire) == 0)
+    ::sched_yield();
+  g_hook_thread_made.store(true, std::memory_order_release);
+  return true;
+}
+
+bool set_crash_path(std::string_view path) noexcept {
+  if (path.size() >= sizeof(g_crash_path)) return false;
+  g_have_crash_path.store(false, std::memory_order_release);
+  if (path.empty()) return true;
+  for (usize i = 0; i < path.size(); ++i)
+    g_crash_path[i] = path[i];
+  g_crash_path[path.size()] = '\0';
+  g_have_crash_path.store(true, std::memory_order_release);
+  return true;
 }
 
 }  // namespace
@@ -650,6 +1090,7 @@ void install_fault_report() noexcept {
     sigemptyset(&sa.sa_mask);
     (void)::sigaction(sig, &sa, nullptr);
   }
+  (void)std::set_terminate(on_terminate);
   // glibc's backtrace loads libgcc's unwinder on its first call; that call is made here, so that
   // a handler never loads a library.
   void* warm[2];
@@ -658,8 +1099,33 @@ void install_fault_report() noexcept {
 
 #else
 
+namespace {
+bool make_hook_thread() noexcept { return false; }
+bool set_crash_path(std::string_view) noexcept { return false; }
+}  // namespace
+
 void install_fault_report() noexcept { g_installed.store(true); }
 
 #endif
 
-}  // namespace engine::platform::detail
+}  // namespace detail
+
+bool set_crash_hook(CrashHook hook, void* context, u32 deadline_ms) noexcept {
+  if (ENGINE_FAULT_UNDER_SANITIZER || detail::error_dialogs_wanted()) return false;
+  if (hook == nullptr) {
+    detail::g_hook.store(nullptr, std::memory_order_release);
+    return true;
+  }
+  if (!detail::make_hook_thread()) return false;
+  detail::g_hook_context.store(context, std::memory_order_release);
+  detail::g_deadline_ms.store(deadline_ms, std::memory_order_release);
+  detail::g_hook.store(hook, std::memory_order_release);
+  return true;
+}
+
+bool set_crash_file(std::string_view path) noexcept {
+  if (ENGINE_FAULT_UNDER_SANITIZER) return false;
+  return detail::set_crash_path(path);
+}
+
+}  // namespace engine::platform

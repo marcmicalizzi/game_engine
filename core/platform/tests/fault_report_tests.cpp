@@ -16,13 +16,17 @@
 #include "../src/fault_report.h"
 
 #include <core/base/types.h>
+#include <core/platform/crash.h>
 #include <core/platform/process.h>
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
+#include <test_temp_dir.h>
 
 #include <cerrno>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <span>
 #include <string>
 #include <string_view>
@@ -51,13 +55,15 @@ const std::string& probe_path() {
   return path;
 }
 
-Outcome run_probe(const char* kind) {
+Outcome run_probe(const char* kind, const std::string& crash_file = {}) {
   Outcome out;
 #if defined(_WIN32)
-  const std::string_view argv[] = {probe_path(), kind};
+  const std::string_view argv[] = {probe_path(), kind, crash_file};
   platform::Process p;
   std::string error;
-  REQUIRE_MESSAGE(p.spawn(std::span<const std::string_view>(argv), &error, true), error);
+  REQUIRE_MESSAGE(
+      p.spawn(std::span<const std::string_view>(argv, crash_file.empty() ? 2u : 3u), &error, true),
+      error);
   p.close_stdin();
   p.read_all(out.output);
   out.code = p.wait();
@@ -73,7 +79,8 @@ Outcome run_probe(const char* kind) {
   ::posix_spawn_file_actions_addclose(&actions, pipe_fds[1]);
   std::string path = probe_path();
   std::string arg = kind;
-  char* argv[] = {path.data(), arg.data(), nullptr};
+  std::string file = crash_file;
+  char* argv[] = {path.data(), arg.data(), crash_file.empty() ? nullptr : file.data(), nullptr};
   pid_t pid = 0;
   const int rc = ::posix_spawn(&pid, path.c_str(), &actions, nullptr, argv, environ);
   ::posix_spawn_file_actions_destroy(&actions);
@@ -198,6 +205,9 @@ TEST_CASE("fault report: every fatal fault prints one line and exits as document
       {"invalid-parameter", "invalid parameter passed to the C runtime", false, "(main)",
        0xC0000409u},
       {"worker", "access violation writing 0x10", true, "\"fault-worker\"", 0xC0000005u},
+      // T216: the abort is named for why it happened, and its status is still abort()'s.
+      {"terminate", "std::terminate()", false, "(main)", 3u},
+      {"verify", "assertion failed: g_zero != 0 (the probe's own verify) at ", false, "(main)", 3u},
   };
 #else
   const Case cases[] = {
@@ -210,6 +220,9 @@ TEST_CASE("fault report: every fatal fault prints one line and exits as document
       {"abort", "SIGABRT, abort()", false, "(main)", SIGABRT},
       {"bus", "SIGBUS, no such physical address reading 0x", true, "(main)", SIGBUS},
       {"worker", "SIGSEGV, address not mapped writing 0x10", true, "\"fault-worker\"", SIGSEGV},
+      {"terminate", "SIGABRT, std::terminate()", false, "(main)", SIGABRT},
+      {"verify", "SIGABRT, assertion failed: g_zero != 0 (the probe's own verify) at ", false,
+       "(main)", SIGABRT},
   };
 #endif
 #if ENGINE_FAULT_UNDER_SANITIZER
@@ -220,4 +233,124 @@ TEST_CASE("fault report: every fatal fault prints one line and exits as document
 #endif
   for (const Case& c : cases)
     check(c);
+}
+
+// ---- the host's turn (crash.h, roadmap T216) ----------------------------------------------------
+
+namespace {
+
+usize count_of(const std::string& text, std::string_view what) {
+  usize n = 0;
+  for (usize at = text.find(what); at != std::string::npos; at = text.find(what, at + 1))
+    ++n;
+  return n;
+}
+
+// The probe's exit with a hook registered: the crashed code, on both platforms (the hook ends the
+// process with `_exit` on Linux, not the signal).
+void check_crashed_exit(const Outcome& out) {
+  CHECK(out.code == platform::k_exit_crashed);
+  CHECK(out.died_of == 0);
+}
+
+std::string read_text(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+}  // namespace
+
+TEST_CASE("fault report: a host's hook runs after the line, and the process exits 77") {
+  const test::TempDir tmp("fault_report_hook");
+  const std::string crash = tmp.file("crash.json");
+  const Outcome out = run_probe("hook", crash);
+  INFO("the probe printed: " << out.output);
+#if ENGINE_FAULT_UNDER_SANITIZER
+  // Nothing is installed: the sanitizer's runtime has the fault, and the hook is refused.
+  CHECK(out.output.find("probe: hook not set") != std::string::npos);
+  CHECK(fatal_lines(out.output).empty());
+  CHECK((out.code != 0 || out.died_of != 0));
+#else
+  CHECK(out.output.find("probe: hook set, crash file set") != std::string::npos);
+  const std::vector<std::string> lines = fatal_lines(out.output);
+  REQUIRE(lines.size() == 1);
+  CHECK(lines[0].find("exit code 77 after the host's turn") != std::string::npos);
+  // The hook ran once, after the line, handed the fault and the crash file's path.
+  CHECK(count_of(out.output, "probe hook: ") == 1);
+  CHECK(out.output.find("probe hook: ") > out.output.find("engine: fatal: "));
+#if defined(_WIN32)
+  CHECK(out.output.find("probe hook: what=access violation at=engine_platform_fault_probe") !=
+        std::string::npos);
+#else
+  CHECK(out.output.find("probe hook: what=SIGSEGV, address not mapped at=engine_platform_fault_"
+                        "probe") != std::string::npos);
+#endif
+  CHECK(out.output.find("crash_file=" + crash) != std::string::npos);
+  check_crashed_exit(out);
+  // The crash file: the same fault, its stack, the exit code, and the line as printed.
+  const std::string text = read_text(crash);
+  INFO("the crash file: " << text);
+  CHECK(text.find("\"format\":\"engine.crash\"") != std::string::npos);
+  CHECK(text.find("\"address\":\"0x10\"") != std::string::npos);
+  CHECK(text.find("\"access\":\"writing\"") != std::string::npos);
+  CHECK(text.find("\"exit_code\":77") != std::string::npos);
+  CHECK(text.find("\"hook\":true") != std::string::npos);
+  CHECK(text.find("\"main_thread\":true") != std::string::npos);
+  CHECK(text.find("\"stack\":[\"engine_platform_fault_probe") != std::string::npos);
+  CHECK(text.find("\"line\":\"engine: fatal: ") != std::string::npos);
+  CHECK(text.find("\"assertion\":null") != std::string::npos);
+#endif
+}
+
+TEST_CASE("fault report: a failed verify is named to the hook and in the crash file") {
+  const test::TempDir tmp("fault_report_hook_verify");
+  const std::string crash = tmp.file("crash.json");
+  const Outcome out = run_probe("hook-verify", crash);
+  INFO("the probe printed: " << out.output);
+#if ENGINE_FAULT_UNDER_SANITIZER
+  CHECK(fatal_lines(out.output).empty());
+#else
+  const std::vector<std::string> lines = fatal_lines(out.output);
+  REQUIRE(lines.size() == 1);
+  CHECK(lines[0].find("assertion failed: g_zero != 0 (the probe's own verify) at ") !=
+        std::string::npos);
+  CHECK(out.output.find("expression=g_zero != 0") != std::string::npos);
+  check_crashed_exit(out);
+  const std::string text = read_text(crash);
+  CHECK(text.find("\"assertion\":{\"expression\":\"g_zero != 0\",\"message\":\"the probe's own "
+                  "verify\",\"file\":\"") != std::string::npos);
+#endif
+}
+
+TEST_CASE("fault report: a second fault inside the hook ends the process at once, the line out") {
+  const test::TempDir tmp("fault_report_hook_fault");
+  const Outcome out = run_probe("hook-fault", tmp.file("crash.json"));
+  INFO("the probe printed: " << out.output);
+#if ENGINE_FAULT_UNDER_SANITIZER
+  CHECK(fatal_lines(out.output).empty());
+#else
+  // Two lines begin "engine: fatal: ": the fault's, whole, and the hook's second fault's.
+  const std::vector<std::string> lines = fatal_lines(out.output);
+  REQUIRE(lines.size() == 2);
+  CHECK(lines[0].find("; stack: ") != std::string::npos);
+  CHECK(lines[1].find("a second fault") != std::string::npos);
+  CHECK(lines[1].find("inside the host's crash hook; exit code 77") != std::string::npos);
+  CHECK(count_of(out.output, "probe hook: ") == 1);
+  check_crashed_exit(out);
+#endif
+}
+
+TEST_CASE("fault report: a hook past its deadline is left, and the process exits 77") {
+  const test::TempDir tmp("fault_report_hook_hang");
+  const Outcome out = run_probe("hook-hang", tmp.file("crash.json"));
+  INFO("the probe printed: " << out.output);
+#if ENGINE_FAULT_UNDER_SANITIZER
+  CHECK(fatal_lines(out.output).empty());
+#else
+  // The hook started and never returned; the deadline (500 ms) ended the process. The count is
+  // the check, not the time it took.
+  CHECK(fatal_lines(out.output).size() == 1);
+  CHECK(count_of(out.output, "probe hook: ") == 1);
+  check_crashed_exit(out);
+#endif
 }
