@@ -1,13 +1,13 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "R207",
-  "reason": "R207: the opacity micromaps' stored bake: renderer.md's section 'The bake is read back' (why the key names the device, what it covers, the refusals, the memory, the leaf-cards and staging measurements and what does not hold yet), gfx.md's line on the pipeline cache's identity keying it, apps.md's load.micromaps block",
+  "reason": "R207 and its mend after the independent read: renderer.md's 'The bake is read back' (the alpha word's round trip on a miss, the scene's bounds on a read, the version-bump rule, the masked flags), gfx.md's line on the pipeline cache's identity keying it, apps.md's load.micromaps block and the summary version it arrives in",
   "date": "2026-11-23",
   "by": "Marc Micalizzi",
   "deltas": {
     "renderer.gpu_scene_cpp.lines": -43,
-    "page:docs/subsystems/renderer.md": 8644,
-    "page:docs/subsystems/apps.md": 469,
+    "page:docs/subsystems/renderer.md": 10940,
+    "page:docs/subsystems/apps.md": 631,
     "page:docs/subsystems/gfx.md": 232
   }
 }

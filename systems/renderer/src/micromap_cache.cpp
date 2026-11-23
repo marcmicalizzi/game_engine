@@ -1,4 +1,5 @@
 #include <core/hash/hash.h>
+#include <core/platform/random.h>
 #include <core/time/time.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/micromap_cache.h>
@@ -145,8 +146,12 @@ u64 micromap_materials_digest(std::span<const MicromapMaterialWords> materials) 
   for (const MicromapMaterialWords& m : materials) {
     // Exactly what the bake reads of a record (opacity_micromap_bake.slang: `material_uv`, the
     // cutoff, the factor, the albedo and its sampler), the slots replaced by their contents.
+    // Of the flags, only the bit the bake reads (`material_uv`'s; R207-L3): the foliage, normal,
+    // mip and stochastic bits shade but do not bake, and keyed they would only cost a rebake. The
+    // sampler's description stays whole: Vulkan applies its LOD bias and clamp to an explicit
+    // level-0 sample too, so a sampler word is not provably outside what the bake reads.
     const gfx::ResolveMaterial& r = m.record;
-    const u32 words[] = {r.flags,
+    const u32 words[] = {r.flags & gfx::k_material_uv_transform,
                          bits_of(r.uv_scale),
                          bits_of(r.uv_transform.x),
                          bits_of(r.uv_transform.y),
@@ -256,8 +261,14 @@ bool write_micromap_file(const std::string& path, u64 key, const gfx::MicromapSe
   };
   const std::string dir = path.substr(0, path.find_last_of("/\\"));
   if (io::make_directories(dir) != io::Status::Ok) return fail("cannot make " + dir, {});
-  // A name of this write's own, so two loads writing one key never write one file.
-  const std::string temp = path + "." + std::to_string(time::monotonic_ns()) + ".tmp";
+  // A name of this write's own, so two loads writing one key never write one file: the clock and
+  // 64 bits from the system's generator, since two processes can read one clock value (R207-L1).
+  u64 token = 0;
+  (void)platform::secure_random(std::span<u8>(reinterpret_cast<u8*>(&token), sizeof(token)));
+  char token_text[20];
+  std::snprintf(token_text, sizeof(token_text), "%016llx", static_cast<unsigned long long>(token));
+  const std::string temp =
+      path + "." + std::to_string(time::monotonic_ns()) + "." + token_text + ".tmp";
   if (io::write_file(temp, micromap_file_header(key, sections)) != io::Status::Ok)
     return fail("cannot write " + temp, temp);
   Section parts[4];
@@ -272,12 +283,13 @@ bool write_micromap_file(const std::string& path, u64 key, const gfx::MicromapSe
     }
   }
   if (io::rename_path(temp, path) != io::Status::Ok) {
-    // Another load wrote the same key first: its file is the same bytes, and this one goes.
-    if (io::exists(path)) {
-      (void)io::remove_file(temp);
-      return true;
-    }
-    return fail("cannot rename " + temp, temp);
+    // Not stored (R207-L2): the file at `path` may be the one this load just refused, held open by
+    // another process, or another load's whole file; either way this write is not what is there,
+    // and the report must not say `stored`.
+    return fail(io::exists(path) ? "cannot rename " + temp + " over " + path +
+                                       ": the file there is in use or another load's"
+                                 : "cannot rename " + temp,
+                temp);
   }
   return true;
 }
@@ -329,7 +341,49 @@ struct SectionReader {
 
 }  // namespace
 
+namespace {
+
+// The two tables the GPU reads unchecked, held before the restore uploads them (R207-M2): read
+// once through the bounce buffer from the reader's own handle, the per-cluster table against the
+// layout the scene's bake makes and every index against the special indices and the stored
+// entries. Empty when both hold, else the refusal.
+std::string check_micromap_tables(SectionReader& reader, u64 at, const MicromapSceneShape& scene,
+                                  u32 entry_count) {
+  Vector<u32> expected;
+  gfx::micromap_cluster_first(scene.cluster_count, scene.items, scene.triangle_counts, expected);
+  for (u32 s = 0; s < 2; ++s) {
+    const u64 bytes = reader.sizes[s];
+    for (u64 done = 0; done < bytes;) {
+      const u64 piece = std::min<u64>(k_piece, bytes - done);
+      u64 read = 0;
+      if (reader.file.read_at(at + done, reader.bounce.data(), piece, read) != io::Status::Ok ||
+          read != piece) {
+        return s == 0 ? "its per-cluster table did not read" : "its indices did not read";
+      }
+      const u64 first_word = done / 4;
+      for (u64 w = 0; w < piece / 4; ++w) {
+        const u32 word = get_u32(reader.bounce.data() + 4 * w);
+        if (s == 0 && word != expected[static_cast<u32>(first_word + w)]) {
+          return "its per-cluster table is not the scene's (cluster " +
+                 std::to_string(first_word + w) + ")";
+        }
+        if (s == 1 && !gfx::micromap_index_valid(static_cast<i32>(word), entry_count)) {
+          return "an index names no stored entry (triangle " + std::to_string(first_word + w) +
+                 ", " + std::to_string(static_cast<i32>(word)) + " of " +
+                 std::to_string(entry_count) + ")";
+        }
+      }
+      done += piece;
+    }
+    at += bytes;
+  }
+  return {};
+}
+
+}  // namespace
+
 MicromapFileRead read_micromap_file(const gfx::Device& device, const std::string& path, u64 key,
+                                    const MicromapSceneShape& scene,
                                     gfx::OpacityMicromapSet& out) {
   MicromapFileRead result;
   SectionReader reader;
@@ -384,12 +438,47 @@ MicromapFileRead read_micromap_file(const gfx::Device& device, const std::string
     result.refused = "its measures did not read";
     return result;
   }
+  // The scene bounds the file, never the other way round (R207-M2): the counts first, then every
+  // size against the file's length, then their sum, all before anything is allocated.
+  if (restore.cluster_count != scene.cluster_count) {
+    result.refused = "its cluster count is not the scene's (" +
+                     std::to_string(restore.cluster_count) + ", the scene has " +
+                     std::to_string(scene.cluster_count) + ")";
+    return result;
+  }
+  u64 scene_triangles = 0;
+  for (const u32 n : scene.triangle_counts)
+    scene_triangles += n;
+  if (restore.triangle_count != scene_triangles) {
+    result.refused = "its masked triangles are not the scene's (" +
+                     std::to_string(restore.triangle_count) + ", the scene has " +
+                     std::to_string(scene_triangles) + ")";
+    return result;
+  }
+  if (restore.entry_count > restore.triangle_count) {
+    result.refused = "it stores more entries than the scene has masked triangles (" +
+                     std::to_string(restore.entry_count) + ")";
+    return result;
+  }
   reader.sizes[0] = u64{restore.cluster_count} * sizeof(u32);
   reader.sizes[1] = u64{restore.triangle_count} * sizeof(i32);
   reader.sizes[2] = u64{restore.entry_count} * sizeof(gfx::MicromapTriangle);
   reader.sizes[3] = restore.data_bytes;
+  static constexpr const char* k_section_names[4] = {"per-cluster table", "indices",
+                                                     "triangle records", "states"};
   u64 total = header_bytes;
   for (u32 s = 0; s < 4; ++s) {
+    if (reader.sizes[s] > result.file_bytes) {
+      result.refused = std::string("its ") + k_section_names[s] + " name more bytes (" +
+                       std::to_string(reader.sizes[s]) + ") than the file holds";
+      return result;
+    }
+    // Unreachable after the line above for any file a disk holds; kept so the sum is a bound by
+    // construction rather than by the size of disks.
+    if (total > ~u64{0} - reader.sizes[s]) {
+      result.refused = "its sections' sizes overflow";
+      return result;
+    }
     total += reader.sizes[s];
     if (reader.sizes[s] != 0) reader.last = s;
   }
@@ -398,9 +487,18 @@ MicromapFileRead read_micromap_file(const gfx::Device& device, const std::string
                      " bytes, " + std::to_string(total) + " named)";
     return result;
   }
+  reader.bounce.resize(static_cast<u32>(k_piece));
+  const std::string tables = check_micromap_tables(reader, header_bytes, scene, restore.entry_count);
+  if (!tables.empty()) {
+    result.refused = tables;
+    return result;
+  }
+  if (!device.valid()) {  // every bound held; a caller with no device gets no restore
+    result.refused = "every bound holds, and there is no device to restore it on";
+    return result;
+  }
   reader.hash = hash_bytes(header.data(), header.size());
   reader.cursor = header_bytes;
-  reader.bounce.resize(static_cast<u32>(k_piece));
   restore.fill = &SectionReader::fill;
   restore.context = &reader;
   std::string error;

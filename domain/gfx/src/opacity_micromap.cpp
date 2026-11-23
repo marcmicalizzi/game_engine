@@ -373,11 +373,10 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
 
   // Every masked triangle, as {item, triangle}, and each item's first triangle.
   Vector<u32> refs;
-  Vector<u32> cluster_first(in.cluster_count, k_micromap_none);
+  Vector<u32> cluster_first;
+  micromap_cluster_first(in.cluster_count, in.items, in.triangle_counts, cluster_first);
   u32 triangle_count = 0;
   for (u32 i = 0; i < item_count; ++i) {
-    const u32 cluster = in.items[2 * i];
-    if (cluster < in.cluster_count) cluster_first[cluster] = triangle_count;
     for (u32 t = 0; t < in.triangle_counts[i]; ++t) {
       refs.push_back(i);
       refs.push_back(t);
@@ -708,6 +707,18 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
   return true;
 }
 
+void micromap_cluster_first(u32 cluster_count, std::span<const u32> items,
+                            std::span<const u32> triangle_counts, Vector<u32>& out) {
+  out.assign(cluster_count, k_micromap_none);
+  const usize item_count = std::min(items.size() / 2, triangle_counts.size());
+  u32 first = 0;
+  for (usize i = 0; i < item_count; ++i) {
+    const u32 cluster = items[2 * i];
+    if (cluster < cluster_count) out[cluster] = first;
+    first += triangle_counts[i];
+  }
+}
+
 bool restore_opacity_micromaps(const Device& device, const MicromapRestore& in,
                                OpacityMicromapSet& out, std::string* error) {
   destroy_opacity_micromaps(device, out);
@@ -732,6 +743,10 @@ bool restore_opacity_micromaps(const Device& device, const MicromapRestore& in,
                u64{in.cluster_count} * sizeof(u32))) {
     return fail("the per-cluster table did not read");
   }
+  // clas_records.slang reads `indices[first + t]` for every cluster unchecked (R207-M2).
+  for (const u32 first : out.cluster_first_host)
+    if (first != k_micromap_none && first >= in.triangle_count)
+      return fail("a cluster's first index is past the indices");
   if (!upload_buffer(device, out.cluster_first_host.data(),
                      u64{out.cluster_first_host.size()} * sizeof(u32), k_storage, out.cluster_first,
                      error)) {

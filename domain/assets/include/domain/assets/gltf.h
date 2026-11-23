@@ -416,4 +416,16 @@ u32 weld_vertices(MeshData& mesh);
 geometry::ClusterFileMaterial cluster_file_material(const Material& material) noexcept;
 void write_import_sections(const MeshData& mesh, geometry::ClusterFileData& data);
 
+// **The alpha word's five constants, one way** (R207-M1): the record's alpha word keeps the mode,
+// the sidedness, the cutoff as a unorm16 and the foliage optics in fifteenths, so a material read
+// back from a container is not the import's floats (a cutoff of 0.5 reads 0.50000763). The writer
+// (`cluster_file_material`), the reader (a container's materials) and the renderer's glTF miss
+// path all go through these, so a load that built the container and every later load that read it
+// shade, and key the opacity micromaps' bake, with the same constants: a miss draws what a hit
+// draws (renderer.md, "The bake is read back"). `round_trip_alpha_word` is
+// `set_alpha_word(m, alpha_word(m))`; it is idempotent.
+u32 alpha_word(const Material& material) noexcept;
+void set_alpha_word(Material& material, u32 word) noexcept;
+void round_trip_alpha_word(Material& material) noexcept;
+
 }  // namespace engine::assets

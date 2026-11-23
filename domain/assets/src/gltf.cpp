@@ -1919,10 +1919,27 @@ geometry::ClusterFileMaterial cluster_file_material(const Material& source) noex
   material.emissive_image = geometry::encode_optional_image(source.emissive_image);
   material.emissive = source.emissive;
   material.normal_scale = source.normal_scale;
-  material.alpha = geometry::alpha_word_with_foliage(
-      geometry::encode_alpha_word(source.alpha_mode, source.double_sided, source.alpha_cutoff),
-      source.transmission, source.normal_spread);  // R164: zero for every material but foliage
+  material.alpha = alpha_word(source);
   return material;
+}
+
+u32 alpha_word(const Material& material) noexcept {
+  return geometry::alpha_word_with_foliage(
+      geometry::encode_alpha_word(material.alpha_mode, material.double_sided,
+                                  material.alpha_cutoff),
+      material.transmission, material.normal_spread);  // R164: zero for every material but foliage
+}
+
+void set_alpha_word(Material& material, u32 word) noexcept {
+  material.alpha_mode = geometry::alpha_word_mode(word);
+  material.double_sided = geometry::alpha_word_double_sided(word);
+  material.alpha_cutoff = geometry::alpha_word_cutoff(word);
+  material.transmission = geometry::alpha_word_transmit(word);  // R164, foliage optics
+  material.normal_spread = geometry::alpha_word_spread(word);
+}
+
+void round_trip_alpha_word(Material& material) noexcept {
+  set_alpha_word(material, alpha_word(material));
 }
 
 void write_import_sections(const MeshData& mesh, geometry::ClusterFileData& data) {
