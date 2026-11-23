@@ -1215,6 +1215,11 @@ class GpuScene {
   // puts on a deformed instance of `mesh`'s LOD padding, in mesh-space metres — +inf (no cap: the
   // whole padding) when the table is off this frame or the mesh is past it. For the tests.
   f32 sway_lod_cap(u32 slot, u32 mesh) const noexcept;
+  // Whether `slot`'s region holds the table as it stands: what a frame on that slot wrote before
+  // its cull read it. A region no frame has written since the table changed holds an older one.
+  bool sway_lod_current(u32 slot) const noexcept {
+    return slot < k_joint_slots && sway_cap_written_[slot] == sway_cap_version_;
+  }
   // **The normal pool this frame reads** — `normal_pool_address()`, except in a scene whose pool
   // normals are the trees' alone on a frame where no part of any tree moves: then 0, and the
   // resolve shades every tree from the attribute stream's rest normals with the rigid path's own

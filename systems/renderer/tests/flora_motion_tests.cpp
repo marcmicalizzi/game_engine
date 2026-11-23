@@ -1149,10 +1149,12 @@ TEST_CASE("flora motion: a gale's LOD caps leave the terrain rings' padding whol
       ++levels;
       past += record->mesh >= scene.sway_lod_count() ? 1u : 0u;
       most_padding = std::max(most_padding, record->bounds_padding);
-      // The cull's read for this mesh in every slot's region is no cap at all — +inf past the table,
-      // its "none" (3e38) under it — whatever padding the level holds (0 here: a still field).
+      // The cull's read for this mesh in every region a frame wrote is no cap at all — +inf past
+      // the table, its "none" (3e38) under it — whatever padding the level holds (0 here: a still
+      // field).
       bool whole = true;
       for (u32 slot = 0; slot < k_joint_slots; ++slot) {
+        if (!scene.sway_lod_current(slot)) continue;  // no frame of this table read that region
         const f32 cap = scene.sway_lod_cap(slot, record->mesh);
         whole = whole && cap >= 3.0e38f && !(cap * record->scale_max < record->bounds_padding);
       }
@@ -1160,6 +1162,9 @@ TEST_CASE("flora motion: a gale's LOD caps leave the terrain rings' padding whol
     }
     const gfx::InstanceDesc* tree = scene.instance_record(0);
     const bool table = scene.sway_lod_address(0) != 0;
+    u32 current = 0;
+    for (u32 slot = 0; slot < k_joint_slots; ++slot)
+      current += scene.sway_lod_current(slot) ? 1u : 0u;
     for (const u64 p : pairs) {
       const gfx::InstanceDesc* record = scene.instance_record(static_cast<u32>(p >> 32));
       if (record != nullptr && record->mesh >= parts) ring_cut[on ? 1 : 0].push_back(p);
@@ -1174,6 +1179,7 @@ TEST_CASE("flora motion: a gale's LOD caps leave the terrain rings' padding whol
     CHECK(levels > 0);
     CHECK(past > 0);  // the mend's ground: before it, every one of these read past its region
     CHECK(table == on);  // force 12 stood the ladder above calm: the table is handed to the cull
+    CHECK((current > 0) == on);  // and the frames that read it wrote their regions
     CHECK(untouched == levels);  // and no ring slot takes a cap from it
     census.destroy();
     motion.finish();

@@ -7,7 +7,7 @@
   "deltas": {
     "renderer.record_frame.lines": 2,
     "renderer.gpu_scene_cpp.lines": 7,
-    "renderer.gpu_scene_h.lines": 34,
+    "renderer.gpu_scene_h.lines": 39,
     "page:docs/subsystems/renderer.md": 8623
   }
 }
