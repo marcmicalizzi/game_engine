@@ -687,6 +687,9 @@ the gate ran CTest one test at a time — no test preset set `jobs` and `tools/d
 none — and nobody knew whether the Windows half, four suites side by side, was waiting on that or
 on the one machine-wide GPU lock they share.
 
+What this section settled is [the gate script](gate.md)'s now, with batch 72's change: two waves of
+suites, since four at once put long parts past the GPU lock's 30-minute deadline.
+
 ### Gate b57, measured
 
 From gate b57's second run (2026-11-09, `ge-gate\build\<preset>\Testing\Temporary\LastTest.log`
@@ -1023,6 +1026,17 @@ check runs `tools/dev.ps1 test -Filter '^tools\.'`** beside the lint, the docume
 the debug build (about six minutes, no GPU): rows that change the tools meet in the tools' own
 tests, and a gate is a slow place to learn it.
 
+## The gate script
+
+A batch's gate is one command of the tree since T217, and a follow-up's is the same command with
+the tests its change can reach; what each step does, how a verdict is read and the step after the
+gate are [the gate script](gate.md)'s page.
+
+```powershell
+pwsh tools/gate.ps1 -Root <gate worktree> -Batch b73 -Logs <dir> -Server <ssh alias>
+pwsh tools/gate.ps1 -Root <gate worktree> -Batch b73b -Logs <dir> -Reach '<regex>' -Skip listeners,budgets,weaker-card
+pwsh tools/after-gate.ps1 -Gate <gate worktree> -Main <primary checkout> -Verdict <dir>/b73-gate.verdict.json -CopyTo <dir> [-Push]
+```
 ## Two GPU chains
 
 **Where the chain's time went, gate b66** (2026-11-16, `msvc-debug` on d6534963 at three jobs,

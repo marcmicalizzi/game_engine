@@ -315,6 +315,14 @@ if(ENGINE_PWSH)
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   set_tests_properties(tools.slot PROPERTIES LABELS "tools")
 
+  # The merge gate and the step after it (T217) over a throwaway repository whose tools/ are
+  # stand-ins: no build, test, container or device, and no push but to a bare repository beside it.
+  add_test(NAME tools.gate
+    COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/tools/gate.Tests.ps1"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  set_tests_properties(tools.gate PROPERTIES LABELS "tools")
+
   # The disk-write reporter's arithmetic (T185) over canned counter samples: no counter is read.
   add_test(NAME tools.disk_writes
     COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass

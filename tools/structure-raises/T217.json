@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T217",
+  "reason": "T217: the gate script's section (its two commands and a pointer to docs/ci/gate.md, where the rest of it lives) and the wall clock's note that its settlements moved there",
+  "date": "2026-11-23",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/ci/what-to-run.md": 797
+  }
+}
