@@ -851,14 +851,16 @@ struct ShiftDrive {
   u32 numberings[2] = {};  // changes that numbered the pairs again, by flight
 };
 
-// `GpuScene`'s lists of runs (T154) through two flights of a streamed world of small tiles held to
-// a pair cap, so nearly every change numbers the pairs again: a change's runs with the slots it
-// wrote taken out, composed into the CPU's list and two table sets' (one taken by each frame in
-// turn), the CPU's list cut where a change wrote and past the table's end, as `write_slots` and
-// `number_first_pairs` do. In the second flight a few slots a change are also settled alone, as a
-// set's copy settles a slot a sway or a still form's lean marked (`settle_first_pairs`), which cuts
-// the CPU's list inside its blocks. `reserved`: every list given `reserve_shift_runs`' room for the
-// tail's slot capacity whenever that capacity is set, as `GpuScene::reserve_shift_lists` does.
+// A model of `GpuScene`'s lists of runs (T154) — its own CPU list, two table sets and scratch,
+// built from the same `pair_shift.h` calls, not `GpuScene` itself — through two flights of a
+// streamed world of small tiles held to a pair cap, so nearly every change numbers the pairs again:
+// a change's runs with the slots it wrote taken out, composed into the CPU's list and two table
+// sets' (one taken by each frame in turn), the CPU's list cut where a change wrote and past the
+// table's end, as `write_slots` and `number_first_pairs` do. In the second flight a few slots a
+// change are also settled alone, as a set's copy settles a slot a sway or a still form's lean
+// marked (`settle_first_pairs`), which cuts the CPU's list inside its blocks. `reserved`: every
+// list given `reserve_shift_runs`' room for the tail's slot capacity whenever that capacity is set,
+// as `GpuScene::reserve_shift_lists` does.
 ShiftDrive shift_lists_drive(bool reserved) {
   std::mt19937 rng(20261123);
   TileLayout layout;
@@ -962,7 +964,10 @@ ShiftDrive shift_lists_drive(bool reserved) {
 // holds follows how the tile commits bunch and which slots a set settles, which is timing, and
 // nothing reserved them. Reserved to the tail's slots where its capacity is set, the same drive
 // allocates nothing; unreserved, it allocates whenever the second flight cuts the CPU's list past
-// what the first left it room for, which the drive does every time, not by luck.
+// what the first left it room for, which the drive does every time, not by luck. The drive is a
+// model of `GpuScene`'s lists, not `GpuScene`: it proves the bound and the reservation pattern;
+// that `GpuScene::reserve_shift_lists` covers every list the scene holds is shown on the device by
+// `engine_view.frame_loop`'s streamed trees.
 TEST_CASE("pair shifts: lists reserved to the tail's slots allocate nothing in a second flight") {
   const ShiftDrive bare = shift_lists_drive(false);
   const ShiftDrive held = shift_lists_drive(true);
