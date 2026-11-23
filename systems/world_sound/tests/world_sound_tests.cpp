@@ -248,9 +248,11 @@ TEST_CASE("world_sound: the null render of a scripted session is pinned") {
     CHECK(stats.listener_moves == 52);
   }
   CHECK(hashes[0] == hashes[1]);
-  // Taken on MSVC; GCC 13 and Clang 18 in the Linux container must reproduce it.
+  // Taken on MSVC; GCC 13 and Clang 18 in the Linux container must reproduce it. S114 moved it
+  // from 0x9b8ce750f9dab6e5: the 3D clips now pass the air's low-pass by distance at the stage's
+  // 20 degC and 70 % (mixer.h, `air_lowpass_coefficient`, arithmetic the same on every toolchain).
   MESSAGE("session " << hashes[0]);
-  CHECK(hashes[0] == 0x9b8ce750f9dab6e5ull);
+  CHECK(hashes[0] == 0x18a7f5169eeef2e6ull);
 }
 
 TEST_CASE("world_sound: a mute stage, a sounding one and one with no block answer as they must") {

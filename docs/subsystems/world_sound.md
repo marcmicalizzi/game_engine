@@ -1,6 +1,6 @@
 # world_sound (systems)
 
-**Purpose.** The sound stage a host creates for a game (roadmap S111, the first stage of [audio](audio.md#sound-for-the-world-the-design-s110)'s design; [ADR-0079](../adr/0079-world-sound-is-synthesised-from-world-state.md), proposed). One object, `world_sound::SoundStage`, owns the clip store, the mixer, the output (a device or the null backend), the listener, the clips a scene's `sound` block declares and the voices a game module starts; a host creates it, hands it a listener and ticks it. Sound code lives here and not in an app, as rendering code lives in [renderer](renderer.md). engine-view is the one host so far ([apps](apps.md#sound-a-module-plays)): `--audio` chooses the mode and a module's `sound_clip`, `sound_play` and `sound_stop` reach the stage. **Since S112 it also hears the world's wind** — in the crowns a host's canopy table names and at the listener's ears ("The wind in the trees and at the ears", below). **What this stage is not yet**: running water and the surf (S113) and the path's terms (S114) are the design's later stages, and nothing of them is built.
+**Purpose.** The sound stage a host creates for a game (roadmap S111, the first stage of [audio](audio.md#sound-for-the-world-the-design-s110)'s design; [ADR-0079](../adr/0079-world-sound-is-synthesised-from-world-state.md), proposed). One object, `world_sound::SoundStage`, owns the clip store, the mixer, the output (a device or the null backend), the listener, the clips a scene's `sound` block declares and the voices a game module starts; a host creates it, hands it a listener and ticks it. Sound code lives here and not in an app, as rendering code lives in [renderer](renderer.md). engine-view is the one host so far ([apps](apps.md#sound-a-module-plays)): `--audio` chooses the mode and a module's `sound_clip`, `sound_play` and `sound_stop` reach the stage. **Since S112 it also hears the world's wind** — in the crowns a host's canopy table names and at the listener's ears ("The wind in the trees and at the ears", below). **Since S114 every world voice carries its path** — the air, the forest and the ground by octave band ("Distance", below). **What this stage is not yet**: running water and the surf (S113) are the design's third stage and nothing of them is built.
 
 **Why this shape.** The design's reasons hold ([audio](audio.md#the-capability-systemsworld_sound)): one object a host creates, so engine-view, engine-host and the editor can each host sound without each wiring a store, a mixer and an output; a capability of its own requiring only `audio`, so the minimal build proves nothing depends on it. Three things were settled while building it:
 
@@ -82,6 +82,32 @@ U is the wind at the crown (or for the ears at 1.7 m, less the head's own veloci
 
 **Determinism**: presentation, as the stage is: the field reads world state and writes none; its gains go through the C library's `pow` and `log10` and the gust's `sin` and `exp`, so a world render is the same bytes run after run on one toolchain and **is not pinned across toolchains** (the voice's own bytes are: [audio](audio.md#the-shaped-noise-voice)).
 
+## Distance (S114)
+
+Roadmap S114, the design's stage 4 ([audio](audio.md#distance)); the sources and every number's mark are [the grounding page](../experiments/world-sound.md#read-again-by-s114). **Why it came first: the owner heard a waterfall.** On the forest at 3 m/s the beds — the far wood summed by sector with spherical spreading alone — stood 10 dB over the six nearest crowns, kept their top octave and barely moved (the forest's need 171). A uniform wood summed by spreading alone grows as the logarithm of its radius, so everything out to `audio.world.reach_m` (2 km) counted, and nothing took the top first: a steady broadband roar over everything near, which is what a waterfall is.
+
+**Every world voice but the ears carries its path, octave band by octave band** (`path.h`, public, so a host or a case may evaluate a term): the band's power after spreading is multiplied by 10^(−A/10) with
+
+| Term | dB | Over |
+|---|---|---|
+| the air | ISO 9613-1's pure-tone coefficient at the band's centre, at `audio.world.temperature_c` (20) and `audio.world.humidity` (70 %) | the whole path, foliage to ears |
+| the forest | Hoover's 0.01 r f^(1/3) | the share of the path along the ground that runs under canopy |
+| the ground | ISO 9613-2's source, receiver and middle regions, porous by default (`audio.world.ground_g`, 1) | the foliage's middle height, the ears' 1.7 m, the distance along the ground |
+
+At 70 % and 200 m the air takes 15.5 dB at 8 kHz and 1.0 at 1 kHz; 100 m of forest takes 10 dB at 1 kHz and 20 at 8 kHz. **How much of a path is under canopy** is read from the refresh's own crowns: their leaf area binned round the listener by 16 sectors and 15 rings (8 m near, 512 m at the reach), a bin's cover its leaf area over a closed canopy's (a leaf area index of 3.5), capped at one, and a path's metres under canopy the cover summed along its sector out to the crown. So a crown across a clearing is heard through the wood on its own side and not through the open, and a lone tree in a field through almost none. A merged group's leaf area is spread over the bins its disc covers. **The ears' wind carries none**: it is made at the head.
+
+**A crown of its own keeps the path its refresh found** (`Voice::path`), and its needles' tone takes the path at its own frequency, interpolated between the two fixed bands either side of it, every tick. **A bed is summed after the path**, band by band, so the far wood's top is gone before it is summed and the stand round the listener is what a bed mostly holds. A crown chosen as a voice of its own is taken out of its bed again by the same arithmetic it went in with (counted, so an emptied ring is exactly empty).
+
+**A bed hears the gust where its power comes from**, so a far wood swells as the wind crosses it: each bed is three rings — the stand within 32 m, the wood to 128 m and the far wood past it — each with its power-weighted place, and every tick each ring's band powers are scaled by the cube of the gust at its own place. Since the gust is Kaimal's turbulence frozen into the flow and carried down the wind, rings at different distances along the wind hear one gust front at different times, so a bed swells as a front crosses its sector and averages more than one crown does, but does not stand on one place. On the case's wood in ten minutes of 3 m/s wind over a forest's roughness the beds' level spreads 6.6 dB from the 5th to the 95th percentile and the crowns' 11.1; the figure held is the natural ambient's spread Boersma and Etienne's 2.0 to 2.4 dB standard deviation gives (6.6 to 7.9 dB were it Gaussian), with a decibel either side — a search excerpt, said so.
+
+**A merged group is heard over its disc.** The sum was checked first for a tree counted twice — in a crown and again in a bed, or a group's area added twice at a promotion — and none was; a merged group was heard too quietly. Spreading and the path are both convex in distance, so a group summed at its centroid was 3.7 dB under the same crowns sent one by one where engine-view promotes it (its near edge at `audio.world.near_m`). A merged crown with an extent is now the mean of seven points over its disc (the centre at a quarter, six at √(2/3) of the radius at an eighth each, exact to degree five), each at a crown's own least distance: within 0.74 dB of its crowns one by one there. **Nothing is counted twice** in engine-view's table: a group is sent either as its crowns or merged, never both, and a placement's near hand-off forms are left out of a tile (`tile_own`).
+
+**One kind alone**: `audio.world.solo` (0 all, 1 the crowns, 2 the beds, 3 the ears) describes the other kinds as silent, so the kind left sounds exactly as it does in the whole world, with its own choice and its own beds — what the forest's listening by kind needed (it had soloed the beds by setting `audio.world.crowns` to 0, which sent the six nearest crowns into them). `audio.world.path` false takes spreading alone, S112's world, for a comparison.
+
+**A game's clips lose their top with distance too**: the stage builds its mixer with `MixerConfig::air_db_per_m_8k`, the air's absorption at 8 kHz at the world's air, and every 3D clip voice passes the mixer's one-pole whose loss at 8 kHz is the air's over its distance ([audio](audio.md#distance)): at 200 m a clip's 8 kHz octave falls 11.3 dB further under its 1 kHz one than at 5 m (the case). It moved the scripted session's pin (`0x9b8ce750f9dab6e5` to `0x18a7f5169eeef2e6`, taken on MSVC; the arithmetic is the toolchains' common one). `audio.world.path` off leaves the clips as they were.
+
+**Not built** (each owed with what it needs): the **barrier term** (`barrier_db` is ISO's form, held by a case; nothing hands the stage a height field yet, so no voice takes it — a host's table of ground heights along a path, as the canopy is a table, is what it needs); refraction (S110 left it out and so does this).
+
 ## Invariants
 
 - What `clip`, `play` and `stop` answer, and every handle, is the same in `Off`, `Null` and `Device` (the scripted session's answers compared, and the end-to-end replay's module state).
@@ -104,7 +130,7 @@ U is the wind at the crown (or for the ears at 1.7 m, less the head's own veloci
 - **Recipes**: the chirp's length, its silent ends and its peak at −6 dB; the chirp's and a seeded noise's samples pinned (`0x812eb5dafa81ec80`, `0x3037d56583c9bee2`); refusals naming the field.
 - **The block**: read, absent, and refused for a repeated name, a clip with neither or both sources, and distances the wrong way round.
 - **Left and right**: a chirp 3 m to the left of a listener 10,000 km out, facing −z, is more than 30 times as loud on the left as on the right; after a half turn the other way round, with the same power; the commands counted.
-- **The pin**: a scripted session (a chirp to the left, a tone ahead stopped half-way, a 2D chirp, a half turn, a tone sounding while the listener walks across a cell's edge) rendered twice to the same bytes, its counts (four plays, two frame moves, one source sent again, 52 listener moves) and its hash pinned (`0x9b8ce750f9dab6e5`). The values were taken on MSVC; the Linux container's GCC and Clang must reproduce them.
+- **The pin**: a scripted session (a chirp to the left, a tone ahead stopped half-way, a 2D chirp, a half turn, a tone sounding while the listener walks across a cell's edge) rendered twice to the same bytes, its counts (four plays, two frame moves, one source sent again, 52 listener moves) and its hash pinned (`0x18a7f5169eeef2e6` since S114's clip low-pass). The values were taken on MSVC; the Linux container's GCC and Clang must reproduce them.
 - **Modes**: the same script `Off` and `Null`, every answer and handle the same; the refusals the same in both; a stage with no block `Unsupported`.
 - **Allocation**: 2,400 ticks of every call a host makes allocate nothing.
 - **Formats**: WAVs written by the case — PCM 16 bit mono at 48 kHz, 24 bit stereo at 44.1 kHz, float mono at 22.05 kHz, 16 bit stereo at 96 kHz — loaded by path from beside the scene, each half a second at the mix rate and each heard; a file that is not there refuses the stage naming the clip.
@@ -125,6 +151,16 @@ The world's wind (`tests/world_field_tests.cpp`, S112), a grove of the case's ow
 - **Merged and sized**: a merged crown beside the listener holds a bed and no crown voice; a crown round the listener with an extent of 50 m is 27.96 dB under the same with none.
 - **The ceiling**: 45 m/s over the grove is held (`held_ticks` above zero, the world's voices summed at or under 93 dB SPL, −12 dBFS); 8 m/s is not touched.
 - **Listening, by band**: three seconds of the null render's WAV at 3 and at 9 m/s with the ears turned down to the tunable's floor: 14.3 dB louder give or take the turbulence (12 to 17), the 2 kHz band 2 dB or more nearer the 500 Hz band (the needles' tone climbing past it; 3.3 dB measured), the calm render all zeros, and the light render the same bytes twice.
+
+The path (`tests/world_path_tests.cpp`, S114):
+
+- **The air**: ISO 9613-1's equations at the standard's exact mid-band frequencies give its table at 20 °C and 10, 70 and 90 % to 1 % (24 values); at 200 m and 70 %, 15.5 dB at 8 kHz and 1.0 at 1 kHz.
+- **Hoover, the ground and a barrier**: 100 m of forest 10 dB at 1 kHz and 20 at 8; a source on porous ground at 200 m loses 13.74 dB at 500 Hz in its own region and over rock gains 1.5 in every band; a detour of 0.1 m takes 5.7, 9.5 and 17 dB at 125 Hz, 1 and 8 kHz, and one edge holds at 20.
+- **A crown at 200 m**: each band's level with the path against without differs by exactly the air over the 3D path, the forest over its share under canopy and the ground's term.
+- **The far wood** (a uniform wood of the case's own to 2 km at 3 m/s): with spreading alone the beds over 8 dB above the six nearest crowns and the wood past 128 m adding over 2 dB (10.0 and 3.4 measured: the forest's fault); with the path the wood past 128 m adds under 0.5 dB (0.07), the beds come 6 dB or more nearer the crowns and their top octave falls 2.5 dB or more further under their 1 kHz.
+- **A promotion keeps its power**: a 128 m group merged against its 256 crowns one by one at the promotion's distance, within 1 dB (0.74).
+- **A clip's low-pass**: the one-pole's loss at 8 kHz within 0.5 dB of the air's at 50 to 300 m; a game's noise clip at 200 m against 5 m, its 8 kHz octave 10.5 to 14 dB further under its 1 kHz (11.3 measured), and the same at both distances with the path off.
+- **The swell**: ten minutes of turbulent wind in 600 ticks, the beds' 5th to 95th percentile spread within a decibel of 6.6 to 7.9 dB and under the crowns' (6.6 and 11.1 measured).
 
 End to end, engine-view's `game_sound_view_tests.cpp` ([apps](apps.md#sound-a-module-plays)).
 
@@ -179,11 +215,11 @@ This is a capability: it was added without editing `core/`, `foundation/`, the r
 | Render-graph passes | none | sound draws nothing |
 | Content-build derived step | none here; a clip's `.clip` is `audio`'s | not needed |
 | Protocol methods | none | not needed yet (engine-host opens no device) |
-| Tunables | `audio.world.*` (S112): `crowns`, `beds`, `max_crowns`, `near_m`, `reach_m`, `refresh_hz`, `reference_db`, `ears_db`, `ears_side_db`, `ears_slope_db`, `calm_m_s`, `floor_db`, and since S112-2 `ceiling_db`, `near_crowns`, `walk_instances`; the mixer's `audio.*` size the rest | done |
+| Tunables | `audio.world.*` (S112): `crowns`, `beds`, `max_crowns`, `near_m`, `reach_m`, `refresh_hz`, `reference_db`, `ears_db`, `ears_side_db`, `ears_slope_db`, `calm_m_s`, `floor_db`, and since S112-2 `ceiling_db`, `near_crowns`, `walk_instances`, and since S114 `temperature_c`, `humidity`, `ground_g`, `path`, `solo`; the mixer's `audio.*` size the rest | done |
 | LOD policy | voices by level at the listener, beds by sector, far crowns merged by group in the host's table; the mixer's pool is the budget ([audio](audio.md#the-voice-policy)) | done (S112) |
 | Determinism | `world_sound::k_determinism` = `derived` | sound is presentation (ADR-0079 decision 4) |
 | Zero cost when unused | `Off` (engine-view's default offscreen, and `--audio off`): no store, mixer, thread or output, no leaves measured at the load and no observer; a stage opened in `Null` or `Device` with the world on builds its mixer whether or not the scene has a `sound` block (S112) | done |
-| Tests and size table | `tests/world_sound_tests.cpp`, `tests/size_table.cpp` (`StageStats`, 88) | done |
+| Tests and size table | `tests/world_sound_tests.cpp`, `tests/world_field_tests.cpp`, `tests/world_path_tests.cpp`, `tests/size_table.cpp` (`StageStats`, 88) | done |
 | Bench | `bench/world_sound_bench.cpp` | done |
 | Removal proof | `ENGINE_WITH_WORLD_SOUND`, off in the minimal build | works: engine-view's module then hears `Unsupported` |
 

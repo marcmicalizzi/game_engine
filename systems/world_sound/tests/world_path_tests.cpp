@@ -3,14 +3,20 @@
 // standards' own figures, and the world's voices by kind on a wood of the case's own, through the
 // stage's descriptions. No case opens a device.
 
+#include <domain/audio/mixer.h>
+#include <domain/audio/noise_voice.h>
+#include <foundation/io/vfs.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/world_sound/path.h>
 #include <systems/world_sound/world_sound.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <schemas/scene.h>
 #include <string>
 #include <vector>
 
@@ -321,4 +327,91 @@ TEST_CASE("world path: a far wood swells as the wind crosses it, less than one c
   CHECK(bed_spread > 5.6);
   CHECK(bed_spread < 8.9);
   CHECK(bed_spread < crown_spread);
+}
+
+namespace {
+
+// The mono sum's power in one of the shaped-noise voice's octave bands, dB full scale, after the
+// first quarter second (the same band-pass the voice uses, audio::k_noise_band_table).
+f64 band_power_db(const std::vector<f32>& stereo, u32 band) {
+  const audio::NoiseBand& b = audio::k_noise_band_table[band];
+  f64 s1 = 0.0, s2 = 0.0, sum = 0.0;
+  u64 n = 0;
+  for (usize f = 0; f + 1 < stereo.size(); f += 2) {
+    const f64 x = 0.5 * (static_cast<f64>(stereo[f]) + static_cast<f64>(stereo[f + 1]));
+    const f64 cx = static_cast<f64>(b.c) * x;
+    const f64 y = cx + s1;
+    s1 = s2 - static_cast<f64>(b.a1) * y;
+    s2 = -cx - static_cast<f64>(b.a2) * y;
+    if (f >= 24000u) {
+      sum += y * y;
+      ++n;
+    }
+  }
+  return n != 0 && sum > 0.0 ? 10.0 * std::log10(sum / static_cast<f64>(n)) : -1000.0;
+}
+
+// A game's noise clip played once `distance_m` ahead of the listener, its null render's 8 kHz band
+// over its 1 kHz band.
+f64 clip_tilt(f64 distance_m, const std::string& wav) {
+  scene::Sound block;
+  scene::SoundClip c;
+  c.name = "hiss";
+  scene::SoundRecipe r;
+  r.kind = scene::SoundRecipeKind::Noise;
+  r.duration_s = 2.0f;
+  r.seed = 7;
+  c.recipe = r;
+  c.min_m = 1.0f;
+  c.max_m = 1000.0f;
+  block.clips.push_back(c);
+  SoundStage stage;
+  StageConfig config;
+  config.mode = AudioMode::Null;
+  config.tick_hz = 60;
+  config.wav_out = wav;
+  REQUIRE(stage.open(config, &block, nullptr));
+  const WorldPos ears{k_far, 1.7, k_far};
+  stage.set_listener(ears, Vec3{0.0f, 0.0f, -1.0f}, Vec3{0.0f, 1.0f, 0.0f});
+  const WorldPos at{k_far, 1.7, k_far - distance_m};
+  u32 handle = 0;
+  REQUIRE(stage.play(0, &at, 1.0f, handle) == Answer::Ok);
+  for (u32 i = 0; i < 90; ++i)
+    stage.tick();
+  REQUIRE(stage.close(nullptr));
+  std::string bytes;
+  REQUIRE(io::read_file(wav, bytes) == io::Status::Ok);
+  std::vector<f32> samples((bytes.size() - 44u) / 4u);
+  std::memcpy(samples.data(), bytes.data() + 44, samples.size() * sizeof(f32));
+  return band_power_db(samples, 7) - band_power_db(samples, 4);
+}
+
+}  // namespace
+
+TEST_CASE("world path: a game's clip loses its top with distance, as the air takes it") {
+  // The one-pole's corner is set so its loss at 8 kHz is the air's over the distance (0.0776 dB a
+  // metre at 20 degC and 70 %): within half a decibel of it to 300 m (the corner is set for the
+  // continuous one-pole; the sampled one takes 0.4 dB less), taking more than the air in the middle
+  // bands beyond about 200 m (1.9 dB at 1 kHz at 200 m against the air's 1.0).
+  for (const f32 d : {50.0f, 100.0f, 200.0f, 300.0f}) {
+    const f32 air = static_cast<f32>(air_absorption_db_per_m(8000.0, 20.0, 70.0));
+    const f64 a = static_cast<f64>(audio::air_lowpass_coefficient(d, air));
+    const f64 om = 2.0 * 3.14159265358979323846 * 8000.0 / 48000.0;
+    const f64 h2 = a * a / (1.0 - 2.0 * (1.0 - a) * std::cos(om) + (1.0 - a) * (1.0 - a));
+    CHECK(std::fabs(-10.0 * std::log10(h2) - static_cast<f64>(d * air)) < 0.5);
+  }
+  CHECK(audio::air_lowpass_coefficient(0.0f, 0.0776f) == 1.0f);
+  CHECK(audio::air_lowpass_coefficient(100.0f, 0.0f) == 1.0f);
+  // Through the stage: the same noise at 5 m and at 200 m, the 8 kHz octave against the 1 kHz one
+  // (the distance law takes both alike): 15.1 - 1.9 = 13.2 dB darker at the bands' centres, less
+  // over the 8 kHz octave's lower half (11.3 measured); held between 10.5 and 14.
+  const test::TempDir tmp("world_path_clip");
+  const f64 near = clip_tilt(5.0, tmp.file("near.wav"));
+  const f64 far = clip_tilt(200.0, tmp.file("far.wav"));
+  MESSAGE("8 kHz over 1 kHz: at 5 m " << near << " dB, at 200 m " << far << " dB");
+  CHECK(near - far > 10.5);
+  CHECK(near - far < 14.0);
+  // With the path off nothing is filtered: the same tilt at both distances.
+  const Tunable path("audio.world.path", "false");
+  CHECK(std::fabs(clip_tilt(200.0, tmp.file("far-off.wav")) - near) < 0.3);
 }
