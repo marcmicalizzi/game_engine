@@ -148,16 +148,26 @@ struct MixerConfig {
   // **The air's low-pass by distance on clip voices** (S114; world_sound.md, "Distance"): the air's
   // absorption at 8 kHz in dB a metre (ISO 9613-1 at the host's air: 0.0776 at 20 degC and 70 %).
   // A 3D voice whose distance model is not `None` passes a one-pole low-pass whose loss at 8 kHz
-  // is the air's over its distance (`air_lowpass_coefficient`). 0, the default, filters nothing and
-  // leaves every byte as it was.
+  // is the air's over its distance, its corner held where its loss at 1 kHz is the air's at 1 kHz
+  // (`air_db_per_m_1k`, 0.00498 at the same air) once the 8 kHz fit would take more there
+  // (`air_lowpass_coefficient`). 0, the default, filters nothing and leaves every byte as it was.
   f32 air_db_per_m_8k = 0.0f;
+  f32 air_db_per_m_1k = 0.0f;
 };
 
-// The one-pole's coefficient `a` of y += a (x - y) for a voice `distance_m` away in air taking
-// `air_db_per_m_8k`: the corner whose loss at 8 kHz, 10 log10(1 + (8000 / fc)^2), is the air's
-// there, a = 1 - e^(-2 pi fc / 48000). 1 (nothing taken) at no loss. `+ - * /`, a correctly
-// rounded square root and ldexp only, so it is the same bits on every toolchain.
-f32 air_lowpass_coefficient(f32 distance_m, f32 air_db_per_m_8k) noexcept;
+// The one-pole's coefficient `a` of y += a (x - y) for a voice `distance_m` (r) away, a = 1 -
+// e^(-2 pi fc / 48000) for the corner fc = max(fc8, fc1) (S114; world_sound.md, "Distance"):
+//   fc8 = 8000 / sqrt(10^(r a8 / 10) - 1), where the one-pole's loss at 8 kHz,
+//         10 log10(1 + (8000 / fc)^2), is the air's, r a8 (`air_db_per_m_8k`);
+//   fc1 = 1000 / sqrt(10^(r a1 / 10) - 1), where its loss at 1 kHz is the air's there, r a1
+//         (`air_db_per_m_1k`; no floor when 0).
+// One pole cannot follow the air's slope, which rises about as f^2 at these frequencies against the
+// pole's 6 dB an octave: fitted at 8 kHz alone it takes far more than the air in the middle beyond
+// about 125 m at 20 degC and 70 % (20.8 dB at 1 kHz at 500 m against the air's 2.5), so past that
+// the corner is held at fc1, a far clip keeps its middle, and its top loses less than the air would
+// take (16.6 dB at 8 kHz at 500 m against 38.8). 1 (nothing taken) at no loss. `+ - * /`, a
+// correctly rounded square root and ldexp only, so it is the same bits on every toolchain.
+f32 air_lowpass_coefficient(f32 distance_m, f32 air_db_per_m_8k, f32 air_db_per_m_1k) noexcept;
 
 // A shaped-noise voice's start (noise_voice.h): it loops until stopped, and is a source like a
 // clip's, with a gain, a bus, a priority and a spatial block.
@@ -426,6 +436,7 @@ class Mixer {
   Vector<f32> decoder_state_;  // voices x decoder_->state_floats
   Vector<f32> air_state_;      // the air's low-pass, two channels a voice (S114)
   f32 air_db_per_m_8k_ = 0.0f;
+  f32 air_db_per_m_1k_ = 0.0f;
   Vector<f32> scratch_;  // one voice's signal for one block: k_max_block_frames x 2
   Vector<u8> bus_parent_;
   Vector<f32> bus_gain_;

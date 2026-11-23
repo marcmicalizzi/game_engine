@@ -81,16 +81,25 @@ using SoundTileList = void (*)(const void* user, Vector<SoundTile>& out);
 // **What shelters the walker's ears** (S114; world_sound.md, "Distance"): the stage's
 // `ShelterSource` over the walker's collision. `cast` is a downward ray from `origin` for `length`
 // metres against what the walker stands among (`Walker::cast` in a session; a case's own world in
-// its test). The height over `feet_y` of what stands at (x, z) is the **least** of three casts a
-// pace apart across the wind (`k_shelter_across_m` either side): a wall or a house stands under all
-// three and a trunk's proxy under one at most, so a stand of trees is not taken for a wall and the
-// ears' wind does not drop 21 dB at one step and come back at the next. 0 where any cast meets
-// nothing or meets only what is under the feet.
+// its test), and `ground` the ground's own height at a cast's (x, z) (`Walker::collision_ground`:
+// the collision's heightfield), false where the collision holds none there. What stands at (x, z)
+// is measured **over the ground at (x, z)**, never over the feet (S114-M1): a cast that meets the
+// ground itself (`WalkCast::what` 1) meets no obstacle, so a slope rising into the wind shelters
+// nothing and a wall on that slope counts its own height; only where the collision holds no ground
+// under a cast (a scene whose floor is a mesh) is its hit measured over `feet_y`, the walker's
+// feet. The height is the **least** of three casts a pace apart across the wind
+// (`k_shelter_across_m` either side): a wall or a house stands under all three and a trunk's proxy
+// under one at most, so a stand of trees is not taken for a wall and the ears' wind does not drop
+// 21 dB at one step and come back at the next. 0 where any cast meets nothing or the ground.
 using ShelterCast = bool (*)(const void* user, WorldPos origin, f32 length, WalkCast& out);
+using ShelterGround = bool (*)(const void* user, f64 x, f64 z, f64& out);
 inline constexpr f32 k_shelter_across_m = 1.5f;
 inline constexpr f32 k_shelter_cast_above_m = 20.0f;  // from this far over the feet, 40 m down
-f32 shelter_height_at(ShelterCast cast, const void* user, f64 feet_y, f64 x, f64 z, f32 across_x,
-                      f32 across_z) noexcept;
+f32 shelter_height_at(ShelterCast cast, ShelterGround ground, const void* user, f64 feet_y, f64 x,
+                      f64 z, f32 across_x, f32 across_z) noexcept;
+// The shelter over a walker's own collision: its feet as they stand now (`Walker::feet`, crouched
+// or not; S114-H1), its casts and its collision's ground. 0 with no walker.
+f32 walker_shelter(const Walker* walker, f64 x, f64 z, f32 across_x, f32 across_z) noexcept;
 
 class GameSoundHost {
  public:
@@ -120,10 +129,11 @@ class GameSoundHost {
   // `sound_ms` without a module (with one, the runner's `sound_ns`).
   i64 sound_ns() const noexcept { return sound_ns_; }
   // **The walker the ears stand behind** (S114): a session's (`FlySession::walker`, a module's
-  // through the runner's `GameSound::walker`), whose collision the stage's shelter casts into;
-  // null (a flight, a fly session, a build with no collision) shelters nothing.
+  // through the runner's `GameSound::walker`), whose collision the stage's shelter casts into, only
+  // while the session walks; null (a session that flies, a flight's frames, a build with no
+  // collision, after the runner's finish) shelters nothing.
   void set_walker(const Walker* walker) noexcept;
-  void note_eye(f64 eye_y) noexcept { eye_y_ = eye_y; }
+  const Walker* walker() const noexcept { return walker_; }
 
   // **The canopy table** (S112; world_sound.h `CanopySource`): the loaded scene's instances whose
   // mesh has leaves and a class (`SceneData::mesh_leaves`, `canopy_class_of`), and a streamed
@@ -229,9 +239,8 @@ class GameSoundHost {
   f64 sun_rate_ = 0.0;
   u32 tick_hz_ = 240;
   i64 sound_ns_ = 0;
-  // The shelter's walker and the last eye's height (S114).
+  // The shelter's walker (S114).
   const Walker* walker_ = nullptr;
-  f64 eye_y_ = 0.0;
   static f32 shelter(void* user, f64 x, f64 z, f32 across_x, f32 across_z) noexcept;
 };
 

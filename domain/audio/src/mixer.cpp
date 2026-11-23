@@ -345,12 +345,18 @@ f64 exp2_series(f64 x) noexcept {
 
 }  // namespace
 
-f32 air_lowpass_coefficient(f32 distance_m, f32 air_db_per_m_8k) noexcept {
+f32 air_lowpass_coefficient(f32 distance_m, f32 air_db_per_m_8k, f32 air_db_per_m_1k) noexcept {
   const f64 loss = static_cast<f64>(distance_m) * static_cast<f64>(air_db_per_m_8k);
   if (!(loss > 1e-6)) return 1.0f;
   // 10^(loss / 10) - 1 = (8000 / fc)^2: the one-pole's loss at 8 kHz is the air's.
   const f64 ratio = exp2_series(loss * 0.33219280948873623479) - 1.0;  // log2(10) / 10
-  const f64 fc = 8000.0 / std::sqrt(ratio);
+  f64 fc = 8000.0 / std::sqrt(ratio);
+  // Held no lower than where its loss at 1 kHz is the air's there (mixer.h): the middle kept.
+  const f64 loss_1k = static_cast<f64>(distance_m) * static_cast<f64>(air_db_per_m_1k);
+  if (loss_1k > 1e-6) {
+    const f64 floor_fc = 1000.0 / std::sqrt(exp2_series(loss_1k * 0.33219280948873623479) - 1.0);
+    if (floor_fc > fc) fc = floor_fc;
+  }
   const f64 w = 2.0 * 3.14159265358979323846 * fc / static_cast<f64>(k_sample_rate);
   const f64 a = 1.0 - exp2_series(-w * 1.44269504088896340736);  // e^-w as 2^(-w log2 e)
   return static_cast<f32>(a < 1.0 ? a : 1.0);
@@ -402,6 +408,7 @@ Mixer::Mixer(ClipStore& clips, const MixerConfig& config)
   decoder_state_.resize_exact(voices * decoder_->state_floats, 0.0f);
   scratch_.resize_exact(k_max_block_frames * 2u, 0.0f);
   air_db_per_m_8k_ = config.air_db_per_m_8k > 0.0f ? config.air_db_per_m_8k : 0.0f;
+  air_db_per_m_1k_ = config.air_db_per_m_1k > 0.0f ? config.air_db_per_m_1k : 0.0f;
   if (air_db_per_m_8k_ > 0.0f) air_state_.resize_exact(voices * 2u, 0.0f);
 
   std::span<const BusDesc> buses = config.buses.empty() ? default_buses() : config.buses;
@@ -1231,7 +1238,8 @@ void Mixer::mix_block(f32* out, u32 frames) noexcept {
       if (air_db_per_m_8k_ > 0.0f && source.distance_model != DistanceModel::None &&
           (v.flags & k_voice_noise) == 0) {
         const Vec3 offset = source.position - listener_.position;
-        const f32 a = air_lowpass_coefficient(std::sqrt(dot(offset, offset)), air_db_per_m_8k_);
+        const f32 a = air_lowpass_coefficient(std::sqrt(dot(offset, offset)), air_db_per_m_8k_,
+                                              air_db_per_m_1k_);
         f32* state = air_state_.data() + static_cast<usize>(s) * 2u;
         if (in.fresh) {
           state[0] = 0.0f;

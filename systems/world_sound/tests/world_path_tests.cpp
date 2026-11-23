@@ -319,11 +319,12 @@ TEST_CASE("world path: a far wood swells as the wind crosses it, less than one c
   const f64 bed_spread = percentile(bed, 0.95) - percentile(bed, 0.05);
   const f64 crown_spread = percentile(crown, 0.95) - percentile(crown, 0.05);
   MESSAGE("5-95 % spread: beds " << bed_spread << " dB, crowns " << crown_spread << " dB");
-  // The grounded figure (world-sound.md, "Read again by S114"): the natural ambient level's
-  // standard deviation of 2.0 to 2.4 dB(A) Boersma and Etienne report, a 5th to 95th percentile
-  // spread of 6.6 to 7.9 dB were it Gaussian; held here with a decibel either side, since their
-  // quantity is the ambient's over intervals and not a bed's over a run. And a wide sector averages
-  // its gusts, so the beds move less than the crowns of their own do.
+  // A sanity window, not a grounded bound (S114-L3; world-sound.md, "Read again by S114"): the
+  // natural ambient level's standard deviation of 2.0 to 2.4 dB(A) Boersma and Etienne report — a
+  // search excerpt [S], and a different quantity, the ambient's over intervals and not a bed's over
+  // a run — is a 5th to 95th percentile spread of 6.6 to 7.9 dB were it Gaussian, and the window is
+  // that with a decibel either side, a choice. And a wide sector averages its gusts, so the beds
+  // move less than the crowns of their own do.
   CHECK(bed_spread > 5.6);
   CHECK(bed_spread < 8.9);
   CHECK(bed_spread < crown_spread);
@@ -349,6 +350,13 @@ f64 band_power_db(const std::vector<f32>& stereo, u32 band) {
     }
   }
   return n != 0 && sum > 0.0 ? 10.0 * std::log10(sum / static_cast<f64>(n)) : -1000.0;
+}
+
+// The sampled one-pole y += a (x - y)'s loss at `hz`, dB, at 48 kHz.
+f64 one_pole_loss_db(f64 a, f64 hz) {
+  const f64 om = 2.0 * 3.14159265358979323846 * hz / 48000.0;
+  const f64 h2 = a * a / (1.0 - 2.0 * (1.0 - a) * std::cos(om) + (1.0 - a) * (1.0 - a));
+  return -10.0 * std::log10(h2);
 }
 
 // A game's noise clip played once `distance_m` ahead of the listener, its null render's 8 kHz band
@@ -390,30 +398,52 @@ f64 clip_tilt(f64 distance_m, const std::string& wav) {
 
 TEST_CASE("world path: a game's clip loses its top with distance, as the air takes it") {
   // The one-pole's corner is set so its loss at 8 kHz is the air's over the distance (0.0776 dB a
-  // metre at 20 degC and 70 %): within half a decibel of it to 300 m (the corner is set for the
-  // continuous one-pole; the sampled one takes 0.4 dB less), taking more than the air in the middle
-  // bands beyond about 200 m (1.9 dB at 1 kHz at 200 m against the air's 1.0).
-  for (const f32 d : {50.0f, 100.0f, 200.0f, 300.0f}) {
-    const f32 air = static_cast<f32>(air_absorption_db_per_m(8000.0, 20.0, 70.0));
-    const f64 a = static_cast<f64>(audio::air_lowpass_coefficient(d, air));
-    const f64 om = 2.0 * 3.14159265358979323846 * 8000.0 / 48000.0;
-    const f64 h2 = a * a / (1.0 - 2.0 * (1.0 - a) * std::cos(om) + (1.0 - a) * (1.0 - a));
-    CHECK(std::fabs(-10.0 * std::log10(h2) - static_cast<f64>(d * air)) < 0.5);
+  // metre at 20 degC and 70 %): within half a decibel of it while that fit binds, to about 125 m
+  // (the corner is set for the continuous one-pole; the sampled one takes 0.4 dB less). Past that
+  // the corner is held at the 1 kHz fit (mixer.h; the next case).
+  const f32 air = static_cast<f32>(air_absorption_db_per_m(8000.0, 20.0, 70.0));
+  const f32 air_1k = static_cast<f32>(air_absorption_db_per_m(1000.0, 20.0, 70.0));
+  for (const f32 d : {50.0f, 100.0f}) {
+    const f64 a = static_cast<f64>(audio::air_lowpass_coefficient(d, air, air_1k));
+    CHECK(std::fabs(one_pole_loss_db(a, 8000.0) - static_cast<f64>(d * air)) < 0.5);
   }
-  CHECK(audio::air_lowpass_coefficient(0.0f, 0.0776f) == 1.0f);
-  CHECK(audio::air_lowpass_coefficient(100.0f, 0.0f) == 1.0f);
+  CHECK(audio::air_lowpass_coefficient(0.0f, 0.0776f, 0.00498f) == 1.0f);
+  CHECK(audio::air_lowpass_coefficient(100.0f, 0.0f, 0.0f) == 1.0f);
   // Through the stage: the same noise at 5 m and at 200 m, the 8 kHz octave against the 1 kHz one
-  // (the distance law takes both alike): 15.1 - 1.9 = 13.2 dB darker at the bands' centres, less
-  // over the 8 kHz octave's lower half (11.3 measured); held between 10.5 and 14.
+  // (the distance law takes both alike). S114-M3 moved it: the corner held at the 1 kHz fit past
+  // about 125 m, the one-pole takes 12.4 dB at 8 kHz and the air's 1.0 at 1 kHz there, 11.4 dB
+  // darker at the bands' centres (13.2 when fitted at 8 kHz alone), less over the 8 kHz octave's
+  // lower half (9.4 measured, 11.3 before); held between 8.6 and 12.1, the window as wide and as
+  // placed about the measurement as it was.
   const test::TempDir tmp("world_path_clip");
   const f64 near = clip_tilt(5.0, tmp.file("near.wav"));
   const f64 far = clip_tilt(200.0, tmp.file("far.wav"));
   MESSAGE("8 kHz over 1 kHz: at 5 m " << near << " dB, at 200 m " << far << " dB");
-  CHECK(near - far > 10.5);
-  CHECK(near - far < 14.0);
+  CHECK(near - far > 8.6);
+  CHECK(near - far < 12.1);
   // With the path off nothing is filtered: the same tilt at both distances.
   const Tunable path("audio.world.path", "false");
   CHECK(std::fabs(clip_tilt(200.0, tmp.file("far-off.wav")) - near) < 0.3);
+}
+
+TEST_CASE(
+    "world path: a far clip keeps its middle: the low-pass takes no more than the air at 1 kHz") {
+  // S114-M3: fitted at 8 kHz alone, the one-pole took 20.8 dB at 1 kHz at 500 m against the air's
+  // 2.5, and its corner fell to about 1 Hz at 1 km. Held at the 1 kHz fit (mixer.h), its loss at
+  // 1 kHz is the air's within a tenth of a decibel at every distance past the crossing (the sampled
+  // filter's departure from the continuous one there is under 0.01 dB), and at 8 kHz it never
+  // takes more than the air does.
+  const f32 air = static_cast<f32>(air_absorption_db_per_m(8000.0, 20.0, 70.0));
+  const f32 air_1k = static_cast<f32>(air_absorption_db_per_m(1000.0, 20.0, 70.0));
+  for (const f32 d : {150.0f, 200.0f, 300.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f}) {
+    const f64 a = static_cast<f64>(audio::air_lowpass_coefficient(d, air, air_1k));
+    const f64 at_1k = one_pole_loss_db(a, 1000.0);
+    const f64 at_8k = one_pole_loss_db(a, 8000.0);
+    MESSAGE(d << " m: 1 kHz " << at_1k << " dB (air " << d * air_1k << "), 8 kHz " << at_8k
+              << " dB (air " << d * air << ")");
+    CHECK(std::fabs(at_1k - static_cast<f64>(d * air_1k)) < 0.1);
+    CHECK(at_8k <= static_cast<f64>(d * air));
+  }
 }
 
 namespace {
@@ -448,7 +478,10 @@ f64 ears_db(const Wall* wall) {
 TEST_CASE("world path: behind a wall the ears' wind drops by the lee's share") {
   // Open air, then a wall 2 m high 3 m upwind (1.5 heights: the near lee, 0.3 of the open wind),
   // then the same wall 3 m downwind (no lee at the listener) and 50 m upwind (past 24 heights:
-  // the probes at 48 m find it, 0.88 of the wind).
+  // the probes at 48 m find it, 0.88 of the wind). The figures pinned are the model's, not the
+  // literature's (S114-L3): the 0.3 is a choice no source gave, and the 0.88 is interpolated
+  // toward the 0.8 at 20 heights that is a review's sentence through a search [S]; only the 30
+  // heights' reach is read from its source [F] (world-sound.md, "Read again by S114").
   const f64 open = ears_db(nullptr);
   const Wall near{-3.0};
   const Wall behind{3.0};

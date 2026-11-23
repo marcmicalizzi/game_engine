@@ -1670,7 +1670,10 @@ void GameRunner::observe(void* user, const FlySession& session, const input::Inp
   // from the camera, and the world's voices described from this tick's wind (S112). Every tick,
   // held or ended: the sound runs on as the clocks do.
   const i64 sound_started = time::monotonic_ns();
-  if (g.sound.walker != nullptr) g.sound.walker(g.sound.user, session.walker());
+  // The walker only while the session walks: a flying session keeps its walker attached, and
+  // its eye is no walker's (S114-M2).
+  if (g.sound.walker != nullptr)
+    g.sound.walker(g.sound.user, session.walking() ? session.walker() : nullptr);
   if (g.sound.wind != nullptr) g.sound.wind(g.sound.user, session.wind().live(), self.sun_time_s());
   if (g.sound.tick != nullptr) g.sound.tick(g.sound.user, in.eye, in.heading, in.pitch);
   g.sound_ns += time::monotonic_ns() - sound_started;

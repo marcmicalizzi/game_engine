@@ -216,7 +216,7 @@ struct GameSound {
   JsonValue (*summary)(const void* user) = nullptr;          // the game block's `sound`
   bool (*finish)(void* user, std::string* error) = nullptr;  // at `GameRunner::finish`
   // The session's walker (S114), handed before `wind` every tick, for the ears' shelter: null when
-  // the session flies.
+  // the session flies (`FlySession::walking`; the session's walker stays attached while it flies).
   void (*walker)(void* user, const Walker* walker) = nullptr;
 };
 

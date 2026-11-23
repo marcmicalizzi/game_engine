@@ -72,7 +72,6 @@ void on_walker(void* user, const Walker* walker) {
   static_cast<GameSoundHost*>(user)->set_walker(walker);
 }
 void on_tick(void* user, const WorldPos& eye, f32 heading, f32 pitch) {
-  static_cast<GameSoundHost*>(user)->note_eye(eye.y);
   world_sound::SoundStage& stage = stage_of(user);
   Vec3 forward;
   Vec3 up;
@@ -83,7 +82,12 @@ void on_tick(void* user, const WorldPos& eye, f32 heading, f32 pitch) {
 JsonValue on_summary(const void* user) {
   return static_cast<const GameSoundHost*>(user)->stage().summary_json();
 }
-bool on_finish(void* user, std::string* error) { return stage_of(user).close(error); }
+bool on_finish(void* user, std::string* error) {
+  // The session's walker is a local of the loop that ran it: nothing casts through it after the
+  // runner's finish (S114-L6).
+  static_cast<GameSoundHost*>(user)->set_walker(nullptr);
+  return stage_of(user).close(error);
+}
 
 f64 distance_xz(f64 x, f64 z, const WorldPos& p) noexcept {
   return std::sqrt((x - p.x) * (x - p.x) + (z - p.z) * (z - p.z));
@@ -194,7 +198,6 @@ void GameSoundHost::set_clock(f64 sky_start_s, f64 sun_rate, u32 tick_hz) noexce
 
 void GameSoundHost::tick_listener(const WorldPos& eye, const Vec3& forward,
                                   const Vec3& up) noexcept {
-  eye_y_ = eye.y;
   stage_.set_listener(eye, forward, up);
   stage_.tick();
 }
@@ -205,7 +208,9 @@ void GameSoundHost::observe(void* user, const FlySession& session, const input::
   // The session's sky as the frame's: the start plus the sun's rate times the ticks' seconds.
   const f64 t = static_cast<f64>(session.tick().value) / static_cast<f64>(h.tick_hz_);
   if (h.world_) {
-    h.set_walker(session.walker());
+    // The walker only while the session walks: a session that flies keeps its walker attached
+    // (`FlySession::walker`), and its eye is no walker's (S114-M2).
+    h.set_walker(session.walking() ? session.walker() : nullptr);
     on_wind(&h, session.wind().live(), h.sky_start_s_ + h.sun_rate_ * t);
   }
   on_tick(&h, session.state().position, session.state().yaw, session.state().pitch);
@@ -215,6 +220,8 @@ void GameSoundHost::observe(void* user, const FlySession& session, const input::
 void GameSoundHost::tick_at(const WorldPos& eye, const Vec3& forward, const gfx::WindLive& live,
                             f64 sky_time_s) noexcept {
   const i64 started = time::monotonic_ns();
+  // A flight's frame has no walker: a session's, if one ran before, is gone (S114-L6).
+  set_walker(nullptr);
   if (world_) on_wind(this, live, sky_time_s);
   // Up as the world's, made square to where the camera looks.
   const Vec3 world_up{0.0f, 1.0f, 0.0f};
@@ -227,8 +234,8 @@ void GameSoundHost::tick_at(const WorldPos& eye, const Vec3& forward, const gfx:
 
 // ---- the ears' shelter (S114) -------------------------------------------------------------------
 
-f32 shelter_height_at(ShelterCast cast, const void* user, f64 feet_y, f64 x, f64 z, f32 across_x,
-                      f32 across_z) noexcept {
+f32 shelter_height_at(ShelterCast cast, ShelterGround ground, const void* user, f64 feet_y, f64 x,
+                      f64 z, f32 across_x, f32 across_z) noexcept {
   if (cast == nullptr) return 0.0f;
   f64 least = 1e30;
   for (const f32 side : {-k_shelter_across_m, 0.0f, k_shelter_across_m}) {
@@ -237,7 +244,13 @@ f32 shelter_height_at(ShelterCast cast, const void* user, f64 feet_y, f64 x, f64
                           z + static_cast<f64>(side * across_z)};
     WalkCast hit;
     if (!cast(user, origin, 2.0f * k_shelter_cast_above_m, hit) || !hit.hit) return 0.0f;
-    const f64 h = hit.position.y - feet_y;
+    // The ground itself is no obstacle: a slope rising into the wind shelters nothing (S114-M1).
+    if (hit.what == 1) return 0.0f;
+    // What stands there, over the ground under it; over the feet only where no ground is held.
+    f64 base = feet_y;
+    f64 under = 0.0;
+    if (ground != nullptr && ground(user, origin.x, origin.z, under)) base = under;
+    const f64 h = hit.position.y - base;
     least = h < least ? h : least;
   }
   return least > 0.0 ? static_cast<f32>(least) : 0.0f;
@@ -249,13 +262,22 @@ bool walker_cast(const void* user, WorldPos origin, f32 length, WalkCast& out) {
   return static_cast<const Walker*>(user)->cast(origin, Vec3{0.0f, -1.0f, 0.0f}, length, 0.0f, out);
 }
 
+bool walker_ground(const void* user, f64 x, f64 z, f64& out) {
+  return static_cast<const Walker*>(user)->collision_ground(x, z, out);
+}
+
 }  // namespace
 
+f32 walker_shelter(const Walker* walker, f64 x, f64 z, f32 across_x, f32 across_z) noexcept {
+  if (walker == nullptr) return 0.0f;
+  // The walker's own feet: crouched, the drawn eye is the feet plus `eye_height()`, not the
+  // standing `params().eye_height` (S114-H1).
+  return shelter_height_at(&walker_cast, &walker_ground, walker, walker->feet().y, x, z, across_x,
+                           across_z);
+}
+
 f32 GameSoundHost::shelter(void* user, f64 x, f64 z, f32 across_x, f32 across_z) noexcept {
-  const GameSoundHost& h = *static_cast<const GameSoundHost*>(user);
-  if (h.walker_ == nullptr) return 0.0f;
-  const f64 feet = h.eye_y_ - static_cast<f64>(h.walker_->params().eye_height);
-  return shelter_height_at(&walker_cast, h.walker_, feet, x, z, across_x, across_z);
+  return walker_shelter(static_cast<const GameSoundHost*>(user)->walker_, x, z, across_x, across_z);
 }
 
 void GameSoundHost::set_walker(const Walker* walker) noexcept {

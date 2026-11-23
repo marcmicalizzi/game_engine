@@ -683,17 +683,36 @@ TEST_CASE("engine-view: a crown's class is the mesh's own word, then its species
 
 namespace {
 
-// A case's own world for the ears' shelter (S114): open ground at y = 0, a wall 3 m high and 40 m
-// long across the x axis at z 4.8 to 5.2, and a trunk's proxy 10 m high and 0.3 m round at
-// (0, 10). A downward cast meets the highest of them under its origin.
-bool shelter_world(const void*, WorldPos origin, f32 length, view::WalkCast& out) {
+// A case's own world for the ears' shelter (S114): ground rising `slope` a metre toward +z from
+// y = 0 at z = 0 (0: open flat ground), a wall 3 m high over it and 40 m long across the x axis at
+// z 4.8 to 5.2 (when `wall`), and a trunk's proxy 10 m high and 0.3 m round at (0, 10). A downward
+// cast meets the highest of them under its origin: the ground as `what` 1, a placement as 2.
+struct ShelterWorld {
+  f64 slope = 0.0;
+  bool wall = true;
+};
+bool shelter_world(const void* user, WorldPos origin, f32 length, view::WalkCast& out) {
+  const ShelterWorld& w = *static_cast<const ShelterWorld*>(user);
   out = view::WalkCast{};
-  f64 top = 0.0;
-  if (origin.z >= 4.8 && origin.z <= 5.2 && std::fabs(origin.x) <= 20.0) top = 3.0;
-  if (std::hypot(origin.x, origin.z - 10.0) <= 0.3) top = 10.0;
+  const f64 ground = w.slope * origin.z;
+  f64 top = ground;
+  u8 what = 1;
+  if (w.wall && origin.z >= 4.8 && origin.z <= 5.2 && std::fabs(origin.x) <= 20.0) {
+    top = ground + 3.0;
+    what = 2;
+  }
+  if (std::hypot(origin.x, origin.z - 10.0) <= 0.3) {
+    top = ground + 10.0;
+    what = 2;
+  }
   if (origin.y - top > static_cast<f64>(length)) return true;
   out.hit = true;
+  out.what = what;
   out.position = WorldPos{origin.x, top, origin.z};
+  return true;
+}
+bool shelter_ground(const void* user, f64, f64 z, f64& out) {
+  out = static_cast<const ShelterWorld*>(user)->slope * z;
   return true;
 }
 
@@ -702,14 +721,120 @@ bool shelter_world(const void*, WorldPos origin, f32 length, view::WalkCast& out
 TEST_CASE("engine-view: the ears' shelter is a wall across the wind, never one trunk") {
   // The wind along z, across it x: three casts a pace apart across the wind each meet the wall,
   // and only the middle one meets the trunk.
-  CHECK(view::shelter_height_at(&shelter_world, nullptr, 0.0, 0.0, 5.0, 1.0f, 0.0f) == 3.0f);
-  CHECK(view::shelter_height_at(&shelter_world, nullptr, 0.0, 0.0, 10.0, 1.0f, 0.0f) == 0.0f);
-  CHECK(view::shelter_height_at(&shelter_world, nullptr, 0.0, 0.0, 20.0, 1.0f, 0.0f) == 0.0f);
-  // Measured from the feet: standing 1 m up a bank, the wall is 2 m over them.
-  CHECK(view::shelter_height_at(&shelter_world, nullptr, 1.0, 0.0, 5.0, 1.0f, 0.0f) == 2.0f);
+  const ShelterWorld flat;
+  const void* u = &flat;
+  CHECK(view::shelter_height_at(&shelter_world, &shelter_ground, u, 0.0, 0.0, 5.0, 1.0f, 0.0f) ==
+        3.0f);
+  CHECK(view::shelter_height_at(&shelter_world, &shelter_ground, u, 0.0, 0.0, 10.0, 1.0f, 0.0f) ==
+        0.0f);
+  CHECK(view::shelter_height_at(&shelter_world, &shelter_ground, u, 0.0, 0.0, 20.0, 1.0f, 0.0f) ==
+        0.0f);
+  // Measured over the ground at the probe, not over the feet (S114-M1): standing 1 m up a bank,
+  // the wall is still its own 3 m; only with no ground under the cast (a mesh floor) is it measured
+  // over the feet, 2 m.
+  CHECK(view::shelter_height_at(&shelter_world, &shelter_ground, u, 1.0, 0.0, 5.0, 1.0f, 0.0f) ==
+        3.0f);
+  CHECK(view::shelter_height_at(&shelter_world, nullptr, u, 1.0, 0.0, 5.0, 1.0f, 0.0f) == 2.0f);
   // With the wind along x the casts run along z, off the wall's 0.4 m: no shelter.
-  CHECK(view::shelter_height_at(&shelter_world, nullptr, 0.0, 0.0, 5.0, 0.0f, 1.0f) == 0.0f);
-  CHECK(view::shelter_height_at(nullptr, nullptr, 0.0, 0.0, 5.0, 1.0f, 0.0f) == 0.0f);
+  CHECK(view::shelter_height_at(&shelter_world, &shelter_ground, u, 0.0, 0.0, 5.0, 0.0f, 1.0f) ==
+        0.0f);
+  CHECK(view::shelter_height_at(nullptr, nullptr, u, 0.0, 0.0, 5.0, 1.0f, 0.0f) == 0.0f);
+}
+
+TEST_CASE("engine-view: a slope rising into the wind shelters nothing, a wall on it its height") {
+  // S114-M1: the ground met by the casts is no obstacle. Measured over the feet, a slope of 1 in 8
+  // (7 degrees) read as 0.19 m of shelter at 1.5 m upwind and 3 m at 24 m, and 1 in 4 (14 degrees)
+  // took the full lee (0.3 of the open wind, -20.9 dB at the ears) on every dune; the feet stand
+  // at the slope's foot, z 0, and the wind comes down the slope toward them along -z.
+  for (const f64 slope : {0.125, 0.25}) {
+    const ShelterWorld open{slope, false};
+    for (const f64 z : {1.5, 3.0, 6.0, 12.0, 24.0})
+      CHECK_MESSAGE(view::shelter_height_at(&shelter_world, &shelter_ground, &open, 0.0, 0.0, z,
+                                            1.0f, 0.0f) == 0.0f,
+                    "slope " << slope << " at " << z << " m");
+    // The same slope with the wall standing on it: the wall's own 3 m, wherever it stands.
+    const ShelterWorld walled{slope, true};
+    CHECK(view::shelter_height_at(&shelter_world, &shelter_ground, &walled, 0.0, 0.0, 5.0, 1.0f,
+                                  0.0f) == doctest::Approx(3.0).epsilon(1e-6));
+  }
+}
+
+namespace {
+
+// Flat open ground of the renderer's own terrain, 120 m across.
+renderer::SceneData shelter_flat_ground() {
+  renderer::SceneData scene;
+  scene.terrain.enabled = true;
+  scene.terrain.size = 65;
+  scene.terrain.extent = 60.0f;
+  scene.terrain.seed = 4;
+  scene.terrain.dune_height = 0.0f;
+  return scene;
+}
+
+}  // namespace
+
+TEST_CASE("engine-view: a crouched walker's ears find no shelter on flat open ground") {
+  // S114-H1: the feet were the drawn eye less the standing eye height, so crouched (the eye 1.1 m
+  // over the feet against 1.65) they came out 0.55 m under the ground, the ground read as a 0.55 m
+  // obstacle and the ears lost 20.9 dB in the open. The feet are the walker's own now.
+  const renderer::SceneData scene = shelter_flat_ground();
+  view::Walker walker;
+  std::string error;
+  REQUIRE_MESSAGE(walker.start(view::WalkParams{}, 240, scene, &error), error);
+  REQUIRE(walker.available());
+  if (std::string(walker.collision()) != "physics") {
+    MESSAGE("this build's walker follows the ground and casts nothing: no shelter to measure");
+    return;
+  }
+  (void)walker.drop(WorldPos{2.0, 20.0, 3.0});
+  view::WalkInput crouch;
+  crouch.crouch = true;
+  for (u32 t = 0; t < 240; ++t)
+    (void)walker.step(crouch);
+  REQUIRE(walker.crouched());
+  REQUIRE(walker.eye_height() < 1.2f);
+  const WorldPos feet = walker.feet();
+  for (const f64 d : {1.5, 3.0, 6.0, 12.0})
+    CHECK_MESSAGE(view::walker_shelter(&walker, feet.x, feet.z - d, 1.0f, 0.0f) == 0.0f,
+                  "at " << d << " m");
+}
+
+TEST_CASE("engine-view: a flying session hands the ears no walker, a walking one its own") {
+  // S114-M2: a session keeps its walker attached while it flies (`FlySession::walker`), so the
+  // shelter took a flight's eye for a walker's. The host is the session's tick observer, as a
+  // module-less session's is.
+  const test::TempDir tmp("engine_view_shelter_walker");
+  view::GameSoundHost host;
+  std::string error;
+  REQUIRE_MESSAGE(
+      host.open(world_sound::AudioMode::Null, "", tmp.file("ears.wav"), "", 240, &error), error);
+  const renderer::SceneData scene = shelter_flat_ground();
+  view::Walker walker;
+  REQUIRE_MESSAGE(walker.start(view::WalkParams{}, 240, scene, &error), error);
+  REQUIRE(walker.available());
+  // Two sessions with the walker attached, ten ticks each: one that flies, one started walking
+  // (`--walk`'s header).
+  for (const bool walking : {false, true}) {
+    view::SessionHeader header;
+    header.start.position = WorldPos{2.0, 20.0, 3.0};
+    header.params.tick_hz = 240;
+    header.has_walk = true;
+    header.walk = view::WalkParams{};
+    header.walking = walking;
+    view::FlySession session;
+    session.set_walker(&walker);
+    REQUIRE_MESSAGE(session.start(view::default_fly_map(), header, &error), error);
+    session.set_tick_observer(&view::GameSoundHost::observe, &host);
+    u32 cursor = 0;
+    for (u64 t = 1; t <= 10; ++t)
+      cursor = session.run(std::span<const input::RawEvent>{}, cursor, SimTick{t});
+    REQUIRE(session.walking() == walking);
+    CHECK_MESSAGE(host.walker() == (walking ? &walker : nullptr), (walking ? "walking" : "flying"));
+    session.set_tick_observer(nullptr, nullptr);
+  }
+  std::string close_error;
+  CHECK_MESSAGE(host.stage().close(&close_error), close_error);
 }
 
 #endif  // ENGINE_VIEW_GAME && ENGINE_VIEW_WORLD_SOUND

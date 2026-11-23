@@ -26,6 +26,18 @@ namespace {
 // into the beds, round a listener 10,000 km out (the mixer's frame is the cell's corner).
 constexpr f64 k_far = 1.0e7;
 
+// A tunable set for a scope and put back however the scope ends, a failed REQUIRE's included.
+struct Tunable {
+  tunables::Tunable* t;
+  Tunable(const char* name, const char* value) : t(tunables::find(name)) {
+    REQUIRE(t != nullptr);
+    REQUIRE(t->set_from_text(value));
+  }
+  ~Tunable() { t->reset(); }
+  Tunable(const Tunable&) = delete;
+  Tunable& operator=(const Tunable&) = delete;
+};
+
 struct Grove {
   std::vector<Crown> crowns;
   static void visit(void* user, const WorldPos& centre, f64 reach_m, const CrownSink& sink) {
@@ -114,13 +126,11 @@ struct Session {
 TEST_CASE("world sound: a bed rises 9 dB and the ears 12 dB a doubling of a fixed wind") {
   // The source laws alone (S114): the path's terms take the needles' tone by its frequency, which a
   // doubling of the wind moves an octave, so with the path the needle crowns rise a little more or
-  // less than 30 log 2 (9.07 and 9.19 dB measured); the path is held by its own cases.
-  tunables::Tunable* path = tunables::find("audio.world.path");
-  REQUIRE(path != nullptr);
-  REQUIRE(path->set_from_text("false"));
+  // less than 30 log 2 (9.07 and 9.19 dB measured); the default configuration, the path on, is the
+  // next case's. The switch is read at the stage's open and put back however the case ends.
+  const Tunable path("audio.world.path", "false");
   Session slow(4.0, false);
   Session fast(8.0, false);
-  path->reset();
   slow.tick(10);
   fast.tick(10);
   // The crowns, the beds and a crown of their own: 30 log 2 = 9.03 dB (Fegeant, through Bolin).
@@ -139,6 +149,40 @@ TEST_CASE("world sound: a bed rises 9 dB and the ears 12 dB a doubling of a fixe
   CHECK(w.bed_voices >= 1u);
   CHECK(w.bed_voices <= 8u);
   CHECK(w.ear_voices == 2u);
+}
+
+TEST_CASE("world sound: in the default configuration, the path on, both laws hold to 0.25 dB") {
+  // S114-L2: the two cases above hold the source laws with the path off; here the path is on, as a
+  // session runs, and the doubling and a held gust are what they were within a quarter decibel:
+  // the path's terms take the needles' tone by its frequency, which the wind moves (9.07 and 9.19
+  // dB measured for a doubling when the path landed).
+  Session slow(4.0, false);
+  Session fast(8.0, false);
+  slow.tick(10);
+  fast.tick(10);
+  const f64 bed = fast.total_db(WorldVoiceKind::Bed) - slow.total_db(WorldVoiceKind::Bed);
+  const f64 crown = fast.total_db(WorldVoiceKind::Crown) - slow.total_db(WorldVoiceKind::Crown);
+  const f64 ears = static_cast<f64>(fast.first(WorldVoiceKind::EarLeft).level_db -
+                                    slow.first(WorldVoiceKind::EarLeft).level_db);
+  MESSAGE("a doubling with the path: beds " << bed << " dB, crowns " << crown << ", ears " << ears);
+  CHECK(std::fabs(bed - 9.031) < 0.25);
+  CHECK(std::fabs(crown - 9.031) < 0.25);
+  CHECK(std::fabs(ears - 12.041) < 0.25);
+  Session s(0.0, false);
+  s.frame.live.set = true;
+  s.frame.live.mean_m_s = 6.0;
+  s.frame.live.to_deg = 90.0;
+  s.tick(2);
+  const f64 calm_gust = s.total_db(WorldVoiceKind::Bed);
+  f64 phase = 0.0;
+  for (u32 t = 0; t < 660; ++t) {
+    phase = gfx::wind_gust_phase_step(phase, true, 1.0 / 60.0);
+    s.frame.live.gust = gfx::wind_gust_level(phase);
+    s.tick(1);
+  }
+  const f64 held = s.total_db(WorldVoiceKind::Bed) - calm_gust;
+  MESSAGE("a held gust with the path: " << held << " dB");
+  CHECK(std::fabs(held - 30.0 * std::log10(gfx::wind_gust_factor(0.03))) < 0.25);
 }
 
 TEST_CASE("world sound: the downwind ear is the louder, and turning the head turns it") {
@@ -169,11 +213,8 @@ TEST_CASE("world sound: a live wind set between two ticks moves the level on the
 TEST_CASE(
     "world sound: a forced gust raises a bed by 30 log G along its envelope and lets it fall") {
   // The source law alone, as above (S114): the gust moves the needles' tone through the path.
-  tunables::Tunable* path = tunables::find("audio.world.path");
-  REQUIRE(path != nullptr);
-  REQUIRE(path->set_from_text("false"));
+  const Tunable path("audio.world.path", "false");
   Session s(0.0, false);
-  path->reset();
   s.frame.live.set = true;
   s.frame.live.mean_m_s = 6.0;
   s.frame.live.to_deg = 90.0;

@@ -419,6 +419,8 @@ bool SoundStage::open(const StageConfig& config, const scene::Sound* block, std:
     if (air.path) {
       mixer_config.air_db_per_m_8k =
           static_cast<f32>(air_absorption_db_per_m(8000.0, air.temperature_c, air.humidity_pct));
+      mixer_config.air_db_per_m_1k =
+          static_cast<f32>(air_absorption_db_per_m(1000.0, air.temperature_c, air.humidity_pct));
     }
   }
   audio::OutputConfig output_config;
