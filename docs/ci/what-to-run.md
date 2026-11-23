@@ -452,9 +452,9 @@ The 2026-10-23 terrain batch has 121 tests in Windows debug: **70 minutes** for 
 
 **The material resolve's variants are the build's largest single memory cost, and a Ninja job pool
 caps how many compile at once** (roadmap T118, 2026-11-12). One `slangc` compile of
-`visibility_resolve_rt_water_terrain_stochastic` holds 12.3 GiB of commit for about two minutes; six
-of the sixteen resolve variants hold 2.4 GiB or more, the other ten under 1 GiB; the 55 shaders of
-the tree sum to 49.1 GiB of peaks and 385 s of `slangc` (the table below). A build that recompiled
+`visibility_resolve_rt_water_terrain_stochastic` holds 12.3 GiB of commit for about two minutes; eight
+of the sixteen resolve variants hold 1.8 GiB or more, the other eight under 1 GiB; the 55 shaders of
+the tree sum to 51.1 GiB of peaks and 403 s of `slangc` (the table below). A build that recompiled
 them at four or six jobs asked for 38 to 40 GB at once, and on 2026-11-11, with thirteen agents
 building, the machine ran out of commit: builds died with C1083 on system headers, tests failed
 writing their own scratch files, and a forest load died. Every agent's first build after a base
@@ -465,33 +465,34 @@ at or above the line, `ENGINE_SHADER_HEAVY_MB` = 1,536 MiB, makes it **heavy**, 
 `engine_shaders()` gives its compile the Ninja pool `engine_shader_heavy`
 (`cmake/EngineShaders.cmake`, `cmake/EngineShaderCosts.cmake`). Every other compile — the light
 shaders and every C++ step — runs as parallel as the build's jobs allow, as before. The line sits
-in the measured gap (light at 997 MiB and under, heavy at 2,430 and over) with room for a light
-shader to grow by half before the check below asks for its row. The depth is the cache variable
+in the measured gap (light at 805 MiB and under, heavy at 1,854 and over) with room for a light
+shader to grow by nine tenths before the check below asks for its row. The depth is the cache variable
 `ENGINE_SHADER_HEAVY_JOBS`: a whole number, or `auto` (the default), which is **as many of the
 heaviest compiles, largest first, as fit in a third of the build machine's physical memory, and
 never fewer than one**. Largest first, because the pool does not choose which heavy compiles run
 together, so the depth has to fit the worst pair it could pick. A third, because the same build's
 C++ jobs, the other builds on a shared machine and the system need the rest. The configure prints
-the depth and the heavy set (`engine shaders: 6 heavy ..., at most 2 at once`).
+the depth and the heavy set (`engine shaders: 8 heavy ..., at most 2 at once`).
 
 | Machine | A third of its memory | The largest first | `auto` depth | Heavy compiles' worst peak |
 |---|---|---|---|---|
 | This desktop, 64 GB (65,216 MiB) | 21,738 MiB | 12,571 + 7,089 = 19,660; + 3,883 = 23,543 | 2 | 19.2 GiB |
 | A 32 GB developer machine | 10,922 MiB | 12,571 alone is over | 1 (the floor) | 12.3 GiB |
-| 128 GB | 43,690 MiB | all six, 31,333 | 6 (no limit) | 30.6 GiB |
+| 128 GB | 43,690 MiB | all eight, 35,073 | 8 (no limit) | 34.3 GiB |
 
 On a 32 GB machine the floor is the point: the largest variant alone is 12.3 GiB, more than a third,
 and it still has to compile; one at a time is the least a build can ask. A Linux container sees the
-memory its VM was given: this desktop's containers see 15,997 MiB and take depth 1, so their six
-heavy compiles run one after another (about 300 s of `slangc` on the shader step's path; the first
+memory its VM was given: this desktop's containers see 15,997 MiB and take depth 1, so their eight
+heavy compiles run one after another (about 340 s of `slangc` on the shader step's path; the first
 two container runs with the pool, `linux-clang-debug` and `linux-gcc-release` with a narrow test
-filter, took 9 min 25 s and 11 min 52 s end to end), where before the pool six of them at once would
-have asked a 15.6 GiB VM for 30.6 GiB. A generator with no pools (anything but Ninja; every preset is Ninja) ignores
+filter, took 9 min 25 s and 11 min 52 s end to end, with six heavy then), where without the pool all
+eight at once would ask a 15.6 GiB VM for 34.3 GiB. A generator with no pools (anything but Ninja; every preset is Ninja) ignores
 `JOB_POOL` and configures as before, and `build.shader_pool` is not registered there.
 
 **What a heavy compile costs** (the meter's numbers in the first `msvc-debug` build of 33ff2824
 with the pool, four jobs and other agents building beside it; the peaks are each compile's own and
-do not move with load or preset, the seconds are an upper bound):
+do not move with load or preset, the seconds are an upper bound; the two rows marked W161 are roadmap
+W161's own measurement, `slangc` alone with the shader cache off, `cmake/shader-costs.txt` says why):
 
 | Shader | Peak MiB | Seconds |
 |---|---|---|
@@ -501,8 +502,10 @@ do not move with load or preset, the seconds are an upper bound):
 | `visibility_resolve_rt_water_stochastic` | 2,824 | 31.2 |
 | `visibility_resolve_rt_water` | 2,536 | 26.8 |
 | `visibility_resolve_water_terrain` | 2,430 | 22.1 |
-| the six together | 31,333 | 303.3 |
-| the other 49 shaders | 18,943 summed; 997 the largest | 82.0 |
+| `visibility_resolve_water_stochastic` (W161) | 1,886 | 16.8 |
+| `visibility_resolve_water` (W161) | 1,854 | 15.8 |
+| the eight together | 35,073 | 335.9 |
+| the other 47 shaders | 17,206 summed; 805 the largest | 66.8 |
 
 The water branch and not the terrain is what makes a variant heavy: every heavy variant carries
 water, and the terrain variants without it peak at 805 MiB and under.
@@ -529,7 +532,7 @@ So at this desktop's default the pool takes 11.4 GiB off the shader step's peak 
 time on a rebuild of the shaders alone; in a whole build the C++ jobs fill the slots the pool holds
 back. The 38 to 40 GB quoted on 2026-11-11 is close to the sixteen resolve variants' peaks summed
 (37,594 MiB on 33ff2824), which one build reaches only with all sixteen running at once; at six jobs
-one build's worst is the six heavy compiles together, the first row, and the machine's worst was
+one build's worst is the six largest heavy compiles together, the first row, and the machine's worst was
 several builds' worst at once.
 
 **The table cannot go stale quietly.** Every compile runs under `tools/shader_meter`
