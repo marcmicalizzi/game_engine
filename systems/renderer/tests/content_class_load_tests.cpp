@@ -2318,10 +2318,11 @@ TEST_CASE("content classes at load: a missing recipe names no host and fails whe
   const Grid a = write_grid(tmp, "a.clusters", 9, "a.png");
   struct Missing {
     const char* name;
-    u32 recipe_reads;  // the class read's reads of the recipe's own file: none for flora's
+    const char* generator;  // flora's is a capability's, and a build may not carry it
+    u32 recipe_reads;       // the class read's reads of the recipe's own file: none for flora's
   };
-  for (const Missing missing :
-       {Missing{"gone.fixturehost.json", 1}, Missing{"gone.flora.json", 0}}) {
+  for (const Missing missing : {Missing{"gone.fixturehost.json", "fixturehost", 1},
+                                Missing{"gone.flora.json", "flora", 0}}) {
     const char* name = missing.name;
     CAPTURE(name);
     const std::string recipe = tmp.file(name);
@@ -2339,12 +2340,19 @@ TEST_CASE("content classes at load: a missing recipe names no host and fails whe
     std::string error;
     SceneData scene;
     CHECK_FALSE(load_scene(scene_of(tmp, {&a, &gone}), scene, error));
-    CHECK_MESSAGE(error.find("cannot read") != std::string::npos, error);
     CHECK_MESSAGE(error.find(name) != std::string::npos, error);
-    // It fails where the recipe is read for its mesh, with that read's own sentence.
-    const std::string sentence =
-        "cannot read " + recipe + ": " + io::status_name(io::Status::NotFound);
-    CHECK_MESSAGE(error.find(sentence) != std::string::npos, error);
+    if (assets::MeshGeneratorRegistry::global().find(missing.generator) != nullptr) {
+      // It fails where the recipe is read for its mesh, with that read's own sentence.
+      CHECK_MESSAGE(error.find("cannot read") != std::string::npos, error);
+      const std::string sentence =
+          "cannot read " + recipe + ": " + io::status_name(io::Status::NotFound);
+      CHECK_MESSAGE(error.find(sentence) != std::string::npos, error);
+    } else {
+      // A build without the generator's capability (the minimal one carries no flora) has nothing
+      // to read the recipe with, so the load refuses the mesh by its generator and names the
+      // capability; the class read before it is the same either way, which the counts below hold.
+      CHECK_MESSAGE(error.find("which this build does not carry") != std::string::npos, error);
+    }
     // The class read before it: the recipe's file read once for a generator that can name a host,
     // found nowhere, and never for flora's, which names none; no host named, so no host's record
     // opened, no probe made in the walk.
