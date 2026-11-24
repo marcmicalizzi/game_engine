@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R208",
+  "reason": "R208 replaces R207's one-key section with the store by part: why parts and packs and not one file a scene, the assembly by bytes, the pruning, the measured floor, and what a tile admitted after the load does; R209's two cases added to What a gale builds",
+  "date": "2026-11-23",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 6333
+  }
+}
