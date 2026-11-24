@@ -207,6 +207,10 @@ struct Surf {
 /// rho g^2 H^2 T / (64 pi) for significant height H and peak period T, which shoaling keeps to the
 /// break and breaking gives up (S113). A host's surf table scales it by the refraction's share.
 f64 surf_power_w_m(f64 height_m, f64 period_s) noexcept;
+/// An upper bound, dB SPL, on what a stretch of surf delivers at `listener` after its path in all
+/// its bands, at the mean over a period (the airborne efficiency taken): what the surf's cull
+/// compares with the floor less 20 dB before costing a record (world_sound.md, `Cost`).
+f64 surf_bound_db(const Surf& surf, const WorldPos& listener) noexcept;
 /// **The airborne efficiency** (S113; docs/experiments/world-sound.md, "Read again by S113"): the
 /// share of the power running water and breaking waves give up that is heard in the air. No
 /// source read gives it; it is **a stated choice**, anchored on Bolin and Abom's 60 dB over surf
@@ -267,6 +271,9 @@ struct WorldStats {
   u64 stretches_seen = 0;
   u64 surf_seen = 0;
   u64 water_dropped = 0;  // past `audio.world.max_water` in the last refresh
+  // Surf records in reach the last refresh skipped before costing them: their bound at the
+  // listener (`surf_bound_db`) under the floor less 20 dB (`audio.world.surf_cull`).
+  u64 surf_culled = 0;
   u32 stream_voices = 0;
   u32 fall_voices = 0;
   u32 surf_voices = 0;

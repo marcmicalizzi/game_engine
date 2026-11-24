@@ -734,6 +734,7 @@ JsonValue SoundStage::summary_json() const {
     world.set("stretches_seen", JsonValue(w.stretches_seen));  // S113
     world.set("surf_seen", JsonValue(w.surf_seen));
     world.set("water_dropped", JsonValue(w.water_dropped));
+    world.set("surf_culled", JsonValue(w.surf_culled));
     world.set("stream_voices", JsonValue(static_cast<u64>(w.stream_voices)));
     world.set("fall_voices", JsonValue(static_cast<u64>(w.fall_voices)));
     world.set("surf_voices", JsonValue(static_cast<u64>(w.surf_voices)));

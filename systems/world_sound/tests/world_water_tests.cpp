@@ -249,6 +249,98 @@ TEST_CASE("world water: a lake's lap at 0.1 m is heard on its shore") {
   CHECK(level < 55.0);
 }
 
+TEST_CASE("world water: the surf's bound is over what its path delivers, at every place tried") {
+  // The cull's bound (`surf_bound_db`) against the level a record is heard at after its whole path
+  // (air, ground), the mean over whole periods of its voice, each record alone, nothing culled.
+  Tunable cull("audio.world.surf_cull", "false");
+  u32 tried = 0;
+  f64 least_margin = 1e9;
+  for (const f64 length : {4.0, 16.0, 40.0}) {
+    for (const f64 off : {3.0, 25.0, 140.0, 600.0}) {
+      for (const f64 turn : {0.0, 1.0}) {
+        for (const f64 xi : {0.5, 3.0}) {
+          Surf su;
+          su.at = WorldPos{k_far + 7.0, 0.0, k_far};
+          su.along = Vec2{static_cast<f32>(std::cos(turn)), static_cast<f32>(std::sin(turn))};
+          su.length_m = static_cast<f32>(length);
+          su.power_w_m = static_cast<f32>(surf_power_w_m(0.6, 1.2));
+          su.height_m = 0.6f;
+          su.surf_similarity = static_cast<f32>(xi);
+          su.period_s = 1.2f;
+          Session s(Water{{}, {su}});
+          s.ears = WorldPos{k_far + 7.0 + 0.6 * off, 1.7, k_far + 0.8 * off};
+          s.tick(1);
+          f64 mean = 0.0;
+          for (u32 i = 0; i < 72; ++i) {  // whole periods: the envelope's mean
+            s.tick();
+            const f32 level = s.loudest(WorldVoiceKind::Surf).level_db;
+            if (level > -999.0f) mean += std::pow(10.0, static_cast<f64>(level) / 10.0);
+          }
+          const f64 bound = surf_bound_db(su, s.ears);
+          if (mean > 0.0) {
+            const f64 level = 10.0 * std::log10(mean / 72.0);
+            least_margin = std::min(least_margin, bound - level);
+            CHECK_MESSAGE(bound >= level, "length " << length << " off " << off << " turn " << turn
+                                                    << " xi " << xi << ": bound " << bound
+                                                    << " against " << level);
+            ++tried;
+          }
+        }
+      }
+    }
+  }
+  MESSAGE(tried << " records heard; the bound over the heard level by at least " << least_margin
+                << " dB");
+  CHECK(tried >= 40u);
+}
+
+TEST_CASE("world water: the surf's cull skips only what could not be heard, and counts it") {
+  // A shore of small laps from 5 m to 790 m: the near ones costed, the far ones' bound under the
+  // floor less 20 dB. The sum heard with the cull against the sum with none differs by at most
+  // what the skipped records' bounds add, a small fraction of a decibel.
+  Water w;
+  for (i32 i = -79; i <= 79; ++i) {
+    Surf su;
+    su.at = WorldPos{k_far + 10.0 * i, 0.0, k_far + 5.0};
+    su.along = Vec2{1.0f, 0.0f};
+    su.length_m = 4.0f;
+    su.power_w_m = static_cast<f32>(surf_power_w_m(0.01, 1.0));
+    su.height_m = 0.01f;
+    su.surf_similarity = 0.5f;
+    su.period_s = 1.0f;
+    w.surf.push_back(su);
+  }
+  const WorldPos ears{k_far, 1.7, k_far};
+  u64 skipped = 0;
+  f64 skipped_bound = 0.0;
+  for (const Surf& su : w.surf) {
+    const f64 b = surf_bound_db(su, ears);
+    if (b <= 10.0 - 20.0) {  // `audio.world.floor_db`'s default less 20 dB
+      ++skipped;
+      skipped_bound += std::pow(10.0, b / 10.0);
+    }
+  }
+  const auto heard = [&](const char* cull) {
+    Tunable t("audio.world.surf_cull", cull);
+    Session s(w);
+    s.ears = ears;
+    s.tick(2);
+    return std::pair<f64, WorldStats>{s.water_power(), s.stage.world_stats()};
+  };
+  const auto on = heard("true");
+  const auto off = heard("false");
+  CHECK(on.second.surf_culled == skipped);
+  CHECK(off.second.surf_culled == 0u);
+  CHECK(on.second.surf_seen + on.second.surf_culled == w.surf.size());
+  CHECK(skipped > w.surf.size() / 3);  // the shore past about 400 m
+  const f64 moved = 10.0 * std::log10(off.first / on.first);
+  const f64 allowed = 10.0 * std::log10(1.0 + skipped_bound / on.first);
+  MESSAGE(skipped << " of " << w.surf.size() << " skipped; heard " << moved
+                  << " dB less than with none, the bound " << allowed << " dB");
+  CHECK(moved >= 0.0);
+  CHECK(moved <= allowed);
+  CHECK(allowed < 0.1);
+}
 TEST_CASE("world water: the far ones are the beds', their power kept across a promotion") {
   Water w;
   // Three channels round the listener and a fall behind it: many stretches, near and far.

@@ -34,6 +34,9 @@ tunables::Float world_water_reach{
 tunables::Int world_max_water{
     "audio.world.max_water", 4096, 0, 1 << 20,
     "Stretches and surf a refresh takes from the tables; the rest counted"};
+tunables::Bool world_surf_cull{
+    "audio.world.surf_cull", true,
+    "Skip a stretch of surf whose bound at the listener is 20 dB under the floor (off: cost all)"};
 
 constexpr f64 k_pi = 3.14159265358979323846;
 constexpr f64 k_rho = 998.2;  // water at 20 degC, kg/m^3
@@ -144,7 +147,32 @@ void line_from(const WorldPos& a, const WorldPos& b, const WorldPos& at, f64 lea
   nearest = WorldPos{a.x + ux * t / len, a.y + uy * t / len, a.z + uz * t / len};
 }
 
+// **What a stretch of surf can deliver at the listener, at most** (S113's surf cull): its line's
+// intensity is W' angle / (2 pi r) with r its perpendicular distance (at least `least`), and
+// angle / r is the integral over the line of 1 / (r^2 + x^2), each term at most 1 / rho^2 for rho
+// the distance to the line's nearest point (and at most 1 / least^2), so the intensity is at most
+// W' L / (2 pi max(rho, least)^2); rho is at least the horizontal distance to its middle less its
+// half. The path's terms take nothing back but the ground's, which gives at most 6 dB (-1.5 at
+// each end and -3 over the middle, ISO 9613-2's least: path.cpp), and the shape sums to one, so
+// this times 10^0.6 bounds every band's sum after the path. In the units of `cull_power_`.
+f64 surf_bound_power(const Surf& su, const WorldPos& listener, f64 eff) noexcept {
+  if (!(su.power_w_m > 0.0f) || !(su.length_m > 0.0f)) return 0.0;
+  const f64 xi = static_cast<f64>(su.surf_similarity);
+  const f64 watts_m = eff * static_cast<f64>(su.power_w_m) * (xi > 2.0 ? k_surging_share : 1.0);
+  const f64 sx = su.at.x - listener.x, sz = su.at.z - listener.z;
+  const f64 edge = std::sqrt(sx * sx + sz * sz) - 0.5 * static_cast<f64>(su.length_m);
+  const f64 rho = edge > k_fall_min_m ? edge : k_fall_min_m;
+  constexpr f64 k_ground_gain_max = 3.9810717055349722;  // 10^0.6
+  return watts_m * static_cast<f64>(su.length_m) * k_ground_gain_max / (2.0 * k_pi * rho * rho) /
+         k_intensity_ref;
+}
+
 }  // namespace
+
+f64 surf_bound_db(const Surf& surf, const WorldPos& listener) noexcept {
+  const f64 p = surf_bound_power(surf, listener, k_water_airborne_efficiency);
+  return p > 0.0 ? 10.0 * std::log10(p) : -1000.0;
+}
 
 f64 surf_power_w_m(f64 height_m, f64 period_s) noexcept {
   if (!(height_m > 0.0) || !(period_s > 0.0)) return 0.0;
@@ -162,6 +190,7 @@ void water_config_from_tunables(FieldConfig& c) noexcept {
   c.surfs = static_cast<u32>(world_surfs.get());
   c.max_water = static_cast<u32>(world_max_water.get());
   c.water_reach_m = world_water_reach.get();
+  c.surf_cull = world_surf_cull.get();
 }
 
 void WorldField::take_water(const WaterSource& s) noexcept {
@@ -219,6 +248,7 @@ void WorldField::refresh_water(const WorldPos& listener) noexcept {
   water_.clear();
   water_heap_.clear();
   stats_.water_dropped = 0;
+  stats_.surf_culled = 0;
   const f64 eff = k_water_airborne_efficiency;
   struct Sink {
     WorldField* self;
@@ -312,6 +342,12 @@ void WorldField::refresh_water(const WorldPos& listener) noexcept {
       if (std::sqrt(sx * sx + sz * sz) - 0.5 * static_cast<f64>(su.length_m) >
           f.config_.water_reach_m)
         return;
+      // The streams' cull before the closed forms, on a bound of what it could deliver after its
+      // path: one under the floor less 20 dB is skipped, counted and never costed.
+      if (f.config_.surf_cull && !(surf_bound_power(su, k.listener, k.eff) > f.cull_power_)) {
+        ++f.stats_.surf_culled;
+        return;
+      }
       const f64 xi = static_cast<f64>(su.surf_similarity);
       const f64 watts_m =
           k.eff * static_cast<f64>(su.power_w_m) * (xi > 2.0 ? k_surging_share : 1.0);

@@ -43,6 +43,8 @@ struct FieldConfig {
   u32 surfs = 3;
   u32 max_water = 4096;
   f64 water_reach_m = 800.0;  // a stream or a stretch of surf past this is not summed
+  // A surf record whose bound is under the floor less 20 dB is skipped (`audio.world.surf_cull`).
+  bool surf_cull = true;
 };
 FieldConfig field_config_from_tunables() noexcept;
 // The water's tunables (S113, `audio.world.streams` and its neighbours; water_field.cpp).
