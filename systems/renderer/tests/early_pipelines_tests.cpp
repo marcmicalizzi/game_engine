@@ -196,14 +196,17 @@ TEST_CASE("renderer: a variant the scene did not name costs one more compile, no
   REQUIRE_MESSAGE(rig.load(gpu.device), rig.error);
   CapturedFrame drawn;
   REQUIRE_MESSAGE(rig.render(gpu.device, &early, drawn), rig.error);
+  // An untaken compile runs to its end on its worker (a driver's compile cannot be called off):
+  // `destroy` waits for it and destroys its pipeline, the device still open, before it is counted.
+  early.destroy();
   const EarlyPipelines::Stats stats = early.stats();
   CHECK(stats.started);
+  CHECK(stats.done);
   CHECK_FALSE(stats.taken);
   CHECK(stats.mismatched == 1);
   const Compiles compiles = resolve_compiles(gpu.device, module);
   CHECK(compiles.early == 1);
   CHECK(compiles.at_creation == 1);
-  early.destroy();  // the untaken pipeline goes with it, the device still open
 
   // A start is refused where the split's pipelines would be made instead: those are other keys.
   EarlyPipelines refused;
