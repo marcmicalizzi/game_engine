@@ -381,10 +381,12 @@ function Test-OffConfiguration {
 # it (tools/lib/CTestLogs.psm1), because the next pass or the next invocation writes the same file.
 Import-Module (Join-Path $PSScriptRoot 'lib/CTestLogs.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'lib/NoDriver.psm1') -Force
-# Every process a test or a bench run starts inherits this process's error mode, so a binary the
-# loader stops (a DLL not found) exits with its status instead of raising a box nobody answers; the
-# test presets run CTest non-interactive (`execution.interactiveDebugging: false`), without which
-# CTest gives each test the default mode instead (T218; docs/subsystems/platform.md).
+# A process this script starts itself (a bench) inherits this process's quiet error mode, which is
+# meant to let a binary the loader stops (a DLL not found) exit with its status instead of raising a
+# box nobody answers; whether the inherited mode covers a static import at process start is open
+# (T218; docs/subsystems/platform.md). A test does not get this mode: a non-interactive CTest (the
+# test presets' `execution.interactiveDebugging: false`) sets its own, 0x0003, and creates every
+# test with that; an interactive one creates each with the default mode.
 . (Join-Path $PSScriptRoot 'lib/QuietErrorMode.ps1')
 function Invoke-CTest([string[]]$ctestArgs, [string]$pass) {
   Push-Location $Root

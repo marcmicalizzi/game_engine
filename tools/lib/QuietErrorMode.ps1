@@ -11,15 +11,20 @@
 # before `platform::quiet_error_dialogs()` can switch the boxes off, and the box it raises waits for a
 # click (Sunday 2026-11-22's stood on the owner's desktop into Monday). A child created by
 # CreateProcess inherits its parent's error mode unless the parent passes CREATE_DEFAULT_ERROR_MODE
-# (Microsoft's SetErrorMode and process-creation-flags pages), so a launcher's mode is the one thing
-# that reaches a process before its main does. CTest is such a parent: since CMake 4.0 its bundled
-# libuv spawns every test with CREATE_DEFAULT_ERROR_MODE unless CTest runs non-interactive
-# (`--interactive-debug-mode 0`, the test presets' `execution.interactiveDebugging: false`), so the
-# mode set here reaches a test only through a non-interactive ctest.
+# (Microsoft's SetErrorMode and process-creation-flags pages), so a launcher's mode is meant to
+# reach a process before its main does; whether it covers the loader's box for a static import at
+# process start is open (T218; docs/subsystems/platform.md). It does not reach a test through
+# CTest: a non-interactive CTest (`--interactive-debug-mode 0`, the test presets'
+# `execution.interactiveDebugging: false`) replaces its own mode with 0x0003 and creates every test
+# with that, and an interactive one creates each with CREATE_DEFAULT_ERROR_MODE (CMake 4.3.1,
+# cmCTest.cxx and cmProcess.cxx). What it reaches is what a script starts itself: the benches, the
+# listener check's copies, a bundle's tests.
 #
 # The mode is SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX (0x8003), the
 # one `platform::quiet_error_dialogs()` sets in the engine's own processes. Nothing here is a module:
-# a script dot-sources it, and tools/lib/NoListeners.psm1 does too.
+# a script dot-sources it, and tools/lib/NoListeners.psm1 does too. Its pair is the inline copy at
+# the head of tools/bundle/run-tests.ps1 (the same 0x8003, since a bundle carries no tools/): change
+# one and the other together.
 
 function Initialize-ErrorModeNative {
   if (-not ('EngineErrorMode.Native' -as [type])) {

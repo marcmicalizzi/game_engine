@@ -2,21 +2,30 @@
 // docs/subsystems/platform.md, "No engine binary opens a dialog when it fails").
 //
 // It prints the error mode its process was created with and exits 0 only when that mode holds
-// SEM_FAILCRITICALERRORS and SEM_NOGPFAULTERRORBOX (0x0003): the mode a test must
-// inherit from whatever started it, because a binary the loader stops for a missing DLL never
-// reaches the `platform::quiet_error_dialogs()` that sets the same mode from inside. So it holds
-// the launcher to it — `tools/dev.ps1 test` sets the mode, and the test presets run CTest
-// non-interactive, without which CTest (4.0 on) creates every test with the default mode.
+// SEM_FAILCRITICALERRORS and SEM_NOGPFAULTERRORBOX (0x0003): the mode a test must be created with,
+// because a binary the loader stops for a missing DLL never reaches the
+// `platform::quiet_error_dialogs()` that sets the same mode from inside. What it holds is the test
+// presets' `execution.interactiveDebugging: false`, the change that mends T218's incident: under a
+// non-interactive CTest the test is created with CTest's own mode, and under an interactive one
+// (CTest's default outside a dashboard) with the default mode, 0, and the case fails.
+//
+// Where its 0x0003 comes from (CMake 4.3.1's source, tag v4.3.1): `cmCTest::ExecuteTests` calls
+// `BlockTestErrorDiagnostics()` when CTest is not in interactive debug mode, and on Windows that
+// routine calls `SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX)` on CTest itself,
+// replacing whatever mode CTest inherited, and puts DART_TEST_FROM_DART=1 and
+// DASHBOARD_TEST_FROM_CTEST into the environment every test inherits (Source/cmCTest.cxx);
+// `cmProcess` then passes UV_PROCESS_WINDOWS_USE_PARENT_ERROR_MODE, again only when not
+// interactive (Source/CTest/cmProcess.cxx), without which its bundled libuv creates the test with
+// CREATE_DEFAULT_ERROR_MODE (Utilities/cmlibuv/src/win/process.c). So the 0x0003 measured on
+// 2026-11-23 through `tools/dev.ps1 test` is CTest's mode, not the launcher's: the 0x8003
+// `tools/dev.ps1` sets never reaches a test through `ctest`, and this probe cannot tell whether
+// `dev.ps1` set anything. `dev.ps1`'s own call covers what it starts directly (the benches) and
+// what a shell whose mode is not already quiet would otherwise pass on.
 //
 // It links no engine module on purpose, and so calls no `require_cpu_baseline()`: that function
 // runs before main in every binary that links `core/platform` and sets the very mode this probe
-// reads, which would make the reading the engine's and not the launcher's. It runs nothing but
+// reads, which would make the reading the engine's and not its creator's. It runs nothing but
 // one system call and a print, so it carries no instruction the baseline check would guard.
-//
-// 0x0003 and not the 0x8003 the launcher sets: measured on 2026-11-23 through tools/dev.ps1 and a
-// non-interactive CTest 4.3.1, the child is created with 0x0003, SEM_NOOPENFILEERRORBOX not passed
-// on (Microsoft's pages say a child inherits "the error mode" and do not say this bit stays
-// behind). That bit is OpenFile's box, not the loader's, so nothing here needs it.
 #include <cstdio>
 
 #if defined(_WIN32)

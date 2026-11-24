@@ -56,10 +56,11 @@ $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 if (-not $root) { $root = (Get-Location).Path }
 
-# Every test this script starts inherits its error mode, so a binary the loader stops (a DLL this
-# machine lacks) exits with its status instead of raising a box the tester has to click before the
-# run goes on (roadmap T218; the repository's tools/lib/QuietErrorMode.ps1 is the same call, which a
-# bundle does not carry). SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX.
+# Every test this script starts inherits its error mode, which is meant to let a binary the loader
+# stops (a DLL this machine lacks) exit with its status instead of raising a box the tester has to
+# click before the run goes on; whether the inherited mode covers a static import at process start
+# is open (roadmap T218; docs/subsystems/platform.md). The repository's tools/lib/QuietErrorMode.ps1
+# is the same call, which a bundle does not carry. SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX.
 try {
   Add-Type -Namespace EngineBundle -Name ErrorMode -MemberDefinition '[System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern uint SetErrorMode(uint uMode);'
   [void][EngineBundle.ErrorMode]::SetErrorMode([uint32]0x8003)

@@ -767,10 +767,12 @@ default.
 **It leaves nothing behind, on a machine other people are using** (T80, 2026-11-09; until then the
 probes opened a window, ran every bench's smoke cases, and could leave a loader's dialog up):
 
-- every copy inherits an error mode that shows no box (`SetErrorMode`: no "a DLL was not found"
-  from the loader, no "has stopped working" from Windows Error Reporting), so a binary that cannot
-  start exits with its status — the loader's box comes before `main`, where
-  `platform::quiet_error_dialogs()` cannot reach it;
+- every copy inherits a quiet error mode (`SetErrorMode` 0x8003), meant to show no box — no
+  "has stopped working" from Windows Error Reporting, and no "a DLL was not found" from the loader —
+  so a binary that cannot start exits with its status; the loader's box comes before `main`, where
+  `platform::quiet_error_dialogs()` cannot reach it, and whether the inherited mode covers it for a
+  static import at process start is open (roadmap T218;
+  [platform](../subsystems/platform.md), "What it cannot reach");
 - a copy is alone in its directory, so the build directory it came from goes on its `PATH` and it
   finds its DLLs and starts, rather than failing in the loader and answering nothing;
 - no window but the editor's 64 pixels, which appear only once it holds the GPU lock, and a bench

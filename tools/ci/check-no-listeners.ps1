@@ -21,8 +21,10 @@
   harmless arguments, and counts the prompt processes before and after. The count must not grow.
 
   What it leaves behind is nothing, and it is built so that holds on a shared machine:
-    - every copy runs under an error mode that shows no box (a missing DLL, a crash): a binary that
-      cannot start exits with its status instead of waiting for a click (Set-QuietErrorMode);
+    - every copy runs under a quiet error mode (Set-QuietErrorMode), meant to show no box for a
+      crash or a missing DLL so a binary that cannot start exits with its status instead of waiting
+      for a click; whether the inherited mode covers the loader's box for a static import at
+      process start is open (roadmap T218; docs/subsystems/platform.md);
     - the copies find their DLLs through PATH, from the build directory they were copied from, so
       they start rather than fail in the loader;
     - engine-view runs `--offscreen` and a bench `--list`s; engine-editor is the one probe with a
