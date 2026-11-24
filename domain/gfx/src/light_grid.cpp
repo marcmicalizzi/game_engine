@@ -119,19 +119,26 @@ bool build_light_grid(std::span<const ResolveLight> lights, std::span<u32> cells
     const u32 bit = i - first;
     const u32 word = bit / 32;
     const u32 mask = 1u << (bit % 32);
+    // A row of cells along x at once: with the row's distance from the light in y and z, the
+    // sphere covers x within ±h of the light, and the cells that interval meets are exactly the
+    // cells of the row whose box is within the reach — the per-cell box test, solved for x.
+    const f64 top_x = static_cast<f64>(dims[0] - 1);
     for (u64 z = c0[2]; z <= c1[2]; ++z) {
       const f64 bz0 = o[2] + static_cast<f64>(z) * cell_edge;
-      const f64 dz = std::max({0.0, bz0 - p[2], p[2] - (bz0 + cell_edge)});
+      const f64 dz = std::max(0.0, std::max(bz0 - p[2], p[2] - (bz0 + cell_edge)));
       for (u64 y = c0[1]; y <= c1[1]; ++y) {
         const f64 by0 = o[1] + static_cast<f64>(y) * cell_edge;
-        const f64 dy = std::max({0.0, by0 - p[1], p[1] - (by0 + cell_edge)});
-        for (u64 x = c0[0]; x <= c1[0]; ++x) {
-          const f64 bx0 = o[0] + static_cast<f64>(x) * cell_edge;
-          const f64 dx = std::max({0.0, bx0 - p[0], p[0] - (bx0 + cell_edge)});
-          if (dx * dx + dy * dy + dz * dz > reach * reach) continue;
-          cells[((z * dims[1] + y) * dims[0] + x) * words + word] |= mask;
-          ++refs;
-        }
+        const f64 dy = std::max(0.0, std::max(by0 - p[1], p[1] - (by0 + cell_edge)));
+        const f64 rest = reach * reach - dy * dy - dz * dz;
+        if (rest < 0.0) continue;
+        const f64 h = std::sqrt(rest);
+        const u64 x0 =
+            static_cast<u64>(std::clamp(std::floor((p[0] - h - o[0]) / cell_edge), 0.0, top_x));
+        const u64 x1 =
+            static_cast<u64>(std::clamp(std::floor((p[0] + h - o[0]) / cell_edge), 0.0, top_x));
+        u32* row = cells.data() + ((z * dims[1] + y) * dims[0]) * words + word;
+        for (u64 x = x0; x <= x1; ++x) row[x * words] |= mask;
+        refs += static_cast<u32>(x1 - x0 + 1);
       }
     }
   }
