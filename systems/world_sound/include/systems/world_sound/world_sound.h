@@ -152,10 +152,12 @@ struct WorldWind {
   const gfx::WindDesc* scene = nullptr;
   gfx::WindLive live{};
   f64 sky_time_s = 0.0;  // the mean and the direction: the weather's, at the sky's hour
-  // **The world clock** (`FrameDesc::world_time_s`): the turbulence, the medium moving (S118), and
-  // the water's clock (S113), which the waves the picture draws move on, so a wave heard breaking
-  // is the wave seen breaking.
+  // **The world clock** (`FrameDesc::world_time_s`): the turbulence, the medium moving (S118).
   f64 world_time_s = 0.0;
+  // **The water's clock** (S113): the world clock the waves the picture draws move on, so a wave
+  // heard breaking is the wave seen breaking. A host may count it apart from `world_time_s` (the
+  // join of S113 and S118: engine-view counts it from its ticks, at a world rate of one).
+  f64 water_time_s = 0.0;
 };
 
 /// **Running water** (S113; world_sound.md, "Running water and the surf"): one stretch of a

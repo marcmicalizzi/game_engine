@@ -464,7 +464,7 @@ void WorldField::refresh_water(const WorldPos& listener) noexcept {
 
 void WorldField::tick_water(const WorldPos& frame, bool frame_moved) noexcept {
   (void)frame;
-  const f64 clock = static_cast<f64>(gfx::water_clock(wind_.world_time_s));
+  const f64 clock = static_cast<f64>(gfx::water_clock(wind_.water_time_s));
   for (u32 i = water_first_; i < voices_.size(); ++i) {
     Voice& v = voices_[i];
     for (f64& p : v.bands)

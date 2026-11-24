@@ -45,6 +45,7 @@ void on_wind(void* user, const gfx::WindLive& live, f64 sky_time_s, f64 world_ti
   wind.live = live;
   wind.sky_time_s = sky_time_s;
   wind.world_time_s = world_time_s;
+  wind.water_time_s = host.world_time();  // the water's clock (S113): the host's ticks
   host.stage().set_wind(wind);
 }
 void on_scene(void* user, const renderer::SceneData& scene) {

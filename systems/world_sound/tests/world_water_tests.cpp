@@ -86,7 +86,7 @@ struct Session {
       stage.set_listener(ears, Vec3{0.0f, 0.0f, -1.0f}, Vec3{0.0f, 1.0f, 0.0f});
       stage.set_wind(clock);  // no wind: the crowns and the ears are silent, the water is not
       stage.tick();
-      clock.world_time_s += 1.0 / 60.0;
+      clock.water_time_s += 1.0 / 60.0;
     }
   }
   WorldVoiceInfo loudest(WorldVoiceKind kind) const {
@@ -199,7 +199,7 @@ TEST_CASE("world water: the surf peaks within a tick of the arrival's crest at i
     f64 best = -1e9;
     f64 best_t = 0.0;
     for (u32 i = 0; i < 480; ++i) {
-      const f64 t = s.clock.world_time_s;
+      const f64 t = s.clock.water_time_s;
       s.tick();
       const f64 level = static_cast<f64>(s.loudest(WorldVoiceKind::Surf).level_db);
       if (level > best) {
