@@ -593,7 +593,7 @@ TEST_CASE("cluster cull: a deformed instance's LOD spheres take the sway cap as 
   REQUIRE(gfx::create_buffer(device, gfx::k_draw_args_bytes, gfx::BufferUsage::TransferDst, true,
                              args_host, &error));
 
-  // Close enough that the 2 m moves the cut: above and in front of the terrain's near edge.
+  // Close enough that the padding moves the cut: above and in front of the terrain's near edge.
   constexpr u32 k_size = 256;
   const Vec3 eye{0.0f, 4.0f, 14.0f};
   const f32 znear = 0.1f;
@@ -670,6 +670,13 @@ TEST_CASE("cluster cull: a deformed instance's LOD spheres take the sway cap as 
     const gfx::RgBuffer rg_visible = graph.import_buffer("visible", visible);
     const gfx::RgBuffer rg_visible_host = graph.import_buffer("visible_host", visible_host);
     const gfx::RgBuffer rg_args_host = graph.import_buffer("args_host", args_host);
+    // What the cull reads through the parameters' device addresses, declared like any buffer.
+    const gfx::RgBuffer rg_params = graph.import_buffer("params", params);
+    const gfx::RgBuffer rg_clusters = graph.import_buffer("clusters", clusters);
+    const gfx::RgBuffer rg_lods = graph.import_buffer("lods", lods);
+    const gfx::RgBuffer rg_instances = graph.import_buffer("instances", instances);
+    const gfx::RgBuffer rg_meshes = graph.import_buffer("meshes", scene.meshes);
+    const gfx::RgBuffer rg_sway = graph.import_buffer("sway", sway);
     graph.add_pass(
         "reset", gfx::PassKind::Transfer,
         [&](gfx::PassBuilder& b) { b.write(rg_args, gfx::Access::TransferWrite); },
@@ -679,6 +686,12 @@ TEST_CASE("cluster cull: a deformed instance's LOD spheres take the sway cap as 
     graph.add_pass(
         "cull", gfx::PassKind::Compute,
         [&](gfx::PassBuilder& b) {
+          b.read(rg_params, gfx::Access::ComputeRead);
+          b.read(rg_clusters, gfx::Access::ComputeRead);
+          b.read(rg_lods, gfx::Access::ComputeRead);
+          b.read(rg_instances, gfx::Access::ComputeRead);
+          b.read(rg_meshes, gfx::Access::ComputeRead);
+          if (table_address != 0) b.read(rg_sway, gfx::Access::ComputeRead);
           b.write(rg_args, gfx::Access::ComputeReadWrite);
           b.write(rg_visible, gfx::Access::ComputeWrite);
         },
