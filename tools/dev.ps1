@@ -381,6 +381,11 @@ function Test-OffConfiguration {
 # it (tools/lib/CTestLogs.psm1), because the next pass or the next invocation writes the same file.
 Import-Module (Join-Path $PSScriptRoot 'lib/CTestLogs.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'lib/NoDriver.psm1') -Force
+# Every process a test or a bench run starts inherits this process's error mode, so a binary the
+# loader stops (a DLL not found) exits with its status instead of raising a box nobody answers; the
+# test presets run CTest non-interactive (`execution.interactiveDebugging: false`), without which
+# CTest gives each test the default mode instead (T218; docs/subsystems/platform.md).
+. (Join-Path $PSScriptRoot 'lib/QuietErrorMode.ps1')
 function Invoke-CTest([string[]]$ctestArgs, [string]$pass) {
   Push-Location $Root
   $lines = @()
@@ -399,6 +404,7 @@ function Invoke-Test {
   if ($Affected -and $Filter) { throw '-Affected chooses the tests; it cannot be combined with -Filter.' }
   Invoke-Build
   Ensure-Tool ctest
+  [void](Set-QuietErrorMode)
   $args = @('--preset', $Preset)
   # What the run selects, in its logs' names: every test, the affected ones, or a filter's.
   $kind = 'all'
@@ -457,6 +463,7 @@ function Invoke-Test {
 
 function Invoke-Bench {
   Invoke-Build
+  [void](Set-QuietErrorMode)
   $exes = Get-ChildItem -Path $BuildDir -Recurse -File |
     Where-Object { $_.Name -match '^engine_.+_bench(\.exe)?$' -and $_.FullName -notmatch '[\\/]_deps[\\/]' }
   if (-not $exes) { throw 'no bench executables found; is ENGINE_BUILD_BENCH on?' }

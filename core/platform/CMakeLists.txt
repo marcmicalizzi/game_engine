@@ -39,3 +39,13 @@ if(TARGET engine_platform_tests)
   target_compile_definitions(engine_platform_tests PRIVATE
     ENGINE_PLATFORM_FAULT_PROBE_PATH="$<TARGET_FILE:engine_platform_fault_probe>")
 endif()
+
+# The error mode a test is created with (roadmap T218): a test of its own, whose process is the one
+# CTest creates, reading the mode it inherited before anything of the engine's runs. It links no
+# engine module (the platform module sets the mode before main), so it has no test main of its own.
+if(TARGET engine_platform_tests AND WIN32)
+  add_executable(engine_platform_error_mode_probe tests/error_mode_probe_main.cpp)
+  engine_apply_warnings(engine_platform_error_mode_probe)
+  add_test(NAME platform.error_mode COMMAND engine_platform_error_mode_probe)
+  set_tests_properties(platform.error_mode PROPERTIES LABELS "platform" TIMEOUT 30)
+endif()
