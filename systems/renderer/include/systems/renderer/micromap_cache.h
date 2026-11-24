@@ -29,16 +29,20 @@
 // **A stored pack is never trusted without its keys**: its header records its generation and each
 // part's key, and a content hash over the header and every byte of its sections, checked when the
 // pack is read; every index and triangle record is held to the pack's own counts before anything
-// is copied or uploaded. A pack that fails is not used, its parts are baked, and it is removed at
-// that load's store.
+// is copied or uploaded, and a stored part is used only when its triangle count is the scene part's
+// (a 64-bit key that collides over other content is a miss, never a read past the part). A pack
+// that fails is not used and its parts are baked; it is removed at that load's store only when its
+// bytes were read and refused for what they say (a pack that did not open or changed under the read
+// is left), and never when this load stored it.
 //
 // **What bounds the folder** (`prune_micromap_store`, at every store): the generations kept are the
 // current one and the most recently used other (`k_micromap_generations_kept`: a driver rolled
 // back, or a second card), by a `used` file each keyed load rewrites; every other generation's
 // packs are removed. R207's whole-scene files are removed. Within a generation the packs grow with
 // the distinct parts the machine has loaded under it, as `<ddc>/clusters` grows with the meshes
-// built. A temporary file a store that died left behind is removed by the next store once it is
-// a minute old (a younger one may be another process's store under way).
+// built (row R211). A temporary file a store that died left behind, in the current generation, the
+// kept other or the root, is removed by the next store once it is a minute old (a younger one may
+// be another process's store under way).
 
 #include <core/base/types.h>
 #include <core/containers/hash_map.h>
@@ -182,7 +186,10 @@ bool write_micromap_pack(const std::string& path, u64 generation, const Micromap
                          std::string* error = nullptr);
 
 // A pack's header as read: its parts and counts, or why it was refused (another magic, version or
-// generation, a header or a length its counts do not add up to). No section is read.
+// generation, a header or a length its counts do not add up to). No section is read. `damaged` is
+// set only when the bytes it read were refused for what they say; a pack that did not open or did
+// not read is a miss for this load and is left alone (R208-L7: another process may be replacing it
+// or a scanner holding it).
 struct MicromapPackIndex {
   std::string path;
   u64 file_bytes = 0;
@@ -193,11 +200,14 @@ struct MicromapPackIndex {
   u64 data_bytes = 0;
   Vector<MicromapPackPart> parts;
   std::string refused;
+  bool damaged = false;
 };
 bool read_micromap_pack_index(const std::string& path, u64 generation, MicromapPackIndex& out);
 // Its sections, read whole into memory and checked: the content hash over the header and every
 // byte, every index a special index or one of its entries, every record a 4-state entry inside its
-// states. False with the refusal; nothing is used from a pack that fails.
+// states. False with the refusal; nothing is used from a pack that fails. `*damaged` is set as the
+// index's is: true only when every byte was read and a content check refused them, false when the
+// file did not open, changed length under the read, or a read failed.
 struct MicromapPackData {
   Vector<MicromapPackPart> parts;
   Vector<u32> first_triangle;  // per part, its first index in `indices`
@@ -206,8 +216,8 @@ struct MicromapPackData {
   Vector<u32> data;
   MicromapPackView view() const;
 };
-bool read_micromap_pack(const MicromapPackIndex& index, MicromapPackData& out,
-                        std::string* refused);
+bool read_micromap_pack(const MicromapPackIndex& index, MicromapPackData& out, std::string* refused,
+                        bool* damaged = nullptr);
 
 // ---- one micromap from stored and baked parts ------------------------------------------------
 
@@ -226,7 +236,10 @@ struct MicromapRun {
 // same whether its parts were baked by this load or read. `entry_source`/`entry_index` say where
 // each entry's states are; `stats` the scene's measures (the micro-triangles counted from the
 // states; `micro_unknown_filter` is the bake's alone and stays 0 here), and `total_bytes` the
-// figure the budget is held to (states, indices and records, as the bake's).
+// figure the budget is held to (states, indices and records, as the bake's). False, with nothing
+// assembled, when a run names a source there is not or reaches past its source's indices (R208-M2:
+// the caller matches a stored part's triangle count to the scene's before it makes a run, and this
+// is the bound that holds whatever a key says).
 struct MicromapAssembly {
   Vector<i32> indices;
   Vector<gfx::MicromapTriangle> triangles;
@@ -235,7 +248,7 @@ struct MicromapAssembly {
   gfx::MicromapStats stats;
   u64 total_bytes = 0;
 };
-void assemble_micromaps(std::span<const MicromapPackView> sources,
+bool assemble_micromaps(std::span<const MicromapPackView> sources,
                         std::span<const MicromapRun> runs, MicromapAssembly& out);
 // Builds the scene's micromap from an assembly: the per-cluster table of `items` (the bake's own
 // layout), the indices, the records and the states copied from the sources into the build's input.
@@ -247,9 +260,11 @@ bool restore_assembled_micromaps(const gfx::Device& device, u32 cluster_count,
 
 // ---- the folder ---------------------------------------------------------------------------------
 
-// What a store removed: temporary files a store that died left (`swept`), packs that failed their
-// read (`damaged`, given), every pack of a generation past the kept ones and R207's whole-scene
-// files (`packs`), and the generations' folders emptied (`generations`).
+// What a store removed: temporary files a store that died left (`swept`: a minute old, in the
+// current generation, the kept other and at the root, where R207's stores named theirs), packs that
+// failed their read (`damaged`, given), every pack of a generation past the kept ones and R207's
+// whole-scene files (`packs`), and the generations' folders emptied (`generations`: removed only
+// when empty, never recursively, so a file another process put there after the listing stays).
 struct MicromapPruneReport {
   u32 swept = 0;
   u32 packs = 0;

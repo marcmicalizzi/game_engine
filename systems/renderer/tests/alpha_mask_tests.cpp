@@ -24,6 +24,7 @@
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/micromap_cache.h>
 #include <systems/renderer/reference.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
@@ -994,7 +995,7 @@ struct TunableScope {
 
 MicromapShot shoot_micromaps(const std::string& mesh, RenderSettings settings, ShotView view,
                              bool without_extension = false, const std::string& ddc = {},
-                             const std::string& second = {}) {
+                             const std::string& second = {}, u64 budget_bytes = 0) {
   MicromapShot out;
   gfx::Device device;
   std::string error;
@@ -1021,6 +1022,9 @@ MicromapShot shoot_micromaps(const std::string& mesh, RenderSettings settings, S
   REQUIRE_MESSAGE(load_scene(desc, data, error), "scene: " << error);
   ResolvedSettings resolved;
   resolve_settings(settings, device.features(), &data, resolved);
+  // R208-M1: the budget in bytes, the setting `renderer.rt.micromap_mib` resolves to, for a
+  // fixture whose micromap is a few KiB.
+  if (budget_bytes != 0) resolved.micromap_budget_bytes = budget_bytes;
   if (check_availability(resolved, device.features()) != RenderAvailability::Ok) {
     out.skip = "unavailable here";
     device.destroy();
@@ -1280,8 +1284,9 @@ TEST_CASE(
 // (here the texel target) is another part, baked and stored as a pack beside the first; a pack at
 // the first's path that holds another part's bake is read for nothing (the part it was asked for
 // is not in it); one made for another generation or version, a short one or a changed byte is
-// refused by name; each time the part is baked again, the picture is the bake's, and the pack the
-// bake stores takes the spoiled one's place.
+// refused by name; a sound pack whose part has the scene part's key and other triangles is a miss
+// (R208-M2: never a read past the part); each time the part is baked again, the picture is the
+// bake's, and the pack the bake stores takes the spoiled one's place.
 TEST_CASE("alpha mask: a stored micromap pack is refused for another key, version or byte") {
   Fixture fx;
   test::TempDir root{"omm_stale"};
@@ -1324,7 +1329,14 @@ TEST_CASE("alpha mask: a stored micromap pack is refused for another key, versio
                           {"another generation", "another generation"},
                           {"another version", "version"},
                           {"a short file", "length"},
-                          {"a changed state", "content hash"}};
+                          {"a changed state", "content hash"},
+                          {"a colliding key over other content", "triangle count"}};
+  auto get_u64 = [](const std::string& b, usize at) {
+    u64 v = 0;
+    for (u32 i = 0; i < 8; ++i)
+      v |= u64{static_cast<u8>(b[at + i])} << (8 * i);
+    return v;
+  };
   for (const Spoil& spoil : spoils) {
     // The first key's pack as the last bake stored it, spoiled.
     std::ifstream in(stored, std::ios::binary);
@@ -1341,6 +1353,26 @@ TEST_CASE("alpha mask: a stored micromap pack is refused for another key, versio
       bytes[4] = static_cast<char>(bytes[4] + 1);
     } else if (name == "a short file") {
       bytes.resize(bytes.size() - 4);
+    } else if (name == "a colliding key over other content") {
+      // R208-M2: a sound pack of this generation whose one part has the scene part's key and
+      // other triangles (a 64-bit collision, or a pack made to look like one): a miss, baked,
+      // never read past the part.
+      const u64 generation = get_u64(bytes, 8);
+      const u64 key = get_u64(bytes, k_micromap_pack_fixed_bytes);
+      const u32 stored_triangles =
+          static_cast<u32>(get_u64(bytes, k_micromap_pack_fixed_bytes + 8) & 0xffffffffu);
+      MicromapPackPart part;
+      part.key = key;
+      part.triangle_count = stored_triangles > 1 ? stored_triangles - 1 : stored_triangles + 1;
+      const std::vector<i32> indices(part.triangle_count, gfx::k_micromap_fully_opaque);
+      MicromapPackView forged;
+      forged.parts = std::span<const MicromapPackPart>(&part, 1);
+      forged.indices = std::span<const i32>(indices.data(), indices.size());
+      const std::string at = root.path() + "/forged.omm";
+      std::string error;
+      REQUIRE_MESSAGE(write_micromap_pack(at, generation, forged, &error), error);
+      std::ifstream theirs(std::filesystem::path(at), std::ios::binary);
+      bytes.assign((std::istreambuf_iterator<char>(theirs)), std::istreambuf_iterator<char>());
     } else {
       bytes[bytes.size() - 1] = static_cast<char>(bytes[bytes.size() - 1] ^ 0x01);
     }
@@ -1416,6 +1448,71 @@ TEST_CASE("alpha mask: a second start reads the parts the first stored and bakes
   CHECK(third.cache.baked == 0);
   CHECK(third.cache.packs_read == 2);
   CHECK_FALSE(third.cache.stored);
+}
+
+// **A scene over its budget is read back at the lowered cap** (R208-M1; renderer.md, "The bake is
+// read back"). The budget is held to the assembled micromap, so a load whose micromap at the top
+// cap is over it lowers the cap and tries again: the first load bakes and stores at both caps, and
+// every later load reads the top cap's pack to find it over (its sections freed before the next
+// cap is tried), then the lowered cap's, and bakes nothing. The budget here is one byte under what
+// the top cap assembles to, measured by a load of its own, so exactly one level drops; the second
+// load reports the lowered cap and draws what the first drew and what an unstored load at the same
+// budget draws, to the byte.
+TEST_CASE(
+    "alpha mask: a micromap over its budget is read back at the lowered cap, baking nothing") {
+  Fixture fx;
+  test::TempDir root{"omm_budget"};
+  RenderSettings rays = base_settings(RasterMode::Hardware);
+  rays.shadows = ShadowMode::RayTraced;
+  TunableScope on("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=true");
+  TunableScope cap("renderer.rt.micromap_level=6", "renderer.rt.micromap_level=6");
+  TunableScope fine("renderer.rt.micromap_texels=0.01", "renderer.rt.micromap_texels=4");
+  TunableScope floor("renderer.rt.micromap_store_min=0", "renderer.rt.micromap_store_min=0");
+  const ShotView view = micromap_shadow_view();
+  // The top cap's assembled size, from a stored load with no budget of its own root.
+  const MicromapShot measure =
+      shoot_micromaps(fx.caster_masked, rays, view, false, root.path() + "/measure");
+  if (!measure.skip.empty() || !measure.baked) {
+    MESSAGE(
+        "skipped: " << (measure.skip.empty() ? std::string("no micromaps here") : measure.skip));
+    return;
+  }
+  REQUIRE(measure.stats.level_cap == 6);
+  REQUIRE(measure.stats.levels_dropped == 0);
+  const u64 top = measure.stats.data_bytes + measure.stats.index_bytes +
+                  u64{measure.stats.unique_entries} * gfx::k_micromap_triangle_bytes;
+  const u64 budget = top - 1;
+  const std::string ddc = root.path() + "/ddc";
+  const MicromapShot first = shoot_micromaps(fx.caster_masked, rays, view, false, ddc, {}, budget);
+  const MicromapShot second = shoot_micromaps(fx.caster_masked, rays, view, false, ddc, {}, budget);
+  const MicromapShot unstored =
+      shoot_micromaps(fx.caster_masked, rays, view, false, {}, {}, budget);
+  MESSAGE("the top cap assembles to "
+          << top << " bytes; budget " << budget << ": the first load " << first.cache.baked
+          << " baked, cap " << first.stats.level_cap << "; the second read " << second.cache.read
+          << " from " << second.cache.packs_read << " pack(s) (" << second.cache.read_bytes
+          << " bytes), " << second.cache.baked << " baked, cap " << second.stats.level_cap);
+  // The first load drops a level, bakes the part at each cap and stores both packs.
+  CHECK(first.cache.levels_dropped == 1);
+  CHECK(first.stats.level_cap == 5);
+  CHECK(first.cache.baked == 1);
+  CHECK(first.cache.stored);
+  // The second reports the lowered cap and bakes nothing: the top cap's pack read and found over,
+  // then the lowered cap's.
+  CHECK(second.cache.levels_dropped == 1);
+  CHECK(second.stats.level_cap == 5);
+  CHECK(second.stats.levels_dropped == 1);
+  CHECK(second.cache.baked == 0);
+  CHECK(second.cache.read == 1);
+  CHECK(second.cache.packs_read == 2);
+  CHECK_FALSE(second.cache.stored);
+  CHECK(second.cache.refused.empty());
+  // The unstored bake holds the same budget to its own entries and lands on the same cap.
+  CHECK(unstored.stats.level_cap == 5);
+  CHECK(unstored.stats.levels_dropped == 1);
+  CHECK(second.stats.data_bytes == first.stats.data_bytes);
+  CHECK(differing_pixels(first.frame, second.frame) == 0);
+  CHECK(differing_pixels(second.frame, unstored.frame) == 0);
 }
 
 // The micromaps are really in the structures: `renderer.shadow.opaque_rays` forces every caster

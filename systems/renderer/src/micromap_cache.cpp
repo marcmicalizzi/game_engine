@@ -7,10 +7,18 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <system_error>
 
 namespace engine::renderer {
 
 namespace {
+
+// A UTF-8 path as the standard library's, as foundation/io makes it.
+std::filesystem::path path_of(std::string_view utf8) {
+  return std::filesystem::path(
+      std::u8string_view(reinterpret_cast<const char8_t*>(utf8.data()), utf8.size()));
+}
 
 constexpr u32 k_levels = gfx::k_micromap_max_level + 1;
 
@@ -274,10 +282,17 @@ bool read_micromap_pack_index(const std::string& path, u64 generation, MicromapP
     return false;
   }
   out.file_bytes = file.size();
+  // From here a refusal is of the bytes, and the pack is damaged, unless a read itself failed.
+  out.damaged = true;
   u8 prefix[k_micromap_pack_fixed_bytes];
   u64 read = 0;
-  if (file.read_at(0, prefix, sizeof(prefix), read) != io::Status::Ok || read != sizeof(prefix)) {
+  if (out.file_bytes < sizeof(prefix)) {
     out.refused = "shorter than a pack's header";
+    return false;
+  }
+  if (file.read_at(0, prefix, sizeof(prefix), read) != io::Status::Ok || read != sizeof(prefix)) {
+    out.damaged = false;
+    out.refused = "its header did not read";
     return false;
   }
   if (get_u32(prefix) != k_micromap_file_magic) {
@@ -330,6 +345,7 @@ bool read_micromap_pack_index(const std::string& path, u64 generation, MicromapP
   if (!records.empty() && (file.read_at(k_micromap_pack_fixed_bytes, records.data(), records.size(),
                                         read) != io::Status::Ok ||
                            read != records.size())) {
+    out.damaged = false;
     out.refused = "its part records did not read";
     return false;
   }
@@ -348,24 +364,30 @@ bool read_micromap_pack_index(const std::string& path, u64 generation, MicromapP
     out.refused = "its parts' triangles are not its own count";
     return false;
   }
+  out.damaged = false;
   return true;
 }
 
-bool read_micromap_pack(const MicromapPackIndex& index, MicromapPackData& out,
-                        std::string* refused) {
-  auto fail = [&](const std::string& why) {
+bool read_micromap_pack(const MicromapPackIndex& index, MicromapPackData& out, std::string* refused,
+                        bool* damaged) {
+  // `content`: the bytes were read and are refused for what they say (R208-L7); otherwise the
+  // file did not open, moved under the read or a read failed, and it is a miss and left alone.
+  auto fail = [&](const std::string& why, bool content) {
     if (refused != nullptr) *refused = why;
+    if (damaged != nullptr) *damaged = content;
     out = MicromapPackData{};
     return false;
   };
+  if (damaged != nullptr) *damaged = false;
   io::FileHandle file;
-  if (file.open(index.path) != io::Status::Ok) return fail("it did not open");
-  if (file.size() != index.file_bytes) return fail("its length changed since its header was read");
+  if (file.open(index.path) != io::Status::Ok) return fail("it did not open", false);
+  if (file.size() != index.file_bytes)
+    return fail("its length changed since its header was read", false);
   Vector<u8> header(index.header_bytes - k_prefix_bytes);
   u64 read = 0;
   if (file.read_at(k_prefix_bytes, header.data(), header.size(), read) != io::Status::Ok ||
       read != header.size()) {
-    return fail("its header did not read");
+    return fail("its header did not read", false);
   }
   out.parts = index.parts;
   out.indices.resize(index.triangle_count);
@@ -382,18 +404,19 @@ bool read_micromap_pack(const MicromapPackIndex& index, MicromapPackData& out,
     for (u64 at = 0; at < part.size; at += k_piece) {
       const u64 piece = std::min(k_piece, part.size - at);
       if (file.read_at(cursor, dst + at, piece, read) != io::Status::Ok || read != piece)
-        return fail("a section did not read");
+        return fail("a section did not read", false);
       h = hash_bytes(dst + at, static_cast<usize>(piece), h);
       cursor += piece;
     }
   }
-  if (h != index.content_hash) return fail("its content hash is not its bytes'");
+  if (h != index.content_hash) return fail("its content hash is not its bytes'", true);
   // The tables the assembly reads, held to the pack's own counts before anything is copied.
   for (u32 t = 0; t < out.indices.size(); ++t) {
     if (!gfx::micromap_index_valid(out.indices[t], index.entry_count)) {
       return fail("an index names no stored entry (triangle " + std::to_string(t) + ", " +
-                  std::to_string(out.indices[t]) + " of " + std::to_string(index.entry_count) +
-                  ")");
+                      std::to_string(out.indices[t]) + " of " + std::to_string(index.entry_count) +
+                      ")",
+                  true);
     }
   }
   for (u32 e = 0; e < out.triangles.size(); ++e) {
@@ -401,8 +424,9 @@ bool read_micromap_pack(const MicromapPackIndex& index, MicromapPackData& out,
     if (r.level > gfx::k_micromap_max_level || r.format != gfx::k_micromap_format_4state ||
         r.data_offset % sizeof(u32) != 0 ||
         u64{r.data_offset} + gfx::micromap_entry_bytes(r.level) > index.data_bytes) {
-      return fail("a triangle record names states the pack does not hold (entry " +
-                  std::to_string(e) + ")");
+      return fail(
+          "a triangle record names states the pack does not hold (entry " + std::to_string(e) + ")",
+          true);
     }
   }
   out.first_triangle.resize(static_cast<u32>(out.parts.size()));
@@ -436,13 +460,20 @@ void count_states(const u32* words, u32 level, u64 out[3]) noexcept {
 
 }  // namespace
 
-void assemble_micromaps(std::span<const MicromapPackView> sources,
+bool assemble_micromaps(std::span<const MicromapPackView> sources,
                         std::span<const MicromapRun> runs, MicromapAssembly& out) {
   out = MicromapAssembly{};
   gfx::MicromapStats& stats = out.stats;
   u32 triangle_count = 0;
-  for (const MicromapRun& run : runs)
+  for (const MicromapRun& run : runs) {
+    // Every run inside its source's indices, checked rather than assumed (R208-M2); the records and
+    // states each index names were held to the source's own counts when it was read.
+    if (run.source >= sources.size() ||
+        u64{run.first} + run.count > sources[run.source].indices.size()) {
+      return false;
+    }
     triangle_count += run.count;
+  }
   out.indices.reserve(triangle_count);
   // Per source, its entries' assembled numbers (~0 until first named), and per assembled entry its
   // micro-triangles by state.
@@ -525,6 +556,7 @@ void assemble_micromaps(std::span<const MicromapPackView> sources,
   stats.index_bytes = u64{triangle_count} * sizeof(i32);
   out.total_bytes =
       data_bytes + stats.index_bytes + u64{out.triangles.size()} * gfx::k_micromap_triangle_bytes;
+  return true;
 }
 
 namespace {
@@ -606,23 +638,28 @@ void prune_micromap_store(std::string_view ddc_root, u64 generation,
   out = MicromapPruneReport{};
   const std::string root = io::join_path(ddc_root, "micromaps");
   const std::string current = hex16(generation);
+  // A temporary file a minute old: a younger one may be another process's store under way.
+  auto stale = [&](const std::string& path) {
+    io::FileInfo info;
+    return io::stat_file(path, info) == io::Status::Ok &&
+           now_unix_ms - info.modified_unix_ms >= k_micromap_temp_age_ms;
+  };
+  // A generation's temporary files that are stale (the current one's, and the kept other's).
+  auto sweep = [&](const std::string& dir) {
+    Vector<io::DirEntry> files;
+    if (io::list_directory(dir, files) != io::Status::Ok) return;
+    for (const io::DirEntry& e : files) {
+      if (e.is_directory || !ends_with(e.name, ".tmp")) continue;
+      const std::string path = io::join_path(dir, e.name);
+      if (stale(path) && io::remove_file(path) == io::Status::Ok) ++out.swept;
+    }
+  };
   // The current generation: packs a read refused, and temporary files a minute old.
   for (const std::string& path : damaged)
     if (io::remove_file(path) == io::Status::Ok) ++out.packs;
-  const std::string here = io::join_path(root, current);
-  Vector<io::DirEntry> entries;
-  if (io::list_directory(here, entries) == io::Status::Ok) {
-    for (const io::DirEntry& e : entries) {
-      if (e.is_directory || !ends_with(e.name, ".tmp")) continue;
-      const std::string path = io::join_path(here, e.name);
-      io::FileInfo info;
-      if (io::stat_file(path, info) != io::Status::Ok) continue;
-      if (now_unix_ms - info.modified_unix_ms < k_micromap_temp_age_ms) continue;
-      if (io::remove_file(path) == io::Status::Ok) ++out.swept;
-    }
-  }
+  sweep(io::join_path(root, current));
   // The root: R207's whole-scene files and their temporaries, and the generations past the kept.
-  entries.clear();
+  Vector<io::DirEntry> entries;
   if (io::list_directory(root, entries) != io::Status::Ok) return;
   struct Other {
     std::string name;
@@ -631,8 +668,14 @@ void prune_micromap_store(std::string_view ddc_root, u64 generation,
   Vector<Other> others;
   for (const io::DirEntry& e : entries) {
     if (!e.is_directory) {
-      if (ends_with(e.name, ".omm") || ends_with(e.name, ".tmp"))
-        if (io::remove_file(io::join_path(root, e.name)) == io::Status::Ok) ++out.packs;
+      // R207's temporaries by the same age rule as any other (R208-L4): a binary of that format
+      // may be storing into this root as this runs. Its whole-scene files are of no use here.
+      const std::string path = io::join_path(root, e.name);
+      if (ends_with(e.name, ".tmp")) {
+        if (stale(path) && io::remove_file(path) == io::Status::Ok) ++out.swept;
+      } else if (ends_with(e.name, ".omm") && io::remove_file(path) == io::Status::Ok) {
+        ++out.packs;
+      }
       continue;
     }
     if (!is_hex16(e.name) || e.name == current) continue;
@@ -646,6 +689,10 @@ void prune_micromap_store(std::string_view ddc_root, u64 generation,
   std::sort(others.begin(), others.end(), [](const Other& a, const Other& b) {
     return a.used != b.used ? a.used > b.used : a.name < b.name;
   });
+  // The kept others' dead stores' temporaries (R208-L6), which would otherwise wait for that
+  // generation to be current again.
+  for (u32 i = 0; i < others.size() && i + 1 < k_micromap_generations_kept; ++i)
+    sweep(io::join_path(root, others[i].name));
   for (u32 i = k_micromap_generations_kept - 1; i < others.size(); ++i) {
     // Only what a store writes is removed, file by file; a folder left with anything else in it
     // is left.
@@ -662,7 +709,10 @@ void prune_micromap_store(std::string_view ddc_root, u64 generation,
         empty = false;
       }
     }
-    if (empty && io::remove_directory_recursive(dir) == io::Status::Ok) ++out.generations;
+    // Removed only if it is empty now (R208-L1): a file another process put there after the
+    // listing, a pack it just renamed in, keeps the folder and the file.
+    std::error_code ec;
+    if (empty && std::filesystem::remove(path_of(dir), ec) && !ec) ++out.generations;
   }
 }
 

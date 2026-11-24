@@ -231,11 +231,19 @@ TEST_CASE("micromap cache: a pack is refused by its header, its bytes and its ta
     std::string bytes = read_all(path);
     spoil(bytes);
     write_all(path, bytes);
+    // Every spoil below is of the bytes, read whole: damaged, and removed at the next store
+    // (R208-L7); a pack that does not open is not (below).
     MicromapPackIndex index;
-    if (!read_micromap_pack_index(path, asked, index)) return index.refused;
+    if (!read_micromap_pack_index(path, asked, index)) {
+      CHECK(index.damaged);
+      return index.refused;
+    }
+    CHECK_FALSE(index.damaged);
     MicromapPackData data;
     std::string refused;
-    CHECK_FALSE(read_micromap_pack(index, data, &refused));
+    bool damaged = false;
+    CHECK_FALSE(read_micromap_pack(index, data, &refused, &damaged));
+    CHECK(damaged);
     CHECK(data.indices.empty());
     return refused;
   };
@@ -278,9 +286,32 @@ TEST_CASE("micromap cache: a pack is refused by its header, its bytes and its ta
     CHECK(refusal(fx, none, generation).find("a triangle record names states") !=
           std::string::npos);
   }
-  // A pack that is not there opens nothing.
+  // A pack that is not there opens nothing, and is not damaged: it may be another process's
+  // replace under way, and a load leaves it alone.
   MicromapPackIndex missing;
   CHECK_FALSE(read_micromap_pack_index(dir.path() + "/none.omm", generation, missing));
+  CHECK_FALSE(missing.damaged);
+  // A pack whose index was read and which is gone (or replaced by another length) before its
+  // sections are: a miss, not damage.
+  {
+    std::string error;
+    REQUIRE_MESSAGE(write_micromap_pack(path, generation, good.view(), &error), error);
+    MicromapPackIndex index;
+    REQUIRE_MESSAGE(read_micromap_pack_index(path, generation, index), index.refused);
+    std::string bytes = read_all(path);
+    write_all(path, bytes + "more");
+    MicromapPackData data;
+    std::string refused;
+    bool damaged = true;
+    CHECK_FALSE(read_micromap_pack(index, data, &refused, &damaged));
+    CHECK(refused.find("length changed") != std::string::npos);
+    CHECK_FALSE(damaged);
+    std::filesystem::remove(std::filesystem::path(path));
+    damaged = true;
+    CHECK_FALSE(read_micromap_pack(index, data, &refused, &damaged));
+    CHECK(refused.find("did not open") != std::string::npos);
+    CHECK_FALSE(damaged);
+  }
 }
 
 // **The micromap is a function of the triangles' states, not of where they were stored** (R208):
@@ -311,8 +342,18 @@ TEST_CASE("micromap cache: the assembly is the same micromap whichever parts wer
                                      {1, 0, 2, whole.parts[1].wanted}};
   MicromapAssembly a;
   MicromapAssembly b;
-  assemble_micromaps(one, one_runs, a);
-  assemble_micromaps(split, split_runs, b);
+  REQUIRE(assemble_micromaps(one, one_runs, a));
+  REQUIRE(assemble_micromaps(split, split_runs, b));
+  // A run past its source's indices, or naming a source there is not, assembles nothing (R208-M2:
+  // the bound holds whatever a part's key says).
+  {
+    const MicromapRun past[1] = {{1, 0, 3, nullptr}};  // split[1] holds two
+    const MicromapRun nowhere[1] = {{2, 0, 1, nullptr}};
+    MicromapAssembly refused;
+    CHECK_FALSE(assemble_micromaps(split, past, refused));
+    CHECK(refused.indices.empty());
+    CHECK_FALSE(assemble_micromaps(split, nowhere, refused));
+  }
   // Entries 0 and 1 of the pack are the same words at the same level: one entry.
   CHECK(a.triangles.size() == 2);
   CHECK(a.stats.unique_entries == 2);
@@ -374,6 +415,16 @@ TEST_CASE("micromap cache: a store keeps two generations and leaves no dead stor
   age(here + "/dead.omm.1.ff.tmp", std::chrono::minutes(5));
   make(here + "/live.omm.2.ee.tmp");               // a store under way
   make(root + "/micromaps/00c0ffee00c0ffee.omm");  // R207's whole-scene file
+  // R207's temporaries at the root by the same age rule (R208-L4): a binary of that format may be
+  // storing into this root now.
+  make(root + "/micromaps/00c0ffee00c0ffee.omm.3.dd.tmp");
+  age(root + "/micromaps/00c0ffee00c0ffee.omm.3.dd.tmp", std::chrono::minutes(5));
+  make(root + "/micromaps/00c0ffee00c0ffee.omm.4.cc.tmp");
+  // The kept other generation's dead store's temporary is swept too (R208-L6), a live one kept.
+  const std::string kept = micromap_generation_dir(root, recent);
+  make(kept + "/dead.omm.5.bb.tmp");
+  age(kept + "/dead.omm.5.bb.tmp", std::chrono::minutes(5));
+  make(kept + "/live.omm.6.aa.tmp");
   const std::string damaged[1] = {here + "/b.omm"};
   MicromapPruneReport report;
   const i64 now = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -391,7 +442,11 @@ TEST_CASE("micromap cache: a store keeps two generations and leaves no dead stor
   CHECK_FALSE(fs::exists(micromap_generation_dir(root, older) + "/a.omm"));
   CHECK(fs::exists(micromap_generation_dir(root, older) + "/notes.txt"));
   CHECK_FALSE(fs::exists(root + "/micromaps/00c0ffee00c0ffee.omm"));
-  CHECK(report.swept == 1);
+  CHECK_FALSE(fs::exists(root + "/micromaps/00c0ffee00c0ffee.omm.3.dd.tmp"));
+  CHECK(fs::exists(root + "/micromaps/00c0ffee00c0ffee.omm.4.cc.tmp"));
+  CHECK_FALSE(fs::exists(kept + "/dead.omm.5.bb.tmp"));
+  CHECK(fs::exists(kept + "/live.omm.6.aa.tmp"));
+  CHECK(report.swept == 3);
   CHECK(report.packs == 4);  // the damaged pack, old's, older's and R207's file
   CHECK(report.generations == 1);
 }

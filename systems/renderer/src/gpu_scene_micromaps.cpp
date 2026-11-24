@@ -38,9 +38,13 @@ struct ScenePart {
 struct StoreIndex {
   Vector<MicromapPackIndex> packs;
   Vector<MicromapPackData> loaded;  // per pack, its sections once read
-  Vector<u8> state;                 // per pack: 0 unread, 1 read, 2 refused
+  Vector<u8> state;                 // per pack: 0 unread, 1 read, 2 refused, 3 spent (freed)
   HashMap<u64, u64> parts;          // key -> pack << 32 | part
 };
+constexpr u8 k_pack_unread = 0;
+constexpr u8 k_pack_read = 1;
+constexpr u8 k_pack_refused = 2;
+constexpr u8 k_pack_spent = 3;
 
 void index_store(const std::string& dir, u64 generation, StoreIndex& out, MicromapCacheReport& r,
                  Vector<std::string>& damaged) {
@@ -50,11 +54,11 @@ void index_store(const std::string& dir, u64 generation, StoreIndex& out, Microm
     if (e.is_directory || e.name.size() < 4 || e.name.substr(e.name.size() - 4) != ".omm") continue;
     MicromapPackIndex index;
     if (!read_micromap_pack_index(io::join_path(dir, e.name), generation, index)) {
-      // A pack in this generation's folder that is not one of its packs is of no use to any
-      // load: removed at the next store.
+      // A pack in this generation's folder whose bytes are not one of its packs is of no use to
+      // any load: removed at this load's store. One that did not open or read is left (R208-L7).
       ++r.packs_refused;
       if (r.refused.empty()) r.refused = e.name + ": " + index.refused;
-      damaged.push_back(index.path);
+      if (index.damaged) damaged.push_back(index.path);
       continue;
     }
     const u32 p = static_cast<u32>(out.packs.size());
@@ -97,8 +101,11 @@ struct Assemble {
     for (const ScenePart& p : *parts)
       runs.push_back(MicromapRun{p.source, p.first, p.triangles, p.wanted});
     MicromapAssembly assembly;
-    assemble_micromaps(std::span<const MicromapPackView>(sources->data(), sources->size()),
-                       std::span<const MicromapRun>(runs.data(), runs.size()), assembly);
+    if (!assemble_micromaps(std::span<const MicromapPackView>(sources->data(), sources->size()),
+                            std::span<const MicromapRun>(runs.data(), runs.size()), assembly)) {
+      error = "a part's run reaches past its source's indices";
+      return false;
+    }
     assembly.stats.level_cap = cap;
     if (budget != 0 && assembly.total_bytes > budget && cap > 0) {
       over_budget = true;
@@ -134,8 +141,11 @@ struct Assemble {
     for (u32 b = 0; b < self.baked.size(); ++b)
       runs.push_back(MicromapRun{0, self.baked_first[b], self.baked[b].triangle_count, nullptr});
     MicromapAssembly packed;
-    assemble_micromaps(std::span<const MicromapPackView>(&raw, 1),
-                       std::span<const MicromapRun>(runs.data(), runs.size()), packed);
+    if (!assemble_micromaps(std::span<const MicromapPackView>(&raw, 1),
+                            std::span<const MicromapRun>(runs.data(), runs.size()), packed)) {
+      self.error = "the bake's sections are shorter than its parts";
+      return;
+    }
     Vector<u32> data(static_cast<u32>(packed.stats.data_bytes / sizeof(u32)), 0u);
     for (u32 e = 0; e < packed.triangles.size(); ++e) {
       const gfx::MicromapTriangle& from = raw.triangles[packed.entry_index[e]];
@@ -218,6 +228,10 @@ bool micromaps_from_store(const gfx::Device& device, gfx::ShaderLibrary& shaders
   Vector<std::string> damaged;
   index_store(dir, generation, store, r, damaged);
   r.key_ms = static_cast<f64>(time::monotonic_ns() - start) / 1e6;
+  // The generation is marked used before anything is stored in it (R208-L2): a folder with a pack
+  // and no `used` file sorts last, and another generation's prune would take it.
+  touch_micromap_generation(state.root, generation);
+  Vector<std::string> stored_paths;  // every pack this load stored, in any round (R208-L3)
   bool stored = false;
   u32 cap = in.max_level;
   const u32 first_cap = cap;
@@ -245,23 +259,39 @@ bool micromaps_from_store(const gfx::Device& device, gfx::ShaderLibrary& shaders
       if (at == nullptr) continue;
       const u32 pack = static_cast<u32>(*at >> 32);
       const u32 index = static_cast<u32>(*at & 0xffffffffu);
-      if (store.state[pack] == 0) {
+      if (store.state[pack] == k_pack_unread) {
         std::string refused;
-        if (read_micromap_pack(store.packs[pack], store.loaded[pack], &refused)) {
-          store.state[pack] = 1;
+        bool spoiled = false;
+        if (read_micromap_pack(store.packs[pack], store.loaded[pack], &refused, &spoiled)) {
+          store.state[pack] = k_pack_read;
           r.read_bytes += store.packs[pack].file_bytes;
           ++r.packs_read;
         } else {
-          store.state[pack] = 2;
+          store.state[pack] = k_pack_refused;
           ++r.packs_refused;
           if (r.refused.empty()) r.refused = store.packs[pack].path + ": " + refused;
-          damaged.push_back(store.packs[pack].path);
+          // Removed only when its bytes were read and refused for what they say (R208-L7).
+          if (spoiled) damaged.push_back(store.packs[pack].path);
           ENGINE_LOG_WARN(log_renderer, "stored opacity micromaps refused",
                           log::field("path", std::string_view{store.packs[pack].path}),
                           log::field("reason", std::string_view{refused}));
         }
       }
-      if (store.state[pack] != 1) continue;
+      if (store.state[pack] != k_pack_read) continue;
+      // A stored part stands for this one only if it has its triangles (R208-M2): a 64-bit key
+      // that collides over other content is a miss, baked, and never a read past the part.
+      const MicromapPackData& held = store.loaded[pack];
+      if (index >= held.parts.size() || held.parts[index].triangle_count != p.triangles ||
+          u64{held.first_triangle[index]} + p.triangles > held.indices.size()) {
+        if (r.refused.empty()) {
+          r.refused =
+              store.packs[pack].path +
+              ": a stored part's triangle count is not the scene part's (" +
+              std::to_string(index < held.parts.size() ? held.parts[index].triangle_count : 0u) +
+              " stored, " + std::to_string(p.triangles) + " here)";
+        }
+        continue;
+      }
       if (source_of[pack] == ~0u) {
         source_of[pack] = static_cast<u32>(sources.size());
         sources.push_back(store.loaded[pack].view());
@@ -327,6 +357,7 @@ bool micromaps_from_store(const gfx::Device& device, gfx::ShaderLibrary& shaders
         r.stored = true;
         r.stored_bytes += job.stored_bytes;
         r.path = job.path;
+        stored_paths.push_back(job.path);
       } else if (!job.store_error.empty()) {
         ENGINE_LOG_WARN(log_renderer, "opacity micromaps not stored",
                         log::field("path", std::string_view{job.path}),
@@ -338,6 +369,15 @@ bool micromaps_from_store(const gfx::Device& device, gfx::ShaderLibrary& shaders
       }
     }
     if (job.over_budget) {
+      // The packs this round read hold parts at this cap alone (a pack is one round's bake, and
+      // the cap is in every part's key), so no key at a lower cap names them: their sections are
+      // freed before the next cap is tried, and a load's peak is the larger round, not the two
+      // rounds' sum (R208-M1).
+      for (u32 pk = 0; pk < store.packs.size(); ++pk) {
+        if (store.state[pk] != k_pack_read) continue;
+        store.loaded[pk] = MicromapPackData{};
+        store.state[pk] = k_pack_spent;
+      }
       --cap;
       r.baked = 0;
       continue;
@@ -355,12 +395,13 @@ bool micromaps_from_store(const gfx::Device& device, gfx::ShaderLibrary& shaders
     }
     break;
   }
-  touch_micromap_generation(state.root, generation);
   if (stored || !damaged.empty()) {
-    // A pack this load stored over a damaged one of the same name is the store's, not the damage.
+    // A pack this load stored over a damaged one of the same name, in any round, is the store's,
+    // not the damage (R208-L3).
     Vector<std::string> remove;
     for (const std::string& path : damaged)
-      if (path != r.path) remove.push_back(path);
+      if (std::find(stored_paths.begin(), stored_paths.end(), path) == stored_paths.end())
+        remove.push_back(path);
     damaged = std::move(remove);
     MicromapPruneReport pruned;
     prune_micromap_store(state.root, generation,
