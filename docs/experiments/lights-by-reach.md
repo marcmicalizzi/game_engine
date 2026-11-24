@@ -146,3 +146,21 @@ run to run even for one binary (base against base differs), so the pictures were
 flights with `renderer.gi.mode=off` and `renderer.reconstruction.accumulation=off`: base and tip
 draw **the same bytes** at 16 and at 64 lamps (and base twice the same bytes). The tests hold the
 same on one renderer with the bounce's frame (`lamp_tests.cpp`).
+
+**A scene with no lights costs what it cost: the forest staging.** `--no-lights`, standing, the
+owner's top setting (3840 × 2160, `--raster rt --shadows rt`, micromaps, the bounce with its guide
+and memory, the accumulation), 300 frames, the resolve's median over frames 100 to 299, each side's
+first load (a cold compile of the resolve: 401 s for base, 465 s for the tip) not a side of the
+pair: **base 9.343 ms (its first load 9.354), tip 9.381 ms (its first load 9.410)**, so +0.04 ms
+(0.4 %), inside the row's 0.05 ms; peaks 18.85 and 18.83 GiB of private commit. Machine state: other
+agents' builds beside it (the CPU 4 to 29 % busy at the starts), and another engine-view running at
+the tip's measured start; an upper bound. The forest names no finite light, so it builds no grid:
+what it pays is the walk's code in the module, every pixel's leading-light loop now asked through
+`light_walk_next`.
+
+**The modules' size** (`fs_resolve`'s instructions, counted by walking each module's SPIR-V from
+`OpFunction` to `OpFunctionEnd`, as [resolve-cold-compile](resolve-cold-compile.md) counts them):
+every resolve variant grows by **141 instructions** (2,940 bytes); the forest's
+(`visibility_resolve_rt_water_terrain_stochastic`) 326,306 → 326,447. No module crosses
+`cmake/shader-costs.txt`'s heavy line either way, so no row of it moves (`build.shader_pool` passes
+in the row's `test -Affected`).
