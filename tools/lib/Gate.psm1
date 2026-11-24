@@ -339,8 +339,8 @@ function Get-FoldPlan {
     follow-up runs (T220; docs/ci/gate.md, "A follow-up that completes a verdict").
   .DESCRIPTION
     Refusal is a sentence when it cannot: a verdict that records no step states, one for another
-    commit, one whose tree changed or gained litter while it ran, one that holds any step red (a red
-    step is a verdict: no follow-up turns it green), or one whose core steps (checks, builds, suites,
+    commit, one whose tree changed or gained litter while it ran, one that holds any step red or whose
+    own red or no_verdict list is not empty (a red step is a verdict: no follow-up turns it green), or one whose core steps (checks, builds, suites,
     integrity, tree) are not all green. Otherwise Run is every earned step (listeners, budgets,
     weaker-card, linux) it holds inconclusive, not run or skipped, less those this run -Skips, and
     a plan with nothing to run is refused too. Sources is the earlier verdict's own per-step sources
@@ -359,6 +359,12 @@ function Get-FoldPlan {
   }
   $red = @($states.Keys | Where-Object { $states[$_] -eq 'red' })
   if ($red) { return & $no "$EarlierPath holds $($red -join ', ') red: a red step is a verdict, and no follow-up turns it green" }
+  # Its own red and no-verdict lists are read as well as its states (T220-L2): every red today maps to
+  # a state, but a red added later without one must still refuse the fold rather than slip past it.
+  $ownRed = @(if (& $has $Earlier 'red') { @($Earlier.red) | Where-Object { $_ } })
+  if ($ownRed) { return & $no "$EarlierPath is red ($($ownRed -join '; ')): a red verdict is a verdict, and no follow-up turns it green" }
+  $noVerdict = @(if (& $has $Earlier 'no_verdict') { @($Earlier.no_verdict) | Where-Object { $_ } })
+  if ($noVerdict) { return & $no "$EarlierPath holds no verdict for $($noVerdict -join ', '): a leg that left none is red, and no follow-up turns it green" }
   $core = @($script:CoreSteps | Where-Object { $states[$_] -ne 'green' })
   if ($core) { return & $no "$EarlierPath holds $(@($core | ForEach-Object { "$_ $($states[$_])" }) -join ', '): a follow-up runs no check, build or suite, so it completes only a verdict whose are green" }
   $run = @($script:EarnedSteps | Where-Object { $states[$_] -in 'inconclusive', 'not run', 'skipped', 'missing' -and $_ -notin $Skip })
@@ -371,6 +377,26 @@ function Get-FoldPlan {
     if ((& $has $Earlier 'sources') -and $Earlier.sources -and (& $has $Earlier.sources $s)) { $sources[$s] = @($Earlier.sources.$s) }
   }
   [pscustomobject]@{ Refusal = $null; Run = $run; States = $states; Sources = $sources }
+}
+
+function Get-OpenStepsText {
+  <#
+  .SYNOPSIS
+    The steps of a verdict's states that are neither green nor skipped, grouped by state
+    ("inconclusive: budgets; not run: listeners"), or '' when there are none (T220-L1): what an exit 4
+    and after-gate's refusal name, so neither names nothing.
+  #>
+  param($States)
+  if (-not $States) { return '' }
+  $pairs = if ($States -is [System.Collections.IDictionary]) { @($States.Keys | ForEach-Object { , @("$_", "$($States[$_])") }) }
+           else { @($States.PSObject.Properties | ForEach-Object { , @($_.Name, "$($_.Value)") }) }
+  $by = [ordered]@{}
+  foreach ($p in $pairs) {
+    if ($p[1] -in 'green', 'skipped') { continue }
+    if (-not $by.Contains($p[1])) { $by[$p[1]] = New-Object System.Collections.Generic.List[string] }
+    $by[$p[1]].Add($p[0])
+  }
+  @($by.Keys | ForEach-Object { "${_}: $($by[$_] -join ', ')" }) -join '; '
 }
 
 function Start-GateProcess {
@@ -405,4 +431,4 @@ function Start-GateProcess {
 Export-ModuleMember -Function Get-GateFilters, Get-WeakerCardFilter, ConvertTo-CommandLine, Read-CTestLog,
   Test-NoCaseByDesign, Get-SuiteState, Get-RerunPlan, Test-RunExplained, Get-IntegrityFindings, Read-ContainerVerdict,
   Read-LegVerdict, Get-WorktreeDirt, Get-TreeLitter, Get-TreeEntries, Start-GateProcess, Get-GateSteps, Get-BudgetStepState,
-  Read-BudgetBusyRuns, Get-FoldPlan
+  Read-BudgetBusyRuns, Get-FoldPlan, Get-OpenStepsText

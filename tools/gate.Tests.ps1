@@ -412,6 +412,17 @@ try {
       (& $why @{ 'states.budgets' = 'green'; 'states.weaker-card' = 'green' }) -match 'nothing this follow-up would run' -and
       (Get-FoldPlan -Earlier ([pscustomobject]@{ tip = 'abc'; green = $false }) -EarlierPath 'old.json' -Tip 'abc').Refusal -match 'records no step states'
   }
+  Test-That 'a follow-up is refused over an earlier verdict whose own red or no-verdict list is not empty, whatever its states say (T220-L2)' {
+    $why = { param($changes) (Get-FoldPlan -Earlier (& $asVerdict $changes) -EarlierPath 'v1.json' -Tip 'abc').Refusal }
+    (& $why @{ red = @('something new') }) -match 'v1\.json is red \(something new\)' -and
+      (& $why @{ no_verdict = @('linux') }) -match 'no verdict for linux' -and -not (& $why @{ red = @(); no_verdict = @() })
+  }
+  Test-That 'the steps an exit 4 or a refusal names: every state but green and skipped, grouped by state, from either form of the states' {
+    $d = [ordered]@{ checks = 'green'; budgets = 'inconclusive'; linux = 'skipped'; listeners = 'not run'; 'weaker-card' = 'inconclusive' }
+    $o = [pscustomobject]$d
+    (Get-OpenStepsText $d) -eq 'inconclusive: budgets, weaker-card; not run: listeners' -and (Get-OpenStepsText $o) -eq (Get-OpenStepsText $d) -and
+      (Get-OpenStepsText ([ordered]@{ checks = 'green'; linux = 'skipped' })) -eq ''
+  }
   Test-That '-Completes takes no -Reach' {
     $o = (& pwsh -NoProfile -File $gateScript -Root $fx -Batch x -Logs (Join-Path $base 'completes-logs') -Completes 'v.json' -Reach 'x' *>&1 | Out-String)
     $LASTEXITCODE -eq 2 -and $o -match 'takes no -Reach' -and -not (Test-Path -LiteralPath (Join-Path $base 'completes-logs'))
@@ -513,6 +524,9 @@ try {
   Test-That 'red suites earn no listener check, no budgets and no weaker card' {
     ($r.Calls -match 'check-no-listeners|frame-budget|device=titanxp').Count -eq 0 -and $r.Out -match 'not run: the suites are not all green'
   }
+  Test-That 'the Linux leg, which runs beside red suites, records what it did: red here, never "not run" (T220-L3)' {
+    $r.Verdict.states.linux -eq 'red' -and $r.Verdict.states.listeners -eq 'not run' -and $r.Verdict.states.budgets -eq 'not run'
+  }
 
   # ---- exit codes the logs do not explain --------------------------------------------------------
   $codes = @{
@@ -577,7 +591,10 @@ try {
   $i = Invoke-Gate 'batchI' @{ budgets = 0 } @('-Skip', 'linux', '-Completes', $hVerdict)
   Test-That 'a follow-up completes the verdict: only the budgets fly, and the folded verdict is green with each step''s source' {
     $i.Code -eq 0 -and $i.Verdict.green -and $i.Verdict.tip -eq $h.Verdict.tip -and $i.Verdict.completes -eq $hVerdict -and
-      ($i.Calls -match 'frame-budget').Count -eq 1 -and ($i.Calls -match 'dev |check-no-listeners|linux-build').Count -eq 0 -and
+      ($i.Calls -match 'frame-budget').Count -eq 1 -and ($i.Calls -match 'dev (docs|lint|test)|check-no-listeners|linux-build').Count -eq 0 -and
+      ($i.Calls -match 'dev build -Preset msvc-release \| ').Count -eq 1 -and @($i.Calls -match 'dev build -Preset (?!msvc-release)').Count -eq 0 -and
+      (Get-CallTime $i.Calls 'dev build -Preset msvc-release') -lt (Get-CallTime $i.Calls 'frame-budget') -and $i.Verdict.states.builds -eq 'green' -and
+      (@($i.Verdict.sources.builds | ForEach-Object { $_.batch }) -join '+') -eq 'batchH+batchI' -and $i.Verdict.sources.linux[0].batch -eq 'batchI' -and
       $i.Verdict.sources.budgets[0].batch -eq 'batchI' -and $i.Verdict.sources.suites[0].batch -eq 'batchH' -and $i.Verdict.sources.listeners[0].batch -eq 'batchH' -and
       $i.Verdict.sources.suites[0].ended -eq $h.Verdict.ended -and $i.Verdict.states.linux -eq 'skipped' -and
       (@($i.Verdict.sources.tree | ForEach-Object { $_.batch }) -join '+') -eq 'batchH+batchI' -and $i.Verdict.suites.'msvc-debug'.ok
@@ -608,6 +625,44 @@ try {
     $a = Invoke-GateRaw 'batchL' (Join-Path $base 'logs-batchL') @('-Completes', $other)
     $b2 = Invoke-GateRaw 'batchL' (Join-Path $base 'logs-batchL') @('-Completes', $dirt)
     $a.Code -eq 2 -and $a.Out -match 'nothing folds across two HEADs' -and $b2.Code -eq 2 -and $b2.Out -match 'nothing folds across a dirty tree'
+  }
+  $i2 = Invoke-Gate 'batchI2' @{ budgets = 0; 'build-fails' = @{ 'msvc-release' = 3 } } @('-Skip', 'linux', '-Completes', $hVerdict)
+  Test-That 'a follow-up whose release build fails is red, and flies nothing over what the build left (T220-L4)' {
+    $i2.Code -eq 1 -and ($i2.Verdict.red -contains 'build msvc-release') -and $i2.Verdict.states.builds -eq 'red' -and
+      $i2.Verdict.states.budgets -eq 'not run' -and ($i2.Calls -match 'frame-budget|check-no-listeners').Count -eq 0 -and
+      ($i2.Calls -match 'dev build -Preset msvc-release').Count -eq 3 -and -not $i2.Verdict.steps.follow_up_build.ok
+  }
+  $m = Invoke-Gate 'batchM' @{ budgets = 1 } @('-Skip', 'linux', '-Completes', $hVerdict)
+  Test-That 'a follow-up whose own budgets come back over on a quiet machine is red (exit 1), and after-gate refuses it (T220-L6)' {
+    $o = (& pwsh -NoProfile -File $afterScript -Gate $repo -Main $repo -Verdict (Join-Path $m.Logs 'batchM-gate.verdict.json') -CopyTo (Join-Path $base 'm-copy') *>&1 | Out-String)
+    $LASTEXITCODE -eq 2 -and $o -match 'not green \(red: budgets; steps red: budgets' -and -not (Test-Path -LiteralPath (Join-Path $base 'm-copy')) -and
+      $m.Code -eq 1 -and -not $m.Verdict.green -and ($m.Verdict.red -contains 'budgets') -and $m.Verdict.states.budgets -eq 'red' -and
+      $m.Verdict.sources.budgets[0].batch -eq 'batchM' -and ($m.Calls -match 'frame-budget').Count -eq 1
+  }
+  $n = Invoke-Gate 'batchN' @{} @('-Skip', 'budgets', '-Completes', $hVerdict)
+  Test-That 'a follow-up that -Skips an inconclusive step keeps it inconclusive, never promoted, and says so in its exit 4 (T220-L1)' {
+    $n.Code -eq 4 -and -not $n.Verdict.green -and $n.Verdict.states.budgets -eq 'inconclusive' -and $n.Verdict.sources.budgets[0].batch -eq 'batchH' -and
+      $n.Verdict.states.linux -eq 'green' -and $n.Verdict.sources.linux[0].batch -eq 'batchN' -and ($n.Calls -match 'frame-budget|dev ').Count -eq 0 -and
+      $n.Out -match 'GATE batchN exit 4 .*not green: inconclusive: budgets'
+  }
+  $hv = Get-Content -LiteralPath $hVerdict -Raw | ConvertFrom-Json
+  $hv.states.PSObject.Properties.Remove('weaker-card')
+  $missing = Join-Path $base 'missing-step.json'; Write-Text $missing ($hv | ConvertTo-Json -Depth 8)
+  $o2 = Invoke-Gate 'batchO' @{ budgets = 0 } @('-Skip', 'linux,weaker-card', '-Completes', $missing)
+  Test-That 'a step the earlier verdict lacks and the follow-up -Skips is recorded skipped, as a plain gate records it (T220-L1)' {
+    $o2.Code -eq 0 -and $o2.Verdict.green -and $o2.Verdict.states.'weaker-card' -eq 'skipped' -and $o2.Verdict.sources.'weaker-card'[0].batch -eq 'batchO' -and
+      $o2.Verdict.states.budgets -eq 'green' -and ($o2.Calls -match 'device=titanxp').Count -eq 0
+  }
+  $rv = Invoke-Gate 'batchR' $busyGreen @('-Reach', 'a', '-Skip', 'linux,listeners,budgets,weaker-card')
+  $r2 = Invoke-Gate 'batchR2' @{ budgets = 0 } @('-Skip', 'linux,listeners,weaker-card', '-Completes', (Join-Path $rv.Logs 'batchR-gate.verdict.json'))
+  Test-That 'a fold of a -Reach verdict records that reach, and says so as it starts (T220-M1)' {
+    $rv.Code -eq 0 -and $rv.Verdict.reach -eq 'a' -and $r2.Code -eq 0 -and $r2.Verdict.reach -eq 'a' -and
+      $r2.Out -match "its suites under -Reach 'a'" -and $r2.Verdict.states.listeners -eq 'skipped' -and $r2.Verdict.sources.listeners[0].batch -eq 'batchR2'
+  }
+  Test-That 'a -Completes naming the verdict this run would write is refused before anything is set aside (T220-L5)' {
+    $self = Invoke-GateRaw 'batchH' $h.Logs @('-Completes', $hVerdict)
+    $self.Code -eq 2 -and $self.Out -match 'names the verdict this run would write' -and $self.Out -match 'a -Batch of its own \(not batchH\)' -and
+      (Test-Path -LiteralPath $hVerdict) -and @(Get-ChildItem -LiteralPath $h.Logs -Filter 'batchH-gate.verdict.previous-*').Count -eq 0
   }
 
   # ---- a follow-up, and a leg that leaves no verdict ---------------------------------------------

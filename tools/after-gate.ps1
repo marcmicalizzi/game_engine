@@ -57,8 +57,11 @@ if (-not (Test-Path -LiteralPath $Verdict)) { "after-gate: no verdict file at $V
 $v = Get-Content -LiteralPath $Verdict -Raw | ConvertFrom-Json
 $tip = (Invoke-Git $Gate rev-parse HEAD).Out
 if (-not $v.green) {
-  $open = if ($v.PSObject.Properties['inconclusive'] -and @($v.inconclusive).Count) { "; inconclusive: $(@($v.inconclusive) -join ', '), which tools/gate.ps1 -Completes can complete" } else { '' }
-  "after-gate: the gate $($v.batch) was not green (red: $(@($v.red) -join '; ')$open); nothing done"; exit 2
+  # Every step that is neither green nor skipped, by state (T220-L1), so the refusal never names nothing.
+  $steps = if ($v.PSObject.Properties['states']) { Get-OpenStepsText $v.states } else { '' }
+  $open = if ($steps) { "; steps $steps" } else { '' }
+  $complete = if ($v.PSObject.Properties['inconclusive'] -and @($v.inconclusive).Count -and -not @($v.red).Count) { '; tools/gate.ps1 -Completes can complete what is inconclusive' } else { '' }
+  "after-gate: the gate $($v.batch) was not green (red: $(@($v.red) -join '; ')$open$complete); nothing done"; exit 2
 }
 # A folded verdict (tools/gate.ps1 -Completes, T220) is read like any other; each step's source is said.
 if ($v.PSObject.Properties['completes'] -and $v.completes -and $v.PSObject.Properties['sources']) {

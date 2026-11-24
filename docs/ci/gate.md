@@ -29,13 +29,13 @@ pwsh tools/after-gate.ps1 -Gate <gate worktree> -Main <primary checkout> -Verdic
 | `-WeakerCard <profile>` | the weaker card's `ENGINE_GFX_TEST_DEVICE` (default `titanxp`) |
 | `-MemoryWaitMinutes <n>` | the longest wait for memory before a configure or a build attempt (default 15); a timeout proceeds and is kept in the verdict (`memory_wait_timeouts`) |
 | `-BudgetWaitQuiet <s>` | the frame budgets' `-WaitQuiet`, the longest wait for a quiet machine before each run is flown (default 120) |
-| `-Completes <verdict>` | a follow-up that completes an earlier verdict of the same tip: it runs no check, build or suite, only the earned steps that verdict lacks or holds inconclusive (below); no `-Reach` with it |
+| `-Completes <verdict>` | a follow-up that completes an earlier verdict of the same tip: it runs no check or suite, only the earned steps that verdict lacks or holds inconclusive, after the release build when one of them flies its binaries (below); no `-Reach` with it, and never the verdict this run would write |
 | `-SamplesFrom <dir>` | when `content/samples/Lantern/Lantern.glb` is missing, the entries of `<dir>` are copied into `<Root>/content/samples` (git-ignored) before the budgets: **the one write the gate itself makes inside `-Root`** |
 
-Exit **0** green; **1** red (the summary names every reason); **4** nothing red and a step inconclusive (the budgets over only on a busy machine twice: complete it with `-Completes`); **2** refused, before anything runs:
+Exit **0** green; **1** red (the summary names every reason); **4** nothing red and a step inconclusive: the budgets over only on a busy machine twice, or a first flight that exits 6 (a run compared with nothing for its session state) whether or not a busy run was flown again, or a step a follow-up `-Skip`s that its earlier verdict holds inconclusive; the summary names every step that is not green or skipped, by state, and `-Completes` completes it; **2** refused, before anything runs:
 an unknown `-Skip` name, a `-Root` that is not a git worktree or is not clean at its HEAD (the
 refusal lists what is in the way), a `-Logs` inside `-Root`, a `-Completes` verdict that cannot be
-completed ([below](#a-follow-up-that-completes-a-verdict)). A run that is refused or stops
+completed ([below](#a-follow-up-that-completes-a-verdict)), a `-Completes` naming the verdict this run would write (refused before the set-aside below, so that file keeps its name: give the follow-up a `-Batch` of its own). A run that is refused or stops
 part-way leaves no verdict of that batch name: the last `<Batch>-gate.verdict.json` in `-Logs` is
 renamed `<Batch>-gate.verdict.previous-<stamp>.json` before anything else can fail, so no older
 green outlives it where `tools/after-gate.ps1` would read it.
@@ -53,7 +53,7 @@ green outlives it where `tools/after-gate.ps1` would read it.
 | `-Push` | pushes main, and only when every step before it did what it says |
 
 Exit **0** every step did what it says; **1** one did not (each named, and `-Push` not taken);
-**2** refused, nothing done: no verdict file, a red verdict, a gate worktree that is not clean or
+**2** refused, nothing done: no verdict file, a verdict that is not green (the refusal names the red list and every step that is neither green nor skipped, by state), a gate worktree that is not clean or
 not at the verdict's commit, a main not on `main`, a main the gated tip does not descend from.
 
 ## What it runs
@@ -99,7 +99,9 @@ through `cmd` or a Unix shell. In order:
    every second look, every fault, and **each step's state and source** (`states`, `sources`,
    `inconclusive`): `checks`, `builds`, `suites`, `integrity`, `tree`, `listeners`, `budgets`,
    `weaker-card` and `linux`, each `green`, `red`, `inconclusive`, `skipped` (by `-Skip`) or
-   `not run` (not earned). The verdict is green only when every state is green or skipped.
+   `not run` (not earned). The Linux leg, which runs beside everything, is red or green by what it
+   did even when the suites are red, and `not run` only when it did not run. The verdict is green
+   only when every state is green or skipped.
 
 ## A follow-up that completes a verdict
 
@@ -112,15 +114,28 @@ is the form for that:
   verdict is for another commit, when its tree changed or gained litter while it ran, when it
   records no step states (a verdict from before T220), and when the tree is not clean now (as any
   gate). Nothing folds across two HEADs or a dirty tree.
-- **A red step is a verdict**: a verdict holding any step red is refused, whatever the step, so a
-  budget over on a quiet machine stays red and no follow-up turns it green. Its checks, builds,
+- **A red step is a verdict**: a verdict holding any step red, or whose own `red` or `no_verdict`
+  list is not empty, is refused, whatever the step, so a budget over on a quiet machine stays red
+  and no follow-up turns it green. Its checks, builds,
   suites, integrity and tree must be green, since a follow-up runs none of them.
 - It runs only the earned steps (`listeners`, `budgets`, `weaker-card`, `linux`) the verdict holds
-  inconclusive, not run or skipped, less what its own `-Skip` names (those stay skipped), and is
-  refused when that leaves nothing. The binaries are the gate worktree's, built from that commit by
-  the earlier run.
+  inconclusive, not run, skipped or lacks, less what its own `-Skip` names, and is refused when that
+  leaves nothing. A step it `-Skip`s keeps an earlier `inconclusive` (never promoted, so the folded
+  verdict exits 4) and is otherwise recorded `skipped`, from this run, as a plain gate records a
+  skipped step. A step it runs that comes back red makes the folded verdict red (exit 1), and
+  `after-gate.ps1` refuses it.
+- **It flies the tip's binaries, and proves it**: before the first step that runs a release binary
+  (the listener check, the budgets) it runs the release build the plain gate runs
+  (`tools/dev.ps1 build -Preset msvc-release`, configured if need be, three attempts), a no-op when
+  `build/msvc-release` is current and a rebuild of this commit when it is not (a gate worktree moved
+  to another tip, built and moved back passes the HEAD check, and nothing else would see it). The
+  build is in the verdict (`steps.follow_up_build`) and in `builds`' sources; a build that fails is
+  red (`build msvc-release`, exit 1) and nothing earned is flown over what it left. The weaker
+  card's leg builds through `tools/dev.ps1 test` and the Linux leg in its containers, as in a plain
+  gate.
 - It writes one **folded verdict** under its own batch name: the earlier verdict's record of what it
-  does not run again, this run's of what it does, `completes` naming the earlier file, and
+  does not run again, this run's of what it does, `completes` naming the earlier file, the earlier
+  verdict's `reach` (its suites ran under it, and the start line says so), and
   `sources.<step>`, a list of `{verdict, batch, started, ended}` for each step (integrity and tree
   name both runs, since both read their own logs and tree). It is green only when every step is.
   `tools/after-gate.ps1` reads it like any other and prints where each step came from; it refuses an

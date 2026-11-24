@@ -130,6 +130,15 @@ $Logs = (Resolve-Path -LiteralPath $Logs).Path
 # The last verdict of this batch name is set aside before anything else can fail, so a run that is
 # refused or stops part-way never leaves an older green where after-gate.ps1 would read it (T217-L2).
 $verdictPath = Join-Path $Logs "$Batch-gate.verdict.json"
+# A -Completes naming the verdict this run would write is refused before that file is set aside, so
+# the verdict the caller meant to complete keeps its name (T220-L5).
+$completesPath = ''
+if ($Completes) {
+  $completesPath = [IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Completes))
+  if ([string]::Equals($completesPath, [IO.Path]::GetFullPath($verdictPath), [StringComparison]::OrdinalIgnoreCase)) {
+    Write-Host "gate: -Completes names the verdict this run would write ($verdictPath); give the follow-up a -Batch of its own (not $Batch); nothing set aside"; exit 2
+  }
+}
 if (Test-Path -LiteralPath $verdictPath) {
   $aside = Join-Path $Logs ("$Batch-gate.verdict.previous-{0}.json" -f (Get-Date).ToString('yyyyMMdd-HHmmss-fff'))
   Move-Item -LiteralPath $verdictPath -Destination $aside
@@ -156,8 +165,6 @@ $tip = (& git -C $Root rev-parse HEAD).Trim()
 # A follow-up that completes an earlier verdict (T220): read and judged before anything runs.
 $fold = $null
 if ($Completes) {
-  $completesPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Completes)
-  if ($completesPath -eq $verdictPath) { Write-Host "gate: -Completes names this run's own verdict file; a follow-up takes a batch name of its own"; exit 2 }
   $earlier = $null
   if (Test-Path -LiteralPath $completesPath) { try { $earlier = Get-Content -LiteralPath $completesPath -Raw | ConvertFrom-Json } catch { $earlier = $null } }
   if (-not $earlier) { Write-Host "gate: no readable verdict at $completesPath; refused"; exit 2 }
@@ -177,13 +184,16 @@ if ($fold) {
   }
   # A step this run flies again overwrites its record below.
   foreach ($k in 'linux', 'weaker_card', 'budgets') { if ($earlier.PSObject.Properties[$k]) { $result[$k] = $earlier.$k } }
+  # The suites it keeps ran under the earlier verdict's reach, so the folded verdict says that reach
+  # (T220-M1): a fold of a -Reach verdict holds the reach set's suites, never the whole ones.
+  $result.reach = if ($earlier.PSObject.Properties['reach']) { "$($earlier.reach)" } else { '' }
   $result.completes = $completesPath
 }
 $red = New-Object System.Collections.Generic.List[string]
 $keptLogs = New-Object System.Collections.Generic.List[object]   # @{ Preset; Path } in the order written
 "gate $Batch over $(& git -C $Root log --oneline -1); the tree is clean at its HEAD; $(Stamp)"
 if ($Reach) { "follow-up: wave one runs ^($Reach)`$" }
-if ($fold) { "follow-up completing $completesPath ($($earlier.batch), the same tip): runs $($fold.Run -join ', '), and no check, build or suite" }
+if ($fold) { "follow-up completing $completesPath ($($earlier.batch), the same tip, its suites $(if ($result.reach) { "under -Reach '$($result.reach)'" } else { 'whole' })): runs $($fold.Run -join ', '), the release build first when one of them flies its binaries, and no check or suite" }
 # Whether this run does a step: a batch's gate does every step it does not skip; a follow-up that
 # completes a verdict does only the earned steps its plan names.
 function Test-Runs([string]$step) { if ($fold) { $step -in $fold.Run } else { $step -notin $Skip } }
@@ -344,11 +354,7 @@ if ($Server) {
 # 2. and 3. The checks and the builds; none of 2. to 5. in a follow-up that completes a verdict,
 # whose earlier verdict holds them green at this very commit.
 $builds = [ordered]@{}
-if (-not $fold) {
-Invoke-Step 'docs' $dev @('docs')
-Invoke-Step 'lint' $dev @('lint')
-$checksOk = ($result.steps.docs -eq 0) -and ($result.steps.lint -eq 0)
-foreach ($preset in 'msvc-debug', 'msvc-minimal', 'msvc-no-ecs', 'msvc-release') {
+function Invoke-Build([string]$preset) {
   # Every attempt and its log is kept in the verdict, and a build that passed on a retry is named
   # there: still green, never folded into a plain pass (T217-M2).
   $log = Join-Path $Logs "$Batch-build-$preset.log"
@@ -375,13 +381,18 @@ foreach ($preset in 'msvc-debug', 'msvc-minimal', 'msvc-no-ecs', 'msvc-release')
   }
   $record.attempts = $attempts.ToArray()
   $record.passed_on_retry = $record.ok -and $attempts.Count -gt 1
-  $builds[$preset] = $record
+  $script:builds[$preset] = $record
   if ($record.passed_on_retry) {
     "BUILD $preset OK on attempt $($attempts.Count), after $($attempts.Count - 1) failed: a pass on a retry, named in the verdict $(Stamp)"
-    $result.retried_builds += $preset
+    $script:result.retried_builds += $preset
   } elseif ($record.ok) { "BUILD $preset OK $(Stamp)" }
   else { "BUILD $preset FAILED after $($attempts.Count) attempt(s)"; $red.Add("build $preset") }
 }
+if (-not $fold) {
+Invoke-Step 'docs' $dev @('docs')
+Invoke-Step 'lint' $dev @('lint')
+$checksOk = ($result.steps.docs -eq 0) -and ($result.steps.lint -eq 0)
+foreach ($preset in 'msvc-debug', 'msvc-minimal', 'msvc-no-ecs', 'msvc-release') { Invoke-Build $preset }
 $result.steps.builds = $builds
 
 # 4. and 5. The suites in two waves, each with its second looks.
@@ -393,7 +404,20 @@ if ($checksOk -and $buildsOk) {
   Invoke-Wave @('msvc-release') $filters 'WAVE 2'
 } else { 'SUITES not run: a check or a build failed' }
 $suitesGreen = $checksOk -and $buildsOk -and $result.suites.Count -eq 4 -and -not @($result.suites.Values | Where-Object { -not $_.ok })
-} else { $checksOk = $true; $buildsOk = $true; $suitesGreen = $true }
+} else {
+  # A follow-up flies the binaries of the tip it names (T220-L4): before a step that runs a release
+  # binary (the listener check, the budgets), the release build the plain gate runs, a no-op when
+  # build/msvc-release is current and a rebuild of the tip when it is not; a build that fails is red
+  # and nothing earned is flown over what it left.
+  $checksOk = $true; $buildsOk = $true
+  if (@($fold.Run | Where-Object { $_ -in 'listeners', 'budgets' })) {
+    Invoke-Build 'msvc-release'
+    $result.steps.follow_up_build = $builds['msvc-release']
+    $buildsOk = [bool]$builds['msvc-release'].ok
+  }
+  $suitesGreen = $buildsOk
+  if (-not $buildsOk) { 'LISTENERS, BUDGETS, WEAKER CARD not run: the follow-up''s release build failed' }
+}
 
 # 6. What only a green set of suites earns.
 if ($suitesGreen) {
@@ -460,30 +484,45 @@ foreach ($n in $result.no_verdict) { $red.Add("no verdict: $n") }
 # to complete, and the folded verdict's record of where every green came from.
 $st = $result.states
 $own = [ordered]@{ verdict = $verdictPath; batch = $Batch; started = $result.started; ended = '' }
-function Set-State([string]$step, [string]$state, [switch]$Kept) {
+function Set-State([string]$step, [string]$state, [switch]$Kept, [switch]$AndOwn) {
   $st[$step] = $state
   # Always a list, one entry a verdict (assigned whole: an `if` expression would unroll a list of one).
   $list = New-Object System.Collections.Generic.List[object]
-  if ($Kept -or ($fold -and $step -in 'integrity', 'tree')) { foreach ($e in @($fold.Sources[$step])) { $list.Add($e) } }
+  if ($Kept -or $AndOwn -or ($fold -and $step -in 'integrity', 'tree')) { foreach ($e in @($fold.Sources[$step])) { $list.Add($e) } }
   if (-not $Kept) { $list.Add($own) }
   $result.sources[$step] = $list.ToArray()
 }
 $earned = { param($step, $isRed)
-  if ($fold -and $step -notin $fold.Run) { Set-State $step $fold.States[$step] -Kept }
+  if ($fold -and $step -notin $fold.Run) {
+    # Not run again: green or inconclusive as the earlier verdict holds it, an inconclusive never
+    # promoted; any other state is a step this follow-up -Skips, recorded as a plain gate records a
+    # skipped step (T220-L1), so no verdict ends holding a state nothing names.
+    $was = $fold.States[$step]
+    if ($was -in 'green', 'inconclusive') { Set-State $step $was -Kept } else { Set-State $step 'skipped' }
+  }
   elseif ($step -in $Skip) { Set-State $step 'skipped' }
   elseif (-not $suitesGreen) { Set-State $step 'not run' }
   else { Set-State $step $(if ($isRed) { 'red' } else { 'green' }) }
 }
-if ($fold) { foreach ($s in 'checks', 'builds', 'suites') { Set-State $s 'green' -Kept } }
-else {
+if ($fold) {
+  foreach ($s in 'checks', 'suites') { Set-State $s 'green' -Kept }
+  # The follow-up's own release build, when it ran one, is part of the builds' record (T220-L4).
+  if (-not $result.steps.Contains('follow_up_build')) { Set-State 'builds' 'green' -Kept }
+  elseif ($buildsOk) { Set-State 'builds' 'green' -AndOwn }
+  else { Set-State 'builds' 'red' }
+} else {
   Set-State 'checks' $(if ($checksOk) { 'green' } else { 'red' })
   Set-State 'builds' $(if ($buildsOk) { 'green' } else { 'red' })
   Set-State 'suites' $(if (-not ($checksOk -and $buildsOk)) { 'not run' } elseif ($suitesGreen) { 'green' } else { 'red' })
 }
 & $earned 'listeners' ($red -contains 'listeners')
 & $earned 'weaker-card' ($red -contains 'weaker card msvc-debug')
-& $earned 'linux' (@($red | Where-Object { $_ -like 'linux *' }).Count -or $result.no_verdict -contains 'linux')
-if ($fold -and 'budgets' -notin $fold.Run) { Set-State 'budgets' $fold.States['budgets'] -Kept }
+# The Linux leg runs beside everything, so its state is what it did whether or not the suites were
+# green: red or green when it ran, `not run` only when it did not (T220-L3).
+$linuxRed = @($red | Where-Object { $_ -like 'linux *' }).Count -or $result.no_verdict -contains 'linux'
+if ($legs.linux) { Set-State 'linux' $(if ($linuxRed) { 'red' } else { 'green' }) }
+else { & $earned 'linux' $linuxRed }
+if ($fold -and 'budgets' -notin $fold.Run) { & $earned 'budgets' $false }
 elseif ($result.Contains('budgets') -and $result.budgets -is [System.Collections.IDictionary]) { Set-State 'budgets' $result.budgets.state }
 else { & $earned 'budgets' $false }
 Set-State 'integrity' $(if ($integrity.Faults -gt 0) { 'red' } else { 'green' })
@@ -498,5 +537,6 @@ if ($fold) { "folded with ${completesPath}: $(@($st.Keys | ForEach-Object { "$_ 
 Write-Json $verdictPath $result
 if ($result.green) { "GATE $Batch exit 0 $(Stamp): green at $tip"; exit 0 }
 if ($result.red.Count) { "GATE $Batch exit 1 $(Stamp): $($result.red -join '; ')"; exit 1 }
-"GATE $Batch exit 4 $(Stamp): nothing red, and inconclusive: $(@($st.Keys | Where-Object { $st[$_] -notin 'green', 'skipped' } | ForEach-Object { "$_ $($st[$_])" }) -join '; ')"
+# Exit 4 is reached only with a state that is neither green nor skipped, so the list is never empty.
+"GATE $Batch exit 4 $(Stamp): nothing red, and not green: $(Get-OpenStepsText $st)"
 exit 4
