@@ -239,9 +239,10 @@ TEST_CASE("renderer: a variant the scene did not name costs one more compile, no
 }
 
 // The prediction's rules off any device: each flag the file can name, read as the GPU scene's own
-// rule reads it (M2 of R205's second leg). Against the GPU scene's flags for the hills above; the
-// scenes that set water, a layered ground, stochastic and foliage by content are owed a case of
-// their own (renderer.md, "The resolve compiles from the scene file").
+// rule reads it (M2 of R205's second leg). Against the GPU scene's flags for the hills above, and
+// for a water body in the water suite (water_scene_tests.cpp); the scenes that set a layered
+// ground, stochastic and foliage by content are owed a case of their own (renderer.md, "The
+// resolve compiles from the scene file").
 TEST_CASE("renderer: the resolve's prediction reads the file by the renderer's own rules") {
   ResolvedSettings resolved;
   const auto predict = [&resolved](const SceneDesc& desc) {

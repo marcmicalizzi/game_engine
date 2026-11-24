@@ -200,15 +200,15 @@ bool EarlyPipelines::start(const gfx::Device& device, const ResolveVariant& vari
     desc.color_format = stats_.key.color_format;
     desc.specialization = resolve_specialization(stats_.key.foliage);
     gfx::PipelineHandle made;
-    std::string why;
+    std::string failure;
     const i64 begin = time::monotonic_ns();
-    const bool ok = gfx::create_graphics_pipeline(*device_, desc, made, &why);
+    const bool ok = gfx::create_graphics_pipeline(*device_, desc, made, &failure);
     const f64 seconds = static_cast<f64>(time::monotonic_ns() - begin) * 1.0e-9;
     ENGINE_LOG_INFO(log_renderer, "early pipeline made", log::field("shader", module_->name),
                     log::field("ms", seconds * 1.0e3), log::field("ok", ok));
     const std::lock_guard<std::mutex> lock(mutex_);
     pipeline_ = ok ? made : gfx::PipelineHandle{};
-    error_ = std::move(why);
+    error_ = std::move(failure);
     stats_.done = true;
     stats_.ok = ok;
     stats_.seconds = seconds;
