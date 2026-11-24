@@ -54,8 +54,9 @@ bool build_light_grid(std::span<const ResolveLight> lights, std::span<u32> cells
   for (u32 i = first; i < n; ++i) {
     const f64 r = base_reach(lights[i]);
     const f64 grown = light_grid_margin(r, 0.0);
-    const f64 p[3] = {lights[i].position_radius.x, lights[i].position_radius.y,
-                      lights[i].position_radius.z};
+    const f64 p[3] = {static_cast<f64>(lights[i].position_radius.x),
+                      static_cast<f64>(lights[i].position_radius.y),
+                      static_cast<f64>(lights[i].position_radius.z)};
     const bool start = i == first;
     for (int a = 0; a < 3; ++a) {
       lo[a] = start ? p[a] - r - grown : std::min(lo[a], p[a] - r - grown);
@@ -86,7 +87,8 @@ bool build_light_grid(std::span<const ResolveLight> lights, std::span<u32> cells
     const f64 pad = cell_edge / 64.0;
     origin = Vec3{static_cast<f32>(lo[0] - pad), static_cast<f32>(lo[1] - pad),
                   static_cast<f32>(lo[2] - pad)};
-    const f64 corner[3] = {origin.x, origin.y, origin.z};
+    const f64 corner[3] = {static_cast<f64>(origin.x), static_cast<f64>(origin.y),
+                           static_cast<f64>(origin.z)};
     f64 total = 1.0;
     for (int a = 0; a < 3; ++a) {
       const f64 span = std::max(1.0, std::ceil((hi[a] + pad - corner[a]) / cell_edge));
@@ -107,13 +109,15 @@ bool build_light_grid(std::span<const ResolveLight> lights, std::span<u32> cells
   header.cells = static_cast<u32>(dims[0] * dims[1] * dims[2]);
   std::memset(cells.data(), 0, sizeof(u32) * u64{header.cells} * words);
 
-  const f64 o[3] = {origin.x, origin.y, origin.z};
+  const f64 o[3] = {static_cast<f64>(origin.x), static_cast<f64>(origin.y),
+                     static_cast<f64>(origin.z)};
   u32 refs = 0;
   for (u32 i = first; i < n; ++i) {
     const f64 r = base_reach(lights[i]);
     const f64 reach = r + light_grid_margin(r, cell_edge);
-    const f64 p[3] = {lights[i].position_radius.x, lights[i].position_radius.y,
-                      lights[i].position_radius.z};
+    const f64 p[3] = {static_cast<f64>(lights[i].position_radius.x),
+                      static_cast<f64>(lights[i].position_radius.y),
+                      static_cast<f64>(lights[i].position_radius.z)};
     u64 c0[3];
     u64 c1[3];
     for (int a = 0; a < 3; ++a) {
