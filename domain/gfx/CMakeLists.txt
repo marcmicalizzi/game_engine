@@ -52,7 +52,7 @@ engine_module(NAME gfx LAYER domain
           src/bindless.cpp src/swapchain.cpp src/capture.cpp src/shader_library.cpp src/pipeline_cache.cpp
           src/pipeline_batch.cpp
           src/gpu_timer.cpp src/acceleration.cpp src/cluster_acceleration.cpp src/opacity_micromap.cpp
-          src/display_probe.cpp src/rt_keep.cpp)
+          src/display_probe.cpp src/rt_keep.cpp src/light_grid.cpp)
 target_link_libraries(engine_gfx PUBLIC engine_shaders_gfx)
 # The display probe (display_probe.h, E39) asks DXGI for the outputs' luminances on Windows.
 if(WIN32)
@@ -107,7 +107,10 @@ engine_module_tests(NAME gfx PARTS 2 CONFIG_INVARIANT
           # device.
           tests/rt_keep_tests.cpp
           # A lost device's names and its test seam's reading (device_lost.h, T212); no device.
-          tests/device_lost_tests.cpp)
+          tests/device_lost_tests.cpp
+          # Which lights reach a point (light_grid.h, R87): the grid never leaves out a light that
+          # reaches; no device.
+          tests/light_grid_tests.cpp)
 
 # Shaders used by the RHI's own tests: the first .slang through the toolchain.
 engine_shaders(NAME gfx_tests

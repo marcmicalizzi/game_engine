@@ -9,6 +9,7 @@
 #include <domain/gfx/dispatch.h>
 #include <domain/gfx/display.h>
 #include <domain/gfx/gi_cache.h>
+#include <domain/gfx/light_grid.h>
 #include <domain/gfx/pipeline_batch.h>
 #include <domain/gfx/water_swash.h>
 #include <foundation/io/vfs.h>
@@ -149,6 +150,40 @@ constexpr u64 gi_stat_offset(u32 views, u32 cascades) noexcept {
 constexpr u64 sky_params_offset(u32 views) noexcept {
   return sizeof(gfx::ResolveParams) * views + k_view_lights * sizeof(gfx::ResolveLight) +
          sizeof(gfx::ShadowMapParams) + sizeof(gfx::GroundDetailParams);
+}
+// Where a slot's light grid is (gfx/light_grid.h; R87): behind the sky's block, on a 16-byte
+// boundary, its header and then at most `gfx::k_light_grid_words` words of cells.
+constexpr u64 light_grid_offset(u32 views) noexcept {
+  return (sky_params_offset(views) + sizeof(gfx::SkyParams) + 15) & ~u64{15};
+}
+constexpr u64 k_light_grid_room = sizeof(gfx::LightGrid) + u64{gfx::k_light_grid_words} * 4;
+// **Lights by reach** (renderer.md, "Lights by reach"; R87): off, no grid is built and every pixel
+// walks the whole light array, which is the same picture; the comparison's other side.
+tunables::Bool light_grid_on{
+    "renderer.lights.grid", true,
+    "Cull the frame's lights by reach: each pixel walks only the lights whose reach covers its "
+    "cell of a grid in the frame's space (R87); off, every pixel walks every light, the same "
+    "picture"};
+// Builds the frame's grid over `lighting`'s array into `cells` and copies it behind the slot's sky
+// block; returns the bytes from the array to it (`gfx::ResolveParams::light_grid`), 0 for no grid.
+u32 write_light_grid(const FrameLighting& lighting, Vector<u32>& cells, u8* resolve_bytes,
+                     u32 views, u32& grid_cells, u32& grid_refs) noexcept {
+  grid_cells = 0;
+  grid_refs = 0;
+  gfx::LightGrid grid;
+  if (!light_grid_on.get() ||
+      !gfx::build_light_grid(
+          std::span<const gfx::ResolveLight>(lighting.lights, lighting.light_count),
+          std::span<u32>(cells.data(), cells.size()), grid)) {
+    return 0;
+  }
+  const u64 offset = light_grid_offset(views);
+  std::memcpy(resolve_bytes + offset, &grid, sizeof(grid));
+  std::memcpy(resolve_bytes + offset + sizeof(grid), cells.data(),
+              gfx::light_grid_bytes(grid) - sizeof(grid));
+  grid_cells = grid.cells;
+  grid_refs = grid.refs;
+  return static_cast<u32>(offset - sizeof(gfx::ResolveParams) * views);
 }
 // The depth atlas's format: 32-bit float, because a cascade's depth range is the scene's extent
 // along the light — kilometres on the desert overlook — and 16 bits of that is 8 cm.
@@ -596,6 +631,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   frame_fires_.reserve(k_max_fires);
   frame_lamps_.clear();
   frame_lamps_.reserve(k_max_lamps);
+  light_grid_cells_.resize(gfx::k_light_grid_words);
   resolved_ = resolved;
   desc_ = desc;
   width_ = desc.width;
@@ -790,7 +826,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
                             sizeof(gfx::CullParams) * (2 * views + cascades) +
                                 u64{views} * gfx::k_hidden_words * sizeof(u32),
                             k_address, true, params_[slot], error) &&
-         gfx::create_buffer(device, sky_params_offset(views) + sizeof(gfx::SkyParams), k_address,
+         gfx::create_buffer(device, light_grid_offset(views) + k_light_grid_room, k_address,
                             true, resolves_[slot], error) &&
          gfx::create_buffer(device, stat_bytes, gfx::BufferUsage::TransferDst, true,
                             stat_blocks_[slot], error);
@@ -3746,6 +3782,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   stats_.lamps_refused = fires_.lamps_refused();
   std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * views, lighting.lights,
               sizeof(lighting.lights));
+  // **The lights by reach** (gfx/light_grid.h; renderer.md, "Lights by reach"; R87): which of the
+  // array's lights reach each cell of a grid over their spheres, built here on the CPU from the
+  // array just written and copied behind the sky's block, which every view's resolve reads.
+  const u32 light_grid_bytes_from_lights =
+      write_light_grid(lighting, light_grid_cells_, resolve_bytes, views, stats_.light_grid_cells,
+                       stats_.light_grid_refs);
 
   // ---- the sun's cascades (shadow_cascades.h) -------------------------------------------------
   //
@@ -4323,6 +4365,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     resolve.mode = frame.view_mode == ~u32{0} ? settings.view_mode : frame.view_mode;
     resolve.lights = lights_address;
     resolve.light_count = lighting.light_count;
+    resolve.light_grid = light_grid_bytes_from_lights;
     // Where this view's picture goes in the target, and — for a Panini view — the map from an
     // output pixel back into the wider rectilinear source the rasterizers filled.
     resolve.view_x = view.rect.x;

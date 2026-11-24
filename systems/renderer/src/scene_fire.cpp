@@ -238,25 +238,12 @@ FrameFire burn_lamp(const FireDesc& desc, const WorldPos& base, f32 scale, f32 u
 u32 add_fire_lights(std::span<const FrameFire> fires, const WorldPos& eye,
                     FrameLighting& out) noexcept {
   u32 added = 0;
-  // The nearest first, by selection: at most k_max_fires candidates and k_max_fire_lights picks,
-  // and no allocation. A tie keeps the earlier fire.
-  bool taken[k_max_fires] = {};
+  // Every fire, in its order (R87): a pixel walks only the lights that reach it
+  // (gfx/light_grid.h), so a fire far from the eye costs the pixels it lights and nothing else.
   const u32 n = std::min(static_cast<u32>(fires.size()), k_max_fires);
-  while (added < k_max_fire_lights && out.light_count < k_frame_lights) {
-    u32 best = n;
-    f64 best_d = 0.0;
-    for (u32 i = 0; i < n; ++i) {
-      if (taken[i] || !(fires[i].intensity > 0.0f)) continue;
-      const DVec3 d = fires[i].base - eye;
-      const f64 d2 = d.x * d.x + d.y * d.y + d.z * d.z;
-      if (best == n || d2 < best_d) {
-        best = i;
-        best_d = d2;
-      }
-    }
-    if (best == n) break;
-    taken[best] = true;
-    const FrameFire& f = fires[best];
+  for (u32 i = 0; i < n && out.light_count < k_frame_lights; ++i) {
+    if (!(fires[i].intensity > 0.0f)) continue;
+    const FrameFire& f = fires[i];
     const WorldPos at =
         f.base + DVec3{0.0, static_cast<f64>(k_fire_light_height * f.height_m), 0.0};
     gfx::ResolveLight& light = out.lights[out.light_count++];

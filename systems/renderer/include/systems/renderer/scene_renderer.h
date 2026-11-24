@@ -647,13 +647,19 @@ struct Stats {
   // Negative when no pass reported one. Not one frame late: the field is the CPU's.
   f32 visibility_m = -1.0f;
   // The last recorded frame's fires (fire.h): how many it burnt, and how many of them it lit by a
-  // light of the array (`k_max_fire_lights` at most, nearest the eye).
+  // light of the array (every one since R87, `k_max_fires` at most, in their order).
   u32 fires = 0;
   u32 fire_lights = 0;
   // Its lamps (fire.h, R86): how many it lit (every one, `k_max_lamps` at most), and how many
   // placed props' lamps the tail last handed over found no room past `k_max_lamps`.
   u32 lamp_lights = 0;
   u32 lamps_refused = 0;
+  // **Lights by reach** (gfx/light_grid.h; renderer.md, "Lights by reach"; R87): the last
+  // recorded frame's grid — its cells, and the set bits over them (a light counted once in each
+  // cell its reach touches) — or 0 and 0 when it built none (no light with a reach, or
+  // `renderer.lights.grid` off) and every pixel walked the whole array.
+  u32 light_grid_cells = 0;
+  u32 light_grid_refs = 0;
   f64 cpu_ns = 0.0;  // wall time inside submit_frame, summed
   // Sampled by sample_gpu_memory(), not by a frame: it is a driver query and the frame path
   // stays free of them.
@@ -1348,6 +1354,9 @@ class SceneRenderer {
   FarForestHandOff far_forest_;
   Vector<FrameFire> frame_fires_;
   Vector<FrameFire> frame_lamps_;  // the frame's lamps (R86), never handed to the medium
+  // The frame's light grid's cells, built here and copied behind the slot's lights (R87): sized
+  // once, `gfx::k_light_grid_words`, because the slot's buffer is written, not read back.
+  Vector<u32> light_grid_cells_;
   // The scene's sky: its provider, tables and pipelines (sky.h), the last frame's state and block.
   SkyPass sky_;
   OverlayPass overlay_;
