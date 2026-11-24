@@ -4733,7 +4733,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           const texture::TextureData& t = built[index].data;
           bound_first = texture_bound_first_level(made.content, t);
           const u32 from = bound_first == ~0u ? 0u : bound_first;
-          // W167: a held texture's image in the bound's chunks, whose bytes go back when it goes.
+          // W167: a held texture's image in the bound's chunks, whose bytes go back with it.
           gfx::ImageChunks* chunks = bound_first == ~0u ? nullptr : texture_bound_chunks();
           Vector<gfx::ImageLevelData> levels;
           levels.reserve(t.levels.size());
@@ -4747,13 +4747,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
                    std::span<const gfx::ImageLevelData>(levels.data(), levels.size()), uploaded,
                    &image_error, chunks) &&
                gfx::create_image_view(device, uploaded, view, &image_error);
-          if (!ok && uploaded.image.valid()) {
-            if (chunks != nullptr) {
-              chunks->destroy_image(uploaded);
-            } else {
-              gfx::destroy_image(device, uploaded);
-            }
-          }
+          if (!ok && uploaded.image.valid()) destroy_held_image(chunks, uploaded);
           if (ok) ++textures_built_;
           if (ok) made.has_mean = built_texture_mean(t, made.mean);
         } else {
@@ -4848,13 +4842,8 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
                   std::span<const gfx::ImageLevelData>(levels.data(), levels.size()), variance,
                   &image_error, bounded ? texture_bound_chunks() : nullptr) ||
               !gfx::create_image_view(device, variance, variance_view, &image_error)) {
-            if (variance.image.valid()) {
-              if (bounded && texture_bound_chunks() != nullptr) {
-                texture_bound_chunks()->destroy_image(variance);
-              } else {
-                gfx::destroy_image(device, variance);
-              }
-            }
+            if (variance.image.valid())
+              destroy_held_image(bounded ? texture_bound_chunks() : nullptr, variance);
             variance_upload_failed = true;
             if (error != nullptr) *error = "normal variance upload: " + image_error;
             return gfx::k_no_texture;

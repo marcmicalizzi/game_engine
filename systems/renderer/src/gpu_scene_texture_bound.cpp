@@ -203,6 +203,14 @@ gfx::ImageChunks* GpuScene::texture_bound_chunks() noexcept {
                                                                      : nullptr;
 }
 
+void GpuScene::destroy_held_image(gfx::ImageChunks* chunks, gfx::ImageResource& image) noexcept {
+  if (chunks != nullptr) {
+    chunks->destroy_image(image);
+  } else if (device_ != nullptr) {
+    gfx::destroy_image(*device_, image);
+  }
+}
+
 u8* GpuScene::staged_bytes_of(gfx::BufferHandle buffer) noexcept {
   if (staging_ring_.mapped != nullptr && staging_ring_.buffer == buffer)
     return static_cast<u8*>(staging_ring_.mapped);

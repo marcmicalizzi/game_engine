@@ -2050,6 +2050,7 @@ class GpuScene {
   // W167: the chunks a held texture's image is placed in (null with no state), which the load's
   // upload of a held texture names and whose `destroy_image` frees one it could not place.
   gfx::ImageChunks* texture_bound_chunks() noexcept;
+  void destroy_held_image(gfx::ImageChunks* chunks, gfx::ImageResource& image) noexcept;
   // W167: under a ceiling alone (no bound) a held texture is offered to the meshes tiles hand,
   // at its current pair: `texture_bound_slot` is that pair's slot (~0u for one it does not hold
   // or with the bound on, where a tile's mesh brings its own whole), and an admitted mesh's
