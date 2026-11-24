@@ -447,11 +447,11 @@ bool GpuScene::texture_bound_plan(std::string* error) {
   s->mesh_q.assign(mesh_count, k_never);
   s->mesh_q_now.assign(mesh_count, k_never);
   s->order.reserve(s->textures.size());
-  s->queue.reserve(s->textures.size() * 3u);
-  s->done.reserve(s->textures.size() * 3u);
-  s->taken.reserve(s->textures.size() * 3u);
+  s->queue.reserve(std::max<u32>(s->textures.size() * 3u, 64u));
+  s->done.reserve(std::max<u32>(s->textures.size() * 3u, 64u));
+  s->taken.reserve(std::max<u32>(s->textures.size() * 3u, 64u));
   s->in_hand_bound = std::max<u64>(u64{64} << 20, u64(bound_promote_kib.get()) * 1024 * 4);
-  pending_images_.reserve(pending_images_.size() + 16);
+  pending_images_.reserve(pending_images_.size() + 64);
   texture_bound_.reset(s.release());
   return true;
 }
@@ -541,6 +541,9 @@ void GpuScene::texture_bound_materials(const Vector<gfx::ResolveMaterial>& table
       if (std::find(named.begin(), named.end(), copy) == named.end()) named.push_back(copy);
     }
   }
+  // W167: a frame's swaps copy each of their records once; room for every record named, so a
+  // frame whose swaps meet more records than any before allocates nothing for them.
+  pending_geometry_.reserve(pending_geometry_.size() + s.materials.size() + 64);
   // Nothing placed (every user's mesh drew decoded): the run stays, holding nothing.
   ENGINE_LOG_INFO(log_renderer, "texture bound", log::field("textures", s.use.managed),
                   log::field("pairs", s.pairs), log::field("materials", s.materials.size()),
