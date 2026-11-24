@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <iterator>
 #include <shaders/cluster_cull.spv.h>
 #include <string>
 
@@ -520,5 +521,228 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
     gfx::destroy_buffer(device, *b);
   }
   frames.destroy();
+  device.destroy();
+}
+
+// **The gale's LOD cap against its CPU mirror** (R206, R209; renderer.md, "What a gale builds"). A
+// deformed instance's padding goes on every sphere the cull tests, and since R206 its LOD spheres
+// take at most `CullParams::sway_lod[mesh]` of it (times its scale) — for a mesh under
+// `sway_lod_count` only. `geometry::lod_selects` is the formula's CPU form; fed the spheres padded
+// by `min(padding, cap)`, it must select what the GPU selects, and fed the whole padding what the
+// GPU selects with no table or with the mesh past it. The padding here is 8 m and the cap 0.25 m,
+// so the two cuts differ (the case prints by how many clusters): a cull that ignored the cap, or
+// read it for a mesh past the table, fails by that count.
+TEST_CASE("cluster cull: a deformed instance's LOD spheres take the sway cap as lod_selects does") {
+  gfx::Device device;
+  std::string error;
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer})) return;
+
+  Vector<Vec3> positions;
+  Vector<u32> indices;
+  make_terrain(65, 10.0f, positions, indices);
+  geometry::ClusterLodMesh lod;
+  REQUIRE_MESSAGE(
+      geometry::build_cluster_lod(positions, indices, geometry::ClusterLodOptions{}, lod, &error),
+      error);
+  const u32 cluster_count = lod.mesh.clusters.size();
+  constexpr f32 k_padding =
+      8.0f;                     // the record's: the ladder's rung in a gale (a palm's at force 12)
+  constexpr f32 k_cap = 0.25f;  // the mesh's calm-rung bound
+
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
+  gfx::BufferResource clusters;
+  gfx::BufferResource lods;
+  gfx::BufferResource instances;
+  gfx::BufferResource sway;
+  gfx_test::SingleInstance scene;
+  REQUIRE(scene.create(device, lod.mesh, cluster_count, &error));
+  gfx::InstanceDesc instance{};
+  gfx::set_instance_placement(instance, Mat4::identity(), WorldPos::origin());
+  instance.deform = 0;  // deformed: what the padding and the cap are for
+  instance.bounds_padding = k_padding;
+  const f32 table[1] = {k_cap};
+  REQUIRE(gfx::upload_buffer(device, lod.mesh.clusters.data(),
+                             cluster_count * sizeof(geometry::ClusterDesc), k_storage, clusters,
+                             &error));
+  REQUIRE(gfx::upload_buffer(device, lod.lod.data(),
+                             cluster_count * sizeof(geometry::ClusterLodDesc), k_storage, lods,
+                             &error));
+  REQUIRE(gfx::upload_buffer(device, &instance, sizeof(instance), k_storage, instances, &error));
+  REQUIRE(gfx::upload_buffer(device, table, sizeof(table), k_storage, sway, &error));
+
+  const u64 visible_bytes = u64{cluster_count} * 2 * sizeof(u32);
+  gfx::BufferResource visible;
+  gfx::BufferResource args;
+  gfx::BufferResource params;
+  gfx::BufferResource visible_host;
+  gfx::BufferResource args_host;
+  REQUIRE(gfx::create_buffer(
+      device, visible_bytes,
+      k_storage | gfx::BufferUsage::ShaderDeviceAddress | gfx::BufferUsage::TransferSrc, false,
+      visible, &error));
+  REQUIRE(gfx::create_buffer(device, gfx::k_draw_args_bytes,
+                             k_storage | gfx::BufferUsage::ShaderDeviceAddress |
+                                 gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc,
+                             false, args, &error));
+  REQUIRE(gfx::create_buffer(device, sizeof(gfx::CullParams),
+                             k_storage | gfx::BufferUsage::ShaderDeviceAddress, true, params,
+                             &error));
+  REQUIRE(gfx::create_buffer(device, visible_bytes, gfx::BufferUsage::TransferDst, true,
+                             visible_host, &error));
+  REQUIRE(gfx::create_buffer(device, gfx::k_draw_args_bytes, gfx::BufferUsage::TransferDst, true,
+                             args_host, &error));
+
+  // Close enough that the 2 m moves the cut: above and in front of the terrain's near edge.
+  constexpr u32 k_size = 256;
+  const Vec3 eye{0.0f, 4.0f, 14.0f};
+  const f32 znear = 0.1f;
+  const Mat4 view_proj =
+      perspective_reversed_z(radians(60.0f), 1.0f, znear) * look_at(eye, Vec3{}, Vec3{0, 1, 0});
+  const Frustum frustum = frustum_from_view_proj(view_proj);
+  geometry::LodView view;
+  view.camera = eye;
+  view.znear = znear;
+  view.proj_scale = 1.0f / std::tan(radians(60.0f) * 0.5f) * static_cast<f32>(k_size) * 0.5f;
+  view.threshold_px = 1.0f;
+
+  // The CPU's cut with the LOD spheres padded by `lod_padding`, the frustum's by the whole padding.
+  auto expected = [&](f32 lod_padding) {
+    Vector<u32> out;
+    for (u32 i = 0; i < cluster_count; ++i) {
+      const geometry::ClusterDesc& c = lod.mesh.clusters[i];
+      geometry::ClusterLodDesc padded = lod.lod[i];
+      padded.own.w += lod_padding;
+      padded.parent.w += lod_padding;
+      if (frustum_contains_sphere(frustum, c.center, c.radius + k_padding) &&
+          geometry::lod_selects(padded, view)) {
+        out.push_back(i);
+      }
+    }
+    return out;
+  };
+  const Vector<u32> capped = expected(std::min(k_padding, k_cap));
+  const Vector<u32> whole = expected(k_padding);
+  u32 apart = 0;
+  {
+    Vector<u32> a = capped;
+    Vector<u32> b = whole;
+    Vector<u32> both;
+    std::set_symmetric_difference(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(both));
+    apart = static_cast<u32>(both.size());
+  }
+  MESSAGE("the cut with the cap: " << capped.size() << " clusters, with the whole padding "
+                                   << whole.size() << ", " << apart << " apart");
+  CHECK(apart > 0);  // the cap bites: a cull that got it wrong fails by these
+
+  gfx::ShaderModuleHandle cull_module = gfx::create_shader_module(
+      device, shaders::k_cluster_cull_spirv, shaders::k_cluster_cull_spirv_size, &error);
+  REQUIRE(cull_module.valid());
+  gfx::ComputePipeline cull_pipeline;
+  REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, cull_module, "cull_main", {}, sizeof(u64),
+                                               cull_pipeline, &error),
+                  error);
+  gfx::FrameContext frames;
+  REQUIRE(frames.create(device, 2, &error));
+
+  // The GPU's cut with the table at `table_address` holding `table_count` floats.
+  auto cull = [&](u64 table_address, u32 table_count) {
+    gfx::CullParams p{};
+    gfx::set_frustum(p, frustum);
+    p.camera = Vec4{eye, znear};
+    p.lod = Vec4{view.proj_scale, view.threshold_px, 1.0f, 1.0f};
+    p.cluster_count = cluster_count;
+    p.count_index = 0;
+    p.clusters = clusters.address;
+    p.lods = lods.address;
+    p.visible = visible.address;
+    p.draw_args = args.address;
+    p.instances = instances.address;
+    p.meshes = scene.meshes.address;
+    p.instance_count = 1;
+    p.pair_count = scene.pair_count();
+    p.sway_lod = table_address;
+    p.sway_lod_count = table_count;
+    std::memcpy(params.mapped, &p, sizeof(p));
+    const u64 params_address = params.address;
+    gfx::RenderGraph graph(device);
+    const gfx::RgBuffer rg_args = graph.import_buffer("args", args);
+    const gfx::RgBuffer rg_visible = graph.import_buffer("visible", visible);
+    const gfx::RgBuffer rg_visible_host = graph.import_buffer("visible_host", visible_host);
+    const gfx::RgBuffer rg_args_host = graph.import_buffer("args_host", args_host);
+    graph.add_pass(
+        "reset", gfx::PassKind::Transfer,
+        [&](gfx::PassBuilder& b) { b.write(rg_args, gfx::Access::TransferWrite); },
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.fill_buffer(args.buffer, 0, gfx::k_whole_size, 0);
+        });
+    graph.add_pass(
+        "cull", gfx::PassKind::Compute,
+        [&](gfx::PassBuilder& b) {
+          b.write(rg_args, gfx::Access::ComputeReadWrite);
+          b.write(rg_visible, gfx::Access::ComputeWrite);
+        },
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Compute, cull_pipeline.pipeline);
+          cb.push_constants(cull_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
+                            &params_address);
+          cb.dispatch(gfx::cull_group_count(cluster_count), 1, 1);
+        });
+    graph.add_pass(
+        "readback", gfx::PassKind::Transfer,
+        [&](gfx::PassBuilder& b) {
+          b.read(rg_args, gfx::Access::TransferRead);
+          b.read(rg_visible, gfx::Access::TransferRead);
+          b.write(rg_args_host, gfx::Access::TransferWrite);
+          b.write(rg_visible_host, gfx::Access::TransferWrite);
+        },
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.copy_buffer(args.buffer, args_host.buffer,
+                         gfx::BufferCopy{0, 0, gfx::k_draw_args_bytes});
+          cb.copy_buffer(visible.buffer, visible_host.buffer, gfx::BufferCopy{0, 0, visible_bytes});
+        });
+    REQUIRE_MESSAGE(graph.compile(&error), error);
+    gfx::CommandList commands = frames.begin_frame();
+    graph.execute(commands);
+    REQUIRE(frames.wait(frames.end_frame()));
+    const u32 count = static_cast<const u32*>(args_host.mapped)[0];
+    const auto* entries = static_cast<const u32*>(visible_host.mapped);
+    Vector<u32> got;
+    for (u32 i = 0; i < count && i < cluster_count; ++i)
+      got.push_back(entries[i * 2 + 1]);
+    std::sort(got.begin(), got.end());
+    return got;
+  };
+  auto differing = [](const Vector<u32>& a, const Vector<u32>& b) {
+    Vector<u32> out;
+    std::set_symmetric_difference(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(out));
+    return static_cast<u32>(out.size());
+  };
+  const Vector<u32> with_table = cull(sway.address, 1);
+  const Vector<u32> past_table = cull(sway.address, 0);  // the mesh past the table (R206-H1)
+  const Vector<u32> no_table = cull(0, 0);
+  MESSAGE("the GPU: " << with_table.size() << " clusters with the table ("
+                      << differing(with_table, capped) << " apart from lod_selects with the cap), "
+                      << past_table.size() << " with the mesh past it ("
+                      << differing(past_table, whole) << " apart from the whole padding), "
+                      << no_table.size() << " with none (" << differing(no_table, whole)
+                      << " apart)");
+  CHECK(differing(with_table, capped) == 0);
+  CHECK(differing(past_table, whole) == 0);
+  CHECK(differing(no_table, whole) == 0);
+
+  gfx::destroy_compute_pipeline(device, cull_pipeline);
+  gfx::destroy_shader_module(device, cull_module);
+  frames.destroy();
+  gfx::destroy_buffer(device, args_host);
+  gfx::destroy_buffer(device, visible_host);
+  gfx::destroy_buffer(device, params);
+  gfx::destroy_buffer(device, args);
+  gfx::destroy_buffer(device, visible);
+  gfx::destroy_buffer(device, sway);
+  gfx::destroy_buffer(device, instances);
+  gfx::destroy_buffer(device, lods);
+  gfx::destroy_buffer(device, clusters);
+  scene.destroy(device);
   device.destroy();
 }

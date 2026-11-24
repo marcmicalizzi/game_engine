@@ -461,11 +461,11 @@ tunables::Int micromap_level{
     "The opacity micromaps' subdivision level cap (each level is four times "
     "the micro-triangles; at most the device's)"};
 tunables::Int micromap_store_min{
-    "renderer.rt.micromap_store_min", 4096, 0, 1 << 30,
+    "renderer.rt.micromap_store_min", 0, 0, 1 << 30,
     "The fewest masked triangles whose opacity micromaps are stored under the derived-data root "
-    "and "
-    "read back: a scene with fewer bakes them at load and stores nothing, since a read's fixed "
-    "cost is more than such a bake (R208; renderer.md, The bake is read back)"};
+    "and read back: a scene with fewer bakes them at load and stores nothing. 0: every scene, "
+    "since measured, a read cost a sixth of a bake even at four triangles (R208; renderer.md, The "
+    "bake is read back)"};
 // R69 stage 1: indirect light from the world-space cache (renderer.md, "Indirect light: the
 // world-space cache"; docs/experiments/gi-cache-2026-11-07.md has the numbers the defaults rest
 // on).

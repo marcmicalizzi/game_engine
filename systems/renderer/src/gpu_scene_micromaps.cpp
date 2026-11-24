@@ -9,8 +9,10 @@
 #include <foundation/io/vfs.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/micromap_cache.h>
+#include <systems/renderer/scene.h>
 
 #include <algorithm>
+#include <cstring>
 #include <renderer_log.h>
 #include <string>
 
@@ -120,11 +122,33 @@ struct Assemble {
       for (u32 t = 0; t < record.triangle_count && first + t < sections.wanted.size(); ++t)
         ++record.wanted[sections.wanted[first + t]];
     }
+    // The pack holds the bake's entries shared by their exact bytes, as the scene's micromap does:
+    // the bake shares an entry only between triangles of one material and the same UV words, and
+    // many more come out the same states (on streamed-forest the bake's own entries were a 52.5 MB
+    // pack, shared by their bytes 5.3 MB).
+    MicromapPackView raw;
+    raw.indices = sections.indices;
+    raw.triangles = sections.triangles;
+    raw.data = sections.data;
+    Vector<MicromapRun> runs;
+    for (u32 b = 0; b < self.baked.size(); ++b)
+      runs.push_back(MicromapRun{0, self.baked_first[b], self.baked[b].triangle_count, nullptr});
+    MicromapAssembly packed;
+    assemble_micromaps(std::span<const MicromapPackView>(&raw, 1),
+                       std::span<const MicromapRun>(runs.data(), runs.size()), packed);
+    Vector<u32> data(static_cast<u32>(packed.stats.data_bytes / sizeof(u32)), 0u);
+    for (u32 e = 0; e < packed.triangles.size(); ++e) {
+      const gfx::MicromapTriangle& from = raw.triangles[packed.entry_index[e]];
+      std::memcpy(data.data() + packed.triangles[e].data_offset / sizeof(u32),
+                  raw.data.data() + from.data_offset / sizeof(u32),
+                  static_cast<usize>(gfx::micromap_entry_bytes(from.level)));
+    }
     MicromapPackView bake;
     bake.parts = std::span<const MicromapPackPart>(self.baked.data(), self.baked.size());
-    bake.indices = sections.indices;
-    bake.triangles = sections.triangles;
-    bake.data = sections.data;
+    bake.indices = std::span<const i32>(packed.indices.data(), packed.indices.size());
+    bake.triangles =
+        std::span<const gfx::MicromapTriangle>(packed.triangles.data(), packed.triangles.size());
+    bake.data = std::span<const u32>(data.data(), data.size());
     if (!self.root.empty()) {
       self.path = micromap_pack_path(self.root, self.generation, bake.parts);
       self.stored = write_micromap_pack(self.path, self.generation, bake, &self.store_error);
@@ -380,6 +404,24 @@ bool GpuScene::bake_micromaps(gfx::ShaderLibrary& shaders, std::string* error) {
 
   MicromapCacheReport& report = micromap_key_.report;
   report.unkeyed = micromap_key_.unkeyed;
+  micromap_key_.store_min = resolved_.micromap_store_min;
+  // R208: each masked cluster's part (the mesh whose clusters hold it) and its index there. The
+  // list runs part by part in the parts' order, so one walk over the parts finds them.
+  micromap_key_.parts.clear();
+  if (data_ != nullptr) {
+    u32 m = 0;
+    for (usize i = 0; i < micromap_list_.size(); i += 2) {
+      const u32 c = micromap_list_[static_cast<u32>(i)];
+      while (m < data_->parts.size() &&
+             c >= data_->parts[m].first_cluster + data_->parts[m].cluster_count)
+        ++m;
+      micromap_key_.parts.push_back(m);
+      micromap_key_.parts.push_back(m < data_->parts.size() ? c - data_->parts[m].first_cluster
+                                                            : c);
+    }
+  }
+  if (micromap_key_.parts.size() != micromap_list_.size() && report.unkeyed.empty())
+    report.unkeyed = "the scene's parts are not known here";
   u64 masked = 0;
   for (const u32 n : micromap_triangles_)
     masked += n;

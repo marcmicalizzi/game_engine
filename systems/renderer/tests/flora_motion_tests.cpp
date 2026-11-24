@@ -33,6 +33,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <span>
 #include <string>
@@ -1094,15 +1095,22 @@ TEST_CASE("flora motion: a gale's LOD caps leave the terrain rings' padding whol
   const TunableValue middle_spacing("terrain.rings.middle_spacing_cm", "50");
   jobs::JobSystem pool(jobs::JobSystemConfig{.performance_workers = 2, .pin_threads = false});
   const u32 parts = data.parts.size();
+  // **Padding above zero on the rings** (R209): the rings' chunks are built from the ground half a
+  // year on, and the scene's fields stand at its own time, so every ring level stands off its
+  // chunks' rest heights by the dunes' travel, the padding its levels' table carries. With a still
+  // field (0 m) a cap read for a ring chunk could not move its cut; with metres of it, one would.
+  TerrainDesc ring_ground = data.terrain;
+  ring_ground.time_s += 0.5 * 31'536'000.0;
   Vector<u64> ring_cut[2];
   u32 palm_cut[2] = {};
+  f64 ring_padding[2] = {};
   for (const char* calm_cut : {"false", "true"}) {
     const std::string cut_name = calm_cut;
     CAPTURE(cut_name);
     const bool on = std::strcmp(calm_cut, "true") == 0;
     const TunableValue cut("renderer.flora.calm_cut", calm_cut);
     TerrainRingSet rings;
-    REQUIRE_MESSAGE(rings.build(data.terrain, WorldPos::origin(), &pool, &error), error);
+    REQUIRE_MESSAGE(rings.build(ring_ground, WorldPos::origin(), &pool, &error), error);
     GpuScene scene;
     REQUIRE_MESSAGE(scene.create(gpu.device, data, resolved, &error, &rings), error);
     SceneRenderer renderer;
@@ -1133,6 +1141,9 @@ TEST_CASE("flora motion: a gale's LOD caps leave the terrain rings' padding whol
       REQUIRE_MESSAGE(renderer.render_offscreen(frame, &error), error);
     }
     REQUIRE_MESSAGE(census.pairs(scene, renderer.stats(), pairs, &error), error);
+    for (u32 k = 1; k < motion.level_count(); ++k)
+      ring_padding[on ? 1 : 0] =
+          std::max(ring_padding[on ? 1 : 0], motion.level_stats(k).padding_m);
     // The ground the mend stands on, counted on the CPU: the deformed instances of a mesh past the
     // table, every one a ring slot, each of which the cull read before the mend from outside its
     // region of `k_joint_slots` regions of `sway_lod_count` floats.
@@ -1172,12 +1183,14 @@ TEST_CASE("flora motion: a gale's LOD caps leave the terrain rings' padding whol
     }
     MESSAGE("calm_cut " << cut_name << ": " << levels << " terrain levels, " << past
                         << " of them past the table's " << scene.sway_lod_count()
-                        << " floats a region; padding up to " << most_padding << " m; "
-                        << ring_cut[on ? 1 : 0].size() << " ring pairs and " << palm_cut[on ? 1 : 0]
+                        << " floats a region; padding up to " << most_padding
+                        << " m on the records, " << ring_padding[on ? 1 : 0]
+                        << " m on the ring levels; " << ring_cut[on ? 1 : 0].size()
+                        << " ring pairs and " << palm_cut[on ? 1 : 0]
                         << " palm pairs in the cut; the palm's padding "
                         << (tree != nullptr ? tree->bounds_padding : -1.0f) << " m");
     CHECK(levels > 0);
-    CHECK(past > 0);  // the mend's ground: before it, every one of these read past its region
+    CHECK(past > 0);     // the mend's ground: before it, every one of these read past its region
     CHECK(table == on);  // force 12 stood the ladder above calm: the table is handed to the cull
     CHECK((current > 0) == on);  // and the frames that read it wrote their regions
     CHECK(untouched == levels);  // and no ring slot takes a cap from it
@@ -1187,6 +1200,21 @@ TEST_CASE("flora motion: a gale's LOD caps leave the terrain rings' padding whol
     scene.destroy();
   }
   CHECK(!ring_cut[0].empty());
+  // The rings stand off their rest by metres, so a cap the cull read for a ring chunk would show.
+  CHECK(ring_padding[0] > 0.5);
+  CHECK(ring_padding[1] == ring_padding[0]);
+  u32 apart = 0;
+  {
+    Vector<u64> a = ring_cut[0];
+    Vector<u64> b = ring_cut[1];
+    std::sort(a.begin(), a.end());
+    std::sort(b.begin(), b.end());
+    Vector<u64> both;
+    std::set_symmetric_difference(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(both));
+    apart = static_cast<u32>(both.size());
+  }
+  MESSAGE(apart << " ring pairs apart between the table-free cull and the table's");
+  CHECK(apart == 0);
   CHECK(same(ring_cut[0], ring_cut[1]));  // the rings' cut with the table is the table-free cull's
 }
 #endif  // ENGINE_RENDERER_TESTS_FLORA_TERRAIN

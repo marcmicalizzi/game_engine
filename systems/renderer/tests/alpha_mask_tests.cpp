@@ -1227,8 +1227,8 @@ TEST_CASE(
   TunableScope on("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=true");
   TunableScope fine("renderer.rt.micromap_texels=0.01", "renderer.rt.micromap_texels=4");
   TunableScope cap("renderer.rt.micromap_level=6", "renderer.rt.micromap_level=6");
-  // The fixtures are a few triangles, under the store's floor: stored here all the same.
-  TunableScope floor("renderer.rt.micromap_store_min=0", "renderer.rt.micromap_store_min=4096");
+  // The fixtures are a few triangles: stored whatever the store's floor is set to.
+  TunableScope floor("renderer.rt.micromap_store_min=0", "renderer.rt.micromap_store_min=0");
   u32 index = 0;
   for (const Case& c : cases) {
     const std::string ddc = root.path() + "/ddc" + std::to_string(index++);
@@ -1289,7 +1289,7 @@ TEST_CASE("alpha mask: a stored micromap pack is refused for another key, versio
   rays.shadows = ShadowMode::RayTraced;
   TunableScope on("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=true");
   TunableScope cap("renderer.rt.micromap_level=6", "renderer.rt.micromap_level=6");
-  TunableScope floor("renderer.rt.micromap_store_min=0", "renderer.rt.micromap_store_min=4096");
+  TunableScope floor("renderer.rt.micromap_store_min=0", "renderer.rt.micromap_store_min=0");
   const std::string ddc = root.path() + "/ddc";
   auto shoot = [&] {
     return shoot_micromaps(fx.caster_masked, rays, micromap_shadow_view(), false, ddc);
@@ -1383,7 +1383,7 @@ TEST_CASE("alpha mask: a second start reads the parts the first stored and bakes
   TunableScope on("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=true");
   TunableScope cap("renderer.rt.micromap_level=6", "renderer.rt.micromap_level=6");
   TunableScope fine("renderer.rt.micromap_texels=0.01", "renderer.rt.micromap_texels=4");
-  TunableScope floor("renderer.rt.micromap_store_min=0", "renderer.rt.micromap_store_min=4096");
+  TunableScope floor("renderer.rt.micromap_store_min=0", "renderer.rt.micromap_store_min=0");
   const std::string ddc = root.path() + "/ddc";
   const ShotView view = micromap_shadow_view();
   const MicromapShot first = shoot_micromaps(fx.caster_masked, rays, view, false, ddc);
