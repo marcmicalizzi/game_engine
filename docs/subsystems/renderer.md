@@ -2579,8 +2579,13 @@ by its samples, and the coarser levels for whatever share the samples behind tha
 walk up the ladder, [stage 5](#stage-5-the-light-is-already-there); stages 1 and 2 read the next
 level only where the first had nothing, then by a confidence), and the harmonics, **to the bit**,
 where no level has a sample or where the frame does not read the cache. The material's ambient occlusion still multiplies it, as it multiplies the
-harmonics: it stands for occlusion below a cell's size. Only the opaque path's ambient reads it; the
-water's own ambient is the harmonics still.
+harmonics: it stands for occlusion below a cell's size. **The water reads it too** (W161,
+`water_scene_ambient` in `visibility_resolve.slang`): every ambient term of the water modules — the
+bed's and the volume's light, the foam's and the white's, and a lifted body's sheet over the
+ground — is the hemisphere through the same read at the water's surface point, so a stream in a
+trench or under a canopy takes the share the ground beside it takes, where until W161 it took the
+open sky ([water](water.md#translucent-by-volume), "What the scene lets through reaches under the
+water"). The plain modules do not have it, so a frame with no water is the bytes it was.
 
 **The buffer** is `renderer.gi.cache_mib` (128 MiB since stage 4: four million cells and their keys,
 144 MiB made; it was 32 MiB, a million cells, which v37's held view — 384,000 to 414,000 cells —

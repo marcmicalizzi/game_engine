@@ -787,6 +787,21 @@ void foliage_raw_ambient_pair(ResolveParams* params, SkyParams* sky, bool has_sk
 #include "water_reflect.slang"
 #include "water_refract.slang"  // S86: what is under the water
 #endif
+// **What the scene lets through reaches under the water** (W161; water.md, "Translucent by
+// volume"): every ambient term the water takes — the bed's light and the volume's scattered light
+// coming down through the surface, the foam's, the white's — is the hemisphere `harmonics` scaled
+// by the world-space cache's cells round the **surface point**, through the same `scene_ambient`
+// the opaque ground beside it reads (renderer.md, "Indirect light: the world-space cache"). The
+// surface point and not the bed's: the bed's light came in through the surface, so what the
+// scene's structures let through is what reaches the surface, and the cells are filled from the
+// frame's own pixels, among which the bed, behind the surface, is not. Where the frame reads no
+// cache it returns `harmonics` to the bit, so the picture is the bytes it was.
+float3 water_scene_ambient(ResolveParams* params, Surface s, float3 normal, float3 harmonics) {
+  return scene_ambient(params->gi_cells, params->gi_flags, params->gi_count,
+                       params->gi_cell_scale, params->eye, s.position,
+                       length(s.position - params->camera.xyz), normal, harmonics);
+}
+
 // **The volume tier** (`k_material_water_volume`; water.slang, "the volume tier"): what is under
 // the surface, seen through it. The refracted view is marched against the body's depth map, the
 // ground as a height field (`water_path_map`; water.md, "The depth map"), so it lands on the
@@ -878,6 +893,7 @@ float3 water_pixel_volume(ResolveParams* params, SceneGeometry geo, InstanceDesc
     ambient = ambient_radiance(params->sky.rgb, ground, s.normal);
     reflected = params->sky.rgb;
   }
+  ambient = water_scene_ambient(params, s, s.normal, ambient);  // W161
 #ifdef RESOLVE_RAY_SHADOWS
   reflected = water_reflection(params, s, r, ray_bias, reflected);  // R129: the scene, or the sky
 #endif
@@ -921,6 +937,7 @@ float3 water_pixel_low(ResolveParams* params, Surface s, float3 n, float3 view, 
     ambient = ambient_radiance(params->sky.rgb, ground, s.normal);
     reflected = params->sky.rgb;
   }
+  ambient = water_scene_ambient(params, s, s.normal, ambient);  // W161
 #ifdef RESOLVE_RAY_SHADOWS
   reflected = water_reflection(params, s, r, ray_bias, reflected);  // R129: the scene, or the sky
 #endif
@@ -957,6 +974,7 @@ float3 water_white_water(ResolveParams* params, Surface s, float3 plane, float r
     const float3 ground = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
     ambient = ambient_radiance(params->sky.rgb, ground, plane);
   }
+  ambient = water_scene_ambient(params, s, plane, ambient);  // W161
   return (0.8 * shade) * (sun / k_brdf_pi + ambient);
 }
 
@@ -974,7 +992,7 @@ float3 water_white_water(ResolveParams* params, Surface s, float3 plane, float r
 // first compile is the longest wait of a cold load (water.md, "What a first load waits for").
 struct WaterChannelPixel {
   float3 normal;
-  float3 plane;      // the surface's own plane, facing out of the water; a nappe's is its vertices'
+  float3 plane;      // the surface's own plane, facing out of the water: its vertices' normals
   float roughness;
   float depth;
   bool has_map;
@@ -1044,11 +1062,14 @@ WaterChannelPixel water_channel_pixel(ResolveParams* params, SceneGeometry geo, 
   } else if (!has_map) {
     depth = hydraulic;
   }
-  // The surface's own plane, facing out of the water whichever side the eye is on. A nappe is a
-  // curve the lattice draws in a few flat cells: it is shaded by its vertices' normals, which are
-  // the parabola's own, so its facets do not show.
-  float3 plane = dot(s.geometric, s.normal) < 0.0 ? -s.geometric : s.geometric;
-  if (nappe > 0.0) plane = normalize(s.normal);
+  // The surface's own plane, facing out of the water whichever side the eye is on: **its
+  // vertices' normals, interpolated, for a reach as for a nappe** (W161; water.md, "What a vertex
+  // carries"). A nappe's are the parabola's own and a reach's the solved level's (channel.cpp: the
+  // level's fall along the heading, times the carry), so the sheet is one smooth field and no
+  // lattice triangle is lit whole in the sun's glint, as each was by its own plane until W161. The
+  // geometric normal is made to face the side `s.normal` faces, so the interpolated one already
+  // faces out; every ray offset stays on `s.geometric`.
+  const float3 plane = normalize(s.normal);
   const WaterChannelSurface c =
       water_channel_surface(f, local, plane, s.uv.x, params->water_time_s, footprint, depth,
                             hydraulic, nappe, w.roughness, section_froude, solved_slope,
@@ -1274,12 +1295,13 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
   float3 color = float3(0.0);
   if (white < 1.0) {
     if ((material.flags & k_material_water_volume) != 0) {
-      // **The ground under a lifted body's water is wet** (S102, second pass; water.md, "One
-      // sheet"): the bottom's material takes the saturation of sand under water, as the ground
-      // beside the sheet takes it under its film — Lekner and Dorf's darkening is that of a surface
-      // under a layer of water, whatever the layer's depth. Until this pass only a bared pixel's
-      // bottom was wet, and the sheet's sand was drawn dry beside the wet sand it lies on.
-      const float bottom_s = swash.surface != 0 && depth > 0.0 ? 1.0 : max(bared_wet, 0.0);
+      // **A bed under any water is wet** (W161; water.md, "Translucent by volume"): wherever the
+      // pixel has depth the bottom's material takes saturation 1 — Lekner and Dorf's darkening is
+      // that of a surface under a layer of water, whatever the layer's depth — for a channel, a
+      // windless body and a lifted body alike. S102's second pass wetted a lifted body's alone, so
+      // a stream's bed was drawn as dry ground between banks drawn damp. A pixel with no depth is
+      // the bared bottom at the swash's saturation, or dry.
+      const float bottom_s = depth > 0.0 ? 1.0 : max(bared_wet, 0.0);
       color = water_pixel_volume(params, geo, instance, index, slope, dp_dx, dp_dy, s, local, n,
                                  view, w, ray_bias, depth, has_map, map, edge, foam, bottom_s);
     } else {
@@ -2122,6 +2144,9 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
           sheet_ambient = ambient_radiance(params->sky.rgb, below, level);
           sheet_reflected = params->sky.rgb;
         }
+        // The level surface's ambient as the water's own takes it (W161, `water_scene_ambient`):
+        // the sheet is that body's water at no depth, so it is the same term by the same rule.
+        sheet_ambient = water_scene_ambient(params, s, level, sheet_ambient);
 #ifdef RESOLVE_RAY_SHADOWS
         sheet_reflected = water_reflection(params, s, r, ray_bias, sheet_reflected);
 #endif

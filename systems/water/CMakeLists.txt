@@ -32,6 +32,8 @@ engine_module_tests(NAME water
           tests/resolve_class_water_tests.cpp
           # W136: the "water wind" pass and the lift's bound, on a GPU.
           tests/wind_scene_tests.cpp
+          # W161: a channel's water lit as the scene lets it, and shaded by its vertices.
+          tests/channel_light_scene_tests.cpp
   DEPS renderer gfx tunables)
 if(TARGET engine_water_tests)
   target_compile_definitions(engine_water_tests PRIVATE ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")

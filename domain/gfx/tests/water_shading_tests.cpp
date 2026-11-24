@@ -13,6 +13,7 @@
 #include "raster_path.h"
 #include "scene_fixture.h"
 #include "water_reference.h"
+#include "wet_reference.h"
 
 #include <domain/geometry/cluster.h>
 #include <domain/gfx/backend/vulkan/vulkan.h>
@@ -41,7 +42,7 @@ namespace wref = engine::water_ref;
 namespace {
 
 constexpr u32 k_size = 128;
-constexpr u32 k_blocks = 13;
+constexpr u32 k_blocks = 14;
 // The synthetic depth maps (water.md, "The depth map"): 64 texels a side over the quad's 10 m.
 constexpr u32 k_map_size = 64;
 constexpr f32 k_map_origin = -5.0f;
@@ -67,9 +68,17 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
   // And a bottom that slopes: 0.5 m deep at x = -5 to 1.5 m at x = 5 (both exact in a half float),
   // the depth 1 + 0.1 x, for the volume tier's plane through the triangle's depths.
   const Vec2 slope_uv[4] = {Vec2{5.0f, 0.5f}, Vec2{5.0f, 1.5f}, Vec2{5.0f, 1.5f}, Vec2{5.0f, 0.5f}};
+  // And a channel's still water (W161; water.md, "Shading"): UV.x the flow's phase, the same at
+  // every corner, and UV.y a hydraulic depth of 0.5 m whose half has none of the five low bits a
+  // reach's Froude number rides in (`water_channel_unpack`), so the section stands still: no
+  // detail, no trains, no standing waves and no white, and the surface is the level plane at the
+  // body's roughness — the volume tier's own surface, which the reference below draws.
+  const Vec2 channel_uv[4] = {Vec2{1.0f, 0.5f}, Vec2{1.0f, 0.5f}, Vec2{1.0f, 0.5f},
+                              Vec2{1.0f, 0.5f}};
   geometry::ClusterMesh mesh;
   geometry::ClusterMesh shore_mesh;
   geometry::ClusterMesh slope_mesh;
+  geometry::ClusterMesh channel_mesh;
   {
     geometry::AttributeSource source;
     source.normals = normals;
@@ -82,6 +91,9 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
     source.uvs = slope_uv;
     REQUIRE(geometry::build_clusters(positions, indices, geometry::ClusterBuildOptions{},
                                      slope_mesh, &error, source));
+    source.uvs = channel_uv;
+    REQUIRE(geometry::build_clusters(positions, indices, geometry::ClusterBuildOptions{},
+                                     channel_mesh, &error, source));
   }
   REQUIRE(mesh.clusters.size() == 1);
 
@@ -110,7 +122,7 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
   silty.absorption = Vec3{0.6f, 0.2f, 0.12f};
   silty.turbidity = 1.0f;
   silty.transmission = 0.6f;
-  gfx::ResolveMaterial material_table[21];
+  gfx::ResolveMaterial material_table[23];
   gfx::set_water_material(material_table[0], wave);
   gfx::set_water_material(material_table[1], sharp);
   gfx::set_water_material(material_table[2], mirror);
@@ -155,9 +167,14 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
   gfx::WaterWave spectrum_waves[gfx::k_water_waves];
   gfx::water_spectrum(6.0, 5000.0, Vec2{0.6f, 0.8f}, 9, spectrum_waves);
   gfx::set_water_spectrum(material_table[14], &material_table[16], spectrum_waves);
-  const u32 material_index[21] = {0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10,
-                                  11, 12, 13, 14, 15, 16, 17, 18, 19, 20};
-  // Block: material, attributes (0 open, 1 shore, 2 the slope), clock.
+  // A channel's water over the same sand (W161): the sharp waves' material with the channel bit,
+  // as the GPU scene sets it, and the clear optics.
+  gfx::set_water_material(material_table[21], sharp);
+  material_table[21].flags |= gfx::k_material_water_channel;
+  gfx::set_water_optics(material_table[21], material_table[22], clear);
+  const u32 material_index[23] = {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11,
+                                  12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22};
+  // Block: material, attributes (0 open, 1 shore, 2 the slope, 3 the channel), clock.
   struct Block {
     u32 material;
     u32 attributes;
@@ -166,16 +183,16 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
   const Block block_of[k_blocks] = {
       {0, 0, 0.0f},   {0, 0, 37.25f},  {1, 0, 500.0f}, {2, 0, 0.0f},   {0, 1, 0.0f},
       {3, 0, 500.0f}, {3, 2, 37.25f},  {5, 1, 0.0f},   {8, 0, 37.25f}, {10, 0, 500.0f},
-      {12, 0, 0.0f},  {14, 0, 37.25f}, {14, 1, 0.0f}};
+      {12, 0, 0.0f},  {14, 0, 37.25f}, {14, 1, 0.0f},  {21, 3, 37.25f}};
   // The map each material reads (k_material_water_depth_map), or none.
-  const i32 map_of_material[21] = {-1, -1, -1, -1, -1, -1, -1, -1, 0,  -1, 1,
-                                   -1, 1,  -1, -1, -1, -1, -1, -1, -1, -1};
-  const f32 slope_of[3] = {0.0f, 0.0f, 0.1f};  // the depth's change a metre along x
+  const i32 map_of_material[23] = {-1, -1, -1, -1, -1, -1, -1, -1, 0,  -1, 1, -1,
+                                   1,  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+  const f32 slope_of[4] = {0.0f, 0.0f, 0.1f, 0.0f};  // the depth's change a metre along x
 
   constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
   gfx::BufferResource clusters;
   gfx::BufferResource triangles;
-  gfx::BufferResource attributes[3];
+  gfx::BufferResource attributes[4];
   gfx::BufferResource materials;
   gfx::BufferResource cluster_materials;
   gfx_test::SingleInstance scene;
@@ -195,6 +212,10 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
   REQUIRE(gfx::upload_buffer(device, slope_mesh.attributes.data(),
                              slope_mesh.attributes.size() * sizeof(geometry::VertexAttributes),
                              k_storage, attributes[2], &error));
+  REQUIRE(channel_mesh.attributes.size() == mesh.attributes.size());
+  REQUIRE(gfx::upload_buffer(device, channel_mesh.attributes.data(),
+                             channel_mesh.attributes.size() * sizeof(geometry::VertexAttributes),
+                             k_storage, attributes[3], &error));
   REQUIRE(gfx::upload_buffer(device, material_index, sizeof(material_index), k_storage,
                              cluster_materials, &error));
 
@@ -374,7 +395,7 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
   const ref::Dvec3 sky_ref = ref::dvec3(sky);
   // A level surface's ambient under the stand-in: the sky's radiance, all of it (the normal up).
   const ref::Dvec3 ambient = ref::sky_radiance(sky_ref);
-  const Vec2* uv_of[3] = {open_uv, shore_uv, slope_uv};
+  const Vec2* uv_of[4] = {open_uv, shore_uv, slope_uv, channel_uv};
 
   int worst_all = 0;
   int differs_with_time = 0;
@@ -383,6 +404,17 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
     const gfx::ResolveMaterial& material = material_table[block_of[b].material];
     const wref::Params w_block = wref::params_of(material);
     const bool volume = (material.flags & gfx::k_material_water_volume) != 0;
+    const bool channel = (material.flags & gfx::k_material_water_channel) != 0;
+    // **A bed under any water is wet** (W161; water.md, "Translucent by volume"): every volume
+    // block has water over its bed, so the reference's bed is the dry one darkened by Lekner and
+    // Dorf's factor at saturation 1 (wet_reference.h, the mirror of wet_ground.slang; a plain
+    // ground has porosity 0.5, a whole share) — the channel's, the windless bodies' and the bed
+    // of no ground, the shallow colour, alike. `dry_worst` is the same pixels against the bed drawn
+    // dry: a resolve that kept a windless body's or a channel's bed dry meets the dry reference and
+    // misses the wet one. The factor is the whole one, the resolve's: under the tier it counts the
+    // water's top a second time, which W164 is to mend in every place at once (water.md,
+    // "Translucent by volume").
+    int dry_worst = 0;
     const Vec2 uv = uv_of[block_of[b].attributes][0];
     const double slope = static_cast<double>(slope_of[block_of[b].attributes]);
     const i32 map = map_of_material[block_of[b].material];
@@ -413,17 +445,25 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
         // (S100 stage B; water.slang, `water_roughness`).
         wref::Params w = w_block;
         double dropped = 0.0;
+        // A still channel's surface is the level plane at the body's roughness, its shore whole at
+        // half a metre of water (the fade is over 3 cm at most).
         const ref::Dvec3 n =
-            spectral ? wref::normal_spectrum(table, p.x, p.z, static_cast<double>(block_of[b].time),
-                                             footprint, depth, &dropped)
-                     : wref::normal(w, p.x, p.z, static_cast<double>(block_of[b].time), footprint,
-                                    depth);
-        w.roughness = wref::roughness_with(w.roughness, (1.0 - gfx::k_water_micro_share) * dropped);
+            channel ? ref::Dvec3{0.0, 1.0, 0.0}
+            : spectral
+                ? wref::normal_spectrum(table, p.x, p.z, static_cast<double>(block_of[b].time),
+                                        footprint, depth, &dropped)
+                : wref::normal(w, p.x, p.z, static_cast<double>(block_of[b].time), footprint,
+                               depth);
+        if (!channel)
+          w.roughness =
+              wref::roughness_with(w.roughness, (1.0 - gfx::k_water_micro_share) * dropped);
         // The shore's fade: the distance from the edge, or for an open body the depth's share of
         // the calm depth (water_edge).
-        const double from_edge = wref::edge(w, material.flags, static_cast<double>(uv.x), depth);
+        const double from_edge =
+            channel ? w.shore : wref::edge(w, material.flags, static_cast<double>(uv.x), depth);
         const ref::Dvec3 v = ref::normalize(ref::dvec3(eye) - p);
         ref::Dvec3 linear;
+        ref::Dvec3 linear_dry;
         if (volume) {
           // No shadow is asked for, so the sun reaches the surface and the bottom whole; the
           // ground is the plain material's colour, or the shallow colour with none.
@@ -431,22 +471,35 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
           ref::Dvec3 n_b = ref::normalize(ref::Dvec3{slope, 1.0, 0.0});
           const wref::Path path = map >= 0 ? wref::path_map(depth_map, p.x, p.z, n, v, depth, n_b)
                                            : wref::path(n, v, depth, slope, 0.0);
-          const ref::Dvec3 albedo = optics.sampler == gfx::k_water_no_ground
-                                        ? w.shallow
-                                        : ref::dvec3(material_table[optics.sampler].albedo);
-          const ref::Dvec3 under = wref::volume(wref::optics_of(optics), path, n_b, albedo, sun_ref,
-                                                ref::splat(1.0), 1.0, 1.0, ambient);
+          const ref::Dvec3 dry = optics.sampler == gfx::k_water_no_ground
+                                     ? w.shallow
+                                     : ref::dvec3(material_table[optics.sampler].albedo);
+          namespace wet = gfx::wet_reference;
+          const ref::Dvec3 albedo{wet::albedo(dry.x, 1.0, 0.5), wet::albedo(dry.y, 1.0, 0.5),
+                                  wet::albedo(dry.z, 1.0, 0.5)};
+          const wref::Optics o = wref::optics_of(optics);
+          const ref::Dvec3 under =
+              wref::volume(o, path, n_b, albedo, sun_ref, ref::splat(1.0), 1.0, 1.0, ambient);
           linear =
               wref::radiance_volume(w, n, v, from_edge, sun_ref, ref::splat(1.0), sky_ref, under);
+          const ref::Dvec3 under_dry =
+              wref::volume(o, path, n_b, dry, sun_ref, ref::splat(1.0), 1.0, 1.0, ambient);
+          linear_dry = wref::radiance_volume(w, n, v, from_edge, sun_ref, ref::splat(1.0), sky_ref,
+                                             under_dry);
         } else {
           linear =
               wref::radiance(w, n, v, from_edge, depth, sun_ref, ref::splat(1.0), ambient, sky_ref);
+          linear_dry = linear;
         }
         const u8* got = pixel(b, x, y);
         const u8 expect[3] = {ref::display(linear.x), ref::display(linear.y),
                               ref::display(linear.z)};
-        for (u32 c = 0; c < 3; ++c)
+        const u8 expect_dry[3] = {ref::display(linear_dry.x), ref::display(linear_dry.y),
+                                  ref::display(linear_dry.z)};
+        for (u32 c = 0; c < 3; ++c) {
           worst = std::max(worst, std::abs(int{got[c]} - int{expect[c]}));
+          dry_worst = std::max(dry_worst, std::abs(int{got[c]} - int{expect_dry[c]}));
+        }
         if (b == 1) {
           const u8* at_zero = pixel(0, x, y);
           if (at_zero[0] != got[0] || at_zero[1] != got[1] || at_zero[2] != got[2])
@@ -459,9 +512,13 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
         }
       }
     }
-    MESSAGE("water block " << b << ": worst " << worst << " of 255 against the reference ("
-                           << std::string(raster.name()) << " path)");
+    MESSAGE("water block " << b << std::string(channel ? " (a channel)" : "") << ": worst " << worst
+                           << " of 255 against the reference, " << dry_worst
+                           << " against the bed drawn dry (" << std::string(raster.name())
+                           << " path)");
     CHECK(worst <= 2);
+    // The bed drawn dry is a picture of its own: more than the tolerance off every volume block.
+    if (volume) CHECK(dry_worst > 2);
     worst_all = std::max(worst_all, worst);
   }
   MESSAGE("water branch against its reference: worst " << worst_all << " of 255");
@@ -496,8 +553,353 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
   gfx::destroy_sampler(device, map_sampler);
   scene.destroy(device);
   for (gfx::BufferResource* b :
-       {&host_color, &params, &vis, &attributes[0], &attributes[1], &attributes[2],
+       {&host_color, &params, &vis, &attributes[0], &attributes[1], &attributes[2], &attributes[3],
         &cluster_materials, &materials, &triangles, &clusters}) {
+    gfx::destroy_buffer(device, *b);
+  }
+  frames.destroy();
+  device.destroy();
+}
+
+// **A reach is shaded by its vertices' normals** (W161; water.md, "What a vertex carries"): a bent
+// pair, two triangles of a channel's still reach meeting along the quad's diagonal at a dihedral
+// of 6 alpha — 3.4 degrees at roughness 0.1, alpha = 0.01 rad, nine times the GGX lobe's half width
+// at half maximum, alpha sqrt(sqrt(2) - 1) = 0.64 alpha — the two shared vertices carrying the
+// averaged normal (up) and each outer vertex its own face's. The sun stands so that, the eye
+// overhead, the half vector at the edge leans 1.5 alpha towards face A: a face drawn by its own
+// plane is 1.5 alpha off it on one side of the edge and 4.5 alpha on the other, where D is 43
+// times smaller, while the interpolated field is continuous across the edge and meets the half
+// vector halfway across face A. The eye stands 600 m off with a field of 1 degree, so the view
+// turns the half vector by 0.014 alpha a strip and a face drawn by its plane is one value. The
+// still channel's surface is its plane at the body's roughness (block 13 of the case above), so
+// the reference takes the interpolated normal as the plane. Two assertions: the block within 2 of
+// 255 of it; and the step in linear luminance across the shared edge — the mean of the pixels
+// within two of it on one side against the other's — no larger than the largest change between
+// two neighbouring two-pixel strips inside either face: a facet's step is a lobe's jump between
+// two near-uniform faces, a smooth field's is its own gradient at the edge, a sixth of its
+// steepest.
+TEST_CASE("material resolve: a channel's reach is shaded by its vertices' normals") {
+  gfx::Device device;
+  std::string error;
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer})) return;
+
+  constexpr double k_alpha = 0.01;          // brdf_alpha(0.1)
+  constexpr double k_tilt = 3.0 * k_alpha;  // each face off the averaged normal
+  constexpr double k_lean = 1.5 * k_alpha;  // the half vector at the edge, towards face A
+  constexpr double k_sun = 0.05;            // the sun's irradiance: the lobe's peak 0.8, unclipped
+  constexpr double k_depth = 0.5;
+  // Across the edge, towards face A's outer vertex (5, -5); the outer vertices 7.07 m off the edge.
+  const ref::Dvec3 across = ref::normalize(ref::Dvec3{1.0, 0.0, -1.0});
+  const double rise = 5.0 * std::sqrt(2.0) * std::tan(k_tilt);
+  const f32 lift = static_cast<f32>(rise);
+  const Vec3 positions[4] = {Vec3{-5.0f, 0.0f, -5.0f}, Vec3{5.0f, lift, -5.0f},
+                             Vec3{5.0f, 0.0f, 5.0f}, Vec3{-5.0f, lift, 5.0f}};
+  const u32 indices[6] = {0, 2, 1, 0, 3, 2};  // face A holds vertex 1, face B vertex 3
+  const auto face_normal = [&](u32 a, u32 b, u32 c) {
+    const ref::Dvec3 n =
+        ref::normalize(ref::cross(ref::dvec3(positions[b]) - ref::dvec3(positions[a]),
+                                  ref::dvec3(positions[c]) - ref::dvec3(positions[a])));
+    return n.y < 0.0 ? -n : n;
+  };
+  const ref::Dvec3 n_a = face_normal(0, 2, 1);
+  const ref::Dvec3 n_b = face_normal(0, 3, 2);
+  const auto vec3_of = [](ref::Dvec3 v) {
+    return Vec3{static_cast<f32>(v.x), static_cast<f32>(v.y), static_cast<f32>(v.z)};
+  };
+  const Vec3 up{0.0f, 1.0f, 0.0f};
+  const Vec3 normals[4] = {up, vec3_of(n_a), up, vec3_of(n_b)};
+  const Vec2 uvs[4] = {Vec2{1.0f, 0.5f}, Vec2{1.0f, 0.5f}, Vec2{1.0f, 0.5f}, Vec2{1.0f, 0.5f}};
+  geometry::ClusterMesh mesh;
+  {
+    geometry::AttributeSource source;
+    source.normals = normals;
+    source.uvs = uvs;
+    REQUIRE(geometry::build_clusters(positions, indices, geometry::ClusterBuildOptions{}, mesh,
+                                     &error, source));
+  }
+  REQUIRE(mesh.clusters.size() == 1);
+
+  // A channel's still water at roughness 0.1 over the case above's sand.
+  gfx::WaterShading still;
+  still.shallow = Vec3{0.30f, 0.55f, 0.50f};
+  still.deep = Vec3{0.02f, 0.06f, 0.08f};
+  still.roughness = 0.1f;
+  still.depth_fade_m = 2.0f;
+  still.shore_m = 1.0f;
+  still.seed = 9;
+  gfx::WaterOptics clear;
+  clear.turbidity = 0.3f;
+  clear.ground = 2;
+  gfx::ResolveMaterial material_table[3];
+  gfx::set_water_material(material_table[0], still);
+  material_table[0].flags |= gfx::k_material_water_channel;
+  gfx::set_water_optics(material_table[0], material_table[1], clear);
+  material_table[2].albedo = Vec4{0.55f, 0.45f, 0.32f, 0.9f};
+  const u32 material_index[1] = {0};
+
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
+  gfx::BufferResource clusters;
+  gfx::BufferResource triangles;
+  gfx::BufferResource attributes;
+  gfx::BufferResource materials;
+  gfx::BufferResource cluster_materials;
+  gfx_test::SingleInstance scene;
+  REQUIRE(gfx::upload_buffer(device, mesh.clusters.data(), sizeof(geometry::ClusterDesc), k_storage,
+                             clusters, &error));
+  REQUIRE(scene.create(device, mesh, 1, &error));
+  REQUIRE(gfx::upload_buffer(device, mesh.triangles.data(), mesh.triangles.size() * sizeof(u32),
+                             k_storage, triangles, &error));
+  REQUIRE(gfx::upload_buffer(device, mesh.attributes.data(),
+                             mesh.attributes.size() * sizeof(geometry::VertexAttributes), k_storage,
+                             attributes, &error));
+  REQUIRE(gfx::upload_buffer(device, material_table, sizeof(material_table), k_storage, materials,
+                             &error));
+  REQUIRE(gfx::upload_buffer(device, material_index, sizeof(material_index), k_storage,
+                             cluster_materials, &error));
+
+  const Vec3 eye{0.0f, 600.0f, 0.0f};
+  const Vec3 target{};
+  const Vec3 view_up{0.0f, 0.0f, -1.0f};
+  const f32 fov_y = radians(1.0f);
+  const Mat4 view_proj = perspective_reversed_z(fov_y, 1.0f, 0.1f) * look_at(eye, target, view_up);
+  gfx::BufferResource vis;
+  gfx::BufferResource params;
+  gfx::BufferResource host_color;
+  REQUIRE(gfx::create_buffer(
+      device, u64{k_size} * k_size * sizeof(u64),
+      k_storage | gfx::BufferUsage::ShaderDeviceAddress | gfx::BufferUsage::TransferDst, false, vis,
+      &error));
+  REQUIRE(gfx::create_buffer(device, sizeof(gfx::ResolveParams),
+                             k_storage | gfx::BufferUsage::ShaderDeviceAddress, true, params,
+                             &error));
+  REQUIRE(gfx::create_buffer(device, u64{k_size} * k_size * 4, gfx::BufferUsage::TransferDst, true,
+                             host_color, &error));
+  gfx::FrameContext frames;
+  REQUIRE(frames.create(device, 2, &error));
+  gfx::BindlessSet bindless;
+  REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
+  gfx::ShaderModuleHandle resolve_module =
+      gfx::create_shader_module(device, shaders::k_visibility_resolve_water_spirv,
+                                shaders::k_visibility_resolve_water_spirv_size, &error);
+  REQUIRE(resolve_module.valid());
+  gfx_test::ClusterRaster raster;
+  REQUIRE_MESSAGE(raster.create(device, bindless.pipeline_layout(),
+                                geometry::ClusterBuildOptions{}.max_triangles, &error),
+                  error);
+  gfx::GraphicsPipelineDesc resolve_desc;
+  resolve_desc.vertex = resolve_module;
+  resolve_desc.vertex_entry = "vs_fullscreen";
+  resolve_desc.fragment = resolve_module;
+  resolve_desc.fragment_entry = "fs_resolve";
+  resolve_desc.layout = bindless.pipeline_layout();
+  resolve_desc.color_format = gfx::Format::R8G8B8A8Unorm;
+  gfx::PipelineHandle resolve_pipeline = {};
+  REQUIRE_MESSAGE(gfx::create_graphics_pipeline(device, resolve_desc, resolve_pipeline, &error),
+                  error);
+
+  gfx::ClusterDrawParams draw{};
+  draw.view_proj = view_proj;
+  draw.clusters = clusters.address;
+  draw.mesh = scene.meshes.address;
+  draw.instances = scene.instances.address;
+  draw.triangles = triangles.address;
+  draw.visibility = vis.address;
+  draw.extent = gfx::draw_extent(k_size, k_size);
+
+  // The sun: the half vector of it and the eye overhead leans k_lean from up towards face A's
+  // normal, which leans from up away from `across`.
+  const ref::Dvec3 up_d{0.0, 1.0, 0.0};
+  const ref::Dvec3 sun_ref =
+      ref::normalize(up_d * std::cos(2.0 * k_lean) - across * std::sin(2.0 * k_lean));
+  auto* block = static_cast<gfx::ResolveParams*>(params.mapped);
+  *block = gfx::ResolveParams{};
+  block->sky = Vec4{0.0f, 0.0f, 0.0f, 1.0f};
+  block->sun = Vec4{vec3_of(sun_ref), static_cast<f32>(k_sun)};
+  block->camera = Vec4{eye, 0.0f};
+  block->view_proj = view_proj;
+  block->visibility = vis.address;
+  block->clusters = clusters.address;
+  block->mesh = scene.meshes.address;
+  block->instances = scene.instances.address;
+  block->triangles = triangles.address;
+  block->materials = materials.address;
+  block->cluster_materials = cluster_materials.address;
+  block->attributes = attributes.address;
+  block->width = k_size;
+  block->height = k_size;
+  const u64 block_address = params.address;
+
+  gfx::RenderGraph graph(device);
+  const gfx::RgBuffer rg_vis = graph.import_buffer("vis", vis);
+  const gfx::RgBuffer rg_host = graph.import_buffer("host", host_color);
+  const gfx::RgImage target_image = graph.create_image(
+      "resolved", {k_size, k_size, gfx::Format::R8G8B8A8Unorm,
+                   gfx::ImageUsage::ColorAttachment | gfx::ImageUsage::TransferSrc});
+  graph.add_pass(
+      "clear", gfx::PassKind::Transfer,
+      [&](gfx::PassBuilder& b) { b.write(rg_vis, gfx::Access::TransferWrite); },
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        cb.fill_buffer(vis.buffer, 0, gfx::k_whole_size, 0);
+      });
+  graph.add_pass(
+      "visibility", gfx::PassKind::Raster,
+      [&](gfx::PassBuilder& b) {
+        b.render_area(k_size, k_size);
+        b.write(rg_vis, gfx::Access::FragmentReadWrite);
+      },
+      [&](gfx::CommandList cb, gfx::RenderGraph&) { raster.draw(cb, bindless, draw, 1); });
+  graph.add_pass(
+      "resolve", gfx::PassKind::Raster,
+      [&](gfx::PassBuilder& b) {
+        gfx::ClearColor clear_color{};
+        b.color_attachment(target_image, gfx::LoadOp::Clear, clear_color);
+        b.read(rg_vis, gfx::Access::FragmentRead);
+      },
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        cb.bind_pipeline(gfx::BindPoint::Graphics, resolve_pipeline);
+        bindless.bind(cb, gfx::BindPoint::Graphics);
+        cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(u64),
+                          &block_address);
+        cb.draw(3, 1, 0, 0);
+      });
+  graph.add_pass(
+      "readback", gfx::PassKind::Transfer,
+      [&](gfx::PassBuilder& b) {
+        b.read(target_image, gfx::Access::TransferRead);
+        b.write(rg_host, gfx::Access::TransferWrite);
+      },
+      [&](gfx::CommandList cb, gfx::RenderGraph& g) {
+        VkBufferImageCopy region{};
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageExtent = {k_size, k_size, 1};
+        vkCmdCopyImageToBuffer(gfx::vk::native(cb), gfx::vk::native(g.image(target_image).image),
+                               gfx::vk::native(g.image_layout(target_image)),
+                               gfx::vk::native(host_color.buffer), 1, &region);
+      });
+  REQUIRE_MESSAGE(graph.compile(&error), error);
+  gfx::CommandList commands = frames.begin_frame();
+  graph.execute(commands);
+  REQUIRE(frames.wait(frames.end_frame()));
+
+  // The reference, a pixel at a time: the view ray meets one of the two faces; the plane is the
+  // interpolated normal there, and the still channel's surface is that plane.
+  const wref::Params w = wref::params_of(material_table[0]);
+  const wref::Optics o = wref::optics_of(material_table[1]);
+  const ref::Dvec3 sand = ref::dvec3(material_table[2].albedo);
+  namespace wet = gfx::wet_reference;
+  const ref::Dvec3 bed{wet::albedo(sand.x, 1.0, 0.5), wet::albedo(sand.y, 1.0, 0.5),
+                       wet::albedo(sand.z, 1.0, 0.5)};
+  const ref::Dvec3 eye_d = ref::dvec3(eye);
+  const u32 faces[2][3] = {{0, 2, 1}, {0, 3, 2}};
+  // Two-pixel strips by the distance from the edge, on face A's side (0) and face B's (1).
+  constexpr u32 k_strips = 48;
+  const double footprint = 2.0 * static_cast<double>(eye.y) *
+                           std::tan(0.5 * static_cast<double>(fov_y)) / static_cast<double>(k_size);
+  const double strip_m = 2.0 * footprint;
+  double sum[2][k_strips] = {};
+  double sum_ref[2][k_strips] = {};
+  u32 count[2][k_strips] = {};
+  const auto linear_luminance = [](const u8* c) {
+    const auto lin = [](u8 v) { return std::pow(static_cast<double>(v) / 255.0, 2.2); };
+    return 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]);
+  };
+  int worst = 0;
+  u32 compared = 0;
+  for (u32 y = 0; y < k_size; ++y) {
+    for (u32 x = 0; x < k_size; ++x) {
+      const ref::Dvec3 dir = ref::pixel_direction(
+          eye_d, ref::dvec3(target), ref::dvec3(view_up), static_cast<double>(fov_y), 1.0, k_size,
+          k_size, static_cast<double>(x) + 0.5, static_cast<double>(y) + 0.5);
+      bool hit = false;
+      ref::Dvec3 p{};
+      ref::Dvec3 n_s{};
+      for (u32 f = 0; f < 2 && !hit; ++f) {
+        const ref::Dvec3 p0 = ref::dvec3(positions[faces[f][0]]);
+        const ref::Dvec3 e1 = ref::dvec3(positions[faces[f][1]]) - p0;
+        const ref::Dvec3 e2 = ref::dvec3(positions[faces[f][2]]) - p0;
+        const ref::Dvec3 q = ref::cross(dir, e2);
+        const double det = ref::dot(e1, q);
+        if (std::abs(det) < 1e-12) continue;
+        const ref::Dvec3 s0 = eye_d - p0;
+        const double b1 = ref::dot(s0, q) / det;
+        const ref::Dvec3 r1 = ref::cross(s0, e1);
+        const double b2 = ref::dot(dir, r1) / det;
+        if (b1 < 0.0 || b2 < 0.0 || b1 + b2 > 1.0) continue;
+        const double t = ref::dot(e2, r1) / det;
+        hit = true;
+        p = eye_d + dir * t;
+        n_s = ref::normalize(ref::dvec3(normals[faces[f][0]]) * (1.0 - b1 - b2) +
+                             ref::dvec3(normals[faces[f][1]]) * b1 +
+                             ref::dvec3(normals[faces[f][2]]) * b2);
+      }
+      // Clear of the quad's outline by 0.3 m, so no pixel is part water and part nothing.
+      if (!hit || std::abs(p.x) > 4.7 || std::abs(p.z) > 4.7) continue;
+      const ref::Dvec3 v = ref::normalize(eye_d - p);
+      const wref::Path path = wref::path(n_s, v, k_depth, 0.0, 0.0);
+      const ref::Dvec3 under =
+          wref::volume(o, path, up_d, bed, sun_ref, ref::splat(k_sun), 1.0, 1.0, ref::splat(0.0));
+      const ref::Dvec3 linear = wref::radiance_volume(w, n_s, v, w.shore, sun_ref,
+                                                      ref::splat(k_sun), ref::splat(0.0), under);
+      const u8 expect[3] = {ref::display(linear.x), ref::display(linear.y), ref::display(linear.z)};
+      const u8* got = static_cast<const u8*>(host_color.mapped) + (u64{y} * k_size + x) * 4;
+      for (u32 c = 0; c < 3; ++c)
+        worst = std::max(worst, std::abs(int{got[c]} - int{expect[c]}));
+      ++compared;
+      const double d = ref::dot(p, across);
+      // A pixel whose centre lies on the edge itself is on neither side: the rasterizer gives it
+      // to one face by its tie rule, which the side of a rounded `d` does not know.
+      if (std::abs(d) < 0.25 * footprint) continue;
+      const u32 side = d > 0.0 ? 0u : 1u;
+      const double strip = std::floor(std::abs(d) / strip_m);
+      if (strip >= static_cast<double>(k_strips)) continue;
+      const u32 k = static_cast<u32>(strip);
+      sum[side][k] += linear_luminance(got);
+      sum_ref[side][k] += linear_luminance(expect);
+      ++count[side][k];
+    }
+  }
+  REQUIRE(count[0][0] >= 50);
+  REQUIRE(count[1][0] >= 50);
+  // The step across the edge and the largest change between neighbouring strips inside a face.
+  const auto mean = [&](const double (&s)[2][k_strips], u32 side, u32 k) {
+    return s[side][k] / static_cast<double>(count[side][k]);
+  };
+  const auto measure = [&](const double (&s)[2][k_strips], double& edge_step, double& inside) {
+    edge_step = std::abs(mean(s, 0, 0) - mean(s, 1, 0));
+    inside = 0.0;
+    for (u32 side = 0; side < 2; ++side) {
+      for (u32 k = 0; k + 1 < k_strips; ++k) {
+        if (count[side][k] < 16 || count[side][k + 1] < 16) continue;
+        inside = std::max(inside, std::abs(mean(s, side, k) - mean(s, side, k + 1)));
+      }
+    }
+  };
+  double step = 0.0;
+  double interior = 0.0;
+  measure(sum, step, interior);
+  double step_ref = 0.0;
+  double interior_ref = 0.0;
+  measure(sum_ref, step_ref, interior_ref);
+  MESSAGE("the bent pair: worst " << worst << " of 255 against the reference over " << compared
+                                  << " pixels; the step across the edge " << step
+                                  << " against the largest change inside a face " << interior
+                                  << " (the reference's: " << step_ref << " and " << interior_ref
+                                  << "), " << count[0][0] << " and " << count[1][0]
+                                  << " pixels in the edge's strips (" << std::string(raster.name())
+                                  << " path)");
+  CHECK(compared > 10000);
+  CHECK(worst <= 2);
+  CHECK(step <= interior);
+
+  graph.reset();
+  gfx::destroy_pipeline(device, resolve_pipeline);
+  raster.destroy(device);
+  gfx::destroy_shader_module(device, resolve_module);
+  bindless.destroy();
+  scene.destroy(device);
+  for (gfx::BufferResource* b : {&host_color, &params, &vis, &attributes, &cluster_materials,
+                                 &materials, &triangles, &clusters}) {
     gfx::destroy_buffer(device, *b);
   }
   frames.destroy();
