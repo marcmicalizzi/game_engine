@@ -1,6 +1,7 @@
 #include <domain/gfx/light_grid.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstring>
 
@@ -10,11 +11,19 @@ namespace {
 
 bool directional(const ResolveLight& light) noexcept { return light.direction_type.w >= 1.5f; }
 
-// The reach a light's cells are found for, before the cell's share of the margin: zero for a light
-// that reaches nothing (`brdf_distance_attenuation` is zero everywhere at a radius of zero).
+// The reach a light's cells are found for, before the cell's share of the margin: the radius the
+// falloff itself implies. `brdf_distance_attenuation` divides by `max(r^2, 1e-8)`, so its window is
+// above zero wherever d^2 < max(r^2, 1e-8): a light of radius zero (or under a tenth of a
+// millimetre) still lights the points within 1e-4 m of it, at an attenuation near 1e8 when the
+// intensity is not zero, and the builder must not skip it.
+inline constexpr f64 k_least_reach = 1e-4;
 f64 base_reach(const ResolveLight& light) noexcept {
-  const f64 r = light.position_radius.w;
-  return r > 0.0 ? r : 0.0;
+  return std::max(static_cast<f64>(light.position_radius.w), k_least_reach);
+}
+
+bool finite(const ResolveLight& light) noexcept {
+  return std::isfinite(light.position_radius.x) && std::isfinite(light.position_radius.y) &&
+         std::isfinite(light.position_radius.z) && std::isfinite(light.position_radius.w);
 }
 
 }  // namespace
@@ -29,63 +38,62 @@ bool build_light_grid(std::span<const ResolveLight> lights, std::span<u32> cells
   if (first == n) return false;
   for (u32 i = first; i < n; ++i) {
     if (directional(lights[i])) return false;  // a light with no reach behind one with a reach
+    // A position or a reach that is not a finite number has no cell to be found in: no grid, and
+    // the readers walk the whole array (main's loop), before any of it reaches a cast below.
+    if (!finite(lights[i])) return false;
   }
   const u32 words = (n - first + 31) / 32;
   const u64 max_cells = cells.size() / words;
   if (max_cells == 0) return false;
 
-  // The box of every grown sphere, before the cell's share of the margin.
+  // The box of every grown sphere, before the cell's share of the margin. Every light past `first`
+  // has a reach of at least `k_least_reach`, so the box is never empty.
   f64 lo[3] = {0.0, 0.0, 0.0};
   f64 hi[3] = {0.0, 0.0, 0.0};
   f64 smallest = 0.0;
-  bool any = false;
   for (u32 i = first; i < n; ++i) {
     const f64 r = base_reach(lights[i]);
-    if (r <= 0.0) continue;
     const f64 grown = light_grid_margin(r, 0.0);
     const f64 p[3] = {lights[i].position_radius.x, lights[i].position_radius.y,
                       lights[i].position_radius.z};
+    const bool start = i == first;
     for (int a = 0; a < 3; ++a) {
-      lo[a] = any ? std::min(lo[a], p[a] - r - grown) : p[a] - r - grown;
-      hi[a] = any ? std::max(hi[a], p[a] + r + grown) : p[a] + r + grown;
+      lo[a] = start ? p[a] - r - grown : std::min(lo[a], p[a] - r - grown);
+      hi[a] = start ? p[a] + r + grown : std::max(hi[a], p[a] + r + grown);
     }
-    smallest = any ? std::min(smallest, r) : r;
-    any = true;
-  }
-  if (!any) {  // no light reaches anything: one empty cell, and the walk past `first` is empty
-    header.origin_inv_cell = Vec4{0.0f, 0.0f, 0.0f, 1.0f};
-    header.dims_x = header.dims_y = header.dims_z = 1;
-    header.words = words;
-    header.first = first;
-    header.count = n;
-    header.cells = 1;
-    std::memset(cells.data(), 0, sizeof(u32) * words);
-    return true;
+    smallest = start ? r : std::min(smallest, r);
   }
 
   // The cell's edge: the cube root of the box's volume over the room, never under the floor, grown
-  // until the box padded by the cell's margin fits in the room.
+  // until the box padded by the cell's margin fits in the room. Finite lights make a finite box;
+  // the room test is taken on the f64 quotient, so a box too long for any u64 count of cells grows
+  // the edge rather than reaching a cast it would overflow.
   const f64 extent[3] = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
+  for (int a = 0; a < 3; ++a) {
+    if (!std::isfinite(extent[a])) return false;
+  }
   f64 edge = std::cbrt(extent[0] * extent[1] * extent[2] / static_cast<f64>(max_cells));
   edge = std::max(edge, static_cast<f64>(k_light_grid_cell_floor) * smallest);
+  if (!(edge > 0.0) || !std::isfinite(edge)) return false;
   f32 inv_cell = 0.0f;
   f64 cell_edge = 0.0;
   Vec3 origin{};
   u64 dims[3] = {1, 1, 1};
   for (;;) {
     inv_cell = static_cast<f32>(1.0 / edge);
+    if (!(inv_cell > 0.0f)) return false;  // an edge past f32's range: no cell a reader could find
     cell_edge = 1.0 / static_cast<f64>(inv_cell);  // the edge the reader's f32 multiply implies
     const f64 pad = cell_edge / 64.0;
     origin = Vec3{static_cast<f32>(lo[0] - pad), static_cast<f32>(lo[1] - pad),
                   static_cast<f32>(lo[2] - pad)};
     const f64 corner[3] = {origin.x, origin.y, origin.z};
-    u64 total = 1;
+    f64 total = 1.0;
     for (int a = 0; a < 3; ++a) {
-      dims[a] =
-          std::max<u64>(1, static_cast<u64>(std::ceil((hi[a] + pad - corner[a]) / cell_edge)));
-      total *= dims[a];
+      const f64 span = std::max(1.0, std::ceil((hi[a] + pad - corner[a]) / cell_edge));
+      total *= span;
+      dims[a] = total <= static_cast<f64>(max_cells) ? static_cast<u64>(span) : 0;
     }
-    if (total <= max_cells) break;
+    if (total <= static_cast<f64>(max_cells)) break;
     edge *= 1.0625;
   }
 
@@ -103,7 +111,6 @@ bool build_light_grid(std::span<const ResolveLight> lights, std::span<u32> cells
   u32 refs = 0;
   for (u32 i = first; i < n; ++i) {
     const f64 r = base_reach(lights[i]);
-    if (r <= 0.0) continue;
     const f64 reach = r + light_grid_margin(r, cell_edge);
     const f64 p[3] = {lights[i].position_radius.x, lights[i].position_radius.y,
                       lights[i].position_radius.z};
@@ -159,6 +166,18 @@ bool light_grid_cell(const LightGrid& grid, Vec3 position, u32& cell) noexcept {
   }
   cell = (i[2] * dims[1] + i[1]) * dims[0] + i[0];
   return true;
+}
+
+bool light_grid_culls_at(const LightGrid& grid, std::span<const u32> cells,
+                         Vec3 position) noexcept {
+  u32 cell = 0;
+  if (!light_grid_cell(grid, position, cell)) return grid.count > grid.first;
+  const u64 base = u64{cell} * grid.words;
+  if (base + grid.words > cells.size()) return true;
+  u32 set = 0;
+  for (u32 w = 0; w < grid.words; ++w)
+    set += static_cast<u32>(std::popcount(cells[base + w]));
+  return set < grid.count - grid.first;
 }
 
 }  // namespace engine::gfx

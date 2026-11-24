@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <random>
 #include <vector>
 
@@ -151,12 +152,115 @@ TEST_CASE("light grid: no grid where the walk must be the whole array") {
   // No room for a cell.
   std::vector<ResolveLight> one = {point({0.0f, 0.0f, 0.0f}, 3.0f)};
   CHECK_FALSE(build_light_grid(one, std::span<u32>{}, grid));
-  // Lights that reach nothing (a radius of zero): one empty cell, nothing walked past `first`.
-  std::vector<ResolveLight> dark = {point({0.0f, 0.0f, 0.0f}, 0.0f)};
-  REQUIRE(build_light_grid(dark, cells, grid));
-  CHECK(grid.cells == 1);
-  CHECK(grid.refs == 0);
-  CHECK(cells[0] == 0u);
+}
+
+// L2 of R87's review: a position or a reach that is not a finite number builds no grid (the readers
+// walk the whole array), and returns rather than reaching a cast of NaN or a loop that never ends.
+TEST_CASE("light grid: a light that is not a finite number builds no grid") {
+  std::vector<u32> cells(k_light_grid_words);
+  const f32 bad[] = {std::numeric_limits<f32>::quiet_NaN(), std::numeric_limits<f32>::infinity(),
+                     -std::numeric_limits<f32>::infinity()};
+  u32 refused = 0;
+  for (f32 v : bad) {
+    for (int field = 0; field < 4; ++field) {
+      std::vector<ResolveLight> lights = {moon(), point({1.0f, 2.0f, 3.0f}, 5.0f),
+                                          point({4.0f, 2.0f, -3.0f}, 8.0f)};
+      Vec4& pr = lights[2].position_radius;
+      (field == 0 ? pr.x : field == 1 ? pr.y : field == 2 ? pr.z : pr.w) = v;
+      LightGrid grid;
+      CHECK_FALSE(build_light_grid(lights, cells, grid));
+      ++refused;
+    }
+  }
+  CHECK(refused == 12);
+}
+
+// L1 of R87's review: the falloff divides by max(r^2, 1e-8), so a light of radius zero is not dark
+// within 1e-4 m of it, and the culled walk keeps it wherever the unculled one would light.
+TEST_CASE("light grid: a light of zero reach is walked where its falloff is above zero") {
+  std::vector<u32> cells(k_light_grid_words);
+  for (f32 offset : {0.0f, 2000.0f}) {
+    const Vec3 at{offset, 2.0f, -offset};
+    std::vector<ResolveLight> lights = {moon(), point(at, 0.0f),
+                                        point({offset + 30.0f, 2.0f, -offset}, 6.0f)};
+    LightGrid grid;
+    REQUIRE(build_light_grid(lights, cells, grid));
+    // 5e-5 m above and below it: (d/r)^2 about 0.25 against the 1e-8 floor, so the unculled walk
+    // lights them, at an attenuation near 1e8; and the light's own position.
+    const Vec3 above{at.x, at.y + 5e-5f, at.z};
+    const Vec3 below{at.x, at.y - 5e-5f, at.z};
+    CHECK(attenuation(at, 0.0f, above) > 1e7f);
+    CHECK(attenuation(at, 0.0f, below) > 1e7f);
+    u32 reached = check_point(lights, grid, cells, above);
+    reached += check_point(lights, grid, cells, at);
+    reached += check_point(lights, grid, cells, below);
+    CHECK(reached == 3);
+    // A tenth of a millimetre away and further it lights nothing, culled or not.
+    CHECK(attenuation(at, 0.0f, Vec3{at.x, at.y + 2e-4f, at.z}) == 0.0f);
+  }
+}
+
+// L3 of R87's review: the error `light_grid_margin`'s cell term exists for is the reader's f32 cell
+// arithmetic at a cell's face. Points one, two and three ulps either side of every face a light's
+// sphere crosses, on the light's own line and out at its reach, near the eye and two kilometres
+// from it, each held culled against unculled with the reader's f32 operations.
+TEST_CASE("light grid: points within ulps of a cell's face") {
+  std::vector<u32> cells(k_light_grid_words);
+  std::mt19937 rng(8703);
+  std::uniform_real_distribution<f32> unit(0.0f, 1.0f);
+  const f32 up = std::numeric_limits<f32>::infinity();
+  u32 reached = 0;
+  u32 straddles = 0;
+  for (f32 offset : {0.0f, 2000.0f}) {
+    std::vector<ResolveLight> lights = {moon()};
+    for (u32 i = 0; i < 24; ++i) {
+      lights.push_back(
+          point({offset + 60.0f * unit(rng), 2.6f + unit(rng), -offset + 60.0f * unit(rng)},
+                6.0f + 4.0f * unit(rng)));
+    }
+    LightGrid grid;
+    REQUIRE(build_light_grid(lights, cells, grid));
+    const f32 o[3] = {grid.origin_inv_cell.x, grid.origin_inv_cell.y, grid.origin_inv_cell.z};
+    const f32 inv = grid.origin_inv_cell.w;
+    const i32 dims[3] = {static_cast<i32>(grid.dims_x), static_cast<i32>(grid.dims_y),
+                         static_cast<i32>(grid.dims_z)};
+    for (u32 i = 1; i < lights.size(); ++i) {
+      const f32 c[3] = {lights[i].position_radius.x, lights[i].position_radius.y,
+                        lights[i].position_radius.z};
+      const f32 r = lights[i].position_radius.w;
+      for (int a = 0; a < 3; ++a) {
+        const int b = (a + 1) % 3;
+        const i32 k0 = std::max(1, static_cast<i32>(std::floor((c[a] - r - o[a]) * inv)));
+        const i32 k1 = std::min(dims[a] - 1, static_cast<i32>(std::ceil((c[a] + r - o[a]) * inv)));
+        for (i32 k = k0; k <= k1; ++k) {
+          const f32 face = o[a] + static_cast<f32>(k) / inv;
+          const f32 along = face - c[a];
+          const f32 rest = (0.9999f * r) * (0.9999f * r) - along * along;
+          const f32 h = rest > 0.0f ? std::sqrt(rest) : 0.0f;  // out to the reach on axis b
+          f32 x = face;
+          for (int s = 0; s < 3; ++s)
+            x = std::nextafter(x, -up);
+          u32 last = ~0u;
+          for (int s = 0; s < 7; ++s, x = std::nextafter(x, up)) {
+            for (f32 side : {0.0f, h, -h}) {
+              f32 q[3] = {c[0], c[1], c[2]};
+              q[a] = x;
+              q[b] = c[b] + side;
+              const Vec3 p{q[0], q[1], q[2]};
+              reached += check_point(lights, grid, cells, p);
+              u32 cell = 0;
+              if (side == 0.0f && light_grid_cell(grid, p, cell)) {
+                if (last != ~0u && cell != last) ++straddles;
+                last = cell;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  CHECK(reached > 10000);
+  CHECK(straddles > 500);  // the walks crossed faces, not only approached them
 }
 
 TEST_CASE("light grid: more lights make coarser cells, never fewer lights") {
@@ -176,4 +280,30 @@ TEST_CASE("light grid: more lights make coarser cells, never fewer lights") {
     REQUIRE(light_grid_cell(grid, lights[i].position_radius.xyz(), cell));
     CHECK(has_bit(grid, cells, cell, i));
   }
+}
+
+// R87's mend: where every light of the grid reaches a point's cell, the grid culls nothing there
+// and the renderer walks the whole array at the eye's say (the same picture, the cheaper walk).
+TEST_CASE("light grid: a cell holding every light culls nothing there") {
+  std::vector<u32> cells(k_light_grid_words);
+  // Four fires of 75 m round a 60 m street: the eye's cell holds all four.
+  std::vector<ResolveLight> fires = {
+      moon(), point({-26.0f, 0.0f, -19.0f}, 75.0f), point({-26.0f, 0.0f, -4.0f}, 75.0f),
+      point({-26.0f, 0.0f, 11.0f}, 75.0f), point({-26.0f, 0.0f, 26.0f}, 75.0f)};
+  LightGrid grid;
+  REQUIRE(build_light_grid(fires, cells, grid));
+  CHECK_FALSE(light_grid_culls_at(grid, cells, Vec3{0.0f, 1.7f, 0.0f}));
+  // Far out in the box, past some of the spheres: it culls there.
+  CHECK(light_grid_culls_at(grid, cells, Vec3{-26.0f, 0.0f, 98.0f}));
+  // Outside the box nothing reaches: every light is culled.
+  CHECK(light_grid_culls_at(grid, cells, Vec3{500.0f, 0.0f, 0.0f}));
+  // Lamps of 8 m on a street: the eye's cell holds a few of them, not all.
+  std::vector<ResolveLight> lamps = {moon()};
+  for (u32 i = 0; i < 16; ++i) {
+    lamps.push_back(point(
+        {static_cast<f32>(i % 4) * 15.0f - 22.5f, 2.6f, static_cast<f32>(i / 4) * 15.0f - 22.5f},
+        8.0f));
+  }
+  REQUIRE(build_light_grid(lamps, cells, grid));
+  CHECK(light_grid_culls_at(grid, cells, Vec3{0.0f, 1.7f, 0.0f}));
 }

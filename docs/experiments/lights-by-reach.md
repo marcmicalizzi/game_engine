@@ -18,10 +18,10 @@ that pops, and for the nearest few to be shadowed.
 
 | Source | Read how | What it says that matters here |
 |---|---|---|
-| Olsson, Billeter and Assarsson, "Clustered Deferred and Forward Shading", HPG 2012 | **The paper not read** (the preprint's fetch failed); its abstract and the Chalmers listing through a search | Grouping view samples by their 3D position (screen tile × depth slice) maps lights to samples better than tiles alone, whose 2D groups take every light along a tile's depth range; per-cluster back-face culling of lights by normal is an option. |
+| Olsson, Billeter and Assarsson, "Clustered Deferred and Forward Shading", HPG 2012 | **The paper not read** (the preprint's fetch failed; tried again in R87's mend, 2026-11-24: the preprint arrives as compressed PDF bytes with no readable text, and the Eurographics library and the Chalmers listing refuse the fetch); its abstract and the Chalmers listing through a search. **What it bears on: the grid's kind** — its clusters are view-space (screen tile × depth slice), built over the camera's samples, which is the choice this page turns down for one in the frame's space that off-screen readers can ask | Grouping view samples by their 3D position (screen tile × depth slice) maps lights to samples better than tiles alone, whose 2D groups take every light along a tile's depth range; per-cluster back-face culling of lights by normal is an option. |
 | Harada, McKee and Yang, "Forward+: Bringing Deferred Lighting to the Next Level", Eurographics 2012 (short) | The authors' project page (takahiroharada.github.io/forward+); **the paper not read** | Screen tiles of about 16 × 16 pixels after a depth prepass; lights culled per tile on the GPU either by a group per tile testing every light (gather) or a thread per light writing light-tile pairs that are then sorted (scatter); the shading pass reads the tile's list. |
 | Filament's documentation, "Physically based rendering in Filament" (google.github.io/filament), sections on punctual lights and clustered forward rendering | Read through the fetch tool, whole | The punctual light's falloff windowed to zero at a radius of influence, E = I / max(d², 0.01²) · ⟨1 − d⁴/r⁴⟩², credited to Karis 2013: "window the inverse square function in such a way that the majority of the light's influence remains unaffected". Lights assigned to **froxels**: 80 × 80-pixel tiles by 16 exponential depth slices (the first slice set by hand, 0.1 to 5 m), at most 32 lights a froxel in an index list ended by a sentinel, assigned on the GPU by compute, or **on the CPU by rasterizing each light into the froxels it touches**, which the text says culls more tightly. |
-| Karis, "Real Shading in Unreal Engine 4", SIGGRAPH 2013 course notes | **Not read** (the fetched PDF had no readable text); its falloff through Filament's citation above | The windowed inverse square the engine already uses. |
+| Karis, "Real Shading in Unreal Engine 4", SIGGRAPH 2013 course notes | **Not read** (the fetched PDF had no readable text; tried again in R87's mend from two hosts, the same); its falloff through Filament's citation above. **What it bears on: the falloff's window**, `(1 − (d/r)⁴)²` over the squared distance, whose exact zero at the radius is what makes the cull invisible; the engine's form drops Karis's `+1` in the denominator and floors both `r²` and `d²` at 1e-8 (`brdf.slang`), which gives a light of radius zero a reach of 1e-4 m, so the grid takes no reach under that (R87's mend) | The windowed inverse square the engine already uses. |
 | Lagarde and de Rousiers, "Moving Frostbite to PBR", SIGGRAPH 2014 course notes | **Not read**; the search results show Unity's render pipeline citing it for `SmoothDistanceAttenuation`, a window of the squared distance over the squared radius, called a non-physical limit to the light's influence | The same choice: a finite radius is a limit put on a light so it can be culled, and the window keeps the inverse square everywhere but near the radius. |
 
 ## What was taken
@@ -78,6 +78,15 @@ what the resolve already reads through `ResolveParams::lights`.
   window is computed from, the last for the f32 arithmetic that finds the reader's cell (its error
   is at most dims · 2⁻²³ of a cell). A grown sphere only sets more bits, and an extra bit costs a
   distance test and changes nothing.
+- **The least reach** (R87's mend): `brdf_distance_attenuation` divides by `max(r², 1e-8)`, so its
+  window is above zero wherever d² < max(r², 1e-8), and a light of radius zero with an intensity
+  lights the points within 1e-4 m of it (at 5e-5 m, (d/r)² = 0.25 and the attenuation is about
+  3.5e8). The builder takes no reach under 1e-4 m, so such a light keeps its bits; the first build
+  skipped it, and the culled walk would have dropped it there.
+- **Inputs that are not numbers** (R87's mend): a NaN or infinite position or reach builds no
+  grid, before any of it reaches a cast (the first build cast `ceil(NaN)` to an integer, which
+  MSVC makes 2⁶³, and grew the edge forever); the room test is taken in f64, so a finite box too
+  long for any integer count of cells grows the edge rather than overflowing one.
 - **The leading lights**: lights with no reach (a directional light: the moon) are walked at every
   point. They come first in the array today; a directional light behind a finite one would make
   the walk's order differ from the array's, so the builder refuses that array and the readers walk
@@ -99,7 +108,9 @@ choice that is not a function of the point alone pops; the design that would kee
 ranking by each light's unshadowed contribution at the point with ties to the lower index, a few
 kept, the rest at the visibility the pixel's own tested lights found (Ward's estimate, which the
 faint-light rule already uses). It is left for when a scene measures more rays at a pixel than the
-frame can pay for; lantern-street's densest pixel is reached by under 20 lamps.
+frame can pay for. On lantern-street at most **5** of its 64 lamps reach one point and at most
+**16** of the 256 (counted over a 2.5 cm lattice of a lamp cell at heights 0 to 3 m, the ground
+and the walls, by the 8 m spheres; R87's mend). The fires below are the case that measures more.
 
 ## The measurement
 
@@ -129,6 +140,50 @@ reach, so four times the lamps reaching each point. A street with none costs wha
 Nothing else in the frame moved (the GPU total moved by the resolve's difference), and no frame
 allocated.
 
+### The fires, measured
+
+R87's mend (2026-11-24, from the row's independent read). **Every fire is lit and traced now
+where main lit the four nearest**, and a fire's reach (71 to 82 m at the flicker's peak) covers a
+street, so the grid culls almost nothing between neighbouring fires: N fires within about 70 m are
+N shadow rays at every pixel at night where main traced four. Measured on lantern-street with its
+lamps replaced by N campfires (250 cd, 1800 K, flicker 0.6, no smoke; the fixture's README says
+how the variants are made), at midnight, everything else as above: 3840 × 2160, `--raster rt
+--shadows rt`, the owner's settings, `--no-cache` on both sides, frames 240 to 480. Base:
+`cc95d783a` (the copy the row measured against); tip: the branch with the mend. RTX 5090,
+2026-11-24 02:09 to 02:28, under the GPU lock, two flights of each cell interleaved base and tip;
+**machine state**: the harness's warning on every flight, other processes 3 to 100 % of the CPU at
+the starts (other agents building), the GPU 0 % busy at every start, free commit 41 to 57 GB, and
+one other engine-view process alive from 02:12 on (not on the card during the lock); upper bounds.
+Milliseconds, medians (p99) of the resolve, and the frame's median:
+
+| fires | base resolve | tip resolve | base frame | tip frame | what base lit |
+|---:|---|---|---:|---:|---|
+| 0 | 0.808, 0.805 (0.823) | 0.814, 0.823 (0.836) | 2.58 | 2.60 | — |
+| 4 | 1.066, 1.066 (1.084) | 1.078, 1.083 (1.099) | 2.84 | 2.86 | all 4 |
+| 8 | 1.069, 1.068 (1.086) | 1.425 (1.444) | 2.86 | 3.21 | the nearest 4 |
+| 16 | 1.061, 1.058 (1.074) | 2.176 (2.211) | 2.85 | 3.97 | the nearest 4 |
+| 32 | 1.039, 1.061 (1.082) | 3.759, 3.757 (3.802) | 2.84 | 5.59 | the nearest 4 |
+| 256 lamps of 400 m and 64 fires (the grid's worst) | refused | 33.03 (34.39) | — | 34.85 | — |
+
+Base at 8 and 16 fires is from the first group (02:09 to 02:16), as are tip's 32 and the worst
+case (the tip before the eye rule below, which moved tip's 8 and 16 fires by 0.02 ms); the rest
+are the second group (02:23 to 02:28). **What the extra fires cost**: about 0.095 ms of the
+resolve a fire past four at 4K (3.76 − 1.08 over 28), its BSDF and its shadow ray at nearly every
+pixel. **Past four the base's number is of a picture missing fires**: main lit the four nearest
+the eye and left the rest dark, so its flat line is not a cost the tip should meet but a light it
+did not draw. The worst case is the 322-ray bound reached: 33 ms of resolve.
+
+**At four fires or fewer the tip was slower, and two things were found.** The first group put tip
+at 1.087 and 1.100 against base's 1.047 and 1.062 at four fires (+0.04 ms) while four lamps of 8 m
+were 0.03 ms faster: four fires reach every pixel, so the grid culls nothing and its walk (a cell
+lookup, then the bits) costs more than the plain loop over the same four. **Mended**: a grid
+whose cell at the eye holds every light is not used, and the frame walks the whole array as main
+did (`gfx::light_grid_culls_at`, the same picture either way); the second group put the gap at
++0.012 and +0.017. **What is left is the walk's code in the module**: the street with no light at
+all is +0.006 and +0.018 the same hour (and the forest pair +0.04, above), the 141 instructions
+every resolve variant grew by. Four lamps of 8 m stay faster with the mend (0.818 and 0.824
+against 0.854 and 0.856), and 64 (0.959 and 0.973 against 1.709 and 1.702).
+
 **What it costs the processor.** The grid is built in the frame's record on the CPU, in the
 `passes` section of a frame record. The first build tested every cell of each light's box against
 its sphere: 1.14 ms of the frame's CPU at 64 lamps and 2.56 ms at 256 (base 0.07 ms). Building a
@@ -140,6 +195,11 @@ for x — set the same bits for **0.26 ms at 64 lamps and 0.71 ms at 256** (medi
 bits, and the copy into the slot's buffer; the frame's lights are steady, but their positions are
 the eye's frame's, so the grid is rebuilt each frame (a grid kept in the world's cells and only
 re-anchored when the eye moves would cost nothing on a still street: a proposed next step).
+**The worst build** is every light over the whole box, nothing culled: its bits are the cells
+times the lights, about 5,957 cells × 322 lights ≈ 1.9 million at the room's limit. Measured on
+lantern-street's worst variant (256 lamps of 400 m and 64 fires, 320 lights each reaching the
+whole box; R87's mend, the tip before the eye rule below): **3.06 ms of the frame's CPU** (the
+`passes` median), where 32 fires cost 0.19 and none 0.04.
 
 **The picture**: with the bounce's history the last frame of a flight is not the same bytes from
 run to run even for one binary (base against base differs), so the pictures were compared in
@@ -154,9 +214,14 @@ first load (a cold compile of the resolve: 401 s for base, 465 s for the tip) no
 pair: **base 9.343 ms (its first load 9.354), tip 9.381 ms (its first load 9.410)**, so +0.04 ms
 (0.4 %), inside the row's 0.05 ms; peaks 18.85 and 18.83 GiB of private commit. Machine state: other
 agents' builds beside it (the CPU 4 to 29 % busy at the starts), and another engine-view running at
-the tip's measured start; an upper bound. The forest names no finite light, so it builds no grid:
-what it pays is the walk's code in the module, every pixel's leading-light loop now asked through
-`light_walk_next`.
+the tip's measured start; an upper bound. **The forest does name a finite light**: the staging's
+scene names a campfire of 250 cd, and `--no-lights` sets `renderer.lights` off, which drops the
+stand-in's two but not the fires (`record_frame` adds them whatever that setting is;
+[forest-resolve](forest-resolve-2026-11-01.md) already says its `--no-lights` array holds the moon
+and the campfire). So the tip builds a grid of one light there, of a reach about 82 m at the
+flicker's peak, and the +0.04 ms pays for that grid's cells and the walk over them as well as for
+the walk's code in the module (every pixel's leading-light loop asked through `light_walk_next`).
+The flight did not record `Stats::light_grid_cells`; a frame record of the forest would.
 
 **The modules' size** (`fs_resolve`'s instructions, counted by walking each module's SPIR-V from
 `OpFunction` to `OpFunctionEnd`, as [resolve-cold-compile](resolve-cold-compile.md) counts them):

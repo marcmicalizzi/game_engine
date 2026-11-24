@@ -6,7 +6,8 @@
 //
 // A light at a point (material.slang, `light_sample`) is the windowed inverse square of
 // `brdf_distance_attenuation`, `(1 - (d/r)^4)^2 / d^2` (Karis 2013), which is **exactly zero** at
-// and past its reach `r` (`ResolveLight::position_radius.w`). So a point that no light's sphere
+// and past its reach `r` (`ResolveLight::position_radius.w`, taken as at least 1e-4 m, since the
+// falloff divides by `max(r^2, 1e-8)`). So a point that no light's sphere
 // covers is lit by none of them, and a walk that skips the lights whose sphere misses the point
 // adds the same terms in the same order: the culled picture is the unculled one's bytes.
 //
@@ -73,13 +74,23 @@ inline f64 light_grid_margin(f64 reach, f64 edge) noexcept {
 
 // Builds the grid over `lights` (the frame's array, in its order) into `header` and `cells`, using
 // at most `cells.size()` words. False when there is no grid to build: no light past the leading
-// directional ones, a directional light behind a finite one, or room for no cell. The readers then
-// walk the whole array, which is the same picture. Allocates nothing.
+// directional ones, a directional light behind a finite one, a position or a reach that is not a
+// finite number, or room for no cell. The readers then walk the whole array, which is the same
+// picture. A light's reach is never taken under 1e-4 m, the radius `brdf_distance_attenuation`'s
+// `max(r^2, 1e-8)` gives a light of radius zero. Allocates nothing.
 bool build_light_grid(std::span<const ResolveLight> lights, std::span<u32> cells,
                       LightGrid& header) noexcept;
 
 // The cell a reader finds for `position`, by the shader's own f32 arithmetic
 // (material.slang, `light_walk_begin`); false outside the grid's box.
 bool light_grid_cell(const LightGrid& grid, Vec3 position, u32& cell) noexcept;
+
+// Whether the grid leaves any light out of the walk at `position`: false when `position`'s cell
+// holds every light past `first`, so a reader there walks what the whole array walks and pays the
+// lookup on top. The renderer asks it at the eye and walks the whole array when it is false (R87's
+// mend): lantern-street's four fires, whose 71 to 82 m reaches cover the street, cost the resolve
+// 0.04 ms more through the grid than through main's loop. Either walk is the same picture, so the
+// choice moves a cost and never a byte.
+bool light_grid_culls_at(const LightGrid& grid, std::span<const u32> cells, Vec3 position) noexcept;
 
 }  // namespace engine::gfx

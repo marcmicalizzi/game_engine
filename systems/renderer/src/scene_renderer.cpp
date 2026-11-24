@@ -180,6 +180,11 @@ u32 write_light_grid(const FrameLighting& lighting, Vector<u32>& cells, u8* reso
           std::span<u32>(cells.data(), cells.size()), grid)) {
     return 0;
   }
+  // A grid that leaves no light out where the eye stands (the frame's origin) culls little that a
+  // pixel near it would skip, and its walk costs more than the whole array's (four fires over a
+  // street: 0.04 ms of the resolve at 4K, R87's mend): the whole array, which is the same picture.
+  if (!gfx::light_grid_culls_at(grid, std::span<const u32>(cells.data(), cells.size()), Vec3{}))
+    return 0;
   const u64 offset = light_grid_offset(views);
   std::memcpy(resolve_bytes + offset, &grid, sizeof(grid));
   std::memcpy(resolve_bytes + offset + sizeof(grid), cells.data(),
@@ -3772,9 +3777,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   }
   sky_params_address_ = sky_address;
   // **The fires** (fire.h, renderer.md "Fires"): burnt at the world clock (clocks.h) — their
-  // flicker is motion, which runs at the world's rate and not the day's — and the nearest appended
-  // to the light array after the stand-in's or the sky's lights, so a frame with none fills the
-  // array as it always did.
+  // flicker is motion, which runs at the world's rate and not the day's — and every one appended
+  // to the light array after the stand-in's or the sky's lights (R87: the four nearest before), so
+  // a frame with none fills the array as it always did.
   // A fire's intensity is candela, and a sky's light is in sun units of 128,000 lux (sky.h).
   fires_.burn(frame.world_time_s, sky_on ? 1.0f / gfx::k_sky_sun_lux : 1.0f, frame_fires_);
   stats_.fires = static_cast<u32>(frame_fires_.size());
@@ -3783,8 +3788,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   fires_.burn_lamps(sky_on ? 1.0f / gfx::k_sky_sun_lux : 1.0f, frame_lamps_);
   stats_.lamp_lights = add_lamp_lights(frame_lamps_, frame.camera.position, lighting);
   stats_.lamps_refused = fires_.lamps_refused();
-  std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * views, lighting.lights,
-              sizeof(lighting.lights));
+  std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * views, lighting.lights,  // by count:
+              sizeof(gfx::ResolveLight) * lighting.light_count);  // no reader passes light_count
   const u32 lights_grid = write_light_grid(lighting, light_grid_cells_, resolve_bytes, views,
                                            stats_.light_grid_cells, stats_.light_grid_refs);  // R87
 

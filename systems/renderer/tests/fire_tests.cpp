@@ -1,5 +1,6 @@
 // Fires (fire.h; docs/subsystems/renderer.md, "Fires"; roadmap R85): the scene file's block, the
-// flicker as a function of the clock, the light array's nearest fires, a prop's fire carried by
+// flicker as a function of the clock, every fire in the light array in its order (R87; the four
+// nearest the eye before), a prop's fire carried by
 // its placed instances — and on a GPU, the fire's light on the ground under traced shadows and
 // under the cascaded maps.
 

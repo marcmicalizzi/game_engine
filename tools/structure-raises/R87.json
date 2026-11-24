@@ -1,12 +1,12 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "R87",
-  "reason": "R87: lights by reach. record_frame calls the light grid's builder and hands its offset to every view's resolve (3 lines); renderer.md gains the section that says what the grid is, why it is exact, what it costs and returns and what holds it; gfx.md the grid beside ResolveParams' lights",
+  "reason": "R87's mend: the review's corrections on the Lamps and Lights by reach sections (every fire, the room's bytes, the eye rule, the worst build, the 70 to 322 rays, the new cases)",
   "date": "2026-11-24",
   "by": "Marc Micalizzi",
   "deltas": {
     "renderer.record_frame.lines": 3,
-    "page:docs/subsystems/renderer.md": 5663,
+    "page:docs/subsystems/renderer.md": 7773,
     "page:docs/subsystems/gfx.md": 938
   }
 }

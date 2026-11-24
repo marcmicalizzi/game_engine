@@ -656,8 +656,9 @@ struct Stats {
   u32 lamps_refused = 0;
   // **Lights by reach** (gfx/light_grid.h; renderer.md, "Lights by reach"; R87): the last
   // recorded frame's grid — its cells, and the set bits over them (a light counted once in each
-  // cell its reach touches) — or 0 and 0 when it built none (no light with a reach, or
-  // `renderer.lights.grid` off) and every pixel walked the whole array.
+  // cell its reach touches) — or 0 and 0 when it built none (no light with a reach,
+  // `renderer.lights.grid` off, or a grid whose cell at the eye held every light, R87's mend) and
+  // every pixel walked the whole array.
   u32 light_grid_cells = 0;
   u32 light_grid_refs = 0;
   f64 cpu_ns = 0.0;  // wall time inside submit_frame, summed
