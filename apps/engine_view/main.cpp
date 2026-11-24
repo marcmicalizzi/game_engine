@@ -2655,8 +2655,10 @@ bool save_recording(const Options& options, const Interactive& it, const view::F
 
 // The summary's `load` block (FlythroughSummary version 17; apps.md, "The summary's load block"):
 // what the load read for its meshes and textures (`renderer::SceneLoadReport`), what the device's
-// pipeline cache did (`gfx::PipelineCacheReport`) and every pipeline it made (pipeline_batch.h).
-JsonValue load_summary(const renderer::SceneLoadReport& load, const gfx::Device& device) {
+// pipeline cache did (`gfx::PipelineCacheReport`), every pipeline it made (pipeline_batch.h) and
+// the resolve compiled from the scene file (`early`, renderer/early_pipelines.h; R205).
+JsonValue load_summary(const renderer::SceneLoadReport& load, const gfx::Device& device,
+                       const renderer::EarlyPipelines& early) {
   const gfx::PipelineCacheReport& cache = device.pipeline_cache();
   JsonValue out = JsonValue::object();
   out.set("meshes", JsonValue(load.meshes));
@@ -2688,6 +2690,7 @@ JsonValue load_summary(const renderer::SceneLoadReport& load, const gfx::Device&
   pipelines.set("ignored", JsonValue(cache.ignored));
   out.set("pipeline_cache", std::move(pipelines));
   out.set("pipelines", gfx::pipeline_creations_json(device));  // R149
+  out.set("early", renderer::early_summary(&early));
   return out;
 }
 
@@ -4207,7 +4210,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
       summary.quiet =
           bench::is_quiet(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{});
     }
-    summary.load = view::with_micromaps(load_summary(scene_data.load, device), scene);  // R207
+    summary.load =
+        view::with_micromaps(load_summary(scene_data.load, device, early_resolve), scene);  // R207
     summary.runs = g_report.runs = renderer::runs_summary(view_renderer.stats());  // T216
     if (startup.on()) {
       std::string why;
@@ -7738,13 +7742,13 @@ int run_view(int argc, char** argv) {
   collision_draw.draw.destroy();  // P62: its frame pass and buffers, before the renderer
 #endif
   view_renderer.destroy();
-  early_resolve.destroy();  // before the device it was made on
   page_source.destroy();
   scene.destroy();
   swapchain.destroy();
   window::vulkan::destroy_surface(device.handles().instance, surface);
+  window.destroy();         // before an untaken early compile is waited for (R205, renderer.md)
+  early_resolve.destroy();  // and the early pipeline before its device
   device.destroy();
-  window.destroy();
   window::shutdown();
 
   if (exit_code == 0) {

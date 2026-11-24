@@ -164,10 +164,25 @@ TEST_CASE("renderer: the resolve a scene file names compiles once, early, and is
   const Compiles with_early = resolve_compiles(gpu.device, module);
   CHECK(with_early.early == 1);
   CHECK(with_early.at_creation == 0);
+  // The prediction is what the GPU scene decided, flag for flag.
+  const GpuScene& scene = rig.scene;
+  CHECK(variant.water == scene.has_water());
+  CHECK(variant.terrain == scene.has_terrain_materials());
+  CHECK(variant.stochastic == scene.has_stochastic_materials());
+  CHECK(variant.foliage == scene.has_foliage_materials());
+  // One shape of the bindless set (M1): the early layout's capacity is the scene's, and it is in
+  // the key, so a set of another shape is another key and never takes this pipeline.
+  CHECK(stats.key.layout == scene.bindless().capacity());
+  CHECK(stats.key.layout.sampled_images <= GpuScene::bindless_config().sampled_images);
+  ResolveKey other = stats.key;
+  other.layout.sampled_images = stats.key.layout.sampled_images / 2;
+  CHECK_FALSE(other == stats.key);
 
-  // A second renderer with nothing started makes its own, at creation, and draws the same bytes.
+  // A second renderer handed the same object after the take (a shader reload's re-create) makes
+  // its own, at creation, draws the same bytes, and is not counted as a wrong guess.
   CapturedFrame made;
-  REQUIRE_MESSAGE(rig.render(gpu.device, nullptr, made), rig.error);
+  REQUIRE_MESSAGE(rig.render(gpu.device, &early, made), rig.error);
+  CHECK(early.stats().mismatched == 0);
   const Compiles both = resolve_compiles(gpu.device, module);
   CHECK(both.early == 1);
   CHECK(both.at_creation == 1);
@@ -204,6 +219,8 @@ TEST_CASE("renderer: a variant the scene did not name costs one more compile, no
   CHECK(stats.done);
   CHECK_FALSE(stats.taken);
   CHECK(stats.mismatched == 1);
+  CHECK(stats.reason.find("foliage") != std::string::npos);
+  CHECK(stats.reason.find("module") == std::string::npos);
   const Compiles compiles = resolve_compiles(gpu.device, module);
   CHECK(compiles.early == 1);
   CHECK(compiles.at_creation == 1);
@@ -217,5 +234,44 @@ TEST_CASE("renderer: a variant the scene did not name costs one more compile, no
   REQUIRE(classes->set_from_text("draws"));
   CHECK_FALSE(refused.start(gpu.device, named_variant(gpu.device), std::string(), &error));
   CHECK_FALSE(refused.stats().started);
+  CHECK(refused.stats().reason == error);
   (void)classes->set_from_text(previous);
+}
+
+// The prediction's rules off any device: each flag the file can name, read as the GPU scene's own
+// rule reads it (M2 of R205's second leg). Against the GPU scene's flags for the hills above; the
+// scenes that set water, a layered ground, stochastic and foliage by content are owed a case of
+// their own (renderer.md, "The resolve compiles from the scene file").
+TEST_CASE("renderer: the resolve's prediction reads the file by the renderer's own rules") {
+  ResolvedSettings resolved;
+  const auto predict = [&resolved](const SceneDesc& desc) {
+    return predict_resolve_variant(desc, resolved, gfx::Format::R8G8B8A8Unorm);
+  };
+  const test::TempDir tmp{"renderer_early_prediction"};
+  SceneDesc base = hills();
+  base.materials = tmp.file("no-pack");  // no pack: the recipes' own words only
+  CHECK(predict(base) == ResolveVariant{});
+
+  // A streamed world whose tiles hand meshes: the mesh room, by `GpuScene::wants_mesh_room`.
+  SceneDesc world = base;
+  world.world.enabled = true;
+  world.streamed.emplace_back();
+  world.streamed.back().tile_meshes = true;
+  CHECK(predict(world).foliage ==
+        GpuScene::wants_mesh_room(world_is_dynamic(world.world, true), false, true));
+  CHECK(predict(world).foliage);
+  resolved.stream = true;  // paged streaming has no mesh room
+  CHECK_FALSE(predict(world).foliage);
+  resolved.stream = false;
+  world.streamed.back().tile_meshes = false;
+  CHECK_FALSE(predict(world).foliage);
+
+  // A recipe's `material.sampling` is read as the field it is, never matched as text.
+  SceneDesc rock = base;
+  rock.recipes.push_back(MeshRecipe{"rock", R"({"material": {"sampling": "Stochastic"}})"});
+  CHECK(predict(rock).stochastic);
+  rock.recipes.back().bytes = R"({"material": {"sampling": "Tiled"}, "stochastic": false})";
+  CHECK_FALSE(predict(rock).stochastic);
+  rock.recipes.back().bytes = R"({"parts": [{"material": {"sampling": "Stochastic"}}]})";
+  CHECK(predict(rock).stochastic);
 }

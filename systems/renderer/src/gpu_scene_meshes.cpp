@@ -59,16 +59,20 @@ constexpr u64 aligned16(u64 v) noexcept { return (v + 15) & ~u64{15}; }
 
 }  // namespace
 
+bool GpuScene::wants_mesh_room(bool dynamic, bool streamed, bool tile_meshes) noexcept {
+  return dynamic && !streamed && tile_meshes && meshes_budget_mib.get() > 0 &&
+         meshes_slots.get() > 0;
+}
+
 bool GpuScene::lay_out_mesh_slots(std::string* error) {
   mesh_room_ = MeshRoom{};
   mesh_use_ = MeshUse{};
   mesh_slots_.clear();
   free_mesh_clusters_.clear();
   free_mesh_materials_.clear();
-  if (!dynamic_ || streamed_ || !data_->tile_meshes) return true;
+  if (!wants_mesh_room(dynamic_, streamed_, data_->tile_meshes)) return true;
   const u64 budget = static_cast<u64>(meshes_budget_mib.get()) * 1024 * 1024;
   const u32 slot_count = static_cast<u32>(meshes_slots.get());
-  if (budget == 0 || slot_count == 0) return true;
   mesh_cluster_vertices_ = std::max<u32>(data_->mesh_options.lod.max_vertices, 1u);
   mesh_cluster_triangles_ = std::max<u32>(data_->mesh_options.lod.max_triangles, 1u);
   const u64 cluster_bytes =

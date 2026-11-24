@@ -206,8 +206,7 @@ bool PipelineBatch::end(std::string* error) {
   const Device& device = *device_;
   auto compile = [&](detail::PipelineRequest& r) {
     r.begin_ns = time::monotonic_ns();
-    r.result = detail::make_pipeline(device, r);
-    r.end_ns = time::monotonic_ns();
+    r.result = detail::make_pipeline(device, r);  // sets `end_ns`, before any statistics' readout
     detail::record_creation(*recorder, r, true);
   };
   const i64 start = time::monotonic_ns();

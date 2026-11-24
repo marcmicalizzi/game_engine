@@ -25,6 +25,7 @@
 
 #include <core/base/macros.h>
 #include <core/base/types.h>
+#include <core/json/json_value.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/rhi.h>
@@ -57,11 +58,13 @@ struct ResolveVariant {
 // settings resolved without the scene (`resolve_settings` with no `SceneData`):
 //   - water: a mesh the file's water blocks made (`SceneMeshInfo::water`);
 //   - terrain: the file's terrain with a `materials` block;
-//   - foliage: a streamed world with tile meshes (the GPU scene keeps the foliage lines for a mesh
-//     room whatever was declared), or a pack role with foliage optics where the file generates
-//     meshes;
-//   - stochastic: a pack role sampled stochastically where the file generates meshes.
-// The last two are the content's to say and are a guess here; a wrong guess is one more compile.
+//   - foliage: the GPU scene's own mesh-room rule (`GpuScene::wants_mesh_room`, with
+//     `world_is_dynamic`), or a pack role a recipe names whose set has foliage optics;
+//   - stochastic: a recipe's `material.sampling` field naming `Stochastic`, a stochastic role a
+//     recipe names, or — the one guess — a pack with a stochastic role where the file generates
+//     meshes, since a generator that names no role takes the pack's defaults.
+// What only the load can say (renderer.md, "The resolve compiles from the scene file", lists the
+// cases) is a wrong guess at worst, and a wrong guess is one more compile, never a wrong pipeline.
 ResolveVariant predict_resolve_variant(const SceneDesc& desc, const ResolvedSettings& resolved,
                                        gfx::Format color_format);
 
@@ -71,9 +74,15 @@ struct ResolveKey {
   u64 hash = 0;        // of its SPIR-V (`gfx::Shader::hash`): a `--shaders` manifest's bytes too
   gfx::Format color_format = gfx::Format::R8G8B8A8Unorm;
   bool foliage = false;
+  // The bindless set's capacity as the device clamped it: the pipeline layout is a function of it,
+  // so a renderer whose scene's set has another shape never takes a pipeline made for this one.
+  gfx::BindlessConfig layout;
   bool operator==(const ResolveKey&) const noexcept = default;
 };
 
+// The worker is a `std::thread` of its own, not a job on the job system's pools: it is one
+// blocking driver call that lasts minutes cold, which would hold a pool's worker (and whatever the
+// load queued behind it) for all of them. It touches nothing the caller's thread writes.
 class EarlyPipelines {
  public:
   struct Stats {
@@ -84,6 +93,9 @@ class EarlyPipelines {
     u32 mismatched = 0;    // renderers that asked with another key, and made their own
     f64 seconds = 0.0;     // the compile's wall time, on its worker
     ResolveKey key;
+    // Why nothing was started, or what the last mismatched key differed in ("module", "hash",
+    // "format", "foliage", "layout"), or why the compile failed; empty otherwise.
+    std::string reason;
   };
 
   EarlyPipelines() noexcept = default;
@@ -101,7 +113,8 @@ class EarlyPipelines {
   // For `SceneRenderer`: whether a pipeline of `key` was started and not taken. Does not wait.
   bool has(const ResolveKey& key) const;
   // Waits for the compile and hands its pipeline over (the caller owns it) when `key` is the one
-  // started; false otherwise — counted as a mismatch, and the caller makes its own.
+  // started, then frees the early set and modules; false otherwise, and the caller makes its own.
+  // Only another key is counted as a mismatch: nothing started, or taken already, is not one.
   bool take(const ResolveKey& key, gfx::PipelineHandle& out);
 
   // Waits for the worker and destroys a pipeline nobody took. The device must still be valid.
@@ -131,5 +144,11 @@ class EarlyPipelines {
 void start_early_resolve(EarlyPipelines& early, const gfx::Device& device, const SceneDesc& desc,
                          const RenderSettings& settings, gfx::Format color_format,
                          const std::string& shader_manifest);
+
+// The load summary's `early` block, engine-view's and `render.load`'s alike (apps.md): `started`,
+// `done`, `ok`, `taken`, `mismatched`, `seconds` (the compile's, on its worker; 0 until done),
+// `shader` (the module started) and `reason` (`Stats::reason`, when there is one). A null `early`
+// (a mesh or a procedural scene, which starts nothing) is `{"started": false}`.
+JsonValue early_summary(const EarlyPipelines* early);
 
 }  // namespace engine::renderer

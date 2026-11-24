@@ -197,6 +197,17 @@ class GpuScene {
   const SceneData& data() const noexcept { return *data_; }
   gfx::BindlessSet& bindless() noexcept { return bindless_; }
   const gfx::BindlessSet& bindless() const noexcept { return bindless_; }
+  // The one definition of the shape every scene's bindless set is made with. The resolve compiled
+  // before the scene exists (early_pipelines.h, R205) makes its layout from this too, and its key
+  // carries the clamped capacity, so a set sized some other way is another key, never a pipeline
+  // bound against an incompatible layout.
+  static gfx::BindlessConfig bindless_config() noexcept { return gfx::BindlessConfig{}; }
+  // Whether the scene makes a room for meshes that arrive with tiles (`lay_out_mesh_slots`, which
+  // asks this; renderer.md, "Meshes that come and go"), and so keeps the resolve's foliage lines:
+  // a dynamic scene that is not paged-streamed, whose tiles hand meshes, with a non-zero
+  // `renderer.meshes.budget_mib` and `renderer.meshes.slots`. The early resolve's prediction asks
+  // the same function with what the scene file says.
+  static bool wants_mesh_room(bool dynamic, bool streamed, bool tile_meshes) noexcept;
 
   // ---- the sand's detail (renderer.md, "The sand close up") ------------------------------------
   //

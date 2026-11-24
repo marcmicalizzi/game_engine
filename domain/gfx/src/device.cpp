@@ -1647,8 +1647,7 @@ bool create_or_record(const Device& device, detail::PipelineRequest& request, st
     if (detail::record_if_batched(*recorder, request)) return true;
   }
   request.begin_ns = time::monotonic_ns();
-  request.result = detail::make_pipeline(device, request);
-  request.end_ns = time::monotonic_ns();
+  request.result = detail::make_pipeline(device, request);  // sets `end_ns`
   if (recorder != nullptr) detail::record_creation(*recorder, request, false);
   return detail::finish_request(device, request, error);
 }
@@ -1742,6 +1741,9 @@ void read_statistics(const Device& device, detail::PipelineRequest& request) {
 VkResult detail::make_pipeline(const Device& device, PipelineRequest& request) {
   request.pipeline = VK_NULL_HANDLE;
   const VkResult result = make_request(device, request);
+  // The creation's end, before the statistics' readout: a creation's `ms` is the driver's compile
+  // whether or not the switch is on (gfx.md, "What the driver says a pipeline costs").
+  request.end_ns = time::monotonic_ns();
   if (result == VK_SUCCESS && device.handles().pipeline_statistics)
     read_statistics(device, request);
   return result;

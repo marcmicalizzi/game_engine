@@ -893,9 +893,6 @@ bool render_load_followed(protocol::Context& ctx, const protocol::RenderLoadPara
       error = protocol::make_error(protocol::codes::k_io_error, std::move(load_error));
       return false;
     }
-    // R205: the resolve's pipeline starts compiling now, and the scene's first renderer takes it.
-    early = std::make_unique<renderer::EarlyPipelines>();
-    renderer::start_early_resolve(*early, *device, desc, asked, gfx::Format::R8G8B8A8Unorm, {});
   } else {
     if (!params.mesh.empty() && !io::exists(mesh_at.native)) {
       error = protocol::path_not_found("mesh", params.mesh, io::Access::read);
@@ -932,6 +929,13 @@ bool render_load_followed(protocol::Context& ctx, const protocol::RenderLoadPara
   if (availability != renderer::RenderAvailability::Ok) {
     error = unavailable(renderer::unavailable_reason(availability, *device));
     return false;
+  }
+  // R205: the resolve's pipeline starts compiling once every check of the load has passed (a load
+  // that fails replies at once, never behind a compile), and the scene's first renderer takes it.
+  // The host's upload is lazy, so what it buys here is the compile beside the first call's upload.
+  if (!params.scene.empty()) {
+    early = std::make_unique<renderer::EarlyPipelines>();
+    renderer::start_early_resolve(*early, *device, desc, asked, gfx::Format::R8G8B8A8Unorm, {});
   }
   RenderHost::Scene* scene = host->add_scene();
   scene->request = request;

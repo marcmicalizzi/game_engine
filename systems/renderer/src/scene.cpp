@@ -3409,6 +3409,11 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   return true;
 }
 
+bool world_is_dynamic(const WorldDesc& world, bool streams_placements) noexcept {
+  // The world's tiles alone are terrain levels in fixed slots, not instances of the tail.
+  return world.enabled && !(world.ground && !streams_placements);
+}
+
 bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   if (desc.meshes.empty()) {
     error = "a scene needs at least one mesh";
@@ -3885,9 +3890,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     out.tile_meshes = out.tile_meshes || entry.tile_meshes;
     out.tile_meshes_masked = out.tile_meshes_masked || entry.tile_meshes_masked;
   }
-  // A streamed world's instances come and go — unless all it streams is its ground (the world's
-  // tiles, which are terrain levels in fixed slots, not instances of the tail).
-  out.dynamic = resolved.world.enabled && !(resolved.world.ground && out.streamed.empty());
+  out.dynamic = world_is_dynamic(resolved.world, !out.streamed.empty());
   out.sky = resolved.sky;
   out.wind = resolved.wind;
   out.medium = resolved.medium;

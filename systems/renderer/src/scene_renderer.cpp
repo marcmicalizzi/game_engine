@@ -1690,9 +1690,11 @@ bool SceneRenderer::create_pipelines(std::string* error) {
                                                                       scene_->has_masked())) ||
                         resolved_.direct;
   const ResolveKey key{resolve->name, resolve->hash, desc_.color_format,
-                       scene_->has_foliage_materials()};
+                       scene_->has_foliage_materials(), bindless.capacity()};
   const bool early = one_draw && desc_.early != nullptr && desc_.early->has(key);
-  if (one_draw && desc_.early != nullptr && !early)
+  // Asked only where a compile was started and not taken: another key is then a wrong guess, and
+  // is counted as one (a re-create after the take, or nothing started, is not).
+  if (one_draw && desc_.early != nullptr && !early && desc_.early->stats().started)
     (void)desc_.early->take(key, pipelines_.resolve);
   return gfx::create_graphics_pipeline(device, vertex_desc, pipelines_.vertex, error) &&
          gfx::create_compute_pipeline(device, sw->module, "sw_raster_main", {},
