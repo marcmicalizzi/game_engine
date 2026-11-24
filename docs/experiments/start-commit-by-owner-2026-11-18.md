@@ -429,6 +429,34 @@ So on a warm launch the maximum stands **1.05 GiB above the standing figure at t
 
 **At the top setting the ceiling returns 1,536 MB of the device and 1,458 MiB of commit standing** — the design's 1.6 GB, less the floor the held textures keep (125 MB) and the 144 MB of holes in the four live chunks (1,680 MB released by the trim, 1,536 back to the driver). With no ceiling the tip is main to the byte: the same standing figures and the same last frame. **The first frame does not move**: the trim waits the hold (8 s) after the load, which uploads every held texture whole, so the launch's maximum is main's; a launch that should start under the ceiling is the bound's (`renderer.textures.bound`, which uploads from the floor) or stage 7's. The ceiling costs a frame its feedback pass (0.04 ms at 4K, R172's measure) and nothing the medians show; the p99 is the trim's first seconds, when 3,820 demotions and 2,210 moves pass through 4 MiB a frame, and the 25 allocations are that same stretch growing the frame's pending lists (none after frame 633).
 
+| Low setting, standing | Base, no ceiling | Tip, 768 MiB |
+|---|---:|---:|
+| Processors at the start; free commit | 6 %, 51.9 GB | 0 %, 54 GB |
+| Ready, s; the first frame's commit, MiB; the device's maximum, MB | 82.5; 13,319; 9,352 | 94.0; 13,409; 9,352 |
+| **Standing: commit, MiB; the device, MB** | 13,131; 9,352 | **11,697; 7,816** |
+| Demotions; moves; chunks live at the end | — | 3,870; 2,843; 4 (115 MB used) |
+| Frame median / p95 / p99, ms | 22.37 / 22.93 / 23.24 | 22.40 / 22.98 / 23.29 |
+| The frame loop: allocations (frames) | 0 | 29 (5, the last at frame 559) |
+| The last frame against the base's | — | 38 of 2,073,600 pixels differ, by at most 2 of 255 |
+
+**At the low setting the same 1,536 MB comes back** (the device 9,352 to 7,816 MB, the commit 13,131 to 11,697 MiB), since the low tier's 768 MiB trims to the same floor; the design's 2.4 GB needed the 1.50 GB the residency does not hold. With no bounce the last frame is nearly the base's: 38 pixels a step of 2 at most, which is a level the sparse feedback had not asked within the hold, drawn a level softer.
+
+**The ceiling from a device budget** (`renderer.textures.device_budget_mib=10240`, the design's top tier, no `ceiling_mib`; the tip, top, standing): the ceiling was worked out at 816 MiB (10 GiB less what the rest of the process held on the device) and the trim and the standing figures are the 1,536 MiB ceiling's — the device 11,094 MB, the commit 15,111 MiB.
+
+**On the grounded walk** (the top setting, the tip; the share a level softer from runs with the feedback measurement on, the rest from runs without it, the same hour, the processors at 1 to 23 %):
+
+| Top setting, the walk's 2,400 frames | No ceiling | 1,536 MiB |
+|---|---:|---:|
+| The device at the end, MB; the commit at the end and the run's most, MiB | 13,844; 18,195 and 18,890 | **12,372; 16,328 and 17,706** |
+| Promotions; demotions; moves; refused inside the hold; frames that asked late | — | 315; 4,199; 3,083; 33; 412 |
+| **Textured pixel-frames a level softer** (two or more) | — | **0.0157 %** (0.0009 %) |
+| Frame median / p95 / p99, ms | 17.91 / 21.73 / 22.58 | 18.09 / 21.96 / 22.79 |
+| The frame loop: allocations (frames); device buffers (frames) | 5,731 (662); 39 (10) | 5,655 (665); 46 (17) |
+
+And at the low setting under 768 MiB (with the measurement on): **0.0007 %** of textured pixel-frames a level softer (two or more 0.00001 %), 403 promotions, the device 7,398 MB a minute after the first frame. **Both walks are inside the bound stated before the flights** (0.1 % at the top ceiling, 0.5 % at the low one, two levels or more 0.01 %). The walk with no ceiling allocates as much as the walk with one: those are the walk's own (its tiles arriving, the first flight over a path), which `engine_view.frame_loop`'s second flight holds to zero; the ceiling adds seven device buffers in seven frames, promotions the ring had no room for beside the ground's chunks, which a promotion makes as before. The median moves 0.18 ms; the feedback's pass is 0.04 ms of it at 4K (R172's measure), and the rest was not split between the swaps, the moves and the run.
+
+**The default I would set** (the design's question 2, the owner's): none fixed in MiB. A ceiling in MiB means a different thing beside a different scene; the device budget names what a player's card has, and on the staging 10 GiB at the top setting leaves the textures 816 MiB, which is the same trim as the tiers' 1,536 and 768 MiB. So `renderer.textures.device_budget_mib` from the tier (10,240 at the top, 4,608 at the low one, capped by the card less an eighth as the design says), once ADR-0063's form is settled; until then the default stays main's, nothing trimmed, because a ceiling under the textures the residency does not hold trims every held texture to its floor and a launch should not do that unasked.
+
 ## Not measured
 
 - The cold load with a cache of its own: a cold load of the whole staging needs a 20-minute lease and 40 GB free (the staging agent's DONE note), and its cook does not ship; its peak is the staging agent's 32.2 GB.
