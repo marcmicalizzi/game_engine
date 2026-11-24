@@ -10,6 +10,7 @@
 #include <domain/scene_gen/scene_gen.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/capture.h>
+#include <systems/renderer/early_pipelines.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
@@ -131,6 +132,47 @@ TEST_CASE("water: a scene's block is one mesh and one instance a body, before th
     CHECK(bare.meshes[0].empty());
     REQUIRE(bare.instances.size() == 1);
     CHECK_FALSE(bare.mesh_info[0].water.has_value());
+  }
+}
+
+// The resolve the scene file names (renderer.md, "The resolve compiles from the scene file"; R205):
+// what `predict_resolve_variant` reads from the file before any mesh loads is what the GPU scene
+// decides after the load, flag for flag, for a scene with a water body and the same without it.
+TEST_CASE("water: the resolve a scene file names is the one its GPU scene draws with") {
+  const test::TempDir tmp("water_scene_early_resolve");
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error)) {
+    MESSAGE("skipped: no Vulkan device: " << error);
+    return;
+  }
+  for (const char* water_text : {k_pool, ""}) {
+    const std::string path = tmp.file(*water_text ? "pool.json" : "dry.json");
+    REQUIRE(write_text(path, scene_text(water_text)));
+    SceneDesc desc;
+    REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
+    desc.ddc = tmp.file("ddc");
+    ResolvedSettings before;
+    resolve_settings(RenderSettings{}, device.features(), nullptr, before);
+    const ResolveVariant predicted =
+        predict_resolve_variant(desc, before, gfx::Format::R8G8B8A8Unorm);
+    SceneData data;
+    REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+    ResolvedSettings resolved;
+    resolve_settings(RenderSettings{}, device.features(), &data, resolved);
+    if (check_availability(resolved, device.features()) != RenderAvailability::Ok) {
+      MESSAGE("skipped: the renderer is unavailable on this device");
+      return;
+    }
+    GpuScene scene;
+    REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), error);
+    CAPTURE(path);
+    CHECK(predicted.water == (*water_text != '\0'));
+    CHECK(predicted.water == scene.has_water());
+    CHECK(predicted.terrain == scene.has_terrain_materials());
+    CHECK(predicted.stochastic == scene.has_stochastic_materials());
+    CHECK(predicted.foliage == scene.has_foliage_materials());
+    CHECK(predicted.shadows == resolved.shadows);
   }
 }
 

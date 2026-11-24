@@ -37,6 +37,7 @@ struct PipelineRequest {
   VkPipeline pipeline = VK_NULL_HANDLE;
   i64 begin_ns = 0;
   i64 end_ns = 0;
+  Vector<PipelineStatistic> statistics;  // the driver's, under ENGINE_PIPELINE_STATISTICS=1
 };
 
 struct ModuleName {
@@ -69,7 +70,8 @@ void record_creation(PipelineRecorder& recorder, const PipelineRequest& made, bo
 
 // device.cpp: the `vkCreate*Pipelines` call behind each kind, made from a request's copies, and
 // the result into the caller's out-parameter (on failure: the error as the unbatched call gives
-// it, the out-parameter cleared, a compute pipeline's layout destroyed).
+// it, the out-parameter cleared, a compute pipeline's layout destroyed). `make_pipeline` sets the
+// request's `end_ns` when the driver's call returns, before the statistics' readout (R205).
 VkResult make_pipeline(const Device& device, PipelineRequest& request);
 bool finish_request(const Device& device, PipelineRequest& request, std::string* error);
 

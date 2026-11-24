@@ -40,6 +40,9 @@ struct BindlessConfig {
       256;  // binding 3 exists only with DeviceFeatures::acceleration_structure
   // Push-constant block shared by every pipeline using the layout, all stages.
   u32 push_constant_bytes = 128;
+  // Two sets whose (clamped) capacities are equal on one device have identically created layouts,
+  // so a pipeline made with one is drawn with the other (the renderer's early resolve, R205).
+  bool operator==(const BindlessConfig&) const noexcept = default;
 };
 
 class BindlessSet {

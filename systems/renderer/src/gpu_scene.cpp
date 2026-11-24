@@ -847,8 +847,8 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
     pair_limit_ = static_cast<u32>(resolved.pairs.limit);
   }
 
-  if (!bindless_.create(device, gfx::BindlessConfig{}, error) ||
-      !create_streaming(resolved, error) || !upload_geometry(resolved, error)) {
+  if (!bindless_.create(device, bindless_config(), error) || !create_streaming(resolved, error) ||
+      !upload_geometry(resolved, error)) {
     destroy();
     return false;
   }

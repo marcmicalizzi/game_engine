@@ -1,0 +1,17 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R205",
+  "reason": "R205 second leg and its mend: the early resolve compile is started and destroyed in both engine-view loops and reported in the load summary's early block, and renderer.md, gfx.md, apps.md and water.md gain the early compile, what its prediction cannot know, the statistics switch's caveat and the water's every-pixel reading qualified where it stood",
+  "date": "2026-11-24",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.gpu_scene_h.lines": 11,
+    "engine_view.main_cpp.lines": 24,
+    "engine_view.run_view.lines": 5,
+    "engine_view.run_offscreen.lines": 7,
+    "page:docs/subsystems/renderer.md": 8432,
+    "page:docs/subsystems/apps.md": 1402,
+    "page:docs/subsystems/gfx.md": 3160,
+    "page:docs/subsystems/water.md": 347
+  }
+}

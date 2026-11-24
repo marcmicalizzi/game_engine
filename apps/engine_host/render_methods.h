@@ -16,6 +16,7 @@
 #include <domain/gfx/device.h>
 #include <domain/protocol/rpc.h>
 #include <systems/doc_scene/doc_scene.h>
+#include <systems/renderer/early_pipelines.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/reference.h>
 #include <systems/renderer/request.h>
@@ -53,6 +54,9 @@ class RenderHost {
     JsonValue pair_breakdown;  // the load's account before the lazy GPU upload
     std::unique_ptr<renderer::GpuScene> gpu;
     std::unique_ptr<renderer::SceneRenderer> view;
+    // The resolve's pipeline started when `render.load` read the scene file (early_pipelines.h,
+    // R205), until the scene's first renderer takes it; null for a mesh or a procedural scene.
+    std::unique_ptr<renderer::EarlyPipelines> early;
     // The terrain levels a call moves — the time-lapse, the rings, the world's tiles — built with
     // the GPU scene, which reserves their slots, round the call's first camera. A scene that has
     // them is rebuilt for every call that draws, so a call's picture is a function of the call and

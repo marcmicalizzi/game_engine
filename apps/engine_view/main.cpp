@@ -89,6 +89,7 @@ inline void print_solo_summary() {}
 #include <foundation/window/window.h>
 #include <systems/renderer/camera_path.h>
 #include <systems/renderer/capture.h>
+#include <systems/renderer/early_pipelines.h>
 #include <systems/renderer/flythrough.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/lighting.h>
@@ -2654,8 +2655,10 @@ bool save_recording(const Options& options, const Interactive& it, const view::F
 
 // The summary's `load` block (FlythroughSummary version 17; apps.md, "The summary's load block"):
 // what the load read for its meshes and textures (`renderer::SceneLoadReport`), what the device's
-// pipeline cache did (`gfx::PipelineCacheReport`) and every pipeline it made (pipeline_batch.h).
-JsonValue load_summary(const renderer::SceneLoadReport& load, const gfx::Device& device) {
+// pipeline cache did (`gfx::PipelineCacheReport`), every pipeline it made (pipeline_batch.h) and
+// the resolve compiled from the scene file (`early`, renderer/early_pipelines.h; R205).
+JsonValue load_summary(const renderer::SceneLoadReport& load, const gfx::Device& device,
+                       const renderer::EarlyPipelines& early) {
   const gfx::PipelineCacheReport& cache = device.pipeline_cache();
   JsonValue out = JsonValue::object();
   out.set("meshes", JsonValue(load.meshes));
@@ -2687,6 +2690,7 @@ JsonValue load_summary(const renderer::SceneLoadReport& load, const gfx::Device&
   pipelines.set("ignored", JsonValue(cache.ignored));
   out.set("pipeline_cache", std::move(pipelines));
   out.set("pipelines", gfx::pipeline_creations_json(device));  // R149
+  out.set("early", renderer::early_summary(&early));
   return out;
 }
 
@@ -2698,6 +2702,14 @@ std::string pipeline_cache_dir(const Options& options) {
   const std::string ddc =
       options.ddc.empty() ? geometry::find_ddc_root(platform::executable_directory()) : options.ddc;
   return ddc.empty() ? std::string() : io::join_path(ddc, "pipeline-cache");
+}
+
+// The offscreen target's colour format, an HDR `--present-format`'s or the renderer's default: the
+// early resolve compile's key has it as the renderer's does (renderer/early_pipelines.h, R205).
+gfx::Format offscreen_format(const Options& options) {
+  const gfx::DisplayEncoding display = gfx::present_format_encoding(options.present_format);
+  return display != gfx::DisplayEncoding::Sdr ? gfx::display_encoding_format(display)
+                                              : renderer::SceneRenderer::Desc{}.color_format;
 }
 
 // Every path's device: the adapter, validation, the pipeline cache, and a test's device profile,
@@ -3059,6 +3071,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
   jobs::JobSystem page_jobs(
       jobs::JobSystemConfig{.performance_workers = 1, .efficiency_workers = 2});
   renderer::FilePageSource page_source;
+  renderer::EarlyPipelines early_resolve;  // R205: started at the scene file, taken at create
   renderer::SceneRenderer view_renderer;
   renderer::ResolvedSettings resolved_off;
   renderer::ResolvedSettings scene_off_requested;
@@ -3167,6 +3180,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
         break;
       }
       read_rules(options, desc);
+      renderer::start_early_resolve(early_resolve, device, desc, options.settings,
+                                    offscreen_format(options), options.shaders);
     } else {
       desc.meshes.push_back(options.mesh);
     }
@@ -3327,6 +3342,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
     renderer_desc.frames_in_flight = k_frames_in_flight;
     renderer_desc.offscreen = true;
     renderer_desc.shader_manifest = options.shaders;
+    renderer_desc.early = &early_resolve;
     renderer_desc.views = renderer::view_set_desc(resolved.settings);
     // An HDR --present-format offscreen: its format and its encode, at the display the settings
     // name (no window, so no display of its own: the flags, the tunables, or 1000 and 200 nits).
@@ -3915,6 +3931,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
     if (options.verify_occlusion) {
       renderer::SceneRenderer::Desc off_desc = renderer_desc;
       off_desc.page_source = nullptr;
+      off_desc.early = nullptr;  // taken by the first renderer
       if (!renderer_off.create(device, scene_off, scene_off_requested, off_desc, &error)) {
         exit_code = fail("renderer", error);
         break;
@@ -4193,7 +4210,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
       summary.quiet =
           bench::is_quiet(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{});
     }
-    summary.load = view::with_micromaps(load_summary(scene_data.load, device), scene);  // R207
+    summary.load =
+        view::with_micromaps(load_summary(scene_data.load, device, early_resolve), scene);  // R207
     summary.runs = g_report.runs = renderer::runs_summary(view_renderer.stats());  // T216
     if (startup.on()) {
       std::string why;
@@ -4234,6 +4252,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
 #endif
   renderer_off.destroy();
   view_renderer.destroy();
+  early_resolve.destroy();  // before the device it was made on
   page_source.destroy();
   scene_off.destroy();
   scene.destroy();
@@ -5927,6 +5946,7 @@ int run_view(int argc, char** argv) {
 #endif
   VkSurfaceKHR surface = VK_NULL_HANDLE;
   gfx::Swapchain swapchain;
+  renderer::EarlyPipelines early_resolve;  // R205: started at the scene file, taken at create
   renderer::SceneData scene_data;
   renderer::ResolvedSettings resolved;
   renderer::ResolvedSettings scene_requested;
@@ -6200,6 +6220,8 @@ int run_view(int argc, char** argv) {
           return false;
         }
         read_rules(options, desc);
+        renderer::start_early_resolve(early_resolve, device, desc, options.settings,
+                                      swapchain.format(), options.shaders);
       } else {
         desc.meshes.push_back(options.mesh);  // empty: the procedural heightfield
       }
@@ -6455,6 +6477,7 @@ int run_view(int argc, char** argv) {
     renderer_desc.frames_in_flight = options.frames_in_flight;
     renderer_desc.offscreen = false;  // the swapchain image is the target
     renderer_desc.shader_manifest = options.shaders;
+    renderer_desc.early = &early_resolve;
     // The layout the flags asked for, over the swapchain. The monitor geometry of a surround is
     // derived from the target (a third of its width each, no bezel correction) unless a caller of
     // the module fills `Surround3` in; engine-view exposes the yaw, which is the parameter a
@@ -7723,8 +7746,9 @@ int run_view(int argc, char** argv) {
   scene.destroy();
   swapchain.destroy();
   window::vulkan::destroy_surface(device.handles().instance, surface);
+  window.destroy();         // before an untaken early compile is waited for (R205, renderer.md)
+  early_resolve.destroy();  // and the early pipeline before its device
   device.destroy();
-  window.destroy();
   window::shutdown();
 
   if (exit_code == 0) {

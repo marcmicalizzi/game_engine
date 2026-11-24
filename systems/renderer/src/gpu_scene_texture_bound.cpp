@@ -379,7 +379,7 @@ bool GpuScene::texture_bound_plan(std::string* error) {
   // are consecutive. Never more than half of what is left, so the textures the bound does not
   // hold, the variance chains and a tile texture room still find theirs; past it, keys are dropped
   // from the end and uploaded whole.
-  const u32 capacity = gfx::BindlessConfig{}.sampled_images;
+  const u32 capacity = bindless_config().sampled_images;
   const u32 live = bindless_.live_sampled_images();
   const u32 room = capacity > live ? (capacity - live) / 4 : 0u;
   u32 wanted = s->textures.size() + k_spare_pairs;

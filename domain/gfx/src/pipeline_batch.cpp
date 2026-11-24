@@ -143,6 +143,7 @@ void record_creation(PipelineRecorder& recorder, const PipelineRequest& made, bo
   c.seconds = seconds_of(made);
   c.batched = batched;
   c.ok = made.result == VK_SUCCESS;
+  c.statistics = made.statistics;
   ENGINE_LOG_INFO(log_pipelines, "pipeline created", log::field("shader", c.shader),
                   log::field("entry", c.entry), log::field("kind", pipeline_kind_name(c.kind)),
                   log::field("spirv_bytes", c.spirv_bytes), log::field("ms", c.seconds * 1.0e3),
@@ -205,8 +206,7 @@ bool PipelineBatch::end(std::string* error) {
   const Device& device = *device_;
   auto compile = [&](detail::PipelineRequest& r) {
     r.begin_ns = time::monotonic_ns();
-    r.result = detail::make_pipeline(device, r);
-    r.end_ns = time::monotonic_ns();
+    r.result = detail::make_pipeline(device, r);  // sets `end_ns`, before any statistics' readout
     detail::record_creation(*recorder, r, true);
   };
   const i64 start = time::monotonic_ns();
@@ -329,6 +329,19 @@ JsonValue pipeline_creations_json(const Device& device) {
     one.set("ms", JsonValue(c.seconds * 1.0e3));
     one.set("batched", JsonValue(c.batched));
     one.set("ok", JsonValue(c.ok));
+    // The driver's own numbers (ENGINE_PIPELINE_STATISTICS=1; gfx.md, "What the driver says a
+    // pipeline costs"), by its own names.
+    if (!c.statistics.empty()) {
+      JsonValue stats = JsonValue::array();
+      for (const PipelineStatistic& s : c.statistics) {
+        JsonValue entry = JsonValue::object();
+        entry.set("executable", JsonValue(s.executable));
+        entry.set("name", JsonValue(s.name));
+        entry.set("value", JsonValue(s.value));
+        stats.push_back(std::move(entry));
+      }
+      one.set("statistics", std::move(stats));
+    }
     slowest.push_back(std::move(one));
   }
   out.set("slowest", std::move(slowest));

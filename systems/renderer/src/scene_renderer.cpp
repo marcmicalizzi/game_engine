@@ -15,6 +15,7 @@
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/caster_volume.h>
 #include <systems/renderer/crown_priors.h>
+#include <systems/renderer/early_pipelines.h>
 #include <systems/renderer/eye_shell.h>
 #include <systems/renderer/gi_preroll.h>
 #include <systems/renderer/lighting.h>
@@ -59,22 +60,6 @@
 #include <shaders/resolve_half_sun.spv.h>
 #include <shaders/tlas_references.spv.h>
 #include <shaders/vertex_expand.spv.h>
-#include <shaders/visibility_resolve.spv.h>
-#include <shaders/visibility_resolve_rt.spv.h>
-#include <shaders/visibility_resolve_rt_stochastic.spv.h>
-#include <shaders/visibility_resolve_rt_terrain.spv.h>
-#include <shaders/visibility_resolve_rt_terrain_stochastic.spv.h>
-#include <shaders/visibility_resolve_rt_water.spv.h>
-#include <shaders/visibility_resolve_rt_water_stochastic.spv.h>
-#include <shaders/visibility_resolve_rt_water_terrain.spv.h>
-#include <shaders/visibility_resolve_rt_water_terrain_stochastic.spv.h>
-#include <shaders/visibility_resolve_stochastic.spv.h>
-#include <shaders/visibility_resolve_terrain.spv.h>
-#include <shaders/visibility_resolve_terrain_stochastic.spv.h>
-#include <shaders/visibility_resolve_water.spv.h>
-#include <shaders/visibility_resolve_water_stochastic.spv.h>
-#include <shaders/visibility_resolve_water_terrain.spv.h>
-#include <shaders/visibility_resolve_water_terrain_stochastic.spv.h>
 #include <texture_feedback.h>
 
 namespace engine::renderer {
@@ -825,55 +810,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   shaders_.add_embedded("vertex_expand", shaders::k_vertex_expand_spirv,
                         shaders::k_vertex_expand_spirv_size);
   shaders_.add_embedded("fold_args", shaders::k_fold_args_spirv, shaders::k_fold_args_spirv_size);
-  shaders_.add_embedded("visibility_resolve", shaders::k_visibility_resolve_spirv,
-                        shaders::k_visibility_resolve_spirv_size);
-  // The same resolve with the shadow rays in; only a device with acceleration structures may
-  // draw with it, because its `g_scenes[]` is binding 3 of the bindless set.
-  shaders_.add_embedded("visibility_resolve_rt", shaders::k_visibility_resolve_rt_spirv,
-                        shaders::k_visibility_resolve_rt_spirv_size);
-  // The same two with the water branch (water.md, "Shading"), drawn with only by a scene that has a
-  // water material (`resolve_module`, above): a branch in every resolve costs every pixel
-  // registers.
-  shaders_.add_embedded("visibility_resolve_water", shaders::k_visibility_resolve_water_spirv,
-                        shaders::k_visibility_resolve_water_spirv_size);
-  shaders_.add_embedded("visibility_resolve_rt_water", shaders::k_visibility_resolve_rt_water_spirv,
-                        shaders::k_visibility_resolve_rt_water_spirv_size);
-  shaders_.add_embedded("visibility_resolve_terrain", shaders::k_visibility_resolve_terrain_spirv,
-                        shaders::k_visibility_resolve_terrain_spirv_size);
-  shaders_.add_embedded("visibility_resolve_rt_terrain",
-                        shaders::k_visibility_resolve_rt_terrain_spirv,
-                        shaders::k_visibility_resolve_rt_terrain_spirv_size);
-  shaders_.add_embedded("visibility_resolve_water_terrain",
-                        shaders::k_visibility_resolve_water_terrain_spirv,
-                        shaders::k_visibility_resolve_water_terrain_spirv_size);
-  shaders_.add_embedded("visibility_resolve_rt_water_terrain",
-                        shaders::k_visibility_resolve_rt_water_terrain_spirv,
-                        shaders::k_visibility_resolve_rt_water_terrain_spirv_size);
-  // The eight with stochastic mesh materials (R131), drawn only by a scene that has one.
-  shaders_.add_embedded("visibility_resolve_stochastic",
-                        shaders::k_visibility_resolve_stochastic_spirv,
-                        shaders::k_visibility_resolve_stochastic_spirv_size);
-  shaders_.add_embedded("visibility_resolve_rt_stochastic",
-                        shaders::k_visibility_resolve_rt_stochastic_spirv,
-                        shaders::k_visibility_resolve_rt_stochastic_spirv_size);
-  shaders_.add_embedded("visibility_resolve_water_stochastic",
-                        shaders::k_visibility_resolve_water_stochastic_spirv,
-                        shaders::k_visibility_resolve_water_stochastic_spirv_size);
-  shaders_.add_embedded("visibility_resolve_rt_water_stochastic",
-                        shaders::k_visibility_resolve_rt_water_stochastic_spirv,
-                        shaders::k_visibility_resolve_rt_water_stochastic_spirv_size);
-  shaders_.add_embedded("visibility_resolve_terrain_stochastic",
-                        shaders::k_visibility_resolve_terrain_stochastic_spirv,
-                        shaders::k_visibility_resolve_terrain_stochastic_spirv_size);
-  shaders_.add_embedded("visibility_resolve_rt_terrain_stochastic",
-                        shaders::k_visibility_resolve_rt_terrain_stochastic_spirv,
-                        shaders::k_visibility_resolve_rt_terrain_stochastic_spirv_size);
-  shaders_.add_embedded("visibility_resolve_water_terrain_stochastic",
-                        shaders::k_visibility_resolve_water_terrain_stochastic_spirv,
-                        shaders::k_visibility_resolve_water_terrain_stochastic_spirv_size);
-  shaders_.add_embedded("visibility_resolve_rt_water_terrain_stochastic",
-                        shaders::k_visibility_resolve_rt_water_terrain_stochastic_spirv,
-                        shaders::k_visibility_resolve_rt_water_terrain_stochastic_spirv_size);
+  add_resolve_modules(shaders_);  // the sixteen, as the early compile has them (early_pipelines.h)
   shaders_.add_embedded("clas_records", shaders::k_clas_records_spirv,
                         shaders::k_clas_records_spirv_size);
   shaders_.add_embedded("tlas_references", shaders::k_tlas_references_spirv,
@@ -904,11 +841,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
                         shaders::k_alpha_coverage_spirv_size);
   shaders_.add_embedded("opacity_micromap_bake", shaders::k_opacity_micromap_bake_spirv,
                         shaders::k_opacity_micromap_bake_spirv_size);
-  std::string manifest = desc.shader_manifest;
-  if (manifest.empty()) {
-    const std::string candidate = platform::executable_directory() + "/../shaders/manifest.json";
-    if (io::exists(candidate)) manifest = candidate;
-  }
+  const std::string manifest = resolve_manifest_path(desc.shader_manifest);
   if (!manifest.empty()) {
     ENGINE_STARTUP_STAGE_DETAIL("shader manifest", manifest);
     if (!shaders_.load_manifest(manifest, error)) {
@@ -1750,6 +1683,19 @@ bool SceneRenderer::create_pipelines(std::string* error) {
   resolve_desc.layout = bindless.pipeline_layout();
   resolve_desc.color_format = desc_.color_format;
   resolve_desc.specialization = resolve_specialization(scene_->has_foliage_materials());
+  // The one draw's pipeline, unless the renderer is made to draw by class (R151): the same module
+  // twice in one batch is the driver compiling it twice. Started on a worker when the scene file
+  // was read (early_pipelines.h; R205): taken after the batch, so the rest compiles beside it.
+  const bool one_draw = resolve_one_draw_built(resolve_class_mode_for(resolve_classes_tunable(),
+                                                                      scene_->has_masked())) ||
+                        resolved_.direct;
+  const ResolveKey key{resolve->name, resolve->hash, desc_.color_format,
+                       scene_->has_foliage_materials(), bindless.capacity()};
+  const bool early = one_draw && desc_.early != nullptr && desc_.early->has(key);
+  // Asked only where a compile was started and not taken: another key is then a wrong guess, and
+  // is counted as one (a re-create after the take, or nothing started, is not).
+  if (one_draw && desc_.early != nullptr && !early && desc_.early->stats().started)
+    (void)desc_.early->take(key, pipelines_.resolve);
   return gfx::create_graphics_pipeline(device, vertex_desc, pipelines_.vertex, error) &&
          gfx::create_compute_pipeline(device, sw->module, "sw_raster_main", {},
                                       sizeof(gfx::ClusterDrawParams), pipelines_.software, error) &&
@@ -1776,14 +1722,12 @@ bool SceneRenderer::create_pipelines(std::string* error) {
                                       pipelines_.cull_node_guard, error) &&
          gfx::create_compute_pipeline(device, hiz->module, "hiz_build_main", {},
                                       sizeof(gfx::HizParams), pipelines_.hiz, error) &&
-         // The one draw's pipeline, unless the renderer is made to draw by class (R151): the same
-         // module twice in one batch is the driver compiling it twice.
-         ((!resolve_one_draw_built(
-               resolve_class_mode_for(resolve_classes_tunable(), scene_->has_masked())) &&
-           !resolved_.direct) ||
+         (!one_draw || early ||
           gfx::create_graphics_pipeline(device, resolve_desc, pipelines_.resolve, error)) &&
          create_resolve_class_pipelines(linear_wanted(), error) &&  // R151: in this batch
-         batch.end(error);
+         batch.end(error) &&
+         (!early || desc_.early->take(key, pipelines_.resolve) ||
+          gfx::create_graphics_pipeline(device, resolve_desc, pipelines_.resolve, error));
 }
 
 void SceneRenderer::destroy() noexcept {

@@ -1178,6 +1178,11 @@ struct SceneData {
 // computes the bounds. `error` says which mesh failed and why.
 bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error);
 
+// `SceneData::dynamic` from the description alone: a streamed world's instances come and go,
+// unless all it streams is its ground. `load_scene` sets it with this, and the early resolve's
+// prediction (early_pipelines.h) reads the scene file with the same function.
+bool world_is_dynamic(const WorldDesc& world, bool streams_placements) noexcept;
+
 // `SceneData::mesh_leaves` from the merged meshes' float positions (crown_priors.cpp): one pass
 // over the finest level's alpha-tested triangles, a mesh a job on `pool` (null: in order on this
 // thread; the result is the same). `load_scene` calls it last, and only when the desc asks for it
