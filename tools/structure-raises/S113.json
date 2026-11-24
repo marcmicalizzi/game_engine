@@ -1,0 +1,13 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "S113",
+  "reason": "S113 documents the water's sound where its readers look: audio.md the voice's struck resonators and the stage note, water.md the field's new reader (the surf records), apps.md engine-view's flow and surf tables",
+  "date": "2026-11-23",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.gpu_scene_cpp.lines": -69,
+    "page:docs/subsystems/apps.md": 764,
+    "page:docs/subsystems/water.md": 1174,
+    "page:docs/subsystems/audio.md": 2100
+  }
+}

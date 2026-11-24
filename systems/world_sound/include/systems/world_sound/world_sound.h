@@ -7,8 +7,8 @@
 // that owns the clip store, the mixer, the output (a device or the null backend), the listener, the
 // clips a scene's `sound` block declares and the voices a game module starts. A host has one object
 // to create, hand a listener and tick; sound code lives here, not in an app, as rendering code
-// lives in `systems/renderer`. Later stages add the world's synthesised sources (S112 the wind in
-// the trees, S113 the water) to the same stage; none of them is built here.
+// lives in `systems/renderer`. Later stages add the world's synthesised sources to the same stage:
+// S112 the wind in the trees and at the ears, S114 their path, S113 running water and the surf.
 //
 // **What a module sees does not depend on whether anything is heard** (ADR-0079 decision 5):
 // `play` answers with a handle the stage counts itself, never the mixer's slot, whether or not a
