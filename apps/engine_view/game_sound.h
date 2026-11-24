@@ -151,10 +151,15 @@ class GameSoundHost {
   // of the loaded scene's solved channels — a stretch's two stations at their solved levels, its
   // discharge (the upstream station's), the level given up, its wet width (`wet_left_m` plus
   // `wet_right_m`) and Froude number, a fall where a lip meets its foot, landing on water where the
-  // foot's solved depth is 0.1 m or more — and every body's surf records
-  // (`renderer::water_surf_records`, one a 16 m square where its train breaks), made once when the
-  // scene is attached. The fields of the description read: `points`, `discharge_m3s`, `depth_m`,
-  // `wet_left_m`, `wet_right_m`, `froude`, `flags`.
+  // foot's solved depth is 0.1 m or more — made once when the scene is attached, and every body's
+  // surf records, scanned once a body mesh by the GPU scene from the field it built for its waves
+  // (`renderer::SurfTable`, one a 16 m square where the field loses wave energy) and placed by each
+  // instance (`attach_surf`, after the upload). The fields of the description read: `points`,
+  // `discharge_m3s`, `depth_m`, `wet_left_m`, `wet_right_m`, `froude`, `flags`. **A refresh visits
+  // what is in reach** (M2): both tables are bucketed by 128 m cell at attach, and a visit walks
+  // the cells within the sink's reach (streams and surf `audio.world.water_reach_m`, falls
+  // `reach_m`).
+  void attach_surf(const renderer::SurfTable& table, const renderer::SceneData& scene);
   // Neighbouring stretches that carry the same water join into one up to this long (S113).
   static constexpr f64 k_stretch_join_m = 32.0;
   static void visit_flow(void* user, const WorldPos& centre, f64 reach_m,
@@ -163,7 +168,13 @@ class GameSoundHost {
                          const world_sound::SurfSink& sink);
   u32 stretches() const noexcept { return static_cast<u32>(stretches_.size()); }
   u32 surf_records() const noexcept { return static_cast<u32>(surf_.size()); }
-  i64 surf_ns() const noexcept { return surf_ns_; }  // the surf records' making, at attach
+  i64 surf_ns() const noexcept { return surf_ns_; }  // the scans (the upload's) and the placing
+  u32 water_cells_walked() const noexcept { return water_cells_walked_; }  // the last visits'
+  struct WaterCell {  // a 128 m cell's run of a table, ordered by cell (M2)
+    u64 key = 0;
+    u32 first = 0;
+    u32 count = 0;
+  };
   // The water's clock (S113): the world clock a tick of the stage stands at — a session's ticks
   // over its rate, a flight's frames over 60 — so a wave heard breaking is the wave drawn
   // breaking (at a world rate of one).
@@ -267,8 +278,12 @@ class GameSoundHost {
   const Walker* walker_ = nullptr;
   // Running water and the surf (S113): the loaded scene's, made at attach.
   void attach_water(const renderer::SceneData& scene);
-  Vector<world_sound::Stretch> stretches_;
-  Vector<world_sound::Surf> surf_;
+  Vector<world_sound::Stretch> stretches_;  // the streams, then the falls, each by cell
+  Vector<world_sound::Surf> surf_;          // by cell
+  Vector<WaterCell> stream_cells_, fall_cells_, surf_cells_;
+  f64 stream_half_max_ = 0.0;  // the longest stream's half, the visits' margin
+  f64 surf_half_max_ = 0.0;
+  mutable u32 water_cells_walked_ = 0;
   i64 surf_ns_ = 0;
   f64 world_time_s_ = 0.0;
   static f32 shelter(void* user, f64 x, f64 z, f32 across_x, f32 across_z) noexcept;
@@ -287,6 +302,8 @@ bool open_solo_sound(GameSoundHost& host, std::string_view audio, const AudioRun
 bool sound_hears_world() noexcept;  // the load measures leaves (`SceneDesc::measure_leaves`, M7)
 i64 solo_sound_ns() noexcept;       // the record's `sound_ms` without a module
 void attach_solo_scene(const renderer::SceneData& scene);
+// The surf the GPU scene scanned at its upload (S113): to the session's host, module or none.
+void attach_session_surf(const renderer::SurfTable& table, const renderer::SceneData& scene);
 void attach_solo_session(FlySession& session, f64 sky_start_s, f64 sun_rate) noexcept;
 void attach_solo_tiles(void* placements) noexcept;  // a world::PlacementTiles*
 // A flight's frames, a tick each (a sixtieth of a second, the flight's clock), heard from each

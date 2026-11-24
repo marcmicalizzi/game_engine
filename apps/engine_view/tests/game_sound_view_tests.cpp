@@ -892,4 +892,56 @@ TEST_CASE(
   CHECK_MESSAGE(host.stage().close(&close_error), close_error);
 }
 
+TEST_CASE("engine-view: a refresh visits the water in reach, not the scene's") {
+  // S113, M2: a channel 40 km long, a stretch every 100 m (too far apart to join), heard from its
+  // middle. The flow table is bucketed by 128 m cell at attach; a visit with the streams' reach at
+  // 800 m walks the cells within it and sends exactly the stretches the sink would take.
+  const test::TempDir tmp("engine_view_flow_cells");
+  view::GameSoundHost host;
+  std::string error;
+  REQUIRE_MESSAGE(
+      host.open(world_sound::AudioMode::Null, "", tmp.file("cells.wav"), "", 60, &error), error);
+  renderer::SceneData scene;
+  scene.mesh_info.resize(1);
+  renderer::SceneWater water;
+  water.channel = true;
+  scene::WaterChannel& c = water.channel_source;
+  constexpr u32 k_stations = 401;
+  for (u32 i = 0; i < k_stations; ++i) {
+    c.points.push_back(WorldPos{100.0 * i, 400.0 - 0.5 * i, 0.0});
+    c.discharge_m3s.push_back(i % 2 == 0 ? 0.4f : 0.8f);  // never within a tenth: no joins
+    c.depth_m.push_back(0.3f);
+    c.wet_left_m.push_back(1.0f);
+    c.wet_right_m.push_back(1.0f);
+    c.froude.push_back(0.5f);
+    c.flags.push_back(0);
+  }
+  scene.mesh_info[0].water = water;
+  host.attach_scene(scene);
+  REQUIRE(host.stretches() == k_stations - 1);
+  const WorldPos centre{20000.0, 300.0, 30.0};
+  constexpr f64 k_stream_reach = 800.0;
+  u32 expected = 0;
+  for (u32 i = 0; i + 1 < k_stations; ++i) {
+    const f64 mx = 100.0 * i + 50.0 - centre.x, mz = -centre.z;
+    if (std::sqrt(mx * mx + mz * mz) - 50.0 <= k_stream_reach) ++expected;
+  }
+  struct Count {
+    u32 sent = 0;
+    static void emit(void* user, const world_sound::Stretch&) noexcept {
+      ++static_cast<Count*>(user)->sent;
+    }
+  } count;
+  view::GameSoundHost::visit_flow(&host, centre, 2000.0,
+                                  world_sound::StretchSink{&count, &Count::emit, k_stream_reach});
+  MESSAGE(count.sent << " stretches sent of " << host.stretches() << ", "
+                     << host.water_cells_walked() << " cells walked");
+  CHECK(count.sent == expected);
+  // The cells holding water within the reach and the longest stretch's half: the line's, 850 m
+  // either side of the listener's cell and its own, at most 15 of the table's 313.
+  CHECK(host.water_cells_walked() <= 15u);
+  CHECK(host.water_cells_walked() >= 13u);
+  std::string close_error;
+  CHECK_MESSAGE(host.stage().close(&close_error), close_error);
+}
 #endif  // ENGINE_VIEW_GAME && ENGINE_VIEW_WORLD_SOUND

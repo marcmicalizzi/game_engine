@@ -316,6 +316,25 @@ bool WorldField::crown_power(const Crown& c, const WorldPos& listener, f64 law, 
   return true;
 }
 
+void WorldField::path_terms(f64 dx, f64 dy, f64 dz, f64 height, f64 (&path)[8]) const noexcept {
+  if (!config_.path) {
+    for (f64& p : path)
+      p = 1.0;
+    return;
+  }
+  // Each term in dB, then one exponential a band (S114's cost: the bands' shared exponentials
+  // once, the forest's f^(1/3) once at `open`).
+  const f64 r3 = std::sqrt(dx * dx + dy * dy + dz * dz);
+  const f64 ground_m = std::sqrt(dx * dx + dz * dz);
+  const f64 under = canopy_path_m(dx, dz);
+  f64 ground[8];
+  ground_bands_db(height, k_ears_height_m, ground_m, config_.ground_g, ground);
+  constexpr f64 k_db_to_ln = -0.23025850929940456840;  // -ln(10) / 10
+  for (u32 b = 0; b < 8; ++b) {
+    const f64 a = air_db_m_[b] * r3 + foliage_db_m_[b] * under + ground[b];
+    path[b] = std::exp(a * k_db_to_ln);
+  }
+}
 void WorldField::point_power(const Crown& c, f64 dx, f64 dy, f64 dz, f64 least, f64 law,
                              f64 (&band)[8], f64 (&path)[8], f64& tone) const noexcept {
   const u32 k = static_cast<u32>(c.kind) < 3 ? static_cast<u32>(c.kind) : 0u;
@@ -331,26 +350,10 @@ void WorldField::point_power(const Crown& c, f64 dx, f64 dy, f64 dz, f64 least, 
   // the ears' over the distance along the ground. A crown the listener stands in is heard at its
   // edge
   // (`extent_m`) and its path is the short one it really has.
-  if (!config_.path) {
-    for (u32 b = 0; b < 8; ++b) {
-      path[b] = 1.0;
-      band[b] = broadband * shape_[k][b];
-    }
-    return;
-  }
-  // Each term in dB, then one exponential a band (S114's cost: the bands' shared exponentials
-  // once, the forest's f^(1/3) once at `open`).
-  const f64 ground_m = std::sqrt(dx * dx + dz * dz);
-  const f64 under = canopy_path_m(dx, dz);
-  f64 ground[8];
-  ground_bands_db(static_cast<f64>(c.height_m), k_ears_height_m, ground_m, config_.ground_g,
-                  ground);
-  constexpr f64 k_db_to_ln = -0.23025850929940456840;  // -ln(10) / 10
-  for (u32 b = 0; b < 8; ++b) {
-    const f64 a = air_db_m_[b] * r3 + foliage_db_m_[b] * under + ground[b];
-    path[b] = std::exp(a * k_db_to_ln);
+  // One function for every source's path (the water's too, S113): 1 a band with the path off.
+  path_terms(dx, dy, dz, static_cast<f64>(c.height_m), path);
+  for (u32 b = 0; b < 8; ++b)
     band[b] = broadband * shape_[k][b] * path[b];
-  }
 }
 
 void WorldField::add_to_bed(const Crown& c, const WorldPos& listener, f64 law, const f64 (&band)[8],

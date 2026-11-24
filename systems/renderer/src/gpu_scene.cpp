@@ -2651,7 +2651,13 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
     // instruction-for-instruction path it always drew on.
     water_surface_of_.assign(instance_count_, ~0u);
     water_deforms_.clear();
+    water_surf_.clear();  // S113: the ears' surf records, once a body mesh (`surf_table`)
+    water_surf_first_.assign(data_->mesh_info.size(), 0u);
+    water_surf_count_.assign(data_->mesh_info.size(), 0u);
     {
+      Vector<u8> surf_scanned;
+      surf_scanned.assign(data_->mesh_info.size(), u8{0});
+      i64 surf_ns = 0;
       Vector<gfx::WaterSurface> surfaces;
       for (u32 i = 0; i < instance_count_ && i < data_->instances.size(); ++i) {
         const u32 m = data_->instances[i].mesh;
@@ -2663,6 +2669,17 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
         gfx::WaterSurface surface;
         Vector<f32> field;
         water_surface_of(water, n, surface, field);
+        if (surf_scanned[m] == 0) {  // a scan of the field in hand, not a second build
+          surf_scanned[m] = 1;
+          const i64 scan_start = time::monotonic_ns();
+          Vector<SurfRecord> found;
+          water_surf_records(water, surface, {field.data(), field.size()}, k_surf_cell_m, found);
+          water_surf_first_[m] = static_cast<u32>(water_surf_.size());
+          water_surf_count_[m] = static_cast<u32>(found.size());
+          for (const SurfRecord& r : found)
+            water_surf_.push_back(r);
+          surf_ns += time::monotonic_ns() - scan_start;
+        }
         gfx::BufferResource buffer;
         if (!gfx::upload_buffer(device, field.data(), u64{field.size()} * sizeof(f32), k_address,
                                 buffer, error)) {
@@ -2684,6 +2701,10 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
             log::field("run_up_m", surface.run_up_m), log::field("field_texels", water.depth.size),
             log::field("padding_m", padding));
       }
+      water_surf_ns_ = surf_ns;
+      if (!water_surf_.empty())
+        ENGINE_LOG_INFO(log_renderer, "surf records", log::field("records", water_surf_.size()),
+                        log::field("scan_ms", static_cast<f64>(surf_ns) / 1.0e6));
       water_surface_load_ = surfaces;  // W136: what the wind's redraw starts from
       if (!surfaces.empty() && !gfx::upload_buffer(device, surfaces.data(),
                                                    u64{surfaces.size()} * sizeof(gfx::WaterSurface),
@@ -6539,6 +6560,9 @@ void GpuScene::destroy() noexcept {
   water_fields_.clear();
   water_surface_of_.clear();
   water_deforms_.clear();
+  water_surf_.clear();  // S113
+  water_surf_first_.clear();
+  water_surf_count_.clear();
   water_wind_.clear();  // W136
   water_wind_ready_ = false;
   micromap_list_.clear();

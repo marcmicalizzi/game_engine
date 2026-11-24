@@ -303,13 +303,17 @@ void water_surface_of(const SceneWater& water, const WaterSwashNumbers& n, gfx::
                       Vector<f32>& field);
 
 // **Where a body's train breaks, for a host's ears** (S113; world_sound.md, "Running water and the
-// surf"): one record a `cell_m` square of the depth map where the train breaks — the outermost
-// texel in it whose wave reaches the limit (the train's height times the flux's `incident` at
-// least 0.78 of the depth), body-local in x and z at the body's level, the shore's direction there
-// (across the arrival's gradient), the wave power reaching it (the sea's deep-water flux times
-// `incident` squared), the breaking height, the surf similarity over the texel's own foreshore
-// slope, and the train's period and arrival there, so a crest stands there at the water's clock
-// `arrival_s + n period_s` as the picture draws it. None for a body with no train.
+// surf"): one record a `cell_m` square of the depth map where **the field loses wave energy** — the
+// flux its `kept` share gives up along the train's ray from each texel's upwind neighbours, which
+// is where the group's waves break by the ratio the picture's white water is drawn by — and none
+// where it loses nothing (behind a bar, a face whose kept share does not fall). `power_w_m` is the
+// cell's loss over its width `length_m`, so a transect's records sum to the flux in less the flux
+// out whatever the cell (the sea's deep-water flux, times `incident` squared, times the fall of
+// `kept` squared). Body-local in x and z at the body's level, placed at the texel losing most, the
+// shore's direction there (across the arrival's gradient), the breaking height (the wave there,
+// at most 0.78 of the depth), the surf similarity over the texel's own foreshore slope, and the
+// train's period and arrival there, so a crest stands there at the water's clock `arrival_s + n
+// period_s` as the picture draws it. None for a body with no train.
 struct SurfRecord {
   Vec2 at{};
   Vec2 along{1.0f, 0.0f};
@@ -320,7 +324,21 @@ struct SurfRecord {
   f32 period_s = 0.0f;
   f32 arrival_s = 0.0f;
 };
+// The scan over a field already built (`water_surface_of`'s, as the GPU scene keeps it: one pass,
+// no build), and the form that builds the field first (the water's own cases).
+void water_surf_records(const SceneWater& water, const gfx::WaterSurface& surface,
+                        std::span<const f32> field, f64 cell_m, Vector<SurfRecord>& out);
 void water_surf_records(const SceneWater& water, f64 cell_m, Vector<SurfRecord>& out);
+// A GPU scene's records for a host (`GpuScene::surf_table`): mesh m's are `count[m]` from
+// `records[first[m]]`, body-local, scanned once a body mesh at the upload, 16 m cells; both spans
+// are empty, or one entry a mesh.
+struct SurfTable {
+  std::span<const SurfRecord> records;
+  std::span<const u32> first;
+  std::span<const u32> count;
+  i64 scan_ns = 0;  // what the scans cost the upload
+};
+inline constexpr f64 k_surf_cell_m = 16.0;
 
 // What a scene file said about one mesh besides its path: what to call it, which bytes it must
 // be, where it came from, and how to fit it. Parallel to `SceneDesc::meshes`, or empty.

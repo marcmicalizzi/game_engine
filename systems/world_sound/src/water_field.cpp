@@ -165,28 +165,14 @@ void water_config_from_tunables(FieldConfig& c) noexcept {
   c.water_reach_m = world_water_reach.get();
 }
 
-void WorldField::water_path(f64 dx, f64 dy, f64 dz, f64 height, f64 (&path)[8]) const noexcept {
-  if (!config_.path) {
-    for (f64& p : path)
-      p = 1.0;
-    return;
-  }
-  const f64 r3 = std::sqrt(dx * dx + dy * dy + dz * dz);
-  const f64 ground_m = std::sqrt(dx * dx + dz * dz);
-  const f64 under = canopy_path_m(dx, dz);
-  f64 ground[8];
-  ground_bands_db(height, k_ears_height_m, ground_m, config_.ground_g, ground);
-  constexpr f64 k_db_to_ln = -0.23025850929940456840;  // -ln(10) / 10
-  for (u32 b = 0; b < 8; ++b)
-    path[b] = std::exp((air_db_m_[b] * r3 + foliage_db_m_[b] * under + ground[b]) * k_db_to_ln);
-}
-
 void WorldField::take_water(const WaterSource& s) noexcept {
   if (!(s.total > 0.0)) return;
   if (water_.size() < config_.max_water) {
     water_.push_back(s);
     return;
   }
+  // Full: one source is dropped whichever it is — this one, or the farthest kept, which this one
+  // replaces — so the count is the sources sent past the cap, the same either way.
   ++stats_.water_dropped;
   if (config_.max_water == 0) return;
   // Full: the farthest kept goes if this one is nearer (a total order: distance, then key).
@@ -308,7 +294,7 @@ void WorldField::refresh_water(const WorldPos& listener) noexcept {
       const f64 dx = s.at.x - k.listener.x, dy = s.at.y - k.listener.y, dz = s.at.z - k.listener.z;
       s.dist = std::sqrt(dx * dx + dz * dz);
       if (dx * dx + dy * dy + dz * dz > f.config_.reach_m * f.config_.reach_m) return;
-      f.water_path(dx, dy + height, dz, height, s.path);
+      f.path_terms(dx, dy + height, dz, height, s.path);
       s.total = 0.0;
       for (u32 b = 0; b < 8; ++b) {
         s.band[b] = power * shape[b] * s.path[b];
@@ -351,7 +337,7 @@ void WorldField::refresh_water(const WorldPos& listener) noexcept {
       const f64 dx = s.at.x - k.listener.x, dy = s.at.y - k.listener.y, dz = s.at.z - k.listener.z;
       s.dist = std::sqrt(dx * dx + dz * dz);
       if (dx * dx + dy * dy + dz * dz > f.config_.reach_m * f.config_.reach_m) return;
-      f.water_path(dx, dy + k_surf_height_m, dz, k_surf_height_m, s.path);
+      f.path_terms(dx, dy + k_surf_height_m, dz, k_surf_height_m, s.path);
       s.total = 0.0;
       for (u32 i = 0; i < 8; ++i) {
         s.band[i] = power * shape[i] * s.path[i];
@@ -367,9 +353,10 @@ void WorldField::refresh_water(const WorldPos& listener) noexcept {
   stats_.stretches_seen = 0;
   stats_.surf_seen = 0;
   if (flow_.visit != nullptr)
-    flow_.visit(flow_.user, listener, config_.reach_m, StretchSink{&sink, &Sink::stretch});
-  if (surf_.visit != nullptr)
-    surf_.visit(surf_.user, listener, config_.reach_m, SurfSink{&sink, &Sink::surf});
+    flow_.visit(flow_.user, listener, config_.reach_m,
+                StretchSink{&sink, &Sink::stretch, config_.water_reach_m});
+  if (surf_.visit != nullptr)  // the surf is taken to `water_reach_m` (`Sink::surf`)
+    surf_.visit(surf_.user, listener, config_.water_reach_m, SurfSink{&sink, &Sink::surf});
   // Everything into its sector's bed, by power (the surf at its mean over a period).
   for (const WaterSource& s : water_)
     add_water_to_bed(s, listener, 1.0);

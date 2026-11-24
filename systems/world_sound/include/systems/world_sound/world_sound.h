@@ -176,9 +176,13 @@ struct Stretch {
 struct StretchSink {
   void* user = nullptr;
   void (*emit)(void* user, const Stretch& stretch) noexcept = nullptr;
+  // A stream (not a fall) whose middle is farther than this, less its half length, is not taken
+  // (`audio.world.water_reach_m`), so a host need not visit past it; 0: `reach_m`.
+  f64 stream_reach_m = 0.0;
 };
-/// **The host's flow table**: every stretch within `reach_m` of `centre`, from the solved channel
-/// description. Called at `audio.world.refresh_hz`, as the canopy table is.
+/// **The host's flow table**: every fall within `reach_m` of `centre` and every stream within the
+/// sink's `stream_reach_m`, from the solved channel description. Called at
+/// `audio.world.refresh_hz`, as the canopy table is; a host visits only what is in reach (S113).
 struct FlowSource {
   void* user = nullptr;
   void (*visit)(void* user, const WorldPos& centre, f64 reach_m, const StretchSink& sink) = nullptr;

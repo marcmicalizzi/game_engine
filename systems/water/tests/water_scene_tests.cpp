@@ -1021,11 +1021,14 @@ TEST_CASE("water: an open body's sea goes on past its outline to the horizon, an
   device.destroy();
 }
 
-// S113 (world_sound.md, "Running water and the surf"): where a body's train breaks, for a host's
-// ears — read from the field the GPU scene draws its waves from (`water_surface_of`, the same
-// function), so a record's arrival is the drawn train's at its texel. A still lake has no train and
-// no record; a lake under 7 m/s has records along its shore, each at the limit and in water.
-TEST_CASE("water: the surf records are where the drawn train breaks, and none without a train") {
+// S113 (world_sound.md, "Running water and the surf"; M3 of its review): the surf's power is the
+// wave energy flux the field loses, where it loses it — read from the field the GPU scene draws its
+// waves from (`water_surface_of`, the same function), so a record's arrival is the drawn train's at
+// its texel. A still lake has no train and no record; a lake under 7 m/s has records along its
+// shore, each in water where the field's `kept` share falls; the total does not depend on the
+// cell; a field that loses nothing (unbroken, or a kept share that holds level, as behind a bar) is
+// silent; and over a transect the records sum to the flux in less the flux out.
+TEST_CASE("water: the surf records are the flux the drawn train loses, where it loses it") {
   const test::TempDir tmp("water_surf_records");
   constexpr const char* k_large = R"({"size": 129, "extent": 1024, "seed": 2, "dune_height": 0,
       "basins": [{"center": [0, 0], "radius": 350, "depth": 10}]})";
@@ -1051,23 +1054,98 @@ TEST_CASE("water: the surf records are where the drawn train breaks, and none wi
   water_surf_records(lake, 16.0, records);
   MESSAGE("a 700 m lake under 7 m/s: " << records.size() << " surf records");
   REQUIRE(!records.empty());
-  // The same field, built as the GPU scene builds it: each record's arrival is its texel's.
+  // The same field, built as the GPU scene builds it: each record's arrival is its texel's, and
+  // the scan over it gives the same records the building form did.
   gfx::WaterSurface surface;
   Vector<f32> field;
   water_surface_of(lake, water_swash_numbers(lake), surface, field);
+  const std::span<const f32> view{field.data(), field.size()};
+  Vector<SurfRecord> scanned;
+  water_surf_records(lake, surface, view, 16.0, scanned);
+  REQUIRE(scanned.size() == records.size());
   const SceneWaterDepth& map = lake.depth;
-  for (const SurfRecord& r : records) {
+  const u32 size = map.size;
+  const auto texel_of = [&](u32 i, u32 j) {
+    return field.data() + u64{gfx::k_water_field_channels} * (u64{j} * size + i);
+  };
+  f64 total16 = 0.0;
+  for (u32 k = 0; k < records.size(); ++k) {
+    const SurfRecord& r = records[k];
+    CHECK(r.power_w_m == scanned[k].power_w_m);
     const u32 i = static_cast<u32>(std::lround((r.at.x - map.origin.x) / map.texel_m));
     const u32 j = static_cast<u32>(std::lround((r.at.y - map.origin.y) / map.texel_m));
-    REQUIRE(i < map.size);
-    REQUIRE(j < map.size);
-    const f32* t = field.data() + u64{gfx::k_water_field_channels} * (u64{j} * map.size + i);
+    REQUIRE(i < size);
+    REQUIRE(j < size);
+    const f32* t = texel_of(i, j);
     CHECK(r.arrival_s == t[1]);
     CHECK(t[0] > 0.0f);  // in the water
-    CHECK(r.height_m == doctest::Approx(0.78f * t[0]));
+    // Where the field takes something: a kept share under one, and a neighbour that kept more.
+    CHECK(t[6] < 1.0f);
+    f32 most = 0.0f;
+    if (i > 0) most = std::max(most, texel_of(i - 1, j)[6]);
+    if (i + 1 < size) most = std::max(most, texel_of(i + 1, j)[6]);
+    if (j > 0) most = std::max(most, texel_of(i, j - 1)[6]);
+    if (j + 1 < size) most = std::max(most, texel_of(i, j + 1)[6]);
+    CHECK(most > t[6]);
+    CHECK(r.height_m > 0.0f);
+    CHECK(r.height_m <= 0.78f * t[0] * 1.0001f);  // at most the breaking limit there
     CHECK(r.period_s == surface.period_s);
     CHECK(r.power_w_m > 0.0f);
     CHECK(std::fabs(r.along.x * r.along.x + r.along.y * r.along.y - 1.0f) < 1e-4f);
+    total16 += static_cast<f64>(r.power_w_m) * static_cast<f64>(r.length_m);
+  }
+  // **The total does not depend on the cell**: half the cell, and twice, lose the same watts to
+  // within a part in ten thousand (each texel's loss is counted once in whichever cell holds it;
+  // what differs is the f32 a record keeps and the -60 dB floor a cell is silent under).
+  for (const f64 cell : {8.0, 32.0}) {
+    Vector<SurfRecord> other;
+    water_surf_records(lake, surface, view, cell, other);
+    f64 total = 0.0;
+    for (const SurfRecord& r : other)
+      total += static_cast<f64>(r.power_w_m) * static_cast<f64>(r.length_m);
+    MESSAGE(cell << " m cells: " << other.size() << " records, " << total << " W against "
+                 << total16 << " W at 16 m");
+    CHECK(std::fabs(total - total16) <= 1e-4 * total16);
+  }
+  // **Silent where the field loses nothing**: the train unbroken everywhere, and a kept share
+  // that holds level (what a trough behind a bar carries across it).
+  Vector<f32> whole = field;
+  for (u32 at = 0; at < size * size; ++at)
+    whole[u64{gfx::k_water_field_channels} * at + 6] = 1.0f;
+  water_surf_records(lake, surface, {whole.data(), whole.size()}, 16.0, scanned);
+  CHECK(scanned.empty());
+  for (u32 at = 0; at < size * size; ++at)
+    whole[u64{gfx::k_water_field_channels} * at + 6] = 0.4f;
+  water_surf_records(lake, surface, {whole.data(), whole.size()}, 16.0, scanned);
+  CHECK(scanned.empty());
+  // **A transect**: a plane beach of the lake's grid, every texel water, the train arriving along
+  // +x (an arrival rising with x), nothing refracted, and the kept share falling from 1 to 0.3 over
+  // the middle third. Each row's losses telescope: the records sum to the flux in less the flux
+  // out, (1 - 0.09) of the sea's deep-water flux across the beach's width, at any cell.
+  Vector<f32> beach = field;
+  for (u32 j = 0; j < size; ++j) {
+    for (u32 i = 0; i < size; ++i) {
+      f32* t = beach.data() + u64{gfx::k_water_field_channels} * (u64{j} * size + i);
+      const f64 x = static_cast<f64>(i) / static_cast<f64>(size - 1);
+      t[0] = static_cast<f32>(10.0 - 9.5 * x);
+      t[1] = static_cast<f32>(2.0 * i);
+      t[5] = 1.0f;
+      const f64 into = std::clamp((x - 1.0 / 3.0) * 3.0, 0.0, 1.0);
+      t[6] = static_cast<f32>(1.0 - 0.7 * into);
+    }
+  }
+  const f64 h0 = static_cast<f64>(surface.height_m);
+  const f64 flux0 = 998.2 * 9.81 * 9.81 * h0 * h0 * static_cast<f64>(surface.period_s) /
+                    (64.0 * 3.14159265358979323846);
+  const f64 width = static_cast<f64>(size) * static_cast<f64>(map.texel_m);
+  const f64 lost = flux0 * (1.0 - static_cast<f64>(0.3f) * static_cast<f64>(0.3f)) * width;
+  for (const f64 cell : {8.0, 16.0, 64.0}) {
+    water_surf_records(lake, surface, {beach.data(), beach.size()}, cell, scanned);
+    f64 total = 0.0;
+    for (const SurfRecord& r : scanned)
+      total += static_cast<f64>(r.power_w_m) * static_cast<f64>(r.length_m);
+    MESSAGE("the transect at " << cell << " m cells: " << total << " W against " << lost);
+    CHECK(std::fabs(total - lost) <= 1e-4 * lost);
   }
 }
 #endif

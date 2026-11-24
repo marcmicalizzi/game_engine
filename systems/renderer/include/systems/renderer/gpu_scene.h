@@ -216,6 +216,14 @@ class GpuScene {
     ground_time_s_ = time_s;
   }
   f64 ground_time_s() const noexcept { return ground_time_s_; }
+  // **The surf's records for a host's ears** (S113; scene.h, `SurfTable`): scanned once a body
+  // mesh from the field the upload built, kept for the scene's life, so the ears build no field.
+  SurfTable surf_table() const noexcept {
+    return {{water_surf_.data(), water_surf_.size()},
+            {water_surf_first_.data(), water_surf_first_.size()},
+            {water_surf_count_.data(), water_surf_count_.size()},
+            water_surf_ns_};
+  }
   // **The scene's epoch** (clocks.h): its terrain's `time` as the scene was loaded (a request's
   // `ground_time_s` included), 0 without a terrain — where the sky stands for a frame that names no
   // hour of its own, whatever a time-lapse has since done to the ground.
@@ -2427,6 +2435,10 @@ class GpuScene {
   Vector<gfx::BufferResource> water_fields_;
   Vector<u32> water_surface_of_;
   Vector<u32> water_deforms_;
+  Vector<SurfRecord> water_surf_;  // S113: the surf's records by mesh (`surf_table`)
+  Vector<u32> water_surf_first_;   // by mesh: where its records start
+  Vector<u32> water_surf_count_;   // and how many (0: not a body, or none)
+  i64 water_surf_ns_ = 0;
   // W136 (scene_wind.h): where each body's wave table sits in the material table (by mesh), the
   // bodies the scene's wind or the hand wind redraws, and this frame's copies.
   struct WaterWaveEntry {

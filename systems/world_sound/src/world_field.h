@@ -179,9 +179,10 @@ class WorldField {
   void refresh_water(const WorldPos& listener) noexcept;
   void take_water(const WaterSource& s) noexcept;
   void add_water_to_bed(const WaterSource& s, const WorldPos& listener, f64 sign) noexcept;
-  // The path's eight bands from a source `dx`, `dy`, `dz` from the listener at `height` over its
-  // ground, as a crown's is taken.
-  void water_path(f64 dx, f64 dy, f64 dz, f64 height, f64 (&path)[8]) const noexcept;
+  // **The path's eight bands** (S114) from a source `dx`, `dy`, `dz` from the listener at `height`
+  // over its ground: the air over the whole path, the forest over its share under canopy, the
+  // ground's term; 1 a band with `audio.world.path` off. A crown's and the water's alike.
+  void path_terms(f64 dx, f64 dy, f64 dz, f64 height, f64 (&path)[8]) const noexcept;
   // Every tick: each water voice's bands (the surf's envelope at the water's clock), and the
   // bubbles a trickle's voice strikes.
   void tick_water(const WorldPos& frame, bool frame_moved) noexcept;
