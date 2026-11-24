@@ -16,7 +16,7 @@
       "file": "systems/renderer/src/scene_renderer.cpp",
       "function": "SceneRenderer::record_frame",
       "why": "every pass and every feature flag of a frame",
-      "ceiling": 3928
+      "ceiling": 3931
     },
     {
       "id": "renderer.record_frame.add_pass",
@@ -32,21 +32,21 @@
       "measure": "file-lines",
       "file": "systems/renderer/src/gpu_scene.cpp",
       "why": "every feature's GPU state",
-      "ceiling": 6976
+      "ceiling": 6941
     },
     {
       "id": "renderer.gpu_scene_h.lines",
       "measure": "file-lines",
       "file": "systems/renderer/include/systems/renderer/gpu_scene.h",
       "why": "every feature's GPU state",
-      "ceiling": 2579
+      "ceiling": 2616
     },
     {
       "id": "engine_view.main_cpp.lines",
       "measure": "file-lines",
       "file": "apps/engine_view/main.cpp",
       "why": "every play feature and every flag",
-      "ceiling": 7838
+      "ceiling": 7866
     },
     {
       "id": "engine_view.run_view.lines",
@@ -54,7 +54,7 @@
       "file": "apps/engine_view/main.cpp",
       "function": "run_view",
       "why": "the windowed loop",
-      "ceiling": 3333
+      "ceiling": 3339
     },
     {
       "id": "engine_view.run_offscreen.lines",
@@ -62,7 +62,7 @@
       "file": "apps/engine_view/main.cpp",
       "function": "run_offscreen",
       "why": "the offscreen loop",
-      "ceiling": 1216
+      "ceiling": 1224
     },
     {
       "id": "gfx.resolve_modules",
@@ -107,19 +107,19 @@
       "id": "page:docs/subsystems/renderer.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/renderer.md",
-      "ceiling": 1540536
+      "ceiling": 1568165
     },
     {
       "id": "page:docs/subsystems/apps.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/apps.md",
-      "ceiling": 786103
+      "ceiling": 788754
     },
     {
       "id": "page:docs/subsystems/gfx.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/gfx.md",
-      "ceiling": 401418
+      "ceiling": 409642
     },
     {
       "id": "page:docs/subsystems/geometry.md",
@@ -149,7 +149,7 @@
       "id": "page:docs/subsystems/water.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/water.md",
-      "ceiling": 290434
+      "ceiling": 301626
     },
     {
       "id": "page:docs/subsystems/protocol.md",
@@ -221,13 +221,13 @@
       "id": "page:docs/subsystems/texture.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/texture.md",
-      "ceiling": 120922
+      "ceiling": 133260
     },
     {
       "id": "page:docs/ci/what-to-run.md",
       "measure": "page-bytes",
       "file": "docs/ci/what-to-run.md",
-      "ceiling": 122705
+      "ceiling": 122998
     },
     {
       "id": "page:docs/subsystems/animation.md",
@@ -245,7 +245,7 @@
       "id": "page:docs/subsystems/audio.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/audio.md",
-      "ceiling": 119182
+      "ceiling": 121282
     }
   ],
   "rebaselines": [
@@ -4500,6 +4500,167 @@
           "id": "page:AGENTS.md",
           "old": 75901,
           "new": 76491
+        }
+      ]
+    },
+    {
+      "date": "2026-11-24",
+      "by": "Marc Micalizzi",
+      "reason": "",
+      "commit": "0ac9fbaf9",
+      "folded": [
+        {
+          "name": "R205",
+          "reason": "R205 second leg and its mend: the early resolve compile is started and destroyed in both engine-view loops and reported in the load summary's early block, and renderer.md, gfx.md, apps.md and water.md gain the early compile, what its prediction cannot know, the statistics switch's caveat and the water's every-pixel reading qualified where it stood",
+          "date": "2026-11-24",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.gpu_scene_h.lines": 11,
+            "engine_view.main_cpp.lines": 24,
+            "engine_view.run_view.lines": 5,
+            "engine_view.run_offscreen.lines": 7,
+            "page:docs/subsystems/renderer.md": 8432,
+            "page:docs/subsystems/apps.md": 1402,
+            "page:docs/subsystems/gfx.md": 3160,
+            "page:docs/subsystems/water.md": 347
+          }
+        },
+        {
+          "name": "R208",
+          "reason": "R208 replaces R207's one-key section with the store by part: why parts and packs, the assembly by bytes, the pruning, the measured floor, what a tile admitted after the load does; R209's two cases; the read's mends: what an over-budget load reads and holds and its case, the triangle-count miss, when a pack is removed as damaged, the temporaries' age rule everywhere, three generations' cost, rows R211 and R212; and the pixel a load with no root draws apart, followed to the load path with what was ruled out",
+          "date": "2026-11-24",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 10065
+          }
+        },
+        {
+          "name": "R87",
+          "reason": "R87's mend: the review's corrections on the Lamps and Lights by reach sections (every fire, the room's bytes, the eye rule, the worst build, the 70 to 322 rays, the new cases)",
+          "date": "2026-11-24",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 3,
+            "page:docs/subsystems/renderer.md": 7773,
+            "page:docs/subsystems/gfx.md": 938
+          }
+        },
+        {
+          "name": "S113",
+          "reason": "S113 documents the water's sound where its readers look: audio.md the voice's struck resonators and the stage note, water.md the field's new reader (the surf records), apps.md engine-view's flow and surf tables; and its mend (M1) has the GPU scene scan each body mesh once for the ears in the upload that builds the field (gpu_scene: 24 of the 69 lines the move of water_surface_of left; the surf table and its members in gpu_scene.h) and main.cpp hand that table to the session's sound after the upload at both loads; the mend's pages: water.md the reader's new contract (the kept share, the scan in the upload), apps.md the surf handed over after the upload and the cells",
+          "date": "2026-11-24",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.gpu_scene_cpp.lines": -45,
+            "renderer.gpu_scene_h.lines": 13,
+            "engine_view.main_cpp.lines": 4,
+            "engine_view.run_view.lines": 1,
+            "engine_view.run_offscreen.lines": 1,
+            "page:docs/subsystems/apps.md": 1249,
+            "page:docs/subsystems/water.md": 1845,
+            "page:docs/subsystems/audio.md": 2100
+          }
+        },
+        {
+          "name": "S118",
+          "reason": "the clocks table names the gust's clock (world, S118) beside the mean's (sky): the one row a reader of the two clocks needs",
+          "date": "2026-11-23",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.gpu_scene_cpp.lines": -1,
+            "page:docs/subsystems/renderer.md": 328
+          }
+        },
+        {
+          "name": "W161",
+          "reason": "W161: water.md says that a bed under any water is wet by Lekner and Dorf's factor, what the factor counts under the volume tier and why the top's second count is not mended in one place (W164), that every water ambient term reads the world-space cache at the surface point and what that costs the forest's resolve, and that a reach is shaded on its vertices' normals, with the bent pair's case; renderer.md names the water among the cache's readers; the form that asked the surface's ambient once a place was measured on the forest and refused for the frame (R205); what-to-run.md lists the two water modules W161 made heavy; water.md gives what W161 did to the forest staging's streams in pictures, the water-to-ground luminance ratios before and after at three places",
+          "date": "2026-11-23",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 523,
+            "page:docs/subsystems/water.md": 9000,
+            "page:docs/ci/what-to-run.md": 293
+          }
+        },
+        {
+          "name": "W167",
+          "reason": "W47 stage 1: the held textures' chunks, moves, the device budget's ceiling and tile sharing in the load path and GpuScene's declarations; gfx.md's 'Images in chunks', texture.md's 'Stage 3', renderer.md's tile sharing. The mend after the read: the drain, the budget's arithmetic, a ceiling's frames, the chunk limits and the bound's tile defect said on texture.md; the pool's 64-chunk limit and its unasked dedicated preference on gfx.md",
+          "date": "2026-11-24",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.gpu_scene_cpp.lines": 11,
+            "renderer.gpu_scene_h.lines": 13,
+            "page:docs/subsystems/renderer.md": 510,
+            "page:docs/subsystems/gfx.md": 4126,
+            "page:docs/subsystems/texture.md": 12338
+          }
+        }
+      ],
+      "changes": [
+        {
+          "id": "renderer.record_frame.lines",
+          "old": 3928,
+          "new": 3931
+        },
+        {
+          "id": "renderer.gpu_scene_cpp.lines",
+          "old": 6976,
+          "new": 6941
+        },
+        {
+          "id": "renderer.gpu_scene_h.lines",
+          "old": 2579,
+          "new": 2616
+        },
+        {
+          "id": "engine_view.main_cpp.lines",
+          "old": 7838,
+          "new": 7866
+        },
+        {
+          "id": "engine_view.run_view.lines",
+          "old": 3333,
+          "new": 3339
+        },
+        {
+          "id": "engine_view.run_offscreen.lines",
+          "old": 1216,
+          "new": 1224
+        },
+        {
+          "id": "page:docs/subsystems/renderer.md",
+          "old": 1540536,
+          "new": 1568165
+        },
+        {
+          "id": "page:docs/subsystems/apps.md",
+          "old": 786103,
+          "new": 788754
+        },
+        {
+          "id": "page:docs/subsystems/gfx.md",
+          "old": 401418,
+          "new": 409642
+        },
+        {
+          "id": "page:docs/subsystems/water.md",
+          "old": 290434,
+          "new": 301626
+        },
+        {
+          "id": "page:docs/subsystems/texture.md",
+          "old": 120922,
+          "new": 133260
+        },
+        {
+          "id": "page:docs/ci/what-to-run.md",
+          "old": 122705,
+          "new": 122998
+        },
+        {
+          "id": "page:docs/subsystems/audio.md",
+          "old": 119182,
+          "new": 121282
         }
       ]
     }
