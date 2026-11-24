@@ -107,8 +107,8 @@ void place(u32 tile, u32 mesh, Vector<SceneInstance>& out) {
 
 // The slab and a spare (so both loads are merged, as mesh_room_tests.cpp explains), and with
 // `whole` every tile's rock and its instances.
-// With `spare_look` the spare carries that look, so the load holds the textures a tile dealt the same
-// set names (W167).
+// With `spare_look` the spare carries that look, so the load holds the textures a tile dealt the
+// same set names (W167).
 SceneDesc describe(const test::TempDir& tmp, bool whole, u32 look, u32 spare_look = 0) {
   SceneDesc desc;
   const scene_gen::PlacementMesh base = slab();
@@ -873,7 +873,7 @@ TEST_CASE("mesh textures: a tile's foliage material arriving after the first fra
 // records too** (W167; texture.md, "Stage 3: the bytes go back to the device", item 5). The spare
 // the load holds carries tile 0's look, so the load holds the base colour map tiles 0 and 2 are
 // dealt and the normal map all four share (held by level under a floor of 4 texels, since the
-// fixture's maps are small). Under a ceiling of 10 KiB with a hold of 0.25 s, the
+// fixture's maps are small). Under a ceiling of 1 KiB with a hold of 0.25 s, the
 // four rocks admitted upload only tile 1's and 3's base colour map — the other two are the load's,
 // at their current pair — and the trim swaps the held textures down to what the view asks within
 // the hold while the frames run. The last frame is the scene read whole, byte for byte: every
@@ -901,9 +901,10 @@ TEST_CASE("mesh textures: under a texture ceiling a tile mesh shares the load's 
     }
     ~Scope() { tunable->reset(); }
   };
-  const Scope cap("renderer.textures.ceiling_mib", "0.01");
+  const Scope cap("renderer.textures.ceiling_mib", "0.001");
   const Scope hold("renderer.textures.hold_s", "0.25");
-  // The fixture's maps are small: a floor of 4 texels holds them by level, so the trim has levels to take.
+  // The fixture's maps are small: a floor of 4 texels holds them by level, so the trim has levels
+  // to take.
   const Scope floor("renderer.textures.floor", "4");
   Rig held;
   REQUIRE_MESSAGE(held.build(gpu.device, describe(tmp, false, look, look), plain(), true, look),
@@ -914,7 +915,7 @@ TEST_CASE("mesh textures: under a texture ceiling a tile mesh shares the load's 
   REQUIRE_MESSAGE(held.hand_over(k_in_order), held.error);
   const GpuScene::TextureUse use = held.scene.texture_use();
   MESSAGE("tile textures uploaded " << use.uploaded << ", shared " << use.shared << "; held "
-                                     << held.scene.texture_bound_use().managed);
+                                    << held.scene.texture_bound_use().managed);
   CHECK(held.scene.texture_bound_use().managed == 2);
   CHECK(use.uploaded == 1);  // tile 1's and 3's base colour map; the rest is the load's
   CapturedFrame last;

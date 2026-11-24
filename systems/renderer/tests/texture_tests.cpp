@@ -1508,6 +1508,51 @@ TEST_CASE("renderer: a trim gives its chunk back, and a trim or a promotion allo
   CHECK(buffers == 0);
 }
 
+// **A device budget names the ceiling** (W167; texture.md, "Stage 3: the bytes go back to the
+// device", item 3). With no `ceiling_mib`, `device_budget_mib` sets the textures' ceiling to the
+// budget less what the rest of the process holds on the device, at the first frame and every 10 s
+// of the frames' clock. A budget of 1 MiB is under what the rest holds, so the ceiling is the least
+// (one byte) and the quad's map goes to its floor once the hold has passed; a budget of 64 GiB
+// leaves room for everything, and nothing is trimmed.
+TEST_CASE("renderer: a device budget names the texture ceiling from what the rest holds") {
+  const test::TempDir tmp("renderer_texture_budget");
+  const std::filesystem::path dir = tmp.native();
+  REQUIRE(write_quad(dir));
+  Vector<u8> png;
+  REQUIRE(write_image(dir, k_bound_image, smooth_image(k_bound_image), png));
+  const std::string mesh = (dir / "quad.gltf").string();
+  const std::string ddc = (dir / "ddc").string();
+  TunableScope hold("renderer.textures.hold_s", "0.25");
+  for (const char* budget : {"1", "65536"}) {
+    INFO("budget " << budget << " MiB");
+    TunableScope named("renderer.textures.device_budget_mib", budget);
+    Harness h;
+    if (!h.build(mesh, ddc)) {
+      MESSAGE("skipped: " << h.skip);
+      return;
+    }
+    REQUIRE(h.scene.texture_bound_active());
+    gfx::MemoryBudget memory;
+    if (!h.device.memory_budget(memory) || !memory.valid) {
+      MESSAGE("skipped: the device reports no memory budget");
+      return;
+    }
+    for (u32 k = 0; k < 60; ++k)
+      (void)h.shot(30.0f);
+    const TextureBoundUse& use = h.scene.texture_bound_use();
+    MESSAGE("budget " << budget << " MiB: ceiling " << use.ceiling << " bytes, top "
+                      << resident_top(h.scene) << ", " << use.demotions << " demotions");
+    CHECK(use.budget == std::strtoull(budget, nullptr, 10) * 1024ull * 1024ull);
+    if (std::string(budget) == "1") {
+      CHECK(use.ceiling == 1);
+      CHECK(resident_top(h.scene) == 3);
+    } else {
+      CHECK(use.ceiling > (u64{60} << 30));
+      CHECK(use.demotions == 0);
+      CHECK(resident_top(h.scene) == 0);
+    }
+  }
+}
 // **The embedded image bytes go once the textures are built** (W51-3; renderer.md): a quad that
 // embeds its image as a data URI, loaded through a derived-data root, keeps none of the image's
 // bytes after the load's texture pass — on the first run, which builds the `.tex`, and on the next,

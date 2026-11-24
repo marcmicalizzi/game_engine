@@ -722,7 +722,8 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
   // chunks and the other textures' images), worked out at the first frame, at a cut and every 10 s
   // of the frames' clock. A driver query: never more often than that.
   if (s.budget != 0 && residency_ceiling_mib.get() <= 0.0 &&
-      (settle || s.now - s.budget_at >= 10.0)) {
+      (cut ||
+       s.now - s.budget_at >= 10.0)) {  // never `settle`: without the bound it is every frame
     s.budget_at = s.now;
     gfx::MemoryBudget memory;
     if (device_->memory_budget(memory) && memory.valid) {
