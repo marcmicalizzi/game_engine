@@ -20,7 +20,9 @@
 
 #include <core/hash/hash.h>
 #include <core/math/math.h>
+#include <core/memory/memory.h>
 #include <domain/gfx/device.h>
+#include <domain/gfx/resources.h>
 #include <domain/texture/texture_build.h>
 #include <domain/texture/texture_file.h>
 #include <foundation/image/png.h>
@@ -1400,6 +1402,110 @@ TEST_CASE("renderer: a texture trimmed then asked again ends on the whole pictur
   CHECK(identical_from < k_back / 2);
   CHECK(resident_top(h.scene) == 0);
   CHECK(use.promotions >= 1);
+}
+
+// **A trim gives its bytes back to the device, and neither a trim nor a promotion allocates in a
+// steady frame** (W167, W47's stage 1; texture.md, "Stage 3: the bytes go back to the device").
+// The quad's 1,024-texel map loaded whole under a 10 KiB ceiling, its image in the held textures'
+// chunks (1 MiB here, so the whole chain, 1.4 MB, takes a chunk of its own size), the hold 0.25 s.
+// After ten frames near, a glance away shorter than the hold and back reads nothing again (no
+// demotion, no promotion). Then two cycles of the same walk: from 30 m until the trim has taken it
+// to the floor, whose image goes into a standard chunk while the whole chain's chunk goes back, and
+// near again until a promotion has brought the levels back. The first cycle is the warm-up (the
+// standard chunk is made, lists grow to what the cycle needs); the second is counted: the whole
+// chain's chunk goes back again — one live chunk of 1 MiB, counted by the pool and on the driver's
+// own usage for the process — and every frame of it, the trim's and the promotion's included, is
+// begun and submitted with the engine's allocations and device buffers counted on this thread:
+// zero (their staging is the ring, their tables reserved at the load). The frames do not wait for
+// the device, so a cycle runs until its read has landed, at most 2,000 frames.
+TEST_CASE("renderer: a trim gives its chunk back, and a trim or a promotion allocates nothing") {
+  const test::TempDir tmp("renderer_texture_chunks");
+  const std::filesystem::path dir = tmp.native();
+  REQUIRE(write_quad(dir));
+  Vector<u8> png;
+  REQUIRE(write_image(dir, k_bound_image, smooth_image(k_bound_image), png));
+  const std::string mesh = (dir / "quad.gltf").string();
+  const std::string ddc = (dir / "ddc").string();
+  TunableScope hold("renderer.textures.hold_s", "0.25");
+  TunableScope cap("renderer.textures.ceiling_mib", "0.01");
+  TunableScope chunk("renderer.textures.chunk_mib", "1");
+  Harness h;
+  if (!h.build(mesh, ddc)) {
+    MESSAGE("skipped: " << h.skip);
+    return;
+  }
+  REQUIRE(h.scene.texture_bound_active());
+  constexpr u64 k_chunk = 1024ull * 1024ull;
+  const TextureBoundUse loaded = h.scene.texture_bound_use();
+  CHECK(loaded.chunks == 1);
+  CHECK(loaded.chunk_bytes > k_chunk);  // the whole chain's chunk, of its own size
+  CHECK(resident_top(h.scene) == 0);
+  bool counting = false;
+  u64 allocations = 0;
+  u64 buffers = 0;
+  const auto frame = [&](f32 distance) {
+    FrameDesc desc;
+    desc.camera.position = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, distance});
+    desc.camera.target = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, 0.0f});
+    desc.camera.fov_y = k_fov;
+    desc.view_mode = k_albedo_view;
+    const u64 a0 = mem::allocations_on_thread();
+    const u64 b0 = gfx::buffers_created_on_thread();
+    h.renderer.begin_frame();
+    std::string error;
+    const bool ok = h.renderer.submit_frame(desc, &error) != 0;
+    if (counting) {
+      allocations += mem::allocations_on_thread() - a0;
+      buffers += gfx::buffers_created_on_thread() - b0;
+    }
+    REQUIRE_MESSAGE(ok, error);
+  };
+  // Frames from `distance` until the quad's texture stands at `top`, then eight more (the old
+  // image leaves `k_joint_slots + 1` frames after its swap); false past 2,000.
+  const auto walk_until = [&](f32 distance, u32 top) {
+    u32 k = 0;
+    for (; k < 2000 && resident_top(h.scene) != top; ++k)
+      frame(distance);
+    for (u32 j = 0; j < 8; ++j)
+      frame(distance);
+    return k < 2000;
+  };
+  for (u32 k = 0; k < 10; ++k)
+    (void)h.shot(k_near_m);  // what grows with what a frame holds grows here
+  // A glance away within the hold, and back: nothing is read again.
+  const u64 swaps = h.scene.texture_bound_use().promotions + h.scene.texture_bound_use().demotions;
+  for (u32 k = 0; k < 6; ++k)
+    frame(30.0f);
+  for (u32 k = 0; k < 6; ++k)
+    frame(k_near_m);
+  CHECK(h.scene.texture_bound_use().promotions + h.scene.texture_bound_use().demotions == swaps);
+  // The warm-up cycle.
+  REQUIRE(walk_until(30.0f, 3));
+  REQUIRE(walk_until(k_near_m, 0));
+  // The counted one.
+  counting = true;
+  const TextureBoundUse whole = h.scene.texture_bound_use();
+  gfx::MemoryBudget before;
+  const bool budget = h.device.memory_budget(before) && before.valid;
+  REQUIRE(walk_until(30.0f, 3));
+  const TextureBoundUse trimmed = h.scene.texture_bound_use();
+  gfx::MemoryBudget after;
+  if (budget) REQUIRE(h.device.memory_budget(after));
+  MESSAGE("trimmed: chunks " << trimmed.chunks << " of " << trimmed.chunk_bytes << " bytes (whole "
+                             << whole.chunks << " of " << whole.chunk_bytes << "), "
+                             << trimmed.chunks_freed - whole.chunks_freed
+                             << " given back; the driver's usage " << before.used_bytes << " -> "
+                             << after.used_bytes);
+  CHECK(trimmed.demotions == whole.demotions + 1);
+  CHECK(trimmed.chunks == 1);
+  CHECK(trimmed.chunk_bytes == k_chunk);
+  CHECK(trimmed.chunks_freed == whole.chunks_freed + 1);
+  CHECK(whole.chunk_bytes == trimmed.chunk_bytes + loaded.chunk_bytes);
+  if (budget) CHECK(after.used_bytes + loaded.chunk_bytes / 2 <= before.used_bytes);
+  REQUIRE(walk_until(k_near_m, 0));
+  CHECK(h.scene.texture_bound_use().promotions == whole.promotions + 1);
+  CHECK(allocations == 0);
+  CHECK(buffers == 0);
 }
 
 // **The embedded image bytes go once the textures are built** (W51-3; renderer.md): a quad that

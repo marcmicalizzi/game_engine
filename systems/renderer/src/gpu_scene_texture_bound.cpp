@@ -95,6 +95,22 @@ tunables::Float residency_hold_s{
     "Seconds of the frames' own clock a level stays after the feedback last asked for it or it was "
     "brought in: under a ceiling, nothing younger is trimmed (a minimum age, not a clock)"};
 
+// W167 (W47's stage 1; texture.md, "Stage 3: the bytes go back to the device").
+tunables::Int residency_chunk_mib{
+    "renderer.textures.chunk_mib", 64, 1, 4'096,
+    "MiB of a chunk of the device memory the held textures' images are placed in: a chunk goes "
+    "back "
+    "to the device when its last image goes, so a trim's bytes leave the driver's usage. Read once "
+    "per load"};
+tunables::Int residency_device_budget_mib{
+    "renderer.textures.device_budget_mib", 0, 0, 1 << 20,
+    "MiB of the device the process may hold: with no `ceiling_mib` named, the textures' ceiling is "
+    "this less what everything else holds on the device, worked out at the first frame, at a cut "
+    "and "
+    "every 10 s of the frames' clock (0, the default: none named, and the ceiling is "
+    "`ceiling_mib`'s "
+    "alone). Read once per load"};
+
 constexpr u32 k_spare_pairs = 64;  // pairs a promotion takes while its old one waits out the frames
 constexpr u64 aligned16(u64 v) noexcept { return (v + 15) & ~u64{15}; }
 constexpr f64 k_never = 1.0e30;  // a mesh no instance places: it asks nothing
@@ -111,13 +127,16 @@ u32 floor_top_of(u32 width, u32 height, u32 levels, u32 floor) noexcept {
 void reader(TextureBoundState* s) {
   std::unique_lock<std::mutex> lock(s->mutex);
   for (;;) {
-    s->wake.wait(lock, [s] { return s->stop || !s->queue.empty(); });
+    s->wake.wait(lock, [s] {
+      return s->stop || (!s->queue.empty() && (s->in_hand == 0 || s->in_hand < s->in_hand_bound));
+    });
     if (s->stop) return;
     TextureBoundState::Read read = std::move(s->queue.back());
     s->queue.pop_back();
     lock.unlock();
-    read.ok = texture::read_texture_file_levels(read.path, read.first, read.data, nullptr);
+    read.ok = texture::read_texture_file_levels(*read.path, read.first, read.data, nullptr);
     lock.lock();
+    s->in_hand += read.data.data.size() + read.data.normal_variance.size();
     s->done.push_back(std::move(read));
   }
 }
@@ -132,7 +151,10 @@ const u32* find_held(const TextureBoundState& s, u64 key) noexcept {
 }
 }  // namespace
 
-bool texture_bound_enabled() { return bound_on.get() || residency_ceiling_mib.get() > 0.0; }
+bool texture_bound_enabled() {
+  return bound_on.get() || residency_ceiling_mib.get() > 0.0 ||
+         residency_device_budget_mib.get() > 0;
+}
 
 namespace {
 // Bytes a 4x4 block takes in a texture's format (BC1 and BC4 eight, the rest sixteen).
@@ -149,6 +171,16 @@ u64 level_bytes_of(const TextureBoundState::Texture& tex, u32 level) noexcept {
                      ((texture::texture_level_extent(tex.height, level) + 3) / 4);
   return blocks * (block_bytes(tex.format) + (tex.variance ? 8u : 0u));
 }
+// The chunks' account into the use a test and a measurement read (W167).
+void sync_chunk_use(TextureBoundState& s) noexcept {
+  const gfx::ImageChunkUse chunks = s.chunks.use();
+  s.use.chunks = chunks.chunks;
+  s.use.chunk_bytes = chunks.chunk_bytes;
+  s.use.chunk_used_bytes = chunks.used_bytes;
+  s.use.chunks_made = chunks.made;
+  s.use.chunks_freed = chunks.freed;
+  s.use.most_chunk_bytes = chunks.most_chunk_bytes;
+}
 u64 chain_bytes_from(const TextureBoundState::Texture& tex, u32 top) noexcept {
   u64 bytes = 0;
   for (u32 l = top; l < tex.levels; ++l)
@@ -164,6 +196,86 @@ void GpuScene::TextureBoundDelete::operator()(TextureBoundState* state) const no
 const TextureBoundUse& GpuScene::texture_bound_use() const noexcept {
   static const TextureBoundUse none{};
   return texture_bound_ != nullptr ? texture_bound_->use : none;
+}
+
+gfx::ImageChunks* GpuScene::texture_bound_chunks() noexcept {
+  return texture_bound_ != nullptr && texture_bound_->chunks.valid() ? &texture_bound_->chunks
+                                                                     : nullptr;
+}
+
+u8* GpuScene::staged_bytes_of(gfx::BufferHandle buffer) noexcept {
+  if (staging_ring_.mapped != nullptr && staging_ring_.buffer == buffer)
+    return static_cast<u8*>(staging_ring_.mapped);
+  for (const gfx::BufferResource& own : pending_staging_)
+    if (own.buffer == buffer) return static_cast<u8*>(own.mapped);
+  return nullptr;
+}
+
+u32 GpuScene::texture_bound_slot(u64 key) const noexcept {
+  if (texture_bound_ == nullptr || texture_bound_->bound) return ~0u;
+  const u32* at = find_held(*texture_bound_, key);
+  if (at == nullptr || !texture_bound_->textures[*at].placed) return ~0u;
+  return texture_bound_->first_slot + 2 * texture_bound_->textures[*at].pair;
+}
+
+void GpuScene::texture_bound_admitted(u32 first_material,
+                                      std::span<const gfx::ResolveMaterial> made) {
+  if (texture_bound_ == nullptr || texture_bound_->bound) return;
+  TextureBoundState& s = *texture_bound_;
+  for (u32 e = 0; e < made.size(); ++e) {
+    const gfx::ResolveMaterial& record = made[e];
+    u32 copy = ~0u;
+    for (const u32 slot :
+         {record.albedo_texture, record.metallic_roughness_texture, record.normal_texture,
+          record.occlusion_texture, record.emissive_texture}) {
+      if (slot < s.first_slot || slot >= s.first_slot + 2 * s.pairs) continue;
+      if (((slot - s.first_slot) & 1u) != 0) continue;  // a variance slot is named by its normal's
+      const u32 t = s.pair_texture[(slot - s.first_slot) / 2];
+      if (t == ~0u) continue;
+      if (copy == ~0u) {
+        if (!s.free_materials.empty()) {
+          copy = s.free_materials.back();
+          s.free_materials.pop_back();
+          s.materials[copy] = TextureBoundState::MaterialCopy{first_material + e, record};
+        } else {
+          copy = s.materials.size();
+          s.materials.push_back(TextureBoundState::MaterialCopy{first_material + e, record});
+        }
+        s.copy_of_material.insert(first_material + e, copy);
+      }
+      Vector<u32>& named = s.textures[t].materials;
+      if (std::find(named.begin(), named.end(), copy) == named.end()) named.push_back(copy);
+    }
+  }
+}
+
+void GpuScene::texture_bound_retired(u32 first_material, u32 count) noexcept {
+  if (texture_bound_ == nullptr || texture_bound_->copy_of_material.empty()) return;
+  TextureBoundState& s = *texture_bound_;
+  for (u32 e = first_material; e < first_material + count; ++e) {
+    const u32* at = s.copy_of_material.find_value(e);
+    if (at == nullptr) continue;
+    const u32 copy = *at;
+    s.copy_of_material.erase(e);
+    // Its record names the pairs its textures hold now (a swap keeps it current).
+    const gfx::ResolveMaterial& record = s.materials[copy].record;
+    for (const u32 slot :
+         {record.albedo_texture, record.metallic_roughness_texture, record.normal_texture,
+          record.occlusion_texture, record.emissive_texture}) {
+      if (slot < s.first_slot || slot >= s.first_slot + 2 * s.pairs) continue;
+      if (((slot - s.first_slot) & 1u) != 0) continue;
+      const u32 t = s.pair_texture[(slot - s.first_slot) / 2];
+      if (t == ~0u) continue;
+      Vector<u32>& named = s.textures[t].materials;
+      for (u32 i = 0; i < named.size(); ++i) {
+        if (named[i] != copy) continue;
+        named[i] = named.back();
+        named.pop_back();
+        break;
+      }
+    }
+    s.free_materials.push_back(copy);
+  }
 }
 
 bool GpuScene::texture_bound_manages(u64 key) const noexcept {
@@ -301,6 +413,20 @@ bool GpuScene::texture_bound_plan(std::string* error) {
   // Stage 2: what the residency reads once per load, and everything its frames touch, made now.
   s->bound = bound_on.get();
   s->ceiling = static_cast<u64>(residency_ceiling_mib.get() * 1'048'576.0);
+  // W167: a device budget names the ceiling where `ceiling_mib` does not; until the first frame
+  // can say what the rest of the process holds, the budget itself stands in (nothing is trimmed
+  // before a frame has run).
+  s->budget = u64(residency_device_budget_mib.get()) * 1'048'576;
+  if (s->ceiling == 0) s->ceiling = s->budget;
+  s->use.budget = s->budget;
+  // The held images in chunks of their own: every texture's image and its variance, each with
+  // one leaving beside it and a move or a swap in flight.
+  if (!s->chunks.create(*device_, u64(residency_chunk_mib.get()) * 1'048'576,
+                        s->textures.size() * 6u + 64u, error)) {
+    gfx::destroy_image_view(*device_, s->placeholder_view);
+    gfx::destroy_image(*device_, s->placeholder);
+    return false;
+  }
   s->hold_s = residency_hold_s.get();
   s->use.ceiling = s->ceiling;
   s->pair_texture.assign(wanted, ~0u);
@@ -313,9 +439,10 @@ bool GpuScene::texture_bound_plan(std::string* error) {
   s->mesh_q.assign(mesh_count, k_never);
   s->mesh_q_now.assign(mesh_count, k_never);
   s->order.reserve(s->textures.size());
-  s->queue.reserve(s->textures.size());
-  s->done.reserve(s->textures.size());
-  s->taken.reserve(s->textures.size());
+  s->queue.reserve(s->textures.size() * 3u);
+  s->done.reserve(s->textures.size() * 3u);
+  s->taken.reserve(s->textures.size() * 3u);
+  s->in_hand_bound = std::max<u64>(u64{64} << 20, u64(bound_promote_kib.get()) * 1024 * 4);
   pending_images_.reserve(pending_images_.size() + 16);
   texture_bound_.reset(s.release());
   return true;
@@ -360,6 +487,7 @@ u32 GpuScene::texture_bound_place(u64 key, const texture::TextureData& t, u32 fi
   s.use.whole_bytes += t.data.size() + t.normal_variance.size();
   s.use.resident_bytes += image.bytes;
   s.use.peak_bytes = std::max(s.use.peak_bytes, s.use.resident_bytes);
+  sync_chunk_use(s);
   return slot;
 }
 
@@ -374,6 +502,7 @@ u32 GpuScene::texture_bound_place_variance(u64 key, const gfx::ImageResource& im
   bindless_.update_sampled_image(slot, view, gfx::ImageLayout::ShaderReadOnly);
   s.use.resident_bytes += image.bytes;
   s.use.peak_bytes = std::max(s.use.peak_bytes, s.use.resident_bytes);
+  sync_chunk_use(s);
   return slot;
 }
 
@@ -462,6 +591,7 @@ void GpuScene::texture_residency_feedback_ms(f64 ms) noexcept {
 void GpuScene::destroy_texture_bound() noexcept {
   if (texture_bound_ == nullptr) return;
   TextureBoundState& s = *texture_bound_;
+  sync_chunk_use(s);
   if (s.use.managed != 0) {  // what the run held and cost, once, for a measurement to read
     ENGINE_LOG_INFO(
         log_renderer, "texture bound use", log::field("textures", s.use.managed),
@@ -478,7 +608,13 @@ void GpuScene::destroy_texture_bound() noexcept {
         log::field("pressure_frames", s.use.pressure_frames),
         log::field("refused_in_hold", s.use.refused_in_hold),
         log::field("asked_late", s.use.asked_late),
-        log::field("worst_demote_ms", s.use.worst_demote_ms));
+        log::field("worst_demote_ms", s.use.worst_demote_ms), log::field("moves", s.use.moves),
+        log::field("moved_bytes", s.use.moved_bytes), log::field("chunks", s.use.chunks),
+        log::field("chunk_bytes", s.use.chunk_bytes),
+        log::field("chunk_used_bytes", s.use.chunk_used_bytes),
+        log::field("chunks_made", s.use.chunks_made),
+        log::field("chunks_freed", s.use.chunks_freed),
+        log::field("most_chunk_bytes", s.use.most_chunk_bytes), log::field("budget", s.budget));
   }
   if (s.worker.joinable()) {
     {
@@ -491,7 +627,7 @@ void GpuScene::destroy_texture_bound() noexcept {
   if (device_ != nullptr) {
     const auto destroy = [&](gfx::ImageResource& image, gfx::ImageViewHandle& view) {
       if (view.valid()) gfx::destroy_image_view(*device_, view);
-      if (image.image.valid()) gfx::destroy_image(*device_, image);
+      if (image.image.valid()) s.chunks.destroy_image(image);  // W167: every held image is one
       view = {};
       image = {};
     };
@@ -503,7 +639,9 @@ void GpuScene::destroy_texture_bound() noexcept {
       destroy(gone.image, gone.view);
       destroy(gone.variance_image, gone.variance_view);
     }
-    destroy(s.placeholder, s.placeholder_view);
+    if (s.placeholder_view.valid()) gfx::destroy_image_view(*device_, s.placeholder_view);
+    if (s.placeholder.image.valid()) gfx::destroy_image(*device_, s.placeholder);
+    s.chunks.destroy();
   }
   texture_bound_.reset();
 }
@@ -541,10 +679,10 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
     bindless_.update_sampled_image(slot, s.placeholder_view, gfx::ImageLayout::ShaderReadOnly);
     bindless_.update_sampled_image(slot + 1, s.placeholder_view, gfx::ImageLayout::ShaderReadOnly);
     gfx::destroy_image_view(*device_, gone.view);
-    gfx::destroy_image(*device_, gone.image);
+    s.chunks.destroy_image(gone.image);  // W167: its chunk goes back when this was its last
     if (gone.variance_image.image.valid()) {
       gfx::destroy_image_view(*device_, gone.variance_view);
-      gfx::destroy_image(*device_, gone.variance_image);
+      s.chunks.destroy_image(gone.variance_image);
     }
     s.free_pairs.push_back(gone.pair);
     s.pair_texture[gone.pair] = ~0u;
@@ -571,6 +709,22 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
   s.last_eye = eye;
   s.have_eye = true;
   const f64 lead = bound_lead_m.get() + step * static_cast<f64>(bound_lead_frames.get());
+  // W167: a device budget named and no ceiling: the textures may hold the budget less what
+  // everything else on the device holds (the driver's usage for the process, less the held images'
+  // chunks and the other textures' images), worked out at the first frame, at a cut and every 10 s
+  // of the frames' clock. A driver query: never more often than that.
+  if (s.budget != 0 && residency_ceiling_mib.get() <= 0.0 &&
+      (settle || s.now - s.budget_at >= 10.0)) {
+    s.budget_at = s.now;
+    gfx::MemoryBudget memory;
+    if (device_->memory_budget(memory) && memory.valid) {
+      const u64 held = s.chunks.use().chunk_bytes;
+      const u64 others = texture_bytes_ - std::min(texture_bytes_, s.use.resident_bytes);
+      const u64 rest = memory.used_bytes - std::min(memory.used_bytes, held + others);
+      s.ceiling = s.budget > rest ? std::max<u64>(s.budget - rest, 1u) : 1u;
+      s.use.ceiling = s.ceiling;
+    }
+  }
   // A ceiling without the bound (stage 2 alone) evaluates nothing: its levels come from the load
   // whole and leave only by the trim.
   const bool evaluate =
@@ -658,7 +812,7 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
       s.taken.push_back(std::move(read));
     s.done.clear();
   }
-  const auto admit = [&](u32 t, texture::TextureData& tail, u32 first) {
+  const auto admit = [&](u32 t, texture::TextureData& tail, u32 first, bool move) {
     TextureBoundState::Texture& tex = s.textures[t];
     if (s.free_pairs.empty()) return false;
     const u32 levels = tail.levels.size();
@@ -669,18 +823,18 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
     std::string error;
     const auto undo = [&] {
       if (view_handle.valid()) gfx::destroy_image_view(*device_, view_handle);
-      if (image.image.valid()) gfx::destroy_image(*device_, image);
+      if (image.image.valid()) s.chunks.destroy_image(image);
       if (variance_view.valid()) gfx::destroy_image_view(*device_, variance_view);
-      if (variance.image.valid()) gfx::destroy_image(*device_, variance);
+      if (variance.image.valid()) s.chunks.destroy_image(variance);
     };
     const bool with_variance = tex.variance && !tail.normal_variance.empty();
     if (levels == 0 || levels > gfx::k_max_image_levels ||
-        !gfx::create_sampled_image_levels(*device_, tail.width, tail.height, tex.format, levels,
-                                          image, &error) ||
+        !s.chunks.create_sampled_image_levels(tail.width, tail.height, tex.format, levels, image,
+                                              &error) ||
         !gfx::create_image_view(*device_, image, view_handle, &error) ||
         (with_variance &&
-         (!gfx::create_sampled_image_levels(*device_, tail.width, tail.height,
-                                            gfx::Format::Bc4Unorm, levels, variance, &error) ||
+         (!s.chunks.create_sampled_image_levels(tail.width, tail.height, gfx::Format::Bc4Unorm,
+                                                levels, variance, &error) ||
           !gfx::create_image_view(*device_, variance, variance_view, &error)))) {
       undo();
       ENGINE_LOG_WARN(log_renderer, "texture bound: no image for a promotion",
@@ -753,10 +907,23 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
                           sizeof(gfx::ResolveMaterial)}};
       bool joined = false;
       for (TerrainUpdate::GeometryCopy& earlier : pending_geometry_) {
-        if (earlier.dst == copy.dst && earlier.region.dst_offset == copy.region.dst_offset &&
+        if (earlier.dst != copy.dst) continue;
+        if (earlier.region.dst_offset == copy.region.dst_offset &&
             earlier.region.size == copy.region.size) {
           earlier = copy;
           joined = true;
+        } else if (earlier.region.dst_offset <= copy.region.dst_offset &&
+                   copy.region.dst_offset + copy.region.size <=
+                       earlier.region.dst_offset + earlier.region.size) {
+          // W167: a tile's mesh admitted this frame copies its whole block of records, which
+          // covers this one; its staged bytes take the record instead, since a second copy into the
+          // same bytes in one pass is not ordered against the first.
+          if (u8* bytes = staged_bytes_of(earlier.src)) {
+            std::memcpy(bytes + earlier.region.src_offset +
+                            (copy.region.dst_offset - earlier.region.dst_offset),
+                        &record, sizeof(record));
+            joined = true;
+          }
         }
       }
       if (!joined) pending_geometry_.push_back(copy);
@@ -786,7 +953,10 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
     for (const TextureBoundState::Leaving& gone : s.leaving)
       leaving_bytes += gone.image.bytes + gone.variance_image.bytes;
     s.use.peak_bytes = std::max(s.use.peak_bytes, s.use.resident_bytes + leaving_bytes);
-    if (demote) {  // a trim's (stage 2)
+    if (move) {  // W167: the same levels, out of a draining chunk
+      ++s.use.moves;
+      s.use.moved_bytes += new_bytes;
+    } else if (demote) {  // a trim's (stage 2)
       ++s.use.demotions;
       s.use.released_bytes += old_bytes > new_bytes ? old_bytes - new_bytes : 0u;
     } else {
@@ -815,7 +985,7 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
                         log::field("path", tex.path), log::field("error", error));
         continue;
       }
-      admit(t, tail, want);
+      admit(t, tail, want, false);
     }
     s.settled = true;
     if (settle) ++s.use.settles;
@@ -853,7 +1023,7 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
     if (tex.asked_top != ~0u && tex.asked_top <= target) continue;
     tex.asked_top = target;
     std::lock_guard<std::mutex> lock(s.mutex);
-    s.queue.push_back(TextureBoundState::Read{t, target, tex.path, {}, false, false, 0});
+    s.queue.push_back(TextureBoundState::Read{t, target, &tex.path, {}, false, false, 0, false});
     asked = true;
   }
   // **The trim** (stage 2; ADR-0065 decision 3 and its 2026-11-17 settlement): only over the
@@ -898,7 +1068,46 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
         s.releasing += frees;
         std::lock_guard<std::mutex> lock(s.mutex);
         s.queue.push_back(
-            TextureBoundState::Read{t, s.plan_top[t], tex.path, {}, false, true, frees});
+            TextureBoundState::Read{t, s.plan_top[t], &tex.path, {}, false, true, frees, false});
+        asked = true;
+      }
+    }
+  }
+  // **The bytes go back to the device** (W167, W47's stage 1; texture.md, "Stage 3: the bytes go
+  // back to the device"). A trim's and a promotion's old images leave holes in the chunks the held
+  // images live in, and the driver is charged for a chunk until its last image goes. Where the
+  // holes in the chunks that hold anything pass one and a half chunks, the sparsest of them is
+  // drained: it takes no new image, and every texture with an image in it is moved — its levels
+  // from the same top read again by range and re-placed through the promotion's swap, inside the
+  // frame's allowance — so the chunk empties and goes back. One chunk drains at a time.
+  if (s.chunks.valid()) {
+    if (s.draining != ~0u && !s.chunks.draining(s.draining)) s.draining = ~0u;  // it went back
+    const gfx::ImageChunkUse chunks = s.chunks.use();
+    const u64 chunk = s.chunks.chunk_size();
+    const u64 spare = u64{chunks.empty} * chunk;
+    const u64 holes = chunks.chunk_bytes - std::min(chunks.chunk_bytes, chunks.used_bytes + spare);
+    if (s.draining == ~0u && holes >= chunk + chunk / 2) {
+      u64 used = 0;
+      const u32 sparsest = s.chunks.sparsest_chunk(&used);
+      // Only where what it holds fits in the other chunks' holes: a move that made a new chunk
+      // would give nothing back.
+      if (sparsest != ~0u && used <= chunk && holes - std::min(holes, chunk - used) >= used) {
+        s.chunks.set_draining(sparsest, true);
+        s.draining = sparsest;
+        ++s.use.drains;
+      }
+    }
+    if (s.draining != ~0u) {
+      for (u32 t = 0; t < s.textures.size(); ++t) {
+        TextureBoundState::Texture& tex = s.textures[t];
+        if (!tex.placed || tex.moving || tex.asked_top != ~0u || tex.demote_top != ~0u) continue;
+        if (s.chunks.chunk_of(tex.image) != s.draining &&
+            s.chunks.chunk_of(tex.variance_image) != s.draining)
+          continue;
+        tex.moving = true;
+        std::lock_guard<std::mutex> lock(s.mutex);
+        s.queue.push_back(
+            TextureBoundState::Read{t, tex.resident_top, &tex.path, {}, false, false, 0, true});
         asked = true;
       }
     }
@@ -908,6 +1117,7 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
     s.wake.notify_one();
   }
   if (!s.taken.empty()) {
+    u64 consumed = 0;  // the bytes of reads admitted or dropped this frame, out of the hand
     const i64 started = time::monotonic_ns();
     const u64 allowance = static_cast<u64>(bound_promote_kib.get()) * 1024;
     u64 spent = 0;
@@ -920,12 +1130,20 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
       // hold since it was planned: what the trim releases is never younger than the hold.
       const bool in_hold = read.demote && read.first > 0 && read.first <= 16 &&
                            s.now - tex.asked_at[read.first - 1] < s.hold_s;
+      // A move (W167) is dropped where the texture was swapped since it was asked (its new image is
+      // in another chunk already) or where its chunk is no longer draining.
+      const bool still_draining =
+          s.draining != ~0u && (s.chunks.chunk_of(tex.image) == s.draining ||
+                                s.chunks.chunk_of(tex.variance_image) == s.draining);
       const bool stale =
           !read.ok || read.data.levels.size() != tex.levels - read.first ||
-          (read.demote ? tex.demote_top != read.first || read.first <= tex.resident_top || in_hold
-                       : read.first >= tex.resident_top);
+          (read.move     ? read.first != tex.resident_top || !still_draining
+           : read.demote ? tex.demote_top != read.first || read.first <= tex.resident_top || in_hold
+                         : read.first >= tex.resident_top);
       const auto settle_read = [&] {
-        if (read.demote) {
+        if (read.move) {
+          tex.moving = false;
+        } else if (read.demote) {
           if (tex.demote_top == read.first) tex.demote_top = ~0u;
           s.releasing -= std::min(s.releasing, read.frees);
         } else if (tex.asked_top == read.first) {
@@ -935,24 +1153,33 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
       if (stale) {
         if (!read.ok) {
           ENGINE_LOG_WARN(log_renderer, "texture bound: a promotion's levels did not read",
-                          log::field("path", read.path));
+                          log::field("path", *read.path));
         }
         if (in_hold) ++s.use.refused_in_hold;
         settle_read();
+        consumed += read.data.data.size() + read.data.normal_variance.size();
         continue;
       }
       const u64 bytes = read.data.data.size() + read.data.normal_variance.size();
       if ((allowance != 0 && spent != 0 && spent + bytes > allowance) ||
-          !admit(read.texture, read.data, read.first)) {
+          !admit(read.texture, read.data, read.first, read.move)) {
         if (kept != r) s.taken[kept] = std::move(read);
         ++kept;
         continue;
       }
-      if (read.demote) {
+      if (read.demote || read.move) {
         settle_read();
-        demoted = true;
+        demoted = demoted || read.demote;
       }
       spent += bytes;
+      consumed += bytes;
+    }
+    if (consumed != 0) {
+      {
+        std::lock_guard<std::mutex> lock(s.mutex);
+        s.in_hand -= std::min(s.in_hand, consumed);
+      }
+      s.wake.notify_one();
     }
     if (demoted) {
       s.use.worst_demote_ms =
@@ -964,6 +1191,7 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
           std::max(s.use.worst_admit_ms, static_cast<f64>(time::monotonic_ns() - started) / 1.0e6);
     }
   }
+  sync_chunk_use(s);
 }
 
 }  // namespace engine::renderer

@@ -11,6 +11,7 @@
 #include <domain/geometry/material_sampling.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/commands.h>
+#include <domain/gfx/image_chunks.h>
 #include <domain/gfx/pipeline.h>
 #include <domain/gfx/water_flux.h>
 #include <domain/gfx/water_spectrum.h>
@@ -970,7 +971,10 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
   }
   // The first fill went through buffers of its own, once; every upload from here on is staged
   // through the ring.
-  if ((!ring_slots_.empty() || mesh_room_.slots != 0) && !create_staging_ring(error)) {
+  // W167: a scene whose textures are held by level stages its promotions through the ring too,
+  // so a promotion makes no buffer in a steady frame.
+  if ((!ring_slots_.empty() || mesh_room_.slots != 0 || texture_bound_ != nullptr) &&
+      !create_staging_ring(error)) {
     destroy();
     return false;
   }
@@ -4729,6 +4733,8 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           const texture::TextureData& t = built[index].data;
           bound_first = texture_bound_first_level(made.content, t);
           const u32 from = bound_first == ~0u ? 0u : bound_first;
+          // W167: a held texture's image in the bound's chunks, whose bytes go back when it goes.
+          gfx::ImageChunks* chunks = bound_first == ~0u ? nullptr : texture_bound_chunks();
           Vector<gfx::ImageLevelData> levels;
           levels.reserve(t.levels.size());
           for (u32 l = from; l < t.levels.size(); ++l) {
@@ -4739,9 +4745,15 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
                    device, texture::texture_level_extent(t.width, from),
                    texture::texture_level_extent(t.height, from), texture_gpu_format(t),
                    std::span<const gfx::ImageLevelData>(levels.data(), levels.size()), uploaded,
-                   &image_error) &&
+                   &image_error, chunks) &&
                gfx::create_image_view(device, uploaded, view, &image_error);
-          if (!ok && uploaded.image.valid()) gfx::destroy_image(device, uploaded);
+          if (!ok && uploaded.image.valid()) {
+            if (chunks != nullptr) {
+              chunks->destroy_image(uploaded);
+            } else {
+              gfx::destroy_image(device, uploaded);
+            }
+          }
           if (ok) ++textures_built_;
           if (ok) made.has_mean = built_texture_mean(t, made.mean);
         } else {
@@ -4834,9 +4846,15 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
                   device, texture::texture_level_extent(t.width, from),
                   texture::texture_level_extent(t.height, from), gfx::Format::Bc4Unorm,
                   std::span<const gfx::ImageLevelData>(levels.data(), levels.size()), variance,
-                  &image_error) ||
+                  &image_error, bounded ? texture_bound_chunks() : nullptr) ||
               !gfx::create_image_view(device, variance, variance_view, &image_error)) {
-            if (variance.image.valid()) gfx::destroy_image(device, variance);
+            if (variance.image.valid()) {
+              if (bounded && texture_bound_chunks() != nullptr) {
+                texture_bound_chunks()->destroy_image(variance);
+              } else {
+                gfx::destroy_image(device, variance);
+              }
+            }
             variance_upload_failed = true;
             if (error != nullptr) *error = "normal variance upload: " + image_error;
             return gfx::k_no_texture;
@@ -5091,8 +5109,12 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     // textures are the scene's for its life.
     if (mesh_room_.slots != 0) {
       for (const SceneTexture& held : scene_textures.all()) {
-        // A texture the bound holds by level is not offered: a tile's mesh brings its own whole.
-        if (held.form != k_form_built || texture_bound_manages(held.content)) continue;
+        // A texture the bound holds by level is not offered: a tile's mesh brings its own whole,
+        // since the bound does not see a tile's instances. Under a ceiling alone it is (W167): the
+        // feedback reads every pixel that samples it, and a swap rewrites the tile's records too.
+        if (held.form != k_form_built ||
+            (texture_bound_manages(held.content) && texture_bound_slot(held.content) == ~0u))
+          continue;
         TextureInfo info;
         info.slot = held.slot;
         info.normal_rg = held.stored == texture::TextureFormat::bc5;

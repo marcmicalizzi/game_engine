@@ -142,6 +142,8 @@ void GpuScene::texture_records(Vector<TextureRecord>& out) const {
 bool GpuScene::find_texture(u64 key, TextureInfo& out) const noexcept {
   if (const TextureInfo* pinned = load_textures_.find_value(key)) {
     out = *pinned;
+    // W167: one the residency holds is at its current pair, which a swap moves.
+    if (const u32 slot = texture_bound_slot(key); slot != ~0u) out.slot = slot;
     return true;
   }
   for (const TileTexture& held : tile_textures_) {

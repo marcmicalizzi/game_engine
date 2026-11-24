@@ -11,6 +11,7 @@
 #include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/device_memory.h>
+#include <domain/gfx/image_chunks.h>
 #include <domain/gfx/pipeline.h>
 #include <domain/gfx/resources.h>
 #include <foundation/gpu_lock/device_hold.h>
@@ -1827,7 +1828,7 @@ void record_image_levels_upload(CommandList list, const ImageResource& image, Bu
 
 bool upload_image_2d_levels(const Device& device, u32 width, u32 height, Format format,
                             std::span<const ImageLevelData> levels, ImageResource& out,
-                            std::string* error) {
+                            std::string* error, ImageChunks* chunks) {
   out = ImageResource{};
   if (levels.empty() || width == 0 || height == 0) {
     if (error != nullptr) *error = "upload_image_2d_levels: nothing to upload";
@@ -1851,12 +1852,23 @@ bool upload_image_2d_levels(const Device& device, u32 width, u32 height, Format 
     offsets[i] = total;
     total += levels[i].bytes;
   }
-  if (!create_sampled_image_levels(device, width, height, format, static_cast<u32>(levels.size()),
-                                   out, error))
+  // W167: in a chunk of the caller's pool when it names one (image_chunks.h).
+  const auto unmake = [&] {
+    if (chunks != nullptr) {
+      chunks->destroy_image(out);
+    } else {
+      destroy_image(device, out);
+    }
+  };
+  if (!(chunks != nullptr
+            ? chunks->create_sampled_image_levels(width, height, format,
+                                                  static_cast<u32>(levels.size()), out, error)
+            : create_sampled_image_levels(device, width, height, format,
+                                          static_cast<u32>(levels.size()), out, error)))
     return false;
   BufferResource staging;
   if (!create_buffer(device, total, BufferUsage::TransferSrc, true, staging, error)) {
-    destroy_image(device, out);
+    unmake();
     return false;
   }
   for (u32 i = 0; i < levels.size(); ++i) {
@@ -1872,7 +1884,7 @@ bool upload_image_2d_levels(const Device& device, u32 width, u32 height, Format 
       },
       error);
   destroy_buffer(device, staging);
-  if (!ok) destroy_image(device, out);
+  if (!ok) unmake();
   return ok;
 }
 }  // namespace engine::gfx

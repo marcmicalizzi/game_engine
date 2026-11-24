@@ -2047,6 +2047,18 @@ class GpuScene {
                           const gfx::ImageResource& image, gfx::ImageViewHandle view);
   u32 texture_bound_place_variance(u64 key, const gfx::ImageResource& image,
                                    gfx::ImageViewHandle view);
+  // W167: the chunks a held texture's image is placed in (null with no state), which the load's
+  // upload of a held texture names and whose `destroy_image` frees one it could not place.
+  gfx::ImageChunks* texture_bound_chunks() noexcept;
+  // W167: under a ceiling alone (no bound) a held texture is offered to the meshes tiles hand,
+  // at its current pair: `texture_bound_slot` is that pair's slot (~0u for one it does not hold
+  // or with the bound on, where a tile's mesh brings its own whole), and an admitted mesh's
+  // records that name a held pair are kept with the texture's own, so a swap rewrites them too.
+  u32 texture_bound_slot(u64 key) const noexcept;
+  void texture_bound_admitted(u32 first_material, std::span<const gfx::ResolveMaterial> made);
+  void texture_bound_retired(u32 first_material, u32 count) noexcept;
+  // The mapped bytes of a staging buffer a pending copy reads (the ring, or one of its own).
+  u8* staged_bytes_of(gfx::BufferHandle buffer) noexcept;
   void texture_bound_materials(const Vector<gfx::ResolveMaterial>& table,
                                const Vector<u8>& is_material);
   void destroy_texture_bound() noexcept;

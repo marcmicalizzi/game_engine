@@ -75,10 +75,13 @@ bool upload_image_2d(const Device& device, u32 width, u32 height, Format format,
 // never below one) at each step, level 0 first, all copied from one staging buffer in one
 // submission and left in ImageLayout::ShaderReadOnly. The format may be block-compressed (the BC
 // formats need DeviceFeatures::texture_compression_bc); each level's bytes are then its blocks.
-// This is how the content build's textures reach the GPU without a decode (texture.md).
+// This is how the content build's textures reach the GPU without a decode (texture.md). With
+// `chunks` the image is placed in that pool's chunks (image_chunks.h, W167) and is the pool's to
+// destroy.
+class ImageChunks;
 bool upload_image_2d_levels(const Device& device, u32 width, u32 height, Format format,
                             std::span<const ImageLevelData> levels, ImageResource& out,
-                            std::string* error = nullptr);
+                            std::string* error = nullptr, ImageChunks* chunks = nullptr);
 
 // **The same upload in two halves, so that nothing waits for the device** (texture.md, "Textures
 // that arrive after the load"; R145). `create_sampled_image_levels` makes the sampled image with

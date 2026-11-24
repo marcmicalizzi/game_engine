@@ -9,6 +9,7 @@
 #include <core/containers/hash_map.h>
 #include <core/containers/vector.h>
 #include <core/math/world.h>
+#include <domain/gfx/image_chunks.h>
 #include <domain/gfx/resources.h>
 #include <domain/gfx/visibility_resolve.h>
 #include <domain/texture/texture_file.h>
@@ -56,6 +57,8 @@ struct TextureBoundState {
     u32 asked_level = ~0u;  // the finest level the feedback's folds asked since the last frame
     u32 last_asked = ~0u;   // the frame before's, for the trend
     u32 demote_top = ~0u;   // a demotion's read in flight brings this top (~0u: none)
+    // W167: a move's read in flight (its image re-placed at the same top, out of a draining chunk).
+    bool moving = false;
   };
   // A mesh's managed textures: which, and log2 of its least density times the image's shorter
   // side (texels a metre at scale 1 along the least stretched direction of any triangle).
@@ -78,11 +81,14 @@ struct TextureBoundState {
   struct Read {
     u32 texture = 0;
     u32 first = 0;
-    std::string path;
+    // The texture's own path (`Texture::path`, fixed after the plan): a pointer, so that asking a
+    // read allocates nothing on the frame's thread (W167).
+    const std::string* path = nullptr;
     texture::TextureData data;
     bool ok = false;
     bool demote = false;  // a trim's: the levels from a coarser top
     u64 frees = 0;        // the device bytes a demotion was planned to release
+    bool move = false;    // W167: the same top again, to empty a draining chunk
   };
   // A level the trim may release: its texture, the level, and when it was last asked.
   struct Candidate {
@@ -96,6 +102,10 @@ struct TextureBoundState {
   Vector<Vector<User>> mesh_users;  // per mesh of the scene
   Vector<Vec4> mesh_sphere;         // per mesh: mesh-space centre, radius
   Vector<MaterialCopy> materials;
+  // W167: the copies of records an admitted tile mesh wrote (under a ceiling alone), by the
+  // material index, and the copies its retirement freed for the next.
+  HashMap<u32, u32> copy_of_material;
+  Vector<u32> free_materials;
   Vector<Leaving> leaving;
   Vector<u32> free_pairs;
   u32 first_slot = 0;
@@ -135,6 +145,14 @@ struct TextureBoundState {
   Vector<u32> plan_top;          // per texture: the top the trim's plan takes it to
   u64 releasing = 0;             // the bytes demotions in flight were planned to release
 
+  // W167 (W47's stage 1): the held textures' images in chunks of their own, so that a trimmed
+  // level's bytes go back to the device; draining the chunk being emptied by moves (~0u: none);
+  // the ceiling, when a device budget named it, worked out again at a cut.
+  gfx::ImageChunks chunks;
+  u32 draining = ~0u;
+  u64 budget = 0;           // `renderer.textures.device_budget_mib` in bytes, 0: none named
+  f64 budget_at = -1.0e30;  // the clock when the ceiling was last worked out from it
+
   // The reader: one thread, a queue in and a list out.
   std::thread worker;
   std::mutex mutex;
@@ -143,6 +161,12 @@ struct TextureBoundState {
   Vector<Read> done;
   Vector<Read> taken;  // the frame's, swapped with `done`
   bool stop = false;
+  // W167: the bytes of reads done and not yet admitted or dropped, under `mutex`. The reader takes
+  // no new read while they pass `in_hand_bound` (one always goes when nothing is in hand): on
+  // the forest staging an unbounded reader read 3,820 demotions ahead of a 4 MiB-a-frame
+  // admission and held 30 GB of commit for them (texture.md, "Stage 3").
+  u64 in_hand = 0;
+  u64 in_hand_bound = 0;
 
   TextureBoundUse use;
 };
