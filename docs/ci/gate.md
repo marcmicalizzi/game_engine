@@ -11,6 +11,7 @@ tree, so a lesson is a line and a test here rather than a comment in a file that
 ```powershell
 pwsh tools/gate.ps1 -Root <gate worktree> -Batch b73 -Logs <dir> -Server <ssh alias>      # a batch's gate
 pwsh tools/gate.ps1 -Root <gate worktree> -Batch b73b -Logs <dir> -Reach '<regex>' -Skip listeners,budgets,weaker-card   # a follow-up
+pwsh tools/gate.ps1 -Root <gate worktree> -Batch b73c -Logs <dir> -Completes <dir>/b73b-gate.verdict.json   # completes a verdict of the same tip (T220)
 pwsh tools/after-gate.ps1 -Gate <gate worktree> -Main <primary checkout> -Verdict <dir>/b73-gate.verdict.json -CopyTo <dir> [-Push]
 ```
 
@@ -27,11 +28,14 @@ pwsh tools/after-gate.ps1 -Gate <gate worktree> -Main <primary checkout> -Verdic
 | `-Jobs <n>` | each suite's `tools/dev.ps1 test -Jobs` (default 3) |
 | `-WeakerCard <profile>` | the weaker card's `ENGINE_GFX_TEST_DEVICE` (default `titanxp`) |
 | `-MemoryWaitMinutes <n>` | the longest wait for memory before a configure or a build attempt (default 15); a timeout proceeds and is kept in the verdict (`memory_wait_timeouts`) |
+| `-BudgetWaitQuiet <s>` | the frame budgets' `-WaitQuiet`, the longest wait for a quiet machine before each run is flown (default 120) |
+| `-Completes <verdict>` | a follow-up that completes an earlier verdict of the same tip: it runs no check, build or suite, only the earned steps that verdict lacks or holds inconclusive (below); no `-Reach` with it |
 | `-SamplesFrom <dir>` | when `content/samples/Lantern/Lantern.glb` is missing, the entries of `<dir>` are copied into `<Root>/content/samples` (git-ignored) before the budgets: **the one write the gate itself makes inside `-Root`** |
 
-Exit **0** green; **1** red (the summary names every reason); **2** refused, before anything runs:
+Exit **0** green; **1** red (the summary names every reason); **4** nothing red and a step inconclusive (the budgets over only on a busy machine twice: complete it with `-Completes`); **2** refused, before anything runs:
 an unknown `-Skip` name, a `-Root` that is not a git worktree or is not clean at its HEAD (the
-refusal lists what is in the way), a `-Logs` inside `-Root`. A run that is refused or stops
+refusal lists what is in the way), a `-Logs` inside `-Root`, a `-Completes` verdict that cannot be
+completed ([below](#a-follow-up-that-completes-a-verdict)). A run that is refused or stops
 part-way leaves no verdict of that batch name: the last `<Batch>-gate.verdict.json` in `-Logs` is
 renamed `<Batch>-gate.verdict.previous-<stamp>.json` before anything else can fail, so no older
 green outlives it where `tools/after-gate.ps1` would read it.
@@ -81,10 +85,46 @@ through `cmd` or a Unix shell. In order:
 5. **Only when every suite is green**: the listener check, the frame budgets, and the weaker card's
    leg (the renderer's parts, `water` and `engine_cli.gpu` as a Titan Xp, T162). `-Skip` leaves any
    of them, or the Linux leg, out by name, and the summary says what was skipped. Each that fails
-   is red by its name (`listeners`, `budgets`, `weaker card msvc-debug`).
+   is red by its name (`listeners`, `budgets`, `weaker card msvc-debug`). **The budgets have three
+   states** (T220): `tools/frame-budget.ps1 -WaitQuiet <-BudgetWaitQuiet> -Out <Logs>/<batch>-budgets-1`
+   exits 0 (green), 1 (a run over on a quiet machine, a failed run: red), 4 (over only on a busy
+   machine) or 6 (a run compared with nothing for its session state: inconclusive). On a 4 the runs
+   its `report.json` holds busy are flown **once more, by themselves** (`-Run <ids>`, into
+   `-budgets-2`): within budget then is green, busy again (4 or 6) is **inconclusive**, over on a
+   quiet machine is red. A 4 whose report names no busy run is red (the code and the report
+   disagree). A quiet over is never flown again: a check is not retried into passing. Every flight
+   is in the verdict (`budgets.flights`).
 6. **The integrity read, the litter check, the tree check, the summary**, and
    `<batch>-gate.verdict.json`: green, the tip it judged, each leg's verdict, every build attempt,
-   every second look, every fault.
+   every second look, every fault, and **each step's state and source** (`states`, `sources`,
+   `inconclusive`): `checks`, `builds`, `suites`, `integrity`, `tree`, `listeners`, `budgets`,
+   `weaker-card` and `linux`, each `green`, `red`, `inconclusive`, `skipped` (by `-Skip`) or
+   `not run` (not earned). The verdict is green only when every state is green or skipped.
+
+## A follow-up that completes a verdict
+
+Batch 73's two follow-up gates were green in everything but the frame budgets, which exited 4 while
+another project's build ran (2026-11-23); flying them again meant the whole release set again, and
+`after-gate.ps1` took only a green verdict, so the merge was taken by hand. `-Completes <verdict>`
+is the form for that:
+
+- It names an earlier verdict of **the same HEAD on a clean tree**: refused (exit 2) when the
+  verdict is for another commit, when its tree changed or gained litter while it ran, when it
+  records no step states (a verdict from before T220), and when the tree is not clean now (as any
+  gate). Nothing folds across two HEADs or a dirty tree.
+- **A red step is a verdict**: a verdict holding any step red is refused, whatever the step, so a
+  budget over on a quiet machine stays red and no follow-up turns it green. Its checks, builds,
+  suites, integrity and tree must be green, since a follow-up runs none of them.
+- It runs only the earned steps (`listeners`, `budgets`, `weaker-card`, `linux`) the verdict holds
+  inconclusive, not run or skipped, less what its own `-Skip` names (those stay skipped), and is
+  refused when that leaves nothing. The binaries are the gate worktree's, built from that commit by
+  the earlier run.
+- It writes one **folded verdict** under its own batch name: the earlier verdict's record of what it
+  does not run again, this run's of what it does, `completes` naming the earlier file, and
+  `sources.<step>`, a list of `{verdict, batch, started, ended}` for each step (integrity and tree
+  name both runs, since both read their own logs and tree). It is green only when every step is.
+  `tools/after-gate.ps1` reads it like any other and prints where each step came from; it refuses an
+  inconclusive one and names what `-Completes` can complete.
 
 ## Verdicts that cannot lie
 
@@ -156,9 +196,9 @@ every step before it did what it says.**
 functions over fixture logs and verdict files, and the refusal that starts one process (2.4 s on
 the run that mended it). `-Part scenarios` is `tools.gate_scenarios`, registered in `msvc-debug`
 only (`cmake/EngineTesting.cmake`): the scripts are the same in every configuration, and the
-scenarios are the time — seven gate runs over the stand-in repository (each a few dozen pwsh
-processes), five refusals and nine after-gate runs: 127 s and 202 s on two runs of 2026-11-23,
-the machine shared with other rows' builds both times. With neither, the file runs both. The wave case proves
+scenarios are the time — eleven gate runs over the stand-in repository (each a few dozen pwsh
+processes), eight refusals and eleven after-gate runs: 228 s on 2026-11-23 with T220's four runs
+(127 s and 202 s before them), the machine shared with other rows' builds each time. With neither, the file runs both. The wave case proves
 side by side with a barrier, not a clock: each wave-one stand-in ends only once all three have
 started (a deadline of 60 s, logged as `barrier-timeout` if it passes), so a loaded machine slows it
 and cannot fail it.

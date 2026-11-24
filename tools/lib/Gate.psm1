@@ -285,6 +285,94 @@ function Get-TreeEntries {
   , @(@($names) + @($untracked) | Sort-Object -Unique)
 }
 
+# The steps a verdict holds a state for (T220), each 'green', 'red', 'inconclusive', 'skipped' (by
+# the caller's -Skip) or 'not run' (not earned: the suites were not green). The core steps are what
+# a follow-up can never run again and must find green; the earned ones are what it completes.
+$script:CoreSteps = @('checks', 'builds', 'suites', 'integrity', 'tree')
+$script:EarnedSteps = @('listeners', 'budgets', 'weaker-card', 'linux')
+
+function Get-GateSteps { [pscustomobject]@{ Core = $script:CoreSteps; Earned = $script:EarnedSteps } }
+
+function Get-BudgetStepState {
+  <#
+  .SYNOPSIS
+    The frame budgets' step from tools/frame-budget.ps1's exit codes (T220): green, red or
+    inconclusive, never a pass read from a retry of a failure.
+  .DESCRIPTION
+    First is the whole flight's exit; Busy the runs its report.json holds as over on a busy machine;
+    Again the exit of those runs flown once more by themselves (-Run), or $null when they were not.
+      0                     green
+      1, 3, 5, anything else red: over on a quiet machine, a failed run, not the budget's machine, a
+                            summary that is not a native measurement. No second flight changes it.
+      4  (only busy overs)  the busy runs are flown again alone: 0 green, 4 or 6 inconclusive, else red.
+                            A 4 whose report names no busy run is red: the code and the report disagree.
+      6  (compared with nothing: no budget for the session state) inconclusive; when it also had busy
+                            runs they are flown again, and a 1 there is red.
+  #>
+  param([Parameter(Mandatory)][int]$First, [string[]]$Busy = @(), $Again = $null)
+  if ($First -eq 0) { return 'green' }
+  if ($First -notin 4, 6) { return 'red' }
+  if ($First -eq 4 -and @($Busy).Count -eq 0) { return 'red' }
+  if ($null -eq $Again) { return 'inconclusive' }
+  $again = [int]$Again
+  if ($again -eq 0) { return $(if ($First -eq 4) { 'green' } else { 'inconclusive' }) }
+  if ($again -in 4, 6) { return 'inconclusive' }
+  'red'
+}
+
+function Read-BudgetBusyRuns {
+  <#
+  .SYNOPSIS
+    The ids of the runs a frame-budget report.json holds as over on a busy machine (Verdict 'busy'),
+    or none when the report is missing or unreadable.
+  #>
+  param([Parameter(Mandatory)][string]$Path)
+  if (-not (Test-Path -LiteralPath $Path)) { return @() }
+  try { $r = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch { return @() }
+  @(@($r) | Where-Object { $_ -and $_.PSObject.Properties['Verdict'] -and $_.Verdict -eq 'busy' } | ForEach-Object { "$($_.Id)" })
+}
+
+function Get-FoldPlan {
+  <#
+  .SYNOPSIS
+    Whether an earlier verdict can be completed by a follow-up at this tip, and which steps the
+    follow-up runs (T220; docs/ci/gate.md, "A follow-up that completes a verdict").
+  .DESCRIPTION
+    Refusal is a sentence when it cannot: a verdict that records no step states, one for another
+    commit, one whose tree changed or gained litter while it ran, one that holds any step red (a red
+    step is a verdict: no follow-up turns it green), or one whose core steps (checks, builds, suites,
+    integrity, tree) are not all green. Otherwise Run is every earned step (listeners, budgets,
+    weaker-card, linux) it holds inconclusive, not run or skipped, less those this run -Skips, and
+    a plan with nothing to run is refused too. Sources is the earlier verdict's own per-step sources
+    when it was itself folded, else every step it holds named to it.
+  #>
+  param([Parameter(Mandatory)]$Earlier, [Parameter(Mandatory)][string]$EarlierPath, [Parameter(Mandatory)][string]$Tip, [string[]]$Skip = @())
+  $no = { param($why) [pscustomobject]@{ Refusal = $why; Run = @(); States = $null; Sources = $null } }
+  $has = { param($o, $n) $o -and $o.PSObject.Properties[$n] }
+  if (-not (& $has $Earlier 'states') -or -not $Earlier.states) { return & $no "$EarlierPath records no step states (a verdict from before T220), so there is nothing to fold it with" }
+  if ("$($Earlier.tip)" -ne $Tip) { return & $no "$EarlierPath is for $($Earlier.tip) and the tree is at ${Tip}: nothing folds across two HEADs" }
+  $dirty = @(@($Earlier.tree_changed) + @($Earlier.litter) | Where-Object { $_ })
+  if ($dirty) { return & $no "$EarlierPath ran on a tree that changed or gained litter ($($dirty -join '; ')): nothing folds across a dirty tree" }
+  $states = [ordered]@{}
+  foreach ($s in $script:CoreSteps + $script:EarnedSteps) {
+    $states[$s] = if (& $has $Earlier.states $s) { "$($Earlier.states.$s)" } else { 'missing' }
+  }
+  $red = @($states.Keys | Where-Object { $states[$_] -eq 'red' })
+  if ($red) { return & $no "$EarlierPath holds $($red -join ', ') red: a red step is a verdict, and no follow-up turns it green" }
+  $core = @($script:CoreSteps | Where-Object { $states[$_] -ne 'green' })
+  if ($core) { return & $no "$EarlierPath holds $(@($core | ForEach-Object { "$_ $($states[$_])" }) -join ', '): a follow-up runs no check, build or suite, so it completes only a verdict whose are green" }
+  $run = @($script:EarnedSteps | Where-Object { $states[$_] -in 'inconclusive', 'not run', 'skipped', 'missing' -and $_ -notin $Skip })
+  if (-not $run) { return & $no "$EarlierPath holds nothing this follow-up would run (its states: $(@($script:EarnedSteps | ForEach-Object { "$_ $($states[$_])" }) -join ', '))" }
+  $sources = [ordered]@{}
+  $own = @([ordered]@{ verdict = $EarlierPath; batch = "$($Earlier.batch)"; started = "$($Earlier.started)"; ended = "$($Earlier.ended)" })
+  foreach ($s in $states.Keys) {
+    # Assigned whole, never through an `if` expression, which would unroll a list of one.
+    $sources[$s] = $own
+    if ((& $has $Earlier 'sources') -and $Earlier.sources -and (& $has $Earlier.sources $s)) { $sources[$s] = @($Earlier.sources.$s) }
+  }
+  [pscustomobject]@{ Refusal = $null; Run = $run; States = $states; Sources = $sources }
+}
+
 function Start-GateProcess {
   <#
   .SYNOPSIS
@@ -316,4 +404,5 @@ function Start-GateProcess {
 
 Export-ModuleMember -Function Get-GateFilters, Get-WeakerCardFilter, ConvertTo-CommandLine, Read-CTestLog,
   Test-NoCaseByDesign, Get-SuiteState, Get-RerunPlan, Test-RunExplained, Get-IntegrityFindings, Read-ContainerVerdict,
-  Read-LegVerdict, Get-WorktreeDirt, Get-TreeLitter, Get-TreeEntries, Start-GateProcess
+  Read-LegVerdict, Get-WorktreeDirt, Get-TreeLitter, Get-TreeEntries, Start-GateProcess, Get-GateSteps, Get-BudgetStepState,
+  Read-BudgetBusyRuns, Get-FoldPlan

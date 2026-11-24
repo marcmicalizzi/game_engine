@@ -33,11 +33,29 @@
 
   Verdicts are read from what a leg kept, never from a console line: a suite's from the CTest logs
   `tools/dev.ps1` keeps per pass (copied into -Logs), a container's from its whole transcript. The
-  summary fails when any leg that ran left no verdict. Exit 0 green, 1 red, 2 refused: an unknown
+  summary fails when any leg that ran left no verdict. Every verdict holds each step's state and its
+  source (`states`, `sources`). Exit 0 green, 1 red, 4 nothing red and a step inconclusive (the
+  budgets on a busy machine: complete it with -Completes), 2 refused: an unknown
   -Skip name, a -Root that is not a git worktree, a -Logs inside it, or a -Root that is not clean at
   its HEAD (a tracked change, an untracked file git does not ignore, an unfinished merge), since the
   verdict names that commit. A tracked change or a moved HEAD during the run is red. The last
   `<Batch>-gate.verdict.json` in -Logs is set aside first, so no older green outlives a failed run.
+
+  A follow-up that completes an earlier verdict of the same HEAD (T220), when that verdict is green
+  in its checks, builds, suites, integrity and tree and holds a step inconclusive, not run or skipped:
+
+      pwsh tools/gate.ps1 -Root <gate worktree> -Batch b73c -Logs <dir> -Completes <dir>/b73b-gate.verdict.json
+
+  It runs no check, build or suite: only the earned steps (listeners, budgets, weaker card, Linux)
+  the earlier verdict lacks or holds as inconclusive, less what -Skip names, and writes one folded
+  verdict naming each step's source verdict and time. It refuses (exit 2) a verdict of another
+  commit, of a tree that changed while it ran, or holding any step red: a red step is a verdict.
+
+  The budgets (-BudgetWaitQuiet, default 120 s, is frame-budget.ps1's -WaitQuiet) keep their own
+  states: exit 0 green; 4 (over only on a busy machine) flies the busy runs once more by themselves
+  (-Run), green if they pass then, inconclusive if they come back busy; 6 inconclusive; anything
+  else red, and nothing flown again turns a quiet over green. Exit 4 of the gate: nothing red, a
+  step inconclusive.
 
   What it never does: push, merge, install, copy binaries out (tools/after-gate.ps1 does those, after
   the verdict is read), take or wait on the GPU lock itself (every test takes it, ADR-0049), kill a
@@ -56,6 +74,8 @@ param(
   [Parameter(ParameterSetName = 'gate')][string]$WeakerCard = 'titanxp',
   [Parameter(ParameterSetName = 'gate')][int]$MemoryWaitMinutes = 15,
   [Parameter(ParameterSetName = 'gate')][string]$SamplesFrom = '',
+  [Parameter(ParameterSetName = 'gate')][int]$BudgetWaitQuiet = 120,
+  [Parameter(ParameterSetName = 'gate')][string]$Completes = '',
   [Parameter(ParameterSetName = 'leg', Mandatory)][ValidateSet('linux', 'server')][string]$Leg,
   [Parameter(ParameterSetName = 'leg', Mandatory)][string]$Spec
 )
@@ -96,6 +116,7 @@ if ($PSCmdlet.ParameterSetName -eq 'leg') {
 $Skip = @($Skip | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 $unknown = @($Skip | Where-Object { $_ -notin 'linux', 'listeners', 'budgets', 'weaker-card' })
 if ($unknown) { Write-Host "gate: -Skip takes linux, listeners, budgets, weaker-card; not $($unknown -join ', ')"; exit 2 }
+if ($Completes -and $Reach) { Write-Host 'gate: -Completes runs no suite, so it takes no -Reach'; exit 2 }
 if (-not (Test-Path -LiteralPath (Join-Path $Root '.git'))) { Write-Host "gate: $Root is not a git worktree"; exit 2 }
 $Root = (Resolve-Path -LiteralPath $Root).Path
 # -Logs is checked before it is made, so a refused run has made nothing inside the gate worktree (T217-L1).
@@ -132,16 +153,40 @@ if ($IsWindows -and $git) {
 }
 
 $tip = (& git -C $Root rev-parse HEAD).Trim()
+# A follow-up that completes an earlier verdict (T220): read and judged before anything runs.
+$fold = $null
+if ($Completes) {
+  $completesPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Completes)
+  if ($completesPath -eq $verdictPath) { Write-Host "gate: -Completes names this run's own verdict file; a follow-up takes a batch name of its own"; exit 2 }
+  $earlier = $null
+  if (Test-Path -LiteralPath $completesPath) { try { $earlier = Get-Content -LiteralPath $completesPath -Raw | ConvertFrom-Json } catch { $earlier = $null } }
+  if (-not $earlier) { Write-Host "gate: no readable verdict at $completesPath; refused"; exit 2 }
+  $fold = Get-FoldPlan -Earlier $earlier -EarlierPath $completesPath -Tip $tip -Skip $Skip
+  if ($fold.Refusal) { Write-Host "gate: $($fold.Refusal); refused"; exit 2 }
+}
 $entriesBefore = Get-TreeEntries -Root $Root
 $dev = Join-Path $Root 'tools/dev.ps1'
 $started = Get-Date
 $result = [ordered]@{ batch = $Batch; tip = $tip; reach = $Reach; skip = @($Skip); started = $started.ToString('s'); green = $false
                       steps = [ordered]@{}; suites = [ordered]@{}; no_verdict = @(); litter = @(); tree_changed = @()
-                      retried_builds = @(); memory_wait_timeouts = @() }
+                      retried_builds = @(); memory_wait_timeouts = @(); states = [ordered]@{}; sources = [ordered]@{}; inconclusive = @() }
+if ($fold) {
+  # The folded verdict carries the earlier one's record of what this run does not do again.
+  foreach ($k in 'steps', 'suites') {
+    if ($earlier.PSObject.Properties[$k] -and $earlier.$k) { foreach ($p in $earlier.$k.PSObject.Properties) { $result[$k][$p.Name] = $p.Value } }
+  }
+  # A step this run flies again overwrites its record below.
+  foreach ($k in 'linux', 'weaker_card', 'budgets') { if ($earlier.PSObject.Properties[$k]) { $result[$k] = $earlier.$k } }
+  $result.completes = $completesPath
+}
 $red = New-Object System.Collections.Generic.List[string]
 $keptLogs = New-Object System.Collections.Generic.List[object]   # @{ Preset; Path } in the order written
 "gate $Batch over $(& git -C $Root log --oneline -1); the tree is clean at its HEAD; $(Stamp)"
 if ($Reach) { "follow-up: wave one runs ^($Reach)`$" }
+if ($fold) { "follow-up completing $completesPath ($($earlier.batch), the same tip): runs $($fold.Run -join ', '), and no check, build or suite" }
+# Whether this run does a step: a batch's gate does every step it does not skip; a follow-up that
+# completes a verdict does only the earned steps its plan names.
+function Test-Runs([string]$step) { if ($fold) { $step -in $fold.Run } else { $step -notin $Skip } }
 if ($Skip) { "skipped by the caller: $($Skip -join ', ')" }
 
 function Wait-Memory([double]$commit, [double]$physical, [string]$what) {
@@ -249,9 +294,37 @@ function Invoke-Step([string]$name, [string]$script, [string[]]$arguments) {
   if ($code -ne 0) { $red.Add($name) }
 }
 
+function Invoke-Budgets {
+  # The frame budgets as a step with three states (T220): the whole flight, and when it came back
+  # over only on a busy machine (exit 4), the busy runs once more by themselves before the step is
+  # called inconclusive. A quiet over (exit 1) is red and is never flown again. Each flight's
+  # report.json and per-frame records go in -Logs, never under -Root.
+  $script_ = Join-Path $Root 'tools/frame-budget.ps1'
+  $out1 = Join-Path $Logs "$Batch-budgets-1"
+  $first = Start-GateProcess -Script $script_ -Arguments @('-Preset', 'msvc-release', '-WaitQuiet', "$BudgetWaitQuiet", '-Out', $out1) -Log (Join-Path $Logs "$Batch-budgets.log") -WorkingDirectory $Root
+  $flights = @([ordered]@{ runs = 'all'; exit = $first; out = $out1 })
+  "BUDGETS exit $first $(Stamp)"
+  $busy = @()
+  $again = $null
+  if ($first -in 4, 6) {
+    $busy = @(Read-BudgetBusyRuns -Path (Join-Path $out1 'report.json'))
+    if ($busy) {
+      $out2 = Join-Path $Logs "$Batch-budgets-2"
+      "BUDGETS again, by themselves: $($busy -join ', ') $(Stamp)"
+      $again = Start-GateProcess -Script $script_ -Arguments @('-Preset', 'msvc-release', '-Run', ($busy -join ','), '-WaitQuiet', "$BudgetWaitQuiet", '-Out', $out2) -Log (Join-Path $Logs "$Batch-budgets-2.log") -WorkingDirectory $Root
+      $flights += [ordered]@{ runs = ($busy -join ','); exit = $again; out = $out2 }
+      "BUDGETS again exit $again $(Stamp)"
+    } elseif ($first -eq 4) { 'BUDGETS exit 4 with no busy run in its report: the code and the report disagree' }
+  }
+  $state = Get-BudgetStepState -First $first -Busy $busy -Again $again
+  $script:result.steps['budgets'] = $(if ($null -ne $again) { $again } else { $first })
+  $script:result.budgets = [ordered]@{ state = $state; wait_quiet_s = $BudgetWaitQuiet; flights = $flights }
+  "BUDGETS $($state.ToUpper())"
+}
+
 # 1. The legs beside everything: Linux (waited for at the end) and the server (never waited for).
 $legs = @{}
-if ('linux' -notin $Skip) {
+if (Test-Runs 'linux') {
   $legSpec = Join-Path $Logs "$Batch-linux.spec.json"
   Write-Json $legSpec @{ Root = $Root; Logs = $Logs; Batch = $Batch; Verdict = (Join-Path $Logs "$Batch-linux.verdict.json")
                          Presets = @('linux-gcc-release', 'linux-clang-debug', 'linux-clang-minimal') }
@@ -268,11 +341,13 @@ if ($Server) {
   "server leg started detached ($($sp.Id)); its verdict: $serverVerdict"
 }
 
-# 2. and 3. The checks and the builds.
+# 2. and 3. The checks and the builds; none of 2. to 5. in a follow-up that completes a verdict,
+# whose earlier verdict holds them green at this very commit.
+$builds = [ordered]@{}
+if (-not $fold) {
 Invoke-Step 'docs' $dev @('docs')
 Invoke-Step 'lint' $dev @('lint')
 $checksOk = ($result.steps.docs -eq 0) -and ($result.steps.lint -eq 0)
-$builds = [ordered]@{}
 foreach ($preset in 'msvc-debug', 'msvc-minimal', 'msvc-no-ecs', 'msvc-release') {
   # Every attempt and its log is kept in the verdict, and a build that passed on a retry is named
   # there: still green, never folded into a plain pass (T217-M2).
@@ -318,11 +393,12 @@ if ($checksOk -and $buildsOk) {
   Invoke-Wave @('msvc-release') $filters 'WAVE 2'
 } else { 'SUITES not run: a check or a build failed' }
 $suitesGreen = $checksOk -and $buildsOk -and $result.suites.Count -eq 4 -and -not @($result.suites.Values | Where-Object { -not $_.ok })
+} else { $checksOk = $true; $buildsOk = $true; $suitesGreen = $true }
 
 # 6. What only a green set of suites earns.
 if ($suitesGreen) {
-  if ('listeners' -notin $Skip) { Invoke-Step 'listeners' (Join-Path $Root 'tools/ci/check-no-listeners.ps1') @('-Preset', 'msvc-release') }
-  if ('budgets' -notin $Skip) {
+  if (Test-Runs 'listeners') { Invoke-Step 'listeners' (Join-Path $Root 'tools/ci/check-no-listeners.ps1') @('-Preset', 'msvc-release') }
+  if (Test-Runs 'budgets') {
     # The one write the gate makes inside -Root itself: the budgets' sample models into the
     # git-ignored content/samples, the folder's entries copied into it whether or not it exists
     # yet (T217-L3: copying the folder made content/samples/<leaf> when content/samples existed).
@@ -332,9 +408,9 @@ if ($suitesGreen) {
       Get-ChildItem -LiteralPath $SamplesFrom -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $samplesDir -Recurse -Force }
       "copied the entries of $SamplesFrom into content/samples"
     }
-    Invoke-Step 'budgets' (Join-Path $Root 'tools/frame-budget.ps1') @('-Preset', 'msvc-release', '-WaitQuiet', '120')
+    Invoke-Budgets
   }
-  if ('weaker-card' -notin $Skip) {
+  if (Test-Runs 'weaker-card') {
     $w = @{ 'msvc-debug' = (Get-WeakerCardFilter) }
     $saved = $result.suites['msvc-debug']
     Invoke-Wave @('msvc-debug') $w 'WEAKER CARD' @{ ENGINE_GFX_TEST_DEVICE = $WeakerCard }
@@ -379,10 +455,48 @@ if ($Server) {
   else { "SERVER still running; it does not hold this verdict: $serverVerdict" }
 }
 foreach ($n in $result.no_verdict) { $red.Add("no verdict: $n") }
+
+# Each step's state and the verdict it comes from (T220): what a follow-up reads to know what is left
+# to complete, and the folded verdict's record of where every green came from.
+$st = $result.states
+$own = [ordered]@{ verdict = $verdictPath; batch = $Batch; started = $result.started; ended = '' }
+function Set-State([string]$step, [string]$state, [switch]$Kept) {
+  $st[$step] = $state
+  # Always a list, one entry a verdict (assigned whole: an `if` expression would unroll a list of one).
+  $list = New-Object System.Collections.Generic.List[object]
+  if ($Kept -or ($fold -and $step -in 'integrity', 'tree')) { foreach ($e in @($fold.Sources[$step])) { $list.Add($e) } }
+  if (-not $Kept) { $list.Add($own) }
+  $result.sources[$step] = $list.ToArray()
+}
+$earned = { param($step, $isRed)
+  if ($fold -and $step -notin $fold.Run) { Set-State $step $fold.States[$step] -Kept }
+  elseif ($step -in $Skip) { Set-State $step 'skipped' }
+  elseif (-not $suitesGreen) { Set-State $step 'not run' }
+  else { Set-State $step $(if ($isRed) { 'red' } else { 'green' }) }
+}
+if ($fold) { foreach ($s in 'checks', 'builds', 'suites') { Set-State $s 'green' -Kept } }
+else {
+  Set-State 'checks' $(if ($checksOk) { 'green' } else { 'red' })
+  Set-State 'builds' $(if ($buildsOk) { 'green' } else { 'red' })
+  Set-State 'suites' $(if (-not ($checksOk -and $buildsOk)) { 'not run' } elseif ($suitesGreen) { 'green' } else { 'red' })
+}
+& $earned 'listeners' ($red -contains 'listeners')
+& $earned 'weaker-card' ($red -contains 'weaker card msvc-debug')
+& $earned 'linux' (@($red | Where-Object { $_ -like 'linux *' }).Count -or $result.no_verdict -contains 'linux')
+if ($fold -and 'budgets' -notin $fold.Run) { Set-State 'budgets' $fold.States['budgets'] -Kept }
+elseif ($result.Contains('budgets') -and $result.budgets -is [System.Collections.IDictionary]) { Set-State 'budgets' $result.budgets.state }
+else { & $earned 'budgets' $false }
+Set-State 'integrity' $(if ($integrity.Faults -gt 0) { 'red' } else { 'green' })
+Set-State 'tree' $(if ($litter -or $changed) { 'red' } else { 'green' })
+if ($st['budgets'] -eq 'red') { $red.Add('budgets') }
+$result.inconclusive = @($st.Keys | Where-Object { $st[$_] -eq 'inconclusive' })
 $result.red = @($red | Sort-Object -Unique)
-$result.green = ($red.Count -eq 0)
+$result.green = ($red.Count -eq 0) -and -not @($st.Values | Where-Object { $_ -notin 'green', 'skipped' })
 $result.ended = (Get-Date).ToString('s')
+foreach ($s in $result.sources.Values) { foreach ($e in $s) { if ($e.verdict -eq $verdictPath) { $e.ended = $result.ended } } }
+if ($fold) { "folded with ${completesPath}: $(@($st.Keys | ForEach-Object { "$_ $($st[$_]) ($(@($result.sources[$_] | ForEach-Object { $_.batch }) -join '+'))" }) -join ', ')" }
 Write-Json $verdictPath $result
 if ($result.green) { "GATE $Batch exit 0 $(Stamp): green at $tip"; exit 0 }
-"GATE $Batch exit 1 $(Stamp): $($result.red -join '; ')"
-exit 1
+if ($result.red.Count) { "GATE $Batch exit 1 $(Stamp): $($result.red -join '; ')"; exit 1 }
+"GATE $Batch exit 4 $(Stamp): nothing red, and inconclusive: $(@($st.Keys | Where-Object { $st[$_] -notin 'green', 'skipped' } | ForEach-Object { "$_ $($st[$_])" }) -join '; ')"
+exit 4
