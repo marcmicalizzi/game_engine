@@ -875,8 +875,9 @@ TEST_CASE("mesh textures: a tile's foliage material arriving after the first fra
 // dealt and the normal map all four share (held by level under a floor of 4 texels, since the
 // fixture's maps are small). Under a ceiling of 1 KiB with a hold of 0.25 s, the
 // four rocks admitted upload only tile 1's and 3's base colour map — the other two are the load's,
-// at their current pair — and the trim swaps the held textures down to what the view asks within
-// the hold while the frames run. The last frame is the scene read whole, byte for byte: every
+// at their current pair. Looking away longer than the hold, the trim swaps the held textures down
+// to their floor; looking back, promotions bring them in again. The last frame is the scene read
+// whole, byte for byte: every
 // tile record naming a held texture followed its swaps (a record left on a pair that went would
 // sample the residency's placeholder).
 TEST_CASE("mesh textures: under a texture ceiling a tile mesh shares the load's held texture") {
@@ -918,6 +919,21 @@ TEST_CASE("mesh textures: under a texture ceiling a tile mesh shares the load's 
                                     << held.scene.texture_bound_use().managed);
   CHECK(held.scene.texture_bound_use().managed == 2);
   CHECK(use.uploaded == 1);  // tile 1's and 3's base colour map; the rest is the load's
+  // The fixture's maps are magnified from the rig's camera, which asks their level 0 every frame;
+  // looking away for longer than the hold lets the trim take every held level to the floor, and
+  // looking back brings them in again — both swaps of the tiles' records.
+  const auto away = [&] {
+    FrameDesc frame;
+    frame.camera.position = WorldPos{-9.0, 13.0, 17.0};
+    frame.camera.target = WorldPos{-19.0, 25.0, 33.0};
+    CaptureChannels channels;
+    channels.color = true;
+    CapturedFrame scratch;
+    REQUIRE_MESSAGE(held.renderer.capture(frame, channels, scratch, &held.error), held.error);
+  };
+  for (u32 f = 0; f < 60; ++f)
+    away();
+  const u64 trimmed = held.scene.texture_bound_use().demotions;
   CapturedFrame last;
   for (u32 f = 0; f < 90; ++f)
     REQUIRE_MESSAGE(held.shoot(last), held.error);
@@ -926,7 +942,8 @@ TEST_CASE("mesh textures: under a texture ceiling a tile mesh shares the load's 
   MESSAGE("after " << bound.demotions << " demotions and " << bound.promotions
                    << " promotions: " << d.depth << " depths, " << d.color << " colours, " << d.ids
                    << " ids over " << d.rock_pixels << " rock pixels");
-  CHECK(bound.demotions >= 1);
+  CHECK(trimmed >= 1);
+  CHECK(bound.promotions >= 1);
   CHECK(d.depth == 0);
   CHECK(d.ids == 0);
   CHECK(d.color == 0);
