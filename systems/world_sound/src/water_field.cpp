@@ -99,7 +99,6 @@ constexpr f64 k_fall_height_m = 0.5;
 constexpr f64 k_surf_height_m = 0.5;
 constexpr f64 k_water_min_m = 1.0;
 constexpr f64 k_fall_min_m = 2.0;
-constexpr f64 k_ears_height_m = 1.7;
 
 f64 pow10(f64 db) noexcept { return std::pow(10.0, db / 10.0); }
 

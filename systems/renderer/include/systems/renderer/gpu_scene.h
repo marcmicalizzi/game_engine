@@ -217,7 +217,8 @@ class GpuScene {
   }
   f64 ground_time_s() const noexcept { return ground_time_s_; }
   // **The surf's records for a host's ears** (S113; scene.h, `SurfTable`): scanned once a body
-  // mesh from the field the upload built, kept for the scene's life, so the ears build no field.
+  // mesh from the field the upload built when the load is heard (`SceneData::heard`), kept for the
+  // scene's life, so the ears build no field. Empty for a load nobody hears.
   SurfTable surf_table() const noexcept {
     return {{water_surf_.data(), water_surf_.size()},
             {water_surf_first_.data(), water_surf_first_.size()},

@@ -330,8 +330,8 @@ void water_surf_records(const SceneWater& water, const gfx::WaterSurface& surfac
                         std::span<const f32> field, f64 cell_m, Vector<SurfRecord>& out);
 void water_surf_records(const SceneWater& water, f64 cell_m, Vector<SurfRecord>& out);
 // A GPU scene's records for a host (`GpuScene::surf_table`): mesh m's are `count[m]` from
-// `records[first[m]]`, body-local, scanned once a body mesh at the upload, 16 m cells; both spans
-// are empty, or one entry a mesh.
+// `records[first[m]]`, body-local, scanned once a body mesh at the upload of a heard load
+// (`SceneData::heard`), 16 m cells; both spans are empty, or one entry a mesh.
 struct SurfTable {
   std::span<const SurfRecord> records;
   std::span<const u32> first;
@@ -671,7 +671,8 @@ struct SceneDesc {
   // **Measure each mesh's leaves for the world's sound** (`SceneData::mesh_leaves`, S112): only a
   // host that hears the world sets it (engine-view with `world_sound` and `--audio` not `off`), so
   // a load nobody listens to pays nothing for it. It must be asked here: the floats it reads are
-  // let go inside `GpuScene::create`.
+  // let go inside `GpuScene::create`. Since S113 it also asks the GPU scene for its bodies' surf
+  // records (`SceneData::heard`), which a load nobody listens to does not scan either.
   bool measure_leaves = false;
   // **The texels a metre the closest view of this scene's meshes resolves** (G14; texture.md,
   // "Sized by the asset"): a mesh whose built textures hold more than that at its largest instance
@@ -1172,6 +1173,9 @@ struct SceneData {
   // **Each mesh's leaves, measured at the load** (S112; `measure_mesh_leaves`), what a host's sound
   // hears a crown by; empty entries for meshes with none. Kept through the release of the floats.
   Vector<MeshLeaves> mesh_leaves;
+  // Carried from `SceneDesc::measure_leaves`: a host hears this scene, so the GPU scene keeps its
+  // bodies' surf records (`GpuScene::surf_table`, S113: 52 ms on the forest staging's sea).
+  bool heard = false;
   // Carried from the `SceneDesc`: the medium a frame pass draws (frame_pass.h;
   // systems/volumetrics), uninterpreted. Null: no medium.
   JsonValue medium;

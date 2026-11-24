@@ -2669,7 +2669,7 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
         gfx::WaterSurface surface;
         Vector<f32> field;
         water_surface_of(water, n, surface, field);
-        if (surf_scanned[m] == 0) {  // a scan of the field in hand, not a second build
+        if (data_->heard && surf_scanned[m] == 0) {  // the field in hand, not a second build
           surf_scanned[m] = 1;
           const i64 scan_start = time::monotonic_ns();
           Vector<SurfRecord> found;
