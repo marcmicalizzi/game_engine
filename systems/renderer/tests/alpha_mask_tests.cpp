@@ -24,6 +24,7 @@
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/micromap_cache.h>
 #include <systems/renderer/reference.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
@@ -202,6 +203,97 @@ bool write_caster_scene(const std::filesystem::path& dir, const char* name,
       "{\"buffer\":0,\"byteOffset\":224,\"byteLength\":32},"
       "{\"buffer\":0,\"byteOffset\":256,\"byteLength\":12}],"
       "\"buffers\":[{\"uri\":\"caster.bin\",\"byteLength\":272}]}";
+  return write_file((dir / name).string(), json.data(), json.size());
+}
+
+// R208-M1's fixture: a micromap over a MiB at level 6, the budget setting's grain. The XY quad of
+// half-width 1 cut into `n` x `n` quads, each its own four vertices mapping its own cell of a
+// 128x128 mask of deterministic noise, so every triangle covers a dozen texels of its own and its
+// micro-triangles' states are its own: an entry of 1 KiB a triangle at level 6 (the coarser LOD
+// levels' clusters too), a quarter of that at 5.
+bool write_noise_grid(const std::filesystem::path& dir, const char* name, u32 n) {
+  constexpr u32 k_noise = 128;
+  std::vector<u8> rgba(k_noise * k_noise * 4);
+  u32 state = 0x2545f491u;
+  for (u32 t = 0; t < k_noise * k_noise; ++t) {
+    state = state * 1664525u + 1013904223u;
+    const u8 v = ((state >> 24) & 1u) != 0 ? u8{255} : u8{0};
+    rgba[t * 4 + 0] = rgba[t * 4 + 1] = rgba[t * 4 + 2] = rgba[t * 4 + 3] = v;
+  }
+  Vector<u8> png;
+  if (!image::encode_png(k_noise, k_noise, 4, std::span<const u8>(rgba.data(), rgba.size()), png))
+    return false;
+  if (!write_file((dir / "noise.png").string(), png.data(), png.size())) return false;
+  const u32 vertices = 4 * n * n;
+  std::vector<u8> bin;
+  for (u32 j = 0; j < n; ++j)
+    for (u32 i = 0; i < n; ++i) {
+      const f32 x0 = -1.0f + 2.0f * static_cast<f32>(i) / static_cast<f32>(n);
+      const f32 x1 = -1.0f + 2.0f * static_cast<f32>(i + 1) / static_cast<f32>(n);
+      const f32 y0 = -1.0f + 2.0f * static_cast<f32>(j) / static_cast<f32>(n);
+      const f32 y1 = -1.0f + 2.0f * static_cast<f32>(j + 1) / static_cast<f32>(n);
+      for (const f32 v : {x0, y0, 0.0f, x1, y0, 0.0f, x1, y1, 0.0f, x0, y1, 0.0f})
+        put_f32(bin, v);
+    }
+  for (u32 v = 0; v < vertices; ++v)
+    for (const f32 c : {0.0f, 0.0f, 1.0f})
+      put_f32(bin, c);
+  for (u32 j = 0; j < n; ++j)
+    for (u32 i = 0; i < n; ++i) {
+      const f32 u0 = static_cast<f32>(i) / static_cast<f32>(n);
+      const f32 u1 = static_cast<f32>(i + 1) / static_cast<f32>(n);
+      const f32 v0 = 1.0f - static_cast<f32>(j) / static_cast<f32>(n);
+      const f32 v1 = 1.0f - static_cast<f32>(j + 1) / static_cast<f32>(n);
+      for (const f32 c : {u0, v0, u1, v0, u1, v1, u0, v1})
+        put_f32(bin, c);
+    }
+  const usize index_offset = bin.size();
+  for (u32 q = 0; q < n * n; ++q)
+    for (const u32 k : {0u, 1u, 2u, 0u, 2u, 3u}) {
+      const u32 i = 4 * q + k;
+      bin.push_back(static_cast<u8>(i & 0xff));
+      bin.push_back(static_cast<u8>(i >> 8));
+    }
+  const usize index_bytes = bin.size() - index_offset;
+  while (bin.size() % 4 != 0)
+    bin.push_back(0);
+  if (!write_file((dir / "grid.bin").string(), bin.data(), bin.size())) return false;
+  const std::string count = std::to_string(vertices);
+  const std::string p_bytes = std::to_string(vertices * 12);
+  const std::string uv_at = std::to_string(vertices * 24);
+  const std::string uv_bytes = std::to_string(vertices * 8);
+  const std::string json =
+      "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
+      "\"nodes\":[{\"mesh\":0}],"
+      "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,"
+      "\"TEXCOORD_0\":2},\"indices\":3,\"material\":0}]}],"
+      "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0},"
+      "\"metallicFactor\":0,\"roughnessFactor\":1},\"doubleSided\":true,"
+      "\"alphaMode\":\"MASK\",\"alphaCutoff\":0.5}],"
+      "\"samplers\":[{\"magFilter\":9728,\"minFilter\":9728}],"
+      "\"textures\":[{\"source\":0,\"sampler\":0}],"
+      "\"images\":[{\"uri\":\"noise.png\"}],"
+      "\"accessors\":["
+      "{\"bufferView\":0,\"componentType\":5126,\"count\":" +
+      count +
+      ",\"type\":\"VEC3\",\"min\":[-1,-1,0],\"max\":[1,1,0]},"
+      "{\"bufferView\":1,\"componentType\":5126,\"count\":" +
+      count +
+      ",\"type\":\"VEC3\"},"
+      "{\"bufferView\":2,\"componentType\":5126,\"count\":" +
+      count +
+      ",\"type\":\"VEC2\"},"
+      "{\"bufferView\":3,\"componentType\":5123,\"count\":" +
+      std::to_string(6 * n * n) +
+      ",\"type\":\"SCALAR\"}],"
+      "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":" +
+      p_bytes + "},{\"buffer\":0,\"byteOffset\":" + p_bytes + ",\"byteLength\":" + p_bytes +
+      "},{\"buffer\":0,\"byteOffset\":" + uv_at + ",\"byteLength\":" + uv_bytes +
+      "},{\"buffer\":0,\"byteOffset\":" + std::to_string(index_offset) +
+      ",\"byteLength\":" + std::to_string(index_bytes) +
+      "}],"
+      "\"buffers\":[{\"uri\":\"grid.bin\",\"byteLength\":" +
+      std::to_string(bin.size()) + "}]}";
   return write_file((dir / name).string(), json.data(), json.size());
 }
 
@@ -993,7 +1085,8 @@ struct TunableScope {
 };
 
 MicromapShot shoot_micromaps(const std::string& mesh, RenderSettings settings, ShotView view,
-                             bool without_extension = false, const std::string& ddc = {}) {
+                             bool without_extension = false, const std::string& ddc = {},
+                             const std::string& second = {}) {
   MicromapShot out;
   gfx::Device device;
   std::string error;
@@ -1013,6 +1106,7 @@ MicromapShot shoot_micromaps(const std::string& mesh, RenderSettings settings, S
   SceneRenderer renderer;
   SceneDesc desc;
   desc.meshes.push_back(mesh);
+  if (!second.empty()) desc.meshes.push_back(second);  // R208: a part another load also holds
   desc.cache = !ddc.empty();  // R207: a root of the test's own, where the bake is stored
   desc.ddc = ddc;
   settings.view_mode = view.mode;
@@ -1060,6 +1154,60 @@ u32 differing_pixels(const CapturedFrame& a, const CapturedFrame& b) {
     if (!same) ++differ;
   }
   return differ;
+}
+
+// Two captured micromap inputs (`renderer.rt.micromap_capture`) compared triangle by triangle,
+// each through its own index: a special index against the other's, an entry's level, format and
+// every micro-triangle's two-bit state against the other's entry, whatever the entries' numbers.
+struct StateDiff {
+  u32 triangles = 0;        // the masked triangles compared
+  u32 triangles_apart = 0;  // any difference at all
+  u32 special_apart = 0;    // a special index against another special index or an entry
+  u32 level_apart = 0;      // both entries, another level or format
+  u64 micro_compared = 0;
+  u64 micro_apart = 0;  // both entries at one level: micro-triangles of another state
+  u32 first_apart = ~0u;
+};
+StateDiff compare_states(const MicromapCacheReport& a, const MicromapCacheReport& b) {
+  StateDiff d;
+  REQUIRE(a.captured_indices.size() == b.captured_indices.size());
+  d.triangles = static_cast<u32>(a.captured_indices.size());
+  for (u32 t = 0; t < d.triangles; ++t) {
+    const i32 ia = a.captured_indices[t];
+    const i32 ib = b.captured_indices[t];
+    bool apart = false;
+    if (ia < 0 || ib < 0) {
+      apart = ia != ib;
+      d.special_apart += apart ? 1u : 0u;
+    } else {
+      REQUIRE(static_cast<u32>(ia) < a.captured_triangles.size());
+      REQUIRE(static_cast<u32>(ib) < b.captured_triangles.size());
+      const gfx::MicromapTriangle& ra = a.captured_triangles[static_cast<u32>(ia)];
+      const gfx::MicromapTriangle& rb = b.captured_triangles[static_cast<u32>(ib)];
+      if (ra.level != rb.level || ra.format != rb.format) {
+        apart = true;
+        ++d.level_apart;
+      } else {
+        const u64 states = u64{1} << (2 * ra.level);
+        const u32* wa = a.captured_data.data() + ra.data_offset / 4;
+        const u32* wb = b.captured_data.data() + rb.data_offset / 4;
+        for (u64 s = 0; s < states; ++s) {
+          const u32 sa = (wa[s / 16] >> (2 * (s % 16))) & 3u;
+          const u32 sb = (wb[s / 16] >> (2 * (s % 16))) & 3u;
+          ++d.micro_compared;
+          if (sa != sb) {
+            ++d.micro_apart;
+            apart = true;
+          }
+        }
+      }
+    }
+    if (apart) {
+      ++d.triangles_apart;
+      if (d.first_apart == ~0u) d.first_apart = t;
+    }
+  }
+  return d;
 }
 
 ShotView micromap_shadow_view() {
@@ -1225,6 +1373,8 @@ TEST_CASE(
   TunableScope on("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=true");
   TunableScope fine("renderer.rt.micromap_texels=0.01", "renderer.rt.micromap_texels=4");
   TunableScope cap("renderer.rt.micromap_level=6", "renderer.rt.micromap_level=6");
+  // The fixtures are a few triangles: stored whatever the store's floor is set to.
+  TunableScope floor("renderer.rt.micromap_store_min=0", "renderer.rt.micromap_store_min=0");
   u32 index = 0;
   for (const Case& c : cases) {
     const std::string ddc = root.path() + "/ddc" + std::to_string(index++);
@@ -1240,23 +1390,22 @@ TEST_CASE(
       MESSAGE(c.name << ": no micromaps on this device; nothing to read back");
       continue;
     }
+    CHECK(first.cache.parts == 1);
     CHECK(first.cache.baked == 1);
     CHECK(first.cache.read == 0);
-    CHECK(first.cache.key != 0);
+    CHECK(first.cache.generation != 0);
     CHECK(first.cache.unkeyed.empty());
     CHECK(first.cache.stored);
     CHECK(std::filesystem::exists(first.cache.path));
     const MicromapShot second = shoot_micromaps(c.mesh, c.settings, c.view, false, ddc);
     REQUIRE(second.skip.empty());
-    MESSAGE(c.name << ": the empty root's load keyed " << first.cache.key << " (materials "
-                   << first.cache.materials << "), the next " << second.cache.key
-                   << " (materials " << second.cache.materials << ")");
-    CHECK(second.cache.materials == first.cache.materials);
-    CHECK(second.cache.geometry[0] == first.cache.geometry[0]);
-    CHECK(second.cache.geometry[1] == first.cache.geometry[1]);
+    MESSAGE(c.name << ": the empty root's load baked " << first.cache.baked << " part(s) into "
+                   << first.cache.path << ", the next read " << second.cache.read);
     CHECK(second.cache.baked == 0);
     CHECK(second.cache.read == 1);
-    CHECK(second.cache.key == first.cache.key);
+    CHECK(second.cache.packs_read == 1);
+    CHECK_FALSE(second.cache.stored);
+    CHECK(second.cache.generation == first.cache.generation);
     CHECK(second.cache.refused.empty());
     CHECK(second.baked);
     // The bake's measures come back with it, and the micromap is the same size.
@@ -1268,22 +1417,26 @@ TEST_CASE(
     CHECK(second.stats.storage_bytes == first.stats.storage_bytes);
     const u32 differ = differing_pixels(first.frame, second.frame);
     MESSAGE(c.name << ": baked " << first.cache.ms << " ms, read " << second.cache.ms << " ms, "
-                   << first.cache.file_bytes << " bytes stored; " << differ << " pixels differ");
+                   << first.cache.stored_bytes << " bytes stored; " << differ << " pixels differ");
     CHECK(differ == 0);
   }
 }
 
-// **A stored bake is never trusted without its key** (R207): a key the bake read differently (here
-// the texel target) is another file; a file at the key's path that holds another key's bake, a
-// version this build does not write, a short file or a changed byte is refused by name and baked
-// again, and the picture is the bake's.
-TEST_CASE("alpha mask: a stored micromap bake is refused for another key, version or byte") {
+// **A stored pack is never trusted without its keys** (R207, R208): a key the bake read differently
+// (here the texel target) is another part, baked and stored as a pack beside the first; a pack at
+// the first's path that holds another part's bake is read for nothing (the part it was asked for
+// is not in it); one made for another generation or version, a short one or a changed byte is
+// refused by name; a sound pack whose part has the scene part's key and other triangles is a miss
+// (R208-M2: never a read past the part); each time the part is baked again, the picture is the
+// bake's, and the pack the bake stores takes the spoiled one's place.
+TEST_CASE("alpha mask: a stored micromap pack is refused for another key, version or byte") {
   Fixture fx;
   test::TempDir root{"omm_stale"};
   RenderSettings rays = base_settings(RasterMode::Hardware);
   rays.shadows = ShadowMode::RayTraced;
   TunableScope on("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=true");
   TunableScope cap("renderer.rt.micromap_level=6", "renderer.rt.micromap_level=6");
+  TunableScope floor("renderer.rt.micromap_store_min=0", "renderer.rt.micromap_store_min=0");
   const std::string ddc = root.path() + "/ddc";
   auto shoot = [&] {
     return shoot_micromaps(fx.caster_masked, rays, micromap_shadow_view(), false, ddc);
@@ -1299,7 +1452,7 @@ TEST_CASE("alpha mask: a stored micromap bake is refused for another key, versio
   }
   REQUIRE(first.cache.stored);
   const std::filesystem::path stored(first.cache.path);
-  // Another texel target is another key: baked, and stored beside the first.
+  // Another texel target is another part key: baked, and stored as a pack beside the first.
   MicromapShot other;
   {
     TunableScope coarse("renderer.rt.micromap_texels=0.02", "renderer.rt.micromap_texels=4");
@@ -1307,30 +1460,61 @@ TEST_CASE("alpha mask: a stored micromap bake is refused for another key, versio
   }
   CHECK(other.cache.baked == 1);
   CHECK(other.cache.read == 0);
-  CHECK(other.cache.key != first.cache.key);
+  CHECK(other.cache.path != first.cache.path);
   REQUIRE(other.cache.stored);
   TunableScope fine("renderer.rt.micromap_texels=0.01", "renderer.rt.micromap_texels=4");
   struct Spoil {
     const char* name;
-    const char* refused;  // a word the refusal names
+    const char* refused;  // a word the refusal names; empty: the pack is sound and not asked for
   };
-  const Spoil spoils[] = {{"another key's bake", "another key"},
+  const Spoil spoils[] = {{"another part's bake", ""},
+                          {"another generation", "another generation"},
                           {"another version", "version"},
                           {"a short file", "length"},
-                          {"a changed state", "content hash"}};
+                          {"a changed state", "content hash"},
+                          {"a colliding key over other content", "triangle count"}};
+  auto get_u64 = [](const std::string& b, usize at) {
+    u64 v = 0;
+    for (u32 i = 0; i < 8; ++i)
+      v |= u64{static_cast<u8>(b[at + i])} << (8 * i);
+    return v;
+  };
   for (const Spoil& spoil : spoils) {
-    // The first key's file as the last bake stored it, spoiled.
+    // The first key's pack as the last bake stored it, spoiled.
     std::ifstream in(stored, std::ios::binary);
     std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     in.close();
     REQUIRE(bytes.size() > 64);
-    if (std::string_view(spoil.name) == "another key's bake") {
+    const std::string_view name(spoil.name);
+    if (name == "another part's bake") {
       std::ifstream theirs(std::filesystem::path(other.cache.path), std::ios::binary);
       bytes.assign((std::istreambuf_iterator<char>(theirs)), std::istreambuf_iterator<char>());
-    } else if (std::string_view(spoil.name) == "another version") {
+    } else if (name == "another generation") {
+      bytes[8] = static_cast<char>(bytes[8] ^ 0x01);
+    } else if (name == "another version") {
       bytes[4] = static_cast<char>(bytes[4] + 1);
-    } else if (std::string_view(spoil.name) == "a short file") {
+    } else if (name == "a short file") {
       bytes.resize(bytes.size() - 4);
+    } else if (name == "a colliding key over other content") {
+      // R208-M2: a sound pack of this generation whose one part has the scene part's key and
+      // other triangles (a 64-bit collision, or a pack made to look like one): a miss, baked,
+      // never read past the part.
+      const u64 generation = get_u64(bytes, 8);
+      const u64 key = get_u64(bytes, k_micromap_pack_fixed_bytes);
+      const u32 stored_triangles =
+          static_cast<u32>(get_u64(bytes, k_micromap_pack_fixed_bytes + 8) & 0xffffffffu);
+      MicromapPackPart part;
+      part.key = key;
+      part.triangle_count = stored_triangles > 1 ? stored_triangles - 1 : stored_triangles + 1;
+      const std::vector<i32> indices(part.triangle_count, gfx::k_micromap_fully_opaque);
+      MicromapPackView forged;
+      forged.parts = std::span<const MicromapPackPart>(&part, 1);
+      forged.indices = std::span<const i32>(indices.data(), indices.size());
+      const std::string at = root.path() + "/forged.omm";
+      std::string error;
+      REQUIRE_MESSAGE(write_micromap_pack(at, generation, forged, &error), error);
+      std::ifstream theirs(std::filesystem::path(at), std::ios::binary);
+      bytes.assign((std::istreambuf_iterator<char>(theirs)), std::istreambuf_iterator<char>());
     } else {
       bytes[bytes.size() - 1] = static_cast<char>(bytes[bytes.size() - 1] ^ 0x01);
     }
@@ -1339,19 +1523,192 @@ TEST_CASE("alpha mask: a stored micromap bake is refused for another key, versio
       out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
     }
     const MicromapShot again = shoot();
-    INFO(spoil.name << ": refused '" << again.cache.refused << "', key " << again.cache.key
-                    << " against " << first.cache.key);
+    INFO(spoil.name << ": refused '" << again.cache.refused << "'");
     CHECK(again.cache.read == 0);
     CHECK(again.cache.baked == 1);
-    CHECK(again.cache.refused.find(spoil.refused) != std::string::npos);
+    if (spoil.refused[0] != '\0')
+      CHECK(again.cache.refused.find(spoil.refused) != std::string::npos);
+    else
+      CHECK(again.cache.refused.empty());
     CHECK(differing_pixels(first.frame, again.frame) == 0);
-    // The bake it fell back to is stored over the spoiled file.
+    // The bake it fell back to is stored at the spoiled pack's path.
     REQUIRE(again.cache.stored);
+    CHECK(again.cache.path == first.cache.path);
   }
-  // And the last of those is read by the next load.
+  // And the last of those is read by the next load, and the other texel target's pack still is.
   const MicromapShot after = shoot();
   CHECK(after.cache.read == 1);
+  CHECK(after.cache.baked == 0);
   CHECK(differing_pixels(first.frame, after.frame) == 0);
+  CHECK(std::filesystem::exists(std::filesystem::path(other.cache.path)));
+}
+
+// **A start elsewhere reads what it shares and bakes only what is new** (R208; renderer.md, "The
+// bake is read back"). In a streamed world what a load holds follows where it starts; here the
+// first load holds one masked mesh and the second that mesh and another, as a second start would
+// hold the tiles it shares with the first and some of its own. The second bakes only the part the
+// first did not store (a count: one part read, the rest baked, one pack read and one stored), and
+// draws what a load with no store draws, to the byte; a third holding either reads both.
+TEST_CASE("alpha mask: a second start reads the parts the first stored and bakes only the rest") {
+  Fixture fx;
+  test::TempDir root{"omm_parts"};
+  RenderSettings rays = base_settings(RasterMode::Hardware);
+  rays.shadows = ShadowMode::RayTraced;
+  TunableScope on("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=true");
+  TunableScope cap("renderer.rt.micromap_level=6", "renderer.rt.micromap_level=6");
+  TunableScope fine("renderer.rt.micromap_texels=0.01", "renderer.rt.micromap_texels=4");
+  TunableScope floor("renderer.rt.micromap_store_min=0", "renderer.rt.micromap_store_min=0");
+  const std::string ddc = root.path() + "/ddc";
+  const ShotView view = micromap_shadow_view();
+  const MicromapShot first = shoot_micromaps(fx.caster_masked, rays, view, false, ddc);
+  if (!first.skip.empty() || !first.baked) {
+    MESSAGE("skipped: " << (first.skip.empty() ? std::string("no micromaps here") : first.skip));
+    return;
+  }
+  REQUIRE(first.cache.stored);
+  CHECK(first.cache.parts == 1);
+  CHECK(first.cache.baked == 1);
+  const MicromapShot second = shoot_micromaps(fx.caster_masked, rays, view, false, ddc, fx.masked);
+  const MicromapShot unstored = shoot_micromaps(fx.caster_masked, rays, view, false, {}, fx.masked);
+  MESSAGE("the second start: " << second.cache.parts << " parts, " << second.cache.read
+                               << " read from " << second.cache.packs_read << " pack(s), "
+                               << second.cache.baked << " baked, stored " << second.cache.stored);
+  CHECK(second.cache.parts == 2);
+  CHECK(second.cache.read == 1);   // the first start's part
+  CHECK(second.cache.baked == 1);  // only the new one
+  CHECK(second.cache.packs_read == 1);
+  CHECK(second.cache.stored);
+  CHECK(second.cache.path != first.cache.path);
+  CHECK(differing_pixels(second.frame, unstored.frame) == 0);
+  CHECK(second.stats.triangles == unstored.stats.triangles);
+  CHECK(second.stats.micro_unknown == unstored.stats.micro_unknown);
+  CHECK(second.stats.micro_opaque == unstored.stats.micro_opaque);
+  // A third start holding both reads both, from the two packs, and bakes nothing.
+  const MicromapShot third = shoot_micromaps(fx.masked, rays, view, false, ddc, fx.caster_masked);
+  CHECK(third.cache.parts == 2);
+  CHECK(third.cache.read == 2);
+  CHECK(third.cache.baked == 0);
+  CHECK(third.cache.packs_read == 2);
+  CHECK_FALSE(third.cache.stored);
+}
+
+// **A scene over its budget is read back at the lowered cap** (R208-M1; renderer.md, "The bake is
+// read back"). The budget is held to the assembled micromap, so a load whose micromap at the top
+// cap is over it lowers the cap and tries again: the first load bakes and stores at both caps, and
+// every later load reads the top cap's pack to find it over (its sections freed before the next
+// cap is tried), then the lowered cap's, and bakes nothing. The budget is the setting's grain, a
+// MiB, under a grid whose micromap is over it at the top cap (2.9 MB, a premise measured by a load
+// of its own) and under it a level down, so exactly one level drops. The keyed loads are held to
+// an unkeyed bake on their own load path (a derived-data root, the store's floor above the scene):
+// the second load draws the first's picture and the unkeyed bake's, to the byte; at the lowered
+// cap reached directly, the keyed micromap's states equal the bake's triangle by triangle, through
+// each one's own index (`renderer.rt.micromap_capture`), and the two draw the same bytes.
+//
+// A load with no derived-data root is another load path, not another micromap: it imports the
+// glTF and decodes the PNG where a rooted load reads the container and the block-compressed
+// texture built from it. On this noise it draws one pixel apart from the rooted loads on the 5090
+// with every micromap state equal (R208's mend, 2026-11-24: keyed against unkeyed on one root, 0
+// pixels; the same states with no root, 1), so the case prints that count and asserts the states.
+TEST_CASE(
+    "alpha mask: a micromap over its budget is read back at the lowered cap, baking nothing") {
+  test::TempDir root{"omm_budget"};
+  const std::filesystem::path dir(root.path());
+  REQUIRE(write_noise_grid(dir, "grid.gltf", 28));  // 1,568 triangles of their own states
+  const std::string grid = (dir / "grid.gltf").string();
+  RenderSettings traced = base_settings(RasterMode::RayTrace);
+  traced.shadows = ShadowMode::RayTraced;
+  ShotView view;
+  view.mode = static_cast<u32>(gfx::ResolveMode::Shaded);
+  TunableScope on("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=true");
+  TunableScope cap("renderer.rt.micromap_level=6", "renderer.rt.micromap_level=6");
+  TunableScope fine("renderer.rt.micromap_texels=0.01", "renderer.rt.micromap_texels=4");
+  TunableScope floor("renderer.rt.micromap_store_min=0", "renderer.rt.micromap_store_min=0");
+  // The top cap's assembled size, from a stored load at the default budget into a root of its own.
+  const MicromapShot measure = shoot_micromaps(grid, traced, view, false, root.path() + "/measure");
+  if (!measure.skip.empty() || !measure.baked) {
+    MESSAGE(
+        "skipped: " << (measure.skip.empty() ? std::string("no micromaps here") : measure.skip));
+    return;
+  }
+  REQUIRE(measure.stats.level_cap == 6);
+  REQUIRE(measure.stats.levels_dropped == 0);
+  const u64 top = measure.stats.data_bytes + measure.stats.index_bytes +
+                  u64{measure.stats.unique_entries} * gfx::k_micromap_triangle_bytes;
+  const u64 budget = u64{1} << 20;
+  REQUIRE(top > budget);  // the premise: the top cap is over a MiB
+  TunableScope small("renderer.rt.micromap_mib=1", "renderer.rt.micromap_mib=1024");
+  const std::string ddc = root.path() + "/ddc";
+  // An unkeyed bake on the keyed loads' load path: a root of its own, the floor above the scene.
+  auto unkeyed_shot = [&] {
+    TunableScope above("renderer.rt.micromap_store_min=1073741824",
+                       "renderer.rt.micromap_store_min=0");
+    return shoot_micromaps(grid, traced, view, false, root.path() + "/unkeyed");
+  };
+  const MicromapShot first = shoot_micromaps(grid, traced, view, false, ddc);
+  const MicromapShot second = shoot_micromaps(grid, traced, view, false, ddc);
+  const MicromapShot unstored = unkeyed_shot();
+  MESSAGE("the top cap assembles to "
+          << top << " bytes; budget " << budget << ": the first load " << first.cache.baked
+          << " baked, cap " << first.stats.level_cap << "; the second read " << second.cache.read
+          << " from " << second.cache.packs_read << " pack(s) (" << second.cache.read_bytes
+          << " bytes), " << second.cache.baked << " baked, cap " << second.stats.level_cap);
+  // The first load drops a level, bakes the part at each cap and stores both packs.
+  CHECK(first.cache.levels_dropped == 1);
+  CHECK(first.stats.level_cap == 5);
+  CHECK(first.cache.baked == 1);
+  CHECK(first.cache.stored);
+  // The second reports the lowered cap and bakes nothing: the top cap's pack read and found over,
+  // then the lowered cap's.
+  CHECK(second.cache.levels_dropped == 1);
+  CHECK(second.stats.level_cap == 5);
+  CHECK(second.stats.levels_dropped == 1);
+  CHECK(second.cache.baked == 0);
+  CHECK(second.cache.read == 1);
+  CHECK(second.cache.packs_read == 2);
+  CHECK_FALSE(second.cache.stored);
+  CHECK(second.cache.refused.empty());
+  // The unkeyed bake holds the same budget to its own entries and lands on the same cap.
+  CHECK_FALSE(unstored.cache.unkeyed.empty());
+  CHECK(unstored.cache.read == 0);
+  CHECK_FALSE(unstored.cache.stored);
+  CHECK(unstored.stats.level_cap == 5);
+  CHECK(unstored.stats.levels_dropped == 1);
+  CHECK(second.stats.data_bytes == first.stats.data_bytes);
+  CHECK(second.stats.unique_entries == unstored.stats.unique_entries);
+  CHECK(second.stats.micro_unknown == unstored.stats.micro_unknown);
+  CHECK(differing_pixels(first.frame, second.frame) == 0);
+  CHECK(differing_pixels(second.frame, unstored.frame) == 0);
+  // The lowered cap reached directly, keyed and unkeyed, each micromap's input captured: the budget
+  // path draws what the cap draws, and the keyed micromap is the bake's, state for state.
+  TunableScope big("renderer.rt.micromap_mib=1024", "renderer.rt.micromap_mib=1");
+  TunableScope five("renderer.rt.micromap_level=5", "renderer.rt.micromap_level=6");
+  TunableScope capture("renderer.rt.micromap_capture=true", "renderer.rt.micromap_capture=false");
+  const MicromapShot keyed = shoot_micromaps(grid, traced, view, false, root.path() + "/direct");
+  const MicromapShot unkeyed = unkeyed_shot();
+  CHECK(keyed.stats.levels_dropped == 0);
+  CHECK(keyed.cache.unkeyed.empty());
+  CHECK_FALSE(unkeyed.cache.unkeyed.empty());
+  CHECK(differing_pixels(second.frame, keyed.frame) == 0);
+  CHECK(differing_pixels(unstored.frame, unkeyed.frame) == 0);
+  const StateDiff states = compare_states(keyed.cache, unkeyed.cache);
+  MESSAGE("states by triangle, keyed against unkeyed at cap 5: "
+          << states.triangles << " triangles, " << states.triangles_apart << " apart (special "
+          << states.special_apart << ", level or format " << states.level_apart
+          << "), micro-triangles " << states.micro_apart << " of " << states.micro_compared
+          << " apart; entries " << keyed.cache.captured_triangles.size() << "/"
+          << unkeyed.cache.captured_triangles.size());
+  CHECK(states.triangles > 0);
+  CHECK(states.micro_compared > 0);
+  CHECK(states.triangles_apart == 0);
+  CHECK(states.micro_apart == 0);
+  CHECK(differing_pixels(keyed.frame, unkeyed.frame) == 0);
+  // A load with no root: the same states, another load path (above); its pixels printed.
+  const MicromapShot bare = shoot_micromaps(grid, traced, view, false, {});
+  const StateDiff bare_states = compare_states(keyed.cache, bare.cache);
+  CHECK(bare_states.triangles_apart == 0);
+  CHECK(bare_states.micro_apart == 0);
+  MESSAGE("a load with no derived-data root, the same states: "
+          << differing_pixels(keyed.frame, bare.frame) << " pixel(s) from the rooted loads");
 }
 
 // The micromaps are really in the structures: `renderer.shadow.opaque_rays` forces every caster

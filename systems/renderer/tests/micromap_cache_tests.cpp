@@ -1,19 +1,21 @@
-// The opacity micromaps' stored bake on the CPU (roadmap R207; micromap_cache.h; renderer.md, "The
-// bake is read back"): the key and the file's bytes pinned (the engine's own arithmetic and layout,
-// so every toolchain must give the same words), every input the key covers moving it, and a file
-// refused by its header before a device is asked for anything. No device: the read back itself
-// and the picture are alpha_mask_tests.cpp's.
+// The opacity micromaps' store on the CPU (roadmap R207, R208; micromap_cache.h; renderer.md, "The
+// bake is read back"): the generation and a part's key pinned (the engine's own arithmetic, so
+// every toolchain must give the same words), every input a part's key covers moving it, a pack's
+// bytes pinned, a pack refused by its header and by its tables before anything is copied, the
+// assembly the same micromap whichever parts were stored, and the folder's pruning. No device: the
+// read back itself and the picture are alpha_mask_tests.cpp's.
 
 #include <core/hash/hash.h>
-#include <domain/gfx/device.h>
 #include <systems/renderer/micromap_cache.h>
 
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <chrono>
 #include <cstdio>
+#include <cstring>
+#include <filesystem>
 #include <fstream>
-#include <initializer_list>
 #include <iterator>
 #include <string>
 
@@ -23,59 +25,20 @@ using namespace engine::renderer;
 namespace {
 
 struct KeyFixture {
-  u32 items[6] = {3, 0, 4, 1, 9, 1};
+  u32 locals[3] = {0, 4, 9};
   u32 counts[3] = {124, 2, 37};
-  MicromapCacheKeyInput input() const {
-    MicromapCacheKeyInput in;
-    for (u32 i = 0; i < 28; ++i)
-      in.device[i] = static_cast<u8>(i * 7 + 1);
-    in.shader = 0x0123456789abcdefull;
+  u64 materials[3] = {0xfeedfacecafebeefull, 0xfeedfacecafebeefull, 0x0badf00d00000001ull};
+  u64 digests[3] = {0x1111222233334444ull, 0x5555666677778888ull, 0x99990000aaaabbbbull};
+  MicromapPartKeyInput input() const {
+    MicromapPartKeyInput in;
+    in.generation = 0x0123456789abcdefull;
     in.level_cap = 6;
-    in.device_limit = 12;
-    in.budget_bytes = u64{1024} << 20;
     in.target_texels = 4.0f;
-    in.cluster_count = 10;
-    in.items = items;
+    in.locals = locals;
     in.triangle_counts = counts;
-    in.materials = 0xfeedfacecafebeefull;
-    in.geometry[0] = 0x1111222233334444ull;
-    in.geometry[1] = 0x5555666677778888ull;
+    in.materials = materials;
+    in.digests = digests;
     return in;
-  }
-};
-
-// A small bake's sections: three clusters, four triangles, two stored entries at levels 1 and 2.
-struct SectionsFixture {
-  u32 cluster_first[3] = {0, gfx::k_micromap_none, 2};
-  i32 indices[4] = {0, gfx::k_micromap_fully_opaque, 1, 0};
-  gfx::MicromapTriangle triangles[2] = {{0, 1, static_cast<u16>(gfx::k_micromap_format_4state)},
-                                        {4, 2, static_cast<u16>(gfx::k_micromap_format_4state)}};
-  u32 data[3] = {0x000000e4u, 0x5a5a5a5au, 0xa5a5ffffu};
-  gfx::MicromapStats stats;
-  // The scene those sections are a bake of: clusters 0 and 2 masked, two triangles each.
-  u32 items[4] = {0, 5, 2, 5};
-  u32 counts[2] = {2, 2};
-  MicromapSceneShape shape() const { return MicromapSceneShape{3, items, counts}; }
-  gfx::MicromapSections sections() {
-    stats.triangles = 4;
-    stats.entries_per_level[1] = 2;
-    stats.entries_per_level[2] = 1;
-    stats.special_opaque = 1;
-    stats.unique_entries = 2;
-    stats.unique_per_level[1] = 1;
-    stats.unique_per_level[2] = 1;
-    stats.level_cap = 2;
-    stats.data_bytes = sizeof(data);
-    stats.index_bytes = sizeof(indices);
-    stats.micro_opaque = 9;
-    stats.micro_unknown = 7;
-    gfx::MicromapSections s;
-    s.cluster_first = cluster_first;
-    s.indices = indices;
-    s.triangles = triangles;
-    s.data = data;
-    s.stats = &stats;
-    return s;
   }
 };
 
@@ -85,47 +48,107 @@ std::string hex(u64 v) {
   return text;
 }
 
-}  // namespace
+// Two parts' sections as one pack: part 0 has three triangles (an entry at level 1 twice, one
+// special), part 1 two (the level-1 entry's words again under another entry, and a level-2 entry).
+struct PackFixture {
+  MicromapPackPart parts[2];
+  i32 indices[5] = {0, gfx::k_micromap_fully_opaque, 0, 1, 2};
+  gfx::MicromapTriangle triangles[3] = {{0, 1, static_cast<u16>(gfx::k_micromap_format_4state)},
+                                        {4, 1, static_cast<u16>(gfx::k_micromap_format_4state)},
+                                        {8, 2, static_cast<u16>(gfx::k_micromap_format_4state)}};
+  u32 data[3] = {0x000000e4u, 0x000000e4u, 0xa5a5ffffu};
+  PackFixture() {
+    parts[0].key = 0xaaaa000000000001ull;
+    parts[0].triangle_count = 3;
+    parts[0].wanted[1] = 2;
+    parts[0].wanted[3] = 1;
+    parts[1].key = 0xbbbb000000000002ull;
+    parts[1].triangle_count = 2;
+    parts[1].wanted[2] = 2;
+  }
+  MicromapPackView view() const {
+    MicromapPackView v;
+    v.parts = parts;
+    v.indices = indices;
+    v.triangles = triangles;
+    v.data = data;
+    return v;
+  }
+};
 
-TEST_CASE("micromap cache: the key is the engine's own arithmetic, the same on every toolchain") {
-  const KeyFixture fx;
-  const u64 key = micromap_cache_key(fx.input());
-  MESSAGE("key " << hex(key));
-  // Pinned on MSVC (R207); GCC and Clang must give the same word.
-  CHECK(hex(key) == "0xca193a11cefcaffc");
-  CHECK(micromap_cache_path("ddc", key) == "ddc/micromaps/" + hex(key).substr(2) + ".omm");
+std::string read_all(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 
-TEST_CASE("micromap cache: every input the key covers moves it") {
+void write_all(const std::string& path, const std::string& bytes) {
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+}
+
+}  // namespace
+
+TEST_CASE("micromap cache: the keys are the engine's own arithmetic, the same on every toolchain") {
+  u8 device[28];
+  for (u32 i = 0; i < 28; ++i)
+    device[i] = static_cast<u8>(i * 7 + 1);
+  const u64 generation = micromap_generation(device, 0x0123456789abcdefull);
   const KeyFixture fx;
-  const u64 base = micromap_cache_key(fx.input());
+  const u64 part = micromap_part_key(fx.input());
+  MESSAGE("generation " << hex(generation) << ", part " << hex(part));
+  // Pinned on MSVC (R208); GCC and Clang must give the same words.
+  CHECK(hex(generation) == "0xbe95f623e8515e87");
+  CHECK(hex(part) == "0xf880eaf05d66dfb8");
+  CHECK(micromap_generation_dir("ddc", generation) == "ddc/micromaps/" + hex(generation).substr(2));
+}
+
+TEST_CASE(
+    "micromap cache: every input a part's key covers moves it, and nothing of the load does") {
+  const KeyFixture fx;
+  const u64 base = micromap_part_key(fx.input());
   auto moved = [&](auto change) {
     KeyFixture other;
-    MicromapCacheKeyInput in = other.input();
+    MicromapPartKeyInput in = other.input();
     change(in, other);
-    return micromap_cache_key(in) != base;
+    return micromap_part_key(in) != base;
   };
-  CHECK(moved([](MicromapCacheKeyInput& in, KeyFixture&) { in.device[0] ^= 1; }));   // vendor
-  CHECK(moved([](MicromapCacheKeyInput& in, KeyFixture&) { in.device[8] ^= 1; }));   // driver
-  CHECK(moved([](MicromapCacheKeyInput& in, KeyFixture&) { in.device[27] ^= 1; }));  // UUID
-  CHECK(moved([](MicromapCacheKeyInput& in, KeyFixture&) { in.shader ^= 1; }));
-  CHECK(moved([](MicromapCacheKeyInput& in, KeyFixture&) { in.level_cap = 5; }));
-  CHECK(moved([](MicromapCacheKeyInput& in, KeyFixture&) { in.device_limit = 10; }));
-  CHECK(moved([](MicromapCacheKeyInput& in, KeyFixture&) { in.budget_bytes += 1; }));
-  CHECK(moved([](MicromapCacheKeyInput& in, KeyFixture&) { in.target_texels = 4.5f; }));
-  CHECK(moved([](MicromapCacheKeyInput& in, KeyFixture&) { in.cluster_count = 11; }));
-  CHECK(moved([](MicromapCacheKeyInput& in, KeyFixture& f) {
-    f.items[1] = 2;  // another material for a cluster
-    in.items = f.items;
+  CHECK(moved([](MicromapPartKeyInput& in, KeyFixture&) { in.generation ^= 1; }));
+  CHECK(moved([](MicromapPartKeyInput& in, KeyFixture&) { in.level_cap = 5; }));
+  CHECK(moved([](MicromapPartKeyInput& in, KeyFixture&) { in.target_texels = 4.5f; }));
+  CHECK(moved([](MicromapPartKeyInput& in, KeyFixture& f) {
+    f.locals[1] = 5;  // another cluster of the part
+    in.locals = f.locals;
   }));
-  CHECK(moved([](MicromapCacheKeyInput& in, KeyFixture& f) {
+  CHECK(moved([](MicromapPartKeyInput& in, KeyFixture& f) {
     f.counts[2] = 36;
     in.triangle_counts = f.counts;
   }));
-  CHECK(moved([](MicromapCacheKeyInput& in, KeyFixture&) { in.materials ^= 1; }));
-  CHECK(moved([](MicromapCacheKeyInput& in, KeyFixture&) { in.geometry[0] ^= 1; }));
-  CHECK(moved([](MicromapCacheKeyInput& in, KeyFixture&) { in.geometry[1] ^= 1; }));
-  CHECK_FALSE(moved([](MicromapCacheKeyInput&, KeyFixture&) {}));
+  CHECK(moved([](MicromapPartKeyInput& in, KeyFixture& f) {
+    f.materials[1] ^= 1;  // another material for a cluster
+    in.materials = f.materials;
+  }));
+  CHECK(moved([](MicromapPartKeyInput& in, KeyFixture& f) {
+    f.digests[0] ^= 1;  // another UV word
+    in.digests = f.digests;
+  }));
+  CHECK(moved([](MicromapPartKeyInput& in, KeyFixture& f) {
+    in.locals = std::span<const u32>(f.locals, 2);  // a cluster fewer
+    in.triangle_counts = std::span<const u32>(f.counts, 2);
+    in.materials = std::span<const u64>(f.materials, 2);
+    in.digests = std::span<const u64>(f.digests, 2);
+  }));
+  // The generation moves with the device, the driver, the shader and nothing else.
+  u8 device[28] = {};
+  const u64 g = micromap_generation(device, 7);
+  device[8] ^= 1;  // the driver's version
+  CHECK(micromap_generation(device, 7) != g);
+  device[8] ^= 1;
+  device[27] ^= 1;  // the pipeline cache's UUID
+  CHECK(micromap_generation(device, 7) != g);
+  device[27] ^= 1;
+  CHECK(micromap_generation(device, 8) != g);
+  CHECK(micromap_generation(device, 7) == g);
+  CHECK_FALSE(moved([](MicromapPartKeyInput&, KeyFixture&) {}));
 }
 
 TEST_CASE("micromap cache: a material's digest is of what the bake reads, never of a slot") {
@@ -135,16 +158,16 @@ TEST_CASE("micromap cache: a material's digest is of what the bake reads, never 
   a.record.uv_offset = Vec4{0.0f, 0.0f, 0.5f, 1.0f};
   a.albedo_identity = 0xabcdef;
   a.sampler_identity = (u64{1} << 32) | 5;
-  const u64 base = micromap_materials_digest(std::span<const MicromapMaterialWords>(&a, 1));
+  const u64 base = micromap_material_digest(a);
   MicromapMaterialWords b = a;
   b.record.albedo_texture = 12;  // the same texture in another slot
   b.record.sampler = 9;
   b.record.normal_texture = 4;  // a slot the bake never reads
-  CHECK(micromap_materials_digest(std::span<const MicromapMaterialWords>(&b, 1)) == base);
+  CHECK(micromap_material_digest(b) == base);
   auto moved = [&](auto change) {
     MicromapMaterialWords m = a;
     change(m);
-    return micromap_materials_digest(std::span<const MicromapMaterialWords>(&m, 1)) != base;
+    return micromap_material_digest(m) != base;
   };
   CHECK(moved([](MicromapMaterialWords& m) { m.albedo_identity ^= 1; }));
   CHECK(moved([](MicromapMaterialWords& m) { m.sampler_identity ^= 1; }));
@@ -158,195 +181,272 @@ TEST_CASE("micromap cache: a material's digest is of what the bake reads, never 
   }));
 }
 
-TEST_CASE("micromap cache: a stored bake's bytes are the engine's own layout") {
-  SectionsFixture fx;
-  const gfx::MicromapSections sections = fx.sections();
-  const std::string header = micromap_file_header(0x00c0ffee00c0ffeeull, sections);
-  // The prefix: magic, version, key, the content hash, the header's length.
-  REQUIRE(header.size() > 28);
+TEST_CASE("micromap cache: a pack's bytes are the engine's own layout") {
+  const PackFixture fx;
+  const MicromapPackView view = fx.view();
+  const u64 generation = 0x00c0ffee00c0ffeeull;
+  const std::string header = micromap_pack_header(generation, view);
+  CHECK(header.size() == k_micromap_pack_fixed_bytes + 2 * k_micromap_part_record_bytes);
   CHECK(static_cast<u8>(header[0]) == 0x45);  // "EOMM"
   CHECK(static_cast<u8>(header[3]) == 0x4d);
   CHECK(static_cast<u8>(header[4]) == k_micromap_cache_version);
   const u64 hashed = hash_bytes(header.data(), header.size());
   MESSAGE("header " << header.size() << " bytes, hash " << hex(hashed));
-  // Pinned on MSVC (R207): the layout and the content hash, which GCC and Clang must reproduce.
-  CHECK(header.size() == 492);
-  CHECK(hex(hashed) == "0x6b15b7b33480fa82");
+  // Pinned on MSVC (R208): the layout and the content hash, which GCC and Clang must reproduce.
+  CHECK(hex(hashed) == "0x86b48845e0660e5b");
 
-  test::TempDir dir{"omm_file"};
-  const std::string path = micromap_cache_path(dir.path(), 0x00c0ffee00c0ffeeull);
+  test::TempDir dir{"omm_pack"};
+  const std::string path = micromap_pack_path(dir.path(), generation, view.parts);
   std::string error;
-  REQUIRE_MESSAGE(write_micromap_file(path, 0x00c0ffee00c0ffeeull, sections, &error), error);
-  std::ifstream in(path, std::ios::binary);
-  const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  CHECK(bytes.size() == header.size() + sizeof(fx.cluster_first) + sizeof(fx.indices) +
-                            sizeof(fx.triangles) + sizeof(fx.data));
+  REQUIRE_MESSAGE(write_micromap_pack(path, generation, view, &error), error);
+  const std::string bytes = read_all(path);
+  CHECK(bytes.size() ==
+        header.size() + sizeof(fx.indices) + sizeof(fx.triangles) + sizeof(fx.data));
   CHECK(bytes.compare(0, header.size(), header) == 0);
+  // And it reads back as it was written.
+  MicromapPackIndex index;
+  REQUIRE_MESSAGE(read_micromap_pack_index(path, generation, index), index.refused);
+  REQUIRE(index.parts.size() == 2);
+  CHECK(index.parts[0].key == fx.parts[0].key);
+  CHECK(index.parts[1].wanted[2] == 2);
+  MicromapPackData data;
+  std::string refused;
+  REQUIRE_MESSAGE(read_micromap_pack(index, data, &refused), refused);
+  CHECK(data.first_triangle[1] == 3);
+  CHECK(std::memcmp(data.indices.data(), fx.indices, sizeof(fx.indices)) == 0);
+  CHECK(std::memcmp(data.data.data(), fx.data, sizeof(fx.data)) == 0);
 }
 
-// A file is refused by its header before the restore asks the device for anything, so these need
-// none: another key, another version, not a stored bake at all, a length its sections do not add
-// up to, and no file.
-TEST_CASE("micromap cache: a file is refused by its header for another key, version or length") {
-  SectionsFixture fx;
-  const gfx::MicromapSections sections = fx.sections();
+// A pack is refused by its header before any section is read, and by its content and its tables
+// before anything of it is copied: another generation, another version, not a pack at all, a
+// header or length its counts do not add up to, a changed byte, an index past its entries, a record
+// past its states. Each refusal is named.
+TEST_CASE("micromap cache: a pack is refused by its header, its bytes and its tables") {
   test::TempDir dir{"omm_refuse"};
-  const u64 key = 0x1234;
-  const std::string path = micromap_cache_path(dir.path(), key);
-  std::string error;
-  REQUIRE_MESSAGE(write_micromap_file(path, key, sections, &error), error);
-  std::string good;
-  {
-    std::ifstream in(path, std::ios::binary);
-    good.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  }
-  const gfx::Device none;  // never created: a refusal must come before any device call
-  auto refusal = [&](const std::string& bytes, u64 asked) {
-    {
-      std::ofstream out(path, std::ios::binary | std::ios::trunc);
-      out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+  const u64 generation = 0x1234;
+  const std::string path = dir.path() + "/pack.omm";
+  auto refusal = [&](const PackFixture& fx, auto spoil, u64 asked) {
+    std::string error;
+    REQUIRE_MESSAGE(write_micromap_pack(path, generation, fx.view(), &error), error);
+    std::string bytes = read_all(path);
+    spoil(bytes);
+    write_all(path, bytes);
+    // Every spoil below is of the bytes, read whole: damaged, and removed at the next store
+    // (R208-L7); a pack that does not open is not (below).
+    MicromapPackIndex index;
+    if (!read_micromap_pack_index(path, asked, index)) {
+      CHECK(index.damaged);
+      return index.refused;
     }
-    gfx::OpacityMicromapSet set;
-    const MicromapFileRead read = read_micromap_file(none, path, asked, fx.shape(), set);
-    CHECK(read.found);
-    CHECK_FALSE(read.used);
-    CHECK(set.address == 0);
-    return read.refused;
+    CHECK_FALSE(index.damaged);
+    MicromapPackData data;
+    std::string refused;
+    bool damaged = false;
+    CHECK_FALSE(read_micromap_pack(index, data, &refused, &damaged));
+    CHECK(damaged);
+    CHECK(data.indices.empty());
+    return refused;
   };
-  CHECK(refusal(good, key + 1).find("another key") != std::string::npos);
-  std::string spoiled = good;
-  spoiled[4] = static_cast<char>(spoiled[4] + 1);
-  CHECK(refusal(spoiled, key).find("version") != std::string::npos);
-  spoiled = good;
-  spoiled[0] = 'X';
-  CHECK(refusal(spoiled, key).find("not a stored bake") != std::string::npos);
-  spoiled = good.substr(0, good.size() - 4);
-  CHECK(refusal(spoiled, key).find("length") != std::string::npos);
-  spoiled = good.substr(0, 10);
-  CHECK(refusal(spoiled, key).find("prefix") != std::string::npos);
-  gfx::OpacityMicromapSet set;
-  const MicromapFileRead missing =
-      read_micromap_file(none, micromap_cache_path(dir.path(), key + 7), key + 7, fx.shape(), set);
-  CHECK_FALSE(missing.found);
-  CHECK(missing.refused.empty());
+  const PackFixture good;
+  auto none = [](std::string&) {};
+  CHECK(refusal(good, none, generation + 1).find("another generation") != std::string::npos);
+  CHECK(refusal(
+            good, [](std::string& b) { b[4] = static_cast<char>(b[4] + 1); }, generation)
+            .find("version") != std::string::npos);
+  CHECK(refusal(
+            good, [](std::string& b) { b[0] = 'X'; }, generation)
+            .find("not a stored bake") != std::string::npos);
+  CHECK(refusal(
+            good, [](std::string& b) { b.resize(b.size() - 4); }, generation)
+            .find("length") != std::string::npos);
+  CHECK(refusal(
+            good, [](std::string& b) { b.resize(20); }, generation)
+            .find("shorter") != std::string::npos);
+  CHECK(refusal(
+            good, [](std::string& b) { b[28] = static_cast<char>(b[28] + 1); }, generation)
+            .find("header's length") != std::string::npos);  // one part more than its records
+  CHECK(refusal(
+            good, [](std::string& b) { b[b.size() - 1] ^= 0x01; }, generation)
+            .find("content hash") != std::string::npos);
+  {
+    PackFixture fx;
+    fx.indices[3] = 3;  // past the three entries
+    CHECK(refusal(fx, none, generation).find("an index names no stored entry (triangle 3") !=
+          std::string::npos);
+  }
+  {
+    PackFixture fx;
+    fx.indices[1] = -5;  // below the special indices
+    CHECK(refusal(fx, none, generation).find("an index names no stored entry (triangle 1") !=
+          std::string::npos);
+  }
+  {
+    PackFixture fx;
+    fx.triangles[2].data_offset = 12;  // a level-2 entry's 4 bytes at 12 of 12
+    CHECK(refusal(fx, none, generation).find("a triangle record names states") !=
+          std::string::npos);
+  }
+  // A pack that is not there opens nothing, and is not damaged: it may be another process's
+  // replace under way, and a load leaves it alone.
+  MicromapPackIndex missing;
+  CHECK_FALSE(read_micromap_pack_index(dir.path() + "/none.omm", generation, missing));
+  CHECK_FALSE(missing.damaged);
+  // A pack whose index was read and which is gone (or replaced by another length) before its
+  // sections are: a miss, not damage.
+  {
+    std::string error;
+    REQUIRE_MESSAGE(write_micromap_pack(path, generation, good.view(), &error), error);
+    MicromapPackIndex index;
+    REQUIRE_MESSAGE(read_micromap_pack_index(path, generation, index), index.refused);
+    std::string bytes = read_all(path);
+    write_all(path, bytes + "more");
+    MicromapPackData data;
+    std::string refused;
+    bool damaged = true;
+    CHECK_FALSE(read_micromap_pack(index, data, &refused, &damaged));
+    CHECK(refused.find("length changed") != std::string::npos);
+    CHECK_FALSE(damaged);
+    std::filesystem::remove(std::filesystem::path(path));
+    damaged = true;
+    CHECK_FALSE(read_micromap_pack(index, data, &refused, &damaged));
+    CHECK(refused.find("did not open") != std::string::npos);
+    CHECK_FALSE(damaged);
+  }
 }
 
-namespace {
-
-// The content hash a writer would put on `bytes` as they stand (the header after its prefix, then
-// each section chained in order; the data section is whatever follows the triangle records), so a
-// lie written into a header carries a correct hash and the hash is never what refuses it.
-void rehash(std::string& bytes) {
-  auto u32_at = [&](usize at) {
-    u32 v = 0;
-    for (u32 i = 0; i < 4; ++i)
-      v |= u32{static_cast<u8>(bytes[at + i])} << (8 * i);
-    return v;
-  };
-  const usize header_bytes = u32_at(24);
-  u64 h = hash_bytes(bytes.data() + 28, header_bytes - 28);
-  const usize sizes[3] = {usize{u32_at(28)} * 4, usize{u32_at(32)} * 4,
-                          usize{u32_at(36)} * sizeof(gfx::MicromapTriangle)};
-  usize at = header_bytes;
-  for (const usize size : sizes) {
-    if (size != 0) h = hash_bytes(bytes.data() + at, size, h);
-    at += size;
+// **The micromap is a function of the triangles' states, not of where they were stored** (R208):
+// the scene's five triangles assembled from one pack, and from two packs that hold its parts
+// apart (one of them storing the shared words under an entry of its own), give the same indices,
+// records and states; the shared words are one entry, and a 64-bit proposal the words refuse
+// costs an entry and never a wrong state.
+TEST_CASE("micromap cache: the assembly is the same micromap whichever parts were stored") {
+  const PackFixture whole;
+  // Part 0 alone, and part 1 alone with its entries renumbered from zero.
+  MicromapPackPart first_part[1] = {whole.parts[0]};
+  const i32 first_indices[3] = {0, gfx::k_micromap_fully_opaque, 0};
+  const gfx::MicromapTriangle first_records[1] = {whole.triangles[0]};
+  const u32 first_data[1] = {whole.data[0]};
+  MicromapPackPart second_part[1] = {whole.parts[1]};
+  const i32 second_indices[2] = {0, 1};
+  const gfx::MicromapTriangle second_records[2] = {
+      {0, 1, static_cast<u16>(gfx::k_micromap_format_4state)},
+      {4, 2, static_cast<u16>(gfx::k_micromap_format_4state)}};
+  const u32 second_data[2] = {whole.data[1], whole.data[2]};
+  MicromapPackView split[2];
+  split[0] = MicromapPackView{first_part, first_indices, first_records, first_data};
+  split[1] = MicromapPackView{second_part, second_indices, second_records, second_data};
+  const MicromapPackView one[1] = {whole.view()};
+  const MicromapRun one_runs[2] = {{0, 0, 3, whole.parts[0].wanted},
+                                   {0, 3, 2, whole.parts[1].wanted}};
+  const MicromapRun split_runs[2] = {{0, 0, 3, whole.parts[0].wanted},
+                                     {1, 0, 2, whole.parts[1].wanted}};
+  MicromapAssembly a;
+  MicromapAssembly b;
+  REQUIRE(assemble_micromaps(one, one_runs, a));
+  REQUIRE(assemble_micromaps(split, split_runs, b));
+  // A run past its source's indices, or naming a source there is not, assembles nothing (R208-M2:
+  // the bound holds whatever a part's key says).
+  {
+    const MicromapRun past[1] = {{1, 0, 3, nullptr}};  // split[1] holds two
+    const MicromapRun nowhere[1] = {{2, 0, 1, nullptr}};
+    MicromapAssembly refused;
+    CHECK_FALSE(assemble_micromaps(split, past, refused));
+    CHECK(refused.indices.empty());
+    CHECK_FALSE(assemble_micromaps(split, nowhere, refused));
   }
-  if (at < bytes.size()) h = hash_bytes(bytes.data() + at, bytes.size() - at, h);
-  for (u32 i = 0; i < 8; ++i)
-    bytes[16 + i] = static_cast<char>((h >> (8 * i)) & 0xffu);
+  // Entries 0 and 1 of the pack are the same words at the same level: one entry.
+  CHECK(a.triangles.size() == 2);
+  CHECK(a.stats.unique_entries == 2);
+  CHECK(a.stats.dedup_mismatches == 0);
+  CHECK(a.stats.triangles == 5);
+  CHECK(a.stats.special_opaque == 1);
+  CHECK(a.stats.entries_per_level[1] == 3);
+  CHECK(a.stats.wanted_per_level[2] == 2);
+  // Level 1's words 0xe4 are its four states 0, 1, 2, 3: one transparent, one opaque, two unknown,
+  // named three times; level 2's sixteen states of 0xa5a5ffff are 8 unknown-opaque, 4 unknown-
+  // transparent and 4 opaque... counted by the states, once per triangle naming them.
+  CHECK(a.stats.micro_transparent == 3 * 1 + 0);
+  CHECK(a.stats.micro_opaque == 3 * 1 + 4);
+  CHECK(a.stats.micro_unknown == 3 * 2 + 12);
+  REQUIRE(a.indices.size() == b.indices.size());
+  CHECK(std::memcmp(a.indices.data(), b.indices.data(), a.indices.size() * sizeof(i32)) == 0);
+  REQUIRE(a.triangles.size() == b.triangles.size());
+  CHECK(std::memcmp(a.triangles.data(), b.triangles.data(),
+                    a.triangles.size() * sizeof(gfx::MicromapTriangle)) == 0);
+  CHECK(a.total_bytes == b.total_bytes);
+  for (u32 e = 0; e < a.triangles.size(); ++e) {
+    const MicromapPackView& sa = one[a.entry_source[e]];
+    const MicromapPackView& sb = split[b.entry_source[e]];
+    CHECK(sa.data[sa.triangles[a.entry_index[e]].data_offset / 4] ==
+          sb.data[sb.triangles[b.entry_index[e]].data_offset / 4]);
+  }
 }
 
-}  // namespace
-
-// **The scene bounds the file** (R207-M2; micromap_cache.h, `read_micromap_file`): each lie below
-// is the only one in its file and the file's content hash is correct, so the hash is not what
-// refuses it; every refusal comes before the restore allocates or uploads anything, so none needs
-// a device. Before the mend each of these files but the oversized states reached the restore (with
-// this never-created device, `Device::features`' assert; on a card, the upload of the tables the
-// GPU reads unchecked: a first index of 3 reads the indices one past their end).
-TEST_CASE("micromap cache: a file is refused by the scene's counts and tables before any upload") {
-  test::TempDir dir{"omm_bounds"};
-  const u64 key = 0x5678;
-  const std::string path = micromap_cache_path(dir.path(), key);
-  const gfx::Device none;  // never created: every refusal must come before any device call
-  auto read = [&](const SectionsFixture& fx, const MicromapSceneShape& shape) {
-    gfx::OpacityMicromapSet set;
-    const MicromapFileRead r = read_micromap_file(none, path, key, shape, set);
-    CHECK(r.found);
-    CHECK_FALSE(r.used);
-    CHECK(set.address == 0);
-    (void)fx;
-    return r.refused;
+// **What bounds the folder** (R208): a store keeps its own generation and the most recently used
+// other, removes every pack of the rest and R207's whole-scene files, removes the packs a read
+// refused, and sweeps a temporary file a store that died left once it is a minute old — never a
+// younger one, which may be another process's store under way, and never a file a store did not
+// write.
+TEST_CASE("micromap cache: a store keeps two generations and leaves no dead store's temp") {
+  test::TempDir dir{"omm_prune"};
+  namespace fs = std::filesystem;
+  const std::string root = dir.path();
+  const u64 current = 0x1111;
+  const u64 recent = 0x2222;
+  const u64 old = 0x3333;
+  const u64 older = 0x4444;
+  auto make = [](const std::string& path) { write_all(path, "x"); };
+  auto age = [](const std::string& path, std::chrono::minutes ago) {
+    fs::last_write_time(fs::path(path), fs::file_time_type::clock::now() - ago);
   };
-  auto write = [&](SectionsFixture& fx) {
-    std::string error;
-    REQUIRE_MESSAGE(write_micromap_file(path, key, fx.sections(), &error), error);
-    std::ifstream in(path, std::ios::binary);
-    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  };
-  auto overwrite = [&](const std::string& bytes) {
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-  };
-  // The true file for the true scene passes every bound and reaches the restore.
-  SectionsFixture good;
-  const std::string bytes = write(good);
-  {
-    std::string again = bytes;
-    rehash(again);
-    REQUIRE(again == bytes);  // the test's hash is the writer's
+  for (const u64 g : {current, recent, old, older}) {
+    const std::string gen = micromap_generation_dir(root, g);
+    fs::create_directories(gen);
+    make(gen + "/a.omm");
+    make(gen + "/used");
   }
-  const std::string passed = read(good, good.shape());
-  MESSAGE("the true file: " << passed);
-  CHECK(passed.find("every bound holds") != std::string::npos);
-  // Another scene: one more cluster, or one more masked triangle.
-  {
-    MicromapSceneShape shape = good.shape();
-    shape.cluster_count = 4;
-    CHECK(read(good, shape).find("cluster count is not the scene's") != std::string::npos);
-    u32 counts[2] = {2, 3};
-    shape = good.shape();
-    shape.triangle_counts = counts;
-    CHECK(read(good, shape).find("masked triangles are not the scene's") != std::string::npos);
-  }
-  // A states section larger than the file.
-  {
-    std::string lie = bytes;
-    const u64 huge = u64{bytes.size()} + 4;
-    for (u32 i = 0; i < 8; ++i)
-      lie[40 + i] = static_cast<char>((huge >> (8 * i)) & 0xffu);
-    rehash(lie);
-    overwrite(lie);
-    CHECK(read(good, good.shape()).find("states name more bytes") != std::string::npos);
-  }
-  // More stored entries than the scene has masked triangles.
-  {
-    SectionsFixture fx;
-    gfx::MicromapTriangle five[5] = {fx.triangles[0], fx.triangles[1], fx.triangles[1],
-                                     fx.triangles[1], fx.triangles[1]};
-    gfx::MicromapSections s = fx.sections();
-    s.triangles = five;
-    std::string error;
-    REQUIRE_MESSAGE(write_micromap_file(path, key, s, &error), error);
-    CHECK(read(fx, fx.shape()).find("more entries than") != std::string::npos);
-  }
-  // A per-cluster table in range but not the scene's layout, and one past the indices.
-  for (const u32 first : {3u, 9u}) {
-    SectionsFixture fx;
-    fx.cluster_first[2] = first;
-    (void)write(fx);
-    const std::string why = read(fx, fx.shape());
-    MESSAGE("first index " << first << ": " << why);
-    CHECK(why.find("per-cluster table is not the scene's (cluster 2)") != std::string::npos);
-  }
-  // An index past the stored entries, and one below the special indices.
-  for (const i32 index : {2, -5}) {
-    SectionsFixture fx;
-    fx.indices[2] = index;
-    (void)write(fx);
-    const std::string why = read(fx, fx.shape());
-    MESSAGE("index " << index << ": " << why);
-    CHECK(why.find("an index names no stored entry (triangle 2") != std::string::npos);
-  }
+  age(micromap_generation_dir(root, recent) + "/used", std::chrono::minutes(10));
+  age(micromap_generation_dir(root, old) + "/used", std::chrono::minutes(100));
+  age(micromap_generation_dir(root, older) + "/used", std::chrono::minutes(1000));
+  make(micromap_generation_dir(root, older) + "/notes.txt");  // not a store's: the folder stays
+  const std::string here = micromap_generation_dir(root, current);
+  make(here + "/b.omm");
+  make(here + "/dead.omm.1.ff.tmp");
+  age(here + "/dead.omm.1.ff.tmp", std::chrono::minutes(5));
+  make(here + "/live.omm.2.ee.tmp");               // a store under way
+  make(root + "/micromaps/00c0ffee00c0ffee.omm");  // R207's whole-scene file
+  // R207's temporaries at the root by the same age rule (R208-L4): a binary of that format may be
+  // storing into this root now.
+  make(root + "/micromaps/00c0ffee00c0ffee.omm.3.dd.tmp");
+  age(root + "/micromaps/00c0ffee00c0ffee.omm.3.dd.tmp", std::chrono::minutes(5));
+  make(root + "/micromaps/00c0ffee00c0ffee.omm.4.cc.tmp");
+  // The kept other generation's dead store's temporary is swept too (R208-L6), a live one kept.
+  const std::string kept = micromap_generation_dir(root, recent);
+  make(kept + "/dead.omm.5.bb.tmp");
+  age(kept + "/dead.omm.5.bb.tmp", std::chrono::minutes(5));
+  make(kept + "/live.omm.6.aa.tmp");
+  const std::string damaged[1] = {here + "/b.omm"};
+  MicromapPruneReport report;
+  const i64 now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::system_clock::now().time_since_epoch())
+                      .count();
+  prune_micromap_store(root, current, damaged, now, report);
+  MESSAGE("swept " << report.swept << ", packs " << report.packs << ", generations "
+                   << report.generations);
+  CHECK(fs::exists(here + "/a.omm"));
+  CHECK_FALSE(fs::exists(here + "/b.omm"));
+  CHECK_FALSE(fs::exists(here + "/dead.omm.1.ff.tmp"));
+  CHECK(fs::exists(here + "/live.omm.2.ee.tmp"));
+  CHECK(fs::exists(micromap_generation_dir(root, recent) + "/a.omm"));
+  CHECK_FALSE(fs::exists(micromap_generation_dir(root, old)));
+  CHECK_FALSE(fs::exists(micromap_generation_dir(root, older) + "/a.omm"));
+  CHECK(fs::exists(micromap_generation_dir(root, older) + "/notes.txt"));
+  CHECK_FALSE(fs::exists(root + "/micromaps/00c0ffee00c0ffee.omm"));
+  CHECK_FALSE(fs::exists(root + "/micromaps/00c0ffee00c0ffee.omm.3.dd.tmp"));
+  CHECK(fs::exists(root + "/micromaps/00c0ffee00c0ffee.omm.4.cc.tmp"));
+  CHECK_FALSE(fs::exists(kept + "/dead.omm.5.bb.tmp"));
+  CHECK(fs::exists(kept + "/live.omm.6.aa.tmp"));
+  CHECK(report.swept == 3);
+  CHECK(report.packs == 4);  // the damaged pack, old's, older's and R207's file
+  CHECK(report.generations == 1);
 }

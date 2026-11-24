@@ -509,15 +509,26 @@ MemoryReport& memory_report() {
 
 JsonValue with_micromaps(JsonValue load, const renderer::GpuScene& scene) {
   const renderer::MicromapCacheReport& r = scene.micromap_cache();
-  char key[24];
-  std::snprintf(key, sizeof(key), "%016llx", static_cast<unsigned long long>(r.key));
+  char generation[24];
+  std::snprintf(generation, sizeof(generation), "%016llx",
+                static_cast<unsigned long long>(r.generation));
   JsonValue out = JsonValue::object();
+  // R208: counted in parts (a mesh's masked clusters), read from the packs a store holds or baked.
+  out.set("parts", JsonValue(r.parts));
   out.set("baked", JsonValue(r.baked));
   out.set("read", JsonValue(r.read));
+  out.set("packs", JsonValue(r.packs));
+  out.set("packs_read", JsonValue(r.packs_read));
+  out.set("packs_refused", JsonValue(r.packs_refused));
+  out.set("read_bytes", JsonValue(r.read_bytes));
   out.set("stored", JsonValue(r.stored));
-  out.set("key", JsonValue(r.key != 0 ? std::string(key) : std::string()));
+  out.set("stored_bytes", JsonValue(r.stored_bytes));
+  out.set("generation", JsonValue(r.generation != 0 ? std::string(generation) : std::string()));
   out.set("path", JsonValue(r.path));
-  out.set("file_bytes", JsonValue(r.file_bytes));
+  out.set("levels_dropped", JsonValue(r.levels_dropped));
+  out.set("swept", JsonValue(r.swept));
+  out.set("pruned_packs", JsonValue(r.pruned_packs));
+  out.set("pruned_generations", JsonValue(r.pruned_generations));
   out.set("ms", JsonValue(r.ms));
   out.set("key_ms", JsonValue(r.key_ms));
   out.set("resident_bytes", JsonValue(scene.micromap_bytes()));

@@ -156,13 +156,12 @@ bool micromap_device_identity(const Device& device, u8 out[28]) noexcept {
   return true;
 }
 
-bool micromap_geometry_digest(const Device& device, ShaderLibrary& shaders,
-                              const BindlessSet& bindless, const MicromapBakeInput& in, u64 out[2],
-                              std::string* error) {
-  out[0] = 0;
-  out[1] = 0;
+bool micromap_item_digests(const Device& device, ShaderLibrary& shaders,
+                           const BindlessSet& bindless, const MicromapBakeInput& in,
+                           Vector<u64>& out, std::string* error) {
+  out.clear();
   if (!device.features().opacity_micromap) {
-    set_message(error, "micromap_geometry_digest: the device has no VK_EXT_opacity_micromap");
+    set_message(error, "micromap_item_digests: the device has no VK_EXT_opacity_micromap");
     return false;
   }
   const u32 item_count = static_cast<u32>(in.items.size() / 2);
@@ -181,15 +180,14 @@ bool micromap_geometry_digest(const Device& device, ShaderLibrary& shaders,
   BufferResource sums;
   bool ok = upload_buffer(device, in.items.data(), u64{item_count} * 2 * sizeof(u32), k_storage,
                           items, error) &&
-            create_buffer(device, 2 * sizeof(u64), k_storage, true, sums, error);
+            create_buffer(device, u64{item_count} * sizeof(u64), k_storage, true, sums, error);
   if (ok) {
-    std::memset(sums.mapped, 0, 2 * sizeof(u64));
     MicromapBakeParams params;
     params.clusters = in.clusters;
     params.triangles = in.triangles;
     params.attributes = in.attributes;
     params.items = items.address;
-    params.counters = sums.address;
+    params.keys = sums.address;
     params.count = item_count;
     params.mode = 3u;
     const u32 groups = (item_count + k_micromap_bake_workgroup - 1) / k_micromap_bake_workgroup;
@@ -204,7 +202,13 @@ bool micromap_geometry_digest(const Device& device, ShaderLibrary& shaders,
           cb.dispatch(groups_x, groups_y, 1);
         },
         error);
-    if (ok) std::memcpy(out, sums.mapped, 2 * sizeof(u64));
+    if (ok) {
+      // Each item's two words as one: the first hash high, the second low.
+      const auto* words = static_cast<const u32*>(sums.mapped);
+      out.resize(item_count);
+      for (u32 i = 0; i < item_count; ++i)
+        out[i] = (u64{words[2 * i]} << 32) | u64{words[2 * i + 1]};
+    }
   }
   destroy_buffer(device, items);
   destroy_buffer(device, sums);
@@ -480,8 +484,9 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
   u32 cap = std::min({in.max_level, limit_4, k_micromap_max_level, 15u});
   const u32 first_cap = cap;
   Vector<i32> index_host(triangle_count, 0);
-  Vector<u32> entry_host;   // {data offset, level | format << 16} per entry
-  Vector<u32> writer_host;  // {triangle, uses} per entry
+  Vector<u8> wanted_host(triangle_count, u8{0});  // R208: a stored part keeps its histogram
+  Vector<u32> entry_host;                         // {data offset, level | format << 16} per entry
+  Vector<u32> writer_host;                        // {triangle, uses} per entry
   Vector<Keyed> keyed;
   u64 data_bytes = 0;
   MicromapStats stats;
@@ -500,7 +505,9 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
       const u32 level = code[t] & 0xfu;
       const u32 seen = (code[t] >> 4) & 0xfu;
       const u32 wanted = (code[t] >> 8) & 0xfu;
-      ++stats.wanted_per_level[wanted <= k_micromap_max_level ? wanted : k_micromap_max_level];
+      const u32 kept = wanted <= k_micromap_max_level ? wanted : k_micromap_max_level;
+      ++stats.wanted_per_level[kept];
+      wanted_host[t] = static_cast<u8>(kept);
       if (seen == (1u << k_micromap_transparent)) {
         index_host[t] = k_micromap_fully_transparent;
         ++stats.special_transparent;
@@ -604,6 +611,21 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
     return fail();
   }
   const u32 entry_count = static_cast<u32>(entry_host.size() / 2);
+  if (entry_count == 0 && !in.build) {
+    out.stats = stats;
+    out.stats.bake_ms = static_cast<f64>(time::monotonic_ns() - start) / 1e6;
+    if (sink.take != nullptr) {
+      MicromapSections sections;
+      sections.cluster_first = out.cluster_first_host;
+      sections.indices = std::span<const i32>(index_host.data(), index_host.size());
+      sections.stats = &out.stats;
+      sections.wanted = std::span<const u8>(wanted_host.data(), wanted_host.size());
+      sink.take(sink.context, sections);
+    }
+    cleanup();
+    destroy_opacity_micromaps(device, out);
+    return true;
+  }
   if (entry_count == 0) {
     // Every triangle is a special index: a micromap with no triangle is not a thing to build, and
     // the records name none (`array` 0), so the ray loops decide every candidate as before.
@@ -622,6 +644,7 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
       sections.cluster_first = out.cluster_first_host;
       sections.indices = std::span<const i32>(index_host.data(), index_host.size());
       sections.stats = &out.stats;
+      sections.wanted = std::span<const u8>(wanted_host.data(), wanted_host.size());
       sink.take(sink.context, sections);
     }
     return true;
@@ -674,6 +697,33 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
     stats.micro_per_level[l] = row[0] + row[1] + row[2];
     stats.unknown_per_level[l] = row[2];
   }
+  // The sections a sink needs, as a stored bake holds them, before the data buffer goes with
+  // `cleanup`.
+  auto hand_over = [&] {
+    if (sink.take == nullptr) return;
+    MicromapSections sections;
+    sections.cluster_first = out.cluster_first_host;
+    sections.indices = std::span<const i32>(index_host.data(), index_host.size());
+    sections.triangles = std::span<const MicromapTriangle>(
+        reinterpret_cast<const MicromapTriangle*>(entry_host.data()), entry_count);
+    sections.data =
+        std::span<const u32>(reinterpret_cast<const u32*>(static_cast<const u8*>(data.mapped) +
+                                                          (data_address - data.address)),
+                             static_cast<usize>(data_bytes / sizeof(u32)));
+    sections.stats = &out.stats;
+    sections.wanted = std::span<const u8>(wanted_host.data(), wanted_host.size());
+    sink.take(sink.context, sections);
+  };
+  if (!in.build) {
+    // R208: the sections alone; the caller builds one micromap from them and the stored parts.
+    destroy_buffer(device, entries_aligned);
+    stats.bake_ms = static_cast<f64>(time::monotonic_ns() - start) / 1e6;
+    out.stats = stats;
+    hand_over();
+    cleanup();
+    destroy_opacity_micromaps(device, out);
+    return true;
+  }
 
   // The build: one micromap, its usage counts per level (the stored entries, not the triangles).
   const bool built =
@@ -689,20 +739,7 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
   stats.storage_bytes = out.storage.size;
   stats.bake_ms = static_cast<f64>(time::monotonic_ns() - start) / 1e6;
   out.stats = stats;
-  if (sink.take != nullptr) {
-    // The sections as a stored bake holds them, before the data buffer goes with `cleanup`.
-    MicromapSections sections;
-    sections.cluster_first = out.cluster_first_host;
-    sections.indices = std::span<const i32>(index_host.data(), index_host.size());
-    sections.triangles = std::span<const MicromapTriangle>(
-        reinterpret_cast<const MicromapTriangle*>(entry_host.data()), entry_count);
-    sections.data =
-        std::span<const u32>(reinterpret_cast<const u32*>(static_cast<const u8*>(data.mapped) +
-                                                          (data_address - data.address)),
-                             static_cast<usize>(data_bytes / sizeof(u32)));
-    sections.stats = &out.stats;
-    sink.take(sink.context, sections);
-  }
+  hand_over();
   cleanup();
   return true;
 }
