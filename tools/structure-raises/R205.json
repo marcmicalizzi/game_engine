@@ -1,0 +1,15 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R205",
+  "reason": "R205 second leg: the early resolve compile is started and destroyed in both engine-view loops (a declaration, a start call and a destroy each), and renderer.md, gfx.md and apps.md gain the early compile, the driver's statistics switch and the water's cost by class",
+  "date": "2026-11-24",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "engine_view.main_cpp.lines": 20,
+    "engine_view.run_view.lines": 5,
+    "engine_view.run_offscreen.lines": 6,
+    "page:docs/subsystems/renderer.md": 4268,
+    "page:docs/subsystems/apps.md": 209,
+    "page:docs/subsystems/gfx.md": 2188
+  }
+}
