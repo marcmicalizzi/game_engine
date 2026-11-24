@@ -37,6 +37,7 @@ struct PipelineRequest {
   VkPipeline pipeline = VK_NULL_HANDLE;
   i64 begin_ns = 0;
   i64 end_ns = 0;
+  Vector<PipelineStatistic> statistics;  // the driver's, under ENGINE_PIPELINE_STATISTICS=1
 };
 
 struct ModuleName {

@@ -78,6 +78,10 @@ struct Handles {
   // offers the vendor's binary crash dump. Nothing drawn depends on either.
   bool device_fault = false;
   bool device_fault_vendor_binary = false;
+  // VK_KHR_pipeline_executable_properties (R205; pipeline_batch.h): every pipeline is made with
+  // the capture-statistics flag and its statistics are kept with its creation. Only under
+  // ENGINE_PIPELINE_STATISTICS=1, since the flag keys the pipeline cache.
+  bool pipeline_statistics = false;
 };
 
 const char* result_name(VkResult result) noexcept;

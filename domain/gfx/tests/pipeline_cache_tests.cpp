@@ -13,6 +13,7 @@
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <cstdlib>
 #include <cstring>
 #include <shaders/fill.spv.h>
 #include <string>
@@ -326,4 +327,83 @@ TEST_CASE("pipeline batch: recorded, compiled together at its end, timed under t
   gfx::destroy_compute_pipeline(device, now);
   vkDestroyDescriptorSetLayout(h.device, set_layout, nullptr);
   gfx::destroy_shader_module(device, module);
+}
+
+// The driver's own statistics (pipeline_batch.h; gfx.md, "What the driver says a pipeline costs";
+// R205): with ENGINE_PIPELINE_STATISTICS=1 a device whose driver offers
+// VK_KHR_pipeline_executable_properties keeps each executable's numbers with the creation and the
+// summary writes them; without the switch nothing is asked and nothing is kept.
+namespace {
+
+void set_statistics_switch(const char* value) {
+#if defined(_WIN32)
+  (void)_putenv_s("ENGINE_PIPELINE_STATISTICS", value);
+#else
+  (void)setenv("ENGINE_PIPELINE_STATISTICS", value, 1);
+#endif
+}
+
+// One compute pipeline of the fill on a new device; its creation's statistics into `out`.
+bool fill_statistics(bool on, bool& offered, Vector<gfx::PipelineStatistic>& out) {
+  set_statistics_switch(on ? "1" : "0");
+  gfx::Device device;
+  const bool opened = gfx_test::open_device(device);
+  set_statistics_switch("0");
+  if (!opened) return false;
+  offered = device.handles().pipeline_statistics;
+  std::string error;
+  gfx::ShaderModuleHandle module =
+      gfx::create_shader_module(device, shaders::k_fill_spirv, shaders::k_fill_spirv_size, &error);
+  REQUIRE_MESSAGE(module.valid(), error);
+  VkDescriptorSetLayoutBinding binding{};
+  binding.binding = 0;
+  binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  binding.descriptorCount = 1;
+  binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  VkDescriptorSetLayoutCreateInfo layout_info{};
+  layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  layout_info.bindingCount = 1;
+  layout_info.pBindings = &binding;
+  VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
+  REQUIRE(vkCreateDescriptorSetLayout(device.handles().device, &layout_info, nullptr,
+                                      &set_layout) == VK_SUCCESS);
+  const gfx::DescriptorSetLayoutHandle layouts[] = {gfx::vk::wrap(set_layout)};
+  gfx::ComputePipeline pipeline;
+  REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, module, "fill", layouts, sizeof(FillParams),
+                                               pipeline, &error),
+                  error);
+  Vector<gfx::PipelineCreation> creations;
+  gfx::pipeline_creations(device, creations);
+  REQUIRE(creations.size() == 1);
+  out = creations[0].statistics;
+  const JsonValue summary = gfx::pipeline_creations_json(device);
+  const JsonValue* slowest = summary.find("slowest");
+  REQUIRE(slowest != nullptr);
+  CHECK(((*slowest)[0].find("statistics") != nullptr) == !out.empty());
+  gfx::destroy_compute_pipeline(device, pipeline);
+  vkDestroyDescriptorSetLayout(device.handles().device, set_layout, nullptr);
+  gfx::destroy_shader_module(device, module);
+  return true;
+}
+
+}  // namespace
+
+TEST_CASE("pipeline statistics: the driver's own numbers kept with a creation, behind a switch") {
+  bool offered = false;
+  Vector<gfx::PipelineStatistic> off;
+  if (!fill_statistics(false, offered, off)) return;
+  CHECK_FALSE(offered);
+  CHECK(off.empty());
+  Vector<gfx::PipelineStatistic> on;
+  REQUIRE(fill_statistics(true, offered, on));
+  if (!offered) {
+    MESSAGE("the driver offers no VK_KHR_pipeline_executable_properties: nothing is kept");
+    CHECK(on.empty());
+    return;
+  }
+  REQUIRE_FALSE(on.empty());
+  for (const gfx::PipelineStatistic& s : on) {
+    CHECK_FALSE(s.executable.empty());
+    CHECK_FALSE(s.name.empty());
+  }
 }

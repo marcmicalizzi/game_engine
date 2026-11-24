@@ -126,6 +126,22 @@ bool pipeline_cache_switched_off() {
 #endif
 }
 
+// ENGINE_PIPELINE_STATISTICS=1 asks the driver for every pipeline's statistics (R205; gfx.md,
+// "What the driver says a pipeline costs"): a debug switch for one process, off otherwise.
+bool pipeline_statistics_switched_on() {
+#if ENGINE_COMPILER_MSVC
+  char* value = nullptr;
+  size_t size = 0;
+  if (_dupenv_s(&value, &size, "ENGINE_PIPELINE_STATISTICS") != 0 || value == nullptr) return false;
+  const bool on = value[0] == '1' && value[1] == '\0';
+  std::free(value);
+  return on;
+#else
+  const char* value = std::getenv("ENGINE_PIPELINE_STATISTICS");
+  return value != nullptr && value[0] == '1' && value[1] == '\0';
+#endif
+}
+
 // The device's cache, filled from its file when the file is this device's (pipeline_cache.h).
 // Nothing here can fail creation: a cache that cannot be made leaves every pipeline uncached.
 void open_pipeline_cache(const DeviceOptions& options, Handles& h, PipelineCacheReport& report,
@@ -732,6 +748,24 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
     fault.deviceFaultVendorBinary = h.device_fault_vendor_binary ? VK_TRUE : VK_FALSE;
   }
 #endif
+  // The driver's own statistics of each pipeline it makes (R205; gfx.md, "What the driver says a
+  // pipeline costs"): a debug switch, because asking for them is a creation flag the pipeline
+  // cache keys on, so a run with it compiles cold whatever the cache holds.
+#if defined(VK_KHR_pipeline_executable_properties)
+  VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR executable{};
+  executable.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR;
+  if (pipeline_statistics_switched_on() &&
+      device_extensions.has("VK_KHR_pipeline_executable_properties")) {
+    VkPhysicalDeviceFeatures2 query{};
+    query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    query.pNext = &executable;
+    vkGetPhysicalDeviceFeatures2(h.physical, &query);
+    executable.pNext = nullptr;
+    h.pipeline_statistics =
+        executable.pipelineExecutableInfo == VK_TRUE &&
+        device_extensions.enable_if_available("VK_KHR_pipeline_executable_properties");
+  }
+#endif
   const bool ext_mesh = enable_ext("VK_EXT_mesh_shader", caps_.mesh_shader);
   const bool ext_deferred =
       enable_ext("VK_KHR_deferred_host_operations", caps_.deferred_host_operations);
@@ -921,6 +955,9 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
   if (ext_present_timing) link(reinterpret_cast<VkBaseOutStructure*>(&present_timing));
 #if defined(VK_EXT_device_fault)
   if (h.device_fault) link(reinterpret_cast<VkBaseOutStructure*>(&fault));
+#endif
+#if defined(VK_KHR_pipeline_executable_properties)
+  if (h.pipeline_statistics) link(reinterpret_cast<VkBaseOutStructure*>(&executable));
 #endif
   *tail = nullptr;
 
@@ -1377,6 +1414,16 @@ bool create_graphics_pipeline(const Device& device, const GraphicsPipelineDesc& 
 
 namespace {
 
+// The capture flag every pipeline is made with under ENGINE_PIPELINE_STATISTICS=1 (Handles::
+// pipeline_statistics), none otherwise.
+VkPipelineCreateFlags statistics_flags(const Device& device) noexcept {
+#if defined(VK_KHR_pipeline_executable_properties)
+  if (device.handles().pipeline_statistics) return VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
+#endif
+  (void)device;
+  return 0;
+}
+
 VkResult make_graphics_pipeline(const Device& device, const GraphicsPipelineDesc& desc,
                                 VkPipeline& pipeline) {
   VkPipelineShaderStageCreateInfo stages[2]{};
@@ -1460,6 +1507,7 @@ VkResult make_graphics_pipeline(const Device& device, const GraphicsPipelineDesc
   info.pColorBlendState = &blend;
   info.pDynamicState = &dynamic;
   info.layout = vk::native(desc.layout);
+  info.flags = statistics_flags(device);
   return vkCreateGraphicsPipelines(device.handles().device, device.handles().pipeline_cache, 1,
                                    &info, nullptr, &pipeline);
 }
@@ -1570,6 +1618,7 @@ VkResult make_mesh_pipeline(const Device& device, const MeshPipelineDesc& desc,
   info.pColorBlendState = &blend;
   info.pDynamicState = &dynamic;
   info.layout = vk::native(desc.layout);
+  info.flags = statistics_flags(device);
   return vkCreateGraphicsPipelines(device.handles().device, device.handles().pipeline_cache, 1,
                                    &info, nullptr, &pipeline);
 }
@@ -1586,6 +1635,7 @@ VkResult make_compute_pipeline(const Device& device, ShaderModuleHandle module, 
   SpecializationStorage specialization;
   info.stage.pSpecializationInfo = specialization_info(device, spec, specialization);
   info.layout = vk::native(layout);
+  info.flags = statistics_flags(device);
   return vkCreateComputePipelines(device.handles().device, device.handles().pipeline_cache, 1,
                                   &info, nullptr, &pipeline);
 }
@@ -1605,9 +1655,9 @@ bool create_or_record(const Device& device, detail::PipelineRequest& request, st
 
 }  // namespace
 
-// The entry points are the request's own copies, so a batch's descriptions outlive their callers'.
-VkResult detail::make_pipeline(const Device& device, PipelineRequest& request) {
-  request.pipeline = VK_NULL_HANDLE;
+namespace {
+
+VkResult make_request(const Device& device, detail::PipelineRequest& request) {
   switch (request.kind) {
     case PipelineKind::Compute:
       return make_compute_pipeline(device, request.module, request.entries[0].c_str(),
@@ -1627,6 +1677,74 @@ VkResult detail::make_pipeline(const Device& device, PipelineRequest& request) {
     }
   }
   return VK_ERROR_UNKNOWN;
+}
+
+// What the driver reports for each executable of a pipeline made with the capture flag (R205;
+// gfx.md, "What the driver says a pipeline costs"): every statistic, by its own name, as a number.
+void read_statistics(const Device& device, detail::PipelineRequest& request) {
+  request.statistics.clear();
+#if defined(VK_KHR_pipeline_executable_properties)
+  const VkDevice vk_device = device.handles().device;
+  VkPipelineInfoKHR info{};
+  info.sType = VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR;
+  info.pipeline = request.pipeline;
+  u32 count = 0;
+  if (vkGetPipelineExecutablePropertiesKHR(vk_device, &info, &count, nullptr) != VK_SUCCESS) return;
+  Vector<VkPipelineExecutablePropertiesKHR> executables(count);
+  for (VkPipelineExecutablePropertiesKHR& e : executables)
+    e.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR;
+  if (vkGetPipelineExecutablePropertiesKHR(vk_device, &info, &count, executables.data()) !=
+      VK_SUCCESS)
+    return;
+  for (u32 i = 0; i < count; ++i) {
+    VkPipelineExecutableInfoKHR which{};
+    which.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR;
+    which.pipeline = request.pipeline;
+    which.executableIndex = i;
+    u32 n = 0;
+    if (vkGetPipelineExecutableStatisticsKHR(vk_device, &which, &n, nullptr) != VK_SUCCESS)
+      continue;
+    Vector<VkPipelineExecutableStatisticKHR> stats(n);
+    for (VkPipelineExecutableStatisticKHR& s : stats)
+      s.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR;
+    if (vkGetPipelineExecutableStatisticsKHR(vk_device, &which, &n, stats.data()) != VK_SUCCESS)
+      continue;
+    for (u32 k = 0; k < n; ++k) {
+      PipelineStatistic out;
+      out.executable = executables[i].name;
+      out.name = stats[k].name;
+      switch (stats[k].format) {
+        case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_BOOL32_KHR:
+          out.value = stats[k].value.b32 ? 1.0 : 0.0;
+          break;
+        case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_INT64_KHR:
+          out.value = static_cast<f64>(stats[k].value.i64);
+          break;
+        case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR:
+          out.value = static_cast<f64>(stats[k].value.u64);
+          break;
+        case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_FLOAT64_KHR:
+          out.value = stats[k].value.f64;
+          break;
+        default: break;
+      }
+      request.statistics.push_back(std::move(out));
+    }
+  }
+#else
+  (void)device;
+#endif
+}
+
+}  // namespace
+
+// The entry points are the request's own copies, so a batch's descriptions outlive their callers'.
+VkResult detail::make_pipeline(const Device& device, PipelineRequest& request) {
+  request.pipeline = VK_NULL_HANDLE;
+  const VkResult result = make_request(device, request);
+  if (result == VK_SUCCESS && device.handles().pipeline_statistics)
+    read_statistics(device, request);
+  return result;
 }
 
 bool detail::finish_request(const Device& device, PipelineRequest& request, std::string* error) {

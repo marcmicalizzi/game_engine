@@ -42,6 +42,15 @@ namespace engine::gfx {
 
 enum class PipelineKind : u8 { Compute, Graphics, Mesh };
 
+// One number the driver reports about a pipeline it made, under ENGINE_PIPELINE_STATISTICS=1
+// (gfx.md, "What the driver says a pipeline costs"; R205): the executable (a stage, in the
+// driver's own words), the statistic's own name, and its value.
+struct PipelineStatistic {
+  std::string executable;
+  std::string name;
+  f64 value = 0.0;
+};
+
 // One pipeline the device made, and what it cost.
 struct PipelineCreation {
   std::string shader;  // the module's name ("" for a module no library named)
@@ -51,6 +60,7 @@ struct PipelineCreation {
   f64 seconds = 0.0;    // wall time inside the driver's create call
   bool batched = false;
   bool ok = true;
+  Vector<PipelineStatistic> statistics;  // empty unless the switch is on and the driver reports
 };
 
 // One batch's end: how many it compiled, on how many threads, the wall time of the whole and the
