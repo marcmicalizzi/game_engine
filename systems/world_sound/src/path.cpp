@@ -35,6 +35,17 @@ f64 air_absorption_db_per_m(f64 f_hz, f64 temperature_c, f64 humidity_pct) noexc
   return 8.686 * f2 * (1.84e-11 / pa_pr * std::sqrt(tr) + y);
 }
 
+void clip_air_db_per_m(f64 temperature_c, f64 humidity_pct, f32& db_per_m_8k,
+                       f32& db_per_m_1k) noexcept {
+  if (temperature_c == k_default_air_c && humidity_pct == k_default_air_pct) {
+    db_per_m_8k = k_default_air_db_per_m_8k;
+    db_per_m_1k = k_default_air_db_per_m_1k;
+    return;
+  }
+  db_per_m_8k = static_cast<f32>(air_absorption_db_per_m(8000.0, temperature_c, humidity_pct));
+  db_per_m_1k = static_cast<f32>(air_absorption_db_per_m(1000.0, temperature_c, humidity_pct));
+}
+
 f64 foliage_db(f64 f_hz, f64 r_m) noexcept {
   if (!(r_m > 0.0) || !(f_hz > 0.0)) return 0.0;
   return 0.01 * r_m * std::cbrt(f_hz);

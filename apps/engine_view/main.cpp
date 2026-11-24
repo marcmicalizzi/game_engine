@@ -46,9 +46,9 @@ class FlySession;
 inline bool sound_hears_world() noexcept { return false; }
 inline i64 solo_sound_ns() noexcept { return 0; }
 inline void attach_solo_scene(const renderer::SceneData&) {}
-inline void attach_solo_session(FlySession&, f64, f64) noexcept {}
+inline void attach_solo_session(FlySession&, f64, f64, f64) noexcept {}
 inline void attach_solo_tiles(void*) noexcept {}
-inline void set_solo_flight_clock(f64, f64) noexcept {}
+inline void set_solo_flight_clock(const auto&) noexcept {}
 inline void solo_flight_frame(const renderer::FlightStep&) noexcept {}
 inline void print_solo_summary() {}
 }  // namespace engine::view
@@ -1450,7 +1450,7 @@ view::GameRunner* g_game = nullptr;
 void attach_game(view::FlySession& session, f64 sun_offset_s, f64 sun_rate, f64 world_rate,
                  const renderer::SceneData& scene, view::Walker& walker) {
   if (g_game == nullptr) {
-    view::attach_solo_session(session, sun_offset_s, sun_rate);  // the world heard (S112-2)
+    view::attach_solo_session(session, sun_offset_s, sun_rate, world_rate);  // heard (S112-2)
     return;
   }
   session.set_tick_observer(&view::GameRunner::observe, g_game);
@@ -3715,7 +3715,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       Vector<std::optional<scene::FrameTerrain>> terrain_of;
       if (time_lapse.active()) terrain_of.resize(static_cast<usize>(frames) * repeats);
       WorldHook world_hook{&world_before, options.warmup == 0, &time_lapse, &terrain_of, frames};
-      view::set_solo_flight_clock(flight_options.sky_start_s, flight_options.sun_rate);
+      view::set_solo_flight_clock(flight_options);
       flight_options.before_frame = [](void* context, const renderer::FlightStep& step,
                                        std::string*) {
         const auto* hook = static_cast<const WorldHook*>(context);

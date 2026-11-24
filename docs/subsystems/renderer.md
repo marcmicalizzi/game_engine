@@ -4401,7 +4401,8 @@ The stand-in sun has a day (2026-09-27, lighting.h; engine-view's `--sun-rate` a
 |---|---|---|
 | the sun and the moon (place, light, the moon's phase), the sky's light, the stars, the exposure | sky | `SkyPass::evaluate(epoch + FrameDesc::sky_time_s)` |
 | the stand-in sun (a scene with no sky) | sky, as seconds past the epoch along its arc | `lighting_options(settings, sky_time_s)` |
-| the wind the weather feels — the trees' gust direction and strength, the medium's wind (dust, smoke bend), the crest plumes' hour | the record's hour at the **sky** time (weather follows the day) | `flora_frame`, `MediumPass::record`, `build_plumes` |
+| the wind the weather feels — the trees' wind's direction and mean, the medium's wind (dust, smoke bend), the crest plumes' hour | the record's hour at the **sky** time (weather follows the day) | `flora_frame`, `MediumPass::record`, `build_plumes` |
+| the gust over that mean — the turbulence in the trees' strength (`gfx::wind_gust`), and the same gust heard (`world_sound`) | world (the air moving; S118: until 2026-11-23 the sky's, so a held day held the gust and a short day flickered it) | `scene_flora_wind(wind, sky_time_s, world_time_s, ...)`, `WorldField::wind10_at` |
 | what that wind moves — the sway, the smoke's and the clouds' drift distance, a flame's noise | world | `flora_part_poses`, `CloudDrift::offset_m`, `medium_fire` |
 | the water's waves | world, `water_clock(world_time_s)` | `ResolveParams::water_time_s` |
 | the sun's glitter on the water | the sun's place from the sky, the waves from the world | the resolve, as it already decomposed |

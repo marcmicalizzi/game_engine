@@ -110,6 +110,7 @@ void world_tick(bench::State& state, bool path) {
     x += 1.4 / 60.0;  // a walk
     stage.set_listener(WorldPos{x, 1.7, 0.0}, Vec3{0.0f, 0.0f, -1.0f}, Vec3{0.0f, 1.0f, 0.0f});
     frame.sky_time_s += 1.0 / 60.0;
+    frame.world_time_s += 1.0 / 60.0;
     stage.set_wind(frame);
     stage.tick();
     bench::keep(stage.last_block()[0]);

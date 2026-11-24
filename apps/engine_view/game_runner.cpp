@@ -1674,7 +1674,8 @@ void GameRunner::observe(void* user, const FlySession& session, const input::Inp
   // its eye is no walker's (S114-M2).
   if (g.sound.walker != nullptr)
     g.sound.walker(g.sound.user, session.walking() ? session.walker() : nullptr);
-  if (g.sound.wind != nullptr) g.sound.wind(g.sound.user, session.wind().live(), self.sun_time_s());
+  if (g.sound.wind != nullptr)
+    g.sound.wind(g.sound.user, session.wind().live(), self.sun_time_s(), self.world_time_s());
   if (g.sound.tick != nullptr) g.sound.tick(g.sound.user, in.eye, in.heading, in.pitch);
   g.sound_ns += time::monotonic_ns() - sound_started;
 }

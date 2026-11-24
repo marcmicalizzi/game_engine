@@ -236,8 +236,8 @@ TEST_CASE("flora storm: a gust held over a gale raises lean and sway by the law"
   Vec2 to2{};
   f32 calm_strength = 0.0f;
   f32 gust_strength = 0.0f;
-  REQUIRE(scene_flora_wind(scene, 500.0, to2, calm_strength, gale));
-  REQUIRE(scene_flora_wind(scene, 500.0, to2, gust_strength, gust));
+  REQUIRE(scene_flora_wind(scene, 500.0, 500.0, to2, calm_strength, gale));
+  REQUIRE(scene_flora_wind(scene, 500.0, 500.0, to2, gust_strength, gust));
   const f64 g = gfx::wind_gust_factor(0.03);
   CHECK(static_cast<f64>(gust_strength - calm_strength) ==
         doctest::Approx(20.0 * (g - 1.0) / k_flora_wind_mean_m_s).epsilon(1e-5));
@@ -297,7 +297,7 @@ TEST_CASE("flora storm: a step of the live mean reaches the trees with no jump")
       // The trunk's lean through it, the clock held so only the wind moves it.
       Vec2 to2{};
       f32 strength = 0.0f;
-      REQUIRE(scene_flora_wind(scene, 900.0, to2, strength, trees));
+      REQUIRE(scene_flora_wind(scene, 900.0, 900.0, to2, strength, trees));
       pose(mesh, FloraWind{Vec3{to2.x, 0.0f, to2.y}, strength}, 4.0, state, poses);
       const f32 angle = poses[0].pivot_angle.w;
       if (f > 0) worst_step = std::fmax(worst_step, std::fabs(angle - last_angle));
@@ -745,4 +745,44 @@ TEST_CASE("flora storm: a rigid form leans as its swaying tree does on the mean,
   CHECK(crown.x - foot.x == doctest::Approx(lean.x * 20.0f));
   CHECK(crown.z - foot.z == doctest::Approx(lean.y * 20.0f));
   CHECK(crown.y == doctest::Approx(250.0f));
+}
+
+TEST_CASE("flora storm: a held sky still gusts the trees, on the world's clock (S118)") {
+  // The sway's strength is the gust at the origin over the 5 m/s mean day: the mean at the sky's
+  // hour, the turbulence at the world's time. Held, the sky moves nothing; the world moves the
+  // gust, to the value `gfx::wind_gust` gives at the world's time, for the scene's wind and a live
+  // one.
+  gfx::WindDesc scene;
+  scene.kind = gfx::WindKind::fixed;
+  scene.speed_m_s = 8.0;
+  scene.to_deg = 30.0;
+  scene.roughness_m = 0.03;
+  gfx::WindLive live;
+  live.set = true;
+  live.mean_m_s = 8.0;
+  live.to_deg = 30.0;
+  for (const bool is_live : {false, true}) {
+    CAPTURE(is_live);
+    const gfx::WindLive used = is_live ? live : gfx::WindLive{};
+    const auto strength_at = [&](f64 sky_s, f64 world_s) {
+      Vec2 to{};
+      f32 s = 0.0f;
+      REQUIRE(scene_flora_wind(scene, sky_s, world_s, to, s, used));
+      return s;
+    };
+    const f32 a = strength_at(1000.0, 1000.0);
+    const f32 later_sky = strength_at(1000.0 + 3600.0, 1000.0);  // an hour on the sky alone
+    const f32 later_world = strength_at(1000.0, 1001.5);         // 1.5 s on the world alone
+    const gfx::WindSample mean = gfx::wind_at(scene, 1000.0);
+    const auto expected = [&](f64 world_s) {
+      return static_cast<f32>(gfx::wind_gust(scene, mean, Vec2{0.0f, 0.0f}, world_s) /
+                              k_flora_wind_mean_m_s);
+    };
+    MESSAGE("strength " << a << "; the sky an hour on " << later_sky << "; the world 1.5 s on "
+                        << later_world);
+    CHECK(later_sky == a);
+    CHECK(a == expected(1000.0));
+    CHECK(later_world == expected(1001.5));
+    CHECK(std::fabs(later_world - a) > 1e-3f * a);
+  }
 }

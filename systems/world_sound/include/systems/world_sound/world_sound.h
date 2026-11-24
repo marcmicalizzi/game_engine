@@ -133,9 +133,9 @@ struct CanopySource {
 };
 
 /// **The frame's wind as every reader has it** (S112): the scene's (or none), W151's live state
-/// where a session set one (the mean, the direction and the forced gust), and the sky's clock the
-/// turbulence is read at. The stage takes the arguments the trees' sway takes
-/// (`renderer::scene_flora_wind`) and asks the gust at each source's own place.
+/// where a session set one (the mean, the direction and the forced gust), the sky's clock the mean
+/// is read at and the world's the turbulence is (S118). The stage takes the arguments the trees'
+/// sway takes (`renderer::scene_flora_wind`) and asks the gust at each source's own place.
 /// **What shelters the listener's ears** (S114; world_sound.md, "Distance"): a host's table of what
 /// stands round the listener, a function pointer and a context as the canopy is. `height_at` is
 /// the height above the listener's ground of whatever stands across the wind at (x, z) — a wall's
@@ -151,7 +151,8 @@ struct ShelterSource {
 struct WorldWind {
   const gfx::WindDesc* scene = nullptr;
   gfx::WindLive live{};
-  f64 sky_time_s = 0.0;
+  f64 sky_time_s = 0.0;    // the mean and the direction: the weather's, at the sky's hour
+  f64 world_time_s = 0.0;  // the turbulence: the medium moving, on the world's clock (S118)
 };
 
 /// `audio.world.near_m` (96): a canopy table walks its crowns one by one within this of the

@@ -183,8 +183,13 @@ void water_wind_frame(std::span<WaterWindBody> bodies, f64 sky_time_s,
 // over the scene's and the hand tunable's: its mean and direction with the scene's turbulence, and
 // the forced gust's speed over the mean added (`gfx::wind_live_speed`); the trees answer it at once
 // through their own sway, since a part's lean is a function of the strength now.
-bool scene_flora_wind(const gfx::WindDesc& wind, f64 sky_time_s, Vec2& to, f32& strength,
-                      const gfx::WindLive& live = {}) noexcept;
+// **Two clocks** (S118; clocks.h's rule): the mean and the direction are the weather's, at the
+// sky's hour `sky_time_s`; the turbulence over them is the medium moving, at the world's
+// `world_time_s`, so a held sky (`--time-rate 0`) still gusts and a paused world holds the gust.
+// The sound's wind (`world_sound::WorldWind`) takes the same two, so what is heard is what is
+// drawn.
+bool scene_flora_wind(const gfx::WindDesc& wind, f64 sky_time_s, f64 world_time_s, Vec2& to,
+                      f32& strength, const gfx::WindLive& live = {}) noexcept;
 // **The wind the sway uses when no live wind is set** (S112-2, so the sound reads it as the trees
 // do): the hand tunable's (`renderer.flora.wind_*`) written into `held` — a fixed wind at the
 // scene's roughness, no track, so nothing allocates — and returned, or the scene's own when the

@@ -92,6 +92,7 @@ struct Session {
     wind.roughness_m = 0.03;
     frame.scene = &wind;
     frame.sky_time_s = 1000.0;
+    frame.world_time_s = 1000.0;
     stage.set_canopy(trees.source());
   }
   void tick(u32 n = 1, f64 dt = 1.0 / 60.0) {
@@ -100,6 +101,7 @@ struct Session {
       stage.set_wind(frame);
       stage.tick();
       frame.sky_time_s += dt;
+      frame.world_time_s += dt;
     }
   }
   WorldVoiceInfo first(WorldVoiceKind kind) const {
@@ -266,6 +268,30 @@ TEST_CASE("world sound: a gust's front raises a crown on the tick it raises the 
   const WorldVoiceInfo after = s.first(WorldVoiceKind::Crown);
   CHECK(after.level_db > before);
   CHECK(after.wind_m_s > wind_before);
+}
+
+TEST_CASE("world sound: a held sky still gusts, on the world's clock, and the sky moves no gust") {
+  // S118: the turbulence is the medium moving, on the world's clock; the mean is the weather's, on
+  // the sky's. A fixed wind's mean is the same at every hour, so with the world's clock alike two
+  // skies hear the same wind to the bit, and with the sky held two world times do not.
+  const auto heard = [](f64 sky_s, f64 world_s, WorldVoiceKind kind) {
+    Session s(6.0, true);
+    s.frame.sky_time_s = sky_s;
+    s.frame.world_time_s = world_s;
+    s.tick(3, 0.0);  // both clocks held: three ticks to settle the voices
+    return s.first(kind).wind_m_s;
+  };
+  for (const WorldVoiceKind kind : {WorldVoiceKind::Crown, WorldVoiceKind::EarLeft}) {
+    CAPTURE(static_cast<u32>(kind));
+    const f32 a = heard(1000.0, 1000.0, kind);
+    const f32 later_sky = heard(1000.0 + 3600.0, 1000.0, kind);  // an hour on the sky alone
+    const f32 later_world = heard(1000.0, 1001.5, kind);         // 1.5 s on the world alone
+    MESSAGE("wind heard " << a << " m/s; the sky an hour on " << later_sky
+                          << "; the world 1.5 s on " << later_world);
+    REQUIRE(a > 0.0f);
+    CHECK(later_sky == a);
+    CHECK(std::fabs(later_world - a) > 1e-3f * a);
+  }
 }
 
 TEST_CASE("world sound: a needle crown's movable band sits at 0.2 U / d, a blade crown has none") {
