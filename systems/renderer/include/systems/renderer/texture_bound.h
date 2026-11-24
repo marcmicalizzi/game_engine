@@ -49,6 +49,8 @@ struct TextureBoundUse {
   u64 chunks_made = 0;       // chunks made since the load
   u64 chunks_freed = 0;      // chunks given back to the device since the load
   u64 most_chunk_bytes = 0;  // the most the chunks took at once
+  u64 failed_admits = 0;     // swaps the device made no image for (kept, tried again; logged once)
+  u64 deferred_swaps = 0;    // swaps held a frame: a block copy's staged bytes were not found
 };
 
 }  // namespace engine::renderer

@@ -257,6 +257,7 @@ bool ImageChunks::create_sampled_image_levels(u32 width, u32 height, Format form
       if (chunk != ~0u && m.chunks[chunk].images == 0) m.free_chunk(chunk);
       vkDestroyImage(h.device, image, nullptr);
       if (error != nullptr && error->empty()) *error = "ImageChunks: a new chunk took no image";
+      m.count();  // the chunk made and freed again: `use()` says so now, not at the next image
       return false;
     }
   }

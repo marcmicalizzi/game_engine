@@ -730,7 +730,14 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
     s.budget_at = s.now;
     gfx::MemoryBudget memory;
     if (device_->memory_budget(memory) && memory.valid) {
-      const u64 held = s.chunks.use().chunk_bytes;
+      // The held images' chunks, and a held image the device allocator made instead (its memory
+      // type outside the pool's): it is in the textures' bytes the ceiling governs, so it is not
+      // also the rest's (W167 mend, L4). A walk of the held textures every 10 s, not a frame's.
+      u64 held = s.chunks.use().chunk_bytes;
+      for (const TextureBoundState::Texture& tex : s.textures) {
+        if (tex.image.allocation.valid()) held += tex.image.bytes;
+        if (tex.variance_image.allocation.valid()) held += tex.variance_image.bytes;
+      }
       const u64 others = texture_bytes_ - std::min(texture_bytes_, s.use.resident_bytes);
       const u64 rest = memory.used_bytes - std::min(memory.used_bytes, held + others);
       s.ceiling = s.budget > rest ? std::max<u64>(s.budget - rest, 1u) : 1u;
@@ -824,9 +831,29 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
       s.taken.push_back(std::move(read));
     s.done.clear();
   }
+  // **A swap's records are written in order or not at all** (W167 mend, L12). A record a block
+  // copy pending this frame also writes (a tile's mesh admitted between frames copies its whole
+  // run of records) is patched in that block's staged bytes, because a second copy into the same
+  // bytes in one pass is not ordered against the first. Every such block is staged in the ring or
+  // in a pending staging buffer, so its bytes are always found; should one not be, no swap is made
+  // this frame (the reads are kept for the next, when the block has been copied) rather than add
+  // the unordered copy. One look a frame, at the block copies alone.
+  bool blocks_patchable = true;
+  for (const TerrainUpdate::GeometryCopy& earlier : pending_geometry_) {
+    if (earlier.dst == materials.buffer && earlier.region.size > sizeof(gfx::ResolveMaterial) &&
+        staged_bytes_of(earlier.src) == nullptr) {
+      blocks_patchable = false;
+      break;
+    }
+  }
+  ENGINE_ASSERT(blocks_patchable, "every pending block of records is staged where a swap finds it");
   const auto admit = [&](u32 t, texture::TextureData& tail, u32 first, bool move) {
     TextureBoundState::Texture& tex = s.textures[t];
     if (s.free_pairs.empty()) return false;
+    if (!blocks_patchable) {
+      ++s.use.deferred_swaps;
+      return false;
+    }
     const u32 levels = tail.levels.size();
     gfx::ImageResource image;
     gfx::ImageViewHandle view_handle;
@@ -849,8 +876,11 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
                                                 levels, variance, &error) ||
           !gfx::create_image_view(*device_, variance, variance_view, &error)))) {
       undo();
-      ENGINE_LOG_WARN(log_renderer, "texture bound: no image for a promotion",
-                      log::field("key", tex.key), log::field("error", error));
+      // Kept and tried again the next frame (W167 mend, L13): said once, counted always.
+      if (s.use.failed_admits++ == 0) {
+        ENGINE_LOG_WARN(log_renderer, "texture bound: no image for a promotion",
+                        log::field("key", tex.key), log::field("error", error));
+      }
       return false;
     }
     u64 staged = 0;
@@ -929,13 +959,16 @@ void GpuScene::texture_bound_frame(WorldPos eye, f32 fov_y, f32 znear, u32 width
                        earlier.region.dst_offset + earlier.region.size) {
           // W167: a tile's mesh admitted this frame copies its whole block of records, which
           // covers this one; its staged bytes take the record instead, since a second copy into the
-          // same bytes in one pass is not ordered against the first.
-          if (u8* bytes = staged_bytes_of(earlier.src)) {
+          // same bytes in one pass is not ordered against the first. Its bytes are found: the
+          // frame made no swap otherwise (`blocks_patchable`, above).
+          u8* bytes = staged_bytes_of(earlier.src);
+          ENGINE_ASSERT(bytes != nullptr, "a block of records' staged bytes, checked this frame");
+          if (bytes != nullptr) {
             std::memcpy(bytes + earlier.region.src_offset +
                             (copy.region.dst_offset - earlier.region.dst_offset),
                         &record, sizeof(record));
-            joined = true;
           }
+          joined = true;
         }
       }
       if (!joined) pending_geometry_.push_back(copy);

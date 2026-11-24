@@ -1553,6 +1553,199 @@ TEST_CASE("renderer: a device budget names the texture ceiling from what the res
     }
   }
 }
+
+namespace {
+
+constexpr u32 k_drain_maps = 8;      // quads, each with a map of its own
+constexpr u32 k_drain_image = 512;   // a whole chain is 349,552 bytes: two to a 1 MiB chunk
+constexpr f32 k_drain_side_m = 100;  // the odd quads' group stands this far along +x
+constexpr f32 k_drain_eye_m = 3.9f;  // from here a group of four fills the frame
+
+// Eight unit-half-width quads facing +z, each with a material of its own whose base colour is
+// `image<i>.png` beside it, their UVs a corner of the map an eighth across (so a quad of 126
+// pixels magnifies its 64 texels: level 0 is what its pixels ask). The even quads stand in a 2x2
+// group round the origin and the odd ones in the same group `k_drain_side_m` along +x, so a camera
+// at one group sees none of the other. The load places the maps in their order, so every chunk
+// starts with one even map and one odd one.
+bool write_drain_scene(const std::filesystem::path& dir) {
+  std::vector<u8> bin;
+  const f32 positions[12] = {-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0};
+  const f32 normals[12] = {0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1};
+  const f32 m = 0.125f;
+  const f32 uvs[8] = {0, m, m, m, m, 0, 0, 0};
+  for (const f32 v : positions)
+    put_f32(bin, v);
+  for (const f32 v : normals)
+    put_f32(bin, v);
+  for (const f32 v : uvs)
+    put_f32(bin, v);
+  const u16 indices[6] = {0, 1, 2, 0, 2, 3};
+  for (const u16 i : indices) {
+    bin.push_back(static_cast<u8>(i & 0xff));
+    bin.push_back(static_cast<u8>(i >> 8));
+  }
+  if (!write_file((dir / "quads.bin").string(), bin.data(), bin.size())) return false;
+  std::string nodes, meshes, materials, textures, images;
+  for (u32 i = 0; i < k_drain_maps; ++i) {
+    const u32 corner = (i / 2) % 4;
+    const f32 x = ((corner & 1u) != 0 ? 1.0f : -1.0f) + ((i & 1u) != 0 ? k_drain_side_m : 0.0f);
+    const f32 y = (corner & 2u) != 0 ? 1.0f : -1.0f;
+    const std::string sep = i == 0 ? "" : ",";
+    nodes += sep + "{\"mesh\":" + std::to_string(i) + ",\"translation\":[" + std::to_string(x) +
+             "," + std::to_string(y) + ",0]}";
+    meshes += sep +
+              "{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,\"TEXCOORD_0\":2},"
+              "\"indices\":3,\"material\":" +
+              std::to_string(i) + "}]}";
+    materials += sep +
+                 "{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":" + std::to_string(i) +
+                 "},\"metallicFactor\":0,\"roughnessFactor\":1},\"doubleSided\":true}";
+    textures += sep + "{\"source\":" + std::to_string(i) + "}";
+    images += sep + "{\"uri\":\"image" + std::to_string(i) + ".png\"}";
+  }
+  std::string scene_nodes;
+  for (u32 i = 0; i < k_drain_maps; ++i)
+    scene_nodes += (i == 0 ? "" : ",") + std::to_string(i);
+  const std::string json =
+      "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[" + scene_nodes +
+      "]}],\"nodes\":[" + nodes + "],\"meshes\":[" + meshes + "],\"materials\":[" + materials +
+      "],\"textures\":[" + textures + "],\"images\":[" + images +
+      "],"
+      "\"accessors\":["
+      "{\"bufferView\":0,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\","
+      "\"min\":[-1,-1,0],\"max\":[1,1,0]},"
+      "{\"bufferView\":1,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\"},"
+      "{\"bufferView\":2,\"componentType\":5126,\"count\":4,\"type\":\"VEC2\"},"
+      "{\"bufferView\":3,\"componentType\":5123,\"count\":6,\"type\":\"SCALAR\"}],"
+      "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":48},"
+      "{\"buffer\":0,\"byteOffset\":48,\"byteLength\":48},"
+      "{\"buffer\":0,\"byteOffset\":96,\"byteLength\":32},"
+      "{\"buffer\":0,\"byteOffset\":128,\"byteLength\":12}],"
+      "\"buffers\":[{\"uri\":\"quads.bin\",\"byteLength\":140}]}";
+  if (!write_file((dir / "quads.gltf").string(), json.data(), json.size())) return false;
+  for (u32 i = 0; i < k_drain_maps; ++i) {
+    std::vector<u8> rgba = smooth_image(k_drain_image);
+    for (usize p = 0; p < rgba.size(); p += 4)  // a map of its own: no two share a content key
+      rgba[p + 2] = static_cast<u8>(rgba[p + 2] ^ static_cast<u8>(17u * (i + 1)));
+    Vector<u8> png;
+    if (!image::encode_png(k_drain_image, k_drain_image, 4,
+                           std::span<const u8>(rgba.data(), rgba.size()), png) ||
+        !write_file((dir / ("image" + std::to_string(i) + ".png")).string(), png.data(),
+                    png.size()))
+      return false;
+  }
+  return true;
+}
+
+}  // namespace
+
+// **A drain moves what a sparse chunk holds, gives the chunk back, and changes no picture** (W167
+// mend M1; texture.md, "Stage 3: the bytes go back to the device"). Eight 512-texel maps, two to a
+// 1 MiB chunk, under a 10 KiB ceiling with a hold of 0.25 s. From the even group the odd maps are
+// asked by no pixel, so the trim takes them to the floor (level 2) and their whole chains leave:
+// every chunk keeps one even map and a hole as large, over one and a half chunks of holes in all,
+// so the sparsest chunk drains — its even map is read again at the same top and re-placed through
+// the promotion's swap into another chunk's hole — and the chunk empties: the spare first, then
+// given back. The even maps are never trimmed (their pixels ask level 0 every frame), so the even
+// group's picture after the moves is the scene's with no ceiling, byte for byte (ids, depth,
+// colour): the moved images carry the same levels. Then the odd group, whose maps the asks bring
+// back to level 0, and the even group again: each ends on the no-ceiling picture once its maps are
+// promoted back. The ceiling never keeps a seen level trimmed (the hold keeps what is asked), so
+// the comparison is with the unchunked, unceilinged scene and not with a softer one.
+TEST_CASE("renderer: a drain moves a sparse chunk's maps, gives it back and changes no picture") {
+  const test::TempDir tmp("renderer_texture_drain");
+  const std::filesystem::path dir = tmp.native();
+  REQUIRE(write_drain_scene(dir));
+  const std::string mesh = (dir / "quads.gltf").string();
+  const std::string ddc = (dir / "ddc").string();
+  const auto desc_at = [](f32 x) {
+    FrameDesc desc;
+    desc.camera.position = absolute(WorldPos::origin(), Vec3{x, 0.0f, k_drain_eye_m});
+    desc.camera.target = absolute(WorldPos::origin(), Vec3{x, 0.0f, 0.0f});
+    desc.camera.fov_y = k_fov;
+    desc.view_mode = k_albedo_view;
+    return desc;
+  };
+  const auto capture = [&](Harness& h, f32 x) {
+    CaptureChannels channels;
+    channels.ids = true;
+    channels.depth = true;
+    CapturedFrame out;
+    std::string error;
+    REQUIRE_MESSAGE(h.renderer.capture(desc_at(x), channels, out, &error), error);
+    return out;
+  };
+  CapturedFrame plain_even, plain_odd;
+  {
+    Harness none;
+    if (!none.build(mesh, ddc)) {
+      MESSAGE("skipped: " << none.skip);
+      return;
+    }
+    CHECK(!none.scene.texture_bound_active());
+    plain_even = capture(none, 0.0f);
+    plain_odd = capture(none, k_drain_side_m);
+  }
+  TunableScope hold("renderer.textures.hold_s", "0.25");
+  TunableScope cap("renderer.textures.ceiling_mib", "0.01");
+  TunableScope chunk("renderer.textures.chunk_mib", "1");
+  Harness h;
+  REQUIRE(h.build(mesh, ddc));
+  REQUIRE(h.scene.texture_bound_active());
+  const TextureBoundUse loaded = h.scene.texture_bound_use();
+  CHECK(loaded.managed == k_drain_maps);
+  u32 most_chunks = loaded.chunks;
+  const auto frame = [&](f32 x) {
+    h.renderer.begin_frame();
+    std::string error;
+    REQUIRE_MESSAGE(h.renderer.submit_frame(desc_at(x), &error) != 0, error);
+    most_chunks = std::max(most_chunks, h.scene.texture_bound_use().chunks);
+  };
+  // From the even group until a drain has given a chunk back, and its moved image's old place has
+  // left (`k_joint_slots + 1` frames), at most 2,000 frames.
+  u32 k = 0;
+  for (; k < 2000; ++k) {
+    const TextureBoundUse& use = h.scene.texture_bound_use();
+    if (use.moves >= 1 && use.chunks_freed > loaded.chunks_freed) break;
+    frame(0.0f);
+  }
+  for (u32 j = 0; j < 8; ++j)
+    frame(0.0f);
+  const TextureBoundUse drained = h.scene.texture_bound_use();
+  MESSAGE("loaded: " << loaded.chunks << " chunks of " << loaded.chunk_bytes << " bytes; after "
+                     << k << " frames: " << drained.demotions << " demotions, " << drained.drains
+                     << " drains, " << drained.moves << " moves (" << drained.moved_bytes
+                     << " bytes), " << drained.chunks << " chunks of " << drained.chunk_bytes
+                     << " bytes (" << drained.chunk_used_bytes << " used), " << drained.chunks_made
+                     << " made, " << drained.chunks_freed << " freed, most " << most_chunks);
+  CHECK(k < 2000);
+  CHECK(drained.demotions >= k_drain_maps / 2);  // the odd maps, to the floor
+  CHECK(drained.drains >= 1);
+  CHECK(drained.moves >= 1);
+  CHECK(drained.chunks_freed > loaded.chunks_freed);
+  CHECK(drained.chunks < most_chunks);
+  CHECK(drained.chunk_bytes < loaded.chunk_bytes);
+  CHECK(drained.promotions == 0);  // nothing the even group asks was ever trimmed
+  // The even group's picture is the no-ceiling one now: the moves carried the same levels.
+  CHECK(differing_pixels(plain_even, capture(h, 0.0f)) == 0);
+  // The odd group, then the even group again: each ends on the no-ceiling picture once the asks
+  // have brought its maps back (a capture every ten frames, at most 2,000 frames each).
+  const auto ends_on = [&](f32 x, const CapturedFrame& plain) {
+    for (u32 n = 0; n < 200; ++n) {
+      for (u32 j = 0; j < 10; ++j)
+        frame(x);
+      if (differing_pixels(plain, capture(h, x)) == 0) return true;
+    }
+    return false;
+  };
+  CHECK(ends_on(k_drain_side_m, plain_odd));
+  CHECK(ends_on(0.0f, plain_even));
+  const TextureBoundUse& last = h.scene.texture_bound_use();
+  MESSAGE("at the end: " << last.promotions << " promotions, " << last.demotions << " demotions, "
+                         << last.drains << " drains, " << last.moves << " moves, " << last.chunks
+                         << " chunks, " << last.chunks_freed << " freed");
+  CHECK(last.promotions >= k_drain_maps);  // the odd maps back, then the even ones
+}
 // **The embedded image bytes go once the textures are built** (W51-3; renderer.md): a quad that
 // embeds its image as a data URI, loaded through a derived-data root, keeps none of the image's
 // bytes after the load's texture pass — on the first run, which builds the `.tex`, and on the next,
