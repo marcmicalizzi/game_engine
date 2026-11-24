@@ -1,0 +1,12 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R87",
+  "reason": "R87: lights by reach. record_frame calls the light grid's builder and hands its offset to every view's resolve (3 lines); renderer.md gains the section that says what the grid is, why it is exact and what holds it; gfx.md the grid beside ResolveParams' lights",
+  "date": "2026-11-23",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": 3,
+    "page:docs/subsystems/renderer.md": 5022,
+    "page:docs/subsystems/gfx.md": 938
+  }
+}
