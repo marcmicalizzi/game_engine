@@ -52,7 +52,7 @@ engine_module(NAME gfx LAYER domain
           src/bindless.cpp src/swapchain.cpp src/capture.cpp src/shader_library.cpp src/pipeline_cache.cpp
           src/pipeline_batch.cpp
           src/gpu_timer.cpp src/acceleration.cpp src/cluster_acceleration.cpp src/opacity_micromap.cpp
-          src/display_probe.cpp src/rt_keep.cpp)
+          src/display_probe.cpp src/rt_keep.cpp src/image_chunks.cpp)
 target_link_libraries(engine_gfx PUBLIC engine_shaders_gfx)
 # The display probe (display_probe.h, E39) asks DXGI for the outputs' luminances on Windows.
 if(WIN32)
@@ -118,7 +118,7 @@ engine_shaders(NAME gfx_tests
           shaders/formation_probe.slang)
 if(TARGET engine_gfx_tests)
   target_sources(engine_gfx_tests PRIVATE tests/compute_tests.cpp tests/frame_tests.cpp
-                                          tests/device_memory_tests.cpp
+                                          tests/device_memory_tests.cpp tests/image_chunks_tests.cpp
                                           tests/pipeline_cache_tests.cpp
                                           tests/render_graph_tests.cpp tests/bindless_tests.cpp
                                           tests/raster_tests.cpp tests/mesh_shader_tests.cpp

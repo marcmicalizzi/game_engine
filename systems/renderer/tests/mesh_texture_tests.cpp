@@ -107,14 +107,16 @@ void place(u32 tile, u32 mesh, Vector<SceneInstance>& out) {
 
 // The slab and a spare (so both loads are merged, as mesh_room_tests.cpp explains), and with
 // `whole` every tile's rock and its instances.
-SceneDesc describe(const test::TempDir& tmp, bool whole, u32 look) {
+// With `spare_look` the spare carries that look, so the load holds the textures a tile dealt the
+// same set names (W167).
+SceneDesc describe(const test::TempDir& tmp, bool whole, u32 look, u32 spare_look = 0) {
   SceneDesc desc;
   const scene_gen::PlacementMesh base = slab();
   desc.meshes.push_back(base.path);
   desc.recipes.push_back(MeshRecipe{base.path, base.recipe});
   scene_gen::PlacementMesh spare;
   spare.path = test::tile_rock_path(50, 50);
-  spare.recipe = test::tile_rock_recipe(50, 50, k_grid);
+  spare.recipe = test::tile_rock_recipe(50, 50, k_grid, spare_look);
   desc.meshes.push_back(spare.path);
   desc.recipes.push_back(MeshRecipe{spare.path, spare.recipe});
   SceneInstance ground;
@@ -865,4 +867,84 @@ TEST_CASE("mesh textures: a tile's foliage material arriving after the first fra
           << optics.rock_color << " of " << optics.rock_pixels << " rock pixels differ");
   CHECK(optics.ids == 0);
   CHECK(optics.rock_color > 1000);
+}
+
+// **Under a texture ceiling a tile's mesh shares the load's held texture, and a swap moves its
+// records too** (W167; texture.md, "Stage 3: the bytes go back to the device", item 5). The spare
+// the load holds carries tile 0's look, so the load holds the base colour map tiles 0 and 2 are
+// dealt and the normal map all four share (held by level under a floor of 4 texels, since the
+// fixture's maps are small). Under a ceiling of 1 KiB with a hold of 0.25 s, the
+// four rocks admitted upload only tile 1's and 3's base colour map — the other two are the load's,
+// at their current pair. Looking away longer than the hold, the trim swaps the held textures down
+// to their floor; looking back, promotions bring them in again. The last frame is the scene read
+// whole, byte for byte: every
+// tile record naming a held texture followed its swaps (a record left on a pair that went would
+// sample the residency's placeholder).
+TEST_CASE("mesh textures: under a texture ceiling a tile mesh shares the load's held texture") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  const u32 look = test::k_tile_rock_textured;
+  test::TempDir tmp{"engine_renderer_mesh_textures_held"};
+  Rig whole;
+  REQUIRE_MESSAGE(whole.build(gpu.device, describe(tmp, true, look, look), plain(), false, look),
+                  whole.error);
+  CapturedFrame w;
+  REQUIRE_MESSAGE(whole.shoot(w), whole.error);
+  struct Scope {
+    tunables::Tunable* tunable;
+    Scope(const char* name, const char* value) : tunable(tunables::find(name)) {
+      REQUIRE(tunable != nullptr);
+      std::string error;
+      REQUIRE_MESSAGE(tunable->set_from_text(value, &error), error);
+    }
+    ~Scope() { tunable->reset(); }
+  };
+  const Scope cap("renderer.textures.ceiling_mib", "0.001");
+  const Scope hold("renderer.textures.hold_s", "0.25");
+  // The fixture's maps are small: a floor of 4 texels holds them by level, so the trim has levels
+  // to take.
+  const Scope floor("renderer.textures.floor", "4");
+  Rig held;
+  REQUIRE_MESSAGE(held.build(gpu.device, describe(tmp, false, look, look), plain(), true, look),
+                  held.error);
+  REQUIRE(held.scene.texture_bound_active());
+  for (u32 t = 0; t < k_tiles; ++t)
+    REQUIRE_MESSAGE(held.admit(t, t), held.error);
+  REQUIRE_MESSAGE(held.hand_over(k_in_order), held.error);
+  const GpuScene::TextureUse use = held.scene.texture_use();
+  MESSAGE("tile textures uploaded " << use.uploaded << ", shared " << use.shared << "; held "
+                                    << held.scene.texture_bound_use().managed);
+  CHECK(held.scene.texture_bound_use().managed == 2);
+  CHECK(use.uploaded == 1);  // tile 1's and 3's base colour map; the rest is the load's
+  // The fixture's maps are magnified from the rig's camera, which asks their level 0 every frame;
+  // looking away for longer than the hold lets the trim take every held level to the floor, and
+  // looking back brings them in again — both swaps of the tiles' records.
+  const auto away = [&] {
+    FrameDesc frame;
+    frame.camera.position = WorldPos{-9.0, 13.0, 17.0};
+    frame.camera.target = WorldPos{-19.0, 25.0, 33.0};
+    CaptureChannels channels;
+    channels.color = true;
+    CapturedFrame scratch;
+    REQUIRE_MESSAGE(held.renderer.capture(frame, channels, scratch, &held.error), held.error);
+  };
+  for (u32 f = 0; f < 60; ++f)
+    away();
+  const u64 trimmed = held.scene.texture_bound_use().demotions;
+  CapturedFrame last;
+  for (u32 f = 0; f < 90; ++f)
+    REQUIRE_MESSAGE(held.shoot(last), held.error);
+  const TextureBoundUse& bound = held.scene.texture_bound_use();
+  const Difference d = compare(w, whole, last, held);
+  MESSAGE("after " << bound.demotions << " demotions and " << bound.promotions
+                   << " promotions: " << d.depth << " depths, " << d.color << " colours, " << d.ids
+                   << " ids over " << d.rock_pixels << " rock pixels");
+  CHECK(trimmed >= 1);
+  CHECK(bound.promotions >= 1);
+  CHECK(d.depth == 0);
+  CHECK(d.ids == 0);
+  CHECK(d.color == 0);
 }

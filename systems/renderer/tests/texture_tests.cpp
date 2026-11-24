@@ -20,7 +20,9 @@
 
 #include <core/hash/hash.h>
 #include <core/math/math.h>
+#include <core/memory/memory.h>
 #include <domain/gfx/device.h>
+#include <domain/gfx/resources.h>
 #include <domain/texture/texture_build.h>
 #include <domain/texture/texture_file.h>
 #include <foundation/image/png.h>
@@ -1402,6 +1404,348 @@ TEST_CASE("renderer: a texture trimmed then asked again ends on the whole pictur
   CHECK(use.promotions >= 1);
 }
 
+// **A trim gives its bytes back to the device, and neither a trim nor a promotion allocates in a
+// steady frame** (W167, W47's stage 1; texture.md, "Stage 3: the bytes go back to the device").
+// The quad's 1,024-texel map loaded whole under a 10 KiB ceiling, its image in the held textures'
+// chunks (1 MiB here, so the whole chain, 1.4 MB, takes a chunk of its own size), the hold 0.25 s.
+// After ten frames near, a glance away shorter than the hold and back reads nothing again (no
+// demotion, no promotion). Then two cycles of the same walk: from 30 m until the trim has taken it
+// to the floor, whose image goes into a standard chunk while the whole chain's chunk goes back, and
+// near again until a promotion has brought the levels back. The first cycle is the warm-up (the
+// standard chunk is made, lists grow to what the cycle needs); the second is counted: the whole
+// chain's chunk goes back again — one live chunk of 1 MiB, counted by the pool and on the driver's
+// own usage for the process — and every frame of it, the trim's and the promotion's included, is
+// begun and submitted with the engine's allocations and device buffers counted on this thread:
+// zero (their staging is the ring, their tables reserved at the load). The frames do not wait for
+// the device, so a cycle runs until its read has landed, at most 2,000 frames.
+TEST_CASE("renderer: a trim gives its chunk back, and a trim or a promotion allocates nothing") {
+  const test::TempDir tmp("renderer_texture_chunks");
+  const std::filesystem::path dir = tmp.native();
+  REQUIRE(write_quad(dir));
+  Vector<u8> png;
+  REQUIRE(write_image(dir, k_bound_image, smooth_image(k_bound_image), png));
+  const std::string mesh = (dir / "quad.gltf").string();
+  const std::string ddc = (dir / "ddc").string();
+  TunableScope hold("renderer.textures.hold_s", "0.25");
+  TunableScope cap("renderer.textures.ceiling_mib", "0.01");
+  TunableScope chunk("renderer.textures.chunk_mib", "1");
+  Harness h;
+  if (!h.build(mesh, ddc)) {
+    MESSAGE("skipped: " << h.skip);
+    return;
+  }
+  REQUIRE(h.scene.texture_bound_active());
+  constexpr u64 k_chunk = 1024ull * 1024ull;
+  const TextureBoundUse loaded = h.scene.texture_bound_use();
+  CHECK(loaded.chunks == 1);
+  CHECK(loaded.chunk_bytes > k_chunk);  // the whole chain's chunk, of its own size
+  CHECK(resident_top(h.scene) == 0);
+  bool counting = false;
+  u64 allocations = 0;
+  u64 buffers = 0;
+  const auto frame = [&](f32 distance) {
+    FrameDesc desc;
+    desc.camera.position = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, distance});
+    desc.camera.target = absolute(WorldPos::origin(), Vec3{0.0f, 0.0f, 0.0f});
+    desc.camera.fov_y = k_fov;
+    desc.view_mode = k_albedo_view;
+    const u64 a0 = mem::allocations_on_thread();
+    const u64 b0 = gfx::buffers_created_on_thread();
+    h.renderer.begin_frame();
+    std::string error;
+    const bool ok = h.renderer.submit_frame(desc, &error) != 0;
+    if (counting) {
+      allocations += mem::allocations_on_thread() - a0;
+      buffers += gfx::buffers_created_on_thread() - b0;
+    }
+    REQUIRE_MESSAGE(ok, error);
+  };
+  // Frames from `distance` until the quad's texture stands at `top`, then eight more (the old
+  // image leaves `k_joint_slots + 1` frames after its swap); false past 2,000.
+  const auto walk_until = [&](f32 distance, u32 top) {
+    u32 k = 0;
+    for (; k < 2000 && resident_top(h.scene) != top; ++k)
+      frame(distance);
+    for (u32 j = 0; j < 8; ++j)
+      frame(distance);
+    return k < 2000;
+  };
+  for (u32 k = 0; k < 10; ++k)
+    (void)h.shot(k_near_m);  // what grows with what a frame holds grows here
+  // A glance away within the hold, and back: nothing is read again.
+  const u64 swaps = h.scene.texture_bound_use().promotions + h.scene.texture_bound_use().demotions;
+  for (u32 k = 0; k < 6; ++k)
+    frame(30.0f);
+  for (u32 k = 0; k < 6; ++k)
+    frame(k_near_m);
+  CHECK(h.scene.texture_bound_use().promotions + h.scene.texture_bound_use().demotions == swaps);
+  // The warm-up cycle.
+  REQUIRE(walk_until(30.0f, 3));
+  REQUIRE(walk_until(k_near_m, 0));
+  // The counted one.
+  counting = true;
+  const TextureBoundUse whole = h.scene.texture_bound_use();
+  gfx::MemoryBudget before;
+  const bool budget = h.device.memory_budget(before) && before.valid;
+  REQUIRE(walk_until(30.0f, 3));
+  const TextureBoundUse trimmed = h.scene.texture_bound_use();
+  gfx::MemoryBudget after;
+  if (budget) REQUIRE(h.device.memory_budget(after));
+  MESSAGE("trimmed: chunks " << trimmed.chunks << " of " << trimmed.chunk_bytes << " bytes (whole "
+                             << whole.chunks << " of " << whole.chunk_bytes << "), "
+                             << trimmed.chunks_freed - whole.chunks_freed
+                             << " given back; the driver's usage " << before.used_bytes << " -> "
+                             << after.used_bytes);
+  CHECK(trimmed.demotions == whole.demotions + 1);
+  CHECK(trimmed.chunks == 1);
+  CHECK(trimmed.chunk_bytes == k_chunk);
+  CHECK(trimmed.chunks_freed == whole.chunks_freed + 1);
+  CHECK(whole.chunk_bytes == trimmed.chunk_bytes + loaded.chunk_bytes);
+  if (budget) CHECK(after.used_bytes + loaded.chunk_bytes / 2 <= before.used_bytes);
+  REQUIRE(walk_until(k_near_m, 0));
+  CHECK(h.scene.texture_bound_use().promotions == whole.promotions + 1);
+  CHECK(allocations == 0);
+  CHECK(buffers == 0);
+}
+
+// **A device budget names the ceiling** (W167; texture.md, "Stage 3: the bytes go back to the
+// device", item 3). With no `ceiling_mib`, `device_budget_mib` sets the textures' ceiling to the
+// budget less what the rest of the process holds on the device, at the first frame and every 10 s
+// of the frames' clock. A budget of 1 MiB is under what the rest holds, so the ceiling is the least
+// (one byte) and the quad's map goes to its floor once the hold has passed; a budget of 64 GiB
+// leaves room for everything, and nothing is trimmed.
+TEST_CASE("renderer: a device budget names the texture ceiling from what the rest holds") {
+  const test::TempDir tmp("renderer_texture_budget");
+  const std::filesystem::path dir = tmp.native();
+  REQUIRE(write_quad(dir));
+  Vector<u8> png;
+  REQUIRE(write_image(dir, k_bound_image, smooth_image(k_bound_image), png));
+  const std::string mesh = (dir / "quad.gltf").string();
+  const std::string ddc = (dir / "ddc").string();
+  TunableScope hold("renderer.textures.hold_s", "0.25");
+  for (const char* budget : {"1", "65536"}) {
+    INFO("budget " << budget << " MiB");
+    TunableScope named("renderer.textures.device_budget_mib", budget);
+    Harness h;
+    if (!h.build(mesh, ddc)) {
+      MESSAGE("skipped: " << h.skip);
+      return;
+    }
+    REQUIRE(h.scene.texture_bound_active());
+    gfx::MemoryBudget memory;
+    if (!h.device.memory_budget(memory) || !memory.valid) {
+      MESSAGE("skipped: the device reports no memory budget");
+      return;
+    }
+    for (u32 k = 0; k < 60; ++k)
+      (void)h.shot(30.0f);
+    const TextureBoundUse& use = h.scene.texture_bound_use();
+    MESSAGE("budget " << budget << " MiB: ceiling " << use.ceiling << " bytes, top "
+                      << resident_top(h.scene) << ", " << use.demotions << " demotions");
+    CHECK(use.budget == std::strtoull(budget, nullptr, 10) * 1024ull * 1024ull);
+    if (std::string(budget) == "1") {
+      CHECK(use.ceiling == 1);
+      CHECK(resident_top(h.scene) == 3);
+    } else {
+      CHECK(use.ceiling > (u64{60} << 30));
+      CHECK(use.demotions == 0);
+      CHECK(resident_top(h.scene) == 0);
+    }
+  }
+}
+
+namespace {
+
+constexpr u32 k_drain_maps = 8;      // quads, each with a map of its own
+constexpr u32 k_drain_image = 512;   // a whole chain is 349,552 bytes: two to a 1 MiB chunk
+constexpr f32 k_drain_side_m = 100;  // the odd quads' group stands this far along +x
+constexpr f32 k_drain_eye_m = 3.9f;  // from here a group of four fills the frame
+
+// Eight unit-half-width quads facing +z, each with a material of its own whose base colour is
+// `image<i>.png` beside it, their UVs a corner of the map an eighth across (so a quad of 126
+// pixels magnifies its 64 texels: level 0 is what its pixels ask). The even quads stand in a 2x2
+// group round the origin and the odd ones in the same group `k_drain_side_m` along +x, so a camera
+// at one group sees none of the other. The load places the maps in their order, so every chunk
+// starts with one even map and one odd one.
+bool write_drain_scene(const std::filesystem::path& dir) {
+  std::vector<u8> bin;
+  const f32 positions[12] = {-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0};
+  const f32 normals[12] = {0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1};
+  const f32 m = 0.125f;
+  const f32 uvs[8] = {0, m, m, m, m, 0, 0, 0};
+  for (const f32 v : positions)
+    put_f32(bin, v);
+  for (const f32 v : normals)
+    put_f32(bin, v);
+  for (const f32 v : uvs)
+    put_f32(bin, v);
+  const u16 indices[6] = {0, 1, 2, 0, 2, 3};
+  for (const u16 i : indices) {
+    bin.push_back(static_cast<u8>(i & 0xff));
+    bin.push_back(static_cast<u8>(i >> 8));
+  }
+  if (!write_file((dir / "quads.bin").string(), bin.data(), bin.size())) return false;
+  std::string nodes, meshes, materials, textures, images;
+  for (u32 i = 0; i < k_drain_maps; ++i) {
+    const u32 corner = (i / 2) % 4;
+    const f32 x = ((corner & 1u) != 0 ? 1.0f : -1.0f) + ((i & 1u) != 0 ? k_drain_side_m : 0.0f);
+    const f32 y = (corner & 2u) != 0 ? 1.0f : -1.0f;
+    const std::string sep = i == 0 ? "" : ",";
+    nodes += sep + "{\"mesh\":" + std::to_string(i) + ",\"translation\":[" + std::to_string(x) +
+             "," + std::to_string(y) + ",0]}";
+    meshes += sep +
+              "{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,\"TEXCOORD_0\":2},"
+              "\"indices\":3,\"material\":" +
+              std::to_string(i) + "}]}";
+    materials += sep +
+                 "{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":" + std::to_string(i) +
+                 "},\"metallicFactor\":0,\"roughnessFactor\":1},\"doubleSided\":true}";
+    textures += sep + "{\"source\":" + std::to_string(i) + "}";
+    images += sep + "{\"uri\":\"image" + std::to_string(i) + ".png\"}";
+  }
+  std::string scene_nodes;
+  for (u32 i = 0; i < k_drain_maps; ++i)
+    scene_nodes += (i == 0 ? "" : ",") + std::to_string(i);
+  const std::string json =
+      "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[" + scene_nodes +
+      "]}],\"nodes\":[" + nodes + "],\"meshes\":[" + meshes + "],\"materials\":[" + materials +
+      "],\"textures\":[" + textures + "],\"images\":[" + images +
+      "],"
+      "\"accessors\":["
+      "{\"bufferView\":0,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\","
+      "\"min\":[-1,-1,0],\"max\":[1,1,0]},"
+      "{\"bufferView\":1,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\"},"
+      "{\"bufferView\":2,\"componentType\":5126,\"count\":4,\"type\":\"VEC2\"},"
+      "{\"bufferView\":3,\"componentType\":5123,\"count\":6,\"type\":\"SCALAR\"}],"
+      "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":48},"
+      "{\"buffer\":0,\"byteOffset\":48,\"byteLength\":48},"
+      "{\"buffer\":0,\"byteOffset\":96,\"byteLength\":32},"
+      "{\"buffer\":0,\"byteOffset\":128,\"byteLength\":12}],"
+      "\"buffers\":[{\"uri\":\"quads.bin\",\"byteLength\":140}]}";
+  if (!write_file((dir / "quads.gltf").string(), json.data(), json.size())) return false;
+  for (u32 i = 0; i < k_drain_maps; ++i) {
+    std::vector<u8> rgba = smooth_image(k_drain_image);
+    for (usize p = 0; p < rgba.size(); p += 4)  // a map of its own: no two share a content key
+      rgba[p + 2] = static_cast<u8>(rgba[p + 2] ^ static_cast<u8>(17u * (i + 1)));
+    Vector<u8> png;
+    if (!image::encode_png(k_drain_image, k_drain_image, 4,
+                           std::span<const u8>(rgba.data(), rgba.size()), png) ||
+        !write_file((dir / ("image" + std::to_string(i) + ".png")).string(), png.data(),
+                    png.size()))
+      return false;
+  }
+  return true;
+}
+
+}  // namespace
+
+// **A drain moves what a sparse chunk holds, gives the chunk back, and changes no picture** (W167
+// mend M1; texture.md, "Stage 3: the bytes go back to the device"). Eight 512-texel maps, two to a
+// 1 MiB chunk, under a 10 KiB ceiling with a hold of 0.25 s. From the even group the odd maps are
+// asked by no pixel, so the trim takes them to the floor (level 2) and their whole chains leave:
+// every chunk keeps one even map and a hole as large, over one and a half chunks of holes in all,
+// so the sparsest chunk drains — its even map is read again at the same top and re-placed through
+// the promotion's swap into another chunk's hole — and the chunk empties: the spare first, then
+// given back. The even maps are never trimmed (their pixels ask level 0 every frame), so the even
+// group's picture after the moves is the scene's with no ceiling, byte for byte (ids, depth,
+// colour): the moved images carry the same levels. Then the odd group, whose maps the asks bring
+// back to level 0, and the even group again: each ends on the no-ceiling picture once its maps are
+// promoted back. The ceiling never keeps a seen level trimmed (the hold keeps what is asked), so
+// the comparison is with the unchunked, unceilinged scene and not with a softer one.
+TEST_CASE("renderer: a drain moves a sparse chunk's maps, gives it back and changes no picture") {
+  const test::TempDir tmp("renderer_texture_drain");
+  const std::filesystem::path dir = tmp.native();
+  REQUIRE(write_drain_scene(dir));
+  const std::string mesh = (dir / "quads.gltf").string();
+  const std::string ddc = (dir / "ddc").string();
+  const auto desc_at = [](f32 x) {
+    FrameDesc desc;
+    desc.camera.position = absolute(WorldPos::origin(), Vec3{x, 0.0f, k_drain_eye_m});
+    desc.camera.target = absolute(WorldPos::origin(), Vec3{x, 0.0f, 0.0f});
+    desc.camera.fov_y = k_fov;
+    desc.view_mode = k_albedo_view;
+    return desc;
+  };
+  const auto capture = [&](Harness& h, f32 x) {
+    CaptureChannels channels;
+    channels.ids = true;
+    channels.depth = true;
+    CapturedFrame out;
+    std::string error;
+    REQUIRE_MESSAGE(h.renderer.capture(desc_at(x), channels, out, &error), error);
+    return out;
+  };
+  CapturedFrame plain_even, plain_odd;
+  {
+    Harness none;
+    if (!none.build(mesh, ddc)) {
+      MESSAGE("skipped: " << none.skip);
+      return;
+    }
+    CHECK(!none.scene.texture_bound_active());
+    plain_even = capture(none, 0.0f);
+    plain_odd = capture(none, k_drain_side_m);
+  }
+  TunableScope hold("renderer.textures.hold_s", "0.25");
+  TunableScope cap("renderer.textures.ceiling_mib", "0.01");
+  TunableScope chunk("renderer.textures.chunk_mib", "1");
+  Harness h;
+  REQUIRE(h.build(mesh, ddc));
+  REQUIRE(h.scene.texture_bound_active());
+  const TextureBoundUse loaded = h.scene.texture_bound_use();
+  CHECK(loaded.managed == k_drain_maps);
+  u32 most_chunks = loaded.chunks;
+  const auto frame = [&](f32 x) {
+    h.renderer.begin_frame();
+    std::string error;
+    REQUIRE_MESSAGE(h.renderer.submit_frame(desc_at(x), &error) != 0, error);
+    most_chunks = std::max(most_chunks, h.scene.texture_bound_use().chunks);
+  };
+  // From the even group until a drain has given a chunk back, and its moved image's old place has
+  // left (`k_joint_slots + 1` frames), at most 2,000 frames.
+  u32 k = 0;
+  for (; k < 2000; ++k) {
+    const TextureBoundUse& use = h.scene.texture_bound_use();
+    if (use.moves >= 1 && use.chunks_freed > loaded.chunks_freed) break;
+    frame(0.0f);
+  }
+  for (u32 j = 0; j < 8; ++j)
+    frame(0.0f);
+  const TextureBoundUse drained = h.scene.texture_bound_use();
+  MESSAGE("loaded: " << loaded.chunks << " chunks of " << loaded.chunk_bytes << " bytes; after "
+                     << k << " frames: " << drained.demotions << " demotions, " << drained.drains
+                     << " drains, " << drained.moves << " moves (" << drained.moved_bytes
+                     << " bytes), " << drained.chunks << " chunks of " << drained.chunk_bytes
+                     << " bytes (" << drained.chunk_used_bytes << " used), " << drained.chunks_made
+                     << " made, " << drained.chunks_freed << " freed, most " << most_chunks);
+  CHECK(k < 2000);
+  CHECK(drained.demotions >= k_drain_maps / 2);  // the odd maps, to the floor
+  CHECK(drained.drains >= 1);
+  CHECK(drained.moves >= 1);
+  CHECK(drained.chunks_freed > loaded.chunks_freed);
+  CHECK(drained.chunks < most_chunks);
+  CHECK(drained.chunk_bytes < loaded.chunk_bytes);
+  CHECK(drained.promotions == 0);  // nothing the even group asks was ever trimmed
+  // The even group's picture is the no-ceiling one now: the moves carried the same levels.
+  CHECK(differing_pixels(plain_even, capture(h, 0.0f)) == 0);
+  // The odd group, then the even group again: each ends on the no-ceiling picture once the asks
+  // have brought its maps back (a capture every ten frames, at most 2,000 frames each).
+  const auto ends_on = [&](f32 x, const CapturedFrame& plain) {
+    for (u32 n = 0; n < 200; ++n) {
+      for (u32 j = 0; j < 10; ++j)
+        frame(x);
+      if (differing_pixels(plain, capture(h, x)) == 0) return true;
+    }
+    return false;
+  };
+  CHECK(ends_on(k_drain_side_m, plain_odd));
+  CHECK(ends_on(0.0f, plain_even));
+  const TextureBoundUse& last = h.scene.texture_bound_use();
+  MESSAGE("at the end: " << last.promotions << " promotions, " << last.demotions << " demotions, "
+                         << last.drains << " drains, " << last.moves << " moves, " << last.chunks
+                         << " chunks, " << last.chunks_freed << " freed");
+  CHECK(last.promotions >= k_drain_maps);  // the odd maps back, then the even ones
+}
 // **The embedded image bytes go once the textures are built** (W51-3; renderer.md): a quad that
 // embeds its image as a data URI, loaded through a derived-data root, keeps none of the image's
 // bytes after the load's texture pass — on the first run, which builds the `.tex`, and on the next,

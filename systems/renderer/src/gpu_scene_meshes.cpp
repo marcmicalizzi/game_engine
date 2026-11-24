@@ -400,6 +400,9 @@ bool GpuScene::admit_mesh(u32 mesh, const PlacementMeshData& data, std::string* 
   copy(materials, at_materials, slot.materials.offset * sizeof(gfx::ResolveMaterial),
        u64{nm} * sizeof(gfx::ResolveMaterial));
   pending_geometry_bytes_ += total;
+  // W167: records naming a texture the residency holds are kept with it, so a swap rewrites them.
+  texture_bound_admitted(static_cast<u32>(slot.materials.offset),
+                         std::span<const gfx::ResolveMaterial>(made.data(), nm));
 
   // The mesh's record: the scene's addresses (the slot's record has them from `create`), this
   // mesh's grid and its run of the cluster array. The frame that copies the streams writes it.
@@ -446,6 +449,8 @@ void GpuScene::retire_mesh(u32 mesh) noexcept {
   desc.cluster_count = 0;
   pending_mesh_writes_.push_back(mesh);
   give_range(free_mesh_clusters_, slot.clusters);
+  texture_bound_retired(static_cast<u32>(slot.materials.offset),
+                        static_cast<u32>(slot.materials.count));
   give_range(free_mesh_materials_, slot.materials);
   // Its textures' references back: one nobody else holds leaves the table now and its image once
   // the frames in flight are done (gpu_scene_textures.cpp).

@@ -37,6 +37,20 @@ struct TextureBoundUse {
   f64 feedback_ms_total = 0.0;  // its GPU time, summed
   f64 feedback_ms_max = 0.0;
   f64 worst_demote_ms = 0.0;  // the most one frame's demotions took on the recording thread
+  // W167 (W47's stage 1; texture.md, "Stage 3: the bytes go back to the device"): the held
+  // textures' images in chunks of their own, and the moves that empty a sparse one.
+  u64 budget = 0;            // `renderer.textures.device_budget_mib` in bytes, 0: none named
+  u64 moves = 0;             // images re-placed at the same top out of a draining chunk
+  u64 moved_bytes = 0;       // their device bytes
+  u64 drains = 0;            // chunks marked draining (one at a time)
+  u32 chunks = 0;            // live chunks now, the spare included
+  u64 chunk_bytes = 0;       // the device bytes those chunks take: what the driver is charged
+  u64 chunk_used_bytes = 0;  // of them, what live images take
+  u64 chunks_made = 0;       // chunks made since the load
+  u64 chunks_freed = 0;      // chunks given back to the device since the load
+  u64 most_chunk_bytes = 0;  // the most the chunks took at once
+  u64 failed_admits = 0;     // swaps the device made no image for (kept, tried again; logged once)
+  u64 deferred_swaps = 0;    // swaps held a frame: a block copy's staged bytes were not found
 };
 
 }  // namespace engine::renderer
