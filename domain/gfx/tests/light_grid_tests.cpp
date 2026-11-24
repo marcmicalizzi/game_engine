@@ -132,7 +132,8 @@ TEST_CASE("light grid: the walk keeps the array's order and its leading lights")
   CHECK_FALSE(has_bit(grid, cells, cell, 3));  // 38 m from a 5 m reach
   // Far from every sphere: outside the box, or a cell with no bit.
   if (light_grid_cell(grid, Vec3{20.0f, 2.0f, 30.0f}, cell)) {
-    for (u32 w = 0; w < grid.words; ++w) CHECK(cells[u64{cell} * grid.words + w] == 0u);
+    for (u32 w = 0; w < grid.words; ++w)
+      CHECK(cells[u64{cell} * grid.words + w] == 0u);
   }
   CHECK_FALSE(light_grid_cell(grid, Vec3{500.0f, 2.0f, 0.0f}, cell));
 }
@@ -162,9 +163,8 @@ TEST_CASE("light grid: more lights make coarser cells, never fewer lights") {
   std::vector<u32> cells(k_light_grid_words);
   std::vector<ResolveLight> lights;
   for (u32 i = 0; i < 322; ++i) {
-    lights.push_back(point({static_cast<f32>(i % 18) * 30.0f, 2.6f,
-                            static_cast<f32>(i / 18) * 30.0f},
-                           28.0f));
+    lights.push_back(
+        point({static_cast<f32>(i % 18) * 30.0f, 2.6f, static_cast<f32>(i / 18) * 30.0f}, 28.0f));
   }
   LightGrid grid;
   REQUIRE(build_light_grid(lights, cells, grid));

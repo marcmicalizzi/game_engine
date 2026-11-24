@@ -24,7 +24,8 @@ bool build_light_grid(std::span<const ResolveLight> lights, std::span<u32> cells
   header = LightGrid{};
   const u32 n = static_cast<u32>(lights.size());
   u32 first = 0;
-  while (first < n && directional(lights[first])) ++first;
+  while (first < n && directional(lights[first]))
+    ++first;
   if (first == n) return false;
   for (u32 i = first; i < n; ++i) {
     if (directional(lights[i])) return false;  // a light with no reach behind one with a reach
@@ -52,9 +53,14 @@ bool build_light_grid(std::span<const ResolveLight> lights, std::span<u32> cells
     any = true;
   }
   if (!any) {  // no light reaches anything: one empty cell, and the walk past `first` is empty
-    lo[0] = lo[1] = lo[2] = 0.0;
-    hi[0] = hi[1] = hi[2] = 1.0;
-    smallest = 1.0;
+    header.origin_inv_cell = Vec4{0.0f, 0.0f, 0.0f, 1.0f};
+    header.dims_x = header.dims_y = header.dims_z = 1;
+    header.words = words;
+    header.first = first;
+    header.count = n;
+    header.cells = 1;
+    std::memset(cells.data(), 0, sizeof(u32) * words);
+    return true;
   }
 
   // The cell's edge: the cube root of the box's volume over the room, never under the floor, grown

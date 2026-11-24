@@ -38,8 +38,9 @@ namespace engine::gfx {
 // lights) never pass it. A named constant, not a tunable: it sizes a buffer made at init.
 inline constexpr u32 k_light_grid_words = 65536;
 // A cell's edge is never under this share of the smallest reach: a cell much smaller than the
-// spheres it is tested against buys no culling and costs words.
-inline constexpr f32 k_light_grid_cell_floor = 0.5f;
+// spheres it is tested against buys little culling and costs words (a cell a quarter of a reach
+// across holds the lights within about 1.4 reaches of any point in it, where 1 would be exact).
+inline constexpr f32 k_light_grid_cell_floor = 0.25f;
 
 // Mirrors LightGrid in material.slang. 48 bytes; the cells follow it, `u32[cells * words]`, the
 // cell (x, y, z) at `((z * dims_y + y) * dims_x + x) * words`.
@@ -63,9 +64,9 @@ inline u64 light_grid_bytes(const LightGrid& grid) noexcept {
 // How much a light's reach is grown for its cells: a 256th of the reach and a centimetre, for the
 // float arithmetic of the reader's distance (`brdf_distance_attenuation` compares d^2 with r^2 in
 // f32), and a 64th of the cell's edge, for the f32 arithmetic that finds the reader's cell (its
-// error is at most dims * 2^-23 of a cell, and a grid has at most 2^16 cells along an axis). A grown
-// sphere only ever sets more bits, and a bit for a light that does not reach costs a distance test
-// and changes nothing in the picture.
+// error is at most dims * 2^-23 of a cell, and a grid has at most 2^16 cells along an axis). A
+// grown sphere only ever sets more bits, and a bit for a light that does not reach costs a distance
+// test and changes nothing in the picture.
 inline f64 light_grid_margin(f64 reach, f64 edge) noexcept {
   return reach / 256.0 + 0.01 + edge / 64.0;
 }

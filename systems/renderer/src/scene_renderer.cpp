@@ -164,8 +164,11 @@ tunables::Bool light_grid_on{
     "Cull the frame's lights by reach: each pixel walks only the lights whose reach covers its "
     "cell of a grid in the frame's space (R87); off, every pixel walks every light, the same "
     "picture"};
-// Builds the frame's grid over `lighting`'s array into `cells` and copies it behind the slot's sky
-// block; returns the bytes from the array to it (`gfx::ResolveParams::light_grid`), 0 for no grid.
+// **The lights by reach** (gfx/light_grid.h; renderer.md, "Lights by reach"; R87): builds the
+// frame's grid over `lighting`'s array — which of its lights reach each cell — on the CPU into
+// `cells`, from the array just written, and copies it behind the slot's sky block, which every
+// view's resolve reads beside the lights; returns the bytes from the array to it
+// (`gfx::ResolveParams::light_grid`), 0 for no grid.
 u32 write_light_grid(const FrameLighting& lighting, Vector<u32>& cells, u8* resolve_bytes,
                      u32 views, u32& grid_cells, u32& grid_refs) noexcept {
   grid_cells = 0;
@@ -3782,12 +3785,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   stats_.lamps_refused = fires_.lamps_refused();
   std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * views, lighting.lights,
               sizeof(lighting.lights));
-  // **The lights by reach** (gfx/light_grid.h; renderer.md, "Lights by reach"; R87): which of the
-  // array's lights reach each cell of a grid over their spheres, built here on the CPU from the
-  // array just written and copied behind the sky's block, which every view's resolve reads.
-  const u32 light_grid_bytes_from_lights =
-      write_light_grid(lighting, light_grid_cells_, resolve_bytes, views, stats_.light_grid_cells,
-                       stats_.light_grid_refs);
+  const u32 lights_grid = write_light_grid(lighting, light_grid_cells_, resolve_bytes, views,
+                                           stats_.light_grid_cells, stats_.light_grid_refs);  // R87
 
   // ---- the sun's cascades (shadow_cascades.h) -------------------------------------------------
   //
@@ -4365,7 +4364,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     resolve.mode = frame.view_mode == ~u32{0} ? settings.view_mode : frame.view_mode;
     resolve.lights = lights_address;
     resolve.light_count = lighting.light_count;
-    resolve.light_grid = light_grid_bytes_from_lights;
+    resolve.light_grid = lights_grid;
     // Where this view's picture goes in the target, and — for a Panini view — the map from an
     // output pixel back into the wider rectilinear source the rasterizers filled.
     resolve.view_x = view.rect.x;

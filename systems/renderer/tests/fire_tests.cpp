@@ -88,7 +88,7 @@ TEST_CASE("fire: a blackbody's colour is orange at a campfire's temperature and 
   CHECK(std::fabs(noon.x - noon.z) < 0.1f);
 }
 
-TEST_CASE("fire: the light array takes the nearest fires after the lights it has") {
+TEST_CASE("fire: the light array takes every fire, in order, after the lights it has") {
   FrameFire fires[6];
   for (u32 i = 0; i < 6; ++i) {
     fires[i].base = WorldPos{100.0 + 10.0 * (5 - i), 2.0, 0.0};  // the last is the nearest
@@ -96,26 +96,74 @@ TEST_CASE("fire: the light array takes the nearest fires after the lights it has
     fires[i].intensity = 100.0f + static_cast<f32>(i);
     fires[i].reach_m = 30.0f;
   }
+  fires[3].intensity = 0.0f;  // out: no light
   FrameLighting lighting;
   lighting.light_count = 1;  // a moon
   const WorldPos eye{100.0, 2.0, 5.0};
   const u32 added = add_fire_lights(std::span<const FrameFire>(fires, 6), eye, lighting);
-  CHECK(added == k_max_fire_lights);
-  CHECK(lighting.light_count == 1 + k_max_fire_lights);
-  // Nearest first: fire 5 (at x 100), then 4, 3, 2; in the eye's frame, at the light's height.
-  CHECK(lighting.lights[1].color_intensity.w == 105.0f);
-  CHECK(lighting.lights[2].color_intensity.w == 104.0f);
-  CHECK(lighting.lights[4].color_intensity.w == 102.0f);
-  CHECK(lighting.lights[1].position_radius.x == 0.0f);
-  CHECK(lighting.lights[1].position_radius.y ==
+  CHECK(added == 5);
+  CHECK(lighting.light_count == 6);
+  // In their order, past four (R87), the one that is out left out; in the eye's frame, at the
+  // light's height.
+  CHECK(lighting.lights[1].color_intensity.w == 100.0f);
+  CHECK(lighting.lights[3].color_intensity.w == 102.0f);
+  CHECK(lighting.lights[4].color_intensity.w == 104.0f);
+  CHECK(lighting.lights[5].color_intensity.w == 105.0f);
+  CHECK(lighting.lights[5].position_radius.x == 0.0f);
+  CHECK(lighting.lights[5].position_radius.y ==
         doctest::Approx(static_cast<f64>(k_fire_light_height)));
-  CHECK(lighting.lights[1].position_radius.z == -5.0f);
-  CHECK(lighting.lights[1].position_radius.w == 30.0f);
-  CHECK(lighting.lights[1].direction_type.w == gfx::k_light_point);
+  CHECK(lighting.lights[5].position_radius.z == -5.0f);
+  CHECK(lighting.lights[5].position_radius.w == 30.0f);
+  CHECK(lighting.lights[5].direction_type.w == gfx::k_light_point);
   // A full array takes none.
   FrameLighting full;
   full.light_count = k_frame_lights;
   CHECK(add_fire_lights(std::span<const FrameFire>(fires, 6), eye, full) == 0);
+}
+
+TEST_CASE("fire: an eye walking past the fires changes nothing the array lights") {
+  // Six fires in a row and an eye walking along it from one end to the other: under the rule
+  // before R87 (the four nearest) the array changed each time the eye passed the midpoint of two
+  // fires, a fire's light going out and another's coming on. Now the array's fires, their order
+  // and their world positions are the same at every step: a change is counted, and none is allowed.
+  FrameFire fires[6];
+  for (u32 i = 0; i < 6; ++i) {
+    fires[i].base = WorldPos{10.0 * i, 0.0, 0.0};
+    fires[i].height_m = 1.0f;
+    fires[i].intensity = 50.0f + static_cast<f32>(i);
+    fires[i].reach_m = 25.0f;
+  }
+  FrameLighting first;
+  add_fire_lights(std::span<const FrameFire>(fires, 6), WorldPos{-5.0, 1.7, 3.0}, first);
+  u32 changes = 0;
+  u32 nearest_changes = 0;
+  u32 last_nearest = 0;
+  for (u32 step = 0; step <= 120; ++step) {
+    const WorldPos eye{-5.0 + 0.5 * step, 1.7, 3.0};
+    FrameLighting lighting;
+    add_fire_lights(std::span<const FrameFire>(fires, 6), eye, lighting);
+    bool same = lighting.light_count == first.light_count;
+    for (u32 l = 0; same && l < lighting.light_count; ++l) {
+      const Vec4 a = lighting.lights[l].color_intensity;
+      const Vec4 b = first.lights[l].color_intensity;
+      // Back in the world: the eye-relative position plus the eye, to a millimetre.
+      const f64 x = static_cast<f64>(lighting.lights[l].position_radius.x) + eye.x - (-5.0);
+      same = a.w == b.w && a.x == b.x &&
+             std::fabs(x - static_cast<f64>(first.lights[l].position_radius.x)) < 1e-3;
+    }
+    changes += same ? 0 : 1;
+    // The old rule's boundary, for the count's other side: which fire is nearest the eye.
+    u32 nearest = 0;
+    for (u32 i = 1; i < 6; ++i) {
+      if (std::fabs(fires[i].base.x - eye.x) < std::fabs(fires[nearest].base.x - eye.x))
+        nearest = i;
+    }
+    nearest_changes += (step > 0 && nearest != last_nearest) ? 1 : 0;
+    last_nearest = nearest;
+  }
+  CHECK(nearest_changes == 5);  // the walk crossed five of the old rule's boundaries
+  CHECK(changes == 0);
+  CHECK(first.light_count == 6);
 }
 
 TEST_CASE("fire: the scene file's fires and a prop's fire are read, and a bad one is refused") {
