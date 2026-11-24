@@ -12,13 +12,23 @@
 #include <domain/gfx/pipeline.h>
 #include <domain/gfx/resolve_classes.h>
 #include <domain/gfx/rhi.h>
+#include <domain/gfx/shader_library.h>
 #include <systems/renderer/settings.h>
+
+#include <string>
 
 namespace engine::renderer {
 
 // The resolve module of a combination (scene_renderer.cpp's `resolve_module`), for the split's
 // pipelines: the scene's own, and the same combination with no water.
 const char* resolve_module_name(bool shadows, bool water, bool terrain, bool stochastic) noexcept;
+
+// The sixteen resolve modules' embedded SPIR-V into `library` (early_pipelines.cpp): the renderer's
+// library and the early compile's (early_pipelines.h) hold the same bytes under the same names.
+void add_resolve_modules(gfx::ShaderLibrary& library);
+// The shader manifest a library reads: `named`, or `<exe dir>/../shaders/manifest.json` where it
+// exists, or none.
+std::string resolve_manifest_path(const std::string& named);
 
 // The specialization every pipeline of the resolve's family is made with (R177; renderer.md,
 // "Foliage lit from both sides"): `gfx::k_spec_scene_foliage` false where the scene has no foliage

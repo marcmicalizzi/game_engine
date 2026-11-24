@@ -43,7 +43,7 @@ engine_module(NAME renderer LAYER systems
           src/flora_poser.cpp src/flora_census.cpp src/sway_lod.cpp src/scene_fire.cpp src/far_forest.cpp src/far_tile.cpp src/far_offered.cpp src/water_reflect.cpp
           src/water_refract.cpp
           src/scene_ground_plan.cpp src/sway_forms.cpp src/source_images.cpp
-          src/resolve_classes.cpp src/temporal_change.cpp src/texture_feedback.cpp
+          src/resolve_classes.cpp src/early_pipelines.cpp src/temporal_change.cpp src/texture_feedback.cpp
           src/exposure_pass.cpp
           # R207: the micromaps' bake keyed, stored and read back (micromap_cache.h).
           src/gpu_scene_micromaps.cpp src/micromap_cache.cpp)
@@ -155,6 +155,8 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     tests/crown_prior_measure_tests.cpp
                     # R151: the resolve drawn once per pixel class is the one draw's bytes.
                     tests/resolve_class_tests.cpp
+                    # R205: the resolve's pipeline started from the scene file, taken at creation.
+                    tests/early_pipelines_tests.cpp
                     # R4 stage 1: the Hi-Z and the depth image made only for a frame that reads them.
                     tests/frame_targets_tests.cpp
                     # R168: the eye's adaptation's model on the CPU (exposure.h); no device.

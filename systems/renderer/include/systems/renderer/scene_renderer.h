@@ -800,6 +800,8 @@ struct FrameDesc {
   bool history_reset = false;
 };
 
+class EarlyPipelines;
+
 class SceneRenderer {
  public:
   struct Desc {
@@ -834,6 +836,10 @@ class SceneRenderer {
     // `attach_page_source` reads them out of the meshes' `.clusters` containers instead, and must
     // outlive the renderer. Ignored for a scene that is not streamed.
     PageSource* page_source = nullptr;
+    // The resolve's pipeline started when the scene file was read (early_pipelines.h; R205): taken
+    // when its key is this renderer's, waited for and never compiled a second time; null, or
+    // another key, and the renderer makes its own. Read inside `create` only.
+    EarlyPipelines* early = nullptr;
   };
 
   SceneRenderer() noexcept = default;

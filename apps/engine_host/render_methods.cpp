@@ -875,6 +875,7 @@ bool render_load_followed(protocol::Context& ctx, const protocol::RenderLoadPara
   desc.stream = asked.stream;
   desc.page_bytes = params.page_bytes;
   std::string load_error;
+  std::unique_ptr<renderer::EarlyPipelines> early;
   if (!params.overlay.empty() && params.scene.empty()) {
     error = invalid("an overlay replaces a scene file's meshes; name the scene");
     return false;
@@ -892,6 +893,9 @@ bool render_load_followed(protocol::Context& ctx, const protocol::RenderLoadPara
       error = protocol::make_error(protocol::codes::k_io_error, std::move(load_error));
       return false;
     }
+    // R205: the resolve's pipeline starts compiling now, and the scene's first renderer takes it.
+    early = std::make_unique<renderer::EarlyPipelines>();
+    renderer::start_early_resolve(*early, *device, desc, asked, gfx::Format::R8G8B8A8Unorm, {});
   } else {
     if (!params.mesh.empty() && !io::exists(mesh_at.native)) {
       error = protocol::path_not_found("mesh", params.mesh, io::Access::read);
@@ -935,6 +939,7 @@ bool render_load_followed(protocol::Context& ctx, const protocol::RenderLoadPara
   scene->resolved = resolved;
   scene->pair_breakdown = std::move(pairs);
   scene->data = std::move(data);
+  scene->early = std::move(early);
   if (!params.scene.empty()) {
     scene->kind = "scene";
     scene->source = scene_at.portable();
@@ -1869,6 +1874,7 @@ bool RenderHost::ensure_renderer(Scene& scene, const renderer::RenderSettings& s
   // `resolve_settings` saw just above, because the scene's per-frame working set is sized by the
   // view count; both come from the same `RenderSettings`, which is what keeps them in step.
   desc.views = renderer::view_set_desc(scene.resolved.settings);
+  desc.early = scene.early.get();
   if (!view->create(*dev, *gpu, requested, desc, &error)) return false;
   // The motion from the scene's own time, waiting for its fields as an offscreen engine-view run
   // does, so the frames of a call draw the same pictures however fast the machine evaluates.

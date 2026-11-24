@@ -89,6 +89,7 @@ inline void print_solo_summary() {}
 #include <foundation/window/window.h>
 #include <systems/renderer/camera_path.h>
 #include <systems/renderer/capture.h>
+#include <systems/renderer/early_pipelines.h>
 #include <systems/renderer/flythrough.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/lighting.h>
@@ -2700,6 +2701,14 @@ std::string pipeline_cache_dir(const Options& options) {
   return ddc.empty() ? std::string() : io::join_path(ddc, "pipeline-cache");
 }
 
+// The offscreen target's colour format, an HDR `--present-format`'s or the renderer's default: the
+// early resolve compile's key has it as the renderer's does (renderer/early_pipelines.h, R205).
+gfx::Format offscreen_format(const Options& options) {
+  const gfx::DisplayEncoding display = gfx::present_format_encoding(options.present_format);
+  return display != gfx::DisplayEncoding::Sdr ? gfx::display_encoding_format(display)
+                                              : renderer::SceneRenderer::Desc{}.color_format;
+}
+
 // Every path's device: the adapter, validation, the pipeline cache, and a test's device profile,
 // which only a test's main can give (gfx/test_profile.h; apps.md, "Running as a weaker card").
 gfx::DeviceOptions device_options_of(const Options& options) {
@@ -3059,6 +3068,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
   jobs::JobSystem page_jobs(
       jobs::JobSystemConfig{.performance_workers = 1, .efficiency_workers = 2});
   renderer::FilePageSource page_source;
+  renderer::EarlyPipelines early_resolve;  // R205: started at the scene file, taken at create
   renderer::SceneRenderer view_renderer;
   renderer::ResolvedSettings resolved_off;
   renderer::ResolvedSettings scene_off_requested;
@@ -3167,6 +3177,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
         break;
       }
       read_rules(options, desc);
+      renderer::start_early_resolve(early_resolve, device, desc, options.settings,
+                                    offscreen_format(options), options.shaders);
     } else {
       desc.meshes.push_back(options.mesh);
     }
@@ -3327,6 +3339,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
     renderer_desc.frames_in_flight = k_frames_in_flight;
     renderer_desc.offscreen = true;
     renderer_desc.shader_manifest = options.shaders;
+    renderer_desc.early = &early_resolve;
     renderer_desc.views = renderer::view_set_desc(resolved.settings);
     // An HDR --present-format offscreen: its format and its encode, at the display the settings
     // name (no window, so no display of its own: the flags, the tunables, or 1000 and 200 nits).
@@ -3915,6 +3928,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
     if (options.verify_occlusion) {
       renderer::SceneRenderer::Desc off_desc = renderer_desc;
       off_desc.page_source = nullptr;
+      off_desc.early = nullptr;  // taken by the first renderer
       if (!renderer_off.create(device, scene_off, scene_off_requested, off_desc, &error)) {
         exit_code = fail("renderer", error);
         break;
@@ -5927,6 +5941,7 @@ int run_view(int argc, char** argv) {
 #endif
   VkSurfaceKHR surface = VK_NULL_HANDLE;
   gfx::Swapchain swapchain;
+  renderer::EarlyPipelines early_resolve;  // R205: started at the scene file, taken at create
   renderer::SceneData scene_data;
   renderer::ResolvedSettings resolved;
   renderer::ResolvedSettings scene_requested;
@@ -6200,6 +6215,8 @@ int run_view(int argc, char** argv) {
           return false;
         }
         read_rules(options, desc);
+        renderer::start_early_resolve(early_resolve, device, desc, options.settings,
+                                      swapchain.format(), options.shaders);
       } else {
         desc.meshes.push_back(options.mesh);  // empty: the procedural heightfield
       }
@@ -6455,6 +6472,7 @@ int run_view(int argc, char** argv) {
     renderer_desc.frames_in_flight = options.frames_in_flight;
     renderer_desc.offscreen = false;  // the swapchain image is the target
     renderer_desc.shader_manifest = options.shaders;
+    renderer_desc.early = &early_resolve;
     // The layout the flags asked for, over the swapchain. The monitor geometry of a surround is
     // derived from the target (a third of its width each, no bezel correction) unless a caller of
     // the module fills `Surround3` in; engine-view exposes the yaw, which is the parameter a
