@@ -37,12 +37,13 @@ hotload::Result result_of(world_sound::Answer a) noexcept {
 
 world_sound::SoundStage& stage_of(void* user) { return static_cast<GameSoundHost*>(user)->stage(); }
 
-void on_wind(void* user, const gfx::WindLive& live, f64 sky_time_s) {
+void on_wind(void* user, const gfx::WindLive& live, f64 sky_time_s, f64 world_time_s) {
   GameSoundHost& host = *static_cast<GameSoundHost*>(user);
   world_sound::WorldWind wind;
   wind.scene = host.scene_wind();
   wind.live = live;
   wind.sky_time_s = sky_time_s;
+  wind.world_time_s = world_time_s;
   host.stage().set_wind(wind);
 }
 void on_scene(void* user, const renderer::SceneData& scene) {
@@ -190,9 +191,10 @@ GameSound GameSoundHost::hooks() noexcept {
   return hooks;
 }
 
-void GameSoundHost::set_clock(f64 sky_start_s, f64 sun_rate, u32 tick_hz) noexcept {
+void GameSoundHost::set_clock(f64 sky_start_s, f64 sun_rate, f64 world_rate, u32 tick_hz) noexcept {
   sky_start_s_ = sky_start_s;
   sun_rate_ = sun_rate;
+  world_rate_ = world_rate;
   if (tick_hz != 0) tick_hz_ = tick_hz;
 }
 
@@ -211,18 +213,18 @@ void GameSoundHost::observe(void* user, const FlySession& session, const input::
     // The walker only while the session walks: a session that flies keeps its walker attached
     // (`FlySession::walker`), and its eye is no walker's (S114-M2).
     h.set_walker(session.walking() ? session.walker() : nullptr);
-    on_wind(&h, session.wind().live(), h.sky_start_s_ + h.sun_rate_ * t);
+    on_wind(&h, session.wind().live(), h.sky_start_s_ + h.sun_rate_ * t, h.world_rate_ * t);
   }
   on_tick(&h, session.state().position, session.state().yaw, session.state().pitch);
   h.sound_ns_ += time::monotonic_ns() - started;
 }
 
 void GameSoundHost::tick_at(const WorldPos& eye, const Vec3& forward, const gfx::WindLive& live,
-                            f64 sky_time_s) noexcept {
+                            f64 sky_time_s, f64 world_time_s) noexcept {
   const i64 started = time::monotonic_ns();
   // A flight's frame has no walker: a session's, if one ran before, is gone (S114-L6).
   set_walker(nullptr);
-  if (world_) on_wind(this, live, sky_time_s);
+  if (world_) on_wind(this, live, sky_time_s, world_time_s);
   // Up as the world's, made square to where the camera looks.
   const Vec3 world_up{0.0f, 1.0f, 0.0f};
   Vec3 up = world_up - forward * dot(world_up, forward);
@@ -697,6 +699,7 @@ bool g_solo = false;
 bool g_solo_summarised = false;  // print_solo_summary's lines are a run's once
 f64 g_flight_sky_start_s = 0.0;
 f64 g_flight_sun_rate = 0.0;
+f64 g_flight_world_rate = 1.0;
 
 GameSoundHost* solo_world() noexcept {
   return g_solo && g_host != nullptr && g_host->world() ? g_host : nullptr;
@@ -724,17 +727,19 @@ i64 solo_sound_ns() noexcept { return g_solo && g_host != nullptr ? g_host->soun
 void attach_solo_scene(const renderer::SceneData& scene) {
   if (GameSoundHost* h = solo_world()) h->attach_scene(scene);
 }
-void attach_solo_session(FlySession& session, f64 sky_start_s, f64 sun_rate) noexcept {
+void attach_solo_session(FlySession& session, f64 sky_start_s, f64 sun_rate,
+                         f64 world_rate) noexcept {
   if (!g_solo || g_host == nullptr) return;
   session.set_tick_observer(&GameSoundHost::observe, g_host);
-  g_host->set_clock(sky_start_s, sun_rate, 0);
+  g_host->set_clock(sky_start_s, sun_rate, world_rate, 0);
 }
 void attach_solo_tiles(void* placements) noexcept {
   if (GameSoundHost* h = solo_world()) h->attach_tiles(placements);
 }
-void set_solo_flight_clock(f64 sky_start_s, f64 sun_rate) noexcept {
+void set_solo_flight_clock(f64 sky_start_s, f64 sun_rate, f64 world_rate) noexcept {
   g_flight_sky_start_s = sky_start_s;
   g_flight_sun_rate = sun_rate;
+  g_flight_world_rate = world_rate;
 }
 void solo_flight_frame(const renderer::FlightStep& step) noexcept {
   GameSoundHost* h = solo_world();
@@ -742,7 +747,11 @@ void solo_flight_frame(const renderer::FlightStep& step) noexcept {
   const i64 before = h->sound_ns();
   const f64 sky = g_flight_sky_start_s + g_flight_sun_rate * static_cast<f64>(step.frame) /
                                              static_cast<f64>(renderer::k_frame_hz);
-  h->tick_at(step.camera.position, renderer::camera_forward(step.camera), gfx::WindLive{}, sky);
+  // The world's as the flight's frame has it (flythrough.cpp): the gust's clock (S118).
+  const f64 world =
+      g_flight_world_rate * static_cast<f64>(step.frame) / static_cast<f64>(renderer::k_frame_hz);
+  h->tick_at(step.camera.position, renderer::camera_forward(step.camera), gfx::WindLive{}, sky,
+             world);
   if (step.world == nullptr) return;
   // The sound's tick is a flight frame's only one: in `ticks_ms` too, so `other_ms` leaves it out.
   const f64 ms = static_cast<f64>(h->sound_ns() - before) / 1.0e6;

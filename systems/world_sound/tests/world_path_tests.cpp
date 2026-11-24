@@ -142,15 +142,18 @@ struct Listening {
     wind.roughness_m = 0.5;  // a forest's
     frame.scene = &wind;
     frame.sky_time_s = 1000.0;
+    frame.world_time_s = 1000.0;
     stage.set_canopy(trees.source());
   }
-  // `n` ticks of audio, the sky's clock stepped `sky_dt` a tick (a long wind in few ticks).
+  // `n` ticks of audio, the sky's and the world's clocks stepped `sky_dt` a tick (a long wind in
+  // few ticks).
   void tick(u32 n, f64 sky_dt = 1.0 / 60.0) {
     for (u32 i = 0; i < n; ++i) {
       stage.set_listener(ears, forward, Vec3{0.0f, 1.0f, 0.0f});
       stage.set_wind(frame);
       stage.tick();
       frame.sky_time_s += sky_dt;
+      frame.world_time_s += sky_dt;
     }
   }
   f64 power(WorldVoiceKind kind, u32 band = 99) const {

@@ -202,12 +202,12 @@ TEST_CASE("water wind: the trees take a live wind's mean and its forced gust") {
   live.to_deg = 90.0;
   Vec2 to{};
   f32 calm = 0.0f;
-  REQUIRE(scene_flora_wind(sea, 1000.0, to, calm, live));
+  REQUIRE(scene_flora_wind(sea, 1000.0, 1000.0, to, calm, live));
   CHECK(to.y == doctest::Approx(1.0f).epsilon(1e-6));
   CHECK(static_cast<f64>(calm) == doctest::Approx(15.0 / k_flora_wind_mean_m_s).epsilon(0.35));
   live.gust = 1.0;
   f32 gusting = 0.0f;
-  REQUIRE(scene_flora_wind(sea, 1000.0, to, gusting, live));
+  REQUIRE(scene_flora_wind(sea, 1000.0, 1000.0, to, gusting, live));
   const f64 g = gfx::wind_gust_factor(0.0002);
   CHECK(g == doctest::Approx(1.24).epsilon(0.01));
   CHECK(static_cast<f64>(gusting - calm) ==

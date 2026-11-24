@@ -3553,7 +3553,8 @@ u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f6
     to = frame.wind_to;
     strength = frame.wind_strength;
   } else if (data_ != nullptr &&
-             scene_flora_wind(data_->wind, sky_time_s, to, strength, flora_wind_lag_.held(live))) {
+             scene_flora_wind(data_->wind, sky_time_s, world_time_s, to, strength,
+                              flora_wind_lag_.held(live))) {
     source = "scene";  // W136: the scene's wind (or the hand wind), its gust over a mean day's
   } else {
     const TerrainSampler* ground = ground_ != nullptr ? ground_.get() : flora_ground_.get();

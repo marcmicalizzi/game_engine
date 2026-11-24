@@ -207,10 +207,10 @@ struct GameSound {
   hotload::Result (*stop)(void* user, u32 voice) = nullptr;
   void (*tick)(void* user, const WorldPos& eye, f32 heading, f32 pitch) = nullptr;
   // **The world's sound** (S112): the frame's wind as every reader has it — the session's live
-  // state and the sky's clock — handed before `tick`; the loaded scene's crowns once the session
-  // is attached (`attach_sound`), and a streamed world's placements when there is one (an opaque
-  // `world::PlacementTiles*`, `attach_sound_tiles`).
-  void (*wind)(void* user, const gfx::WindLive& live, f64 sky_time_s) = nullptr;
+  // state, the sky's clock and the world's (S118: the gust's) — handed before `tick`; the loaded
+  // scene's crowns once the session is attached (`attach_sound`), and a streamed world's placements
+  // when there is one (an opaque `world::PlacementTiles*`, `attach_sound_tiles`).
+  void (*wind)(void* user, const gfx::WindLive& live, f64 sky_time_s, f64 world_time_s) = nullptr;
   void (*scene)(void* user, const renderer::SceneData& scene) = nullptr;
   void (*tiles)(void* user, void* placements) = nullptr;
   JsonValue (*summary)(const void* user) = nullptr;          // the game block's `sound`

@@ -120,11 +120,12 @@ class GameSoundHost {
 
   // **Without a game module** (S112-2): a session's tick observer (`FlySession::
   // set_tick_observer`, user this host), whose sky stands `sky_start_s + sun_rate * t` at the
-  // session's tick t seconds in, as the frame's does; and a flight's frame, its camera and sky.
-  void set_clock(f64 sky_start_s, f64 sun_rate, u32 tick_hz) noexcept;
+  // session's tick t seconds in, as the frame's does, and its world `world_rate * t` (the gust's,
+  // S118); and a flight's frame, its camera, its sky and its world.
+  void set_clock(f64 sky_start_s, f64 sun_rate, f64 world_rate, u32 tick_hz) noexcept;
   static void observe(void* user, const FlySession& session, const input::InputState& input);
-  void tick_at(const WorldPos& eye, const Vec3& forward, const gfx::WindLive& live,
-               f64 sky_time_s) noexcept;
+  void tick_at(const WorldPos& eye, const Vec3& forward, const gfx::WindLive& live, f64 sky_time_s,
+               f64 world_time_s) noexcept;
   // The wall time this host's own ticks took (`observe`, `tick_at`), nanoseconds: a frame's
   // `sound_ms` without a module (with one, the runner's `sound_ns`).
   i64 sound_ns() const noexcept { return sound_ns_; }
@@ -237,6 +238,7 @@ class GameSoundHost {
   // Without a module: the session's clock and the listener's last place.
   f64 sky_start_s_ = 0.0;
   f64 sun_rate_ = 0.0;
+  f64 world_rate_ = 1.0;
   u32 tick_hz_ = 240;
   i64 sound_ns_ = 0;
   // The shelter's walker (S114).
@@ -257,11 +259,12 @@ bool open_solo_sound(GameSoundHost& host, std::string_view audio, const AudioRun
 bool sound_hears_world() noexcept;  // the load measures leaves (`SceneDesc::measure_leaves`, M7)
 i64 solo_sound_ns() noexcept;       // the record's `sound_ms` without a module
 void attach_solo_scene(const renderer::SceneData& scene);
-void attach_solo_session(FlySession& session, f64 sky_start_s, f64 sun_rate) noexcept;
+void attach_solo_session(FlySession& session, f64 sky_start_s, f64 sun_rate,
+                         f64 world_rate) noexcept;
 void attach_solo_tiles(void* placements) noexcept;  // a world::PlacementTiles*
 // A flight's frames, a tick each (a sixtieth of a second, the flight's clock), heard from each
 // frame's camera, the time added to its record's `world.sound_ms` and `ticks_ms`.
-void set_solo_flight_clock(f64 sky_start_s, f64 sun_rate) noexcept;
+void set_solo_flight_clock(f64 sky_start_s, f64 sun_rate, f64 world_rate) noexcept;
 void solo_flight_frame(const renderer::FlightStep& step) noexcept;
 // A module-less run's summary, which has no game block to sit in: two lines on stderr, once a
 // run. **Before the JSON summary, never after it**: a run's last line is its summary, and every

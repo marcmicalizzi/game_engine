@@ -526,8 +526,9 @@ const gfx::WindDesc& scene_wind_in_use(const gfx::WindDesc& wind, gfx::WindDesc&
   return held;
 }
 
-bool scene_flora_wind(const gfx::WindDesc& wind, f64 sky_time_s, Vec2& to, f32& strength,
-                      const gfx::WindLive& live) noexcept {
+bool scene_flora_wind(const gfx::WindDesc& wind, f64 sky_time_s, f64 world_time_s, Vec2& to,
+                      f32& strength, const gfx::WindLive& live) noexcept {
+  // S118: the mean at the sky's hour, the turbulence over it at the world's time (scene_wind.h).
   // A held wind is a fixed one at the scene's roughness, made fresh rather than copied from the
   // scene's (whose track would allocate every frame: the frame loop allocates nothing).
   gfx::WindDesc held;
@@ -542,7 +543,7 @@ bool scene_flora_wind(const gfx::WindDesc& wind, f64 sky_time_s, Vec2& to, f32& 
     const f64 forced = gfx::wind_live_speed(live, held.roughness_m) - live.mean_m_s;
     to = mean.to;
     strength =
-        static_cast<f32>((gfx::wind_gust(held, mean, Vec2{0.0f, 0.0f}, sky_time_s) + forced) /
+        static_cast<f32>((gfx::wind_gust(held, mean, Vec2{0.0f, 0.0f}, world_time_s) + forced) /
                          k_flora_wind_mean_m_s);
     return true;
   }
@@ -550,7 +551,7 @@ bool scene_flora_wind(const gfx::WindDesc& wind, f64 sky_time_s, Vec2& to, f32& 
   if (used.kind == gfx::WindKind::none) return false;
   const gfx::WindSample mean = gfx::wind_at(used, sky_time_s);
   to = mean.to;
-  strength = static_cast<f32>(gfx::wind_gust(used, mean, Vec2{0.0f, 0.0f}, sky_time_s) /
+  strength = static_cast<f32>(gfx::wind_gust(used, mean, Vec2{0.0f, 0.0f}, world_time_s) /
                               k_flora_wind_mean_m_s);
   return true;
 }
@@ -629,7 +630,7 @@ std::span<const WaterWindUpload> GpuScene::water_wind_frame(f64 sky_time_s,
   f32 trees = 0.0f;
   // The trees' mean through their lag (W154), stepped here, once a frame and before the trees'
   // poses (`flora_frame` reads it as it stands), so a scene with no tree steps it too.
-  if (scene_flora_wind(scene_wind, sky_time_s, trees_to, trees,
+  if (scene_flora_wind(scene_wind, sky_time_s, world_time_s, trees_to, trees,
                        flora_wind_lag_.follow(live, world_time_s)))
     wind_stats_.trees_m_s = static_cast<f64>(trees) * k_flora_wind_mean_m_s;
   if (scene_wind.kind != gfx::WindKind::none) {

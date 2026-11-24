@@ -381,6 +381,7 @@ f64 WorldField::wind10_at(f64 x, f64 z, Vec2& to, f64& z0) const noexcept {
   const Vec2 place{static_cast<f32>(x), static_cast<f32>(z)};
   z0 = wind_.scene != nullptr ? wind_.scene->roughness_m : 0.03;
   const f64 t = wind_.sky_time_s;
+  const f64 tw = wind_.world_time_s;  // the gust's clock, as the sway's (S118)
   if (wind_.live.set) {
     // The sway's live branch (renderer::scene_flora_wind): the live mean and direction under the
     // scene's turbulence, the forced gust over it. A held wind is made fresh, as the sway's is.
@@ -392,14 +393,14 @@ f64 WorldField::wind10_at(f64 x, f64 z, Vec2& to, f64& z0) const noexcept {
     const gfx::WindSample mean = gfx::wind_at(held, t);
     to = mean.to;
     const f64 forced = gfx::wind_live_speed(wind_.live, z0) - wind_.live.mean_m_s;
-    const f64 g = config_.turbulence ? gfx::wind_gust(held, mean, place, t) : mean.speed_m_s;
+    const f64 g = config_.turbulence ? gfx::wind_gust(held, mean, place, tw) : mean.speed_m_s;
     const f64 u = g + (forced > 0.0 ? forced : 0.0);
     return u > 0.0 ? u : 0.0;
   }
   if (wind_.scene == nullptr || wind_.scene->kind == gfx::WindKind::none) return 0.0;
   const gfx::WindSample mean = gfx::wind_at(*wind_.scene, t);
   to = mean.to;
-  return config_.turbulence ? gfx::wind_gust(*wind_.scene, mean, place, t) : mean.speed_m_s;
+  return config_.turbulence ? gfx::wind_gust(*wind_.scene, mean, place, tw) : mean.speed_m_s;
 }
 
 void WorldField::take(const Crown& c) noexcept {
