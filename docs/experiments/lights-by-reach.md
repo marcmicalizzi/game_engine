@@ -103,6 +103,46 @@ frame can pay for; lantern-street's densest pixel is reached by under 20 lamps.
 
 ## The measurement
 
-Filled in below by the row's flights (lantern-street at 3840 × 2160, `--raster rt --shadows rt`,
-base `cc95d783a` against the branch's tip, the same hour), and the forest staging's `--no-lights`
-pair.
+**lantern-street** ([its README](../../content/test-scenes/lantern-street/README.md)): 4, 16, 64 and
+256 lamps of 40 cd and an 8 m reach on 2 × 2 to 16 × 16 grids over the same 60 m square among 64
+walls, and the street with none; 3840 × 2160, `--raster rt --shadows rt`, the owner's settings (the
+bounce with `renderer.gi.guide` and `renderer.gi.memory`, `renderer.reconstruction.accumulation=on`,
+`renderer.shadow.micromaps=true`), `--no-cache` on both sides, the held path's frames 240 to 480
+(241 frames a flight). Base: `cc95d783a` built in `msvc-release` and copied out; tip: the branch
+(`eab100e1d`), same build. RTX 5090, 2026-11-23 22:54 to 23:30, under the GPU lock; **machine
+state**: the harness's warning on every flight, other processes 2 to 60 % of the CPU at the
+flights' starts (other agents building) and the GPU 0 to 6 % busy at each start, so the numbers
+are upper bounds; two flights of each cell, interleaved base and tip, agree within 0.01 ms.
+
+| lamps | base resolve, median (p95, p99) | tip resolve, median (p95, p99) | base − tip |
+|---:|---|---|---:|
+| 0 | 0.814 (0.827, 0.832); again 0.813 | 0.812 (0.822, 0.826); again 0.820 | 0.00 |
+| 4 | 0.851 (0.862, 0.867); again 0.849 | 0.826 (0.839, 0.843); again 0.820 | 0.03 |
+| 16 | 1.008 (1.021, 1.025); again 1.012 | 0.884 (0.897, 0.904); again 0.887 | 0.12 |
+| 64 | 1.702 (1.740, 1.747); again 1.711 | 0.966 (0.981, 0.984); again 0.971 | 0.74 |
+| 256 | refused: past the 64 a frame lit | 1.372 (1.392, 1.396); again 1.374 | — |
+
+So **the lamps' share of the resolve went from 0.89 ms to 0.15 ms at 64 lamps**, and 256 lamps
+cost 0.56 ms where 64 cost 0.89 before. What is left grows with the lamps that reach a pixel and
+its cell's coarseness, not with the frame's count: 64 to 256 is four times the lamps at the same
+reach, so four times the lamps reaching each point. A street with none costs what it cost.
+Nothing else in the frame moved (the GPU total moved by the resolve's difference), and no frame
+allocated.
+
+**What it costs the processor.** The grid is built in the frame's record on the CPU, in the
+`passes` section of a frame record. The first build tested every cell of each light's box against
+its sphere: 1.14 ms of the frame's CPU at 64 lamps and 2.56 ms at 256 (base 0.07 ms). Building a
+row of cells along x at once — with the row's distance from the light in y and z, the cells the
+sphere covers are those its x-interval of half-width √(r² − dy² − dz²) meets, the same test solved
+for x — set the same bits for **0.26 ms at 64 lamps and 0.71 ms at 256** (medians; base 0.085 ms;
+16 lamps 0.10, 4 lamps 0.06), and the resolve's numbers did not move (64 lamps 0.968 and 0.972 ms,
+256 lamps 1.388 and 1.389 ms, the same hour as base's 1.695). That is the memset of the cells, the
+bits, and the copy into the slot's buffer; the frame's lights are steady, but their positions are
+the eye's frame's, so the grid is rebuilt each frame (a grid kept in the world's cells and only
+re-anchored when the eye moves would cost nothing on a still street: a proposed next step).
+
+**The picture**: with the bounce's history the last frame of a flight is not the same bytes from
+run to run even for one binary (base against base differs), so the pictures were compared in
+flights with `renderer.gi.mode=off` and `renderer.reconstruction.accumulation=off`: base and tip
+draw **the same bytes** at 16 and at 64 lamps (and base twice the same bytes). The tests hold the
+same on one renderer with the bounce's frame (`lamp_tests.cpp`).
