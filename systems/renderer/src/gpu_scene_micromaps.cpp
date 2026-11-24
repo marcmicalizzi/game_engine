@@ -7,6 +7,7 @@
 #include <core/time/time.h>
 #include <domain/gfx/opacity_micromap.h>
 #include <foundation/io/vfs.h>
+#include <foundation/tunables/tunables.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/micromap_cache.h>
 #include <systems/renderer/scene.h>
@@ -19,6 +20,20 @@
 namespace engine::renderer {
 
 namespace {
+
+tunables::Bool micromap_capture{
+    "renderer.rt.micromap_capture", false,
+    "A diagnostic for the tests: the opacity micromap's input as built (indices, triangle "
+    "records, states) is copied into the load's micromap report, keyed or baked, so two loads "
+    "can be compared triangle by triangle (renderer.md, The bake is read back; read at load)"};
+
+// The bake's sections into the report (the unkeyed path's capture).
+void capture_sections(void* context, const gfx::MicromapSections& s) {
+  auto& r = *static_cast<MicromapCacheReport*>(context);
+  r.captured_indices.assign(s.indices.begin(), s.indices.end());
+  r.captured_triangles.assign(s.triangles.begin(), s.triangles.end());
+  r.captured_data.assign(s.data.begin(), s.data.end());
+}
 
 // One part of the scene, as the scene lists it: a run of its masked clusters (`micromap_list_`'s
 // items), their triangles and the key the run is stored under at the cap being tried.
@@ -92,6 +107,7 @@ struct Assemble {
   std::string store_error;
   bool over_budget = false;
   bool restored = false;
+  MicromapCacheReport* capture = nullptr;  // `renderer.rt.micromap_capture`
   gfx::MicromapStats stats;
   std::string error;
   gfx::OpacityMicromapSet* out = nullptr;
@@ -112,6 +128,19 @@ struct Assemble {
       return true;
     }
     stats = assembly.stats;
+    if (capture != nullptr) {
+      // The input the restore builds from, laid out as the restore's fill lays it.
+      capture->captured_indices = assembly.indices;
+      capture->captured_triangles = assembly.triangles;
+      capture->captured_data.assign(static_cast<u32>(assembly.stats.data_bytes / sizeof(u32)), 0u);
+      for (u32 e = 0; e < assembly.triangles.size(); ++e) {
+        const MicromapPackView& src = (*sources)[assembly.entry_source[e]];
+        const gfx::MicromapTriangle& from = src.triangles[assembly.entry_index[e]];
+        std::memcpy(capture->captured_data.data() + assembly.triangles[e].data_offset / sizeof(u32),
+                    src.data.data() + from.data_offset / sizeof(u32),
+                    static_cast<usize>(gfx::micromap_entry_bytes(from.level)));
+      }
+    }
     restored = restore_assembled_micromaps(
         *device, scene->cluster_count, scene->items, scene->triangle_counts,
         std::span<const MicromapPackView>(sources->data(), sources->size()), assembly, *out,
@@ -312,6 +341,7 @@ bool micromaps_from_store(const gfx::Device& device, gfx::ShaderLibrary& shaders
     job.budget = in.budget_bytes;
     job.cap = cap;
     job.out = &out;
+    job.capture = micromap_capture.get() ? &r : nullptr;
     Vector<u32> items;
     Vector<u32> counts;
     u32 baked_triangles = 0;
@@ -489,7 +519,12 @@ bool GpuScene::bake_micromaps(gfx::ShaderLibrary& shaders, std::string* error) {
   }
   if (!done) {
     gfx::destroy_opacity_micromaps(device, micromaps_);
-    if (!gfx::bake_opacity_micromaps(device, shaders, bindless_, in, micromaps_, error)) {
+    gfx::MicromapSink sink;
+    if (micromap_capture.get()) {
+      sink.take = &capture_sections;
+      sink.context = &report;
+    }
+    if (!gfx::bake_opacity_micromaps(device, shaders, bindless_, in, sink, micromaps_, error)) {
       return false;
     }
     // Every part baked, none stored.

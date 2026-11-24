@@ -1156,6 +1156,60 @@ u32 differing_pixels(const CapturedFrame& a, const CapturedFrame& b) {
   return differ;
 }
 
+// Two captured micromap inputs (`renderer.rt.micromap_capture`) compared triangle by triangle,
+// each through its own index: a special index against the other's, an entry's level, format and
+// every micro-triangle's two-bit state against the other's entry, whatever the entries' numbers.
+struct StateDiff {
+  u32 triangles = 0;        // the masked triangles compared
+  u32 triangles_apart = 0;  // any difference at all
+  u32 special_apart = 0;    // a special index against another special index or an entry
+  u32 level_apart = 0;      // both entries, another level or format
+  u64 micro_compared = 0;
+  u64 micro_apart = 0;  // both entries at one level: micro-triangles of another state
+  u32 first_apart = ~0u;
+};
+StateDiff compare_states(const MicromapCacheReport& a, const MicromapCacheReport& b) {
+  StateDiff d;
+  REQUIRE(a.captured_indices.size() == b.captured_indices.size());
+  d.triangles = static_cast<u32>(a.captured_indices.size());
+  for (u32 t = 0; t < d.triangles; ++t) {
+    const i32 ia = a.captured_indices[t];
+    const i32 ib = b.captured_indices[t];
+    bool apart = false;
+    if (ia < 0 || ib < 0) {
+      apart = ia != ib;
+      d.special_apart += apart ? 1u : 0u;
+    } else {
+      REQUIRE(static_cast<u32>(ia) < a.captured_triangles.size());
+      REQUIRE(static_cast<u32>(ib) < b.captured_triangles.size());
+      const gfx::MicromapTriangle& ra = a.captured_triangles[static_cast<u32>(ia)];
+      const gfx::MicromapTriangle& rb = b.captured_triangles[static_cast<u32>(ib)];
+      if (ra.level != rb.level || ra.format != rb.format) {
+        apart = true;
+        ++d.level_apart;
+      } else {
+        const u64 states = u64{1} << (2 * ra.level);
+        const u32* wa = a.captured_data.data() + ra.data_offset / 4;
+        const u32* wb = b.captured_data.data() + rb.data_offset / 4;
+        for (u64 s = 0; s < states; ++s) {
+          const u32 sa = (wa[s / 16] >> (2 * (s % 16))) & 3u;
+          const u32 sb = (wb[s / 16] >> (2 * (s % 16))) & 3u;
+          ++d.micro_compared;
+          if (sa != sb) {
+            ++d.micro_apart;
+            apart = true;
+          }
+        }
+      }
+    }
+    if (apart) {
+      ++d.triangles_apart;
+      if (d.first_apart == ~0u) d.first_apart = t;
+    }
+  }
+  return d;
+}
+
 ShotView micromap_shadow_view() {
   ShotView view;
   view.eye = Vec3{-2.5f, 4.0f, -2.5f};
@@ -1544,9 +1598,17 @@ TEST_CASE("alpha mask: a second start reads the parts the first stored and bakes
 // every later load reads the top cap's pack to find it over (its sections freed before the next
 // cap is tried), then the lowered cap's, and bakes nothing. The budget is the setting's grain, a
 // MiB, under a grid whose micromap is over it at the top cap (2.9 MB, a premise measured by a load
-// of its own) and under it a level down, so exactly one level drops; the second load reports the
-// lowered cap and draws what the first drew, and each side draws what that cap reached directly
-// draws.
+// of its own) and under it a level down, so exactly one level drops. The keyed loads are held to
+// an unkeyed bake on their own load path (a derived-data root, the store's floor above the scene):
+// the second load draws the first's picture and the unkeyed bake's, to the byte; at the lowered
+// cap reached directly, the keyed micromap's states equal the bake's triangle by triangle, through
+// each one's own index (`renderer.rt.micromap_capture`), and the two draw the same bytes.
+//
+// A load with no derived-data root is another load path, not another micromap: it imports the
+// glTF and decodes the PNG where a rooted load reads the container and the block-compressed
+// texture built from it. On this noise it draws one pixel apart from the rooted loads on the 5090
+// with every micromap state equal (R208's mend, 2026-11-24: keyed against unkeyed on one root, 0
+// pixels; the same states with no root, 1), so the case prints that count and asserts the states.
 TEST_CASE(
     "alpha mask: a micromap over its budget is read back at the lowered cap, baking nothing") {
   test::TempDir root{"omm_budget"};
@@ -1576,9 +1638,15 @@ TEST_CASE(
   REQUIRE(top > budget);  // the premise: the top cap is over a MiB
   TunableScope small("renderer.rt.micromap_mib=1", "renderer.rt.micromap_mib=1024");
   const std::string ddc = root.path() + "/ddc";
+  // An unkeyed bake on the keyed loads' load path: a root of its own, the floor above the scene.
+  auto unkeyed_shot = [&] {
+    TunableScope above("renderer.rt.micromap_store_min=1073741824",
+                       "renderer.rt.micromap_store_min=0");
+    return shoot_micromaps(grid, traced, view, false, root.path() + "/unkeyed");
+  };
   const MicromapShot first = shoot_micromaps(grid, traced, view, false, ddc);
   const MicromapShot second = shoot_micromaps(grid, traced, view, false, ddc);
-  const MicromapShot unstored = shoot_micromaps(grid, traced, view, false, {});
+  const MicromapShot unstored = unkeyed_shot();
   MESSAGE("the top cap assembles to "
           << top << " bytes; budget " << budget << ": the first load " << first.cache.baked
           << " baked, cap " << first.stats.level_cap << "; the second read " << second.cache.read
@@ -1599,29 +1667,48 @@ TEST_CASE(
   CHECK(second.cache.packs_read == 2);
   CHECK_FALSE(second.cache.stored);
   CHECK(second.cache.refused.empty());
-  // The unstored bake holds the same budget to its own entries and lands on the same cap.
+  // The unkeyed bake holds the same budget to its own entries and lands on the same cap.
+  CHECK_FALSE(unstored.cache.unkeyed.empty());
+  CHECK(unstored.cache.read == 0);
+  CHECK_FALSE(unstored.cache.stored);
   CHECK(unstored.stats.level_cap == 5);
   CHECK(unstored.stats.levels_dropped == 1);
   CHECK(second.stats.data_bytes == first.stats.data_bytes);
   CHECK(second.stats.unique_entries == unstored.stats.unique_entries);
   CHECK(second.stats.micro_unknown == unstored.stats.micro_unknown);
   CHECK(differing_pixels(first.frame, second.frame) == 0);
-  // The lowered cap reached through the budget draws what that cap reached directly draws, stored
-  // and unstored, to the byte: the budget's path adds nothing to the picture.
+  CHECK(differing_pixels(second.frame, unstored.frame) == 0);
+  // The lowered cap reached directly, keyed and unkeyed, each micromap's input captured: the budget
+  // path draws what the cap draws, and the keyed micromap is the bake's, state for state.
   TunableScope big("renderer.rt.micromap_mib=1024", "renderer.rt.micromap_mib=1");
   TunableScope five("renderer.rt.micromap_level=5", "renderer.rt.micromap_level=6");
-  const MicromapShot direct = shoot_micromaps(grid, traced, view, false, {});
-  const MicromapShot direct_stored =
-      shoot_micromaps(grid, traced, view, false, root.path() + "/direct");
-  CHECK(direct.stats.levels_dropped == 0);
-  CHECK(differing_pixels(unstored.frame, direct.frame) == 0);
-  CHECK(differing_pixels(second.frame, direct_stored.frame) == 0);
-  // A stored and an unstored load of this grid at one cap, budget or none, measured on the
-  // 5090 one pixel apart with the same entries and states counted (R208's mend, 2026-11-24; the
-  // quads and the tree's scenes are byte-equal): printed, and an open question on the page.
-  MESSAGE("stored against unstored at cap 5: "
-          << differing_pixels(second.frame, unstored.frame) << " pixel(s) apart with the budget, "
-          << differing_pixels(direct_stored.frame, direct.frame) << " without");
+  TunableScope capture("renderer.rt.micromap_capture=true", "renderer.rt.micromap_capture=false");
+  const MicromapShot keyed = shoot_micromaps(grid, traced, view, false, root.path() + "/direct");
+  const MicromapShot unkeyed = unkeyed_shot();
+  CHECK(keyed.stats.levels_dropped == 0);
+  CHECK(keyed.cache.unkeyed.empty());
+  CHECK_FALSE(unkeyed.cache.unkeyed.empty());
+  CHECK(differing_pixels(second.frame, keyed.frame) == 0);
+  CHECK(differing_pixels(unstored.frame, unkeyed.frame) == 0);
+  const StateDiff states = compare_states(keyed.cache, unkeyed.cache);
+  MESSAGE("states by triangle, keyed against unkeyed at cap 5: "
+          << states.triangles << " triangles, " << states.triangles_apart << " apart (special "
+          << states.special_apart << ", level or format " << states.level_apart
+          << "), micro-triangles " << states.micro_apart << " of " << states.micro_compared
+          << " apart; entries " << keyed.cache.captured_triangles.size() << "/"
+          << unkeyed.cache.captured_triangles.size());
+  CHECK(states.triangles > 0);
+  CHECK(states.micro_compared > 0);
+  CHECK(states.triangles_apart == 0);
+  CHECK(states.micro_apart == 0);
+  CHECK(differing_pixels(keyed.frame, unkeyed.frame) == 0);
+  // A load with no root: the same states, another load path (above); its pixels printed.
+  const MicromapShot bare = shoot_micromaps(grid, traced, view, false, {});
+  const StateDiff bare_states = compare_states(keyed.cache, bare.cache);
+  CHECK(bare_states.triangles_apart == 0);
+  CHECK(bare_states.micro_apart == 0);
+  MESSAGE("a load with no derived-data root, the same states: "
+          << differing_pixels(keyed.frame, bare.frame) << " pixel(s) from the rooted loads");
 }
 
 // The micromaps are really in the structures: `renderer.shadow.opaque_rays` forces every caster

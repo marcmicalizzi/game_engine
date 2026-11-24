@@ -131,6 +131,13 @@ struct MicromapCacheReport {
   std::string path;
   std::string unkeyed;
   std::string refused;
+  // `renderer.rt.micromap_capture` (a diagnostic for the tests, off by default): the micromap's
+  // input as it was built, keyed or not — per masked triangle in the scene's order its index
+  // (special or an entry), the entries' records and the states — so a case can compare two loads
+  // triangle by triangle through each one's own index.
+  Vector<i32> captured_indices;
+  Vector<gfx::MicromapTriangle> captured_triangles;
+  Vector<u32> captured_data;
 };
 
 // What `GpuScene::upload_materials` leaves for the bake: its parameters (the level cap, the budget
