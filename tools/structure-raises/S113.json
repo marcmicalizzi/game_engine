@@ -1,0 +1,17 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "S113",
+  "reason": "S113 documents the water's sound where its readers look: audio.md the voice's struck resonators and the stage note, water.md the field's new reader (the surf records), apps.md engine-view's flow and surf tables; and its mend (M1) has the GPU scene scan each body mesh once for the ears in the upload that builds the field (gpu_scene: 24 of the 69 lines the move of water_surface_of left; the surf table and its members in gpu_scene.h) and main.cpp hand that table to the session's sound after the upload at both loads; the mend's pages: water.md the reader's new contract (the kept share, the scan in the upload), apps.md the surf handed over after the upload and the cells",
+  "date": "2026-11-24",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.gpu_scene_cpp.lines": -45,
+    "renderer.gpu_scene_h.lines": 13,
+    "engine_view.main_cpp.lines": 4,
+    "engine_view.run_view.lines": 1,
+    "engine_view.run_offscreen.lines": 1,
+    "page:docs/subsystems/apps.md": 1249,
+    "page:docs/subsystems/water.md": 1845,
+    "page:docs/subsystems/audio.md": 2100
+  }
+}

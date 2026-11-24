@@ -3910,6 +3910,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
 
   update_scene_bounds(out);
   // What a host's sound hears a crown by (S112), only for a host that listens, on the load's pool.
+  out.heard = desc.measure_leaves;  // and its surf (S113, `GpuScene::surf_table`)
   if (desc.measure_leaves) {
     ENGINE_STARTUP_STAGE("mesh leaves");
     const i64 leaves_start = time::monotonic_ns();

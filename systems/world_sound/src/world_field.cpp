@@ -63,8 +63,9 @@ tunables::Float world_ground_g{"audio.world.ground_g", 1.0, 0.0, 1.0,
                                "ISO 9613-2's ground factor under the world: 0 hard, 1 porous"};
 tunables::Bool world_path{"audio.world.path", true,
                           "Take the path's terms (air, forest, ground); off: spreading alone"};
-tunables::Int world_solo{"audio.world.solo", 0, 0, 3,
-                         "One kind of world voice heard alone: 0 all, 1 crowns, 2 beds, 3 ears"};
+tunables::Int world_solo{"audio.world.solo", 0, 0, 6,
+                         "One kind of world voice heard alone: 0 all, 1 crowns, 2 beds, 3 ears, "
+                         "4 streams, 5 falls, 6 surf"};
 
 // ---- the laws (docs/experiments/world-sound.md) -------------------------------------------------
 
@@ -110,6 +111,7 @@ constexpr f64 k_bed_distance_m = 20.0;
 constexpr u8 k_crown_priority = 40;
 constexpr u8 k_bed_priority = 50;
 constexpr u8 k_ears_priority = 60;
+constexpr u8 k_water_priority = 45;  // S113: running water and the surf, between the two
 // A description is sent again when a lane's gain moved by more than this share (0.09 dB) or the
 // tone's centre by more than this share: what does not move sends nothing.
 constexpr f64 k_resend = 0.01;
@@ -200,6 +202,7 @@ FieldConfig field_config_from_tunables() noexcept {
   c.ground_g = world_ground_g.get();
   c.path = world_path.get();
   c.solo = static_cast<u32>(world_solo.get());
+  water_config_from_tunables(c);
   return c;
 }
 
@@ -216,14 +219,26 @@ void WorldField::open(audio::Mixer* mixer, u32 tick_hz, const FieldConfig& confi
   far_heap_.reserve(config_.max_crowns);
   chosen_.resize(config_.crowns, 0);
   beds_.resize(config_.beds);
-  voices_.resize(config_.crowns + config_.beds + 2u);
+  // Crowns, beds, the two ears, then (S113) the streams, the falls and the surf.
+  water_first_ = config_.crowns + config_.beds + 2u;
+  const u32 water_voices = config_.streams + config_.falls + config_.surfs;
+  voices_.resize(water_first_ + water_voices);
+  water_voices_.resize(water_voices);
+  water_.reserve(config_.max_water);
+  water_heap_.reserve(config_.max_water);
   for (u32 i = 0; i < voices_.size(); ++i) {
-    voices_[i].kind = i < config_.crowns                  ? WorldVoiceKind::Crown
-                      : i < config_.crowns + config_.beds ? WorldVoiceKind::Bed
-                      : i + 1u == voices_.size()          ? WorldVoiceKind::EarRight
-                                                          : WorldVoiceKind::EarLeft;
+    const u32 w = i - water_first_;
+    voices_[i].kind = i < config_.crowns                    ? WorldVoiceKind::Crown
+                      : i < config_.crowns + config_.beds   ? WorldVoiceKind::Bed
+                      : i + 1u == water_first_              ? WorldVoiceKind::EarRight
+                      : i < water_first_                    ? WorldVoiceKind::EarLeft
+                      : w < config_.streams                 ? WorldVoiceKind::Stream
+                      : w < config_.streams + config_.falls ? WorldVoiceKind::Fall
+                                                            : WorldVoiceKind::Surf;
     voices_[i].info.kind = voices_[i].kind;
   }
+  surf_shape_mean_ = surf_envelope_mean();  // water_field.cpp
+  cull_power_ = pow10(config_.floor_db - 20.0);
   for (u32 c = 0; c < 3; ++c) {
     f64 sum = 0.0;
     for (u32 b = 0; b < 8; ++b)
@@ -301,6 +316,25 @@ bool WorldField::crown_power(const Crown& c, const WorldPos& listener, f64 law, 
   return true;
 }
 
+void WorldField::path_terms(f64 dx, f64 dy, f64 dz, f64 height, f64 (&path)[8]) const noexcept {
+  if (!config_.path) {
+    for (f64& p : path)
+      p = 1.0;
+    return;
+  }
+  // Each term in dB, then one exponential a band (S114's cost: the bands' shared exponentials
+  // once, the forest's f^(1/3) once at `open`).
+  const f64 r3 = std::sqrt(dx * dx + dy * dy + dz * dz);
+  const f64 ground_m = std::sqrt(dx * dx + dz * dz);
+  const f64 under = canopy_path_m(dx, dz);
+  f64 ground[8];
+  ground_bands_db(height, k_ears_height_m, ground_m, config_.ground_g, ground);
+  constexpr f64 k_db_to_ln = -0.23025850929940456840;  // -ln(10) / 10
+  for (u32 b = 0; b < 8; ++b) {
+    const f64 a = air_db_m_[b] * r3 + foliage_db_m_[b] * under + ground[b];
+    path[b] = std::exp(a * k_db_to_ln);
+  }
+}
 void WorldField::point_power(const Crown& c, f64 dx, f64 dy, f64 dz, f64 least, f64 law,
                              f64 (&band)[8], f64 (&path)[8], f64& tone) const noexcept {
   const u32 k = static_cast<u32>(c.kind) < 3 ? static_cast<u32>(c.kind) : 0u;
@@ -316,26 +350,10 @@ void WorldField::point_power(const Crown& c, f64 dx, f64 dy, f64 dz, f64 least, 
   // the ears' over the distance along the ground. A crown the listener stands in is heard at its
   // edge
   // (`extent_m`) and its path is the short one it really has.
-  if (!config_.path) {
-    for (u32 b = 0; b < 8; ++b) {
-      path[b] = 1.0;
-      band[b] = broadband * shape_[k][b];
-    }
-    return;
-  }
-  // Each term in dB, then one exponential a band (S114's cost: the bands' shared exponentials
-  // once, the forest's f^(1/3) once at `open`).
-  const f64 ground_m = std::sqrt(dx * dx + dz * dz);
-  const f64 under = canopy_path_m(dx, dz);
-  f64 ground[8];
-  ground_bands_db(static_cast<f64>(c.height_m), k_ears_height_m, ground_m, config_.ground_g,
-                  ground);
-  constexpr f64 k_db_to_ln = -0.23025850929940456840;  // -ln(10) / 10
-  for (u32 b = 0; b < 8; ++b) {
-    const f64 a = air_db_m_[b] * r3 + foliage_db_m_[b] * under + ground[b];
-    path[b] = std::exp(a * k_db_to_ln);
+  // One function for every source's path (the water's too, S113): 1 a band with the path off.
+  path_terms(dx, dy, dz, static_cast<f64>(c.height_m), path);
+  for (u32 b = 0; b < 8; ++b)
     band[b] = broadband * shape_[k][b] * path[b];
-  }
 }
 
 void WorldField::add_to_bed(const Crown& c, const WorldPos& listener, f64 law, const f64 (&band)[8],
@@ -632,6 +650,7 @@ void WorldField::refresh(const WorldPos& listener) noexcept {
   }
   for (u32 slot = 0; slot < want; ++slot)
     chosen[slot] = next[slot];
+  refresh_water(listener);  // running water and the surf (S113; water_field.cpp)
 }
 
 void WorldField::place(Voice& v, const WorldPos& frame) noexcept {
@@ -663,11 +682,11 @@ void WorldField::silence(Voice& v) noexcept {
   v.info.level_db = -1000.0f;
 }
 
-void WorldField::describe(Voice& v, const f64 (&band_power)[9], f64 tone_hz, f64 tone_power,
-                          bool two_d, f32 pan, u64 seed, u8 priority,
-                          const WorldPos& frame) noexcept {
-  (void)tone_power;
-  f64 total = 0.0;
+void WorldField::describe(Voice& v, const f64 (&band_power)[9], f64 tone_hz, f64 extra, bool two_d,
+                          f32 pan, u64 seed, u8 priority, const WorldPos& frame) noexcept {
+  // `extra`: power the voice carries outside its lanes (S113: a trickle's bubbles, struck on its
+  // resonators), counted in its level so a voice that is only bubbles still sounds.
+  f64 total = extra > 0.0 ? extra : 0.0;
   for (const f64 p : band_power)
     total += p;
   const f64 level = total > 0.0 ? 10.0 * std::log10(total) : -1000.0;
@@ -805,7 +824,14 @@ void WorldField::tick(const WorldPos& listener, const Vec3& forward, const World
     for (f64& x : bands)
       x = 0.0;
     tone_hz = 0.0;
-    if (b.count > 0 && b.total > 0.0) {
+    // Running water and the surf not heard as voices of their own (S113): the wind does not move
+    // them. A ring that only water holds is placed by the water's power alone.
+    const bool water = b.water_count > 0 && b.water_total > 0.0;
+    if (water) {
+      for (u32 band = 0; band < 8; ++band)
+        bands[band] = b.water[band] > 0.0 ? b.water[band] : 0.0;
+    }
+    if ((b.count > 0 && b.total > 0.0) || water) {
       // **Each ring hears the gust at its own place** (S114): the stand round the listener, the
       // wood beyond and the far wood each at its power-weighted place, so a gust front crossing the
       // wood reaches the bed ring by ring, and a wide sector averages over the places its power
@@ -847,7 +873,8 @@ void WorldField::tick(const WorldPos& listener, const Vec3& forward, const World
       const f64 uz = len > 1e-9 ? b.dz / len : -1.0;
       const WorldPos at{listener.x + ux * k_bed_distance_m, listener.y,
                         listener.z + uz * k_bed_distance_m};
-      v.spread = static_cast<f32>(1.0 - (len / b.total < 1.0 ? len / b.total : 1.0));
+      const f64 weight = b.total + b.water_total;
+      v.spread = static_cast<f32>(1.0 - (len / weight < 1.0 ? len / weight : 1.0));
       const f64 mx = at.x - v.at.x;
       const f64 mz = at.z - v.at.z;
       const bool moved = mx * mx + mz * mz > 1.0;
@@ -902,6 +929,7 @@ void WorldField::tick(const WorldPos& listener, const Vec3& forward, const World
       }
     }
   }
+  tick_water(frame, frame_moved);  // running water and the surf (S113)
   // ---- the world's ceiling (S112-2; world_sound.md, "The world's hold"): the voices' powers
   // summed, in full scale's units; over the ceiling every one is held by the same factor, so the
   // balance and the spectrum stay and only the whole is held. Under it nothing changes.
@@ -913,8 +941,11 @@ void WorldField::tick(const WorldPos& listener, const Vec3& forward, const World
     const bool muted =
         config_.solo != 0 &&
         !((config_.solo == 1 && v.kind == WorldVoiceKind::Crown) ||
-          (config_.solo == 2 && v.kind == WorldVoiceKind::Bed) || (config_.solo == 3 && ear));
-    if ((v.kind == WorldVoiceKind::Crown && v.key == 0) || muted) {
+          (config_.solo == 2 && v.kind == WorldVoiceKind::Bed) || (config_.solo == 3 && ear) ||
+          (config_.solo == 4 && v.kind == WorldVoiceKind::Stream) ||
+          (config_.solo == 5 && v.kind == WorldVoiceKind::Fall) ||
+          (config_.solo == 6 && v.kind == WorldVoiceKind::Surf));
+    if (((v.kind == WorldVoiceKind::Crown || water_voice(v)) && v.key == 0) || muted) {
       for (f64& p : v.bands)
         p = 0.0;
       continue;
@@ -933,6 +964,7 @@ void WorldField::tick(const WorldPos& listener, const Vec3& forward, const World
     stats_.held_db = static_cast<f32>(10.0 * std::log10(factor));
     ++stats_.held_ticks;
   }
+  account_levels();  // the summary's levels by kind (S113; water_field.cpp)
   for (u32 i = 0; i < voices_.size(); ++i) {
     Voice& v = voices_[i];
     if (v.kind == WorldVoiceKind::Crown) {
@@ -941,6 +973,19 @@ void WorldField::tick(const WorldPos& listener, const Vec3& forward, const World
     } else if (v.kind == WorldVoiceKind::Bed) {
       describe(v, v.bands, v.tone_hz, 0.0, false, 0.0f, 0xbedull + (i - crowns), k_bed_priority,
                frame);
+    } else if (water_voice(v)) {
+      if (v.key == 0) continue;
+      // A trickle's bubbles are its level too, unless another kind is heard alone.
+      WaterVoice& w = water_voices_[i - water_first_];
+      const bool heard = config_.solo == 0 || config_.solo == static_cast<u32>(v.kind) - 1u;
+      const f64 bubbles = heard ? w.source.total * w.source.trickle : 0.0;
+      describe(v, v.bands, 0.0, bubbles, false, 0.0f, v.key, k_water_priority, frame);
+      if (v.needs_place) place(v, frame);
+      if (heard) {
+        strike_bubbles(v, water_voices_[i - water_first_], static_cast<f64>(ticks_) / tick_hz_,
+                       1.0 / static_cast<f64>(tick_hz_));
+      }
+      continue;
     } else {
       const bool left = v.kind == WorldVoiceKind::EarLeft;
       describe(v, v.bands, 0.0, 0.0, true, left ? -1.0f : 1.0f, left ? 0xea5ull : 0xea6ull,
@@ -961,6 +1006,13 @@ void WorldField::tick(const WorldPos& listener, const Vec3& forward, const World
   stats_.crown_voices = crown_n;
   stats_.bed_voices = bed_n;
   stats_.ear_voices = ear_n;
+  u32 water_n[3] = {};
+  for (const Voice& v : voices_)
+    if (!v.voice.is_null() && water_voice(v))
+      ++water_n[static_cast<u32>(v.kind) - static_cast<u32>(WorldVoiceKind::Stream)];
+  stats_.stream_voices = water_n[0];
+  stats_.fall_voices = water_n[1];
+  stats_.surf_voices = water_n[2];
 }
 
 void WorldField::stop_all() noexcept {

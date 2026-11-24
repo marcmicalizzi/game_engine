@@ -40,12 +40,14 @@
 namespace engine::renderer {
 struct FlightStep;
 struct SceneData;
+struct SurfTable;
 }  // namespace engine::renderer
 namespace engine::view {  // the session's sound's seams with the capability out (game_sound.h)
 class FlySession;
 inline bool sound_hears_world() noexcept { return false; }
 inline i64 solo_sound_ns() noexcept { return 0; }
 inline void attach_solo_scene(const renderer::SceneData&) {}
+inline void attach_session_surf(const renderer::SurfTable&, const renderer::SceneData&) {}
 inline void attach_solo_session(FlySession&, f64, f64, f64) noexcept {}
 inline void attach_solo_tiles(void*) noexcept {}
 inline void set_solo_flight_clock(const auto&) noexcept {}
@@ -3308,6 +3310,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       resolved = scene.resolved();
     }
     startup.milestone("gpu_scene");
+    view::attach_session_surf(scene.surf_table(), scene_data);  // the surf heard (S113)
     // The occlusion check's second scene is built before a page source could release the host
     // streams it uploads from; streaming and the check were refused together above anyway.
     if (options.verify_occlusion) {
@@ -6387,6 +6390,7 @@ int run_view(int argc, char** argv) {
     resolved = scene.resolved();
     gpu_scene_stage.end();
     startup.milestone("gpu_scene");
+    view::attach_session_surf(scene.surf_table(), scene_data);  // the surf heard (S113)
     // The pose stage's per-frame array and the defaults it is refilled from, sized once.
     if (options.morph_animate && scene.morphed()) {
       morph_pose_weights.resize(scene.morph_channel_count(), 0.0f);

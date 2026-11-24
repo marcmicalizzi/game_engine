@@ -7,8 +7,8 @@
 // that owns the clip store, the mixer, the output (a device or the null backend), the listener, the
 // clips a scene's `sound` block declares and the voices a game module starts. A host has one object
 // to create, hand a listener and tick; sound code lives here, not in an app, as rendering code
-// lives in `systems/renderer`. Later stages add the world's synthesised sources (S112 the wind in
-// the trees, S113 the water) to the same stage; none of them is built here.
+// lives in `systems/renderer`. Later stages add the world's synthesised sources to the same stage:
+// S112 the wind in the trees and at the ears, S114 their path, S113 running water and the surf.
 //
 // **What a module sees does not depend on whether anything is heard** (ADR-0079 decision 5):
 // `play` answers with a handle the stage counts itself, never the mixer's slot, whether or not a
@@ -151,8 +151,79 @@ struct ShelterSource {
 struct WorldWind {
   const gfx::WindDesc* scene = nullptr;
   gfx::WindLive live{};
-  f64 sky_time_s = 0.0;    // the mean and the direction: the weather's, at the sky's hour
-  f64 world_time_s = 0.0;  // the turbulence: the medium moving, on the world's clock (S118)
+  f64 sky_time_s = 0.0;  // the mean and the direction: the weather's, at the sky's hour
+  // **The world clock** (`FrameDesc::world_time_s`): the turbulence, the medium moving (S118), and
+  // the water's clock (S113), which the waves the picture draws move on, so a wave heard breaking
+  // is the wave seen breaking.
+  f64 world_time_s = 0.0;
+};
+
+/// **Running water** (S113; world_sound.md, "Running water and the surf"): one stretch of a
+/// solved channel between two neighbouring stations, as a host's flow table sends it — the two
+/// stations at the water's surface (y the solved level), what the stretch carries, the level it
+/// gives up, how wide its water is and its regime, and for a fall (a lip and its foot) whether its
+/// foot lands in water (a pool, a body) or on the bed. The sound is the power the water gives up,
+/// rho g Q h, a share of it heard in the air.
+struct Stretch {
+  WorldPos a{};
+  WorldPos b{};
+  f32 discharge_m3s = 0.0f;
+  f32 drop_m = 0.0f;  // the level given up from `a` to `b`, metres (a fall's height)
+  f32 wet_width_m = 0.0f;
+  f32 froude = 0.0f;
+  bool fall = false;
+  bool lands_on_water = false;
+};
+struct StretchSink {
+  void* user = nullptr;
+  void (*emit)(void* user, const Stretch& stretch) noexcept = nullptr;
+  // A stream (not a fall) whose middle is farther than this, less its half length, is not taken
+  // (`audio.world.water_reach_m`), so a host need not visit past it; 0: `reach_m`.
+  f64 stream_reach_m = 0.0;
+};
+/// **The host's flow table**: every fall within `reach_m` of `centre` and every stream within the
+/// sink's `stream_reach_m`, from the solved channel description. Called at
+/// `audio.world.refresh_hz`, as the canopy table is; a host visits only what is in reach (S113).
+struct FlowSource {
+  void* user = nullptr;
+  void (*visit)(void* user, const WorldPos& centre, f64 reach_m, const StretchSink& sink) = nullptr;
+};
+
+/// **The surf** (S113): one stretch of a body's shore where its train breaks, as a host's surf
+/// table sends it — the break's place at the water's level and the shore's direction there, the
+/// length of shore it stands for, the wave power breaking gives up a metre of shore, the height
+/// the wave breaks at and the surf similarity there, and the train's period and arrival at the
+/// break, so its crest stands there at the water's clock `arrival_s + n period_s`.
+struct Surf {
+  WorldPos at{};
+  Vec2 along{1.0f, 0.0f};  // unit, along the shore
+  f32 length_m = 0.0f;
+  f32 power_w_m = 0.0f;
+  f32 height_m = 0.0f;
+  f32 surf_similarity = 0.0f;
+  f32 period_s = 0.0f;
+  f32 arrival_s = 0.0f;
+};
+/// The wave power a stretch of shore takes in, watts a metre: a sea's deep-water energy flux,
+/// rho g^2 H^2 T / (64 pi) for significant height H and peak period T, which shoaling keeps to the
+/// break and breaking gives up (S113). A host's surf table scales it by the refraction's share.
+f64 surf_power_w_m(f64 height_m, f64 period_s) noexcept;
+/// An upper bound, dB SPL, on what a stretch of surf delivers at `listener` after its path in all
+/// its bands, at the mean over a period (the airborne efficiency taken): what the surf's cull
+/// compares with the floor less 20 dB before costing a record (world_sound.md, `Cost`).
+f64 surf_bound_db(const Surf& surf, const WorldPos& listener) noexcept;
+/// **The airborne efficiency** (S113; docs/experiments/world-sound.md, "Read again by S113"): the
+/// share of the power running water and breaking waves give up that is heard in the air. No
+/// source read gives it; it is **a stated choice**, anchored on Bolin and Abom's 60 dB over surf
+/// of 0.4 m (a Baltic sea of 3 s, read 20 m from the break line: the distance is a choice).
+inline constexpr f64 k_water_airborne_efficiency = 1.75e-7;
+struct SurfSink {
+  void* user = nullptr;
+  void (*emit)(void* user, const Surf& surf) noexcept = nullptr;
+};
+struct SurfSource {
+  void* user = nullptr;
+  void (*visit)(void* user, const WorldPos& centre, f64 reach_m, const SurfSink& sink) = nullptr;
 };
 
 /// `audio.world.near_m` (96): a canopy table walks its crowns one by one within this of the
@@ -167,7 +238,7 @@ u32 world_walk_instances() noexcept;
 
 /// What one world voice was last told: its kind, its level at the listener in dB SPL over its
 /// bands, each band's level, the movable band's centre (0: none) and the wind it was made from.
-enum class WorldVoiceKind : u8 { None = 0, Crown, Bed, EarLeft, EarRight };
+enum class WorldVoiceKind : u8 { None = 0, Crown, Bed, EarLeft, EarRight, Stream, Fall, Surf };
 struct WorldVoiceInfo {
   WorldVoiceKind kind = WorldVoiceKind::None;
   bool sounding = false;
@@ -196,6 +267,18 @@ struct WorldStats {
   // **Shelter** (S114): the share of the open wind the ears' wind had at the last refresh, 1 in the
   // open (or with no shelter table), from what stands upwind (`ShelterSource`).
   f32 shelter = 1.0f;
+  // **Running water and the surf** (S113): what the last refresh was sent and kept, the voices
+  // sounding now, and the bubbles struck.
+  u64 stretches_seen = 0;
+  u64 surf_seen = 0;
+  u64 water_dropped = 0;  // past `audio.world.max_water` in the last refresh
+  // Surf records in reach the last refresh skipped before costing them: their bound at the
+  // listener (`surf_bound_db`) under the floor less 20 dB (`audio.world.surf_cull`).
+  u64 surf_culled = 0;
+  u32 stream_voices = 0;
+  u32 fall_voices = 0;
+  u32 surf_voices = 0;
+  u64 bubbles = 0;
 };
 
 /// What the stage did, counted where it did it.
@@ -267,10 +350,14 @@ class SoundStage {
   /// handed before every `tick`. Neither does anything with the world off.
   void set_canopy(const CanopySource& canopy) noexcept;
   void set_shelter(const ShelterSource& shelter) noexcept;
+  /// Running water and the surf (S113): the host's flow and surf tables, kept until replaced.
+  void set_flow(const FlowSource& flow) noexcept;
+  void set_surf(const SurfSource& surf) noexcept;
   void set_wind(const WorldWind& wind) noexcept;
   const WorldStats& world_stats() const noexcept;
   /// The world's voices as last described (tests: the levels the laws are held to). `count` is
-  /// the crowns' (`audio.world.crowns`), then the beds' (`audio.world.beds`), then the two ears.
+  /// the crowns' (`audio.world.crowns`), then the beds' (`audio.world.beds`), then the two ears,
+  /// then (S113) the streams' (`audio.world.streams`), the falls' and the surf's.
   u32 world_voice_count() const noexcept;
   WorldVoiceInfo world_voice(u32 index) const noexcept;
 

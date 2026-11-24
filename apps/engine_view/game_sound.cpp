@@ -5,6 +5,7 @@
 #include <core/json/json.h>
 #include <core/time/time.h>
 #include <domain/geometry/flora_species.h>
+#include <domain/scene_gen/water_channel.h>
 #include <systems/renderer/flythrough.h>
 #include <systems/renderer/request.h>
 #include <systems/renderer/scene.h>
@@ -79,6 +80,7 @@ void on_tick(void* user, const WorldPos& eye, f32 heading, f32 pitch) {
   listener_axes(heading, pitch, forward, up);
   stage.set_listener(eye, forward, up);
   stage.tick();
+  static_cast<GameSoundHost*>(user)->advance_world_time();  // a module's ticks (S113)
 }
 JsonValue on_summary(const void* user) {
   return static_cast<const GameSoundHost*>(user)->stage().summary_json();
@@ -92,6 +94,70 @@ bool on_finish(void* user, std::string* error) {
 
 f64 distance_xz(f64 x, f64 z, const WorldPos& p) noexcept {
   return std::sqrt((x - p.x) * (x - p.x) + (z - p.z) * (z - p.z));
+}
+
+// **The water's tables by 128 m cell** (S113, M2): a cell's key orders x first, then z, both
+// signed as unsigned, so one row of cells along z is one run of keys.
+constexpr f64 k_water_cell_m = 128.0;
+i64 water_cell(f64 v) noexcept { return static_cast<i64>(std::floor(v / k_water_cell_m)); }
+u64 water_cell_key(i64 x, i64 z) noexcept {
+  return (u64{static_cast<u32>(static_cast<i32>(x)) ^ 0x80000000u} << 32) |
+         u64{static_cast<u32>(static_cast<i32>(z)) ^ 0x80000000u};
+}
+// Orders `items[begin, end)` by cell (then by place in the table: deterministic) and writes the
+// cells' runs. At attach: it allocates.
+template <class T, class Xz>
+void bucket_water(Vector<T>& items, u32 begin, u32 end, Vector<GameSoundHost::WaterCell>& cells,
+                  Xz xz) {
+  cells.clear();
+  struct Order {
+    u64 key;
+    u32 index;
+  };
+  Vector<Order> order;
+  order.reserve(end - begin);
+  for (u32 i = begin; i < end; ++i) {
+    f64 x = 0.0, z = 0.0;
+    xz(items[i], x, z);
+    order.push_back(Order{water_cell_key(water_cell(x), water_cell(z)), i});
+  }
+  std::sort(order.begin(), order.end(), [](const Order& a, const Order& b) {
+    return a.key != b.key ? a.key < b.key : a.index < b.index;
+  });
+  Vector<T> sorted;
+  sorted.reserve(end - begin);
+  for (const Order& o : order)
+    sorted.push_back(items[o.index]);
+  for (u32 k = 0; k < sorted.size(); ++k) {
+    items[begin + k] = sorted[k];
+    if (cells.empty() || cells.back().key != order[k].key)
+      cells.push_back(GameSoundHost::WaterCell{order[k].key, begin + k, 0});
+    ++cells.back().count;
+  }
+}
+// Every item of the cells within `reach_m` of `centre` (a square of cells round it; the caller
+// tests the distance), one search a row of cells. Returns the cells walked.
+template <class T, class Each>
+u32 visit_water(const Vector<T>& items, const Vector<GameSoundHost::WaterCell>& cells,
+                const WorldPos& centre, f64 reach_m, Each each) {
+  if (cells.empty() || !(reach_m >= 0.0)) return 0;
+  const i64 r = static_cast<i64>(std::ceil(reach_m / k_water_cell_m));
+  const i64 cx = water_cell(centre.x);
+  const i64 cz = water_cell(centre.z);
+  u32 walked = 0;
+  for (i64 x = cx - r; x <= cx + r; ++x) {
+    const u64 lo = water_cell_key(x, cz - r);
+    const u64 hi = water_cell_key(x, cz + r);
+    auto it = std::lower_bound(
+        cells.begin(), cells.end(), lo,
+        [](const GameSoundHost::WaterCell& c, u64 key) noexcept { return c.key < key; });
+    for (; it != cells.end() && it->key <= hi; ++it) {
+      ++walked;
+      for (u32 k = it->first; k < it->first + it->count; ++k)
+        each(items[k]);
+    }
+  }
+  return walked;
 }
 
 }  // namespace
@@ -165,6 +231,8 @@ bool GameSoundHost::open(world_sound::AudioMode mode, const std::string& device,
   if (!scene.empty()) config.base_dir = std::filesystem::path(scene).parent_path().string();
   if (!stage_.open(config, present ? &block : nullptr, error)) return false;
   stage_.set_canopy(world_sound::CanopySource{this, &GameSoundHost::visit});
+  stage_.set_flow(world_sound::FlowSource{this, &GameSoundHost::visit_flow});  // S113
+  stage_.set_surf(world_sound::SurfSource{this, &GameSoundHost::visit_surf});
   if (present) {
     std::fprintf(stderr, "engine-view: sound: %u clip%s, audio %s\n",
                  static_cast<u32>(block.clips.size()), block.clips.size() == 1 ? "" : "s",
@@ -209,6 +277,7 @@ void GameSoundHost::observe(void* user, const FlySession& session, const input::
   const i64 started = time::monotonic_ns();
   // The session's sky as the frame's: the start plus the sun's rate times the ticks' seconds.
   const f64 t = static_cast<f64>(session.tick().value) / static_cast<f64>(h.tick_hz_);
+  h.world_time_s_ = t;  // the session's world clock at a rate of one: the water's (S113)
   if (h.world_) {
     // The walker only while the session walks: a session that flies keeps its walker attached
     // (`FlySession::walker`), and its eye is no walker's (S114-M2).
@@ -385,8 +454,166 @@ void GameSoundHost::merge(Group& g, std::span<const world_sound::Crown> crowns) 
   }
 }
 
+// ---- running water and the surf (S113) ----------------------------------------------------------
+
+void GameSoundHost::attach_water(const renderer::SceneData& scene) {
+  stretches_.clear();
+  // The solved channels: a stretch between each two neighbouring stations, as the solve wrote
+  // them (renderer::SceneWater::channel_source, the scene's description).
+  for (const renderer::SceneMeshInfo& info : scene.mesh_info) {
+    if (!info.water.has_value() || !info.water->channel) continue;
+    const scene::WaterChannel& c = info.water->channel_source;
+    const u32 n = static_cast<u32>(c.points.size());
+    if (n < 2 || c.discharge_m3s.size() != n || c.flags.size() != n) continue;
+    // **A run of stations is one stretch up to `k_stretch_join_m`** (the forest staging's solve
+    // writes 39,142 stretches of a few metres; S113's first flight): neighbouring stretches that
+    // are not falls, carry the same water within a tenth and give up some level are joined, their
+    // drops summed and the wider wet width kept, so a line of 32 m is one source — what its sound
+    // is from more than a few metres off.
+    bool run = false;
+    for (u32 i = 0; i + 1 < n; ++i) {
+      world_sound::Stretch s;
+      s.a = c.points[i];
+      s.b = c.points[i + 1];
+      s.discharge_m3s = c.discharge_m3s[i];
+      const f64 drop = s.a.y - s.b.y;
+      s.drop_m = drop > 0.0 ? static_cast<f32>(drop) : 0.0f;
+      if (c.wet_left_m.size() == n && c.wet_right_m.size() == n)
+        s.wet_width_m = c.wet_left_m[i] + c.wet_right_m[i];
+      if (c.froude.size() == n) s.froude = c.froude[i];
+      s.fall = (c.flags[i] & scene_gen::k_channel_fall_lip) != 0 &&
+               (c.flags[i + 1] & scene_gen::k_channel_fall_foot) != 0;
+      s.lands_on_water = s.fall && c.depth_m.size() == n && c.depth_m[i + 1] >= 0.1f;
+      if (!(s.drop_m > 0.0f) || !(s.discharge_m3s > 0.0f)) {
+        run = false;
+        continue;
+      }
+      if (run && !s.fall) {
+        world_sound::Stretch& p = stretches_.back();
+        const f64 dx = s.b.x - p.a.x, dy = s.b.y - p.a.y, dz = s.b.z - p.a.z;
+        const f32 dq = s.discharge_m3s - p.discharge_m3s;
+        if (dx * dx + dy * dy + dz * dz <= k_stretch_join_m * k_stretch_join_m &&
+            (dq < 0.0f ? -dq : dq) <= 0.1f * p.discharge_m3s) {
+          p.b = s.b;
+          p.drop_m += s.drop_m;
+          p.wet_width_m = p.wet_width_m > s.wet_width_m ? p.wet_width_m : s.wet_width_m;
+          p.froude = p.froude > s.froude ? p.froude : s.froude;
+          continue;
+        }
+      }
+      stretches_.push_back(s);
+      run = !s.fall;
+    }
+  }
+  // **By cell** (M2): the streams, then the falls, each run ordered by its 128 m cell, so a refresh
+  // walks the cells in reach and not the scene's every stretch.
+  u32 streams = 0;
+  for (u32 i = 0; i < stretches_.size(); ++i) {
+    if (stretches_[i].fall) continue;
+    std::swap(stretches_[i], stretches_[streams]);
+    ++streams;
+  }
+  stream_half_max_ = 0.0;
+  for (u32 i = 0; i < streams; ++i)
+    stream_half_max_ = std::max(
+        stream_half_max_, 0.5 * distance_xz(stretches_[i].a.x, stretches_[i].a.z, stretches_[i].b));
+  const auto middle = [](const world_sound::Stretch& s, f64& x, f64& z) {
+    x = 0.5 * (s.a.x + s.b.x);
+    z = 0.5 * (s.a.z + s.b.z);
+  };
+  bucket_water(stretches_, 0, streams, stream_cells_, middle);
+  bucket_water(stretches_, streams, static_cast<u32>(stretches_.size()), fall_cells_, middle);
+  if (!stretches_.empty()) {
+    std::fprintf(stderr, "engine-view: sound: %u stretches of running water in %u cells\n",
+                 static_cast<u32>(stretches_.size()),
+                 static_cast<u32>(stream_cells_.size() + fall_cells_.size()));
+  }
+}
+
+// The surf (S113, M1): the GPU scene's records, scanned once a body mesh at its upload from the
+// field it built for its waves, placed by each body instance's rows (a body's mesh is body-local
+// at its level) — a body with k instances is k placings of one scan, never a build.
+void GameSoundHost::attach_surf(const renderer::SurfTable& table,
+                                const renderer::SceneData& scene) {
+  const i64 started = time::monotonic_ns();
+  surf_.clear();
+  surf_cells_.clear();
+  for (const gfx::InstanceDesc& in : scene.instances) {
+    if (in.mesh >= table.count.size() || in.mesh >= table.first.size()) continue;
+    const u32 first = table.first[in.mesh];
+    const u32 count = table.count[in.mesh];
+    for (u32 k = first; k < first + count && k < table.records.size(); ++k) {
+      const renderer::SurfRecord& r = table.records[k];
+      const auto row = [&](u32 c) {
+        return static_cast<f64>(in.rows[c].x * r.at.x + in.rows[c].z * r.at.y + in.rows[c].w);
+      };
+      world_sound::Surf s;
+      s.at = WorldPos{static_cast<f64>(in.cell.x) * k_world_cell_m + row(0),
+                      static_cast<f64>(in.cell.y) * k_world_cell_m + row(1),
+                      static_cast<f64>(in.cell.z) * k_world_cell_m + row(2)};
+      s.along = Vec2{in.rows[0].x * r.along.x + in.rows[0].z * r.along.y,
+                     in.rows[2].x * r.along.x + in.rows[2].z * r.along.y};
+      s.length_m = r.length_m;
+      s.power_w_m = r.power_w_m;
+      s.height_m = r.height_m;
+      s.surf_similarity = r.surf_similarity;
+      s.period_s = r.period_s;
+      s.arrival_s = r.arrival_s;
+      surf_.push_back(s);
+    }
+  }
+  surf_half_max_ = 0.0;
+  for (const world_sound::Surf& s : surf_)
+    surf_half_max_ = std::max(surf_half_max_, 0.5 * static_cast<f64>(s.length_m));
+  bucket_water(surf_, 0, static_cast<u32>(surf_.size()), surf_cells_,
+               [](const world_sound::Surf& s, f64& x, f64& z) {
+                 x = s.at.x;
+                 z = s.at.z;
+               });
+  const i64 placed = time::monotonic_ns() - started;
+  surf_ns_ = table.scan_ns + placed;
+  if (!surf_.empty()) {
+    std::fprintf(stderr,
+                 "engine-view: sound: %u of surf from %u records (scan %.1f ms, placing %.1f ms)\n",
+                 static_cast<u32>(surf_.size()), static_cast<u32>(table.records.size()),
+                 static_cast<f64>(table.scan_ns) / 1.0e6, static_cast<f64>(placed) / 1.0e6);
+  }
+}
+
+void GameSoundHost::visit_flow(void* user, const WorldPos& centre, f64 reach_m,
+                               const world_sound::StretchSink& sink) {
+  const GameSoundHost& h = *static_cast<const GameSoundHost*>(user);
+  // A stream as the sink takes it (its middle less its half within the stream reach), a fall by
+  // its middle within the whole reach, as before the cells.
+  const f64 stream_reach =
+      sink.stream_reach_m > 0.0 && sink.stream_reach_m < reach_m ? sink.stream_reach_m : reach_m;
+  u32 walked = visit_water(h.stretches_, h.stream_cells_, centre, stream_reach + h.stream_half_max_,
+                           [&](const world_sound::Stretch& s) {
+                             const f64 x = 0.5 * (s.a.x + s.b.x), z = 0.5 * (s.a.z + s.b.z);
+                             const f64 half = 0.5 * distance_xz(s.a.x, s.a.z, s.b);
+                             if (distance_xz(x, z, centre) - half <= stream_reach)
+                               sink.emit(sink.user, s);
+                           });
+  walked +=
+      visit_water(h.stretches_, h.fall_cells_, centre, reach_m, [&](const world_sound::Stretch& s) {
+        const f64 x = 0.5 * (s.a.x + s.b.x), z = 0.5 * (s.a.z + s.b.z);
+        if (distance_xz(x, z, centre) <= reach_m) sink.emit(sink.user, s);
+      });
+  h.water_cells_walked_ = walked;
+}
+
+void GameSoundHost::visit_surf(void* user, const WorldPos& centre, f64 reach_m,
+                               const world_sound::SurfSink& sink) {
+  const GameSoundHost& h = *static_cast<const GameSoundHost*>(user);
+  h.water_cells_walked_ += visit_water(
+      h.surf_, h.surf_cells_, centre, reach_m + h.surf_half_max_, [&](const world_sound::Surf& s) {
+        if (distance_xz(s.at.x, s.at.z, centre) - 0.5 * static_cast<f64>(s.length_m) <= reach_m)
+          sink.emit(sink.user, s);
+      });
+}
 void GameSoundHost::attach_scene(const renderer::SceneData& scene) {
   scene_ = &scene;
+  if (world_) attach_water(scene);  // running water (S113); the surf is `attach_surf`'s
   const u32 meshes = static_cast<u32>(scene.mesh_leaves.size());
   mesh_heard_.clear();
   mesh_class_.clear();
@@ -727,6 +954,9 @@ i64 solo_sound_ns() noexcept { return g_solo && g_host != nullptr ? g_host->soun
 void attach_solo_scene(const renderer::SceneData& scene) {
   if (GameSoundHost* h = solo_world()) h->attach_scene(scene);
 }
+void attach_session_surf(const renderer::SurfTable& table, const renderer::SceneData& scene) {
+  if (g_host != nullptr && g_host->world()) g_host->attach_surf(table, scene);
+}
 void attach_solo_session(FlySession& session, f64 sky_start_s, f64 sun_rate,
                          f64 world_rate) noexcept {
   if (!g_solo || g_host == nullptr) return;
@@ -747,6 +977,8 @@ void solo_flight_frame(const renderer::FlightStep& step) noexcept {
   const i64 before = h->sound_ns();
   const f64 sky = g_flight_sky_start_s + g_flight_sun_rate * static_cast<f64>(step.frame) /
                                              static_cast<f64>(renderer::k_frame_hz);
+  // The flight's world clock, its frames over their rate (at a world rate of one): the water's.
+  h->set_world_time(static_cast<f64>(step.frame) / static_cast<f64>(renderer::k_frame_hz));
   // The world's as the flight's frame has it (flythrough.cpp): the gust's clock (S118).
   const f64 world =
       g_flight_world_rate * static_cast<f64>(step.frame) / static_cast<f64>(renderer::k_frame_hz);

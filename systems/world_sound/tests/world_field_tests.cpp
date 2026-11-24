@@ -360,7 +360,10 @@ TEST_CASE("world sound: the counts never pass their tunables") {
     CHECK(w.crown_voices == 2u);
     CHECK(w.bed_voices <= 3u);
     CHECK(w.ear_voices == 2u);
-    CHECK(s.stage.world_voice_count() == 2u + 3u + 2u);
+    // The crowns', the beds' and the ears', then (S113) the water's at their defaults: four
+    // streams, four falls and three of surf, none of which a grove with no water sounds.
+    CHECK(s.stage.world_voice_count() == 2u + 3u + 2u + 4u + 4u + 3u);
+    CHECK(w.stream_voices + w.fall_voices + w.surf_voices == 0u);
   }
   crowns->reset();
   beds->reset();
