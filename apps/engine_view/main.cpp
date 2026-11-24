@@ -4248,6 +4248,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
 #endif
   renderer_off.destroy();
   view_renderer.destroy();
+  early_resolve.destroy();  // before the device it was made on
   page_source.destroy();
   scene_off.destroy();
   scene.destroy();
@@ -7737,6 +7738,7 @@ int run_view(int argc, char** argv) {
   collision_draw.draw.destroy();  // P62: its frame pass and buffers, before the renderer
 #endif
   view_renderer.destroy();
+  early_resolve.destroy();  // before the device it was made on
   page_source.destroy();
   scene.destroy();
   swapchain.destroy();
