@@ -5255,6 +5255,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   micromap_key_.level = resolved.micromap_level;
   micromap_key_.budget_bytes = resolved.micromap_budget_bytes;
   micromap_key_.texels = resolved.micromap_texels;
+  micromap_key_.store_min = resolved.micromap_store_min;
   if (resolved.shadow_micromaps && ray_tracing_ && has_masked_ && !streamed_) {
     for (u32 m = 0; m < data_->parts.size(); ++m) {
       const geometry::ClusterMeshPart& part = data_->parts[m];
@@ -5267,6 +5268,8 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           micromap_list_.push_back(c);
           micromap_list_.push_back(material);
           micromap_triangles_.push_back(data_->lod.mesh.clusters[c].triangle_count);
+          micromap_key_.parts.push_back(m);  // R208: the part a stored bake is keyed by
+          micromap_key_.parts.push_back(i);
         }
       }
     }

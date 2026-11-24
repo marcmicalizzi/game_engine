@@ -440,6 +440,7 @@ struct ResolvedSettings {
   u32 micromap_level = 0;
   u64 micromap_budget_bytes = 0;
   f32 micromap_texels = 0.0f;  // `renderer.rt.micromap_texels`: a micro-triangle's most texels
+  u64 micromap_store_min = 0;  // `renderer.rt.micromap_store_min`: below it, bake and store none
   // **Indirect light: the world-space cache** (R69; renderer.md, "Indirect light: the world-space
   // cache"): the mode (`renderer.gi.mode`, `Off` without traced shadows), the cache's bytes
   // (`renderer.gi.cache_mib`, made once at load), the sample pass's rays a frame over every view

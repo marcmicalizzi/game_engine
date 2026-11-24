@@ -118,6 +118,10 @@ struct MicromapBakeInput {
   // Data, indices and the triangle array together, before the driver's own storage; the cap
   // drops a level at a time until the bake fits (0: no budget).
   u64 budget_bytes = 0;
+  // False: the passes run and the sink is handed the sections, but no micromap is built and `out`
+  // is left empty (R208: the renderer assembles one micromap from stored parts and baked ones, so
+  // the bake of the missing parts is never built on its own).
+  bool build = true;
 };
 
 // What the bake measured: per level, the triangles that kept data; the special-indexed
@@ -226,15 +230,15 @@ void destroy_opacity_micromaps(const Device& device, OpacityMicromapSet& set) no
 bool micromap_device_identity(const Device& device, u8 out[28]) noexcept;
 
 // **What the bake reads of the geometry, digested on the device** (the key pass, mode 3 of
-// opacity_micromap_bake.slang): every masked cluster's triangles, each triangle's three
-// `uv_half2` words — the only geometry the bake reads, through its packed indices — hashed in the
-// cluster's order and mixed with the item's place in `in.items`, two 64-bit lanes summed with
-// atomics, so the answer is integer arithmetic only and the same on any device and any schedule.
-// `in.items`, the triangle counts and the materials are the host's to key. False with `out` zero
-// when the device has no micromaps or a dispatch fails.
-bool micromap_geometry_digest(const Device& device, ShaderLibrary& shaders,
-                              const BindlessSet& bindless, const MicromapBakeInput& in, u64 out[2],
-                              std::string* error = nullptr);
+// opacity_micromap_bake.slang): per item of `in.items`, its cluster's triangles' three `uv_half2`
+// words each — the only geometry the bake reads, through its packed indices — hashed in the
+// cluster's order under two seeds, one 64-bit word an item (`out[i]`). Integer arithmetic only, so
+// the same on any device; the item's place in the list is not in it (R208: a part's key is the
+// same whichever load lists it). The materials and the triangle counts are the host's to key.
+// False with `out` empty when the device has no micromaps or a dispatch fails.
+bool micromap_item_digests(const Device& device, ShaderLibrary& shaders,
+                           const BindlessSet& bindless, const MicromapBakeInput& in,
+                           Vector<u64>& out, std::string* error = nullptr);
 
 // The sections a bake leaves, in the order a stored bake holds them: per cluster of the scene its
 // first index or `k_micromap_none`, per masked triangle its index (special or an entry), per
@@ -245,6 +249,9 @@ struct MicromapSections {
   std::span<const MicromapTriangle> triangles;
   std::span<const u32> data;  // the states, `stats.data_bytes / 4` words
   const MicromapStats* stats = nullptr;
+  // Per masked triangle, the level the texel target wanted before the cap (R208: a stored part
+  // keeps its own histogram). Empty from a writer that does not know it.
+  std::span<const u8> wanted;
 };
 // Handed the sections before the bake frees its buffers (the states are read from a host-visible
 // copy only when a sink is given). A function and a context, called once; its answer is the
@@ -306,7 +313,7 @@ bool build_opacity_micromap(const Device& device, std::span<const u32> data,
 // micro-triangles took, into `codes`, and its dedup key into `keys`; 2 verifies that every
 // triangle sharing an entry is its writer's material and UVs word for word; 1 writes each
 // entry's states, one thread an entry, at the offset its triangle-array entry names; and 3, the
-// key pass, one thread an item, adds its triangles' UV words' two hashes into `counters[0..1]`.
+// key pass, one thread an item, writes its triangles' UV words' two hashes to `keys[item]`.
 struct MicromapBakeParams {
   u64 clusters = 0;
   u64 triangles = 0;

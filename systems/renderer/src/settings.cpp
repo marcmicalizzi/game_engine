@@ -460,6 +460,12 @@ tunables::Int micromap_level{
     "renderer.rt.micromap_level", 6, 0, 12,
     "The opacity micromaps' subdivision level cap (each level is four times "
     "the micro-triangles; at most the device's)"};
+tunables::Int micromap_store_min{
+    "renderer.rt.micromap_store_min", 4096, 0, 1 << 30,
+    "The fewest masked triangles whose opacity micromaps are stored under the derived-data root "
+    "and "
+    "read back: a scene with fewer bakes them at load and stores nothing, since a read's fixed "
+    "cost is more than such a bake (R208; renderer.md, The bake is read back)"};
 // R69 stage 1: indirect light from the world-space cache (renderer.md, "Indirect light: the
 // world-space cache"; docs/experiments/gi-cache-2026-11-07.md has the numbers the defaults rest
 // on).
@@ -1072,6 +1078,7 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   out.micromap_level = static_cast<u32>(micromap_level.get());
   out.micromap_budget_bytes = static_cast<u64>(micromap_mib.get()) << 20;
   out.micromap_texels = static_cast<f32>(micromap_texels.get());
+  out.micromap_store_min = static_cast<u64>(micromap_store_min.get());
   // Indirect light (R69): read once, here, so the cache is made at load and never in a frame. It
   // traces the shadow rays' query, so it needs them.
   out.gi_mode = out.shadows && !out.direct ? gi_mode.get() : GiMode::Off;
