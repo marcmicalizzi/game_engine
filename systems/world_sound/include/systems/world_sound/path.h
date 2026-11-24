@@ -22,6 +22,20 @@ inline constexpr u32 k_path_bands = 8;
 /// dB a kilometre at 1 kHz and 76.6 at 8 kHz, the standard's own table (a case).
 f64 air_absorption_db_per_m(f64 f_hz, f64 temperature_c, f64 humidity_pct) noexcept;
 
+/// **The clip filter's two air figures** (S120), what the mixer's distance low-pass is handed
+/// (`audio::MixerConfig::air_db_per_m_8k`, `_1k`), as f32. The function above is ISO's through
+/// `std::pow` and `std::exp`, whose last bit is the C library's; the filter itself is `+ - * /`, a
+/// square root and ldexp. So at the default air (20 degC, 70 %, `FieldConfig`'s and the tunables')
+/// the figures are these constants, the standard's own as f32 (a case holds them to the function),
+/// and a session's render is the same on every toolchain by construction, not because f32 rounding
+/// happened to absorb a difference. Any other air is the function's, cast.
+inline constexpr f64 k_default_air_c = 20.0;
+inline constexpr f64 k_default_air_pct = 70.0;
+inline constexpr f32 k_default_air_db_per_m_8k = 0x1.3dfc42p-4f;  // 0.0776331499
+inline constexpr f32 k_default_air_db_per_m_1k = 0x1.4639cep-8f;  // 0.00497781066
+void clip_air_db_per_m(f64 temperature_c, f64 humidity_pct, f32& db_per_m_8k,
+                       f32& db_per_m_1k) noexcept;
+
 /// **The forest's excess attenuation**, dB, over `r_m` metres of path under canopy: Hoover's
 /// formula as Bies and Hansen give it, A = 0.01 r f^(1/3) (Arup's Strutt help, "Dense foliage
 /// excess attenuation", citing *Engineering Noise Control* p. 227).

@@ -417,10 +417,9 @@ bool SoundStage::open(const StageConfig& config, const scene::Sound* block, std:
   {
     const FieldConfig air = field_config_from_tunables();
     if (air.path) {
-      mixer_config.air_db_per_m_8k =
-          static_cast<f32>(air_absorption_db_per_m(8000.0, air.temperature_c, air.humidity_pct));
-      mixer_config.air_db_per_m_1k =
-          static_cast<f32>(air_absorption_db_per_m(1000.0, air.temperature_c, air.humidity_pct));
+      // S120: constants at the default air, the same on every toolchain (path.h).
+      clip_air_db_per_m(air.temperature_c, air.humidity_pct, mixer_config.air_db_per_m_8k,
+                        mixer_config.air_db_per_m_1k);
     }
   }
   audio::OutputConfig output_config;
