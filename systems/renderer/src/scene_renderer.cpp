@@ -9,6 +9,7 @@
 #include <domain/gfx/dispatch.h>
 #include <domain/gfx/display.h>
 #include <domain/gfx/gi_cache.h>
+#include <domain/gfx/light_grid.h>
 #include <domain/gfx/pipeline_batch.h>
 #include <domain/gfx/water_swash.h>
 #include <foundation/io/vfs.h>
@@ -134,6 +135,48 @@ constexpr u64 gi_stat_offset(u32 views, u32 cascades) noexcept {
 constexpr u64 sky_params_offset(u32 views) noexcept {
   return sizeof(gfx::ResolveParams) * views + k_view_lights * sizeof(gfx::ResolveLight) +
          sizeof(gfx::ShadowMapParams) + sizeof(gfx::GroundDetailParams);
+}
+// Where a slot's light grid is (gfx/light_grid.h; R87): behind the sky's block, on a 16-byte
+// boundary, its header and then at most `gfx::k_light_grid_words` words of cells.
+constexpr u64 light_grid_offset(u32 views) noexcept {
+  return (sky_params_offset(views) + sizeof(gfx::SkyParams) + 15) & ~u64{15};
+}
+constexpr u64 k_light_grid_room = sizeof(gfx::LightGrid) + u64{gfx::k_light_grid_words} * 4;
+// **Lights by reach** (renderer.md, "Lights by reach"; R87): off, no grid is built and every pixel
+// walks the whole light array, which is the same picture; the comparison's other side.
+tunables::Bool light_grid_on{
+    "renderer.lights.grid", true,
+    "Cull the frame's lights by reach: each pixel walks only the lights whose reach covers its "
+    "cell of a grid in the frame's space (R87); off, every pixel walks every light, the same "
+    "picture"};
+// **The lights by reach** (gfx/light_grid.h; renderer.md, "Lights by reach"; R87): builds the
+// frame's grid over `lighting`'s array — which of its lights reach each cell — on the CPU into
+// `cells`, from the array just written, and copies it behind the slot's sky block, which every
+// view's resolve reads beside the lights; returns the bytes from the array to it
+// (`gfx::ResolveParams::light_grid`), 0 for no grid.
+u32 write_light_grid(const FrameLighting& lighting, Vector<u32>& cells, u8* resolve_bytes,
+                     u32 views, u32& grid_cells, u32& grid_refs) noexcept {
+  grid_cells = 0;
+  grid_refs = 0;
+  gfx::LightGrid grid;
+  if (!light_grid_on.get() ||
+      !gfx::build_light_grid(
+          std::span<const gfx::ResolveLight>(lighting.lights, lighting.light_count),
+          std::span<u32>(cells.data(), cells.size()), grid)) {
+    return 0;
+  }
+  // A grid that leaves no light out where the eye stands (the frame's origin) culls little that a
+  // pixel near it would skip, and its walk costs more than the whole array's (four fires over a
+  // street: 0.04 ms of the resolve at 4K, R87's mend): the whole array, which is the same picture.
+  if (!gfx::light_grid_culls_at(grid, std::span<const u32>(cells.data(), cells.size()), Vec3{}))
+    return 0;
+  const u64 offset = light_grid_offset(views);
+  std::memcpy(resolve_bytes + offset, &grid, sizeof(grid));
+  std::memcpy(resolve_bytes + offset + sizeof(grid), cells.data(),
+              gfx::light_grid_bytes(grid) - sizeof(grid));
+  grid_cells = grid.cells;
+  grid_refs = grid.refs;
+  return static_cast<u32>(offset - sizeof(gfx::ResolveParams) * views);
 }
 // The depth atlas's format: 32-bit float, because a cascade's depth range is the scene's extent
 // along the light — kilometres on the desert overlook — and 16 bits of that is 8 cm.
@@ -581,6 +624,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   frame_fires_.reserve(k_max_fires);
   frame_lamps_.clear();
   frame_lamps_.reserve(k_max_lamps);
+  light_grid_cells_.resize(gfx::k_light_grid_words);
   resolved_ = resolved;
   desc_ = desc;
   width_ = desc.width;
@@ -775,7 +819,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
                             sizeof(gfx::CullParams) * (2 * views + cascades) +
                                 u64{views} * gfx::k_hidden_words * sizeof(u32),
                             k_address, true, params_[slot], error) &&
-         gfx::create_buffer(device, sky_params_offset(views) + sizeof(gfx::SkyParams), k_address,
+         gfx::create_buffer(device, light_grid_offset(views) + k_light_grid_room, k_address,
                             true, resolves_[slot], error) &&
          gfx::create_buffer(device, stat_bytes, gfx::BufferUsage::TransferDst, true,
                             stat_blocks_[slot], error);
@@ -3677,9 +3721,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   }
   sky_params_address_ = sky_address;
   // **The fires** (fire.h, renderer.md "Fires"): burnt at the world clock (clocks.h) — their
-  // flicker is motion, which runs at the world's rate and not the day's — and the nearest appended
-  // to the light array after the stand-in's or the sky's lights, so a frame with none fills the
-  // array as it always did.
+  // flicker is motion, which runs at the world's rate and not the day's — and every one appended
+  // to the light array after the stand-in's or the sky's lights (R87: the four nearest before), so
+  // a frame with none fills the array as it always did.
   // A fire's intensity is candela, and a sky's light is in sun units of 128,000 lux (sky.h).
   fires_.burn(frame.world_time_s, sky_on ? 1.0f / gfx::k_sky_sun_lux : 1.0f, frame_fires_);
   stats_.fires = static_cast<u32>(frame_fires_.size());
@@ -3688,8 +3732,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   fires_.burn_lamps(sky_on ? 1.0f / gfx::k_sky_sun_lux : 1.0f, frame_lamps_);
   stats_.lamp_lights = add_lamp_lights(frame_lamps_, frame.camera.position, lighting);
   stats_.lamps_refused = fires_.lamps_refused();
-  std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * views, lighting.lights,
-              sizeof(lighting.lights));
+  std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * views, lighting.lights,  // by count:
+              sizeof(gfx::ResolveLight) * lighting.light_count);  // no reader passes light_count
+  const u32 lights_grid = write_light_grid(lighting, light_grid_cells_, resolve_bytes, views,
+                                           stats_.light_grid_cells, stats_.light_grid_refs);  // R87
 
   // ---- the sun's cascades (shadow_cascades.h) -------------------------------------------------
   //
@@ -4267,6 +4313,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     resolve.mode = frame.view_mode == ~u32{0} ? settings.view_mode : frame.view_mode;
     resolve.lights = lights_address;
     resolve.light_count = lighting.light_count;
+    resolve.light_grid = lights_grid;
     // Where this view's picture goes in the target, and — for a Panini view — the map from an
     // output pixel back into the wider rectilinear source the rasterizers filled.
     resolve.view_x = view.rect.x;

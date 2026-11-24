@@ -1,0 +1,15 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "lantern-street held",
+  "description": "Held at a walker's height in the street's south-west corner, looking up the diagonal over the walls and the lamps' pools: nothing moves, so a benchmark along it measures the lights' cost alone.",
+  "fps": 60,
+  "interpolation": "Smooth",
+  "znear": 0.05,
+  "keys": [
+    {"time": 0, "fov_deg": 75, "position": [-29, 1.7, -29], "target": [4, 0.4, 4]},
+    {"time": 8, "fov_deg": 75, "position": [-29, 1.7, -29], "target": [4, 0.4, 4]}
+  ],
+  "markers": [
+    {"frame": 240, "name": "held"}
+  ]
+}

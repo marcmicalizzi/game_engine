@@ -215,7 +215,9 @@ struct ResolveParams {
   // attributes for its first `extra_vertices`, or 0 for none. A row of its own.
   uint64_t extra;
   uint extra_vertices;
-  uint extra_pad;
+  // Lights by reach (gfx::ResolveParams::light_grid; R87): bytes from `lights` to the frame's
+  // gfx::LightGrid, or 0 for none, and every pixel walks the whole array.
+  uint light_grid;
 };
 
 // **The resolve's split** (gfx::ResolveStop; renderer.md, "Where the resolve's time goes"; R115).
@@ -2065,8 +2067,15 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     // The analytic lights: inverse square windowed to zero at the radius, spots by their cone, and
     // a shadow ray that stops short of the light itself; a directional light (the moon) has neither
     // falloff nor end. The cascaded maps shadow only the light they were drawn from.
+    // **Only the lights that reach the point** (R87; renderer.md, "Lights by reach"): the leading
+    // lights with no reach, then the point's cell of the frame's grid in the array's order, which
+    // is every term the whole array adds here and in the same order (material.slang).
     ResolveLight* lights = (ResolveLight*)params->lights;
-    for (uint i = 0; i < params->light_count; ++i) {
+    LightWalk walk = light_walk_begin(
+        params->light_grid != 0 ? params->lights + uint64_t(params->light_grid) : uint64_t(0),
+        params->light_count, s.position);
+    uint i;
+    while (light_walk_next(walk, i)) {
       float3 light_dir;
       float3 radiance;
       float light_distance;

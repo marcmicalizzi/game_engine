@@ -1,0 +1,12 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R87",
+  "reason": "R87's mend: the review's corrections on the Lamps and Lights by reach sections (every fire, the room's bytes, the eye rule, the worst build, the 70 to 322 rays, the new cases)",
+  "date": "2026-11-24",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": 3,
+    "page:docs/subsystems/renderer.md": 7773,
+    "page:docs/subsystems/gfx.md": 938
+  }
+}

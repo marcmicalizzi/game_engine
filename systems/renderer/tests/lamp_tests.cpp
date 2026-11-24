@@ -1,14 +1,16 @@
-// Lamps (fire.h; docs/subsystems/renderer.md, "Lamps"; roadmap R86): the scene file's block and a
-// prop's, refused past the frame's room with the count, burnt steady, every one in the light array
-// behind the fires, a prop's lamp carried by its placed instances and counted past the room — and
-// on a GPU, a lamp-lit floor held to the BSDF's CPU reference (brdf_reference.h): shadowed by an
-// occluder under traced shadows as a point light is, unshadowed under the cascaded maps.
+// Lamps (fire.h; docs/subsystems/renderer.md, "Lamps" and "Lights by reach"; roadmap R86, R87): the
+// scene file's block and a prop's, refused past the frame's room with the count, burnt steady,
+// every one in the light array behind the fires, a prop's lamp carried by its placed instances and
+// counted past the room — and on a GPU, a lamp-lit floor held to the BSDF's CPU reference
+// (brdf_reference.h): shadowed by an occluder under traced shadows as a point light is, unshadowed
+// under the cascaded maps.
 
 #include "test_device.h"
 
 #include <core/math/world.h>
 #include <domain/gfx/device.h>
 #include <foundation/io/vfs.h>
+#include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/fire.h>
 #include <systems/renderer/gpu_scene.h>
@@ -23,6 +25,7 @@
 #include <brdf_reference.h>
 #include <cmath>
 #include <cstring>
+#include <span>
 #include <string>
 
 using namespace engine;
@@ -171,10 +174,10 @@ TEST_CASE("lamp: the light array takes every lamp, in order, behind what it has"
   CHECK(lighting.lights[2].position_radius.z == -5.0f);
   CHECK(lighting.lights[2].position_radius.w == 7.0f);
   CHECK(lighting.lights[2].direction_type.w == gfx::k_light_point);
-  // The array's room is the stand-in's two, the fires' four and every lamp: a full frame of each
+  // The array's room is the stand-in's two, every fire and every lamp (R87): a full frame of each
   // fits, and no more than `k_max_lamps` lamps are ever taken.
   FrameLighting roomy;
-  roomy.light_count = k_stand_in_lights + k_max_fire_lights;
+  roomy.light_count = k_stand_in_lights + k_max_fires;
   CHECK(add_lamp_lights(std::span<const FrameFire>(lamps, k_max_lamps + 3), eye, roomy) ==
         k_max_lamps - 1);
 }
@@ -355,12 +358,14 @@ struct LampRig {
   std::string error;
 
   bool build(const gfx::Device& device, const std::string& room, ShadowMode shadows,
-             const FireDesc* lamp) {
+             const FireDesc* lamp, std::span<const FireDesc> more = {}) {
     SceneDesc desc;
     desc.meshes.push_back(room);
     desc.cache = false;
     if (!load_scene(desc, data, error)) return false;
     if (lamp != nullptr) data.lamps.push_back(*lamp);
+    for (const FireDesc& light : more)
+      (light.lamp ? data.lamps : data.fires).push_back(light);
     RenderSettings settings;
     settings.shadows = shadows;
     settings.lights = false;  // the stand-in's two lights out: the lamp is the only point light
@@ -506,8 +511,8 @@ void lamp_on_the_floor(ShadowMode shadows, const char* name) {
       const f64 z1 = static_cast<f64>(k_slab_z);
       const f64 mx = 0.5 * (p.x + static_cast<f64>(lamp_at.x));
       const f64 mz = 0.5 * (p.z + static_cast<f64>(lamp_at.z));
-      const f64 edge = std::min(std::min(std::fabs(mx - x0), std::fabs(mx - x1)),
-                                std::fabs(std::fabs(mz) - z1));
+      const f64 edge =
+          std::min(std::min(std::fabs(mx - x0), std::fabs(mx - x1)), std::fabs(std::fabs(mz) - z1));
       if (edge < 0.08) continue;  // the pixel's footprint may straddle the shadow's edge
       const bool in_shadow = mx > x0 && mx < x1 && std::fabs(mz) < z1;
       brdf_ref::Surface surface;
@@ -551,6 +556,98 @@ void lamp_on_the_floor(ShadowMode shadows, const char* name) {
   CHECK(again.light == a.light);
 }
 
+// **Lights by reach** (gfx/light_grid.h; renderer.md, "Lights by reach"; R87): a floor under 63
+// lamps of short reach and six fires, the slab and the globe's cube among them, drawn with the
+// grid and without it (`renderer.lights.grid`) on one renderer: the same bytes in the linear light
+// the resolve wrote, because a light's windowed inverse square is exactly zero past its reach and
+// the walk keeps the array's order. The grid has to have culled for the comparison to mean
+// anything: its set bits are far fewer than its cells times its lights.
+void lights_by_reach(ShadowMode shadows, const char* name) {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(renderer_test::device_options(), &error) ||
+      !device.features().buffer_int64_atomics) {
+    MESSAGE("skipped: no device with 64-bit buffer atomics: " << error);
+    return;
+  }
+  const test::TempDir dir("renderer_lights_by_reach");
+  std::string room;
+  REQUIRE(write_room(dir, room));
+  Vector<FireDesc> lights;
+  for (u32 j = 0; j < 7; ++j) {
+    for (u32 i = 0; i < 9; ++i) {
+      FireDesc lamp;
+      lamp.lamp = true;
+      lamp.name = "lamp";
+      lamp.position = WorldPos{-5.0 + 1.25 * i, 0.3 + 0.15 * ((i + j) % 5), -4.5 + 1.5 * j};
+      lamp.intensity = 0.4f + 0.05f * static_cast<f32>((i * 7 + j) % 9);
+      lamp.color = Vec3{0.6f + 0.05f * static_cast<f32>(i % 5), 1.0f,
+                        0.5f + 0.08f * static_cast<f32>(j % 6)};
+      lamp.color = lamp.color * (1.0f / luminance(lamp.color));
+      lamp.reach_m = 0.9f + 0.25f * static_cast<f32>((i + 2 * j) % 6);
+      lights.push_back(lamp);
+    }
+  }
+  for (u32 k = 0; k < 6; ++k) {  // more than the four the array took before R87
+    FireDesc fire;
+    fire.name = "fire";
+    fire.position = WorldPos{-4.0 + 1.6 * k, 0.0, 4.0 - 1.2 * (k % 3)};
+    fire.radius_m = 0.2f;
+    fire.height_m = 0.5f;
+    fire.intensity = 0.02f;  // reaches 0.63 m (fire_light_reach)
+    fire.seed = 11 + k;
+    lights.push_back(fire);
+  }
+  LampRig rig;
+  if (!rig.build(device, room, shadows, nullptr, std::span<const FireDesc>(lights))) {
+    REQUIRE_MESSAGE(rig.error == "unavailable", rig.error);
+    MESSAGE("skipped: " << std::string(name) << " is not available here");
+    return;
+  }
+  FrameDesc frame;
+  frame.camera.position = WorldPos{0.0, 9.0, 7.5};
+  frame.camera.target = WorldPos{0.0, 0.0, 0.0};
+  frame.camera.fov_y = 70.0f * k_pi / 180.0f;
+  frame.camera.znear = 0.05f;
+  frame.world_time_s = 3.25;  // the fires flicker by the clock: one clock for both frames
+  CaptureChannels channels;
+  channels.color = false;  // the rig's target is linear: its picture is the light channel
+  channels.light = true;
+  struct Restore {
+    ~Restore() { (void)tunables::apply_overrides("renderer.lights.grid=true"); }
+  } restore;
+  REQUIRE(tunables::apply_overrides("renderer.lights.grid=true"));
+  CapturedFrame culled, whole;
+  REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, culled, &rig.error), rig.error);
+  const auto on = rig.renderer.stats();
+  REQUIRE(tunables::apply_overrides("renderer.lights.grid=false"));
+  REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, whole, &rig.error), rig.error);
+  const auto off = rig.renderer.stats();
+  CHECK(on.lamp_lights == 63);
+  CHECK(on.fire_lights == 6);
+  CHECK(on.light_grid_cells > 100);
+  CHECK(off.light_grid_cells == 0);
+  CHECK(off.light_grid_refs == 0);
+  // It culled: on average a cell holds a small share of the 69 lights.
+  const f64 per_cell = static_cast<f64>(on.light_grid_refs) / on.light_grid_cells;
+  MESSAGE(std::string(name) << ": " << on.light_grid_cells << " cells, " << on.light_grid_refs
+                            << " set bits, " << per_cell << " lights a cell of 69");
+  CHECK(per_cell < 8.0);
+  REQUIRE(culled.light.size() == size_t{k_width} * k_height * 3);
+  REQUIRE(whole.light.size() == culled.light.size());
+  u32 differ = 0;
+  for (u32 i = 0; i < culled.light.size(); ++i)
+    differ += culled.light[i] != whole.light[i];
+  MESSAGE(std::string(name) << ": " << differ << " light values differ with the grid off");
+  CHECK(differ == 0);
+  CHECK(culled.light == whole.light);
+  // And the floor is lit: the lamps reach it (the frame is not the moonless dark of none).
+  u32 lit = 0;
+  for (u32 i = 0; i < culled.light.size(); ++i)
+    lit += culled.light[i] > 1e-3f;
+  CHECK(lit > culled.light.size() / 8);
+}
+
 }  // namespace
 
 TEST_CASE("lamp: a lamp-lit floor is the model's, shadowed by a slab under traced shadows") {
@@ -559,4 +656,12 @@ TEST_CASE("lamp: a lamp-lit floor is the model's, shadowed by a slab under trace
 
 TEST_CASE("lamp: a lamp-lit floor is the model's, unshadowed under the cascaded maps") {
   lamp_on_the_floor(ShadowMode::Cascaded, "--shadows csm");
+}
+
+TEST_CASE("lamp: lights culled by reach draw the bytes of every light, under traced shadows") {
+  lights_by_reach(ShadowMode::RayTraced, "--shadows rt");
+}
+
+TEST_CASE("lamp: lights culled by reach draw the bytes of every light, under the cascaded maps") {
+  lights_by_reach(ShadowMode::Cascaded, "--shadows csm");
 }

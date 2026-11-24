@@ -1282,7 +1282,11 @@ struct ResolveParams {
   // How many vertices `extra` covers: the scene's own, so a terrain ring's slot vertices past them
   // read the record's defaults rather than past the buffer.
   u32 extra_vertices = 0;
-  u32 extra_pad = 0;
+  // **Lights by reach** (light_grid.h; renderer.md, "Lights by reach"; R87): bytes from `lights` to
+  // the frame's `LightGrid` and its cells, which the caller writes behind the array, or 0 for none,
+  // and every pixel then walks all `light_count` lights as it always did. The same picture either
+  // way. It took the row's pad word, so the block's size is unchanged.
+  u32 light_grid = 0;
 };
 // `ResolveParams::water_open_instance` when the scene has no open water.
 inline constexpr u32 k_no_water_open = 0xffffffffu;

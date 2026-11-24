@@ -99,17 +99,18 @@ struct FrameFire {
   u32 seed = 1;
 };
 
-// A frame's fires, the scene's and its placed props' together.
+// A frame's fires, the scene's and its placed props' together, and the light array's room for
+// them: **every one is lit** (`add_fire_lights`, R87), in their order. Until R87 the array took the
+// four nearest the eye, which put a fire's light out and lit another as the eye walked past them.
 inline constexpr u32 k_max_fires = 64;
-// The light array's room for them (lighting.h's `k_frame_lights`), nearest the eye first.
-inline constexpr u32 k_max_fire_lights = 4;
 // **A frame's lamps**, the scene's and its placed props' together, and the light array's room for
 // them: every one is lit (`add_lamp_lights`). A scene file naming more is refused with the count;
 // a tail placing more keeps the first `k_max_lamps` in its order and counts the rest
-// (`FireSet::lamps_refused`, `Stats::lamps_refused`), never dropping one unsaid. The resolve walks
-// every light of the array at every pixel (a lamp past its reach costs a distance test), which is
-// what the next row, lights by reach (R87), changes.
-inline constexpr u32 k_max_lamps = 64;
+// (`FireSet::lamps_refused`, `Stats::lamps_refused`), never dropping one unsaid. A pixel walks only
+// the lights whose reach covers it (gfx/light_grid.h, R87), so the room is memory — 64 bytes a
+// light in each frame slot's array, and a word a cell for each 32 lights in its grid — and not a
+// cost at every pixel; it was 64 before R87 and is 256 since.
+inline constexpr u32 k_max_lamps = 256;
 // Where the light stands: this share of the flame's height above its base.
 inline constexpr f32 k_fire_light_height = 0.45f;
 // The light's reach: where its inverse square has fallen to this illuminance (lux with a sky), so a
@@ -148,8 +149,9 @@ FrameFire burn_fire(const FireDesc& desc, const WorldPos& base, f32 scale, f64 t
 FrameFire burn_lamp(const FireDesc& desc, const WorldPos& base, f32 scale,
                     f32 units = 1.0f) noexcept;
 
-// **The light array's fires**: up to `k_max_fire_lights` of `fires` — nearest the eye first, ties
-// by their order — as point lights appended to `out` after the lights it has, in the frame's space
+// **The light array's fires**: every one of `fires` that burns (at most `k_max_fires`), in their
+// order — never by distance from the eye, so neither the set nor its order changes as the eye
+// moves — as point lights appended to `out` after the lights it has, in the frame's space
 // (measured from `eye` in f64), while the array has room. Returns how many it added.
 u32 add_fire_lights(std::span<const FrameFire> fires, const WorldPos& eye,
                     FrameLighting& out) noexcept;

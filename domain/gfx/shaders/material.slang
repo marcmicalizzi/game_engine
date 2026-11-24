@@ -975,6 +975,75 @@ bool light_sample(ResolveLight light, float3 position, out float3 direction, out
   return true;
 }
 
+// ---- lights by reach (R87; renderer.md, "Lights by reach"; gfx/light_grid.h) -------------------
+//
+// Mirrors gfx::LightGrid (48 bytes); its cells follow it, `uint[cells * words]`. A light's
+// windowed inverse square is exactly zero past its reach, so a walk that visits the array's leading
+// lights (`[0, first)`, the ones with no reach) and then the set bits of the point's cell in
+// increasing order adds the very terms the whole walk adds, in the same order. Any point — a pixel,
+// a reflection's hit, a bounce's hit — asks with its own position in the frame's space.
+struct LightGrid {
+  float4 origin_inv_cell;  // xyz the grid's low corner, w 1 / the cell's edge
+  uint4 dims_words;        // xyz cells along each axis, w u32 words a cell
+  uint first;              // lights [0, first) are walked everywhere
+  uint count;              // the light count it was built for
+  uint refs;               // statistics; no shader reads it
+  uint cells;
+};
+static const uint64_t k_light_grid_header_bytes = 48;
+
+struct LightWalk {
+  uint next;   // the next leading light
+  uint first;  // where the leading lights end and the cell's bits begin
+  uint word;   // the cell's word being walked
+  uint words;  // 0 outside the grid: no light past `first` reaches the point
+  uint bits;   // what is left of `word`
+  uint64_t cell;
+};
+
+// `grid` 0: no grid, the whole array of `light_count` is walked as it always was.
+LightWalk light_walk_begin(uint64_t grid, uint light_count, float3 position) {
+  LightWalk w;
+  w.next = 0;
+  w.first = light_count;
+  w.word = 0;
+  w.words = 0;
+  w.bits = 0;
+  w.cell = 0;
+  if (grid == 0) return w;
+  LightGrid* g = (LightGrid*)grid;
+  w.first = min(g->first, light_count);
+  const float3 c = (position - g->origin_inv_cell.xyz) * g->origin_inv_cell.w;
+  const uint3 dims = g->dims_words.xyz;
+  if (all(c >= float3(0.0)) && all(c < float3(dims))) {
+    const uint3 i = min(uint3(c), dims - uint3(1));
+    w.words = g->dims_words.w;
+    w.cell = grid + k_light_grid_header_bytes +
+             uint64_t(((i.z * dims.y + i.y) * dims.x + i.x) * w.words) * 4;
+    w.bits = ((uint*)w.cell)[0];
+  }
+  return w;
+}
+
+// The next light to visit, in the array's order; false when the walk is over.
+bool light_walk_next(inout LightWalk w, out uint index) {
+  index = 0;
+  if (w.next < w.first) {
+    index = w.next;
+    w.next += 1;
+    return true;
+  }
+  while (w.bits == 0) {
+    w.word += 1;
+    if (w.word >= w.words) return false;
+    w.bits = ((uint*)w.cell)[w.word];
+  }
+  const uint b = firstbitlow(w.bits);
+  w.bits &= w.bits - 1u;
+  index = w.first + w.word * 32u + b;
+  return true;
+}
+
 // ---- the environment: the sky above the horizon, the ground below it ---------------------------
 //
 // What the resolve's indirect term stands for and what the path tracer's escaped rays pick up, so

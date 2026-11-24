@@ -11,6 +11,7 @@
 #include <domain/gfx/flora_motion.h>
 #include <domain/gfx/formation.h>
 #include <domain/gfx/gi_cache.h>
+#include <domain/gfx/light_grid.h>
 #include <domain/gfx/ground_detail.h>
 #include <domain/gfx/motion.h>
 #include <domain/gfx/path_trace.h>
@@ -442,6 +443,15 @@ static_assert(offsetof(gfx::FormationBedGpu, start_m) == 64);
 static_assert(offsetof(gfx::FormationBedGpu, base_amp_m) == 80);
 
 ENGINE_EXPECT_SIZE(64, 4, gfx::ResolveLight);
+// The frame's light grid's header (light_grid.h, R87), mirrored in material.slang; its cells follow.
+ENGINE_EXPECT_SIZE(48, 4, gfx::LightGrid);
+// Its fields where material.slang's `LightGrid` reads them: a float4, then eight uints.
+static_assert(offsetof(gfx::LightGrid, dims_x) == 16);
+static_assert(offsetof(gfx::LightGrid, words) == 28);
+static_assert(offsetof(gfx::LightGrid, first) == 32);
+static_assert(offsetof(gfx::LightGrid, count) == 36);
+static_assert(offsetof(gfx::LightGrid, refs) == 40);
+static_assert(offsetof(gfx::LightGrid, cells) == 44);
 
 // The RHI's own vocabulary (rhi.h, docs/subsystems/gfx.md "The RHI surface and the backend
 // surface"). A handle carries the bits of the Vulkan handle it replaced, so it is that handle's 8
