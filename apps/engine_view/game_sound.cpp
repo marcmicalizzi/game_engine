@@ -401,6 +401,12 @@ void GameSoundHost::attach_water(const renderer::SceneData& scene) {
     const scene::WaterChannel& c = info.water->channel_source;
     const u32 n = static_cast<u32>(c.points.size());
     if (n < 2 || c.discharge_m3s.size() != n || c.flags.size() != n) continue;
+    // **A run of stations is one stretch up to `k_stretch_join_m`** (the forest staging's solve
+    // writes 39,142 stretches of a few metres; S113's first flight): neighbouring stretches that
+    // are not falls, carry the same water within a tenth and give up some level are joined, their
+    // drops summed and the wider wet width kept, so a line of 32 m is one source — what its sound
+    // is from more than a few metres off.
+    bool run = false;
     for (u32 i = 0; i + 1 < n; ++i) {
       world_sound::Stretch s;
       s.a = c.points[i];
@@ -414,7 +420,25 @@ void GameSoundHost::attach_water(const renderer::SceneData& scene) {
       s.fall = (c.flags[i] & scene_gen::k_channel_fall_lip) != 0 &&
                (c.flags[i + 1] & scene_gen::k_channel_fall_foot) != 0;
       s.lands_on_water = s.fall && c.depth_m.size() == n && c.depth_m[i + 1] >= 0.1f;
-      if (s.drop_m > 0.0f && s.discharge_m3s > 0.0f) stretches_.push_back(s);
+      if (!(s.drop_m > 0.0f) || !(s.discharge_m3s > 0.0f)) {
+        run = false;
+        continue;
+      }
+      if (run && !s.fall) {
+        world_sound::Stretch& p = stretches_.back();
+        const f64 dx = s.b.x - p.a.x, dy = s.b.y - p.a.y, dz = s.b.z - p.a.z;
+        const f32 dq = s.discharge_m3s - p.discharge_m3s;
+        if (dx * dx + dy * dy + dz * dz <= k_stretch_join_m * k_stretch_join_m &&
+            (dq < 0.0f ? -dq : dq) <= 0.1f * p.discharge_m3s) {
+          p.b = s.b;
+          p.drop_m += s.drop_m;
+          p.wet_width_m = p.wet_width_m > s.wet_width_m ? p.wet_width_m : s.wet_width_m;
+          p.froude = p.froude > s.froude ? p.froude : s.froude;
+          continue;
+        }
+      }
+      stretches_.push_back(s);
+      run = !s.fall;
     }
   }
   // The bodies' surf: each body instance's records, from the field the GPU scene draws its waves

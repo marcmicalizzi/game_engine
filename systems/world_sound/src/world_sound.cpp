@@ -737,6 +737,16 @@ JsonValue SoundStage::summary_json() const {
     world.set("fall_voices", JsonValue(static_cast<u64>(w.fall_voices)));
     world.set("surf_voices", JsonValue(static_cast<u64>(w.surf_voices)));
     world.set("bubbles", JsonValue(w.bubbles));
+    // Each kind's mean level at the listener over the run, dB SPL after the hold, and the ticks on
+    // which running water stood over the wind's own (S113: a listening run's levels by kind).
+    JsonValue levels = JsonValue::object();
+    const char* names[WorldField::k_level_kinds] = {"crowns",  "beds",  "beds_water", "ears",
+                                                    "streams", "falls", "surf"};
+    for (u32 k = 0; k < WorldField::k_level_kinds; ++k)
+      levels.set(names[k], JsonValue(impl_->field.mean_level_db(k)));
+    world.set("levels_db", std::move(levels));
+    world.set("water_over_wind_ticks", JsonValue(impl_->field.water_over_wind_ticks()));
+    world.set("level_ticks", JsonValue(impl_->field.level_ticks()));
     world.set("held_db", JsonValue(static_cast<f64>(w.held_db)));
     world.set("held_ticks", JsonValue(w.held_ticks));
     world.set("place_retries", JsonValue(w.place_retries));

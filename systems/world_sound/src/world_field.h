@@ -42,6 +42,7 @@ struct FieldConfig {
   u32 falls = 4;
   u32 surfs = 3;
   u32 max_water = 4096;
+  f64 water_reach_m = 800.0;  // a stream or a stretch of surf past this is not summed
 };
 FieldConfig field_config_from_tunables() noexcept;
 // The water's tunables (S113, `audio.world.streams` and its neighbours; water_field.cpp).
@@ -185,6 +186,20 @@ class WorldField {
   // bubbles a trickle's voice strikes.
   void tick_water(const WorldPos& frame, bool frame_moved) noexcept;
   void strike_bubbles(Voice& v, WaterVoice& w, f64 now_s, f64 dt) noexcept;
+  // Each kind's power at the listener summed over the ticks (after the hold), for the summary's
+  // levels by kind: what a listening run reads without soloing each kind in turn.
+  void account_levels() noexcept;
+
+ public:
+  // The mean level of each kind over the ticks so far, dB SPL (-1000: never heard): crowns,
+  // beds (all), beds' water, the ears, streams, falls, surf; and the ticks on which the streams
+  // and falls stood over the wind's own (the crowns, the ears and the beds' wind).
+  static constexpr u32 k_level_kinds = 7;
+  f64 mean_level_db(u32 kind) const noexcept;
+  u64 water_over_wind_ticks() const noexcept { return water_over_wind_; }
+  u64 level_ticks() const noexcept { return level_ticks_; }
+
+ private:
   bool water_voice(const Voice& v) const noexcept {
     return v.kind == WorldVoiceKind::Stream || v.kind == WorldVoiceKind::Fall ||
            v.kind == WorldVoiceKind::Surf;
@@ -227,6 +242,10 @@ class WorldField {
   Vector<WaterVoice> water_voices_;
   u32 water_first_ = 0;
   f64 surf_shape_mean_ = 1.0;  // the surf envelope's mean over a period, for its normalisation
+  f64 cull_power_ = 0.0;       // a stretch under this before its path is not taken (floor - 20 dB)
+  f64 level_sum_[k_level_kinds] = {};
+  u64 level_ticks_ = 0;
+  u64 water_over_wind_ = 0;
 };
 
 }  // namespace engine::world_sound

@@ -155,6 +155,8 @@ class GameSoundHost {
   // (`renderer::water_surf_records`, one a 16 m square where its train breaks), made once when the
   // scene is attached. The fields of the description read: `points`, `discharge_m3s`, `depth_m`,
   // `wet_left_m`, `wet_right_m`, `froude`, `flags`.
+  // Neighbouring stretches that carry the same water join into one up to this long (S113).
+  static constexpr f64 k_stretch_join_m = 32.0;
   static void visit_flow(void* user, const WorldPos& centre, f64 reach_m,
                          const world_sound::StretchSink& sink);
   static void visit_surf(void* user, const WorldPos& centre, f64 reach_m,

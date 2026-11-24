@@ -1020,4 +1020,54 @@ TEST_CASE("water: an open body's sea goes on past its outline to the horizon, an
   }
   device.destroy();
 }
+
+// S113 (world_sound.md, "Running water and the surf"): where a body's train breaks, for a host's
+// ears — read from the field the GPU scene draws its waves from (`water_surface_of`, the same
+// function), so a record's arrival is the drawn train's at its texel. A still lake has no train and
+// no record; a lake under 7 m/s has records along its shore, each at the limit and in water.
+TEST_CASE("water: the surf records are where the drawn train breaks, and none without a train") {
+  const test::TempDir tmp("water_surf_records");
+  constexpr const char* k_large = R"({"size": 129, "extent": 1024, "seed": 2, "dune_height": 0,
+      "basins": [{"center": [0, 0], "radius": 350, "depth": 10}]})";
+  const auto read = [&](const char* name, const char* wind) {
+    const std::string text =
+        std::string(R"({"format": "engine.scene.v1", "name": "surf-test", "terrain": )") + k_large +
+        R"(, "water": [{"name": "lake", "level_m": -2, "wind_follow": false, "direction_deg": 30,
+        "shape": {"fill": {"seed": [0, 0, 0], "max_extent_m": 900}}, "wind_m_s": )" +
+        wind + "}]}\n";
+    const std::string path = tmp.file(name);
+    REQUIRE(write_text(path, text));
+    SceneDesc desc;
+    std::string error;
+    REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
+    REQUIRE(desc.mesh_info.size() >= 1u);
+    REQUIRE(desc.mesh_info[0].water.has_value());
+    return *desc.mesh_info[0].water;
+  };
+  Vector<SurfRecord> records;
+  water_surf_records(read("still.json", "0"), 16.0, records);
+  CHECK(records.empty());
+  const SceneWater lake = read("lake.json", "7");
+  water_surf_records(lake, 16.0, records);
+  MESSAGE("a 700 m lake under 7 m/s: " << records.size() << " surf records");
+  REQUIRE(!records.empty());
+  // The same field, built as the GPU scene builds it: each record's arrival is its texel's.
+  gfx::WaterSurface surface;
+  Vector<f32> field;
+  water_surface_of(lake, water_swash_numbers(lake), surface, field);
+  const SceneWaterDepth& map = lake.depth;
+  for (const SurfRecord& r : records) {
+    const u32 i = static_cast<u32>(std::lround((r.at.x - map.origin.x) / map.texel_m));
+    const u32 j = static_cast<u32>(std::lround((r.at.y - map.origin.y) / map.texel_m));
+    REQUIRE(i < map.size);
+    REQUIRE(j < map.size);
+    const f32* t = field.data() + u64{gfx::k_water_field_channels} * (u64{j} * map.size + i);
+    CHECK(r.arrival_s == t[1]);
+    CHECK(t[0] > 0.0f);  // in the water
+    CHECK(r.height_m == doctest::Approx(0.78f * t[0]));
+    CHECK(r.period_s == surface.period_s);
+    CHECK(r.power_w_m > 0.0f);
+    CHECK(std::fabs(r.along.x * r.along.x + r.along.y * r.along.y - 1.0f) < 1e-4f);
+  }
+}
 #endif

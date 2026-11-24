@@ -238,6 +238,7 @@ void WorldField::open(audio::Mixer* mixer, u32 tick_hz, const FieldConfig& confi
     voices_[i].info.kind = voices_[i].kind;
   }
   surf_shape_mean_ = surf_envelope_mean();  // water_field.cpp
+  cull_power_ = pow10(config_.floor_db - 20.0);
   for (u32 c = 0; c < 3; ++c) {
     f64 sum = 0.0;
     for (u32 b = 0; b < 8; ++b)
@@ -959,6 +960,7 @@ void WorldField::tick(const WorldPos& listener, const Vec3& forward, const World
     stats_.held_db = static_cast<f32>(10.0 * std::log10(factor));
     ++stats_.held_ticks;
   }
+  account_levels();  // the summary's levels by kind (S113; water_field.cpp)
   for (u32 i = 0; i < voices_.size(); ++i) {
     Voice& v = voices_[i];
     if (v.kind == WorldVoiceKind::Crown) {

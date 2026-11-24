@@ -23,6 +23,8 @@
 //                      apart from its arithmetic
 //   audio.mix.noise    shaped-noise voices (noise_voice.h; S112) positioned around the listener,
 //                      every lane sounding and a ramp in flight: what a world voice costs
+//   audio.mix.noise_struck  the same with every voice's four resonators ringing (S113): a
+//                      trickle's bubbles at their most
 //   audio.mix.stream   the first with every voice streamed: the callback reading each voice's ring
 //                      instead of its clip. The fills run between blocks with the clock stopped,
 //                      so the row is the audio thread's cost alone, beside `audio.mix.3d`'s
@@ -167,7 +169,7 @@ namespace {
 // every band and the movable band sounding, every voice's gains ramping (a `set_noise` a voice
 // every fifth block, as a world field is described again each tick): the generator, nine biquads,
 // the source model and the panner — what the design's 27 world voices cost the audio thread.
-void run_noise(bench::State& state) {
+void run_noise(bench::State& state, bool struck = false) {
   const u32 voices = static_cast<u32>(state.arg());
   ClipStore clips;
   MixerConfig config;
@@ -197,6 +199,12 @@ void run_noise(bench::State& state) {
       for (const VoiceHandle h : handles)
         mixer.set_noise(h, n);
     }
+    if (struck) {
+      // Every resonator of every voice struck afresh each block (a 1 kHz bubble rings about 106 ms,
+      // so all four ring throughout): the most a trickle's voice can ask (S113).
+      for (const VoiceHandle h : handles)
+        mixer.strike_noise(h, noise_strike(block % k_noise_resonators, 1000.0f, 87.0f, 0.01f));
+    }
     mixer.render(out.data(), 480);
     mixer.update();
     bench::keep(out[0]);
@@ -207,6 +215,8 @@ void run_noise(bench::State& state) {
 }  // namespace
 
 ENGINE_BENCH_ARGS(mix_noise, "audio.mix.noise", 1, 27, 64) { run_noise(state); }
+// `audio.mix.noise_struck`: the same with every voice's four resonators ringing (S113).
+ENGINE_BENCH_ARGS(mix_noise_struck, "audio.mix.noise_struck", 1, 27) { run_noise(state, true); }
 
 namespace {
 

@@ -864,7 +864,9 @@ TEST_CASE(
   c.flags = {0, 0, scene_gen::k_channel_fall_lip, scene_gen::k_channel_fall_foot, 0};
   scene.mesh_info[0].water = water;
   host.attach_scene(scene);
-  CHECK(host.stretches() == 3u);  // the still pool's stretch is left out
+  // The reach's two stretches joined into one (12 m: under `k_stretch_join_m`), the fall, and the
+  // still pool's stretch left out.
+  CHECK(host.stretches() == 2u);
   struct Seen {
     u32 falls = 0;
     u32 on_water = 0;

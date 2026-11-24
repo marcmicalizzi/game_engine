@@ -28,6 +28,9 @@ tunables::Int world_streams{"audio.world.streams", 4, 0, 16,
 tunables::Int world_falls{"audio.world.falls", 4, 0, 16, "Falls heard as voices of their own"};
 tunables::Int world_surfs{"audio.world.surf", 3, 0, 16,
                           "Stretches of surf heard as voices of their own"};
+tunables::Float world_water_reach{
+    "audio.world.water_reach_m", 800.0, 10.0, 20000.0,
+    "A stream or surf farther than this is not summed (a fall: reach_m)"};
 tunables::Int world_max_water{
     "audio.world.max_water", 4096, 0, 1 << 20,
     "Stretches and surf a refresh takes from the tables; the rest counted"};
@@ -159,6 +162,7 @@ void water_config_from_tunables(FieldConfig& c) noexcept {
   c.falls = static_cast<u32>(world_falls.get());
   c.surfs = static_cast<u32>(world_surfs.get());
   c.max_water = static_cast<u32>(world_max_water.get());
+  c.water_reach_m = world_water_reach.get();
 }
 
 void WorldField::water_path(f64 dx, f64 dy, f64 dz, f64 height, f64 (&path)[8]) const noexcept {
@@ -241,7 +245,17 @@ void WorldField::refresh_water(const WorldPos& listener) noexcept {
       WorldField& f = *k.self;
       const f64 q = st.discharge_m3s > 0.0f ? static_cast<f64>(st.discharge_m3s) : 0.0;
       const f64 h = st.drop_m > 0.0f ? static_cast<f64>(st.drop_m) : 0.0;
+      ++f.stats_.stretches_seen;
       if (!(q > 0.0) || !(h > 0.0)) return;  // no flow, or still water: nothing given up
+      // A stream past `audio.world.water_reach_m` is not taken (a fall is, to the whole reach):
+      // the forest staging's walk sent 39,142 stretches a refresh within 2 km, at 10 ms.
+      if (!st.fall) {
+        const f64 mx = 0.5 * (st.a.x + st.b.x) - k.listener.x,
+                  mz = 0.5 * (st.a.z + st.b.z) - k.listener.z;
+        const f64 hx = 0.5 * (st.b.x - st.a.x), hz = 0.5 * (st.b.z - st.a.z);
+        const f64 far = std::sqrt(mx * mx + mz * mz) - std::sqrt(hx * hx + hz * hz);
+        if (far > f.config_.water_reach_m) return;
+      }
       WaterSource s;
       s.kind = st.fall ? WorldVoiceKind::Fall : WorldVoiceKind::Stream;
       f64 shape[8];
@@ -288,6 +302,9 @@ void WorldField::refresh_water(const WorldPos& listener) noexcept {
         s.bubbles_hz = s.trickle > 0.0 ? (rate < k_bubbles_max_hz ? rate : k_bubbles_max_hz) : 0.0;
       }
       const f64 power = intensity / k_intensity_ref;
+      // A stretch 20 dB under the floor before its path is not taken: a thousand of them summed in
+      // a bed would still be at the floor.
+      if (!(power > f.cull_power_)) return;
       const f64 dx = s.at.x - k.listener.x, dy = s.at.y - k.listener.y, dz = s.at.z - k.listener.z;
       s.dist = std::sqrt(dx * dx + dz * dz);
       if (dx * dx + dy * dy + dz * dz > f.config_.reach_m * f.config_.reach_m) return;
@@ -300,13 +317,16 @@ void WorldField::refresh_water(const WorldPos& listener) noexcept {
       // Identity: where the stretch starts and ends (a fall: its foot), so a stretch keeps its
       // voice across refreshes while the listener moves along it.
       s.key = key_of(st.a, key_of(st.b, st.fall ? 0xfa11ull : 0x5eull));
-      ++f.stats_.stretches_seen;
       f.take_water(s);
     }
     static void surf(void* user, const Surf& su) noexcept {
       Sink& k = *static_cast<Sink*>(user);
       WorldField& f = *k.self;
       if (!(su.power_w_m > 0.0f) || !(su.length_m > 0.0f) || !(su.period_s > 0.0f)) return;
+      const f64 sx = su.at.x - k.listener.x, sz = su.at.z - k.listener.z;
+      if (std::sqrt(sx * sx + sz * sz) - 0.5 * static_cast<f64>(su.length_m) >
+          f.config_.water_reach_m)
+        return;
       const f64 xi = static_cast<f64>(su.surf_similarity);
       const f64 watts_m =
           k.eff * static_cast<f64>(su.power_w_m) * (xi > 2.0 ? k_surging_share : 1.0);
@@ -448,6 +468,55 @@ void WorldField::tick_water(const WorldPos& frame, bool frame_moved) noexcept {
     v.spread = s.spread;
     v.needs_place = v.needs_place || moved || frame_moved;
   }
+}
+
+void WorldField::account_levels() noexcept {
+  // After the hold: each voice's bands as described this tick (a trickle's bubbles in its level),
+  // the beds' water share scaled by the hold's factor.
+  const f64 held = std::pow(10.0, static_cast<f64>(stats_.held_db) / 10.0);
+  f64 p[k_level_kinds] = {};
+  for (u32 i = 0; i < voices_.size(); ++i) {
+    const Voice& v = voices_[i];
+    f64 sum = 0.0;
+    for (const f64 b : v.bands)
+      sum += b;
+    switch (v.kind) {
+      case WorldVoiceKind::Crown: p[0] += sum; break;
+      case WorldVoiceKind::Bed: {
+        p[1] += sum;
+        if (sum > 0.0) {
+          const Bed& b = beds_[i - config_.crowns];
+          for (const f64 w : b.water)
+            p[2] += w > 0.0 ? w * held : 0.0;
+        }
+        break;
+      }
+      case WorldVoiceKind::EarLeft:
+      case WorldVoiceKind::EarRight: p[3] += sum; break;
+      case WorldVoiceKind::Stream:
+      case WorldVoiceKind::Fall:
+      case WorldVoiceKind::Surf: {
+        const WaterSource& s = water_voices_[i - water_first_].source;
+        const bool heard =
+            v.key != 0 && (config_.solo == 0 || config_.solo == static_cast<u32>(v.kind) - 1u);
+        const f64 bubbles = heard ? s.total * s.trickle : 0.0;
+        p[4 + static_cast<u32>(v.kind) - static_cast<u32>(WorldVoiceKind::Stream)] += sum + bubbles;
+        break;
+      }
+      default: break;
+    }
+  }
+  for (u32 k = 0; k < k_level_kinds; ++k)
+    level_sum_[k] += p[k];
+  ++level_ticks_;
+  const f64 wind = p[0] + p[3] + (p[1] - p[2] > 0.0 ? p[1] - p[2] : 0.0);
+  if (p[4] + p[5] > wind) ++water_over_wind_;
+}
+
+f64 WorldField::mean_level_db(u32 kind) const noexcept {
+  if (kind >= k_level_kinds || level_ticks_ == 0) return -1000.0;
+  const f64 mean = level_sum_[kind] / static_cast<f64>(level_ticks_);
+  return mean > 0.0 ? 10.0 * std::log10(mean) : -1000.0;
 }
 
 void WorldField::strike_bubbles(Voice& v, WaterVoice& w, f64 now_s, f64 dt) noexcept {
