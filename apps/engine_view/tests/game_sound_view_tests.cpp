@@ -885,7 +885,7 @@ TEST_CASE(
   CHECK(seen.height == doctest::Approx(4.0f));
   // Heard from 8 m off the fall: a fall's voice and the reach's.
   for (u32 i = 0; i < 30; ++i)
-    host.tick_at(WorldPos{12.0, 7.0, 8.0}, Vec3{0.0f, 0.0f, -1.0f}, gfx::WindLive{}, 0.0);
+    host.tick_at(WorldPos{12.0, 7.0, 8.0}, Vec3{0.0f, 0.0f, -1.0f}, gfx::WindLive{}, 0.0, 0.0);
   CHECK(host.stage().world_stats().fall_voices == 1u);
   CHECK(host.stage().world_stats().stream_voices >= 1u);
   std::string close_error;
