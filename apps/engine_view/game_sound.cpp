@@ -736,10 +736,10 @@ void attach_solo_session(FlySession& session, f64 sky_start_s, f64 sun_rate,
 void attach_solo_tiles(void* placements) noexcept {
   if (GameSoundHost* h = solo_world()) h->attach_tiles(placements);
 }
-void set_solo_flight_clock(f64 sky_start_s, f64 sun_rate, f64 world_rate) noexcept {
-  g_flight_sky_start_s = sky_start_s;
-  g_flight_sun_rate = sun_rate;
-  g_flight_world_rate = world_rate;
+void set_solo_flight_clock(const renderer::FlightOptions& flight) noexcept {
+  g_flight_sky_start_s = flight.sky_start_s;
+  g_flight_sun_rate = flight.sun_rate;
+  g_flight_world_rate = flight.world_rate;
 }
 void solo_flight_frame(const renderer::FlightStep& step) noexcept {
   GameSoundHost* h = solo_world();

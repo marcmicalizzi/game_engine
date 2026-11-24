@@ -48,7 +48,7 @@ inline i64 solo_sound_ns() noexcept { return 0; }
 inline void attach_solo_scene(const renderer::SceneData&) {}
 inline void attach_solo_session(FlySession&, f64, f64, f64) noexcept {}
 inline void attach_solo_tiles(void*) noexcept {}
-inline void set_solo_flight_clock(f64, f64, f64) noexcept {}
+inline void set_solo_flight_clock(const auto&) noexcept {}
 inline void solo_flight_frame(const renderer::FlightStep&) noexcept {}
 inline void print_solo_summary() {}
 }  // namespace engine::view
@@ -3715,8 +3715,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       Vector<std::optional<scene::FrameTerrain>> terrain_of;
       if (time_lapse.active()) terrain_of.resize(static_cast<usize>(frames) * repeats);
       WorldHook world_hook{&world_before, options.warmup == 0, &time_lapse, &terrain_of, frames};
-      view::set_solo_flight_clock(flight_options.sky_start_s, flight_options.sun_rate,
-                                  flight_options.world_rate);
+      view::set_solo_flight_clock(flight_options);
       flight_options.before_frame = [](void* context, const renderer::FlightStep& step,
                                        std::string*) {
         const auto* hook = static_cast<const WorldHook*>(context);
