@@ -19,8 +19,8 @@
 //     SceneRenderer::Desc rd;  rd.early = &early;  renderer.create(device, scene, ..., rd);
 //
 // **A wrong guess costs a compile, never a picture.** The early compile and the renderer's creation
-// share one key (`ResolveKey`): the module's name and its SPIR-V's hash, the colour format and the
-// foliage specialization. A renderer whose key differs — the content had a flag the file did not
+// share one key (`ResolveKey`): the module's name and its SPIR-V's hash, the colour format, the
+// foliage specialization and the bindless set's clamped capacity (`GpuScene::bindless_config`). A renderer whose key differs — the content had a flag the file did not
 // name — makes its own pipeline as it always did, and the early one is destroyed untaken.
 
 #include <core/base/macros.h>
