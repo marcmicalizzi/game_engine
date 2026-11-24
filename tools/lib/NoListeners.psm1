@@ -143,25 +143,10 @@ function Resolve-ListenerVerdict {
 }
 
 # The error mode every process this run starts inherits (CreateProcess passes the parent's on unless
-# told not to): no "a DLL was not found" box from the loader, no "has stopped working" box from
-# Windows Error Reporting, no "insert a disk" box. A copied binary that cannot start then exits with
-# its status (0xC0000135) instead of waiting for a click on a desktop nobody is watching. The engine's
-# own `platform::quiet_error_dialogs()` does the same for itself, but only once main runs, and the
-# loader's box comes before main. Returns the mode it replaced, for Restore-ErrorMode.
-function Set-QuietErrorMode {
-  if (-not ('EngineNoListeners.Native' -as [type])) {
-    Add-Type -Namespace EngineNoListeners -Name Native -MemberDefinition @'
-[System.Runtime.InteropServices.DllImport("kernel32.dll")]
-public static extern uint SetErrorMode(uint uMode);
-'@
-  }
-  # SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX
-  return [EngineNoListeners.Native]::SetErrorMode([uint32]0x8003)
-}
-
-function Restore-ErrorMode([uint32]$Mode) {
-  if ('EngineNoListeners.Native' -as [type]) { [void][EngineNoListeners.Native]::SetErrorMode($Mode) }
-}
+# told not to): Set-QuietErrorMode and Restore-ErrorMode are tools/lib/QuietErrorMode.ps1's, the one
+# helper every launcher uses (T218). The engine's own `platform::quiet_error_dialogs()` sets the same
+# mode for itself, but only once main runs, and the loader's box for a missing DLL comes before main.
+. (Join-Path $PSScriptRoot 'QuietErrorMode.ps1')
 
 Export-ModuleMember -Function Get-FirewallPrompts, Get-ProcessListeners, Test-LoopbackAddress, Get-ProbeArgs,
   Get-KnownListeners, Test-HoldsUntilListening,

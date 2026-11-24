@@ -187,7 +187,22 @@ switch ($me) {
     exit $code
   }
   'check-no-listeners' { exit $(if ($sc.ContainsKey('listeners')) { $sc.listeners } else { 0 }) }
-  'frame-budget' { exit $(if ($sc.ContainsKey('budgets')) { $sc.budgets } else { 0 }) }
+  'frame-budget' {
+    # 'budgets': an exit code for every flight, or a list of { exit; busy = [run ids] }, one a flight
+    # in order. Each flight writes report.json in its -Out as the real one does: two runs, r1 and r2,
+    # those named busy over on a busy machine and the rest within budget.
+    $out = ''; for ($i = 0; $i -lt $args.Count; $i++) { if ($args[$i] -eq '-Out') { $out = $args[$i + 1] } }
+    $k = Next 'budgets'
+    $b = if ($sc.ContainsKey('budgets')) { $sc.budgets } else { 0 }
+    $flight = if ($b -is [System.Collections.IList]) { if ($k -lt $b.Count) { $b[$k] } else { @{ exit = 0 } } } else { @{ exit = [int]$b } }
+    $busy = if ($flight.ContainsKey('busy')) { @($flight.busy) } else { @() }
+    if ($out) {
+      New-Item -ItemType Directory -Force -Path $out | Out-Null
+      $report = @('r1', 'r2' | ForEach-Object { [ordered]@{ Id = $_; Verdict = $(if ($_ -in $busy) { 'busy' } else { 'pass' }) } })
+      Set-Content -LiteralPath (Join-Path $out 'report.json') (ConvertTo-Json -InputObject $report -Depth 4)
+    }
+    exit $flight.exit
+  }
   'export-game-sdk' {
     $out = ''; for ($i = 0; $i -lt $args.Count; $i++) { if ($args[$i] -eq '-Out') { $out = $args[$i + 1] } }
     New-Item -ItemType Directory -Force -Path $out | Out-Null; Set-Content -LiteralPath (Join-Path $out 'sdk.json') '{}'
@@ -358,6 +373,60 @@ try {
     $o = (& pwsh -NoProfile -File $gateScript -Root $fx -Batch x -Logs (Join-Path $base 'skip-logs') -Skip 'linux,budget' *>&1 | Out-String)
     $LASTEXITCODE -eq 2 -and $o -match 'not budget' -and -not (Test-Path -LiteralPath (Join-Path $base 'skip-logs'))
   }
+  # ---- T220: the budgets' three states and the follow-up's plan ---------------------------------
+  Test-That 'the budgets: 0 green; a quiet over (1) or any other failure red, whatever a second flight says' {
+    (Get-BudgetStepState -First 0) -eq 'green' -and (Get-BudgetStepState -First 1) -eq 'red' -and (Get-BudgetStepState -First 3) -eq 'red' -and
+      (Get-BudgetStepState -First 5) -eq 'red' -and (Get-BudgetStepState -First 1 -Busy @('r1') -Again 0) -eq 'red'
+  }
+  Test-That 'the budgets: a busy over flown again alone is green only if it passes then, inconclusive if busy again, red if over quietly' {
+    (Get-BudgetStepState -First 4 -Busy @('r1') -Again 0) -eq 'green' -and (Get-BudgetStepState -First 4 -Busy @('r1') -Again 4) -eq 'inconclusive' -and
+      (Get-BudgetStepState -First 4 -Busy @('r1') -Again 1) -eq 'red' -and (Get-BudgetStepState -First 4 -Busy @('r1')) -eq 'inconclusive' -and
+      (Get-BudgetStepState -First 4) -eq 'red' -and (Get-BudgetStepState -First 6) -eq 'inconclusive' -and
+      (Get-BudgetStepState -First 6 -Busy @('r1') -Again 0) -eq 'inconclusive' -and (Get-BudgetStepState -First 6 -Busy @('r1') -Again 1) -eq 'red'
+  }
+  Test-That 'the busy runs are read from a flight''s report.json, one run or many, and none from a missing or torn file' {
+    $one = Join-Path $fx 'report-one.json'; Write-Text $one '{"Id":"r1","Verdict":"busy"}'
+    $many = Join-Path $fx 'report-many.json'; Write-Text $many '[{"Id":"r1","Verdict":"pass"},{"Id":"r2","Verdict":"busy"},{"Id":"r3","Verdict":"busy"}]'
+    $torn = Join-Path $fx 'report-torn.json'; Write-Text $torn '[{"Id":"r1","Verd'
+    ((Read-BudgetBusyRuns -Path $one) -join ',') -eq 'r1' -and ((Read-BudgetBusyRuns -Path $many) -join ',') -eq 'r2,r3' -and
+      @(Read-BudgetBusyRuns -Path $torn).Count -eq 0 -and @(Read-BudgetBusyRuns -Path (Join-Path $fx 'no-report.json')).Count -eq 0
+  }
+  $foldBase = @{ batch = 'b1'; tip = 'abc'; started = 's'; ended = 'e'; tree_changed = @(); litter = @()
+                 states = [ordered]@{ checks = 'green'; builds = 'green'; suites = 'green'; integrity = 'green'; tree = 'green'
+                                      listeners = 'green'; budgets = 'inconclusive'; 'weaker-card' = 'skipped'; linux = 'green' } }
+  $asVerdict = { param($changes) $h = $foldBase.Clone(); $h.states = [ordered]@{}
+    foreach ($k in $foldBase.states.Keys) { $h.states[$k] = $foldBase.states[$k] }
+    foreach ($k in $changes.Keys) { if ($k -like 'states.*') { $h.states[$k.Substring(7)] = $changes[$k] } else { $h[$k] = $changes[$k] } }
+    $h | ConvertTo-Json -Depth 6 | ConvertFrom-Json }
+  Test-That 'a follow-up''s plan: the inconclusive and skipped earned steps, less its own -Skip, each kept step named to its verdict' {
+    $p = Get-FoldPlan -Earlier (& $asVerdict @{}) -EarlierPath 'v1.json' -Tip 'abc'
+    $q = Get-FoldPlan -Earlier (& $asVerdict @{}) -EarlierPath 'v1.json' -Tip 'abc' -Skip @('weaker-card')
+    -not $p.Refusal -and ($p.Run -join ',') -eq 'budgets,weaker-card' -and ($q.Run -join ',') -eq 'budgets' -and
+      $p.Sources['suites'][0].verdict -eq 'v1.json' -and $p.Sources['suites'][0].batch -eq 'b1'
+  }
+  Test-That 'a follow-up is refused across two HEADs, over a dirty tree, over any red step, over core steps not green, and with nothing to run' {
+    $why = { param($changes, $tip = 'abc') (Get-FoldPlan -Earlier (& $asVerdict $changes) -EarlierPath 'v1.json' -Tip $tip).Refusal }
+    (& $why @{} 'def') -match 'two HEADs' -and (& $why @{ tree_changed = @('README.md') }) -match 'dirty tree' -and
+      (& $why @{ litter = @('$null') }) -match 'dirty tree' -and (& $why @{ 'states.budgets' = 'red' }) -match 'budgets red.*no follow-up turns it green' -and
+      (& $why @{ 'states.suites' = 'not run' }) -match 'suites not run' -and
+      (& $why @{ 'states.budgets' = 'green'; 'states.weaker-card' = 'green' }) -match 'nothing this follow-up would run' -and
+      (Get-FoldPlan -Earlier ([pscustomobject]@{ tip = 'abc'; green = $false }) -EarlierPath 'old.json' -Tip 'abc').Refusal -match 'records no step states'
+  }
+  Test-That 'a follow-up is refused over an earlier verdict whose own red or no-verdict list is not empty, whatever its states say (T220-L2)' {
+    $why = { param($changes) (Get-FoldPlan -Earlier (& $asVerdict $changes) -EarlierPath 'v1.json' -Tip 'abc').Refusal }
+    (& $why @{ red = @('something new') }) -match 'v1\.json is red \(something new\)' -and
+      (& $why @{ no_verdict = @('linux') }) -match 'no verdict for linux' -and -not (& $why @{ red = @(); no_verdict = @() })
+  }
+  Test-That 'the steps an exit 4 or a refusal names: every state but green and skipped, grouped by state, from either form of the states' {
+    $d = [ordered]@{ checks = 'green'; budgets = 'inconclusive'; linux = 'skipped'; listeners = 'not run'; 'weaker-card' = 'inconclusive' }
+    $o = [pscustomobject]$d
+    (Get-OpenStepsText $d) -eq 'inconclusive: budgets, weaker-card; not run: listeners' -and (Get-OpenStepsText $o) -eq (Get-OpenStepsText $d) -and
+      (Get-OpenStepsText ([ordered]@{ checks = 'green'; linux = 'skipped' })) -eq ''
+  }
+  Test-That '-Completes takes no -Reach' {
+    $o = (& pwsh -NoProfile -File $gateScript -Root $fx -Batch x -Logs (Join-Path $base 'completes-logs') -Completes 'v.json' -Reach 'x' *>&1 | Out-String)
+    $LASTEXITCODE -eq 2 -and $o -match 'takes no -Reach' -and -not (Test-Path -LiteralPath (Join-Path $base 'completes-logs'))
+  }
   Write-Host ("unit part: {0:N1} s" -f $clock.Elapsed.TotalSeconds)
   }
 
@@ -455,6 +524,9 @@ try {
   Test-That 'red suites earn no listener check, no budgets and no weaker card' {
     ($r.Calls -match 'check-no-listeners|frame-budget|device=titanxp').Count -eq 0 -and $r.Out -match 'not run: the suites are not all green'
   }
+  Test-That 'the Linux leg, which runs beside red suites, records what it did: red here, never "not run" (T220-L3)' {
+    $r.Verdict.states.linux -eq 'red' -and $r.Verdict.states.listeners -eq 'not run' -and $r.Verdict.states.budgets -eq 'not run'
+  }
 
   # ---- exit codes the logs do not explain --------------------------------------------------------
   $codes = @{
@@ -497,6 +569,100 @@ try {
   Test-That 'a listener check, budgets or weaker card that fails is red by name, and the suites stay green' {
     $w.Code -eq 1 -and ($w.Verdict.red -contains 'listeners') -and ($w.Verdict.red -contains 'budgets') -and ($w.Verdict.red -contains 'weaker card msvc-debug') -and
       -not $w.Verdict.weaker_card.ok -and $w.Verdict.suites.'msvc-debug'.ok -and $w.Out -match 'SUITE msvc-debug FAILED \(failed: renderer\.1\)'
+  }
+
+  # ---- T220: the budgets inconclusive, flown again alone, and a follow-up that completes them -----
+  $busyGreen = @{ test = @{
+      'msvc-debug' = @(@{ records = @('a:passed') }, @{ records = @('renderer.1:passed', 'water:passed') })
+      'msvc-minimal' = $suiteGreen['msvc-minimal']; 'msvc-no-ecs' = $suiteGreen['msvc-no-ecs']; 'msvc-release' = $suiteGreen['msvc-release'] } }
+  $h = Invoke-Gate 'batchH' ($busyGreen + @{ budgets = @(@{ exit = 4; busy = @('r2') }, @{ exit = 4; busy = @('r2') }) }) @('-Skip', 'linux', '-BudgetWaitQuiet', '300')
+  Test-That 'budgets over only on a busy machine: the busy run is flown once more by itself, and busy again is inconclusive, neither red nor green (exit 4)' {
+    $h.Code -eq 4 -and -not $h.Verdict.green -and @($h.Verdict.red).Count -eq 0 -and ($h.Verdict.inconclusive -join ',') -eq 'budgets' -and
+      $h.Verdict.states.budgets -eq 'inconclusive' -and $h.Verdict.states.listeners -eq 'green' -and $h.Verdict.states.linux -eq 'skipped' -and
+      ($h.Calls -match 'frame-budget -Preset msvc-release -WaitQuiet 300 -Out').Count -eq 1 -and
+      ($h.Calls -match 'frame-budget -Preset msvc-release -Run r2 -WaitQuiet 300 -Out').Count -eq 1 -and @($h.Verdict.budgets.flights).Count -eq 2 -and
+      $h.Out -match 'GATE batchH exit 4'
+  }
+  Test-That 'after-gate refuses an inconclusive verdict and names what is open' {
+    $o = (& pwsh -NoProfile -File $afterScript -Gate $repo -Main $repo -Verdict (Join-Path $h.Logs 'batchH-gate.verdict.json') -CopyTo (Join-Path $base 'h-copy') *>&1 | Out-String)
+    $LASTEXITCODE -eq 2 -and $o -match 'inconclusive: budgets'
+  }
+  $hVerdict = Join-Path $h.Logs 'batchH-gate.verdict.json'
+  $i = Invoke-Gate 'batchI' @{ budgets = 0 } @('-Skip', 'linux', '-Completes', $hVerdict)
+  Test-That 'a follow-up completes the verdict: only the budgets fly, and the folded verdict is green with each step''s source' {
+    $i.Code -eq 0 -and $i.Verdict.green -and $i.Verdict.tip -eq $h.Verdict.tip -and $i.Verdict.completes -eq $hVerdict -and
+      ($i.Calls -match 'frame-budget').Count -eq 1 -and ($i.Calls -match 'dev (docs|lint|test)|check-no-listeners|linux-build').Count -eq 0 -and
+      ($i.Calls -match 'dev build -Preset msvc-release \| ').Count -eq 1 -and @($i.Calls -match 'dev build -Preset (?!msvc-release)').Count -eq 0 -and
+      (Get-CallTime $i.Calls 'dev build -Preset msvc-release') -lt (Get-CallTime $i.Calls 'frame-budget') -and $i.Verdict.states.builds -eq 'green' -and
+      (@($i.Verdict.sources.builds | ForEach-Object { $_.batch }) -join '+') -eq 'batchH+batchI' -and $i.Verdict.sources.linux[0].batch -eq 'batchI' -and
+      $i.Verdict.sources.budgets[0].batch -eq 'batchI' -and $i.Verdict.sources.suites[0].batch -eq 'batchH' -and $i.Verdict.sources.listeners[0].batch -eq 'batchH' -and
+      $i.Verdict.sources.suites[0].ended -eq $h.Verdict.ended -and $i.Verdict.states.linux -eq 'skipped' -and
+      (@($i.Verdict.sources.tree | ForEach-Object { $_.batch }) -join '+') -eq 'batchH+batchI' -and $i.Verdict.suites.'msvc-debug'.ok
+  }
+  Test-That 'after-gate reads the folded verdict like any other, and says where each step came from' {
+    Write-Text (Join-Path $repo 'build/msvc-release/bin/engine-view.exe') 'bytes'
+    $mainI = Join-Path $base 'main-i'
+    & git clone -q $repo $mainI 2>$null
+    $o = (& pwsh -NoProfile -File $afterScript -Gate $repo -Main $mainI -Verdict (Join-Path $i.Logs 'batchI-gate.verdict.json') -CopyTo (Join-Path $base 'i-copy') -Install (Join-Path $base 'i-install') -Sdk (Join-Path $base 'i-sdk') *>&1 | Out-String)
+    $LASTEXITCODE -eq 0 -and $o -match 'batchI completes .*budgets from batchI' -and $o -match 'MAIN already holds' -and (Test-Path -LiteralPath (Join-Path $base 'i-install/engine-view.exe'))
+  }
+  $j = Invoke-Gate 'batchJ' ($busyGreen + @{ budgets = @(@{ exit = 1 }) }) @('-Skip', 'linux')
+  Test-That 'a budget over on a quiet machine is red, is not flown again, and no follow-up completes it' {
+    $again = Invoke-GateRaw 'batchJ2' (Join-Path $base 'logs-batchJ2') @('-Completes', (Join-Path $j.Logs 'batchJ-gate.verdict.json'))
+    $j.Code -eq 1 -and ($j.Verdict.red -contains 'budgets') -and $j.Verdict.states.budgets -eq 'red' -and ($j.Calls -match 'frame-budget').Count -eq 1 -and
+      $again.Code -eq 2 -and $again.Out -match 'budgets red: a red step is a verdict'
+  }
+  $k = Invoke-Gate 'batchK' ($busyGreen + @{ budgets = @(@{ exit = 4; busy = @('r1') }, @{ exit = 0 }) }) @('-Skip', 'linux')
+  Test-That 'a busy over that is within budget when flown again by itself is green, both flights in the verdict' {
+    $k.Code -eq 0 -and $k.Verdict.green -and $k.Verdict.states.budgets -eq 'green' -and ($k.Calls -match 'frame-budget -Preset msvc-release -Run r1 ').Count -eq 1 -and
+      (@($k.Verdict.budgets.flights | ForEach-Object { $_.exit }) -join ',') -eq '4,0'
+  }
+  Test-That 'a follow-up is refused for a verdict of another commit or of a tree that changed while it ran' {
+    $hv = Get-Content -LiteralPath $hVerdict -Raw | ConvertFrom-Json
+    $other = Join-Path $base 'other-tip.json'; $hv.tip = '0000000000000000000000000000000000000000'; Write-Text $other ($hv | ConvertTo-Json -Depth 8)
+    $hv = Get-Content -LiteralPath $hVerdict -Raw | ConvertFrom-Json
+    $dirt = Join-Path $base 'dirty-run.json'; $hv.tree_changed = @('README.md'); Write-Text $dirt ($hv | ConvertTo-Json -Depth 8)
+    $a = Invoke-GateRaw 'batchL' (Join-Path $base 'logs-batchL') @('-Completes', $other)
+    $b2 = Invoke-GateRaw 'batchL' (Join-Path $base 'logs-batchL') @('-Completes', $dirt)
+    $a.Code -eq 2 -and $a.Out -match 'nothing folds across two HEADs' -and $b2.Code -eq 2 -and $b2.Out -match 'nothing folds across a dirty tree'
+  }
+  $i2 = Invoke-Gate 'batchI2' @{ budgets = 0; 'build-fails' = @{ 'msvc-release' = 3 } } @('-Skip', 'linux', '-Completes', $hVerdict)
+  Test-That 'a follow-up whose release build fails is red, and flies nothing over what the build left (T220-L4)' {
+    $i2.Code -eq 1 -and ($i2.Verdict.red -contains 'build msvc-release') -and $i2.Verdict.states.builds -eq 'red' -and
+      $i2.Verdict.states.budgets -eq 'not run' -and ($i2.Calls -match 'frame-budget|check-no-listeners').Count -eq 0 -and
+      ($i2.Calls -match 'dev build -Preset msvc-release').Count -eq 3 -and -not $i2.Verdict.steps.follow_up_build.ok
+  }
+  $m = Invoke-Gate 'batchM' @{ budgets = 1 } @('-Skip', 'linux', '-Completes', $hVerdict)
+  Test-That 'a follow-up whose own budgets come back over on a quiet machine is red (exit 1), and after-gate refuses it (T220-L6)' {
+    $o = (& pwsh -NoProfile -File $afterScript -Gate $repo -Main $repo -Verdict (Join-Path $m.Logs 'batchM-gate.verdict.json') -CopyTo (Join-Path $base 'm-copy') *>&1 | Out-String)
+    $LASTEXITCODE -eq 2 -and $o -match 'not green \(red: budgets; steps red: budgets' -and -not (Test-Path -LiteralPath (Join-Path $base 'm-copy')) -and
+      $m.Code -eq 1 -and -not $m.Verdict.green -and ($m.Verdict.red -contains 'budgets') -and $m.Verdict.states.budgets -eq 'red' -and
+      $m.Verdict.sources.budgets[0].batch -eq 'batchM' -and ($m.Calls -match 'frame-budget').Count -eq 1
+  }
+  $n = Invoke-Gate 'batchN' @{} @('-Skip', 'budgets', '-Completes', $hVerdict)
+  Test-That 'a follow-up that -Skips an inconclusive step keeps it inconclusive, never promoted, and says so in its exit 4 (T220-L1)' {
+    $n.Code -eq 4 -and -not $n.Verdict.green -and $n.Verdict.states.budgets -eq 'inconclusive' -and $n.Verdict.sources.budgets[0].batch -eq 'batchH' -and
+      $n.Verdict.states.linux -eq 'green' -and $n.Verdict.sources.linux[0].batch -eq 'batchN' -and ($n.Calls -match 'frame-budget|dev ').Count -eq 0 -and
+      $n.Out -match 'GATE batchN exit 4 .*not green: inconclusive: budgets'
+  }
+  $hv = Get-Content -LiteralPath $hVerdict -Raw | ConvertFrom-Json
+  $hv.states.PSObject.Properties.Remove('weaker-card')
+  $missing = Join-Path $base 'missing-step.json'; Write-Text $missing ($hv | ConvertTo-Json -Depth 8)
+  $o2 = Invoke-Gate 'batchO' @{ budgets = 0 } @('-Skip', 'linux,weaker-card', '-Completes', $missing)
+  Test-That 'a step the earlier verdict lacks and the follow-up -Skips is recorded skipped, as a plain gate records it (T220-L1)' {
+    $o2.Code -eq 0 -and $o2.Verdict.green -and $o2.Verdict.states.'weaker-card' -eq 'skipped' -and $o2.Verdict.sources.'weaker-card'[0].batch -eq 'batchO' -and
+      $o2.Verdict.states.budgets -eq 'green' -and ($o2.Calls -match 'device=titanxp').Count -eq 0
+  }
+  $rv = Invoke-Gate 'batchR' $busyGreen @('-Reach', 'a', '-Skip', 'linux,listeners,budgets,weaker-card')
+  $r2 = Invoke-Gate 'batchR2' @{ budgets = 0 } @('-Skip', 'linux,listeners,weaker-card', '-Completes', (Join-Path $rv.Logs 'batchR-gate.verdict.json'))
+  Test-That 'a fold of a -Reach verdict records that reach, and says so as it starts (T220-M1)' {
+    $rv.Code -eq 0 -and $rv.Verdict.reach -eq 'a' -and $r2.Code -eq 0 -and $r2.Verdict.reach -eq 'a' -and
+      $r2.Out -match "its suites under -Reach 'a'" -and $r2.Verdict.states.listeners -eq 'skipped' -and $r2.Verdict.sources.listeners[0].batch -eq 'batchR2'
+  }
+  Test-That 'a -Completes naming the verdict this run would write is refused before anything is set aside (T220-L5)' {
+    $self = Invoke-GateRaw 'batchH' $h.Logs @('-Completes', $hVerdict)
+    $self.Code -eq 2 -and $self.Out -match 'names the verdict this run would write' -and $self.Out -match 'a -Batch of its own \(not batchH\)' -and
+      (Test-Path -LiteralPath $hVerdict) -and @(Get-ChildItem -LiteralPath $h.Logs -Filter 'batchH-gate.verdict.previous-*').Count -eq 0
   }
 
   # ---- a follow-up, and a leg that leaves no verdict ---------------------------------------------

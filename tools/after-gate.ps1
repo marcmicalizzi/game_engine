@@ -56,7 +56,17 @@ $Main = (Resolve-Path -LiteralPath $Main).Path
 if (-not (Test-Path -LiteralPath $Verdict)) { "after-gate: no verdict file at $Verdict"; exit 2 }
 $v = Get-Content -LiteralPath $Verdict -Raw | ConvertFrom-Json
 $tip = (Invoke-Git $Gate rev-parse HEAD).Out
-if (-not $v.green) { "after-gate: the gate $($v.batch) was not green ($(@($v.red) -join '; ')); nothing done"; exit 2 }
+if (-not $v.green) {
+  # Every step that is neither green nor skipped, by state (T220-L1), so the refusal never names nothing.
+  $steps = if ($v.PSObject.Properties['states']) { Get-OpenStepsText $v.states } else { '' }
+  $open = if ($steps) { "; steps $steps" } else { '' }
+  $complete = if ($v.PSObject.Properties['inconclusive'] -and @($v.inconclusive).Count -and -not @($v.red).Count) { '; tools/gate.ps1 -Completes can complete what is inconclusive' } else { '' }
+  "after-gate: the gate $($v.batch) was not green (red: $(@($v.red) -join '; ')$open$complete); nothing done"; exit 2
+}
+# A folded verdict (tools/gate.ps1 -Completes, T220) is read like any other; each step's source is said.
+if ($v.PSObject.Properties['completes'] -and $v.completes -and $v.PSObject.Properties['sources']) {
+  "after-gate: $($v.batch) completes $($v.completes): $(@($v.sources.PSObject.Properties | ForEach-Object { "$($_.Name) from $(@($_.Value | ForEach-Object { "$($_.batch) $($_.ended)" }) -join ' + ')" }) -join '; ')"
+}
 # The binaries it installs are the gate worktree's, so that tree must be exactly the gated commit
 # (T217-H1): no tracked change, no untracked file git does not ignore, no unfinished merge.
 try { $gateDirt = @(Get-WorktreeDirt -Root $Gate) } catch { "after-gate: $($_.Exception.Message); nothing done"; exit 2 }
