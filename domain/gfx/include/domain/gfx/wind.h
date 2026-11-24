@@ -285,9 +285,10 @@ inline constexpr u32 k_wind_gust_sines = 8;
 inline constexpr f64 k_wind_gust_f_low = 0.004;  // Hz: a four-minute lull, inside the spectral gap
 inline constexpr f64 k_wind_gust_f_high = 0.5;   // Hz: a two-second gust
 
-// **The gust**: the instantaneous wind speed at `place` (x, z) and sky time `time_s`, for a wind
-// whose mean there is `mean`: the mean plus Kaimal's turbulence frozen into the flow and carried
-// down the wind at the mean speed. Never below zero.
+// **The gust**: the instantaneous wind speed at `place` (x, z) and time `time_s`, for a wind whose
+// mean there is `mean`: the mean plus Kaimal's turbulence frozen into the flow and carried down the
+// wind at the mean speed. Never below zero. `time_s` is the world's clock (S118: a medium that moves
+// is on world time); the mean is the caller's, taken at the sky's hour.
 inline f64 wind_gust(const WindDesc& w, const WindSample& mean, Vec2 place, f64 time_s) noexcept {
   const f64 u = mean.speed_m_s;
   if (!(u > 0.0)) return 0.0;
