@@ -5,6 +5,7 @@
 #include <core/json/json.h>
 #include <core/time/time.h>
 #include <domain/geometry/flora_species.h>
+#include <domain/scene_gen/water_channel.h>
 #include <systems/renderer/flythrough.h>
 #include <systems/renderer/request.h>
 #include <systems/renderer/scene.h>
@@ -43,6 +44,7 @@ void on_wind(void* user, const gfx::WindLive& live, f64 sky_time_s) {
   wind.scene = host.scene_wind();
   wind.live = live;
   wind.sky_time_s = sky_time_s;
+  wind.world_time_s = host.world_time();  // the water's clock (S113)
   host.stage().set_wind(wind);
 }
 void on_scene(void* user, const renderer::SceneData& scene) {
@@ -78,6 +80,7 @@ void on_tick(void* user, const WorldPos& eye, f32 heading, f32 pitch) {
   listener_axes(heading, pitch, forward, up);
   stage.set_listener(eye, forward, up);
   stage.tick();
+  static_cast<GameSoundHost*>(user)->advance_world_time();  // a module's ticks (S113)
 }
 JsonValue on_summary(const void* user) {
   return static_cast<const GameSoundHost*>(user)->stage().summary_json();
@@ -164,6 +167,8 @@ bool GameSoundHost::open(world_sound::AudioMode mode, const std::string& device,
   if (!scene.empty()) config.base_dir = std::filesystem::path(scene).parent_path().string();
   if (!stage_.open(config, present ? &block : nullptr, error)) return false;
   stage_.set_canopy(world_sound::CanopySource{this, &GameSoundHost::visit});
+  stage_.set_flow(world_sound::FlowSource{this, &GameSoundHost::visit_flow});  // S113
+  stage_.set_surf(world_sound::SurfSource{this, &GameSoundHost::visit_surf});
   if (present) {
     std::fprintf(stderr, "engine-view: sound: %u clip%s, audio %s\n",
                  static_cast<u32>(block.clips.size()), block.clips.size() == 1 ? "" : "s",
@@ -207,6 +212,7 @@ void GameSoundHost::observe(void* user, const FlySession& session, const input::
   const i64 started = time::monotonic_ns();
   // The session's sky as the frame's: the start plus the sun's rate times the ticks' seconds.
   const f64 t = static_cast<f64>(session.tick().value) / static_cast<f64>(h.tick_hz_);
+  h.world_time_s_ = t;  // the session's world clock at a rate of one: the water's (S113)
   if (h.world_) {
     // The walker only while the session walks: a session that flies keeps its walker attached
     // (`FlySession::walker`), and its eye is no walker's (S114-M2).
@@ -383,8 +389,91 @@ void GameSoundHost::merge(Group& g, std::span<const world_sound::Crown> crowns) 
   }
 }
 
+// ---- running water and the surf (S113) ----------------------------------------------------------
+
+void GameSoundHost::attach_water(const renderer::SceneData& scene) {
+  stretches_.clear();
+  surf_.clear();
+  // The solved channels: a stretch between each two neighbouring stations, as the solve wrote
+  // them (renderer::SceneWater::channel_source, the scene's description).
+  for (const renderer::SceneMeshInfo& info : scene.mesh_info) {
+    if (!info.water.has_value() || !info.water->channel) continue;
+    const scene::WaterChannel& c = info.water->channel_source;
+    const u32 n = static_cast<u32>(c.points.size());
+    if (n < 2 || c.discharge_m3s.size() != n || c.flags.size() != n) continue;
+    for (u32 i = 0; i + 1 < n; ++i) {
+      world_sound::Stretch s;
+      s.a = c.points[i];
+      s.b = c.points[i + 1];
+      s.discharge_m3s = c.discharge_m3s[i];
+      const f64 drop = s.a.y - s.b.y;
+      s.drop_m = drop > 0.0 ? static_cast<f32>(drop) : 0.0f;
+      if (c.wet_left_m.size() == n && c.wet_right_m.size() == n)
+        s.wet_width_m = c.wet_left_m[i] + c.wet_right_m[i];
+      if (c.froude.size() == n) s.froude = c.froude[i];
+      s.fall = (c.flags[i] & scene_gen::k_channel_fall_lip) != 0 &&
+               (c.flags[i + 1] & scene_gen::k_channel_fall_foot) != 0;
+      s.lands_on_water = s.fall && c.depth_m.size() == n && c.depth_m[i + 1] >= 0.1f;
+      if (s.drop_m > 0.0f && s.discharge_m3s > 0.0f) stretches_.push_back(s);
+    }
+  }
+  // The bodies' surf: each body instance's records, from the field the GPU scene draws its waves
+  // from, placed by the instance's rows (a body's mesh is body-local at its level).
+  const i64 started = time::monotonic_ns();
+  Vector<renderer::SurfRecord> records;
+  for (const gfx::InstanceDesc& in : scene.instances) {
+    if (in.mesh >= scene.mesh_info.size()) continue;
+    const renderer::SceneMeshInfo& info = scene.mesh_info[in.mesh];
+    if (!info.water.has_value() || info.water->channel) continue;
+    renderer::water_surf_records(*info.water, 16.0, records);
+    for (const renderer::SurfRecord& r : records) {
+      const auto row = [&](u32 k) {
+        return static_cast<f64>(in.rows[k].x * r.at.x + in.rows[k].z * r.at.y + in.rows[k].w);
+      };
+      world_sound::Surf s;
+      s.at = WorldPos{static_cast<f64>(in.cell.x) * k_world_cell_m + row(0),
+                      static_cast<f64>(in.cell.y) * k_world_cell_m + row(1),
+                      static_cast<f64>(in.cell.z) * k_world_cell_m + row(2)};
+      s.along = Vec2{in.rows[0].x * r.along.x + in.rows[0].z * r.along.y,
+                     in.rows[2].x * r.along.x + in.rows[2].z * r.along.y};
+      s.length_m = r.length_m;
+      s.power_w_m = r.power_w_m;
+      s.height_m = r.height_m;
+      s.surf_similarity = r.surf_similarity;
+      s.period_s = r.period_s;
+      s.arrival_s = r.arrival_s;
+      surf_.push_back(s);
+    }
+  }
+  surf_ns_ = time::monotonic_ns() - started;
+  if (!stretches_.empty() || !surf_.empty()) {
+    std::fprintf(stderr,
+                 "engine-view: sound: %u stretches of running water, %u of surf (%.0f ms)\n",
+                 static_cast<u32>(stretches_.size()), static_cast<u32>(surf_.size()),
+                 static_cast<f64>(surf_ns_) / 1.0e6);
+  }
+}
+
+void GameSoundHost::visit_flow(void* user, const WorldPos& centre, f64 reach_m,
+                               const world_sound::StretchSink& sink) {
+  const GameSoundHost& h = *static_cast<const GameSoundHost*>(user);
+  for (const world_sound::Stretch& s : h.stretches_) {
+    const f64 x = 0.5 * (s.a.x + s.b.x);
+    const f64 z = 0.5 * (s.a.z + s.b.z);
+    if (distance_xz(x, z, centre) <= reach_m) sink.emit(sink.user, s);
+  }
+}
+
+void GameSoundHost::visit_surf(void* user, const WorldPos& centre, f64 reach_m,
+                               const world_sound::SurfSink& sink) {
+  const GameSoundHost& h = *static_cast<const GameSoundHost*>(user);
+  for (const world_sound::Surf& s : h.surf_)
+    if (distance_xz(s.at.x, s.at.z, centre) <= reach_m) sink.emit(sink.user, s);
+}
+
 void GameSoundHost::attach_scene(const renderer::SceneData& scene) {
   scene_ = &scene;
+  if (world_) attach_water(scene);  // running water and the surf (S113)
   const u32 meshes = static_cast<u32>(scene.mesh_leaves.size());
   mesh_heard_.clear();
   mesh_class_.clear();
@@ -742,6 +831,8 @@ void solo_flight_frame(const renderer::FlightStep& step) noexcept {
   const i64 before = h->sound_ns();
   const f64 sky = g_flight_sky_start_s + g_flight_sun_rate * static_cast<f64>(step.frame) /
                                              static_cast<f64>(renderer::k_frame_hz);
+  // The flight's world clock, its frames over their rate (at a world rate of one): the water's.
+  h->set_world_time(static_cast<f64>(step.frame) / static_cast<f64>(renderer::k_frame_hz));
   h->tick_at(step.camera.position, renderer::camera_forward(step.camera), gfx::WindLive{}, sky);
   if (step.world == nullptr) return;
   // The sound's tick is a flight frame's only one: in `ticks_ms` too, so `other_ms` leaves it out.

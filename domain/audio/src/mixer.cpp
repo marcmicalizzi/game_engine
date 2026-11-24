@@ -798,6 +798,21 @@ bool Mixer::set_noise(VoiceHandle voice, const NoiseParams& params) noexcept {
   return true;
 }
 
+bool Mixer::strike_noise(VoiceHandle voice, const NoiseStrike& strike) noexcept {
+  if (!is_live(voice) || strike.resonator >= k_noise_resonators || !finite(strike.a) ||
+      !finite(strike.b) || !finite(strike.kick)) {
+    return false;
+  }
+  Command c;
+  c.kind = CommandKind::StrikeNoise;
+  c.slot = voice.slot;
+  c.generation = voice.generation;
+  c.payload.strike = StrikePayload{strike.resonator, strike.a, strike.b, strike.kick, strike.life};
+  if (!push(c)) return false;
+  ++control_.noise_strikes;
+  return true;
+}
+
 bool Mixer::is_live(VoiceHandle voice) const noexcept {
   if (voice.is_null() || voice.slot >= slots_.size()) return false;
   const VoiceSlot& slot = slots_[voice.slot];
@@ -1085,6 +1100,17 @@ void Mixer::apply(const Command& c) noexcept {
         n.step[k] = (p.gain[k] - n.gain[k]) * inv;
       }
       n.ramp = field_ramp_frames_;
+      return;
+    }
+    case CommandKind::StrikeNoise: {
+      const VoiceState& v = voices_[c.slot];
+      if (v.state == k_free || v.generation != c.generation || (v.flags & k_voice_noise) == 0) {
+        ++audio_stats_.stale_commands;
+        return;
+      }
+      const StrikePayload& p = c.payload.strike;
+      ::engine::audio::strike_noise(noise_[c.slot],
+                                    NoiseStrike{p.resonator, p.a, p.b, p.kick, p.life});
       return;
     }
     case CommandKind::Stop: {

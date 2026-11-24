@@ -114,6 +114,39 @@ NoiseBand noise_band(f32 centre_hz, f32 q) noexcept {
   return out;
 }
 
+NoiseStrike noise_strike(u32 resonator, f32 frequency_hz, f32 damping, f32 amplitude) noexcept {
+  NoiseStrike s;
+  s.resonator = resonator < k_noise_resonators ? resonator : k_noise_resonators - 1u;
+  f32 f = std::isfinite(frequency_hz) ? frequency_hz : k_noise_tone_min_hz;
+  f = f < k_noise_tone_min_hz ? k_noise_tone_min_hz
+                              : (f > k_noise_tone_max_hz ? k_noise_tone_max_hz : f);
+  f32 d = std::isfinite(damping) ? damping : 1.0f;
+  d = d < 1.0f ? 1.0f : (d > 20000.0f ? 20000.0f : d);
+  const f32 amp = std::isfinite(amplitude) && amplitude > 0.0f ? amplitude : 0.0f;
+  // r = e^(-x), x = d / fs, by five terms of the series: x is at most 0.42 at the damping's top.
+  const f32 x = d / static_cast<f32>(k_sample_rate);
+  const f32 r = 1.0f - x * (1.0f - x * (0.5f - x * (1.0f / 6.0f - x * (1.0f / 24.0f))));
+  const f32 t = 4.0f * f / static_cast<f32>(k_sample_rate);
+  const f32 sin_w = sin_quarter(t);
+  const f32 cos_w = sin_quarter(1.0f - t);
+  s.a = 2.0f * r * cos_w;
+  s.b = r * r;
+  s.kick = -amp * sin_w / s.b;
+  // It rings until r^n is 1e-4: n = ln(1e4) / x, a division alone, so the same on every toolchain.
+  const f32 life = 9.21034037f / x;
+  s.life = life < 4.0e6f ? static_cast<u32>(life) + 1u : 4000000u;
+  return s;
+}
+
+void strike_noise(NoiseState& n, const NoiseStrike& s) noexcept {
+  const u32 r = s.resonator < k_noise_resonators ? s.resonator : k_noise_resonators - 1u;
+  n.res_a[r] = s.a;
+  n.res_b[r] = s.b;
+  n.res_y1[r] = 0.0f;
+  n.res_y2[r] = s.kick;
+  n.res_life[r] = s.life;
+}
+
 void render_noise(NoiseState& n, f32* out, u32 frames) noexcept {
   u32 done = 0;
   if (n.ramp != 0) {
@@ -130,6 +163,27 @@ void render_noise(NoiseState& n, f32* out, u32 frames) noexcept {
     }
   }
   if (done < frames) noise_run<false>(n, out + done, frames - done);
+  // The struck resonators (S113), each only while it rings: a voice never struck pays a test of
+  // four words a block. A multiply, a multiply and a subtract, then an add, in f32 (no fused
+  // multiply-add, ADR-0035), so the same strikes are the same bytes on every toolchain.
+  for (u32 r = 0; r < k_noise_resonators; ++r) {
+    const u32 life = n.res_life[r];
+    if (life == 0) continue;
+    const u32 run = frames < life ? frames : life;
+    const f32 a = n.res_a[r];
+    const f32 b = n.res_b[r];
+    f32 y1 = n.res_y1[r];
+    f32 y2 = n.res_y2[r];
+    for (u32 i = 0; i < run; ++i) {
+      const f32 y = a * y1 - b * y2;
+      y2 = y1;
+      y1 = y;
+      out[i] += y;
+    }
+    n.res_life[r] = life - run;
+    n.res_y1[r] = life == run ? 0.0f : y1;
+    n.res_y2[r] = life == run ? 0.0f : y2;
+  }
 }
 
 }  // namespace engine::audio

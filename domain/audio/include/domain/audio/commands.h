@@ -45,6 +45,7 @@ enum class CommandKind : u8 {
   SetListener,  // where the listener is; applies to every 3D source
   SetBusGain,   // one bus's gain; `bus` names it
   SetNoise,     // a shaped-noise voice's seed, nine gains and movable band (noise_voice.h)
+  StrikeNoise,  // one of a shaped-noise voice's resonators struck: a bubble (S113)
 };
 
 // Voice flags, in `Command::flags` and in the audio thread's voice.
@@ -109,6 +110,16 @@ struct NoisePayload {
   f32 tone[3];  // c, a1, a2
 };
 
+// `NoiseStrike`, flattened (20 bytes): which resonator, its two coefficients, its kick and its
+// life.
+struct StrikePayload {
+  u32 resonator;
+  f32 a;
+  f32 b;
+  f32 kick;
+  u32 life;
+};
+
 union CommandPayload {
   PlayPayload play;
   ParamsPayload params;
@@ -116,6 +127,7 @@ union CommandPayload {
   ListenerPayload listener;
   BusPayload bus;
   NoisePayload noise;
+  StrikePayload strike;
 };
 
 struct alignas(64) Command {

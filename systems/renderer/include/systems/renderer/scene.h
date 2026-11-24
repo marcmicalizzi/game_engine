@@ -295,6 +295,33 @@ struct WaterSwashNumbers {
 };
 WaterSwashNumbers water_swash_numbers(const SceneWater& water);
 
+// **A body's height function** (S100; water_swash.h, `WaterSurface`; water.md, "The mesh"): the
+// surface the GPU scene uploads and its field (`gfx::k_water_field_channels` floats a texel: the
+// depth, the train's arrival, the flux's shares). Here since S113 (water_surf.cpp; until then the
+// GPU scene's own), so a host's ears read the arrival the picture's waves are drawn from.
+void water_surface_of(const SceneWater& water, const WaterSwashNumbers& n, gfx::WaterSurface& out,
+                      Vector<f32>& field);
+
+// **Where a body's train breaks, for a host's ears** (S113; world_sound.md, "Running water and the
+// surf"): one record a `cell_m` square of the depth map where the train breaks — the outermost
+// texel in it whose wave reaches the limit (the train's height times the flux's `incident` at
+// least 0.78 of the depth), body-local in x and z at the body's level, the shore's direction there
+// (across the arrival's gradient), the wave power reaching it (the sea's deep-water flux times
+// `incident` squared), the breaking height, the surf similarity over the texel's own foreshore
+// slope, and the train's period and arrival there, so a crest stands there at the water's clock
+// `arrival_s + n period_s` as the picture draws it. None for a body with no train.
+struct SurfRecord {
+  Vec2 at{};
+  Vec2 along{1.0f, 0.0f};
+  f32 length_m = 0.0f;
+  f32 power_w_m = 0.0f;
+  f32 height_m = 0.0f;
+  f32 surf_similarity = 0.0f;
+  f32 period_s = 0.0f;
+  f32 arrival_s = 0.0f;
+};
+void water_surf_records(const SceneWater& water, f64 cell_m, Vector<SurfRecord>& out);
+
 // What a scene file said about one mesh besides its path: what to call it, which bytes it must
 // be, where it came from, and how to fit it. Parallel to `SceneDesc::meshes`, or empty.
 struct SceneMeshInfo {

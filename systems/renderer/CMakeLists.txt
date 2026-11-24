@@ -39,7 +39,7 @@ engine_module(NAME renderer LAYER systems
           src/pair_account.cpp src/ground_sample.cpp src/ring_forms.cpp src/scene_admission.cpp
           src/terrain_time.cpp
           src/terrain_rings.cpp src/terrain_tiles.cpp src/sky.cpp src/request.cpp
-          src/overlay.cpp src/scene_leaves.cpp src/scene_water.cpp src/scene_wind.cpp src/scene_flora.cpp src/flora_motion.cpp
+          src/overlay.cpp src/scene_leaves.cpp src/scene_water.cpp src/water_surf.cpp src/scene_wind.cpp src/scene_flora.cpp src/flora_motion.cpp
           src/flora_poser.cpp src/flora_census.cpp src/sway_lod.cpp src/scene_fire.cpp src/far_forest.cpp src/far_tile.cpp src/far_offered.cpp src/water_reflect.cpp
           src/water_refract.cpp
           src/scene_ground_plan.cpp src/sway_forms.cpp src/source_images.cpp

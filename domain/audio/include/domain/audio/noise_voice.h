@@ -74,10 +74,37 @@ struct NoiseParams {
   NoiseBand tone{};
 };
 
+// **The struck resonators** (S113; docs/subsystems/audio.md, "The shaped-noise voice"): up to
+// four damped sinusoids a voice, each struck by a command — a trickle's separate bubbles, each
+// ringing at Minnaert's frequency for its radius and dying at its damping. A resonator is the
+// two-pole recursion y[n] = a y[n-1] - b y[n-2], a = 2 r cos w, b = r^2, r = e^(-d / fs) for a
+// damping of d a second; a strike sets y[n-1] = 0 and y[n-2] = -A sin w / r^2, so the resonator
+// then rings A r^n sin(w (n + 1)) from the first frame of the next block, replacing whatever that
+// resonator still rang (the controlling thread takes them in turn). It rings for `life` frames,
+// until r^n is 1e-4, and is then still. Its samples are added to the voice's signal before the
+// voice's gain and spatial block, in full scale's units.
+inline constexpr u32 k_noise_resonators = 4;
+
+// What a strike tells a resonator: which, its coefficients, its kick and how long it rings.
+struct NoiseStrike {
+  u32 resonator = 0;  // < k_noise_resonators
+  f32 a = 0.0f;
+  f32 b = 0.0f;
+  f32 kick = 0.0f;
+  u32 life = 0;  // frames
+};
+
+// A bubble of `frequency_hz` (held inside [k_noise_tone_min_hz, k_noise_tone_max_hz]) dying at
+// `damping` a second (held inside [1, 20,000]) with a peak of `amplitude` (full scale), on
+// resonator `resonator`. Its sine and cosine are `sin_quarter`'s and r is e^(-d / fs) by five terms
+// of its series (d / fs under 0.42, where the fifth term is under 1e-4 of the first), so the same
+// bubble is the same coefficients on every toolchain.
+NoiseStrike noise_strike(u32 resonator, f32 frequency_hz, f32 damping, f32 amplitude) noexcept;
+
 // The audio thread's state of one shaped-noise voice: the nine filters' two delays, their
 // coefficients (the fixed bands' copied in at the play, so one loop runs every lane), the gains
-// and where a ramp takes them, and the generator. A parallel array of the pool, sized at
-// construction; read only for a voice whose kind is noise.
+// and where a ramp takes them, the generator, and since S113 the four struck resonators. A
+// parallel array of the pool, sized at construction; read only for a voice whose kind is noise.
 struct alignas(32) NoiseState {
   f32 s1[k_noise_lanes] = {};
   f32 s2[k_noise_lanes] = {};
@@ -89,7 +116,16 @@ struct alignas(32) NoiseState {
   f32 step[k_noise_lanes] = {};
   u32 rng = 1;
   u32 ramp = 0;  // frames of the gains' ramp still to run
+  // The resonators (S113): their coefficients, their two delays and the frames each still rings.
+  f32 res_a[k_noise_resonators] = {};
+  f32 res_b[k_noise_resonators] = {};
+  f32 res_y1[k_noise_resonators] = {};
+  f32 res_y2[k_noise_resonators] = {};
+  u32 res_life[k_noise_resonators] = {};
 };
+
+// A strike applied to a voice's state (the mixer's audio thread; public for the cases).
+void strike_noise(NoiseState& state, const NoiseStrike& strike) noexcept;
 
 // The generator's first word for a seed: never 0, which xorshift would keep.
 constexpr u32 noise_seed(u32 seed) noexcept { return seed != 0 ? seed : 0x9E3779B9u; }

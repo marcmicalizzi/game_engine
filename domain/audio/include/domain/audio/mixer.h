@@ -220,6 +220,7 @@ struct ControlStats {
   u64 stream_underruns = 0;  // streamed voices that ran dry at least once, each logged once
   u64 noise_plays = 0;       // of `plays`, shaped-noise voices (S112)
   u64 noise_sets = 0;        // `set_noise` commands sent
+  u64 noise_strikes = 0;     // `strike_noise` commands sent (S113)
 };
 
 // What the audio thread did, as of the last block it finished. Read with `Mixer::stats()` from any
@@ -315,6 +316,10 @@ class Mixer {
   // band takes these coefficients at once. False for a voice that is not live or a value that is
   // not finite.
   bool set_noise(VoiceHandle voice, const NoiseParams& params) noexcept;
+  // One of a live shaped-noise voice's resonators struck (S113; noise_voice.h, `noise_strike`):
+  // applied at the start of the audio thread's next block. False for a voice that is not live or a
+  // full ring (the strike is lost: a bubble, not a state).
+  bool strike_noise(VoiceHandle voice, const NoiseStrike& strike) noexcept;
   u32 field_ramp_frames() const noexcept { return field_ramp_frames_; }
 
   // Drains the ended-voice events, freeing their slots and releasing their clips, and re-sends any

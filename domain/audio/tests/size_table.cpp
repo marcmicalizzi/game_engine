@@ -32,7 +32,7 @@ ENGINE_EXPECT_SIZE(128, 64, StreamRing);
 // A shaped-noise voice (noise_voice.h; S112): nine lanes' two delays, three coefficients, gain,
 // target and step (8 x 36 bytes), the generator and the ramp, aligned to a 32-byte vector: 320.
 // Walked every frame of every block while the voice sounds; 64 voices are 20 KB.
-ENGINE_EXPECT_SIZE(320, 32, NoiseState);
+ENGINE_EXPECT_SIZE(384, 32, NoiseState);
 // Its description, one command's payload: 52 bytes inside the Play's 88.
 ENGINE_EXPECT_SIZE(52, 4, NoiseParams);
 ENGINE_EXPECT_SIZE(52, 4, NoisePayload);

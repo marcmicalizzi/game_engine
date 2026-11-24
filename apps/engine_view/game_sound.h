@@ -147,6 +147,28 @@ class GameSoundHost {
   static void visit(void* user, const WorldPos& centre, f64 reach_m,
                     const world_sound::CrownSink& sink);
 
+  // **The flow and surf tables** (S113; world_sound.h `FlowSource`, `SurfSource`): every stretch
+  // of the loaded scene's solved channels — a stretch's two stations at their solved levels, its
+  // discharge (the upstream station's), the level given up, its wet width (`wet_left_m` plus
+  // `wet_right_m`) and Froude number, a fall where a lip meets its foot, landing on water where the
+  // foot's solved depth is 0.1 m or more — and every body's surf records
+  // (`renderer::water_surf_records`, one a 16 m square where its train breaks), made once when the
+  // scene is attached. The fields of the description read: `points`, `discharge_m3s`, `depth_m`,
+  // `wet_left_m`, `wet_right_m`, `froude`, `flags`.
+  static void visit_flow(void* user, const WorldPos& centre, f64 reach_m,
+                         const world_sound::StretchSink& sink);
+  static void visit_surf(void* user, const WorldPos& centre, f64 reach_m,
+                         const world_sound::SurfSink& sink);
+  u32 stretches() const noexcept { return static_cast<u32>(stretches_.size()); }
+  u32 surf_records() const noexcept { return static_cast<u32>(surf_.size()); }
+  i64 surf_ns() const noexcept { return surf_ns_; }  // the surf records' making, at attach
+  // The water's clock (S113): the world clock a tick of the stage stands at — a session's ticks
+  // over its rate, a flight's frames over 60 — so a wave heard breaking is the wave drawn
+  // breaking (at a world rate of one).
+  void set_world_time(f64 world_time_s) noexcept { world_time_s_ = world_time_s; }
+  f64 world_time() const noexcept { return world_time_s_; }
+  void advance_world_time() noexcept { world_time_s_ += 1.0 / static_cast<f64>(tick_hz_); }
+
   // A group's crowns merged, one a class, at their leaves' centroid: a 128 m cell of the loaded
   // instances, or a placement tile (made again when its version changes).
   struct Group {
@@ -241,6 +263,12 @@ class GameSoundHost {
   i64 sound_ns_ = 0;
   // The shelter's walker (S114).
   const Walker* walker_ = nullptr;
+  // Running water and the surf (S113): the loaded scene's, made at attach.
+  void attach_water(const renderer::SceneData& scene);
+  Vector<world_sound::Stretch> stretches_;
+  Vector<world_sound::Surf> surf_;
+  i64 surf_ns_ = 0;
+  f64 world_time_s_ = 0.0;
   static f32 shelter(void* user, f64 x, f64 z, f32 across_x, f32 across_z) noexcept;
 };
 

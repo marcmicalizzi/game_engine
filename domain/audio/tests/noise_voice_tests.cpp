@@ -10,6 +10,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -265,4 +266,109 @@ TEST_CASE("noise voice: in the mixer a 2D voice's power is its gain times its ba
   CHECK(mixer.control_stats().refused_params == 2u);
   // A SetNoise naming a clip voice's slot is stale on the audio thread, never applied.
   CHECK(mixer.control_stats().noise_plays == 1u);
+}
+
+// ---- the struck resonators (S113) ---------------------------------------------------------------
+
+TEST_CASE("noise voice: a struck resonator rings at its frequency and dies at its damping") {
+  // A bubble of 2 kHz damped at 300 a second, alone on a voice whose bands are silent.
+  NoiseState n;
+  const NoiseStrike s = noise_strike(1, 2000.0f, 300.0f, 0.5f);
+  CHECK(s.resonator == 1u);
+  strike_noise(n, s);
+  std::vector<f32> out(4800, 0.0f);
+  render_noise(n, out.data(), 4800);
+  // Its first sample is A sin w, and it rings A r^n sin(w (n + 1)) after (f32's recursion against
+  // the closed form in double, to a part in a thousand of the peak).
+  const f64 w = 2.0 * 3.14159265358979323846 * 2000.0 / 48000.0;
+  const f64 r = std::exp(-300.0 / 48000.0);
+  f64 worst = 0.0;
+  for (u32 i = 0; i < 2000; ++i) {
+    const f64 want = 0.5 * std::pow(r, static_cast<f64>(i)) * std::sin(w * (i + 1.0));
+    worst = std::max(worst, std::fabs(static_cast<f64>(out[i]) - want));
+  }
+  CHECK(worst < 5e-4);
+  // It rings until r^n is 1e-4 (ln 1e4 / (300 / 48000) = 1,473.7 frames) and is then still.
+  CHECK(s.life == 1474u);
+  CHECK(n.res_life[1] == 0u);
+  for (u32 i = s.life; i < 4800; ++i)
+    CHECK(out[i] == 0.0f);
+  // A voice never struck renders nothing from its resonators.
+  NoiseState quiet;
+  std::vector<f32> none(480, 0.0f);
+  render_noise(quiet, none.data(), 480);
+  for (const f32 x : none)
+    CHECK(x == 0.0f);
+}
+
+namespace {
+
+std::vector<f32> strike_session(std::initializer_list<u32> calls, u64* strikes) {
+  ClipStore clips;
+  MixerConfig config;
+  config.voices = 4;
+  config.field_ramp_frames = 2400;
+  config.limiter = LimiterMode::Off;
+  Mixer mixer(clips, config);
+  NoisePlayParams p;
+  p.noise.seed = 21;
+  p.noise.gain[5] = 0.01f;  // a faint 2 kHz band under the bubbles
+  p.source.flags = k_source_2d;
+  const VoiceHandle v = mixer.play_noise(p);
+  REQUIRE(!v.is_null());
+  std::vector<f32> all;
+  std::vector<f32> block(4800 * 2);
+  for (u32 tick = 0; tick < 10; ++tick) {
+    // Two bubbles a tick on the four resonators in turn, 1.1 to 7.4 kHz, damped as van den Doel's
+    // bubbles are (0.043 f + 0.0014 f^1.5 a second).
+    for (u32 k = 0; k < 2; ++k) {
+      const u32 i = tick * 2 + k;
+      const f32 f = 1100.0f + 330.0f * static_cast<f32>(i);
+      const f32 d = 0.043f * f + 0.0014f * f * std::sqrt(f);
+      CHECK(mixer.strike_noise(v, noise_strike(i % k_noise_resonators, f, d, 0.2f)));
+    }
+    u32 done = 0;
+    while (done < 4800) {
+      for (const u32 call : calls) {
+        const u32 n = call < 4800 - done ? call : 4800 - done;
+        mixer.render(block.data(), n);
+        all.insert(all.end(), block.begin(), block.begin() + n * 2);
+        done += n;
+        if (done == 4800) break;
+      }
+    }
+    mixer.update();
+  }
+  if (strikes != nullptr) *strikes = mixer.control_stats().noise_strikes;
+  // A strike on a voice that is gone is refused.
+  CHECK(mixer.stop(v));
+  mixer.render(block.data(), 4800);
+  mixer.update();
+  CHECK_FALSE(mixer.strike_noise(v, noise_strike(0, 1000.0f, 100.0f, 0.1f)));
+  return all;
+}
+
+}  // namespace
+
+TEST_CASE(
+    "noise voice: strikes in the mixer are the same bytes however the frames are cut, pinned") {
+  u64 strikes = 0;
+  const std::vector<f32> whole = strike_session({480}, &strikes);
+  CHECK(strikes == 20u);
+  const std::vector<f32> uneven = strike_session({7, 473, 160, 1024}, nullptr);
+  REQUIRE(whole.size() == 10u * 4800u * 2u);
+  CHECK(whole == uneven);
+  // Heard: a tick opens with its bubbles, far over the faint band under them at its end.
+  f64 head = 0.0;
+  f64 tail = 0.0;
+  for (usize i = 9600u; i < 9600u + 400u; ++i)
+    head += static_cast<f64>(whole[i]) * static_cast<f64>(whole[i]);
+  for (usize i = 9600u + 8000u; i < 9600u + 8400u; ++i)
+    tail += static_cast<f64>(whole[i]) * static_cast<f64>(whole[i]);
+  CHECK(head > 100.0 * tail);
+  const u64 hash =
+      hash_mix(ChannelLayout::Stereo, std::span<const f32>(whole.data(), whole.size()));
+  MESSAGE("noise strike session hash: " << hash);
+  // Pinned on MSVC 2026-11-23 (S113); GCC and Clang must reproduce it.
+  CHECK(hash == 0x0730cf117e1b9046ull);
 }

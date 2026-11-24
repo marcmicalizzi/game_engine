@@ -33,10 +33,21 @@ struct FieldConfig {
   f64 humidity_pct = 70.0;
   f64 ground_g = 1.0;
   bool path = true;
-  // One kind of voice heard alone (`audio.world.solo`): 0 all, 1 crowns, 2 beds, 3 the ears.
+  // One kind of voice heard alone (`audio.world.solo`): 0 all, 1 crowns, 2 beds, 3 the ears, and
+  // since S113 4 streams, 5 falls, 6 the surf.
   u32 solo = 0;
+  // Running water and the surf (S113; water_field.cpp): the voices of each kind and the sources a
+  // refresh keeps.
+  u32 streams = 4;
+  u32 falls = 4;
+  u32 surfs = 3;
+  u32 max_water = 4096;
 };
 FieldConfig field_config_from_tunables() noexcept;
+// The water's tunables (S113, `audio.world.streams` and its neighbours; water_field.cpp).
+void water_config_from_tunables(FieldConfig& config) noexcept;
+// The surf's envelope's mean over a period, which the envelope is divided by (water_field.cpp).
+f64 surf_envelope_mean() noexcept;
 
 class WorldField {
  public:
@@ -46,6 +57,8 @@ class WorldField {
   void set_canopy(const CanopySource& canopy) noexcept { canopy_ = canopy; }
   void set_shelter(const ShelterSource& shelter) noexcept { shelter_ = shelter; }
   void set_wind(const WorldWind& wind) noexcept { wind_ = wind; }
+  void set_flow(const FlowSource& flow) noexcept { flow_ = flow; }
+  void set_surf(const SurfSource& surf) noexcept { surf_ = surf; }
   // One tick: a refresh when it is due, then every voice described. `frame` is the mixer's frame
   // (the corner of the listener's cell); `frame_moved` places every world voice again in it.
   void tick(const WorldPos& listener, const Vec3& forward, const WorldPos& frame,
@@ -101,6 +114,36 @@ class WorldField {
     f64 total = 0.0;
     i64 count = 0;
     f64 dx = 0.0, dz = 0.0;  // power-weighted unit directions from the listener
+    // Running water and the surf (S113): the band powers at the listener after the path of every
+    // stretch, fall and stretch of surf not heard as a voice of its own (the surf at its mean over
+    // a period). The wind does not move them.
+    f64 water[8] = {};
+    f64 water_total = 0.0;
+    i64 water_count = 0;
+  };
+  // **A water source at a refresh** (S113; water_field.cpp): its kind, identity and place, its
+  // band powers at the listener after the path (the surf's at its mean), and what its voice needs
+  // between refreshes.
+  struct WaterSource {
+    WorldVoiceKind kind = WorldVoiceKind::Stream;
+    u64 key = 0;
+    WorldPos at{};  // where its voice sounds: a stretch's nearest point, a fall's foot, the break
+    f32 spread = 0.0f;
+    f64 band[8] = {};
+    f64 total = 0.0;       // the sum of `band`: what choosing ranks by
+    f64 dist = 0.0;        // from the listener, as `take_water` ranks it when the table is full
+    f64 trickle = 0.0;     // the share of a stream's power heard as separate bubbles
+    f64 bubbles_hz = 0.0;  // their rate
+    f64 path[8] = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};  // a bubble takes its own band's
+    f64 period_s = 0.0;                                      // the surf's
+    f64 arrival_s = 0.0;
+  };
+  // A water voice's own between ticks: the bubbles' clock and the next resonator.
+  struct WaterVoice {
+    WaterSource source{};
+    f64 next_bubble_s = 0.0;
+    u32 resonator = 0;
+    u32 rng = 1;
   };
   // **How much of a path runs under canopy** (S114): leaf area by sector and ring of distance round
   // the listener, a refresh's, each bin's cover the share of a closed canopy its leaf area makes.
@@ -125,9 +168,27 @@ class WorldField {
   void take(const Crown& c) noexcept;
   // Placed in `frame` again (a moved frame, a moved bed, or a move the ring refused).
   void place(Voice& v, const WorldPos& frame) noexcept;
-  void describe(Voice& v, const f64 (&band_power)[9], f64 tone_hz, f64 tone_power, bool two_d,
-                f32 pan, u64 seed, u8 priority, const WorldPos& frame) noexcept;
+  void describe(Voice& v, const f64 (&band_power)[9], f64 tone_hz, f64 extra, bool two_d, f32 pan,
+                u64 seed, u8 priority, const WorldPos& frame) noexcept;
   void silence(Voice& v) noexcept;
+  // ---- running water and the surf (S113; water_field.cpp) -----------------------------------
+  // At a refresh, after the crowns: the flow and surf tables visited, each source's power at the
+  // listener through its path, everything into its sector's bed, then the loudest of each kind
+  // chosen (3 dB of hysteresis) and taken out of its bed again by the same arithmetic.
+  void refresh_water(const WorldPos& listener) noexcept;
+  void take_water(const WaterSource& s) noexcept;
+  void add_water_to_bed(const WaterSource& s, const WorldPos& listener, f64 sign) noexcept;
+  // The path's eight bands from a source `dx`, `dy`, `dz` from the listener at `height` over its
+  // ground, as a crown's is taken.
+  void water_path(f64 dx, f64 dy, f64 dz, f64 height, f64 (&path)[8]) const noexcept;
+  // Every tick: each water voice's bands (the surf's envelope at the water's clock), and the
+  // bubbles a trickle's voice strikes.
+  void tick_water(const WorldPos& frame, bool frame_moved) noexcept;
+  void strike_bubbles(Voice& v, WaterVoice& w, f64 now_s, f64 dt) noexcept;
+  bool water_voice(const Voice& v) const noexcept {
+    return v.kind == WorldVoiceKind::Stream || v.kind == WorldVoiceKind::Fall ||
+           v.kind == WorldVoiceKind::Surf;
+  }
 
   audio::Mixer* mixer_ = nullptr;
   FieldConfig config_{};
@@ -157,6 +218,15 @@ class WorldField {
   f64 cover_[k_cover_sectors][k_cover_rings] = {};  // leaf area, then the cover's share
   f64 cover_run_[k_cover_sectors][k_cover_rings + 1] =
       {};  // metres under canopy to each ring's start
+  // Running water and the surf (S113): the tables, a refresh's sources, the farthest-first heap
+  // once full, and each water voice's own (parallel to the voices from `water_first_`).
+  FlowSource flow_{};
+  SurfSource surf_{};
+  Vector<WaterSource> water_;
+  Vector<u32> water_heap_;
+  Vector<WaterVoice> water_voices_;
+  u32 water_first_ = 0;
+  f64 surf_shape_mean_ = 1.0;  // the surf envelope's mean over a period, for its normalisation
 };
 
 }  // namespace engine::world_sound

@@ -665,6 +665,8 @@ void SoundStage::set_canopy(const CanopySource& canopy) noexcept {
 void SoundStage::set_shelter(const ShelterSource& shelter) noexcept {
   impl_->field.set_shelter(shelter);
 }
+void SoundStage::set_flow(const FlowSource& flow) noexcept { impl_->field.set_flow(flow); }
+void SoundStage::set_surf(const SurfSource& surf) noexcept { impl_->field.set_surf(surf); }
 void SoundStage::set_wind(const WorldWind& wind) noexcept { impl_->field.set_wind(wind); }
 const WorldStats& SoundStage::world_stats() const noexcept { return impl_->field.stats(); }
 u32 SoundStage::world_voice_count() const noexcept { return impl_->field.voice_count(); }
@@ -729,6 +731,12 @@ JsonValue SoundStage::summary_json() const {
     world.set("crown_voices", JsonValue(static_cast<u64>(w.crown_voices)));
     world.set("bed_voices", JsonValue(static_cast<u64>(w.bed_voices)));
     world.set("ear_voices", JsonValue(static_cast<u64>(w.ear_voices)));
+    world.set("stretches_seen", JsonValue(w.stretches_seen));  // S113
+    world.set("surf_seen", JsonValue(w.surf_seen));
+    world.set("stream_voices", JsonValue(static_cast<u64>(w.stream_voices)));
+    world.set("fall_voices", JsonValue(static_cast<u64>(w.fall_voices)));
+    world.set("surf_voices", JsonValue(static_cast<u64>(w.surf_voices)));
+    world.set("bubbles", JsonValue(w.bubbles));
     world.set("held_db", JsonValue(static_cast<f64>(w.held_db)));
     world.set("held_ticks", JsonValue(w.held_ticks));
     world.set("place_retries", JsonValue(w.place_retries));
