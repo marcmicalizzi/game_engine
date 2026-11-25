@@ -52,7 +52,8 @@ velocity that anything can change**, no ground store that fills, and no record o
 
 ### The shallow-water equations
 
-The depth-averaged equations of an incompressible layer under gravity over a bed z(x, y): mass,
+The depth-averaged equations of an incompressible layer under gravity over a bed z(x, y) (the textbook
+form, written here from memory and not from a source read tonight; the solvers below each state theirs): mass,
 ∂h/∂t + ∇·(h**u**) = r − i (rain, a source, less what infiltrates), and momentum,
 ∂(h**u**)/∂t + ∇·(h**u**⊗**u**) + ∇(g h²/2) = −g h ∇z − **τ**_b/ρ, with a bed friction that open-channel
 work takes from Manning, **τ**_b/ρ = g n² |**u**| **u** / h^(1/3) (n the bed's Manning coefficient,
@@ -300,9 +301,11 @@ content there and is not used. The 1983 K is [a SWMM help page's](https://tbn2ne
 minimum Horton rate, citing Rawls, Brakensiek and Miller (1983, *J. Hydraulic Engineering* 109). The
 same page's Horton guidance: **f₀ for dry soils with little vegetation 127 mm/h on sand, 76 on loam, 25
 on clay, twice that under dense vegetation; divided by 3 at field capacity and by 1.5 to 2.5 when partly
-dry; the decay k 2 to 7 per hour; a saturated soil drying completely in 2 to 14 days**. Field
-conductivities spread over decades more (gravel to clay); the encyclopaedia's table of them (Bear 1972,
-via Freeze and Cherry) is an image that did not read.
+dry; the decay k 2 to 7 per hour; a saturated soil drying completely in 2 to 14 days**. **No
+range of K within a texture class was read** (the two tables give one value each); field conductivities
+spread over decades from gravel to clay, and the encyclopaedia's table of them (Bear 1972, via Freeze and
+Cherry) is an image that did not read, so a design that needs a texture's spread reads Rawls's own
+tables first.
 
 **What a stream loses** (*derived*). A bed losing at K a square metre (Green and Ampt's late rate, the
 unit-gradient limit) takes from a stream 1 m wide, per metre of channel: on the 1993 sand 65 ml/s, on loam
@@ -441,7 +444,11 @@ of a surface tracer with a source and an exponential decay, not a law read from 
 surface diverges (behind a bore, where a jet surfaces, a boil) foam spreads and thins; where it converges
 (eddy lines, the edge of a backwater, a pool's slack side) it gathers into lines and rafts, which is what
 the engine's lace already draws as lines
-([water](../subsystems/water.md#the-foams-pattern)). S is the breaking's: proportional to the dissipation
+([water](../subsystems/water.md#the-foams-pattern)). The sea shows the same at a larger scale: Langmuir
+circulation's convergence zones collect foam, seaweed and debris into windrows along the wind, 1 to 300 m
+apart, visible above about 3 m/s of wind and dispersed again by breaking in strong winds, while the
+divergence zones between them are clear
+([the encyclopaedia's article](https://en.wikipedia.org/wiki/Langmuir_circulation), read). S is the breaking's: proportional to the dissipation
 (Callaghan) and gated by the speed that entrains air (Chanson); τ is fresh water's second or the sea's
 seconds. The same equation serves a stream's white downstream of a step and a beach's foam behind a bore.
 
@@ -588,6 +595,7 @@ neighbours' read, its new state written — times the cells, over the card's ban
 | Tavakkol, Lynett (2017), Celeris | Boussinesq on the GPU, faster than real time | abstracts (arXiv, ICCE) |
 | Thürey, Müller-Fischer, Schirm, Gross (2007) via US 8,204,725 | breaking-front detection and sheets | read (the patent) |
 | USBR, "Groundwater basics: interaction with rivers" | gaining, losing, connected, disconnected; the mound | read |
+| Langmuir circulation, the encyclopaedia's article | windrows of foam at convergence zones, 1–300 m apart, along the wind, above about 3 m/s | read |
 | Weir, the encyclopaedia's article | Q = C L H^n, n 3/2 for a horizontal weir | read |
 | Yuksel, House, Keyser (2007), wave particles | method, limits, the boat scene's cost | read (project page) |
 | Not read at all | the USGS circular on ground and surface water (refused), Lamarre's thesis and Lamarre and Melville (1991), Melville, Loewen and Lamarre (1992), Schäffer et al.'s decay rule, Lane (1983) and the Walnut Gulch losses, Yu et al. (2009), From Dust, Timberborn's developers' article, Bear's conductivity table | — |
