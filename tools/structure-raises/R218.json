@@ -1,12 +1,12 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "R218",
-  "reason": "R218: GpuScene::mesh_fits takes the reservations beside the mesh (two parameters) so the world stops handing the renderer a sum as one mesh's count; renderer.md and world.md record the room's question, the finding from the owner's walk, the staging's figure and the order that cannot starve",
+  "reason": "R218's mend after review: the limit on taking a reservation, the two new counters, the machine's state beside the frame figures and the host memory's bound",
   "date": "2026-11-24",
   "by": "Marc Micalizzi",
   "deltas": {
     "renderer.gpu_scene_h.lines": 1,
-    "page:docs/subsystems/renderer.md": 1507,
-    "page:docs/subsystems/world.md": 3763
+    "page:docs/subsystems/renderer.md": 1647,
+    "page:docs/subsystems/world.md": 6549
   }
 }

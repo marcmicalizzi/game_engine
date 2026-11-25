@@ -51,6 +51,11 @@ struct Recorder {
   u32 clusters = 0;
   u32 room = ~0u;  // clusters the room holds
   u32 most = ~0u;  // meshes the room holds, for a test that counts in rocks
+  // The most one mesh may have, as the renderer's room holds each mesh to `max_clusters` and to a
+  // run of its own (R218): a sum of reservations handed over as one mesh's count is refused here as
+  // it was there. And the largest count the room was asked about as one mesh.
+  u32 per_mesh = ~0u;
+  u32 asked_most = 0;
   Vector<renderer::SceneInstance> tail;
 
   const Held* find(u32 mesh) const {
@@ -60,8 +65,10 @@ struct Recorder {
   }
   // The mesh and what nearer meshes being built again reserve, against the clusters it holds.
   static bool fits(void* context, u32 mesh_clusters, u32, u64 reserved, u64) {
-    const auto* self = static_cast<const Recorder*>(context);
-    return u64{self->clusters} + reserved + mesh_clusters <= self->room &&
+    auto* self = static_cast<Recorder*>(context);
+    self->asked_most = std::max(self->asked_most, mesh_clusters);
+    return mesh_clusters <= self->per_mesh &&
+           u64{self->clusters} + reserved + mesh_clusters <= self->room &&
            self->held.size() < self->most;
   }
   static bool admit(void* context, u32 mesh, const renderer::PlacementMeshData& data,
@@ -825,6 +832,10 @@ TEST_CASE("tile meshes: a room with room admits the nearest waiting tile's mesh"
   TexturedRoom told;
   told.room = most + most / 2;
   REQUIRE(2 * least > told.room);  // one rock at a time
+  // One mesh is one rock at most, as the renderer's `max_clusters` is: the room must be asked for
+  // the mesh alone, and the reservations beside it, never their sum as one mesh (R218's second
+  // fault, review M2).
+  told.per_mesh = most;
   PlacementTiles placements;
   PlacementTilesConfig config;
   config.ring_count = 1;
@@ -868,8 +879,101 @@ TEST_CASE("tile meshes: a room with room admits the nearest waiting tile's mesh"
                   << spare_withheld << ", with the room empty: " << empty_withheld);
   MESSAGE("reservations a nearer rock took from a farther one: "
           << placements.meshes().stats().reservations_taken);
+  MESSAGE("the largest count the room was asked about as one mesh: "
+          << told.asked_most << " (a rock: " << most << ")");
   CHECK(spare_withheld == 0);
   CHECK(empty_withheld == 0);
   CHECK(drawn_last == 2);  // the walk's last tile draws its rock
+  CHECK(told.asked_most <= most);
+  CHECK(told.violations == 0);
+}
+
+// R218 review, M1 (world.md, "A withheld mesh is let go and built again"): a reservation is let go
+// only when letting it go can help. The room refuses a mesh for its free total, which the
+// reservations bear on, or for want of a free run of its own clusters or materials, which they do
+// not; a refusal of the second kind takes no reservation, so a farther mesh being built again keeps
+// its build, its room and its texture progress. Textured rocks in a room of four: the one edge tile
+// withheld is the nearest waiting, so room for one rock more builds its rock again, which reserves
+// it and takes its first texture the commit after. Then the room refuses every rock whatever is
+// freed, as a fragmented room refuses for want of a run, and the eye steps toward a withheld corner
+// on the far side, which is now asked before the edge. Until the mend that refusal let the edge's
+// reservation go and shelved its rock, its texture with it, for nothing.
+TEST_CASE("tile meshes: a refusal reservations cannot answer takes none") {
+  test::TempDir tmp{"engine_world_tile_meshes_run"};
+  const renderer::SceneData scene = scene_of(tmp, R"({"reach":4,"n":10,"look":1,"sets":25})");
+  u32 least = ~0u;
+  u32 most = 0;
+  {
+    Recorder told;
+    PlacementTiles placements;
+    PlacementTilesConfig config;
+    config.ring_count = 1;
+    std::string error;
+    REQUIRE_MESSAGE(placements.create(scene, config, &error), error);
+    placements.set_meshes(room(32, 1u << 20, 0), told.sink());
+    placements.set_run_sink(&Recorder::runs, &told);
+    World world(ring(1.5f));
+    add_scene_consumers(world, nullptr, &placements);
+    for (u64 tick = 0; tick < 2; ++tick)
+      step(world, placements, at(0, 0), tick);
+    REQUIRE(told.held.size() == 9);
+    for (const Recorder::Held& h : told.held) {
+      least = std::min(least, h.clusters);
+      most = std::max(most, h.clusters);
+    }
+  }
+  REQUIRE(2 * least > most);  // room for one rock more is never room for two
+  TexturedRoom told;
+  told.most = 4;
+  PlacementTiles placements;
+  PlacementTilesConfig config;
+  config.ring_count = 1;
+  std::string error;
+  REQUIRE_MESSAGE(placements.create(scene, config, &error), error);
+  TileMeshConfig meshes = room(32, 1u << 20, 0);
+  meshes.admissions = 0;
+  meshes.admission_bytes = 1500;  // a 32 x 32 map (1,392 staged bytes) fills a commit
+  placements.set_meshes(meshes, told.textured_sink());
+  placements.set_run_sink(&Recorder::runs, &told);
+  World world(ring(1.5f));
+  add_scene_consumers(world, nullptr, &placements);
+  u64 tick = 0;
+  for (; tick < 3; ++tick)
+    step(world, placements, at(0, 0), tick);
+  const TileMeshStats& s = placements.meshes().stats();
+  REQUIRE(told.held.size() == 4);
+  TileCoord edge;
+  u32 edges_withheld = 0;
+  for (const TileCoord c : {TileCoord{1, 0}, TileCoord{-1, 0}, TileCoord{0, 1}, TileCoord{0, -1}}) {
+    if (!placements.tile_instances(c).empty()) continue;
+    edge = c;
+    ++edges_withheld;
+  }
+  REQUIRE(edges_withheld == 1);
+  // Room for one rock more: the edge's rock is built again and reserves it, then takes its first
+  // texture (the commit's bytes) and waits.
+  told.most = ~0u;
+  told.room = told.clusters + most;
+  const u64 rebuilds = s.rebuilds;
+  step(world, placements, at(0, 0), tick++, 64);
+  REQUIRE(s.rebuilds == rebuilds + 1);
+  step(world, placements, at(0, 0), tick++, 64);
+  REQUIRE(placements.tile_instances(edge).empty());
+  const u64 reserved = s.reserved_clusters;
+  REQUIRE(reserved != 0);
+  // Nothing fits whatever is let go, and a corner on the far side is nearer than the edge.
+  told.most = 0;
+  const f64 x = -0.3 * edge.x + 0.3 * edge.z;
+  const f64 z = -0.3 * edge.z + 0.3 * edge.x;
+  const u64 taken = s.reservations_taken;
+  const u64 kept = s.kept_textures;
+  step(world, placements, at(x, z), tick++, 64);
+  MESSAGE("edge (" << edge.x << ", " << edge.z << "); reservations taken " << s.reservations_taken
+                   << " (were " << taken << "), reserved clusters " << s.reserved_clusters
+                   << " (were " << reserved << "), kept for their textures "
+                   << s.kept_textures - kept);
+  CHECK(placements.stats().mesh_starved != 0);
+  CHECK(s.reservations_taken == taken);
+  CHECK(s.reserved_clusters == reserved);  // the edge's rock keeps its build and its room
   CHECK(told.violations == 0);
 }

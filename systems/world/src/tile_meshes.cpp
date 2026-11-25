@@ -296,6 +296,8 @@ void TileMeshes::withhold(u32 slot) {
     }
   }
   release_textures(entry);  // the scene may let a texture go that only this mesh wanted
+  // Built again and refused by its own admission: that build is thrown away (R218 review, L4).
+  if (entry.reserved && entry.refused == commit_) ++stats_.rebuilds_refused;
   reserve(entry, false);
   entry.textures_in = 0;
   entry.data = renderer::PlacementMeshData{};
@@ -347,17 +349,32 @@ void TileMeshes::reserve(Entry& entry, bool on) noexcept {
 
 // **A nearer mesh takes a farther one's reservation** (R218; world.md, "A withheld mesh is let go
 // and built again"). A commit asks in the pair budget's order, so a reservation held by a mesh not
-// yet asked this commit is a farther tile's (or one no waiting tile asks for). Until R218 such a
-// reservation held the nearer mesh out with nothing in the room: a farther mesh built again, once
-// its first texture was in, was kept by `withhold` whenever a nearer refusal came first in a
-// commit, and never asked again, while the nearer mesh was refused for its reservation — every
-// commit after (the owner's walk of the forest, 2026-11-24: the room empty and 240 tiles withheld).
-// The caller asks this after the lingering meshes and before it yields a farther tile's resident
-// meshes (a reservation is of nothing drawn), so the head of the order is refused only for what
-// nearer tiles hold, resident or reserved: nothing farther can starve it. The one let go is shelved
-// again (its streams and textures given back), or, still building, keeps its build and loses only
-// the room; either way it is asked again in its turn.
-bool TileMeshes::release_farther_reservation() {
+// yet asked this commit is a farther tile's, one no waiting tile asks for, or one of the asking
+// tile's own later meshes (harmless: the tile needs both, and it costs one build thrown away).
+// Until R218 such a reservation held the nearer mesh out with nothing in the room: a farther mesh
+// built again, once its first texture was in, was kept by `withhold` whenever a nearer refusal came
+// first in a commit, and never asked again, while the nearer mesh was refused for its reservation —
+// every commit after (the owner's walk of the forest, 2026-11-24: the room empty and 240 tiles
+// withheld). The caller asks this after the lingering meshes and before it yields a farther tile's
+// resident meshes (a reservation is of nothing drawn), so the head of the order is refused only for
+// what nearer tiles hold, resident or reserved: nothing farther can starve it. The one let go is
+// shelved again (its streams and textures given back), or, still building, keeps its build and
+// loses only the room; either way it is asked again in its turn.
+// **Only when letting go can help** (R218 review, M1): the room refuses a mesh for its free total,
+// which reservations bear on, or for want of a free run of its own clusters or materials, which
+// they do not. A mesh that would not fit with no reservation at all takes none — each would be a
+// farther build and its texture progress thrown away for nothing — and the caller goes on to what
+// can make a run (the yield), as before.
+// Its cost on the committing thread: a scan of the slots and one question to the sink a call, at
+// most one call per reservation in a refused commit — about reservations times slots, 45 x 4,096
+// after the staging's jumps — with no allocation and no sort.
+bool TileMeshes::release_farther_reservation(u32 asking) {
+  if (asking >= entries_.size() || entries_[asking] == nullptr) return false;
+  const Entry& wanting = *entries_[asking];
+  const bool helps = sink_.fits != nullptr
+                         ? sink_.fits(sink_.context, wanting.clusters, wanting.materials, 0, 0)
+                         : u64{used_clusters_} + wanting.clusters <= config_.clusters;
+  if (!helps) return false;
   u32 chosen = k_none;
   for (u32 slot = 0; slot < entries_.size(); ++slot) {
     const Entry* entry = entries_[slot].get();
