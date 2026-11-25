@@ -303,7 +303,10 @@ pipeline that carries the capped walk; **the forest staging compiles it out** (o
 moon), where `capped` is the constant false and the driver folds the test away, so its pair is
 unchanged and was not flown again. The 32 fires' picture against every ray, from the mend's own two
 flights (frame 300, as below): 3,009,497 pixels differ, 71,531 past 2 of 255, the worst 12 — the
-built form's row to the pixel, since the street's faint fires are not where its cut falls.
+built form's row to the pixel, since the street's faint fires are not where its cut falls. And
+**with the cap at 0 the one walk is main's to the byte** where it is compiled in: 32 fires, frame 300,
+main's gated binary against the tip at `renderer.shadow.light_rays=0`, 0 of 8,294,400 pixels differ
+(and the tip at 0 twice, 0).
 
 **Compiled out where it cannot be taken.** The first form's branch cost a resolve that never took
 it 0.06 to 0.07 ms (no fire: 0.814 → 0.877; four fires: 1.076 → 1.142 with the cap off and 1.146
