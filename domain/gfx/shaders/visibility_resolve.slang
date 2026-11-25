@@ -231,6 +231,19 @@ static const uint k_max_light_cap_rays = 8u;
 // gfx::k_spec_scene_light_cap: false where the scene cannot light more lights than the cap, so the
 // capped walk and its ranking's registers fold out at the driver's compile (R213).
 [vk::constant_id(213)] const bool k_scene_light_cap = true;
+// A light's weight in the cap's ranking: its unshadowed irradiance at the point, its luminance there
+// times its cosine to the normal, which no eye moves. `precise`, because the walks that rank, trace
+// and add the rest each compute it and must agree on it to the bit.
+float light_cap_weight(float3 radiance, float3 normal, float3 direction) {
+  precise const float w = dot(radiance, float3(0.2126, 0.7152, 0.0722)) * abs(dot(normal, direction));
+  return w;
+}
+// Its rank as one word: the weight's half-float bits (positive, so ordered as the weights are) over
+// the index's complement, so a larger word is a heavier light and, between equal halves, the lower
+// index. Never 0 for a light (an index is under 0xffff), which is the ranking's empty slot.
+uint light_cap_key(float w, uint index) {
+  return (f32tof16(min(w, 65504.0)) << 16) | (0xffffu - index);
+}
 
 // **The resolve's split** (gfx::ResolveStop; renderer.md, "Where the resolve's time goes"; R115).
 // The pass is one draw, so its time is divided by frames that end each pixel's work after a named
@@ -2094,20 +2107,21 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     // — the light's luminance at the point times its cosine to the normal, which no eye moves —
     // with ties to the lower index, and traced in that order until `cap` rays or until what the
     // untraced ones could add is at most `light_cap_share` of what the traced ones were found to
-    // deliver. The untraced are added at the fill, by their unshadowed sum. A point no more lights
-    // reach than the cap, and every pixel with `cap` 0, takes the walk below: R87's bytes.
+    // deliver. The untraced are added at the fill. A point no more lights reach than the cap, and
+    // every pixel with `cap` 0, takes the walk below: R87's bytes.
     const uint cap = min(params->light_cap_rays & 0xffu, k_max_light_cap_rays);
     if (k_scene_light_cap && cap != 0u &&
         (params->shadow_flags & (k_shadow_lights | k_shadow_cascades)) == k_shadow_lights &&
         !stop_skips(k_stop_light_shadows) && light_walk_count(walk) > cap) {
-      float top_w[k_max_light_cap_rays];
-      uint top_i[k_max_light_cap_rays];
-      [unroll] for (uint j = 0; j < k_max_light_cap_rays; ++j) {
-        top_w[j] = -1.0;
-        top_i[j] = 0xffffffffu;
-      }
+      // Three walks, each light's BSDF once: the ranking by the cheap weight alone (a light facing
+      // away from the surface is added as below, unshadowed), the traced in rank order, then the
+      // untraced. A rank is one word, the weight's half-float bits over the index's complement
+      // (`light_cap_key`), so the ranking is `cap` registers and a tie goes to the lower index.
+      const LightWalk fresh = walk;
+      uint top[k_max_light_cap_rays];
+      [unroll] for (uint j = 0; j < k_max_light_cap_rays; ++j)
+        top[j] = 0u;
       float total_w = 0.0;
-      float3 total_lit = float3(0.0);
       uint candidates = 0u;
       while (light_walk_next(walk, i)) {
         float3 light_dir;
@@ -2117,51 +2131,33 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
         if (has_sky && lights[i].direction_type.w >= 1.5) {
           radiance = sky_light_at(sky, s.position, light_dir, radiance);
         }
-        float3 lit = brdf_direct(surface, light_dir, radiance);
-        if (foliage) lit = foliage_direct(material, surface, light_dir, radiance, lit);
         if (!(foliage ? foliage_lights(material, surface, light_dir)
                       : dot(surface.normal, light_dir) > 0.0)) {
-          color += lit;  // no shadow is asked, as below
+          float3 lit = brdf_direct(surface, light_dir, radiance);  // no shadow is asked, as below
+          if (foliage) lit = foliage_direct(material, surface, light_dir, radiance, lit);
+          color += lit;
           continue;
         }
-        if (weigh && max(lit.r, max(lit.g, lit.b)) <= rest) {  // too faint to test, as below
-          if (sun_visibility >= 1.0) {
-            color += lit;
-          } else if (sun_visibility > 0.0) {
-            float3 shaded = brdf_direct(surface, light_dir, radiance * sun_visibility);
-            if (foliage) {
-              shaded = foliage_direct(material, surface, light_dir, radiance * sun_visibility,
-                                      shaded);
-            }
-            color += shaded;
-          }
-          continue;
-        }
-        float w = dot(radiance, k_luma) * abs(dot(surface.normal, light_dir));
-        uint wi = i;
+        const float w = light_cap_weight(radiance, surface.normal, light_dir);
         total_w += w;
-        total_lit += lit;
         candidates += 1u;
-        // Into the ranking, carried down past every entry it outranks.
-        [unroll] for (uint j = 0; j < k_max_light_cap_rays; ++j) {
-          if (j < cap && (w > top_w[j] || (w == top_w[j] && wi < top_i[j]))) {
-            const float tw = top_w[j];
-            const uint ti = top_i[j];
-            top_w[j] = w;
-            top_i[j] = wi;
-            w = tw;
-            wi = ti;
+        uint key = light_cap_key(w, i);
+        [unroll] for (uint j = 0; j < k_max_light_cap_rays; ++j) {  // carried down past each it outranks
+          if (j < cap && key > top[j]) {
+            const uint held = top[j];
+            top[j] = key;
+            key = held;
           }
         }
       }
       float traced_w = 0.0;
       float found_w = 0.0;
-      float3 traced_lit = float3(0.0);
       uint traced = 0u;
+      uint last = 0u;
       [unroll] for (uint j = 0; j < k_max_light_cap_rays; ++j) {
         if (j >= cap || j >= candidates) break;
         if (total_w - traced_w <= params->light_cap_share * found_w) break;
-        const uint t = top_i[j];
+        const uint t = 0xffffu - (top[j] & 0xffffu);
         float3 light_dir;
         float3 radiance;
         float light_distance;
@@ -2169,16 +2165,17 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
         if (has_sky && lights[t].direction_type.w >= 1.5) {
           radiance = sky_light_at(sky, s.position, light_dir, radiance);
         }
+        const float w = light_cap_weight(radiance, surface.normal, light_dir);
         float3 lit = brdf_direct(surface, light_dir, radiance);
         if (foliage) lit = foliage_direct(material, surface, light_dir, radiance, lit);
         const float v = shadow_visibility(params, k_shadow_lights, t + 1u, s.position,
                                           foliage ? ray_side(s.geometric, light_dir) : s.geometric,
                                           ray_bias, light_dir,
                                           light_distance - ray_bias - lights[t].spot.z);
-        traced_w += top_w[j];
-        found_w += top_w[j] * v;
-        traced_lit += lit;
+        traced_w += w;
+        found_w += w * v;
         traced += 1u;
+        last = top[j];
         if (v >= 1.0) {
           color += lit;
         } else if (v > 0.0) {
@@ -2188,14 +2185,42 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
         }
       }
       if (traced < candidates) {
-        // The untraced lights' unshadowed sum at the fill: the traced ones' visibility weighted by
-        // their irradiance (the default), 1, or 0. Any of the three moves the pixel by at most that
-        // sum, which the cut held to the share wherever it was met before the cap.
+        // The untraced at the fill: the traced ones' visibility weighted by their irradiance (the
+        // default), 1, or 0 — any of the three moves the pixel by at most their unshadowed light,
+        // which the cut held to the share wherever it was met before the cap — or, too faint to
+        // test, at the pixel's own sun query, as below.
         const uint fill = (params->light_cap_rays >> 8) & 3u;
         const float at = fill == 1u ? 1.0
                          : fill == 2u ? 0.0
                          : (traced_w > 0.0 ? found_w / traced_w : sun_visibility);
-        color += max(total_lit - traced_lit, float3(0.0)) * at;
+        LightWalk again = fresh;
+        while (light_walk_next(again, i)) {
+          float3 light_dir;
+          float3 radiance;
+          float light_distance;
+          if (!light_sample(lights[i], s.position, light_dir, radiance, light_distance)) continue;
+          if (has_sky && lights[i].direction_type.w >= 1.5) {
+            radiance = sky_light_at(sky, s.position, light_dir, radiance);
+          }
+          if (!(foliage ? foliage_lights(material, surface, light_dir)
+                        : dot(surface.normal, light_dir) > 0.0)) {
+            continue;  // added in the first walk
+          }
+          const float w = light_cap_weight(radiance, surface.normal, light_dir);
+          if (traced != 0u && light_cap_key(w, i) >= last) continue;  // traced
+          float3 lit = brdf_direct(surface, light_dir, radiance);
+          if (foliage) lit = foliage_direct(material, surface, light_dir, radiance, lit);
+          const float v = weigh && max(lit.r, max(lit.g, lit.b)) <= rest ? sun_visibility : at;
+          if (v >= 1.0) {
+            color += lit;
+          } else if (v > 0.0) {
+            float3 shaded = brdf_direct(surface, light_dir, radiance * v);
+            if (foliage) {
+              shaded = foliage_direct(material, surface, light_dir, radiance * v, shaded);
+            }
+            color += shaded;
+          }
+        }
         // A pixel that stopped at the cap with its bound unmet, counted once a wave by a lane that
         // is not a helper (a helper's atomic writes nothing).
         const bool hit = total_w - traced_w > params->light_cap_share * found_w;

@@ -232,3 +232,67 @@ every resolve variant grows by **141 instructions** (2,940 bytes); the forest's
 (`visibility_resolve_rt_water_terrain_stochastic`) 326,306 → 326,447. No module crosses
 `cmake/shader-costs.txt`'s heavy line either way, so no row of it moves (`build.shader_pool` passes
 in the row's `test -Affected`).
+## The cap
+
+R213 (2026-11-24, batch 75). The renderer's page has the rule
+([renderer](../subsystems/renderer.md#a-cap-on-the-shadow-rays-a-pixel-traces)); this section has what
+it was taken from and what it measured.
+
+**What the published methods bound, and what they need.** Ward (1991) is the shape: rank the
+sources at a point by what they could add, test them in that order, stop when the untested rest is
+under a tolerance of what the tested gave, and add the rest at an estimated visibility rather than
+by a coin, so the result is biased and not noisy. Lightcuts (2005) bounds the same way, cluster by
+cluster — an untraced group's error is at most its unshadowed contribution, visibility bounded by
+1 — and stops at 2% of the total, Weber's fraction. Clustered and tiled shading bound the *lights* a
+cell or tile holds (Filament's 32 a froxel, above), not the rays a pixel traces; with every light of
+a cell shadowed that bound is the cell's count, which a fire's 71 to 82 m reach makes the frame's.
+Stochastic light sampling (ReSTIR, 2020) traces a few rays a pixel by picking lights in proportion
+to their contribution and settles the noise by reusing picks across neighbours and frames. **The
+engine's rule decides between them**: a picture is judged with no temporal pass behind it, so the
+frame has to be right by itself and the same point has to pick the same lights every frame. That
+rules out a stochastic pick and leaves Ward's order with Lightcuts' bound.
+
+**What was taken.** Ward's ranking, by each candidate's unshadowed **irradiance** at the point (its
+luminance there times `|n·l|`) rather than its BSDF-weighted radiance, because the irradiance does
+not move with the eye and the radiance's specular lobe does: a point's traced set is then a function
+of the point, its normal and the lights. Ties go to the lower index, as R87's page asked. Ward's
+stop, with Lightcuts' 2% as the default share (`renderer.shadow.light_cap_share`), against what the
+traced lights were found to deliver, and a hard cap of rays (`renderer.shadow.light_rays`, 8) because
+a fragment shader keeps its ranking in registers. Ward's estimate for the rest, taken from the
+pixel's own tests instead of the render's history, which a pixel drawn by itself does not have.
+
+**The error of each fill.** With the untraced candidates' unshadowed light U at a pixel and their
+true visibilities v_i in [0, 1], the estimate (the traced candidates' visibility weighted by their
+irradiance, v̂) moves the pixel by Σ U_i |v̂ − v_i| ≤ U·max(v̂, 1 − v̂); lit unshadowed (fill 1) by
+Σ U_i (1 − v_i) ≤ U; left out (fill 2) by Σ U_i v_i ≤ U. All three are bounded by U, and where the
+cut stopped before the cap U's irradiance is at most the share of the traced lights' delivered
+irradiance. The estimate is exact where every light is seen (v̂ = 1 and every v_i = 1), which is
+what the renderer's case holds; it is worst where the traced and the untraced lights' visibilities
+differ, which a walled street makes common (below).
+
+**The picture's error, measured**: lantern-street's fire variants at midnight, 3840 × 2160, `--raster
+rt --shadows rt`, the bounce and the accumulation off (with them the last frame is not the same
+bytes run to run), the tip's binary, frame 300 captured with the cap on against the same flight with
+`renderer.shadow.light_rays=0` (every ray traced), counted by the largest channel difference of the
+8-bit picture. 3840 × 2160 is 8,294,400 pixels.
+
+| fires | cap | fill | pixels that differ | pixels over 2 of 255 | worst |
+|---:|---:|---|---:|---:|---:|
+| 8 | 8 | estimate | 26,173 | 0 | 2 |
+| 16 | 8 | estimate | 1,191,424 | 4,205 (0.05%) | 7 |
+| 16 | 4 | estimate | 2,437,999 | 151,032 (1.8%) | 20 |
+| 32 | 8 | estimate | 3,773,181 | 50,717 (0.61%) | 9 |
+| 32 | 4 | estimate | 3,779,385 | 782,343 (9.4%) | 18 |
+| 32 | 8 | unshadowed | 3,920,602 | 636,697 (7.7%) | 28 |
+| 32 | 8 | left out | 500,343 | 13,407 (0.16%) | 10 |
+
+So **8 rays is the default and 4 is not**: at 16 and 32 fires four rays put 2 to 9% of the picture
+past 2 of 255 where eight put 0.05 to 0.6%. **The fills are the street's lesson**: the eight
+nearest fires are mostly in view of a point and the far ones mostly behind the walls, so the traced
+lights' visibility over-states the rest's; lit unshadowed is far worse, and left out is better than
+the estimate here — it differs from every ray's picture at 0.5 million pixels where the estimate
+differs at 3.8 million, since most of the untraced fires are in fact hidden — and would be worse in
+an open square where the far fires are seen. The estimate stays the default because it is exact
+where everything is seen and its bound is the tightest of the three; a fill that knows how far a
+light is from the traced ones (the walls between are what makes the far fires dark) is a proposed
+next step.
