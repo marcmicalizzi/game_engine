@@ -16,7 +16,7 @@
       "file": "systems/renderer/src/scene_renderer.cpp",
       "function": "SceneRenderer::record_frame",
       "why": "every pass and every feature flag of a frame",
-      "ceiling": 3931
+      "ceiling": 3941
     },
     {
       "id": "renderer.record_frame.add_pass",
@@ -39,14 +39,14 @@
       "measure": "file-lines",
       "file": "systems/renderer/include/systems/renderer/gpu_scene.h",
       "why": "every feature's GPU state",
-      "ceiling": 2616
+      "ceiling": 2617
     },
     {
       "id": "engine_view.main_cpp.lines",
       "measure": "file-lines",
       "file": "apps/engine_view/main.cpp",
       "why": "every play feature and every flag",
-      "ceiling": 7866
+      "ceiling": 7869
     },
     {
       "id": "engine_view.run_view.lines",
@@ -54,7 +54,7 @@
       "file": "apps/engine_view/main.cpp",
       "function": "run_view",
       "why": "the windowed loop",
-      "ceiling": 3339
+      "ceiling": 3340
     },
     {
       "id": "engine_view.run_offscreen.lines",
@@ -62,7 +62,7 @@
       "file": "apps/engine_view/main.cpp",
       "function": "run_offscreen",
       "why": "the offscreen loop",
-      "ceiling": 1224
+      "ceiling": 1225
     },
     {
       "id": "gfx.resolve_modules",
@@ -107,19 +107,19 @@
       "id": "page:docs/subsystems/renderer.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/renderer.md",
-      "ceiling": 1568165
+      "ceiling": 1586033
     },
     {
       "id": "page:docs/subsystems/apps.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/apps.md",
-      "ceiling": 788754
+      "ceiling": 789108
     },
     {
       "id": "page:docs/subsystems/gfx.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/gfx.md",
-      "ceiling": 409642
+      "ceiling": 409730
     },
     {
       "id": "page:docs/subsystems/geometry.md",
@@ -173,13 +173,13 @@
       "id": "page:docs/subsystems/world.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/world.md",
-      "ceiling": 169110
+      "ceiling": 176036
     },
     {
       "id": "page:AGENTS.md",
       "measure": "page-bytes",
       "file": "AGENTS.md",
-      "ceiling": 76491
+      "ceiling": 76605
     },
     {
       "id": "page:docs/subsystems/rocks.md",
@@ -221,13 +221,13 @@
       "id": "page:docs/subsystems/texture.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/texture.md",
-      "ceiling": 133260
+      "ceiling": 133959
     },
     {
       "id": "page:docs/ci/what-to-run.md",
       "measure": "page-bytes",
       "file": "docs/ci/what-to-run.md",
-      "ceiling": 122998
+      "ceiling": 123309
     },
     {
       "id": "page:docs/subsystems/animation.md",
@@ -245,7 +245,13 @@
       "id": "page:docs/subsystems/audio.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/audio.md",
-      "ceiling": 121282
+      "ceiling": 121278
+    },
+    {
+      "id": "page:docs/subsystems/world_sound.md",
+      "measure": "page-bytes",
+      "file": "docs/subsystems/world_sound.md",
+      "ceiling": 105205
     }
   ],
   "rebaselines": [
@@ -4661,6 +4667,159 @@
           "id": "page:docs/subsystems/audio.md",
           "old": 119182,
           "new": 121282
+        }
+      ]
+    },
+    {
+      "date": "2026-11-25",
+      "by": "Marc Micalizzi",
+      "reason": "",
+      "commit": "200b6eea5",
+      "folded": [
+        {
+          "name": "R213",
+          "reason": "R213's cap on the lights' shadow rays and its mend: the cap's helper and the resolve's visible-list declaration in record_frame; its section in renderer.md (one walk, the class mode's early depth test, what the cases hold, the mend's figures) and the frame record's field in apps.md",
+          "date": "2026-11-25",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 10,
+            "page:docs/subsystems/renderer.md": 14202,
+            "page:docs/subsystems/apps.md": 300
+          }
+        },
+        {
+          "name": "R217",
+          "reason": "R217's paragraph under Lights by reach: no grid built that would be dropped, the light array made again in place, their measured cost, and the tests that hold the skip both ways and the frame's decision",
+          "date": "2026-11-24",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 2019
+          }
+        },
+        {
+          "name": "R218",
+          "reason": "R218's mend after review: the limit on taking a reservation, the two new counters, the machine's state beside the frame figures, the host memory's bound and the mend's own flight",
+          "date": "2026-11-24",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.gpu_scene_h.lines": 1,
+            "page:docs/subsystems/renderer.md": 1647,
+            "page:docs/subsystems/world.md": 6926
+          }
+        },
+        {
+          "name": "R219",
+          "reason": "gfx.md names the render graph's new pass labels (RenderGraph::set_labels) in one line pointing at bench.md, where the capture they serve is described",
+          "date": "2026-11-24",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/gfx.md": 88
+          }
+        },
+        {
+          "name": "S122",
+          "reason": "S122: the session's world sound computes its refresh on each loop's page_jobs, handed for the loop's life by one scope guard a loop (and its one-line stub without the capability); apps.md says the surf's records are joined into lines; world_sound.md takes the refresh off the frame's thread and the surf's join, with the staging pair, past the default page ceiling. S122's mend: world_sound.md says what the review found and what was mended (the cases by construction, a compute on the tick's thread counted late, a reopened stage clean, a stop that settles, the snapshot's bound, a line's real span, the line law held in the stage, the join's time)",
+          "date": "2026-11-24",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "engine_view.main_cpp.lines": 3,
+            "engine_view.run_view.lines": 1,
+            "engine_view.run_offscreen.lines": 1,
+            "page:docs/subsystems/apps.md": 54,
+            "page:docs/subsystems/audio.md": -4,
+            "page:docs/subsystems/world_sound.md": 5205
+          }
+        },
+        {
+          "name": "T222",
+          "reason": "T222: AGENTS.md's hand-over line names the Linux preset a row runs, linux-clang-debug, and linux-gcc-release as well where a pin or golden moves",
+          "date": "2026-11-24",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:AGENTS.md": 114,
+            "page:docs/ci/what-to-run.md": 311
+          }
+        },
+        {
+          "name": "W171",
+          "reason": "W171: texture.md's drain case says why each phase waits for the unseen group's trim, and what the server's failure was",
+          "date": "2026-11-24",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/texture.md": 699
+          }
+        }
+      ],
+      "changes": [
+        {
+          "id": "renderer.record_frame.lines",
+          "old": 3931,
+          "new": 3941
+        },
+        {
+          "id": "renderer.gpu_scene_h.lines",
+          "old": 2616,
+          "new": 2617
+        },
+        {
+          "id": "engine_view.main_cpp.lines",
+          "old": 7866,
+          "new": 7869
+        },
+        {
+          "id": "engine_view.run_view.lines",
+          "old": 3339,
+          "new": 3340
+        },
+        {
+          "id": "engine_view.run_offscreen.lines",
+          "old": 1224,
+          "new": 1225
+        },
+        {
+          "id": "page:docs/subsystems/renderer.md",
+          "old": 1568165,
+          "new": 1586033
+        },
+        {
+          "id": "page:docs/subsystems/apps.md",
+          "old": 788754,
+          "new": 789108
+        },
+        {
+          "id": "page:docs/subsystems/gfx.md",
+          "old": 409642,
+          "new": 409730
+        },
+        {
+          "id": "page:docs/subsystems/world.md",
+          "old": 169110,
+          "new": 176036
+        },
+        {
+          "id": "page:AGENTS.md",
+          "old": 76491,
+          "new": 76605
+        },
+        {
+          "id": "page:docs/subsystems/texture.md",
+          "old": 133260,
+          "new": 133959
+        },
+        {
+          "id": "page:docs/ci/what-to-run.md",
+          "old": 122998,
+          "new": 123309
+        },
+        {
+          "id": "page:docs/subsystems/audio.md",
+          "old": 121282,
+          "new": 121278
+        },
+        {
+          "id": "page:docs/subsystems/world_sound.md",
+          "old": 100000,
+          "new": 105205
         }
       ]
     }
