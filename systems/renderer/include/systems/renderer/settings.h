@@ -710,7 +710,7 @@ bool half_rate_centre_tunable() noexcept;
 // "A light too faint to test"). 0 traces every light.
 f32 shadow_light_tolerance_tunable() noexcept;
 // `renderer.shadow.light_rays` (8) and `renderer.shadow.light_cap_fill` (0) as
-// `gfx::ResolveParams::light_cap_rays`, and `renderer.shadow.light_cap_share` (0.02) as
+// `gfx::ResolveParams::light_cap_rays`, and `renderer.shadow.light_cap_share` (0.002) as
 // `light_cap_share`: the cap on the lights' shadow rays a pixel traces (R213; renderer.md, "A cap
 // on the shadow rays a pixel traces"). A rays count of 0 traces every light.
 u32 shadow_light_cap_tunable() noexcept;

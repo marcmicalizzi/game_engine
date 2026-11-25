@@ -708,7 +708,7 @@ void shadow_ray_cap(ShadowMode shadows, const char* name) {
   struct Restore {
     ~Restore() {
       (void)tunables::apply_overrides("renderer.shadow.light_rays=8");
-      (void)tunables::apply_overrides("renderer.shadow.light_cap_share=0.02");
+      (void)tunables::apply_overrides("renderer.shadow.light_cap_share=0.002");
       (void)tunables::apply_overrides("renderer.shadow.light_cap_fill=0");
     }
   } restore;
@@ -748,7 +748,7 @@ void shadow_ray_cap(ShadowMode shadows, const char* name) {
   REQUIRE_MESSAGE(open_dark.renderer.capture(frame, channels, unshadowed_base, &open_dark.error),
                   open_dark.error);
   MESSAGE(std::string(name) << ": " << three_capped << " pixels stopped at three rays with the "
-                            << "2% share unmet, " << wide_capped << " with a share of 1");
+                            << "0.2% share unmet, " << wide_capped << " with a share of 1");
   CHECK(three_capped > 0);
   CHECK(wide_capped <= three_capped);
   u32 seen_all = 0, differ = 0, over = 0;

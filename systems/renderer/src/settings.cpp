@@ -395,9 +395,10 @@ tunables::Int shadow_light_rays{
     "there; 0 traces every light that reaches it (renderer.md, A cap on the shadow rays a pixel "
     "traces)"};
 tunables::Float shadow_light_cap_share{
-    "renderer.shadow.light_cap_share", 0.02, 0.0, 1.0,
-    "Under the cap, a pixel stops tracing once the untraced lights' irradiance is at most this "
-    "share of what the traced lights were found to deliver (2%: Weber's fraction, as Lightcuts)"};
+    "renderer.shadow.light_cap_share", 0.002, 0.0, 1.0,
+    "Under the cap, a pixel traces fewer than its rays once the untraced lights' irradiance is at "
+    "most this share of the traced lights' (0.2%; R213 measured 2%, Lightcuts' Weber fraction, "
+    "too coarse)"};
 tunables::Int shadow_light_cap_fill{
     "renderer.shadow.light_cap_fill", 0, 0, 2,
     "What the lights past the cap are added at: 0 the traced lights' visibility weighted by their "
